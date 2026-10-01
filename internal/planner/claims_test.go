@@ -443,6 +443,137 @@ func TestClaimsMissingHolderWithinGrace(t *testing.T) {
 	require.Equal(t, []string{"conflict a.example.com lxc/5"}, eventKeys(t, res.Events))
 }
 
+func TestClaimsHeldHolderKeepsTheHostname(t *testing.T) {
+	since := at(-30 * time.Second)
+	claim := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)})
+	claim.MissingSince = &since
+	in := ClaimInput{
+		Routes:   routes(t, primary, "qemu/9", "lxc/5"),
+		Held:     []HeldName{{Hostname: primary, Owner: "qemu/3"}},
+		Claims:   map[string]Claim{primary: claim},
+		Identity: map[string]string{"qemu/3": "new", "qemu/9": "id9", "lxc/5": "id5"},
+		Now:      t0,
+		Grace:    grace,
+	}
+
+	res := ResolveClaims(in)
+
+	require.Empty(t, res.Winners)
+	require.Equal(t, []string{"qemu/9", "lxc/5"}, ownersOf(res.Conflicts))
+	require.Equal(t, map[string]Claim{
+		primary: holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)}, Waiter{"lxc/5", t0}),
+	}, res.Claims, "kept as it was, no longer missing")
+	require.Equal(t, []string{"conflict a.example.com lxc/5"}, eventKeys(t, res.Events))
+
+	t.Run("long after the grace nothing changes", func(t *testing.T) {
+		later := in
+		later.Claims = res.Claims
+		later.Now = at(10 * grace)
+
+		again := ResolveClaims(later)
+
+		require.Empty(t, again.Winners)
+		require.Equal(t, res.Conflicts, again.Conflicts)
+		require.Equal(t, res.Claims, again.Claims)
+		require.Empty(t, again.Events)
+	})
+
+	t.Run("the holder's route comes back", func(t *testing.T) {
+		back := in
+		back.Routes = routes(t, primary, "qemu/3", "qemu/9", "lxc/5")
+		back.Held = nil
+		back.Claims = res.Claims
+		back.Now = at(10 * grace)
+
+		got := ResolveClaims(back)
+
+		require.Equal(t, []string{"qemu/3"}, ownersOf(got.Winners))
+		require.Equal(t, at(-time.Hour), got.Claims[primary].Since)
+		require.Equal(t, []string{"identity-changed a.example.com qemu/3"}, eventKeys(t, got.Events))
+	})
+
+	t.Run("the holder stops naming it", func(t *testing.T) {
+		gone := in
+		gone.Held = nil
+		gone.Claims = res.Claims
+		gone.Now = at(time.Minute)
+
+		first := ResolveClaims(gone)
+
+		require.Empty(t, first.Winners)
+		require.Empty(t, first.Events)
+		require.Equal(t, at(time.Minute), *first.Claims[primary].MissingSince)
+
+		gone.Claims = first.Claims
+		gone.Now = at(time.Minute + grace)
+
+		after := ResolveClaims(gone)
+
+		require.Equal(t, []string{"qemu/9"}, ownersOf(after.Winners))
+		require.Equal(t, []string{"transferred a.example.com qemu/9"}, eventKeys(t, after.Events))
+	})
+}
+
+func TestClaimsHeldWithoutTheHolderIsIgnored(t *testing.T) {
+	gone := func() Claim {
+		since := at(-2 * time.Minute)
+		claim := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)}, Waiter{"lxc/5", at(-time.Minute)})
+		claim.MissingSince = &since
+		return claim
+	}
+
+	t.Run("a hostname nobody holds", func(t *testing.T) {
+		res := ResolveClaims(ClaimInput{
+			Held:  []HeldName{{Hostname: primary, Owner: "qemu/3"}},
+			Now:   t0,
+			Grace: grace,
+		})
+
+		require.Empty(t, res.Winners)
+		require.Empty(t, res.Claims)
+		require.Empty(t, res.Events)
+	})
+
+	t.Run("a hostname nobody holds goes to its first claimant", func(t *testing.T) {
+		res := ResolveClaims(ClaimInput{
+			Routes: routes(t, primary, "qemu/9"),
+			Held:   []HeldName{{Hostname: primary, Owner: "qemu/3"}},
+			Now:    t0,
+			Grace:  grace,
+		})
+
+		require.Equal(t, []string{"qemu/9"}, ownersOf(res.Winners))
+		require.Equal(t, map[string]Claim{primary: holding("qemu/9", "", t0)}, res.Claims)
+		require.Equal(t, []string{"claimed a.example.com qemu/9"}, eventKeys(t, res.Events))
+	})
+
+	t.Run("a waiter that is only held does not keep the claim", func(t *testing.T) {
+		res := ResolveClaims(ClaimInput{
+			Held:   []HeldName{{Hostname: primary, Owner: "qemu/9"}},
+			Claims: map[string]Claim{primary: gone()},
+			Now:    t0,
+			Grace:  grace,
+		})
+
+		require.Empty(t, res.Winners)
+		require.Empty(t, res.Claims)
+		require.Equal(t, []string{"released a.example.com qemu/3"}, eventKeys(t, res.Events))
+	})
+
+	t.Run("a waiter that is only held does not win", func(t *testing.T) {
+		res := ResolveClaims(ClaimInput{
+			Routes: routes(t, primary, "lxc/5"),
+			Held:   []HeldName{{Hostname: primary, Owner: "qemu/9"}},
+			Claims: map[string]Claim{primary: gone()},
+			Now:    t0,
+			Grace:  grace,
+		})
+
+		require.Equal(t, []string{"lxc/5"}, ownersOf(res.Winners))
+		require.Equal(t, []string{"transferred a.example.com lxc/5"}, eventKeys(t, res.Events))
+	})
+}
+
 func TestClaimsTransferGoesToEarliestWaiter(t *testing.T) {
 	since := at(-2 * time.Minute)
 	claim := holding("qemu/3", "id3", at(-time.Hour),
@@ -545,16 +676,29 @@ func TestClaimsOneOwnerClaimsAHostnameOnce(t *testing.T) {
 }
 
 func TestClaimsEventOrder(t *testing.T) {
-	const other = "b.example.com"
+	const (
+		other = "b.example.com"
+		kept  = "c.example.com"
+	)
 	since := at(-2 * time.Minute)
 	gone := holding("qemu/1", "", at(-time.Hour), Waiter{"qemu/2", at(-time.Minute)})
 	gone.MissingSince = &since
 	in := ClaimInput{
-		Routes: append(
+		Routes: slices.Concat(
 			routes(t, other, "lxc/7", "qemu/6", "qemu/5"),
-			routes(t, primary, "qemu/2", "qemu/10")...,
+			routes(t, primary, "qemu/2", "qemu/10"),
+			routes(t, kept, "lxc/8"),
 		),
-		Claims:   map[string]Claim{primary: gone},
+		Held: []HeldName{
+			{Hostname: kept, Owner: "qemu/4"},
+			{Hostname: kept, Owner: "qemu/9"},
+			{Hostname: primary, Owner: "qemu/11"},
+			{Hostname: "d.example.com", Owner: "qemu/1"},
+		},
+		Claims: map[string]Claim{
+			primary: gone,
+			kept:    {Hostname: kept, Owner: "qemu/4", Since: at(-time.Hour), MissingSince: &since},
+		},
 		Identity: map[string]string{"qemu/2": "id2"},
 		Now:      t0,
 		Grace:    grace,
@@ -565,6 +709,7 @@ func TestClaimsEventOrder(t *testing.T) {
 		"claimed b.example.com qemu/5",
 		"conflict b.example.com qemu/6",
 		"conflict b.example.com lxc/7",
+		"conflict c.example.com lxc/8",
 	}
 
 	rng := rand.New(rand.NewPCG(3, 5))
@@ -572,15 +717,18 @@ func TestClaimsEventOrder(t *testing.T) {
 	for i := range 20 {
 		shuffled := in
 		shuffled.Routes = slices.Clone(in.Routes)
-		rng.Shuffle(len(shuffled.Routes), func(a, b int) {
-			shuffled.Routes[a], shuffled.Routes[b] = shuffled.Routes[b], shuffled.Routes[a]
-		})
+		shuffled.Held = slices.Clone(in.Held)
+		shuffle(rng, shuffled.Routes)
+		shuffle(rng, shuffled.Held)
 
 		res := ResolveClaims(shuffled)
 
 		require.Equal(t, want, eventKeys(t, res.Events), "run %d", i)
 		require.Equal(t, []string{primary, other}, hostsOf(res.Winners), "run %d", i)
-		require.Equal(t, []string{"qemu/10", "qemu/6", "lxc/7"}, ownersOf(res.Conflicts), "run %d", i)
+		require.Equal(t, []string{"qemu/10", "qemu/6", "lxc/7", "lxc/8"}, ownersOf(res.Conflicts), "run %d", i)
+		require.Equal(t, Claim{
+			Hostname: kept, Owner: "qemu/4", Since: at(-time.Hour), Waiting: []Waiter{{"lxc/8", t0}},
+		}, res.Claims[kept], "run %d", i)
 		if i == 0 {
 			first = res
 			continue
@@ -636,6 +784,21 @@ func TestClaimsDoesNotAliasInput(t *testing.T) {
 					Identity: map[string]string{"qemu/3": "id3"},
 					Now:      t0,
 					Grace:    grace,
+				}
+			},
+		},
+		{
+			name: "holder held",
+			input: func() ClaimInput {
+				since := at(-10 * time.Second)
+				claim := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-time.Minute)})
+				claim.MissingSince = &since
+				return ClaimInput{
+					Routes: routes(t, primary, "qemu/9", "lxc/5"),
+					Held:   []HeldName{{Hostname: primary, Owner: "qemu/3"}},
+					Claims: map[string]Claim{primary: claim},
+					Now:    t0,
+					Grace:  grace,
 				}
 			},
 		},

@@ -188,6 +188,8 @@ func TestCollectPolicy(t *testing.T) {
 
 			got := Collect([]model.Guest{g}, nil, tt.settings)
 
+			require.False(t, got.PolicyInvalid)
+			require.Empty(t, got.Held, "a valid policy decision holds nothing")
 			if tt.allowed {
 				require.Equal(t, []string{tt.host + " qemu/101"}, routeKeys(got.Routes))
 				require.Empty(t, got.Issues)
@@ -220,6 +222,7 @@ func TestCollectInvalidPatterns(t *testing.T) {
 	const host = "a.example.com"
 	g := tagged(model.KindQEMU, 101, block(host+" -> :80"))
 	hostIssue := Issue{Guest: g.Ref, Line: 2, Col: 1, Msg: notAllowed(host)}
+	held := []HeldName{{Hostname: host, Owner: "qemu/101"}}
 	denyIssue := func(pattern, reason string) Issue {
 		return Issue{Msg: fmt.Sprintf("invalid deny pattern %q: %s; all hostnames are denied until it is fixed", pattern, reason)}
 	}
@@ -281,6 +284,12 @@ func TestCollectInvalidPatterns(t *testing.T) {
 
 			require.Equal(t, tt.routes, routeKeys(got.Routes))
 			require.Equal(t, tt.issues, got.Issues)
+			require.True(t, got.PolicyInvalid)
+			if tt.routes == nil {
+				require.Equal(t, held, got.Held, "a policy that cannot be read holds what it drops")
+			} else {
+				require.Empty(t, got.Held)
+			}
 		})
 	}
 
@@ -292,12 +301,14 @@ func TestCollectInvalidPatterns(t *testing.T) {
 		require.Empty(t, got.Routes)
 		require.Len(t, got.Issues, 3)
 		require.Equal(t, denyIssue("bad/", "needs at least two labels"), got.Issues[2])
+		require.Equal(t, []HeldName{{Hostname: host, Owner: "qemu/101"}, {Hostname: "b.example.com", Owner: "lxc/200"}}, got.Held)
 	})
 
 	t.Run("reported without any guest", func(t *testing.T) {
 		got := Collect(nil, nil, Settings{DenyHosts: []string{"bad/"}})
 
 		require.Equal(t, []Issue{denyIssue("bad/", "needs at least two labels")}, got.Issues)
+		require.True(t, got.PolicyInvalid)
 	})
 
 	t.Run("manual routes are not affected", func(t *testing.T) {
@@ -308,6 +319,178 @@ func TestCollectInvalidPatterns(t *testing.T) {
 		require.Equal(t, manual, got.Routes)
 		require.Len(t, got.Issues, 2)
 	})
+}
+
+func TestCollectHeld(t *testing.T) {
+	const owner = "qemu/101"
+	held := func(hosts ...string) []HeldName {
+		out := []HeldName{}
+		for _, h := range hosts {
+			out = append(out, HeldName{Hostname: h, Owner: owner})
+		}
+		return out
+	}
+
+	tests := []struct {
+		name     string
+		notes    string
+		settings Settings
+		routes   []string
+		held     []HeldName
+	}{
+		{
+			name:   "a routed hostname is not held",
+			notes:  block("a.example.com -> :80"),
+			routes: []string{"a.example.com qemu/101"},
+			held:   held(),
+		},
+		{
+			name:   "an entry with a typo",
+			notes:  block("a.example.com -> :80800", "b.example.com -> :80"),
+			routes: []string{"b.example.com qemu/101"},
+			held:   held("a.example.com"),
+		},
+		{
+			name:  "hostnames in the text skipped after an error",
+			notes: block("a_b.example.com c.example.com -> :80", "  d.example.com"),
+			held:  held("c.example.com", "d.example.com"),
+		},
+		{
+			name:  "a block with a stray fence",
+			notes: "````cf-tunnel\na.example.com -> :80\n```\nb.example.com -> :81\n````",
+			held:  held("a.example.com", "b.example.com"),
+		},
+		{
+			name:  "a closing fence in a comment",
+			notes: block("a.example.com -> :80 # was ```:81```"),
+			held:  held("a.example.com"),
+		},
+		{
+			name:  "a shorthand line with a fence",
+			notes: "cf-tunnel: a.example.com -> :80 ```",
+			held:  held("a.example.com"),
+		},
+		{
+			name:   "a hostname listed twice keeps its first route",
+			notes:  block("a.example.com -> :80", "a.example.com -> :81"),
+			routes: []string{"a.example.com qemu/101"},
+			held:   held(),
+		},
+		{
+			name:     "a broken entry denied by a valid pattern",
+			notes:    block("a.example.com -> :abc", "b.example.com -> :abc"),
+			settings: Settings{DenyHosts: []string{"a.example.com"}},
+			held:     held("b.example.com"),
+		},
+		{
+			name:     "a valid entry denied by a valid pattern",
+			notes:    block("a.example.com -> :80"),
+			settings: Settings{DenyHosts: []string{"*.example.com"}},
+			held:     held(),
+		},
+		{
+			name:     "hostnames outside a valid allow list",
+			notes:    block("a.example.com -> :80", "b.other.org -> :80", "c.other.org -> :abc"),
+			settings: Settings{AllowHosts: []string{"*.example.com"}},
+			routes:   []string{"a.example.com qemu/101"},
+			held:     held(),
+		},
+		{
+			name:     "an invalid deny pattern holds everything it drops",
+			notes:    block("a.example.com -> :80", "b.example.com -> :abc"),
+			settings: Settings{DenyHosts: []string{"a.example.com", "bad/"}},
+			held:     held("a.example.com", "b.example.com"),
+		},
+		{
+			name:     "an invalid allow pattern holds what the valid ones leave out",
+			notes:    block("a.example.com -> :80", "b.other.org -> :80"),
+			settings: Settings{AllowHosts: []string{"*.example.com", "*.other.org/"}},
+			routes:   []string{"a.example.com qemu/101"},
+			held:     held("b.other.org"),
+		},
+		{
+			name:     "an invalid allow pattern holds what a valid deny pattern drops",
+			notes:    block("a.example.com -> :80"),
+			settings: Settings{AllowHosts: []string{"bad/"}, DenyHosts: []string{"a.example.com"}},
+			held:     held("a.example.com"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Collect([]model.Guest{tagged(model.KindQEMU, 101, tt.notes)}, nil, tt.settings)
+
+			require.Equal(t, tt.routes, routeKeys(got.Routes))
+			require.Equal(t, tt.held, got.Held)
+		})
+	}
+
+	t.Run("guests outside the gate hold nothing", func(t *testing.T) {
+		notes := block("a.example.com -> :abc")
+		untagged := tagged(model.KindQEMU, 101, notes)
+		untagged.Tags = nil
+		template := tagged(model.KindQEMU, 102, notes)
+		template.Template = true
+
+		got := Collect([]model.Guest{untagged, template}, nil, Settings{})
+
+		require.Empty(t, got.Held)
+	})
+
+	t.Run("sorted by hostname, then owner", func(t *testing.T) {
+		notes := block("b.example.com -> :x", "a.example.com -> :y")
+		guests := []model.Guest{
+			tagged(model.KindLXC, 5, notes),
+			tagged(model.KindQEMU, 20, notes),
+			tagged(model.KindQEMU, 3, notes),
+		}
+
+		got := Collect(guests, nil, Settings{})
+
+		require.Equal(t, []HeldName{
+			{Hostname: "a.example.com", Owner: "qemu/3"},
+			{Hostname: "a.example.com", Owner: "qemu/20"},
+			{Hostname: "a.example.com", Owner: "lxc/5"},
+			{Hostname: "b.example.com", Owner: "qemu/3"},
+			{Hostname: "b.example.com", Owner: "qemu/20"},
+			{Hostname: "b.example.com", Owner: "lxc/5"},
+		}, got.Held)
+
+		rng := rand.New(rand.NewPCG(9, 4))
+		for range 10 {
+			g := slices.Clone(guests)
+			rng.Shuffle(len(g), func(i, j int) { g[i], g[j] = g[j], g[i] })
+
+			require.Equal(t, got, Collect(g, nil, Settings{}))
+		}
+	})
+}
+
+func TestCollectManualRouteWithoutID(t *testing.T) {
+	guest := ref(model.KindQEMU, 101)
+	grafana := model.Route{Hostname: "grafana.example.com", Source: model.SourceManual, ManualID: "grafana"}
+	manual := []model.Route{
+		{Hostname: "z.example.com", Source: model.SourceManual},
+		grafana,
+		// Without an id this would belong to the guest it names.
+		{Hostname: "a.example.com", Source: model.SourceAnnotation, Guest: &guest},
+	}
+
+	got := Collect(nil, manual, Settings{})
+
+	require.Equal(t, []model.Route{grafana}, got.Routes)
+	require.Equal(t, []Issue{
+		{Msg: `manual route for "a.example.com" has no id`},
+		{Msg: `manual route for "z.example.com" has no id`},
+	}, got.Issues)
+	require.Empty(t, got.Held)
+
+	rng := rand.New(rand.NewPCG(4, 9))
+	for range 10 {
+		m := slices.Clone(manual)
+		rng.Shuffle(len(m), func(i, j int) { m[i], m[j] = m[j], m[i] })
+
+		require.Equal(t, got, Collect(nil, m, Settings{}))
+	}
 }
 
 func TestCollectTaggedWithoutRoutes(t *testing.T) {
@@ -400,6 +583,7 @@ func TestCollectOrderDoesNotDependOnInput(t *testing.T) {
 		issues = append(issues, fmt.Sprintf("%s %d:%d", is.Guest, is.Line, is.Col))
 	}
 	require.Equal(t, []string{"qemu/3 2:20", "qemu/20 0:0", "lxc/5 4:1"}, issues)
+	require.Equal(t, []HeldName{{Hostname: "bad.example.com", Owner: "qemu/3"}}, got.Held)
 
 	rng := rand.New(rand.NewPCG(1, 2))
 	for range 30 {

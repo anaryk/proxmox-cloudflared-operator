@@ -31,12 +31,14 @@ type Claim struct {
 
 // ClaimInput is everything ResolveClaims needs.
 //
-// Routes must come from a complete inventory. An owner missing from Routes is
-// taken to no longer claim its hostnames, so a partial inventory would start
-// their grace and in the end hand them to someone else; when the inventory is
-// incomplete, callers skip the call and keep the stored claims.
+// Routes must come from a complete inventory. An owner missing from Routes,
+// and from Held, is taken to no longer claim its hostnames, so a partial
+// inventory would start their grace and in the end hand them to someone else;
+// when the inventory is incomplete, callers skip the call and keep the stored
+// claims.
 type ClaimInput struct {
 	Routes   []model.Route
+	Held     []HeldName        // hostnames owners still name without a route; see Collected.Held
 	Claims   map[string]Claim  // by hostname
 	Identity map[string]string // owner -> identity now; "" when unknown, as for manual routes
 	Now      time.Time
@@ -77,10 +79,25 @@ type ClaimResult struct {
 // stops asking, the hostname stays reserved for Grace so that a restart or a
 // brief edit of the Notes loses nothing. After that it goes to the waiter
 // that has been waiting longest, or is released when nobody wants it.
+//
+// A holder that still names the hostname in Held has not stopped asking: its
+// entry is broken, or the policy cannot be read. It keeps the claim for as
+// long as that lasts, and nobody serves the hostname meanwhile. Held is only
+// ever about keeping a claim: it never creates one and never lets a waiter
+// win.
 func ResolveClaims(in ClaimInput) ClaimResult {
 	r := resolver{
-		in:  in,
-		res: ClaimResult{Claims: make(map[string]Claim, len(in.Claims))},
+		in:   in,
+		held: make(map[HeldName]bool, len(in.Held)),
+		res: ClaimResult{
+			Winners:   []model.Route{},
+			Conflicts: []model.Route{},
+			Claims:    make(map[string]Claim, len(in.Claims)),
+			Events:    []ClaimEvent{},
+		},
+	}
+	for _, h := range in.Held {
+		r.held[h] = true
 	}
 	groups := groupClaimants(in.Routes)
 	for _, host := range hostnamesOf(groups, in.Claims) {
@@ -133,22 +150,26 @@ func hostnamesOf(groups map[string][]claimant, claims map[string]Claim) []string
 }
 
 type resolver struct {
-	in  ClaimInput
-	res ClaimResult
+	in   ClaimInput
+	held map[HeldName]bool
+	res  ClaimResult
 }
 
 // resolve settles one hostname. Claimants are in CompareOwners order.
 func (r *resolver) resolve(host string, cs []claimant) {
-	claim, held := r.in.Claims[host]
-	if !held {
+	claim, ok := r.in.Claims[host]
+	if !ok {
 		r.firstClaim(host, cs)
 		return
 	}
-	if i := slices.IndexFunc(cs, func(c claimant) bool { return c.owner == claim.Owner }); i >= 0 {
+	switch i := slices.IndexFunc(cs, func(c claimant) bool { return c.owner == claim.Owner }); {
+	case i >= 0:
 		r.keep(host, claim, cs, i)
-		return
+	case r.held[HeldName{Hostname: host, Owner: claim.Owner}]:
+		r.hold(host, claim, cs)
+	default:
+		r.holderMissing(host, claim, cs)
 	}
-	r.holderMissing(host, claim, cs)
 }
 
 // firstClaim gives a hostname nobody holds to the first claimant.
@@ -179,8 +200,17 @@ func (r *resolver) keep(host string, claim Claim, cs []claimant, i int) {
 	r.award(next, holder, without(cs, i), claim.Waiting)
 }
 
+// hold keeps a claim whose holder has no route for the hostname but still
+// names it. The claim stays as it is, no longer missing, and nobody wins the
+// hostname; the other claimants wait as they would behind a present holder.
+func (r *resolver) hold(host string, claim Claim, cs []claimant) {
+	next := Claim{Hostname: host, Owner: claim.Owner, Identity: claim.Identity, Since: claim.Since}
+	next.Waiting = r.queue(host, claim.Owner, claim.Waiting, cs)
+	r.res.Claims[host] = next
+}
+
 // holderMissing handles a stored claim whose holder has no route for the
-// hostname.
+// hostname and does not name it either.
 func (r *resolver) holderMissing(host string, claim Claim, cs []claimant) {
 	missing := r.in.Now
 	// A time after Now means the clock stepped back; counting from it would

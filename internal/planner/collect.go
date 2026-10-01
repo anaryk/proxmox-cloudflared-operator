@@ -36,31 +36,54 @@ type Issue struct {
 	Msg   string         `json:"msg"`
 }
 
+// HeldName is a hostname that a guest's Notes still name but that did not
+// become a route of that guest, typically because its entry is broken. It
+// keeps an existing claim of that guest from being released.
+type HeldName struct {
+	Hostname string `json:"hostname"`
+	Owner    string `json:"owner"`
+}
+
 // Collected is the candidate routes found in one pass. Several routes may
 // claim the same hostname; ResolveClaims settles that.
 type Collected struct {
-	Routes []model.Route // sorted by hostname, then owner
-	Issues []Issue       // sorted by guest, then position; settings issues last
+	Routes        []model.Route // sorted by hostname, then owner
+	Issues        []Issue       // sorted by guest, then position; settings issues last
+	Held          []HeldName    // sorted by hostname, then owner
+	PolicyInvalid bool          // an allow or deny pattern does not normalise
 }
 
 // Collect turns guest annotations and manual routes into candidate routes.
 // Templates and guests without the gate tag are ignored. The allow and deny
-// lists apply to annotations only: manual routes are the admin's own.
+// lists apply to annotations only: manual routes are the admin's own. A
+// manual route without an id is left out, since it would have no owner of its
+// own.
 //
 // A deny pattern that does not normalise denies every hostname and an allow
 // pattern that does not normalise matches none; each is reported once.
+//
+// Every hostname a guest's Notes name that did not become one of its routes
+// is held for that guest, unless a policy that could be read in full ruled it
+// out. A broken entry or a typo in the settings therefore never makes a guest
+// lose a hostname; only removing it from the Notes, or a policy that says so,
+// does.
 func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 	gate := cmp.Or(s.GateTag, defaultGateTag)
 	pol, issues := newPolicy(s.AllowHosts, s.DenyHosts)
 
-	out := Collected{Issues: issues}
+	out := Collected{
+		Routes:        []model.Route{},
+		Issues:        append([]Issue{}, issues...),
+		Held:          []HeldName{},
+		PolicyInvalid: pol.invalid,
+	}
 	for _, g := range guests {
 		if g.Template || !g.HasTag(gate) {
 			continue
 		}
 		out.addGuest(g, gate, pol)
 	}
-	out.Routes = append(out.Routes, manual...)
+	out.addManual(manual)
 
 	slices.SortStableFunc(out.Routes, func(a, b model.Route) int {
 		return cmp.Or(
@@ -75,6 +98,12 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 			cmp.Compare(a.Col, b.Col),
 		)
 	})
+	slices.SortFunc(out.Held, func(a, b HeldName) int {
+		return cmp.Or(
+			strings.Compare(a.Hostname, b.Hostname),
+			model.CompareOwners(a.Owner, b.Owner),
+		)
+	})
 	return out
 }
 
@@ -84,6 +113,7 @@ func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
 		c.addIssue(g.Ref, 0, 0, fmt.Sprintf("tagged %s but no routes found in Notes", gate))
 		return
 	}
+	routed := make(map[string]bool)
 	for _, e := range res.Entries {
 		for i, host := range e.Hosts {
 			if !pol.allows(host) {
@@ -99,10 +129,35 @@ func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
 				Source:   model.SourceAnnotation,
 				Guest:    &guest,
 			})
+			routed[host] = true
 		}
+	}
+	for _, host := range res.Mentioned {
+		// Only a policy that could be read in full may take a hostname away.
+		if routed[host] || !pol.invalid && !pol.allows(host) {
+			continue
+		}
+		c.Held = append(c.Held, HeldName{Hostname: host, Owner: g.Ref.String()})
 	}
 	for _, e := range res.Errors {
 		c.addIssue(g.Ref, e.Line, e.Col, e.Msg)
+	}
+}
+
+// addManual adds the manual routes that have an id and reports the others.
+func (c *Collected) addManual(manual []model.Route) {
+	var unnamed []string
+	for _, rt := range manual {
+		if rt.ManualID == "" {
+			unnamed = append(unnamed, rt.Hostname)
+			continue
+		}
+		c.Routes = append(c.Routes, rt)
+	}
+	// Sorted, so that the issues do not depend on the order of the input.
+	slices.Sort(unnamed)
+	for _, host := range unnamed {
+		c.addIssue(model.GuestRef{}, 0, 0, fmt.Sprintf("manual route for %q has no id", host))
 	}
 }
 
@@ -115,6 +170,7 @@ type policy struct {
 	allow, deny []string
 	restricted  bool // an allow list was given, even if none of it is valid
 	denyAll     bool // a deny pattern is invalid
+	invalid     bool // a deny or allow pattern is invalid
 }
 
 // newPolicy normalises the patterns and returns an issue for each one that
@@ -127,7 +183,7 @@ func newPolicy(allow, deny []string) (policy, []Issue) {
 	for _, s := range deny {
 		pattern, err := hostname.NormalizePattern(s)
 		if err != nil {
-			p.denyAll = true
+			p.denyAll, p.invalid = true, true
 			issues = append(issues, Issue{Msg: fmt.Sprintf(
 				"invalid deny pattern %q: %v; all hostnames are denied until it is fixed", s, err)})
 			continue
@@ -137,6 +193,7 @@ func newPolicy(allow, deny []string) (policy, []Issue) {
 	for _, s := range allow {
 		pattern, err := hostname.NormalizePattern(s)
 		if err != nil {
+			p.invalid = true
 			issues = append(issues, Issue{Msg: fmt.Sprintf("invalid allow pattern %q: %v", s, err)})
 			continue
 		}

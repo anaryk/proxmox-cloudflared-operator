@@ -328,6 +328,75 @@ func TestBuildServesOnlyTheResolvedAddress(t *testing.T) {
 	}, plan.Routes)
 }
 
+func TestBuildTargetVerifiedForAnotherOwnerIsBlocked(t *testing.T) {
+	const reason = "address was verified for another owner"
+	addr := netip.MustParseAddr(originAddr)
+
+	plan := Build(BuildInput{
+		Winners: []model.Route{
+			winner(t, "mine.shop.cz", "qemu/1"),
+			winner(t, "taken.shop.cz", "qemu/2"),
+			winner(t, "gone.shop.cz", "qemu/3"),
+			winner(t, "anyone.shop.cz", "manual/web"),
+		},
+		Targets: map[string]ResolvedTarget{
+			"mine.shop.cz":   {Addr: addr, Reachable: true, Owner: "qemu/1"},
+			"taken.shop.cz":  {Addr: addr, Reachable: true, Owner: "qemu/1", Reason: "probe passed"},
+			"gone.shop.cz":   {Addr: addr, Withdrawn: true, Owner: "qemu/9"},
+			"anyone.shop.cz": verified(originAddr),
+		},
+		Zones:  []Zone{shopZone},
+		Writer: buildWriter,
+	})
+
+	require.Equal(t, withSentinel(
+		httpRule("anyone.shop.cz", originAddr),
+		blockRule("gone.shop.cz"),
+		httpRule("mine.shop.cz", originAddr),
+		blockRule("taken.shop.cz"),
+	), plan.Tunnels[0].Rules)
+	require.Equal(t, []string{"anyone.shop.cz", "mine.shop.cz"}, recordNames(plan.Records))
+	require.Equal(t, []RouteStatus{
+		{Hostname: "anyone.shop.cz", Owner: "manual/web", State: StateActive, Service: "http://10.20.0.15:8080", Zone: "shop.cz"},
+		{Hostname: "gone.shop.cz", Owner: "qemu/3", State: StateUnreachable, Reason: reason, Zone: "shop.cz"},
+		{Hostname: "mine.shop.cz", Owner: "qemu/1", State: StateActive, Service: "http://10.20.0.15:8080", Zone: "shop.cz"},
+		{Hostname: "taken.shop.cz", Owner: "qemu/2", State: StateUnreachable, Reason: reason, Zone: "shop.cz"},
+	}, plan.Routes)
+}
+
+func TestBuildAccountWithOnlyBlocksGetsNoTunnel(t *testing.T) {
+	plan := Build(BuildInput{
+		Winners: []model.Route{
+			winner(t, "never.shop.cz", "qemu/1"),
+			winner(t, "banned.shop.cz", "qemu/2"),
+			winner(t, "api.example.com", "qemu/3"),
+		},
+		Conflicts: []model.Route{winner(t, "held.shop.cz", "qemu/6")},
+		Holders: map[string]string{
+			"held.shop.cz":     "qemu/4",
+			"held.example.com": "qemu/5",
+		},
+		Targets: map[string]ResolvedTarget{
+			"banned.shop.cz":  {Addr: netip.MustParseAddr(originAddr), Reachable: true, Rejected: true},
+			"api.example.com": verified(originAddr),
+		},
+		Zones:  []Zone{shopZone, exampleZone},
+		Writer: buildWriter,
+	})
+
+	require.Equal(t, []TunnelPlan{{
+		AccountID: "acc2", CredentialID: "cred2", Name: tunnelName,
+		Rules: withSentinel(httpRule("api.example.com", originAddr), blockRule("held.example.com")),
+	}}, plan.Tunnels)
+	require.Equal(t, []RecordPlan{recordFor(exampleZone, "api.example.com")}, plan.Records)
+	require.Equal(t, []RouteStatus{
+		{Hostname: "api.example.com", Owner: "qemu/3", State: StateActive, Service: "http://10.20.0.15:8080", Zone: "example.com"},
+		{Hostname: "banned.shop.cz", Owner: "qemu/2", State: StateUnreachable, Reason: "address must never be served", Zone: "shop.cz"},
+		{Hostname: "held.shop.cz", Owner: "qemu/6", State: StateConflict, Reason: "hostname is held by qemu/4"},
+		{Hostname: "never.shop.cz", Owner: "qemu/1", State: StateUnreachable, Reason: noAddrReason, Zone: "shop.cz"},
+	}, plan.Routes)
+}
+
 func TestBuildWithdrawnKeepsItsRecordBehindABlock(t *testing.T) {
 	plan := Build(BuildInput{
 		Winners: []model.Route{winner(t, "gone.shop.cz", "qemu/4")},
@@ -690,19 +759,22 @@ func TestBuildConflictNamesTheServingOwner(t *testing.T) {
 
 func TestBuildHeldHostnameWithoutWinnerIsOnlyBlocked(t *testing.T) {
 	plan := Build(BuildInput{
+		Winners:   []model.Route{winner(t, "www.shop.cz", "qemu/3")},
 		Conflicts: []model.Route{winner(t, "api.shop.cz", "qemu/2")},
-		Holders:   map[string]string{"api.shop.cz": "qemu/1"},
+		Holders:   map[string]string{"api.shop.cz": "qemu/1", "www.shop.cz": "qemu/3"},
+		Targets:   allVerified("www.shop.cz"),
 		Zones:     []Zone{shopZone},
 		Writer:    buildWriter,
 	})
 
 	require.Equal(t, []TunnelPlan{{
-		AccountID: "acc1", CredentialID: "cred1", Name: tunnelName, Rules: withSentinel(blockRule("api.shop.cz")),
+		AccountID: "acc1", CredentialID: "cred1", Name: tunnelName,
+		Rules: withSentinel(blockRule("api.shop.cz"), httpRule("www.shop.cz", originAddr)),
 	}}, plan.Tunnels)
-	require.Empty(t, plan.Records)
-	require.Equal(t, []RouteStatus{
-		{Hostname: "api.shop.cz", Owner: "qemu/2", State: StateConflict, Reason: "hostname is held by qemu/1"},
-	}, plan.Routes)
+	require.Equal(t, []string{"www.shop.cz"}, recordNames(plan.Records))
+	require.Equal(t, RouteStatus{
+		Hostname: "api.shop.cz", Owner: "qemu/2", State: StateConflict, Reason: "hostname is held by qemu/1",
+	}, plan.Routes[0])
 }
 
 func TestBuildEmpty(t *testing.T) {
@@ -856,9 +928,14 @@ func TestPlannerTypesJSONShape(t *testing.T) {
 		{
 			name: "resolved target",
 			value: ResolvedTarget{
-				Addr: netip.MustParseAddr("10.0.0.5"), Reachable: true, Withdrawn: true, Rejected: true, Reason: "why",
+				Addr: netip.MustParseAddr("10.0.0.5"), Reachable: true, Withdrawn: true, Rejected: true, Reason: "why", Owner: "qemu/1",
 			},
-			want: `{"addr": "10.0.0.5", "reachable": true, "withdrawn": true, "rejected": true, "reason": "why"}`,
+			want: `{"addr": "10.0.0.5", "reachable": true, "withdrawn": true, "rejected": true, "reason": "why", "owner": "qemu/1"}`,
+		},
+		{
+			name:  "held name",
+			value: HeldName{Hostname: "a.shop.cz", Owner: "qemu/1"},
+			want:  `{"hostname": "a.shop.cz", "owner": "qemu/1"}`,
 		},
 		{
 			name:  "unresolved target",
@@ -871,6 +948,44 @@ func TestPlannerTypesJSONShape(t *testing.T) {
 				Hostname: "a.shop.cz", Owner: "qemu/1", State: StateUnreachable, Reason: "why", Zone: "shop.cz", Warnings: []string{"w"},
 			},
 			want: `{"hostname": "a.shop.cz", "owner": "qemu/1", "state": "unreachable", "reason": "why", "zone": "shop.cz", "warnings": ["w"]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.value)
+			require.NoError(t, err)
+			require.JSONEq(t, tt.want, string(data))
+		})
+	}
+}
+
+func TestEmptyResultsMarshalAsEmptyLists(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name:  "plan",
+			value: Build(BuildInput{Writer: buildWriter}),
+			want:  `{"tunnels": [], "records": [], "routes": []}`,
+		},
+		{
+			name: "plan of an account with only blocks",
+			value: Build(BuildInput{
+				Holders: map[string]string{"held.shop.cz": "qemu/1"}, Zones: []Zone{shopZone}, Writer: buildWriter,
+			}),
+			want: `{"tunnels": [], "records": [], "routes": []}`,
+		},
+		{
+			name:  "collected",
+			value: Collect(nil, nil, Settings{}),
+			want:  `{"Routes": [], "Issues": [], "Held": [], "PolicyInvalid": false}`,
+		},
+		{
+			name:  "claim result",
+			value: ResolveClaims(ClaimInput{Now: t0, Grace: grace}),
+			want:  `{"Winners": [], "Conflicts": [], "Claims": {}, "Events": []}`,
 		},
 	}
 	for _, tt := range tests {
