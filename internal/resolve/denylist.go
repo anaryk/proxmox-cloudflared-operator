@@ -1,9 +1,6 @@
 package resolve
 
-import (
-	"net/netip"
-	"slices"
-)
+import "net/netip"
 
 // Denylist holds the addresses that must never be published, whatever a
 // route or a guest says. A guest controls its own configuration and what its
@@ -20,14 +17,29 @@ type Denylist struct {
 func NewDenylist(nodeAddrs []netip.Addr, extra []netip.Prefix) Denylist {
 	d := Denylist{nodes: make(map[netip.Addr]struct{}, len(nodeAddrs))}
 	for _, a := range nodeAddrs {
-		if a.Is4() {
+		if a = a.Unmap(); a.Is4() {
 			d.nodes[a] = struct{}{}
 		}
 	}
-	d.prefixes = slices.DeleteFunc(slices.Clone(extra), func(p netip.Prefix) bool {
-		return !p.IsValid()
-	})
+	for _, p := range extra {
+		if p = unmapPrefix(p); p.IsValid() && p.Addr().Is4() {
+			d.prefixes = append(d.prefixes, p)
+		}
+	}
 	return d
+}
+
+// unmapPrefix returns an IPv4-mapped IPv6 prefix as the IPv4 prefix it
+// covers. One shorter than /96 reaches beyond the mapped range and is no
+// IPv4 prefix at all.
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	if !p.IsValid() || !p.Addr().Is4In6() {
+		return p
+	}
+	if p.Bits() < 96 {
+		return netip.Prefix{}
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
 }
 
 // withoutNodes returns d without the addresses of the cluster nodes, for a

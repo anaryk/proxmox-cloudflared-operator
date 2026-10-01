@@ -25,8 +25,8 @@ type Binding struct {
 	VerifiedAt   time.Time  `json:"verifiedAt"`
 	FailingSince *time.Time `json:"failingSince,omitempty"`
 	// Withdrawn is set once the address has lost its proof: identity failed,
-	// the guest stopped or vanished, or the host could not be asked for too
-	// long. Only a full verification serves the address again.
+	// the guest stopped or vanished, or the last proof is too old or in doubt.
+	// Only identity passing again lifts it, even if the port then fails.
 	Withdrawn bool `json:"withdrawn,omitempty"`
 }
 
@@ -117,7 +117,7 @@ func (b *Binding) boundCandidate(route model.Route, guest model.Guest, cands []C
 	if index, ok := parseNICName(route.Options.Via); ok && index != nics[i].Index {
 		return Candidate{}, false
 	}
-	c := Candidate{Addr: b.Addr, NIC: nics[i], Source: FromBinding}
+	c := Candidate{Addr: b.Addr, NIC: copyNIC(nics[i]), Source: FromBinding}
 	if j := slices.IndexFunc(cands, c.sameAs); j >= 0 {
 		c.Source = cands[j].Source
 	}
@@ -127,11 +127,6 @@ func (b *Binding) boundCandidate(route model.Route, guest model.Guest, cands []C
 // sameAs reports whether o is c's address on c's NIC.
 func (c Candidate) sameAs(o Candidate) bool {
 	return o.Addr == c.Addr && o.NIC.Index == c.NIC.Index
-}
-
-// proven reports whether b's identity was proven within maxAge of now.
-func (b *Binding) proven(now time.Time, maxAge time.Duration) bool {
-	return now.Sub(b.VerifiedAt) <= maxAge
 }
 
 // namedAddr returns the address a route names itself, as its target or as

@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -210,12 +211,16 @@ func (a *attempt) ownMACs(nic model.NIC) map[string][]int {
 }
 
 // answeredBy ARPs for addr and returns the MACs that answered, every one of
-// which must be in own.
+// which must be in own. More claimants than the prober collects is a failure
+// of identity, not of the prober.
 func (a *attempt) answeredBy(ctx context.Context, iface string, addr netip.Addr, own map[string][]int) ([]string, outcome) {
 	if ctx.Err() != nil {
 		return nil, stopped()
 	}
 	raw, err := a.r.prober.ARP(ctx, iface, addr)
+	if ctx.Err() == nil && errors.Is(err, ErrTooManyClaimants) {
+		return nil, lost("too many stations claim %s on %s", addr, iface)
+	}
 	if o := answered(ctx, err, "ARP on %s: %v", iface); !o.ok() {
 		return nil, o
 	}

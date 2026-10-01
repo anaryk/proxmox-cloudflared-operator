@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -1096,7 +1097,7 @@ func TestResolveTriesAtMostSixteenCandidates(t *testing.T) {
 
 	res := s.resolve(t, webRoute(), boundTo("10.20.0.119"))
 
-	requireWithdrawn(t, res, "no ARP answer on vmbr0", withdrawnAt(boundTo("10.20.0.119"), t0))
+	requireWithdrawn(t, res, "no ARP answer on vmbr0; 4 more candidates not tried", withdrawnAt(boundTo("10.20.0.119"), t0))
 	require.Len(t, s.prober.ops("arp"), 16)
 	require.Len(t, res.Candidates, 20)
 	require.Equal(t, ip("10.20.0.119"), res.Candidates[0].Addr, "the bound address comes first")
@@ -1108,6 +1109,33 @@ func TestResolveTriesAtMostSixteenCandidates(t *testing.T) {
 		require.Equal(t, "not tried: too many candidates", c.Reason, "candidate %d", i)
 		require.False(t, s.prober.touched(c.Addr))
 	}
+}
+
+func TestResolveCapIsReported(t *testing.T) {
+	s := newScenario()
+	var static []string
+	for i := range 17 {
+		static = append(static, fmt.Sprintf("10.20.0.%d", 100+i))
+	}
+	s.web().NICs[0].Static = ips(static...)
+
+	res := s.resolve(t, webRoute(), nil)
+
+	requireNotServed(t, res, "no ARP answer on vmbr0; 1 more candidate not tried")
+	require.Len(t, s.prober.ops("arp"), 16)
+}
+
+func TestResolveCapNotReportedWhenStickyKeepsBinding(t *testing.T) {
+	s, prev := stickyScenario()
+	var static []string
+	for i := range 20 {
+		static = append(static, fmt.Sprintf("10.20.0.%d", 100+i))
+	}
+	s.web().NICs[0].Static = append(s.web().NICs[0].Static, ips(static...)...)
+
+	res := s.resolve(t, webRoute(), prev)
+
+	require.Equal(t, "port 80: connection refused", res.Target.Reason)
 }
 
 func TestResolveGuestNotRunning(t *testing.T) {
@@ -1649,6 +1677,10 @@ func TestResolveRouteWithoutGuest(t *testing.T) {
 			ManualID: "app",
 		}
 	}
+	notManual := func(r model.Route) model.Route {
+		r.Source = model.SourceAnnotation
+		return r
+	}
 	served := func(addr string) planner.ResolvedTarget {
 		return planner.ResolvedTarget{Addr: ip(addr), Reachable: true, Owner: owner}
 	}
@@ -1673,6 +1705,11 @@ func TestResolveRouteWithoutGuest(t *testing.T) {
 		{name: "link-local with allowNode", route: route("169.254.0.1", true), target: rejected("link-local address")},
 		{name: "reserved node address with allowNode", route: route("10.99.0.1", true), target: rejected("reserved by pco")},
 		{name: "no address", route: model.Route{Hostname: "app.example.com", Source: model.SourceManual, ManualID: "app"}, target: rejected("not an IPv4 address")},
+		{name: "cluster node allowed outside a manual route", route: notManual(route("10.20.0.2", true)), target: rejected("address of a cluster node")},
+		{
+			name: "host interface allowed outside a manual route", route: notManual(route("10.30.0.2", true)),
+			target: rejected("address of this node"), calls: []string{"interfaces"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1708,7 +1745,7 @@ func TestResolveRouteWithoutGuest(t *testing.T) {
 
 		res := s.resolve(t, route("10.20.0.50", false), nil)
 
-		require.Equal(t, planner.ResolvedTarget{Reason: "listing host interfaces: netlink closed"}, res.Target)
+		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.50"), Withdrawn: true, Reason: "listing host interfaces: netlink closed", Owner: owner}, res.Target)
 		require.Empty(t, s.prober.ops("dial"))
 	})
 
@@ -1719,8 +1756,28 @@ func TestResolveRouteWithoutGuest(t *testing.T) {
 
 		res := s.resolveCtx(ctx, route("10.20.0.50", false), nil)
 
-		require.Equal(t, planner.ResolvedTarget{Reason: "resolve cancelled"}, res.Target)
+		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.50"), Withdrawn: true, Reason: "resolve cancelled", Owner: owner}, res.Target)
 		require.Empty(t, s.prober.calls)
+	})
+
+	t.Run("cancelled during the dial", func(t *testing.T) {
+		s := newScenario()
+		ctx, cancel := context.WithCancel(t.Context())
+		s.prober.cancelOn, s.prober.cancelSilently, s.prober.cancel = "dial", true, cancel
+
+		res := s.resolveCtx(ctx, route("10.20.0.50", false), nil)
+
+		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.50"), Withdrawn: true, Reason: "resolve cancelled", Owner: owner}, res.Target)
+	})
+
+	t.Run("cancelled with a denied address", func(t *testing.T) {
+		s := newScenario()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		res := s.resolveCtx(ctx, route("10.20.0.2", false), nil)
+
+		require.Equal(t, planner.ResolvedTarget{Rejected: true, Reason: "address of a cluster node"}, res.Target)
 	})
 }
 
@@ -1918,6 +1975,183 @@ func TestResolveCancelled(t *testing.T) {
 		s.prober.cancelOn, s.prober.cancel = "dial", cancel
 
 		res := s.resolveCtx(ctx, webRoute(), nil)
+
+		requireNotServed(t, res, reason)
+	})
+}
+
+// throughJSON returns b as it comes back from storage, without a monotonic
+// clock reading.
+func throughJSON(t *testing.T, b *Binding) *Binding {
+	t.Helper()
+	data, err := json.Marshal(b)
+	require.NoError(t, err)
+	var back Binding
+	require.NoError(t, json.Unmarshal(data, &back))
+	return &back
+}
+
+func TestResolveProofDatedInFuture(t *testing.T) {
+	const reason = "identity proof is dated in the future"
+
+	t.Run("prober error", func(t *testing.T) {
+		s := newScenario()
+		s.prober.arpErr[arpKey("vmbr0", "10.20.0.10")] = errors.New("socket closed")
+		prev := throughJSON(t, provenAt(boundTo("10.20.0.10"), t0.Add(time.Second)))
+
+		res := s.resolve(t, webRoute(), prev)
+
+		requireWithdrawn(t, res, reason, withdrawnAt(prev, t0))
+	})
+
+	t.Run("cancelled on entry", func(t *testing.T) {
+		s := newScenario()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		prev := throughJSON(t, provenAt(boundTo("10.20.0.10"), t0.Add(time.Minute)))
+
+		res := s.resolveCtx(ctx, webRoute(), prev)
+
+		want := *prev
+		want.Withdrawn = true
+		requireWithdrawn(t, res, reason, &want)
+		require.Empty(t, s.prober.calls)
+	})
+
+	t.Run("renewed when identity passes", func(t *testing.T) {
+		s := newScenario()
+		prev := throughJSON(t, provenAt(boundTo("10.20.0.10"), t0.Add(time.Hour)))
+
+		res := s.resolve(t, webRoute(), prev)
+
+		requireServed(t, res, "10.20.0.10", t0)
+	})
+}
+
+func TestResolveApplicabilityBeforeCancel(t *testing.T) {
+	const cancelled = "resolve cancelled"
+	tests := []struct {
+		name    string
+		route   model.Route
+		setup   func(s *scenario)
+		target  planner.ResolvedTarget
+		binding func(prev *Binding) *Binding
+	}{
+		{
+			name:    "still applies",
+			route:   webRoute(),
+			target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Reason: cancelled, Owner: webOwner},
+			binding: func(prev *Binding) *Binding { return prev },
+		},
+		{
+			name:   "MAC on no NIC any more",
+			route:  webRoute(),
+			setup:  func(s *scenario) { s.web().NICs[0].MAC = mac2 },
+			target: planner.ResolvedTarget{Reason: cancelled},
+		},
+		{
+			name:   "via names another NIC",
+			route:  routeFor(netip.Addr{}, "net1"),
+			setup:  func(s *scenario) { s.web().NICs = append(s.web().NICs, nicOn(1, mac1, "vmbr0", 0, "10.20.0.11")) },
+			target: planner.ResolvedTarget{Reason: cancelled},
+		},
+		{
+			name:   "route names another address",
+			route:  routeFor(ip("10.20.0.11"), ""),
+			setup:  func(s *scenario) { s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11") },
+			target: planner.ResolvedTarget{Reason: cancelled},
+		},
+		{
+			name:   "via names another address",
+			route:  routeFor(netip.Addr{}, "10.20.0.11"),
+			setup:  func(s *scenario) { s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11") },
+			target: planner.ResolvedTarget{Reason: cancelled},
+		},
+		{
+			name:   "candidates fail for the route",
+			route:  routeFor(netip.Addr{}, "net9"),
+			target: planner.ResolvedTarget{Rejected: true, Reason: "guest has no net9"},
+		},
+		{
+			name:  "MAC also on a running guest",
+			route: webRoute(),
+			setup: func(s *scenario) { s.addDB1(true, nicOn(0, mac0, "vmbr1", 0)) },
+			target: planner.ResolvedTarget{
+				Addr: ip("10.20.0.10"), Withdrawn: true, Owner: webOwner,
+				Reason: "MAC bc:24:11:00:00:01 is also configured on qemu/102",
+			},
+			binding: func(prev *Binding) *Binding {
+				c := *prev
+				c.Withdrawn = true
+				return &c
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newScenario()
+			if tt.setup != nil {
+				tt.setup(s)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			prev := boundTo("10.20.0.10")
+
+			res := s.resolveCtx(ctx, tt.route, prev)
+
+			require.Equal(t, tt.target, res.Target)
+			if tt.binding == nil {
+				require.Nil(t, res.Binding)
+			} else {
+				require.Equal(t, tt.binding(boundTo("10.20.0.10")), res.Binding)
+			}
+			require.Empty(t, s.prober.calls)
+		})
+	}
+}
+
+func TestResolveProberErrorWithSharedMAC(t *testing.T) {
+	s := newScenario()
+	s.addDB1(true, nicOn(0, mac0, "vmbr1", 0))
+	s.prober.fdbErr = errors.New("dump interrupted")
+
+	res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+	requireWithdrawn(t, res, "MAC bc:24:11:00:00:01 is also configured on qemu/102", withdrawnAt(boundTo("10.20.0.10"), t0))
+}
+
+func TestResolveTooManyClaimants(t *testing.T) {
+	const reason = "too many stations claim 10.20.0.10 on vmbr0"
+	flood := func(s *scenario) {
+		s.prober.arpErr[arpKey("vmbr0", "10.20.0.10")] = fmt.Errorf("too many stations claim 10.20.0.10 on vmbr0: %w", ErrTooManyClaimants)
+	}
+
+	t.Run("bound address is withdrawn at once", func(t *testing.T) {
+		s := newScenario()
+		flood(s)
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+		requireWithdrawn(t, res, reason, withdrawnAt(boundTo("10.20.0.10"), t0))
+		require.Empty(t, s.prober.ops("dial"))
+	})
+
+	t.Run("bound address gives way to a verified alternative", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
+		s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{mac0}
+		flood(s)
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+		requireServed(t, res, "10.20.0.11", t0)
+	})
+
+	t.Run("candidate without a binding", func(t *testing.T) {
+		s := newScenario()
+		flood(s)
+
+		res := s.resolve(t, webRoute(), nil)
 
 		requireNotServed(t, res, reason)
 	})

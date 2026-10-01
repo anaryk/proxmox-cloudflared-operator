@@ -264,7 +264,8 @@ func TestLinuxExchange(t *testing.T) {
 
 	t.Run("too many stations", func(t *testing.T) {
 		_, _, err := run(t.Context(), append(replies(1, maxClaimants), foreign))
-		require.EqualError(t, err, "too many stations claim 10.20.0.5 on vmbr0")
+		require.ErrorIs(t, err, ErrTooManyClaimants)
+		require.EqualError(t, err, "too many stations claim 10.20.0.5 on vmbr0: too many stations claim the address")
 	})
 
 	t.Run("cancelled", func(t *testing.T) {

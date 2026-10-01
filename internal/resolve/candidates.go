@@ -37,6 +37,9 @@ func Candidates(route model.Route, guest model.Guest) ([]Candidate, error) {
 	if route.Guest == nil {
 		return nil, errors.New("route has no guest")
 	}
+	if *route.Guest != guest.Ref {
+		return nil, errors.New("guest does not match the route")
+	}
 	explicit, via := route.Target.Addr, route.Options.Via
 	switch {
 	case explicit.IsValid() && via != "":
@@ -87,7 +90,7 @@ func (l *candidateList) add(addr netip.Addr, nic model.NIC, source CandidateSour
 		l.seen = make(map[netip.Addr]struct{})
 	}
 	l.seen[addr] = struct{}{}
-	l.out = append(l.out, Candidate{Addr: addr, NIC: nic, Source: source})
+	l.out = append(l.out, Candidate{Addr: addr, NIC: copyNIC(nic), Source: source})
 }
 
 // addNIC adds the static addresses of nic, then the reported ones.
@@ -162,7 +165,14 @@ func named(addr netip.Addr, guest model.Guest) ([]Candidate, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []Candidate{{Addr: addr, NIC: nic, Source: FromVia}}, nil
+	return []Candidate{{Addr: addr, NIC: copyNIC(nic), Source: FromVia}}, nil
+}
+
+// copyNIC returns nic with a Static slice of its own, so that a candidate
+// shares no memory with the guest.
+func copyNIC(nic model.NIC) model.NIC {
+	nic.Static = slices.Clone(nic.Static)
+	return nic
 }
 
 // nicFor finds the NIC an address is expected on: the one that lists it as a

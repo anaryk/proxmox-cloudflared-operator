@@ -97,6 +97,7 @@ func TestDenylistNodeAddress(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := Candidates(tt.route, g)
 			require.NoError(t, err)
+			require.NotEmpty(t, got)
 			for _, c := range got {
 				reason, denied := d.Check(c.Addr)
 				if c.Addr == ip(node) {
@@ -164,4 +165,22 @@ func TestZeroDenylist(t *testing.T) {
 
 	_, denied = d.Check(ip("10.20.0.2"))
 	require.False(t, denied)
+}
+
+func TestNewDenylistUnmapsIPv4InIPv6(t *testing.T) {
+	d := NewDenylist(
+		[]netip.Addr{ip("::ffff:10.20.0.2")},
+		[]netip.Prefix{netip.MustParsePrefix("::ffff:10.99.0.0/120"), netip.MustParsePrefix("::ffff:0:0/80")},
+	)
+
+	reason, denied := d.Check(ip("10.20.0.2"))
+	require.True(t, denied)
+	require.Equal(t, "address of a cluster node", reason)
+
+	reason, denied = d.Check(ip("10.99.0.5"))
+	require.True(t, denied)
+	require.Equal(t, "reserved by pco", reason)
+
+	_, denied = d.Check(ip("10.98.0.5"))
+	require.False(t, denied, "a mapped prefix shorter than /96 is not an IPv4 range")
 }

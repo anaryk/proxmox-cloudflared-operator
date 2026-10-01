@@ -150,7 +150,7 @@ func (p *hostProber) exchange(ctx context.Context, conn net.PacketConn, iface st
 		switch {
 		case err == nil:
 			if macs = appendClaimants(macs, buf[:n], addr, req); len(macs) == maxClaimants {
-				return nil, fmt.Errorf("too many stations claim %s on %s", addr, iface)
+				return nil, fmt.Errorf("too many stations claim %s on %s: %w", addr, iface, ErrTooManyClaimants)
 			}
 		case !errors.Is(err, os.ErrDeadlineExceeded):
 			return nil, fmt.Errorf("reading replies: %w", err)

@@ -394,3 +394,40 @@ func TestCandidatesErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestCandidatesGuestMustMatchRoute(t *testing.T) {
+	g := guestWith([]model.NIC{{Index: 0, MAC: mac0, Bridge: "vmbr0", Static: ips("10.20.0.10")}})
+	g.Ref = model.GuestRef{Kind: model.KindQEMU, VMID: 102}
+
+	got, err := Candidates(routeFor(netip.Addr{}, ""), g)
+
+	require.EqualError(t, err, "guest does not match the route")
+	require.Nil(t, got)
+}
+
+func TestCandidatesShareNoStaticSlice(t *testing.T) {
+	routes := []struct {
+		name  string
+		route model.Route
+	}{
+		{"discovered", routeFor(netip.Addr{}, "")},
+		{"via nic", routeFor(netip.Addr{}, "net0")},
+		{"explicit", routeFor(ip("10.20.0.10"), "")},
+	}
+	for _, tt := range routes {
+		t.Run(tt.name, func(t *testing.T) {
+			g := guestWith([]model.NIC{{Index: 0, MAC: mac0, Bridge: "vmbr0", Static: ips("10.20.0.10", "10.20.0.11")}})
+
+			got, err := Candidates(tt.route, g)
+			require.NoError(t, err)
+			require.NotEmpty(t, got)
+
+			g.NICs[0].Static[1] = ip("10.20.0.88")
+			for _, c := range got {
+				require.Equal(t, ips("10.20.0.10", "10.20.0.11"), c.NIC.Static)
+				c.NIC.Static[0] = ip("10.20.0.99")
+			}
+			require.Equal(t, ips("10.20.0.10", "10.20.0.88"), g.NICs[0].Static)
+		})
+	}
+}
