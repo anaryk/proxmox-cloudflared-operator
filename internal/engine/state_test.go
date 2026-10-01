@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,38 +149,82 @@ func TestRolloutIsConfirmedOnlyAgainstAVerifiedVersion(t *testing.T) {
 	require.Empty(t, rollouts(), "no connector reported yet")
 
 	e.cf.SetConnectors(testAccount, id, []cfapi.Connector{{ID: "c1", ConfigVersion: 1}})
-	e.clock.advance(10 * time.Second)
+	e.clock.advance(rolloutAskEvery)
 	e.cycle()
 	require.Equal(t, []Event{{
-		At: t0.Add(10 * time.Second), Level: "info", Kind: "rollout", Subject: tunnelName,
+		At: t0.Add(rolloutAskEvery), Level: "info", Kind: "rollout", Subject: tunnelName,
 		Message: "configuration version 1 runs on 1 connectors in account acc1",
 	}}, rollouts())
 
-	// A change the rate limit holds leaves the tunnel unverified: whatever the
-	// connectors run, nothing is confirmed against it.
+	// A write whose read-back fails is not verified, although its version is
+	// newer than the one confirmed: whatever the connectors run, nothing is
+	// confirmed against it.
 	e.cf.SetConnectors(testAccount, id, []cfapi.Connector{{ID: "c1", ConfigVersion: 9}})
 	e.inv.set(snapshot(guest(101, "web-1", "www.example.com api.example.com -> :8080")))
-	e.clock.advance(2 * time.Second)
-	st := e.cycle()
-	require.False(t, st.Tunnels[0].Verified)
-	require.Equal(t, 1, st.Tunnels[0].Version)
-	require.Len(t, rollouts(), 1)
-
-	// A write whose read-back fails is not verified either, although its
-	// version is newer than the one confirmed.
 	readBack.arm()
-	e.clock.advance(20 * time.Second)
-	st = e.cycle()
+	e.clock.advance(rolloutAskEvery)
+	st := e.cycle()
 	require.False(t, st.Tunnels[0].Verified)
 	require.Equal(t, 2, st.Tunnels[0].Version)
 	require.Len(t, rollouts(), 1)
 
-	e.clock.advance(20 * time.Second)
+	e.clock.advance(rolloutAskEvery)
 	st = e.cycle()
 	require.True(t, st.Tunnels[0].Verified)
 	require.Equal(t, 2, st.Tunnels[0].Version)
 	require.Len(t, rollouts(), 2)
 	require.Equal(t, "configuration version 2 runs on 1 connectors in account acc1", rollouts()[1].Message)
+}
+
+func TestRolloutIsAskedAtMostEveryThirtySeconds(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	asked := func() int {
+		n := 0
+		for _, c := range e.cf.Calls() {
+			if strings.HasPrefix(c, "Connectors ") {
+				n++
+			}
+		}
+		return n
+	}
+	require.Equal(t, 1, asked())
+
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	require.Equal(t, 1, asked(), "no connector reports the version yet; Cloudflare is not asked every cycle")
+
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	require.Equal(t, 2, asked())
+}
+
+func TestTheStateHandedOutIsACopy(t *testing.T) {
+	e := newEnv(t)
+	e.inv.set(snapshot(guest(101, "web-1", "*.example.com -> :8080"), guest(102, "web-2", "www.example.com -> :8080")))
+	_, err := e.eng.CheckCredential(t.Context(), testCred, false)
+	require.NoError(t, err)
+
+	st := e.cycle()
+	before, err := json.Marshal(e.eng.State())
+	require.NoError(t, err)
+	require.NotEmpty(t, st.Routes[0].Warnings)
+	require.NotEmpty(t, st.Routes[0].Candidates)
+	require.NotEmpty(t, st.Credentials[0].Report.Checks)
+
+	for _, got := range []State{st, e.eng.State()} {
+		got.Routes[0].Warnings[0] = "changed"
+		got.Routes[0].Candidates[0].Reason = "changed"
+		got.Credentials[0].Report.Checks[0].Detail = "changed"
+		got.Credentials[0].Report.Zones[0].Name = "changed"
+	}
+
+	after, err := json.Marshal(e.eng.State())
+	require.NoError(t, err)
+	require.JSONEq(t, string(before), string(after))
 }
 
 // failingReadBack fails the read of a configuration right after a write,
@@ -289,12 +334,16 @@ func TestRunCyclesOnThePollIntervalAndOnTrigger(t *testing.T) {
 
 func TestConcurrentApplyAndCycle(t *testing.T) {
 	e := newEnv(t)
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com api.example.com -> :8080")))
+	e.cf.SeedRecord(testZone, cfapi.Record{Type: "A", Name: "api.example.com", Content: "192.0.2.10", Comment: "by hand"})
+	e.enforce()
+	e.cycle()
 	errs := make(chan error, 64)
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Go(func() { e.eng.Cycle(t.Context()) })
 		wg.Go(func() { errs <- e.eng.Apply(t.Context(), i%2 == 0) })
-		wg.Go(func() { errs <- e.eng.Adopt(t.Context(), "www.example.com") })
+		wg.Go(func() { errs <- e.eng.Adopt(t.Context(), "api.example.com") })
 		wg.Go(func() {
 			_ = e.eng.State()
 			_ = e.eng.Events(time.Time{})
@@ -313,13 +362,16 @@ func TestConcurrentApplyAndCycle(t *testing.T) {
 	require.Equal(t, "enforce", st.Mode)
 	require.Empty(t, st.Problems)
 	require.Len(t, e.tunnels(), 1, "one tunnel whatever the order")
-	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+	require.Equal(t, []string{"api.example.com", "www.example.com"}, e.recordNames())
+	for _, r := range e.records() {
+		require.Equal(t, "CNAME", r.Type, "adopted")
+	}
 	require.Equal(t, st, again)
 }
 
 func TestCallsWaitForTheCycleLockUntilTheirContextEnds(t *testing.T) {
-	e := newEnv(t)
-	first := e.cycle()
+	e, _ := conflicted(t)
+	first := e.eng.State()
 	require.NoError(t, e.eng.acquire(t.Context()))
 	defer e.eng.release()
 	before := e.files()
@@ -344,7 +396,7 @@ func TestCallsWaitForTheCycleLockUntilTheirContextEnds(t *testing.T) {
 
 	require.Equal(t, before, e.files(), "nothing was done while the lock was held")
 	require.Equal(t, 1, e.inv.refreshes())
-	require.False(t, e.eng.confirmDeletes)
+	require.Nil(t, e.eng.confirm)
 	require.Empty(t, e.eng.adopt)
 }
 
@@ -426,12 +478,21 @@ func TestDNSSettingsFollowTheSettings(t *testing.T) {
 
 func TestClientsAreRebuiltOnlyWhenTheTokenChanges(t *testing.T) {
 	e := newEnv(t)
+	e.enforce()
 	e.cycle()
 	e.cycle()
 	require.Equal(t, []string{testCred}, e.made, "an unchanged token keeps its client")
 
 	require.NoError(t, e.store.SaveCredential(store.Credential{ID: testCred, Label: "main", Kind: "scoped", Token: store.NewSecret("rotated-token"), AddedAt: t0}))
-	e.cycle()
+	// The first listing with the new token fails: the zones of the old one
+	// still stand, as for any listing that fails.
+	e.cf.FailNext("zones", 1, errors.New("connection reset"))
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
 
 	require.Equal(t, []string{testCred, testCred}, e.made)
+	require.Equal(t, []string{
+		"credential cred1: listing its zones failed (connection reset); using the list from 2026-10-01T12:00:00Z",
+	}, st.Problems)
+	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
 }

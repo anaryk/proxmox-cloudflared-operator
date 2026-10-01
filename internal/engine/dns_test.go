@@ -1,9 +1,6 @@
 package engine
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
 // retired publishes x and y on guest 101, then takes them from it, so that
@@ -87,66 +83,26 @@ func TestStillUnwantedHoldsTheDeletesWhenTheSecondLookIsIncomplete(t *testing.T)
 	require.Empty(t, e.records(), "the grace was kept, so the deletes go ahead once the inventory answers")
 }
 
-func TestReplacedRecordsReachTheAdoptedLog(t *testing.T) {
-	e := newEnv(t)
-	e.enforce()
-	foreign := e.cf.SeedRecord(testZone, cfapi.Record{Type: "A", Name: "www.example.com", Content: "192.0.2.10", TTL: 300, Comment: "by hand"})
-
-	st := e.cycle()
-
-	require.Equal(t, []reconcile.Conflict{{Zone: "example.com", Name: "www.example.com", Type: "A", Content: "192.0.2.10"}}, st.Conflicts)
-	require.Contains(t, e.eng.Events(time.Time{}), Event{
-		At: t0, Level: "warn", Kind: "conflict", Subject: "www.example.com",
-		Message: "A 192.0.2.10 in zone example.com is not ours; the hostname is not published",
-	})
-
-	require.NoError(t, e.eng.Adopt(t.Context(), "WWW.example.com."))
-	e.clock.advance(20 * time.Second)
-	st = e.cycle()
-
-	require.Empty(t, st.Conflicts)
-	recs := e.records()
-	require.Len(t, recs, 1)
-	require.Equal(t, "CNAME", recs[0].Type)
-	require.Empty(t, e.eng.adopt, "the adoption is used up")
-
-	b, err := os.ReadFile(filepath.Join(e.paths.Cluster, "adopted.jsonl"))
-	require.NoError(t, err)
-	var line struct {
-		At     time.Time `json:"at"`
-		Zone   string    `json:"zone"`
-		Record struct {
-			ID, Type, Name, Content string
-		} `json:"record"`
-	}
-	require.NoError(t, json.Unmarshal(b, &line))
-	require.Equal(t, t0.Add(20*time.Second), line.At)
-	require.Equal(t, "example.com", line.Zone)
-	require.Equal(t, foreign.ID, line.Record.ID)
-	require.Equal(t, "A", line.Record.Type)
-	require.Equal(t, "192.0.2.10", line.Record.Content)
-
-	events := e.eng.Events(t0)
-	require.Contains(t, events, Event{
-		At: t0.Add(20 * time.Second), Level: "info", Kind: "conflict", Subject: "www.example.com",
-		Message: "A 192.0.2.10 in zone example.com no longer conflicts",
-	})
-}
-
 func TestAdoptWaitsForAnEnforcingRun(t *testing.T) {
 	e := newEnv(t)
+	// The tunnel is there, so that observing finds the record in the way.
+	e.cf.SeedTunnel(testAccount, tunnelName, nil)
 	e.cf.SeedRecord(testZone, cfapi.Record{Type: "A", Name: "www.example.com", Content: "192.0.2.10", Comment: "by hand"})
+	st := e.cycle()
+	require.Len(t, st.Conflicts, 1)
 	require.NoError(t, e.eng.Adopt(t.Context(), "www.example.com"))
 
+	e.clock.advance(10 * time.Second)
 	e.cycle()
 
-	require.True(t, e.eng.adopt["www.example.com"], "an observing run does not use the adoption up")
+	require.Contains(t, e.eng.adopt, "www.example.com", "an observing run does not use the adoption up")
 	require.Equal(t, "A", e.records()[0].Type)
 
 	e.apply(false)
 	e.clock.advance(10 * time.Second)
 	e.cycle()
 	require.Equal(t, "CNAME", e.records()[0].Type)
+	require.Empty(t, e.eng.adopt)
 }
 
 func TestConfirmedDeletesLiftTheGuardOnce(t *testing.T) {
@@ -177,21 +133,5 @@ func TestConfirmedDeletesLiftTheGuardOnce(t *testing.T) {
 	e.cycle()
 
 	require.Empty(t, e.records())
-	require.False(t, e.eng.confirmDeletes)
-}
-
-func TestAReplacedRecordThatCannotBeLoggedIsAProblemWithTheRecord(t *testing.T) {
-	e := newEnv(t)
-	e.enforce()
-	e.cf.SeedRecord(testZone, cfapi.Record{Type: "A", Name: "www.example.com", Content: "192.0.2.10", TTL: 300, Comment: "by hand"})
-	e.cycle()
-	// A directory where the log should be makes the write fail.
-	require.NoError(t, os.Mkdir(filepath.Join(e.paths.Cluster, "adopted.jsonl"), 0o700))
-
-	require.NoError(t, e.eng.Adopt(t.Context(), "www.example.com"))
-	e.clock.advance(20 * time.Second)
-	st := e.cycle()
-
-	require.Len(t, st.Problems, 1)
-	require.Contains(t, st.Problems[0], "recording the replaced record A www.example.com 192.0.2.10 (ttl 300) of zone example.com")
+	require.Nil(t, e.eng.confirm)
 }

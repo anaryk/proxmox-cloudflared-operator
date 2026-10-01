@@ -3,8 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
 // Apply leaves observe-only mode. With confirmDeletes the next enforcing DNS
@@ -30,7 +33,7 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 		e.adminEvent("", "observe-only mode ended; changes are applied from now on")
 	}
 	if confirmDeletes {
-		e.confirmDeletes = true
+		e.confirm = &request{at: e.d.Now()}
 		e.adminEvent("", "the deletes held by the mass delete guard are confirmed for the next run")
 		for _, ref := range e.vanished {
 			e.gone[ref] = true
@@ -45,21 +48,36 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 	return nil
 }
 
-// Adopt asks the next enforcing DNS run to take over the record of someone
-// else that holds name, a hostname pco publishes.
+// Adopt asks an enforcing DNS run to take over the record that holds name, a
+// hostname pco publishes: a record of someone else, or one of ours that lost
+// its marker. The request waits until the tunnel of the name is verified and
+// its connector ready, and expires after requestTTL.
 func (e *Engine) Adopt(ctx context.Context, name string) error {
 	host, err := hostname.Normalize(name)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if !e.inTheWay(host) {
+		return fmt.Errorf("%w: no record of someone else holds %s, and none of ours lost its marker there", ErrNotFound, host)
 	}
 	if err := e.acquire(ctx); err != nil {
 		return err
 	}
 	defer e.Trigger()
 	defer e.release()
-	e.adopt[host] = true
+	e.adopt[host] = &request{at: e.d.Now()}
 	e.adminEvent(host, "adoption requested for the next run")
 	return nil
+}
+
+// inTheWay reports whether the last state shows a record at host that pco
+// would take over: one in conflict, or one that lost the marker of this
+// install.
+func (e *Engine) inTheWay(host string) bool {
+	st := e.State()
+	same := func(name string) bool { return strings.EqualFold(strings.TrimSuffix(name, "."), host) }
+	return slices.ContainsFunc(st.Conflicts, func(c reconcile.Conflict) bool { return same(c.Name) }) ||
+		slices.ContainsFunc(st.Lost, same)
 }
 
 func (e *Engine) adminEvent(subject, msg string) {

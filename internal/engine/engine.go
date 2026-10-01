@@ -50,7 +50,10 @@ type Connectors interface {
 	Token(tunnelID string) (token string, found bool, err error) // the token the connector has on disk
 }
 
-// ClientFactory builds a Cloudflare client for a credential.
+// ClientFactory builds a Cloudflare client for a credential. It is called
+// again when the token of a credential changes, and for every check and
+// removal of one; the clients of one credential id should share one
+// cfapi.Limiter, so that a new token keeps the budget of the old one.
 type ClientFactory func(c store.Credential) (cfapi.API, error)
 
 // Deps is what an Engine is built from.
@@ -103,10 +106,13 @@ type Engine struct {
 	addrs   nodeAddrs
 	// us is the writer identity read at the start of the running cycle; the
 	// writer callback of both reconcilers answers with it.
-	us             planner.Writer
-	confirmDeletes bool
-	adopt          map[string]bool
-	rolledOut      map[string]int // by tunnel id: the configuration version confirmed on its connectors
+	us planner.Writer
+	// confirm and adopt are the admin's one-shot requests that wait for a
+	// DNS run to decide on them.
+	confirm   *request
+	adopt     map[string]*request  // by hostname
+	rolledOut map[string]int       // by tunnel id: the configuration version confirmed on its connectors
+	asked     map[string]time.Time // by tunnel id: when its connectors were last asked for the version
 	// vanished are the guests holding a claim that the last complete listing
 	// lacked, and gone those of them the admin confirmed removed.
 	vanished []model.GuestRef
@@ -151,7 +157,8 @@ func New(d Deps) (*Engine, error) {
 		clients:   reconcile.Clients{},
 		tokens:    make(map[string]store.Secret),
 		zones:     newZoneCache(),
-		adopt:     make(map[string]bool),
+		adopt:     make(map[string]*request),
+		asked:     make(map[string]time.Time),
 		rolledOut: make(map[string]int),
 		gone:      make(map[model.GuestRef]bool),
 		seen:      make(map[string]seenTunnel),
@@ -197,7 +204,7 @@ func (e *Engine) Cycle(ctx context.Context) State {
 
 	c := e.newCycle(ctx)
 	st := c.run()
-	e.publish(st, c.events)
+	e.publish(st.clone(), c.events)
 	e.d.Log.Debug().
 		Str("mode", st.Mode).
 		Bool("complete", st.Complete).
@@ -269,6 +276,12 @@ func (e *Engine) writer() (us, stored planner.Writer, err error) {
 		return e.us, planner.Writer{}, errors.New("leader.json is missing")
 	}
 	return e.us, w, nil
+}
+
+// request is a one-shot request of the admin.
+type request struct {
+	at   time.Time // when it was made
+	told bool      // the admin was told that it waits
 }
 
 // seenTunnel is where a tunnel of this install was seen.

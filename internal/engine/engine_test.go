@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -147,10 +148,10 @@ func TestApplyWaitsForTheRunningCycleAndKeepsItsConfirmation(t *testing.T) {
 	require.Equal(t, "observe", (<-done).Mode)
 	require.NoError(t, <-applied)
 
-	require.True(t, e.eng.confirmDeletes, "the observing cycle did not use the confirmation up")
+	require.NotNil(t, e.eng.confirm, "the observing cycle did not use the confirmation up")
 	st := e.cycle()
 	require.Equal(t, "enforce", st.Mode)
-	require.False(t, e.eng.confirmDeletes, "the enforcing DNS run used it")
+	require.Nil(t, e.eng.confirm, "the enforcing DNS run used it")
 }
 
 func TestRouteRemovedRuleGoesAtOnceRecordAfterTheGrace(t *testing.T) {
@@ -414,6 +415,46 @@ func TestRemoveCredential(t *testing.T) {
 	err = e.eng.RemoveCredential(t.Context(), testCred)
 	require.ErrorIs(t, err, ErrRefused, "what cannot be seen is not taken for nothing")
 	require.Contains(t, err.Error(), "connection reset")
+}
+
+func TestACheckedCredentialSaysSo(t *testing.T) {
+	e := newEnv(t)
+	st := e.cycle()
+	require.False(t, st.Credentials[0].Checked, "never checked in this process")
+
+	_, err := e.eng.CheckCredential(t.Context(), testCred, false)
+	require.NoError(t, err)
+	st = e.cycle()
+	require.True(t, st.Credentials[0].Checked)
+}
+
+func TestCheckingACredentialThatIsRemovedMeanwhile(t *testing.T) {
+	e := newEnv(t)
+	var once sync.Once
+	e.addSecondCredential("second-token", hookedAPI{API: e.cf, before: func(method string) {
+		if method == "Records" {
+			once.Do(func() { require.NoError(t, e.store.DeleteCredential("cred2")) })
+		}
+	}})
+
+	_, err := e.eng.CheckCredential(t.Context(), "cred2", false)
+
+	require.ErrorIs(t, err, ErrNotFound)
+	st := e.cycle()
+	require.Len(t, st.Credentials, 1)
+	require.NotContains(t, e.eng.reports, "cred2", "a removed credential gets no report back")
+}
+
+func TestRemovingACredentialWhoseTokenIsRefused(t *testing.T) {
+	e := newEnv(t)
+	refused := cffake.New()
+	refused.Deny("zones")
+	e.addSecondCredential("refused-token", refused)
+
+	require.NoError(t, e.eng.RemoveCredential(t.Context(), "cred2"))
+
+	require.Contains(t, adminEvents(e, time.Time{}), `cred2: credential "label-cred2" removed; Cloudflare refused its token, `+
+		"so what it managed could not be checked and may be left behind")
 }
 
 func TestRemoveCredentialThatManagesNothing(t *testing.T) {

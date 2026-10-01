@@ -216,6 +216,15 @@ func (f *fakeConnectors) Status(_ context.Context, id string) (connector.Status,
 	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"}, nil
 }
 
+func (f *fakeConnectors) setReady(id string, ready bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.notReady == nil {
+		f.notReady = map[string]bool{}
+	}
+	f.notReady[id] = !ready
+}
+
 // lastPrune returns the keep list of the last prune, and false when there was
 // none.
 func (f *fakeConnectors) lastPrune() ([]string, bool) {
@@ -592,14 +601,14 @@ func actionKinds(st State) []string {
 	return out
 }
 
-// addCredential stores a credential whose token NewClient answers with api,
-// or with the fake when api is nil.
-func (e *env) addCredential(id, token string, api cfapi.API) {
+// addSecondCredential stores credential cred2, whose token NewClient answers
+// with api, or with the fake when api is nil.
+func (e *env) addSecondCredential(token string, api cfapi.API) {
 	e.t.Helper()
 	if api != nil {
 		e.useAPI(token, api)
 	}
-	require.NoError(e.t, e.store.SaveCredential(store.Credential{ID: id, Label: "label-" + id, Kind: "scoped", Token: store.NewSecret(token), AddedAt: t0}))
+	require.NoError(e.t, e.store.SaveCredential(store.Credential{ID: "cred2", Label: "label-cred2", Kind: "scoped", Token: store.NewSecret(token), AddedAt: t0}))
 }
 
 // callsSince returns the calls made to the fake after the first n.

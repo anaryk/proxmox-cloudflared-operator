@@ -133,7 +133,7 @@ func TestARemovedCredentialLeavesTheConnectorsOfItsTunnels(t *testing.T) {
 	other := cffake.New()
 	other.AddAccount("acc2", "Other")
 	other.AddZone("zone2", "example.org", "acc2")
-	e.addCredential("cred2", "other-token", other)
+	e.addSecondCredential("other-token", other)
 	e.enforce()
 	e.cycle()
 	tun := e.tunnels()[0]
@@ -197,7 +197,7 @@ func TestASecondCredentialForAServedZone(t *testing.T) {
 	e, _, tun := servingThrough(t)
 	writes := e.writes()
 	// The same Cloudflare account, reached with another token.
-	e.addCredential("cred2", "second-token", nil)
+	e.addSecondCredential("second-token", nil)
 
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()

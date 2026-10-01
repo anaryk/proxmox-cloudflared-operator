@@ -88,9 +88,18 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 	if err := ctx.Err(); err != nil {
 		return CredentialView{}, fmt.Errorf("checking the token: %w", err)
 	}
+	// The credential may have been removed during the check; its report is
+	// kept only while it is stored, which the cycle lock makes sure of.
+	if err := e.acquire(ctx); err != nil {
+		return CredentialView{}, err
+	}
+	defer e.Trigger()
+	defer e.release()
+	if _, err := e.credential(id); err != nil {
+		return CredentialView{}, err
+	}
 	e.setReport(id, report)
-	e.Trigger()
-	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Report: report}, nil
+	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Checked: true, Report: cloneReport(report)}, nil
 }
 
 // RemoveCredential deletes a credential, but only once nothing of this install
@@ -117,7 +126,7 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("building a Cloudflare client: %w", err)
 	}
-	left, err := leftBehind(ctx, api, install)
+	left, refused, err := leftBehind(ctx, api, install)
 	if err != nil {
 		return fmt.Errorf("%w: cannot tell what credential %s still manages: %w", ErrRefused, id, err)
 	}
@@ -131,33 +140,39 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 	e.repMu.Lock()
 	delete(e.reports, id)
 	e.repMu.Unlock()
-	e.adminEvent(id, fmt.Sprintf("credential %q removed", cred.Label))
+	msg := fmt.Sprintf("credential %q removed", cred.Label)
+	if refused {
+		msg += "; Cloudflare refused its token, so what it managed could not be checked and may be left behind"
+		e.d.Log.Warn().Str("credential", id).Msg("removed a credential whose token Cloudflare refused; what it managed may be left behind")
+	}
+	e.adminEvent(id, msg)
 	return nil
 }
 
 // leftBehind lists the records and tunnels of this install that api reaches.
 // What Cloudflare refuses to show the token, the token cannot manage either,
-// so a refusal counts as nothing reached; any other failure is an error.
-func leftBehind(ctx context.Context, api cfapi.API, installID string) ([]string, error) {
+// so a refusal counts as nothing reached, and refused says that there was
+// one; any other failure is an error.
+func leftBehind(ctx context.Context, api cfapi.API, installID string) (left []string, refused bool, err error) {
 	zones, err := api.Zones(ctx)
 	switch {
 	case cfapi.IsAuth(err):
-		return nil, nil
+		return nil, true, nil
 	case err != nil:
-		return nil, err
+		return nil, false, err
 	}
 	slices.SortFunc(zones, func(a, b cfapi.Zone) int { return strings.Compare(a.Name, b.Name) })
 	marker := planner.DNSMarker(installID)
-	var left []string
 	var accounts []string
 	for _, z := range zones {
 		accounts = append(accounts, z.AccountID)
 		records, err := api.Records(ctx, z.ID, cfapi.RecordFilter{CommentPrefix: marker})
 		switch {
 		case cfapi.IsAuth(err):
+			refused = true
 			continue
 		case err != nil:
-			return nil, err
+			return nil, false, err
 		}
 		for _, rec := range records {
 			if reconcile.Owned(installID, rec) && !reconcile.IsProbeRecord(installID, rec) {
@@ -169,14 +184,14 @@ func leftBehind(ctx context.Context, api cfapi.API, installID string) ([]string,
 		t, found, err := api.FindTunnel(ctx, account, planner.TunnelName(installID))
 		switch {
 		case cfapi.IsAuth(err):
-			continue
+			refused = true
 		case err != nil:
-			return nil, err
+			return nil, false, err
 		case found:
 			left = append(left, fmt.Sprintf("tunnel %s in account %s", t.Name, account))
 		}
 	}
-	return left, nil
+	return left, refused, nil
 }
 
 // refuseKnownToken refuses a token a stored credential has already: two

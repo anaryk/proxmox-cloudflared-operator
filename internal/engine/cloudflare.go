@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,10 @@ import (
 // minMaxGap is the least MaxGap the DNS reconciler gets; with a long poll
 // interval it is six intervals.
 const minMaxGap = 2 * time.Minute
+
+// rolloutAskEvery is how often the connectors of a tunnel are asked for the
+// version they run while none reports the one written.
+const rolloutAskEvery = 30 * time.Second
 
 func (c *cycleRun) mode() reconcile.Mode {
 	if c.settings.ObserveOnly {
@@ -37,7 +42,7 @@ func (c *cycleRun) reconcileTunnels() bool {
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
 	c.st.WriterVerdict = verdictName(res.Verdict)
-	return res.Verdict == reconcile.WriterProceed
+	return res.Verdict == reconcile.WriterProceed && c.writerStill("after the tunnel run")
 }
 
 // reconcileConnectors keeps a connector running for every tunnel the tunnel
@@ -211,9 +216,11 @@ func (c *cycleRun) confirmRollouts(existing []reconcile.TunnelState) {
 			continue
 		}
 		api := c.e.clients[t.CredentialID]
-		if api == nil {
+		last, asked := c.e.asked[t.ID]
+		if api == nil || asked && c.now.Sub(last) < rolloutAskEvery && !c.now.Before(last) {
 			continue
 		}
+		c.e.asked[t.ID] = c.now
 		conns, err := api.Connectors(c.ctx, t.AccountID, t.ID)
 		if err != nil {
 			c.e.d.Log.Debug().Err(err).Str("tunnel", t.Name).Msg("listing the connectors of a tunnel failed")
@@ -230,9 +237,10 @@ func (c *cycleRun) confirmRollouts(existing []reconcile.TunnelState) {
 	}
 }
 
-// reconcileDNS brings the records in line. The one-shot requests of the
-// admin, confirmed deletes and adoptions, go to the first enforcing run and
-// are cleared after it, whatever its outcome.
+// reconcileDNS brings the records in line. The admin's one-shot requests,
+// confirmed deletes and adoptions, go only to an enforcing run and stay
+// pending until a run decided on them; an adoption also waits until its
+// tunnel can serve the name.
 func (c *cycleRun) reconcileDNS() {
 	mode := c.mode()
 	in := reconcile.DNSInput{
@@ -245,24 +253,99 @@ func (c *cycleRun) reconcileDNS() {
 		Keep:          c.kept(),
 		InventoryOK:   c.snap.Complete && !c.col.PolicyInvalid,
 		StillUnwanted: c.stillUnwanted,
+		BeforeReplace: c.beforeReplace,
 	}
 	if mode == reconcile.Enforce {
-		in.ConfirmDeletes = c.e.confirmDeletes
-		in.Adopt = maps.Clone(c.e.adopt)
+		in.ConfirmDeletes = c.e.confirm != nil
+		var ready []string
+		ready, c.adoptWaits = c.adoptable(c.publishedThrough(in.Records))
+		in.Adopt = make(map[string]bool, len(ready))
+		for _, name := range ready {
+			in.Adopt[name] = true
+		}
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
-	if mode == reconcile.Enforce {
-		c.e.confirmDeletes = false
-		clear(c.e.adopt)
-	}
+	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
-	c.st.Conflicts = res.Conflicts
-	c.st.Lost = res.Lost
 	c.st.Problems = append(c.st.Problems, res.Problems...)
+	if res.Decided && res.Verdict == reconcile.WriterProceed {
+		c.st.Conflicts, c.st.Lost = c.lookedAt(res)
+	}
 	if res.Verdict != reconcile.WriterProceed {
 		c.st.WriterVerdict = verdictName(res.Verdict)
+		return
 	}
-	c.logReplaced(res.Replaced)
+	c.writerStill("after the DNS run")
+}
+
+// publishedThrough maps every hostname with a record plan to the state of the
+// tunnel its record points at.
+func (c *cycleRun) publishedThrough(records []planner.RecordPlan) map[string]reconcile.TunnelState {
+	out := make(map[string]reconcile.TunnelState, len(records))
+	for _, rp := range records {
+		for _, t := range c.st.Tunnels {
+			if t.AccountID == rp.AccountID && t.Name == rp.TunnelName {
+				out[strings.ToLower(rp.Name)] = t
+			}
+		}
+	}
+	return out
+}
+
+// lookedAt is what a DNS run that decided found in conflict or lost. The
+// zones it did not manage in this cycle, as those of a frozen account, keep
+// what was found there before.
+func (c *cycleRun) lookedAt(res reconcile.DNSResult) ([]reconcile.Conflict, []string) {
+	managed := make(map[string]bool, len(c.zones.dns))
+	for _, z := range c.zones.dns {
+		managed[z.Name] = true
+	}
+	conflicts := slices.Clone(res.Conflicts)
+	for _, old := range c.st.Conflicts {
+		if !managed[old.Zone] {
+			conflicts = append(conflicts, old)
+		}
+	}
+	slices.SortFunc(conflicts, func(a, b reconcile.Conflict) int {
+		return cmp.Or(
+			cmp.Compare(a.Zone, b.Zone),
+			cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)),
+			cmp.Compare(a.Type, b.Type),
+			cmp.Compare(a.Content, b.Content),
+		)
+	})
+	lost := slices.Clone(res.Lost)
+	for _, name := range c.st.Lost {
+		if c.zones.zoneOf(name) == "" {
+			lost = append(lost, name)
+		}
+	}
+	return slices.Compact(conflicts), lost
+}
+
+// beforeReplace keeps a copy of the record an adoption is about to change or
+// delete, in the adopted log; the adoption goes ahead only once it is kept.
+func (c *cycleRun) beforeReplace(_ context.Context, zone reconcile.ZoneRef, rec cfapi.Record) error {
+	return c.e.d.Store.AppendAdopted(c.now, zone.Name, rec)
+}
+
+// writerStill reads leader.json again after a reconciler run that let this
+// writer proceed: a run that could not read it, or found it changed, may have
+// stopped writing without saying so in its verdict. It reports whether the
+// cycle may go on.
+func (c *cycleRun) writerStill(when string) bool {
+	us, stored, err := c.e.writer()
+	switch {
+	case err != nil:
+		c.st.WriterVerdict = verdictUnknown
+		c.problem("the writer identity cannot be read %s (%v); the rest is left as it is", when, err)
+		return false
+	case stored.Generation != us.Generation || stored.Nonce != us.Nonce:
+		c.st.WriterVerdict = verdictStale
+		c.problem("leader.json names another writer %s; the rest is left as it is", when)
+		return false
+	}
+	return true
 }
 
 // kept are the hostnames claimed or published in this cycle that have no
@@ -300,18 +383,6 @@ func (e *Engine) dnsReconciler(s reconcile.DNSSettings) *reconcile.DNSReconciler
 		e.dnsSet = s
 	}
 	return e.dns
-}
-
-// logReplaced appends every record an adoption changed or replaced to the
-// adopted log, so that it can be put back by hand.
-func (c *cycleRun) logReplaced(records []cfapi.Record) {
-	for _, rec := range records {
-		zone := c.zones.zoneOf(rec.Name)
-		if err := c.e.d.Store.AppendAdopted(c.now, zone, rec); err != nil {
-			c.problem("recording the replaced record %s %s %s (ttl %d) of zone %s: %v",
-				rec.Type, rec.Name, rec.Content, rec.TTL, zone, err)
-		}
-	}
 }
 
 // recheck is the second look at the inventory that a cycle takes before its

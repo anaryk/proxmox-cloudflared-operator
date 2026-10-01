@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +82,44 @@ func TestWriterReplacedAfterTheTunnelRunStopsDNS(t *testing.T) {
 	rules := e.rules()
 	require.Equal(t, planner.SentinelHostname(takeover), rules[len(rules)-2].Hostname)
 	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+}
+
+func TestLeaderJSONSpoiledInTheMiddleOfACycle(t *testing.T) {
+	for name, spoil := range map[string]func(path string) error{
+		"unreadable": func(path string) error { return os.WriteFile(path, []byte("{"), 0o600) },
+		"missing":    os.Remove,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			path := filepath.Join(e.paths.Cluster, "meta", "leader.json")
+			good, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var armed bool
+			e.useAPI(testToken, hookedAPI{API: e.cf, before: func(method string) {
+				if armed && method == "FindTunnel" {
+					armed = false
+					require.NoError(t, spoil(path))
+				}
+			}})
+			e.cycle()
+			e.apply(true)
+			armed = true
+			n := len(e.cf.Calls())
+
+			e.clock.advance(10 * time.Second)
+			st := e.cycle()
+
+			require.Equal(t, "unknown", st.WriterVerdict, "a writer that cannot be read is not ok")
+			require.Zero(t, dnsCalls(e.callsSince(n)))
+			require.NotNil(t, e.eng.confirm, "the confirmation waits")
+
+			require.NoError(t, os.WriteFile(path, good, 0o600))
+			e.clock.advance(10 * time.Second)
+			st = e.cycle()
+			require.Equal(t, "ok", st.WriterVerdict)
+			require.Nil(t, e.eng.confirm)
+		})
+	}
 }
 
 func TestForeignWriterStopsBeforeConnectorsAndDNS(t *testing.T) {

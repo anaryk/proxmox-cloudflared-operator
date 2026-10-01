@@ -21,6 +21,7 @@ const (
 	verdictOK      = "ok"
 	verdictStale   = "stale"
 	verdictForeign = "foreign"
+	verdictUnknown = "unknown"
 )
 
 // RouteView is a route as the plan left it, with what resolution found.
@@ -35,8 +36,10 @@ type CredentialView struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 	Kind  string `json:"kind"`
-	// Report is the last check run in this process; zero when there was none.
-	Report credentials.Report `json:"report"`
+	// Checked says whether Report holds a check: it is the last one run in
+	// this process, and zero when there was none.
+	Checked bool               `json:"checked"`
+	Report  credentials.Report `json:"report"`
 }
 
 // State is what the last cycle found and did. Every slice is sorted, so that
@@ -54,8 +57,10 @@ type State struct {
 	Conflicts   []reconcile.Conflict    `json:"conflicts"`
 	Lost        []string                `json:"lost"`
 	Problems    []string                `json:"problems"`
-	// WriterVerdict is the verdict of the last reconciler run: "ok", "stale"
-	// or "foreign".
+	// WriterVerdict is what the cycle found of the writer: "ok", "stale" or
+	// "foreign" as the reconcilers judged it, or "unknown" when leader.json
+	// could not be read or used. A cycle that did not get as far keeps the
+	// last one.
 	WriterVerdict string `json:"writerVerdict"`
 }
 
@@ -75,18 +80,38 @@ func (s State) carried(at time.Time) State {
 	return next
 }
 
-// clone copies the slices of s, so that the copy can be handed out.
+// clone copies s down to the slices and pointers its parts hold, so that a
+// copy handed out shares nothing with the state the engine keeps.
 func (s State) clone() State {
 	s.Routes = slices.Clone(s.Routes)
+	for i := range s.Routes {
+		s.Routes[i].Warnings = slices.Clone(s.Routes[i].Warnings)
+		s.Routes[i].Candidates = slices.Clone(s.Routes[i].Candidates)
+	}
 	s.Issues = slices.Clone(s.Issues)
 	s.Tunnels = slices.Clone(s.Tunnels)
 	s.Connectors = slices.Clone(s.Connectors)
 	s.Credentials = slices.Clone(s.Credentials)
+	for i := range s.Credentials {
+		s.Credentials[i].Report = cloneReport(s.Credentials[i].Report)
+	}
 	s.Actions = slices.Clone(s.Actions)
 	s.Conflicts = slices.Clone(s.Conflicts)
 	s.Lost = slices.Clone(s.Lost)
 	s.Problems = slices.Clone(s.Problems)
 	return s
+}
+
+func cloneReport(r credentials.Report) credentials.Report {
+	if r.Token.ExpiresOn != nil {
+		at := *r.Token.ExpiresOn
+		r.Token.ExpiresOn = &at
+	}
+	r.Accounts = slices.Clone(r.Accounts)
+	r.Zones = slices.Clone(r.Zones)
+	r.Checks = slices.Clone(r.Checks)
+	r.Leftovers = slices.Clone(r.Leftovers)
+	return r
 }
 
 // normalized sorts what has no order of its own and makes every slice
@@ -184,7 +209,8 @@ func (e *Engine) credentialViews(ids []credentialInfo) []CredentialView {
 	defer e.repMu.Unlock()
 	out := make([]CredentialView, 0, len(ids))
 	for _, c := range ids {
-		out = append(out, CredentialView{ID: c.id, Label: c.label, Kind: c.kind, Report: e.reports[c.id]})
+		r, checked := e.reports[c.id]
+		out = append(out, CredentialView{ID: c.id, Label: c.label, Kind: c.kind, Checked: checked, Report: cloneReport(r)})
 	}
 	return out
 }

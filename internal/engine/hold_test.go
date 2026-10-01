@@ -230,6 +230,7 @@ func TestCycleWithoutAWriterKeepsCloudflareButShowsTheRoutes(t *testing.T) {
 			st := e.cycle()
 
 			require.Equal(t, []string{setup.problem}, st.Problems)
+			require.Equal(t, "unknown", st.WriterVerdict)
 			require.Equal(t, planner.StateActive, route(st, "api.example.com").State, "the routes are worked out for display")
 			require.Equal(t, writes, e.writes())
 			require.Len(t, e.conn.ensures(), ensures)
@@ -260,12 +261,14 @@ func TestCycleWhoseClaimsCannotBeSavedKeepsCloudflare(t *testing.T) {
 		require.Contains(t, st.Problems[0], "saving the claims")
 		require.Equal(t, writes, e.writes(), "a hostname whose claim is not saved is not published")
 	}
+	require.Empty(t, claimEventsAfter(e, t0), "a claim that was not saved is no event")
 
 	require.NoError(t, os.Remove(blocked))
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 	require.Empty(t, st.Problems)
 	require.Equal(t, []string{"api.example.com", "www.example.com"}, e.recordNames())
+	require.Len(t, claimEventsAfter(e, t0), 1)
 }
 
 func TestCycleEndingDuringResolutionChangesNothing(t *testing.T) {

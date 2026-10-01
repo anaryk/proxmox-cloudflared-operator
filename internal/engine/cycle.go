@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -64,6 +65,11 @@ type cycleRun struct {
 	cfHold        bool
 	recheck       recheck
 	tunnelVerdict reconcile.WriterVerdict
+
+	// waitWhy says why the admin's requests wait, when the DNS step was
+	// reached; adoptWaits why each adoption waits.
+	waitWhy    string
+	adoptWaits map[string]string
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -74,10 +80,12 @@ func (e *Engine) newCycle(ctx context.Context) *cycleRun {
 // run goes through the steps of a cycle in order. A step that cannot go on
 // safely ends the cycle; what it found so far is the state.
 func (c *cycleRun) run() State {
+	c.expireRequests()
 	if c.prepare() && c.inspect() {
 		c.build()
 		c.reconcile()
 	}
+	c.notePending(c.adoptWaits)
 	return c.st.normalized()
 }
 
@@ -177,6 +185,7 @@ func (c *cycleRun) readWriter() {
 		return
 	}
 	c.cfHold = true
+	c.st.WriterVerdict = verdictUnknown
 }
 
 // inspect refreshes the inventory, collects the routes, settles the claims and
@@ -353,8 +362,11 @@ func (c *cycleRun) settleClaims() {
 		Grace:    time.Duration(c.settings.Grace),
 	})
 	if err := c.e.d.Store.SaveClaims(c.claims.Claims); err != nil {
+		// The same changes are made again in the next cycle: they become
+		// events once they are saved.
 		c.problem("saving the claims: %v; nothing is changed at Cloudflare until they are saved", err)
 		c.cfHold = true
+		return
 	}
 	c.events = append(c.events, claimEvents(c.now, c.claims.Events)...)
 }
@@ -498,10 +510,18 @@ func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 	seen := make(map[string]bool, len(creds))
 	for _, cr := range creds {
 		seen[cr.ID] = true
-		if old, ok := e.tokens[cr.ID]; ok && old.Equal(cr.Token) && e.clients[cr.ID] != nil {
+		old, known := e.tokens[cr.ID]
+		if known && old.Equal(cr.Token) && e.clients[cr.ID] != nil {
 			continue
 		}
-		e.dropClient(cr.ID)
+		// A new token keeps what the credential listed until it lists anew.
+		delete(e.clients, cr.ID)
+		delete(e.tokens, cr.ID)
+		if known && !old.Equal(cr.Token) {
+			e.repMu.Lock()
+			delete(e.reports, cr.ID)
+			e.repMu.Unlock()
+		}
 		api, err := e.d.NewClient(cr)
 		if err != nil {
 			c.problem("credential %s: building its client: %v", cr.ID, err)
@@ -511,11 +531,15 @@ func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 		e.tokens[cr.ID] = cr.Token
 		e.zones.due = true
 	}
-	for _, id := range slices.Sorted(maps.Keys(e.tokens)) {
+	known := slices.Concat(slices.Collect(maps.Keys(e.tokens)), slices.Collect(maps.Keys(e.zones.byCred)))
+	for _, id := range slices.Compact(slices.Sorted(slices.Values(known))) {
 		if !seen[id] {
 			e.dropClient(id)
 		}
 	}
+	e.repMu.Lock()
+	maps.DeleteFunc(e.reports, func(id string, _ credentials.Report) bool { return !seen[id] })
+	e.repMu.Unlock()
 }
 
 // dropClient forgets the client of a credential and what was listed with it.
