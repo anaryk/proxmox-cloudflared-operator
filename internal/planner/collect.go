@@ -26,35 +26,39 @@ type Settings struct {
 	DenyHosts  []string
 }
 
-// Issue is a problem with a guest's annotation. It does not stop collection;
-// the affected route is left out and the issue is reported.
+// Issue is a problem with a guest's annotation or with the settings. It does
+// not stop collection; the affected route is left out and the issue is
+// reported.
 type Issue struct {
-	Guest model.GuestRef
-	Line  int // 0 when the issue is not tied to a position in the Notes
-	Col   int
-	Msg   string
+	Guest model.GuestRef `json:"guest,omitzero"` // zero for a problem with the settings
+	Line  int            `json:"line,omitempty"` // 0 when the issue is not tied to a position in the Notes
+	Col   int            `json:"col,omitempty"`
+	Msg   string         `json:"msg"`
 }
 
 // Collected is the candidate routes found in one pass. Several routes may
 // claim the same hostname; ResolveClaims settles that.
 type Collected struct {
 	Routes []model.Route // sorted by hostname, then owner
-	Issues []Issue       // sorted by guest, then position
+	Issues []Issue       // sorted by guest, then position; settings issues last
 }
 
 // Collect turns guest annotations and manual routes into candidate routes.
 // Templates and guests without the gate tag are ignored. The allow and deny
 // lists apply to annotations only: manual routes are the admin's own.
+//
+// A deny pattern that does not normalise denies every hostname and an allow
+// pattern that does not normalise matches none; each is reported once.
 func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 	gate := cmp.Or(s.GateTag, defaultGateTag)
-	pol := newPolicy(s.AllowHosts, s.DenyHosts)
+	pol, issues := newPolicy(s.AllowHosts, s.DenyHosts)
 
-	var out Collected
+	out := Collected{Issues: issues}
 	for _, g := range guests {
 		if g.Template || !g.HasTag(gate) {
 			continue
 		}
-		out.addGuest(g, pol)
+		out.addGuest(g, gate, pol)
 	}
 	out.Routes = append(out.Routes, manual...)
 
@@ -74,16 +78,17 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 	return out
 }
 
-func (c *Collected) addGuest(g model.Guest, pol policy) {
+func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
 	res := annotation.Parse(g.Description)
-	if !res.Found {
-		c.addIssue(g.Ref, 0, 0, "tagged cf-tunnel but no routes found in Notes")
+	if len(res.Entries) == 0 && len(res.Errors) == 0 {
+		c.addIssue(g.Ref, 0, 0, fmt.Sprintf("tagged %s but no routes found in Notes", gate))
 		return
 	}
 	for _, e := range res.Entries {
-		for _, host := range e.Hosts {
+		for i, host := range e.Hosts {
 			if !pol.allows(host) {
-				c.addIssue(g.Ref, e.Line, e.Col, fmt.Sprintf("hostname %q is not allowed by policy", host))
+				at := e.Positions[i]
+				c.addIssue(g.Ref, at.Line, at.Col, fmt.Sprintf("hostname %q is not allowed by policy", host))
 				continue
 			}
 			guest := g.Ref
@@ -105,28 +110,46 @@ func (c *Collected) addIssue(guest model.GuestRef, line, col int, msg string) {
 	c.Issues = append(c.Issues, Issue{Guest: guest, Line: line, Col: col, Msg: msg})
 }
 
-// policy is the allow and deny lists with their patterns in the form
-// hostname.MatchPattern expects.
+// policy is the allow and deny lists with their patterns normalised.
 type policy struct {
 	allow, deny []string
+	restricted  bool // an allow list was given, even if none of it is valid
+	denyAll     bool // a deny pattern is invalid
 }
 
-func newPolicy(allow, deny []string) policy {
-	return policy{allow: normalizePatterns(allow), deny: normalizePatterns(deny)}
-}
-
-func normalizePatterns(patterns []string) []string {
-	out := make([]string, len(patterns))
-	for i, p := range patterns {
-		out[i] = strings.ToLower(strings.TrimSuffix(p, "."))
+// newPolicy normalises the patterns and returns an issue for each one that
+// is invalid. Doubt fails closed: an invalid deny pattern denies everything,
+// and an allow list keeps restricting even when every pattern in it is
+// invalid.
+func newPolicy(allow, deny []string) (policy, []Issue) {
+	p := policy{restricted: len(allow) > 0}
+	var issues []Issue
+	for _, s := range deny {
+		pattern, err := hostname.NormalizePattern(s)
+		if err != nil {
+			p.denyAll = true
+			issues = append(issues, Issue{Msg: fmt.Sprintf(
+				"invalid deny pattern %q: %v; all hostnames are denied until it is fixed", s, err)})
+			continue
+		}
+		p.deny = append(p.deny, pattern)
 	}
-	return out
+	for _, s := range allow {
+		pattern, err := hostname.NormalizePattern(s)
+		if err != nil {
+			issues = append(issues, Issue{Msg: fmt.Sprintf("invalid allow pattern %q: %v", s, err)})
+			continue
+		}
+		p.allow = append(p.allow, pattern)
+	}
+	return p, issues
 }
 
 func (p policy) allows(host string) bool {
-	matches := func(pattern string) bool { return hostname.MatchPattern(pattern, host) }
-	if slices.ContainsFunc(p.deny, matches) {
+	denies := func(pattern string) bool { return hostname.Denies(pattern, host) }
+	if p.denyAll || slices.ContainsFunc(p.deny, denies) {
 		return false
 	}
-	return len(p.allow) == 0 || slices.ContainsFunc(p.allow, matches)
+	matches := func(pattern string) bool { return hostname.MatchPattern(pattern, host) }
+	return !p.restricted || slices.ContainsFunc(p.allow, matches)
 }

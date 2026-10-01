@@ -30,10 +30,15 @@ type Claim struct {
 }
 
 // ClaimInput is everything ResolveClaims needs.
+//
+// Routes must come from a complete inventory. An owner missing from Routes is
+// taken to no longer claim its hostnames, so a partial inventory would start
+// their grace and in the end hand them to someone else; when the inventory is
+// incomplete, callers skip the call and keep the stored claims.
 type ClaimInput struct {
 	Routes   []model.Route
 	Claims   map[string]Claim  // by hostname
-	Identity map[string]string // owner -> identity now ("" for manual routes)
+	Identity map[string]string // owner -> identity now; "" when unknown, as for manual routes
 	Now      time.Time
 	Grace    time.Duration // how long a holder may be absent before it loses the hostname
 }
@@ -51,10 +56,10 @@ const (
 
 // ClaimEvent reports a change made by one ResolveClaims call.
 type ClaimEvent struct {
-	Kind     ClaimEventKind
-	Hostname string
-	Owner    string
-	Detail   string
+	Kind     ClaimEventKind `json:"kind"`
+	Hostname string         `json:"hostname"`
+	Owner    string         `json:"owner"`
+	Detail   string         `json:"detail"`
 }
 
 // ClaimResult is the outcome of ResolveClaims.
@@ -156,11 +161,18 @@ func (r *resolver) firstClaim(host string, cs []claimant) {
 
 // keep leaves the hostname with its holder, cs[i], and records the others as
 // conflicts. A changed identity is noted and nothing more: the holder is the
-// same owner, so the hostname stays.
+// same owner, so the hostname stays. An identity that is not known says
+// nothing about the guest: it never replaces a stored one, and the first one
+// that becomes known is stored without an event.
 func (r *resolver) keep(host string, claim Claim, cs []claimant, i int) {
 	holder := cs[i]
 	next := Claim{Hostname: host, Owner: claim.Owner, Identity: claim.Identity, Since: claim.Since}
-	if now := r.in.Identity[claim.Owner]; now != claim.Identity {
+	switch now := r.in.Identity[claim.Owner]; {
+	case now == "" || now == claim.Identity:
+		// Nothing new is known.
+	case claim.Identity == "":
+		next.Identity = now
+	default:
 		next.Identity = now
 		r.event(ClaimIdentityChanged, host, claim.Owner, fmt.Sprintf("identity changed from %q to %q, claim kept", claim.Identity, now))
 	}
@@ -171,7 +183,9 @@ func (r *resolver) keep(host string, claim Claim, cs []claimant, i int) {
 // hostname.
 func (r *resolver) holderMissing(host string, claim Claim, cs []claimant) {
 	missing := r.in.Now
-	if claim.MissingSince != nil {
+	// A time after Now means the clock stepped back; counting from it would
+	// keep the hostname reserved for longer than the grace.
+	if claim.MissingSince != nil && !claim.MissingSince.After(r.in.Now) {
 		missing = *claim.MissingSince
 	}
 	absent := r.in.Now.Sub(missing)

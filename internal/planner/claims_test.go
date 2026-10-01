@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"encoding/json"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -264,6 +265,147 @@ func TestClaimsIdentityChangeNeverTransfers(t *testing.T) {
 		require.Empty(t, again.Events)
 		require.Equal(t, res.Claims, again.Claims)
 	})
+}
+
+func TestClaimsEmptyIdentityIsNotAChange(t *testing.T) {
+	tests := []struct {
+		name   string
+		stored string
+		now    string
+		want   string
+	}{
+		{"unknown now keeps the stored identity", "X", "", "X"},
+		{"first known identity is stored silently", "", "X", "X"},
+		{"both unknown", "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := ClaimInput{
+				Routes:   routes(t, primary, "qemu/3"),
+				Claims:   map[string]Claim{primary: holding("qemu/3", tt.stored, at(-time.Hour))},
+				Identity: map[string]string{"qemu/3": tt.now},
+				Now:      t0,
+				Grace:    grace,
+			}
+
+			res := ResolveClaims(in)
+
+			require.Equal(t, []string{"qemu/3"}, ownersOf(res.Winners))
+			require.Equal(t, map[string]Claim{primary: holding("qemu/3", tt.want, at(-time.Hour))}, res.Claims)
+			require.Empty(t, res.Events)
+		})
+	}
+
+	t.Run("an owner missing from the identity map counts as unknown", func(t *testing.T) {
+		res := ResolveClaims(ClaimInput{
+			Routes: routes(t, primary, "qemu/3"),
+			Claims: map[string]Claim{primary: holding("qemu/3", "X", at(-time.Hour))},
+			Now:    t0,
+			Grace:  grace,
+		})
+
+		require.Equal(t, "X", res.Claims[primary].Identity)
+		require.Empty(t, res.Events)
+	})
+}
+
+func TestClaimsMissingSinceInTheFutureIsClamped(t *testing.T) {
+	future := at(10 * time.Minute)
+	claim := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)})
+	claim.MissingSince = &future
+	in := ClaimInput{
+		Routes: routes(t, primary, "qemu/9"),
+		Claims: map[string]Claim{primary: claim},
+		Now:    t0,
+		Grace:  grace,
+	}
+
+	res := ResolveClaims(in)
+
+	require.Empty(t, res.Winners)
+	require.Empty(t, res.Events)
+	require.NotNil(t, res.Claims[primary].MissingSince)
+	require.Equal(t, t0, *res.Claims[primary].MissingSince)
+
+	t.Run("the grace counts from the clamped time", func(t *testing.T) {
+		in.Claims = res.Claims
+		in.Now = at(grace)
+
+		after := ResolveClaims(in)
+
+		require.Equal(t, []string{"qemu/9"}, ownersOf(after.Winners))
+		require.Equal(t, []string{"transferred a.example.com qemu/9"}, eventKeys(t, after.Events))
+	})
+}
+
+func TestClaimsOldHolderReturningAfterATransferWaits(t *testing.T) {
+	since := at(-2 * time.Minute)
+	claim := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)})
+	claim.MissingSince = &since
+	ids := map[string]string{"qemu/3": "id3", "qemu/9": "id9"}
+
+	transfer := ResolveClaims(ClaimInput{
+		Routes:   routes(t, primary, "qemu/9"),
+		Claims:   map[string]Claim{primary: claim},
+		Identity: ids,
+		Now:      t0,
+		Grace:    grace,
+	})
+	require.Equal(t, []string{"transferred a.example.com qemu/9"}, eventKeys(t, transfer.Events))
+
+	back := ResolveClaims(ClaimInput{
+		Routes:   routes(t, primary, "qemu/3", "qemu/9"),
+		Claims:   transfer.Claims,
+		Identity: ids,
+		Now:      at(time.Minute),
+		Grace:    grace,
+	})
+
+	require.Equal(t, []string{"qemu/9"}, ownersOf(back.Winners))
+	require.Equal(t, []string{"qemu/3"}, ownersOf(back.Conflicts))
+	require.Equal(t, map[string]Claim{
+		primary: holding("qemu/9", "id9", t0, Waiter{"qemu/3", at(time.Minute)}),
+	}, back.Claims)
+	require.Equal(t, []string{"conflict a.example.com qemu/3"}, eventKeys(t, back.Events))
+	require.Equal(t, "hostname is held by qemu/9", back.Events[0].Detail)
+}
+
+func TestClaimJSONShape(t *testing.T) {
+	missing := at(-30 * time.Second)
+	claims := map[string]Claim{
+		primary: {
+			Hostname:     primary,
+			Owner:        "qemu/3",
+			Identity:     "id3",
+			Since:        at(-time.Hour),
+			MissingSince: &missing,
+			Waiting:      []Waiter{{Owner: "lxc/5", FirstSeen: at(-5 * time.Minute)}},
+		},
+		"b.example.com": {Hostname: "b.example.com", Owner: "manual/grafana", Since: t0},
+	}
+
+	data, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	require.JSONEq(t, `{
+		"a.example.com": {
+			"hostname": "a.example.com",
+			"owner": "qemu/3",
+			"identity": "id3",
+			"since": "2026-03-01T11:00:00Z",
+			"missingSince": "2026-03-01T11:59:30Z",
+			"waiting": [{"owner": "lxc/5", "firstSeen": "2026-03-01T11:55:00Z"}]
+		},
+		"b.example.com": {
+			"hostname": "b.example.com",
+			"owner": "manual/grafana",
+			"since": "2026-03-01T12:00:00Z"
+		}
+	}`, string(data))
+
+	var back map[string]Claim
+	require.NoError(t, json.Unmarshal(data, &back))
+	require.Equal(t, claims, back)
 }
 
 func TestClaimsManualRouteKeepsEmptyIdentity(t *testing.T) {

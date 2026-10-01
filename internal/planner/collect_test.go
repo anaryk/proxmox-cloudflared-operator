@@ -168,6 +168,19 @@ func TestCollectPolicy(t *testing.T) {
 		{"deny pattern is lower-cased and loses its dot", Settings{DenyHosts: []string{"Secret.Example.com."}}, "secret.example.com", false},
 		{"allow pattern for a wildcard host", Settings{AllowHosts: []string{"*.example.com"}}, "*.example.com", true},
 		{"deny pattern for a wildcard host", Settings{DenyHosts: []string{"*.example.com"}}, "*.example.com", false},
+		{"allow a top level domain", Settings{AllowHosts: []string{"*.com"}}, "a.example.com", true},
+		{"deny a top level domain", Settings{DenyHosts: []string{"*.com"}}, "a.example.com", false},
+		{"deny a name blocks a wildcard that would serve it", Settings{DenyHosts: []string{"secret.example.com"}}, "*.example.com", false},
+		{"deny a wildcard blocks a wider wildcard", Settings{DenyHosts: []string{"*.internal.example.com"}}, "*.example.com", false},
+		{"deny star blocks a wildcard", Settings{DenyHosts: []string{"*"}}, "*.example.com", false},
+		{"deny leaves a wildcard in another zone", Settings{DenyHosts: []string{"secret.example.com"}}, "*.other.com", true},
+		{"deny leaves a wildcard below the denied name", Settings{DenyHosts: []string{"secret.example.com"}}, "*.secret.example.com", true},
+		{
+			"allow a name does not allow a wildcard over it",
+			Settings{AllowHosts: []string{"a.example.com"}},
+			"*.example.com",
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,7 +205,109 @@ func TestCollectPolicyFiltersHostsOfOneEntry(t *testing.T) {
 	got := Collect([]model.Guest{g}, nil, Settings{DenyHosts: []string{"secret.example.com"}})
 
 	require.Equal(t, []string{"ok.example.com qemu/101"}, routeKeys(got.Routes))
-	require.Equal(t, []Issue{{Guest: g.Ref, Line: 2, Col: 1, Msg: notAllowed("secret.example.com")}}, got.Issues)
+	require.Equal(t, []Issue{{Guest: g.Ref, Line: 2, Col: 16, Msg: notAllowed("secret.example.com")}}, got.Issues)
+}
+
+func TestCollectPolicyIssuePointsAtTheHost(t *testing.T) {
+	g := tagged(model.KindQEMU, 101, block("ok.example.com", "  secret.example.com", "  -> :80"))
+
+	got := Collect([]model.Guest{g}, nil, Settings{DenyHosts: []string{"secret.example.com"}})
+
+	require.Equal(t, []Issue{{Guest: g.Ref, Line: 3, Col: 3, Msg: notAllowed("secret.example.com")}}, got.Issues)
+}
+
+func TestCollectInvalidPatterns(t *testing.T) {
+	const host = "a.example.com"
+	g := tagged(model.KindQEMU, 101, block(host+" -> :80"))
+	hostIssue := Issue{Guest: g.Ref, Line: 2, Col: 1, Msg: notAllowed(host)}
+	denyIssue := func(pattern, reason string) Issue {
+		return Issue{Msg: fmt.Sprintf("invalid deny pattern %q: %s; all hostnames are denied until it is fixed", pattern, reason)}
+	}
+	allowIssue := func(pattern, reason string) Issue {
+		return Issue{Msg: fmt.Sprintf("invalid allow pattern %q: %s", pattern, reason)}
+	}
+
+	tests := []struct {
+		name     string
+		settings Settings
+		routes   []string
+		issues   []Issue
+	}{
+		{
+			name:     "an invalid deny pattern denies everything",
+			settings: Settings{DenyHosts: []string{"secret.example.com/"}},
+			issues:   []Issue{hostIssue, denyIssue("secret.example.com/", `label "com/" contains '/'`)},
+		},
+		{
+			name:     "an invalid deny pattern next to valid ones denies everything",
+			settings: Settings{DenyHosts: []string{"other.example.com", " secret.example.com"}},
+			issues:   []Issue{hostIssue, denyIssue(" secret.example.com", `label " secret" contains ' '`)},
+		},
+		{
+			name:     "a star glued to a label is not a wildcard",
+			settings: Settings{DenyHosts: []string{"*internal.example.com"}},
+			issues:   []Issue{hostIssue, denyIssue("*internal.example.com", `label "*internal" contains '*'`)},
+		},
+		{
+			name:     "an empty deny pattern denies everything",
+			settings: Settings{DenyHosts: []string{""}},
+			issues:   []Issue{hostIssue, denyIssue("", "empty")},
+		},
+		{
+			name:     "an invalid allow pattern alone allows nothing",
+			settings: Settings{AllowHosts: []string{"*.example.com "}},
+			issues:   []Issue{hostIssue, allowIssue("*.example.com ", `label "com " contains ' '`)},
+		},
+		{
+			name:     "an invalid allow pattern matches nothing next to a valid one",
+			settings: Settings{AllowHosts: []string{"*.example.com", "a.example.com/"}},
+			routes:   []string{host + " qemu/101"},
+			issues:   []Issue{allowIssue("a.example.com/", `label "com/" contains '/'`)},
+		},
+		{
+			name:     "every invalid pattern is reported",
+			settings: Settings{AllowHosts: []string{"x y"}, DenyHosts: []string{"*.", "a b"}},
+			issues: []Issue{
+				hostIssue,
+				denyIssue("*.", "a bare * takes no trailing dot"),
+				denyIssue("a b", "needs at least two labels"),
+				allowIssue("x y", "needs at least two labels"),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Collect([]model.Guest{g}, nil, tt.settings)
+
+			require.Equal(t, tt.routes, routeKeys(got.Routes))
+			require.Equal(t, tt.issues, got.Issues)
+		})
+	}
+
+	t.Run("one issue per run, not per guest", func(t *testing.T) {
+		guests := []model.Guest{g, tagged(model.KindLXC, 200, block("b.example.com -> :80"))}
+
+		got := Collect(guests, nil, Settings{DenyHosts: []string{"bad/"}})
+
+		require.Empty(t, got.Routes)
+		require.Len(t, got.Issues, 3)
+		require.Equal(t, denyIssue("bad/", "needs at least two labels"), got.Issues[2])
+	})
+
+	t.Run("reported without any guest", func(t *testing.T) {
+		got := Collect(nil, nil, Settings{DenyHosts: []string{"bad/"}})
+
+		require.Equal(t, []Issue{denyIssue("bad/", "needs at least two labels")}, got.Issues)
+	})
+
+	t.Run("manual routes are not affected", func(t *testing.T) {
+		manual := []model.Route{{Hostname: "grafana.example.com", Source: model.SourceManual, ManualID: "grafana"}}
+
+		got := Collect(nil, manual, Settings{AllowHosts: []string{"bad/"}, DenyHosts: []string{"bad/"}})
+
+		require.Equal(t, manual, got.Routes)
+		require.Len(t, got.Issues, 2)
+	})
 }
 
 func TestCollectTaggedWithoutRoutes(t *testing.T) {
@@ -204,6 +319,8 @@ func TestCollectTaggedWithoutRoutes(t *testing.T) {
 		{"empty notes", ""},
 		{"notes without a block", "web server for the shop"},
 		{"block of another kind", "```yaml\nkey: value\n```"},
+		{"empty block", block()},
+		{"block with only comments", block("# app.example.com -> :80", "  # later")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -216,11 +333,30 @@ func TestCollectTaggedWithoutRoutes(t *testing.T) {
 		})
 	}
 
-	t.Run("an empty block is not missing", func(t *testing.T) {
-		got := Collect([]model.Guest{tagged(model.KindLXC, 200, block())}, nil, Settings{})
+	t.Run("the message names the configured gate tag", func(t *testing.T) {
+		g := tagged(model.KindLXC, 200, "")
+		g.Tags = []string{"expose"}
+
+		got := Collect([]model.Guest{g}, nil, Settings{GateTag: "expose"})
+
+		require.Equal(t, []Issue{{Guest: g.Ref, Msg: "tagged expose but no routes found in Notes"}}, got.Issues)
+	})
+
+	t.Run("parser errors are reported instead", func(t *testing.T) {
+		g := tagged(model.KindLXC, 200, block("oops"))
+
+		got := Collect([]model.Guest{g}, nil, Settings{})
+
+		require.Equal(t, []Issue{{Guest: g.Ref, Line: 2, Col: 1, Msg: `invalid hostname "oops": needs at least two labels`}}, got.Issues)
+	})
+
+	t.Run("routes left out by policy are reported instead", func(t *testing.T) {
+		g := tagged(model.KindLXC, 200, block("a.example.com -> :80"))
+
+		got := Collect([]model.Guest{g}, nil, Settings{DenyHosts: []string{"*"}})
 
 		require.Empty(t, got.Routes)
-		require.Empty(t, got.Issues)
+		require.Equal(t, []Issue{{Guest: g.Ref, Line: 2, Col: 1, Msg: notAllowed("a.example.com")}}, got.Issues)
 	})
 }
 

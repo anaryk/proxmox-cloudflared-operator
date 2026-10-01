@@ -89,6 +89,66 @@ func TestSentinelLabelsFitDNS(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestWriterValidate(t *testing.T) {
+	valid := []struct {
+		name string
+		w    Writer
+	}{
+		{"typical", Writer{InstallID: "3f9a2c1e77b0", Generation: 12, Nonce: "k3x9q1"}},
+		{"generation zero", Writer{InstallID: "a", Generation: 0, Nonce: "b"}},
+		{"largest generation", Writer{InstallID: "a", Generation: math.MaxInt, Nonce: "b"}},
+		{"longest install id", Writer{InstallID: strings.Repeat("f", 59), Nonce: "n"}},
+		{"longest nonce", Writer{InstallID: "a", Nonce: strings.Repeat("z", 63)}},
+	}
+	for _, tt := range valid {
+		t.Run("valid "+tt.name, func(t *testing.T) {
+			require.NoError(t, tt.w.Validate())
+
+			got, ok := ParseSentinel(SentinelHostname(tt.w))
+			require.True(t, ok)
+			require.Equal(t, tt.w, got)
+		})
+	}
+
+	invalid := []struct {
+		name string
+		w    Writer
+	}{
+		{"zero value", Writer{}},
+		{"empty install id", Writer{Nonce: "n"}},
+		{"empty nonce", Writer{InstallID: "a"}},
+		{"install id upper case", Writer{InstallID: "A", Nonce: "n"}},
+		{"install id with hyphen", Writer{InstallID: "a-b", Nonce: "n"}},
+		{"install id with dot", Writer{InstallID: "a.b", Nonce: "n"}},
+		{"nonce upper case", Writer{InstallID: "a", Nonce: "N"}},
+		{"nonce with dot", Writer{InstallID: "a", Nonce: "n.n"}},
+		{"nonce non-ascii", Writer{InstallID: "a", Nonce: "ñ"}},
+		{"negative generation", Writer{InstallID: "a", Generation: -1, Nonce: "n"}},
+		{"install id label too long", Writer{InstallID: strings.Repeat("f", 60), Nonce: "n"}},
+		{"nonce label too long", Writer{InstallID: "a", Nonce: strings.Repeat("z", 64)}},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			require.Error(t, tt.w.Validate())
+		})
+	}
+}
+
+func TestReservedCoversEverySentinel(t *testing.T) {
+	for _, host := range []string{
+		SentinelHostname(buildWriter),
+		"app.invalid",
+		"*.invalid",
+		"App.INVALID",
+		"app.invalid.",
+	} {
+		require.True(t, reserved(host), host)
+	}
+	for _, host := range []string{"app.example.com", "invalid.example.com", "app.xinvalid", "invalid"} {
+		require.False(t, reserved(host), host)
+	}
+}
+
 func TestNamesDerivedFromInstallID(t *testing.T) {
 	require.Equal(t, "pco-3f9a2c1e77b0", TunnelName("3f9a2c1e77b0"))
 	require.Equal(t, "pco:3f9a2c1e77b0", DNSMarker("3f9a2c1e77b0"))
