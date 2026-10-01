@@ -1,0 +1,32 @@
+[Unit]
+Description=pco cloudflared connector (tunnel %i)
+Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
+After=network-online.target pco-netns.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+DynamicUser=yes
+LoadCredential=token:/var/lib/pco/tunnels/%i.token
+EnvironmentFile=/var/lib/pco/tunnels/%i.env
+ExecStart=/usr/bin/cloudflared --no-autoupdate --metrics ${METRICS_ADDR} tunnel run --token-file %d/token
+Restart=always
+RestartSec=5
+TimeoutStartSec=infinity
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
