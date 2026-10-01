@@ -38,11 +38,13 @@ type TunnelReconciler struct {
 }
 
 // NewTunnelReconciler returns a reconciler that reaches each account through
-// the client of its credential. writer returns the identity this process
-// writes as (us) and leader.json as stored now (stored). Run asks it before
-// its first call to Cloudflare and again right before each configuration
-// write, and stops when it fails; it should fail whenever this process may
-// not write at all, as when its lease is lost.
+// the client of its credential.
+//
+// writer returns the identity this process writes as (us) and leader.json as
+// stored now (stored). Run asks it before its first call to Cloudflare, in
+// Enforce mode again before it reads the configuration of each tunnel, and
+// once more before it stops on the sentinel of another writer. It should fail
+// whenever this process may not write at all, as when its lease is lost.
 func NewTunnelReconciler(clients Clients, writer func() (us, stored planner.Writer, err error), now func() time.Time, log zerolog.Logger) *TunnelReconciler {
 	return &TunnelReconciler{
 		clients: clients,
@@ -55,42 +57,48 @@ func NewTunnelReconciler(clients Clients, writer func() (us, stored planner.Writ
 
 // TunnelResult is what a run found and did.
 type TunnelResult struct {
-	// Tunnels are the tunnels looked at, by account id. A tunnel whose lookup
-	// failed, or that was to be created and was not, is left out: whether it
-	// exists is not known.
-	Tunnels  []TunnelState
-	Actions  []Action // in the order performed or planned
+	Tunnels  []TunnelState // one per planned or known account, by account id
+	Actions  []Action      // in the order performed or planned
 	Problems []string
-	Verdict  WriterVerdict // WriterProceed unless a sentinel stopped the run
+	Verdict  WriterVerdict // WriterProceed unless another writer stopped the run
 }
 
 // Run brings tunnels in line with plans. Accounts listed in `known` (account
 // id -> credential id) without a plan get an empty rule set when their tunnel exists.
+// As such an account is emptied, known must hold only accounts for which the
+// caller has a complete, current plan.
 //
-// A configuration is written only where it differs from the plan or holds
-// settings pco does not manage, and only when the sentinels in it let this
-// writer proceed; a stale or foreign verdict stops the run at once. A failure
-// on one tunnel is a problem and the run goes on with the next. In Observe
-// mode Run only reads, and returns the actions it would take as held.
+// Run writes only as long as the writer callback names us as the writer
+// stored in leader.json, with the same generation and nonce; otherwise it
+// stops with WriterStale. A configuration is written only where it differs
+// from the plan or holds settings pco does not manage, and only when the
+// sentinels in it let this writer proceed: a stale or foreign verdict stops
+// the run at once. A failure on one tunnel is a problem, and the run goes on
+// with the next. In Observe mode Run only reads, and returns the actions it
+// would take as held.
+//
+// A tunnel the run could not look up or create, or did not reach because it
+// stopped, is returned with Unknown set. Callers must never prune connectors
+// or records for an Unknown tunnel: only Exists == false && !Unknown means
+// that the tunnel is absent.
 func (r *TunnelReconciler) Run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	run := &tunnelRun{r: r, mode: mode}
-	us, stored, err := r.writer()
-	if err != nil {
-		run.problem(fmt.Sprintf("reading the writer identity: %v", err))
-		return run.res
-	}
-	if err := us.Validate(); err != nil {
-		run.problem(fmt.Sprintf("cannot write as this writer: %v", err))
-		return run.res
-	}
-	run.us, run.stored = us, stored
-	for _, t := range targets(plans, known, us) {
-		if !run.reconcile(ctx, t) {
-			break
+	goOn := run.start()
+	for _, t := range targets(plans, known, run.us) {
+		if goOn && ctx.Err() != nil {
+			run.problem(fmt.Sprintf("run stopped: %v", ctx.Err()))
+			goOn = false
 		}
+		if !goOn {
+			run.res.Tunnels = append(run.res.Tunnels, t.unknown())
+			continue
+		}
+		var st TunnelState
+		st, goOn = run.reconcile(ctx, t)
+		run.res.Tunnels = append(run.res.Tunnels, st)
 	}
 	return run.res
 }
@@ -106,8 +114,14 @@ type target struct {
 
 func (t target) String() string { return t.name + " in account " + t.account }
 
+// unknown is the state of a tunnel that the run knows nothing about.
+func (t target) unknown() TunnelState {
+	return TunnelState{AccountID: t.account, CredentialID: t.credential, Name: t.name, Unknown: true}
+}
+
 // targets lists the tunnels to look at, by account id: one per plan, and one
-// that serves nothing for each known account without a plan.
+// that serves nothing for each known account without a plan. Without a writer
+// identity the name of the latter is not known and left empty.
 func targets(plans []planner.TunnelPlan, known map[string]string, us planner.Writer) []target {
 	out := make([]target, 0, len(plans)+len(known))
 	planned := make(map[string]bool, len(plans))
@@ -115,142 +129,245 @@ func targets(plans []planner.TunnelPlan, known map[string]string, us planner.Wri
 		out = append(out, target{account: p.AccountID, credential: p.CredentialID, name: p.Name, rules: p.Rules, planned: true})
 		planned[p.AccountID] = true
 	}
+	var name string
+	if us.InstallID != "" {
+		name = planner.TunnelName(us.InstallID)
+	}
 	for account, credential := range known {
 		if !planned[account] {
-			out = append(out, target{account: account, credential: credential, name: planner.TunnelName(us.InstallID), rules: emptyRules(us)})
+			out = append(out, target{account: account, credential: credential, name: name, rules: emptyRules(us)})
 		}
 	}
 	slices.SortStableFunc(out, func(a, b target) int { return cmp.Compare(a.account, b.account) })
 	return out
 }
 
+func sentinelRule(us planner.Writer) planner.IngressRule {
+	return planner.IngressRule{Hostname: planner.SentinelHostname(us), Service: notFoundService}
+}
+
+func catchAllRule() planner.IngressRule { return planner.IngressRule{Service: notFoundService} }
+
 // emptyRules is the ingress of a tunnel that serves nothing.
 func emptyRules(us planner.Writer) []planner.IngressRule {
-	return []planner.IngressRule{
-		{Hostname: planner.SentinelHostname(us), Service: notFoundService},
-		{Service: notFoundService},
-	}
+	return []planner.IngressRule{sentinelRule(us), catchAllRule()}
 }
 
 // tunnelRun is the state of one Run.
 type tunnelRun struct {
 	r      *TunnelReconciler
 	mode   Mode
-	us     planner.Writer
+	us     planner.Writer // set once start has validated it
 	stored planner.Writer // as last read
 	res    TunnelResult
 }
 
-// reconcile brings the tunnel of one account in line and reports whether the
-// run goes on.
-func (run *tunnelRun) reconcile(ctx context.Context, t target) bool {
-	api := run.r.clients[t.credential]
+// start reads the identity the run writes as and reports whether the run may
+// go on.
+func (run *tunnelRun) start() bool {
+	us, stored, err := run.r.writer()
+	if err != nil {
+		run.problem(fmt.Sprintf("reading the writer identity: %v", err))
+		return false
+	}
+	if err := us.Validate(); err != nil {
+		run.problem(fmt.Sprintf("cannot write as this writer: %v", err))
+		return false
+	}
+	run.us = us
+	return run.admit("", us, stored)
+}
+
+// reread asks for the writer identity again before a write may follow, and
+// reports whether the run goes on.
+func (run *tunnelRun) reread(t target) bool {
+	us, stored, err := run.r.writer()
+	if err != nil {
+		run.problem(fmt.Sprintf("%s: reading the writer identity: %v", t, err))
+		return false
+	}
+	return run.admit(t.String()+": ", us, stored)
+}
+
+// admit takes an answer of the writer callback and reports whether the run
+// may go on. If it may not, the run stops as stale.
+func (run *tunnelRun) admit(prefix string, us, stored planner.Writer) bool {
+	if fault := run.writerFault(us, stored); fault != "" {
+		run.stop(prefix, WriterStale, fault)
+		return false
+	}
+	run.stored = stored
+	return true
+}
+
+// writerFault says why an answer of the writer callback forbids writing:
+// this process writes only as the identity it started the run with, and only
+// while leader.json names that identity.
+func (run *tunnelRun) writerFault(us, stored planner.Writer) string {
 	switch {
-	case api == nil:
+	case us != run.us:
+		return "the writer identity changed during the run"
+	case stored.Generation != us.Generation || stored.Nonce != us.Nonce:
+		// The install id is not compared: leader.json does not hold one.
+		return fmt.Sprintf("leader.json names generation %d nonce %s, not this writer (generation %d nonce %s)",
+			stored.Generation, stored.Nonce, us.Generation, us.Nonce)
+	}
+	return ""
+}
+
+// stop ends the run with a verdict other than proceed.
+func (run *tunnelRun) stop(prefix string, v WriterVerdict, why string) {
+	end := "; writing stops"
+	if v == WriterStale {
+		end = "; this writer is stale and stops"
+	}
+	run.problem(prefix + why + end)
+	run.res.Verdict = v
+}
+
+// reconcile brings the tunnel of one account in line. It returns what it
+// found out about the tunnel and whether the run goes on.
+func (run *tunnelRun) reconcile(ctx context.Context, t target) (TunnelState, bool) {
+	st := t.unknown()
+	api := run.r.clients[t.credential]
+	if api == nil {
 		run.problem(fmt.Sprintf("%s: no client for credential %s", t, t.credential))
-		return true
-	case !hasSentinel(t.rules, run.us):
-		// Other writers are fenced by the sentinel written here, so it must
-		// be this writer's.
-		run.problem(fmt.Sprintf("%s: the planned rules lack the sentinel of this writer", t))
-		return true
+		return st, true
+	}
+	if fault := run.planFault(t); fault != "" {
+		run.problem(fmt.Sprintf("%s: %s", t, fault))
+		return st, true
 	}
 
 	tun, found, err := api.FindTunnel(ctx, t.account, t.name)
 	if err != nil {
 		run.problem(fmt.Sprintf("%s: finding the tunnel: %v", t, err))
-		return true
+		return st, true
 	}
-	st := TunnelState{AccountID: t.account, CredentialID: t.credential, Name: t.name}
+	st.Unknown = false
+	fresh := false
 	if !found {
 		switch {
 		case !t.planned:
-			run.res.Tunnels = append(run.res.Tunnels, st)
-			return true
+			return st, true
 		case run.mode == Observe:
-			run.res.Tunnels = append(run.res.Tunnels, st)
 			run.act(t, CreateTunnel, createDetail(t), heldObserve)
 			run.act(t, PutConfig, putDetail(t, cfapi.TunnelConfig{}), heldObserve)
-			return true
+			return st, true
 		}
-		if tun, found = run.create(ctx, api, t); !found {
-			return true
+		if tun, fresh, found = run.create(ctx, api, t); !found {
+			return t.unknown(), true
 		}
 	}
 	st.ID, st.Exists = tun.ID, true
-	goOn := run.converge(ctx, api, t, &st)
-	run.res.Tunnels = append(run.res.Tunnels, st)
-	return goOn
+	return st, run.converge(ctx, api, t, &st, fresh)
 }
 
-func hasSentinel(rules []planner.IngressRule, us planner.Writer) bool {
-	host := planner.SentinelHostname(us)
-	return slices.ContainsFunc(rules, func(r planner.IngressRule) bool { return r.Hostname == host })
+// planFault says why the plan of t may not be written, if it may not. The
+// sentinel written is what fences the other writers, so it must be this
+// writer's, in its place before the catch-all.
+func (run *tunnelRun) planFault(t target) string {
+	n := len(t.rules)
+	switch {
+	case t.name != planner.TunnelName(run.us.InstallID):
+		return "the plan is not for the tunnel of this install, " + planner.TunnelName(run.us.InstallID)
+	case n < 2 || t.rules[n-1] != catchAllRule():
+		return "the planned rules do not end with the catch-all"
+	case t.rules[n-2] != sentinelRule(run.us):
+		return "the planned rules lack the sentinel of this writer before the catch-all"
+	}
+	return ""
 }
 
-// create creates the tunnel of t and reports whether there is one now.
-func (run *tunnelRun) create(ctx context.Context, api cfapi.API, t target) (cfapi.Tunnel, bool) {
+// create creates the tunnel of t. found reports whether there is a tunnel
+// now, and fresh whether this call created it.
+func (run *tunnelRun) create(ctx context.Context, api cfapi.API, t target) (tun cfapi.Tunnel, fresh, found bool) {
 	tun, err := api.CreateTunnel(ctx, t.account, t.name)
 	switch {
 	case err == nil:
 		run.act(t, CreateTunnel, createDetail(t), "")
 		run.r.log.Info().Str("account", t.account).Str("tunnel", t.name).Msg("created tunnel")
-		return tun, true
+		return tun, true, true
 	case !cfapi.IsConflict(err):
 		run.act(t, CreateTunnel, createDetail(t), err.Error())
 		run.problem(fmt.Sprintf("%s: creating the tunnel: %v", t, err))
-		return cfapi.Tunnel{}, false
+		return cfapi.Tunnel{}, false, false
 	}
 
 	// Another writer was quicker, or the answer to an earlier create was lost.
 	run.act(t, CreateTunnel, createDetail(t), "tunnel already exists")
-	tun, found, err := api.FindTunnel(ctx, t.account, t.name)
+	tun, found, err = api.FindTunnel(ctx, t.account, t.name)
 	switch {
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: finding the tunnel after its name was taken: %v", t, err))
 	case !found:
 		run.problem(fmt.Sprintf("%s: the name is taken, but no tunnel of that name is found", t))
 	}
-	return tun, err == nil && found
+	return tun, false, err == nil && found
 }
 
 // converge writes the planned rules to an existing tunnel when its
-// configuration differs from them, and reports whether the run goes on.
-func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st *TunnelState) bool {
+// configuration differs from them, and reports whether the run goes on. fresh
+// says that the run created the tunnel.
+func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st *TunnelState, fresh bool) bool {
+	// Step 1 of the write procedure comes before the configuration is read.
+	if run.mode == Enforce && !run.reread(t) {
+		return false
+	}
 	remote, err := api.TunnelConfig(ctx, t.account, st.ID)
-	if err != nil {
+	switch {
+	case err == nil:
+	case fresh && cfapi.IsNotFound(err):
+		// A tunnel created moments ago may not have a configuration yet.
+		remote = cfapi.TunnelConfig{}
+	default:
 		run.problem(fmt.Sprintf("%s: reading the configuration: %v", t, err))
 		return true
 	}
 	st.Version = remote.Version
 	if EqualIngress(remote.Ingress, t.rules) && !remote.Foreign {
+		st.Verified = true
 		return true
 	}
 
 	detail := putDetail(t, remote)
-	key := t.account + "/" + st.ID
-	wait := run.r.putWait(key)
-	due := run.mode == Enforce && wait <= 0
-	if due && !run.rereadWriter(t) {
-		return false
-	}
 	if v, by := judgeConfig(run.us, run.stored, remote.Ingress); v != WriterProceed {
-		run.act(t, PutConfig, detail, heldVerdict(v))
-		run.problem(verdictProblem(t, v, by, run.us))
-		run.res.Verdict = v
+		run.refuse(t, detail, v, by)
 		return false
 	}
-	switch {
-	case run.mode == Observe:
+	if run.mode == Observe {
 		run.act(t, PutConfig, detail, heldObserve)
-	case !due:
-		run.act(t, PutConfig, detail, fmt.Sprintf("rate limit: next write in %s", wait))
-	default:
-		// Counted before the call: a write whose answer is lost may have landed.
-		run.r.lastPut[key] = run.r.now()
-		run.put(ctx, api, t, st, detail)
+		return true
 	}
+	key := t.account + "/" + st.ID
+	if wait := run.r.putWait(key); wait > 0 {
+		run.act(t, PutConfig, detail, fmt.Sprintf("rate limit: next write in %s", wait))
+		return true
+	}
+	// Counted before the call: a write whose answer is lost may have landed.
+	run.r.lastPut[key] = run.r.now()
+	run.put(ctx, api, t, st, detail)
 	return true
+}
+
+// refuse stops the run on a verdict other than proceed. A takeover during the
+// run shows as a sentinel newer than ours too, so the writer is read once
+// more first: if leader.json has moved on, this writer is stale whatever the
+// sentinel says.
+func (run *tunnelRun) refuse(t target, detail string, v WriterVerdict, by planner.Writer) {
+	why := fmt.Sprintf("the configuration was written by generation %d nonce %s", by.Generation, by.Nonce)
+	if v == WriterForeign {
+		why += fmt.Sprintf(", which leader.json does not know: another installation uses install id %s, "+
+			"or the store was lost (pco setup --recover)", run.us.InstallID)
+	}
+	us, stored, err := run.r.writer()
+	if err != nil {
+		run.problem(fmt.Sprintf("%s: reading the writer identity: %v", t, err))
+	} else if fault := run.writerFault(us, stored); fault != "" {
+		v, why = WriterStale, fault
+	}
+	run.act(t, PutConfig, detail, heldVerdict(v))
+	run.stop(t.String()+": ", v, why)
 }
 
 // putWait returns how long the configuration of a tunnel must wait before it
@@ -260,24 +377,14 @@ func (r *TunnelReconciler) putWait(key string) time.Duration {
 	if !ok {
 		return 0
 	}
-	return last.Add(putInterval).Sub(r.now())
-}
-
-// rereadWriter asks for the writer identity right before a write and reports
-// whether the write may go on to be judged.
-func (run *tunnelRun) rereadWriter(t target) bool {
-	us, stored, err := run.r.writer()
-	switch {
-	case err != nil:
-		run.problem(fmt.Sprintf("%s: reading the writer identity before the write: %v", t, err))
-		return false
-	case us != run.us:
-		// The plan carries the sentinel of the identity the run started with.
-		run.problem(fmt.Sprintf("%s: the writer identity changed during the run; not writing", t))
-		return false
+	now := r.now()
+	if now.Before(last) {
+		// The clock stepped back. Counting from now holds the write for one
+		// interval; counting from last would hold it until the clock caught up.
+		r.lastPut[key] = now
+		last = now
 	}
-	run.stored = stored
-	return true
+	return last.Add(putInterval).Sub(now)
 }
 
 // put writes the planned rules and reads them back. Whatever the outcome, it
@@ -290,16 +397,17 @@ func (run *tunnelRun) put(ctx context.Context, api cfapi.API, t target, st *Tunn
 		return
 	}
 	run.act(t, PutConfig, detail, "")
+	st.Version = version
 	run.r.log.Info().Str("account", t.account).Str("tunnel", t.name).Int("version", version).Msg("wrote tunnel configuration")
 
 	got, err := api.TunnelConfig(ctx, t.account, st.ID)
-	if err != nil {
+	switch {
+	case err != nil:
 		run.problem(fmt.Sprintf("%s: reading the configuration back: %v", t, err))
-		return
-	}
-	st.Version = got.Version
-	if !EqualIngress(got.Ingress, t.rules) || got.Foreign {
+	case !EqualIngress(got.Ingress, t.rules) || got.Foreign:
 		run.problem(fmt.Sprintf("config changed under us on %s", t))
+	default:
+		st.Verified = true
 	}
 }
 
@@ -338,14 +446,4 @@ func heldVerdict(v WriterVerdict) string {
 		return "stale writer"
 	}
 	return "foreign writer"
-}
-
-// verdictProblem says why the sentinel of writer by stops this writer.
-func verdictProblem(t target, v WriterVerdict, by, us planner.Writer) string {
-	if v == WriterStale {
-		return fmt.Sprintf("%s: written by generation %d, newer than ours (%d): this writer is stale and stops", t, by.Generation, us.Generation)
-	}
-	return fmt.Sprintf("%s: written by generation %d with nonce %s, which leader.json does not know: "+
-		"another installation uses install id %s, or the store was lost (pco setup --recover); writing stops",
-		t, by.Generation, by.Nonce, us.InstallID)
 }

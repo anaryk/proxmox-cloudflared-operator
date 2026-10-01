@@ -42,8 +42,16 @@ type TunnelState struct {
 	CredentialID string
 	Name         string
 	ID           string
-	Version      int
+	Version      int // the version the run wrote, or else the one it read
 	Exists       bool
+
+	// Verified is true when the configuration at Version was read and equals
+	// the plan.
+	Verified bool
+
+	// Unknown is true when the run could not find out whether the tunnel
+	// exists; Exists is then false. Nothing may be pruned for such a tunnel.
+	Unknown bool
 }
 
 // WriterVerdict is the outcome of the sentinel decision table.
