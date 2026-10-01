@@ -37,24 +37,31 @@ func newFake() *cffake.Fake {
 	return f
 }
 
-func ok(c Capability, scope string) Check {
-	return Check{Capability: c, Scope: scope, OK: true}
+// The scopes of the fixture, each a name and an id.
+var (
+	exampleCom = scope{"example.com", "zone1"}
+	exampleOrg = scope{"example.org", "zone2"}
+	acme       = scope{"Acme", "acct1"}
+)
+
+func ok(c Capability, s scope) Check {
+	return Check{Capability: c, Scope: s.name, ScopeID: s.id, OK: true}
 }
 
-func failed(c Capability, scope, detail string) Check {
-	return Check{Capability: c, Scope: scope, Detail: detail}
+func failed(c Capability, s scope, detail string) Check {
+	return Check{Capability: c, Scope: s.name, ScopeID: s.id, Detail: detail}
 }
 
 // find returns the one check of a capability and scope.
-func find(t *testing.T, r Report, c Capability, scope string) Check {
+func find(t *testing.T, r Report, c Capability, s scope) Check {
 	t.Helper()
 	var found []Check
 	for _, check := range r.Checks {
-		if check.Capability == c && check.Scope == scope {
+		if check.Capability == c && check.Scope == s.name && check.ScopeID == s.id {
 			found = append(found, check)
 		}
 	}
-	require.Len(t, found, 1, "checks of %s for %q in %v", c, scope, r.Checks)
+	require.Len(t, found, 1, "checks of %s for %v in %v", c, s, r.Checks)
 	return found[0]
 }
 
@@ -91,14 +98,20 @@ func requireNothingLeft(t *testing.T, f *cffake.Fake, zoneIDs, accountIDs []stri
 }
 
 // spyAPI wraps an API to change or record what a test needs and the fake
-// cannot do: a zone that is not active, a refusal in one zone only, a delete
-// that fails after the create worked.
+// cannot do: a zone that is not active, a refusal in one zone only, a create
+// whose answer is lost or wrong, a delete that fails after the create worked.
 type spyAPI struct {
 	cfapi.API
 
 	zoneStatus   map[string]string // zone id -> status to report
 	denyCreateIn map[string]bool   // zone id -> CreateRecord answers 403
 	deleteErr    error             // what DeleteRecord and DeleteTunnel answer
+	deleteGone   bool              // DeleteRecord and DeleteTunnel delete, and answer 404
+	lostCreate   error             // CreateRecord and CreateTunnel create, and answer this
+	lookupErr    error             // what the lookup of a probe by its name answers
+
+	answerRecord func(cfapi.Record) cfapi.Record // changes the answer of CreateRecord
+	answerTunnel func(cfapi.Tunnel) cfapi.Tunnel // changes the answer of CreateTunnel
 
 	afterCreateRecord func()
 	afterCreateTunnel func()
@@ -120,7 +133,17 @@ func (s *spyAPI) Zones(ctx context.Context) ([]cfapi.Zone, error) {
 
 func (s *spyAPI) Records(ctx context.Context, zoneID string, f cfapi.RecordFilter) ([]cfapi.Record, error) {
 	s.filters = append(s.filters, f)
+	if f.Name != "" && s.lookupErr != nil {
+		return nil, s.lookupErr
+	}
 	return s.API.Records(ctx, zoneID, f)
+}
+
+func (s *spyAPI) FindTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, bool, error) {
+	if name == probeTunnel && s.lookupErr != nil {
+		return cfapi.Tunnel{}, false, s.lookupErr
+	}
+	return s.API.FindTunnel(ctx, accountID, name)
 }
 
 func (s *spyAPI) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
@@ -129,33 +152,59 @@ func (s *spyAPI) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record
 	}
 	s.records = append(s.records, r)
 	got, err := s.API.CreateRecord(ctx, zoneID, r)
-	if err == nil && s.afterCreateRecord != nil {
+	if err != nil {
+		return got, err
+	}
+	if s.afterCreateRecord != nil {
 		s.afterCreateRecord()
 	}
-	return got, err
+	switch {
+	case s.lostCreate != nil:
+		return cfapi.Record{}, s.lostCreate
+	case s.answerRecord != nil:
+		return s.answerRecord(got), nil
+	}
+	return got, nil
 }
 
 func (s *spyAPI) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
-	return s.API.DeleteRecord(ctx, zoneID, recordID)
+	err := s.API.DeleteRecord(ctx, zoneID, recordID)
+	if err == nil && s.deleteGone {
+		return &cfapi.Error{Status: 404, Message: "not found"}
+	}
+	return err
 }
 
 func (s *spyAPI) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, error) {
 	s.tunnels = append(s.tunnels, name)
 	got, err := s.API.CreateTunnel(ctx, accountID, name)
-	if err == nil && s.afterCreateTunnel != nil {
+	if err != nil {
+		return got, err
+	}
+	if s.afterCreateTunnel != nil {
 		s.afterCreateTunnel()
 	}
-	return got, err
+	switch {
+	case s.lostCreate != nil:
+		return cfapi.Tunnel{}, s.lostCreate
+	case s.answerTunnel != nil:
+		return s.answerTunnel(got), nil
+	}
+	return got, nil
 }
 
 func (s *spyAPI) DeleteTunnel(ctx context.Context, accountID, tunnelID string) error {
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
-	return s.API.DeleteTunnel(ctx, accountID, tunnelID)
+	err := s.API.DeleteTunnel(ctx, accountID, tunnelID)
+	if err == nil && s.deleteGone {
+		return &cfapi.Error{Status: 404, Message: "not found"}
+	}
+	return err
 }
 
 func TestCapableTokenIsUsable(t *testing.T) {
@@ -164,15 +213,17 @@ func TestCapableTokenIsUsable(t *testing.T) {
 	got := newChecker().Run(t.Context(), f, true)
 
 	require.Equal(t, []Check{
-		ok(CapToken, ""),
-		ok(CapAccounts, ""),
-		ok(CapZones, ""),
-		ok(CapDNSRead, "example.com"),
-		ok(CapDNSWrite, "example.com"),
-		ok(CapTunnelRead, "Acme"),
-		ok(CapTunnelWrite, "Acme"),
+		ok(CapToken, scope{}),
+		ok(CapAccounts, scope{}),
+		ok(CapZones, scope{}),
+		ok(CapDNSRead, exampleCom),
+		ok(CapDNSWrite, exampleCom),
+		ok(CapTunnelRead, acme),
+		ok(CapTunnelWrite, acme),
 	}, got.Checks)
 	require.True(t, got.Usable)
+	require.True(t, got.Deep)
+	require.Empty(t, got.Leftovers)
 	require.Equal(t, t0, got.CheckedAt)
 	require.Equal(t, cfapi.TokenStatus{ID: "token-1", Status: "active"}, got.Token)
 	require.Equal(t, []cfapi.Account{{ID: "acct1", Name: "Acme"}}, got.Accounts)
@@ -218,13 +269,14 @@ func TestShallowRunMakesNoWriteCall(t *testing.T) {
 	got := checker.Run(t.Context(), f, false)
 
 	require.Equal(t, []Check{
-		ok(CapToken, ""),
-		ok(CapAccounts, ""),
-		ok(CapZones, ""),
-		ok(CapDNSRead, "example.com"),
-		ok(CapTunnelRead, "Acme"),
+		ok(CapToken, scope{}),
+		ok(CapAccounts, scope{}),
+		ok(CapZones, scope{}),
+		ok(CapDNSRead, exampleCom),
+		ok(CapTunnelRead, acme),
 	}, got.Checks)
 	require.True(t, got.Usable)
+	require.False(t, got.Deep)
 	require.Equal(t, []string{
 		"VerifyToken",
 		"Accounts",
@@ -264,12 +316,12 @@ func TestDeniedWriteNamesThePermission(t *testing.T) {
 		{
 			name:   "dns write",
 			op:     "dns.write",
-			failed: failed(CapDNSWrite, "example.com", "grant Zone > DNS > Edit on example.com"),
+			failed: failed(CapDNSWrite, exampleCom, "grant Zone > DNS > Edit on example.com"),
 		},
 		{
 			name:   "tunnel write",
 			op:     "tunnel.write",
-			failed: failed(CapTunnelWrite, "Acme", "grant Account > Cloudflare Tunnel > Edit on Acme"),
+			failed: failed(CapTunnelWrite, acme, "grant Account > Cloudflare Tunnel > Edit on Acme"),
 		},
 	}
 	for _, tc := range tests {
@@ -296,9 +348,9 @@ func TestDeniedWriteInOneZoneNamesThatZone(t *testing.T) {
 	got := newChecker().Run(t.Context(), spy, true)
 
 	require.Equal(t, []Check{
-		failed(CapDNSWrite, "example.org", "grant Zone > DNS > Edit on example.org"),
+		failed(CapDNSWrite, exampleOrg, "grant Zone > DNS > Edit on example.org"),
 	}, failures(got))
-	require.True(t, find(t, got, CapDNSWrite, "example.com").OK)
+	require.True(t, find(t, got, CapDNSWrite, exampleCom).OK)
 	require.False(t, got.Usable)
 }
 
@@ -313,14 +365,14 @@ func TestDeniedReadSkipsTheMatchingWriteProbe(t *testing.T) {
 		{
 			name:    "dns read",
 			op:      "dns.read",
-			failed:  failed(CapDNSRead, "example.com", "grant Zone > DNS > Read on example.com"),
+			failed:  failed(CapDNSRead, exampleCom, "grant Zone > DNS > Read on example.com"),
 			missing: CapDNSWrite,
 			writes:  "CreateRecord",
 		},
 		{
 			name:    "tunnel read",
 			op:      "tunnel.read",
-			failed:  failed(CapTunnelRead, "Acme", "grant Account > Cloudflare Tunnel > Read on Acme"),
+			failed:  failed(CapTunnelRead, acme, "grant Account > Cloudflare Tunnel > Read on Acme"),
 			missing: CapTunnelWrite,
 			writes:  "CreateTunnel",
 		},
@@ -350,9 +402,9 @@ func TestDeniedZoneListing(t *testing.T) {
 	got := newChecker().Run(t.Context(), f, true)
 
 	require.Equal(t, []Check{
-		ok(CapToken, ""),
-		ok(CapAccounts, ""),
-		failed(CapZones, "", "grant Zone > Zone > Read on the zones to manage"),
+		ok(CapToken, scope{}),
+		ok(CapAccounts, scope{}),
+		failed(CapZones, scope{}, "grant Zone > Zone > Read on the zones to manage"),
 	}, got.Checks)
 	require.Empty(t, got.Zones)
 	require.False(t, got.Usable)
@@ -366,13 +418,13 @@ func TestDeniedAccountListing(t *testing.T) {
 	got := newChecker().Run(t.Context(), f, true)
 
 	require.Equal(t, []Check{
-		ok(CapToken, ""),
-		failed(CapAccounts, "", "grant Account > Cloudflare Tunnel > Read on the account"),
-		ok(CapZones, ""),
-		ok(CapDNSRead, "example.com"),
-		ok(CapDNSWrite, "example.com"),
-		ok(CapTunnelRead, "acct1"),
-		ok(CapTunnelWrite, "acct1"),
+		ok(CapToken, scope{}),
+		failed(CapAccounts, scope{}, "grant Account > Cloudflare Tunnel > Read on the account"),
+		ok(CapZones, scope{}),
+		ok(CapDNSRead, exampleCom),
+		ok(CapDNSWrite, exampleCom),
+		ok(CapTunnelRead, scope{"acct1", "acct1"}),
+		ok(CapTunnelWrite, scope{"acct1", "acct1"}),
 	}, got.Checks)
 	require.Empty(t, got.Accounts)
 	require.False(t, got.Usable)
@@ -385,9 +437,9 @@ func TestNoZonesIsNotUsable(t *testing.T) {
 	got := newChecker().Run(t.Context(), f, true)
 
 	require.Equal(t, []Check{
-		ok(CapToken, ""),
-		ok(CapAccounts, ""),
-		failed(CapZones, "", "token sees no zones; grant Zone > Zone > Read on the zones to manage"),
+		ok(CapToken, scope{}),
+		ok(CapAccounts, scope{}),
+		failed(CapZones, scope{}, "token sees no zones; grant Zone > Zone > Read on the zones to manage"),
 	}, got.Checks)
 	require.Equal(t, []cfapi.Account{{ID: "acct1", Name: "Acme"}}, got.Accounts)
 	require.False(t, got.Usable)
@@ -399,8 +451,8 @@ func TestNoAccountsIsReported(t *testing.T) {
 
 	got := newChecker().Run(t.Context(), f, true)
 
-	require.Equal(t, failed(CapAccounts, "", "token sees no accounts; grant Account > Cloudflare Tunnel > Read on the account"),
-		find(t, got, CapAccounts, ""))
+	require.Equal(t, failed(CapAccounts, scope{}, "token sees no accounts; grant Account > Cloudflare Tunnel > Read on the account"),
+		find(t, got, CapAccounts, scope{}))
 	require.False(t, got.Usable)
 }
 
@@ -413,14 +465,14 @@ func TestPendingZoneFailsAloneAndLeavesTheTokenUsable(t *testing.T) {
 	got := newChecker().Run(t.Context(), spy, true)
 
 	require.Equal(t, []Check{
-		ok(CapToken, ""),
-		ok(CapAccounts, ""),
-		ok(CapZones, ""),
-		failed(CapZones, "example.org", "zone is pending at Cloudflare"),
-		ok(CapDNSRead, "example.com"),
-		ok(CapDNSWrite, "example.com"),
-		ok(CapTunnelRead, "Acme"),
-		ok(CapTunnelWrite, "Acme"),
+		ok(CapToken, scope{}),
+		ok(CapAccounts, scope{}),
+		ok(CapZones, scope{}),
+		failed(CapZones, exampleOrg, "zone is pending at Cloudflare"),
+		ok(CapDNSRead, exampleCom),
+		ok(CapDNSWrite, exampleCom),
+		ok(CapTunnelRead, acme),
+		ok(CapTunnelWrite, acme),
 	}, got.Checks)
 	require.True(t, got.Usable)
 	require.Equal(t, []cfapi.Zone{
@@ -441,10 +493,10 @@ func TestOnlyPendingZonesIsNotUsable(t *testing.T) {
 	got := newChecker().Run(t.Context(), spy, true)
 
 	require.Equal(t, []Check{
-		ok(CapToken, ""),
-		ok(CapAccounts, ""),
-		ok(CapZones, ""),
-		failed(CapZones, "example.com", "zone is pending at Cloudflare"),
+		ok(CapToken, scope{}),
+		ok(CapAccounts, scope{}),
+		ok(CapZones, scope{}),
+		failed(CapZones, exampleCom, "zone is pending at Cloudflare"),
 	}, got.Checks)
 	require.False(t, got.Usable)
 	require.Equal(t, []string{"VerifyToken", "Accounts", "Zones"}, f.Calls())
@@ -500,7 +552,7 @@ func TestTokenThatIsNotActive(t *testing.T) {
 
 			got := newChecker().Run(t.Context(), f, true)
 
-			require.Equal(t, []Check{failed(CapToken, "", tc.detail)}, got.Checks)
+			require.Equal(t, []Check{failed(CapToken, scope{}, tc.detail)}, got.Checks)
 			require.Equal(t, tc.token, got.Token)
 			require.False(t, got.Usable)
 			require.Equal(t, t0, got.CheckedAt)
@@ -562,12 +614,12 @@ func TestErrorsThatAreNotAuthorisationCarryNoHint(t *testing.T) {
 		op    string
 		check func(*testing.T, Report) Check
 	}{
-		{"accounts", "accounts", func(t *testing.T, r Report) Check { return find(t, r, CapAccounts, "") }},
-		{"zones", "zones", func(t *testing.T, r Report) Check { return find(t, r, CapZones, "") }},
-		{"dns read", "dns.read", func(t *testing.T, r Report) Check { return find(t, r, CapDNSRead, "example.com") }},
-		{"dns write", "dns.write", func(t *testing.T, r Report) Check { return find(t, r, CapDNSWrite, "example.com") }},
-		{"tunnel read", "tunnel.read", func(t *testing.T, r Report) Check { return find(t, r, CapTunnelRead, "Acme") }},
-		{"tunnel write", "tunnel.write", func(t *testing.T, r Report) Check { return find(t, r, CapTunnelWrite, "Acme") }},
+		{"accounts", "accounts", func(t *testing.T, r Report) Check { return find(t, r, CapAccounts, scope{}) }},
+		{"zones", "zones", func(t *testing.T, r Report) Check { return find(t, r, CapZones, scope{}) }},
+		{"dns read", "dns.read", func(t *testing.T, r Report) Check { return find(t, r, CapDNSRead, exampleCom) }},
+		{"dns write", "dns.write", func(t *testing.T, r Report) Check { return find(t, r, CapDNSWrite, exampleCom) }},
+		{"tunnel read", "tunnel.read", func(t *testing.T, r Report) Check { return find(t, r, CapTunnelRead, acme) }},
+		{"tunnel write", "tunnel.write", func(t *testing.T, r Report) Check { return find(t, r, CapTunnelWrite, acme) }},
 	}
 	errs := []error{
 		errors.New("connection reset by peer"),
@@ -595,18 +647,27 @@ func TestErrorsThatAreNotAuthorisationCarryNoHint(t *testing.T) {
 
 func TestFailedDeleteReportsTheLeftoverProbe(t *testing.T) {
 	tests := []struct {
-		name      string
-		deleteErr error
-		cause     string
+		name                       string
+		deleteErr                  error
+		recordDetail, tunnelDetail string
 	}{
 		{
-			name:      "refused",
-			deleteErr: &cfapi.Error{Status: 403, Message: "denied"},
+			name:         "refused",
+			deleteErr:    &cfapi.Error{Status: 403, Message: "denied"},
+			recordDetail: "probe record left behind: " + probeRecord + "; grant Zone > DNS > Edit on example.com",
+			tunnelDetail: "probe tunnel left behind: " + probeTunnel + "; grant Account > Cloudflare Tunnel > Edit on Acme",
 		},
 		{
-			name:      "unreachable",
-			deleteErr: errors.New("connection reset"),
-			cause:     " (connection reset)",
+			name:         "unreachable",
+			deleteErr:    errors.New("connection reset"),
+			recordDetail: "probe record left behind: " + probeRecord + " (connection reset)",
+			tunnelDetail: "probe tunnel left behind: " + probeTunnel + " (connection reset)",
+		},
+		{
+			name:         "server error",
+			deleteErr:    &cfapi.Error{Status: 500, Message: "internal error"},
+			recordDetail: "probe record left behind: " + probeRecord + " (" + (&cfapi.Error{Status: 500, Message: "internal error"}).Error() + ")",
+			tunnelDetail: "probe tunnel left behind: " + probeTunnel + " (" + (&cfapi.Error{Status: 500, Message: "internal error"}).Error() + ")",
 		},
 	}
 	for _, tc := range tests {
@@ -616,14 +677,8 @@ func TestFailedDeleteReportsTheLeftoverProbe(t *testing.T) {
 
 			got := newChecker().Run(t.Context(), spy, true)
 
-			require.Equal(t,
-				failed(CapDNSWrite, "example.com",
-					"probe record left behind: "+probeRecord+tc.cause+"; grant Zone > DNS > Edit on example.com"),
-				find(t, got, CapDNSWrite, "example.com"))
-			require.Equal(t,
-				failed(CapTunnelWrite, "Acme",
-					"probe tunnel left behind: "+probeTunnel+tc.cause+"; grant Account > Cloudflare Tunnel > Edit on Acme"),
-				find(t, got, CapTunnelWrite, "Acme"))
+			require.Equal(t, failed(CapDNSWrite, exampleCom, tc.recordDetail), find(t, got, CapDNSWrite, exampleCom))
+			require.Equal(t, failed(CapTunnelWrite, acme, tc.tunnelDetail), find(t, got, CapTunnelWrite, acme))
 			require.False(t, got.Usable)
 
 			records := f.RecordsIn("zone1")
@@ -650,6 +705,7 @@ func TestOnlyObjectsItCreatedAreTouched(t *testing.T) {
 	got := newChecker().Run(t.Context(), f, true)
 
 	require.True(t, got.Usable)
+	require.Equal(t, []string{"_pco-probe-old.example.com"}, got.Leftovers)
 	require.Equal(t, records, f.RecordsIn("zone1"))
 	require.Equal(t, tunnels, f.TunnelsIn("acct1"))
 	require.Len(t, callsTo(f, "DeleteRecord"), 1)
@@ -664,7 +720,7 @@ func TestProbeNameTakenByAnotherObjectFailsWithoutDeleting(t *testing.T) {
 
 	got := newChecker().Run(t.Context(), f, true)
 
-	for _, check := range []Check{find(t, got, CapDNSWrite, "example.com"), find(t, got, CapTunnelWrite, "Acme")} {
+	for _, check := range []Check{find(t, got, CapDNSWrite, exampleCom), find(t, got, CapTunnelWrite, acme)} {
 		require.False(t, check.OK, "%v", check)
 		require.NotContains(t, check.Detail, "grant")
 		require.NotContains(t, check.Detail, "left behind")
@@ -684,12 +740,12 @@ func TestCancelledRunStillRemovesItsProbes(t *testing.T) {
 		{
 			name:  "record",
 			hook:  func(s *spyAPI, cancel context.CancelFunc) { s.afterCreateRecord = cancel },
-			check: ok(CapDNSWrite, "example.com"),
+			check: ok(CapDNSWrite, exampleCom),
 		},
 		{
 			name:  "tunnel",
 			hook:  func(s *spyAPI, cancel context.CancelFunc) { s.afterCreateTunnel = cancel },
-			check: ok(CapTunnelWrite, "Acme"),
+			check: ok(CapTunnelWrite, acme),
 		},
 	}
 	for _, tc := range tests {
@@ -702,8 +758,9 @@ func TestCancelledRunStillRemovesItsProbes(t *testing.T) {
 
 			got := newChecker().Run(ctx, spy, true)
 
-			require.Equal(t, tc.check, find(t, got, tc.check.Capability, tc.check.Scope))
+			require.Equal(t, tc.check, find(t, got, tc.check.Capability, scope{tc.check.Scope, tc.check.ScopeID}))
 			requireNothingLeft(t, f, []string{"zone1"}, []string{"acct1"})
+			require.False(t, got.Usable)
 		})
 	}
 }
@@ -768,4 +825,45 @@ func TestConcurrentRunsForDifferentCredentials(t *testing.T) {
 		require.Equal(t, i%2 == 0, reports[i].Usable, "report %d: %v", i, reports[i].Checks)
 		requireNothingLeft(t, fakes[i], []string{"zone1"}, []string{"acct1"})
 	}
+}
+
+func TestProbesOfEarlierRunsAreReportedNotDeleted(t *testing.T) {
+	f := cffake.New()
+	f.AddAccount("acct1", "Acme")
+	f.AddZone("zone-a", "a.org", "acct1")
+	f.AddZone("zone-b", "b.org", "acct1")
+	probe := func(name, comment string) cfapi.Record {
+		return cfapi.Record{Type: "TXT", Name: name, Content: "pco permission probe", Comment: comment}
+	}
+	f.SeedRecord("zone-a", probe("_pco-probe-z.a.org", "pco:abc probe"))
+	f.SeedRecord("zone-a", probe("_pco-probe-near.a.org", "pco:abc probe of something else"))
+	f.SeedRecord("zone-a", cfapi.Record{Type: "CNAME", Name: "app.a.org", Content: "x.cfargotunnel.com", Comment: "pco:abc"})
+	f.SeedRecord("zone-b", probe("_pco-probe-a.b.org", "pco:abc probe"))
+	f.SeedRecord("zone-b", probe("_pco-probe-theirs.b.org", "pco:other probe"))
+	before := [][]cfapi.Record{f.RecordsIn("zone-a"), f.RecordsIn("zone-b")}
+
+	for _, deep := range []bool{false, true} {
+		got := newChecker().Run(t.Context(), f, deep)
+
+		require.Equal(t, []string{"_pco-probe-a.b.org", "_pco-probe-z.a.org"}, got.Leftovers, "deep %v", deep)
+		require.True(t, got.Usable)
+		require.Equal(t, before[0], f.RecordsIn("zone-a"))
+		require.Equal(t, before[1], f.RecordsIn("zone-b"))
+	}
+}
+
+func TestAccountsOfOneNameAreToldApartById(t *testing.T) {
+	f := cffake.New()
+	f.AddAccount("acct-2", "Acme")
+	f.AddAccount("acct-1", "Acme")
+	f.AddZone("zone-2", "two.example", "acct-2")
+	f.AddZone("zone-1", "one.example", "acct-1")
+
+	got := newChecker().Run(t.Context(), f, false)
+
+	require.Equal(t, []cfapi.Account{{ID: "acct-1", Name: "Acme"}, {ID: "acct-2", Name: "Acme"}}, got.Accounts)
+	require.Equal(t, []Check{
+		ok(CapTunnelRead, scope{"Acme", "acct-1"}),
+		ok(CapTunnelRead, scope{"Acme", "acct-2"}),
+	}, got.Checks[len(got.Checks)-2:])
 }

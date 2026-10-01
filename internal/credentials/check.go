@@ -51,6 +51,7 @@ func (c Capability) rank() int {
 type Check struct {
 	Capability Capability
 	Scope      string // account or zone name; empty for token-wide checks
+	ScopeID    string // account or zone id; empty for token-wide checks
 	OK         bool
 	Detail     string // on failure: what to grant, e.g. "grant Zone > DNS > Edit on example.com"
 }
@@ -64,14 +65,27 @@ type Report struct {
 	Accounts []cfapi.Account
 	Zones    []cfapi.Zone
 
-	// Checks are sorted by capability, then scope.
+	// Checks are sorted by capability, then by scope name and id.
 	Checks []Check
 
+	// Deep is true when the run was asked to probe write access.
+	Deep bool
+
 	// Usable is true when the token is active, at least one zone is active
-	// and every check that concerns an active zone or its account passed. A
-	// zone that is not active fails its own check and does not make the
-	// token unusable while another zone is active.
+	// and every check that concerns an active zone or its account passed, and
+	// the run was not cut short by its context. A zone that is not active
+	// fails its own check and does not make the token unusable while another
+	// zone is active.
+	//
+	// With Deep false Usable says nothing about write access. A caller that
+	// is about to store a credential for use must run a deep check.
 	Usable bool
+
+	// Leftovers are the names of probe records that were already in the
+	// zones before this run, sorted: records whose comment is exactly the
+	// one a probe carries. They come from an earlier run that could not
+	// remove its probe. The checker leaves them alone.
+	Leftovers []string
 
 	CheckedAt time.Time
 }
@@ -86,10 +100,8 @@ const (
 	permDNSEdit    = "Zone > DNS > Edit"
 )
 
-// cleanupTimeout bounds the removal of a probe object.
-const cleanupTimeout = 30 * time.Second
-
-// Checker probes Cloudflare tokens. It keeps nothing between runs.
+// Checker probes Cloudflare tokens. It keeps nothing between runs and is safe
+// for concurrent use.
 type Checker struct {
 	installID string
 	now       func() time.Time
@@ -98,7 +110,7 @@ type Checker struct {
 
 // NewChecker returns a checker for one install. rand returns lower-case
 // letters and digits that make the names of probe objects unique; it is called
-// once per deep run and must be safe for concurrent use when runs overlap.
+// once per deep run. now and rand must themselves be safe for concurrent use.
 func NewChecker(installID string, now func() time.Time, rand func() string) *Checker {
 	return &Checker{installID: installID, now: now, rand: rand}
 }
@@ -110,17 +122,26 @@ func NewChecker(installID string, now func() time.Time, rand func() string) *Che
 // probe is attempted only where the matching read probe passed. Run deletes
 // only what it created, and a probe it cannot delete is named in the check.
 //
-// Run is safe to call concurrently, for different credentials.
+// A deep run makes roughly three calls per zone and three per account, one
+// after the other, besides the three that open it. It is meant for adding a
+// token or for an explicit action of the admin, and the caller should pass a
+// context with a deadline. A run that ctx cut short is never usable; the
+// caller should check ctx.Err() and discard its report.
 func (c *Checker) Run(ctx context.Context, api cfapi.API, deep bool) Report {
 	r := &run{checker: c, api: api, deep: deep}
+	r.report.Deep = deep
 	r.report.CheckedAt = c.now()
 	if r.verify(ctx) {
 		r.probe(ctx)
 	}
 	slices.SortStableFunc(r.report.Checks, func(a, b Check) int {
-		return cmp.Or(cmp.Compare(a.Capability.rank(), b.Capability.rank()), cmp.Compare(a.Scope, b.Scope))
+		return cmp.Or(
+			cmp.Compare(a.Capability.rank(), b.Capability.rank()),
+			cmp.Compare(a.Scope, b.Scope),
+			cmp.Compare(a.ScopeID, b.ScopeID))
 	})
-	r.report.Usable = !r.blocked && r.active > 0
+	slices.Sort(r.report.Leftovers)
+	r.report.Usable = !r.blocked && r.active > 0 && ctx.Err() == nil
 	return r.report
 }
 
@@ -136,55 +157,57 @@ type run struct {
 	blocked bool // a check failed that makes the token unusable
 }
 
-func (r *run) pass(c Capability, scope string) {
-	r.report.Checks = append(r.report.Checks, Check{Capability: c, Scope: scope, OK: true})
+// scope is what a check is about: a zone or an account, or the token as a
+// whole when empty.
+type scope struct{ name, id string }
+
+func zoneScope(z cfapi.Zone) scope       { return scope{z.Name, z.ID} }
+func accountScope(a cfapi.Account) scope { return scope{a.Name, a.ID} }
+
+func (r *run) pass(c Capability, s scope) {
+	r.report.Checks = append(r.report.Checks, Check{Capability: c, Scope: s.name, ScopeID: s.id, OK: true})
 }
 
 // note adds a failed check that does not by itself make the token unusable.
-func (r *run) note(c Capability, scope, detail string) {
-	r.report.Checks = append(r.report.Checks, Check{Capability: c, Scope: scope, Detail: detail})
+func (r *run) note(c Capability, s scope, detail string) {
+	r.report.Checks = append(r.report.Checks, Check{Capability: c, Scope: s.name, ScopeID: s.id, Detail: detail})
 }
 
-func (r *run) fail(c Capability, scope, detail string) {
+func (r *run) fail(c Capability, s scope, detail string) {
 	r.blocked = true
-	r.note(c, scope, detail)
+	r.note(c, s, detail)
 }
 
-// refused records why a probe call failed: an authorisation error says what to
-// grant, any other error is shown as it is.
-func (r *run) refused(c Capability, scope string, err error, hint string) {
-	if cfapi.IsAuth(err) {
-		r.fail(c, scope, hint)
-		return
+// result records the outcome of a probe call and reports whether it passed. An
+// authorisation error says what to grant, any other error is shown as it is.
+func (r *run) result(c Capability, s scope, err error, hint string) bool {
+	switch {
+	case err == nil:
+		r.pass(c, s)
+		return true
+	case cfapi.IsAuth(err):
+		r.fail(c, s, hint)
+	default:
+		r.fail(c, s, err.Error())
 	}
-	r.fail(c, scope, err.Error())
+	return false
 }
 
-// result records the outcome of a probe call and reports whether it passed.
-func (r *run) result(c Capability, scope string, err error, hint string) bool {
-	if err != nil {
-		r.refused(c, scope, err, hint)
-		return false
-	}
-	r.pass(c, scope)
-	return true
-}
-
-func grant(permission, scope string) string { return "grant " + permission + " on " + scope }
+func grant(permission, where string) string { return "grant " + permission + " on " + where }
 
 // verify checks the token itself and reports whether the probes can go on.
 func (r *run) verify(ctx context.Context) bool {
 	status, err := r.api.VerifyToken(ctx)
 	if err != nil {
-		r.fail(CapToken, "", err.Error())
+		r.fail(CapToken, scope{}, err.Error())
 		return false
 	}
 	r.report.Token = status
 	if status.Status != "active" {
-		r.fail(CapToken, "", inactiveDetail(status))
+		r.fail(CapToken, scope{}, inactiveDetail(status))
 		return false
 	}
-	r.pass(CapToken, "")
+	r.pass(CapToken, scope{})
 	return true
 }
 
@@ -203,7 +226,7 @@ func (r *run) probe(ctx context.Context) {
 	var active []cfapi.Zone
 	for _, z := range r.listZones(ctx) {
 		if z.Status != "active" {
-			r.note(CapZones, z.Name, "zone is "+z.Status+" at Cloudflare")
+			r.note(CapZones, zoneScope(z), "zone is "+z.Status+" at Cloudflare")
 			continue
 		}
 		active = append(active, z)
@@ -221,16 +244,14 @@ func (r *run) listAccounts(ctx context.Context) {
 	hint := grant(permTunnelRead, "the account")
 	accounts, err := r.api.Accounts(ctx)
 	if err == nil && len(accounts) == 0 {
-		r.fail(CapAccounts, "", "token sees no accounts; "+hint)
+		r.fail(CapAccounts, scope{}, "token sees no accounts; "+hint)
 		return
 	}
-	if !r.result(CapAccounts, "", err, hint) {
+	if !r.result(CapAccounts, scope{}, err, hint) {
 		return
 	}
 	accounts = slices.Clone(accounts)
-	slices.SortFunc(accounts, func(a, b cfapi.Account) int {
-		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
-	})
+	slices.SortFunc(accounts, compareAccounts)
 	r.report.Accounts = accounts
 }
 
@@ -239,10 +260,10 @@ func (r *run) listZones(ctx context.Context) []cfapi.Zone {
 	hint := grant(permZoneRead, "the zones to manage")
 	zones, err := r.api.Zones(ctx)
 	if err == nil && len(zones) == 0 {
-		r.fail(CapZones, "", "token sees no zones; "+hint)
+		r.fail(CapZones, scope{}, "token sees no zones; "+hint)
 		return nil
 	}
-	if !r.result(CapZones, "", err, hint) {
+	if !r.result(CapZones, scope{}, err, hint) {
 		return nil
 	}
 	zones = slices.Clone(zones)
@@ -251,6 +272,10 @@ func (r *run) listZones(ctx context.Context) []cfapi.Zone {
 	})
 	r.report.Zones = zones
 	return zones
+}
+
+func compareAccounts(a, b cfapi.Account) int {
+	return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
 }
 
 // probedAccounts returns the accounts that own an active zone. The zone names
@@ -267,79 +292,29 @@ func (r *run) probedAccounts(active []cfapi.Zone) []cfapi.Account {
 		}
 		out = append(out, a)
 	}
-	slices.SortFunc(out, func(a, b cfapi.Account) int {
-		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
-	})
+	slices.SortFunc(out, compareAccounts)
 	return out
 }
 
 func (r *run) probeZone(ctx context.Context, z cfapi.Zone) {
 	filter := cfapi.RecordFilter{CommentPrefix: planner.DNSMarker(r.checker.installID)}
-	_, err := r.api.Records(ctx, z.ID, filter)
-	if r.result(CapDNSRead, z.Name, err, grant(permDNSRead, z.Name)) && r.deep {
+	owned, err := r.api.Records(ctx, z.ID, filter)
+	if !r.result(CapDNSRead, zoneScope(z), err, grant(permDNSRead, z.Name)) {
+		return
+	}
+	for _, rec := range owned {
+		if rec.Comment == r.probeComment() {
+			r.report.Leftovers = append(r.report.Leftovers, rec.Name)
+		}
+	}
+	if r.deep {
 		r.probeDNSWrite(ctx, z)
 	}
 }
 
-func (r *run) probeDNSWrite(ctx context.Context, z cfapi.Zone) {
-	hint := grant(permDNSEdit, z.Name)
-	name := "_pco-probe-" + r.suffix + "." + z.Name
-	created, err := r.api.CreateRecord(ctx, z.ID, cfapi.Record{
-		Type:    "TXT",
-		Name:    name,
-		Content: "pco permission probe",
-		Comment: planner.DNSMarker(r.checker.installID) + " probe",
-	})
-	if err != nil {
-		r.refused(CapDNSWrite, z.Name, err, hint)
-		return
-	}
-	cleanup, cancel := cleanupContext(ctx)
-	defer cancel()
-	if err := r.api.DeleteRecord(cleanup, z.ID, created.ID); err != nil {
-		r.fail(CapDNSWrite, z.Name, leftBehind("record", name, err, hint))
-		return
-	}
-	r.pass(CapDNSWrite, z.Name)
-}
-
 func (r *run) probeAccount(ctx context.Context, a cfapi.Account) {
 	_, _, err := r.api.FindTunnel(ctx, a.ID, planner.TunnelName(r.checker.installID))
-	if r.result(CapTunnelRead, a.Name, err, grant(permTunnelRead, a.Name)) && r.deep {
+	if r.result(CapTunnelRead, accountScope(a), err, grant(permTunnelRead, a.Name)) && r.deep {
 		r.probeTunnelWrite(ctx, a)
 	}
-}
-
-func (r *run) probeTunnelWrite(ctx context.Context, a cfapi.Account) {
-	hint := grant(permTunnelEdit, a.Name)
-	name := planner.TunnelName(r.checker.installID) + "-probe-" + r.suffix
-	created, err := r.api.CreateTunnel(ctx, a.ID, name)
-	if err != nil {
-		r.refused(CapTunnelWrite, a.Name, err, hint)
-		return
-	}
-	cleanup, cancel := cleanupContext(ctx)
-	defer cancel()
-	if err := r.api.DeleteTunnel(cleanup, a.ID, created.ID); err != nil {
-		r.fail(CapTunnelWrite, a.Name, leftBehind("tunnel", name, err, hint))
-		return
-	}
-	r.pass(CapTunnelWrite, a.Name)
-}
-
-// cleanupContext returns the context a probe object is deleted with. A run
-// that was cancelled after it created the object must still remove it.
-func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-}
-
-// leftBehind is the detail of a probe that was created and could not be
-// deleted. The admin has to remove it, and the hint says which permission
-// covers deleting.
-func leftBehind(kind, name string, err error, hint string) string {
-	detail := "probe " + kind + " left behind: " + name
-	if !cfapi.IsAuth(err) {
-		detail += " (" + err.Error() + ")"
-	}
-	return detail + "; " + hint
 }
