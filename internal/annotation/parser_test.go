@@ -2,7 +2,9 @@ package annotation
 
 import (
 	"cmp"
+	"fmt"
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,11 +40,13 @@ func block(lines ...string) string {
 func withoutPositions(in []Entry) []Entry {
 	var out []Entry
 	for _, en := range in {
-		en.Line, en.Col = 0, 0
+		en.Line, en.Col, en.Positions = 0, 0, nil
 		out = append(out, en)
 	}
 	return out
 }
+
+func at(line, col int) []Position { return []Position{{Line: line, Col: col}} }
 
 func messages(errs []Error) []string {
 	var out []string
@@ -273,6 +277,76 @@ func TestParse(t *testing.T) {
 			input: "cf-tunnel: a.example.com -> :80\n  # via=net1",
 			found: true,
 			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "shorthand indented with spaces and an option under a tab",
+			input: "  cf-tunnel: a.example.com -> :80\n\tvia=net1",
+			found: true,
+			errs:  []string{msgShorthandContinue},
+		},
+		{
+			name:  "shorthand indented with a tab and an option under spaces",
+			input: "\tcf-tunnel: a.example.com -> https://:443\n  no-tls-verify",
+			found: true,
+			errs:  []string{msgShorthandContinue},
+		},
+		{
+			name:  "shorthand with prose under inconsistent indentation",
+			input: "\tcf-tunnel: a.example.com -> :80\n  more notes",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name: "shorthand continued by malformed options",
+			input: strings.Join([]string{
+				"cf-tunnel: a.example.com -> https://:443", "  no-tls-verify=yes",
+				"cf-tunnel: b.example.com -> https://:443", "  SNI:x.example.com",
+				"cf-tunnel: c.example.com -> :80", "  host-header x.example.com",
+				"cf-tunnel: d.example.com -> :80", "  Via:net1",
+				"cf-tunnel: e.example.com -> :80", "  vianet1",
+				"cf-tunnel: f.example.com -> :80", "  ->:81",
+			}, "\n"),
+			found: true,
+			errs: []string{
+				msgShorthandContinue, msgShorthandContinue, msgShorthandContinue,
+				msgShorthandContinue, msgShorthandContinue, msgShorthandContinue,
+			},
+		},
+		{
+			name:  "hosts of a shorthand line with a fence are reserved",
+			input: "cf-tunnel: a.example.com -> :80 ```\ncf-tunnel: a.example.com -> :81",
+			found: true,
+			errs:  []string{msgShorthandFence, `hostname "a.example.com" is listed twice`},
+		},
+		{
+			name:  "a host glued to a fence on a shorthand line is reserved",
+			input: "cf-tunnel: a.example.com -> :80 ```b.example.com```\ncf-tunnel: b.example.com -> :81",
+			found: true,
+			errs:  []string{msgShorthandFence, `hostname "b.example.com" is listed twice`},
+		},
+		{
+			name:  "hosts of a shorthand line that continues are reserved",
+			input: "cf-tunnel: a.example.com -> https://:443\n  no-tls-verify\ncf-tunnel: a.example.com -> :80",
+			found: true,
+			errs:  []string{msgShorthandContinue, `hostname "a.example.com" is listed twice`},
+		},
+		{
+			name:  "bare shorthand",
+			input: "notes\ncf-tunnel:\nmore",
+			found: true,
+			errs:  []string{msgEmptyShorthand},
+		},
+		{
+			name:  "shorthand with only a comment",
+			input: "cf-tunnel:   # nothing yet",
+			found: true,
+			errs:  []string{msgEmptyShorthand},
+		},
+		{
+			name:  "bare shorthand at the end without a line break",
+			input: "  CF-Tunnel:  ",
+			found: true,
+			errs:  []string{msgEmptyShorthand},
 		},
 		{
 			name:  "shorthand not at line start of text",
@@ -552,16 +626,35 @@ func TestParse(t *testing.T) {
 			errs:  []string{msgShorthandFence},
 		},
 		{
-			name:  "closing fence in a comment hides the rest of the line",
+			name:  "closing fence in a comment rejects the block and hides the rest of the line",
 			input: "```cf-tunnel\na.example.com -> :80 # see ``` ```cf-tunnel x.example.com -> :82\n```",
 			found: true,
-			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+			errs:  []string{msgHiddenClose},
 		},
 		{
 			name:  "closing fence in a comment on a flattened line",
 			input: "```cf-tunnel a.example.com -> :80 # see ``` ```cf-tunnel x.example.com -> :82",
 			found: true,
-			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+			errs:  []string{msgHiddenClose},
+		},
+		{
+			name:  "closing fence in a comment right after the tag",
+			input: "```cf-tunnel # a.example.com -> :80 ```",
+			found: true,
+			errs:  []string{msgHiddenClose},
+		},
+		{
+			name:  "scanning goes on at the line after a hidden closing fence",
+			input: "```cf-tunnel\na.example.com -> :80 # old ```\n" + block("b.example.com -> :81"),
+			found: true,
+			want:  []Entry{e(hosts("b.example.com"), http(81), model.RouteOptions{})},
+			errs:  []string{msgHiddenClose},
+		},
+		{
+			name:  "hosts of a block with a hidden closing fence are reserved",
+			input: "```cf-tunnel\na.example.com -> :80 # old ```\ncf-tunnel: a.example.com -> :81",
+			found: true,
+			errs:  []string{msgHiddenClose, `hostname "a.example.com" is listed twice`},
 		},
 		{
 			name:  "second block on the line of a closing fence outside a comment",
@@ -602,14 +695,57 @@ func TestParse(t *testing.T) {
 			input: "````text\n```\ncf-tunnel: a.example.com -> :80\n```",
 		},
 		{
-			name:  "route block opened with four backticks",
+			name:  "route block with a nested fence is rejected whole",
 			input: "````cf-tunnel\na.example.com -> :80\n```\nb.example.com -> :81\n````",
 			found: true,
-			want: []Entry{
-				e(hosts("a.example.com"), http(80), model.RouteOptions{}),
-				e(hosts("b.example.com"), http(81), model.RouteOptions{}),
+			errs:  []string{msgNestedFence},
+		},
+		{
+			name:  "route block opened with four backticks and no inner fence",
+			input: "````cf-tunnel\na.example.com -> :80\n````",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "nested fence in a comment rejects the block",
+			input: "````cf-tunnel\na.example.com -> :80 # see ```\n````",
+			found: true,
+			errs:  []string{msgNestedFence},
+		},
+		{
+			name:  "nested fence in an unterminated block",
+			input: "````cf-tunnel\na.example.com -> :80\n```",
+			found: true,
+			errs:  []string{msgNestedFence},
+		},
+		{
+			name:  "nested fence on a flattened line",
+			input: "`````cf-tunnel a.example.com -> :80 ```` b.example.com -> :81 `````",
+			found: true,
+			errs:  []string{msgNestedFence},
+		},
+		{
+			name:  "short backtick runs inside a block are not fences",
+			input: block("a.example.com -> :80 host-header=``"),
+			found: true,
+			errs:  []string{"invalid value for host-header="},
+		},
+		{
+			name:  "hosts of a block with a nested fence are reserved",
+			input: "````cf-tunnel\na.example.com -> :80\n```b.example.com```\n````\n" + block("a.example.com -> :81", "b.example.com -> :82"),
+			found: true,
+			errs: []string{
+				msgNestedFence,
+				`hostname "a.example.com" is listed twice`,
+				`hostname "b.example.com" is listed twice`,
 			},
-			errs: []string{"invalid hostname \"```\": needs at least two labels"},
+		},
+		{
+			name:  "scanning goes on after a block with a nested fence",
+			input: "````cf-tunnel\na.example.com -> :80\n```\n````\n" + block("b.example.com -> :81"),
+			found: true,
+			want:  []Entry{e(hosts("b.example.com"), http(81), model.RouteOptions{})},
+			errs:  []string{msgNestedFence},
 		},
 		{
 			name:  "longer run closes a block and is used up",
@@ -722,6 +858,76 @@ func TestParse(t *testing.T) {
 			input: block("a.example.com -> b.example.com:80"),
 			found: true,
 			errs:  []string{`invalid target "b.example.com:80": expected [http|https://][ipv4]:port`},
+		},
+		{
+			name:  "a hostname where the target belongs is reserved",
+			input: block("a.example.com -> b.example.com", "b.example.com -> :80", "a.example.com -> :81"),
+			found: true,
+			errs: []string{
+				`invalid target "b.example.com": expected [http|https://][ipv4]:port`,
+				`hostname "b.example.com" is listed twice`,
+				`hostname "a.example.com" is listed twice`,
+			},
+		},
+		{
+			name:  "a hostname as target on a continuation line is reserved",
+			input: block("a.example.com ->", "  b.example.com", "b.example.com -> :80"),
+			found: true,
+			errs: []string{
+				`invalid target "b.example.com": expected [http|https://][ipv4]:port`,
+				`hostname "b.example.com" is listed twice`,
+			},
+		},
+		{
+			name:  "port with a leading zero",
+			input: block("a.example.com -> :080"),
+			found: true,
+			errs:  []string{`invalid target ":080": expected [http|https://][ipv4]:port`},
+		},
+		{
+			name:  "port of zeros",
+			input: block("a.example.com -> :00"),
+			found: true,
+			errs:  []string{`invalid target ":00": expected [http|https://][ipv4]:port`},
+		},
+		{
+			name:  "port with a leading zero after an address",
+			input: block("a.example.com -> https://10.0.0.5:08443"),
+			found: true,
+			errs:  []string{`invalid target "https://10.0.0.5:08443": expected [http|https://][ipv4]:port`},
+		},
+		{
+			name:  "highest port",
+			input: block("a.example.com -> :65535"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(65535), model.RouteOptions{})},
+		},
+		{
+			name:  "port just above the range",
+			input: block("a.example.com -> :65536"),
+			found: true,
+			errs:  []string{`invalid target ":65536": expected [http|https://][ipv4]:port`},
+		},
+		{
+			name:  "port with many digits",
+			input: block("a.example.com -> :" + strings.Repeat("9", 40)),
+			found: true,
+			errs:  []string{`invalid target ":` + strings.Repeat("9", 40) + `": expected [http|https://][ipv4]:port`},
+		},
+		{
+			name:  "private address",
+			input: block("a.example.com -> 192.168.1.5:80", "b.example.com -> 172.16.0.1:81"),
+			found: true,
+			want: []Entry{
+				e(hosts("a.example.com"), tgt(model.SchemeHTTP, "192.168.1.5", 80), model.RouteOptions{}),
+				e(hosts("b.example.com"), tgt(model.SchemeHTTP, "172.16.0.1", 81), model.RouteOptions{}),
+			},
+		},
+		{
+			name:  "non-routable target is checked before the path",
+			input: block("a.example.com -> 127.0.0.1:80/admin"),
+			found: true,
+			errs:  []string{`invalid target "127.0.0.1:80/admin": address is not routable to a guest`},
 		},
 		{
 			name:  "unknown scheme",
@@ -985,16 +1191,92 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestParseRejectsNonRoutableAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+	}{
+		{"loopback", "127.0.0.1"},
+		{"loopback range", "127.8.9.10"},
+		{"link-local", "169.254.169.254"},
+		{"link-local range start", "169.254.0.1"},
+		{"multicast", "224.0.0.1"},
+		{"multicast range end", "239.255.255.250"},
+		{"unspecified", "0.0.0.0"},
+		{"broadcast", "255.255.255.255"},
+	}
+	for _, tt := range tests {
+		t.Run("target "+tt.name, func(t *testing.T) {
+			target := "https://" + tt.addr + ":8006"
+
+			got := Parse(block("a.example.com -> " + target))
+
+			require.Empty(t, got.Entries)
+			require.Equal(t, []string{fmt.Sprintf("invalid target %q: address is not routable to a guest", target)}, messages(got.Errors))
+		})
+		t.Run("via "+tt.name, func(t *testing.T) {
+			got := Parse(block("a.example.com -> :80 via=" + tt.addr))
+
+			require.Empty(t, got.Entries)
+			require.Equal(t, []string{"invalid value for via="}, messages(got.Errors))
+		})
+	}
+
+	t.Run("neighbours of the ranges are accepted", func(t *testing.T) {
+		got := Parse(block(
+			"a.example.com -> 126.255.255.255:80",
+			"b.example.com -> 128.0.0.1:80",
+			"c.example.com -> 169.253.255.255:80",
+			"d.example.com -> 169.255.0.1:80",
+			"e.example.com -> 223.255.255.255:80",
+			"f.example.com -> :80 via=10.0.0.1",
+		))
+
+		require.Empty(t, got.Errors)
+		require.Len(t, got.Entries, 6)
+	})
+}
+
+func TestParseHostPositions(t *testing.T) {
+	got := Parse(block(
+		"a.example.com, b.example.com",
+		"  *.example.com -> :80",
+		"c.example.com -> :81 d.example.com,e.example.com -> :82",
+	))
+
+	require.Empty(t, got.Errors)
+	require.Equal(t, []Entry{
+		{
+			Hosts:     hosts("a.example.com", "b.example.com", "*.example.com"),
+			Positions: []Position{{Line: 2, Col: 1}, {Line: 2, Col: 16}, {Line: 3, Col: 3}},
+			Target:    http(80),
+			Line:      2, Col: 1,
+		},
+		{
+			Hosts:     hosts("c.example.com"),
+			Positions: at(4, 1),
+			Target:    http(81),
+			Line:      4, Col: 1,
+		},
+		{
+			Hosts:     hosts("d.example.com", "e.example.com"),
+			Positions: []Position{{Line: 4, Col: 22}, {Line: 4, Col: 36}},
+			Target:    http(82),
+			Line:      4, Col: 22,
+		},
+	}, got.Entries)
+}
+
 func TestParseCRLFAndTabs(t *testing.T) {
 	lf := "notes\n```cf-tunnel\n\ta.example.com\t-> :80\n\tb.example.com -> https://:443\tno-tls-verify # c\n```\nmore"
 	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
 	want := []Entry{
 		{
-			Hosts: hosts("a.example.com"), Target: http(80),
+			Hosts: hosts("a.example.com"), Positions: at(3, 2), Target: http(80),
 			Line: 3, Col: 2,
 		},
 		{
-			Hosts: hosts("b.example.com"), Target: https(443),
+			Hosts: hosts("b.example.com"), Positions: at(4, 2), Target: https(443),
 			Options: model.RouteOptions{NoTLSVerify: true},
 			Line:    4, Col: 2,
 		},
@@ -1033,9 +1315,9 @@ func TestParseFlattenedDescription(t *testing.T) {
 		require.True(t, got.Found)
 		require.Empty(t, got.Errors)
 		require.Equal(t, []Entry{
-			{Hosts: hosts("a.example.com"), Target: http(80), Line: 1, Col: 14},
+			{Hosts: hosts("a.example.com"), Positions: at(1, 14), Target: http(80), Line: 1, Col: 14},
 			{
-				Hosts: hosts("b.example.com"), Target: https(81),
+				Hosts: hosts("b.example.com"), Positions: at(1, 35), Target: https(81),
 				Options: model.RouteOptions{NoTLSVerify: true},
 				Line:    1, Col: 35,
 			},
@@ -1053,7 +1335,7 @@ func TestParseFlattenedDescription(t *testing.T) {
 func TestParseDuplicateAfterNormalisation(t *testing.T) {
 	input := block("A.example.com -> :80", "a.example.com. -> :81")
 	got := Parse(input)
-	require.Equal(t, []Entry{{Hosts: hosts("a.example.com"), Target: http(80), Line: 2, Col: 1}}, got.Entries)
+	require.Equal(t, []Entry{{Hosts: hosts("a.example.com"), Positions: at(2, 1), Target: http(80), Line: 2, Col: 1}}, got.Entries)
 	require.Equal(t, []Error{{Line: 3, Col: 1, Msg: `hostname "a.example.com" is listed twice`}}, got.Errors)
 }
 
@@ -1135,14 +1417,19 @@ func TestParsePositions(t *testing.T) {
 	t.Run("shorthand", func(t *testing.T) {
 		got := Parse("notes\n  cf-tunnel: app.example.com -> :3000\nmore")
 		require.Equal(t, []Entry{
-			{Hosts: hosts("app.example.com"), Target: http(3000), Line: 2, Col: 14},
+			{Hosts: hosts("app.example.com"), Positions: at(2, 14), Target: http(3000), Line: 2, Col: 14},
 		}, got.Entries)
 	})
 
 	t.Run("entry that spans lines starts at its first host", func(t *testing.T) {
 		got := Parse(block("# note", "  a.example.com", "    b.example.com", "    -> :80"))
 		require.Equal(t, []Entry{
-			{Hosts: hosts("a.example.com", "b.example.com"), Target: http(80), Line: 3, Col: 3},
+			{
+				Hosts:     hosts("a.example.com", "b.example.com"),
+				Positions: []Position{{Line: 3, Col: 3}, {Line: 4, Col: 5}},
+				Target:    http(80),
+				Line:      3, Col: 3,
+			},
 		}, got.Entries)
 	})
 
@@ -1154,7 +1441,7 @@ func TestParsePositions(t *testing.T) {
 		}, got.Errors)
 
 		got = Parse("Účetní ```cf-tunnel a.example.com -> :80 fast ```\nžluťoučký ```cf-tunnel b.example.com -> :81```")
-		require.Equal(t, []Entry{{Hosts: hosts("b.example.com"), Target: http(81), Line: 2, Col: 24}}, got.Entries)
+		require.Equal(t, []Entry{{Hosts: hosts("b.example.com"), Positions: at(2, 24), Target: http(81), Line: 2, Col: 24}}, got.Entries)
 		require.Equal(t, []Error{{Line: 1, Col: 42, Msg: `unknown option "fast"`}}, got.Errors)
 	})
 }
@@ -1315,6 +1602,26 @@ func TestParseRejectionPositions(t *testing.T) {
 			block("  a.example.com -> :80", "\tvia=net1"),
 			[]Error{{3, 2, msgMixedIndent}},
 		},
+		{
+			"nested fence points at the inner fence",
+			"````cf-tunnel\na.example.com -> :80\n  ```\n````",
+			[]Error{{3, 3, msgNestedFence}},
+		},
+		{
+			"hidden closing fence points at the fence",
+			"```cf-tunnel\na.example.com -> :80 # old ```",
+			[]Error{{2, 28, msgHiddenClose}},
+		},
+		{
+			"bare shorthand points at the prefix",
+			"notes\n  cf-tunnel:\nmore",
+			[]Error{{2, 3, msgEmptyShorthand}},
+		},
+		{
+			"shorthand continued under inconsistent indentation",
+			"  cf-tunnel: a.example.com -> :80\n\tvia=net1",
+			[]Error{{2, 2, msgShorthandContinue}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1379,9 +1686,29 @@ func FuzzParse(f *testing.F) {
 		block("  a.example.com -> :80", "\tvia=net1", "    no-tls-verify", "  b.example.com -> :81 via=net32"),
 		"cf-tunnel: a.example.com -> https://:443\n  no-tls-verify\ncf-tunnel: a_b.example.com c.example.com -> :80\n  d.example.com",
 		block("a_b.example.com c.example.com -> :80", "c.example.com -> :81"),
+		"````cf-tunnel\na.example.com -> :80\n```b.example.com```\n````\n" + block("b.example.com -> :81"),
+		"```cf-tunnel\na.example.com -> :80 # old ```\ncf-tunnel: a.example.com -> :81",
+		block("a.example.com -> https://127.0.0.1:8006", "b.example.com -> :080 via=169.254.1.1", "c.example.com -> 0.0.0.0:80"),
+		block("a.example.com -> b.example.com", "b.example.com -> 224.0.0.1:80", "d.example.com -> :80 via=255.255.255.255"),
+		"  cf-tunnel: a.example.com -> https://:443\n\tno-tls-verify=yes\ncf-tunnel:\ncf-tunnel: # x",
 	}
 	for _, s := range seeds {
 		f.Add(s)
+	}
+
+	nonRoutable := []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"),
+		netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("224.0.0.0/4"),
+		netip.MustParsePrefix("0.0.0.0/32"),
+		netip.MustParsePrefix("255.255.255.255/32"),
+	}
+	requireRoutable := func(t *testing.T, addr netip.Addr) {
+		t.Helper()
+		require.True(t, addr.Is4(), "address %s", addr)
+		for _, p := range nonRoutable {
+			require.False(t, p.Contains(addr), "address %s is in %s", addr, p)
+		}
 	}
 
 	f.Fuzz(func(t *testing.T, description string) {
@@ -1389,6 +1716,8 @@ func FuzzParse(f *testing.F) {
 		seen := make(map[string]bool)
 		for _, en := range res.Entries {
 			require.NotEmpty(t, en.Hosts)
+			require.Len(t, en.Positions, len(en.Hosts))
+			require.Equal(t, Position{Line: en.Line, Col: en.Col}, en.Positions[0])
 			require.NotZero(t, en.Target.Port)
 			require.Contains(t, []model.Scheme{model.SchemeHTTP, model.SchemeHTTPS}, en.Target.Scheme)
 			require.GreaterOrEqual(t, en.Line, 1)
@@ -1401,15 +1730,21 @@ func FuzzParse(f *testing.F) {
 				require.False(t, seen[h], "hostname %q in two entries", h)
 				seen[h] = true
 			}
-			require.Contains(t, description, strconv.Itoa(int(en.Target.Port)), "port that was never written")
+			// The port must be written as is, without leading zeros.
+			written := regexp.MustCompile(":" + strconv.Itoa(int(en.Target.Port)) + "($|[^0-9])")
+			require.Regexp(t, written, description, "port that was never written")
+			if en.Target.Addr.IsValid() {
+				requireRoutable(t, en.Target.Addr)
+			}
 			if v := en.Options.Via; strings.HasPrefix(v, "net") {
 				n, err := strconv.Atoi(v[3:])
 				require.NoError(t, err)
 				require.LessOrEqual(t, n, 31)
+				require.Equal(t, strconv.Itoa(n), v[3:])
 			} else if v != "" {
 				addr, err := netip.ParseAddr(v)
 				require.NoError(t, err)
-				require.True(t, addr.Is4(), "via %q", v)
+				requireRoutable(t, addr)
 			}
 			if en.Options.SNI != "" {
 				require.Equal(t, model.SchemeHTTPS, en.Target.Scheme)

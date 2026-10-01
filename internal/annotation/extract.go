@@ -12,8 +12,9 @@ const (
 // span is a byte range of the description that holds route text.
 type span struct {
 	from, to  int
-	shorthand bool // a "cf-tunnel:" line rather than a fenced block
-	fenceAt   int  // shorthand only: offset of a code fence on the line; 0 if none
+	shorthand bool   // a "cf-tunnel:" line rather than a fenced block
+	reject    string // set when the span is rejected whole: the error message
+	rejectAt  int    // the offset the rejection points at
 }
 
 // extract finds the text that carries routes: fenced cf-tunnel blocks and
@@ -30,6 +31,10 @@ type span struct {
 //     a skipped block that ends at the next line that starts with a run at
 //     least as long.
 //   - A block that is never closed runs to the end of the description.
+//   - A cf-tunnel block is rejected whole when its text holds a shorter run of
+//     three or more backticks, which only quoted or nested markup has, or when
+//     its closing fence sits in a comment, where a reader takes it for part of
+//     the comment.
 //   - Shorthand lines count only outside every block, and a shorthand line is
 //     taken as a whole line. One that holds a code fence is rejected, and the
 //     fence does not open a block.
@@ -54,7 +59,7 @@ func extract(src string) []span {
 			if from, ok := shorthandStart(src, first, eol); ok {
 				sp := span{from: from, to: eol, shorthand: true}
 				if i := strings.Index(src[from:eol], fence); i >= 0 {
-					sp.fenceAt = from + i
+					sp.reject, sp.rejectAt = msgShorthandFence, from+i
 				}
 				spans = append(spans, sp)
 				pos = eol + 1
@@ -92,15 +97,25 @@ func readFence(src string, open, n int) (sp span, route bool, next int) {
 	}
 	closeAt, closeEnd := closingFence(src, textStart, n)
 	if closeAt < 0 {
-		return span{from: textStart, to: len(src)}, route, len(src)
+		sp, next = span{from: textStart, to: len(src)}, len(src)
+	} else {
+		sp, next = span{from: textStart, to: closeAt}, closeEnd
 	}
-	next = closeEnd
-	if route && commentIn(src, closingLineStart(src, textStart, closeAt), closeAt) {
+	if !route {
+		return sp, false, next
+	}
+	hidden := closeAt >= 0 && commentIn(src, closingLineStart(src, textStart, closeAt), closeAt)
+	if hidden {
 		// The fence closes the block, but it sits in a comment, so the rest of
 		// the line is not trusted to be anything but more comment.
 		next = lineEnd(src, closeEnd) + 1
 	}
-	return span{from: textStart, to: closeAt}, route, next
+	if inner, _ := openingFence(src, sp.from, sp.to); inner >= 0 {
+		sp.reject, sp.rejectAt = msgNestedFence, inner
+	} else if hidden {
+		sp.reject, sp.rejectAt = msgHiddenClose, closeAt
+	}
+	return sp, true, next
 }
 
 // openingFence returns the start and length of the first run of at least three

@@ -9,8 +9,7 @@ import (
 // byte in the description.
 type token struct {
 	text   string
-	line   int
-	col    int    // in characters
+	at     Position
 	indent string // the blanks the token's line starts with
 }
 
@@ -33,8 +32,8 @@ func lex(src string, sp span, lines lineIndex) []token {
 			for i < sp.to && !isSeparator(src[i]) {
 				i++
 			}
-			line, col := lines.position(start)
-			toks = append(toks, token{text: src[start:i], line: line, col: col, indent: lines.indent(line)})
+			at := lines.position(start)
+			toks = append(toks, token{text: src[start:i], at: at, indent: lines.indent(at.Line)})
 		}
 	}
 	return toks
@@ -80,12 +79,12 @@ func newLineIndex(src string) lineIndex {
 }
 
 // position converts a byte offset to a 1-based line and character column.
-func (x lineIndex) position(offset int) (line, col int) {
+func (x lineIndex) position(offset int) Position {
 	i, found := slices.BinarySearch(x.starts, offset)
 	if !found {
 		i--
 	}
-	return i + 1, x.cols[offset]
+	return Position{Line: i + 1, Col: x.cols[offset]}
 }
 
 // indent returns the leading blanks of a line.
