@@ -1,10 +1,10 @@
 // Package hostname validates and orders the public hostnames that tunnel
 // ingress rules are built from.
 //
-// Apart from Normalize, every function expects host names that already went
-// through Normalize and does not validate them again. Patterns passed to
-// MatchPattern are not hostnames ("*" and "*.com" are valid patterns); they
-// must be lower case without a trailing dot.
+// Apart from Normalize and NormalizePattern, every function expects host names
+// that already went through Normalize and patterns that went through
+// NormalizePattern, and does not validate them again. Patterns are not
+// hostnames: "*" and "*.com" are valid patterns.
 package hostname
 
 import (
@@ -47,6 +47,10 @@ func validate(h string) error {
 	} else if len(labels) < 2 {
 		return errors.New("needs at least two labels")
 	}
+	return validateLabels(labels)
+}
+
+func validateLabels(labels []string) error {
 	for _, l := range labels {
 		if err := validateLabel(l); err != nil {
 			return err
@@ -57,6 +61,34 @@ func validate(h string) error {
 		return fmt.Errorf("last label %q is all digits", last)
 	}
 	return nil
+}
+
+// NormalizePattern lower-cases an allow or deny pattern, strips one trailing
+// dot and validates it. A pattern is "*", a hostname that Normalize accepts,
+// or "*." followed by one or more labels, so unlike a hostname "*.com" is a
+// valid pattern. Nothing else is trimmed or repaired.
+//
+// The error states only what is wrong; the caller names the pattern.
+func NormalizePattern(s string) (string, error) {
+	if s == "*" {
+		return s, nil
+	}
+	p := strings.TrimSuffix(s, ".")
+	if err := validatePattern(p); err != nil {
+		return "", err
+	}
+	return strings.ToLower(p), nil
+}
+
+func validatePattern(p string) error {
+	if p == "*" {
+		return errors.New("a bare * takes no trailing dot")
+	}
+	if rest, ok := strings.CutPrefix(p, wildcard); ok && !strings.Contains(rest, ".") {
+		// A single label below the star, which no hostname may have.
+		return validateLabels([]string{rest})
+	}
+	return validate(p)
 }
 
 func isAllDigits(l string) bool {
@@ -155,6 +187,14 @@ func MatchPattern(pattern, host string) bool {
 		return true
 	}
 	return Covers(pattern, host)
+}
+
+// Denies reports whether a deny rule for pattern blocks host. Matching is not
+// enough for a wildcard host, which would also serve the names below it, so
+// "*.example.com" is denied by "secret.example.com", by
+// "*.internal.example.com" and by "*".
+func Denies(pattern, host string) bool {
+	return MatchPattern(pattern, host) || Covers(host, pattern)
 }
 
 func labelCount(h string) int {

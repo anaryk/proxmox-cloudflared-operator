@@ -187,6 +187,98 @@ func TestDepth(t *testing.T) {
 	require.Equal(t, 2, Depth("a.b.example.com", "example.com"))
 }
 
+func TestNormalizePattern(t *testing.T) {
+	ok := []struct{ name, in, want string }{
+		{"star", "*", "*"},
+		{"hostname", "example.com", "example.com"},
+		{"hostname mixed case with trailing dot", "Secret.Example.COM.", "secret.example.com"},
+		{"wildcard", "*.Example.com", "*.example.com"},
+		{"wildcard with trailing dot", "*.example.com.", "*.example.com"},
+		{"wildcard over a top level domain", "*.com", "*.com"},
+		{"wildcard over a top level domain with trailing dot", "*.COM.", "*.com"},
+		{"deep wildcard", "*.a.b.example.com", "*.a.b.example.com"},
+		{"punycode", "*.xn--bcher-kva.de", "*.xn--bcher-kva.de"},
+	}
+	for _, tt := range ok {
+		t.Run("valid "+tt.name, func(t *testing.T) {
+			got, err := NormalizePattern(tt.in)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+
+	bad := []struct{ name, in string }{
+		{"empty", ""},
+		{"dot only", "."},
+		{"leading space", " example.com"},
+		{"trailing space", "example.com "},
+		{"inner space", "exa mple.com"},
+		{"star with a space", "* "},
+		{"star with a trailing dot", "*."},
+		{"wildcard without a label", "*.."},
+		{"star glued to a label", "*internal.example.com"},
+		{"double star", "**.example.com"},
+		{"star in the middle", "a.*.example.com"},
+		{"star last", "example.*"},
+		{"trailing slash", "example.com/"},
+		{"wildcard with a trailing slash", "*.com/"},
+		{"two trailing dots", "example.com.."},
+		{"single label", "com"},
+		{"numeric top level domain", "*.123"},
+		{"ipv4 literal", "10.0.0.5"},
+		{"wildcard over an ipv4 literal", "*.10.0.0.5"},
+		{"non-ascii", "*.bücher.de"},
+		{"kelvin sign", "*.K.com"},
+		{"leading hyphen", "*.-a.com"},
+		{"64 char label below the star", "*." + strings.Repeat("a", 64)},
+		{"too long", "*." + strings.Repeat("a.", 126) + "com"},
+	}
+	for _, tt := range bad {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			_, err := NormalizePattern(tt.in)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestNormalizePatternErrorIsTheReason(t *testing.T) {
+	_, err := NormalizePattern("example.com/")
+	require.EqualError(t, err, `label "com/" contains '/'`)
+}
+
+func TestDenies(t *testing.T) {
+	tests := []struct {
+		name          string
+		pattern, host string
+		want          bool
+	}{
+		{"exact name", "secret.example.com", "secret.example.com", true},
+		{"star denies a name", "*", "a.example.com", true},
+		{"star denies a wildcard", "*", "*.example.com", true},
+		{"wildcard pattern denies a name below", "*.example.com", "a.b.example.com", true},
+		{"wildcard pattern denies the identical wildcard", "*.example.com", "*.example.com", true},
+		{"wildcard pattern denies a wildcard below", "*.example.com", "*.a.example.com", true},
+		{"wildcard host would serve a denied name", "secret.example.com", "*.example.com", true},
+		{"wildcard host would serve a deeply denied name", "a.secret.example.com", "*.example.com", true},
+		{"wildcard host would serve a denied wildcard", "*.internal.example.com", "*.example.com", true},
+		{"top level domain pattern denies a wildcard", "*.com", "*.example.com", true},
+
+		{"other name", "secret.example.com", "public.example.com", false},
+		{"wildcard host in another zone", "secret.example.com", "*.other.com", false},
+		{"wildcard host does not serve its apex", "example.com", "*.example.com", false},
+		{"wildcard host below the denied name", "secret.example.com", "*.secret.example.com", false},
+		{"sibling wildcards", "*.internal.example.com", "*.public.example.com", false},
+		{"wildcard pattern leaves its apex", "*.example.com", "example.com", false},
+		{"whole labels only", "*.example.com", "badexample.com", false},
+		{"wildcard host over a similar suffix", "secret.badexample.com", "*.example.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, Denies(tt.pattern, tt.host))
+		})
+	}
+}
+
 func TestMatchPattern(t *testing.T) {
 	tests := []struct {
 		name          string
