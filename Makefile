@@ -8,13 +8,17 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Commit=$(COMMIT) \
 	-X $(MODULE)/internal/version.Date=$(DATE)
 
+# Without it gin links a msgpack codec the API never uses, about 6 MB of binary.
+# Keep it in sync with run.build-tags in .golangci.yml and the test job in CI.
+TAGS := nomsgpack
+
 .PHONY: build test lint fmt
 
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
+	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
 
 test:
-	go test -race ./...
+	go test -tags $(TAGS) -race ./...
 
 lint:
 	golangci-lint run

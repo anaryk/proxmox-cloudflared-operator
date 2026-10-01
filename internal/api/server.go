@@ -7,13 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"net"
+	stdlog "log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
-	"syscall"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -26,11 +24,9 @@ const (
 	// A credential check or an apply may take a minute; a read timeout would
 	// cancel the request context of such a call, so there is none.
 	writeTimeout    = 70 * time.Second
+	idleTimeout     = time.Minute
 	shutdownTimeout = 5 * time.Second
-	probeTimeout    = time.Second
-
-	socketMode = 0o660
-	dirMode    = 0o750
+	bodyReadTimeout = 30 * time.Second
 )
 
 // Engine is what the API asks of the engine.
@@ -53,11 +49,17 @@ type Server struct {
 	log         zerolog.Logger
 	handler     http.Handler
 
-	// shutdownTimeout is how long Serve waits for running requests; tests
-	// shorten it.
+	// checkPeers is whether a request is answered only when its peer is one
+	// of allowedUIDs. It starts as what the platform can do; tests set it.
+	checkPeers bool
+	// bodyTimeout is how long a peer has to send the body of a POST.
+	bodyTimeout time.Duration
+	// shutdownTimeout is how long Serve waits for running requests.
 	shutdownTimeout time.Duration
-	// onListening runs once the socket is ready; tests wait on it.
+	// onListening runs once the socket is ready, and onShutdown when a
+	// shutdown begins; tests wait on them.
 	onListening func()
+	onShutdown  func()
 }
 
 // New returns a server. allowedUIDs are the users whose requests are answered
@@ -68,6 +70,8 @@ func New(e Engine, version string, allowedUIDs []uint32, log zerolog.Logger) *Se
 		version:         version,
 		allowedUIDs:     slices.Clone(allowedUIDs),
 		log:             log,
+		checkPeers:      peerChecks,
+		bodyTimeout:     bodyReadTimeout,
 		shutdownTimeout: shutdownTimeout,
 	}
 	s.handler = s.routes()
@@ -80,24 +84,53 @@ func New(e Engine, version string, allowedUIDs []uint32, log zerolog.Logger) *Se
 func (s *Server) Handler() http.Handler { return s.handler }
 
 func (s *Server) httpServer() *http.Server {
-	return &http.Server{
+	srv := &http.Server{
 		Handler:           s.handler,
 		ConnContext:       connContext,
 		ReadHeaderTimeout: readHeaderTimeout,
 		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		ErrorLog:          stdlog.New(httpErrorLog{s.log}, "", 0),
 	}
+	if s.onShutdown != nil {
+		srv.RegisterOnShutdown(s.onShutdown)
+	}
+	return srv
+}
+
+// httpErrorLog carries what net/http would print to the standard logger into
+// the daemon's log.
+type httpErrorLog struct{ log zerolog.Logger }
+
+func (w httpErrorLog) Write(p []byte) (int, error) {
+	w.log.Warn().Str("component", "http").Msg(strings.TrimSpace(string(p)))
+	return len(p), nil
 }
 
 // Serve listens on the unix socket path, fixing owner and mode, until ctx
 // ends. A clean shutdown returns nil.
+//
+// The directory of the socket belongs to the daemon: Serve creates it if it is
+// missing, and sets the mode and the owner of it, as it has them for the
+// socket, in either case.
 func (s *Server) Serve(ctx context.Context, socketPath string, gid int) error {
-	ln, err := s.listen(ctx, socketPath, gid)
+	// The mode and the owner of its directory are set: that must never be the
+	// directory the daemon happens to run in.
+	if !filepath.IsAbs(socketPath) {
+		return fmt.Errorf("the socket path %q must be absolute", socketPath)
+	}
+	sock, err := s.openSocket(ctx, socketPath, gid)
 	if err != nil {
 		return err
 	}
+	defer sock.release()
+
+	if !s.checkPeers {
+		s.log.Warn().Msg("peer credentials are not checked on this platform; every local user may use the API")
+	}
 	srv := s.httpServer()
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ln) }()
+	go func() { done <- srv.Serve(sock.ln) }()
 	if s.onListening != nil {
 		s.onListening()
 	}
@@ -107,7 +140,6 @@ func (s *Server) Serve(ctx context.Context, socketPath string, gid int) error {
 		return fmt.Errorf("serving on %s: %w", socketPath, err)
 	case <-ctx.Done():
 	}
-	// The listener's close removes the socket file.
 	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
@@ -118,94 +150,4 @@ func (s *Server) Serve(ctx context.Context, socketPath string, gid int) error {
 		return fmt.Errorf("serving on %s: %w", socketPath, err)
 	}
 	return nil
-}
-
-// listen makes the socket directory, clears a stale socket and binds the path.
-func (s *Server) listen(ctx context.Context, path string, gid int) (net.Listener, error) {
-	if err := s.makeDir(filepath.Dir(path), gid); err != nil {
-		return nil, err
-	}
-	if err := clearStale(ctx, path); err != nil {
-		return nil, err
-	}
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "unix", path)
-	if err != nil {
-		return nil, fmt.Errorf("listening on %s: %w", path, err)
-	}
-	if err := os.Chmod(path, socketMode); err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("setting the mode of %s: %w", path, err)
-	}
-	s.chown(path, gid)
-	return ln, nil
-}
-
-// makeDir creates the socket directory when it is missing. A directory that is
-// already there is left as it is.
-func (s *Server) makeDir(dir string, gid int) error {
-	if _, err := os.Stat(dir); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return fmt.Errorf("creating %s: %w", dir, err)
-	}
-	// MkdirAll is subject to the umask.
-	if err := os.Chmod(dir, dirMode); err != nil {
-		return fmt.Errorf("setting the mode of %s: %w", dir, err)
-	}
-	// The group of the socket must be able to reach it.
-	s.chown(dir, gid)
-	return nil
-}
-
-// chown hands path to root and gid, as far as the process may: a daemon that
-// does not run as root, as in tests, keeps what it has.
-func (s *Server) chown(path string, gid int) {
-	err := os.Chown(path, 0, gid)
-	if err != nil && !errors.Is(err, fs.ErrPermission) {
-		s.log.Warn().Err(err).Str("path", path).Int("gid", gid).Msg("could not change the owner")
-	}
-}
-
-// clearStale removes a socket file nobody listens on. It refuses to touch
-// anything that is not a socket, and a socket another process answers on.
-func clearStale(ctx context.Context, path string) error {
-	info, err := os.Lstat(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case err != nil:
-		return fmt.Errorf("checking %s: %w", path, err)
-	case info.Mode().Type() != fs.ModeSocket:
-		return fmt.Errorf("%s exists and is not a socket; not removing it", path)
-	}
-	d := net.Dialer{Timeout: probeTimeout}
-	conn, err := d.DialContext(ctx, "unix", path)
-	switch {
-	case err == nil:
-		_ = conn.Close()
-		return fmt.Errorf("another process is already listening on %s", path)
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case !errors.Is(err, syscall.ECONNREFUSED):
-		return fmt.Errorf("checking whether %s is in use: %w", path, err)
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("removing the stale socket %s: %w", path, err)
-	}
-	return nil
-}
-
-type peerKey struct{}
-
-// withPeerUID returns ctx carrying the uid of the process on the other end of
-// the connection.
-func withPeerUID(ctx context.Context, uid uint32) context.Context {
-	return context.WithValue(ctx, peerKey{}, uid)
-}
-
-func peerUID(ctx context.Context) (uint32, bool) {
-	uid, ok := ctx.Value(peerKey{}).(uint32)
-	return uid, ok
 }

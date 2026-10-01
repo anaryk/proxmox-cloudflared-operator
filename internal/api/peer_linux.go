@@ -10,9 +10,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// enforcePeers is true where the kernel tells who is on the other end of a unix
+// peerChecks is true where the kernel tells who is on the other end of a unix
 // socket.
-const enforcePeers = true
+const peerChecks = true
 
 // connContext puts the uid of the peer into the context of a connection. When
 // the credentials cannot be read, nothing is put there, and the peer check

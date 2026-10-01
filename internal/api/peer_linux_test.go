@@ -7,9 +7,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -53,7 +51,9 @@ func TestThePeerOfTheSocketIsChecked(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeEngine{}
 			socket := filepath.Join(shortDir(t), "pco.sock")
-			serve(t, New(f, "1.2.3", tt.allowed, zerolog.Nop()), socket)
+			s := New(f, "1.2.3", tt.allowed, zerolog.Nop())
+			require.True(t, s.checkPeers, "peers are checked on Linux unless a test says otherwise")
+			serve(t, s, socket)
 
 			status, body := rawGet(t, socket, "/v1/version")
 			v, err := apiclient.New(socket).Version(t.Context())
@@ -65,49 +65,11 @@ func TestThePeerOfTheSocketIsChecked(t *testing.T) {
 				return
 			}
 			require.Equal(t, http.StatusForbidden, status)
-			require.JSONEq(t, `{"error":"not allowed"}`, body)
+			require.JSONEq(t, `{"error":"not allowed","code":"forbidden"}`, body)
 			require.EqualError(t, err, "permission denied on "+socket+": run as root")
 			status, _ = rawGet(t, socket, "/v1/state")
 			require.Equal(t, http.StatusForbidden, status)
 			require.Empty(t, f.called())
 		})
 	}
-}
-
-func TestADisallowedPeerGetsNothingElse(t *testing.T) {
-	f := &fakeEngine{}
-	s := New(f, "1.2.3", []uint32{testUID}, zerolog.Nop())
-
-	for _, tt := range []struct{ name, method, target, contentType, body string }{
-		{"known route", http.MethodGet, "/v1/version", "", ""},
-		{"unknown route", http.MethodGet, "/v1/nope", "", ""},
-		{"wrong method", http.MethodPost, "/v1/state", "", ""},
-		{"no content type", http.MethodPost, "/v1/apply", "", `{}`},
-		{"bad body", http.MethodPost, "/v1/apply", "application/json", `nonsense`},
-		{"delete", http.MethodDelete, "/v1/credentials/abc12345", "", ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
-			if tt.contentType != "" {
-				req.Header.Set("Content-Type", tt.contentType)
-			}
-
-			rec := send(s, req.WithContext(withPeerUID(req.Context(), testUID+1)))
-
-			require.Equal(t, http.StatusForbidden, rec.Code)
-			require.Equal(t, "not allowed", errorMessage(t, rec))
-		})
-	}
-	require.Empty(t, f.called())
-}
-
-func TestARequestWithoutPeerCredentialsIsRefused(t *testing.T) {
-	f := &fakeEngine{}
-	s := New(f, "1.2.3", []uint32{0, testUID}, zerolog.Nop())
-
-	rec := send(s, httptest.NewRequest(http.MethodGet, "/v1/version", nil)) // no uid in its context
-
-	require.Equal(t, http.StatusForbidden, rec.Code)
-	require.Equal(t, "not allowed", errorMessage(t, rec))
-	require.Empty(t, f.called())
 }

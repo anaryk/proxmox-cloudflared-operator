@@ -18,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -237,21 +238,29 @@ func TestErrorsComeBackAsGoErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		status   int
+		code     string
 		message  string
 		sentinel error
 	}{
-		{"invalid", 400, "invalid request: the label is empty", engine.ErrInvalid},
-		{"not found", 404, `not found: no credential "abc"`, engine.ErrNotFound},
-		{"refused", 409, "refused: credential abc still manages 2 records", engine.ErrRefused},
-		{"bad body", 400, "the request body is not valid JSON", engine.ErrInvalid},
-		{"unknown route", 404, "no such route", engine.ErrNotFound},
-		{"unsupported media", 415, "the content type must be application/json", nil},
-		{"too large", 413, "the request body is too large", nil},
-		{"server error", 500, "reading the settings: disk gone", nil},
-		{"unavailable", 503, "the operation timed out", nil},
+		{"invalid", 400, "invalid", "invalid request: the label is empty", engine.ErrInvalid},
+		{"not found", 404, "not_found", `not found: no credential "abc"`, engine.ErrNotFound},
+		{"refused", 409, "refused", "refused: credential abc still manages 2 records", engine.ErrRefused},
+		{"bad body", 400, "invalid", "the request body is not valid JSON", engine.ErrInvalid},
+		{"unsupported media", 415, "unsupported_media_type", "the content type must be application/json", nil},
+		{"too large", 413, "too_large", "the request body is too large", nil},
+		{"server error", 500, "internal", "reading the settings: disk gone", nil},
+		{"unavailable", 503, "unavailable", "the operation timed out", nil},
+		{"the code decides, not the status", 400, "refused", "refused: a guard said no", engine.ErrRefused},
+		{"the code decides, even on a server error", 500, "not_found", "not found: no credential", engine.ErrNotFound},
+		{"no code, no sentinel", 400, "", "something is wrong", nil},
+		{"no code on a conflict", 409, "", "something is wrong", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			body, err := json.Marshal(map[string]string{"error": tt.message})
+			answer := map[string]string{"error": tt.message}
+			if tt.code != "" {
+				answer["code"] = tt.code
+			}
+			body, err := json.Marshal(answer)
 			require.NoError(t, err)
 			_, socket := fakeDaemon(t, reply(tt.status, string(body)))
 
@@ -269,6 +278,29 @@ func TestErrorsComeBackAsGoErrors(t *testing.T) {
 	}
 }
 
+func TestAnUnknownRequestIsAVersionMismatch(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"unknown route", 404, `{"error":"no such route","code":"no_route"}`},
+		{"unknown method", 405, `{"error":"method not allowed","code":"method_not_allowed"}`},
+		{"a daemon that sends no codes", 404, `{"error":"no such route"}`},
+		{"not json at all", 404, "404 page not found"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, socket := fakeDaemon(t, reply(tt.status, tt.body))
+
+			for _, r := range everyCall(t, New(socket)) {
+				require.EqualError(t, r.err, "the pco daemon at "+socket+" does not know this request: is it a different version than this pco?", r.name)
+				require.NotErrorIs(t, r.err, engine.ErrNotFound, r.name)
+				require.NotErrorIs(t, r.err, engine.ErrInvalid, r.name)
+			}
+		})
+	}
+}
+
 func TestAnAnswerWithoutAnErrorBody(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -279,7 +311,7 @@ func TestAnAnswerWithoutAnErrorBody(t *testing.T) {
 		{"plain text", 502, "bad gateway\n", "the pco daemon answered 502 Bad Gateway"},
 		{"empty", 500, "", "the pco daemon answered 500 Internal Server Error"},
 		{"json without error", 500, `{"oops":true}`, "the pco daemon answered 500 Internal Server Error"},
-		{"html", 404, "<html>nope</html>", "the pco daemon answered 404 Not Found"},
+		{"an error without a message", 400, `{"code":"invalid"}`, "the pco daemon answered 400 Bad Request"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, socket := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -295,12 +327,61 @@ func TestAnAnswerWithoutAnErrorBody(t *testing.T) {
 }
 
 func TestAForbiddenAnswerSaysToRunAsRoot(t *testing.T) {
-	_, socket := fakeDaemon(t, reply(403, `{"error":"not allowed"}`))
+	for _, body := range []string{`{"error":"not allowed","code":"forbidden"}`, `{"error":"not allowed"}`, ``} {
+		_, socket := fakeDaemon(t, reply(403, body))
 
-	err := New(socket).Apply(t.Context(), false)
+		err := New(socket).Apply(t.Context(), false)
 
-	require.EqualError(t, err, "permission denied on "+socket+": run as root")
-	require.ErrorIs(t, err, fs.ErrPermission)
+		require.EqualError(t, err, "permission denied on "+socket+": run as root")
+		require.ErrorIs(t, err, fs.ErrPermission)
+	}
+}
+
+func TestARefusedTokenComesBackWithItsReport(t *testing.T) {
+	view := engine.CredentialView{
+		Label: "main", Kind: "scoped",
+		Report: credentials.Report{Checks: []credentials.Check{
+			{Capability: credentials.CapDNSWrite, Scope: "example.com", Detail: "grant Zone > DNS > Edit on example.com"},
+		}},
+	}
+	const message = "invalid request: the token cannot be used: dns.write on example.com: grant Zone > DNS > Edit on example.com"
+	body, err := json.Marshal(map[string]any{"error": message, "code": "invalid", "credential": view})
+	require.NoError(t, err)
+	_, socket := fakeDaemon(t, reply(400, string(body)))
+
+	got, err := New(socket).AddCredential(t.Context(), "main", testToken)
+
+	require.EqualError(t, err, message)
+	require.ErrorIs(t, err, engine.ErrInvalid)
+	require.Equal(t, view, got)
+}
+
+func TestAFailureWithoutAReportReturnsAZeroView(t *testing.T) {
+	_, socket := fakeDaemon(t, reply(400, `{"error":"invalid request: the label is empty","code":"invalid"}`))
+
+	got, err := New(socket).AddCredential(t.Context(), "", testToken)
+
+	require.ErrorIs(t, err, engine.ErrInvalid)
+	require.Equal(t, engine.CredentialView{}, got)
+}
+
+func TestRedirectsAreNotFollowed(t *testing.T) {
+	d, socket := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/v1/elsewhere", http.StatusFound)
+	})
+	c := New(socket)
+
+	_, err := c.Version(t.Context())
+	require.EqualError(t, err, "the pco daemon answered 302 Found")
+	err = c.Apply(t.Context(), true)
+	require.EqualError(t, err, "the pco daemon answered 302 Found")
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	require.Len(t, d.reqs, 2, "each call is sent once and its redirect is not followed")
+	for _, r := range d.reqs {
+		require.NotEqual(t, "/v1/elsewhere", r.Path)
+	}
 }
 
 func TestSuccessWithAnUnreadableBody(t *testing.T) {
@@ -380,10 +461,6 @@ func TestTimeouts(t *testing.T) {
 	require.InDelta(t, 10, rec.last().Seconds(), 1, "events")
 	_ = c.Sync(t.Context())
 	require.InDelta(t, 10, rec.last().Seconds(), 1, "sync")
-	_ = c.Adopt(t.Context(), "a.example.com")
-	require.InDelta(t, 10, rec.last().Seconds(), 1, "adopt")
-	_ = c.RemoveCredential(t.Context(), "a")
-	require.InDelta(t, 10, rec.last().Seconds(), 1, "remove")
 
 	_ = c.Apply(t.Context(), false)
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "apply")
@@ -391,6 +468,10 @@ func TestTimeouts(t *testing.T) {
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "check")
 	_, _ = c.AddCredential(t.Context(), "l", "t")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "add")
+	_ = c.Adopt(t.Context(), "a.example.com")
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "adopt")
+	_ = c.RemoveCredential(t.Context(), "a")
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "remove")
 }
 
 // deadlines records how long each request has to finish.

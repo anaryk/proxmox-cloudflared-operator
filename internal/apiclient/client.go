@@ -21,7 +21,9 @@ import (
 
 const (
 	baseURL = "http://pco"
-	// A deep credential check and an apply may take a minute at Cloudflare.
+	// Whatever changes something may wait for the cycle that is running, and a
+	// credential check or an apply may take a minute at Cloudflare. Only what
+	// reads takes the short time.
 	shortTimeout = 10 * time.Second
 	longTimeout  = 60 * time.Second
 	maxResponse  = 32 << 20
@@ -38,15 +40,20 @@ type Client struct {
 // New returns a client for the daemon that listens on socketPath.
 func New(socketPath string) *Client {
 	var d net.Dialer
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return d.DialContext(ctx, "unix", socketPath)
+		},
+		// One call per process, so there is nothing to keep alive.
+		DisableKeepAlives: true,
+	}
 	return &Client{
 		socket: socketPath,
-		http: &http.Client{Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return d.DialContext(ctx, "unix", socketPath)
-			},
-			// One call per process, so there is nothing to keep alive.
-			DisableKeepAlives: true,
-		}},
+		http: &http.Client{
+			Transport: transport,
+			// The daemon does not redirect. An answer that does is not one of its.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		short: shortTimeout,
 		long:  longTimeout,
 	}
@@ -85,7 +92,7 @@ func (c *Client) Adopt(ctx context.Context, name string) error {
 	body := struct {
 		Name string `json:"name"`
 	}{name}
-	return c.call(ctx, c.short, http.MethodPost, "/v1/adopt", body, nil)
+	return c.call(ctx, c.long, http.MethodPost, "/v1/adopt", body, nil)
 }
 
 // Sync asks for a reconcile cycle now.
@@ -94,7 +101,9 @@ func (c *Client) Sync(ctx context.Context) error {
 }
 
 // AddCredential checks a token and stores it as a credential. The token
-// travels in the body of the request only.
+// travels in the body of the request only. When the daemon refuses the token it
+// answers with an error and with the view that says what the token can do, and
+// so does AddCredential.
 func (c *Client) AddCredential(ctx context.Context, label, token string) (engine.CredentialView, error) {
 	body := struct {
 		Label string `json:"label"`
@@ -102,6 +111,10 @@ func (c *Client) AddCredential(ctx context.Context, label, token string) (engine
 	}{label, token}
 	var view engine.CredentialView
 	err := c.call(ctx, c.long, http.MethodPost, "/v1/credentials", body, &view)
+	var de *daemonError
+	if errors.As(err, &de) && de.credential != nil {
+		return *de.credential, err
+	}
 	return view, err
 }
 
@@ -118,7 +131,7 @@ func (c *Client) CheckCredential(ctx context.Context, id string, deep bool) (eng
 
 // RemoveCredential deletes a credential, if nothing is left that it manages.
 func (c *Client) RemoveCredential(ctx context.Context, id string) error {
-	return c.call(ctx, c.short, http.MethodDelete, "/v1/credentials/"+url.PathEscape(id), nil, nil)
+	return c.call(ctx, c.long, http.MethodDelete, "/v1/credentials/"+url.PathEscape(id), nil, nil)
 }
 
 // Version returns the version of the running daemon.
@@ -178,40 +191,50 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, method, path s
 }
 
 // daemonError is an error the daemon answered with. Its text is the message of
-// the daemon, and it unwraps to the sentinel of the engine that the status
-// stands for, if there is one.
+// the daemon, and it unwraps to the sentinel of the engine that the code of the
+// answer stands for, if there is one.
 type daemonError struct {
-	msg   string
-	cause error
+	msg        string
+	cause      error
+	credential *engine.CredentialView // the report of a refused token
 }
 
 func (e *daemonError) Error() string { return e.msg }
 func (e *daemonError) Unwrap() error { return e.cause }
 
+// statusError makes the error of an answer that is not a success. What an
+// answer stands for is told by its code, not by its status: an unknown route
+// is a 404 too, and is not "not found".
 func (c *Client) statusError(status int, body []byte) error {
-	if status == http.StatusForbidden {
-		return &daemonError{msg: "permission denied on " + c.socket + ": run as root", cause: fs.ErrPermission}
-	}
 	var answer struct {
-		Error string `json:"error"`
+		Error      string                 `json:"error"`
+		Code       string                 `json:"code"`
+		Credential *engine.CredentialView `json:"credential"`
 	}
-	msg := ""
-	if json.Unmarshal(body, &answer) == nil {
-		msg = answer.Error
+	if json.Unmarshal(body, &answer) != nil {
+		answer.Error, answer.Code, answer.Credential = "", "", nil
 	}
+	switch {
+	case status == http.StatusForbidden, answer.Code == "forbidden":
+		return &daemonError{msg: "permission denied on " + c.socket + ": run as root", cause: fs.ErrPermission}
+	case answer.Code == "no_route", answer.Code == "method_not_allowed",
+		answer.Code == "" && (status == http.StatusNotFound || status == http.StatusMethodNotAllowed):
+		return &daemonError{msg: "the pco daemon at " + c.socket + " does not know this request: is it a different version than this pco?"}
+	}
+	msg := answer.Error
 	if msg == "" {
 		msg = fmt.Sprintf("the pco daemon answered %d %s", status, http.StatusText(status))
 	}
 	var cause error
-	switch status {
-	case http.StatusBadRequest:
+	switch answer.Code {
+	case "invalid":
 		cause = engine.ErrInvalid
-	case http.StatusNotFound:
+	case "not_found":
 		cause = engine.ErrNotFound
-	case http.StatusConflict:
+	case "refused":
 		cause = engine.ErrRefused
 	}
-	return &daemonError{msg: msg, cause: cause}
+	return &daemonError{msg: msg, cause: cause, credential: answer.Credential}
 }
 
 // transportError explains a request that did not get an answer.

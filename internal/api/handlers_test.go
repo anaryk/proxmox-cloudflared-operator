@@ -1,0 +1,560 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+)
+
+// refusedView is what the engine returns with the error for a token it refused:
+// the view without an id, and the report that says what to grant.
+func refusedView() engine.CredentialView {
+	return engine.CredentialView{
+		Label: "main",
+		Kind:  "scoped",
+		Report: credentials.Report{
+			Token: cfapi.TokenStatus{ID: "token-id", Status: "active"},
+			Checks: []credentials.Check{
+				{Capability: credentials.CapToken, OK: true},
+				{Capability: credentials.CapDNSWrite, Scope: "example.com", ScopeID: "zone1", Detail: "grant Zone > DNS > Edit on example.com"},
+			},
+		},
+	}
+}
+
+func TestVersion(t *testing.T) {
+	rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/version", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"version":"1.2.3"}`, rec.Body.String())
+}
+
+func TestStateIsTheEngineState(t *testing.T) {
+	st := testState()
+	rec := do(newServer(&fakeEngine{state: st}), http.MethodGet, "/v1/state", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	want, err := json.Marshal(st)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), rec.Body.String())
+}
+
+func TestEvents(t *testing.T) {
+	events := []engine.Event{
+		{At: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC), Level: "info", Kind: "route", Subject: "a.example.com", Message: "up"},
+	}
+	since := time.Date(2026, 3, 4, 5, 0, 0, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name      string
+		query     string
+		wantSince time.Time
+	}{
+		{"no since means everything", "", time.Time{}},
+		{"utc", "?since=2026-03-04T05:00:00Z", since},
+		{"fraction", "?since=2026-03-04T05:00:00.5Z", since.Add(500 * time.Millisecond)},
+		{"offset", "?since=2026-03-04T07:00:00%2B02:00", since},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{events: events}
+			rec := do(newServer(f), http.MethodGet, "/v1/events"+tt.query, "")
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			want, err := json.Marshal(events)
+			require.NoError(t, err)
+			require.JSONEq(t, string(want), rec.Body.String())
+			require.True(t, tt.wantSince.Equal(f.lastSince()), "since was %v, want %v", f.lastSince(), tt.wantSince)
+		})
+	}
+
+	t.Run("no events is an empty list", func(t *testing.T) {
+		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/events", "")
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `[]`, rec.Body.String())
+	})
+
+	for _, bad := range []string{"yesterday", "2026-03-04", "1709528400", "", "2026-03-04T05:00:00"} {
+		t.Run("malformed "+bad, func(t *testing.T) {
+			f := &fakeEngine{events: events}
+			rec := do(newServer(f), http.MethodGet, "/v1/events?since="+bad, "")
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "invalid", errorCode(t, rec))
+			require.Contains(t, errorMessage(t, rec), "since")
+			require.Empty(t, f.called())
+		})
+	}
+}
+
+func TestSyncTriggersACycle(t *testing.T) {
+	f := &fakeEngine{}
+	rec := do(newServer(f), http.MethodPost, "/v1/sync", "")
+
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.JSONEq(t, `{}`, rec.Body.String())
+	require.Equal(t, 1, f.triggered())
+}
+
+func TestApply(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		call string
+	}{
+		{"confirming", `{"confirmDeletes":true}`, "apply:true"},
+		{"not confirming", `{"confirmDeletes":false}`, "apply:false"},
+		{"empty object", `{}`, "apply:false"},
+		{"no body", ``, "apply:false"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			rec := do(newServer(f), http.MethodPost, "/v1/apply", tt.body)
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.JSONEq(t, `{}`, rec.Body.String())
+			require.Equal(t, []string{tt.call}, f.called())
+		})
+	}
+}
+
+func TestAdopt(t *testing.T) {
+	f := &fakeEngine{}
+	rec := do(newServer(f), http.MethodPost, "/v1/adopt", `{"name":"www.example.com"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{}`, rec.Body.String())
+	require.Equal(t, []string{"adopt:www.example.com"}, f.called())
+}
+
+func TestCredentialsAreListedFromTheState(t *testing.T) {
+	st := testState()
+	rec := do(newServer(&fakeEngine{state: st}), http.MethodGet, "/v1/credentials", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	want, err := json.Marshal(st.Credentials)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), rec.Body.String())
+
+	t.Run("none is an empty list", func(t *testing.T) {
+		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/credentials", "")
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `[]`, rec.Body.String())
+	})
+}
+
+func TestAddCredentialAnswersWithTheViewOnly(t *testing.T) {
+	view := engine.CredentialView{ID: "abc12345", Label: "main", Kind: "scoped"}
+	f := &fakeEngine{view: view}
+	rec := do(newServer(f), http.MethodPost, "/v1/credentials", `{"label":"main","token":"`+testToken+`"}`)
+
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	want, err := json.Marshal(view)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), rec.Body.String())
+	require.NotContains(t, rec.Body.String(), testToken)
+	require.Equal(t, []string{"add:main:" + testToken}, f.called())
+}
+
+func TestAPaddedTokenIsTrimmedBeforeTheEngineSeesIt(t *testing.T) {
+	f := &fakeEngine{}
+	body, err := json.Marshal(map[string]string{"label": "main", "token": "  " + testToken + "\n"})
+	require.NoError(t, err)
+
+	rec := do(newServer(f), http.MethodPost, "/v1/credentials", string(body))
+
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	require.Equal(t, []string{"add:main:" + testToken}, f.called())
+}
+
+func TestTheTokenIsReadFromTheBodyOnly(t *testing.T) {
+	f := &fakeEngine{}
+	rec := do(newServer(f), http.MethodPost, "/v1/credentials?token="+testToken, `{"label":"main"}`)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Equal(t, "invalid", errorCode(t, rec))
+	require.Empty(t, f.called())
+}
+
+func TestTheShapeOfATokenIsChecked(t *testing.T) {
+	long := strings.Repeat("a", 20)
+	for _, tt := range []struct {
+		name  string
+		token string
+		ok    bool
+	}{
+		{"empty", "", false},
+		{"blank", "   ", false},
+		{"short", "abc", false},
+		{"one letter", "a", false},
+		{"nineteen characters", long[:19], false},
+		{"twenty characters", long, true},
+		{"all allowed characters", "Abc_def-GHI_jkl-0123456789", true},
+		{"surrounding white space", "\t " + long + " \n", true},
+		{"space inside", long + " " + long, false},
+		{"newline inside", long + "\n" + long, false},
+		{"dot", long + ".", false},
+		{"slash", long + "/", false},
+		{"quote", long + `"`, false},
+		{"backslash", long + `\`, false},
+		{"percent", long + "%", false},
+		{"non ascii letter", long + "é", false},
+		{"nul", long + "\x00", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			body, err := json.Marshal(map[string]string{"label": "main", "token": tt.token})
+			require.NoError(t, err)
+
+			rec := do(newServer(f), http.MethodPost, "/v1/credentials", string(body))
+
+			if tt.ok {
+				require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+				require.Equal(t, []string{"add:main:" + strings.TrimSpace(tt.token)}, f.called())
+				return
+			}
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			require.Equal(t, "invalid", errorCode(t, rec))
+			require.Empty(t, f.called())
+			// A short one is part of the fixed message by chance.
+			if trimmed := strings.TrimSpace(tt.token); len(trimmed) >= 8 {
+				require.NotContains(t, rec.Body.String(), trimmed, "the answer must not echo the token")
+			}
+		})
+	}
+}
+
+func TestARefusedTokenKeepsItsReport(t *testing.T) {
+	view := refusedView()
+	f := &fakeEngine{
+		view: view,
+		err:  fmt.Errorf("%w: the token cannot be used: dns.write on example.com: %s", engine.ErrInvalid, view.Report.Checks[1].Detail),
+	}
+
+	rec := do(newServer(f), http.MethodPost, "/v1/credentials", `{"label":"main","token":"`+testToken+`"}`)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	a := parseError(t, rec)
+	require.Equal(t, "invalid", a.Code)
+	require.Contains(t, a.Message, "grant Zone > DNS > Edit on example.com")
+	want, err := json.Marshal(view)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), string(a.Credential))
+	require.NotContains(t, rec.Body.String(), testToken)
+}
+
+func TestTheReportOfARefusedTokenIsScrubbed(t *testing.T) {
+	view := refusedView()
+	view.Report.Checks[1].Detail = "cloudflare rejected " + testToken
+	f := &fakeEngine{view: view, err: fmt.Errorf("%w: cloudflare rejected %s", engine.ErrInvalid, testToken)}
+
+	rec := do(newServer(f), http.MethodPost, "/v1/credentials", `{"label":"main","token":"`+testToken+`"}`)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.NotContains(t, rec.Body.String(), testToken)
+	a := parseError(t, rec)
+	require.Contains(t, a.Message, "[redacted]")
+	require.Contains(t, string(a.Credential), "cloudflare rejected [redacted]")
+}
+
+func TestAFailureWithoutAReportHasNoCredential(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		view engine.CredentialView
+	}{
+		{"zero view", engine.CredentialView{}},
+		{"view without a report", engine.CredentialView{Label: "main", Kind: "scoped"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{view: tt.view, err: fmt.Errorf("%w: the label is empty", engine.ErrInvalid)}
+
+			rec := do(newServer(f), http.MethodPost, "/v1/credentials", `{"label":"","token":"`+testToken+`"}`)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Nil(t, parseError(t, rec).Credential)
+			require.NotContains(t, rec.Body.String(), `"credential"`)
+		})
+	}
+}
+
+func TestOnlyAddingACredentialAnswersWithAView(t *testing.T) {
+	for _, rt := range engineRoutes {
+		if rt.name == "add credential" {
+			continue
+		}
+		t.Run(rt.name, func(t *testing.T) {
+			f := &fakeEngine{view: refusedView(), err: fmt.Errorf("%w: no", engine.ErrInvalid)}
+
+			rec := do(newServer(f), rt.method, rt.target, rt.body)
+
+			require.GreaterOrEqual(t, rec.Code, 400)
+			require.Nil(t, parseError(t, rec).Credential)
+		})
+	}
+}
+
+func TestCheckCredential(t *testing.T) {
+	view := engine.CredentialView{ID: "abc12345", Label: "main", Kind: "scoped"}
+	for _, tt := range []struct {
+		name string
+		body string
+		call string
+	}{
+		{"deep", `{"deep":true}`, "check:abc12345:true"},
+		{"shallow", `{"deep":false}`, "check:abc12345:false"},
+		{"no body", ``, "check:abc12345:false"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{view: view}
+			rec := do(newServer(f), http.MethodPost, "/v1/credentials/abc12345/check", tt.body)
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			want, err := json.Marshal(view)
+			require.NoError(t, err)
+			require.JSONEq(t, string(want), rec.Body.String())
+			require.Equal(t, []string{tt.call}, f.called())
+		})
+	}
+}
+
+func TestRemoveCredential(t *testing.T) {
+	f := &fakeEngine{}
+	rec := do(newServer(f), http.MethodDelete, "/v1/credentials/abc12345", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{}`, rec.Body.String())
+	require.Equal(t, []string{"remove:abc12345"}, f.called())
+}
+
+var engineRoutes = []struct{ name, method, target, body string }{
+	{"apply", http.MethodPost, "/v1/apply", `{}`},
+	{"adopt", http.MethodPost, "/v1/adopt", `{"name":"www.example.com"}`},
+	{"add credential", http.MethodPost, "/v1/credentials", `{"label":"main","token":"` + testToken + `"}`},
+	{"check credential", http.MethodPost, "/v1/credentials/abc12345/check", `{}`},
+	{"remove credential", http.MethodDelete, "/v1/credentials/abc12345", ""},
+}
+
+func TestEngineErrorsAreMapped(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		err     error
+		status  int
+		code    string
+		message string
+	}{
+		{"invalid", fmt.Errorf("%w: the label is empty", engine.ErrInvalid), http.StatusBadRequest, "invalid", "invalid request: the label is empty"},
+		{"not found", fmt.Errorf("%w: no credential %q", engine.ErrNotFound, "abc12345"), http.StatusNotFound, "not_found", `not found: no credential "abc12345"`},
+		{"refused", fmt.Errorf("%w: credential abc12345 still manages 2 records", engine.ErrRefused), http.StatusConflict, "refused", "refused: credential abc12345 still manages 2 records"},
+		{"deadline", fmt.Errorf("checking the token: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, "unavailable", "the operation timed out"},
+		{"cancelled", fmt.Errorf("checking the token: %w", context.Canceled), http.StatusServiceUnavailable, "unavailable", "the operation was cancelled"},
+		{"anything else", errors.New("reading the settings: disk gone"), http.StatusInternalServerError, "internal", "reading the settings: disk gone"},
+	} {
+		for _, rt := range engineRoutes {
+			t.Run(tt.name+" on "+rt.name, func(t *testing.T) {
+				rec := do(newServer(&fakeEngine{err: tt.err}), rt.method, rt.target, rt.body)
+
+				require.Equal(t, tt.status, rec.Code, rec.Body.String())
+				require.Equal(t, tt.code, errorCode(t, rec))
+				require.Equal(t, tt.message, errorMessage(t, rec))
+			})
+		}
+	}
+}
+
+func TestEveryErrorCarriesACode(t *testing.T) {
+	s := newServer(&fakeEngine{})
+	for _, tt := range []struct {
+		name        string
+		req         *http.Request
+		status      int
+		code        string
+		contentType string
+	}{
+		{"unknown route", request(http.MethodGet, "/v1/nope", ""), http.StatusNotFound, "no_route", ""},
+		{"wrong method", request(http.MethodPost, "/v1/state", ""), http.StatusMethodNotAllowed, "method_not_allowed", ""},
+		{"wrong content type", func() *http.Request {
+			r := request(http.MethodPost, "/v1/apply", `{}`)
+			r.Header.Set("Content-Type", "text/plain")
+			return r
+		}(), http.StatusUnsupportedMediaType, "unsupported_media_type", ""},
+		{"too large", request(http.MethodPost, "/v1/apply", `{"confirmDeletes":false}`+strings.Repeat(" ", maxBody)), http.StatusRequestEntityTooLarge, "too_large", ""},
+		{"bad body", request(http.MethodPost, "/v1/apply", `nonsense`), http.StatusBadRequest, "invalid", ""},
+		{"bad since", request(http.MethodGet, "/v1/events?since=x", ""), http.StatusBadRequest, "invalid", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := send(s, tt.req)
+
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+			require.Equal(t, tt.code, errorCode(t, rec))
+		})
+	}
+}
+
+func TestErrorsDoNotEchoTheSubmittedToken(t *testing.T) {
+	const padded = "  " + testToken + "\n"
+	for _, tt := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"invalid", fmt.Errorf("%w: %s is not a token", engine.ErrInvalid, testToken), http.StatusBadRequest},
+		{"refused", fmt.Errorf("%w: cloudflare rejected %q", engine.ErrRefused, testToken), http.StatusConflict},
+		{"anything else", fmt.Errorf("calling cloudflare with %s: boom", testToken), http.StatusInternalServerError},
+		{"as submitted", fmt.Errorf("calling cloudflare with %s: boom", padded), http.StatusInternalServerError},
+		{"as submitted and quoted", fmt.Errorf("calling cloudflare with %q: boom", padded), http.StatusInternalServerError},
+		{"twice", fmt.Errorf("%s then %s", testToken, testToken), http.StatusInternalServerError},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var logged syncBuffer
+			s := New(&fakeEngine{err: tt.err}, "v", []uint32{testUID}, zerolog.New(&logged).Level(zerolog.DebugLevel))
+			body, err := json.Marshal(map[string]string{"label": "main", "token": padded})
+			require.NoError(t, err)
+
+			rec := send(s, request(http.MethodPost, "/v1/credentials", string(body)))
+
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+			require.NotContains(t, rec.Body.String(), testToken)
+			require.Contains(t, errorMessage(t, rec), "[redacted]")
+			require.NotContains(t, logged.String(), testToken)
+		})
+	}
+}
+
+func TestUnknownRoutesAndMethods(t *testing.T) {
+	f := &fakeEngine{}
+	s := newServer(f)
+
+	for _, tt := range []struct {
+		name, method, target string
+		status               int
+		code                 string
+		allow                string
+	}{
+		{"unknown path", http.MethodGet, "/v1/nope", http.StatusNotFound, "no_route", ""},
+		{"root", http.MethodGet, "/", http.StatusNotFound, "no_route", ""},
+		{"trailing slash", http.MethodGet, "/v1/state/", http.StatusNotFound, "no_route", ""},
+		{"unknown post", http.MethodPost, "/v1/nope", http.StatusNotFound, "no_route", ""},
+		{"post to a get route", http.MethodPost, "/v1/state", http.StatusMethodNotAllowed, "method_not_allowed", "GET"},
+		{"get to a post route", http.MethodGet, "/v1/apply", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
+		{"put on credentials", http.MethodPut, "/v1/credentials", http.StatusMethodNotAllowed, "method_not_allowed", ""},
+		{"delete on the collection", http.MethodDelete, "/v1/credentials", http.StatusMethodNotAllowed, "method_not_allowed", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.target, nil) // no content type: the route is not found first
+			rec := send(s, req.WithContext(withPeerUID(req.Context(), testUID)))
+
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+			require.Equal(t, tt.code, errorCode(t, rec))
+			require.NotEmpty(t, errorMessage(t, rec))
+			if tt.allow != "" {
+				require.Equal(t, tt.allow, rec.Header().Get("Allow"))
+			}
+		})
+	}
+	require.Empty(t, f.called())
+}
+
+func TestRequestBodies(t *testing.T) {
+	big := `{"label":"` + strings.Repeat("a", 1<<20) + `"}`
+	for _, tt := range []struct {
+		name        string
+		target      string
+		contentType string
+		body        string
+		status      int
+		code        string
+		contains    string
+	}{
+		{"no content type", "/v1/apply", "", `{}`, http.StatusUnsupportedMediaType, "unsupported_media_type", "application/json"},
+		{"wrong content type", "/v1/apply", "text/plain", `{}`, http.StatusUnsupportedMediaType, "unsupported_media_type", "application/json"},
+		{"form content type", "/v1/apply", "application/x-www-form-urlencoded", `confirmDeletes=true`, http.StatusUnsupportedMediaType, "unsupported_media_type", "application/json"},
+		{"charset is fine", "/v1/apply", "application/json; charset=utf-8", `{}`, http.StatusOK, "", ""},
+		{"upper case is fine", "/v1/apply", "Application/JSON", `{}`, http.StatusOK, "", ""},
+		{"unknown field", "/v1/apply", "application/json", `{"confirmDeletes":true,"force":true}`, http.StatusBadRequest, "invalid", "force"},
+		{"not json", "/v1/apply", "application/json", `confirmDeletes`, http.StatusBadRequest, "invalid", "JSON"},
+		{"truncated", "/v1/adopt", "application/json", `{"name":`, http.StatusBadRequest, "invalid", "JSON"},
+		{"wrong type", "/v1/apply", "application/json", `{"confirmDeletes":"yes"}`, http.StatusBadRequest, "invalid", "confirmDeletes"},
+		{"not an object", "/v1/apply", "application/json", `[true]`, http.StatusBadRequest, "invalid", "object"},
+		{"two objects", "/v1/apply", "application/json", `{} {}`, http.StatusBadRequest, "invalid", "after"},
+		{"trailing junk", "/v1/apply", "application/json", `{}x`, http.StatusBadRequest, "invalid", "after"},
+		{"adopt needs a body", "/v1/adopt", "application/json", ``, http.StatusBadRequest, "invalid", "empty"},
+		{"add needs a body", "/v1/credentials", "application/json", ``, http.StatusBadRequest, "invalid", "empty"},
+		{"too large", "/v1/credentials", "application/json", big, http.StatusRequestEntityTooLarge, "too_large", "too large"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			req := httptest.NewRequest(http.MethodPost, tt.target, strings.NewReader(tt.body))
+			if tt.contentType != "" {
+				req.Header.Set("Content-Type", tt.contentType)
+			}
+			rec := send(newServer(f), req.WithContext(withPeerUID(req.Context(), testUID)))
+
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+			if tt.status == http.StatusOK {
+				return
+			}
+			require.Equal(t, tt.code, errorCode(t, rec))
+			require.Contains(t, errorMessage(t, rec), tt.contains)
+			require.Empty(t, f.called())
+		})
+	}
+
+	t.Run("a body just under the limit is read", func(t *testing.T) {
+		f := &fakeEngine{}
+		pad := strings.Repeat(" ", 1<<20-len(`{"deep":true}`))
+		rec := do(newServer(f), http.MethodPost, "/v1/credentials/abc12345/check", `{"deep":true}`+pad)
+
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, []string{"check:abc12345:true"}, f.called())
+	})
+
+	t.Run("a body over the limit closes the connection", func(t *testing.T) {
+		rec := do(newServer(&fakeEngine{}), http.MethodPost, "/v1/apply", `{}`+strings.Repeat(" ", 1<<20))
+
+		require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+		require.Equal(t, "close", rec.Header().Get("Connection"))
+	})
+
+	t.Run("get and delete need no content type", func(t *testing.T) {
+		s := newServer(&fakeEngine{})
+		for _, tt := range []struct{ method, target string }{
+			{http.MethodGet, "/v1/version"},
+			{http.MethodGet, "/v1/state"},
+			{http.MethodDelete, "/v1/credentials/abc12345"},
+		} {
+			req := httptest.NewRequest(tt.method, tt.target, nil)
+			rec := send(s, req.WithContext(withPeerUID(req.Context(), testUID)))
+			require.Equal(t, http.StatusOK, rec.Code, tt.method+" "+tt.target)
+		}
+	})
+}
+
+func TestTheRequestContextReachesTheEngine(t *testing.T) {
+	type key struct{}
+	f := &fakeEngine{}
+	for _, rt := range engineRoutes {
+		t.Run(rt.name, func(t *testing.T) {
+			req := request(rt.method, rt.target, rt.body)
+			req = req.WithContext(context.WithValue(req.Context(), key{}, "marker"))
+
+			rec := send(newServer(f), req)
+
+			require.Less(t, rec.Code, 300, rec.Body.String())
+			require.Equal(t, "marker", f.lastCtx().Value(key{}))
+		})
+	}
+}

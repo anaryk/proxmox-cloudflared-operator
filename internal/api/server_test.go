@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,9 +22,27 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
-const testToken = "s3cr3t-token-value"
+const testToken = "s3cr3t-token-value-0123456789"
 
 var testUID = uint32(os.Getuid())
+
+// syncBuffer is a log destination that handler goroutines may write to.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // fakeEngine records what the server asks of it and answers from its fields.
 type fakeEngine struct {
@@ -41,6 +57,7 @@ type fakeEngine struct {
 	ctx      context.Context
 	triggers int
 	panics   bool
+	addPanic string // AddCredential panics with this text
 }
 
 func (f *fakeEngine) record(ctx context.Context, call string) {
@@ -119,6 +136,9 @@ func (f *fakeEngine) Adopt(ctx context.Context, name string) error {
 
 func (f *fakeEngine) AddCredential(ctx context.Context, label, token string) (engine.CredentialView, error) {
 	f.record(ctx, fmt.Sprintf("add:%s:%s", label, token))
+	if f.addPanic != "" {
+		panic(f.addPanic)
+	}
 	return f.view, f.failure()
 }
 
@@ -138,18 +158,24 @@ func (f *fakeEngine) lastCtx() context.Context {
 	return f.ctx
 }
 
+// newServer returns a server that checks peers as the platform does.
 func newServer(e *fakeEngine) *Server {
 	return New(e, "1.2.3", []uint32{testUID}, zerolog.Nop())
 }
 
-// request builds a request that came in on the socket from an allowed peer.
-// A POST carries the JSON content type.
-func request(method, target, body string) *http.Request {
+// requestFrom builds a request that came in on the socket from the peer with
+// uid. A POST carries the JSON content type.
+func requestFrom(uid uint32, method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return req.WithContext(withPeerUID(req.Context(), testUID))
+	return req.WithContext(withPeerUID(req.Context(), uid))
+}
+
+// request builds a request from an allowed peer.
+func request(method, target, body string) *http.Request {
+	return requestFrom(testUID, method, target, body)
 }
 
 func send(s *Server, req *http.Request) *httptest.ResponseRecorder {
@@ -162,14 +188,40 @@ func do(s *Server, method, target, body string) *httptest.ResponseRecorder {
 	return send(s, request(method, target, body))
 }
 
-func errorMessage(t *testing.T, rec *httptest.ResponseRecorder) string {
+// errorAnswer is the body of an error answer.
+type errorAnswer struct {
+	Message    string
+	Code       string
+	Credential json.RawMessage // nil when the body has none
+}
+
+// parseError reads an error answer strictly: it carries the message and the
+// code, may carry a credential, and nothing else.
+func parseError(t *testing.T, rec *httptest.ResponseRecorder) errorAnswer {
 	t.Helper()
 	require.True(t, strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json"), rec.Header().Get("Content-Type"))
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body), rec.Body.String())
-	require.Len(t, body, 1, rec.Body.String())
-	require.Contains(t, body, "error")
-	return body["error"]
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw), rec.Body.String())
+	for key := range raw {
+		require.Contains(t, []string{"error", "code", "credential"}, key, rec.Body.String())
+	}
+	require.Contains(t, raw, "error", rec.Body.String())
+	require.Contains(t, raw, "code", rec.Body.String())
+	var a errorAnswer
+	require.NoError(t, json.Unmarshal(raw["error"], &a.Message))
+	require.NoError(t, json.Unmarshal(raw["code"], &a.Code))
+	a.Credential = raw["credential"]
+	return a
+}
+
+func errorMessage(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	return parseError(t, rec).Message
+}
+
+func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	return parseError(t, rec).Code
 }
 
 func testState() engine.State {
@@ -186,414 +238,6 @@ func testState() engine.State {
 	}
 }
 
-func TestVersion(t *testing.T) {
-	rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/version", "")
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.JSONEq(t, `{"version":"1.2.3"}`, rec.Body.String())
-}
-
-func TestStateIsTheEngineState(t *testing.T) {
-	st := testState()
-	rec := do(newServer(&fakeEngine{state: st}), http.MethodGet, "/v1/state", "")
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	want, err := json.Marshal(st)
-	require.NoError(t, err)
-	require.JSONEq(t, string(want), rec.Body.String())
-}
-
-func TestEvents(t *testing.T) {
-	events := []engine.Event{
-		{At: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC), Level: "info", Kind: "route", Subject: "a.example.com", Message: "up"},
-	}
-	since := time.Date(2026, 3, 4, 5, 0, 0, 0, time.UTC)
-
-	for _, tt := range []struct {
-		name      string
-		query     string
-		wantSince time.Time
-	}{
-		{"no since means everything", "", time.Time{}},
-		{"utc", "?since=2026-03-04T05:00:00Z", since},
-		{"fraction", "?since=2026-03-04T05:00:00.5Z", since.Add(500 * time.Millisecond)},
-		{"offset", "?since=2026-03-04T07:00:00%2B02:00", since},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fakeEngine{events: events}
-			rec := do(newServer(f), http.MethodGet, "/v1/events"+tt.query, "")
-
-			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			want, err := json.Marshal(events)
-			require.NoError(t, err)
-			require.JSONEq(t, string(want), rec.Body.String())
-			require.True(t, tt.wantSince.Equal(f.lastSince()), "since was %v, want %v", f.lastSince(), tt.wantSince)
-		})
-	}
-
-	t.Run("no events is an empty list", func(t *testing.T) {
-		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/events", "")
-
-		require.Equal(t, http.StatusOK, rec.Code)
-		require.JSONEq(t, `[]`, rec.Body.String())
-	})
-
-	for _, bad := range []string{"yesterday", "2026-03-04", "1709528400", "", "2026-03-04T05:00:00"} {
-		t.Run("malformed "+bad, func(t *testing.T) {
-			f := &fakeEngine{events: events}
-			rec := do(newServer(f), http.MethodGet, "/v1/events?since="+bad, "")
-
-			require.Equal(t, http.StatusBadRequest, rec.Code)
-			require.Contains(t, errorMessage(t, rec), "since")
-			require.Empty(t, f.called())
-		})
-	}
-}
-
-func TestSyncTriggersACycle(t *testing.T) {
-	f := &fakeEngine{}
-	rec := do(newServer(f), http.MethodPost, "/v1/sync", "")
-
-	require.Equal(t, http.StatusAccepted, rec.Code)
-	require.JSONEq(t, `{}`, rec.Body.String())
-	require.Equal(t, 1, f.triggered())
-}
-
-func TestApply(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		body string
-		call string
-	}{
-		{"confirming", `{"confirmDeletes":true}`, "apply:true"},
-		{"not confirming", `{"confirmDeletes":false}`, "apply:false"},
-		{"empty object", `{}`, "apply:false"},
-		{"no body", ``, "apply:false"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fakeEngine{}
-			rec := do(newServer(f), http.MethodPost, "/v1/apply", tt.body)
-
-			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			require.JSONEq(t, `{}`, rec.Body.String())
-			require.Equal(t, []string{tt.call}, f.called())
-		})
-	}
-}
-
-func TestAdopt(t *testing.T) {
-	f := &fakeEngine{}
-	rec := do(newServer(f), http.MethodPost, "/v1/adopt", `{"name":"www.example.com"}`)
-
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	require.JSONEq(t, `{}`, rec.Body.String())
-	require.Equal(t, []string{"adopt:www.example.com"}, f.called())
-}
-
-func TestCredentialsAreListedFromTheState(t *testing.T) {
-	st := testState()
-	rec := do(newServer(&fakeEngine{state: st}), http.MethodGet, "/v1/credentials", "")
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	want, err := json.Marshal(st.Credentials)
-	require.NoError(t, err)
-	require.JSONEq(t, string(want), rec.Body.String())
-
-	t.Run("none is an empty list", func(t *testing.T) {
-		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/credentials", "")
-
-		require.Equal(t, http.StatusOK, rec.Code)
-		require.JSONEq(t, `[]`, rec.Body.String())
-	})
-}
-
-func TestAddCredentialAnswersWithTheViewOnly(t *testing.T) {
-	view := engine.CredentialView{ID: "abc12345", Label: "main", Kind: "scoped"}
-	f := &fakeEngine{view: view}
-	rec := do(newServer(f), http.MethodPost, "/v1/credentials", `{"label":"main","token":"`+testToken+`"}`)
-
-	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
-	want, err := json.Marshal(view)
-	require.NoError(t, err)
-	require.JSONEq(t, string(want), rec.Body.String())
-	require.NotContains(t, rec.Body.String(), testToken)
-	require.Equal(t, []string{"add:main:" + testToken}, f.called())
-}
-
-func TestTheTokenIsReadFromTheBodyOnly(t *testing.T) {
-	f := &fakeEngine{}
-	rec := do(newServer(f), http.MethodPost, "/v1/credentials?token="+testToken, `{"label":"main"}`)
-
-	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
-	require.Equal(t, []string{"add:main:"}, f.called())
-}
-
-func TestCheckCredential(t *testing.T) {
-	view := engine.CredentialView{ID: "abc12345", Label: "main", Kind: "scoped"}
-	for _, tt := range []struct {
-		name string
-		body string
-		call string
-	}{
-		{"deep", `{"deep":true}`, "check:abc12345:true"},
-		{"shallow", `{"deep":false}`, "check:abc12345:false"},
-		{"no body", ``, "check:abc12345:false"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fakeEngine{view: view}
-			rec := do(newServer(f), http.MethodPost, "/v1/credentials/abc12345/check", tt.body)
-
-			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			want, err := json.Marshal(view)
-			require.NoError(t, err)
-			require.JSONEq(t, string(want), rec.Body.String())
-			require.Equal(t, []string{tt.call}, f.called())
-		})
-	}
-}
-
-func TestRemoveCredential(t *testing.T) {
-	f := &fakeEngine{}
-	rec := do(newServer(f), http.MethodDelete, "/v1/credentials/abc12345", "")
-
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	require.JSONEq(t, `{}`, rec.Body.String())
-	require.Equal(t, []string{"remove:abc12345"}, f.called())
-}
-
-var engineRoutes = []struct{ name, method, target, body string }{
-	{"apply", http.MethodPost, "/v1/apply", `{}`},
-	{"adopt", http.MethodPost, "/v1/adopt", `{"name":"www.example.com"}`},
-	{"add credential", http.MethodPost, "/v1/credentials", `{"label":"main","token":"tok"}`},
-	{"check credential", http.MethodPost, "/v1/credentials/abc12345/check", `{}`},
-	{"remove credential", http.MethodDelete, "/v1/credentials/abc12345", ""},
-}
-
-func TestEngineErrorsAreMapped(t *testing.T) {
-	for _, tt := range []struct {
-		name    string
-		err     error
-		status  int
-		message string
-	}{
-		{"invalid", fmt.Errorf("%w: the label is empty", engine.ErrInvalid), http.StatusBadRequest, "invalid request: the label is empty"},
-		{"not found", fmt.Errorf("%w: no credential %q", engine.ErrNotFound, "abc12345"), http.StatusNotFound, `not found: no credential "abc12345"`},
-		{"refused", fmt.Errorf("%w: credential abc12345 still manages 2 records", engine.ErrRefused), http.StatusConflict, "refused: credential abc12345 still manages 2 records"},
-		{"deadline", fmt.Errorf("checking the token: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, "the operation timed out"},
-		{"cancelled", fmt.Errorf("checking the token: %w", context.Canceled), http.StatusServiceUnavailable, "the operation was cancelled"},
-		{"anything else", errors.New("reading the settings: disk gone"), http.StatusInternalServerError, "reading the settings: disk gone"},
-	} {
-		for _, rt := range engineRoutes {
-			t.Run(tt.name+" on "+rt.name, func(t *testing.T) {
-				rec := do(newServer(&fakeEngine{err: tt.err}), rt.method, rt.target, rt.body)
-
-				require.Equal(t, tt.status, rec.Code, rec.Body.String())
-				require.Equal(t, tt.message, errorMessage(t, rec))
-			})
-		}
-	}
-}
-
-func TestErrorsDoNotEchoTheSubmittedToken(t *testing.T) {
-	const padded = "  " + testToken + "\n"
-	for _, tt := range []struct {
-		name   string
-		err    error
-		status int
-	}{
-		{"invalid", fmt.Errorf("%w: %s is not a token", engine.ErrInvalid, testToken), http.StatusBadRequest},
-		{"refused", fmt.Errorf("%w: cloudflare rejected %q", engine.ErrRefused, testToken), http.StatusConflict},
-		{"anything else", fmt.Errorf("calling cloudflare with %s: boom", testToken), http.StatusInternalServerError},
-		{"as submitted", fmt.Errorf("calling cloudflare with %s: boom", padded), http.StatusInternalServerError},
-		{"twice", fmt.Errorf("%s then %s", testToken, testToken), http.StatusInternalServerError},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			var logged bytes.Buffer
-			s := New(&fakeEngine{err: tt.err}, "v", []uint32{testUID}, zerolog.New(&logged).Level(zerolog.DebugLevel))
-			body, err := json.Marshal(map[string]string{"label": "main", "token": padded})
-			require.NoError(t, err)
-
-			rec := send(s, request(http.MethodPost, "/v1/credentials", string(body)))
-
-			require.Equal(t, tt.status, rec.Code, rec.Body.String())
-			require.NotContains(t, rec.Body.String(), testToken)
-			require.Contains(t, errorMessage(t, rec), "[redacted]")
-			require.NotContains(t, logged.String(), testToken)
-		})
-	}
-}
-
-func TestUnknownRoutesAndMethods(t *testing.T) {
-	f := &fakeEngine{}
-	s := newServer(f)
-
-	for _, tt := range []struct {
-		name, method, target string
-		status               int
-		allow                string
-	}{
-		{"unknown path", http.MethodGet, "/v1/nope", http.StatusNotFound, ""},
-		{"root", http.MethodGet, "/", http.StatusNotFound, ""},
-		{"trailing slash", http.MethodGet, "/v1/state/", http.StatusNotFound, ""},
-		{"unknown post", http.MethodPost, "/v1/nope", http.StatusNotFound, ""},
-		{"post to a get route", http.MethodPost, "/v1/state", http.StatusMethodNotAllowed, "GET"},
-		{"get to a post route", http.MethodGet, "/v1/apply", http.StatusMethodNotAllowed, "POST"},
-		{"put on credentials", http.MethodPut, "/v1/credentials", http.StatusMethodNotAllowed, ""},
-		{"delete on the collection", http.MethodDelete, "/v1/credentials", http.StatusMethodNotAllowed, ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.target, nil) // no content type: the route is not found first
-			rec := send(s, req.WithContext(withPeerUID(req.Context(), testUID)))
-
-			require.Equal(t, tt.status, rec.Code, rec.Body.String())
-			require.NotEmpty(t, errorMessage(t, rec))
-			if tt.allow != "" {
-				require.Equal(t, tt.allow, rec.Header().Get("Allow"))
-			}
-		})
-	}
-	require.Empty(t, f.called())
-}
-
-func TestRequestBodies(t *testing.T) {
-	big := `{"label":"` + strings.Repeat("a", 1<<20) + `"}`
-	for _, tt := range []struct {
-		name        string
-		target      string
-		contentType string
-		body        string
-		status      int
-		contains    string
-	}{
-		{"no content type", "/v1/apply", "", `{}`, http.StatusUnsupportedMediaType, "application/json"},
-		{"wrong content type", "/v1/apply", "text/plain", `{}`, http.StatusUnsupportedMediaType, "application/json"},
-		{"form content type", "/v1/apply", "application/x-www-form-urlencoded", `confirmDeletes=true`, http.StatusUnsupportedMediaType, "application/json"},
-		{"charset is fine", "/v1/apply", "application/json; charset=utf-8", `{}`, http.StatusOK, ""},
-		{"upper case is fine", "/v1/apply", "Application/JSON", `{}`, http.StatusOK, ""},
-		{"unknown field", "/v1/apply", "application/json", `{"confirmDeletes":true,"force":true}`, http.StatusBadRequest, "force"},
-		{"not json", "/v1/apply", "application/json", `confirmDeletes`, http.StatusBadRequest, "JSON"},
-		{"truncated", "/v1/adopt", "application/json", `{"name":`, http.StatusBadRequest, "JSON"},
-		{"wrong type", "/v1/apply", "application/json", `{"confirmDeletes":"yes"}`, http.StatusBadRequest, "confirmDeletes"},
-		{"not an object", "/v1/apply", "application/json", `[true]`, http.StatusBadRequest, "object"},
-		{"two objects", "/v1/apply", "application/json", `{} {}`, http.StatusBadRequest, "after"},
-		{"trailing junk", "/v1/apply", "application/json", `{}x`, http.StatusBadRequest, "after"},
-		{"adopt needs a body", "/v1/adopt", "application/json", ``, http.StatusBadRequest, "empty"},
-		{"add needs a body", "/v1/credentials", "application/json", ``, http.StatusBadRequest, "empty"},
-		{"too large", "/v1/credentials", "application/json", big, http.StatusRequestEntityTooLarge, "too large"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &fakeEngine{}
-			req := httptest.NewRequest(http.MethodPost, tt.target, strings.NewReader(tt.body))
-			if tt.contentType != "" {
-				req.Header.Set("Content-Type", tt.contentType)
-			}
-			rec := send(newServer(f), req.WithContext(withPeerUID(req.Context(), testUID)))
-
-			require.Equal(t, tt.status, rec.Code, rec.Body.String())
-			if tt.status == http.StatusOK {
-				return
-			}
-			require.Contains(t, errorMessage(t, rec), tt.contains)
-			require.Empty(t, f.called())
-		})
-	}
-
-	t.Run("a body just under the limit is read", func(t *testing.T) {
-		f := &fakeEngine{}
-		pad := strings.Repeat(" ", 1<<20-len(`{"deep":true}`))
-		rec := do(newServer(f), http.MethodPost, "/v1/credentials/abc12345/check", `{"deep":true}`+pad)
-
-		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-		require.Equal(t, []string{"check:abc12345:true"}, f.called())
-	})
-
-	t.Run("get and delete need no content type", func(t *testing.T) {
-		s := newServer(&fakeEngine{})
-		for _, tt := range []struct{ method, target string }{
-			{http.MethodGet, "/v1/version"},
-			{http.MethodGet, "/v1/state"},
-			{http.MethodDelete, "/v1/credentials/abc12345"},
-		} {
-			req := httptest.NewRequest(tt.method, tt.target, nil)
-			rec := send(s, req.WithContext(withPeerUID(req.Context(), testUID)))
-			require.Equal(t, http.StatusOK, rec.Code, tt.method+" "+tt.target)
-		}
-	})
-}
-
-func TestTheRequestContextReachesTheEngine(t *testing.T) {
-	type key struct{}
-	f := &fakeEngine{}
-	for _, rt := range engineRoutes {
-		t.Run(rt.name, func(t *testing.T) {
-			req := request(rt.method, rt.target, rt.body)
-			req = req.WithContext(context.WithValue(req.Context(), key{}, "marker"))
-
-			rec := send(newServer(f), req)
-
-			require.Less(t, rec.Code, 300, rec.Body.String())
-			require.Equal(t, "marker", f.lastCtx().Value(key{}))
-		})
-	}
-}
-
-func TestRequestLogCarriesNoBodiesOrQueries(t *testing.T) {
-	var logged bytes.Buffer
-	s := New(&fakeEngine{}, "v", []uint32{testUID}, zerolog.New(&logged).Level(zerolog.DebugLevel))
-
-	rec := send(s, request(http.MethodPost, "/v1/credentials?token=querysecret&x=1", `{"label":"main","token":"bodysecret"}`))
-
-	require.Equal(t, http.StatusCreated, rec.Code)
-	var line map[string]any
-	require.NoError(t, json.Unmarshal(logged.Bytes(), &line), logged.String())
-	require.Equal(t, "debug", line["level"])
-	require.Equal(t, "POST", line["method"])
-	require.Equal(t, "/v1/credentials", line["path"])
-	require.EqualValues(t, http.StatusCreated, line["status"])
-	require.Contains(t, line, "duration")
-	for _, secret := range []string{"querysecret", "bodysecret", "token=", "x=1"} {
-		require.NotContains(t, logged.String(), secret)
-	}
-}
-
-func TestRequestLogIsDebugOnly(t *testing.T) {
-	var logged bytes.Buffer
-	s := New(&fakeEngine{}, "v", []uint32{testUID}, zerolog.New(&logged).Level(zerolog.InfoLevel))
-
-	do(s, http.MethodGet, "/v1/version", "")
-
-	require.Empty(t, logged.String())
-}
-
-func TestAPanicIsLoggedAndAnswered(t *testing.T) {
-	var logged bytes.Buffer
-	s := New(&fakeEngine{panics: true}, "v", []uint32{testUID}, zerolog.New(&logged).Level(zerolog.DebugLevel))
-
-	rec := send(s, request(http.MethodGet, "/v1/state?q=querysecret", ""))
-
-	require.Equal(t, http.StatusInternalServerError, rec.Code)
-	require.Equal(t, "internal error", errorMessage(t, rec))
-	require.Contains(t, logged.String(), "state exploded")
-	require.Contains(t, logged.String(), `"level":"error"`)
-	require.NotContains(t, logged.String(), "querysecret")
-
-	t.Run("and the server goes on", func(t *testing.T) {
-		rec := send(s, request(http.MethodGet, "/v1/version", ""))
-		require.Equal(t, http.StatusOK, rec.Code)
-	})
-}
-
-func TestServerErrorsAreLogged(t *testing.T) {
-	var logged bytes.Buffer
-	s := New(&fakeEngine{err: errors.New("disk gone")}, "v", []uint32{testUID}, zerolog.New(&logged).Level(zerolog.InfoLevel))
-
-	rec := do(s, http.MethodPost, "/v1/apply", `{}`)
-
-	require.Equal(t, http.StatusInternalServerError, rec.Code)
-	require.Contains(t, logged.String(), "disk gone")
-	require.Contains(t, logged.String(), `"level":"error"`)
-}
-
 // shortDir returns a directory whose path is short enough for a unix socket.
 func shortDir(t *testing.T) string {
 	t.Helper()
@@ -607,11 +251,16 @@ func shortDir(t *testing.T) string {
 // the error Serve ended with.
 func serve(t *testing.T, s *Server, socket string) (stop func() error) {
 	t.Helper()
+	return serveAs(t, s, socket, os.Getgid())
+}
+
+func serveAs(t *testing.T, s *Server, socket string, gid int) (stop func() error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	ready := make(chan struct{})
 	s.onListening = func() { close(ready) }
 	done := make(chan error, 1)
-	go func() { done <- s.Serve(ctx, socket, os.Getgid()) }()
+	go func() { done <- s.Serve(ctx, socket, gid) }()
 	select {
 	case <-ready:
 	case err := <-done:
@@ -629,6 +278,19 @@ func serve(t *testing.T, s *Server, socket string) (stop func() error) {
 	}
 	t.Cleanup(func() { _ = stop() })
 	return stop
+}
+
+// serveFails runs Serve where it is expected to give up before it listens, and
+// returns its error. A server that got to listen would end at once instead of
+// hanging.
+func serveFails(t *testing.T, s *Server, socket string) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.onListening = cancel
+	err := s.Serve(ctx, socket, os.Getgid())
+	require.Error(t, err, "Serve was expected to fail")
+	return err
 }
 
 func TestEveryClientMethodOverTheSocket(t *testing.T) {
@@ -685,6 +347,24 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	require.NoError(t, stop())
 }
 
+func TestARefusedTokenReachesTheClientWithItsReport(t *testing.T) {
+	f := &fakeEngine{
+		view: refusedView(),
+		err:  fmt.Errorf("%w: the token cannot be used: dns.write on example.com: grant Zone > DNS > Edit on example.com", engine.ErrInvalid),
+	}
+	socket := filepath.Join(shortDir(t), "pco.sock")
+	serve(t, newServer(f), socket)
+
+	view, err := apiclient.New(socket).AddCredential(t.Context(), "main", testToken)
+
+	require.ErrorIs(t, err, engine.ErrInvalid)
+	require.Contains(t, err.Error(), "grant Zone > DNS > Edit on example.com")
+	require.NotContains(t, err.Error(), testToken)
+	require.Equal(t, f.view.Label, view.Label)
+	require.Equal(t, f.view.Report.Checks, view.Report.Checks)
+	require.False(t, view.Report.Usable)
+}
+
 func TestServeCreatesTheDirectory(t *testing.T) {
 	socket := filepath.Join(shortDir(t), "run", "pco", "pco.sock")
 	serve(t, newServer(&fakeEngine{}), socket)
@@ -705,69 +385,6 @@ func TestTheSocketIsGroupWritableOnly(t *testing.T) {
 	require.Equal(t, fs.FileMode(0o660), info.Mode().Perm())
 }
 
-func TestAStaleSocketIsReplaced(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
-	old, err := net.Listen("unix", socket)
-	require.NoError(t, err)
-	old.(*net.UnixListener).SetUnlinkOnClose(false)
-	require.NoError(t, old.Close())
-	info, err := os.Lstat(socket)
-	require.NoError(t, err, "the dead listener leaves its file behind")
-	require.Equal(t, fs.ModeSocket, info.Mode().Type())
-
-	serve(t, newServer(&fakeEngine{}), socket)
-
-	v, err := apiclient.New(socket).Version(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, "1.2.3", v)
-}
-
-func TestServeRefusesToRemoveWhatIsNotASocket(t *testing.T) {
-	dir := shortDir(t)
-	for name, create := range map[string]func(path string) error{
-		"file":    func(path string) error { return os.WriteFile(path, []byte("keep me"), 0o600) },
-		"symlink": func(path string) error { return os.Symlink(dir, path) },
-		"dir":     func(path string) error { return os.Mkdir(path, 0o700) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			socket := filepath.Join(dir, name+".sock")
-			require.NoError(t, create(socket))
-			before, err := os.Lstat(socket)
-			require.NoError(t, err)
-
-			// A server that got to listen would end at once instead of hanging.
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			s := newServer(&fakeEngine{})
-			s.onListening = cancel
-			err = s.Serve(ctx, socket, os.Getgid())
-
-			require.ErrorContains(t, err, "not a socket")
-			after, err := os.Lstat(socket)
-			require.NoError(t, err, "the path must still exist")
-			require.True(t, os.SameFile(before, after))
-		})
-	}
-}
-
-func TestServeDoesNotStealALiveSocket(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
-	stop := serve(t, newServer(&fakeEngine{}), socket)
-
-	// A second server that got to listen would end at once instead of hanging.
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	second := newServer(&fakeEngine{})
-	second.onListening = cancel
-	err := second.Serve(ctx, socket, os.Getgid())
-
-	require.ErrorContains(t, err, "already listening")
-	v, err := apiclient.New(socket).Version(t.Context())
-	require.NoError(t, err, "the first server still answers")
-	require.Equal(t, "1.2.3", v)
-	require.NoError(t, stop())
-}
-
 func TestShutdownIsCleanAndRemovesTheSocket(t *testing.T) {
 	socket := filepath.Join(shortDir(t), "pco.sock")
 	stop := serve(t, newServer(&fakeEngine{}), socket)
@@ -783,20 +400,38 @@ func TestShutdownIsCleanAndRemovesTheSocket(t *testing.T) {
 func TestShutdownLetsARunningRequestFinish(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
+	shuttingDown := make(chan struct{})
+	var releaseOnce sync.Once
+	letGo := func() { releaseOnce.Do(func() { close(release) }) }
 	f := &fakeEngine{hook: func(context.Context) error {
 		close(started)
 		<-release
 		return nil
 	}}
+	s := newServer(f)
+	s.onShutdown = func() { close(shuttingDown) }
 	socket := filepath.Join(shortDir(t), "pco.sock")
-	stop := serve(t, newServer(f), socket)
+	stop := serve(t, s, socket)
+	t.Cleanup(letGo)
 
 	applied := make(chan error, 1)
 	go func() { applied <- apiclient.New(socket).Apply(t.Context(), false) }()
-	<-started
+	select {
+	case <-started:
+	case err := <-applied:
+		t.Fatalf("the request ended before the engine saw it: %v", err)
+	}
 	stopped := make(chan error, 1)
 	go func() { stopped <- stop() }()
-	close(release)
+
+	// The request is released only once the shutdown has begun, so that a
+	// server that closed its connections instead of waiting would fail here.
+	select {
+	case <-shuttingDown:
+	case err := <-stopped:
+		t.Fatalf("Serve returned while a request was running: %v", err)
+	}
+	letGo()
 
 	require.NoError(t, <-applied)
 	require.NoError(t, <-stopped)
@@ -819,7 +454,11 @@ func TestShutdownGivesUpOnAStuckRequest(t *testing.T) {
 
 	applied := make(chan error, 1)
 	go func() { applied <- apiclient.New(socket).Apply(t.Context(), false) }()
-	<-started
+	select {
+	case <-started:
+	case err := <-applied:
+		t.Fatalf("the request ended before the engine saw it: %v", err)
+	}
 
 	err := stop()
 
@@ -830,10 +469,44 @@ func TestShutdownGivesUpOnAStuckRequest(t *testing.T) {
 }
 
 func TestServeTimeouts(t *testing.T) {
-	s := newServer(&fakeEngine{})
-	srv := s.httpServer()
+	srv := newServer(&fakeEngine{}).httpServer()
 
 	require.Equal(t, 5*time.Second, srv.ReadHeaderTimeout)
 	require.GreaterOrEqual(t, srv.WriteTimeout, 70*time.Second)
+	require.Equal(t, time.Minute, srv.IdleTimeout)
 	require.Zero(t, srv.ReadTimeout, "a read timeout would cancel the context of a long apply")
+}
+
+func TestTheHTTPServerLogsThroughTheLogger(t *testing.T) {
+	var logged syncBuffer
+	s := New(&fakeEngine{}, "v", []uint32{testUID}, zerolog.New(&logged))
+
+	s.httpServer().ErrorLog.Printf("http: Accept error: %v", "boom")
+
+	require.Contains(t, logged.String(), "http: Accept error: boom")
+	require.Contains(t, logged.String(), `"level":"warn"`)
+}
+
+func TestServeSaysWhenPeersAreNotChecked(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		check bool
+		want  int
+	}{
+		{"checked", true, 0},
+		{"unchecked", false, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var logged syncBuffer
+			s := New(&fakeEngine{}, "v", []uint32{testUID}, zerolog.New(&logged))
+			s.checkPeers = tt.check
+			stop := serve(t, s, filepath.Join(shortDir(t), "pco.sock"))
+			require.NoError(t, stop())
+
+			require.Equal(t, tt.want, strings.Count(logged.String(), "peer credentials are not checked"))
+			if tt.want > 0 {
+				require.Contains(t, logged.String(), `"level":"warn"`)
+			}
+		})
+	}
 }

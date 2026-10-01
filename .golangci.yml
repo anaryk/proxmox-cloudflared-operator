@@ -1,5 +1,10 @@
 version: "2"
 
+run:
+  # Kept in sync with TAGS in the Makefile.
+  build-tags:
+    - nomsgpack
+
 linters:
   default: standard
   enable:

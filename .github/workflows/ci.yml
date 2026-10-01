@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race ./...
+      - run: go test -tags nomsgpack -race ./...
 
   linux-probe:
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
         with:
           go-version-file: go.mod
       # sudo drops the environment, so the variables the test needs are passed on explicitly.
-      - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -race -run 'Linux' -count=1 ./internal/resolve/
+      - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/resolve/
 
   build:
     runs-on: ubuntu-latest
