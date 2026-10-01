@@ -2,6 +2,7 @@ package cfapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,19 +11,84 @@ import (
 // VerifyToken asks Cloudflare whether the token is usable. A token that is
 // rejected comes back as an error for which IsAuth is true.
 //
-// This is the endpoint of user-owned tokens. Account-owned tokens are verified
-// at another path.
+// A token owned by a user is verified at /user/tokens/verify, one owned by an
+// account at /accounts/{account_id}/tokens/verify. The user form is asked
+// first. What it answers a token of an account is not documented, so any
+// failure that is an answer, not a rate limit or a request that got none,
+// sends VerifyToken on to the account form: of every account the token sees,
+// in turn, until one verifies it. The error of a token neither form verifies
+// names both attempts.
 func (c *Client) VerifyToken(ctx context.Context) (TokenStatus, error) {
+	st, userErr := c.verifyAt(ctx, "/user/tokens/verify")
+	switch {
+	case userErr == nil:
+		return st, nil
+	case unanswered(userErr):
+		return TokenStatus{}, fmt.Errorf("verifying token: %w", userErr)
+	}
+	st, accountErr := c.verifyAsAccountToken(ctx)
+	switch {
+	case accountErr == nil:
+		return st, nil
+	case unanswered(accountErr):
+		// The account form may still verify it: the error is one to try again.
+		return TokenStatus{}, fmt.Errorf("verifying token: as a user token: %s; as an account token: %w", userErr.Error(), accountErr)
+	}
+	// Both forms answered, and neither verified it: the user form says what
+	// kind of refusal it is.
+	return TokenStatus{}, fmt.Errorf("verifying token: as a user token: %w; as an account token: %s", userErr, accountErr.Error())
+}
+
+// verifyAsAccountToken verifies the token at the account form of each account
+// it sees, and stops at the first that answers yes, or that cannot answer.
+func (c *Client) verifyAsAccountToken(ctx context.Context) (TokenStatus, error) {
+	accounts, err := c.Accounts(ctx)
+	if err != nil {
+		return TokenStatus{}, err
+	}
+	if len(accounts) == 0 {
+		return TokenStatus{}, errors.New("it sees no account")
+	}
+	var refused errorList
+	for _, a := range accounts {
+		st, err := c.verifyAtAccount(ctx, a.ID)
+		switch {
+		case err == nil:
+			return st, nil
+		case unanswered(err):
+			return TokenStatus{}, fmt.Errorf("account %s: %w", a.ID, err)
+		}
+		refused = append(refused, fmt.Errorf("account %s: %w", a.ID, err))
+	}
+	return TokenStatus{}, fmt.Errorf("no account it sees verifies it: %w", refused)
+}
+
+func (c *Client) verifyAtAccount(ctx context.Context, accountID string) (TokenStatus, error) {
+	path, err := accountTokenPath(accountID)
+	if err != nil {
+		return TokenStatus{}, err
+	}
+	return c.verifyAt(ctx, path)
+}
+
+func accountTokenPath(accountID string) (string, error) {
+	if err := CheckID("account id", accountID); err != nil {
+		return "", err
+	}
+	return joinPath("accounts", accountID, "tokens", "verify")
+}
+
+func (c *Client) verifyAt(ctx context.Context, path string) (TokenStatus, error) {
 	var got struct {
 		ID        string     `json:"id"`
 		Status    string     `json:"status"`
 		ExpiresOn *time.Time `json:"expires_on"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/user/tokens/verify", nil, nil, &got); err != nil {
-		return TokenStatus{}, fmt.Errorf("verifying token: %w", err)
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &got); err != nil {
+		return TokenStatus{}, err
 	}
 	if got.Status == "" {
-		return TokenStatus{}, fmt.Errorf("verifying token: %w: no status", errUnexpected)
+		return TokenStatus{}, fmt.Errorf("%w: no status", errUnexpected)
 	}
 	return TokenStatus{ID: got.ID, Status: got.Status, ExpiresOn: got.ExpiresOn}, nil
 }

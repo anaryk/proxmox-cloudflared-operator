@@ -33,6 +33,7 @@ const (
 // Cloudflare codes behind the errors the fake returns.
 const (
 	codeAuthentication = 10000 // the token may not do this
+	codeInvalidToken   = 1000  // the token is not one Cloudflare verifies
 	codeTunnelExists   = 1013  // a tunnel of that name exists
 	codeNameExists     = 81053 // an A, AAAA or CNAME record for that name conflicts
 	codeIdentical      = 81058 // the same record exists
@@ -54,9 +55,10 @@ type Fake struct {
 	tunnels  []*tunnel
 	records  map[string][]cfapi.Record // by zone id, oldest first
 
-	tunnelSeq int
-	recordSeq int
-	token     cfapi.TokenStatus
+	tunnelSeq  int
+	recordSeq  int
+	token      cfapi.TokenStatus
+	tokenOwner string // the account that owns the token; empty for a user's token
 
 	calls    []string
 	denied   map[string]bool
@@ -102,6 +104,18 @@ func (f *Fake) SetTokenStatus(status string, expiresOn *time.Time) {
 		expires := *expiresOn
 		f.token.ExpiresOn = &expires
 	}
+}
+
+// SetTokenOwner makes the token one that an account owns rather than a user;
+// an empty id makes it a user's again. VerifyToken answers for it what the
+// client finds: the user form refuses it with a 401, and the account form of
+// its account verifies it, which the client reaches only while the token sees
+// that account. So the token verifies while its account is added, and is
+// refused with a 401 otherwise.
+func (f *Fake) SetTokenOwner(accountID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenOwner = accountID
 }
 
 // AddAccount makes an account visible. Adding an id again renames it.
@@ -259,6 +273,9 @@ func (f *Fake) VerifyToken(ctx context.Context) (cfapi.TokenStatus, error) {
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opVerify, "VerifyToken"); err != nil {
 		return cfapi.TokenStatus{}, err
+	}
+	if f.tokenOwner != "" && f.account(f.tokenOwner) != nil {
+		return cfapi.TokenStatus{}, &cfapi.Error{Status: http.StatusUnauthorized, Codes: []int{codeInvalidToken}, Message: "Invalid API Token"}
 	}
 	st := f.token
 	if st.ExpiresOn != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,164 @@ func TestVerifyTokenFailures(t *testing.T) {
 			require.Equal(t, TokenStatus{}, got)
 		})
 	}
+}
+
+const rejectedToken = `{"success":false,"errors":[{"code":1000,"message":"Invalid API Token"}]}`
+
+// tokenServer answers the user form of the token check with user, the listing
+// of the accounts with the accounts of ids, and the account form of each
+// account with what byAccount holds for it, or a rejection.
+func tokenServer(user http.HandlerFunc, byAccount map[string]http.HandlerFunc, ids ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/client/v4")
+		switch path {
+		case "/user/tokens/verify":
+			user(w, r)
+		case "/accounts":
+			items := make([]string, len(ids))
+			for i, id := range ids {
+				items[i] = fmt.Sprintf(`{"id":%q,"name":"Account %s"}`, id, id)
+			}
+			reply(http.StatusOK, okBody(`[`+strings.Join(items, ",")+`]`))(w, r)
+		default:
+			id := strings.TrimSuffix(strings.TrimPrefix(path, "/accounts/"), "/tokens/verify")
+			if h, ok := byAccount[id]; ok {
+				h(w, r)
+				return
+			}
+			reply(http.StatusUnauthorized, rejectedToken)(w, r)
+		}
+	}
+}
+
+func requestedPaths(t *testing.T, env *testEnv) []string {
+	t.Helper()
+	var paths []string
+	for _, r := range env.requests() {
+		paths = append(paths, strings.TrimPrefix(r.path(t), "/client/v4"))
+	}
+	return paths
+}
+
+func TestVerifyAccountOwnedToken(t *testing.T) {
+	active := reply(http.StatusOK, okBody(`{"id":"tok9","status":"active"}`))
+	env := setup(t, tokenServer(reply(http.StatusUnauthorized, rejectedToken), map[string]http.HandlerFunc{"a2": active, "a3": active}, "a1", "a2", "a3"))
+
+	got, err := env.c.VerifyToken(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, TokenStatus{ID: "tok9", Status: "active"}, got)
+	require.Equal(t, []string{
+		"/user/tokens/verify",
+		"/accounts",
+		"/accounts/a1/tokens/verify",
+		"/accounts/a2/tokens/verify",
+	}, requestedPaths(t, env), "the first account that verifies it is the answer")
+}
+
+func TestVerifyTokenTriesTheAccountFormOnAnyRefusal(t *testing.T) {
+	// What Cloudflare answers an account-owned token at the user form is not
+	// known for certain, so every answer that is not a 429 counts.
+	for name, user := range map[string]http.HandlerFunc{
+		"401":                         reply(http.StatusUnauthorized, rejectedToken),
+		"403":                         reply(http.StatusForbidden, `{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`),
+		"400 with an auth code":       reply(http.StatusBadRequest, `{"success":false,"errors":[{"code":6003,"message":"Invalid request headers"}]}`),
+		"404":                         reply(http.StatusNotFound, ``),
+		"500":                         reply(http.StatusInternalServerError, ``),
+		"success false":               reply(http.StatusOK, `{"success":false,"errors":[{"code":1001,"message":"no"}]}`),
+		"no status":                   reply(http.StatusOK, okBody(`{"id":"tok1"}`)),
+		"an answer that is not JSON":  reply(http.StatusOK, `<html></html>`),
+		"a result of the wrong shape": reply(http.StatusOK, okBody(`{"id":"tok1","status":"active","expires_on":"soon"}`)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := setup(t, tokenServer(user, map[string]http.HandlerFunc{
+				"a1": reply(http.StatusOK, okBody(`{"id":"tok9","status":"active"}`)),
+			}, "a1"))
+
+			got, err := env.c.VerifyToken(context.Background())
+
+			require.NoError(t, err)
+			require.Equal(t, "tok9", got.ID)
+			require.Len(t, env.requests(), 3)
+		})
+	}
+}
+
+func TestVerifyTokenKeepsToTheUserFormWhenItCannotTell(t *testing.T) {
+	for name, user := range map[string]http.HandlerFunc{
+		"rate limited": reply(http.StatusTooManyRequests, `{"success":false,"errors":[{"code":971,"message":"slow down"}]}`),
+		"no answer":    func(w http.ResponseWriter, _ *http.Request) { dropConnection(w) },
+		"cut short":    dropMidBody(http.StatusOK, ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := setup(t, tokenServer(user, nil, "a1"))
+
+			_, err := env.c.VerifyToken(context.Background())
+
+			require.Error(t, err)
+			require.False(t, IsAuth(err))
+			require.NotContains(t, err.Error(), "account token")
+			require.Equal(t, []string{"/user/tokens/verify"}, requestedPaths(t, env))
+		})
+	}
+}
+
+func TestVerifyTokenFailsBothWays(t *testing.T) {
+	user := reply(http.StatusUnauthorized, rejectedToken)
+	tests := []struct {
+		name        string
+		h           http.HandlerFunc
+		says        string // about the account form
+		auth        bool
+		rateLimited bool
+		askedA2     bool
+	}{
+		{"every account rejects it", tokenServer(user, nil, "a1", "a2"),
+			"as an account token: no account it sees verifies it: account a1: cloudflare api: HTTP 401: Invalid API Token (codes 1000); account a2: cloudflare api: HTTP 401",
+			true, false, true},
+		{"it sees no account", tokenServer(user, nil),
+			"as an account token: it sees no account", true, false, false},
+		{"the accounts cannot be listed", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/client/v4/accounts" {
+				reply(http.StatusForbidden, `{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`)(w, r)
+				return
+			}
+			user(w, r)
+		}, "as an account token: listing accounts", true, false, false},
+		{"the account form is rate limited", tokenServer(user, map[string]http.HandlerFunc{
+			"a1": reply(http.StatusTooManyRequests, `{"success":false,"errors":[{"code":971,"message":"slow down"}]}`),
+		}, "a1", "a2"), "as an account token: account a1: cloudflare api: HTTP 429", false, true, false},
+		{"the account form gets no answer", tokenServer(user, map[string]http.HandlerFunc{
+			"a1": func(w http.ResponseWriter, _ *http.Request) { dropConnection(w) },
+		}, "a1", "a2"), "as an account token: account a1: sending request", false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setup(t, tt.h)
+
+			got, err := env.c.VerifyToken(context.Background())
+
+			require.Equal(t, TokenStatus{}, got)
+			require.ErrorContains(t, err, "verifying token: as a user token: cloudflare api: HTTP 401: Invalid API Token")
+			require.ErrorContains(t, err, tt.says)
+			require.Equal(t, tt.auth, IsAuth(err), "IsAuth")
+			require.Equal(t, tt.rateLimited, IsRateLimited(err), "IsRateLimited")
+			require.Equal(t, tt.askedA2, slices.Contains(requestedPaths(t, env), "/accounts/a2/tokens/verify"),
+				"an account that could not answer stops the search")
+		})
+	}
+}
+
+func TestVerifyTokenSkipsAnAccountIDThatCannotBeAPath(t *testing.T) {
+	env := setup(t, tokenServer(reply(http.StatusUnauthorized, rejectedToken), map[string]http.HandlerFunc{
+		"a1": reply(http.StatusOK, okBody(`{"id":"tok9","status":"active"}`)),
+	}, "..", "a1"))
+
+	got, err := env.c.VerifyToken(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, "tok9", got.ID)
+	require.Equal(t, []string{"/user/tokens/verify", "/accounts", "/accounts/a1/tokens/verify"}, requestedPaths(t, env))
 }
 
 func TestAccounts(t *testing.T) {

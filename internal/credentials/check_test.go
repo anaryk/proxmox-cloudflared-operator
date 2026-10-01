@@ -574,6 +574,17 @@ func TestActiveTokenKeepsItsExpiry(t *testing.T) {
 	require.Equal(t, cfapi.TokenStatus{ID: "token-1", Status: "active", ExpiresOn: &expires}, got.Token)
 }
 
+func TestAccountOwnedTokenIsChecked(t *testing.T) {
+	f := newFake()
+	f.SetTokenOwner("acct1")
+
+	got := newChecker().Run(t.Context(), f, true)
+
+	require.True(t, got.Usable)
+	require.Empty(t, failures(got))
+	requireNothingLeft(t, f, []string{"zone1"}, []string{"acct1"})
+}
+
 func TestFailingVerificationStopsEarly(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -589,6 +600,11 @@ func TestFailingVerificationStopsEarly(t *testing.T) {
 			name:  "rejected token",
 			setup: func(f *cffake.Fake) { f.Deny("verify") },
 			want:  "HTTP 403",
+		},
+		{
+			name:  "token of an account it does not see",
+			setup: func(f *cffake.Fake) { f.SetTokenOwner("acct9") },
+			want:  "HTTP 401",
 		},
 	}
 	for _, tc := range tests {

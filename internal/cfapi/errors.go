@@ -1,6 +1,7 @@
 package cfapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -48,6 +49,36 @@ func (e *Error) Error() string {
 	}
 	return b.String()
 }
+
+// transportError marks a request that got no whole answer: it could not be
+// sent, or the answer was cut short. Its message is the one of the error it
+// wraps.
+type transportError struct{ err error }
+
+func (e transportError) Error() string { return e.err.Error() }
+func (e transportError) Unwrap() error { return e.err }
+
+// unanswered reports whether err leaves open what the server would have
+// answered: the request got no whole answer, the caller gave up, or it was
+// held back or refused for the rate limit.
+func unanswered(err error) bool {
+	var te transportError
+	return errors.As(err, &te) || IsRateLimited(err) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// errorList is several errors on one line.
+type errorList []error
+
+func (l errorList) Error() string {
+	msgs := make([]string, len(l))
+	for i, err := range l {
+		msgs[i] = err.Error()
+	}
+	return strings.Join(msgs, "; ")
+}
+
+func (l errorList) Unwrap() []error { return l }
 
 // IsAuth reports whether err says the token is rejected or lacks permission.
 func IsAuth(err error) bool {

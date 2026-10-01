@@ -243,7 +243,7 @@ func (c *Client) roundTrip(ctx context.Context, method, path string, query url.V
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		return nil, fmt.Errorf("sending request: %w", transportError{err})
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -278,7 +278,7 @@ func (c *Client) readAnswer(resp *http.Response, raw []byte, readErr error) (*en
 
 	switch {
 	case readErr != nil:
-		return nil, fmt.Errorf("reading response: %w", readErr)
+		return nil, fmt.Errorf("reading response: %w", transportError{readErr})
 	case tooBig:
 		return nil, fmt.Errorf("%w: body exceeds %d bytes", errUnexpected, maxBodyBytes)
 	case decodeErr != nil:

@@ -941,6 +941,29 @@ func TestSetTokenStatus(t *testing.T) {
 	require.Equal(t, cfapi.TokenStatus{ID: st.ID, Status: "disabled"}, st)
 }
 
+func TestAccountOwnedToken(t *testing.T) {
+	f := newFake()
+	f.SetTokenStatus("expired", nil)
+
+	f.SetTokenOwner(acct)
+	st, err := f.VerifyToken(ctx)
+	require.NoError(t, err, "found at the account form of its account")
+	require.Equal(t, "expired", st.Status, "with the status the token has")
+
+	f.SetTokenOwner("acct9")
+	st, err = f.VerifyToken(ctx)
+	require.True(t, cfapi.IsAuth(err), "its account is not one the token sees: %v", err)
+	require.Equal(t, cfapi.TokenStatus{}, st)
+	f.AddAccount("acct9", "Ninth")
+	_, err = f.VerifyToken(ctx)
+	require.NoError(t, err)
+
+	f.SetTokenOwner("")
+	_, err = f.VerifyToken(ctx)
+	require.NoError(t, err, "a user's token again")
+	require.Equal(t, []string{"VerifyToken", "VerifyToken", "VerifyToken", "VerifyToken"}, f.Calls())
+}
+
 func TestSetTokenStatusDoesNotOverrideDeny(t *testing.T) {
 	f := New()
 	f.SetTokenStatus("active", nil)
