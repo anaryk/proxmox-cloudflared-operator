@@ -5,10 +5,27 @@ import (
 	"time"
 )
 
+// The profiles an installation is made for.
+const (
+	ProfileHost      = "host"
+	ProfileAppliance = "appliance"
+)
+
 // Install identifies this installation of pco.
 type Install struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Profile is ProfileHost or ProfileAppliance. An install made before
+	// profiles existed has none, which means the host profile.
+	Profile string `json:"profile,omitempty"`
+}
+
+// ProfileName returns the profile of the install, never an empty one.
+func (i Install) ProfileName() string {
+	if i.Profile == "" {
+		return ProfileHost
+	}
+	return i.Profile
 }
 
 // NodeEntry is a node that runs pco.

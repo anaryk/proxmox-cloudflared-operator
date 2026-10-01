@@ -131,6 +131,11 @@ func (s *Store) SaveInstall(i Install) error {
 	if i.ID == "" {
 		return errors.New("install id is empty")
 	}
+	switch i.Profile {
+	case "", ProfileHost, ProfileAppliance:
+	default:
+		return fmt.Errorf("install profile %q: want %q or %q", i.Profile, ProfileHost, ProfileAppliance)
+	}
 	return s.cluster.put(kindMeta, idInstall, i, true)
 }
 
