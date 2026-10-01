@@ -17,8 +17,9 @@ type Tombstone struct {
 	Nonce      string    `json:"nonce"`      // nonce of the writer that created it
 
 	// Confirmed is set when the admin confirmed the removal while it was
-	// pending: it then passes the mass delete guard. A grace that starts
-	// again starts unconfirmed.
+	// pending, that is in a run that found the tombstone already there: it
+	// then passes the mass delete guard. A grace that starts again starts
+	// unconfirmed.
 	Confirmed bool `json:"confirmed,omitempty"`
 }
 
@@ -63,21 +64,24 @@ func (run *dnsRun) continuous(t Tombstone) bool {
 		run.now.Sub(t.Seen) <= run.r.s.MaxGap
 }
 
-// confirm records that the name of key is unwanted now and returns its
+// seenUnwanted records that the name of key is unwanted now and returns its
 // tombstone, whose grace starts now, unconfirmed, unless it was watched
 // without a break. Seen moves on only once it is more than a quarter of
 // MaxGap old, so that a held delete does not rewrite the store on every run.
-// A run with ConfirmDeletes confirms the removal.
-func (run *dnsRun) confirm(key string) Tombstone {
+// A run with ConfirmDeletes confirms the removal only when the tombstone was
+// there before and keeps its grace: the admin confirmed what the guard
+// showed, not what this run finds for the first time.
+func (run *dnsRun) seenUnwanted(key string) Tombstone {
 	old, ok := run.stones.m[key]
 	t := old
+	kept := ok && run.continuous(old)
 	switch {
-	case !ok || !run.continuous(t):
+	case !kept:
 		t = Tombstone{Since: run.now, Seen: run.now, Generation: run.us.Generation, Nonce: run.us.Nonce}
 	case run.now.Sub(t.Seen) > run.r.s.MaxGap/4:
 		t.Seen = run.now
 	}
-	if run.in.ConfirmDeletes {
+	if kept && run.in.ConfirmDeletes {
 		t.Confirmed = true
 	}
 	if !ok || t != old {

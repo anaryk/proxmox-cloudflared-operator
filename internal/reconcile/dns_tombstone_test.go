@@ -714,3 +714,27 @@ func TestDNSTombstoneHousekeeping(t *testing.T) {
 		stoneKey(zone2.ID, "unread.shop.cz"):    watched(t0.Add(-31*24*time.Hour), t0.Add(-31*24*time.Hour)),
 	}, store.m)
 }
+
+// TestDNSIncompleteInventoryStillRemembersWantedNames plans a name with an
+// incomplete inventory in a run whose saves fail: the drop of its tombstone is
+// only in memory, and the next run must still start a new grace.
+func TestDNSIncompleteInventoryStillRemembersWantedNames(t *testing.T) {
+	ctx := context.Background()
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, ourCNAME("app.example.com", testTunnelID))
+	key := stoneKey(zone1.ID, "app.example.com")
+	store := &memStore{m: map[string]Tombstone{key: overdue}, saveErrs: map[int]error{1: errDisk, 2: errDisk}}
+	c := &clock{t0}
+	r := newDNSAt(f, store, writerOf(ours, ours), c)
+
+	in := dnsIn("app.example.com")
+	in.InventoryOK = false
+	r.Run(ctx, in, Enforce)
+	require.Equal(t, overdue, store.m[key], "the drop was not saved")
+	require.Equal(t, map[string]bool{key: true}, r.wantedSinceSave)
+
+	c.t = t0.Add(20 * time.Second)
+	res := r.Run(ctx, dnsIn(), Enforce)
+	require.Empty(t, callsTo(f, "DeleteRecord"))
+	requireHeld(t, res.Actions, "grace period: 1m0s left")
+}

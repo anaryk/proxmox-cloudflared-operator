@@ -86,7 +86,7 @@ func sinceOf(m map[string]Tombstone) map[string]time.Time {
 // failCreate may refuse a create; deleteErr answers every delete without
 // passing it on; lostAnswers passes updates and deletes on but answers them
 // with an error, as when the answer is lost; afterWrite runs after each write
-// that went through.
+// that went through. updates keeps every record an update sent.
 type dnsSpy struct {
 	cfapi.API
 	lookup      func(zoneID string, f cfapi.RecordFilter) error
@@ -96,6 +96,7 @@ type dnsSpy struct {
 	lostAnswers bool
 	afterWrite  func(method string)
 	deletes     int
+	updates     []cfapi.Record
 }
 
 var errLostAnswer = errors.New("connection reset by peer")
@@ -127,6 +128,7 @@ func (s *dnsSpy) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record
 }
 
 func (s *dnsSpy) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
+	s.updates = append(s.updates, r)
 	got, err := s.API.UpdateRecord(ctx, zoneID, r)
 	if err == nil {
 		s.wrote("UpdateRecord")

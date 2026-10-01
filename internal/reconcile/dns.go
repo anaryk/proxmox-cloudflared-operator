@@ -23,6 +23,7 @@ const (
 
 	heldNoTunnel      = "tunnel not created yet"
 	heldTunnelUnknown = "tunnel state unknown"
+	heldUnverified    = "tunnel configuration not verified"
 	heldInventory     = "inventory incomplete"
 	heldWriter        = "writer changed"
 	heldUnreadable    = "writer unreadable"
@@ -64,17 +65,33 @@ type ZoneRef struct {
 
 // DNSInput is what a DNS run brings in line.
 type DNSInput struct {
-	Records     []planner.RecordPlan
-	Zones       []ZoneRef       // every zone pco manages, also those with no wanted records
-	Tunnels     []TunnelState   // to translate tunnel names into ids
+	Records []planner.RecordPlan
+	Zones   []ZoneRef // every zone pco manages, also those with no wanted records
+
+	// Tunnels and TunnelVerdict must be the result of this cycle's tunnel
+	// run. Tunnels translate tunnel names into ids, and a record is created
+	// or pointed at a tunnel only once that run verified its configuration.
+	// With a verdict other than WriterProceed the DNS run does nothing.
+	Tunnels       []TunnelState
+	TunnelVerdict WriterVerdict
+
+	// Keep holds the hostnames that are published or claimed but have no
+	// record plan, as their rule is the 503 block. A record of this install
+	// at such a name is neither wanted nor unwanted: it is not pointed
+	// anywhere, not deleted and not counted by the mass delete guard, and a
+	// tombstone of the name is dropped as for a wanted name.
+	Keep map[string]bool
+
 	InventoryOK bool            // false: no deletes, no tombstone started or confirmed
 	Adopt       map[string]bool // record names the admin agreed to take over
 
 	// ConfirmDeletes, in an enforcing run with a complete inventory, confirms
-	// every removal pending in this run, in its grace or due, and every
-	// tombstone of a zone that could not be listed: each then passes the mass
-	// delete guard, also in later runs. A removal that becomes pending later,
-	// or whose grace starts again, is not covered.
+	// the removals that were pending before this run and still are, in their
+	// grace or due, and every tombstone of a zone that could not be listed:
+	// each then passes the mass delete guard, also in later runs. A removal
+	// the run finds for the first time, or whose grace starts again in it, is
+	// not covered, nor is one that becomes pending later: the admin confirms
+	// only what the guard showed.
 	ConfirmDeletes bool
 
 	// StillUnwanted asks the inventory once more, right before a delete,
@@ -103,7 +120,11 @@ type DNSResult struct {
 	Replaced []cfapi.Record
 
 	Problems []string
-	Verdict  WriterVerdict // WriterStale when this process is not, or stopped being, the stored writer
+
+	// Verdict is TunnelVerdict when that did not let the run start, and
+	// otherwise WriterStale when this process is not, or stopped being, the
+	// stored writer.
+	Verdict WriterVerdict
 }
 
 // DNSReconciler keeps a proxied CNAME to the tunnel for every published
@@ -151,24 +172,27 @@ func NewDNSReconciler(clients Clients, store TombstoneStore, writer func() (us, 
 
 // Run brings the records of every zone in line with in.
 //
-// It works only while the writer callback names us as the writer stored in
-// leader.json, asks again before every write to Cloudflare or to the store,
-// and stops with WriterStale as soon as that changes. A wanted name gets a
-// proxied CNAME to its tunnel; records of others are never changed, except
-// the one the admin asked to adopt. A record of this install at an unwanted
-// name is deleted only after a grace this writer watched without a break,
-// with a complete inventory, the tombstones saved, a fresh read and an
-// inventory check right before the call, and, while many removals are
-// pending, the admin's confirmation (ConfirmDeletes). When in doubt a record
-// stays. In Observe mode Run only reads and returns the actions it would take
-// as held.
+// It does nothing when the tunnel run of the cycle did not let its writer
+// proceed. It works only while the writer callback names us as the writer
+// stored in leader.json, asks again before every write to Cloudflare or to the
+// store, and stops with WriterStale as soon as that changes. A wanted name
+// gets a proxied CNAME to its tunnel, and in Enforce mode only once the tunnel
+// run verified the configuration of that tunnel; records of others are never
+// changed, except the one the admin asked to adopt. A record of this install
+// at an unwanted name is deleted only after a grace this writer watched
+// without a break, with a complete inventory, the tombstones saved, a fresh
+// read and an inventory check right before the call, and, while many removals
+// are pending, the admin's confirmation (ConfirmDeletes). When in doubt a
+// record stays. In Observe mode Run only reads and returns the actions it
+// would take as held.
 //
-// A name seen wanted, by the plan of a run that did not find another writer
-// stored or by the inventory right before a delete, starts a new grace when
-// it is next unwanted, also when the drop of its tombstone could not be saved
-// yet; that is remembered in memory, so a restart of the process between
-// such a failed save and the next run loses it. A forward clock step larger
-// than the grace but within MaxGap makes a tombstone due at once.
+// A name seen wanted, planned or kept by a run that did not find another
+// writer stored, or published as the inventory says right before a delete,
+// starts a new grace when it is next unwanted, also when the drop of its
+// tombstone could not be saved yet; that is remembered in memory, so a
+// restart of the process between such a failed save and the next run loses
+// it. A forward clock step larger than the grace but within MaxGap makes a
+// tombstone due at once.
 func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -180,13 +204,19 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 		now:    r.now(),
 		marker: planner.DNSMarker(r.s.InstallID),
 		adopt:  lowerKeys(in.Adopt),
+		keep:   lowerKeys(in.Keep),
 	}
-	started := run.start()
+	started := false
+	if in.TunnelVerdict != WriterProceed {
+		// Its tunnels were not brought in line, so no record may follow them.
+		run.res.Verdict = in.TunnelVerdict
+		run.problem(fmt.Sprintf("dns: the tunnel run of this cycle found a %s; changing no dns record", heldVerdict(in.TunnelVerdict)))
+	} else {
+		started = run.start()
+	}
 	if run.res.Verdict != WriterStale {
 		// What the plan of another writer wants says nothing about ours.
-		for _, rp := range in.Records {
-			r.wantedSinceSave[tombstoneKey(rp.ZoneID, rp.Name)] = true
-		}
+		run.remember()
 	}
 	if !started {
 		return run.res
@@ -207,6 +237,27 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 	run.saveTombstones(ctx, false)
 	run.finish()
 	return run.res
+}
+
+// remember notes the tombstone keys of the names this run sees wanted, planned
+// or kept, until the tombstones are saved.
+func (run *dnsRun) remember() {
+	for _, rp := range run.in.Records {
+		run.r.wantedSinceSave[tombstoneKey(rp.ZoneID, rp.Name)] = true
+	}
+	for name := range run.keep {
+		for _, z := range run.in.Zones {
+			if inZone(name, z.Name) {
+				run.r.wantedSinceSave[tombstoneKey(z.ID, name)] = true
+			}
+		}
+	}
+}
+
+// inZone reports whether a lower-case name lies in the zone of that name.
+func inZone(name, zone string) bool {
+	zone = strings.ToLower(zone)
+	return name == zone || strings.HasSuffix(name, "."+zone)
 }
 
 // tunnelRef names the tunnel of an account.
@@ -233,6 +284,7 @@ type dnsRun struct {
 	tunnels map[tunnelRef]TunnelState
 	targets map[string]bool // lower-case CNAME targets of our tunnels
 	adopt   map[string]bool // lower-case names
+	keep    map[string]bool // lower-case names neither wanted nor unwanted
 	twice   map[string]bool // lower-case names planned more than once
 	stones  *tombstones     // nil in Observe mode
 

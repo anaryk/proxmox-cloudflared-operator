@@ -26,7 +26,7 @@ func (run *dnsRun) decide(zones []*dnsZone) {
 		}
 		z.holds = make(map[string]string)
 		for name := range z.owned {
-			if !z.isWanted(name) {
+			if !z.isWanted(name) && !run.keep[name] {
 				z.holds[name] = run.retireHold(z, name)
 			}
 		}
@@ -45,13 +45,19 @@ func (run *dnsRun) decide(zones []*dnsZone) {
 
 // forgetWanted drops the tombstones of names seen wanted, whatever else the
 // run knows: dropping one only makes a later delete wait longer. A name this
-// run plans drops any tombstone. One remembered from an earlier run, which may
-// have come from a process that was not the writer, drops only a tombstone of
-// this writer: the tombstones of another writer restart wherever they are
-// seen, and where they are not they keep the mass delete guard counting.
+// run plans or keeps drops any tombstone, a kept one in whatever zone. One
+// remembered from an earlier run, which may have come from a process that was
+// not the writer, drops only a tombstone of this writer: the tombstones of
+// another writer restart wherever they are seen, and where they are not they
+// keep the mass delete guard counting.
 func (run *dnsRun) forgetWanted() {
 	for _, rp := range run.in.Records {
 		run.stones.drop(tombstoneKey(rp.ZoneID, rp.Name))
+	}
+	for key := range run.stones.m {
+		if _, name, _ := strings.Cut(key, "/"); run.keep[name] {
+			run.stones.drop(key)
+		}
 	}
 	for key := range run.r.wantedSinceSave {
 		if t, ok := run.stones.m[key]; ok && run.byUs(t) {
@@ -102,8 +108,8 @@ func (run *dnsRun) expire(zones []*dnsZone) {
 }
 
 // retireHold says why the records at an unwanted name may not be deleted in
-// this run, confirming their tombstone when the run keeps tombstones. It is
-// empty when they are due.
+// this run, bringing their tombstone up to date when the run keeps
+// tombstones. It is empty when they are due.
 func (run *dnsRun) retireHold(z *dnsZone, name string) string {
 	switch {
 	case !run.in.InventoryOK:
@@ -111,7 +117,7 @@ func (run *dnsRun) retireHold(z *dnsZone, name string) string {
 	case run.mode == Observe:
 		return heldObserve
 	}
-	t := run.confirm(tombstoneKey(z.ID, name))
+	t := run.seenUnwanted(tombstoneKey(z.ID, name))
 	if left := run.graceLeft(t); left > 0 {
 		return fmt.Sprintf("grace period: %s left", left)
 	}

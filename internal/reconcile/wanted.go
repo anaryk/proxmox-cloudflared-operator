@@ -5,9 +5,14 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 )
+
+// adoptTimeout bounds the create that refills a name an adoption emptied,
+// and the put-back after it, which outlive a cancelled run.
+const adoptTimeout = 30 * time.Second
 
 // want gives a wanted name its CNAME to the tunnel.
 func (run *dnsRun) want(ctx context.Context, z *dnsZone, name string) {
@@ -40,22 +45,38 @@ func (run *dnsRun) want(ctx context.Context, z *dnsZone, name string) {
 		z.add(Action{Kind: kind, Target: name, Detail: fmt.Sprintf("in zone %s: tunnel %s has no known id", z.Name, rp.TunnelName)}, held)
 		return
 	}
-	target := st.ID + tunnelDomain
+	// A tunnel whose configuration was not verified may answer the name
+	// with the catch-all: a working record is not pointed at it.
+	p := pointing{target: st.ID + tunnelDomain}
+	if run.mode == Enforce && !st.Verified {
+		p.held = heldUnverified
+	}
 	if len(ours) == 0 {
-		run.claim(ctx, z, name, target)
+		run.claim(ctx, z, name, p)
 		return
 	}
-	run.retarget(ctx, z, ours[0], target)
+	run.retarget(ctx, z, ours[0], p)
 }
 
-// retarget points a CNAME of this install at target. The record is read again
-// first, and changed only while it is still a CNAME of ours at that name; its
-// comment, which begins with the marker, is kept.
-func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, target string) {
-	if strings.EqualFold(rec.Content, target) && rec.Proxied {
+// pointing is where a wanted name is to point, and why it may not yet when
+// held is set.
+type pointing struct {
+	target string
+	held   string
+}
+
+// retarget points a CNAME of this install at the target. The record is read
+// again first, and changed only while it is still a CNAME of ours at that
+// name; its comment, which begins with the marker, is kept.
+func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, p pointing) {
+	if strings.EqualFold(rec.Content, p.target) && rec.Proxied {
 		return
 	}
-	a := Action{Kind: UpdateRecord, Target: rec.Name, Detail: pointDetail(z, target, rec)}
+	a := Action{Kind: UpdateRecord, Target: rec.Name, Detail: pointDetail(z, p.target, rec)}
+	if p.held != "" {
+		z.add(a, p.held)
+		return
+	}
 	if !run.proceed(z, a) {
 		return
 	}
@@ -72,7 +93,8 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, t
 		run.conflict(z, fresh)
 		return
 	}
-	fresh.Content, fresh.Proxied = target, true
+	// A proxied record has no TTL of its own: Cloudflare spells that 1.
+	fresh.Content, fresh.Proxied, fresh.TTL = p.target, true, 1
 	run.write(z, a, func() error {
 		_, err := z.api.UpdateRecord(ctx, z.ID, fresh)
 		return err
@@ -81,8 +103,8 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, t
 
 // claim creates the CNAME of a wanted name that has no record of this install,
 // unless a record of someone else holds the name.
-func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name, target string) {
-	create := Action{Kind: CreateRecord, Target: name, Detail: pointDetail(z, target)}
+func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name string, p pointing) {
+	create := Action{Kind: CreateRecord, Target: name, Detail: pointDetail(z, p.target)}
 	if run.stopped != "" {
 		z.add(create, run.stopped)
 		return
@@ -96,10 +118,12 @@ func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name, target string) {
 	switch {
 	case slices.ContainsFunc(holders, run.owns):
 		run.problem(fmt.Sprintf("%s: a record of this install appeared during the run; trying again on the next one", z.about(name)))
+	case len(holders) == 0 && p.held != "":
+		z.add(create, p.held)
 	case len(holders) == 0:
-		run.create(ctx, z, create, target)
+		run.create(ctx, z, create, p.target)
 	case run.adopt[name] && len(holders) == 1:
-		run.adoptRecord(ctx, z, holders[0], target)
+		run.adoptRecord(ctx, z, holders[0], p)
 	default:
 		for _, rec := range holders {
 			run.conflict(z, rec)
@@ -120,10 +144,15 @@ func (run *dnsRun) create(ctx context.Context, z *dnsZone, a Action, target stri
 // adopt: a CNAME is changed in place, an address record is replaced. The
 // record as it was goes into Replaced as the call that changes or deletes it
 // goes out: a call whose answer is lost may have landed.
-func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record, target string) {
+func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record, p pointing) {
+	target := p.target
 	if isType(rec, "CNAME") {
 		upd := cfapi.Record{ID: rec.ID, Type: "CNAME", Name: rec.Name, Content: target, Proxied: true, Comment: run.marker}
 		a := Action{Kind: UpdateRecord, Target: rec.Name, Detail: pointDetail(z, target, rec), Destructive: true}
+		if p.held != "" {
+			z.add(a, p.held)
+			return
+		}
 		run.write(z, a, func() error {
 			run.res.Replaced = append(run.res.Replaced, rec)
 			_, err := z.api.UpdateRecord(ctx, z.ID, upd)
@@ -140,6 +169,8 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		held = heldInventory
 	case run.mode == Observe:
 		held = heldObserve
+	case p.held != "":
+		held = p.held
 	case run.noDeletes != "":
 		held = run.noDeletes
 	}
@@ -157,6 +188,9 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		}
 		return
 	}
+	// The name is empty now: a run cancelled from here on must still fill it.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adoptTimeout)
+	defer cancel()
 	if !run.create(ctx, z, add, target) {
 		run.restore(ctx, z, rec)
 	}

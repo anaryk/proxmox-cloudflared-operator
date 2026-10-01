@@ -160,3 +160,42 @@ func TestDNSAdoptSeveralRecordsStaysConflict(t *testing.T) {
 		{Zone: "example.com", Name: "app.example.com", Type: "A", Content: "192.0.2.11"},
 	}, res.Conflicts)
 }
+
+// TestDNSAdoptionCompletesInACancelledRun cancels the run right after an
+// adoption deleted the address record: the name must not stay empty.
+func TestDNSAdoptionCompletesInACancelledRun(t *testing.T) {
+	original := cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10", TTL: 300, Comment: "by hand"}
+	cases := []struct {
+		name   string
+		refuse func(r cfapi.Record) error
+		want   cfapi.Record
+	}{
+		{"the CNAME is created", nil,
+			cfapi.Record{Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, TTL: 1, Comment: testMarker}},
+		{"the original is put back", func(r cfapi.Record) error {
+			if r.Type == "CNAME" {
+				return errors.New("refused by the test")
+			}
+			return nil
+		}, original},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDNSFake()
+			f.SeedRecord(zone1.ID, original)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			s := &dnsSpy{API: f, failCreate: tc.refuse, afterWrite: func(method string) {
+				if method == "DeleteRecord" {
+					cancel()
+				}
+			}}
+			in := dnsIn("app.example.com")
+			in.Adopt = map[string]bool{"app.example.com": true}
+
+			newDNS(s, &memStore{}, t0).Run(ctx, in, Enforce)
+
+			require.Equal(t, []cfapi.Record{tc.want}, withoutIDs(recordsIn(f, zone1.ID)))
+		})
+	}
+}
