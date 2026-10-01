@@ -3,6 +3,7 @@ package annotation
 import (
 	"cmp"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -220,6 +221,60 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			name:  "shorthand continued by an option on the next line",
+			input: "cf-tunnel: a.example.com -> https://:443\n  no-tls-verify",
+			found: true,
+			errs:  []string{msgShorthandContinue},
+		},
+		{
+			name:  "shorthand continued by each kind of option",
+			input: "cf-tunnel: a.example.com -> https://:443\n  SNI=x.example.com\ncf-tunnel: b.example.com -> :80\n  via=net1\ncf-tunnel: c.example.com -> :80\n  Host-Header=x",
+			found: true,
+			errs:  []string{msgShorthandContinue, msgShorthandContinue, msgShorthandContinue},
+		},
+		{
+			name:  "shorthand continued by an arrow",
+			input: "cf-tunnel: a.example.com\n  -> :80",
+			found: true,
+			errs:  []string{"expected '->' after hostnames", msgShorthandContinue},
+		},
+		{
+			name:  "shorthand with an option on an unindented next line",
+			input: "cf-tunnel: a.example.com -> https://:443\nno-tls-verify",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{})},
+		},
+		{
+			name:  "shorthand with an option as wide as the line itself",
+			input: "  cf-tunnel: a.example.com -> https://:443\n  no-tls-verify",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{})},
+		},
+		{
+			name:  "shorthand followed by an indented option under an indented line",
+			input: "  cf-tunnel: a.example.com -> https://:443\n    no-tls-verify",
+			found: true,
+			errs:  []string{msgShorthandContinue},
+		},
+		{
+			name:  "shorthand followed by indented prose",
+			input: "cf-tunnel: a.example.com -> :80\n  more notes",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "shorthand followed by a blank line and an option",
+			input: "cf-tunnel: a.example.com -> :80\n\n  via=net1",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "shorthand followed by an indented comment",
+			input: "cf-tunnel: a.example.com -> :80\n  # via=net1",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
 			name:  "shorthand not at line start of text",
 			input: "see cf-tunnel: a.example.com -> :80",
 		},
@@ -321,11 +376,47 @@ func TestParse(t *testing.T) {
 			errs:  []string{`invalid hostname "no-tls-verify": needs at least two labels`},
 		},
 		{
-			name:  "tab indent is not continued by spaces",
+			name:  "tab indent against spaces",
 			input: block("\ta.example.com -> https://:443", "  no-tls-verify"),
 			found: true,
-			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{})},
-			errs:  []string{`invalid hostname "no-tls-verify": needs at least two labels`},
+			errs:  []string{msgMixedIndent},
+		},
+		{
+			name:  "spaces against a tab drop the entry",
+			input: block("  a.example.com -> :80", "\tvia=net1"),
+			found: true,
+			errs:  []string{msgMixedIndent},
+		},
+		{
+			name:  "mixed indent before the arrow",
+			input: block("  a.example.com", "\t-> :80"),
+			found: true,
+			errs:  []string{msgMixedIndent},
+		},
+		{
+			name:  "mixed indent before the target",
+			input: block("  a.example.com ->", "\t:80"),
+			found: true,
+			errs:  []string{msgMixedIndent},
+		},
+		{
+			name:  "mixed indent on a line that would start an entry",
+			input: block("  a.example.com -> :80", "\tb.example.com -> :81"),
+			found: true,
+			errs:  []string{msgMixedIndent},
+		},
+		{
+			name:  "mixed indent skips the entry's later continuation lines",
+			input: block("  a.example.com -> :80", "\tvia=net1", "    no-tls-verify", "  b.example.com -> :81"),
+			found: true,
+			want:  []Entry{e(hosts("b.example.com"), http(81), model.RouteOptions{})},
+			errs:  []string{msgMixedIndent},
+		},
+		{
+			name:  "tab under an unindented entry is a continuation",
+			input: block("a.example.com -> https://:443", "\tno-tls-verify"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{NoTLSVerify: true})},
 		},
 		{
 			name:  "hostname-like token on a continuation line after the target",
@@ -430,13 +521,123 @@ func TestParse(t *testing.T) {
 			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
 		},
 		{
-			name:  "shorthand ends at a fence on its line",
+			name:  "shorthand with a block on its line is rejected whole",
 			input: "cf-tunnel: a.example.com -> :80 ```cf-tunnel b.example.com -> :81```",
+			found: true,
+			errs:  []string{msgShorthandFence},
+		},
+		{
+			name:  "fence in a comment on a shorthand line",
+			input: "cf-tunnel: a.example.com -> :80 # old: ```cf-tunnel b.example.com -> :81``` ",
+			found: true,
+			errs:  []string{msgShorthandFence},
+		},
+		{
+			name:  "fence inside the port of a shorthand line",
+			input: "cf-tunnel: a.example.com -> :8```0",
+			found: true,
+			errs:  []string{msgShorthandFence},
+		},
+		{
+			name:  "a fence on a shorthand line does not open a block",
+			input: "cf-tunnel: a.example.com -> :80 ```cf-tunnel\nb.example.com -> :81\n",
+			found: true,
+			errs:  []string{msgShorthandFence},
+		},
+		{
+			name:  "scanning goes on at the line after a rejected shorthand line",
+			input: "cf-tunnel: a.example.com -> :80 ```\n" + block("b.example.com -> :81"),
+			found: true,
+			want:  []Entry{e(hosts("b.example.com"), http(81), model.RouteOptions{})},
+			errs:  []string{msgShorthandFence},
+		},
+		{
+			name:  "closing fence in a comment hides the rest of the line",
+			input: "```cf-tunnel\na.example.com -> :80 # see ``` ```cf-tunnel x.example.com -> :82\n```",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "closing fence in a comment on a flattened line",
+			input: "```cf-tunnel a.example.com -> :80 # see ``` ```cf-tunnel x.example.com -> :82",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "second block on the line of a closing fence outside a comment",
+			input: "```cf-tunnel a.example.com -> :80 ``` ```cf-tunnel x.example.com -> :82",
+			found: true,
+			want: []Entry{
+				e(hosts("a.example.com"), http(80), model.RouteOptions{}),
+				e(hosts("x.example.com"), http(82), model.RouteOptions{}),
+			},
+		},
+		{
+			name:  "hash inside a token is no comment, so the fence is not hidden",
+			input: "```cf-tunnel a.example.com -> :80 host-header=a#b ``` ```cf-tunnel x.example.com -> :82```",
+			found: true,
+			want:  []Entry{e(hosts("x.example.com"), http(82), model.RouteOptions{})},
+			errs:  []string{"invalid value for host-header="},
+		},
+		{
+			name:  "comment on an earlier line does not hide the closing line",
+			input: "```cf-tunnel\na.example.com -> :80 # note\nb.example.com -> :81 ``` ```cf-tunnel x.example.com -> :82```",
+			found: true,
+			want: []Entry{
+				e(hosts("a.example.com"), http(80), model.RouteOptions{}),
+				e(hosts("b.example.com"), http(81), model.RouteOptions{}),
+				e(hosts("x.example.com"), http(82), model.RouteOptions{}),
+			},
+		},
+		{
+			name:  "longer fence with a nested fence and a shorthand line",
+			input: "````md\n```text\ncf-tunnel: a.example.com -> :80\n```\n````",
+		},
+		{
+			name:  "longer fence with a nested cf-tunnel block",
+			input: "````md\n```cf-tunnel\na.example.com -> :80\n```\n````",
+		},
+		{
+			name:  "unterminated longer fence hides the rest",
+			input: "````text\n```\ncf-tunnel: a.example.com -> :80\n```",
+		},
+		{
+			name:  "route block opened with four backticks",
+			input: "````cf-tunnel\na.example.com -> :80\n```\nb.example.com -> :81\n````",
 			found: true,
 			want: []Entry{
 				e(hosts("a.example.com"), http(80), model.RouteOptions{}),
 				e(hosts("b.example.com"), http(81), model.RouteOptions{}),
 			},
+			errs: []string{"invalid hostname \"```\": needs at least two labels"},
+		},
+		{
+			name:  "longer run closes a block and is used up",
+			input: "```cf-tunnel a.example.com -> :80 ````cf-tunnel x.example.com -> :82",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "longer run closes a block of three",
+			input: "```cf-tunnel a.example.com -> :80 ````\nx.example.com -> :82",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "longer tilde fence with a nested shorter one",
+			input: "~~~~\n~~~\ncf-tunnel: a.example.com -> :80\n~~~\n~~~~",
+		},
+		{
+			name:  "longer tilde fence closed by an equal run",
+			input: "~~~~\nnotes\n~~~~\ncf-tunnel: a.example.com -> :80",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "tilde fence closed by a longer run",
+			input: "~~~\nnotes\n~~~~~\ncf-tunnel: a.example.com -> :80",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
 		},
 		{
 			name:  "fence inside a block text closes it",
@@ -637,6 +838,24 @@ func TestParse(t *testing.T) {
 			errs:  []string{"invalid value for via="},
 		},
 		{
+			name:  "via highest nic",
+			input: block("a.example.com -> :80 via=net31"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{Via: "net31"})},
+		},
+		{
+			name:  "via nic above the range",
+			input: block("a.example.com -> :80 via=net32"),
+			found: true,
+			errs:  []string{"invalid value for via="},
+		},
+		{
+			name:  "via nic with three digits",
+			input: block("a.example.com -> :80 via=net100"),
+			found: true,
+			errs:  []string{"invalid value for via="},
+		},
+		{
 			name:  "via ipv6",
 			input: block("a.example.com -> :80 via=::1"),
 			found: true,
@@ -684,6 +903,58 @@ func TestParse(t *testing.T) {
 			found: true,
 			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
 			errs:  []string{`hostname "a.example.com" is listed twice`},
+		},
+		{
+			name:  "hosts in the skipped part of a broken line are reserved",
+			input: block("a_b.example.com c.example.com -> :80", "c.example.com -> :81"),
+			found: true,
+			errs: []string{
+				`invalid hostname "a_b.example.com": label "a_b" contains '_'`,
+				`hostname "c.example.com" is listed twice`,
+			},
+		},
+		{
+			name:  "hosts on skipped continuation lines are reserved",
+			input: block("a_b.example.com -> :80", "  c.example.com", "c.example.com -> :81"),
+			found: true,
+			errs: []string{
+				`invalid hostname "a_b.example.com": label "a_b" contains '_'`,
+				`hostname "c.example.com" is listed twice`,
+			},
+		},
+		{
+			name:  "a hostname rejected as an unknown option is reserved",
+			input: block("a.example.com -> :80", "  c.example.com", "c.example.com -> :81"),
+			found: true,
+			errs: []string{
+				`unknown option "c.example.com"`,
+				`hostname "c.example.com" is listed twice`,
+			},
+		},
+		{
+			name:  "hosts after a stray option on the same line are reserved",
+			input: block("a.example.com -> :80 fast d.example.com", "d.example.com -> :81"),
+			found: true,
+			errs: []string{
+				`unknown option "fast"`,
+				`hostname "d.example.com" is listed twice`,
+			},
+		},
+		{
+			name:  "hosts of a line skipped for mixed indentation are reserved",
+			input: block("  a.example.com -> :80", "\tb.example.com -> :81", "b.example.com -> :82"),
+			found: true,
+			errs: []string{
+				msgMixedIndent,
+				`hostname "b.example.com" is listed twice`,
+			},
+		},
+		{
+			name:  "non-hostname tokens in skipped text reserve nothing",
+			input: block("a_b.example.com -> :80 fast ::1 10.0.0.5", "c.example.com -> :81"),
+			found: true,
+			want:  []Entry{e(hosts("c.example.com"), http(81), model.RouteOptions{})},
+			errs:  []string{`invalid hostname "a_b.example.com": label "a_b" contains '_'`},
 		},
 		{
 			name: "recovery",
@@ -1018,6 +1289,42 @@ func TestParseRecoveryResumesOnALaterLine(t *testing.T) {
 	})
 }
 
+func TestParseRejectionPositions(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []Error
+	}{
+		{
+			"fence in a comment on a shorthand line",
+			"cf-tunnel: a.example.com -> :80 # old: ```cf-tunnel b.example.com -> :81```",
+			[]Error{{1, 40, msgShorthandFence}},
+		},
+		{
+			"fence in the port of a shorthand line",
+			"notes\n  cf-tunnel: a.example.com -> :8```0",
+			[]Error{{2, 33, msgShorthandFence}},
+		},
+		{
+			"shorthand continued on the next line",
+			"cf-tunnel: a.example.com -> https://:443\n  no-tls-verify",
+			[]Error{{2, 3, msgShorthandContinue}},
+		},
+		{
+			"mixed indentation points at the first token of the line",
+			block("  a.example.com -> :80", "\tvia=net1"),
+			[]Error{{3, 2, msgMixedIndent}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Parse(tt.input)
+			require.Equal(t, tt.want, got.Errors)
+			require.Empty(t, got.Entries)
+		})
+	}
+}
+
 func TestParseRecoveryErrorLines(t *testing.T) {
 	input := strings.Join([]string{
 		"intro",
@@ -1066,6 +1373,12 @@ func FuzzParse(f *testing.F) {
 		"Účetní šéf ```cf-tunnel a_b.example.com -> :80```",
 		block("a.example.com -> :80 host-header=intranet,#2 via=net01", "10.0.0.5 -> :80"),
 		"cf-tunnel:#x a.example.com -> :80 ```cf-tunnel b.example.com -> :81",
+		"cf-tunnel: a.example.com -> :80 # old: ```cf-tunnel b.example.com -> :81``` ",
+		"```cf-tunnel a.example.com -> :80 # see ``` ```cf-tunnel x.example.com -> :82",
+		"````md\n```text\ncf-tunnel: a.example.com -> :80\n```\n````\n~~~~\n~~~\n~~~~",
+		block("  a.example.com -> :80", "\tvia=net1", "    no-tls-verify", "  b.example.com -> :81 via=net32"),
+		"cf-tunnel: a.example.com -> https://:443\n  no-tls-verify\ncf-tunnel: a_b.example.com c.example.com -> :80\n  d.example.com",
+		block("a_b.example.com c.example.com -> :80", "c.example.com -> :81"),
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -1088,9 +1401,15 @@ func FuzzParse(f *testing.F) {
 				require.False(t, seen[h], "hostname %q in two entries", h)
 				seen[h] = true
 			}
-			if v := en.Options.Via; v != "" {
+			require.Contains(t, description, strconv.Itoa(int(en.Target.Port)), "port that was never written")
+			if v := en.Options.Via; strings.HasPrefix(v, "net") {
+				n, err := strconv.Atoi(v[3:])
+				require.NoError(t, err)
+				require.LessOrEqual(t, n, 31)
+			} else if v != "" {
 				addr, err := netip.ParseAddr(v)
-				require.True(t, strings.HasPrefix(v, "net") || err == nil && addr.Is4(), "via %q", v)
+				require.NoError(t, err)
+				require.True(t, addr.Is4(), "via %q", v)
 			}
 			if en.Options.SNI != "" {
 				require.Equal(t, model.SchemeHTTPS, en.Target.Scheme)
@@ -1113,6 +1432,9 @@ func FuzzParse(f *testing.F) {
 		if !res.Found {
 			require.Empty(t, res.Entries)
 			require.Empty(t, res.Errors)
+		}
+		if res.Found {
+			require.Contains(t, strings.ToLower(description), "cf-tunnel")
 		}
 	})
 }

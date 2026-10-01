@@ -16,8 +16,9 @@
 // flattened onto one line working.
 //
 // A hostname may be listed only once in a description. Every hostname that is
-// read counts, also in entries that are dropped; each later mention is an error
-// and drops the entry it is in.
+// read counts, also in entries that are dropped, and so does every hostname in
+// the text skipped after an error; each later mention is an error and drops the
+// entry it is in.
 package annotation
 
 import (
@@ -33,6 +34,12 @@ import (
 const (
 	arrow        = "->"
 	targetSyntax = "expected [http|https://][ipv4]:port"
+
+	msgShorthandFence    = "code fences are not allowed on a cf-tunnel: line"
+	msgShorthandContinue = "a cf-tunnel: line cannot continue on the next line; use a fenced block"
+	msgMixedIndent       = "inconsistent indentation: mix of tabs and spaces"
+
+	maxNIC = 31 // the highest netN a guest can have
 )
 
 // Option names as they appear in messages. Options that take a value include
@@ -81,7 +88,7 @@ func Parse(description string) Result {
 	if len(spans) > 0 {
 		lines := newLineIndex(description)
 		for _, sp := range spans {
-			p.parseSegment(lex(description, sp, lines))
+			p.parseSpan(description, sp, lines)
 		}
 	}
 	p.res.Found = len(spans) > 0
@@ -93,11 +100,52 @@ type parser struct {
 	seen map[string]struct{} // every hostname read so far, kept entry or not
 }
 
+// parseSpan parses one block or shorthand line.
+func (p *parser) parseSpan(src string, sp span, lines lineIndex) {
+	if sp.fenceAt > 0 {
+		line, col := lines.position(sp.fenceAt)
+		p.res.Errors = append(p.res.Errors, Error{Line: line, Col: col, Msg: msgShorthandFence})
+		return
+	}
+	kept := len(p.res.Entries)
+	p.parseSegment(lex(src, sp, lines))
+	if sp.shorthand {
+		// The entry is dropped, but its hostnames stay claimed.
+		if t, ok := shorthandContinuation(src, sp, lines); ok {
+			p.res.Entries = p.res.Entries[:kept]
+			p.res.Errors = append(p.res.Errors, errorAt(t, msgShorthandContinue))
+		}
+	}
+}
+
+// shorthandContinuation finds the first token of the line right after a
+// shorthand line when that line is indented more and starts with "->" or an
+// option. It looks like the rest of the entry, but a shorthand line never
+// continues, so the entry is not published without it.
+func shorthandContinuation(src string, sp span, lines lineIndex) (token, bool) {
+	next := sp.to + 1
+	if next >= len(src) {
+		return token{}, false
+	}
+	toks := lex(src, span{from: next, to: lineEnd(src, next)}, lines)
+	if len(toks) == 0 {
+		return token{}, false
+	}
+	line, _ := lines.position(sp.from)
+	t := toks[0]
+	if !continues(lines.indent(line), t.indent) {
+		return token{}, false
+	}
+	_, _, isOption := splitOption(t.text)
+	return t, isOption || t.text == arrow
+}
+
 // parseSegment parses the tokens of one block or shorthand line. An entry
 // never continues into the next segment.
 //
 // After a syntax error the entry is dropped and parsing resumes at the next
-// line that does not continue it.
+// line that does not continue it. The hostnames in the text skipped that way
+// are reserved: they may well belong to the broken entry.
 func (p *parser) parseSegment(toks []token) {
 	c := &cursor{toks: toks}
 	for !c.done() {
@@ -106,12 +154,21 @@ func (p *parser) parseSegment(toks []token) {
 		if failed != nil {
 			p.res.Errors = append(p.res.Errors, failed.err)
 			if failed.skip {
-				c.skipEntry(d.indent, failed.err.Line)
+				p.reserve(c.skipEntry(d.indent, failed.err.Line))
 			}
 			continue
 		}
 		if !dup {
 			p.res.Entries = append(p.res.Entries, d.Entry)
+		}
+	}
+}
+
+// reserve claims every token that is a hostname without reporting it.
+func (p *parser) reserve(toks []token) {
+	for _, t := range toks {
+		if h, err := hostname.Normalize(t.text); err == nil {
+			p.seen[h] = struct{}{}
 		}
 	}
 }
@@ -174,26 +231,36 @@ func parseEntry(c *cursor) (draft, *failure) {
 	return d, err
 }
 
-// peek returns the next token of the entry. It reports false at the end of the
-// segment and in front of a line that does not continue the entry.
-func (d *draft) peek(c *cursor) (token, bool) {
+// lookahead says what the next token means for the entry being read.
+type lookahead int
+
+const (
+	inEntry     lookahead = iota // the token is part of the entry
+	endsEntry                    // end of the segment, or a line that starts a new entry
+	mixedIndent                  // a line indented in a way that cannot be compared with the entry's
+)
+
+// peek returns the next token and whether it belongs to the entry.
+func (d *draft) peek(c *cursor) (token, lookahead) {
 	t, ok := c.peek()
-	if !ok {
-		return token{}, false
+	switch {
+	case !ok:
+		return token{}, endsEntry
+	case d.taken == 0 || t.line == c.last().line || continues(d.indent, t.indent):
+		return t, inEntry
+	case inconsistent(d.indent, t.indent):
+		return t, mixedIndent
 	}
-	if d.taken > 0 && t.line != c.last().line && !continues(d.indent, t.indent) {
-		return token{}, false
-	}
-	return t, true
+	return t, endsEntry
 }
 
-func (d *draft) take(c *cursor) (token, bool) {
-	t, ok := d.peek(c)
-	if ok {
+func (d *draft) take(c *cursor) (token, lookahead) {
+	t, state := d.peek(c)
+	if state == inEntry {
 		c.pos++
 		d.taken++
 	}
-	return t, ok
+	return t, state
 }
 
 // continues reports whether a line that starts with lineIndent belongs to an
@@ -203,13 +270,22 @@ func continues(entryIndent, lineIndent string) bool {
 	return len(lineIndent) > len(entryIndent) && strings.HasPrefix(lineIndent, entryIndent)
 }
 
+// inconsistent reports whether two indents cannot be ordered because neither
+// is a prefix of the other, as with a tab against spaces.
+func inconsistent(a, b string) bool {
+	return !strings.HasPrefix(a, b) && !strings.HasPrefix(b, a)
+}
+
 // readHosts reads up to and including the arrow and returns the arrow token.
 func (d *draft) readHosts(c *cursor) (token, *failure) {
 	for {
-		t, ok := d.take(c)
-		if !ok {
+		t, state := d.take(c)
+		switch state {
+		case endsEntry:
 			// The first token always exists, so there is a host to point at.
 			return token{}, incomplete(d.at[len(d.at)-1], "expected '->' after hostnames")
+		case mixedIndent:
+			return token{}, fail(t, msgMixedIndent)
 		}
 		if t.text == arrow {
 			if len(d.Hosts) == 0 {
@@ -235,9 +311,12 @@ func (d *draft) readHosts(c *cursor) (token, *failure) {
 }
 
 func (d *draft) readTarget(c *cursor, arrowTok token) *failure {
-	t, ok := d.take(c)
-	if !ok {
+	t, state := d.take(c)
+	switch state {
+	case endsEntry:
 		return incomplete(arrowTok, "invalid target %q: %s", "", targetSyntax)
+	case mixedIndent:
+		return fail(t, msgMixedIndent)
 	}
 	target, err := parseTarget(t.text)
 	if err != nil {
@@ -301,9 +380,12 @@ func parseTarget(s string) (model.Target, error) {
 func (d *draft) readOptions(c *cursor) *failure {
 	given := make(map[string]bool)
 	for {
-		t, ok := d.peek(c)
-		if !ok {
+		t, state := d.peek(c)
+		switch state {
+		case endsEntry:
 			return nil
+		case mixedIndent:
+			return fail(t, msgMixedIndent)
 		}
 		name, value, isOption := splitOption(t.text)
 		if !isOption {
@@ -374,8 +456,8 @@ func (d *draft) apply(t token, name, value string) *failure {
 	return nil
 }
 
-// parseVia accepts a NIC name ("net" and an index without leading zeros) or an
-// IPv4 address and returns it in canonical form.
+// parseVia accepts a NIC name ("net0" to "net31") or an IPv4 address and
+// returns it in canonical form.
 func parseVia(v string) (string, bool) {
 	if len(v) > len("net") && equalFoldASCII(v[:3], "net") && isNICIndex(v[3:]) {
 		return "net" + v[3:], true
@@ -387,16 +469,19 @@ func parseVia(v string) (string, bool) {
 	return addr.String(), true
 }
 
+// isNICIndex accepts 0 to 31, written without leading zeros.
 func isNICIndex(s string) bool {
-	if s == "" || s != "0" && s[0] == '0' {
+	if s == "" || len(s) > 2 || s != "0" && s[0] == '0' {
 		return false
 	}
+	n := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
 			return false
 		}
+		n = n*10 + int(s[i]-'0')
 	}
-	return true
+	return n <= maxNIC
 }
 
 const maxHostHeaderLen = 253
@@ -437,9 +522,12 @@ func (c *cursor) peek() (token, bool) {
 func (c *cursor) last() token { return c.toks[c.pos-1] }
 
 // skipEntry drops the rest of a broken entry: the tokens on the line of the
-// error, then every following line that continues the entry.
-func (c *cursor) skipEntry(indent string, line int) {
+// error, then every following line that continues the entry. It returns what
+// it dropped.
+func (c *cursor) skipEntry(indent string, line int) []token {
+	from := c.pos
 	for !c.done() && (c.toks[c.pos].line <= line || continues(indent, c.toks[c.pos].indent)) {
 		c.pos++
 	}
+	return c.toks[from:c.pos]
 }
