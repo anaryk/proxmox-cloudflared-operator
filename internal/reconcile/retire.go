@@ -5,9 +5,69 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 )
+
+// tombstoneAge is how long the tombstone of a zone the run no longer manages
+// is kept.
+const tombstoneAge = 30 * 24 * time.Hour
+
+// decide works out, before anything is written, which records of this
+// install at unwanted names may be deleted in this run, and brings the
+// tombstones up to date.
+func (run *dnsRun) decide(zones []*dnsZone) {
+	if run.stones != nil {
+		// A wanted name loses its tombstone whatever else the run knows:
+		// dropping one only makes a later delete wait longer.
+		for _, rp := range run.in.Records {
+			run.stones.drop(tombstoneKey(rp.ZoneID, rp.Name))
+		}
+	}
+	for _, z := range zones {
+		if !z.listed {
+			continue
+		}
+		z.holds = make(map[string]string)
+		for name := range z.owned {
+			if !z.isWanted(name) {
+				z.holds[name] = run.retireHold(z, name)
+			}
+		}
+		if run.keepsTombstones() {
+			run.forgetGone(z)
+		}
+	}
+	if run.keepsTombstones() {
+		run.expire(zones)
+	}
+	run.decideGuard(zones)
+}
+
+// forgetGone drops the tombstones of a listed zone whose name holds no record
+// of this install any more.
+func (run *dnsRun) forgetGone(z *dnsZone) {
+	for key := range run.stones.m {
+		if name, ok := strings.CutPrefix(key, z.ID+"/"); ok && len(z.owned[name]) == 0 {
+			run.stones.drop(key)
+		}
+	}
+}
+
+// expire drops the old tombstones of zones the run does not manage.
+func (run *dnsRun) expire(zones []*dnsZone) {
+	managed := make(map[string]bool, len(zones))
+	for _, z := range zones {
+		managed[z.ID] = true
+	}
+	for key, t := range run.stones.m {
+		zoneID, _, _ := strings.Cut(key, "/")
+		if !managed[zoneID] && run.now.Sub(t.Seen) > tombstoneAge {
+			run.stones.drop(key)
+		}
+	}
+}
 
 // retireHold says why the records at an unwanted name may not be deleted in
 // this run, confirming their tombstone when the run keeps tombstones. It is

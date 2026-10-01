@@ -1,31 +1,22 @@
 package reconcile
 
-import (
-	"fmt"
-
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
-)
+import "fmt"
 
 // start reads the identity the run writes as and reports whether the run may
 // go on. Every DNS write runs under step 1 of the write procedure, so a run
 // that is not the stored writer does nothing at all, not even a listing.
 func (run *dnsRun) start() bool {
-	us, stored, err := run.r.writer()
-	if err != nil {
-		run.problem(fmt.Sprintf("dns: reading the writer identity: %v", err))
-		return false
-	}
-	if err := us.Validate(); err != nil {
-		run.problem(fmt.Sprintf("dns: cannot write as this writer: %v", err))
-		return false
-	}
-	if us.InstallID != run.r.s.InstallID {
+	us, fault, stale := startWriter(run.r.writer)
+	if (fault == "" || stale) && us.InstallID != run.r.s.InstallID {
 		// The marker comes from the settings, the sentinel from the writer.
-		run.problem(fmt.Sprintf("dns: the writer is of install %s, the settings are for install %q", us.InstallID, run.r.s.InstallID))
-		return false
+		fault, stale = fmt.Sprintf("the writer is of install %s, the settings are for install %q", us.InstallID, run.r.s.InstallID), false
 	}
 	run.us = us
-	return run.admit("dns: ", us, stored)
+	if fault != "" && !stale {
+		run.problem("dns: " + fault)
+		return false
+	}
+	return run.admit("dns: ", fault, stale)
 }
 
 // fenced asks for the writer identity again right before a write to
@@ -35,26 +26,23 @@ func (run *dnsRun) fenced(what string) bool {
 	if run.stopped {
 		return false
 	}
-	us, stored, err := run.r.writer()
-	if err != nil {
-		run.problem(fmt.Sprintf("%s: reading the writer identity: %v; writing stops", what, err))
-		run.stopped = true
-		return false
-	}
-	return run.admit(what+": ", us, stored)
+	fault, stale := recheckWriter(run.r.writer, run.us)
+	return run.admit(what+": ", fault, stale)
 }
 
-// admit takes an answer of the writer callback and reports whether the run
-// may go on. If it may not, the run stops as stale.
-func (run *dnsRun) admit(prefix string, us, stored planner.Writer) bool {
-	// The rule is the tunnel reconciler's; it needs only the identity the run
-	// started with.
-	fault := (&tunnelRun{us: run.us}).writerFault(us, stored)
-	if fault == "" {
+// admit takes what a check of the writer found and reports whether the run
+// may go on. A run that may not is stopped; as stale when another writer is
+// stored.
+func (run *dnsRun) admit(prefix, fault string, stale bool) bool {
+	switch {
+	case stale:
+		run.problem(prefix + fault + "; this writer is stale and stops")
+		run.res.Verdict = WriterStale
+	case fault != "":
+		run.problem(prefix + fault + "; writing stops")
+	default:
 		return true
 	}
-	run.problem(prefix + fault + "; this writer is stale and stops")
-	run.res.Verdict = WriterStale
 	run.stopped = true
 	return false
 }

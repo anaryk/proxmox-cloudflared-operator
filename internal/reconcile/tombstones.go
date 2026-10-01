@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// tombstoneAge is how long the tombstone of a zone the run no longer manages
-// is kept.
-const tombstoneAge = 30 * 24 * time.Hour
-
 // Tombstone is the grace of the records of this install at a name nobody
 // wants any more.
 type Tombstone struct {
@@ -26,13 +22,11 @@ type TombstoneStore interface {
 	Save(ctx context.Context, m map[string]Tombstone) error
 }
 
-// tombstones are the tombstones of one run.
 type tombstones struct {
 	m       map[string]Tombstone
 	changed bool // since the last save
 }
 
-// tombstoneKey is the key of the tombstone of a name in a zone.
 func tombstoneKey(zoneID, name string) string { return zoneID + "/" + strings.ToLower(name) }
 
 func (t *tombstones) set(key string, stone Tombstone) {
@@ -91,61 +85,6 @@ func (run *dnsRun) loadTombstones(ctx context.Context) bool {
 		run.stones.m = make(map[string]Tombstone)
 	}
 	return true
-}
-
-// decide works out, before anything is written, which records of this
-// install at unwanted names may be deleted in this run, and brings the
-// tombstones up to date.
-func (run *dnsRun) decide(zones []*dnsZone) {
-	if run.stones != nil {
-		// A wanted name loses its tombstone whatever else the run knows:
-		// dropping one only makes a later delete wait longer.
-		for _, rp := range run.in.Records {
-			run.stones.drop(tombstoneKey(rp.ZoneID, rp.Name))
-		}
-	}
-	for _, z := range zones {
-		if !z.listed {
-			continue
-		}
-		z.holds = make(map[string]string)
-		for name := range z.owned {
-			if !z.isWanted(name) {
-				z.holds[name] = run.retireHold(z, name)
-			}
-		}
-		if run.keepsTombstones() {
-			run.forgetGone(z)
-		}
-	}
-	if run.keepsTombstones() {
-		run.expire(zones)
-	}
-	run.decideGuard(zones)
-}
-
-// forgetGone drops the tombstones of a listed zone whose name holds no record
-// of this install any more.
-func (run *dnsRun) forgetGone(z *dnsZone) {
-	for key := range run.stones.m {
-		if name, ok := strings.CutPrefix(key, z.ID+"/"); ok && len(z.owned[name]) == 0 {
-			run.stones.drop(key)
-		}
-	}
-}
-
-// expire drops the old tombstones of zones the run does not manage.
-func (run *dnsRun) expire(zones []*dnsZone) {
-	managed := make(map[string]bool, len(zones))
-	for _, z := range zones {
-		managed[z.ID] = true
-	}
-	for key, t := range run.stones.m {
-		zoneID, _, _ := strings.Cut(key, "/")
-		if !managed[zoneID] && run.now.Sub(t.Seen) > tombstoneAge {
-			run.stones.drop(key)
-		}
-	}
 }
 
 // saveTombstones stores the tombstones when they changed since the last save.

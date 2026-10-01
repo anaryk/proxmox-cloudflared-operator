@@ -165,53 +165,31 @@ type tunnelRun struct {
 // start reads the identity the run writes as and reports whether the run may
 // go on.
 func (run *tunnelRun) start() bool {
-	us, stored, err := run.r.writer()
-	if err != nil {
-		run.problem(fmt.Sprintf("reading the writer identity: %v", err))
-		return false
-	}
-	if err := us.Validate(); err != nil {
-		run.problem(fmt.Sprintf("cannot write as this writer: %v", err))
-		return false
-	}
+	us, fault, stale := startWriter(run.r.writer)
 	run.us = us
-	return run.admit("", us, stored)
+	return run.admit("", fault, stale)
 }
 
 // reread asks for the writer identity again before a write may follow, and
 // reports whether the run goes on.
 func (run *tunnelRun) reread(t target) bool {
-	us, stored, err := run.r.writer()
-	if err != nil {
-		run.problem(fmt.Sprintf("%s: reading the writer identity: %v", t, err))
-		return false
-	}
-	return run.admit(t.String()+": ", us, stored)
+	fault, stale := recheckWriter(run.r.writer, run.us)
+	return run.admit(t.String()+": ", fault, stale)
 }
 
-// admit takes an answer of the writer callback and reports whether the run
-// may go on. If it may not, the run stops as stale.
-func (run *tunnelRun) admit(prefix string, us, stored planner.Writer) bool {
-	if fault := run.writerFault(us, stored); fault != "" {
-		run.stop(prefix, WriterStale, fault)
-		return false
-	}
-	return true
-}
-
-// writerFault says why an answer of the writer callback forbids writing:
-// this process writes only as the identity it started the run with, and only
-// while leader.json names that identity.
-func (run *tunnelRun) writerFault(us, stored planner.Writer) string {
+// admit takes what a check of the writer found and reports whether the run
+// may go on. A run that may not stops; as stale when another writer is
+// stored.
+func (run *tunnelRun) admit(prefix, fault string, stale bool) bool {
 	switch {
-	case us != run.us:
-		return "the writer identity changed during the run"
-	case stored.Generation != us.Generation || stored.Nonce != us.Nonce:
-		// The install id is not compared: leader.json does not hold one.
-		return fmt.Sprintf("leader.json names generation %d nonce %s, not this writer (generation %d nonce %s)",
-			stored.Generation, stored.Nonce, us.Generation, us.Nonce)
+	case stale:
+		run.stop(prefix, WriterStale, fault)
+	case fault != "":
+		run.problem(prefix + fault)
+	default:
+		return true
 	}
-	return ""
+	return false
 }
 
 // stop ends the run with a verdict other than proceed.
@@ -368,7 +346,7 @@ func (run *tunnelRun) refuse(t target, detail string, remote []planner.IngressRu
 		run.problem(fmt.Sprintf("%s: reading the writer identity: %v", t, err))
 	case us != run.us:
 		run.act(t, PutConfig, detail, heldVerdict(WriterStale))
-		run.stop(t.String()+": ", WriterStale, run.writerFault(us, fresh))
+		run.stop(t.String()+": ", WriterStale, writerFault(run.us, us, fresh))
 		return
 	default:
 		stored = fresh
@@ -380,7 +358,7 @@ func (run *tunnelRun) refuse(t target, detail string, remote []planner.IngressRu
 		"another installation uses install id %s, or the store was lost (pco setup --recover)",
 		by.Generation, by.Nonce, run.us.InstallID)
 	if v == WriterStale {
-		why = run.writerFault(run.us, stored)
+		why = writerFault(run.us, run.us, stored)
 	}
 	run.act(t, PutConfig, detail, heldVerdict(v))
 	run.stop(t.String()+": ", v, why)
