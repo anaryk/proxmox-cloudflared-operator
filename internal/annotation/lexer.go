@@ -1,25 +1,30 @@
 package annotation
 
-import "slices"
+import (
+	"slices"
+	"unicode/utf8"
+)
 
 // token is a run of text without separators, with the position of its first
 // byte in the description.
 type token struct {
-	text string
-	line int
-	col  int
+	text   string
+	line   int
+	col    int    // in characters
+	indent string // the blanks the token's line starts with
 }
 
 // lex splits src[sp.from:sp.to] into tokens. Spaces, tabs, line breaks and
-// commas separate tokens. A token that starts with '#' is a comment that runs
-// to the end of the line; a '#' inside a token is part of it.
+// commas separate tokens. A '#' that follows whitespace or starts a line begins
+// a comment that runs to the end of the line; any other '#' is part of its
+// token, so "a,#b" and "cf-tunnel:#b" contain no comment.
 func lex(src string, sp span, lines lineIndex) []token {
 	var toks []token
 	for i := sp.from; i < sp.to; {
 		switch {
 		case isSeparator(src[i]):
 			i++
-		case src[i] == '#':
+		case src[i] == '#' && (i == 0 || isSpace(src[i-1])):
 			for i < sp.to && src[i] != '\n' {
 				i++
 			}
@@ -29,34 +34,63 @@ func lex(src string, sp span, lines lineIndex) []token {
 				i++
 			}
 			line, col := lines.position(start)
-			toks = append(toks, token{text: src[start:i], line: line, col: col})
+			toks = append(toks, token{text: src[start:i], line: line, col: col, indent: lines.indent(line)})
 		}
 	}
 	return toks
 }
 
-// lineIndex holds the byte offset at which each line of the description
-// starts. Only '\n' ends a line, so CRLF counts as one break and the '\r' is
-// ordinary whitespace at the end of a line.
-type lineIndex []int
-
-func newLineIndex(src string) lineIndex {
-	idx := lineIndex{0}
-	for i := 0; i < len(src); i++ {
-		if src[i] == '\n' {
-			idx = append(idx, i+1)
-		}
-	}
-	return idx
+// lineIndex locates byte offsets of the description. Only '\n' ends a line, so
+// CRLF counts as one break and the '\r' is ordinary whitespace at the end of
+// a line.
+type lineIndex struct {
+	src     string
+	starts  []int // offset at which each line starts
+	indents []int // offset at which the leading blanks of each line end
+	cols    []int // 1-based column, in characters, of every byte offset
 }
 
-// position converts a byte offset to a 1-based line and byte column.
+func newLineIndex(src string) lineIndex {
+	x := lineIndex{src: src, starts: []int{0}, indents: []int{0}, cols: make([]int, len(src)+1)}
+	col, leading := 1, true
+	for i := 0; i < len(src); {
+		c := src[i]
+		x.cols[i] = col
+		if c == '\n' {
+			x.starts = append(x.starts, i+1)
+			x.indents = append(x.indents, i+1)
+			col, leading = 1, true
+			i++
+			continue
+		}
+		if leading && (c == ' ' || c == '\t') {
+			x.indents[len(x.indents)-1] = i + 1
+		} else {
+			leading = false
+		}
+		_, size := utf8.DecodeRuneInString(src[i:])
+		for j := i + 1; j < i+size; j++ {
+			x.cols[j] = col
+		}
+		col++
+		i += size
+	}
+	x.cols[len(src)] = col
+	return x
+}
+
+// position converts a byte offset to a 1-based line and character column.
 func (x lineIndex) position(offset int) (line, col int) {
-	i, found := slices.BinarySearch(x, offset)
+	i, found := slices.BinarySearch(x.starts, offset)
 	if !found {
 		i--
 	}
-	return i + 1, offset - x[i] + 1
+	return i + 1, x.cols[offset]
+}
+
+// indent returns the leading blanks of a line.
+func (x lineIndex) indent(line int) string {
+	return x.src[x.starts[line-1]:x.indents[line-1]]
 }
 
 func isSpace(c byte) bool {

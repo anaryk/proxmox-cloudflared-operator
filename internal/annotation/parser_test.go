@@ -148,16 +148,40 @@ func TestParse(t *testing.T) {
 			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
 		},
 		{
-			name:  "comment after a comma",
-			input: block("a.example.com,# b.example.com", "-> :80"),
+			name:  "comment after a tab",
+			input: block("a.example.com -> :80\t# trailing"),
 			found: true,
 			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "indented comment line",
+			input: block("  # note", "  a.example.com -> :80"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "hash after a comma is not a comment",
+			input: block("a.example.com -> :80 host-header=intranet,#2"),
+			found: true,
+			errs:  []string{`unknown option "#2"`},
+		},
+		{
+			name:  "hash after a comma in the hosts",
+			input: block("a.example.com,#b.example.com -> :80"),
+			found: true,
+			errs:  []string{`invalid hostname "#b.example.com": label "#b" contains '#'`},
+		},
+		{
+			name:  "hash right after the shorthand tag is not a comment",
+			input: "cf-tunnel:#x a.example.com -> :80",
+			found: true,
+			errs:  []string{`invalid hostname "#x": needs at least two labels`},
 		},
 		{
 			name:  "hash inside token",
 			input: block("a.example.com -> :80 host-header=a#b"),
 			found: true,
-			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{HostHeader: "a#b"})},
+			errs:  []string{"invalid value for host-header="},
 		},
 		{
 			name:  "shorthand",
@@ -240,6 +264,94 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			name:  "arrow and target on indented lines",
+			input: block("a.example.com", "  b.example.com", "  ->", "    :80"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com", "b.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "indented entries on the same indent are separate",
+			input: block("  a.example.com -> :80", "  b.example.com -> :81"),
+			found: true,
+			want: []Entry{
+				e(hosts("a.example.com"), http(80), model.RouteOptions{}),
+				e(hosts("b.example.com"), http(81), model.RouteOptions{}),
+			},
+		},
+		{
+			name:  "less indented line starts a new entry",
+			input: block("    a.example.com -> :80", "  b.example.com -> :81"),
+			found: true,
+			want: []Entry{
+				e(hosts("a.example.com"), http(80), model.RouteOptions{}),
+				e(hosts("b.example.com"), http(81), model.RouteOptions{}),
+			},
+		},
+		{
+			name:  "continuation is relative to the entry indent",
+			input: block("  a.example.com -> https://:443", "    no-tls-verify"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{NoTLSVerify: true})},
+		},
+		{
+			name:  "tab indent continued by more whitespace",
+			input: block("\ta.example.com -> https://:443", "\t  no-tls-verify"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{NoTLSVerify: true})},
+		},
+		{
+			name:  "forgotten target",
+			input: block("a.example.com", "b.example.com -> :81"),
+			found: true,
+			want:  []Entry{e(hosts("b.example.com"), http(81), model.RouteOptions{})},
+			errs:  []string{"expected '->' after hostnames"},
+		},
+		{
+			name:  "forgotten target after the arrow",
+			input: block("a.example.com ->", "b.example.com -> :81"),
+			found: true,
+			want:  []Entry{e(hosts("b.example.com"), http(81), model.RouteOptions{})},
+			errs:  []string{`invalid target "": expected [http|https://][ipv4]:port`},
+		},
+		{
+			name:  "unindented option line is not a continuation",
+			input: block("a.example.com -> https://:443", "no-tls-verify"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{})},
+			errs:  []string{`invalid hostname "no-tls-verify": needs at least two labels`},
+		},
+		{
+			name:  "tab indent is not continued by spaces",
+			input: block("\ta.example.com -> https://:443", "  no-tls-verify"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), https(443), model.RouteOptions{})},
+			errs:  []string{`invalid hostname "no-tls-verify": needs at least two labels`},
+		},
+		{
+			name:  "hostname-like token on a continuation line after the target",
+			input: block("a.example.com -> https://:443", "  sni.origin.example.com"),
+			found: true,
+			errs:  []string{`unknown option "sni.origin.example.com"`},
+		},
+		{
+			name:  "misspelled option on a continuation line",
+			input: block("a.example.com -> :80", "  host-heder=internal.lan"),
+			found: true,
+			errs:  []string{`unknown option "host-heder=internal.lan"`},
+		},
+		{
+			name:  "hostname after the target on a continuation line",
+			input: block("a.example.com", "  -> :80 b.example.com -> :81"),
+			found: true,
+			errs:  []string{`unknown option "b.example.com"`},
+		},
+		{
+			name:  "bad first line with its indented options",
+			input: block("a_b.example.com -> https://:443", "  no-tls-verify", "  sni=x.example.com"),
+			found: true,
+			errs:  []string{`invalid hostname "a_b.example.com": label "a_b" contains '_'`},
+		},
+		{
 			name:  "unterminated block",
 			input: "```cf-tunnel\na.example.com -> :80",
 			found: true,
@@ -248,6 +360,89 @@ func TestParse(t *testing.T) {
 		{
 			name:  "other fence ignored",
 			input: "```yaml\na.example.com -> :80\n```",
+		},
+		{
+			name:  "shorthand inside a fence with another tag",
+			input: "```text\ncf-tunnel: a.example.com -> :80\n```",
+		},
+		{
+			name:  "shorthand inside a fence without a tag",
+			input: "```\ncf-tunnel: a.example.com -> :80\n```",
+		},
+		{
+			name:  "shorthand inside a tilde fence",
+			input: "~~~\ncf-tunnel: a.example.com -> :80\n~~~",
+		},
+		{
+			name:  "shorthand inside a tilde fence with an info string",
+			input: "~~~text\ncf-tunnel: a.example.com -> :80\n~~~",
+		},
+		{
+			name:  "shorthand inside an indented tilde fence",
+			input: "  ~~~\n  cf-tunnel: a.example.com -> :80\n  ~~~",
+		},
+		{
+			name:  "block nested inside a markdown fence",
+			input: "```markdown\n```cf-tunnel\na.example.com -> :80\n```\n```",
+		},
+		{
+			name:  "block inside a tilde fence",
+			input: "~~~\n" + block("a.example.com -> :80") + "\n~~~",
+		},
+		{
+			name:  "unterminated fence hides the rest",
+			input: "```text\nnotes\ncf-tunnel: a.example.com -> :80",
+		},
+		{
+			name:  "unterminated tilde fence hides the rest",
+			input: "~~~\nnotes\n" + block("a.example.com -> :80"),
+		},
+		{
+			name:  "tag glued to the closing fence",
+			input: "```cf-tunnel```",
+		},
+		{
+			name:  "tag followed by a comma",
+			input: "```cf-tunnel,a.example.com -> :80```",
+		},
+		{
+			name:  "block after a closed fence with another tag",
+			input: "```yaml\nkey: value\n```\n" + block("a.example.com -> :80"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "block after a closed tilde fence",
+			input: "~~~\nnotes\n~~~\n" + block("a.example.com -> :80"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "shorthand after a closed fence",
+			input: "```text\nnotes\n```\ncf-tunnel: a.example.com -> :80",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "tilde marker in the middle of a line is not a fence",
+			input: "text ~~~\ncf-tunnel: a.example.com -> :80",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
+		},
+		{
+			name:  "shorthand ends at a fence on its line",
+			input: "cf-tunnel: a.example.com -> :80 ```cf-tunnel b.example.com -> :81```",
+			found: true,
+			want: []Entry{
+				e(hosts("a.example.com"), http(80), model.RouteOptions{}),
+				e(hosts("b.example.com"), http(81), model.RouteOptions{}),
+			},
+		},
+		{
+			name:  "fence inside a block text closes it",
+			input: "```cf-tunnel a.example.com -> :80 ``` b.example.com -> :81",
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})},
 		},
 		{
 			name:  "missing arrow",
@@ -278,6 +473,12 @@ func TestParse(t *testing.T) {
 			input: block("a.example.com b_c.example.com d.example.com -> :80"),
 			found: true,
 			errs:  []string{`invalid hostname "b_c.example.com": label "b_c" contains '_'`},
+		},
+		{
+			name:  "ipv4 literal as host",
+			input: block("10.0.0.5 -> :80"),
+			found: true,
+			errs:  []string{`invalid hostname "10.0.0.5": last label "5" is all digits`},
 		},
 		{
 			name:  "target missing",
@@ -406,6 +607,12 @@ func TestParse(t *testing.T) {
 			errs:  []string{"invalid value for sni="},
 		},
 		{
+			name:  "sni ipv4 literal",
+			input: block("a.example.com -> https://:443 sni=10.0.0.5"),
+			found: true,
+			errs:  []string{"invalid value for sni="},
+		},
+		{
 			name:  "sni wildcard",
 			input: block("a.example.com -> https://:443 sni=*.example.com"),
 			found: true,
@@ -418,6 +625,18 @@ func TestParse(t *testing.T) {
 			errs:  []string{"invalid value for via="},
 		},
 		{
+			name:  "via nic zero",
+			input: block("a.example.com -> :80 via=net0"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{Via: "net0"})},
+		},
+		{
+			name:  "via nic with a leading zero",
+			input: block("a.example.com -> :80 via=net01"),
+			found: true,
+			errs:  []string{"invalid value for via="},
+		},
+		{
 			name:  "via ipv6",
 			input: block("a.example.com -> :80 via=::1"),
 			found: true,
@@ -426,6 +645,36 @@ func TestParse(t *testing.T) {
 		{
 			name:  "host-header empty",
 			input: block("a.example.com -> :80 host-header="),
+			found: true,
+			errs:  []string{"invalid value for host-header="},
+		},
+		{
+			name:  "host-header with allowed punctuation",
+			input: block("a.example.com -> :80 host-header=my_host-1.lan:8443"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{HostHeader: "my_host-1.lan:8443"})},
+		},
+		{
+			name:  "host-header with a slash",
+			input: block("a.example.com -> :80 host-header=a/b"),
+			found: true,
+			errs:  []string{"invalid value for host-header="},
+		},
+		{
+			name:  "host-header with a non-ascii character",
+			input: block("a.example.com -> :80 host-header=\u00e9.lan"),
+			found: true,
+			errs:  []string{"invalid value for host-header="},
+		},
+		{
+			name:  "host-header at the length limit",
+			input: block("a.example.com -> :80 host-header=" + strings.Repeat("a", 253)),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{HostHeader: strings.Repeat("a", 253)})},
+		},
+		{
+			name:  "host-header over the length limit",
+			input: block("a.example.com -> :80 host-header=" + strings.Repeat("a", 254)),
 			found: true,
 			errs:  []string{"invalid value for host-header="},
 		},
@@ -538,18 +787,54 @@ func TestParseDuplicateAfterNormalisation(t *testing.T) {
 }
 
 func TestParseDuplicateHosts(t *testing.T) {
-	t.Run("the whole second entry is dropped", func(t *testing.T) {
+	t.Run("the whole second entry is dropped and still counts", func(t *testing.T) {
 		input := block(
 			"a.example.com -> :80",
 			"b.example.com a.example.com c.example.com -> :81",
 			"c.example.com -> :82",
 		)
 		got := Parse(input)
-		require.Equal(t, []Entry{
-			e(hosts("a.example.com"), http(80), model.RouteOptions{}),
-			e(hosts("c.example.com"), http(82), model.RouteOptions{}),
-		}, withoutPositions(got.Entries))
-		require.Equal(t, []Error{{Line: 3, Col: 15, Msg: `hostname "a.example.com" is listed twice`}}, got.Errors)
+		require.Equal(t, []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{})}, withoutPositions(got.Entries))
+		require.Equal(t, []Error{
+			{Line: 3, Col: 15, Msg: `hostname "a.example.com" is listed twice`},
+			{Line: 4, Col: 1, Msg: `hostname "c.example.com" is listed twice`},
+		}, got.Errors)
+	})
+
+	t.Run("an entry dropped for another reason still counts", func(t *testing.T) {
+		got := Parse(block("a.example.com -> :abc", "a.example.com -> :80"))
+		require.Empty(t, got.Entries)
+		require.Equal(t, []Error{
+			{Line: 2, Col: 18, Msg: `invalid target ":abc": expected [http|https://][ipv4]:port`},
+			{Line: 3, Col: 1, Msg: `hostname "a.example.com" is listed twice`},
+		}, got.Errors)
+	})
+
+	t.Run("hosts read before a syntax error count", func(t *testing.T) {
+		got := Parse(block("a.example.com b_c.example.com -> :80", "a.example.com -> :81"))
+		require.Empty(t, got.Entries)
+		require.Equal(t, []Error{
+			{Line: 2, Col: 15, Msg: `invalid hostname "b_c.example.com": label "b_c" contains '_'`},
+			{Line: 3, Col: 1, Msg: `hostname "a.example.com" is listed twice`},
+		}, got.Errors)
+	})
+
+	t.Run("a repeat in an entry with a syntax error is reported first", func(t *testing.T) {
+		got := Parse(block("a.example.com -> :80", "a.example.com -> :abc"))
+		require.Len(t, got.Entries, 1)
+		require.Equal(t, []Error{
+			{Line: 3, Col: 1, Msg: `hostname "a.example.com" is listed twice`},
+			{Line: 3, Col: 18, Msg: `invalid target ":abc": expected [http|https://][ipv4]:port`},
+		}, got.Errors)
+	})
+
+	t.Run("every repeated host is reported", func(t *testing.T) {
+		got := Parse(block("a.example.com b.example.com a.example.com B.example.com -> :80"))
+		require.Empty(t, got.Entries)
+		require.Equal(t, []Error{
+			{Line: 2, Col: 29, Msg: `hostname "a.example.com" is listed twice`},
+			{Line: 2, Col: 43, Msg: `hostname "b.example.com" is listed twice`},
+		}, got.Errors)
 	})
 
 	t.Run("within one entry", func(t *testing.T) {
@@ -590,15 +875,21 @@ func TestParsePositions(t *testing.T) {
 		}, got.Entries)
 	})
 
-	t.Run("columns count bytes", func(t *testing.T) {
-		got := Parse(block("a.example.com -> :80 host-header=\u00e9 fast"))
+	t.Run("columns count characters", func(t *testing.T) {
+		got := Parse("Účetní šéf ```cf-tunnel a_b.example.com -> :80```")
 		require.Empty(t, got.Entries)
-		require.Equal(t, []Error{{Line: 2, Col: 37, Msg: `unknown option "fast"`}}, got.Errors)
+		require.Equal(t, []Error{
+			{Line: 1, Col: 25, Msg: `invalid hostname "a_b.example.com": label "a_b" contains '_'`},
+		}, got.Errors)
+
+		got = Parse("Účetní ```cf-tunnel a.example.com -> :80 fast ```\nžluťoučký ```cf-tunnel b.example.com -> :81```")
+		require.Equal(t, []Entry{{Hosts: hosts("b.example.com"), Target: http(81), Line: 2, Col: 24}}, got.Entries)
+		require.Equal(t, []Error{{Line: 1, Col: 42, Msg: `unknown option "fast"`}}, got.Errors)
 	})
 }
 
 func TestParseErrorPosition(t *testing.T) {
-	input := "notes\n\n```cf-tunnel\na.example.com -> :80\n    a_b.example.com -> :80\n```"
+	input := "notes\n\n```cf-tunnel\n    a.example.com -> :80\n    a_b.example.com -> :80\n```"
 	got := Parse(input)
 	require.Equal(t, []Error{
 		{Line: 5, Col: 5, Msg: `invalid hostname "a_b.example.com": label "a_b" contains '_'`},
@@ -673,6 +964,37 @@ func TestParseRecoveryResumesOnALaterLine(t *testing.T) {
 		}, got.Errors)
 	})
 
+	t.Run("indented lines of the broken entry are skipped too", func(t *testing.T) {
+		got := Parse(block(
+			"a_b.example.com -> :80",
+			"    b.example.com -> :81",
+			"  c.example.com -> :82",
+			"d.example.com -> :83",
+		))
+		require.Equal(t, []Entry{e(hosts("d.example.com"), http(83), model.RouteOptions{})}, withoutPositions(got.Entries))
+		require.Len(t, got.Errors, 1)
+	})
+
+	t.Run("an error on a continuation line skips the following continuation lines", func(t *testing.T) {
+		got := Parse(block(
+			"a.example.com",
+			"  -> :abc",
+			"    https://:443",
+			"b.example.com -> :81",
+		))
+		require.Equal(t, []Entry{e(hosts("b.example.com"), http(81), model.RouteOptions{})}, withoutPositions(got.Entries))
+		require.Equal(t, []Error{{Line: 3, Col: 6, Msg: `invalid target ":abc": expected [http|https://][ipv4]:port`}}, got.Errors)
+	})
+
+	t.Run("an incomplete entry does not swallow the next line", func(t *testing.T) {
+		got := Parse(block("a.example.com", "b.example.com", "c.example.com -> :80"))
+		require.Equal(t, []Entry{e(hosts("c.example.com"), http(80), model.RouteOptions{})}, withoutPositions(got.Entries))
+		require.Equal(t, []Error{
+			{Line: 2, Col: 1, Msg: "expected '->' after hostnames"},
+			{Line: 3, Col: 1, Msg: "expected '->' after hostnames"},
+		}, got.Errors)
+	})
+
 	t.Run("errors keep their line numbers across blocks", func(t *testing.T) {
 		input := block("a_b.example.com -> :80") + "\n" + block("c.example.com -> :81", "d_e.example.com -> :82")
 		got := Parse(input)
@@ -738,6 +1060,12 @@ func FuzzParse(f *testing.F) {
 		"```cf-tunnel a.example.com -> :80 b.example.com -> https://:81 no-tls-verify ```",
 		"```cf-tunnel\na.example.com\n  b.example.com\n  -> :80",
 		block("-> :80", "a.example.com :80", "a_b.example.com -> :0", "a.example.com -> :80/x", "a.example.com -> [::1]:80"),
+		"```text\ncf-tunnel: a.example.com -> :80\n```\n~~~\n~~~\ncf-tunnel: b.example.com -> :81",
+		"~~~\ncf-tunnel: a.example.com -> :80",
+		block("  a.example.com -> https://:443", "    no-tls-verify", "\tb.example.com", "  \t-> :80", "c.example.com"),
+		"Účetní šéf ```cf-tunnel a_b.example.com -> :80```",
+		block("a.example.com -> :80 host-header=intranet,#2 via=net01", "10.0.0.5 -> :80"),
+		"cf-tunnel:#x a.example.com -> :80 ```cf-tunnel b.example.com -> :81",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -745,6 +1073,7 @@ func FuzzParse(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, description string) {
 		res := Parse(description)
+		seen := make(map[string]bool)
 		for _, en := range res.Entries {
 			require.NotEmpty(t, en.Hosts)
 			require.NotZero(t, en.Target.Port)
@@ -755,7 +1084,18 @@ func FuzzParse(f *testing.F) {
 				norm, err := hostname.Normalize(h)
 				require.NoError(t, err)
 				require.Equal(t, norm, h)
+				require.Contains(t, strings.ToLower(description), h, "hostname that was never written")
+				require.False(t, seen[h], "hostname %q in two entries", h)
+				seen[h] = true
 			}
+			if v := en.Options.Via; v != "" {
+				addr, err := netip.ParseAddr(v)
+				require.True(t, strings.HasPrefix(v, "net") || err == nil && addr.Is4(), "via %q", v)
+			}
+			if en.Options.SNI != "" {
+				require.Equal(t, model.SchemeHTTPS, en.Target.Scheme)
+			}
+			require.LessOrEqual(t, len(en.Options.HostHeader), 253)
 		}
 		for _, er := range res.Errors {
 			require.GreaterOrEqual(t, er.Line, 1)
@@ -768,7 +1108,7 @@ func FuzzParse(f *testing.F) {
 		}
 		for i := 1; i < len(res.Errors); i++ {
 			prev, cur := res.Errors[i-1], res.Errors[i]
-			require.Negative(t, cmp.Or(cmp.Compare(prev.Line, cur.Line), cmp.Compare(prev.Col, cur.Col)), "errors out of order")
+			require.LessOrEqual(t, cmp.Or(cmp.Compare(prev.Line, cur.Line), cmp.Compare(prev.Col, cur.Col)), 0, "errors out of order")
 		}
 		if !res.Found {
 			require.Empty(t, res.Entries)

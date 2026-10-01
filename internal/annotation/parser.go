@@ -1,14 +1,28 @@
 // Package annotation reads the routes that admins write into the notes of a
 // guest: a fenced block tagged cf-tunnel, or one-line "cf-tunnel:" shorthand.
 //
+// What gets parsed decides what is published, so doubt is an error: anything
+// that is not clearly a route is reported and the entry it belongs to is
+// dropped.
+//
 // The package is pure. It never fails as a whole; every mistake becomes an
 // Error with a position and the rest of the text is still parsed.
+//
+// Layout: an entry starts on a line, and the blanks that line starts with are
+// its indent. Following lines continue the entry only when they start with
+// that indent and more; any other line starts a new entry. After the target,
+// only options may follow on continuation lines, while on the entry's own line
+// a hostname starts the next entry, which keeps descriptions that were
+// flattened onto one line working.
+//
+// A hostname may be listed only once in a description. Every hostname that is
+// read counts, also in entries that are dropped; each later mention is an error
+// and drops the entry it is in.
 package annotation
 
 import (
 	"fmt"
 	"net/netip"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -36,11 +50,12 @@ type Entry struct {
 	Target  model.Target
 	Options model.RouteOptions
 	Line    int // 1-based position of the first host in the description
-	Col     int
+	Col     int // 1-based, counted in characters from the start of the line
 }
 
 // Error is a mistake in the annotation. Line and Col are 1-based positions in
-// the whole description; Col counts bytes.
+// the whole description; Col counts characters from the start of the line, not
+// bytes.
 type Error struct {
 	Line int
 	Col  int
@@ -75,55 +90,80 @@ func Parse(description string) Result {
 
 type parser struct {
 	res  Result
-	seen map[string]struct{} // hostnames of the entries kept so far
+	seen map[string]struct{} // every hostname read so far, kept entry or not
 }
 
 // parseSegment parses the tokens of one block or shorthand line. An entry
 // never continues into the next segment.
 //
-// After an error the entry is dropped and parsing resumes at the first token
-// on a later line than the one the error was found on.
+// After a syntax error the entry is dropped and parsing resumes at the next
+// line that does not continue it.
 func (p *parser) parseSegment(toks []token) {
 	c := &cursor{toks: toks}
 	for !c.done() {
-		d, err := parseEntry(c)
-		if err != nil {
-			p.res.Errors = append(p.res.Errors, *err)
-			c.skipThrough(err.Line)
+		d, failed := parseEntry(c)
+		dup := p.claim(d)
+		if failed != nil {
+			p.res.Errors = append(p.res.Errors, failed.err)
+			if failed.skip {
+				c.skipEntry(d.indent, failed.err.Line)
+			}
 			continue
 		}
-		p.commit(d)
+		if !dup {
+			p.res.Entries = append(p.res.Entries, d.Entry)
+		}
 	}
 }
 
-// commit keeps a complete entry unless it repeats a hostname. A dropped entry
-// reserves none of its hostnames.
-func (p *parser) commit(d draft) {
+// claim records the hostnames of d and reports every one that was already
+// taken. All hostnames that were read count, including those of entries that
+// are dropped, so one mention that is broken does not make a second one safe.
+func (p *parser) claim(d draft) (dup bool) {
 	for i, h := range d.Hosts {
-		if _, dup := p.seen[h]; dup || slices.Contains(d.Hosts[:i], h) {
-			p.res.Errors = append(p.res.Errors, *errAt(d.at[i], "hostname %q is listed twice", h))
-			return
+		if _, taken := p.seen[h]; taken {
+			p.res.Errors = append(p.res.Errors, errorAt(d.at[i], "hostname %q is listed twice", h))
+			dup = true
 		}
-	}
-	for _, h := range d.Hosts {
 		p.seen[h] = struct{}{}
 	}
-	p.res.Entries = append(p.res.Entries, d.Entry)
+	return dup
 }
 
 // draft is an entry under construction.
 type draft struct {
 	Entry
-	at []token // where each of Hosts was written
+	at     []token // where each of Hosts was written
+	indent string  // the blanks the entry's first line starts with
+	line0  int     // the entry's first line
+	taken  int     // tokens read so far
 }
 
-func errAt(t token, format string, args ...any) *Error {
-	return &Error{Line: t.line, Col: t.col, Msg: fmt.Sprintf(format, args...)}
+// failure is a syntax error. skip is set when the entry may have more text
+// that must be skipped; it is clear when the entry just ended too early and
+// the next token already belongs to the next entry.
+type failure struct {
+	err  Error
+	skip bool
 }
 
-// parseEntry reads one entry: host+ "->" target option*.
-func parseEntry(c *cursor) (draft, *Error) {
-	var d draft
+func errorAt(t token, format string, args ...any) Error {
+	return Error{Line: t.line, Col: t.col, Msg: fmt.Sprintf(format, args...)}
+}
+
+func fail(t token, format string, args ...any) *failure {
+	return &failure{err: errorAt(t, format, args...), skip: true}
+}
+
+func incomplete(t token, format string, args ...any) *failure {
+	return &failure{err: errorAt(t, format, args...)}
+}
+
+// parseEntry reads one entry: host+ "->" target option*. The cursor must not
+// be at the end.
+func parseEntry(c *cursor) (draft, *failure) {
+	first, _ := c.peek()
+	d := draft{indent: first.indent, line0: first.line}
 	arrowTok, err := d.readHosts(c)
 	if err == nil {
 		err = d.readTarget(c, arrowTok)
@@ -134,17 +174,46 @@ func parseEntry(c *cursor) (draft, *Error) {
 	return d, err
 }
 
+// peek returns the next token of the entry. It reports false at the end of the
+// segment and in front of a line that does not continue the entry.
+func (d *draft) peek(c *cursor) (token, bool) {
+	t, ok := c.peek()
+	if !ok {
+		return token{}, false
+	}
+	if d.taken > 0 && t.line != c.last().line && !continues(d.indent, t.indent) {
+		return token{}, false
+	}
+	return t, true
+}
+
+func (d *draft) take(c *cursor) (token, bool) {
+	t, ok := d.peek(c)
+	if ok {
+		c.pos++
+		d.taken++
+	}
+	return t, ok
+}
+
+// continues reports whether a line that starts with lineIndent belongs to an
+// entry whose first line starts with entryIndent. Indents are compared as
+// text, so a tab is never taken for some number of spaces.
+func continues(entryIndent, lineIndent string) bool {
+	return len(lineIndent) > len(entryIndent) && strings.HasPrefix(lineIndent, entryIndent)
+}
+
 // readHosts reads up to and including the arrow and returns the arrow token.
-func (d *draft) readHosts(c *cursor) (token, *Error) {
+func (d *draft) readHosts(c *cursor) (token, *failure) {
 	for {
-		t, ok := c.next()
+		t, ok := d.take(c)
 		if !ok {
-			// The cursor was not done when the entry started, so there is a host.
-			return token{}, errAt(d.at[len(d.at)-1], "expected '->' after hostnames")
+			// The first token always exists, so there is a host to point at.
+			return token{}, incomplete(d.at[len(d.at)-1], "expected '->' after hostnames")
 		}
 		if t.text == arrow {
 			if len(d.Hosts) == 0 {
-				return token{}, errAt(t, "expected a hostname before '->'")
+				return token{}, fail(t, "expected a hostname before '->'")
 			}
 			return t, nil
 		}
@@ -158,21 +227,21 @@ func (d *draft) readHosts(c *cursor) (token, *Error) {
 			d.at = append(d.at, t)
 		case len(d.Hosts) > 0 && strings.ContainsAny(t.text, ":="):
 			// A target or an option where the arrow belongs, not a mistyped host.
-			return token{}, errAt(t, "expected '->' after hostnames")
+			return token{}, fail(t, "expected '->' after hostnames")
 		default:
-			return token{}, errAt(t, "%s", err)
+			return token{}, fail(t, "%s", err)
 		}
 	}
 }
 
-func (d *draft) readTarget(c *cursor, arrowTok token) *Error {
-	t, ok := c.next()
+func (d *draft) readTarget(c *cursor, arrowTok token) *failure {
+	t, ok := d.take(c)
 	if !ok {
-		return errAt(arrowTok, "invalid target %q: %s", "", targetSyntax)
+		return incomplete(arrowTok, "invalid target %q: %s", "", targetSyntax)
 	}
 	target, err := parseTarget(t.text)
 	if err != nil {
-		return errAt(t, "%s", err)
+		return fail(t, "%s", err)
 	}
 	d.Target = target
 	return nil
@@ -224,27 +293,28 @@ func parseTarget(s string) (model.Target, error) {
 // readOptions reads the options that follow the target and stops at the first
 // token that is not one.
 //
-// A token that normalises as a hostname starts the next entry. So does any
-// other token on a later line than the entry so far: a mistake in the next
-// entry is reported there and does not take this valid entry down with it.
-// On the same line such a token is a stray option of this entry.
-func (d *draft) readOptions(c *cursor) *Error {
+// On the entry's own line a token that normalises as a hostname starts the next
+// entry, which is how entries flattened onto one line are told apart. On
+// continuation lines nothing but options is accepted: a hostname there is more
+// likely a mistake than a new entry, and an entry that silently lost an option
+// should not be published.
+func (d *draft) readOptions(c *cursor) *failure {
 	given := make(map[string]bool)
 	for {
-		t, ok := c.peek()
+		t, ok := d.peek(c)
 		if !ok {
 			return nil
 		}
 		name, value, isOption := splitOption(t.text)
 		if !isOption {
-			if _, err := hostname.Normalize(t.text); err == nil || t.line > c.last().line {
+			if _, err := hostname.Normalize(t.text); err == nil && t.line == d.line0 {
 				return nil
 			}
-			return errAt(t, "unknown option %q", t.text)
+			return fail(t, "unknown option %q", t.text)
 		}
-		c.next()
+		d.take(c)
 		if given[name] {
-			return errAt(t, "option %q given twice", name)
+			return fail(t, "option %q given twice", name)
 		}
 		given[name] = true
 		if err := d.apply(t, name, value); err != nil {
@@ -270,44 +340,44 @@ func splitOption(tok string) (name, value string, ok bool) {
 	return "", "", false
 }
 
-func (d *draft) apply(t token, name, value string) *Error {
+func (d *draft) apply(t token, name, value string) *failure {
 	switch name {
 	case optNoTLSVerify:
 		if d.Target.Scheme != model.SchemeHTTPS {
-			return errAt(t, "%s only applies to https targets", name)
+			return fail(t, "%s only applies to https targets", name)
 		}
 		d.Options.NoTLSVerify = true
 	case optHostHeader:
-		if value == "" {
-			return errAt(t, "invalid value for %s", name)
+		if !validHostHeader(value) {
+			return fail(t, "invalid value for %s", name)
 		}
 		d.Options.HostHeader = value
 	case optSNI:
 		if d.Target.Scheme != model.SchemeHTTPS {
-			return errAt(t, "%s only applies to https targets", name)
+			return fail(t, "%s only applies to https targets", name)
 		}
 		sni, err := hostname.Normalize(value)
 		if err != nil || hostname.IsWildcard(sni) {
-			return errAt(t, "invalid value for %s", name)
+			return fail(t, "invalid value for %s", name)
 		}
 		d.Options.SNI = sni
 	case optVia:
 		if d.Target.Addr.IsValid() {
-			return errAt(t, "via= cannot be combined with an address in the target")
+			return fail(t, "via= cannot be combined with an address in the target")
 		}
 		via, ok := parseVia(value)
 		if !ok {
-			return errAt(t, "invalid value for %s", name)
+			return fail(t, "invalid value for %s", name)
 		}
 		d.Options.Via = via
 	}
 	return nil
 }
 
-// parseVia accepts a NIC name ("net" and digits) or an IPv4 address and
-// returns it in canonical form.
+// parseVia accepts a NIC name ("net" and an index without leading zeros) or an
+// IPv4 address and returns it in canonical form.
 func parseVia(v string) (string, bool) {
-	if len(v) > len("net") && equalFoldASCII(v[:3], "net") && isDigits(v[3:]) {
+	if len(v) > len("net") && equalFoldASCII(v[:3], "net") && isNICIndex(v[3:]) {
 		return "net" + v[3:], true
 	}
 	addr, err := netip.ParseAddr(v)
@@ -317,12 +387,31 @@ func parseVia(v string) (string, bool) {
 	return addr.String(), true
 }
 
-func isDigits(s string) bool {
-	if s == "" {
+func isNICIndex(s string) bool {
+	if s == "" || s != "0" && s[0] == '0' {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+const maxHostHeaderLen = 253
+
+// validHostHeader accepts what can appear in a Host header without surprises:
+// letters, digits, '.', '_', ':' (for a port) and '-'.
+func validHostHeader(v string) bool {
+	if v == "" || len(v) > maxHostHeaderLen {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		ok := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
+			c == '.' || c == '_' || c == ':' || c == '-'
+		if !ok {
 			return false
 		}
 	}
@@ -344,20 +433,13 @@ func (c *cursor) peek() (token, bool) {
 	return c.toks[c.pos], true
 }
 
-func (c *cursor) next() (token, bool) {
-	t, ok := c.peek()
-	if ok {
-		c.pos++
-	}
-	return t, ok
-}
-
 // last is the token consumed most recently; only valid after a next.
 func (c *cursor) last() token { return c.toks[c.pos-1] }
 
-// skipThrough drops every token up to and including the given line.
-func (c *cursor) skipThrough(line int) {
-	for !c.done() && c.toks[c.pos].line <= line {
+// skipEntry drops the rest of a broken entry: the tokens on the line of the
+// error, then every following line that continues the entry.
+func (c *cursor) skipEntry(indent string, line int) {
+	for !c.done() && (c.toks[c.pos].line <= line || continues(indent, c.toks[c.pos].indent)) {
 		c.pos++
 	}
 }
