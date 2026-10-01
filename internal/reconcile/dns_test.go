@@ -238,7 +238,7 @@ func TestDNSCreate(t *testing.T) {
 	require.Empty(t, res.Problems)
 	require.Equal(t, WriterProceed, res.Verdict)
 	require.Equal(t, []string{"Records zone1", "Records zone2", "Records zone1", "CreateRecord zone1 app.example.com"}, f.Calls())
-	require.Equal(t, []cfapi.Record{{ID: "rec-1", Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, Comment: testMarker}},
+	require.Equal(t, []cfapi.Record{{ID: "rec-1", Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, TTL: 1, Comment: testMarker}},
 		recordsIn(f, zone1.ID))
 	require.Equal(t, []Action{dnsAction(CreateRecord, "app.example.com", "", false)}, withoutDetail(res.Actions))
 	require.Contains(t, res.Actions[0].Detail, testTarget)
@@ -296,7 +296,7 @@ func TestDNSUpdate(t *testing.T) {
 			require.Equal(t, []string{"Records zone1", "Records zone2", "Records zone1", "UpdateRecord zone1 " + seeded.ID}, f.Calls(),
 				"the record is read again right before the update")
 			require.Equal(t, []cfapi.Record{{
-				ID: seeded.ID, Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true,
+				ID: seeded.ID, Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, TTL: 1,
 				Comment: testMarker + " keep this note",
 			}}, recordsIn(f, zone1.ID))
 			require.Equal(t, []Action{dnsAction(UpdateRecord, "app.example.com", "", false)}, withoutDetail(res.Actions))
@@ -498,7 +498,7 @@ func TestDNSAdoptCNAMEInPlace(t *testing.T) {
 
 			require.Empty(t, res.Problems)
 			require.Equal(t, []string{"UpdateRecord zone1 " + seeded.ID}, dnsWrites(f))
-			require.Equal(t, []cfapi.Record{{ID: seeded.ID, Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, Comment: testMarker}},
+			require.Equal(t, []cfapi.Record{{ID: seeded.ID, Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, TTL: 1, Comment: testMarker}},
 				recordsIn(f, zone1.ID))
 			require.Equal(t, []Action{dnsAction(UpdateRecord, "app.example.com", "", true)}, withoutDetail(res.Actions))
 			require.Contains(t, res.Actions[0].Detail, "was CNAME "+tc.content)
@@ -525,7 +525,7 @@ func TestDNSAdoptAddressRecordReplaced(t *testing.T) {
 
 			require.Empty(t, res.Problems)
 			require.Equal(t, []string{"DeleteRecord zone1 " + seeded.ID, "CreateRecord zone1 app.example.com"}, dnsWrites(f))
-			require.Equal(t, []cfapi.Record{{ID: "rec-2", Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, Comment: testMarker}},
+			require.Equal(t, []cfapi.Record{{ID: "rec-2", Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, TTL: 1, Comment: testMarker}},
 				recordsIn(f, zone1.ID))
 			require.Equal(t, []Action{
 				dnsAction(DeleteRecord, "app.example.com", "", true),
@@ -541,7 +541,7 @@ func TestDNSAdoptAddressRecordReplaced(t *testing.T) {
 }
 
 func TestDNSAdoptionCreateFails(t *testing.T) {
-	original := cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10", Proxied: true, Comment: "web front, by hand"}
+	original := cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10", Proxied: true, TTL: 1, Comment: "web front, by hand"}
 	refused := errors.New("refused by the test")
 	cases := []struct {
 		name     string

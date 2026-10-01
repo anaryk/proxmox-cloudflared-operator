@@ -15,6 +15,7 @@ type wireRecord struct {
 	Name       string    `json:"name"`
 	Content    string    `json:"content"`
 	Proxied    bool      `json:"proxied"`
+	TTL        int       `json:"ttl"`
 	Comment    string    `json:"comment"`
 	ModifiedOn time.Time `json:"modified_on"`
 }
@@ -46,8 +47,16 @@ func newRecordBody(r Record) (recordBody, error) {
 	if err := ValidName("record name", r.Name); err != nil {
 		return recordBody{}, err
 	}
-	// A TTL of 1 means automatic, the only one a proxied record has.
-	return recordBody{Type: r.Type, Name: r.Name, Content: r.Content, Proxied: r.Proxied, Comment: r.Comment, TTL: 1}, nil
+	return recordBody{Type: r.Type, Name: r.Name, Content: r.Content, Proxied: r.Proxied, Comment: r.Comment, TTL: SentTTL(r.TTL)}, nil
+}
+
+// SentTTL is the TTL a write sends for ttl: an unset one means automatic,
+// which Cloudflare spells 1.
+func SentTTL(ttl int) int {
+	if ttl <= 0 {
+		return 1
+	}
+	return ttl
 }
 
 func recordsPath(zoneID string) (string, error) {

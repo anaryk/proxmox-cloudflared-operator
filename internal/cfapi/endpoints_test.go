@@ -701,7 +701,7 @@ func wantRecord(t *testing.T) Record {
 	t.Helper()
 	return Record{
 		ID: "r1", Type: "CNAME", Name: "app.example.com", Content: "t1.cfargotunnel.com",
-		Proxied: true, Comment: "pco:abc", ModifiedOn: ts(t, "2026-02-03T04:05:06.5Z"),
+		Proxied: true, TTL: 1, Comment: "pco:abc", ModifiedOn: ts(t, "2026-02-03T04:05:06.5Z"),
 	}
 }
 
@@ -921,6 +921,43 @@ func TestCreateRecordSendsEveryField(t *testing.T) {
 
 	require.NoError(t, err)
 	require.JSONEq(t, `{"type":"TXT","name":"_pco-probe-x.example.com","content":"\"probe\"","proxied":false,"comment":"","ttl":1}`, only(t, env).body)
+}
+
+func TestRecordWritesSendTheTTL(t *testing.T) {
+	tests := []struct {
+		name string
+		ttl  int
+		sent int
+	}{
+		{"automatic", 1, 1},
+		{"unset means automatic", 0, 1},
+		{"five minutes", 300, 300},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := Record{ID: "r1", Type: "A", Name: "a.example.com", Content: "192.0.2.7", TTL: tt.ttl}
+			want := fmt.Sprintf(`{"type":"A","name":"a.example.com","content":"192.0.2.7","proxied":false,"comment":"","ttl":%d}`, tt.sent)
+
+			env := setup(t, reply(http.StatusOK, okBody(recordJSON)))
+			_, err := env.c.CreateRecord(context.Background(), "z1", r)
+			require.NoError(t, err)
+			require.JSONEq(t, want, only(t, env).body, "create")
+
+			env = setup(t, reply(http.StatusOK, okBody(recordJSON)))
+			_, err = env.c.UpdateRecord(context.Background(), "z1", r)
+			require.NoError(t, err)
+			require.JSONEq(t, want, only(t, env).body, "update")
+		})
+	}
+}
+
+func TestRecordsCarryTheTTL(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(`[{"id":"r3","type":"A","name":"a.example.com","content":"192.0.2.7","ttl":300}]`)))
+
+	got, err := env.c.Records(context.Background(), "z1", RecordFilter{})
+
+	require.NoError(t, err)
+	require.Equal(t, []Record{{ID: "r3", Type: "A", Name: "a.example.com", Content: "192.0.2.7", TTL: 300}}, got)
 }
 
 func TestCreateRecordConflict(t *testing.T) {

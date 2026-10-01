@@ -67,6 +67,7 @@ type Record struct {
 	Name       string
 	Content    string
 	Proxied    bool
+	TTL        int // in seconds; 1 means automatic, the only TTL a proxied record has
 	Comment    string
 	ModifiedOn time.Time
 }

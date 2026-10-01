@@ -120,7 +120,8 @@ func checkRecordFields(r cfapi.Record) error {
 }
 
 // CreateRecord ignores the ID and ModifiedOn of r. The name is stored in lower
-// case and, when it is not inside the zone, with the zone name added.
+// case and, when it is not inside the zone, with the zone name added, and an
+// unset TTL as 1, automatic, as the client sends it.
 func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
 	if err := cfapi.ValidID("zone id", zoneID); err != nil {
 		return cfapi.Record{}, err
@@ -138,6 +139,7 @@ func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 		return cfapi.Record{}, err
 	}
 	r.Name = qualify(r.Name, z.Name)
+	r.TTL = cfapi.SentTTL(r.TTL)
 	if err := f.checkRecord(zoneID, r, ""); err != nil {
 		return cfapi.Record{}, err
 	}
@@ -173,6 +175,7 @@ func (f *Fake) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 		return cfapi.Record{}, notFound("record", r.ID)
 	}
 	r.Name = qualify(r.Name, z.Name)
+	r.TTL = cfapi.SentTTL(r.TTL)
 	if err := f.checkRecord(zoneID, r, r.ID); err != nil {
 		return cfapi.Record{}, err
 	}

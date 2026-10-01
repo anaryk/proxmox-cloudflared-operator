@@ -373,6 +373,27 @@ func TestCreateRecordIgnoresIDAndModifiedOn(t *testing.T) {
 	require.True(t, got.Proxied)
 }
 
+func TestRecordTTL(t *testing.T) {
+	f := newFake()
+	auto, err := f.CreateRecord(ctx, zone, cname("a.example.com", "x"))
+	require.NoError(t, err)
+	timed := rec("A", "b.example.com", "192.0.2.1")
+	timed.TTL = 300
+	timed, err = f.CreateRecord(ctx, zone, timed)
+	require.NoError(t, err)
+	seeded := f.SeedRecord(zone, rec("A", "c.example.com", "192.0.2.2"))
+
+	require.Equal(t, 1, auto.TTL, "an unset TTL is automatic, as the client sends it")
+	require.Equal(t, 300, timed.TTL)
+	require.Equal(t, 0, seeded.TTL, "a seeded record is kept as it is")
+
+	timed.TTL = 0
+	updated, err := f.UpdateRecord(ctx, zone, timed)
+	require.NoError(t, err)
+	require.Equal(t, 1, updated.TTL)
+	require.Equal(t, []int{1, 1, 0}, []int{f.RecordsIn(zone)[0].TTL, f.RecordsIn(zone)[1].TTL, f.RecordsIn(zone)[2].TTL})
+}
+
 func TestSeedRecord(t *testing.T) {
 	f := newFake()
 	older := t0.Add(-24 * time.Hour)
@@ -589,7 +610,7 @@ func TestUpdateRecord(t *testing.T) {
 	require.NoError(t, err)
 	want := cfapi.Record{
 		ID: orig.ID, Type: "CNAME", Name: "a.example.com", Content: "new.cfargotunnel.com",
-		Proxied: false, Comment: "pco:abc moved", ModifiedOn: later,
+		Proxied: false, TTL: 1, Comment: "pco:abc moved", ModifiedOn: later,
 	}
 	require.Equal(t, want, got)
 	require.Equal(t, []cfapi.Record{want}, f.RecordsIn(zone))
