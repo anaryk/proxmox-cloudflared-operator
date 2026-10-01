@@ -571,7 +571,92 @@ func TestClaimsHeldWithoutTheHolderIsIgnored(t *testing.T) {
 
 		require.Equal(t, []string{"lxc/5"}, ownersOf(res.Winners))
 		require.Equal(t, []string{"transferred a.example.com lxc/5"}, eventKeys(t, res.Events))
+		require.Equal(t, []Waiter{{"qemu/9", at(-5 * time.Minute)}}, res.Claims[primary].Waiting, "but it keeps its place")
 	})
+}
+
+func TestClaimsHeldWaiterKeepsItsPlace(t *testing.T) {
+	claim := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)}, Waiter{"lxc/5", at(-time.Minute)})
+	in := ClaimInput{
+		Routes: routes(t, primary, "qemu/3", "lxc/5"),
+		Held:   []HeldName{{Hostname: primary, Owner: "qemu/9"}},
+		Claims: map[string]Claim{primary: claim},
+		Now:    t0,
+		Grace:  grace,
+	}
+
+	res := ResolveClaims(in)
+
+	require.Equal(t, []string{"qemu/3"}, ownersOf(res.Winners))
+	require.Equal(t, []string{"lxc/5"}, ownersOf(res.Conflicts), "a waiter without a route is no conflict")
+	require.Equal(t, map[string]Claim{primary: claim}, res.Claims)
+	require.Empty(t, res.Events)
+
+	t.Run("and takes it up again with a route", func(t *testing.T) {
+		back := in
+		back.Routes = routes(t, primary, "qemu/3", "qemu/9", "lxc/5")
+		back.Held = nil
+		back.Claims = res.Claims
+
+		got := ResolveClaims(back)
+
+		require.Equal(t, map[string]Claim{primary: claim}, got.Claims)
+		require.Empty(t, got.Events)
+	})
+
+	t.Run("and loses it once it no longer names the hostname", func(t *testing.T) {
+		gone := in
+		gone.Held = nil
+		gone.Claims = res.Claims
+
+		got := ResolveClaims(gone)
+
+		require.Equal(t, []Waiter{{"lxc/5", at(-time.Minute)}}, got.Claims[primary].Waiting)
+	})
+
+	t.Run("the holder is never its own waiter", func(t *testing.T) {
+		since := at(-2 * time.Minute)
+		absent := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)})
+		absent.MissingSince = &since
+
+		got := ResolveClaims(ClaimInput{
+			Routes: routes(t, primary, "qemu/9"),
+			Held:   []HeldName{{Hostname: primary, Owner: "qemu/9"}},
+			Claims: map[string]Claim{primary: absent},
+			Now:    t0,
+			Grace:  grace,
+		})
+
+		require.Equal(t, []string{"qemu/9"}, ownersOf(got.Winners))
+		require.Empty(t, got.Claims[primary].Waiting)
+	})
+}
+
+func TestClaimsHeldIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		stored string
+		now    string
+		want   string
+	}{
+		{"first known identity is stored silently", "", "X", "X"},
+		{"unknown now keeps the stored identity", "X", "", "X"},
+		{"a changed identity waits for the route to come back", "X", "Y", "X"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := ResolveClaims(ClaimInput{
+				Held:     []HeldName{{Hostname: primary, Owner: "qemu/3"}},
+				Claims:   map[string]Claim{primary: holding("qemu/3", tt.stored, at(-time.Hour))},
+				Identity: map[string]string{"qemu/3": tt.now},
+				Now:      t0,
+				Grace:    grace,
+			})
+
+			require.Equal(t, map[string]Claim{primary: holding("qemu/3", tt.want, at(-time.Hour))}, res.Claims)
+			require.Empty(t, res.Events)
+		})
+	}
 }
 
 func TestClaimsTransferGoesToEarliestWaiter(t *testing.T) {

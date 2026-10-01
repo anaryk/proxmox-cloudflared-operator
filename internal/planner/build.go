@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -89,6 +90,7 @@ const (
 	StateWithdrawn   RouteState = "withdrawn"
 	StateConflict    RouteState = "conflict"
 	StateNoZone      RouteState = "no-zone"
+	StateHeld        RouteState = "held" // claimed, but nobody serves it: blocked until its holder routes it or loses it
 )
 
 // RouteStatus is the plan's verdict on one route.
@@ -106,7 +108,7 @@ type RouteStatus struct {
 type BuildInput struct {
 	Winners   []model.Route // at most one per hostname
 	Conflicts []model.Route
-	Holders   map[string]string         // hostname -> owner holding the claim
+	Claims    map[string]Claim          // by hostname, as ResolveClaims left them
 	Targets   map[string]ResolvedTarget // by hostname
 	Zones     []Zone
 	Writer    Writer
@@ -127,8 +129,9 @@ type Plan struct {
 // claimed hostname that is not served, whether its winner cannot be served,
 // its holder is absent within the grace or the holder's entry is broken, gets
 // a rule that answers 503, so that no other owner's wildcard serves it
-// meanwhile. Names in the .invalid domain, where the sentinels live, never get
-// a rule or a record.
+// meanwhile. A claim without a winner also gets a status, held, that names the
+// holder and says why. Names in the .invalid domain, where the sentinels live,
+// never get a rule, a record or a held status.
 //
 // An account gets a tunnel only when it serves a rule or a record points at
 // it. A tunnel of nothing but 503 rules would be reached by no DNS record.
@@ -221,21 +224,42 @@ func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 	b.block(zone.AccountID, rt.Hostname)
 }
 
-// blockHeld blocks every hostname whose holder is absent but still within its
-// grace, so that the claim is not served by another owner's wildcard.
+// blockHeld blocks every claimed hostname that has no winner, so that no other
+// owner's wildcard serves it, and gives it a status that says why.
 func (b *builder) blockHeld() {
 	won := make(map[string]bool, len(b.in.Winners))
 	for _, w := range b.in.Winners {
 		won[w.Hostname] = true
 	}
-	for _, host := range slices.Sorted(maps.Keys(b.in.Holders)) {
+	for _, host := range slices.Sorted(maps.Keys(b.in.Claims)) {
 		if won[host] || reserved(host) {
 			continue
 		}
-		if zone, reason := b.zones.find(host); reason == "" {
-			b.block(zone.AccountID, host)
+		zone, reason := b.zones.find(host)
+		if reason != "" {
+			continue
 		}
+		claim := b.in.Claims[host]
+		b.block(zone.AccountID, host)
+		b.routes = append(b.routes, RouteStatus{
+			Hostname: host,
+			Owner:    claim.Owner,
+			State:    StateHeld,
+			Reason:   heldReason(claim),
+			Zone:     zone.Name,
+		})
 	}
+}
+
+// heldReason explains a claim that nobody serves: its holder still names the
+// hostname without a route for it, or no longer asks for it and is within the
+// grace.
+func heldReason(c Claim) string {
+	if c.MissingSince == nil {
+		return fmt.Sprintf("named in the Notes of %s but not routed; claim kept", c.Owner)
+	}
+	return fmt.Sprintf("no longer claimed by %s since %s; released after the grace period",
+		c.Owner, c.MissingSince.UTC().Format(time.RFC3339))
 }
 
 // block plans a rule that answers 503 for host.
@@ -260,11 +284,13 @@ func (b *builder) addRecord(zone Zone, name string) {
 }
 
 // addConflicts adds a status for each route that lost its hostname. The
-// serving owner is the winner when there is one; Holders covers a hostname
-// that is reserved for an absent holder.
+// serving owner is the winner when there is one, and otherwise the holder of
+// the claim.
 func (b *builder) addConflicts() {
-	holders := make(map[string]string, len(b.in.Holders)+len(b.in.Winners))
-	maps.Copy(holders, b.in.Holders)
+	holders := make(map[string]string, len(b.in.Claims)+len(b.in.Winners))
+	for host, c := range b.in.Claims {
+		holders[host] = c.Owner
+	}
 	for _, w := range b.in.Winners {
 		holders[w.Hostname] = w.Owner()
 	}

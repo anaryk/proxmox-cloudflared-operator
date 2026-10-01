@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -79,6 +80,24 @@ func recordFor(z Zone, name string) RecordPlan {
 		CredentialID: z.CredentialID,
 		Name:         name,
 		TunnelName:   tunnelName,
+	}
+}
+
+// claimed turns hostname -> owner into claims that are held by their owners.
+func claimed(owners map[string]string) map[string]Claim {
+	out := make(map[string]Claim, len(owners))
+	for host, owner := range owners {
+		out[host] = Claim{Hostname: host, Owner: owner, Since: t0}
+	}
+	return out
+}
+
+// heldStatus is the status of a claimed hostname that its holder still names
+// but has no route for.
+func heldStatus(host, owner, zone string) RouteStatus {
+	return RouteStatus{
+		Hostname: host, Owner: owner, State: StateHeld, Zone: zone,
+		Reason: "named in the Notes of " + owner + " but not routed; claim kept",
 	}
 }
 
@@ -372,10 +391,10 @@ func TestBuildAccountWithOnlyBlocksGetsNoTunnel(t *testing.T) {
 			winner(t, "api.example.com", "qemu/3"),
 		},
 		Conflicts: []model.Route{winner(t, "held.shop.cz", "qemu/6")},
-		Holders: map[string]string{
+		Claims: claimed(map[string]string{
 			"held.shop.cz":     "qemu/4",
 			"held.example.com": "qemu/5",
-		},
+		}),
 		Targets: map[string]ResolvedTarget{
 			"banned.shop.cz":  {Addr: netip.MustParseAddr(originAddr), Reachable: true, Rejected: true},
 			"api.example.com": verified(originAddr),
@@ -392,6 +411,8 @@ func TestBuildAccountWithOnlyBlocksGetsNoTunnel(t *testing.T) {
 	require.Equal(t, []RouteStatus{
 		{Hostname: "api.example.com", Owner: "qemu/3", State: StateActive, Service: "http://10.20.0.15:8080", Zone: "example.com"},
 		{Hostname: "banned.shop.cz", Owner: "qemu/2", State: StateUnreachable, Reason: "address must never be served", Zone: "shop.cz"},
+		heldStatus("held.example.com", "qemu/5", "example.com"),
+		heldStatus("held.shop.cz", "qemu/4", "shop.cz"),
 		{Hostname: "held.shop.cz", Owner: "qemu/6", State: StateConflict, Reason: "hostname is held by qemu/4"},
 		{Hostname: "never.shop.cz", Owner: "qemu/1", State: StateUnreachable, Reason: noAddrReason, Zone: "shop.cz"},
 	}, plan.Routes)
@@ -420,14 +441,14 @@ func TestBuildBlocksClaimedNamesFromOtherWildcards(t *testing.T) {
 			winner(t, "api.shop.cz", "qemu/2"),
 		},
 		Conflicts: []model.Route{winner(t, "held.shop.cz", "qemu/1")},
-		Holders: map[string]string{
+		Claims: claimed(map[string]string{
 			"*.shop.cz":          "qemu/1",
 			"api.shop.cz":        "qemu/2",
 			"held.shop.cz":       "qemu/3",
 			"*.held.shop.cz":     "qemu/3",
 			"held.nowhere.org":   "qemu/3",
 			"x.pco-ab12.invalid": "qemu/3",
-		},
+		}),
 		Targets: map[string]ResolvedTarget{"*.shop.cz": verified(originAddr)},
 		Zones:   []Zone{shopZone},
 		Writer:  buildWriter,
@@ -444,6 +465,7 @@ func TestBuildBlocksClaimedNamesFromOtherWildcards(t *testing.T) {
 	}}, plan.Tunnels)
 	require.Equal(t, []string{"*.shop.cz"}, recordNames(plan.Records))
 	require.Equal(t, []RouteStatus{
+		heldStatus("*.held.shop.cz", "qemu/3", "shop.cz"),
 		{
 			Hostname: "*.shop.cz", Owner: "qemu/1", State: StateActive, Service: "http://10.20.0.15:8080", Zone: "shop.cz",
 			Warnings: []string{"*.shop.cz overlaps api.shop.cz owned by qemu/2"},
@@ -453,6 +475,7 @@ func TestBuildBlocksClaimedNamesFromOtherWildcards(t *testing.T) {
 			Warnings: []string{"api.shop.cz overlaps *.shop.cz owned by qemu/1"},
 		},
 		{Hostname: "held.shop.cz", Owner: "qemu/1", State: StateConflict, Reason: "hostname is held by qemu/3"},
+		heldStatus("held.shop.cz", "qemu/3", "shop.cz"),
 	}, plan.Routes)
 }
 
@@ -466,7 +489,7 @@ func TestBuildReservedHostnames(t *testing.T) {
 			winner(t, "app.invalid", "manual/web"),
 			winner(t, "*.other.invalid", "qemu/2"),
 		},
-		Holders: map[string]string{"held.invalid": "qemu/3"},
+		Claims:  claimed(map[string]string{"held.invalid": "qemu/3"}),
 		Targets: allVerified(sentinel, "app.invalid", "*.other.invalid"),
 		Zones:   []Zone{invalidZone},
 		Writer:  buildWriter,
@@ -720,10 +743,10 @@ func TestBuildConflicts(t *testing.T) {
 			winner(t, "api.shop.cz", "qemu/2"),
 			winner(t, "reserved.shop.cz", "qemu/3"),
 		},
-		Holders: map[string]string{
+		Claims: claimed(map[string]string{
 			"api.shop.cz":      "qemu/1",
 			"reserved.shop.cz": "qemu/9",
-		},
+		}),
 		Targets: allVerified("api.shop.cz", "reserved.shop.cz"),
 		Zones:   []Zone{shopZone},
 		Writer:  buildWriter,
@@ -739,6 +762,7 @@ func TestBuildConflicts(t *testing.T) {
 		{Hostname: "api.shop.cz", Owner: "qemu/2", State: StateConflict, Reason: "hostname is held by qemu/1"},
 		{Hostname: "api.shop.cz", Owner: "manual/web", State: StateConflict, Reason: "hostname is held by qemu/1"},
 		{Hostname: "reserved.shop.cz", Owner: "qemu/3", State: StateConflict, Reason: "hostname is held by qemu/9"},
+		heldStatus("reserved.shop.cz", "qemu/9", "shop.cz"),
 	}, plan.Routes)
 	require.Equal(t, withSentinel(httpRule("api.shop.cz", originAddr), blockRule("reserved.shop.cz")), plan.Tunnels[0].Rules)
 	require.Equal(t, []string{"api.shop.cz"}, recordNames(plan.Records))
@@ -748,7 +772,7 @@ func TestBuildConflictNamesTheServingOwner(t *testing.T) {
 	plan := Build(BuildInput{
 		Winners:   []model.Route{winner(t, "api.shop.cz", "qemu/1")},
 		Conflicts: []model.Route{winner(t, "api.shop.cz", "qemu/2")},
-		Holders:   map[string]string{"api.shop.cz": "qemu/9"},
+		Claims:    claimed(map[string]string{"api.shop.cz": "qemu/9"}),
 		Targets:   allVerified("api.shop.cz"),
 		Zones:     []Zone{shopZone},
 		Writer:    buildWriter,
@@ -761,7 +785,7 @@ func TestBuildHeldHostnameWithoutWinnerIsOnlyBlocked(t *testing.T) {
 	plan := Build(BuildInput{
 		Winners:   []model.Route{winner(t, "www.shop.cz", "qemu/3")},
 		Conflicts: []model.Route{winner(t, "api.shop.cz", "qemu/2")},
-		Holders:   map[string]string{"api.shop.cz": "qemu/1", "www.shop.cz": "qemu/3"},
+		Claims:    claimed(map[string]string{"api.shop.cz": "qemu/1", "www.shop.cz": "qemu/3"}),
 		Targets:   allVerified("www.shop.cz"),
 		Zones:     []Zone{shopZone},
 		Writer:    buildWriter,
@@ -772,9 +796,49 @@ func TestBuildHeldHostnameWithoutWinnerIsOnlyBlocked(t *testing.T) {
 		Rules: withSentinel(blockRule("api.shop.cz"), httpRule("www.shop.cz", originAddr)),
 	}}, plan.Tunnels)
 	require.Equal(t, []string{"www.shop.cz"}, recordNames(plan.Records))
-	require.Equal(t, RouteStatus{
-		Hostname: "api.shop.cz", Owner: "qemu/2", State: StateConflict, Reason: "hostname is held by qemu/1",
-	}, plan.Routes[0])
+	require.Equal(t, []RouteStatus{
+		heldStatus("api.shop.cz", "qemu/1", "shop.cz"),
+		{Hostname: "api.shop.cz", Owner: "qemu/2", State: StateConflict, Reason: "hostname is held by qemu/1"},
+		{Hostname: "www.shop.cz", Owner: "qemu/3", State: StateActive, Service: "http://10.20.0.15:8080", Zone: "shop.cz"},
+	}, plan.Routes)
+}
+
+func TestBuildHeldStatus(t *testing.T) {
+	// A time in another zone, so that the reason shows it is written in UTC.
+	missing := t0.Add(-30 * time.Second).In(time.FixedZone("CET", 3600))
+	kept := Claim{Hostname: "kept.shop.cz", Owner: "qemu/1", Since: t0}
+	absent := Claim{Hostname: "absent.shop.cz", Owner: "manual/web", Since: t0, MissingSince: &missing}
+	plan := Build(BuildInput{
+		Winners: []model.Route{winner(t, "www.shop.cz", "qemu/3")},
+		Claims: map[string]Claim{
+			kept.Hostname:   kept,
+			absent.Hostname: absent,
+			"www.shop.cz":   {Hostname: "www.shop.cz", Owner: "qemu/3", Since: t0},
+			// Neither gets a rule, so neither gets a status.
+			"held.nowhere.org": {Hostname: "held.nowhere.org", Owner: "qemu/4", Since: t0},
+			"held.invalid":     {Hostname: "held.invalid", Owner: "qemu/5", Since: t0},
+		},
+		Targets: allVerified("www.shop.cz"),
+		Zones:   []Zone{shopZone},
+		Writer:  buildWriter,
+	})
+
+	require.Equal(t, []RouteStatus{
+		{
+			Hostname: "absent.shop.cz", Owner: "manual/web", State: StateHeld, Zone: "shop.cz",
+			Reason: "no longer claimed by manual/web since 2026-03-01T11:59:30Z; released after the grace period",
+		},
+		{
+			Hostname: "kept.shop.cz", Owner: "qemu/1", State: StateHeld, Zone: "shop.cz",
+			Reason: "named in the Notes of qemu/1 but not routed; claim kept",
+		},
+		{Hostname: "www.shop.cz", Owner: "qemu/3", State: StateActive, Service: "http://10.20.0.15:8080", Zone: "shop.cz"},
+	}, plan.Routes)
+	require.Equal(t, withSentinel(
+		blockRule("absent.shop.cz"),
+		blockRule("kept.shop.cz"),
+		httpRule("www.shop.cz", originAddr),
+	), plan.Tunnels[0].Rules)
 }
 
 func TestBuildEmpty(t *testing.T) {
@@ -817,13 +881,13 @@ func TestBuildDeterministic(t *testing.T) {
 	in := BuildInput{
 		Winners:   winners,
 		Conflicts: conflicts,
-		Holders: map[string]string{
+		Claims: claimed(map[string]string{
 			"api.shop.cz":       "qemu/2",
 			"www.example.com":   "manual/web",
 			"held.example.com":  "qemu/13",
 			"held2.example.com": "qemu/14",
 			"held.shop.cz":      "qemu/15",
-		},
+		}),
 		Targets: map[string]ResolvedTarget{
 			"*.shop.cz":          verified("10.20.0.1"),
 			"api.shop.cz":        verified("10.20.0.2"),
@@ -1017,9 +1081,12 @@ func TestEmptyResultsMarshalAsEmptyLists(t *testing.T) {
 		{
 			name: "plan of an account with only blocks",
 			value: Build(BuildInput{
-				Holders: map[string]string{"held.shop.cz": "qemu/1"}, Zones: []Zone{shopZone}, Writer: buildWriter,
+				Claims: claimed(map[string]string{"held.shop.cz": "qemu/1"}), Zones: []Zone{shopZone}, Writer: buildWriter,
 			}),
-			want: `{"tunnels": [], "records": [], "routes": []}`,
+			want: `{"tunnels": [], "records": [], "routes": [{
+				"hostname": "held.shop.cz", "owner": "qemu/1", "state": "held",
+				"reason": "named in the Notes of qemu/1 but not routed; claim kept", "zone": "shop.cz"
+			}]}`,
 		},
 		{
 			name:  "collected",

@@ -38,14 +38,10 @@ func (p pipeline) run(stored map[string]Claim, now time.Time) cycle {
 	res := ResolveClaims(ClaimInput{
 		Routes: col.Routes, Held: col.Held, Claims: stored, Identity: identity, Now: now, Grace: grace,
 	})
-	holders := make(map[string]string, len(res.Claims))
-	for host, c := range res.Claims {
-		holders[host] = c.Owner
-	}
 	plan := Build(BuildInput{
 		Winners:   res.Winners,
 		Conflicts: res.Conflicts,
-		Holders:   holders,
+		Claims:    res.Claims,
 		Targets:   p.targets,
 		Zones:     p.zones,
 		Writer:    buildWriter,
@@ -276,6 +272,8 @@ func TestPipeline(t *testing.T) {
 				first.plan.Routes[1],
 				first.plan.Routes[2],
 				first.plan.Routes[3],
+				heldStatus("shop.example.com", "qemu/101", "example.com"),
+				heldStatus("www.example.com", "qemu/101", "example.com"),
 				{Hostname: "www.example.com", Owner: "qemu/102", State: StateConflict, Reason: "hostname is held by qemu/101"},
 			},
 		}, c.plan)
@@ -325,6 +323,13 @@ func TestPipelineHolderRemovingTheHostnameHandsItOver(t *testing.T) {
 	require.Empty(t, gone.claims.Events)
 	require.Empty(t, gone.claims.Winners)
 	require.Equal(t, at(time.Minute), *gone.claims.Claims["www.example.com"].MissingSince)
+	require.Equal(t, []RouteStatus{
+		{
+			Hostname: "www.example.com", Owner: "qemu/101", State: StateHeld, Zone: "example.com",
+			Reason: "no longer claimed by qemu/101 since 2026-03-01T12:01:00Z; released after the grace period",
+		},
+		{Hostname: "www.example.com", Owner: "qemu/102", State: StateConflict, Reason: "hostname is held by qemu/101"},
+	}, gone.plan.Routes)
 
 	after := p.run(persist(t, gone.claims.Claims), at(time.Minute+grace))
 
@@ -384,6 +389,14 @@ func TestPipelineRouteAfterAStrayClosingFenceKeepsItsClaim(t *testing.T) {
 			),
 		}}, c.plan.Tunnels)
 		require.Equal(t, []string{"api.example.com"}, recordNames(c.plan.Records))
+		require.Equal(t, []RouteStatus{
+			{
+				Hostname: "api.example.com", Owner: "qemu/101", State: StateActive,
+				Service: "http://10.20.0.11:3000", Zone: "example.com",
+			},
+			heldStatus("www.example.com", "qemu/101", "example.com"),
+			{Hostname: "www.example.com", Owner: "qemu/102", State: StateConflict, Reason: "hostname is held by qemu/101"},
+		}, c.plan.Routes)
 	}
 
 	repaired := p.run(persist(t, later.claims.Claims), at(time.Minute+3*grace))
@@ -424,14 +437,12 @@ func TestPipelineHostnameInProseClaimsNothing(t *testing.T) {
 func TestPipelineInvalidDenyPatternKeepsClaims(t *testing.T) {
 	p, stored := holderAndClone(t)
 	p.settings = Settings{DenyHosts: []string{"secret.example.com/"}}
-	// The clone has no route while everything is denied, so it stops
-	// waiting; the holder keeps its claim.
-	kept := stored["www.example.com"]
-	kept.Waiting = nil
 
 	broken := p.run(stored, at(time.Minute))
 	later := p.run(persist(t, broken.claims.Claims), at(time.Minute+2*grace))
 
+	// Holder and clone both only name the hostname now. The holder keeps the
+	// claim and the clone its place in line.
 	for _, c := range []cycle{broken, later} {
 		require.True(t, c.collected.PolicyInvalid)
 		require.Equal(t, []HeldName{
@@ -439,9 +450,14 @@ func TestPipelineInvalidDenyPatternKeepsClaims(t *testing.T) {
 			{Hostname: "www.example.com", Owner: "qemu/102"},
 		}, c.collected.Held)
 		require.Empty(t, c.claims.Winners)
+		require.Empty(t, c.claims.Conflicts)
 		require.Empty(t, c.claims.Events)
-		require.Equal(t, map[string]Claim{"www.example.com": kept}, c.claims.Claims)
-		require.Equal(t, Plan{Tunnels: []TunnelPlan{}, Records: []RecordPlan{}, Routes: []RouteStatus{}}, c.plan)
+		require.Equal(t, stored, c.claims.Claims)
+		require.Equal(t, Plan{
+			Tunnels: []TunnelPlan{},
+			Records: []RecordPlan{},
+			Routes:  []RouteStatus{heldStatus("www.example.com", "qemu/101", "example.com")},
+		}, c.plan)
 	}
 
 	p.settings = Settings{DenyHosts: []string{"secret.example.com"}}
@@ -449,9 +465,10 @@ func TestPipelineInvalidDenyPatternKeepsClaims(t *testing.T) {
 	fixed := p.run(persist(t, later.claims.Claims), at(time.Minute+3*grace))
 
 	require.False(t, fixed.collected.PolicyInvalid)
-	require.Equal(t, []string{"conflict www.example.com qemu/102"}, eventKeys(t, fixed.claims.Events))
+	require.Empty(t, fixed.claims.Events)
 	require.Equal(t, []string{"qemu/101"}, ownersOf(fixed.claims.Winners))
-	require.Equal(t, t0, fixed.claims.Claims["www.example.com"].Since)
+	require.Equal(t, stored, fixed.claims.Claims, "same holder, same waiter, same first seen")
+	require.Equal(t, []Waiter{{Owner: "qemu/102", FirstSeen: t0}}, fixed.claims.Claims["www.example.com"].Waiting)
 	require.Equal(t, []TunnelPlan{{
 		AccountID: "acc2", CredentialID: "cred2", Name: tunnelName,
 		Rules: withSentinel(httpRule("www.example.com", "10.20.0.11")),
@@ -468,6 +485,10 @@ func TestPipelineValidDenyPatternReleasesTheHostname(t *testing.T) {
 	require.Empty(t, denied.collected.Held)
 	require.Empty(t, denied.claims.Events)
 	require.Equal(t, at(time.Minute), *denied.claims.Claims["www.example.com"].MissingSince)
+	require.Equal(t, []RouteStatus{{
+		Hostname: "www.example.com", Owner: "qemu/101", State: StateHeld, Zone: "example.com",
+		Reason: "no longer claimed by qemu/101 since 2026-03-01T12:01:00Z; released after the grace period",
+	}}, denied.plan.Routes)
 
 	after := p.run(persist(t, denied.claims.Claims), at(time.Minute+grace))
 

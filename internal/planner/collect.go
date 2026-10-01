@@ -131,11 +131,9 @@ func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
 			routed[host] = true
 		}
 	}
-	// Mentioned is added because Hostnames does not split a hostname glued to
-	// the shorthand prefix, as in "cf-tunnel:a.example.com".
-	named := slices.Concat(annotation.Hostnames(g.Description), res.Mentioned)
-	slices.Sort(named)
-	for _, host := range slices.Compact(named) {
+	// Hostnames covers res.Mentioned: every hostname of the route text is a
+	// word of the whole description.
+	for _, host := range annotation.Hostnames(g.Description) {
 		// Only a policy that could be read in full may take a hostname away.
 		if routed[host] || !pol.invalid && !pol.allows(host) {
 			continue

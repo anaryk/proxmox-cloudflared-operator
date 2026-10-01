@@ -82,9 +82,9 @@ type ClaimResult struct {
 //
 // A holder that still names the hostname in Held has not stopped asking: its
 // entry is broken, or the policy cannot be read. It keeps the claim for as
-// long as that lasts, and nobody serves the hostname meanwhile. Held is only
-// ever about keeping a claim: it never creates one and never lets a waiter
-// win.
+// long as that lasts, and nobody serves the hostname meanwhile. A waiter that
+// still names it keeps its place in line the same way. Held only ever keeps
+// what exists: it never creates a claim and never lets a waiter win.
 func ResolveClaims(in ClaimInput) ClaimResult {
 	r := resolver{
 		in:   in,
@@ -205,6 +205,12 @@ func (r *resolver) keep(host string, claim Claim, cs []claimant, i int) {
 // hostname; the other claimants wait as they would behind a present holder.
 func (r *resolver) hold(host string, claim Claim, cs []claimant) {
 	next := Claim{Hostname: host, Owner: claim.Owner, Identity: claim.Identity, Since: claim.Since}
+	if next.Identity == "" {
+		// As in keep, the first identity that becomes known is stored without
+		// an event. A change of a known one is left for keep to report once
+		// the route is back.
+		next.Identity = r.in.Identity[claim.Owner]
+	}
 	next.Waiting = r.queue(host, claim.Owner, claim.Waiting, cs)
 	r.res.Claims[host] = next
 }
@@ -273,8 +279,10 @@ func (r *resolver) award(claim Claim, winner claimant, losers []claimant, prior 
 
 // queue records losers as conflicts and returns them as the waiting list,
 // longest wait first. Waiters already in prior keep their FirstSeen; each new
-// one gets a conflict event. Waiters in prior that are not among the losers
-// are dropped.
+// one gets a conflict event. A waiter in prior that is not among the losers
+// but still names the hostname in Held keeps its place too, though it is no
+// conflict and cannot win until it has a route. Every other waiter in prior is
+// dropped.
 func (r *resolver) queue(host, holder string, prior []Waiter, losers []claimant) []Waiter {
 	var waiting []Waiter
 	for _, c := range losers {
@@ -286,6 +294,12 @@ func (r *resolver) queue(host, holder string, prior []Waiter, losers []claimant)
 		}
 		waiting = append(waiting, Waiter{Owner: c.owner, FirstSeen: r.in.Now})
 		r.event(ClaimConflict, host, c.owner, "hostname is held by "+holder)
+	}
+	for _, w := range prior {
+		claims := slices.ContainsFunc(losers, func(c claimant) bool { return c.owner == w.Owner })
+		if !claims && w.Owner != holder && r.held[HeldName{Hostname: host, Owner: w.Owner}] {
+			waiting = append(waiting, w)
+		}
 	}
 	slices.SortStableFunc(waiting, func(a, b Waiter) int {
 		return cmp.Or(a.FirstSeen.Compare(b.FirstSeen), model.CompareOwners(a.Owner, b.Owner))
