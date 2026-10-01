@@ -10,7 +10,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 )
 
-// Cloudflare answers these two refusals with a 400 and a code.
+// Cloudflare answers these two refusals with a 400 and a code. The first is
+// also the refusal of a CNAME next to any other record of its name.
 const (
 	messageNameExists = "An A, AAAA, or CNAME record with that host already exists."
 	messageIdentical  = "An identical record already exists."
@@ -78,14 +79,32 @@ func qualify(name, zone string) string {
 	return name + "." + zone
 }
 
-// clashes reports whether Cloudflare would refuse to hold both records. A
-// CNAME stands alone: no other record may share its name. TXT records are left
-// out of the rule, and any number of A and AAAA records may share a name.
-func clashes(a, b cfapi.Record) bool {
-	if !strings.EqualFold(a.Name, b.Name) || isType(a, "TXT") || isType(b, "TXT") {
+// clashes reports whether Cloudflare would refuse to hold both records in the
+// zone of name apex. A CNAME stands alone: no other record may share its name.
+// At the apex, where Cloudflare flattens a CNAME, only an address record or
+// another CNAME clashes with one. Any number of A and AAAA records may share
+// a name.
+func clashes(a, b cfapi.Record, apex string) bool {
+	switch {
+	case !strings.EqualFold(a.Name, b.Name) || !isType(a, "CNAME") && !isType(b, "CNAME"):
 		return false
+	case strings.EqualFold(a.Name, apex):
+		return isAddress(a) && isAddress(b)
 	}
-	return isType(a, "CNAME") || isType(b, "CNAME")
+	return true
+}
+
+func isAddress(r cfapi.Record) bool {
+	return isType(r, "A") || isType(r, "AAAA") || isType(r, "CNAME")
+}
+
+// storedTTL is the TTL Cloudflare keeps for r: a proxied record has no TTL of
+// its own and shows 1, automatic, as does a record written without one.
+func storedTTL(r cfapi.Record) int {
+	if r.Proxied {
+		return 1
+	}
+	return cfapi.SentTTL(r.TTL)
 }
 
 // identical reports whether the records have the same type, name and content,
@@ -96,15 +115,15 @@ func identical(a, b cfapi.Record) bool {
 
 func isType(r cfapi.Record, typ string) bool { return strings.EqualFold(r.Type, typ) }
 
-// checkRecord says why r cannot be stored next to the records of the zone,
-// not counting the record with id except.
-func (f *Fake) checkRecord(zoneID string, r cfapi.Record, except string) error {
-	for _, other := range f.records[zoneID] {
+// checkRecord says why r cannot be stored next to the records of zone z, not
+// counting the record with id except.
+func (f *Fake) checkRecord(z cfapi.Zone, r cfapi.Record, except string) error {
+	for _, other := range f.records[z.ID] {
 		switch {
 		case other.ID == except:
 		case identical(other, r):
 			return &cfapi.Error{Status: http.StatusBadRequest, Codes: []int{codeIdentical}, Message: messageIdentical}
-		case clashes(other, r):
+		case clashes(other, r, z.Name):
 			return &cfapi.Error{Status: http.StatusBadRequest, Codes: []int{codeNameExists}, Message: messageNameExists}
 		}
 	}
@@ -120,8 +139,8 @@ func checkRecordFields(r cfapi.Record) error {
 }
 
 // CreateRecord ignores the ID and ModifiedOn of r. The name is stored in lower
-// case and, when it is not inside the zone, with the zone name added, and an
-// unset TTL as 1, automatic, as the client sends it.
+// case and, when it is not inside the zone, with the zone name added, and the
+// TTL of a proxied record or an unset one as 1, automatic.
 func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
 	if err := cfapi.CheckID("zone id", zoneID); err != nil {
 		return cfapi.Record{}, err
@@ -139,8 +158,8 @@ func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 		return cfapi.Record{}, err
 	}
 	r.Name = qualify(r.Name, z.Name)
-	r.TTL = cfapi.SentTTL(r.TTL)
-	if err := f.checkRecord(zoneID, r, ""); err != nil {
+	r.TTL = storedTTL(r)
+	if err := f.checkRecord(z, r, ""); err != nil {
 		return cfapi.Record{}, err
 	}
 	r.ID = f.newRecordID()
@@ -175,8 +194,8 @@ func (f *Fake) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 		return cfapi.Record{}, notFound("record", r.ID)
 	}
 	r.Name = qualify(r.Name, z.Name)
-	r.TTL = cfapi.SentTTL(r.TTL)
-	if err := f.checkRecord(zoneID, r, r.ID); err != nil {
+	r.TTL = storedTTL(r)
+	if err := f.checkRecord(z, r, r.ID); err != nil {
 		return cfapi.Record{}, err
 	}
 	r.ModifiedOn = f.now()

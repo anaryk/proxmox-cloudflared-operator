@@ -239,15 +239,19 @@ func TestDNSForeignRecordUntouched(t *testing.T) {
 	}
 }
 
-func TestDNSTextRecordDoesNotBlock(t *testing.T) {
+func TestDNSTextRecordAtTheNameRefusesTheCNAME(t *testing.T) {
 	f := newDNSFake()
-	f.SeedRecord(zone1.ID, cfapi.Record{Type: "TXT", Name: "app.example.com", Content: "v=spf1 -all"})
+	txt := f.SeedRecord(zone1.ID, cfapi.Record{Type: "TXT", Name: "app.example.com", Content: "v=spf1 -all"})
 
 	res := newDNS(f, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
 
-	require.Empty(t, res.Problems)
-	require.Empty(t, res.Conflicts)
-	require.Equal(t, []string{"CreateRecord zone1 app.example.com"}, dnsWrites(f))
+	require.Equal(t, []string{"CreateRecord zone1 app.example.com"}, dnsWrites(f), "a text record is no address: the create is tried")
+	require.Len(t, res.Problems, 1)
+	require.Contains(t, res.Problems[0], "app.example.com in zone example.com: creating the record")
+	require.Len(t, res.Actions, 1)
+	require.False(t, res.Actions[0].Applied)
+	require.Contains(t, res.Actions[0].Held, "(codes 81053)", "Cloudflare refuses a CNAME next to any other record")
+	require.Equal(t, []cfapi.Record{txt}, f.RecordsIn(zone1.ID))
 }
 
 func TestDNSOwnedAddressRecordAtWantedName(t *testing.T) {
@@ -364,7 +368,9 @@ func TestDNSListingFailureSkipsZone(t *testing.T) {
 			require.Contains(t, res.Problems[0], "zone example.com")
 			require.Equal(t, []string{"CreateRecord zone2 www.shop.cz"}, dnsWrites(f))
 			require.Equal(t, []Action{dnsAction(CreateRecord, "www.shop.cz", "", false)}, withoutDetail(res.Actions))
-			require.Equal(t, []cfapi.Record{ourCNAME("gone.example.com", testTunnelID)}, withoutIDs(recordsIn(f, zone1.ID)))
+			gone := ourCNAME("gone.example.com", testTunnelID)
+			gone.TTL = 1
+			require.Equal(t, []cfapi.Record{gone}, withoutIDs(recordsIn(f, zone1.ID)))
 			require.Equal(t, stones, store.m)
 			require.Equal(t, 0, store.saves)
 		})

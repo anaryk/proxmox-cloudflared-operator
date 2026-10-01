@@ -98,6 +98,7 @@ type API interface {
 	Zones(ctx context.Context) ([]Zone, error)
 
 	FindTunnel(ctx context.Context, accountID, name string) (Tunnel, bool, error)
+	Tunnels(ctx context.Context, accountID, namePrefix string) ([]Tunnel, error) // not deleted, name starts with namePrefix
 	CreateTunnel(ctx context.Context, accountID, name string) (Tunnel, error)
 	DeleteTunnel(ctx context.Context, accountID, tunnelID string) error
 	TunnelToken(ctx context.Context, accountID, tunnelID string) (string, error)

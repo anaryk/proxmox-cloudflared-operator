@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -84,6 +85,39 @@ func (c *Client) FindTunnel(ctx context.Context, accountID, name string) (Tunnel
 	return Tunnel{}, false, fmt.Errorf("finding tunnel %q: %d tunnels have that name", name, len(matches))
 }
 
+// Tunnels returns the tunnels that are not deleted and whose name starts with
+// namePrefix, which must not be blank. The prefix is also checked on what
+// comes back, because callers decide what to delete by it: a tunnel of
+// another name fails the whole call.
+func (c *Client) Tunnels(ctx context.Context, accountID, namePrefix string) ([]Tunnel, error) {
+	path, err := tunnelsPath(accountID)
+	if err != nil {
+		return nil, fmt.Errorf("listing tunnels: %w", err)
+	}
+	if err := CheckName("tunnel name prefix", namePrefix); err != nil {
+		return nil, fmt.Errorf("listing tunnels: %w", err)
+	}
+
+	var out []Tunnel
+	query := url.Values{"include_prefix": {namePrefix}, "is_deleted": {"false"}}
+	err = listEach(ctx, c, path, query, func(w wireTunnel) error {
+		switch {
+		case w.deleted():
+			return nil
+		case !strings.HasPrefix(w.Name, namePrefix):
+			return fmt.Errorf("%w: cloudflare returned a tunnel outside the requested prefix", errUnexpected)
+		case w.ID == "":
+			return fmt.Errorf("%w: tunnel without an id", errUnexpected)
+		}
+		out = append(out, w.tunnel())
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing tunnels %s* in account %s: %w", namePrefix, accountID, err)
+	}
+	return out, nil
+}
+
 // CreateTunnel creates a tunnel whose configuration is kept by Cloudflare. A
 // name that is taken is an error for which IsConflict is true.
 func (c *Client) CreateTunnel(ctx context.Context, accountID, name string) (Tunnel, error) {
@@ -106,7 +140,8 @@ func (c *Client) CreateTunnel(ctx context.Context, accountID, name string) (Tunn
 	return got.tunnel(), nil
 }
 
-// DeleteTunnel deletes a tunnel.
+// DeleteTunnel deletes a tunnel. Cloudflare refuses to delete one that has
+// active connections.
 func (c *Client) DeleteTunnel(ctx context.Context, accountID, tunnelID string) error {
 	path, err := tunnelPath(accountID, tunnelID)
 	if err != nil {

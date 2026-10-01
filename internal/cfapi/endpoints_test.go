@@ -427,6 +427,62 @@ func TestFindTunnelMatchWithoutID(t *testing.T) {
 	require.False(t, found)
 }
 
+func TestTunnels(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(`[
+		{"id":"id-1","name":"pco-abc_probe_1","status":"inactive","created_at":"2026-02-03T04:05:06Z"},
+		{"id":"id-dead","name":"pco-abc_probe_2","status":"inactive","created_at":"2026-02-03T04:05:06Z","deleted_at":"2026-02-04T00:00:00Z"},
+		{"id":"id-3","name":"pco-abc_probe_3","status":"healthy","created_at":"2026-02-05T04:05:06Z","deleted_at":null}]`)))
+
+	got, err := env.c.Tunnels(context.Background(), "a1", "pco-abc_probe_")
+
+	require.NoError(t, err)
+	require.Equal(t, []Tunnel{
+		{ID: "id-1", Name: "pco-abc_probe_1", Status: "inactive", CreatedAt: ts(t, "2026-02-03T04:05:06Z")},
+		{ID: "id-3", Name: "pco-abc_probe_3", Status: "healthy", CreatedAt: ts(t, "2026-02-05T04:05:06Z")},
+	}, got, "a deleted tunnel is none")
+	req := only(t, env)
+	require.Equal(t, http.MethodGet, req.method)
+	require.Equal(t, "/client/v4/accounts/a1/cfd_tunnel", req.path(t))
+	require.Equal(t, url.Values{
+		"include_prefix": {"pco-abc_probe_"}, "is_deleted": {"false"}, "page": {"1"}, "per_page": {"50"},
+	}, req.query(t))
+}
+
+func TestTunnelsNone(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(`[]`)))
+	got, err := env.c.Tunnels(context.Background(), "a1", "pco-abc_probe_")
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestTunnelsBadAnswers(t *testing.T) {
+	for name, item := range map[string]string{
+		"a name outside the prefix":  `{"id":"id-1","name":"pco-abc-node1","status":"inactive"}`,
+		"the prefix in another case": `{"id":"id-1","name":"PCO-ABC_probe_1","status":"inactive"}`,
+		"a tunnel without an id":     `{"name":"pco-abc_probe_1","status":"inactive"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := setup(t, reply(http.StatusOK, okBody(`[{"id":"id-0","name":"pco-abc_probe_0"},`+item+`]`)))
+			got, err := env.c.Tunnels(context.Background(), "a1", "pco-abc_probe_")
+			require.ErrorIs(t, err, errUnexpected)
+			require.Nil(t, got, "nothing of a listing that cannot be trusted")
+		})
+	}
+}
+
+func TestTunnelsFailWholeOnAFailedPage(t *testing.T) {
+	env := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			reply(http.StatusBadGateway, `bad gateway`)(w, r)
+			return
+		}
+		reply(http.StatusOK, `{"success":true,"result":[{"id":"id-1","name":"pco-abc_probe_1"}],"result_info":{"page":1,"total_pages":2}}`)(w, r)
+	})
+	got, err := env.c.Tunnels(context.Background(), "a1", "pco-abc_probe_")
+	require.Error(t, err)
+	require.Nil(t, got)
+}
+
 func TestCreateTunnel(t *testing.T) {
 	env := setup(t, reply(http.StatusOK, okBody(tunnelJSON)))
 
@@ -1202,6 +1258,9 @@ func TestEmptyArgumentsAreRejectedBeforeAnyRequest(t *testing.T) {
 		{"FindTunnel without account", func(c *Client) error { _, _, err := c.FindTunnel(ctx, "", "n"); return err }},
 		{"FindTunnel without name", func(c *Client) error { _, _, err := c.FindTunnel(ctx, "a1", ""); return err }},
 		{"FindTunnel blank name", func(c *Client) error { _, _, err := c.FindTunnel(ctx, "a1", "  "); return err }},
+		{"Tunnels without account", func(c *Client) error { _, err := c.Tunnels(ctx, "", "pco-"); return err }},
+		{"Tunnels without prefix", func(c *Client) error { _, err := c.Tunnels(ctx, "a1", ""); return err }},
+		{"Tunnels blank prefix", func(c *Client) error { _, err := c.Tunnels(ctx, "a1", " "); return err }},
 		{"CreateTunnel without account", func(c *Client) error { _, err := c.CreateTunnel(ctx, "", "n"); return err }},
 		{"CreateTunnel without name", func(c *Client) error { _, err := c.CreateTunnel(ctx, "a1", ""); return err }},
 		{"DeleteTunnel without account", func(c *Client) error { return c.DeleteTunnel(ctx, "", "t1") }},

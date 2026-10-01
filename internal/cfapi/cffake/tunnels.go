@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -83,13 +84,18 @@ func (f *Fake) SetForeign(accountID, tunnelID string, v bool) {
 	}
 }
 
-// SetConnectors sets what Connectors lists for a tunnel; none by default. An
-// unknown tunnel is ignored.
+// SetConnectors sets what Connectors lists for a tunnel; none by default. The
+// status of the tunnel follows: "healthy" with connectors, "inactive" without.
+// A tunnel with connectors cannot be deleted. An unknown tunnel is ignored.
 func (f *Fake) SetConnectors(accountID, tunnelID string, c []cfapi.Connector) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if t, _, err := f.tunnelIn(accountID, tunnelID); err == nil {
 		t.connectors = clone(c)
+		t.Status = "inactive"
+		if len(c) > 0 {
+			t.Status = "healthy"
+		}
 	}
 }
 
@@ -118,6 +124,32 @@ func (f *Fake) FindTunnel(ctx context.Context, accountID, name string) (cfapi.Tu
 		return matches[0], true, nil
 	}
 	return cfapi.Tunnel{}, false, fmt.Errorf("finding tunnel %q: %d tunnels have that name", name, len(matches))
+}
+
+// Tunnels lists the tunnels of an account whose name starts with namePrefix,
+// which is matched with regard to case, oldest first.
+func (f *Fake) Tunnels(ctx context.Context, accountID, namePrefix string) ([]cfapi.Tunnel, error) {
+	if err := cfapi.CheckID("account id", accountID); err != nil {
+		return nil, err
+	}
+	if err := cfapi.CheckName("tunnel name prefix", namePrefix); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin(ctx, opTunnelRead, "Tunnels", accountID, namePrefix); err != nil {
+		return nil, err
+	}
+	if err := f.account(accountID); err != nil {
+		return nil, err
+	}
+	var out []cfapi.Tunnel
+	for _, t := range f.tunnels {
+		if t.account == accountID && strings.HasPrefix(t.Name, namePrefix) {
+			out = append(out, t.Tunnel)
+		}
+	}
+	return out, nil
 }
 
 func (f *Fake) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, error) {
@@ -150,9 +182,12 @@ func (f *Fake) DeleteTunnel(ctx context.Context, accountID, tunnelID string) err
 	if err := f.begin(ctx, opTunnelWrite, "DeleteTunnel", accountID, tunnelID); err != nil {
 		return err
 	}
-	_, i, err := f.tunnelIn(accountID, tunnelID)
+	t, i, err := f.tunnelIn(accountID, tunnelID)
 	if err != nil {
 		return err
+	}
+	if len(t.connectors) > 0 {
+		return &cfapi.Error{Status: http.StatusBadRequest, Message: "Cannot delete a tunnel that has active connections"}
 	}
 	f.tunnels = slices.Delete(f.tunnels, i, i+1)
 	return nil

@@ -24,7 +24,7 @@ const (
 	opVerify      = "verify"       // VerifyToken
 	opAccounts    = "accounts"     // Accounts
 	opZones       = "zones"        // Zones
-	opTunnelRead  = "tunnel.read"  // FindTunnel, TunnelToken, TunnelConfig, Connectors
+	opTunnelRead  = "tunnel.read"  // FindTunnel, Tunnels, TunnelToken, TunnelConfig, Connectors
 	opTunnelWrite = "tunnel.write" // CreateTunnel, DeleteTunnel, PutTunnelConfig
 	opDNSRead     = "dns.read"     // Records
 	opDNSWrite    = "dns.write"    // CreateRecord, UpdateRecord, DeleteRecord
@@ -143,18 +143,20 @@ func (f *Fake) AddZone(id, name, accountID string) {
 	f.zones = append(f.zones, z)
 }
 
-// SeedRecord puts a record into a zone as it is, without the checks and the
-// change of the name that CreateRecord makes, so that a test can start from a
-// state it could not reach through the API. An empty ID is replaced by the next
-// free "rec-N" and a zero ModifiedOn by the current time. A record that has the
-// id of one already there replaces it. The zone must have been added for the
-// record to be visible through the API.
+// SeedRecord puts a record into a zone without the checks and the change of
+// the name that CreateRecord makes, so that a test can start from a state it
+// could not reach through the API. An empty ID is replaced by the next free
+// "rec-N" and a zero ModifiedOn by the current time. The TTL is stored as
+// Cloudflare holds it: 1, automatic, for a proxied record or an unset TTL. A
+// record that has the id of one already there replaces it. The zone must have
+// been added for the record to be visible through the API.
 func (f *Fake) SeedRecord(zoneID string, r cfapi.Record) cfapi.Record {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.ID == "" {
 		r.ID = f.newRecordID()
 	}
+	r.TTL = storedTTL(r)
 	if r.ModifiedOn.IsZero() {
 		r.ModifiedOn = f.now()
 	}

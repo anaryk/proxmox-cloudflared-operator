@@ -375,23 +375,52 @@ func TestCreateRecordIgnoresIDAndModifiedOn(t *testing.T) {
 
 func TestRecordTTL(t *testing.T) {
 	f := newFake()
-	auto, err := f.CreateRecord(ctx, zone, cname("a.example.com", "x"))
+	auto, err := f.CreateRecord(ctx, zone, rec("A", "a.example.com", "192.0.2.0"))
 	require.NoError(t, err)
 	timed := rec("A", "b.example.com", "192.0.2.1")
 	timed.TTL = 300
 	timed, err = f.CreateRecord(ctx, zone, timed)
 	require.NoError(t, err)
 	seeded := f.SeedRecord(zone, rec("A", "c.example.com", "192.0.2.2"))
+	seededTimed := rec("A", "d.example.com", "192.0.2.3")
+	seededTimed.TTL = 600
+	seededTimed = f.SeedRecord(zone, seededTimed)
 
 	require.Equal(t, 1, auto.TTL, "an unset TTL is automatic, as the client sends it")
 	require.Equal(t, 300, timed.TTL)
-	require.Equal(t, 0, seeded.TTL, "a seeded record is kept as it is")
+	require.Equal(t, 1, seeded.TTL, "Cloudflare holds no record without a TTL")
+	require.Equal(t, 600, seededTimed.TTL)
 
 	timed.TTL = 0
 	updated, err := f.UpdateRecord(ctx, zone, timed)
 	require.NoError(t, err)
 	require.Equal(t, 1, updated.TTL)
-	require.Equal(t, []int{1, 1, 0}, []int{f.RecordsIn(zone)[0].TTL, f.RecordsIn(zone)[1].TTL, f.RecordsIn(zone)[2].TTL})
+	require.Equal(t, []int{1, 1, 1, 600}, []int{f.RecordsIn(zone)[0].TTL, f.RecordsIn(zone)[1].TTL, f.RecordsIn(zone)[2].TTL, f.RecordsIn(zone)[3].TTL})
+}
+
+func TestProxiedRecordsHaveAutomaticTTL(t *testing.T) {
+	f := newFake()
+	proxied := func(name string) cfapi.Record {
+		r := cname(name, "x.cfargotunnel.com")
+		r.TTL = 300
+		return r
+	}
+
+	created, err := f.CreateRecord(ctx, zone, proxied("a.example.com"))
+	require.NoError(t, err)
+	seeded := f.SeedRecord(zone, proxied("b.example.com"))
+	plain := rec("A", "c.example.com", "192.0.2.1")
+	plain.TTL = 300
+	plain, err = f.CreateRecord(ctx, zone, plain)
+	require.NoError(t, err)
+	plain.Proxied = true
+	updated, err := f.UpdateRecord(ctx, zone, plain)
+	require.NoError(t, err)
+
+	require.Equal(t, []int{1, 1, 1}, []int{created.TTL, seeded.TTL, updated.TTL})
+	for _, r := range f.RecordsIn(zone) {
+		require.Equal(t, 1, r.TTL, r.Name)
+	}
 }
 
 func TestSeedRecord(t *testing.T) {
@@ -420,6 +449,7 @@ func TestRecordConflicts(t *testing.T) {
 		existing  string
 		new       string
 		sameName  bool
+		apex      bool // the name is the zone itself
 		wantClash bool
 	}{
 		{name: "cname then cname", existing: "CNAME", new: "CNAME", sameName: true, wantClash: true},
@@ -433,25 +463,40 @@ func TestRecordConflicts(t *testing.T) {
 		{name: "a then aaaa", existing: "A", new: "AAAA", sameName: true},
 		{name: "aaaa then aaaa", existing: "AAAA", new: "AAAA", sameName: true},
 		{name: "a then mx", existing: "A", new: "MX", sameName: true},
-		{name: "txt then cname", existing: "TXT", new: "CNAME", sameName: true},
-		{name: "cname then txt", existing: "CNAME", new: "TXT", sameName: true},
+		{name: "txt then cname", existing: "TXT", new: "CNAME", sameName: true, wantClash: true},
+		{name: "cname then txt", existing: "CNAME", new: "TXT", sameName: true, wantClash: true},
 		{name: "txt then txt", existing: "TXT", new: "TXT", sameName: true},
 		{name: "txt then a", existing: "TXT", new: "A", sameName: true},
 		{name: "cname then cname of another name", existing: "CNAME", new: "CNAME"},
+		{name: "txt then cname at the apex", existing: "TXT", new: "CNAME", sameName: true, apex: true},
+		{name: "mx then cname at the apex", existing: "MX", new: "CNAME", sameName: true, apex: true},
+		{name: "cname then txt at the apex", existing: "CNAME", new: "TXT", sameName: true, apex: true},
+		{name: "a then cname at the apex", existing: "A", new: "CNAME", sameName: true, apex: true, wantClash: true},
+		{name: "cname then cname at the apex", existing: "CNAME", new: "CNAME", sameName: true, apex: true, wantClash: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFake()
-			seeded := f.SeedRecord(zone, rec(tt.existing, "app.example.com", "old"))
+			existing := "app.example.com"
+			if tt.apex {
+				existing = "example.com"
+			}
+			seeded := f.SeedRecord(zone, rec(tt.existing, existing, "old"))
 
 			name := "other.example.com"
 			if tt.sameName {
-				name = "app.example.com"
+				name = existing
 			}
 			got, err := f.CreateRecord(ctx, zone, rec(tt.new, name, "new"))
 
 			if tt.wantClash {
 				require.True(t, cfapi.IsConflict(err), "got %v", err)
+				var apiErr *cfapi.Error
+				require.ErrorAs(t, err, &apiErr)
+				require.Equal(t, cfapi.Error{
+					Status: http.StatusBadRequest, Codes: []int{81053},
+					Message: "An A, AAAA, or CNAME record with that host already exists.",
+				}, *apiErr, "the same refusal whatever the other record")
 				require.Equal(t, cfapi.Record{}, got)
 				require.Equal(t, []cfapi.Record{seeded}, f.RecordsIn(zone), "a refused create leaves nothing behind")
 				return
@@ -700,6 +745,7 @@ func TestUnknownIDsAreNotFound(t *testing.T) {
 		call func() error
 	}{
 		{"FindTunnel in unknown account", func() error { _, _, err := f.FindTunnel(ctx, "nope", "pco-abc"); return err }},
+		{"Tunnels in unknown account", func() error { _, err := f.Tunnels(ctx, "nope", "pco-"); return err }},
 		{"CreateTunnel in unknown account", func() error { _, err := f.CreateTunnel(ctx, "nope", "pco-new"); return err }},
 		{"DeleteTunnel in unknown account", func() error { return f.DeleteTunnel(ctx, "nope", tun.ID) }},
 		{"DeleteTunnel unknown", func() error { return f.DeleteTunnel(ctx, acct, "nope") }},
@@ -747,6 +793,8 @@ func TestBadArgumentsAreRejectedLocally(t *testing.T) {
 		{"FindTunnel without name", func() error { _, _, err := f.FindTunnel(ctx, acct, ""); return err }},
 		{"FindTunnel blank name", func() error { _, _, err := f.FindTunnel(ctx, acct, "  "); return err }},
 		{"FindTunnel account with a slash", func() error { _, _, err := f.FindTunnel(ctx, "a/b", "n"); return err }},
+		{"Tunnels without account", func() error { _, err := f.Tunnels(ctx, "", "pco-"); return err }},
+		{"Tunnels without prefix", func() error { _, err := f.Tunnels(ctx, acct, ""); return err }},
 		{"CreateTunnel without account", func() error { _, err := f.CreateTunnel(ctx, "", "n"); return err }},
 		{"CreateTunnel without name", func() error { _, err := f.CreateTunnel(ctx, acct, ""); return err }},
 		{"DeleteTunnel without account", func() error { return f.DeleteTunnel(ctx, "", "t1") }},
@@ -1009,6 +1057,73 @@ func TestSetConnectors(t *testing.T) {
 	require.Empty(t, again)
 }
 
+func TestConnectorsMoveTheStatus(t *testing.T) {
+	f := newFake()
+	tun := f.SeedTunnel(acct, "pco-abc", nil)
+	status := func() string {
+		got, found, err := f.FindTunnel(ctx, acct, "pco-abc")
+		require.NoError(t, err)
+		require.True(t, found)
+		listed, err := f.Tunnels(ctx, acct, "pco-")
+		require.NoError(t, err)
+		require.Equal(t, []cfapi.Tunnel{got}, listed)
+		require.Equal(t, []cfapi.Tunnel{got}, f.TunnelsIn(acct))
+		return got.Status
+	}
+
+	require.Equal(t, "inactive", status())
+	f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Connections: 4}})
+	require.Equal(t, "healthy", status())
+	f.SetConnectors(acct, tun.ID, nil)
+	require.Equal(t, "inactive", status())
+}
+
+func TestTunnelWithConnectorsIsNotDeleted(t *testing.T) {
+	f := newFake()
+	tun := f.SeedTunnel(acct, "pco-abc", nil)
+	f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Connections: 1}})
+
+	err := f.DeleteTunnel(ctx, acct, tun.ID)
+
+	var apiErr *cfapi.Error
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, http.StatusBadRequest, apiErr.Status)
+	require.False(t, cfapi.IsAuth(err) || cfapi.IsNotFound(err) || cfapi.IsConflict(err))
+	require.Len(t, f.TunnelsIn(acct), 1, "a refused delete leaves the tunnel")
+	require.Equal(t, []string{"DeleteTunnel acct1 " + tun.ID}, f.Calls())
+
+	f.SetConnectors(acct, tun.ID, nil)
+	require.NoError(t, f.DeleteTunnel(ctx, acct, tun.ID))
+	require.Empty(t, f.TunnelsIn(acct))
+}
+
+func TestTunnelsByPrefix(t *testing.T) {
+	f := newFake()
+	f.AddAccount("acct2", "Other")
+	probe1 := f.SeedTunnel(acct, "pco-abc_probe_1", nil)
+	f.SeedTunnel(acct, "pco-abc", nil)
+	f.SeedTunnel(acct, "pco-abc-node1", nil)
+	f.SeedTunnel(acct, "PCO-ABC_probe_2", nil)
+	probe3 := f.SeedTunnel(acct, "pco-abc_probe_3", nil)
+	f.SeedTunnel("acct2", "pco-abc_probe_4", nil)
+
+	got, err := f.Tunnels(ctx, acct, "pco-abc_probe_")
+	require.NoError(t, err)
+	require.Equal(t, []cfapi.Tunnel{probe1, probe3}, got, "the prefix is matched exactly, in the account asked")
+
+	none, err := f.Tunnels(ctx, acct, "pco-xyz")
+	require.NoError(t, err)
+	require.Nil(t, none)
+
+	got[0].Name = "changed"
+	again, err := f.Tunnels(ctx, acct, "pco-abc_probe_")
+	require.NoError(t, err)
+	require.Equal(t, "pco-abc_probe_1", again[0].Name, "a copy")
+	require.Equal(t, []string{
+		"Tunnels acct1 pco-abc_probe_", "Tunnels acct1 pco-xyz", "Tunnels acct1 pco-abc_probe_",
+	}, f.Calls())
+}
+
 func TestSetConnectorsOnNothingChangesNothing(t *testing.T) {
 	f := newFake()
 	tun := f.SeedTunnel(acct, "pco-abc", nil)
@@ -1065,6 +1180,9 @@ func methods() []method {
 		{"FindTunnel", "tunnel.read",
 			func(f *Fake, _ fixture) error { _, _, err := f.FindTunnel(ctx, acct, "pco-seeded"); return err },
 			func(fixture) string { return "FindTunnel acct1 pco-seeded" }},
+		{"Tunnels", "tunnel.read",
+			func(f *Fake, _ fixture) error { _, err := f.Tunnels(ctx, acct, "pco-"); return err },
+			func(fixture) string { return "Tunnels acct1 pco-" }},
 		{"TunnelToken", "tunnel.read",
 			func(f *Fake, fx fixture) error { _, err := f.TunnelToken(ctx, acct, fx.tunnel); return err },
 			func(fx fixture) string { return "TunnelToken acct1 " + fx.tunnel }},
