@@ -8,12 +8,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -158,7 +157,7 @@ func leftBehind(ctx context.Context, api cfapi.API, installID string) ([]string,
 			return nil, err
 		}
 		for _, rec := range records {
-			if ownedRecord(rec, marker) {
+			if reconcile.Owned(installID, rec) && !reconcile.IsProbeRecord(installID, rec) {
 				left = append(left, fmt.Sprintf("record %s in zone %s", rec.Name, z.Name))
 			}
 		}
@@ -175,24 +174,6 @@ func leftBehind(ctx context.Context, api cfapi.API, installID string) ([]string,
 		}
 	}
 	return left, nil
-}
-
-// ownedRecord reports whether a record publishes a hostname for this install:
-// its comment begins with the marker as a whole word, and it is not a probe a
-// credential check left behind, which the DNS reconciler sweeps on its own.
-// Both rules are the DNS reconciler's.
-func ownedRecord(rec cfapi.Record, marker string) bool {
-	rest, ok := strings.CutPrefix(rec.Comment, marker)
-	if !ok {
-		return false
-	}
-	if next, _ := utf8.DecodeRuneInString(rest); rest != "" && !unicode.IsSpace(next) {
-		return false
-	}
-	probe := strings.EqualFold(rec.Type, "TXT") &&
-		strings.HasPrefix(strings.ToLower(rec.Name), planner.ProbeRecordPrefix) &&
-		rec.Comment == marker+" probe"
-	return !probe
 }
 
 // credential returns the stored credential with an id.

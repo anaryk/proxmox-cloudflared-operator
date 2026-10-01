@@ -81,8 +81,9 @@ func (run *dnsRun) seenUnwanted(key string) Tombstone {
 	case run.now.Sub(t.Seen) > run.r.s.MaxGap/4:
 		t.Seen = run.now
 	}
-	if kept && run.in.ConfirmDeletes {
+	if kept && run.in.ConfirmDeletes && !t.Confirmed {
 		t.Confirmed = true
+		run.res.Confirmed++
 	}
 	if !ok || t != old {
 		run.stones.set(key, t)

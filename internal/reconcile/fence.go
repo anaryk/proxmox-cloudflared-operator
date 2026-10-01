@@ -67,9 +67,12 @@ func (run *dnsRun) proceed(z *dnsZone, a Action) bool {
 // write makes one change, or only records it when the run may not write, and
 // reports whether the change was made.
 func (run *dnsRun) write(z *dnsZone, a Action, call func() error) bool {
-	if !run.proceed(z, a) {
-		return false
-	}
+	return run.proceed(z, a) && run.commit(z, a, call)
+}
+
+// commit makes a change that proceed let through, once the writer callback
+// still names this writer, and reports whether the change was made.
+func (run *dnsRun) commit(z *dnsZone, a Action, call func() error) bool {
 	if !run.fenced(z.about(a.Target)) {
 		z.add(a, run.stopped)
 		return false

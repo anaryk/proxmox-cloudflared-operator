@@ -3,26 +3,16 @@ package reconcile
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
 // probeAge is how old a probe record must be before it counts as left
 // behind; a younger one may belong to a check still running.
 const probeAge = 10 * time.Minute
 
-// isProbe reports whether a record is one the credential check leaves behind
-// when it cannot delete it: a TXT record named like a probe that carries
-// exactly the probe comment of this install. Anything else with that comment
-// is an ordinary record of this install.
-func (run *dnsRun) isProbe(rec cfapi.Record) bool {
-	return isType(rec, "TXT") &&
-		strings.HasPrefix(strings.ToLower(rec.Name), planner.ProbeRecordPrefix) &&
-		rec.Comment == planner.ProbeRecordComment(run.r.s.InstallID)
-}
+func (run *dnsRun) isProbe(rec cfapi.Record) bool { return IsProbeRecord(run.r.s.InstallID, rec) }
 
 // leftBehind reports whether a probe is old enough to be swept. A probe whose
 // age is not known stays.

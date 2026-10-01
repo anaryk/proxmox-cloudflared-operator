@@ -149,15 +149,16 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 	if isType(rec, "CNAME") {
 		upd := cfapi.Record{ID: rec.ID, Type: "CNAME", Name: rec.Name, Content: target, Proxied: true, Comment: run.marker}
 		a := Action{Kind: UpdateRecord, Target: rec.Name, Detail: pointDetail(z, target, rec), Destructive: true}
-		if p.held != "" {
+		switch {
+		case p.held != "":
 			z.add(a, p.held)
-			return
+		case run.proceed(z, a) && run.snapshot(ctx, z, rec, a):
+			run.commit(z, a, func() error {
+				run.res.Replaced = append(run.res.Replaced, rec)
+				_, err := z.api.UpdateRecord(ctx, z.ID, upd)
+				return err
+			})
 		}
-		run.write(z, a, func() error {
-			run.res.Replaced = append(run.res.Replaced, rec)
-			_, err := z.api.UpdateRecord(ctx, z.ID, upd)
-			return err
-		})
 		return
 	}
 
@@ -179,6 +180,9 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		z.add(add, held)
 		return
 	}
+	if !run.snapshot(ctx, z, rec, del, add) {
+		return
+	}
 	if !run.write(z, del, func() error {
 		run.res.Replaced = append(run.res.Replaced, rec)
 		return deleteRecord(ctx, z, rec.ID)
@@ -194,6 +198,23 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 	if !run.create(ctx, z, add, target) {
 		run.restore(ctx, z, rec)
 	}
+}
+
+// snapshot hands the record an adoption is about to replace to BeforeReplace,
+// when the input has one, and reports whether the adoption may go on. When
+// it may not, the actions of the adoption are held.
+func (run *dnsRun) snapshot(ctx context.Context, z *dnsZone, rec cfapi.Record, actions ...Action) bool {
+	if run.in.BeforeReplace == nil {
+		return true
+	}
+	if err := run.in.BeforeReplace(ctx, z.ZoneRef, rec); err != nil {
+		for _, a := range actions {
+			z.add(a, heldSnapshot)
+		}
+		run.problem(fmt.Sprintf("%s: storing the record before the adoption: %v", z.about(rec.Name), err))
+		return false
+	}
+	return true
 }
 
 // restore puts back a record an adoption deleted when the CNAME that was to

@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 
@@ -24,6 +22,7 @@ const (
 	heldNoTunnel      = "tunnel not created yet"
 	heldTunnelUnknown = "tunnel state unknown"
 	heldUnverified    = "tunnel configuration not verified"
+	heldSnapshot      = "snapshot not stored"
 	heldInventory     = "inventory incomplete"
 	heldWriter        = "writer changed"
 	heldUnreadable    = "writer unreadable"
@@ -97,6 +96,12 @@ type DNSInput struct {
 	// StillUnwanted asks the inventory once more, right before a delete,
 	// whether no guest publishes name. An error or false holds the delete.
 	StillUnwanted func(ctx context.Context, name string) (bool, error)
+
+	// BeforeReplace, when set, is handed the record an adoption is about to
+	// change or delete, after it was read again and before the first write
+	// of the adoption, once per adoption. An error holds the adoption: the
+	// record is taken over only once a copy of it is kept.
+	BeforeReplace func(ctx context.Context, zone ZoneRef, rec cfapi.Record) error
 }
 
 // Conflict is a record at a wanted name that pco will not change: someone
@@ -120,6 +125,16 @@ type DNSResult struct {
 	Replaced []cfapi.Record
 
 	Problems []string
+
+	// Decided is true when the run got as far as the admin's one-shot
+	// requests, ConfirmDeletes and Adopt: it passed its start, loaded the
+	// tombstones in Enforce mode and applied the confirmation. A run that
+	// stopped before, as on another writer or a tunnel run that did not
+	// proceed, leaves them for a later run.
+	Decided bool
+
+	// Confirmed is how many tombstones this run marked confirmed.
+	Confirmed int
 
 	// Verdict is TunnelVerdict when that did not let the run start, and
 	// otherwise WriterStale when this process is not, or stopped being, the
@@ -230,6 +245,7 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 		run.list(ctx, z)
 	}
 	run.decide(zones)
+	run.res.Decided = true
 	run.saveTombstones(ctx, true)
 	for _, z := range zones {
 		run.reconcile(ctx, z)
@@ -410,16 +426,7 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	}
 }
 
-// owns reports whether a record belongs to this install: its comment begins
-// with the marker as a whole word.
-func (run *dnsRun) owns(rec cfapi.Record) bool {
-	rest, ok := strings.CutPrefix(rec.Comment, run.marker)
-	if !ok {
-		return false
-	}
-	next, _ := utf8.DecodeRuneInString(rest)
-	return rest == "" || unicode.IsSpace(next)
-}
+func (run *dnsRun) owns(rec cfapi.Record) bool { return Owned(run.r.s.InstallID, rec) }
 
 // recheck reads rec again by its id right before a write. found is false when
 // it is gone or now has another name; ours tells whether it is still of the
