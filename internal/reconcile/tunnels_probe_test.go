@@ -207,3 +207,59 @@ func TestTunnelProbeSweepNotAfterTheRunStopped(t *testing.T) {
 	require.Equal(t, WriterForeign, res.Verdict)
 	require.Empty(t, callsTo(f, "Tunnels", "DeleteTunnel"))
 }
+
+func TestTunnelProbeSweepAtMostEveryTenMinutes(t *testing.T) {
+	ctx := context.Background()
+	f := newFake("acct1", "acct2")
+	f.SeedTunnel("acct1", testTunnel, rulesOf(ours, app))
+	f.SeedTunnel("acct2", testTunnel, rulesOf(ours, app))
+	s := &spy{API: f, tunnelsErr: map[string]error{}}
+	c := &clock{t0}
+	r := newReconciler(Clients{"cred1": s}, c)
+	one := []planner.TunnelPlan{planFor("acct1", "cred1", app)}
+	both := []planner.TunnelPlan{planFor("acct1", "cred1", app), planFor("acct2", "cred1", app)}
+	listings := func() []string { return callsTo(f, "Tunnels") }
+
+	r.Run(ctx, one, nil, Enforce)
+	require.Equal(t, []string{"Tunnels acct1 pco-abc_probe_"}, listings(), "the first enforcing run sweeps")
+
+	c.t = t0.Add(10*time.Minute - time.Second)
+	r.Run(ctx, both, nil, Enforce)
+	require.Equal(t, []string{"Tunnels acct1 pco-abc_probe_", "Tunnels acct2 pco-abc_probe_"}, listings(),
+		"an account is swept on its own schedule")
+
+	c.t = t0.Add(10 * time.Minute)
+	s.tunnelsErr["acct1"] = errors.New("connection reset by peer")
+	r.Run(ctx, both, nil, Enforce)
+	require.Len(t, listings(), 2, "the listing that failed is not in the log of the fake")
+
+	c.t = t0.Add(10*time.Minute + time.Second)
+	delete(s.tunnelsErr, "acct1")
+	r.Run(ctx, both, nil, Enforce)
+	require.Equal(t, []string{"Tunnels acct1 pco-abc_probe_", "Tunnels acct2 pco-abc_probe_", "Tunnels acct1 pco-abc_probe_"}, listings(),
+		"a sweep whose listing failed is tried again on the next run")
+
+	c.t = t0.Add(19*time.Minute + 59*time.Second)
+	r.Run(ctx, both, nil, Enforce)
+	require.Equal(t, "Tunnels acct2 pco-abc_probe_", listings()[3], "acct2 is due, acct1 was swept a moment ago")
+	require.Len(t, listings(), 4)
+
+	c.t = t0.Add(-time.Hour)
+	r.Run(ctx, both, nil, Enforce)
+	require.Len(t, listings(), 6, "a clock that stepped back sweeps rather than wait for it to catch up")
+}
+
+func TestTunnelProbeSweepNotInObserveRunsFirst(t *testing.T) {
+	ctx := context.Background()
+	f := newFake("acct1")
+	f.SeedTunnel("acct1", testTunnel, rulesOf(ours, app))
+	c := &clock{t0}
+	r := newReconciler(Clients{"cred1": f}, c)
+	plans := []planner.TunnelPlan{planFor("acct1", "cred1", app)}
+
+	r.Run(ctx, plans, nil, Observe)
+	c.t = t0.Add(time.Minute)
+	r.Run(ctx, plans, nil, Enforce)
+
+	require.Len(t, callsTo(f, "Tunnels"), 1, "an observing run does not count as a sweep")
+}

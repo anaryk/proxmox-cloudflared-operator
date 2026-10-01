@@ -1049,8 +1049,70 @@ func TestTunnelFoundWithoutConfigurationFencedByWriter(t *testing.T) {
 		Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
 
 	require.Equal(t, WriterStale, res.Verdict)
-	require.Equal(t, 1, s.finds, "no second lookup for a write that may not follow")
+	require.Empty(t, callsTo(f, "TunnelConfig"), "the spy answered the first read; there is no second for a write that may not follow")
 	require.Empty(t, callsTo(f, "PutTunnelConfig"))
+}
+
+// TestTunnelFoundWithoutConfigurationIsReadTwice answers one read of the
+// configuration of a tunnel found by its name with a 404: a single 404 may be
+// transient, so the configuration is read once more after the tunnel is
+// found again, and written over only when that read finds none either.
+func TestTunnelFoundWithoutConfigurationIsReadTwice(t *testing.T) {
+	newer := writerAt(7, "n7")
+	notFound := statusError(http.StatusNotFound)
+	cases := []struct {
+		name    string
+		rules   []planner.IngressRule // what the tunnel really holds
+		errs    []error               // what the reads of the configuration answer first
+		puts    int
+		verdict WriterVerdict
+		actions []Action
+		problem string
+	}{
+		{name: "two 404s", errs: []error{notFound, notFound}, puts: 1,
+			actions: []Action{action(PutConfig, "cred1", "")}},
+		{name: "a 404, then the configuration of a newer writer", rules: rulesOf(newer, app), errs: []error{notFound},
+			verdict: WriterStale, actions: []Action{action(PutConfig, "cred1", "stale writer")},
+			problem: "this writer is stale and stops"},
+		{name: "a 404, then the planned configuration", rules: rulesOf(ours, app), errs: []error{notFound}},
+		{name: "a 404, then a failed read", errs: []error{notFound, errors.New("connection reset by peer")},
+			problem: "pco-abc in account acct1: reading the configuration again: connection reset by peer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake("acct1")
+			tun := f.SeedTunnel("acct1", testTunnel, tc.rules)
+			s := &spy{API: f, configErrs: tc.errs}
+			writer, _ := scripted(
+				answer{us: ours, stored: ours},  // start
+				answer{us: ours, stored: ours},  // before the first read
+				answer{us: ours, stored: ours},  // before the second read
+				answer{us: ours, stored: newer}, // when judging
+			)
+
+			res := reconcilerWith(Clients{"cred1": s}, writer).
+				Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+
+			require.Equal(t, tc.verdict, res.Verdict)
+			require.Equal(t, 2, s.finds, "looked up once more")
+			require.Equal(t, tc.puts, s.puts)
+			require.Equal(t, tc.actions, withoutDetail(res.Actions))
+			if tc.puts > 0 {
+				require.Contains(t, res.Actions[0].Detail, "first configuration")
+				require.True(t, res.Tunnels[0].Verified)
+			}
+			if tc.problem == "" {
+				require.Empty(t, res.Problems)
+			} else {
+				require.Len(t, res.Problems, 1)
+				require.Contains(t, res.Problems[0], tc.problem)
+			}
+			if tc.rules != nil {
+				require.Equal(t, tc.rules, configIn(t, f, "acct1").Ingress, "nothing written over")
+			}
+			require.Equal(t, tun.ID, res.Tunnels[0].ID)
+		})
+	}
 }
 
 func TestTunnelCreateConflictFindsTunnel(t *testing.T) {

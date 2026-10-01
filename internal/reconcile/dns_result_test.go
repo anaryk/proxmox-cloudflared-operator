@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -22,7 +23,7 @@ func TestDNSDecided(t *testing.T) {
 		want     bool
 	}{
 		{name: "an enforcing run", want: true},
-		{name: "an observing run", observe: true, want: true},
+		{name: "an observing run", observe: true},
 		{name: "the writer changes during the run", writer: []answer{{us: ours, stored: ours}, {us: ours, stored: newer}}, want: true},
 		{name: "another writer stored", writer: []answer{{us: ours, stored: newer}}},
 		{name: "the writer cannot be read", writer: []answer{{err: errors.New("lease lost")}}},
@@ -106,6 +107,49 @@ func TestDNSConfirmedCounts(t *testing.T) {
 
 			require.True(t, res.Decided)
 			require.Equal(t, tc.want, res.Confirmed)
+		})
+	}
+}
+
+// TestDNSConfirmedOnlyWhatWasSaved confirms two pending removals in runs whose
+// tombstones may not reach the store: only a confirmation that was saved is
+// reported.
+func TestDNSConfirmedOnlyWhatWasSaved(t *testing.T) {
+	cases := []struct {
+		name     string
+		saveErrs map[int]error
+		writer   []answer
+		want     int
+		saved    bool
+	}{
+		{name: "saved before the deletes", want: 2, saved: true},
+		{name: "saved at the end of the run", saveErrs: map[int]error{1: errDisk}, want: 2, saved: true},
+		{name: "never saved", saveErrs: map[int]error{1: errDisk, 2: errDisk}},
+		{name: "the writer changed before the save", writer: []answer{{us: ours, stored: ours}, {us: ours, stored: newer}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDNSFake()
+			store := &memStore{m: map[string]Tombstone{}, saveErrs: tc.saveErrs}
+			for i := range 2 {
+				name := fmt.Sprintf("h%d.example.com", i)
+				f.SeedRecord(zone1.ID, ourCNAME(name, testTunnelID))
+				store.m[stoneKey(zone1.ID, name)] = watched(t0.Add(-30*time.Second), t0.Add(-time.Minute))
+			}
+			writer := writerOf(ours, ours)
+			if tc.writer != nil {
+				writer, _ = scripted(tc.writer...)
+			}
+			in := dnsIn()
+			in.ConfirmDeletes = true
+
+			res := newDNSWith(f, store, writer, t0).Run(context.Background(), in, Enforce)
+
+			require.True(t, res.Decided)
+			require.Equal(t, tc.want, res.Confirmed)
+			for key, stone := range store.m {
+				require.Equal(t, tc.saved, stone.Confirmed, key)
+			}
 		})
 	}
 }

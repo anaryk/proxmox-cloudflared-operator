@@ -10,7 +10,9 @@ import (
 )
 
 // probeTunnelAge is how old a probe tunnel must be before it counts as left
-// behind; a younger one may belong to a credential check still running.
+// behind; a younger one may belong to a credential check still running. It is
+// also the least time between two sweeps of an account: whatever a sweep
+// left, a sweep sooner would find too young as well.
 const probeTunnelAge = 10 * time.Minute
 
 // sweepProbeTunnels deletes the probe tunnels the credential check left
@@ -18,17 +20,27 @@ const probeTunnelAge = 10 * time.Minute
 // deleted: only a tunnel named as a probe of this install, older than
 // probeTunnelAge and without connectors, each after a fresh read of the
 // writer. A failure is a problem and the sweep goes on; a writer that may not
-// write stops it.
+// write stops it. An account swept less than probeTunnelAge ago is left for
+// a later run.
 func (run *tunnelRun) sweepProbeTunnels(ctx context.Context) {
 	for _, st := range run.res.Tunnels {
 		api := run.r.clients[st.CredentialID]
-		if st.Unknown || api == nil || ctx.Err() != nil {
+		if st.Unknown || api == nil || ctx.Err() != nil || !run.sweepDue(st.AccountID) {
 			continue
 		}
 		if !run.sweepAccount(ctx, api, st) {
 			return
 		}
 	}
+}
+
+// sweepDue reports whether the probe tunnels of an account are to be swept:
+// never yet, or not for probeTunnelAge. A clock that stepped back makes the
+// sweep due rather than wait for the clock to catch up.
+func (run *tunnelRun) sweepDue(account string) bool {
+	last, ok := run.r.lastSweep[account]
+	now := run.r.now()
+	return !ok || now.Before(last) || now.Sub(last) >= probeTunnelAge
 }
 
 // sweepAccount sweeps the probe tunnels of the account of st and reports
@@ -40,6 +52,7 @@ func (run *tunnelRun) sweepAccount(ctx context.Context, api cfapi.API, st Tunnel
 		run.problem(fmt.Sprintf("account %s: listing probe tunnels: %v", st.AccountID, err))
 		return true
 	}
+	run.r.lastSweep[st.AccountID] = run.r.now()
 	for _, tun := range tunnels {
 		if !planner.IsProbeTunnel(install, tun.Name) || !run.leftBehind(tun) {
 			continue

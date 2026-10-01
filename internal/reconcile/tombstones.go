@@ -83,7 +83,7 @@ func (run *dnsRun) seenUnwanted(key string) Tombstone {
 	}
 	if kept && run.in.ConfirmDeletes && !t.Confirmed {
 		t.Confirmed = true
-		run.res.Confirmed++
+		run.confirmations++
 	}
 	if !ok || t != old {
 		run.stones.set(key, t)
@@ -139,6 +139,8 @@ func (run *dnsRun) saveTombstones(ctx context.Context, beforeDeletes bool) {
 			return
 		}
 		run.stones.changed = false
+		// Every confirmation is made before the first save.
+		run.res.Confirmed = run.confirmations
 	}
 	clear(run.r.wantedSinceSave)
 }

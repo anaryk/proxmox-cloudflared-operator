@@ -126,14 +126,15 @@ type DNSResult struct {
 
 	Problems []string
 
-	// Decided is true when the run got as far as the admin's one-shot
-	// requests, ConfirmDeletes and Adopt: it passed its start, loaded the
-	// tombstones in Enforce mode and applied the confirmation. A run that
-	// stopped before, as on another writer or a tunnel run that did not
-	// proceed, leaves them for a later run.
+	// Decided is true when an enforcing run got as far as the admin's
+	// one-shot requests, ConfirmDeletes and Adopt: it passed its start,
+	// loaded the tombstones and applied the confirmation. An observing run
+	// never decides, and one that stopped before, as on another writer or a
+	// tunnel run that did not proceed, leaves them for a later run.
 	Decided bool
 
-	// Confirmed is how many tombstones this run marked confirmed.
+	// Confirmed is how many tombstones this run marked confirmed and saved
+	// so marked. It stays zero when no save of the run held them.
 	Confirmed int
 
 	// Verdict is TunnelVerdict when that did not let the run start, and
@@ -245,7 +246,7 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 		run.list(ctx, z)
 	}
 	run.decide(zones)
-	run.res.Decided = true
+	run.res.Decided = mode == Enforce
 	run.saveTombstones(ctx, true)
 	for _, z := range zones {
 		run.reconcile(ctx, z)
@@ -314,6 +315,9 @@ type dnsRun struct {
 	// askFailed is set once the inventory could not answer before a delete:
 	// every delete left is held without further calls.
 	askFailed bool
+	// confirmations counts the tombstones the run marked confirmed; the result
+	// reports them once a save holds them.
+	confirmations int
 
 	res DNSResult
 }

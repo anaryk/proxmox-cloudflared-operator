@@ -32,8 +32,9 @@ type TunnelReconciler struct {
 	now     func() time.Time
 	log     zerolog.Logger
 
-	mu      sync.Mutex
-	lastPut map[string]time.Time // by account id and tunnel id
+	mu        sync.Mutex
+	lastPut   map[string]time.Time // by account id and tunnel id
+	lastSweep map[string]time.Time // of the probe tunnels, by account id
 }
 
 // NewTunnelReconciler returns a reconciler that reaches each account through
@@ -42,17 +43,18 @@ type TunnelReconciler struct {
 // writer returns the identity this process writes as (us) and leader.json as
 // stored now (stored). Run asks it before its first call to Cloudflare; in
 // Enforce mode again before each create, before it reads the configuration of
-// each tunnel, before it looks a tunnel up again whose configuration was not
-// found, and before it deletes a probe tunnel; and once more before it stops
-// on the sentinel of another writer. It should fail whenever this process may
+// each tunnel, before it reads again a configuration that was not found, and
+// before it deletes a probe tunnel; and once more before it stops on the
+// sentinel of another writer. It should fail whenever this process may
 // not write at all, as when its lease is lost.
 func NewTunnelReconciler(clients Clients, writer func() (us, stored planner.Writer, err error), now func() time.Time, log zerolog.Logger) *TunnelReconciler {
 	return &TunnelReconciler{
-		clients: clients,
-		writer:  writer,
-		now:     now,
-		log:     log,
-		lastPut: make(map[string]time.Time),
+		clients:   clients,
+		writer:    writer,
+		now:       now,
+		log:       log,
+		lastPut:   make(map[string]time.Time),
+		lastSweep: make(map[string]time.Time),
 	}
 }
 
@@ -88,7 +90,8 @@ type TunnelResult struct {
 // An enforcing run that did not stop also deletes the probe tunnels the
 // credential check left behind in the accounts whose tunnel it looked up: a
 // tunnel named as a probe of this install, more than ten minutes old and
-// without connectors. It deletes no other tunnel.
+// without connectors. It deletes no other tunnel. An account is swept at most
+// every ten minutes, the first time by the first enforcing run.
 func (r *TunnelReconciler) Run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -307,13 +310,13 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 		// A tunnel created moments ago may not have a configuration yet.
 		remote = cfapi.TunnelConfig{}
 	case cfapi.IsNotFound(err):
-		// So may one whose creator stopped before its first write, as long
-		// as it is still the tunnel of that name.
-		still, goOn := run.stillThere(ctx, api, t, st.ID, err)
-		if !still {
+		// So may one whose creator stopped before its first write. A single
+		// 404 may be transient, though, and taken for no configuration it
+		// would write over whatever sentinel the tunnel holds.
+		var read, goOn bool
+		if remote, read, goOn = run.readAgain(ctx, api, t, st.ID, err); !read {
 			return goOn
 		}
-		remote = cfapi.TunnelConfig{}
 	default:
 		run.problem(fmt.Sprintf("%s: reading the configuration: %v", t, err))
 		return true
@@ -345,25 +348,35 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 	return true
 }
 
-// stillThere looks up again the tunnel of t, found before, whose
-// configuration read answered notFound. still reports whether it is the
-// tunnel of that name under the same id, which then has no configuration
-// yet; otherwise the read is a problem. goOn says whether the run goes on.
-func (run *tunnelRun) stillThere(ctx context.Context, api cfapi.API, t target, id string, notFound error) (still, goOn bool) {
-	// The answer decides a write, so the writer is read just before it.
-	if run.mode == Enforce && !run.reread(t) {
-		return false, false
-	}
+// readAgain answers a configuration read of the tunnel of t, found before,
+// that answered notFound. When the lookup still finds the tunnel of that
+// name under the same id, the configuration is read once more: only a second
+// 404 means that the tunnel has none yet, and any configuration it returns is
+// judged like any other. read reports whether remote is that answer;
+// otherwise there is a problem. goOn says whether the run goes on.
+func (run *tunnelRun) readAgain(ctx context.Context, api cfapi.API, t target, id string, notFound error) (remote cfapi.TunnelConfig, read, goOn bool) {
 	tun, found, err := api.FindTunnel(ctx, t.account, t.name)
-	if err == nil && found && tun.ID == id {
-		return true, true
+	if err != nil || !found || tun.ID != id {
+		msg := fmt.Sprintf("%s: reading the configuration: %v", t, notFound)
+		if err != nil {
+			msg += fmt.Sprintf("; looking it up again: %v", err)
+		}
+		run.problem(msg)
+		return cfapi.TunnelConfig{}, false, true
 	}
-	msg := fmt.Sprintf("%s: reading the configuration: %v", t, notFound)
-	if err != nil {
-		msg += fmt.Sprintf("; looking it up again: %v", err)
+	// The write is decided on this read, so the writer is read just before.
+	if run.mode == Enforce && !run.reread(t) {
+		return cfapi.TunnelConfig{}, false, false
 	}
-	run.problem(msg)
-	return false, true
+	remote, err = api.TunnelConfig(ctx, t.account, id)
+	switch {
+	case err == nil:
+		return remote, true, true
+	case cfapi.IsNotFound(err):
+		return cfapi.TunnelConfig{}, true, true
+	}
+	run.problem(fmt.Sprintf("%s: reading the configuration again: %v", t, err))
+	return cfapi.TunnelConfig{}, false, true
 }
 
 // refuse stops the run on remote rules whose sentinels do not let this writer

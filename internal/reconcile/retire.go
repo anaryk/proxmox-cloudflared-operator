@@ -78,7 +78,7 @@ func (run *dnsRun) confirmUnlisted(zones []*dnsZone) {
 			if strings.HasPrefix(key, z.ID+"/") && !t.Confirmed {
 				t.Confirmed = true
 				run.stones.set(key, t)
-				run.res.Confirmed++
+				run.confirmations++
 			}
 		}
 	}
