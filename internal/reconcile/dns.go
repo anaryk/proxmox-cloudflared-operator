@@ -21,10 +21,16 @@ import (
 const (
 	tunnelDomain = ".cfargotunnel.com"
 
-	heldNoTunnel  = "tunnel not created yet"
-	heldInventory = "inventory incomplete"
+	heldNoTunnel      = "tunnel not created yet"
+	heldTunnelUnknown = "tunnel state unknown"
+	heldInventory     = "inventory incomplete"
+	heldWriter        = "writer changed"
+	heldUnsaved       = "tombstones not saved"
+	heldUnconfirmed   = "no inventory confirmation"
+	heldAskFailed     = "inventory confirmation failed"
 
 	defaultGrace          = 60 * time.Second
+	defaultMaxGap         = 2 * time.Minute
 	defaultMaxDeletes     = 5
 	defaultMaxDeleteShare = 0.30
 )
@@ -32,8 +38,9 @@ const (
 // DNSSettings tune the DNS reconciler. A setting that is zero or negative
 // takes its default.
 type DNSSettings struct {
-	InstallID      string
+	InstallID      string        // must be the install id of the writer
 	Grace          time.Duration // default 60s
+	MaxGap         time.Duration // default 2m: the longest break between two runs that keeps a grace running
 	MaxDeletes     int           // default 5
 	MaxDeleteShare float64       // default 0.30
 }
@@ -50,12 +57,17 @@ type DNSInput struct {
 	Records        []planner.RecordPlan
 	Zones          []ZoneRef       // every zone pco manages, also those with no wanted records
 	Tunnels        []TunnelState   // to translate tunnel names into ids
-	InventoryOK    bool            // false: no deletes, no tombstone changes
+	InventoryOK    bool            // false: no deletes, no tombstone started or confirmed
 	ConfirmDeletes bool            // lifts the mass-delete guard for this run
 	Adopt          map[string]bool // record names the admin agreed to take over
+
+	// StillUnwanted asks the inventory once more, right before a delete,
+	// whether no guest publishes name. An error or false holds the delete.
+	StillUnwanted func(ctx context.Context, name string) (bool, error)
 }
 
-// Conflict is a record that is not ours and holds a name pco wants.
+// Conflict is a record at a wanted name that pco will not change: someone
+// else's, or one of ours of an unexpected type.
 type Conflict struct {
 	Zone    string
 	Name    string
@@ -67,8 +79,10 @@ type Conflict struct {
 type DNSResult struct {
 	Actions   []Action // by zone name, then record name
 	Conflicts []Conflict
-	Lost      []string // names that still point at our tunnel but lost the marker
+	Lost      []string       // names that still point at our tunnel but lost the marker
+	Replaced  []cfapi.Record // records as they were before an adoption changed or replaced them
 	Problems  []string
+	Verdict   WriterVerdict // WriterStale when this process is not, or stopped being, the stored writer
 }
 
 // DNSReconciler keeps a proxied CNAME to the tunnel for every published
@@ -78,6 +92,7 @@ type DNSResult struct {
 type DNSReconciler struct {
 	clients Clients
 	store   TombstoneStore
+	writer  func() (us, stored planner.Writer, err error)
 	s       DNSSettings
 	now     func() time.Time
 	log     zerolog.Logger
@@ -86,11 +101,16 @@ type DNSReconciler struct {
 }
 
 // NewDNSReconciler returns a reconciler that reaches each zone through the
-// client of its credential and keeps the start of each removal grace in store.
-func NewDNSReconciler(clients Clients, store TombstoneStore, s DNSSettings, now func() time.Time, log zerolog.Logger) *DNSReconciler {
+// client of its credential and keeps the grace of each removal in store.
+// writer is the callback the tunnel reconciler takes: it returns the identity
+// this process writes as (us) and leader.json as stored now (stored).
+func NewDNSReconciler(clients Clients, store TombstoneStore, writer func() (us, stored planner.Writer, err error), s DNSSettings, now func() time.Time, log zerolog.Logger) *DNSReconciler {
 	// A negative setting would loosen a guard, so it gets the default as well.
 	if s.Grace <= 0 {
 		s.Grace = defaultGrace
+	}
+	if s.MaxGap <= 0 {
+		s.MaxGap = defaultMaxGap
 	}
 	if s.MaxDeletes <= 0 {
 		s.MaxDeletes = defaultMaxDeletes
@@ -98,65 +118,56 @@ func NewDNSReconciler(clients Clients, store TombstoneStore, s DNSSettings, now 
 	if s.MaxDeleteShare <= 0 {
 		s.MaxDeleteShare = defaultMaxDeleteShare
 	}
-	return &DNSReconciler{clients: clients, store: store, s: s, now: now, log: log}
+	return &DNSReconciler{clients: clients, store: store, writer: writer, s: s, now: now, log: log}
 }
 
 // Run brings the records of every zone in line with in.
 //
-// A wanted name gets a proxied CNAME to its tunnel. A record of this install
-// whose name is no longer wanted is deleted once the grace that began when it
-// was first seen unwanted has passed, the inventory is complete, a fresh read
-// confirms it, and the run does not delete a large share of the records at
-// once. Records of others are never changed, except one the admin asked to
-// adopt. A zone whose records cannot be listed is left alone. In Observe mode
-// Run only reads and does not touch the tombstones; it returns the actions it
+// It works only while the writer callback names us as the writer stored in
+// leader.json, asks again before every write to Cloudflare or to the store,
+// and stops with WriterStale as soon as that changes. A wanted name gets a
+// proxied CNAME to its tunnel; records of others are never changed, except
+// the one the admin asked to adopt. A record of this install at an unwanted
+// name is deleted only after a grace this writer watched without a break,
+// with a complete inventory, the tombstones saved, no mass delete, and a
+// fresh read and an inventory check right before the call. When in doubt a
+// record stays. In Observe mode Run only reads and returns the actions it
 // would take as held.
 func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	run := &dnsRun{
-		r:       r,
-		in:      in,
-		mode:    mode,
-		now:     r.now(),
-		marker:  planner.DNSMarker(r.s.InstallID),
-		tunnels: tunnelIDs(in.Tunnels),
-		adopt:   lowerKeys(in.Adopt),
+		r:      r,
+		in:     in,
+		mode:   mode,
+		now:    r.now(),
+		marker: planner.DNSMarker(r.s.InstallID),
+		adopt:  lowerKeys(in.Adopt),
 	}
-	if r.s.InstallID == "" {
-		run.problem("dns: no install id, so no record can be recognised as ours")
+	if !run.start() {
 		return run.res
 	}
 	if mode == Enforce && !run.loadTombstones(ctx) {
 		return run.res
 	}
+	run.know(in.Tunnels)
 	zones := run.zones()
 	for _, z := range zones {
 		run.list(ctx, z)
 	}
-	run.decideGuard(zones)
+	run.decide(zones)
+	run.saveTombstones(ctx, true)
 	for _, z := range zones {
 		run.reconcile(ctx, z)
 	}
-	run.saveTombstones(ctx, zones)
+	run.saveTombstones(ctx, false)
 	run.finish()
 	return run.res
 }
 
 // tunnelRef names the tunnel of an account.
 type tunnelRef struct{ account, name string }
-
-// tunnelIDs maps every tunnel known to exist to its id.
-func tunnelIDs(tunnels []TunnelState) map[tunnelRef]string {
-	ids := make(map[tunnelRef]string, len(tunnels))
-	for _, t := range tunnels {
-		if t.Exists && t.ID != "" {
-			ids[tunnelRef{t.AccountID, t.Name}] = t.ID
-		}
-	}
-	return ids
-}
 
 func lowerKeys(m map[string]bool) map[string]bool {
 	out := make(map[string]bool, len(m))
@@ -175,11 +186,21 @@ type dnsRun struct {
 	mode    Mode
 	now     time.Time
 	marker  string
-	tunnels map[tunnelRef]string
+	us      planner.Writer // as the run started
+	tunnels map[tunnelRef]TunnelState
+	targets map[string]bool // lower-case CNAME targets of our tunnels
 	adopt   map[string]bool // lower-case names
+	twice   map[string]bool // lower-case names planned more than once
 	stones  *tombstones     // nil in Observe mode
-	guard   string          // why deletes due in this run are held; empty when they may go
-	res     DNSResult
+
+	// noDeletes says why no record is deleted in this run, when the
+	// tombstones could not be saved before the deletes.
+	noDeletes string
+	// stopped is set once the writer changed or could not be read: the run
+	// makes no further call to Cloudflare or to the store.
+	stopped bool
+
+	res DNSResult
 }
 
 // dnsZone is one zone during a run. Names are kept in lower case.
@@ -190,6 +211,7 @@ type dnsZone struct {
 	wanted  map[string]planner.RecordPlan // by name
 	owned   map[string][]cfapi.Record     // records of this install by name, probes left out
 	probes  []cfapi.Record
+	holds   map[string]string // unwanted names of owned records: why their delete is held, empty when it is due
 	actions []Action
 }
 
@@ -200,8 +222,26 @@ func (z *dnsZone) isWanted(name string) bool {
 	return ok
 }
 
+// know indexes the tunnels of the input.
+func (run *dnsRun) know(tunnels []TunnelState) {
+	run.tunnels = make(map[tunnelRef]TunnelState, len(tunnels))
+	run.targets = make(map[string]bool, len(tunnels))
+	for _, t := range tunnels {
+		run.tunnels[tunnelRef{t.AccountID, t.Name}] = t
+		if t.ID != "" {
+			run.targets[strings.ToLower(t.ID+tunnelDomain)] = true
+		}
+	}
+}
+
+// pointsAtOurs reports whether a record is a CNAME to one of our tunnels.
+func (run *dnsRun) pointsAtOurs(rec cfapi.Record) bool {
+	return isType(rec, "CNAME") && run.targets[strings.ToLower(rec.Content)]
+}
+
 // zones returns the zones of the run sorted by name: every zone of the input,
-// and the zone of any wanted record that the input does not list.
+// and the zone of any wanted record that the input does not list. A name
+// planned more than once is a problem and is not written.
 func (run *dnsRun) zones() []*dnsZone {
 	byID := make(map[string]*dnsZone)
 	add := func(ref ZoneRef) *dnsZone {
@@ -215,15 +255,32 @@ func (run *dnsRun) zones() []*dnsZone {
 	for _, ref := range run.in.Zones {
 		add(ref)
 	}
+	plans := make(map[string][]planner.RecordPlan)
 	for _, rp := range run.in.Records {
-		z := add(ZoneRef{ID: rp.ZoneID, Name: rp.ZoneName, CredentialID: rp.CredentialID})
-		z.wanted[strings.ToLower(rp.Name)] = rp
+		name := strings.ToLower(rp.Name)
+		add(ZoneRef{ID: rp.ZoneID, Name: rp.ZoneName, CredentialID: rp.CredentialID}).wanted[name] = rp
+		plans[name] = append(plans[name], rp)
+	}
+	run.twice = make(map[string]bool)
+	for _, name := range slices.Sorted(maps.Keys(plans)) {
+		if ps := plans[name]; len(ps) > 1 {
+			run.twice[name] = true
+			run.problem(fmt.Sprintf("%s: planned %d times (%s); not writing it", name, len(ps), describePlans(ps)))
+		}
 	}
 	zones := slices.Collect(maps.Values(byID))
 	slices.SortFunc(zones, func(a, b *dnsZone) int {
 		return cmp.Or(cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), cmp.Compare(a.ID, b.ID))
 	})
 	return zones
+}
+
+func describePlans(ps []planner.RecordPlan) string {
+	out := make([]string, len(ps))
+	for i, rp := range ps {
+		out[i] = fmt.Sprintf("zone %s, tunnel %s in account %s", rp.ZoneName, rp.TunnelName, rp.AccountID)
+	}
+	return strings.Join(out, "; ")
 }
 
 // list reads the records of this install in a zone. A zone that cannot be
@@ -245,7 +302,7 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	for _, rec := range records {
 		switch {
 		case !run.owns(rec):
-		case isProbe(rec, run.marker):
+		case run.isProbe(rec):
 			z.probes = append(z.probes, rec)
 		default:
 			name := strings.ToLower(rec.Name)
@@ -280,177 +337,14 @@ func (run *dnsRun) reconcile(ctx context.Context, z *dnsZone) {
 	for _, name := range slices.Sorted(maps.Keys(z.wanted)) {
 		run.want(ctx, z, name)
 	}
-	for _, name := range slices.Sorted(maps.Keys(z.owned)) {
-		if !z.isWanted(name) {
-			run.retire(ctx, z, name)
-		}
+	for _, name := range slices.Sorted(maps.Keys(z.holds)) {
+		run.retire(ctx, z, name)
 	}
 	run.sweepProbes(ctx, z)
-	if run.keepsTombstones() {
-		run.forgetSettled(z)
-	}
 	slices.SortStableFunc(z.actions, func(a, b Action) int {
 		return cmp.Compare(strings.ToLower(a.Target), strings.ToLower(b.Target))
 	})
 	run.res.Actions = append(run.res.Actions, z.actions...)
-}
-
-// want gives a wanted name its CNAME to the tunnel.
-func (run *dnsRun) want(ctx context.Context, z *dnsZone, name string) {
-	rp := z.wanted[name]
-	ours := slices.DeleteFunc(slices.Clone(z.owned[name]), func(rec cfapi.Record) bool { return !isAddress(rec) })
-	id, ok := run.tunnels[tunnelRef{rp.AccountID, rp.TunnelName}]
-	if !ok {
-		kind := CreateRecord
-		if len(ours) > 0 {
-			kind = UpdateRecord
-		}
-		z.add(Action{Kind: kind, Target: name, Detail: fmt.Sprintf("in zone %s: tunnel %s has no id", z.Name, rp.TunnelName)}, heldNoTunnel)
-		return
-	}
-	target := id + tunnelDomain
-	switch {
-	case len(ours) == 0:
-		run.claim(ctx, z, name, target)
-	case len(ours) == 1 && isType(ours[0], "CNAME"):
-		run.retarget(ctx, z, ours[0], target)
-	default:
-		// pco writes only CNAMEs, so address records under our marker were
-		// made by hand; they are reported, not replaced.
-		for _, rec := range ours {
-			run.conflict(z, rec, target)
-		}
-	}
-}
-
-// retarget points a CNAME of this install at target. Its comment, which
-// begins with the marker, is kept.
-func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, target string) {
-	if strings.EqualFold(rec.Content, target) && rec.Proxied {
-		return
-	}
-	upd := rec
-	upd.Content, upd.Proxied = target, true
-	run.write(z, Action{Kind: UpdateRecord, Target: rec.Name, Detail: pointDetail(z, target, rec)}, func() error {
-		_, err := z.api.UpdateRecord(ctx, z.ID, upd)
-		return err
-	})
-}
-
-// claim creates the CNAME of a wanted name that has no record of this install,
-// unless a record of someone else holds the name.
-func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name, target string) {
-	found, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: name})
-	if err != nil {
-		run.problem(fmt.Sprintf("%s: looking up the records of that name: %v", z.about(name), err))
-		return
-	}
-	holders := slices.DeleteFunc(found, func(rec cfapi.Record) bool { return !isAddress(rec) })
-	switch {
-	case slices.ContainsFunc(holders, run.owns):
-		run.problem(fmt.Sprintf("%s: a record of this install appeared during the run; trying again on the next one", z.about(name)))
-	case len(holders) == 0:
-		run.create(ctx, z, Action{Kind: CreateRecord, Target: name, Detail: pointDetail(z, target)}, target)
-	case run.adopt[name] && len(holders) == 1:
-		run.adoptRecord(ctx, z, holders[0], target)
-	default:
-		for _, rec := range holders {
-			run.conflict(z, rec, target)
-		}
-	}
-}
-
-func (run *dnsRun) create(ctx context.Context, z *dnsZone, a Action, target string) {
-	rec := cfapi.Record{Type: "CNAME", Name: a.Target, Content: target, Proxied: true, Comment: run.marker}
-	run.write(z, a, func() error {
-		_, err := z.api.CreateRecord(ctx, z.ID, rec)
-		return err
-	})
-}
-
-// adoptRecord takes over the one record that holds a name the admin asked to
-// adopt: a CNAME is changed in place, an address record is replaced.
-func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record, target string) {
-	if isType(rec, "CNAME") {
-		upd := cfapi.Record{ID: rec.ID, Type: "CNAME", Name: rec.Name, Content: target, Proxied: true, Comment: run.marker}
-		a := Action{Kind: UpdateRecord, Target: rec.Name, Detail: pointDetail(z, target, rec), Destructive: true}
-		run.write(z, a, func() error {
-			_, err := z.api.UpdateRecord(ctx, z.ID, upd)
-			return err
-		})
-		return
-	}
-
-	del := Action{Kind: DeleteRecord, Target: rec.Name, Detail: pointDetail(z, target, rec), Destructive: true}
-	add := Action{Kind: CreateRecord, Target: rec.Name, Detail: pointDetail(z, target, rec), Destructive: true}
-	held := ""
-	switch {
-	case !run.in.InventoryOK:
-		held = heldInventory
-	case run.mode == Observe:
-		held = heldObserve
-	}
-	if held != "" {
-		z.add(del, held)
-		z.add(add, held)
-		return
-	}
-	if run.write(z, del, func() error { return deleteRecord(ctx, z, rec.ID) }) {
-		run.create(ctx, z, add, target)
-	}
-}
-
-// conflict reports a record of someone else that holds a wanted name.
-func (run *dnsRun) conflict(z *dnsZone, rec cfapi.Record, target string) {
-	run.res.Conflicts = append(run.res.Conflicts, Conflict{Zone: z.Name, Name: rec.Name, Type: rec.Type, Content: rec.Content})
-	if isType(rec, "CNAME") && strings.EqualFold(rec.Content, target) && !run.owns(rec) {
-		run.res.Lost = append(run.res.Lost, rec.Name)
-	}
-}
-
-// pointDetail describes pointing a name at target, and the record that was
-// there before, if any.
-func pointDetail(z *dnsZone, target string, was ...cfapi.Record) string {
-	d := fmt.Sprintf("in zone %s: CNAME %s", z.Name, target)
-	for _, rec := range was {
-		d += fmt.Sprintf(", was %s %s", rec.Type, rec.Content)
-	}
-	return d
-}
-
-// write makes one change, or in Observe mode only records it, and reports
-// whether the change was made.
-func (run *dnsRun) write(z *dnsZone, a Action, call func() error) bool {
-	if run.mode == Observe {
-		z.add(a, heldObserve)
-		return false
-	}
-	if err := call(); err != nil {
-		z.add(a, err.Error())
-		run.problem(fmt.Sprintf("%s: %s the record: %v", z.about(a.Target), verb(a.Kind), err))
-		return false
-	}
-	z.add(a, "")
-	run.r.log.Info().Str("zone", z.Name).Str("record", a.Target).Str("action", string(a.Kind)).Str("detail", a.Detail).Msg("changed dns record")
-	return true
-}
-
-// deleteRecord deletes a record; one that is gone already counts as deleted.
-func deleteRecord(ctx context.Context, z *dnsZone, id string) error {
-	if err := z.api.DeleteRecord(ctx, z.ID, id); err != nil && !cfapi.IsNotFound(err) {
-		return err
-	}
-	return nil
-}
-
-func verb(k ActionKind) string {
-	switch k {
-	case CreateRecord:
-		return "creating"
-	case UpdateRecord:
-		return "updating"
-	}
-	return "deleting"
 }
 
 // add records an action of the zone; it was applied when held is empty.

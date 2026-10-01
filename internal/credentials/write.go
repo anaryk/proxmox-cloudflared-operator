@@ -11,6 +11,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
+// ProbeRecordPrefix begins the name of every probe record, so that a probe
+// left behind can be told from the records that publish hostnames.
+const ProbeRecordPrefix = "_pco-probe-"
+
 const (
 	probeContent = "pco permission probe"
 
@@ -37,7 +41,7 @@ type writeProbe struct {
 }
 
 func (r *run) probeDNSWrite(ctx context.Context, z cfapi.Zone) {
-	name := "_pco-probe-" + r.suffix + "." + z.Name
+	name := ProbeRecordPrefix + r.suffix + "." + z.Name
 	p := writeProbe{
 		r: r, capability: CapDNSWrite, scope: zoneScope(z), kind: "record", name: name,
 		hint: grant(permDNSEdit, z.Name),
