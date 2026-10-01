@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Cloudflare DNS error codes that mean the record to create is already there:
@@ -59,15 +60,20 @@ func (e transportError) Error() string { return e.err.Error() }
 func (e transportError) Unwrap() error { return e.err }
 
 // unanswered reports whether err leaves open what the server would have
-// answered: the request got no whole answer, the caller gave up, or it was
-// held back or refused for the rate limit.
+// answered: the request got no whole answer, the caller gave up, it was held
+// back or refused for the rate limit, or the server failed on it.
 func unanswered(err error) bool {
 	var te transportError
+	var apiErr *Error
 	return errors.As(err, &te) || IsRateLimited(err) ||
+		errors.As(err, &apiErr) && apiErr.Status >= http.StatusInternalServerError ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// errorList is several errors on one line.
+// maxListBytes bounds the message of an errorList, which ends up in a report.
+const maxListBytes = 1024
+
+// errorList is several errors on one line, cut short when it grows long.
 type errorList []error
 
 func (l errorList) Error() string {
@@ -75,7 +81,22 @@ func (l errorList) Error() string {
 	for i, err := range l {
 		msgs[i] = err.Error()
 	}
-	return strings.Join(msgs, "; ")
+	msg := strings.Join(msgs, "; ")
+	if len(msg) <= maxListBytes {
+		return msg
+	}
+	return cutBytes(msg, maxListBytes) + " ..."
+}
+
+// cutBytes returns s cut to at most n bytes, without splitting a character.
+func cutBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func (l errorList) Unwrap() []error { return l }

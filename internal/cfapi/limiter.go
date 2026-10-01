@@ -58,8 +58,9 @@ func newLimiter(limit int, window time.Duration, burst int, now func() time.Time
 // Wait blocks until the bucket holds a token for a request and takes it. A
 // pause is not waited out: while one is in force Wait returns at once, without
 // a token, an *Error with status 429 whose RetryAfter is what is left of the
-// pause, so that a caller never sits on a lock for as long as Cloudflare asked
-// to wait. It returns the error of ctx if that ends first.
+// pause, in whole seconds rounded up, so that a caller never sits on a lock for
+// as long as Cloudflare asked to wait. It returns the error of ctx if that ends
+// first.
 func (l *Limiter) Wait(ctx context.Context) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -68,7 +69,9 @@ func (l *Limiter) Wait(ctx context.Context) error {
 		d, paused := l.reserve()
 		switch {
 		case paused:
-			return &Error{Status: http.StatusTooManyRequests, Message: "not sent: holding back after an earlier 429", RetryAfter: d}
+			// Whole seconds, so that the same pause reads the same in every report.
+			left := (d + time.Second - 1).Truncate(time.Second)
+			return &Error{Status: http.StatusTooManyRequests, Message: "not sent: holding back after an earlier 429", RetryAfter: left}
 		case d == 0:
 			return nil
 		}

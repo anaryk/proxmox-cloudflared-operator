@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -153,7 +154,6 @@ func TestVerifyTokenTriesTheAccountFormOnAnyRefusal(t *testing.T) {
 		"403":                         reply(http.StatusForbidden, `{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`),
 		"400 with an auth code":       reply(http.StatusBadRequest, `{"success":false,"errors":[{"code":6003,"message":"Invalid request headers"}]}`),
 		"404":                         reply(http.StatusNotFound, ``),
-		"500":                         reply(http.StatusInternalServerError, ``),
 		"success false":               reply(http.StatusOK, `{"success":false,"errors":[{"code":1001,"message":"no"}]}`),
 		"no status":                   reply(http.StatusOK, okBody(`{"id":"tok1"}`)),
 		"an answer that is not JSON":  reply(http.StatusOK, `<html></html>`),
@@ -175,9 +175,12 @@ func TestVerifyTokenTriesTheAccountFormOnAnyRefusal(t *testing.T) {
 
 func TestVerifyTokenKeepsToTheUserFormWhenItCannotTell(t *testing.T) {
 	for name, user := range map[string]http.HandlerFunc{
-		"rate limited": reply(http.StatusTooManyRequests, `{"success":false,"errors":[{"code":971,"message":"slow down"}]}`),
-		"no answer":    func(w http.ResponseWriter, _ *http.Request) { dropConnection(w) },
-		"cut short":    dropMidBody(http.StatusOK, ""),
+		"rate limited":        reply(http.StatusTooManyRequests, `{"success":false,"errors":[{"code":971,"message":"slow down"}]}`),
+		"no answer":           func(w http.ResponseWriter, _ *http.Request) { dropConnection(w) },
+		"cut short":           dropMidBody(http.StatusOK, ""),
+		"a server error":      reply(http.StatusInternalServerError, `{"success":false,"errors":[{"code":1000,"message":"boom"}]}`),
+		"a gateway":           reply(http.StatusBadGateway, `bad gateway`),
+		"service unavailable": reply(http.StatusServiceUnavailable, ``),
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := setup(t, tokenServer(user, nil, "a1"))
@@ -220,6 +223,9 @@ func TestVerifyTokenFailsBothWays(t *testing.T) {
 		{"the account form gets no answer", tokenServer(user, map[string]http.HandlerFunc{
 			"a1": func(w http.ResponseWriter, _ *http.Request) { dropConnection(w) },
 		}, "a1", "a2"), "as an account token: account a1: sending request", false, false, false},
+		{"the account form fails on the server", tokenServer(user, map[string]http.HandlerFunc{
+			"a1": reply(http.StatusServiceUnavailable, ``),
+		}, "a1", "a2"), "as an account token: account a1: cloudflare api: HTTP 503", false, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -236,6 +242,36 @@ func TestVerifyTokenFailsBothWays(t *testing.T) {
 				"an account that could not answer stops the search")
 		})
 	}
+}
+
+func TestVerifyTokenTriesAtMostFiveAccounts(t *testing.T) {
+	ids := make([]string, 40)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("a%02d", i)
+	}
+	long := `{"success":false,"errors":[{"code":1000,"message":"` + strings.Repeat("no ", 160) + `"}]}`
+	env := setup(t, tokenServer(reply(http.StatusUnauthorized, rejectedToken), map[string]http.HandlerFunc{
+		"a00": reply(http.StatusUnauthorized, long),
+		"a01": reply(http.StatusUnauthorized, long),
+		"a02": reply(http.StatusUnauthorized, long),
+		"a03": reply(http.StatusUnauthorized, long),
+		"a04": reply(http.StatusUnauthorized, long),
+		"a05": reply(http.StatusOK, okBody(`{"id":"tok9","status":"active"}`)),
+	}, ids...))
+
+	got, err := env.c.VerifyToken(context.Background())
+
+	require.Equal(t, TokenStatus{}, got, "the sixth account is not asked")
+	require.True(t, IsAuth(err))
+	require.Equal(t, []string{
+		"/user/tokens/verify", "/accounts",
+		"/accounts/a00/tokens/verify", "/accounts/a01/tokens/verify", "/accounts/a02/tokens/verify",
+		"/accounts/a03/tokens/verify", "/accounts/a04/tokens/verify",
+	}, requestedPaths(t, env))
+	require.ErrorContains(t, err, "as an account token: none of the first 5 of its 40 accounts verifies it: account a00: cloudflare api: HTTP 401: no no")
+	require.LessOrEqual(t, len(err.Error()), 1300, "the refusals are cut short: %d bytes", len(err.Error()))
+	require.True(t, utf8.ValidString(err.Error()))
+	require.NotContains(t, err.Error(), "account a04", "the message is cut before the last refusal")
 }
 
 func TestVerifyTokenSkipsAnAccountIDThatCannotBeAPath(t *testing.T) {

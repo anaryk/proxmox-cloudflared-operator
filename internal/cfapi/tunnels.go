@@ -219,7 +219,10 @@ func (c *Client) PutTunnelConfig(ctx context.Context, accountID, tunnelID string
 }
 
 // Connectors lists the cloudflared instances connected to a tunnel. A result of
-// null is none: the listing only feeds a status display.
+// null is none. The listing feeds a status display and lets the reconciler
+// delete a probe tunnel only while it has no connectors; a tunnel that has
+// connections after all is safe from a delete that takes null for none, as
+// Cloudflare refuses to delete a tunnel with active connections.
 func (c *Client) Connectors(ctx context.Context, accountID, tunnelID string) ([]Connector, error) {
 	path, err := tunnelPath(accountID, tunnelID, "connections")
 	if err != nil {

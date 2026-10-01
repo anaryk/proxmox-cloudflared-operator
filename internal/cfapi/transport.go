@@ -20,7 +20,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/version"
 )
@@ -322,14 +321,7 @@ func (c *Client) cleanMessage(msg string) string {
 		return r
 	}, msg)
 	msg = strings.ReplaceAll(msg, c.token, redacted)
-	if len(msg) <= maxMessageBytes {
-		return msg
-	}
-	cut := maxMessageBytes
-	for cut > 0 && !utf8.RuneStart(msg[cut]) {
-		cut--
-	}
-	return msg[:cut]
+	return cutBytes(msg, maxMessageBytes)
 }
 
 func fallbackMessage(status int) string {

@@ -101,10 +101,16 @@ func TestLimiterSchedule(t *testing.T) {
 		{"pause is counted from now", []step{
 			{advance: time.Hour, pause: 7 * s, refused: 7 * s},
 		}},
-		{"what is left of the pause is reported", []step{
+		{"what is left of the pause is reported in whole seconds, rounded up", []step{
 			{pause: 7 * s},
 			{advance: 3 * s, refused: 4 * s},
-			{advance: 4*s - time.Nanosecond, refused: time.Nanosecond},
+			{advance: 2*s + 500*time.Millisecond, refused: 2 * s},
+			{advance: s, refused: s},
+			{advance: s/2 - time.Nanosecond, refused: s},
+		}},
+		{"a long pause just begun is reported as it was asked", []step{
+			{pause: time.Hour},
+			{advance: 32625 * time.Nanosecond, refused: time.Hour},
 		}},
 		{"a refusal takes no token and sleeps not", []step{
 			{pause: 7 * s, refused: 7 * s},

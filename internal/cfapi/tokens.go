@@ -14,10 +14,11 @@ import (
 // A token owned by a user is verified at /user/tokens/verify, one owned by an
 // account at /accounts/{account_id}/tokens/verify. The user form is asked
 // first. What it answers a token of an account is not documented, so any
-// failure that is an answer, not a rate limit or a request that got none,
-// sends VerifyToken on to the account form: of every account the token sees,
-// in turn, until one verifies it. The error of a token neither form verifies
-// names both attempts.
+// refusal sends VerifyToken on to the account form: of the first five
+// accounts the token sees, in turn, until one verifies it. A rate limit, a
+// server error or a request that got no answer says nothing about the token
+// and ends the check. The error of a token neither form verifies names both
+// attempts.
 func (c *Client) VerifyToken(ctx context.Context) (TokenStatus, error) {
 	st, userErr := c.verifyAt(ctx, "/user/tokens/verify")
 	switch {
@@ -39,8 +40,13 @@ func (c *Client) VerifyToken(ctx context.Context) (TokenStatus, error) {
 	return TokenStatus{}, fmt.Errorf("verifying token: as a user token: %w; as an account token: %s", userErr, accountErr.Error())
 }
 
-// verifyAsAccountToken verifies the token at the account form of each account
-// it sees, and stops at the first that answers yes, or that cannot answer.
+// maxAccountTries bounds the accounts the account form of the token check
+// asks: a token that sees many accounts is usually a user's.
+const maxAccountTries = 5
+
+// verifyAsAccountToken verifies the token at the account form of the first
+// accounts it sees, and stops at the first that answers yes, or that cannot
+// answer.
 func (c *Client) verifyAsAccountToken(ctx context.Context) (TokenStatus, error) {
 	accounts, err := c.Accounts(ctx)
 	if err != nil {
@@ -48,6 +54,11 @@ func (c *Client) verifyAsAccountToken(ctx context.Context) (TokenStatus, error) 
 	}
 	if len(accounts) == 0 {
 		return TokenStatus{}, errors.New("it sees no account")
+	}
+	none := "no account it sees verifies it"
+	if len(accounts) > maxAccountTries {
+		none = fmt.Sprintf("none of the first %d of its %d accounts verifies it", maxAccountTries, len(accounts))
+		accounts = accounts[:maxAccountTries]
 	}
 	var refused errorList
 	for _, a := range accounts {
@@ -60,7 +71,7 @@ func (c *Client) verifyAsAccountToken(ctx context.Context) (TokenStatus, error) 
 		}
 		refused = append(refused, fmt.Errorf("account %s: %w", a.ID, err))
 	}
-	return TokenStatus{}, fmt.Errorf("no account it sees verifies it: %w", refused)
+	return TokenStatus{}, fmt.Errorf("%s: %w", none, refused)
 }
 
 func (c *Client) verifyAtAccount(ctx context.Context, accountID string) (TokenStatus, error) {
