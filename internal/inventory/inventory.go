@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -45,18 +46,19 @@ type Node struct {
 	Ifaces []pve.NodeIface
 }
 
-// Snapshot is the state of the cluster after one refresh. It must be treated
-// as read-only; the inventory hands out the same data again when a later
-// refresh fails.
+// Snapshot is the state of the cluster after one refresh. It shares no memory
+// with the inventory, so a caller may change it freely.
 type Snapshot struct {
 	Guests []model.Guest // sorted by kind, then vmid
 	Nodes  []Node        // sorted by name
-	// Complete is false when any call needed to learn the true state failed,
-	// so that absence from the snapshot proves nothing. A guest that merely
-	// has no agent does not clear it.
+	// Complete is false when the true state could not be learned, so that
+	// absence from the snapshot proves nothing: a call that failed, a config
+	// that could not be read, a watched guest that sits on an offline node and
+	// is not cached. A guest that merely has no agent does not clear it.
 	Complete bool
-	// Problems says why Complete is false. It may also hold notes that leave
-	// Complete alone, such as a token without the guest-agent privilege.
+	// Problems says why Complete is false. It also holds notes that leave
+	// Complete alone, such as an offline node or a token without the
+	// guest-agent privilege.
 	Problems []string
 	TakenAt  time.Time // when the refresh ran, also for a failed one
 }
@@ -96,7 +98,7 @@ func (s Snapshot) Guest(ref model.GuestRef) (model.Guest, bool) {
 type Options struct {
 	GateTags       []string      // guests carrying one of these are "watched"
 	FullSweepEvery time.Duration // config refresh for unwatched guests, default 5m
-	ReportedTTL    time.Duration // agent / lxc interface cache, default 60s
+	ReportedTTL    time.Duration // agent / lxc interface cache, default 60s; quick answers without addresses are kept for 15s at most
 	Concurrency    int           // parallel API calls, default 4
 }
 
@@ -170,6 +172,9 @@ func (r *run) note(format string, args ...any) {
 // Refresh reads the cluster and returns its state. When the guest list
 // cannot be read, or ctx ends first, it returns the previous guests and
 // nodes with Complete false. Calls are serialised.
+//
+// The cluster members are read before the guests, so that no config is asked
+// from a node that is known to be offline.
 func (i *Inventory) Refresh(ctx context.Context) Snapshot {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -187,17 +192,28 @@ func (i *Inventory) Refresh(ctx context.Context) Snapshot {
 		return i.previous(r, fmt.Sprintf("cluster resources not listed: %v", err))
 	}
 
-	guests, cache := i.refreshGuests(ctx, r, r.uniqueRows(rows))
+	nodes, listed := i.listNodes(ctx, r)
 	if err := ctx.Err(); err != nil {
 		return i.previous(r, cancelled(err))
 	}
-	nodes := i.refreshNodes(ctx, r)
+	var offline map[string]bool
+	if listed {
+		offline = offlineNames(nodes)
+	}
+	guests, cache := i.refreshGuests(ctx, r, r.uniqueRows(rows), offline)
 	if err := ctx.Err(); err != nil {
 		return i.previous(r, cancelled(err))
+	}
+	if listed {
+		i.refreshNodeIfaces(ctx, r, nodes)
+		if err := ctx.Err(); err != nil {
+			return i.previous(r, cancelled(err))
+		}
 	}
 
 	snap := Snapshot{Guests: guests, Nodes: nodes, Complete: r.complete, Problems: r.problems, TakenAt: r.now}
-	i.cache, i.last = cache, snap
+	i.cache = cache
+	i.last = Snapshot{Guests: cloneGuests(guests), Nodes: cloneNodes(nodes)}
 	i.log.Debug().
 		Int("guests", len(guests)).
 		Int("nodes", len(nodes)).
@@ -211,16 +227,31 @@ func cancelled(err error) string {
 	return fmt.Sprintf("refresh cancelled: %v", err)
 }
 
-// previous returns the last good guests and nodes marked incomplete. The
-// caches stay as they were.
+// previous returns a copy of the last good guests and nodes marked
+// incomplete. The caches stay as they were.
 func (i *Inventory) previous(r *run, problem string) Snapshot {
 	return Snapshot{
-		Guests:   slices.Clone(i.last.Guests),
-		Nodes:    slices.Clone(i.last.Nodes),
+		Guests:   cloneGuests(i.last.Guests),
+		Nodes:    cloneNodes(i.last.Nodes),
 		Complete: false,
 		Problems: []string{problem},
 		TakenAt:  r.now,
 	}
+}
+
+// cloneGuests copies guests down to the slices they hold, so that the copy and
+// the original can be changed independently.
+func cloneGuests(in []model.Guest) []model.Guest {
+	out := slices.Clone(in)
+	for j := range out {
+		out[j].Tags = slices.Clone(out[j].Tags)
+		out[j].NICs = slices.Clone(out[j].NICs)
+		for k := range out[j].NICs {
+			out[j].NICs[k].Static = slices.Clone(out[j].NICs[k].Static)
+		}
+		out[j].Reported = slices.Clone(out[j].Reported)
+	}
+	return out
 }
 
 // uniqueRows sorts the resource rows by kind, then vmid, and drops a row that
@@ -261,15 +292,16 @@ func label(row pve.Resource) string {
 type tracked struct {
 	row     pve.Resource
 	watched bool
+	offline bool // its node is offline, so nothing is asked about it
 	entry   cacheEntry
 	guest   model.Guest
 }
 
 // refreshGuests builds the guests for rows, which are sorted and unique, and
 // the cache for the next refresh. Guests that are no longer listed are not
-// carried over.
-func (i *Inventory) refreshGuests(ctx context.Context, r *run, rows []pve.Resource) ([]model.Guest, map[model.GuestRef]cacheEntry) {
-	ts := i.refreshConfigs(ctx, r, rows)
+// carried over. Nothing is asked about guests on the offline nodes.
+func (i *Inventory) refreshGuests(ctx context.Context, r *run, rows []pve.Resource, offline map[string]bool) ([]model.Guest, map[model.GuestRef]cacheEntry) {
+	ts := i.refreshConfigs(ctx, r, rows, offline)
 	if ctx.Err() != nil {
 		return nil, nil
 	}
@@ -303,10 +335,14 @@ type configResult struct {
 
 // refreshConfigs fetches the configs that are due and combines them with the
 // cached ones. Watched guests are always due; the others on first sight and
-// then once per FullSweepEvery.
-func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resource) []tracked {
+// then once per FullSweepEvery. The current resource row always wins over what
+// the cached config says about name, node, status and tags.
+func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resource, offline map[string]bool) []tracked {
 	var due []int
 	for j, row := range rows {
+		if offline[row.Node] {
+			continue
+		}
 		old, cached := i.cache[refOf(row)]
 		if !cached || i.isWatched(row, old.cfg) || r.now.Sub(old.cfgAt) >= i.opts.FullSweepEvery {
 			due = append(due, j)
@@ -323,21 +359,13 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 	}
 
 	ts := make([]tracked, 0, len(rows))
+	held := map[string]bool{}
 	for j, row := range rows {
-		ref := refOf(row)
-		entry, cached := i.cache[ref]
-		if res := results[j]; res.attempted {
-			switch {
-			case res.err == nil:
-				entry.cfg, entry.cfgAt, cached = res.cfg, r.now, true
-			case pve.IsNotFound(res.err):
-				i.log.Debug().Stringer("guest", ref).Msg("guest vanished before its config was read")
-				continue
-			default:
-				i.log.Debug().Stringer("guest", ref).Err(res.err).Msg("reading config failed")
-				r.fail("guest %s: config not refreshed: %v", label(row), res.err)
-			}
+		isOffline := offline[row.Node]
+		if isOffline {
+			held[row.Node] = true
 		}
+		entry, cached := i.configEntry(r, row, results[j], isOffline)
 		if !cached {
 			continue
 		}
@@ -346,10 +374,41 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 			r.fail("guest %s: %v", label(row), err)
 			continue
 		}
-		ts = append(ts, tracked{row: row, watched: i.isWatched(row, entry.cfg), entry: entry, guest: guest})
+		ts = append(ts, tracked{row: row, watched: i.isWatched(row, entry.cfg), offline: isOffline, entry: entry, guest: guest})
+	}
+	for _, node := range slices.Sorted(maps.Keys(held)) {
+		r.note("node %s is offline; using cached data for its guests", node)
 	}
 	i.log.Debug().Int("guests", len(rows)).Int("configCalls", len(due)).Msg("configs refreshed")
 	return ts
+}
+
+// configEntry returns the config to build a guest from, and false when there
+// is none. A config that could not be read leaves the cached one in place and
+// the snapshot incomplete: not-found is not taken as a deletion, because a
+// guest that has just moved to another node is answered that way too. A
+// deletion shows as the guest missing from the next listing.
+func (i *Inventory) configEntry(r *run, row pve.Resource, res configResult, offline bool) (cacheEntry, bool) {
+	ref := refOf(row)
+	entry, cached := i.cache[ref]
+	switch {
+	case offline:
+		// A guest that is not cached cannot be told apart from one that is
+		// gone. Only a watched one has routes that must not be dropped.
+		if !cached && i.isWatched(row, pve.GuestConfig{}) {
+			r.fail("guest %s: node %s is offline and the guest is not cached", label(row), row.Node)
+		}
+	case !res.attempted:
+	case res.err == nil:
+		entry.cfg, entry.cfgAt, cached = res.cfg, r.now, true
+	case pve.IsNotFound(res.err):
+		i.log.Debug().Stringer("guest", ref).Str("node", row.Node).Msg("config not found; the guest may have moved")
+		r.fail("config for %s not found on %s; will re-check", ref, row.Node)
+	default:
+		i.log.Debug().Stringer("guest", ref).Err(res.err).Msg("reading config failed")
+		r.fail("guest %s: config not refreshed: %v", label(row), res.err)
+	}
+	return entry, cached
 }
 
 // forEach calls fn for 0 to n-1 on at most Concurrency goroutines and waits

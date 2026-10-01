@@ -67,16 +67,83 @@ func TestRefreshCachesUnavailableAgentForTTL(t *testing.T) {
 	inv, clk := newInventory(src, Options{})
 	inv.Refresh(t.Context())
 
-	clk.advance(30 * time.Second)
+	clk.advance(14 * time.Second)
 	snap := inv.Refresh(t.Context())
 	require.Equal(t, 1, src.count("iface "+refWeb.String()))
 	require.True(t, snap.Complete)
 
-	clk.advance(30 * time.Second)
+	clk.advance(time.Second)
 	delete(src.ifaceErrs, refWeb)
 	snap = inv.Refresh(t.Context())
-	require.Equal(t, 2, src.count("iface "+refWeb.String()))
+	require.Equal(t, 2, src.count("iface "+refWeb.String()), "a guest without an agent is asked again after 15s")
 	require.NotEmpty(t, guestOf(t, snap, refWeb).Reported)
+}
+
+// hangingAgent makes the interface call of web-1 wait for its deadline.
+func hangingAgent(src *fakeSource, inv *Inventory) {
+	inv.callTimeout = time.Millisecond
+	src.ifaceHooks[refWeb] = func(ctx context.Context) ([]pve.GuestIface, error) {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("fetching agent interfaces of qemu/101: %w", ctx.Err())
+		case <-time.After(2 * time.Second): // only reached when no timeout is applied
+			return nil, errors.New("agent call was never cut short")
+		}
+	}
+}
+
+func TestRefreshReportedCacheLifetimes(t *testing.T) {
+	tests := []struct {
+		name  string
+		opts  Options
+		setup func(src *fakeSource, inv *Inventory)
+		life  time.Duration
+	}{
+		{"agent unavailable", Options{}, func(src *fakeSource, _ *Inventory) {
+			src.ifaceErrs[refWeb] = agentErr("No QEMU guest agent configured")
+		}, 15 * time.Second},
+		{"forbidden", Options{}, func(src *fakeSource, _ *Inventory) {
+			src.ifaceErrs[refWeb] = forbiddenErr()
+		}, 15 * time.Second},
+		{"unexpected error", Options{}, func(src *fakeSource, _ *Inventory) {
+			src.ifaceErrs[refWeb] = serverErr()
+		}, 15 * time.Second},
+		{"empty answer", Options{}, func(src *fakeSource, _ *Inventory) {
+			src.ifaces[refWeb] = []pve.GuestIface{iface("lo", "", "127.0.0.1")}
+		}, 15 * time.Second},
+		{"answer with addresses", Options{}, func(*fakeSource, *Inventory) {}, time.Minute},
+		{"timeout", Options{}, hangingAgent, time.Minute},
+		{"agent unavailable, short ttl", Options{ReportedTTL: 5 * time.Second}, func(src *fakeSource, _ *Inventory) {
+			src.ifaceErrs[refWeb] = agentErr("QEMU guest agent is not running")
+		}, 5 * time.Second},
+		{"empty answer, short ttl", Options{ReportedTTL: 5 * time.Second}, func(src *fakeSource, _ *Inventory) {
+			src.ifaces[refWeb] = nil
+		}, 5 * time.Second},
+		{"timeout, short ttl", Options{ReportedTTL: 5 * time.Second}, hangingAgent, 5 * time.Second},
+		{"answer with addresses, ttl above the cap", Options{ReportedTTL: 5 * time.Minute}, func(*fakeSource, *Inventory) {}, 5 * time.Minute},
+		{"agent unavailable, ttl above the cap", Options{ReportedTTL: 5 * time.Minute}, func(src *fakeSource, _ *Inventory) {
+			src.ifaceErrs[refWeb] = agentErr("QEMU guest agent is not running")
+		}, 15 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := newFake()
+			inv, clk := newInventory(src, tt.opts)
+			tt.setup(src, inv)
+			call := "iface " + refWeb.String()
+
+			inv.Refresh(t.Context())
+			require.Equal(t, 1, src.count(call))
+
+			clk.advance(tt.life - time.Second)
+			inv.Refresh(t.Context())
+			require.Equal(t, 1, src.count(call), "still cached just before %s", tt.life)
+
+			clk.advance(time.Second)
+			inv.Refresh(t.Context())
+			require.Equal(t, 2, src.count(call), "asked again after %s", tt.life)
+		})
+	}
 }
 
 func TestRefreshForbiddenInterfacesAreOneAdvisoryProblem(t *testing.T) {
@@ -100,38 +167,63 @@ func TestRefreshForbiddenInterfacesAreOneAdvisoryProblem(t *testing.T) {
 	require.Equal(t, 1, src.count("iface "+refWeb.String()), "forbidden answers are cached too")
 }
 
-func TestRefreshOtherInterfaceFailureMarksIncomplete(t *testing.T) {
+func TestRefreshOtherInterfaceFailureIsAdvisory(t *testing.T) {
 	t.Run("nothing cached", func(t *testing.T) {
 		src := newFake()
 		src.ifaceErrs[refWeb] = serverErr()
-		inv, _ := newInventory(src, Options{})
+		inv, clk := newInventory(src, Options{})
 
 		snap := inv.Refresh(t.Context())
 
-		require.False(t, snap.Complete)
+		require.True(t, snap.Complete)
 		require.Len(t, snap.Problems, 1)
 		require.Contains(t, snap.Problems[0], "qemu/101")
+		require.Contains(t, snap.Problems[0], "interfaces not refreshed")
 		require.Empty(t, guestOf(t, snap, refWeb).Reported)
 		require.Len(t, snap.Guests, 4)
+		require.NotEmpty(t, guestOf(t, snap, refApp).Reported)
+
+		clk.advance(14 * time.Second)
+		snap = inv.Refresh(t.Context())
+		require.True(t, snap.Complete)
+		require.Len(t, snap.Problems, 1, "the line stays while the failed answer is cached")
+		require.Equal(t, 1, src.count("iface "+refWeb.String()))
+
+		delete(src.ifaceErrs, refWeb)
+		clk.advance(time.Second)
+		snap = inv.Refresh(t.Context())
+		require.True(t, snap.Complete)
+		require.Empty(t, snap.Problems)
+		require.NotEmpty(t, guestOf(t, snap, refWeb).Reported)
 	})
 
-	t.Run("stale answer is served", func(t *testing.T) {
+	t.Run("a failure replaces the old answer", func(t *testing.T) {
 		src := newFake()
 		inv, clk := newInventory(src, Options{})
 		first := inv.Refresh(t.Context())
-		require.True(t, first.Complete)
+		require.NotEmpty(t, guestOf(t, first, refWeb).Reported)
 		src.ifaceErrs[refWeb] = serverErr()
 		clk.advance(time.Minute)
 
 		snap := inv.Refresh(t.Context())
 
-		require.False(t, snap.Complete)
-		require.Equal(t, guestOf(t, first, refWeb).Reported, guestOf(t, snap, refWeb).Reported)
+		require.True(t, snap.Complete)
+		require.Len(t, snap.Problems, 1)
+		require.Empty(t, guestOf(t, snap, refWeb).Reported, "an answer that cannot be renewed is not served")
+	})
 
-		clk.advance(10 * time.Second)
-		snap = inv.Refresh(t.Context())
-		require.Equal(t, 3, src.count("iface "+refWeb.String()), "a failed fetch is retried at once")
-		require.False(t, snap.Complete)
+	t.Run("one line per guest", func(t *testing.T) {
+		src := newFake()
+		src.ifaceErrs[refWeb] = serverErr()
+		src.ifaceErrs[refApp] = serverErr()
+		inv, _ := newInventory(src, Options{})
+
+		snap := inv.Refresh(t.Context())
+
+		require.True(t, snap.Complete)
+		require.Len(t, snap.Problems, 2)
+		require.Contains(t, snap.Problems[0], "lxc/201")
+		require.Contains(t, snap.Problems[1], "qemu/101")
 	})
 }
 

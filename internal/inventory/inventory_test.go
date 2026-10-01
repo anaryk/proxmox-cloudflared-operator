@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -94,25 +95,32 @@ func TestRefreshHonoursConfiguredSweepInterval(t *testing.T) {
 func TestRefreshUsesCachedConfigWithCurrentResourceRow(t *testing.T) {
 	src := newFake()
 	inv, clk := newInventory(src, Options{})
-	inv.Refresh(t.Context())
-	src.setStatus(refDB, "stopped")
+	first := inv.Refresh(t.Context())
+	src.update(refDB, func(row *pve.Resource) {
+		row.Node = "pve1"
+		row.Name = "db-2"
+		row.Status = "stopped"
+		row.Tags = []string{"prod", "db"}
+	})
 	clk.advance(10 * time.Second)
 
 	snap := inv.Refresh(t.Context())
 
-	require.False(t, guestOf(t, snap, refDB).Running)
-	require.Equal(t, 1, src.count("config "+refDB.String()))
+	require.Equal(t, 1, src.count("config "+refDB.String()), "the unwatched guest is not read again")
+	db := guestOf(t, snap, refDB)
+	require.Equal(t, "pve1", db.Node)
+	require.Equal(t, "db-2", db.Name)
+	require.False(t, db.Running)
+	require.Equal(t, []string{"prod", "db"}, db.Tags)
+	require.Equal(t, guestOf(t, first, refDB).Identity, db.Identity)
+	require.Equal(t, guestOf(t, first, refDB).NICs, db.NICs)
 }
 
 func TestRefreshGuestBecomingWatchedIsFetchedAtOnce(t *testing.T) {
 	src := newFake()
 	inv, clk := newInventory(src, Options{})
 	inv.Refresh(t.Context())
-	for i := range src.resources {
-		if src.resources[i].VMID == refDB.VMID {
-			src.resources[i].Tags = []string{"cf-tunnel"}
-		}
-	}
+	src.update(refDB, func(row *pve.Resource) { row.Tags = []string{"cf-tunnel"} })
 	clk.advance(10 * time.Second)
 
 	snap := inv.Refresh(t.Context())
@@ -214,24 +222,73 @@ func TestRefreshConfigFailureMarksIncomplete(t *testing.T) {
 	})
 }
 
-func TestRefreshVanishedGuestIsDroppedSilently(t *testing.T) {
-	src := newFake()
-	inv, clk := newInventory(src, Options{})
-	inv.Refresh(t.Context())
-	src.configErrs[refWeb] = notFoundErr()
-	clk.advance(10 * time.Second)
+func TestRefreshConfigNotFoundMarksIncomplete(t *testing.T) {
+	t.Run("cached guest that moved to another node", func(t *testing.T) {
+		src := newFake()
+		inv, clk := newInventory(src, Options{})
+		first := inv.Refresh(t.Context())
+		src.moved[refWeb] = "pve2" // the resource row still says pve1
+		clk.advance(10 * time.Second)
 
-	snap := inv.Refresh(t.Context())
+		snap := inv.Refresh(t.Context())
 
-	require.True(t, snap.Complete)
-	require.Empty(t, snap.Problems)
-	require.Equal(t, []model.GuestRef{refDB, refApp, refBatch}, refs(snap))
+		require.False(t, snap.Complete)
+		require.Equal(t, []string{"config for qemu/101 not found on pve1; will re-check"}, snap.Problems)
+		require.Len(t, snap.Guests, 4)
+		require.Equal(t, guestOf(t, first, refWeb), guestOf(t, snap, refWeb))
 
-	delete(src.configErrs, refWeb)
-	clk.advance(10 * time.Second)
-	snap = inv.Refresh(t.Context())
-	require.Len(t, snap.Guests, 4)
-	require.Equal(t, 2, src.count("iface "+refWeb.String()), "the reported cache went with the guest")
+		src.update(refWeb, func(row *pve.Resource) { row.Node = "pve2" })
+		clk.advance(10 * time.Second)
+		snap = inv.Refresh(t.Context())
+		require.True(t, snap.Complete)
+		require.Empty(t, snap.Problems)
+		require.Equal(t, "pve2", guestOf(t, snap, refWeb).Node)
+	})
+
+	t.Run("guest without a cache is left out", func(t *testing.T) {
+		src := newFake()
+		src.moved[refWeb] = "pve2"
+		inv, _ := newInventory(src, Options{})
+
+		snap := inv.Refresh(t.Context())
+
+		require.False(t, snap.Complete)
+		require.Equal(t, []string{"config for qemu/101 not found on pve1; will re-check"}, snap.Problems)
+		require.Equal(t, []model.GuestRef{refDB, refApp, refBatch}, refs(snap))
+	})
+
+	t.Run("a deletion is confirmed by the next listing", func(t *testing.T) {
+		src := newFake()
+		inv, clk := newInventory(src, Options{})
+		inv.Refresh(t.Context())
+		src.configErrs[refWeb] = notFoundErr()
+		clk.advance(10 * time.Second)
+		snap := inv.Refresh(t.Context())
+		require.False(t, snap.Complete)
+		require.Len(t, snap.Guests, 4, "still served from the cache")
+
+		src.removeGuest(refWeb)
+		clk.advance(10 * time.Second)
+		snap = inv.Refresh(t.Context())
+
+		require.True(t, snap.Complete)
+		require.Empty(t, snap.Problems)
+		require.Equal(t, []model.GuestRef{refDB, refApp, refBatch}, refs(snap))
+	})
+
+	t.Run("a failed sweep of an unwatched guest", func(t *testing.T) {
+		src := newFake()
+		inv, clk := newInventory(src, Options{})
+		first := inv.Refresh(t.Context())
+		src.configErrs[refDB] = notFoundErr()
+		clk.advance(5 * time.Minute)
+
+		snap := inv.Refresh(t.Context())
+
+		require.False(t, snap.Complete)
+		require.Contains(t, snap.Problems[0], "lxc/200")
+		require.Equal(t, guestOf(t, first, refDB), guestOf(t, snap, refDB))
+	})
 }
 
 func TestRefreshResourcesFailureKeepsPreviousGuests(t *testing.T) {
@@ -416,7 +473,7 @@ func TestRefreshCancelledReturnsPreviousGuests(t *testing.T) {
 		require.Contains(t, snap.Problems[0], "cancelled")
 		require.Equal(t, first.Guests, snap.Guests)
 		require.Equal(t, first.Nodes, snap.Nodes)
-		require.Equal(t, 1, src.count("nodes"), "nothing is asked after the cancellation")
+		require.Equal(t, 1, src.count("network pve1"), "no node is asked after the cancellation")
 
 		src.configGate = nil
 		snap = inv.Refresh(t.Context())
@@ -491,4 +548,77 @@ func TestRefreshNeverLogsDescriptions(t *testing.T) {
 
 	require.NotEmpty(t, buf.String())
 	require.NotContains(t, buf.String(), "SECRET-NOTE")
+}
+
+// scribble overwrites everything a caller can reach in a snapshot.
+func scribble(snap *Snapshot) {
+	for i := range snap.Guests {
+		g := &snap.Guests[i]
+		g.Name = "scribbled"
+		for k := range g.Tags {
+			g.Tags[k] = "scribbled"
+		}
+		for k := range g.NICs {
+			g.NICs[k].MAC = "scribbled"
+			for m := range g.NICs[k].Static {
+				g.NICs[k].Static[m] = ip("203.0.113.9")
+			}
+		}
+		for k := range g.Reported {
+			g.Reported[k] = model.ReportedAddr{Iface: "scribbled"}
+		}
+	}
+	for i := range snap.Nodes {
+		n := &snap.Nodes[i]
+		n.Name = "scribbled"
+		for k := range n.Ifaces {
+			n.Ifaces[k].Name = "scribbled"
+			for m := range n.Ifaces[k].Addrs {
+				n.Ifaces[k].Addrs[m] = netip.MustParsePrefix("203.0.113.0/24")
+			}
+			for m := range n.Ifaces[k].Ports {
+				n.Ifaces[k].Ports[m] = "scribbled"
+			}
+		}
+	}
+	for k := range snap.Problems {
+		snap.Problems[k] = "scribbled"
+	}
+	snap.Guests = slices.DeleteFunc(snap.Guests, func(model.Guest) bool { return true })
+	snap.Nodes = slices.DeleteFunc(snap.Nodes, func(Node) bool { return true })
+}
+
+func TestRefreshSnapshotsShareNothingWithTheInventory(t *testing.T) {
+	pristine := func() Snapshot {
+		inv, _ := newInventory(newFake(), Options{})
+		return inv.Refresh(t.Context())
+	}()
+	require.True(t, pristine.Complete)
+	require.NotEmpty(t, pristine.Guests[0].NICs[0].Static, "the fixture exercises static addresses")
+	require.NotEmpty(t, pristine.Nodes[0].Ifaces[0].Ports)
+
+	src := newFake()
+	inv, clk := newInventory(src, Options{})
+	first := inv.Refresh(t.Context())
+	require.Equal(t, pristine.Guests, first.Guests)
+	scribble(&first)
+
+	clk.advance(10 * time.Second)
+	second := inv.Refresh(t.Context())
+	require.Equal(t, pristine.Guests, second.Guests, "reported answers come from the cache")
+	require.Equal(t, pristine.Nodes, second.Nodes)
+	scribble(&second)
+
+	src.resourcesErr = serverErr()
+	clk.advance(10 * time.Second)
+	previous := inv.Refresh(t.Context())
+	require.False(t, previous.Complete)
+	require.Equal(t, pristine.Guests, previous.Guests)
+	require.Equal(t, pristine.Nodes, previous.Nodes)
+	scribble(&previous)
+
+	again := inv.Refresh(t.Context())
+	require.False(t, again.Complete)
+	require.Equal(t, pristine.Guests, again.Guests, "a returned fallback copy does not feed the next one")
+	require.Equal(t, pristine.Nodes, again.Nodes)
 }

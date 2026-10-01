@@ -33,6 +33,7 @@ type fakeSource struct {
 	resourcesErr error
 	configs      map[model.GuestRef]pve.GuestConfig
 	configErrs   map[model.GuestRef]error
+	moved        map[model.GuestRef]string // guests that live elsewhere than their resource row says
 	configGate   func(ctx context.Context)
 	ifaces       map[model.GuestRef][]pve.GuestIface
 	ifaceErrs    map[model.GuestRef]error
@@ -48,6 +49,7 @@ func newFake() *fakeSource {
 		calls:       map[string]int{},
 		configs:     map[model.GuestRef]pve.GuestConfig{},
 		configErrs:  map[model.GuestRef]error{},
+		moved:       map[model.GuestRef]string{},
 		ifaces:      map[model.GuestRef][]pve.GuestIface{},
 		ifaceErrs:   map[model.GuestRef]error{},
 		ifaceHooks:  map[model.GuestRef]func(context.Context) ([]pve.GuestIface, error){},
@@ -143,9 +145,21 @@ func (f *fakeSource) removeGuest(ref model.GuestRef) {
 }
 
 func (f *fakeSource) setStatus(ref model.GuestRef, status string) {
+	f.update(ref, func(row *pve.Resource) { row.Status = status })
+}
+
+func (f *fakeSource) update(ref model.GuestRef, change func(row *pve.Resource)) {
 	for i := range f.resources {
 		if (model.GuestRef{Kind: f.resources[i].Kind, VMID: f.resources[i].VMID}) == ref {
-			f.resources[i].Status = status
+			change(&f.resources[i])
+		}
+	}
+}
+
+func (f *fakeSource) setOnline(node string, online bool) {
+	for i := range f.nodes {
+		if f.nodes[i].Name == node {
+			f.nodes[i].Online = online
 		}
 	}
 }
@@ -191,7 +205,14 @@ func (f *fakeSource) GuestConfig(ctx context.Context, node string, ref model.Gue
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if want := f.nodeOf(ref); want != node {
+	want := f.nodeOf(ref)
+	if actual, ok := f.moved[ref]; ok {
+		want = actual
+		if node != actual {
+			return pve.GuestConfig{}, notFoundErr()
+		}
+	}
+	if want != node {
 		return pve.GuestConfig{}, fmt.Errorf("config of %s asked from node %q, guest is on %q", ref, node, want)
 	}
 	if err := f.configErrs[ref]; err != nil {

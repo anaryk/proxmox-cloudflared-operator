@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -12,14 +13,19 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 )
 
-// reportedEntry is the outcome of one interface lookup. An agent that could
-// not answer is cached like any other result, as an entry without addresses,
-// so that a guest whose agent hangs is not retried on every refresh.
+// negativeTTL is how long an answer without addresses is kept when it came
+// back quickly. A guest whose agent is not up yet is asked again soon; one
+// whose agent hangs costs a call timeout per full ReportedTTL instead.
+const negativeTTL = 15 * time.Second
+
+// reportedEntry is the outcome of one interface lookup. A guest that could not
+// answer is cached like any other result, as an entry without addresses.
 type reportedEntry struct {
 	identity  string // the guest it was read from
-	at        time.Time
+	expires   time.Time
 	addrs     []model.ReportedAddr
-	forbidden bool // the token may not ask
+	forbidden bool   // the token may not ask
+	failure   string // problem line for an error nobody expects; empty otherwise
 }
 
 // reportedResult is the outcome of one interface fetch.
@@ -30,7 +36,11 @@ type reportedResult struct {
 
 // refreshReported fills in the reported addresses of running watched guests,
 // asking for those whose cached answer has expired. Anything else loses its
-// cached answer, so that a guest that starts again is asked afresh.
+// cached answer, so that a guest that starts again is asked afresh. Guests on
+// an offline node are not asked; their cached answer, if any, stays.
+//
+// No failure here clears Complete: a guest without usable addresses is a known
+// state, and the addresses are a hint on top of the configured ones.
 func (i *Inventory) refreshReported(ctx context.Context, r *run, ts []tracked) {
 	var due []int
 	for j := range ts {
@@ -39,7 +49,8 @@ func (i *Inventory) refreshReported(ctx context.Context, r *run, ts []tracked) {
 		switch {
 		case !t.watched || !t.guest.Running:
 			t.entry.reported = nil
-		case c == nil || c.identity != t.guest.Identity || r.now.Sub(c.at) >= i.opts.ReportedTTL:
+		case t.offline:
+		case c == nil || c.identity != t.guest.Identity || !r.now.Before(c.expires):
 			due = append(due, j)
 		}
 	}
@@ -56,9 +67,14 @@ func (i *Inventory) refreshReported(ctx context.Context, r *run, ts []tracked) {
 
 	var forbidden bool
 	for j := range ts {
-		if c := ts[j].entry.reported; c != nil {
-			ts[j].guest.Reported = slices.Clone(c.addrs)
-			forbidden = forbidden || c.forbidden
+		c := ts[j].entry.reported
+		if c == nil {
+			continue
+		}
+		ts[j].guest.Reported = slices.Clone(c.addrs)
+		forbidden = forbidden || c.forbidden
+		if c.failure != "" {
+			r.note("%s", c.failure)
 		}
 	}
 	if forbidden {
@@ -86,29 +102,34 @@ func (i *Inventory) fetchReported(ctx context.Context, row pve.Resource) reporte
 	return reportedResult{addrs: reportedAddrs(ifaces)}
 }
 
-// applyReported stores the outcome of a fetch. A guest that cannot answer
-// because it has no agent, the agent hangs or the token may not ask has no
-// reported addresses, which is a known state. Any other failure leaves the
-// state unknown: the cached answer, if any, is kept and the snapshot is
-// marked incomplete.
+// applyReported stores the outcome of a fetch together with how long it
+// stays valid: a full ReportedTTL for addresses and for a timeout, negativeTTL
+// (at most ReportedTTL) for any other answer without addresses. An error that
+// is none of the expected ones is kept as a problem line for as long as the
+// answer is cached.
 func (i *Inventory) applyReported(r *run, t *tracked, res reportedResult) {
-	identity := t.guest.Identity
+	entry := &reportedEntry{identity: t.guest.Identity}
+	ttl := min(i.opts.ReportedTTL, negativeTTL)
 	switch {
 	case res.err == nil:
-		t.entry.reported = &reportedEntry{identity: identity, at: r.now, addrs: res.addrs}
-	case errors.Is(res.err, pve.ErrAgentUnavailable), errors.Is(res.err, context.DeadlineExceeded):
-		i.log.Debug().Stringer("guest", t.guest.Ref).Err(res.err).Msg("no interfaces reported")
-		t.entry.reported = &reportedEntry{identity: identity, at: r.now}
+		entry.addrs = res.addrs
+		if len(res.addrs) > 0 {
+			ttl = i.opts.ReportedTTL
+		}
+	case errors.Is(res.err, pve.ErrAgentUnavailable):
+		i.log.Debug().Stringer("guest", t.guest.Ref).Err(res.err).Msg("guest agent not available")
+	case errors.Is(res.err, context.DeadlineExceeded):
+		i.log.Debug().Stringer("guest", t.guest.Ref).Err(res.err).Msg("guest did not answer in time")
+		ttl = i.opts.ReportedTTL
 	case pve.IsForbidden(res.err):
 		i.log.Debug().Stringer("guest", t.guest.Ref).Err(res.err).Msg("interfaces forbidden")
-		t.entry.reported = &reportedEntry{identity: identity, at: r.now, forbidden: true}
+		entry.forbidden = true
 	default:
 		i.log.Debug().Stringer("guest", t.guest.Ref).Err(res.err).Msg("reading interfaces failed")
-		r.fail("guest %s: interfaces not refreshed: %v", label(t.row), res.err)
-		if c := t.entry.reported; c != nil && c.identity != identity {
-			t.entry.reported = nil
-		}
+		entry.failure = fmt.Sprintf("guest %s: interfaces not refreshed: %v", label(t.row), res.err)
 	}
+	entry.expires = r.now.Add(ttl)
+	t.entry.reported = entry
 }
 
 // reportedAddrs flattens the interfaces of a guest into usable addresses.
