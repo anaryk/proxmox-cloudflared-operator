@@ -371,6 +371,41 @@ func TestCollectHeld(t *testing.T) {
 			held:  held("a.example.com"),
 		},
 		{
+			name:   "a route after a stray closing fence",
+			notes:  "```cf-tunnel\na.example.com -> :80\n```\nb.example.com -> :81\n```",
+			routes: []string{"a.example.com qemu/101"},
+			held:   held("b.example.com"),
+		},
+		{
+			name:   "hostnames in comments and prose",
+			notes:  block("a.example.com -> :80 # was b.example.com") + "\nAlso answers for (c.example.com)",
+			routes: []string{"a.example.com qemu/101"},
+			held:   held("b.example.com", "c.example.com"),
+		},
+		{
+			name:  "notes without route text",
+			notes: "Moved to a.example.com.",
+			held:  held("a.example.com"),
+		},
+		{
+			name:  "a hostname glued to the shorthand prefix",
+			notes: "cf-tunnel:a.example.com -> :abc",
+			held:  held("a.example.com"),
+		},
+		{
+			name:     "a hostname in prose denied by a valid pattern",
+			notes:    block("a.example.com -> :80") + "\nNot secret.example.com.",
+			settings: Settings{DenyHosts: []string{"secret.example.com"}},
+			routes:   []string{"a.example.com qemu/101"},
+			held:     held(),
+		},
+		{
+			name:     "a hostname in prose under an invalid policy",
+			notes:    "Not secret.example.com.",
+			settings: Settings{DenyHosts: []string{"secret.example.com", "bad/"}},
+			held:     held("secret.example.com"),
+		},
+		{
 			name:   "a hostname listed twice keeps its first route",
 			notes:  block("a.example.com -> :80", "a.example.com -> :81"),
 			routes: []string{"a.example.com qemu/101"},
@@ -531,6 +566,16 @@ func TestCollectTaggedWithoutRoutes(t *testing.T) {
 		got := Collect([]model.Guest{g}, nil, Settings{})
 
 		require.Equal(t, []Issue{{Guest: g.Ref, Line: 2, Col: 1, Msg: `invalid hostname "oops": needs at least two labels`}}, got.Issues)
+	})
+
+	t.Run("hostnames named outside route text are still held", func(t *testing.T) {
+		g := tagged(model.KindLXC, 200, "```cf-tunnel\n```\na.example.com -> :80\n```")
+
+		got := Collect([]model.Guest{g}, nil, Settings{})
+
+		require.Empty(t, got.Routes)
+		require.Equal(t, []Issue{{Guest: g.Ref, Msg: msg}}, got.Issues)
+		require.Equal(t, []HeldName{{Hostname: "a.example.com", Owner: "lxc/200"}}, got.Held)
 	})
 
 	t.Run("routes left out by policy are reported instead", func(t *testing.T) {

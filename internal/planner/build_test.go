@@ -938,6 +938,50 @@ func TestPlannerTypesJSONShape(t *testing.T) {
 			want:  `{"hostname": "a.shop.cz", "owner": "qemu/1"}`,
 		},
 		{
+			name: "collected",
+			value: Collected{
+				Routes:        []model.Route{winner(t, "a.shop.cz", "manual/web")},
+				Issues:        []Issue{{Msg: "bad"}},
+				Held:          []HeldName{{Hostname: "b.shop.cz", Owner: "qemu/1"}},
+				PolicyInvalid: true,
+			},
+			want: `{
+				"routes": [{
+					"hostname": "a.shop.cz", "target": {"scheme": "http", "port": 8080}, "options": {},
+					"source": "manual", "manualId": "web"
+				}],
+				"issues": [{"msg": "bad"}],
+				"held": [{"hostname": "b.shop.cz", "owner": "qemu/1"}],
+				"policyInvalid": true
+			}`,
+		},
+		{
+			name: "claim result",
+			value: ClaimResult{
+				Winners:   []model.Route{winner(t, "a.shop.cz", "qemu/1")},
+				Conflicts: []model.Route{winner(t, "a.shop.cz", "qemu/2")},
+				Claims: map[string]Claim{"a.shop.cz": {
+					Hostname: "a.shop.cz", Owner: "qemu/1", Since: t0, Waiting: []Waiter{{Owner: "qemu/2", FirstSeen: t0}},
+				}},
+				Events: []ClaimEvent{{Kind: ClaimConflict, Hostname: "a.shop.cz", Owner: "qemu/2", Detail: "hostname is held by qemu/1"}},
+			},
+			want: `{
+				"winners": [{
+					"hostname": "a.shop.cz", "target": {"scheme": "http", "port": 8080}, "options": {},
+					"source": "annotation", "guest": {"kind": "qemu", "vmid": 1}
+				}],
+				"conflicts": [{
+					"hostname": "a.shop.cz", "target": {"scheme": "http", "port": 8080}, "options": {},
+					"source": "annotation", "guest": {"kind": "qemu", "vmid": 2}
+				}],
+				"claims": {"a.shop.cz": {
+					"hostname": "a.shop.cz", "owner": "qemu/1", "since": "2026-03-01T12:00:00Z",
+					"waiting": [{"owner": "qemu/2", "firstSeen": "2026-03-01T12:00:00Z"}]
+				}},
+				"events": [{"kind": "conflict", "hostname": "a.shop.cz", "owner": "qemu/2", "detail": "hostname is held by qemu/1"}]
+			}`,
+		},
+		{
 			name:  "unresolved target",
 			value: ResolvedTarget{},
 			want:  `{}`,
@@ -980,12 +1024,12 @@ func TestEmptyResultsMarshalAsEmptyLists(t *testing.T) {
 		{
 			name:  "collected",
 			value: Collect(nil, nil, Settings{}),
-			want:  `{"Routes": [], "Issues": [], "Held": [], "PolicyInvalid": false}`,
+			want:  `{"routes": [], "issues": [], "held": [], "policyInvalid": false}`,
 		},
 		{
 			name:  "claim result",
 			value: ResolveClaims(ClaimInput{Now: t0, Grace: grace}),
-			want:  `{"Winners": [], "Conflicts": [], "Claims": {}, "Events": []}`,
+			want:  `{"winners": [], "conflicts": [], "claims": {}, "events": []}`,
 		},
 	}
 	for _, tt := range tests {

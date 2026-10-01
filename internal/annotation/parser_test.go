@@ -1865,5 +1865,16 @@ func FuzzParse(f *testing.F) {
 		if res.Found {
 			require.Contains(t, strings.ToLower(description), "cf-tunnel")
 		}
+
+		named := Hostnames(description)
+		for i, h := range named {
+			norm, err := hostname.Normalize(h)
+			require.NoError(t, err)
+			require.Equal(t, norm, h)
+			require.Contains(t, strings.ToLower(description), h, "hostname that was never written")
+			if i > 0 {
+				require.Less(t, named[i-1], h, "hostnames not sorted or not unique")
+			}
+		}
 	})
 }

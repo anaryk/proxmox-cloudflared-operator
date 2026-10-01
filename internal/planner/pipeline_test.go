@@ -2,6 +2,7 @@ package planner
 
 import (
 	"encoding/json"
+	"maps"
 	"net/netip"
 	"slices"
 	"testing"
@@ -315,7 +316,8 @@ func holderAndClone(t *testing.T) (pipeline, map[string]Claim) {
 
 func TestPipelineHolderRemovingTheHostnameHandsItOver(t *testing.T) {
 	p, stored := holderAndClone(t)
-	p.guests[0].Description = "Web server, retired."
+	// Nothing in the Notes names the hostname any more, not even prose.
+	p.guests[0].Description = "Web server, retired. Its site moved to the clone."
 
 	gone := p.run(stored, at(time.Minute))
 
@@ -338,6 +340,85 @@ func TestPipelineHolderRemovingTheHostnameHandsItOver(t *testing.T) {
 			Reason: "address was verified for another owner", Zone: "example.com",
 		}},
 	}, after.plan)
+}
+
+func TestPipelineRouteAfterAStrayClosingFenceKeepsItsClaim(t *testing.T) {
+	p := pipeline{
+		guests: []model.Guest{
+			identified(model.KindQEMU, 101, block("api.example.com -> :3000", "www.example.com -> :8080")),
+			identified(model.KindQEMU, 102, block("www.example.com -> :8080")),
+		},
+		targets: map[string]ResolvedTarget{
+			"api.example.com": verified("10.20.0.11"),
+			"www.example.com": verified("10.20.0.11"),
+		},
+		zones: []Zone{exampleZone},
+	}
+	first := p.run(nil, t0)
+	require.Equal(t, []string{
+		"claimed api.example.com qemu/101",
+		"claimed www.example.com qemu/101",
+		"conflict www.example.com qemu/102",
+	}, eventKeys(t, first.claims.Events))
+	stored := persist(t, first.claims.Claims)
+
+	// The stray fence closes the block, so the www line is prose now and the
+	// last fence opens a block of its own.
+	broken := p
+	broken.guests = slices.Clone(p.guests)
+	broken.guests[0].Description = "```cf-tunnel\napi.example.com -> :3000\n```\nwww.example.com -> :8080\n```"
+
+	third := broken.run(stored, at(time.Minute))
+	later := broken.run(persist(t, third.claims.Claims), at(time.Minute+2*grace))
+
+	for _, c := range []cycle{third, later} {
+		require.Equal(t, []string{"api.example.com qemu/101", "www.example.com qemu/102"}, routeKeys(c.collected.Routes))
+		require.Equal(t, []HeldName{{Hostname: "www.example.com", Owner: "qemu/101"}}, c.collected.Held)
+		require.Empty(t, c.claims.Events)
+		require.Equal(t, stored, c.claims.Claims)
+		require.Equal(t, []TunnelPlan{{
+			AccountID: "acc2", CredentialID: "cred2", Name: tunnelName,
+			Rules: withSentinel(
+				IngressRule{Hostname: "api.example.com", Service: "http://10.20.0.11:3000"},
+				blockRule("www.example.com"),
+			),
+		}}, c.plan.Tunnels)
+		require.Equal(t, []string{"api.example.com"}, recordNames(c.plan.Records))
+	}
+
+	repaired := p.run(persist(t, later.claims.Claims), at(time.Minute+3*grace))
+
+	require.Empty(t, repaired.claims.Events)
+	require.Equal(t, first.plan, repaired.plan)
+}
+
+func TestPipelineHostnameInProseClaimsNothing(t *testing.T) {
+	p := pipeline{
+		guests: []model.Guest{identified(model.KindQEMU, 300, block("db.example.com -> :5432")+
+			"\nReplica of docs.example.com; see (wiki.example.com)")},
+		targets: map[string]ResolvedTarget{"db.example.com": verified("10.20.0.30")},
+		zones:   []Zone{exampleZone},
+	}
+
+	c := p.run(nil, t0)
+
+	require.Equal(t, []HeldName{
+		{Hostname: "docs.example.com", Owner: "qemu/300"},
+		{Hostname: "wiki.example.com", Owner: "qemu/300"},
+	}, c.collected.Held)
+	require.Equal(t, []string{"claimed db.example.com qemu/300"}, eventKeys(t, c.claims.Events))
+	require.Equal(t, []string{"db.example.com"}, slices.Sorted(maps.Keys(c.claims.Claims)))
+	require.Equal(t, Plan{
+		Tunnels: []TunnelPlan{{
+			AccountID: "acc2", CredentialID: "cred2", Name: tunnelName,
+			Rules: withSentinel(IngressRule{Hostname: "db.example.com", Service: "http://10.20.0.30:5432"}),
+		}},
+		Records: []RecordPlan{recordFor(exampleZone, "db.example.com")},
+		Routes: []RouteStatus{{
+			Hostname: "db.example.com", Owner: "qemu/300", State: StateActive,
+			Service: "http://10.20.0.30:5432", Zone: "example.com",
+		}},
+	}, c.plan)
 }
 
 func TestPipelineInvalidDenyPatternKeepsClaims(t *testing.T) {

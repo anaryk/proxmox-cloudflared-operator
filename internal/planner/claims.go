@@ -66,10 +66,10 @@ type ClaimEvent struct {
 
 // ClaimResult is the outcome of ResolveClaims.
 type ClaimResult struct {
-	Winners   []model.Route    // at most one per hostname, sorted by hostname
-	Conflicts []model.Route    // sorted by hostname, then owner
-	Claims    map[string]Claim // state to persist
-	Events    []ClaimEvent     // only for changes made in this call
+	Winners   []model.Route    `json:"winners"`   // at most one per hostname, sorted by hostname
+	Conflicts []model.Route    `json:"conflicts"` // sorted by hostname, then owner
+	Claims    map[string]Claim `json:"claims"`    // state to persist
+	Events    []ClaimEvent     `json:"events"`    // only for changes made in this call
 }
 
 // ResolveClaims decides which owner serves each hostname.

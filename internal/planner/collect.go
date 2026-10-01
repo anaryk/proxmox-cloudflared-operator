@@ -36,9 +36,9 @@ type Issue struct {
 	Msg   string         `json:"msg"`
 }
 
-// HeldName is a hostname that a guest's Notes still name but that did not
-// become a route of that guest, typically because its entry is broken. It
-// keeps an existing claim of that guest from being released.
+// HeldName is a hostname that a guest's Notes still name, anywhere, but that
+// did not become a route of that guest, typically because its entry is broken.
+// It keeps an existing claim of that guest from being released.
 type HeldName struct {
 	Hostname string `json:"hostname"`
 	Owner    string `json:"owner"`
@@ -47,10 +47,10 @@ type HeldName struct {
 // Collected is the candidate routes found in one pass. Several routes may
 // claim the same hostname; ResolveClaims settles that.
 type Collected struct {
-	Routes        []model.Route // sorted by hostname, then owner
-	Issues        []Issue       // sorted by guest, then position; settings issues last
-	Held          []HeldName    // sorted by hostname, then owner
-	PolicyInvalid bool          // an allow or deny pattern does not normalise
+	Routes        []model.Route `json:"routes"`        // sorted by hostname, then owner
+	Issues        []Issue       `json:"issues"`        // sorted by guest, then position; settings issues last
+	Held          []HeldName    `json:"held"`          // sorted by hostname, then owner
+	PolicyInvalid bool          `json:"policyInvalid"` // an allow or deny pattern does not normalise
 }
 
 // Collect turns guest annotations and manual routes into candidate routes.
@@ -62,11 +62,11 @@ type Collected struct {
 // A deny pattern that does not normalise denies every hostname and an allow
 // pattern that does not normalise matches none; each is reported once.
 //
-// Every hostname a guest's Notes name that did not become one of its routes
-// is held for that guest, unless a policy that could be read in full ruled it
-// out. A broken entry or a typo in the settings therefore never makes a guest
-// lose a hostname; only removing it from the Notes, or a policy that says so,
-// does.
+// Every hostname a guest's Notes name anywhere, in route text or not, that did
+// not become one of its routes is held for that guest, unless a policy that
+// could be read in full ruled it out. A broken entry, a stray fence or a typo
+// in the settings therefore never makes a guest lose a hostname; only removing
+// it from the Notes altogether, or a policy that says so, does.
 func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 	gate := cmp.Or(s.GateTag, defaultGateTag)
 	pol, issues := newPolicy(s.AllowHosts, s.DenyHosts)
@@ -111,7 +111,6 @@ func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
 	res := annotation.Parse(g.Description)
 	if len(res.Entries) == 0 && len(res.Errors) == 0 {
 		c.addIssue(g.Ref, 0, 0, fmt.Sprintf("tagged %s but no routes found in Notes", gate))
-		return
 	}
 	routed := make(map[string]bool)
 	for _, e := range res.Entries {
@@ -132,7 +131,11 @@ func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
 			routed[host] = true
 		}
 	}
-	for _, host := range res.Mentioned {
+	// Mentioned is added because Hostnames does not split a hostname glued to
+	// the shorthand prefix, as in "cf-tunnel:a.example.com".
+	named := slices.Concat(annotation.Hostnames(g.Description), res.Mentioned)
+	slices.Sort(named)
+	for _, host := range slices.Compact(named) {
 		// Only a policy that could be read in full may take a hostname away.
 		if routed[host] || !pol.invalid && !pol.allows(host) {
 			continue
