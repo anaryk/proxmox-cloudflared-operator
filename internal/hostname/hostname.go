@@ -134,16 +134,14 @@ func Depth(host, zone string) int {
 }
 
 // MatchPattern implements the allow/deny policy: "*" matches everything,
-// "*.x" matches names below x, anything else must be equal.
+// "*.x" matches names below x, anything else must be equal. A pattern also
+// matches a host identical to it, so a rule for "*.x" applies to a route
+// whose hostname is "*.x".
 func MatchPattern(pattern, host string) bool {
-	switch {
-	case pattern == "*":
+	if pattern == host || pattern == "*" {
 		return true
-	case IsWildcard(pattern):
-		return Covers(pattern, host)
-	default:
-		return pattern == host
 	}
+	return Covers(pattern, host)
 }
 
 func labelCount(h string) int {

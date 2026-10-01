@@ -192,6 +192,9 @@ func TestMatchPattern(t *testing.T) {
 		{"wildcard needs whole labels", "*.example.com", "badexample.com", false},
 		{"exact equal", "example.com", "example.com", true},
 		{"exact does not match below", "example.com", "a.example.com", false},
+		{"wildcard matches identical wildcard", "*.shop.cz", "*.shop.cz", true},
+		{"wildcard matches wildcard below", "*.shop.cz", "*.a.shop.cz", true},
+		{"wildcard does not match its apex", "*.shop.cz", "shop.cz", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
