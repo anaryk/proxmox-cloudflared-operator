@@ -14,7 +14,8 @@ import (
 // stops answering for a while does not unpublish a verified route.
 const FromBinding CandidateSource = "bound"
 
-// Binding remembers the address verified for a guest NIC.
+// Binding remembers the address verified for a guest NIC. VerifiedAt is the
+// last time its identity was proven, whether or not the port answered then.
 type Binding struct {
 	Owner        string     `json:"owner"`
 	Hostname     string     `json:"hostname"`
@@ -101,9 +102,9 @@ func (b *Binding) target(reason string) planner.ResolvedTarget {
 }
 
 // boundCandidate returns the candidate that carries b: its address on the
-// NIC that has its MAC now, with the source that reports it, if any. It
-// returns false when b no longer applies: no NIC of the guest has its MAC,
-// or the route names another address.
+// NIC that has its MAC now, with the source that reports it there, if any.
+// It returns false when b no longer applies: no NIC of the guest has its
+// MAC, or the route names another address or another NIC.
 func (b *Binding) boundCandidate(route model.Route, guest model.Guest, cands []Candidate) (Candidate, bool) {
 	if named, ok := namedAddr(route); ok && named != b.Addr {
 		return Candidate{}, false
@@ -113,11 +114,24 @@ func (b *Binding) boundCandidate(route model.Route, guest model.Guest, cands []C
 	if i < 0 {
 		return Candidate{}, false
 	}
+	if index, ok := parseNICName(route.Options.Via); ok && index != nics[i].Index {
+		return Candidate{}, false
+	}
 	c := Candidate{Addr: b.Addr, NIC: nics[i], Source: FromBinding}
-	if j := slices.IndexFunc(cands, func(o Candidate) bool { return o.Addr == b.Addr }); j >= 0 {
+	if j := slices.IndexFunc(cands, c.sameAs); j >= 0 {
 		c.Source = cands[j].Source
 	}
 	return c, true
+}
+
+// sameAs reports whether o is c's address on c's NIC.
+func (c Candidate) sameAs(o Candidate) bool {
+	return o.Addr == c.Addr && o.NIC.Index == c.NIC.Index
+}
+
+// proven reports whether b's identity was proven within maxAge of now.
+func (b *Binding) proven(now time.Time, maxAge time.Duration) bool {
+	return now.Sub(b.VerifiedAt) <= maxAge
 }
 
 // namedAddr returns the address a route names itself, as its target or as

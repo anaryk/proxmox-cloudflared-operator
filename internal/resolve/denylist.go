@@ -30,6 +30,12 @@ func NewDenylist(nodeAddrs []netip.Addr, extra []netip.Prefix) Denylist {
 	return d
 }
 
+// withoutNodes returns d without the addresses of the cluster nodes, for a
+// route an admin points at a node on purpose. Everything else stays denied.
+func (d Denylist) withoutNodes() Denylist {
+	return Denylist{prefixes: d.prefixes}
+}
+
 // Check returns a reason when addr must never be published. Only IPv4
 // addresses can be published, so anything else is denied too.
 func (d Denylist) Check(addr netip.Addr) (reason string, denied bool) {

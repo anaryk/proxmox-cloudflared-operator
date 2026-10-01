@@ -35,13 +35,17 @@ func lost(format string, args ...any) outcome {
 
 func stopped() outcome { return outcome{cancelled, reasonCancelled} }
 
-// asked turns the error of a prober call into an outcome. A call that failed
-// because ctx ended proves nothing about the candidate.
-func asked(ctx context.Context, err error, format string, args ...any) outcome {
-	if ctx.Err() != nil {
+// answered checks a prober call that has returned. Once ctx has ended, its
+// answer counts as not obtained, error or not, so that nothing learned after
+// the caller gave up is taken as proof.
+func answered(ctx context.Context, err error, format string, args ...any) outcome {
+	switch {
+	case ctx.Err() != nil:
 		return stopped()
+	case err != nil:
+		return outcome{probeFailed, fmt.Sprintf(format, append(args, err)...)}
 	}
-	return outcome{probeFailed, fmt.Sprintf(format, append(args, err)...)}
+	return outcome{}
 }
 
 // verify runs the checks on one candidate in order and stops at the first
@@ -104,8 +108,8 @@ func (a *attempt) hostIfaces(ctx context.Context) ([]HostIface, outcome) {
 		a.ifaces, a.ifacesErr = a.r.prober.Interfaces(ctx)
 		a.ifacesRead = true
 	}
-	if a.ifacesErr != nil {
-		return nil, asked(ctx, a.ifacesErr, "listing host interfaces: %v")
+	if o := answered(ctx, a.ifacesErr, "listing host interfaces: %v"); !o.ok() {
+		return nil, o
 	}
 	return a.ifaces, outcome{}
 }
@@ -212,8 +216,8 @@ func (a *attempt) answeredBy(ctx context.Context, iface string, addr netip.Addr,
 		return nil, stopped()
 	}
 	raw, err := a.r.prober.ARP(ctx, iface, addr)
-	if err != nil {
-		return nil, asked(ctx, err, "ARP on %s: %v", iface)
+	if o := answered(ctx, err, "ARP on %s: %v", iface); !o.ok() {
+		return nil, o
 	}
 	macs := normalizeMACs(raw)
 	if len(macs) == 0 {
@@ -240,9 +244,10 @@ func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, m
 			return nil, stopped()
 		}
 		port, found, err := a.r.prober.FDBPort(ctx, bridge, vlan, mac)
+		if o := answered(ctx, err, "forwarding table of %s: %v", bridge); !o.ok() {
+			return nil, o
+		}
 		switch {
-		case err != nil:
-			return nil, asked(ctx, err, "forwarding table of %s: %v", bridge)
 		case !found:
 			return nil, lost("MAC %s not seen on bridge %s", mac, bridge)
 		case !slices.Contains(guestPorts(a.guest.Ref.VMID, own[mac]), port):
@@ -271,10 +276,11 @@ func (r *Resolver) dial(ctx context.Context, addr netip.Addr, port uint16) outco
 	if ctx.Err() != nil {
 		return stopped()
 	}
-	if err := r.prober.Dial(ctx, netip.AddrPortFrom(addr, port)); err != nil {
-		if ctx.Err() != nil {
-			return stopped()
-		}
+	err := r.prober.Dial(ctx, netip.AddrPortFrom(addr, port))
+	switch {
+	case ctx.Err() != nil:
+		return stopped()
+	case err != nil:
 		return outcome{unreachable, fmt.Sprintf("port %d: %v", port, err)}
 	}
 	return outcome{}

@@ -51,11 +51,13 @@ type fakeProber struct {
 	calls     []probeCall
 
 	// cancelOn names the op whose call cancels the caller's context with
-	// cancel and fails the way a cancelled call fails; when cancelAddr is
-	// set, only a call for that address does.
-	cancelOn   string
-	cancelAddr netip.Addr
-	cancel     context.CancelFunc
+	// cancel and fails the way a cancelled call fails, or answers as usual
+	// when cancelSilently is set. When cancelAddr is set, only a call for
+	// that address cancels.
+	cancelOn       string
+	cancelAddr     netip.Addr
+	cancelSilently bool
+	cancel         context.CancelFunc
 }
 
 func newFakeProber() *fakeProber {
@@ -79,6 +81,9 @@ func (f *fakeProber) record(c probeCall) error {
 		return nil
 	}
 	f.cancel()
+	if f.cancelSilently {
+		return nil
+	}
 	return context.Canceled
 }
 
@@ -209,7 +214,14 @@ func routeTo(ref model.GuestRef) model.Route {
 }
 
 func boundTo(addr string) *Binding {
-	return &Binding{Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip(addr), MAC: mac0, VerifiedAt: t0.Add(-time.Hour)}
+	return &Binding{Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip(addr), MAC: mac0, VerifiedAt: t0.Add(-time.Minute)}
+}
+
+// provenAt returns a copy of b whose identity was last proven at.
+func provenAt(b *Binding, at time.Time) *Binding {
+	c := *b
+	c.VerifiedAt = at
+	return &c
 }
 
 // failingAt returns a copy of b failing since at.
@@ -847,7 +859,7 @@ func TestResolveStickyBindingDoesNotFlap(t *testing.T) {
 		res := s.resolve(t, webRoute(), prev)
 
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: failed, Owner: webOwner}, res.Target, "after %s", after)
-		require.Equal(t, failingAt(boundTo("10.20.0.11"), t0), res.Binding, "after %s", after)
+		require.Equal(t, provenAt(failingAt(boundTo("10.20.0.11"), t0), s.clock.t), res.Binding, "after %s", after)
 		require.Equal(t, []CandidateResult{
 			{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: failed},
 			{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "not tried"},
@@ -875,7 +887,7 @@ func TestResolveStickyBindingKeptWithoutAlternative(t *testing.T) {
 	res := s.resolve(t, webRoute(), prev)
 
 	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-	require.Equal(t, prev, res.Binding)
+	require.Equal(t, provenAt(prev, s.clock.t), res.Binding)
 	require.Equal(t, []CandidateResult{
 		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: "port 80: connection refused"},
 		{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "port 80: connection refused"},
@@ -943,8 +955,6 @@ func TestResolveIdentityLossWithdrawsBinding(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newScenario()
-			s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
-			s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{mac0}
 			tt.setup(s)
 			prev := boundTo("10.20.0.10")
 
@@ -953,7 +963,6 @@ func TestResolveIdentityLossWithdrawsBinding(t *testing.T) {
 			requireWithdrawn(t, res, tt.reason, withdrawnAt(boundTo("10.20.0.10"), t0))
 			require.Nil(t, prev.FailingSince, "prev must not change")
 			require.Empty(t, s.prober.ops("dial"))
-			require.False(t, s.prober.touched(ip("10.20.0.11")), "no other candidate within StickyFor")
 		})
 	}
 }
@@ -969,22 +978,37 @@ func TestResolveIdentityLossKeepsFailingSince(t *testing.T) {
 		withdrawnAt(boundTo("10.20.0.10"), t0.Add(-30*time.Second)))
 }
 
-func TestResolveIdentityLossAfterStickyForTakesAlternative(t *testing.T) {
-	s := newScenario()
-	s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
-	s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{foreignMAC}
-	prev := withdrawnAt(boundTo("10.20.0.11"), t0.Add(-3*time.Minute))
+func TestResolveIdentityLossTriesOthersAtOnce(t *testing.T) {
+	const foreign = "10.20.0.11 answered by bc:24:11:ff:ff:01, which is not this guest"
 
-	res := s.resolve(t, webRoute(), prev)
+	t.Run("an alternative verifies", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
+		s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{foreignMAC}
 
-	requireServed(t, res, "10.20.0.10", t0)
-	require.Equal(t, []CandidateResult{
-		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: "10.20.0.11 answered by bc:24:11:ff:ff:01, which is not this guest"},
-		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
-	}, res.Candidates)
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.11"))
+
+		requireServed(t, res, "10.20.0.10", t0)
+		require.Equal(t, []CandidateResult{
+			{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: foreign},
+			{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+		}, res.Candidates)
+	})
+
+	t.Run("nothing else verifies", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
+		s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{foreignMAC}
+		s.prober.dialErr[ip("10.20.0.10")] = errDial
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.11"))
+
+		requireWithdrawn(t, res, foreign, withdrawnAt(boundTo("10.20.0.11"), t0))
+		require.True(t, s.prober.touched(ip("10.20.0.10")))
+	})
 }
 
-func TestResolveWithdrawnUntilVerified(t *testing.T) {
+func TestResolveWithdrawnUntilIdentityPasses(t *testing.T) {
 	s := newScenario()
 	const foreign = "10.20.0.10 answered by bc:24:11:ff:ff:01, which is not this guest"
 
@@ -1001,7 +1025,8 @@ func TestResolveWithdrawnUntilVerified(t *testing.T) {
 	requireWithdrawn(t, res, "guest is not running", withdrawnAt(boundTo("10.20.0.10"), t0))
 	require.Empty(t, s.prober.calls)
 
-	// Running again, but the host cannot be asked: still withdrawn.
+	// Running again, but the host cannot be asked: still withdrawn, although
+	// the last proof is fresh.
 	s.clock.t = t0.Add(20 * time.Second)
 	s.web().Running = true
 	s.prober.arp[arpKey("vmbr0", "10.20.0.10")] = []string{mac0}
@@ -1009,18 +1034,80 @@ func TestResolveWithdrawnUntilVerified(t *testing.T) {
 	res = s.resolve(t, webRoute(), res.Binding)
 	requireWithdrawn(t, res, "ARP on vmbr0: socket closed", withdrawnAt(boundTo("10.20.0.10"), t0))
 
-	// Identity holds but the port does not answer: still withdrawn.
+	// Identity holds but the port does not answer: no longer withdrawn.
 	s.clock.t = t0.Add(30 * time.Second)
 	delete(s.prober.arpErr, arpKey("vmbr0", "10.20.0.10"))
 	s.prober.dialErr[ip("10.20.0.10")] = errDial
 	res = s.resolve(t, webRoute(), res.Binding)
-	requireWithdrawn(t, res, "port 80: connection refused", withdrawnAt(boundTo("10.20.0.10"), t0))
+	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
+	require.Equal(t, provenAt(failingAt(boundTo("10.20.0.10"), t0), t0.Add(30*time.Second)), res.Binding)
 
-	// Fully verified: served again.
+	// Fully verified: served and reachable.
 	s.clock.t = t0.Add(40 * time.Second)
 	delete(s.prober.dialErr, ip("10.20.0.10"))
 	res = s.resolve(t, webRoute(), res.Binding)
 	requireServed(t, res, "10.20.0.10", t0.Add(40*time.Second))
+}
+
+func TestResolveTakeoverDuringLaterCandidate(t *testing.T) {
+	s, prev := stickyScenario()
+	s.prober.dialErr[ip("10.20.0.10")] = errDial
+
+	// The port closes.
+	res := s.resolve(t, webRoute(), prev)
+	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
+
+	// Still closed beyond StickyFor; the other candidate does not answer either.
+	s.clock.t = t0.Add(3 * time.Minute)
+	res = s.resolve(t, webRoute(), res.Binding)
+	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
+	require.True(t, s.prober.touched(ip("10.20.0.10")))
+
+	// Another machine takes the address over, and the context ends while the
+	// other candidate is being tried.
+	s.clock.t = t0.Add(4 * time.Minute)
+	s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{foreignMAC}
+	ctx, cancel := context.WithCancel(t.Context())
+	s.prober.cancelOn, s.prober.cancelAddr, s.prober.cancel = "arp", ip("10.20.0.10"), cancel
+	res = s.resolveCtx(ctx, webRoute(), res.Binding)
+
+	want := withdrawnAt(provenAt(boundTo("10.20.0.11"), t0.Add(3*time.Minute)), t0)
+	requireWithdrawn(t, res, "10.20.0.11 answered by bc:24:11:ff:ff:01, which is not this guest", want)
+}
+
+func TestResolveIdentityClearsWithdrawn(t *testing.T) {
+	s := newScenario()
+	s.prober.dialErr[ip("10.20.0.10")] = errDial
+	prev := withdrawnAt(boundTo("10.20.0.10"), t0.Add(-time.Minute))
+
+	res := s.resolve(t, webRoute(), prev)
+
+	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
+	require.Equal(t, provenAt(failingAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)), t0), res.Binding)
+}
+
+func TestResolveTriesAtMostSixteenCandidates(t *testing.T) {
+	s := newScenario()
+	var static []string
+	for i := range 20 {
+		static = append(static, fmt.Sprintf("10.20.0.%d", 100+i))
+	}
+	s.web().NICs[0].Static = ips(static...)
+
+	res := s.resolve(t, webRoute(), boundTo("10.20.0.119"))
+
+	requireWithdrawn(t, res, "no ARP answer on vmbr0", withdrawnAt(boundTo("10.20.0.119"), t0))
+	require.Len(t, s.prober.ops("arp"), 16)
+	require.Len(t, res.Candidates, 20)
+	require.Equal(t, ip("10.20.0.119"), res.Candidates[0].Addr, "the bound address comes first")
+	for i, c := range res.Candidates {
+		if i < 16 {
+			require.Equal(t, "no ARP answer on vmbr0", c.Reason, "candidate %d", i)
+			continue
+		}
+		require.Equal(t, "not tried: too many candidates", c.Reason, "candidate %d", i)
+		require.False(t, s.prober.touched(c.Addr))
+	}
 }
 
 func TestResolveGuestNotRunning(t *testing.T) {
@@ -1305,13 +1392,25 @@ func TestResolveBindingOutlivesSources(t *testing.T) {
 		requireServed(t, res, "10.20.0.10", t0)
 	})
 
-	t.Run("unreported address that fails identity", func(t *testing.T) {
+	t.Run("unreported address that fails identity gives way", func(t *testing.T) {
 		s := newScenario()
 
 		res := s.resolve(t, webRoute(), boundTo("10.20.0.99"))
 
+		requireServed(t, res, "10.20.0.10", t0)
+		require.Equal(t, []CandidateResult{
+			{Addr: ip("10.20.0.99"), Source: FromBinding, Reason: "no ARP answer on vmbr0"},
+			{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+		}, res.Candidates)
+	})
+
+	t.Run("unreported address that fails identity with nothing else", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = nil
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.99"))
+
 		requireWithdrawn(t, res, "no ARP answer on vmbr0", withdrawnAt(boundTo("10.20.0.99"), t0))
-		require.False(t, s.prober.touched(ip("10.20.0.10")))
 	})
 }
 
@@ -1358,9 +1457,50 @@ func TestResolveBindingDropped(t *testing.T) {
 		res := s.resolve(t, routeFor(ip("10.20.0.10"), ""), boundTo("10.20.0.10"))
 
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-		require.Equal(t, failingAt(boundTo("10.20.0.10"), t0), res.Binding)
+		require.Equal(t, provenAt(failingAt(boundTo("10.20.0.10"), t0), t0), res.Binding)
 		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromVia, Reason: "port 80: connection refused"}}, res.Candidates)
 	})
+
+	t.Run("via names another NIC", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs = append(s.web().NICs, nicOn(1, mac1, "vmbr0", 0, "10.20.0.11"))
+		s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{mac1}
+		s.prober.fdb[fdbKey("vmbr0", 0, mac1)] = "tap101i1"
+
+		res := s.resolve(t, routeFor(netip.Addr{}, "net1"), boundTo("10.20.0.10"))
+
+		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reachable: true, Owner: webOwner}, res.Target)
+		require.Equal(t, mac1, res.Binding.MAC)
+		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.11"), Source: FromStatic, OK: true}}, res.Candidates)
+		require.False(t, s.prober.touched(ip("10.20.0.10")))
+	})
+
+	t.Run("kept when via names the NIC that has the MAC", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = nil
+
+		res := s.resolve(t, routeFor(netip.Addr{}, "net0"), boundTo("10.20.0.10"))
+
+		requireServed(t, res, "10.20.0.10", t0)
+	})
+}
+
+func TestResolveAddressMovesToAnotherNIC(t *testing.T) {
+	s := newScenario()
+	s.web().NICs = []model.NIC{nicOn(0, mac0, "vmbr0", 0), nicOn(1, mac1, "vmbr1", 0, "10.20.0.10")}
+	s.prober.ifaces = append(s.prober.ifaces, HostIface{Name: "vmbr1", Addrs: prefixes("10.20.0.3/24")})
+	delete(s.prober.arp, arpKey("vmbr0", "10.20.0.10"))
+	s.prober.arp[arpKey("vmbr1", "10.20.0.10")] = []string{mac1}
+	s.prober.fdb[fdbKey("vmbr1", 0, mac1)] = "tap101i1"
+
+	res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Owner: webOwner}, res.Target)
+	require.Equal(t, mac1, res.Binding.MAC)
+	require.Equal(t, []CandidateResult{
+		{Addr: ip("10.20.0.10"), Source: FromBinding, Reason: "no ARP answer on vmbr0"},
+		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+	}, res.Candidates)
 }
 
 // proberErrors fail each prober call that comes before the dial.
@@ -1409,21 +1549,62 @@ func TestResolveProberErrorIsNotWithdrawal(t *testing.T) {
 	}
 }
 
-func TestResolveProberErrorWithdrawsAfterStickyFor(t *testing.T) {
+func TestResolveProberErrorAndProofAge(t *testing.T) {
 	for _, tt := range proberErrors {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name+" with a fresh proof", func(t *testing.T) {
 			s := newScenario()
 			tt.setup(s)
-			since := t0.Add(-2 * time.Minute)
+			prev := provenAt(boundTo("10.20.0.10"), t0.Add(-5*time.Minute))
 
-			before := s.resolve(t, webRoute(), failingAt(boundTo("10.20.0.10"), since.Add(time.Second)))
-			after := s.resolve(t, webRoute(), failingAt(boundTo("10.20.0.10"), since))
+			res := s.resolve(t, webRoute(), prev)
 
-			require.False(t, before.Target.Withdrawn, "within StickyFor")
-			require.True(t, before.Target.Addr.IsValid())
-			requireWithdrawn(t, after, tt.reason, withdrawnAt(boundTo("10.20.0.10"), since))
+			require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: tt.reason, Owner: webOwner}, res.Target)
+			require.Equal(t, failingAt(prev, t0), res.Binding)
+		})
+		t.Run(tt.name+" with a stale proof", func(t *testing.T) {
+			s := newScenario()
+			tt.setup(s)
+			prev := provenAt(boundTo("10.20.0.10"), t0.Add(-5*time.Minute-time.Second))
+
+			res := s.resolve(t, webRoute(), prev)
+
+			requireWithdrawn(t, res, "identity not confirmed for 5m1s", withdrawnAt(prev, t0))
 		})
 	}
+
+	t.Run("custom MaxProofAge", func(t *testing.T) {
+		s := newScenario()
+		s.settings.MaxProofAge = 30 * time.Second
+		s.prober.arpErr[arpKey("vmbr0", "10.20.0.10")] = errors.New("socket closed")
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+		requireWithdrawn(t, res, "identity not confirmed for 1m0s", withdrawnAt(boundTo("10.20.0.10"), t0))
+	})
+
+	t.Run("stale proof gives way to a verified alternative", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
+		s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{mac0}
+		s.prober.arpErr[arpKey("vmbr0", "10.20.0.10")] = errors.New("socket closed")
+
+		res := s.resolve(t, webRoute(), provenAt(boundTo("10.20.0.10"), t0.Add(-10*time.Minute)))
+
+		requireServed(t, res, "10.20.0.11", t0)
+	})
+
+	t.Run("fresh proof keeps the binding without trying others", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
+		s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{mac0}
+		s.prober.arpErr[arpKey("vmbr0", "10.20.0.10")] = errors.New("socket closed")
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+		require.Equal(t, ip("10.20.0.10"), res.Target.Addr)
+		require.False(t, res.Target.Withdrawn)
+		require.False(t, s.prober.touched(ip("10.20.0.11")))
+	})
 }
 
 func TestResolveDialFailureWithoutBinding(t *testing.T) {
@@ -1458,55 +1639,77 @@ func TestResolveListsEveryCandidate(t *testing.T) {
 }
 
 func TestResolveRouteWithoutGuest(t *testing.T) {
-	route := model.Route{
-		Hostname: "app.example.com",
-		Target:   model.Target{Scheme: model.SchemeHTTP, Addr: ip("10.20.0.50"), Port: 8080},
-		Source:   model.SourceManual,
-		ManualID: "app",
+	const owner = "manual/app"
+	route := func(addr string, allowNode bool) model.Route {
+		return model.Route{
+			Hostname: "app.example.com",
+			Target:   model.Target{Scheme: model.SchemeHTTP, Addr: ip(addr), Port: 8080},
+			Options:  model.RouteOptions{AllowNode: allowNode},
+			Source:   model.SourceManual,
+			ManualID: "app",
+		}
 	}
+	served := func(addr string) planner.ResolvedTarget {
+		return planner.ResolvedTarget{Addr: ip(addr), Reachable: true, Owner: owner}
+	}
+	rejected := func(reason string) planner.ResolvedTarget {
+		return planner.ResolvedTarget{Rejected: true, Reason: reason}
+	}
+	tests := []struct {
+		name   string
+		route  model.Route
+		target planner.ResolvedTarget
+		calls  []string
+	}{
+		{name: "answering", route: route("10.20.0.50", false), target: served("10.20.0.50"), calls: []string{"interfaces", "dial"}},
+		{name: "address of a cluster node", route: route("10.20.0.2", false), target: rejected("address of a cluster node")},
+		{
+			name: "address of a host interface", route: route("10.30.0.2", false),
+			target: rejected("address of this node"), calls: []string{"interfaces"},
+		},
+		{name: "cluster node allowed", route: route("10.20.0.2", true), target: served("10.20.0.2"), calls: []string{"dial"}},
+		{name: "host interface allowed", route: route("10.30.0.2", true), target: served("10.30.0.2"), calls: []string{"dial"}},
+		{name: "loopback with allowNode", route: route("127.0.0.1", true), target: rejected("loopback address")},
+		{name: "link-local with allowNode", route: route("169.254.0.1", true), target: rejected("link-local address")},
+		{name: "reserved node address with allowNode", route: route("10.99.0.1", true), target: rejected("reserved by pco")},
+		{name: "no address", route: model.Route{Hostname: "app.example.com", Source: model.SourceManual, ManualID: "app"}, target: rejected("not an IPv4 address")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newScenario()
+			s.deny = NewDenylist(ips("10.20.0.2", "10.99.0.1"), prefixes("10.99.0.0/24"))
+			s.prober.ifaces = append(s.prober.ifaces, HostIface{Name: "vmbr1", Addrs: prefixes("10.30.0.2/24")})
 
-	t.Run("answering", func(t *testing.T) {
-		s := newScenario()
+			res := s.resolve(t, tt.route, &Binding{Owner: owner, Hostname: "app.example.com", Addr: ip("10.20.0.51")})
 
-		res := s.resolve(t, route, &Binding{Owner: "manual/app", Hostname: "app.example.com", Addr: ip("10.20.0.51")})
-
-		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.50"), Reachable: true, Owner: "manual/app"}, res.Target)
-		require.Nil(t, res.Binding)
-		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.50"), Source: FromVia, OK: true}}, res.Candidates)
-		require.Equal(t, []probeCall{{op: "dial", addr: ip("10.20.0.50"), port: 8080}}, s.prober.calls)
-	})
+			require.Equal(t, tt.target, res.Target)
+			require.Nil(t, res.Binding)
+			var ops []string
+			for _, c := range s.prober.calls {
+				ops = append(ops, c.op)
+			}
+			require.Equal(t, tt.calls, ops)
+		})
+	}
 
 	t.Run("not answering", func(t *testing.T) {
 		s := newScenario()
 		s.prober.dialErr[ip("10.20.0.50")] = errDial
 
-		res := s.resolve(t, route, nil)
+		res := s.resolve(t, route("10.20.0.50", false), nil)
 
-		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.50"), Reason: "port 8080: connection refused", Owner: "manual/app"}, res.Target)
-		require.Nil(t, res.Binding)
+		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.50"), Reason: "port 8080: connection refused", Owner: owner}, res.Target)
+		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.50"), Source: FromVia, Reason: "port 8080: connection refused"}}, res.Candidates)
 	})
 
-	t.Run("denied", func(t *testing.T) {
+	t.Run("interfaces not listed", func(t *testing.T) {
 		s := newScenario()
-		denied := route
-		denied.Target.Addr = ip("10.20.0.2")
+		s.prober.ifacesErr = errors.New("netlink closed")
 
-		res := s.resolve(t, denied, nil)
+		res := s.resolve(t, route("10.20.0.50", false), nil)
 
-		require.Equal(t, planner.ResolvedTarget{Rejected: true, Reason: "address of a cluster node"}, res.Target)
-		require.Nil(t, res.Binding)
-		require.Empty(t, s.prober.calls)
-	})
-
-	t.Run("no address", func(t *testing.T) {
-		s := newScenario()
-		empty := route
-		empty.Target.Addr = netip.Addr{}
-
-		res := s.resolve(t, empty, nil)
-
-		require.Equal(t, planner.ResolvedTarget{Rejected: true, Reason: "not an IPv4 address"}, res.Target)
-		require.Empty(t, s.prober.calls)
+		require.Equal(t, planner.ResolvedTarget{Reason: "listing host interfaces: netlink closed"}, res.Target)
+		require.Empty(t, s.prober.ops("dial"))
 	})
 
 	t.Run("cancelled", func(t *testing.T) {
@@ -1514,11 +1717,36 @@ func TestResolveRouteWithoutGuest(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		res := s.resolveCtx(ctx, route, nil)
+		res := s.resolveCtx(ctx, route("10.20.0.50", false), nil)
 
-		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.50"), Reason: "resolve cancelled", Owner: "manual/app"}, res.Target)
+		require.Equal(t, planner.ResolvedTarget{Reason: "resolve cancelled"}, res.Target)
 		require.Empty(t, s.prober.calls)
 	})
+}
+
+func TestResolveAllowNodeIgnoredForGuests(t *testing.T) {
+	tests := []struct {
+		name   string
+		static string
+		reason string
+	}{
+		{"address of a cluster node", "10.20.0.2", "address of a cluster node"},
+		{"address of a host interface", "10.30.0.2", "address of this node"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newScenario()
+			s.prober.ifaces = append(s.prober.ifaces, HostIface{Name: "vmbr1", Addrs: prefixes("10.30.0.2/24")})
+			s.web().NICs[0].Static = ips(tt.static)
+			route := webRoute()
+			route.Options.AllowNode = true
+
+			res := s.resolve(t, route, nil)
+
+			require.Equal(t, planner.ResolvedTarget{Rejected: true, Reason: tt.reason}, res.Target)
+			require.False(t, s.prober.touched(ip(tt.static)))
+		})
+	}
 }
 
 func TestResolveCancelled(t *testing.T) {
@@ -1530,27 +1758,46 @@ func TestResolveCancelled(t *testing.T) {
 	}
 
 	t.Run("before resolving", func(t *testing.T) {
+		stale := provenAt(boundTo("10.20.0.10"), t0.Add(-10*time.Minute))
+		staleWithdrawn := *stale
+		staleWithdrawn.Withdrawn = true
 		tests := []struct {
 			name    string
 			running bool
+			missing bool
 			prev    *Binding
 			target  planner.ResolvedTarget
+			binding *Binding
 		}{
 			{
-				name: "served binding", running: true, prev: boundTo("10.20.0.10"),
-				target: planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Reason: reason, Owner: webOwner},
+				name: "fresh binding", running: true, prev: boundTo("10.20.0.10"),
+				target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Reason: reason, Owner: webOwner},
+				binding: boundTo("10.20.0.10"),
 			},
 			{
 				name: "failing binding", running: true, prev: failingAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)),
-				target: planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: reason, Owner: webOwner},
+				target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: reason, Owner: webOwner},
+				binding: failingAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)),
 			},
 			{
 				name: "withdrawn binding", running: true, prev: withdrawnAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)),
-				target: planner.ResolvedTarget{Addr: ip("10.20.0.10"), Withdrawn: true, Reason: reason, Owner: webOwner},
+				target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Withdrawn: true, Reason: reason, Owner: webOwner},
+				binding: withdrawnAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)),
+			},
+			{
+				name: "stale binding", running: true, prev: stale,
+				target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Withdrawn: true, Reason: "identity not confirmed for 10m0s", Owner: webOwner},
+				binding: &staleWithdrawn,
 			},
 			{
 				name: "stopped guest", prev: boundTo("10.20.0.10"),
-				target: planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Reason: reason, Owner: webOwner},
+				target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Withdrawn: true, Reason: "guest is not running", Owner: webOwner},
+				binding: withdrawnAt(boundTo("10.20.0.10"), t0),
+			},
+			{
+				name: "missing guest", missing: true, prev: boundTo("10.20.0.10"),
+				target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Withdrawn: true, Reason: "guest not found in inventory", Owner: webOwner},
+				binding: withdrawnAt(boundTo("10.20.0.10"), t0),
 			},
 			{name: "no binding", running: true, target: planner.ResolvedTarget{Reason: reason}},
 			{
@@ -1562,15 +1809,14 @@ func TestResolveCancelled(t *testing.T) {
 			t.Run(tt.name, func(t *testing.T) {
 				s := newScenario()
 				s.web().Running = tt.running
+				if tt.missing {
+					s.guests = nil
+				}
 
 				res := s.resolveCtx(cancelled(t), webRoute(), tt.prev)
 
 				require.Equal(t, tt.target, res.Target)
-				if tt.target.Addr.IsValid() {
-					require.Equal(t, tt.prev, res.Binding)
-				} else {
-					require.Nil(t, res.Binding)
-				}
+				require.Equal(t, tt.binding, res.Binding)
 				require.Empty(t, s.prober.calls)
 			})
 		}
@@ -1591,7 +1837,57 @@ func TestResolveCancelled(t *testing.T) {
 		})
 	}
 
-	t.Run("while trying other candidates", func(t *testing.T) {
+	t.Run("answer after the end is no proof", func(t *testing.T) {
+		for _, op := range []string{"interfaces", "arp", "fdb", "dial"} {
+			t.Run(op, func(t *testing.T) {
+				s := newScenario()
+				ctx, cancel := context.WithCancel(t.Context())
+				s.prober.cancelOn, s.prober.cancelSilently, s.prober.cancel = op, true, cancel
+				prev := withdrawnAt(boundTo("10.20.0.10"), t0.Add(-time.Minute))
+
+				res := s.resolveCtx(ctx, webRoute(), prev)
+
+				requireWithdrawn(t, res, reason, prev)
+				require.Equal(t, op, s.prober.calls[len(s.prober.calls)-1].op, "nothing is asked after the end")
+			})
+		}
+	})
+
+	t.Run("negative answer after the end is not used", func(t *testing.T) {
+		tests := []struct {
+			op    string
+			setup func(s *scenario)
+		}{
+			{"interfaces", func(s *scenario) { s.prober.ifaces = nil }},
+			{"arp", func(s *scenario) { s.prober.arp[arpKey("vmbr0", "10.20.0.10")] = []string{foreignMAC} }},
+			{"fdb", func(s *scenario) { s.prober.fdb[fdbKey("vmbr0", 0, mac0)] = "tap102i0" }},
+		}
+		for _, tt := range tests {
+			t.Run(tt.op, func(t *testing.T) {
+				s := newScenario()
+				tt.setup(s)
+				ctx, cancel := context.WithCancel(t.Context())
+				s.prober.cancelOn, s.prober.cancelSilently, s.prober.cancel = tt.op, true, cancel
+
+				res := s.resolveCtx(ctx, webRoute(), boundTo("10.20.0.10"))
+
+				require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Reason: reason, Owner: webOwner}, res.Target)
+				require.Equal(t, boundTo("10.20.0.10"), res.Binding)
+			})
+		}
+	})
+
+	t.Run("answer after the end without a binding", func(t *testing.T) {
+		s := newScenario()
+		ctx, cancel := context.WithCancel(t.Context())
+		s.prober.cancelOn, s.prober.cancelSilently, s.prober.cancel = "dial", true, cancel
+
+		res := s.resolveCtx(ctx, webRoute(), nil)
+
+		requireNotServed(t, res, reason)
+	})
+
+	t.Run("while trying other candidates after a dial failure", func(t *testing.T) {
 		s, prev := stickyScenario()
 		prev.FailingSince = timePtr(t0.Add(-time.Hour))
 		ctx, cancel := context.WithCancel(t.Context())
@@ -1599,8 +1895,21 @@ func TestResolveCancelled(t *testing.T) {
 
 		res := s.resolveCtx(ctx, webRoute(), prev)
 
-		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: reason, Owner: webOwner}, res.Target)
-		require.Equal(t, prev, res.Binding)
+		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
+		require.Equal(t, provenAt(prev, t0), res.Binding)
+	})
+
+	t.Run("while trying other candidates after a stale prober error", func(t *testing.T) {
+		s := newScenario()
+		s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
+		s.prober.arpErr[arpKey("vmbr0", "10.20.0.10")] = errors.New("socket closed")
+		ctx, cancel := context.WithCancel(t.Context())
+		s.prober.cancelOn, s.prober.cancelAddr, s.prober.cancel = "arp", ip("10.20.0.11"), cancel
+		prev := provenAt(boundTo("10.20.0.10"), t0.Add(-10*time.Minute))
+
+		res := s.resolveCtx(ctx, webRoute(), prev)
+
+		requireWithdrawn(t, res, "identity not confirmed for 10m0s", withdrawnAt(prev, t0))
 	})
 
 	t.Run("without a binding", func(t *testing.T) {

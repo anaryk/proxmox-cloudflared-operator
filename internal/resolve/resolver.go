@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"slices"
 	"time"
@@ -12,12 +13,18 @@ import (
 )
 
 const (
-	defaultStickyFor = 2 * time.Minute
+	defaultStickyFor   = 2 * time.Minute
+	defaultMaxProofAge = 5 * time.Minute
+
+	// maxTries bounds the candidates verified in one call, so that a guest
+	// reporting many addresses cannot make a call arbitrarily long.
+	maxTries = 16
 
 	reasonNotRunning  = "guest is not running"
 	reasonNotFound    = "guest not found in inventory"
 	reasonNoCandidate = "no candidate address"
 	reasonNotTried    = "not tried"
+	reasonTooMany     = "not tried: too many candidates"
 	reasonCancelled   = "resolve cancelled"
 	reasonNodeAddress = "address of this node"
 )
@@ -45,6 +52,9 @@ type Settings struct {
 	StickyFor    time.Duration // keep a failing binding this long before trying others, default 2m
 	TrustStatic  bool          // resolve.trustStaticConfig
 	TrustedCIDRs []netip.Prefix
+	// MaxProofAge is how long a bound address stays served on an old proof of
+	// identity when a call cannot prove it anew, default 5m.
+	MaxProofAge time.Duration
 }
 
 // CandidateResult is how one candidate fared.
@@ -76,6 +86,9 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 	if s.StickyFor <= 0 {
 		s.StickyFor = defaultStickyFor
 	}
+	if s.MaxProofAge <= 0 {
+		s.MaxProofAge = defaultMaxProofAge
+	}
 	s.TrustedCIDRs = slices.Clone(s.TrustedCIDRs)
 	if now == nil {
 		now = time.Now
@@ -93,12 +106,14 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 // table placed them, and the port answers.
 //
 // The previous binding is verified first, even when no source reports its
-// address any more. While it fails for less than StickyFor it stays the
-// target and no other candidate is tried. Losing identity, a stopped or
-// missing guest, or a host that cannot be asked for StickyFor withdraws it,
-// and only a full verification serves it again. When nothing passes and
-// nothing is bound, the target says why the first candidate failed and has
-// no address. A cancelled ctx leaves the previous state as it was.
+// address any more. After a dial failure it stays the target for StickyFor
+// before other candidates are tried; after a prober error, while its last
+// proof is younger than MaxProofAge. Lost identity, a stopped or missing
+// guest, or a proof older than MaxProofAge withdraws it, and only identity
+// passing again lifts that. When nothing passes and nothing is bound, the
+// target says why the first candidate failed and has no address. A cancelled
+// ctx leaves the previous state as it was, except for what the call has
+// already learned about the bound address.
 func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist) Result {
 	res := r.resolve(ctx, route, snap, prev, deny)
 	if res.Target.Addr.IsValid() {
@@ -114,9 +129,6 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 	if !prev.appliesTo(route) {
 		prev = nil
 	}
-	if ctx.Err() != nil {
-		return unchanged(prev, deny)
-	}
 	now := r.now()
 	guest, ok := snap.Guest(*route.Guest)
 	switch {
@@ -124,6 +136,8 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 		return hold(prev, deny, reasonNotFound, now)
 	case !guest.Running:
 		return hold(prev, deny, reasonNotRunning, now)
+	case ctx.Err() != nil:
+		return r.unchanged(prev, deny, now)
 	}
 	cands, err := Candidates(route, guest)
 	if err != nil {
@@ -144,33 +158,69 @@ func hold(prev *Binding, deny Denylist, reason string, now time.Time) Result {
 	return Result{Target: planner.ResolvedTarget{Addr: prev.Addr, Withdrawn: true, Reason: reason}, Binding: prev.withdrawn(now)}
 }
 
-// unchanged returns what prev says, for a call that could not finish. A
-// denied address is still rejected.
-func unchanged(prev *Binding, deny Denylist) Result {
+// unchanged returns what prev says, for a call that learned nothing about
+// it. A denied address is still rejected, and a stale proof withdrawn.
+func (r *Resolver) unchanged(prev *Binding, deny Denylist, now time.Time) Result {
 	if prev == nil {
 		return Result{Target: planner.ResolvedTarget{Reason: reasonCancelled}}
 	}
 	if why, denied := deny.Check(prev.Addr); denied {
 		return Result{Target: planner.ResolvedTarget{Rejected: true, Reason: why}}
 	}
-	return Result{Target: prev.target(reasonCancelled), Binding: prev.clone()}
+	return r.unproven(prev.clone(), now, reasonCancelled)
+}
+
+// unproven returns b as the target of a call that did not prove its
+// identity. It is withdrawn once its last proof is older than MaxProofAge.
+func (r *Resolver) unproven(b *Binding, now time.Time, reason string) Result {
+	if !b.Withdrawn && !b.proven(now, r.settings.MaxProofAge) {
+		b.Withdrawn = true
+		reason = fmt.Sprintf("identity not confirmed for %s", now.Sub(b.VerifiedAt).Round(time.Second))
+	}
+	return Result{Target: b.target(reason), Binding: b}
 }
 
 // resolveAddress handles a route an admin wrote without a guest: there is no
-// identity to check, so only the denylist and the dial apply.
+// identity to check, so only the denylist, the node's own addresses and the
+// dial apply. AllowNode lifts the node rules, nothing else.
 func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, deny Denylist) Result {
 	addr := route.Target.Addr
-	cr := CandidateResult{Addr: addr, Source: FromVia}
+	if route.Options.AllowNode {
+		deny = deny.withoutNodes()
+	}
+	o := r.checkAddress(ctx, addr, route.Options.AllowNode, deny)
+	if o.ok() {
+		o = r.dial(ctx, addr, route.Target.Port)
+	}
+	cr := []CandidateResult{{Addr: addr, Source: FromVia, OK: o.ok(), Reason: o.reason}}
+	switch o.verdict {
+	case passed, unreachable:
+		return Result{Target: planner.ResolvedTarget{Addr: addr, Reachable: o.ok(), Reason: o.reason}, Candidates: cr}
+	case rejected:
+		return Result{Target: planner.ResolvedTarget{Rejected: true, Reason: o.reason}, Candidates: cr}
+	}
+	return Result{Target: planner.ResolvedTarget{Reason: o.reason}, Candidates: cr}
+}
+
+// checkAddress rejects an address a guest-less route must not point at.
+func (r *Resolver) checkAddress(ctx context.Context, addr netip.Addr, allowNode bool, deny Denylist) outcome {
 	if why, denied := deny.Check(addr); denied {
-		cr.Reason = why
-		return Result{Target: planner.ResolvedTarget{Rejected: true, Reason: why}, Candidates: []CandidateResult{cr}}
+		return outcome{rejected, why}
 	}
-	o := r.dial(ctx, addr, route.Target.Port)
-	cr.OK, cr.Reason = o.ok(), o.reason
-	return Result{
-		Target:     planner.ResolvedTarget{Addr: addr, Reachable: o.ok(), Reason: o.reason},
-		Candidates: []CandidateResult{cr},
+	if allowNode {
+		return outcome{}
 	}
+	if ctx.Err() != nil {
+		return stopped()
+	}
+	ifaces, err := r.prober.Interfaces(ctx)
+	if o := answered(ctx, err, "listing host interfaces: %v"); !o.ok() {
+		return o
+	}
+	if isNodeAddr(ifaces, addr) {
+		return outcome{rejected, reasonNodeAddress}
+	}
+	return outcome{}
 }
 
 // attempt is one Resolve call for a running guest.
@@ -195,12 +245,13 @@ type attempt struct {
 }
 
 // newAttempt puts the candidate of the previous binding first, or drops the
-// binding when it no longer applies.
+// binding when it no longer applies. The same address on another NIC stays a
+// candidate of its own, so that an address that moved can be bound again.
 func newAttempt(r *Resolver, route model.Route, guest model.Guest, snap inventory.Snapshot, deny Denylist, prev *Binding, now time.Time, cands []Candidate) *attempt {
 	a := &attempt{r: r, route: route, guest: guest, snap: snap, deny: deny, now: now, list: cands}
 	if prev != nil {
 		if c, ok := prev.boundCandidate(route, guest, cands); ok {
-			rest := slices.DeleteFunc(slices.Clone(cands), func(o Candidate) bool { return o.Addr == c.Addr })
+			rest := slices.DeleteFunc(slices.Clone(cands), c.sameAs)
 			a.list, a.prev, a.bound = append([]Candidate{c}, rest...), prev, true
 		}
 	}
@@ -214,23 +265,23 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		o := a.try(ctx, 0)
 		switch {
 		case o.verdict == cancelled:
-			return a.unchanged()
+			return a.cancelled()
 		case o.ok():
 			return a.served(a.list[0])
 		case o.verdict == rejected:
 			a.prev, a.bound = nil, false
-		case a.prev.holds(a.now, a.r.settings.StickyFor):
+		case a.keepsBound(o):
 			return a.boundFailed(o)
 		}
 	}
-	for i := range a.list {
+	for i := range a.list[:min(len(a.list), maxTries)] {
 		if a.tried[i] {
 			continue
 		}
 		o := a.try(ctx, i)
 		switch {
 		case o.verdict == cancelled:
-			return a.unchanged()
+			return a.cancelled()
 		case o.ok():
 			return a.served(a.list[i])
 		}
@@ -245,6 +296,20 @@ func (a *attempt) resolve(ctx context.Context) Result {
 	return a.result(planner.ResolvedTarget{Rejected: first.verdict == rejected, Reason: first.reason}, nil)
 }
 
+// keepsBound reports whether the failing bound candidate stays the target
+// without other candidates being tried: after a dial failure for StickyFor,
+// after a prober error while its proof is fresh. Lost identity looks for
+// another address at once.
+func (a *attempt) keepsBound(o outcome) bool {
+	switch o.verdict {
+	case unreachable:
+		return a.prev.holds(a.now, a.r.settings.StickyFor)
+	case probeFailed:
+		return !a.prev.Withdrawn && a.prev.proven(a.now, a.r.settings.MaxProofAge)
+	}
+	return false
+}
+
 func (a *attempt) try(ctx context.Context, i int) outcome {
 	c := a.list[i]
 	o := a.verify(ctx, c)
@@ -257,20 +322,36 @@ func (a *attempt) served(c Candidate) Result {
 	return a.result(planner.ResolvedTarget{Addr: c.Addr, Reachable: true}, newBinding(a.route, c, a.now))
 }
 
-// boundFailed keeps the failing binding as the target. It is withdrawn when
-// identity is lost, when it already was, or when the host could not be asked
-// for StickyFor; otherwise it stays served and unreachable.
+// boundFailed keeps the failing binding as the target. Lost identity
+// withdraws it. A dial failure comes after identity passed, which renews the
+// proof and lifts a withdrawal. A prober error proves nothing either way.
 func (a *attempt) boundFailed(o outcome) Result {
 	b := a.prev.failing(a.now)
-	b.Withdrawn = b.Withdrawn || o.verdict == notIdentified ||
-		(o.verdict == probeFailed && !a.prev.holds(a.now, a.r.settings.StickyFor))
-	return a.result(planner.ResolvedTarget{Addr: b.Addr, Withdrawn: b.Withdrawn, Reason: o.reason}, b)
+	switch o.verdict {
+	case notIdentified:
+		b.Withdrawn = true
+		return a.result(planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: o.reason}, b)
+	case unreachable:
+		b.VerifiedAt, b.Withdrawn = a.now, false
+		return a.result(planner.ResolvedTarget{Addr: b.Addr, Reason: o.reason}, b)
+	}
+	res := a.r.unproven(b, a.now, o.reason)
+	return a.result(res.Target, res.Binding)
 }
 
-// unchanged reports the previous state for a call that was cancelled. A
-// binding found rejected in this call is already gone.
-func (a *attempt) unchanged() Result {
-	res := unchanged(a.prev, a.deny)
+// cancelled reports a call that could not finish. What it learned about the
+// first candidate stands; otherwise the previous state is kept.
+func (a *attempt) cancelled() Result {
+	if len(a.list) > 0 && a.tried[0] {
+		switch first := a.outcomes[0]; {
+		case first.verdict == cancelled:
+		case a.bound:
+			return a.boundFailed(first)
+		case first.verdict == rejected:
+			return a.result(planner.ResolvedTarget{Rejected: true, Reason: first.reason}, nil)
+		}
+	}
+	res := a.r.unchanged(a.prev, a.deny, a.now)
 	return a.result(res.Target, res.Binding)
 }
 
@@ -278,7 +359,11 @@ func (a *attempt) unchanged() Result {
 func (a *attempt) result(target planner.ResolvedTarget, b *Binding) Result {
 	out := a.results
 	for i, c := range a.list {
-		if !a.tried[i] {
+		switch {
+		case a.tried[i]:
+		case i >= maxTries:
+			out = append(out, CandidateResult{Addr: c.Addr, Source: c.Source, Reason: reasonTooMany})
+		default:
 			out = append(out, CandidateResult{Addr: c.Addr, Source: c.Source, Reason: reasonNotTried})
 		}
 	}
