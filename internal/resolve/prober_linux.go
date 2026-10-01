@@ -3,6 +3,7 @@ package resolve
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/mdlayher/arp"
-	"github.com/mdlayher/ethernet"
 	"github.com/mdlayher/packet"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -24,6 +24,12 @@ const (
 	defaultDialTimeout = 2 * time.Second
 	arpRequests        = 3
 	arpInterval        = 100 * time.Millisecond
+	// maxClaimants is more MACs than a guest plausibly has NICs; the address
+	// is rejected long before, so reading on proves nothing more.
+	maxClaimants = 8
+	dumpAttempts = 3
+	etherTypeARP = 0x0806
+	ethHeaderLen = 14
 )
 
 // hostProber looks at the node through netlink, a raw ARP socket and TCP.
@@ -45,11 +51,11 @@ func NewHostProber(arpWindow, dialTimeout time.Duration) Prober {
 }
 
 func (p *hostProber) Interfaces(context.Context) ([]HostIface, error) {
-	links, err := netlink.LinkList()
+	links, err := retryDump(netlink.LinkList)
 	if err != nil {
 		return nil, fmt.Errorf("listing links: %w", err)
 	}
-	addrs, err := netlink.AddrList(nil, netlink.FAMILY_V4)
+	addrs, err := retryDump(func() ([]netlink.Addr, error) { return netlink.AddrList(nil, netlink.FAMILY_V4) })
 	if err != nil {
 		return nil, fmt.Errorf("listing addresses: %w", err)
 	}
@@ -93,7 +99,10 @@ func (p *hostProber) ARP(ctx context.Context, iface string, addr netip.Addr) ([]
 	if err != nil {
 		return nil, err
 	}
-	conn, err := packet.Listen(ifi, packet.Raw, int(ethernet.EtherTypeARP), nil)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	conn, err := packet.Listen(ifi, packet.Raw, etherTypeARP, nil)
 	if err != nil {
 		return nil, fmt.Errorf("opening raw socket: %w", err)
 	}
@@ -105,11 +114,11 @@ func (p *hostProber) ARP(ctx context.Context, iface string, addr netip.Addr) ([]
 }
 
 // exchange sends req arpRequests times, arpInterval apart, and collects the
-// replies about addr until the window ends.
+// MACs that claim addr until the window ends or maxClaimants are found.
 func (p *hostProber) exchange(ctx context.Context, conn net.PacketConn, req []byte, addr netip.Addr) ([]string, error) {
 	start := time.Now()
 	end := start.Add(p.arpWindow)
-	to := &packet.Addr{HardwareAddr: ethernet.Broadcast}
+	to := &packet.Addr{HardwareAddr: broadcastMAC()}
 	buf := make([]byte, 128)
 	var macs []string
 	for sent := 0; time.Now().Before(end); {
@@ -134,7 +143,9 @@ func (p *hostProber) exchange(ctx context.Context, conn net.PacketConn, req []by
 		n, _, err := conn.ReadFrom(buf)
 		switch {
 		case err == nil:
-			macs = appendClaimants(macs, buf[:n], addr)
+			if macs = appendClaimants(macs, buf[:n], addr, req); len(macs) == maxClaimants {
+				return macs, nil
+			}
 		case !errors.Is(err, os.ErrDeadlineExceeded):
 			return nil, fmt.Errorf("reading replies: %w", err)
 		}
@@ -156,9 +167,15 @@ func sourceAddr(addrs []net.Addr, addr netip.Addr) (netip.Addr, error) {
 	return netip.Addr{}, fmt.Errorf("no IPv4 address in the network of %s", addr)
 }
 
-// arpRequest builds the broadcast frame that asks who has addr.
+// arpRequest builds the frame the kernel itself sends to resolve addr from
+// src: broadcast, target hardware address zero and no padding. A probe that
+// looked different could be told apart and answered differently from the
+// kernel's own requests, which are what the host's traffic follows.
 func arpRequest(hw net.HardwareAddr, src, addr netip.Addr) ([]byte, error) {
-	pkt, err := arp.NewPacket(arp.OperationRequest, hw, src, ethernet.Broadcast, addr)
+	if len(hw) != 6 {
+		return nil, errors.New("interface has no Ethernet address")
+	}
+	pkt, err := arp.NewPacket(arp.OperationRequest, hw, src, make(net.HardwareAddr, 6), addr)
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
@@ -166,29 +183,44 @@ func arpRequest(hw net.HardwareAddr, src, addr netip.Addr) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
-	f := ethernet.Frame{Destination: ethernet.Broadcast, Source: hw, EtherType: ethernet.EtherTypeARP, Payload: payload}
-	return f.MarshalBinary()
+	return slices.Concat(broadcastMAC(), hw, binary.BigEndian.AppendUint16(nil, etherTypeARP), payload), nil
 }
 
-// appendClaimants adds the MACs behind frame to macs when it is an ARP reply
-// from addr. Both the sender hardware address and the frame's source count,
-// so a reply sent from one MAC on behalf of another names both. Frames that
-// do not parse are skipped: anyone on the segment can send them.
-func appendClaimants(macs []string, frame []byte, addr netip.Addr) []string {
-	var f ethernet.Frame
-	if f.UnmarshalBinary(frame) != nil || f.EtherType != ethernet.EtherTypeARP {
+// appendClaimants adds to macs, up to maxClaimants, the MACs behind frame
+// when it claims addr: an ARP request, reply or announcement with addr as
+// its sender address, which is what makes a host update its neighbour
+// table. Both the sender hardware address and the frame's source count, so a
+// claim sent from one MAC on behalf of another names both. Frames that do
+// not parse are skipped: anyone on the segment can send them.
+//
+// The kernel does not pass the frames this host sends to a socket bound to
+// ARP, so sent, the request sent here, comes back only when the network
+// reflects it; such a copy is skipped. Frames are not skipped for merely
+// coming from this host's MAC: anyone can put that MAC as source on a claim.
+func appendClaimants(macs []string, frame []byte, addr netip.Addr, sent []byte) []string {
+	if len(frame) < ethHeaderLen || binary.BigEndian.Uint16(frame[12:ethHeaderLen]) != etherTypeARP {
+		return macs
+	}
+	if len(sent) > 0 && bytes.HasPrefix(frame, sent) {
 		return macs
 	}
 	var pkt arp.Packet
-	if pkt.UnmarshalBinary(f.Payload) != nil || pkt.Operation != arp.OperationReply || pkt.SenderIP != addr {
+	if pkt.UnmarshalBinary(frame[ethHeaderLen:]) != nil || pkt.SenderIP != addr {
 		return macs
 	}
-	for _, hw := range []net.HardwareAddr{pkt.SenderHardwareAddr, f.Source} {
-		if mac := hw.String(); !slices.Contains(macs, mac) {
+	if pkt.Operation != arp.OperationRequest && pkt.Operation != arp.OperationReply {
+		return macs
+	}
+	for _, hw := range []net.HardwareAddr{pkt.SenderHardwareAddr, frame[6:12]} {
+		if mac := hw.String(); len(macs) < maxClaimants && !slices.Contains(macs, mac) {
 			macs = append(macs, mac)
 		}
 	}
 	return macs
+}
+
+func broadcastMAC() net.HardwareAddr {
+	return net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 }
 
 func (p *hostProber) FDBPort(_ context.Context, bridge string, vlan int, mac string) (string, bool, error) {
@@ -196,18 +228,23 @@ func (p *hostProber) FDBPort(_ context.Context, bridge string, vlan int, mac str
 	if err != nil {
 		return "", false, fmt.Errorf("parsing MAC: %w", err)
 	}
-	br, err := netlink.LinkByName(bridge)
+	link, err := netlink.LinkByName(bridge)
 	if err != nil {
 		return "", false, fmt.Errorf("looking up bridge: %w", err)
 	}
-	if _, ok := br.(*netlink.Bridge); !ok {
+	br, ok := link.(*netlink.Bridge)
+	if !ok {
 		return "", false, fmt.Errorf("%s is not a Linux bridge", bridge)
 	}
-	entries, err := netlink.NeighList(0, unix.AF_BRIDGE)
+	entries, err := retryDump(func() ([]netlink.Neigh, error) { return netlink.NeighList(0, unix.AF_BRIDGE) })
 	if err != nil {
 		return "", false, fmt.Errorf("dumping forwarding database: %w", err)
 	}
-	ports, err := linkNames(fdbPorts(entries, br.Attrs().Index, vlan, hw))
+	indexes, err := fdbPorts(entries, br, vlan, hw)
+	if err != nil {
+		return "", false, err
+	}
+	ports, err := linkNames(indexes)
 	switch {
 	case err != nil:
 		return "", false, err
@@ -219,28 +256,38 @@ func (p *hostProber) FDBPort(_ context.Context, bridge string, vlan int, mac str
 	return ports[0], true, nil
 }
 
-// fdbPorts returns the ports of bridge on which mac is learned for vlan, in
-// the order found. Entries of the bridge device itself and permanent ones
-// hold the host's own addresses, not learned ones, and are skipped.
-func fdbPorts(entries []netlink.Neigh, bridge, vlan int, mac net.HardwareAddr) []int {
+// fdbPorts returns the ports of br on which mac is learned for vlan, in the
+// order found. Entries of the bridge device itself and permanent ones hold
+// the host's own addresses, not learned ones, and are skipped.
+func fdbPorts(entries []netlink.Neigh, br *netlink.Bridge, vlan int, mac net.HardwareAddr) ([]int, error) {
+	vid, err := fdbVID(br, vlan)
+	if err != nil {
+		return nil, err
+	}
+	bridge := br.Attrs().Index
 	var ports []int
 	for _, e := range entries {
 		learned := e.MasterIndex == bridge && e.LinkIndex != bridge && e.State&netlink.NUD_PERMANENT == 0
-		if learned && bytes.Equal(e.HardwareAddr, mac) && vlanMatches(e.Vlan, vlan) && !slices.Contains(ports, e.LinkIndex) {
+		if learned && e.Vlan == vid && bytes.Equal(e.HardwareAddr, mac) && !slices.Contains(ports, e.LinkIndex) {
 			ports = append(ports, e.LinkIndex)
 		}
 	}
-	return ports
+	return ports, nil
 }
 
-// vlanMatches reports whether an entry of VLAN entry belongs to want. Untagged
-// (0) matches entries without a VLAN and those of PVID 1, under which a bridge
-// without VLAN filtering keeps them too.
-func vlanMatches(entry, want int) bool {
-	if want == 0 {
-		return entry == 0 || entry == 1
+// fdbVID returns the VLAN under which br keeps the entries of vlan. Untagged
+// (0) is VID 0 while VLAN filtering is off and the default PVID while it is
+// on.
+func fdbVID(br *netlink.Bridge, vlan int) (int, error) {
+	switch {
+	case vlan != 0:
+		return vlan, nil
+	case br.VlanFiltering == nil || !*br.VlanFiltering:
+		return 0, nil
+	case br.VlanDefaultPVID == nil:
+		return 0, fmt.Errorf("%s filters VLANs but reports no default PVID", br.Attrs().Name)
 	}
-	return entry == want
+	return int(*br.VlanDefaultPVID), nil
 }
 
 func linkNames(indexes []int) ([]string, error) {
@@ -255,7 +302,21 @@ func linkNames(indexes []int) ([]string, error) {
 	return names, nil
 }
 
+// retryDump runs list again while the kernel reports that the dump was
+// interrupted by a concurrent change, up to dumpAttempts times in all.
+func retryDump[T any](list func() ([]T, error)) ([]T, error) {
+	for attempt := 1; ; attempt++ {
+		out, err := list()
+		if !errors.Is(err, netlink.ErrDumpInterrupted) || attempt == dumpAttempts {
+			return out, err
+		}
+	}
+}
+
 func (p *hostProber) Dial(ctx context.Context, target netip.AddrPort) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d := net.Dialer{Timeout: p.dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", target.String())
 	if err != nil {

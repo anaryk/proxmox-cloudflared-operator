@@ -28,6 +28,15 @@ jobs:
           go-version-file: go.mod
       - run: go test -race ./...
 
+  linux-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo env "PATH=$PATH" go test -race -run 'Linux' -count=1 ./internal/resolve/
+
   build:
     runs-on: ubuntu-latest
     steps:
