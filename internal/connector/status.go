@@ -19,11 +19,11 @@ const (
 
 // Status is what is known of the connector of one tunnel.
 type Status struct {
-	TunnelID    string
-	Active      bool // unit started or starting, including the restart back-off
-	Ready       bool // /ready answered 200
-	Connections int  // readyConnections
-	MetricsAddr string
+	TunnelID    string `json:"tunnelId"`
+	Active      bool   `json:"active"`                // unit started or starting, including the restart back-off
+	Ready       bool   `json:"ready"`                 // /ready answered 200
+	Connections int    `json:"connections"`           // readyConnections
+	MetricsAddr string `json:"metricsAddr,omitempty"` // empty when the tunnel has no usable env file
 }
 
 // Status reports the unit's state and, when it runs, asks its metrics endpoint

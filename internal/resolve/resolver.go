@@ -96,10 +96,10 @@ type Settings struct {
 
 // CandidateResult is how one candidate fared.
 type CandidateResult struct {
-	Addr   netip.Addr
-	Source CandidateSource
-	OK     bool
-	Reason string
+	Addr   netip.Addr      `json:"addr"`
+	Source CandidateSource `json:"source"`
+	OK     bool            `json:"ok"`
+	Reason string          `json:"reason,omitempty"` // why it failed, or was not tried
 }
 
 // Result is the outcome of resolving one route.

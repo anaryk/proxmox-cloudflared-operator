@@ -49,27 +49,27 @@ func (c Capability) rank() int {
 
 // Check is the outcome of one probe.
 type Check struct {
-	Capability Capability
-	Scope      string // account or zone name; empty for token-wide checks
-	ScopeID    string // account or zone id; empty for token-wide checks
-	OK         bool
-	Detail     string // on failure: what to grant, e.g. "grant Zone > DNS > Edit on example.com"
+	Capability Capability `json:"capability"`
+	Scope      string     `json:"scope,omitempty"`   // account or zone name; empty for token-wide checks
+	ScopeID    string     `json:"scopeId,omitempty"` // account or zone id; empty for token-wide checks
+	OK         bool       `json:"ok"`
+	Detail     string     `json:"detail,omitempty"` // on failure: what to grant, e.g. "grant Zone > DNS > Edit on example.com"
 }
 
 // Report is what a token can do.
 type Report struct {
-	Token cfapi.TokenStatus // including the expiry date, if the token has one
+	Token cfapi.TokenStatus `json:"token"` // including the expiry date, if the token has one
 
 	// Accounts and Zones are everything the token sees, by name, whether or
 	// not it was probed.
-	Accounts []cfapi.Account
-	Zones    []cfapi.Zone
+	Accounts []cfapi.Account `json:"accounts"`
+	Zones    []cfapi.Zone    `json:"zones"`
 
 	// Checks are sorted by capability, then by scope name and id.
-	Checks []Check
+	Checks []Check `json:"checks"`
 
 	// Deep is true when the run was asked to probe write access.
-	Deep bool
+	Deep bool `json:"deep"`
 
 	// Usable is true when the token is active, at least one zone is active
 	// and every check that concerns an active zone or its account passed, and
@@ -79,16 +79,16 @@ type Report struct {
 	//
 	// With Deep false Usable says nothing about write access. A caller that
 	// is about to store a credential for use must run a deep check.
-	Usable bool
+	Usable bool `json:"usable"`
 
 	// Leftovers are the names of probe records that were already in the
 	// zones before this run, sorted: records whose comment is exactly the
 	// one a probe carries. Each is an object left by an earlier run of this
 	// checker that could not remove it, or one of a run that is still going
 	// on elsewhere. The checker leaves them alone.
-	Leftovers []string
+	Leftovers []string `json:"leftovers"`
 
-	CheckedAt time.Time
+	CheckedAt time.Time `json:"checkedAt,omitzero"`
 }
 
 // The Cloudflare permissions a failed check asks the admin to grant, as the

@@ -45,7 +45,7 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 	if err := ctx.Err(); err != nil {
 		return CredentialView{}, fmt.Errorf("checking the token: %w", err)
 	}
-	view := CredentialView{Label: label, Kind: credentialKind, Report: report}
+	view := CredentialView{Label: label, Kind: credentialKind, Checked: true, Report: shownReport(report)}
 	if !report.Usable {
 		return view, fmt.Errorf("%w: the token cannot be used: %s", ErrInvalid, failedChecks(report))
 	}
@@ -99,7 +99,7 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 		return CredentialView{}, err
 	}
 	e.setReport(id, report)
-	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Checked: true, Report: cloneReport(report)}, nil
+	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Checked: true, Report: shownReport(report)}, nil
 }
 
 // RemoveCredential deletes a credential, but only once nothing of this install

@@ -1,0 +1,14 @@
+{
+  "mode": "observe",
+  "complete": false,
+  "routes": [],
+  "issues": [],
+  "tunnels": [],
+  "connectors": [],
+  "credentials": [],
+  "actions": [],
+  "conflicts": [],
+  "lost": [],
+  "problems": [],
+  "writerVerdict": "ok"
+}

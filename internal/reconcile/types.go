@@ -28,38 +28,38 @@ const (
 
 // Action is a change a run made or would have made.
 type Action struct {
-	Kind        ActionKind
-	Credential  string
-	Target      string // tunnel name or record name
-	Detail      string
-	Destructive bool
-	Applied     bool
-	Held        string // why it was not applied (observe mode, guard, error)
+	Kind        ActionKind `json:"kind"`
+	Credential  string     `json:"credential"`
+	Target      string     `json:"target"` // tunnel name or record name
+	Detail      string     `json:"detail"`
+	Destructive bool       `json:"destructive"`
+	Applied     bool       `json:"applied"`
+	Held        string     `json:"held,omitempty"` // why it was not applied (observe mode, guard, error)
 }
 
 // TunnelState is what a run knows about the tunnel of one account.
 type TunnelState struct {
-	AccountID    string
-	CredentialID string
-	Name         string
-	ID           string
+	AccountID    string `json:"accountId"`
+	CredentialID string `json:"credentialId"`
+	Name         string `json:"name"`
+	ID           string `json:"id,omitempty"` // empty while the tunnel is not known to exist
 
 	// Version is the version of the configuration. Without a write it is the
 	// version read. After a write it is the version read back when the
 	// read-back equals the plan, and otherwise the version the write
 	// returned.
-	Version int
-	Exists  bool
+	Version int  `json:"version"`
+	Exists  bool `json:"exists"`
 
 	// Verified is true when the configuration at Version was read and equals
 	// the plan: nothing needed writing, or the read-back after a write
 	// matched. It is false when a write was held or failed, or when its
 	// read-back failed or differed.
-	Verified bool
+	Verified bool `json:"verified"`
 
 	// Unknown is true when the run could not find out whether the tunnel
 	// exists; Exists is then false. Nothing may be pruned for such a tunnel.
-	Unknown bool
+	Unknown bool `json:"unknown"`
 }
 
 // WriterVerdict is the outcome of the sentinel decision table.

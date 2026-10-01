@@ -39,13 +39,13 @@ type CredentialView struct {
 	// Checked says whether Report holds a check: it is the last one run in
 	// this process, and zero when there was none.
 	Checked bool               `json:"checked"`
-	Report  credentials.Report `json:"report"`
+	Report  credentials.Report `json:"report,omitzero"`
 }
 
 // State is what the last cycle found and did. Every slice is sorted, so that
 // two cycles over the same world give equal states.
 type State struct {
-	At          time.Time               `json:"at"`
+	At          time.Time               `json:"at,omitzero"`
 	Mode        string                  `json:"mode"`     // "observe" or "enforce"
 	Complete    bool                    `json:"complete"` // inventory completeness
 	Routes      []RouteView             `json:"routes"`   // by hostname, then owner
@@ -100,6 +100,14 @@ func (s State) clone() State {
 	s.Lost = slices.Clone(s.Lost)
 	s.Problems = slices.Clone(s.Problems)
 	return s
+}
+
+// shownReport is a report as a view shows it: a copy whose lists are empty
+// rather than missing.
+func shownReport(r credentials.Report) credentials.Report {
+	r = cloneReport(r)
+	r.Accounts, r.Zones, r.Checks, r.Leftovers = nonNil(r.Accounts), nonNil(r.Zones), nonNil(r.Checks), nonNil(r.Leftovers)
+	return r
 }
 
 func cloneReport(r credentials.Report) credentials.Report {
@@ -209,8 +217,11 @@ func (e *Engine) credentialViews(ids []credentialInfo) []CredentialView {
 	defer e.repMu.Unlock()
 	out := make([]CredentialView, 0, len(ids))
 	for _, c := range ids {
-		r, checked := e.reports[c.id]
-		out = append(out, CredentialView{ID: c.id, Label: c.label, Kind: c.kind, Checked: checked, Report: cloneReport(r)})
+		v := CredentialView{ID: c.id, Label: c.label, Kind: c.kind}
+		if r, checked := e.reports[c.id]; checked {
+			v.Checked, v.Report = true, shownReport(r)
+		}
+		out = append(out, v)
 	}
 	return out
 }

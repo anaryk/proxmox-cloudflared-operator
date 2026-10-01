@@ -1,0 +1,164 @@
+{
+  "at": "2026-10-01T12:00:00Z",
+  "mode": "enforce",
+  "complete": true,
+  "routes": [
+    {
+      "hostname": "www.example.com",
+      "owner": "qemu/101",
+      "state": "active",
+      "service": "http://10.0.0.11:8080",
+      "zone": "example.com",
+      "warnings": [
+        "a warning"
+      ],
+      "guest": "qemu/101 web-1",
+      "candidates": [
+        {
+          "addr": "10.0.0.11",
+          "source": "static",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "hostname": "www.example.com",
+      "owner": "qemu/102",
+      "state": "conflict",
+      "reason": "hostname is held by qemu/101",
+      "guest": "qemu/102 web-2"
+    }
+  ],
+  "issues": [
+    {
+      "guest": {
+        "kind": "qemu",
+        "vmid": 103
+      },
+      "line": 2,
+      "col": 5,
+      "msg": "a broken entry"
+    },
+    {
+      "msg": "an issue of the settings"
+    }
+  ],
+  "tunnels": [
+    {
+      "accountId": "acc1",
+      "credentialId": "cred1",
+      "name": "pco-abc123",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "version": 3,
+      "exists": true,
+      "verified": true,
+      "unknown": false
+    },
+    {
+      "accountId": "acc2",
+      "credentialId": "cred1",
+      "name": "pco-abc123",
+      "version": 0,
+      "exists": false,
+      "verified": false,
+      "unknown": true
+    }
+  ],
+  "connectors": [
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "active": true,
+      "ready": true,
+      "connections": 4,
+      "metricsAddr": "127.0.0.1:20300"
+    }
+  ],
+  "credentials": [
+    {
+      "id": "cred1",
+      "label": "main",
+      "kind": "scoped",
+      "checked": true,
+      "report": {
+        "token": {
+          "id": "token-1",
+          "status": "active",
+          "expiresOn": "2027-01-01T00:00:00Z"
+        },
+        "accounts": [
+          {
+            "id": "acc1",
+            "name": "Main"
+          }
+        ],
+        "zones": [
+          {
+            "id": "zone1",
+            "name": "example.com",
+            "status": "active",
+            "accountId": "acc1"
+          }
+        ],
+        "checks": [
+          {
+            "capability": "token",
+            "ok": true
+          },
+          {
+            "capability": "dns.read",
+            "scope": "example.com",
+            "scopeId": "zone1",
+            "ok": false,
+            "detail": "grant Zone > DNS > Read on example.com"
+          }
+        ],
+        "deep": true,
+        "usable": true,
+        "leftovers": [
+          "_pco-probe-x.example.com"
+        ],
+        "checkedAt": "2026-10-01T12:00:00Z"
+      }
+    },
+    {
+      "id": "cred2",
+      "label": "spare",
+      "kind": "scoped",
+      "checked": false
+    }
+  ],
+  "actions": [
+    {
+      "kind": "create-record",
+      "credential": "cred1",
+      "target": "www.example.com",
+      "detail": "in zone example.com",
+      "destructive": false,
+      "applied": true
+    },
+    {
+      "kind": "delete-record",
+      "credential": "cred1",
+      "target": "old.example.com",
+      "detail": "in zone example.com",
+      "destructive": true,
+      "applied": false,
+      "held": "grace period: 1m0s left"
+    }
+  ],
+  "conflicts": [
+    {
+      "zone": "example.com",
+      "name": "api.example.com",
+      "type": "A",
+      "content": "192.0.2.10"
+    }
+  ],
+  "lost": [
+    "lost.example.com"
+  ],
+  "problems": [
+    "a problem"
+  ],
+  "writerVerdict": "ok"
+}

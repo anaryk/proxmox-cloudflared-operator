@@ -107,10 +107,10 @@ type DNSInput struct {
 // Conflict is a record at a wanted name that pco will not change: someone
 // else's, or one of ours of an unexpected type.
 type Conflict struct {
-	Zone    string
-	Name    string
-	Type    string
-	Content string
+	Zone    string `json:"zone"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Content string `json:"content"`
 }
 
 // DNSResult is what a DNS run found and did.

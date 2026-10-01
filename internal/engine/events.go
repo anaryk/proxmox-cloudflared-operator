@@ -39,7 +39,7 @@ const (
 
 // Event is something that changed, as the event log keeps it.
 type Event struct {
-	At      time.Time `json:"at"`
+	At      time.Time `json:"at,omitzero"`
 	Level   string    `json:"level"` // "info", "warn", "error"
 	Kind    string    `json:"kind"`
 	Subject string    `json:"subject"`

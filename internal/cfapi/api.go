@@ -14,20 +14,23 @@ import (
 
 // TokenStatus is what Cloudflare says about the token in use.
 type TokenStatus struct {
-	ID        string
-	Status    string     // "active", "disabled", "expired"
-	ExpiresOn *time.Time // nil when the token does not expire
+	ID        string     `json:"id"`
+	Status    string     `json:"status"`              // "active", "disabled", "expired"
+	ExpiresOn *time.Time `json:"expiresOn,omitempty"` // nil when the token does not expire
 }
 
 // Account is a Cloudflare account the token can see.
-type Account struct{ ID, Name string }
+type Account struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
 
 // Zone is a DNS zone the token can see.
 type Zone struct {
-	ID        string
-	Name      string
-	Status    string // "active", "pending", ...
-	AccountID string
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Status    string `json:"status"` // "active", "pending", ...
+	AccountID string `json:"accountId"`
 }
 
 // Tunnel is a Cloudflare tunnel.
