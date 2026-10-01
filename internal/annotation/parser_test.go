@@ -1187,6 +1187,81 @@ func TestParse(t *testing.T) {
 			require.Equal(t, tt.found, got.Found)
 			require.Equal(t, tt.want, withoutPositions(got.Entries))
 			require.Equal(t, tt.errs, messages(got.Errors))
+			for _, en := range got.Entries {
+				require.Subset(t, got.Mentioned, en.Hosts)
+			}
+		})
+	}
+}
+
+func TestParseMentioned(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "no annotation", input: "a.example.com -> :80"},
+		{name: "route text in another block", input: "```yaml\na.example.com -> :80\n```"},
+		{name: "bare shorthand", input: "cf-tunnel:"},
+		{
+			name:  "valid entries, normalised and sorted",
+			input: block("B.Example.com. -> :80", "c.example.com *.example.com -> :81"),
+			want:  hosts("*.example.com", "b.example.com", "c.example.com"),
+		},
+		{
+			name:  "an entry dropped for its target",
+			input: block("a.example.com -> :abc", "b.example.com -> :80"),
+			want:  hosts("a.example.com", "b.example.com"),
+		},
+		{
+			name:  "hosts read before a syntax error",
+			input: block("b.example.com a_b.example.com -> :80"),
+			want:  hosts("b.example.com"),
+		},
+		{
+			name:  "hosts in the text skipped after an error",
+			input: block("a_b.example.com c.example.com -> :80", "  d.example.com"),
+			want:  hosts("c.example.com", "d.example.com"),
+		},
+		{
+			name:  "a hostname where the target belongs",
+			input: block("a.example.com -> b.example.com"),
+			want:  hosts("a.example.com", "b.example.com"),
+		},
+		{
+			name:  "a block with a nested fence",
+			input: "````cf-tunnel\na.example.com -> :80\n```b.example.com```\n````",
+			want:  hosts("a.example.com", "b.example.com"),
+		},
+		{
+			name:  "a block with a hidden closing fence",
+			input: "```cf-tunnel\na.example.com -> :80 # old ```",
+			want:  hosts("a.example.com"),
+		},
+		{
+			name:  "a shorthand line with a fence",
+			input: "cf-tunnel: a.example.com -> :80 ```",
+			want:  hosts("a.example.com"),
+		},
+		{
+			name:  "a shorthand line that continues",
+			input: "cf-tunnel: a.example.com -> https://:443\n  no-tls-verify",
+			want:  hosts("a.example.com"),
+		},
+		{
+			name:  "a hostname listed twice is mentioned once",
+			input: block("a.example.com -> :80", "A.example.com -> :81"),
+			want:  hosts("a.example.com"),
+		},
+		{
+			name:  "comments and option values name nothing",
+			input: block("# a.example.com -> :80", "b.example.com -> https://:443 sni=c.example.com host-header=d.example.com # e.example.com"),
+			want:  hosts("b.example.com"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, Parse(tt.input).Mentioned)
 		})
 	}
 }
@@ -1203,6 +1278,11 @@ func TestParseRejectsNonRoutableAddresses(t *testing.T) {
 		{"multicast", "224.0.0.1"},
 		{"multicast range end", "239.255.255.250"},
 		{"unspecified", "0.0.0.0"},
+		{"this network", "0.1.2.3"},
+		{"this network range end", "0.255.255.255"},
+		{"reserved", "240.0.0.1"},
+		{"reserved range", "250.1.2.3"},
+		{"reserved range end", "255.255.255.254"},
 		{"broadcast", "255.255.255.255"},
 	}
 	for _, tt := range tests {
@@ -1230,10 +1310,12 @@ func TestParseRejectsNonRoutableAddresses(t *testing.T) {
 			"d.example.com -> 169.255.0.1:80",
 			"e.example.com -> 223.255.255.255:80",
 			"f.example.com -> :80 via=10.0.0.1",
+			"g.example.com -> 1.0.0.0:80",
+			"h.example.com -> :80 via=1.0.0.1",
 		))
 
 		require.Empty(t, got.Errors)
-		require.Len(t, got.Entries, 6)
+		require.Len(t, got.Entries, 8)
 	})
 }
 
@@ -1690,6 +1772,7 @@ func FuzzParse(f *testing.F) {
 		"```cf-tunnel\na.example.com -> :80 # old ```\ncf-tunnel: a.example.com -> :81",
 		block("a.example.com -> https://127.0.0.1:8006", "b.example.com -> :080 via=169.254.1.1", "c.example.com -> 0.0.0.0:80"),
 		block("a.example.com -> b.example.com", "b.example.com -> 224.0.0.1:80", "d.example.com -> :80 via=255.255.255.255"),
+		block("a.example.com -> 0.1.2.3:80", "b.example.com -> :80 via=240.0.0.1", "c.example.com -> 1.0.0.0:80"),
 		"  cf-tunnel: a.example.com -> https://:443\n\tno-tls-verify=yes\ncf-tunnel:\ncf-tunnel: # x",
 	}
 	for _, s := range seeds {
@@ -1697,11 +1780,11 @@ func FuzzParse(f *testing.F) {
 	}
 
 	nonRoutable := []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/8"),
 		netip.MustParsePrefix("127.0.0.0/8"),
 		netip.MustParsePrefix("169.254.0.0/16"),
 		netip.MustParsePrefix("224.0.0.0/4"),
-		netip.MustParsePrefix("0.0.0.0/32"),
-		netip.MustParsePrefix("255.255.255.255/32"),
+		netip.MustParsePrefix("240.0.0.0/4"),
 	}
 	requireRoutable := func(t *testing.T, addr netip.Addr) {
 		t.Helper()
@@ -1750,6 +1833,16 @@ func FuzzParse(f *testing.F) {
 				require.Equal(t, model.SchemeHTTPS, en.Target.Scheme)
 			}
 			require.LessOrEqual(t, len(en.Options.HostHeader), 253)
+			require.Subset(t, res.Mentioned, en.Hosts, "hostname of an entry that is not mentioned")
+		}
+		for i, h := range res.Mentioned {
+			norm, err := hostname.Normalize(h)
+			require.NoError(t, err)
+			require.Equal(t, norm, h)
+			require.Contains(t, strings.ToLower(description), h, "mentioned hostname that was never written")
+			if i > 0 {
+				require.Less(t, res.Mentioned[i-1], h, "mentioned hostnames not sorted or not unique")
+			}
 		}
 		for _, er := range res.Errors {
 			require.GreaterOrEqual(t, er.Line, 1)
@@ -1767,6 +1860,7 @@ func FuzzParse(f *testing.F) {
 		if !res.Found {
 			require.Empty(t, res.Entries)
 			require.Empty(t, res.Errors)
+			require.Empty(t, res.Mentioned)
 		}
 		if res.Found {
 			require.Contains(t, strings.ToLower(description), "cf-tunnel")

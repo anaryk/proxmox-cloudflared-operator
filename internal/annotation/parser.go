@@ -18,13 +18,16 @@
 // A hostname may be listed only once in a description. Every hostname that is
 // read counts, also in entries that are dropped, and so does every hostname in
 // the text skipped after an error or in a block or line rejected whole; each
-// later mention is an error and drops the entry it is in.
+// later mention is an error and drops the entry it is in. Result.Mentioned
+// lists all of them.
 package annotation
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
@@ -87,10 +90,15 @@ func (e Error) Error() string {
 
 // Result is what Parse found. Entries are the valid definitions in the order
 // they appear; Errors describe everything that was dropped.
+//
+// Mentioned is every hostname read anywhere in the route text, normalised and
+// sorted: those of the entries and those of everything that was dropped. It
+// tells a hostname whose entry is broken from one that was removed.
 type Result struct {
-	Found   bool // a cf-tunnel block or shorthand line exists
-	Entries []Entry
-	Errors  []Error
+	Found     bool // a cf-tunnel block or shorthand line exists
+	Entries   []Entry
+	Errors    []Error
+	Mentioned []string
 }
 
 // Parse extracts and parses the route text of a guest description.
@@ -104,6 +112,7 @@ func Parse(description string) Result {
 		}
 	}
 	p.res.Found = len(spans) > 0
+	p.res.Mentioned = slices.Sorted(maps.Keys(p.seen))
 	return p.res
 }
 
@@ -409,11 +418,15 @@ func parseTarget(s string) (model.Target, error) {
 }
 
 // routable reports whether a guest can be reached at the IPv4 address a.
-// Loopback, link-local, multicast, the unspecified and the broadcast address
-// reach the host the tunnel runs on, or nothing, never a guest.
+// Loopback, link-local and multicast addresses, 0.0.0.0/8 ("this network",
+// with the unspecified address) and 240.0.0.0/4 (reserved, with the broadcast
+// address) reach the host the tunnel runs on, or nothing, never a guest.
 func routable(a netip.Addr) bool {
-	return !a.IsLoopback() && !a.IsLinkLocalUnicast() && !a.IsMulticast() && !a.IsUnspecified() &&
-		a != netip.AddrFrom4([4]byte{255, 255, 255, 255})
+	if !a.Is4() {
+		return false
+	}
+	first := a.As4()[0]
+	return first != 0 && first < 240 && !a.IsLoopback() && !a.IsLinkLocalUnicast() && !a.IsMulticast()
 }
 
 // readOptions reads the options that follow the target and stops at the first
