@@ -356,6 +356,8 @@ func assertEqualState(a, b State) bool {
 
 func TestResolutionRunsEightAtATimeEachWithItsOwnDeadline(t *testing.T) {
 	e := newEnv(t)
+	deadlines := &timeouts{}
+	e.eng.timeout = deadlines.withTimeout
 	routes := make([]string, 12)
 	for i := range routes {
 		routes[i] = fmt.Sprintf("h%02d.example.com -> :80", i)
@@ -387,14 +389,27 @@ func TestResolutionRunsEightAtATimeEachWithItsOwnDeadline(t *testing.T) {
 
 	require.Len(t, st.Routes, 12)
 	require.Equal(t, resolveConcurrency, most, "eight at a time, never more")
-	start := time.Now()
-	require.Len(t, e.res.deadlines, 12)
-	for _, d := range e.res.deadlines {
-		require.LessOrEqual(t, d.Sub(start), resolveTimeout, "each call has a deadline of its own")
-	}
-	require.True(t, e.inv.hasDeadline)
-	require.LessOrEqual(t, e.inv.deadline.Sub(start), refreshTimeout)
-	require.Greater(t, e.inv.deadline.Sub(start), resolveTimeout, "the refresh deadline is the longer one")
+	require.Len(t, e.res.deadlines, 12, "each call has a deadline of its own")
+	require.Equal(t, 12, deadlines.count(15*time.Second))
+	require.Equal(t, 1, deadlines.count(60*time.Second), "the refresh has one too")
+}
+
+// The DNS reconciler remembers names it saw wanted until its tombstones are
+// saved; a new one starts without that memory, so it is made anew only when
+// its settings change.
+func TestTheDNSReconcilerIsKeptBetweenCycles(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	first := e.eng.dns
+	require.NotNil(t, first)
+
+	e.cycle()
+	require.Same(t, first, e.eng.dns)
+
+	e.settings(func(s *store.Settings) { s.Grace = store.Duration(2 * time.Minute) })
+	e.cycle()
+	require.NotSame(t, first, e.eng.dns)
+	require.Equal(t, 2*time.Minute, e.eng.dnsSet.Grace)
 }
 
 func TestDNSSettingsFollowTheSettings(t *testing.T) {

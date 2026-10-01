@@ -14,8 +14,9 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
-// retired publishes x and y on guest 101, then removes the guest, so that
-// both records are due for deletion once the grace has passed.
+// retired publishes x and y on guest 101, then takes them from it, so that
+// both records are due for deletion once the claims and then the records
+// have waited out their grace.
 func retired(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
@@ -24,8 +25,10 @@ func retired(t *testing.T) *env {
 	e.cycle()
 	require.Equal(t, []string{"x.example.com", "y.example.com"}, e.recordNames())
 
-	e.inv.set(snapshot())
+	e.inv.set(snapshot(untagged(guest(101, "web-1"))))
 	e.clock.advance(20 * time.Second)
+	e.cycle()
+	e.clock.advance(61 * time.Second)
 	st := e.cycle()
 	require.Contains(t, actionKinds(st), "delete-record x.example.com held: grace period: 1m0s left")
 	e.clock.advance(61 * time.Second)
@@ -34,9 +37,10 @@ func retired(t *testing.T) *env {
 
 func TestStillUnwantedKeepsANameAnotherGuestPublishes(t *testing.T) {
 	e := retired(t)
-	// The cycle sees neither guest; the look right before the deletes finds
-	// another guest that publishes x now.
-	e.inv.enqueue(snapshot(), snapshot(guest(102, "web-2", "x.example.com -> :8080")))
+	// The cycle sees no route for x; the look right before the deletes finds
+	// another guest that publishes it now.
+	idle := untagged(guest(101, "web-1"))
+	e.inv.enqueue(snapshot(idle), snapshot(idle, guest(102, "web-2", "x.example.com -> :8080")))
 	refreshes := e.inv.refreshes()
 
 	e.cycle()
@@ -45,9 +49,33 @@ func TestStillUnwantedKeepsANameAnotherGuestPublishes(t *testing.T) {
 	require.Equal(t, refreshes+2, e.inv.refreshes(), "the second look is taken once per cycle, not once per delete")
 }
 
+func TestStillUnwantedCountsAHostnameAGuestStillNames(t *testing.T) {
+	e := retired(t)
+	// Another guest names x in its Notes, outside a route: a held name.
+	named := guest(102, "web-2")
+	named.Description = "Takes over from x.example.com next week."
+	idle := untagged(guest(101, "web-1"))
+	e.inv.enqueue(snapshot(idle), snapshot(idle, named))
+
+	e.cycle()
+
+	require.Equal(t, []string{"x.example.com"}, e.recordNames(), "a held name is still wanted")
+}
+
+func TestStillUnwantedHoldsTheDeletesWhenTheSecondLookListsNoGuest(t *testing.T) {
+	e := retired(t)
+	e.inv.enqueue(snapshot(untagged(guest(101, "web-1"))), snapshot())
+
+	st := e.cycle()
+
+	require.Equal(t, []string{"x.example.com", "y.example.com"}, e.recordNames())
+	require.True(t, hasProblem(st, "asking the inventory before deleting: the inventory lists no guest any more"))
+}
+
 func TestStillUnwantedHoldsTheDeletesWhenTheSecondLookIsIncomplete(t *testing.T) {
 	e := retired(t)
-	e.inv.enqueue(snapshot(), incomplete("node pve1: network not refreshed: timeout"))
+	idle := untagged(guest(101, "web-1"))
+	e.inv.enqueue(snapshot(idle), incomplete("node pve1: network not refreshed: timeout", idle))
 
 	st := e.cycle()
 
@@ -133,8 +161,10 @@ func TestConfirmedDeletesLiftTheGuardOnce(t *testing.T) {
 	e.cycle()
 	require.Len(t, e.records(), 6)
 
-	e.inv.set(snapshot())
+	e.inv.set(snapshot(untagged(guest(101, "web-1"))))
 	e.clock.advance(20 * time.Second)
+	e.cycle()
+	e.clock.advance(61 * time.Second)
 	e.cycle()
 	e.clock.advance(61 * time.Second)
 	st := e.cycle()

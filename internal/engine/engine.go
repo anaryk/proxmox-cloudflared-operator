@@ -82,8 +82,10 @@ type Engine struct {
 	d       Deps
 	events  *eventLog
 	trigger chan struct{}
-	// after starts the wait between two cycles of Run; tests replace it.
-	after func(time.Duration) (<-chan time.Time, func() bool)
+	// after starts the wait between two cycles of Run, and timeout gives a
+	// call its deadline; tests replace them.
+	after   func(time.Duration) (<-chan time.Time, func() bool)
+	timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	// interval is the poll interval of the last settings read, in
 	// nanoseconds; Run reads it outside the cycle lock.
 	interval atomic.Int64
@@ -105,6 +107,13 @@ type Engine struct {
 	confirmDeletes bool
 	adopt          map[string]bool
 	rolledOut      map[string]int // by tunnel id: the configuration version confirmed on its connectors
+	// vanished are the guests holding a claim that the last complete listing
+	// lacked, and gone those of them the admin confirmed removed.
+	vanished []model.GuestRef
+	gone     map[model.GuestRef]bool
+	// seen are the tunnels of this install seen to exist, by id, so that a
+	// connector is kept until Cloudflare shows its tunnel gone.
+	seen map[string]seenTunnel
 
 	repMu   sync.Mutex
 	reports map[string]credentials.Report // by credential id: the last check in this process
@@ -137,12 +146,15 @@ func New(d Deps) (*Engine, error) {
 		events:    newEventLog(d.LocalDir, d.Log),
 		trigger:   make(chan struct{}, 1),
 		after:     startTimer,
+		timeout:   context.WithTimeout,
 		sem:       make(chan struct{}, 1),
 		clients:   reconcile.Clients{},
 		tokens:    make(map[string]store.Secret),
 		zones:     newZoneCache(),
 		adopt:     make(map[string]bool),
 		rolledOut: make(map[string]int),
+		gone:      make(map[model.GuestRef]bool),
+		seen:      make(map[string]seenTunnel),
 		reports:   make(map[string]credentials.Report),
 		state:     emptyState(),
 	}
@@ -258,6 +270,9 @@ func (e *Engine) writer() (us, stored planner.Writer, err error) {
 	}
 	return e.us, w, nil
 }
+
+// seenTunnel is where a tunnel of this install was seen.
+type seenTunnel struct{ account, name string }
 
 // nodeAddrs is every node address seen since the daemon started, together
 // with the ones saved before. It never shrinks.

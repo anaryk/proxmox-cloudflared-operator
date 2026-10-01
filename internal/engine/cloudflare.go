@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
@@ -25,9 +27,12 @@ func (c *cycleRun) mode() reconcile.Mode {
 }
 
 // reconcileTunnels brings the tunnel of every planned account in line and
-// reports whether the cycle may go on: a stale or foreign writer stops it.
+// reports whether the cycle may go on: a stale or foreign writer stops it. A
+// frozen account is left out: its tunnel is not touched.
 func (c *cycleRun) reconcileTunnels() bool {
-	res := c.e.tunnels.Run(c.ctx, c.plan.Tunnels, c.zones.known, c.mode())
+	plans := slices.DeleteFunc(slices.Clone(c.plan.Tunnels), func(p planner.TunnelPlan) bool { return c.zones.frozen[p.AccountID] })
+	res := c.e.tunnels.Run(c.ctx, plans, c.zones.known, c.mode())
+	c.tunnelVerdict = res.Verdict
 	c.st.Tunnels = res.Tunnels
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
@@ -35,27 +40,28 @@ func (c *cycleRun) reconcileTunnels() bool {
 	return res.Verdict == reconcile.WriterProceed
 }
 
-// reconcileConnectors keeps a connector running for every tunnel of this
-// install that exists, and in enforce mode removes the others when the cycle
-// knows every tunnel. The status of the connectors is read in both modes.
+// reconcileConnectors keeps a connector running for every tunnel the tunnel
+// run found, and in enforce mode removes the connectors of tunnels Cloudflare
+// shows gone. The status of the connectors is read in both modes.
 func (c *cycleRun) reconcileConnectors() {
 	var existing []reconcile.TunnelState
-	unknown := false
 	for _, t := range c.st.Tunnels {
-		unknown = unknown || t.Unknown
 		if t.Exists && t.ID != "" {
 			existing = append(existing, t)
 		}
 	}
+	shown := existing
 	if c.mode() == reconcile.Enforce {
 		for _, t := range existing {
 			c.ensure(t)
 		}
-		c.prune(existing, unknown)
+		others, failed := c.lookUpOthers()
+		c.prune(append(slices.Clone(existing), others...), failed)
 		c.confirmRollouts(existing)
+		shown = append(slices.Clone(existing), others...)
 	}
-	statuses := make([]connector.Status, 0, len(existing))
-	for _, t := range existing {
+	statuses := make([]connector.Status, 0, len(shown))
+	for _, t := range shown {
 		st, err := c.e.d.Connectors.Status(c.ctx, t.ID)
 		if err != nil {
 			c.problem("tunnel %s in account %s: reading the connector status: %v", t.Name, t.AccountID, err)
@@ -64,6 +70,97 @@ func (c *cycleRun) reconcileConnectors() {
 		statuses = append(statuses, st)
 	}
 	c.st.Connectors = statuses
+}
+
+// lookUpOthers looks up, without changing anything, the tunnel of every
+// account of the install that the tunnel run did not report on: the frozen
+// ones and those without a zone. It returns the tunnels found and why a
+// lookup failed.
+func (c *cycleRun) lookUpOthers() (found []reconcile.TunnelState, failed []string) {
+	reported := make(map[string]bool, len(c.st.Tunnels))
+	for _, t := range c.st.Tunnels {
+		reported[t.AccountID] = true
+	}
+	name := planner.TunnelName(c.install.ID)
+	for _, account := range slices.Sorted(maps.Keys(c.zones.accounts)) {
+		if reported[account] {
+			continue
+		}
+		cred := c.zones.accounts[account]
+		api := c.e.clients[cred]
+		if api == nil {
+			failed = append(failed, fmt.Sprintf("looking up the tunnel of account %s failed: no client for credential %s", account, cred))
+			continue
+		}
+		t, ok, err := api.FindTunnel(c.ctx, account, name)
+		switch {
+		case err != nil:
+			failed = append(failed, fmt.Sprintf("looking up the tunnel of account %s failed: %v", account, err))
+		case !ok:
+			c.forgetTunnelsOf(account)
+		default:
+			found = append(found, reconcile.TunnelState{AccountID: account, CredentialID: cred, Name: t.Name, ID: t.ID, Exists: true})
+			if !c.zones.frozen[account] {
+				c.problem("tunnel %s in account %s serves no zone pco sees; the tunnel and its connector are left as they are", t.Name, account)
+			}
+		}
+	}
+	return found, failed
+}
+
+// forgetTunnelsOf forgets the tunnels seen in an account whose tunnel
+// Cloudflare shows absent.
+func (c *cycleRun) forgetTunnelsOf(account string) {
+	maps.DeleteFunc(c.e.seen, func(_ string, t seenTunnel) bool { return t.account == account })
+}
+
+// prune removes the connectors of the tunnels that are gone. The engine keeps
+// the connector of every tunnel it has no proof is gone, so it prunes only
+// when every account the credentials see was looked at and answered: no
+// tunnel is in an unknown state, the account listing of every credential
+// worked in this cycle and every lookup answered. A tunnel seen before in an
+// account that no credential sees any more is kept.
+func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) {
+	var why []string
+	for _, t := range c.st.Tunnels {
+		switch {
+		case t.Unknown:
+			why = append(why, fmt.Sprintf("the tunnel of account %s is in an unknown state", t.AccountID))
+		case !t.Exists:
+			c.forgetTunnelsOf(t.AccountID)
+		}
+	}
+	for _, id := range c.credIDs {
+		if cz := c.e.zones.byCred[id]; cz == nil || !cz.accountsOK {
+			err := "never tried"
+			if cz != nil {
+				err = cz.accountsErr
+			}
+			why = append(why, fmt.Sprintf("listing the accounts of credential %s failed: %s", id, err))
+		}
+	}
+	why = append(why, failed...)
+
+	keep := make([]string, 0, len(existing))
+	for _, t := range existing {
+		keep = append(keep, t.ID)
+		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name}
+	}
+	for _, id := range slices.Sorted(maps.Keys(c.e.seen)) {
+		t := c.e.seen[id]
+		if _, visible := c.zones.accounts[t.account]; !visible {
+			keep = append(keep, id)
+			c.problem("tunnel %s in account %s is not visible through any credential; its connector is kept", t.name, t.account)
+		}
+	}
+	if len(why) > 0 {
+		c.problem("connectors are not pruned in this cycle: %s", strings.Join(why, "; "))
+		return
+	}
+	keep = slices.Compact(slices.Sorted(slices.Values(keep)))
+	if err := c.e.d.Connectors.Prune(c.ctx, keep); err != nil {
+		c.problem("removing the connectors of other tunnels: %v", err)
+	}
 }
 
 // ensure starts the connector of a tunnel with the token it has on disk, or
@@ -84,7 +181,7 @@ func (c *cycleRun) ensure(t reconcile.TunnelState) {
 		token, err = api.TunnelToken(c.ctx, t.AccountID, t.ID)
 		switch {
 		case err != nil:
-			c.problem("tunnel %s in account %s: fetching its token: %s", t.Name, t.AccountID, redact(err.Error(), token))
+			c.problem("tunnel %s in account %s: fetching its token: %v", t.Name, t.AccountID, err)
 			return
 		case strings.TrimSpace(token) == "":
 			c.problem("tunnel %s in account %s: Cloudflare returned an empty token", t.Name, t.AccountID)
@@ -102,25 +199,6 @@ func redact(msg, token string) string {
 		return msg
 	}
 	return strings.ReplaceAll(msg, token, "[redacted]")
-}
-
-// prune removes the connectors of tunnels that are not ours any more. It runs
-// only when the tunnel run looked at the tunnel of every account the zones
-// name and found each one or found it absent: Cloudflare held nothing back and
-// the writer let the run proceed.
-func (c *cycleRun) prune(existing []reconcile.TunnelState, unknown bool) {
-	if unknown {
-		c.e.d.Log.Debug().Msg("not pruning connectors: a tunnel is in an unknown state")
-		return
-	}
-	keep := make([]string, 0, len(existing))
-	for _, t := range existing {
-		keep = append(keep, t.ID)
-	}
-	slices.Sort(keep)
-	if err := c.e.d.Connectors.Prune(c.ctx, keep); err != nil {
-		c.problem("removing the connectors of other tunnels: %v", err)
-	}
 }
 
 // confirmRollouts checks, for each tunnel whose configuration was read back
@@ -158,9 +236,13 @@ func (c *cycleRun) confirmRollouts(existing []reconcile.TunnelState) {
 func (c *cycleRun) reconcileDNS() {
 	mode := c.mode()
 	in := reconcile.DNSInput{
-		Records:       c.plan.Records,
+		Records: slices.DeleteFunc(slices.Clone(c.plan.Records), func(rp planner.RecordPlan) bool {
+			return c.zones.frozen[rp.AccountID]
+		}),
 		Zones:         c.zones.dns,
 		Tunnels:       c.st.Tunnels,
+		TunnelVerdict: c.tunnelVerdict,
+		Keep:          c.kept(),
 		InventoryOK:   c.snap.Complete && !c.col.PolicyInvalid,
 		StillUnwanted: c.stillUnwanted,
 	}
@@ -181,6 +263,22 @@ func (c *cycleRun) reconcileDNS() {
 		c.st.WriterVerdict = verdictName(res.Verdict)
 	}
 	c.logReplaced(res.Replaced)
+}
+
+// kept are the hostnames claimed or published in this cycle that have no
+// record plan, as their rule answers 503: their records are left alone.
+func (c *cycleRun) kept() map[string]bool {
+	keep := make(map[string]bool, len(c.claims.Claims))
+	for host := range c.claims.Claims {
+		keep[host] = true
+	}
+	for _, st := range c.plan.Routes {
+		keep[st.Hostname] = true
+	}
+	for _, rp := range c.plan.Records {
+		delete(keep, rp.Name)
+	}
+	return keep
 }
 
 func (c *cycleRun) dnsSettings() reconcile.DNSSettings {
@@ -240,11 +338,15 @@ func (c *cycleRun) stillUnwanted(ctx context.Context, name string) (bool, error)
 }
 
 func (c *cycleRun) wantedNow(ctx context.Context) (map[string]bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	ctx, cancel := c.e.timeout(ctx, refreshTimeout)
 	defer cancel()
 	snap := c.e.d.Inventory.Refresh(ctx)
-	if !snap.Complete {
+	switch {
+	case !snap.Complete:
 		return nil, fmt.Errorf("the inventory is incomplete: %s", strings.Join(snap.Problems, "; "))
+	case len(snap.Guests) == 0 && len(c.snap.Guests) > 0:
+		// An empty answer is more likely a failure than every guest gone.
+		return nil, errors.New("the inventory lists no guest any more")
 	}
 	col := c.collectFrom(snap)
 	if col.PolicyInvalid {

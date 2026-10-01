@@ -181,6 +181,7 @@ type fakeConnectors struct {
 	pruned    [][]string
 	onEnsure  func()
 	ensureErr func(token string) error
+	notReady  map[string]bool // tunnels whose connector is not ready
 }
 
 func (f *fakeConnectors) Ensure(_ context.Context, id, token string) error {
@@ -207,7 +208,23 @@ func (f *fakeConnectors) Prune(_ context.Context, keep []string) error {
 }
 
 func (f *fakeConnectors) Status(_ context.Context, id string) (connector.Status, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.notReady[id] {
+		return connector.Status{TunnelID: id, Active: true, MetricsAddr: "127.0.0.1:20300"}, nil
+	}
 	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"}, nil
+}
+
+// lastPrune returns the keep list of the last prune, and false when there was
+// none.
+func (f *fakeConnectors) lastPrune() ([]string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.pruned) == 0 {
+		return nil, false
+	}
+	return slices.Clone(f.pruned[len(f.pruned)-1]), true
 }
 
 func (f *fakeConnectors) Token(id string) (string, bool, error) {
@@ -248,6 +265,76 @@ func (h hookedAPI) CreateTunnel(ctx context.Context, account, name string) (cfap
 func (h hookedAPI) Records(ctx context.Context, zoneID string, f cfapi.RecordFilter) ([]cfapi.Record, error) {
 	h.before("Records")
 	return h.API.Records(ctx, zoneID, f)
+}
+
+// zoneView changes what Zones lists of the API it wraps: zones it hides are
+// left out, and a zone can be given another status.
+type zoneView struct {
+	cfapi.API
+	mu     *sync.Mutex
+	hidden map[string]bool   // by zone id
+	status map[string]string // by zone id
+}
+
+func newZoneView(api cfapi.API) zoneView {
+	return zoneView{API: api, mu: &sync.Mutex{}, hidden: map[string]bool{}, status: map[string]string{}}
+}
+
+func (z zoneView) Zones(ctx context.Context) ([]cfapi.Zone, error) {
+	zones, err := z.API.Zones(ctx)
+	if err != nil {
+		return nil, err
+	}
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	var out []cfapi.Zone
+	for _, zone := range zones {
+		if z.hidden[zone.ID] {
+			continue
+		}
+		if st, ok := z.status[zone.ID]; ok {
+			zone.Status = st
+		}
+		out = append(out, zone)
+	}
+	return out, nil
+}
+
+func (z zoneView) hide(id string, hidden bool) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.hidden[id] = hidden
+}
+
+func (z zoneView) setStatus(id, status string) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.status[id] = status
+}
+
+// timeouts records the deadlines the engine asks for, by length.
+type timeouts struct {
+	mu   sync.Mutex
+	seen []time.Duration
+}
+
+func (r *timeouts) withTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	r.mu.Lock()
+	r.seen = append(r.seen, d)
+	r.mu.Unlock()
+	return context.WithTimeout(ctx, d)
+}
+
+func (r *timeouts) count(d time.Duration) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, x := range r.seen {
+		if x == d {
+			n++
+		}
+	}
+	return n
 }
 
 // env is an engine over a real store in a temporary directory, the fake
@@ -438,7 +525,25 @@ func guest(vmid int, name string, routes ...string) model.Guest {
 	}
 }
 
+// many returns n tagged guests, from qemu/101 on, each publishing
+// g<vmid>.example.com.
+func many(n int) []model.Guest {
+	out := make([]model.Guest, n)
+	for i := range out {
+		vmid := 101 + i
+		out[i] = guest(vmid, fmt.Sprintf("vm-%d", vmid), fmt.Sprintf("g%d.example.com -> :8080", vmid))
+	}
+	return out
+}
+
+// untagged is a guest that lost the gate tag: Proxmox still lists it.
+func untagged(g model.Guest) model.Guest {
+	g.Tags = nil
+	return g
+}
+
 func snapshot(guests ...model.Guest) inventory.Snapshot {
+	guests = slices.Clone(guests)
 	slices.SortFunc(guests, func(a, b model.Guest) int { return a.Ref.VMID - b.Ref.VMID })
 	return inventory.Snapshot{
 		Guests:   guests,
@@ -463,8 +568,9 @@ func route(st State, host string) RouteView {
 	return RouteView{}
 }
 
-func hostRule(host, service string) planner.IngressRule {
-	return planner.IngressRule{Hostname: host, Service: service}
+// hostRule is the rule that serves host on the guest's port 8080.
+func hostRule(host string) planner.IngressRule {
+	return planner.IngressRule{Hostname: host, Service: "http://10.0.0.11:8080"}
 }
 
 func withSentinel(rules ...planner.IngressRule) []planner.IngressRule {
@@ -484,4 +590,21 @@ func actionKinds(st State) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// addCredential stores a credential whose token NewClient answers with api,
+// or with the fake when api is nil.
+func (e *env) addCredential(id, token string, api cfapi.API) {
+	e.t.Helper()
+	if api != nil {
+		e.useAPI(token, api)
+	}
+	require.NoError(e.t, e.store.SaveCredential(store.Credential{ID: id, Label: "label-" + id, Kind: "scoped", Token: store.NewSecret(token), AddedAt: t0}))
+}
+
+// callsSince returns the calls made to the fake after the first n.
+func (e *env) callsSince(n int) []string { return e.cf.Calls()[n:] }
+
+func hasProblem(st State, part string) bool {
+	return slices.ContainsFunc(st.Problems, func(p string) bool { return strings.Contains(p, part) })
 }

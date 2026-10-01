@@ -32,6 +32,15 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 	if confirmDeletes {
 		e.confirmDeletes = true
 		e.adminEvent("", "the deletes held by the mass delete guard are confirmed for the next run")
+		for _, ref := range e.vanished {
+			e.gone[ref] = true
+		}
+		if len(e.vanished) > 0 {
+			e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed", len(e.vanished)))
+		}
+		for _, name := range e.zones.confirmGone() {
+			e.adminEvent(name, "the zone that left its listing is confirmed gone")
+		}
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -54,13 +55,15 @@ type cycleRun struct {
 	col       planner.Collected
 	claims    planner.ClaimResult
 	results   map[string]resolve.Result // of the winners, by hostname
+	credIDs   []string                  // of the stored credentials, sorted
 	zones     zoneSet
 	plan      planner.Plan
 
 	// cfHold says that nothing is changed at Cloudflare or on the
 	// connectors in this cycle; the problems say why.
-	cfHold  bool
-	recheck recheck
+	cfHold        bool
+	recheck       recheck
+	tunnelVerdict reconcile.WriterVerdict
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -181,7 +184,7 @@ func (c *cycleRun) readWriter() {
 // to hold. Everything it needs from the store is read before anything is
 // saved, so that a hold changes nothing on disk.
 func (c *cycleRun) inspect() bool {
-	if !c.refresh() || !c.collect() || !c.load() {
+	if !c.refresh() || !c.collect() || !c.load() || !c.guardVanished() {
 		return false
 	}
 	c.settleClaims()
@@ -189,7 +192,7 @@ func (c *cycleRun) inspect() bool {
 }
 
 func (c *cycleRun) refresh() bool {
-	ctx, cancel := context.WithTimeout(c.ctx, refreshTimeout)
+	ctx, cancel := c.e.timeout(c.ctx, refreshTimeout)
 	defer cancel()
 	c.snap = c.e.d.Inventory.Refresh(ctx)
 	c.st.Complete = c.snap.Complete
@@ -261,9 +264,11 @@ func (c *cycleRun) collectFrom(snap inventory.Snapshot) planner.Collected {
 	return col
 }
 
-// admit drops the routes and held names of guests whose identity is not
-// approved, with one issue per guest. Manual routes are the admin's own and
-// pass.
+// admit takes the routes from guests whose identity is not approved, with
+// one issue per guest, and keeps their hostnames as held names: a guest that
+// waits for approval keeps its claims, served by nobody, as a guest whose
+// entry is broken does. Manual routes are the admin's own and pass. An empty
+// identity is never approved.
 func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]string) planner.Collected {
 	waiting := make(map[model.GuestRef]bool)
 	approved := func(owner string) bool {
@@ -278,8 +283,19 @@ func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]
 		waiting[ref] = true
 		return false
 	}
-	col.Routes = slices.DeleteFunc(slices.Clone(col.Routes), func(rt model.Route) bool { return !approved(rt.Owner()) })
-	col.Held = slices.DeleteFunc(slices.Clone(col.Held), func(h planner.HeldName) bool { return !approved(h.Owner) })
+	routes := make([]model.Route, 0, len(col.Routes))
+	held := slices.Clone(col.Held)
+	for _, rt := range col.Routes {
+		if approved(rt.Owner()) {
+			routes = append(routes, rt)
+			continue
+		}
+		held = append(held, planner.HeldName{Hostname: rt.Hostname, Owner: rt.Owner()})
+	}
+	slices.SortFunc(held, func(a, b planner.HeldName) int {
+		return cmp.Or(strings.Compare(a.Hostname, b.Hostname), model.CompareOwners(a.Owner, b.Owner))
+	})
+	col.Routes, col.Held = routes, slices.Compact(held)
 	issues := slices.Clone(col.Issues)
 	for ref := range waiting {
 		issues = append(issues, planner.Issue{Guest: ref, Msg: issueWaitingApproval})
@@ -396,7 +412,7 @@ func (c *cycleRun) resolveAll(stored map[string]resolve.Binding, deny resolve.De
 		started++
 		go func() {
 			defer func() { <-slots; done <- struct{}{} }()
-			ctx, cancel := context.WithTimeout(c.ctx, resolveTimeout)
+			ctx, cancel := c.e.timeout(c.ctx, resolveTimeout)
 			defer cancel()
 			out[i] = c.e.d.Resolver.Resolve(ctx, rt, c.snap, prev, deny)
 		}()
@@ -467,6 +483,7 @@ func (c *cycleRun) syncCredentials() bool {
 		return true
 	}
 	c.refreshZones(ids)
+	c.credIDs = ids
 	c.zones = c.e.zones.set(ids, c.settings.ZonePins)
 	c.st.Problems = append(c.st.Problems, c.zones.problems...)
 	if !c.zones.ready {
@@ -534,4 +551,70 @@ func (c *cycleRun) goOn(where string) bool {
 		return false
 	}
 	return true
+}
+
+// Vanish guard: how many of the guests that hold a hostname may drop out of
+// the listing at once before the cycle holds for the admin's confirmation.
+const (
+	vanishMax      = 5
+	vanishShare    = 0.30
+	vanishExamples = 5
+)
+
+// guardVanished holds the cycle when the guests that hold a claim drop out of
+// a complete listing in numbers that look like a failure rather than their
+// removal: Proxmox lists no guest at all, or more than vanishMax of them and
+// more than vanishShare are gone. A guest that only lost its tag or its route
+// is still listed. Guests the admin confirmed gone do not count until they
+// are listed again.
+func (c *cycleRun) guardVanished() bool {
+	listed := make(map[model.GuestRef]bool, len(c.snap.Guests))
+	for _, g := range c.snap.Guests {
+		listed[g.Ref] = true
+	}
+	maps.DeleteFunc(c.e.gone, func(ref model.GuestRef, _ bool) bool { return listed[ref] })
+
+	holders := make(map[model.GuestRef]bool)
+	for _, claim := range c.stored {
+		if ref, err := model.ParseGuestRef(claim.Owner); err == nil {
+			holders[ref] = true
+		}
+	}
+	var vanished []model.GuestRef
+	for ref := range holders {
+		if !listed[ref] && !c.e.gone[ref] {
+			vanished = append(vanished, ref)
+		}
+	}
+	slices.SortFunc(vanished, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
+	c.e.vanished = vanished
+
+	switch {
+	case len(vanished) == 0:
+		return true
+	case len(c.snap.Guests) == 0:
+		c.problem("Proxmox lists no guest at all, but %d guests hold a hostname (%s); nothing is changed: "+
+			"check the privileges of the Proxmox API token, or run pco apply --confirm-deletes if they were removed on purpose",
+			len(vanished), examples(vanished))
+		return false
+	case len(vanished) > vanishMax && float64(len(vanished)) > vanishShare*float64(len(holders)):
+		c.problem("%d of %d guests that hold a hostname are no longer listed by Proxmox (%s); nothing is changed "+
+			"until they are listed again, or run pco apply --confirm-deletes if they were removed on purpose",
+			len(vanished), len(holders), examples(vanished))
+		return false
+	}
+	return true
+}
+
+// examples names the first few guests, and how many more there are.
+func examples(refs []model.GuestRef) string {
+	names := make([]string, 0, vanishExamples)
+	for _, ref := range refs[:min(len(refs), vanishExamples)] {
+		names = append(names, ref.String())
+	}
+	out := strings.Join(names, ", ")
+	if n := len(refs) - vanishExamples; n > 0 {
+		out += fmt.Sprintf(" and %d more", n)
+	}
+	return out
 }

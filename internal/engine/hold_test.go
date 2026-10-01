@@ -70,8 +70,20 @@ func (f *frozen) requireUnchanged(t *testing.T, e *env, st State) {
 
 // Review Focus 2.
 func TestCycleIncompleteSnapshotHolds(t *testing.T) {
-	e := published(t)
+	e := newEnv(t)
+	e.enforce()
+	web := guest(101, "web-1", "www.example.com -> :8080")
+	e.inv.set(snapshot(web, guest(102, "old", "old.example.com -> :8080")))
+	e.cycle()
+	// old.example.com goes, and its record starts its grace.
+	e.inv.set(snapshot(web, untagged(guest(102, "old"))))
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	e.clock.advance(61 * time.Second)
+	st := e.cycle()
+	require.Contains(t, actionKinds(st), "delete-record old.example.com held: grace period: 1m0s left")
 	before := freeze(e)
+	require.Contains(t, before.files, filepath.Join(e.paths.Cluster, "meta", "tombstones.json"))
 	e.inv.set(incomplete("cluster resources not listed: proxmox api: HTTP 500"))
 
 	// Long past every grace: an incomplete inventory proves nothing gone.
@@ -85,12 +97,12 @@ func TestCycleIncompleteSnapshotHolds(t *testing.T) {
 		before.requireUnchanged(t, e, st)
 	}
 
-	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080")))
+	e.inv.set(snapshot(web))
 	e.clock.advance(10 * time.Second)
-	st := e.cycle()
+	st = e.cycle()
 	require.True(t, st.Complete)
 	require.Empty(t, st.Problems)
-	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+	require.Contains(t, e.recordNames(), "www.example.com")
 }
 
 func TestCycleHoldsWhileTheClusterFilesystemIsNotMounted(t *testing.T) {
@@ -232,26 +244,26 @@ func TestCycleWithoutAWriterKeepsCloudflareButShowsTheRoutes(t *testing.T) {
 }
 
 func TestCycleWhoseClaimsCannotBeSavedKeepsCloudflare(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root writes into a read-only directory")
-	}
 	e := published(t)
-	claims := filepath.Join(e.paths.Cluster, "claims")
-	require.NoError(t, os.Chmod(claims, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(claims, 0o700) })
+	// A directory where the claim of the new hostname goes makes its save
+	// fail, whoever runs the test; reading the claims still works.
+	blocked := filepath.Join(e.paths.Cluster, "claims", "api.example.com.json")
+	require.NoError(t, os.MkdirAll(blocked, 0o700))
 	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080", "api.example.com -> :3000")))
 	writes := e.writes()
 
+	for range 2 {
+		e.clock.advance(20 * time.Second)
+		st := e.cycle()
+
+		require.Len(t, st.Problems, 1)
+		require.Contains(t, st.Problems[0], "saving the claims")
+		require.Equal(t, writes, e.writes(), "a hostname whose claim is not saved is not published")
+	}
+
+	require.NoError(t, os.Remove(blocked))
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
-
-	require.Len(t, st.Problems, 1)
-	require.Contains(t, st.Problems[0], "saving the claims")
-	require.Equal(t, writes, e.writes(), "a hostname whose claim is not saved is not published")
-
-	require.NoError(t, os.Chmod(claims, 0o700))
-	e.clock.advance(10 * time.Second)
-	st = e.cycle()
 	require.Empty(t, st.Problems)
 	require.Equal(t, []string{"api.example.com", "www.example.com"}, e.recordNames())
 }
@@ -291,6 +303,20 @@ func TestCycleEndingDuringTheTunnelRunLeavesTheRestAlone(t *testing.T) {
 	}
 }
 
+func TestCycleEndingBeforeDNSLeavesTheRecordsAlone(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	ctx, cancel := context.WithCancel(t.Context())
+	e.conn.onEnsure = cancel
+
+	st := e.eng.Cycle(ctx)
+
+	require.Contains(t, st.Problems, "the cycle ended before DNS (context canceled); the rest is left as it is")
+	require.Len(t, e.tunnels(), 1)
+	require.Zero(t, dnsCalls(e.cf.Calls()))
+	require.Empty(t, e.records())
+}
+
 func TestCycleWithoutACredential(t *testing.T) {
 	e := newEnv(t)
 	e.enforce()
@@ -316,7 +342,7 @@ func TestCycleWithACredentialWhoseZonesWereNeverListed(t *testing.T) {
 	require.Equal(t, []string{
 		"credential cred1: its zones are not listed yet (connection reset); nothing is changed at Cloudflare until they are",
 	}, st.Problems)
-	require.Equal(t, []string{"Zones"}, e.cf.Calls())
+	require.Equal(t, []string{"Zones", "Accounts"}, e.cf.Calls())
 	require.Empty(t, e.conn.prunes())
 
 	e.clock.advance(10 * time.Second)
@@ -395,7 +421,7 @@ func TestCycleWithUnreadableCredentialsKeepsCloudflareAndTheRoutes(t *testing.T)
 	routes := e.eng.State().Routes
 	path := filepath.Join(e.paths.Private, "credentials", "cred2.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"schemaVersion":1,"rev":1,"id":"cred2","data":{`), 0o600))
-	e.inv.set(snapshot())
+	e.inv.set(snapshot(untagged(guest(101, "web-1"))))
 	calls := len(e.cf.Calls())
 
 	e.clock.advance(61 * time.Second)

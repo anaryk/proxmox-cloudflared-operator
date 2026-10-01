@@ -34,6 +34,9 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 		return CredentialView{}, err
 	}
 	cred := store.Credential{Label: label, Kind: credentialKind, Token: store.NewSecret(token), AddedAt: e.d.Now()}
+	if err := e.refuseKnownToken(cred.Token); err != nil {
+		return CredentialView{}, err
+	}
 	api, err := e.d.NewClient(cred)
 	if err != nil {
 		return CredentialView{}, fmt.Errorf("building a Cloudflare client: %w", err)
@@ -174,6 +177,21 @@ func leftBehind(ctx context.Context, api cfapi.API, installID string) ([]string,
 		}
 	}
 	return left, nil
+}
+
+// refuseKnownToken refuses a token a stored credential has already: two
+// credentials of one token see the same zones, which then need a pin.
+func (e *Engine) refuseKnownToken(token store.Secret) error {
+	creds, err := e.d.Store.Credentials()
+	if err != nil {
+		return fmt.Errorf("reading the credentials: %w", err)
+	}
+	for _, c := range creds {
+		if c.Token.Equal(token) {
+			return fmt.Errorf("%w: credential %q has this token already", ErrInvalid, c.Label)
+		}
+	}
+	return nil
 }
 
 // credential returns the stored credential with an id.

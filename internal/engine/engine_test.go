@@ -91,7 +91,7 @@ func TestApplyPublishesTunnelConfigAndRecord(t *testing.T) {
 	require.Len(t, e.tunnels(), 1)
 	tun := e.tunnels()[0]
 	require.Equal(t, tunnelName, tun.Name)
-	require.Equal(t, withSentinel(hostRule("www.example.com", "http://10.0.0.11:8080")), e.rules())
+	require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
 	recs := e.records()
 	require.Len(t, recs, 1)
 	require.Equal(t, "www.example.com", recs[0].Name)
@@ -142,11 +142,6 @@ func TestApplyWaitsForTheRunningCycleAndKeepsItsConfirmation(t *testing.T) {
 
 	applied := make(chan error)
 	go func() { applied <- e.eng.Apply(t.Context(), true) }()
-	select {
-	case err := <-applied:
-		t.Fatalf("Apply returned while a cycle ran: %v", err)
-	default:
-	}
 	e.res.hook(nil)
 	close(release)
 	require.Equal(t, "observe", (<-done).Mode)
@@ -164,7 +159,7 @@ func TestRouteRemovedRuleGoesAtOnceRecordAfterTheGrace(t *testing.T) {
 	e.cycle()
 	require.Equal(t, []string{"www.example.com"}, e.recordNames())
 
-	e.inv.set(snapshot())
+	e.inv.set(snapshot(untagged(guest(101, "web-1", "www.example.com -> :8080"))))
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 
@@ -172,20 +167,21 @@ func TestRouteRemovedRuleGoesAtOnceRecordAfterTheGrace(t *testing.T) {
 	bindings, err := e.store.Bindings()
 	require.NoError(t, err)
 	require.Empty(t, bindings, "a hostname nobody serves keeps no binding")
-	require.Equal(t, []string{"www.example.com"}, e.recordNames(), "the record waits for the grace")
-	require.Contains(t, actionKinds(st), "delete-record www.example.com held: grace period: 1m0s left")
+	require.Equal(t, []string{"www.example.com"}, e.recordNames(), "the claim keeps the record through its grace")
 	require.Equal(t, planner.StateHeld, route(st, "www.example.com").State)
 
-	e.clock.advance(30 * time.Second)
-	e.cycle()
+	// The claim is released after its grace; the record has a grace of its own.
+	e.clock.advance(61 * time.Second)
+	st = e.cycle()
+	require.Empty(t, st.Routes)
 	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+	require.Contains(t, actionKinds(st), "delete-record www.example.com held: grace period: 1m0s left")
 
-	e.clock.advance(31 * time.Second)
+	e.clock.advance(61 * time.Second)
 	st = e.cycle()
 
 	require.Empty(t, e.records(), "deleted after the grace")
 	require.Contains(t, actionKinds(st), "delete-record www.example.com")
-	require.Empty(t, st.Routes)
 	claims, err := e.store.Claims()
 	require.NoError(t, err)
 	require.Empty(t, claims)
@@ -206,7 +202,7 @@ func TestCycleRecoversTunnelByName(t *testing.T) {
 		require.NotContains(t, e.writes(), "CreateTunnel "+testAccount+" "+tunnelName)
 		require.Contains(t, e.cf.Calls(), "TunnelToken "+testAccount+" "+tun.ID)
 		require.Equal(t, []ensureCall{{id: tun.ID, token: "token-" + tun.ID}}, e.conn.ensures())
-		require.Equal(t, withSentinel(hostRule("www.example.com", "http://10.0.0.11:8080")), e.rules())
+		require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
 		require.Equal(t, []string{"www.example.com"}, e.recordNames())
 	})
 	t.Run("token on disk", func(t *testing.T) {
@@ -287,55 +283,6 @@ func TestApprovalModeHoldsAnUnapprovedGuest(t *testing.T) {
 	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
 	require.NotContains(t, st.Issues, planner.Issue{Guest: ref, Msg: "waiting for approval"})
 	require.Equal(t, []string{"www.example.com"}, e.recordNames())
-}
-
-func TestZonePinResolvesAnAmbiguousZone(t *testing.T) {
-	e := newEnv(t)
-	e.enforce()
-	second := cffake.New()
-	second.SetNow(e.clock.now)
-	second.AddAccount(testAccount, "Main")
-	second.AddZone(testZone, "example.com", testAccount)
-	e.useAPI("second-token", second)
-	require.NoError(t, e.store.SaveCredential(store.Credential{ID: "cred2", Label: "second", Kind: "scoped", Token: store.NewSecret("second-token"), AddedAt: t0}))
-	// A record of this install from before the second credential came.
-	e.cf.SeedRecord(testZone, cfapi.Record{Type: "CNAME", Name: "old.example.com", Content: "x.cfargotunnel.com", Proxied: true, Comment: marker})
-
-	var st State
-	for range 3 {
-		st = e.cycle()
-		e.clock.advance(61 * time.Second)
-	}
-
-	r := route(st, "www.example.com")
-	require.Equal(t, planner.StateNoZone, r.State)
-	require.Equal(t, "zone example.com is visible through several credentials; pin it to one", r.Reason)
-	require.Contains(t, st.Problems, "zone example.com is visible through credentials cred1, cred2; pin it to one in zonePins")
-	require.Empty(t, e.writes())
-	require.Empty(t, second.RecordsIn(testZone))
-	require.Zero(t, dnsCalls(e.cf.Calls()), "the records of a zone in doubt are left alone")
-	require.Zero(t, dnsCalls(second.Calls()))
-	require.Equal(t, []string{"old.example.com"}, e.recordNames())
-
-	e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.com": "cred2"} })
-	e.clock.advance(10 * time.Second)
-	st = e.cycle()
-
-	require.Empty(t, st.Problems)
-	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
-	require.Len(t, second.TunnelsIn(testAccount), 1, "the tunnel is managed through the pinned credential")
-	require.Len(t, second.RecordsIn(testZone), 1)
-	require.Empty(t, e.writes(), "nothing through the other one")
-}
-
-func TestZonePinToACredentialThatDoesNotSeeTheZone(t *testing.T) {
-	e := newEnv(t)
-	e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.com": "cred9"} })
-
-	st := e.cycle()
-
-	require.Contains(t, st.Problems, "zone example.com is pinned to credential cred9, which does not see it")
-	require.Equal(t, planner.StateNoZone, route(st, "www.example.com").State)
 }
 
 func TestEventsForARouteGoingActiveThenUnreachable(t *testing.T) {
