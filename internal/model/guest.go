@@ -29,7 +29,8 @@ func (r GuestRef) String() string {
 	return string(r.Kind) + "/" + strconv.Itoa(r.VMID)
 }
 
-// ParseGuestRef is the inverse of GuestRef.String.
+// ParseGuestRef is the inverse of GuestRef.String. Only the canonical form is
+// accepted, so every guest has exactly one owner string.
 func ParseGuestRef(s string) (GuestRef, error) {
 	kind, id, ok := strings.Cut(s, "/")
 	if !ok {
@@ -40,10 +41,11 @@ func ParseGuestRef(s string) (GuestRef, error) {
 		return GuestRef{}, fmt.Errorf("guest ref %q: unknown kind %q", s, kind)
 	}
 	vmid, err := strconv.ParseUint(id, 10, 31)
-	if err != nil || vmid < 1 {
+	ref := GuestRef{Kind: k, VMID: int(vmid)}
+	if err != nil || vmid < 1 || ref.String() != s {
 		return GuestRef{}, fmt.Errorf("guest ref %q: invalid vmid %q", s, id)
 	}
-	return GuestRef{Kind: k, VMID: int(vmid)}, nil
+	return ref, nil
 }
 
 // NIC is a network interface as configured on the guest.
@@ -79,11 +81,10 @@ type Guest struct {
 	Reported    []ReportedAddr `json:"reported,omitempty"`
 }
 
-// HasTag reports whether the guest carries tag, ignoring case.
+// HasTag reports whether the guest carries tag. Tags are compared exactly, as
+// Proxmox compares registered tags.
 func (g Guest) HasTag(tag string) bool {
-	return slices.ContainsFunc(g.Tags, func(t string) bool {
-		return strings.EqualFold(t, tag)
-	})
+	return slices.Contains(g.Tags, tag)
 }
 
 // NIC returns the interface with the given index.

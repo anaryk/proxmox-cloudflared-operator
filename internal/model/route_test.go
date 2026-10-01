@@ -30,6 +30,21 @@ func TestRouteOwner(t *testing.T) {
 			route: Route{Source: SourceManual, ManualID: "grafana"},
 			want:  "manual/grafana",
 		},
+		{
+			name:  "manual route that names a guest",
+			route: Route{Source: SourceManual, ManualID: "grafana", Guest: &GuestRef{Kind: KindQEMU, VMID: 101}},
+			want:  "manual/grafana",
+		},
+		{
+			name:  "manual id wins over a guest",
+			route: Route{Source: SourceAnnotation, ManualID: "grafana", Guest: &GuestRef{Kind: KindLXC, VMID: 200}},
+			want:  "manual/grafana",
+		},
+		{
+			name:  "manual source without an id",
+			route: Route{Source: SourceManual, Guest: &GuestRef{Kind: KindQEMU, VMID: 101}},
+			want:  "manual/",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,6 +74,15 @@ func TestCompareOwnersSign(t *testing.T) {
 		{"manual after guest", "manual/a", "lxc/5", 1},
 		{"manual ids lexically", "manual/a", "manual/b", -1},
 		{"equal manual", "manual/a", "manual/a", 0},
+		{"equal lxc", "lxc/5", "lxc/5", 0},
+		{"invalid after guest", "bogus", "qemu/1", 1},
+		{"guest before invalid", "lxc/1", "bogus", -1},
+		{"invalid after manual", "bogus", "manual/a", 1},
+		{"manual before invalid", "manual/z", "bogus", -1},
+		{"non-canonical guest ref is invalid", "qemu/007", "manual/a", 1},
+		{"two invalid owners lexically", "bogus", "qemu/007", -1},
+		{"two invalid owners lexically reversed", "qemu/007", "bogus", 1},
+		{"equal invalid owners", "bogus", "bogus", 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

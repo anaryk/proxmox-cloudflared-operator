@@ -64,7 +64,7 @@ func TestCollectTagGate(t *testing.T) {
 		want     []string
 	}{
 		{"tagged", tagged(model.KindQEMU, 101, notes), Settings{}, []string{"app.example.com qemu/101"}},
-		{"tag in another case", upperTag, Settings{}, []string{"app.example.com qemu/101"}},
+		{"tag in another case does not pass the gate", upperTag, Settings{}, nil},
 		{"untagged", untagged, Settings{}, nil},
 		{"template", template, Settings{}, nil},
 		{"template without notes raises no issue", templateNoNotes, Settings{}, nil},

@@ -41,6 +41,13 @@ func TestParseGuestRefRejects(t *testing.T) {
 		{"missing vmid", "qemu/"},
 		{"missing kind", "/101"},
 		{"extra segment", "qemu/1/2"},
+		{"leading zeros", "qemu/007"},
+		{"plus sign", "qemu/+7"},
+		{"trailing space", "qemu/7 "},
+		{"leading space", " qemu/7"},
+		{"space before the vmid", "qemu/ 7"},
+		{"upper case kind", "QEMU/7"},
+		{"vmid above the range", "qemu/2147483648"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -89,10 +96,16 @@ func TestNormalizeMACRejects(t *testing.T) {
 
 func TestGuestHasTag(t *testing.T) {
 	g := Guest{Tags: []string{"prod", "cf-tunnel"}}
-	require.True(t, g.HasTag("CF-Tunnel"))
+	require.True(t, g.HasTag("cf-tunnel"))
 	require.True(t, g.HasTag("prod"))
 	require.False(t, g.HasTag("dev"))
 	require.False(t, Guest{}.HasTag("prod"))
+}
+
+func TestGuestHasTagIsCaseSensitive(t *testing.T) {
+	require.False(t, Guest{Tags: []string{"cf-tunnel"}}.HasTag("CF-Tunnel"))
+	require.False(t, Guest{Tags: []string{"CF-Tunnel"}}.HasTag("cf-tunnel"))
+	require.True(t, Guest{Tags: []string{"CF-Tunnel"}}.HasTag("CF-Tunnel"))
 }
 
 func TestGuestNIC(t *testing.T) {

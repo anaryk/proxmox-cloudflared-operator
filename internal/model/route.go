@@ -49,9 +49,12 @@ type Route struct {
 
 const manualPrefix = "manual/"
 
-// Owner identifies who claims the hostname: "qemu/101", "lxc/200" or "manual/<id>".
+// Owner identifies who claims the hostname. An annotation route belongs to its
+// guest ("qemu/101", "lxc/200"). A manual route, that is one with Source
+// manual or a ManualID, belongs to "manual/<id>" even when it names a guest:
+// the admin who wrote it owns it, not whoever controls the guest's Notes.
 func (r Route) Owner() string {
-	if r.Guest != nil {
+	if r.Source != SourceManual && r.ManualID == "" && r.Guest != nil {
 		return r.Guest.String()
 	}
 	return manualPrefix + r.ManualID
