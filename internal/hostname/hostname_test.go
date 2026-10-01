@@ -9,51 +9,69 @@ import (
 )
 
 func TestNormalize(t *testing.T) {
-	ok := []struct{ in, want string }{
-		{"App.Example.COM", "app.example.com"},
-		{"example.com.", "example.com"},
-		{"*.Shop.cz", "*.shop.cz"},
-		{"*.shop.cz.", "*.shop.cz"},
-		{"a-b.example.com", "a-b.example.com"},
-		{"xn--bcher-kva.de", "xn--bcher-kva.de"},
-		{strings.Repeat("a", 63) + ".example.com", strings.Repeat("a", 63) + ".example.com"},
+	ok := []struct{ name, in, want string }{
+		{"mixed case", "App.Example.COM", "app.example.com"},
+		{"trailing dot", "example.com.", "example.com"},
+		{"wildcard", "*.Shop.cz", "*.shop.cz"},
+		{"wildcard trailing dot", "*.shop.cz.", "*.shop.cz"},
+		{"hyphen inside label", "a-b.example.com", "a-b.example.com"},
+		{"punycode", "xn--bcher-kva.de", "xn--bcher-kva.de"},
+		{"63 char label", strings.Repeat("a", 63) + ".example.com", strings.Repeat("a", 63) + ".example.com"},
 	}
 	for _, tt := range ok {
-		t.Run("valid "+tt.in, func(t *testing.T) {
+		t.Run("valid "+tt.name, func(t *testing.T) {
 			got, err := Normalize(tt.in)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
 		})
 	}
 
-	bad := []string{
-		"", ".", "localhost", "a..example.com", "example.com..",
-		"-a.example.com", "a-.example.com", "a_b.example.com",
-		"a.*.example.com", "*", "*.com", "*.com.", "foo.*", "*a.example.com",
-		"exa mple.com", " example.com",
-		strings.Repeat("a", 64) + ".example.com",
-		strings.Repeat("a.", 127) + "com",
-		"bücher.de",
-		"\u212a.example.com", // Kelvin sign: lower-cases to an ASCII k
+	bad := []struct{ name, in string }{
+		{"empty", ""},
+		{"dot only", "."},
+		{"single label", "localhost"},
+		{"empty label", "a..example.com"},
+		{"two trailing dots", "example.com.."},
+		{"leading hyphen", "-a.example.com"},
+		{"trailing hyphen", "a-.example.com"},
+		{"underscore", "a_b.example.com"},
+		{"wildcard in the middle", "a.*.example.com"},
+		{"bare wildcard", "*"},
+		{"wildcard with one label", "*.com"},
+		{"wildcard with one label and dot", "*.com."},
+		{"wildcard last", "foo.*"},
+		{"wildcard prefix in label", "*a.example.com"},
+		{"space inside", "exa mple.com"},
+		{"leading space", " example.com"},
+		{"64 char label", strings.Repeat("a", 64) + ".example.com"},
+		{"too long", strings.Repeat("a.", 127) + "com"},
+		{"non-ascii", "bücher.de"},
+		{"kelvin sign", "\u212a.example.com"}, // lower-cases to an ASCII k
 	}
-	for _, in := range bad {
-		t.Run("invalid "+in, func(t *testing.T) {
-			_, err := Normalize(in)
+	for _, tt := range bad {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			_, err := Normalize(tt.in)
 			require.Error(t, err)
 		})
 	}
 }
 
 func TestNormalizeLengthLimit(t *testing.T) {
+	// Every label is valid, so only the total length decides.
 	label := strings.Repeat("a", 63)
-	atLimit := strings.Join([]string{label, label, label, strings.Repeat("b", 61)}, ".")
-	require.Len(t, atLimit, 253)
+	name := func(last int) string {
+		return strings.Join([]string{label, label, label, strings.Repeat("b", last)}, ".")
+	}
 
+	atLimit := name(61)
+	require.Len(t, atLimit, 253)
 	got, err := Normalize(atLimit)
 	require.NoError(t, err)
 	require.Equal(t, atLimit, got)
 
-	_, err = Normalize("a" + atLimit)
+	overLimit := name(62)
+	require.Len(t, overLimit, 254)
+	_, err = Normalize(overLimit)
 	require.Error(t, err)
 }
 
@@ -107,6 +125,8 @@ func TestCovers(t *testing.T) {
 		{"whole labels only", "*.shop.cz", "notshop.cz", false},
 		{"other zone", "*.shop.cz", "api.shop.com", false},
 		{"exact pattern is not a wildcard", "api.shop.cz", "api.shop.cz", false},
+		{"wildcard host below the pattern", "*.shop.cz", "*.a.shop.cz", true},
+		{"wildcard does not cover itself", "*.shop.cz", "*.shop.cz", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

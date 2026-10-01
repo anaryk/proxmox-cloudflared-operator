@@ -1,8 +1,10 @@
 // Package hostname validates and orders the public hostnames that tunnel
 // ingress rules are built from.
 //
-// Apart from Normalize, every function expects names that already went through
-// Normalize and does not validate them again.
+// Apart from Normalize, every function expects host names that already went
+// through Normalize and does not validate them again. Patterns passed to
+// MatchPattern are not hostnames ("*" and "*.com" are valid patterns); they
+// must be lower case without a trailing dot.
 package hostname
 
 import (
@@ -99,8 +101,9 @@ func Compare(a, b string) int {
 }
 
 // Covers reports whether wildcard pattern "*.x" matches host (any depth below x).
+// A wildcard host such as "*.a.x" is covered, but a wildcard never covers itself.
 func Covers(pattern, host string) bool {
-	if !IsWildcard(pattern) {
+	if !IsWildcard(pattern) || host == pattern {
 		return false
 	}
 	suffix := pattern[1:]
