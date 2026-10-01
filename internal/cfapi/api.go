@@ -46,8 +46,9 @@ type TunnelConfig struct {
 	// Foreign is true when the configuration holds settings pco does not
 	// manage and Ingress therefore does not show: a path on a rule, origin
 	// options other than the ones of IngressRule, or settings outside the
-	// ingress such as warp-routing. Ingress equal to what pco wants does not
-	// make the configuration equal to it while Foreign is set.
+	// ingress such as a top-level originRequest. Ingress equal to what pco wants
+	// does not make the configuration equal to it while Foreign is set.
+	// The read-only warp-routing key, which Cloudflare sets itself, is not counted.
 	Foreign bool
 }
 

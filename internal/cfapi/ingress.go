@@ -84,8 +84,16 @@ func (w wireConfig) tunnelConfig() (TunnelConfig, error) {
 		return TunnelConfig{}, fmt.Errorf("decoding configuration: %w", err)
 	}
 	for key, raw := range parts {
-		if key != "ingress" && !isDefault(raw) {
-			cfg.Foreign = true
+		switch key {
+		case "ingress":
+		case "warp-routing":
+			// Read-only and deprecated: Cloudflare sets it from the routes of
+			// the tunnel and a write cannot clear it, so it says nothing about
+			// what pco manages.
+		default:
+			if !isDefault(raw) {
+				cfg.Foreign = true
+			}
 		}
 	}
 	if isNull(parts["ingress"]) {
@@ -109,6 +117,11 @@ func (w wireConfig) tunnelConfig() (TunnelConfig, error) {
 // decodeRule reads one rule and says whether it carries a field or an origin
 // option that IngressRule has no place for.
 func decodeRule(raw json.RawMessage) (rule planner.IngressRule, foreign bool, err error) {
+	if isNull(raw) {
+		// Decoding null into a rule would leave it empty, and an empty rule is
+		// not what Cloudflare sent.
+		return planner.IngressRule{}, false, fmt.Errorf("%w: ingress rule is null", errUnexpected)
+	}
 	var w wireRule
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &w); err != nil {

@@ -450,7 +450,12 @@ func TestTunnelConfigForeign(t *testing.T) {
 		{"nothing but what pco manages", configBody(2, ruleCaseWires()), false},
 		{"no configuration", `{"version":2,"config":null}`, false},
 		{"empty configuration", `{"version":2,"config":{}}`, false},
+		// Cloudflare sets warp-routing itself, from the routes of the tunnel,
+		// and a write cannot clear it: it must never count as drift.
+		{"warp routing on", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{"enabled":true}}}`, false},
 		{"warp routing off", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{"enabled":false}}}`, false},
+		{"warp routing with anything else", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{"enabled":true,"x":[1]}}}`, false},
+		{"warp routing next to a foreign key", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{"enabled":true},"x":1}}`, true},
 		{"warp routing empty", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{}}}`, false},
 		{"top level origin request empty", `{"version":2,"config":{"ingress":[` + rule + `],"originRequest":{}}}`, false},
 		{"top level origin request of defaults", `{"version":2,"config":{"ingress":[` + rule + `],"originRequest":{"noTLSVerify":false,"connectTimeout":0}}}`, false},
@@ -470,7 +475,6 @@ func TestTunnelConfigForeign(t *testing.T) {
 			`"originRequest":{"httpHostHeader":"h","noHappyEyeballs":true}}]}}`, true},
 		{"rule field of a later rule", `{"version":2,"config":{"ingress":[` + rule + `,{"hostname":"b.example.com","service":"http://10.0.0.6:80","x":1},{"service":"http_status:404"}]}}`, true},
 		{"top level origin request", `{"version":2,"config":{"ingress":[` + rule + `],"originRequest":{"noTLSVerify":true}}}`, true},
-		{"warp routing on", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{"enabled":true}}}`, true},
 		{"unknown top level key", `{"version":2,"config":{"ingress":[` + rule + `],"x":1}}`, true},
 	}
 	for _, tt := range tests {
@@ -505,6 +509,8 @@ func TestTunnelConfigDoesNotFitTheShape(t *testing.T) {
 		"config is a list":          `{"version":2,"config":[]}`,
 		"ingress is an object":      `{"version":2,"config":{"ingress":{}}}`,
 		"rule is a string":          `{"version":2,"config":{"ingress":["x"]}}`,
+		"rule is null":              `{"version":2,"config":{"ingress":[null]}}`,
+		"null among good rules":     `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","service":"http://10.0.0.5:80"},null,{"service":"http_status:404"}]}}`,
 		"origin request is a list":  `{"version":2,"config":{"ingress":[{"service":"x","originRequest":[]}]}}`,
 		"option has the wrong type": `{"version":2,"config":{"ingress":[{"service":"x","originRequest":{"noTLSVerify":"yes"}}]}}`,
 	} {
