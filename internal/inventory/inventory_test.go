@@ -149,17 +149,23 @@ func TestRefreshGateTagsAreComparedExactly(t *testing.T) {
 	require.Empty(t, guestOf(t, snap, ref).Reported)
 }
 
-func TestRefreshWithoutGateTagsWatchesNothing(t *testing.T) {
-	src := newFake()
-	inv, clk := newInventory(src, Options{GateTags: []string{}})
-	inv.Refresh(t.Context())
-	clk.advance(10 * time.Second)
+func TestNewDefaultsGateTags(t *testing.T) {
+	for name, tags := range map[string][]string{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			src := newFake()
+			clk := &testClock{t: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
+			inv := New(src, Options{GateTags: tags}, clk.now, zerolog.Nop())
+			inv.Refresh(t.Context())
+			clk.advance(10 * time.Second)
 
-	inv.Refresh(t.Context())
+			snap := inv.Refresh(t.Context())
 
-	for _, ref := range []model.GuestRef{refWeb, refBatch, refDB, refApp} {
-		require.Equal(t, 1, src.count("config "+ref.String()), ref.String())
-		require.Zero(t, src.count("iface "+ref.String()), ref.String())
+			for _, ref := range []model.GuestRef{refWeb, refBatch, refApp} {
+				require.Equal(t, 2, src.count("config "+ref.String()), "%s carries cf-tunnel", ref)
+			}
+			require.Equal(t, 1, src.count("config "+refDB.String()), "untagged guest comes from the cache")
+			require.NotEmpty(t, guestOf(t, snap, refWeb).Reported)
+		})
 	}
 }
 
@@ -233,7 +239,7 @@ func TestRefreshConfigNotFoundMarksIncomplete(t *testing.T) {
 		snap := inv.Refresh(t.Context())
 
 		require.False(t, snap.Complete)
-		require.Equal(t, []string{"config for qemu/101 not found on pve1; will re-check"}, snap.Problems)
+		require.Equal(t, []string{"config for qemu/101 (web-1) not found on pve1; will re-check"}, snap.Problems)
 		require.Len(t, snap.Guests, 4)
 		require.Equal(t, guestOf(t, first, refWeb), guestOf(t, snap, refWeb))
 
@@ -253,7 +259,7 @@ func TestRefreshConfigNotFoundMarksIncomplete(t *testing.T) {
 		snap := inv.Refresh(t.Context())
 
 		require.False(t, snap.Complete)
-		require.Equal(t, []string{"config for qemu/101 not found on pve1; will re-check"}, snap.Problems)
+		require.Equal(t, []string{"config for qemu/101 (web-1) not found on pve1; will re-check"}, snap.Problems)
 		require.Equal(t, []model.GuestRef{refDB, refApp, refBatch}, refs(snap))
 	})
 
@@ -621,4 +627,70 @@ func TestRefreshSnapshotsShareNothingWithTheInventory(t *testing.T) {
 	require.False(t, again.Complete)
 	require.Equal(t, pristine.Guests, again.Guests, "a returned fallback copy does not feed the next one")
 	require.Equal(t, pristine.Nodes, again.Nodes)
+}
+
+func TestRefreshGoodAt(t *testing.T) {
+	src := newFake()
+	src.configErrs[refWeb] = serverErr()
+	inv, clk := newInventory(src, Options{})
+
+	snap := inv.Refresh(t.Context())
+	require.False(t, snap.Complete)
+	require.True(t, snap.GoodAt.IsZero(), "no refresh has been complete yet")
+	require.Equal(t, clk.t, snap.TakenAt)
+
+	delete(src.configErrs, refWeb)
+	clk.advance(10 * time.Second)
+	good := clk.t
+	snap = inv.Refresh(t.Context())
+	require.True(t, snap.Complete)
+	require.Equal(t, good, snap.GoodAt)
+	require.Equal(t, good, snap.TakenAt)
+
+	src.configErrs[refWeb] = serverErr()
+	clk.advance(10 * time.Second)
+	snap = inv.Refresh(t.Context())
+	require.False(t, snap.Complete)
+	require.Equal(t, good, snap.GoodAt)
+	require.Equal(t, clk.t, snap.TakenAt)
+
+	src.resourcesErr = serverErr()
+	clk.advance(10 * time.Second)
+	snap = inv.Refresh(t.Context())
+	require.False(t, snap.Complete)
+	require.Equal(t, good, snap.GoodAt, "a fallback snapshot says when the last complete one was taken")
+	require.Equal(t, clk.t, snap.TakenAt)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	clk.advance(10 * time.Second)
+	snap = inv.Refresh(ctx)
+	require.Equal(t, good, snap.GoodAt)
+
+	src.resourcesErr = nil
+	delete(src.configErrs, refWeb)
+	clk.advance(10 * time.Second)
+	snap = inv.Refresh(t.Context())
+	require.True(t, snap.Complete)
+	require.Equal(t, clk.t, snap.GoodAt)
+}
+
+func TestRefreshConcurrentCalls(t *testing.T) {
+	src := newFake()
+	inv, _ := newInventory(src, Options{})
+	snaps := make([]Snapshot, 8)
+
+	var wg sync.WaitGroup
+	for k := range snaps {
+		wg.Go(func() {
+			snaps[k] = inv.Refresh(t.Context())
+			scribble(&snaps[k])
+		})
+	}
+	wg.Wait()
+
+	again := inv.Refresh(t.Context())
+	require.True(t, again.Complete)
+	require.Len(t, again.Guests, 4)
+	require.Equal(t, "web-1", guestOf(t, again, refWeb).Name, "no snapshot handed out shares memory with the next one")
 }

@@ -1,4 +1,3 @@
-// Package inventory builds the operator's view of Proxmox guests.
 package inventory
 
 import (
@@ -21,7 +20,9 @@ const maxNICs = 32
 const maxVLAN = 4094
 
 // BuildGuest combines a resource row and its config into a guest. Reported
-// addresses are filled in by the caller.
+// addresses are filled in by the caller. Running is true only for the status
+// running; the refresh keeps the last known state instead for a status that
+// is neither running nor stopped.
 //
 // The NIC list is what the identity check trusts, so anything that does not
 // parse cleanly is dropped rather than interpreted: a malformed NIC is
@@ -35,8 +36,9 @@ const maxVLAN = 4094
 // kind and VMID. The MAC is the one on the lowest-numbered netN key that
 // carries a readable MAC, whether or not that NIC is otherwise valid, so a
 // rename, an added NIC or an edited bridge or tag leaves the identity alone.
-// Adding a NIC at a lower index than the current first one changes a
-// MAC-based identity, which is the case for every container.
+// Adding a NIC at a lower index than the current first one, removing the
+// first NIC or changing its MAC changes a MAC-based identity, which every
+// container has.
 func BuildGuest(res pve.Resource, cfg pve.GuestConfig) (model.Guest, error) {
 	if res.Kind != model.KindQEMU && res.Kind != model.KindLXC {
 		return model.Guest{}, fmt.Errorf("building guest %d: unknown guest kind %q", res.VMID, res.Kind)

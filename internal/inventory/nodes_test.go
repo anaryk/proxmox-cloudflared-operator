@@ -131,12 +131,15 @@ func TestRefreshOfflineNodeServesCachedGuests(t *testing.T) {
 	snap := inv.Refresh(t.Context())
 
 	require.True(t, snap.Complete)
-	require.Equal(t, []string{"node pve2 is offline; using cached data for its guests"}, snap.Problems)
+	require.Equal(t, []string{
+		"node pve2 is offline; using cached data for its guests",
+		"status of 1 guests is unknown; using last known state",
+	}, snap.Problems)
 	require.Len(t, snap.Guests, 4)
 	require.Equal(t, 1, src.count("config "+refDB.String()))
 	require.Equal(t, 1, src.count("config "+refApp.String()))
 	require.Equal(t, 1, src.count("iface "+refApp.String()))
-	require.False(t, guestOf(t, snap, refDB).Running, "the resource row still wins")
+	require.Equal(t, guestOf(t, first, refDB), guestOf(t, snap, refDB), "an unknown status keeps the last known state")
 	require.Equal(t, guestOf(t, first, refApp), guestOf(t, snap, refApp))
 
 	pve2 := snap.Nodes[1]
@@ -174,12 +177,14 @@ func TestRefreshOfflineNodeWithUncachedGuest(t *testing.T) {
 		require.Zero(t, src.count("config "+ref.String()))
 
 		src.setOnline("pve3", true)
+		src.setStatus(ref, "running")
 		clk.advance(10 * time.Second)
 		snap = inv.Refresh(t.Context())
 		require.True(t, snap.Complete)
 		require.Empty(t, snap.Problems)
 		require.Len(t, snap.Guests, 5)
 		require.Equal(t, 1, src.count("config "+ref.String()))
+		require.True(t, guestOf(t, snap, ref).Running)
 	})
 
 	t.Run("other guest is left out quietly", func(t *testing.T) {
@@ -234,10 +239,12 @@ func TestRefreshClusterNodesFailureTreatsEveryNodeAsOnline(t *testing.T) {
 	snap := inv.Refresh(t.Context())
 
 	require.False(t, snap.Complete)
-	require.Len(t, snap.Problems, 1)
+	require.Len(t, snap.Problems, 2)
 	require.Contains(t, snap.Problems[0], "cluster nodes not listed")
+	require.Equal(t, "status of 1 guests is unknown; using last known state", snap.Problems[1])
 	require.Equal(t, 1, src.count("config "+ref.String()), "the config call decides")
 	require.Len(t, snap.Guests, 5)
+	require.False(t, guestOf(t, snap, ref).Running, "never seen running")
 	require.Equal(t, first.Nodes, snap.Nodes)
 	require.Equal(t, 1, src.count("network pve1"))
 }

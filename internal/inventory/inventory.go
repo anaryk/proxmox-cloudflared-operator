@@ -1,3 +1,9 @@
+// Package inventory builds the operator's view of Proxmox guests and nodes.
+//
+// An Inventory runs one Refresh at a time: it may be called from several
+// goroutines, and the calls wait for each other. Every Snapshot it returns is
+// an independent copy that shares no memory with the inventory or with any
+// other snapshot.
 package inventory
 
 import (
@@ -18,6 +24,7 @@ import (
 )
 
 const (
+	defaultGateTag        = "cf-tunnel"
 	defaultFullSweepEvery = 5 * time.Minute
 	defaultReportedTTL    = time.Minute
 	defaultConcurrency    = 4
@@ -51,16 +58,20 @@ type Node struct {
 type Snapshot struct {
 	Guests []model.Guest // sorted by kind, then vmid
 	Nodes  []Node        // sorted by name
-	// Complete is false when the true state could not be learned, so that
-	// absence from the snapshot proves nothing: a call that failed, a config
-	// that could not be read, a watched guest that sits on an offline node and
-	// is not cached. A guest that merely has no agent does not clear it.
+	// Complete is false when absence from the snapshot proves nothing. Only
+	// these clear it: the resource listing failed or listed a guest twice; a
+	// guest config fetch failed or found no config; a guest is of an unknown
+	// kind; the cluster members or the network of a node could not be read; a
+	// watched guest on an offline node has never been cached; the refresh was
+	// cancelled. Failing to read the addresses a guest agent or container
+	// reports does not clear it, and neither does an unknown guest status.
 	Complete bool
 	// Problems says why Complete is false. It also holds notes that leave
-	// Complete alone, such as an offline node or a token without the
-	// guest-agent privilege.
+	// Complete alone, such as an offline node, an unknown guest status or a
+	// token without the guest-agent privilege.
 	Problems []string
 	TakenAt  time.Time // when the refresh ran, also for a failed one
+	GoodAt   time.Time // when the last complete refresh ran; zero until one has
 }
 
 // NodeAddrs returns every IPv4 address configured on any node, sorted and
@@ -96,7 +107,7 @@ func (s Snapshot) Guest(ref model.GuestRef) (model.Guest, bool) {
 
 // Options tunes the refresh. Zero values select the defaults.
 type Options struct {
-	GateTags       []string      // guests carrying one of these are "watched"
+	GateTags       []string      // guests carrying one of these are "watched", default cf-tunnel
 	FullSweepEvery time.Duration // config refresh for unwatched guests, default 5m
 	ReportedTTL    time.Duration // agent / lxc interface cache, default 60s; quick answers without addresses are kept for 15s at most
 	Concurrency    int           // parallel API calls, default 4
@@ -114,15 +125,18 @@ type Inventory struct {
 	// answer must not stall the refresh. Tests shorten it.
 	callTimeout time.Duration
 
-	mu    sync.Mutex // serialises Refresh
-	cache map[model.GuestRef]cacheEntry
-	last  Snapshot
+	mu     sync.Mutex // serialises Refresh
+	cache  map[model.GuestRef]cacheEntry
+	last   Snapshot
+	goodAt time.Time // of the last complete refresh
 }
 
 // cacheEntry is what is remembered about one guest between refreshes.
 type cacheEntry struct {
 	cfg      pve.GuestConfig
 	cfgAt    time.Time
+	running  bool           // last running state that could be read
+	identity string         // of the guest that running describes
 	reported *reportedEntry // nil when nothing is cached
 }
 
@@ -138,6 +152,9 @@ func New(src Source, opts Options, now func() time.Time, log zerolog.Logger) *In
 		opts.Concurrency = defaultConcurrency
 	}
 	opts.GateTags = slices.Clone(opts.GateTags)
+	if len(opts.GateTags) == 0 {
+		opts.GateTags = []string{defaultGateTag}
+	}
 	if now == nil {
 		now = time.Now
 	}
@@ -211,7 +228,10 @@ func (i *Inventory) Refresh(ctx context.Context) Snapshot {
 		}
 	}
 
-	snap := Snapshot{Guests: guests, Nodes: nodes, Complete: r.complete, Problems: r.problems, TakenAt: r.now}
+	if r.complete {
+		i.goodAt = r.now
+	}
+	snap := Snapshot{Guests: guests, Nodes: nodes, Complete: r.complete, Problems: r.problems, TakenAt: r.now, GoodAt: i.goodAt}
 	i.cache = cache
 	i.last = Snapshot{Guests: cloneGuests(guests), Nodes: cloneNodes(nodes)}
 	i.log.Debug().
@@ -236,6 +256,7 @@ func (i *Inventory) previous(r *run, problem string) Snapshot {
 		Complete: false,
 		Problems: []string{problem},
 		TakenAt:  r.now,
+		GoodAt:   i.goodAt,
 	}
 }
 
@@ -336,7 +357,8 @@ type configResult struct {
 // refreshConfigs fetches the configs that are due and combines them with the
 // cached ones. Watched guests are always due; the others on first sight and
 // then once per FullSweepEvery. The current resource row always wins over what
-// the cached config says about name, node, status and tags.
+// the cached config says about name, node, status and tags, except that a
+// status other than running or stopped keeps the last known state.
 func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resource, offline map[string]bool) []tracked {
 	var due []int
 	for j, row := range rows {
@@ -360,6 +382,7 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 
 	ts := make([]tracked, 0, len(rows))
 	held := map[string]bool{}
+	unread := 0
 	for j, row := range rows {
 		isOffline := offline[row.Node]
 		if isOffline {
@@ -374,10 +397,16 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 			r.fail("guest %s: %v", label(row), err)
 			continue
 		}
+		if applyStatus(&guest, row, &entry) {
+			unread++
+		}
 		ts = append(ts, tracked{row: row, watched: i.isWatched(row, entry.cfg), offline: isOffline, entry: entry, guest: guest})
 	}
 	for _, node := range slices.Sorted(maps.Keys(held)) {
 		r.note("node %s is offline; using cached data for its guests", node)
+	}
+	if unread > 0 {
+		r.note("status of %d guests is unknown; using last known state", unread)
 	}
 	i.log.Debug().Int("guests", len(rows)).Int("configCalls", len(due)).Msg("configs refreshed")
 	return ts
@@ -403,7 +432,7 @@ func (i *Inventory) configEntry(r *run, row pve.Resource, res configResult, offl
 		entry.cfg, entry.cfgAt, cached = res.cfg, r.now, true
 	case pve.IsNotFound(res.err):
 		i.log.Debug().Stringer("guest", ref).Str("node", row.Node).Msg("config not found; the guest may have moved")
-		r.fail("config for %s not found on %s; will re-check", ref, row.Node)
+		r.fail("config for %s not found on %s; will re-check", label(row), row.Node)
 	default:
 		i.log.Debug().Stringer("guest", ref).Err(res.err).Msg("reading config failed")
 		r.fail("guest %s: config not refreshed: %v", label(row), res.err)
