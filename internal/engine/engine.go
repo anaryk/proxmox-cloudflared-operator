@@ -1,0 +1,268 @@
+// Package engine runs the reconcile cycle of the daemon. One cycle reads the
+// store and the inventory, decides which owner serves each hostname and on
+// which address, brings the tunnels, the connectors and the DNS records in
+// line, and keeps what it found as a State for the API.
+//
+// Whenever something the cycle needs cannot be read, or cannot be trusted to
+// be complete, the cycle holds: it changes nothing at Cloudflare, nothing on
+// disk and no connector, and says why in State.Problems.
+package engine
+
+import (
+	"context"
+	"errors"
+	"net/netip"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/rs/zerolog"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+const defaultPollInterval = 10 * time.Second
+
+// Inventory is the part of *inventory.Inventory the engine uses.
+type Inventory interface {
+	Refresh(ctx context.Context) inventory.Snapshot
+}
+
+// Resolver is the part of *resolve.Resolver the engine uses. It must be safe
+// for concurrent use.
+type Resolver interface {
+	Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist) resolve.Result
+}
+
+// Connectors is the part of *connector.Manager the engine uses.
+type Connectors interface {
+	Ensure(ctx context.Context, tunnelID, token string) error
+	Prune(ctx context.Context, keep []string) error
+	Status(ctx context.Context, tunnelID string) (connector.Status, error)
+	Token(tunnelID string) (token string, found bool, err error) // the token the connector has on disk
+}
+
+// ClientFactory builds a Cloudflare client for a credential.
+type ClientFactory func(c store.Credential) (cfapi.API, error)
+
+// Deps is what an Engine is built from.
+type Deps struct {
+	Store      *store.Store
+	Inventory  Inventory
+	Resolver   Resolver
+	Connectors Connectors
+	NewClient  ClientFactory
+	Node       string
+	Now        func() time.Time
+	Log        zerolog.Logger
+
+	// LocalDir is the node-local state directory, /var/lib/pco: the events
+	// are appended to events.log in it. Empty keeps them in memory only.
+	LocalDir string
+}
+
+// Errors the admin actions return, for callers that map them to answers.
+var (
+	ErrInvalid  = errors.New("invalid request")
+	ErrNotFound = errors.New("not found")
+	ErrRefused  = errors.New("refused")
+)
+
+// Engine runs reconcile cycles, one at a time. Its methods are safe for
+// concurrent use.
+type Engine struct {
+	d       Deps
+	events  *eventLog
+	trigger chan struct{}
+	// after starts the wait between two cycles of Run; tests replace it.
+	after func(time.Duration) (<-chan time.Time, func() bool)
+	// interval is the poll interval of the last settings read, in
+	// nanoseconds; Run reads it outside the cycle lock.
+	interval atomic.Int64
+
+	// sem is held by the cycle that runs and by every admin action that
+	// changes what a cycle reads. Everything below up to the reports is
+	// guarded by it.
+	sem     chan struct{}
+	clients reconcile.Clients
+	tokens  map[string]store.Secret // the token each client was built with
+	tunnels *reconcile.TunnelReconciler
+	dns     *reconcile.DNSReconciler
+	dnsSet  reconcile.DNSSettings
+	zones   *zoneCache
+	addrs   nodeAddrs
+	// us is the writer identity read at the start of the running cycle; the
+	// writer callback of both reconcilers answers with it.
+	us             planner.Writer
+	confirmDeletes bool
+	adopt          map[string]bool
+	rolledOut      map[string]int // by tunnel id: the configuration version confirmed on its connectors
+
+	repMu   sync.Mutex
+	reports map[string]credentials.Report // by credential id: the last check in this process
+
+	stateMu sync.RWMutex
+	state   State
+}
+
+// New returns an engine. It reads nothing yet: the first cycle does.
+func New(d Deps) (*Engine, error) {
+	switch {
+	case d.Store == nil:
+		return nil, errors.New("engine: no store")
+	case d.Inventory == nil:
+		return nil, errors.New("engine: no inventory")
+	case d.Resolver == nil:
+		return nil, errors.New("engine: no resolver")
+	case d.Connectors == nil:
+		return nil, errors.New("engine: no connector manager")
+	case d.NewClient == nil:
+		return nil, errors.New("engine: no Cloudflare client factory")
+	case d.Node == "":
+		return nil, errors.New("engine: the node name is empty")
+	}
+	if d.Now == nil {
+		d.Now = time.Now
+	}
+	e := &Engine{
+		d:         d,
+		events:    newEventLog(d.LocalDir, d.Log),
+		trigger:   make(chan struct{}, 1),
+		after:     startTimer,
+		sem:       make(chan struct{}, 1),
+		clients:   reconcile.Clients{},
+		tokens:    make(map[string]store.Secret),
+		zones:     newZoneCache(),
+		adopt:     make(map[string]bool),
+		rolledOut: make(map[string]int),
+		reports:   make(map[string]credentials.Report),
+		state:     emptyState(),
+	}
+	e.interval.Store(int64(defaultPollInterval))
+	// The reconciler keeps the time of its last write per tunnel, so it lives
+	// as long as the engine. The DNS reconciler is made by the first cycle
+	// that knows the install and the settings.
+	e.tunnels = reconcile.NewTunnelReconciler(e.clients, e.writer, d.Now, d.Log)
+	return e, nil
+}
+
+func startTimer(d time.Duration) (<-chan time.Time, func() bool) {
+	t := time.NewTimer(d)
+	return t.C, t.Stop
+}
+
+// acquire waits for the cycle lock until ctx ends.
+func (e *Engine) acquire(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case e.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *Engine) release() { <-e.sem }
+
+// Cycle runs one full pass and stores the resulting state. A call waits for a
+// cycle or admin action that is running; when ctx ends first, it runs nothing
+// and returns the last state.
+func (e *Engine) Cycle(ctx context.Context) State {
+	if err := e.acquire(ctx); err != nil {
+		return e.State()
+	}
+	defer e.release()
+
+	c := e.newCycle(ctx)
+	st := c.run()
+	e.publish(st, c.events)
+	e.d.Log.Debug().
+		Str("mode", st.Mode).
+		Bool("complete", st.Complete).
+		Int("routes", len(st.Routes)).
+		Int("actions", len(st.Actions)).
+		Int("problems", len(st.Problems)).
+		Msg("cycle done")
+	return st
+}
+
+// Run cycles on the poll interval until ctx ends; Trigger asks for an early cycle.
+func (e *Engine) Run(ctx context.Context) error {
+	for {
+		e.Cycle(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		wait, stop := e.after(time.Duration(e.interval.Load()))
+		select {
+		case <-ctx.Done():
+			stop()
+			return nil
+		case <-e.trigger:
+			stop()
+		case <-wait:
+		}
+	}
+}
+
+// Trigger asks Run for a cycle now. Requests made while one is pending are
+// merged into it.
+func (e *Engine) Trigger() {
+	select {
+	case e.trigger <- struct{}{}:
+	default:
+	}
+}
+
+// State returns the state of the last cycle.
+func (e *Engine) State() State {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	return e.state.clone()
+}
+
+// Events returns the events kept in memory that happened after since, oldest
+// first.
+func (e *Engine) Events(since time.Time) []Event { return e.events.since(since) }
+
+// publish stores the state of a cycle and records what changed against the
+// one before, after the events the cycle itself reported.
+func (e *Engine) publish(st State, events []Event) {
+	e.stateMu.Lock()
+	prev := e.state
+	e.state = st
+	e.stateMu.Unlock()
+	e.events.add(append(events, changes(prev, st)...)...)
+}
+
+// writer is the callback of both reconcilers: the identity read at the start
+// of the cycle and leader.json as it is stored now, read afresh on every call.
+// The reconcilers run only within a cycle, under the cycle lock.
+func (e *Engine) writer() (us, stored planner.Writer, err error) {
+	w, found, err := e.d.Store.Writer()
+	switch {
+	case err != nil:
+		return e.us, planner.Writer{}, err
+	case !found:
+		return e.us, planner.Writer{}, errors.New("leader.json is missing")
+	}
+	return e.us, w, nil
+}
+
+// nodeAddrs is every node address seen since the daemon started, together
+// with the ones saved before. It never shrinks.
+type nodeAddrs struct {
+	loaded bool
+	dirty  bool // holds an address the store does not have yet
+	list   []netip.Addr
+}

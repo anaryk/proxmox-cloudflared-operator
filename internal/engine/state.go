@@ -1,0 +1,193 @@
+package engine
+
+import (
+	"cmp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
+)
+
+const (
+	modeObserve = "observe"
+	modeEnforce = "enforce"
+
+	verdictOK      = "ok"
+	verdictStale   = "stale"
+	verdictForeign = "foreign"
+)
+
+// RouteView is a route as the plan left it, with what resolution found.
+type RouteView struct {
+	planner.RouteStatus
+	Guest      string                    `json:"guest,omitempty"` // "qemu/101 web-1", empty for URL routes
+	Candidates []resolve.CandidateResult `json:"candidates,omitempty"`
+}
+
+// CredentialView is a stored Cloudflare credential without its token.
+type CredentialView struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"`
+	// Report is the last check run in this process; zero when there was none.
+	Report credentials.Report `json:"report"`
+}
+
+// State is what the last cycle found and did. Every slice is sorted, so that
+// two cycles over the same world give equal states.
+type State struct {
+	At          time.Time               `json:"at"`
+	Mode        string                  `json:"mode"`     // "observe" or "enforce"
+	Complete    bool                    `json:"complete"` // inventory completeness
+	Routes      []RouteView             `json:"routes"`   // by hostname, then owner
+	Issues      []planner.Issue         `json:"issues"`   // by guest, then position
+	Tunnels     []reconcile.TunnelState `json:"tunnels"`  // by account id
+	Connectors  []connector.Status      `json:"connectors"`
+	Credentials []CredentialView        `json:"credentials"`
+	Actions     []reconcile.Action      `json:"actions"` // tunnels by account, then records by zone and name
+	Conflicts   []reconcile.Conflict    `json:"conflicts"`
+	Lost        []string                `json:"lost"`
+	Problems    []string                `json:"problems"`
+	// WriterVerdict is the verdict of the last reconciler run: "ok", "stale"
+	// or "foreign".
+	WriterVerdict string `json:"writerVerdict"`
+}
+
+func emptyState() State {
+	return State{Mode: modeObserve, WriterVerdict: verdictOK}.normalized()
+}
+
+// carried is the start of the next state: what the cycle does not find out
+// again stays as the last cycle left it. Actions and problems are the
+// cycle's own.
+func (s State) carried(at time.Time) State {
+	next := s.clone()
+	next.At = at
+	next.Complete = false
+	next.Actions = nil
+	next.Problems = nil
+	return next
+}
+
+// clone copies the slices of s, so that the copy can be handed out.
+func (s State) clone() State {
+	s.Routes = slices.Clone(s.Routes)
+	s.Issues = slices.Clone(s.Issues)
+	s.Tunnels = slices.Clone(s.Tunnels)
+	s.Connectors = slices.Clone(s.Connectors)
+	s.Credentials = slices.Clone(s.Credentials)
+	s.Actions = slices.Clone(s.Actions)
+	s.Conflicts = slices.Clone(s.Conflicts)
+	s.Lost = slices.Clone(s.Lost)
+	s.Problems = slices.Clone(s.Problems)
+	return s
+}
+
+// normalized sorts what has no order of its own and makes every slice
+// non-nil, so that a state reads the same in JSON whatever led to it.
+func (s State) normalized() State {
+	s.Problems = slices.Compact(slices.Sorted(slices.Values(s.Problems)))
+	s.Lost = slices.Compact(slices.Sorted(slices.Values(s.Lost)))
+	slices.SortStableFunc(s.Tunnels, func(a, b reconcile.TunnelState) int {
+		return cmp.Or(cmp.Compare(a.AccountID, b.AccountID), cmp.Compare(a.ID, b.ID))
+	})
+	slices.SortStableFunc(s.Connectors, func(a, b connector.Status) int { return cmp.Compare(a.TunnelID, b.TunnelID) })
+	slices.SortStableFunc(s.Credentials, func(a, b CredentialView) int { return cmp.Compare(a.ID, b.ID) })
+	s.Routes = nonNil(s.Routes)
+	s.Issues = nonNil(s.Issues)
+	s.Tunnels = nonNil(s.Tunnels)
+	s.Connectors = nonNil(s.Connectors)
+	s.Credentials = nonNil(s.Credentials)
+	s.Actions = nonNil(s.Actions)
+	s.Conflicts = nonNil(s.Conflicts)
+	s.Lost = nonNil(s.Lost)
+	s.Problems = nonNil(s.Problems)
+	return s
+}
+
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
+func modeName(observe bool) string {
+	if observe {
+		return modeObserve
+	}
+	return modeEnforce
+}
+
+func verdictName(v reconcile.WriterVerdict) string {
+	switch v {
+	case reconcile.WriterStale:
+		return verdictStale
+	case reconcile.WriterForeign:
+		return verdictForeign
+	}
+	return verdictOK
+}
+
+// routeViews pairs every route status of the plan with its guest and, for the
+// route that won its hostname, the candidates resolution tried.
+func (c *cycleRun) routeViews() []RouteView {
+	type key struct{ host, owner string }
+	routes := make(map[key]model.Route, len(c.claims.Winners)+len(c.claims.Conflicts))
+	for _, rt := range append(slices.Clone(c.claims.Winners), c.claims.Conflicts...) {
+		routes[key{rt.Hostname, rt.Owner()}] = rt
+	}
+	winner := make(map[string]string, len(c.claims.Winners))
+	for _, rt := range c.claims.Winners {
+		winner[rt.Hostname] = rt.Owner()
+	}
+
+	out := make([]RouteView, 0, len(c.plan.Routes))
+	for _, st := range c.plan.Routes {
+		v := RouteView{RouteStatus: st}
+		rt, ok := routes[key{st.Hostname, st.Owner}]
+		switch {
+		case ok && rt.Guest != nil:
+			v.Guest = c.guestLabel(*rt.Guest)
+		case !ok:
+			// A claim nobody serves: its owner is a guest or a manual route.
+			if ref, err := model.ParseGuestRef(st.Owner); err == nil {
+				v.Guest = c.guestLabel(ref)
+			}
+		}
+		if res, ok := c.results[st.Hostname]; ok && winner[st.Hostname] == st.Owner {
+			v.Candidates = slices.Clone(res.Candidates)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// guestLabel names a guest as "qemu/101 web-1".
+func (c *cycleRun) guestLabel(ref model.GuestRef) string {
+	g, ok := c.snap.Guest(ref)
+	if !ok || strings.TrimSpace(g.Name) == "" {
+		return ref.String()
+	}
+	return ref.String() + " " + g.Name
+}
+
+// credentialViews lists the stored credentials with the last report of each.
+func (e *Engine) credentialViews(ids []credentialInfo) []CredentialView {
+	e.repMu.Lock()
+	defer e.repMu.Unlock()
+	out := make([]CredentialView, 0, len(ids))
+	for _, c := range ids {
+		out = append(out, CredentialView{ID: c.id, Label: c.label, Kind: c.kind, Report: e.reports[c.id]})
+	}
+	return out
+}
+
+// credentialInfo is what a view shows of a stored credential.
+type credentialInfo struct{ id, label, kind string }

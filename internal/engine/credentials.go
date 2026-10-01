@@ -1,0 +1,274 @@
+package engine
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+const credentialKind = "scoped"
+
+// AddCredential checks a token without changing anything at Cloudflare and
+// stores it only when the check finds it usable. The view of a token that is
+// refused carries the report, so that the admin sees what to grant.
+func (e *Engine) AddCredential(ctx context.Context, label, token string) (CredentialView, error) {
+	label, token = strings.TrimSpace(label), strings.TrimSpace(token)
+	switch {
+	case label == "":
+		return CredentialView{}, fmt.Errorf("%w: the label is empty", ErrInvalid)
+	case token == "":
+		return CredentialView{}, fmt.Errorf("%w: the token is empty", ErrInvalid)
+	}
+	install, err := e.installID()
+	if err != nil {
+		return CredentialView{}, err
+	}
+	cred := store.Credential{Label: label, Kind: credentialKind, Token: store.NewSecret(token), AddedAt: e.d.Now()}
+	api, err := e.d.NewClient(cred)
+	if err != nil {
+		return CredentialView{}, fmt.Errorf("building a Cloudflare client: %w", err)
+	}
+	report := e.checker(install).Run(ctx, api, false)
+	if err := ctx.Err(); err != nil {
+		return CredentialView{}, fmt.Errorf("checking the token: %w", err)
+	}
+	view := CredentialView{Label: label, Kind: credentialKind, Report: report}
+	if !report.Usable {
+		return view, fmt.Errorf("%w: the token cannot be used: %s", ErrInvalid, failedChecks(report))
+	}
+
+	if err := e.acquire(ctx); err != nil {
+		return CredentialView{}, err
+	}
+	defer e.Trigger()
+	defer e.release()
+	cred.ID, err = e.newCredentialID()
+	if err != nil {
+		return CredentialView{}, err
+	}
+	if err := e.d.Store.SaveCredential(cred); err != nil {
+		return CredentialView{}, fmt.Errorf("storing the credential: %w", err)
+	}
+	view.ID = cred.ID
+	e.setReport(cred.ID, report)
+	e.zones.due = true
+	e.adminEvent(cred.ID, fmt.Sprintf("credential %q added", label))
+	return view, nil
+}
+
+// CheckCredential checks a stored credential again. A deep check proves the
+// write permissions by creating and deleting probe objects.
+func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (CredentialView, error) {
+	cred, err := e.credential(id)
+	if err != nil {
+		return CredentialView{}, err
+	}
+	install, err := e.installID()
+	if err != nil {
+		return CredentialView{}, err
+	}
+	api, err := e.d.NewClient(cred)
+	if err != nil {
+		return CredentialView{}, fmt.Errorf("building a Cloudflare client: %w", err)
+	}
+	report := e.checker(install).Run(ctx, api, deep)
+	if err := ctx.Err(); err != nil {
+		return CredentialView{}, fmt.Errorf("checking the token: %w", err)
+	}
+	e.setReport(id, report)
+	e.Trigger()
+	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Report: report}, nil
+}
+
+// RemoveCredential deletes a credential, but only once nothing of this install
+// is left in what it can reach: no record in its zones and no tunnel in their
+// accounts. A token Cloudflare rejects reaches nothing and is removed. When
+// Cloudflare cannot tell, nothing is removed.
+func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
+	if err := e.acquire(ctx); err != nil {
+		return err
+	}
+	defer e.Trigger()
+	defer e.release()
+
+	cred, err := e.credential(id)
+	if err != nil {
+		return err
+	}
+	install, err := e.installID()
+	if err != nil {
+		return err
+	}
+	// The stored token decides, not a client a cycle built from an older one.
+	api, err := e.d.NewClient(cred)
+	if err != nil {
+		return fmt.Errorf("building a Cloudflare client: %w", err)
+	}
+	left, err := leftBehind(ctx, api, install)
+	if err != nil {
+		return fmt.Errorf("%w: cannot tell what credential %s still manages: %w", ErrRefused, id, err)
+	}
+	if len(left) > 0 {
+		return fmt.Errorf("%w: credential %s still manages %s", ErrRefused, id, strings.Join(left, ", "))
+	}
+	if err := e.d.Store.DeleteCredential(id); err != nil {
+		return fmt.Errorf("removing the credential: %w", err)
+	}
+	e.dropClient(id)
+	e.repMu.Lock()
+	delete(e.reports, id)
+	e.repMu.Unlock()
+	e.adminEvent(id, fmt.Sprintf("credential %q removed", cred.Label))
+	return nil
+}
+
+// leftBehind lists the records and tunnels of this install that api reaches.
+// What Cloudflare refuses to show the token, the token cannot manage either,
+// so a refusal counts as nothing reached; any other failure is an error.
+func leftBehind(ctx context.Context, api cfapi.API, installID string) ([]string, error) {
+	zones, err := api.Zones(ctx)
+	switch {
+	case cfapi.IsAuth(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	slices.SortFunc(zones, func(a, b cfapi.Zone) int { return strings.Compare(a.Name, b.Name) })
+	marker := planner.DNSMarker(installID)
+	var left []string
+	var accounts []string
+	for _, z := range zones {
+		accounts = append(accounts, z.AccountID)
+		records, err := api.Records(ctx, z.ID, cfapi.RecordFilter{CommentPrefix: marker})
+		switch {
+		case cfapi.IsAuth(err):
+			continue
+		case err != nil:
+			return nil, err
+		}
+		for _, rec := range records {
+			if ownedRecord(rec, marker) {
+				left = append(left, fmt.Sprintf("record %s in zone %s", rec.Name, z.Name))
+			}
+		}
+	}
+	for _, account := range slices.Compact(slices.Sorted(slices.Values(accounts))) {
+		t, found, err := api.FindTunnel(ctx, account, planner.TunnelName(installID))
+		switch {
+		case cfapi.IsAuth(err):
+			continue
+		case err != nil:
+			return nil, err
+		case found:
+			left = append(left, fmt.Sprintf("tunnel %s in account %s", t.Name, account))
+		}
+	}
+	return left, nil
+}
+
+// ownedRecord reports whether a record publishes a hostname for this install:
+// its comment begins with the marker as a whole word, and it is not a probe a
+// credential check left behind, which the DNS reconciler sweeps on its own.
+// Both rules are the DNS reconciler's.
+func ownedRecord(rec cfapi.Record, marker string) bool {
+	rest, ok := strings.CutPrefix(rec.Comment, marker)
+	if !ok {
+		return false
+	}
+	if next, _ := utf8.DecodeRuneInString(rest); rest != "" && !unicode.IsSpace(next) {
+		return false
+	}
+	probe := strings.EqualFold(rec.Type, "TXT") &&
+		strings.HasPrefix(strings.ToLower(rec.Name), credentials.ProbeRecordPrefix) &&
+		rec.Comment == marker+" probe"
+	return !probe
+}
+
+// credential returns the stored credential with an id.
+func (e *Engine) credential(id string) (store.Credential, error) {
+	creds, err := e.d.Store.Credentials()
+	if err != nil {
+		return store.Credential{}, fmt.Errorf("reading the credentials: %w", err)
+	}
+	i := slices.IndexFunc(creds, func(c store.Credential) bool { return c.ID == id })
+	if i < 0 {
+		return store.Credential{}, fmt.Errorf("%w: no credential %q", ErrNotFound, id)
+	}
+	return creds[i], nil
+}
+
+func (e *Engine) installID() (string, error) {
+	inst, found, err := e.d.Store.Install()
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("reading the install identity: %w", err)
+	case !found:
+		return "", errors.New(problemNotSetUp)
+	}
+	return inst.ID, nil
+}
+
+func (e *Engine) checker(installID string) *credentials.Checker {
+	return credentials.NewChecker(installID, e.d.Now, randomHex(8))
+}
+
+func (e *Engine) setReport(id string, r credentials.Report) {
+	e.repMu.Lock()
+	defer e.repMu.Unlock()
+	e.reports[id] = r
+}
+
+// newCredentialID returns 8 random hex characters that no stored credential
+// uses. The caller holds the cycle lock.
+func (e *Engine) newCredentialID() (string, error) {
+	creds, err := e.d.Store.Credentials()
+	if err != nil {
+		return "", fmt.Errorf("reading the credentials: %w", err)
+	}
+	for {
+		id := randomHex(4)()
+		if !slices.ContainsFunc(creds, func(c store.Credential) bool { return strings.EqualFold(c.ID, id) }) {
+			return id, nil
+		}
+	}
+}
+
+// randomHex returns a function that makes 2n random lower-case hex characters
+// on every call.
+func randomHex(n int) func() string {
+	return func() string {
+		b := make([]byte, n)
+		_, _ = rand.Read(b)
+		return hex.EncodeToString(b)
+	}
+}
+
+// failedChecks says what a report found wrong.
+func failedChecks(r credentials.Report) string {
+	var out []string
+	for _, c := range r.Checks {
+		if c.OK {
+			continue
+		}
+		what := string(c.Capability)
+		if c.Scope != "" {
+			what += " on " + c.Scope
+		}
+		out = append(out, what+": "+c.Detail)
+	}
+	if len(out) == 0 {
+		return "no active zone"
+	}
+	return strings.Join(out, "; ")
+}
