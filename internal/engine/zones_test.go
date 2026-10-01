@@ -224,6 +224,32 @@ func TestASecondCredentialForAServedZone(t *testing.T) {
 	requireUntouched(t, e, writes, tun)
 }
 
+// A zone in doubt freezes its whole account: the plan of the account's other
+// zones would PUT the tunnel without the rules of the zone in doubt.
+func TestAZoneInDoubtFreezesTheOtherZonesOfItsAccount(t *testing.T) {
+	e := newEnv(t)
+	e.cf.AddZone("zone2", "example.net", testAccount)
+	e.enforce()
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com www.example.net -> :8080")))
+	e.cycle()
+	both := withSentinel(hostRule("www.example.com"), hostRule("www.example.net"))
+	require.Equal(t, both, e.rules())
+	// A second token sees example.net only.
+	second := newZoneView(e.cf)
+	second.hide(testZone, true)
+	e.addSecondCredential("second-token", second)
+
+	e.eng = e.newEngine()
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.Contains(t, st.Problems, "zone example.net is visible through credentials cred1 and cred2 and none of them served it before; "+
+		"pin it with zonePins; account acc1 is left as it is until then")
+	require.Equal(t, both, e.rules(), "the rules of example.com stay, and those of example.net with them")
+	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+	require.Len(t, e.cf.RecordsIn("zone2"), 1)
+}
+
 func TestTheSameTokenTwiceIsRefused(t *testing.T) {
 	e := newEnv(t)
 

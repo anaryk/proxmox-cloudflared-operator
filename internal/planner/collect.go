@@ -91,13 +91,7 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 			model.CompareOwners(a.Owner(), b.Owner()),
 		)
 	})
-	slices.SortStableFunc(out.Issues, func(a, b Issue) int {
-		return cmp.Or(
-			model.CompareOwners(a.Guest.String(), b.Guest.String()),
-			cmp.Compare(a.Line, b.Line),
-			cmp.Compare(a.Col, b.Col),
-		)
-	})
+	slices.SortStableFunc(out.Issues, CompareIssues)
 	slices.SortFunc(out.Held, func(a, b HeldName) int {
 		return cmp.Or(
 			strings.Compare(a.Hostname, b.Hostname),
@@ -105,6 +99,16 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 		)
 	})
 	return out
+}
+
+// CompareIssues is the order of Collected.Issues: by guest, then position in
+// the Notes; the issues of the settings, which name no guest, come last.
+func CompareIssues(a, b Issue) int {
+	return cmp.Or(
+		model.CompareOwners(a.Guest.String(), b.Guest.String()),
+		cmp.Compare(a.Line, b.Line),
+		cmp.Compare(a.Col, b.Col),
+	)
 }
 
 func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {

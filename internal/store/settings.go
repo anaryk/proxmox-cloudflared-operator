@@ -12,9 +12,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 )
 
+// The admission modes of Settings.Admission.
 const (
-	admissionTag     = "tag"
-	admissionApprove = "approve"
+	AdmissionTag     = "tag"     // a guest with the gate tag is published
+	AdmissionApprove = "approve" // a guest is published once an admin approved its identity
 
 	maxTagLen = 64
 )
@@ -64,7 +65,7 @@ func DefaultSettings() Settings {
 		GateTag:      "cf-tunnel",
 		PollInterval: Duration(10 * time.Second),
 		Grace:        Duration(60 * time.Second),
-		Admission:    admissionTag,
+		Admission:    AdmissionTag,
 		ObserveOnly:  true,
 	}
 }
@@ -88,8 +89,8 @@ func (s Settings) normalized() (Settings, error) {
 	if s.Grace <= 0 {
 		return Settings{}, fmt.Errorf("grace %s: must be positive", time.Duration(s.Grace))
 	}
-	if s.Admission != admissionTag && s.Admission != admissionApprove {
-		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, admissionTag, admissionApprove)
+	if s.Admission != AdmissionTag && s.Admission != AdmissionApprove {
+		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)
 	}
 	for i, p := range s.TrustedCIDRs {
 		if !p.IsValid() || !p.Addr().Is4() {

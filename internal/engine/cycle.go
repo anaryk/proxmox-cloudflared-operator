@@ -1,17 +1,13 @@
 package engine
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"maps"
-	"net/netip"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -32,8 +28,6 @@ const (
 	problemPolicyInvalid  = "settings contain an invalid allow or deny pattern; nothing is changed until it is fixed"
 	problemIncomplete     = "the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are"
 	problemNoCredential   = "no Cloudflare credential; add one with pco credential add"
-	admissionApprove      = "approve"
-	issueWaitingApproval  = "waiting for approval"
 	problemStoppedResolve = "the cycle ended while addresses were resolved (%v); nothing is changed"
 )
 
@@ -216,114 +210,6 @@ func (c *cycleRun) refresh() bool {
 	return true
 }
 
-// learnNodeAddrs adds the node addresses of the snapshot to the ones known,
-// which start with those saved before. Only a cycle that goes on saves them.
-func (c *cycleRun) learnNodeAddrs() bool {
-	a := &c.e.addrs
-	if !a.loaded {
-		saved, err := c.e.d.Store.NodeAddrs()
-		if err != nil {
-			c.problem("reading the saved node addresses: %v", err)
-			return false
-		}
-		a.list, a.loaded = saved, true
-	}
-	merged := slices.Compact(slices.SortedFunc(slices.Values(append(slices.Clone(a.list), c.snap.NodeAddrs()...)), netip.Addr.Compare))
-	if len(merged) != len(a.list) {
-		a.list, a.dirty = merged, true
-	}
-	return true
-}
-
-// collect turns the guests and the manual routes into candidate routes and
-// drops those of guests that wait for approval.
-func (c *cycleRun) collect() bool {
-	manual, err := c.e.d.Store.ManualRoutes()
-	if err != nil {
-		c.storeProblem("reading the manual routes", err)
-		return false
-	}
-	c.manual = manual
-	if c.settings.Admission == admissionApprove {
-		approvals, err := c.e.d.Store.Approvals()
-		if err != nil {
-			c.storeProblem("reading the approvals", err)
-			return false
-		}
-		c.approvals = approvals
-	}
-	c.col = c.collectFrom(c.snap)
-	c.st.Issues = c.col.Issues
-	if c.col.PolicyInvalid {
-		c.problem(problemPolicyInvalid)
-		return false
-	}
-	return true
-}
-
-func (c *cycleRun) collectFrom(snap inventory.Snapshot) planner.Collected {
-	col := planner.Collect(snap.Guests, c.manual, planner.Settings{
-		GateTag:    c.settings.GateTag,
-		AllowHosts: c.settings.AllowHosts,
-		DenyHosts:  c.settings.DenyHosts,
-	})
-	if c.approvals != nil {
-		col = admit(col, snap, c.approvals)
-	}
-	return col
-}
-
-// admit takes the routes from guests whose identity is not approved, with
-// one issue per guest, and keeps their hostnames as held names: a guest that
-// waits for approval keeps its claims, served by nobody, as a guest whose
-// entry is broken does. Manual routes are the admin's own and pass. An empty
-// identity is never approved.
-func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]string) planner.Collected {
-	waiting := make(map[model.GuestRef]bool)
-	approved := func(owner string) bool {
-		ref, err := model.ParseGuestRef(owner)
-		if err != nil {
-			return true
-		}
-		g, ok := snap.Guest(ref)
-		if ok && g.Identity != "" && approvals[owner] == g.Identity {
-			return true
-		}
-		waiting[ref] = true
-		return false
-	}
-	routes := make([]model.Route, 0, len(col.Routes))
-	held := slices.Clone(col.Held)
-	for _, rt := range col.Routes {
-		if approved(rt.Owner()) {
-			routes = append(routes, rt)
-			continue
-		}
-		held = append(held, planner.HeldName{Hostname: rt.Hostname, Owner: rt.Owner()})
-	}
-	slices.SortFunc(held, func(a, b planner.HeldName) int {
-		return cmp.Or(strings.Compare(a.Hostname, b.Hostname), model.CompareOwners(a.Owner, b.Owner))
-	})
-	col.Routes, col.Held = routes, slices.Compact(held)
-	issues := slices.Clone(col.Issues)
-	for ref := range waiting {
-		issues = append(issues, planner.Issue{Guest: ref, Msg: issueWaitingApproval})
-	}
-	slices.SortStableFunc(issues, compareIssues)
-	col.Issues = issues
-	return col
-}
-
-// compareIssues is the order Collect gives its issues: by guest, then
-// position, issues of the settings last.
-func compareIssues(a, b planner.Issue) int {
-	return cmp.Or(
-		model.CompareOwners(a.Guest.String(), b.Guest.String()),
-		cmp.Compare(a.Line, b.Line),
-		cmp.Compare(a.Col, b.Col),
-	)
-}
-
 // load reads the claims and the bindings and builds the denylist.
 func (c *cycleRun) load() bool {
 	claims, err := c.e.d.Store.Claims()
@@ -371,74 +257,6 @@ func (c *cycleRun) settleClaims() {
 	c.events = append(c.events, claimEvents(c.now, c.claims.Events)...)
 }
 
-// resolveTargets resolves the address of every winner, with the binding of
-// its hostname, and saves the bindings. A cycle whose context ends in the
-// middle plans and changes nothing.
-func (c *cycleRun) resolveTargets() bool {
-	c.results = c.resolveAll(c.bindings, c.deny)
-	if err := c.ctx.Err(); err != nil {
-		c.problem(problemStoppedResolve, err)
-		return false
-	}
-
-	next := make(map[string]resolve.Binding, len(c.results))
-	for host, res := range c.results {
-		if res.Binding != nil {
-			next[host] = *res.Binding
-		}
-	}
-	if err := c.e.d.Store.SaveBindings(next); err != nil {
-		c.problem("saving the bindings: %v", err)
-	}
-	if c.e.addrs.dirty {
-		if err := c.e.d.Store.SaveNodeAddrs(c.e.addrs.list); err != nil {
-			c.problem("saving the node addresses: %v", err)
-		} else {
-			c.e.addrs.dirty = false
-		}
-	}
-	return true
-}
-
-// resolveAll runs Resolve for each winner, at most resolveConcurrency at a
-// time and each with a deadline of its own, so that one guest that reports
-// many addresses cannot hold up the others.
-func (c *cycleRun) resolveAll(stored map[string]resolve.Binding, deny resolve.Denylist) map[string]resolve.Result {
-	winners := c.claims.Winners
-	out := make([]resolve.Result, len(winners))
-	slots := make(chan struct{}, resolveConcurrency)
-	done := make(chan struct{})
-	started := 0
-	for i, rt := range winners {
-		select {
-		case slots <- struct{}{}:
-		case <-c.ctx.Done():
-		}
-		if c.ctx.Err() != nil {
-			break
-		}
-		var prev *resolve.Binding
-		if b, ok := stored[rt.Hostname]; ok {
-			prev = &b
-		}
-		started++
-		go func() {
-			defer func() { <-slots; done <- struct{}{} }()
-			ctx, cancel := c.e.timeout(c.ctx, resolveTimeout)
-			defer cancel()
-			out[i] = c.e.d.Resolver.Resolve(ctx, rt, c.snap, prev, deny)
-		}()
-	}
-	for range started {
-		<-done
-	}
-	results := make(map[string]resolve.Result, len(winners))
-	for i, rt := range winners[:started] {
-		results[rt.Hostname] = out[i]
-	}
-	return results
-}
-
 // build plans the Cloudflare state: the credentials and their zones first,
 // then the plan itself. The plan is made even when Cloudflare is held, for
 // the route states, unless the credentials could not be read: then the routes
@@ -470,85 +288,6 @@ func (c *cycleRun) targets() map[string]planner.ResolvedTarget {
 	return out
 }
 
-// syncCredentials reads the credentials, keeps a client for each and works
-// out the zones. It returns false when the credentials cannot be read.
-// Credentials that cannot be read, none at all, or zones that were never
-// listed hold Cloudflare.
-func (c *cycleRun) syncCredentials() bool {
-	creds, err := c.e.d.Store.Credentials()
-	if err != nil {
-		c.storeProblem("reading the credentials", err)
-		c.cfHold = true
-		return false
-	}
-	c.e.syncClients(c, creds)
-	info := make([]credentialInfo, len(creds))
-	ids := make([]string, len(creds))
-	for i, cr := range creds {
-		info[i] = credentialInfo{id: cr.ID, label: cr.Label, kind: cr.Kind}
-		ids[i] = cr.ID
-	}
-	c.st.Credentials = c.e.credentialViews(info)
-	if len(creds) == 0 {
-		c.problem(problemNoCredential)
-		c.cfHold = true
-		return true
-	}
-	c.refreshZones(ids)
-	c.credIDs = ids
-	c.zones = c.e.zones.set(ids, c.settings.ZonePins)
-	c.st.Problems = append(c.st.Problems, c.zones.problems...)
-	if !c.zones.ready {
-		c.cfHold = true
-	}
-	return true
-}
-
-// syncClients keeps one client per stored credential, built anew when its
-// token changed. A credential whose client is new has its zones listed anew.
-func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
-	seen := make(map[string]bool, len(creds))
-	for _, cr := range creds {
-		seen[cr.ID] = true
-		old, known := e.tokens[cr.ID]
-		if known && old.Equal(cr.Token) && e.clients[cr.ID] != nil {
-			continue
-		}
-		// A new token keeps what the credential listed until it lists anew.
-		delete(e.clients, cr.ID)
-		delete(e.tokens, cr.ID)
-		if known && !old.Equal(cr.Token) {
-			e.repMu.Lock()
-			delete(e.reports, cr.ID)
-			e.repMu.Unlock()
-		}
-		api, err := e.d.NewClient(cr)
-		if err != nil {
-			c.problem("credential %s: building its client: %v", cr.ID, err)
-			continue
-		}
-		e.clients[cr.ID] = api
-		e.tokens[cr.ID] = cr.Token
-		e.zones.due = true
-	}
-	known := slices.Concat(slices.Collect(maps.Keys(e.tokens)), slices.Collect(maps.Keys(e.zones.byCred)))
-	for _, id := range slices.Compact(slices.Sorted(slices.Values(known))) {
-		if !seen[id] {
-			e.dropClient(id)
-		}
-	}
-	e.repMu.Lock()
-	maps.DeleteFunc(e.reports, func(id string, _ credentials.Report) bool { return !seen[id] })
-	e.repMu.Unlock()
-}
-
-// dropClient forgets the client of a credential and what was listed with it.
-func (e *Engine) dropClient(id string) {
-	delete(e.clients, id)
-	delete(e.tokens, id)
-	e.zones.forget(id)
-}
-
 // reconcile brings Cloudflare and the connectors in line with the plan,
 // unless the cycle holds them.
 func (c *cycleRun) reconcile() {
@@ -575,70 +314,4 @@ func (c *cycleRun) goOn(where string) bool {
 		return false
 	}
 	return true
-}
-
-// Vanish guard: how many of the guests that hold a hostname may drop out of
-// the listing at once before the cycle holds for the admin's confirmation.
-const (
-	vanishMax      = 5
-	vanishShare    = 0.30
-	vanishExamples = 5
-)
-
-// guardVanished holds the cycle when the guests that hold a claim drop out of
-// a complete listing in numbers that look like a failure rather than their
-// removal: Proxmox lists no guest at all, or more than vanishMax of them and
-// more than vanishShare are gone. A guest that only lost its tag or its route
-// is still listed. Guests the admin confirmed gone do not count until they
-// are listed again.
-func (c *cycleRun) guardVanished() bool {
-	listed := make(map[model.GuestRef]bool, len(c.snap.Guests))
-	for _, g := range c.snap.Guests {
-		listed[g.Ref] = true
-	}
-	maps.DeleteFunc(c.e.gone, func(ref model.GuestRef, _ bool) bool { return listed[ref] })
-
-	holders := make(map[model.GuestRef]bool)
-	for _, claim := range c.stored {
-		if ref, err := model.ParseGuestRef(claim.Owner); err == nil {
-			holders[ref] = true
-		}
-	}
-	var vanished []model.GuestRef
-	for ref := range holders {
-		if !listed[ref] && !c.e.gone[ref] {
-			vanished = append(vanished, ref)
-		}
-	}
-	slices.SortFunc(vanished, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
-	c.e.vanished = vanished
-
-	switch {
-	case len(vanished) == 0:
-		return true
-	case len(c.snap.Guests) == 0:
-		c.problem("Proxmox lists no guest at all, but %d guests hold a hostname (%s); nothing is changed: "+
-			"check the privileges of the Proxmox API token, or run pco apply --confirm-deletes if they were removed on purpose",
-			len(vanished), examples(vanished))
-		return false
-	case len(vanished) > vanishMax && float64(len(vanished)) > vanishShare*float64(len(holders)):
-		c.problem("%d of %d guests that hold a hostname are no longer listed by Proxmox (%s); nothing is changed "+
-			"until they are listed again, or run pco apply --confirm-deletes if they were removed on purpose",
-			len(vanished), len(holders), examples(vanished))
-		return false
-	}
-	return true
-}
-
-// examples names the first few guests, and how many more there are.
-func examples(refs []model.GuestRef) string {
-	names := make([]string, 0, vanishExamples)
-	for _, ref := range refs[:min(len(refs), vanishExamples)] {
-		names = append(names, ref.String())
-	}
-	out := strings.Join(names, ", ")
-	if n := len(refs) - vanishExamples; n > 0 {
-		out += fmt.Sprintf(" and %d more", n)
-	}
-	return out
 }

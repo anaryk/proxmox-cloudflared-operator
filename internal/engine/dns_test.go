@@ -97,6 +97,7 @@ func TestAdoptWaitsForAnEnforcingRun(t *testing.T) {
 
 	require.Contains(t, e.eng.adopt, "www.example.com", "an observing run does not use the adoption up")
 	require.Equal(t, "A", e.records()[0].Type)
+	require.Equal(t, 1, eventsContaining(e, "adoption of www.example.com waits: pco is in observe-only mode"))
 
 	e.apply(false)
 	e.clock.advance(10 * time.Second)

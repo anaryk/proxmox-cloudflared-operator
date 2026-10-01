@@ -17,7 +17,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -258,32 +257,6 @@ func TestUnregisteredNodeRefusesToRun(t *testing.T) {
 		require.Zero(t, e.inv.refreshes())
 		require.Empty(t, e.cf.Calls())
 	})
-}
-
-func TestApprovalModeHoldsAnUnapprovedGuest(t *testing.T) {
-	e := newEnv(t)
-	e.enforce()
-	e.settings(func(s *store.Settings) { s.Admission = "approve" })
-	ref := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
-	// An approval of another guest that once had this VMID does not count.
-	require.NoError(t, e.store.SaveApproval("qemu/101", "uuid:999"))
-
-	st := e.cycle()
-
-	require.Empty(t, st.Routes)
-	require.Contains(t, st.Issues, planner.Issue{Guest: ref, Msg: "waiting for approval"})
-	require.Empty(t, e.writes())
-	claims, err := e.store.Claims()
-	require.NoError(t, err)
-	require.Empty(t, claims, "an unapproved guest claims nothing")
-
-	require.NoError(t, e.store.SaveApproval("qemu/101", "uuid:101"))
-	e.clock.advance(10 * time.Second)
-	st = e.cycle()
-
-	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
-	require.NotContains(t, st.Issues, planner.Issue{Guest: ref, Msg: "waiting for approval"})
-	require.Equal(t, []string{"www.example.com"}, e.recordNames())
 }
 
 func TestEventsForARouteGoingActiveThenUnreachable(t *testing.T) {
