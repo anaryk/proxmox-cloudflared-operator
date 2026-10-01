@@ -21,10 +21,11 @@ func TestDNSDecided(t *testing.T) {
 		change   func(in *DNSInput, store *memStore)
 		observe  bool
 		want     bool
+		looked   bool
 	}{
-		{name: "an enforcing run", want: true},
-		{name: "an observing run", observe: true},
-		{name: "the writer changes during the run", writer: []answer{{us: ours, stored: ours}, {us: ours, stored: newer}}, want: true},
+		{name: "an enforcing run", want: true, looked: true},
+		{name: "an observing run", observe: true, looked: true},
+		{name: "the writer changes during the run", writer: []answer{{us: ours, stored: ours}, {us: ours, stored: newer}}, want: true, looked: true},
 		{name: "another writer stored", writer: []answer{{us: ours, stored: newer}}},
 		{name: "the writer cannot be read", writer: []answer{{err: errors.New("lease lost")}}},
 		{name: "the writer is not valid", writer: []answer{{us: writerAt(5, ""), stored: writerAt(5, "")}}},
@@ -61,6 +62,7 @@ func TestDNSDecided(t *testing.T) {
 			res := r.Run(context.Background(), in, mode)
 
 			require.Equal(t, tc.want, res.Decided)
+			require.Equal(t, tc.looked, res.Looked)
 		})
 	}
 }

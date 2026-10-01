@@ -126,6 +126,12 @@ type DNSResult struct {
 
 	Problems []string
 
+	// Looked is true when the run, observing or enforcing, listed its zones
+	// and compared them with the plan, so Conflicts and Lost describe what
+	// is there now. A run that stopped before leaves them empty without
+	// having looked.
+	Looked bool
+
 	// Decided is true when an enforcing run got as far as the admin's
 	// one-shot requests, ConfirmDeletes and Adopt: it passed its start,
 	// loaded the tombstones and applied the confirmation. An observing run
@@ -246,6 +252,7 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 		run.list(ctx, z)
 	}
 	run.decide(zones)
+	run.res.Looked = true
 	run.res.Decided = mode == Enforce
 	run.saveTombstones(ctx, true)
 	for _, z := range zones {

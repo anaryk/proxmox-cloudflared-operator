@@ -49,7 +49,7 @@ func (c *cycleRun) reconcileDNS() {
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
-	if res.Decided && res.Verdict == reconcile.WriterProceed {
+	if res.Looked && res.Verdict == reconcile.WriterProceed {
 		c.st.Conflicts, c.st.Lost = c.lookedAt(res)
 	}
 	if res.Verdict != reconcile.WriterProceed {
