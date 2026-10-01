@@ -411,7 +411,8 @@ func TestFindTunnelFailsWholeOnAFailedPage(t *testing.T) {
 			reply(http.StatusInternalServerError, `{"success":false,"errors":[{"code":1000,"message":"boom"}]}`)(w, r)
 			return
 		}
-		reply(http.StatusOK, `{"success":true,"result":[],"result_info":{"page":1,"per_page":100,"total_pages":2}}`)(w, r)
+		// A full page of other names: the one asked for may be on the next.
+		reply(http.StatusOK, tunnelPage(named("pco-abc-x", 100), `{"page":1,"per_page":100,"count":100,"total_count":120}`))(w, r)
 	})
 
 	_, found, err := env.c.FindTunnel(context.Background(), "a1", "pco-abc")
@@ -476,7 +477,7 @@ func TestTunnelsFailWholeOnAFailedPage(t *testing.T) {
 			reply(http.StatusBadGateway, `bad gateway`)(w, r)
 			return
 		}
-		reply(http.StatusOK, `{"success":true,"result":[{"id":"id-1","name":"pco-abc_probe_1"}],"result_info":{"page":1,"total_pages":2}}`)(w, r)
+		reply(http.StatusOK, tunnelPage(named("pco-abc_probe_", 50), `{"page":1,"per_page":50,"count":50,"total_count":120}`))(w, r)
 	})
 	got, err := env.c.Tunnels(context.Background(), "a1", "pco-abc_probe_")
 	require.Error(t, err)

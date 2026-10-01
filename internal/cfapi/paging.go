@@ -21,65 +21,47 @@ const (
 // changed while it was read, or the server left items out.
 var errListingChanged = errors.New("listing changed while it was read")
 
+// totals says what the counts in the result_info of a listing are about, and
+// so how list finds its end.
+type totals int
+
+const (
+	// strict is for a listing whose total_count and total_pages count what
+	// the request asked for, filters included. The pages are counted from
+	// them, and the listing must add up to them.
+	strict totals = iota
+
+	// shortPage is for a listing whose counts may be about something else.
+	// The tunnel listing is described with a total_count of "total results
+	// available without any search parameters" and no total_pages: held to
+	// that total, a filtered listing would fail on every account that has
+	// other tunnels, and pages counted from it would not exist. Such a
+	// listing ends with the first page that is not full. Its counts are
+	// only required not to change while it is read.
+	shortPage
+)
+
 // list reads every page of the collection at path, then calls each with every
 // item in order. Nothing is passed to each unless the whole listing was read
 // and adds up: a listing that failed half way, or that cannot be shown to be
 // complete, is an error and never a shorter list. The caller retries later.
 //
-// The page size is the per_page of query, or 50. How many pages there are is
-// taken from result_info: total_pages, else total_count over the page size.
-// With neither, a page that is not full is the only page, and a full one is an
-// error. A page that result_info numbers must be the page asked for, every
-// page of a listing of more than one page must hold items, total_count and
-// total_pages must not change between pages, and the items read must add up
-// to total_count.
-func (c *Client) list(ctx context.Context, path string, query url.Values, each func(json.RawMessage) error) error {
+// The page size is the per_page of query, or 50, and once the first page
+// reports one, the per_page the server uses. A page that result_info numbers
+// must be the page asked for, and total_count and total_pages must not change
+// between pages. How the end is found depends on t: see strict and shortPage.
+func (c *Client) list(ctx context.Context, path string, query url.Values, t totals, each func(json.RawMessage) error) error {
 	size, err := requestedPageSize(query)
 	if err != nil {
 		return err
 	}
-
-	var (
-		items      []json.RawMessage
-		first      *resultInfo
-		totalPages = 1
-	)
-	for page := 1; page <= totalPages; page++ {
-		env, err := c.roundTrip(ctx, http.MethodGet, path, pageQuery(query, page, size), nil)
-		if err != nil {
-			return fmt.Errorf("listing %s, page %d: %w", path, page, err)
-		}
-		batch, err := pageItems(env)
-		if err != nil {
-			return fmt.Errorf("listing %s, page %d: %w", path, page, err)
-		}
-		if err := env.ResultInfo.isPage(page); err != nil {
-			return fmt.Errorf("listing %s, page %d: %w", path, page, err)
-		}
-		items = append(items, batch...)
-
-		if page > 1 {
-			if err := sameListing(first, env.ResultInfo); err != nil {
-				return fmt.Errorf("listing %s, page %d: %w", path, page, err)
-			}
-		} else {
-			first = env.ResultInfo
-			if first != nil && first.PerPage > 0 {
-				size = first.PerPage // what the server really uses
-			}
-			if totalPages, err = pageCount(first, len(batch), size); err != nil {
-				return fmt.Errorf("listing %s: %w", path, err)
-			}
-		}
-		if len(batch) == 0 && totalPages > 1 {
-			// Whatever was to fill it moved, or the server left it out.
-			return fmt.Errorf("listing %s: %w: page %d is empty, %d pages expected", path, errListingChanged, page, totalPages)
-		}
+	read := c.readCounted
+	if t == shortPage {
+		read = c.readToShortPage
 	}
-
-	if first != nil && first.TotalCount != nil && len(items) != *first.TotalCount {
-		return fmt.Errorf("listing %s: %w: read %d items, the server counts %d",
-			path, errListingChanged, len(items), *first.TotalCount)
+	items, err := read(ctx, path, query, size)
+	if err != nil {
+		return err
 	}
 	for _, item := range items {
 		if err := each(item); err != nil {
@@ -87,6 +69,98 @@ func (c *Client) list(ctx context.Context, path string, query url.Values, each f
 		}
 	}
 	return nil
+}
+
+// readCounted reads a strict listing. How many pages there are is taken from
+// result_info: total_pages, else total_count over the page size. With
+// neither, a page that is not full is the only page, and a full one is an
+// error. Every page of a listing of more than one page must hold items, and
+// the items read must add up to total_count.
+func (c *Client) readCounted(ctx context.Context, path string, query url.Values, size int) ([]json.RawMessage, error) {
+	var (
+		items      []json.RawMessage
+		first      *resultInfo
+		totalPages = 1
+	)
+	for page := 1; page <= totalPages; page++ {
+		info, batch, err := c.page(ctx, path, query, page, size)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, batch...)
+
+		if page > 1 {
+			if err := sameListing(first, info); err != nil {
+				return nil, fmt.Errorf("listing %s, page %d: %w", path, page, err)
+			}
+		} else {
+			first = info
+			if first != nil && first.PerPage > 0 {
+				size = first.PerPage // what the server really uses
+			}
+			if totalPages, err = pageCount(first, len(batch), size); err != nil {
+				return nil, fmt.Errorf("listing %s: %w", path, err)
+			}
+		}
+		if len(batch) == 0 && totalPages > 1 {
+			// Whatever was to fill it moved, or the server left it out.
+			return nil, fmt.Errorf("listing %s: %w: page %d is empty, %d pages expected", path, errListingChanged, page, totalPages)
+		}
+	}
+
+	if first != nil && first.TotalCount != nil && len(items) != *first.TotalCount {
+		return nil, fmt.Errorf("listing %s: %w: read %d items, the server counts %d",
+			path, errListingChanged, len(items), *first.TotalCount)
+	}
+	return items, nil
+}
+
+// readToShortPage reads a shortPage listing: page after page until one holds
+// fewer items than a page does, at most maxPages of them. A page may not hold
+// more, and the page size must not change.
+func (c *Client) readToShortPage(ctx context.Context, path string, query url.Values, size int) ([]json.RawMessage, error) {
+	var (
+		items []json.RawMessage
+		first *resultInfo
+	)
+	for page := 1; page <= maxPages; page++ {
+		info, batch, err := c.page(ctx, path, query, page, size)
+		if err != nil {
+			return nil, err
+		}
+		if page == 1 {
+			first = info
+			if first != nil && first.PerPage > 0 {
+				size = first.PerPage // what the server really uses
+			}
+		} else if err := samePages(first, info, size); err != nil {
+			return nil, fmt.Errorf("listing %s, page %d: %w", path, page, err)
+		}
+		if len(batch) > size {
+			return nil, fmt.Errorf("listing %s, page %d: %w: %d items, more than the %d of a page", path, page, errUnexpected, len(batch), size)
+		}
+		items = append(items, batch...)
+		if len(batch) < size {
+			return items, nil
+		}
+	}
+	return nil, fmt.Errorf("listing %s: %w: more than %d full pages", path, errUnexpected, maxPages)
+}
+
+// page reads one page of a listing, which must be the page asked for.
+func (c *Client) page(ctx context.Context, path string, query url.Values, page, size int) (*resultInfo, []json.RawMessage, error) {
+	env, err := c.roundTrip(ctx, http.MethodGet, path, pageQuery(query, page, size), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing %s, page %d: %w", path, page, err)
+	}
+	batch, err := pageItems(env)
+	if err == nil {
+		err = env.ResultInfo.isPage(page)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing %s, page %d: %w", path, page, err)
+	}
+	return env.ResultInfo, batch, nil
 }
 
 func requestedPageSize(query url.Values) (int, error) {
@@ -179,6 +253,18 @@ func sameListing(first, next *resultInfo) error {
 	}
 	if !samePtr(a.TotalPages, b.TotalPages) {
 		return fmt.Errorf("%w: total_pages differs between pages", errListingChanged)
+	}
+	return nil
+}
+
+// samePages checks a later page of a shortPage listing: the same totals as
+// the first, and, when it says, the page size the listing is read with.
+func samePages(first, next *resultInfo, size int) error {
+	if err := sameListing(first, next); err != nil {
+		return err
+	}
+	if next != nil && next.PerPage > 0 && next.PerPage != size {
+		return fmt.Errorf("%w: per_page differs between pages", errListingChanged)
 	}
 	return nil
 }

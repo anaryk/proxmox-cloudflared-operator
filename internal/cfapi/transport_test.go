@@ -659,7 +659,7 @@ func TestErrorsNeverContainTheToken(t *testing.T) {
 			env := setup(t, h)
 			var out struct{ ID int }
 			doErr := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, &out)
-			listErr := env.c.list(context.Background(), "/zones", nil, func(json.RawMessage) error { return nil })
+			listErr := env.c.list(context.Background(), "/zones", nil, strict, func(json.RawMessage) error { return nil })
 
 			require.Error(t, doErr)
 			require.Error(t, listErr)
@@ -850,7 +850,7 @@ func TestDoRefusesUnsafePaths(t *testing.T) {
 
 			err := env.c.do(context.Background(), http.MethodDelete, path, nil, nil, nil)
 			require.ErrorContains(t, err, "invalid request path")
-			err = env.c.list(context.Background(), path, nil, func(json.RawMessage) error { return nil })
+			err = env.c.list(context.Background(), path, nil, strict, func(json.RawMessage) error { return nil })
 			require.ErrorContains(t, err, "invalid request path")
 
 			require.Empty(t, env.requests(), "nothing is sent")

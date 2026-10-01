@@ -60,10 +60,11 @@ func (c *Client) FindTunnel(ctx context.Context, accountID, name string) (Tunnel
 	}
 
 	// The name filter of the API matches more than the exact name and a server
-	// may ignore a filter, so the answer is checked here too.
+	// may ignore a filter, so the answer is checked here too. The totals of
+	// the listing need not be about the filtered result.
 	var matches []Tunnel
 	query := url.Values{"name": {name}, "is_deleted": {"false"}}
-	err = listEach(ctx, c, path, query, func(w wireTunnel) error {
+	err = listEach(ctx, c, path, query, shortPage, func(w wireTunnel) error {
 		if w.Name != name || w.deleted() {
 			return nil
 		}
@@ -100,7 +101,7 @@ func (c *Client) Tunnels(ctx context.Context, accountID, namePrefix string) ([]T
 
 	var out []Tunnel
 	query := url.Values{"include_prefix": {namePrefix}, "is_deleted": {"false"}}
-	err = listEach(ctx, c, path, query, func(w wireTunnel) error {
+	err = listEach(ctx, c, path, query, shortPage, func(w wireTunnel) error {
 		switch {
 		case w.deleted():
 			return nil

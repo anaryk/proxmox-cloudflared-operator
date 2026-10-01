@@ -96,7 +96,7 @@ func (c *Client) Records(ctx context.Context, zoneID string, f RecordFilter) ([]
 	}
 
 	var out []Record
-	err = listEach(ctx, c, path, query, func(w wireRecord) error {
+	err = listEach(ctx, c, path, query, strict, func(w wireRecord) error {
 		r, err := w.record()
 		if err != nil {
 			return err

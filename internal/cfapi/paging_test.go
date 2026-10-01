@@ -81,7 +81,7 @@ func numbered(n int) []string {
 func collect(t *testing.T, env *testEnv, path string, query url.Values) ([]string, error) {
 	t.Helper()
 	var got []string
-	err := env.c.list(context.Background(), path, query, func(raw json.RawMessage) error {
+	err := env.c.list(context.Background(), path, query, strict, func(raw json.RawMessage) error {
 		var s string
 		require.NoError(t, json.Unmarshal(raw, &s))
 		got = append(got, s)
@@ -592,7 +592,7 @@ func TestListStopsWhenCallbackFails(t *testing.T) {
 	errStop := errors.New("stop here")
 
 	var seen []string
-	err := env.c.list(context.Background(), "/zones", nil, func(raw json.RawMessage) error {
+	err := env.c.list(context.Background(), "/zones", nil, strict, func(raw json.RawMessage) error {
 		seen = append(seen, string(raw))
 		if len(seen) == 2 {
 			return errStop
@@ -609,7 +609,7 @@ func TestListStopsWhenContextEnds(t *testing.T) {
 	defer cancel()
 
 	var calls int
-	err := env.c.list(ctx, "/zones", nil, func(json.RawMessage) error {
+	err := env.c.list(ctx, "/zones", nil, strict, func(json.RawMessage) error {
 		calls++
 		return nil
 	})
@@ -617,7 +617,7 @@ func TestListStopsWhenContextEnds(t *testing.T) {
 	require.Equal(t, 2, calls)
 
 	cancel()
-	err = env.c.list(ctx, "/zones", nil, func(json.RawMessage) error {
+	err = env.c.list(ctx, "/zones", nil, strict, func(json.RawMessage) error {
 		calls++
 		return nil
 	})

@@ -144,8 +144,8 @@ func CheckName(kind, name string) error {
 // listEach reads every page of the collection at path and calls each with
 // every item decoded into a W, in order. It is list for a caller that wants
 // typed items; each runs only after the whole listing was read.
-func listEach[W any](ctx context.Context, c *Client, path string, query url.Values, each func(W) error) error {
-	return c.list(ctx, path, query, func(raw json.RawMessage) error {
+func listEach[W any](ctx context.Context, c *Client, path string, query url.Values, t totals, each func(W) error) error {
+	return c.list(ctx, path, query, t, func(raw json.RawMessage) error {
 		var item W
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return fmt.Errorf("decoding item: %w", err)

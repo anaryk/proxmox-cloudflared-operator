@@ -100,7 +100,7 @@ func (c *Client) Accounts(ctx context.Context) ([]Account, error) {
 		Name string `json:"name"`
 	}
 	var out []Account
-	err := listEach(ctx, c, "/accounts", nil, func(w wire) error {
+	err := listEach(ctx, c, "/accounts", nil, strict, func(w wire) error {
 		if w.ID == "" {
 			return fmt.Errorf("%w: account without an id", errUnexpected)
 		}
@@ -124,7 +124,7 @@ func (c *Client) Zones(ctx context.Context) ([]Zone, error) {
 		} `json:"account"`
 	}
 	var out []Zone
-	err := listEach(ctx, c, "/zones", nil, func(w wire) error {
+	err := listEach(ctx, c, "/zones", nil, strict, func(w wire) error {
 		if w.ID == "" || w.Name == "" || w.Account.ID == "" {
 			return fmt.Errorf("%w: zone without an id, a name or an account", errUnexpected)
 		}
