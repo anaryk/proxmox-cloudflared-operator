@@ -155,8 +155,9 @@ func statusError(code int) error {
 }
 
 // spy wraps an API to change what the fake cannot: a lookup that misses a
-// tunnel that is there, failing reads of the configuration, and something
-// that happens right after a configuration write.
+// tunnel that is there, failing reads of the configuration, something that
+// happens right after a configuration write, and listings of probe tunnels
+// that fail or hold more than they should.
 type spy struct {
 	cfapi.API
 
@@ -164,14 +165,49 @@ type spy struct {
 	configErrs []error // what the next reads of the configuration answer, in turn; nil passes the read on
 	afterPut   func()  // runs after each configuration write that succeeded
 	puts       int     // configuration writes made through the spy
+
+	// refind answers the lookups after the first in place of the API.
+	refind func() (cfapi.Tunnel, bool, error)
+	finds  int
+
+	tunnelsErr    map[string]error // by account: what the listing of probe tunnels answers
+	extraTunnels  []cfapi.Tunnel   // added to every listing of probe tunnels
+	connectorsErr map[string]error // by tunnel id
+	deleteErr     map[string]error // by tunnel id
 }
 
 func (s *spy) FindTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, bool, error) {
+	s.finds++
 	if s.findMisses > 0 {
 		s.findMisses--
 		return cfapi.Tunnel{}, false, nil
 	}
+	if s.refind != nil && s.finds > 1 {
+		return s.refind()
+	}
 	return s.API.FindTunnel(ctx, accountID, name)
+}
+
+func (s *spy) Tunnels(ctx context.Context, accountID, prefix string) ([]cfapi.Tunnel, error) {
+	if err := s.tunnelsErr[accountID]; err != nil {
+		return nil, err
+	}
+	got, err := s.API.Tunnels(ctx, accountID, prefix)
+	return append(got, s.extraTunnels...), err
+}
+
+func (s *spy) Connectors(ctx context.Context, accountID, tunnelID string) ([]cfapi.Connector, error) {
+	if err := s.connectorsErr[tunnelID]; err != nil {
+		return nil, err
+	}
+	return s.API.Connectors(ctx, accountID, tunnelID)
+}
+
+func (s *spy) DeleteTunnel(ctx context.Context, accountID, tunnelID string) error {
+	if err := s.deleteErr[tunnelID]; err != nil {
+		return err
+	}
+	return s.API.DeleteTunnel(ctx, accountID, tunnelID)
 }
 
 func (s *spy) TunnelConfig(ctx context.Context, accountID, tunnelID string) (cfapi.TunnelConfig, error) {
@@ -311,6 +347,7 @@ func TestTunnelCreateAndPut(t *testing.T) {
 		"TunnelConfig acct1 " + id,
 		"PutTunnelConfig acct1 " + id,
 		"TunnelConfig acct1 " + id,
+		"Tunnels acct1 pco-abc_probe_",
 	}, f.Calls())
 	require.Equal(t, []Action{action(CreateTunnel, "cred1", ""), action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
 	require.Equal(t, []TunnelState{
@@ -329,7 +366,7 @@ func TestTunnelNoOpWhenEqual(t *testing.T) {
 
 	require.Empty(t, res.Problems)
 	require.Empty(t, res.Actions)
-	require.Equal(t, []string{"FindTunnel acct1 pco-abc", "TunnelConfig acct1 " + tun.ID}, f.Calls())
+	require.Equal(t, []string{"FindTunnel acct1 pco-abc", "TunnelConfig acct1 " + tun.ID, "Tunnels acct1 pco-abc_probe_"}, f.Calls())
 	require.Equal(t, []TunnelState{
 		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 1, Exists: true, Verified: true},
 	}, res.Tunnels)
@@ -548,6 +585,42 @@ func TestTunnelVerdictJudgedAgainstFreshWriter(t *testing.T) {
 	}
 }
 
+// TestTunnelVerdictWhenTheWriterCannotBeRead fails the read of leader.json
+// that a verdict is taken against: only a sentinel that is foreign whatever
+// leader.json holds makes the run foreign, a newer one is taken for a writer
+// of this install.
+func TestTunnelVerdictWhenTheWriterCannotBeRead(t *testing.T) {
+	newer, twin := writerAt(7, "n7"), writerAt(5, "zz")
+	cases := []struct {
+		name  string
+		rules []planner.IngressRule
+		want  WriterVerdict
+		says  string
+	}{
+		{"newer generation", rulesOf(newer, app), WriterStale,
+			"pco-abc in account acct1: the configuration was written by generation 7 nonce n7, newer than this writer; this writer is stale and stops"},
+		{"our generation, another nonce", rulesOf(twin, app), WriterForeign, "another installation"},
+		{"both", []planner.IngressRule{app, sentinelOf(newer), sentinelOf(twin), catchAll}, WriterForeign, "generation 5 nonce zz"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake("acct1")
+			f.SeedTunnel("acct1", testTunnel, tc.rules)
+			writer, _ := scripted(answer{us: ours, stored: ours}, answer{us: ours, stored: ours}, answer{err: errors.New("lease lost")})
+
+			res := reconcilerWith(Clients{"cred1": f}, writer).
+				Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", web)}, nil, Enforce)
+
+			require.Equal(t, tc.want, res.Verdict)
+			require.Empty(t, callsTo(f, "PutTunnelConfig"))
+			require.Len(t, res.Problems, 2)
+			require.Equal(t, "pco-abc in account acct1: reading the writer identity: lease lost", res.Problems[0])
+			require.Contains(t, res.Problems[1], tc.says)
+			require.Equal(t, []Action{action(PutConfig, "cred1", heldVerdict(tc.want))}, withoutDetail(res.Actions))
+		})
+	}
+}
+
 func TestTunnelForeignWriterStops(t *testing.T) {
 	f := newFake("acct1", "acct2")
 	twin := writerAt(5, "zz")
@@ -716,9 +789,11 @@ func TestTunnelFailureOnOneAccount(t *testing.T) {
 			drifted(f)
 			return &spy{API: f, configErrs: []error{statusError(http.StatusForbidden)}}, nil
 		}},
-		{"configuration not found", func(f *cffake.Fake) (cfapi.API, []string) {
+		{"configuration not found, nor the tunnel", func(f *cffake.Fake) (cfapi.API, []string) {
 			drifted(f)
-			return &spy{API: f, configErrs: []error{statusError(http.StatusNotFound)}}, nil
+			return &spy{API: f, configErrs: []error{statusError(http.StatusNotFound)}, refind: func() (cfapi.Tunnel, bool, error) {
+				return cfapi.Tunnel{}, false, nil
+			}}, nil
 		}},
 		{"lookup rate limited", func(f *cffake.Fake) (cfapi.API, []string) {
 			f.FailNext("tunnel.read", 1, rateLimited)
@@ -886,10 +961,10 @@ func TestTunnelConfigNotFoundAfterCreate(t *testing.T) {
 	cases := []struct {
 		name   string
 		seeded bool // the tunnel is there, but the first lookup misses it
-		writes bool
+		finds  int  // lookups in all
 	}{
-		{"created in this run", false, true},
-		{"found after a conflicting create", true, false},
+		{"created in this run", false, 1},
+		{"found after a conflicting create", true, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -903,18 +978,79 @@ func TestTunnelConfigNotFoundAfterCreate(t *testing.T) {
 			res := newReconciler(Clients{"cred1": s}, &clock{t0}).
 				Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
 
-			if !tc.writes {
-				require.Len(t, res.Problems, 1)
-				require.Contains(t, res.Problems[0], "pco-abc in account acct1: reading the configuration")
-				require.Empty(t, callsTo(f, "PutTunnelConfig"))
-				return
-			}
 			require.Empty(t, res.Problems)
+			require.Equal(t, tc.finds, s.finds)
 			require.Len(t, callsTo(f, "PutTunnelConfig"), 1)
 			require.True(t, res.Tunnels[0].Verified)
 			require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
 		})
 	}
+}
+
+// TestTunnelFoundWithoutConfiguration finds a tunnel whose configuration
+// answers 404, as one does when the process that created it died before its
+// first write: it is looked up again, and written only while it is still
+// there under the same id.
+func TestTunnelFoundWithoutConfiguration(t *testing.T) {
+	cases := []struct {
+		name   string
+		refind func(tun cfapi.Tunnel) (cfapi.Tunnel, bool, error)
+		writes bool
+		says   string
+	}{
+		{"still there", func(tun cfapi.Tunnel) (cfapi.Tunnel, bool, error) { return tun, true, nil }, true, ""},
+		{"gone", func(cfapi.Tunnel) (cfapi.Tunnel, bool, error) { return cfapi.Tunnel{}, false, nil }, false, ""},
+		{"another tunnel of that name", func(tun cfapi.Tunnel) (cfapi.Tunnel, bool, error) {
+			tun.ID = "00000000-0000-4000-8000-000000000099"
+			return tun, true, nil
+		}, false, ""},
+		{"lookup fails", func(cfapi.Tunnel) (cfapi.Tunnel, bool, error) {
+			return cfapi.Tunnel{}, false, errors.New("connection reset by peer")
+		}, false, "; looking it up again: connection reset by peer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake("acct1")
+			tun := f.SeedTunnel("acct1", testTunnel, nil)
+			s := &spy{API: f, configErrs: []error{statusError(http.StatusNotFound)}, refind: func() (cfapi.Tunnel, bool, error) {
+				return tc.refind(tun)
+			}}
+			writer, asked := scripted(answer{us: ours, stored: ours})
+
+			res := reconcilerWith(Clients{"cred1": s}, writer).
+				Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+
+			require.Equal(t, 2, s.finds, "looked up once more")
+			if !tc.writes {
+				require.Len(t, res.Problems, 1)
+				require.Equal(t, "pco-abc in account acct1: reading the configuration: "+statusError(http.StatusNotFound).Error()+tc.says, res.Problems[0])
+				require.Empty(t, callsTo(f, "PutTunnelConfig"))
+				require.False(t, res.Tunnels[0].Verified)
+				return
+			}
+			require.Empty(t, res.Problems)
+			require.Equal(t, 3, *asked, "once for the run, once before the configuration read, once before the second lookup")
+			require.Len(t, callsTo(f, "PutTunnelConfig"), 1)
+			require.True(t, res.Tunnels[0].Verified)
+			require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
+		})
+	}
+}
+
+func TestTunnelFoundWithoutConfigurationFencedByWriter(t *testing.T) {
+	f := newFake("acct1")
+	tun := f.SeedTunnel("acct1", testTunnel, nil)
+	s := &spy{API: f, configErrs: []error{statusError(http.StatusNotFound)}, refind: func() (cfapi.Tunnel, bool, error) {
+		return tun, true, nil
+	}}
+	writer, _ := scripted(answer{us: ours, stored: ours}, answer{us: ours, stored: ours}, answer{us: ours, stored: writerAt(6, "n6")})
+
+	res := reconcilerWith(Clients{"cred1": s}, writer).
+		Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+
+	require.Equal(t, WriterStale, res.Verdict)
+	require.Equal(t, 1, s.finds, "no second lookup for a write that may not follow")
+	require.Empty(t, callsTo(f, "PutTunnelConfig"))
 }
 
 func TestTunnelCreateConflictFindsTunnel(t *testing.T) {
@@ -932,6 +1068,7 @@ func TestTunnelCreateConflictFindsTunnel(t *testing.T) {
 		"TunnelConfig acct1 " + tun.ID,
 		"PutTunnelConfig acct1 " + tun.ID,
 		"TunnelConfig acct1 " + tun.ID,
+		"Tunnels acct1 pco-abc_probe_",
 	}, f.Calls())
 	require.Equal(t, []Action{
 		action(CreateTunnel, "cred1", "tunnel already exists"),

@@ -40,11 +40,12 @@ type TunnelReconciler struct {
 // the client of its credential.
 //
 // writer returns the identity this process writes as (us) and leader.json as
-// stored now (stored). Run asks it before its first call to Cloudflare, in
-// Enforce mode again before each create and before it reads the
-// configuration of each tunnel, and once more before it stops on the sentinel
-// of another writer. It should fail
-// whenever this process may not write at all, as when its lease is lost.
+// stored now (stored). Run asks it before its first call to Cloudflare; in
+// Enforce mode again before each create, before it reads the configuration of
+// each tunnel, before it looks a tunnel up again whose configuration was not
+// found, and before it deletes a probe tunnel; and once more before it stops
+// on the sentinel of another writer. It should fail whenever this process may
+// not write at all, as when its lease is lost.
 func NewTunnelReconciler(clients Clients, writer func() (us, stored planner.Writer, err error), now func() time.Time, log zerolog.Logger) *TunnelReconciler {
 	return &TunnelReconciler{
 		clients: clients,
@@ -80,7 +81,14 @@ type TunnelResult struct {
 // A tunnel the run could not look up or create, or did not reach because it
 // stopped, is returned with Unknown set. Callers must never prune connectors
 // or records for an Unknown tunnel: only Exists == false && !Unknown means
-// that the tunnel is absent.
+// that the tunnel is absent. The result's Tunnels, with its Verdict, are what
+// the DNS run of the same cycle must be given: a record is pointed only at a
+// tunnel this run verified.
+//
+// An enforcing run that did not stop also deletes the probe tunnels the
+// credential check left behind in the accounts whose tunnel it looked up: a
+// tunnel named as a probe of this install, more than ten minutes old and
+// without connectors. It deletes no other tunnel.
 func (r *TunnelReconciler) Run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -99,6 +107,9 @@ func (r *TunnelReconciler) Run(ctx context.Context, plans []planner.TunnelPlan, 
 		var st TunnelState
 		st, goOn = run.reconcile(ctx, t)
 		run.res.Tunnels = append(run.res.Tunnels, st)
+	}
+	if goOn && mode == Enforce {
+		run.sweepProbeTunnels(ctx)
 	}
 	return run.res
 }
@@ -295,6 +306,14 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 	case fresh && cfapi.IsNotFound(err):
 		// A tunnel created moments ago may not have a configuration yet.
 		remote = cfapi.TunnelConfig{}
+	case cfapi.IsNotFound(err):
+		// So may one whose creator stopped before its first write, as long
+		// as it is still the tunnel of that name.
+		still, goOn := run.stillThere(ctx, api, t, st.ID, err)
+		if !still {
+			return goOn
+		}
+		remote = cfapi.TunnelConfig{}
 	default:
 		run.problem(fmt.Sprintf("%s: reading the configuration: %v", t, err))
 		return true
@@ -326,35 +345,84 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 	return true
 }
 
+// stillThere looks up again the tunnel of t, found before, whose
+// configuration read answered notFound. still reports whether it is the
+// tunnel of that name under the same id, which then has no configuration
+// yet; otherwise the read is a problem. goOn says whether the run goes on.
+func (run *tunnelRun) stillThere(ctx context.Context, api cfapi.API, t target, id string, notFound error) (still, goOn bool) {
+	// The answer decides a write, so the writer is read just before it.
+	if run.mode == Enforce && !run.reread(t) {
+		return false, false
+	}
+	tun, found, err := api.FindTunnel(ctx, t.account, t.name)
+	if err == nil && found && tun.ID == id {
+		return true, true
+	}
+	msg := fmt.Sprintf("%s: reading the configuration: %v", t, notFound)
+	if err != nil {
+		msg += fmt.Sprintf("; looking it up again: %v", err)
+	}
+	run.problem(msg)
+	return false, true
+}
+
 // refuse stops the run on remote rules whose sentinels do not let this writer
 // proceed. A takeover during the run shows as a sentinel newer than ours, so
 // the verdict is taken again against leader.json as it is now: a newer writer
 // that leader.json names makes this one stale, while a sentinel it does not
-// explain stays foreign.
+// explain stays foreign. When leader.json cannot be read, only a sentinel
+// that is foreign whatever it holds makes the verdict foreign; a newer one is
+// taken for a writer of this install.
 func (run *tunnelRun) refuse(t target, detail string, remote []planner.IngressRule) {
-	stored := run.us
-	us, fresh, err := run.r.writer()
+	us, stored, err := run.r.writer()
+	var v WriterVerdict
+	var why string
 	switch {
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: reading the writer identity: %v", t, err))
+		v, why = judgeUnread(run.us, remote)
 	case us != run.us:
-		run.act(t, PutConfig, detail, heldVerdict(WriterStale))
-		run.stop(t.String()+": ", WriterStale, writerFault(run.us, us, fresh))
-		return
+		v, why = WriterStale, writerFault(run.us, us, stored)
 	default:
-		stored = fresh
-	}
-	// The table answers proceed from the sentinels and us alone, and those
-	// did not let this writer proceed: the verdict stops the run either way.
-	v, by := judgeConfig(run.us, stored, remote)
-	why := fmt.Sprintf("the configuration was written by generation %d nonce %s, which leader.json does not know: "+
-		"another installation uses install id %s, or the store was lost (pco setup --recover)",
-		by.Generation, by.Nonce, run.us.InstallID)
-	if v == WriterStale {
-		why = writerFault(run.us, run.us, stored)
+		// The table answers proceed from the sentinels and us alone, and
+		// those did not let this writer proceed: the verdict stops the run
+		// either way.
+		var by planner.Writer
+		v, by = judgeConfig(run.us, stored, remote)
+		why = foreignWhy(run.us, by)
+		if v == WriterStale {
+			why = writerFault(run.us, run.us, stored)
+		}
 	}
 	run.act(t, PutConfig, detail, heldVerdict(v))
 	run.stop(t.String()+": ", v, why)
+}
+
+// judgeUnread is the verdict on remote rules that do not let us proceed, when
+// leader.json cannot be read. A sentinel of our generation with another nonce
+// is foreign whatever leader.json holds; a newer one leader.json may name, so
+// the writer is taken to be stale.
+func judgeUnread(us planner.Writer, remote []planner.IngressRule) (WriterVerdict, string) {
+	var newer planner.Writer
+	for _, rule := range remote {
+		w, ok := planner.ParseSentinel(rule.Hostname)
+		switch {
+		case !ok || JudgeWriter(us, w, true, us) == WriterProceed:
+		case JudgeWriter(us, w, true, w) == WriterForeign:
+			// Foreign even with leader.json naming that very writer.
+			return WriterForeign, foreignWhy(us, w)
+		case newer == (planner.Writer{}):
+			newer = w
+		}
+	}
+	return WriterStale, fmt.Sprintf("the configuration was written by generation %d nonce %s, newer than this writer",
+		newer.Generation, newer.Nonce)
+}
+
+func foreignWhy(us, by planner.Writer) string {
+	return fmt.Sprintf("the configuration was written by generation %d nonce %s, which leader.json does not know: "+
+		"another installation uses install id %s, or the store was lost (pco setup --recover)",
+		by.Generation, by.Nonce, us.InstallID)
 }
 
 // putWait returns how long the configuration of a tunnel must wait before it

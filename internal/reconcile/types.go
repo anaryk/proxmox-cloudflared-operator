@@ -19,6 +19,7 @@ type ActionKind string
 
 const (
 	CreateTunnel ActionKind = "create-tunnel"
+	DeleteTunnel ActionKind = "delete-tunnel" // only ever a probe tunnel the credential check left behind
 	PutConfig    ActionKind = "put-config"
 	CreateRecord ActionKind = "create-record"
 	UpdateRecord ActionKind = "update-record"
