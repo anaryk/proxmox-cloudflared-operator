@@ -24,9 +24,11 @@ const (
 	defaultDialTimeout = 2 * time.Second
 	arpRequests        = 3
 	arpInterval        = 100 * time.Millisecond
-	// maxClaimants is more MACs than a guest plausibly has NICs; the address
-	// is rejected long before, so reading on proves nothing more.
-	maxClaimants = 8
+	// maxClaimants bounds the MACs one probe collects. A guest may have all
+	// 32 of its NICs on one bridge and answer from each; reaching the bound
+	// fails the probe, since a foreign claim could be among the frames not
+	// read.
+	maxClaimants = 64
 	dumpAttempts = 3
 	etherTypeARP = 0x0806
 	ethHeaderLen = 14
@@ -36,6 +38,9 @@ const (
 type hostProber struct {
 	arpWindow   time.Duration
 	dialTimeout time.Duration
+	// now schedules the ARP exchange; its read deadlines must be real time
+	// unless the connection is a test double.
+	now func() time.Time
 }
 
 // NewHostProber returns the Prober of this host. A zero arpWindow selects
@@ -47,7 +52,7 @@ func NewHostProber(arpWindow, dialTimeout time.Duration) Prober {
 	if dialTimeout <= 0 {
 		dialTimeout = defaultDialTimeout
 	}
-	return &hostProber{arpWindow: arpWindow, dialTimeout: dialTimeout}
+	return &hostProber{arpWindow: arpWindow, dialTimeout: dialTimeout, now: time.Now}
 }
 
 func (p *hostProber) Interfaces(context.Context) ([]HostIface, error) {
@@ -110,19 +115,20 @@ func (p *hostProber) ARP(ctx context.Context, iface string, addr netip.Addr) ([]
 	// A deadline in the past wakes the pending read as soon as ctx ends.
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetReadDeadline(time.Unix(1, 0)) })
 	defer stop()
-	return p.exchange(ctx, conn, req, addr)
+	return p.exchange(ctx, conn, iface, req, addr)
 }
 
 // exchange sends req arpRequests times, arpInterval apart, and collects the
-// MACs that claim addr until the window ends or maxClaimants are found.
-func (p *hostProber) exchange(ctx context.Context, conn net.PacketConn, req []byte, addr netip.Addr) ([]string, error) {
-	start := time.Now()
+// MACs that claim addr until the window ends. Finding maxClaimants of them is
+// an error rather than a partial answer.
+func (p *hostProber) exchange(ctx context.Context, conn net.PacketConn, iface string, req []byte, addr netip.Addr) ([]string, error) {
+	start := p.now()
 	end := start.Add(p.arpWindow)
 	to := &packet.Addr{HardwareAddr: broadcastMAC()}
 	buf := make([]byte, 128)
 	var macs []string
-	for sent := 0; time.Now().Before(end); {
-		if sent < arpRequests && !time.Now().Before(start.Add(time.Duration(sent)*arpInterval)) {
+	for sent := 0; p.now().Before(end); {
+		if sent < arpRequests && !p.now().Before(start.Add(time.Duration(sent)*arpInterval)) {
 			if _, err := conn.WriteTo(req, to); err != nil {
 				return nil, fmt.Errorf("sending request: %w", err)
 			}
@@ -144,7 +150,7 @@ func (p *hostProber) exchange(ctx context.Context, conn net.PacketConn, req []by
 		switch {
 		case err == nil:
 			if macs = appendClaimants(macs, buf[:n], addr, req); len(macs) == maxClaimants {
-				return macs, nil
+				return nil, fmt.Errorf("too many stations claim %s on %s", addr, iface)
 			}
 		case !errors.Is(err, os.ErrDeadlineExceeded):
 			return nil, fmt.Errorf("reading replies: %w", err)

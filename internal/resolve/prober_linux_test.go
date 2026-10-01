@@ -172,11 +172,7 @@ func TestLinuxAppendClaimants(t *testing.T) {
 	guest := mustMAC(t, "bc:24:11:00:00:01")
 	stranger := mustMAC(t, "bc:24:11:00:00:02")
 	hostMAC := mustMAC(t, "bc:24:11:00:00:fe")
-	seven := []string{
-		"02:00:00:00:00:01", "02:00:00:00:00:02", "02:00:00:00:00:03", "02:00:00:00:00:04",
-		"02:00:00:00:00:05", "02:00:00:00:00:06", "02:00:00:00:00:07",
-	}
-	eight := append(slices.Clone(seven), "02:00:00:00:00:08")
+	almostFull, full := stationMACs(maxClaimants-1), stationMACs(maxClaimants)
 
 	reply := arpFrame(t, guest, arp.OperationReply, guest, addr, host)
 	forged := arpFrame(t, stranger, arp.OperationReply, guest, addr, host)
@@ -205,8 +201,8 @@ func TestLinuxAppendClaimants(t *testing.T) {
 		{name: "claim sent with this host's MAC as source", frame: arpFrame(t, hostMAC, arp.OperationRequest, stranger, addr, addr), expect: []string{"bc:24:11:00:00:02", "bc:24:11:00:00:fe"}},
 		{name: "copy of the probe sent here", frame: ownProbe, sent: ownProbe},
 		{name: "padded copy of the probe sent here", frame: append(slices.Clone(ownProbe), make([]byte, 18)...), sent: ownProbe},
-		{name: "stops at eight", macs: seven, frame: forged, expect: append(slices.Clone(seven), "bc:24:11:00:00:01")},
-		{name: "already eight", macs: eight, frame: reply, expect: eight},
+		{name: "stops at the limit", macs: almostFull, frame: forged, expect: append(slices.Clone(almostFull), "bc:24:11:00:00:01")},
+		{name: "already at the limit", macs: full, frame: reply, expect: full},
 		{name: "truncated frame", frame: reply[:20]},
 		{name: "not ARP", frame: ethFrame(hostMAC, guest, 0x0800, make([]byte, 46))},
 	}
@@ -219,6 +215,94 @@ func TestLinuxAppendClaimants(t *testing.T) {
 			require.Equal(t, tc.expect, appendClaimants(slices.Clone(tc.macs), tc.frame, addr, sent))
 		})
 	}
+}
+
+func TestLinuxExchange(t *testing.T) {
+	addr := netip.MustParseAddr("10.20.0.5")
+	host := netip.MustParseAddr("10.20.0.1")
+	req, err := arpRequest(mustMAC(t, "bc:24:11:00:00:fe"), host, addr)
+	require.NoError(t, err)
+	// replies returns one reply for addr from each of the stations first to
+	// first+n-1, each sent from the MAC it names.
+	replies := func(first, n int) [][]byte {
+		out := make([][]byte, 0, n)
+		for i := first; i < first+n; i++ {
+			mac := net.HardwareAddr{0x02, 0, 0, 0, byte(i >> 8), byte(i)}
+			out = append(out, arpFrame(t, mac, arp.OperationReply, mac, addr, host))
+		}
+		return out
+	}
+	foreign := arpFrame(t, mustMAC(t, "bc:24:11:00:00:66"), arp.OperationReply, mustMAC(t, "bc:24:11:00:00:66"), addr, host)
+
+	run := func(ctx context.Context, frames [][]byte) ([]string, int, error) {
+		clock := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+		conn := &scriptedConn{clock: &clock, frames: frames}
+		p := &hostProber{arpWindow: defaultARPWindow, now: func() time.Time { return clock }}
+		macs, err := p.exchange(ctx, conn, "vmbr0", req, addr)
+		return macs, conn.sent, err
+	}
+
+	t.Run("no answer", func(t *testing.T) {
+		macs, sent, err := run(t.Context(), nil)
+		require.NoError(t, err)
+		require.Empty(t, macs)
+		require.Equal(t, arpRequests, sent)
+	})
+
+	t.Run("a guest with 32 NICs", func(t *testing.T) {
+		macs, _, err := run(t.Context(), replies(1, 32))
+		require.NoError(t, err)
+		require.Equal(t, stationMACs(32), macs)
+	})
+
+	t.Run("a foreign claim after the guest's own", func(t *testing.T) {
+		macs, _, err := run(t.Context(), append(replies(1, 32), foreign))
+		require.NoError(t, err)
+		require.Len(t, macs, 33)
+		require.Contains(t, macs, "bc:24:11:00:00:66")
+	})
+
+	t.Run("too many stations", func(t *testing.T) {
+		_, _, err := run(t.Context(), append(replies(1, maxClaimants), foreign))
+		require.EqualError(t, err, "too many stations claim 10.20.0.5 on vmbr0")
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, _, err := run(ctx, replies(1, 1))
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+// scriptedConn hands out queued frames. Once they are used up, it moves the
+// clock to the read deadline as if nothing more had arrived.
+type scriptedConn struct {
+	net.PacketConn
+	clock    *time.Time
+	frames   [][]byte
+	deadline time.Time
+	sent     int
+}
+
+func (c *scriptedConn) WriteTo(b []byte, _ net.Addr) (int, error) {
+	c.sent++
+	return len(b), nil
+}
+
+func (c *scriptedConn) SetReadDeadline(t time.Time) error {
+	c.deadline = t
+	return nil
+}
+
+func (c *scriptedConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	if len(c.frames) == 0 {
+		*c.clock = c.deadline
+		return 0, nil, os.ErrDeadlineExceeded
+	}
+	n := copy(b, c.frames[0])
+	c.frames = c.frames[1:]
+	return n, nil, nil
 }
 
 func TestLinuxSourceAddr(t *testing.T) {
@@ -403,18 +487,18 @@ type bridgeLab struct {
 func newBridgeLab(t *testing.T) *bridgeLab {
 	t.Helper()
 	if os.Geteuid() != 0 {
-		t.Skip("needs root to build a bridge and network namespaces")
+		skipLab(t, "needs root to build a bridge and network namespaces")
 	}
 	if _, err := netlink.LinkByName(labBridge); err == nil {
-		t.Skipf("%s already exists, probably left by an earlier run that was killed; remove it with: ip link del %s", labBridge, labBridge)
+		skipLab(t, "%s already exists, probably left by an earlier run that was killed; remove it with: ip link del %s", labBridge, labBridge)
 	}
 	for _, name := range []string{labPort1, labPort2} {
 		if _, err := netlink.LinkByName(name); err == nil {
-			t.Skipf("%s already exists and may belong to a guest; not touching it", name)
+			skipLab(t, "%s already exists and may belong to a guest; not touching it", name)
 		}
 	}
 	if what, ok := labNetInUse(t); ok {
-		t.Skipf("%s overlaps the test network 10.99.0.0/24", what)
+		skipLab(t, "%s overlaps the test network 10.99.0.0/24", what)
 	}
 
 	br := addLabLink(t, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: labBridge}})
@@ -447,6 +531,16 @@ func newBridgeLab(t *testing.T) *bridgeLab {
 	require.NoError(t, err)
 	lab.bridgeMAC = br.Attrs().HardwareAddr.String()
 	return lab
+}
+
+// skipLab skips the bridge test, or fails it when PCO_REQUIRE_LINUX_TESTS=1
+// says this environment exists to run it.
+func skipLab(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("PCO_REQUIRE_LINUX_TESTS") == "1" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 // labNetInUse reports an address or route of the host, in any routing table,
@@ -643,6 +737,16 @@ func arpFrame(t *testing.T, src net.HardwareAddr, op arp.Operation, sender net.H
 
 func ethFrame(dst, src net.HardwareAddr, etherType uint16, payload []byte) []byte {
 	return slices.Concat(dst, src, []byte{byte(etherType >> 8), byte(etherType)}, payload)
+}
+
+// stationMACs returns n distinct locally administered MACs, the nth being
+// 02:00:00:00:00:<n> for small n.
+func stationMACs(n int) []string {
+	out := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, net.HardwareAddr{0x02, 0, 0, 0, byte(i >> 8), byte(i)}.String())
+	}
+	return out
 }
 
 func mustMAC(t *testing.T, s string) net.HardwareAddr {
