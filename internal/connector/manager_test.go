@@ -1,8 +1,10 @@
 package connector
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -610,17 +612,19 @@ func TestPruneRejectsAnInvalidIDInKeepBeforeRemovingAnything(t *testing.T) {
 
 func TestDotNamesAreInvisibleToPruneAndPortAllocation(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	writeFile(t, dir, ".stray.env", "METRICS_ADDR=127.0.0.1:20300\n")
-	writeFile(t, dir, ".stray.token", "x")
-	writeFile(t, dir, pendingOf(idC), "")
+	// Each of these would name a port or a connector if the dot did not hide it.
+	hidden := []string{"." + idC + ".env", "." + idC + ".token", ".stray.pending"}
+	writeFile(t, dir, hidden[0], "METRICS_ADDR=127.0.0.1:20300\n")
+	writeFile(t, dir, hidden[1], "x")
+	writeFile(t, dir, hidden[2], "")
 
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.Equal(t, 20300, portOf(t, dir, idA))
+	require.Equal(t, 20300, portOf(t, dir, idA), "a hidden env file reserves no port")
 	sd.reset()
-	require.NoError(t, m.Prune(t.Context(), []string{idA}))
+	require.NoError(t, m.Prune(t.Context(), []string{idA}), "hidden names are not reported")
 
 	require.Empty(t, sd.changes())
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", ".stray.env", ".stray.token", pendingOf(idC)}, listDir(t, dir))
+	require.ElementsMatch(t, append([]string{idA + ".token", idA + ".env"}, hidden...), listDir(t, dir))
 }
 
 func TestPruneRemovesThePendingMarker(t *testing.T) {
@@ -706,3 +710,158 @@ func TestEnsureRestartsAnActiveUnitWhoseEnvFileIsRewritten(t *testing.T) {
 }
 
 func pendingOf(id string) string { return "." + id + ".pending" }
+
+// undeletable puts a directory with content in place of the marker of tunnel A:
+// it can be seen, and removing it fails on every platform.
+func undeletable(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, pendingOf(idA))
+	require.NoError(t, os.RemoveAll(path))
+	require.NoError(t, os.MkdirAll(filepath.Join(path, "x"), 0o700))
+}
+
+func TestEnsureRestartsOnceForAMarkerItCannotClear(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	undeletable(t, dir)
+	sd.reset()
+
+	for range 3 {
+		err := m.Ensure(t.Context(), idA, "token-1")
+		require.ErrorContains(t, err, "clearing the pending marker", "the problem stays visible")
+		require.ErrorContains(t, err, pendingOf(idA))
+	}
+	require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "a healthy connector is not restarted every poll")
+
+	sd.reset()
+	require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-2"), "clearing the pending marker")
+	require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "a new token is applied whatever the marker says")
+	require.Equal(t, "token-2", readFile(t, dir, idA+".token"))
+
+	sd.reset()
+	require.Error(t, m.Ensure(t.Context(), idA, "token-2"))
+	require.Empty(t, sd.changes())
+}
+
+func TestEnsureStartsOnceForAMarkerItCannotClear(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	undeletable(t, dir)
+
+	for range 3 {
+		require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-1"), "clearing the pending marker")
+	}
+
+	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes(), "the unit that was started is not restarted")
+}
+
+func TestEnsureStartsAStoppedUnitWhoseMarkerCannotBeCleared(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	undeletable(t, dir)
+	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+	delete(sd.active, unitA)
+	sd.reset()
+
+	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+
+	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
+}
+
+func TestEnsureRestartsAgainWhenTheMarkerIsReplaced(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	undeletable(t, dir)
+	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, pendingOf(idA))))
+	sd.reset()
+
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"), "nothing is pending any more")
+	require.Empty(t, sd.changes())
+
+	writeFile(t, dir, pendingOf(idA), "") // a marker of another change
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
+}
+
+func TestEnsureRestartsOnceForAMarkerItCannotStat(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	undeletable(t, dir) // so that clearing it fails as well
+	m.lstat = func(name string) (fs.FileInfo, error) {
+		if filepath.Base(name) == pendingOf(idA) {
+			return nil, errors.New("input/output error")
+		}
+		return os.Lstat(name)
+	}
+	sd.reset()
+
+	for range 3 {
+		require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+	}
+
+	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
+}
+
+func TestEnsureCarriesOnWhenAStaleTemporaryFileCannotBeRemoved(t *testing.T) {
+	sd := newFakeSystemd()
+	dir := filepath.Join(t.TempDir(), "tunnels")
+	var logged bytes.Buffer
+	m := NewManager(sd, dir, nil, zerolog.New(&logged))
+	// A non-empty directory cannot be removed with os.Remove.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".stuck.tmp", "x"), 0o700))
+	writeFile(t, dir, "."+idB+".token.1.tmp", "a copy of a token")
+
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-secret"))
+
+	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
+	require.NoFileExists(t, filepath.Join(dir, "."+idB+".token.1.tmp"), "the others are still removed")
+	require.Contains(t, logged.String(), `"level":"warn"`)
+	require.Contains(t, logged.String(), ".stuck.tmp")
+	require.NotContains(t, logged.String(), "token-secret")
+	require.NotContains(t, logged.String(), "a copy of a token")
+}
+
+func TestPruneReportsAStaleTemporaryFileItCannotRemove(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".stuck.tmp", "x"), 0o700))
+	sd.reset()
+
+	err := m.Prune(t.Context(), []string{idA})
+
+	require.ErrorContains(t, err, ".stuck.tmp")
+	require.Equal(t, []string{"DisableNow " + unitB}, sd.changes(), "the rest of the work is done")
+}
+
+func TestPruneRemovesAnOrphanMarker(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	// An empty directory in place of the env file makes its replacement fail.
+	// The marker is written before that, so it is what a failed first Ensure
+	// leaves of a tunnel that never got a token or a unit.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, idA+".env"), 0o700))
+
+	require.Error(t, m.Ensure(t.Context(), idA, "token-a"))
+
+	require.FileExists(t, filepath.Join(dir, pendingOf(idA)), "the marker comes before the first file is replaced")
+	require.NoFileExists(t, filepath.Join(dir, idA+".token"))
+	require.Empty(t, sd.calls)
+
+	require.NoError(t, m.Prune(t.Context(), nil))
+
+	require.Empty(t, listDir(t, dir))
+}
+
+func TestPruneKeepsTheMarkerOfAKeptTunnel(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	sd.fail["Restart "+unitA] = errBoom
+	require.Error(t, m.Ensure(t.Context(), idA, "token-a-rotated"))
+	writeFile(t, dir, pendingOf(idB), "")
+	sd.reset()
+
+	require.NoError(t, m.Prune(t.Context(), []string{idA}))
+
+	require.Equal(t, []string{"DisableNow " + unitB}, sd.changes())
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", pendingOf(idA)}, listDir(t, dir))
+}

@@ -37,11 +37,6 @@ func tokenFile(id string) string { return id + tokenExt }
 
 func envFile(id string) string { return id + envExt }
 
-// pendingFile is the marker that says the files of a tunnel changed and its
-// unit has not been started or restarted since. It is hidden, like the
-// temporary files, so that nothing that lists the connectors sees it.
-func pendingFile(id string) string { return "." + id + pendingExt }
-
 // hidden reports whether a name in the directory belongs to the manager's own
 // bookkeeping rather than to a connector.
 func hidden(name string) bool { return strings.HasPrefix(name, ".") }
@@ -156,7 +151,7 @@ func removeStaleTemps(dir string) error {
 	var errs []error
 	for _, e := range entries {
 		name := e.Name()
-		if !e.Type().IsRegular() || !hidden(name) || !strings.HasSuffix(name, tempExt) {
+		if !hidden(name) || !strings.HasSuffix(name, tempExt) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
