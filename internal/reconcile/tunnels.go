@@ -19,8 +19,7 @@ const (
 	// of one tunnel.
 	putInterval = 15 * time.Second
 
-	notFoundService = "http_status:404"
-	heldObserve     = "observe mode"
+	heldObserve = "observe mode"
 )
 
 // TunnelReconciler brings the tunnel of each account in line with its plan.
@@ -143,15 +142,9 @@ func targets(plans []planner.TunnelPlan, known map[string]string, us planner.Wri
 	return out
 }
 
-func sentinelRule(us planner.Writer) planner.IngressRule {
-	return planner.IngressRule{Hostname: planner.SentinelHostname(us), Service: notFoundService}
-}
-
-func catchAllRule() planner.IngressRule { return planner.IngressRule{Service: notFoundService} }
-
 // emptyRules is the ingress of a tunnel that serves nothing.
 func emptyRules(us planner.Writer) []planner.IngressRule {
-	return []planner.IngressRule{sentinelRule(us), catchAllRule()}
+	return []planner.IngressRule{planner.SentinelRule(us), planner.CatchAllRule()}
 }
 
 // tunnelRun is the state of one Run.
@@ -252,9 +245,9 @@ func (run *tunnelRun) planFault(t target) string {
 	switch {
 	case t.name != planner.TunnelName(run.us.InstallID):
 		return "the plan is not for the tunnel of this install, " + planner.TunnelName(run.us.InstallID)
-	case n < 2 || t.rules[n-1] != catchAllRule():
+	case n < 2 || t.rules[n-1] != planner.CatchAllRule():
 		return "the planned rules do not end with the catch-all"
-	case t.rules[n-2] != sentinelRule(run.us):
+	case t.rules[n-2] != planner.SentinelRule(run.us):
 		return "the planned rules lack the sentinel of this writer before the catch-all"
 	}
 	return ""

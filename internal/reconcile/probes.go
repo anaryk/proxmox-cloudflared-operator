@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
 // probeAge is how old a probe record must be before it counts as left
@@ -20,8 +20,8 @@ const probeAge = 10 * time.Minute
 // is an ordinary record of this install.
 func (run *dnsRun) isProbe(rec cfapi.Record) bool {
 	return isType(rec, "TXT") &&
-		strings.HasPrefix(strings.ToLower(rec.Name), credentials.ProbeRecordPrefix) &&
-		rec.Comment == run.marker+" probe"
+		strings.HasPrefix(strings.ToLower(rec.Name), planner.ProbeRecordPrefix) &&
+		rec.Comment == planner.ProbeRecordComment(run.r.s.InstallID)
 }
 
 // leftBehind reports whether a probe is old enough to be swept. A probe whose

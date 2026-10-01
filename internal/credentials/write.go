@@ -11,10 +11,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
-// ProbeRecordPrefix begins the name of every probe record, so that a probe
-// left behind can be told from the records that publish hostnames.
-const ProbeRecordPrefix = "_pco-probe-"
-
 const (
 	probeContent = "pco permission probe"
 
@@ -22,10 +18,7 @@ const (
 	cleanupTimeout = 30 * time.Second
 )
 
-// probeComment is the comment of a probe record. It starts with the marker of
-// the install, so that anything that sweeps the install's records finds a
-// probe that was left behind.
-func (r *run) probeComment() string { return planner.DNSMarker(r.checker.installID) + " probe" }
+func (r *run) probeComment() string { return planner.ProbeRecordComment(r.checker.installID) }
 
 // writeProbe is one write probe, which creates an object and deletes it again.
 // Run only ever deletes an object it knows to be its own: the one a create
@@ -41,7 +34,7 @@ type writeProbe struct {
 }
 
 func (r *run) probeDNSWrite(ctx context.Context, z cfapi.Zone) {
-	name := ProbeRecordPrefix + r.suffix + "." + z.Name
+	name := planner.ProbeRecordPrefix + r.suffix + "." + z.Name
 	p := writeProbe{
 		r: r, capability: CapDNSWrite, scope: zoneScope(z), kind: "record", name: name,
 		hint: grant(permDNSEdit, z.Name),
@@ -63,7 +56,7 @@ func (r *run) probeDNSWrite(ctx context.Context, z cfapi.Zone) {
 }
 
 func (r *run) probeTunnelWrite(ctx context.Context, a cfapi.Account) {
-	name := planner.TunnelName(r.checker.installID) + "-probe-" + r.suffix
+	name := planner.ProbeTunnelName(r.checker.installID, r.suffix)
 	p := writeProbe{
 		r: r, capability: CapTunnelWrite, scope: accountScope(a), kind: "tunnel", name: name,
 		hint: grant(permTunnelEdit, a.Name),

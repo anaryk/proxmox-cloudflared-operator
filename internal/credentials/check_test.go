@@ -19,7 +19,7 @@ import (
 const (
 	install     = "abc"
 	probeRecord = "_pco-probe-r4nd.example.com"
-	probeTunnel = "pco-abc-probe-r4nd"
+	probeTunnel = "pco-abc_probe_r4nd"
 )
 
 var t0 = time.Date(2026, time.March, 4, 5, 6, 7, 0, time.UTC)
@@ -714,7 +714,7 @@ func TestOnlyObjectsItCreatedAreTouched(t *testing.T) {
 	f.SeedRecord("zone1", cfapi.Record{Type: "TXT", Name: "_pco-probe-old.example.com", Content: "pco permission probe", Comment: "pco:abc probe"})
 	f.SeedRecord("zone1", cfapi.Record{Type: "A", Name: "www.example.com", Content: "192.0.2.1"})
 	f.SeedTunnel("acct1", "pco-abc", nil)
-	f.SeedTunnel("acct1", "pco-abc-probe-old", nil)
+	f.SeedTunnel("acct1", "pco-abc_probe_old", nil)
 	f.SeedTunnel("acct1", "someone-elses", nil)
 	records, tunnels := f.RecordsIn("zone1"), f.TunnelsIn("acct1")
 

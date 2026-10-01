@@ -310,10 +310,7 @@ func (b *builder) tunnels() []TunnelPlan {
 	for _, id := range slices.Sorted(maps.Keys(b.live)) {
 		rules := b.rules[id]
 		slices.SortStableFunc(rules, func(x, y IngressRule) int { return hostname.Compare(x.Hostname, y.Hostname) })
-		rules = append(rules,
-			IngressRule{Hostname: SentinelHostname(b.in.Writer), Service: notFoundService},
-			IngressRule{Service: notFoundService},
-		)
+		rules = append(rules, SentinelRule(b.in.Writer), CatchAllRule())
 		out = append(out, TunnelPlan{
 			AccountID:    id,
 			CredentialID: b.zones.credential[id],

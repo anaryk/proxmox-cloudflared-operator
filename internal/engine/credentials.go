@@ -190,7 +190,7 @@ func ownedRecord(rec cfapi.Record, marker string) bool {
 		return false
 	}
 	probe := strings.EqualFold(rec.Type, "TXT") &&
-		strings.HasPrefix(strings.ToLower(rec.Name), credentials.ProbeRecordPrefix) &&
+		strings.HasPrefix(strings.ToLower(rec.Name), planner.ProbeRecordPrefix) &&
 		rec.Comment == marker+" probe"
 	return !probe
 }
