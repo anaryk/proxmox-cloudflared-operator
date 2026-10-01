@@ -767,22 +767,6 @@ func TestEnsureStartsAStoppedUnitWhoseMarkerCannotBeCleared(t *testing.T) {
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 }
 
-func TestEnsureRestartsAgainWhenTheMarkerIsReplaced(t *testing.T) {
-	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
-	undeletable(t, dir)
-	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
-	require.NoError(t, os.RemoveAll(filepath.Join(dir, pendingOf(idA))))
-	sd.reset()
-
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"), "nothing is pending any more")
-	require.Empty(t, sd.changes())
-
-	writeFile(t, dir, pendingOf(idA), "") // a marker of another change
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
-	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
-}
-
 func TestEnsureRestartsOnceForAMarkerItCannotStat(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))

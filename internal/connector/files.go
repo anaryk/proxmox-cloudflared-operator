@@ -138,25 +138,33 @@ func writeAtomic(path string, data []byte, mode fs.FileMode) (err error) {
 	return os.Rename(tmp.Name(), path)
 }
 
+// staleFailure is a stale temporary file that could not be removed, or the
+// directory that could not be listed to find them.
+type staleFailure struct {
+	name string
+	err  error
+}
+
 // removeStaleTemps removes the temporary files that a write interrupted
 // between creating and renaming leaves behind. One of them may hold a token.
-func removeStaleTemps(dir string) error {
+func removeStaleTemps(dir string) []staleFailure {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("listing %s: %w", dir, err)
+		return []staleFailure{{dir, fmt.Errorf("listing %s: %w", dir, err)}}
 	}
-	var errs []error
+	var failed []staleFailure
 	for _, e := range entries {
 		name := e.Name()
 		if !hidden(name) || !strings.HasSuffix(name, tempExt) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			errs = append(errs, fmt.Errorf("removing %s: %w", filepath.Join(dir, name), err))
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			failed = append(failed, staleFailure{path, fmt.Errorf("removing %s: %w", path, err)})
 		}
 	}
-	return errors.Join(errs...)
+	return failed
 }

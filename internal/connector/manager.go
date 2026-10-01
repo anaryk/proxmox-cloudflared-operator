@@ -44,8 +44,9 @@ type Manager struct {
 	firstPort int                               // where metrics ports are allocated from
 	lstat     func(string) (fs.FileInfo, error) // os.Lstat, replaceable so that a test can make a stat fail
 
-	mu     sync.Mutex              // guards queued and serialises the work on the files
+	mu     sync.Mutex              // guards the fields below and serialises the work on the files
 	queued map[string]pendingState // by tunnel id: the marker a start or restart was queued for
+	stuck  map[string]struct{}     // stale temporary files that could not be removed, by path
 }
 
 // NewManager returns a manager that keeps the token and env files of the
@@ -104,11 +105,7 @@ func (m *Manager) Ensure(ctx context.Context, tunnelID, token string) error {
 	if err := m.prepareDir(); err != nil {
 		return err
 	}
-	// A leftover that cannot be removed is no reason to leave the connector
-	// as it is. Only the name is logged, never what the file holds.
-	if err := removeStaleTemps(m.dir); err != nil {
-		m.log.Warn().Err(err).Msg("could not remove stale temporary files")
-	}
+	m.sweepStaleTemps()
 	wrote, err := m.writeFiles(tunnelID, token)
 	if err != nil {
 		return fmt.Errorf("tunnel %s: %w", tunnelID, err)
@@ -127,6 +124,21 @@ func (m *Manager) prepareDir() error {
 	return nil
 }
 
+// sweepStaleTemps removes the leftovers of interrupted writes. A leftover that
+// cannot be removed is no reason to leave the connector as it is; it is logged,
+// by name and never by content, the first time it is seen and again only after
+// it was gone and came back, since Ensure runs for every tunnel on every poll.
+func (m *Manager) sweepStaleTemps() {
+	failing := make(map[string]struct{})
+	for _, f := range removeStaleTemps(m.dir) {
+		failing[f.name] = struct{}{}
+		if _, known := m.stuck[f.name]; !known {
+			m.log.Warn().Err(f.err).Str("file", f.name).Msg("could not remove a stale temporary file")
+		}
+	}
+	m.stuck = failing
+}
+
 // writeFiles brings the env and token file of a tunnel to the wanted content
 // and mode, and reports whether it replaced one of them. Their content is
 // replaced only when it differs; a mode is fixed in place and is no change
@@ -139,6 +151,10 @@ func (m *Manager) writeFiles(id, token string) (wrote bool, err error) {
 	}
 	replaceToken := !hasContent(tokenPath, []byte(token))
 	if replaceEnv || replaceToken {
+		// What was queued for an earlier marker says nothing about this
+		// change, however this call ends: it may fail before it restarts, and
+		// the next one must not take the marker for one that was dealt with.
+		delete(m.queued, id)
 		if err := m.markPending(id); err != nil {
 			return false, fmt.Errorf("marking the change as pending: %w", err)
 		}
@@ -238,8 +254,8 @@ func (m *Manager) Prune(ctx context.Context, keep []string) error {
 	defer m.mu.Unlock()
 
 	var errs []error
-	if err := removeStaleTemps(m.dir); err != nil {
-		errs = append(errs, err)
+	for _, f := range removeStaleTemps(m.dir) {
+		errs = append(errs, f.err)
 	}
 	ids, found := m.discover(ctx)
 	errs = append(errs, found...)
