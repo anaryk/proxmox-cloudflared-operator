@@ -9,13 +9,18 @@
 // file through a rename within its directory, leaves an object alone when a
 // save would not change it, and reports a write that fails as an error of
 // that write while reads go on.
+//
+// The cluster and private roots are never created by Open, and never taken for
+// empty when they are gone: see Paths.MountCheck, ErrNotMounted and Init. The
+// files of the tunnel connectors, in <local>/tunnels, are not the store's.
 package store
 
 import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
+	"path/filepath"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -41,75 +46,79 @@ const (
 )
 
 // Store groups the typed accessors over the three roots. It is safe for
-// concurrent use; two processes on the same roots are not coordinated.
+// concurrent use.
 type Store struct {
 	paths   Paths
 	cluster Dir
 	private Dir
 	local   Dir
-
-	mu sync.Mutex // serialises the writes of files that are not objects of a Dir
 }
 
-// Open makes the roots that are missing and removes the temporary files a
-// crash left in them. The cluster and private roots may be read-only, as they
-// are without quorum, and then Open still succeeds and the writes fail one by
-// one. The local root must be writable.
-func Open(p Paths) (*Store, error) {
-	roots := []struct {
-		name, path string
-		local      bool
-	}{
-		{"cluster", p.Cluster, false},
-		{"private", p.Private, false},
-		{"local", p.Local, true},
-	}
-	for _, r := range roots {
+// Open makes the local root, if it is missing, and removes the temporary files
+// that crashes left in the roots, but only ones that are old enough not to be a
+// write in progress. It does not create the cluster and private roots, which
+// Init does, and it succeeds while they are missing, unmounted or read-only, as
+// they are while pve-cluster restarts and without quorum: the operations on them
+// fail one by one. The local root must be writable.
+func Open(p Paths) (*Store, error) { return open(p, time.Now) }
+
+// open is Open with a clock, to tell an old temporary file from a young one.
+func open(p Paths, now func() time.Time) (*Store, error) {
+	for _, r := range []struct{ name, path string }{
+		{"cluster", p.Cluster}, {"private", p.Private}, {"local", p.Local},
+	} {
 		if r.path == "" {
 			return nil, fmt.Errorf("store: the %s path is empty", r.name)
 		}
 	}
-	for _, r := range roots {
-		if err := prepareRoot(r.path, r.local); err != nil {
-			return nil, fmt.Errorf("store: %s root: %w", r.name, err)
-		}
+	guard := mountGuard(p.MountCheck)
+	cutoff := now().Add(-staleTempAge)
+	if err := prepareLocal(p.Local, cutoff); err != nil {
+		return nil, fmt.Errorf("store: local root: %w", err)
+	}
+	// What lies under a mount point that is not mounted is not ours to touch.
+	// A refusal to remove a leftover from a read-only root is no failure.
+	if guard == nil || guard() == nil {
+		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals)...)
+		_ = removeStaleTemps(cutoff, tempDirs(p.Private, kindCredentials, kindMeta)...)
 	}
 	return &Store{
 		paths:   p,
-		cluster: NewDir(p.Cluster),
-		private: NewDir(p.Private),
+		cluster: newDir(p.Cluster, guard),
+		private: newDir(p.Private, guard),
 		local:   NewDir(p.Local),
 	}, nil
 }
 
-// prepareRoot creates the root and sweeps its temporary files. The local root
-// must be writable; for a shared root, a refusal to write is no reason to fail.
-func prepareRoot(path string, local bool) error {
-	if err := ensureDir(path); err != nil {
-		if !local && readOnly(err) {
-			return nil
-		}
-		return fmt.Errorf("creating %s: %w", path, err)
+// tempDirs returns the directories of a root that can hold a temporary file of
+// the store: the root and the directories of its kinds. Nothing else is looked
+// into, in particular not the directory of the tunnel connectors.
+func tempDirs(root string, kinds ...string) []string {
+	dirs := []string{root}
+	for _, k := range kinds {
+		dirs = append(dirs, filepath.Join(root, k))
 	}
-	err := removeStaleTemps(path)
-	if !local {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return probeWritable(path)
+	return dirs
 }
 
-// probeWritable fails when files cannot be made in dir.
-func probeWritable(dir string) error {
-	f, err := os.CreateTemp(dir, ".probe-*"+tempExt)
-	if err != nil {
-		return fmt.Errorf("%s is not writable: %w", dir, err)
+// prepareLocal creates the local root, removes the stale temporary files of
+// the store from it and checks that files can be made there.
+func prepareLocal(root string, cutoff time.Time) error {
+	if err := ensureDir(root); err != nil {
+		return fmt.Errorf("creating %s: %w", root, err)
 	}
-	name := f.Name()
+	if err := removeStaleTemps(cutoff, tempDirs(root, kindBindings)...); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(root, ".probe-*"+tempExt)
+	if err != nil {
+		return fmt.Errorf("%s is not writable: %w", root, err)
+	}
 	_ = f.Close()
-	return removeIfThere(name)
+	if err := os.Remove(f.Name()); err != nil {
+		return fmt.Errorf("removing %s: %w", f.Name(), err)
+	}
+	return nil
 }
 
 // Install returns the identity of this installation.
@@ -127,11 +136,13 @@ func (s *Store) SaveInstall(i Install) error {
 
 // Settings returns the settings, or the defaults when none were saved. Settings
 // that are stored but invalid are an error, never the defaults: the daemon
-// would act on rules the admin did not write. A field the stored settings
-// leave out keeps its default.
+// would act on rules the admin did not write. That includes a key the settings
+// have no field for, such as a misspelt "denyhost", which would otherwise drop
+// the list it was meant to be. A field the stored settings leave out keeps its
+// default.
 func (s *Store) Settings() (Settings, error) {
 	stored := DefaultSettings()
-	found, err := s.cluster.Get(kindMeta, idSettings, &stored)
+	found, err := s.cluster.get(kindMeta, idSettings, &stored, true)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -158,7 +169,8 @@ func (s *Store) SaveSettings(v Settings) error {
 
 // Writer returns the writer named in leader.json. The file is read on every
 // call, as the answer decides whether a write to Cloudflare may go ahead: a
-// missing file is not found, a file that cannot be read is an error.
+// missing file is not found, a file that cannot be read, and a cluster root
+// that is gone, are errors.
 func (s *Store) Writer() (planner.Writer, bool, error) {
 	return getOne[planner.Writer](s.cluster, kindMeta, idLeader)
 }
@@ -174,7 +186,8 @@ func (s *Store) SaveWriter(w planner.Writer) error {
 // Nodes returns the nodes that run pco, by name.
 func (s *Store) Nodes() ([]NodeEntry, error) { return loadList[NodeEntry](s.cluster, kindNodes) }
 
-// SaveNode stores a node entry under its name.
+// SaveNode stores a node entry under its name. The name of another node that
+// maps to the same file, as one that differs by case does, is refused.
 func (s *Store) SaveNode(n NodeEntry) error {
 	if n.Name == "" {
 		return errors.New("node name is empty")
@@ -215,7 +228,7 @@ func (s *Store) ManualRoutes() ([]model.Route, error) {
 
 // SaveManualRoute stores a manual route under its ManualID, with its hostname
 // in normal form. A route without an id or with a hostname that is not valid
-// is refused.
+// is refused, and so is one whose id maps to the file of another id.
 func (s *Store) SaveManualRoute(r model.Route) error {
 	if r.ManualID == "" {
 		return errors.New("manual route has no id")
@@ -257,21 +270,31 @@ func (s *Store) SaveApproval(owner, identity string) error {
 // error.
 func (s *Store) DeleteApproval(owner string) error { return s.cluster.Delete(kindApprovals, owner) }
 
-// Credentials returns the Cloudflare credentials, in the order of their ids.
-// They are kept on the private root only.
+// Credentials returns the Cloudflare credentials, in the order of their file
+// names. They are kept on the private root only.
 func (s *Store) Credentials() ([]Credential, error) {
-	return loadList[Credential](s.private, kindCredentials)
+	files, err := loadList[credentialFile](s.private, kindCredentials)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Credential, len(files))
+	for i, f := range files {
+		out[i] = f.credential()
+	}
+	return out, nil
 }
 
-// SaveCredential stores a credential under its id.
+// SaveCredential stores a credential under its id. The id of another
+// credential that maps to the same file, as one that differs by case does, is
+// refused, so that no token replaces another.
 func (s *Store) SaveCredential(c Credential) error {
 	if c.ID == "" {
 		return errors.New("credential id is empty")
 	}
-	if c.Token == "" {
+	if c.Token.Reveal() == "" {
 		return fmt.Errorf("credential %s: the token is empty", c.ID)
 	}
-	return s.private.put(kindCredentials, c.ID, c, true)
+	return s.private.put(kindCredentials, c.ID, c.file(), true)
 }
 
 // DeleteCredential removes a credential. A missing one is not an error.
@@ -279,13 +302,17 @@ func (s *Store) DeleteCredential(id string) error { return s.private.Delete(kind
 
 // PVEToken returns the Proxmox API token of the daemon.
 func (s *Store) PVEToken() (PVEToken, bool, error) {
-	return getOne[PVEToken](s.private, kindMeta, idPVEToken)
+	f, found, err := getOne[pveTokenFile](s.private, kindMeta, idPVEToken)
+	if err != nil || !found {
+		return PVEToken{}, false, err
+	}
+	return PVEToken{TokenID: f.TokenID, Secret: NewSecret(f.Secret)}, true, nil
 }
 
 // SavePVEToken stores the Proxmox API token of the daemon.
 func (s *Store) SavePVEToken(t PVEToken) error {
-	if t.TokenID == "" || t.Secret == "" {
+	if t.TokenID == "" || t.Secret.Reveal() == "" {
 		return errors.New("pve token needs an id and a secret")
 	}
-	return s.private.put(kindMeta, idPVEToken, t, true)
+	return s.private.put(kindMeta, idPVEToken, pveTokenFile{TokenID: t.TokenID, Secret: t.Secret.Reveal()}, true)
 }

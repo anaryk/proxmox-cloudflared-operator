@@ -31,6 +31,7 @@ func openStore(t *testing.T) (*Store, Paths) {
 	p := testPaths(t)
 	s, err := Open(p)
 	require.NoError(t, err)
+	require.NoError(t, s.Init())
 	return s, p
 }
 
@@ -54,27 +55,12 @@ func stored(t *testing.T, dir string) []string {
 }
 
 func TestDefaultPaths(t *testing.T) {
-	require.Equal(t, Paths{Cluster: "/etc/pve/pco", Private: "/etc/pve/priv/pco", Local: "/var/lib/pco"}, DefaultPaths())
-}
-
-func TestOpenCreatesTheRoots(t *testing.T) {
-	base := t.TempDir()
-	p := Paths{
-		Cluster: filepath.Join(base, "a", "cluster"),
-		Private: filepath.Join(base, "b", "private"),
-		Local:   filepath.Join(base, "c", "local"),
-	}
-	_, err := Open(p)
-	require.NoError(t, err)
-	for _, dir := range []string{p.Cluster, p.Private, p.Local} {
-		info, err := os.Stat(dir)
-		require.NoError(t, err)
-		require.True(t, info.IsDir())
-		require.Equal(t, fs.FileMode(0o700), info.Mode().Perm(), dir)
-	}
-
-	_, err = Open(p)
-	require.NoError(t, err, "an existing store opens again")
+	require.Equal(t, Paths{
+		Cluster:    "/etc/pve/pco",
+		Private:    "/etc/pve/priv/pco",
+		Local:      "/var/lib/pco",
+		MountCheck: "/etc/pve/.version",
+	}, DefaultPaths())
 }
 
 func TestOpenRefusesAnEmptyPath(t *testing.T) {
@@ -90,41 +76,11 @@ func TestOpenRefusesAnEmptyPath(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesARootThatIsAFile(t *testing.T) {
+func TestOpenRefusesALocalRootThatIsAFile(t *testing.T) {
 	p := testPaths(t)
 	writeFile(t, p.Local, "x")
 	_, err := Open(p)
 	require.Error(t, err)
-}
-
-func TestOpenRemovesStaleTempFiles(t *testing.T) {
-	p := testPaths(t)
-	stale := []string{
-		filepath.Join(p.Cluster, "claims", "a.json.tmp"),
-		filepath.Join(p.Cluster, "adopted.jsonl.tmp"),
-		filepath.Join(p.Private, "credentials", "c.json.tmp"),
-		filepath.Join(p.Local, "bindings", "b.json.tmp"),
-		filepath.Join(p.Local, "tunnels", ".00000000-0000-0000-0000-000000000000.token.tmp"),
-	}
-	kept := []string{
-		filepath.Join(p.Cluster, "claims", "a.json"),
-		filepath.Join(p.Cluster, "adopted.jsonl"),
-		filepath.Join(p.Local, "tunnels", "00000000-0000-0000-0000-000000000000.token"),
-		filepath.Join(p.Local, "tunnels", ".00000000-0000-0000-0000-000000000000.pending"),
-	}
-	for _, path := range append(append([]string{}, stale...), kept...) {
-		writeFile(t, path, "x")
-	}
-
-	_, err := Open(p)
-	require.NoError(t, err)
-	for _, path := range stale {
-		requireMissing(t, path)
-	}
-	for _, path := range kept {
-		_, err := os.Stat(path)
-		require.NoError(t, err, path)
-	}
 }
 
 func TestOpenRefusesALocalRootThatIsNotWritable(t *testing.T) {
@@ -137,36 +93,6 @@ func TestOpenRefusesALocalRootThatIsNotWritable(t *testing.T) {
 	_, err := Open(p)
 	require.ErrorIs(t, err, fs.ErrPermission)
 	require.Contains(t, err.Error(), p.Local)
-}
-
-func TestOpenToleratesReadOnlyClusterRoots(t *testing.T) {
-	skipAsRoot(t)
-	p := testPaths(t)
-	require.NoError(t, os.MkdirAll(p.Cluster, 0o700))
-	require.NoError(t, os.Chmod(p.Cluster, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(p.Cluster, 0o700) })
-	// The private root does not exist and cannot be created either.
-	locked := filepath.Join(filepath.Dir(p.Private), "locked")
-	require.NoError(t, os.MkdirAll(locked, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
-	p.Private = filepath.Join(locked, "pco")
-
-	s, err := Open(p)
-	require.NoError(t, err)
-
-	_, found, err := s.Install()
-	require.NoError(t, err)
-	require.False(t, found)
-	settings, err := s.Settings()
-	require.NoError(t, err)
-	require.Equal(t, DefaultSettings(), settings)
-	creds, err := s.Credentials()
-	require.NoError(t, err)
-	require.Empty(t, creds)
-
-	require.ErrorIs(t, s.SaveInstall(Install{ID: "abc", CreatedAt: t0}), fs.ErrPermission)
-	require.ErrorIs(t, s.SaveCredential(Credential{ID: "c", Token: "t"}), fs.ErrPermission)
-	require.Empty(t, stored(t, p.Cluster))
 }
 
 func TestInstallRoundTrip(t *testing.T) {
@@ -242,12 +168,12 @@ func TestWriterThatCannotBeReadIsNotMissing(t *testing.T) {
 	s, p := openStore(t)
 	path := filepath.Join(p.Cluster, "meta", "leader.json")
 
-	writeFile(t, path, `{"schemaVersion":1,"rev":1,"data":{"generation":`)
+	writeFile(t, path, `{"schemaVersion":1,"rev":1,"id":"leader","data":{"generation":`)
 	_, found, err := s.Writer()
 	require.Error(t, err)
 	require.False(t, found)
 
-	writeFile(t, path, `{"schemaVersion":9,"rev":1,"data":{}}`)
+	writeFile(t, path, `{"schemaVersion":9,"rev":1,"id":"leader","data":{}}`)
 	_, found, err = s.Writer()
 	require.Error(t, err)
 	require.False(t, found)
@@ -433,13 +359,13 @@ func TestApprovals(t *testing.T) {
 func TestApprovalsAreKeyedByTheOwnerStoredInside(t *testing.T) {
 	s, p := openStore(t)
 	writeFile(t, filepath.Join(p.Cluster, "approvals", "whatever.json"),
-		`{"schemaVersion":1,"rev":1,"data":{"owner":"qemu/101","identity":"i"}}`)
+		envelopeJSON("qemu/101", `{"owner":"qemu/101","identity":"i"}`))
 	got, err := s.Approvals()
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"qemu/101": "i"}, got)
 
 	writeFile(t, filepath.Join(p.Cluster, "approvals", "nameless.json"),
-		`{"schemaVersion":1,"rev":1,"data":{"identity":"i"}}`)
+		envelopeJSON("nameless", `{"identity":"i"}`))
 	_, err = s.Approvals()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "nameless.json")

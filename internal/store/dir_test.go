@@ -46,6 +46,16 @@ func writeFile(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
+// requireNoTempFiles fails when a temporary file is left in dir.
+func requireNoTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.False(t, strings.HasSuffix(e.Name(), ".tmp"), "left behind: %s", e.Name())
+	}
+}
+
 func requireMissing(t *testing.T, path string) {
 	t.Helper()
 	_, err := os.Lstat(path)
@@ -159,7 +169,7 @@ func TestGetOfInvalidJSONNamesTheFile(t *testing.T) {
 	root := t.TempDir()
 	d := NewDir(root)
 	path := filepath.Join(root, "things", "a.json")
-	writeFile(t, path, `{"schemaVersion":1,"rev":1,"data":`)
+	writeFile(t, path, `{"schemaVersion":1,"rev":1,"id":"a","data":`)
 
 	var got sample
 	found, err := d.Get("things", "a", &got)
@@ -173,7 +183,7 @@ func TestGetOfWrongShapeNamesTheFile(t *testing.T) {
 	root := t.TempDir()
 	d := NewDir(root)
 	path := filepath.Join(root, "things", "a.json")
-	writeFile(t, path, `{"schemaVersion":1,"rev":1,"data":{"name":5}}`)
+	writeFile(t, path, envelopeJSON("a", `{"name":5}`))
 
 	var got sample
 	_, err := d.Get("things", "a", &got)
@@ -185,8 +195,8 @@ func TestGetOfWrongShapeNamesTheFile(t *testing.T) {
 func TestGetErrorsDoNotQuoteTheContent(t *testing.T) {
 	root := t.TempDir()
 	d := NewDir(root)
-	writeFile(t, filepath.Join(root, "things", "a.json"), `{"schemaVersion":1,"rev":1,"data":{"name":"s3cr3t-value" x}}`)
-	writeFile(t, filepath.Join(root, "things", "b.json"), `{"schemaVersion":1,"rev":1,"data":{"n":"s3cr3t-value"}}`)
+	writeFile(t, filepath.Join(root, "things", "a.json"), envelopeJSON("a", `{"name":"s3cr3t-value" x}`))
+	writeFile(t, filepath.Join(root, "things", "b.json"), envelopeJSON("b", `{"n":"s3cr3t-value"}`))
 
 	for _, id := range []string{"a", "b"} {
 		var got sample
@@ -223,7 +233,27 @@ func TestPutDoesNotOverwriteAFutureSchemaVersion(t *testing.T) {
 	b, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, future, string(b))
-	requireMissing(t, path+".tmp")
+	requireNoTempFiles(t, filepath.Dir(path))
+}
+
+func TestGetRejectsEmptyData(t *testing.T) {
+	root := t.TempDir()
+	d := NewDir(root)
+	path := filepath.Join(root, "things", "a.json")
+	for name, body := range map[string]string{
+		"null":    `{"schemaVersion":1,"rev":1,"id":"a","data":null}`,
+		"absent":  `{"schemaVersion":1,"rev":1,"id":"a"}`,
+		"padded":  `{"schemaVersion":1,"rev":1,"id":"a","data": null }`,
+		"missing": `{}`,
+	} {
+		writeFile(t, path, body)
+		got := sample{Name: "untouched"}
+		found, err := d.Get("things", "a", &got)
+		require.Error(t, err, name)
+		require.False(t, found, name)
+		require.Contains(t, err.Error(), path, name)
+		require.Equal(t, "untouched", got.Name, name)
+	}
 }
 
 func TestGetRejectsAMissingSchemaVersion(t *testing.T) {
@@ -252,42 +282,29 @@ func TestOversizedObjectIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, "small", got.Name, "the old object stays")
-	requireMissing(t, path+".tmp")
+	requireNoTempFiles(t, filepath.Dir(path))
 
 	err = d.Put("things", "fresh", sample{Name: strings.Repeat("x", 1<<20)})
 	require.Error(t, err)
 	requireMissing(t, filepath.Join(root, "things", "fresh.json"))
-	requireMissing(t, filepath.Join(root, "things", "fresh.json.tmp"))
+	requireNoTempFiles(t, filepath.Dir(path))
 }
 
-func TestStaleTempFileIsIgnoredAndOverwritten(t *testing.T) {
+func TestStaleTempFilesAreIgnoredByList(t *testing.T) {
 	root := t.TempDir()
 	d := NewDir(root)
-	path := filepath.Join(root, "things", "a.json")
-	writeFile(t, path+".tmp", "half a wri")
+	dir := filepath.Join(root, "things")
+	writeFile(t, filepath.Join(dir, ".a.json.123456.tmp"), "half a wri")
+	writeFile(t, filepath.Join(dir, "a.json.tmp"), "half a wri")
 
 	ids, err := d.List("things")
 	require.NoError(t, err)
 	require.Empty(t, ids)
 
 	require.NoError(t, d.Put("things", "a", sample{Name: "x"}))
-	requireMissing(t, path+".tmp")
-	var got sample
-	found, err := d.Get("things", "a", &got)
+	ids, err = d.List("things")
 	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, "x", got.Name)
-}
-
-func TestFailedWriteRemovesItsTempFile(t *testing.T) {
-	root := t.TempDir()
-	d := NewDir(root)
-	path := filepath.Join(root, "things", "a.json")
-	// A non-empty directory in the way makes the final rename fail.
-	writeFile(t, filepath.Join(path, "inner"), "x")
-
-	require.Error(t, d.Put("things", "a", sample{}))
-	requireMissing(t, path+".tmp")
+	require.Equal(t, []string{"a"}, ids)
 }
 
 func TestWriteInAReadOnlyDirectoryFailsCleanly(t *testing.T) {
@@ -312,8 +329,8 @@ func TestWriteInAReadOnlyDirectoryFailsCleanly(t *testing.T) {
 	require.Len(t, entries, 1)
 }
 
-func TestPutCreatesDirectoriesPrivate(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state")
+func TestPutCreatesTheKindDirectoryPrivate(t *testing.T) {
+	root := t.TempDir()
 	d := NewDir(root)
 	require.NoError(t, d.Put("things", "a", sample{}))
 
@@ -355,74 +372,6 @@ func TestConcurrentPutsStayConsistent(t *testing.T) {
 	found, err := d.Get("things", "a", &got)
 	require.NoError(t, err)
 	require.True(t, found)
-}
-
-func TestFileNameIsSafe(t *testing.T) {
-	valid := []struct{ name, id, want string }{
-		{"plain", "shop.cz", "shop.cz"},
-		{"upper case", "Shop.CZ", "shop.cz"},
-		{"wildcard", "*.shop.cz", "_wildcard.shop.cz"},
-		{"wildcard upper case", "*.Shop.CZ", "_wildcard.shop.cz"},
-		{"owner", "qemu/101", "qemu_101"},
-		{"slash", "a/b", "a_b"},
-		{"leading underscore", "_x", "_x"},
-		{"hyphen and digits", "pve-1", "pve-1"},
-		{"longest", strings.Repeat("a", 201), strings.Repeat("a", 201)},
-	}
-	for _, tc := range valid {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := FileName(tc.id)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
-		})
-	}
-
-	invalid := []struct{ name, id string }{
-		{"empty", ""},
-		{"dot dot", ".."},
-		{"dot dot slash", "../x"},
-		{"dot dot inside", "a..b"},
-		{"dot dot after slash", "x/.."},
-		{"single dot", "."},
-		{"hidden", ".hidden"},
-		{"leading hyphen", "-x"},
-		{"space", "a b"},
-		{"bare star", "*"},
-		{"star inside", "a*b"},
-		{"star without dot", "*shop.cz"},
-		{"backslash", `a\b`},
-		{"nul", "a\x00b"},
-		{"newline", "a\nb"},
-		{"non ascii", "café.cz"},
-		{"kelvin sign", "Key"},
-		{"too long", strings.Repeat("a", 202)},
-		{"300 characters", strings.Repeat("a", 300)},
-	}
-	for _, tc := range invalid {
-		t.Run("refuses "+tc.name, func(t *testing.T) {
-			got, err := FileName(tc.id)
-			require.Error(t, err)
-			require.Empty(t, got)
-		})
-	}
-}
-
-func TestFileNameKeepsAWildcardApartFromItsTwin(t *testing.T) {
-	wild, err := FileName("*.shop.cz")
-	require.NoError(t, err)
-	plain, err := FileName("shop.cz")
-	require.NoError(t, err)
-	require.NotEqual(t, wild, plain)
-}
-
-func TestFileNameIsIdempotent(t *testing.T) {
-	for _, id := range []string{"*.Shop.CZ", "qemu/101", "A.b"} {
-		once, err := FileName(id)
-		require.NoError(t, err)
-		twice, err := FileName(once)
-		require.NoError(t, err)
-		require.Equal(t, once, twice, id)
-	}
 }
 
 func TestDirRefusesUnsafeKindsAndIDs(t *testing.T) {

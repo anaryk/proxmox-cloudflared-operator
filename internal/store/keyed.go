@@ -1,8 +1,10 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 )
 
@@ -16,32 +18,43 @@ func getOne[T any](d Dir, kind, id string) (v T, found bool, err error) {
 	return obj, true, nil
 }
 
-// eachObject calls fn for every object of a kind, in the order of their ids.
-// An object that cannot be read stops it: a part of a set is not the set. One
-// that is deleted while it runs is skipped.
-func eachObject[T any](d Dir, kind string, fn func(id string, v T) error) error {
-	ids, err := d.List(kind)
+// eachObject calls fn for every object of a kind, in the order of their file
+// names, with the path of its file and the id it was stored under. An object
+// that cannot be read stops it: a part of a set is not the set. One that is
+// deleted while it runs is skipped.
+func eachObject[T any](d Dir, kind string, fn func(path, id string, v T) error) error {
+	names, err := d.List(kind)
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		v, found, err := getOne[T](d, kind, id)
+	dir, err := d.kindDir(kind)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		path := filepath.Join(dir, name+objectExt)
+		env, found, err := d.readFile(path)
 		if err != nil {
 			return err
 		}
-		if found {
-			if err := fn(id, v); err != nil {
-				return err
-			}
+		if !found {
+			continue
+		}
+		var v T
+		if err := decode(env.Data, &v, false); err != nil {
+			return fmt.Errorf("%s: %s", path, jsonProblem(err))
+		}
+		if err := fn(path, env.ID, v); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// loadList returns the objects of a kind, in the order of their ids.
+// loadList returns the objects of a kind, in the order of their file names.
 func loadList[T any](d Dir, kind string) ([]T, error) {
 	out := []T{}
-	err := eachObject(d, kind, func(_ string, v T) error {
+	err := eachObject(d, kind, func(_, _ string, v T) error {
 		out = append(out, v)
 		return nil
 	})
@@ -52,23 +65,22 @@ func loadList[T any](d Dir, kind string) ([]T, error) {
 }
 
 // loadMap returns the objects of a kind by the key each keeps inside it; field
-// names that key in an error. The name of a file never decides the key.
+// names that key in an error. The key must be the id the object was stored
+// under: an object put in the wrong place by hand is an error, not a guess.
 func loadMap[T any](d Dir, kind, field string, key func(*T) *string) (map[string]T, error) {
 	out := make(map[string]T)
-	files := make(map[string]string) // key -> id of the object that holds it
-	err := eachObject(d, kind, func(id string, v T) error {
+	err := eachObject(d, kind, func(path, id string, v T) error {
 		k := *key(&v)
-		_, path, err := d.file(kind, id)
-		if err != nil {
-			return err
-		}
-		if k == "" {
+		switch {
+		case k == "":
 			return fmt.Errorf("%s has no %s", path, field)
+		case k != id:
+			return fmt.Errorf("%s holds the object of %q, which names the %s %q", path, id, field, k)
 		}
-		if other, dup := files[k]; dup {
-			return fmt.Errorf("%s and %s both hold the %s %q", other, id, field, k)
+		if _, dup := out[k]; dup {
+			return fmt.Errorf("%s: another file holds the %s %q too", path, field, k)
 		}
-		files[k], out[k] = id, v
+		out[k] = v
 		return nil
 	})
 	if err != nil {
@@ -80,12 +92,12 @@ func loadMap[T any](d Dir, kind, field string, key func(*T) *string) (map[string
 // saveMap makes the objects of a kind the ones in next, which are keyed by
 // hostname: it writes those that differ from what is stored and deletes the
 // rest. The key is the id of an object and is kept inside it, in the field key
-// points at. Everything is checked before the first write, so a bad entry
-// changes nothing.
+// points at. Everything is checked and encoded before the first write, so a bad
+// entry changes nothing.
 func saveMap[T any](d Dir, kind string, next map[string]T, key func(*T) *string) error {
 	keys := slices.Sorted(maps.Keys(next))
 	names := make(map[string]string, len(next)) // file name -> key
-	values := make(map[string]T, len(next))
+	objs := make([]object, 0, len(next))
 	for _, k := range keys {
 		name, err := FileName(k)
 		if err != nil {
@@ -102,23 +114,11 @@ func saveMap[T any](d Dir, kind string, next map[string]T, key func(*T) *string)
 		case *f != k:
 			return fmt.Errorf("%s: the key %q holds an object with hostname %q", kind, k, *f)
 		}
-		values[k] = v
-	}
-	for _, k := range keys {
-		if err := d.put(kind, k, values[k], true); err != nil {
-			return err
+		data, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("encoding %s %q: %w", kind, k, err)
 		}
+		objs = append(objs, object{id: k, data: data})
 	}
-	ids, err := d.List(kind)
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if _, keep := names[id]; !keep {
-			if err := d.Delete(kind, id); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return d.replace(kind, objs)
 }

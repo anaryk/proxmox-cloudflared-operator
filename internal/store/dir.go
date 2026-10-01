@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -22,68 +21,65 @@ const (
 	objectExt = ".json"
 )
 
-var (
-	namePattern = regexp.MustCompile(`^[a-z0-9_][a-z0-9._-]{0,200}$`)
+// errNewerSchema marks a file written by a newer version.
+var errNewerSchema = errors.New("written by a newer version")
 
-	// errNewerSchema marks a file written by a newer build.
-	errNewerSchema = errors.New("written by a newer version")
-)
-
-// envelope is what a file holds around the value of an object.
+// envelope is what a file holds around the value of an object. The id is the
+// one the object was stored under, since a file name cannot tell ids apart that
+// share it.
 type envelope struct {
 	SchemaVersion int             `json:"schemaVersion"`
 	Rev           int64           `json:"rev"`
+	ID            string          `json:"id"`
 	Data          json.RawMessage `json:"data"`
 }
 
 // Dir is a file-per-object JSON store rooted at a directory: the object of a
-// kind and an id is the file <root>/<kind>/<id>.json.
+// kind and an id is the file <root>/<kind>/<FileName(id)>.json.
 //
-// Nothing here chmods a file or relies on links, so a Dir works on pmxcfs,
-// where the modes are fixed by path. Writes of one Dir are serialised; two
-// processes writing the same root are not coordinated, as there is one daemon
-// per store.
+// The root must exist, and a Dir never creates it: on the cluster filesystem a
+// root that is gone means the filesystem is, and a directory made then lands
+// on the disk underneath it. Nothing here chmods a file or relies on links, so
+// a Dir works on pmxcfs, where the modes are fixed by path. Writes of one Dir
+// are serialised; processes writing the same root are not coordinated with
+// each other beyond every write being a rename of a file of its own.
 type Dir struct {
-	root string
-	mu   *sync.Mutex
+	root  string
+	mu    *sync.Mutex
+	guard func() error // run before every operation; nil for none
 }
 
-// NewDir returns the store rooted at root. The directory is created by the
-// first write.
-func NewDir(root string) Dir { return Dir{root: root, mu: new(sync.Mutex)} }
+// NewDir returns the store rooted at root.
+func NewDir(root string) Dir { return newDir(root, nil) }
 
-// FileName maps an id to the name of its file, without the extension: it is
-// lower-cased, a leading "*." becomes "_wildcard." and "/" becomes "_". Ids
-// that differ only by case, or by "/" against "_", share a name, so an object
-// keeps its real id inside. Anything that is not a plain file name is an
-// error, which keeps every path under the root.
-func FileName(id string) (string, error) {
-	name := lowerASCII(id)
-	if rest, ok := strings.CutPrefix(name, "*."); ok {
-		name = "_wildcard." + rest
-	}
-	name = strings.ReplaceAll(name, "/", "_")
-	if !namePattern.MatchString(name) || strings.Contains(name, "..") {
-		return "", fmt.Errorf("%q cannot be used as a file name", id)
-	}
-	return name, nil
+func newDir(root string, guard func() error) Dir {
+	return Dir{root: root, mu: new(sync.Mutex), guard: guard}
 }
 
-// lowerASCII lower-cases A-Z only: a name is ASCII, and the lower-casing of
-// some other characters, such as the Kelvin sign, would be an ASCII letter.
-func lowerASCII(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + 'a' - 'A'
-		}
-	}
-	return string(b)
-}
-
+// check refuses an operation on a Dir that was not made by NewDir, and one the
+// guard refuses.
 func (d Dir) check() error {
 	if d.root == "" || d.mu == nil {
 		return errors.New("store: directory not set; make it with NewDir")
+	}
+	if d.guard != nil {
+		return d.guard()
+	}
+	return nil
+}
+
+// requireRoot reports an error when the root is not there. It is what a read
+// of a file or a directory that does not exist asks, to tell "nothing stored"
+// from "no store".
+func (d Dir) requireRoot() error {
+	info, err := os.Stat(d.root)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("store root %s is missing", d.root)
+	case err != nil:
+		return fmt.Errorf("store root %s: %w", d.root, err)
+	case !info.IsDir():
+		return fmt.Errorf("store root %s is not a directory", d.root)
 	}
 	return nil
 }
@@ -113,74 +109,56 @@ func (d Dir) file(kind, id string) (dir, path string, err error) {
 }
 
 // Put stores v as the object of kind and id. The file wraps v with the schema
-// version and a revision that is one more than the file's before, or 1 when
-// there is no file or it cannot be read. A file written by a newer version is
-// not overwritten.
+// version, the id and a revision that is one more than the file's before, or 1
+// when there is no file or it cannot be read. It refuses to replace the file
+// of another id that maps to the same name, and one written by a newer version.
 func (d Dir) Put(kind, id string, v any) error { return d.put(kind, id, v, false) }
 
-// put is Put, which with onlyIfChanged leaves the file alone when it already
-// holds v: every write of the cluster root is replicated to every node.
-func (d Dir) put(kind, id string, v any, onlyIfChanged bool) error {
-	dir, path, err := d.file(kind, id)
-	if err != nil {
-		return err
-	}
-	data, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("encoding %s %s: %w", kind, id, err)
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	old, found, err := readEnvelope(path)
-	if errors.Is(err, errNewerSchema) {
-		return fmt.Errorf("storing %s %s: %w", kind, id, err)
-	}
-	if err != nil {
-		old = envelope{} // unreadable: the revision starts again
-	} else if found && onlyIfChanged && sameData(old.Data, data) {
-		return nil
-	}
-	out, err := json.MarshalIndent(envelope{SchemaVersion: schemaVersion, Rev: old.Rev + 1, Data: data}, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding %s %s: %w", kind, id, err)
-	}
-	if err := ensureDir(dir); err != nil {
-		return fmt.Errorf("storing %s %s: %w", kind, id, err)
-	}
-	if err := writeFileAtomic(path, path+tempExt, append(out, '\n')); err != nil {
-		return fmt.Errorf("storing %s %s: %w", kind, id, err)
-	}
-	return nil
-}
-
-// sameData reports whether the data of a file is the compact JSON in want.
-func sameData(have json.RawMessage, want []byte) bool {
-	var buf bytes.Buffer
-	return json.Compact(&buf, have) == nil && bytes.Equal(buf.Bytes(), want)
-}
-
 // Get reads the object of kind and id into v. It reports false, and no error,
-// when there is no such object. A file that cannot be read, is not valid or
-// was written by a newer version is an error that names it.
+// when there is no such object. A file that cannot be read, is not valid, was
+// written by a newer version or holds the object of another id is an error that
+// names it.
 func (d Dir) Get(kind, id string, v any) (found bool, err error) {
+	return d.get(kind, id, v, false)
+}
+
+// get is Get, which with strict also refuses a key the value has no field for.
+func (d Dir) get(kind, id string, v any, strict bool) (found bool, err error) {
 	_, path, err := d.file(kind, id)
 	if err != nil {
 		return false, err
 	}
-	env, found, err := readEnvelope(path)
+	env, found, err := d.readFile(path)
 	if err != nil || !found {
 		return false, err
 	}
-	if err := json.Unmarshal(env.Data, v); err != nil {
+	if env.ID != id {
+		return false, fmt.Errorf("%s holds the object of %q, not of %q", path, env.ID, id)
+	}
+	if err := decode(env.Data, v, strict); err != nil {
 		return false, fmt.Errorf("%s: %s", path, jsonProblem(err))
 	}
 	return true, nil
 }
 
+// readFile reads the file at path, in a kind directory of the root. A file that
+// is not there is not found, unless the root is gone too.
+func (d Dir) readFile(path string) (env envelope, found bool, err error) {
+	env, found, err = readEnvelope(path)
+	switch {
+	case err != nil:
+		return envelope{}, false, err
+	case !found:
+		return envelope{}, false, d.requireRoot()
+	case env.ID == "":
+		return envelope{}, false, fmt.Errorf("%s has no id", path)
+	}
+	return env, true, nil
+}
+
 // readEnvelope reads the file at path. A file that does not exist is not an
-// error.
+// error. The id is not checked: a file without one is for the caller to
+// refuse or to replace.
 func readEnvelope(path string) (env envelope, found bool, err error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -198,14 +176,25 @@ func readEnvelope(path string) (env envelope, found bool, err error) {
 			path, env.SchemaVersion, schemaVersion, errNewerSchema)
 	case env.SchemaVersion != schemaVersion:
 		return envelope{}, false, fmt.Errorf("%s has no schema version", path)
-	case len(env.Data) == 0:
+	case len(env.Data) == 0 || string(bytes.TrimSpace(env.Data)) == "null":
 		return envelope{}, false, fmt.Errorf("%s has no data", path)
 	}
 	return env, true, nil
 }
 
+// decode reads the data of an object into v.
+func decode(data json.RawMessage, v any, strict bool) error {
+	if !strict {
+		return json.Unmarshal(data, v)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
 // jsonProblem says what is wrong with a file without quoting it, as an error
-// of the standard library may: a file can hold a secret.
+// of the standard library may: a file can hold a secret. The name of a key the
+// value has no field for is the exception, as it is part of the question.
 func jsonProblem(err error) string {
 	var syntax *json.SyntaxError
 	var kind *json.UnmarshalTypeError
@@ -219,8 +208,10 @@ func jsonProblem(err error) string {
 }
 
 // List returns the ids of the objects of a kind, sorted: the names of their
-// files without the extension. Hidden files, temporary files, anything that is
-// not a .json file and names that FileName would change are not objects.
+// files without the extension, which are the ids themselves only when FileName
+// leaves them as they are. Hidden files, temporary files, anything that is not
+// a .json file and names that FileName would change are not objects. A kind
+// with no directory has no objects, but a root that is gone is an error.
 func (d Dir) List(kind string) ([]string, error) {
 	dir, err := d.kindDir(kind)
 	if err != nil {
@@ -228,7 +219,7 @@ func (d Dir) List(kind string) ([]string, error) {
 	}
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return []string{}, nil
+		return []string{}, d.requireRoot()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing %s: %w", kind, err)
@@ -247,7 +238,9 @@ func (d Dir) List(kind string) ([]string, error) {
 	return ids, nil
 }
 
-// Delete removes the object of kind and id. A missing object is not an error.
+// Delete removes the object of kind and id. A missing object is not an error;
+// the file of another id that maps to the same name, and one written by a newer
+// version, are not removed.
 func (d Dir) Delete(kind, id string) error {
 	_, path, err := d.file(kind, id)
 	if err != nil {
@@ -255,8 +248,26 @@ func (d Dir) Delete(kind, id string) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("deleting %s %s: %w", kind, id, err)
+
+	env, found, err := readEnvelope(path)
+	switch {
+	case errors.Is(err, errNewerSchema):
+		return fmt.Errorf("deleting %s %q: %w", kind, id, err)
+	case err == nil && found && env.ID != "" && env.ID != id:
+		return fmt.Errorf("deleting %s %q: %s holds the object of %q", kind, id, path, env.ID)
+	}
+	return d.removeFile(path)
+}
+
+// removeFile removes a file. One that is not there is no error, unless the
+// root is gone too. The caller holds the lock.
+func (d Dir) removeFile(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return d.requireRoot()
+	}
+	if err != nil {
+		return fmt.Errorf("deleting %s: %w", filepath.Base(path), err)
 	}
 	return nil
 }

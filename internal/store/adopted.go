@@ -3,11 +3,7 @@ package store
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
@@ -43,7 +39,7 @@ type adoptedRecord struct {
 // dropping the oldest lines, and the newest line always stays.
 //
 // pmxcfs has no append worth relying on, so the file is read, extended and
-// written again through a temporary file.
+// written again through a temporary file, under the lock of the cluster root.
 func (s *Store) AppendAdopted(at time.Time, zone string, rec cfapi.Record) error {
 	line, err := json.Marshal(adoptedEntry{
 		At:   at.UTC(),
@@ -57,18 +53,8 @@ func (s *Store) AppendAdopted(at time.Time, zone string, rec cfapi.Record) error
 		return fmt.Errorf("encoding the adopted record %s: %w", rec.Name, err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	path := filepath.Join(s.paths.Cluster, adoptedFile)
-	old, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("reading the adopted records: %w", err)
-	}
-	if err := ensureDir(s.paths.Cluster); err != nil {
-		return fmt.Errorf("storing the adopted record %s: %w", rec.Name, err)
-	}
-	if err := writeFileAtomic(path, path+tempExt, appendLine(old, line)); err != nil {
+	err = s.cluster.updateFile(adoptedFile, func(old []byte) []byte { return appendLine(old, line) })
+	if err != nil {
 		return fmt.Errorf("storing the adopted record %s: %w", rec.Name, err)
 	}
 	return nil

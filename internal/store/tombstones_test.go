@@ -93,7 +93,7 @@ func TestTombstonesSaveOfNothingStoresAnEmptyMap(t *testing.T) {
 
 func TestTombstonesLoadOfAnUnreadableFileIsAnError(t *testing.T) {
 	s, p := openStore(t)
-	writeFile(t, filepath.Join(p.Cluster, "meta", "tombstones.json"), `{"schemaVersion":1,"rev":1,"data":{"a":`)
+	writeFile(t, filepath.Join(p.Cluster, "meta", "tombstones.json"), `{"schemaVersion":1,"rev":1,"id":"tombstones","data":{"a":`)
 	got, err := s.Tombstones().Load(t.Context())
 	require.Error(t, err)
 	require.Nil(t, got)

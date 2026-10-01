@@ -1,22 +1,20 @@
 package store
 
 import (
+	"bytes"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	secretToken = "tok-Sup3rS3cret-value"
-	tunnelA     = "6a1f3c52-9d0e-4b7a-8c11-2f5e7d9a0b34"
-	tunnelB     = "0b9d7e21-4c63-4a58-9f02-71a3c5e8d6f1"
-)
+const secretToken = "tok-Sup3rS3cret-value"
 
 // requireNoSecretOnDisk fails when any file below dir holds secret.
 func requireNoSecretOnDisk(t *testing.T, dir, secret string) {
@@ -34,7 +32,7 @@ func requireNoSecretOnDisk(t *testing.T, dir, secret string) {
 }
 
 func credentialOf(id string) Credential {
-	return Credential{ID: id, Label: "Shop account", Kind: "scoped", Token: secretToken, AddedAt: t0}
+	return Credential{ID: id, Label: "Shop account", Kind: "scoped", Token: NewSecret(secretToken), AddedAt: t0}
 }
 
 func TestCredentialsLiveOnThePrivateRootOnly(t *testing.T) {
@@ -52,6 +50,7 @@ func TestCredentialsLiveOnThePrivateRootOnly(t *testing.T) {
 	got, err = s.Credentials()
 	require.NoError(t, err)
 	require.Equal(t, []Credential{a, b}, got)
+	require.Equal(t, secretToken, got[0].Token.Reveal())
 	require.Equal(t, []string{"credentials/cred-a.json", "credentials/cred-b.json"}, stored(t, p.Private))
 	require.Empty(t, stored(t, p.Cluster))
 	require.Empty(t, stored(t, p.Local))
@@ -72,7 +71,7 @@ func TestSaveCredentialRefusesIncompleteCredentials(t *testing.T) {
 	s, p := openStore(t)
 	noID := credentialOf("")
 	noToken := credentialOf("cred-a")
-	noToken.Token = ""
+	noToken.Token = Secret{}
 	badID := credentialOf("../x")
 	for name, c := range map[string]Credential{"no id": noID, "no token": noToken, "unsafe id": badID} {
 		err := s.SaveCredential(c)
@@ -89,10 +88,10 @@ func TestCredentialErrorsNeverCarryTheToken(t *testing.T) {
 	path := filepath.Join(p.Private, "credentials", "cred-b.json")
 
 	for name, body := range map[string]string{
-		"syntax error after the token": `{"schemaVersion":1,"rev":1,"data":{"id":"cred-b","token":"` + secretToken + `" x}}`,
-		"token of the wrong type":      `{"schemaVersion":1,"rev":1,"data":{"id":"cred-b","token":["` + secretToken + `"]}}`,
-		"label of the wrong type":      `{"schemaVersion":1,"rev":1,"data":{"id":"cred-b","label":123,"token":"` + secretToken + `"}}`,
-		"cut off":                      `{"schemaVersion":1,"rev":1,"data":{"id":"cred-b","token":"` + secretToken,
+		"syntax error after the token": envelopeJSON("cred-b", `{"id":"cred-b","token":"`+secretToken+`" x}`),
+		"token of the wrong type":      envelopeJSON("cred-b", `{"id":"cred-b","token":["`+secretToken+`"]}`),
+		"label of the wrong type":      envelopeJSON("cred-b", `{"id":"cred-b","label":123,"token":"`+secretToken+`"}`),
+		"cut off":                      `{"schemaVersion":1,"rev":1,"id":"cred-b","data":{"id":"cred-b","token":"` + secretToken,
 	} {
 		writeFile(t, path, body)
 		_, err := s.Credentials()
@@ -102,26 +101,120 @@ func TestCredentialErrorsNeverCarryTheToken(t *testing.T) {
 	}
 }
 
-func TestCredentialDoesNotPrintItsToken(t *testing.T) {
+func TestSecret(t *testing.T) {
+	require.Equal(t, secretToken, NewSecret(secretToken).Reveal())
+	require.Empty(t, Secret{}.Reveal())
+	require.Equal(t, Secret{}, NewSecret(""), "an empty secret is the zero secret")
+	require.Equal(t, NewSecret("a"), NewSecret("a"))
+	require.NotEqual(t, NewSecret("a"), NewSecret("b"))
+	require.Equal(t, "[redacted]", NewSecret(secretToken).String())
+	require.Equal(t, "[redacted]", Secret{}.String())
+}
+
+// hold keeps secrets in unexported fields, which fmt reads through reflection
+// without asking them how to print themselves.
+type hold struct {
+	cred  Credential
+	token PVEToken
+	bare  Secret
+}
+
+type holdExported struct {
+	Cred  Credential
+	Token PVEToken
+	Bare  Secret
+}
+
+func TestSecretsAreRedactedWhateverPrintsThem(t *testing.T) {
 	c := credentialOf("cred-a")
-	ptr := &c
-	wrapped := struct{ Cred Credential }{c}
-	for name, got := range map[string]string{
-		"%v":        fmt.Sprintf("%v", c),
-		"%+v":       fmt.Sprintf("%+v", c),
-		"%s":        fmt.Sprintf("[%s]", c),
-		"%#v":       fmt.Sprintf("%#v", c),
-		"pointer":   fmt.Sprintf("%v", ptr),
-		"slice":     fmt.Sprintf("%v", []Credential{c}),
-		"nested":    fmt.Sprintf("%+v", wrapped),
-		"String":    c.String(),
-		"Sprint":    fmt.Sprint(c),
-		"map value": fmt.Sprintf("%v", map[string]Credential{"a": c}),
-	} {
-		require.NotContains(t, got, secretToken, name)
-		require.Contains(t, got, "cred-a", name)
+	tok := PVEToken{TokenID: "pco@pve!pco", Secret: NewSecret(secretToken)}
+	values := map[string]any{
+		"secret":              c.Token,
+		"credential":          c,
+		"credential pointer":  &c,
+		"credential slice":    []Credential{c},
+		"credential array":    [1]Credential{c},
+		"credential map":      map[string]Credential{"a": c},
+		"pve token":           tok,
+		"pve token pointer":   &tok,
+		"unexported fields":   hold{cred: c, token: tok, bare: c.Token},
+		"unexported pointer":  &hold{cred: c, token: tok, bare: c.Token},
+		"exported fields":     holdExported{Cred: c, Token: tok, Bare: c.Token},
+		"exported pointer":    &holdExported{Cred: c, Token: tok, Bare: c.Token},
+		"nested unexported":   []hold{{cred: c, token: tok, bare: c.Token}},
+		"interface in a map":  map[string]any{"c": c, "h": hold{cred: c}},
+		"anonymous struct":    struct{ s Secret }{c.Token},
+		"pointer to a secret": &c.Token,
 	}
-	require.Contains(t, c.String(), "redacted")
+	for name, v := range values {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d"} {
+			out := fmt.Sprintf(verb, v)
+			require.NotContains(t, out, secretToken, "%s %s", name, verb)
+			require.NotContains(t, out, hex.EncodeToString([]byte(secretToken)), "%s %s", name, verb)
+		}
+		require.NotContains(t, fmt.Sprint(v), secretToken, name)
+		require.NotContains(t, fmt.Sprintln(v), secretToken, name)
+	}
+	require.Contains(t, fmt.Sprintf("%v", c), "cred-a")
+	require.Contains(t, fmt.Sprintf("%v", tok), "pco@pve!pco")
+}
+
+func TestSecretsAreRedactedInJSON(t *testing.T) {
+	c := credentialOf("cred-a")
+	tok := PVEToken{TokenID: "pco@pve!pco", Secret: NewSecret(secretToken)}
+	for name, v := range map[string]any{
+		"secret": c.Token, "credential": c, "credential pointer": &c, "credentials": []Credential{c},
+		"pve token": tok, "holder": holdExported{Cred: c, Token: tok, Bare: c.Token},
+	} {
+		b, err := json.Marshal(v)
+		require.NoError(t, err, name)
+		require.NotContains(t, string(b), secretToken, name)
+		require.Contains(t, string(b), "[redacted]", name)
+		b, err = json.MarshalIndent(v, "", "  ")
+		require.NoError(t, err, name)
+		require.NotContains(t, string(b), secretToken, name)
+	}
+}
+
+func TestSecretsAreRedactedInLogs(t *testing.T) {
+	c := credentialOf("cred-a")
+	tok := PVEToken{TokenID: "pco@pve!pco", Secret: NewSecret(secretToken)}
+	var buf bytes.Buffer
+	log := zerolog.New(&buf)
+
+	log.Info().Interface("credential", c).Interface("token", tok).Msg("as interfaces")
+	log.Info().Any("credential", &c).Any("secret", c.Token).Msg("as any")
+	log.Info().Stringer("credential", c).Stringer("token", tok).Msg("as stringers")
+	log.Info().Str("credential", fmt.Sprint(c)).Str("secret", fmt.Sprintf("%v", c.Token)).Msg("as strings")
+	log.Info().Interface("holder", hold{cred: c, token: tok, bare: c.Token}).Msg("unexported")
+	log.Info().Err(fmt.Errorf("saving %v: %w", c, os.ErrPermission)).Msg("in an error")
+
+	require.NotContains(t, buf.String(), secretToken)
+	require.Contains(t, buf.String(), "cred-a")
+}
+
+func TestTheSecretIsOnDiskAndComesBack(t *testing.T) {
+	s, p := openStore(t)
+	require.NoError(t, s.SaveCredential(credentialOf("cred-a")))
+	require.NoError(t, s.SavePVEToken(PVEToken{TokenID: "pco@pve!pco", Secret: NewSecret(secretToken)}))
+
+	for _, f := range []string{
+		filepath.Join(p.Private, "credentials", "cred-a.json"),
+		filepath.Join(p.Private, "meta", "pve-token.json"),
+	} {
+		b, err := os.ReadFile(f)
+		require.NoError(t, err)
+		require.Contains(t, string(b), secretToken, f)
+		require.NotContains(t, string(b), "redacted", f)
+	}
+	creds, err := s.Credentials()
+	require.NoError(t, err)
+	require.Len(t, creds, 1)
+	require.Equal(t, secretToken, creds[0].Token.Reveal())
+	tok, found, err := s.PVEToken()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, secretToken, tok.Secret.Reveal())
 }
 
 func TestPVETokenRoundTrip(t *testing.T) {
@@ -130,7 +223,7 @@ func TestPVETokenRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, found)
 
-	want := PVEToken{TokenID: "pco@pve!pco", Secret: "3f1c0a9e-1111-2222-3333-444455556666"}
+	want := PVEToken{TokenID: "pco@pve!pco", Secret: NewSecret("3f1c0a9e-1111-2222-3333-444455556666")}
 	require.NoError(t, s.SavePVEToken(want))
 	got, found, err := s.PVEToken()
 	require.NoError(t, err)
@@ -146,166 +239,7 @@ func TestPVETokenRoundTrip(t *testing.T) {
 
 func TestSavePVETokenRefusesIncompleteTokens(t *testing.T) {
 	s, p := openStore(t)
-	require.Error(t, s.SavePVEToken(PVEToken{Secret: "s"}))
+	require.Error(t, s.SavePVEToken(PVEToken{Secret: NewSecret("s")}))
 	require.Error(t, s.SavePVEToken(PVEToken{TokenID: "pco@pve!pco"}))
 	require.Empty(t, stored(t, p.Private))
-}
-
-func TestPVETokenDoesNotPrintItsSecret(t *testing.T) {
-	tok := PVEToken{TokenID: "pco@pve!pco", Secret: "3f1c0a9e-1111-2222-3333-444455556666"}
-	for _, got := range []string{
-		fmt.Sprintf("%v", tok), fmt.Sprintf("%+v", tok), fmt.Sprintf("%#v", tok), fmt.Sprintf("%v", &tok), tok.String(),
-	} {
-		require.NotContains(t, got, tok.Secret)
-		require.Contains(t, got, "pco@pve!pco")
-	}
-}
-
-func tunnelFile(p Paths, id string) string {
-	return filepath.Join(p.Local, "tunnels", id+".token")
-}
-
-func TestTunnelTokenFile(t *testing.T) {
-	s, p := openStore(t)
-	_, found, err := s.TunnelToken(tunnelA)
-	require.NoError(t, err)
-	require.False(t, found)
-
-	require.NoError(t, s.SaveTunnelToken(tunnelA, secretToken))
-	got, found, err := s.TunnelToken(tunnelA)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, secretToken, got)
-
-	b, err := os.ReadFile(tunnelFile(p, tunnelA))
-	require.NoError(t, err)
-	require.Equal(t, secretToken, string(b), "the file holds the token as it is, as the connector manager writes it")
-	info, err := os.Stat(tunnelFile(p, tunnelA))
-	require.NoError(t, err)
-	require.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
-	dir, err := os.Stat(filepath.Join(p.Local, "tunnels"))
-	require.NoError(t, err)
-	require.Equal(t, fs.FileMode(0o700), dir.Mode().Perm())
-	require.Equal(t, []string{"tunnels/" + tunnelA + ".token"}, stored(t, p.Local))
-	require.Empty(t, stored(t, p.Cluster))
-	require.Empty(t, stored(t, p.Private))
-
-	require.NoError(t, s.SaveTunnelToken(tunnelA, "second-token"))
-	got, _, err = s.TunnelToken(tunnelA)
-	require.NoError(t, err)
-	require.Equal(t, "second-token", got)
-	info, err = os.Stat(tunnelFile(p, tunnelA))
-	require.NoError(t, err)
-	require.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
-	require.Equal(t, []string{"tunnels/" + tunnelA + ".token"}, stored(t, p.Local), "no temporary file is left")
-}
-
-func TestTunnelTokenReadsAFileTheConnectorWrote(t *testing.T) {
-	s, p := openStore(t)
-	writeFile(t, tunnelFile(p, tunnelB), "  "+secretToken+"\n")
-	got, found, err := s.TunnelToken(tunnelB)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, secretToken, got)
-
-	writeFile(t, tunnelFile(p, tunnelA), " \n")
-	_, found, err = s.TunnelToken(tunnelA)
-	require.NoError(t, err)
-	require.False(t, found, "an empty token file holds no token")
-}
-
-func TestDeleteTunnelToken(t *testing.T) {
-	s, p := openStore(t)
-	require.NoError(t, s.DeleteTunnelToken(tunnelA), "nothing to delete")
-
-	require.NoError(t, s.SaveTunnelToken(tunnelA, secretToken))
-	require.NoError(t, s.SaveTunnelToken(tunnelB, "other"))
-	writeFile(t, filepath.Join(p.Local, "tunnels", tunnelA+".env"), "METRICS_ADDR=127.0.0.1:20300\n")
-	require.NoError(t, s.DeleteTunnelToken(tunnelA))
-	require.NoError(t, s.DeleteTunnelToken(tunnelA))
-
-	_, found, err := s.TunnelToken(tunnelA)
-	require.NoError(t, err)
-	require.False(t, found)
-	_, found, err = s.TunnelToken(tunnelB)
-	require.NoError(t, err)
-	require.True(t, found)
-	_, err = os.Stat(filepath.Join(p.Local, "tunnels", tunnelA+".env"))
-	require.NoError(t, err, "only the token goes")
-}
-
-func TestTunnelTokenRefusesAnythingButATunnelID(t *testing.T) {
-	s, p := openStore(t)
-	for _, id := range []string{
-		"", "..", "../x", "abc", strings.ToUpper(tunnelA), tunnelA + "x", tunnelA[:35],
-		"6a1f3c52/9d0e-4b7a-8c11-2f5e7d9a0b34", "../../etc/6a1f3c52-9d0e-4b7a-8c11-2f5e7d9a0b3", "6a1f3c52-9d0e-4b7a-8c11-2f5e7d9a0b3g",
-	} {
-		_, found, err := s.TunnelToken(id)
-		require.Error(t, err, id)
-		require.False(t, found, id)
-		require.Error(t, s.SaveTunnelToken(id, secretToken), id)
-		require.Error(t, s.DeleteTunnelToken(id), id)
-	}
-	require.Empty(t, stored(t, p.Local))
-}
-
-func TestSaveTunnelTokenRefusesTokensItCannotKeepAsTheyAre(t *testing.T) {
-	s, p := openStore(t)
-	for name, token := range map[string]string{
-		"empty": "", "blank": "  ", "trailing newline": secretToken + "\n", "leading space": " " + secretToken,
-	} {
-		err := s.SaveTunnelToken(tunnelA, token)
-		require.Error(t, err, name)
-		require.NotContains(t, err.Error(), secretToken, name)
-	}
-	require.Empty(t, stored(t, p.Local))
-}
-
-func TestTunnelTokenErrorsNeverCarryTheToken(t *testing.T) {
-	skipAsRoot(t)
-	s, p := openStore(t)
-	require.NoError(t, s.SaveTunnelToken(tunnelA, secretToken))
-	require.NoError(t, os.Chmod(tunnelFile(p, tunnelA), 0))
-	t.Cleanup(func() { _ = os.Chmod(tunnelFile(p, tunnelA), 0o600) })
-
-	_, _, err := s.TunnelToken(tunnelA)
-	require.Error(t, err)
-	require.NotContains(t, err.Error(), secretToken)
-
-	dir := filepath.Join(p.Local, "tunnels")
-	require.NoError(t, os.Chmod(dir, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	err = s.SaveTunnelToken(tunnelA, "another-"+secretToken)
-	require.ErrorIs(t, err, fs.ErrPermission)
-	require.NotContains(t, err.Error(), secretToken)
-}
-
-func TestTunnelTokenWriteLeavesNoTempFileWhenItFails(t *testing.T) {
-	s, p := openStore(t)
-	// A non-empty directory in the way makes the final rename fail.
-	writeFile(t, filepath.Join(tunnelFile(p, tunnelA), "inner"), "x")
-
-	require.Error(t, s.SaveTunnelToken(tunnelA, secretToken))
-	require.Equal(t, []string{"tunnels/" + tunnelA + ".token/inner"}, stored(t, p.Local))
-}
-
-func TestStoreIsSafeForConcurrentUse(t *testing.T) {
-	s, _ := openStore(t)
-	done := make(chan error, 8)
-	for i := range 4 {
-		go func() {
-			done <- s.SaveNode(NodeEntry{Name: "pve1", Version: fmt.Sprint(i), Since: t0})
-		}()
-		go func() {
-			done <- s.AppendAdopted(t0.Add(time.Duration(i)*time.Second), "zone1", adoptedSample(i))
-		}()
-	}
-	for range 8 {
-		require.NoError(t, <-done)
-	}
-	nodes, err := s.Nodes()
-	require.NoError(t, err)
-	require.Len(t, nodes, 1)
-	lines := adoptedLines(t, s)
-	require.Len(t, lines, 4)
 }

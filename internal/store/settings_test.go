@@ -178,7 +178,7 @@ func TestInvalidSettingsOnDiskAreAnErrorNotTheDefaults(t *testing.T) {
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
 			s, p := openStore(t)
-			writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), `{"schemaVersion":1,"rev":1,"data":`+data+`}`)
+			writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), envelopeJSON("settings", data))
 			got, err := s.Settings()
 			require.Error(t, err)
 			require.Equal(t, Settings{}, got)
@@ -187,7 +187,7 @@ func TestInvalidSettingsOnDiskAreAnErrorNotTheDefaults(t *testing.T) {
 
 	t.Run("unreadable file", func(t *testing.T) {
 		s, p := openStore(t)
-		writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), `{`)
+		writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), `{"schemaVersion":1,`)
 		_, err := s.Settings()
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "settings.json")
@@ -197,7 +197,7 @@ func TestInvalidSettingsOnDiskAreAnErrorNotTheDefaults(t *testing.T) {
 func TestSettingsFillsInTheFieldsAFileLeavesOut(t *testing.T) {
 	s, p := openStore(t)
 	writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"),
-		`{"schemaVersion":1,"rev":3,"data":{"gateTag":"web","allowHosts":["Shop.CZ"]}}`)
+		envelopeJSON("settings", `{"gateTag":"web","allowHosts":["Shop.CZ"]}`))
 
 	got, err := s.Settings()
 	require.NoError(t, err)
@@ -238,4 +238,30 @@ func TestDurationJSON(t *testing.T) {
 	for _, bad := range []string{`{"d":"ten"}`, `{"d":""}`, `{"d":10}`, `{"d":true}`, `{"d":"10"}`, `{"d":{}}`} {
 		require.Error(t, json.Unmarshal([]byte(bad), &w), bad)
 	}
+}
+
+func TestSettingsRefuseAnUnknownKey(t *testing.T) {
+	const rest = `"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true`
+	for name, tc := range map[string]struct{ data, key string }{
+		"misspelt deny list":  {`{` + rest + `,"denyhost":["admin.example.com"]}`, "denyhost"},
+		"misspelt allow list": {`{` + rest + `,"allowhost":["shop.cz"]}`, "allowhost"},
+		"invented key":        {`{` + rest + `,"somethingElse":1}`, "somethingElse"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, p := openStore(t)
+			writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), envelopeJSON("settings", tc.data))
+			got, err := s.Settings()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.key)
+			require.Equal(t, Settings{}, got)
+		})
+	}
+}
+
+func TestSettingsStillReadWhatSaveSettingsWrites(t *testing.T) {
+	s, _ := openStore(t)
+	require.NoError(t, s.SaveSettings(customSettings()))
+	got, err := s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, customSettings(), got)
 }

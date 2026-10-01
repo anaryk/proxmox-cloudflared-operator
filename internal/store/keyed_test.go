@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,7 +180,7 @@ func TestSaveClaimsRefusesBadInputAndWritesNothing(t *testing.T) {
 func TestClaimsOfAnUnreadableStoreAreAnError(t *testing.T) {
 	s, p := openStore(t)
 	require.NoError(t, s.SaveClaims(map[string]planner.Claim{"a.example.com": claimOf("a.example.com", "qemu/101")}))
-	writeFile(t, filepath.Join(p.Cluster, "claims", "b.example.com.json"), `{"schemaVersion":1,`)
+	writeFile(t, filepath.Join(p.Cluster, "claims", "b.example.com.json"), `{"schemaVersion":1,"rev":1,"id":"b.example.com","data":{`)
 
 	got, err := s.Claims()
 	require.Error(t, err, "a partial set of claims would hand a hostname to someone else")
@@ -189,7 +190,7 @@ func TestClaimsOfAnUnreadableStoreAreAnError(t *testing.T) {
 
 func TestClaimsRefuseTwoFilesForOneHostname(t *testing.T) {
 	s, p := openStore(t)
-	const body = `{"schemaVersion":1,"rev":1,"data":{"hostname":"a.example.com","owner":"qemu/101","since":"2026-10-01T12:00:00Z"}}`
+	body := envelopeJSON("a.example.com", `{"hostname":"a.example.com","owner":"qemu/101","since":"2026-10-01T12:00:00Z"}`)
 	writeFile(t, filepath.Join(p.Cluster, "claims", "a.example.com.json"), body)
 	writeFile(t, filepath.Join(p.Cluster, "claims", "other.json"), body)
 
@@ -201,10 +202,62 @@ func TestClaimsRefuseTwoFilesForOneHostname(t *testing.T) {
 func TestClaimsRefuseAFileWithoutHostname(t *testing.T) {
 	s, p := openStore(t)
 	writeFile(t, filepath.Join(p.Cluster, "claims", "a.example.com.json"),
-		`{"schemaVersion":1,"rev":1,"data":{"owner":"qemu/101","since":"2026-10-01T12:00:00Z"}}`)
+		envelopeJSON("a.example.com", `{"owner":"qemu/101","since":"2026-10-01T12:00:00Z"}`))
 	_, err := s.Claims()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "a.example.com.json")
+}
+
+func TestClaimsRefuseAFileWhoseIDIsNotItsHostname(t *testing.T) {
+	s, p := openStore(t)
+	writeFile(t, filepath.Join(p.Cluster, "claims", "a.example.com.json"),
+		envelopeJSON("b.example.com", `{"hostname":"a.example.com","owner":"qemu/101","since":"2026-10-01T12:00:00Z"}`))
+	_, err := s.Claims()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "a.example.com.json")
+	require.Contains(t, err.Error(), "b.example.com")
+}
+
+func TestSaveClaimsChecksEverythingBeforeItWritesOrDeletes(t *testing.T) {
+	s, p := openStore(t)
+	stored1 := map[string]planner.Claim{
+		"a.example.com": claimOf("a.example.com", "qemu/101"),
+		"b.example.com": claimOf("b.example.com", "qemu/102"),
+	}
+	require.NoError(t, s.SaveClaims(stored1))
+	dir := filepath.Join(p.Cluster, "claims")
+	before := identities(t, dir)
+
+	changed := claimOf("a.example.com", "qemu/109")
+	tooBig := claimOf("z.example.com", "qemu/103")
+	tooBig.Identity = strings.Repeat("x", 1<<20)
+	err := s.SaveClaims(map[string]planner.Claim{"a.example.com": changed, "z.example.com": tooBig})
+	require.Error(t, err, "the size of z is known before a is written and b is deleted")
+
+	after := identities(t, dir)
+	require.Len(t, after, 2)
+	for name, info := range before {
+		require.True(t, os.SameFile(info, after[name]), "%s was touched", name)
+	}
+	got, err := s.Claims()
+	require.NoError(t, err)
+	require.Equal(t, stored1, got)
+}
+
+func TestSaveBindingsChecksEverythingBeforeItWrites(t *testing.T) {
+	s, p := openStore(t)
+	require.NoError(t, s.SaveBindings(map[string]resolve.Binding{"a.example.com": bindingOf("a.example.com", "qemu/101")}))
+	before := identities(t, filepath.Join(p.Local, "bindings"))
+
+	big := bindingOf("z.example.com", "qemu/103")
+	big.MAC = strings.Repeat("x", 1<<20)
+	moved := bindingOf("a.example.com", "qemu/101")
+	moved.Addr = netip.MustParseAddr("10.0.0.9")
+	require.Error(t, s.SaveBindings(map[string]resolve.Binding{"a.example.com": moved, "z.example.com": big}))
+
+	after := identities(t, filepath.Join(p.Local, "bindings"))
+	require.Len(t, after, 1)
+	require.True(t, os.SameFile(before["a.example.com.json"], after["a.example.com.json"]))
 }
 
 func bindingOf(host, owner string) resolve.Binding {
