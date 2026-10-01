@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -154,13 +155,43 @@ func TestResolveTrustedStatic(t *testing.T) {
 			source: FromStatic,
 		},
 		{
-			name:   "static routed through another interface",
+			name:   "static through a gateway on another interface",
+			trust:  true,
+			nic:    nicOn(0, mac0, "vmbr0", 0, "10.40.0.10"),
+			route:  webRoute(),
+			kernel: &fakeRoute{iface: "vmbr7"},
+			addr:   "10.40.0.10",
+			source: FromStatic,
+		},
+		{
+			name:   "static on-link through another interface",
 			trust:  true,
 			nic:    nicOn(0, mac0, "vmbr0", 0, "10.40.0.10"),
 			route:  webRoute(),
 			kernel: &fakeRoute{iface: "vmbr7", onLink: true},
 			addr:   "10.40.0.10",
 			source: FromStatic,
+			reason: "address is on-link through vmbr7, which is not the guest's bridge",
+		},
+		{
+			name:   "static on-link on the guest's bridge without an address there",
+			trust:  true,
+			nic:    nicOn(0, mac0, "vmbr0", 0, "10.40.0.10"),
+			route:  webRoute(),
+			kernel: &fakeRoute{iface: "vmbr0", onLink: true},
+			addr:   "10.40.0.10",
+			source: FromStatic,
+			reason: notAdjacent,
+		},
+		{
+			name:   "static whose route changes with the source address",
+			trust:  true,
+			nic:    nicOn(0, mac0, "vmbr0", 0, "10.40.0.10"),
+			route:  webRoute(),
+			kernel: &fakeRoute{err: fmt.Errorf("route to 10.40.0.10 from 10.20.0.2: %w", ErrRouteDiffers)},
+			addr:   "10.40.0.10",
+			source: FromStatic,
+			reason: "route to 10.40.0.10 changes with the source address",
 		},
 		{
 			name:   "static the kernel has no route to",
@@ -433,6 +464,7 @@ func TestResolveForwardingTableNode(t *testing.T) {
 		localNode string
 		nodes     []string // nil: pve1 and pve2
 		checked   bool
+		reason    string // when checked; the usual one when empty
 	}{
 		{name: "guest on this node", guestNode: localNode, localNode: localNode, checked: true},
 		{name: "guest on another node", guestNode: "pve2", localNode: localNode, checked: false},
@@ -440,7 +472,10 @@ func TestResolveForwardingTableNode(t *testing.T) {
 		{name: "guest node unknown", guestNode: "", localNode: localNode, checked: true},
 		{name: "local node names no node of the cluster", guestNode: "pve2", localNode: "pve9", checked: true},
 		{name: "local node in another spelling", guestNode: "pve2", localNode: "PVE1", checked: true},
-		{name: "no nodes known", guestNode: "pve2", localNode: localNode, nodes: []string{}, checked: true},
+		{
+			name: "no nodes known", guestNode: "pve2", localNode: localNode, nodes: []string{}, checked: true,
+			reason: "MAC bc:24:11:00:00:01 not seen on bridge vmbr0 (no cluster nodes known)",
+		},
 		{name: "guest on a node that is not listed", guestNode: "pve7", localNode: localNode, checked: false},
 	}
 	for _, tt := range tests {
@@ -461,7 +496,7 @@ func TestResolveForwardingTableNode(t *testing.T) {
 			require.Len(t, s.prober.ops("arp"), 1, "ARP always applies")
 			require.Len(t, s.prober.ops("fdb"), 1, "the forwarding table is read either way")
 			if tt.checked {
-				requireNotServed(t, res, "MAC bc:24:11:00:00:01 not seen on bridge vmbr0")
+				requireNotServed(t, res, cmp.Or(tt.reason, "MAC bc:24:11:00:00:01 not seen on bridge vmbr0"))
 				return
 			}
 			requireServed(t, res, "10.20.0.10", t0)
@@ -515,6 +550,17 @@ func TestResolveDuplicateMAC(t *testing.T) {
 		res := s.resolve(t, webRoute(), nil)
 
 		requireServed(t, res, "10.20.0.10", t0)
+	})
+
+	t.Run("on a guest whose state is unknown", func(t *testing.T) {
+		s := newScenario(t)
+		s.addDB1(false, nicOn(0, mac0, "vmbr1", 0))
+		s.guests[1].StatusUnknown = true
+
+		res := s.resolve(t, webRoute(), nil)
+
+		requireNotServed(t, res, dupMAC0)
+		require.False(t, s.prober.touched(ip("10.20.0.10")))
 	})
 
 	t.Run("in another spelling", func(t *testing.T) {
@@ -937,6 +983,14 @@ func TestResolveFollowsTheKernelRoute(t *testing.T) {
 			},
 			addr:   "10.20.0.10",
 			reason: "node has no route to 10.20.0.10",
+		},
+		{
+			name: "route that changes with the source address",
+			setup: func(s *scenario) {
+				s.prober.routes["10.20.0.10"] = fakeRoute{err: fmt.Errorf("route to 10.20.0.10 from 10.20.0.2: %w", ErrRouteDiffers)}
+			},
+			addr:   "10.20.0.10",
+			reason: "route to 10.20.0.10 changes with the source address",
 		},
 		{
 			// The guest proves the address on its own bridge, but the host

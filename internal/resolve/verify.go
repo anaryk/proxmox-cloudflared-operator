@@ -64,8 +64,9 @@ func (a *attempt) verify(ctx context.Context, c Candidate) outcome {
 	if isNodeAddr(ifaces, c.Addr) {
 		return outcome{rejected, reasonNodeAddress}
 	}
-	// A MAC another running guest has too passes only on the forwarding
-	// table, so there is nothing to probe when that cannot happen.
+	// A MAC that another guest which runs, or may, has too passes only on
+	// the forwarding table, so there is nothing to probe when that cannot
+	// happen.
 	if o := a.claimMAC(c.NIC.MAC, a.checksFDB()); !o.ok() {
 		return o
 	}
@@ -81,9 +82,7 @@ func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate)
 	var placed map[string]bool
 	switch iface := arpInterface(ifaces, c); {
 	case iface == "" && a.trusted(c):
-		// Routed networks are what the admin trusts static addresses for, so
-		// the route may leave anywhere, but there must be one.
-		if _, _, o := a.kernelRoute(ctx, c.Addr); !o.ok() {
+		if o := a.throughGateway(ctx, c); !o.ok() {
 			return o
 		}
 	case iface == "":
@@ -181,9 +180,9 @@ func (a *attempt) checksFDB() bool {
 	return node == "" || local == "" || node == local || !listed
 }
 
-// claimMAC fails when another running guest has mac configured too. Such a
-// MAC passes only when the binding already had it and this call found it on
-// the guest's own port.
+// claimMAC fails when another guest that runs, or may run, has mac
+// configured too. Such a MAC passes only when the binding already had it and
+// this call found it on the guest's own port.
 func (a *attempt) claimMAC(mac string, onOwnPort bool) outcome {
 	key, err := model.NormalizeMAC(mac)
 	if err != nil {
@@ -196,10 +195,11 @@ func (a *attempt) claimMAC(mac string, onOwnPort bool) outcome {
 	return lost("MAC %s is also configured on %s", key, other)
 }
 
-// sharedWith returns another running guest that has mac configured.
+// sharedWith returns another guest that has mac configured and runs, or may
+// run because Proxmox has never said whether it does.
 func (a *attempt) sharedWith(mac string) (string, bool) {
 	for _, g := range a.snap.Guests {
-		if g.Ref == a.guest.Ref || !g.Running {
+		if g.Ref == a.guest.Ref || !g.Running && !g.StatusUnknown {
 			continue
 		}
 		if slices.ContainsFunc(g.NICs, func(n model.NIC) bool { return sameMAC(n.MAC, mac) }) {
@@ -239,7 +239,8 @@ func vlanBridge(nic model.NIC) string {
 
 // trusted reports whether a candidate the node has no address next to may be
 // served anyway: only an address from the NIC's Proxmox config, only when the
-// admin allows it, and only inside the admin's ranges.
+// admin allows it, and only inside the admin's ranges. The route to it is
+// checked as well; see throughGateway.
 func (a *attempt) trusted(c Candidate) bool {
 	s := a.r.settings
 	inRange := func(p netip.Prefix) bool { return p.Contains(c.Addr) }

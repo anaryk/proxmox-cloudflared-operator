@@ -268,7 +268,12 @@ func broadcastMAC() net.HardwareAddr {
 }
 
 // Route asks the kernel for the route it would use to send to addr from this
-// host, as "ip route get" does.
+// host, as "ip route get" does, and asks again from the source address the
+// kernel picked. Both answers must leave through the same interface, both
+// on-link or both through a gateway; otherwise a rule on the source address
+// sends the host's own traffic elsewhere, and Route fails with
+// ErrRouteDiffers. Policy routing on anything else, such as the user of a
+// socket or a firewall mark, is not looked at.
 func (p *hostProber) Route(ctx context.Context, addr netip.Addr) (string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return "", false, err
@@ -276,26 +281,47 @@ func (p *hostProber) Route(ctx context.Context, addr netip.Addr) (string, bool, 
 	if !addr.Is4() {
 		return "", false, fmt.Errorf("%s is not an IPv4 address", addr)
 	}
-	routes, err := netlink.RouteGet(addr.AsSlice())
-	switch {
-	case noRoute(err):
-		return "", false, fmt.Errorf("route to %s: %w", addr, ErrNoRoute)
-	case err != nil:
-		return "", false, fmt.Errorf("looking up route: %w", err)
-	case len(routes) == 0:
-		return "", false, fmt.Errorf("route to %s: %w", addr, ErrNoRoute)
-	}
-	link, err := netlink.LinkByIndex(routes[0].LinkIndex)
+	first, err := routeGet(addr, nil)
 	if err != nil {
-		return "", false, fmt.Errorf("looking up interface %d: %w", routes[0].LinkIndex, err)
+		return "", false, err
 	}
-	return link.Attrs().Name, onLink(routes[0]), nil
+	if first.Src == nil {
+		return "", false, fmt.Errorf("route to %s: the kernel picked no source address", addr)
+	}
+	again, err := routeGet(addr, &netlink.RouteGetOptions{SrcAddr: first.Src})
+	switch {
+	case errors.Is(err, ErrNoRoute), err == nil && (again.LinkIndex != first.LinkIndex || onLink(again) != onLink(first)):
+		return "", false, fmt.Errorf("route to %s from %s: %w", addr, first.Src, ErrRouteDiffers)
+	case err != nil:
+		return "", false, err
+	}
+	link, err := netlink.LinkByIndex(first.LinkIndex)
+	if err != nil {
+		return "", false, fmt.Errorf("looking up interface %d: %w", first.LinkIndex, err)
+	}
+	return link.Attrs().Name, onLink(first), nil
+}
+
+// routeGet looks up the route to addr, with ErrNoRoute when the kernel has
+// none it would send on.
+func routeGet(addr netip.Addr, opts *netlink.RouteGetOptions) (netlink.Route, error) {
+	routes, err := netlink.RouteGetWithOptions(addr.AsSlice(), opts)
+	switch {
+	case noRoute(err), err == nil && len(routes) == 0:
+		return netlink.Route{}, fmt.Errorf("route to %s: %w", addr, ErrNoRoute)
+	case err != nil:
+		return netlink.Route{}, fmt.Errorf("looking up route: %w", err)
+	}
+	return routes[0], nil
 }
 
 // noRoute reports whether the kernel answered a route lookup with having no
-// route to the address, or one that rejects it.
+// route to the address (ENETUNREACH) or with one that drops the traffic:
+// unreachable (EHOSTUNREACH), blackhole (EINVAL) or prohibit (EACCES). The
+// address is IPv4 by then, so EINVAL does not stand for a malformed request.
 func noRoute(err error) bool {
-	return errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH)
+	return errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) ||
+		errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EACCES)
 }
 
 // onLink reports whether r sends to the destination itself rather than to a

@@ -26,19 +26,46 @@ func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, m
 	placed := make(map[string]bool, len(macs))
 	for _, mac := range macs {
 		ports, o := a.fdbPorts(ctx, bridge, vlan, mac)
-		switch {
-		case !o.ok():
+		if !o.ok() {
 			return nil, o
-		case len(ports) == 0:
-			return nil, lost("MAC %s not seen on bridge %s", mac, bridge)
-		case len(ports) > 1:
-			return nil, lost("MAC %s is on several ports: %s", mac, strings.Join(ports, ", "))
-		case !slices.Contains(guestPorts(a.guest.Ref.VMID, own[mac]), ports[0]):
-			return nil, lost("MAC %s is on port %s, not on the guest's own port", mac, ports[0])
+		}
+		if o := a.onOwnPort(mac, bridge, ports, own[mac]); !o.ok() {
+			return nil, o
 		}
 		placed[mac] = true
 	}
 	return placed, outcome{}
+}
+
+// onOwnPort checks that ports, where the bridge has learned mac, is the port
+// of a guest NIC with that MAC and nothing else. A guest said to run on
+// another node while the inventory lists no node at all may well run there,
+// so a failure then proves nothing, unless a port is a local guest's.
+func (a *attempt) onOwnPort(mac, bridge string, ports []string, indexes []int) outcome {
+	var o outcome
+	switch {
+	case len(ports) == 0:
+		o = lost("MAC %s not seen on bridge %s", mac, bridge)
+	case len(ports) > 1:
+		o = lost("MAC %s is on several ports: %s", mac, strings.Join(ports, ", "))
+	case !slices.Contains(guestPorts(a.guest.Ref.VMID, indexes), ports[0]):
+		o = lost("MAC %s is on port %s, not on the guest's own port", mac, ports[0])
+	default:
+		return outcome{}
+	}
+	if a.mayRunElsewhere() && !slices.ContainsFunc(ports, isGuestPort) {
+		return outcome{probeFailed, o.reason + " (no cluster nodes known)"}
+	}
+	return o
+}
+
+// mayRunElsewhere reports whether the guest is said to run on another node
+// while the inventory lists no node at all, as when the listing failed right
+// after a restart. That is missing information, unlike a LocalNode that names
+// none of the nodes listed.
+func (a *attempt) mayRunElsewhere() bool {
+	node, local := a.guest.Node, a.r.settings.LocalNode
+	return len(a.snap.Nodes) == 0 && node != "" && local != "" && node != local
 }
 
 // notOnLocalPorts checks, for a guest that runs on another node, that the

@@ -54,12 +54,19 @@ var ErrTooManyClaimants = errors.New("too many stations claim the address")
 // address at all, as opposed to one that could not be looked up.
 var ErrNoRoute = errors.New("no route to the address")
 
+// ErrRouteDiffers is wrapped by a Route error when the route from the source
+// address the kernel picks for addr is not the one found without it.
+var ErrRouteDiffers = errors.New("route depends on the source address")
+
 // Prober is the host-side view the resolver needs. Its methods may be called
 // concurrently.
 type Prober interface {
 	Interfaces(ctx context.Context) ([]HostIface, error)
 	// Route returns the interface the kernel sends traffic for addr out of,
-	// and whether it goes to addr directly rather than through a gateway.
+	// and whether it goes to addr directly rather than through a gateway. A
+	// route that changes with the source address the kernel picks fails with
+	// ErrRouteDiffers; policy routing on anything else, such as the user of a
+	// socket or a firewall mark, is not supported.
 	Route(ctx context.Context, addr netip.Addr) (iface string, onLink bool, err error)
 	// ARP asks for addr on iface and returns every MAC that answered in the window.
 	ARP(ctx context.Context, iface string, addr netip.Addr) ([]string, error)
@@ -73,8 +80,11 @@ type Prober interface {
 type Settings struct {
 	// LocalNode is the name of the node the resolver runs on. A guest that
 	// runs on another node gets no forwarding-table step, only the check that
-	// no local guest port has its MAC; when LocalNode is empty or names no
-	// node of the inventory, every guest gets the step.
+	// no local guest port has its MAC; when LocalNode is empty or names none
+	// of the nodes the inventory lists, every guest gets the step. When the
+	// inventory lists no node at all, a guest said to run elsewhere gets it
+	// too, but its failure proves nothing unless the MAC is on the port of a
+	// local guest.
 	LocalNode    string
 	StickyFor    time.Duration // keep a failing binding this long before trying others, default 2m
 	TrustStatic  bool          // resolve.trustStaticConfig
@@ -137,11 +147,12 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 //
 // The previous binding is verified first, even when no source reports its
 // address any more. After a dial failure it stays the target for StickyFor
-// before other candidates are tried; after a prober error, or while an
-// incomplete inventory does not list the guest, while its last proof is not
-// in doubt. Lost identity, a stopped guest, a guest missing from a complete
-// inventory, or a doubtful proof (older than MaxProofAge, dated in the
-// future, or for a MAC another running guest has too) withdraws it, and only
+// before other candidates are tried; after a prober error, while an
+// incomplete inventory does not list the guest, or while Proxmox has never
+// reported whether it runs, while its last proof is not in doubt. Lost
+// identity, a stopped guest, a guest missing from a complete inventory, or a
+// doubtful proof (older than MaxProofAge, dated in the future, or for a MAC
+// another guest that runs or may run has too) withdraws it, and only
 // identity passing again lifts that. When nothing passes and nothing is
 // bound, the target says why the first candidate failed and has no address.
 // Whether the binding still applies is decided before ctx is looked at; a
@@ -170,7 +181,7 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 		return a.guestUnknown()
 	case !ok:
 		return hold(prev, deny, snap, reasonNotFound, now)
-	case !guest.Running:
+	case !guest.Running && !guest.StatusUnknown:
 		return hold(prev, deny, snap, reasonNotRunning, now)
 	}
 	cands, err := Candidates(route, guest)
@@ -180,6 +191,9 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 	// Whether the binding still applies is settled before ctx is looked at,
 	// so that a cancelled call cannot keep one that does not.
 	a := newAttempt(r, route, guest, snap, deny, prev, now, cands)
+	if !guest.Running {
+		return a.guestUnknown()
+	}
 	if ctx.Err() != nil {
 		return a.cancelled()
 	}
@@ -403,11 +417,11 @@ func (a *attempt) unchanged() Result {
 	return a.unproven(a.prev.clone(), reasonCancelled)
 }
 
-// guestUnknown keeps the binding of a guest that an incomplete inventory does
-// not list. Nothing shows that the guest is gone, or that it is still there,
-// so the address is treated as after a prober error: served while its last
-// proof is fresh, and never probed, since there is no guest to check it
-// against.
+// guestUnknown keeps the binding of a guest whose state is not known: an
+// incomplete inventory does not list it, or Proxmox has never reported
+// whether it runs. Nothing shows that the guest is gone or stopped, or that
+// it is there, so the address is treated as after a prober error: served
+// while its last proof is fresh, and not probed.
 func (a *attempt) guestUnknown() Result {
 	if a.prev == nil {
 		return a.result(planner.ResolvedTarget{Reason: reasonGuestUnknown}, nil)
@@ -427,8 +441,9 @@ func (a *attempt) unproven(b *Binding, reason string) Result {
 	return a.result(b.target(reason), b)
 }
 
-// doubt says why b may not be served on an old proof: another running guest
-// has its MAC, or the proof is older than MaxProofAge or dated in the future.
+// doubt says why b may not be served on an old proof: another guest that runs
+// or may run has its MAC, or the proof is older than MaxProofAge or dated in
+// the future.
 func (a *attempt) doubt(b *Binding) (string, bool) {
 	if mac, err := model.NormalizeMAC(b.MAC); err == nil {
 		if other, shared := a.sharedWith(mac); shared {

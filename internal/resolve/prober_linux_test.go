@@ -113,9 +113,11 @@ func TestLinuxNoRoute(t *testing.T) {
 		{err: nil},
 		{err: unix.ENETUNREACH, want: true},
 		{err: unix.EHOSTUNREACH, want: true},
+		{err: unix.EINVAL, want: true},
+		{err: unix.EACCES, want: true},
 		{err: fmt.Errorf("asking: %w", unix.ENETUNREACH), want: true},
 		{err: unix.EPERM},
-		{err: unix.EINVAL},
+		{err: unix.EAGAIN},
 		{err: errors.New("network is unreachable")},
 	} {
 		require.Equal(t, tc.want, noRoute(tc.err), "%v", tc.err)
@@ -128,6 +130,79 @@ func TestLinuxOnLink(t *testing.T) {
 	require.False(t, onLink(netlink.Route{LinkIndex: 3, Gw: gw}))
 	require.False(t, onLink(netlink.Route{LinkIndex: 3, Via: &netlink.Via{AddrFamily: unix.AF_INET6, Addr: net.ParseIP("fe80::1")}}))
 	require.False(t, onLink(netlink.Route{MultiPath: []*netlink.NexthopInfo{{LinkIndex: 3}, {LinkIndex: 4}}}))
+}
+
+// TestLinuxRouteInANamespace looks routes up in a throwaway network
+// namespace with a veth pair pco0/pco1 in it, so that no route or rule of the
+// host is touched.
+func TestLinuxRouteInANamespace(t *testing.T) {
+	if os.Geteuid() != 0 {
+		skipLab(t, "needs root to create a network namespace")
+	}
+	ns := newNamespace(t)
+	h, err := netlink.NewHandleAt(ns)
+	require.NoError(t, err)
+	t.Cleanup(h.Close)
+	require.NoError(t, h.LinkAdd(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: "pco0"}, PeerName: "pco1"}))
+	index := map[string]int{}
+	for _, l := range []struct{ name, addr string }{{"pco0", "10.97.0.1/24"}, {"pco1", "10.96.0.1/24"}} {
+		link, err := h.LinkByName(l.name)
+		require.NoError(t, err)
+		require.NoError(t, h.AddrAdd(link, &netlink.Addr{IPNet: mustIPNet(t, l.addr)}))
+		require.NoError(t, h.LinkSetUp(link))
+		index[l.name] = link.Attrs().Index
+	}
+	for _, r := range []struct {
+		dst  string
+		kind int
+	}{{"10.95.1.0/24", unix.RTN_BLACKHOLE}, {"10.95.2.0/24", unix.RTN_PROHIBIT}, {"10.95.3.0/24", unix.RTN_UNREACHABLE}} {
+		require.NoError(t, h.RouteAdd(&netlink.Route{Dst: mustIPNet(t, r.dst), Type: r.kind}), r.dst)
+	}
+	require.NoError(t, h.RouteAdd(&netlink.Route{LinkIndex: index["pco1"], Dst: mustIPNet(t, "10.94.0.0/24"), Gw: net.ParseIP("10.96.0.2")}))
+	// Traffic from 10.97.0.1 into its own network leaves through pco1, while
+	// a lookup that names no source finds pco0.
+	require.NoError(t, h.RouteAdd(&netlink.Route{LinkIndex: index["pco1"], Dst: mustIPNet(t, "10.97.0.0/24"), Scope: netlink.SCOPE_LINK, Table: 100}))
+	rule := netlink.NewRule()
+	rule.Src, rule.Table, rule.Priority = mustIPNet(t, "10.97.0.1/32"), 100, 100
+	require.NoError(t, h.RuleAdd(rule))
+
+	p := NewHostProber(0, 0)
+	tests := []struct {
+		name   string
+		addr   string
+		iface  string
+		onLink bool
+		err    error
+	}{
+		{name: "connected network", addr: "10.96.0.5", iface: "pco1", onLink: true},
+		{name: "through a gateway", addr: "10.94.0.5", iface: "pco1"},
+		{name: "no route at all", addr: "10.93.0.5", err: ErrNoRoute},
+		{name: "blackhole", addr: "10.95.1.5", err: ErrNoRoute},
+		{name: "prohibit", addr: "10.95.2.5", err: ErrNoRoute},
+		{name: "unreachable", addr: "10.95.3.5", err: ErrNoRoute},
+		{name: "route that changes with the source address", addr: "10.97.0.5", err: ErrRouteDiffers},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				iface  string
+				onLink bool
+				err    error
+			)
+			onThrowawayThread(func() {
+				if err = netns.Set(ns); err == nil {
+					iface, onLink, err = p.Route(t.Context(), netip.MustParseAddr(tc.addr))
+				}
+			})
+			if tc.err != nil {
+				require.ErrorIs(t, err, tc.err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.iface, iface)
+			require.Equal(t, tc.onLink, onLink)
+		})
+	}
 }
 
 func TestLinuxRetryDump(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
@@ -139,6 +140,13 @@ func TestResolveIdentityLossWithdrawsBinding(t *testing.T) {
 				s.prober.routes["10.20.0.10"] = fakeRoute{err: fmt.Errorf("route to 10.20.0.10: %w", ErrNoRoute)}
 			},
 			reason: "node has no route to 10.20.0.10",
+		},
+		{
+			name: "route that changes with the source address",
+			setup: func(s *scenario) {
+				s.prober.routes["10.20.0.10"] = fakeRoute{err: fmt.Errorf("route to 10.20.0.10 from 10.20.0.2: %w", ErrRouteDiffers)}
+			},
+			reason: "route to 10.20.0.10 changes with the source address",
 		},
 	}
 	for _, tt := range tests {
@@ -851,5 +859,202 @@ func TestResolveGuestAbsentFromIncompleteSnapshot(t *testing.T) {
 		res := s.resolve(t, webRoute(), prev)
 
 		requireNotServed(t, res, reason)
+	})
+}
+
+func TestResolveGuestStatusUnknown(t *testing.T) {
+	const reason = "guest state unknown"
+	stale := provenAt(boundTo("10.20.0.10"), t0.Add(-5*time.Minute-time.Second))
+	tests := []struct {
+		name    string
+		prev    *Binding
+		setup   func(s *scenario)
+		target  planner.ResolvedTarget
+		binding *Binding
+	}{
+		{
+			name:    "fresh proof",
+			prev:    boundTo("10.20.0.10"),
+			target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: reason, Owner: webOwner},
+			binding: failingAt(boundTo("10.20.0.10"), t0),
+		},
+		{
+			name:    "stale proof",
+			prev:    stale,
+			target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Withdrawn: true, Reason: "identity not confirmed for 5m1s", Owner: webOwner},
+			binding: withdrawnAt(stale, t0),
+		},
+		{
+			name:    "withdrawn binding stays withdrawn",
+			prev:    withdrawnAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)),
+			target:  planner.ResolvedTarget{Addr: ip("10.20.0.10"), Withdrawn: true, Reason: reason, Owner: webOwner},
+			binding: withdrawnAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)),
+		},
+		{
+			name:  "MAC on another running guest",
+			prev:  boundTo("10.20.0.10"),
+			setup: func(s *scenario) { s.addDB1(true, nicOn(0, mac0, "vmbr1", 0)) },
+			target: planner.ResolvedTarget{
+				Addr: ip("10.20.0.10"), Withdrawn: true, Owner: webOwner,
+				Reason: "MAC bc:24:11:00:00:01 is also configured on qemu/102",
+			},
+			binding: withdrawnAt(boundTo("10.20.0.10"), t0),
+		},
+		{
+			name:   "binding whose MAC is on no NIC any more",
+			prev:   boundTo("10.20.0.10"),
+			setup:  func(s *scenario) { s.web().NICs[0].MAC = mac2 },
+			target: planner.ResolvedTarget{Reason: reason},
+		},
+		{
+			name:   "no binding",
+			target: planner.ResolvedTarget{Reason: reason},
+		},
+		{
+			name:   "denied binding",
+			prev:   boundTo("10.20.0.2"),
+			target: planner.ResolvedTarget{Rejected: true, Reason: "address of a cluster node"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newScenario(t)
+			s.web().Running = false
+			s.web().StatusUnknown = true
+			if tt.setup != nil {
+				tt.setup(s)
+			}
+
+			res := s.resolve(t, webRoute(), tt.prev)
+
+			require.Equal(t, tt.target, res.Target)
+			require.Equal(t, tt.binding, res.Binding)
+			require.Empty(t, s.prober.calls, "nothing is probed for a guest whose state is unknown")
+		})
+	}
+
+	t.Run("invalid route is still rejected", func(t *testing.T) {
+		s := newScenario(t)
+		s.web().Running = false
+		s.web().StatusUnknown = true
+
+		res := s.resolve(t, routeFor(netip.Addr{}, "net9"), boundTo("10.20.0.10"))
+
+		require.Equal(t, planner.ResolvedTarget{Rejected: true, Reason: "guest has no net9"}, res.Target)
+		require.Nil(t, res.Binding)
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		s := newScenario(t)
+		s.web().Running = false
+		s.web().StatusUnknown = true
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		res := s.resolveCtx(ctx, webRoute(), boundTo("10.20.0.10"))
+
+		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: reason, Owner: webOwner}, res.Target)
+		require.Equal(t, failingAt(boundTo("10.20.0.10"), t0), res.Binding)
+	})
+
+	t.Run("a known stop still withdraws", func(t *testing.T) {
+		s := newScenario(t)
+		s.web().Running = false
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+		requireWithdrawn(t, res, "guest is not running", withdrawnAt(boundTo("10.20.0.10"), t0))
+	})
+}
+
+func TestResolveForwardingTableWithoutNodes(t *testing.T) {
+	const unsure = " (no cluster nodes known)"
+	stale := provenAt(boundTo("10.20.0.10"), t0.Add(-5*time.Minute-time.Second))
+	tests := []struct {
+		name      string
+		guestNode string
+		localNode string
+		nodes     []inventory.Node
+		ports     []string
+		reason    string
+		unproven  bool // a prober error rather than lost identity
+	}{
+		{
+			name: "not learned", guestNode: "pve2", localNode: localNode,
+			reason: "MAC bc:24:11:00:00:01 not seen on bridge vmbr0" + unsure, unproven: true,
+		},
+		{
+			name: "learned on the uplink", guestNode: "pve2", localNode: localNode, ports: []string{"eno1"},
+			reason: "MAC bc:24:11:00:00:01 is on port eno1, not on the guest's own port" + unsure, unproven: true,
+		},
+		{
+			name: "learned on two uplinks", guestNode: "pve2", localNode: localNode, ports: []string{"eno1", "eno2"},
+			reason: "MAC bc:24:11:00:00:01 is on several ports: eno1, eno2" + unsure, unproven: true,
+		},
+		{
+			name: "learned on another local guest's port", guestNode: "pve2", localNode: localNode, ports: []string{"tap102i0"},
+			reason: "MAC bc:24:11:00:00:01 is on port tap102i0, not on the guest's own port",
+		},
+		{
+			name: "learned on the uplink and a local guest's port", guestNode: "pve2", localNode: localNode, ports: []string{"eno1", "fwpr102p0"},
+			reason: "MAC bc:24:11:00:00:01 is on several ports: eno1, fwpr102p0",
+		},
+		{
+			name: "guest on this node", guestNode: localNode, localNode: localNode,
+			reason: "MAC bc:24:11:00:00:01 not seen on bridge vmbr0",
+		},
+		{
+			name: "guest node unknown", guestNode: "", localNode: localNode,
+			reason: "MAC bc:24:11:00:00:01 not seen on bridge vmbr0",
+		},
+		{
+			name: "local node unknown", guestNode: "pve2", localNode: "",
+			reason: "MAC bc:24:11:00:00:01 not seen on bridge vmbr0",
+		},
+		{
+			name: "local node names none of the listed nodes", guestNode: "pve2", localNode: "pve9",
+			nodes:  []inventory.Node{{Name: "pve1"}, {Name: "pve2"}},
+			reason: "MAC bc:24:11:00:00:01 not seen on bridge vmbr0",
+		},
+	}
+	for _, tt := range tests {
+		run := func(t *testing.T, prev *Binding) Result {
+			t.Helper()
+			s := newScenario(t)
+			s.nodes = tt.nodes
+			s.web().Node = tt.guestNode
+			s.settings.LocalNode = tt.localNode
+			s.prober.fdb[fdbKey("vmbr0", 0, mac0)] = tt.ports
+			res := s.resolve(t, webRoute(), prev)
+			require.Empty(t, s.prober.ops("dial"))
+			return res
+		}
+		t.Run(tt.name+" without a binding", func(t *testing.T) {
+			requireNotServed(t, run(t, nil), tt.reason)
+		})
+		t.Run(tt.name+" with a fresh binding", func(t *testing.T) {
+			res := run(t, boundTo("10.20.0.10"))
+			if tt.unproven {
+				require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: tt.reason, Owner: webOwner}, res.Target)
+				require.Equal(t, failingAt(boundTo("10.20.0.10"), t0), res.Binding)
+				return
+			}
+			requireWithdrawn(t, res, tt.reason, withdrawnAt(boundTo("10.20.0.10"), t0))
+		})
+		if tt.unproven {
+			t.Run(tt.name+" with a stale binding", func(t *testing.T) {
+				requireWithdrawn(t, run(t, stale), "identity not confirmed for 5m1s", withdrawnAt(stale, t0))
+			})
+		}
+	}
+
+	t.Run("own port still proves identity", func(t *testing.T) {
+		s := newScenario(t)
+		s.nodes = nil
+		s.web().Node = "pve2"
+
+		res := s.resolve(t, webRoute(), nil)
+
+		requireServed(t, res, "10.20.0.10", t0)
 	})
 }

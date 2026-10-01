@@ -181,6 +181,13 @@ func (c cycle) requireBlocked(t *testing.T, host string, state planner.RouteStat
 
 func (p *pipeline) advance(d time.Duration) { p.clock.t = p.clock.t.Add(d) }
 
+// restart starts the inventory and the resolver afresh, as a restarted
+// operator does; only the stored bindings and claims survive.
+func (p *pipeline) restart() {
+	p.inv = inventory.New(p.src, inventory.Options{}, p.clock.now, zerolog.Nop())
+	p.resolver = NewResolver(p.prober, Settings{LocalNode: "pve1"}, p.clock.now)
+}
+
 func (p *pipeline) run(t *testing.T) cycle {
 	t.Helper()
 	snap := p.inv.Refresh(t.Context())
@@ -285,6 +292,46 @@ func TestPipelineUnknownStatusKeepsServingWhileTheWireProvesIt(t *testing.T) {
 	c := p.run(t)
 
 	c.requireBlocked(t, "web.example.com", planner.StateWithdrawn, "no ARP answer on vmbr0.30", true)
+}
+
+func TestPipelineRestartWhileTheStatusIsUnknown(t *testing.T) {
+	p, ref := webPipeline()
+	p.run(t)
+	proven := p.clock.t
+	p.src.setStatus(ref, "unknown")
+	p.restart()
+	p.prober.calls = nil
+
+	for _, at := range []time.Duration{10 * time.Second, 5 * time.Minute} {
+		p.clock.t = proven.Add(at)
+
+		c := p.run(t)
+
+		require.True(t, c.snap.Complete)
+		g := c.snap.Guests[0]
+		require.True(t, g.StatusUnknown, "nothing was read before the restart")
+		require.False(t, g.Running)
+		st := c.status(t, "web.example.com")
+		require.Equal(t, planner.StateUnreachable, st.State, "after %s", at)
+		require.Equal(t, "guest state unknown", st.Reason)
+		require.Equal(t, planner.IngressRule{Hostname: "web.example.com", Service: "http://10.30.0.11:8080"}, c.rule(t, "web.example.com"))
+		require.Equal(t, proven, p.bindings["web.example.com"].VerifiedAt, "an unknown state proves nothing")
+	}
+	require.Empty(t, p.prober.calls, "a guest whose state is unknown is not probed")
+
+	p.clock.t = proven.Add(5*time.Minute + time.Second)
+
+	c := p.run(t)
+
+	c.requireBlocked(t, "web.example.com", planner.StateWithdrawn, "identity not confirmed for 5m1s", true)
+
+	p.src.setStatus(ref, "running")
+	p.advance(10 * time.Second)
+
+	c = p.run(t)
+
+	c.requireActive(t, "web.example.com", "10.30.0.11:8080")
+	require.Equal(t, p.clock.t, p.bindings["web.example.com"].VerifiedAt)
 }
 
 func TestPipelineGuestOnAnOfflineNode(t *testing.T) {
