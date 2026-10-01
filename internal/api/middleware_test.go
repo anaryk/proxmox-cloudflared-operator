@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -149,7 +148,7 @@ func answerAndClose(t *testing.T, br *bufio.Reader) (int, string) {
 }
 
 func TestARefusedConnectionIsClosedAtOnce(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	serve(t, checkedServer(&fakeEngine{}), socket)
 	conn, br := rawConn(t, socket)
 
@@ -163,7 +162,7 @@ func TestARefusedConnectionIsClosedAtOnce(t *testing.T) {
 
 func TestARefusedPeerCannotStallAnAnswer(t *testing.T) {
 	f := &fakeEngine{}
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	serve(t, checkedServer(f), socket)
 	conn, br := rawConn(t, socket)
 
@@ -182,7 +181,7 @@ func TestAnAllowedPeersStalledBodyIsCutOff(t *testing.T) {
 	f := &fakeEngine{}
 	s := newServer(f)
 	s.bodyTimeout = 50 * time.Millisecond
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	serve(t, s, socket)
 	conn, br := rawConn(t, socket)
 
@@ -202,7 +201,7 @@ func TestAnAllowedPeersStalledBodyIsCutOff(t *testing.T) {
 func TestAnAllowedPeerWithAWrongContentTypeCannotStallEither(t *testing.T) {
 	s := newServer(&fakeEngine{})
 	s.bodyTimeout = 50 * time.Millisecond
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	serve(t, s, socket)
 	conn, br := rawConn(t, socket)
 
@@ -212,6 +211,45 @@ func TestAnAllowedPeerWithAWrongContentTypeCannotStallEither(t *testing.T) {
 
 	status, _ := answerAndClose(t, br)
 	require.Equal(t, http.StatusUnsupportedMediaType, status)
+}
+
+func TestAnAllowedPeerCannotStallWhereNoBodyIsExpected(t *testing.T) {
+	// The body timeout stays at its default of half a minute: the answer must
+	// come at once, not when the timeout ends.
+	f := &fakeEngine{}
+	socket := socketPath(t)
+	serve(t, newServer(f), socket)
+	const (
+		chunked = "Transfer-Encoding: chunked\r\n\r\n10\r\n{\"confirm"
+		counted = "Content-Length: 16\r\n\r\n{\"confirm"
+	)
+	for _, tt := range []struct {
+		name, method, target, body string
+		status                     int
+		code                       string
+	}{
+		{"a get with a chunked body", http.MethodGet, "/v1/state", chunked, http.StatusBadRequest, "invalid"},
+		{"a get with a counted body", http.MethodGet, "/v1/state", counted, http.StatusBadRequest, "invalid"},
+		{"a delete with a chunked body", http.MethodDelete, "/v1/credentials/abc12345", chunked, http.StatusBadRequest, "invalid"},
+		{"a delete with a counted body", http.MethodDelete, "/v1/credentials/abc12345", counted, http.StatusBadRequest, "invalid"},
+		{"a get to an unknown route", http.MethodGet, "/v1/nope", chunked, http.StatusNotFound, "no_route"},
+		{"a post to an unknown route", http.MethodPost, "/v1/nope", chunked, http.StatusNotFound, "no_route"},
+		{"the wrong method", http.MethodPut, "/v1/state", chunked, http.StatusMethodNotAllowed, "method_not_allowed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, br := rawConn(t, socket)
+
+			_, err := io.WriteString(conn, tt.method+" "+tt.target+" HTTP/1.1\r\nHost: pco\r\nContent-Type: application/json\r\n"+tt.body)
+			require.NoError(t, err)
+
+			status, body := answerAndClose(t, br)
+			require.Equal(t, tt.status, status, body)
+			var answer struct{ Error, Code string }
+			require.NoError(t, json.Unmarshal([]byte(body), &answer))
+			require.Equal(t, tt.code, answer.Code)
+		})
+	}
+	require.Empty(t, f.called())
 }
 
 func TestTheBodyDeadlineDoesNotCancelALongRequest(t *testing.T) {
@@ -230,7 +268,7 @@ func TestTheBodyDeadlineDoesNotCancelALongRequest(t *testing.T) {
 	t.Run("with a body", func(t *testing.T) {
 		s := newServer(&fakeEngine{hook: hook})
 		s.bodyTimeout = timeout
-		socket := filepath.Join(shortDir(t), "pco.sock")
+		socket := socketPath(t)
 		serve(t, s, socket)
 
 		require.NoError(t, apiclient.New(socket).Apply(t.Context(), false))
@@ -241,7 +279,7 @@ func TestTheBodyDeadlineDoesNotCancelALongRequest(t *testing.T) {
 	t.Run("without a body", func(t *testing.T) {
 		s := newServer(&fakeEngine{hook: hook})
 		s.bodyTimeout = timeout
-		socket := filepath.Join(shortDir(t), "pco.sock")
+		socket := socketPath(t)
 		serve(t, s, socket)
 		conn, br := rawConn(t, socket)
 

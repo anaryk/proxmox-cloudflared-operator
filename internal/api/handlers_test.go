@@ -203,6 +203,10 @@ func TestTheShapeOfATokenIsChecked(t *testing.T) {
 		{"one letter", "a", false},
 		{"nineteen characters", long[:19], false},
 		{"twenty characters", long, true},
+		{"256 characters", strings.Repeat("a", 256), true},
+		{"256 characters and white space", " " + strings.Repeat("a", 256) + "\n", true},
+		{"257 characters", strings.Repeat("a", 257), false},
+		{"a huge one", strings.Repeat("a", 100_000), false},
 		{"all allowed characters", "Abc_def-GHI_jkl-0123456789", true},
 		{"surrounding white space", "\t " + long + " \n", true},
 		{"space inside", long + " " + long, false},
@@ -236,6 +240,38 @@ func TestTheShapeOfATokenIsChecked(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOnlyAPostTakesABody(t *testing.T) {
+	for _, tt := range []struct {
+		name, method, target string
+		length               int64
+	}{
+		{"get with a body", http.MethodGet, "/v1/state", 2},
+		{"get with a body of unknown length", http.MethodGet, "/v1/state", -1},
+		{"delete with a body", http.MethodDelete, "/v1/credentials/abc12345", 2},
+		{"delete with a body of unknown length", http.MethodDelete, "/v1/credentials/abc12345", -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			req := requestFrom(testUID, tt.method, tt.target, "xx")
+			req.ContentLength = tt.length
+
+			rec := send(newServer(f), req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			require.Equal(t, "invalid", errorCode(t, rec))
+			require.Equal(t, "this request takes no body", errorMessage(t, rec))
+			require.Equal(t, "close", rec.Header().Get("Connection"), "what follows is not read")
+			require.Empty(t, f.called())
+		})
+	}
+
+	t.Run("an empty body is none", func(t *testing.T) {
+		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/state", "")
+
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
 }
 
 func TestARefusedTokenKeepsItsReport(t *testing.T) {

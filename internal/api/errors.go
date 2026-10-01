@@ -54,9 +54,11 @@ func (e *httpError) Error() string { return e.msg }
 
 var (
 	errNotAllowed = &httpError{http.StatusForbidden, codeForbidden, "not allowed", true}
-	errNoRoute    = &httpError{http.StatusNotFound, codeNoRoute, "no such route", false}
-	errNoMethod   = &httpError{http.StatusMethodNotAllowed, codeMethodNotAllowed, "method not allowed", false}
-	errInternal   = &httpError{http.StatusInternalServerError, codeInternal, "internal error", false}
+	// An unknown route and a wrong method are answered without the body of the
+	// request having been read, and it is not going to be.
+	errNoRoute  = &httpError{http.StatusNotFound, codeNoRoute, "no such route", true}
+	errNoMethod = &httpError{http.StatusMethodNotAllowed, codeMethodNotAllowed, "method not allowed", true}
+	errInternal = &httpError{http.StatusInternalServerError, codeInternal, "internal error", false}
 )
 
 // answered is what an error is answered with.

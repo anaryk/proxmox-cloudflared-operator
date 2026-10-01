@@ -23,6 +23,7 @@ var (
 	errTooLarge   = &httpError{http.StatusRequestEntityTooLarge, codeTooLarge, "the request body is too large", true}
 	errBodySlow   = &httpError{http.StatusBadRequest, codeInvalid, "the request body was not received in time", true}
 	errBodyBroken = &httpError{http.StatusBadRequest, codeInvalid, "the request body could not be read", true}
+	errNoBody     = &httpError{http.StatusBadRequest, codeInvalid, "this request takes no body", true}
 )
 
 type peerKey struct{}
@@ -129,13 +130,19 @@ func (s *Server) recoverPanics(c *gin.Context) {
 }
 
 // acceptJSON makes sure that a POST says it carries JSON and reads its body,
-// within a size and a time that bound it. The body is read here, before any
+// within a size and a time that bound it, and that nothing else has a body. The body is read here, before any
 // handler, for the sake of the deadline: it is set for the read, and is gone
 // when the engine is called. A POST without a body has net/http watching the
 // connection already, and a deadline that stayed on it would end the request
 // context of an apply that takes a minute.
 func (s *Server) acceptJSON(c *gin.Context) {
 	if c.Request.Method != http.MethodPost {
+		// Nothing else takes a body, and one that is not all there already
+		// (a length of -1 is a chunked body) is not waited for: a peer could
+		// hold the connection by never finishing it.
+		if c.Request.ContentLength != 0 {
+			s.fail(c, errNoBody)
+		}
 		return
 	}
 	rc := http.NewResponseController(c.Writer)

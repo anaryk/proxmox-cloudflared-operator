@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"path/filepath"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -50,7 +49,7 @@ func TestThePeerOfTheSocketIsChecked(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeEngine{}
-			socket := filepath.Join(shortDir(t), "pco.sock")
+			socket := socketPath(t)
 			s := New(f, "1.2.3", tt.allowed, zerolog.Nop())
 			require.True(t, s.checkPeers, "peers are checked on Linux unless a test says otherwise")
 			serve(t, s, socket)

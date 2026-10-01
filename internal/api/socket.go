@@ -13,10 +13,12 @@ import (
 )
 
 const (
-	socketMode   = 0o660
-	dirMode      = 0o750
-	lockSuffix   = ".lock"
-	probeTimeout = time.Second
+	socketMode = 0o660
+	dirMode    = 0o750
+	// socketDirName is the one name the directory of the socket may have.
+	socketDirName = "pco"
+	lockSuffix    = ".lock"
+	probeTimeout  = time.Second
 )
 
 // socket is a listening socket that is at its public path, together with the
@@ -45,7 +47,7 @@ func (s *Server) openSocket(ctx context.Context, path string, gid int) (*socket,
 		_ = lock.Close()
 		return nil, err
 	}
-	p, err := s.bindPrivate(dir, gid)
+	p, err := s.bindPrivate(path, gid)
 	if err != nil {
 		_ = lock.Close()
 		return nil, err
@@ -68,19 +70,39 @@ func (k *socket) release() {
 	_ = k.lock.Close()
 }
 
-// prepareDir creates the socket directory if it is missing and gives it, new or
-// old, the mode and the owner the socket directory has. The directory is opened
-// without following a symlink, and what is changed is the open directory, so a
-// link put in its place cannot send the change elsewhere.
+// prepareDir makes the socket directory when it is missing, and gives it, new
+// or old, the mode and the owner the socket directory has. That is done to a
+// directory named pco and to no other, so that it can never be /tmp or /run; and
+// only the directory itself is made, never its parent. A directory that is there
+// already must be a real directory, not a symlink, and owned by the user the
+// daemon runs as; anything else is refused before a thing is changed.
+//
+// The directory is opened without following a symlink, its owner is read from
+// what is open, and what is changed is the open directory, so that a link put in
+// its place cannot send a change elsewhere.
 func (s *Server) prepareDir(dir string, gid int) error {
-	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return fmt.Errorf("creating %s: %w", dir, err)
+	if filepath.Base(dir) != socketDirName {
+		return fmt.Errorf("the socket directory %s must be named %q: its mode and owner are changed, which no other directory may have done to it", dir, socketDirName)
+	}
+	if err := os.Mkdir(dir, dirMode); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("creating the socket directory %s, whose parent must exist: %w", dir, err)
 	}
 	f, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return fmt.Errorf("opening the socket directory %s, which must be a real directory, not a symlink: %w", dir, err)
+		return fmt.Errorf("the socket directory %s must be a real directory, not a symlink or a file: %w", dir, err)
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("reading the socket directory %s: %w", dir, err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("the owner of the socket directory %s cannot be read on this platform", dir)
+	}
+	if uid := uint32(os.Geteuid()); st.Uid != uid {
+		return fmt.Errorf("the socket directory %s belongs to uid %d, not to the daemon, which runs as uid %d; not touching it", dir, st.Uid, uid)
+	}
 	// A daemon that is not root, as in a test, may not own what it is given.
 	if err := f.Chmod(dirMode); err != nil && !errors.Is(err, fs.ErrPermission) {
 		return fmt.Errorf("setting the mode of %s: %w", dir, err)
@@ -154,16 +176,27 @@ type pending struct {
 	path string // the socket in it
 }
 
-func (s *Server) bindPrivate(parent string, gid int) (*pending, error) {
-	// MkdirTemp makes the directory 0700, whatever the umask.
-	dir, err := os.MkdirTemp(parent, ".pco-")
-	if err != nil {
-		return nil, fmt.Errorf("making a private directory in %s: %w", parent, err)
+// bindPrivate binds a socket for path in a private directory beside it, named
+// after it. The caller holds the lock of the path, which is what makes what an
+// earlier daemon left of that directory, if it crashed, nobody's but ours to
+// remove.
+func (s *Server) bindPrivate(path string, gid int) (*pending, error) {
+	dir := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".new")
+	if err := os.RemoveAll(dir); err != nil {
+		return nil, fmt.Errorf("removing what a crash left in %s: %w", dir, err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("making the private directory %s: %w", dir, err)
 	}
 	p := &pending{dir: dir, path: filepath.Join(dir, "s")}
+	// Mkdir is subject to the umask.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		p.abandonDir()
+		return nil, fmt.Errorf("setting the mode of %s: %w", dir, err)
+	}
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: p.path, Net: "unix"})
 	if err != nil {
-		_ = os.RemoveAll(dir)
+		p.abandonDir()
 		return nil, fmt.Errorf("listening on %s: %w", p.path, err)
 	}
 	// The file is renamed, so the listener must not unlink its old name.
@@ -195,5 +228,7 @@ func (p *pending) publish(path string) (fs.FileInfo, error) {
 // abandon closes the listener and removes what is left of the private directory.
 func (p *pending) abandon() {
 	_ = p.ln.Close()
-	_ = os.RemoveAll(p.dir)
+	p.abandonDir()
 }
+
+func (p *pending) abandonDir() { _ = os.RemoveAll(p.dir) }

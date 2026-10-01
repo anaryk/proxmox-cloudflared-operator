@@ -247,6 +247,21 @@ func shortDir(t *testing.T) string {
 	return dir
 }
 
+// socketPath returns where a test's socket goes: in a directory named pco,
+// which Serve makes, inside a directory of the test's own.
+func socketPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(shortDir(t), "pco", "pco.sock")
+}
+
+// pcoDir makes the socket directory ahead of Serve and returns it.
+func pcoDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(shortDir(t), "pco")
+	require.NoError(t, os.Mkdir(dir, 0o750))
+	return dir
+}
+
 // serve runs Serve until the returned stop function is called, which returns
 // the error Serve ended with.
 func serve(t *testing.T, s *Server, socket string) (stop func() error) {
@@ -298,7 +313,7 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	view := engine.CredentialView{ID: "abc12345", Label: "main", Kind: "scoped"}
 	events := []engine.Event{{At: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC), Level: "info", Kind: "route", Subject: "a.example.com", Message: "up"}}
 	f := &fakeEngine{state: st, view: view, events: events}
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	stop := serve(t, newServer(f), socket)
 	c := apiclient.New(socket)
 	ctx := t.Context()
@@ -352,7 +367,7 @@ func TestARefusedTokenReachesTheClientWithItsReport(t *testing.T) {
 		view: refusedView(),
 		err:  fmt.Errorf("%w: the token cannot be used: dns.write on example.com: grant Zone > DNS > Edit on example.com", engine.ErrInvalid),
 	}
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	serve(t, newServer(f), socket)
 
 	view, err := apiclient.New(socket).AddCredential(t.Context(), "main", testToken)
@@ -366,7 +381,7 @@ func TestARefusedTokenReachesTheClientWithItsReport(t *testing.T) {
 }
 
 func TestServeCreatesTheDirectory(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "run", "pco", "pco.sock")
+	socket := socketPath(t)
 	serve(t, newServer(&fakeEngine{}), socket)
 
 	info, err := os.Stat(filepath.Dir(socket))
@@ -376,7 +391,7 @@ func TestServeCreatesTheDirectory(t *testing.T) {
 }
 
 func TestTheSocketIsGroupWritableOnly(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	serve(t, newServer(&fakeEngine{}), socket)
 
 	info, err := os.Lstat(socket)
@@ -386,7 +401,7 @@ func TestTheSocketIsGroupWritableOnly(t *testing.T) {
 }
 
 func TestShutdownIsCleanAndRemovesTheSocket(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	stop := serve(t, newServer(&fakeEngine{}), socket)
 
 	require.NoError(t, stop())
@@ -410,7 +425,7 @@ func TestShutdownLetsARunningRequestFinish(t *testing.T) {
 	}}
 	s := newServer(f)
 	s.onShutdown = func() { close(shuttingDown) }
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	stop := serve(t, s, socket)
 	t.Cleanup(letGo)
 
@@ -449,7 +464,7 @@ func TestShutdownGivesUpOnAStuckRequest(t *testing.T) {
 	}}
 	s := newServer(f)
 	s.shutdownTimeout = 20 * time.Millisecond
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	stop := serve(t, s, socket)
 
 	applied := make(chan error, 1)
@@ -500,7 +515,7 @@ func TestServeSaysWhenPeersAreNotChecked(t *testing.T) {
 			var logged syncBuffer
 			s := New(&fakeEngine{}, "v", []uint32{testUID}, zerolog.New(&logged))
 			s.checkPeers = tt.check
-			stop := serve(t, s, filepath.Join(shortDir(t), "pco.sock"))
+			stop := serve(t, s, socketPath(t))
 			require.NoError(t, stop())
 
 			require.Equal(t, tt.want, strings.Count(logged.String(), "peer credentials are not checked"))

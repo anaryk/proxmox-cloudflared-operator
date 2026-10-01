@@ -14,7 +14,7 @@ import (
 )
 
 func TestAStaleSocketIsReplaced(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := filepath.Join(pcoDir(t), "pco.sock")
 	old, err := net.Listen("unix", socket)
 	require.NoError(t, err)
 	old.(*net.UnixListener).SetUnlinkOnClose(false)
@@ -31,7 +31,7 @@ func TestAStaleSocketIsReplaced(t *testing.T) {
 }
 
 func TestServeRefusesToRemoveWhatIsNotASocket(t *testing.T) {
-	dir := shortDir(t)
+	dir := pcoDir(t)
 	for name, create := range map[string]func(path string) error{
 		"file":    func(path string) error { return os.WriteFile(path, []byte("keep me"), 0o600) },
 		"symlink": func(path string) error { return os.Symlink(dir, path) },
@@ -54,7 +54,7 @@ func TestServeRefusesToRemoveWhatIsNotASocket(t *testing.T) {
 }
 
 func TestServeDoesNotStealASocketThatIsInUse(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := filepath.Join(pcoDir(t), "pco.sock")
 	other, err := net.Listen("unix", socket) // not a pco daemon: it holds no lock
 	require.NoError(t, err)
 	defer func() { _ = other.Close() }()
@@ -68,7 +68,7 @@ func TestServeDoesNotStealASocketThatIsInUse(t *testing.T) {
 }
 
 func TestASecondInstanceIsRefused(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	stop := serve(t, newServer(&fakeEngine{}), socket)
 
 	err := serveFails(t, newServer(&fakeEngine{}), socket)
@@ -90,16 +90,20 @@ func lockHeldBy(t *testing.T, socket string) {
 }
 
 func TestAHeldLockKeepsServeFromTouchingTheSocket(t *testing.T) {
-	dir := shortDir(t)
+	dir := pcoDir(t)
 	socket := filepath.Join(dir, "pco.sock")
 	// A socket the holder of the lock has just made: nobody listens on it yet
-	// from where this process looks, but it must not be removed.
+	// from where this process looks, but it must not be removed. Nor must the
+	// private directory it is making the next one in.
 	stale, err := net.Listen("unix", socket)
 	require.NoError(t, err)
 	stale.(*net.UnixListener).SetUnlinkOnClose(false)
 	require.NoError(t, stale.Close())
 	before, err := os.Lstat(socket)
 	require.NoError(t, err)
+	private := filepath.Join(dir, ".pco.sock.new")
+	require.NoError(t, os.Mkdir(private, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(private, "s"), nil, 0o600))
 	lockHeldBy(t, socket)
 
 	err = serveFails(t, newServer(&fakeEngine{}), socket)
@@ -108,10 +112,11 @@ func TestAHeldLockKeepsServeFromTouchingTheSocket(t *testing.T) {
 	after, err := os.Lstat(socket)
 	require.NoError(t, err)
 	require.True(t, os.SameFile(before, after), "the socket must be left alone")
+	require.FileExists(t, filepath.Join(private, "s"), "so must the private directory")
 }
 
 func TestTheLockIsReleasedWhenServeEnds(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	stop := serve(t, newServer(&fakeEngine{}), socket)
 	require.NoError(t, stop())
 
@@ -120,7 +125,7 @@ func TestTheLockIsReleasedWhenServeEnds(t *testing.T) {
 }
 
 func TestShutdownRemovesOnlyItsOwnSocket(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := socketPath(t)
 	stop := serve(t, newServer(&fakeEngine{}), socket)
 	// Someone takes the path over while the daemon runs.
 	require.NoError(t, os.Remove(socket))
@@ -136,8 +141,42 @@ func TestShutdownRemovesOnlyItsOwnSocket(t *testing.T) {
 	require.Equal(t, fs.ModeSocket, info.Mode().Type())
 }
 
+func TestALeftoverPrivateDirectoryDoesNotStopServe(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		create func(t *testing.T, path string)
+	}{
+		{"a directory with files in it", func(t *testing.T, path string) {
+			require.NoError(t, os.Mkdir(path, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(path, "s"), []byte("left by a crash"), 0o600))
+			require.NoError(t, os.MkdirAll(filepath.Join(path, "deeper", "still"), 0o700))
+		}},
+		{"a file", func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("left by a crash"), 0o600))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := pcoDir(t)
+			leftover := filepath.Join(dir, ".pco.sock.new")
+			tt.create(t, leftover)
+
+			serve(t, newServer(&fakeEngine{}), filepath.Join(dir, "pco.sock"))
+
+			_, err := os.Lstat(leftover)
+			require.ErrorIs(t, err, fs.ErrNotExist, "the leftover is removed")
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			require.ElementsMatch(t, []string{"pco.sock", "pco.sock.lock"}, names)
+		})
+	}
+}
+
 func TestAnExistingDirectoryIsBroughtTo0750(t *testing.T) {
-	dir := shortDir(t)
+	dir := pcoDir(t)
 	require.NoError(t, os.Chmod(dir, 0o777))
 
 	serve(t, newServer(&fakeEngine{}), filepath.Join(dir, "pco.sock"))
@@ -147,27 +186,98 @@ func TestAnExistingDirectoryIsBroughtTo0750(t *testing.T) {
 	require.Equal(t, fs.FileMode(0o750), info.Mode().Perm())
 }
 
-func TestASymlinkInPlaceOfTheDirectoryIsRefused(t *testing.T) {
+func TestOnlyADirectoryNamedPcoIsTouched(t *testing.T) {
+	// /tmp and /run, and every other directory the system shares, must come out
+	// of Serve as they went in.
+	for _, name := range []string{"tmp", "run", "var", "PCO", "pco2", "pco.d", ".pco"} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(shortDir(t), name)
+			require.NoError(t, os.Mkdir(dir, 0o700))
+			require.NoError(t, os.Chmod(dir, os.ModeSticky|0o777))
+			before, err := os.Stat(dir)
+			require.NoError(t, err)
+			require.Equal(t, os.ModeSticky|0o777, before.Mode()&(os.ModeSticky|os.ModePerm), "set up as /tmp is")
+
+			err = serveFails(t, newServer(&fakeEngine{}), filepath.Join(dir, "pco.sock"))
+
+			require.ErrorContains(t, err, dir)
+			require.ErrorContains(t, err, `must be named "pco"`)
+			after, err := os.Stat(dir)
+			require.NoError(t, err)
+			require.Equal(t, before.Mode(), after.Mode(), "the mode must not change")
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			require.Empty(t, entries, "nothing may be put there")
+		})
+	}
+}
+
+func TestOnlyThePcoDirectoryIsEverMade(t *testing.T) {
+	root := shortDir(t)
+
+	err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(root, "missing", "pco", "pco.sock"))
+
+	require.ErrorContains(t, err, filepath.Join(root, "missing", "pco"))
+	require.ErrorContains(t, err, "parent")
+	_, statErr := os.Lstat(filepath.Join(root, "missing"))
+	require.ErrorIs(t, statErr, fs.ErrNotExist, "no parent may be made")
+}
+
+func TestWhatIsNotARealDirectoryIsRefused(t *testing.T) {
 	target := shortDir(t)
 	require.NoError(t, os.Chmod(target, 0o777))
-	link := filepath.Join(shortDir(t), "link")
-	require.NoError(t, os.Symlink(target, link))
+	for name, create := range map[string]func(path string) error{
+		"a symlink to a directory": func(path string) error { return os.Symlink(target, path) },
+		"a dangling symlink":       func(path string) error { return os.Symlink(filepath.Join(target, "nothing"), path) },
+		"a file":                   func(path string) error { return os.WriteFile(path, []byte("keep me"), 0o600) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(shortDir(t), "pco")
+			require.NoError(t, create(path))
 
-	err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(link, "pco.sock"))
+			err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(path, "pco.sock"))
 
-	require.ErrorContains(t, err, "not a symlink")
-	info, err := os.Stat(target)
+			require.ErrorContains(t, err, path)
+			require.ErrorContains(t, err, "real directory")
+			info, err := os.Stat(target)
+			require.NoError(t, err)
+			require.Equal(t, fs.FileMode(0o777), info.Mode().Perm(), "what the link points to must not be touched")
+			entries, err := os.ReadDir(target)
+			require.NoError(t, err)
+			require.Empty(t, entries)
+		})
+	}
+}
+
+func TestADirectoryOfSomeoneElseIsRefused(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("only root may give a directory to another user")
+	}
+	const other = 1234
+	dir := pcoDir(t)
+	require.NoError(t, os.Chown(dir, other, other))
+	require.NoError(t, os.Chmod(dir, 0o777))
+
+	err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(dir, "pco.sock"))
+
+	require.ErrorContains(t, err, dir)
+	require.ErrorContains(t, err, "belongs to uid 1234")
+	info, err := os.Stat(dir)
 	require.NoError(t, err)
-	require.Equal(t, fs.FileMode(0o777), info.Mode().Perm(), "the directory behind the link must not be touched")
-	entries, err := os.ReadDir(target)
+	require.Equal(t, fs.FileMode(0o777), info.Mode().Perm(), "the mode must not change")
+	st, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+	require.Equal(t, uint32(other), st.Uid, "the owner must not change")
+	require.Equal(t, uint32(other), st.Gid)
+	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	require.Empty(t, entries)
+	require.Empty(t, entries, "nothing may be put there")
 }
 
 func TestARelativePathIsRefused(t *testing.T) {
 	// Where a mistake would change the mode of the working directory, it is a
 	// directory of the test's own.
-	dir := shortDir(t)
+	dir := pcoDir(t)
 	require.NoError(t, os.Chmod(dir, 0o777))
 	t.Chdir(dir)
 
@@ -183,16 +293,17 @@ func TestARelativePathIsRefused(t *testing.T) {
 }
 
 func TestTheSocketIsPrivateUntilItIsReady(t *testing.T) {
-	dir := shortDir(t)
+	dir := pcoDir(t)
 	final := filepath.Join(dir, "pco.sock")
 	s := newServer(&fakeEngine{})
 
-	p, err := s.bindPrivate(dir, os.Getgid())
+	p, err := s.bindPrivate(final, os.Getgid())
 	require.NoError(t, err)
 	t.Cleanup(p.abandon)
 
-	// Bound and set up, in a directory only its owner can enter; nothing is
-	// at the public path yet.
+	// Bound and set up, in a directory only its owner can enter and that is
+	// named after the socket; nothing is at the public path yet.
+	require.Equal(t, filepath.Join(dir, ".pco.sock.new"), p.dir)
 	dirInfo, err := os.Lstat(p.dir)
 	require.NoError(t, err)
 	require.True(t, dirInfo.IsDir())
@@ -219,8 +330,8 @@ func TestTheSocketIsPrivateUntilItIsReady(t *testing.T) {
 }
 
 func TestANeverPublishedSocketLeavesNothingBehind(t *testing.T) {
-	dir := shortDir(t)
-	p, err := newServer(&fakeEngine{}).bindPrivate(dir, os.Getgid())
+	dir := pcoDir(t)
+	p, err := newServer(&fakeEngine{}).bindPrivate(filepath.Join(dir, "pco.sock"), os.Getgid())
 	require.NoError(t, err)
 
 	p.abandon()
@@ -245,10 +356,10 @@ func TestTheDirectoryAndTheSocketGoToTheGroup(t *testing.T) {
 	}
 
 	t.Run("a new directory", func(t *testing.T) {
-		dir := filepath.Join(shortDir(t), "run")
-		serveAs(t, newServer(&fakeEngine{}), filepath.Join(dir, "pco.sock"), gid)
+		socket := socketPath(t)
+		serveAs(t, newServer(&fakeEngine{}), socket, gid)
 
-		for _, path := range []string{dir, filepath.Join(dir, "pco.sock")} {
+		for _, path := range []string{filepath.Dir(socket), socket} {
 			u, g := owner(t, path)
 			require.Equal(t, uint32(0), u, path)
 			require.Equal(t, uint32(gid), g, path)
@@ -256,7 +367,7 @@ func TestTheDirectoryAndTheSocketGoToTheGroup(t *testing.T) {
 	})
 
 	t.Run("an existing directory", func(t *testing.T) {
-		dir := shortDir(t)
+		dir := pcoDir(t)
 		serveAs(t, newServer(&fakeEngine{}), filepath.Join(dir, "pco.sock"), gid)
 
 		u, g := owner(t, dir)

@@ -110,9 +110,16 @@ func (w httpErrorLog) Write(p []byte) (int, error) {
 // Serve listens on the unix socket path, fixing owner and mode, until ctx
 // ends. A clean shutdown returns nil.
 //
-// The directory of the socket belongs to the daemon: Serve creates it if it is
-// missing, and sets the mode and the owner of it, as it has them for the
-// socket, in either case.
+// The path must be absolute, and the directory of the socket must be named
+// "pco": Serve sets the mode and the owner of that directory, which no other
+// may have done to it. It makes the directory when it is missing, but not its
+// parent; a directory that is already there must be a real one, not a symlink,
+// and owned by the user the daemon runs as, or Serve changes nothing and fails.
+//
+// Serve takes a lock on the path of the socket, "<path>.lock", for as long as it
+// runs, so that two calls on the same path cannot run at once. The lock guards
+// this socket and nothing else; a lock that keeps a second daemon from starting
+// with another socket path is the caller's to take.
 func (s *Server) Serve(ctx context.Context, socketPath string, gid int) error {
 	// The mode and the owner of its directory are set: that must never be the
 	// directory the daemon happens to run in.
