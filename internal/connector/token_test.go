@@ -3,7 +3,6 @@ package connector
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -91,26 +90,27 @@ func TestTokenErrorsNeverCarryTheToken(t *testing.T) {
 	}
 }
 
-// A test cannot prove a goroutine is blocked; this one can pass by chance, but
-// fails whenever Token ignores the lock.
-func TestTokenWaitsForTheManagersLock(t *testing.T) {
+func TestTokenIsReadUnderTheManagersLock(t *testing.T) {
 	m, _, dir := newTestManager(t)
 	writeFile(t, dir, idA+".token", secretToken)
 
-	m.mu.Lock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _, _ = m.Token(idA)
-	}()
-	for range 200 {
-		runtime.Gosched()
+	var reads int
+	m.readFile = func(path string) ([]byte, error) {
+		reads++
+		// Ensure holds the lock for as long as it works on the files, so a read
+		// that is not under it can see them half way through a change.
+		if m.mu.TryLock() {
+			m.mu.Unlock()
+			t.Error("the token file was read without the manager's lock")
+		}
+		return os.ReadFile(path)
 	}
-	select {
-	case <-done:
-		t.Fatal("Token returned while the manager held its lock")
-	default:
-	}
+
+	got, found, err := m.Token(idA)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, secretToken, got)
+	require.Equal(t, 1, reads)
+	require.True(t, m.mu.TryLock(), "the lock is released again")
 	m.mu.Unlock()
-	<-done
 }

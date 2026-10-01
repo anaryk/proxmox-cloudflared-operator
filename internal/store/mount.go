@@ -31,7 +31,10 @@ func mountGuard(marker string) func() error {
 // Init creates the cluster and private roots, which Open never does. Only the
 // directories themselves are made, so their parents must exist, and a root that
 // exists already is left as it is. It is what installation calls, once the
-// cluster filesystem is mounted.
+// cluster filesystem is mounted. The mount is checked again after each root is
+// made: a filesystem that went away in between has taken the directory with it,
+// or has not and the directory is then in its way, so the one just made is
+// removed again and the error is ErrNotMounted.
 func (s *Store) Init() error {
 	if err := s.cluster.check(); err != nil {
 		return err
@@ -40,8 +43,16 @@ func (s *Store) Init() error {
 		{"cluster", s.paths.Cluster},
 		{"private", s.paths.Private},
 	} {
-		if err := makeLeaf(r.path); err != nil {
+		created, err := makeLeaf(r.path)
+		if err != nil {
 			return fmt.Errorf("store: creating the %s root: %w", r.name, err)
+		}
+		if !created {
+			continue
+		}
+		if err := s.cluster.check(); err != nil {
+			_ = os.Remove(r.path)
+			return err
 		}
 	}
 	return nil

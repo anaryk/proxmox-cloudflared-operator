@@ -356,17 +356,23 @@ func TestApprovals(t *testing.T) {
 	require.Equal(t, map[string]string{"qemu/101": "ident-c"}, got)
 }
 
-func TestApprovalsAreKeyedByTheOwnerStoredInside(t *testing.T) {
+func TestApprovalsRefuseAFileUnderTheWrongName(t *testing.T) {
 	s, p := openStore(t)
 	writeFile(t, filepath.Join(p.Cluster, "approvals", "whatever.json"),
 		envelopeJSON("qemu/101", `{"owner":"qemu/101","identity":"i"}`))
 	got, err := s.Approvals()
-	require.NoError(t, err)
-	require.Equal(t, map[string]string{"qemu/101": "i"}, got)
+	require.Error(t, err)
+	require.Nil(t, got)
+	require.Contains(t, err.Error(), "whatever.json")
+	require.Contains(t, err.Error(), "qemu/101")
+	require.Contains(t, err.Error(), "qemu_101.json", "the name it belongs under")
+}
 
+func TestApprovalsRefuseAFileWithoutAnOwner(t *testing.T) {
+	s, p := openStore(t)
 	writeFile(t, filepath.Join(p.Cluster, "approvals", "nameless.json"),
 		envelopeJSON("nameless", `{"identity":"i"}`))
-	_, err = s.Approvals()
+	_, err := s.Approvals()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "nameless.json")
 }

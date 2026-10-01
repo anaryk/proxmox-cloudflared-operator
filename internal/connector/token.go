@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"strings"
 )
 
@@ -22,7 +21,7 @@ func (m *Manager) Token(tunnelID string) (token string, found bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	b, err := os.ReadFile(m.path(tokenFile(tunnelID)))
+	b, err := m.readFile(m.path(tokenFile(tunnelID)))
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", false, nil
 	}

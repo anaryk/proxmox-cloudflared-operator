@@ -158,7 +158,7 @@ func (d Dir) ensureKindDir(dir string) error {
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return nil
 	}
-	err := makeLeaf(dir)
+	_, err := makeLeaf(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		if rootErr := d.requireRoot(); rootErr != nil {
 			return rootErr

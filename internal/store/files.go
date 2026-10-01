@@ -52,20 +52,21 @@ func ensureDir(dir string) error {
 	return setDirMode(dir)
 }
 
-// makeLeaf creates the directory dir, whose parent must exist. A directory
-// that is already there is fine, a file of that name is not.
-func makeLeaf(dir string) error {
-	err := os.Mkdir(dir, dirMode)
+// makeLeaf creates the directory dir, whose parent must exist, and reports
+// whether it made it. A directory that is already there is fine, a file of that
+// name is not.
+func makeLeaf(dir string) (created bool, err error) {
+	err = os.Mkdir(dir, dirMode)
 	if errors.Is(err, fs.ErrExist) {
 		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	return setDirMode(dir)
+	return true, setDirMode(dir)
 }
 
 // setDirMode sets the mode of a directory this process made. The cluster

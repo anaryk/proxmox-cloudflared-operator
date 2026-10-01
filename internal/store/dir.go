@@ -21,6 +21,12 @@ const (
 	objectExt = ".json"
 )
 
+// ErrNoRoot is the error of an operation on a root directory that does not
+// exist, while the cluster filesystem is mounted: the store was never set up
+// here, or its root was removed. Callers turn it into "run pco setup". It comes
+// wrapped, with the path of the root.
+var ErrNoRoot = errors.New("store root is missing")
+
 // errNewerSchema marks a file written by a newer version.
 var errNewerSchema = errors.New("written by a newer version")
 
@@ -68,14 +74,14 @@ func (d Dir) check() error {
 	return nil
 }
 
-// requireRoot reports an error when the root is not there. It is what a read
-// of a file or a directory that does not exist asks, to tell "nothing stored"
-// from "no store".
+// requireRoot reports an error, ErrNoRoot, when the root is not there. It is
+// what a read of a file or a directory that does not exist asks, to tell
+// "nothing stored" from "no store".
 func (d Dir) requireRoot() error {
 	info, err := os.Stat(d.root)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("store root %s is missing", d.root)
+		return fmt.Errorf("%w: %s", ErrNoRoot, d.root)
 	case err != nil:
 		return fmt.Errorf("store root %s: %w", d.root, err)
 	case !info.IsDir():
@@ -207,9 +213,11 @@ func jsonProblem(err error) string {
 	return "invalid: " + err.Error()
 }
 
-// List returns the ids of the objects of a kind, sorted: the names of their
-// files without the extension, which are the ids themselves only when FileName
-// leaves them as they are. Hidden files, temporary files, anything that is not
+// List returns the file stems of the objects of a kind, sorted: the names of
+// their files without the extension. A stem is the id of its object only when
+// FileName leaves the id as it is; for an id that is long, or has capitals, a
+// "/" or a leading "*.", it is not, and the id is in the file. Get takes an id,
+// never a stem of that kind. Hidden files, temporary files, anything that is not
 // a .json file and names that FileName would change are not objects. A kind
 // with no directory has no objects, but a root that is gone is an error.
 func (d Dir) List(kind string) ([]string, error) {

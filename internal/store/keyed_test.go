@@ -196,6 +196,7 @@ func TestClaimsRefuseTwoFilesForOneHostname(t *testing.T) {
 
 	_, err := s.Claims()
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "other.json")
 	require.Contains(t, err.Error(), "a.example.com")
 }
 
@@ -208,10 +209,20 @@ func TestClaimsRefuseAFileWithoutHostname(t *testing.T) {
 	require.Contains(t, err.Error(), "a.example.com.json")
 }
 
+func TestClaimsRefuseAFileUnderTheNameOfAnotherID(t *testing.T) {
+	s, p := openStore(t)
+	writeFile(t, filepath.Join(p.Cluster, "claims", "a.example.com.json"),
+		envelopeJSON("b.example.com", `{"hostname":"b.example.com","owner":"qemu/101","since":"2026-10-01T12:00:00Z"}`))
+	_, err := s.Claims()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "a.example.com.json")
+	require.Contains(t, err.Error(), "b.example.com")
+}
+
 func TestClaimsRefuseAFileWhoseIDIsNotItsHostname(t *testing.T) {
 	s, p := openStore(t)
 	writeFile(t, filepath.Join(p.Cluster, "claims", "a.example.com.json"),
-		envelopeJSON("b.example.com", `{"hostname":"a.example.com","owner":"qemu/101","since":"2026-10-01T12:00:00Z"}`))
+		envelopeJSON("a.example.com", `{"hostname":"b.example.com","owner":"qemu/101","since":"2026-10-01T12:00:00Z"}`))
 	_, err := s.Claims()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "a.example.com.json")

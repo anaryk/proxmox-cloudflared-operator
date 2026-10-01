@@ -101,6 +101,42 @@ func TestCredentialErrorsNeverCarryTheToken(t *testing.T) {
 	}
 }
 
+func TestSecretsBuiltSeparatelyAreEqual(t *testing.T) {
+	a, b := NewSecret(secretToken), NewSecret(secretToken)
+	require.True(t, a.Equal(b))
+	require.True(t, b.Equal(a))
+	same := a
+	require.True(t, a.Equal(same))
+	require.False(t, a.Equal(NewSecret(secretToken+"x")))
+	require.False(t, a.Equal(NewSecret(secretToken[:len(secretToken)-1])))
+	require.False(t, a.Equal(NewSecret("")))
+	require.False(t, NewSecret("").Equal(a))
+	require.True(t, Secret{}.Equal(NewSecret("")))
+	var none, alsoNone Secret
+	require.True(t, none.Equal(alsoNone))
+}
+
+func TestAReloadedCredentialIsTheSavedOne(t *testing.T) {
+	s, _ := openStore(t)
+	saved := credentialOf("cred-a")
+	require.NoError(t, s.SaveCredential(saved))
+
+	loaded, err := s.Credentials()
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	got := loaded[0]
+	// A credential is compared field by field, the token with Equal: two
+	// secrets that hold the same text are not == to each other.
+	require.Equal(t, saved.ID, got.ID)
+	require.Equal(t, saved.Label, got.Label)
+	require.Equal(t, saved.Kind, got.Kind)
+	require.True(t, saved.AddedAt.Equal(got.AddedAt))
+	require.True(t, saved.Token.Equal(got.Token), "the reloaded token is the saved one")
+
+	got.Token = NewSecret("rotated")
+	require.False(t, saved.Token.Equal(got.Token))
+}
+
 func TestSecret(t *testing.T) {
 	require.Equal(t, secretToken, NewSecret(secretToken).Reveal())
 	require.Empty(t, Secret{}.Reveal())

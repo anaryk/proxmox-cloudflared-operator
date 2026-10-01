@@ -82,7 +82,9 @@ type Paths struct {
 
 	// MountCheck is a file that exists only while the cluster filesystem is
 	// mounted. While it is missing, every operation on the cluster and private
-	// roots fails with ErrNotMounted. Empty switches the check off.
+	// roots fails with ErrNotMounted. An empty value switches the check off,
+	// which is for tests: callers start from DefaultPaths and override the
+	// roots, not build a Paths from nothing.
 	MountCheck string
 }
 

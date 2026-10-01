@@ -84,21 +84,36 @@ func TestTwoDirsWritingOneObjectNeverFail(t *testing.T) {
 	require.Len(t, entries, 1, "no temporary file is left behind")
 }
 
+// Writers that shared one temporary file per object removed each other's: the
+// name was <file>.tmp. A file or a directory of that name, standing for what
+// another writer is in the middle of, must neither be removed nor stand in the
+// way of a write.
 func TestAWriteLeavesTheTempFileOfAnotherWriterAlone(t *testing.T) {
 	root := t.TempDir()
 	d := NewDir(root)
 	dir := filepath.Join(root, "things")
-	stale := filepath.Join(dir, ".a.json.1234.tmp")
-	writeFile(t, stale, "left by another writer")
+	other := filepath.Join(dir, "a.json.tmp")
+	writeFile(t, other, "being written by another")
+	busy := filepath.Join(dir, "b.json.tmp")
+	writeFile(t, filepath.Join(busy, "inner"), "x")
 
 	require.NoError(t, d.Put("things", "a", sample{N: 1}))
-	b, err := os.ReadFile(stale)
+	require.NoError(t, d.Put("things", "b", sample{N: 2}))
+
+	b, err := os.ReadFile(other)
+	require.NoError(t, err, "the file of the other writer is still there")
+	require.Equal(t, "being written by another", string(b))
+	_, err = os.Stat(filepath.Join(busy, "inner"))
 	require.NoError(t, err)
-	require.Equal(t, "left by another writer", string(b), "a write does not touch the temporary file of another")
+	var got sample
+	found, err := d.Get("things", "b", &got)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, 2, got.N)
 
 	ids, err := d.List("things")
 	require.NoError(t, err)
-	require.Equal(t, []string{"a"}, ids)
+	require.Equal(t, []string{"a", "b"}, ids)
 }
 
 func TestOpenSweepsOnlyOldTempFiles(t *testing.T) {

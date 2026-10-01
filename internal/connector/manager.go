@@ -43,6 +43,7 @@ type Manager struct {
 
 	firstPort int                               // where metrics ports are allocated from
 	lstat     func(string) (fs.FileInfo, error) // os.Lstat, replaceable so that a test can make a stat fail
+	readFile  func(string) ([]byte, error)      // os.ReadFile, replaceable so that a test can see what a read holds
 
 	mu     sync.Mutex              // guards the fields below and serialises the work on the files
 	queued map[string]pendingState // by tunnel id: the marker a start or restart was queued for
@@ -60,6 +61,7 @@ func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) 
 		sd: sd, dir: dir, httpc: httpc, log: log,
 		firstPort: defaultFirstPort,
 		lstat:     os.Lstat,
+		readFile:  os.ReadFile,
 		queued:    make(map[string]pendingState),
 	}
 }

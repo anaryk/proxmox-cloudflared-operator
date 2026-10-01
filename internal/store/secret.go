@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"io"
 )
@@ -16,6 +17,10 @@ const redacted = "[redacted]"
 // itself, so a string type, whatever its String method says, would show its
 // text in the %v of a struct that holds it in such a field; a pointer shows an
 // address. Make one with NewSecret; the zero Secret is the empty one.
+//
+// Because of that, == compares the pointers: two Secrets that hold the same text
+// are not equal under it, and code that compares a reloaded credential with
+// one it kept would find a change every time. Compare with Equal.
 type Secret struct{ p *string }
 
 // NewSecret returns a Secret that holds s.
@@ -32,6 +37,12 @@ func (s Secret) Reveal() string {
 		return ""
 	}
 	return *s.p
+}
+
+// Equal reports whether two secrets hold the same text, comparing it in time
+// that does not depend on where they differ. Use it, not ==.
+func (s Secret) Equal(o Secret) bool {
+	return subtle.ConstantTimeCompare([]byte(s.Reveal()), []byte(o.Reveal())) == 1
 }
 
 // String returns "[redacted]".

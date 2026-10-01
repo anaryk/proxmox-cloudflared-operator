@@ -40,7 +40,10 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// Settings is what the admin configures.
+// Settings is what the admin configures. They are decoded strictly, a key they
+// have no field for is an error, so a field added later is a change of the
+// schema and needs a schema version bump: a build that does not know it must
+// refuse the file, not drop the field.
 type Settings struct {
 	GateTag      string            `json:"gateTag"`
 	AllowHosts   []string          `json:"allowHosts,omitempty"`

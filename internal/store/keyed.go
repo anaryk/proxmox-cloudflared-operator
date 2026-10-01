@@ -40,6 +40,9 @@ func eachObject[T any](d Dir, kind string, fn func(path, id string, v T) error) 
 		if !found {
 			continue
 		}
+		if err := belongsIn(path, name, env.ID); err != nil {
+			return err
+		}
 		var v T
 		if err := decode(env.Data, &v, false); err != nil {
 			return fmt.Errorf("%s: %s", path, jsonProblem(err))
@@ -47,6 +50,21 @@ func eachObject[T any](d Dir, kind string, fn func(path, id string, v T) error) 
 		if err := fn(path, env.ID, v); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// belongsIn checks that the file at path, whose name is name without the
+// extension, is where the object of id is kept. A copy of a file under another
+// name would otherwise be a second object that Delete, which goes by the name,
+// never reaches.
+func belongsIn(path, name, id string) error {
+	want, err := FileName(id)
+	if err != nil {
+		return fmt.Errorf("%s holds an id that is not valid: %w", path, err)
+	}
+	if want != name {
+		return fmt.Errorf("%s holds the object of %q, which belongs in %s", path, id, want+objectExt)
 	}
 	return nil
 }

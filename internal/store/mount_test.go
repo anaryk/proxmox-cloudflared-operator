@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,16 @@ func afterRemovingTheRoots(t *testing.T) (*Store, Paths) {
 	return s, p
 }
 
+// requireNoRoot checks that err is the error of a store whose root is gone: it
+// is ErrNoRoot, names the root, and is not the error of an unmounted filesystem.
+func requireNoRoot(t *testing.T, p Paths, name string, err error) {
+	t.Helper()
+	require.ErrorIs(t, err, ErrNoRoot, name)
+	require.NotErrorIs(t, err, ErrNotMounted, name)
+	require.True(t, strings.Contains(err.Error(), p.Cluster) || strings.Contains(err.Error(), p.Private),
+		"%s: %v does not say which root", name, err)
+}
+
 func TestMissingSharedRootIsAnErrorNotAnEmptyStore(t *testing.T) {
 	s, p := afterRemovingTheRoots(t)
 
@@ -128,10 +139,7 @@ func TestMissingSharedRootIsAnErrorNotAnEmptyStore(t *testing.T) {
 		"PVEToken":     func() error { _, _, err := s.PVEToken(); return err },
 	}
 	for name, read := range reads {
-		err := read()
-		require.Error(t, err, name)
-		require.Contains(t, err.Error(), "missing", name)
-		require.NotErrorIs(t, err, ErrNotMounted, name)
+		requireNoRoot(t, p, name, read())
 	}
 	requireMissing(t, p.Cluster)
 	requireMissing(t, p.Private)
@@ -159,9 +167,7 @@ func TestMissingSharedRootFailsEveryWriteAndCreatesNothing(t *testing.T) {
 		"SavePVEToken":     func() error { return s.SavePVEToken(PVEToken{TokenID: "pco@pve!pco", Secret: NewSecret("s")}) },
 	}
 	for name, write := range writes {
-		err := write()
-		require.Error(t, err, name)
-		require.Contains(t, err.Error(), "missing", name)
+		requireNoRoot(t, p, name, write())
 	}
 	requireMissing(t, p.Cluster)
 	requireMissing(t, p.Private)
