@@ -94,27 +94,34 @@ func TestLimiterSchedule(t *testing.T) {
 			{waits: 1, want: []time.Duration{10 * s}},
 		}},
 		{"pause blocks although tokens are left", []step{
-			{pause: 7 * s, waits: 1, want: []time.Duration{7 * s}},
-			{waits: 1},
+			{pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
 		}},
 		{"pause is counted from now", []step{
-			{advance: time.Hour, pause: 7 * s, waits: 1, want: []time.Duration{7 * s}},
+			{advance: time.Hour, pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
 		}},
-		{"tokens refill while paused", []step{
+		{"pause empties the bucket, so no burst follows it", []step{
+			{pause: 7 * s, waits: 4, want: []time.Duration{7 * s, 10 * s, 10 * s, 10 * s, 10 * s}},
+		}},
+		{"nothing refills during a pause", []step{
 			{waits: 3},
-			{pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 3 * s}},
+			{pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
 		}},
 		{"a shorter pause does not cut a longer one", []step{
 			{pause: 30 * s},
-			{pause: 7 * s, waits: 1, want: []time.Duration{30 * s}},
+			{pause: 7 * s, waits: 1, want: []time.Duration{30 * s, 10 * s}},
 		}},
 		{"a later pause extends an earlier one", []step{
 			{pause: 7 * s},
-			{advance: 3 * s, pause: 7 * s, waits: 1, want: []time.Duration{7 * s}},
+			{advance: 3 * s, pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
 		}},
-		{"a pause that is over changes nothing", []step{
+		{"refilling starts when the pause ends", []step{
 			{pause: 7 * s},
-			{advance: 8 * s, waits: 3},
+			{advance: 8 * s, waits: 3, want: []time.Duration{9 * s, 10 * s, 10 * s}},
+		}},
+		{"a long idle time after a pause fills the bucket again", []step{
+			{pause: 7 * s},
+			{advance: time.Hour, waits: 3},
+			{waits: 1, want: []time.Duration{10 * s}},
 		}},
 		{"non-positive pause is ignored", []step{
 			{pause: 0, waits: 1},

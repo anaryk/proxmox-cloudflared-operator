@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -114,6 +115,13 @@ func TestNewChecksOptions(t *testing.T) {
 		{"https on loopback", Options{Token: testToken, BaseURL: "https://127.0.0.1:8787"}, ""},
 		{"empty token", Options{}, "token is empty"},
 		{"blank token", Options{Token: " \t"}, "token is empty"},
+		{"token with a space", Options{Token: "abc def"}, "whitespace or control"},
+		{"token with a trailing newline", Options{Token: "abcdef\n"}, "whitespace or control"},
+		{"token with a tab", Options{Token: "abc\tdef"}, "whitespace or control"},
+		{"token with a carriage return", Options{Token: "abc\rdef"}, "whitespace or control"},
+		{"token with a nul byte", Options{Token: "abc\x00def"}, "whitespace or control"},
+		{"token with a delete character", Options{Token: "abc\x7fdef"}, "whitespace or control"},
+		{"token with a no-break space", Options{Token: "abc\u00a0def"}, "whitespace or control"},
 		{"http on a named host", Options{Token: testToken, BaseURL: "http://cf.example.com"}, "https"},
 		{"http on a private address", Options{Token: testToken, BaseURL: "http://10.0.0.5"}, "https"},
 		{"localhost by name is not trusted", Options{Token: testToken, BaseURL: "http://localhost:8787"}, "https"},
@@ -151,6 +159,14 @@ func TestNewErrorsDoNotRepeatTheURL(t *testing.T) {
 		_, err := New(Options{Token: testToken, BaseURL: raw})
 		require.Error(t, err, raw)
 		require.NotContains(t, err.Error(), testToken, raw)
+	}
+}
+
+func TestNewErrorsDoNotRepeatTheToken(t *testing.T) {
+	for _, token := range []string{"secret value", "secret\nvalue", " secret", "secret\x00"} {
+		_, err := New(Options{Token: token})
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "secret")
 	}
 }
 
@@ -464,6 +480,7 @@ func TestRateLimited(t *testing.T) {
 	start := newFakeClock().now()
 	inThirtySeconds := start.Add(30 * time.Second).UTC().Format(http.TimeFormat)
 	aMinuteAgo := start.Add(-time.Minute).UTC().Format(http.TimeFormat)
+	farAway := start.AddDate(100, 0, 0).UTC().Format(http.TimeFormat)
 
 	tests := []struct {
 		name       string
@@ -477,10 +494,12 @@ func TestRateLimited(t *testing.T) {
 		{"negative", "-3", time.Minute},
 		{"fraction", "1.5", time.Minute},
 		{"http date", inThirtySeconds, 30 * time.Second},
-		{"http date in the past", aMinuteAgo, 0},
-		{"zero", "0", 0},
+		{"http date in the past", aMinuteAgo, time.Second},
+		{"http date far away", farAway, time.Hour},
+		{"zero", "0", time.Second},
 		{"absurdly long", "99999999999999", time.Hour},
-		{"does not fit an int64", "99999999999999999999999", time.Minute},
+		{"does not fit an int64", "99999999999999999999999", time.Hour},
+		{"does not fit a uint64", "184467440737095516160", time.Hour},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -502,12 +521,9 @@ func TestRateLimited(t *testing.T) {
 			}, *apiErr)
 			require.Len(t, env.requests(), 1, "do does not retry")
 
-			// The limiter now holds every caller back for that long.
-			var wantSleeps []time.Duration
-			if tt.want > 0 {
-				wantSleeps = []time.Duration{tt.want}
-			}
-			require.Equal(t, wantSleeps, takeAfterWait(t, env))
+			// The limiter now holds every caller back for that long, and starts
+			// with an empty bucket after it: one more token interval.
+			require.Equal(t, []time.Duration{tt.want, time.Second}, takeAfterWait(t, env))
 		})
 	}
 }
@@ -522,7 +538,7 @@ func TestRateLimitedWithoutEnvelope(t *testing.T) {
 	var apiErr *Error
 	require.ErrorAs(t, err, &apiErr)
 	require.Equal(t, Error{Status: 429, Message: "Too Many Requests", RetryAfter: 7 * time.Second}, *apiErr)
-	require.Equal(t, []time.Duration{7 * time.Second}, takeAfterWait(t, env))
+	require.Equal(t, []time.Duration{7 * time.Second, time.Second}, takeAfterWait(t, env))
 }
 
 func takeAfterWait(t *testing.T, env *testEnv) []time.Duration {
@@ -536,7 +552,7 @@ func TestDoWaitsForTheLimiter(t *testing.T) {
 	env.c.limiter.Pause(5 * time.Second)
 
 	require.NoError(t, env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil))
-	require.Equal(t, []time.Duration{5 * time.Second}, env.clock.takeSleeps())
+	require.Equal(t, []time.Duration{5 * time.Second, time.Second}, env.clock.takeSleeps())
 	require.Len(t, env.requests(), 1)
 }
 
@@ -576,6 +592,29 @@ func TestDoUsesTheGivenHTTPClient(t *testing.T) {
 	})
 	require.NoError(t, env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil))
 	require.True(t, used)
+}
+
+func TestGivenHTTPClientNeverFollowsRedirects(t *testing.T) {
+	var elsewhereHits int
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhereHits++ }))
+	t.Cleanup(elsewhere.Close)
+
+	// A client that would follow redirects, and that carries its own settings.
+	given := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return nil }}
+	env := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL, http.StatusFound)
+	}, func(o *Options) { o.HTTPClient = given })
+
+	err := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil)
+	var apiErr *Error
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, http.StatusFound, apiErr.Status)
+	require.Zero(t, elsewhereHits)
+
+	require.Equal(t, 3*time.Second, env.c.hc.Timeout, "the rest of the given client is kept")
+	require.NotNil(t, given.CheckRedirect, "the given client is not changed")
+	require.NoError(t, given.CheckRedirect(nil, nil))
+	require.NotSame(t, given, env.c.hc)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -646,249 +685,131 @@ func dropConnection(w http.ResponseWriter) {
 	}
 }
 
-// pagedAnswer answers page n of a listing whose pages hold the given items.
-func pagedAnswer(pages [][]string, w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 || page > len(pages) {
-		reply(http.StatusNotFound, `{"success":false,"errors":[{"code":7003,"message":"no such page"}]}`)(w, r)
-		return
-	}
-	items := make([]string, len(pages[page-1]))
-	for i, item := range pages[page-1] {
-		items[i] = strconv.Quote(item)
-	}
-	reply(http.StatusOK, fmt.Sprintf(
-		`{"success":true,"errors":[],"result":[%s],"result_info":{"page":%d,"per_page":100,"count":%d,"total_count":5,"total_pages":%d}}`,
-		strings.Join(items, ","), page, len(items), len(pages)))(w, r)
-}
-
-// collect runs list and returns what the callback saw as strings.
-func collect(t *testing.T, env *testEnv, path string, query url.Values) ([]string, error) {
-	t.Helper()
-	var got []string
-	err := env.c.list(context.Background(), path, query, func(raw json.RawMessage) error {
-		var s string
-		require.NoError(t, json.Unmarshal(raw, &s))
-		got = append(got, s)
-		return nil
-	})
-	return got, err
-}
-
-func TestListCollectsPagesInOrder(t *testing.T) {
-	pages := [][]string{{"a", "b"}, {"c", "d"}, {"e"}}
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) { pagedAnswer(pages, w, r) })
-
-	got, err := collect(t, env, "/zones/z1/dns_records", url.Values{"type": {"CNAME"}, "page": {"9"}, "per_page": {"5"}})
-	require.NoError(t, err)
-	require.Equal(t, []string{"a", "b", "c", "d", "e"}, got)
-
-	var uris []string
-	for _, r := range env.requests() {
-		require.Equal(t, http.MethodGet, r.method)
-		require.Equal(t, "Bearer "+testToken, r.auth)
-		uris = append(uris, r.uri)
-	}
-	require.Equal(t, []string{
-		"/client/v4/zones/z1/dns_records?page=1&per_page=100&type=CNAME",
-		"/client/v4/zones/z1/dns_records?page=2&per_page=100&type=CNAME",
-		"/client/v4/zones/z1/dns_records?page=3&per_page=100&type=CNAME",
-	}, uris)
-}
-
-func TestListDoesNotChangeTheCallersQuery(t *testing.T) {
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) { pagedAnswer([][]string{{"a"}, {"b"}}, w, r) })
-	query := url.Values{"type": {"A"}}
-	_, err := collect(t, env, "/zones", query)
-	require.NoError(t, err)
-	require.Equal(t, url.Values{"type": {"A"}}, query)
-}
-
-func TestListWithoutQuery(t *testing.T) {
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) { pagedAnswer([][]string{{"a"}}, w, r) })
-	got, err := collect(t, env, "/zones", nil)
-	require.NoError(t, err)
-	require.Equal(t, []string{"a"}, got)
-	require.Equal(t, "/client/v4/zones?page=1&per_page=100", env.requests()[0].uri)
-}
-
-func TestListWithoutResultInfoIsOnePage(t *testing.T) {
-	env := setup(t, reply(http.StatusOK, okBody(`["a","b"]`)))
-	got, err := collect(t, env, "/zones", nil)
-	require.NoError(t, err)
-	require.Equal(t, []string{"a", "b"}, got)
-	require.Len(t, env.requests(), 1)
-}
-
-func TestListWithEmptyResult(t *testing.T) {
-	for _, info := range []string{
-		`{"page":1,"per_page":100,"count":0,"total_count":0,"total_pages":0}`,
-		`{"page":1,"per_page":100,"count":0,"total_count":0,"total_pages":1}`,
-		`{}`,
-		`null`,
-	} {
-		env := setup(t, reply(http.StatusOK, `{"success":true,"errors":[],"result":[],"result_info":`+info+`}`))
-		got, err := collect(t, env, "/zones", nil)
-		require.NoError(t, err, info)
-		require.Empty(t, got, info)
-		require.Len(t, env.requests(), 1, info)
-	}
-}
-
-func TestListFailsWholeOnPageError(t *testing.T) {
-	// The first page is fine and the second one fails. Whatever page 1 held
-	// must not be taken for the listing.
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("page") == "2" {
-			reply(http.StatusInternalServerError, `{"success":false,"errors":[{"code":1000,"message":"boom"}]}`)(w, r)
+// dropMidBody answers with the given status line and headers and a body that
+// stops short of its Content-Length.
+func dropMidBody(status int, header string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
 			return
 		}
-		pagedAnswer([][]string{{"a", "b"}, {"c"}, {"d"}}, w, r)
-	})
+		defer func() { _ = conn.Close() }()
+		_, _ = fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\nContent-Length: 100\r\n%s\r\npartial", status, http.StatusText(status), header)
+		_ = buf.Flush()
+	}
+}
 
-	got, err := collect(t, env, "/zones", nil)
+func TestRateLimitedEvenWhenTheBodyCannotBeRead(t *testing.T) {
+	env := setup(t, dropMidBody(http.StatusTooManyRequests, "Retry-After: 7\r\n"))
+	err := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil)
 
-	require.Error(t, err)
+	require.True(t, IsRateLimited(err))
 	var apiErr *Error
 	require.ErrorAs(t, err, &apiErr)
-	require.Equal(t, http.StatusInternalServerError, apiErr.Status)
-	require.Empty(t, got, "no callback may run for a listing that did not complete")
-	require.Len(t, env.requests(), 2, "page 3 is not requested after page 2 failed")
+	require.Equal(t, Error{Status: 429, Message: "Too Many Requests", RetryAfter: 7 * time.Second}, *apiErr)
+	require.Equal(t, []time.Duration{7 * time.Second, time.Second}, takeAfterWait(t, env))
 }
 
-func TestListFailsWholeOnAnyBadLaterPage(t *testing.T) {
-	page2 := map[string]http.HandlerFunc{
-		"server error":      reply(http.StatusBadGateway, `bad gateway`),
-		"rate limited":      reply(http.StatusTooManyRequests, `{"success":false,"errors":[]}`),
-		"unauthorized":      reply(http.StatusUnauthorized, `{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`),
-		"success false":     reply(http.StatusOK, `{"success":false,"errors":[{"code":1003,"message":"bad"}]}`),
-		"not json":          reply(http.StatusOK, `<html></html>`),
-		"empty body":        reply(http.StatusOK, ``),
-		"no success":        reply(http.StatusOK, `{"result":["x"],"result_info":{"total_pages":3}}`),
-		"result is null":    reply(http.StatusOK, okBody(`null`)),
-		"result is missing": reply(http.StatusOK, `{"success":true}`),
-		"result is object":  reply(http.StatusOK, okBody(`{"id":"x"}`)),
-		"result is text":    reply(http.StatusOK, okBody(`"x"`)),
-		"dropped":           func(w http.ResponseWriter, _ *http.Request) { dropConnection(w) },
-	}
-	for name, bad := range page2 {
-		t.Run(name, func(t *testing.T) {
-			env := setup(t, func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Query().Get("page") == "2" {
-					bad(w, r)
-					return
-				}
-				pagedAnswer([][]string{{"a"}, {"b"}, {"c"}}, w, r)
+func TestUnreadableBodyKeepsTheStatus(t *testing.T) {
+	t.Run("failure", func(t *testing.T) {
+		env := setup(t, dropMidBody(http.StatusForbidden, ""))
+		err := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil)
+		require.True(t, IsAuth(err))
+	})
+	t.Run("success is an error, not an answer", func(t *testing.T) {
+		env := setup(t, dropMidBody(http.StatusOK, ""))
+		var out map[string]any
+		err := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, &out)
+		require.ErrorContains(t, err, "reading response")
+		require.Nil(t, out)
+	})
+}
+
+func TestServerMessagesAreRedacted(t *testing.T) {
+	echo := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			body, _ := json.Marshal(map[string]any{
+				"success": false,
+				"errors": []map[string]any{
+					{"code": 1, "message": "bad header " + r.Header.Get("Authorization") + " and again " + testToken},
+				},
 			})
-			got, err := collect(t, env, "/zones", nil)
-			require.Error(t, err)
-			require.Empty(t, got)
-		})
-	}
-}
-
-func TestListWrapsTheFailingPage(t *testing.T) {
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("page") == "2" {
-			reply(http.StatusForbidden, `{"success":false,"errors":[{"code":10000,"message":"nope"}]}`)(w, r)
-			return
+			reply(status, string(body))(w, r)
 		}
-		pagedAnswer([][]string{{"a"}, {"b"}}, w, r)
-	})
-	_, err := collect(t, env, "/zones", nil)
-
-	require.ErrorContains(t, err, "page 2")
-	require.True(t, IsAuth(err))
-}
-
-func TestListFirstPageErrors(t *testing.T) {
-	env := setup(t, reply(http.StatusUnauthorized, `{"success":false,"errors":[{"code":10000,"message":"nope"}]}`))
-	got, err := collect(t, env, "/zones", nil)
-	require.True(t, IsAuth(err))
-	require.Empty(t, got)
-}
-
-func TestListResultMustBeAList(t *testing.T) {
-	for name, body := range map[string]string{
-		"object":  okBody(`{"id":"x"}`),
-		"null":    okBody(`null`),
-		"missing": `{"success":true}`,
-		"string":  okBody(`"x"`),
-	} {
+	}
+	for name, status := range map[string]int{"non-2xx": http.StatusBadRequest, "success false": http.StatusOK} {
 		t.Run(name, func(t *testing.T) {
-			env := setup(t, reply(http.StatusOK, body))
-			got, err := collect(t, env, "/zones", nil)
-			require.ErrorIs(t, err, errUnexpected)
-			require.Empty(t, got)
+			env := setup(t, echo(status))
+			err := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil)
+
+			var apiErr *Error
+			require.ErrorAs(t, err, &apiErr)
+			require.Equal(t, "bad header Bearer [redacted] and again [redacted]", apiErr.Message)
+			require.NotContains(t, err.Error(), testToken)
+		})
+	}
+
+	t.Run("in a listing", func(t *testing.T) {
+		env := setup(t, echo(http.StatusBadRequest))
+		_, err := collect(t, env, "/zones", nil)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), testToken)
+		require.ErrorContains(t, err, "[redacted]")
+	})
+}
+
+func TestServerMessagesAreBounded(t *testing.T) {
+	messageOf := func(t *testing.T, msg string) string {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"success": false, "errors": []map[string]any{{"code": 1, "message": msg}}})
+		require.NoError(t, err)
+		env := setup(t, reply(http.StatusBadRequest, string(body)))
+		var apiErr *Error
+		require.ErrorAs(t, env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil), &apiErr)
+		return apiErr.Message
+	}
+
+	t.Run("short messages are kept", func(t *testing.T) {
+		require.Equal(t, strings.Repeat("a", 512), messageOf(t, strings.Repeat("a", 512)))
+	})
+	t.Run("long messages are cut", func(t *testing.T) {
+		require.Equal(t, strings.Repeat("a", 512), messageOf(t, strings.Repeat("a", 5000)))
+	})
+	t.Run("a cut does not split a character", func(t *testing.T) {
+		got := messageOf(t, "x"+strings.Repeat("\u00e9", 400)) // 801 bytes, byte 512 is inside a character
+		require.True(t, utf8.ValidString(got))
+		require.Equal(t, "x"+strings.Repeat("\u00e9", 255), got)
+	})
+	t.Run("a cut cannot leave a piece of the token", func(t *testing.T) {
+		got := messageOf(t, strings.Repeat("a", 505)+testToken)
+		require.LessOrEqual(t, len(got), 512)
+		require.NotContains(t, got, testToken[:6])
+		require.True(t, strings.HasPrefix(got, strings.Repeat("a", 505)+"[redact"))
+	})
+}
+
+func TestDoRefusesUnsafePaths(t *testing.T) {
+	for _, path := range []string{
+		"", "/", "/zones/", "/zones//dns_records", "zones//dns_records",
+		"/zones/.", "/zones/./dns_records", "/zones/..", "/zones/z1/../dns_records", "/../zones", "..",
+		"/zones/%2e%2e", "/zones/%2E%2E/x", "/zones/%2e",
+		"/zones/%zz", "/zones/%", "/zones/a%2Fb", "/zones/a%2fb",
+	} {
+		t.Run(path, func(t *testing.T) {
+			env := setup(t, reply(http.StatusOK, okBody(`[]`)))
+
+			err := env.c.do(context.Background(), http.MethodDelete, path, nil, nil, nil)
+			require.ErrorContains(t, err, "invalid request path")
+			err = env.c.list(context.Background(), path, nil, func(json.RawMessage) error { return nil })
+			require.ErrorContains(t, err, "invalid request path")
+
+			require.Empty(t, env.requests(), "nothing is sent")
 		})
 	}
 }
 
-func TestListGuardsAgainstRunawayPaging(t *testing.T) {
-	t.Run("more than the limit", func(t *testing.T) {
-		env := setup(t, reply(http.StatusOK, `{"success":true,"result":["a"],"result_info":{"total_pages":1001}}`))
-		got, err := collect(t, env, "/zones", nil)
-		require.ErrorContains(t, err, "1001 pages")
-		require.Empty(t, got)
-		require.Len(t, env.requests(), 1, "no page after the first is fetched")
-	})
-	t.Run("exactly the limit", func(t *testing.T) {
-		env := setup(t, reply(http.StatusOK, `{"success":true,"result":["a"],"result_info":{"total_pages":1000}}`), func(o *Options) {
-			// 1000 requests would otherwise wait on the default budget.
-			o.Limiter = NewLimiter(1_000_000, time.Second, 1000, time.Now)
-		})
-		got, err := collect(t, env, "/zones", nil)
-		require.NoError(t, err)
-		require.Len(t, got, 1000)
-	})
-}
-
-func TestListStopsWhenCallbackFails(t *testing.T) {
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) { pagedAnswer([][]string{{"a", "b"}, {"c"}}, w, r) })
-	errStop := errors.New("stop here")
-
-	var seen []string
-	err := env.c.list(context.Background(), "/zones", nil, func(raw json.RawMessage) error {
-		seen = append(seen, string(raw))
-		if len(seen) == 2 {
-			return errStop
-		}
-		return nil
-	})
-	require.ErrorIs(t, err, errStop)
-	require.Equal(t, []string{`"a"`, `"b"`}, seen)
-}
-
-func TestListStopsWhenContextEnds(t *testing.T) {
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) { pagedAnswer([][]string{{"a"}, {"b"}}, w, r) })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var calls int
-	err := env.c.list(ctx, "/zones", nil, func(json.RawMessage) error {
-		calls++
-		return nil
-	})
-	require.NoError(t, err)
-	require.Equal(t, 2, calls)
-
-	cancel()
-	err = env.c.list(ctx, "/zones", nil, func(json.RawMessage) error {
-		calls++
-		return nil
-	})
-	require.ErrorIs(t, err, context.Canceled)
-	require.Equal(t, 2, calls)
-}
-
-func TestListEachRequestWaitsForTheLimiter(t *testing.T) {
-	clock := newFakeClock()
-	env := setup(t, func(w http.ResponseWriter, r *http.Request) { pagedAnswer([][]string{{"a"}, {"b"}, {"c"}}, w, r) }, func(o *Options) {
-		// One token every 10 s, room for one.
-		o.Limiter = newLimiter(6, time.Minute, 1, clock.now, clock.sleep)
-	})
-	_, err := collect(t, env, "/zones", nil)
-	require.NoError(t, err)
-	require.Len(t, env.requests(), 3)
-	require.Equal(t, []time.Duration{10 * time.Second, 10 * time.Second}, clock.takeSleeps())
+func TestDoSendsEscapedPathsAsGiven(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(`{}`)))
+	require.NoError(t, env.c.do(context.Background(), http.MethodGet, "/zones/a%20b/dns_records/100%25", nil, nil, nil))
+	require.Equal(t, "/client/v4/zones/a%20b/dns_records/100%25", env.requests()[0].uri)
 }

@@ -71,17 +71,22 @@ func (l *Limiter) Wait(ctx context.Context) error {
 	}
 }
 
-// Pause holds back every Wait until d from now, whatever tokens are left. It
-// never shortens a pause that is already longer.
+// Pause holds back every Wait until d from now, whatever tokens are left, and
+// empties the bucket: nothing is saved up during the pause, so no burst goes
+// out the moment it ends. It never shortens a pause that is already longer.
 func (l *Limiter) Pause(d time.Duration) {
 	if d <= 0 {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if until := l.now().Add(d); until.After(l.until) {
-		l.until = until
+	until := l.now().Add(d)
+	if !until.After(l.until) {
+		return
 	}
+	l.until = until
+	l.credit = 0
+	l.last = until // refilling starts when the pause ends
 }
 
 // reserve takes a token and returns 0, or returns how long to wait before
@@ -91,6 +96,9 @@ func (l *Limiter) reserve() time.Duration {
 	defer l.mu.Unlock()
 
 	now := l.now()
+	if now.Before(l.until) {
+		return l.until.Sub(now)
+	}
 	// A clock that steps back earns no credit.
 	if elapsed := now.Sub(l.last); elapsed >= l.capacity-l.credit {
 		l.credit = l.capacity
@@ -99,9 +107,6 @@ func (l *Limiter) reserve() time.Duration {
 	}
 	l.last = now
 
-	if now.Before(l.until) {
-		return l.until.Sub(now)
-	}
 	if l.credit >= l.cost {
 		l.credit -= l.cost
 		return 0

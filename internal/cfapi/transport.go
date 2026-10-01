@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/version"
 )
@@ -33,27 +35,35 @@ const (
 	defaultWindow = 5 * time.Minute
 	defaultBurst  = 20
 
-	pageSize = 100
-	// A listing this long is a server that never ends, not a zone.
-	maxPages = 1000
-
+	// How a Retry-After is read: missing or unreadable means a minute, and
+	// whatever the server asks is held between a second and an hour.
 	defaultRetryAfter = time.Minute
+	minRetryAfter     = time.Second
 	maxRetryAfter     = time.Hour
+
+	// Longest message taken from a response. Messages come from the server and
+	// end up in logs.
+	maxMessageBytes = 512
+	redacted        = "[redacted]"
 )
 
 // Options says how to reach the API. Only Token is required.
 type Options struct {
-	BaseURL    string       // default https://api.cloudflare.com/client/v4; plain http only for loopback addresses
-	Token      string       // API token, sent as a bearer token
-	HTTPClient *http.Client // default: 30 s timeout, never follows a redirect
-	Limiter    *Limiter     // default: 300 requests per 5 minutes, burst 20; share one between clients of a credential
-	UserAgent  string       // default "pco/<version>"
+	BaseURL string // default https://api.cloudflare.com/client/v4; plain http only for loopback addresses
+	Token   string // API token, sent as a bearer token; must not contain whitespace or control characters
+	// HTTPClient is used for every request. The client keeps a copy of it that
+	// refuses redirects whatever its CheckRedirect says, so that the token never
+	// follows a redirect; the value passed in is not changed. Default: a client
+	// with a 30 s timeout.
+	HTTPClient *http.Client
+	Limiter    *Limiter // default: 300 requests per 5 minutes, burst 20; share one between clients of a credential
+	UserAgent  string   // default "pco/<version>"
 }
 
 // Client talks to the Cloudflare API. It is safe for concurrent use.
 type Client struct {
 	base      *url.URL
-	auth      string
+	token     string
 	hc        *http.Client
 	limiter   *Limiter
 	userAgent string
@@ -65,24 +75,29 @@ func New(opts Options) (*Client, error) {
 	if strings.TrimSpace(opts.Token) == "" {
 		return nil, errors.New("api token is empty")
 	}
+	if strings.ContainsFunc(opts.Token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return nil, errors.New("api token contains whitespace or control characters")
+	}
 	base, err := parseBaseURL(opts.BaseURL)
 	if err != nil {
 		return nil, err
 	}
+
+	hc := &http.Client{Timeout: defaultTimeout}
+	if opts.HTTPClient != nil {
+		given := *opts.HTTPClient
+		hc = &given
+	}
+	// The API never redirects; following one would carry the token to
+	// wherever it points.
+	hc.CheckRedirect = refuseRedirect
+
 	c := &Client{
 		base:      base,
-		auth:      "Bearer " + opts.Token,
-		hc:        opts.HTTPClient,
+		token:     opts.Token,
+		hc:        hc,
 		limiter:   opts.Limiter,
 		userAgent: opts.UserAgent,
-	}
-	if c.hc == nil {
-		c.hc = &http.Client{
-			Timeout: defaultTimeout,
-			// The API never redirects; following one would carry the token
-			// to wherever it points.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		}
 	}
 	if c.limiter == nil {
 		c.limiter = NewLimiter(defaultLimit, defaultWindow, defaultBurst, time.Now)
@@ -92,6 +107,8 @@ func New(opts Options) (*Client, error) {
 	}
 	return c, nil
 }
+
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // parseBaseURL returns the base URL to use. The messages do not quote raw,
 // which may carry a secret.
@@ -142,13 +159,19 @@ type apiMessage struct {
 	Message string `json:"message"`
 }
 
+// resultInfo describes the page of a listing. Which of the counts an endpoint
+// sends differs, so each one is a pointer: absent is not zero.
 type resultInfo struct {
-	TotalPages int `json:"total_pages"`
+	Count      *int `json:"count"`
+	PerPage    int  `json:"per_page"`
+	TotalCount *int `json:"total_count"`
+	TotalPages *int `json:"total_pages"`
 }
 
 // do sends one request and decodes the result of the answer into out, which
 // may be nil when the result is not needed. body, when not nil, is sent as
-// JSON. path is below the base URL and must already be escaped.
+// JSON. path is below the base URL and must already be escaped (see
+// joinPath); a path with an empty, "." or ".." segment is refused.
 //
 // An answer with a result of null or none is an error when out is given: no
 // result is not an empty one.
@@ -169,48 +192,6 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	return nil
 }
 
-// list reads every page of the collection at path, then calls each with every
-// item in order. Nothing is passed to each unless all pages were read: a
-// listing that failed half way is an error, never a shorter list.
-func (c *Client) list(ctx context.Context, path string, query url.Values, each func(json.RawMessage) error) error {
-	var items []json.RawMessage
-	totalPages := 1
-	for page := 1; page <= totalPages; page++ {
-		env, err := c.roundTrip(ctx, http.MethodGet, path, pageQuery(query, page), nil)
-		if err != nil {
-			return fmt.Errorf("listing %s, page %d: %w", path, page, err)
-		}
-		var batch []json.RawMessage
-		if isNull(env.Result) || json.Unmarshal(env.Result, &batch) != nil {
-			return fmt.Errorf("listing %s, page %d: %w: result is not a list", path, page, errUnexpected)
-		}
-		items = append(items, batch...)
-
-		if page == 1 && env.ResultInfo != nil {
-			totalPages = max(env.ResultInfo.TotalPages, 1)
-			if totalPages > maxPages {
-				return fmt.Errorf("listing %s: %d pages is more than the limit of %d", path, totalPages, maxPages)
-			}
-		}
-	}
-	for _, item := range items {
-		if err := each(item); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func pageQuery(query url.Values, page int) url.Values {
-	q := make(url.Values, len(query)+2)
-	for k, v := range query {
-		q[k] = append([]string(nil), v...)
-	}
-	q.Set("page", strconv.Itoa(page))
-	q.Set("per_page", strconv.Itoa(pageSize))
-	return q
-}
-
 func isNull(raw json.RawMessage) bool {
 	return len(raw) == 0 || string(raw) == "null"
 }
@@ -218,6 +199,9 @@ func isNull(raw json.RawMessage) bool {
 // roundTrip waits for the limiter, sends the request and returns the envelope
 // of a successful answer. Every other outcome is an error.
 func (c *Client) roundTrip(ctx context.Context, method, path string, query url.Values, body any) (*envelope, error) {
+	if err := checkPath(path); err != nil {
+		return nil, fmt.Errorf("invalid request path: %w", err)
+	}
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -236,7 +220,7 @@ func (c *Client) roundTrip(ctx context.Context, method, path string, query url.V
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
-	req.Header.Set("Authorization", c.auth)
+	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
 	if body != nil {
@@ -249,30 +233,28 @@ func (c *Client) roundTrip(ctx context.Context, method, path string, query url.V
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
-	return c.readAnswer(resp, raw)
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	return c.readAnswer(resp, raw, readErr)
 }
 
 // readAnswer turns the answer into an envelope when it is a success, and into
-// an error in every other case.
-func (c *Client) readAnswer(resp *http.Response, raw []byte) (*envelope, error) {
+// an error in every other case. The status is looked at before a failure to
+// read the body is reported, so that a 429 always pauses the limiter.
+func (c *Client) readAnswer(resp *http.Response, raw []byte, readErr error) (*envelope, error) {
 	tooBig := len(raw) > maxBodyBytes
 	var env envelope
 	var decodeErr error
-	if !tooBig {
+	if !tooBig && readErr == nil {
 		decodeErr = json.Unmarshal(raw, &env)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		// A body that is too big or not an envelope is not worth quoting: the
-		// status says enough.
-		if tooBig || decodeErr != nil {
+		// A body that could not be read, is too big or is not an envelope is
+		// not worth quoting: the status says enough.
+		if tooBig || readErr != nil || decodeErr != nil {
 			env = envelope{}
 		}
-		apiErr := newError(resp.StatusCode, &env)
+		apiErr := c.newError(resp.StatusCode, &env)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			apiErr.RetryAfter = c.retryAfter(resp.Header)
 			c.limiter.Pause(apiErr.RetryAfter)
@@ -281,6 +263,8 @@ func (c *Client) readAnswer(resp *http.Response, raw []byte) (*envelope, error) 
 	}
 
 	switch {
+	case readErr != nil:
+		return nil, fmt.Errorf("reading response: %w", readErr)
 	case tooBig:
 		return nil, fmt.Errorf("%w: body exceeds %d bytes", errUnexpected, maxBodyBytes)
 	case decodeErr != nil:
@@ -288,23 +272,40 @@ func (c *Client) readAnswer(resp *http.Response, raw []byte) (*envelope, error) 
 	case env.Success == nil:
 		return nil, fmt.Errorf("%w: no success field", errUnexpected)
 	case !*env.Success:
-		return nil, newError(resp.StatusCode, &env)
+		return nil, c.newError(resp.StatusCode, &env)
 	}
 	return &env, nil
 }
 
-func newError(status int, env *envelope) *Error {
+func (c *Client) newError(status int, env *envelope) *Error {
 	e := &Error{Status: status}
+	message := ""
 	for _, m := range env.Errors {
 		e.Codes = append(e.Codes, m.Code)
-		if e.Message == "" {
-			e.Message = strings.TrimSpace(m.Message)
+		if message == "" {
+			message = strings.TrimSpace(m.Message)
 		}
 	}
+	e.Message = c.cleanMessage(message)
 	if e.Message == "" {
 		e.Message = fallbackMessage(status)
 	}
 	return e
+}
+
+// cleanMessage makes a message from the server safe to keep: the token is
+// blanked out, in case the server echoes the request, and the length is
+// bounded. The token goes first so that a cut cannot leave part of it behind.
+func (c *Client) cleanMessage(msg string) string {
+	msg = strings.ReplaceAll(msg, c.token, redacted)
+	if len(msg) <= maxMessageBytes {
+		return msg
+	}
+	cut := maxMessageBytes
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut]
 }
 
 func fallbackMessage(status int) string {
@@ -320,21 +321,18 @@ func fallbackMessage(status int) string {
 }
 
 // retryAfter reads the Retry-After header of a 429: a number of seconds or an
-// HTTP date. A header that is missing or unreadable means a minute; one that
-// asks for more than an hour is cut to an hour.
+// HTTP date. A header that is missing or unreadable means a minute. The result
+// is kept between a second and an hour: a server that says "now" has not made
+// the next request any more likely to succeed, and one that says "never" must
+// not stop the operator for good.
 func (c *Client) retryAfter(h http.Header) time.Duration {
 	v := strings.TrimSpace(h.Get("Retry-After"))
-	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
-		switch {
-		case secs < 0:
-			return defaultRetryAfter
-		case secs > int64(maxRetryAfter/time.Second):
-			return maxRetryAfter
-		}
-		return time.Duration(secs) * time.Second
+	d := defaultRetryAfter
+	if secs, err := strconv.ParseUint(v, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		// On overflow ParseUint returns the largest value, which is capped below.
+		d = time.Duration(min(secs, uint64(maxRetryAfter/time.Second))) * time.Second
+	} else if t, err := http.ParseTime(v); err == nil {
+		d = t.Sub(c.limiter.now())
 	}
-	if t, err := http.ParseTime(v); err == nil {
-		return min(max(t.Sub(c.limiter.now()), 0), maxRetryAfter)
-	}
-	return defaultRetryAfter
+	return min(max(d, minRetryAfter), maxRetryAfter)
 }
