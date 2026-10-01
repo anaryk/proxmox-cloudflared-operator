@@ -1,0 +1,7 @@
+{
+  "data": [
+    {"type": "cluster", "name": "lab", "nodes": 2, "quorate": 1},
+    {"id": "node/pve1", "type": "node", "name": "pve1", "ip": "10.20.0.2", "online": 1, "local": 1},
+    {"id": "node/pve2", "type": "node", "name": "pve2", "ip": "10.20.0.3", "online": 0, "local": 0}
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "data": [
+    {
+      "id": "qemu/101",
+      "type": "qemu",
+      "vmid": 101,
+      "name": "web-1",
+      "node": "pve1",
+      "status": "running",
+      "template": 0,
+      "tags": "cf-tunnel;prod",
+      "maxmem": 8589934592
+    },
+    {
+      "id": "lxc/200",
+      "type": "lxc",
+      "vmid": 200,
+      "name": "db-1",
+      "node": "pve2",
+      "status": "stopped",
+      "template": 0,
+      "maxmem": 2147483648
+    },
+    {
+      "id": "qemu/9000",
+      "type": "qemu",
+      "vmid": 9000,
+      "name": "base-image",
+      "node": "pve1",
+      "status": "stopped",
+      "template": 1,
+      "tags": "Template;Base"
+    }
+  ]
+}

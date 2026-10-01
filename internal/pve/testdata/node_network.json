@@ -1,0 +1,7 @@
+{
+  "data": [
+    {"iface": "vmbr0", "type": "bridge", "active": 1, "cidr": "10.20.0.2/24", "bridge_ports": "nic3"},
+    {"iface": "vmbr1", "type": "bridge", "active": 1, "bridge_ports": ""},
+    {"iface": "nic3", "type": "eth", "active": 1}
+  ]
+}

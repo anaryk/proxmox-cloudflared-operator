@@ -1,0 +1,15 @@
+{
+  "data": {
+    "cores": 4,
+    "memory": "8192",
+    "name": "web-1",
+    "description": "notes\n",
+    "digest": "fb4a8e8f8e7b16bb727fc538bd3b9c5244e2c57e",
+    "net0": "virtio=BC:24:11:00:AA:B5,bridge=vmbr0,firewall=1",
+    "ipconfig0": "ip=10.20.0.15/24,gw=10.20.0.1",
+    "smbios1": "uuid=80e8ef19-34bf-4cb3-b314-96870ca14d1e",
+    "meta": "creation-qemu=10.1.2,ctime=1790847599",
+    "onboot": 0,
+    "tags": "cf-tunnel;prod"
+  }
+}
