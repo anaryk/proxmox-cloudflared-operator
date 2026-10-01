@@ -228,8 +228,18 @@ func TestWhatIsNotARealDirectoryIsRefused(t *testing.T) {
 	require.NoError(t, os.Chmod(target, 0o777))
 	for name, create := range map[string]func(path string) error{
 		"a symlink to a directory": func(path string) error { return os.Symlink(target, path) },
-		"a dangling symlink":       func(path string) error { return os.Symlink(filepath.Join(target, "nothing"), path) },
-		"a file":                   func(path string) error { return os.WriteFile(path, []byte("keep me"), 0o600) },
+		"a symlink to a sibling": func(path string) error {
+			sibling := filepath.Join(filepath.Dir(path), "sibling")
+			if err := os.Mkdir(sibling, 0o777); err != nil {
+				return err
+			}
+			if err := os.Chmod(sibling, 0o777); err != nil {
+				return err
+			}
+			return os.Symlink("sibling", path)
+		},
+		"a dangling symlink": func(path string) error { return os.Symlink(filepath.Join(target, "nothing"), path) },
+		"a file":             func(path string) error { return os.WriteFile(path, []byte("keep me"), 0o600) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(shortDir(t), "pco")
@@ -245,14 +255,21 @@ func TestWhatIsNotARealDirectoryIsRefused(t *testing.T) {
 			entries, err := os.ReadDir(target)
 			require.NoError(t, err)
 			require.Empty(t, entries)
+			sibling := filepath.Join(filepath.Dir(path), "sibling")
+			if _, err := os.Lstat(sibling); err == nil {
+				info, err := os.Stat(sibling)
+				require.NoError(t, err)
+				require.Equal(t, fs.FileMode(0o777), info.Mode().Perm(), "nor the sibling")
+				entries, err := os.ReadDir(sibling)
+				require.NoError(t, err)
+				require.Empty(t, entries)
+			}
 		})
 	}
 }
 
 func TestADirectoryOfSomeoneElseIsRefused(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("only root may give a directory to another user")
-	}
+	needRoot(t, "only root may give a directory to another user")
 	const other = 1234
 	dir := pcoDir(t)
 	require.NoError(t, os.Chown(dir, other, other))
@@ -292,59 +309,8 @@ func TestARelativePathIsRefused(t *testing.T) {
 	require.Empty(t, entries)
 }
 
-func TestTheSocketIsPrivateUntilItIsReady(t *testing.T) {
-	dir := pcoDir(t)
-	final := filepath.Join(dir, "pco.sock")
-	s := newServer(&fakeEngine{})
-
-	p, err := s.bindPrivate(final, os.Getgid())
-	require.NoError(t, err)
-	t.Cleanup(p.abandon)
-
-	// Bound and set up, in a directory only its owner can enter and that is
-	// named after the socket; nothing is at the public path yet.
-	require.Equal(t, filepath.Join(dir, ".pco.sock.new"), p.dir)
-	dirInfo, err := os.Lstat(p.dir)
-	require.NoError(t, err)
-	require.True(t, dirInfo.IsDir())
-	require.Equal(t, fs.FileMode(0o700), dirInfo.Mode().Perm())
-	sockInfo, err := os.Lstat(p.path)
-	require.NoError(t, err)
-	require.Equal(t, fs.ModeSocket, sockInfo.Mode().Type())
-	require.Equal(t, fs.FileMode(0o660), sockInfo.Mode().Perm(), "the mode is final before the socket can be reached")
-	_, err = os.Lstat(final)
-	require.ErrorIs(t, err, fs.ErrNotExist)
-
-	info, err := p.publish(final)
-	require.NoError(t, err)
-
-	pub, err := os.Lstat(final)
-	require.NoError(t, err)
-	require.True(t, os.SameFile(info, pub))
-	require.Equal(t, fs.ModeSocket, pub.Mode().Type())
-	require.Equal(t, fs.FileMode(0o660), pub.Mode().Perm())
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "the private directory is gone")
-	require.Equal(t, "pco.sock", entries[0].Name())
-}
-
-func TestANeverPublishedSocketLeavesNothingBehind(t *testing.T) {
-	dir := pcoDir(t)
-	p, err := newServer(&fakeEngine{}).bindPrivate(filepath.Join(dir, "pco.sock"), os.Getgid())
-	require.NoError(t, err)
-
-	p.abandon()
-
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Empty(t, entries)
-}
-
 func TestTheDirectoryAndTheSocketGoToTheGroup(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("only root may hand files to another group")
-	}
+	needRoot(t, "only root may hand files to another group")
 	const gid = 4242
 	owner := func(t *testing.T, path string) (uid, group uint32) {
 		t.Helper()
@@ -374,4 +340,123 @@ func TestTheDirectoryAndTheSocketGoToTheGroup(t *testing.T) {
 		require.Equal(t, uint32(0), u)
 		require.Equal(t, uint32(gid), g)
 	})
+}
+
+// parentWith makes a directory of the test's own with a pco directory in it, and
+// gives the parent the mode. The pco directory is 0700 and empty, so that a
+// change to it shows.
+func parentWith(t *testing.T, mode fs.FileMode) (parent, pco string) {
+	t.Helper()
+	parent = shortDir(t)
+	pco = filepath.Join(parent, "pco")
+	require.NoError(t, os.Mkdir(pco, 0o700))
+	require.NoError(t, os.Chmod(parent, mode))
+	return parent, pco
+}
+
+func TestAParentThatOthersCanWriteIsRefused(t *testing.T) {
+	// Whoever can write to the parent can rename pco away and put one of their
+	// own in its place, and the daemon would make its socket and its lock there.
+	for _, tt := range []struct {
+		name string
+		mode fs.FileMode
+	}{
+		{"group can write", 0o775},
+		{"only the group can write", 0o770},
+		{"others can write", 0o757},
+		{"only others can write", 0o702},
+		{"everybody can write", 0o777},
+		{"everybody can write, sticky as /tmp is", os.ModeSticky | 0o777},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parent, pco := parentWith(t, tt.mode)
+
+			err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(pco, "pco.sock"))
+
+			require.ErrorContains(t, err, parent)
+			require.ErrorContains(t, err, "writable")
+			info, err := os.Stat(parent)
+			require.NoError(t, err)
+			require.Equal(t, tt.mode, info.Mode()&(os.ModeSticky|os.ModePerm), "the parent must not change")
+			info, err = os.Stat(pco)
+			require.NoError(t, err)
+			require.Equal(t, fs.FileMode(0o700), info.Mode().Perm(), "pco must not be changed")
+			entries, err := os.ReadDir(pco)
+			require.NoError(t, err)
+			require.Empty(t, entries, "nothing may be made in pco")
+		})
+	}
+}
+
+func TestAMissingPcoUnderAParentThatOthersCanWriteIsNotMade(t *testing.T) {
+	parent := shortDir(t)
+	require.NoError(t, os.Chmod(parent, os.ModeSticky|0o777))
+
+	err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(parent, "pco", "pco.sock"))
+
+	require.ErrorContains(t, err, "writable")
+	entries, err := os.ReadDir(parent)
+	require.NoError(t, err)
+	require.Empty(t, entries, "pco must not be made there")
+}
+
+func TestAParentThatOthersCannotWriteIsFine(t *testing.T) {
+	for _, mode := range []fs.FileMode{0o755, 0o750, 0o700, 0o705} {
+		t.Run(mode.String(), func(t *testing.T) {
+			parent := shortDir(t)
+			require.NoError(t, os.Chmod(parent, mode))
+			socket := filepath.Join(parent, "pco", "pco.sock")
+
+			serve(t, newServer(&fakeEngine{}), socket)
+
+			v, err := apiclient.New(socket).Version(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, "1.2.3", v)
+		})
+	}
+}
+
+func TestAParentThatIsASymlinkIsFollowed(t *testing.T) {
+	// /var/run is a link to /run.
+	target := shortDir(t)
+	require.NoError(t, os.Chmod(target, 0o755))
+	link := filepath.Join(shortDir(t), "run")
+	require.NoError(t, os.Symlink(target, link))
+
+	serve(t, newServer(&fakeEngine{}), filepath.Join(link, "pco", "pco.sock"))
+
+	info, err := os.Lstat(filepath.Join(target, "pco", "pco.sock"))
+	require.NoError(t, err, "the socket is in the directory the link leads to")
+	require.Equal(t, fs.ModeSocket, info.Mode().Type())
+}
+
+func TestAParentThatIsNotADirectoryIsRefused(t *testing.T) {
+	file := filepath.Join(shortDir(t), "file")
+	require.NoError(t, os.WriteFile(file, []byte("keep me"), 0o600))
+
+	err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(file, "pco", "pco.sock"))
+
+	require.ErrorContains(t, err, file)
+	require.ErrorContains(t, err, "parent")
+	data, err := os.ReadFile(file)
+	require.NoError(t, err)
+	require.Equal(t, "keep me", string(data))
+}
+
+func TestAParentOfSomeoneElseIsRefused(t *testing.T) {
+	needRoot(t, "only root may give a directory to another user")
+	const other = 1234
+	parent, pco := parentWith(t, 0o755)
+	require.NoError(t, os.Chown(parent, other, other))
+
+	err := serveFails(t, newServer(&fakeEngine{}), filepath.Join(pco, "pco.sock"))
+
+	require.ErrorContains(t, err, parent)
+	require.ErrorContains(t, err, "belongs to uid 1234")
+	info, err := os.Stat(pco)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o700), info.Mode().Perm(), "pco must not be changed")
+	entries, err := os.ReadDir(pco)
+	require.NoError(t, err)
+	require.Empty(t, entries, "nothing may be made in pco")
 }

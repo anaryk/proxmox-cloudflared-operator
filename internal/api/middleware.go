@@ -130,11 +130,12 @@ func (s *Server) recoverPanics(c *gin.Context) {
 }
 
 // acceptJSON makes sure that a POST says it carries JSON and reads its body,
-// within a size and a time that bound it, and that nothing else has a body. The body is read here, before any
-// handler, for the sake of the deadline: it is set for the read, and is gone
-// when the engine is called. A POST without a body has net/http watching the
-// connection already, and a deadline that stayed on it would end the request
-// context of an apply that takes a minute.
+// within a size and a time that bound it, and that nothing else has a body.
+//
+// The body is read here, before any handler, for the sake of the deadline: it
+// is set for the read, and is gone when the engine is called. A POST without a
+// body has net/http watching the connection already, and a deadline that stayed
+// on it would end the request context of an apply that takes a minute.
 func (s *Server) acceptJSON(c *gin.Context) {
 	if c.Request.Method != http.MethodPost {
 		// Nothing else takes a body, and one that is not all there already

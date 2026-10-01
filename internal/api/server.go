@@ -113,8 +113,12 @@ func (w httpErrorLog) Write(p []byte) (int, error) {
 // The path must be absolute, and the directory of the socket must be named
 // "pco": Serve sets the mode and the owner of that directory, which no other
 // may have done to it. It makes the directory when it is missing, but not its
-// parent; a directory that is already there must be a real one, not a symlink,
-// and owned by the user the daemon runs as, or Serve changes nothing and fails.
+// parent, which must exist, belong to the user the daemon runs as and be
+// writable by neither group nor others (a symlink to such a directory will do).
+// A directory that is already there must be a real one, not a symlink, and owned
+// by the user the daemon runs as. Where that is not so, Serve changes nothing
+// and fails. Once the directory is open, what is done to it is done through the
+// handle, but for binding the socket, which takes a path (see bindPrivate).
 //
 // Serve takes a lock on the path of the socket, "<path>.lock", for as long as it
 // runs, so that two calls on the same path cannot run at once. The lock guards

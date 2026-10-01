@@ -23,8 +23,9 @@ import (
 // the view without an id, and the report that says what to grant.
 func refusedView() engine.CredentialView {
 	return engine.CredentialView{
-		Label: "main",
-		Kind:  "scoped",
+		Label:   "main",
+		Kind:    "scoped",
+		Checked: true,
 		Report: credentials.Report{
 			Token: cfapi.TokenStatus{ID: "token-id", Status: "active"},
 			Checks: []credentials.Check{
@@ -313,7 +314,7 @@ func TestAFailureWithoutAReportHasNoCredential(t *testing.T) {
 		view engine.CredentialView
 	}{
 		{"zero view", engine.CredentialView{}},
-		{"view without a report", engine.CredentialView{Label: "main", Kind: "scoped"}},
+		{"view that was not checked", engine.CredentialView{Label: "main", Kind: "scoped", Checked: false}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeEngine{view: tt.view, err: fmt.Errorf("%w: the label is empty", engine.ErrInvalid)}
@@ -323,6 +324,30 @@ func TestAFailureWithoutAReportHasNoCredential(t *testing.T) {
 			require.Equal(t, http.StatusBadRequest, rec.Code)
 			require.Nil(t, parseError(t, rec).Credential)
 			require.NotContains(t, rec.Body.String(), `"credential"`)
+		})
+	}
+}
+
+func TestTheCheckedFlagDecidesWhetherAViewHasAReport(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		view engine.CredentialView
+		want bool
+	}{
+		{"checked", engine.CredentialView{Label: "main", Kind: "scoped", Checked: true}, true},
+		{"not checked, whatever the report holds", func() engine.CredentialView {
+			v := refusedView()
+			v.Checked = false
+			return v
+		}(), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{view: tt.view, err: fmt.Errorf("%w: no", engine.ErrInvalid)}
+
+			rec := do(newServer(f), http.MethodPost, "/v1/credentials", `{"label":"main","token":"`+testToken+`"}`)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, tt.want, parseError(t, rec).Credential != nil, rec.Body.String())
 		})
 	}
 }

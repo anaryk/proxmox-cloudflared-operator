@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 
@@ -139,7 +138,7 @@ func (s *Server) postCredential(c *gin.Context) {
 	view, err := s.engine.AddCredential(c.Request.Context(), req.Label, token)
 	if err != nil {
 		var opts []failOption
-		if !reflect.ValueOf(view.Report).IsZero() {
+		if view.Checked {
 			opts = append(opts, withCredential(view))
 		}
 		s.fail(c, err, opts...)

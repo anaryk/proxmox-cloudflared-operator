@@ -39,6 +39,8 @@ jobs:
           go-version-file: go.mod
       # sudo drops the environment, so the variables the test needs are passed on explicitly.
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/resolve/
+      # The tests of the socket directory that only root can run: who owns it, and its group.
+      - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -count=1 -run 'SomeoneElse|ToTheGroup' ./internal/api/
 
   build:
     runs-on: ubuntu-latest

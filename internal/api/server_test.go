@@ -247,6 +247,19 @@ func shortDir(t *testing.T) string {
 	return dir
 }
 
+// needRoot skips a test that only root can run, or fails it where
+// PCO_REQUIRE_LINUX_TESTS=1 says the environment exists to run it.
+func needRoot(t *testing.T, why string) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		return
+	}
+	if os.Getenv("PCO_REQUIRE_LINUX_TESTS") == "1" {
+		t.Fatalf("%s: this environment is meant to run the test as root", why)
+	}
+	t.Skip(why)
+}
+
 // socketPath returns where a test's socket goes: in a directory named pco,
 // which Serve makes, inside a directory of the test's own.
 func socketPath(t *testing.T) string {
