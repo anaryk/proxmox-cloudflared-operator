@@ -52,7 +52,20 @@ func validate(h string) error {
 			return err
 		}
 	}
+	// Keeps IPv4 literals out: "10.0.0.5" is an address, not a name.
+	if last := labels[len(labels)-1]; isAllDigits(last) {
+		return fmt.Errorf("last label %q is all digits", last)
+	}
 	return nil
+}
+
+func isAllDigits(l string) bool {
+	for i := 0; i < len(l); i++ {
+		if l[i] < '0' || l[i] > '9' {
+			return false
+		}
+	}
+	return l != ""
 }
 
 func validateLabel(l string) error {

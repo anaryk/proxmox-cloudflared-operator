@@ -17,6 +17,9 @@ func TestNormalize(t *testing.T) {
 		{"hyphen inside label", "a-b.example.com", "a-b.example.com"},
 		{"punycode", "xn--bcher-kva.de", "xn--bcher-kva.de"},
 		{"63 char label", strings.Repeat("a", 63) + ".example.com", strings.Repeat("a", 63) + ".example.com"},
+		{"digits in a label that is not last", "123.example.com", "123.example.com"},
+		{"digits and letters in the last label", "example.c0m", "example.c0m"},
+		{"wildcard over numeric labels", "*.10.example.com", "*.10.example.com"},
 	}
 	for _, tt := range ok {
 		t.Run("valid "+tt.name, func(t *testing.T) {
@@ -47,6 +50,10 @@ func TestNormalize(t *testing.T) {
 		{"too long", strings.Repeat("a.", 127) + "com"},
 		{"non-ascii", "bücher.de"},
 		{"kelvin sign", "\u212a.example.com"}, // lower-cases to an ASCII k
+		{"ipv4 literal", "10.0.0.5"},
+		{"ipv4 literal with trailing dot", "10.0.0.5."},
+		{"numeric last label", "example.123"},
+		{"wildcard over an ipv4 literal", "*.10.0.0.5"},
 	}
 	for _, tt := range bad {
 		t.Run("invalid "+tt.name, func(t *testing.T) {
