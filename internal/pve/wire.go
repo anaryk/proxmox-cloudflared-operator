@@ -110,17 +110,14 @@ func leadingInt(s string) (int, bool) {
 	return n, err == nil
 }
 
-// splitTags splits a Proxmox tag string on ';', ',' and white space and
-// lower-cases the parts.
+// splitTags splits a Proxmox tag string on ';', ',' and white space and drops
+// empty parts. Case is kept: tags are compared exactly as Proxmox stores them.
 func splitTags(s string) []string {
 	tags := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ';' || r == ',' || unicode.IsSpace(r)
 	})
 	if len(tags) == 0 {
 		return nil
-	}
-	for i, t := range tags {
-		tags[i] = strings.ToLower(t)
 	}
 	return tags
 }
@@ -163,18 +160,21 @@ func lenientMAC(s string) string {
 	return mac
 }
 
-func parseIPv4(s string) (netip.Addr, bool) {
-	addr, err := netip.ParseAddr(s)
-	if err != nil || !addr.Is4() {
-		return netip.Addr{}, false
+// parseAddr parses an IP address and reports whether it is IPv4. A valid IPv6
+// address is not an error; callers ignore it.
+func parseAddr(s string) (addr netip.Addr, isV4 bool, err error) {
+	addr, err = netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, false, err
 	}
-	return addr, true
+	return addr, addr.Is4(), nil
 }
 
-func parseIPv4Prefix(s string) (netip.Prefix, bool) {
-	prefix, err := netip.ParsePrefix(s)
-	if err != nil || !prefix.Addr().Is4() {
-		return netip.Prefix{}, false
+// parsePrefix is parseAddr for an address in CIDR form.
+func parsePrefix(s string) (prefix netip.Prefix, isV4 bool, err error) {
+	prefix, err = netip.ParsePrefix(s)
+	if err != nil {
+		return netip.Prefix{}, false, err
 	}
-	return prefix, true
+	return prefix, prefix.Addr().Is4(), nil
 }

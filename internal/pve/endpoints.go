@@ -30,10 +30,13 @@ func (c *Client) Resources(ctx context.Context) ([]Resource, error) {
 		return nil, fmt.Errorf("fetching cluster resources: %w", err)
 	}
 	var out []Resource
-	for _, row := range rows {
+	for i, row := range rows {
 		kind := model.GuestKind(row.Type)
 		if kind != model.KindQEMU && kind != model.KindLXC {
 			continue
+		}
+		if row.VMID < 1 || row.Node == "" {
+			return nil, fmt.Errorf("fetching cluster resources: row %d (%s) has no valid vmid or node", i, row.Type)
 		}
 		out = append(out, Resource{
 			Kind:     kind,
@@ -70,6 +73,9 @@ func (c *Client) GuestConfig(ctx context.Context, node string, ref model.GuestRe
 		}
 		cfg.Values[key] = text
 	}
+	if len(cfg.Values) == 0 && cfg.Digest == "" {
+		return GuestConfig{}, fmt.Errorf("fetching config of %s: unexpected response: empty configuration", ref)
+	}
 	return cfg, nil
 }
 
@@ -87,6 +93,9 @@ func (c *Client) AgentInterfaces(ctx context.Context, node string, vmid int) ([]
 		}
 		return nil, fmt.Errorf("fetching agent interfaces of qemu/%d: %w", vmid, err)
 	}
+	if w.Result == nil {
+		return nil, fmt.Errorf("fetching agent interfaces of qemu/%d: unexpected response: no result", vmid)
+	}
 	out := make([]GuestIface, 0, len(w.Result))
 	for _, row := range w.Result {
 		iface := GuestIface{Name: row.Name, MAC: lenientMAC(row.MAC)}
@@ -94,9 +103,11 @@ func (c *Client) AgentInterfaces(ctx context.Context, node string, vmid int) ([]
 			if a.Type != "ipv4" {
 				continue
 			}
-			if addr, ok := parseIPv4(a.Address); ok {
-				iface.Addrs = append(iface.Addrs, addr)
+			addr, isV4, err := parseAddr(a.Address)
+			if err != nil || !isV4 {
+				return nil, fmt.Errorf("agent interface %q of qemu/%d: invalid ipv4 address %q", row.Name, vmid, a.Address)
 			}
+			iface.Addrs = append(iface.Addrs, addr)
 		}
 		out = append(out, iface)
 	}
@@ -126,8 +137,14 @@ func (c *Client) LXCInterfaces(ctx context.Context, node string, vmid int) ([]Gu
 	out := make([]GuestIface, 0, len(rows))
 	for _, row := range rows {
 		iface := GuestIface{Name: row.Name, MAC: lenientMAC(row.MAC)}
-		if prefix, ok := parseIPv4Prefix(row.Inet); ok {
-			iface.Addrs = []netip.Addr{prefix.Addr()}
+		if row.Inet != "" {
+			prefix, isV4, err := parsePrefix(row.Inet)
+			if err != nil {
+				return nil, fmt.Errorf("interface %q of lxc/%d: invalid inet %q", row.Name, vmid, row.Inet)
+			}
+			if isV4 {
+				iface.Addrs = []netip.Addr{prefix.Addr()}
+			}
 		}
 		out = append(out, iface)
 	}
@@ -147,21 +164,31 @@ func (c *Client) ClusterNodes(ctx context.Context) ([]ClusterNode, error) {
 			continue
 		}
 		node := ClusterNode{Name: row.Name, Online: bool(row.Online), Local: bool(row.Local)}
-		if addr, ok := parseIPv4(row.IP); ok {
-			node.Addr = addr
+		if row.IP != "" {
+			addr, isV4, err := parseAddr(row.IP)
+			if err != nil {
+				return nil, fmt.Errorf("cluster node %q: invalid ip %q", row.Name, row.IP)
+			}
+			if isV4 {
+				node.Addr = addr
+			}
 		}
 		out = append(out, node)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("fetching cluster status: unexpected response: no nodes")
 	}
 	return out, nil
 }
 
 // NodeNetwork lists the network interfaces of a node.
 func (c *Client) NodeNetwork(ctx context.Context, node string) ([]NodeIface, error) {
-	if !validNode(node) {
-		return nil, fmt.Errorf("invalid node name %q", node)
+	endpoint, err := nodeEndpoint(node, "network")
+	if err != nil {
+		return nil, err
 	}
 	var rows []nodeIfaceWire
-	if err := c.get(ctx, "nodes/"+node+"/network", nil, &rows); err != nil {
+	if err := c.get(ctx, endpoint, nil, &rows); err != nil {
 		return nil, fmt.Errorf("fetching network of node %s: %w", node, err)
 	}
 	out := make([]NodeIface, 0, len(rows))
@@ -172,27 +199,38 @@ func (c *Client) NodeNetwork(ctx context.Context, node string) ([]NodeIface, err
 			Active: bool(row.Active),
 			Ports:  fields(row.BridgePorts),
 		}
-		if prefix, ok := parseIPv4Prefix(row.CIDR); ok {
-			iface.Addrs = []netip.Prefix{prefix}
+		if row.CIDR != "" {
+			prefix, isV4, err := parsePrefix(row.CIDR)
+			if err != nil {
+				return nil, fmt.Errorf("interface %q of node %s: invalid cidr %q", row.Name, node, row.CIDR)
+			}
+			if isV4 {
+				iface.Addrs = []netip.Prefix{prefix}
+			}
 		}
 		out = append(out, iface)
 	}
 	return out, nil
 }
 
-// guestEndpoint builds nodes/<node>/<kind>/<vmid>/<tail>. Node names come from
-// API data and end up in a URL path, so they are checked first.
+// guestEndpoint builds nodes/<node>/<kind>/<vmid>/<tail>.
 func guestEndpoint(node string, kind model.GuestKind, vmid int, tail string) (string, error) {
-	if !validNode(node) {
-		return "", fmt.Errorf("invalid node name %q", node)
-	}
 	if kind != model.KindQEMU && kind != model.KindLXC {
 		return "", fmt.Errorf("invalid guest kind %q", kind)
 	}
 	if vmid < 1 {
 		return "", fmt.Errorf("invalid vmid %d", vmid)
 	}
-	return fmt.Sprintf("nodes/%s/%s/%d/%s", node, kind, vmid, tail), nil
+	return nodeEndpoint(node, fmt.Sprintf("%s/%d/%s", kind, vmid, tail))
+}
+
+// nodeEndpoint builds nodes/<node>/<tail>. Node names come from API data and
+// end up in a URL path, so they are checked first.
+func nodeEndpoint(node, tail string) (string, error) {
+	if !validNode(node) {
+		return "", fmt.Errorf("invalid node name %q", node)
+	}
+	return "nodes/" + node + "/" + tail, nil
 }
 
 // validNode accepts host-name characters only, which keeps a node name from

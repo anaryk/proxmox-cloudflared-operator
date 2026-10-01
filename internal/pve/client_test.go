@@ -165,6 +165,8 @@ func TestNewValidatesConfig(t *testing.T) {
 		{"loopback ipv4 without ca", func(c *Config) {}, ""},
 		{"loopback ipv6 without ca", func(c *Config) { c.BaseURL = "https://[::1]:8006" }, ""},
 		{"loopback with default port", func(c *Config) { c.BaseURL = "https://127.0.0.1" }, ""},
+		{"loopback with ca file", func(c *Config) { c.CAFile = caFile }, ""},
+		{"base url with a path", func(c *Config) { c.BaseURL = "https://127.0.0.1:8006/proxy" }, ""},
 		{"remote host with ca", func(c *Config) {
 			c.BaseURL = "https://pve1.lab.invalid:8006"
 			c.CAFile = caFile
@@ -174,6 +176,11 @@ func TestNewValidatesConfig(t *testing.T) {
 		{"scheme is a host name", func(c *Config) { c.BaseURL = "pve1.lab.invalid:8006" }, "https"},
 		{"empty base url", func(c *Config) { c.BaseURL = "" }, "https"},
 		{"base url without host", func(c *Config) { c.BaseURL = "https://" }, "host"},
+		{"base url with user name", func(c *Config) { c.BaseURL = "https://pco@127.0.0.1:8006" }, "credentials"},
+		{"base url with credentials", func(c *Config) { c.BaseURL = "https://pco:" + testSecret + "@127.0.0.1:8006" }, "credentials"},
+		{"base url with query", func(c *Config) { c.BaseURL = "https://127.0.0.1:8006?x=1" }, "query"},
+		{"base url with empty query", func(c *Config) { c.BaseURL = "https://127.0.0.1:8006/?" }, "query"},
+		{"base url with fragment", func(c *Config) { c.BaseURL = "https://127.0.0.1:8006#top" }, "fragment"},
 		{"unparsable base url", func(c *Config) { c.BaseURL = "https://127.0.0.1:port" }, "base url"},
 		{"token id without bang", func(c *Config) { c.TokenID = "pco@pve" }, "token id"},
 		{"token id without name", func(c *Config) { c.TokenID = "pco@pve!" }, "token id"},
@@ -182,6 +189,10 @@ func TestNewValidatesConfig(t *testing.T) {
 		{"remote host without ca", func(c *Config) { c.BaseURL = "https://pve1.lab.invalid:8006" }, "CA file"},
 		{"remote ip without ca", func(c *Config) { c.BaseURL = "https://10.20.0.2:8006" }, "CA file"},
 		{"localhost name is not an address", func(c *Config) { c.BaseURL = "https://localhost:8006" }, "CA file"},
+		{"loopback with missing ca file", func(c *Config) {
+			c.CAFile = filepath.Join(t.TempDir(), "missing.pem")
+		}, "CA file"},
+		{"loopback with ca file holding no certificate", func(c *Config) { c.CAFile = emptyFile }, "no certificates"},
 		{"remote host with missing ca file", func(c *Config) {
 			c.BaseURL = "https://pve1.lab.invalid:8006"
 			c.CAFile = filepath.Join(t.TempDir(), "missing.pem")
@@ -478,6 +489,8 @@ func TestMalformedResponses(t *testing.T) {
 		{"not json", "pong"},
 		{"truncated", `{"data":{"release":"9.`},
 		{"wrong shape", `{"data":["9.1"]}`},
+		{"no data member", `{}`},
+		{"null data", `{"data":null}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

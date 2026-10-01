@@ -21,7 +21,7 @@ type Resource struct {
 	Node     string
 	Status   string // "running", "stopped", ...
 	Template bool
-	Tags     []string // lower case
+	Tags     []string // as stored, case included
 }
 
 // GuestConfig is a guest's configuration with every value as text.

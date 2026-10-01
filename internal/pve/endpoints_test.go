@@ -2,6 +2,7 @@ package pve
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/netip"
 	"testing"
@@ -52,7 +53,7 @@ func TestResources(t *testing.T) {
 	require.Equal(t, []Resource{
 		{Kind: model.KindQEMU, VMID: 101, Name: "web-1", Node: "pve1", Status: "running", Tags: []string{"cf-tunnel", "prod"}},
 		{Kind: model.KindLXC, VMID: 200, Name: "db-1", Node: "pve2", Status: "stopped"},
-		{Kind: model.KindQEMU, VMID: 9000, Name: "base-image", Node: "pve1", Status: "stopped", Template: true, Tags: []string{"template", "base"}},
+		{Kind: model.KindQEMU, VMID: 9000, Name: "base-image", Node: "pve1", Status: "stopped", Template: true, Tags: []string{"Template", "Base"}},
 	}, got)
 	require.Equal(t, "/api2/json/cluster/resources?type=vm", rec.requests()[0].uri)
 }
@@ -74,25 +75,55 @@ func TestResourcesSkipsOtherTypes(t *testing.T) {
 }
 
 func TestResourcesEmpty(t *testing.T) {
-	for _, body := range []string{`{"data":[]}`, `{"data":null}`} {
-		c, _ := newTestClient(t, map[string]reply{"/cluster/resources?type=vm": {http.StatusOK, body}})
-		got, err := c.Resources(context.Background())
-		require.NoError(t, err)
-		require.Empty(t, got)
+	c, _ := newTestClient(t, map[string]reply{"/cluster/resources?type=vm": {http.StatusOK, `{"data":[]}`}})
+	got, err := c.Resources(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, got)
+
+	for _, body := range []string{`{"data":null}`, `{}`} {
+		t.Run("no data "+body, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{"/cluster/resources?type=vm": {http.StatusOK, body}})
+			_, err := c.Resources(context.Background())
+			require.ErrorContains(t, err, "unexpected response: no data")
+		})
+	}
+}
+
+func TestResourcesRejectsRowsWithoutIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		row  string
+	}{
+		{"qemu without vmid", `{"type":"qemu","node":"pve1","name":"web-1"}`},
+		{"lxc with zero vmid", `{"type":"lxc","vmid":0,"node":"pve1"}`},
+		{"qemu with negative vmid", `{"type":"qemu","vmid":-5,"node":"pve1"}`},
+		{"qemu without node", `{"type":"qemu","vmid":101,"name":"web-1"}`},
+		{"lxc with empty node", `{"type":"lxc","vmid":200,"node":""}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			good := `{"type":"qemu","vmid":101,"node":"pve1"}`
+			c, _ := newTestClient(t, map[string]reply{
+				"/cluster/resources?type=vm": {http.StatusOK, `{"data":[` + good + `,` + tt.row + `]}`},
+			})
+			got, err := c.Resources(context.Background())
+			require.Error(t, err)
+			require.Nil(t, got)
+		})
 	}
 }
 
 func TestResourceBooleanForms(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
 		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[
-			{"type":"qemu","vmid":1,"template":1},
-			{"type":"qemu","vmid":2,"template":0},
-			{"type":"qemu","vmid":3,"template":true},
-			{"type":"qemu","vmid":4,"template":false},
-			{"type":"qemu","vmid":5,"template":"1"},
-			{"type":"qemu","vmid":6,"template":"0"},
-			{"type":"qemu","vmid":7},
-			{"type":"qemu","vmid":8,"template":null}
+			{"type":"qemu","vmid":1,"node":"pve1","template":1},
+			{"type":"qemu","vmid":2,"node":"pve1","template":0},
+			{"type":"qemu","vmid":3,"node":"pve1","template":true},
+			{"type":"qemu","vmid":4,"node":"pve1","template":false},
+			{"type":"qemu","vmid":5,"node":"pve1","template":"1"},
+			{"type":"qemu","vmid":6,"node":"pve1","template":"0"},
+			{"type":"qemu","vmid":7,"node":"pve1"},
+			{"type":"qemu","vmid":8,"node":"pve1","template":null}
 		]}`},
 	})
 	got, err := c.Resources(context.Background())
@@ -107,7 +138,7 @@ func TestResourceBooleanForms(t *testing.T) {
 
 func TestResourceRejectsUnknownBoolean(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
-		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[{"type":"qemu","vmid":1,"template":"maybe"}]}`},
+		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[{"type":"qemu","vmid":1,"node":"pve1","template":"maybe"}]}`},
 	})
 	_, err := c.Resources(context.Background())
 	require.Error(t, err)
@@ -119,9 +150,10 @@ func TestSplitTags(t *testing.T) {
 		in   string
 		want []string
 	}{
-		{"mixed separators", "A; b,c  d", []string{"a", "b", "c", "d"}},
+		{"mixed separators", "A; b,c  d", []string{"A", "b", "c", "d"}},
 		{"semicolons", "cf-tunnel;prod", []string{"cf-tunnel", "prod"}},
-		{"single", "Prod", []string{"prod"}},
+		{"case is kept", "CF-Tunnel;Prod", []string{"CF-Tunnel", "Prod"}},
+		{"single", "Prod", []string{"Prod"}},
 		{"tabs and newlines", "a\tb\nc", []string{"a", "b", "c"}},
 		{"empty parts dropped", ";;a;; ,b,", []string{"a", "b"}},
 		{"empty", "", nil},
@@ -136,11 +168,11 @@ func TestSplitTags(t *testing.T) {
 
 func TestResourceTagsDecode(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
-		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[{"type":"lxc","vmid":3,"tags":"A; b,c  d"}]}`},
+		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[{"type":"lxc","vmid":3,"node":"pve1","tags":"A; b,c  d"}]}`},
 	})
 	got, err := c.Resources(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, []string{"a", "b", "c", "d"}, got[0].Tags)
+	require.Equal(t, []string{"A", "b", "c", "d"}, got[0].Tags)
 }
 
 func TestGuestConfig(t *testing.T) {
@@ -190,6 +222,18 @@ func TestGuestConfigWithoutDigest(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, got.Digest)
 	require.Equal(t, map[string]string{"name": "web-1"}, got.Values)
+}
+
+func TestGuestConfigWithoutData(t *testing.T) {
+	bodies := []string{`{}`, `{"data":null}`, `{"data":{}}`}
+	for _, body := range bodies {
+		t.Run(body, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{"/nodes/pve1/qemu/101/config": {http.StatusOK, body}})
+			got, err := c.GuestConfig(context.Background(), "pve1", model.GuestRef{Kind: model.KindQEMU, VMID: 101})
+			require.ErrorContains(t, err, "unexpected response")
+			require.Zero(t, got)
+		})
+	}
 }
 
 func TestGuestConfigMissingGuest(t *testing.T) {
@@ -248,7 +292,7 @@ func TestAgentInterfacesTolerance(t *testing.T) {
 				{"ip-address":"10.20.0.15","ip-address-type":"ipv4","prefix":24},
 				{"ip-address":"10.20.0.16","ip-address-type":"ipv4","prefix":24},
 				{"ip-address":"2001:db8::15","ip-address-type":"ipv6","prefix":64},
-				{"ip-address":"not-an-address","ip-address-type":"ipv4","prefix":24},
+				{"ip-address":"not-an-address","ip-address-type":"ipv6","prefix":64},
 				{"ip-address":"10.20.0.17","ip-address-type":"ipv6","prefix":24}
 			]},
 			{"name":"tun0","ip-addresses":[{"ip-address":"10.99.0.2","ip-address-type":"ipv4","prefix":32}]},
@@ -265,6 +309,55 @@ func TestAgentInterfacesTolerance(t *testing.T) {
 		{Name: "ib0"},
 		{Name: "eth1", MAC: "bc:24:11:00:aa:b6"},
 	}, got)
+}
+
+func TestAgentInterfacesRejectsBadAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+	}{
+		{"unparsable", `{"ip-address":"not-an-address","ip-address-type":"ipv4","prefix":24}`},
+		{"empty", `{"ip-address":"","ip-address-type":"ipv4","prefix":24}`},
+		{"missing", `{"ip-address-type":"ipv4","prefix":24}`},
+		{"ipv6 literal typed ipv4", `{"ip-address":"fd00::15","ip-address-type":"ipv4","prefix":64}`},
+		{"out of range octet", `{"ip-address":"10.20.0.256","ip-address-type":"ipv4","prefix":24}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{
+				"/nodes/pve1/qemu/101/agent/network-get-interfaces": {http.StatusOK, `{"data":{"result":[
+					{"name":"eth0","hardware-address":"bc:24:11:00:aa:b5","ip-addresses":[
+						{"ip-address":"10.20.0.15","ip-address-type":"ipv4","prefix":24},
+						` + tt.addr + `
+					]}
+				]}}`},
+			})
+			got, err := c.AgentInterfaces(context.Background(), "pve1", 101)
+			require.ErrorContains(t, err, "eth0")
+			require.Nil(t, got)
+		})
+	}
+}
+
+func TestAgentInterfacesWithoutResult(t *testing.T) {
+	bodies := []string{`{}`, `{"data":null}`, `{"data":{}}`, `{"data":{"result":null}}`}
+	for _, body := range bodies {
+		t.Run(body, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{
+				"/nodes/pve1/qemu/101/agent/network-get-interfaces": {http.StatusOK, body},
+			})
+			got, err := c.AgentInterfaces(context.Background(), "pve1", 101)
+			require.ErrorContains(t, err, "unexpected response")
+			require.Nil(t, got)
+		})
+	}
+
+	c, _ := newTestClient(t, map[string]reply{
+		"/nodes/pve1/qemu/101/agent/network-get-interfaces": {http.StatusOK, `{"data":{"result":[]}}`},
+	})
+	got, err := c.AgentInterfaces(context.Background(), "pve1", 101)
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestLXCInterfaces(t *testing.T) {
@@ -287,8 +380,7 @@ func TestLXCInterfacesTolerance(t *testing.T) {
 			{"name":"eth0","hwaddr":"BC:24:11:11:22:33","inet":"10.20.0.30/24"},
 			{"name":"eth1","hwaddr":"BC:24:11:11:22:34","inet6":"fe80::1/64"},
 			{"name":"eth2","hwaddr":"BC:24:11:11:22:35","inet":"fd00::5/64"},
-			{"name":"eth3","hwaddr":"BC:24:11:11:22:36","inet":"garbage"},
-			{"name":"eth4"}
+			{"name":"eth3"}
 		]}`},
 	})
 	got, err := c.LXCInterfaces(context.Background(), "pve1", 200)
@@ -298,9 +390,24 @@ func TestLXCInterfacesTolerance(t *testing.T) {
 		{Name: "eth0", MAC: "bc:24:11:11:22:33", Addrs: []netip.Addr{netip.MustParseAddr("10.20.0.30")}},
 		{Name: "eth1", MAC: "bc:24:11:11:22:34"},
 		{Name: "eth2", MAC: "bc:24:11:11:22:35"},
-		{Name: "eth3", MAC: "bc:24:11:11:22:36"},
-		{Name: "eth4"},
+		{Name: "eth3"},
 	}, got)
+}
+
+func TestLXCInterfacesRejectsBadInet(t *testing.T) {
+	for _, inet := range []string{"garbage", "10.20.0.30", "10.20.0.30/33", "10.20.0.300/24", "10.20.0.30/"} {
+		t.Run(inet, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{
+				"/nodes/pve1/lxc/200/interfaces": {http.StatusOK, `{"data":[
+					{"name":"lo","hwaddr":"00:00:00:00:00:00","inet":"127.0.0.1/8"},
+					{"name":"eth0","hwaddr":"bc:24:11:11:22:33","inet":"` + inet + `"}
+				]}`},
+			})
+			got, err := c.LXCInterfaces(context.Background(), "pve1", 200)
+			require.ErrorContains(t, err, "eth0")
+			require.Nil(t, got)
+		})
+	}
 }
 
 func TestClusterNodes(t *testing.T) {
@@ -343,6 +450,36 @@ func TestClusterNodesUnknownAddress(t *testing.T) {
 	}, got)
 }
 
+func TestClusterNodesRejectsBadAddress(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{
+		"/cluster/status": {http.StatusOK, `{"data":[
+			{"type":"node","name":"pve1","ip":"10.20.0.2","online":1,"local":1},
+			{"type":"node","name":"pve2","ip":"not-an-address","online":1,"local":0}
+		]}`},
+	})
+	got, err := c.ClusterNodes(context.Background())
+	require.ErrorContains(t, err, "pve2")
+	require.Nil(t, got)
+}
+
+func TestClusterNodesNeedsANode(t *testing.T) {
+	bodies := []string{
+		`{}`,
+		`{"data":null}`,
+		`{"data":[]}`,
+		`{"data":{}}`,
+		`{"data":[{"type":"cluster","name":"lab","nodes":2,"quorate":1}]}`,
+	}
+	for _, body := range bodies {
+		t.Run(body, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{"/cluster/status": {http.StatusOK, body}})
+			got, err := c.ClusterNodes(context.Background())
+			require.Error(t, err)
+			require.Nil(t, got)
+		})
+	}
+}
+
 func TestNodeNetwork(t *testing.T) {
 	c, rec := newTestClient(t, map[string]reply{
 		"/nodes/pve1/network": okReply(t, "node_network.json"),
@@ -358,12 +495,28 @@ func TestNodeNetwork(t *testing.T) {
 	require.Equal(t, "/api2/json/nodes/pve1/network", rec.requests()[0].uri)
 }
 
+func TestNodeNetworkRejectsBadCIDR(t *testing.T) {
+	for _, cidr := range []string{"broken", "10.20.0.2", "10.20.0.2/33", "10.20.0.2/"} {
+		t.Run(cidr, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{
+				"/nodes/pve1/network": {http.StatusOK, `{"data":[
+					{"iface":"nic3","type":"eth","active":1},
+					{"iface":"vmbr0","type":"bridge","active":1,"cidr":"` + cidr + `"}
+				]}`},
+			})
+			got, err := c.NodeNetwork(context.Background(), "pve1")
+			require.ErrorContains(t, err, "vmbr0")
+			require.Nil(t, got)
+		})
+	}
+}
+
 func TestNodeNetworkTolerance(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
 		"/nodes/pve1/network": {http.StatusOK, `{"data":[
 			{"iface":"vmbr0","type":"bridge","active":1,"cidr":"10.20.0.2/24","cidr6":"fd00::2/64","bridge_ports":"nic3  nic4 tap101i0"},
 			{"iface":"vmbr1","type":"bridge","active":0,"cidr":"fd00::3/64"},
-			{"iface":"bond0","type":"bond","cidr":"broken"},
+			{"iface":"bond0","type":"bond","cidr6":"fd00::9/64"},
 			{"iface":"vmbr2","type":"bridge","active":"1","autostart":1}
 		]}`},
 	})
@@ -376,4 +529,46 @@ func TestNodeNetworkTolerance(t *testing.T) {
 		{Name: "bond0", Type: "bond"},
 		{Name: "vmbr2", Type: "bridge", Active: true},
 	}, got)
+}
+
+func TestWrongShapeIsAnError(t *testing.T) {
+	ctx := context.Background()
+	qemu := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
+	const (
+		object = `{"data":{"qemu":[1,2]}}`
+		array  = `{"data":[{"a":1}]}`
+	)
+	endpoints := []struct {
+		name  string
+		route string
+		wrong string // the container the endpoint does not return
+		call  func(c *Client) error
+	}{
+		{"Version", "/version", array, func(c *Client) error { _, err := c.Version(ctx); return err }},
+		{"Resources", "/cluster/resources?type=vm", object, func(c *Client) error { _, err := c.Resources(ctx); return err }},
+		{"GuestConfig", "/nodes/pve1/qemu/101/config", array, func(c *Client) error { _, err := c.GuestConfig(ctx, "pve1", qemu); return err }},
+		{"AgentInterfaces", "/nodes/pve1/qemu/101/agent/network-get-interfaces", array, func(c *Client) error { _, err := c.AgentInterfaces(ctx, "pve1", 101); return err }},
+		{"LXCInterfaces", "/nodes/pve1/lxc/200/interfaces", object, func(c *Client) error { _, err := c.LXCInterfaces(ctx, "pve1", 200); return err }},
+		{"ClusterNodes", "/cluster/status", object, func(c *Client) error { _, err := c.ClusterNodes(ctx); return err }},
+		{"NodeNetwork", "/nodes/pve1/network", object, func(c *Client) error { _, err := c.NodeNetwork(ctx, "pve1"); return err }},
+	}
+	for _, ep := range endpoints {
+		bodies := []struct{ name, body string }{
+			{"wrong container", ep.wrong},
+			{"string", `{"data":"pve1"}`},
+			{"number", `{"data":7}`},
+			{"truncated", `{"data":[{"type":"qemu","vmid":10`},
+			{"not json", `<html>proxy error</html>`},
+			{"empty body", ``},
+		}
+		for _, b := range bodies {
+			t.Run(ep.name+" "+b.name, func(t *testing.T) {
+				c, _ := newTestClient(t, map[string]reply{ep.route: {http.StatusOK, b.body}})
+				err := ep.call(c)
+				require.Error(t, err)
+				var apiErr *APIError
+				require.False(t, errors.As(err, &apiErr))
+			})
+		}
+	}
 }

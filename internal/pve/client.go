@@ -34,7 +34,7 @@ type Config struct {
 	BaseURL string        // e.g. "https://127.0.0.1:8006"
 	TokenID string        // "user@realm!tokenid"
 	Secret  string        // the token's secret value
-	CAFile  string        // PEM bundle; not needed, and not used, for loopback addresses
+	CAFile  string        // PEM bundle; required unless the host is a loopback address, whose certificate is never verified
 	Timeout time.Duration // per request, default 10s
 }
 
@@ -98,6 +98,9 @@ func parseConfig(cfg Config) (*url.URL, error) {
 	if host == "" {
 		return nil, errors.New("base url has no host")
 	}
+	if base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" {
+		return nil, errors.New("base url must not carry credentials, a query or a fragment")
+	}
 	user, name, ok := strings.Cut(cfg.TokenID, "!")
 	if !ok || user == "" || name == "" {
 		return nil, errors.New("token id must look like user@realm!tokenid")
@@ -118,14 +121,17 @@ func isLoopback(host string) bool {
 
 func newHTTPClient(base *url.URL, caFile string) (*http.Client, error) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if isLoopback(base.Hostname()) {
-		tlsCfg.InsecureSkipVerify = true
-	} else {
+	// A CA file that is given is always read, so that a wrong path is
+	// reported even where it would not be used.
+	if caFile != "" {
 		pool, err := loadCAPool(caFile)
 		if err != nil {
 			return nil, err
 		}
 		tlsCfg.RootCAs = pool
+	}
+	if isLoopback(base.Hostname()) {
+		tlsCfg.InsecureSkipVerify = true
 	}
 	return &http.Client{
 		// No proxy on purpose: the API is local or on the management network.
@@ -247,8 +253,8 @@ func decodeData(body []byte, out any) error {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return fmt.Errorf("decoding response: %w", err)
 	}
-	if len(envelope.Data) == 0 {
-		return nil
+	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+		return errors.New("unexpected response: no data")
 	}
 	if err := json.Unmarshal(envelope.Data, out); err != nil {
 		return fmt.Errorf("decoding response data: %w", err)
