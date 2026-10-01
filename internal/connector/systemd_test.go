@@ -3,11 +3,14 @@ package connector
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -19,11 +22,12 @@ printf '%s\n' "$*" >> "$0.log"
 for last; do :; done
 case "$1" in
 is-active)
-	case "$2" in
+	case "$last" in
 	up.service) echo active ;;
 	down.service) echo inactive; exit 3 ;;
 	starting.service) echo activating; exit 3 ;;
 	failed.service) echo failed; exit 3 ;;
+	block.service) echo started > "$0.ready"; exec sleep 30 ;;
 	*) echo "  unit exploded  " >&2; exit 1 ;;
 	esac ;;
 list-units)
@@ -69,11 +73,11 @@ func TestSystemctlArguments(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
-		"enable --now --no-block up.service",
-		"disable --now up.service",
-		"restart --no-block up.service",
-		"is-active up.service",
-		"list-units --all --plain --no-legend pco-cloudflared@*.service",
+		"enable --now --no-block -- up.service",
+		"disable --now --no-block -- up.service",
+		"restart --no-block -- up.service",
+		"is-active -- up.service",
+		"list-units --all --plain --no-legend -- pco-cloudflared@*.service",
 	}, calls())
 }
 
@@ -108,7 +112,7 @@ func TestSystemctlIsActiveFailsOnOtherExitCodes(t *testing.T) {
 	var exit *exec.ExitError
 	require.ErrorAs(t, err, &exit)
 	require.Equal(t, 1, exit.ExitCode())
-	require.ErrorContains(t, err, "systemctl is-active unknown.service")
+	require.ErrorContains(t, err, "systemctl is-active -- unknown.service")
 	require.ErrorContains(t, err, ": unit exploded", "stderr is part of the error, trimmed")
 	require.False(t, strings.HasSuffix(err.Error(), " "))
 }
@@ -158,6 +162,46 @@ func TestSystemctlStopsWhenTheContextIsCancelled(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, active)
 	require.Empty(t, calls())
+}
+
+func TestSystemctlStopsWhenTheContextIsCancelledWhileItRuns(t *testing.T) {
+	ctl, _ := newFakeSystemctl(t)
+	ready := ctl.bin + ".ready" // a fifo, so that the test knows when the script runs
+	require.NoError(t, syscall.Mkfifo(ready, 0o600))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	started := make(chan struct{})
+	go func() {
+		defer close(started)
+		if f, err := os.Open(ready); err == nil { // blocks until the script opens it
+			_, _ = io.Copy(io.Discard, f)
+			_ = f.Close()
+		}
+	}()
+	type result struct {
+		active bool
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		active, err := ctl.IsActive(ctx, "block.service")
+		done <- result{active, err}
+	}()
+
+	select {
+	case <-started:
+		cancel()
+	case r := <-done:
+		t.Fatalf("the script returned before it was cancelled: %+v", r)
+	}
+	select {
+	case r := <-done:
+		require.Error(t, r.err)
+		require.False(t, r.active)
+	case <-time.After(10 * time.Second):
+		t.Fatal("IsActive did not return after its context was cancelled")
+	}
 }
 
 // unitFile is the parsed content of a systemd unit: values by section and key,

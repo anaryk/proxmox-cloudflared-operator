@@ -16,7 +16,8 @@ const (
 	// is not active.
 	exitNotActive = 3
 	// stateStarting is what is-active prints for a unit that was started and
-	// has not signalled readiness yet.
+	// has not signalled readiness yet, and for one that waits out its restart
+	// back-off. Both have a start queued or a process that is up.
 	stateStarting = "activating"
 )
 
@@ -25,11 +26,14 @@ type Systemd interface {
 	// EnableNow is enable --now --no-block: cloudflared signals readiness
 	// only after its first edge connection, so the call must not wait for it.
 	EnableNow(ctx context.Context, unit string) error
+	// DisableNow is disable --now --no-block: it queues the stop and does not
+	// wait for the unit to drain.
 	DisableNow(ctx context.Context, unit string) error
 	// Restart does not wait for readiness either.
 	Restart(ctx context.Context, unit string) error
-	// IsActive reports whether the unit runs. A unit that is still starting
-	// does: its process is up and holds the token it was started with.
+	// IsActive reports whether the unit is started or starting, including the
+	// restart back-off. Such a unit holds, or will start with, the files it
+	// finds when it starts, so a change to them needs a restart.
 	IsActive(ctx context.Context, unit string) (bool, error)
 	// ListUnits returns the names of the loaded units that match the glob.
 	ListUnits(ctx context.Context, pattern string) ([]string, error)
@@ -41,22 +45,22 @@ func NewSystemctl() Systemd { return systemctl{bin: systemctlPath} }
 type systemctl struct{ bin string }
 
 func (s systemctl) EnableNow(ctx context.Context, unit string) error {
-	_, err := s.run(ctx, "enable", "--now", "--no-block", unit)
+	_, err := s.run(ctx, "enable", "--now", "--no-block", "--", unit)
 	return err
 }
 
 func (s systemctl) DisableNow(ctx context.Context, unit string) error {
-	_, err := s.run(ctx, "disable", "--now", unit)
+	_, err := s.run(ctx, "disable", "--now", "--no-block", "--", unit)
 	return err
 }
 
 func (s systemctl) Restart(ctx context.Context, unit string) error {
-	_, err := s.run(ctx, "restart", "--no-block", unit)
+	_, err := s.run(ctx, "restart", "--no-block", "--", unit)
 	return err
 }
 
 func (s systemctl) IsActive(ctx context.Context, unit string) (bool, error) {
-	out, err := s.run(ctx, "is-active", unit)
+	out, err := s.run(ctx, "is-active", "--", unit)
 	if err == nil {
 		return true, nil
 	}
@@ -68,7 +72,7 @@ func (s systemctl) IsActive(ctx context.Context, unit string) (bool, error) {
 }
 
 func (s systemctl) ListUnits(ctx context.Context, pattern string) ([]string, error) {
-	out, err := s.run(ctx, "list-units", "--all", "--plain", "--no-legend", pattern)
+	out, err := s.run(ctx, "list-units", "--all", "--plain", "--no-legend", "--", pattern)
 	if err != nil {
 		return nil, err
 	}

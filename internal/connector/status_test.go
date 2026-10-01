@@ -112,12 +112,25 @@ func TestStatusWithAMalformedEnvFileIsActiveAndNotReady(t *testing.T) {
 
 func TestStatusWhenTheEndpointDoesNotAnswerIsNotAnError(t *testing.T) {
 	f := newStatusFixture(t, answer(http.StatusOK, ``))
-	writeFile(t, f.dir, idA+".env", "METRICS_ADDR=127.0.0.1:1\n") // nothing listens there
+	closed := httptest.NewServer(http.NotFoundHandler())
+	addr := closed.Listener.Addr().String()
+	closed.Close() // nothing listens there any more
+	writeFile(t, f.dir, idA+".env", "METRICS_ADDR="+addr+"\n")
 
 	got, err := f.m.Status(t.Context(), idA)
 
 	require.NoError(t, err)
-	require.Equal(t, Status{TunnelID: idA, Active: true, MetricsAddr: "127.0.0.1:1"}, got)
+	require.Equal(t, Status{TunnelID: idA, Active: true, MetricsAddr: addr}, got)
+}
+
+func TestStatusReadsAQuotedAddress(t *testing.T) {
+	f := newStatusFixture(t, answer(http.StatusOK, `{"readyConnections":2}`))
+	writeFile(t, f.dir, idA+".env", "METRICS_ADDR=\""+f.addr+"\"\n")
+
+	got, err := f.m.Status(t.Context(), idA)
+
+	require.NoError(t, err)
+	require.Equal(t, Status{TunnelID: idA, Active: true, Ready: true, Connections: 2, MetricsAddr: f.addr}, got)
 }
 
 func TestStatusReportsAFailedActivityCheck(t *testing.T) {

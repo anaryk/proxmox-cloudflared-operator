@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	// probeTimeout bounds the ask of the /ready endpoint of one connector.
+	// probeTimeout bounds one request to the /ready endpoint of a connector.
 	probeTimeout = 2 * time.Second
 	// maxReadyBody is how much of the answer is read. The real one is a line.
 	maxReadyBody = 64 << 10
@@ -20,7 +20,7 @@ const (
 // Status is what is known of the connector of one tunnel.
 type Status struct {
 	TunnelID    string
-	Active      bool // unit running
+	Active      bool // unit started or starting, including the restart back-off
 	Ready       bool // /ready answered 200
 	Connections int  // readyConnections
 	MetricsAddr string
