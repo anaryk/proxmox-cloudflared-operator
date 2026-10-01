@@ -13,6 +13,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
 var errDisk = errors.New("disk full")
@@ -233,6 +234,97 @@ func TestDNSRemembersWantedNamesUntilSaved(t *testing.T) {
 			} else {
 				require.Empty(t, r.wantedSinceSave)
 			}
+		})
+	}
+}
+
+// TestDNSPublishedAgainAtTheLastMoment has the inventory publish the name
+// right before the delete, in a run whose last save fails: 20 s later, with
+// both plan and inventory unwanting the name again, the old grace must not
+// count.
+func TestDNSPublishedAgainAtTheLastMoment(t *testing.T) {
+	ctx := context.Background()
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, ourCNAME("gone.example.com", testTunnelID))
+	key := stoneKey(zone1.ID, "gone.example.com")
+	store := &memStore{m: map[string]Tombstone{key: overdue}, saveErrs: map[int]error{2: errDisk}}
+	c := &clock{t0}
+	r := newDNSAt(f, store, writerOf(ours, ours), c)
+	in := dnsIn()
+	in.StillUnwanted = func(context.Context, string) (bool, error) { return false, nil }
+
+	res := r.Run(ctx, in, Enforce)
+	require.Equal(t, []string{"saving dns tombstones: disk full"}, res.Problems)
+	require.Contains(t, store.m, key, "the drop was not saved")
+
+	c.t = t0.Add(20 * time.Second)
+	res = r.Run(ctx, dnsIn(), Enforce)
+	require.Empty(t, callsTo(f, "DeleteRecord"))
+	requireHeld(t, res.Actions, "grace period: 1m0s left")
+}
+
+// TestDNSFailedStartStillRemembers wants the name again at t0+20s in a run
+// that cannot start, and unwants it at t0+90s, well within MaxGap.
+func TestDNSFailedStartStillRemembers(t *testing.T) {
+	cases := []struct {
+		name  string
+		start answer
+	}{
+		{"writer unreadable", answer{err: errors.New("lease lost")}},
+		{"writer not valid", answer{us: writerAt(5, ""), stored: writerAt(5, "")}},
+		{"writer of another install", answer{
+			us:     planner.Writer{InstallID: "xyz", Generation: 5, Nonce: "n5"},
+			stored: planner.Writer{InstallID: "xyz", Generation: 5, Nonce: "n5"},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newDNSFake()
+			f.SeedRecord(zone1.ID, ourCNAME("gone.example.com", testTunnelID))
+			store := &memStore{}
+			w := &writerBox{us: ours, stored: ours}
+			c := &clock{t0}
+			r := newDNSAt(f, store, w.get, c)
+			r.Run(ctx, dnsIn(), Enforce)
+
+			c.t = t0.Add(20 * time.Second)
+			w.next = []answer{tc.start}
+			res := r.Run(ctx, dnsIn("gone.example.com"), Enforce)
+			require.Len(t, res.Problems, 1)
+			require.Equal(t, WriterProceed, res.Verdict)
+
+			c.t = t0.Add(90 * time.Second)
+			res = r.Run(ctx, dnsIn(), Enforce)
+			require.Empty(t, callsTo(f, "DeleteRecord"))
+			requireHeld(t, res.Actions, "grace period: 1m0s left")
+		})
+	}
+}
+
+// TestDNSStaleStartNeitherFeedsNorClears pins that a run which finds
+// another writer stored leaves the names seen wanted as they were.
+func TestDNSStaleStartNeitherFeedsNorClears(t *testing.T) {
+	old := stoneKey(zone1.ID, "old.example.com")
+	cases := []struct {
+		name   string
+		writer answer
+		want   map[string]bool
+	}{
+		{"stale", answer{us: ours, stored: newer}, map[string]bool{old: true}},
+		{"unreadable", answer{err: errors.New("lease lost")}, map[string]bool{old: true, stoneKey(zone1.ID, "app.example.com"): true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDNSFake()
+			w := &writerBox{us: ours, stored: ours, next: []answer{tc.writer}}
+			r := newDNSWith(f, &memStore{}, w.get, t0)
+			r.wantedSinceSave[old] = true
+
+			r.Run(context.Background(), dnsIn("app.example.com"), Enforce)
+
+			require.Equal(t, tc.want, r.wantedSinceSave)
+			require.Empty(t, f.Calls())
 		})
 	}
 }

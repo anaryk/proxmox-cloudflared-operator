@@ -139,10 +139,11 @@ func NewDNSReconciler(clients Clients, store TombstoneStore, writer func() (us, 
 // record stays. In Observe mode Run only reads and returns the actions it
 // would take as held.
 //
-// A name seen wanted starts a new grace when it is next unwanted, also when
-// the drop of its tombstone could not be saved yet; that is remembered in
-// memory, so a restart of the process between such a failed save and the
-// next run loses it. A forward clock step larger than the grace but within
+// A name seen wanted, by the plan of a run that did not find another writer
+// stored or by the inventory right before a delete, starts a new grace when
+// it is next unwanted, also when the drop of its tombstone could not be saved
+// yet; that is remembered in memory, so a restart of the process between
+// such a failed save and the next run loses it. A forward clock step larger than the grace but within
 // MaxGap makes a tombstone due at once.
 func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResult {
 	r.mu.Lock()
@@ -156,11 +157,15 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 		marker: planner.DNSMarker(r.s.InstallID),
 		adopt:  lowerKeys(in.Adopt),
 	}
-	if !run.start() {
-		return run.res
+	started := run.start()
+	if run.res.Verdict != WriterStale {
+		// What the plan of another writer wants says nothing about ours.
+		for _, rp := range in.Records {
+			r.wantedSinceSave[tombstoneKey(rp.ZoneID, rp.Name)] = true
+		}
 	}
-	for _, rp := range in.Records {
-		r.wantedSinceSave[tombstoneKey(rp.ZoneID, rp.Name)] = true
+	if !started {
+		return run.res
 	}
 	if mode == Enforce && !run.loadTombstones(ctx) {
 		return run.res

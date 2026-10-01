@@ -136,7 +136,10 @@ func (run *dnsRun) retire(ctx context.Context, z *dnsZone, name string) {
 		}
 		return
 	case !unwanted:
-		run.stones.drop(key) // published again
+		// Published again: like a name the plan wants, it is remembered
+		// until the drop is saved.
+		run.stones.drop(key)
+		run.r.wantedSinceSave[key] = true
 		return
 	}
 	done := true
