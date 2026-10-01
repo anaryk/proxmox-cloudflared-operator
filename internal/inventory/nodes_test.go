@@ -140,6 +140,7 @@ func TestRefreshOfflineNodeServesCachedGuests(t *testing.T) {
 	require.Equal(t, 1, src.count("config "+refApp.String()))
 	require.Equal(t, 1, src.count("iface "+refApp.String()))
 	require.Equal(t, guestOf(t, first, refDB), guestOf(t, snap, refDB), "an unknown status keeps the last known state")
+	require.False(t, guestOf(t, snap, refDB).StatusUnknown)
 	require.Equal(t, guestOf(t, first, refApp), guestOf(t, snap, refApp))
 
 	pve2 := snap.Nodes[1]
@@ -245,6 +246,7 @@ func TestRefreshClusterNodesFailureTreatsEveryNodeAsOnline(t *testing.T) {
 	require.Equal(t, 1, src.count("config "+ref.String()), "the config call decides")
 	require.Len(t, snap.Guests, 5)
 	require.False(t, guestOf(t, snap, ref).Running, "never seen running")
+	require.True(t, guestOf(t, snap, ref).StatusUnknown)
 	require.Equal(t, first.Nodes, snap.Nodes)
 	require.Equal(t, 1, src.count("network pve1"))
 }

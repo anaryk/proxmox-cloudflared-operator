@@ -135,8 +135,8 @@ type Inventory struct {
 type cacheEntry struct {
 	cfg      pve.GuestConfig
 	cfgAt    time.Time
-	running  bool           // last running state that could be read
-	identity string         // of the guest that running describes
+	running  bool           // last running state read from Proxmox
+	identity string         // of the guest running was read for; empty when none was
 	reported *reportedEntry // nil when nothing is cached
 }
 
@@ -358,7 +358,8 @@ type configResult struct {
 // cached ones. Watched guests are always due; the others on first sight and
 // then once per FullSweepEvery. The current resource row always wins over what
 // the cached config says about name, node, status and tags, except that a
-// status other than running or stopped keeps the last known state.
+// status other than running or stopped keeps the last known state, or marks
+// the guest StatusUnknown when there is none.
 func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resource, offline map[string]bool) []tracked {
 	var due []int
 	for j, row := range rows {

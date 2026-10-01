@@ -79,6 +79,10 @@ type Guest struct {
 	Identity    string         `json:"identity"`
 	NICs        []NIC          `json:"nics,omitempty"`
 	Reported    []ReportedAddr `json:"reported,omitempty"`
+	// StatusUnknown is set when Proxmox reports neither running nor stopped
+	// and no state was ever read for this guest. Running is then false, but
+	// only because nothing is known.
+	StatusUnknown bool `json:"statusUnknown,omitempty"`
 }
 
 // HasTag reports whether the guest carries tag. Tags are compared exactly, as

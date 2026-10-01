@@ -148,3 +148,16 @@ func TestGuestJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 	require.Equal(t, g, got)
 }
+
+func TestGuestStatusUnknownJSON(t *testing.T) {
+	data, err := json.Marshal(Guest{Ref: GuestRef{Kind: KindQEMU, VMID: 101}, StatusUnknown: true})
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"statusUnknown":true`)
+	var got Guest
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.True(t, got.StatusUnknown)
+
+	data, err = json.Marshal(Guest{Ref: GuestRef{Kind: KindQEMU, VMID: 101}})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "statusUnknown")
+}

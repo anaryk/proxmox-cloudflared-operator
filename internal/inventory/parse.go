@@ -21,8 +21,9 @@ const maxVLAN = 4094
 
 // BuildGuest combines a resource row and its config into a guest. Reported
 // addresses are filled in by the caller. Running is true only for the status
-// running; the refresh keeps the last known state instead for a status that
-// is neither running nor stopped.
+// running; for a status that is neither running nor stopped the refresh
+// keeps the last known state instead, or sets StatusUnknown when there is
+// none.
 //
 // The NIC list is what the identity check trusts, so anything that does not
 // parse cleanly is dropped rather than interpreted: a malformed NIC is
