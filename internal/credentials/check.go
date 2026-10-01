@@ -83,8 +83,9 @@ type Report struct {
 
 	// Leftovers are the names of probe records that were already in the
 	// zones before this run, sorted: records whose comment is exactly the
-	// one a probe carries. They come from an earlier run that could not
-	// remove its probe. The checker leaves them alone.
+	// one a probe carries. Each is an object left by an earlier run of this
+	// checker that could not remove it, or one of a run that is still going
+	// on elsewhere. The checker leaves them alone.
 	Leftovers []string
 
 	CheckedAt time.Time
@@ -108,9 +109,13 @@ type Checker struct {
 	rand      func() string
 }
 
-// NewChecker returns a checker for one install. rand returns lower-case
-// letters and digits that make the names of probe objects unique; it is called
-// once per deep run. now and rand must themselves be safe for concurrent use.
+// NewChecker returns a checker for one install. rand makes the names of the
+// probe objects of a deep run unique and is called once per deep run: it must
+// return a fresh, unpredictable suffix of lower-case letters and digits on
+// every call, unique also across restarts of the process, for example 16 hex
+// characters from crypto/rand. A suffix that repeats would let one run take
+// the probe of another for its own. now and rand must themselves be safe for
+// concurrent use.
 func NewChecker(installID string, now func() time.Time, rand func() string) *Checker {
 	return &Checker{installID: installID, now: now, rand: rand}
 }
@@ -121,6 +126,11 @@ func NewChecker(installID string, now func() time.Time, rand func() string) *Che
 // changes anything and the write capabilities are absent from the report. A
 // probe is attempted only where the matching read probe passed. Run deletes
 // only what it created, and a probe it cannot delete is named in the check.
+//
+// A deep run creates and deletes objects at Cloudflare without asking who the
+// writer of the install is, so it may run in a process that is not the
+// writer. It touches only objects it created itself, each under a name unique
+// to the run, never a record or tunnel that serves a hostname.
 //
 // A deep run makes roughly three calls per zone and three per account, one
 // after the other, besides the three that open it. It is meant for adding a
