@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
 func TestDNSMassDeleteGuard(t *testing.T) {
@@ -239,7 +241,6 @@ func TestDNSMassDeleteGuardCountsTombstonesOfOtherWriters(t *testing.T) {
 	}{
 		{"another generation", func(t *Tombstone) { t.Generation = ours.Generation - 1 }},
 		{"another nonce", func(t *Tombstone) { t.Nonce = "n9" }},
-		{"confirmed", func(t *Tombstone) { t.Confirmed = true }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,6 +264,54 @@ func TestDNSMassDeleteGuardCountsTombstonesOfOtherWriters(t *testing.T) {
 			requireHeld(t, res.Actions, "mass delete guard: 7 of 7 records are being removed (5 in zones that could not be listed); confirm to proceed")
 		})
 	}
+}
+
+func TestDNSMassDeleteGuardConfirmedTombstonesOfUnlistedZones(t *testing.T) {
+	f := newDNSFake()
+	store := &memStore{m: map[string]Tombstone{}}
+	for i := range 6 {
+		name := fmt.Sprintf("h%d.example.com", i)
+		f.SeedRecord(zone1.ID, ourCNAME(name, testTunnelID))
+		store.m[stoneKey(zone1.ID, name)] = overdue
+	}
+	confirmed := overdue
+	confirmed.Confirmed = true
+	for i := range 14 {
+		store.m[stoneKey(zone2.ID, fmt.Sprintf("b%d.shop.cz", i))] = confirmed
+	}
+	s, _ := unlistable(f)
+
+	res := newDNS(s, store, t0).Run(context.Background(), dnsIn(), Enforce)
+
+	require.Len(t, callsTo(f, "DeleteRecord"), 6, "6 pending of 20 owned: the confirmed ones count as owned only")
+	for _, p := range res.Problems {
+		require.NotContains(t, p, "mass delete guard")
+	}
+}
+
+func TestDNSMassDeleteGuardNamesWhatIsPendingInUnlistedZones(t *testing.T) {
+	f := newDNSFake()
+	store := &memStore{m: map[string]Tombstone{}}
+	for i := range 2 {
+		name := fmt.Sprintf("h%d.example.com", i)
+		f.SeedRecord(zone1.ID, ourCNAME(name, testTunnelID))
+		store.m[stoneKey(zone1.ID, name)] = overdue
+	}
+	confirmed := overdue
+	confirmed.Confirmed = true
+	for i := range 9 {
+		stone := overdue
+		if i < 3 {
+			stone = confirmed
+		}
+		store.m[stoneKey(zone2.ID, fmt.Sprintf("b%d.shop.cz", i))] = stone
+	}
+	s, _ := unlistable(f)
+
+	res := newDNS(s, store, t0).Run(context.Background(), dnsIn(), Enforce)
+
+	require.Empty(t, callsTo(f, "DeleteRecord"))
+	requireHeld(t, res.Actions, "mass delete guard: 8 of 11 records are being removed (6 in zones that could not be listed); confirm to proceed")
 }
 
 // TestDNSConfirmationCoversPendingRemovals unpublishes six names of ten
@@ -460,4 +509,211 @@ func TestDNSSettingsApply(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDNSRememberedNamesDropOnlyOurTombstones has a process that is not the
+// writer run with a plan and fail to start, then take over two hours later
+// while a zone cannot be listed: what it remembers must not clear the
+// tombstones the writer before it left there.
+func TestDNSRememberedNamesDropOnlyOurTombstones(t *testing.T) {
+	for _, earlier := range []bool{false, true} {
+		t.Run(fmt.Sprintf("earlier run %v", earlier), func(t *testing.T) {
+			ctx := context.Background()
+			f := newDNSFake()
+			s, _ := unlistable(f)
+			store := &memStore{m: map[string]Tombstone{}}
+			var planned []planner.RecordPlan
+			var keys []string
+			for i := range 5 {
+				for _, z := range []ZoneRef{zone1, zone2} {
+					name := fmt.Sprintf("h%d.%s", i, z.Name)
+					f.SeedRecord(z.ID, ourCNAME(name, testTunnelID))
+					planned = append(planned, wantRecord(z, name))
+					keys = append(keys, stoneKey(z.ID, name))
+				}
+			}
+			w := &writerBox{us: newer, stored: newer}
+			c := &clock{t0}
+			r := NewDNSReconciler(Clients{"cred1": s}, store, w.get, DNSSettings{InstallID: testInstall}, c.now, zerolog.Nop())
+			if earlier {
+				w.next = []answer{{err: errors.New("not the writer")}}
+				in := dnsIn()
+				in.Records = planned
+				r.Run(ctx, in, Enforce)
+				require.Empty(t, f.Calls())
+			}
+
+			// Two hours later the writer before, generation 5, holds a
+			// tombstone for every name.
+			takeover := t0.Add(2 * time.Hour)
+			for _, key := range keys {
+				store.m[key] = watched(takeover.Add(-time.Hour), takeover.Add(-time.Minute))
+			}
+			c.t = takeover
+			res := r.Run(ctx, dnsIn(), Enforce)
+			require.Contains(t, res.Problems,
+				"mass delete guard: 10 of 10 records are being removed (5 in zones that could not be listed); confirm to proceed")
+
+			c.t = takeover.Add(61 * time.Second)
+			r.Run(ctx, dnsIn(), Enforce)
+			require.Empty(t, callsTo(f, "DeleteRecord"))
+		})
+	}
+}
+
+// TestDNSConfirmationCoversZonesThatCannotBeListed keeps a zone with six
+// tombstones unreadable while names elsewhere are unpublished: one
+// confirmation dismisses them, so later removals pass, and the zone's own
+// removals go when it lists again soon enough.
+func TestDNSConfirmationCoversZonesThatCannotBeListed(t *testing.T) {
+	cases := []struct {
+		name    string
+		relist  time.Duration
+		deleted int
+	}{
+		{"zone lists again within MaxGap", 3 * time.Minute, 6},
+		{"zone lists again after a longer break", 15 * time.Minute, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newDNSFake()
+			s, failing := unlistable(f)
+			store := &memStore{m: map[string]Tombstone{}}
+			var broken []string
+			for i := range 6 {
+				name := fmt.Sprintf("b%d.shop.cz", i)
+				f.SeedRecord(zone2.ID, ourCNAME(name, testTunnelID))
+				broken = append(broken, stoneKey(zone2.ID, name))
+				store.m[broken[i]] = overdue
+			}
+			names := make([]string, 10)
+			for i := range names {
+				names[i] = fmt.Sprintf("h%d.example.com", i)
+				f.SeedRecord(zone1.ID, ourCNAME(names[i], testTunnelID))
+			}
+			wantAllBut := func(n int) DNSInput { return dnsIn(names[n:]...) }
+			c := &clock{t0}
+			r := NewDNSReconciler(Clients{"cred1": s}, store, writerOf(ours, ours),
+				DNSSettings{InstallID: testInstall, MaxGap: 10 * time.Minute}, c.now, zerolog.Nop())
+
+			res := r.Run(ctx, wantAllBut(1), Enforce)
+			require.Contains(t, res.Problems,
+				"mass delete guard: 7 of 16 records are being removed (6 in zones that could not be listed); confirm to proceed")
+			c.t = t0.Add(61 * time.Second)
+			r.Run(ctx, wantAllBut(1), Enforce)
+			require.Empty(t, callsTo(f, "DeleteRecord"), "the first later removal is held")
+
+			c.t = t0.Add(90 * time.Second)
+			in := wantAllBut(1)
+			in.ConfirmDeletes = true
+			r.Run(ctx, in, Enforce)
+			require.Len(t, callsTo(f, "DeleteRecord"), 1)
+			for _, key := range broken {
+				require.True(t, store.m[key].Confirmed, key)
+			}
+
+			c.t = t0.Add(100 * time.Second)
+			r.Run(ctx, wantAllBut(2), Enforce)
+			c.t = t0.Add(161 * time.Second)
+			res = r.Run(ctx, wantAllBut(2), Enforce)
+			require.Len(t, callsTo(f, "DeleteRecord"), 2, "the next removal needs no second confirmation")
+			for _, p := range res.Problems {
+				require.NotContains(t, p, "mass delete guard")
+			}
+
+			*failing = false
+			c.t = t0.Add(tc.relist)
+			r.Run(ctx, wantAllBut(2), Enforce)
+			require.Len(t, callsTo(f, "DeleteRecord"), 2+tc.deleted)
+			if tc.deleted == 0 {
+				for _, key := range broken {
+					require.False(t, store.m[key].Confirmed, "%s: a new grace is not confirmed", key)
+				}
+			}
+		})
+	}
+}
+
+func TestDNSMassDeleteGuardLineOnlyWhenAConfirmationHelps(t *testing.T) {
+	cases := []struct {
+		name    string
+		change  func(in *DNSInput)
+		held    string
+		deleted int
+	}{
+		{"inventory incomplete", func(in *DNSInput) { in.InventoryOK = false }, "inventory incomplete", 0},
+		{"confirming run", func(in *DNSInput) { in.ConfirmDeletes = true }, "", 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDNSFake()
+			store := &memStore{m: map[string]Tombstone{}}
+			for i := range 10 {
+				name := fmt.Sprintf("h%d.example.com", i)
+				f.SeedRecord(zone1.ID, ourCNAME(name, testTunnelID))
+				store.m[stoneKey(zone1.ID, name)] = overdue
+			}
+			for i := range 6 {
+				store.m[stoneKey(zone2.ID, fmt.Sprintf("b%d.shop.cz", i))] = overdue
+			}
+			s, _ := unlistable(f)
+			in := dnsIn()
+			tc.change(&in)
+
+			res := newDNS(s, store, t0).Run(context.Background(), in, Enforce)
+
+			for _, p := range res.Problems {
+				require.NotContains(t, p, "mass delete guard")
+			}
+			require.Len(t, callsTo(f, "DeleteRecord"), tc.deleted)
+			for _, a := range res.Actions {
+				require.Equal(t, tc.held, a.Held)
+			}
+		})
+	}
+}
+
+func TestDNSConfirmDeletesWithIncompleteInventoryConfirmsNothing(t *testing.T) {
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, ourCNAME("gone.example.com", testTunnelID))
+	store := &memStore{m: map[string]Tombstone{
+		stoneKey(zone1.ID, "gone.example.com"): overdue,
+		stoneKey(zone2.ID, "b.shop.cz"):        overdue,
+	}}
+	s, _ := unlistable(f)
+	in := dnsIn()
+	in.ConfirmDeletes = true
+	in.InventoryOK = false
+
+	newDNS(s, store, t0).Run(context.Background(), in, Enforce)
+
+	for key, stone := range store.m {
+		require.False(t, stone.Confirmed, key)
+	}
+}
+
+func TestDNSMassDeleteGuardCountsRecords(t *testing.T) {
+	f := newDNSFake()
+	store := &memStore{m: map[string]Tombstone{}}
+	in := dnsIn()
+	for i := range 3 {
+		name := fmt.Sprintf("a%d.example.com", i)
+		for _, ip := range []string{"192.0.2.10", "192.0.2.11"} {
+			f.SeedRecord(zone1.ID, cfapi.Record{Type: "A", Name: name, Content: ip, Comment: testMarker})
+		}
+		store.m[stoneKey(zone1.ID, name)] = overdue
+	}
+	for i := range 4 {
+		name := fmt.Sprintf("h%d.example.com", i)
+		f.SeedRecord(zone1.ID, ourCNAME(name, testTunnelID))
+		in.Records = append(in.Records, wantRecord(zone1, name))
+	}
+
+	res := newDNS(f, store, t0).Run(context.Background(), in, Enforce)
+
+	held := "mass delete guard: 6 of 10 records are being removed; confirm to proceed"
+	require.Equal(t, []string{held}, res.Problems, "three names, six records")
+	require.Empty(t, callsTo(f, "DeleteRecord"))
+	requireHeld(t, res.Actions, held)
 }

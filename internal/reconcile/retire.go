@@ -18,12 +18,7 @@ const tombstoneAge = 30 * 24 * time.Hour
 // tombstones up to date.
 func (run *dnsRun) decide(zones []*dnsZone) {
 	if run.stones != nil {
-		// A name seen wanted, in this run or in one whose tombstones were not
-		// saved, loses its tombstone whatever else the run knows: dropping
-		// one only makes a later delete wait longer.
-		for key := range run.r.wantedSinceSave {
-			run.stones.drop(key)
-		}
+		run.forgetWanted()
 	}
 	for _, z := range zones {
 		if !z.listed {
@@ -41,8 +36,45 @@ func (run *dnsRun) decide(zones []*dnsZone) {
 	}
 	if run.keepsTombstones() {
 		run.expire(zones)
+		if run.in.ConfirmDeletes {
+			run.confirmUnlisted(zones)
+		}
 	}
 	run.decideGuard(zones)
+}
+
+// forgetWanted drops the tombstones of names seen wanted, whatever else the
+// run knows: dropping one only makes a later delete wait longer. A name this
+// run plans drops any tombstone. One remembered from an earlier run, which may
+// have come from a process that was not the writer, drops only a tombstone of
+// this writer: the tombstones of another writer restart wherever they are
+// seen, and where they are not they keep the mass delete guard counting.
+func (run *dnsRun) forgetWanted() {
+	for _, rp := range run.in.Records {
+		run.stones.drop(tombstoneKey(rp.ZoneID, rp.Name))
+	}
+	for key := range run.r.wantedSinceSave {
+		if t, ok := run.stones.m[key]; ok && run.byUs(t) {
+			run.stones.drop(key)
+		}
+	}
+}
+
+// confirmUnlisted confirms the removals of zones the run could not list: as
+// long as such a zone stays unreadable nothing else ends them, and the guard
+// would ask again for every later removal elsewhere.
+func (run *dnsRun) confirmUnlisted(zones []*dnsZone) {
+	for _, z := range zones {
+		if z.listed {
+			continue
+		}
+		for key, t := range run.stones.m {
+			if strings.HasPrefix(key, z.ID+"/") && !t.Confirmed {
+				t.Confirmed = true
+				run.stones.set(key, t)
+			}
+		}
+	}
 }
 
 // forgetGone drops the tombstones of a listed zone whose name holds no record

@@ -70,10 +70,11 @@ type DNSInput struct {
 	InventoryOK bool            // false: no deletes, no tombstone started or confirmed
 	Adopt       map[string]bool // record names the admin agreed to take over
 
-	// ConfirmDeletes confirms every removal pending in a listed zone in this
-	// run, in its grace or due: each then passes the mass delete guard once
-	// its grace is over, also in later runs. A removal that becomes pending
-	// later, or whose grace starts again, is not covered.
+	// ConfirmDeletes, in an enforcing run with a complete inventory, confirms
+	// every removal pending in this run, in its grace or due, and every
+	// tombstone of a zone that could not be listed: each then passes the mass
+	// delete guard, also in later runs. A removal that becomes pending later,
+	// or whose grace starts again, is not covered.
 	ConfirmDeletes bool
 
 	// StillUnwanted asks the inventory once more, right before a delete,
