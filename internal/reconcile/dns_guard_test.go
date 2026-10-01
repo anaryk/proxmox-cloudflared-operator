@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 )
 
 func TestDNSMassDeleteGuard(t *testing.T) {
@@ -96,20 +97,13 @@ func TestDNSMassDeleteGuardCountsUnlistedZones(t *testing.T) {
 			store.m[stoneKey(z.ID, name)] = overdue
 		}
 	}
-	listing := true
-	s := &dnsSpy{API: f, lookup: func(zoneID string, _ cfapi.RecordFilter) error {
-		if zoneID == zone2.ID && !listing {
-			return forbidden
-		}
-		return nil
-	}}
+	s, failing := unlistable(f)
 
-	listing = false
 	res := newDNSWith(s, store, writerOf(ours, ours), t0).Run(ctx, dnsIn(), Enforce)
 	require.Empty(t, callsTo(f, "DeleteRecord"), "the zone that cannot be listed still counts")
 	requireHeld(t, res.Actions, "mass delete guard: 10 of 10 records")
 
-	listing = true
+	*failing = false
 	res = newDNSWith(s, store, writerOf(ours, ours), t0.Add(30*time.Second)).Run(ctx, dnsIn(), Enforce)
 	require.Empty(t, callsTo(f, "DeleteRecord"))
 	requireHeld(t, res.Actions, "mass delete guard: 10 of 10 records")
@@ -120,13 +114,73 @@ func TestDNSMassDeleteGuardCountsUnlistedZones(t *testing.T) {
 	require.Len(t, callsTo(f, "DeleteRecord"), 10)
 }
 
-func TestDNSMassDeleteGuardIgnoresOldTombstonesOfUnlistedZones(t *testing.T) {
+// unlistable returns a client that cannot list zone2 while the returned flag
+// is set.
+func unlistable(f *cffake.Fake) (*dnsSpy, *bool) {
+	failing := true
+	return &dnsSpy{API: f, lookup: func(zoneID string, _ cfapi.RecordFilter) error {
+		if zoneID == zone2.ID && failing {
+			return forbidden
+		}
+		return nil
+	}}, &failing
+}
+
+func TestDNSMassDeleteGuardUnlistedZoneOverTime(t *testing.T) {
+	ctx := context.Background()
+	f := newDNSFake()
+	store := &memStore{m: map[string]Tombstone{}}
+	for i := range 5 {
+		for _, z := range []ZoneRef{zone1, zone2} {
+			name := fmt.Sprintf("h%d.%s", i, z.Name)
+			f.SeedRecord(z.ID, ourCNAME(name, testTunnelID))
+			store.m[stoneKey(z.ID, name)] = overdue
+		}
+	}
+	s, _ := unlistable(f)
+	c := &clock{t0}
+	r := newDNSAt(s, store, writerOf(ours, ours), c)
+
+	// Once a minute for ten minutes: the tombstones of the zone that cannot be
+	// listed are confirmed by no run and grow far older than MaxGap.
+	for at := time.Duration(0); at <= 10*time.Minute; at += time.Minute {
+		c.t = t0.Add(at)
+		res := r.Run(ctx, dnsIn(), Enforce)
+		require.Empty(t, callsTo(f, "DeleteRecord"), "%s on", at)
+		requireHeld(t, res.Actions, "mass delete guard: 10 of 10 records")
+	}
+}
+
+func TestDNSMassDeleteGuardShareWithUnlistedZone(t *testing.T) {
+	f := newDNSFake()
+	store := &memStore{m: map[string]Tombstone{}}
+	in := dnsIn()
+	for i := range 20 {
+		name := fmt.Sprintf("h%02d.example.com", i)
+		f.SeedRecord(zone1.ID, ourCNAME(name, testTunnelID))
+		if i == 0 {
+			store.m[stoneKey(zone1.ID, name)] = overdue
+			continue
+		}
+		in.Records = append(in.Records, wantRecord(zone1, name))
+	}
+	for i := range 5 {
+		store.m[stoneKey(zone2.ID, fmt.Sprintf("h%d.shop.cz", i))] = watched(t0.Add(-48*time.Hour), t0.Add(-24*time.Hour))
+	}
+	s, _ := unlistable(f)
+
+	newDNS(s, store, t0).Run(context.Background(), in, Enforce)
+
+	require.Len(t, callsTo(f, "DeleteRecord"), 1, "6 due of 25 is not more than the share")
+}
+
+func TestDNSMassDeleteGuardIgnoresTombstonesOfOtherWriters(t *testing.T) {
 	cases := []struct {
-		name  string
-		stone Tombstone
+		name   string
+		change func(t *Tombstone)
 	}{
-		{"another generation", Tombstone{Since: overdue.Since, Seen: overdue.Seen, Generation: ours.Generation - 1}},
-		{"not seen lately", watched(t0.Add(-time.Hour), t0.Add(-10*time.Minute))},
+		{"another generation", func(t *Tombstone) { t.Generation = ours.Generation - 1 }},
+		{"another nonce", func(t *Tombstone) { t.Nonce = "n9" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,19 +191,16 @@ func TestDNSMassDeleteGuardIgnoresOldTombstonesOfUnlistedZones(t *testing.T) {
 				f.SeedRecord(zone1.ID, ourCNAME(name, testTunnelID))
 				store.m[stoneKey(zone1.ID, name)] = overdue
 			}
+			other := overdue
+			tc.change(&other)
 			for i := range 5 {
-				store.m[stoneKey(zone2.ID, fmt.Sprintf("h%d.shop.cz", i))] = tc.stone
+				store.m[stoneKey(zone2.ID, fmt.Sprintf("h%d.shop.cz", i))] = other
 			}
-			s := &dnsSpy{API: f, lookup: func(zoneID string, _ cfapi.RecordFilter) error {
-				if zoneID == zone2.ID {
-					return forbidden
-				}
-				return nil
-			}}
+			s, _ := unlistable(f)
 
 			newDNS(s, store, t0).Run(context.Background(), dnsIn(), Enforce)
 
-			require.Len(t, callsTo(f, "DeleteRecord"), 2, "a tombstone this writer did not confirm lately does not count")
+			require.Len(t, callsTo(f, "DeleteRecord"), 2, "a tombstone of another writer does not count")
 		})
 	}
 }

@@ -3,7 +3,6 @@ package reconcile
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -19,10 +18,11 @@ const tombstoneAge = 30 * 24 * time.Hour
 // tombstones up to date.
 func (run *dnsRun) decide(zones []*dnsZone) {
 	if run.stones != nil {
-		// A wanted name loses its tombstone whatever else the run knows:
-		// dropping one only makes a later delete wait longer.
-		for _, rp := range run.in.Records {
-			run.stones.drop(tombstoneKey(rp.ZoneID, rp.Name))
+		// A name seen wanted, in this run or in one whose tombstones were not
+		// saved, loses its tombstone whatever else the run knows: dropping
+		// one only makes a later delete wait longer.
+		for key := range run.r.wantedSinceSave {
+			run.stones.drop(key)
 		}
 	}
 	for _, z := range zones {
@@ -96,10 +96,12 @@ func (run *dnsRun) retire(ctx context.Context, z *dnsZone, name string) {
 	case held != "":
 	case run.noDeletes != "":
 		held = run.noDeletes
-	case run.stopped:
-		held = heldWriter
+	case run.stopped != "":
+		held = run.stopped
 	case run.in.StillUnwanted == nil:
 		held = heldUnconfirmed
+	case run.askFailed:
+		held = heldAskFailed
 	}
 	if held != "" {
 		for _, rec := range records {
@@ -109,10 +111,16 @@ func (run *dnsRun) retire(ctx context.Context, z *dnsZone, name string) {
 	}
 
 	key := tombstoneKey(z.ID, name)
-	doomed, err := run.stillOurs(ctx, z, name, records)
-	if err != nil {
-		run.problem(fmt.Sprintf("%s: reading the records again before deleting them: %v", z.about(name), err))
-		return
+	var doomed []cfapi.Record
+	for _, rec := range records {
+		fresh, found, ours, err := run.recheck(ctx, z, rec)
+		if err != nil {
+			run.problem(fmt.Sprintf("%s: reading the record again before deleting it: %v", z.about(rec.Name), err))
+			return
+		}
+		if found && ours {
+			doomed = append(doomed, fresh)
+		}
 	}
 	if len(doomed) == 0 {
 		run.stones.drop(key) // gone, or no longer ours
@@ -122,6 +130,7 @@ func (run *dnsRun) retire(ctx context.Context, z *dnsZone, name string) {
 	switch {
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: asking the inventory before deleting: %v", z.about(name), err))
+		run.askFailed = true
 		for _, rec := range doomed {
 			z.add(deleteAction(z, rec), heldAskFailed)
 		}
@@ -139,23 +148,6 @@ func (run *dnsRun) retire(ctx context.Context, z *dnsZone, name string) {
 	if done {
 		run.stones.drop(key)
 	}
-}
-
-// stillOurs reads the records at name again and returns those of list that
-// it still shows with their name, their type and the marker of this install.
-func (run *dnsRun) stillOurs(ctx context.Context, z *dnsZone, name string, list []cfapi.Record) ([]cfapi.Record, error) {
-	fresh, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: name})
-	if err != nil {
-		return nil, err
-	}
-	var out []cfapi.Record
-	for _, rec := range list {
-		i := slices.IndexFunc(fresh, func(f cfapi.Record) bool { return f.ID == rec.ID })
-		if i >= 0 && strings.EqualFold(fresh[i].Name, rec.Name) && isType(fresh[i], rec.Type) && run.owns(fresh[i]) {
-			out = append(out, fresh[i])
-		}
-	}
-	return out, nil
 }
 
 func deleteAction(z *dnsZone, rec cfapi.Record) Action {

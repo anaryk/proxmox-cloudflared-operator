@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"net/http"
 	"testing"
@@ -33,14 +34,15 @@ var (
 	newer = writerAt(6, "n6")
 
 	// overdue is a tombstone of ours whose grace ended long before t0,
-	// confirmed by a run 30 s before t0.
-	overdue = watched(t0.Add(-time.Hour), t0.Add(-30*time.Second))
+	// confirmed by a run a minute before t0, long enough ago that a run at t0
+	// confirms it again.
+	overdue = watched(t0.Add(-time.Hour), t0.Add(-time.Minute))
 )
 
-// watched is a tombstone of our generation, first seen unwanted at since and
-// last confirmed at seen.
+// watched is a tombstone of our writer, first seen unwanted at since and last
+// confirmed at seen.
 func watched(since, seen time.Time) Tombstone {
-	return Tombstone{Since: since, Seen: seen, Generation: ours.Generation}
+	return Tombstone{Since: since, Seen: seen, Generation: ours.Generation, Nonce: ours.Nonce}
 }
 
 // memStore keeps tombstones in memory and counts how it is used. saveErrs
@@ -82,16 +84,21 @@ func sinceOf(m map[string]Tombstone) map[string]time.Time {
 // dnsSpy wraps an API. lookup runs before each listing and an error it
 // returns fails the listing; edit may change what a listing answers;
 // failCreate may refuse a create; deleteErr answers every delete without
-// passing it on; afterWrite runs after each write that went through.
+// passing it on; lostAnswers passes updates and deletes on but answers them
+// with an error, as when the answer is lost; afterWrite runs after each write
+// that went through.
 type dnsSpy struct {
 	cfapi.API
-	lookup     func(zoneID string, f cfapi.RecordFilter) error
-	edit       func(f cfapi.RecordFilter, got []cfapi.Record) []cfapi.Record
-	failCreate func(r cfapi.Record) error
-	deleteErr  error
-	afterWrite func(method string)
-	deletes    int
+	lookup      func(zoneID string, f cfapi.RecordFilter) error
+	edit        func(f cfapi.RecordFilter, got []cfapi.Record) []cfapi.Record
+	failCreate  func(r cfapi.Record) error
+	deleteErr   error
+	lostAnswers bool
+	afterWrite  func(method string)
+	deletes     int
 }
+
+var errLostAnswer = errors.New("connection reset by peer")
 
 func (s *dnsSpy) Records(ctx context.Context, zoneID string, f cfapi.RecordFilter) ([]cfapi.Record, error) {
 	if s.lookup != nil {
@@ -124,6 +131,9 @@ func (s *dnsSpy) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record
 	if err == nil {
 		s.wrote("UpdateRecord")
 	}
+	if s.lostAnswers {
+		return cfapi.Record{}, errLostAnswer
+	}
 	return got, err
 }
 
@@ -136,6 +146,9 @@ func (s *dnsSpy) DeleteRecord(ctx context.Context, zoneID, recordID string) erro
 	if err == nil {
 		s.wrote("DeleteRecord")
 	}
+	if s.lostAnswers {
+		return errLostAnswer
+	}
 	return err
 }
 
@@ -145,10 +158,21 @@ func (s *dnsSpy) wrote(method string) {
 	}
 }
 
-// writerBox is a writer callback whose answer a test may change during a run.
-type writerBox struct{ us, stored planner.Writer }
+// writerBox is a writer callback whose answer a test may change during a
+// run. It gives the answers in next in turn, then us and stored.
+type writerBox struct {
+	us, stored planner.Writer
+	next       []answer
+}
 
-func (w *writerBox) get() (planner.Writer, planner.Writer, error) { return w.us, w.stored, nil }
+func (w *writerBox) get() (planner.Writer, planner.Writer, error) {
+	if len(w.next) > 0 {
+		a := w.next[0]
+		w.next = w.next[1:]
+		return a.us, a.stored, a.err
+	}
+	return w.us, w.stored, nil
+}
 
 // newDNSFake returns a fake with account acct1 and its zones example.com
 // (zone1) and shop.cz (zone2).
@@ -165,6 +189,12 @@ func newDNS(api cfapi.API, store TombstoneStore, now time.Time) *DNSReconciler {
 
 func newDNSWith(api cfapi.API, store TombstoneStore, writer func() (planner.Writer, planner.Writer, error), now time.Time) *DNSReconciler {
 	return NewDNSReconciler(Clients{"cred1": api}, store, writer, DNSSettings{InstallID: testInstall}, (&clock{now}).now, zerolog.Nop())
+}
+
+// newDNSAt returns a reconciler whose clock a test moves between runs, so
+// that one instance, with what it remembers, serves several runs.
+func newDNSAt(api cfapi.API, store TombstoneStore, writer writerFunc, c *clock) *DNSReconciler {
+	return NewDNSReconciler(Clients{"cred1": api}, store, writer, DNSSettings{InstallID: testInstall}, c.now, zerolog.Nop())
 }
 
 func wantRecord(z ZoneRef, name string) planner.RecordPlan {

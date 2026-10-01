@@ -115,10 +115,13 @@ func TestDNSWriterChangesBeforeWrite(t *testing.T) {
 		name    string
 		later   answer
 		verdict WriterVerdict
+		held    string
 	}{
-		{"taken over", answer{us: ours, stored: newer}, WriterStale},
-		{"identity changed", answer{us: writerAt(5, "n9"), stored: writerAt(5, "n9")}, WriterStale},
-		{"cannot be read", answer{err: errors.New("lease lost")}, WriterProceed},
+		{"taken over", answer{us: ours, stored: newer}, WriterStale, "writer changed"},
+		{"stored generation moved on", answer{us: ours, stored: writerAt(6, "n5")}, WriterStale, "writer changed"},
+		{"stored nonce changed", answer{us: ours, stored: writerAt(5, "n6")}, WriterStale, "writer changed"},
+		{"identity changed", answer{us: writerAt(5, "n9"), stored: writerAt(5, "n9")}, WriterStale, "writer changed"},
+		{"cannot be read", answer{err: errors.New("lease lost")}, WriterProceed, "writer unreadable"},
 	}
 	for _, sc := range scenarios {
 		for _, ch := range changes {
@@ -141,7 +144,7 @@ func TestDNSWriterChangesBeforeWrite(t *testing.T) {
 				}
 				stopped := 0
 				for _, a := range res.Actions {
-					if a.Held == "writer changed" {
+					if a.Held == ch.held {
 						stopped++
 					}
 				}
@@ -190,6 +193,8 @@ func TestDNSWriterChangesBetweenAdoptionHalves(t *testing.T) {
 		dnsAction(CreateRecord, "app.example.com", "writer changed", true),
 	}, withoutDetail(res.Actions))
 	last := res.Problems[len(res.Problems)-1]
-	require.Contains(t, last, "adoption failed")
+	require.Contains(t, last, "app.example.com in zone example.com: the record was removed for the adoption")
+	require.Contains(t, last, "the current writer creates the CNAME on its next run")
 	require.Contains(t, last, "A app.example.com 192.0.2.10")
+	require.NotContains(t, last, "by hand")
 }

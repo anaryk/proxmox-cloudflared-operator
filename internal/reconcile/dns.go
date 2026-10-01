@@ -25,6 +25,7 @@ const (
 	heldTunnelUnknown = "tunnel state unknown"
 	heldInventory     = "inventory incomplete"
 	heldWriter        = "writer changed"
+	heldUnreadable    = "writer unreadable"
 	heldUnsaved       = "tombstones not saved"
 	heldUnconfirmed   = "no inventory confirmation"
 	heldAskFailed     = "inventory confirmation failed"
@@ -98,6 +99,10 @@ type DNSReconciler struct {
 	log     zerolog.Logger
 
 	mu sync.Mutex
+	// wantedSinceSave holds the tombstone keys of the names runs saw wanted
+	// since the tombstones were last saved: their stored grace is stale even
+	// while the store, not yet saved, still holds it.
+	wantedSinceSave map[string]bool
 }
 
 // NewDNSReconciler returns a reconciler that reaches each zone through the
@@ -118,7 +123,7 @@ func NewDNSReconciler(clients Clients, store TombstoneStore, writer func() (us, 
 	if s.MaxDeleteShare <= 0 {
 		s.MaxDeleteShare = defaultMaxDeleteShare
 	}
-	return &DNSReconciler{clients: clients, store: store, writer: writer, s: s, now: now, log: log}
+	return &DNSReconciler{clients: clients, store: store, writer: writer, s: s, now: now, log: log, wantedSinceSave: make(map[string]bool)}
 }
 
 // Run brings the records of every zone in line with in.
@@ -133,6 +138,12 @@ func NewDNSReconciler(clients Clients, store TombstoneStore, writer func() (us, 
 // fresh read and an inventory check right before the call. When in doubt a
 // record stays. In Observe mode Run only reads and returns the actions it
 // would take as held.
+//
+// A name seen wanted starts a new grace when it is next unwanted, also when
+// the drop of its tombstone could not be saved yet; that is remembered in
+// memory, so a restart of the process between such a failed save and the
+// next run loses it. A forward clock step larger than the grace but within
+// MaxGap makes a tombstone due at once.
 func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -147,6 +158,9 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 	}
 	if !run.start() {
 		return run.res
+	}
+	for _, rp := range in.Records {
+		r.wantedSinceSave[tombstoneKey(rp.ZoneID, rp.Name)] = true
 	}
 	if mode == Enforce && !run.loadTombstones(ctx) {
 		return run.res
@@ -196,9 +210,13 @@ type dnsRun struct {
 	// noDeletes says why no record is deleted in this run, when the
 	// tombstones could not be saved before the deletes.
 	noDeletes string
-	// stopped is set once the writer changed or could not be read: the run
-	// makes no further call to Cloudflare or to the store.
-	stopped bool
+	// stopped says why the run stopped writing, once the writer changed or
+	// could not be read: it makes no further call to Cloudflare or to the
+	// store, and holds every action left for that reason.
+	stopped string
+	// askFailed is set once the inventory could not answer before a delete:
+	// every delete left is held without further calls.
+	askFailed bool
 
 	res DNSResult
 }
@@ -320,6 +338,22 @@ func (run *dnsRun) owns(rec cfapi.Record) bool {
 	}
 	next, _ := utf8.DecodeRuneInString(rest)
 	return rest == "" || unicode.IsSpace(next)
+}
+
+// recheck reads rec again by its id right before a write. found is false when
+// it is gone or now has another name; ours tells whether it is still of the
+// same type and carries the marker of this install.
+func (run *dnsRun) recheck(ctx context.Context, z *dnsZone, rec cfapi.Record) (fresh cfapi.Record, found, ours bool, err error) {
+	got, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: strings.ToLower(rec.Name)})
+	if err != nil {
+		return cfapi.Record{}, false, false, err
+	}
+	i := slices.IndexFunc(got, func(f cfapi.Record) bool { return f.ID == rec.ID })
+	if i < 0 || !strings.EqualFold(got[i].Name, rec.Name) {
+		return cfapi.Record{}, false, false, nil
+	}
+	fresh = got[i]
+	return fresh, true, isType(fresh, rec.Type) && run.owns(fresh), nil
 }
 
 func isAddress(rec cfapi.Record) bool {

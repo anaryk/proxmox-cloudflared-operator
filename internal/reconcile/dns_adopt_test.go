@@ -73,7 +73,7 @@ func TestDNSAdoptAddressRecordReplaced(t *testing.T) {
 }
 
 func TestDNSAdoptionCreateFails(t *testing.T) {
-	original := cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10", Proxied: true, TTL: 1, Comment: "web front, by hand"}
+	original := cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10", TTL: 300, Comment: "web front, by hand"}
 	refused := errors.New("refused by the test")
 	cases := []struct {
 		name     string
@@ -109,9 +109,36 @@ func TestDNSAdoptionCreateFails(t *testing.T) {
 				return
 			}
 			require.Empty(t, f.RecordsIn(zone1.ID))
-			for _, part := range []string{"A", "app.example.com", "192.0.2.10", "proxied true", `"web front, by hand"`, seeded.ID} {
+			for _, part := range []string{"A", "app.example.com", "192.0.2.10", "proxied false", "ttl 300", `"web front, by hand"`, seeded.ID} {
 				require.Contains(t, last, part, "the admin can restore the record by hand")
 			}
+		})
+	}
+}
+
+// TestDNSAdoptionAnswerLost loses the answer to the first write of an
+// adoption: the write may have landed, so the snapshot must be there.
+func TestDNSAdoptionAnswerLost(t *testing.T) {
+	cases := []struct {
+		name   string
+		record cfapi.Record
+	}{
+		{"CNAME changed in place", cfapi.Record{Type: "CNAME", Name: "app.example.com", Content: "app.other.net"}},
+		{"address record deleted", cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDNSFake()
+			seeded := f.SeedRecord(zone1.ID, tc.record)
+			s := &dnsSpy{API: f, lostAnswers: true}
+			in := dnsIn("app.example.com")
+			in.Adopt = map[string]bool{"app.example.com": true}
+
+			res := newDNS(s, &memStore{}, t0).Run(context.Background(), in, Enforce)
+
+			require.Len(t, dnsWrites(f), 1)
+			require.Equal(t, []cfapi.Record{seeded}, res.Replaced)
+			require.NotEmpty(t, res.Problems)
 		})
 	}
 }

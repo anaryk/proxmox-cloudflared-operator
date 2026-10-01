@@ -23,7 +23,7 @@ func (run *dnsRun) start() bool {
 // Cloudflare or to the tombstone store, and reports whether the write may go
 // ahead. Once it may not, the run is stopped.
 func (run *dnsRun) fenced(what string) bool {
-	if run.stopped {
+	if run.stopped != "" {
 		return false
 	}
 	fault, stale := recheckWriter(run.r.writer, run.us)
@@ -38,12 +38,13 @@ func (run *dnsRun) admit(prefix, fault string, stale bool) bool {
 	case stale:
 		run.problem(prefix + fault + "; this writer is stale and stops")
 		run.res.Verdict = WriterStale
+		run.stopped = heldWriter
 	case fault != "":
 		run.problem(prefix + fault + "; writing stops")
+		run.stopped = heldUnreadable
 	default:
 		return true
 	}
-	run.stopped = true
 	return false
 }
 
@@ -53,8 +54,8 @@ func (run *dnsRun) proceed(z *dnsZone, a Action) bool {
 	switch {
 	case run.mode == Observe:
 		z.add(a, heldObserve)
-	case run.stopped:
-		z.add(a, heldWriter)
+	case run.stopped != "":
+		z.add(a, run.stopped)
 	default:
 		return true
 	}
@@ -68,7 +69,7 @@ func (run *dnsRun) write(z *dnsZone, a Action, call func() error) bool {
 		return false
 	}
 	if !run.fenced(z.about(a.Target)) {
-		z.add(a, heldWriter)
+		z.add(a, run.stopped)
 		return false
 	}
 	if err := call(); err != nil {

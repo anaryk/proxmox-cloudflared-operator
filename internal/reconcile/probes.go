@@ -46,11 +46,11 @@ func (run *dnsRun) sweepProbes(ctx context.Context, z *dnsZone) {
 		if !run.proceed(z, a) {
 			continue
 		}
-		fresh, found, err := readByID(ctx, z, rec)
+		fresh, found, ours, err := run.recheck(ctx, z, rec)
 		switch {
 		case err != nil:
 			run.problem(fmt.Sprintf("%s: reading the probe again before deleting it: %v", z.about(rec.Name), err))
-		case found && run.isProbe(fresh) && run.leftBehind(fresh):
+		case found && ours && run.isProbe(fresh) && run.leftBehind(fresh):
 			run.write(z, a, func() error { return deleteRecord(ctx, z, fresh.ID) })
 		}
 	}

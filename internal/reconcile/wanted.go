@@ -16,6 +16,14 @@ func (run *dnsRun) want(ctx context.Context, z *dnsZone, name string) {
 	}
 	rp := z.wanted[name]
 	ours := slices.DeleteFunc(slices.Clone(z.owned[name]), func(rec cfapi.Record) bool { return !isAddress(rec) })
+	if len(ours) > 1 || len(ours) == 1 && !isType(ours[0], "CNAME") {
+		// pco writes only CNAMEs, so address records under our marker were
+		// made by hand; they are reported, not replaced, whatever the tunnel.
+		for _, rec := range ours {
+			run.conflict(z, rec)
+		}
+		return
+	}
 	st, known := run.tunnels[tunnelRef{rp.AccountID, rp.TunnelName}]
 	held := ""
 	switch {
@@ -33,18 +41,11 @@ func (run *dnsRun) want(ctx context.Context, z *dnsZone, name string) {
 		return
 	}
 	target := st.ID + tunnelDomain
-	switch {
-	case len(ours) == 0:
+	if len(ours) == 0 {
 		run.claim(ctx, z, name, target)
-	case len(ours) == 1 && isType(ours[0], "CNAME"):
-		run.retarget(ctx, z, ours[0], target)
-	default:
-		// pco writes only CNAMEs, so address records under our marker were
-		// made by hand; they are reported, not replaced.
-		for _, rec := range ours {
-			run.conflict(z, rec)
-		}
+		return
 	}
+	run.retarget(ctx, z, ours[0], target)
 }
 
 // retarget points a CNAME of this install at target. The record is read again
@@ -58,15 +59,16 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, t
 	if !run.proceed(z, a) {
 		return
 	}
-	fresh, found, err := readByID(ctx, z, rec)
+	fresh, found, ours, err := run.recheck(ctx, z, rec)
 	switch {
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: reading the record again before changing it: %v", z.about(rec.Name), err))
 		return
 	case !found:
-		// Gone meanwhile: the next run creates it.
+		run.r.log.Debug().Str("zone", z.Name).Str("record", rec.Name).Str("id", rec.ID).
+			Msg("record to point at the tunnel is gone or renamed; the next run looks again")
 		return
-	case !isType(fresh, "CNAME") || !strings.EqualFold(fresh.Name, rec.Name) || !run.owns(fresh):
+	case !ours:
 		run.conflict(z, fresh)
 		return
 	}
@@ -77,26 +79,12 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, t
 	})
 }
 
-// readByID reads the record with the id of rec again, looking it up by the
-// name it had.
-func readByID(ctx context.Context, z *dnsZone, rec cfapi.Record) (cfapi.Record, bool, error) {
-	found, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: strings.ToLower(rec.Name)})
-	if err != nil {
-		return cfapi.Record{}, false, err
-	}
-	i := slices.IndexFunc(found, func(f cfapi.Record) bool { return f.ID == rec.ID })
-	if i < 0 {
-		return cfapi.Record{}, false, nil
-	}
-	return found[i], true, nil
-}
-
 // claim creates the CNAME of a wanted name that has no record of this install,
 // unless a record of someone else holds the name.
 func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name, target string) {
 	create := Action{Kind: CreateRecord, Target: name, Detail: pointDetail(z, target)}
-	if run.stopped {
-		z.add(create, heldWriter)
+	if run.stopped != "" {
+		z.add(create, run.stopped)
 		return
 	}
 	found, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: name})
@@ -130,17 +118,17 @@ func (run *dnsRun) create(ctx context.Context, z *dnsZone, a Action, target stri
 
 // adoptRecord takes over the one record that holds a name the admin asked to
 // adopt: a CNAME is changed in place, an address record is replaced. The
-// record as it was goes into Replaced once it has been changed or deleted.
+// record as it was goes into Replaced as the call that changes or deletes it
+// goes out: a call whose answer is lost may have landed.
 func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record, target string) {
 	if isType(rec, "CNAME") {
 		upd := cfapi.Record{ID: rec.ID, Type: "CNAME", Name: rec.Name, Content: target, Proxied: true, Comment: run.marker}
 		a := Action{Kind: UpdateRecord, Target: rec.Name, Detail: pointDetail(z, target, rec), Destructive: true}
-		if run.write(z, a, func() error {
+		run.write(z, a, func() error {
+			run.res.Replaced = append(run.res.Replaced, rec)
 			_, err := z.api.UpdateRecord(ctx, z.ID, upd)
 			return err
-		}) {
-			run.res.Replaced = append(run.res.Replaced, rec)
-		}
+		})
 		return
 	}
 
@@ -160,13 +148,15 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		z.add(add, held)
 		return
 	}
-	if !run.write(z, del, func() error { return deleteRecord(ctx, z, rec.ID) }) {
-		if run.stopped {
-			z.add(add, heldWriter)
+	if !run.write(z, del, func() error {
+		run.res.Replaced = append(run.res.Replaced, rec)
+		return deleteRecord(ctx, z, rec.ID)
+	}) {
+		if run.stopped != "" {
+			z.add(add, run.stopped)
 		}
 		return
 	}
-	run.res.Replaced = append(run.res.Replaced, rec)
 	if !run.create(ctx, z, add, target) {
 		run.restore(ctx, z, rec)
 	}
@@ -175,9 +165,11 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 // restore puts back a record an adoption deleted when the CNAME that was to
 // replace it could not be created. When that is not possible either, the
 // problem carries the whole record, so that the admin can restore it by hand.
+// A run that stopped as the writer changed leaves the name empty: the writer
+// that runs next creates the CNAME there.
 func (run *dnsRun) restore(ctx context.Context, z *dnsZone, rec cfapi.Record) {
-	if !run.stopped {
-		back := cfapi.Record{Type: rec.Type, Name: rec.Name, Content: rec.Content, Proxied: rec.Proxied, Comment: rec.Comment}
+	if run.stopped == "" {
+		back := cfapi.Record{Type: rec.Type, Name: rec.Name, Content: rec.Content, Proxied: rec.Proxied, TTL: rec.TTL, Comment: rec.Comment}
 		a := Action{Kind: CreateRecord, Target: rec.Name, Detail: fmt.Sprintf("in zone %s: put back %s %s", z.Name, rec.Type, rec.Content)}
 		if run.write(z, a, func() error {
 			_, err := z.api.CreateRecord(ctx, z.ID, back)
@@ -187,12 +179,17 @@ func (run *dnsRun) restore(ctx context.Context, z *dnsZone, rec cfapi.Record) {
 			return
 		}
 	}
+	if run.stopped != "" {
+		run.problem(fmt.Sprintf("%s: the record was removed for the adoption; the current writer creates the CNAME on its next run; the original was %s",
+			z.about(rec.Name), describe(rec)))
+		return
+	}
 	run.problem(fmt.Sprintf("%s: adoption failed and the original record is gone; restore it by hand: %s", z.about(rec.Name), describe(rec)))
 }
 
 // describe spells out a record with everything needed to create it again.
 func describe(rec cfapi.Record) string {
-	return fmt.Sprintf("%s %s %s (proxied %t, comment %q, id %s)", rec.Type, rec.Name, rec.Content, rec.Proxied, rec.Comment, rec.ID)
+	return fmt.Sprintf("%s %s %s (proxied %t, ttl %d, comment %q, id %s)", rec.Type, rec.Name, rec.Content, rec.Proxied, rec.TTL, rec.Comment, rec.ID)
 }
 
 // conflict reports a record at a wanted name that pco will not change. One

@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
@@ -131,6 +133,14 @@ func TestDNSRetargetRereadsRecord(t *testing.T) {
 			record: ourCNAME("app.example.com", "old"),
 			change: func(cfapi.Record) (cfapi.Record, bool) { return cfapi.Record{}, false },
 		},
+		{
+			name:   "renamed",
+			record: ourCNAME("app.example.com", "old"),
+			change: func(rec cfapi.Record) (cfapi.Record, bool) {
+				rec.Name = "other.example.com"
+				return rec, true
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,8 +158,11 @@ func TestDNSRetargetRereadsRecord(t *testing.T) {
 				}
 				return []cfapi.Record{rec}
 			}}
+			var log bytes.Buffer
+			r := NewDNSReconciler(Clients{"cred1": s}, &memStore{}, writerOf(ours, ours), DNSSettings{InstallID: testInstall},
+				(&clock{t0}).now, zerolog.New(&log).Level(zerolog.DebugLevel))
 
-			res := newDNS(s, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+			res := r.Run(context.Background(), dnsIn("app.example.com"), Enforce)
 
 			require.Empty(t, res.Problems)
 			require.Empty(t, dnsWrites(f))
@@ -157,9 +170,12 @@ func TestDNSRetargetRereadsRecord(t *testing.T) {
 			require.Equal(t, tc.lost, res.Lost)
 			if tc.conflict {
 				require.Equal(t, []Conflict{{Zone: "example.com", Name: changed.Name, Type: changed.Type, Content: changed.Content}}, res.Conflicts)
-			} else {
-				require.Empty(t, res.Conflicts)
+				return
 			}
+			require.Empty(t, res.Conflicts)
+			require.Equal(t, 1, strings.Count(log.String(), `"level":"debug"`), "log: %s", log.String())
+			require.Contains(t, log.String(), seeded.ID)
+			require.Contains(t, log.String(), "app.example.com")
 		})
 	}
 }
@@ -239,10 +255,12 @@ func TestDNSOwnedAddressRecordAtWantedName(t *testing.T) {
 	cases := []struct {
 		name    string
 		records []cfapi.Record
+		tunnels []TunnelState
 	}{
-		{"address record", []cfapi.Record{address}},
+		{"address record", []cfapi.Record{address}, []TunnelState{ourTunnel}},
 		// Cloudflare refuses this pair; a record that is ours is never lost.
-		{"address record next to our CNAME", []cfapi.Record{address, ourCNAME("app.example.com", testTunnelID)}},
+		{"address record next to our CNAME", []cfapi.Record{address, ourCNAME("app.example.com", testTunnelID)}, []TunnelState{ourTunnel}},
+		{"address record, tunnel not known", []cfapi.Record{address}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,13 +270,16 @@ func TestDNSOwnedAddressRecordAtWantedName(t *testing.T) {
 				f.SeedRecord(zone1.ID, rec)
 				want = append(want, Conflict{Zone: "example.com", Name: rec.Name, Type: rec.Type, Content: rec.Content})
 			}
+			in := dnsIn("app.example.com")
+			in.Tunnels = tc.tunnels
 
-			res := newDNS(f, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+			res := newDNS(f, &memStore{}, t0).Run(context.Background(), in, Enforce)
 
 			require.Empty(t, res.Problems)
 			require.Empty(t, dnsWrites(f), "an address record is not turned into a CNAME without the admin")
 			require.Equal(t, want, res.Conflicts)
 			require.Empty(t, res.Lost)
+			require.Empty(t, res.Actions, "nothing is planned for the name")
 		})
 	}
 }

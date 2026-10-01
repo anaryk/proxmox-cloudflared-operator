@@ -12,8 +12,9 @@ import (
 // wants any more.
 type Tombstone struct {
 	Since      time.Time `json:"since"`      // first seen unwanted, start of the grace
-	Seen       time.Time `json:"seen"`       // last run that confirmed it
-	Generation int       `json:"generation"` // writer generation that created it
+	Seen       time.Time `json:"seen"`       // last confirmed by a run; moves on at most every MaxGap/4
+	Generation int       `json:"generation"` // generation of the writer that created it
+	Nonce      string    `json:"nonce"`      // nonce of the writer that created it
 }
 
 // TombstoneStore persists tombstones by zoneID + "/" + record name.
@@ -41,24 +42,36 @@ func (t *tombstones) drop(key string) {
 	}
 }
 
+// byUs reports whether this writer, its generation and its nonce, made a
+// tombstone.
+func (run *dnsRun) byUs(t Tombstone) bool {
+	return t.Generation == run.us.Generation && t.Nonce == run.us.Nonce
+}
+
 // continuous reports whether a tombstone was watched without a break by this
-// writer: created by its generation, not dated in the future, and confirmed
-// within MaxGap. Any other grace starts again, as nobody can tell what
-// happened to the name in between.
+// writer: made by it, with a start, not dated in the future, and confirmed
+// within MaxGap (which a zero Seen never is). Any other grace starts again, as
+// nobody can tell what happened to the name in between.
 func (run *dnsRun) continuous(t Tombstone) bool {
-	return t.Generation == run.us.Generation &&
+	return run.byUs(t) && !t.Since.IsZero() &&
 		!t.Since.After(run.now) && !t.Seen.After(run.now) &&
 		run.now.Sub(t.Seen) <= run.r.s.MaxGap
 }
 
 // confirm records that the name of key is unwanted now and returns its
 // tombstone, whose grace starts now unless it was watched without a break.
+// Seen moves on only once it is more than a quarter of MaxGap old, so that a
+// held delete does not rewrite the store on every run.
 func (run *dnsRun) confirm(key string) Tombstone {
 	t, ok := run.stones.m[key]
-	if !ok || !run.continuous(t) {
-		t = Tombstone{Since: run.now, Generation: run.us.Generation}
+	switch {
+	case !ok || !run.continuous(t):
+		t = Tombstone{Since: run.now, Seen: run.now, Generation: run.us.Generation, Nonce: run.us.Nonce}
+	case run.now.Sub(t.Seen) > run.r.s.MaxGap/4:
+		t.Seen = run.now
+	default:
+		return t
 	}
-	t.Seen = run.now
 	run.stones.set(key, t)
 	return t
 }
@@ -89,17 +102,28 @@ func (run *dnsRun) loadTombstones(ctx context.Context) bool {
 
 // saveTombstones stores the tombstones when they changed since the last save.
 // The save before the deletes must succeed for any record to be deleted in
-// this run; after a failed one there is nothing to save afterwards.
+// this run; the one at the end also tries again what an earlier one could
+// not save.
+//
+// Once the store holds everything the run has, the names seen wanted are
+// forgotten: the run dropped their tombstones, and the store now has none of
+// them, or a new one this run started.
 func (run *dnsRun) saveTombstones(ctx context.Context, beforeDeletes bool) {
-	if run.stones == nil || !run.stones.changed || run.noDeletes != "" || !run.fenced("saving dns tombstones") {
+	if run.stones == nil {
 		return
 	}
-	if err := run.r.store.Save(ctx, maps.Clone(run.stones.m)); err != nil {
-		run.problem(fmt.Sprintf("saving dns tombstones: %v", err))
-		if beforeDeletes {
-			run.noDeletes = heldUnsaved
+	if run.stones.changed {
+		if !run.fenced("saving dns tombstones") {
+			return
 		}
-		return
+		if err := run.r.store.Save(ctx, maps.Clone(run.stones.m)); err != nil {
+			run.problem(fmt.Sprintf("saving dns tombstones: %v", err))
+			if beforeDeletes {
+				run.noDeletes = heldUnsaved
+			}
+			return
+		}
+		run.stones.changed = false
 	}
-	run.stones.changed = false
+	clear(run.r.wantedSinceSave)
 }
