@@ -1058,3 +1058,93 @@ func TestResolveForwardingTableWithoutNodes(t *testing.T) {
 		requireServed(t, res, "10.20.0.10", t0)
 	})
 }
+
+// TestResolveIdentityFailureOutranksAProberError has two NICs of the guest
+// answer ARP. A forwarding-table answer that proves nothing about the first
+// MAC must not hide what the table says about the second.
+func TestResolveIdentityFailureOutranksAProberError(t *testing.T) {
+	const unproven = "forwarding table of vmbr0: dump interrupted"
+	errDump := errors.New("dump interrupted")
+	scenarios := []struct {
+		name  string
+		setup func(s *scenario)
+		fine  string // a port that proves nothing wrong about mac1
+		wrong string // the identity failure for mac1 on another guest's port
+	}{
+		{
+			name:  "no cluster nodes known",
+			setup: func(s *scenario) { s.nodes, s.web().Node = nil, "pve2" },
+			fine:  "tap101i1",
+			wrong: "MAC bc:24:11:00:00:02 is on port tap102i0, not on the guest's own port",
+		},
+		{
+			name:  "guest on this node",
+			setup: func(*scenario) {},
+			fine:  "tap101i1",
+			wrong: "MAC bc:24:11:00:00:02 is on port tap102i0, not on the guest's own port",
+		},
+		{
+			name:  "guest on another node",
+			setup: func(s *scenario) { s.web().Node = "pve2" },
+			fine:  "eno1",
+			wrong: "MAC bc:24:11:00:00:02 is on local port tap102i0 but the guest runs on pve2",
+		},
+	}
+	for _, sc := range scenarios {
+		setup := func(t *testing.T, first func(s *scenario), second []string) *scenario {
+			s := newScenario(t)
+			sc.setup(s)
+			s.web().NICs = append(s.web().NICs, nicOn(1, mac1, "vmbr0", 0))
+			s.prober.arp[arpKey("vmbr0", "10.20.0.10")] = []string{mac0, mac1}
+			first(s)
+			s.prober.fdb[fdbKey("vmbr0", 0, mac1)] = second
+			return s
+		}
+		firstErrors := func(s *scenario) { s.prober.fdbErrs[fdbKey("vmbr0", 0, mac0)] = errDump }
+
+		t.Run(sc.name+": first errors, second on another guest's port", func(t *testing.T) {
+			for _, prev := range []*Binding{nil, boundTo("10.20.0.10")} {
+				s := setup(t, firstErrors, []string{"tap102i0"})
+
+				res := s.resolve(t, webRoute(), prev)
+
+				require.Len(t, s.prober.ops("fdb"), 2, "every answering MAC is looked up")
+				if prev == nil {
+					requireNotServed(t, res, sc.wrong)
+					continue
+				}
+				requireWithdrawn(t, res, sc.wrong, withdrawnAt(boundTo("10.20.0.10"), t0))
+			}
+		})
+
+		t.Run(sc.name+": first errors, second fine", func(t *testing.T) {
+			s := setup(t, firstErrors, []string{sc.fine})
+			res := s.resolve(t, webRoute(), nil)
+			requireNotServed(t, res, unproven)
+
+			s = setup(t, firstErrors, []string{sc.fine})
+			res = s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+			require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: unproven, Owner: webOwner}, res.Target)
+			require.Equal(t, failingAt(boundTo("10.20.0.10"), t0), res.Binding)
+
+			stale := provenAt(boundTo("10.20.0.10"), t0.Add(-5*time.Minute-time.Second))
+			s = setup(t, firstErrors, []string{sc.fine})
+			res = s.resolve(t, webRoute(), stale)
+			requireWithdrawn(t, res, "identity not confirmed for 5m1s", withdrawnAt(stale, t0))
+		})
+	}
+
+	t.Run("no cluster nodes known: first proves nothing, second on another guest's port", func(t *testing.T) {
+		s := newScenario(t)
+		s.nodes, s.web().Node = nil, "pve2"
+		s.web().NICs = append(s.web().NICs, nicOn(1, mac1, "vmbr0", 0))
+		s.prober.arp[arpKey("vmbr0", "10.20.0.10")] = []string{mac0, mac1}
+		s.prober.fdb[fdbKey("vmbr0", 0, mac0)] = []string{"eno1"}
+		s.prober.fdb[fdbKey("vmbr0", 0, mac1)] = []string{"tap102i0"}
+
+		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
+
+		requireWithdrawn(t, res, "MAC bc:24:11:00:00:02 is on port tap102i0, not on the guest's own port",
+			withdrawnAt(boundTo("10.20.0.10"), t0))
+	})
+}

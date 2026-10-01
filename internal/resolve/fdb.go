@@ -21,18 +21,26 @@ func fdbOf(iface string, nic model.NIC) (bridge string, vlan int) {
 
 // forwarding checks that the bridge has learned each MAC on exactly one port,
 // the port of the guest NIC that has it, and returns the MACs it placed there.
+// A MAC that proves nothing either way does not end the check: what the table
+// says about the others can still show that the identity does not hold.
 func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, macs []string, own map[string][]int) (map[string]bool, outcome) {
 	bridge, vlan := fdbOf(iface, nic)
 	placed := make(map[string]bool, len(macs))
+	var unsure undecided
 	for _, mac := range macs {
 		ports, o := a.fdbPorts(ctx, bridge, vlan, mac)
-		if !o.ok() {
+		if o.ok() {
+			o = a.onOwnPort(mac, bridge, ports, own[mac])
+		}
+		if !unsure.keep(o) {
 			return nil, o
 		}
-		if o := a.onOwnPort(mac, bridge, ports, own[mac]); !o.ok() {
-			return nil, o
+		if o.ok() {
+			placed[mac] = true
 		}
-		placed[mac] = true
+	}
+	if !unsure.ok() {
+		return nil, unsure.outcome
 	}
 	return placed, outcome{}
 }
@@ -73,16 +81,36 @@ func (a *attempt) mayRunElsewhere() bool {
 // guest of this node, which would be a local guest answering in its name.
 func (a *attempt) notOnLocalPorts(ctx context.Context, iface string, nic model.NIC, macs []string) outcome {
 	bridge, vlan := fdbOf(iface, nic)
+	var unsure undecided
 	for _, mac := range macs {
 		ports, o := a.fdbPorts(ctx, bridge, vlan, mac)
-		if !o.ok() {
+		if i := slices.IndexFunc(ports, isGuestPort); o.ok() && i >= 0 {
+			o = lost("MAC %s is on local port %s but the guest runs on %s", mac, ports[i], a.guest.Node)
+		}
+		if !unsure.keep(o) {
 			return o
 		}
-		if i := slices.IndexFunc(ports, isGuestPort); i >= 0 {
-			return lost("MAC %s is on local port %s but the guest runs on %s", mac, ports[i], a.guest.Node)
-		}
 	}
-	return outcome{}
+	return unsure.outcome
+}
+
+// undecided holds the first check of a series that proved nothing either way,
+// to be reported only if no later check fails outright.
+type undecided struct{ outcome }
+
+// keep notes o and reports whether the series may go on: it may after a pass
+// or a prober error, not after lost identity or a cancelled call.
+func (u *undecided) keep(o outcome) bool {
+	switch o.verdict {
+	case passed:
+		return true
+	case probeFailed:
+		if u.ok() {
+			u.outcome = o
+		}
+		return true
+	}
+	return false
 }
 
 func (a *attempt) fdbPorts(ctx context.Context, bridge string, vlan int, mac string) ([]string, outcome) {

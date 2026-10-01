@@ -62,7 +62,8 @@ type fakeProber struct {
 	arp     map[string][]string // arpKey -> answering MACs
 	arpErr  map[string]error    // arpKey
 	fdb     map[string][]string // fdbKey -> ports the MAC is learned on
-	fdbErr  error
+	fdbErr  error               // every forwarding-table lookup
+	fdbErrs map[string]error    // fdbKey
 	dialErr map[netip.Addr]error
 
 	mu    sync.Mutex
@@ -84,6 +85,7 @@ func newFakeProber() *fakeProber {
 		arp:     map[string][]string{},
 		arpErr:  map[string]error{},
 		fdb:     map[string][]string{},
+		fdbErrs: map[string]error{},
 		dialErr: map[netip.Addr]error{},
 	}
 }
@@ -153,6 +155,9 @@ func (f *fakeProber) FDBPorts(_ context.Context, bridge string, vlan int, mac st
 	}
 	if f.fdbErr != nil {
 		return nil, f.fdbErr
+	}
+	if err := f.fdbErrs[fdbKey(bridge, vlan, mac)]; err != nil {
+		return nil, err
 	}
 	return slices.Clone(f.fdb[fdbKey(bridge, vlan, mac)]), nil
 }
