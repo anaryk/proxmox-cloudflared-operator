@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mdlayher/arp"
 	"github.com/mdlayher/packet"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
@@ -197,6 +196,65 @@ func TestLinuxARPRequest(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestLinuxParseARP(t *testing.T) {
+	// The request of TestLinuxARPRequest, without its Ethernet header.
+	request := []byte{
+		0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
+		0xbc, 0x24, 0x11, 0x00, 0x00, 0xfe, 10, 20, 0, 1,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, 20, 0, 5,
+	}
+	wantRequest := arpPacket{
+		op:       opRequest,
+		senderHW: mustMAC(t, "bc:24:11:00:00:fe"),
+		senderIP: netip.MustParseAddr("10.20.0.1"),
+		targetIP: netip.MustParseAddr("10.20.0.5"),
+	}
+	// A reply from a station whose hardware addresses are 8 bytes long.
+	long := []byte{
+		0x00, 0x01, 0x08, 0x00, 0x08, 0x04, 0x00, 0x02,
+		1, 2, 3, 4, 5, 6, 7, 8, 10, 20, 0, 5,
+		0, 0, 0, 0, 0, 0, 0, 0, 10, 20, 0, 1,
+	}
+	edit := func(i int, b byte) []byte {
+		out := slices.Clone(request)
+		out[i] = b
+		return out
+	}
+	tests := []struct {
+		name    string
+		payload []byte
+		want    arpPacket
+		ok      bool
+	}{
+		{name: "request", payload: request, want: wantRequest, ok: true},
+		{name: "padded", payload: append(slices.Clone(request), make([]byte, 18)...), want: wantRequest, ok: true},
+		{name: "IEEE 802 hardware type", payload: edit(1, 6), want: wantRequest, ok: true},
+		{name: "other protocol type", payload: edit(3, 0x01), want: wantRequest, ok: true},
+		{
+			name: "longer hardware addresses", payload: long, ok: true,
+			want: arpPacket{
+				op:       opReply,
+				senderHW: net.HardwareAddr{1, 2, 3, 4, 5, 6, 7, 8},
+				senderIP: netip.MustParseAddr("10.20.0.5"),
+				targetIP: netip.MustParseAddr("10.20.0.1"),
+			},
+		},
+		{name: "IPv6 protocol addresses", payload: edit(5, 16)},
+		{name: "truncated", payload: request[:27]},
+		{name: "truncated header", payload: request[:7]},
+		{name: "empty"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseARP(tc.payload)
+			require.Equal(t, tc.ok, ok)
+			if tc.ok {
+				require.Equal(t, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestLinuxAppendClaimants(t *testing.T) {
 	addr := netip.MustParseAddr("10.20.0.5")
 	other := netip.MustParseAddr("10.20.0.6")
@@ -206,8 +264,8 @@ func TestLinuxAppendClaimants(t *testing.T) {
 	hostMAC := mustMAC(t, "bc:24:11:00:00:fe")
 	almostFull, full := stationMACs(maxClaimants-1), stationMACs(maxClaimants)
 
-	reply := arpFrame(t, guest, arp.OperationReply, guest, addr, host)
-	forged := arpFrame(t, stranger, arp.OperationReply, guest, addr, host)
+	reply := arpFrame(t, guest, opReply, guest, addr, host)
+	forged := arpFrame(t, stranger, opReply, guest, addr, host)
 	probe, err := arpRequest(hostMAC, host, addr)
 	require.NoError(t, err)
 	// What this host sends when it probes an address it holds itself.
@@ -224,13 +282,14 @@ func TestLinuxAppendClaimants(t *testing.T) {
 		{name: "reply from addr", frame: reply, expect: []string{"bc:24:11:00:00:01"}},
 		{name: "repeated reply", macs: []string{"bc:24:11:00:00:01"}, frame: reply, expect: []string{"bc:24:11:00:00:01"}},
 		{name: "second replier", macs: []string{"bc:24:11:00:00:02"}, frame: reply, expect: []string{"bc:24:11:00:00:02", "bc:24:11:00:00:01"}},
-		{name: "request from addr", frame: arpFrame(t, guest, arp.OperationRequest, guest, addr, host), expect: []string{"bc:24:11:00:00:01"}},
-		{name: "gratuitous announcement", frame: arpFrame(t, guest, arp.OperationRequest, guest, addr, addr), expect: []string{"bc:24:11:00:00:01"}},
-		{name: "request for addr from another sender", frame: arpFrame(t, hostMAC, arp.OperationRequest, hostMAC, host, addr)},
-		{name: "reply about another address", frame: arpFrame(t, guest, arp.OperationReply, guest, other, host)},
-		{name: "other operation", frame: arpFrame(t, guest, arp.Operation(4), guest, addr, host)},
+		{name: "request from addr", frame: arpFrame(t, guest, opRequest, guest, addr, host), expect: []string{"bc:24:11:00:00:01"}},
+		{name: "gratuitous announcement", frame: arpFrame(t, guest, opRequest, guest, addr, addr), expect: []string{"bc:24:11:00:00:01"}},
+		{name: "request for addr from another sender", frame: arpFrame(t, hostMAC, opRequest, hostMAC, host, addr)},
+		{name: "reply about another address", frame: arpFrame(t, guest, opReply, guest, other, host)},
+		{name: "other operation", frame: arpFrame(t, guest, 4, guest, addr, host)},
+		{name: "IEEE 802 hardware type", frame: withHardwareType(arpFrame(t, stranger, opReply, stranger, addr, host), 6), expect: []string{"bc:24:11:00:00:02"}},
 		{name: "frame source differs", frame: forged, expect: []string{"bc:24:11:00:00:01", "bc:24:11:00:00:02"}},
-		{name: "claim sent with this host's MAC as source", frame: arpFrame(t, hostMAC, arp.OperationRequest, stranger, addr, addr), expect: []string{"bc:24:11:00:00:02", "bc:24:11:00:00:fe"}},
+		{name: "claim sent with this host's MAC as source", frame: arpFrame(t, hostMAC, opRequest, stranger, addr, addr), expect: []string{"bc:24:11:00:00:02", "bc:24:11:00:00:fe"}},
 		{name: "copy of the probe sent here", frame: ownProbe, sent: ownProbe},
 		{name: "padded copy of the probe sent here", frame: append(slices.Clone(ownProbe), make([]byte, 18)...), sent: ownProbe},
 		{name: "stops at the limit", macs: almostFull, frame: forged, expect: append(slices.Clone(almostFull), "bc:24:11:00:00:01")},
@@ -260,11 +319,11 @@ func TestLinuxExchange(t *testing.T) {
 		out := make([][]byte, 0, n)
 		for i := first; i < first+n; i++ {
 			mac := net.HardwareAddr{0x02, 0, 0, 0, byte(i >> 8), byte(i)}
-			out = append(out, arpFrame(t, mac, arp.OperationReply, mac, addr, host))
+			out = append(out, arpFrame(t, mac, opReply, mac, addr, host))
 		}
 		return out
 	}
-	foreign := arpFrame(t, mustMAC(t, "bc:24:11:00:00:66"), arp.OperationReply, mustMAC(t, "bc:24:11:00:00:66"), addr, host)
+	foreign := arpFrame(t, mustMAC(t, "bc:24:11:00:00:66"), opReply, mustMAC(t, "bc:24:11:00:00:66"), addr, host)
 
 	run := func(ctx context.Context, frames [][]byte) ([]string, int, error) {
 		clock := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -803,9 +862,10 @@ func requestFor(t *testing.T, conn *packet.Conn, target netip.Addr) []byte {
 	for {
 		n, _, err := conn.ReadFrom(buf)
 		require.NoError(t, err)
-		var pkt arp.Packet
-		if n > ethHeaderLen && pkt.UnmarshalBinary(buf[ethHeaderLen:n]) == nil &&
-			pkt.Operation == arp.OperationRequest && pkt.TargetIP == target {
+		if n <= ethHeaderLen {
+			continue
+		}
+		if pkt, ok := parseARP(buf[ethHeaderLen:n]); ok && pkt.op == opRequest && pkt.targetIP == target {
 			return slices.Clone(buf[:n])
 		}
 	}
@@ -853,14 +913,30 @@ func onThrowawayThread(fn func()) {
 	<-done
 }
 
-// arpFrame builds a broadcast ARP frame sent from src.
-func arpFrame(t *testing.T, src net.HardwareAddr, op arp.Operation, sender net.HardwareAddr, senderIP, targetIP netip.Addr) []byte {
+// The ARP operations, as RFC 826 numbers them.
+const (
+	opRequest = 1
+	opReply   = 2
+)
+
+// arpFrame builds a broadcast Ethernet/IPv4 ARP frame sent from src, with
+// the target hardware address zeroed.
+func arpFrame(t *testing.T, src net.HardwareAddr, op uint16, sender net.HardwareAddr, senderIP, targetIP netip.Addr) []byte {
 	t.Helper()
-	pkt, err := arp.NewPacket(op, sender, senderIP, make(net.HardwareAddr, 6), targetIP)
-	require.NoError(t, err)
-	payload, err := pkt.MarshalBinary()
-	require.NoError(t, err)
+	require.Len(t, sender, 6)
+	spa, tpa := senderIP.As4(), targetIP.As4()
+	payload := slices.Concat(
+		[]byte{0x00, 0x01, 0x08, 0x00, 6, 4, byte(op >> 8), byte(op)},
+		sender, spa[:], make([]byte, 6), tpa[:],
+	)
 	return ethFrame(broadcastMAC(), src, etherTypeARP, payload)
+}
+
+// withHardwareType returns frame with the ARP hardware type set to htype.
+func withHardwareType(frame []byte, htype uint16) []byte {
+	out := slices.Clone(frame)
+	out[ethHeaderLen], out[ethHeaderLen+1] = byte(htype>>8), byte(htype)
+	return out
 }
 
 func ethFrame(dst, src net.HardwareAddr, etherType uint16, payload []byte) []byte {

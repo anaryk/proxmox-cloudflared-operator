@@ -12,7 +12,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/mdlayher/arp"
 	"github.com/mdlayher/packet"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -29,8 +28,13 @@ const (
 	// read.
 	maxClaimants = 64
 	dumpAttempts = 3
-	etherTypeARP = 0x0806
-	ethHeaderLen = 14
+
+	ethHeaderLen  = 14
+	etherTypeARP  = 0x0806
+	etherTypeIPv4 = 0x0800
+	arpEthernet   = 1 // ARP hardware type of Ethernet
+	arpOpRequest  = 1
+	arpOpReply    = 2
 )
 
 // hostProber looks at the node through netlink, a raw ARP socket and TCP.
@@ -181,15 +185,52 @@ func arpRequest(hw net.HardwareAddr, src, addr netip.Addr) ([]byte, error) {
 	if len(hw) != 6 {
 		return nil, errors.New("interface has no Ethernet address")
 	}
-	pkt, err := arp.NewPacket(arp.OperationRequest, hw, src, make(net.HardwareAddr, 6), addr)
-	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
+	if !src.Is4() || !addr.Is4() {
+		return nil, fmt.Errorf("building request from %s for %s: not IPv4", src, addr)
 	}
-	payload, err := pkt.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
+	spa, tpa := src.As4(), addr.As4()
+	frame := make([]byte, 0, ethHeaderLen+28)
+	frame = append(frame, broadcastMAC()...)
+	frame = append(frame, hw...)
+	frame = binary.BigEndian.AppendUint16(frame, etherTypeARP)
+	frame = binary.BigEndian.AppendUint16(frame, arpEthernet)
+	frame = binary.BigEndian.AppendUint16(frame, etherTypeIPv4)
+	frame = append(frame, 6, 4) // address lengths
+	frame = binary.BigEndian.AppendUint16(frame, arpOpRequest)
+	frame = append(frame, hw...)
+	frame = append(frame, spa[:]...)
+	frame = append(frame, make([]byte, 6)...)
+	return append(frame, tpa[:]...), nil
+}
+
+// arpPacket is what an ARP payload says about its sender and target.
+type arpPacket struct {
+	op       uint16
+	senderHW net.HardwareAddr
+	senderIP netip.Addr
+	targetIP netip.Addr
+}
+
+// parseARP reads an ARP payload with IPv4 addresses. The hardware type, the
+// protocol type and the length of the hardware addresses are taken as they
+// come: the kernel accepts more than one hardware type, and reading a claim
+// the kernel would ignore only makes the identity check stricter.
+func parseARP(b []byte) (arpPacket, bool) {
+	if len(b) < 8 || b[5] != 4 {
+		return arpPacket{}, false
 	}
-	return slices.Concat(broadcastMAC(), hw, binary.BigEndian.AppendUint16(nil, etherTypeARP), payload), nil
+	hlen := int(b[4])
+	sender := 8 + hlen          // offset of the sender address
+	target := sender + 4 + hlen // offset of the target address
+	if len(b) < target+4 {
+		return arpPacket{}, false
+	}
+	return arpPacket{
+		op:       binary.BigEndian.Uint16(b[6:8]),
+		senderHW: slices.Clone(net.HardwareAddr(b[8:sender])),
+		senderIP: netip.AddrFrom4([4]byte(b[sender : sender+4])),
+		targetIP: netip.AddrFrom4([4]byte(b[target : target+4])),
+	}, true
 }
 
 // appendClaimants adds to macs, up to maxClaimants, the MACs behind frame
@@ -210,14 +251,11 @@ func appendClaimants(macs []string, frame []byte, addr netip.Addr, sent []byte) 
 	if len(sent) > 0 && bytes.HasPrefix(frame, sent) {
 		return macs
 	}
-	var pkt arp.Packet
-	if pkt.UnmarshalBinary(frame[ethHeaderLen:]) != nil || pkt.SenderIP != addr {
+	pkt, ok := parseARP(frame[ethHeaderLen:])
+	if !ok || pkt.senderIP != addr || (pkt.op != arpOpRequest && pkt.op != arpOpReply) {
 		return macs
 	}
-	if pkt.Operation != arp.OperationRequest && pkt.Operation != arp.OperationReply {
-		return macs
-	}
-	for _, hw := range []net.HardwareAddr{pkt.SenderHardwareAddr, frame[6:12]} {
+	for _, hw := range []net.HardwareAddr{pkt.senderHW, frame[6:12]} {
 		if mac := hw.String(); len(macs) < maxClaimants && !slices.Contains(macs, mac) {
 			macs = append(macs, mac)
 		}
