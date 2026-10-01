@@ -45,7 +45,7 @@ func (c *Client) Resources(ctx context.Context) ([]Resource, error) {
 			Node:     row.Node,
 			Status:   row.Status,
 			Template: bool(row.Template),
-			Tags:     splitTags(row.Tags),
+			Tags:     SplitTags(row.Tags),
 		})
 	}
 	return out, nil

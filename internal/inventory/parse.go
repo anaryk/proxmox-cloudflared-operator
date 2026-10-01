@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -28,12 +27,21 @@ const maxVLAN = 4094
 // parse cleanly is dropped rather than interpreted: a malformed NIC is
 // skipped, a malformed address is ignored. Only an unknown guest kind is an
 // error.
+//
+// Identity tells a guest apart from a different one that later holds the same
+// VMID, and must not change while the guest itself is unchanged. A QEMU guest
+// is identified by its SMBIOS UUID, then by its creation time, then by the
+// MAC of its first NIC; a container by that MAC; anything without one by its
+// kind and VMID. The MAC is the one on the lowest-numbered netN key that
+// carries a readable MAC, whether or not that NIC is otherwise valid, so a
+// rename, an added NIC or an edited bridge or tag leaves the identity alone.
+// Adding a NIC at a lower index than the current first one changes a
+// MAC-based identity, which is the case for every container.
 func BuildGuest(res pve.Resource, cfg pve.GuestConfig) (model.Guest, error) {
 	if res.Kind != model.KindQEMU && res.Kind != model.KindLXC {
 		return model.Guest{}, fmt.Errorf("building guest %d: unknown guest kind %q", res.VMID, res.Kind)
 	}
 	ref := model.GuestRef{Kind: res.Kind, VMID: res.VMID}
-	nics := parseNICs(res.Kind, cfg.Values)
 	return model.Guest{
 		Ref:         ref,
 		Name:        guestName(res, cfg.Values),
@@ -43,8 +51,8 @@ func BuildGuest(res pve.Resource, cfg pve.GuestConfig) (model.Guest, error) {
 		Tags:        guestTags(res, cfg.Values),
 		Description: cfg.Values["description"],
 		Digest:      cfg.Digest,
-		Identity:    guestIdentity(ref, nics, cfg.Values),
-		NICs:        nics,
+		Identity:    guestIdentity(ref, cfg.Values),
+		NICs:        parseNICs(res.Kind, cfg.Values),
 	}, nil
 }
 
@@ -60,21 +68,12 @@ func guestName(res pve.Resource, values map[string]string) string {
 }
 
 // guestTags prefers the tags of the resource row and falls back to the
-// config's tag string, which Proxmox separates with ';', ',' or spaces.
+// config's tag string.
 func guestTags(res pve.Resource, values map[string]string) []string {
 	if len(res.Tags) > 0 {
 		return slices.Clone(res.Tags)
 	}
-	tags := strings.FieldsFunc(values["tags"], func(r rune) bool {
-		return r == ';' || r == ',' || unicode.IsSpace(r)
-	})
-	if len(tags) == 0 {
-		return nil
-	}
-	for i, t := range tags {
-		tags[i] = strings.ToLower(t)
-	}
-	return tags
+	return pve.SplitTags(values["tags"])
 }
 
 // parseNICs reads net0 to net31 in index order.
@@ -101,20 +100,24 @@ func parseNICs(kind model.GuestKind, values map[string]string) []model.NIC {
 	return nics
 }
 
-// nicModels are the QEMU NIC models that carry the MAC as their value.
-var nicModels = map[string]bool{
-	"virtio":  true,
-	"e1000":   true,
-	"e1000e":  true,
-	"rtl8139": true,
-	"vmxnet3": true,
+// isNICModel reports whether s is a QEMU NIC model. In a net value the model
+// is either a key carrying the MAC ("virtio=MAC") or a bare first item
+// followed by "macaddr=MAC".
+func isNICModel(s string) bool {
+	switch s {
+	case "e1000", "e1000-82540em", "e1000-82544gc", "e1000-82545em", "e1000e",
+		"i82551", "i82557b", "i82559er", "ne2k_isa", "ne2k_pci", "pcnet",
+		"rtl8139", "virtio", "vmxnet3":
+		return true
+	}
+	return false
 }
 
 // parseQEMUNIC reads "virtio=MAC,bridge=vmbr0,tag=10,firewall=1" and the
 // older "e1000,macaddr=MAC,bridge=vmbr0". The static address comes from the
 // ipconfig value with the same index.
 func parseQEMUNIC(index int, raw, ipconfig string) (model.NIC, bool) {
-	pairs, ok := splitPairs(raw, func(s string) bool { return nicModels[s] })
+	pairs, ok := splitPairs(raw, isNICModel)
 	if !ok {
 		return model.NIC{}, false
 	}
@@ -134,7 +137,7 @@ func parseQEMUNIC(index int, raw, ipconfig string) (model.NIC, bool) {
 func qemuMAC(pairs []pair) (string, bool) {
 	var mac string
 	for _, p := range pairs {
-		if p.key != "macaddr" && !nicModels[p.key] {
+		if !carriesMAC(model.KindQEMU, p.key) {
 			continue
 		}
 		norm, err := model.NormalizeMAC(p.value)
@@ -178,11 +181,21 @@ func buildNIC(index int, mac string, pairs []pair) (model.NIC, bool) {
 		MAC:      mac,
 		Bridge:   bridge,
 		VLAN:     vlan,
-		Firewall: lookup(pairs, "firewall") == "1",
+		Firewall: isEnabled(lookup(pairs, "firewall")),
 	}, true
 }
 
-// parseVLAN reads a tag; an absent tag is VLAN 0, an invalid one is an error.
+// isEnabled reads a Proxmox boolean; only the spellings for true count.
+func isEnabled(s string) bool {
+	switch strings.ToLower(s) {
+	case "1", "on", "yes", "true":
+		return true
+	}
+	return false
+}
+
+// parseVLAN reads a tag. An absent tag is VLAN 0; ok is false when the tag is
+// not a number from 1 to 4094.
 func parseVLAN(tag string) (int, bool) {
 	if tag == "" {
 		return 0, true
@@ -204,50 +217,101 @@ func ipconfigAddrs(raw string) []netip.Addr {
 }
 
 // staticAddrs reads an "ip=<cidr>" pair; "dhcp", "manual", IPv6 and anything
-// that is not a usable unicast IPv4 address yield nothing.
+// that is not a usable unicast IPv4 address (including the broadcast address)
+// yield nothing.
 func staticAddrs(pairs []pair) []netip.Addr {
 	prefix, err := netip.ParsePrefix(lookup(pairs, "ip"))
 	if err != nil {
 		return nil
 	}
 	addr := prefix.Addr()
-	if !addr.Is4() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast() {
+	if !addr.Is4() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast() ||
+		addr == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
 		return nil
 	}
 	return []netip.Addr{addr}
 }
 
-// guestIdentity names a guest so a recreated one is not mistaken for the
-// original. QEMU guests prefer their SMBIOS UUID; otherwise the identity is
-// a hash over things that change when the guest is rebuilt.
-func guestIdentity(ref model.GuestRef, nics []model.NIC, values map[string]string) string {
-	if ref.Kind == model.KindQEMU {
+// guestIdentity names a guest; see BuildGuest for the scheme.
+func guestIdentity(ref model.GuestRef, values map[string]string) string {
+	switch ref.Kind {
+	case model.KindQEMU:
 		if uuid, ok := smbiosUUID(values["smbios1"]); ok {
 			return "uuid:" + uuid
 		}
+		if ctime, ok := creationTime(values["meta"]); ok {
+			return "ctime:" + ctime
+		}
+		return macIdentity(ref, values)
+	default:
+		return macIdentity(ref, values)
 	}
-	if len(nics) == 0 {
-		return "vmid:" + ref.String()
-	}
-	seed := nics[0].MAC + "|" + values["hostname"]
-	if ref.Kind == model.KindQEMU {
-		seed = creationTime(values["meta"]) + "|" + nics[0].MAC
-	}
-	sum := sha256.Sum256([]byte(seed))
-	return "mac:" + hex.EncodeToString(sum[:16])
 }
 
-// smbiosUUID returns the lower-cased uuid of a QEMU "smbios1" value.
+// macIdentity hashes the MAC of the lowest-numbered NIC that has one. It reads
+// the raw net values rather than the parsed NICs so that a NIC that is
+// skipped for another reason still counts.
+func macIdentity(ref model.GuestRef, values map[string]string) string {
+	for i := range maxNICs {
+		mac, ok := nicMAC(ref.Kind, values["net"+strconv.Itoa(i)])
+		if !ok {
+			continue
+		}
+		sum := sha256.Sum256([]byte(mac))
+		return "mac:" + hex.EncodeToString(sum[:16])
+	}
+	return "vmid:" + ref.String()
+}
+
+// carriesMAC reports whether a net value item with this key holds a MAC.
+func carriesMAC(kind model.GuestKind, key string) bool {
+	if kind == model.KindLXC {
+		return key == "hwaddr"
+	}
+	return key == "macaddr" || isNICModel(key)
+}
+
+// nicMAC returns the first readable MAC of a net value, ignoring items it
+// does not understand.
+func nicMAC(kind model.GuestKind, raw string) (string, bool) {
+	for _, item := range strings.Split(raw, ",") {
+		key, value, found := strings.Cut(item, "=")
+		if !found || !carriesMAC(kind, key) {
+			continue
+		}
+		if mac, err := model.NormalizeMAC(value); err == nil {
+			return mac, true
+		}
+	}
+	return "", false
+}
+
+// smbiosUUID returns the first well-formed uuid of a QEMU "smbios1" value,
+// lower-cased. Other items, well-formed or not, do not matter.
 func smbiosUUID(raw string) (string, bool) {
-	pairs, ok := splitPairs(raw, nil)
-	if !ok {
-		return "", false
+	uuid, ok := findItem(raw, "uuid", validUUID)
+	return strings.ToLower(uuid), ok
+}
+
+// creationTime returns the first well-formed ctime of a QEMU "meta" value.
+func creationTime(raw string) (string, bool) {
+	return findItem(raw, "ctime", func(s string) bool {
+		_, err := strconv.ParseUint(s, 10, 64)
+		return err == nil
+	})
+}
+
+// findItem returns the value of the first "key=value" item of a
+// comma-separated property string whose value passes valid. Unlike
+// splitPairs it does not care about the rest of the string.
+func findItem(raw, key string, valid func(string) bool) (string, bool) {
+	for _, item := range strings.Split(raw, ",") {
+		k, v, found := strings.Cut(item, "=")
+		if found && k == key && valid(v) {
+			return v, true
+		}
 	}
-	uuid := lookup(pairs, "uuid")
-	if !validUUID(uuid) {
-		return "", false
-	}
-	return strings.ToLower(uuid), true
+	return "", false
 }
 
 func validUUID(s string) bool {
@@ -269,20 +333,6 @@ func validUUID(s string) bool {
 
 func isHex(r rune) bool {
 	return r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F'
-}
-
-// creationTime returns the ctime of a QEMU "meta" value, or "" when it is
-// missing or not a number.
-func creationTime(raw string) string {
-	pairs, ok := splitPairs(raw, nil)
-	if !ok {
-		return ""
-	}
-	ctime := lookup(pairs, "ctime")
-	if _, err := strconv.ParseUint(ctime, 10, 64); err != nil {
-		return ""
-	}
-	return ctime
 }
 
 // pair is one key=value item of a Proxmox property string.

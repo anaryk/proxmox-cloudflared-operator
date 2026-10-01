@@ -110,9 +110,9 @@ func leadingInt(s string) (int, bool) {
 	return n, err == nil
 }
 
-// splitTags splits a Proxmox tag string on ';', ',' and white space and drops
+// SplitTags splits a Proxmox tag string on ';', ',' and white space and drops
 // empty parts. Case is kept: tags are compared exactly as Proxmox stores them.
-func splitTags(s string) []string {
+func SplitTags(s string) []string {
 	tags := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ';' || r == ',' || unicode.IsSpace(r)
 	})
