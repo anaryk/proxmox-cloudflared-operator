@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 )
 
 // verdict says how a candidate fared.
@@ -52,7 +54,7 @@ func answered(ctx context.Context, err error, format string, args ...any) outcom
 // verify runs the checks on one candidate in order and stops at the first
 // that fails.
 func (a *attempt) verify(ctx context.Context, c Candidate) outcome {
-	if why, denied := a.deny.Check(c.Addr); denied {
+	if why, denied := a.forbidden(c.Addr); denied {
 		return outcome{rejected, why}
 	}
 	ifaces, o := a.hostIfaces(ctx)
@@ -79,18 +81,17 @@ func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate)
 	var placed map[string]bool
 	switch iface := arpInterface(ifaces, c); {
 	case iface == "" && a.trusted(c):
+		// Routed networks are what the admin trusts static addresses for, so
+		// the route may leave anywhere, but there must be one.
+		if _, _, o := a.kernelRoute(ctx, c.Addr); !o.ok() {
+			return o
+		}
 	case iface == "":
 		return lost("node has no address on %s in the guest's network", strings.Join(ifaceNames(c.NIC), " or "))
 	default:
-		own := a.ownMACs(c.NIC)
 		var o outcome
-		if macs, o = a.answeredBy(ctx, iface, c.Addr, own); !o.ok() {
+		if macs, placed, o = a.onWire(ctx, iface, c); !o.ok() {
 			return o
-		}
-		if a.checksFDB() {
-			if placed, o = a.forwarding(ctx, iface, c.NIC, macs, own); !o.ok() {
-				return o
-			}
 		}
 	}
 	for _, mac := range append([]string{c.NIC.MAC}, macs...) {
@@ -99,6 +100,26 @@ func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate)
 		}
 	}
 	return outcome{}
+}
+
+// onWire checks c.Addr on iface: the host's traffic for it leaves there, only
+// this guest answers ARP for it, and the bridge has learned the MACs that
+// answered where they belong. It returns those MACs and the ones the
+// forwarding table placed on the guest's own ports.
+func (a *attempt) onWire(ctx context.Context, iface string, c Candidate) ([]string, map[string]bool, outcome) {
+	if o := a.followsRoute(ctx, iface, c.Addr); !o.ok() {
+		return nil, nil, o
+	}
+	own := a.ownMACs(c.NIC)
+	macs, o := a.answeredBy(ctx, iface, c.Addr, own)
+	if !o.ok() {
+		return nil, nil, o
+	}
+	if !a.checksFDB() {
+		return macs, nil, a.notOnLocalPorts(ctx, iface, c.NIC, macs)
+	}
+	placed, o := a.forwarding(ctx, iface, c.NIC, macs, own)
+	return macs, placed, o
 }
 
 func (a *attempt) hostIfaces(ctx context.Context) ([]HostIface, outcome) {
@@ -123,11 +144,41 @@ func isNodeAddr(ifaces []HostIface, addr netip.Addr) bool {
 	})
 }
 
+// isClusterNodeAddr reports whether addr is the cluster address of a node or
+// configured on one of its interfaces, as far as the inventory knows. Like the
+// host's own addresses, these are never published whatever the denylist says.
+func isClusterNodeAddr(nodes []inventory.Node, addr netip.Addr) bool {
+	return slices.ContainsFunc(nodes, func(n inventory.Node) bool {
+		return n.Addr.Unmap() == addr || slices.ContainsFunc(n.Ifaces, func(ifc pve.NodeIface) bool {
+			return slices.ContainsFunc(ifc.Addrs, func(p netip.Prefix) bool { return p.Addr().Unmap() == addr })
+		})
+	})
+}
+
+// forbidden says why addr may never be served for a guest: the denylist, or
+// the address of a node.
+func forbidden(deny Denylist, snap inventory.Snapshot, addr netip.Addr) (string, bool) {
+	if why, denied := deny.Check(addr); denied {
+		return why, true
+	}
+	if isClusterNodeAddr(snap.Nodes, addr) {
+		return reasonClusterNode, true
+	}
+	return "", false
+}
+
+func (a *attempt) forbidden(addr netip.Addr) (string, bool) {
+	return forbidden(a.deny, a.snap, addr)
+}
+
 // checksFDB reports whether the forwarding-table step applies: on the node
-// that hosts the guest, and whenever either node is not known.
+// that hosts the guest, and whenever it is not known that the guest runs on
+// another node. A LocalNode that names no node of the inventory is a mistake
+// in the settings, which must not switch the step off.
 func (a *attempt) checksFDB() bool {
 	node, local := a.guest.Node, a.r.settings.LocalNode
-	return node == "" || local == "" || node == local
+	listed := slices.ContainsFunc(a.snap.Nodes, func(n inventory.Node) bool { return n.Name == local })
+	return node == "" || local == "" || node == local || !listed
 }
 
 // claimMAC fails when another running guest has mac configured too. Such a
@@ -234,47 +285,6 @@ func (a *attempt) answeredBy(ctx context.Context, iface string, addr netip.Addr,
 		}
 	}
 	return macs, outcome{}
-}
-
-// forwarding checks that the bridge has learned each MAC on the port of the
-// guest NIC that has it, and returns the MACs it placed there.
-func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, macs []string, own map[string][]int) (map[string]bool, outcome) {
-	bridge, vlan := nic.Bridge, nic.VLAN
-	if nic.VLAN != 0 && iface == vlanBridge(nic) {
-		bridge, vlan = iface, 0
-	}
-	placed := make(map[string]bool, len(macs))
-	for _, mac := range macs {
-		if ctx.Err() != nil {
-			return nil, stopped()
-		}
-		port, found, err := a.r.prober.FDBPort(ctx, bridge, vlan, mac)
-		if o := answered(ctx, err, "forwarding table of %s: %v", bridge); !o.ok() {
-			return nil, o
-		}
-		switch {
-		case !found:
-			return nil, lost("MAC %s not seen on bridge %s", mac, bridge)
-		case !slices.Contains(guestPorts(a.guest.Ref.VMID, own[mac]), port):
-			return nil, lost("MAC %s is on port %s, not on the guest's own port", mac, port)
-		}
-		placed[mac] = true
-	}
-	return placed, outcome{}
-}
-
-// guestPorts names the bridge ports Proxmox creates for the guest NICs with
-// the given indexes.
-func guestPorts(vmid int, indexes []int) []string {
-	out := make([]string, 0, 3*len(indexes))
-	for _, n := range indexes {
-		out = append(out,
-			fmt.Sprintf("tap%di%d", vmid, n),
-			fmt.Sprintf("fwpr%dp%d", vmid, n),
-			fmt.Sprintf("veth%di%d", vmid, n),
-		)
-	}
-	return out
 }
 
 func (r *Resolver) dial(ctx context.Context, addr netip.Addr, port uint16) outcome {

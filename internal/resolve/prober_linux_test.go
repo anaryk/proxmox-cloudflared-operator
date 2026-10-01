@@ -19,13 +19,20 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
 const (
-	labBridge = "pcotest0"
-	labPort1  = "tap901i0"
-	labPort2  = "tap902i0"
+	labBridge  = "pcotest0"
+	labBridge2 = "pcotest1" // only for the overlapping-prefix case
+	labPort1   = "tap901i0"
+	labPort2   = "tap902i0"
 )
+
+// labNets are the networks the bridge test puts addresses and routes in.
+var labNets = []netip.Prefix{netip.MustParsePrefix("10.99.0.0/24"), netip.MustParsePrefix("10.98.0.0/24")}
 
 func TestLinuxFDBPorts(t *testing.T) {
 	const bridge, tap1, tap2, otherBridge = 10, 11, 12, 20
@@ -97,6 +104,31 @@ func TestLinuxFDBPorts(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestLinuxNoRoute(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{err: nil},
+		{err: unix.ENETUNREACH, want: true},
+		{err: unix.EHOSTUNREACH, want: true},
+		{err: fmt.Errorf("asking: %w", unix.ENETUNREACH), want: true},
+		{err: unix.EPERM},
+		{err: unix.EINVAL},
+		{err: errors.New("network is unreachable")},
+	} {
+		require.Equal(t, tc.want, noRoute(tc.err), "%v", tc.err)
+	}
+}
+
+func TestLinuxOnLink(t *testing.T) {
+	gw := net.ParseIP("10.20.0.1")
+	require.True(t, onLink(netlink.Route{LinkIndex: 3}))
+	require.False(t, onLink(netlink.Route{LinkIndex: 3, Gw: gw}))
+	require.False(t, onLink(netlink.Route{LinkIndex: 3, Via: &netlink.Via{AddrFamily: unix.AF_INET6, Addr: net.ParseIP("fe80::1")}}))
+	require.False(t, onLink(netlink.Route{MultiPath: []*netlink.NexthopInfo{{LinkIndex: 3}, {LinkIndex: 4}}}))
 }
 
 func TestLinuxRetryDump(t *testing.T) {
@@ -398,16 +430,95 @@ func TestLinuxProberOnBridge(t *testing.T) {
 			require.Equal(t, []string{lab.guestMAC[i]}, macs)
 		}
 		for i, port := range []string{labPort1, labPort2} {
-			got, found, err := p.FDBPort(t.Context(), labBridge, 0, lab.guestMAC[i])
+			ports, err := p.FDBPorts(t.Context(), labBridge, 0, lab.guestMAC[i])
 			require.NoError(t, err)
-			require.True(t, found)
-			require.Equal(t, port, got)
+			require.Equal(t, []string{port}, ports)
 		}
 		for _, own := range []string{lab.bridgeMAC, lab.portMAC[0], "bc:24:11:99:99:99"} {
-			_, found, err := p.FDBPort(t.Context(), labBridge, 0, own)
+			ports, err := p.FDBPorts(t.Context(), labBridge, 0, own)
 			require.NoError(t, err, own)
-			require.False(t, found, own)
+			require.Empty(t, ports, own)
 		}
+	})
+
+	t.Run("forwarding table holds one port per MAC and VLAN", func(t *testing.T) {
+		// The bridge keys its table by MAC and VLAN, so a second entry moves
+		// the MAC rather than adding a port.
+		mac := "bc:24:11:99:99:97"
+		lab.staticFDB(t, labPort2, mac, 0)
+		lab.staticFDB(t, labPort1, mac, 0)
+
+		ports, err := p.FDBPorts(t.Context(), labBridge, 0, mac)
+
+		require.NoError(t, err)
+		require.Equal(t, []string{labPort1}, ports)
+	})
+
+	t.Run("route to a guest on the bridge", func(t *testing.T) {
+		iface, direct, err := p.Route(t.Context(), guest)
+		require.NoError(t, err)
+		require.Equal(t, labBridge, iface)
+		require.True(t, direct)
+	})
+
+	t.Run("route through a gateway", func(t *testing.T) {
+		lab.addRoute(t, "10.98.0.0/24", second)
+
+		iface, direct, err := p.Route(t.Context(), netip.MustParseAddr("10.98.0.5"))
+		require.NoError(t, err)
+		require.Equal(t, labBridge, iface)
+		require.False(t, direct)
+	})
+
+	t.Run("route to an address that is not IPv4", func(t *testing.T) {
+		_, _, err := p.Route(t.Context(), netip.MustParseAddr("fd00::1"))
+		require.ErrorContains(t, err, "is not an IPv4 address")
+	})
+
+	// A more specific network on a second bridge takes the host's traffic for
+	// an address the guest still answers ARP for on its own bridge.
+	t.Run("overlapping networks on two bridges", func(t *testing.T) {
+		moved := netip.MustParseAddr("10.99.0.70")
+		lab.addAddr(t, 0, "10.99.0.70/24")
+		br2 := addLabLink(t, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: labBridge2}})
+		require.NoError(t, netlink.AddrAdd(br2, &netlink.Addr{IPNet: mustIPNet(t, "10.99.0.65/26")}))
+		require.NoError(t, netlink.LinkSetUp(br2))
+
+		macs, err := p.ARP(t.Context(), labBridge, moved)
+		require.NoError(t, err)
+		require.Equal(t, []string{lab.guestMAC[0]}, macs, "the guest proves the address on its bridge")
+		iface, direct, err := p.Route(t.Context(), moved)
+		require.NoError(t, err)
+		require.Equal(t, labBridge2, iface)
+		require.True(t, direct)
+
+		ln := listenIn(t, lab.ns[0], "0.0.0.0:0")
+		port := uint16(ln.Addr().(*net.TCPAddr).Port)
+		ref := model.GuestRef{Kind: model.KindQEMU, VMID: 901}
+		snap := inventory.Snapshot{Complete: true, Guests: []model.Guest{{
+			Ref: ref, Name: "lab-1", Running: true, Identity: "lab",
+			NICs: []model.NIC{{Index: 0, MAC: lab.guestMAC[0], Bridge: labBridge}},
+		}}}
+		deny, err := NewDenylist(nil, nil)
+		require.NoError(t, err)
+		r := NewResolver(p, Settings{}, nil)
+		resolve := func(addr netip.Addr) Result {
+			route := model.Route{
+				Hostname: "lab.example.com",
+				Target:   model.Target{Scheme: model.SchemeHTTP, Addr: addr, Port: port},
+				Source:   model.SourceAnnotation,
+				Guest:    &ref,
+			}
+			return r.Resolve(t.Context(), route, snap, nil, deny)
+		}
+
+		res := resolve(moved)
+		require.False(t, res.Target.Addr.IsValid())
+		require.Equal(t, "route to 10.99.0.70 leaves through pcotest1, not pcotest0", res.Target.Reason)
+
+		res = resolve(guest)
+		require.Equal(t, guest, res.Target.Addr)
+		require.True(t, res.Target.Reachable, res.Target.Reason)
 	})
 
 	t.Run("dial", func(t *testing.T) {
@@ -455,23 +566,21 @@ func TestLinuxProberOnBridge(t *testing.T) {
 		mac := "bc:24:11:99:99:98"
 		lab.staticFDB(t, labPort2, mac, 1)
 
-		_, found, err := p.FDBPort(t.Context(), labBridge, 0, mac)
+		ports, err := p.FDBPorts(t.Context(), labBridge, 0, mac)
 		require.NoError(t, err)
-		require.False(t, found, "VID 1 is not untagged while VLAN filtering is off")
-		port, found, err := p.FDBPort(t.Context(), labBridge, 1, mac)
+		require.Empty(t, ports, "VID 1 is not untagged while VLAN filtering is off")
+		ports, err = p.FDBPorts(t.Context(), labBridge, 1, mac)
 		require.NoError(t, err)
-		require.True(t, found)
-		require.Equal(t, labPort2, port)
+		require.Equal(t, []string{labPort2}, ports)
 
 		// Only the name: the attributes read back from the bridge are not all
 		// accepted when sent again.
 		attrs := netlink.NewLinkAttrs()
 		attrs.Name = labBridge
 		require.NoError(t, netlink.BridgeSetVlanFiltering(&netlink.Bridge{LinkAttrs: attrs}, true))
-		port, found, err = p.FDBPort(t.Context(), labBridge, 0, mac)
+		ports, err = p.FDBPorts(t.Context(), labBridge, 0, mac)
 		require.NoError(t, err)
-		require.True(t, found, "VID 1 is the default PVID once VLAN filtering is on")
-		require.Equal(t, labPort2, port)
+		require.Equal(t, []string{labPort2}, ports, "VID 1 is the default PVID once VLAN filtering is on")
 	})
 }
 
@@ -490,8 +599,10 @@ func newBridgeLab(t *testing.T) *bridgeLab {
 	if os.Geteuid() != 0 {
 		skipLab(t, "needs root to build a bridge and network namespaces")
 	}
-	if _, err := netlink.LinkByName(labBridge); err == nil {
-		skipLab(t, "%s already exists, probably left by an earlier run that was killed; remove it with: ip link del %s", labBridge, labBridge)
+	for _, name := range []string{labBridge, labBridge2} {
+		if _, err := netlink.LinkByName(name); err == nil {
+			skipLab(t, "%s already exists, probably left by an earlier run that was killed; remove it with: ip link del %s", name, name)
+		}
 	}
 	for _, name := range []string{labPort1, labPort2} {
 		if _, err := netlink.LinkByName(name); err == nil {
@@ -499,7 +610,7 @@ func newBridgeLab(t *testing.T) *bridgeLab {
 		}
 	}
 	if what, ok := labNetInUse(t); ok {
-		skipLab(t, "%s overlaps the test network 10.99.0.0/24", what)
+		skipLab(t, "%s overlaps the test networks %v", what, labNets)
 	}
 
 	br := addLabLink(t, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: labBridge}})
@@ -545,14 +656,16 @@ func skipLab(t *testing.T, format string, args ...any) {
 }
 
 // labNetInUse reports an address or route of the host, in any routing table,
-// that overlaps the test network. Default routes do not count.
+// that overlaps the test networks. Default routes do not count.
 func labNetInUse(t *testing.T) (string, bool) {
 	t.Helper()
-	labNet := netip.MustParsePrefix("10.99.0.0/24")
+	overlaps := func(p netip.Prefix) bool {
+		return slices.ContainsFunc(labNets, func(n netip.Prefix) bool { return p.Masked().Overlaps(n) })
+	}
 	addrs, err := retryDump(func() ([]netlink.Addr, error) { return netlink.AddrList(nil, netlink.FAMILY_V4) })
 	require.NoError(t, err)
 	for _, a := range addrs {
-		if pfx, ok := ipv4Prefix(a.IPNet); ok && pfx.Masked().Overlaps(labNet) {
+		if pfx, ok := ipv4Prefix(a.IPNet); ok && overlaps(pfx) {
 			return fmt.Sprintf("address %s", pfx), true
 		}
 	}
@@ -561,7 +674,7 @@ func labNetInUse(t *testing.T) (string, bool) {
 	})
 	require.NoError(t, err)
 	for _, r := range routes {
-		if pfx, ok := ipv4Prefix(r.Dst); ok && pfx.Bits() > 0 && pfx.Masked().Overlaps(labNet) {
+		if pfx, ok := ipv4Prefix(r.Dst); ok && pfx.Bits() > 0 && overlaps(pfx) {
 			return fmt.Sprintf("route %s", pfx), true
 		}
 	}
@@ -594,6 +707,20 @@ func (l *bridgeLab) addAddr(t *testing.T, guest int, prefix string) {
 	eth0, err := h.LinkByName("eth0")
 	require.NoError(t, err)
 	require.NoError(t, h.AddrAdd(eth0, &netlink.Addr{IPNet: mustIPNet(t, prefix)}))
+}
+
+// addRoute sends dst through gw on the lab bridge until the test ends.
+func (l *bridgeLab) addRoute(t *testing.T, dst string, gw netip.Addr) {
+	t.Helper()
+	br, err := netlink.LinkByName(labBridge)
+	require.NoError(t, err)
+	route := &netlink.Route{LinkIndex: br.Attrs().Index, Dst: mustIPNet(t, dst), Gw: gw.AsSlice()}
+	require.NoError(t, netlink.RouteAdd(route))
+	t.Cleanup(func() {
+		if err := netlink.RouteDel(route); err != nil {
+			t.Errorf("deleting route to %s: %v", dst, err)
+		}
+	})
 }
 
 func (l *bridgeLab) staticFDB(t *testing.T, port, mac string, vlan int) {

@@ -1,3 +1,9 @@
+// Package resolve decides which address of a guest a published route may
+// point at.
+//
+// A Resolver keeps nothing between calls, so Resolve may be called from
+// several goroutines at once as long as its Prober allows that; the one
+// NewHostProber returns does.
 package resolve
 
 import (
@@ -23,6 +29,7 @@ const (
 
 	reasonNotRunning    = "guest is not running"
 	reasonNotFound      = "guest not found in inventory"
+	reasonGuestUnknown  = "guest state unknown"
 	reasonNoCandidate   = "no candidate address"
 	reasonNotTried      = "not tried"
 	reasonTooMany       = "not tried: too many candidates"
@@ -43,18 +50,31 @@ type HostIface struct {
 // a host that could not be asked.
 var ErrTooManyClaimants = errors.New("too many stations claim the address")
 
-// Prober is the host-side view the resolver needs.
+// ErrNoRoute is wrapped by a Route error when the kernel has no route to the
+// address at all, as opposed to one that could not be looked up.
+var ErrNoRoute = errors.New("no route to the address")
+
+// Prober is the host-side view the resolver needs. Its methods may be called
+// concurrently.
 type Prober interface {
 	Interfaces(ctx context.Context) ([]HostIface, error)
+	// Route returns the interface the kernel sends traffic for addr out of,
+	// and whether it goes to addr directly rather than through a gateway.
+	Route(ctx context.Context, addr netip.Addr) (iface string, onLink bool, err error)
 	// ARP asks for addr on iface and returns every MAC that answered in the window.
 	ARP(ctx context.Context, iface string, addr netip.Addr) ([]string, error)
-	// FDBPort returns the port of bridge on which mac is learned for vlan (0 = untagged).
-	FDBPort(ctx context.Context, bridge string, vlan int, mac string) (port string, found bool, err error)
+	// FDBPorts returns every port of bridge on which mac is learned for vlan
+	// (0 = untagged).
+	FDBPorts(ctx context.Context, bridge string, vlan int, mac string) ([]string, error)
 	Dial(ctx context.Context, target netip.AddrPort) error
 }
 
 // Settings tunes the resolver.
 type Settings struct {
+	// LocalNode is the name of the node the resolver runs on. A guest that
+	// runs on another node gets no forwarding-table step, only the check that
+	// no local guest port has its MAC; when LocalNode is empty or names no
+	// node of the inventory, every guest gets the step.
 	LocalNode    string
 	StickyFor    time.Duration // keep a failing binding this long before trying others, default 2m
 	TrustStatic  bool          // resolve.trustStaticConfig
@@ -80,7 +100,8 @@ type Result struct {
 }
 
 // Resolver decides which address a route may be served on. It keeps nothing
-// between calls; what it needs from the past is the previous binding.
+// between calls; what it needs from the past is the previous binding. It is
+// safe for concurrent use.
 type Resolver struct {
 	prober   Prober
 	settings Settings
@@ -105,24 +126,27 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 
 // Resolve decides the address for one route of a guest.
 //
-// A candidate is served only when it is neither denied nor an address of
-// this node, ARP for it is answered only by this guest's NICs on that bridge,
-// the bridge has learned those MACs on the guest's own ports (unless the
-// guest is known to run on another node), no other running guest has those
-// MACs configured unless the binding already had them and the forwarding
-// table placed them, and the port answers.
+// A candidate is served only when it is neither denied nor an address of any
+// node of the cluster or of this host, the host's own traffic for it leaves
+// directly through the interface on the NIC's bridge and VLAN, ARP for it
+// there is answered only by this guest's NICs, the bridge has learned each
+// of those MACs on exactly one port, the guest's own (for a guest known to
+// run on another node: on no port of a local guest), no other running guest
+// has those MACs configured unless the binding already had them and the
+// forwarding table placed them, and the port answers.
 //
 // The previous binding is verified first, even when no source reports its
 // address any more. After a dial failure it stays the target for StickyFor
-// before other candidates are tried; after a prober error, while its last
-// proof is not in doubt. Lost identity, a stopped or missing guest, or a
-// doubtful proof (older than MaxProofAge, dated in the future, or for a MAC
-// another running guest has too) withdraws it, and only identity passing
-// again lifts that. When nothing passes and nothing is bound, the target
-// says why the first candidate failed and has no address. Whether the
-// binding still applies is decided before ctx is looked at; a cancelled ctx
-// then leaves the previous state as it was, except for what the call has
-// already learned about the bound address.
+// before other candidates are tried; after a prober error, or while an
+// incomplete inventory does not list the guest, while its last proof is not
+// in doubt. Lost identity, a stopped guest, a guest missing from a complete
+// inventory, or a doubtful proof (older than MaxProofAge, dated in the
+// future, or for a MAC another running guest has too) withdraws it, and only
+// identity passing again lifts that. When nothing passes and nothing is
+// bound, the target says why the first candidate failed and has no address.
+// Whether the binding still applies is decided before ctx is looked at; a
+// cancelled ctx then leaves the previous state as it was, except for what the
+// call has already learned about the bound address.
 func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist) Result {
 	res := r.resolve(ctx, route, snap, prev, deny)
 	if res.Target.Addr.IsValid() {
@@ -133,7 +157,7 @@ func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventor
 
 func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist) Result {
 	if route.Guest == nil {
-		return r.resolveAddress(ctx, route, deny)
+		return r.resolveAddress(ctx, route, snap, deny)
 	}
 	if !prev.appliesTo(route) {
 		prev = nil
@@ -141,10 +165,13 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 	now := r.now()
 	guest, ok := snap.Guest(*route.Guest)
 	switch {
+	case !ok && !snap.Complete:
+		a := &attempt{r: r, route: route, guest: model.Guest{Ref: *route.Guest}, snap: snap, deny: deny, prev: prev, now: now}
+		return a.guestUnknown()
 	case !ok:
-		return hold(prev, deny, reasonNotFound, now)
+		return hold(prev, deny, snap, reasonNotFound, now)
 	case !guest.Running:
-		return hold(prev, deny, reasonNotRunning, now)
+		return hold(prev, deny, snap, reasonNotRunning, now)
 	}
 	cands, err := Candidates(route, guest)
 	if err != nil {
@@ -160,28 +187,28 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 }
 
 // hold withdraws the previous binding without probing while its guest
-// cannot be checked. The denylist still applies to it.
-func hold(prev *Binding, deny Denylist, reason string, now time.Time) Result {
+// cannot be checked. The denylist and the node addresses still apply to it.
+func hold(prev *Binding, deny Denylist, snap inventory.Snapshot, reason string, now time.Time) Result {
 	if prev == nil {
 		return Result{Target: planner.ResolvedTarget{Reason: reason}}
 	}
-	if why, denied := deny.Check(prev.Addr); denied {
+	if why, denied := forbidden(deny, snap, prev.Addr); denied {
 		return Result{Target: planner.ResolvedTarget{Rejected: true, Reason: why}}
 	}
 	return Result{Target: planner.ResolvedTarget{Addr: prev.Addr, Withdrawn: true, Reason: reason}, Binding: prev.withdrawn(now)}
 }
 
 // resolveAddress handles a route an admin wrote without a guest: there is no
-// identity to check, so only the denylist, the node's own addresses and the
+// identity to check, so only the denylist, the addresses of the nodes and the
 // dial apply. AllowNode lifts the node rules, nothing else, and only on a
 // manual route.
-func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, deny Denylist) Result {
+func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, snap inventory.Snapshot, deny Denylist) Result {
 	addr := route.Target.Addr
 	allowNode := route.Options.AllowNode && route.Source == model.SourceManual
 	if allowNode {
 		deny = deny.withoutNodes()
 	}
-	o := r.checkAddress(ctx, addr, allowNode, deny)
+	o := r.checkAddress(ctx, addr, allowNode, snap, deny)
 	if o.ok() {
 		o = r.dial(ctx, addr, route.Target.Port)
 	}
@@ -197,12 +224,15 @@ func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, deny D
 }
 
 // checkAddress rejects an address a guest-less route must not point at.
-func (r *Resolver) checkAddress(ctx context.Context, addr netip.Addr, allowNode bool, deny Denylist) outcome {
+func (r *Resolver) checkAddress(ctx context.Context, addr netip.Addr, allowNode bool, snap inventory.Snapshot, deny Denylist) outcome {
 	if why, denied := deny.Check(addr); denied {
 		return outcome{rejected, why}
 	}
 	if allowNode {
 		return outcome{}
+	}
+	if isClusterNodeAddr(snap.Nodes, addr) {
+		return outcome{rejected, reasonClusterNode}
 	}
 	if ctx.Err() != nil {
 		return stopped()
@@ -362,15 +392,30 @@ func (a *attempt) cancelled() Result {
 }
 
 // unchanged returns what the binding says, for a call that learned nothing
-// about it. A denied address is still rejected.
+// about it. A forbidden address is still rejected.
 func (a *attempt) unchanged() Result {
 	if a.prev == nil {
 		return a.result(planner.ResolvedTarget{Reason: reasonCancelled}, nil)
 	}
-	if why, denied := a.deny.Check(a.prev.Addr); denied {
+	if why, denied := a.forbidden(a.prev.Addr); denied {
 		return a.result(planner.ResolvedTarget{Rejected: true, Reason: why}, nil)
 	}
 	return a.unproven(a.prev.clone(), reasonCancelled)
+}
+
+// guestUnknown keeps the binding of a guest that an incomplete inventory does
+// not list. Nothing shows that the guest is gone, or that it is still there,
+// so the address is treated as after a prober error: served while its last
+// proof is fresh, and never probed, since there is no guest to check it
+// against.
+func (a *attempt) guestUnknown() Result {
+	if a.prev == nil {
+		return a.result(planner.ResolvedTarget{Reason: reasonGuestUnknown}, nil)
+	}
+	if why, denied := a.forbidden(a.prev.Addr); denied {
+		return a.result(planner.ResolvedTarget{Rejected: true, Reason: why}, nil)
+	}
+	return a.unproven(a.prev.failing(a.now), reasonGuestUnknown)
 }
 
 // unproven returns b as the target of a call that did not prove its

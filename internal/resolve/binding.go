@@ -82,13 +82,15 @@ func (b *Binding) withdrawn(now time.Time) *Binding {
 }
 
 // holds reports whether b, failing at now, is still kept without trying
-// other candidates.
+// other candidates. A FailingSince after now, as after the clock was set
+// back, says nothing about how long b has failed and counts as expired.
 func (b *Binding) holds(now time.Time, stickyFor time.Duration) bool {
 	since := now
 	if b.FailingSince != nil {
 		since = *b.FailingSince
 	}
-	return now.Sub(since) < stickyFor
+	failing := now.Sub(since)
+	return failing >= 0 && failing < stickyFor
 }
 
 // target is what b says about its address when nothing new is known.

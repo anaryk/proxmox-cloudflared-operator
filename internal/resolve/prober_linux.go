@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"os"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/mdlayher/arp"
@@ -44,7 +43,8 @@ type hostProber struct {
 }
 
 // NewHostProber returns the Prober of this host. A zero arpWindow selects
-// 600 ms, a zero dialTimeout 2 s.
+// 600 ms, a zero dialTimeout 2 s. It keeps no state between calls, and every
+// call opens sockets of its own, so it is safe for concurrent use.
 func NewHostProber(arpWindow, dialTimeout time.Duration) Prober {
 	if arpWindow <= 0 {
 		arpWindow = defaultARPWindow
@@ -229,37 +229,72 @@ func broadcastMAC() net.HardwareAddr {
 	return net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 }
 
-func (p *hostProber) FDBPort(_ context.Context, bridge string, vlan int, mac string) (string, bool, error) {
+// Route asks the kernel for the route it would use to send to addr from this
+// host, as "ip route get" does.
+func (p *hostProber) Route(ctx context.Context, addr netip.Addr) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if !addr.Is4() {
+		return "", false, fmt.Errorf("%s is not an IPv4 address", addr)
+	}
+	routes, err := netlink.RouteGet(addr.AsSlice())
+	switch {
+	case noRoute(err):
+		return "", false, fmt.Errorf("route to %s: %w", addr, ErrNoRoute)
+	case err != nil:
+		return "", false, fmt.Errorf("looking up route: %w", err)
+	case len(routes) == 0:
+		return "", false, fmt.Errorf("route to %s: %w", addr, ErrNoRoute)
+	}
+	link, err := netlink.LinkByIndex(routes[0].LinkIndex)
+	if err != nil {
+		return "", false, fmt.Errorf("looking up interface %d: %w", routes[0].LinkIndex, err)
+	}
+	return link.Attrs().Name, onLink(routes[0]), nil
+}
+
+// noRoute reports whether the kernel answered a route lookup with having no
+// route to the address, or one that rejects it.
+func noRoute(err error) bool {
+	return errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH)
+}
+
+// onLink reports whether r sends to the destination itself rather than to a
+// gateway.
+func onLink(r netlink.Route) bool {
+	return r.Gw == nil && r.Via == nil && len(r.MultiPath) == 0
+}
+
+// FDBPorts returns the ports in name order, so that the same table always
+// reads the same.
+func (p *hostProber) FDBPorts(_ context.Context, bridge string, vlan int, mac string) ([]string, error) {
 	hw, err := net.ParseMAC(mac)
 	if err != nil {
-		return "", false, fmt.Errorf("parsing MAC: %w", err)
+		return nil, fmt.Errorf("parsing MAC: %w", err)
 	}
 	link, err := netlink.LinkByName(bridge)
 	if err != nil {
-		return "", false, fmt.Errorf("looking up bridge: %w", err)
+		return nil, fmt.Errorf("looking up bridge: %w", err)
 	}
 	br, ok := link.(*netlink.Bridge)
 	if !ok {
-		return "", false, fmt.Errorf("%s is not a Linux bridge", bridge)
+		return nil, fmt.Errorf("%s is not a Linux bridge", bridge)
 	}
 	entries, err := retryDump(func() ([]netlink.Neigh, error) { return netlink.NeighList(0, unix.AF_BRIDGE) })
 	if err != nil {
-		return "", false, fmt.Errorf("dumping forwarding database: %w", err)
+		return nil, fmt.Errorf("dumping forwarding database: %w", err)
 	}
 	indexes, err := fdbPorts(entries, br, vlan, hw)
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 	ports, err := linkNames(indexes)
-	switch {
-	case err != nil:
-		return "", false, err
-	case len(ports) == 0:
-		return "", false, nil
-	case len(ports) > 1:
-		return "", false, fmt.Errorf("MAC %s is learned on ports %s", hw, strings.Join(ports, " and "))
+	if err != nil {
+		return nil, err
 	}
-	return ports[0], true, nil
+	slices.Sort(ports)
+	return ports, nil
 }
 
 // fdbPorts returns the ports of br on which mac is learned for vlan, in the

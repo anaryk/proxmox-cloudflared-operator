@@ -10,7 +10,7 @@ import (
 )
 
 func TestDenylistCheck(t *testing.T) {
-	d := NewDenylist(
+	d := denylist(t,
 		ips("10.20.0.2", "10.20.0.3"),
 		[]netip.Prefix{netip.MustParsePrefix("10.99.0.0/24"), netip.MustParsePrefix("100.64.1.7/32")},
 	)
@@ -46,7 +46,7 @@ func TestDenylistCheck(t *testing.T) {
 }
 
 func TestDenylistAllowsOrdinaryAddresses(t *testing.T) {
-	d := NewDenylist(
+	d := denylist(t,
 		ips("10.20.0.2"),
 		[]netip.Prefix{netip.MustParsePrefix("10.99.0.0/24")},
 	)
@@ -64,7 +64,7 @@ func TestDenylistAllowsOrdinaryAddresses(t *testing.T) {
 }
 
 func TestDenylistNodeAddressIsExact(t *testing.T) {
-	d := NewDenylist(ips("10.20.0.2"), nil)
+	d := denylist(t, ips("10.20.0.2"), nil)
 	for _, s := range []string{"10.20.0.1", "10.20.0.3", "10.20.1.2"} {
 		_, denied := d.Check(ip(s))
 		require.False(t, denied, s)
@@ -81,7 +81,7 @@ func TestDenylistNodeAddress(t *testing.T) {
 		rep(mac0, node),
 		rep(mac0, "10.20.0.11"),
 	)
-	d := NewDenylist(ips(node), nil)
+	d := denylist(t, ips(node), nil)
 
 	routes := []struct {
 		name  string
@@ -120,17 +120,14 @@ func TestDenylistNodeAddress(t *testing.T) {
 }
 
 func TestDenylistNodeReasonBeatsExtraPrefix(t *testing.T) {
-	d := NewDenylist(ips("10.20.0.2"), []netip.Prefix{netip.MustParsePrefix("10.20.0.0/24")})
+	d := denylist(t, ips("10.20.0.2"), []netip.Prefix{netip.MustParsePrefix("10.20.0.0/24")})
 	reason, denied := d.Check(ip("10.20.0.2"))
 	require.True(t, denied)
 	require.Equal(t, "address of a cluster node", reason)
 }
 
-func TestDenylistIgnoresNonIPv4Config(t *testing.T) {
-	d := NewDenylist(
-		[]netip.Addr{{}, ip("fd00::2"), ip("10.20.0.2")},
-		[]netip.Prefix{{}, netip.MustParsePrefix("fd00::/8")},
-	)
+func TestDenylistIgnoresNonIPv4NodeAddresses(t *testing.T) {
+	d := denylist(t, []netip.Addr{{}, ip("fd00::2"), ip("10.20.0.2")}, nil)
 	reason, denied := d.Check(ip("10.20.0.2"))
 	require.True(t, denied)
 	require.Equal(t, "address of a cluster node", reason)
@@ -142,7 +139,7 @@ func TestDenylistIgnoresNonIPv4Config(t *testing.T) {
 func TestNewDenylistCopiesInput(t *testing.T) {
 	nodes := ips("10.20.0.2")
 	extra := []netip.Prefix{netip.MustParsePrefix("10.99.0.0/24")}
-	d := NewDenylist(nodes, extra)
+	d := denylist(t, nodes, extra)
 
 	nodes[0] = ip("10.20.0.77")
 	extra[0] = netip.MustParsePrefix("10.77.0.0/24")
@@ -168,9 +165,9 @@ func TestZeroDenylist(t *testing.T) {
 }
 
 func TestNewDenylistUnmapsIPv4InIPv6(t *testing.T) {
-	d := NewDenylist(
+	d := denylist(t,
 		[]netip.Addr{ip("::ffff:10.20.0.2")},
-		[]netip.Prefix{netip.MustParsePrefix("::ffff:10.99.0.0/120"), netip.MustParsePrefix("::ffff:0:0/80")},
+		[]netip.Prefix{netip.MustParsePrefix("::ffff:10.99.0.0/120")},
 	)
 
 	reason, denied := d.Check(ip("10.20.0.2"))
@@ -182,5 +179,35 @@ func TestNewDenylistUnmapsIPv4InIPv6(t *testing.T) {
 	require.Equal(t, "reserved by pco", reason)
 
 	_, denied = d.Check(ip("10.98.0.5"))
-	require.False(t, denied, "a mapped prefix shorter than /96 is not an IPv4 range")
+	require.False(t, denied)
+}
+
+func TestNewDenylistRejectsPrefixesOutsideIPv4(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix netip.Prefix
+		err    string
+	}{
+		{"mapped prefix shorter than /96", netip.MustParsePrefix("::ffff:0:0/80"), "deny prefix ::ffff:0.0.0.0/80 reaches beyond the IPv4-mapped range"},
+		{"mapped prefix of /95", netip.MustParsePrefix("::ffff:0:0/95"), "deny prefix ::ffff:0.0.0.0/95 reaches beyond the IPv4-mapped range"},
+		{"IPv6 prefix", netip.MustParsePrefix("fd00::/8"), "deny prefix fd00::/8 is not an IPv4 range"},
+		{"every IPv6 address", netip.MustParsePrefix("::/0"), "deny prefix ::/0 is not an IPv4 range"},
+		{"zero prefix", netip.Prefix{}, "deny prefix invalid Prefix is not an IPv4 range"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extra := []netip.Prefix{netip.MustParsePrefix("10.99.0.0/24"), tt.prefix}
+
+			_, err := NewDenylist(ips("10.20.0.2"), extra)
+
+			require.EqualError(t, err, tt.err)
+		})
+	}
+
+	t.Run("whole mapped range", func(t *testing.T) {
+		d := denylist(t, nil, []netip.Prefix{netip.MustParsePrefix("::ffff:0:0/96")})
+		reason, denied := d.Check(ip("192.168.1.10"))
+		require.True(t, denied)
+		require.Equal(t, "reserved by pco", reason)
+	})
 }

@@ -142,7 +142,7 @@ func TestCandidatesEmptyMACNICMatchesNothing(t *testing.T) {
 	require.Empty(t, got)
 }
 
-func TestCandidatesDropDuplicates(t *testing.T) {
+func TestCandidatesDropDuplicatesOnTheSameNIC(t *testing.T) {
 	g := guestWith(
 		[]model.NIC{
 			{Index: 0, MAC: mac0, Bridge: "vmbr0", Static: ips("10.20.0.10", "10.20.0.10")},
@@ -157,8 +157,10 @@ func TestCandidatesDropDuplicates(t *testing.T) {
 	require.NoError(t, err)
 	requireCandidates(t, g, got, []want{
 		{"10.20.0.10", 0, FromStatic},
+		{"10.20.0.10", 1, FromStatic},
 		{"10.30.0.10", 1, FromStatic},
 		{"10.20.0.11", 0, FromAgent},
+		{"10.20.0.11", 1, FromAgent},
 	})
 }
 
@@ -266,23 +268,23 @@ func TestCandidatesViaAddress(t *testing.T) {
 		rep("", "10.40.0.50"),
 	}
 	tests := []struct {
-		name string
-		via  string
-		want want
+		name  string
+		via   string
+		wants []want
 	}{
-		{"static on the second nic", "10.30.0.10", want{"10.30.0.10", 1, FromVia}},
-		{"static on the first nic", "10.20.0.10", want{"10.20.0.10", 0, FromVia}},
-		{"reported with the MAC of a nic", "10.30.0.11", want{"10.30.0.11", 1, FromVia}},
-		{"reported with an unknown MAC", "172.17.0.2", want{"172.17.0.2", 0, FromVia}},
-		{"reported without a MAC", "10.40.0.50", want{"10.40.0.50", 0, FromVia}},
-		{"unknown address", "10.20.0.99", want{"10.20.0.99", 0, FromVia}},
+		{"static on the second nic", "10.30.0.10", []want{{"10.30.0.10", 1, FromVia}}},
+		{"static on the first nic", "10.20.0.10", []want{{"10.20.0.10", 0, FromVia}}},
+		{"reported with the MAC of a nic", "10.30.0.11", []want{{"10.30.0.11", 1, FromVia}}},
+		{"reported with an unknown MAC", "172.17.0.2", []want{{"172.17.0.2", 0, FromVia}, {"172.17.0.2", 1, FromVia}}},
+		{"reported without a MAC", "10.40.0.50", []want{{"10.40.0.50", 0, FromVia}, {"10.40.0.50", 1, FromVia}}},
+		{"unknown address", "10.20.0.99", []want{{"10.20.0.99", 0, FromVia}, {"10.20.0.99", 1, FromVia}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := guestWith(nics, reported...)
 			got, err := Candidates(routeFor(netip.Addr{}, tt.via), g)
 			require.NoError(t, err)
-			requireCandidates(t, g, got, []want{tt.want})
+			requireCandidates(t, g, got, tt.wants)
 		})
 	}
 }
@@ -300,7 +302,7 @@ func TestCandidatesViaAddressPrefersStaticOverReported(t *testing.T) {
 	requireCandidates(t, g, got, []want{{"10.20.0.10", 1, FromVia}})
 }
 
-func TestCandidatesViaAddressFallsBackToLowestBridgedNIC(t *testing.T) {
+func TestCandidatesGuessedAddressOnEveryBridgedNIC(t *testing.T) {
 	g := guestWith([]model.NIC{
 		{Index: 3, MAC: mac2, Bridge: "vmbr2"},
 		{Index: 1, MAC: mac1, Bridge: "vmbr1"},
@@ -308,7 +310,21 @@ func TestCandidatesViaAddressFallsBackToLowestBridgedNIC(t *testing.T) {
 	})
 	got, err := Candidates(routeFor(netip.Addr{}, "10.20.0.99"), g)
 	require.NoError(t, err)
-	requireCandidates(t, g, got, []want{{"10.20.0.99", 1, FromVia}})
+	requireCandidates(t, g, got, []want{{"10.20.0.99", 1, FromVia}, {"10.20.0.99", 3, FromVia}})
+}
+
+func TestCandidatesNamedAddressStaticOnTwoNICs(t *testing.T) {
+	g := guestWith(
+		[]model.NIC{
+			{Index: 0, MAC: mac0, Bridge: "vmbr0"},
+			{Index: 1, MAC: mac1, Bridge: "vmbr1", Static: ips("10.20.0.10")},
+			{Index: 2, MAC: mac2, Bridge: "vmbr2", Static: ips("10.20.0.10")},
+		},
+		rep(mac0, "10.20.0.10"),
+	)
+	got, err := Candidates(routeFor(ip("10.20.0.10"), ""), g)
+	require.NoError(t, err)
+	requireCandidates(t, g, got, []want{{"10.20.0.10", 1, FromVia}})
 }
 
 func TestCandidatesViaAddressNeedsANIC(t *testing.T) {
@@ -342,19 +358,19 @@ func TestCandidatesExplicitAddress(t *testing.T) {
 		rep(mac1, "10.30.0.11"),
 	)
 	tests := []struct {
-		name string
-		addr string
-		want want
+		name  string
+		addr  string
+		wants []want
 	}{
-		{"static", "10.20.0.10", want{"10.20.0.10", 0, FromVia}},
-		{"reported", "10.30.0.11", want{"10.30.0.11", 1, FromVia}},
-		{"unknown", "10.50.0.1", want{"10.50.0.1", 0, FromVia}},
+		{"static", "10.20.0.10", []want{{"10.20.0.10", 0, FromVia}}},
+		{"reported", "10.30.0.11", []want{{"10.30.0.11", 1, FromVia}}},
+		{"unknown", "10.50.0.1", []want{{"10.50.0.1", 0, FromVia}, {"10.50.0.1", 1, FromVia}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := Candidates(routeFor(ip(tt.addr), ""), g)
 			require.NoError(t, err)
-			requireCandidates(t, g, got, []want{tt.want})
+			requireCandidates(t, g, got, tt.wants)
 		})
 	}
 }

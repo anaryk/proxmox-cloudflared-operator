@@ -1,6 +1,11 @@
 package resolve
 
-import "net/netip"
+import (
+	"fmt"
+	"net/netip"
+)
+
+const reasonClusterNode = "address of a cluster node"
 
 // Denylist holds the addresses that must never be published, whatever a
 // route or a guest says. A guest controls its own configuration and what its
@@ -13,8 +18,10 @@ type Denylist struct {
 
 // NewDenylist denies the addresses of the cluster nodes, matched exactly, and
 // every prefix in extra on top of the built-in ranges. Its arguments are
-// copied.
-func NewDenylist(nodeAddrs []netip.Addr, extra []netip.Prefix) Denylist {
+// copied. A node address that is not IPv4 is ignored, but a prefix in extra
+// that is neither IPv4 nor IPv4-mapped of /96 or longer is an error naming
+// it, so that callers can validate their settings with it.
+func NewDenylist(nodeAddrs []netip.Addr, extra []netip.Prefix) (Denylist, error) {
 	d := Denylist{nodes: make(map[netip.Addr]struct{}, len(nodeAddrs))}
 	for _, a := range nodeAddrs {
 		if a = a.Unmap(); a.Is4() {
@@ -22,24 +29,28 @@ func NewDenylist(nodeAddrs []netip.Addr, extra []netip.Prefix) Denylist {
 		}
 	}
 	for _, p := range extra {
-		if p = unmapPrefix(p); p.IsValid() && p.Addr().Is4() {
-			d.prefixes = append(d.prefixes, p)
+		v4, err := unmapPrefix(p)
+		if err != nil {
+			return Denylist{}, err
 		}
+		d.prefixes = append(d.prefixes, v4)
 	}
-	return d
+	return d, nil
 }
 
-// unmapPrefix returns an IPv4-mapped IPv6 prefix as the IPv4 prefix it
-// covers. One shorter than /96 reaches beyond the mapped range and is no
-// IPv4 prefix at all.
-func unmapPrefix(p netip.Prefix) netip.Prefix {
-	if !p.IsValid() || !p.Addr().Is4In6() {
-		return p
+// unmapPrefix returns p as the IPv4 prefix it covers. An IPv4-mapped IPv6
+// prefix shorter than /96 reaches beyond the mapped range, and any other
+// prefix that is not IPv4 covers no IPv4 address at all.
+func unmapPrefix(p netip.Prefix) (netip.Prefix, error) {
+	switch {
+	case p.IsValid() && p.Addr().Is4():
+		return p, nil
+	case !p.IsValid() || !p.Addr().Is4In6():
+		return netip.Prefix{}, fmt.Errorf("deny prefix %s is not an IPv4 range", p)
+	case p.Bits() < 96:
+		return netip.Prefix{}, fmt.Errorf("deny prefix %s reaches beyond the IPv4-mapped range", p)
 	}
-	if p.Bits() < 96 {
-		return netip.Prefix{}
-	}
-	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96), nil
 }
 
 // withoutNodes returns d without the addresses of the cluster nodes, for a
@@ -66,7 +77,7 @@ func (d Denylist) Check(addr netip.Addr) (reason string, denied bool) {
 		return "broadcast address", true
 	}
 	if _, ok := d.nodes[addr]; ok {
-		return "address of a cluster node", true
+		return reasonClusterNode, true
 	}
 	for _, p := range d.prefixes {
 		if p.Contains(addr) {

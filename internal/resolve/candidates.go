@@ -1,5 +1,3 @@
-// Package resolve decides which address of a guest a published route may
-// point at.
 package resolve
 
 import (
@@ -73,23 +71,31 @@ func parseNICName(s string) (int, bool) {
 	return int(n), true
 }
 
-// candidateList collects candidates, dropping unusable and repeated addresses.
+// candidateList collects candidates, dropping unusable addresses and an
+// address repeated on the same NIC. The same address on another NIC is a
+// candidate of its own: which NIC really has it is for the wire to say.
 type candidateList struct {
 	out  []Candidate
-	seen map[netip.Addr]struct{}
+	seen map[nicAddr]struct{}
+}
+
+type nicAddr struct {
+	index int
+	addr  netip.Addr
 }
 
 func (l *candidateList) add(addr netip.Addr, nic model.NIC, source CandidateSource) {
 	if !usable(addr) {
 		return
 	}
-	if _, dup := l.seen[addr]; dup {
+	key := nicAddr{nic.Index, addr}
+	if _, dup := l.seen[key]; dup {
 		return
 	}
 	if l.seen == nil {
-		l.seen = make(map[netip.Addr]struct{})
+		l.seen = make(map[nicAddr]struct{})
 	}
-	l.seen[addr] = struct{}{}
+	l.seen[key] = struct{}{}
 	l.out = append(l.out, Candidate{Addr: addr, NIC: copyNIC(nic), Source: source})
 }
 
@@ -156,16 +162,32 @@ func onNIC(index int, guest model.Guest) ([]Candidate, error) {
 	return l.out, nil
 }
 
-// named returns the single candidate for an address the route names itself.
+// named returns the candidates for an address the route names itself: the
+// address on the NIC that lists it as a static address, else on the NIC whose
+// MAC the agent reports it with. An address neither source places is tried on
+// every NIC that has a bridge, in index order, rather than guessed onto one;
+// the identity check on the wire decides which, if any, holds.
 func named(addr netip.Addr, guest model.Guest) ([]Candidate, error) {
 	if !usable(addr) {
 		return nil, fmt.Errorf("address %s is not a usable IPv4 address", addr)
 	}
-	nic, err := nicFor(addr, sortedNICs(guest), guest.Reported)
-	if err != nil {
-		return nil, err
+	nics := sortedNICs(guest)
+	if len(nics) == 0 {
+		return nil, errors.New("guest has no network interface")
 	}
-	return []Candidate{{Addr: addr, NIC: copyNIC(nic), Source: FromVia}}, nil
+	if nic, ok := nicFor(addr, nics, guest.Reported); ok {
+		return []Candidate{{Addr: addr, NIC: copyNIC(nic), Source: FromVia}}, nil
+	}
+	var out []Candidate
+	for _, nic := range nics {
+		if nic.Bridge != "" {
+			out = append(out, Candidate{Addr: addr, NIC: copyNIC(nic), Source: FromVia})
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("guest has no network interface with a bridge")
+	}
+	return out, nil
 }
 
 // copyNIC returns nic with a Static slice of its own, so that a candidate
@@ -175,17 +197,13 @@ func copyNIC(nic model.NIC) model.NIC {
 	return nic
 }
 
-// nicFor finds the NIC an address is expected on: the one that lists it as a
-// static address, else the one whose MAC the agent reports it with, else the
-// first NIC that has a bridge. The last case is a guess; the identity check
-// on the wire decides whether it holds.
-func nicFor(addr netip.Addr, nics []model.NIC, reported []model.ReportedAddr) (model.NIC, error) {
-	if len(nics) == 0 {
-		return model.NIC{}, errors.New("guest has no network interface")
-	}
+// nicFor finds the NIC the guest's configuration or agent places an address
+// on: the first that lists it as a static address, else the first whose MAC
+// the agent reports it with.
+func nicFor(addr netip.Addr, nics []model.NIC, reported []model.ReportedAddr) (model.NIC, bool) {
 	for _, nic := range nics {
 		if slices.Contains(nic.Static, addr) {
-			return nic, nil
+			return nic, true
 		}
 	}
 	for _, nic := range nics {
@@ -193,13 +211,8 @@ func nicFor(addr netip.Addr, nics []model.NIC, reported []model.ReportedAddr) (m
 			return r.Addr == addr && reportedOn(r, nic)
 		})
 		if seen {
-			return nic, nil
+			return nic, true
 		}
 	}
-	for _, nic := range nics {
-		if nic.Bridge != "" {
-			return nic, nil
-		}
-	}
-	return model.NIC{}, errors.New("guest has no network interface with a bridge")
+	return model.NIC{}, false
 }
