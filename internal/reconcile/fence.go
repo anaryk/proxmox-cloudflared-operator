@@ -7,7 +7,9 @@ import "fmt"
 // that is not the stored writer does nothing at all, not even a listing.
 func (run *dnsRun) start() bool {
 	us, fault, stale := startWriter(run.r.writer)
-	if (fault == "" || stale) && us.InstallID != run.r.s.InstallID {
+	// A valid identity was read: the run may write, or it is stale.
+	identified := fault == "" || stale
+	if identified && us.InstallID != run.r.s.InstallID {
 		// The marker comes from the settings, the sentinel from the writer.
 		fault, stale = fmt.Sprintf("the writer is of install %s, the settings are for install %q", us.InstallID, run.r.s.InstallID), false
 	}

@@ -53,6 +53,10 @@ func TestDNSProbeChangedBeforeDelete(t *testing.T) {
 			rec.Comment = "kept by hand"
 			return rec
 		}},
+		{"comment changed, still ours", func(rec cfapi.Record) cfapi.Record {
+			rec.Comment = testMarker + " probe kept by hand"
+			return rec
+		}},
 		{"type changed", func(rec cfapi.Record) cfapi.Record {
 			rec.Type = "CNAME"
 			return rec

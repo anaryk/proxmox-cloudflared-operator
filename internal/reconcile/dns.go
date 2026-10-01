@@ -39,11 +39,20 @@ const (
 // DNSSettings tune the DNS reconciler. A setting that is zero or negative
 // takes its default.
 type DNSSettings struct {
-	InstallID      string        // must be the install id of the writer
-	Grace          time.Duration // default 60s
-	MaxGap         time.Duration // default 2m: the longest break between two runs that keeps a grace running
-	MaxDeletes     int           // default 5
-	MaxDeleteShare float64       // default 0.30
+	InstallID string        // must be the install id of the writer
+	Grace     time.Duration // default 60s
+
+	// MaxGap, default 2m, is the longest break in watching an unwanted name
+	// that keeps its grace running. As the last sighting is saved at most
+	// every MaxGap/4, the break between two runs that is tolerated lies
+	// between 3/4 MaxGap and MaxGap.
+	MaxGap time.Duration
+
+	// The mass delete guard holds the deletes of unconfirmed removals while
+	// more than MaxDeletes (default 5) and more than MaxDeleteShare (default
+	// 0.30) of the records of this install are being removed.
+	MaxDeletes     int
+	MaxDeleteShare float64
 }
 
 // ZoneRef is a zone pco manages and the credential that reaches it.
@@ -55,12 +64,17 @@ type ZoneRef struct {
 
 // DNSInput is what a DNS run brings in line.
 type DNSInput struct {
-	Records        []planner.RecordPlan
-	Zones          []ZoneRef       // every zone pco manages, also those with no wanted records
-	Tunnels        []TunnelState   // to translate tunnel names into ids
-	InventoryOK    bool            // false: no deletes, no tombstone started or confirmed
-	ConfirmDeletes bool            // lifts the mass-delete guard for this run
-	Adopt          map[string]bool // record names the admin agreed to take over
+	Records     []planner.RecordPlan
+	Zones       []ZoneRef       // every zone pco manages, also those with no wanted records
+	Tunnels     []TunnelState   // to translate tunnel names into ids
+	InventoryOK bool            // false: no deletes, no tombstone started or confirmed
+	Adopt       map[string]bool // record names the admin agreed to take over
+
+	// ConfirmDeletes confirms every removal pending in a listed zone in this
+	// run, in its grace or due: each then passes the mass delete guard once
+	// its grace is over, also in later runs. A removal that becomes pending
+	// later, or whose grace starts again, is not covered.
+	ConfirmDeletes bool
 
 	// StillUnwanted asks the inventory once more, right before a delete,
 	// whether no guest publishes name. An error or false holds the delete.
@@ -80,10 +94,15 @@ type Conflict struct {
 type DNSResult struct {
 	Actions   []Action // by zone name, then record name
 	Conflicts []Conflict
-	Lost      []string       // names that still point at our tunnel but lost the marker
-	Replaced  []cfapi.Record // records as they were before an adoption changed or replaced them
-	Problems  []string
-	Verdict   WriterVerdict // WriterStale when this process is not, or stopped being, the stored writer
+	Lost      []string // names that still point at our tunnel but lost the marker
+
+	// Replaced lists records as they were before an adoption changed or
+	// replaced them. A record is listed as the write goes out, so also when
+	// Cloudflare refused it or its answer was lost.
+	Replaced []cfapi.Record
+
+	Problems []string
+	Verdict  WriterVerdict // WriterStale when this process is not, or stopped being, the stored writer
 }
 
 // DNSReconciler keeps a proxied CNAME to the tunnel for every published
@@ -101,7 +120,10 @@ type DNSReconciler struct {
 	mu sync.Mutex
 	// wantedSinceSave holds the tombstone keys of the names runs saw wanted
 	// since the tombstones were last saved: their stored grace is stale even
-	// while the store, not yet saved, still holds it.
+	// while the store, not yet saved, still holds it. It is bounded by the
+	// number of distinct names planned, also in a process that only
+	// observes, and emptied by the first enforcing run that saves the
+	// tombstones or has nothing to save.
 	wantedSinceSave map[string]bool
 }
 
@@ -134,17 +156,18 @@ func NewDNSReconciler(clients Clients, store TombstoneStore, writer func() (us, 
 // proxied CNAME to its tunnel; records of others are never changed, except
 // the one the admin asked to adopt. A record of this install at an unwanted
 // name is deleted only after a grace this writer watched without a break,
-// with a complete inventory, the tombstones saved, no mass delete, and a
-// fresh read and an inventory check right before the call. When in doubt a
-// record stays. In Observe mode Run only reads and returns the actions it
-// would take as held.
+// with a complete inventory, the tombstones saved, a fresh read and an
+// inventory check right before the call, and, while many removals are
+// pending, the admin's confirmation (ConfirmDeletes). When in doubt a record
+// stays. In Observe mode Run only reads and returns the actions it would take
+// as held.
 //
 // A name seen wanted, by the plan of a run that did not find another writer
 // stored or by the inventory right before a delete, starts a new grace when
 // it is next unwanted, also when the drop of its tombstone could not be saved
 // yet; that is remembered in memory, so a restart of the process between
-// such a failed save and the next run loses it. A forward clock step larger than the grace but within
-// MaxGap makes a tombstone due at once.
+// such a failed save and the next run loses it. A forward clock step larger
+// than the grace but within MaxGap makes a tombstone due at once.
 func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -48,6 +48,8 @@ func TestDNSWriterUnusableAtStart(t *testing.T) {
 		{"writer not valid", writerOf(writerAt(5, ""), writerAt(5, "")), DNSSettings{InstallID: testInstall}, "cannot write as this writer"},
 		{"no install id", writerOf(ours, ours), DNSSettings{}, "install"},
 		{"another install id", writerOf(ours, ours), DNSSettings{InstallID: "xyz"}, "install"},
+		// A writer of another install is a wrong setup, whatever leader.json says.
+		{"another install id and another writer stored", writerOf(ours, newer), DNSSettings{InstallID: "xyz"}, "install"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
