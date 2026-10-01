@@ -521,9 +521,7 @@ func TestRateLimited(t *testing.T) {
 			}, *apiErr)
 			require.Len(t, env.requests(), 1, "do does not retry")
 
-			// The limiter now holds every caller back for that long, and starts
-			// with an empty bucket after it: one more token interval.
-			require.Equal(t, []time.Duration{tt.want, time.Second}, takeAfterWait(t, env))
+			requirePausedFor(t, env, tt.want)
 		})
 	}
 }
@@ -538,21 +536,40 @@ func TestRateLimitedWithoutEnvelope(t *testing.T) {
 	var apiErr *Error
 	require.ErrorAs(t, err, &apiErr)
 	require.Equal(t, Error{Status: 429, Message: "Too Many Requests", RetryAfter: 7 * time.Second}, *apiErr)
-	require.Equal(t, []time.Duration{7 * time.Second, time.Second}, takeAfterWait(t, env))
+	requirePausedFor(t, env, 7*time.Second)
 }
 
-func takeAfterWait(t *testing.T, env *testEnv) []time.Duration {
+// requirePausedFor checks what follows a 429 that asked to wait d: every call
+// fails at once for that long without sending anything, and once it is over
+// the bucket starts empty, one token interval away.
+func requirePausedFor(t *testing.T, env *testEnv, d time.Duration) {
 	t.Helper()
+	sent := len(env.requests())
+	err := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil)
+	requirePaused(t, err, d)
+	_, err = collect(t, env, "/zones", nil)
+	requirePaused(t, err, d)
+	require.Len(t, env.requests(), sent, "nothing is sent during the pause")
+	require.Empty(t, env.clock.takeSleeps(), "nobody waits for the pause")
+
+	env.clock.advance(d)
 	require.NoError(t, env.c.limiter.Wait(context.Background()))
-	return env.clock.takeSleeps()
+	require.Equal(t, []time.Duration{time.Second}, env.clock.takeSleeps())
 }
 
-func TestDoWaitsForTheLimiter(t *testing.T) {
+func TestDoFailsFastWhilePaused(t *testing.T) {
 	env := setup(t, reply(http.StatusOK, okBody(`{}`)))
 	env.c.limiter.Pause(5 * time.Second)
 
+	err := env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil)
+	requirePaused(t, err, 5*time.Second)
+	require.ErrorContains(t, err, "waiting for the rate limit")
+	require.Empty(t, env.requests())
+	require.Empty(t, env.clock.takeSleeps())
+
+	env.clock.advance(5 * time.Second)
 	require.NoError(t, env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil))
-	require.Equal(t, []time.Duration{5 * time.Second, time.Second}, env.clock.takeSleeps())
+	require.Equal(t, []time.Duration{time.Second}, env.clock.takeSleeps(), "a refill is still waited for")
 	require.Len(t, env.requests(), 1)
 }
 
@@ -707,7 +724,7 @@ func TestRateLimitedEvenWhenTheBodyCannotBeRead(t *testing.T) {
 	var apiErr *Error
 	require.ErrorAs(t, err, &apiErr)
 	require.Equal(t, Error{Status: 429, Message: "Too Many Requests", RetryAfter: 7 * time.Second}, *apiErr)
-	require.Equal(t, []time.Duration{7 * time.Second, time.Second}, takeAfterWait(t, env))
+	requirePausedFor(t, env, 7*time.Second)
 }
 
 func TestUnreadableBodyKeepsTheStatus(t *testing.T) {
@@ -786,6 +803,39 @@ func TestServerMessagesAreBounded(t *testing.T) {
 		require.NotContains(t, got, testToken[:6])
 		require.True(t, strings.HasPrefix(got, strings.Repeat("a", 505)+"[redact"))
 	})
+}
+
+func TestServerMessagesLoseControlCharacters(t *testing.T) {
+	messageOf := func(t *testing.T, msg string) string {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"success": false, "errors": []map[string]any{{"code": 1, "message": msg}}})
+		require.NoError(t, err)
+		env := setup(t, reply(http.StatusBadRequest, string(body)))
+		var apiErr *Error
+		require.ErrorAs(t, env.c.do(context.Background(), http.MethodGet, "/zones", nil, nil, nil), &apiErr)
+		return apiErr.Message
+	}
+
+	t.Run("they are dropped", func(t *testing.T) {
+		got := messageOf(t, "first line\nsecond\tline\r\x1b[31mred\x1b[0m\x00\x7f\u0085!")
+		require.Equal(t, "first linesecondline[31mred[0m!", got)
+	})
+	t.Run("before the token is looked for", func(t *testing.T) {
+		got := messageOf(t, "bad "+testToken[:5]+"\n"+testToken[5:]+" header")
+		require.Equal(t, "bad [redacted] header", got)
+	})
+	t.Run("printable text is kept", func(t *testing.T) {
+		require.Equal(t, "Zone été introuvable", messageOf(t, "Zone été introuvable"))
+	})
+}
+
+func TestGivenHTTPClientWithoutTimeoutGetsOne(t *testing.T) {
+	given := &http.Client{}
+	c, err := New(Options{Token: testToken, HTTPClient: given})
+	require.NoError(t, err)
+
+	require.Equal(t, 30*time.Second, c.hc.Timeout)
+	require.Zero(t, given.Timeout, "the given client is not changed")
 }
 
 func TestDoRefusesUnsafePaths(t *testing.T) {

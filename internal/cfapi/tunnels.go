@@ -30,7 +30,7 @@ func (w wireTunnel) deleted() bool {
 }
 
 func tunnelsPath(accountID string) (string, error) {
-	if err := ValidID("account id", accountID); err != nil {
+	if err := CheckID("account id", accountID); err != nil {
 		return "", err
 	}
 	return joinPath("accounts", accountID, "cfd_tunnel")
@@ -38,10 +38,10 @@ func tunnelsPath(accountID string) (string, error) {
 
 // tunnelPath is the path of a tunnel, or of what lies below it.
 func tunnelPath(accountID, tunnelID string, below ...string) (string, error) {
-	if err := ValidID("account id", accountID); err != nil {
+	if err := CheckID("account id", accountID); err != nil {
 		return "", err
 	}
-	if err := ValidID("tunnel id", tunnelID); err != nil {
+	if err := CheckID("tunnel id", tunnelID); err != nil {
 		return "", err
 	}
 	return joinPath(append([]string{"accounts", accountID, "cfd_tunnel", tunnelID}, below...)...)
@@ -54,7 +54,7 @@ func (c *Client) FindTunnel(ctx context.Context, accountID, name string) (Tunnel
 	if err != nil {
 		return Tunnel{}, false, fmt.Errorf("finding tunnel: %w", err)
 	}
-	if err := ValidName("tunnel name", name); err != nil {
+	if err := CheckName("tunnel name", name); err != nil {
 		return Tunnel{}, false, fmt.Errorf("finding tunnel: %w", err)
 	}
 
@@ -91,7 +91,7 @@ func (c *Client) CreateTunnel(ctx context.Context, accountID, name string) (Tunn
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("creating tunnel: %w", err)
 	}
-	if err := ValidName("tunnel name", name); err != nil {
+	if err := CheckName("tunnel name", name); err != nil {
 		return Tunnel{}, fmt.Errorf("creating tunnel: %w", err)
 	}
 

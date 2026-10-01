@@ -53,11 +53,18 @@ type Options struct {
 	Token   string // API token, sent as a bearer token; must not contain whitespace or control characters
 	// HTTPClient is used for every request. The client keeps a copy of it that
 	// refuses redirects whatever its CheckRedirect says, so that the token never
-	// follows a redirect; the value passed in is not changed. Default: a client
-	// with a 30 s timeout.
+	// follows a redirect, and that times out after 30 s when it has no timeout
+	// of its own; the value passed in is not changed. Default: a client with a
+	// 30 s timeout.
 	HTTPClient *http.Client
-	Limiter    *Limiter // default: 300 requests per 5 minutes, burst 20; share one between clients of a credential
-	UserAgent  string   // default "pco/<version>"
+
+	// Limiter paces the requests. Cloudflare counts its rate limit per user,
+	// not per token, so share one limiter between all clients of one
+	// Cloudflare user (owner of the tokens). Default: 300 requests per 5
+	// minutes, burst 20, for this client alone.
+	Limiter *Limiter
+
+	UserAgent string // default "pco/<version>"
 }
 
 // Client talks to the Cloudflare API. It is safe for concurrent use.
@@ -87,6 +94,11 @@ func New(opts Options) (*Client, error) {
 	if opts.HTTPClient != nil {
 		given := *opts.HTTPClient
 		hc = &given
+	}
+	if hc.Timeout == 0 {
+		// A request that never ends would hold its caller, and whatever lock
+		// it holds, for good.
+		hc.Timeout = defaultTimeout
 	}
 	// The API never redirects; following one would carry the token to
 	// wherever it points.
@@ -162,6 +174,7 @@ type apiMessage struct {
 // resultInfo describes the page of a listing. Which of the counts an endpoint
 // sends differs, so each one is a pointer: absent is not zero.
 type resultInfo struct {
+	Page       *int `json:"page"`
 	Count      *int `json:"count"`
 	PerPage    int  `json:"per_page"`
 	TotalCount *int `json:"total_count"`
@@ -197,7 +210,8 @@ func isNull(raw json.RawMessage) bool {
 }
 
 // roundTrip waits for the limiter, sends the request and returns the envelope
-// of a successful answer. Every other outcome is an error.
+// of a successful answer. Every other outcome is an error; while the limiter
+// is paused after a 429 that is a 429 of its own, and nothing is sent.
 func (c *Client) roundTrip(ctx context.Context, method, path string, query url.Values, body any) (*envelope, error) {
 	if err := checkPath(path); err != nil {
 		return nil, fmt.Errorf("invalid request path: %w", err)
@@ -293,10 +307,20 @@ func (c *Client) newError(status int, env *envelope) *Error {
 	return e
 }
 
-// cleanMessage makes a message from the server safe to keep: the token is
-// blanked out, in case the server echoes the request, and the length is
-// bounded. The token goes first so that a cut cannot leave part of it behind.
+// cleanMessage makes a message from the server safe to keep: control
+// characters are dropped, so that the message cannot break or forge a line of
+// a log, the token is blanked out, in case the server echoes the request, and
+// the length is bounded. The control characters go before the token is looked
+// for, which cannot contain any, so that one inside the echoed token does not
+// hide it; the token goes before the cut so that a cut cannot leave part of
+// it behind.
 func (c *Client) cleanMessage(msg string) string {
+	msg = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, msg)
 	msg = strings.ReplaceAll(msg, c.token, redacted)
 	if len(msg) <= maxMessageBytes {
 		return msg

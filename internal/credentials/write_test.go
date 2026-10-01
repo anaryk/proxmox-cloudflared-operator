@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -140,6 +144,48 @@ func TestOnlyAnUnknownOutcomeIsLookedUp(t *testing.T) {
 			})
 		}
 	}
+}
+
+// pausedWrites sends the probe creates through a real client, so that they
+// meet its limiter.
+type pausedWrites struct {
+	cfapi.API
+	client *cfapi.Client
+}
+
+func (p pausedWrites) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
+	return p.client.CreateRecord(ctx, zoneID, r)
+}
+
+func (p pausedWrites) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, error) {
+	return p.client.CreateTunnel(ctx, accountID, name)
+}
+
+func TestProbeCreateHeldByAPausedLimiterWasNotSent(t *testing.T) {
+	var sent atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sent.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	limiter := cfapi.NewLimiter(300, 5*time.Minute, 20, nil)
+	limiter.Pause(time.Hour) // as after a 429
+	client, err := cfapi.New(cfapi.Options{BaseURL: srv.URL, Token: "secret", Limiter: limiter})
+	require.NoError(t, err)
+	f := newFake()
+
+	got := newChecker().Run(t.Context(), pausedWrites{API: f, client: client}, true)
+
+	for _, check := range []Check{find(t, got, CapDNSWrite, exampleCom), find(t, got, CapTunnelWrite, acme)} {
+		require.False(t, check.OK)
+		require.Contains(t, check.Detail, "HTTP 429")
+		require.NotContains(t, check.Detail, "may exist", "a create that was never sent left nothing behind")
+	}
+	require.False(t, got.Usable)
+	require.Zero(t, sent.Load(), "nothing reached Cloudflare")
+	require.Len(t, callsTo(f, "Records"), 1, "no lookup of a probe record that was never sent")
+	require.Len(t, callsTo(f, "FindTunnel"), 1, "no lookup of a probe tunnel that was never sent")
+	require.Empty(t, callsTo(f, "DeleteRecord", "DeleteTunnel"))
 }
 
 func TestCancelledCreateOfUnknownOutcomeStillRemovesTheProbe(t *testing.T) {

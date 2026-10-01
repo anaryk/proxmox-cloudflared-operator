@@ -379,19 +379,19 @@ func TestListItemsMustAddUpToTotalCount(t *testing.T) {
 	}
 
 	t.Run("a server that reports more than it lists", func(t *testing.T) {
-		// 7 reported, 5 there: with no total_pages the pages follow total_count.
+		// 6 reported, 5 there: with no total_pages the pages follow total_count.
 		all := numbered(5)
 		env := setup(t, func(w http.ResponseWriter, r *http.Request) {
 			page, size := pageParams(r)
 			lo := min((page-1)*size, len(all))
 			hi := min(page*size, len(all))
-			reply(http.StatusOK, listBody(all[lo:hi], `{"count":`+strconv.Itoa(hi-lo)+`,"total_count":7}`))(w, r)
+			reply(http.StatusOK, listBody(all[lo:hi], `{"count":`+strconv.Itoa(hi-lo)+`,"total_count":6}`))(w, r)
 		})
 		got, err := collect(t, env, "/accounts/a1/cfd_tunnel", url.Values{"per_page": {"2"}})
 		require.ErrorIs(t, err, errListingChanged)
-		require.ErrorContains(t, err, "read 5 items, the server counts 7")
+		require.ErrorContains(t, err, "read 5 items, the server counts 6")
 		require.Empty(t, got)
-		require.Len(t, env.requests(), 4)
+		require.Len(t, env.requests(), 3)
 	})
 
 	t.Run("an empty later page cannot hide missing items", func(t *testing.T) {
@@ -407,6 +407,85 @@ func TestListItemsMustAddUpToTotalCount(t *testing.T) {
 		require.ErrorIs(t, err, errListingChanged)
 		require.Empty(t, got)
 	})
+}
+
+func TestListPageMustBeTheOneAskedFor(t *testing.T) {
+	answerAs := func(served func(asked int) int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			asked, _ := pageParams(r)
+			page := served(asked)
+			items := [][]string{{"a", "b"}, {"c", "d"}, {"e"}}[page-1]
+			reply(http.StatusOK, listBody(items, fmt.Sprintf(`{"page":%d,"per_page":2,"count":%d,"total_count":5,"total_pages":3}`, page, len(items))))(w, r)
+		}
+	}
+	tests := []struct {
+		name    string
+		served  func(asked int) int
+		pages   int // requests made before the listing is refused
+		wantErr string
+	}{
+		{"every page as asked", func(asked int) int { return asked }, 3, ""},
+		{"the first page again", func(int) int { return 1 }, 2, "asked for page 2, got page 1"},
+		{"a page skipped", func(asked int) int { return min(asked+1, 3) }, 1, "asked for page 1, got page 2"},
+		{"the last page early", func(int) int { return 3 }, 1, "asked for page 1, got page 3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setup(t, answerAs(tt.served))
+			got, err := collect(t, env, "/zones", url.Values{"per_page": {"2"}})
+			require.Len(t, env.requests(), tt.pages)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				require.Equal(t, []string{"a", "b", "c", "d", "e"}, got)
+				return
+			}
+			require.ErrorIs(t, err, errUnexpected)
+			require.ErrorContains(t, err, tt.wantErr)
+			require.Empty(t, got)
+		})
+	}
+}
+
+func TestListEmptyPageBeforeTheEndFailsAtOnce(t *testing.T) {
+	tests := []struct {
+		name  string
+		info  string // result_info of every page, with %d for the page
+		empty int    // the page that comes back empty
+	}{
+		{"a middle page, with totals", `{"page":%d,"total_count":6,"total_pages":3}`, 2},
+		{"a middle page, pages only", `{"page":%d,"total_pages":3}`, 2},
+		{"the first page, pages only", `{"page":%d,"total_pages":3}`, 1},
+		{"the last page, pages only", `{"page":%d,"total_pages":3}`, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setup(t, func(w http.ResponseWriter, r *http.Request) {
+				page, _ := pageParams(r)
+				items := []string{fmt.Sprintf("p%d-a", page), fmt.Sprintf("p%d-b", page)}
+				if page == tt.empty {
+					items = nil
+				}
+				reply(http.StatusOK, listBody(items, fmt.Sprintf(tt.info, page)))(w, r)
+			})
+			got, err := collect(t, env, "/zones", url.Values{"per_page": {"2"}})
+			require.ErrorIs(t, err, errListingChanged)
+			require.ErrorContains(t, err, fmt.Sprintf("page %d is empty", tt.empty))
+			require.Empty(t, got)
+			require.Len(t, env.requests(), tt.empty, "no page after the empty one is asked for")
+		})
+	}
+}
+
+func TestListNoPagesButItems(t *testing.T) {
+	for _, pages := range []string{"0", "-1"} {
+		t.Run(pages, func(t *testing.T) {
+			env := setup(t, reply(http.StatusOK, listBody([]string{"a"}, `{"page":1,"total_pages":`+pages+`}`)))
+			got, err := collect(t, env, "/zones", nil)
+			require.ErrorIs(t, err, errUnexpected)
+			require.ErrorContains(t, err, "total_pages is "+pages)
+			require.Empty(t, got)
+		})
+	}
 }
 
 func TestListFailsWholeOnPageError(t *testing.T) {

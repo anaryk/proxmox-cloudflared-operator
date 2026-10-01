@@ -24,11 +24,12 @@ const (
 var errUnexpected = errors.New("unexpected response")
 
 // Error is a call the API refused: a non-2xx status, or an envelope whose
-// success is false. It never contains the API token.
+// success is false. A call the client held back because an earlier answer
+// was a 429 is one too, with status 429. It never contains the API token.
 type Error struct {
 	Status     int
 	Codes      []int         // every code in the envelope, in order
-	Message    string        // the first message of the envelope, with the token blanked out and cut to 512 bytes, or the status text
+	Message    string        // the first message of the envelope without control characters, with the token blanked out and cut to 512 bytes, or the status text
 	RetryAfter time.Duration // set for 429
 }
 

@@ -117,11 +117,11 @@ var _ API = (*Client)(nil)
 // an id or a name it was given cannot be used.
 var ErrInvalidArgument = errors.New("invalid argument")
 
-// ValidID checks an id that is about to become a segment of a request path:
+// CheckID checks an id that is about to become a segment of a request path:
 // it must not be blank, "." or "..", nor contain a slash. kind names the id in
 // the error, which matches ErrInvalidArgument. The fake in cffake applies the
 // same check, so that both refuse the same calls.
-func ValidID(kind, id string) error {
+func CheckID(kind, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("%w: %s is empty", ErrInvalidArgument, kind)
 	}
@@ -131,9 +131,9 @@ func ValidID(kind, id string) error {
 	return nil
 }
 
-// ValidName checks a value that goes into a query or a body, such as the name
+// CheckName checks a value that goes into a query or a body, such as the name
 // of a tunnel or a record: it must not be blank.
-func ValidName(kind, name string) error {
+func CheckName(kind, name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("%w: %s is empty", ErrInvalidArgument, kind)
 	}

@@ -41,10 +41,10 @@ type recordBody struct {
 }
 
 func newRecordBody(r Record) (recordBody, error) {
-	if err := ValidName("record type", r.Type); err != nil {
+	if err := CheckName("record type", r.Type); err != nil {
 		return recordBody{}, err
 	}
-	if err := ValidName("record name", r.Name); err != nil {
+	if err := CheckName("record name", r.Name); err != nil {
 		return recordBody{}, err
 	}
 	return recordBody{Type: r.Type, Name: r.Name, Content: r.Content, Proxied: r.Proxied, Comment: r.Comment, TTL: SentTTL(r.TTL)}, nil
@@ -60,17 +60,17 @@ func SentTTL(ttl int) int {
 }
 
 func recordsPath(zoneID string) (string, error) {
-	if err := ValidID("zone id", zoneID); err != nil {
+	if err := CheckID("zone id", zoneID); err != nil {
 		return "", err
 	}
 	return joinPath("zones", zoneID, "dns_records")
 }
 
 func recordPath(zoneID, recordID string) (string, error) {
-	if err := ValidID("zone id", zoneID); err != nil {
+	if err := CheckID("zone id", zoneID); err != nil {
 		return "", err
 	}
-	if err := ValidID("record id", recordID); err != nil {
+	if err := CheckID("record id", recordID); err != nil {
 		return "", err
 	}
 	return joinPath("zones", zoneID, "dns_records", recordID)

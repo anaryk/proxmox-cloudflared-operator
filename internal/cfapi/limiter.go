@@ -2,6 +2,7 @@ package cfapi
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -54,15 +55,21 @@ func newLimiter(limit int, window time.Duration, burst int, now func() time.Time
 	}
 }
 
-// Wait blocks until a request may be sent and takes its token. It returns the
-// error of ctx if that ends first, without having taken one.
+// Wait blocks until the bucket holds a token for a request and takes it. A
+// pause is not waited out: while one is in force Wait returns at once, without
+// a token, an *Error with status 429 whose RetryAfter is what is left of the
+// pause, so that a caller never sits on a lock for as long as Cloudflare asked
+// to wait. It returns the error of ctx if that ends first.
 func (l *Limiter) Wait(ctx context.Context) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		d := l.reserve()
-		if d == 0 {
+		d, paused := l.reserve()
+		switch {
+		case paused:
+			return &Error{Status: http.StatusTooManyRequests, Message: "not sent: holding back after an earlier 429", RetryAfter: d}
+		case d == 0:
 			return nil
 		}
 		if err := l.sleep(ctx, d); err != nil {
@@ -71,7 +78,7 @@ func (l *Limiter) Wait(ctx context.Context) error {
 	}
 }
 
-// Pause holds back every Wait until d from now, whatever tokens are left, and
+// Pause refuses every Wait until d from now, whatever tokens are left, and
 // empties the bucket: nothing is saved up during the pause, so no burst goes
 // out the moment it ends. It never shortens a pause that is already longer.
 func (l *Limiter) Pause(d time.Duration) {
@@ -90,14 +97,14 @@ func (l *Limiter) Pause(d time.Duration) {
 }
 
 // reserve takes a token and returns 0, or returns how long to wait before
-// asking again.
-func (l *Limiter) reserve() time.Duration {
+// asking again. paused says that the wait is what is left of a pause.
+func (l *Limiter) reserve() (wait time.Duration, paused bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	now := l.now()
 	if now.Before(l.until) {
-		return l.until.Sub(now)
+		return l.until.Sub(now), true
 	}
 	// A clock that steps back earns no credit.
 	if elapsed := now.Sub(l.last); elapsed >= l.capacity-l.credit {
@@ -109,9 +116,9 @@ func (l *Limiter) reserve() time.Duration {
 
 	if l.credit >= l.cost {
 		l.credit -= l.cost
-		return 0
+		return 0, false
 	}
-	return l.cost - l.credit
+	return l.cost - l.credit, false
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

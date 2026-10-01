@@ -206,7 +206,7 @@ func (f *Fake) FailNext(op string, n int, err error) {
 // zone1 <record id>". A call refused by Deny, FailNext or because an id is
 // unknown is in the list. A call that never reaches Cloudflare is not: one made
 // with an ended context, or with an id or name the client would refuse to send
-// (see cfapi.ValidID).
+// (see cfapi.CheckID).
 func (f *Fake) Calls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

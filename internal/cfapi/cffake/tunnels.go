@@ -22,19 +22,19 @@ type tunnel struct {
 // checkTunnelName checks the arguments of the calls that take an account and a
 // tunnel name, the way the client does before it sends anything.
 func checkTunnelName(accountID, name string) error {
-	if err := cfapi.ValidID("account id", accountID); err != nil {
+	if err := cfapi.CheckID("account id", accountID); err != nil {
 		return err
 	}
-	return cfapi.ValidName("tunnel name", name)
+	return cfapi.CheckName("tunnel name", name)
 }
 
 // checkTunnelID checks the arguments of the calls that take an account and a
 // tunnel id.
 func checkTunnelID(accountID, tunnelID string) error {
-	if err := cfapi.ValidID("account id", accountID); err != nil {
+	if err := cfapi.CheckID("account id", accountID); err != nil {
 		return err
 	}
-	return cfapi.ValidID("tunnel id", tunnelID)
+	return cfapi.CheckID("tunnel id", tunnelID)
 }
 
 func (f *Fake) account(id string) error {

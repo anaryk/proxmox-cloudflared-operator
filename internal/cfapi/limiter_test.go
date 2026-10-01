@@ -66,6 +66,7 @@ func TestLimiterSchedule(t *testing.T) {
 		pause   time.Duration   // then call Pause
 		waits   int             // then call Wait this many times
 		want    []time.Duration // the sleeps those waits asked for
+		refused time.Duration   // then, when set, one more Wait is refused with this much of the pause left
 	}
 	const s = time.Second
 	tests := []struct {
@@ -93,26 +94,39 @@ func TestLimiterSchedule(t *testing.T) {
 			{advance: time.Hour, waits: 3},
 			{waits: 1, want: []time.Duration{10 * s}},
 		}},
-		{"pause blocks although tokens are left", []step{
-			{pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
+		{"pause refuses although tokens are left", []step{
+			{pause: 7 * s, refused: 7 * s},
+			{advance: 7 * s, waits: 1, want: []time.Duration{10 * s}},
 		}},
 		{"pause is counted from now", []step{
-			{advance: time.Hour, pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
+			{advance: time.Hour, pause: 7 * s, refused: 7 * s},
+		}},
+		{"what is left of the pause is reported", []step{
+			{pause: 7 * s},
+			{advance: 3 * s, refused: 4 * s},
+			{advance: 4*s - time.Nanosecond, refused: time.Nanosecond},
+		}},
+		{"a refusal takes no token and sleeps not", []step{
+			{pause: 7 * s, refused: 7 * s},
+			{refused: 7 * s},
+			{advance: 17 * s, waits: 1},
 		}},
 		{"pause empties the bucket, so no burst follows it", []step{
-			{pause: 7 * s, waits: 4, want: []time.Duration{7 * s, 10 * s, 10 * s, 10 * s, 10 * s}},
+			{pause: 7 * s},
+			{advance: 7 * s, waits: 4, want: []time.Duration{10 * s, 10 * s, 10 * s, 10 * s}},
 		}},
 		{"nothing refills during a pause", []step{
 			{waits: 3},
-			{pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
+			{pause: 7 * s},
+			{advance: 7 * s, waits: 1, want: []time.Duration{10 * s}},
 		}},
 		{"a shorter pause does not cut a longer one", []step{
 			{pause: 30 * s},
-			{pause: 7 * s, waits: 1, want: []time.Duration{30 * s, 10 * s}},
+			{pause: 7 * s, refused: 30 * s},
 		}},
 		{"a later pause extends an earlier one", []step{
 			{pause: 7 * s},
-			{advance: 3 * s, pause: 7 * s, waits: 1, want: []time.Duration{7 * s, 10 * s}},
+			{advance: 3 * s, pause: 7 * s, refused: 7 * s},
 		}},
 		{"refilling starts when the pause ends", []step{
 			{pause: 7 * s},
@@ -139,9 +153,41 @@ func TestLimiterSchedule(t *testing.T) {
 					require.NoError(t, l.Wait(context.Background()), "step %d", i)
 				}
 				require.Equal(t, st.want, clock.takeSleeps(), "step %d", i)
+				if st.refused > 0 {
+					requirePaused(t, l.Wait(context.Background()), st.refused)
+					require.Empty(t, clock.takeSleeps(), "step %d: a refused wait does not sleep", i)
+				}
 			}
 		})
 	}
+}
+
+// requirePaused checks that err is the refusal of a paused limiter with left
+// of the pause to go.
+func requirePaused(t *testing.T, err error, left time.Duration) {
+	t.Helper()
+	require.True(t, IsRateLimited(err), "got %v", err)
+	var apiErr *Error
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, left, apiErr.RetryAfter)
+}
+
+func TestLimiterPauseDuringARefillWait(t *testing.T) {
+	clock := newFakeClock()
+	var l *Limiter
+	paused := false
+	l = newLimiter(6, time.Minute, 1, clock.now, func(ctx context.Context, d time.Duration) error {
+		if !paused {
+			// A 429 comes back to another caller while this one waits for a token.
+			paused = true
+			l.Pause(time.Minute)
+		}
+		return clock.sleep(ctx, d)
+	})
+	require.NoError(t, l.Wait(context.Background()))
+
+	requirePaused(t, l.Wait(context.Background()), time.Minute-10*time.Second)
+	require.Equal(t, []time.Duration{10 * time.Second}, clock.takeSleeps(), "the refill wait, then no more")
 }
 
 func TestLimiterDefaultBudget(t *testing.T) {

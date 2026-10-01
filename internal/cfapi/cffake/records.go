@@ -43,7 +43,7 @@ func (f *Fake) newRecordID() string {
 // Records lists what the filter asks for, the same way the client checks
 // the answer: type, name and comment prefix are matched without regard to case.
 func (f *Fake) Records(ctx context.Context, zoneID string, filter cfapi.RecordFilter) ([]cfapi.Record, error) {
-	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+	if err := cfapi.CheckID("zone id", zoneID); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
@@ -113,17 +113,17 @@ func (f *Fake) checkRecord(zoneID string, r cfapi.Record, except string) error {
 
 // checkRecordFields checks the arguments the client would refuse to send.
 func checkRecordFields(r cfapi.Record) error {
-	if err := cfapi.ValidName("record type", r.Type); err != nil {
+	if err := cfapi.CheckName("record type", r.Type); err != nil {
 		return err
 	}
-	return cfapi.ValidName("record name", r.Name)
+	return cfapi.CheckName("record name", r.Name)
 }
 
 // CreateRecord ignores the ID and ModifiedOn of r. The name is stored in lower
 // case and, when it is not inside the zone, with the zone name added, and an
 // unset TTL as 1, automatic, as the client sends it.
 func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
-	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+	if err := cfapi.CheckID("zone id", zoneID); err != nil {
 		return cfapi.Record{}, err
 	}
 	if err := checkRecordFields(r); err != nil {
@@ -152,10 +152,10 @@ func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 // UpdateRecord replaces the record that has the ID of r, which keeps its
 // place. The name is treated as CreateRecord does.
 func (f *Fake) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
-	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+	if err := cfapi.CheckID("zone id", zoneID); err != nil {
 		return cfapi.Record{}, err
 	}
-	if err := cfapi.ValidID("record id", r.ID); err != nil {
+	if err := cfapi.CheckID("record id", r.ID); err != nil {
 		return cfapi.Record{}, err
 	}
 	if err := checkRecordFields(r); err != nil {
@@ -185,10 +185,10 @@ func (f *Fake) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 }
 
 func (f *Fake) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
-	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+	if err := cfapi.CheckID("zone id", zoneID); err != nil {
 		return err
 	}
-	if err := cfapi.ValidID("record id", recordID); err != nil {
+	if err := cfapi.CheckID("record id", recordID); err != nil {
 		return err
 	}
 	f.mu.Lock()

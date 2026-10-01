@@ -29,8 +29,10 @@ var errListingChanged = errors.New("listing changed while it was read")
 // The page size is the per_page of query, or 50. How many pages there are is
 // taken from result_info: total_pages, else total_count over the page size.
 // With neither, a page that is not full is the only page, and a full one is an
-// error. total_count and total_pages must not change between pages, and the
-// items read must add up to total_count.
+// error. A page that result_info numbers must be the page asked for, every
+// page of a listing of more than one page must hold items, total_count and
+// total_pages must not change between pages, and the items read must add up
+// to total_count.
 func (c *Client) list(ctx context.Context, path string, query url.Values, each func(json.RawMessage) error) error {
 	size, err := requestedPageSize(query)
 	if err != nil {
@@ -51,20 +53,27 @@ func (c *Client) list(ctx context.Context, path string, query url.Values, each f
 		if err != nil {
 			return fmt.Errorf("listing %s, page %d: %w", path, page, err)
 		}
+		if err := env.ResultInfo.isPage(page); err != nil {
+			return fmt.Errorf("listing %s, page %d: %w", path, page, err)
+		}
 		items = append(items, batch...)
 
 		if page > 1 {
 			if err := sameListing(first, env.ResultInfo); err != nil {
 				return fmt.Errorf("listing %s, page %d: %w", path, page, err)
 			}
-			continue
+		} else {
+			first = env.ResultInfo
+			if first != nil && first.PerPage > 0 {
+				size = first.PerPage // what the server really uses
+			}
+			if totalPages, err = pageCount(first, len(batch), size); err != nil {
+				return fmt.Errorf("listing %s: %w", path, err)
+			}
 		}
-		first = env.ResultInfo
-		if first != nil && first.PerPage > 0 {
-			size = first.PerPage // what the server really uses
-		}
-		if totalPages, err = pageCount(first, len(batch), size); err != nil {
-			return fmt.Errorf("listing %s: %w", path, err)
+		if len(batch) == 0 && totalPages > 1 {
+			// Whatever was to fill it moved, or the server left it out.
+			return fmt.Errorf("listing %s: %w: page %d is empty, %d pages expected", path, errListingChanged, page, totalPages)
 		}
 	}
 
@@ -123,6 +132,16 @@ func (i *resultInfo) reportsNone() bool {
 	return i != nil && (i.Count != nil && *i.Count == 0 || i.TotalCount != nil && *i.TotalCount == 0)
 }
 
+// isPage checks that result_info, when it numbers the page, numbers it as
+// the page asked for: a server that answers another page, the first one again
+// for instance, would make items count twice and others go missing.
+func (i *resultInfo) isPage(asked int) error {
+	if i != nil && i.Page != nil && *i.Page != asked {
+		return fmt.Errorf("%w: asked for page %d, got page %d", errUnexpected, asked, *i.Page)
+	}
+	return nil
+}
+
 // pageCount says how many pages the listing has, from what the first page
 // told.
 func pageCount(info *resultInfo, items, size int) (int, error) {
@@ -130,6 +149,9 @@ func pageCount(info *resultInfo, items, size int) (int, error) {
 	switch {
 	case info != nil && info.TotalPages != nil:
 		pages = *info.TotalPages
+		if pages <= 0 && items > 0 {
+			return 0, fmt.Errorf("%w: total_pages is %d, but the page holds %d items", errUnexpected, pages, items)
+		}
 	case info != nil && info.TotalCount != nil:
 		pages = (*info.TotalCount + size - 1) / size
 	case items < size:

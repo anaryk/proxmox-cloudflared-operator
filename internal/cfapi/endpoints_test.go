@@ -1120,22 +1120,22 @@ func TestIDsCannotChangeThePath(t *testing.T) {
 	}
 }
 
-func TestValidID(t *testing.T) {
+func TestCheckID(t *testing.T) {
 	for _, id := range []string{"023e105f4ecef8ad9ca31a8372d0c353", "a b", "100%", "q?x#y", "a..b", "...", "%2e%2e", "ünï"} {
-		require.NoError(t, ValidID("zone id", id), id)
+		require.NoError(t, CheckID("zone id", id), id)
 	}
 	for _, id := range []string{"", " ", " \t\n", ".", "..", "a/b", "/"} {
-		err := ValidID("zone id", id)
+		err := CheckID("zone id", id)
 		require.ErrorIs(t, err, ErrInvalidArgument, id)
 		require.ErrorContains(t, err, "zone id", id)
 	}
 }
 
-func TestValidName(t *testing.T) {
-	require.NoError(t, ValidName("tunnel name", "pco-abc"))
-	require.NoError(t, ValidName("tunnel name", "a/b"), "a name is not a path segment")
+func TestCheckName(t *testing.T) {
+	require.NoError(t, CheckName("tunnel name", "pco-abc"))
+	require.NoError(t, CheckName("tunnel name", "a/b"), "a name is not a path segment")
 	for _, name := range []string{"", " ", "\t"} {
-		err := ValidName("tunnel name", name)
+		err := CheckName("tunnel name", name)
 		require.ErrorIs(t, err, ErrInvalidArgument)
 		require.ErrorContains(t, err, "tunnel name")
 	}
