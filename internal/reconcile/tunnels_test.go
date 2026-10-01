@@ -316,7 +316,7 @@ func TestTunnelCreateAndPut(t *testing.T) {
 	require.Equal(t, []TunnelState{
 		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: id, Version: 1, Exists: true, Verified: true},
 	}, res.Tunnels)
-	require.Equal(t, 2, *asked, "once for the run and once before the configuration is read")
+	require.Equal(t, 3, *asked, "once for the run, once before the create and once before the configuration is read")
 	require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
 }
 
@@ -479,6 +479,72 @@ func TestTunnelStoredWriterMovedOn(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestTunnelCreateFencedByWriter(t *testing.T) {
+	f := newFake("acct1", "acct2")
+	tun := f.SeedTunnel("acct1", testTunnel, rulesOf(writerAt(3, "n3"), app))
+	newer := writerAt(6, "n6")
+	writer, asked := scripted(
+		answer{us: ours, stored: ours},  // start
+		answer{us: ours, stored: ours},  // before the configuration of acct1 is read
+		answer{us: ours, stored: newer}, // before the create in acct2
+	)
+
+	res := reconcilerWith(Clients{"cred1": f}, writer).Run(context.Background(), []planner.TunnelPlan{
+		planFor("acct1", "cred1", app),
+		planFor("acct2", "cred1", app),
+	}, nil, Enforce)
+
+	require.Equal(t, WriterStale, res.Verdict)
+	require.Empty(t, callsTo(f, "CreateTunnel"))
+	require.Empty(t, f.TunnelsIn("acct2"))
+	require.Equal(t, 3, *asked)
+	require.Equal(t, []string{
+		"FindTunnel acct1 pco-abc",
+		"TunnelConfig acct1 " + tun.ID,
+		"PutTunnelConfig acct1 " + tun.ID,
+		"TunnelConfig acct1 " + tun.ID,
+		"FindTunnel acct2 pco-abc",
+	}, f.Calls())
+	require.Len(t, res.Problems, 1)
+	require.Contains(t, res.Problems[0], "pco-abc in account acct2: leader.json names generation 6 nonce n6")
+	require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []TunnelState{
+		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 2, Exists: true, Verified: true},
+		{AccountID: "acct2", CredentialID: "cred1", Name: testTunnel}, // the lookup found no tunnel
+	}, res.Tunnels)
+}
+
+func TestTunnelVerdictJudgedAgainstFreshWriter(t *testing.T) {
+	cases := []struct {
+		name   string
+		remote planner.Writer // sentinel of the configuration of acct1
+		fresh  answer         // what the writer callback answers before the verdict is returned
+		want   WriterVerdict
+		says   string
+	}{
+		{"same generation, other nonce, leader.json moved on", writerAt(5, "zz"), answer{us: ours, stored: writerAt(7, "n7")}, WriterForeign, "another installation"},
+		{"newer sentinel unknown to leader.json", writerAt(7, "n7"), answer{us: ours, stored: writerAt(7, "x")}, WriterForeign, "another installation"},
+		{"newer sentinel is the stored writer", writerAt(7, "n7"), answer{us: ours, stored: writerAt(7, "n7")}, WriterStale, "this writer is stale"},
+		{"identity changed", writerAt(5, "zz"), answer{us: writerAt(6, "n6"), stored: writerAt(6, "n6")}, WriterStale, "the writer identity changed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake("acct1")
+			f.SeedTunnel("acct1", testTunnel, rulesOf(tc.remote, app))
+			writer, _ := scripted(answer{us: ours, stored: ours}, answer{us: ours, stored: ours}, tc.fresh)
+
+			res := reconcilerWith(Clients{"cred1": f}, writer).
+				Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", web)}, nil, Enforce)
+
+			require.Equal(t, tc.want, res.Verdict)
+			require.Empty(t, callsTo(f, "PutTunnelConfig"))
+			require.Len(t, res.Problems, 1)
+			require.Contains(t, res.Problems[0], tc.says)
+			require.Equal(t, []Action{action(PutConfig, "cred1", heldVerdict(tc.want))}, withoutDetail(res.Actions))
+		})
 	}
 }
 
@@ -777,6 +843,26 @@ func TestTunnelVerifyAfterPutMismatch(t *testing.T) {
 			}, res.Tunnels, "the version of our write, not verified")
 		})
 	}
+}
+
+func TestTunnelVerifyAtLaterVersion(t *testing.T) {
+	f := newFake("acct1")
+	tun := f.SeedTunnel("acct1", testTunnel, rulesOf(writerAt(3, "n3"), app))
+	s := &spy{API: f}
+	s.afterPut = func() {
+		// Another write of the same rules lands between ours and the read-back.
+		_, err := f.PutTunnelConfig(context.Background(), "acct1", tun.ID, rulesOf(ours, app))
+		require.NoError(t, err)
+	}
+
+	res := newReconciler(Clients{"cred1": s}, &clock{t0}).
+		Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+
+	require.Empty(t, res.Problems)
+	require.Equal(t, 1, s.puts)
+	require.Equal(t, []TunnelState{
+		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 3, Exists: true, Verified: true},
+	}, res.Tunnels, "the version that was read back and verified")
 }
 
 func TestTunnelVerifyReadFails(t *testing.T) {

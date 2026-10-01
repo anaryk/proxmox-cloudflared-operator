@@ -42,11 +42,18 @@ type TunnelState struct {
 	CredentialID string
 	Name         string
 	ID           string
-	Version      int // the version the run wrote, or else the one it read
-	Exists       bool
+
+	// Version is the version of the configuration. Without a write it is the
+	// version read. After a write it is the version read back when the
+	// read-back equals the plan, and otherwise the version the write
+	// returned.
+	Version int
+	Exists  bool
 
 	// Verified is true when the configuration at Version was read and equals
-	// the plan.
+	// the plan: nothing needed writing, or the read-back after a write
+	// matched. It is false when a write was held or failed, or when its
+	// read-back failed or differed.
 	Verified bool
 
 	// Unknown is true when the run could not find out whether the tunnel

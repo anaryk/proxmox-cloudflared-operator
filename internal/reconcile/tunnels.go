@@ -42,8 +42,9 @@ type TunnelReconciler struct {
 //
 // writer returns the identity this process writes as (us) and leader.json as
 // stored now (stored). Run asks it before its first call to Cloudflare, in
-// Enforce mode again before it reads the configuration of each tunnel, and
-// once more before it stops on the sentinel of another writer. It should fail
+// Enforce mode again before each create and before it reads the
+// configuration of each tunnel, and once more before it stops on the sentinel
+// of another writer. It should fail
 // whenever this process may not write at all, as when its lease is lost.
 func NewTunnelReconciler(clients Clients, writer func() (us, stored planner.Writer, err error), now func() time.Time, log zerolog.Logger) *TunnelReconciler {
 	return &TunnelReconciler{
@@ -155,11 +156,10 @@ func emptyRules(us planner.Writer) []planner.IngressRule {
 
 // tunnelRun is the state of one Run.
 type tunnelRun struct {
-	r      *TunnelReconciler
-	mode   Mode
-	us     planner.Writer // set once start has validated it
-	stored planner.Writer // as last read
-	res    TunnelResult
+	r    *TunnelReconciler
+	mode Mode
+	us   planner.Writer // set once start has validated it
+	res  TunnelResult
 }
 
 // start reads the identity the run writes as and reports whether the run may
@@ -196,7 +196,6 @@ func (run *tunnelRun) admit(prefix string, us, stored planner.Writer) bool {
 		run.stop(prefix, WriterStale, fault)
 		return false
 	}
-	run.stored = stored
 	return true
 }
 
@@ -254,6 +253,10 @@ func (run *tunnelRun) reconcile(ctx context.Context, t target) (TunnelState, boo
 			run.act(t, CreateTunnel, createDetail(t), heldObserve)
 			run.act(t, PutConfig, putDetail(t, cfapi.TunnelConfig{}), heldObserve)
 			return st, true
+		case !run.reread(t):
+			// A create is a write too: a takeover since the last check must
+			// stop it. The lookup's answer, no tunnel, still holds.
+			return st, false
 		}
 		if tun, fresh, found = run.create(ctx, api, t); !found {
 			return t.unknown(), true
@@ -310,7 +313,8 @@ func (run *tunnelRun) create(ctx context.Context, api cfapi.API, t target) (tun 
 // configuration differs from them, and reports whether the run goes on. fresh
 // says that the run created the tunnel.
 func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st *TunnelState, fresh bool) bool {
-	// Step 1 of the write procedure comes before the configuration is read.
+	// A write is decided on the configuration read next. Reading the writer
+	// just before it lets a takeover since the last check stop the write.
 	if run.mode == Enforce && !run.reread(t) {
 		return false
 	}
@@ -331,8 +335,9 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 	}
 
 	detail := putDetail(t, remote)
-	if v, by := judgeConfig(run.us, run.stored, remote.Ingress); v != WriterProceed {
-		run.refuse(t, detail, v, by)
+	// Every answer the run went on with named us as the stored writer.
+	if v, _ := judgeConfig(run.us, run.us, remote.Ingress); v != WriterProceed {
+		run.refuse(t, detail, remote.Ingress)
 		return false
 	}
 	if run.mode == Observe {
@@ -350,21 +355,32 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 	return true
 }
 
-// refuse stops the run on a verdict other than proceed. A takeover during the
-// run shows as a sentinel newer than ours too, so the writer is read once
-// more first: if leader.json has moved on, this writer is stale whatever the
-// sentinel says.
-func (run *tunnelRun) refuse(t target, detail string, v WriterVerdict, by planner.Writer) {
-	why := fmt.Sprintf("the configuration was written by generation %d nonce %s", by.Generation, by.Nonce)
-	if v == WriterForeign {
-		why += fmt.Sprintf(", which leader.json does not know: another installation uses install id %s, "+
-			"or the store was lost (pco setup --recover)", run.us.InstallID)
-	}
-	us, stored, err := run.r.writer()
-	if err != nil {
+// refuse stops the run on remote rules whose sentinels do not let this writer
+// proceed. A takeover during the run shows as a sentinel newer than ours, so
+// the verdict is taken again against leader.json as it is now: a newer writer
+// that leader.json names makes this one stale, while a sentinel it does not
+// explain stays foreign.
+func (run *tunnelRun) refuse(t target, detail string, remote []planner.IngressRule) {
+	stored := run.us
+	us, fresh, err := run.r.writer()
+	switch {
+	case err != nil:
 		run.problem(fmt.Sprintf("%s: reading the writer identity: %v", t, err))
-	} else if fault := run.writerFault(us, stored); fault != "" {
-		v, why = WriterStale, fault
+	case us != run.us:
+		run.act(t, PutConfig, detail, heldVerdict(WriterStale))
+		run.stop(t.String()+": ", WriterStale, run.writerFault(us, fresh))
+		return
+	default:
+		stored = fresh
+	}
+	// The table answers proceed from the sentinels and us alone, and those
+	// did not let this writer proceed: the verdict stops the run either way.
+	v, by := judgeConfig(run.us, stored, remote)
+	why := fmt.Sprintf("the configuration was written by generation %d nonce %s, which leader.json does not know: "+
+		"another installation uses install id %s, or the store was lost (pco setup --recover)",
+		by.Generation, by.Nonce, run.us.InstallID)
+	if v == WriterStale {
+		why = run.writerFault(run.us, stored)
 	}
 	run.act(t, PutConfig, detail, heldVerdict(v))
 	run.stop(t.String()+": ", v, why)
@@ -407,7 +423,7 @@ func (run *tunnelRun) put(ctx context.Context, api cfapi.API, t target, st *Tunn
 	case !EqualIngress(got.Ingress, t.rules) || got.Foreign:
 		run.problem(fmt.Sprintf("config changed under us on %s", t))
 	default:
-		st.Verified = true
+		st.Version, st.Verified = got.Version, true
 	}
 }
 
