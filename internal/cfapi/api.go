@@ -3,6 +3,7 @@ package cfapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -41,6 +42,13 @@ type Tunnel struct {
 type TunnelConfig struct {
 	Version int
 	Ingress []planner.IngressRule // empty when the tunnel has no config yet
+
+	// Foreign is true when the configuration holds settings pco does not
+	// manage and Ingress therefore does not show: a path on a rule, origin
+	// options other than the ones of IngressRule, or settings outside the
+	// ingress such as warp-routing. Ingress equal to what pco wants does not
+	// make the configuration equal to it while Foreign is set.
+	Foreign bool
 }
 
 // Connector is one running cloudflared of a tunnel.
@@ -70,6 +78,14 @@ type RecordFilter struct {
 	CommentPrefix string // comment.startswith
 }
 
+// Matches reports whether r is a record the filter asks for. Type, name and
+// comment prefix are compared without regard to case, as Cloudflare does.
+func (f RecordFilter) Matches(r Record) bool {
+	return (f.Type == "" || strings.EqualFold(r.Type, f.Type)) &&
+		(f.Name == "" || strings.EqualFold(r.Name, f.Name)) &&
+		(f.CommentPrefix == "" || strings.HasPrefix(strings.ToLower(r.Comment), strings.ToLower(f.CommentPrefix)))
+}
+
 // API is everything pco asks of Cloudflare for one credential.
 //
 // Every call that does not return an error has seen the whole answer: a
@@ -95,23 +111,29 @@ type API interface {
 
 var _ API = (*Client)(nil)
 
-// pathID checks an id that is about to become a path segment and escapes it.
-// An id of "." or ".." would be resolved away when the URL is joined and send
-// the call to another resource.
-func pathID(what, id string) (string, error) {
-	switch {
-	case strings.TrimSpace(id) == "":
-		return "", fmt.Errorf("%s is empty", what)
-	case id == "." || id == "..":
-		return "", fmt.Errorf("%s %q is not valid", what, id)
+// ErrInvalidArgument marks a call refused before any request was made because
+// an id or a name it was given cannot be used.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// ValidID checks an id that is about to become a segment of a request path:
+// it must not be blank, "." or "..", nor contain a slash. kind names the id in
+// the error, which matches ErrInvalidArgument. The fake in cffake applies the
+// same check, so that both refuse the same calls.
+func ValidID(kind, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%w: %s is empty", ErrInvalidArgument, kind)
 	}
-	return url.PathEscape(id), nil
+	if checkSegment(id) != nil {
+		return fmt.Errorf("%w: %s %q cannot be part of a request path", ErrInvalidArgument, kind, id)
+	}
+	return nil
 }
 
-// required checks a value that goes into a query or a body, not a path.
-func required(what, v string) error {
-	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("%s is empty", what)
+// ValidName checks a value that goes into a query or a body, such as the name
+// of a tunnel or a record: it must not be blank.
+func ValidName(kind, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%w: %s is empty", ErrInvalidArgument, kind)
 	}
 	return nil
 }

@@ -12,9 +12,29 @@ import (
 
 type tunnel struct {
 	cfapi.Tunnel
-	account string
-	version int // 0 until a configuration was written
-	ingress []planner.IngressRule
+	account    string
+	version    int // 0 until a configuration was written
+	ingress    []planner.IngressRule
+	foreign    bool // settings in the configuration that IngressRule cannot show
+	connectors []cfapi.Connector
+}
+
+// checkTunnelName checks the arguments of the calls that take an account and a
+// tunnel name, the way the client does before it sends anything.
+func checkTunnelName(accountID, name string) error {
+	if err := cfapi.ValidID("account id", accountID); err != nil {
+		return err
+	}
+	return cfapi.ValidName("tunnel name", name)
+}
+
+// checkTunnelID checks the arguments of the calls that take an account and a
+// tunnel id.
+func checkTunnelID(accountID, tunnelID string) error {
+	if err := cfapi.ValidID("account id", accountID); err != nil {
+		return err
+	}
+	return cfapi.ValidID("tunnel id", tunnelID)
 }
 
 func (f *Fake) account(id string) error {
@@ -51,13 +71,35 @@ func (f *Fake) newTunnel(accountID, name string) *tunnel {
 	return t
 }
 
+// SetForeign says whether the configuration of a tunnel holds settings that
+// TunnelConfig reports as Foreign, such as a path on a rule. A successful
+// PutTunnelConfig clears it, as writing the configuration replaces those
+// settings. An unknown tunnel is ignored.
+func (f *Fake) SetForeign(accountID, tunnelID string, v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t, _, err := f.tunnelIn(accountID, tunnelID); err == nil {
+		t.foreign = v
+	}
+}
+
+// SetConnectors sets what Connectors lists for a tunnel; none by default. An
+// unknown tunnel is ignored.
+func (f *Fake) SetConnectors(accountID, tunnelID string, c []cfapi.Connector) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t, _, err := f.tunnelIn(accountID, tunnelID); err == nil {
+		t.connectors = clone(c)
+	}
+}
+
 func (f *Fake) FindTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, bool, error) {
+	if err := checkTunnelName(accountID, name); err != nil {
+		return cfapi.Tunnel{}, false, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opTunnelRead, "FindTunnel", accountID, name); err != nil {
-		return cfapi.Tunnel{}, false, err
-	}
-	if err := blank("tunnel name", name); err != nil {
 		return cfapi.Tunnel{}, false, err
 	}
 	if err := f.account(accountID); err != nil {
@@ -79,12 +121,12 @@ func (f *Fake) FindTunnel(ctx context.Context, accountID, name string) (cfapi.Tu
 }
 
 func (f *Fake) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, error) {
+	if err := checkTunnelName(accountID, name); err != nil {
+		return cfapi.Tunnel{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opTunnelWrite, "CreateTunnel", accountID, name); err != nil {
-		return cfapi.Tunnel{}, err
-	}
-	if err := blank("tunnel name", name); err != nil {
 		return cfapi.Tunnel{}, err
 	}
 	if err := f.account(accountID); err != nil {
@@ -100,6 +142,9 @@ func (f *Fake) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.
 }
 
 func (f *Fake) DeleteTunnel(ctx context.Context, accountID, tunnelID string) error {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opTunnelWrite, "DeleteTunnel", accountID, tunnelID); err != nil {
@@ -114,6 +159,9 @@ func (f *Fake) DeleteTunnel(ctx context.Context, accountID, tunnelID string) err
 }
 
 func (f *Fake) TunnelToken(ctx context.Context, accountID, tunnelID string) (string, error) {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return "", err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opTunnelRead, "TunnelToken", accountID, tunnelID); err != nil {
@@ -127,6 +175,9 @@ func (f *Fake) TunnelToken(ctx context.Context, accountID, tunnelID string) (str
 }
 
 func (f *Fake) TunnelConfig(ctx context.Context, accountID, tunnelID string) (cfapi.TunnelConfig, error) {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return cfapi.TunnelConfig{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opTunnelRead, "TunnelConfig", accountID, tunnelID); err != nil {
@@ -136,12 +187,18 @@ func (f *Fake) TunnelConfig(ctx context.Context, accountID, tunnelID string) (cf
 	if err != nil {
 		return cfapi.TunnelConfig{}, err
 	}
-	return cfapi.TunnelConfig{Version: t.version, Ingress: clone(t.ingress)}, nil
+	return cfapi.TunnelConfig{Version: t.version, Ingress: clone(t.ingress), Foreign: t.foreign}, nil
 }
 
-// PutTunnelConfig stores the rules and counts a new version, also when they
-// equal the ones before.
+// PutTunnelConfig refuses what Cloudflare refuses, with a 400: no rules, a rule
+// without a service, a last rule that has a hostname, and a rule without a
+// hostname before the last. Otherwise it stores the rules and counts a new
+// version, also when they equal the ones before, and drops any foreign
+// settings.
 func (f *Fake) PutTunnelConfig(ctx context.Context, accountID, tunnelID string, rules []planner.IngressRule) (int, error) {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return 0, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opTunnelWrite, "PutTunnelConfig", accountID, tunnelID); err != nil {
@@ -151,20 +208,52 @@ func (f *Fake) PutTunnelConfig(ctx context.Context, accountID, tunnelID string, 
 	if err != nil {
 		return 0, err
 	}
+	if err := checkIngress(rules); err != nil {
+		return 0, err
+	}
 	t.ingress = clone(rules)
+	t.foreign = false
 	t.version++
 	return t.version, nil
 }
 
-// Connectors lists none: no cloudflared ever connects to a fake.
+// checkIngress returns the 400 Cloudflare answers to an ingress it does not
+// accept, which is one that cloudflared could not run.
+func checkIngress(rules []planner.IngressRule) error {
+	if len(rules) == 0 {
+		return badIngress("the ingress has no rules; it must end with a rule that matches all URLs")
+	}
+	for i, r := range rules {
+		last := i == len(rules)-1
+		switch {
+		case r.Service == "":
+			return badIngress(fmt.Sprintf("ingress rule #%d has no service", i+1))
+		case last && r.Hostname != "":
+			return badIngress("the last ingress rule must match all URLs (it must not have a hostname)")
+		case !last && r.Hostname == "":
+			return badIngress(fmt.Sprintf("ingress rule #%d matches all URLs but is not the last one", i+1))
+		}
+	}
+	return nil
+}
+
+func badIngress(msg string) error {
+	return &cfapi.Error{Status: http.StatusBadRequest, Message: msg}
+}
+
+// Connectors lists what SetConnectors set; none by default.
 func (f *Fake) Connectors(ctx context.Context, accountID, tunnelID string) ([]cfapi.Connector, error) {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opTunnelRead, "Connectors", accountID, tunnelID); err != nil {
 		return nil, err
 	}
-	if _, _, err := f.tunnelIn(accountID, tunnelID); err != nil {
+	t, _, err := f.tunnelIn(accountID, tunnelID)
+	if err != nil {
 		return nil, err
 	}
-	return nil, nil
+	return clone(t.connectors), nil
 }

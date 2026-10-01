@@ -40,10 +40,10 @@ type recordBody struct {
 }
 
 func newRecordBody(r Record) (recordBody, error) {
-	if err := required("record type", r.Type); err != nil {
+	if err := ValidName("record type", r.Type); err != nil {
 		return recordBody{}, err
 	}
-	if err := required("record name", r.Name); err != nil {
+	if err := ValidName("record name", r.Name); err != nil {
 		return recordBody{}, err
 	}
 	// A TTL of 1 means automatic, the only one a proxied record has.
@@ -51,20 +51,31 @@ func newRecordBody(r Record) (recordBody, error) {
 }
 
 func recordsPath(zoneID string) (string, error) {
-	zone, err := pathID("zone id", zoneID)
-	if err != nil {
+	if err := ValidID("zone id", zoneID); err != nil {
 		return "", err
 	}
-	return "/zones/" + zone + "/dns_records", nil
+	return joinPath("zones", zoneID, "dns_records")
 }
 
-// Records lists the DNS records of a zone that match f.
+func recordPath(zoneID, recordID string) (string, error) {
+	if err := ValidID("zone id", zoneID); err != nil {
+		return "", err
+	}
+	if err := ValidID("record id", recordID); err != nil {
+		return "", err
+	}
+	return joinPath("zones", zoneID, "dns_records", recordID)
+}
+
+// Records lists the DNS records of a zone that match f. The filter is also
+// applied to what comes back, because callers decide what to delete by it: a
+// record outside the filter fails the whole call.
 func (c *Client) Records(ctx context.Context, zoneID string, f RecordFilter) ([]Record, error) {
 	path, err := recordsPath(zoneID)
 	if err != nil {
 		return nil, fmt.Errorf("listing dns records: %w", err)
 	}
-	query := url.Values{}
+	query := url.Values{"per_page": {"100"}}
 	if f.Type != "" {
 		query.Set("type", f.Type)
 	}
@@ -80,6 +91,9 @@ func (c *Client) Records(ctx context.Context, zoneID string, f RecordFilter) ([]
 		r, err := w.record()
 		if err != nil {
 			return err
+		}
+		if !f.Matches(r) {
+			return fmt.Errorf("%w: cloudflare returned a record outside the requested filter", errUnexpected)
 		}
 		out = append(out, r)
 		return nil
@@ -108,11 +122,7 @@ func (c *Client) CreateRecord(ctx context.Context, zoneID string, r Record) (Rec
 // UpdateRecord changes the record with the id of r to r and returns the record
 // as Cloudflare stored it.
 func (c *Client) UpdateRecord(ctx context.Context, zoneID string, r Record) (Record, error) {
-	base, err := recordsPath(zoneID)
-	if err != nil {
-		return Record{}, fmt.Errorf("updating dns record: %w", err)
-	}
-	id, err := pathID("record id", r.ID)
+	path, err := recordPath(zoneID, r.ID)
 	if err != nil {
 		return Record{}, fmt.Errorf("updating dns record: %w", err)
 	}
@@ -120,7 +130,7 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID string, r Record) (Rec
 	if err != nil {
 		return Record{}, fmt.Errorf("updating dns record: %w", err)
 	}
-	return c.writeRecord(ctx, http.MethodPatch, base+"/"+id, body, "updating", r.Name)
+	return c.writeRecord(ctx, http.MethodPatch, path, body, "updating", r.Name)
 }
 
 func (c *Client) writeRecord(ctx context.Context, method, path string, body recordBody, verb, name string) (Record, error) {
@@ -137,15 +147,11 @@ func (c *Client) writeRecord(ctx context.Context, method, path string, body reco
 
 // DeleteRecord deletes a DNS record.
 func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
-	base, err := recordsPath(zoneID)
+	path, err := recordPath(zoneID, recordID)
 	if err != nil {
 		return fmt.Errorf("deleting dns record: %w", err)
 	}
-	id, err := pathID("record id", recordID)
-	if err != nil {
-		return fmt.Errorf("deleting dns record: %w", err)
-	}
-	if err := c.do(ctx, http.MethodDelete, base+"/"+id, nil, nil, nil); err != nil {
+	if err := c.do(ctx, http.MethodDelete, path, nil, nil, nil); err != nil {
 		return fmt.Errorf("deleting dns record %s: %w", recordID, err)
 	}
 	return nil

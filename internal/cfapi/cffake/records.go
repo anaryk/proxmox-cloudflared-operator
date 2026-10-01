@@ -10,11 +10,18 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 )
 
-func (f *Fake) zone(id string) error {
-	if !slices.ContainsFunc(f.zones, func(z cfapi.Zone) bool { return z.ID == id }) {
-		return notFound("zone", id)
+// Cloudflare answers these two refusals with a 400 and a code.
+const (
+	messageNameExists = "An A, AAAA, or CNAME record with that host already exists."
+	messageIdentical  = "An identical record already exists."
+)
+
+func (f *Fake) zone(id string) (cfapi.Zone, error) {
+	i := slices.IndexFunc(f.zones, func(z cfapi.Zone) bool { return z.ID == id })
+	if i < 0 {
+		return cfapi.Zone{}, notFound("zone", id)
 	}
-	return nil
+	return f.zones[i], nil
 }
 
 // newRecordID returns the next "rec-N" that no zone uses yet, so that ids a
@@ -33,31 +40,42 @@ func (f *Fake) newRecordID() string {
 	}
 }
 
-// Records filters the way Cloudflare does: the name is exact, the comment is
-// matched by prefix, and neither cares about case.
+// Records lists what the filter asks for, the same way the client checks
+// the answer: type, name and comment prefix are matched without regard to case.
 func (f *Fake) Records(ctx context.Context, zoneID string, filter cfapi.RecordFilter) ([]cfapi.Record, error) {
+	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opDNSRead, "Records", zoneID); err != nil {
 		return nil, err
 	}
-	if err := f.zone(zoneID); err != nil {
+	if _, err := f.zone(zoneID); err != nil {
 		return nil, err
 	}
 	var out []cfapi.Record
 	for _, r := range f.records[zoneID] {
-		if matches(r, filter) {
+		if filter.Matches(r) {
 			out = append(out, r)
 		}
 	}
 	return out, nil
 }
 
-func matches(r cfapi.Record, f cfapi.RecordFilter) bool {
-	return (f.Type == "" || strings.EqualFold(r.Type, f.Type)) &&
-		(f.Name == "" || strings.EqualFold(r.Name, f.Name)) &&
-		(f.CommentPrefix == "" || len(r.Comment) >= len(f.CommentPrefix) &&
-			strings.EqualFold(r.Comment[:len(f.CommentPrefix)], f.CommentPrefix))
+// qualify gives a record name the form Cloudflare stores: lower case, with the
+// zone name added to a name that is not inside the zone, and "@" meaning the
+// zone itself.
+func qualify(name, zone string) string {
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	zone = strings.ToLower(zone)
+	switch {
+	case name == "@":
+		return zone
+	case zone == "" || name == zone || strings.HasSuffix(name, "."+zone):
+		return name
+	}
+	return name + "." + zone
 }
 
 // clashes reports whether Cloudflare would refuse to hold both records. A
@@ -70,38 +88,56 @@ func clashes(a, b cfapi.Record) bool {
 	return isType(a, "CNAME") || isType(b, "CNAME")
 }
 
+// identical reports whether the records have the same type, name and content,
+// which Cloudflare refuses whatever the type.
+func identical(a, b cfapi.Record) bool {
+	return isType(a, b.Type) && strings.EqualFold(a.Name, b.Name) && a.Content == b.Content
+}
+
 func isType(r cfapi.Record, typ string) bool { return strings.EqualFold(r.Type, typ) }
 
 // checkRecord says why r cannot be stored next to the records of the zone,
 // not counting the record with id except.
 func (f *Fake) checkRecord(zoneID string, r cfapi.Record, except string) error {
-	if err := blank("record type", r.Type); err != nil {
-		return err
-	}
-	if err := blank("record name", r.Name); err != nil {
-		return err
-	}
 	for _, other := range f.records[zoneID] {
-		if other.ID != except && clashes(other, r) {
-			return &cfapi.Error{
-				Status: http.StatusBadRequest, Codes: []int{codeNameExists},
-				Message: "An A, AAAA, or CNAME record with that host already exists.",
-			}
+		switch {
+		case other.ID == except:
+		case identical(other, r):
+			return &cfapi.Error{Status: http.StatusBadRequest, Codes: []int{codeIdentical}, Message: messageIdentical}
+		case clashes(other, r):
+			return &cfapi.Error{Status: http.StatusBadRequest, Codes: []int{codeNameExists}, Message: messageNameExists}
 		}
 	}
 	return nil
 }
 
-// CreateRecord ignores the ID and ModifiedOn of r.
+// checkRecordFields checks the arguments the client would refuse to send.
+func checkRecordFields(r cfapi.Record) error {
+	if err := cfapi.ValidName("record type", r.Type); err != nil {
+		return err
+	}
+	return cfapi.ValidName("record name", r.Name)
+}
+
+// CreateRecord ignores the ID and ModifiedOn of r. The name is stored in lower
+// case and, when it is not inside the zone, with the zone name added.
 func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
+	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+		return cfapi.Record{}, err
+	}
+	if err := checkRecordFields(r); err != nil {
+		return cfapi.Record{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opDNSWrite, "CreateRecord", zoneID, r.Name); err != nil {
 		return cfapi.Record{}, err
 	}
-	if err := f.zone(zoneID); err != nil {
+	z, err := f.zone(zoneID)
+	if err != nil {
 		return cfapi.Record{}, err
 	}
+	r.Name = qualify(r.Name, z.Name)
 	if err := f.checkRecord(zoneID, r, ""); err != nil {
 		return cfapi.Record{}, err
 	}
@@ -111,20 +147,32 @@ func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 	return r, nil
 }
 
-// UpdateRecord replaces the record that has the ID of r, which keeps its place.
+// UpdateRecord replaces the record that has the ID of r, which keeps its
+// place. The name is treated as CreateRecord does.
 func (f *Fake) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
+	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+		return cfapi.Record{}, err
+	}
+	if err := cfapi.ValidID("record id", r.ID); err != nil {
+		return cfapi.Record{}, err
+	}
+	if err := checkRecordFields(r); err != nil {
+		return cfapi.Record{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opDNSWrite, "UpdateRecord", zoneID, r.ID); err != nil {
 		return cfapi.Record{}, err
 	}
-	if err := f.zone(zoneID); err != nil {
+	z, err := f.zone(zoneID)
+	if err != nil {
 		return cfapi.Record{}, err
 	}
 	i := slices.IndexFunc(f.records[zoneID], func(x cfapi.Record) bool { return x.ID == r.ID })
 	if i < 0 {
 		return cfapi.Record{}, notFound("record", r.ID)
 	}
+	r.Name = qualify(r.Name, z.Name)
 	if err := f.checkRecord(zoneID, r, r.ID); err != nil {
 		return cfapi.Record{}, err
 	}
@@ -134,12 +182,18 @@ func (f *Fake) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 }
 
 func (f *Fake) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
+	if err := cfapi.ValidID("zone id", zoneID); err != nil {
+		return err
+	}
+	if err := cfapi.ValidID("record id", recordID); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(ctx, opDNSWrite, "DeleteRecord", zoneID, recordID); err != nil {
 		return err
 	}
-	if err := f.zone(zoneID); err != nil {
+	if _, err := f.zone(zoneID); err != nil {
 		return err
 	}
 	i := slices.IndexFunc(f.records[zoneID], func(x cfapi.Record) bool { return x.ID == recordID })

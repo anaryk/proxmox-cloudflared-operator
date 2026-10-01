@@ -59,8 +59,8 @@ func (c *Client) Zones(ctx context.Context) ([]Zone, error) {
 	}
 	var out []Zone
 	err := listEach(ctx, c, "/zones", nil, func(w wire) error {
-		if w.ID == "" || w.Name == "" {
-			return fmt.Errorf("%w: zone without an id or a name", errUnexpected)
+		if w.ID == "" || w.Name == "" || w.Account.ID == "" {
+			return fmt.Errorf("%w: zone without an id, a name or an account", errUnexpected)
 		}
 		out = append(out, Zone{ID: w.ID, Name: w.Name, Status: w.Status, AccountID: w.Account.ID})
 		return nil

@@ -102,7 +102,7 @@ func TestAccounts(t *testing.T) {
 	req := only(t, env)
 	require.Equal(t, http.MethodGet, req.method)
 	require.Equal(t, "/client/v4/accounts", req.path(t))
-	require.Equal(t, url.Values{"page": {"1"}, "per_page": {"100"}}, req.query(t))
+	require.Equal(t, url.Values{"page": {"1"}, "per_page": {"50"}}, req.query(t))
 }
 
 func TestAccountsRejectsAnItemWithoutID(t *testing.T) {
@@ -127,7 +127,7 @@ func TestZones(t *testing.T) {
 	req := only(t, env)
 	require.Equal(t, http.MethodGet, req.method)
 	require.Equal(t, "/client/v4/zones", req.path(t))
-	require.Equal(t, url.Values{"page": {"1"}, "per_page": {"100"}}, req.query(t))
+	require.Equal(t, url.Values{"page": {"1"}, "per_page": {"50"}}, req.query(t))
 }
 
 func TestZonesAreNotShortenedByAFailedPage(t *testing.T) {
@@ -150,6 +150,8 @@ func TestZonesRejectsAnItemWithoutIdentity(t *testing.T) {
 	for _, item := range []string{
 		`{"name":"example.com","status":"active","account":{"id":"a1"}}`,
 		`{"id":"z1","status":"active","account":{"id":"a1"}}`,
+		`{"id":"z1","name":"example.com","status":"active"}`,
+		`{"id":"z1","name":"example.com","status":"active","account":{"name":"First"}}`,
 	} {
 		env := setup(t, reply(http.StatusOK, okBody(`[`+item+`]`)))
 		got, err := env.c.Zones(context.Background())
@@ -183,7 +185,7 @@ func TestFindTunnel(t *testing.T) {
 	require.Equal(t, http.MethodGet, req.method)
 	require.Equal(t, "/client/v4/accounts/a1/cfd_tunnel", req.path(t))
 	require.Equal(t, url.Values{
-		"name": {"pco-abc"}, "is_deleted": {"false"}, "page": {"1"}, "per_page": {"100"},
+		"name": {"pco-abc"}, "is_deleted": {"false"}, "page": {"1"}, "per_page": {"50"},
 	}, req.query(t))
 }
 
@@ -438,7 +440,53 @@ func TestTunnelConfigRules(t *testing.T) {
 	}
 }
 
-func TestTunnelConfigIgnoresWhatItDoesNotKnow(t *testing.T) {
+func TestTunnelConfigForeign(t *testing.T) {
+	const rule = `{"hostname":"app.example.com","service":"http://10.0.0.5:8080"}`
+	tests := []struct {
+		name   string
+		result string
+		want   bool
+	}{
+		{"nothing but what pco manages", configBody(2, ruleCaseWires()), false},
+		{"no configuration", `{"version":2,"config":null}`, false},
+		{"empty configuration", `{"version":2,"config":{}}`, false},
+		{"warp routing off", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{"enabled":false}}}`, false},
+		{"warp routing empty", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{}}}`, false},
+		{"top level origin request empty", `{"version":2,"config":{"ingress":[` + rule + `],"originRequest":{}}}`, false},
+		{"top level origin request of defaults", `{"version":2,"config":{"ingress":[` + rule + `],"originRequest":{"noTLSVerify":false,"connectTimeout":0}}}`, false},
+		{"top level key that is null", `{"version":2,"config":{"ingress":[` + rule + `],"x":null}}`, false},
+		{"rule path empty", `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","path":"","service":"http://10.0.0.5:80"}]}}`, false},
+		{"rule origin request of defaults", `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","service":"http://10.0.0.5:80",` +
+			`"originRequest":{"noTLSVerify":false,"connectTimeout":0,"access":{"required":false,"teamName":"","audTag":[]}}}]}}`, false},
+		{"mapped options are not foreign", `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","service":"https://10.0.0.5:443",` +
+			`"originRequest":{"noTLSVerify":true,"originServerName":"x","matchSNItoHost":true,"httpHostHeader":"h"}}]}}`, false},
+
+		{"rule path", `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","path":"/api","service":"http://10.0.0.5:80"}]}}`, true},
+		{"rule option pco does not map", `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","service":"http://10.0.0.5:80",` +
+			`"originRequest":{"connectTimeout":30}}]}}`, true},
+		{"rule option that is a block", `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","service":"http://10.0.0.5:80",` +
+			`"originRequest":{"access":{"required":true,"teamName":"team"}}}]}}`, true},
+		{"rule option next to mapped ones", `{"version":2,"config":{"ingress":[{"hostname":"a.example.com","service":"http://10.0.0.5:80",` +
+			`"originRequest":{"httpHostHeader":"h","noHappyEyeballs":true}}]}}`, true},
+		{"rule field of a later rule", `{"version":2,"config":{"ingress":[` + rule + `,{"hostname":"b.example.com","service":"http://10.0.0.6:80","x":1},{"service":"http_status:404"}]}}`, true},
+		{"top level origin request", `{"version":2,"config":{"ingress":[` + rule + `],"originRequest":{"noTLSVerify":true}}}`, true},
+		{"warp routing on", `{"version":2,"config":{"ingress":[` + rule + `],"warp-routing":{"enabled":true}}}`, true},
+		{"unknown top level key", `{"version":2,"config":{"ingress":[` + rule + `],"x":1}}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setup(t, reply(http.StatusOK, okBody(tt.result)))
+
+			got, err := env.c.TunnelConfig(context.Background(), "a1", "t1")
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got.Foreign)
+			require.Equal(t, 2, got.Version)
+		})
+	}
+}
+
+func TestTunnelConfigForeignStillShowsWhatPcoManages(t *testing.T) {
 	wire := `{"hostname":"app.example.com","path":"/api","service":"http://10.0.0.5:8080","originRequest":` +
 		`{"connectTimeout":30,"noTLSVerify":false,"httpHostHeader":"internal.lan"}}`
 	env := setup(t, reply(http.StatusOK, okBody(configBody(2, wire))))
@@ -446,9 +494,42 @@ func TestTunnelConfigIgnoresWhatItDoesNotKnow(t *testing.T) {
 	got, err := env.c.TunnelConfig(context.Background(), "a1", "t1")
 
 	require.NoError(t, err)
+	require.True(t, got.Foreign)
 	require.Equal(t, []planner.IngressRule{
 		{Hostname: "app.example.com", Service: "http://10.0.0.5:8080", HTTPHostHeader: "internal.lan"},
 	}, got.Ingress)
+}
+
+func TestTunnelConfigDoesNotFitTheShape(t *testing.T) {
+	for name, result := range map[string]string{
+		"config is a list":          `{"version":2,"config":[]}`,
+		"ingress is an object":      `{"version":2,"config":{"ingress":{}}}`,
+		"rule is a string":          `{"version":2,"config":{"ingress":["x"]}}`,
+		"origin request is a list":  `{"version":2,"config":{"ingress":[{"service":"x","originRequest":[]}]}}`,
+		"option has the wrong type": `{"version":2,"config":{"ingress":[{"service":"x","originRequest":{"noTLSVerify":"yes"}}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := setup(t, reply(http.StatusOK, okBody(result)))
+			got, err := env.c.TunnelConfig(context.Background(), "a1", "t1")
+			require.Error(t, err)
+			require.Equal(t, TunnelConfig{}, got)
+		})
+	}
+}
+
+func TestConfigurationAnswerWithoutAVersion(t *testing.T) {
+	const noVersion = `{"tunnel_id":"t1","config":{"ingress":[{"service":"http_status:404"}]}}`
+	rules := []planner.IngressRule{{Service: "http_status:404"}}
+
+	env := setup(t, reply(http.StatusOK, okBody(noVersion)))
+	cfg, err := env.c.TunnelConfig(context.Background(), "a1", "t1")
+	require.Error(t, err)
+	require.Equal(t, TunnelConfig{}, cfg)
+
+	env = setup(t, reply(http.StatusOK, okBody(noVersion)))
+	version, err := env.c.PutTunnelConfig(context.Background(), "a1", "t1", rules)
+	require.Error(t, err)
+	require.Zero(t, version)
 }
 
 func TestTunnelConfigEmptyOriginRequest(t *testing.T) {
@@ -514,13 +595,18 @@ func TestPutTunnelConfigRules(t *testing.T) {
 	}
 }
 
-func TestPutTunnelConfigWithoutRulesSendsAList(t *testing.T) {
+func TestPutTunnelConfigWithoutRulesIsRefusedLocally(t *testing.T) {
+	// Cloudflare refuses an ingress that does not end in a catch-all rule, so
+	// nothing is sent for one that has no rule at all.
 	for name, rules := range map[string][]planner.IngressRule{"nil": nil, "empty": {}} {
 		t.Run(name, func(t *testing.T) {
 			env := setup(t, reply(http.StatusOK, okBody(configBody(1, ``))))
-			_, err := env.c.PutTunnelConfig(context.Background(), "a1", "t1", rules)
-			require.NoError(t, err)
-			require.JSONEq(t, `{"config":{"ingress":[]}}`, only(t, env).body)
+
+			version, err := env.c.PutTunnelConfig(context.Background(), "a1", "t1", rules)
+
+			require.ErrorIs(t, err, ErrInvalidArgument)
+			require.Zero(t, version)
+			require.Empty(t, env.requests())
 		})
 	}
 }
@@ -537,7 +623,7 @@ func TestPutTunnelConfigRejected(t *testing.T) {
 
 func TestPutTunnelConfigWithoutResult(t *testing.T) {
 	env := setup(t, reply(http.StatusOK, okBody(`null`)))
-	version, err := env.c.PutTunnelConfig(context.Background(), "a1", "t1", nil)
+	version, err := env.c.PutTunnelConfig(context.Background(), "a1", "t1", []planner.IngressRule{{Service: "http_status:404"}})
 	require.Error(t, err)
 	require.Zero(t, version)
 }
@@ -571,11 +657,35 @@ func TestConnectorsNone(t *testing.T) {
 	require.Empty(t, got)
 }
 
-func TestConnectorsWithoutResult(t *testing.T) {
-	env := setup(t, reply(http.StatusOK, okBody(`null`)))
-	got, err := env.c.Connectors(context.Background(), "a1", "t1")
-	require.Error(t, err)
-	require.Nil(t, got)
+func TestConnectorsNullResultIsNone(t *testing.T) {
+	// The listing only feeds a status display, and Cloudflare answers a tunnel
+	// that nothing connects to in either way.
+	for name, body := range map[string]string{
+		"null":    okBody(`null`),
+		"missing": `{"success":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := setup(t, reply(http.StatusOK, body))
+			got, err := env.c.Connectors(context.Background(), "a1", "t1")
+			require.NoError(t, err)
+			require.Empty(t, got)
+		})
+	}
+}
+
+func TestConnectorsBadAnswers(t *testing.T) {
+	for name, h := range map[string]http.HandlerFunc{
+		"entry without an id": reply(http.StatusOK, okBody(`[{"id":"c1","conns":[]},{"version":"2026.8.1","conns":[{}]}]`)),
+		"not a list":          reply(http.StatusOK, okBody(`{"id":"c1"}`)),
+		"forbidden":           reply(http.StatusForbidden, `{"success":false,"errors":[]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := setup(t, h)
+			got, err := env.c.Connectors(context.Background(), "a1", "t1")
+			require.Error(t, err)
+			require.Nil(t, got)
+		})
+	}
 }
 
 const recordJSON = `{"id":"r1","type":"CNAME","name":"app.example.com","content":"t1.cfargotunnel.com",` +
@@ -596,7 +706,7 @@ func TestRecords(t *testing.T) {
 		query  url.Values
 	}{
 		{"no filter", RecordFilter{}, url.Values{}},
-		{"type", RecordFilter{Type: "TXT"}, url.Values{"type": {"TXT"}}},
+		{"type", RecordFilter{Type: "CNAME"}, url.Values{"type": {"CNAME"}}},
 		{"name", RecordFilter{Name: "app.example.com"}, url.Values{"name": {"app.example.com"}}},
 		{"comment prefix", RecordFilter{CommentPrefix: "pco:abc"}, url.Values{"comment.startswith": {"pco:abc"}}},
 		{
@@ -683,6 +793,90 @@ func TestRecordsRejectsAnItemWithoutID(t *testing.T) {
 	got, err := env.c.Records(context.Background(), "z1", RecordFilter{})
 	require.Error(t, err)
 	require.Nil(t, got)
+}
+
+func TestRecordsOutsideTheFilterFailTheWholeCall(t *testing.T) {
+	// The records returned decide what gets deleted, so a server that ignores
+	// part of the filter must not be believed.
+	good := `{"id":"r1","type":"CNAME","name":"app.example.com","content":"x","comment":"pco:abc ok"}`
+	tests := []struct {
+		name   string
+		filter RecordFilter
+		bad    string
+	}{
+		{"other type", RecordFilter{Type: "CNAME"}, `{"id":"r2","type":"A","name":"app.example.com","content":"192.0.2.1","comment":"pco:abc"}`},
+		{"other name", RecordFilter{Name: "app.example.com"}, `{"id":"r2","type":"CNAME","name":"www.example.com","content":"x","comment":"pco:abc"}`},
+		{"name that only contains it", RecordFilter{Name: "app.example.com"}, `{"id":"r2","type":"CNAME","name":"x.app.example.com","content":"x","comment":"pco:abc"}`},
+		{"other comment", RecordFilter{CommentPrefix: "pco:abc"}, `{"id":"r2","type":"CNAME","name":"app.example.com","content":"x","comment":"pco:other"}`},
+		{"comment that only contains it", RecordFilter{CommentPrefix: "pco:abc"}, `{"id":"r2","type":"CNAME","name":"app.example.com","content":"x","comment":"by pco:abc"}`},
+		{"no comment", RecordFilter{CommentPrefix: "pco:abc"}, `{"id":"r2","type":"CNAME","name":"app.example.com","content":"x","comment":null}`},
+		{"one of three filters", RecordFilter{Type: "CNAME", Name: "app.example.com", CommentPrefix: "pco:abc"},
+			`{"id":"r2","type":"CNAME","name":"app.example.com","content":"x","comment":"mine"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := setup(t, reply(http.StatusOK, okBody(`[`+good+`,`+tt.bad+`]`)))
+
+			got, err := env.c.Records(context.Background(), "z1", tt.filter)
+
+			require.ErrorContains(t, err, "cloudflare returned a record outside the requested filter")
+			require.Nil(t, got, "the records that did match are not returned either")
+		})
+	}
+}
+
+func TestRecordsOutsideTheFilterOnALaterPage(t *testing.T) {
+	env := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		rec := `{"id":"r1","type":"CNAME","name":"app.example.com","content":"x","comment":"pco:abc"}`
+		if r.URL.Query().Get("page") == "2" {
+			rec = `{"id":"r2","type":"CNAME","name":"app.example.com","content":"x","comment":"mine"}`
+		}
+		reply(http.StatusOK, `{"success":true,"result":[`+rec+`],"result_info":{"total_pages":2}}`)(w, r)
+	})
+
+	got, err := env.c.Records(context.Background(), "z1", RecordFilter{CommentPrefix: "pco:abc"})
+
+	require.ErrorContains(t, err, "outside the requested filter")
+	require.Nil(t, got)
+}
+
+func TestRecordsFilterIgnoresCase(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(
+		`[{"id":"r1","type":"cname","name":"APP.Example.com","content":"x","comment":"PCO:ABC probe"}]`)))
+
+	got, err := env.c.Records(context.Background(), "z1",
+		RecordFilter{Type: "CNAME", Name: "app.example.COM", CommentPrefix: "pco:abc"})
+
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+}
+
+func TestRecordFilterMatches(t *testing.T) {
+	r := Record{Type: "CNAME", Name: "app.example.com", Comment: "pco:abc moved"}
+	tests := []struct {
+		name string
+		f    RecordFilter
+		want bool
+	}{
+		{"empty filter", RecordFilter{}, true},
+		{"type", RecordFilter{Type: "cname"}, true},
+		{"other type", RecordFilter{Type: "A"}, false},
+		{"name", RecordFilter{Name: "APP.example.com"}, true},
+		{"longer name", RecordFilter{Name: "x.app.example.com"}, false},
+		{"shorter name", RecordFilter{Name: "app.example"}, false},
+		{"comment prefix", RecordFilter{CommentPrefix: "PCO:abc"}, true},
+		{"whole comment", RecordFilter{CommentPrefix: "pco:abc moved"}, true},
+		{"longer than the comment", RecordFilter{CommentPrefix: "pco:abc moved!"}, false},
+		{"not a prefix", RecordFilter{CommentPrefix: "abc"}, false},
+		{"all", RecordFilter{Type: "CNAME", Name: "app.example.com", CommentPrefix: "pco:"}, true},
+		{"one of all fails", RecordFilter{Type: "CNAME", Name: "app.example.com", CommentPrefix: "x"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.f.Matches(r))
+		})
+	}
+	require.False(t, RecordFilter{CommentPrefix: "pco:"}.Matches(Record{Type: "A", Name: "a"}), "no comment")
 }
 
 func TestRecordsDenied(t *testing.T) {
@@ -797,6 +991,7 @@ func TestEmptyArgumentsAreRejectedBeforeAnyRequest(t *testing.T) {
 	noName.Name = ""
 	noType := newRecord()
 	noType.Type = ""
+	catchAll := []planner.IngressRule{{Service: "http_status:404"}}
 
 	tests := []struct {
 		name string
@@ -813,8 +1008,9 @@ func TestEmptyArgumentsAreRejectedBeforeAnyRequest(t *testing.T) {
 		{"TunnelToken without tunnel", func(c *Client) error { _, err := c.TunnelToken(ctx, "a1", ""); return err }},
 		{"TunnelConfig without account", func(c *Client) error { _, err := c.TunnelConfig(ctx, "", "t1"); return err }},
 		{"TunnelConfig without tunnel", func(c *Client) error { _, err := c.TunnelConfig(ctx, "a1", ""); return err }},
-		{"PutTunnelConfig without account", func(c *Client) error { _, err := c.PutTunnelConfig(ctx, "", "t1", nil); return err }},
-		{"PutTunnelConfig without tunnel", func(c *Client) error { _, err := c.PutTunnelConfig(ctx, "a1", "", nil); return err }},
+		{"PutTunnelConfig without account", func(c *Client) error { _, err := c.PutTunnelConfig(ctx, "", "t1", catchAll); return err }},
+		{"PutTunnelConfig without tunnel", func(c *Client) error { _, err := c.PutTunnelConfig(ctx, "a1", "", catchAll); return err }},
+		{"PutTunnelConfig without rules", func(c *Client) error { _, err := c.PutTunnelConfig(ctx, "a1", "t1", nil); return err }},
 		{"Connectors without account", func(c *Client) error { _, err := c.Connectors(ctx, "", "t1"); return err }},
 		{"Connectors without tunnel", func(c *Client) error { _, err := c.Connectors(ctx, "a1", ""); return err }},
 		{"Records without zone", func(c *Client) error { _, err := c.Records(ctx, "", RecordFilter{}); return err }},
@@ -832,11 +1028,19 @@ func TestEmptyArgumentsAreRejectedBeforeAnyRequest(t *testing.T) {
 		{"DeleteRecord without zone", func(c *Client) error { return c.DeleteRecord(ctx, "", "r1") }},
 		{"DeleteRecord without id", func(c *Client) error { return c.DeleteRecord(ctx, "z1", "") }},
 		{"DeleteRecord blank id", func(c *Client) error { return c.DeleteRecord(ctx, "z1", " \t") }},
+		{"DeleteRecord id with a slash", func(c *Client) error { return c.DeleteRecord(ctx, "z1", "a/b") }},
+		{"DeleteTunnel account with a slash", func(c *Client) error { return c.DeleteTunnel(ctx, "a/b", "t1") }},
+		{"UpdateRecord id with a slash", func(c *Client) error {
+			r := newRecord()
+			r.ID = "a/b"
+			_, err := c.UpdateRecord(ctx, "z1", r)
+			return err
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			env := setup(t, reply(http.StatusOK, okBody(`{}`)))
-			require.Error(t, tt.call(env.c))
+			require.ErrorIs(t, tt.call(env.c), ErrInvalidArgument)
 			require.Empty(t, env.requests())
 		})
 	}
@@ -849,7 +1053,6 @@ func TestIDsCannotChangeThePath(t *testing.T) {
 		call     func(c *Client) error
 		wantPath string // as the server sees it, still escaped
 	}{
-		{"slash is escaped", func(c *Client) error { return c.DeleteRecord(ctx, "z1", "a/b") }, "/client/v4/zones/z1/dns_records/a%2Fb"},
 		{"question mark is escaped", func(c *Client) error { return c.DeleteRecord(ctx, "z1", "a?b=c") }, "/client/v4/zones/z1/dns_records/a%3Fb=c"},
 		{"percent is escaped", func(c *Client) error { return c.DeleteTunnel(ctx, "a%2e", "t1") }, "/client/v4/accounts/a%252e/cfd_tunnel/t1"},
 	}
@@ -861,12 +1064,36 @@ func TestIDsCannotChangeThePath(t *testing.T) {
 		})
 	}
 
-	for _, id := range []string{".", ".."} {
-		t.Run("dot "+id, func(t *testing.T) {
+	// What cannot stay one segment of the path is refused before anything is sent.
+	for _, id := range []string{".", "..", "a/b", "/", "../x"} {
+		t.Run("refused "+id, func(t *testing.T) {
 			env := setup(t, reply(http.StatusOK, okBody(`{}`)))
-			require.Error(t, env.c.DeleteRecord(ctx, "z1", id))
-			require.Error(t, env.c.DeleteTunnel(ctx, id, "t1"))
+			require.ErrorIs(t, env.c.DeleteRecord(ctx, "z1", id), ErrInvalidArgument)
+			require.ErrorIs(t, env.c.DeleteTunnel(ctx, id, "t1"), ErrInvalidArgument)
+			require.ErrorIs(t, env.c.DeleteTunnel(ctx, "a1", id), ErrInvalidArgument)
+			require.ErrorIs(t, env.c.DeleteRecord(ctx, id, "r1"), ErrInvalidArgument)
 			require.Empty(t, env.requests())
 		})
+	}
+}
+
+func TestValidID(t *testing.T) {
+	for _, id := range []string{"023e105f4ecef8ad9ca31a8372d0c353", "a b", "100%", "q?x#y", "a..b", "...", "%2e%2e", "ünï"} {
+		require.NoError(t, ValidID("zone id", id), id)
+	}
+	for _, id := range []string{"", " ", " \t\n", ".", "..", "a/b", "/"} {
+		err := ValidID("zone id", id)
+		require.ErrorIs(t, err, ErrInvalidArgument, id)
+		require.ErrorContains(t, err, "zone id", id)
+	}
+}
+
+func TestValidName(t *testing.T) {
+	require.NoError(t, ValidName("tunnel name", "pco-abc"))
+	require.NoError(t, ValidName("tunnel name", "a/b"), "a name is not a path segment")
+	for _, name := range []string{"", " ", "\t"} {
+		err := ValidName("tunnel name", name)
+		require.ErrorIs(t, err, ErrInvalidArgument)
+		require.ErrorContains(t, err, "tunnel name")
 	}
 }

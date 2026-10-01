@@ -35,6 +35,7 @@ const (
 	codeAuthentication = 10000 // the token may not do this
 	codeTunnelExists   = 1013  // a tunnel of that name exists
 	codeNameExists     = 81053 // an A, AAAA or CNAME record for that name conflicts
+	codeIdentical      = 81058 // the same record exists
 )
 
 var _ cfapi.API = (*Fake)(nil)
@@ -55,6 +56,7 @@ type Fake struct {
 
 	tunnelSeq int
 	recordSeq int
+	token     cfapi.TokenStatus
 
 	calls    []string
 	denied   map[string]bool
@@ -70,6 +72,7 @@ type failure struct {
 func New() *Fake {
 	return &Fake{
 		now:      time.Now,
+		token:    cfapi.TokenStatus{ID: "token-1", Status: "active"},
 		records:  make(map[string][]cfapi.Record),
 		denied:   make(map[string]bool),
 		failures: make(map[string][]*failure),
@@ -85,6 +88,20 @@ func (f *Fake) SetNow(now func() time.Time) {
 		now = time.Now
 	}
 	f.now = now
+}
+
+// SetTokenStatus sets what VerifyToken reports: "active", "disabled" or
+// "expired", and when the token expires, if it does. A token is active and
+// does not expire until this says otherwise.
+func (f *Fake) SetTokenStatus(status string, expiresOn *time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.token.Status = status
+	f.token.ExpiresOn = nil
+	if expiresOn != nil {
+		expires := *expiresOn
+		f.token.ExpiresOn = &expires
+	}
 }
 
 // AddAccount makes an account visible. Adding an id again renames it.
@@ -112,11 +129,12 @@ func (f *Fake) AddZone(id, name, accountID string) {
 	f.zones = append(f.zones, z)
 }
 
-// SeedRecord puts a record into a zone without any check, so that a test can
-// start from a state it could not reach through the API. An empty ID is
-// replaced by the next free "rec-N" and a zero ModifiedOn by the current time. A
-// record that has the id of one already there replaces it. The zone must have
-// been added for the record to be visible through the API.
+// SeedRecord puts a record into a zone as it is, without the checks and the
+// change of the name that CreateRecord makes, so that a test can start from a
+// state it could not reach through the API. An empty ID is replaced by the next
+// free "rec-N" and a zero ModifiedOn by the current time. A record that has the
+// id of one already there replaces it. The zone must have been added for the
+// record to be visible through the API.
 func (f *Fake) SeedRecord(zoneID string, r cfapi.Record) cfapi.Record {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -137,8 +155,9 @@ func (f *Fake) SeedRecord(zoneID string, r cfapi.Record) cfapi.Record {
 
 // SeedTunnel puts a tunnel into an account without any check, so a test may
 // make two of one name. With rules the tunnel starts with that configuration
-// at version 1. The account must have been added for the tunnel to be visible
-// through the API.
+// at version 1, whether or not Cloudflare would accept it: a configuration
+// edited by hand may lack a catch-all. The account must have been added for the
+// tunnel to be visible through the API.
 func (f *Fake) SeedTunnel(accountID, name string, rules []planner.IngressRule) cfapi.Tunnel {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -184,8 +203,10 @@ func (f *Fake) FailNext(op string, n int, err error) {
 // Calls returns the calls made so far, oldest first, as the method name
 // followed by its arguments: "FindTunnel acct1 pco-abc", "DeleteTunnel acct1
 // <tunnel id>", "Records zone1", "CreateRecord zone1 <name>", "UpdateRecord
-// zone1 <record id>". A call refused by Deny or FailNext is in the list; one
-// made with an ended context is not.
+// zone1 <record id>". A call refused by Deny, FailNext or because an id is
+// unknown is in the list. A call that never reaches Cloudflare is not: one made
+// with an ended context, or with an id or name the client would refuse to send
+// (see cfapi.ValidID).
 func (f *Fake) Calls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -239,7 +260,12 @@ func (f *Fake) VerifyToken(ctx context.Context) (cfapi.TokenStatus, error) {
 	if err := f.begin(ctx, opVerify, "VerifyToken"); err != nil {
 		return cfapi.TokenStatus{}, err
 	}
-	return cfapi.TokenStatus{ID: "token-1", Status: "active"}, nil
+	st := f.token
+	if st.ExpiresOn != nil {
+		expires := *st.ExpiresOn
+		st.ExpiresOn = &expires
+	}
+	return st, nil
 }
 
 func (f *Fake) Accounts(ctx context.Context) ([]cfapi.Account, error) {
@@ -271,11 +297,4 @@ func clone[T any](s []T) []T {
 
 func notFound(what, id string) error {
 	return &cfapi.Error{Status: http.StatusNotFound, Message: fmt.Sprintf("%s %q not found", what, id)}
-}
-
-func blank(what, v string) error {
-	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("%s is empty", what)
-	}
-	return nil
 }

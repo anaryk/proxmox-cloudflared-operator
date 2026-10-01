@@ -2,6 +2,7 @@ package cfapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -28,77 +29,22 @@ func (w wireTunnel) deleted() bool {
 	return w.DeletedAt != nil && !w.DeletedAt.IsZero()
 }
 
-// wireRule is an ingress rule as the API spells it: the origin options live
-// in a nested object that is left out when none is set.
-type wireRule struct {
-	Hostname      string             `json:"hostname,omitempty"` // none for the catch-all
-	Service       string             `json:"service"`
-	OriginRequest *wireOriginRequest `json:"originRequest,omitempty"`
-}
-
-type wireOriginRequest struct {
-	OriginServerName string `json:"originServerName,omitempty"`
-	MatchSNIToHost   bool   `json:"matchSNItoHost,omitempty"`
-	NoTLSVerify      bool   `json:"noTLSVerify,omitempty"`
-	HTTPHostHeader   string `json:"httpHostHeader,omitempty"`
-}
-
-func toWireRule(r planner.IngressRule) wireRule {
-	w := wireRule{Hostname: r.Hostname, Service: r.Service}
-	opts := wireOriginRequest{
-		OriginServerName: r.OriginServerName,
-		MatchSNIToHost:   r.MatchSNIToHost,
-		NoTLSVerify:      r.NoTLSVerify,
-		HTTPHostHeader:   r.HTTPHostHeader,
-	}
-	if opts != (wireOriginRequest{}) {
-		w.OriginRequest = &opts
-	}
-	return w
-}
-
-// rule maps back to the flat form. Options of the API that pco does not set
-// are not carried over.
-func (w wireRule) rule() planner.IngressRule {
-	r := planner.IngressRule{Hostname: w.Hostname, Service: w.Service}
-	if o := w.OriginRequest; o != nil {
-		r.OriginServerName = o.OriginServerName
-		r.MatchSNIToHost = o.MatchSNIToHost
-		r.NoTLSVerify = o.NoTLSVerify
-		r.HTTPHostHeader = o.HTTPHostHeader
-	}
-	return r
-}
-
-type wireIngress struct {
-	Ingress []wireRule `json:"ingress"`
-}
-
-// wireConfig is the answer to reading or writing a tunnel configuration.
-// Config is null for a tunnel that has none yet.
-type wireConfig struct {
-	Version int          `json:"version"`
-	Config  *wireIngress `json:"config"`
-}
-
 func tunnelsPath(accountID string) (string, error) {
-	acct, err := pathID("account id", accountID)
-	if err != nil {
+	if err := ValidID("account id", accountID); err != nil {
 		return "", err
 	}
-	return "/accounts/" + acct + "/cfd_tunnel", nil
+	return joinPath("accounts", accountID, "cfd_tunnel")
 }
 
-func tunnelPath(accountID, tunnelID string) (string, error) {
-	base, err := tunnelsPath(accountID)
-	if err != nil {
+// tunnelPath is the path of a tunnel, or of what lies below it.
+func tunnelPath(accountID, tunnelID string, below ...string) (string, error) {
+	if err := ValidID("account id", accountID); err != nil {
 		return "", err
 	}
-	id, err := pathID("tunnel id", tunnelID)
-	if err != nil {
+	if err := ValidID("tunnel id", tunnelID); err != nil {
 		return "", err
 	}
-	return base + "/" + id, nil
+	return joinPath(append([]string{"accounts", accountID, "cfd_tunnel", tunnelID}, below...)...)
 }
 
 // FindTunnel returns the tunnel of that exact name that is not deleted. Two of
@@ -108,7 +54,7 @@ func (c *Client) FindTunnel(ctx context.Context, accountID, name string) (Tunnel
 	if err != nil {
 		return Tunnel{}, false, fmt.Errorf("finding tunnel: %w", err)
 	}
-	if err := required("tunnel name", name); err != nil {
+	if err := ValidName("tunnel name", name); err != nil {
 		return Tunnel{}, false, fmt.Errorf("finding tunnel: %w", err)
 	}
 
@@ -145,7 +91,7 @@ func (c *Client) CreateTunnel(ctx context.Context, accountID, name string) (Tunn
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("creating tunnel: %w", err)
 	}
-	if err := required("tunnel name", name); err != nil {
+	if err := ValidName("tunnel name", name); err != nil {
 		return Tunnel{}, fmt.Errorf("creating tunnel: %w", err)
 	}
 
@@ -174,12 +120,12 @@ func (c *Client) DeleteTunnel(ctx context.Context, accountID, tunnelID string) e
 
 // TunnelToken returns the token a cloudflared needs to run the tunnel.
 func (c *Client) TunnelToken(ctx context.Context, accountID, tunnelID string) (string, error) {
-	path, err := tunnelPath(accountID, tunnelID)
+	path, err := tunnelPath(accountID, tunnelID, "token")
 	if err != nil {
 		return "", fmt.Errorf("reading run token: %w", err)
 	}
 	var token string
-	if err := c.do(ctx, http.MethodGet, path+"/token", nil, nil, &token); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &token); err != nil {
 		return "", fmt.Errorf("reading run token of tunnel %s: %w", tunnelID, err)
 	}
 	if token == "" {
@@ -191,36 +137,32 @@ func (c *Client) TunnelToken(ctx context.Context, accountID, tunnelID string) (s
 // TunnelConfig returns the ingress configuration of a tunnel. A tunnel that
 // has none yet has no rules and the version Cloudflare reports for it.
 func (c *Client) TunnelConfig(ctx context.Context, accountID, tunnelID string) (TunnelConfig, error) {
-	path, err := tunnelPath(accountID, tunnelID)
+	path, err := tunnelPath(accountID, tunnelID, "configurations")
 	if err != nil {
 		return TunnelConfig{}, fmt.Errorf("reading tunnel configuration: %w", err)
 	}
 	var got wireConfig
-	if err := c.do(ctx, http.MethodGet, path+"/configurations", nil, nil, &got); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &got); err != nil {
 		return TunnelConfig{}, fmt.Errorf("reading configuration of tunnel %s: %w", tunnelID, err)
 	}
-	return got.tunnelConfig(), nil
-}
-
-func (w wireConfig) tunnelConfig() TunnelConfig {
-	cfg := TunnelConfig{Version: w.Version}
-	if w.Config == nil {
-		return cfg
+	cfg, err := got.tunnelConfig()
+	if err != nil {
+		return TunnelConfig{}, fmt.Errorf("reading configuration of tunnel %s: %w", tunnelID, err)
 	}
-	for _, rule := range w.Config.Ingress {
-		cfg.Ingress = append(cfg.Ingress, rule.rule())
-	}
-	return cfg
+	return cfg, nil
 }
 
 // PutTunnelConfig replaces the ingress configuration of a tunnel and returns
-// the version Cloudflare gave it.
+// the version Cloudflare gave it. Without rules there is nothing to write:
+// Cloudflare wants the ingress to end in a rule that matches everything.
 func (c *Client) PutTunnelConfig(ctx context.Context, accountID, tunnelID string, rules []planner.IngressRule) (int, error) {
-	path, err := tunnelPath(accountID, tunnelID)
+	path, err := tunnelPath(accountID, tunnelID, "configurations")
 	if err != nil {
 		return 0, fmt.Errorf("writing tunnel configuration: %w", err)
 	}
-	// A list, never null, however few rules there are.
+	if len(rules) == 0 {
+		return 0, fmt.Errorf("writing tunnel configuration: %w: no ingress rules", ErrInvalidArgument)
+	}
 	wires := make([]wireRule, len(rules))
 	for i, r := range rules {
 		wires[i] = toWireRule(r)
@@ -230,30 +172,45 @@ func (c *Client) PutTunnelConfig(ctx context.Context, accountID, tunnelID string
 	}{wireIngress{Ingress: wires}}
 
 	var got wireConfig
-	if err := c.do(ctx, http.MethodPut, path+"/configurations", nil, body, &got); err != nil {
+	if err := c.do(ctx, http.MethodPut, path, nil, body, &got); err != nil {
 		return 0, fmt.Errorf("writing configuration of tunnel %s: %w", tunnelID, err)
 	}
-	return got.Version, nil
+	version, err := got.version()
+	if err != nil {
+		return 0, fmt.Errorf("writing configuration of tunnel %s: %w", tunnelID, err)
+	}
+	return version, nil
 }
 
-// Connectors lists the cloudflared instances connected to a tunnel.
+// Connectors lists the cloudflared instances connected to a tunnel. A result of
+// null is none: the listing only feeds a status display.
 func (c *Client) Connectors(ctx context.Context, accountID, tunnelID string) ([]Connector, error) {
-	path, err := tunnelPath(accountID, tunnelID)
+	path, err := tunnelPath(accountID, tunnelID, "connections")
 	if err != nil {
 		return nil, fmt.Errorf("listing connectors: %w", err)
 	}
 	// The endpoint does not page.
+	env, err := c.roundTrip(ctx, http.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing connectors of tunnel %s: %w", tunnelID, err)
+	}
+	if isNull(env.Result) {
+		return nil, nil
+	}
 	var got []struct {
 		ID            string     `json:"id"`
 		Version       string     `json:"version"`
 		ConfigVersion int        `json:"config_version"`
 		Conns         []struct{} `json:"conns"`
 	}
-	if err := c.do(ctx, http.MethodGet, path+"/connections", nil, nil, &got); err != nil {
-		return nil, fmt.Errorf("listing connectors of tunnel %s: %w", tunnelID, err)
+	if err := json.Unmarshal(env.Result, &got); err != nil {
+		return nil, fmt.Errorf("listing connectors of tunnel %s: decoding result: %w", tunnelID, err)
 	}
 	var out []Connector
 	for _, w := range got {
+		if w.ID == "" {
+			return nil, fmt.Errorf("listing connectors of tunnel %s: %w: connector without an id", tunnelID, errUnexpected)
+		}
 		out = append(out, Connector{
 			ID:            w.ID,
 			Version:       w.Version,
