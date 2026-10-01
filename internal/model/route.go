@@ -27,6 +27,11 @@ type RouteOptions struct {
 	HostHeader  string `json:"hostHeader,omitempty"`
 	SNI         string `json:"sni,omitempty"`
 	Via         string `json:"via,omitempty"` // "net1" or an IPv4 address
+	// AllowNode lets a manual route without a guest point at an address of a
+	// cluster node, such as a service the admin runs on the hypervisor. It is
+	// honoured only for such routes and only admin tools set it; the
+	// annotation parser never does.
+	AllowNode bool `json:"allowNode,omitempty"`
 }
 
 // SourceKind says where a route definition came from.

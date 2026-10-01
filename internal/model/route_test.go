@@ -135,3 +135,25 @@ func TestRouteJSONKeepsAddr(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 	require.Equal(t, r, got)
 }
+
+func TestRouteJSONAllowNode(t *testing.T) {
+	r := Route{
+		Hostname: "pve.example.com",
+		Target:   Target{Scheme: SchemeHTTPS, Addr: netip.MustParseAddr("10.0.0.2"), Port: 8006},
+		Options:  RouteOptions{AllowNode: true},
+		Source:   SourceManual,
+		ManualID: "pve",
+	}
+
+	data, err := json.Marshal(r)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"allowNode":true`)
+	var got Route
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, r, got)
+
+	r.Options.AllowNode = false
+	data, err = json.Marshal(r)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "allowNode")
+}
