@@ -1867,6 +1867,7 @@ func FuzzParse(f *testing.F) {
 		}
 
 		named := Hostnames(description)
+		require.Subset(t, named, res.Mentioned, "a hostname of the route text is not found in the whole description")
 		for i, h := range named {
 			norm, err := hostname.Normalize(h)
 			require.NoError(t, err)

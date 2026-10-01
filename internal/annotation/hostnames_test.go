@@ -32,8 +32,9 @@ func TestHostnames(t *testing.T) {
 			want:  hosts("a.example.com", "b.example.com", "c.example.com", "d.example.com", "e.example.com", "f.example.com"),
 		},
 		{
-			name:  "only one character is taken off each end",
-			input: "((a.example.com b.example.com); c.example.com:)",
+			name:  "any amount of punctuation around a name",
+			input: "((a.example.com b.example.com); c.example.com:) ...d.example.com... --e.example.com--",
+			want:  hosts("a.example.com", "b.example.com", "c.example.com", "d.example.com", "e.example.com"),
 		},
 		{
 			name:  "normalised, wildcards included, each once",
@@ -41,9 +42,25 @@ func TestHostnames(t *testing.T) {
 			want:  hosts("*.example.com", "a.example.com"),
 		},
 		{
-			name:  "words that are not hostnames",
-			input: "10.0.0.5 https://a.example.com a.example.com:8080 host-header=b.example.com user@c.example.com a_b.example.com",
+			name:  "names inside other text",
+			input: "https://a.example.com/x b.example.com:8080 host-header=c.example.com user@d.example.com",
+			want:  hosts("a.example.com", "b.example.com", "c.example.com", "d.example.com"),
 		},
+		{
+			name:  "words that are not hostnames",
+			input: "10.0.0.5 a_b.example.com example a..b.example.com -.- * *. 1.2.3",
+		},
+		{name: "a typo in the shorthand prefix", input: "cf-tunel:www.example.com -> :8080", want: hosts("www.example.com")},
+		{name: "missing spaces around the arrow", input: "www.example.com->:8080", want: hosts("www.example.com")},
+		{name: "commented out", input: "#www.example.com -> :8080", want: hosts("www.example.com")},
+		{name: "bold", input: "**www.example.com**", want: hosts("www.example.com")},
+		{name: "italic", input: "*www.example.com*", want: hosts("www.example.com")},
+		{name: "a wildcard in bold", input: "***.example.com**", want: hosts("*.example.com")},
+		{name: "a URL", input: "https://www.example.com", want: hosts("www.example.com")},
+		{name: "quoted", input: `"www.example.com" 'a.example.com'`, want: hosts("a.example.com", "www.example.com")},
+		{name: "in parentheses before a full stop", input: "(see www.example.com).", want: hosts("www.example.com")},
+		{name: "with a port", input: "www.example.com:8080", want: hosts("www.example.com")},
+		{name: "next to letters that are not ASCII", input: "žwww.example.comž", want: hosts("www.example.com")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
