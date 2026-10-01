@@ -283,10 +283,88 @@ func TestDNSMassDeleteGuardConfirmedTombstonesOfUnlistedZones(t *testing.T) {
 
 	res := newDNS(s, store, t0).Run(context.Background(), dnsIn(), Enforce)
 
-	require.Len(t, callsTo(f, "DeleteRecord"), 6, "6 pending of 20 owned: the confirmed ones count as owned only")
-	for _, p := range res.Problems {
-		require.NotContains(t, p, "mass delete guard")
+	require.Empty(t, callsTo(f, "DeleteRecord"), "confirmed tombstones of a zone that cannot be listed do not dilute the share")
+	requireHeld(t, res.Actions, "mass delete guard: 6 of 6 records are being removed; confirm to proceed")
+}
+
+// TestDNSMassDeleteGuardAfterAConfirmedBrokenZone confirms the 30 tombstones
+// of a zone that cannot be listed, then unpublishes every record of another
+// zone at once: that is a mass delete of its own, as it is without the broken
+// zone.
+func TestDNSMassDeleteGuardAfterAConfirmedBrokenZone(t *testing.T) {
+	for _, broken := range []bool{true, false} {
+		t.Run(fmt.Sprintf("broken zone %v", broken), func(t *testing.T) {
+			ctx := context.Background()
+			f := newDNSFake()
+			store := &memStore{m: map[string]Tombstone{}}
+			if broken {
+				for i := range 30 {
+					store.m[stoneKey(zone2.ID, fmt.Sprintf("b%02d.shop.cz", i))] = overdue
+				}
+			}
+			names := make([]string, 10)
+			for i := range names {
+				names[i] = fmt.Sprintf("h%d.example.com", i)
+				f.SeedRecord(zone1.ID, ourCNAME(names[i], testTunnelID))
+			}
+			s, _ := unlistable(f)
+			c := &clock{t0}
+			r := newDNSAt(s, store, writerOf(ours, ours), c)
+
+			in := dnsIn(names...)
+			in.ConfirmDeletes = true
+			r.Run(ctx, in, Enforce)
+
+			held := "mass delete guard: 10 of 10 records are being removed; confirm to proceed"
+			for _, at := range []time.Duration{time.Minute, 2*time.Minute + time.Second} {
+				c.t = t0.Add(at)
+				res := r.Run(ctx, dnsIn(), Enforce)
+				require.Contains(t, res.Problems, held, "%s on", at)
+			}
+			require.Empty(t, callsTo(f, "DeleteRecord"))
+		})
 	}
+}
+
+func TestDNSPlannedNameDropsTheTombstoneOfAnotherWriter(t *testing.T) {
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, ourCNAME("app.example.com", testTunnelID))
+	other := overdue
+	other.Generation = ours.Generation - 1
+	store := &memStore{m: map[string]Tombstone{stoneKey(zone1.ID, "app.example.com"): other}}
+
+	newDNS(f, store, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+
+	require.Empty(t, store.m)
+}
+
+func TestDNSConfirmingRunLeavesUnmanagedZonesAlone(t *testing.T) {
+	f := newDNSFake()
+	unmanaged := stoneKey("zone9", "old.example.org")
+	broken := stoneKey(zone2.ID, "b.shop.cz")
+	store := &memStore{m: map[string]Tombstone{unmanaged: overdue, broken: overdue}}
+	s, _ := unlistable(f)
+	in := dnsIn()
+	in.ConfirmDeletes = true
+
+	newDNS(s, store, t0).Run(context.Background(), in, Enforce)
+
+	require.True(t, store.m[broken].Confirmed, "a managed zone that cannot be listed")
+	require.Equal(t, overdue, store.m[unmanaged], "a zone the run does not manage")
+}
+
+func TestDNSConfirmationOfUnlistedZonesIsSaved(t *testing.T) {
+	f := newDNSFake()
+	key := stoneKey(zone2.ID, "b.shop.cz")
+	store := &memStore{m: map[string]Tombstone{key: overdue}}
+	s, _ := unlistable(f)
+	in := dnsIn()
+	in.ConfirmDeletes = true
+
+	newDNS(s, store, t0).Run(context.Background(), in, Enforce)
+
+	require.Equal(t, 1, store.saves, "the confirmation is all that changed")
+	require.True(t, store.m[key].Confirmed)
 }
 
 func TestDNSMassDeleteGuardNamesWhatIsPendingInUnlistedZones(t *testing.T) {
@@ -311,7 +389,7 @@ func TestDNSMassDeleteGuardNamesWhatIsPendingInUnlistedZones(t *testing.T) {
 	res := newDNS(s, store, t0).Run(context.Background(), dnsIn(), Enforce)
 
 	require.Empty(t, callsTo(f, "DeleteRecord"))
-	requireHeld(t, res.Actions, "mass delete guard: 8 of 11 records are being removed (6 in zones that could not be listed); confirm to proceed")
+	requireHeld(t, res.Actions, "mass delete guard: 8 of 8 records are being removed (6 in zones that could not be listed); confirm to proceed")
 }
 
 // TestDNSConfirmationCoversPendingRemovals unpublishes six names of ten

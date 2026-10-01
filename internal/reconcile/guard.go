@@ -11,10 +11,11 @@ import (
 //
 // A removal is pending from the moment its name is unwanted, in its grace or
 // due, until the record is gone; one the admin confirmed is not counted. A
-// zone that could not be listed counts with every tombstone in it, whoever
-// wrote it, as one owned record each, and as one pending record unless it is
-// confirmed: otherwise a listing that keeps failing, or a new writer, could
-// split a mass delete into parts that each pass.
+// zone that could not be listed counts with every unconfirmed tombstone in it,
+// whoever wrote it, as one pending and one owned record each: otherwise a
+// listing that keeps failing, or a new writer, could split a mass delete into
+// parts that each pass. Its confirmed tombstones count as neither, so that a
+// zone that stays broken does not dilute the share for the others.
 //
 // The guard speaks only where a confirmation can help: with an incomplete
 // inventory every delete is held anyway.
@@ -25,10 +26,10 @@ func (run *dnsRun) decideGuard(zones []*dnsZone) {
 	pending, owned, unlisted := 0, 0, 0
 	for _, z := range zones {
 		if !z.listed {
-			all, unconfirmed := run.stonesIn(z.ID)
-			owned += all
-			pending += unconfirmed
-			unlisted += unconfirmed
+			n := run.unconfirmedIn(z.ID)
+			owned += n
+			pending += n
+			unlisted += n
 			continue
 		}
 		for name, records := range z.owned {
@@ -61,16 +62,13 @@ func (run *dnsRun) confirmed(z *dnsZone, name string) bool {
 	return run.stones.m[tombstoneKey(z.ID, name)].Confirmed
 }
 
-// stonesIn counts the tombstones of a zone, and those of them that are not
-// confirmed.
-func (run *dnsRun) stonesIn(zoneID string) (all, unconfirmed int) {
+// unconfirmedIn counts the tombstones of a zone that are not confirmed.
+func (run *dnsRun) unconfirmedIn(zoneID string) int {
+	n := 0
 	for key, t := range run.stones.m {
-		if strings.HasPrefix(key, zoneID+"/") {
-			all++
-			if !t.Confirmed {
-				unconfirmed++
-			}
+		if strings.HasPrefix(key, zoneID+"/") && !t.Confirmed {
+			n++
 		}
 	}
-	return all, unconfirmed
+	return n
 }
