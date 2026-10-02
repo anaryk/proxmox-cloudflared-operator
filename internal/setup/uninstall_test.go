@@ -110,14 +110,15 @@ func egressRemoved() []call {
 
 func noEgress() []call { return []call{{line: "nft list tables", out: "table inet filter\n"}} }
 
-// userRemoved removes the token and the user setup created, and the tags.
+// userRemoved reads what Proxmox holds and removes the token and the user
+// setup created, and the tags.
 func userRemoved() []call {
 	return []call{
 		{line: "pveum user list --output-format json", out: usersWith},
 		{line: "pveum user token list pco@pve --output-format json", out: tokensWith},
+		{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"a;cf-tunnel;cf-tunnel-managed"}`},
 		{line: "pveum user token remove pco@pve pco"},
 		{line: "pveum user delete pco@pve"},
-		{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"a;cf-tunnel;cf-tunnel-managed"}`},
 		{line: "pvesh set /cluster/options --registered-tags a"},
 	}
 }
@@ -311,9 +312,9 @@ func TestAFailedRemovalKeepsTheStore(t *testing.T) {
 		[]call{
 			{line: "pveum user list --output-format json", out: usersWith},
 			{line: "pveum user token list pco@pve --output-format json", out: tokensWith},
+			{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"cf-tunnel;cf-tunnel-managed"}`},
 			{line: "pveum user token remove pco@pve pco", err: exitErr(255, "cluster not ready - no quorum?")},
 			{line: "pveum user delete pco@pve"},
-			{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"cf-tunnel;cf-tunnel-managed"}`},
 			{line: "pvesh set /cluster/options --delete registered-tags"},
 		})
 
@@ -338,7 +339,8 @@ func TestUninstallRemovesTheRoleOnlyWhenUnchanged(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newTestEnv(t)
 			e.installed(Manifest{CreatedRole: true})
-			script := [][]call{serviceStopped(), connectorsPruned(), noEgress(), {roleWith(tt.privs)}}
+			script := [][]call{serviceStopped(), connectorsPruned(), noEgress(),
+				{roleWith(tt.privs), {line: "pveum acl list --output-format json", out: `[]`}}}
 			if tt.deleted {
 				script = append(script, []call{{line: "pveum role delete PCO"}})
 			}

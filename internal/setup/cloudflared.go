@@ -30,12 +30,17 @@ func sourcesContent(keyring string) []byte {
 }
 
 // ensureCloudflared keeps a cloudflared that runs, or installs it from
-// Cloudflare's apt repository when the operator agrees.
+// Cloudflare's apt repository when the operator agrees. One that is there and
+// does not run is the admin's to look at, not a reason to install.
 func (r *run) ensureCloudflared(ctx context.Context) error {
-	if out, err := r.run.Run(ctx, cloudflaredBin, "--version"); err == nil {
+	out, err := r.run.Run(ctx, cloudflaredBin, "--version")
+	switch {
+	case err == nil:
 		version, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
 		r.ask.Info("cloudflared: %s, kept", version)
 		return nil
+	case !errors.Is(err, ErrCommandNotFound):
+		return fmt.Errorf("%s is there but does not run: %w; repair or remove it, then run pco setup again", cloudflaredBin, err)
 	}
 	install, err := r.choose(r.o.InstallCloudflared, true, "cloudflared is not installed. Install it from Cloudflare's apt repository?")
 	if err != nil {
@@ -52,28 +57,34 @@ func (r *run) ensureCloudflared(ctx context.Context) error {
 		return err
 	}
 	if _, err := r.run.Run(ctx, "apt-get", "update"); err != nil {
-		return fmt.Errorf("updating the package lists: %w", err)
-	}
-	if _, err := r.run.Run(ctx, "apt-get", "install", "-y", "cloudflared"); err != nil {
-		return fmt.Errorf("installing cloudflared: %w", err)
+		return fmt.Errorf("updating the package lists: %w; the apt source %s stays: once apt-get update works, run pco setup again",
+			err, r.host.sources)
 	}
 	if err := r.record(func(m *Manifest) { m.InstalledCloudflared = true }); err != nil {
 		return err
+	}
+	if _, err := r.run.Run(ctx, "apt-get", "install", "-y", "cloudflared"); err != nil {
+		return fmt.Errorf("installing cloudflared: %w", err)
 	}
 	r.ask.Info("cloudflared: installed from %s", repoURL)
 	return nil
 }
 
 // ensureKeyring downloads the key of the repository, unless it is there. It
-// is written next to its place and moved there once it is complete.
+// is written next to its place and moved there once it is complete. Its
+// fingerprint is not pinned: Cloudflare has replaced the key before.
 func (r *run) ensureKeyring(ctx context.Context) (err error) {
 	path := r.host.keyring
+	removeLeftovers(path)
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", dir, err)
+	}
+	if err := r.record(func(m *Manifest) { m.AddedKeyring = true }); err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -97,16 +108,14 @@ func (r *run) ensureKeyring(ctx context.Context) (err error) {
 	if err := os.Chmod(name, 0o644); err != nil {
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
-		return err
-	}
-	return r.record(func(m *Manifest) { m.AddedKeyring = true })
+	return os.Rename(name, path)
 }
 
 // ensureSources writes the apt source of cloudflared. A file of that name
 // with other content is the admin's and is left as it is.
 func (r *run) ensureSources() error {
 	path, want := r.host.sources, sourcesContent(r.host.keyring)
+	removeLeftovers(path)
 	have, err := os.ReadFile(path)
 	switch {
 	case err == nil && bytes.Equal(have, want):
@@ -117,13 +126,17 @@ func (r *run) ensureSources() error {
 	case !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
+	if err := r.record(func(m *Manifest) { m.AddedAptSource = true }); err != nil {
+		return err
+	}
 	if err := writeFileAtomic(path, want, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	return r.record(func(m *Manifest) { m.AddedAptSource = true })
+	return nil
 }
 
-// removeCloudflared removes what setup installed of cloudflared.
+// removeCloudflared removes what setup installed of cloudflared. The key
+// stays while an apt source that is kept names it.
 func (u *uninstall) removeCloudflared(ctx context.Context) {
 	m := u.manifest
 	if m.InstalledCloudflared {
@@ -134,6 +147,7 @@ func (u *uninstall) removeCloudflared(ctx context.Context) {
 		}
 	}
 	if m.AddedAptSource {
+		removeLeftovers(u.host.sources)
 		have, err := os.ReadFile(u.host.sources)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -146,8 +160,33 @@ func (u *uninstall) removeCloudflared(ctx context.Context) {
 		}
 	}
 	if m.AddedKeyring {
+		removeLeftovers(u.host.keyring)
+		if source := u.sourceNaming(u.host.keyring); source != "" {
+			u.ask.Info("%s is kept: the apt source %s names it", u.host.keyring, source)
+			return
+		}
 		u.removeFile(u.host.keyring)
 	}
+}
+
+// sourceNaming returns an apt source, in the directory of the source of
+// cloudflared, that names path; empty when none does.
+func (u *uninstall) sourceNaming(path string) string {
+	dir := filepath.Dir(u.host.sources)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || !strings.HasSuffix(name, ".sources") && !strings.HasSuffix(name, ".list") {
+			continue
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil && bytes.Contains(b, []byte(path)) {
+			return filepath.Join(dir, name)
+		}
+	}
+	return ""
 }
 
 func (u *uninstall) removeFile(path string) {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type Manifest struct {
 	CreatedRole          bool      `json:"createdRole"`
 	CreatedUser          bool      `json:"createdUser"`
 	CreatedToken         bool      `json:"createdToken"`
+	GrantedACL           bool      `json:"grantedACL"`     // the grant of role PCO on / to pco@pve
 	RegisteredTags       []string  `json:"registeredTags"` // tags setup added
 	InstalledCloudflared bool      `json:"installedCloudflared"`
 	AddedAptSource       bool      `json:"addedAptSource"`
@@ -91,4 +93,19 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode) (err error) {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// removeLeftovers removes the temporary files that a write of path, cut
+// short, left next to it.
+func removeLeftovers(path string) {
+	dir, prefix := filepath.Dir(path), "."+filepath.Base(path)+"."
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if name := e.Name(); e.Type().IsRegular() && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".tmp") {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
 }

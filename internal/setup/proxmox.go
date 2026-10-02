@@ -142,6 +142,21 @@ func (s *Setup) userExists(ctx context.Context) (bool, error) {
 	return slices.ContainsFunc(users, func(u pveUser) bool { return u.ID == userID }), nil
 }
 
+// acl returns the access control list.
+func (s *Setup) acl(ctx context.Context) ([]pveACL, error) {
+	var acl []pveACL
+	if err := s.query(ctx, &acl, "pveum", "acl", "list", "--output-format", "json"); err != nil {
+		return nil, fmt.Errorf("listing the access control list: %w", err)
+	}
+	return acl, nil
+}
+
+// isGrant reports whether an entry is the grant setup makes: role PCO on /
+// to pco@pve.
+func isGrant(a pveACL) bool {
+	return a.Path == "/" && a.Type == "user" && a.UGID == userID && a.Role == roleID
+}
+
 func (s *Setup) findToken(ctx context.Context) (pveToken, bool, error) {
 	var tokens []pveToken
 	if err := s.query(ctx, &tokens, "pveum", "user", "token", "list", userID, "--output-format", "json"); err != nil {
@@ -203,11 +218,11 @@ func (r *run) ensureRole(ctx context.Context) error {
 		return err
 	}
 	if !found {
-		if _, err := r.run.Run(ctx, "pveum", "role", "add", roleID, "--privs", strings.Join(want, ",")); err != nil {
-			return fmt.Errorf("creating role %s: %w", roleID, err)
-		}
 		if err := r.record(func(m *Manifest) { m.CreatedRole = true }); err != nil {
 			return err
+		}
+		if _, err := r.run.Run(ctx, "pveum", "role", "add", roleID, "--privs", strings.Join(want, ",")); err != nil {
+			return fmt.Errorf("creating role %s: %w", roleID, err)
 		}
 		r.ask.Info("role %s: created with %s", roleID, strings.Join(want, ", "))
 		return nil
@@ -235,22 +250,22 @@ func (r *run) ensureUser(ctx context.Context) error {
 	}
 	var did []string
 	if !exists {
-		if _, err := r.run.Run(ctx, "pveum", "user", "add", userID, "--comment", userComment); err != nil {
-			return fmt.Errorf("creating user %s: %w", userID, err)
-		}
 		if err := r.record(func(m *Manifest) { m.CreatedUser = true }); err != nil {
 			return err
 		}
+		if _, err := r.run.Run(ctx, "pveum", "user", "add", userID, "--comment", userComment); err != nil {
+			return fmt.Errorf("creating user %s: %w", userID, err)
+		}
 		did = append(did, "created")
 	}
-	var acl []pveACL
-	if err := r.query(ctx, &acl, "pveum", "acl", "list", "--output-format", "json"); err != nil {
-		return fmt.Errorf("listing the access control list: %w", err)
+	acl, err := r.acl(ctx)
+	if err != nil {
+		return err
 	}
-	granted := slices.ContainsFunc(acl, func(a pveACL) bool {
-		return a.Path == "/" && a.Type == "user" && a.UGID == userID && a.Role == roleID && (a.Propagate == nil || bool(*a.Propagate))
-	})
-	if !granted {
+	if !slices.ContainsFunc(acl, func(a pveACL) bool { return isGrant(a) && (a.Propagate == nil || bool(*a.Propagate)) }) {
+		if err := r.record(func(m *Manifest) { m.GrantedACL = true }); err != nil {
+			return err
+		}
 		if _, err := r.run.Run(ctx, "pveum", "acl", "modify", "/", "--users", userID, "--roles", roleID); err != nil {
 			return fmt.Errorf("granting role %s on / to %s: %w", roleID, userID, err)
 		}
@@ -295,12 +310,12 @@ func (r *run) ensureToken(ctx context.Context) error {
 }
 
 func (r *run) createToken(ctx context.Context) error {
+	if err := r.record(func(m *Manifest) { m.CreatedToken = true }); err != nil {
+		return err
+	}
 	out, err := r.run.Run(ctx, "pveum", "user", "token", "add", userID, tokenName, "--privsep", "0", "--output-format", "json")
 	if err != nil {
 		return fmt.Errorf("creating token %s: %w", tokenID, err)
-	}
-	if err := r.record(func(m *Manifest) { m.CreatedToken = true }); err != nil {
-		return err
 	}
 	secret, err := tokenSecret(out)
 	if err != nil {
@@ -350,10 +365,10 @@ func (r *run) ensureTags(ctx context.Context) error {
 	if missing := without(gateTags(), tags); len(missing) == 0 {
 		r.ask.Info("registered tags: nothing needed")
 	} else {
-		if err := r.setRegisteredTags(ctx, append(tags, missing...)); err != nil {
+		if err := r.record(func(m *Manifest) { m.addTags(missing) }); err != nil {
 			return err
 		}
-		if err := r.record(func(m *Manifest) { m.addTags(missing) }); err != nil {
+		if err := r.setRegisteredTags(ctx, append(tags, missing...)); err != nil {
 			return err
 		}
 		r.ask.Info("registered tags: added %s", strings.Join(missing, ", "))

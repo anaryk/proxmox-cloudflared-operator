@@ -202,8 +202,11 @@ func (r *run) choose(given *bool, def bool, question string) (bool, error) {
 	return r.ask.Confirm(question, def)
 }
 
-// record notes in the manifest what this run created and writes it at once,
-// so that a run that fails later does not forget it.
+// record notes in the manifest what this run is about to create and writes
+// it at once, before the command that creates it: the object was not there a
+// moment before, so if it is there later it is setup's, also when this run is
+// killed right after making it. A create that fails leaves the note, and
+// uninstall takes what is gone already for done.
 func (r *run) record(change func(*Manifest)) error {
 	change(&r.manifest)
 	if r.manifest.Node == "" {

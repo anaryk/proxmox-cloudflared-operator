@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -251,95 +250,6 @@ func (u *uninstall) removeEgress(ctx context.Context) {
 		return
 	}
 	u.ask.Info("egress filter: removed table inet %s", egressTable)
-}
-
-// removeProxmox removes what the manifest says setup created in Proxmox.
-func (u *uninstall) removeProxmox(ctx context.Context) {
-	m := u.manifest
-	if m.CreatedToken || m.CreatedUser {
-		u.removeUser(ctx)
-	}
-	if m.CreatedRole {
-		u.removeRole(ctx)
-	}
-	if len(m.RegisteredTags) > 0 {
-		u.removeTags(ctx)
-	}
-}
-
-func (u *uninstall) removeUser(ctx context.Context) {
-	exists, err := u.userExists(ctx)
-	if err != nil {
-		u.fail("%v", err)
-		return
-	}
-	if !exists {
-		u.ask.Info("user %s: gone already", userID)
-		return
-	}
-	if u.manifest.CreatedToken {
-		switch _, found, err := u.findToken(ctx); {
-		case err != nil:
-			u.fail("%v", err)
-		case found:
-			if err := u.removeToken(ctx); err != nil {
-				u.fail("%v", err)
-			} else {
-				u.ask.Info("token %s: removed", tokenID)
-			}
-		}
-	}
-	if u.manifest.CreatedUser {
-		if _, err := u.run.Run(ctx, "pveum", "user", "delete", userID); err != nil {
-			u.fail("removing user %s: %v", userID, err)
-			return
-		}
-		u.ask.Info("user %s: removed", userID)
-	}
-}
-
-// removeRole removes role PCO while it grants what setup gave it and nothing
-// else: a privilege an admin added says the role is used for more.
-func (u *uninstall) removeRole(ctx context.Context) {
-	role, found, err := u.role(ctx)
-	switch {
-	case err != nil:
-		u.fail("%v", err)
-		return
-	case !found:
-		u.ask.Info("role %s: gone already", roleID)
-		return
-	}
-	for _, privs := range setupPrivileges() {
-		if sameSet(role.Privs, privs) {
-			if _, err := u.run.Run(ctx, "pveum", "role", "delete", roleID); err != nil {
-				u.fail("removing role %s: %v", roleID, err)
-				return
-			}
-			u.ask.Info("role %s: removed", roleID)
-			return
-		}
-	}
-	u.ask.Warn("role %s is kept: it grants %s, which setup did not give it",
-		roleID, strings.Join(without(role.Privs, slices.Concat(setupPrivileges()...)), ", "))
-}
-
-func (u *uninstall) removeTags(ctx context.Context) {
-	tags, err := u.registeredTags(ctx)
-	if err != nil {
-		u.fail("%v", err)
-		return
-	}
-	keep := without(tags, u.manifest.RegisteredTags)
-	if len(keep) == len(tags) {
-		u.ask.Info("registered tags: nothing needed")
-		return
-	}
-	if err := u.setRegisteredTags(ctx, keep); err != nil {
-		u.fail("%v", err)
-		return
-	}
-	u.ask.Info("registered tags: removed %s", strings.Join(without(tags, keep), ", "))
 }
 
 // removeStore removes the node from the registry and the three roots of the

@@ -69,6 +69,7 @@ func TestFreshInstallOnPVE9(t *testing.T) {
 		CreatedRole:          true,
 		CreatedUser:          true,
 		CreatedToken:         true,
+		GrantedACL:           true,
 		RegisteredTags:       []string{"cf-tunnel", "cf-tunnel-managed"},
 		InstalledCloudflared: true,
 		AddedAptSource:       true,
