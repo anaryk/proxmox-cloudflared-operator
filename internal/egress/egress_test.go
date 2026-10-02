@@ -137,10 +137,9 @@ func TestSetSubtractsTheBlockedAddressesFromEverySet(t *testing.T) {
 	require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.5:443", "10.0.0.6:80")))
 
 	script := n.applied()[0]
-	require.NotContains(t, script, "10.0.0.5 .")
-	require.NotContains(t, script, "10.0.0.53")
-	require.Contains(t, script, "10.0.0.6 . 80")
-	require.Contains(t, script, "192.168.1.1")
+	require.Equal(t, []string{"10.0.0.6 . 80"}, elementsOf(t, script, setTargets4))
+	require.Equal(t, []string{"192.168.1.1"}, elementsOf(t, script, setResolvers4))
+	require.Equal(t, []string{"10.0.0.5", "10.0.0.53"}, elementsOf(t, script, setBlocked4))
 }
 
 func TestSetAppliesWhenTheBlockListChanged(t *testing.T) {
@@ -152,7 +151,7 @@ func TestSetAppliesWhenTheBlockListChanged(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.6:80")))
 	require.Len(t, n.applied(), 1)
-	require.NotContains(t, n.applied()[0], "10.0.0.6")
+	require.Equal(t, []string{"10.0.0.5 . 80"}, elementsOf(t, n.applied()[0], setTargets4))
 
 	_, err = ov.Unblock(addr("10.0.0.6"))
 	require.NoError(t, err)
@@ -254,6 +253,19 @@ func TestTheNextSetAfterRemoveAppliesTheSetItIsGiven(t *testing.T) {
 	require.Len(t, n.applied(), 1, "a target that verified again comes back")
 }
 
+func TestRemoveKeepsTheBlockedAddresses(t *testing.T) {
+	f, n, _, ov := newTestFilter(t)
+	_, err := ov.Block(addr("10.0.0.9"))
+	require.NoError(t, err)
+	require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.6:80")))
+	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
+	n.reset()
+
+	require.NoError(t, f.Set(t.Context(), targets("10.0.0.6:80")))
+
+	require.Empty(t, n.applied(), "the table already holds what the cycle wants, blocked set included")
+}
+
 func TestRemoveReplacesTheWholeTableWhenTheDeleteFails(t *testing.T) {
 	f, n, _, _ := newTestFilter(t)
 	require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.6:80")))
@@ -345,14 +357,14 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				}}
 				return append(l[:first], append(listing{added}, l[first:]...)...)
 			})
-		}, "chain connector has 12 rules, want 11"},
+		}, "chain connector has 14 rules, want 13"},
 		{"a rule changed", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				last := l.rules(chainConnector)
 				l[last[len(last)-1]]["rule"].(map[string]any)["expr"] = []any{map[string]any{"accept": nil}}
 				return l
 			})
-		}, "chain connector: rule 11 differs"},
+		}, "chain connector: rule 13 differs"},
 		{"two rules swapped", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				r := l.rules(chainConnector)
@@ -401,6 +413,9 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 		{"an extra resolver", func(t *testing.T, l listing) listing {
 			return l.with(t, tg, append(rs, addr("fd00::53")))
 		}, "set resolvers6 holds fd00::53"},
+		{"an extra blocked address", func(t *testing.T, l listing) listing {
+			return l.withBlocked(t, addr("fd00::99"))
+		}, "set blocked6 holds fd00::99"},
 		{"an element pco cannot read", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				l.object(t, "set", setTargets4)["elem"] = []any{map[string]any{"range": []any{"10.0.0.0", "10.0.0.9"}}}
@@ -652,12 +667,30 @@ func TestVerifyTakesTheBlockedAddressesOutOfWhatItExpects(t *testing.T) {
 	f, n, r, ov := newTestFilter(t)
 	r.set(addr("192.168.1.1"))
 	require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443", "10.0.0.7:22")))
-	// What pco egress block does: the list, and the elements out of the live table.
+	// What pco egress block does: the list, the elements out of the live
+	// table and the address into its blocked set.
 	_, err := ov.Block(addr("10.0.0.7"))
 	require.NoError(t, err)
-	n.setLive(realListing(t, "1.1.3").bytes(t))
+	n.setLive(realListing(t, "1.1.3").withBlocked(t, addr("10.0.0.7")).bytes(t))
 
 	require.NoError(t, f.Verify(t.Context()))
+
+	n.setLive(realListing(t, "1.1.3").bytes(t))
+	require.ErrorContains(t, f.Verify(t.Context()), "set blocked4 lacks 10.0.0.7")
+}
+
+func TestSetPutsTheBlockedAddressesIntoTheirSets(t *testing.T) {
+	f, n, _, ov := newTestFilter(t)
+	_, err := ov.Block(addr("10.0.0.7"))
+	require.NoError(t, err)
+	_, err = ov.Block(addr("fd00::7"))
+	require.NoError(t, err)
+
+	require.NoError(t, f.Set(t.Context(), targets("10.0.0.7:22", "10.0.0.8:22")))
+
+	require.Equal(t, []string{"10.0.0.7"}, elementsOf(t, n.applied()[0], setBlocked4))
+	require.Equal(t, []string{"fd00::7"}, elementsOf(t, n.applied()[0], setBlocked6))
+	require.Equal(t, []string{"10.0.0.8 . 22"}, elementsOf(t, n.applied()[0], setTargets4))
 }
 
 func TestVerifyBeforeAnythingWasAppliedComparesAllButTheElements(t *testing.T) {

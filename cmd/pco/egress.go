@@ -302,18 +302,18 @@ func (a *app) egressBlockCmd(e egressEnv) *cobra.Command {
 				s.println("The egress filter is off; the block applies once it is switched on.")
 				return s.done()
 			}
-			removed, err := egress.Drop(cmd.Context(), e.nft, addr)
+			removed, err := egress.BlockLive(cmd.Context(), e.nft, addr)
 			switch {
 			case errors.Is(err, egress.ErrNotLoaded):
 				s.println("The egress table is not loaded.")
 			case err != nil:
 				return err
 			case removed == 0:
-				s.println("The egress table held no entry for it.")
+				s.println("The egress table held no entry for it, and now rejects it on every port.")
 			case removed == 1:
-				s.println("Took 1 entry for it out of the egress table.")
+				s.println("Took 1 entry for it out of the egress table, which now rejects it on every port.")
 			default:
-				s.printf("Took %d entries for it out of the egress table.\n", removed)
+				s.printf("Took %d entries for it out of the egress table, which now rejects it on every port.\n", removed)
 			}
 			return s.done()
 		},
@@ -333,9 +333,21 @@ func (a *app) egressUnblockCmd(e egressEnv) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			removed, err := egress.NewOverrides(e.local).Unblock(addr)
+			ov := egress.NewOverrides(e.local)
+			removed, err := ov.Unblock(addr)
 			if err != nil {
 				return err
+			}
+			_, off, err := ov.Off()
+			if err != nil {
+				return err
+			}
+			if !off {
+				// Out of the blocked set even when the list did not hold it:
+				// the list is what counts.
+				if _, err := egress.UnblockLive(cmd.Context(), e.nft, addr); err != nil && !errors.Is(err, egress.ErrNotLoaded) {
+					return err
+				}
 			}
 			s := &screen{w: cmd.OutOrStdout()}
 			if removed {

@@ -318,11 +318,12 @@ func TestEgressBlockTakesTheAddressOutOfTheLiveTable(t *testing.T) {
 	res := r.run("block", "10.0.0.5")
 
 	require.NoError(t, res.err)
-	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n"}, r.nft.applied())
+	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
+		"add element inet pco_egress blocked4 { 10.0.0.5 }\n"}, r.nft.applied())
 	blocked, err := r.overrides().Blocked()
 	require.NoError(t, err)
 	require.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.5")}, blocked)
-	require.Equal(t, "Blocked 10.0.0.5.\nTook 2 entries for it out of the egress table.\n", res.out)
+	require.Equal(t, "Blocked 10.0.0.5.\nTook 2 entries for it out of the egress table, which now rejects it on every port.\n", res.out)
 }
 
 func TestEgressBlockPrintsTheAddressAsItParsedIt(t *testing.T) {
@@ -333,7 +334,7 @@ func TestEgressBlockPrintsTheAddressAsItParsedIt(t *testing.T) {
 	res := r.run("block", "::ffff:10.0.0.6")
 
 	require.NoError(t, res.err)
-	require.Equal(t, "Blocked 10.0.0.6.\nTook 1 entry for it out of the egress table.\n", res.out)
+	require.Equal(t, "Blocked 10.0.0.6.\nTook 1 entry for it out of the egress table, which now rejects it on every port.\n", res.out)
 }
 
 func TestEgressBlockRefusesWhatIsNoAddress(t *testing.T) {
@@ -380,8 +381,8 @@ func TestEgressBlockOfAnAddressTheTableDoesNotHold(t *testing.T) {
 	res := r.run("block", "10.0.0.99")
 
 	require.NoError(t, res.err)
-	require.Empty(t, r.nft.applied())
-	require.Equal(t, "10.0.0.99 was blocked already.\nThe egress table held no entry for it.\n", res.out)
+	require.Equal(t, []string{"add element inet pco_egress blocked4 { 10.0.0.99 }\n"}, r.nft.applied())
+	require.Equal(t, "10.0.0.99 was blocked already.\nThe egress table held no entry for it, and now rejects it on every port.\n", res.out)
 }
 
 func TestEgressUnblock(t *testing.T) {
@@ -397,6 +398,21 @@ func TestEgressUnblock(t *testing.T) {
 	require.NoError(t, res.err)
 	require.Equal(t, "10.0.0.5 was not blocked.\n", res.out)
 	require.Empty(t, r.nft.applied())
+}
+
+func TestEgressUnblockTakesTheAddressOutOfTheBlockedSetOfTheLiveTable(t *testing.T) {
+	r := newEgressRig(t)
+	_, err := r.overrides().Block(netip.MustParseAddr("10.0.0.9"))
+	require.NoError(t, err)
+	r.nft.listErr = nil
+	r.nft.live = strings.Replace(liveTable(t), `"name": "blocked4", "table": "pco_egress", "type": "ipv4_addr", "handle": 9}`,
+		`"name": "blocked4", "table": "pco_egress", "type": "ipv4_addr", "handle": 9, "elem": ["10.0.0.9"]}`, 1)
+	require.Contains(t, r.nft.live, `"elem": ["10.0.0.9"]`)
+
+	res := r.run("unblock", "10.0.0.9")
+
+	require.NoError(t, res.err)
+	require.Equal(t, []string{"delete element inet pco_egress blocked4 { 10.0.0.9 }\n"}, r.nft.applied())
 }
 
 func TestEgressShowGolden(t *testing.T) {

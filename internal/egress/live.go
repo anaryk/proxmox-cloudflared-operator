@@ -23,14 +23,16 @@ const (
 ]`
 	wantConnectorRules = `[
 [{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"invalid"}},{"drop":null}],
-[{"match":{"op":"==","left":{"ct":{"key":"direction"}},"right":"reply"}},{"accept":null}],
+[{"match":{"op":"==","left":{"ct":{"key":"direction"}},"right":"reply"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"local"}},{"accept":null}],
+[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@blocked4"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
+[{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@blocked6"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
 [{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets4"}},{"accept":null}],
 [{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets6"}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@resolvers4"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@resolvers6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
 [{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"local"}},{"counter":"rejected_local"},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
-[{"match":{"op":"!=","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":[{"prefix":{"addr":"10.0.0.0","len":8}},{"prefix":{"addr":"100.64.0.0","len":10}},{"prefix":{"addr":"127.0.0.0","len":8}},{"prefix":{"addr":"169.254.0.0","len":16}},{"prefix":{"addr":"172.16.0.0","len":12}},{"prefix":{"addr":"192.168.0.0","len":16}},{"prefix":{"addr":"198.18.0.0","len":15}}]}}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
-[{"match":{"op":"!=","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":{"set":["::1",{"prefix":{"addr":"fc00::","len":7}},{"prefix":{"addr":"fe80::","len":10}}]}}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
+[{"match":{"op":"!=","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":[{"prefix":{"addr":"0.0.0.0","len":8}},{"prefix":{"addr":"10.0.0.0","len":8}},{"prefix":{"addr":"100.64.0.0","len":10}},{"prefix":{"addr":"127.0.0.0","len":8}},{"prefix":{"addr":"169.254.0.0","len":16}},{"prefix":{"addr":"172.16.0.0","len":12}},{"prefix":{"addr":"192.0.0.0","len":24}},{"prefix":{"addr":"192.0.2.0","len":24}},{"prefix":{"addr":"192.168.0.0","len":16}},{"prefix":{"addr":"198.18.0.0","len":15}},{"prefix":{"addr":"198.51.100.0","len":24}},{"prefix":{"addr":"203.0.113.0","len":24}},{"prefix":{"addr":"224.0.0.0","len":3}}]}}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"unicast"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
+[{"match":{"op":"!=","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":{"set":["::1",{"prefix":{"addr":"64:ff9b::","len":96}},{"prefix":{"addr":"64:ff9b:1::","len":48}},{"prefix":{"addr":"2001::","len":32}},{"prefix":{"addr":"2002::","len":16}},{"prefix":{"addr":"fc00::","len":7}},{"prefix":{"addr":"fe80::","len":10}},{"prefix":{"addr":"ff00::","len":8}}]}}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"unicast"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":["1.0.0.1","1.1.1.1"]}}},{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":853}},{"accept":null}],
 [{"counter":"rejected"},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}]
 ]`
@@ -98,11 +100,12 @@ func Unload(ctx context.Context, n Nft) error {
 	return nil
 }
 
-// Drop takes every element of an address out of the sets of the live table,
-// targets and resolvers alike, and returns how many it took out. It is what
-// pco egress block does at once; the next script the daemon renders leaves
-// the address out by itself.
-func Drop(ctx context.Context, n Nft, addr netip.Addr) (int, error) {
+// BlockLive takes every element of an address out of the target and resolver
+// sets of the live table and puts it into its blocked set, in one
+// transaction, and returns how many elements it took out. It is what pco
+// egress block does at once; every script the daemon renders after it does
+// the same by itself.
+func BlockLive(ctx context.Context, n Nft, addr netip.Addr) (int, error) {
 	addr = normalizeAddr(addr)
 	l, err := list(ctx, n)
 	if err != nil {
@@ -111,13 +114,29 @@ func Drop(ctx context.Context, n Nft, addr netip.Addr) (int, error) {
 	c, _ := l.contents()
 	tg := slices.DeleteFunc(c.targets, func(t Target) bool { return t.Addr != addr })
 	rs := slices.DeleteFunc(c.resolvers, func(a netip.Addr) bool { return a != addr })
-	if len(tg)+len(rs) == 0 {
-		return 0, nil
-	}
-	if err := n.Apply(ctx, deleteScript(tg, rs)); err != nil {
-		return 0, fmt.Errorf("taking %s out of the egress table: %w", addr, err)
+	if err := n.Apply(ctx, blockScript(tg, rs, addr)); err != nil {
+		return 0, fmt.Errorf("blocking %s in the egress table: %w", addr, err)
 	}
 	return len(tg) + len(rs), nil
+}
+
+// UnblockLive takes an address out of the blocked set of the live table and
+// reports whether it was there. It puts nothing back: the daemon does at its
+// next cycle.
+func UnblockLive(ctx context.Context, n Nft, addr netip.Addr) (bool, error) {
+	addr = normalizeAddr(addr)
+	l, err := list(ctx, n)
+	if err != nil {
+		return false, err
+	}
+	c, _ := l.contents()
+	if !slices.Contains(c.blocked, addr) {
+		return false, nil
+	}
+	if err := n.Apply(ctx, unblockScript(addr)); err != nil {
+		return false, fmt.Errorf("unblocking %s in the egress table: %w", addr, err)
+	}
+	return true, nil
 }
 
 // ErrUnreadable is a listing that is not what nft prints for the table. nft
@@ -253,10 +272,10 @@ func setType(name string) (string, bool) {
 		return typeTarget4, true
 	case setTargets6:
 		return typeTarget6, true
-	case setResolvers4:
-		return typeResolver4, true
-	case setResolvers6:
-		return typeResolver6, true
+	case setResolvers4, setBlocked4:
+		return typeAddr4, true
+	case setResolvers6, setBlocked6:
+		return typeAddr6, true
 	}
 	return "", false
 }
@@ -333,7 +352,7 @@ func (l *listed) setDifferences(want *contents) []string {
 			d = append(d, "an unexpected set "+name)
 		}
 	}
-	for _, name := range []string{setTargets4, setTargets6, setResolvers4, setResolvers6} {
+	for _, name := range []string{setTargets4, setTargets6, setResolvers4, setResolvers6, setBlocked4, setBlocked6} {
 		typ, _ := setType(name)
 		got, ok := l.sets[name]
 		wantSet := listedSet{Type: typeJSON(typ)}
@@ -351,6 +370,7 @@ func (l *listed) setDifferences(want *contents) []string {
 	d = append(d, unreadable...)
 	d = append(d, elementDifferences(have.targets, want.targets, targetSet, Target.String)...)
 	d = append(d, elementDifferences(have.resolvers, want.resolvers, resolverSet, netip.Addr.String)...)
+	d = append(d, elementDifferences(have.blocked, want.blocked, blockedSet, netip.Addr.String)...)
 	return d
 }
 
@@ -400,18 +420,27 @@ func (l *listed) contents() (contents, []string) {
 			c.targets = append(c.targets, t)
 		}
 	}
-	for _, name := range []string{setResolvers4, setResolvers6} {
-		for _, raw := range l.sets[name].Elem {
-			a, ok := parseAddr(raw)
-			if !ok {
-				unreadable = append(unreadable, fmt.Sprintf("set %s holds an element pco cannot read: %s", name, compactJSON(raw)))
-				continue
+	for _, s := range []struct {
+		names []string
+		into  *[]netip.Addr
+	}{
+		{[]string{setResolvers4, setResolvers6}, &c.resolvers},
+		{[]string{setBlocked4, setBlocked6}, &c.blocked},
+	} {
+		for _, name := range s.names {
+			for _, raw := range l.sets[name].Elem {
+				a, ok := parseAddr(raw)
+				if !ok {
+					unreadable = append(unreadable, fmt.Sprintf("set %s holds an element pco cannot read: %s", name, compactJSON(raw)))
+					continue
+				}
+				*s.into = append(*s.into, a)
 			}
-			c.resolvers = append(c.resolvers, a)
 		}
 	}
 	c.targets = sortTargets(c.targets)
 	c.resolvers = normalizeAddrs(c.resolvers)
+	c.blocked = normalizeAddrs(c.blocked)
 	return c, unreadable
 }
 

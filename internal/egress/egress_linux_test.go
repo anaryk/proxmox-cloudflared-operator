@@ -36,7 +36,7 @@ const (
 	guestIP    = "10.77.0.2"
 	nodeIP6    = "fd77::1"
 	guestIP6   = "fd77::2"
-	publicIP   = "203.0.113.7" // on the guest, and outside every range the edge rule excludes
+	publicIP   = "198.41.192.7" // on the guest: an address of the edge, outside every range the edge rule excludes
 	resolverIP = "127.0.0.53"
 
 	targetPort     = 8080
@@ -179,7 +179,7 @@ func newEgressLab(t *testing.T) *egressLab {
 	eg0, err := node.LinkByName("eg0")
 	require.NoError(t, err)
 	require.NoError(t, node.RouteAdd(&netlink.Route{
-		LinkIndex: eg0.Attrs().Index, Scope: netlink.SCOPE_LINK, Dst: mustPrefix(t, "203.0.113.0/24"),
+		LinkIndex: eg0.Attrs().Index, Scope: netlink.SCOPE_LINK, Dst: mustPrefix(t, "198.41.192.0/24"),
 	}))
 
 	for _, port := range []int{targetPort, otherPort, edgePort} {

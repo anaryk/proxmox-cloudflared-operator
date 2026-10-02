@@ -102,10 +102,9 @@ func (f *Filter) Remove(ctx context.Context, addr netip.Addr) error {
 		return nil
 	}
 	if err := f.nft.Apply(ctx, deleteScript(gone, nil)); err == nil {
-		f.applied = &contents{
-			targets:   slices.DeleteFunc(slices.Clone(f.applied.targets), func(t Target) bool { return t.Addr == addr }),
-			resolvers: f.applied.resolvers,
-		}
+		next := *f.applied
+		next.targets = slices.DeleteFunc(slices.Clone(next.targets), func(t Target) bool { return t.Addr == addr })
+		f.applied = &next
 		return nil
 	}
 	// The live table does not hold what was last applied.
@@ -146,7 +145,7 @@ func (f *Filter) Verify(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		c := f.applied.without(blocked)
+		c := f.applied.blocking(blocked)
 		want = &c
 	}
 	d := l.differences(f.uid, want)
@@ -202,11 +201,12 @@ func (f *Filter) contents() (contents, error) {
 		return contents{}, fmt.Errorf("reading the resolvers: %w", err)
 	}
 	c := contents{targets: f.want, resolvers: normalizeAddrs(resolvers)}
-	return c.without(blocked), nil
+	return c.blocking(blocked), nil
 }
 
-// without returns c with no element of the blocked addresses.
-func (c contents) without(blocked []netip.Addr) contents {
+// blocking returns c with the blocked addresses in its blocked sets and out of
+// its targets and resolvers, so that the sets show what is allowed.
+func (c contents) blocking(blocked []netip.Addr) contents {
 	return contents{
 		targets: slices.DeleteFunc(slices.Clone(c.targets), func(t Target) bool {
 			return slices.Contains(blocked, t.Addr)
@@ -214,6 +214,7 @@ func (c contents) without(blocked []netip.Addr) contents {
 		resolvers: slices.DeleteFunc(slices.Clone(c.resolvers), func(a netip.Addr) bool {
 			return slices.Contains(blocked, a)
 		}),
+		blocked: slices.Clone(blocked),
 	}
 }
 

@@ -12,6 +12,15 @@ func TestBaseGolden(t *testing.T) {
 	requireGolden(t, "base.nft", Base(testUID, nil, nil))
 }
 
+// TestTheTableOfTheListingsGolden writes the table the listings of testdata
+// were printed for.
+func TestTheTableOfTheListingsGolden(t *testing.T) {
+	requireGolden(t, "listed.nft", render(testUID, contents{
+		targets:   targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443"),
+		resolvers: []netip.Addr{addr("192.168.1.1")},
+	}))
+}
+
 func TestTheBootTableHoldsTheResolversLessTheBlocked(t *testing.T) {
 	resolvers := []netip.Addr{addr("192.168.1.1"), addr("fd00::53"), addr("10.0.0.9"), addr("192.168.1.1"), addr("fe80::1%vmbr0")}
 
@@ -81,6 +90,67 @@ func TestOnlyTheConnectorUserIsSentToTheFilter(t *testing.T) {
 
 	require.Contains(t, script, "\t\ttype filter hook output priority filter - 10; policy accept;\n\t\tmeta skuid 4242 jump connector\n\t}\n")
 	require.Equal(t, 1, strings.Count(script, "skuid"))
+}
+
+// rulesOf returns the rules of the connector chain of a script, in order.
+func rulesOf(t *testing.T, script string) []string {
+	t.Helper()
+	_, chain, ok := strings.Cut(script, "\tchain connector {\n")
+	require.True(t, ok)
+	chain, _, _ = strings.Cut(chain, "\n\t}\n")
+	var rules []string
+	for line := range strings.Lines(chain) {
+		rules = append(rules, strings.TrimSpace(line))
+	}
+	return rules
+}
+
+func TestOnlyLocalTCPGetsAnswersThroughTheReplyRule(t *testing.T) {
+	rules := rulesOf(t, Base(testUID, nil, nil))
+
+	require.Equal(t, "ct direction reply meta l4proto tcp fib daddr type local accept", rules[1],
+		"answers of the metrics scrape, and no flow that a datagram from elsewhere seeded")
+	require.Equal(t, 1, strings.Count(strings.Join(rules, "\n"), "ct direction"))
+}
+
+func TestTheEdgeRulesAdmitOnlyUnicastToThePublicInternet(t *testing.T) {
+	var edge []string
+	for _, r := range rulesOf(t, Base(testUID, nil, nil)) {
+		if strings.Contains(r, "dport 7844") {
+			edge = append(edge, r)
+		}
+	}
+
+	require.Len(t, edge, 2)
+	for _, r := range edge {
+		require.Contains(t, r, " fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept")
+	}
+	excluded := func(r string) []string {
+		set, _, _ := strings.Cut(strings.SplitN(r, "{ ", 2)[1], " }")
+		return strings.Split(set, ", ")
+	}
+	require.ElementsMatch(t, []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8",
+		"198.18.0.0/15", "0.0.0.0/8", "192.0.0.0/24", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3",
+	}, excluded(edge[0]))
+	require.ElementsMatch(t, []string{
+		"fc00::/7", "fe80::/10", "::1", "64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32", "ff00::/8",
+	}, excluded(edge[1]))
+	require.True(t, strings.HasPrefix(edge[0], "ip daddr != { "))
+	require.True(t, strings.HasPrefix(edge[1], "ip6 daddr != { "))
+}
+
+func TestABlockedAddressIsRejectedForEveryPortRightAfterTheReplyRule(t *testing.T) {
+	script := Base(testUID, []netip.Addr{addr("10.0.0.9"), addr("192.168.1.1")}, []netip.Addr{addr("fd00::9"), addr("10.0.0.9")})
+
+	require.Equal(t, []string{"10.0.0.9"}, elementsOf(t, script, setBlocked4))
+	require.Equal(t, []string{"fd00::9"}, elementsOf(t, script, setBlocked6))
+	require.Equal(t, []string{"192.168.1.1"}, elementsOf(t, script, setResolvers4), "and out of the other sets")
+	rules := rulesOf(t, script)
+	require.Equal(t, []string{
+		"ip daddr @blocked4 reject with icmpx admin-prohibited",
+		"ip6 daddr @blocked6 reject with icmpx admin-prohibited",
+	}, rules[2:4], "before any rule that accepts, the edge and DNS over TLS among them")
 }
 
 func TestTheDeleteScriptNamesEachElement(t *testing.T) {

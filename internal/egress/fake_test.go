@@ -145,7 +145,7 @@ func elementsOf(t *testing.T, script, set string) []string {
 type listing []map[string]any
 
 // realListing reads a listing that an nft of the given version printed for
-// the table of testdata/several.nft. The kernel they were taken on had no fib
+// the table of testdata/listed.nft. The kernel they were taken on had no fib
 // expression for inet tables, so the fib match in them is the one the same
 // nft printed for an ip table; the Linux test compares a real one.
 func realListing(t *testing.T, version string) listing {
@@ -190,6 +190,32 @@ func (l listing) with(t *testing.T, tg []Target, rs []netip.Addr) listing {
 		for _, e := range entries {
 			set, ok := e["set"].(map[string]any)
 			if !ok {
+				continue
+			}
+			delete(set, "elem")
+			if v := elems[set["name"].(string)]; len(v) > 0 {
+				set["elem"] = v
+			}
+		}
+		return entries
+	})
+}
+
+// withBlocked returns the listing with the blocked sets holding addrs.
+func (l listing) withBlocked(t *testing.T, addrs ...netip.Addr) listing {
+	t.Helper()
+	elems := map[string][]any{}
+	for _, a := range addrs {
+		name := setBlocked4
+		if a.Is6() {
+			name = setBlocked6
+		}
+		elems[name] = append(elems[name], a.String())
+	}
+	return l.edit(t, func(entries listing) listing {
+		for _, e := range entries {
+			set, ok := e["set"].(map[string]any)
+			if !ok || (set["name"] != setBlocked4 && set["name"] != setBlocked6) {
 				continue
 			}
 			delete(set, "elem")

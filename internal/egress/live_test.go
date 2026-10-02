@@ -68,49 +68,65 @@ func TestReadLiveRefusesAnElementItCannotRead(t *testing.T) {
 	require.ErrorContains(t, err, "set resolvers4 holds an element pco cannot read")
 }
 
-func TestDropTakesEveryEntryOfAnAddressOutOfTheLiveTable(t *testing.T) {
+func TestBlockLiveTakesAnAddressOutOfEverySetAndBlocksItInOneTransaction(t *testing.T) {
 	n := &fakeNft{}
 	n.setLive(realListing(t, "1.1.3").with(t,
 		targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443"),
 		[]netip.Addr{addr("10.0.0.5"), addr("192.168.1.1")}).bytes(t))
 
-	removed, err := Drop(t.Context(), n, addr("10.0.0.5"))
+	removed, err := BlockLive(t.Context(), n, addr("::ffff:10.0.0.5"))
 
 	require.NoError(t, err)
 	require.Equal(t, 3, removed)
 	require.Equal(t, []string{
 		"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
-			"delete element inet pco_egress resolvers4 { 10.0.0.5 }\n",
+			"delete element inet pco_egress resolvers4 { 10.0.0.5 }\n" +
+			"add element inet pco_egress blocked4 { 10.0.0.5 }\n",
 	}, n.applied())
 }
 
-func TestDropOfAnAddressTheTableDoesNotHold(t *testing.T) {
+func TestBlockLiveOfAnAddressTheSetsDoNotHoldStillBlocksIt(t *testing.T) {
 	n := &fakeNft{}
 	n.setLive(realListing(t, "1.1.3").bytes(t))
 
-	removed, err := Drop(t.Context(), n, addr("10.0.0.99"))
+	removed, err := BlockLive(t.Context(), n, addr("fd00::99"))
 
 	require.NoError(t, err)
 	require.Zero(t, removed)
-	require.Empty(t, n.applied())
+	require.Equal(t, []string{"add element inet pco_egress blocked6 { fd00::99 }\n"}, n.applied())
 }
 
-func TestDropWithoutATable(t *testing.T) {
+func TestBlockLiveWithoutATable(t *testing.T) {
 	n := &fakeNft{listErr: ErrNotLoaded}
 
-	_, err := Drop(t.Context(), n, addr("10.0.0.5"))
+	_, err := BlockLive(t.Context(), n, addr("10.0.0.5"))
 
 	require.ErrorIs(t, err, ErrNotLoaded)
 	require.Empty(t, n.applied())
 }
 
-func TestDropReturnsAFailedDelete(t *testing.T) {
+func TestBlockLiveReturnsAFailedApply(t *testing.T) {
 	n := &fakeNft{apply: func(string) error { return errBoom }}
 	n.setLive(realListing(t, "1.1.3").bytes(t))
 
-	_, err := Drop(t.Context(), n, addr("10.0.0.5"))
+	_, err := BlockLive(t.Context(), n, addr("10.0.0.5"))
 
 	require.ErrorIs(t, err, errBoom)
+}
+
+func TestUnblockLiveTakesTheAddressOutOfTheBlockedSet(t *testing.T) {
+	n := &fakeNft{}
+	n.setLive(realListing(t, "1.1.3").withBlocked(t, addr("10.0.0.9"), addr("fd00::9")).bytes(t))
+
+	removed, err := UnblockLive(t.Context(), n, addr("fd00::9"))
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.Equal(t, []string{"delete element inet pco_egress blocked6 { fd00::9 }\n"}, n.applied())
+
+	removed, err = UnblockLive(t.Context(), n, addr("10.0.0.10"))
+	require.NoError(t, err)
+	require.False(t, removed)
+	require.Len(t, n.applied(), 1, "nothing to take out")
 }
 
 func TestLoadAppliesBaseWhenThereIsNoTable(t *testing.T) {

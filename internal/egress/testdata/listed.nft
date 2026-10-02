@@ -27,9 +27,6 @@ table inet pco_egress {
 	}
 	set blocked4 {
 		type ipv4_addr
-		elements = {
-			10.0.0.9
-		}
 	}
 	set blocked6 {
 		type ipv6_addr
