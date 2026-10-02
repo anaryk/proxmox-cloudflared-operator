@@ -43,9 +43,9 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 // Settings is what the admin configures. They are decoded strictly, a key they
-// have no field for is an error, so a field added later is a change of the
-// schema and needs a schema version bump: a build that does not know it must
-// refuse the file, not drop the field.
+// have no field for is an error, so a build that does not know a field added
+// later refuses the file rather than drop the field. Before the first release
+// such a field, as identityMinimum was, comes without a schema version bump.
 type Settings struct {
 	GateTag      string            `json:"gateTag"`
 	AllowHosts   []string          `json:"allowHosts,omitempty"`

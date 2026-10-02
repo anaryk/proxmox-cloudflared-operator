@@ -163,7 +163,7 @@ func (d *diagnosis) dns() Step {
 		}
 	}
 	if d.rt.Service == "" && d.rt.State != planner.StateWithdrawn {
-		return warned("no record is published for it while its target is not verified")
+		return warned("no record is published for it while its target is not served")
 	}
 	return passed("its record points at the tunnel")
 }
@@ -184,7 +184,7 @@ func (d *diagnosis) ingress() Step {
 	case !t.Verified:
 		return failed(fmt.Sprintf("the configuration of tunnel %s is not verified: the last write was held or failed (pco plan shows why)", t.Name))
 	case r.Service == planner.BlockedService && d.targetIsTheCause():
-		return warned(fmt.Sprintf("tunnel %s answers 503 for it until its target is verified", t.Name))
+		return warned(fmt.Sprintf("tunnel %s answers 503 for it while its target is not served", t.Name))
 	case r.Service == planner.BlockedService:
 		return failed(fmt.Sprintf("tunnel %s answers 503 for it", t.Name))
 	}

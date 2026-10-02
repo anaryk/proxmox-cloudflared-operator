@@ -42,13 +42,13 @@ func (l Level) rank() int {
 	return 0
 }
 
-// AtLeast reports whether l proves at least what min asks for, on the scale
-// "" < observed < filtered < port. A min that is not on the scale is met by
-// nothing.
-func (l Level) AtLeast(min Level) bool {
-	switch min {
+// AtLeast reports whether l proves at least what required asks for, on the
+// scale "" < observed < filtered < port. A required level that is not on the
+// scale is met by nothing.
+func (l Level) AtLeast(required Level) bool {
+	switch required {
 	case "", LevelObserved, LevelFiltered, LevelPort:
-		return l.rank() >= min.rank()
+		return l.rank() >= required.rank()
 	}
 	return false
 }

@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	belowPort    = "identity level observed is below the required port"
-	oneHeldBack  = "1 route is held back: its identity level is observed, below the required port; lower identityMinimum in the settings if serving guests on other nodes is intended"
-	threeHeldOut = "3 routes are held back: their identity level is filtered or observed, below the required port; lower identityMinimum in the settings if serving guests on other nodes is intended"
+	belowPort   = "identity level observed is below the required port"
+	oneHeldBack = "1 route is held back: its identity level is observed, below the required port; " +
+		"guests on other nodes and trusted static addresses are proven at observed only: lower identityMinimum in the settings to serve them"
+	threeHeldOut = "3 routes are held back: their identity level is filtered or observed, below the required port; " +
+		"guests on other nodes and trusted static addresses are proven at observed only: lower identityMinimum in the settings to serve them"
 )
 
 // webAndAPI publishes www on guest 101 and api on guest 102, in enforce mode.

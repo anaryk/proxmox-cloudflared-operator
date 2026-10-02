@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"cmp"
 	"errors"
 	"io"
 	"net/http"
@@ -236,37 +237,54 @@ func TestEachStepFailsInTurn(t *testing.T) {
 // The identity step names the level the address was proven at, when the
 // state has one.
 func TestTheIdentityStepNamesTheLevel(t *testing.T) {
-	for level, detail := range map[string]string{
-		"observed": "127.0.0.1 is the address of qemu/101, verified at identity level observed (static)",
-		"manual":   "127.0.0.1 is the address of qemu/101, verified at identity level manual (static)",
-		"":         "127.0.0.1 is the address of qemu/101, verified (static)",
+	for _, tt := range []struct{ level, detail string }{
+		{"observed", "127.0.0.1 is the address of qemu/101, verified at identity level observed (static)"},
+		{"manual", "127.0.0.1 is the address of qemu/101, verified at identity level manual (static)"},
+		{"", "127.0.0.1 is the address of qemu/101, verified (static)"},
 	} {
-		o := newOrigin(t, false, nil)
-		st := servedBy(t, o.Server, "http")
-		st.Routes[0].Level = level
+		t.Run(cmp.Or(tt.level, "no level"), func(t *testing.T) {
+			o := newOrigin(t, false, nil)
+			st := servedBy(t, o.Server, "http")
+			st.Routes[0].Level = tt.level
 
-		steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+			steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
 
-		require.NoError(t, err)
-		require.Equal(t, Step{Name: "identity", Level: LevelOK, Detail: detail}, steps[5])
+			require.NoError(t, err)
+			require.Equal(t, Step{Name: "identity", Level: LevelOK, Detail: tt.detail}, steps[5])
+		})
 	}
 }
 
-// A route whose target is not verified is not published: the steps up to the
-// target warn rather than fail, so that the cause is told where it is.
-func TestATargetThatIsNotVerifiedIsWhereTheDiagnosisFails(t *testing.T) {
-	o := newOrigin(t, false, nil)
-	st := servedBy(t, o.Server, "http")
-	r := &st.Routes[0]
-	r.State, r.Reason, r.Service = planner.StateUnreachable, "no verified address yet", ""
-	r.Rule.Service = "http_status:503"
-	r.Candidates[0].OK, r.Candidates[0].Reason = false, "ARP answered by another MAC"
+// A route whose target is not served gets no record: the steps up to the
+// target warn rather than fail, so that the cause is told where it is, which
+// the identity step does, also for a target verified below the minimum.
+func TestATargetThatIsNotServedIsWhereTheDiagnosisFails(t *testing.T) {
+	for _, tt := range []struct{ name, level, reason, identity string }{
+		{
+			name: "not verified", reason: "no verified address yet",
+			identity: "no verified address yet; tried 127.0.0.1 (static): ARP answered by another MAC",
+		},
+		{
+			name: "held back", level: "observed", reason: "identity level observed is below the required port",
+			identity: "identity level observed is below the required port; tried 127.0.0.1 (static): ARP answered by another MAC",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newOrigin(t, false, nil)
+			st := servedBy(t, o.Server, "http")
+			r := &st.Routes[0]
+			r.State, r.Level, r.Reason, r.Service = planner.StateUnreachable, tt.level, tt.reason, ""
+			r.Rule.Service = "http_status:503"
+			r.Candidates[0].OK, r.Candidates[0].Reason = false, "ARP answered by another MAC"
 
-	steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+			steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
 
-	require.NoError(t, err)
-	require.Equal(t, Step{Name: "dns", Level: LevelWarn, Detail: "no record is published for it while its target is not verified"}, steps[2])
-	require.Equal(t, Step{Name: "ingress", Level: LevelWarn, Detail: "tunnel pco-abc123 answers 503 for it until its target is verified"}, steps[3])
+			require.NoError(t, err)
+			require.Equal(t, Step{Name: "dns", Level: LevelWarn, Detail: "no record is published for it while its target is not served"}, steps[2])
+			require.Equal(t, Step{Name: "ingress", Level: LevelWarn, Detail: "tunnel pco-abc123 answers 503 for it while its target is not served"}, steps[3])
+			require.Equal(t, Step{Name: "identity", Level: LevelFail, Detail: tt.identity}, steps[5])
+		})
+	}
 }
 
 func TestWhatTheOriginAnswers(t *testing.T) {

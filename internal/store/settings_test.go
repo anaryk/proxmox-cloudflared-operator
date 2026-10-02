@@ -72,13 +72,15 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 func TestSettingsAcceptEveryIdentityMinimum(t *testing.T) {
 	for _, level := range []string{"observed", "filtered", "port"} {
-		s, _ := openStore(t)
-		in := customSettings()
-		in.IdentityMinimum = level
-		require.NoError(t, s.SaveSettings(in), level)
-		got, err := s.Settings()
-		require.NoError(t, err)
-		require.Equal(t, level, got.IdentityMinimum)
+		t.Run(level, func(t *testing.T) {
+			s, _ := openStore(t)
+			in := customSettings()
+			in.IdentityMinimum = level
+			require.NoError(t, s.SaveSettings(in))
+			got, err := s.Settings()
+			require.NoError(t, err)
+			require.Equal(t, level, got.IdentityMinimum)
+		})
 	}
 }
 

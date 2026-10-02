@@ -17,11 +17,11 @@ const reasonBelowMinimum = "identity level %s is below the required %s"
 // Filtered is the level of the managed network, which the host profile does
 // not have: there it asks for port.
 func (c *cycleRun) requiredLevel() resolve.Level {
-	min := resolve.Level(c.settings.IdentityMinimum)
-	if min == resolve.LevelFiltered && c.install.ProfileName() == store.ProfileHost {
+	required := resolve.Level(c.settings.IdentityMinimum)
+	if required == resolve.LevelFiltered && c.install.ProfileName() == store.ProfileHost {
 		return resolve.LevelPort
 	}
-	return min
+	return required
 }
 
 // holdBelowMinimum takes the address from the target of every winner whose
@@ -35,7 +35,7 @@ func (c *cycleRun) requiredLevel() resolve.Level {
 // and is never held back, whatever level its result says. One problem line
 // says how many routes are held back.
 func (c *cycleRun) holdBelowMinimum() {
-	min := c.requiredLevel()
+	required := c.requiredLevel()
 	var held []resolve.Level
 	for _, rt := range c.claims.Winners {
 		res, ok := c.results[rt.Hostname]
@@ -43,19 +43,19 @@ func (c *cycleRun) holdBelowMinimum() {
 			continue
 		}
 		level, published := standsOn(res)
-		if !published || level.AtLeast(min) {
+		if !published || level.AtLeast(required) {
 			continue
 		}
 		if res.Target.Withdrawn {
 			res.Target.Addr = netip.Addr{}
 		} else {
-			res.Target = planner.ResolvedTarget{Reason: fmt.Sprintf(reasonBelowMinimum, level, min)}
+			res.Target = planner.ResolvedTarget{Reason: fmt.Sprintf(reasonBelowMinimum, level, required)}
 		}
 		c.results[rt.Hostname] = res
 		held = append(held, level)
 	}
 	if len(held) > 0 {
-		c.problem("%s", heldBack(held, min))
+		c.problem("%s", heldBack(held, required))
 	}
 }
 
@@ -78,7 +78,7 @@ func standsOn(res resolve.Result) (resolve.Level, bool) {
 
 // heldBack says how many routes the minimum holds back, at which levels, and
 // how to serve them anyway.
-func heldBack(levels []resolve.Level, min resolve.Level) string {
+func heldBack(levels []resolve.Level, required resolve.Level) string {
 	which := "1 route is held back: its"
 	if len(levels) != 1 {
 		which = fmt.Sprintf("%d routes are held back: their", len(levels))
@@ -89,6 +89,7 @@ func heldBack(levels []resolve.Level, min resolve.Level) string {
 	}
 	names = slices.Compact(slices.Sorted(slices.Values(names)))
 	return fmt.Sprintf("%s identity level is %s, below the required %s; "+
-		"lower identityMinimum in the settings if serving guests on other nodes is intended",
-		which, strings.Join(names, " or "), min)
+		"guests on other nodes and trusted static addresses are proven at observed only: "+
+		"lower identityMinimum in the settings to serve them",
+		which, strings.Join(names, " or "), required)
 }
