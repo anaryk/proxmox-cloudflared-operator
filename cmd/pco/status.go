@@ -42,7 +42,8 @@ func (a *app) statusCmd() *cobra.Command {
 		Long: "Show the mode of the daemon, whether the inventory is complete, the routes by state,\n" +
 			"the tunnels with their connectors, the credentials, the issues found in guest notes\n" +
 			"and the problems. The exit status is 1 when there are problems.\n\n" +
-			"With --json the state of the daemon is printed, as it was sent.",
+			"With --json the state of the daemon is printed as the daemon sent it, re-indented, with\n" +
+			"control and bidirectional characters escaped.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			raw, err := a.rawState(cmd.Context())

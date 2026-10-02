@@ -31,6 +31,8 @@ type env struct {
 	// to read a secret from when it is.
 	stdinTerminal func(in io.Reader) (fd int, ok bool)
 	readPassword  func(fd int) ([]byte, error)
+	// stderrTerminal says whether w, where the daemon logs, is a terminal.
+	stderrTerminal func(w io.Writer) bool
 
 	// daemon is what pco daemon is run with: the parts of the daemon that a
 	// test replaces.
@@ -50,6 +52,10 @@ func defaultEnv() env {
 			return int(f.Fd()), true
 		},
 		readPassword: readSecret,
+		stderrTerminal: func(w io.Writer) bool {
+			f, ok := w.(*os.File)
+			return ok && term.IsTerminal(int(f.Fd()))
+		},
 	}
 }
 
@@ -74,7 +80,8 @@ func newRootCmdWith(e env) *cobra.Command {
 	flags.StringVar(&a.socket, "socket", daemon.DefaultSocket,
 		"unix socket of the daemon; its directory must be named pco and sit in a directory only the daemon's user can write")
 	flags.BoolVar(&a.json, "json", false,
-		"print the answer of the daemon as JSON (status, routes, plan, credential list, add and check)")
+		"print the answer of the daemon as JSON (status, routes, plan, credential list, add and check): "+
+			"printed as the daemon sent it, re-indented, with control and bidirectional characters escaped")
 
 	root.AddCommand(
 		a.versionCmd(),

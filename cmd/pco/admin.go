@@ -12,9 +12,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
-// confirmFlag is how the engine marks, in a problem, what waits for the
-// confirmation of pco apply --confirm-deletes.
-const confirmFlag = "--confirm-deletes"
+const applying = "Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status."
 
 func (a *app) syncCmd() *cobra.Command {
 	return &cobra.Command{
@@ -41,48 +39,25 @@ func (a *app) applyCmd() *cobra.Command {
 		Use:   "apply",
 		Short: "Leave observe-only mode and start publishing",
 		Long: "Leave observe-only mode: from the next cycle the daemon changes Cloudflare.\n\n" +
-			"With --confirm-deletes everything that waits for a confirmation is accepted at the\n" +
-			"next run: the deletes the mass delete guard holds back, and what the daemon says\n" +
-			"it waits for, such as guests that Proxmox no longer lists. All of it is shown first,\n" +
-			"and the question needs a terminal; a script passes --yes.",
+			"With --confirm-deletes, what the daemon shows waiting for a confirmation is listed first:\n" +
+			"the DNS removals the mass delete guard holds back, guests that Proxmox no longer lists,\n" +
+			"zones that left their listing and tunnels no credential sees. Confirmed, the daemon\n" +
+			"accepts exactly what was listed, and refuses when that changed in the meantime: look\n" +
+			"again and repeat. The question needs a terminal; a script passes --yes.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
 				return err
 			}
-			ctx := cmd.Context()
-			s := &screen{w: cmd.OutOrStdout()}
 			if confirmDeletes {
-				st, err := a.state(ctx)
-				if err != nil {
-					return err
-				}
-				if !renderConfirmation(s, st) {
-					// Nothing waits, so nothing is confirmed: a confirmation that
-					// nobody waits for would land on deletes the admin did not see.
-					confirmDeletes = false
-					if st.Mode == "enforce" && !st.At.IsZero() {
-						s.println("Nothing waits for a confirmation, so there is nothing to do.")
-						return s.done()
-					}
-					s.println("Nothing waits for a confirmation, so none is given.")
-				} else {
-					ok, err := a.confirm(cmd, yes, "Accept this at the next run? [y/N]")
-					if err != nil {
-						return err
-					}
-					if !ok {
-						return errAborted
-					}
-				}
+				return a.applyConfirming(cmd, yes)
 			}
-			if _, err := a.client().Apply(ctx, confirmDeletes, ""); err != nil {
+			ctx := cmd.Context()
+			if _, err := a.client().Apply(ctx, false, ""); err != nil {
 				return a.explain(ctx, err)
 			}
-			if confirmDeletes {
-				s.println("Deletes confirmed for the next run.")
-			}
-			s.println("Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status.")
+			s := &screen{w: cmd.OutOrStdout()}
+			s.println(applying)
 			return s.done()
 		},
 	}
@@ -91,40 +66,64 @@ func (a *app) applyCmd() *cobra.Command {
 	return cmd
 }
 
-// heldDeletes returns the deletes the last cycle did not carry out.
-func heldDeletes(actions []reconcile.Action) []reconcile.Action {
-	return slices.DeleteFunc(pending(actions), func(act reconcile.Action) bool { return !act.Destructive })
-}
-
-// waiting returns the problems of the state that say they wait for the
-// confirmation. A cycle that holds plans no action, so its holds are in the
-// problems only.
-func waiting(problems []string) []string {
-	return slices.DeleteFunc(slices.Clone(problems), func(p string) bool { return !strings.Contains(p, confirmFlag) })
-}
-
-// renderConfirmation shows what a confirmation accepts, and reports whether
-// there is anything: held deletes, or problems that wait for it.
-func renderConfirmation(s *screen, st engine.State) bool {
-	held, waits := heldDeletes(st.Actions), waiting(st.Problems)
-	if len(held) == 0 && len(waits) == 0 {
-		return false
+// applyConfirming shows what the daemon offers to have confirmed and, when the
+// admin agrees, confirms it by its offer: the daemon accepts that and nothing
+// else. What it accepted is what is said to be confirmed.
+func (a *app) applyConfirming(cmd *cobra.Command, yes bool) error {
+	ctx := cmd.Context()
+	s := &screen{w: cmd.OutOrStdout()}
+	st, err := a.state(ctx)
+	if err != nil {
+		return err
 	}
-	if len(held) > 0 {
-		s.println("Deletes pending:")
-		actionTable(s, held)
-	} else {
-		s.println("No deletes are held right now.")
-	}
-	if len(waits) > 0 {
+	if len(st.Waiting) > 0 {
+		s.println(waitingTitle)
+		renderWaiting(s, st.Waiting)
 		s.println("")
-		s.println("These also wait for the confirmation, and " + confirmFlag + " accepts all of them:")
-		for _, p := range waits {
-			s.printf("  - %s\n", p)
+	}
+	if other := unaffected(st); len(other) > 0 {
+		s.println(unaffectedTitle)
+		actionTable(s, other)
+		s.println("")
+	}
+	if len(st.Waiting) == 0 {
+		// Nothing is confirmed: a confirmation that nothing waits for would
+		// land on what the admin did not see.
+		if st.Mode == "enforce" && !st.At.IsZero() {
+			s.println("Nothing waits for a confirmation, so there is nothing to do.")
+			return s.done()
+		}
+		s.println("Nothing waits for a confirmation, so none is given.")
+		if _, err := a.client().Apply(ctx, false, ""); err != nil {
+			return a.explain(ctx, err)
+		}
+		s.println(applying)
+		return s.done()
+	}
+	if err := s.done(); err != nil {
+		return err
+	}
+	ok, err := a.confirm(cmd, yes, "Accept this at the next run? [y/N]")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errAborted
+	}
+	res, err := a.client().Apply(ctx, true, st.Offer)
+	if err != nil {
+		return a.explain(ctx, err)
+	}
+	if len(res.Accepted) == 0 {
+		s.println("Nothing was confirmed.")
+	} else {
+		s.println("Confirmed for the next run:")
+		for _, w := range res.Accepted {
+			s.printf("  - %s\n", w.Detail)
 		}
 	}
-	s.println("")
-	return true
+	s.println(applying)
+	return s.done()
 }
 
 func (a *app) adoptCmd() *cobra.Command {

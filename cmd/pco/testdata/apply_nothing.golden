@@ -1,0 +1,7 @@
+Destructive actions that are pending; a confirmation does not affect them:
+ACTION         TARGET            DETAIL                             HELD
+delete-record  old.example.com   in zone example.com                grace period: 1m0s left
+update-record  shop.example.com  in zone example.com: A 192.0.2.10  tunnel configuration not verified
+
+Nothing waits for a confirmation, so there is nothing to do.
+--- stderr

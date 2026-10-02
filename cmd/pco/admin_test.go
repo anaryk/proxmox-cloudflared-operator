@@ -12,20 +12,18 @@ import (
 
 const notATerminal = "stdin is not a terminal: pass --yes to confirm"
 
-// vanishGuardProblem is what the engine says when the guests that hold a
-// hostname dropped out of the listing: nothing is planned, the cycle holds.
-const vanishGuardProblem = "7 of 20 guests that hold a hostname are no longer listed by Proxmox (qemu/101, qemu/102); " +
-	"nothing is changed until they are listed again, or run pco apply --confirm-deletes if they were removed on purpose"
-
 // vanishState is a daemon whose cycle holds on the vanish guard: no action is
-// planned, and no delete is held.
+// planned, and 23 guests wait for a confirmation.
 func vanishState() engine.State {
 	st := healthyState()
 	st.Actions = nil
 	st.Problems = []string{
 		"an unrelated problem",
-		vanishGuardProblem,
+		"23 of 40 guests that hold a hostname are no longer listed by Proxmox (qemu/101, qemu/102, qemu/103, qemu/104, qemu/105 and 18 more); " +
+			"nothing is changed until they are listed again, or run pco apply --confirm-deletes if they were removed on purpose",
 	}
+	st.Waiting = []engine.Waiting{vanishedGuests(23)}
+	st.Offer = "5c5c5c5c00000001"
 	return st
 }
 
@@ -50,7 +48,7 @@ func TestApplyAsksNothingWithoutConfirmDeletes(t *testing.T) {
 	require.Equal(t, []string{"apply confirmDeletes=false"}, e.called())
 }
 
-func TestApplyConfirmDeletesShowsWhatIsPendingAndAsks(t *testing.T) {
+func TestApplyConfirmDeletesShowsWhatWaitsAndAsks(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		in      string
@@ -70,17 +68,18 @@ func TestApplyConfirmDeletesShowsWhatIsPendingAndAsks(t *testing.T) {
 
 			res := r.tty().run(tt.in, append([]string{"apply", "--confirm-deletes"}, tt.args...)...)
 
-			// Only the deletes that were not carried out, not the other pending
-			// actions and not the applied ones.
-			require.Contains(t, res.out, "Deletes pending:")
-			require.Contains(t, res.out, "old.example.com")
-			require.Contains(t, res.out, "gone.example.com")
+			// What the daemon offers, and not the other pending actions.
+			require.Contains(t, res.out, "Waits for a confirmation (pco apply --confirm-deletes accepts all of it):\n"+
+				"  - mass delete guard: 6 of 9 records are being removed; confirm to proceed\n"+
+				"      gone.example.com\n"+
+				"      old.example.com\n")
 			require.NotContains(t, res.out, "blog.example.com")
 			require.NotContains(t, res.out, "update-record")
 			if tt.applied {
 				require.NoError(t, res.err)
-				require.Contains(t, res.out, "Deletes confirmed for the next run.")
-				require.Equal(t, []string{"apply confirmDeletes=true"}, e.called())
+				require.Contains(t, res.out, "Confirmed for the next run:\n"+
+					"  - mass delete guard: 6 of 9 records are being removed; confirm to proceed\n")
+				require.Equal(t, []string{"apply confirmDeletes=true offer=1a2b3c4d5e6f7a8b"}, e.called(), "the offer of what was shown")
 			} else {
 				require.ErrorIs(t, res.err, errAborted)
 				require.Empty(t, e.called(), "nothing was sent to the daemon")
@@ -94,41 +93,104 @@ func TestApplyConfirmDeletesShowsWhatIsPendingAndAsks(t *testing.T) {
 	}
 }
 
-// What the confirmation accepts is more than the deletes of the plan: the
-// engine marks everything that waits for it with the flag in its problem.
-func TestApplyConfirmDeletesListsEverythingThatWaitsForTheConfirmation(t *testing.T) {
-	withDeletes := vanishState()
-	withDeletes.Actions = planState().Actions
-
+func TestApplyConfirmDeletesGolden(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		state      engine.State
-		wantDelete bool
-		wantWaits  bool
+		name   string
+		state  engine.State
+		in     string
+		golden string
+		call   []string
 	}{
-		{"only deletes are held", planState(), true, false},
-		{"only the vanish guard holds the cycle", vanishState(), false, true},
-		{"both", withDeletes, true, true},
+		{"only removals the guard holds", guardState(), "y\n", "apply_guard.golden", []string{"apply confirmDeletes=true offer=0f1e2d3c4b5a6978"}},
+		{"only a vanish hold", vanishState(), "y\n", "apply_vanished.golden", []string{"apply confirmDeletes=true offer=5c5c5c5c00000001"}},
+		{"a stale zone and an unseen tunnel", zoneAndTunnelState(), "y\n", "apply_zone_tunnel.golden", []string{"apply confirmDeletes=true offer=9a8b7c6d5e4f3a2b"}},
+		{"nothing waits", graceState(), "", "apply_nothing.golden", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, e := daemonWith(t, tt.state)
 
-			res := r.tty().run("y\n", "apply", "--confirm-deletes")
+			res := r.tty().run(tt.in, "apply", "--confirm-deletes")
 
 			require.NoError(t, res.err)
-			require.Equal(t, []string{"apply confirmDeletes=true"}, e.called())
-			require.Equal(t, tt.wantDelete, strings.Contains(res.out, "Deletes pending:"), res.out)
-			require.Equal(t, !tt.wantDelete, strings.Contains(res.out, "No deletes are held right now."), res.out)
-			if tt.wantWaits {
-				require.Contains(t, res.out, "These also wait for the confirmation, and --confirm-deletes accepts all of them:")
-				require.Contains(t, res.out, "  - "+vanishGuardProblem)
-				require.NotContains(t, res.out, "an unrelated problem", "only what waits for the confirmation is listed")
-			} else {
-				require.NotContains(t, res.out, "wait for the confirmation")
-			}
-			require.Contains(t, res.errOut, "Accept this at the next run? [y/N] ")
+			require.Equal(t, tt.call, e.called())
+			requireClean(t, res.out, "stdout")
+			requireGolden(t, tt.golden, res.out+"--- stderr\n"+res.errOut)
 		})
 	}
+}
+
+// Reproduced: a removal in its grace and an adoption made the command ask,
+// send a confirmation and say that deletes were confirmed, while the daemon
+// had nothing to confirm. Neither is offered, so nothing is asked.
+func TestApplyConfirmDeletesAsksNothingForWhatAConfirmationDoesNotAffect(t *testing.T) {
+	r, e := daemonWith(t, graceState())
+
+	res := r.tty().run("y\n", "apply", "--confirm-deletes")
+
+	require.NoError(t, res.err)
+	require.Empty(t, e.called())
+	require.Empty(t, res.errOut, "no question")
+	require.Contains(t, res.out, "Destructive actions that are pending; a confirmation does not affect them:\n")
+	require.Contains(t, res.out, "old.example.com")
+	require.Contains(t, res.out, "shop.example.com")
+	require.True(t, strings.HasSuffix(res.out, "Nothing waits for a confirmation, so there is nothing to do.\n"), res.out)
+	require.NotContains(t, res.out, "onfirmed")
+}
+
+// The problems name the flag; what waits is told by the daemon alone.
+func TestApplyConfirmDeletesDoesNotReadTheProblems(t *testing.T) {
+	st := vanishState()
+	st.Waiting, st.Offer = []engine.Waiting{}, ""
+	r, e := daemonWith(t, st)
+
+	res := r.tty().run("y\n", "apply", "--confirm-deletes")
+
+	require.NoError(t, res.err)
+	require.Equal(t, "Nothing waits for a confirmation, so there is nothing to do.\n", res.out)
+	require.Empty(t, e.called())
+}
+
+// Only what the daemon accepted is told as confirmed.
+func TestApplyConfirmDeletesSaysWhatTheDaemonAccepted(t *testing.T) {
+	t.Run("nothing", func(t *testing.T) {
+		e := &fakeEngine{state: planState(), applied: &engine.ApplyResult{Accepted: []engine.Waiting{}}}
+		r := newRunner(t, serveFake(t, e))
+
+		res := r.tty().run("y\n", "apply", "--confirm-deletes")
+
+		require.NoError(t, res.err)
+		require.Contains(t, res.out, "Nothing was confirmed.\n")
+		require.NotContains(t, res.out, "Confirmed for the next run")
+	})
+	t.Run("part of it", func(t *testing.T) {
+		st := zoneAndTunnelState()
+		e := &fakeEngine{state: st, applied: &engine.ApplyResult{Accepted: st.Waiting[1:]}}
+		r := newRunner(t, serveFake(t, e))
+
+		res := r.tty().run("y\n", "apply", "--confirm-deletes")
+
+		require.NoError(t, res.err)
+		_, confirmed, found := strings.Cut(res.out, "Confirmed for the next run:\n")
+		require.True(t, found, res.out)
+		require.Contains(t, confirmed, "tunnel pco-abc123")
+		require.NotContains(t, confirmed, "zone example.net", "not accepted, so not said")
+	})
+}
+
+func TestApplyConfirmDeletesOfWhatChangedMeanwhile(t *testing.T) {
+	// A cycle ran between the state that was shown and the confirmation.
+	e := &fakeEngine{state: planState(), applyErr: errOfferChanged}
+	r := newRunner(t, serveFake(t, e))
+
+	res := r.tty().run("y\n", "apply", "--confirm-deletes")
+
+	require.ErrorIs(t, res.err, engine.ErrRefused)
+	require.EqualError(t, res.err, "refused: what waits for a confirmation changed since it was shown; look again and repeat")
+	var stderr strings.Builder
+	require.Equal(t, 1, exitCode(res.err, &stderr))
+	require.Equal(t, "pco: refused: what waits for a confirmation changed since it was shown; look again and repeat\n", stderr.String())
+	require.NotContains(t, res.out, "onfirmed")
+	require.Equal(t, []string{"apply confirmDeletes=true offer=1a2b3c4d5e6f7a8b"}, e.called())
 }
 
 func TestApplyConfirmDeletesWithNothingWaitingAsksNothing(t *testing.T) {
@@ -204,7 +266,7 @@ func TestConfirmationsRefuseToRunWithoutATerminal(t *testing.T) {
 		res := r.runReader(unreadable{t}, "apply", "--confirm-deletes", "--yes")
 
 		require.NoError(t, res.err)
-		require.Equal(t, []string{"apply confirmDeletes=true"}, e.called())
+		require.Equal(t, []string{"apply confirmDeletes=true offer=1a2b3c4d5e6f7a8b"}, e.called())
 	})
 
 	t.Run("a command that asks nothing needs no terminal", func(t *testing.T) {

@@ -14,9 +14,10 @@ func (a *app) planCmd() *cobra.Command {
 		Use:   "plan",
 		Short: "Show what the daemon would change and what stands in its way",
 		Long: "Show the actions of the last cycle that were not applied and why they are held,\n" +
-			"the records of someone else that stand in the way of a hostname, and the names\n" +
-			"that point at the tunnel but lost the marker of this install.\n\n" +
-			"With --json the whole state of the daemon is printed, as it was sent.",
+			"what waits for a confirmation, the records of someone else that stand in the way of\n" +
+			"a hostname, and the names that point at the tunnel but lost the marker of this install.\n\n" +
+			"With --json the whole state of the daemon is printed as the daemon sent it, re-indented,\n" +
+			"with control and bidirectional characters escaped.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.json {
@@ -61,7 +62,7 @@ func actionTable(s *screen, actions []reconcile.Action) {
 func renderPlan(w io.Writer, st engine.State) error {
 	s := &screen{w: w}
 	actions := pending(st.Actions)
-	if len(actions) == 0 && len(st.Conflicts) == 0 && len(st.Lost) == 0 {
+	if len(actions) == 0 && len(st.Waiting) == 0 && len(st.Conflicts) == 0 && len(st.Lost) == 0 {
 		s.println("Nothing to do.")
 		return s.done()
 	}
@@ -79,6 +80,10 @@ func renderPlan(w io.Writer, st engine.State) error {
 	if len(actions) > 0 {
 		section("")
 		actionTable(s, actions)
+	}
+	if len(st.Waiting) > 0 {
+		section(waitingTitle)
+		renderWaiting(s, st.Waiting)
 	}
 	if len(st.Conflicts) > 0 {
 		section("Records of someone else that stand in the way (pco adopt replaces one):")

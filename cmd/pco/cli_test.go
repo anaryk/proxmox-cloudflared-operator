@@ -232,6 +232,33 @@ func TestPlanGolden(t *testing.T) {
 	}
 }
 
+func TestPlanShowsWhatWaitsForAConfirmation(t *testing.T) {
+	st := healthyState()
+	st.Waiting = vanishState().Waiting
+	r, e := daemonWith(t, st)
+
+	res := r.run("", "plan")
+
+	require.NoError(t, res.err)
+	require.True(t, strings.HasPrefix(res.out, "Waits for a confirmation (pco apply --confirm-deletes accepts all of it):\n"+
+		"  - 23 guests that hold a hostname are no longer listed by Proxmox;"), res.out)
+	require.Contains(t, res.out, "      qemu/120 vm-120\n      ... and 3 more\n")
+	require.NotContains(t, res.out, "qemu/121")
+	require.Empty(t, e.called(), "plan only reads")
+}
+
+// --json prints what the daemon sent; its help says how it is changed.
+func TestTheHelpOfJSONSaysWhatIsChanged(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+	for _, args := range [][]string{{"--help"}, {"status", "--help"}, {"routes", "--help"}, {"plan", "--help"}} {
+		res := r.run("", args...)
+
+		require.NoError(t, res.err)
+		require.Contains(t, strings.Join(strings.Fields(res.out), " "),
+			"printed as the daemon sent it, re-indented, with control and bidirectional characters escaped", args)
+	}
+}
+
 func TestPlanWithNothingToDo(t *testing.T) {
 	st := healthyState()
 	st.Actions = planState().Actions[:1] // applied: nothing pending

@@ -1,9 +1,11 @@
-Deletes pending:
-ACTION         TARGET                            DETAIL                                HELD
-delete-record  gone?[2J?]0;pwned? ? ?31m ?evil?  in zone ?[2J?]0;pwned? ? ?31m ?evil?  guard ?[2J?]0;pwned? ? ?31m ?evil?
+Waits for a confirmation (pco apply --confirm-deletes accepts all of it):
+  - guard ?[2J?]0;pwned? ? ?31m ?evil?
+      gone?[2J?]0;pwned? ? ?31m ?evil?
+  - zone?[2J?]0;pwned? ? ?31m ?evil? left its listing
 
-These also wait for the confirmation, and --confirm-deletes accepts all of them:
-  - the inventory is incomplete; run pco apply --confirm-deletes if ?[2J?]0;pwned? ? ?31m ?evil?
+Destructive actions that are pending; a confirmation does not affect them:
+ACTION         TARGET                            DETAIL                                HELD
+update-record  shop?[2J?]0;pwned? ? ?31m ?evil?  in zone ?[2J?]0;pwned? ? ?31m ?evil?  adoption ?[2J?]0;pwned? ? ?31m ?evil?
 
 --- stderr
 Accept this at the next run? [y/N] 

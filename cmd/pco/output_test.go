@@ -35,11 +35,22 @@ func TestPrintableReplacesWhatATerminalWouldObey(t *testing.T) {
 		{"bidirectional isolates", runes(0x2066) + "x" + runes(0x2067) + "y" + runes(0x2068) + "z" + runes(0x2069), "?x?y?z?"},
 		{"marks of direction", runes(0x200e) + "A" + runes(0x200f) + "B" + runes(0x61c) + "C", "?A?B?C"},
 		{"line and paragraph separators", "a" + runes(0x2028) + "b" + runes(0x2029) + "c", "a?b?c"},
+		{"zero-width characters", "w" + runes(0x200b) + "w" + runes(0x200c) + "w" + runes(0x200d) + "w" + runes(0x2060) + "w", "w?w?w?w?w"},
+		{"a byte order mark", runes(0xfeff) + "bom", "?bom"},
+		{"a soft hyphen", "ex" + runes(0xad) + "ample", "ex?ample"},
+		{"tag characters", "flag" + runes(0xe0001, 0xe0065, 0xe006e, 0xe007f), "flag????"},
+		{"other format characters", runes(0x600) + runes(0x180e) + runes(0xfff9), "???"},
+		{"spaces that are not ASCII stay", "a" + runes(0xa0) + "b" + runes(0x3000) + "c", "a" + runes(0xa0) + "b" + runes(0x3000) + "c"},
 		{"bytes that are no UTF-8", "a\xffb", "a�b"},
 		{"nothing", "", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, printable(tt.in))
+			got := printable(tt.in)
+
+			require.Equal(t, tt.want, got)
+			for _, r := range got {
+				require.True(t, unicode.IsPrint(r) || unicode.IsSpace(r), "U+%04X is neither printable nor a space", r)
+			}
 		})
 	}
 }
@@ -52,6 +63,7 @@ func TestPrintableLeavesNothingToChance(t *testing.T) {
 		for _, got := range out {
 			require.False(t, unicode.IsControl(got), "U+%04X came out as a control character", r)
 			require.False(t, isBidi(got), "U+%04X came out as a bidirectional control", r)
+			require.False(t, unicode.Is(unicode.Cf, got), "U+%04X came out as a format character", r)
 		}
 	}
 }
@@ -98,6 +110,7 @@ func requireClean(t *testing.T, text string, what string) {
 		}
 		require.False(t, unicode.IsControl(r), "%s: control character U+%04X at byte %d of %q", what, r, i, text)
 		require.False(t, isBidi(r), "%s: bidirectional control U+%04X at byte %d of %q", what, r, i, text)
+		require.False(t, unicode.Is(unicode.Cf, r), "%s: format character U+%04X at byte %d of %q", what, r, i, text)
 	}
 }
 
@@ -122,6 +135,11 @@ func hostileState() engine.State {
 	st.Tunnels[0].Name = "pco" + hostileText
 	st.Actions = []reconcile.Action{
 		{Kind: reconcile.DeleteRecord, Target: "gone" + hostileText, Detail: "in zone " + hostileText, Destructive: true, Held: "guard " + hostileText},
+		{Kind: reconcile.UpdateRecord, Target: "shop" + hostileText, Detail: "in zone " + hostileText, Destructive: true, Held: "adoption " + hostileText},
+	}
+	st.Waiting = []engine.Waiting{
+		{Kind: engine.WaitingRemovals, Detail: "guard " + hostileText, Items: []string{"gone" + hostileText}},
+		{Kind: engine.WaitingZone, Subject: "zone" + hostileText, Detail: "zone" + hostileText + " left its listing", Items: []string{}},
 	}
 	st.Conflicts = []reconcile.Conflict{{Zone: "zone" + hostileText, Name: "shop.example.com", Type: "TXT", Content: "content" + hostileText}}
 	st.Lost = []string{"lost" + hostileText}

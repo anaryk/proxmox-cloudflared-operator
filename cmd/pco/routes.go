@@ -21,8 +21,8 @@ func (a *app) routesCmd() *cobra.Command {
 		Short: "List the routes and how each fares",
 		Long: "List the routes sorted by hostname. The note is the reason a route is not served,\n" +
 			"or its first warning.\n\n" +
-			"With --json the whole state of the daemon is printed, as it was sent, and --state\n" +
-			"cannot be used.",
+			"With --json the whole state of the daemon is printed as the daemon sent it, re-indented,\n" +
+			"with control and bidirectional characters escaped, and --state cannot be used.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			want, err := parseRouteState(state)

@@ -1,5 +1,11 @@
 ACTION         TARGET                            DETAIL                                HELD
 delete-record  gone?[2J?]0;pwned? ? ?31m ?evil?  in zone ?[2J?]0;pwned? ? ?31m ?evil?  guard ?[2J?]0;pwned? ? ?31m ?evil?
+update-record  shop?[2J?]0;pwned? ? ?31m ?evil?  in zone ?[2J?]0;pwned? ? ?31m ?evil?  adoption ?[2J?]0;pwned? ? ?31m ?evil?
+
+Waits for a confirmation (pco apply --confirm-deletes accepts all of it):
+  - guard ?[2J?]0;pwned? ? ?31m ?evil?
+      gone?[2J?]0;pwned? ? ?31m ?evil?
+  - zone?[2J?]0;pwned? ? ?31m ?evil? left its listing
 
 Records of someone else that stand in the way (pco adopt replaces one):
 NAME              ZONE                              TYPE  CONTENT

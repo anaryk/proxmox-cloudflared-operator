@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -57,6 +58,7 @@ type fakeEngine struct {
 	addErr, checkErr   error
 	applyErr, adoptErr error
 	removeErr          error
+	applied            *engine.ApplyResult // what Apply answers instead of what the state offers
 
 	calls []string
 }
@@ -83,10 +85,34 @@ func (f *fakeEngine) Events(time.Time) []engine.Event { return nil }
 
 func (f *fakeEngine) Trigger() { f.record("sync") }
 
-func (f *fakeEngine) Apply(_ context.Context, confirmDeletes bool, _ string) (engine.ApplyResult, error) {
-	f.record("apply confirmDeletes=" + boolText(confirmDeletes))
-	return engine.ApplyResult{}, f.applyErr
+// Apply answers as the engine does: a confirmation with another offer than
+// that of the state is refused, and one with it accepts what the state shows.
+func (f *fakeEngine) Apply(_ context.Context, confirmDeletes bool, offer string) (engine.ApplyResult, error) {
+	call := "apply confirmDeletes=" + boolText(confirmDeletes)
+	if offer != "" {
+		call += " offer=" + offer
+	}
+	f.record(call)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.applyErr != nil:
+		return engine.ApplyResult{}, f.applyErr
+	case f.applied != nil:
+		return *f.applied, nil
+	case confirmDeletes && offer != f.state.Offer:
+		return engine.ApplyResult{}, errOfferChanged
+	}
+	res := engine.ApplyResult{LeftObserveOnly: f.state.Mode == "observe", Accepted: []engine.Waiting{}}
+	if confirmDeletes {
+		res.Accepted = append(res.Accepted, f.state.Waiting...)
+	}
+	return res, nil
 }
+
+// errOfferChanged is how the engine refuses a confirmation of what no longer
+// waits.
+var errOfferChanged = fmt.Errorf("%w: what waits for a confirmation changed since it was shown; look again and repeat", engine.ErrRefused)
 
 func (f *fakeEngine) Adopt(_ context.Context, name string) error {
 	f.record("adopt " + name)

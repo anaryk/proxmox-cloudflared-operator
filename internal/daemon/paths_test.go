@@ -10,60 +10,42 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
-func TestStorePathsClearTheMountCheckWhenTheClusterOrPrivateRootMoves(t *testing.T) {
+func TestStorePathsAreTheNodesOrAStoreOfItsOwn(t *testing.T) {
 	defaults := store.DefaultPaths()
 	require.NotEmpty(t, defaults.MountCheck)
 
-	for _, tt := range []struct {
-		name                    string
-		cluster, private, local string
-		want                    store.Paths
-	}{
-		{"defaults", "", "", "", defaults},
-		{
-			"the cluster root moves", "/tmp/c", "", "",
-			store.Paths{Cluster: "/tmp/c", Private: defaults.Private, Local: defaults.Local},
-		},
-		{
-			"the private root moves", "", "/tmp/p", "",
-			store.Paths{Cluster: defaults.Cluster, Private: "/tmp/p", Local: defaults.Local},
-		},
-		{
-			"both move, the local root stays", "/tmp/c", "/tmp/p", "",
-			store.Paths{Cluster: "/tmp/c", Private: "/tmp/p", Local: defaults.Local},
-		},
-		{
-			"all move: a store of its own", "/tmp/c", "/tmp/p", "/tmp/l",
-			store.Paths{Cluster: "/tmp/c", Private: "/tmp/p", Local: "/tmp/l"},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := StorePaths(tt.cluster, tt.private, tt.local)
+	got, err := StorePaths("", "", "")
+	require.NoError(t, err)
+	require.Equal(t, defaults, got)
 
-			require.NoError(t, err)
-			require.Equal(t, tt.want, got)
-		})
-	}
+	got, err = StorePaths("/tmp/c", "/tmp/p", "/tmp/l")
+	require.NoError(t, err)
+	require.Equal(t, store.Paths{Cluster: "/tmp/c", Private: "/tmp/p", Local: "/tmp/l"}, got,
+		"nothing is mounted behind the directories of a test")
 }
 
-// The lock of a node is in its local directory. A daemon with another local
-// directory and the same cluster store would reconcile it a second time, so the
-// local directory moves only with a store of its own.
-func TestTheLocalDirectoryMovesOnlyWithAStoreOfItsOwn(t *testing.T) {
+// The lock of a node is in its local directory, the tokens in the private one
+// and the connectors are kept by what the cluster one says. Moving some of
+// them would let a daemon reconcile a store a second time, or mix a store of
+// a test with the tokens and the connector directory of the node.
+func TestTheDirectoriesMoveAllThreeOrNone(t *testing.T) {
 	for _, tt := range []struct {
 		name                    string
 		cluster, private, local string
 	}{
-		{"alone", "", "", "/tmp/l"},
-		{"with the cluster directory only", "/tmp/c", "", "/tmp/l"},
-		{"with the private directory only", "", "/tmp/p", "/tmp/l"},
+		{"the local one alone", "", "", "/tmp/l"},
+		{"the cluster one alone", "/tmp/c", "", ""},
+		{"the private one alone", "", "/tmp/p", ""},
+		{"the cluster and the private ones", "/tmp/c", "/tmp/p", ""},
+		{"the cluster and the local ones", "/tmp/c", "", "/tmp/l"},
+		{"the private and the local ones", "", "/tmp/p", "/tmp/l"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := StorePaths(tt.cluster, tt.private, tt.local)
 
-			require.EqualError(t, err, "--local-dir is refused without --cluster-dir and --private-dir: "+
-				"the lock of the node lives in the local directory, and a daemon with another one but the same "+
-				"cluster store would reconcile it a second time; a separate store needs all three")
+			require.EqualError(t, err, "--cluster-dir, --private-dir and --local-dir are given all three or none: "+
+				"a daemon that kept some of the directories of the node would reconcile its store a second time, "+
+				"or mix a store of its own with the tokens and the connectors of the node")
 		})
 	}
 }

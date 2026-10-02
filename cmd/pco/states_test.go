@@ -152,10 +152,94 @@ func planState() engine.State {
 		{Kind: reconcile.CreateRecord, Target: "blog.example.com", Detail: "in zone example.com: tunnel pco-abc123 has no known id", Held: "tunnel not created yet"},
 		{Kind: reconcile.UpdateRecord, Target: "api.example.com", Detail: "in zone example.com"},
 		{Kind: reconcile.DeleteRecord, Target: "old.example.com", Detail: "in zone example.com", Destructive: true, Held: "grace period: 1m0s left"},
-		{Kind: reconcile.DeleteRecord, Target: "gone.example.com", Detail: "in zone example.com", Destructive: true, Held: "mass delete guard: 5 of 9 records are being removed; confirm to proceed"},
+		{Kind: reconcile.DeleteRecord, Target: "gone.example.com", Detail: "in zone example.com", Destructive: true, Held: "mass delete guard: 6 of 9 records are being removed; confirm to proceed"},
 	}
 	st.Conflicts = []reconcile.Conflict{{Zone: "example.com", Name: "shop.example.com", Type: "A", Content: "192.0.2.10"}}
 	st.Lost = []string{"lost.example.com"}
+	// The guard counts the removal in its grace too, and a confirmation lets
+	// it through.
+	st.Waiting = []engine.Waiting{{
+		Kind:   engine.WaitingRemovals,
+		Detail: "mass delete guard: 6 of 9 records are being removed; confirm to proceed",
+		Items:  []string{"gone.example.com", "old.example.com"},
+	}}
+	st.Offer = "1a2b3c4d5e6f7a8b"
+	return st
+}
+
+// guardState is a daemon whose mass delete guard holds two removals while
+// four more are in their grace.
+func guardState() engine.State {
+	st := healthyState()
+	guard := "mass delete guard: 6 of 16 records are being removed; confirm to proceed"
+	names := []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com", "e.example.com", "f.example.com"}
+	for i, name := range names {
+		held := guard
+		if i >= 2 {
+			held = "grace period: 29s left"
+		}
+		st.Actions = append(st.Actions, reconcile.Action{Kind: reconcile.DeleteRecord, Target: name, Detail: "in zone example.com: CNAME", Destructive: true, Held: held})
+	}
+	st.Problems = []string{guard}
+	st.Waiting = []engine.Waiting{{Kind: engine.WaitingRemovals, Detail: guard, Items: names}}
+	st.Offer = "0f1e2d3c4b5a6978"
+	return st
+}
+
+// vanishedGuests is what a vanish hold offers: n guests from qemu/101 on.
+func vanishedGuests(n int) engine.Waiting {
+	w := engine.Waiting{
+		Kind: engine.WaitingVanished,
+		Detail: fmt.Sprintf("%d guests that hold a hostname are no longer listed by Proxmox; "+
+			"a confirmation takes them as removed, and their hostnames are released after the grace period", n),
+	}
+	for i := range n {
+		w.Items = append(w.Items, fmt.Sprintf("qemu/%d vm-%d", 101+i, 101+i))
+	}
+	return w
+}
+
+// zoneAndTunnelState is a daemon that waits for the confirmation of a zone
+// that left its listing and of a tunnel no credential sees; a removal in its
+// grace is pending besides.
+func zoneAndTunnelState() engine.State {
+	st := healthyState()
+	st.Actions = []reconcile.Action{
+		{Kind: reconcile.DeleteRecord, Target: "old.example.com", Detail: "in zone example.com", Destructive: true, Held: "grace period: 1m0s left"},
+	}
+	st.Problems = []string{
+		"zone example.net is no longer listed by credential cred1; account acc4 is left as it is " +
+			"until the zone is listed again or pco apply --confirm-deletes confirms it is gone",
+		"tunnel pco-abc123 in account acc3 is not visible through any credential; its connector is kept " +
+			"until a credential sees the account again or pco apply --confirm-deletes confirms the tunnel is gone",
+	}
+	st.Waiting = []engine.Waiting{
+		{
+			Kind: engine.WaitingZone, Subject: "example.net",
+			Detail: "zone example.net is no longer listed by credential cred1; a confirmation takes it as gone, " +
+				"and its hostnames are taken off the tunnel",
+			Items: []string{},
+		},
+		{
+			Kind: engine.WaitingTunnel, Subject: "pco-abc123",
+			Detail: "tunnel pco-abc123 (" + tunnelC + ") in account acc3 is not visible through any credential; " +
+				"a confirmation takes it as gone and removes its connector",
+			Items: []string{},
+		},
+	}
+	st.Offer = "9a8b7c6d5e4f3a2b"
+	return st
+}
+
+// graceState waits for nothing: a removal is in its grace and an adoption
+// waits for its tunnel, and a confirmation affects neither.
+func graceState() engine.State {
+	st := healthyState()
+	st.Actions = []reconcile.Action{
+		{Kind: reconcile.DeleteRecord, Target: "old.example.com", Detail: "in zone example.com", Destructive: true, Held: "grace period: 1m0s left"},
+		{Kind: reconcile.UpdateRecord, Target: "shop.example.com", Detail: "in zone example.com: A 192.0.2.10", Destructive: true, Held: "tunnel configuration not verified"},
+	}
+	st.Waiting = []engine.Waiting{}
 	return st
 }
 

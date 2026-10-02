@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -15,6 +17,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
@@ -76,28 +79,59 @@ func TestTheDaemonSaysWhenTheNodeIsNotSetUp(t *testing.T) {
 	require.EqualError(t, res.err, "pco is not set up on this node; run pco setup")
 }
 
-// The lock of the node is in the local directory: another one with the same
-// cluster store would let a second daemon reconcile it.
-func TestTheLocalDirectoryNeedsAStoreOfItsOwn(t *testing.T) {
-	for name, others := range map[string][]string{
-		"alone":                 nil,
-		"with the cluster only": {"--cluster-dir", "cluster"},
-		"with the private only": {"--private-dir", "private"},
+// The directories of the store move together or not at all: some of them
+// moved would mix a store of a test with the tokens, the connectors and the
+// lock of the node.
+func TestTheDirectoriesOfTheStoreMoveTogether(t *testing.T) {
+	for name, flags := range map[string][]string{
+		"the local one alone":     {"--local-dir", "local"},
+		"the cluster one alone":   {"--cluster-dir", "cluster"},
+		"the private one alone":   {"--private-dir", "private"},
+		"all but the local one":   {"--cluster-dir", "cluster", "--private-dir", "private"},
+		"all but the cluster one": {"--private-dir", "private", "--local-dir", "local"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			base := testutil.ShortDir(t)
-			args := []string{"daemon", "--node", "pve1", "--local-dir", filepath.Join(base, "local")}
-			for i := 0; i < len(others); i += 2 {
-				args = append(args, others[i], filepath.Join(base, others[i+1]))
+			args := []string{"daemon", "--node", "pve1"}
+			for i := 0; i < len(flags); i += 2 {
+				args = append(args, flags[i], filepath.Join(base, flags[i+1]))
 			}
 			r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
 
 			res := r.run("", args...)
 
-			require.ErrorContains(t, res.err, "--local-dir is refused without --cluster-dir and --private-dir")
-			require.NoDirExists(t, filepath.Join(base, "local"), "nothing was made")
+			require.ErrorContains(t, res.err, "--cluster-dir, --private-dir and --local-dir are given all three or none")
+			for _, dir := range []string{"local", "cluster", "private"} {
+				require.NoDirExists(t, filepath.Join(base, dir), "nothing was made")
+			}
 		})
 	}
+}
+
+// On a terminal the daemon logs lines to read, and what others control in a
+// message or a field is cleaned as everything printed is; to the journal it
+// logs JSON.
+func TestTheDaemonLogsForATerminalAndForTheJournal(t *testing.T) {
+	logOnce := func(terminal bool) string {
+		a := &app{env: testEnv()}
+		a.stderrTerminal = func(io.Writer) bool { return terminal }
+		var buf bytes.Buffer
+		log := a.daemonLog(&buf, zerolog.InfoLevel)
+		log.Warn().Str("guest", "web"+hostileText).Err(errors.New("refused " + hostileText)).Msg("hello " + hostileText)
+		return buf.String()
+	}
+
+	console := logOnce(true)
+	requireClean(t, strings.TrimSuffix(console, "\n"), "console")
+	require.Contains(t, console, " WRN hello "+printable(hostileText)+" ")
+	require.Contains(t, console, `error="refused `+printable(hostileText)+`"`)
+	require.Contains(t, console, `guest="web`+printable(hostileText)+`"`)
+	require.False(t, strings.HasPrefix(console, "{"), "lines to read: %q", console)
+
+	journal := logOnce(false)
+	var line map[string]any
+	require.NoError(t, json.Unmarshal([]byte(journal), &line), journal)
+	require.Equal(t, "hello "+hostileText, line["message"], "JSON keeps the text, escaped")
 }
 
 // readyNotifier tells a test when the daemon says it is ready.
