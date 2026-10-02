@@ -1451,8 +1451,12 @@ gpg_cmd() {
 
 # With PCO_REQUIRE_CRYPTO_TESTS=1 a missing tool fails the run instead of
 # skipping the checks, so that CI cannot lose them unnoticed.
+crypto_required() {
+	[[ ${PCO_REQUIRE_CRYPTO_TESTS:-} == 1 ]]
+}
+
 skip_crypto() {
-	if [[ ${PCO_REQUIRE_CRYPTO_TESTS:-} == 1 ]]; then
+	if crypto_required; then
 		CHECKS=$((CHECKS + 1))
 		FAILS=$((FAILS + 1))
 		printf 'FAIL [the real signature checks] PCO_REQUIRE_CRYPTO_TESTS=1 but %s\n' "$1"
@@ -1556,6 +1560,9 @@ case_real_signature() {
 	for tool in gpgv sqv; do
 		if command -v "$tool" >/dev/null 2>&1; then
 			tools+=("$tool")
+		elif crypto_required; then
+			skip_crypto "$tool is not installed"
+			return
 		fi
 	done
 	if [[ ${#tools[@]} == 0 ]]; then
