@@ -28,7 +28,7 @@ func passingSteps() []doctor.Step {
 	steps := failingSteps()[:4]
 	return append(steps,
 		doctor.Step{Name: "connector", Level: doctor.LevelOK, Detail: "active, ready, 4 connections"},
-		doctor.Step{Name: "identity", Level: doctor.LevelOK, Detail: "10.0.0.11 is the address of qemu/101, verified (static)"},
+		doctor.Step{Name: "identity", Level: doctor.LevelOK, Detail: "10.0.0.11 is the address of qemu/101, verified at identity level port (static)"},
 		doctor.Step{Name: "tcp", Level: doctor.LevelOK, Detail: "10.0.0.11:8080 answers"},
 		doctor.Step{Name: "http", Level: doctor.LevelWarn, Detail: "the origin answered 502 Bad Gateway"},
 	)

@@ -246,10 +246,14 @@ func (d *diagnosis) identity() Step {
 	if err != nil {
 		return failed(fmt.Sprintf("the target %s is no address and port", d.rt.Service))
 	}
-	if c, ok := d.candidate(ap.Addr()); ok {
-		return passed(fmt.Sprintf("%s is the address of %s, verified (%s)", ap.Addr(), d.rt.Owner, c.Source))
+	level := ""
+	if d.rt.Level != "" {
+		level = " at identity level " + d.rt.Level
 	}
-	return passed(fmt.Sprintf("%s is the address verified for %s", ap.Addr(), d.rt.Owner))
+	if c, ok := d.candidate(ap.Addr()); ok {
+		return passed(fmt.Sprintf("%s is the address of %s, verified%s (%s)", ap.Addr(), d.rt.Owner, level, c.Source))
+	}
+	return passed(fmt.Sprintf("%s is the address verified for %s%s", ap.Addr(), d.rt.Owner, level))
 }
 
 // tried lists the candidates resolution tried, and how each fared.

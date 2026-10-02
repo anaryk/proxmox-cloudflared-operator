@@ -19,8 +19,9 @@ func (a *app) routesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "routes",
 		Short: "List the routes and how each fares",
-		Long: "List the routes sorted by hostname. The note is the reason a route is not served,\n" +
-			"or its first warning.\n\n" +
+		Long: "List the routes sorted by hostname. The level is how strongly the address of the target\n" +
+			"was proven to be the guest's: port, observed, or manual for a route to an address. The note\n" +
+			"is the reason a route is not served, or its first warning.\n\n" +
 			"With --json the whole state of the daemon is printed as the daemon sent it, re-indented,\n" +
 			"with control and bidirectional characters escaped, and --state cannot be used.",
 		Args: cobra.NoArgs,
@@ -87,9 +88,9 @@ func renderRoutes(w io.Writer, routes []engine.RouteView, state planner.RouteSta
 		return cmp.Or(cmp.Compare(x.Hostname, y.Hostname), cmp.Compare(x.Owner, y.Owner))
 	})
 	t := s.table()
-	t.row("HOSTNAME", "STATE", "SERVICE", "OWNER", "ZONE", "NOTE")
+	t.row("HOSTNAME", "STATE", "LEVEL", "SERVICE", "OWNER", "ZONE", "NOTE")
 	for _, r := range shown {
-		t.row(r.Hostname, string(r.State), dash(r.Service), dash(r.Owner), dash(r.Zone), dash(routeNote(r)))
+		t.row(r.Hostname, string(r.State), dash(r.Level), dash(r.Service), dash(r.Owner), dash(r.Zone), dash(routeNote(r)))
 	}
 	t.flush()
 	return s.done()

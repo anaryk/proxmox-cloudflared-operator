@@ -1,8 +1,8 @@
-HOSTNAME            STATE        SERVICE                OWNER     ZONE         NOTE
-api.example.com     unreachable  -                      lxc/200   example.com  connection refused
-frozen.example.com  frozen       -                      qemu/107  example.com  account frozen: Cloudflare says so
-new.example.com     held         -                      qemu/106  example.com  claimed by qemu/105
-old.example.com     withdrawn    http://10.0.0.15:80    qemu/105  example.com  guest is not running
-shop.example.net    no-zone      -                      qemu/104  -            no zone for example.net
-www.example.com     active       http://10.0.0.11:8080  qemu/101  example.com  the guest answers slowly
-www.example.com     conflict     -                      qemu/102  -            hostname is held by qemu/101
+HOSTNAME            STATE        LEVEL     SERVICE                OWNER     ZONE         NOTE
+api.example.com     unreachable  observed  -                      lxc/200   example.com  identity level observed is below the required port
+frozen.example.com  frozen       -         -                      qemu/107  example.com  account frozen: Cloudflare says so
+new.example.com     held         -         -                      qemu/106  example.com  claimed by qemu/105
+old.example.com     withdrawn    -         http://10.0.0.15:80    qemu/105  example.com  guest is not running
+shop.example.net    no-zone      -         -                      qemu/104  -            no zone for example.net
+www.example.com     active       port      http://10.0.0.11:8080  qemu/101  example.com  the guest answers slowly
+www.example.com     conflict     -         -                      qemu/102  -            hostname is held by qemu/101

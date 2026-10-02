@@ -119,12 +119,15 @@ func (f *fakeInventory) refreshes() int {
 }
 
 // fakeResolver verifies every route on guestAddr, or on the address the route
-// names, unless a test made its hostname unreachable.
+// names, unless a test made its hostname unreachable. A guest's route is
+// proven at port and a route without a guest is manual, unless a test set
+// another level for its hostname.
 type fakeResolver struct {
 	mu          sync.Mutex
 	now         func() time.Time
-	unreachable map[string]string // hostname -> reason
-	rejected    map[string]string // hostname -> reason
+	unreachable map[string]string        // hostname -> reason
+	rejected    map[string]string        // hostname -> reason
+	levels      map[string]resolve.Level // hostname -> level
 	calls       int
 	denied      []netip.Addr // the node addresses the last denylist refused
 	deadlines   []time.Time
@@ -139,6 +142,14 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	}
 	reason, bad := f.unreachable[route.Hostname]
 	rejection, rejected := f.rejected[route.Hostname]
+	level, set := f.levels[route.Hostname]
+	switch {
+	case set:
+	case route.Guest == nil:
+		level = resolve.LevelManual
+	default:
+		level = resolve.LevelPort
+	}
 	f.denied = f.denied[:0]
 	for _, a := range []string{"10.0.0.2", "10.0.0.3", "10.0.0.4"} {
 		if _, d := deny.Check(netip.MustParseAddr(a)); d {
@@ -165,13 +176,21 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	if route.Guest != nil {
 		guest = route.Guest.String()
 	}
-	b := &resolve.Binding{Owner: route.Owner(), Hostname: route.Hostname, Guest: guest, Addr: addr, MAC: testMAC, VerifiedAt: f.now()}
+	b := &resolve.Binding{Owner: route.Owner(), Hostname: route.Hostname, Guest: guest, Addr: addr, MAC: testMAC, VerifiedAt: f.now(), Level: level}
 	res := resolve.Result{
 		Target:     planner.ResolvedTarget{Addr: addr, Reachable: !bad, Reason: reason, Owner: route.Owner()},
 		Binding:    b,
 		Candidates: []resolve.CandidateResult{{Addr: addr, Source: resolve.FromStatic, OK: !bad, Reason: reason}},
+		Level:      level,
 	}
 	return res
+}
+
+// setLevel makes the routes of host proven at level.
+func (f *fakeResolver) setLevel(host string, level resolve.Level) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.levels[host] = level
 }
 
 func (f *fakeResolver) hook(fn func()) {
@@ -434,7 +453,7 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 		cf:   cffake.New(),
 		apis: map[string]cfapi.API{},
 	}
-	e.res = &fakeResolver{now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{}}
+	e.res = &fakeResolver{now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{}, levels: map[string]resolve.Level{}}
 	if paths != nil {
 		paths(base, &e.paths)
 	}

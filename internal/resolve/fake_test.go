@@ -305,10 +305,19 @@ func withdrawnAt(b *Binding, at time.Time) *Binding {
 
 func timePtr(t time.Time) *time.Time { return &t }
 
+// requireServed asserts that addr is served and bound, proven at at on the
+// guest's own port.
 func requireServed(t *testing.T, res Result, addr string, at time.Time) {
 	t.Helper()
+	requireServedAt(t, res, addr, at, LevelPort)
+}
+
+// requireServedAt is requireServed for a proof of the given level.
+func requireServedAt(t *testing.T, res Result, addr string, at time.Time, level Level) {
+	t.Helper()
 	require.Equal(t, planner.ResolvedTarget{Addr: ip(addr), Reachable: true, Owner: webOwner}, res.Target)
-	require.Equal(t, &Binding{Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip(addr), MAC: mac0, VerifiedAt: at}, res.Binding)
+	require.Equal(t, &Binding{Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip(addr), MAC: mac0, VerifiedAt: at, Level: level}, res.Binding)
+	require.Equal(t, level, res.Level)
 }
 
 // requireNotServed asserts the outcome for a candidate that never was bound:
@@ -325,6 +334,7 @@ func requireWithdrawn(t *testing.T, res Result, reason string, want *Binding) {
 	t.Helper()
 	require.Equal(t, planner.ResolvedTarget{Addr: want.Addr, Withdrawn: true, Reason: reason, Owner: webOwner}, res.Target)
 	require.Equal(t, want, res.Binding)
+	require.Empty(t, res.Level, "a withdrawn address is proven at no level")
 }
 
 // stickyScenario has two healthy candidates on net0; the binding is on the

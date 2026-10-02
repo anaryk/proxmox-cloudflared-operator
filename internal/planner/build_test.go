@@ -383,6 +383,49 @@ func TestBuildTargetVerifiedForAnotherOwnerIsBlocked(t *testing.T) {
 	}, plan.Routes)
 }
 
+// The status of a winner carries the identity level its target was proven
+// at, also when the target is not served. A target held back for its level
+// has no address: it is blocked and gets no record, like one never verified.
+func TestBuildCarriesTheIdentityLevel(t *testing.T) {
+	addr := netip.MustParseAddr(originAddr)
+	const below = "identity level observed is below the required port"
+
+	plan := Build(BuildInput{
+		Winners: []model.Route{
+			winner(t, "local.shop.cz", "qemu/1"),
+			winner(t, "remote.shop.cz", "qemu/2"),
+			winner(t, "nas.shop.cz", "manual/nas", withAddr(originAddr)),
+			winner(t, "gone.shop.cz", "qemu/3"),
+			winner(t, "taken.shop.cz", "qemu/4"),
+		},
+		Targets: map[string]ResolvedTarget{
+			"local.shop.cz":  {Addr: addr, Reachable: true, Owner: "qemu/1", Level: "port"},
+			"remote.shop.cz": {Reason: below, Level: "observed"},
+			"nas.shop.cz":    {Addr: addr, Reachable: true, Owner: "manual/nas", Level: "manual"},
+			"gone.shop.cz":   {Addr: addr, Withdrawn: true, Owner: "qemu/3"},
+			"taken.shop.cz":  {Addr: addr, Reachable: true, Owner: "qemu/9", Level: "port"},
+		},
+		Zones:  []Zone{shopZone},
+		Writer: buildWriter,
+	})
+
+	require.Equal(t, []RouteStatus{
+		{Hostname: "gone.shop.cz", Owner: "qemu/3", State: StateWithdrawn, Reason: "identity check failed", Zone: "shop.cz"},
+		{Hostname: "local.shop.cz", Owner: "qemu/1", State: StateActive, Level: "port", Service: "http://10.20.0.15:8080", Zone: "shop.cz"},
+		{Hostname: "nas.shop.cz", Owner: "manual/nas", State: StateActive, Level: "manual", Service: "http://10.20.0.15:8080", Zone: "shop.cz"},
+		{Hostname: "remote.shop.cz", Owner: "qemu/2", State: StateUnreachable, Level: "observed", Reason: below, Zone: "shop.cz"},
+		{Hostname: "taken.shop.cz", Owner: "qemu/4", State: StateUnreachable, Reason: "address was verified for another owner", Zone: "shop.cz"},
+	}, plan.Routes)
+	require.Equal(t, withSentinel(
+		blockRule("gone.shop.cz"),
+		httpRule("local.shop.cz", originAddr),
+		httpRule("nas.shop.cz", originAddr),
+		blockRule("remote.shop.cz"),
+		blockRule("taken.shop.cz"),
+	), plan.Tunnels[0].Rules)
+	require.Equal(t, []string{"gone.shop.cz", "local.shop.cz", "nas.shop.cz"}, recordNames(plan.Records))
+}
+
 func TestBuildAccountWithOnlyBlocksGetsNoTunnel(t *testing.T) {
 	plan := Build(BuildInput{
 		Winners: []model.Route{
@@ -992,9 +1035,9 @@ func TestPlannerTypesJSONShape(t *testing.T) {
 		{
 			name: "resolved target",
 			value: ResolvedTarget{
-				Addr: netip.MustParseAddr("10.0.0.5"), Reachable: true, Withdrawn: true, Rejected: true, Reason: "why", Owner: "qemu/1",
+				Addr: netip.MustParseAddr("10.0.0.5"), Reachable: true, Withdrawn: true, Rejected: true, Reason: "why", Owner: "qemu/1", Level: "port",
 			},
-			want: `{"addr": "10.0.0.5", "reachable": true, "withdrawn": true, "rejected": true, "reason": "why", "owner": "qemu/1"}`,
+			want: `{"addr": "10.0.0.5", "reachable": true, "withdrawn": true, "rejected": true, "reason": "why", "owner": "qemu/1", "level": "port"}`,
 		},
 		{
 			name:  "held name",
@@ -1056,6 +1099,13 @@ func TestPlannerTypesJSONShape(t *testing.T) {
 				Hostname: "a.shop.cz", Owner: "qemu/1", State: StateUnreachable, Reason: "why", Zone: "shop.cz", Warnings: []string{"w"},
 			},
 			want: `{"hostname": "a.shop.cz", "owner": "qemu/1", "state": "unreachable", "reason": "why", "zone": "shop.cz", "warnings": ["w"]}`,
+		},
+		{
+			name: "route status with a level",
+			value: RouteStatus{
+				Hostname: "a.shop.cz", Owner: "qemu/1", State: StateActive, Level: "port", Service: "http://10.0.0.5:80", Zone: "shop.cz",
+			},
+			want: `{"hostname": "a.shop.cz", "owner": "qemu/1", "state": "active", "level": "port", "service": "http://10.0.0.5:80", "zone": "shop.cz"}`,
 		},
 	}
 	for _, tt := range tests {

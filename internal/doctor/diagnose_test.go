@@ -85,7 +85,7 @@ func servedBy(t *testing.T, srv *httptest.Server, scheme string) engine.State {
 	return engine.State{
 		At: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Mode: "enforce", Complete: true, WriterVerdict: "ok",
 		Routes: []engine.RouteView{{
-			RouteStatus: planner.RouteStatus{Hostname: www, Owner: "qemu/101", State: planner.StateActive, Service: service, Zone: "example.com"},
+			RouteStatus: planner.RouteStatus{Hostname: www, Owner: "qemu/101", State: planner.StateActive, Level: "port", Service: service, Zone: "example.com"},
 			Guest:       &engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
 			Candidates:  []resolve.CandidateResult{{Addr: ap.Addr(), Source: resolve.FromStatic, OK: true}},
 			Account:     "acc1",
@@ -140,7 +140,7 @@ func TestARouteThatWorksPassesEveryStep(t *testing.T) {
 		{Name: "dns", Level: LevelOK, Detail: "its record points at the tunnel"},
 		{Name: "ingress", Level: LevelOK, Detail: "tunnel pco-abc123 sends it to " + service + " (configuration version 3)"},
 		{Name: "connector", Level: LevelOK, Detail: "active, ready, 4 connections"},
-		{Name: "identity", Level: LevelOK, Detail: "127.0.0.1 is the address of qemu/101, verified (static)"},
+		{Name: "identity", Level: LevelOK, Detail: "127.0.0.1 is the address of qemu/101, verified at identity level port (static)"},
 		{Name: "tcp", Level: LevelOK, Detail: strings.TrimPrefix(service, "http://") + " answers"},
 		{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"},
 	}, steps)
@@ -207,6 +207,12 @@ func TestEachStepFailsInTurn(t *testing.T) {
 			r.Rule.Service = "http_status:503"
 			r.Candidates[0].OK, r.Candidates[0].Reason = false, "ARP answered by another MAC"
 		}},
+		{"a target held back by the identity minimum", "identity",
+			"identity level observed is below the required port; tried 127.0.0.1 (static): passed", func(st *engine.State) {
+				r := &st.Routes[0]
+				r.State, r.Level, r.Reason, r.Service = planner.StateUnreachable, "observed", "identity level observed is below the required port", ""
+				r.Rule.Service = "http_status:503"
+			}},
 		{"a port that does not answer", "tcp", "dial tcp: connection refused", func(st *engine.State) {
 			r := &st.Routes[0]
 			r.State, r.Reason = planner.StateUnreachable, "target is not answering"
@@ -224,6 +230,25 @@ func TestEachStepFailsInTurn(t *testing.T) {
 			requireFailsAt(t, steps, tt.step, tt.detail)
 			require.Empty(t, o.requests(), "nothing asks the origin once a step failed")
 		})
+	}
+}
+
+// The identity step names the level the address was proven at, when the
+// state has one.
+func TestTheIdentityStepNamesTheLevel(t *testing.T) {
+	for level, detail := range map[string]string{
+		"observed": "127.0.0.1 is the address of qemu/101, verified at identity level observed (static)",
+		"manual":   "127.0.0.1 is the address of qemu/101, verified at identity level manual (static)",
+		"":         "127.0.0.1 is the address of qemu/101, verified (static)",
+	} {
+		o := newOrigin(t, false, nil)
+		st := servedBy(t, o.Server, "http")
+		st.Routes[0].Level = level
+
+		steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+
+		require.NoError(t, err)
+		require.Equal(t, Step{Name: "identity", Level: LevelOK, Detail: detail}, steps[5])
 	}
 }
 

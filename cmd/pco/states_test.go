@@ -137,12 +137,18 @@ func problemState() engine.State {
 func mixedRoutes() []engine.RouteView {
 	return []engine.RouteView{
 		routeView("www.example.com", "qemu/102", planner.StateConflict, "", "", "hostname is held by qemu/101"),
-		routeView("www.example.com", "qemu/101", planner.StateActive, "http://10.0.0.11:8080", "example.com", "", "the guest answers slowly", "another warning"),
+		atLevel(routeView("www.example.com", "qemu/101", planner.StateActive, "http://10.0.0.11:8080", "example.com", "", "the guest answers slowly", "another warning"), "port"),
 		routeView("shop.example.net", "qemu/104", planner.StateNoZone, "", "", "no zone for example.net"),
-		routeView("api.example.com", "lxc/200", planner.StateUnreachable, "", "example.com", "connection refused"),
+		atLevel(routeView("api.example.com", "lxc/200", planner.StateUnreachable, "", "example.com", "identity level observed is below the required port"), "observed"),
 		routeView("old.example.com", "qemu/105", planner.StateWithdrawn, "http://10.0.0.15:80", "example.com", "guest is not running"),
 		routeView("new.example.com", "qemu/106", planner.StateHeld, "", "example.com", "claimed by qemu/105"),
 	}
+}
+
+// atLevel returns r with its target proven at level.
+func atLevel(r engine.RouteView, level string) engine.RouteView {
+	r.Level = level
+	return r
 }
 
 func planState() engine.State {

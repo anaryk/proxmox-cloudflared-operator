@@ -34,7 +34,7 @@ func populatedState() State {
 		Routes: []RouteView{
 			{
 				RouteStatus: planner.RouteStatus{
-					Hostname: "www.example.com", Owner: "qemu/101", State: planner.StateActive,
+					Hostname: "www.example.com", Owner: "qemu/101", State: planner.StateActive, Level: "port",
 					Service: "http://10.0.0.11:8080", Zone: "example.com", Warnings: []string{"a warning"},
 				},
 				Guest:      &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},

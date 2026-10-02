@@ -23,6 +23,7 @@ func TestDefaultSettings(t *testing.T) {
 	require.Empty(t, d.DenyHosts)
 	require.Empty(t, d.TrustedCIDRs)
 	require.Empty(t, d.ZonePins)
+	require.Equal(t, "port", d.IdentityMinimum)
 }
 
 func TestSettingsDefaultsWhenMissing(t *testing.T) {
@@ -45,6 +46,8 @@ func customSettings() Settings {
 		Admission:    "approve",
 		ZonePins:     map[string]string{"example.com": "cred-1"},
 		ObserveOnly:  false,
+		// Guests on other nodes are served.
+		IdentityMinimum: "observed",
 	}
 }
 
@@ -64,6 +67,19 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, "30s", wire["pollInterval"])
 	require.Equal(t, "5m0s", wire["grace"])
 	require.Equal(t, []any{"10.20.0.0/16"}, wire["trustedCIDRs"])
+	require.Equal(t, "observed", wire["identityMinimum"])
+}
+
+func TestSettingsAcceptEveryIdentityMinimum(t *testing.T) {
+	for _, level := range []string{"observed", "filtered", "port"} {
+		s, _ := openStore(t)
+		in := customSettings()
+		in.IdentityMinimum = level
+		require.NoError(t, s.SaveSettings(in), level)
+		got, err := s.Settings()
+		require.NoError(t, err)
+		require.Equal(t, level, got.IdentityMinimum)
+	}
 }
 
 func TestSaveSettingsOfUnchangedSettingsWritesNothing(t *testing.T) {
@@ -113,6 +129,10 @@ func TestSaveSettingsRefusesInvalidSettings(t *testing.T) {
 			s.TrustedCIDRs = []netip.Prefix{netip.MustParsePrefix("::ffff:10.0.0.0/104")}
 		}},
 		{"zero trusted prefix", "trustedCIDRs[0]", func(s *Settings) { s.TrustedCIDRs = []netip.Prefix{{}} }},
+		{"empty identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "" }},
+		{"unknown identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "strict" }},
+		{"upper case identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "Port" }},
+		{"manual as identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "manual" }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,6 +194,8 @@ func TestInvalidSettingsOnDiskAreAnErrorNotTheDefaults(t *testing.T) {
 		"bad pattern":       `{"gateTag":"cf-tunnel","allowHosts":["a b"],"pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
 		"bad prefix":        `{"gateTag":"cf-tunnel","trustedCIDRs":["nope"],"pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
 		"ipv6 prefix":       `{"gateTag":"cf-tunnel","trustedCIDRs":["fd00::/8"],"pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
+		"unknown minimum":   `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true,"identityMinimum":"none"}`,
+		"empty minimum":     `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true,"identityMinimum":""}`,
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -205,6 +227,7 @@ func TestSettingsFillsInTheFieldsAFileLeavesOut(t *testing.T) {
 	want.GateTag = "web"
 	want.AllowHosts = []string{"shop.cz"}
 	require.Equal(t, want, got)
+	require.Equal(t, "port", got.IdentityMinimum, "settings of an older version ask for the default")
 }
 
 func TestDurationJSON(t *testing.T) {

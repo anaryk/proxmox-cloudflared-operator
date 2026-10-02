@@ -43,6 +43,9 @@ type Zone struct {
 // another owner than the one that now serves the hostname, as after a
 // transfer, counts as never verified. Empty means it is not known and the
 // target is taken as it is.
+//
+// Level is the identity level the address was proven at, for the route status
+// to show; it does not change what is served.
 type ResolvedTarget struct {
 	Addr      netip.Addr `json:"addr,omitzero"`       // last verified address; zero if never verified
 	Reachable bool       `json:"reachable,omitempty"` // currently passing identity and probe
@@ -50,6 +53,7 @@ type ResolvedTarget struct {
 	Rejected  bool       `json:"rejected,omitempty"`  // the address must never be served: no rule, no DNS
 	Reason    string     `json:"reason,omitempty"`
 	Owner     string     `json:"owner,omitempty"`
+	Level     string     `json:"level,omitempty"`
 }
 
 // IngressRule is one entry of a tunnel's ingress configuration.
@@ -98,6 +102,7 @@ type RouteStatus struct {
 	Hostname string     `json:"hostname"`
 	Owner    string     `json:"owner"`
 	State    RouteState `json:"state"`
+	Level    string     `json:"level,omitempty"` // identity level of the winner's target, once it was proven
 	Reason   string     `json:"reason,omitempty"`
 	Service  string     `json:"service,omitempty"` // set when the route is served; empty when it is blocked
 	Zone     string     `json:"zone,omitempty"`
@@ -198,10 +203,11 @@ func (b *builder) addWinner(rt model.Route, warnings []string) {
 // the outcome on st. A route that cannot be served is blocked instead.
 func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 	target := b.in.Targets[rt.Hostname]
+	st.Level = target.Level
 	switch {
 	case target.Owner != "" && target.Owner != rt.Owner():
 		// Everything resolution knows is about another owner.
-		st.State, st.Reason = StateUnreachable, reasonOtherOwner
+		st.State, st.Reason, st.Level = StateUnreachable, reasonOtherOwner, ""
 	case target.Rejected:
 		st.State, st.Reason = StateUnreachable, cmp.Or(target.Reason, reasonRejected)
 	case !target.Addr.IsValid():

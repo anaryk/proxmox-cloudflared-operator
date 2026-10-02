@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
 // The admission modes of Settings.Admission.
@@ -56,17 +57,21 @@ type Settings struct {
 	Admission    string            `json:"admission"`          // "tag" or "approve"
 	ZonePins     map[string]string `json:"zonePins,omitempty"` // zone name -> credential id
 	ObserveOnly  bool              `json:"observeOnly"`
+	// IdentityMinimum is the least identity level a guest's address must be
+	// proven at to be served: "observed", "filtered" or "port".
+	IdentityMinimum string `json:"identityMinimum"`
 }
 
 // DefaultSettings returns the settings of a fresh install, which only
 // observes until the admin applies.
 func DefaultSettings() Settings {
 	return Settings{
-		GateTag:      "cf-tunnel",
-		PollInterval: Duration(10 * time.Second),
-		Grace:        Duration(60 * time.Second),
-		Admission:    AdmissionTag,
-		ObserveOnly:  true,
+		GateTag:         "cf-tunnel",
+		PollInterval:    Duration(10 * time.Second),
+		Grace:           Duration(60 * time.Second),
+		Admission:       AdmissionTag,
+		ObserveOnly:     true,
+		IdentityMinimum: string(resolve.LevelPort),
 	}
 }
 
@@ -91,6 +96,12 @@ func (s Settings) normalized() (Settings, error) {
 	}
 	if s.Admission != AdmissionTag && s.Admission != AdmissionApprove {
 		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)
+	}
+	switch resolve.Level(s.IdentityMinimum) {
+	case resolve.LevelObserved, resolve.LevelFiltered, resolve.LevelPort:
+	default:
+		return Settings{}, fmt.Errorf("identityMinimum %q: want %q, %q or %q",
+			s.IdentityMinimum, resolve.LevelObserved, resolve.LevelFiltered, resolve.LevelPort)
 	}
 	for i, p := range s.TrustedCIDRs {
 		if !p.IsValid() || !p.Addr().Is4() {

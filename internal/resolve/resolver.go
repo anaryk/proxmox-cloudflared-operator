@@ -107,6 +107,10 @@ type Result struct {
 	Target     planner.ResolvedTarget
 	Binding    *Binding          // nil when nothing is bound
 	Candidates []CandidateResult // every candidate with its outcome, for diagnosis
+	// Level is the level the target's address is proven at, whether or not
+	// its port answers. It is empty when the target has no address, or one
+	// that is withdrawn or rejected.
+	Level Level
 }
 
 // Resolver decides which address a route may be served on. It keeps nothing
@@ -229,7 +233,8 @@ func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, snap i
 	cr := []CandidateResult{{Addr: addr, Source: FromVia, OK: o.ok(), Reason: o.reason}}
 	switch o.verdict {
 	case passed, unreachable:
-		return Result{Target: planner.ResolvedTarget{Addr: addr, Reachable: o.ok(), Reason: o.reason}, Candidates: cr}
+		target := planner.ResolvedTarget{Addr: addr, Reachable: o.ok(), Reason: o.reason}
+		return Result{Target: target, Candidates: cr, Level: LevelManual}
 	case rejected:
 		return Result{Target: planner.ResolvedTarget{Rejected: true, Reason: o.reason}, Candidates: cr}
 	}
@@ -274,6 +279,7 @@ type attempt struct {
 	list     []Candidate // in the order they are tried
 	bound    bool        // list[0] carries prev
 	outcomes []outcome   // by list index
+	levels   []Level     // by list index: what proved the identity, if it held
 	tried    []bool      // by list index
 	results  []CandidateResult
 
@@ -294,6 +300,7 @@ func newAttempt(r *Resolver, route model.Route, guest model.Guest, snap inventor
 		}
 	}
 	a.outcomes = make([]outcome, len(a.list))
+	a.levels = make([]Level, len(a.list))
 	a.tried = make([]bool, len(a.list))
 	return a
 }
@@ -305,7 +312,7 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		case o.verdict == cancelled:
 			return a.cancelled()
 		case o.ok():
-			return a.served(a.list[0])
+			return a.served(0)
 		case o.verdict == rejected:
 			a.prev, a.bound = nil, false
 		case a.keepsBound(o):
@@ -321,7 +328,7 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		case o.verdict == cancelled:
 			return a.cancelled()
 		case o.ok():
-			return a.served(a.list[i])
+			return a.served(i)
 		}
 	}
 	var res Result
@@ -364,14 +371,15 @@ func (a *attempt) keepsBound(o outcome) bool {
 
 func (a *attempt) try(ctx context.Context, i int) outcome {
 	c := a.list[i]
-	o := a.verify(ctx, c)
-	a.outcomes[i], a.tried[i] = o, true
+	level, o := a.verify(ctx, c)
+	a.outcomes[i], a.levels[i], a.tried[i] = o, level, true
 	a.results = append(a.results, CandidateResult{Addr: c.Addr, Source: c.Source, OK: o.ok(), Reason: o.reason})
 	return o
 }
 
-func (a *attempt) served(c Candidate) Result {
-	return a.result(planner.ResolvedTarget{Addr: c.Addr, Reachable: true}, newBinding(a.route, c, a.now))
+func (a *attempt) served(i int) Result {
+	c := a.list[i]
+	return a.result(planner.ResolvedTarget{Addr: c.Addr, Reachable: true}, newBinding(a.route, c, a.now, a.levels[i]))
 }
 
 // boundFailed keeps the failing binding as the target. Lost identity
@@ -384,7 +392,7 @@ func (a *attempt) boundFailed(o outcome) Result {
 		b.Withdrawn = true
 		return a.result(planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: o.reason}, b)
 	case unreachable:
-		b.VerifiedAt, b.Withdrawn = a.now, false
+		b.VerifiedAt, b.Withdrawn, b.Level = a.now, false, a.levels[0]
 		return a.result(planner.ResolvedTarget{Addr: b.Addr, Reason: o.reason}, b)
 	}
 	return a.unproven(b, o.reason)
@@ -459,7 +467,8 @@ func (a *attempt) doubt(b *Binding) (string, bool) {
 	return "", false
 }
 
-// result lists the candidates in the order tried, then those not tried.
+// result lists the candidates in the order tried, then those not tried, and
+// gives the target the level of the proof it stands on.
 func (a *attempt) result(target planner.ResolvedTarget, b *Binding) Result {
 	out := a.results
 	for i, c := range a.list {
@@ -471,5 +480,9 @@ func (a *attempt) result(target planner.ResolvedTarget, b *Binding) Result {
 			out = append(out, CandidateResult{Addr: c.Addr, Source: c.Source, Reason: reasonNotTried})
 		}
 	}
-	return Result{Target: target, Binding: b, Candidates: out}
+	res := Result{Target: target, Binding: b, Candidates: out}
+	if b != nil && target.Addr.IsValid() && !target.Withdrawn && !target.Rejected {
+		res.Level = b.proven()
+	}
+	return res
 }

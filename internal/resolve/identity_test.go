@@ -277,7 +277,7 @@ func TestResolveTrustedStatic(t *testing.T) {
 				require.Empty(t, s.prober.ops("dial"))
 				return
 			}
-			requireServed(t, res, tt.addr, t0)
+			requireServedAt(t, res, tt.addr, t0, LevelObserved)
 			require.Equal(t, []probeCall{{op: "route", addr: ip(tt.addr)}}, s.prober.ops("route"))
 			require.Equal(t, []probeCall{{op: "dial", addr: ip(tt.addr), port: 80}}, s.prober.ops("dial"))
 		})
@@ -499,7 +499,7 @@ func TestResolveForwardingTableNode(t *testing.T) {
 				requireNotServed(t, res, cmp.Or(tt.reason, "MAC bc:24:11:00:00:01 not seen on bridge vmbr0"))
 				return
 			}
-			requireServed(t, res, "10.20.0.10", t0)
+			requireServedAt(t, res, "10.20.0.10", t0, LevelObserved)
 		})
 	}
 }
@@ -512,7 +512,7 @@ func TestResolveGuestMovedToAnotherNode(t *testing.T) {
 
 		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
 
-		requireServed(t, res, "10.20.0.10", t0)
+		requireServedAt(t, res, "10.20.0.10", t0, LevelObserved)
 		require.Len(t, s.prober.ops("arp"), 1)
 		require.Len(t, s.prober.ops("fdb"), 1)
 	})
@@ -1096,7 +1096,7 @@ func TestResolveRemoteGuestOnALocalPort(t *testing.T) {
 				require.Empty(t, s.prober.ops("dial"))
 				return
 			}
-			requireServed(t, res, "10.20.0.10", t0)
+			requireServedAt(t, res, "10.20.0.10", t0, LevelObserved)
 		})
 	}
 

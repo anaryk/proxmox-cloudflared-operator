@@ -28,6 +28,9 @@ type Binding struct {
 	// the guest stopped or vanished, or the last proof is too old or in doubt.
 	// Only identity passing again lifts it, even if the port then fails.
 	Withdrawn bool `json:"withdrawn,omitempty"`
+	// Level is the level of the proof made at VerifiedAt. A binding stored
+	// before levels were kept has none until its identity is proven again.
+	Level Level `json:"level,omitempty"`
 }
 
 func guestOf(route model.Route) string {
@@ -37,7 +40,7 @@ func guestOf(route model.Route) string {
 	return route.Guest.String()
 }
 
-func newBinding(route model.Route, c Candidate, now time.Time) *Binding {
+func newBinding(route model.Route, c Candidate, now time.Time, level Level) *Binding {
 	return &Binding{
 		Owner:      route.Owner(),
 		Hostname:   route.Hostname,
@@ -45,7 +48,18 @@ func newBinding(route model.Route, c Candidate, now time.Time) *Binding {
 		Addr:       c.Addr,
 		MAC:        c.NIC.MAC,
 		VerifiedAt: now,
+		Level:      level,
 	}
+}
+
+// proven is the level b's proof stands for. Every proof of a version that
+// kept no level established at least that only the guest answers ARP for the
+// address, so a binding without one counts as observed.
+func (b *Binding) proven() Level {
+	if b.Level == "" {
+		return LevelObserved
+	}
+	return b.Level
 }
 
 // appliesTo reports whether b was made for route. A binding of another owner

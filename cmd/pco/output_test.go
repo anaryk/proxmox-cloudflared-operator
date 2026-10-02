@@ -127,7 +127,9 @@ func hostileState() engine.State {
 	}
 	st.Routes = []engine.RouteView{
 		routeView("evil"+hostileText+".example.com", "qemu/101", planner.StateUnreachable, "", "zone"+hostileText, "refused "+hostileText),
-		routeView("warn.example.com", "qemu/102", planner.StateActive, "http://10.0.0.1:80", "example.com", "", hostileText),
+		// A daemon never stores a level it does not know; one of another
+		// version may still send it.
+		atLevel(routeView("warn.example.com", "qemu/102", planner.StateActive, "http://10.0.0.1:80", "example.com", "", hostileText), "port"+hostileText),
 	}
 	st.Issues = []planner.Issue{
 		{Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Line: 2, Col: 5, Msg: "broken " + hostileText},

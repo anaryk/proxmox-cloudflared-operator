@@ -335,6 +335,54 @@ func TestSaveBindingsWritesOnlyWhatChangedAndDeletesTheRest(t *testing.T) {
 	require.EqualValues(t, 2, revOf(t, filepath.Join(dir, "a.example.com.json")))
 }
 
+func TestBindingsKeepTheirLevel(t *testing.T) {
+	s, p := openStore(t)
+	port := bindingOf("a.example.com", "qemu/101")
+	port.Level = resolve.LevelPort
+	observed := bindingOf("b.example.com", "qemu/102")
+	observed.Level = resolve.LevelObserved
+	next := map[string]resolve.Binding{"a.example.com": port, "b.example.com": observed}
+	require.NoError(t, s.SaveBindings(next))
+
+	got, err := s.Bindings()
+	require.NoError(t, err)
+	require.Equal(t, next, got)
+	require.Contains(t, string(readRaw(t, filepath.Join(p.Local, "bindings", "a.example.com.json")).Data), `"level": "port"`)
+}
+
+func TestABindingOfAnOlderVersionHasNoLevel(t *testing.T) {
+	s, p := openStore(t)
+	writeFile(t, filepath.Join(p.Local, "bindings", "a.example.com.json"), envelopeJSON("a.example.com",
+		`{"owner":"qemu/101","hostname":"a.example.com","guest":"qemu/101","addr":"10.0.0.5","mac":"bc:24:11:00:00:01","verifiedAt":"2026-01-01T00:00:00Z"}`))
+
+	got, err := s.Bindings()
+
+	require.NoError(t, err)
+	require.Empty(t, got["a.example.com"].Level)
+}
+
+func TestABindingWithALevelOfNoKindIsRefused(t *testing.T) {
+	for name, level := range map[string]string{
+		"unknown":  `"strict"`,
+		"manual":   `"manual"`,
+		"hostile":  `"\u001b[2J\u001b]0;pwned\u0007"`,
+		"a number": `3`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, p := openStore(t)
+			writeFile(t, filepath.Join(p.Local, "bindings", "a.example.com.json"), envelopeJSON("a.example.com",
+				`{"owner":"qemu/101","hostname":"a.example.com","guest":"qemu/101","addr":"10.0.0.5","mac":"bc:24:11:00:00:01",`+
+					`"verifiedAt":"2026-01-01T00:00:00Z","level":`+level+`}`))
+
+			got, err := s.Bindings()
+
+			require.Error(t, err)
+			require.Nil(t, got)
+			require.NotContains(t, err.Error(), "pwned", "the file is not quoted")
+		})
+	}
+}
+
 func TestSaveBindingsRefusesAKeyThatIsNotTheHostname(t *testing.T) {
 	s, p := openStore(t)
 	err := s.SaveBindings(map[string]resolve.Binding{"a.example.com": bindingOf("b.example.com", "qemu/101")})

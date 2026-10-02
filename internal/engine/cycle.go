@@ -51,7 +51,7 @@ type cycleRun struct {
 	claims    planner.ClaimResult
 	settled   bool                      // the claims were settled and saved
 	listing   listing                   // what this cycle saw of the guests; empty unless it saw all of them
-	results   map[string]resolve.Result // of the winners, by hostname
+	results   map[string]resolve.Result // of the winners, by hostname, with what the identity minimum holds back
 	credIDs   []string                  // of the stored credentials, sorted
 	zones     zoneSet
 	plan      planner.Plan
@@ -321,10 +321,13 @@ func (c *cycleRun) build() {
 	c.st.Routes = c.routeViews()
 }
 
+// targets are the targets of the winners, with the level each was proven at.
 func (c *cycleRun) targets() map[string]planner.ResolvedTarget {
 	out := make(map[string]planner.ResolvedTarget, len(c.results))
 	for host, res := range c.results {
-		out[host] = res.Target
+		t := res.Target
+		t.Level = string(res.Level)
+		out[host] = t
 	}
 	return out
 }

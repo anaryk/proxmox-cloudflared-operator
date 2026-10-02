@@ -259,7 +259,7 @@ func TestPipelineFirewalledGuestOnAVLAN(t *testing.T) {
 	c.requireActive(t, "web.example.com", "10.30.0.11:8080")
 	require.Equal(t, &Binding{
 		Owner: "qemu/101", Hostname: "web.example.com", Guest: "qemu/101",
-		Addr: ip("10.30.0.11"), MAC: webMAC, VerifiedAt: t0,
+		Addr: ip("10.30.0.11"), MAC: webMAC, VerifiedAt: t0, Level: LevelPort,
 	}, p.bindings["web.example.com"])
 	require.Equal(t, []probeCall{
 		{op: "interfaces"},
