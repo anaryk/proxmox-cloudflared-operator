@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
@@ -57,8 +58,11 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 	}
 	defer e.Trigger()
 	defer e.release()
-	cred.ID, err = e.newCredentialID()
+	creds, err := e.d.Store.Credentials()
 	if err != nil {
+		return CredentialView{}, fmt.Errorf("reading the credentials: %w", err)
+	}
+	if cred, err = NewCredential(creds, label, cred.Token, cred.AddedAt); err != nil {
 		return CredentialView{}, err
 	}
 	if err := e.d.Store.SaveCredential(cred); err != nil {
@@ -227,19 +231,40 @@ func (e *Engine) leftBehind(ctx context.Context, api cfapi.API, installID, id st
 	return left, refused, nil
 }
 
-// refuseKnownToken refuses a token a stored credential has already: two
-// credentials of one token see the same zones, which then need a pin.
+// refuseKnownToken refuses a token a stored credential has already.
 func (e *Engine) refuseKnownToken(token store.Secret) error {
 	creds, err := e.d.Store.Credentials()
 	if err != nil {
 		return fmt.Errorf("reading the credentials: %w", err)
 	}
-	for _, c := range creds {
+	return refuseToken(creds, token)
+}
+
+// refuseToken refuses a token one of stored has already: two credentials of
+// one token see the same zones, which then need a pin.
+func refuseToken(stored []store.Credential, token store.Secret) error {
+	for _, c := range stored {
 		if c.Token.Equal(token) {
 			return fmt.Errorf("%w: credential %q has this token already", ErrInvalid, c.Label)
 		}
 	}
 	return nil
+}
+
+// NewCredential returns the credential that is stored for a token that passed
+// its check: a scoped one, with an id of 8 random hex characters that no
+// credential of stored has in any case. A token one of stored has already is
+// refused.
+func NewCredential(stored []store.Credential, label string, token store.Secret, addedAt time.Time) (store.Credential, error) {
+	if err := refuseToken(stored, token); err != nil {
+		return store.Credential{}, err
+	}
+	for {
+		id := randomHex(4)()
+		if !slices.ContainsFunc(stored, func(c store.Credential) bool { return strings.EqualFold(c.ID, id) }) {
+			return store.Credential{ID: id, Label: label, Kind: credentialKind, Token: token, AddedAt: addedAt}, nil
+		}
+	}
 }
 
 // credential returns the stored credential with an id.
@@ -274,21 +299,6 @@ func (e *Engine) setReport(id string, r credentials.Report) {
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
 	e.reports[id] = r
-}
-
-// newCredentialID returns 8 random hex characters that no stored credential
-// uses. The caller holds the cycle lock.
-func (e *Engine) newCredentialID() (string, error) {
-	creds, err := e.d.Store.Credentials()
-	if err != nil {
-		return "", fmt.Errorf("reading the credentials: %w", err)
-	}
-	for {
-		id := randomHex(4)()
-		if !slices.ContainsFunc(creds, func(c store.Credential) bool { return strings.EqualFold(c.ID, id) }) {
-			return id, nil
-		}
-	}
 }
 
 // randomHex returns a function that makes 2n random lower-case hex characters

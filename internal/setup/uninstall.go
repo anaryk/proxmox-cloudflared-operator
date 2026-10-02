@@ -1,0 +1,366 @@
+package setup
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/rs/zerolog"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+// UninstallOptions are the answers to the questions of uninstall that were
+// given in advance. Yes answers the question whether to remove pco; deleting
+// at Cloudflare and removing cloudflared are asked on their own, as they
+// reach beyond this node.
+type UninstallOptions struct {
+	Yes               bool // remove pco without asking
+	PurgeCloudflare   bool // delete the records and tunnels of the install without asking
+	RemoveCloudflared bool // remove the cloudflared package and source setup installed, without asking
+}
+
+// tunnelsDir is where the connectors' files are kept, below the local root.
+const tunnelsDir = "tunnels"
+
+// egressTable is the nftables table of the egress filter.
+const egressTable = "pco_egress"
+
+// uninstall is the state of one Uninstall.
+type uninstall struct {
+	*Setup
+	o         UninstallOptions
+	manifest  Manifest
+	installID string // empty when the store holds no install
+	creds     []store.Credential
+	node      string
+	failed    []string // what could not be done
+}
+
+// Uninstall removes pco from the node, in an order that keeps what a later
+// part needs: what is at Cloudflare first, as it needs the stored
+// credentials, with the connectors stopped before their tunnels are deleted,
+// then the egress filter and what Proxmox holds, and the store last. Only
+// what the manifest lists is removed from Proxmox. A part that fails is
+// reported and the others go on, but the store is then kept, so that a second
+// run finishes the rest.
+func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
+	if s.host.euid() != 0 {
+		return errors.New("pco uninstall must run as root")
+	}
+	u, err := s.newUninstall(o)
+	if err != nil {
+		return err
+	}
+	var purge cfObjects
+	if o.PurgeCloudflare {
+		if purge, err = u.listCloudflare(ctx); err != nil {
+			u.fail("listing what install %s has at Cloudflare: %v", u.installID, err)
+		}
+	}
+	u.describe(purge)
+	if !o.Yes {
+		ok, err := u.ask.Confirm("Remove pco from this node?", false)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrAborted
+		}
+	}
+	if !o.PurgeCloudflare {
+		if purge, err = u.askPurge(ctx); err != nil {
+			return err
+		}
+	}
+	removeCloudflared, err := u.askCloudflared()
+	if err != nil {
+		return err
+	}
+
+	u.stopDaemon(ctx)
+	u.deleteRecords(ctx, purge)
+	u.pruneConnectors(ctx)
+	u.deleteTunnels(ctx, purge)
+	u.removeEgress(ctx)
+	u.removeProxmox(ctx)
+	if removeCloudflared {
+		u.removeCloudflared(ctx)
+	}
+	if len(u.failed) > 0 {
+		u.ask.Warn("the store is kept, with the credentials and the manifest, so that pco uninstall can finish the rest")
+		return fmt.Errorf("uninstall did not finish: %s; run pco uninstall again to finish the rest", strings.Join(u.failed, "; "))
+	}
+	return u.removeStore()
+}
+
+func (s *Setup) newUninstall(o UninstallOptions) (*uninstall, error) {
+	u := &uninstall{Setup: s, o: o}
+	m, _, err := readManifest(s.manifestPath())
+	if err != nil {
+		return nil, fmt.Errorf("reading the manifest, which says what setup created: %w", err)
+	}
+	u.manifest = m
+	inst, found, err := s.st.Install()
+	switch {
+	case errors.Is(err, store.ErrNoRoot):
+	case err != nil:
+		return nil, fmt.Errorf("reading the install: %w", err)
+	case found:
+		u.installID = inst.ID
+	}
+	u.creds, err = s.st.Credentials()
+	if err != nil && !errors.Is(err, store.ErrNoRoot) {
+		return nil, fmt.Errorf("reading the credentials: %w", err)
+	}
+	u.node = m.Node
+	if u.node == "" {
+		name, err := s.host.hostname()
+		if err != nil {
+			return nil, fmt.Errorf("reading the host name: %w", err)
+		}
+		u.node, _, _ = strings.Cut(name, ".")
+	}
+	return u, nil
+}
+
+// fail notes something that could not be done, and says so.
+func (u *uninstall) fail(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	u.failed = append(u.failed, msg)
+	u.ask.Warn("%s", msg)
+}
+
+// describe lists what the uninstall removes, before it asks.
+func (u *uninstall) describe(purge cfObjects) {
+	p, m := u.host.paths, u.manifest
+	u.ask.Info("pco uninstall removes from this node:")
+	if u.unitInstalled(serviceUnit) {
+		u.ask.Info("  the daemon: %s is stopped and disabled", serviceUnit)
+	}
+	u.ask.Info("  the connectors: every pco-cloudflared@ unit and its files")
+	u.ask.Info("  the egress filter: table inet %s", egressTable)
+	if m.CreatedToken {
+		u.ask.Info("  Proxmox token %s", tokenID)
+	}
+	if m.CreatedUser {
+		u.ask.Info("  Proxmox user %s", userID)
+	}
+	if m.CreatedRole {
+		u.ask.Info("  Proxmox role %s, unless it grants more than setup gave it", roleID)
+	} else {
+		u.ask.Info("  (role %s is kept: setup did not create it)", roleID)
+	}
+	if len(m.RegisteredTags) > 0 {
+		u.ask.Info("  the registered tags %s", strings.Join(m.RegisteredTags, ", "))
+	}
+	u.ask.Info("  the store: %s, %s and %s, with the credentials and node %s in the registry",
+		p.Cluster, p.Private, p.Local, u.node)
+	if u.o.PurgeCloudflare {
+		u.showCloudflare(purge)
+	}
+}
+
+// askPurge lists what the install has at Cloudflare and asks whether to
+// delete it. What cannot be listed is not deleted.
+func (u *uninstall) askPurge(ctx context.Context) (cfObjects, error) {
+	if u.installID == "" || len(u.creds) == 0 {
+		return cfObjects{}, nil
+	}
+	found, err := u.listCloudflare(ctx)
+	if err != nil {
+		u.ask.Warn("what install %s has at Cloudflare cannot all be listed, so nothing there is deleted: %v", u.installID, err)
+		return cfObjects{}, nil
+	}
+	if found.empty() {
+		return cfObjects{}, nil
+	}
+	u.showCloudflare(found)
+	ok, err := u.ask.Confirm("Delete these at Cloudflare as well?", false)
+	if err != nil || !ok {
+		return cfObjects{}, err
+	}
+	return found, nil
+}
+
+// askCloudflared reports whether to remove what setup installed of
+// cloudflared, which other software of the node may use.
+func (u *uninstall) askCloudflared() (bool, error) {
+	m := u.manifest
+	switch {
+	case !m.InstalledCloudflared && !m.AddedAptSource && !m.AddedKeyring:
+		return false, nil
+	case u.o.RemoveCloudflared:
+		return true, nil
+	}
+	return u.ask.Confirm("Remove the cloudflared package and its apt source, which setup installed?", false)
+}
+
+func (u *uninstall) stopDaemon(ctx context.Context) {
+	if !u.unitInstalled(serviceUnit) {
+		return
+	}
+	if _, err := u.run.Run(ctx, "systemctl", "disable", "--now", serviceUnit); err != nil {
+		u.fail("stopping %s: %v", serviceUnit, err)
+		return
+	}
+	u.ask.Info("%s: stopped and disabled", serviceUnit)
+}
+
+func (u *uninstall) pruneConnectors(ctx context.Context) {
+	m := connector.NewManager(unitControl{u.run}, filepath.Join(u.host.paths.Local, tunnelsDir), nil, zerolog.Nop())
+	if err := m.Prune(ctx, nil); err != nil {
+		u.fail("removing the connectors: %v", err)
+		return
+	}
+	u.ask.Info("connectors: stopped and removed")
+}
+
+func (u *uninstall) removeEgress(ctx context.Context) {
+	if u.unitInstalled(egressUnit) {
+		if _, err := u.run.Run(ctx, "systemctl", "disable", "--now", egressUnit); err != nil {
+			u.fail("stopping %s: %v", egressUnit, err)
+		}
+	}
+	out, err := u.run.Run(ctx, "nft", "list", "tables")
+	switch {
+	case errors.Is(err, ErrCommandNotFound):
+		u.ask.Info("egress filter: nothing needed, nft is not installed")
+		return
+	case err != nil:
+		u.fail("listing the nftables tables: %v", err)
+		return
+	}
+	present := false
+	for line := range strings.Lines(out) {
+		if strings.Join(strings.Fields(line), " ") == "table inet "+egressTable {
+			present = true
+		}
+	}
+	if !present {
+		u.ask.Info("egress filter: nothing needed")
+		return
+	}
+	if _, err := u.run.Run(ctx, "nft", "delete", "table", "inet", egressTable); err != nil {
+		u.fail("removing table inet %s: %v", egressTable, err)
+		return
+	}
+	u.ask.Info("egress filter: removed table inet %s", egressTable)
+}
+
+// removeProxmox removes what the manifest says setup created in Proxmox.
+func (u *uninstall) removeProxmox(ctx context.Context) {
+	m := u.manifest
+	if m.CreatedToken || m.CreatedUser {
+		u.removeUser(ctx)
+	}
+	if m.CreatedRole {
+		u.removeRole(ctx)
+	}
+	if len(m.RegisteredTags) > 0 {
+		u.removeTags(ctx)
+	}
+}
+
+func (u *uninstall) removeUser(ctx context.Context) {
+	exists, err := u.userExists(ctx)
+	if err != nil {
+		u.fail("%v", err)
+		return
+	}
+	if !exists {
+		u.ask.Info("user %s: gone already", userID)
+		return
+	}
+	if u.manifest.CreatedToken {
+		switch _, found, err := u.findToken(ctx); {
+		case err != nil:
+			u.fail("%v", err)
+		case found:
+			if err := u.removeToken(ctx); err != nil {
+				u.fail("%v", err)
+			} else {
+				u.ask.Info("token %s: removed", tokenID)
+			}
+		}
+	}
+	if u.manifest.CreatedUser {
+		if _, err := u.run.Run(ctx, "pveum", "user", "delete", userID); err != nil {
+			u.fail("removing user %s: %v", userID, err)
+			return
+		}
+		u.ask.Info("user %s: removed", userID)
+	}
+}
+
+// removeRole removes role PCO while it grants what setup gave it and nothing
+// else: a privilege an admin added says the role is used for more.
+func (u *uninstall) removeRole(ctx context.Context) {
+	role, found, err := u.role(ctx)
+	switch {
+	case err != nil:
+		u.fail("%v", err)
+		return
+	case !found:
+		u.ask.Info("role %s: gone already", roleID)
+		return
+	}
+	for _, privs := range setupPrivileges() {
+		if sameSet(role.Privs, privs) {
+			if _, err := u.run.Run(ctx, "pveum", "role", "delete", roleID); err != nil {
+				u.fail("removing role %s: %v", roleID, err)
+				return
+			}
+			u.ask.Info("role %s: removed", roleID)
+			return
+		}
+	}
+	u.ask.Warn("role %s is kept: it grants %s, which setup did not give it",
+		roleID, strings.Join(without(role.Privs, slices.Concat(setupPrivileges()...)), ", "))
+}
+
+func (u *uninstall) removeTags(ctx context.Context) {
+	tags, err := u.registeredTags(ctx)
+	if err != nil {
+		u.fail("%v", err)
+		return
+	}
+	keep := without(tags, u.manifest.RegisteredTags)
+	if len(keep) == len(tags) {
+		u.ask.Info("registered tags: nothing needed")
+		return
+	}
+	if err := u.setRegisteredTags(ctx, keep); err != nil {
+		u.fail("%v", err)
+		return
+	}
+	u.ask.Info("registered tags: removed %s", strings.Join(without(tags, keep), ", "))
+}
+
+// removeStore removes the node from the registry and the three roots of the
+// store. The shared ones are only touched while the cluster filesystem is
+// mounted: what lies under its mount point otherwise is not the store.
+func (u *uninstall) removeStore() error {
+	p := u.host.paths
+	if p.MountCheck != "" {
+		if _, err := os.Stat(p.MountCheck); err != nil {
+			return fmt.Errorf("removing the store: %w", store.ErrNotMounted)
+		}
+	}
+	if err := u.st.DeleteNode(u.node); err != nil && !errors.Is(err, store.ErrNoRoot) {
+		return fmt.Errorf("removing node %s from the registry: %w; run pco uninstall again to finish the rest", u.node, err)
+	}
+	for _, dir := range []string{p.Cluster, p.Private, p.Local} {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("removing %s: %w; run pco uninstall again to finish the rest", dir, err)
+		}
+	}
+	u.ask.Info("store: removed %s, %s and %s", p.Cluster, p.Private, p.Local)
+	u.ask.Info("pco is removed from this node; the package goes with apt-get purge pco")
+	return nil
+}
