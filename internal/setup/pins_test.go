@@ -39,7 +39,7 @@ func TestUninstallKeepsTheUserAndTokenSetupDidNotCreate(t *testing.T) {
 			h.acl = append(h.acl, pveACL{Path: "/", Type: "user", UGID: userID, Role: "Auditors"})
 			e.onHost(h)
 
-			require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
+			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 
 			require.Equal(t, tt.userStays, slices.Contains(h.users, userID))
 			require.Equal(t, tt.tokenStays, slices.Contains(h.tokens, tokenName))
@@ -100,7 +100,7 @@ func TestUninstallRemovesOfCloudflaredOnlyWhatTheManifestLists(t *testing.T) {
 			}
 			e.script(script...)
 
-			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true}))
+			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true, RemoveCloudflared: true}))
 			e.done()
 
 			if tt.sourcesGo {
@@ -123,7 +123,7 @@ func TestTheStoreIsNotRemovedWhileItIsNotMounted(t *testing.T) {
 	e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsSeen(),
 		[]call{{line: "systemctl disable --now -- pco-cloudflared@" + tunnelID + ".service", do: unmount}})
 
-	err := e.uninstall(UninstallOptions{Yes: true})
+	err := e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true})
 
 	// Uninstall looks itself before anything of the store goes; that the
 	// store refuses its own writes then too is not what it rests on.
@@ -225,7 +225,7 @@ func TestAnNftThatFailsIsAFailure(t *testing.T) {
 	e.script(connectorsSeen(), []call{{line: "nft list tables", err: exitErr(1, "Error: cache initialization failed: Operation not permitted")}},
 		serviceStopped(), connectorsPruned())
 
-	err := e.uninstall(UninstallOptions{Yes: true})
+	err := e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true})
 
 	require.ErrorContains(t, err, "Operation not permitted")
 	e.done()

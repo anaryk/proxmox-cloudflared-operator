@@ -221,8 +221,8 @@ func TestUninstallAsksEachQuestion(t *testing.T) {
 			purged:  true, cloudflaredGo: true,
 		},
 		{
-			name:    "--yes answers only the main question, and the others with no",
-			options: UninstallOptions{Yes: true},
+			name:    "--yes answers only the main question, and cloudflared with no",
+			options: UninstallOptions{Yes: true, KeepCloudflare: true},
 		},
 		{
 			name:    "the flags answer the others",
@@ -348,7 +348,7 @@ func TestAFailedRemovalKeepsTheStore(t *testing.T) {
 			{line: "pvesh set /cluster/options --delete registered-tags"},
 		})
 
-	err := e.uninstall(UninstallOptions{Yes: true})
+	err := e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true})
 
 	require.ErrorContains(t, err, "pco uninstall again")
 	e.done()
@@ -379,7 +379,7 @@ func TestUninstallRemovesTheRoleOnlyWhenUnchanged(t *testing.T) {
 			}
 			e.script(script...)
 
-			require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
+			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 			e.done()
 			if !tt.deleted {
 				e.requireShown("role PCO is kept: " + tt.says)
@@ -414,7 +414,7 @@ func TestUninstallRemovesTheEgressFilter(t *testing.T) {
 			}
 			e.script(connectorsSeen(), tt.seen, serviceStopped(), connectorsPruned(), tt.remove)
 
-			require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
+			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 			e.done()
 			e.requireStoreGone()
 		})
@@ -522,7 +522,7 @@ func TestUninstallDoesNotLookAtCloudflareForAFixedAnswer(t *testing.T) {
 		options UninstallOptions
 		answers []answer
 	}{
-		{"--yes", UninstallOptions{Yes: true}, nil},
+		{"--yes --keep-cloudflare", UninstallOptions{Yes: true, KeepCloudflare: true}, nil},
 		{"--keep-cloudflare", UninstallOptions{KeepCloudflare: true}, []answer{{"Remove pco", true}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -536,7 +536,7 @@ func TestUninstallDoesNotLookAtCloudflareForAFixedAnswer(t *testing.T) {
 			e.done()
 
 			require.Empty(t, e.cf.Calls())
-			e.requireShown("--purge-cloudflare deletes it")
+			e.requireShown("nothing on this node can remove it later")
 			e.requireStoreGone()
 		})
 	}

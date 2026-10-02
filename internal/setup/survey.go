@@ -57,9 +57,10 @@ func (u *uninstall) survey(ctx context.Context) {
 }
 
 // looksAtCloudflare reports whether Cloudflare is to be listed: for a purge,
-// and for the question whether to purge, which only a terminal can answer.
+// and for the question whether to purge, which is asked without Yes. Yes with
+// an install and credentials comes with one of the two flags.
 func (u *uninstall) looksAtCloudflare() bool {
-	return u.installID != "" && len(u.creds) > 0 && (u.o.PurgeCloudflare || !u.o.KeepCloudflare && !u.o.Yes)
+	return u.installID != "" && len(u.creds) > 0 && !u.o.KeepCloudflare
 }
 
 // listConnectors returns the tunnel ids of the connectors that have files or
@@ -176,8 +177,8 @@ func (u *uninstall) describeCloudflare() {
 	case u.installID == "" || len(u.creds) == 0:
 	case u.o.PurgeCloudflare:
 		u.showCloudflare()
-	case !u.found.listed:
-		u.ask.Info("  (what install %s has at Cloudflare stays; --purge-cloudflare deletes it)", u.installID)
+	case u.o.KeepCloudflare:
+		u.ask.Info("  (what install %s has at Cloudflare stays, and nothing on this node can remove it later)", u.installID)
 	default:
 		u.ask.Info("  (what install %s has at Cloudflare is asked about next)", u.installID)
 	}

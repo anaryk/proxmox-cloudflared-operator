@@ -15,8 +15,10 @@ func (a *app) uninstallCmd() *cobra.Command {
 			"in Proxmox as its manifest lists, and the store. It looks first, lists what is there and asks\n" +
 			"once; --yes answers that. Deleting the DNS records and the tunnel of the install at\n" +
 			"Cloudflare is asked on its own, or done with --purge-cloudflare and left with\n" +
-			"--keep-cloudflare; removing the cloudflared package setup installed is asked as well, or done\n" +
-			"with --remove-cloudflared. With --yes, what no flag says is not done. A part that fails is\n" +
+			"--keep-cloudflare; with --yes, an install with Cloudflare credentials needs one of the two,\n" +
+			"as nothing on this node can remove those objects once the store is gone. Removing the\n" +
+			"cloudflared package setup installed is asked as well, or done with --remove-cloudflared;\n" +
+			"with --yes it stays without that flag. A part that fails is\n" +
 			"reported and the rest goes on; the store is then kept, and running pco uninstall again\n" +
 			"finishes the rest. It runs as root on the node.",
 		Args: cobra.NoArgs,
@@ -37,7 +39,8 @@ func (a *app) uninstallCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.BoolVarP(&o.Yes, "yes", "y", false,
-		"remove pco without asking (needed without a terminal); Cloudflare and cloudflared then go only with their flags")
+		"remove pco without asking (needed without a terminal); an install with Cloudflare credentials needs "+
+			"--purge-cloudflare or --keep-cloudflare as well, and cloudflared stays without --remove-cloudflared")
 	flags.BoolVar(&o.PurgeCloudflare, "purge-cloudflare", false, "delete the DNS records and the tunnel of the install at Cloudflare")
 	flags.BoolVar(&o.KeepCloudflare, "keep-cloudflare", false,
 		"leave the DNS records and the tunnel of the install at Cloudflare as they are, without looking at them")

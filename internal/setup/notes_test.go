@@ -195,7 +195,7 @@ func TestUninstallKeepsTheKeyAKeptSourceNames(t *testing.T) {
 			require.NoError(t, os.WriteFile(e.s.host.keyring, []byte(gpgKey), 0o644))
 			e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned())
 
-			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true}))
+			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true, RemoveCloudflared: true}))
 			e.done()
 
 			got, err := os.ReadFile(e.s.host.sources)

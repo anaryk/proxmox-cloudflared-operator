@@ -192,7 +192,7 @@ func TestTheUninstallPrompter(t *testing.T) {
 		terminal, yes       bool
 		interactive, refuse bool
 	}{
-		{"--yes on a terminal asks nothing: what no flag says is not done", true, true, false, false},
+		{"--yes on a terminal asks nothing: the flags answer the rest", true, true, false, false},
 		{"a terminal without --yes", true, false, true, false},
 		{"--yes without a terminal", false, true, false, false},
 		{"neither", false, false, false, true},
@@ -210,4 +210,15 @@ func TestTheUninstallPrompter(t *testing.T) {
 			require.Equal(t, tt.interactive, p.interactive)
 		})
 	}
+}
+
+func TestTheHelpOfUninstallYesNamesTheCloudflareFlags(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+
+	res := r.run("", "uninstall", "--help")
+
+	require.NoError(t, res.err)
+	help := strings.Join(strings.Fields(res.out), " ")
+	require.Contains(t, help, "an install with Cloudflare credentials needs --purge-cloudflare or --keep-cloudflare as well")
+	require.Contains(t, help, "cloudflared stays without --remove-cloudflared")
 }

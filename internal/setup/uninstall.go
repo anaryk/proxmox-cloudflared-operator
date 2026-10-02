@@ -16,9 +16,11 @@ import (
 
 // UninstallOptions are the answers to the questions of uninstall given in
 // advance. Yes answers the question whether to remove pco, and nothing else:
-// deleting at Cloudflare and removing cloudflared reach beyond this node, so
-// with Yes they are done only with their own flags. Without Yes, what no flag
-// answers is asked.
+// deleting at Cloudflare and removing cloudflared reach beyond this node. With
+// Yes, cloudflared stays unless RemoveCloudflared says otherwise, and an
+// install with credentials needs PurgeCloudflare or KeepCloudflare: once the
+// store is gone, nothing on the node can remove what the install has at
+// Cloudflare. Without Yes, what no flag answers is asked.
 type UninstallOptions struct {
 	Yes               bool // remove pco without asking
 	PurgeCloudflare   bool // delete the records and tunnels of the install at Cloudflare
@@ -70,6 +72,9 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	}
 	u, err := s.newUninstall(o)
 	if err != nil {
+		return err
+	}
+	if err := u.refuseToOrphan(); err != nil {
 		return err
 	}
 	u.survey(ctx)
@@ -142,6 +147,19 @@ func (s *Setup) newUninstall(o UninstallOptions) (*uninstall, error) {
 		u.node, _, _ = strings.Cut(name, ".")
 	}
 	return u, nil
+}
+
+// refuseToOrphan refuses --yes without a word on Cloudflare while the store
+// holds an install and the credentials that reach what it has there: the
+// uninstall would take the credentials and leave the records and tunnels with
+// nothing on this node to remove them.
+func (u *uninstall) refuseToOrphan() error {
+	if !u.o.Yes || u.o.PurgeCloudflare || u.o.KeepCloudflare || u.installID == "" || len(u.creds) == 0 {
+		return nil
+	}
+	return fmt.Errorf("install %s may have DNS records and a tunnel at Cloudflare, and the uninstall removes the "+
+		"credentials that reach them: say what becomes of them with --purge-cloudflare, which deletes them, or "+
+		"--keep-cloudflare, which leaves them, and then nothing on this node can remove them later", u.installID)
 }
 
 // fail notes something that could not be done, and says so.
