@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 )
 
@@ -104,6 +105,10 @@ type Paths struct {
 	// roots, not build a Paths from nothing.
 	MountCheck string
 }
+
+// NodeLock is the file a daemon holds locked for as long as it runs on the
+// node, below the local root.
+func (p Paths) NodeLock() string { return filepath.Join(p.Local, "daemon.lock") }
 
 // DefaultPaths returns the roots on a Proxmox node.
 func DefaultPaths() Paths {

@@ -1,19 +1,17 @@
 package setup
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"syscall"
 )
 
-// lockName is the lock a daemon holds on the node for as long as it runs,
-// below the local root, also when it was not started by systemd.
-const lockName = "daemon.lock"
-
-func (s *Setup) lockPath() string { return filepath.Join(s.paths().Local, lockName) }
+// lockPath is the lock a daemon holds on the node for as long as it runs, also
+// when it was not started by systemd.
+func (s *Setup) lockPath() string { return s.paths().NodeLock() }
 
 // daemonLocked reports whether a daemon holds the lock of the node. It tries
 // the lock without waiting and lets it go at once; a missing file is no
@@ -35,6 +33,20 @@ func (s *Setup) daemonLocked() (bool, error) {
 	}
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return false, nil
+}
+
+// runsByHand reports whether a daemon that systemd does not run holds the
+// lock of the node. Without the lock held nothing is asked of systemd.
+func (s *Setup) runsByHand(ctx context.Context) (bool, error) {
+	locked, err := s.daemonLocked()
+	if err != nil || !locked {
+		return false, err
+	}
+	if !s.unitInstalled(serviceUnit) {
+		return true, nil
+	}
+	active, err := s.serviceActive(ctx, serviceUnit)
+	return !active, err
 }
 
 // errRunsByHand is the error of a daemon that holds the lock of the node while

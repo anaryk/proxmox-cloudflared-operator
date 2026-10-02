@@ -198,7 +198,7 @@ func TestTheDaemonServesTheDoctorAndTheDiagnosis(t *testing.T) {
 	require.ErrorIs(t, err, engine.ErrNotFound)
 
 	// The lock the doctor looks at is the one this daemon holds.
-	require.NoError(t, os.Remove(filepath.Join(w.paths.Local, lockName)))
+	require.NoError(t, os.Remove(store.Paths{Local: w.paths.Local}.NodeLock()))
 	skew.Add(int64(6 * time.Second))
 	findings, err = d.client.Doctor(ctx)
 	require.NoError(t, err)

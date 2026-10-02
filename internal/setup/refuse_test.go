@@ -164,6 +164,7 @@ func TestADaemonRunByHandCountsAsRunning(t *testing.T) {
 		h := newFakeHost(t)
 		e.onHost(h)
 		require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+		h.active[serviceUnit] = false // systemd's daemon is stopped, one by hand runs
 		e.holdLock()
 
 		err := e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true})

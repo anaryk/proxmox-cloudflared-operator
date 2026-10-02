@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -114,7 +113,7 @@ func nodeHost() host {
 // checkPVEToken reads the version of Proxmox VE with a token, through the API
 // the daemon reads the guests from.
 func checkPVEToken(ctx context.Context, tok store.PVEToken) error {
-	c, err := pve.New(pve.Config{BaseURL: daemon.DefaultPVEURL, TokenID: tok.TokenID, Secret: tok.Secret.Reveal()})
+	c, err := pve.New(pve.Config{BaseURL: pve.DefaultURL, TokenID: tok.TokenID, Secret: tok.Secret.Reveal()})
 	if err != nil {
 		return err
 	}
@@ -256,6 +255,17 @@ func (r *run) record(change func(*Manifest)) error {
 
 // paths are the roots of the store setup works on.
 func (s *Setup) paths() store.Paths { return s.st.Paths() }
+
+// takeBack takes back the note of a create that failed, when it left
+// nothing: what an admin makes in its place later is the admin's. When that
+// cannot be told, the note stays.
+func (r *run) takeBack(there func() (bool, error), unnote func(*Manifest)) {
+	if present, err := there(); err == nil && !present {
+		if err := r.record(unnote); err != nil {
+			r.ask.Warn("%v", err)
+		}
+	}
+}
 
 func (s *Setup) manifestPath() string { return filepath.Join(s.paths().Local, manifestName) }
 

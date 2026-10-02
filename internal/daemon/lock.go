@@ -4,11 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"syscall"
-)
 
-const lockName = "daemon.lock"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
 
 // ErrRunning is the error of a daemon that finds another one on this node.
 var ErrRunning = errors.New("another pco daemon is running on this node")
@@ -31,7 +30,7 @@ func lockNode(dir string) (*nodeLock, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", dir, err)
 	}
-	path := filepath.Join(dir, lockName)
+	path := store.Paths{Local: dir}.NodeLock()
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening the lock %s: %w", path, err)

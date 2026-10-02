@@ -26,7 +26,7 @@ import (
 
 // The defaults of the daemon's flags.
 const (
-	DefaultPVEURL = "https://127.0.0.1:8006"
+	DefaultPVEURL = pve.DefaultURL
 	DefaultSocket = "/run/pco/pco.sock"
 )
 

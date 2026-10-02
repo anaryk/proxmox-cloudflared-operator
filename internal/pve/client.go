@@ -25,6 +25,9 @@ const (
 	apiPath        = "api2/json"
 )
 
+// DefaultURL is the Proxmox VE API of the node pco runs on.
+const DefaultURL = "https://127.0.0.1:8006"
+
 // ErrAgentUnavailable means the QEMU guest agent cannot answer: it is not
 // configured, not running, or the guest is stopped.
 var ErrAgentUnavailable = errors.New("guest agent not available")

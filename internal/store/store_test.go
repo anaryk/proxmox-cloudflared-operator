@@ -63,6 +63,11 @@ func TestDefaultPaths(t *testing.T) {
 	}, DefaultPaths())
 }
 
+func TestTheNodeLockIsBelowTheLocalRoot(t *testing.T) {
+	require.Equal(t, "/var/lib/pco/daemon.lock", DefaultPaths().NodeLock())
+	require.Equal(t, "/srv/local/daemon.lock", Paths{Local: "/srv/local"}.NodeLock())
+}
+
 func TestTheStoreTellsItsPaths(t *testing.T) {
 	p := testPaths(t)
 	p.MountCheck = filepath.Join(t.TempDir(), "mounted")

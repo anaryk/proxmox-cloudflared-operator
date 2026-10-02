@@ -209,18 +209,28 @@ func (u *uninstall) decideCloudflared() (bool, error) {
 // removed. One that does not stop, and one run by hand, which systemd cannot
 // stop, stop the uninstall before anything goes.
 func (u *uninstall) stopDaemon(ctx context.Context) error {
-	if u.found.unit {
-		if _, err := u.run.Run(ctx, "systemctl", "disable", "--now", serviceUnit); err != nil {
-			return fmt.Errorf("stopping %s: %w; nothing was removed: stop the daemon, then run pco uninstall again", serviceUnit, err)
-		}
-		u.ask.Info("%s: stopped and disabled", serviceUnit)
-	}
-	locked, err := u.daemonLocked()
+	byHand, err := u.runsByHand(ctx)
 	switch {
 	case err != nil:
 		return fmt.Errorf("%w; nothing was removed", err)
-	case locked:
+	case byHand:
 		return fmt.Errorf("%w, then run pco uninstall again; nothing was removed", u.errRunsByHand())
+	}
+	if !u.found.unit {
+		return nil
+	}
+	if _, err := u.run.Run(ctx, "systemctl", "disable", "--now", serviceUnit); err != nil {
+		return fmt.Errorf("stopping %s: %w; nothing was removed: stop the daemon, then run pco uninstall again", serviceUnit, err)
+	}
+	u.ask.Info("%s: stopped and disabled", serviceUnit)
+	// The lock was its, or one more daemon started meanwhile.
+	locked, err := u.daemonLocked()
+	switch {
+	case err != nil:
+		return fmt.Errorf("%s was stopped and disabled, but %w; nothing else was removed", serviceUnit, err)
+	case locked:
+		return fmt.Errorf("%s was stopped and disabled, but %w, then run pco uninstall again; nothing else was removed",
+			serviceUnit, u.errRunsByHand())
 	}
 	return nil
 }

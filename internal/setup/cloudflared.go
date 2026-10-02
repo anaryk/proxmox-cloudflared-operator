@@ -64,6 +64,10 @@ func (r *run) ensureCloudflared(ctx context.Context) error {
 		return err
 	}
 	if _, err := r.run.Run(ctx, "apt-get", "install", "-y", "cloudflared"); err != nil {
+		r.takeBack(func() (bool, error) {
+			_, err := r.run.Run(ctx, cloudflaredBin, "--version")
+			return !errors.Is(err, ErrCommandNotFound), nil
+		}, func(m *Manifest) { m.InstalledCloudflared = false })
 		return fmt.Errorf("installing cloudflared: %w", err)
 	}
 	r.ask.Info("cloudflared: installed from %s", repoURL)
@@ -86,6 +90,11 @@ func (r *run) ensureKeyring(ctx context.Context) (err error) {
 	if err := r.record(func(m *Manifest) { m.AddedKeyring = true }); err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			r.takeBack(func() (bool, error) { return exists(path) }, func(m *Manifest) { m.AddedKeyring = false })
+		}
+	}()
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("creating a file in %s: %w", dir, err)
@@ -130,9 +139,22 @@ func (r *run) ensureSources() error {
 		return err
 	}
 	if err := writeFileAtomic(path, want, 0o644); err != nil {
+		r.takeBack(func() (bool, error) { return exists(path) }, func(m *Manifest) { m.AddedAptSource = false })
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	return nil
+}
+
+// exists reports whether there is a file at path.
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	}
+	return false, err
 }
 
 // removeCloudflared removes what setup installed of cloudflared. The key

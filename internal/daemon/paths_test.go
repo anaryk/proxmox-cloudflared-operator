@@ -63,7 +63,7 @@ func TestTheNodeLockIsExclusiveAndGoesWithItsHolder(t *testing.T) {
 	again, err := lockNode(dir)
 	require.NoError(t, err)
 	again.release()
-	require.FileExists(t, filepath.Join(dir, lockName), "the lock file stays")
+	require.FileExists(t, store.Paths{Local: dir}.NodeLock(), "the lock file stays")
 }
 
 // The lock holds only while its file is the one at its path: once the file
@@ -81,7 +81,7 @@ func TestTheNodeLockSaysWhetherItStillHolds(t *testing.T) {
 		lock, err := lockNode(dir)
 		require.NoError(t, err)
 		t.Cleanup(lock.release)
-		require.NoError(t, os.Remove(filepath.Join(dir, lockName)))
+		require.NoError(t, os.Remove(store.Paths{Local: dir}.NodeLock()))
 
 		require.ErrorContains(t, lock.check(), "is gone; a second daemon could start")
 	})
@@ -90,12 +90,12 @@ func TestTheNodeLockSaysWhetherItStillHolds(t *testing.T) {
 		lock, err := lockNode(dir)
 		require.NoError(t, err)
 		t.Cleanup(lock.release)
-		require.NoError(t, os.Remove(filepath.Join(dir, lockName)))
+		require.NoError(t, os.Remove(store.Paths{Local: dir}.NodeLock()))
 		other, err := lockNode(dir)
 		require.NoError(t, err, "a second daemon gets a lock of its own")
 		t.Cleanup(other.release)
 
-		require.EqualError(t, lock.check(), "the lock of the node "+filepath.Join(dir, lockName)+
+		require.EqualError(t, lock.check(), "the lock of the node "+store.Paths{Local: dir}.NodeLock()+
 			" is not the file this daemon locked; a second daemon could start")
 		require.NoError(t, other.check())
 	})

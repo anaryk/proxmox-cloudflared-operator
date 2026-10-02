@@ -83,8 +83,9 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 	roleGoes, why := u.roleVerdict()
 	bothGo := userGoes && roleGoes
 	granted := m.GrantedACL && slices.ContainsFunc(s.acl, isGrant)
+	revoked := true
 	if granted && !bothGo {
-		u.revokeGrant(ctx)
+		revoked = u.revokeGrant(ctx)
 	}
 	if m.CreatedToken && s.token {
 		if err := u.removeToken(ctx); err != nil {
@@ -104,6 +105,11 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 		u.ask.Info("user %s: gone already", userID)
 	}
 	if m.CreatedRole {
+		if roleGoes && !revoked {
+			// Deleting the role would leave the grant to the user that stays in
+			// user.cfg, where pveum no longer shows it and warns about it.
+			roleGoes, why = false, "the grant of it to "+userID+" could not be revoked; pco uninstall again tries again"
+		}
 		u.removeRole(ctx, s.role, roleGoes, why)
 	}
 	if granted && bothGo {
@@ -114,12 +120,14 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 	}
 }
 
-func (u *uninstall) revokeGrant(ctx context.Context) {
+// revokeGrant revokes setup's grant and reports whether it did.
+func (u *uninstall) revokeGrant(ctx context.Context) bool {
 	if _, err := u.run.Run(ctx, "pveum", "acl", "delete", "/", "--users", userID, "--roles", roleID); err != nil {
 		u.fail("revoking role %s on / from %s: %v", roleID, userID, err)
-		return
+		return false
 	}
 	u.ask.Info("acl /: revoked role %s from %s", roleID, userID)
+	return true
 }
 
 // checkGrantGone looks for setup's grant once its user and role are gone, with

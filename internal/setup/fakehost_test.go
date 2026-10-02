@@ -42,9 +42,12 @@ type fakeHost struct {
 	secret      string // of the token pco@pve!pco, while there is one
 
 	ran      []string
-	killedAt int  // the command, counted from 1, that the host dies at; 0: none
-	before   bool // the host dies before the command, not after it
-	refuse   map[string]error
+	killedAt int              // the command, counted from 1, that the host dies at; 0: none
+	before   bool             // the host dies before the command, not after it
+	refuse   map[string]error // by command line, or by command name
+
+	userAttrs  map[string]any // more fields of pco@pve in the user list
+	tokenAttrs map[string]any // more fields of its token in the token list
 }
 
 // newFakeHost is a node an admin has used: a role, a user, its grant and a
@@ -109,6 +112,9 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 	if err := h.refuse[cmd]; err != nil {
 		return "", err
 	}
+	if err := h.refuse[name]; err != nil {
+		return "", err
+	}
 	verb := ""
 	if len(args) > 0 {
 		verb = args[0]
@@ -145,9 +151,13 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		return "", nil
 
 	case cmd == "pveum user list --output-format json":
-		var users []map[string]string
+		var users []map[string]any
 		for _, u := range h.users {
-			users = append(users, map[string]string{"userid": u})
+			user := map[string]any{"userid": u}
+			if u == userID {
+				maps.Copy(user, h.userAttrs)
+			}
+			users = append(users, user)
 		}
 		return asJSON(users), nil
 	case name == "pveum" && verb == "user" && args[1] == "add":
@@ -186,7 +196,9 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		}
 		var tokens []map[string]any
 		for _, tok := range h.tokens {
-			tokens = append(tokens, map[string]any{"tokenid": tok, "privsep": 0})
+			token := map[string]any{"tokenid": tok, "privsep": 0}
+			maps.Copy(token, h.tokenAttrs)
+			tokens = append(tokens, token)
 		}
 		return asJSON(tokens), nil
 	case cmd == "pveum user token add pco@pve pco --privsep 0 --output-format json":
@@ -262,6 +274,8 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 	case "try-restart":
 	case "enable --now":
 		h.active[unit], h.enabled[unit] = true, true
+	case "enable":
+		h.enabled[unit] = true
 	case "disable --now", "disable --now --":
 		h.active[unit], h.enabled[unit] = false, false
 	case "list-units --all --plain --no-legend --":

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -96,7 +97,9 @@ type pveRole struct {
 }
 
 type pveUser struct {
-	ID string `json:"userid"`
+	ID     string   `json:"userid"`
+	Enable *pveBool `json:"enable"` // absent: enabled
+	Expire pveInt   `json:"expire"` // seconds since the epoch; 0: never
 }
 
 type pveACL struct {
@@ -110,6 +113,24 @@ type pveACL struct {
 type pveToken struct {
 	ID      string   `json:"tokenid"`
 	Privsep *pveBool `json:"privsep"`
+	Expire  pveInt   `json:"expire"` // seconds since the epoch; 0: never
+}
+
+// pveInt is a number Proxmox gives as a number or a string.
+type pveInt int64
+
+func (n *pveInt) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		*n = 0
+		return nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return errors.New("want a whole number")
+	}
+	*n = pveInt(v)
+	return nil
 }
 
 // query runs a command that prints JSON and reads it into v.
@@ -224,6 +245,10 @@ func (r *run) ensureRole(ctx context.Context) error {
 			return err
 		}
 		if _, err := r.run.Run(ctx, "pveum", "role", "add", roleID, "--privs", strings.Join(want, ",")); err != nil {
+			r.takeBack(func() (bool, error) {
+				_, found, err := r.role(ctx)
+				return found, err
+			}, func(m *Manifest) { m.CreatedRole = false })
 			return fmt.Errorf("creating role %s: %w", roleID, err)
 		}
 		r.ask.Info("role %s: created with %s", roleID, strings.Join(want, ", "))
@@ -256,6 +281,7 @@ func (r *run) ensureUser(ctx context.Context) error {
 			return err
 		}
 		if _, err := r.run.Run(ctx, "pveum", "user", "add", userID, "--comment", userComment); err != nil {
+			r.takeBack(func() (bool, error) { return r.userExists(ctx) }, func(m *Manifest) { m.CreatedUser = false })
 			return fmt.Errorf("creating user %s: %w", userID, err)
 		}
 		did = append(did, "created")
@@ -269,6 +295,10 @@ func (r *run) ensureUser(ctx context.Context) error {
 			return err
 		}
 		if _, err := r.run.Run(ctx, "pveum", "acl", "modify", "/", "--users", userID, "--roles", roleID); err != nil {
+			r.takeBack(func() (bool, error) {
+				acl, err := r.acl(ctx)
+				return slices.ContainsFunc(acl, isGrant), err
+			}, func(m *Manifest) { m.GrantedACL = false })
 			return fmt.Errorf("granting role %s on / to %s: %w", roleID, userID, err)
 		}
 		did = append(did, "granted role "+roleID+" on /")
@@ -304,6 +334,15 @@ func (r *run) ensureToken(ctx context.Context) error {
 		if !refusedByProxmox(err) {
 			return fmt.Errorf("checking the stored secret of token %s with Proxmox: %w", tokenID, err)
 		}
+		// A user that is disabled or expired, and a token that expired, are
+		// refused as well, and a new token would be refused just the same.
+		why, err := r.whyRefused(ctx, tok)
+		if err != nil {
+			return err
+		}
+		if why != "" {
+			return fmt.Errorf("the stored secret of token %s is refused: %s, then run pco setup again", tokenID, why)
+		}
 		r.ask.Warn("Proxmox refuses the stored secret of token %s: making it anew", tokenID)
 	case separated:
 		r.ask.Warn("token %s is privilege separated and lacks the privileges of role %s: making it anew", tokenID, roleID)
@@ -324,6 +363,10 @@ func (r *run) createToken(ctx context.Context) error {
 	}
 	out, err := r.run.Run(ctx, "pveum", "user", "token", "add", userID, tokenName, "--privsep", "0", "--output-format", "json")
 	if err != nil {
+		r.takeBack(func() (bool, error) {
+			_, found, err := r.findToken(ctx)
+			return found, err
+		}, func(m *Manifest) { m.CreatedToken = false })
 		return fmt.Errorf("creating token %s: %w", tokenID, err)
 	}
 	secret, err := tokenSecret(out)
@@ -336,6 +379,33 @@ func (r *run) createToken(ctx context.Context) error {
 	r.newPVEToken = true
 	r.ask.Info("token %s: created", tokenID)
 	return nil
+}
+
+// whyRefused says what explains that Proxmox refuses the token, if the user
+// or the token does: a user that is disabled or expired, a token that
+// expired. Empty when neither does.
+func (r *run) whyRefused(ctx context.Context, tok pveToken) (string, error) {
+	var users []pveUser
+	if err := r.query(ctx, &users, "pveum", "user", "list", "--output-format", "json"); err != nil {
+		return "", fmt.Errorf("listing the users: %w", err)
+	}
+	now := r.now().Unix()
+	expired := func(at pveInt) bool { return at > 0 && int64(at) <= now }
+	date := func(at pveInt) string { return time.Unix(int64(at), 0).UTC().Format(time.DateOnly) }
+	if i := slices.IndexFunc(users, func(u pveUser) bool { return u.ID == userID }); i >= 0 {
+		switch u := users[i]; {
+		case u.Enable != nil && !bool(*u.Enable):
+			return fmt.Sprintf("user %s is disabled; enable it with pveum user modify %s --enable 1", userID, userID), nil
+		case expired(u.Expire):
+			return fmt.Sprintf("user %s expired on %s; lift that with pveum user modify %s --expire 0",
+				userID, date(u.Expire), userID), nil
+		}
+	}
+	if expired(tok.Expire) {
+		return fmt.Sprintf("token %s expired on %s; remove it with pveum user token remove %s %s, and setup makes it anew",
+			tokenID, date(tok.Expire), userID, tokenName), nil
+	}
+	return "", nil
 }
 
 // refusedByProxmox reports whether Proxmox refused a token: an answer 401.
@@ -384,6 +454,12 @@ func (r *run) ensureTags(ctx context.Context) error {
 			return err
 		}
 		if err := r.setRegisteredTags(ctx, append(tags, missing...)); err != nil {
+			if now, rerr := r.registeredTags(ctx); rerr == nil {
+				if absent := without(missing, now); len(absent) > 0 {
+					r.takeBack(func() (bool, error) { return false, nil },
+						func(m *Manifest) { m.RegisteredTags = without(m.RegisteredTags, absent) })
+				}
+			}
 			return err
 		}
 		r.ask.Info("registered tags: added %s", strings.Join(missing, ", "))

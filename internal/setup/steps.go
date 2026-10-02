@@ -195,6 +195,24 @@ func (r *run) startService(ctx context.Context) error {
 		r.nextSteps()
 		return nil
 	}
+	// A daemon run by hand holds the lock of the node; another one started
+	// next to it would not start.
+	byHand, err := r.runsByHand(ctx)
+	if err != nil {
+		return err
+	}
+	if byHand {
+		if _, err := r.run.Run(ctx, "systemctl", "enable", serviceUnit); err != nil {
+			return fmt.Errorf("enabling %s: %w", serviceUnit, err)
+		}
+		r.ask.Warn("a pco daemon runs on this node outside systemd (it holds %s): %s is enabled but not started; "+
+			"stop the daemon run by hand, then start %s", r.lockPath(), serviceUnit, serviceUnit)
+		if r.newPVEToken {
+			r.ask.Warn("a new Proxmox token reaches a daemon only when it starts")
+		}
+		r.nextSteps()
+		return nil
+	}
 	// The daemon reads the Proxmox token when it starts, so one that may run
 	// with the old token is restarted, if it runs.
 	if r.newPVEToken && (r.running == nil || *r.running) {
