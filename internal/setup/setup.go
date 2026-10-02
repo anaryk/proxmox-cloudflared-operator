@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -94,18 +96,32 @@ type host struct {
 	unitDirs []string    // where the units of the package may be installed
 	euid     func() int
 	hostname func() (string, error)
+	// checkToken makes one read of the Proxmox API with a token.
+	checkToken func(ctx context.Context, tok store.PVEToken) error
 }
 
 func nodeHost() host {
 	return host{
-		paths:    store.DefaultPaths(),
-		pveDir:   "/etc/pve",
-		keyring:  "/usr/share/keyrings/cloudflare-main.gpg",
-		sources:  "/etc/apt/sources.list.d/cloudflared.sources",
-		unitDirs: []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"},
-		euid:     os.Geteuid,
-		hostname: os.Hostname,
+		paths:      store.DefaultPaths(),
+		pveDir:     "/etc/pve",
+		keyring:    "/usr/share/keyrings/cloudflare-main.gpg",
+		sources:    "/etc/apt/sources.list.d/cloudflared.sources",
+		unitDirs:   []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"},
+		euid:       os.Geteuid,
+		hostname:   os.Hostname,
+		checkToken: checkPVEToken,
 	}
+}
+
+// checkPVEToken reads the version of Proxmox VE with a token, through the API
+// the daemon reads the guests from.
+func checkPVEToken(ctx context.Context, tok store.PVEToken) error {
+	c, err := pve.New(pve.Config{BaseURL: daemon.DefaultPVEURL, TokenID: tok.TokenID, Secret: tok.Secret.Reveal()})
+	if err != nil {
+		return err
+	}
+	_, err = c.Version(ctx)
+	return err
 }
 
 // New returns a setup that runs commands through r, asks p, keeps its state in
@@ -125,8 +141,11 @@ type run struct {
 	version     pveVersion
 	install     store.Install
 	manifest    Manifest
-	running     *bool // whether pco.service runs, once that is known
+	running     *bool // whether the daemon runs, once that is known
 	newPVEToken bool  // the Proxmox token was made in this run
+	// What a recovery did with the daemon: looked at it, and stopped it as
+	// it was running.
+	looked, stopped bool
 }
 
 type step struct {
@@ -157,10 +176,26 @@ func (s *Setup) Run(ctx context.Context, o Options) error {
 	r.manifest = m
 	for _, st := range r.steps() {
 		if err := st.do(ctx); err != nil {
+			r.afterFailure(ctx)
 			return fmt.Errorf("setup step %s: %w", st.name, err)
 		}
 	}
 	return nil
+}
+
+// afterFailure starts the daemon again that a recovery stopped, and says so;
+// one that did not run stays stopped.
+func (r *run) afterFailure(ctx context.Context) {
+	switch {
+	case r.stopped:
+		if _, err := r.run.Run(ctx, "systemctl", "start", serviceUnit); err != nil {
+			r.ask.Warn("%s was running before --recover and could not be started again: %v", serviceUnit, err)
+			return
+		}
+		r.ask.Warn("%s was running before --recover and is started again", serviceUnit)
+	case r.looked:
+		r.ask.Info("%s was not running before --recover and stays stopped", serviceUnit)
+	}
 }
 
 func (r *run) steps() []step {
@@ -250,12 +285,16 @@ func (s *Setup) serviceActive(ctx context.Context, unit string) (bool, error) {
 	return false, fmt.Errorf("systemd says %s is %q", unit, state)
 }
 
-// daemonRunning reports whether pco.service runs, asking systemd only once.
+// daemonRunning reports whether a daemon runs: pco.service, or one started by
+// hand, which holds the lock of the node as well. It looks only once.
 func (r *run) daemonRunning(ctx context.Context) (bool, error) {
 	if r.running != nil {
 		return *r.running, nil
 	}
 	running, err := r.serviceActive(ctx, serviceUnit)
+	if err == nil && !running {
+		running, err = r.daemonLocked()
+	}
 	if err != nil {
 		return false, err
 	}

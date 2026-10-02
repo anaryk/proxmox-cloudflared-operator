@@ -21,7 +21,7 @@ func ptr[T any](v T) *T { return &v }
 func freshInstall() [][]call {
 	return [][]call{
 		preflight("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(),
-		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), cloudflaredInstalled(), daemon("inactive"), serviceStarted(),
+		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), cloudflaredInstalled(), daemonIs("inactive"), serviceStarted(),
 	}
 }
 
@@ -271,7 +271,7 @@ func TestSetupRestartsARunningDaemonForANewToken(t *testing.T) {
 			{line: "pveum user token remove pco@pve pco"},
 			tokenAdd(pveSecret),
 		},
-		tagsKept(), cloudflaredKept(), daemon("active"), serviceRestarted())
+		tagsKept(), cloudflaredKept(), daemonIs("active"), serviceRestarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
 	e.done()
@@ -309,7 +309,7 @@ func TestSetupDeclinesTagsAndCloudflared(t *testing.T) {
 				script = append(script, serviceRestarted())
 			} else {
 				// The token is asked for only while the daemon cannot take it.
-				script = append(script, daemon("inactive"), serviceStarted())
+				script = append(script, daemonIs("inactive"), serviceStarted())
 			}
 			e.script(script...)
 
@@ -361,7 +361,7 @@ func TestSetupSkipsTheTokenWhileTheDaemonRuns(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")
 	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenCreated(),
-		tagsKept(), cloudflaredKept(), daemon("active"), serviceRestarted())
+		tagsKept(), cloudflaredKept(), daemonIs("active"), serviceRestarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
 	e.done()
@@ -423,6 +423,14 @@ func sentinel(install string, generation int) []planner.IngressRule {
 	}
 }
 
+// stoppedForRecovery stops the daemon that ran before a recovery.
+func stoppedForRecovery() []call {
+	return append(daemonIs("active"), call{line: "systemctl stop pco.service"})
+}
+
+// startedAgain starts the daemon a failed recovery stopped.
+func startedAgain() []call { return []call{{line: "systemctl start pco.service"}} }
+
 // recovered is the rest of a setup that recovers an install. The daemon was
 // stopped first, so the token is stored without asking systemd again.
 func recovered() [][]call {
@@ -440,7 +448,7 @@ func TestRecoverAdoptsTheOneInstallFound(t *testing.T) {
 	e.cf.SeedTunnel(testAccount, "pco-"+testInstall+"_probe_x1y2", nil)
 	e.cf.SeedTunnel(testAccount, "pco-not-an-install", nil)
 	e.cf.SeedTunnel(testAccount, "office", nil)
-	e.script(append([][]call{preflight("9.0.10"), {{line: "systemctl stop pco.service"}}}, recovered()...)...)
+	e.script(append([][]call{preflight("9.0.10"), stoppedForRecovery()}, recovered()...)...)
 
 	require.NoError(t, e.setup(Options{Yes: true, Recover: true, CloudflareToken: cfToken, Node: testNode}))
 	e.done()
@@ -465,7 +473,7 @@ func TestRecoverWithTwoInstallsNeedsTheID(t *testing.T) {
 	e.installUnit("pco.service")
 	e.cf.SeedTunnel(testAccount, "pco-"+testInstall, sentinel(testInstall, 3))
 	e.cf.SeedTunnel(testAccount, "pco-"+other, sentinel(other, 12))
-	e.script(preflight("9.0.10"), []call{{line: "systemctl stop pco.service"}})
+	e.script(preflight("9.0.10"), stoppedForRecovery(), startedAgain())
 
 	err := e.setup(Options{Yes: true, Recover: true, CloudflareToken: cfToken, Node: testNode})
 
@@ -477,7 +485,7 @@ func TestRecoverWithTwoInstallsNeedsTheID(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, found)
 
-	e.script(append([][]call{preflight("9.0.10"), {{line: "systemctl stop pco.service"}}}, recovered()...)...)
+	e.script(append([][]call{preflight("9.0.10"), stoppedForRecovery()}, recovered()...)...)
 	require.NoError(t, e.setup(Options{Yes: true, Recover: true, InstallID: other, CloudflareToken: cfToken, Node: testNode}))
 	e.done()
 	require.Equal(t, other, e.install().ID)
@@ -489,12 +497,13 @@ func TestRecoverRefusesAnUnreadableConfiguration(t *testing.T) {
 	e.installUnit("pco.service")
 	e.api = func(api cfapi.API) cfapi.API { return unreadableConfig{api} }
 	e.cf.SeedTunnel(testAccount, "pco-"+testInstall, sentinel(testInstall, 7))
-	e.script(preflight("9.0.10"), []call{{line: "systemctl stop pco.service"}})
+	e.script(preflight("9.0.10"), daemonIs("inactive"))
 
 	err := e.setup(Options{Yes: true, Recover: true, CloudflareToken: cfToken, Node: testNode})
 
 	require.ErrorContains(t, err, "configuration")
 	e.done()
+	e.requireShown("pco.service was not running before --recover and stays stopped")
 	_, found, err := e.st.Writer()
 	require.NoError(t, err)
 	require.False(t, found, "no generation is guessed")
@@ -503,10 +512,11 @@ func TestRecoverRefusesAnUnreadableConfiguration(t *testing.T) {
 func TestRecoverNeedsAToken(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")
-	e.script(preflight("9.0.10"), []call{{line: "systemctl stop pco.service"}})
+	e.script(preflight("9.0.10"), stoppedForRecovery(), startedAgain())
 
 	require.ErrorContains(t, e.setup(Options{Yes: true, Recover: true, Node: testNode}), "Cloudflare token")
 	e.done()
+	e.requireShown("pco.service was running before --recover and is started again")
 }
 
 func TestRecoverAsksForTheToken(t *testing.T) {
@@ -515,7 +525,7 @@ func TestRecoverAsksForTheToken(t *testing.T) {
 	e.cf.SeedTunnel(testAccount, "pco-"+testInstall, sentinel(testInstall, 2))
 	e.ask.answers = []answer{{"cf-tunnel", true}}
 	e.ask.secrets = []string{cfToken}
-	e.script(append([][]call{preflight("9.0.10"), {{line: "systemctl stop pco.service"}}}, recovered()...)...)
+	e.script(append([][]call{preflight("9.0.10"), stoppedForRecovery()}, recovered()...)...)
 
 	require.NoError(t, e.setup(Options{Recover: true, Node: testNode}))
 	e.done()

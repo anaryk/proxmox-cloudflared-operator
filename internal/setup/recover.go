@@ -23,14 +23,10 @@ type placedTunnel struct {
 // its store was lost: its id becomes the id of this install, and the writer
 // takes a generation above every one found in its tunnels, so that the
 // daemon is not taken for a stale or a foreign writer. The install observes
-// until pco apply.
+// until pco apply. Whatever it cannot know it refuses rather than guess.
 func (r *run) recover(ctx context.Context) error {
-	if r.unitInstalled(serviceUnit) {
-		if _, err := r.run.Run(ctx, "systemctl", "stop", serviceUnit); err != nil {
-			return fmt.Errorf("stopping %s: %w", serviceUnit, err)
-		}
-		stopped := false
-		r.running = &stopped
+	if err := r.stopForRecovery(ctx); err != nil {
+		return err
 	}
 	if err := r.recoveryToken(); err != nil {
 		return err
@@ -54,6 +50,37 @@ func (r *run) recover(ctx context.Context) error {
 	return r.adopt(id, generation)
 }
 
+// stopForRecovery stops pco.service, if it runs, so that the store is not
+// written under it; a failed run starts it again. A daemon run by hand is not
+// stopped, and refuses the recovery.
+func (r *run) stopForRecovery(ctx context.Context) error {
+	if r.unitInstalled(serviceUnit) {
+		active, err := r.serviceActive(ctx, serviceUnit)
+		if err != nil {
+			return err
+		}
+		r.looked = true
+		if active {
+			if _, err := r.run.Run(ctx, "systemctl", "stop", serviceUnit); err != nil {
+				return fmt.Errorf("stopping %s: %w", serviceUnit, err)
+			}
+			r.stopped = true
+		}
+	}
+	locked, err := r.daemonLocked()
+	switch {
+	case err != nil:
+		return err
+	case locked:
+		return r.errRunsByHand()
+	}
+	if r.looked {
+		running := false
+		r.running = &running
+	}
+	return nil
+}
+
 // recoveryToken makes sure there is a Cloudflare token to find the install
 // with, asking for it when it was not given.
 func (r *run) recoveryToken() error {
@@ -75,22 +102,34 @@ func (r *run) recoveryToken() error {
 }
 
 // findInstalls returns the tunnels of every install the token sees, by
-// install id.
+// install id, in the accounts it lists and the accounts of its zones, as the
+// purge looks.
 func findInstalls(ctx context.Context, api cfapi.API) (map[string][]placedTunnel, error) {
-	accounts, err := api.Accounts(ctx)
+	listed, err := api.Accounts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing the accounts the token sees: %w", err)
 	}
+	zones, err := api.Zones(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing the zones the token sees: %w", err)
+	}
+	accounts := make(map[string]bool)
+	for _, a := range listed {
+		accounts[a.ID] = true
+	}
+	for _, z := range zones {
+		accounts[z.AccountID] = true
+	}
 	found := make(map[string][]placedTunnel)
-	for _, a := range accounts {
+	for _, account := range slices.Sorted(maps.Keys(accounts)) {
 		// The prefix of the name of every tunnel pco makes.
-		tunnels, err := api.Tunnels(ctx, a.ID, planner.TunnelName(""))
+		tunnels, err := api.Tunnels(ctx, account, planner.TunnelName(""))
 		if err != nil {
-			return nil, fmt.Errorf("listing the tunnels of account %s: %w", a.Name, err)
+			return nil, fmt.Errorf("listing the tunnels of account %s: %w", account, err)
 		}
 		for _, t := range tunnels {
 			if id, ok := installOf(t.Name); ok {
-				found[id] = append(found[id], placedTunnel{account: a.ID, tunnel: t})
+				found[id] = append(found[id], placedTunnel{account: account, tunnel: t})
 			}
 		}
 	}
@@ -113,7 +152,8 @@ func installOf(name string) (string, bool) {
 func (r *run) chooseInstall(found map[string][]placedTunnel) (string, error) {
 	if id := r.o.InstallID; id != "" {
 		if len(found[id]) == 0 {
-			r.ask.Warn("the token sees no tunnel of install %s; its writer starts from generation 1", id)
+			return "", fmt.Errorf("the token sees no tunnel of install %s, so the generation its writer used is unknown: "+
+				"check the id, or recover with a token that sees the account of its tunnel", id)
 		}
 		return id, nil
 	}
@@ -156,9 +196,9 @@ func (r *run) adopt(id string, highest int) error {
 	if err != nil {
 		return fmt.Errorf("reading the install: %w", err)
 	}
-	if found && inst.ID != id && r.o.InstallID == "" {
-		return fmt.Errorf("the store holds install %s and Cloudflare shows install %s: pass --install-id %s to adopt it",
-			inst.ID, id, id)
+	if found && inst.ID != id {
+		return fmt.Errorf("the store holds install %s, not %s, and recovery never replaces an install: "+
+			"remove it with pco uninstall first, or recover install %s with --install-id %s", inst.ID, id, inst.ID, inst.ID)
 	}
 	created := r.now()
 	if found && inst.ID == id {

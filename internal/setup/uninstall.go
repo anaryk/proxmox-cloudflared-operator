@@ -188,15 +188,22 @@ func (u *uninstall) decideCloudflared() (bool, error) {
 }
 
 // stopDaemon stops the daemon, which would otherwise make again what is
-// removed. One that does not stop stops the uninstall before anything goes.
+// removed. One that does not stop, and one run by hand, which systemd cannot
+// stop, stop the uninstall before anything goes.
 func (u *uninstall) stopDaemon(ctx context.Context) error {
-	if !u.found.unit {
-		return nil
+	if u.found.unit {
+		if _, err := u.run.Run(ctx, "systemctl", "disable", "--now", serviceUnit); err != nil {
+			return fmt.Errorf("stopping %s: %w; nothing was removed: stop the daemon, then run pco uninstall again", serviceUnit, err)
+		}
+		u.ask.Info("%s: stopped and disabled", serviceUnit)
 	}
-	if _, err := u.run.Run(ctx, "systemctl", "disable", "--now", serviceUnit); err != nil {
-		return fmt.Errorf("stopping %s: %w; nothing was removed: stop the daemon, then run pco uninstall again", serviceUnit, err)
+	locked, err := u.daemonLocked()
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w; nothing was removed", err)
+	case locked:
+		return fmt.Errorf("%w, then run pco uninstall again; nothing was removed", u.errRunsByHand())
 	}
-	u.ask.Info("%s: stopped and disabled", serviceUnit)
 	return nil
 }
 

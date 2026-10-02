@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -294,8 +296,15 @@ func (r *run) ensureToken(ctx context.Context) error {
 	separated := exists && tok.Privsep != nil && bool(*tok.Privsep)
 	switch {
 	case exists && found && stored.TokenID == tokenID && !separated:
-		r.ask.Info("token %s: nothing needed", tokenID)
-		return nil
+		err := r.host.checkToken(ctx, stored)
+		if err == nil {
+			r.ask.Info("token %s: nothing needed", tokenID)
+			return nil
+		}
+		if !refusedByProxmox(err) {
+			return fmt.Errorf("checking the stored secret of token %s with Proxmox: %w", tokenID, err)
+		}
+		r.ask.Warn("Proxmox refuses the stored secret of token %s: making it anew", tokenID)
 	case separated:
 		r.ask.Warn("token %s is privilege separated and lacks the privileges of role %s: making it anew", tokenID, roleID)
 	case exists:
@@ -327,6 +336,12 @@ func (r *run) createToken(ctx context.Context) error {
 	r.newPVEToken = true
 	r.ask.Info("token %s: created", tokenID)
 	return nil
+}
+
+// refusedByProxmox reports whether Proxmox refused a token: an answer 401.
+func refusedByProxmox(err error) bool {
+	var apiErr *pve.APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized
 }
 
 // tokenSecret reads the secret from what pveum user token add printed. That

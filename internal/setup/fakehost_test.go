@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // errKilled is what a fakeHost panics with to stop setup where a kill would:
@@ -35,6 +39,7 @@ type fakeHost struct {
 	enabled     map[string]bool
 	tables      []string
 	secrets     int
+	secret      string // of the token pco@pve!pco, while there is one
 
 	ran      []string
 	killedAt int  // the command, counted from 1, that the host dies at; 0: none
@@ -158,7 +163,7 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		h.users = slices.DeleteFunc(h.users, func(u string) bool { return u == args[2] })
 		h.acl = slices.DeleteFunc(h.acl, func(a pveACL) bool { return a.UGID == args[2] })
 		if args[2] == userID {
-			h.tokens = nil
+			h.tokens, h.secret = nil, ""
 		}
 		return "", nil
 
@@ -190,12 +195,13 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		}
 		h.tokens = append(h.tokens, tokenName)
 		h.secrets++
-		return asJSON(map[string]any{"full-tokenid": tokenID, "value": "pve-secret-" + strconv.Itoa(h.secrets)}), nil
+		h.secret = "pve-secret-" + strconv.Itoa(h.secrets)
+		return asJSON(map[string]any{"full-tokenid": tokenID, "value": h.secret}), nil
 	case cmd == "pveum user token remove pco@pve pco":
 		if !slices.Contains(h.tokens, tokenName) {
 			return "", exitErr(255, "no such token 'pco' for user 'pco@pve'")
 		}
-		h.tokens = nil
+		h.tokens, h.secret = nil, ""
 		return "", nil
 
 	case cmd == "pvesh get /cluster/options --output-format json":
@@ -270,9 +276,20 @@ func sameGrant(a, b pveACL) bool {
 	return a.Path == b.Path && a.Type == b.Type && a.UGID == b.UGID && a.Role == b.Role
 }
 
-// onHost makes the env run its commands on h instead of a script.
+// onHost makes the env run its commands on h instead of a script, and check
+// the Proxmox token against it.
 func (e *testEnv) onHost(h *fakeHost) {
 	e.s.run = h
+	e.s.host.checkToken = h.checkToken
+}
+
+// checkToken answers as the API of the host: the secret of the token it has,
+// or a 401.
+func (h *fakeHost) checkToken(_ context.Context, tok store.PVEToken) error {
+	if tok.TokenID != tokenID || h.secret == "" || !tok.Secret.Equal(store.NewSecret(h.secret)) {
+		return &pve.APIError{Status: http.StatusUnauthorized, Message: "authentication failure"}
+	}
+	return nil
 }
 
 // killed runs f and reports whether the host killed it.

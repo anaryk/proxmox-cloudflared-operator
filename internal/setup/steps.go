@@ -83,10 +83,14 @@ func (r *run) prepareStore(ctx context.Context) error {
 	case err != nil:
 		return fmt.Errorf("reading the writer identity: %w", err)
 	case !found:
+		// Generation 1 is fenced: a writer above it is never taken for this
+		// one. If the install wrote to Cloudflare before, its daemon stops
+		// writing until a recovery takes a generation above the one in use.
 		if err := r.saveWriter(inst.ID, 1); err != nil {
 			return err
 		}
-		r.ask.Info("store: install %s kept; wrote its missing writer identity", inst.ID)
+		r.ask.Warn("store: install %s had no writer identity; wrote one of generation 1. If this install wrote to "+
+			"Cloudflare before, run pco setup --recover to take a generation above the one in use", inst.ID)
 	case w.InstallID != inst.ID:
 		return fmt.Errorf("leader.json names install %s, but this is install %s; run pco setup --recover", w.InstallID, inst.ID)
 	default:

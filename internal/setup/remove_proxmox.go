@@ -136,9 +136,9 @@ func (u *uninstall) checkGrantGone(ctx context.Context) {
 }
 
 // roleVerdict reports whether role PCO goes, and why not when it stays. It
-// goes when setup created it and it grants what setup gave it and nothing
-// else: a privilege an admin added or took away says the role is used for
-// more.
+// goes when setup created it, it grants what setup gave it and nothing else,
+// and nobody but pco@pve holds it: a privilege an admin added or took away,
+// or a grant to another user, group or token, says the role is used for more.
 func (u *uninstall) roleVerdict() (goes bool, why string) {
 	role := u.found.proxmox.role
 	switch {
@@ -148,6 +148,15 @@ func (u *uninstall) roleVerdict() (goes bool, why string) {
 		return false, "it is gone"
 	case !isSetupRole(*role):
 		return false, roleChange(role.Privs)
+	}
+	var others []string
+	for _, a := range u.found.proxmox.acl {
+		if a.Role == roleID && !isGrant(a) && !slices.Contains(others, a.UGID) {
+			others = append(others, a.UGID)
+		}
+	}
+	if len(others) > 0 {
+		return false, "it is granted to " + strings.Join(others, ", ") + " as well, who keep it"
 	}
 	return true, ""
 }

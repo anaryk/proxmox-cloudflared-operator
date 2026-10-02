@@ -221,13 +221,14 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	e.s = New(e.run, e.ask, st, newClient, func() time.Time { return t0 }, mathrand.NewChaCha8([32]byte{1}))
 	e.s.host = host{
-		paths:    e.paths,
-		pveDir:   "/etc/pve",
-		keyring:  filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
-		sources:  filepath.Join(base, "sources", "cloudflared.sources"),
-		unitDirs: []string{filepath.Join(base, "units")},
-		euid:     func() int { return 0 },
-		hostname: func() (string, error) { return testNode + ".example.com", nil },
+		paths:      e.paths,
+		pveDir:     "/etc/pve",
+		keyring:    filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
+		sources:    filepath.Join(base, "sources", "cloudflared.sources"),
+		unitDirs:   []string{filepath.Join(base, "units")},
+		euid:       func() int { return 0 },
+		hostname:   func() (string, error) { return testNode + ".example.com", nil },
+		checkToken: func(context.Context, store.PVEToken) error { return nil },
 	}
 	return e
 }
@@ -437,7 +438,7 @@ func cloudflaredKept() []call {
 	return []call{{line: "/usr/bin/cloudflared --version", out: "cloudflared version 2025.9.1 (built 2025-09-22-1234 UTC)\n"}}
 }
 
-func daemon(state string) []call {
+func daemonIs(state string) []call {
 	c := call{line: "systemctl is-active pco.service", out: state + "\n"}
 	if state != "active" {
 		c.err = exitErr(3, "")
