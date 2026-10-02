@@ -343,6 +343,69 @@ func TestARouteThatSaysHTTPToAnOriginThatSpeaksTLS(t *testing.T) {
 	})
 }
 
+// What the last cycle did not check is not told as ok: the dns, ingress and
+// connector steps warn, and say why.
+func TestLinksALastCycleDidNotCheckAreNotOk(t *testing.T) {
+	const held = "not checked in the last cycle: no writer identity; run pco setup"
+	for _, tt := range []struct {
+		name   string
+		tunnel func(tv *engine.TunnelView)
+	}{
+		{"a tunnel the state carries", func(tv *engine.TunnelView) { tv.Held, tv.Verified = held, false }},
+		{"a tunnel not seen since a restart", func(tv *engine.TunnelView) {
+			*tv = engine.TunnelView{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", Unknown: true}, Held: held}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newOrigin(t, false, nil)
+			st := servedBy(t, o.Server, "http")
+			tt.tunnel(&st.Tunnels[0])
+			st.Conflicts = []reconcile.Conflict{{Zone: "example.com", Name: www, Type: "A", Content: "192.0.2.10"}}
+
+			steps, err := DiagnoseRoute(t.Context(), st, www, nil)
+
+			require.NoError(t, err)
+			for _, i := range []int{2, 3, 4} {
+				require.Equal(t, Step{Name: stepNames[i], Level: LevelWarn, Detail: held}, steps[i])
+			}
+		})
+	}
+}
+
+// The route that lost the hostname may come first: the one that holds it is
+// diagnosed.
+func TestTheHolderIsDiagnosedWhicheverRouteComesFirst(t *testing.T) {
+	o := newOrigin(t, false, nil)
+	st := servedBy(t, o.Server, "http")
+	loser := st.Routes[0]
+	loser.Owner, loser.State, loser.Reason, loser.Rule, loser.Guest = "qemu/102", planner.StateConflict, "hostname is held by qemu/101", nil, nil
+	st.Routes = append([]engine.RouteView{loser}, st.Routes...)
+
+	steps, err := DiagnoseRoute(t.Context(), st, www, nil)
+
+	require.NoError(t, err)
+	require.Equal(t, "qemu/101 (web-1) holds it; state active", steps[0].Detail)
+	require.Equal(t, LevelOK, steps[7].Level)
+}
+
+// When the rule says the name TLS asks for follows the Host, it is the Host
+// the tunnel sends, after the override of the route.
+func TestTheNameTLSAsksForFollowsTheHostSent(t *testing.T) {
+	o := newOrigin(t, true, nil)
+	st := servedBy(t, o.Server, "https")
+	st.Routes[0].Hostname, st.Routes[0].Rule.Hostname = "*.example.com", "*.example.com"
+	st.Routes[0].Rule.HTTPHostHeader, st.Routes[0].Rule.MatchSNIToHost = "intranet.example.com", true
+
+	steps, err := DiagnoseRoute(t.Context(), st, "*.example.com", o.Client())
+
+	require.NoError(t, err)
+	require.Equal(t, LevelOK, steps[7].Level, steps[7].Detail)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	require.Equal(t, []string{"intranet.example.com"}, o.snis)
+	require.Equal(t, []string{"intranet.example.com"}, o.hosts)
+}
+
 // alerting is a server that answers whatever it is sent with a TLS alert, as
 // a TLS server does that is spoken to in plain HTTP.
 func alerting(t *testing.T) *httptest.Server {

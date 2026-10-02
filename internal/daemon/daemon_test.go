@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,7 +154,13 @@ func TestTheDaemonServesTheDoctorAndTheDiagnosis(t *testing.T) {
 		dialed = append(dialed, network+" "+addr)
 		return nil, errors.New("no network in this test")
 	}
-	w.deps.Cloudflared = filepath.Join(w.dir, "no-cloudflared")
+	w.deps.Cloudflared = filepath.Join(w.dir, "cloudflared")
+	require.NoError(t, os.WriteFile(w.deps.Cloudflared, []byte("#!/bin/sh\necho 'cloudflared version 2026.9.0 (built 2026-09-10-1200 UTC)'\n"), 0o700))
+	// The clock of the daemon, which the test moves past the time a doctor
+	// run is kept.
+	var skew atomic.Int64
+	clock := w.deps.Now
+	w.deps.Now = func() time.Time { return clock().Add(time.Duration(skew.Load())) }
 	d := w.start()
 	ctx := t.Context()
 	require.NoError(t, d.client.Sync(ctx))
@@ -172,7 +179,8 @@ func TestTheDaemonServesTheDoctorAndTheDiagnosis(t *testing.T) {
 	require.Equal(t, doctor.LevelOK, byCheck["node lock"].Level, byCheck["node lock"].Detail)
 	require.Equal(t, doctor.LevelOK, byCheck["store"].Level, byCheck["store"].Detail)
 	require.Equal(t, doctor.Finding{Check: "proxmox", Level: doctor.LevelOK, Detail: "Proxmox VE 9.0"}, byCheck["proxmox"])
-	require.Equal(t, doctor.LevelFail, byCheck["cloudflared"].Level)
+	require.Equal(t, doctor.Finding{Check: "cloudflared", Level: doctor.LevelOK, Detail: "cloudflared 2026.9.0"}, byCheck["cloudflared"],
+		"the binary the daemon was given")
 	require.Equal(t, doctor.LevelWarn, byCheck["mode"].Level)
 	mu.Lock()
 	require.Equal(t, []string{"tcp region1.v2.argotunnel.com:7844"}, dialed)
@@ -188,6 +196,7 @@ func TestTheDaemonServesTheDoctorAndTheDiagnosis(t *testing.T) {
 
 	// The lock the doctor looks at is the one this daemon holds.
 	require.NoError(t, os.Remove(filepath.Join(w.paths.Local, lockName)))
+	skew.Add(int64(6 * time.Second))
 	findings, err = d.client.Doctor(ctx)
 	require.NoError(t, err)
 	i := slices.IndexFunc(findings, func(f doctor.Finding) bool { return f.Check == "node lock" })

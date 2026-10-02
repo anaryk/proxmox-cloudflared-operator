@@ -79,6 +79,60 @@ echo "second line"`)
 	require.Equal(t, "cloudflared version 2026.9.0 (built 2026-09-10-1200 UTC)", v)
 }
 
+// cloudflared --version gets the deadline of the host, which reads as a
+// timeout, and a child that keeps its output open does not hold the call.
+func TestCloudflaredIsAskedWithinADeadline(t *testing.T) {
+	t.Run("a cloudflared that does not answer", func(t *testing.T) {
+		env, _, _ := hostEnv(t)
+		env.Timeout = 100 * time.Millisecond
+		env.Binary = fakeBinary(t, "exec sleep 5")
+
+		_, err := env.CloudflaredVersion(t.Context())
+
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+	t.Run("a child that keeps the output open", func(t *testing.T) {
+		// The script gets a second to start and end, however busy the
+		// machine; its child would hold the output for ten.
+		env, _, _ := hostEnv(t)
+		env.Timeout = 2 * time.Second
+		env.Binary = fakeBinary(t, `sleep 10 &
+echo "cloudflared version 2026.9.0"`)
+		start := time.Now()
+
+		v, err := env.CloudflaredVersion(t.Context())
+
+		require.NoError(t, err)
+		require.Equal(t, "cloudflared version 2026.9.0", v)
+		require.Less(t, time.Since(start), 8*time.Second, "the call did not wait for the child")
+	})
+	t.Run("an answer that does not end", func(t *testing.T) {
+		env, _, _ := hostEnv(t)
+		env.Binary = fakeBinary(t, `i=0
+while [ $i -lt 100 ]; do printf '%0100d' 0; i=$((i+1)); done
+echo`)
+
+		v, err := env.CloudflaredVersion(t.Context())
+
+		require.NoError(t, err)
+		require.Len(t, v, maxVersionOutput)
+	})
+}
+
+// A store or a lock that does not answer, as on a stalled cluster filesystem,
+// does not hold the doctor.
+func TestTheChecksOfTheDaemonHaveADeadline(t *testing.T) {
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	env, _, _ := hostEnv(t)
+	env.Timeout = 50 * time.Millisecond
+	env.StoreCheck = func() error { <-stuck; return nil }
+	env.LockCheck = func() error { <-stuck; return nil }
+
+	require.ErrorIs(t, env.Store(t.Context()), context.DeadlineExceeded)
+	require.ErrorIs(t, env.NodeLock(t.Context()), context.DeadlineExceeded)
+}
+
 func TestACloudflaredThatDoesNotRun(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		env, _, _ := hostEnv(t)

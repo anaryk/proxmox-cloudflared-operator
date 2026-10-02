@@ -155,7 +155,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
-	doc := doctor.Runner{State: eng.State, Env: &doctor.HostEnv{
+	doc := doctor.NewRunner(eng.State, &doctor.HostEnv{
 		Systemd:    deps.Systemd,
 		Proxmox:    client,
 		Interval:   eng.PollInterval,
@@ -164,7 +164,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		LockCheck:  lock.check,
 		Binary:     deps.Cloudflared,
 		Dial:       deps.Dial,
-	}}
+	}, nil, deps.Now)
 	gid, uids := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
@@ -196,7 +196,7 @@ func logStart(log zerolog.Logger, cfg Config, st *store.Store) {
 // its state.
 type served struct {
 	*engine.Engine
-	doc doctor.Runner
+	doc *doctor.Runner
 }
 
 func (s served) Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error) {

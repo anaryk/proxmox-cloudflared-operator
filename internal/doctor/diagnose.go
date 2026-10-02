@@ -172,7 +172,20 @@ func (d *diagnosis) same(name string) bool {
 	return strings.EqualFold(strings.TrimSuffix(name, "."), d.host)
 }
 
+// unchecked is the held reason of the route's tunnel when the last cycle did
+// not check Cloudflare, and empty otherwise. What the state shows of the
+// records, the rules and the connectors is then not what is there now.
+func (d *diagnosis) unchecked() string {
+	if d.tunnel != nil && strings.HasPrefix(d.tunnel.Held, engine.HeldUnchecked) {
+		return d.tunnel.Held
+	}
+	return ""
+}
+
 func (d *diagnosis) dns() Step {
+	if why := d.unchecked(); why != "" {
+		return warned(why)
+	}
 	if i := slices.IndexFunc(d.st.Conflicts, func(c reconcile.Conflict) bool { return d.same(c.Name) }); i >= 0 {
 		c := d.st.Conflicts[i]
 		return failed(fmt.Sprintf("a record of someone else holds the name in zone %s: %s %s; pco adopt %s replaces it", c.Zone, c.Type, c.Content, d.host))
@@ -196,6 +209,8 @@ func (d *diagnosis) ingress() Step {
 	switch {
 	case r == nil || d.rt.Account == "":
 		return failed("the plan has no rule for it")
+	case d.unchecked() != "":
+		return warned(d.unchecked())
 	case t == nil || !t.Exists && !t.Unknown:
 		return failed(fmt.Sprintf("the tunnel of account %s does not exist yet", d.rt.Account))
 	case t.Unknown:
@@ -219,6 +234,9 @@ func (d *diagnosis) targetIsTheCause() bool {
 }
 
 func (d *diagnosis) connector() Step {
+	if why := d.unchecked(); why != "" {
+		return warned(why)
+	}
 	t := d.tunnel
 	if t == nil || t.ID == "" {
 		return failed("the tunnel has no id yet")
@@ -322,13 +340,13 @@ func (d *diagnosis) target() (target, bool) {
 	if c, ok := d.candidate(ap.Addr()); !ok || !c.OK {
 		return target{}, false
 	}
-	host := requestHost(d.host)
-	t := target{scheme: scheme, addr: ap, host: cmp.Or(r.HTTPHostHeader, host), verify: !r.NoTLSVerify}
+	t := target{scheme: scheme, addr: ap, host: cmp.Or(r.HTTPHostHeader, requestHost(d.host)), verify: !r.NoTLSVerify}
 	switch {
 	case r.OriginServerName != "":
 		t.sni = r.OriginServerName
 	case r.MatchSNIToHost:
-		t.sni = host
+		// The name follows the Host the tunnel sends, after the override.
+		t.sni = t.host
 	}
 	return t, true
 }

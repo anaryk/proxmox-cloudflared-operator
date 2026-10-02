@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +94,7 @@ func TestAHealthyInstallation(t *testing.T) {
 		{Check: "mode", Level: LevelOK, Detail: "enforce: changes are applied"},
 		{Check: "node lock", Level: LevelOK, Detail: "this daemon holds the lock of the node"},
 		{Check: "outbound", Level: LevelOK, Detail: "region1.v2.argotunnel.com:7844 answers over TCP"},
+		{Check: "problems", Level: LevelOK, Detail: "the last cycle found no problem"},
 		{Check: "proxmox", Level: LevelOK, Detail: "Proxmox VE 9.0"},
 		{Check: "store", Level: LevelOK, Detail: "the store is mounted and set up"},
 		{Check: "tunnel pco-abc123 in account acc1", Level: LevelOK, Detail: "configuration version 3 is verified"},
@@ -110,13 +113,28 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 	}{
 		{"observe-only mode", func(st *engine.State) { st.Mode = "observe" }, nil,
 			Finding{Check: "mode", Level: LevelWarn, Detail: "observe-only: nothing is changed at Cloudflare", Fix: "pco apply"}},
-		{"no cycle yet", func(st *engine.State) { st.At = time.Time{} }, nil,
-			Finding{Check: "cycle", Level: LevelWarn, Detail: "no cycle has run yet", Fix: "wait for the first cycle; journalctl -u pco says why it does not come"}},
 		{"a cycle three intervals old", func(st *engine.State) { st.At = now.Add(-30 * time.Second) }, nil,
 			Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 30s ago"}},
 		{"a cycle older than three intervals", func(st *engine.State) { st.At = now.Add(-31 * time.Second) }, nil,
-			Finding{Check: "cycle", Level: LevelFail, Detail: "the last cycle ran 31s ago, more than three poll intervals of 10s",
+			Finding{Check: "cycle", Level: LevelWarn, Detail: "the last cycle ran 31s ago, more than three poll intervals of 10s",
 				Fix: "journalctl -u pco says what holds the cycles up"}},
+		{"a cycle six intervals old", func(st *engine.State) { st.At = now.Add(-60 * time.Second) }, nil,
+			Finding{Check: "cycle", Level: LevelWarn, Detail: "the last cycle ran 1m0s ago, more than three poll intervals of 10s",
+				Fix: "journalctl -u pco says what holds the cycles up"}},
+		{"a cycle older than six intervals", func(st *engine.State) { st.At = now.Add(-61 * time.Second) }, nil,
+			Finding{Check: "cycle", Level: LevelFail, Detail: "the last cycle ran 1m1s ago, more than six poll intervals of 10s",
+				Fix: "journalctl -u pco says what holds the cycles up"}},
+		{"a daemon that holds", func(st *engine.State) {
+			st.Problems = []string{
+				"reading what the engine remembered: unexpected end of JSON input; nothing is changed at Cloudflare until it can be read",
+				"the inventory is incomplete",
+			}
+		}, nil, Finding{Check: "problems", Level: LevelFail,
+			Detail: "2 problems; the first: reading what the engine remembered: unexpected end of JSON input; " +
+				"nothing is changed at Cloudflare until it can be read",
+			Fix: "pco status"}},
+		{"one problem", func(st *engine.State) { st.Problems = []string{"saving the claims: disk full"} }, nil,
+			Finding{Check: "problems", Level: LevelFail, Detail: "1 problem: saving the claims: disk full", Fix: "pco status"}},
 		{"a long poll interval", func(st *engine.State) { st.At = now.Add(-2 * time.Minute) }, func(env *fakeEnv) { env.interval = time.Minute },
 			Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 2m0s ago"}},
 		{"an incomplete inventory", func(st *engine.State) { st.Complete = false }, nil,
@@ -154,6 +172,10 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 		{"no cloudflared", nil, func(env *fakeEnv) { env.versionErr = errors.New(`exec: "/usr/bin/cloudflared": file does not exist`) },
 			Finding{Check: "cloudflared", Level: LevelFail, Detail: `cloudflared does not run: exec: "/usr/bin/cloudflared": file does not exist`,
 				Fix: "install cloudflared from the package repository of Cloudflare"}},
+		{"a cloudflared that does not answer in time", nil, func(env *fakeEnv) {
+			env.versionErr = fmt.Errorf("cloudflared --version: %w", context.DeadlineExceeded)
+		}, Finding{Check: "cloudflared", Level: LevelWarn, Detail: "cloudflared --version did not answer in time",
+			Fix: "run cloudflared --version by hand to see what holds it up"}},
 		{"a version that cannot be read", nil, func(env *fakeEnv) { env.version = "cloudflared version DEV" },
 			Finding{Check: "cloudflared", Level: LevelWarn, Detail: `cannot tell the version from "cloudflared version DEV"`, Fix: "update cloudflared"}},
 		{"a cloudflared more than a year old", nil, func(env *fakeEnv) { env.version = "cloudflared version 2025.9.2 (built 2025-09-30)" },
@@ -173,9 +195,10 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 		{"systemd that does not answer", nil, func(env *fakeEnv) { env.unitErr = errors.New("systemctl: timeout") },
 			Finding{Check: "connector pco-abc123 in account acc1", Level: LevelWarn, Detail: "systemd did not say whether it runs: systemctl: timeout",
 				Fix: "systemctl status pco-cloudflared@" + tunnelID + ".service"}},
-		{"no way out", nil, func(env *fakeEnv) { env.dialErr = errors.New("dial tcp: i/o timeout") },
-			Finding{Check: "outbound", Level: LevelFail, Detail: "region1.v2.argotunnel.com:7844 cannot be reached over TCP: dial tcp: i/o timeout",
-				Fix: "allow outbound TCP and UDP to port 7844"}},
+		{"no way out over TCP while every connector is connected", nil, func(env *fakeEnv) { env.dialErr = errors.New("dial tcp: i/o timeout") },
+			Finding{Check: "outbound", Level: LevelWarn,
+				Detail: "region1.v2.argotunnel.com:7844 cannot be reached over TCP: dial tcp: i/o timeout; every connector is connected all the same, over QUIC perhaps",
+				Fix:    "allow outbound TCP and UDP to port 7844"}},
 		{"a stale writer", func(st *engine.State) { st.WriterVerdict = "stale" }, nil,
 			Finding{Check: "writer", Level: LevelFail, Detail: "a newer generation of this install writes the tunnel configuration",
 				Fix: "run pco setup --recover on the node that should write"}},
@@ -217,6 +240,10 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
 				Detail: "left as it is: account frozen: zone example.com is no longer listed by credential cred1",
 				Fix:    "pco status lists the problems that say why"}},
+		{"a tunnel the last cycle did not check", func(st *engine.State) {
+			st.Tunnels[0].Held, st.Tunnels[0].Verified = "not checked in the last cycle: no writer identity; run pco setup", false
+		}, nil, Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
+			Detail: "not checked in the last cycle: no writer identity; run pco setup", Fix: "pco status lists the problems that say why"}},
 		{"a configuration that is not verified", func(st *engine.State) { st.Tunnels[0].Verified = false }, nil,
 			Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn, Detail: "its configuration is not verified", Fix: "pco plan"}},
 		{"a tunnel not created yet", func(st *engine.State) {
@@ -258,6 +285,51 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 	}
 }
 
+// The way out over TCP is a failure only when a connector is not connected:
+// connected ones may be over QUIC.
+func TestTheWayOutIsAFailureWhenAConnectorIsNotConnected(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		state func(st *engine.State)
+	}{
+		{"a connector not ready", func(st *engine.State) { st.Connectors[0].Ready = false }},
+		{"no connector", func(st *engine.State) { st.Connectors, st.Tunnels = nil, nil }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, env := healthyState(), healthyEnv()
+			tt.state(&st)
+			env.dialErr = errors.New("dial tcp: i/o timeout")
+
+			findings := Run(t.Context(), st, env)
+
+			require.Contains(t, findings, Finding{Check: "outbound", Level: LevelFail,
+				Detail: "region1.v2.argotunnel.com:7844 cannot be reached over TCP: dial tcp: i/o timeout",
+				Fix:    "allow outbound TCP and UDP to port 7844"})
+		})
+	}
+}
+
+// Before the first cycle the state says nothing yet: what is read from it is
+// not known, and no failure.
+func TestBeforeTheFirstCycleTheStateTellsNothing(t *testing.T) {
+	findings := Run(t.Context(), engine.State{Mode: "observe", WriterVerdict: "ok"}, healthyEnv())
+
+	byCheck := map[string]Finding{}
+	for _, f := range findings {
+		byCheck[f.Check] = f
+		require.NotEqual(t, LevelFail, f.Level, "%s: %s", f.Check, f.Detail)
+	}
+	for _, check := range []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "waiting", "writer"} {
+		require.Equal(t, Finding{Check: check, Level: LevelWarn, Detail: "not known until the first cycle", Fix: "wait for the first cycle"},
+			byCheck[check], check)
+	}
+	require.Equal(t, Finding{Check: "cycle", Level: LevelWarn, Detail: "no cycle has run yet",
+		Fix: "wait for the first cycle; journalctl -u pco says why it does not come"}, byCheck["cycle"])
+	for _, check := range []string{"cloudflared", "node lock", "outbound", "proxmox", "store"} {
+		require.Equal(t, LevelOK, byCheck[check].Level, check)
+	}
+}
+
 func TestFindingsAreSortedAndOnlyOkHasNoFix(t *testing.T) {
 	st := healthyState()
 	st.Mode, st.Complete, st.WriterVerdict = "observe", false, "foreign"
@@ -283,7 +355,7 @@ func TestTheRunnerAsksAboutTheStateOfNow(t *testing.T) {
 	o := newOrigin(t, false, nil)
 	st := servedBy(t, o.Server, "http")
 	calls := 0
-	r := Runner{State: func() engine.State { calls++; return st }, Env: healthyEnv()}
+	r := NewRunner(func() engine.State { calls++; return st }, healthyEnv(), nil, (&testClock{t: now}).now)
 
 	steps, err := r.Diagnose(t.Context(), www)
 	require.NoError(t, err)
@@ -293,4 +365,102 @@ func TestTheRunnerAsksAboutTheStateOfNow(t *testing.T) {
 	require.Equal(t, 2, calls)
 	_, err = r.Diagnose(t.Context(), "nope.example.com")
 	require.ErrorIs(t, err, engine.ErrNotFound)
+	_, err = r.Diagnose(t.Context(), "not a host")
+	require.ErrorIs(t, err, engine.ErrInvalid)
+}
+
+// testClock is a time that moves when a test moves it.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// A diagnosis of a hostname runs once at a time, and its result serves for
+// five seconds: whoever may use the socket cannot make the daemon hammer an
+// origin.
+func TestOneDiagnosisOfAHostnameAtATime(t *testing.T) {
+	arrived, release := make(chan struct{}, 4), make(chan struct{})
+	o := newOrigin(t, false, func(w http.ResponseWriter, _ *http.Request) {
+		arrived <- struct{}{}
+		<-release
+	})
+	st := servedBy(t, o.Server, "http")
+	clock := &testClock{t: now}
+	r := NewRunner(func() engine.State { return st }, healthyEnv(), nil, clock.now)
+
+	results := make(chan []Step, 2)
+	go func() { steps, _ := r.Diagnose(t.Context(), www); results <- steps }()
+	<-arrived
+	go func() { steps, _ := r.Diagnose(t.Context(), "WWW.example.com"); results <- steps }()
+	close(release)
+	first, second := <-results, <-results
+
+	require.Equal(t, first, second)
+	require.Len(t, o.requests(), 1, "one request for both")
+	clock.advance(4 * time.Second)
+	_, err := r.Diagnose(t.Context(), www)
+	require.NoError(t, err)
+	require.Len(t, o.requests(), 1, "the result is kept for five seconds")
+	clock.advance(time.Second)
+	_, err = r.Diagnose(t.Context(), www)
+	require.NoError(t, err)
+	require.Len(t, o.requests(), 2, "and asked again after")
+}
+
+// blockingEnv is an Env whose cloudflared answers when the test lets it.
+type blockingEnv struct {
+	*fakeEnv
+	mu      sync.Mutex
+	runs    int
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingEnv) CloudflaredVersion(ctx context.Context) (string, error) {
+	b.mu.Lock()
+	b.runs++
+	b.mu.Unlock()
+	b.arrived <- struct{}{}
+	<-b.release
+	return b.fakeEnv.CloudflaredVersion(ctx)
+}
+
+func (b *blockingEnv) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.runs
+}
+
+func TestOneDoctorAtATime(t *testing.T) {
+	env := &blockingEnv{fakeEnv: healthyEnv(), arrived: make(chan struct{}, 4), release: make(chan struct{})}
+	clock := &testClock{t: now}
+	r := NewRunner(healthyState, env, nil, clock.now)
+
+	results := make(chan []Finding, 2)
+	go func() { results <- r.Doctor(t.Context()) }()
+	<-env.arrived
+	go func() { results <- r.Doctor(t.Context()) }()
+	close(env.release)
+	first, second := <-results, <-results
+
+	require.Equal(t, first, second)
+	require.Equal(t, 1, env.count(), "cloudflared was run once")
+	clock.advance(4 * time.Second)
+	r.Doctor(t.Context())
+	require.Equal(t, 1, env.count())
+	clock.advance(time.Second)
+	r.Doctor(t.Context())
+	require.Equal(t, 2, env.count())
 }

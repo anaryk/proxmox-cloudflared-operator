@@ -57,8 +57,10 @@ type cycleRun struct {
 	plan      planner.Plan
 
 	// cfHold says that nothing is changed at Cloudflare or on the
-	// connectors in this cycle; the problems say why.
+	// connectors in this cycle; the problems say why. checked says that the
+	// cycle got through to its DNS run and looked at the records.
 	cfHold        bool
+	checked       bool
 	recheck       recheck
 	tunnelVerdict reconcile.WriterVerdict
 	// tunnels are the states the tunnel run returned, which DNS must be given.
@@ -93,6 +95,9 @@ func (c *cycleRun) run() State {
 		c.reconcile()
 	}
 	c.saveMemory()
+	if !c.checked {
+		c.markUnchecked()
+	}
 	c.notePending(c.adoptWaits)
 	c.st.Waiting = c.offer.waiting(c.st.Routes)
 	c.st.Offer = offerOf(c.st.Waiting)

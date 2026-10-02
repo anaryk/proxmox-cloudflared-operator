@@ -53,6 +53,7 @@ func (c *cycleRun) reconcileDNS() {
 	c.st.Problems = append(c.st.Problems, res.Problems...)
 	if res.Looked && res.Verdict == reconcile.WriterProceed {
 		c.st.Conflicts, c.st.Lost = c.lookedAt(res)
+		c.checked = true
 	}
 	if res.Verdict != reconcile.WriterProceed {
 		c.st.WriterVerdict = verdictName(res.Verdict)

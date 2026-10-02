@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -57,8 +56,10 @@ const (
 	edge = "region1.v2.argotunnel.com:7844"
 	// expirySoon is how long before its expiry a token is pointed out.
 	expirySoon = 14 * 24 * time.Hour
-	// staleCycles is how many poll intervals the last cycle may be old.
-	staleCycles = 3
+	// lateCycles and staleCycles are how many poll intervals old the last
+	// cycle is late, and stale.
+	lateCycles  = 3
+	staleCycles = 6
 
 	fixProblems = "pco status lists the problems that say why"
 	fixNewToken = "add a new token with pco credential add, then remove this one"
@@ -70,17 +71,27 @@ var minPVE = [2]int{8, 4}
 // cloudflaredVersion finds YYYY.M.P in what cloudflared --version says.
 var cloudflaredVersion = regexp.MustCompile(`\b(\d{4})\.(\d{1,2})\.(\d+)\b`)
 
+// stateChecks are the checks that read nothing but the state, which says
+// nothing before the first cycle.
+var stateChecks = []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "waiting", "writer"}
+
 // Run checks the installation: the state the engine published and what env
 // tells of the host. Every check has a finding, sorted by check.
 func Run(ctx context.Context, st engine.State, env Env) []Finding {
-	var out []Finding
-	out = append(out, checkMode(st), checkCycle(st, env), checkInventory(st), checkWriter(st))
-	out = append(out, checkCredentials(st, env.Now())...)
-	out = append(out, checkCloudflared(ctx, env))
+	out := []Finding{
+		checkCycle(st, env), checkCloudflared(ctx, env), checkOutbound(ctx, st, env),
+		checkProxmox(ctx, env), checkStore(ctx, env), checkLock(ctx, env),
+	}
+	if st.At.IsZero() {
+		for _, check := range stateChecks {
+			out = append(out, warn(check, "not known until the first cycle", "wait for the first cycle"))
+		}
+	} else {
+		out = append(out, checkMode(st), checkInventory(st), checkWriter(st), checkProblems(st), checkConflicts(st), checkLost(st), checkWaiting(st))
+		out = append(out, checkCredentials(st, env.Now())...)
+		out = append(out, checkApprovals(st)...)
+	}
 	out = append(out, checkTunnels(ctx, st, env)...)
-	out = append(out, checkOutbound(ctx, env), checkConflicts(st), checkLost(st))
-	out = append(out, checkProxmox(ctx, env), checkStore(ctx, env), checkLock(ctx, env), checkWaiting(st))
-	out = append(out, checkApprovals(st)...)
 	slices.SortStableFunc(out, func(a, b Finding) int { return cmp.Compare(a.Check, b.Check) })
 	return out
 }
@@ -113,11 +124,28 @@ func checkCycle(st engine.State, env Env) Finding {
 		return warn("cycle", "no cycle has run yet", "wait for the first cycle; journalctl -u pco says why it does not come")
 	}
 	age := env.Now().Sub(st.At).Round(time.Second)
-	if age > staleCycles*interval {
-		return fail("cycle", fmt.Sprintf("the last cycle ran %s ago, more than three poll intervals of %s", age, interval),
+	switch {
+	case age > staleCycles*interval:
+		return fail("cycle", fmt.Sprintf("the last cycle ran %s ago, more than six poll intervals of %s", age, interval),
+			"journalctl -u pco says what holds the cycles up")
+	case age > lateCycles*interval:
+		return warn("cycle", fmt.Sprintf("the last cycle ran %s ago, more than three poll intervals of %s", age, interval),
 			"journalctl -u pco says what holds the cycles up")
 	}
 	return ok("cycle", fmt.Sprintf("the last cycle ran %s ago", max(age, 0)))
+}
+
+// checkProblems fails while the last cycle reported problems: most of them
+// hold the daemon, and none is in order.
+func checkProblems(st engine.State) Finding {
+	switch n := len(st.Problems); n {
+	case 0:
+		return ok("problems", "the last cycle found no problem")
+	case 1:
+		return fail("problems", "1 problem: "+st.Problems[0], "pco status")
+	default:
+		return fail("problems", fmt.Sprintf("%d problems; the first: %s", n, st.Problems[0]), "pco status")
+	}
 }
 
 func checkInventory(st engine.State) Finding {
@@ -208,7 +236,10 @@ func days(d time.Duration) string {
 
 func checkCloudflared(ctx context.Context, env Env) Finding {
 	out, err := env.CloudflaredVersion(ctx)
-	if err != nil {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return warn("cloudflared", "cloudflared --version did not answer in time", "run cloudflared --version by hand to see what holds it up")
+	case err != nil:
 		return fail("cloudflared", "cloudflared does not run: "+err.Error(), "install cloudflared from the package repository of Cloudflare")
 	}
 	m := cloudflaredVersion.FindStringSubmatch(out)
@@ -233,6 +264,8 @@ func checkTunnels(ctx context.Context, st engine.State, env Env) []Finding {
 		name := fmt.Sprintf("%s in account %s", t.Name, t.AccountID)
 		check := "tunnel " + name
 		switch {
+		case strings.HasPrefix(t.Held, engine.HeldUnchecked):
+			out = append(out, warn(check, t.Held, fixProblems))
 		case t.Held != "":
 			out = append(out, warn(check, "left as it is: "+t.Held, fixProblems))
 		case t.Unknown:
@@ -278,11 +311,25 @@ func connections(n int) string {
 	return fmt.Sprintf("active, ready, %d connections", n)
 }
 
-func checkOutbound(ctx context.Context, env Env) Finding {
-	if err := env.CanDial(ctx, "tcp", edge); err != nil {
-		return fail("outbound", edge+" cannot be reached over TCP: "+err.Error(), "allow outbound TCP and UDP to port 7844")
+// checkOutbound tries the way out to Cloudflare over TCP. Connectors that are
+// all connected may be over QUIC, so then a TCP that does not get through is
+// only a warning.
+func checkOutbound(ctx context.Context, st engine.State, env Env) Finding {
+	err := env.CanDial(ctx, "tcp", edge)
+	switch {
+	case err == nil:
+		return ok("outbound", edge+" answers over TCP")
+	case allConnected(st.Connectors):
+		return warn("outbound", edge+" cannot be reached over TCP: "+err.Error()+"; every connector is connected all the same, over QUIC perhaps",
+			fixOutbound)
 	}
-	return ok("outbound", edge+" answers over TCP")
+	return fail("outbound", edge+" cannot be reached over TCP: "+err.Error(), fixOutbound)
+}
+
+const fixOutbound = "allow outbound TCP and UDP to port 7844"
+
+func allConnected(conns []connector.Status) bool {
+	return len(conns) > 0 && !slices.ContainsFunc(conns, func(c connector.Status) bool { return !c.Ready })
 }
 
 func checkConflicts(st engine.State) Finding {
@@ -392,21 +439,3 @@ func checkApprovals(st engine.State) []Finding {
 	}
 	return out
 }
-
-// Runner runs the checks and the diagnosis against the state the engine
-// shows when it is asked.
-type Runner struct {
-	State func() engine.State
-	Env   Env
-	// HTTP lends the diagnosis the certificate authorities it trusts; nil
-	// trusts those of the system.
-	HTTP *http.Client
-}
-
-// Diagnose walks the chain of the route of a hostname.
-func (r Runner) Diagnose(ctx context.Context, hostname string) ([]Step, error) {
-	return DiagnoseRoute(ctx, r.State(), hostname, r.HTTP)
-}
-
-// Doctor checks the installation.
-func (r Runner) Doctor(ctx context.Context) []Finding { return Run(ctx, r.State(), r.Env) }
