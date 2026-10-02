@@ -69,6 +69,8 @@ func TestFirstCycleObservesAndWritesNothing(t *testing.T) {
 		},
 		Guest:      &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
 		Candidates: []resolve.CandidateResult{{Addr: guestAddr, Source: resolve.FromStatic, OK: true}},
+		Account:    testAccount,
+		Rule:       &planner.IngressRule{Hostname: "www.example.com", Service: "http://10.0.0.11:8080"},
 	}, route(st, "www.example.com"))
 	require.Equal(t, []TunnelView{{TunnelState: reconcile.TunnelState{AccountID: testAccount, CredentialID: testCred, Name: tunnelName}}}, st.Tunnels)
 	require.Empty(t, e.conn.ensures(), "observe mode starts no connector")

@@ -34,6 +34,12 @@ type RouteView struct {
 	planner.RouteStatus
 	Guest      *GuestView                `json:"guest,omitempty"` // nil for a route without a guest
 	Candidates []resolve.CandidateResult `json:"candidates,omitempty"`
+	// Account and Rule are, for a route that won its hostname, the account
+	// whose tunnel carries the hostname and the rule the plan gives it there:
+	// the one that serves it, or the one that answers 503 for it. Both are
+	// empty for a route that lost its hostname or has no tunnel.
+	Account string               `json:"accountId,omitempty"`
+	Rule    *planner.IngressRule `json:"rule,omitempty"`
 }
 
 // TunnelView is a tunnel of the install as the last cycle found it.
@@ -123,6 +129,10 @@ func (s State) clone() State {
 		if g := s.Routes[i].Guest; g != nil {
 			copied := *g
 			s.Routes[i].Guest = &copied
+		}
+		if r := s.Routes[i].Rule; r != nil {
+			copied := *r
+			s.Routes[i].Rule = &copied
 		}
 	}
 	s.Issues = slices.Clone(s.Issues)
@@ -221,6 +231,18 @@ func (c *cycleRun) routeViews() []RouteView {
 	for _, rt := range c.claims.Winners {
 		winner[rt.Hostname] = rt.Owner()
 	}
+	type planned struct {
+		account string
+		rule    planner.IngressRule
+	}
+	rules := make(map[string]planned)
+	for _, t := range c.plan.Tunnels {
+		for _, r := range t.Rules {
+			if r.Hostname != "" {
+				rules[r.Hostname] = planned{account: t.AccountID, rule: r}
+			}
+		}
+	}
 
 	out := make([]RouteView, 0, len(c.plan.Routes))
 	for _, st := range c.plan.Routes {
@@ -228,6 +250,10 @@ func (c *cycleRun) routeViews() []RouteView {
 			st.State, st.Reason, st.Service = RouteFrozen, "account frozen: "+why, ""
 		}
 		v := RouteView{RouteStatus: st}
+		if p, ok := rules[st.Hostname]; ok && st.State != planner.StateConflict {
+			rule := p.rule
+			v.Account, v.Rule = p.account, &rule
+		}
 		rt, ok := routes[key{st.Hostname, st.Owner}]
 		switch {
 		case ok && rt.Guest != nil:

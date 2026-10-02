@@ -245,6 +245,9 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 }
 
+// PollInterval is the time between two cycles, as the last settings read say.
+func (e *Engine) PollInterval() time.Duration { return time.Duration(e.interval.Load()) }
+
 // Trigger asks Run for a cycle now. Requests made while one is pending are
 // merged into it.
 func (e *Engine) Trigger() {

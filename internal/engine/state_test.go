@@ -214,11 +214,13 @@ func TestTheStateHandedOutIsACopy(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, st.Routes[0].Warnings)
 	require.NotEmpty(t, st.Routes[0].Candidates)
+	require.NotNil(t, st.Routes[0].Rule)
 	require.NotEmpty(t, st.Credentials[0].Report.Checks)
 
 	for _, got := range []State{st, e.eng.State()} {
 		got.Routes[0].Warnings[0] = "changed"
 		got.Routes[0].Candidates[0].Reason = "changed"
+		got.Routes[0].Rule.Service = "changed"
 		got.Credentials[0].Report.Checks[0].Detail = "changed"
 		got.Credentials[0].Report.Zones[0].Name = "changed"
 	}
