@@ -64,6 +64,7 @@ nfpms:
     mtime: "{{ .CommitDate }}"
     dependencies:
       - nftables
+      - systemd | systemd-standalone-sysusers | systemd-sysusers
     recommends:
       - cloudflared
     contents:
