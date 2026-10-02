@@ -133,7 +133,7 @@ func TestRoutesRefusesWhatItDoesNotKnow(t *testing.T) {
 	r, _ := daemonWith(t, healthyState())
 
 	res := r.run("", "routes", "--state", "sleeping")
-	require.EqualError(t, res.err, `unknown route state "sleeping": want one of active, unreachable, withdrawn, conflict, no-zone, held`)
+	require.EqualError(t, res.err, `unknown route state "sleeping": want one of active, unreachable, withdrawn, conflict, no-zone, held, frozen`)
 
 	res = r.run("", "routes", "--json", "--state", "held")
 	require.ErrorContains(t, res.err, "--state cannot be used with --json")

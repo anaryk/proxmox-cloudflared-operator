@@ -299,13 +299,30 @@ func (h hookedAPI) Records(ctx context.Context, zoneID string, f cfapi.RecordFil
 // left out, and a zone can be given another status.
 type zoneView struct {
 	cfapi.API
-	mu     *sync.Mutex
-	hidden map[string]bool   // by zone id
-	status map[string]string // by zone id
+	mu       *sync.Mutex
+	hidden   map[string]bool   // by zone id
+	status   map[string]string // by zone id
+	accounts map[string]bool   // account ids Accounts leaves out
 }
 
 func newZoneView(api cfapi.API) zoneView {
-	return zoneView{API: api, mu: &sync.Mutex{}, hidden: map[string]bool{}, status: map[string]string{}}
+	return zoneView{API: api, mu: &sync.Mutex{}, hidden: map[string]bool{}, status: map[string]string{}, accounts: map[string]bool{}}
+}
+
+func (z zoneView) Accounts(ctx context.Context) ([]cfapi.Account, error) {
+	all, err := z.API.Accounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return slices.DeleteFunc(all, func(a cfapi.Account) bool { return z.accounts[a.ID] }), nil
+}
+
+func (z zoneView) hideAccount(id string) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.accounts[id] = true
 }
 
 func (z zoneView) Zones(ctx context.Context) ([]cfapi.Zone, error) {

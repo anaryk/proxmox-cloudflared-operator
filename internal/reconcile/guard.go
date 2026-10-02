@@ -43,7 +43,7 @@ func (run *dnsRun) decideGuard(zones []*dnsZone) {
 	if pending <= s.MaxDeletes || float64(pending) <= s.MaxDeleteShare*float64(owned) {
 		return
 	}
-	guard := fmt.Sprintf("mass delete guard: %d of %d records are being removed", pending, owned)
+	guard := fmt.Sprintf("%s: %d of %d records are being removed", HeldByGuard, pending, owned)
 	if unlisted > 0 {
 		guard += fmt.Sprintf(" (%d in zones that could not be listed)", unlisted)
 	}

@@ -134,7 +134,7 @@ func (run *dnsRun) saveTombstones(ctx context.Context, beforeDeletes bool) {
 		if err := run.r.store.Save(ctx, maps.Clone(run.stones.m)); err != nil {
 			run.problem(fmt.Sprintf("saving dns tombstones: %v", err))
 			if beforeDeletes {
-				run.noDeletes = heldUnsaved
+				run.noDeletes = HeldUnsaved
 			}
 			return
 		}

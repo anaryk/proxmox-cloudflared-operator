@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
@@ -29,7 +30,7 @@ func (c *cycleRun) reconcileDNS() {
 			return c.zones.frozen[rp.AccountID]
 		}),
 		Zones:         c.zones.dns,
-		Tunnels:       c.st.Tunnels,
+		Tunnels:       c.tunnels,
 		TunnelVerdict: c.tunnelVerdict,
 		Keep:          c.kept(),
 		InventoryOK:   c.snap.Complete && !c.col.PolicyInvalid,
@@ -47,7 +48,7 @@ func (c *cycleRun) reconcileDNS() {
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
 	c.offer.guard = slices.ContainsFunc(res.Actions, func(a reconcile.Action) bool {
-		return a.Kind == reconcile.DeleteRecord && !a.Applied && strings.HasPrefix(a.Held, "mass delete guard")
+		return a.Kind == reconcile.DeleteRecord && !a.Applied && strings.HasPrefix(a.Held, reconcile.HeldByGuard)
 	})
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
@@ -67,7 +68,7 @@ func (c *cycleRun) reconcileDNS() {
 func (c *cycleRun) publishedThrough(records []planner.RecordPlan) map[string]reconcile.TunnelState {
 	out := make(map[string]reconcile.TunnelState, len(records))
 	for _, rp := range records {
-		for _, t := range c.st.Tunnels {
+		for _, t := range c.tunnels {
 			if t.AccountID == rp.AccountID && t.Name == rp.TunnelName {
 				out[strings.ToLower(rp.Name)] = t
 			}
@@ -136,22 +137,29 @@ func (c *cycleRun) kept() map[string]bool {
 	}
 	// The planner gives a target that must never be served no record: one
 	// that is there is retired, not kept.
-	for host := range c.rejectedOwners() {
+	for host := range c.rejectedRoutes() {
 		delete(keep, host)
 	}
 	return keep
 }
 
-// rejectedOwners maps every hostname whose winner's target was rejected in
-// this cycle to that owner.
-func (c *cycleRun) rejectedOwners() map[string]string {
-	out := make(map[string]string)
+// rejectedRoutes maps every hostname whose winner's target was rejected in
+// this cycle to that route.
+func (c *cycleRun) rejectedRoutes() map[string]model.Route {
+	out := make(map[string]model.Route)
 	for _, rt := range c.claims.Winners {
 		if res, ok := c.results[rt.Hostname]; ok && res.Target.Rejected {
-			out[strings.ToLower(rt.Hostname)] = rt.Owner()
+			out[strings.ToLower(rt.Hostname)] = rt
 		}
 	}
 	return out
+}
+
+// sameRoute reports whether two routes are the same: hostname, owner, target
+// and options.
+func sameRoute(a, b model.Route) bool {
+	return strings.EqualFold(a.Hostname, b.Hostname) && a.Owner() == b.Owner() &&
+		a.Source == b.Source && a.Target == b.Target && a.Options == b.Options
 }
 
 func (c *cycleRun) dnsSettings() reconcile.DNSSettings {
@@ -213,13 +221,14 @@ func (c *cycleRun) wantedNow(ctx context.Context) (map[string]bool, error) {
 	if col.PolicyInvalid {
 		return nil, fmt.Errorf("the settings contain an invalid allow or deny pattern")
 	}
-	// A route this cycle found rejected wants no record; the same route
-	// found again does not either. Another owner's route does.
-	rejected := c.rejectedOwners()
+	// A route this cycle found rejected wants no record; the very same route
+	// found again does not either. A route that changed, or another owner's,
+	// does: it was not resolved.
+	rejected := c.rejectedRoutes()
 	names := make(map[string]bool, len(col.Routes)+len(col.Held))
 	for _, rt := range col.Routes {
 		host := strings.ToLower(rt.Hostname)
-		if rejected[host] != rt.Owner() {
+		if was, ok := rejected[host]; !ok || !sameRoute(was, rt) {
 			names[host] = true
 		}
 	}

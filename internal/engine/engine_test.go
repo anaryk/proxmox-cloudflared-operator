@@ -70,7 +70,7 @@ func TestFirstCycleObservesAndWritesNothing(t *testing.T) {
 		Guest:      &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
 		Candidates: []resolve.CandidateResult{{Addr: guestAddr, Source: resolve.FromStatic, OK: true}},
 	}, route(st, "www.example.com"))
-	require.Equal(t, []reconcile.TunnelState{{AccountID: testAccount, CredentialID: testCred, Name: tunnelName}}, st.Tunnels)
+	require.Equal(t, []TunnelView{{TunnelState: reconcile.TunnelState{AccountID: testAccount, CredentialID: testCred, Name: tunnelName}}}, st.Tunnels)
 	require.Empty(t, e.conn.ensures(), "observe mode starts no connector")
 	require.Empty(t, e.conn.prunes())
 
@@ -212,6 +212,43 @@ func TestTheRecordOfARejectedTargetIsRetired(t *testing.T) {
 	claims, err := e.store.Claims()
 	require.NoError(t, err)
 	require.Contains(t, claims, "www.example.com", "the claim stays with its owner")
+}
+
+// rejectedAndDue is an engine whose www.example.com was rejected long enough
+// for its record to be due.
+func rejectedAndDue(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	e.res.reject("www.example.com", "address of a cluster node")
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	e.clock.advance(61 * time.Second)
+	return e
+}
+
+// Item 2: the guest changed its route between the cycle and the look right
+// before the delete; the changed route wants its record.
+func TestTheSecondLookCountsAChangedRouteAsWanted(t *testing.T) {
+	e := rejectedAndDue(t)
+	web := guest(101, "web-1", "www.example.com -> :8080")
+	e.inv.enqueue(snapshot(web), snapshot(guest(101, "web-1", "www.example.com -> :9090")))
+
+	e.cycle()
+
+	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+}
+
+// Item 7: another owner's route for the name wants its record.
+func TestTheSecondLookCountsAnotherOwnersRouteAsWanted(t *testing.T) {
+	e := rejectedAndDue(t)
+	web := guest(101, "web-1", "www.example.com -> :8080")
+	e.inv.enqueue(snapshot(web), snapshot(web, guest(102, "web-2", "www.example.com -> :8080")))
+
+	e.cycle()
+
+	require.Equal(t, []string{"www.example.com"}, e.recordNames())
 }
 
 // Review Focus 1: the daemon was killed after it created the tunnel and

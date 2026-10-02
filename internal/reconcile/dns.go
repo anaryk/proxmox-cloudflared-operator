@@ -26,7 +26,6 @@ const (
 	heldInventory     = "inventory incomplete"
 	heldWriter        = "writer changed"
 	heldUnreadable    = "writer unreadable"
-	heldUnsaved       = "tombstones not saved"
 	heldUnconfirmed   = "no inventory confirmation"
 	heldAskFailed     = "inventory confirmation failed"
 
@@ -34,6 +33,16 @@ const (
 	defaultMaxGap         = 2 * time.Minute
 	defaultMaxDeletes     = 5
 	defaultMaxDeleteShare = 0.30
+)
+
+// Held reasons of a delete that a caller may act on.
+const (
+	// HeldUnsaved holds the deletes of a run that could not save its
+	// tombstones before them.
+	HeldUnsaved = "tombstones not saved"
+	// HeldByGuard begins the held reason of a delete the mass delete guard
+	// holds until the admin confirms it.
+	HeldByGuard = "mass delete guard"
 )
 
 // DNSSettings tune the DNS reconciler. A setting that is zero or negative

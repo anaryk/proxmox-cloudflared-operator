@@ -14,6 +14,7 @@ import (
 const (
 	tunnelA = "0a1b2c3d-0000-4000-8000-000000000001"
 	tunnelB = "9f8e7d6c-0000-4000-8000-000000000002"
+	tunnelC = "5e5e5e5e-0000-4000-8000-000000000003"
 )
 
 func routeView(host, owner string, state planner.RouteState, service, zone, reason string, warnings ...string) engine.RouteView {
@@ -69,10 +70,10 @@ func healthyState() engine.State {
 			routeView("blog.example.com", "lxc/200", planner.StateActive, "http://10.0.0.20:80", "example.com", ""),
 			routeView("db.example.org", "qemu/103", planner.StateUnreachable, "", "example.org", "connection refused"),
 		},
-		Tunnels: []reconcile.TunnelState{
-			{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", ID: tunnelA, Version: 3, Exists: true, Verified: true},
-			{AccountID: "acc2", CredentialID: "cred1", Name: "pco-abc123", ID: tunnelB, Version: 1, Exists: true},
-			{AccountID: "acc3", CredentialID: "cred1", Name: "pco-abc123", Unknown: true},
+		Tunnels: []engine.TunnelView{
+			{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", ID: tunnelA, Version: 3, Exists: true, Verified: true}},
+			{TunnelState: reconcile.TunnelState{AccountID: "acc2", CredentialID: "cred1", Name: "pco-abc123", ID: tunnelB, Version: 1, Exists: true}},
+			{TunnelState: reconcile.TunnelState{AccountID: "acc3", CredentialID: "cred1", Name: "pco-abc123", Unknown: true}},
 		},
 		Connectors: []connector.Status{
 			{TunnelID: tunnelA, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"},
@@ -118,6 +119,15 @@ func problemState() engine.State {
 		"cluster status: proxmox api: HTTP 500: no quorum",
 		"the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are",
 	}
+	// An account the last cycle found frozen: its route and its tunnel are
+	// left as they are.
+	frozen := "account frozen: zone example.net is no longer listed by credential cred1"
+	st.Routes = append(st.Routes, routeView("shop.example.net", "qemu/104", engine.RouteFrozen, "", "example.net", frozen))
+	st.Tunnels = append(st.Tunnels, engine.TunnelView{
+		TunnelState: reconcile.TunnelState{AccountID: "acc4", CredentialID: "cred1", Name: "pco-abc123", ID: tunnelC, Exists: true},
+		Held:        frozen,
+	})
+	st.Connectors = append(st.Connectors, connector.Status{TunnelID: tunnelC, Active: true, Ready: true, Connections: 2, MetricsAddr: "127.0.0.1:20302"})
 	return st
 }
 

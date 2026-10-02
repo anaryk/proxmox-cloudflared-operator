@@ -70,6 +70,17 @@
       "exists": false,
       "verified": false,
       "unknown": true
+    },
+    {
+      "accountId": "acc3",
+      "credentialId": "cred1",
+      "name": "pco-abc123",
+      "id": "00000000-0000-4000-8000-000000000003",
+      "version": 0,
+      "exists": true,
+      "verified": false,
+      "unknown": false,
+      "held": "account frozen: zone example.info is no longer listed by credential cred1"
     }
   ],
   "connectors": [

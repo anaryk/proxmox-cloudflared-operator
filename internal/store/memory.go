@@ -12,6 +12,9 @@ const idEngineMemory = "engine-memory"
 // EngineMemory is what the reconcile cycle learns and must still know after a
 // restart: forgetting any of it would turn a hold into a removal.
 type EngineMemory struct {
+	// InstallID is the install the memory belongs to: a memory of another
+	// install, as after a new setup on the node, is not this one's.
+	InstallID string `json:"installId,omitempty"`
 	// Served are the zones as they were last served, each by one credential
 	// alone: who serves a zone that several credentials see, and what a
 	// credential listed before, so that a zone that left its listing while

@@ -8,6 +8,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
@@ -23,9 +24,9 @@ const (
 	verdictForeign = "foreign"
 	verdictUnknown = "unknown"
 
-	// stateFrozen is the state of a route whose account is frozen: what its
+	// RouteFrozen is the state of a route whose account is frozen: what its
 	// tunnel serves for it is not known.
-	stateFrozen planner.RouteState = "frozen"
+	RouteFrozen planner.RouteState = "frozen"
 )
 
 // RouteView is a route as the plan left it, with what resolution found.
@@ -33,6 +34,15 @@ type RouteView struct {
 	planner.RouteStatus
 	Guest      *GuestView                `json:"guest,omitempty"` // nil for a route without a guest
 	Candidates []resolve.CandidateResult `json:"candidates,omitempty"`
+}
+
+// TunnelView is a tunnel of the install as the last cycle found it.
+type TunnelView struct {
+	reconcile.TunnelState
+	// Held says why the cycle left the tunnel as it is, without bringing it
+	// in line: its account is frozen, it serves no zone pco sees, or no
+	// credential sees its account. Empty for a tunnel the cycle reconciled.
+	Held string `json:"held,omitempty"`
 }
 
 // GuestView names a guest: its reference, as an issue names it, and its name.
@@ -55,18 +65,18 @@ type CredentialView struct {
 // State is what the last cycle found and did. Every slice is sorted, so that
 // two cycles over the same world give equal states.
 type State struct {
-	At          time.Time               `json:"at,omitzero"`
-	Mode        string                  `json:"mode"`     // "observe" or "enforce"
-	Complete    bool                    `json:"complete"` // inventory completeness
-	Routes      []RouteView             `json:"routes"`   // by hostname, then owner
-	Issues      []planner.Issue         `json:"issues"`   // by guest, then position
-	Tunnels     []reconcile.TunnelState `json:"tunnels"`  // by account id
-	Connectors  []connector.Status      `json:"connectors"`
-	Credentials []CredentialView        `json:"credentials"`
-	Actions     []reconcile.Action      `json:"actions"` // tunnels by account, then records by zone and name
-	Conflicts   []reconcile.Conflict    `json:"conflicts"`
-	Lost        []string                `json:"lost"`
-	Problems    []string                `json:"problems"`
+	At          time.Time            `json:"at,omitzero"`
+	Mode        string               `json:"mode"`     // "observe" or "enforce"
+	Complete    bool                 `json:"complete"` // inventory completeness
+	Routes      []RouteView          `json:"routes"`   // by hostname, then owner
+	Issues      []planner.Issue      `json:"issues"`   // by guest, then position
+	Tunnels     []TunnelView         `json:"tunnels"`  // by account id
+	Connectors  []connector.Status   `json:"connectors"`
+	Credentials []CredentialView     `json:"credentials"`
+	Actions     []reconcile.Action   `json:"actions"` // tunnels by account, then records by zone and name
+	Conflicts   []reconcile.Conflict `json:"conflicts"`
+	Lost        []string             `json:"lost"`
+	Problems    []string             `json:"problems"`
 	// WriterVerdict is what the cycle found of the writer: "ok", "stale" or
 	// "foreign" as the reconcilers judged it, or "unknown" when leader.json
 	// could not be read or used. A cycle that did not get as far keeps the
@@ -144,7 +154,7 @@ func cloneReport(r credentials.Report) credentials.Report {
 func (s State) normalized() State {
 	s.Problems = slices.Compact(slices.Sorted(slices.Values(s.Problems)))
 	s.Lost = slices.Compact(slices.Sorted(slices.Values(s.Lost)))
-	slices.SortStableFunc(s.Tunnels, func(a, b reconcile.TunnelState) int {
+	slices.SortStableFunc(s.Tunnels, func(a, b TunnelView) int {
 		return cmp.Or(cmp.Compare(a.AccountID, b.AccountID), cmp.Compare(a.ID, b.ID))
 	})
 	slices.SortStableFunc(s.Connectors, func(a, b connector.Status) int { return cmp.Compare(a.TunnelID, b.TunnelID) })
@@ -198,14 +208,10 @@ func (c *cycleRun) routeViews() []RouteView {
 		winner[rt.Hostname] = rt.Owner()
 	}
 
-	accountOf := make(map[string]string, len(c.zones.planned))
-	for _, z := range c.zones.planned {
-		accountOf[z.Name] = z.AccountID
-	}
 	out := make([]RouteView, 0, len(c.plan.Routes))
 	for _, st := range c.plan.Routes {
-		if account := accountOf[st.Zone]; st.Zone != "" && c.zones.frozen[account] {
-			st.State, st.Reason, st.Service = stateFrozen, "account frozen: "+c.zones.frozenWhy[account], ""
+		if why, frozen := c.frozenFor(st); frozen {
+			st.State, st.Reason, st.Service = RouteFrozen, "account frozen: "+why, ""
 		}
 		v := RouteView{RouteStatus: st}
 		rt, ok := routes[key{st.Hostname, st.Owner}]
@@ -224,6 +230,30 @@ func (c *cycleRun) routeViews() []RouteView {
 		out = append(out, v)
 	}
 	return out
+}
+
+// frozenFor says why the route's account is frozen, when it is. A route the
+// planner gave no zone, as one in a zone two credentials see, is matched to
+// the zone of its name. A route that lost its hostname to another owner keeps
+// its state: it is served by nobody either way.
+func (c *cycleRun) frozenFor(st planner.RouteStatus) (string, bool) {
+	if st.State == planner.StateConflict || len(c.zones.frozen) == 0 {
+		return "", false
+	}
+	zone := st.Zone
+	names := make([]string, 0, len(c.zones.planned))
+	for _, z := range c.zones.planned {
+		names = append(names, z.Name)
+	}
+	if zone == "" {
+		zone, _ = hostname.MatchZone(st.Hostname, names)
+	}
+	for _, z := range c.zones.planned {
+		if z.Name == zone && c.zones.frozen[z.AccountID] {
+			return c.zones.frozenWhy[z.AccountID], true
+		}
+	}
+	return "", false
 }
 
 // guestView names a guest of the snapshot.

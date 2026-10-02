@@ -21,7 +21,11 @@ func (c *cycleRun) reconcileTunnels() bool {
 	plans := slices.DeleteFunc(slices.Clone(c.plan.Tunnels), func(p planner.TunnelPlan) bool { return c.zones.frozen[p.AccountID] })
 	res := c.e.tunnels.Run(c.ctx, plans, c.zones.known, c.mode())
 	c.tunnelVerdict = res.Verdict
-	c.st.Tunnels = res.Tunnels
+	c.tunnels = res.Tunnels
+	c.st.Tunnels = make([]TunnelView, 0, len(res.Tunnels))
+	for _, t := range res.Tunnels {
+		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t})
+	}
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
 	c.st.WriterVerdict = verdictName(res.Verdict)

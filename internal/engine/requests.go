@@ -113,7 +113,7 @@ func unkeptConfirmation(res reconcile.DNSResult) string {
 	}
 	for _, a := range res.Actions {
 		if a.Kind == reconcile.DeleteRecord && !a.Applied &&
-			(strings.HasPrefix(a.Held, "mass delete guard") || a.Held == "tombstones not saved") {
+			(strings.HasPrefix(a.Held, reconcile.HeldByGuard) || a.Held == reconcile.HeldUnsaved) {
 			return a.Held
 		}
 	}

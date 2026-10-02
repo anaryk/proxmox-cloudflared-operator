@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 
@@ -12,15 +13,21 @@ import (
 
 // recall reads the memory of an earlier process from the store, once. Until
 // it is read, the caller must not act on the zones, the tunnels or the gone
-// guests it holds: a memory that cannot be read is not an empty one. The
-// caller holds the cycle lock.
-func (e *Engine) recall() error {
+// guests it holds: a memory that cannot be read is not an empty one. A memory
+// of another install, as after a new setup on this node, is set aside, and
+// note says so. The caller holds the cycle lock.
+func (e *Engine) recall(installID string) (note string, err error) {
 	if e.remembered {
-		return nil
+		return "", nil
 	}
 	m, err := e.d.Store.EngineMemory()
 	if err != nil {
-		return err
+		return "", err
+	}
+	e.memoryOf, e.remembered = installID, true
+	if m.InstallID != "" && m.InstallID != installID {
+		return fmt.Sprintf("the engine memory on this node is of install %s, not %s; it is set aside and replaced",
+			m.InstallID, installID), nil
 	}
 	for _, z := range m.Served {
 		e.zones.served[z.Name] = planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID}
@@ -34,13 +41,12 @@ func (e *Engine) recall() error {
 	for _, ref := range m.GoneGuests {
 		e.gone[ref] = true
 	}
-	e.remembered = true
-	return nil
+	return "", nil
 }
 
 // memory is what the engine remembers, as the store keeps it.
 func (e *Engine) memory() store.EngineMemory {
-	var m store.EngineMemory
+	m := store.EngineMemory{InstallID: e.memoryOf}
 	for _, name := range slices.Sorted(maps.Keys(e.zones.served)) {
 		z := e.zones.served[name]
 		m.Served = append(m.Served, store.RememberedZone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID})

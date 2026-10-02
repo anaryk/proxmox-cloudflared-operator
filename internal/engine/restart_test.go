@@ -146,6 +146,9 @@ func TestAMemoryThatCannotBeReadHoldsCloudflare(t *testing.T) {
 	st := e.cycle()
 
 	require.True(t, hasProblem(st, "reading what the engine remembered"))
+	require.True(t, hasProblem(st, "nothing is changed at Cloudflare until it can be read: fix the file or remove it; "+
+		"removing it forgets the connectors kept for tunnels no credential sees, the zones that left their listing "+
+		"and the guests confirmed gone"))
 	require.Equal(t, writes, e.writes(), "it must not read as nothing remembered")
 	require.Len(t, e.conn.prunes(), prunes)
 	require.Equal(t, planner.StateActive, route(st, "api.example.com").State, "the routes are still shown")

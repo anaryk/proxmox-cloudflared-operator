@@ -50,9 +50,13 @@ func populatedState() State {
 			{Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 103}, Line: 2, Col: 5, Msg: "a broken entry"},
 			{Msg: "an issue of the settings"},
 		},
-		Tunnels: []reconcile.TunnelState{
-			{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000001", Version: 3, Exists: true, Verified: true},
-			{AccountID: "acc2", CredentialID: "cred1", Name: "pco-abc123", Unknown: true},
+		Tunnels: []TunnelView{
+			{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000001", Version: 3, Exists: true, Verified: true}},
+			{TunnelState: reconcile.TunnelState{AccountID: "acc2", CredentialID: "cred1", Name: "pco-abc123", Unknown: true}},
+			{
+				TunnelState: reconcile.TunnelState{AccountID: "acc3", CredentialID: "cred1", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000003", Exists: true},
+				Held:        "account frozen: zone example.info is no longer listed by credential cred1",
+			},
 		},
 		Connectors: []connector.Status{{TunnelID: "00000000-0000-4000-8000-000000000001", Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"}},
 		Credentials: []CredentialView{

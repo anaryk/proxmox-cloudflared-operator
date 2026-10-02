@@ -15,29 +15,41 @@ import (
 
 // reconcileConnectors keeps a connector running for every tunnel the tunnel
 // run found, and in enforce mode removes the connectors of tunnels Cloudflare
-// shows gone. The status of the connectors is read in both modes.
+// shows gone. The tunnels the cycle leaves as they are, as those of frozen
+// accounts, are looked up and shown in both modes, and the status of every
+// connector is read.
 func (c *cycleRun) reconcileConnectors() {
 	var existing []reconcile.TunnelState
-	for _, t := range c.st.Tunnels {
+	for _, t := range c.tunnels {
 		if t.Exists && t.ID != "" {
 			existing = append(existing, t)
 		}
 	}
-	shown := existing
+	others, failed := c.lookUpOthers()
+	invisible := c.invisibleTunnels()
 	if c.mode() == reconcile.Enforce {
 		for _, t := range existing {
 			c.ensure(t)
 		}
-		others, failed := c.lookUpOthers()
 		for _, t := range others {
 			if c.zones.frozen[t.AccountID] {
 				c.keepRunning(t)
 			}
 		}
-		c.prune(append(slices.Clone(existing), others...), failed)
+		c.prune(append(slices.Clone(existing), others...), invisible, failed)
 		c.confirmRollouts(existing)
-		shown = append(slices.Clone(existing), others...)
 	}
+	for _, t := range others {
+		held := "serves no zone pco sees"
+		if c.zones.frozen[t.AccountID] {
+			held = "account frozen: " + c.zones.frozenWhy[t.AccountID]
+		}
+		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: held})
+	}
+	for _, t := range invisible {
+		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: "not visible through any credential"})
+	}
+	shown := slices.Concat(existing, others, invisible)
 	statuses := make([]connector.Status, 0, len(shown))
 	for _, t := range shown {
 		st, err := c.e.d.Connectors.Status(c.ctx, t.ID)
@@ -55,8 +67,8 @@ func (c *cycleRun) reconcileConnectors() {
 // ones and those without a zone. It returns the tunnels found and why a
 // lookup failed.
 func (c *cycleRun) lookUpOthers() (found []reconcile.TunnelState, failed []string) {
-	reported := make(map[string]bool, len(c.st.Tunnels))
-	for _, t := range c.st.Tunnels {
+	reported := make(map[string]bool, len(c.tunnels))
+	for _, t := range c.tunnels {
 		reported[t.AccountID] = true
 	}
 	name := planner.TunnelName(c.install.ID)
@@ -102,6 +114,24 @@ func (c *cycleRun) keepRunning(t reconcile.TunnelState) {
 	}
 }
 
+// invisibleTunnels returns the tunnels seen before in accounts that no
+// credential sees now. Nothing can be asked about them, so they are unknown;
+// their connectors are kept, each with a problem line.
+func (c *cycleRun) invisibleTunnels() []reconcile.TunnelState {
+	var out []reconcile.TunnelState
+	for _, id := range slices.Sorted(maps.Keys(c.e.seen)) {
+		t := c.e.seen[id]
+		if _, visible := c.zones.accounts[t.account]; visible {
+			continue
+		}
+		out = append(out, reconcile.TunnelState{AccountID: t.account, CredentialID: t.credential, Name: t.name, ID: id, Unknown: true})
+		c.offer.invisible = append(c.offer.invisible, id)
+		c.problem("tunnel %s in account %s is not visible through any credential; its connector is kept "+
+			"until a credential sees the account again or pco apply --confirm-deletes confirms the tunnel is gone", t.name, t.account)
+	}
+	return out
+}
+
 // forgetTunnelsOf forgets the tunnels seen in an account whose tunnel
 // Cloudflare shows absent.
 func (c *cycleRun) forgetTunnelsOf(account string) {
@@ -114,9 +144,9 @@ func (c *cycleRun) forgetTunnelsOf(account string) {
 // tunnel is in an unknown state, the account listing of every credential
 // worked in this cycle and every lookup answered. A tunnel seen before in an
 // account that no credential sees any more is kept.
-func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) {
+func (c *cycleRun) prune(existing, invisible []reconcile.TunnelState, failed []string) {
 	var why []string
-	for _, t := range c.st.Tunnels {
+	for _, t := range c.tunnels {
 		switch {
 		case t.Unknown:
 			why = append(why, fmt.Sprintf("the tunnel of account %s is in an unknown state", t.AccountID))
@@ -145,14 +175,8 @@ func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) {
 		keep = append(keep, t.ID)
 		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name, credential: t.CredentialID}
 	}
-	for _, id := range slices.Sorted(maps.Keys(c.e.seen)) {
-		t := c.e.seen[id]
-		if _, visible := c.zones.accounts[t.account]; !visible {
-			keep = append(keep, id)
-			c.offer.invisible = append(c.offer.invisible, id)
-			c.problem("tunnel %s in account %s is not visible through any credential; its connector is kept "+
-				"until a credential sees the account again or pco apply --confirm-deletes confirms the tunnel is gone", t.name, t.account)
-		}
+	for _, t := range invisible {
+		keep = append(keep, t.ID)
 	}
 	if len(why) > 0 {
 		c.problem("connectors are not pruned in this cycle: %s", strings.Join(why, "; "))

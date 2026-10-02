@@ -123,7 +123,7 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := e.recall(); err != nil {
+	if _, err := e.recall(install); err != nil {
 		return fmt.Errorf("%w: cannot tell what credential %s managed: reading what the engine remembered: %w", ErrRefused, id, err)
 	}
 	// The stored token decides, not a client a cycle built from an older one.

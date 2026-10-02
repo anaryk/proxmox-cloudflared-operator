@@ -124,6 +124,7 @@ type Engine struct {
 	// remembered says that the memory in the store was read: the served and
 	// stale zones, the tunnels seen and the guests confirmed gone.
 	remembered bool
+	memoryOf   string // the install the memory is of
 
 	repMu   sync.Mutex
 	reports map[string]credentials.Report // by credential id: the last check in this process

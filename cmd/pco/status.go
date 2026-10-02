@@ -12,7 +12,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
 // routeStateOrder is the order routes are counted in; a state that is not
@@ -24,6 +23,7 @@ var routeStateOrder = []planner.RouteState{
 	planner.StateConflict,
 	planner.StateNoZone,
 	planner.StateHeld,
+	engine.RouteFrozen,
 }
 
 // tunnelIDWidth is how much of the id of a tunnel is shown.
@@ -197,8 +197,10 @@ func shortID(id string) string {
 	return dash(id)
 }
 
-func verifiedText(t reconcile.TunnelState) string {
+func verifiedText(t engine.TunnelView) string {
 	switch {
+	case t.Held != "":
+		return "held"
 	case t.Unknown:
 		return "unknown"
 	case t.Verified:
