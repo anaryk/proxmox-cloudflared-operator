@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -42,7 +43,7 @@ func TestTokensNeverReachTheStateEventsOrLog(t *testing.T) {
 
 	st := e.cycle()
 
-	tunnelToken := "token-" + e.tunnels()[0].ID
+	tunnelToken := cffake.RunToken(testAccount, e.tunnels()[0].ID)
 	require.Contains(t, st.Problems, "tunnel pco-abc123 in account acc1: starting its connector: unit refused [redacted]")
 	state, err := json.Marshal(st)
 	require.NoError(t, err)

@@ -98,6 +98,19 @@ func isAddress(r cfapi.Record) bool {
 	return isType(r, "A") || isType(r, "AAAA") || isType(r, "CNAME")
 }
 
+// A TTL is automatic, which is 1, or from half a minute to a day: Cloudflare
+// refuses any other.
+const (
+	minTTL = 30
+	maxTTL = 24 * 60 * 60
+)
+
+func validTTL(ttl int) bool { return ttl == 1 || ttl >= minTTL && ttl <= maxTTL }
+
+func errBadTTL() error {
+	return &cfapi.Error{Status: http.StatusBadRequest, Message: fmt.Sprintf("ttl must be 1 or from %d to %d", minTTL, maxTTL)}
+}
+
 // storedTTL is the TTL Cloudflare keeps for r: a proxied record has no TTL of
 // its own and shows 1, automatic, as does a record written without one.
 func storedTTL(r cfapi.Record) int {
@@ -140,7 +153,9 @@ func checkRecordFields(r cfapi.Record) error {
 
 // CreateRecord ignores the ID and ModifiedOn of r. The name is stored in lower
 // case and, when it is not inside the zone, with the zone name added, and the
-// TTL of a proxied record or an unset one as 1, automatic.
+// TTL of a proxied record or an unset one as 1, automatic. A TTL that is
+// neither 1 nor from 30 to 86400 is refused with a 400, whether or not the
+// record is proxied.
 func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) (cfapi.Record, error) {
 	if err := cfapi.CheckID("zone id", zoneID); err != nil {
 		return cfapi.Record{}, err
@@ -156,6 +171,9 @@ func (f *Fake) CreateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 	z, err := f.zone(zoneID)
 	if err != nil {
 		return cfapi.Record{}, err
+	}
+	if !validTTL(cfapi.SentTTL(r.TTL)) {
+		return cfapi.Record{}, errBadTTL()
 	}
 	r.Name = qualify(r.Name, z.Name)
 	r.TTL = storedTTL(r)
@@ -188,6 +206,9 @@ func (f *Fake) UpdateRecord(ctx context.Context, zoneID string, r cfapi.Record) 
 	z, err := f.zone(zoneID)
 	if err != nil {
 		return cfapi.Record{}, err
+	}
+	if !validTTL(cfapi.SentTTL(r.TTL)) {
+		return cfapi.Record{}, errBadTTL()
 	}
 	i := slices.IndexFunc(f.records[zoneID], func(x cfapi.Record) bool { return x.ID == r.ID })
 	if i < 0 {

@@ -2,6 +2,8 @@ package cffake
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1482,4 +1484,188 @@ func TestSafeForConcurrentUse(t *testing.T) {
 	require.Empty(t, f.RecordsIn(zone))
 	require.Len(t, f.TunnelsIn(acct), 8)
 	require.Len(t, f.Calls(), 8*5)
+}
+
+func TestADeletedTunnelLeavesATombstone(t *testing.T) {
+	f := newFake()
+	old := f.SeedTunnel(acct, "pco-abc", nil)
+	f.SeedTunnel(acct, "pco-other", nil)
+	require.NoError(t, f.DeleteTunnel(ctx, acct, old.ID))
+
+	got, found, err := f.FindTunnel(ctx, acct, "pco-abc")
+	require.NoError(t, err)
+	require.False(t, found, "FindTunnel means a tunnel that is not deleted")
+	require.Equal(t, cfapi.Tunnel{}, got)
+	listed, err := f.Tunnels(ctx, acct, "pco-")
+	require.NoError(t, err)
+	require.Len(t, listed, 1, "and so does Tunnels")
+	require.Equal(t, "pco-other", listed[0].Name)
+	require.Len(t, f.TunnelsIn(acct), 1)
+	require.Equal(t, []cfapi.Tunnel{old}, f.DeletedTunnelsIn(acct))
+	require.Empty(t, f.DeletedTunnelsIn("acct2"))
+
+	// The id is no tunnel for any call, as before.
+	require.True(t, cfapi.IsNotFound(f.DeleteTunnel(ctx, acct, old.ID)))
+	_, err = f.TunnelToken(ctx, acct, old.ID)
+	require.True(t, cfapi.IsNotFound(err))
+	_, err = f.TunnelConfig(ctx, acct, old.ID)
+	require.True(t, cfapi.IsNotFound(err))
+	_, err = f.PutTunnelConfig(ctx, acct, old.ID, []planner.IngressRule{{Service: "http_status:404"}})
+	require.True(t, cfapi.IsNotFound(err))
+	_, err = f.Connectors(ctx, acct, old.ID)
+	require.True(t, cfapi.IsNotFound(err))
+	f.SetForeign(acct, old.ID, true)
+	f.SetConnectors(acct, old.ID, []cfapi.Connector{{ID: "c1"}})
+
+	// The name is free again, and the new tunnel is another one.
+	again, err := f.CreateTunnel(ctx, acct, "pco-abc")
+	require.NoError(t, err)
+	require.NotEqual(t, old.ID, again.ID)
+	got, found, err = f.FindTunnel(ctx, acct, "pco-abc")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, again, got)
+	require.Equal(t, []cfapi.Tunnel{old}, f.DeletedTunnelsIn(acct), "the tombstone stays")
+
+	// Seeding the name twice is still a way to make two live tunnels.
+	f.SeedTunnel(acct, "pco-abc", nil)
+	_, _, err = f.FindTunnel(ctx, acct, "pco-abc")
+	require.Error(t, err)
+}
+
+func TestTheTombstoneKeepsTheTimeOfTheDeletion(t *testing.T) {
+	f := newFake()
+	old := f.SeedTunnel(acct, "pco-abc", nil)
+	later := t0.Add(36 * time.Hour)
+	f.SetNow(func() time.Time { return later })
+
+	require.NoError(t, f.DeleteTunnel(ctx, acct, old.ID))
+
+	all, total, err := f.tunnelListing(ctx, "Tunnels", acct, "pco-", tunnelFilter{prefix: "pco-"})
+	require.NoError(t, err)
+	require.Equal(t, 1, total)
+	require.Len(t, all, 1)
+	require.Equal(t, old, all[0].Tunnel)
+	require.NotNil(t, all[0].DeletedAt)
+	require.Equal(t, later, *all[0].DeletedAt)
+	require.Equal(t, t0, all[0].CreatedAt)
+}
+
+func TestTunnelListingFilters(t *testing.T) {
+	f := newFake()
+	f.AddAccount("acct2", "Other")
+	live := f.SeedTunnel(acct, "pco-live", nil)
+	dead := f.SeedTunnel(acct, "pco-dead", nil)
+	f.SeedTunnel(acct, "other", nil)
+	f.SeedTunnel("acct2", "pco-elsewhere", nil)
+	require.NoError(t, f.DeleteTunnel(ctx, acct, dead.ID))
+
+	names := func(flt tunnelFilter) ([]string, int) {
+		t.Helper()
+		got, total, err := f.tunnelListing(ctx, "Tunnels", acct, "", flt)
+		require.NoError(t, err)
+		var out []string
+		for _, tun := range got {
+			out = append(out, tun.Name)
+		}
+		return out, total
+	}
+	for _, tc := range []struct {
+		name  string
+		flt   tunnelFilter
+		names []string
+	}{
+		{"everything", tunnelFilter{}, []string{"pco-live", "pco-dead", "other"}},
+		{"live ones", tunnelFilter{deleted: liveOnly}, []string{"pco-live", "other"}},
+		{"deleted ones", tunnelFilter{deleted: deletedOnly}, []string{"pco-dead"}},
+		{"a prefix", tunnelFilter{prefix: "pco-"}, []string{"pco-live", "pco-dead"}},
+		{"a prefix of live ones", tunnelFilter{prefix: "pco-", deleted: liveOnly}, []string{"pco-live"}},
+		{"a name", tunnelFilter{name: "pco-dead"}, []string{"pco-dead"}},
+		{"a name that is a prefix only", tunnelFilter{name: "pco"}, nil},
+		{"a name of a deleted one among live ones", tunnelFilter{name: "pco-dead", deleted: liveOnly}, nil},
+		{"a name and a prefix that disagree", tunnelFilter{name: "other", prefix: "pco-"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, total := names(tc.flt)
+			require.Equal(t, tc.names, got)
+			require.Equal(t, 3, total, "the total is the account's, whatever the filter")
+		})
+	}
+	require.Equal(t, []cfapi.Tunnel{live}, mustTunnels(t, f, acct, "pco-l"))
+}
+
+func mustTunnels(t *testing.T, f *Fake, account, prefix string) []cfapi.Tunnel {
+	t.Helper()
+	got, err := f.Tunnels(ctx, account, prefix)
+	require.NoError(t, err)
+	return got
+}
+
+func TestTheRunTokenIsWhatCloudflaredReads(t *testing.T) {
+	f := newFake()
+	tun := f.SeedTunnel(acct, "pco-abc", nil)
+
+	token, err := f.TunnelToken(ctx, acct, tun.ID)
+	require.NoError(t, err)
+
+	require.Equal(t, RunToken(acct, tun.ID), token)
+	raw, err := base64.StdEncoding.DecodeString(token)
+	require.NoError(t, err)
+	var parsed struct {
+		Account string `json:"a"`
+		Tunnel  string `json:"t"`
+		Secret  []byte `json:"s"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &parsed))
+	require.Equal(t, acct, parsed.Account)
+	require.Equal(t, tun.ID, parsed.Tunnel)
+	require.Len(t, parsed.Secret, 32)
+	require.Contains(t, string(parsed.Secret), "not-a-secret", "plainly not one")
+	var keys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &keys))
+	require.Len(t, keys, 3, "a, t and s, and nothing else")
+
+	other := RunToken("acct2", tun.ID)
+	require.NotEqual(t, token, other, "it names the account")
+}
+
+func TestRecordTTLsAreOneOrWithinCloudflaresRange(t *testing.T) {
+	f := newFake()
+	r := rec("A", "a.example.com", "192.0.2.1")
+	for _, ttl := range []int{0, -5, 1, 30, 31, 3600, 86400} {
+		r.TTL = ttl
+		r.Content = fmt.Sprintf("192.0.2.%d", ttl&0xff)
+		created, err := f.CreateRecord(ctx, zone, r)
+		require.NoError(t, err, "ttl %d", ttl)
+		require.NoError(t, f.DeleteRecord(ctx, zone, created.ID))
+	}
+	for _, ttl := range []int{2, 29, 86401, 1 << 30} {
+		r.TTL = ttl
+		_, err := f.CreateRecord(ctx, zone, r)
+		var apiErr *cfapi.Error
+		require.ErrorAs(t, err, &apiErr, "ttl %d", ttl)
+		require.Equal(t, http.StatusBadRequest, apiErr.Status)
+		require.Contains(t, apiErr.Message, "ttl")
+		require.False(t, cfapi.IsConflict(err))
+	}
+	require.Empty(t, f.RecordsIn(zone), "a refused write changes nothing")
+
+	created, err := f.CreateRecord(ctx, zone, withTTL(r, 300))
+	require.NoError(t, err)
+	_, err = f.UpdateRecord(ctx, zone, withTTL(created, 29))
+	require.Error(t, err)
+	got, err := f.UpdateRecord(ctx, zone, withTTL(created, 86400))
+	require.NoError(t, err)
+	require.Equal(t, 86400, got.TTL)
+	require.Equal(t, 86400, f.RecordsIn(zone)[0].TTL)
+
+	proxied := cname("p.example.com", "x.example.com")
+	proxied.TTL = 7
+	_, err = f.CreateRecord(ctx, zone, proxied)
+	require.Error(t, err, "the TTL that is sent is held to it whether or not the record is proxied")
+}
+
+func withTTL(r cfapi.Record, ttl int) cfapi.Record {
+	r.TTL = ttl
+	return r
 }

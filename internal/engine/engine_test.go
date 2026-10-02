@@ -106,7 +106,7 @@ func TestApplyPublishesTunnelConfigAndRecord(t *testing.T) {
 		"create-record www.example.com",
 	}, actionKinds(st))
 
-	require.Equal(t, []ensureCall{{id: tun.ID, token: "token-" + tun.ID}}, e.conn.ensures())
+	require.Equal(t, []ensureCall{{id: tun.ID, token: cffake.RunToken(testAccount, tun.ID)}}, e.conn.ensures())
 	require.Equal(t, [][]string{{tun.ID}}, e.conn.prunes())
 	var applied []string
 	for _, ev := range e.eng.Events(t0) {
@@ -265,7 +265,7 @@ func TestCycleRecoversTunnelByName(t *testing.T) {
 		require.Equal(t, []cfapi.Tunnel{tun}, e.tunnels(), "no second tunnel")
 		require.NotContains(t, e.writes(), "CreateTunnel "+testAccount+" "+tunnelName)
 		require.Contains(t, e.cf.Calls(), "TunnelToken "+testAccount+" "+tun.ID)
-		require.Equal(t, []ensureCall{{id: tun.ID, token: "token-" + tun.ID}}, e.conn.ensures())
+		require.Equal(t, []ensureCall{{id: tun.ID, token: cffake.RunToken(testAccount, tun.ID)}}, e.conn.ensures())
 		require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
 		require.Equal(t, []string{"www.example.com"}, e.recordNames())
 	})

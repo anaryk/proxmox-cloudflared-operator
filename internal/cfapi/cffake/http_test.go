@@ -50,6 +50,8 @@ type scenario struct {
 	method string           // the method of cfapi.API the scenario is about
 	op     string           // the operation of the method, when failures are to be injected into it
 	only   []int            // the statuses to inject; nil for all
+	totals bool             // the answer depends on how a tunnel listing is read, see readings
+	plain  bool             // the fake fails with an error that is not one of the API, which crosses the wire as a 500
 	is     func(error) bool // what the call must fail with; nil when it must succeed
 	seed   seedFunc
 }
@@ -67,10 +69,22 @@ func (s scenario) injecting(op string) scenario {
 	return s
 }
 
+// listing marks a scenario that is run once for each reading of the tunnel
+// listings, the others once.
+func (s scenario) listing() scenario {
+	s.totals = true
+	return s
+}
+
 // statuses limits the statuses of the errors injected into the scenario.
 func (s scenario) statuses(statuses ...int) scenario {
 	s.only = statuses
 	return s
+}
+
+// listed is a scenario that reads a listing of tunnels.
+func listed(method, name string, seed seedFunc) scenario {
+	return ok(method, name, seed).listing()
 }
 
 func isInvalid(err error) bool { return errors.Is(err, cfapi.ErrInvalidArgument) }
@@ -83,22 +97,27 @@ func isStatus(status int) func(error) bool {
 	}
 }
 
-// readings are the two ways total_count of a tunnel listing can be read.
+// readings are the ways a server can answer a tunnel listing that the client
+// has to cope with: total_count of every tunnel or of the filtered result,
+// and a server that ignores is_deleted.
 var readings = []struct {
 	name string
 	opts []cffake.Option
 }{
 	{"total of every tunnel", nil},
 	{"total of the filtered result", []cffake.Option{cffake.WithFilteredTunnelTotals()}},
+	{"is_deleted ignored", []cffake.Option{cffake.WithIgnoredIsDeleted()}},
 }
 
 func TestContract(t *testing.T) {
-	for _, reading := range readings {
-		t.Run(reading.name, func(t *testing.T) {
-			for _, sc := range allScenarios() {
-				t.Run(sc.method+"/"+sc.name, func(t *testing.T) {
-					sc.check(t, reading.opts...)
-				})
+	for _, sc := range allScenarios() {
+		t.Run(sc.method+"/"+sc.name, func(t *testing.T) {
+			if !sc.totals {
+				sc.check(t)
+				return
+			}
+			for _, reading := range readings {
+				t.Run(reading.name, func(t *testing.T) { sc.check(t, reading.opts...) })
 			}
 		})
 	}
@@ -136,8 +155,9 @@ func failures(sc scenario) []scenario {
 		},
 	}}
 	inject := func(name string, is func(error) bool, err error) {
+		var apiErr *cfapi.Error
 		out = append(out, scenario{
-			name: sc.name + ", " + name, method: sc.method, is: is,
+			name: sc.name + ", " + name, method: sc.method, is: is, plain: !errors.As(err, &apiErr),
 			seed: func(f *cffake.Fake) call {
 				c := sc.seed(f)
 				f.FailNext(sc.op, 1, err)
@@ -174,7 +194,10 @@ func (sc scenario) check(t *testing.T, opts ...cffake.Option) {
 	served, run := seeded(sc.seed)
 	got, gotErr := run(client(t, served, opts...))
 
-	requireSameError(t, wantErr, gotErr)
+	if sc.is != nil {
+		require.True(t, sc.is(gotErr), "the client failed with %v", gotErr)
+	}
+	requireSameError(t, wantErr, gotErr, sc.plain)
 	require.Equal(t, want, got)
 	require.Equal(t, snapshot(t, direct), snapshot(t, served), "what the fake holds afterwards")
 }
@@ -204,8 +227,12 @@ func client(t *testing.T, f *cffake.Fake, opts ...cffake.Option) *cfapi.Client {
 
 // requireSameError holds got to the classification of want: the answers the
 // callers of the client branch on, and for an error of the API the status, the
-// message, the retry time and, when the fake says any, the codes.
-func requireSameError(t *testing.T, want, got error) {
+// message, the retry time and, when the fake says any, the codes. An error that
+// is not one of the API stays so, and is worded the same, by the client and
+// the fake, which is how a handler that answered it with a 500 would show. When
+// the fake was made to fail with such an error, plain says so, and the wire
+// carries it as a 500 that has its message.
+func requireSameError(t *testing.T, want, got error, plain bool) {
 	t.Helper()
 	require.Equal(t, want == nil, got == nil, "want %v, got %v", want, got)
 	if want == nil {
@@ -219,10 +246,14 @@ func requireSameError(t *testing.T, want, got error) {
 	}
 	var wantAPI, gotAPI *cfapi.Error
 	if !errors.As(want, &wantAPI) {
-		// What is not an error of the API crosses the wire as a 500.
-		if errors.As(got, &gotAPI) {
+		if plain {
+			require.ErrorAs(t, got, &gotAPI)
 			require.Equal(t, http.StatusInternalServerError, gotAPI.Status)
+			require.Equal(t, want.Error(), gotAPI.Message)
+			return
 		}
+		require.False(t, errors.As(got, &gotAPI), "the client got an answer of the API for what is no error of it: %v", got)
+		require.Contains(t, got.Error(), want.Error(), "the client words it as the fake does")
 		return
 	}
 	require.ErrorAs(t, got, &gotAPI)
@@ -241,6 +272,7 @@ func requireSameError(t *testing.T, want, got error) {
 
 type state struct {
 	Tunnels    map[string][]cfapi.Tunnel
+	Deleted    map[string][]cfapi.Tunnel
 	Configs    map[string]cfapi.TunnelConfig
 	Connectors map[string][]cfapi.Connector
 	Records    map[string][]cfapi.Record
@@ -255,11 +287,13 @@ func snapshot(t *testing.T, f *cffake.Fake) state {
 	}
 	s := state{
 		Tunnels:    make(map[string][]cfapi.Tunnel),
+		Deleted:    make(map[string][]cfapi.Tunnel),
 		Configs:    make(map[string]cfapi.TunnelConfig),
 		Connectors: make(map[string][]cfapi.Connector),
 		Records:    make(map[string][]cfapi.Record),
 	}
 	for _, account := range []string{acct, "acct2", oddAccount} {
+		s.Deleted[account] = f.DeletedTunnelsIn(account)
 		for _, tun := range f.TunnelsIn(account) {
 			s.Tunnels[account] = append(s.Tunnels[account], tun)
 			cfg, err := f.TunnelConfig(ctx, account, tun.ID)
@@ -293,8 +327,6 @@ func TestEveryMethodOfTheClientIsInTheContract(t *testing.T) {
 		require.Contains(t, methods, sc.method, "scenario %q is about a method the API does not have", sc.name)
 	}
 }
-
-// What the scenarios call.
 
 type foundTunnel struct {
 	Tunnel cfapi.Tunnel
@@ -355,8 +387,6 @@ func updateRecord(zoneID string, r cfapi.Record) call {
 func deleteRecord(zoneID, id string) call {
 	return func(a cfapi.API) (any, error) { return nil, a.DeleteRecord(ctx, zoneID, id) }
 }
-
-// What the scenarios start from.
 
 func std(f *cffake.Fake) {
 	f.AddAccount(acct, "Acme")
@@ -468,20 +498,20 @@ func zoneScenarios() []scenario {
 func findTunnelScenarios() []scenario {
 	const oddName = "pco a&b+c=d%e/f é?"
 	return []scenario{
-		ok("FindTunnel", "one of many", func(f *cffake.Fake) call {
+		listed("FindTunnel", "one of many", func(f *cffake.Fake) call {
 			std(f)
 			seedTunnels(f, acct, "other-", 120)
 			f.SeedTunnel(acct, "pco-abc", nil)
 			f.SeedTunnel(acct, "pco-abc_probe_1", nil)
 			return findTunnel(acct, "pco-abc")
 		}).injecting("tunnel.read"),
-		ok("FindTunnel", "a tunnel that has connectors", func(f *cffake.Fake) call {
+		listed("FindTunnel", "a tunnel that has connectors", func(f *cffake.Fake) call {
 			std(f)
 			tun := f.SeedTunnel(acct, "pco-abc", nil)
 			f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Version: "2026.9.0", ConfigVersion: 1, Connections: 2}})
 			return findTunnel(acct, "pco-abc")
 		}),
-		ok("FindTunnel", "names that only contain it", func(f *cffake.Fake) call {
+		listed("FindTunnel", "names that only contain it", func(f *cffake.Fake) call {
 			std(f)
 			f.SeedTunnel(acct, "pco-abc-x", nil)
 			f.SeedTunnel(acct, "x-pco-abc", nil)
@@ -489,29 +519,29 @@ func findTunnelScenarios() []scenario {
 			f.SeedTunnel(acct, "pco-abc", nil)
 			return findTunnel(acct, "pco-abc")
 		}),
-		ok("FindTunnel", "on the last of several pages", func(f *cffake.Fake) call {
+		listed("FindTunnel", "on the last of several pages", func(f *cffake.Fake) call {
 			std(f)
 			seedTunnels(f, acct, "pco-abc-x", 120)
 			f.SeedTunnel(acct, "pco-abc", nil)
 			return findTunnel(acct, "pco-abc")
 		}),
-		ok("FindTunnel", "none", func(f *cffake.Fake) call {
+		listed("FindTunnel", "none", func(f *cffake.Fake) call {
 			std(f)
 			seedTunnels(f, acct, "other-", 120)
 			return findTunnel(acct, "pco-abc")
 		}),
-		ok("FindTunnel", "in another account", func(f *cffake.Fake) call {
+		listed("FindTunnel", "in another account", func(f *cffake.Fake) call {
 			std(f)
 			f.AddAccount("acct2", "Other")
 			f.SeedTunnel("acct2", "pco-abc", nil)
 			return findTunnel(acct, "pco-abc")
 		}),
-		ok("FindTunnel", "a name that needs escaping", func(f *cffake.Fake) call {
+		listed("FindTunnel", "a name that needs escaping", func(f *cffake.Fake) call {
 			std(f)
 			f.SeedTunnel(acct, oddName, nil)
 			return findTunnel(acct, oddName)
 		}),
-		ok("FindTunnel", "in an account that needs escaping", func(f *cffake.Fake) call {
+		listed("FindTunnel", "in an account that needs escaping", func(f *cffake.Fake) call {
 			f.AddAccount(oddAccount, "Odd")
 			f.SeedTunnel(oddAccount, "pco-abc", nil)
 			return findTunnel(oddAccount, "pco-abc")
@@ -520,6 +550,38 @@ func findTunnelScenarios() []scenario {
 			std(f)
 			f.SeedTunnel(acct, "pco-abc", nil)
 			f.SeedTunnel(acct, "pco-abc", nil)
+			return findTunnel(acct, "pco-abc")
+		}).listing(),
+		listed("FindTunnel", "a deleted tunnel of the same name before a live one", func(f *cffake.Fake) call {
+			std(f)
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			f.SeedTunnel(acct, "pco-abc", nil)
+			return findTunnel(acct, "pco-abc")
+		}),
+		listed("FindTunnel", "a deleted tunnel of the same name after a live one", func(f *cffake.Fake) call {
+			std(f)
+			f.SeedTunnel(acct, "pco-abc", nil)
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			return findTunnel(acct, "pco-abc")
+		}),
+		listed("FindTunnel", "several deleted ones next to a live one", func(f *cffake.Fake) call {
+			std(f)
+			for range 3 {
+				f.SeedDeletedTunnel(acct, "pco-abc")
+			}
+			f.SeedTunnel(acct, "pco-abc", nil)
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			return findTunnel(acct, "pco-abc")
+		}),
+		listed("FindTunnel", "only a deleted one", func(f *cffake.Fake) call {
+			std(f)
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			return findTunnel(acct, "pco-abc")
+		}),
+		listed("FindTunnel", "a deleted one among many", func(f *cffake.Fake) call {
+			std(f)
+			seedTunnels(f, acct, "other-", 120)
+			f.SeedDeletedTunnel(acct, "pco-abc")
 			return findTunnel(acct, "pco-abc")
 		}),
 		refused("FindTunnel", "unknown account", cfapi.IsNotFound, func(f *cffake.Fake) call {
@@ -547,33 +609,65 @@ func tunnelsScenarios() []scenario {
 		}
 	}
 	return []scenario{
-		ok("Tunnels", "two among 120 others", among(2, "pco-abc_probe_")).injecting("tunnel.read"),
-		ok("Tunnels", "none among 120 others", among(0, "pco-abc_probe_")),
-		ok("Tunnels", "49, one short page", among(49, "pco-abc_probe_")),
-		ok("Tunnels", "50, one full page and an empty one", among(50, "pco-abc_probe_")),
-		ok("Tunnels", "100, two full pages and an empty one", among(100, "pco-abc_probe_")),
-		ok("Tunnels", "120, three pages", among(120, "pco-abc_probe_")),
-		ok("Tunnels", "a short prefix", among(30, "pco-")),
-		ok("Tunnels", "the others, over three pages", among(5, "other-")),
-		ok("Tunnels", "a prefix that matches nothing", among(5, "nothing-")),
-		ok("Tunnels", "the prefix is case sensitive", func(f *cffake.Fake) call {
+		listed("Tunnels", "two among 120 others", among(2, "pco-abc_probe_")).injecting("tunnel.read"),
+		listed("Tunnels", "none among 120 others", among(0, "pco-abc_probe_")),
+		listed("Tunnels", "49, one short page", among(49, "pco-abc_probe_")),
+		listed("Tunnels", "50, one full page and an empty one", among(50, "pco-abc_probe_")),
+		listed("Tunnels", "100, two full pages and an empty one", among(100, "pco-abc_probe_")),
+		listed("Tunnels", "120, three pages", among(120, "pco-abc_probe_")),
+		listed("Tunnels", "a short prefix", among(30, "pco-")),
+		listed("Tunnels", "the others, over three pages", among(5, "other-")),
+		listed("Tunnels", "a prefix that matches nothing", among(5, "nothing-")),
+		listed("Tunnels", "the prefix is case sensitive", func(f *cffake.Fake) call {
 			std(f)
 			f.SeedTunnel(acct, "PCO-abc", nil)
 			f.SeedTunnel(acct, "pco-abc", nil)
 			return tunnels(acct, "pco-")
 		}),
-		ok("Tunnels", "a prefix that needs escaping", func(f *cffake.Fake) call {
+		listed("Tunnels", "a prefix that needs escaping", func(f *cffake.Fake) call {
 			std(f)
 			f.SeedTunnel(acct, "a&b+c d%e é1", nil)
 			f.SeedTunnel(acct, "a&b+c d%e é2", nil)
 			f.SeedTunnel(acct, "a&b", nil)
 			return tunnels(acct, "a&b+c d%e é")
 		}),
-		ok("Tunnels", "other accounts stay out", func(f *cffake.Fake) call {
+		listed("Tunnels", "other accounts stay out", func(f *cffake.Fake) call {
 			std(f)
 			f.AddAccount("acct2", "Other")
 			seedTunnels(f, "acct2", "pco-abc_probe_", 70)
 			f.SeedTunnel(acct, "pco-abc_probe_x", nil)
+			return tunnels(acct, "pco-abc_probe_")
+		}),
+		listed("Tunnels", "deleted ones among the live ones", func(f *cffake.Fake) call {
+			std(f)
+			f.SeedTunnel(acct, "pco-abc_probe_1", nil)
+			f.SeedDeletedTunnel(acct, "pco-abc_probe_2")
+			f.SeedTunnel(acct, "pco-abc_probe_3", nil)
+			f.SeedDeletedTunnel(acct, "pco-abc_probe_4")
+			f.SeedDeletedTunnel(acct, "other-1")
+			return tunnels(acct, "pco-abc_probe_")
+		}),
+		listed("Tunnels", "deleted ones that fill the first pages", func(f *cffake.Fake) call {
+			std(f)
+			for i := range 120 {
+				f.SeedDeletedTunnel(acct, fmt.Sprintf("pco-abc_probe_d%03d", i))
+			}
+			seedTunnels(f, acct, "pco-abc_probe_l", 5)
+			return tunnels(acct, "pco-abc_probe_")
+		}),
+		listed("Tunnels", "only deleted ones", func(f *cffake.Fake) call {
+			std(f)
+			for i := range 60 {
+				f.SeedDeletedTunnel(acct, fmt.Sprintf("pco-abc_probe_d%03d", i))
+			}
+			return tunnels(acct, "pco-abc_probe_")
+		}),
+		listed("Tunnels", "live and deleted ones past a full page", func(f *cffake.Fake) call {
+			std(f)
+			for i := range 25 {
+				f.SeedTunnel(acct, fmt.Sprintf("pco-abc_probe_a%03d", i), nil)
+				f.SeedDeletedTunnel(acct, fmt.Sprintf("pco-abc_probe_b%03d", i))
+			}
 			return tunnels(acct, "pco-abc_probe_")
 		}),
 		refused("Tunnels", "unknown account", cfapi.IsNotFound, func(f *cffake.Fake) call {
@@ -607,6 +701,23 @@ func createTunnelScenarios() []scenario {
 			f.AddAccount(oddAccount, "Odd")
 			return createTunnel(oddAccount, "pco-abc")
 		}),
+		ok("CreateTunnel", "the name of a deleted tunnel", func(f *cffake.Fake) call {
+			std(f)
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			return createTunnel(acct, "pco-abc")
+		}),
+		ok("CreateTunnel", "a name that was used and deleted twice", func(f *cffake.Fake) call {
+			std(f)
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			return createTunnel(acct, "pco-abc")
+		}),
+		refused("CreateTunnel", "name taken next to a deleted one", cfapi.IsConflict, func(f *cffake.Fake) call {
+			std(f)
+			f.SeedDeletedTunnel(acct, "pco-abc")
+			f.SeedTunnel(acct, "pco-abc", nil)
+			return createTunnel(acct, "pco-abc")
+		}),
 		refused("CreateTunnel", "name taken", cfapi.IsConflict, func(f *cffake.Fake) call {
 			std(f)
 			f.SeedTunnel(acct, "pco-abc", nil)
@@ -626,7 +737,7 @@ func createTunnelScenarios() []scenario {
 			std(f)
 			return createTunnel(acct, "")
 		}),
-		ok("CreateTunnel", "a tunnel from creation to deletion", func(f *cffake.Fake) call {
+		listed("CreateTunnel", "a tunnel from creation to deletion and again", func(f *cffake.Fake) call {
 			std(f)
 			return func(a cfapi.API) (any, error) {
 				created, err := a.CreateTunnel(ctx, acct, "pco-abc")
@@ -653,7 +764,15 @@ func createTunnelScenarios() []scenario {
 					return nil, err
 				}
 				_, stillThere, err := a.FindTunnel(ctx, acct, "pco-abc")
-				return []any{created, found, exists, cfg, version, runToken, stillThere}, err
+				if err != nil {
+					return nil, err
+				}
+				again, err := a.CreateTunnel(ctx, acct, "pco-abc")
+				if err != nil {
+					return nil, err
+				}
+				live, err := a.Tunnels(ctx, acct, "pco-")
+				return []any{created, found, exists, cfg, version, runToken, stillThere, again, live}, err
 			}
 		}),
 	}
@@ -676,6 +795,11 @@ func deleteTunnelScenarios() []scenario {
 			std(f)
 			tun := f.SeedTunnel(acct, "pco-abc", nil)
 			f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Version: "2026.9.0", ConfigVersion: 1, Connections: 4}})
+			return deleteTunnel(acct, tun.ID)
+		}),
+		refused("DeleteTunnel", "a tunnel that was deleted already", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedDeletedTunnel(acct, "pco-abc")
 			return deleteTunnel(acct, tun.ID)
 		}),
 		refused("DeleteTunnel", "unknown tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
@@ -707,6 +831,11 @@ func tokenScenarios() []scenario {
 			tun := f.SeedTunnel(acct, "pco-abc", nil)
 			return tunnelToken(acct, tun.ID)
 		}).injecting("tunnel.read"),
+		refused("TunnelToken", "a deleted tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedDeletedTunnel(acct, "pco-abc")
+			return tunnelToken(acct, tun.ID)
+		}),
 		refused("TunnelToken", "unknown tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
 			std(f)
 			return tunnelToken(acct, "no-such-tunnel")
@@ -787,6 +916,11 @@ func configScenarios() []scenario {
 			tun := f.SeedTunnel(acct, "pco-abc", append(rules, planner.CatchAllRule()))
 			return tunnelConfig(acct, tun.ID)
 		}),
+		refused("TunnelConfig", "a deleted tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedDeletedTunnel(acct, "pco-abc")
+			return tunnelConfig(acct, tun.ID)
+		}),
 		refused("TunnelConfig", "unknown tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
 			std(f)
 			return tunnelConfig(acct, "no-such-tunnel")
@@ -858,6 +992,11 @@ func putConfigScenarios() []scenario {
 			put(none, []planner.IngressRule{planner.CatchAllRule(), planner.CatchAllRule()})),
 		refused("PutTunnelConfig", "a rule without a service", isStatus(http.StatusBadRequest),
 			put(none, []planner.IngressRule{{Hostname: "a.example.com"}, planner.CatchAllRule()})),
+		refused("PutTunnelConfig", "a deleted tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedDeletedTunnel(acct, "pco-abc")
+			return putTunnelConfig(acct, tun.ID, catchAll)
+		}),
 		refused("PutTunnelConfig", "unknown tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
 			std(f)
 			return putTunnelConfig(acct, "no-such-tunnel", catchAll)
@@ -898,6 +1037,11 @@ func connectorScenarios() []scenario {
 			tun := f.SeedTunnel(oddAccount, "pco-abc", nil)
 			f.SetConnectors(oddAccount, tun.ID, []cfapi.Connector{{ID: "c1", Version: "2026.9.0", ConfigVersion: 1, Connections: 2}})
 			return connectors(oddAccount, tun.ID)
+		}),
+		refused("Connectors", "a deleted tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedDeletedTunnel(acct, "pco-abc")
+			return connectors(acct, tun.ID)
 		}),
 		refused("Connectors", "unknown tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
 			std(f)
@@ -990,6 +1134,14 @@ func createRecordScenarios() []scenario {
 		ok("CreateRecord", "a proxied CNAME", create(cname("new.example.com", "t1.cfargotunnel.com"))).injecting("dns.write"),
 		ok("CreateRecord", "an A record with a TTL", create(cfapi.Record{Type: "A", Name: "host.example.com", Content: "192.0.2.77", TTL: 300})),
 		ok("CreateRecord", "an A record with no TTL", create(rec("A", "host.example.com", "192.0.2.77"))),
+		ok("CreateRecord", "the least TTL", create(cfapi.Record{Type: "A", Name: "host.example.com", Content: "192.0.2.77", TTL: 30})),
+		ok("CreateRecord", "the greatest TTL", create(cfapi.Record{Type: "A", Name: "host.example.com", Content: "192.0.2.77", TTL: 86400})),
+		refused("CreateRecord", "a TTL below the least", isStatus(http.StatusBadRequest), create(cfapi.Record{
+			Type: "A", Name: "host.example.com", Content: "192.0.2.77", TTL: 29,
+		})),
+		refused("CreateRecord", "a TTL above the greatest", isStatus(http.StatusBadRequest), create(cfapi.Record{
+			Type: "A", Name: "host.example.com", Content: "192.0.2.77", TTL: 86401,
+		})),
 		ok("CreateRecord", "a proxied record has the automatic TTL", create(cfapi.Record{
 			Type: "A", Name: "host.example.com", Content: "192.0.2.77", Proxied: true, TTL: 300,
 		})),
@@ -1044,6 +1196,8 @@ func updateRecordScenarios() []scenario {
 		ok("UpdateRecord", "changed to another type", update(func(r *cfapi.Record) { r.Type, r.Content = "TXT", `"text"` })),
 		ok("UpdateRecord", "comment dropped", update(func(r *cfapi.Record) { r.Comment = "" })),
 		ok("UpdateRecord", "a TTL", update(func(r *cfapi.Record) { r.TTL = 900 })),
+		refused("UpdateRecord", "a TTL below the least", isStatus(http.StatusBadRequest), update(func(r *cfapi.Record) { r.TTL = 29 })),
+		refused("UpdateRecord", "a TTL above the greatest", isStatus(http.StatusBadRequest), update(func(r *cfapi.Record) { r.TTL = 86401 })),
 		ok("UpdateRecord", "renamed in capitals", update(func(r *cfapi.Record) { r.Name = "RENAMED" })),
 		ok("UpdateRecord", "not changed", update(func(*cfapi.Record) {})),
 		ok("UpdateRecord", "a record whose id needs escaping", func(f *cffake.Fake) call {
@@ -1122,48 +1276,44 @@ func deleteRecordScenarios() []scenario {
 // TestConfigurationRoundTrip pins what the contract only compares: the rules
 // that were written come back as they were, through the wire.
 func TestConfigurationRoundTrip(t *testing.T) {
-	for _, reading := range readings {
-		t.Run(reading.name, func(t *testing.T) {
-			f, _ := seeded(func(f *cffake.Fake) call { std(f); return nil })
-			api := client(t, f, reading.opts...)
-			tun, err := api.CreateTunnel(ctx, acct, "pco-abc")
-			require.NoError(t, err)
+	f, _ := seeded(func(f *cffake.Fake) call { std(f); return nil })
+	api := client(t, f)
+	tun, err := api.CreateTunnel(ctx, acct, "pco-abc")
+	require.NoError(t, err)
 
-			fresh, err := api.TunnelConfig(ctx, acct, tun.ID)
-			require.NoError(t, err)
-			require.Equal(t, cfapi.TunnelConfig{}, fresh, "a tunnel nothing was written to")
+	fresh, err := api.TunnelConfig(ctx, acct, tun.ID)
+	require.NoError(t, err)
+	require.Equal(t, cfapi.TunnelConfig{}, fresh, "a tunnel nothing was written to")
 
-			rules := plannerRules()
-			version, err := api.PutTunnelConfig(ctx, acct, tun.ID, rules)
-			require.NoError(t, err)
-			require.Equal(t, 1, version)
+	rules := plannerRules()
+	version, err := api.PutTunnelConfig(ctx, acct, tun.ID, rules)
+	require.NoError(t, err)
+	require.Equal(t, 1, version)
 
-			cfg, err := api.TunnelConfig(ctx, acct, tun.ID)
-			require.NoError(t, err)
-			require.Equal(t, cfapi.TunnelConfig{Version: 1, Ingress: rules}, cfg,
-				"every rule, every option, and no Foreign for what Cloudflare adds itself")
+	cfg, err := api.TunnelConfig(ctx, acct, tun.ID)
+	require.NoError(t, err)
+	require.Equal(t, cfapi.TunnelConfig{Version: 1, Ingress: rules}, cfg,
+		"every rule, every option, and no Foreign for what Cloudflare adds itself")
 
-			f.SetForeign(acct, tun.ID, true)
-			cfg, err = api.TunnelConfig(ctx, acct, tun.ID)
-			require.NoError(t, err)
-			require.True(t, cfg.Foreign)
-			require.Equal(t, rules, cfg.Ingress, "the rules are still shown next to what pco does not manage")
+	f.SetForeign(acct, tun.ID, true)
+	cfg, err = api.TunnelConfig(ctx, acct, tun.ID)
+	require.NoError(t, err)
+	require.True(t, cfg.Foreign)
+	require.Equal(t, rules, cfg.Ingress, "the rules are still shown next to what pco does not manage")
 
-			version, err = api.PutTunnelConfig(ctx, acct, tun.ID, nil)
-			require.True(t, isInvalid(err), "nothing is written without rules: %v", err)
-			require.Zero(t, version)
-			cfg, err = api.TunnelConfig(ctx, acct, tun.ID)
-			require.NoError(t, err)
-			require.True(t, cfg.Foreign, "a refused write changes nothing")
+	version, err = api.PutTunnelConfig(ctx, acct, tun.ID, nil)
+	require.True(t, isInvalid(err), "nothing is written without rules: %v", err)
+	require.Zero(t, version)
+	cfg, err = api.TunnelConfig(ctx, acct, tun.ID)
+	require.NoError(t, err)
+	require.True(t, cfg.Foreign, "a refused write changes nothing")
 
-			version, err = api.PutTunnelConfig(ctx, acct, tun.ID, rules)
-			require.NoError(t, err)
-			require.Equal(t, 2, version)
-			cfg, err = api.TunnelConfig(ctx, acct, tun.ID)
-			require.NoError(t, err)
-			require.Equal(t, cfapi.TunnelConfig{Version: 2, Ingress: rules}, cfg, "a write replaces what pco does not manage")
-		})
-	}
+	version, err = api.PutTunnelConfig(ctx, acct, tun.ID, rules)
+	require.NoError(t, err)
+	require.Equal(t, 2, version)
+	cfg, err = api.TunnelConfig(ctx, acct, tun.ID)
+	require.NoError(t, err)
+	require.Equal(t, cfapi.TunnelConfig{Version: 2, Ingress: rules}, cfg, "a write replaces what pco does not manage")
 }
 
 func TestScenarioNamesAreUnique(t *testing.T) {

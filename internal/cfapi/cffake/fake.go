@@ -52,7 +52,7 @@ type Fake struct {
 
 	accounts []cfapi.Account
 	zones    []cfapi.Zone
-	tunnels  []*tunnel
+	tunnels  []*tunnel                 // oldest first, the ones that were deleted included
 	records  map[string][]cfapi.Record // by zone id, oldest first
 
 	tunnelSeq  int
@@ -170,7 +170,7 @@ func (f *Fake) SeedRecord(zoneID string, r cfapi.Record) cfapi.Record {
 }
 
 // SeedTunnel puts a tunnel into an account without any check, so a test may
-// make two of one name. With rules the tunnel starts with that configuration
+// make two of one name that are not deleted. With rules the tunnel starts with that configuration
 // at version 1, whether or not Cloudflare would accept it: a configuration
 // edited by hand may lack a catch-all. The account must have been added for the
 // tunnel to be visible through the API.
@@ -182,6 +182,18 @@ func (f *Fake) SeedTunnel(accountID, name string, rules []planner.IngressRule) c
 		t.ingress = clone(rules)
 		t.version = 1
 	}
+	return t.Tunnel
+}
+
+// SeedDeletedTunnel puts a tunnel into an account as one that was deleted, at
+// the time of the clock, so that a test may start from a name that was used
+// before, or from several tombstones of one name. The account must have been
+// added for the tombstone to be visible through the API.
+func (f *Fake) SeedDeletedTunnel(accountID, name string) cfapi.Tunnel {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t := f.newTunnel(accountID, name)
+	t.deleted, t.deletedAt = true, f.now()
 	return t.Tunnel
 }
 
@@ -236,13 +248,25 @@ func (f *Fake) RecordsIn(zoneID string) []cfapi.Record {
 	return clone(f.records[zoneID])
 }
 
-// TunnelsIn returns the tunnels of an account, oldest first.
+// TunnelsIn returns the tunnels of an account that are not deleted, oldest
+// first.
 func (f *Fake) TunnelsIn(accountID string) []cfapi.Tunnel {
+	return f.tunnelsIn(accountID, false)
+}
+
+// DeletedTunnelsIn returns the tunnels of an account that were deleted, oldest
+// first: what a listing of the API shows of them, and what a test looks at to
+// tell a tunnel that was deleted from one that never was.
+func (f *Fake) DeletedTunnelsIn(accountID string) []cfapi.Tunnel {
+	return f.tunnelsIn(accountID, true)
+}
+
+func (f *Fake) tunnelsIn(accountID string, deleted bool) []cfapi.Tunnel {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []cfapi.Tunnel
 	for _, t := range f.tunnels {
-		if t.account == accountID {
+		if t.account == accountID && t.deleted == deleted {
 			out = append(out, t.Tunnel)
 		}
 	}
@@ -277,14 +301,46 @@ func (f *Fake) VerifyToken(ctx context.Context) (cfapi.TokenStatus, error) {
 		return cfapi.TokenStatus{}, err
 	}
 	if f.tokenOwner != "" && f.account(f.tokenOwner) != nil {
-		return cfapi.TokenStatus{}, &cfapi.Error{Status: http.StatusUnauthorized, Codes: []int{codeInvalidToken}, Message: "Invalid API Token"}
+		return cfapi.TokenStatus{}, errInvalidToken()
 	}
+	return f.tokenStatus(), nil
+}
+
+// verifyForm answers one of the two forms of the token check that Cloudflare
+// has, which the handler serves: the user form, asked for with an empty
+// account id, and the form of an account. A token is verified by the form of
+// its owner and refused by the other. VerifyToken stands for the two together,
+// as the client finds the token: it verifies while the account that owns it is
+// one the token sees.
+func (f *Fake) verifyForm(ctx context.Context, accountID string) (cfapi.TokenStatus, error) {
+	if accountID != "" {
+		if err := cfapi.CheckID("account id", accountID); err != nil {
+			return cfapi.TokenStatus{}, err
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin(ctx, opVerify, "VerifyToken"); err != nil {
+		return cfapi.TokenStatus{}, err
+	}
+	if f.tokenOwner != accountID {
+		return cfapi.TokenStatus{}, errInvalidToken()
+	}
+	return f.tokenStatus(), nil
+}
+
+func errInvalidToken() error {
+	return &cfapi.Error{Status: http.StatusUnauthorized, Codes: []int{codeInvalidToken}, Message: "Invalid API Token"}
+}
+
+// tokenStatus is a copy of what the token reports. The lock must be held.
+func (f *Fake) tokenStatus() cfapi.TokenStatus {
 	st := f.token
 	if st.ExpiresOn != nil {
 		expires := *st.ExpiresOn
 		st.ExpiresOn = &expires
 	}
-	return st, nil
+	return st
 }
 
 func (f *Fake) Accounts(ctx context.Context) ([]cfapi.Account, error) {

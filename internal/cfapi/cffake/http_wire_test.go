@@ -32,14 +32,34 @@ func do(t *testing.T, h http.Handler, method, target, body string) *httptest.Res
 
 func doAs(t *testing.T, h http.Handler, bearer, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return doTyped(t, h, bearer, "application/json", method, target, body)
+}
+
+// doTyped makes a request that says what its body is, when it has a kind of
+// request that has one.
+func doTyped(t *testing.T, h http.Handler, bearer, contentType, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if contentType != "" && (method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) {
+		req.Header.Set("Content-Type", contentType)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
 }
+
+// The codes the handler gives an error that has none, which the tests spell
+// out so that a change of them is noticed.
+const (
+	codeBadRequest      = 1400
+	codeConflict        = 1409
+	codeBodyTooLarge    = 1413
+	codeUnsupportedType = 1415
+	codeServerError     = 1500
+)
 
 type wireError struct {
 	Code    int    `json:"code"`
@@ -330,11 +350,11 @@ func TestMalformedRequestsAreRefusedBeforeTheFakeIsAsked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := do(t, fx.h, tc.method, tc.path, tc.body)
 
-			status := http.StatusBadRequest
+			status, code := http.StatusBadRequest, codeBadRequest
 			if strings.Contains(tc.says, "too large") {
-				status = http.StatusRequestEntityTooLarge
+				status, code = http.StatusRequestEntityTooLarge, codeBodyTooLarge
 			}
-			requireRefused(t, rec, status, status, tc.says)
+			requireRefused(t, rec, status, code, tc.says)
 		})
 	}
 	require.Empty(t, fx.f.Calls(), "nothing that was malformed reached the fake")
@@ -359,24 +379,30 @@ func TestQueriesAreChecked(t *testing.T) {
 		{"/client/v4/zones?page=one", "page must be"},
 		{"/client/v4/zones?page=99999999999999999999", "page must be"},
 		{"/client/v4/zones?page=1&page=2", "more than once"},
-		{"/client/v4/zones?per_page=0", "per_page must be"},
-		{"/client/v4/zones?per_page=51", "per_page must be an integer from 1 to 50"},
-		{"/client/v4/accounts?per_page=51", "per_page must be an integer from 1 to 50"},
+		{"/client/v4/zones?per_page=0", "per_page must be an integer from 5 to 50"},
+		{"/client/v4/zones?per_page=4", "per_page must be an integer from 5 to 50"},
+		{"/client/v4/zones?per_page=51", "per_page must be an integer from 5 to 50"},
+		{"/client/v4/accounts?per_page=1", "per_page must be an integer from 5 to 50"},
+		{"/client/v4/accounts?per_page=4", "per_page must be an integer from 5 to 50"},
+		{"/client/v4/accounts?per_page=51", "per_page must be an integer from 5 to 50"},
+		{"/client/v4/accounts/acct1/cfd_tunnel?per_page=0", "per_page must be an integer from 1 to 1000"},
 		{"/client/v4/accounts/acct1/cfd_tunnel?per_page=1001", "per_page must be an integer from 1 to 1000"},
+		{"/client/v4/zones/zone1/dns_records?per_page=0", "per_page must be an integer from 1 to 5000000"},
 		{"/client/v4/zones/zone1/dns_records?per_page=5000001", "per_page must be an integer from 1 to 5000000"},
 		{"/client/v4/zones/zone1/dns_records?per_page=x", "per_page must be"},
 		{"/client/v4/accounts/acct1/cfd_tunnel?is_deleted=maybe", "is_deleted must be"},
 		{"/client/v4/accounts/acct1/cfd_tunnel?is_deleted=1", "is_deleted must be"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			requireRefused(t, do(t, fx.h, http.MethodGet, tc.path, ""), http.StatusBadRequest, 400, tc.says)
+			requireRefused(t, do(t, fx.h, http.MethodGet, tc.path, ""), http.StatusBadRequest, codeBadRequest, tc.says)
 		})
 	}
 	require.Empty(t, fx.f.Calls())
 
 	for _, path := range []string{
-		"/client/v4/zones?per_page=50&page=1", "/client/v4/zones?per_page=1",
-		"/client/v4/accounts/acct1/cfd_tunnel?per_page=1000", "/client/v4/zones/zone1/dns_records?per_page=5000000",
+		"/client/v4/zones?per_page=50&page=1", "/client/v4/zones?per_page=5", "/client/v4/accounts?per_page=5",
+		"/client/v4/accounts/acct1/cfd_tunnel?per_page=1", "/client/v4/accounts/acct1/cfd_tunnel?per_page=1000",
+		"/client/v4/zones/zone1/dns_records?per_page=1", "/client/v4/zones/zone1/dns_records?per_page=5000000",
 		"/client/v4/zones/zone1/dns_records?per_page=100&page=7",
 	} {
 		require.Equal(t, http.StatusOK, do(t, fx.h, http.MethodGet, path, "").Code, path)
@@ -438,14 +464,15 @@ func TestListingsDescribeTheirPages(t *testing.T) {
 			require.Len(t, items, 7)
 			require.Equal(t, info{Page: 1, PerPage: 20, Count: 7, TotalCount: 7, TotalPages: pages(1)}, in, "the page size is 20 unless asked")
 
-			items, in, _ = list(t, h, "/client/v4/"+kind+"?per_page=3&page=3")
-			require.Len(t, items, 1)
-			require.Equal(t, kind[:1]+"6", items[0]["id"])
-			require.Equal(t, info{Page: 3, PerPage: 3, Count: 1, TotalCount: 7, TotalPages: pages(3)}, in)
+			items, in, _ = list(t, h, "/client/v4/"+kind+"?per_page=5&page=2")
+			require.Len(t, items, 2)
+			require.Equal(t, kind[:1]+"5", items[0]["id"])
+			require.Equal(t, kind[:1]+"6", items[1]["id"])
+			require.Equal(t, info{Page: 2, PerPage: 5, Count: 2, TotalCount: 7, TotalPages: pages(2)}, in)
 
-			items, in, _ = list(t, h, "/client/v4/"+kind+"?per_page=3&page=4")
+			items, in, _ = list(t, h, "/client/v4/"+kind+"?per_page=5&page=3")
 			require.Empty(t, items, "past the last page")
-			require.Equal(t, info{Page: 4, PerPage: 3, Count: 0, TotalCount: 7, TotalPages: pages(3)}, in)
+			require.Equal(t, info{Page: 3, PerPage: 5, Count: 0, TotalCount: 7, TotalPages: pages(2)}, in)
 
 			_, in, _ = list(t, h, "/client/v4/"+kind+"?per_page=7")
 			require.Equal(t, info{Page: 1, PerPage: 7, Count: 7, TotalCount: 7, TotalPages: pages(1)}, in)
@@ -558,7 +585,7 @@ func TestShapesOfTheAnswers(t *testing.T) {
 	})
 
 	t.Run("a token is a string", func(t *testing.T) {
-		require.JSONEq(t, `"token-`+fx.tunnel+`"`, result(t, do(t, fx.h, http.MethodGet, tun+"/"+fx.tunnel+"/token", "")))
+		require.JSONEq(t, `"`+cffake.RunToken(acct, fx.tunnel)+`"`, result(t, do(t, fx.h, http.MethodGet, tun+"/"+fx.tunnel+"/token", "")))
 	})
 
 	t.Run("a deletion names what it deleted", func(t *testing.T) {
@@ -715,22 +742,22 @@ func TestErrorsKeepTheStatusTheFakeGave(t *testing.T) {
 	t.Run("an error that is not one of the API is a 500", func(t *testing.T) {
 		fx := newWireFixture()
 		fx.f.FailNext("zones", 1, errors.New("boom"))
-		requireRefused(t, do(t, fx.h, http.MethodGet, zones, ""), http.StatusInternalServerError, 500, "boom")
+		requireRefused(t, do(t, fx.h, http.MethodGet, zones, ""), http.StatusInternalServerError, codeServerError, "boom")
 
 		fx.f.FailNext("zones", 1, nil)
-		requireRefused(t, do(t, fx.h, http.MethodGet, zones, ""), http.StatusInternalServerError, 500, "injected failure")
+		requireRefused(t, do(t, fx.h, http.MethodGet, zones, ""), http.StatusInternalServerError, codeServerError, "injected failure")
 	})
 
 	t.Run("a status that is not an error is a 500", func(t *testing.T) {
 		for _, status := range []int{0, 200, 204, 302, 399, 600} {
 			fx := newWireFixture()
 			fx.f.FailNext("zones", 1, &cfapi.Error{Status: status, Message: "odd"})
-			requireRefused(t, do(t, fx.h, http.MethodGet, zones, ""), http.StatusInternalServerError, 500, "odd")
+			requireRefused(t, do(t, fx.h, http.MethodGet, zones, ""), http.StatusInternalServerError, codeServerError, "odd")
 		}
 	})
 
 	t.Run("an error with no code and no message gets both", func(t *testing.T) {
-		for status, code := range map[int]int{400: 400, 401: 10000, 403: 10000, 404: 7003, 409: 409, 429: 971, 503: 503} {
+		for status, code := range map[int]int{400: codeBadRequest, 401: 10000, 403: 10000, 404: 7003, 409: codeConflict, 410: codeBadRequest, 429: 971, 503: codeServerError} {
 			fx := newWireFixture()
 			fx.f.FailNext("zones", 1, &cfapi.Error{Status: status})
 			requireRefused(t, do(t, fx.h, http.MethodGet, zones, ""), status, code, http.StatusText(status))
@@ -770,13 +797,13 @@ func TestErrorsKeepTheStatusTheFakeGave(t *testing.T) {
 		requireRefused(t, do(t, fx.h, http.MethodGet, "/client/v4/accounts/nope/cfd_tunnel", ""), http.StatusNotFound, 7003, "not found")
 
 		fx.f.SetConnectors(acct, fx.doomed, []cfapi.Connector{{ID: "c1", Connections: 1}})
-		requireRefused(t, do(t, fx.h, http.MethodDelete, tun+"/"+fx.doomed, ""), http.StatusBadRequest, 400, "active connections")
+		requireRefused(t, do(t, fx.h, http.MethodDelete, tun+"/"+fx.doomed, ""), http.StatusBadRequest, codeBadRequest, "active connections")
 
 		requireRefused(t, do(t, fx.h, http.MethodPut, tun+"/"+fx.tunnel+"/configurations", `{"config":{"ingress":[]}}`),
-			http.StatusBadRequest, 400, "no rules")
+			http.StatusBadRequest, codeBadRequest, "no rules")
 		requireRefused(t, do(t, fx.h, http.MethodPut, tun+"/"+fx.tunnel+"/configurations", `{"config":{"ingress":[{"hostname":"a.example.com","service":"x"}]}}`),
-			http.StatusBadRequest, 400, "last ingress rule")
-		requireRefused(t, do(t, fx.h, http.MethodPost, tun, `{"name":" "}`), http.StatusBadRequest, 400, "tunnel name is empty")
+			http.StatusBadRequest, codeBadRequest, "last ingress rule")
+		requireRefused(t, do(t, fx.h, http.MethodPost, tun, `{"name":" "}`), http.StatusBadRequest, codeBadRequest, "tunnel name is empty")
 	})
 }
 
@@ -959,6 +986,7 @@ func FuzzHandler(f *testing.F) {
 			t.Skip()
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
 		fx.h.ServeHTTP(rec, req)

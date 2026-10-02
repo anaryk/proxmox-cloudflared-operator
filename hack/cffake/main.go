@@ -1,10 +1,10 @@
 // Command cffake serves the in-memory Cloudflare of internal/cfapi/cffake over
-// HTTP, to try pco against it by hand:
+// HTTP, for working with a client of the Cloudflare API by hand:
 //
 //	go run ./hack/cffake -zone example.com:acct1 -token secret
+//	curl -H 'Authorization: Bearer secret' http://127.0.0.1:8787/client/v4/zones
 //
-// then point pco at http://127.0.0.1:8787/client/v4. Nothing is kept past the
-// end of the process.
+// Nothing is kept past the end of the process.
 package main
 
 import (
@@ -12,7 +12,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 )
@@ -65,15 +66,15 @@ func run() error {
 		fake.AddZone(fmt.Sprintf("zone-%d", i+1), name, account)
 	}
 
-	logger := log.New(os.Stdout, "", log.Ltime)
+	log := zerolog.New(os.Stdout).With().Timestamp().Logger()
 	api := cffake.Handler(fake, cffake.WithToken(*token))
 	srv := &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 			api.ServeHTTP(sw, r)
-			// The escaped path cannot carry a line break; the headers are not shown.
-			logger.Printf("%s %s %d", r.Method, r.URL.EscapedPath(), sw.status)
+			// The escaped path cannot carry a line break, and no header is shown.
+			log.Info().Str("method", r.Method).Str("path", r.URL.EscapedPath()).Int("status", sw.status).Msg("request")
 		}),
 	}
 
@@ -81,18 +82,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	logger.Printf("serving http://%s/client/v4", ln.Addr())
+	log.Info().Str("url", "http://"+ln.Addr().String()+"/client/v4").Msg("serving")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	stopped := make(chan error, 1)
 	go func() {
 		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		grace, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdown)
+		stopped <- srv.Shutdown(grace)
 	}()
 	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	return nil
+	// Serve returns as soon as the shutdown starts; the requests in flight end
+	// before Shutdown does.
+	return <-stopped
 }

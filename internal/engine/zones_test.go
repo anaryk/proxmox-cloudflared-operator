@@ -324,7 +324,7 @@ func TestTheConnectorOfAFrozenAccountKeepsRunning(t *testing.T) {
 	e.clock.advance(20 * time.Second)
 	e.cycle()
 
-	require.Equal(t, []ensureCall{{id: tun.ID, token: "token-" + tun.ID}}, e.conn.ensures()[ensures:])
+	require.Equal(t, []ensureCall{{id: tun.ID, token: cffake.RunToken(testAccount, tun.ID)}}, e.conn.ensures()[ensures:])
 	require.NotContains(t, e.cf.Calls(), "TunnelToken "+testAccount+" "+tun.ID+" ", "the token comes from disk")
 }
 

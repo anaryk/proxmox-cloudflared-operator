@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"slices"
@@ -47,6 +48,13 @@ func WithFilteredTunnelTotals() Option {
 	return func(h *handler) { h.filteredTotals = true }
 }
 
+// WithIgnoredIsDeleted makes the listing of tunnels ignore is_deleted and show
+// the tunnels that were deleted whatever the request says, as a server does
+// that does not know the filter. A client has to skip them itself.
+func WithIgnoredIsDeleted() Option {
+	return func(h *handler) { h.ignoreIsDeleted = true }
+}
+
 // Handler serves f under /client/v4 in the wire format of the Cloudflare API,
 // so that the real client, and anything that uses it, can talk to the fake over
 // HTTP. It serves exactly what the client calls:
@@ -72,17 +80,28 @@ func WithFilteredTunnelTotals() Option {
 // fake returned, which for FailNext is the one it was given; an error that is
 // not an *cfapi.Error is a 500. A 429 carries a Retry-After.
 //
-// The handler is strict about what it is sent, so that a client that drifts
-// from the wire format fails against it instead of being forgiven: a query
-// parameter, a field or a method it does not know is refused, and a PATCH of a
-// record has to carry every field, as the client sends them. What it keeps is
-// what the fake keeps: a configuration holds the ingress and nothing else, and
-// a tunnel is always managed by Cloudflare.
+// The handler is strict about what it is sent, as Cloudflare is, and a client
+// that drifts from the wire format fails against it instead of being
+// forgiven. A query parameter, a field or a method it does not know is
+// refused, and so is a body that is not sent as application/json (415). A
+// record has a TTL of 1 or from 30 to 86400, a page of zones or accounts
+// holds from 5 to 50, and a PATCH of a record has to carry every field, as the
+// client sends them. What the handler keeps is what the fake keeps: a
+// configuration holds the ingress and nothing else, and a tunnel is always
+// managed by Cloudflare.
+//
+// A tunnel that was deleted stays in the listing of tunnels, with the time it
+// was deleted, unless the request asks for is_deleted=false.
 //
 // Cloudflare sets warp-routing in a configuration itself. The handler always
 // sends it, switched on, so that a client that took it for a setting somebody
 // else made would show. A configuration that SetForeign marked holds a
 // top-level originRequest.
+//
+// A token that expired or was disabled shows only at the token check.
+// Cloudflare refuses every call made with such a token; the handler keeps
+// answering them. That is a simplification: Deny is the way to model a token
+// that is refused.
 func Handler(f *Fake, opts ...Option) http.Handler {
 	h := &handler{f: f}
 	for _, opt := range opts {
@@ -109,10 +128,11 @@ func Handler(f *Fake, opts ...Option) http.Handler {
 }
 
 type handler struct {
-	f              *Fake
-	tokens         []string // none: any non-empty token
-	filteredTotals bool
-	routes         []route
+	f               *Fake
+	tokens          []string // none: any non-empty token
+	filteredTotals  bool
+	ignoreIsDeleted bool
+	routes          []route
 }
 
 // params are the segments of a path that a route names, unescaped.
@@ -222,13 +242,20 @@ func (h *handler) authenticate(r *http.Request) error {
 	return nil
 }
 
-// Codes of the answers the handler makes up. The ones of the fake's own
-// refusals are in fake.go and records.go.
+// Codes of the answers the handler makes up, and of the errors that have none.
+// They are Cloudflare's where Cloudflare has one for it, and otherwise in the
+// range its own are in, so that none can be taken for an HTTP status. The codes
+// of the fake's own refusals are in fake.go.
 const (
 	codeNoRoute          = 7000
 	codeNotFound         = 7003
 	codeMethodNotAllowed = 10405
 	codeRateLimited      = 971
+	codeBadRequest       = 1400
+	codeConflict         = 1409
+	codeBodyTooLarge     = 1413
+	codeUnsupportedType  = 1415
+	codeServerError      = 1500
 )
 
 func errAuthentication() error {
@@ -240,23 +267,32 @@ func apiError(status, code int, message string) *cfapi.Error {
 }
 
 // badRequest is an error for a request that is not one the handler accepts. It
-// carries no code, so the status stands for it.
+// carries no code, so the one of its status stands for it.
 func badRequest(format string, args ...any) *cfapi.Error {
 	return &cfapi.Error{Status: http.StatusBadRequest, Message: fmt.Sprintf(format, args...)}
 }
 
-// codeFor is the code of an error that has none: the one Cloudflare uses where
-// there is a known one, the status otherwise.
+// codeFor is the code of an error that has none.
 func codeFor(status int) int {
-	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	switch {
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
 		return codeAuthentication
-	case http.StatusNotFound:
+	case status == http.StatusNotFound:
 		return codeNotFound
-	case http.StatusTooManyRequests:
+	case status == http.StatusMethodNotAllowed:
+		return codeMethodNotAllowed
+	case status == http.StatusConflict:
+		return codeConflict
+	case status == http.StatusRequestEntityTooLarge:
+		return codeBodyTooLarge
+	case status == http.StatusUnsupportedMediaType:
+		return codeUnsupportedType
+	case status == http.StatusTooManyRequests:
 		return codeRateLimited
+	case status >= 500:
+		return codeServerError
 	}
-	return status
+	return codeBadRequest
 }
 
 type envelope struct {
@@ -334,13 +370,12 @@ func writeError(w http.ResponseWriter, err error) {
 	write(w, status, envelope{Errors: msgs})
 }
 
-// Paging.
-
 type paging struct{ page, perPage int }
 
 // readPaging reads page and per_page, which default to 1 and def. A page size
-// above max is refused, as the API does for the listings that have a limit.
-func readPaging(q url.Values, def, limit int) (paging, error) {
+// outside of what the API gives for the listing, from least to most, is
+// refused.
+func readPaging(q url.Values, def, least, most int) (paging, error) {
 	p := paging{page: 1, perPage: def}
 	if v := q.Get("page"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -351,8 +386,8 @@ func readPaging(q url.Values, def, limit int) (paging, error) {
 	}
 	if v := q.Get("per_page"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > limit {
-			return paging{}, badRequest("per_page must be an integer from 1 to %d", limit)
+		if err != nil || n < least || n > most {
+			return paging{}, badRequest("per_page must be an integer from %d to %d", least, most)
 		}
 		p.perPage = n
 	}
@@ -398,11 +433,12 @@ func checkQuery(q url.Values, allowed ...string) error {
 	return nil
 }
 
-// Bodies.
-
-// readBody returns the body of a request, which must not be larger than the
-// handler is willing to read.
+// readBody returns the body of a request, which has to be sent as
+// application/json and must not be larger than the handler is willing to read.
 func readBody(r *http.Request) ([]byte, error) {
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+		return nil, &cfapi.Error{Status: http.StatusUnsupportedMediaType, Message: "Content-Type must be application/json"}
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	switch {
 	case err != nil:

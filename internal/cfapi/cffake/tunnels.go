@@ -2,14 +2,21 @@ package cffake
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
+
+// runSecret is the secret of every tunnel the fake makes: 32 bytes, as long as
+// Cloudflare's, and plainly not a real one.
+const runSecret = "cffake-not-a-secret-0123456789ab"
 
 type tunnel struct {
 	cfapi.Tunnel
@@ -18,6 +25,54 @@ type tunnel struct {
 	ingress    []planner.IngressRule
 	foreign    bool // settings in the configuration that IngressRule cannot show
 	connectors []cfapi.Connector
+	deleted    bool // a tombstone: Cloudflare keeps the tunnel it deleted, and lists it
+	deletedAt  time.Time
+}
+
+// listedTunnel is a tunnel of a listing, which holds the ones that were
+// deleted as well.
+type listedTunnel struct {
+	cfapi.Tunnel
+	DeletedAt *time.Time // nil for a tunnel that is not deleted
+}
+
+// deletedFilter is the is_deleted of a listing.
+type deletedFilter int
+
+const (
+	liveAndDeleted deletedFilter = iota
+	liveOnly
+	deletedOnly
+)
+
+// tunnelFilter is what a listing of the tunnels of an account asks for: the
+// exact name, or the prefix of a name, among the tunnels that are deleted or
+// are not.
+type tunnelFilter struct {
+	name    string
+	prefix  string
+	deleted deletedFilter
+}
+
+func (flt tunnelFilter) matches(t *tunnel) bool {
+	switch {
+	case flt.deleted == liveOnly && t.deleted, flt.deleted == deletedOnly && !t.deleted:
+		return false
+	}
+	return (flt.name == "" || t.Name == flt.name) && strings.HasPrefix(t.Name, flt.prefix)
+}
+
+// RunToken is the token the fake hands out for a tunnel to run it with: what
+// cloudflared reads, the base64 of the JSON of the account tag, the tunnel id
+// and the secret. The secret is the same for every tunnel and is no secret, so
+// a cloudflared that is started with the token gets as far as the edge.
+func RunToken(accountID, tunnelID string) string {
+	payload, _ := json.Marshal(struct {
+		Account string `json:"a"`
+		Secret  []byte `json:"s"`
+		Tunnel  string `json:"t"`
+	}{accountID, []byte(runSecret), tunnelID}) // cannot fail: only strings and bytes
+	return base64.StdEncoding.EncodeToString(payload)
 }
 
 // checkTunnelName checks the arguments of the calls that take an account and a
@@ -45,16 +100,17 @@ func (f *Fake) account(id string) error {
 	return nil
 }
 
-// tunnelIn returns the tunnel of an account, and its place in the list.
-func (f *Fake) tunnelIn(accountID, tunnelID string) (*tunnel, int, error) {
+// tunnelIn returns the tunnel of an account that is not deleted. A deleted one
+// is no tunnel for any call that names it.
+func (f *Fake) tunnelIn(accountID, tunnelID string) (*tunnel, error) {
 	if err := f.account(accountID); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	i := slices.IndexFunc(f.tunnels, func(t *tunnel) bool { return t.account == accountID && t.ID == tunnelID })
+	i := slices.IndexFunc(f.tunnels, func(t *tunnel) bool { return t.account == accountID && t.ID == tunnelID && !t.deleted })
 	if i < 0 {
-		return nil, 0, notFound("tunnel", tunnelID)
+		return nil, notFound("tunnel", tunnelID)
 	}
-	return f.tunnels[i], i, nil
+	return f.tunnels[i], nil
 }
 
 func (f *Fake) newTunnel(accountID, name string) *tunnel {
@@ -79,7 +135,7 @@ func (f *Fake) newTunnel(accountID, name string) *tunnel {
 func (f *Fake) SetForeign(accountID, tunnelID string, v bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if t, _, err := f.tunnelIn(accountID, tunnelID); err == nil {
+	if t, err := f.tunnelIn(accountID, tunnelID); err == nil {
 		t.foreign = v
 	}
 }
@@ -90,7 +146,7 @@ func (f *Fake) SetForeign(accountID, tunnelID string, v bool) {
 func (f *Fake) SetConnectors(accountID, tunnelID string, c []cfapi.Connector) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if t, _, err := f.tunnelIn(accountID, tunnelID); err == nil {
+	if t, err := f.tunnelIn(accountID, tunnelID); err == nil {
 		t.connectors = clone(c)
 		t.Status = "inactive"
 		if len(c) > 0 {
@@ -99,35 +155,66 @@ func (f *Fake) SetConnectors(accountID, tunnelID string, c []cfapi.Connector) {
 	}
 }
 
+// matching returns the tunnels of an account that pass the filter, oldest
+// first, and how many tunnels the account has, deleted ones included: the
+// total of a listing is about the account, not about the filter. The lock must
+// be held.
+func (f *Fake) matching(accountID string, flt tunnelFilter) (matched []listedTunnel, total int) {
+	for _, t := range f.tunnels {
+		if t.account != accountID {
+			continue
+		}
+		total++
+		if !flt.matches(t) {
+			continue
+		}
+		listed := listedTunnel{Tunnel: t.Tunnel}
+		if t.deleted {
+			deletedAt := t.deletedAt
+			listed.DeletedAt = &deletedAt
+		}
+		matched = append(matched, listed)
+	}
+	return matched, total
+}
+
+// tunnelListing is what every listing of the tunnels of an account does once
+// its arguments are checked: it is a call of the operation, of the method
+// named, and the account must be known. The calls that list for the client
+// pass the filter for tunnels that are not deleted; the handler lists with
+// what the request asked for.
+func (f *Fake) tunnelListing(ctx context.Context, method, accountID, arg string, flt tunnelFilter) (matched []listedTunnel, total int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin(ctx, opTunnelRead, method, accountID, arg); err != nil {
+		return nil, 0, err
+	}
+	if err := f.account(accountID); err != nil {
+		return nil, 0, err
+	}
+	matched, total = f.matching(accountID, flt)
+	return matched, total, nil
+}
+
 func (f *Fake) FindTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, bool, error) {
 	if err := checkTunnelName(accountID, name); err != nil {
 		return cfapi.Tunnel{}, false, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.begin(ctx, opTunnelRead, "FindTunnel", accountID, name); err != nil {
+	matches, _, err := f.tunnelListing(ctx, "FindTunnel", accountID, name, tunnelFilter{name: name, deleted: liveOnly})
+	if err != nil {
 		return cfapi.Tunnel{}, false, err
-	}
-	if err := f.account(accountID); err != nil {
-		return cfapi.Tunnel{}, false, err
-	}
-	var matches []cfapi.Tunnel
-	for _, t := range f.tunnels {
-		if t.account == accountID && t.Name == name {
-			matches = append(matches, t.Tunnel)
-		}
 	}
 	switch len(matches) {
 	case 0:
 		return cfapi.Tunnel{}, false, nil
 	case 1:
-		return matches[0], true, nil
+		return matches[0].Tunnel, true, nil
 	}
 	return cfapi.Tunnel{}, false, fmt.Errorf("finding tunnel %q: %d tunnels have that name", name, len(matches))
 }
 
-// Tunnels lists the tunnels of an account whose name starts with namePrefix,
-// which is matched with regard to case, oldest first.
+// Tunnels lists the tunnels of an account that are not deleted and whose name
+// starts with namePrefix, which is matched with regard to case, oldest first.
 func (f *Fake) Tunnels(ctx context.Context, accountID, namePrefix string) ([]cfapi.Tunnel, error) {
 	if err := cfapi.CheckID("account id", accountID); err != nil {
 		return nil, err
@@ -135,23 +222,19 @@ func (f *Fake) Tunnels(ctx context.Context, accountID, namePrefix string) ([]cfa
 	if err := cfapi.CheckName("tunnel name prefix", namePrefix); err != nil {
 		return nil, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.begin(ctx, opTunnelRead, "Tunnels", accountID, namePrefix); err != nil {
-		return nil, err
-	}
-	if err := f.account(accountID); err != nil {
+	matches, _, err := f.tunnelListing(ctx, "Tunnels", accountID, namePrefix, tunnelFilter{prefix: namePrefix, deleted: liveOnly})
+	if err != nil {
 		return nil, err
 	}
 	var out []cfapi.Tunnel
-	for _, t := range f.tunnels {
-		if t.account == accountID && strings.HasPrefix(t.Name, namePrefix) {
-			out = append(out, t.Tunnel)
-		}
+	for _, m := range matches {
+		out = append(out, m.Tunnel)
 	}
 	return out, nil
 }
 
+// CreateTunnel makes a tunnel. A name that a tunnel that is not deleted has is
+// taken; the name of a deleted one is free.
 func (f *Fake) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.Tunnel, error) {
 	if err := checkTunnelName(accountID, name); err != nil {
 		return cfapi.Tunnel{}, err
@@ -164,7 +247,7 @@ func (f *Fake) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.
 	if err := f.account(accountID); err != nil {
 		return cfapi.Tunnel{}, err
 	}
-	if slices.ContainsFunc(f.tunnels, func(t *tunnel) bool { return t.account == accountID && t.Name == name }) {
+	if slices.ContainsFunc(f.tunnels, func(t *tunnel) bool { return t.account == accountID && t.Name == name && !t.deleted }) {
 		return cfapi.Tunnel{}, &cfapi.Error{
 			Status: http.StatusConflict, Codes: []int{codeTunnelExists},
 			Message: "tunnel with name already exists",
@@ -173,6 +256,10 @@ func (f *Fake) CreateTunnel(ctx context.Context, accountID, name string) (cfapi.
 	return f.newTunnel(accountID, name).Tunnel, nil
 }
 
+// DeleteTunnel deletes a tunnel the way Cloudflare does: the tunnel stays as a
+// tombstone, with the time of its deletion, that the listings of the API show
+// unless they ask for the tunnels that are not deleted. Nothing in cfapi.API
+// shows it, DeletedTunnelsIn does.
 func (f *Fake) DeleteTunnel(ctx context.Context, accountID, tunnelID string) error {
 	if err := checkTunnelID(accountID, tunnelID); err != nil {
 		return err
@@ -182,14 +269,14 @@ func (f *Fake) DeleteTunnel(ctx context.Context, accountID, tunnelID string) err
 	if err := f.begin(ctx, opTunnelWrite, "DeleteTunnel", accountID, tunnelID); err != nil {
 		return err
 	}
-	t, i, err := f.tunnelIn(accountID, tunnelID)
+	t, err := f.tunnelIn(accountID, tunnelID)
 	if err != nil {
 		return err
 	}
 	if len(t.connectors) > 0 {
 		return &cfapi.Error{Status: http.StatusBadRequest, Message: "Cannot delete a tunnel that has active connections"}
 	}
-	f.tunnels = slices.Delete(f.tunnels, i, i+1)
+	t.deleted, t.deletedAt = true, f.now()
 	return nil
 }
 
@@ -202,11 +289,11 @@ func (f *Fake) TunnelToken(ctx context.Context, accountID, tunnelID string) (str
 	if err := f.begin(ctx, opTunnelRead, "TunnelToken", accountID, tunnelID); err != nil {
 		return "", err
 	}
-	t, _, err := f.tunnelIn(accountID, tunnelID)
+	t, err := f.tunnelIn(accountID, tunnelID)
 	if err != nil {
 		return "", err
 	}
-	return "token-" + t.ID, nil
+	return RunToken(accountID, t.ID), nil
 }
 
 func (f *Fake) TunnelConfig(ctx context.Context, accountID, tunnelID string) (cfapi.TunnelConfig, error) {
@@ -218,7 +305,7 @@ func (f *Fake) TunnelConfig(ctx context.Context, accountID, tunnelID string) (cf
 	if err := f.begin(ctx, opTunnelRead, "TunnelConfig", accountID, tunnelID); err != nil {
 		return cfapi.TunnelConfig{}, err
 	}
-	t, _, err := f.tunnelIn(accountID, tunnelID)
+	t, err := f.tunnelIn(accountID, tunnelID)
 	if err != nil {
 		return cfapi.TunnelConfig{}, err
 	}
@@ -239,7 +326,7 @@ func (f *Fake) PutTunnelConfig(ctx context.Context, accountID, tunnelID string, 
 	if err := f.begin(ctx, opTunnelWrite, "PutTunnelConfig", accountID, tunnelID); err != nil {
 		return 0, err
 	}
-	t, _, err := f.tunnelIn(accountID, tunnelID)
+	t, err := f.tunnelIn(accountID, tunnelID)
 	if err != nil {
 		return 0, err
 	}
@@ -286,7 +373,7 @@ func (f *Fake) Connectors(ctx context.Context, accountID, tunnelID string) ([]cf
 	if err := f.begin(ctx, opTunnelRead, "Connectors", accountID, tunnelID); err != nil {
 		return nil, err
 	}
-	t, _, err := f.tunnelIn(accountID, tunnelID)
+	t, err := f.tunnelIn(accountID, tunnelID)
 	if err != nil {
 		return nil, err
 	}
