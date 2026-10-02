@@ -100,6 +100,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.doctorCmd(),
 		a.setupCmd(),
 		a.uninstallCmd(),
+		a.egressCmd(),
 	)
 	return root
 }

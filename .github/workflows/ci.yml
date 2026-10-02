@@ -52,6 +52,9 @@ jobs:
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/resolve/
       # The tests of the socket directory that only root can run: who owns it, and its group.
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -count=1 -run 'SomeoneElse|ToTheGroup' ./internal/api/
+      # The egress filter, loaded in network namespaces of the test's own.
+      - run: sudo apt-get update && sudo apt-get install -y nftables
+      - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/egress/
 
   build:
     runs-on: ubuntu-latest

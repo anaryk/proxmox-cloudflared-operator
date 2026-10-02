@@ -1,0 +1,14 @@
+The egress filter is switched off since 2026-10-01T14:00:00+02:00, but its table is loaded; the daemon does not keep it up to date. pco egress on switches it back on.
+
+Targets:
+  10.0.0.5:80
+  10.0.0.5:8080
+  10.0.0.6:443
+Resolvers:
+  192.168.1.1
+
+Rejected since the table was loaded:
+  to addresses of this node  3 packets
+  to anything else           12 packets
+
+Blocked on this node: none

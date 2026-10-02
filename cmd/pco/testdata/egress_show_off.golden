@@ -1,0 +1,3 @@
+The egress filter is switched off since 2026-10-01T14:00:00+02:00: the connectors are not confined. pco egress on switches it back on.
+
+Blocked on this node: none
