@@ -14,8 +14,16 @@ if [ -d /run/systemd/system ]; then
 	if systemctl cat pco.service >/dev/null 2>&1; then
 		systemctl disable --now pco.service || true
 	fi
-	if [ -n "$(systemctl list-units --plain --no-legend 'pco-cloudflared@*' 2>/dev/null)" ]; then
-		echo "The pco-cloudflared connectors keep running after this removal."
+	# What runs or has failed, and what is enabled and would come back at the
+	# next boot, running or not.
+	connectors=$(systemctl list-units --plain --no-legend 'pco-cloudflared@*' 2>/dev/null) || connectors=
+	for link in /etc/systemd/system/*.wants/pco-cloudflared@*; do
+		if [ -L "$link" ]; then
+			connectors=$link
+		fi
+	done
+	if [ -n "$connectors" ]; then
+		echo "The pco-cloudflared connectors stay after this removal, and the running ones keep running."
 		echo "Only 'pco uninstall' removes them, and it needs pco to be installed."
 	fi
 fi

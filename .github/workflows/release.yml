@@ -72,16 +72,17 @@ jobs:
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
           echo "PCO_RELEASE_KEY_FPR=$fpr" >> "$GITHUB_ENV"
 
-      # The installers of this commit trust the key in scripts/install.sh. A
+      # The installers of this commit trust the keys in scripts/install.sh. A
       # release signed with another key would be refused by every one of them.
+      # There are two keys in it while one is replaced by the other.
       - name: Check the key against install.sh
         run: |
           if ! embedded=$(packaging/release-key.sh scripts/install.sh "$RUNNER_TEMP/release.gpg"); then
             echo "::error::scripts/install.sh at this tag carries no usable release key, see the line above."
             exit 1
           fi
-          if [ "$embedded" != "$PCO_RELEASE_KEY_FPR" ]; then
-            echo "::error::The release key in scripts/install.sh is $embedded, the secret signs with $PCO_RELEASE_KEY_FPR. Nothing was built."
+          if ! printf '%s\n' "$embedded" | grep -Fxq "$PCO_RELEASE_KEY_FPR"; then
+            echo "::error::The secret signs with $PCO_RELEASE_KEY_FPR, which is none of the release keys in scripts/install.sh (${embedded//$'\n'/ }). Nothing was built."
             exit 1
           fi
 
@@ -95,6 +96,14 @@ jobs:
           # change what this run builds.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
+      # The private key has done its work once goreleaser is through, whatever
+      # the outcome. What follows needs the public keyring only.
+      - name: Remove the private key
+        if: always()
+        run: |
+          GNUPGHOME="$RUNNER_TEMP/gnupg" gpgconf --kill gpg-agent || true
+          rm -rf "$RUNNER_TEMP/gnupg"
+
       # What the installer does, with the keyring it was given and neither the
       # keys of the signing home nor the word of goreleaser.
       - name: Check the release files
@@ -105,20 +114,20 @@ jobs:
           env -u GNUPGHOME gpgv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
           env -u GNUPGHOME sqv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
 
+      # Only the highest final version is the latest release: a fix for an older
+      # line, tagged after a newer version, must not become what the installer picks.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          flags=(--draft=false)
-          if [[ $TAG != *-* ]]; then
-            flags+=(--latest)
+          flags=(--draft=false --latest=false)
+          if packaging/is-latest.sh "$TAG"; then
+            flags=(--draft=false --latest)
           fi
           gh release edit "$TAG" "${flags[@]}"
 
-      - name: Remove the release key
+      - name: Remove the public keyring
         if: always()
-        run: |
-          GNUPGHOME="$RUNNER_TEMP/gnupg" gpgconf --kill gpg-agent || true
-          rm -rf "$RUNNER_TEMP/gnupg" "$RUNNER_TEMP/release.gpg"
+        run: rm -f "$RUNNER_TEMP/release.gpg"

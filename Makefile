@@ -30,6 +30,7 @@ fmt:
 test-scripts:
 	bash scripts/install_test.sh
 	bash packaging/release-key_test.sh
+	bash packaging/is-latest_test.sh
 	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh
 
 # Builds the .deb files without a tag and without publishing or signing anything.
