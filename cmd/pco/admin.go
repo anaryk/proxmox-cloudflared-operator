@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 
@@ -13,17 +12,25 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
+// confirmFlag is how the engine marks, in a problem, what waits for the
+// confirmation of pco apply --confirm-deletes.
+const confirmFlag = "--confirm-deletes"
+
 func (a *app) syncCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync",
 		Short: "Ask the daemon for a reconcile cycle now",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
 			if err := a.client().Sync(cmd.Context()); err != nil {
 				return a.explain(cmd.Context(), err)
 			}
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), "A cycle was requested.")
-			return err
+			s := &screen{w: cmd.OutOrStdout()}
+			s.println("A cycle was requested.")
+			return s.done()
 		},
 	}
 }
@@ -34,37 +41,52 @@ func (a *app) applyCmd() *cobra.Command {
 		Use:   "apply",
 		Short: "Leave observe-only mode and start publishing",
 		Long: "Leave observe-only mode: from the next cycle the daemon changes Cloudflare.\n\n" +
-			"With --confirm-deletes the deletes that the mass delete guard holds back are let\n" +
-			"through at the next run. The pending ones are shown first.",
+			"With --confirm-deletes everything that waits for a confirmation is accepted at the\n" +
+			"next run: the deletes the mass delete guard holds back, and what the daemon says\n" +
+			"it waits for, such as guests that Proxmox no longer lists. All of it is shown first,\n" +
+			"and the question needs a terminal; a script passes --yes.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
+			s := &screen{w: cmd.OutOrStdout()}
 			if confirmDeletes {
-				st, _, err := a.state(ctx)
+				st, err := a.state(ctx)
 				if err != nil {
 					return err
 				}
-				renderHeldDeletes(cmd.OutOrStdout(), st.Actions)
-				ok, err := confirm(cmd, yes, "Let these deletes through at the next run? [y/N]")
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return errAborted
+				if !renderConfirmation(s, st) {
+					// Nothing waits, so nothing is confirmed: a confirmation that
+					// nobody waits for would land on deletes the admin did not see.
+					confirmDeletes = false
+					if st.Mode == "enforce" && !st.At.IsZero() {
+						s.println("Nothing waits for a confirmation, so there is nothing to do.")
+						return s.done()
+					}
+					s.println("Nothing waits for a confirmation, so none is given.")
+				} else {
+					ok, err := a.confirm(cmd, yes, "Accept this at the next run? [y/N]")
+					if err != nil {
+						return err
+					}
+					if !ok {
+						return errAborted
+					}
 				}
 			}
 			if err := a.client().Apply(ctx, confirmDeletes); err != nil {
 				return a.explain(ctx, err)
 			}
-			msg := "Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status."
 			if confirmDeletes {
-				msg = "Deletes confirmed for the next run. " + msg
+				s.println("Deletes confirmed for the next run.")
 			}
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), msg)
-			return err
+			s.println("Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status.")
+			return s.done()
 		},
 	}
-	cmd.Flags().BoolVar(&confirmDeletes, "confirm-deletes", false, "let the deletes held by the mass delete guard through at the next run")
+	cmd.Flags().BoolVar(&confirmDeletes, "confirm-deletes", false, "accept what waits for a confirmation at the next run: held deletes, guests that vanished, zones and tunnels that are gone")
 	addYesFlag(cmd, &yes)
 	return cmd
 }
@@ -74,19 +96,35 @@ func heldDeletes(actions []reconcile.Action) []reconcile.Action {
 	return slices.DeleteFunc(pending(actions), func(act reconcile.Action) bool { return !act.Destructive })
 }
 
-func renderHeldDeletes(w io.Writer, actions []reconcile.Action) {
-	held := heldDeletes(actions)
-	if len(held) == 0 {
-		_, _ = fmt.Fprintln(w, "No deletes are held right now.")
-		return
+// waiting returns the problems of the state that say they wait for the
+// confirmation. A cycle that holds plans no action, so its holds are in the
+// problems only.
+func waiting(problems []string) []string {
+	return slices.DeleteFunc(slices.Clone(problems), func(p string) bool { return !strings.Contains(p, confirmFlag) })
+}
+
+// renderConfirmation shows what a confirmation accepts, and reports whether
+// there is anything: held deletes, or problems that wait for it.
+func renderConfirmation(s *screen, st engine.State) bool {
+	held, waits := heldDeletes(st.Actions), waiting(st.Problems)
+	if len(held) == 0 && len(waits) == 0 {
+		return false
 	}
-	_, _ = fmt.Fprintln(w, "Deletes pending:")
-	t := newTable(w)
-	_, _ = fmt.Fprintln(t, "ACTION\tTARGET\tDETAIL\tHELD")
-	for _, act := range held {
-		_, _ = fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", act.Kind, act.Target, dash(act.Detail), dash(act.Held))
+	if len(held) > 0 {
+		s.println("Deletes pending:")
+		actionTable(s, held)
+	} else {
+		s.println("No deletes are held right now.")
 	}
-	_ = t.Flush()
+	if len(waits) > 0 {
+		s.println("")
+		s.println("These also wait for the confirmation, and " + confirmFlag + " accepts all of them:")
+		for _, p := range waits {
+			s.printf("  - %s\n", p)
+		}
+	}
+	s.println("")
+	return true
 }
 
 func (a *app) adoptCmd() *cobra.Command {
@@ -95,23 +133,30 @@ func (a *app) adoptCmd() *cobra.Command {
 		Use:   "adopt <name>",
 		Short: "Take over the DNS record that stands in the way of a hostname",
 		Long: "Replace the record of someone else that holds a hostname pco publishes, or take back\n" +
-			"a record of this install that lost its marker. The conflict is shown first. The\n" +
-			"replacement waits for a run in which the tunnel is verified and its connector ready.",
+			"a record of this install that lost its marker. The conflict is shown first, and the\n" +
+			"question needs a terminal; a script passes --yes. The replacement waits for a run in\n" +
+			"which the tunnel is verified and its connector ready.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 			name, err := hostname.Normalize(args[0])
 			if err != nil {
 				return fmt.Errorf("%q is not a hostname: %w", args[0], err)
 			}
-			st, _, err := a.state(ctx)
+			st, err := a.state(ctx)
 			if err != nil {
 				return err
 			}
+			s := &screen{w: cmd.OutOrStdout()}
 			// Without a conflict in the state the daemon refuses, and says why.
-			if what := describeConflict(st, name); what != "" {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), what)
-				ok, err := confirm(cmd, yes, fmt.Sprintf("Adopt %s? [y/N]", name))
+			if describeConflict(s, st, name) {
+				if err := s.done(); err != nil {
+					return err
+				}
+				ok, err := a.confirm(cmd, yes, fmt.Sprintf("Adopt %s? [y/N]", name))
 				if err != nil {
 					return err
 				}
@@ -122,25 +167,27 @@ func (a *app) adoptCmd() *cobra.Command {
 			if err := a.client().Adopt(ctx, name); err != nil {
 				return a.explain(ctx, err)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Adoption of %s requested; it is made by the next run that can.\n", name)
-			return err
+			s.printf("Adoption of %s requested; it is made by the next run that can.\n", name)
+			return s.done()
 		},
 	}
 	addYesFlag(cmd, &yes)
 	return cmd
 }
 
-// describeConflict says what holds name according to the state, or returns an
-// empty string when nothing does.
-func describeConflict(st engine.State, name string) string {
+// describeConflict says what holds name according to the state, and reports
+// whether anything does.
+func describeConflict(s *screen, st engine.State, name string) bool {
 	same := func(other string) bool { return strings.EqualFold(strings.TrimSuffix(other, "."), name) }
 	if i := slices.IndexFunc(st.Conflicts, func(c reconcile.Conflict) bool { return same(c.Name) }); i >= 0 {
 		c := st.Conflicts[i]
-		return fmt.Sprintf("%s is held by a record of someone else in zone %s: %s %s.\nAdopting replaces it with a record that points at the tunnel.",
-			name, c.Zone, c.Type, c.Content)
+		s.printf("%s is held by a record of someone else in zone %s: %s %s.\n"+
+			"Adopting replaces it with a record that points at the tunnel.\n", name, c.Zone, c.Type, c.Content)
+		return true
 	}
 	if slices.ContainsFunc(st.Lost, same) {
-		return fmt.Sprintf("%s points at the tunnel of this install but lost its marker.\nAdopting takes the record back.", name)
+		s.printf("%s points at the tunnel of this install but lost its marker.\nAdopting takes the record back.\n", name)
+		return true
 	}
-	return ""
+	return false
 }

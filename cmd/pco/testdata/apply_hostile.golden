@@ -1,0 +1,9 @@
+Deletes pending:
+ACTION         TARGET                            DETAIL                                HELD
+delete-record  gone?[2J?]0;pwned? ? ?31m ?evil?  in zone ?[2J?]0;pwned? ? ?31m ?evil?  guard ?[2J?]0;pwned? ? ?31m ?evil?
+
+These also wait for the confirmation, and --confirm-deletes accepts all of them:
+  - the inventory is incomplete; run pco apply --confirm-deletes if ?[2J?]0;pwned? ? ?31m ?evil?
+
+--- stderr
+Accept this at the next run? [y/N] 

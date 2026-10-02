@@ -1,12 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
@@ -155,4 +157,22 @@ func planState() engine.State {
 	st.Conflicts = []reconcile.Conflict{{Zone: "example.com", Name: "shop.example.com", Type: "A", Content: "192.0.2.10"}}
 	st.Lost = []string{"lost.example.com"}
 	return st
+}
+
+// issues returns n problems found in guest notes: the first of the settings,
+// the others of guests.
+func issues(n int) []planner.Issue {
+	var out []planner.Issue
+	for i := range n {
+		if i == 0 {
+			out = append(out, planner.Issue{Msg: "allowHosts[0]: not a valid pattern"})
+			continue
+		}
+		out = append(out, planner.Issue{
+			Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 100 + i},
+			Line:  i, Col: 2 * i,
+			Msg: fmt.Sprintf("entry %d is broken", i),
+		})
+	}
+	return out
 }

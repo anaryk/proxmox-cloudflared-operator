@@ -29,6 +29,9 @@ func (a *app) daemonCmd() *cobra.Command {
 			"private directories.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
 			level, err := zerolog.ParseLevel(logLevel)
 			if err != nil || level == zerolog.NoLevel {
 				return fmt.Errorf("unknown log level %q: want trace, debug, info, warn or error", logLevel)

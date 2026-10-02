@@ -12,5 +12,8 @@ Tunnels:
 Credentials:
   LABEL  STATE   NOTE
   main   usable  token expires 2026-10-13T14:00:00+02:00 (in 12 days)
-Issues:      none
+Issues:      3
+  settings: allowHosts[0]: not a valid pattern
+  qemu/101 line 1, column 2: entry 1 is broken
+  qemu/102 line 2, column 4: entry 2 is broken
 Problems:    none

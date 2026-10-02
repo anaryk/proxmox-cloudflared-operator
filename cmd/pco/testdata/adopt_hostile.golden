@@ -1,0 +1,4 @@
+shop.example.com is held by a record of someone else in zone zone?[2J?]0;pwned? ? ?31m ?evil?: TXT content?[2J?]0;pwned? ? ?31m ?evil?.
+Adopting replaces it with a record that points at the tunnel.
+--- stderr
+Adopt shop.example.com? [y/N] 

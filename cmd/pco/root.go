@@ -49,7 +49,7 @@ func defaultEnv() env {
 			}
 			return int(f.Fd()), true
 		},
-		readPassword: term.ReadPassword,
+		readPassword: readSecret,
 	}
 }
 
@@ -77,7 +77,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		"print the answer of the daemon as JSON (status, routes, plan, credential list, add and check)")
 
 	root.AddCommand(
-		newVersionCmd(),
+		a.versionCmd(),
 		a.daemonCmd(),
 		a.statusCmd(),
 		a.routesCmd(),
@@ -90,16 +90,29 @@ func newRootCmdWith(e env) *cobra.Command {
 	return root
 }
 
-func newVersionCmd() *cobra.Command {
+func (a *app) versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the build version",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "pco %s (%s, %s)\n",
-				version.Version, version.Commit, version.Date)
-			return err
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			s := &screen{w: cmd.OutOrStdout()}
+			s.printf("pco %s (%s, %s)\n", version.Version, version.Commit, version.Date)
+			return s.done()
 		},
 	}
+}
+
+// noJSON is the check of a command that has no answer of the daemon to print:
+// --json would be taken and do nothing, which says nothing of what the admin
+// meant.
+func (a *app) noJSON(cmd *cobra.Command) error {
+	if a.json {
+		return fmt.Errorf("--json has no meaning for %q: it prints no answer of the daemon", cmd.CommandPath())
+	}
+	return nil
 }
 
 // client returns a client of the daemon on the socket of the flags.

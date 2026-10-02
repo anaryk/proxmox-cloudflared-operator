@@ -29,15 +29,19 @@ func (a *app) routesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if a.json && want != "" {
-				return errors.New("--state cannot be used with --json: the JSON is the whole state of the daemon")
+			if a.json {
+				if want != "" {
+					return errors.New("--state cannot be used with --json: the JSON is the whole state of the daemon")
+				}
+				raw, err := a.rawState(cmd.Context())
+				if err != nil {
+					return err
+				}
+				return printJSON(cmd.OutOrStdout(), raw)
 			}
-			st, raw, err := a.state(cmd.Context())
+			st, err := a.state(cmd.Context())
 			if err != nil {
 				return err
-			}
-			if a.json {
-				return printJSON(cmd.OutOrStdout(), raw)
 			}
 			return renderRoutes(cmd.OutOrStdout(), st.Routes, want)
 		},
@@ -67,27 +71,28 @@ func parseRouteState(s string) (planner.RouteState, error) {
 }
 
 func renderRoutes(w io.Writer, routes []engine.RouteView, state planner.RouteState) error {
+	s := &screen{w: w}
 	shown := slices.DeleteFunc(slices.Clone(routes), func(r engine.RouteView) bool {
 		return state != "" && r.State != state
 	})
 	if len(shown) == 0 {
 		if state != "" {
-			_, err := fmt.Fprintf(w, "No routes in state %s.\n", state)
-			return err
+			s.printf("No routes in state %s.\n", state)
+		} else {
+			s.println("No routes.")
 		}
-		_, err := fmt.Fprintln(w, "No routes.")
-		return err
+		return s.done()
 	}
 	slices.SortStableFunc(shown, func(x, y engine.RouteView) int {
 		return cmp.Or(cmp.Compare(x.Hostname, y.Hostname), cmp.Compare(x.Owner, y.Owner))
 	})
-	t := newTable(w)
-	_, _ = fmt.Fprintln(t, "HOSTNAME\tSTATE\tSERVICE\tOWNER\tZONE\tNOTE")
+	t := s.table()
+	t.row("HOSTNAME", "STATE", "SERVICE", "OWNER", "ZONE", "NOTE")
 	for _, r := range shown {
-		_, _ = fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.Hostname, r.State, dash(r.Service), dash(r.Owner), dash(r.Zone), dash(routeNote(r)))
+		t.row(r.Hostname, string(r.State), dash(r.Service), dash(r.Owner), dash(r.Zone), dash(routeNote(r)))
 	}
-	return t.Flush()
+	t.flush()
+	return s.done()
 }
 
 // routeNote is the reason a route is in its state, or else its first warning.

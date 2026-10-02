@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
@@ -20,12 +19,16 @@ func (a *app) planCmd() *cobra.Command {
 			"With --json the whole state of the daemon is printed, as it was sent.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			st, raw, err := a.state(cmd.Context())
+			if a.json {
+				raw, err := a.rawState(cmd.Context())
+				if err != nil {
+					return err
+				}
+				return printJSON(cmd.OutOrStdout(), raw)
+			}
+			st, err := a.state(cmd.Context())
 			if err != nil {
 				return err
-			}
-			if a.json {
-				return printJSON(cmd.OutOrStdout(), raw)
 			}
 			return renderPlan(cmd.OutOrStdout(), st)
 		},
@@ -44,50 +47,53 @@ func pending(actions []reconcile.Action) []reconcile.Action {
 	return out
 }
 
+// actionTable writes actions as a table: what they are, what they are about,
+// and why they are held.
+func actionTable(s *screen, actions []reconcile.Action) {
+	t := s.table()
+	t.row("ACTION", "TARGET", "DETAIL", "HELD")
+	for _, act := range actions {
+		t.row(string(act.Kind), act.Target, dash(act.Detail), dash(act.Held))
+	}
+	t.flush()
+}
+
 func renderPlan(w io.Writer, st engine.State) error {
+	s := &screen{w: w}
 	actions := pending(st.Actions)
 	if len(actions) == 0 && len(st.Conflicts) == 0 && len(st.Lost) == 0 {
-		_, err := fmt.Fprintln(w, "Nothing to do.")
-		return err
+		s.println("Nothing to do.")
+		return s.done()
 	}
 	first := true
 	section := func(title string) {
 		if !first {
-			_, _ = fmt.Fprintln(w)
+			s.println("")
 		}
 		first = false
 		if title != "" {
-			_, _ = fmt.Fprintln(w, title)
+			s.println(title)
 		}
 	}
 
 	if len(actions) > 0 {
 		section("")
-		t := newTable(w)
-		_, _ = fmt.Fprintln(t, "ACTION\tTARGET\tDETAIL\tHELD")
-		for _, act := range actions {
-			_, _ = fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", act.Kind, act.Target, dash(act.Detail), dash(act.Held))
-		}
-		if err := t.Flush(); err != nil {
-			return err
-		}
+		actionTable(s, actions)
 	}
 	if len(st.Conflicts) > 0 {
 		section("Records of someone else that stand in the way (pco adopt replaces one):")
-		t := newTable(w)
-		_, _ = fmt.Fprintln(t, "NAME\tZONE\tTYPE\tCONTENT")
+		t := s.table()
+		t.row("NAME", "ZONE", "TYPE", "CONTENT")
 		for _, c := range st.Conflicts {
-			_, _ = fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", c.Name, c.Zone, c.Type, c.Content)
+			t.row(c.Name, c.Zone, c.Type, c.Content)
 		}
-		if err := t.Flush(); err != nil {
-			return err
-		}
+		t.flush()
 	}
 	if len(st.Lost) > 0 {
 		section("Names that point at the tunnel but lost the marker of this install (pco adopt takes them back):")
 		for _, name := range st.Lost {
-			_, _ = fmt.Fprintf(w, "  %s\n", name)
+			s.printf("  %s\n", name)
 		}
 	}
-	return nil
+	return s.done()
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
@@ -26,28 +28,43 @@ var routeStateOrder = []planner.RouteState{
 	engine.RouteFrozen,
 }
 
-// tunnelIDWidth is how much of the id of a tunnel is shown.
-const tunnelIDWidth = 8
+const (
+	// tunnelIDWidth is how much of the id of a tunnel is shown.
+	tunnelIDWidth = 8
+	// maxIssuesShown is how many issues of guest notes the status lists.
+	maxIssuesShown = 10
+)
 
 func (a *app) statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show what the daemon found and did",
 		Long: "Show the mode of the daemon, whether the inventory is complete, the routes by state,\n" +
-			"the tunnels with their connectors, the credentials and the problems.\n" +
-			"The exit status is 1 when there are problems.",
+			"the tunnels with their connectors, the credentials, the issues found in guest notes\n" +
+			"and the problems. The exit status is 1 when there are problems.\n\n" +
+			"With --json the state of the daemon is printed, as it was sent.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			st, raw, err := a.state(cmd.Context())
+			raw, err := a.rawState(cmd.Context())
 			if err != nil {
 				return err
 			}
+			var st engine.State
+			// The state is printed even when it cannot be read, but then the
+			// exit status cannot be told.
+			decodeErr := json.Unmarshal(raw, &st)
 			if a.json {
 				if err := printJSON(cmd.OutOrStdout(), raw); err != nil {
 					return err
 				}
-			} else if err := a.renderStatus(cmd.OutOrStdout(), st); err != nil {
-				return err
+			}
+			if decodeErr != nil {
+				return fmt.Errorf("decoding the state of the daemon: %w", decodeErr)
+			}
+			if !a.json {
+				if err := a.renderStatus(cmd.OutOrStdout(), st); err != nil {
+					return err
+				}
 			}
 			if hasProblems(st) {
 				return errReported
@@ -76,56 +93,59 @@ const statusKeyWidth = 13
 
 // statusLine writes a key and its value; a key without a value heads the lines
 // that follow it.
-func statusLine(w io.Writer, key, value string) {
+func statusLine(s *screen, key, value string) {
 	if value == "" {
-		_, _ = fmt.Fprintf(w, "%s:\n", key)
+		s.printf("%s:\n", key)
 		return
 	}
-	_, _ = fmt.Fprintf(w, "%-*s%s\n", statusKeyWidth, key+":", value)
+	s.printf("%-*s%s\n", statusKeyWidth, key+":", value)
 }
 
 func (a *app) renderStatus(w io.Writer, st engine.State) error {
-	statusLine(w, "Mode", modeText(st.Mode))
+	s := &screen{w: w}
+	statusLine(s, "Mode", modeText(st))
 	if st.Profile != "" {
-		statusLine(w, "Profile", st.Profile)
+		statusLine(s, "Profile", st.Profile)
 	}
-	statusLine(w, "Inventory", inventoryText(st))
-	statusLine(w, "Writer", writerText(st.WriterVerdict))
-	statusLine(w, "Routes", routeCounts(st.Routes))
+	statusLine(s, "Inventory", inventoryText(st))
+	statusLine(s, "Writer", writerText(st.WriterVerdict))
+	statusLine(s, "Routes", routeCounts(st.Routes))
 	if st.At.IsZero() {
-		statusLine(w, "Last cycle", "no cycle has run yet")
+		statusLine(s, "Last cycle", "no cycle has run yet")
 	} else {
-		statusLine(w, "Last cycle", a.when(st.At))
+		statusLine(s, "Last cycle", a.when(st.At))
 	}
 
-	if err := a.tunnelSection(w, st); err != nil {
-		return err
-	}
-	if err := a.credentialSection(w, st); err != nil {
-		return err
-	}
-	problemSection(w, st.Problems)
+	a.tunnelSection(s, st)
+	a.credentialSection(s, st)
+	issueSection(s, st.Issues)
+	problemSection(s, st.Problems)
 	if next := nextStep(st); next != "" {
-		_, _ = fmt.Fprintf(w, "\n%s\n", next)
+		s.printf("\n%s\n", next)
 	}
-	return nil
+	return s.done()
 }
 
-func modeText(mode string) string {
-	if mode == "observe" {
+// modeText names the mode. Before the first cycle the state says "observe",
+// but only because that is its zero.
+func modeText(st engine.State) string {
+	switch {
+	case st.At.IsZero():
+		return "unknown"
+	case st.Mode == "observe":
 		return "observe-only"
 	}
-	return mode
+	return st.Mode
 }
 
+// inventoryText says whether the inventory is complete. What is wrong with it
+// is in the problems.
 func inventoryText(st engine.State) string {
 	switch {
+	case st.At.IsZero():
+		return "unknown"
 	case st.Complete:
 		return "complete"
-	case st.At.IsZero():
-		return "not read yet"
-	case len(st.Problems) > 0:
-		return "incomplete: " + st.Problems[0]
 	}
 	return "incomplete"
 }
@@ -175,19 +195,18 @@ func routeCounts(routes []engine.RouteView) string {
 	return strings.Join(parts, ", ")
 }
 
-func (a *app) tunnelSection(w io.Writer, st engine.State) error {
+func (a *app) tunnelSection(s *screen, st engine.State) {
 	if len(st.Tunnels) == 0 {
-		statusLine(w, "Tunnels", "none")
-		return nil
+		statusLine(s, "Tunnels", "none")
+		return
 	}
-	statusLine(w, "Tunnels", "")
-	t := newTable(w)
-	_, _ = fmt.Fprintln(t, "  NAME\tID\tVERIFIED\tCONNECTOR")
+	statusLine(s, "Tunnels", "")
+	t := s.table()
+	t.row("  NAME", "ID", "VERIFIED", "CONNECTOR")
 	for _, tun := range st.Tunnels {
-		_, _ = fmt.Fprintf(t, "  %s\t%s\t%s\t%s\n",
-			dash(tun.Name), shortID(tun.ID), verifiedText(tun), connectorText(st.Connectors, tun.ID))
+		t.row("  "+dash(tun.Name), shortID(tun.ID), verifiedText(tun), connectorText(st.Connectors, tun.ID))
 	}
-	return t.Flush()
+	t.flush()
 }
 
 func shortID(id string) string {
@@ -226,28 +245,60 @@ func connectorText(conns []connector.Status, tunnelID string) string {
 	return fmt.Sprintf("active, ready, %d connections", conns[i].Connections)
 }
 
-func (a *app) credentialSection(w io.Writer, st engine.State) error {
+func (a *app) credentialSection(s *screen, st engine.State) {
 	if len(st.Credentials) == 0 {
-		statusLine(w, "Credentials", "none")
-		return nil
-	}
-	statusLine(w, "Credentials", "")
-	t := newTable(w)
-	_, _ = fmt.Fprintln(t, "  LABEL\tSTATE\tNOTE")
-	for _, c := range st.Credentials {
-		_, _ = fmt.Fprintf(t, "  %s\t%s\t%s\n", dash(c.Label), credentialState(c), dash(a.credentialNote(c)))
-	}
-	return t.Flush()
-}
-
-func problemSection(w io.Writer, problems []string) {
-	if len(problems) == 0 {
-		statusLine(w, "Problems", "none")
+		statusLine(s, "Credentials", "none")
 		return
 	}
-	statusLine(w, "Problems", "")
+	statusLine(s, "Credentials", "")
+	t := s.table()
+	t.row("  LABEL", "STATE", "NOTE")
+	for _, c := range st.Credentials {
+		t.row("  "+dash(c.Label), credentialState(c), dash(a.credentialNote(c)))
+	}
+	t.flush()
+}
+
+// issueSection lists the first issues found in guest notes, and in the
+// settings, with the count of all of them.
+func issueSection(s *screen, issues []planner.Issue) {
+	if len(issues) == 0 {
+		statusLine(s, "Issues", "none")
+		return
+	}
+	statusLine(s, "Issues", fmt.Sprint(len(issues)))
+	for _, is := range issues[:min(len(issues), maxIssuesShown)] {
+		s.printf("  %s\n", issueText(is))
+	}
+	if more := len(issues) - maxIssuesShown; more > 0 {
+		s.printf("  ... and %d more (pco status --json)\n", more)
+	}
+}
+
+// issueText says where an issue is and what it is: "qemu/103 line 2, column 5:
+// message", or "settings: message" for an issue that no guest has.
+func issueText(is planner.Issue) string {
+	where := "settings"
+	if is.Guest != (model.GuestRef{}) {
+		where = is.Guest.String()
+		switch {
+		case is.Line > 0 && is.Col > 0:
+			where += fmt.Sprintf(" line %d, column %d", is.Line, is.Col)
+		case is.Line > 0:
+			where += fmt.Sprintf(" line %d", is.Line)
+		}
+	}
+	return where + ": " + is.Msg
+}
+
+func problemSection(s *screen, problems []string) {
+	if len(problems) == 0 {
+		statusLine(s, "Problems", "none")
+		return
+	}
+	statusLine(s, "Problems", "")
 	for _, p := range problems {
-		_, _ = fmt.Fprintf(w, "  - %s\n", p)
+		s.printf("  - %s\n", p)
 	}
 }
 

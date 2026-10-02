@@ -1,0 +1,20 @@
+Mode:        enforce
+Profile:     host
+Inventory:   incomplete
+Writer:      ok
+Routes:      active 1, unreachable 1
+Last cycle:  2026-10-01T14:00:00+02:00
+Tunnels:
+  NAME                             ID        VERIFIED  CONNECTOR
+  pco?[2J?]0;pwned? ? ?31m ?evil?  0a1b2c3d  yes       active, ready, 4 connections
+  pco-abc123                       9f8e7d6c  no        active, not ready
+  pco-abc123                       -         unknown   none
+Credentials:
+  LABEL                              STATE    NOTE
+  label?[2J?]0;pwned? ? ?31m ?evil?  problem  dns.read on zone?[2J?]0;pwned? ? ?31m ?evil?: grant ?[2J?]0;pwned? ? ?31m ?evil?
+Issues:      2
+  qemu/101 line 2, column 5: broken ?[2J?]0;pwned? ? ?31m ?evil?
+  settings: settings ?[2J?]0;pwned? ? ?31m ?evil?
+Problems:
+  - agent of qemu/101: ?[2J?]0;pwned? ? ?31m ?evil?
+  - the inventory is incomplete; run pco apply --confirm-deletes if ?[2J?]0;pwned? ? ?31m ?evil?

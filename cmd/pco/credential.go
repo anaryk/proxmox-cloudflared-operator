@@ -56,16 +56,18 @@ func (a *app) credentialListCmd() *cobra.Command {
 }
 
 func (a *app) renderCredentials(w io.Writer, views []engine.CredentialView) error {
+	s := &screen{w: w}
 	if len(views) == 0 {
-		_, err := fmt.Fprintln(w, "No credentials.")
-		return err
+		s.println("No credentials.")
+		return s.done()
 	}
-	t := newTable(w)
-	_, _ = fmt.Fprintln(t, "ID\tLABEL\tKIND\tSTATE\tNOTE")
+	t := s.table()
+	t.row("ID", "LABEL", "KIND", "STATE", "NOTE")
 	for _, v := range views {
-		_, _ = fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", v.ID, dash(v.Label), dash(v.Kind), credentialState(v), dash(a.credentialNote(v)))
+		t.row(v.ID, dash(v.Label), dash(v.Kind), credentialState(v), dash(a.credentialNote(v)))
 	}
-	return t.Flush()
+	t.flush()
+	return s.done()
 }
 
 func (a *app) credentialAddCmd() *cobra.Command {
@@ -76,7 +78,14 @@ func (a *app) credentialAddCmd() *cobra.Command {
 		Long: "Check what a Cloudflare API token can do and store it when the check passes. The\n" +
 			"token is read from the file, or from standard input; on a terminal it is asked for\n" +
 			"without being shown. It is never taken from an argument, which others could read.",
-		Args: cobra.NoArgs,
+		// A token typed where a flag value belongs is an argument: the error
+		// must not repeat it.
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("%q takes no arguments: the token is read from standard input or --token-file", cmd.CommandPath())
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			if strings.TrimSpace(label) == "" {
@@ -112,7 +121,11 @@ func (a *app) readToken(cmd *cobra.Command, file string) (string, error) {
 	in := cmd.InOrStdin()
 	switch fd, terminal := a.stdinTerminal(in); {
 	case file != "":
-		raw, err = readLimited(file)
+		var loose bool
+		if raw, loose, err = readTokenFile(file); loose {
+			s := &screen{w: cmd.ErrOrStderr()}
+			s.printf("warning: %s can be read by others; restrict it with chmod 600\n", file)
+		}
 	case terminal:
 		raw, err = a.promptToken(cmd, fd)
 	default:
@@ -132,30 +145,36 @@ func (a *app) readToken(cmd *cobra.Command, file string) (string, error) {
 }
 
 func (a *app) promptToken(cmd *cobra.Command, fd int) ([]byte, error) {
-	if _, err := fmt.Fprint(cmd.ErrOrStderr(), tokenPrompt); err != nil {
+	s := &screen{w: cmd.ErrOrStderr()}
+	s.printf("%s", tokenPrompt)
+	if err := s.done(); err != nil {
 		return nil, err
 	}
 	raw, err := a.readPassword(fd)
 	// The newline the admin typed was not echoed.
-	_, _ = fmt.Fprintln(cmd.ErrOrStderr())
+	s.println("")
 	return raw, err
 }
 
-// readLimited reads a file of at most maxTokenInput bytes.
-func readLimited(path string) ([]byte, error) {
+// readTokenFile reads a file of at most maxTokenInput bytes, and says whether
+// group or others can read it.
+func readTokenFile(path string) (raw []byte, loose bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(f, maxTokenInput+1))
+	if info, err := f.Stat(); err == nil {
+		loose = info.Mode().Perm()&0o077 != 0
+	}
+	raw, err = io.ReadAll(io.LimitReader(f, maxTokenInput+1))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, loose, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(raw) > maxTokenInput {
-		return nil, fmt.Errorf("%s is too long for a token", path)
+		return nil, loose, fmt.Errorf("%s is too long for a token", path)
 	}
-	return raw, nil
+	return raw, loose, nil
 }
 
 func (a *app) credentialCheckCmd() *cobra.Command {
@@ -164,12 +183,13 @@ func (a *app) credentialCheckCmd() *cobra.Command {
 		Use:   "check <id>",
 		Short: "Check what the token of a credential can do",
 		Long: "Check what the token of a stored credential can do. A deep check proves the write\n" +
-			"permissions by creating and deleting a test DNS record and a test tunnel.",
+			"permissions by creating and deleting a test DNS record and a test tunnel; it asks\n" +
+			"first, which needs a terminal, and a script passes --yes.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if deep {
-				ok, err := confirm(cmd, yes, "A deep check creates and deletes a test DNS record and a test tunnel. Continue? [y/N]")
+				ok, err := a.confirm(cmd, yes, "A deep check creates and deletes a test DNS record and a test tunnel. Continue? [y/N]")
 				if err != nil {
 					return err
 				}
@@ -195,11 +215,15 @@ func (a *app) credentialRemoveCmd() *cobra.Command {
 		Short: "Remove a credential, when nothing is left that it manages",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
 			if err := a.client().RemoveCredential(cmd.Context(), args[0]); err != nil {
 				return a.explain(cmd.Context(), err)
 			}
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Removed credential %s.\n", args[0])
-			return err
+			s := &screen{w: cmd.OutOrStdout()}
+			s.printf("Removed credential %s.\n", args[0])
+			return s.done()
 		},
 	}
 }
@@ -211,57 +235,54 @@ func (a *app) printCredential(cmd *cobra.Command, v engine.CredentialView, closi
 	if a.json {
 		return printCredentialJSON(out, v)
 	}
-	if err := a.renderChecklist(out, v); err != nil {
-		return err
-	}
+	s := &screen{w: out}
+	a.renderChecklist(s, v)
 	if closing != "" {
-		_, err := fmt.Fprintf(out, "\n%s\n", closing)
-		return err
+		s.printf("\n%s\n", closing)
 	}
-	return nil
+	return s.done()
 }
 
 // renderChecklist writes the outcome of a check: what the token is, what it
 // sees, a line for each capability that was tried with what to grant when it
 // failed, and whether the token can be used.
-func (a *app) renderChecklist(w io.Writer, v engine.CredentialView) error {
+func (a *app) renderChecklist(s *screen, v engine.CredentialView) {
 	r := v.Report
 	title := fmt.Sprintf("Credential %s", dash(v.Label))
 	if v.ID != "" {
 		title += " (" + v.ID + ")"
 	}
-	_, _ = fmt.Fprintln(w, title)
+	s.println(title)
 	if r.Token.Status != "" {
-		_, _ = fmt.Fprintf(w, "Token:     %s\n", a.tokenText(r))
+		s.printf("Token:     %s\n", a.tokenText(r))
 	}
-	_, _ = fmt.Fprintf(w, "Accounts:  %s\n", accountNames(r))
-	_, _ = fmt.Fprintf(w, "Zones:     %s\n\n", zoneNames(r))
+	s.printf("Accounts:  %s\n", accountNames(r))
+	s.printf("Zones:     %s\n\n", zoneNames(r))
 
 	for _, c := range r.Checks {
 		mark := "✗"
 		if c.OK {
 			mark = "✓"
 		}
-		_, _ = fmt.Fprintf(w, "  %s %s\n", mark, checkName(c))
+		s.printf("  %s %s\n", mark, checkName(c))
 		if !c.OK && c.Detail != "" {
-			_, _ = fmt.Fprintf(w, "      %s\n", c.Detail)
+			s.printf("      %s\n", c.Detail)
 		}
 	}
 	if len(r.Checks) > 0 {
-		_, _ = fmt.Fprintln(w)
+		s.println("")
 	}
 	if r.Usable {
-		_, _ = fmt.Fprintln(w, "Usable:    yes")
+		s.println("Usable:    yes")
 	} else {
-		_, _ = fmt.Fprintln(w, "Usable:    no")
+		s.println("Usable:    no")
 	}
 	if !r.Deep && v.ID != "" {
-		_, _ = fmt.Fprintf(w, "Write access was not tried. Run pco credential check %s --deep to prove it.\n", v.ID)
+		s.printf("Write access was not tried. Run pco credential check %s --deep to prove it.\n", v.ID)
 	}
 	if len(r.Leftovers) > 0 {
-		_, _ = fmt.Fprintf(w, "Probe records left by an earlier check, to be removed by hand: %s\n", strings.Join(r.Leftovers, ", "))
+		s.printf("Probe records left by an earlier check, to be removed by hand: %s\n", strings.Join(r.Leftovers, ", "))
 	}
-	return nil
 }
 
 func checkName(c credentials.Check) string {

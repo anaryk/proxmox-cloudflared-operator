@@ -22,6 +22,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
 var update = flag.Bool("update", false, "write the golden files of the tests")
@@ -44,15 +45,6 @@ func testEnv() env {
 	e.stdinTerminal = func(io.Reader) (int, bool) { return 0, false }
 	e.readPassword = func(int) ([]byte, error) { panic("no terminal in this test") }
 	return e
-}
-
-// shortDir returns a directory whose path is short enough for a unix socket.
-func shortDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "pco")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
 }
 
 // fakeEngine is the engine behind a daemon of a test: it answers from its
@@ -127,7 +119,7 @@ func boolText(b bool) string {
 // until the test ends, and returns the path of the socket.
 func serveFake(t *testing.T, e *fakeEngine) string {
 	t.Helper()
-	socket := filepath.Join(shortDir(t), "pco", "pco.sock")
+	socket := filepath.Join(testutil.ShortDir(t), "pco", "pco.sock")
 	srv := api.New(e, "1.2.3", []uint32{uint32(os.Getuid())}, zerolog.Nop())
 	ctx, cancel := context.WithCancel(t.Context())
 	ready := make(chan struct{})
@@ -151,7 +143,7 @@ func serveFake(t *testing.T, e *fakeEngine) string {
 // a status and a body; a path it has no reply for is an unknown route.
 func serveRaw(t *testing.T, replies map[string]rawReply) string {
 	t.Helper()
-	socket := filepath.Join(shortDir(t), "pco.sock")
+	socket := filepath.Join(testutil.ShortDir(t), "pco.sock")
 	ln, err := net.Listen("unix", socket)
 	require.NoError(t, err)
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -195,14 +187,35 @@ func newRunner(t *testing.T, socket string) *runner {
 // run runs pco with args, reading stdin from in.
 func (r *runner) run(in string, args ...string) result {
 	r.t.Helper()
+	return r.runReader(strings.NewReader(in), args...)
+}
+
+// runReader runs pco with args, reading stdin from in.
+func (r *runner) runReader(in io.Reader, args ...string) result {
+	r.t.Helper()
 	cmd := newRootCmdWith(r.env)
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	cmd.SetIn(strings.NewReader(in))
+	cmd.SetIn(in)
 	cmd.SetArgs(append([]string{"--socket", r.socket}, args...))
 	err := cmd.ExecuteContext(r.t.Context())
 	return result{out: out.String(), errOut: errOut.String(), err: err}
+}
+
+// tty makes stdin a terminal, which the commands that ask a question need.
+func (r *runner) tty() *runner {
+	r.env.stdinTerminal = func(io.Reader) (int, bool) { return 0, true }
+	return r
+}
+
+// unreadable is a stdin that fails the test when it is read.
+type unreadable struct{ t *testing.T }
+
+func (u unreadable) Read([]byte) (int, error) {
+	u.t.Helper()
+	u.t.Fatal("stdin was read")
+	return 0, io.EOF
 }
 
 // requireGolden compares got with a file of testdata; run the tests with

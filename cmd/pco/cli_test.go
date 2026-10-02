@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
 // daemonWith returns a runner against a daemon whose engine is in state.
@@ -65,6 +66,52 @@ func TestStatusHasProblemsWithoutSayingSo(t *testing.T) {
 			r, _ := daemonWith(t, st)
 
 			require.ErrorIs(t, r.run("", "status").err, errReported)
+		})
+	}
+}
+
+func TestStatusBeforeTheFirstCycleKnowsNothing(t *testing.T) {
+	// The state of a daemon that has not cycled says "observe" because that
+	// is the zero of its state, not because it was found so.
+	r, _ := daemonWith(t, engine.State{Mode: "observe", WriterVerdict: "ok"})
+
+	res := r.run("", "status")
+
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, "Mode:        unknown\n")
+	require.Contains(t, res.out, "Inventory:   unknown\n")
+	require.NotContains(t, res.out, "observe-only")
+}
+
+func TestStatusInventoryLineSaysNothingButCompleteOrIncomplete(t *testing.T) {
+	r, _ := daemonWith(t, problemState())
+
+	res := r.run("", "status")
+
+	require.Contains(t, res.out, "Inventory:   incomplete\n")
+	require.Equal(t, 1, strings.Count(res.out, "cluster status: proxmox api: HTTP 500: no quorum"), "the problem is in the list of problems only")
+}
+
+func TestStatusIssues(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		count  int
+		golden string
+	}{
+		{"none", 0, "status_issues_none.golden"},
+		{"a few", 3, "status_issues_few.golden"},
+		{"ten are all there is room for", 10, "status_issues_ten.golden"},
+		{"more than ten", 13, "status_issues_many.golden"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st := healthyState()
+			st.Issues = issues(tt.count)
+			r, _ := daemonWith(t, st)
+
+			res := r.run("", "status")
+
+			require.NoError(t, res.err, "issues are no problems")
+			requireGolden(t, tt.golden, res.out)
 		})
 	}
 }
@@ -139,6 +186,27 @@ func TestRoutesRefusesWhatItDoesNotKnow(t *testing.T) {
 	require.ErrorContains(t, res.err, "--state cannot be used with --json")
 }
 
+func TestRoutesOfAFrozenAccount(t *testing.T) {
+	st := healthyState()
+	st.Routes = append(mixedRoutes(), routeView("frozen.example.com", "qemu/107", engine.RouteFrozen, "", "example.com", "account frozen: Cloudflare says so"))
+	r, _ := daemonWith(t, st)
+
+	all := r.run("", "routes")
+	require.NoError(t, all.err)
+	requireGolden(t, "routes_frozen.golden", all.out)
+
+	res := r.run("", "routes", "--state", "frozen")
+	require.NoError(t, res.err)
+	require.Equal(t, 2, strings.Count(res.out, "\n"))
+	require.Contains(t, res.out, "frozen.example.com")
+
+	help := r.run("", "routes", "--help")
+	require.Contains(t, help.out, "active, unreachable, withdrawn, conflict, no-zone, held, frozen")
+
+	status := r.run("", "status")
+	require.Contains(t, status.out, "Routes:      active 1, unreachable 1, withdrawn 1, conflict 1, no-zone 1, held 1, frozen 1\n", "a frozen route is counted with the states of the others")
+}
+
 func TestPlanGolden(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -205,6 +273,31 @@ func TestJSONPrintsThePayloadAsTheDaemonSentIt(t *testing.T) {
 	}
 }
 
+// A daemon of another version may send a state this binary cannot read: it
+// can still be printed.
+const undecodableState = `{"mode":7,"routes":"not a list","futureField":{"z":1,"a":2}}`
+
+func TestJSONPrintsAStateThatDoesNotDecode(t *testing.T) {
+	socket := serveRaw(t, map[string]rawReply{"GET /v1/state": {200, undecodableState}})
+	r := newRunner(t, socket)
+
+	for _, cmd := range []string{"routes", "plan"} {
+		t.Run(cmd, func(t *testing.T) {
+			res := r.run("", "--json", cmd)
+
+			require.NoError(t, res.err, "the bytes are printed without being read")
+			require.Equal(t, indented(t, undecodableState), res.out)
+		})
+	}
+
+	t.Run("status prints it and then says why it cannot tell the exit status", func(t *testing.T) {
+		res := r.run("", "--json", "status")
+
+		require.Equal(t, indented(t, undecodableState), res.out)
+		require.ErrorContains(t, res.err, "decoding the state of the daemon")
+	})
+}
+
 func TestStatusJSONStillExitsWithOneOnProblems(t *testing.T) {
 	st := freshState()
 	r, _ := daemonWith(t, st)
@@ -229,7 +322,7 @@ func TestACommandWritesToItsOwnStreams(t *testing.T) {
 }
 
 func TestWithoutADaemonTheSocketIsNamed(t *testing.T) {
-	socket := filepath.Join(shortDir(t), "pco", "pco.sock")
+	socket := filepath.Join(testutil.ShortDir(t), "pco", "pco.sock")
 	r := newRunner(t, socket)
 
 	for _, args := range [][]string{

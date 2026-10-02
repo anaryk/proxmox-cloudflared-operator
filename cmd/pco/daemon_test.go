@@ -13,6 +13,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
 func TestTheDaemonCommandFlags(t *testing.T) {
@@ -56,7 +57,7 @@ func TestTheDaemonRefusesAnUnknownLogLevel(t *testing.T) {
 }
 
 func TestTheDaemonSaysWhenTheNodeIsNotSetUp(t *testing.T) {
-	base := shortDir(t)
+	base := testutil.ShortDir(t)
 	r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
 
 	res := r.run("", "daemon",
@@ -102,7 +103,7 @@ func (n *readyNotifier) sent() []string {
 func TestASignalStopsTheDaemonCleanly(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
-			base := shortDir(t)
+			base := testutil.ShortDir(t)
 			paths := daemon.StorePaths(filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
 			s, err := store.Open(paths)
 			require.NoError(t, err)
@@ -113,7 +114,7 @@ func TestASignalStopsTheDaemonCleanly(t *testing.T) {
 			r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
 			r.env.daemon = daemon.Deps{Notifier: notify}
 			cmd := newRootCmdWith(r.env)
-			var errOut syncedBuffer
+			var errOut testutil.SyncBuffer
 			cmd.SetErr(&errOut)
 			cmd.SetOut(&bytes.Buffer{})
 			cmd.SetArgs([]string{
@@ -144,22 +145,4 @@ func TestASignalStopsTheDaemonCleanly(t *testing.T) {
 			}
 		})
 	}
-}
-
-// syncedBuffer is a buffer that the daemon's goroutines may write to.
-type syncedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }

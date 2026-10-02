@@ -1,8 +1,9 @@
-Mode:        observe-only
-Inventory:   not read yet
+Mode:        unknown
+Inventory:   unknown
 Writer:      ok
 Routes:      none
 Last cycle:  no cycle has run yet
 Tunnels:     none
 Credentials: none
+Issues:      none
 Problems:    none

@@ -1,0 +1,9 @@
+ACTION         TARGET                            DETAIL                                HELD
+delete-record  gone?[2J?]0;pwned? ? ?31m ?evil?  in zone ?[2J?]0;pwned? ? ?31m ?evil?  guard ?[2J?]0;pwned? ? ?31m ?evil?
+
+Records of someone else that stand in the way (pco adopt replaces one):
+NAME              ZONE                              TYPE  CONTENT
+shop.example.com  zone?[2J?]0;pwned? ? ?31m ?evil?  TXT   content?[2J?]0;pwned? ? ?31m ?evil?
+
+Names that point at the tunnel but lost the marker of this install (pco adopt takes them back):
+  lost?[2J?]0;pwned? ? ?31m ?evil?

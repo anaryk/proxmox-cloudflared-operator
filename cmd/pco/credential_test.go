@@ -113,6 +113,48 @@ func TestCredentialAddReadsTheTokenFromAFile(t *testing.T) {
 	require.Equal(t, []string{"add main " + cfToken}, e.called())
 }
 
+func TestCredentialAddWarnsOfATokenFileOthersCanRead(t *testing.T) {
+	for _, tt := range []struct {
+		mode os.FileMode
+		warn bool
+	}{
+		{0o600, false},
+		{0o400, false},
+		{0o640, true},
+		{0o604, true},
+		{0o644, true},
+	} {
+		t.Run(tt.mode.String(), func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "token")
+			require.NoError(t, os.WriteFile(file, []byte(cfToken+"\n"), 0o600))
+			require.NoError(t, os.Chmod(file, tt.mode))
+			r, e := daemonWith(t, freshState())
+			e.addView = usableCredential("a1b2c3d4", "main", 12*24*time.Hour)
+
+			res := r.run("", "credential", "add", "--label", "main", "--token-file", file)
+
+			require.NoError(t, res.err, "a warning is no reason to refuse the token")
+			require.Equal(t, []string{"add main " + cfToken}, e.called())
+			if tt.warn {
+				require.Equal(t, "warning: "+file+" can be read by others; restrict it with chmod 600\n", res.errOut)
+			} else {
+				require.Empty(t, res.errOut)
+			}
+		})
+	}
+}
+
+func TestCredentialAddNeverEchoesAStrayArgument(t *testing.T) {
+	r, e := daemonWith(t, freshState())
+
+	// A token typed in the place of a flag value ends up as an argument.
+	res := r.run("", "credential", "add", "--label", "main", cfToken)
+
+	require.EqualError(t, res.err, `"pco credential add" takes no arguments: the token is read from standard input or --token-file`)
+	require.NotContains(t, res.err.Error(), cfToken)
+	require.Empty(t, e.called())
+}
+
 func TestCredentialAddNeverTakesTheTokenFromAFlag(t *testing.T) {
 	r, e := daemonWith(t, freshState())
 
@@ -254,7 +296,7 @@ func TestDeepCheckAsksFirst(t *testing.T) {
 			r, e := daemonWith(t, credentialsState())
 			e.checkView = withWrites(usableCredential("a1b2c3d4", "main", 12*24*time.Hour))
 
-			res := r.run(tt.in, "credential", "check", "a1b2c3d4", "--deep")
+			res := r.tty().run(tt.in, "credential", "check", "a1b2c3d4", "--deep")
 
 			require.Contains(t, res.errOut, question)
 			if tt.check {
