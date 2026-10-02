@@ -1,5 +1,6 @@
 www.example.com is held by qemu/101 (web?[2J?]0;pwned? ? ?31m ?evil?) since 2026-10-01T14:00:00+02:00.
 Resolving hands it to manual/x; qemu/101 (web?[2J?]0;pwned? ? ?31m ?evil?) waits for it from then on, in the place in line its claim gives it.
 manual/x names www.example.com without a route for it: nobody serves it until manual/x routes it.
+The daemon holds (the writer ?[2J?]0;pwned? ? ?31m ?evil?): the claim moves now, but manual/x serves www.example.com only once the daemon stops holding.
 --- stderr
 Move www.example.com to manual/x? [y/N] 

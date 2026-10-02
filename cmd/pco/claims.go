@@ -156,8 +156,9 @@ func describeMove(s *screen, a *app, c engine.ClaimView, owner string, st engine
 }
 
 // moveOutcome says when the new holder of a hostname will serve it: not
-// while it waits for approval, names the hostname without a route for it, or
-// the daemon holds; otherwise once a cycle has verified its address.
+// while it waits for approval or names the hostname without a route for it,
+// and nothing is published while the daemon only observes or holds; otherwise
+// it serves it once a cycle has verified its address.
 func moveOutcome(host, owner string, st engine.State) []string {
 	var out []string
 	waits := slices.ContainsFunc(st.Unapproved, func(g engine.UnapprovedGuest) bool {
@@ -170,17 +171,16 @@ func moveOutcome(host, owner string, st engine.State) []string {
 	case !routed:
 		out = append(out, fmt.Sprintf("%s names %s without a route for it: nobody serves it until %s routes it.", owner, host, owner))
 	}
-	if daemonHolds(st) {
-		out = append(out, fmt.Sprintf("The daemon holds, and pco status says why: nobody serves %s from %s until that changes.", host, owner))
+	if st.Mode == engine.ModeObserve {
+		out = append(out, "The daemon only observes: the claim moves now, but nothing is published until pco apply.")
+	}
+	if st.Hold != "" {
+		out = append(out, fmt.Sprintf("The daemon holds (%s): the claim moves now, but %s serves %s only once the daemon stops holding.",
+			st.Hold, owner, host))
 	}
 	if len(out) == 0 {
 		out = append(out, fmt.Sprintf("From the next cycle %s holds it, and serves it once its address is verified: "+
 			"pco diagnose %s shows how that goes.", owner, host))
 	}
 	return out
-}
-
-// daemonHolds reports whether the last cycle left Cloudflare as it was.
-func daemonHolds(st engine.State) bool {
-	return st.Hold != "" || slices.ContainsFunc(st.Tunnels, func(t engine.TunnelView) bool { return t.Unchecked })
 }

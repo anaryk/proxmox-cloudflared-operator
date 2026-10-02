@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -158,7 +159,9 @@ func TestClaimsResolveToAnOwnerThatDoesNotClaimIt(t *testing.T) {
 }
 
 // What a move does not bring about at once is said: nobody serves the
-// hostname until the new holder routes it, is approved, or the daemon goes on.
+// hostname until the new holder routes it or is approved, and nothing is
+// published while the daemon only observes or holds, also when it holds
+// before it knows any tunnel.
 func TestClaimsResolveSaysWhenNobodyWillServeTheHostname(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -171,10 +174,20 @@ func TestClaimsResolveSaysWhenNobodyWillServeTheHostname(t *testing.T) {
 		}, "qemu/102 waits for approval: nobody serves www.example.com until it is approved (pco guest approve qemu/102).\n"},
 		{"a holder that only names it", func(st *engine.State) { st.Routes = st.Routes[:len(st.Routes)-1] },
 			"qemu/102 names www.example.com without a route for it: nobody serves it until qemu/102 routes it.\n"},
+		{"a daemon that only observes", func(st *engine.State) { st.Mode = engine.ModeObserve },
+			"The daemon only observes: the claim moves now, but nothing is published until pco apply.\n"},
 		{"a daemon that holds", func(st *engine.State) {
 			st.Hold = "no writer identity; run pco setup"
-			st.Tunnels[0].Held, st.Tunnels[0].Unchecked = "not checked in the last cycle: no writer identity; run pco setup", true
-		}, "The daemon holds, and pco status says why: nobody serves www.example.com from qemu/102 until that changes.\n"},
+			for i := range st.Tunnels {
+				st.Tunnels[i].Held, st.Tunnels[i].Unchecked, st.Tunnels[i].Verified = "not checked in the last cycle: "+st.Hold, true, false
+			}
+		}, "The daemon holds (no writer identity; run pco setup): the claim moves now, " +
+			"but qemu/102 serves www.example.com only once the daemon stops holding.\n"},
+		{"a daemon that holds before it knows a tunnel", func(st *engine.State) {
+			st.Hold = "the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are"
+			st.Tunnels, st.Connectors = []engine.TunnelView{}, []connector.Status{}
+		}, "The daemon holds (the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are): " +
+			"the claim moves now, but qemu/102 serves www.example.com only once the daemon stops holding.\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			st := claimsState()

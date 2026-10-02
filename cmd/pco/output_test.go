@@ -136,6 +136,7 @@ func hostileState() engine.State {
 		{Msg: "settings " + hostileText},
 	}
 	st.Tunnels[0].Name = "pco" + hostileText
+	st.Hold = "the writer " + hostileText
 	st.Actions = []reconcile.Action{
 		{Kind: reconcile.DeleteRecord, Target: "gone" + hostileText, Detail: "in zone " + hostileText, Destructive: true, Held: "guard " + hostileText},
 		{Kind: reconcile.UpdateRecord, Target: "shop" + hostileText, Detail: "in zone " + hostileText, Destructive: true, Held: "adoption " + hostileText},
