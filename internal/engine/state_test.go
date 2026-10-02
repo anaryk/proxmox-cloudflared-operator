@@ -154,7 +154,7 @@ func TestRolloutIsConfirmedOnlyAgainstAVerifiedVersion(t *testing.T) {
 	e.cycle()
 	require.Equal(t, []Event{{
 		At: t0.Add(rolloutAskEvery), Level: "info", Kind: "rollout", Subject: tunnelName,
-		Message: "configuration version 1 runs on 1 connectors in account acc1",
+		Message: "configuration version 1 runs on 1 connectors in account acc1", Tunnel: tunnelName, Account: testAccount,
 	}}, rollouts())
 
 	// A write whose read-back fails is not verified, although its version is

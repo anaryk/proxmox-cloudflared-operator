@@ -27,6 +27,19 @@ type zoneCache struct {
 	// served holds, by zone name, the zone as it was last served by one
 	// credential alone.
 	served map[string]planner.Zone
+	// lookups holds, by account, what the last lookup of the tunnel of an
+	// account the tunnel run does not report on found. A lookup that failed
+	// is not kept.
+	lookups map[string]tunnelLookup
+}
+
+// tunnelLookup is what a lookup of the tunnel of an account found, through
+// which credential and when.
+type tunnelLookup struct {
+	credential string
+	at         time.Time
+	found      bool
+	tunnel     cfapi.Tunnel
 }
 
 // credZones is what one credential sees.
@@ -45,7 +58,7 @@ type credZones struct {
 }
 
 func newZoneCache() *zoneCache {
-	return &zoneCache{byCred: make(map[string]*credZones), served: make(map[string]planner.Zone)}
+	return &zoneCache{byCred: make(map[string]*credZones), served: make(map[string]planner.Zone), lookups: make(map[string]tunnelLookup)}
 }
 
 // credential returns what is known of credential id, made empty when nothing
@@ -79,6 +92,19 @@ func (z *zoneCache) forget(id string) {
 		z.due = true
 	}
 	maps.DeleteFunc(z.served, func(_ string, zone planner.Zone) bool { return zone.CredentialID == id })
+	maps.DeleteFunc(z.lookups, func(_ string, l tunnelLookup) bool { return l.credential == id })
+}
+
+// lookup returns what the last lookup of the tunnel of an account through a
+// credential found, while it is as new as the last account listing of that
+// credential: an account is looked up again whenever the accounts are listed.
+func (z *zoneCache) lookup(account, credential string, now time.Time) (tunnelLookup, bool) {
+	l, ok := z.lookups[account]
+	cz := z.byCred[credential]
+	if !ok || cz == nil || l.credential != credential || l.at.Before(cz.accountsAt) || now.Before(l.at) {
+		return tunnelLookup{}, false
+	}
+	return l, true
 }
 
 // confirmGone forgets the stale zones the admin confirmed gone, also as zones

@@ -155,7 +155,12 @@ func requireGolden(t *testing.T, name string, v any) {
 func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "state_populated.json", populatedState().normalized())
 	requireGolden(t, "state_empty.json", emptyState())
-	requireGolden(t, "events.json", []Event{{Seq: 7, At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable"}})
+	requireGolden(t, "events.json", []Event{
+		{Seq: 7, At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable",
+			Route: "www.example.com", Guest: "qemu/101", Account: "acc1"},
+		{Seq: 8, At: t0, Level: "info", Kind: "rollout", Subject: "pco-abc123", Message: "configuration version 3 runs on 2 connectors in account acc1",
+			Tunnel: "pco-abc123", Account: "acc1"},
+	})
 	requireGolden(t, "apply_result.json", ApplyResult{LeftObserveOnly: true, Accepted: populatedWaiting()[:1]})
 	requireGolden(t, "apply_result_empty.json", ApplyResult{Accepted: []Waiting{}})
 	requireGolden(t, "claims.json", populatedClaims())

@@ -348,6 +348,7 @@ func TestEventsForARouteGoingActiveThenUnreachable(t *testing.T) {
 
 	require.Contains(t, unnumbered(e.eng.Events(time.Time{})), Event{
 		At: t0, Level: "info", Kind: "route", Subject: "www.example.com", Message: "qemu/101: active",
+		Route: "www.example.com", Guest: "qemu/101", Account: testAccount,
 	})
 
 	e.res.setUnreachable("www.example.com", "connection refused")
@@ -357,7 +358,7 @@ func TestEventsForARouteGoingActiveThenUnreachable(t *testing.T) {
 	later := e.eng.Events(t0)
 	require.Equal(t, []Event{{
 		At: t0.Add(10 * time.Second), Level: "warn", Kind: "route", Subject: "www.example.com",
-		Message: "qemu/101: unreachable (connection refused)",
+		Message: "qemu/101: unreachable (connection refused)", Route: "www.example.com", Guest: "qemu/101", Account: testAccount,
 	}}, unnumbered(later), "only what changed, and nothing from before since")
 
 	e.clock.advance(10 * time.Second)

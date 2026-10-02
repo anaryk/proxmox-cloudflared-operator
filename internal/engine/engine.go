@@ -233,14 +233,29 @@ func (e *Engine) Cycle(ctx context.Context) State {
 	e.storeHeld.Store(c.storeHold)
 	e.offered = offer{what: c.offer, waiting: st.clone().Waiting, token: st.Offer}
 	e.publish(st.clone(), c.events, c.listing, c.served())
-	e.d.Log.Debug().
-		Str("mode", st.Mode).
-		Bool("complete", st.Complete).
-		Int("routes", len(st.Routes)).
-		Int("actions", len(st.Actions)).
-		Int("problems", len(st.Problems)).
-		Msg("cycle done")
+	e.logCycle(st)
 	return st
+}
+
+// logCycle logs a cycle that changed something at info level, with the
+// counts, and any other at debug level.
+func (e *Engine) logCycle(st State) {
+	applied := 0
+	for _, a := range st.Actions {
+		if a.Applied {
+			applied++
+		}
+	}
+	line, msg := e.d.Log.Debug().Bool("complete", st.Complete), "cycle done"
+	if applied > 0 {
+		line, msg = e.d.Log.Info(), "cycle changed something"
+	}
+	line.Str("mode", st.Mode).
+		Int("applied", applied).
+		Int("held", len(st.Actions)-applied).
+		Int("routes", len(st.Routes)).
+		Int("problems", len(st.Problems)).
+		Msg(msg)
 }
 
 // Run cycles on the poll interval until ctx ends; Trigger asks for an early

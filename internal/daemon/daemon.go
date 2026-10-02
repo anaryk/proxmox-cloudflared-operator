@@ -247,7 +247,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	start := wiredFrom(settings)
 	eng, err := engine.New(engine.Deps{
 		Store:      st,
-		Inventory:  newSettingsWatch(inv, st, start, log),
+		Inventory:  inv,
 		StartOnly:  func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Resolver:   res,
 		Connectors: conns,

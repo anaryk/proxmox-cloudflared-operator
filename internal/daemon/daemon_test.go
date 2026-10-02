@@ -301,7 +301,8 @@ func TestTheDaemonKeepsRunningWithoutTheClusterFilesystem(t *testing.T) {
 }
 
 func TestSettingsReadAtStartAreFlaggedWhenTheyChange(t *testing.T) {
-	const warning = "restart pco for them to take effect"
+	const warning = "settings gateTag changed since pco started and are read only at start; " +
+		"restart pco (systemctl restart pco) for them to take effect"
 	w := newWorld(t)
 	d := w.start()
 	ctx := t.Context()
@@ -314,11 +315,9 @@ func TestSettingsReadAtStartAreFlaggedWhenTheyChange(t *testing.T) {
 	s.PollInterval = store.Duration(30 * time.Second) // read by every cycle: no warning of its own
 	require.NoError(t, w.store.SaveSettings(s))
 	require.NoError(t, d.client.Sync(ctx))
+	d.await(func(st engine.State) bool { return containsProblem(st, warning) })
 	require.Eventually(t, func() bool { return strings.Contains(w.logs.String(), warning) }, 10*time.Second, 5*time.Millisecond)
-	require.Contains(t, w.logs.String(), `"settings":["gateTag"]`)
-	d.await(func(st engine.State) bool {
-		return containsProblem(st, "settings gateTag changed since pco started and are read only at start; restart pco")
-	})
+	require.Contains(t, w.logs.String(), `"level":"warn","event":"problem"`)
 
 	// Cycles that follow say nothing more about the same change. The second
 	// one started after the warning was logged.

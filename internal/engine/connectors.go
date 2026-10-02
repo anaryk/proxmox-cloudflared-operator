@@ -90,29 +90,43 @@ func (c *cycleRun) noteForeignConnectors(shown []reconcile.TunnelState) {
 
 // lookUpOthers looks up, without changing anything, the tunnel of every
 // account of the install that the tunnel run did not report on: the frozen
-// ones and those without a zone. It returns the tunnels found and why a
+// ones, in every cycle, and those without a zone, which are looked up again
+// only when the accounts were listed anew, every zoneRefreshEvery, or when
+// their last lookup failed: there may be many of them, and they cost no call
+// in a cycle that lists nothing. It returns the tunnels found and why a
 // lookup failed.
 func (c *cycleRun) lookUpOthers() (found []reconcile.TunnelState, failed []string) {
 	reported := make(map[string]bool, len(c.tunnels))
 	for _, t := range c.tunnels {
 		reported[t.AccountID] = true
 	}
+	lookups := c.e.zones.lookups
+	maps.DeleteFunc(lookups, func(account string, _ tunnelLookup) bool { return reported[account] })
 	name := planner.TunnelName(c.install.ID)
 	for _, account := range slices.Sorted(maps.Keys(c.zones.accounts)) {
 		if reported[account] {
 			continue
 		}
 		cred := c.zones.accounts[account]
-		api := c.e.clients[cred]
-		if api == nil {
-			failed = append(failed, fmt.Sprintf("looking up the tunnel of account %s failed: no client for credential %s", account, cred))
-			continue
+		l, known := c.e.zones.lookup(account, cred, c.now)
+		if !known || c.zones.frozen[account] {
+			api := c.e.clients[cred]
+			if api == nil {
+				failed = append(failed, fmt.Sprintf("looking up the tunnel of account %s failed: no client for credential %s", account, cred))
+				continue
+			}
+			t, ok, err := api.FindTunnel(c.ctx, account, name)
+			if err != nil {
+				delete(lookups, account)
+				failed = append(failed, fmt.Sprintf("looking up the tunnel of account %s failed: %v", account, err))
+				continue
+			}
+			l = tunnelLookup{credential: cred, at: c.now, found: ok, tunnel: t}
+			lookups[account] = l
 		}
-		t, ok, err := api.FindTunnel(c.ctx, account, name)
+		t := l.tunnel
 		switch {
-		case err != nil:
-			failed = append(failed, fmt.Sprintf("looking up the tunnel of account %s failed: %v", account, err))
-		case !ok:
+		case !l.found:
 			c.forgetTunnelsOf(account)
 		default:
 			found = append(found, reconcile.TunnelState{AccountID: account, CredentialID: cred, Name: t.Name, ID: t.ID, Exists: true})
@@ -287,7 +301,7 @@ func (c *cycleRun) confirmRollouts(existing []reconcile.TunnelState) {
 		}
 		c.e.rolledOut[t.ID] = t.Version
 		c.events = append(c.events, Event{
-			At: c.now, Level: levelInfo, Kind: kindRollout, Subject: t.Name,
+			At: c.now, Level: levelInfo, Kind: kindRollout, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
 			Message: fmt.Sprintf("configuration version %d runs on %d connectors in account %s", t.Version, len(conns), t.AccountID),
 		})
 	}

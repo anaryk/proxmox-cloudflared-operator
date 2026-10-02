@@ -473,6 +473,7 @@ type env struct {
 	// startOnly is what the engine is told of the settings read only at the
 	// start of the daemon.
 	startOnly func(store.Settings) []string
+	log       zerolog.Logger
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -494,6 +495,7 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 		conn: &fakeConnectors{tokens: map[string]string{}},
 		cf:   cffake.New(),
 		apis: map[string]cfapi.API{},
+		log:  zerolog.Nop(),
 	}
 	e.res = &fakeResolver{
 		now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{},
@@ -533,7 +535,7 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		NewClient:  e.newClient,
 		Node:       testNode,
 		Now:        e.clock.now,
-		Log:        zerolog.Nop(),
+		Log:        e.log,
 		LocalDir:   e.paths.Local,
 	})
 	require.NoError(e.t, err)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
@@ -36,6 +37,7 @@ const (
 	kindWriter     = "writer"
 	kindAdmin      = "admin"
 	kindCredential = "credential"
+	kindHold       = "hold"
 )
 
 // Event is something that changed, as the event log keeps it.
@@ -48,11 +50,18 @@ type Event struct {
 	Kind    string    `json:"kind"`
 	Subject string    `json:"subject"`
 	Message string    `json:"message"`
+	// Route, Guest, Tunnel and Account name what the event is about, where
+	// it is about one: a hostname, a guest such as qemu/101, a tunnel by its
+	// name and an account by its id.
+	Route   string `json:"route,omitempty"`
+	Guest   string `json:"guest,omitempty"`
+	Tunnel  string `json:"tunnel,omitempty"`
+	Account string `json:"account,omitempty"`
 }
 
-// eventLog keeps the last maxEvents events in memory and appends every event
-// to a file as one JSON line. The file is rotated at maxEventsLog, keeping one
-// previous file.
+// eventLog keeps the last maxEvents events in memory, appends every event to
+// a file as one JSON line and logs it, so that it reaches the journal. The file
+// is rotated at maxEventsLog, keeping one previous file.
 type eventLog struct {
 	mu   sync.Mutex
 	ring []Event // oldest first
@@ -80,6 +89,9 @@ func (l *eventLog) add(events ...Event) {
 		l.seq++
 		events[i].Seq = l.seq
 	}
+	for _, ev := range events {
+		l.logEvent(ev)
+	}
 	l.ring = append(l.ring, events...)
 	if n := len(l.ring) - maxEvents; n > 0 {
 		l.ring = slices.Delete(l.ring, 0, n)
@@ -90,6 +102,26 @@ func (l *eventLog) add(events ...Event) {
 	if err := l.append(events); err != nil {
 		l.log.Warn().Err(err).Str("file", l.path).Msg("could not write the event log")
 	}
+}
+
+// logEvent logs an event at its level, with what it is about as fields.
+func (l *eventLog) logEvent(ev Event) {
+	level := zerolog.InfoLevel
+	switch ev.Level {
+	case levelWarn:
+		level = zerolog.WarnLevel
+	case levelError:
+		level = zerolog.ErrorLevel
+	}
+	line := l.log.WithLevel(level).Str("event", ev.Kind).Uint64("seq", ev.Seq)
+	for _, f := range [...]struct{ key, value string }{
+		{"subject", ev.Subject}, {"route", ev.Route}, {"guest", ev.Guest}, {"tunnel", ev.Tunnel}, {"account", ev.Account},
+	} {
+		if f.value != "" {
+			line = line.Str(f.key, f.value)
+		}
+	}
+	line.Msg(ev.Message)
 }
 
 // append writes events to the file, rotating it first when they would take it
@@ -137,16 +169,22 @@ func (l *eventLog) since(t time.Time) []Event {
 	return out
 }
 
-// changes lists what differs between two states: routes whose state changed,
-// conflicts that appeared or cleared, actions applied, a writer verdict that
-// changed and problems that appeared.
+// changes lists what differs between two states: a hold that began, changed
+// or ended, routes whose state changed, conflicts that appeared or cleared,
+// actions applied, a writer verdict that changed and problems that appeared.
 func changes(prev, next State) []Event {
 	var out []Event
+	switch {
+	case next.Hold != "" && next.Hold != prev.Hold:
+		out = append(out, Event{At: next.At, Level: levelWarn, Kind: kindHold, Message: "the cycle holds: " + next.Hold})
+	case next.Hold == "" && prev.Hold != "":
+		out = append(out, Event{At: next.At, Level: levelInfo, Kind: kindHold, Message: "the cycle no longer holds"})
+	}
 	out = append(out, routeChanges(prev, next)...)
 	out = append(out, conflictChanges(prev, next)...)
 	for _, a := range next.Actions {
 		if a.Applied {
-			out = append(out, Event{At: next.At, Level: levelInfo, Kind: kindAction, Subject: a.Target, Message: actionText(a)})
+			out = append(out, actionEvent(next.At, a))
 		}
 	}
 	if next.WriterVerdict != prev.WriterVerdict {
@@ -186,27 +224,53 @@ func routeChanges(prev, next State) []Event {
 		if r.Reason != "" {
 			msg += " (" + r.Reason + ")"
 		}
-		out = append(out, Event{At: next.At, Level: level, Kind: kindRoute, Subject: r.Hostname, Message: msg})
+		out = append(out, routeEvent(next.At, level, r, msg))
 	}
 	for _, r := range prev.Routes {
 		if !after[key{r.Hostname, r.Owner}] {
-			out = append(out, Event{At: next.At, Level: levelInfo, Kind: kindRoute, Subject: r.Hostname, Message: r.Owner + ": no longer routed"})
+			out = append(out, routeEvent(next.At, levelInfo, r, r.Owner+": no longer routed"))
 		}
 	}
 	return out
+}
+
+func routeEvent(at time.Time, level string, r RouteView, msg string) Event {
+	return Event{
+		At: at, Level: level, Kind: kindRoute, Subject: r.Hostname, Message: msg,
+		Route: r.Hostname, Guest: guestOf(r.Owner), Account: r.Account,
+	}
+}
+
+// guestOf is the guest an owner names, or empty for a manual route.
+func guestOf(owner string) string {
+	if _, err := model.ParseGuestRef(owner); err != nil {
+		return ""
+	}
+	return owner
+}
+
+func actionEvent(at time.Time, a reconcile.Action) Event {
+	ev := Event{At: at, Level: levelInfo, Kind: kindAction, Subject: a.Target, Message: actionText(a)}
+	switch a.Kind {
+	case reconcile.CreateTunnel, reconcile.DeleteTunnel, reconcile.PutConfig:
+		ev.Tunnel = a.Target
+	default:
+		ev.Route = a.Target
+	}
+	return ev
 }
 
 func conflictChanges(prev, next State) []Event {
 	var out []Event
 	for _, c := range next.Conflicts {
 		if !slices.Contains(prev.Conflicts, c) {
-			out = append(out, Event{At: next.At, Level: levelWarn, Kind: kindConflict, Subject: c.Name,
+			out = append(out, Event{At: next.At, Level: levelWarn, Kind: kindConflict, Subject: c.Name, Route: c.Name,
 				Message: fmt.Sprintf("%s %s in zone %s is not ours; the hostname is not published", c.Type, c.Content, c.Zone)})
 		}
 	}
 	for _, c := range prev.Conflicts {
 		if !slices.Contains(next.Conflicts, c) {
-			out = append(out, Event{At: next.At, Level: levelInfo, Kind: kindConflict, Subject: c.Name,
+			out = append(out, Event{At: next.At, Level: levelInfo, Kind: kindConflict, Subject: c.Name, Route: c.Name,
 				Message: fmt.Sprintf("%s %s in zone %s no longer conflicts", c.Type, c.Content, c.Zone)})
 		}
 	}
@@ -228,7 +292,7 @@ func claimEvents(at time.Time, events []planner.ClaimEvent) []Event {
 		if ev.Kind == planner.ClaimConflict {
 			level = levelWarn
 		}
-		out = append(out, Event{At: at, Level: level, Kind: kindClaim, Subject: ev.Hostname,
+		out = append(out, Event{At: at, Level: level, Kind: kindClaim, Subject: ev.Hostname, Route: ev.Hostname, Guest: guestOf(ev.Owner),
 			Message: fmt.Sprintf("%s %s: %s", ev.Kind, ev.Owner, ev.Detail)})
 	}
 	return out
