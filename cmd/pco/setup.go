@@ -1,0 +1,240 @@
+package main
+
+import (
+	"bufio"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+// setupFlags are the flags of pco setup.
+type setupFlags struct {
+	yes, noTags, skipCloudflared bool
+	repair, recover              bool
+	tokenFile                    string
+	tokenStdin                   bool
+	installID                    string
+}
+
+func (a *app) setupCmd() *cobra.Command {
+	var f setupFlags
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Prepare this Proxmox VE node for pco, repair it, or recover a lost store",
+		Long: "Prepare this Proxmox VE node for pco: role PCO, user pco@pve and its API token, the gate\n" +
+			"tags as registered tags, the cloudflared package, a first Cloudflare token, the identity of\n" +
+			"the install and the daemon. Every step looks first: running setup again finishes a run that\n" +
+			"stopped, and changes nothing on a node that is set up. What setup creates is noted in the\n" +
+			"manifest that pco uninstall follows. It runs as root on the node.\n\n" +
+			"The Cloudflare token is read from --cf-token-file, from standard input with --cf-token-stdin,\n" +
+			"or asked for without being shown; never from an argument or the environment. It is stored\n" +
+			"only when it can do what pco needs, and only while the daemon is stopped.\n\n" +
+			"--repair re-asserts the role, the user, the token and the tags, as after a restore of the\n" +
+			"node. --recover adopts the install whose tunnels the Cloudflare token sees, after its store\n" +
+			"was lost; when the token sees several, --install-id chooses.",
+		// A token typed where a flag value belongs is an argument: the error
+		// must not repeat it.
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("%q takes no arguments: the Cloudflare token is read from --cf-token-file, --cf-token-stdin or a prompt", cmd.CommandPath())
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			p, err := a.setupPrompter(cmd, f.yes)
+			if err != nil {
+				return err
+			}
+			o, err := a.setupOptions(cmd, f)
+			if err != nil {
+				return err
+			}
+			s, err := a.nodeSetup(p)
+			if err != nil {
+				return err
+			}
+			return s.Run(cmd.Context(), o)
+		},
+	}
+	flags := cmd.Flags()
+	flags.BoolVarP(&f.yes, "yes", "y", false, "take the default answers and ask nothing (needed without a terminal)")
+	flags.StringVar(&f.tokenFile, "cf-token-file", "", "read the Cloudflare API token from this file")
+	flags.BoolVar(&f.tokenStdin, "cf-token-stdin", false, "read the Cloudflare API token from standard input, which must not be a terminal")
+	flags.BoolVar(&f.noTags, "no-registered-tags", false, "do not register the gate tags, which lets whoever may edit a guest set them")
+	flags.BoolVar(&f.skipCloudflared, "skip-cloudflared", false, "do not install cloudflared when it is missing")
+	flags.BoolVar(&f.repair, "repair", false, "re-assert the role, the user, the token and the tags in Proxmox, and start the daemon")
+	flags.BoolVar(&f.recover, "recover", false, "adopt the install whose tunnels the Cloudflare token sees, after the store was lost")
+	flags.StringVar(&f.installID, "install-id", "", "with --recover: the install to adopt, when the token sees several")
+	cmd.MarkFlagsMutuallyExclusive("cf-token-file", "cf-token-stdin")
+	cmd.MarkFlagsMutuallyExclusive("repair", "recover")
+	return cmd
+}
+
+func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, error) {
+	o := setup.Options{Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID}
+	no := false
+	if f.noTags {
+		o.RegisterTags = &no
+	}
+	if f.skipCloudflared {
+		o.InstallCloudflared = &no
+	}
+	token, err := a.setupToken(cmd, f)
+	if err != nil {
+		return setup.Options{}, err
+	}
+	o.CloudflareToken = token
+	return o, nil
+}
+
+// setupToken reads the Cloudflare token given in advance: from the file, or
+// piped into standard input. Without either, setup asks for it, or does
+// without. A trailing newline is not part of the token.
+func (a *app) setupToken(cmd *cobra.Command, f setupFlags) (string, error) {
+	var raw []byte
+	var err error
+	switch in := cmd.InOrStdin(); {
+	case f.tokenFile != "":
+		var loose bool
+		if raw, loose, err = readTokenFile(f.tokenFile); loose {
+			s := &screen{w: cmd.ErrOrStderr()}
+			s.printf("warning: %s can be read by others; restrict it with chmod 600\n", f.tokenFile)
+		}
+	case f.tokenStdin:
+		if _, terminal := a.stdinTerminal(in); terminal {
+			return "", errors.New("--cf-token-stdin reads a token piped in; on a terminal, setup asks for it without --cf-token-stdin")
+		}
+		raw, err = io.ReadAll(io.LimitReader(in, maxTokenInput+1))
+		if err == nil && len(raw) > maxTokenInput {
+			err = errors.New("the input is too long for a token")
+		}
+	default:
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading the Cloudflare token: %w", err)
+	}
+	token := strings.TrimRight(string(raw), "\r\n")
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("the Cloudflare token is empty")
+	}
+	return token, nil
+}
+
+// setupPrompter is the operator of pco setup: the terminal, or with --yes
+// nobody, as --yes takes every default.
+func (a *app) setupPrompter(cmd *cobra.Command, yes bool) (*cliPrompter, error) {
+	fd, terminal := a.stdinTerminal(cmd.InOrStdin())
+	switch {
+	case yes:
+		return a.newPrompter(cmd, fd, false), nil
+	case terminal:
+		return a.newPrompter(cmd, fd, true), nil
+	}
+	return nil, errNoTerminal
+}
+
+// nodeSetup returns the setup of this node, which works on its store
+// directly and not through the daemon.
+func (a *app) nodeSetup(p setup.Prompter) (*setup.Setup, error) {
+	if os.Geteuid() != 0 {
+		return nil, errors.New("this command changes the node: run it as root")
+	}
+	st, err := store.Open(store.DefaultPaths())
+	if err != nil {
+		return nil, fmt.Errorf("opening the store: %w", err)
+	}
+	newClient := func(token string) (cfapi.API, error) { return cfapi.New(cfapi.Options{Token: token}) }
+	return setup.New(setup.NewHostRunner(), p, st, newClient, a.now, rand.Reader), nil
+}
+
+// cliPrompter is the operator at the terminal. What it prints is cleaned as
+// everything the commands print, as it carries the output of commands and
+// the messages of Cloudflare. One that is not interactive asks nothing and
+// takes the default answers.
+type cliPrompter struct {
+	a           *app
+	interactive bool
+	fd          int
+	in          *bufio.Reader
+	out, errOut io.Writer
+}
+
+func (a *app) newPrompter(cmd *cobra.Command, fd int, interactive bool) *cliPrompter {
+	return &cliPrompter{
+		a: a, interactive: interactive, fd: fd,
+		in: bufio.NewReader(cmd.InOrStdin()), out: cmd.OutOrStdout(), errOut: cmd.ErrOrStderr(),
+	}
+}
+
+// Confirm asks until the answer is yes or no; an empty one is the default.
+func (p *cliPrompter) Confirm(question string, def bool) (bool, error) {
+	if !p.interactive {
+		return def, nil
+	}
+	hint := "[y/N]"
+	if def {
+		hint = "[Y/n]"
+	}
+	for {
+		s := &screen{w: p.errOut}
+		s.printf("%s %s ", question, hint)
+		if err := s.done(); err != nil {
+			return false, err
+		}
+		line, err := p.in.ReadString('\n')
+		if err != nil {
+			s.println("")
+			return false, errors.New("no answer: the input ended")
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "":
+			return def, nil
+		case "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		}
+	}
+}
+
+// Secret asks for a secret without showing what is typed.
+func (p *cliPrompter) Secret(question string) (string, error) {
+	if !p.interactive {
+		return "", nil
+	}
+	s := &screen{w: p.errOut}
+	s.printf("%s", question)
+	if err := s.done(); err != nil {
+		return "", err
+	}
+	raw, err := p.a.readPassword(p.fd)
+	// The newline the operator typed was not echoed.
+	s.println("")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (p *cliPrompter) Info(format string, args ...any) {
+	s := &screen{w: p.out}
+	s.printf(format+"\n", args...)
+}
+
+func (p *cliPrompter) Warn(format string, args ...any) {
+	s := &screen{w: p.errOut}
+	s.printf("warning: "+format+"\n", args...)
+}

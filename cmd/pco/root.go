@@ -98,6 +98,8 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.guestCmd(),
 		a.diagnoseCmd(),
 		a.doctorCmd(),
+		a.setupCmd(),
+		a.uninstallCmd(),
 	)
 	return root
 }
