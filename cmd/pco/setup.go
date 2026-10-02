@@ -53,7 +53,7 @@ func (a *app) setupCmd() *cobra.Command {
 			if err := a.noJSON(cmd); err != nil {
 				return err
 			}
-			p, err := a.setupPrompter(cmd, f.yes)
+			p, err := a.prompter(cmd, f.yes)
 			if err != nil {
 				return err
 			}
@@ -133,9 +133,10 @@ func (a *app) setupToken(cmd *cobra.Command, f setupFlags) (string, error) {
 	return token, nil
 }
 
-// setupPrompter is the operator of pco setup: the terminal, or with --yes
-// nobody, as --yes takes every default.
-func (a *app) setupPrompter(cmd *cobra.Command, yes bool) (*cliPrompter, error) {
+// prompter is the operator of pco setup and pco uninstall: the terminal, or
+// with --yes nobody, as --yes takes the default of every question no flag
+// answers.
+func (a *app) prompter(cmd *cobra.Command, yes bool) (*cliPrompter, error) {
 	fd, terminal := a.stdinTerminal(cmd.InOrStdin())
 	switch {
 	case yes:

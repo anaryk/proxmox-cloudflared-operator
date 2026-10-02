@@ -66,7 +66,7 @@ func isSetupRole(role pveRole) bool {
 }
 
 // removeProxmox removes what the manifest says setup created in Proxmox, as
-// far as it is still there. Proxmox drops the grants of a user or a role that
+// the survey found it. Proxmox drops the grants of a user or a role that
 // goes, so setup's grant is only revoked by itself when the user or the role
 // stays, and is looked for again when both went.
 func (u *uninstall) removeProxmox(ctx context.Context) {
@@ -74,13 +74,13 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 	if !m.inProxmox() {
 		return
 	}
-	s, err := u.readProxmox(ctx)
-	if err != nil {
+	if err := u.found.proxmoxErr; err != nil {
 		u.fail("reading what Proxmox holds of pco: %v; it is left as it is", err)
 		return
 	}
+	s := u.found.proxmox
 	userGoes := m.CreatedUser && s.user
-	roleGoes := m.CreatedRole && s.role != nil && isSetupRole(*s.role)
+	roleGoes, why := u.roleVerdict()
 	bothGo := userGoes && roleGoes
 	granted := m.GrantedACL && slices.ContainsFunc(s.acl, isGrant)
 	if granted && !bothGo {
@@ -104,7 +104,7 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 		u.ask.Info("user %s: gone already", userID)
 	}
 	if m.CreatedRole {
-		u.removeRole(ctx, s.role, roleGoes)
+		u.removeRole(ctx, s.role, roleGoes, why)
 	}
 	if granted && bothGo {
 		u.checkGrantGone(ctx)
@@ -135,9 +135,45 @@ func (u *uninstall) checkGrantGone(ctx context.Context) {
 	}
 }
 
-// removeRole removes role PCO while it grants what setup gave it and nothing
-// else: a privilege an admin added says the role is used for more.
-func (u *uninstall) removeRole(ctx context.Context, role *pveRole, goes bool) {
+// roleVerdict reports whether role PCO goes, and why not when it stays. It
+// goes when setup created it and it grants what setup gave it and nothing
+// else: a privilege an admin added or took away says the role is used for
+// more.
+func (u *uninstall) roleVerdict() (goes bool, why string) {
+	role := u.found.proxmox.role
+	switch {
+	case !u.manifest.CreatedRole:
+		return false, "setup did not create it"
+	case role == nil:
+		return false, "it is gone"
+	case !isSetupRole(*role):
+		return false, roleChange(role.Privs)
+	}
+	return true, ""
+}
+
+// roleChange says how the privileges of a role differ from the set setup
+// gives it that they are closest to.
+func roleChange(privs []string) string {
+	var extra, missing []string
+	best := -1
+	for _, set := range setupPrivileges() {
+		e, m := without(privs, set), without(set, privs)
+		if best < 0 || len(e)+len(m) < best {
+			extra, missing, best = e, m, len(e)+len(m)
+		}
+	}
+	var parts []string
+	if len(extra) > 0 {
+		parts = append(parts, "it also grants "+strings.Join(extra, ", "))
+	}
+	if len(missing) > 0 {
+		parts = append(parts, "it no longer grants "+strings.Join(missing, ", "))
+	}
+	return strings.Join(parts, " and ") + ", unlike the role setup made"
+}
+
+func (u *uninstall) removeRole(ctx context.Context, role *pveRole, goes bool, why string) {
 	switch {
 	case role == nil:
 		u.ask.Info("role %s: gone already", roleID)
@@ -148,8 +184,7 @@ func (u *uninstall) removeRole(ctx context.Context, role *pveRole, goes bool) {
 		}
 		u.ask.Info("role %s: removed", roleID)
 	default:
-		u.ask.Warn("role %s is kept: it grants %s, which setup did not give it",
-			roleID, strings.Join(without(role.Privs, slices.Concat(setupPrivileges()...)), ", "))
+		u.ask.Warn("role %s is kept: %s", roleID, why)
 	}
 }
 

@@ -125,6 +125,7 @@ func TestSetupFlagsThatDoNotGoTogether(t *testing.T) {
 		{"setup", "--yes", "--cf-token-file", "/nonexistent", "--cf-token-stdin"},
 		{"setup", "--yes", "--json"},
 		{"uninstall", "--yes", "--json"},
+		{"uninstall", "--yes", "--purge-cloudflare", "--keep-cloudflare"},
 	} {
 		res := r.runReader(unreadable{t}, args...)
 		require.Error(t, res.err, args)
@@ -137,7 +138,7 @@ func TestThePrompterOnATerminal(t *testing.T) {
 		require.Equal(t, 7, fd, "the secret is read from the terminal")
 		return []byte("typed-secret\n"), nil
 	}
-	p, err := a.setupPrompter(cmd, false)
+	p, err := a.prompter(cmd, false)
 	require.NoError(t, err)
 
 	yes, err := p.Confirm("Register the gate tags?", false)
@@ -170,7 +171,7 @@ func TestThePrompterOnATerminal(t *testing.T) {
 func TestThePrompterWithYesAsksNothing(t *testing.T) {
 	a, cmd, _, errOut := commandWith(unreadable{t}, true)
 	a.readPassword = func(int) ([]byte, error) { panic("no secret is read") }
-	p, err := a.setupPrompter(cmd, true)
+	p, err := a.prompter(cmd, true)
 	require.NoError(t, err)
 
 	yes, err := p.Confirm("Install cloudflared?", true)
@@ -191,7 +192,7 @@ func TestTheUninstallPrompter(t *testing.T) {
 		terminal, yes       bool
 		interactive, refuse bool
 	}{
-		{"a terminal asks what no flag answers, even with --yes", true, true, true, false},
+		{"--yes on a terminal asks nothing: what no flag says is not done", true, true, false, false},
 		{"a terminal without --yes", true, false, true, false},
 		{"--yes without a terminal", false, true, false, false},
 		{"neither", false, false, false, true},
@@ -199,7 +200,7 @@ func TestTheUninstallPrompter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a, cmd, _, _ := commandWith(unreadable{t}, tt.terminal)
 
-			p, err := a.uninstallPrompter(cmd, tt.yes)
+			p, err := a.prompter(cmd, tt.yes)
 
 			if tt.refuse {
 				require.ErrorIs(t, err, errNoTerminal)

@@ -133,26 +133,32 @@ func (u *uninstall) listTunnels(ctx context.Context, credID string, api cfapi.AP
 	return errors.Join(errs...)
 }
 
-func (u *uninstall) showCloudflare(found cfObjects) {
+// showCloudflare lists what the install has at Cloudflare, as the survey
+// found it.
+func (u *uninstall) showCloudflare() {
+	f := u.found
 	switch {
 	case u.installID == "":
 		u.ask.Info("  at Cloudflare: nothing, as the store holds no install")
 		return
-	case found.empty():
+	case f.cloudflareErr != nil:
+		u.ask.Info("  at Cloudflare: what install %s has cannot be listed: %v", u.installID, f.cloudflareErr)
+		return
+	case f.cloudflare.empty():
 		u.ask.Info("  at Cloudflare: nothing of install %s", u.installID)
 		return
 	}
 	u.ask.Info("  at Cloudflare, what install %s has:", u.installID)
-	for _, r := range found.records {
+	for _, r := range f.cloudflare.records {
 		u.ask.Info("    DNS record %s %s in zone %s", r.record.Type, r.record.Name, r.zone.Name)
 	}
-	for _, t := range found.tunnels {
+	for _, t := range f.cloudflare.tunnels {
 		u.ask.Info("    tunnel %s (%s) in account %s", t.tunnel.Name, t.tunnel.ID, t.account)
 	}
 }
 
-func (u *uninstall) deleteRecords(ctx context.Context, found cfObjects) {
-	for _, r := range found.records {
+func (u *uninstall) deleteRecords(ctx context.Context) {
+	for _, r := range u.found.cloudflare.records {
 		err := r.api.DeleteRecord(ctx, r.zone.ID, r.record.ID)
 		if err != nil && !cfapi.IsNotFound(err) {
 			u.fail("DNS record %s in zone %s was not deleted: %v", r.record.Name, r.zone.Name, err)
@@ -164,8 +170,8 @@ func (u *uninstall) deleteRecords(ctx context.Context, found cfObjects) {
 
 // deleteTunnels deletes the tunnels, once their connectors are stopped.
 // Cloudflare refuses to delete a tunnel while it still counts a connection.
-func (u *uninstall) deleteTunnels(ctx context.Context, found cfObjects) {
-	for _, t := range found.tunnels {
+func (u *uninstall) deleteTunnels(ctx context.Context) {
+	for _, t := range u.found.cloudflare.tunnels {
 		err := t.api.DeleteTunnel(ctx, t.account, t.tunnel.ID)
 		if err != nil && !cfapi.IsNotFound(err) {
 			u.fail("tunnel %s (%s) in account %s was not deleted: %v", t.tunnel.Name, t.tunnel.ID, t.account, err)

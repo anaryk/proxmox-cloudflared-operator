@@ -85,42 +85,64 @@ func (e *testEnv) requireStoreKept() {
 	e.manifest()
 }
 
-func serviceStopped() []call { return []call{{line: "systemctl disable --now pco.service"}} }
-
-func connectorsPruned() []call {
-	return []call{
-		{
-			line: "systemctl list-units --all --plain --no-legend -- pco-cloudflared@*.service",
-			out:  "pco-cloudflared@" + tunnelID + ".service loaded active running pco cloudflared connector\n",
-		},
-		{line: "systemctl disable --now -- pco-cloudflared@" + tunnelID + ".service"},
+// requireNoDelete fails when anything was deleted, created or changed at
+// Cloudflare.
+func (e *testEnv) requireNoDelete() {
+	e.t.Helper()
+	for _, call := range e.cf.Calls() {
+		require.NotRegexp(e.t, "^(Delete|Create|Update|Put)", call, "Cloudflare is only read")
 	}
 }
 
-func noConnectors() []call {
-	return []call{{line: "systemctl list-units --all --plain --no-legend -- pco-cloudflared@*.service"}}
+// The reads of what uninstall looks at before it asks.
+
+const listConnectors = "systemctl list-units --all --plain --no-legend -- pco-cloudflared@*.service"
+
+func connectorsSeen() []call {
+	return []call{{line: listConnectors, out: "pco-cloudflared@" + tunnelID + ".service loaded active running pco cloudflared connector\n"}}
 }
 
-func egressRemoved() []call {
-	return []call{
-		{line: "nft list tables", out: "table inet filter\ntable inet pco_egress\n"},
-		{line: "nft delete table inet pco_egress"},
-	}
+func noConnectorsSeen() []call { return []call{{line: listConnectors}} }
+
+func egressSeen() []call {
+	return []call{{line: "nft list tables", out: "table inet filter\ntable inet pco_egress\n"}}
 }
 
-func noEgress() []call { return []call{{line: "nft list tables", out: "table inet filter\n"}} }
+func noEgressSeen() []call { return []call{{line: "nft list tables", out: "table inet filter\n"}} }
 
-// userRemoved reads what Proxmox holds and removes the token and the user
-// setup created, and the tags.
-func userRemoved() []call {
+// userRead reads the user, the token and the tags setup created.
+func userRead() []call {
 	return []call{
 		{line: "pveum user list --output-format json", out: usersWith},
 		{line: "pveum user token list pco@pve --output-format json", out: tokensWith},
 		{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"a;cf-tunnel;cf-tunnel-managed"}`},
+	}
+}
+
+// The removals.
+
+func serviceStopped() []call { return []call{{line: "systemctl disable --now pco.service"}} }
+
+func connectorsPruned() []call {
+	return append(connectorsSeen(), call{line: "systemctl disable --now -- pco-cloudflared@" + tunnelID + ".service"})
+}
+
+func egressDeleted() []call { return []call{{line: "nft delete table inet pco_egress"}} }
+
+// userRemoved removes the token and the user setup created, and the tags,
+// as userRead found them.
+func userRemoved() []call {
+	return []call{
 		{line: "pveum user token remove pco@pve pco"},
 		{line: "pveum user delete pco@pve"},
 		{line: "pvesh set /cluster/options --registered-tags a"},
 	}
+}
+
+// isRead reports whether a command only reads.
+func isRead(command string) bool {
+	return strings.HasPrefix(command, listConnectors) || command == "nft list tables" ||
+		strings.HasPrefix(command, "pveum ") && strings.Contains(command, " list ") || strings.HasPrefix(command, "pvesh get ")
 }
 
 var setupsUser = Manifest{CreatedUser: true, CreatedToken: true, RegisteredTags: []string{"cf-tunnel", "cf-tunnel-managed"}}
@@ -129,14 +151,13 @@ func TestUninstallRemovesOnlyManifestItems(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(setupsUser)
 	e.atCloudflare()
-	e.script(serviceStopped(), connectorsPruned(), egressRemoved(), userRemoved())
+	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
 	e.done()
 
 	// The role was there before setup: it is kept, and not even looked at.
 	require.NotContains(t, strings.Join(e.run.ran, "\n"), "role")
-	e.requireShown("role PCO")
 	require.Equal(t, []string{"rec-other-install", "rec-by-hand"}, e.recordIDs())
 	require.Equal(t, []string{"pco-ba9876543210"}, e.tunnelNames())
 	require.NoFileExists(t, filepath.Join(e.paths.Local, "tunnels", tunnelID+".token"))
@@ -148,9 +169,10 @@ func TestUninstallOrder(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(setupsUser)
 	e.atCloudflare()
-	e.script(serviceStopped(), connectorsPruned(), egressRemoved(), userRemoved())
+	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
+	e.done()
 
 	at := func(prefix string) int {
 		t.Helper()
@@ -158,21 +180,26 @@ func TestUninstallOrder(t *testing.T) {
 		require.GreaterOrEqual(t, i, 0, "%s happened", prefix)
 		return i
 	}
+	stop := at("run systemctl disable --now pco.service")
+	require.True(t, slices.ContainsFunc(e.events[:stop], func(ev string) bool { return strings.HasPrefix(ev, "run pvesh get") }),
+		"what is there is read before anything goes")
+	for _, ev := range e.events[stop:] {
+		if command, ok := strings.CutPrefix(ev, "run "); ok && command != listConnectors {
+			require.False(t, isRead(command), "nothing is read again after the stop: %s", command)
+		}
+	}
 	order := []int{
-		at("run systemctl disable --now pco.service"),
+		stop,
 		at("cf DeleteRecord " + testZone + " rec-ours"),
-		at("run systemctl list-units"),
 		at("run systemctl disable --now -- pco-cloudflared@"),
 		at("cf DeleteTunnel " + testAccount + " " + tunnelID),
-		at("run nft"),
-		at("run pveum"),
+		at("run nft delete"),
+		at("run pveum user token remove"),
 	}
 	require.IsIncreasing(t, order, "the daemon, the records, the connectors, the tunnel, the filter, then Proxmox")
-
 	// What is deleted at Cloudflare is listed before anything is deleted.
-	listed := slices.IndexFunc(e.ask.lines, func(l string) bool { return strings.Contains(l, "www.example.com") })
-	require.GreaterOrEqual(t, listed, 0)
-	require.Contains(t, e.ask.text(), "pco-"+testInstall)
+	e.requireShown("www.example.com")
+	e.requireShown("pco-" + testInstall)
 }
 
 func TestUninstallAsksEachQuestion(t *testing.T) {
@@ -181,7 +208,7 @@ func TestUninstallAsksEachQuestion(t *testing.T) {
 		name          string
 		options       UninstallOptions
 		answers       []answer
-		purged, apt   bool
+		purged        bool
 		cloudflaredGo bool
 	}{
 		{
@@ -189,10 +216,13 @@ func TestUninstallAsksEachQuestion(t *testing.T) {
 			answers: []answer{{"Remove pco", true}, {"Cloudflare", false}, {"cloudflared", false}},
 		},
 		{
-			name:    "--yes answers only the main question",
-			options: UninstallOptions{Yes: true},
-			answers: []answer{{"Cloudflare", true}, {"cloudflared", true}},
+			name:    "all asked and answered yes",
+			answers: []answer{{"Remove pco", true}, {"Cloudflare", true}, {"cloudflared", true}},
 			purged:  true, cloudflaredGo: true,
+		},
+		{
+			name:    "--yes answers only the main question, and the others with no",
+			options: UninstallOptions{Yes: true},
 		},
 		{
 			name:    "the flags answer the others",
@@ -204,15 +234,10 @@ func TestUninstallAsksEachQuestion(t *testing.T) {
 			e := newTestEnv(t)
 			e.installed(withCloudflared)
 			e.atCloudflare()
-			for _, path := range []string{e.s.host.keyring, e.s.host.sources} {
-				content := gpgKey
-				if path == e.s.host.sources {
-					content = string(sourcesContent(e.s.host.keyring))
-				}
-				require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-			}
+			require.NoError(t, os.WriteFile(e.s.host.keyring, []byte(gpgKey), 0o644))
+			require.NoError(t, os.WriteFile(e.s.host.sources, sourcesContent(e.s.host.keyring), 0o644))
 			e.ask.answers = tt.answers
-			script := [][]call{serviceStopped(), connectorsPruned(), egressRemoved()}
+			script := [][]call{connectorsSeen(), egressSeen(), serviceStopped(), connectorsPruned(), egressDeleted()}
 			if tt.cloudflaredGo {
 				script = append(script, []call{{line: "apt-get remove -y cloudflared"}})
 			}
@@ -220,7 +245,6 @@ func TestUninstallAsksEachQuestion(t *testing.T) {
 
 			require.NoError(t, e.uninstall(tt.options))
 			e.done()
-			require.Empty(t, e.ask.answers, "every question was asked")
 
 			if tt.purged {
 				require.Equal(t, []string{"pco-ba9876543210"}, e.tunnelNames())
@@ -245,20 +269,22 @@ func TestUninstallThatIsNotConfirmedChangesNothing(t *testing.T) {
 	e.installed(setupsUser)
 	e.atCloudflare()
 	e.ask.answers = []answer{{"Remove pco", false}}
+	e.script(connectorsSeen(), egressSeen(), userRead())
 
 	require.ErrorIs(t, e.uninstall(UninstallOptions{PurgeCloudflare: true}), ErrAborted)
+	e.done()
 
-	require.Empty(t, e.run.ran)
+	for _, command := range e.run.ran {
+		require.True(t, isRead(command), "only reads before the question: %s", command)
+	}
 	require.Len(t, e.tunnelNames(), 2)
 	require.Len(t, e.recordIDs(), 3)
-	for _, call := range e.cf.Calls() {
-		require.NotRegexp(t, "^(Delete|Create|Update|Put)", call, "Cloudflare is only read")
-	}
+	e.requireNoDelete()
 	e.requireStoreKept()
 	// The question says what would go, at Cloudflare too.
 	for _, want := range []string{
 		"pco@pve", "cf-tunnel-managed", e.paths.Cluster, e.paths.Private, e.paths.Local,
-		"www.example.com", "pco-" + testInstall,
+		"www.example.com", "pco-" + testInstall, "connectors of 1 tunnels", "table inet pco_egress",
 	} {
 		e.requireShown(want)
 	}
@@ -281,7 +307,7 @@ func TestASecondUninstallFinishesTheRest(t *testing.T) {
 	e.atCloudflare()
 	// Cloudflare still sees the connector when the tunnel is deleted.
 	e.cf.SetConnectors(testAccount, tunnelID, []cfapi.Connector{{ID: "conn-1", Connections: 4}})
-	e.script(serviceStopped(), connectorsPruned(), egressRemoved(), userRemoved())
+	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	err := e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true})
 
@@ -292,11 +318,12 @@ func TestASecondUninstallFinishesTheRest(t *testing.T) {
 	e.requireStoreKept()
 
 	e.cf.SetConnectors(testAccount, tunnelID, nil)
-	e.script(serviceStopped(), noConnectors(), noEgress(),
+	e.script(noConnectorsSeen(), noEgressSeen(),
 		[]call{
 			{line: "pveum user list --output-format json", out: usersWithout},
 			{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"a"}`},
-		})
+		},
+		serviceStopped(), noConnectorsSeen())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
 	e.done()
@@ -308,11 +335,14 @@ func TestASecondUninstallFinishesTheRest(t *testing.T) {
 func TestAFailedRemovalKeepsTheStore(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(setupsUser)
-	e.script(serviceStopped(), connectorsPruned(), noEgress(),
+	e.script(connectorsSeen(), noEgressSeen(),
 		[]call{
 			{line: "pveum user list --output-format json", out: usersWith},
 			{line: "pveum user token list pco@pve --output-format json", out: tokensWith},
 			{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"cf-tunnel;cf-tunnel-managed"}`},
+		},
+		serviceStopped(), connectorsPruned(),
+		[]call{
 			{line: "pveum user token remove pco@pve pco", err: exitErr(255, "cluster not ready - no quorum?")},
 			{line: "pveum user delete pco@pve"},
 			{line: "pvesh set /cluster/options --delete registered-tags"},
@@ -331,16 +361,19 @@ func TestUninstallRemovesTheRoleOnlyWhenUnchanged(t *testing.T) {
 		name    string
 		privs   string
 		deleted bool
+		says    string
 	}{
-		{"as setup made it on 9", privs9, true},
-		{"as setup made it on 8", privs8, true},
-		{"with a privilege an admin added", privs9 + ",Datastore.Audit", false},
+		{"as setup made it on 9", privs9, true, ""},
+		{"as setup made it on 8", privs8, true, ""},
+		{"with a privilege an admin added", privs9 + ",Datastore.Audit", false, "it also grants Datastore.Audit"},
+		{"with a privilege an admin took away", "VM.Audit,Sys.Audit,SDN.Audit", false, "it no longer grants VM.GuestAgent.Audit"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newTestEnv(t)
 			e.installed(Manifest{CreatedRole: true})
-			script := [][]call{serviceStopped(), connectorsPruned(), noEgress(),
-				{roleWith(tt.privs), {line: "pveum acl list --output-format json", out: `[]`}}}
+			script := [][]call{connectorsSeen(), noEgressSeen(),
+				{roleWith(tt.privs), {line: "pveum acl list --output-format json", out: `[]`}},
+				serviceStopped(), connectorsPruned()}
 			if tt.deleted {
 				script = append(script, []call{{line: "pveum role delete PCO"}})
 			}
@@ -349,7 +382,7 @@ func TestUninstallRemovesTheRoleOnlyWhenUnchanged(t *testing.T) {
 			require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
 			e.done()
 			if !tt.deleted {
-				e.requireShown("Datastore.Audit")
+				e.requireShown("role PCO is kept: " + tt.says)
 			}
 		})
 	}
@@ -357,14 +390,21 @@ func TestUninstallRemovesTheRoleOnlyWhenUnchanged(t *testing.T) {
 
 func TestUninstallRemovesTheEgressFilter(t *testing.T) {
 	for _, tt := range []struct {
-		name   string
-		unit   bool
-		egress []call
+		name         string
+		unit         bool
+		seen, remove []call
 	}{
-		{"without nft", false, []call{{line: "nft list tables", err: notFound("nft")}}},
-		{"without the table", false, noEgress()},
-		{"with the table", false, egressRemoved()},
-		{"with the unit", true, append([]call{{line: "systemctl disable --now pco-egress.service"}}, egressRemoved()...)},
+		{"without nft", false, []call{{line: "nft list tables", err: notFound("nft")}}, nil},
+		{"without the table", false, noEgressSeen(), nil},
+		{"with the table", false, egressSeen(), egressDeleted()},
+		{"with the unit", true, egressSeen(), append([]call{
+			{line: "systemctl disable --now pco-egress.service"},
+			{line: "nft list tables", out: "table inet pco_egress\n"},
+		}, egressDeleted()...)},
+		{"with a unit that takes its table", true, egressSeen(), []call{
+			{line: "systemctl disable --now pco-egress.service"},
+			{line: "nft list tables"},
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newTestEnv(t)
@@ -372,7 +412,7 @@ func TestUninstallRemovesTheEgressFilter(t *testing.T) {
 			if tt.unit {
 				e.installUnit("pco-egress.service")
 			}
-			e.script(serviceStopped(), connectorsPruned(), tt.egress)
+			e.script(connectorsSeen(), tt.seen, serviceStopped(), connectorsPruned(), tt.remove)
 
 			require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
 			e.done()
@@ -387,7 +427,7 @@ func TestUninstallSkipsWhatACredentialMayNotList(t *testing.T) {
 	e.atCloudflare()
 	// Cloudflare refuses to show the token the tunnels: it manages none.
 	e.cf.Deny("tunnel.read")
-	e.script(serviceStopped(), connectorsPruned(), egressRemoved(), userRemoved())
+	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
 	e.done()
@@ -403,7 +443,7 @@ func TestUninstallKeepsTheStoreWhenCloudflareCannotBeListed(t *testing.T) {
 	e.installed(setupsUser)
 	e.atCloudflare()
 	e.cf.FailNext("zones", 1, errors.New("connection reset by peer"))
-	e.script(serviceStopped(), connectorsPruned(), egressRemoved(), userRemoved())
+	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	err := e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true})
 
@@ -411,4 +451,119 @@ func TestUninstallKeepsTheStoreWhenCloudflareCannotBeListed(t *testing.T) {
 	require.ErrorContains(t, err, "pco uninstall again")
 	e.done()
 	e.requireStoreKept()
+}
+
+// The reviewer's sequence: on a terminal and without a flag, the listing
+// fails once.
+func TestAFailedListingKeepsWhatIsNeededToPurge(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		second  UninstallOptions
+		answers []answer
+		purged  bool
+	}{
+		{"purged on the second run", UninstallOptions{}, []answer{{"Remove pco", true}, {"Cloudflare", true}}, true},
+		{"purged with the flag", UninstallOptions{Yes: true, PurgeCloudflare: true}, nil, true},
+		{"left with --keep-cloudflare", UninstallOptions{Yes: true, KeepCloudflare: true}, nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installed(Manifest{})
+			e.atCloudflare()
+			e.cf.FailNext("zones", 1, errors.New("connection reset by peer"))
+			e.ask.answers = []answer{{"Remove pco", true}}
+			e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned())
+
+			err := e.uninstall(UninstallOptions{})
+
+			require.ErrorContains(t, err, "connection reset by peer")
+			require.ErrorContains(t, err, "pco uninstall --purge-cloudflare again")
+			require.ErrorContains(t, err, "pco uninstall --keep-cloudflare")
+			e.done()
+			e.requireNoDelete()
+			e.requireStoreKept()
+
+			calls := len(e.cf.Calls())
+			e.ask.answers = tt.answers
+			e.script(noConnectorsSeen(), noEgressSeen(), serviceStopped(), noConnectorsSeen())
+			require.NoError(t, e.uninstall(tt.second))
+			e.done()
+			if tt.purged {
+				require.Equal(t, []string{"pco-ba9876543210"}, e.tunnelNames())
+			} else {
+				require.Len(t, e.tunnelNames(), 2)
+				require.Len(t, e.cf.Calls(), calls, "--keep-cloudflare does not even look")
+			}
+			e.requireStoreGone()
+		})
+	}
+}
+
+func TestAFailedDaemonStopRemovesNothing(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(setupsUser)
+	e.atCloudflare()
+	e.script(connectorsSeen(), egressSeen(), userRead(),
+		[]call{{line: "systemctl disable --now pco.service", err: exitErr(1, "Job for pco.service canceled.")}})
+
+	err := e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true})
+
+	require.ErrorContains(t, err, "Job for pco.service canceled.")
+	require.ErrorContains(t, err, "nothing was removed")
+	e.done()
+	e.requireNoDelete()
+	require.FileExists(t, filepath.Join(e.paths.Local, "tunnels", tunnelID+".token"))
+	e.requireStoreKept()
+}
+
+func TestUninstallDoesNotLookAtCloudflareForAFixedAnswer(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		options UninstallOptions
+		answers []answer
+	}{
+		{"--yes", UninstallOptions{Yes: true}, nil},
+		{"--keep-cloudflare", UninstallOptions{KeepCloudflare: true}, []answer{{"Remove pco", true}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installed(Manifest{})
+			e.atCloudflare()
+			e.ask.answers = tt.answers
+			e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned())
+
+			require.NoError(t, e.uninstall(tt.options))
+			e.done()
+
+			require.Empty(t, e.cf.Calls())
+			e.requireShown("--purge-cloudflare deletes it")
+			e.requireStoreGone()
+		})
+	}
+}
+
+func TestUninstallRefusesPurgeAndKeep(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(Manifest{})
+
+	require.ErrorContains(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true, KeepCloudflare: true}), "do not go together")
+	require.Empty(t, e.run.ran)
+}
+
+func TestASecondUninstallListsOnlyWhatIsThere(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	h := newFakeHost(t)
+	e.onHost(h)
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true, RemoveCloudflared: true}))
+	first := len(e.ask.lines)
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true, RemoveCloudflared: true}))
+
+	second := strings.Join(e.ask.lines[first:], "\n")
+	for _, gone := range []string{"Proxmox", "role", "user", "registered tags", "the store", "connectors of", "credentials"} {
+		require.NotContains(t, second, gone)
+	}
+	e.requireNothingLeft(h)
 }

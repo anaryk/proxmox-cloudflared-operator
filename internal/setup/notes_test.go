@@ -193,7 +193,7 @@ func TestUninstallKeepsTheKeyAKeptSourceNames(t *testing.T) {
 			sources := fmt.Sprintf(tt.sources, e.s.host.keyring)
 			require.NoError(t, os.WriteFile(e.s.host.sources, []byte(sources), 0o644))
 			require.NoError(t, os.WriteFile(e.s.host.keyring, []byte(gpgKey), 0o644))
-			e.script(serviceStopped(), connectorsPruned(), noEgress())
+			e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned())
 
 			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true}))
 			e.done()
