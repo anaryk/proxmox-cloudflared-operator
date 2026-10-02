@@ -70,6 +70,18 @@ func (f *fakePVE) caFile(t *testing.T, dir string) string {
 	return path
 }
 
+// certDir writes the certificate of the server where a node keeps the one
+// pveproxy serves, and returns that directory: the server is on a loopback
+// address, which must present it.
+func (f *fakePVE) certDir(t *testing.T, dir string) string {
+	t.Helper()
+	certs := filepath.Join(dir, "pve-local")
+	require.NoError(t, os.MkdirAll(certs, 0o700))
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.srv.Certificate().Raw})
+	require.NoError(t, os.WriteFile(filepath.Join(certs, "pve-ssl.pem"), pemBytes, 0o600))
+	return certs
+}
+
 func (f *fakePVE) authorizations() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -334,13 +346,14 @@ func newWorld(t *testing.T) *world {
 		Log:        zerolog.New(w.logs).Level(zerolog.DebugLevel),
 	}
 	w.deps = Deps{
-		Prober:    scriptedProber{},
-		Systemd:   w.sysd,
-		NewClient: func(store.Credential) (cfapi.API, error) { return w.cf, nil },
-		Notifier:  w.notify,
-		Accounts:  webAccounts(),
-		Sleep:     func(context.Context, time.Duration) error { return nil },
-		Now:       func() time.Time { w.cycles.Add(1); return time.Now() },
+		Prober:     scriptedProber{},
+		Systemd:    w.sysd,
+		NewClient:  func(store.Credential) (cfapi.API, error) { return w.cf, nil },
+		Notifier:   w.notify,
+		Accounts:   webAccounts(),
+		Sleep:      func(context.Context, time.Duration) error { return nil },
+		Now:        func() time.Time { w.cycles.Add(1); return time.Now() },
+		PVECertDir: w.pve.certDir(t, dir),
 	}
 	return w
 }

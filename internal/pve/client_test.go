@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -230,19 +231,6 @@ func TestNewDefaultsTimeout(t *testing.T) {
 	require.Equal(t, 3*time.Second, c.timeout)
 }
 
-func TestLoopbackSkipsCertificateVerification(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, fixture(t, "version.json"))
-	}))
-	t.Cleanup(srv.Close)
-
-	c, err := New(testConfig(srv.URL))
-	require.NoError(t, err)
-	v, err := c.Version(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, 9, v.Major)
-}
-
 func TestCAFileIsUsedForRemoteHosts(t *testing.T) {
 	versionHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, fixture(t, "version.json"))
@@ -259,7 +247,7 @@ func TestCAFileIsUsedForRemoteHosts(t *testing.T) {
 		cfg.CAFile = caFile
 		base, err := parseConfig(cfg)
 		require.NoError(t, err)
-		hc, err := newHTTPClient(base, cfg.CAFile)
+		hc, err := newHTTPClient(base, cfg.CAFile, "")
 		require.NoError(t, err)
 		hc.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
@@ -470,8 +458,11 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 		http.Redirect(w, r, "/elsewhere", http.StatusFound)
 	}))
 	t.Cleanup(srv.Close)
+	cfg := testConfig(srv.URL)
+	cfg.NodeCertDir = t.TempDir()
+	writeCert(t, filepath.Join(cfg.NodeCertDir, "pve-ssl.pem"), tls.Certificate{Certificate: [][]byte{srv.Certificate().Raw}})
 
-	c, err := New(testConfig(srv.URL))
+	c, err := New(cfg)
 	require.NoError(t, err)
 	_, err = c.Version(context.Background())
 

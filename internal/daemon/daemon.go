@@ -71,6 +71,9 @@ type Deps struct {
 	// HostTimeout bounds every question the doctor asks of the host;
 	// default: the doctor's own, 5 s.
 	HostTimeout time.Duration
+	// PVECertDir is where the certificates of this node are, which the
+	// Proxmox API on a loopback URL must present; default /etc/pve/local.
+	PVECertDir string
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -227,10 +230,11 @@ func storeReady(st *store.Store) func() error {
 // reads through too. The Proxmox token goes into the client and nowhere else.
 func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, *pve.Client, error) {
 	client, err := pve.New(pve.Config{
-		BaseURL: cfg.PVEURL,
-		TokenID: token.TokenID,
-		Secret:  token.Secret.Reveal(),
-		CAFile:  cfg.PVECAFile,
+		BaseURL:     cfg.PVEURL,
+		TokenID:     token.TokenID,
+		Secret:      token.Secret.Reveal(),
+		CAFile:      cfg.PVECAFile,
+		NodeCertDir: deps.PVECertDir,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("building the Proxmox client: %w", err)

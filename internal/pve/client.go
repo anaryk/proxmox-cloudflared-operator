@@ -4,6 +4,7 @@
 package pve
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -37,8 +38,11 @@ type Config struct {
 	BaseURL string        // e.g. "https://127.0.0.1:8006"
 	TokenID string        // "user@realm!tokenid"
 	Secret  string        // the token's secret value
-	CAFile  string        // PEM bundle; required unless the host is a loopback address, whose certificate is never verified
+	CAFile  string        // PEM bundle; required unless the host is a loopback address
 	Timeout time.Duration // per request, default 10s
+	// NodeCertDir is where the certificates of this node are, which the API
+	// on a loopback address must present; default DefaultNodeCertDir.
+	NodeCertDir string
 }
 
 // Client talks to one Proxmox VE API endpoint. It is safe for concurrent use.
@@ -49,14 +53,15 @@ type Client struct {
 	timeout time.Duration
 }
 
-// New checks cfg and returns a client for it. The certificate of a loopback
-// host is not verified; any other host is verified against cfg.CAFile.
+// New checks cfg and returns a client for it. A loopback host must present
+// the certificate this node serves, as it is in cfg.NodeCertDir; any other
+// host is verified against cfg.CAFile.
 func New(cfg Config) (*Client, error) {
 	base, err := parseConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	hc, err := newHTTPClient(base, cfg.CAFile)
+	hc, err := newHTTPClient(base, cfg.CAFile, cmp.Or(cfg.NodeCertDir, DefaultNodeCertDir))
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +127,7 @@ func isLoopback(host string) bool {
 	return err == nil && addr.Unmap().IsLoopback()
 }
 
-func newHTTPClient(base *url.URL, caFile string) (*http.Client, error) {
+func newHTTPClient(base *url.URL, caFile, nodeCertDir string) (*http.Client, error) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	// A CA file that is given is always read, so that a wrong path is
 	// reported even where it would not be used.
@@ -134,7 +139,10 @@ func newHTTPClient(base *url.URL, caFile string) (*http.Client, error) {
 		tlsCfg.RootCAs = pool
 	}
 	if isLoopback(base.Hostname()) {
+		// The certificate is pinned instead: it is self-signed, by the CA
+		// of the cluster, and checked in VerifyConnection.
 		tlsCfg.InsecureSkipVerify = true
+		tlsCfg.VerifyConnection = (&nodePin{dir: nodeCertDir}).verify
 	}
 	return &http.Client{
 		// No proxy on purpose: the API is local or on the management network.
