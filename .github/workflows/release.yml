@@ -11,49 +11,111 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The secret lives in this environment, which only the tags of a release can
+    # deploy to and a reviewer has to approve. See packaging/RELEASING.md.
+    environment: release
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::The tag $TAG is not a release tag. A release is vX.Y.Z or vX.Y.Z-rc.N."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+
+      # The build cache of another branch must not flow into a signed build.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
+          cache: false
+
+      # Everything that is installed, is installed before the key is on the runner.
+      - name: Install the signature tools
+        run: sudo apt-get update && sudo apt-get install -y gpgv sqv
+
+      # With cosign on the PATH the goreleaser action checks the signature of
+      # the goreleaser it downloads.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Import the release key
         env:
           PCO_RELEASE_GPG_KEY: ${{ secrets.PCO_RELEASE_GPG_KEY }}
         run: |
           if [ -z "$PCO_RELEASE_GPG_KEY" ]; then
-            echo "::error::The secret PCO_RELEASE_GPG_KEY is empty. Add the armored private release key to the repository secrets, the release is not published without a signature."
+            echo "::error::The secret PCO_RELEASE_GPG_KEY is empty. Put the armored private release key into the secrets of the release environment, a release is not made without a signature."
             exit 1
           fi
           export GNUPGHOME="$RUNNER_TEMP/gnupg"
           mkdir -m 700 "$GNUPGHOME"
           printf '%s\n' "$PCO_RELEASE_GPG_KEY" | gpg --batch --import
-          fpr=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
-          if [ -z "$fpr" ]; then
-            echo "::error::The secret PCO_RELEASE_GPG_KEY holds no private key."
+          secret=$(gpg --batch --with-colons --list-secret-keys)
+          keys=$(printf '%s\n' "$secret" | grep -c '^sec:' || true)
+          if [ "$keys" != 1 ]; then
+            echo "::error::The secret PCO_RELEASE_GPG_KEY holds $keys private keys, expected one."
             exit 1
           fi
+          fpr=$(printf '%s\n' "$secret" | awk -F: '$1 == "fpr" { print $10; exit }')
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
           echo "PCO_RELEASE_KEY_FPR=$fpr" >> "$GITHUB_ENV"
 
+      # The installers of this commit trust the key in scripts/install.sh. A
+      # release signed with another key would be refused by every one of them.
+      - name: Check the key against install.sh
+        run: |
+          if ! embedded=$(packaging/release-key.sh scripts/install.sh "$RUNNER_TEMP/release.gpg"); then
+            echo "::error::scripts/install.sh at this tag carries no usable release key, see the line above."
+            exit 1
+          fi
+          if [ "$embedded" != "$PCO_RELEASE_KEY_FPR" ]; then
+            echo "::error::The release key in scripts/install.sh is $embedded, the secret signs with $PCO_RELEASE_KEY_FPR. Nothing was built."
+            exit 1
+          fi
+
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          version: "~> v2"
+          version: v2.18.2
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          # Not left to goreleaser: a second tag on the same commit must not
+          # change what this run builds.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
-      # Reads the signature the way scripts/install.sh does, with gpgv and a
-      # keyring that holds only the release key.
+      # What the installer does, with the keyring it was given and neither the
+      # keys of the signing home nor the word of goreleaser.
       - name: Check the release files
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          packaging/check-artifacts.sh --signed
-          gpg --batch --export "$PCO_RELEASE_KEY_FPR" > "$RUNNER_TEMP/release.gpg"
-          gpgv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
+          packaging/check-artifacts.sh --signed --version "${TAG#v}" --require-dpkg-deb
+          env -u GNUPGHOME gpgv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
+          env -u GNUPGHOME sqv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=(--draft=false)
+          if [[ $TAG != *-* ]]; then
+            flags+=(--latest)
+          fi
+          gh release edit "$TAG" "${flags[@]}"
 
       - name: Remove the release key
         if: always()

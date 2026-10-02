@@ -2,6 +2,12 @@ version: 2
 
 project_name: pco
 
+# A tag with a suffix after "-" sorts before the release it leads up to, as the
+# versions of the packages do. Which tag a release is built from is not left to
+# this: the release workflow names it in GORELEASER_CURRENT_TAG.
+git:
+  prerelease_suffix: "-"
+
 builds:
   - id: pco
     main: ./cmd/pco
@@ -18,11 +24,13 @@ builds:
     # Keep it in sync with TAGS in the Makefile.
     tags:
       - nomsgpack
-    # The same values the Makefile stamps. The date is the commit date rather than
-    # the time of the build, so that building a tag twice gives the same binary.
+    # The same values the Makefile stamps. A release carries its tag, whatever
+    # git describe says: it names an annotated tag first when a commit has two.
+    # The date is the commit date rather than the time of the build, so that
+    # building a tag twice gives the same binary.
     ldflags:
       - -s -w
-      - -X github.com/anaryk/proxmox-cloudflared-operator/internal/version.Version={{ .Summary }}
+      - -X github.com/anaryk/proxmox-cloudflared-operator/internal/version.Version={{ if .IsSnapshot }}{{ .Summary }}{{ else }}{{ .Tag }}{{ end }}
       - -X github.com/anaryk/proxmox-cloudflared-operator/internal/version.Commit={{ .ShortCommit }}
       - -X github.com/anaryk/proxmox-cloudflared-operator/internal/version.Date={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -42,7 +50,12 @@ nfpms:
     # itself nfpm writes a pre-release as 0.1.0~rc.1 in the file name too.
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     maintainer: Tomáš Marek <tomas.marek@pellera.com>
-    description: Cloudflare Tunnel operator for Proxmox VE
+    description: |-
+      Cloudflare Tunnel operator for Proxmox VE
+      pco runs on a Proxmox VE node and reads the hostnames that tagged guests
+      list in their Notes. It publishes them through Cloudflare Tunnels, creating
+      the DNS records and tunnel routes and running a cloudflared connector for
+      each tunnel. Run pco setup after installing the package.
     homepage: https://github.com/anaryk/proxmox-cloudflared-operator
     license: MIT
     section: admin
@@ -65,7 +78,7 @@ nfpms:
         file_info:
           mode: 0644
       - src: LICENSE
-        dst: /usr/share/doc/pco/LICENSE
+        dst: /usr/share/doc/pco/copyright
         file_info:
           mode: 0644
     scripts:
@@ -104,5 +117,10 @@ changelog:
       - "^docs:"
       - "^test:"
 
+# A release is made as a draft, checked by the release workflow, and published
+# by it only after every check passed. A draft left by an earlier run of the
+# same tag is replaced.
 release:
+  draft: true
+  replace_existing_draft: true
   prerelease: auto

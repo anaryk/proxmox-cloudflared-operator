@@ -3,26 +3,48 @@
 # Checks what goreleaser left in dist/ against what scripts/install.sh downloads:
 # pco_<version>_<arch>.deb for amd64 and arm64, and checksums.txt with one line
 # "<sha256>  <file name>" for each package, as sha256sum writes it. The version
-# is the one goreleaser records in dist/metadata.json: the tag without the v,
-# a pre-release suffix kept as it is.
+# is the tag without the v, a pre-release suffix kept as it is. Each package must
+# also say, in its control file, that it is pco, of that version and of the
+# architecture in its name; dpkg writes a pre-release as 0.1.0~rc.1 there.
 #
-# Usage: packaging/check-artifacts.sh [--signed] [dist-dir]
+# Usage: packaging/check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [dist-dir]
 #
-# A release also holds checksums.txt.sig and is checked with --signed; a
-# snapshot is built without signing and has none. Nothing else may be there
-# besides the files goreleaser keeps for itself.
+#   --version  the version the release is meant to have. Without it the check
+#              trusts dist/metadata.json for the version, which is right for
+#              a snapshot and proves nothing in a release: goreleaser picks the
+#              tag it builds. With it, metadata.json and every file name must agree.
+#   --signed   a release also holds checksums.txt.sig; a snapshot has none.
+#   --require-dpkg-deb
+#              fail when dpkg-deb is missing, instead of skipping the control
+#              fields with a note. CI and the release set it.
+#
+# Nothing else may be in dist/ besides the files goreleaser keeps for itself.
 
 set -euo pipefail
 
-signed=0
-if [[ ${1:-} == --signed ]]; then
-	signed=1
-	shift
-fi
-if [[ $# -gt 1 ]]; then
-	printf 'usage: check-artifacts.sh [--signed] [dist-dir]\n' >&2
+usage() {
+	printf 'usage: check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [dist-dir]\n' >&2
 	exit 2
-fi
+}
+
+signed=0
+want=
+require_dpkg=0
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--signed) signed=1 ;;
+	--require-dpkg-deb) require_dpkg=1 ;;
+	--version)
+		[[ $# -ge 2 && -n $2 ]] || usage
+		want=$2
+		shift
+		;;
+	-*) usage ;;
+	*) break ;;
+	esac
+	shift
+done
+[[ $# -le 1 ]] || usage
 dist=${1:-dist}
 
 failures=0
@@ -41,15 +63,30 @@ sha256() {
 	printf '%s\n' "${out%% *}"
 }
 
+# field <json file> <name>: the string value of a top level key of metadata.json.
+field() {
+	sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1"
+}
+
 meta=$dist/metadata.json
 if [[ ! -f $meta ]]; then
 	printf 'check-artifacts.sh: %s not found, run goreleaser first\n' "$meta" >&2
 	exit 1
 fi
-version=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$meta")
+version=$(field "$meta" version)
+tag=$(field "$meta" tag)
 if [[ -z $version ]]; then
 	printf 'check-artifacts.sh: %s names no version\n' "$meta" >&2
 	exit 1
+fi
+if [[ -n $want ]]; then
+	if [[ $version != "$want" ]]; then
+		fail "goreleaser built version $version, the release is for $want"
+	fi
+	if [[ $tag != "v$want" ]]; then
+		fail "goreleaser built from the tag ${tag:-<none>}, the release is for v$want"
+	fi
+	version=$want
 fi
 
 debs="pco_${version}_amd64.deb
@@ -110,6 +147,35 @@ if [[ -f $dist/checksums.txt ]]; then
 			fail "checksums.txt has $count lines for $name, expected one"
 		fi
 	done <<<"$debs"
+fi
+
+if command -v dpkg-deb >/dev/null 2>&1; then
+	tilde='~'
+	deb_version=${version/-/$tilde}
+	for arch in amd64 arm64; do
+		deb=$dist/pco_${version}_$arch.deb
+		[[ -f $deb ]] || continue
+		got_package=$(dpkg-deb -f "$deb" Package 2>/dev/null) || got_package=
+		got_version=$(dpkg-deb -f "$deb" Version 2>/dev/null) || got_version=
+		got_arch=$(dpkg-deb -f "$deb" Architecture 2>/dev/null) || got_arch=
+		if [[ -z $got_package && -z $got_version && -z $got_arch ]]; then
+			fail "dpkg-deb cannot read the control file of ${deb##*/}"
+			continue
+		fi
+		if [[ $got_package != pco ]]; then
+			fail "${deb##*/} is the package ${got_package:-<none>}, expected pco"
+		fi
+		if [[ $got_version != "$deb_version" ]]; then
+			fail "${deb##*/} has the version ${got_version:-<none>}, expected $deb_version"
+		fi
+		if [[ $got_arch != "$arch" ]]; then
+			fail "${deb##*/} is built for ${got_arch:-<none>}, expected $arch"
+		fi
+	done
+elif [[ $require_dpkg == 1 ]]; then
+	fail "dpkg-deb is required to read the control files of the packages and was not found"
+else
+	printf 'check-artifacts.sh: dpkg-deb not found, the control files of the packages are not checked\n' >&2
 fi
 
 if [[ $failures != 0 ]]; then

@@ -29,11 +29,13 @@ fmt:
 
 test-scripts:
 	bash scripts/install_test.sh
+	bash packaging/release-key_test.sh
 	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh
 
 # Builds the .deb files without a tag and without publishing or signing anything.
+# Keep the version in sync with the release and ci workflows.
 snapshot:
-	go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=sign
+	go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --snapshot --clean --skip=sign
 	packaging/check-artifacts.sh
 
 package: snapshot
