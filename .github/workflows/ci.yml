@@ -28,6 +28,12 @@ jobs:
           go-version-file: go.mod
       - run: go test -tags nomsgpack -race ./...
 
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-scripts
+
   linux-probe:
     runs-on: ubuntu-latest
     env:

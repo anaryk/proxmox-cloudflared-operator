@@ -12,7 +12,7 @@ LDFLAGS := -s -w \
 # Keep it in sync with run.build-tags in .golangci.yml and the test job in CI.
 TAGS := nomsgpack
 
-.PHONY: build test lint fmt
+.PHONY: build test lint fmt test-scripts
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -25,3 +25,7 @@ lint:
 
 fmt:
 	golangci-lint fmt
+
+test-scripts:
+	bash scripts/install_test.sh
+	shellcheck scripts/*.sh
