@@ -27,7 +27,7 @@ import (
 func TestNewRefusesMissingDependencies(t *testing.T) {
 	e := newEnv(t)
 	full := Deps{
-		Store: e.store, Inventory: e.inv, Resolver: e.res, Connectors: e.conn,
+		Store: e.store, Inventory: e.inv, Resolver: e.res, Connectors: e.conn, Egress: e.egr,
 		NewClient: e.newClient, Node: testNode, Log: zerolog.Nop(),
 	}
 	for name, change := range map[string]func(*Deps){
@@ -35,6 +35,7 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 		"inventory":  func(d *Deps) { d.Inventory = nil },
 		"resolver":   func(d *Deps) { d.Resolver = nil },
 		"connectors": func(d *Deps) { d.Connectors = nil },
+		"egress":     func(d *Deps) { d.Egress = nil },
 		"client":     func(d *Deps) { d.NewClient = nil },
 		"node":       func(d *Deps) { d.Node = "" },
 	} {

@@ -100,6 +100,7 @@ func populatedState() State {
 			GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"},
 			Identity:  "uuid:201", Hostnames: []string{"new.example.com"},
 		}},
+		Egress: EgressView{State: EgressOff, Since: t0.Add(-time.Hour)},
 	}
 }
 

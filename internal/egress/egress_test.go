@@ -296,12 +296,47 @@ func TestRemoveReturnsTheErrorWhenNothingCouldBeApplied(t *testing.T) {
 	require.Len(t, n.applied(), 1, "the next Set applies whatever the last one held")
 }
 
-func TestRemoveBeforeAnySetLoadsTheWholeTable(t *testing.T) {
+// A daemon that starts finds the table it loaded before, or the one of the
+// boot unit: until its first Set, the filter knows no targets, and taking one
+// address out must not take the others with it.
+func TestRemoveBeforeAnySetTakesTheAddressOutOfTheTableAsItIs(t *testing.T) {
 	f, n, _, _ := newTestFilter(t)
+	n.setLive(realListing(t, "1.1.3").bytes(t))
 
 	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
 
-	require.Equal(t, []string{Base(testUID, nil, nil)}, n.applied())
+	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n"}, n.applied())
+
+	t.Run("and the next Set loads the whole table", func(t *testing.T) {
+		n.reset()
+		require.NoError(t, f.Set(t.Context(), targets("10.0.0.6:443")))
+		require.Equal(t, []string{render(testUID, contents{targets: targets("10.0.0.6:443")})}, n.applied())
+	})
+}
+
+func TestRemoveBeforeAnySetOfAnAddressTheTableDoesNotHold(t *testing.T) {
+	for name, live := range map[string]func(*fakeNft){
+		"not loaded":        func(n *fakeNft) { n.listErr = ErrNotLoaded },
+		"another address":   func(n *fakeNft) { n.setLive(realListing(t, "1.1.3").bytes(t)) },
+		"no targets at all": func(n *fakeNft) { n.setLive(realListing(t, "1.1.3").with(t, nil, nil).bytes(t)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, n, _, _ := newTestFilter(t)
+			live(n)
+
+			require.NoError(t, f.Remove(t.Context(), addr("10.0.0.99")))
+
+			require.Empty(t, n.applied())
+		})
+	}
+}
+
+func TestRemoveBeforeAnySetReturnsAListingItCannotRead(t *testing.T) {
+	f, n, _, _ := newTestFilter(t)
+	n.setLive([]byte("{"))
+
+	require.ErrorIs(t, f.Remove(t.Context(), addr("10.0.0.5")), ErrUnreadable)
+	require.Empty(t, n.applied(), "nothing is loaded in the dark")
 }
 
 func TestVerifyAcceptsTheTableLastApplied(t *testing.T) {

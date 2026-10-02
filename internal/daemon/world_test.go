@@ -24,6 +24,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -40,6 +41,8 @@ const (
 	cfToken      = "cf-api-token-0123456789-do-not-log"
 	guestMAC     = "bc:24:11:00:aa:b5"
 	guestAddress = "10.20.0.15"
+
+	testConnectorUID = 986
 )
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -217,6 +220,36 @@ func (f *fakeSystemd) units() []string {
 	return out
 }
 
+// fakeNft is the nft of the daemon's egress filter: it keeps the scripts it
+// is given and lists what live holds.
+type fakeNft struct {
+	mu      sync.Mutex
+	scripts []string
+	live    []byte
+	listErr error
+}
+
+func newFakeNft() *fakeNft { return &fakeNft{listErr: egress.ErrNotLoaded} }
+
+func (f *fakeNft) Apply(_ context.Context, script string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scripts = append(f.scripts, script)
+	return nil
+}
+
+func (f *fakeNft) List(context.Context) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.live), f.listErr
+}
+
+func (f *fakeNft) applied() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.scripts)
+}
+
 // fakeNotifier records what the daemon tells systemd.
 type fakeNotifier struct {
 	mu      sync.Mutex
@@ -294,6 +327,7 @@ type world struct {
 	pve    *fakePVE
 	cf     *cffake.Fake
 	sysd   *fakeSystemd
+	nft    *fakeNft
 	notify *fakeNotifier
 	logs   *testutil.SyncBuffer
 	// cycles counts the reads of the clock, which every cycle starts with: it
@@ -313,6 +347,7 @@ func newWorld(t *testing.T) *world {
 		pve:    newFakePVE(t),
 		cf:     cffake.New(),
 		sysd:   &fakeSystemd{enabled: map[string]bool{}},
+		nft:    newFakeNft(),
 		notify: newFakeNotifier(),
 		logs:   &testutil.SyncBuffer{},
 	}
@@ -354,6 +389,10 @@ func newWorld(t *testing.T) *world {
 		Sleep:      func(context.Context, time.Duration) error { return nil },
 		Now:        func() time.Time { w.cycles.Add(1); return time.Now() },
 		PVECertDir: w.pve.certDir(t, dir),
+
+		Nft:          w.nft,
+		ConnectorUID: func() (uint32, error) { return testConnectorUID, nil },
+		Resolvers:    func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.20.0.1")}, nil },
 	}
 	return w
 }

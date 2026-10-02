@@ -250,5 +250,9 @@
         "new.example.com"
       ]
     }
-  ]
+  ],
+  "egress": {
+    "state": "off",
+    "since": "2026-10-01T11:00:00Z"
+  }
 }

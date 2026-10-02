@@ -93,10 +93,21 @@ type TunnelResult struct {
 // without connectors. It deletes no other tunnel. An account is swept at most
 // every ten minutes, the first time by the first enforcing run.
 func (r *TunnelReconciler) Run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode) TunnelResult {
+	return r.run(ctx, plans, known, mode, heldObserve)
+}
+
+// RunHeld runs as Run does in Observe mode, and gives why as the reason of
+// every write it holds: a run whose writes the caller holds for a reason of
+// its own still finds out what each tunnel holds.
+func (r *TunnelReconciler) RunHeld(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, why string) TunnelResult {
+	return r.run(ctx, plans, known, Observe, why)
+}
+
+func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, known map[string]string, mode Mode, held string) TunnelResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	run := &tunnelRun{r: r, mode: mode}
+	run := &tunnelRun{r: r, mode: mode, held: held}
 	goOn := run.start()
 	for _, t := range targets(plans, known, run.us) {
 		if goOn && ctx.Err() != nil {
@@ -165,6 +176,7 @@ func emptyRules(us planner.Writer) []planner.IngressRule {
 type tunnelRun struct {
 	r    *TunnelReconciler
 	mode Mode
+	held string         // why a write is held in Observe mode
 	us   planner.Writer // set once start has validated it
 	res  TunnelResult
 }
@@ -235,8 +247,8 @@ func (run *tunnelRun) reconcile(ctx context.Context, t target) (TunnelState, boo
 		case !t.planned:
 			return st, true
 		case run.mode == Observe:
-			run.act(t, CreateTunnel, createDetail(t), heldObserve)
-			run.act(t, PutConfig, putDetail(t, cfapi.TunnelConfig{}), heldObserve)
+			run.act(t, CreateTunnel, createDetail(t), run.held)
+			run.act(t, PutConfig, putDetail(t, cfapi.TunnelConfig{}), run.held)
 			return st, true
 		case !run.reread(t):
 			// A create is a write too: a takeover since the last check must
@@ -334,7 +346,7 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 		return false
 	}
 	if run.mode == Observe {
-		run.act(t, PutConfig, detail, heldObserve)
+		run.act(t, PutConfig, detail, run.held)
 		return true
 	}
 	key := t.account + "/" + st.ID

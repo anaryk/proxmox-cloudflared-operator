@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -72,6 +73,11 @@ type cycleRun struct {
 	tunnels []reconcile.TunnelState
 	// offer is what this cycle's state shows waiting for a confirmation.
 	offer confirmable
+	// lost are the addresses whose binding lost its proof in this cycle, and
+	// egressHeld says why the tunnel run writes nothing: the egress filter
+	// could not be given the targets of the cycle.
+	lost       map[netip.Addr]bool
+	egressHeld string
 
 	// waitWhy says why the admin's requests wait, when the DNS step was
 	// reached; confirmWhy why a confirmation the DNS run could not keep
@@ -94,6 +100,7 @@ func (c *cycleRun) run() State {
 	c.expireRequests()
 	if c.prepare() && c.inspect() {
 		c.build()
+		c.feedEgress()
 		if why, saved := c.saveMemory(); !saved {
 			c.hold(why)
 		}

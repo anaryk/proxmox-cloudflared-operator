@@ -677,6 +677,37 @@ func TestTunnelObserveMode(t *testing.T) {
 	require.Equal(t, drifted, configIn(t, f, "acct2").Ingress)
 }
 
+// A held run reads what an observing one reads, verifies what already matches
+// and holds every write for the reason it is given.
+func TestTunnelRunHeldWritesNothingAndSaysWhy(t *testing.T) {
+	f := newFake("acct1", "acct2", "acct3")
+	drifted := rulesOf(writerAt(3, "n3"), app)
+	tun := f.SeedTunnel("acct2", testTunnel, drifted)
+	same := f.SeedTunnel("acct3", testTunnel, rulesOf(ours, app))
+	writer, _ := scripted(answer{us: ours, stored: ours})
+
+	res := reconcilerWith(Clients{"cred1": f}, writer).RunHeld(context.Background(), []planner.TunnelPlan{
+		planFor("acct1", "cred1", app),
+		planFor("acct2", "cred1", app),
+		planFor("acct3", "cred1", app),
+	}, nil, "the egress filter could not be set")
+
+	require.Empty(t, res.Problems)
+	require.Equal(t, []Action{
+		action(CreateTunnel, "cred1", "the egress filter could not be set"),
+		action(PutConfig, "cred1", "the egress filter could not be set"),
+		action(PutConfig, "cred1", "the egress filter could not be set"),
+	}, withoutDetail(res.Actions))
+	require.Equal(t, []TunnelState{
+		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel},
+		{AccountID: "acct2", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 1, Exists: true},
+		{AccountID: "acct3", CredentialID: "cred1", Name: testTunnel, ID: same.ID, Version: 1, Exists: true, Verified: true},
+	}, res.Tunnels)
+	require.Empty(t, callsTo(f, "CreateTunnel"))
+	require.Empty(t, callsTo(f, "PutTunnelConfig"))
+	require.Equal(t, drifted, configIn(t, f, "acct2").Ingress)
+}
+
 func TestTunnelPutRateLimited(t *testing.T) {
 	ctx := context.Background()
 	f := newFake("acct1")

@@ -20,6 +20,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -340,6 +341,107 @@ func (f *fakeConnectors) prunes() [][]string {
 	return slices.Clone(f.pruned)
 }
 
+// fakeEgress records what the engine gives the egress filter. With a log, it
+// writes every call there too, in one order with the other calls a test
+// records in it.
+type fakeEgress struct {
+	mu        sync.Mutex
+	sets      [][]egress.Target
+	removed   []netip.Addr
+	setErr    error
+	removeErr error
+	log       *callLog
+}
+
+func (f *fakeEgress) Set(_ context.Context, targets []egress.Target) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sets = append(f.sets, slices.Clone(targets))
+	f.log.add("egress set " + targetsText(targets))
+	return f.setErr
+}
+
+func (f *fakeEgress) Remove(_ context.Context, addr netip.Addr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, addr)
+	f.log.add("egress remove " + addr.String())
+	return f.removeErr
+}
+
+// last returns the targets of the last Set, and false when there was none.
+func (f *fakeEgress) last() ([]egress.Target, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.sets) == 0 {
+		return nil, false
+	}
+	return slices.Clone(f.sets[len(f.sets)-1]), true
+}
+
+func (f *fakeEgress) setCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sets)
+}
+
+func (f *fakeEgress) removes() []netip.Addr {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.removed)
+}
+
+func (f *fakeEgress) failSet(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setErr = err
+}
+
+func targetsText(ts []egress.Target) string {
+	if len(ts) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(ts))
+	for i, t := range ts {
+		parts[i] = t.String()
+	}
+	return strings.Join(parts, " ")
+}
+
+// callLog is one list of calls made to several fakes, in the order they came.
+// A nil log records nothing.
+type callLog struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (l *callLog) add(call string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, call)
+}
+
+func (l *callLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.calls)
+}
+
+// index returns where the first call that begins with prefix is, at or after
+// from, and -1 when there is none.
+func (l *callLog) index(prefix string, from int) int {
+	calls := l.all()
+	for i := from; i < len(calls); i++ {
+		if strings.HasPrefix(calls[i], prefix) {
+			return i
+		}
+	}
+	return -1
+}
+
 // hookedAPI calls before ahead of every call to the API it wraps.
 type hookedAPI struct {
 	cfapi.API
@@ -463,6 +565,7 @@ type env struct {
 	inv   *fakeInventory
 	res   *fakeResolver
 	conn  *fakeConnectors
+	egr   *fakeEgress
 	cf    *cffake.Fake
 
 	mu   sync.Mutex
@@ -493,6 +596,7 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 		},
 		inv:  &fakeInventory{},
 		conn: &fakeConnectors{tokens: map[string]string{}},
+		egr:  &fakeEgress{},
 		cf:   cffake.New(),
 		apis: map[string]cfapi.API{},
 		log:  zerolog.Nop(),
@@ -531,6 +635,7 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		Inventory:  e.inv,
 		Resolver:   e.res,
 		Connectors: conns,
+		Egress:     e.egr,
 		StartOnly:  e.startOnly,
 		NewClient:  e.newClient,
 		Node:       testNode,

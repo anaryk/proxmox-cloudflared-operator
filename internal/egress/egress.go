@@ -79,8 +79,9 @@ func (f *Filter) Set(ctx context.Context, targets []Target) error {
 
 // Remove takes one address out at once, on every port, as when its identity
 // failed between two cycles. It deletes just its elements from the live table,
-// and replaces the whole table when that fails. A resolver with the same
-// address stays.
+// and replaces the whole table when that fails; before the filter applied
+// anything, it deletes them from the table as it finds it. A resolver with the
+// same address stays.
 func (f *Filter) Remove(ctx context.Context, addr netip.Addr) error {
 	addr = normalizeAddr(addr)
 	f.mu.Lock()
@@ -94,7 +95,10 @@ func (f *Filter) Remove(ctx context.Context, addr netip.Addr) error {
 		f.applied = nil
 		return nil
 	}
-	if f.applied == nil || f.stale {
+	switch {
+	case f.applied == nil:
+		return f.removeLive(ctx, addr)
+	case f.stale:
 		return f.sync(ctx)
 	}
 	gone := slices.DeleteFunc(slices.Clone(f.applied.targets), func(t Target) bool { return t.Addr != addr })
@@ -110,6 +114,29 @@ func (f *Filter) Remove(ctx context.Context, addr netip.Addr) error {
 	// The live table does not hold what was last applied.
 	f.stale = true
 	return f.sync(ctx)
+}
+
+// removeLive takes the targets of addr out of the live table, for a filter
+// that has applied nothing yet: a daemon that starts finds the table it loaded
+// before, or the one of the boot unit, and does not know its targets until its
+// first Set. Loading the table anew would take the other targets out as well.
+func (f *Filter) removeLive(ctx context.Context, addr netip.Addr) error {
+	l, err := list(ctx, f.nft)
+	switch {
+	case errors.Is(err, ErrNotLoaded):
+		return nil
+	case err != nil:
+		return fmt.Errorf("taking %s out of the egress table: %w", addr, err)
+	}
+	c, _ := l.contents()
+	gone := slices.DeleteFunc(c.targets, func(t Target) bool { return t.Addr != addr })
+	if len(gone) == 0 {
+		return nil
+	}
+	if err := f.nft.Apply(ctx, deleteScript(gone, nil)); err != nil {
+		return fmt.Errorf("taking %s out of the egress table: %w", addr, err)
+	}
+	return nil
 }
 
 // Verify reads the live table back and reports whether it is the one last

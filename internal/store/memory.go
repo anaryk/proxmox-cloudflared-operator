@@ -2,6 +2,7 @@ package store
 
 import (
 	"cmp"
+	"net/netip"
 	"slices"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
@@ -31,6 +32,19 @@ type EngineMemory struct {
 	// Reports are the last check of each credential: what its token could
 	// do, which holds no secret.
 	Reports []CheckedCredential `json:"reports,omitempty"`
+	// Egress is the set of targets the egress filter was last given, and
+	// Verified, by account, the targets of the tunnel configuration last
+	// verified at Cloudflare: a target leaves the set only once no verified
+	// configuration sends a connector to it, also across a restart.
+	Egress   []netip.AddrPort  `json:"egress,omitempty"`
+	Verified []VerifiedTargets `json:"verified,omitempty"`
+}
+
+// VerifiedTargets are the targets of the tunnel configuration of an account
+// as it was last verified at Cloudflare.
+type VerifiedTargets struct {
+	AccountID string           `json:"accountId"`
+	Targets   []netip.AddrPort `json:"targets"`
 }
 
 // CheckedCredential is the last check of a credential.
@@ -87,6 +101,12 @@ func (m EngineMemory) sorted() EngineMemory {
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
 	m.Reports = slices.Clone(m.Reports)
 	slices.SortFunc(m.Reports, func(a, b CheckedCredential) int { return cmp.Compare(a.CredentialID, b.CredentialID) })
+	m.Egress = sortedTargets(m.Egress)
+	m.Verified = slices.Clone(m.Verified)
+	for i := range m.Verified {
+		m.Verified[i].Targets = sortedTargets(m.Verified[i].Targets)
+	}
+	slices.SortFunc(m.Verified, func(a, b VerifiedTargets) int { return cmp.Compare(a.AccountID, b.AccountID) })
 	if len(m.Served) == 0 {
 		m.Served = nil
 	}
@@ -102,5 +122,18 @@ func (m EngineMemory) sorted() EngineMemory {
 	if len(m.Reports) == 0 {
 		m.Reports = nil
 	}
+	if len(m.Egress) == 0 {
+		m.Egress = nil
+	}
+	if len(m.Verified) == 0 {
+		m.Verified = nil
+	}
 	return m
+}
+
+// sortedTargets returns the targets sorted and once each, never nil.
+func sortedTargets(ts []netip.AddrPort) []netip.AddrPort {
+	out := slices.Clone(ts)
+	slices.SortFunc(out, netip.AddrPort.Compare)
+	return append([]netip.AddrPort{}, slices.Compact(out)...)
 }

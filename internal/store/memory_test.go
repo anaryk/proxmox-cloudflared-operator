@@ -1,6 +1,7 @@
 package store
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,7 +27,21 @@ func memorySample() EngineMemory {
 			{ID: "00000000-0000-4000-8000-000000000001", Name: "pco-abc", AccountID: "acc1", CredentialID: "cred1"},
 		},
 		GoneGuests: []model.GuestRef{{Kind: model.KindLXC, VMID: 200}, {Kind: model.KindQEMU, VMID: 101}},
+		Egress:     targetsOf("10.0.0.12:443", "10.0.0.11:8080", "10.0.0.11:80", "10.0.0.12:443"),
+		Verified: []VerifiedTargets{
+			{AccountID: "acc2", Targets: targetsOf("10.0.0.12:443")},
+			{AccountID: "acc1", Targets: targetsOf("10.0.0.11:8080", "10.0.0.11:80")},
+			{AccountID: "acc3"},
+		},
 	}
+}
+
+func targetsOf(ss ...string) []netip.AddrPort {
+	out := make([]netip.AddrPort, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, netip.MustParseAddrPort(s))
+	}
+	return out
 }
 
 func TestEngineMemoryIsEmptyUntilSaved(t *testing.T) {
@@ -60,6 +75,12 @@ func TestEngineMemoryComesBackInOrder(t *testing.T) {
 			{ID: "00000000-0000-4000-8000-000000000002", Name: "pco-abc", AccountID: "acc2", CredentialID: "cred2"},
 		},
 		GoneGuests: []model.GuestRef{{Kind: model.KindQEMU, VMID: 101}, {Kind: model.KindLXC, VMID: 200}},
+		Egress:     targetsOf("10.0.0.11:80", "10.0.0.11:8080", "10.0.0.12:443"),
+		Verified: []VerifiedTargets{
+			{AccountID: "acc1", Targets: targetsOf("10.0.0.11:80", "10.0.0.11:8080")},
+			{AccountID: "acc2", Targets: targetsOf("10.0.0.12:443")},
+			{AccountID: "acc3", Targets: []netip.AddrPort{}},
+		},
 	}, got)
 	require.Equal(t, []string{"meta/engine-memory.json"}, stored(t, p.Local))
 	require.Empty(t, stored(t, p.Cluster), "the memory is this node's own")

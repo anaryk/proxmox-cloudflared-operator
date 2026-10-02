@@ -69,6 +69,32 @@ func (b *Binding) appliesTo(route model.Route) bool {
 	return b != nil && b.Owner == route.Owner() && b.Hostname == route.Hostname && b.Guest == guestOf(route)
 }
 
+// LostProof reports the address of prev when the call that returned res took
+// it from the route because it lost its proof: the call withdrew it, or tried
+// it first, as the bound address, found its identity failed, its proof in doubt
+// or the address one that must never be served, and bound another. An address
+// the route left for another reason, such as a candidate proven at a higher
+// level, a port that does not answer or a route that names another address,
+// did not lose its proof. A binding withdrawn before the call lost nothing in
+// it, and one made for another route than route is not its to lose.
+func LostProof(route model.Route, prev *Binding, res Result) (netip.Addr, bool) {
+	if !prev.appliesTo(route) || prev.Withdrawn {
+		return netip.Addr{}, false
+	}
+	b := res.Binding
+	switch {
+	case b != nil && b.Addr == prev.Addr:
+		return prev.Addr, b.Withdrawn && res.Target.Withdrawn
+	case len(res.Candidates) == 0:
+		return netip.Addr{}, false
+	}
+	// The bound address is tried first; a failure that proved its identity
+	// all the same has a level.
+	first := res.Candidates[0]
+	return prev.Addr, first.Addr == prev.Addr && !first.OK && first.Level == "" &&
+		first.Reason != reasonNotTried && first.Reason != reasonTooMany
+}
+
 // clone returns a copy that shares no memory with b.
 func (b *Binding) clone() *Binding {
 	c := *b

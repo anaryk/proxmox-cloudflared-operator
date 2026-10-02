@@ -116,6 +116,9 @@ type State struct {
 	// Unapproved are the guests whose routes are held until an admin approves
 	// them, in admission mode approve; [] in mode tag.
 	Unapproved []UnapprovedGuest `json:"unapproved"`
+	// Egress is the egress filter as the daemon last found it; empty until
+	// it has looked.
+	Egress EgressView `json:"egress,omitzero"`
 }
 
 // UnapprovedGuest is a guest whose routes wait for an approval: the identity

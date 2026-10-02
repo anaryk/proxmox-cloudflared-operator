@@ -22,6 +22,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -66,6 +67,7 @@ type Deps struct {
 	Inventory  Inventory
 	Resolver   Resolver
 	Connectors Connectors
+	Egress     Egress
 	NewClient  ClientFactory
 	Node       string
 	Now        func() time.Time
@@ -142,6 +144,11 @@ type Engine struct {
 	// stale zones, the tunnels seen and the guests confirmed gone.
 	remembered bool
 	memoryOf   string // the install the memory is of
+	// egress is the set of targets the egress filter was last given, and
+	// verified, by account, the targets of the tunnel configuration last
+	// verified at Cloudflare. Both are kept in the memory.
+	egress   []egress.Target
+	verified map[string][]egress.Target
 
 	repMu   sync.Mutex
 	reports map[string]credentials.Report // by credential id: the last check, also of an earlier process
@@ -172,6 +179,8 @@ func New(d Deps) (*Engine, error) {
 		return nil, errors.New("engine: no resolver")
 	case d.Connectors == nil:
 		return nil, errors.New("engine: no connector manager")
+	case d.Egress == nil:
+		return nil, errors.New("engine: no egress filter")
 	case d.NewClient == nil:
 		return nil, errors.New("engine: no Cloudflare client factory")
 	case d.Node == "":
@@ -197,6 +206,7 @@ func New(d Deps) (*Engine, error) {
 		seen:      make(map[string]seenTunnel),
 		reports:   make(map[string]credentials.Report),
 		recheckAt: make(map[string]time.Time),
+		verified:  make(map[string][]egress.Target),
 		state:     emptyState(),
 	}
 	e.interval.Store(int64(defaultPollInterval))

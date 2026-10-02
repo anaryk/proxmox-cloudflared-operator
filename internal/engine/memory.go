@@ -41,6 +41,7 @@ func (e *Engine) recall(installID string) (note string, err error) {
 	for _, ref := range m.GoneGuests {
 		e.gone[ref] = true
 	}
+	e.rememberEgress(m)
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
 	for _, r := range m.Reports {
@@ -74,6 +75,7 @@ func (e *Engine) memory() store.EngineMemory {
 		m.GoneGuests = append(m.GoneGuests, ref)
 	}
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
+	e.egressMemory(&m)
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
 	for _, id := range slices.Sorted(maps.Keys(e.reports)) {

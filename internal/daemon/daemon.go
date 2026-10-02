@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -74,6 +76,12 @@ type Deps struct {
 	// PVECertDir is where the certificates of this node are, which the
 	// Proxmox API on a loopback URL must present; default /etc/pve/local.
 	PVECertDir string
+	// Nft runs nft for the egress filter, ConnectorUID looks up the user the
+	// connectors run as and Resolvers reads the name servers of the node;
+	// default: /usr/sbin/nft, the user pco-connector and /etc/resolv.conf.
+	Nft          egress.Nft
+	ConnectorUID func() (uint32, error)
+	Resolvers    func() ([]netip.Addr, error)
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -104,6 +112,15 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.ShutdownTimeout <= 0 {
 		d.ShutdownTimeout = defaultShutdownTimeout
+	}
+	if d.Nft == nil {
+		d.Nft = egress.NewNft()
+	}
+	if d.ConnectorUID == nil {
+		d.ConnectorUID = egress.ConnectorUID
+	}
+	if d.Resolvers == nil {
+		d.Resolvers = egress.SystemResolvers
 	}
 	return d
 }
@@ -247,6 +264,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		TrustedCIDRs: settings.TrustedCIDRs,
 	}, deps.Now)
 	conns := connector.NewManager(deps.Systemd, filepath.Join(cfg.Paths.Local, tunnelsDir), nil, log)
+	filter := newEgressFilter(deps.Nft, cfg.Paths.Local, deps.ConnectorUID, deps.Resolvers)
 
 	start := wiredFrom(settings)
 	eng, err := engine.New(engine.Deps{
@@ -255,6 +273,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		StartOnly:  func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Resolver:   res,
 		Connectors: conns,
+		Egress:     filter,
 		NewClient:  deps.NewClient,
 		Node:       cfg.Node,
 		Now:        deps.Now,
