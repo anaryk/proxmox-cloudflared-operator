@@ -5,9 +5,17 @@
 # are passed on to `pco setup`.
 #
 # The package is verified through checksums.txt, and checksums.txt through its
-# detached signature: a checksum fetched from the place the package comes from
-# proves nothing on its own. Every check runs before apt-get is called, and the
-# script stops at the first one that fails.
+# detached signature by the release key embedded below: a checksum fetched from
+# the place the package comes from proves nothing on its own. Every check runs
+# before apt-get is called, and the script stops at the first one that fails.
+#
+# With PCO_INSECURE_SKIP_SIGNATURE=1 only the HTTPS connection to the release
+# host (offline: whoever supplied the files) decides what is installed. The
+# checksum then only catches a damaged download.
+#
+# The release is expected to hold pco_<version without the v>_<arch>.deb,
+# checksums.txt with lines of the form "<64 hex digits>  <file name>" as
+# sha256sum writes them, and the detached signature checksums.txt.sig.
 #
 # Environment:
 #   PCO_VERSION                    release to install, default is the latest
@@ -27,7 +35,15 @@ REPLACE-WITH-THE-RELEASE-KEY
 EOF
 
 DEFAULT_REPO=anaryk/proxmox-cloudflared-operator
+# The setup runs from where the package puts the binary, not from whatever the
+# PATH of root holds.
+PCO_BIN=/usr/bin/pco
+TTY_DEVICE=/dev/tty
 PLACEHOLDER_KEY=REPLACE-WITH-THE-RELEASE-KEY
+SIGNATURE_REFUSED="the signature of checksums.txt is not valid for the release key, or the key was revoked or has expired"
+MAX_VERSION_LENGTH=64
+MAX_SMALL_FILE=1048576
+MAX_PACKAGE_FILE=209715200
 TMP_DIR=
 
 say() {
@@ -71,29 +87,43 @@ detect_arch() {
 	esac
 }
 
+# Proxmox VE 9 is on Debian 13, whose apt depends on sqv and not on gpgv, while
+# Proxmox VE 8 has gpgv. Either one will do.
 require_commands() {
-	local offline=$1 cmd missing=''
-	for cmd in curl sha256sum gpgv base64 apt-get mktemp; do
+	local offline=$1 cmd missing='' hint=''
+	for cmd in curl sha256sum verifier base64 apt-get mktemp; do
 		if [[ $cmd == curl && $offline == 1 ]]; then
 			continue
 		fi
-		command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
+		if [[ $cmd == verifier ]]; then
+			if ! command -v sqv >/dev/null 2>&1 && ! command -v gpgv >/dev/null 2>&1; then
+				missing="$missing, gpgv or sqv"
+				hint=" (for the signature check run: apt-get install gpgv)"
+			fi
+			continue
+		fi
+		command -v "$cmd" >/dev/null 2>&1 || missing="$missing, $cmd"
 	done
 	if [[ -n $missing ]]; then
-		die "missing required command(s):$missing"
+		die "missing required command(s): ${missing#, }$hint"
 	fi
 }
 
 # Runs before anything is downloaded, so a refusal costs nothing.
 check_signature_policy() {
-	local skip=$1
+	local skip=$1 offline=$2 who='only the HTTPS connection to the release host decides what is installed'
+	local damaged='download'
+	if [[ $offline == 1 ]]; then
+		who='only whoever supplied the files decides what is installed'
+		damaged='file'
+	fi
 	if [[ $skip == 1 ]]; then
 		warn "PCO_INSECURE_SKIP_SIGNATURE=1, the signature of checksums.txt is NOT checked"
-		warn "the package is trusted on its checksum alone, which comes from the same place as the package"
+		warn "$who; the checksum only catches a damaged $damaged"
 		return 0
 	fi
 	if [[ $PCO_RELEASE_KEY_B64 == "$PLACEHOLDER_KEY" ]]; then
-		die "this build of the script has no release key, so nothing can be verified; set PCO_INSECURE_SKIP_SIGNATURE=1 to go on with the checksum alone"
+		die "this build of the script carries no release key, so it cannot check the signature; PCO_INSECURE_SKIP_SIGNATURE=1 installs without that check, and then $who"
 	fi
 }
 
@@ -108,10 +138,14 @@ check_repo() {
 }
 
 check_version() {
-	local version=$1 re='^v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$' q
-	if ! [[ $version =~ $re ]]; then
-		printf -v q '%q' "$version"
-		die "refusing the version $q, it must look like 1.2.3"
+	local version=$1 re='^v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$' shown q
+	if [[ ${#version} -gt $MAX_VERSION_LENGTH ]] || ! [[ $version =~ $re ]]; then
+		shown=$version
+		if [[ ${#shown} -gt 40 ]]; then
+			shown="${shown:0:40}..."
+		fi
+		printf -v q '%q' "$shown"
+		die "refusing the version $q, it must look like 1.2.3 and be at most $MAX_VERSION_LENGTH characters"
 	fi
 }
 
@@ -143,24 +177,26 @@ check_local_files() {
 }
 
 make_tmp() {
-	local base=${TMPDIR:-/tmp}
 	trap cleanup EXIT
 	trap 'exit 129' HUP
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
-	# apt-get must be given an absolute path, or it takes the name for a package.
-	if [[ $base != /* ]]; then
-		base=/tmp
-	fi
-	# Only root can enter the directory, so what was verified is what gets installed.
-	TMP_DIR=$(umask 077 && mktemp -d "$base/pco-install.XXXXXXXX" 2>/dev/null) ||
-		die "cannot create a temporary directory in $base"
+	# TMPDIR is not looked at. The script runs as root, and a TMPDIR that
+	# another user owns would let that user rename this directory and put one
+	# of theirs in its place between the checks and the install. /tmp is
+	# root's and sticky, so only root can do that to a directory in it; the
+	# directory itself is private to root.
+	TMP_DIR=$(umask 077 && mktemp -d /tmp/pco-install.XXXXXXXX 2>/dev/null) ||
+		die "cannot create a temporary directory in /tmp"
 }
 
+# --disable has to come first for curl to leave out the curlrc of root, where a
+# line such as "insecure" would take the TLS check away.
 download() {
-	local url=$1 dest=$2 detail=''
+	local url=$1 dest=$2 max=$3 detail=''
 	# curl's own message goes into the one line of the failure.
-	if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+	if ! curl --disable --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+		--connect-timeout 20 --max-time 300 --max-filesize "$max" \
 		--output "$dest" "$url" 2>"$TMP_DIR/curl.err"; then
 		read -r detail <"$TMP_DIR/curl.err" || true
 		die "download failed: $url${detail:+ ($detail)}"
@@ -169,7 +205,7 @@ download() {
 
 latest_version() {
 	local repo=$1 file=$TMP_DIR/latest.json line tag='' re='"tag_name"[[:space:]]*:[[:space:]]*"([^"]*)"'
-	download "https://api.github.com/repos/$repo/releases/latest" "$file"
+	download "https://api.github.com/repos/$repo/releases/latest" "$file" "$MAX_SMALL_FILE"
 	while IFS= read -r line || [[ -n $line ]]; do
 		if [[ $line =~ $re ]]; then
 			tag=${BASH_REMATCH[1]}
@@ -185,12 +221,12 @@ latest_version() {
 stage_remote() {
 	local base=$1 name=$2 skip=$3
 	say "downloading $name"
-	download "$base/$name" "$TMP_DIR/$name"
+	download "$base/$name" "$TMP_DIR/$name" "$MAX_PACKAGE_FILE"
 	say "downloading checksums.txt"
-	download "$base/checksums.txt" "$TMP_DIR/checksums.txt"
+	download "$base/checksums.txt" "$TMP_DIR/checksums.txt" "$MAX_SMALL_FILE"
 	if [[ $skip != 1 ]]; then
 		say "downloading checksums.txt.sig"
-		download "$base/checksums.txt.sig" "$TMP_DIR/checksums.txt.sig"
+		download "$base/checksums.txt.sig" "$TMP_DIR/checksums.txt.sig" "$MAX_SMALL_FILE"
 	fi
 }
 
@@ -204,31 +240,75 @@ stage_local() {
 	fi
 }
 
-# Prints the fingerprint of the key that made the signature. gpgv would accept
-# a signature by any key of the keyring, which holds only the release key.
-verify_signature() {
-	local keyring=$TMP_DIR/release.gpg status line fpr='' re='^[0-9A-Fa-f]{40}([0-9A-Fa-f]{24})?$'
-	local -a field
-	printf '%s\n' "$PCO_RELEASE_KEY_B64" | base64 -d >"$keyring" 2>/dev/null ||
-		die "the release key embedded in this script is not valid base64"
-	status=$(gpgv --status-fd 1 --keyring "$keyring" "$TMP_DIR/checksums.txt.sig" "$TMP_DIR/checksums.txt" 2>/dev/null) ||
-		die "the signature of checksums.txt is not valid for the release key"
+is_fingerprint() {
+	local re='^[0-9A-Fa-f]{40}([0-9A-Fa-f]{24})?$'
+	[[ $1 =~ $re ]]
+}
+
+# sqv prints the fingerprint of the signing key and exits 0 for a good
+# signature by a key of the keyring that is not revoked.
+verify_with_sqv() {
+	local keyring=$1 sig=$2 file=$3 out line fpr=''
+	out=$(sqv --keyring "$keyring" "$sig" "$file" 2>/dev/null) || die "$SIGNATURE_REFUSED"
 	while IFS= read -r line; do
-		if [[ $line == '[GNUPG:] VALIDSIG '* ]]; then
-			read -r -a field <<<"$line"
-			# The last field is the fingerprint of the primary key, which differs
-			# from the first one when a subkey signed.
-			fpr=${field[2]:-}
-			if [[ ${#field[@]} -ge 12 ]]; then
-				fpr=${field[11]}
-			fi
+		if is_fingerprint "$line"; then
+			fpr=$line
 			break
 		fi
+	done <<<"$out"
+	if [[ -z $fpr ]]; then
+		die "sqv accepted the signature but named no key fingerprint"
+	fi
+	printf '%s\n' "$fpr"
+}
+
+# gpgv exits 0 for a signature by a key that is revoked or has expired and says
+# so only in the status lines, so what it reports is read and not just its
+# exit code. Given --keyring it does not fall back on the keys in ~/.gnupg.
+verify_with_gpgv() {
+	local keyring=$1 sig=$2 file=$3 status line fpr='' good=0
+	local -a field
+	status=$(gpgv --status-fd 1 --keyring "$keyring" "$sig" "$file" 2>/dev/null) || die "$SIGNATURE_REFUSED"
+	while IFS= read -r line; do
+		case $line in
+		'[GNUPG:] BADSIG '* | '[GNUPG:] ERRSIG '* | '[GNUPG:] EXPSIG '* | '[GNUPG:] EXPKEYSIG '* | '[GNUPG:] REVKEYSIG '*)
+			die "$SIGNATURE_REFUSED"
+			;;
+		'[GNUPG:] GOODSIG '*)
+			good=1
+			;;
+		'[GNUPG:] VALIDSIG '*)
+			if [[ -z $fpr ]]; then
+				read -r -a field <<<"$line"
+				# The last field is the fingerprint of the primary key, which differs
+				# from the first one when a subkey signed.
+				fpr=${field[2]:-}
+				if [[ ${#field[@]} -ge 12 ]]; then
+					fpr=${field[11]}
+				fi
+			fi
+			;;
+		esac
 	done <<<"$status"
-	if ! [[ $fpr =~ $re ]]; then
+	if [[ $good != 1 ]]; then
+		die "$SIGNATURE_REFUSED"
+	fi
+	if ! is_fingerprint "$fpr"; then
 		die "gpgv accepted the signature but named no key fingerprint"
 	fi
 	printf '%s\n' "$fpr"
+}
+
+# Prints the fingerprint of the key that made the signature.
+verify_signature() {
+	local keyring=$TMP_DIR/release.gpg sig=$TMP_DIR/checksums.txt.sig file=$TMP_DIR/checksums.txt
+	printf '%s\n' "$PCO_RELEASE_KEY_B64" | base64 -d >"$keyring" 2>/dev/null ||
+		die "the release key embedded in this script is not valid base64"
+	if command -v sqv >/dev/null 2>&1; then
+		verify_with_sqv "$keyring" "$sig" "$file"
+	else
+		verify_with_gpgv "$keyring" "$sig" "$file"
+	fi
 }
 
 # Prints the checksum of the one line that names the package. The file is read
@@ -263,9 +343,12 @@ verify_checksum() {
 	fi
 }
 
+# An upgrade keeps the configuration files the admin edited, and takes the new
+# ones where nothing was edited: dpkg's question has no one to answer it.
 install_package() {
 	local deb=$1 name=$2
-	DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$deb" </dev/null ||
+	DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+		-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$deb" </dev/null ||
 		die "apt-get could not install $name"
 }
 
@@ -283,28 +366,27 @@ has_yes() {
 exec_setup() {
 	cleanup
 	trap - EXIT
-	exec pco setup "$@"
+	exec "$PCO_BIN" setup "$@"
 }
 
 # Opening /dev/tty fails when the process has no controlling terminal, even
 # though the file is readable, so it is tried instead of tested.
 hand_over() {
-	# Overridable so that the tests need no terminal.
-	local tty=${PCO_INSTALL_TTY:-/dev/tty}
-
 	if [[ ${PCO_SKIP_SETUP:-} == 1 ]]; then
 		say "skipping the setup (PCO_SKIP_SETUP=1); run: pco setup"
 		return 0
 	fi
-	command -v pco >/dev/null 2>&1 || die "pco was installed but is not on the PATH; run: pco setup"
+	if [[ ! -x $PCO_BIN ]]; then
+		die "$PCO_BIN is missing or not executable after the install, so the setup cannot start"
+	fi
 	if [[ -t 0 ]]; then
 		say "starting pco setup"
 		exec_setup "$@"
 	fi
 	# Piped into bash, as in curl | bash, stdin is the script and not the terminal.
-	if (: <"$tty") 2>/dev/null; then
+	if (: <"$TTY_DEVICE") 2>/dev/null; then
 		say "starting pco setup on the terminal"
-		exec_setup "$@" <"$tty"
+		exec_setup "$@" <"$TTY_DEVICE"
 	fi
 	# --yes is already among the arguments, which are passed on as they are.
 	if has_yes "$@"; then
@@ -330,7 +412,7 @@ main() {
 	fi
 
 	require_commands "$offline"
-	check_signature_policy "$skip"
+	check_signature_policy "$skip" "$offline"
 	if [[ $offline == 1 ]]; then
 		check_local_files "$skip"
 	else
@@ -379,4 +461,4 @@ main() {
 	hand_over "$@"
 }
 
-main "$@"
+{ main "$@"; }

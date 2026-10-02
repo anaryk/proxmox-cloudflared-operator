@@ -30,6 +30,9 @@ jobs:
 
   scripts:
     runs-on: ubuntu-latest
+    env:
+      # A runner without gpg or without a signature tool must fail the job, not skip the real signature checks.
+      PCO_REQUIRE_CRYPTO_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
       - run: make test-scripts
