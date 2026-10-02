@@ -19,6 +19,13 @@ const (
 	AdmissionApprove = "approve" // a guest is published once an admin approved its identity
 
 	maxTagLen = 64
+
+	// minPollInterval and minGrace are the least the settings may say. A
+	// grace of a moment would remove a record as soon as one cycle missed
+	// its name, which turns the guard against a passing failure off; cycles
+	// closer together would only ask Proxmox and Cloudflare more.
+	minPollInterval = 5 * time.Second
+	minGrace        = 30 * time.Second
 )
 
 // tagPattern is what Proxmox accepts as a tag, in lower case.
@@ -88,11 +95,11 @@ func (s Settings) normalized() (Settings, error) {
 	if s.DenyHosts, err = normalizePatterns("denyHosts", s.DenyHosts); err != nil {
 		return Settings{}, err
 	}
-	if s.PollInterval <= 0 {
-		return Settings{}, fmt.Errorf("pollInterval %s: must be positive", time.Duration(s.PollInterval))
+	if time.Duration(s.PollInterval) < minPollInterval {
+		return Settings{}, fmt.Errorf("pollInterval %s: at least %s", time.Duration(s.PollInterval), minPollInterval)
 	}
-	if s.Grace <= 0 {
-		return Settings{}, fmt.Errorf("grace %s: must be positive", time.Duration(s.Grace))
+	if time.Duration(s.Grace) < minGrace {
+		return Settings{}, fmt.Errorf("grace %s: at least %s", time.Duration(s.Grace), minGrace)
 	}
 	if s.Admission != AdmissionTag && s.Admission != AdmissionApprove {
 		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)

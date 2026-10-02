@@ -115,8 +115,11 @@ func TestSaveSettingsRefusesInvalidSettings(t *testing.T) {
 		{"empty deny pattern", "denyHosts[0]", func(s *Settings) { s.DenyHosts = []string{""} }},
 		{"zero poll interval", "pollInterval", func(s *Settings) { s.PollInterval = 0 }},
 		{"negative poll interval", "pollInterval", func(s *Settings) { s.PollInterval = Duration(-time.Second) }},
+		{"poll interval below five seconds", "pollInterval 4.999s: at least 5s", func(s *Settings) { s.PollInterval = Duration(4999 * time.Millisecond) }},
 		{"zero grace", "grace", func(s *Settings) { s.Grace = 0 }},
 		{"negative grace", "grace", func(s *Settings) { s.Grace = Duration(-time.Minute) }},
+		{"grace below thirty seconds", "grace 29s: at least 30s", func(s *Settings) { s.Grace = Duration(29 * time.Second) }},
+		{"grace that turns the guard off", "grace 60ms: at least 30s", func(s *Settings) { s.Grace = Duration(60 * time.Millisecond) }},
 		{"empty admission", "admission", func(s *Settings) { s.Admission = "" }},
 		{"unknown admission", "admission", func(s *Settings) { s.Admission = "open" }},
 		{"upper case admission", "admission", func(s *Settings) { s.Admission = "Tag" }},
@@ -184,6 +187,36 @@ func TestSettingsPatternsAcceptWhatHostnamesDoNot(t *testing.T) {
 	in := customSettings()
 	in.AllowHosts = []string{"*", "*.com"}
 	require.NoError(t, s.SaveSettings(in))
+}
+
+func TestTheMinimumsThemselvesAreAccepted(t *testing.T) {
+	s, _ := openStore(t)
+	in := customSettings()
+	in.PollInterval, in.Grace = Duration(5*time.Second), Duration(30*time.Second)
+
+	require.NoError(t, s.SaveSettings(in))
+
+	got, err := s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, Duration(5*time.Second), got.PollInterval)
+	require.Equal(t, Duration(30*time.Second), got.Grace)
+}
+
+func TestSettingsOnDiskBelowTheMinimumsAreRefusedByName(t *testing.T) {
+	for field, data := range map[string]string{
+		"pollInterval": `{"gateTag":"cf-tunnel","pollInterval":"1s","grace":"1m","admission":"tag","observeOnly":true}`,
+		"grace":        `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"60ms","admission":"tag","observeOnly":true}`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			s, p := openStore(t)
+			writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), envelopeJSON("settings", data))
+
+			got, err := s.Settings()
+
+			require.ErrorContains(t, err, "stored settings are invalid: "+field)
+			require.Equal(t, Settings{}, got)
+		})
+	}
 }
 
 func TestInvalidSettingsOnDiskAreAnErrorNotTheDefaults(t *testing.T) {
