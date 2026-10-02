@@ -44,8 +44,11 @@ type Resolver interface {
 
 // Connectors is the part of *connector.Manager the engine uses.
 type Connectors interface {
-	Ensure(ctx context.Context, tunnelID, token string) error
-	Prune(ctx context.Context, keep []string) error
+	Ensure(ctx context.Context, installID, tunnelID, token string) error
+	// PruneInstall removes the connectors of the install that are not in
+	// keep, and never one of another install or of none.
+	PruneInstall(ctx context.Context, installID string, keep []string) error
+	List(ctx context.Context) ([]string, error) // every connector on the node, of any install
 	Status(ctx context.Context, tunnelID string) (connector.Status, error)
 	Token(tunnelID string) (token string, found bool, err error) // the token the connector has on disk
 }

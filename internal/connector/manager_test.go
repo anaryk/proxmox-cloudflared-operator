@@ -38,10 +38,10 @@ func TestUnitName(t *testing.T) {
 func TestEnsureWritesFilesAndEnablesTheUnit(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, "token-1", readFile(t, dir, idA+".token"))
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"))
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n", readFile(t, dir, idA+".env"))
 	require.Equal(t, "# Written by pco. A configuration of its own keeps cloudflared from reading one of the host.\n"+
 		"no-autoupdate: true\n", readFile(t, dir, idA+".yml"))
 	require.Equal(t, os.FileMode(0o700), fileMode(t, dir))
@@ -54,13 +54,13 @@ func TestEnsureWritesFilesAndEnablesTheUnit(t *testing.T) {
 
 func TestEnsureTwiceWithTheSameInputChangesNothing(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	tokenBefore := statFile(t, dir, idA+".token")
 	envBefore := statFile(t, dir, idA+".env")
 	configBefore := statFile(t, dir, idA+".yml")
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Empty(t, sd.changes())
 	require.True(t, os.SameFile(tokenBefore, statFile(t, dir, idA+".token")), "token file was rewritten")
@@ -78,12 +78,12 @@ func TestEnsureRestartsAConnectorWhoseConfigFileChanged(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, sd, dir := newTestManager(t)
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 			want := readFile(t, dir, idA+".yml")
 			change(t, filepath.Join(dir, idA+".yml"))
 			sd.reset()
 
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 			require.Equal(t, want, readFile(t, dir, idA+".yml"))
 			require.Equal(t, []string{"Restart " + unitA}, sd.changes())
@@ -100,27 +100,27 @@ func TestEnsureBringsAConnectorOfAnEarlierVersionInLineWithOneRestart(t *testing
 	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\n")
 	sd.active[unitA] = true
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"), "the port stays")
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n", readFile(t, dir, idA+".env"), "the port stays")
 	require.FileExists(t, filepath.Join(dir, idA+".yml"))
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
 
 	sd.reset()
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	require.Empty(t, sd.changes())
 }
 
 func TestEnsureMarksTheConfigPendingBeforeReplacingIt(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	config := filepath.Join(dir, idA+".yml")
 	require.NoError(t, os.Remove(config))
 	require.NoError(t, os.MkdirAll(filepath.Join(config, "x"), 0o700))
 	sd.reset()
 
-	require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-1"), idA+".yml")
+	require.ErrorContains(t, m.Ensure(t.Context(), testInstall, idA, "token-1"), idA+".yml")
 
 	require.FileExists(t, filepath.Join(dir, pendingOf(idA)))
 	require.Empty(t, sd.calls)
@@ -128,12 +128,12 @@ func TestEnsureMarksTheConfigPendingBeforeReplacingIt(t *testing.T) {
 
 func TestEnsureRestartsOnlyOnTokenChange(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a-rotated"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a-rotated"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 	require.Equal(t, "token-a-rotated", readFile(t, dir, idA+".token"))
@@ -142,11 +142,11 @@ func TestEnsureRestartsOnlyOnTokenChange(t *testing.T) {
 
 func TestEnsureOnlyStartsAnInactiveUnitWhoseTokenChanged(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	delete(sd.active, unitA)
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-2"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-2"))
 
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 	require.Equal(t, "token-2", readFile(t, dir, idA+".token"))
@@ -154,11 +154,11 @@ func TestEnsureOnlyStartsAnInactiveUnitWhoseTokenChanged(t *testing.T) {
 
 func TestEnsureStartsAUnitThatStoppedWithoutAChange(t *testing.T) {
 	m, sd, _ := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	delete(sd.active, unitA)
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 }
@@ -168,12 +168,12 @@ func TestEnsureTreatsAnUnreadableTokenFileAsChanged(t *testing.T) {
 		t.Skip("root reads files whatever their mode")
 	}
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	path := filepath.Join(dir, idA+".token")
 	require.NoError(t, os.Chmod(path, 0))
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 	require.Equal(t, "token-1", readFile(t, dir, idA+".token"))
@@ -182,43 +182,43 @@ func TestEnsureTreatsAnUnreadableTokenFileAsChanged(t *testing.T) {
 
 func TestEnsureRetriesARestartThatFailed(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	sd.fail["Restart "+unitA] = errBoom
 
-	err := m.Ensure(t.Context(), idA, "token-2")
+	err := m.Ensure(t.Context(), testInstall, idA, "token-2")
 	require.ErrorIs(t, err, errBoom)
 	require.ErrorContains(t, err, unitA)
 	require.FileExists(t, filepath.Join(dir, pendingOf(idA)), "a restart that failed stays pending")
 
 	delete(sd.fail, "Restart "+unitA)
 	sd.reset()
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-2"), "the token on disk is already the new one")
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-2"), "the token on disk is already the new one")
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
 
 	sd.reset()
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-2"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-2"))
 	require.Empty(t, sd.changes())
 }
 
 func TestEnsureRestartsAfterAFailedActivityCheck(t *testing.T) {
 	m, sd, _ := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	sd.fail["IsActive "+unitA] = errBoom
 
-	require.ErrorIs(t, m.Ensure(t.Context(), idA, "token-2"), errBoom)
+	require.ErrorIs(t, m.Ensure(t.Context(), testInstall, idA, "token-2"), errBoom)
 
 	delete(sd.fail, "IsActive "+unitA)
 	sd.reset()
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-2"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-2"))
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 }
 
 func TestEnsureAppliesAPendingTokenAfterTheDaemonRestarted(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	sd.fail["IsActive "+unitA] = errBoom
-	require.ErrorIs(t, m.Ensure(t.Context(), idA, "token-2"), errBoom)
+	require.ErrorIs(t, m.Ensure(t.Context(), testInstall, idA, "token-2"), errBoom)
 	marker := filepath.Join(dir, pendingOf(idA))
 	require.Equal(t, "", readFile(t, dir, pendingOf(idA)))
 	require.Equal(t, os.FileMode(0o600), fileMode(t, marker))
@@ -226,22 +226,22 @@ func TestEnsureAppliesAPendingTokenAfterTheDaemonRestarted(t *testing.T) {
 	sd.reset()
 
 	restarted := NewManager(sd, dir, nil, zerolog.Nop())
-	require.NoError(t, restarted.Ensure(t.Context(), idA, "token-2"))
+	require.NoError(t, restarted.Ensure(t.Context(), testInstall, idA, "token-2"))
 
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 	require.NoFileExists(t, marker)
 	sd.reset()
-	require.NoError(t, restarted.Ensure(t.Context(), idA, "token-2"))
+	require.NoError(t, restarted.Ensure(t.Context(), testInstall, idA, "token-2"))
 	require.Empty(t, sd.changes())
 }
 
 func TestEnsureRestartsWhenAMarkerIsLeftBehind(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	writeFile(t, dir, pendingOf(idA), "")
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"), "whatever the bytes on disk say")
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"), "whatever the bytes on disk say")
 
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
@@ -249,12 +249,12 @@ func TestEnsureRestartsWhenAMarkerIsLeftBehind(t *testing.T) {
 
 func TestEnsureStartsAPendingUnitThatStoppedInsteadOfRestartingIt(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	writeFile(t, dir, pendingOf(idA), "")
 	delete(sd.active, unitA)
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
@@ -262,7 +262,7 @@ func TestEnsureStartsAPendingUnitThatStoppedInsteadOfRestartingIt(t *testing.T) 
 
 func TestEnsureMarksTheTokenPendingBeforeReplacingIt(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	// A non-empty directory in place of the token file makes the replacement
 	// fail, as a crash in the middle of it would.
 	token := filepath.Join(dir, idA+".token")
@@ -270,7 +270,7 @@ func TestEnsureMarksTheTokenPendingBeforeReplacingIt(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(token, "x"), 0o700))
 	sd.reset()
 
-	require.Error(t, m.Ensure(t.Context(), idA, "token-2"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-2"))
 
 	require.FileExists(t, filepath.Join(dir, pendingOf(idA)))
 	require.Empty(t, sd.calls)
@@ -280,14 +280,14 @@ func TestEnsureRetriesAnEnableThatFailed(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	sd.fail["EnableNow "+unitA] = errBoom
 
-	err := m.Ensure(t.Context(), idA, "token-1")
+	err := m.Ensure(t.Context(), testInstall, idA, "token-1")
 	require.ErrorIs(t, err, errBoom)
 	require.ErrorContains(t, err, unitA)
 	require.FileExists(t, filepath.Join(dir, pendingOf(idA)))
 
 	delete(sd.fail, "EnableNow "+unitA)
 	sd.reset()
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
 }
@@ -295,30 +295,30 @@ func TestEnsureRetriesAnEnableThatFailed(t *testing.T) {
 func TestEnsureAllocatesStablePortsFromTheLowestFree(t *testing.T) {
 	m, _, dir := newTestManager(t)
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	require.Equal(t, 20300, portOf(t, dir, idA))
 	require.Equal(t, 20301, portOf(t, dir, idB))
 
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b-rotated"))
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a-rotated"))
-	require.NoError(t, m.Ensure(t.Context(), idC, "token-c"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b-rotated"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a-rotated"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idC, "token-c"))
 	require.Equal(t, 20300, portOf(t, dir, idA))
 	require.Equal(t, 20301, portOf(t, dir, idB))
 	require.Equal(t, 20302, portOf(t, dir, idC))
 
 	require.NoError(t, m.Prune(t.Context(), []string{idA, idC}))
-	require.NoError(t, m.Ensure(t.Context(), idD, "token-d"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idD, "token-d"))
 	require.Equal(t, 20301, portOf(t, dir, idD), "the port of a removed connector is free again")
 }
 
 func TestEnsureKeepsAnExistingPort(t *testing.T) {
 	m, _, dir := newTestManager(t)
-	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n")
+	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n")
 	before := statFile(t, dir, idA+".env")
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 
 	require.Equal(t, 20450, portOf(t, dir, idA))
 	require.True(t, os.SameFile(before, statFile(t, dir, idA+".env")), "env file was rewritten")
@@ -329,16 +329,16 @@ func TestEnsureKeepsThePortWhenOnlyTheAddressIsOdd(t *testing.T) {
 	m, _, dir := newTestManager(t)
 	writeFile(t, dir, idA+".env", "METRICS_ADDR=0.0.0.0:20450\n")
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"))
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n", readFile(t, dir, idA+".env"))
 }
 
 func TestEnsureDoesNotTouchTheMalformedEnvFileOfAnotherTunnel(t *testing.T) {
 	m, _, dir := newTestManager(t)
 	writeFile(t, dir, idB+".env", "not an env file\nMETRICS_ADDR=nonsense\n")
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 
 	require.Equal(t, 20300, portOf(t, dir, idA))
 	require.Equal(t, "not an env file\nMETRICS_ADDR=nonsense\n", readFile(t, dir, idB+".env"))
@@ -347,10 +347,10 @@ func TestEnsureDoesNotTouchTheMalformedEnvFileOfAnotherTunnel(t *testing.T) {
 
 func TestEnsureRepairsItsOwnMalformedEnvFile(t *testing.T) {
 	m, _, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	writeFile(t, dir, idB+".env", "METRICS_ADDR=127.0.0.1:99999\n")
 
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 
 	require.Equal(t, 20301, portOf(t, dir, idB))
 }
@@ -360,7 +360,7 @@ func TestEnsureReservesThePortsOfEveryEnvFile(t *testing.T) {
 	writeFile(t, dir, "other.env", "METRICS_ADDR=127.0.0.1:20300\n")
 	writeFile(t, dir, idC+".env", "# set by hand\nMETRICS_ADDR=127.0.0.1:20301\n")
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 
 	require.Equal(t, 20302, portOf(t, dir, idA))
 }
@@ -385,7 +385,7 @@ func TestEnsureRejectsInvalidIDs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, sd, dir := newTestManager(t)
 
-			err := m.Ensure(t.Context(), tc.id, "token")
+			err := m.Ensure(t.Context(), testInstall, tc.id, "token")
 
 			require.ErrorContains(t, err, "invalid tunnel id")
 			require.Empty(t, sd.calls)
@@ -397,7 +397,7 @@ func TestEnsureRejectsInvalidIDs(t *testing.T) {
 func TestEnsureRejectsAnEmptyToken(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 
-	require.ErrorContains(t, m.Ensure(t.Context(), idA, ""), "empty token")
+	require.ErrorContains(t, m.Ensure(t.Context(), testInstall, idA, ""), "empty token")
 
 	require.Empty(t, sd.calls)
 	require.NoDirExists(t, dir)
@@ -409,7 +409,7 @@ func TestEnsureFailsWhenTheDirectoryCannotBeCreated(t *testing.T) {
 	require.NoError(t, os.WriteFile(blocker, nil, 0o600))
 	m := NewManager(sd, filepath.Join(blocker, "tunnels"), nil, zerolog.Nop())
 
-	require.Error(t, m.Ensure(t.Context(), idA, "token"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token"))
 	require.Empty(t, sd.calls)
 }
 
@@ -420,7 +420,7 @@ func TestConcurrentEnsureAllocatesDistinctPorts(t *testing.T) {
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := range n {
-		wg.Go(func() { errs[i] = m.Ensure(t.Context(), id(i), "token") })
+		wg.Go(func() { errs[i] = m.Ensure(t.Context(), testInstall, id(i), "token") })
 	}
 	wg.Wait()
 
@@ -437,8 +437,8 @@ func TestConcurrentEnsureAllocatesDistinctPorts(t *testing.T) {
 
 func TestPruneRemovesTheUnwantedConnectorAndKeepsTheWanted(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	sd.reset()
 
 	require.NoError(t, m.Prune(t.Context(), []string{idA}))
@@ -451,8 +451,8 @@ func TestPruneRemovesTheUnwantedConnectorAndKeepsTheWanted(t *testing.T) {
 
 func TestPruneWithNothingToKeepRemovesEveryConnector(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	sd.reset()
 
 	require.NoError(t, m.Prune(t.Context(), nil))
@@ -483,8 +483,8 @@ func TestPruneFindsConnectorsByFilesAndByUnits(t *testing.T) {
 
 func TestPruneKeepsTheFilesOfAUnitThatWillNotStop(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	sd.fail["DisableNow "+unitA] = errBoom
 
 	err := m.Prune(t.Context(), nil)
@@ -501,8 +501,8 @@ func TestPruneKeepsTheFilesOfAUnitThatWillNotStop(t *testing.T) {
 
 func TestPruneContinuesPastARemovalThatFails(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	// A directory in place of a file cannot be removed with os.Remove once it
 	// has content.
 	require.NoError(t, os.Remove(filepath.Join(dir, idA+".env")))
@@ -521,8 +521,8 @@ func TestPruneContinuesPastARemovalThatFails(t *testing.T) {
 
 func TestPruneLeavesNamesThatAreNoTunnelAlone(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	writeFile(t, dir, "foo.token", "mine")
 	writeFile(t, dir, "notes.env", "mine")
 	writeFile(t, dir, "README", "mine")
@@ -545,7 +545,7 @@ func TestPruneLeavesNamesThatAreNoTunnelAlone(t *testing.T) {
 
 func TestPruneStillRemovesFilesWhenUnitsCannotBeListed(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	sd.fail["ListUnits pco-cloudflared@*.service"] = errBoom
 
 	err := m.Prune(t.Context(), nil)
@@ -566,11 +566,11 @@ func TestPruneWorksBeforeTheDirectoryExists(t *testing.T) {
 
 func TestEnsureAfterPruneStartsTheConnectorAgain(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	require.NoError(t, m.Prune(t.Context(), nil))
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 	require.Equal(t, 20300, portOf(t, dir, idA))
@@ -586,14 +586,14 @@ func statFile(t *testing.T, dir, name string) os.FileInfo {
 // portOf is the port in the env file of a tunnel, however it is written.
 func portOf(t *testing.T, dir, id string) int {
 	t.Helper()
-	_, port, err := readMetricsAddr(filepath.Join(dir, id+".env"))
+	port, err := readMetricsPort(filepath.Join(dir, id+".env"))
 	require.NoError(t, err)
 	return port
 }
 
 func TestEnsureRepairsModesWithoutRewritingOrRestarting(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	token, env, config := filepath.Join(dir, idA+".token"), filepath.Join(dir, idA+".env"), filepath.Join(dir, idA+".yml")
 	tokenBefore, envBefore := statFile(t, dir, idA+".token"), statFile(t, dir, idA+".env")
 	configBefore := statFile(t, dir, idA+".yml")
@@ -603,7 +603,7 @@ func TestEnsureRepairsModesWithoutRewritingOrRestarting(t *testing.T) {
 	require.NoError(t, os.Chmod(dir, 0o755))
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, os.FileMode(0o600), fileMode(t, token))
 	require.Equal(t, os.FileMode(0o644), fileMode(t, env))
@@ -620,7 +620,7 @@ func TestEnsureRepairsTheModeOfADirectoryThatExists(t *testing.T) {
 	m, _, dir := newTestManager(t)
 	require.NoError(t, os.Mkdir(dir, 0o755))
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, os.FileMode(0o700), fileMode(t, dir))
 }
@@ -638,14 +638,14 @@ func TestEnsureRemovesStaleTemporaryFiles(t *testing.T) {
 	writeFile(t, dir, "plain.tmp", "not hidden, not ours")
 	writeFile(t, dir, ".hidden", "no tmp suffix")
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 
 	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml", "plain.tmp", ".hidden"}, listDir(t, dir))
 }
 
 func TestPruneRemovesStaleTemporaryFiles(t *testing.T) {
 	m, _, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	for _, name := range stale(idA) {
 		writeFile(t, dir, name, "a copy of a token")
 	}
@@ -665,8 +665,8 @@ func TestPruneRejectsAnInvalidIDInKeepBeforeRemovingAnything(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, sd, dir := newTestManager(t)
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-			require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 			writeFile(t, dir, stale(idB)[0], "a copy of a token")
 			sd.reset()
 
@@ -687,7 +687,7 @@ func TestDotNamesAreInvisibleToPruneAndPortAllocation(t *testing.T) {
 	writeFile(t, dir, hidden[1], "x")
 	writeFile(t, dir, hidden[2], "")
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	require.Equal(t, 20300, portOf(t, dir, idA), "a hidden env file reserves no port")
 	sd.reset()
 	require.NoError(t, m.Prune(t.Context(), []string{idA}), "hidden names are not reported")
@@ -698,10 +698,10 @@ func TestDotNamesAreInvisibleToPruneAndPortAllocation(t *testing.T) {
 
 func TestPruneRemovesThePendingMarker(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	sd.fail["Restart "+unitB] = errBoom
-	require.Error(t, m.Ensure(t.Context(), idB, "token-b-rotated"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idB, "token-b-rotated"))
 	require.FileExists(t, filepath.Join(dir, pendingOf(idB)))
 
 	require.NoError(t, m.Prune(t.Context(), []string{idA}))
@@ -713,10 +713,10 @@ func TestEnsureFailsWhenNoPortIsLeft(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	m.firstPort = 65535
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	require.Equal(t, 65535, portOf(t, dir, idA))
 	sd.reset()
-	err := m.Ensure(t.Context(), idB, "token-b")
+	err := m.Ensure(t.Context(), testInstall, idB, "token-b")
 
 	require.ErrorContains(t, err, "no free metrics port")
 	require.Empty(t, sd.calls)
@@ -724,7 +724,7 @@ func TestEnsureFailsWhenNoPortIsLeft(t *testing.T) {
 }
 
 func TestEnsureReadsQuotedAddressesLikeSystemdDoes(t *testing.T) {
-	const edge = "\nEDGE_IP_VERSION=auto\n"
+	const edge = "\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n"
 	tests := []struct {
 		name     string
 		content  string
@@ -737,20 +737,24 @@ func TestEnsureReadsQuotedAddressesLikeSystemdDoes(t *testing.T) {
 		{"quoted other host", `METRICS_ADDR="0.0.0.0:20450"` + edge, 20450, true},
 		{"quotes that do not match", `METRICS_ADDR="127.0.0.1:20450'` + edge, 20300, true},
 		{"quote only at the start", `METRICS_ADDR="127.0.0.1:20450` + edge, 20300, true},
-		{"edge IP version in quotes", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=\"auto\"\n", 20450, false},
-		{"another edge IP version", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=4\n", 20450, true},
+		{"edge IP version in quotes", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=\"auto\"\nPCO_INSTALL=abc123\n", 20450, false},
+		{"another edge IP version", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=4\nPCO_INSTALL=abc123\n", 20450, true},
 		{"a later edge IP version wins", "METRICS_ADDR=127.0.0.1:20450" + edge + "EDGE_IP_VERSION=6\n", 20450, true},
-		{"no edge IP version", "METRICS_ADDR=127.0.0.1:20450\n", 20450, true},
+		{"no edge IP version", "METRICS_ADDR=127.0.0.1:20450\nPCO_INSTALL=abc123\n", 20450, true},
+		{"install in quotes", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL='abc123'\n", 20450, false},
+		{"another install", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=def456\n", 20450, true},
+		{"a later install wins", "METRICS_ADDR=127.0.0.1:20450" + edge + "PCO_INSTALL=def456\n", 20450, true},
+		{"no install", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", 20450, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m, sd, dir := newTestManager(t)
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 			writeFile(t, dir, idA+".env", tc.content)
 			before := statFile(t, dir, idA+".env")
 			sd.reset()
 
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 
 			require.Equal(t, tc.wantPort, portOf(t, dir, idA))
 			require.Equal(t, !tc.rewrite, os.SameFile(before, statFile(t, dir, idA+".env")))
@@ -765,21 +769,21 @@ func TestEnsureReadsQuotedAddressesLikeSystemdDoes(t *testing.T) {
 
 func TestEnsureRestartsAnActiveUnitWhoseEnvFileIsRewritten(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n")
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n")
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	require.Empty(t, sd.changes(), "an address the manager would have written is left alone")
 
-	writeFile(t, dir, idA+".env", "METRICS_ADDR=10.0.0.1:20450\nEDGE_IP_VERSION=auto\n")
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"))
+	writeFile(t, dir, idA+".env", "METRICS_ADDR=10.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n")
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n", readFile(t, dir, idA+".env"))
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "the process still holds the old address")
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
 
 	sd.reset()
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	require.Empty(t, sd.changes())
 }
 
@@ -796,24 +800,24 @@ func undeletable(t *testing.T, dir string) {
 
 func TestEnsureRestartsOnceForAMarkerItCannotClear(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	undeletable(t, dir)
 	sd.reset()
 
 	for range 3 {
-		err := m.Ensure(t.Context(), idA, "token-1")
+		err := m.Ensure(t.Context(), testInstall, idA, "token-1")
 		require.ErrorContains(t, err, "clearing the pending marker", "the problem stays visible")
 		require.ErrorContains(t, err, pendingOf(idA))
 	}
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "a healthy connector is not restarted every poll")
 
 	sd.reset()
-	require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-2"), "clearing the pending marker")
+	require.ErrorContains(t, m.Ensure(t.Context(), testInstall, idA, "token-2"), "clearing the pending marker")
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "a new token is applied whatever the marker says")
 	require.Equal(t, "token-2", readFile(t, dir, idA+".token"))
 
 	sd.reset()
-	require.Error(t, m.Ensure(t.Context(), idA, "token-2"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-2"))
 	require.Empty(t, sd.changes())
 }
 
@@ -822,7 +826,7 @@ func TestEnsureStartsOnceForAMarkerItCannotClear(t *testing.T) {
 	undeletable(t, dir)
 
 	for range 3 {
-		require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-1"), "clearing the pending marker")
+		require.ErrorContains(t, m.Ensure(t.Context(), testInstall, idA, "token-1"), "clearing the pending marker")
 	}
 
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes(), "the unit that was started is not restarted")
@@ -830,20 +834,20 @@ func TestEnsureStartsOnceForAMarkerItCannotClear(t *testing.T) {
 
 func TestEnsureStartsAStoppedUnitWhoseMarkerCannotBeCleared(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	undeletable(t, dir)
-	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	delete(sd.active, unitA)
 	sd.reset()
 
-	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 }
 
 func TestEnsureRestartsOnceForAMarkerItCannotStat(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	undeletable(t, dir) // so that clearing it fails as well
 	m.lstat = func(name string) (fs.FileInfo, error) {
 		if filepath.Base(name) == pendingOf(idA) {
@@ -854,7 +858,7 @@ func TestEnsureRestartsOnceForAMarkerItCannotStat(t *testing.T) {
 	sd.reset()
 
 	for range 3 {
-		require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+		require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	}
 
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
@@ -869,7 +873,7 @@ func TestEnsureCarriesOnWhenAStaleTemporaryFileCannotBeRemoved(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".stuck.tmp", "x"), 0o700))
 	writeFile(t, dir, "."+idB+".token.1.tmp", "a copy of a token")
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-secret"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-secret"))
 
 	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes())
 	require.NoFileExists(t, filepath.Join(dir, "."+idB+".token.1.tmp"), "the others are still removed")
@@ -881,8 +885,8 @@ func TestEnsureCarriesOnWhenAStaleTemporaryFileCannotBeRemoved(t *testing.T) {
 
 func TestPruneReportsAStaleTemporaryFileItCannotRemove(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.NoError(t, m.Ensure(t.Context(), idB, "token-b"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".stuck.tmp", "x"), 0o700))
 	sd.reset()
 
@@ -899,7 +903,7 @@ func TestPruneRemovesAnOrphanMarker(t *testing.T) {
 	// leaves of a tunnel that never got a token or a unit.
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, idA+".env"), 0o700))
 
-	require.Error(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 
 	require.FileExists(t, filepath.Join(dir, pendingOf(idA)), "the marker comes before the first file is replaced")
 	require.NoFileExists(t, filepath.Join(dir, idA+".token"))
@@ -912,9 +916,9 @@ func TestPruneRemovesAnOrphanMarker(t *testing.T) {
 
 func TestPruneKeepsTheMarkerOfAKeptTunnel(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
 	sd.fail["Restart "+unitA] = errBoom
-	require.Error(t, m.Ensure(t.Context(), idA, "token-a-rotated"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-a-rotated"))
 	writeFile(t, dir, pendingOf(idB), "")
 	sd.reset()
 

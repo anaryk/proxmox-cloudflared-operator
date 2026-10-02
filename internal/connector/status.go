@@ -3,7 +3,6 @@ package connector
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +23,9 @@ type Status struct {
 	Ready       bool   `json:"ready"`                 // /ready answered 200
 	Connections int    `json:"connections"`           // readyConnections
 	MetricsAddr string `json:"metricsAddr,omitempty"` // empty when the tunnel has no usable env file
+	// Install is the install the env file names; empty when it names none,
+	// as one written before connectors named their install.
+	Install string `json:"install,omitempty"`
 }
 
 // Text says how a connector fares: "inactive", "active, not ready" or
@@ -55,12 +57,14 @@ func (m *Manager) Status(ctx context.Context, tunnelID string) (Status, error) {
 	}
 	st := Status{TunnelID: tunnelID, Active: active}
 
-	addr, _, err := readMetricsAddr(m.path(envFile(tunnelID)))
-	switch {
-	case errors.Is(err, errNoAddress):
-		return st, nil
-	case err != nil:
+	values, err := readEnv(m.path(envFile(tunnelID)))
+	if err != nil {
 		return Status{}, fmt.Errorf("tunnel %s: reading env file: %w", tunnelID, err)
+	}
+	st.Install = values[installKey]
+	addr, _, err := metricsOf(values)
+	if err != nil {
+		return st, nil
 	}
 	st.MetricsAddr = addr
 	if active {

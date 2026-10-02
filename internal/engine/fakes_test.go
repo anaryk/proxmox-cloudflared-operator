@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -255,7 +256,10 @@ type fakeConnectors struct {
 	notReady  map[string]bool // tunnels whose connector is not ready
 }
 
-func (f *fakeConnectors) Ensure(_ context.Context, id, token string) error {
+func (f *fakeConnectors) Ensure(_ context.Context, install, id, token string) error {
+	if install != testInstall {
+		return fmt.Errorf("ensure for install %q", install)
+	}
 	f.mu.Lock()
 	f.ensured = append(f.ensured, ensureCall{id, token})
 	hook, fail := f.onEnsure, f.ensureErr
@@ -271,20 +275,30 @@ func (f *fakeConnectors) Ensure(_ context.Context, id, token string) error {
 	return nil
 }
 
-func (f *fakeConnectors) Prune(_ context.Context, keep []string) error {
+func (f *fakeConnectors) PruneInstall(_ context.Context, install string, keep []string) error {
+	if install != testInstall {
+		return fmt.Errorf("prune for install %q", install)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pruned = append(f.pruned, slices.Clone(keep))
 	return nil
 }
 
+// List names the connectors that were ensured: all of this install.
+func (f *fakeConnectors) List(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Sorted(maps.Keys(f.tokens)), nil
+}
+
 func (f *fakeConnectors) Status(_ context.Context, id string) (connector.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.notReady[id] {
-		return connector.Status{TunnelID: id, Active: true, MetricsAddr: "127.0.0.1:20300"}, nil
+		return connector.Status{TunnelID: id, Active: true, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
 	}
-	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"}, nil
+	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
 }
 
 func (f *fakeConnectors) setReady(id string, ready bool) {
@@ -503,13 +517,15 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 	return e
 }
 
-func (e *env) newEngine() *Engine {
+func (e *env) newEngine() *Engine { return e.newEngineWith(e.conn) }
+
+func (e *env) newEngineWith(conns Connectors) *Engine {
 	e.t.Helper()
 	eng, err := New(Deps{
 		Store:      e.store,
 		Inventory:  e.inv,
 		Resolver:   e.res,
-		Connectors: e.conn,
+		Connectors: conns,
 		NewClient:  e.newClient,
 		Node:       testNode,
 		Now:        e.clock.now,

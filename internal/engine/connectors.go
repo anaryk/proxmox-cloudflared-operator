@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -60,6 +61,31 @@ func (c *cycleRun) reconcileConnectors() {
 		statuses = append(statuses, st)
 	}
 	c.st.Connectors = statuses
+	c.noteForeignConnectors(shown)
+}
+
+// noteForeignConnectors names the connectors on the node that are of another
+// install, or of none, as one left from before the store was lost and set up
+// anew: they may serve hostnames this install knows nothing of, so they are
+// never pruned, and the admin has to decide.
+func (c *cycleRun) noteForeignConnectors(shown []reconcile.TunnelState) {
+	ids, err := c.e.d.Connectors.List(c.ctx)
+	if err != nil {
+		c.problem("listing the connectors on this node: %v", err)
+	}
+	for _, id := range ids {
+		if slices.ContainsFunc(shown, func(t reconcile.TunnelState) bool { return t.ID == id }) {
+			continue
+		}
+		st, err := c.e.d.Connectors.Status(c.ctx, id)
+		switch {
+		case err != nil:
+			c.problem("connector for tunnel %s: reading its status: %v", id, err)
+		case st.Install != c.install.ID:
+			c.problem("connector for tunnel %s belongs to install %s; pco setup --recover adopts that install, "+
+				"pco uninstall on this node removes it", id, cmp.Or(st.Install, "unknown"))
+		}
+	}
 }
 
 // lookUpOthers looks up, without changing anything, the tunnel of every
@@ -108,7 +134,7 @@ func (c *cycleRun) keepRunning(t reconcile.TunnelState) {
 	case err != nil:
 		c.problem("tunnel %s in account %s: reading the connector token: %v", t.Name, t.AccountID, err)
 	case found:
-		if err := c.e.d.Connectors.Ensure(c.ctx, t.ID, token); err != nil {
+		if err := c.e.d.Connectors.Ensure(c.ctx, c.install.ID, t.ID, token); err != nil {
 			c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
 		}
 	}
@@ -185,7 +211,7 @@ func (c *cycleRun) prune(existing, invisible []reconcile.TunnelState, failed []s
 		return
 	}
 	keep = slices.Compact(slices.Sorted(slices.Values(keep)))
-	if err := c.e.d.Connectors.Prune(c.ctx, keep); err != nil {
+	if err := c.e.d.Connectors.PruneInstall(c.ctx, c.install.ID, keep); err != nil {
 		c.problem("removing the connectors of other tunnels: %v", err)
 	}
 }
@@ -215,7 +241,7 @@ func (c *cycleRun) ensure(t reconcile.TunnelState) {
 			return
 		}
 	}
-	if err := c.e.d.Connectors.Ensure(c.ctx, t.ID, token); err != nil {
+	if err := c.e.d.Connectors.Ensure(c.ctx, c.install.ID, t.ID, token); err != nil {
 		c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
 	}
 }

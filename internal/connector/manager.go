@@ -30,7 +30,10 @@ const (
 	defaultFirstPort = 20300
 )
 
-var tunnelIDPattern = regexp.MustCompile(`^[0-9a-f-]{36}$`)
+var (
+	tunnelIDPattern  = regexp.MustCompile(`^[0-9a-f-]{36}$`)
+	installIDPattern = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
+)
 
 // Manager keeps the connector of each tunnel running. It is the only writer
 // of the files in its directory, and it serialises Ensure and Prune, which
@@ -78,10 +81,12 @@ func checkID(id string) error {
 
 func (m *Manager) path(name string) string { return filepath.Join(m.dir, name) }
 
-// Ensure makes the connector for a tunnel run with the given token. It writes
-// the token, env and config files when their content differs, starts a unit
-// that does not run, and restarts a running unit whose files changed, since
-// cloudflared reads them only at start.
+// Ensure makes the connector for a tunnel of an install run with the given
+// token. It writes the token, env and config files when their content
+// differs, starts a unit that does not run, and restarts a running unit whose
+// files changed, since cloudflared reads them only at start. The env file names
+// the install; one that names another, or none, is rewritten like any other
+// change.
 //
 // A change is recorded in a marker file before the first file is replaced and
 // the marker is removed only after the start or restart was queued, so that a
@@ -94,8 +99,11 @@ func (m *Manager) path(name string) string { return filepath.Join(m.dir, name) }
 // The metrics port is the lowest from 20300 that no other env file names. A
 // port that an unrelated process on the host holds is not detected: the
 // connector then fails to start, and Status shows it not ready.
-func (m *Manager) Ensure(ctx context.Context, tunnelID, token string) error {
+func (m *Manager) Ensure(ctx context.Context, installID, tunnelID, token string) error {
 	if err := checkID(tunnelID); err != nil {
+		return err
+	}
+	if err := checkInstall(installID); err != nil {
 		return err
 	}
 	if token == "" {
@@ -108,7 +116,7 @@ func (m *Manager) Ensure(ctx context.Context, tunnelID, token string) error {
 		return err
 	}
 	m.sweepStaleTemps()
-	wrote, err := m.writeFiles(tunnelID, token)
+	wrote, err := m.writeFiles(installID, tunnelID, token)
 	if err != nil {
 		return fmt.Errorf("tunnel %s: %w", tunnelID, err)
 	}
@@ -145,9 +153,9 @@ func (m *Manager) sweepStaleTemps() {
 // content and mode, and reports whether it replaced one of them. Their content
 // is replaced only when it differs; a mode is fixed in place and is no change
 // that needs a restart.
-func (m *Manager) writeFiles(id, token string) (wrote bool, err error) {
+func (m *Manager) writeFiles(installID, id, token string) (wrote bool, err error) {
 	envPath, configPath, tokenPath := m.path(envFile(id)), m.path(configFile(id)), m.path(tokenFile(id))
-	env, replaceEnv, err := m.wantedEnv(id)
+	env, replaceEnv, err := m.wantedEnv(installID, id)
 	if err != nil {
 		return false, err
 	}
@@ -189,17 +197,18 @@ func (m *Manager) writeFiles(id, token string) (wrote bool, err error) {
 // its port, so that a tunnel's port does not move between runs; it is only
 // replaced when it does not name the loopback address. A file that says the
 // same in other words, such as with quotes, stays as it is; one written before
-// the edge IP version was set is replaced.
-func (m *Manager) wantedEnv(id string) (data []byte, replace bool, err error) {
+// the edge IP version or the install was set is replaced.
+func (m *Manager) wantedEnv(installID, id string) (data []byte, replace bool, err error) {
 	values, readErr := readEnv(m.path(envFile(id)))
 	addr, port, err := metricsOf(values)
 	if readErr != nil || err != nil {
 		if port, err = m.freePort(id); err != nil {
 			return nil, false, err
 		}
-		return envContent(port), true, nil
+		return envContent(port, installID), true, nil
 	}
-	return envContent(port), addr != metricsAddr(port) || values[edgeKey] != edgeIPVersion, nil
+	replace = addr != metricsAddr(port) || values[edgeKey] != edgeIPVersion || values[installKey] != installID
+	return envContent(port, installID), replace, nil
 }
 
 // freePort returns the lowest port from firstPort that no env file of another
@@ -216,7 +225,7 @@ func (m *Manager) freePort(id string) (int, error) {
 		if !e.Type().IsRegular() || hidden(name) || !strings.HasSuffix(name, envExt) || name == envFile(id) {
 			continue
 		}
-		_, port, err := readMetricsAddr(m.path(name))
+		port, err := readMetricsPort(m.path(name))
 		switch {
 		case errors.Is(err, errNoAddress):
 		case err != nil:
@@ -235,18 +244,42 @@ func (m *Manager) freePort(id string) (int, error) {
 	return port, nil
 }
 
-// Prune stops and removes the connectors of tunnels not in keep. It finds them
-// by their files and by their loaded units, so that a connector is removed
-// even when some of them are gone. An empty keep removes every connector; the
-// caller decides when it knows enough to ask for that. An id in keep that is
-// no tunnel id is an error and nothing is removed, since it could be a tunnel
-// that was meant to stay.
+// Prune stops and removes the connectors of tunnels not in keep, whichever
+// install they are of: it is what pco uninstall does. The daemon prunes with
+// PruneInstall, which leaves the connectors of other installs alone.
+//
+// It finds them by their files and by their loaded units, so that a connector
+// is removed even when some of them are gone. An empty keep removes every
+// connector; the caller decides when it knows enough to ask for that. An id in
+// keep that is no tunnel id is an error and nothing is removed, since it could
+// be a tunnel that was meant to stay.
 //
 // A failure on one connector does not stop the others; the errors come back
 // joined. A connector whose stop could not be queued keeps its files, since
 // its unit still reads them. Names that are no tunnel id are never passed to
 // systemd and never removed; they are reported.
 func (m *Manager) Prune(ctx context.Context, keep []string) error {
+	return m.prune(ctx, keep, func(string) (bool, error) { return true, nil })
+}
+
+// PruneInstall is Prune for the connectors whose env file names installID: a
+// connector of another install, or of none, is never touched, as it may serve
+// tunnels this install knows nothing of. List finds those.
+func (m *Manager) PruneInstall(ctx context.Context, installID string, keep []string) error {
+	if err := checkInstall(installID); err != nil {
+		return err
+	}
+	return m.prune(ctx, keep, func(id string) (bool, error) {
+		values, err := readEnv(m.path(envFile(id)))
+		if err != nil {
+			return false, fmt.Errorf("tunnel %s: reading env file: %w", id, err)
+		}
+		return values[installKey] == installID, nil
+	})
+}
+
+// prune removes the connectors not in keep that ours says are to go.
+func (m *Manager) prune(ctx context.Context, keep []string, ours func(id string) (bool, error)) error {
 	var invalid []error
 	for _, id := range keep {
 		if err := checkID(id); err != nil {
@@ -263,10 +296,18 @@ func (m *Manager) Prune(ctx context.Context, keep []string) error {
 	for _, f := range removeStaleTemps(m.dir) {
 		errs = append(errs, f.err)
 	}
-	ids, found := m.discover(ctx)
-	errs = append(errs, found...)
+	ids, ignored, err := m.discover(ctx)
+	errs = append(errs, ignored...)
+	errs = append(errs, err)
 	for _, id := range ids {
 		if slices.Contains(keep, id) {
+			continue
+		}
+		switch remove, err := ours(id); {
+		case err != nil:
+			errs = append(errs, err)
+			continue
+		case !remove:
 			continue
 		}
 		if err := m.remove(ctx, id); err != nil {
@@ -276,16 +317,28 @@ func (m *Manager) Prune(ctx context.Context, keep []string) error {
 	return errors.Join(errs...)
 }
 
+// List returns the sorted ids of the connectors on the node, of every
+// install: those that have files, a loaded unit or a marker. The error says
+// what could not be looked at; what the rest showed is returned all the same.
+// A name that looks like a connector's but is not is left to Prune to report.
+func (m *Manager) List(ctx context.Context) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids, _, err := m.discover(ctx)
+	return ids, err
+}
+
 // discover returns the sorted ids of the connectors that have files or a
-// loaded unit or a marker, and an error for each name that looked like one but
-// is not. Other hidden files are the manager's own and not connectors.
-func (m *Manager) discover(ctx context.Context) ([]string, []error) {
-	var errs []error
+// loaded unit or a marker, an error for each name that looked like one but is
+// not, and what could not be listed. Other hidden files are the manager's own
+// and not connectors.
+func (m *Manager) discover(ctx context.Context) (ids []string, ignored []error, err error) {
+	var failed []error
 	found := make(map[string]struct{})
 
 	entries, err := os.ReadDir(m.dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		errs = append(errs, fmt.Errorf("listing %s: %w", m.dir, err))
+		failed = append(failed, fmt.Errorf("listing %s: %w", m.dir, err))
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -310,7 +363,7 @@ func (m *Manager) discover(ctx context.Context) ([]string, []error) {
 			continue
 		}
 		if err := checkID(id); err != nil {
-			errs = append(errs, fmt.Errorf("ignoring %s: %w", m.path(name), err))
+			ignored = append(ignored, fmt.Errorf("ignoring %s: %w", m.path(name), err))
 			continue
 		}
 		found[id] = struct{}{}
@@ -318,34 +371,48 @@ func (m *Manager) discover(ctx context.Context) ([]string, []error) {
 
 	units, err := m.sd.ListUnits(ctx, unitGlob)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("listing units: %w", err))
+		failed = append(failed, fmt.Errorf("listing units: %w", err))
 	}
 	for _, unit := range units {
 		id := strings.TrimSuffix(strings.TrimPrefix(unit, unitPrefix), unitSuffix)
 		if err := checkID(id); err != nil || UnitName(id) != unit {
-			errs = append(errs, fmt.Errorf("ignoring unit %s: not the connector of a tunnel id", unit))
+			ignored = append(ignored, fmt.Errorf("ignoring unit %s: not the connector of a tunnel id", unit))
 			continue
 		}
 		found[id] = struct{}{}
 	}
-	return slices.Sorted(maps.Keys(found)), errs
+	return slices.Sorted(maps.Keys(found)), ignored, errors.Join(failed...)
 }
 
-// remove queues the stop of the connector and then removes its files, the
-// token last: a connector that is half removed is found again through
-// whichever file is left.
+// remove queues the stop of the connector and then removes its files. A
+// connector that is half removed is found again through whichever file is
+// left, and the env file, which names its install, goes only once the others
+// are gone, so that what is left is still known to be of that install.
 func (m *Manager) remove(ctx context.Context, id string) error {
 	unit := UnitName(id)
 	if err := m.sd.DisableNow(ctx, unit); err != nil {
 		return fmt.Errorf("stopping %s: %w", unit, err)
 	}
+	delete(m.queued, id)
 	var errs []error
-	for _, name := range []string{pendingFile(id), envFile(id), configFile(id), tokenFile(id)} {
-		if err := os.Remove(m.path(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			errs = append(errs, fmt.Errorf("removing %s: %w", m.path(name), err))
+	for _, name := range []string{pendingFile(id), configFile(id), tokenFile(id)} {
+		if err := m.removeFile(name); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	delete(m.queued, id)
+	if len(errs) == 0 {
+		errs = append(errs, m.removeFile(envFile(id)))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
 	m.log.Info().Str("tunnel", id).Msg("removed connector")
-	return errors.Join(errs...)
+	return nil
+}
+
+func (m *Manager) removeFile(name string) error {
+	if err := os.Remove(m.path(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("removing %s: %w", m.path(name), err)
+	}
+	return nil
 }

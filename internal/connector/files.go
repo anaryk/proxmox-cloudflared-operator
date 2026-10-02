@@ -36,6 +36,11 @@ const (
 	edgeKey       = "EDGE_IP_VERSION"
 	edgeIPVersion = "auto"
 
+	// installKey names the install a connector is of, so that a daemon of
+	// another install, as after the store was lost and set up anew, never
+	// takes the connector for one of its own.
+	installKey = "PCO_INSTALL"
+
 	// configContent is the configuration of every connector. A file of pco's
 	// own with content in it keeps cloudflared from looking for a
 	// configuration of the host, which could send it elsewhere.
@@ -59,8 +64,17 @@ func hidden(name string) bool { return strings.HasPrefix(name, ".") }
 
 func metricsAddr(port int) string { return net.JoinHostPort(metricsHost, strconv.Itoa(port)) }
 
-func envContent(port int) []byte {
-	return []byte(metricsKey + "=" + metricsAddr(port) + "\n" + edgeKey + "=" + edgeIPVersion + "\n")
+func envContent(port int, installID string) []byte {
+	return []byte(metricsKey + "=" + metricsAddr(port) + "\n" + edgeKey + "=" + edgeIPVersion + "\n" + installKey + "=" + installID + "\n")
+}
+
+// checkInstall refuses what cannot be an install id: it is written into the
+// env file as it is.
+func checkInstall(id string) error {
+	if !installIDPattern.MatchString(id) {
+		return fmt.Errorf("invalid install id %q", id)
+	}
+	return nil
 }
 
 // readEnv returns the values an env file gives the keys the manager writes,
@@ -75,7 +89,7 @@ func readEnv(path string) (map[string]string, error) {
 	}
 	values := make(map[string]string)
 	for line := range strings.Lines(string(b)) {
-		for _, key := range []string{metricsKey, edgeKey} {
+		for _, key := range []string{metricsKey, edgeKey, installKey} {
 			// systemd lets a later assignment win.
 			if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
 				values[key] = unquote(strings.TrimSpace(v))
@@ -85,15 +99,16 @@ func readEnv(path string) (map[string]string, error) {
 	return values, nil
 }
 
-// readMetricsAddr reads the metrics address of an env file. An env file that
-// is missing or has no valid address gives errNoAddress; any other error is a
-// failure to read it.
-func readMetricsAddr(path string) (addr string, port int, err error) {
+// readMetricsPort reads the port of the metrics address of an env file. An
+// env file that is missing or has no valid address gives errNoAddress; any
+// other error is a failure to read it.
+func readMetricsPort(path string) (int, error) {
 	values, err := readEnv(path)
 	if err != nil {
-		return "", 0, err
+		return 0, err
 	}
-	return metricsOf(values)
+	_, port, err := metricsOf(values)
+	return port, err
 }
 
 // metricsOf returns the metrics address among the values of an env file, or

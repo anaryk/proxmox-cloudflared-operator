@@ -12,14 +12,14 @@ const secretToken = "tok-Sup3rS3cret-value"
 
 func TestTokenReadsWhatEnsureWrote(t *testing.T) {
 	m, _, _ := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, secretToken))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, secretToken))
 
 	got, found, err := m.Token(idA)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, secretToken, got)
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "rotated"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "rotated"))
 	got, _, err = m.Token(idA)
 	require.NoError(t, err)
 	require.Equal(t, "rotated", got)
@@ -33,7 +33,7 @@ func TestTokenOfAConnectorWithoutOneIsNotFound(t *testing.T) {
 	require.False(t, found)
 	require.Empty(t, got)
 
-	require.NoError(t, m.Ensure(t.Context(), idA, secretToken))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, secretToken))
 	_, found, err = m.Token(idB)
 	require.NoError(t, err)
 	require.False(t, found)

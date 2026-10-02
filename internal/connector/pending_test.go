@@ -27,17 +27,17 @@ func TestEnsureRestartsForARotationWhoseFirstAttemptFailed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, sd, dir := newTestManager(t)
 			marker := filepath.Join(dir, pendingOf(idA))
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 			undeletable(t, dir)
 			sd.reset()
 
 			// The first rotation queues its restart, and the marker stays.
-			require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+			require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 			require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 
 			// The second replaces the token and then fails before its restart.
 			sd.fail[tc.fail+" "+unitA] = errBoom
-			require.ErrorIs(t, m.Ensure(t.Context(), idA, "token-2"), errBoom)
+			require.ErrorIs(t, m.Ensure(t.Context(), testInstall, idA, "token-2"), errBoom)
 			require.Equal(t, "token-2", readFile(t, dir, idA+".token"))
 			delete(sd.fail, tc.fail+" "+unitA)
 			if tc.removable {
@@ -46,7 +46,7 @@ func TestEnsureRestartsForARotationWhoseFirstAttemptFailed(t *testing.T) {
 			sd.reset()
 
 			// The third replaces nothing, and the unit must not stay on token-1.
-			err := m.Ensure(t.Context(), idA, "token-2")
+			err := m.Ensure(t.Context(), testInstall, idA, "token-2")
 			require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 			if tc.removable {
 				require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestEnsureRestartsForARotationWhoseFirstAttemptFailed(t *testing.T) {
 			}
 
 			sd.reset()
-			_ = m.Ensure(t.Context(), idA, "token-2")
+			_ = m.Ensure(t.Context(), testInstall, idA, "token-2")
 			require.Empty(t, sd.changes(), "and it is restarted once")
 		})
 	}
@@ -64,10 +64,10 @@ func TestEnsureRestartsForARotationWhoseFirstAttemptFailed(t *testing.T) {
 
 func TestEnsureRestartsAfterAnEnvFileWasReplacedAndTheTokenWriteFailed(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 	undeletable(t, dir)
 	sd.reset()
-	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 
 	// An env file that has to be replaced, and a token file that cannot be.
@@ -75,14 +75,14 @@ func TestEnsureRestartsAfterAnEnvFileWasReplacedAndTheTokenWriteFailed(t *testin
 	token := filepath.Join(dir, idA+".token")
 	require.NoError(t, os.Remove(token))
 	require.NoError(t, os.MkdirAll(filepath.Join(token, "x"), 0o700))
-	require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-2"), "writing "+idA+".token")
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"), "the env file was replaced first")
+	require.ErrorContains(t, m.Ensure(t.Context(), testInstall, idA, "token-2"), "writing "+idA+".token")
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n", readFile(t, dir, idA+".env"), "the env file was replaced first")
 
 	// The token is what it was, so that the next call replaces no file.
 	require.NoError(t, os.RemoveAll(token))
 	writeFile(t, dir, idA+".token", "token-1")
 	sd.reset()
-	require.Error(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "the new address was never applied")
 }
@@ -90,9 +90,9 @@ func TestEnsureRestartsAfterAnEnvFileWasReplacedAndTheTokenWriteFailed(t *testin
 func TestEnsureRestartsForAMarkerThatIsAnotherFile(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	marker := filepath.Join(dir, pendingOf(idA))
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 	undeletable(t, dir)
-	require.Error(t, m.Ensure(t.Context(), idA, "token-0"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 
 	// Another marker takes the place of the first at once, with no call in
 	// between that could see it missing. The first is kept under another
@@ -101,7 +101,7 @@ func TestEnsureRestartsForAMarkerThatIsAnotherFile(t *testing.T) {
 	writeFile(t, dir, pendingOf(idA), "")
 	sd.reset()
 
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 	require.NoFileExists(t, marker)
@@ -123,15 +123,15 @@ func TestEnsureForgetsAMarkerOnceItIsGone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, sd, dir := newTestManager(t)
 			marker := filepath.Join(dir, pendingOf(idA))
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 			undeletable(t, dir)
 			seen, err := os.Lstat(marker)
 			require.NoError(t, err)
-			require.Error(t, m.Ensure(t.Context(), idA, "token-0")) // restarts, remembers, cannot clear
+			require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-0")) // restarts, remembers, cannot clear
 			sd.reset()
 
 			tc.gone(t, marker)
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 			require.Empty(t, sd.changes())
 
 			// A new marker appears and a file system that reuses inode numbers
@@ -143,7 +143,7 @@ func TestEnsureForgetsAMarkerOnceItIsGone(t *testing.T) {
 				}
 				return os.Lstat(name)
 			}
-			require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 
 			require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "the old marker is not remembered")
 		})
@@ -152,9 +152,9 @@ func TestEnsureForgetsAMarkerOnceItIsGone(t *testing.T) {
 
 func TestPruneForgetsTheMarkerItRemembered(t *testing.T) {
 	m, sd, dir := newTestManager(t)
-	require.NoError(t, m.Ensure(t.Context(), idA, "token-0"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 	undeletable(t, dir)
-	require.Error(t, m.Ensure(t.Context(), idA, "token-0"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 	require.Contains(t, m.queued, idA)
 
 	require.Error(t, m.Prune(t.Context(), nil), "the marker is stuck")
@@ -165,7 +165,7 @@ func TestPruneForgetsTheMarkerItRemembered(t *testing.T) {
 	require.NotContains(t, m.queued, idA)
 	sd.active[unitA] = true
 	sd.reset()
-	require.Error(t, m.Ensure(t.Context(), idA, "token-0"))
+	require.Error(t, m.Ensure(t.Context(), testInstall, idA, "token-0"))
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
 }
 
@@ -181,7 +181,7 @@ func TestEnsureWarnsOnceForEachStaleFileItCannotRemove(t *testing.T) {
 	}
 	ensure := func(id string) {
 		t.Helper()
-		require.NoError(t, m.Ensure(t.Context(), id, "token"))
+		require.NoError(t, m.Ensure(t.Context(), testInstall, id, "token"))
 	}
 	stuck(".stuck.tmp")
 
