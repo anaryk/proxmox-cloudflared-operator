@@ -39,8 +39,7 @@ func eventsContaining(e *env, part string) int {
 // Reproduced: the DNS run stops at its start, as the writer was replaced
 // after the tunnel run. The confirmation is not used up.
 func TestAConfirmationWaitsForADNSRunThatDecided(t *testing.T) {
-	e := newEnv(t)
-	e.cycle()
+	e := guarded(t, nil)
 	var once sync.Once
 	e.conn.onEnsure = func() { once.Do(func() { require.NoError(t, e.store.SaveWriter(takeover)) }) }
 
@@ -59,10 +58,10 @@ func TestAConfirmationWaitsForADNSRunThatDecided(t *testing.T) {
 }
 
 func TestAConfirmationWaitsWhileTheTombstonesCannotBeRead(t *testing.T) {
-	e := newEnv(t)
-	e.enforce()
-	e.cycle()
+	e := guarded(t, nil)
 	path := filepath.Join(e.paths.Cluster, "meta", "tombstones.json")
+	good, err := os.ReadFile(path)
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, []byte("{"), 0o600))
 
 	e.apply(true)
@@ -74,16 +73,15 @@ func TestAConfirmationWaitsWhileTheTombstonesCannotBeRead(t *testing.T) {
 	require.NotNil(t, e.eng.confirm)
 	require.Equal(t, 1, eventsContaining(e, "confirmation waits"))
 
-	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.WriteFile(path, good, 0o600))
 	e.clock.advance(10 * time.Second)
 	e.cycle()
 	require.Nil(t, e.eng.confirm)
+	require.Empty(t, e.records())
 }
 
 func TestAConfirmationExpires(t *testing.T) {
-	e := newEnv(t)
-	e.enforce()
-	e.cycle()
+	e := guarded(t, nil)
 	path := filepath.Join(e.paths.Cluster, "meta", "tombstones.json")
 	require.NoError(t, os.WriteFile(path, []byte("{"), 0o600))
 	e.apply(true)
@@ -96,7 +94,7 @@ func TestAConfirmationExpires(t *testing.T) {
 	e.cycle()
 
 	require.Nil(t, e.eng.confirm)
-	require.Contains(t, adminEvents(e, t0.Add(4*time.Minute)), ": confirmation expired before it could be applied")
+	require.Contains(t, adminEvents(e, e.clock.now().Add(-time.Minute)), ": confirmation expired before it could be applied")
 
 	require.NoError(t, os.Remove(path))
 	e.clock.advance(10 * time.Second)

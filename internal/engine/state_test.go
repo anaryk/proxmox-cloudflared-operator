@@ -366,7 +366,12 @@ func TestConcurrentApplyAndCycle(t *testing.T) {
 	for i := range 8 {
 		wg.Go(func() { e.eng.Cycle(t.Context()) })
 		wg.Go(func() { errs <- e.eng.Apply(t.Context(), i%2 == 0) })
-		wg.Go(func() { errs <- e.eng.Adopt(t.Context(), "api.example.com") })
+		wg.Go(func() {
+			// Once another adoption went through, the name is in nobody's way.
+			if err := e.eng.Adopt(t.Context(), "api.example.com"); !errors.Is(err, ErrNotFound) {
+				errs <- err
+			}
+		})
 		wg.Go(func() {
 			_ = e.eng.State()
 			_ = e.eng.Events(time.Time{})

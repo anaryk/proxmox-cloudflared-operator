@@ -59,6 +59,8 @@ type cycleRun struct {
 	cfHold        bool
 	recheck       recheck
 	tunnelVerdict reconcile.WriterVerdict
+	// offer is what this cycle's state shows waiting for a confirmation.
+	offer confirmable
 
 	// waitWhy says why the admin's requests wait, when the DNS step was
 	// reached; confirmWhy why a confirmation the DNS run could not keep

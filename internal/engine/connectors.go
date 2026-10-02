@@ -145,12 +145,11 @@ func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) {
 		keep = append(keep, t.ID)
 		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name, credential: t.CredentialID}
 	}
-	c.e.invisible = nil
 	for _, id := range slices.Sorted(maps.Keys(c.e.seen)) {
 		t := c.e.seen[id]
 		if _, visible := c.zones.accounts[t.account]; !visible {
 			keep = append(keep, id)
-			c.e.invisible = append(c.e.invisible, id)
+			c.offer.invisible = append(c.offer.invisible, id)
 			c.problem("tunnel %s in account %s is not visible through any credential; its connector is kept "+
 				"until a credential sees the account again or pco apply --confirm-deletes confirms the tunnel is gone", t.name, t.account)
 		}

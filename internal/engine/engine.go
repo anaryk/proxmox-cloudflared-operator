@@ -113,16 +113,14 @@ type Engine struct {
 	adopt     map[string]*request  // by hostname
 	rolledOut map[string]int       // by tunnel id: the configuration version confirmed on its connectors
 	asked     map[string]time.Time // by tunnel id: when its connectors were last asked for the version
-	// vanished are the guests holding a claim that the last complete listing
-	// lacked, and gone those of them the admin confirmed removed.
-	vanished []model.GuestRef
-	gone     map[model.GuestRef]bool
+	// gone are the guests holding a claim the admin confirmed removed.
+	gone map[model.GuestRef]bool
 	// seen are the tunnels of this install seen to exist, by id, so that a
 	// connector is kept until Cloudflare shows its tunnel gone.
 	seen map[string]seenTunnel
-	// invisible are the ids of the tunnels seen whose account no credential
-	// saw in the last cycle.
-	invisible []string
+	// offered is what the last published state showed waiting for the
+	// admin's confirmation: a confirmation accepts that and nothing else.
+	offered confirmable
 	// remembered says that the memory in the store was read: the served and
 	// stale zones, the tunnels seen and the guests confirmed gone.
 	remembered bool
@@ -210,6 +208,7 @@ func (e *Engine) Cycle(ctx context.Context) State {
 
 	c := e.newCycle(ctx)
 	st := c.run()
+	e.offered = c.offer
 	e.publish(st.clone(), c.events)
 	e.d.Log.Debug().
 		Str("mode", st.Mode).
@@ -289,6 +288,18 @@ type request struct {
 	at  time.Time // when it was made
 	why string    // why it waits, as the admin was last told
 }
+
+// confirmable is what one state showed waiting for the admin's
+// confirmation, each with a problem line of its own.
+type confirmable struct {
+	vanished  []model.GuestRef // guests that hold a claim and no longer listed, behind a vanish hold
+	stale     []staleZone      // zones that left their listing
+	invisible []string         // ids of tunnels kept that no credential sees
+	guard     bool             // the mass delete guard held removals
+}
+
+// staleZone names a zone that left the listing of a credential.
+type staleZone struct{ credential, name string }
 
 // seenTunnel is where a tunnel of this install was seen, and through which
 // credential.

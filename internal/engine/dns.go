@@ -46,6 +46,9 @@ func (c *cycleRun) reconcileDNS() {
 		}
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
+	c.offer.guard = slices.ContainsFunc(res.Actions, func(a reconcile.Action) bool {
+		return a.Kind == reconcile.DeleteRecord && !a.Applied && strings.HasPrefix(a.Held, "mass delete guard")
+	})
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)

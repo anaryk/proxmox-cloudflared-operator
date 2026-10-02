@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
@@ -90,18 +91,19 @@ func TestLeaderJSONSpoiledInTheMiddleOfACycle(t *testing.T) {
 		"missing":    os.Remove,
 	} {
 		t.Run(name, func(t *testing.T) {
-			e := newEnv(t)
-			path := filepath.Join(e.paths.Cluster, "meta", "leader.json")
+			var armed bool
+			var path string
+			e := guarded(t, func(api cfapi.API) cfapi.API {
+				return hookedAPI{API: api, before: func(method string) {
+					if armed && method == "FindTunnel" {
+						armed = false
+						require.NoError(t, spoil(path))
+					}
+				}}
+			})
+			path = filepath.Join(e.paths.Cluster, "meta", "leader.json")
 			good, err := os.ReadFile(path)
 			require.NoError(t, err)
-			var armed bool
-			e.useAPI(testToken, hookedAPI{API: e.cf, before: func(method string) {
-				if armed && method == "FindTunnel" {
-					armed = false
-					require.NoError(t, spoil(path))
-				}
-			}})
-			e.cycle()
 			e.apply(true)
 			armed = true
 			n := len(e.cf.Calls())

@@ -81,18 +81,23 @@ func (z *zoneCache) forget(id string) {
 	maps.DeleteFunc(z.served, func(_ string, zone planner.Zone) bool { return zone.CredentialID == id })
 }
 
-// confirmGone forgets every stale zone, as the admin confirmed that they are
-// gone, also as zones served, and returns their names.
-func (z *zoneCache) confirmGone() []string {
+// confirmGone forgets the stale zones the admin confirmed gone, also as zones
+// served, and returns the names of those that were still stale.
+func (z *zoneCache) confirmGone(zones []staleZone) []string {
 	var names []string
-	for id, cz := range z.byCred {
-		for name := range cz.stale {
-			names = append(names, name)
-			if z.served[name].CredentialID == id {
-				delete(z.served, name)
-			}
+	for _, sz := range zones {
+		cz := z.byCred[sz.credential]
+		if cz == nil {
+			continue
 		}
-		clear(cz.stale)
+		if _, ok := cz.stale[sz.name]; !ok {
+			continue
+		}
+		delete(cz.stale, sz.name)
+		if z.served[sz.name].CredentialID == sz.credential {
+			delete(z.served, sz.name)
+		}
+		names = append(names, sz.name)
 	}
 	return slices.Compact(slices.Sorted(slices.Values(names)))
 }
@@ -190,6 +195,8 @@ type zoneSet struct {
 	accounts map[string]string
 	ready    bool // the zones of every credential are known
 	problems []string
+	// staleShown are the stale zones the problems name.
+	staleShown []staleZone
 }
 
 // zoneEntry is one credential's view of a zone.
@@ -247,7 +254,10 @@ func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
 	var served []planner.Zone
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
 		entries := byName[name]
-		chosen, note, doubt := z.choose(name, entries, pins[name])
+		chosen, note, doubt, staleBy := z.choose(name, entries, pins[name])
+		for _, cred := range staleBy {
+			out.staleShown = append(out.staleShown, staleZone{credential: cred, name: name})
+		}
 		if note != "" {
 			out.problems = append(out.problems, note)
 		}
@@ -288,13 +298,14 @@ func (s zoneSet) seen(account, id string) {
 }
 
 // choose decides which credential's view of a zone is used. note is a problem
-// that leaves the zone served; doubt one that freezes its account.
-func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) (chosen []planner.Zone, note, doubt string) {
+// that leaves the zone served; doubt one that freezes its account. staleBy
+// names the credentials whose listing the zone left, when that is the doubt.
+func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) (chosen []planner.Zone, note, doubt string, staleBy []string) {
 	var live []planner.Zone
-	var staleBy []string
+	var stale []string
 	for _, en := range entries {
 		if en.stale {
-			staleBy = append(staleBy, en.zone.CredentialID)
+			stale = append(stale, en.zone.CredentialID)
 			continue
 		}
 		live = append(live, en.zone)
@@ -304,27 +315,27 @@ func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) (chosen
 		pinned := slices.DeleteFunc(slices.Clone(live), func(zone planner.Zone) bool { return zone.CredentialID != pin })
 		if len(pinned) == 0 {
 			return nil, "", fmt.Sprintf("zone %s is pinned to credential %s, which does not see it; %s is left as it is until the pin is fixed",
-				name, pin, accounts)
+				name, pin, accounts), nil
 		}
 		z.served[name] = pinned[0]
-		return pinned, "", ""
+		return pinned, "", "", nil
 	}
-	if len(staleBy) > 0 {
+	if len(stale) > 0 {
 		return nil, "", fmt.Sprintf("zone %s is no longer listed by credential %s; %s is left as it is "+
-			"until the zone is listed again or pco apply --confirm-deletes confirms it is gone", name, andList(staleBy), accounts)
+			"until the zone is listed again or pco apply --confirm-deletes confirms it is gone", name, andList(stale), accounts), stale
 	}
 	creds := credentialsOf(live)
 	if len(creds) == 1 {
 		z.served[name] = live[0]
-		return live, "", ""
+		return live, "", "", nil
 	}
 	if prev, ok := z.served[name]; ok && slices.Contains(creds, prev.CredentialID) {
 		kept := slices.DeleteFunc(slices.Clone(live), func(zone planner.Zone) bool { return zone.CredentialID != prev.CredentialID })
 		return kept, fmt.Sprintf("zone %s is visible through credentials %s; pin it with zonePins (%s serves it until then)",
-			name, andList(creds), prev.CredentialID), ""
+			name, andList(creds), prev.CredentialID), "", nil
 	}
 	return nil, "", fmt.Sprintf("zone %s is visible through credentials %s and none of them served it before; "+
-		"pin it with zonePins; %s is left as it is until then", name, andList(creds), accounts)
+		"pin it with zonePins; %s is left as it is until then", name, andList(creds), accounts), nil
 }
 
 // accountsOf names the accounts of the entries: "account a" or "accounts a and b".

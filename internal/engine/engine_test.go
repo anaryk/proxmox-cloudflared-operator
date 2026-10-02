@@ -129,8 +129,12 @@ func TestApplyPublishesTunnelConfigAndRecord(t *testing.T) {
 	require.Equal(t, guestAddr, bindings["www.example.com"].Addr)
 }
 
+// Apply waits for the running cycle and confirms what its state shows.
 func TestApplyWaitsForTheRunningCycleAndKeepsItsConfirmation(t *testing.T) {
-	e := newEnv(t)
+	e := guarded(t, nil)
+	// A route of another guest, so that the cycle reaches the resolver.
+	e.inv.set(snapshot(untagged(guest(101, "web-1")), guest(102, "keep", "keep.example.com -> :8080")))
+	e.clock.advance(10 * time.Second)
 	inCycle := make(chan struct{})
 	release := make(chan struct{})
 	e.res.hook(func() {
@@ -145,13 +149,14 @@ func TestApplyWaitsForTheRunningCycleAndKeepsItsConfirmation(t *testing.T) {
 	go func() { applied <- e.eng.Apply(t.Context(), true) }()
 	e.res.hook(nil)
 	close(release)
-	require.Equal(t, "observe", (<-done).Mode)
+	require.Equal(t, "enforce", (<-done).Mode)
 	require.NoError(t, <-applied)
 
-	require.NotNil(t, e.eng.confirm, "the observing cycle did not use the confirmation up")
-	st := e.cycle()
-	require.Equal(t, "enforce", st.Mode)
-	require.Nil(t, e.eng.confirm, "the enforcing DNS run used it")
+	require.NotNil(t, e.eng.confirm, "the cycle that ran showed the guard holding")
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	require.Nil(t, e.eng.confirm, "the next DNS run used it")
+	require.Equal(t, []string{"keep.example.com"}, e.recordNames(), "the six went")
 }
 
 func TestRouteRemovedRuleGoesAtOnceRecordAfterTheGrace(t *testing.T) {

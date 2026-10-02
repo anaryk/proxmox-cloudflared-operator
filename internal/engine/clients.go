@@ -35,6 +35,7 @@ func (c *cycleRun) syncCredentials() bool {
 	c.refreshZones(ids)
 	c.credIDs = ids
 	c.zones = c.e.zones.set(ids, c.settings.ZonePins)
+	c.offer.stale = c.zones.staleShown
 	c.st.Problems = append(c.st.Problems, c.zones.problems...)
 	if !c.zones.ready {
 		c.cfHold = true

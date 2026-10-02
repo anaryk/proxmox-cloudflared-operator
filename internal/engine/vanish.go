@@ -43,17 +43,18 @@ func (c *cycleRun) guardVanished() bool {
 		}
 	}
 	slices.SortFunc(vanished, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
-	c.e.vanished = vanished
 
 	switch {
 	case len(vanished) == 0:
 		return true
 	case len(c.snap.Guests) == 0:
+		c.offer.vanished = vanished
 		c.problem("Proxmox lists no guest at all, but %d guests hold a hostname (%s); nothing is changed: "+
 			"check the privileges of the Proxmox API token, or run pco apply --confirm-deletes if they were removed on purpose",
 			len(vanished), examples(vanished))
 		return false
 	case len(vanished) > vanishMax && 100*len(vanished) > vanishPercent*len(holders):
+		c.offer.vanished = vanished
 		c.problem("%d of %d guests that hold a hostname are no longer listed by Proxmox (%s); nothing is changed "+
 			"until they are listed again, or run pco apply --confirm-deletes if they were removed on purpose",
 			len(vanished), len(holders), examples(vanished))

@@ -33,27 +33,7 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 		e.adminEvent("", "observe-only mode ended; changes are applied from now on")
 	}
 	if confirmDeletes {
-		e.confirm = &request{at: e.d.Now()}
-		e.adminEvent("", "the deletes held by the mass delete guard are confirmed for the next run")
-		for _, ref := range e.vanished {
-			e.gone[ref] = true
-		}
-		if len(e.vanished) > 0 {
-			// The DNS guard confirms only removals that are pending already;
-			// those of these guests are not yet.
-			e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed; "+
-				"when their DNS records fall due, the mass delete guard may ask for a confirmation again", len(e.vanished)))
-		}
-		for _, name := range e.zones.confirmGone() {
-			e.adminEvent(name, "the zone that left its listing is confirmed gone")
-		}
-		for _, id := range e.invisible {
-			if t, ok := e.seen[id]; ok {
-				delete(e.seen, id)
-				e.adminEvent(id, fmt.Sprintf("the tunnel %s in account %s is confirmed gone; its connector is removed", t.name, t.account))
-			}
-		}
-		e.invisible = nil
+		e.confirmShown()
 		// The confirmation must outlive a restart of the daemon.
 		if e.remembered {
 			if err := e.d.Store.SaveEngineMemory(e.memory()); err != nil {
@@ -62,6 +42,41 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 		}
 	}
 	return nil
+}
+
+// confirmShown accepts what the last published state showed waiting for a
+// confirmation, each with a problem line, and nothing it did not show: the
+// removals the mass delete guard held, the vanished guests behind a vanish
+// hold, the zones that left their listing and the tunnels no credential sees.
+// The caller holds the cycle lock.
+func (e *Engine) confirmShown() {
+	o := e.offered
+	e.offered = confirmable{}
+	if o.guard {
+		e.confirm = &request{at: e.d.Now()}
+		e.adminEvent("", "the deletes held by the mass delete guard are confirmed for the next run")
+	}
+	for _, ref := range o.vanished {
+		e.gone[ref] = true
+	}
+	if len(o.vanished) > 0 {
+		// The DNS guard confirms only removals that are pending already;
+		// those of these guests are not yet.
+		e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed; "+
+			"when their DNS records fall due, the mass delete guard may ask for a confirmation again", len(o.vanished)))
+	}
+	for _, name := range e.zones.confirmGone(o.stale) {
+		e.adminEvent(name, "the zone that left its listing is confirmed gone")
+	}
+	for _, id := range o.invisible {
+		if t, ok := e.seen[id]; ok {
+			delete(e.seen, id)
+			e.adminEvent(id, fmt.Sprintf("the tunnel %s in account %s is confirmed gone; its connector is removed", t.name, t.account))
+		}
+	}
+	if !o.guard && len(o.vanished) == 0 && len(o.stale) == 0 && len(o.invisible) == 0 {
+		e.adminEvent("", "the last state showed nothing that waits for a confirmation")
+	}
 }
 
 // Adopt asks an enforcing DNS run to take over the record that holds name, a
