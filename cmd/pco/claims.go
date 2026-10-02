@@ -182,5 +182,5 @@ func moveOutcome(host, owner string, st engine.State) []string {
 
 // daemonHolds reports whether the last cycle left Cloudflare as it was.
 func daemonHolds(st engine.State) bool {
-	return slices.ContainsFunc(st.Tunnels, func(t engine.TunnelView) bool { return strings.HasPrefix(t.Held, engine.HeldUnchecked) })
+	return st.Hold != "" || slices.ContainsFunc(st.Tunnels, func(t engine.TunnelView) bool { return t.Unchecked })
 }

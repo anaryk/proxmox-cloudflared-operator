@@ -241,9 +241,14 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 				Detail: "left as it is: account frozen: zone example.com is no longer listed by credential cred1",
 				Fix:    "pco status lists the problems that say why"}},
 		{"a tunnel the last cycle did not check", func(st *engine.State) {
-			st.Tunnels[0].Held, st.Tunnels[0].Verified = "not checked in the last cycle: no writer identity; run pco setup", false
+			t := &st.Tunnels[0]
+			t.Held, t.Unchecked, t.Verified = "not checked in the last cycle: no writer identity; run pco setup", true, false
 		}, nil, Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
 			Detail: "not checked in the last cycle: no writer identity; run pco setup", Fix: "pco status lists the problems that say why"}},
+		{"a tunnel the last cycle did not check, without a reason", func(st *engine.State) {
+			st.Tunnels[0].Unchecked, st.Tunnels[0].Verified = true, false
+		}, nil, Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
+			Detail: "not checked in the last cycle", Fix: "pco status lists the problems that say why"}},
 		{"a configuration that is not verified", func(st *engine.State) { st.Tunnels[0].Verified = false }, nil,
 			Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn, Detail: "its configuration is not verified", Fix: "pco plan"}},
 		{"a tunnel not created yet", func(st *engine.State) {

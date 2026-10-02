@@ -60,6 +60,11 @@ func populatedState() State {
 				TunnelState: reconcile.TunnelState{AccountID: "acc3", CredentialID: "cred1", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000003", Exists: true},
 				Held:        "account frozen: zone example.info is no longer listed by credential cred1",
 			},
+			{
+				TunnelState: reconcile.TunnelState{AccountID: "acc4", CredentialID: "cred2", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000004", Version: 2, Exists: true},
+				Held:        "not checked in the last cycle: no writer identity; run pco setup",
+				Unchecked:   true,
+			},
 		},
 		Connectors: []connector.Status{{TunnelID: "00000000-0000-4000-8000-000000000001", Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"}},
 		Credentials: []CredentialView{
@@ -86,6 +91,7 @@ func populatedState() State {
 		Lost:          []string{"lost.example.com"},
 		Problems:      []string{"a problem"},
 		WriterVerdict: "ok",
+		Hold:          "no writer identity; run pco setup",
 		Profile:       "host",
 		Waiting:       waiting,
 		Offer:         offerOf(waiting),

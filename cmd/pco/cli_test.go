@@ -143,6 +143,26 @@ func TestStatusShowsTheProfileOnlyWhenTheDaemonKnowsIt(t *testing.T) {
 	require.NotContains(t, res.out, "Profile")
 }
 
+// A tunnel the last cycle did not check is called neither verified nor held
+// by its own state: it is unchecked.
+func TestStatusShowsTheTunnelsTheLastCycleDidNotCheck(t *testing.T) {
+	st := healthyState()
+	st.Hold = "no writer identity; run pco setup"
+	for i := range st.Tunnels {
+		tun := &st.Tunnels[i]
+		tun.Held, tun.Unchecked, tun.Verified = "not checked in the last cycle: "+st.Hold, true, false
+	}
+	r, _ := daemonWith(t, st)
+
+	res := r.run("", "status")
+
+	require.Contains(t, res.out, "Tunnels:\n"+
+		"  NAME        ID        VERIFIED   CONNECTOR\n"+
+		"  pco-abc123  0a1b2c3d  unchecked  active, ready, 4 connections\n"+
+		"  pco-abc123  9f8e7d6c  unchecked  active, not ready\n"+
+		"  pco-abc123  -         unchecked  none\n")
+}
+
 func TestStatusIsStableOverLocalTime(t *testing.T) {
 	// The state carries fractions of a second and a zone of its own.
 	r, _ := daemonWith(t, healthyState())

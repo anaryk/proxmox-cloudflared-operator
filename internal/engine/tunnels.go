@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"slices"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -29,7 +30,11 @@ func (c *cycleRun) reconcileTunnels() bool {
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
 	c.st.WriterVerdict = verdictName(res.Verdict)
-	return res.Verdict == reconcile.WriterProceed && c.writerStill("after the tunnel run")
+	if res.Verdict != reconcile.WriterProceed {
+		c.hold(fmt.Sprintf("the tunnel run found a %s writer", c.st.WriterVerdict))
+		return false
+	}
+	return c.writerStill("after the tunnel run")
 }
 
 // writerStill reads leader.json again after a reconciler run that let this
@@ -41,11 +46,11 @@ func (c *cycleRun) writerStill(when string) bool {
 	switch {
 	case err != nil:
 		c.st.WriterVerdict = VerdictUnknown
-		c.problem("the writer identity cannot be read %s (%v); the rest is left as it is", when, err)
+		c.hold(c.problem("the writer identity cannot be read %s (%v); the rest is left as it is", when, err))
 		return false
 	case stored.Generation != us.Generation || stored.Nonce != us.Nonce:
 		c.st.WriterVerdict = VerdictStale
-		c.problem("leader.json names another writer %s; the rest is left as it is", when)
+		c.hold(c.problem("leader.json names another writer %s; the rest is left as it is", when))
 		return false
 	}
 	return true

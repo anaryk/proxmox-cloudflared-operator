@@ -43,13 +43,22 @@ type RouteView struct {
 	Rule    *planner.IngressRule `json:"rule,omitempty"`
 }
 
-// TunnelView is a tunnel of the install as the last cycle found it.
+// TunnelView is a tunnel of the install as the last cycle found it, or, when
+// Unchecked, as an earlier cycle found it or only as the plan wants it.
 type TunnelView struct {
 	reconcile.TunnelState
-	// Held says why the cycle left the tunnel as it is, without bringing it
-	// in line: its account is frozen, it serves no zone pco sees, or no
-	// credential sees its account. Empty for a tunnel the cycle reconciled.
+	// Held says in words why the tunnel is left as it is: for a tunnel the
+	// cycle looked up without bringing it in line, that its account is
+	// frozen, that it serves no zone pco sees, or that no credential sees
+	// its account; for an Unchecked one, why the cycle did not check it.
+	// Empty for a tunnel the cycle reconciled. Read Unchecked, not the
+	// words, to tell the two apart.
 	Held string `json:"held,omitempty"`
+	// Unchecked says that the last cycle did not check Cloudflare, so that
+	// nothing the view shows of the tunnel, its connector or its records is
+	// known to be there now; such a tunnel is never Verified. State.Hold
+	// says why.
+	Unchecked bool `json:"unchecked"`
 }
 
 // GuestView names a guest: its reference, as an issue names it, and its name.
@@ -89,6 +98,11 @@ type State struct {
 	// could not be read or used. A cycle that did not get as far keeps the
 	// last one.
 	WriterVerdict string `json:"writerVerdict"`
+	// Hold says why the last cycle did not check Cloudflare: the reason of
+	// the step that held it, or ended it before its DNS run looked at the
+	// records as the writer. Every tunnel then is Unchecked. Empty when the
+	// cycle checked, and before the first cycle.
+	Hold string `json:"hold,omitempty"`
 	// Profile is the profile of the install, "host" or "appliance". It is
 	// empty until a cycle has read the install.
 	Profile string `json:"profile,omitempty"`
@@ -115,8 +129,8 @@ func emptyState() State {
 }
 
 // carried is the start of the next state: what the cycle does not find out
-// again stays as the last cycle left it. Actions, problems and what waits are
-// the cycle's own.
+// again stays as the last cycle left it. Actions, problems, what waits and the
+// hold are the cycle's own.
 func (s State) carried(at time.Time) State {
 	next := s.clone()
 	next.At = at
@@ -125,6 +139,7 @@ func (s State) carried(at time.Time) State {
 	next.Problems = nil
 	next.Waiting = nil
 	next.Offer = ""
+	next.Hold = ""
 	return next
 }
 

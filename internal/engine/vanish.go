@@ -61,7 +61,7 @@ func (c *cycleRun) guardVanished() bool {
 	}
 	c.offer.vanished = vanished
 	c.offer.lines = append(c.offer.lines, line)
-	c.problem("%s", line)
+	c.hold(c.problem("%s", line))
 	return false
 }
 

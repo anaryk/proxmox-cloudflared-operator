@@ -224,6 +224,8 @@ func shortID(id string) string {
 
 func verifiedText(t engine.TunnelView) string {
 	switch {
+	case t.Unchecked:
+		return "unchecked"
 	case t.Held != "":
 		return "held"
 	case t.Unknown:

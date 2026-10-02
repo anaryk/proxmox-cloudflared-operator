@@ -172,7 +172,8 @@ func TestClaimsResolveSaysWhenNobodyWillServeTheHostname(t *testing.T) {
 		{"a holder that only names it", func(st *engine.State) { st.Routes = st.Routes[:len(st.Routes)-1] },
 			"qemu/102 names www.example.com without a route for it: nobody serves it until qemu/102 routes it.\n"},
 		{"a daemon that holds", func(st *engine.State) {
-			st.Tunnels[0].Held = engine.HeldUnchecked + ": no writer identity; run pco setup"
+			st.Hold = "no writer identity; run pco setup"
+			st.Tunnels[0].Held, st.Tunnels[0].Unchecked = "not checked in the last cycle: no writer identity; run pco setup", true
 		}, "The daemon holds, and pco status says why: nobody serves www.example.com from qemu/102 until that changes.\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

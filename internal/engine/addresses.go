@@ -14,7 +14,7 @@ func (c *cycleRun) learnNodeAddrs() bool {
 	if !a.loaded {
 		saved, err := c.e.d.Store.NodeAddrs()
 		if err != nil {
-			c.problem("reading the saved node addresses: %v", err)
+			c.hold(c.problem("reading the saved node addresses: %v", err))
 			return false
 		}
 		a.list, a.loaded = saved, true
@@ -33,7 +33,7 @@ func (c *cycleRun) learnNodeAddrs() bool {
 func (c *cycleRun) resolveTargets() bool {
 	c.results = c.resolveAll(c.bindings, c.deny)
 	if err := c.ctx.Err(); err != nil {
-		c.problem(problemStoppedResolve, err)
+		c.hold(c.problem(problemStoppedResolve, err))
 		return false
 	}
 	c.holdBelowMinimum()

@@ -193,7 +193,9 @@ type zoneSet struct {
 	// accounts maps every account a credential sees to the first credential
 	// that sees it.
 	accounts map[string]string
-	ready    bool // the zones of every credential are known
+	// unlisted is the problem line of the first credential whose zones
+	// are not known yet; empty when those of every credential are.
+	unlisted string
 	problems []string
 	// staleShown are the stale zones the problems name, in staleLines.
 	staleShown []staleZone
@@ -215,7 +217,7 @@ type zoneEntry struct {
 // with one that served the zone before keep that one, with a problem asking
 // for a pin.
 func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
-	out := zoneSet{known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{}, accounts: map[string]string{}, ready: true}
+	out := zoneSet{known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{}, accounts: map[string]string{}}
 	byName := map[string][]zoneEntry{}
 	for _, id := range ids {
 		cz := z.byCred[id]
@@ -225,9 +227,9 @@ func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
 			if cz != nil && cz.err != "" {
 				why = cz.err
 			}
-			out.ready = false
-			out.problems = append(out.problems, fmt.Sprintf(
-				"credential %s: its zones are not listed yet (%s); nothing is changed at Cloudflare until they are", id, why))
+			line := fmt.Sprintf("credential %s: its zones are not listed yet (%s); nothing is changed at Cloudflare until they are", id, why)
+			out.unlisted = cmp.Or(out.unlisted, line)
+			out.problems = append(out.problems, line)
 			continue
 		case cz.err != "":
 			out.problems = append(out.problems, fmt.Sprintf("credential %s: listing its zones failed (%s); using the list from %s",

@@ -97,14 +97,14 @@ func (e *Engine) memoryAccepting(o confirmable) store.EngineMemory {
 }
 
 // saveMemory stores what the engine remembers, once it was read; the store
-// writes only a change. It reports whether the memory is safe in the store.
-func (c *cycleRun) saveMemory() bool {
+// writes only a change. It reports whether the memory is safe in the store,
+// and when it is not, why.
+func (c *cycleRun) saveMemory() (string, bool) {
 	if !c.e.remembered {
-		return false
+		return "what the engine remembered could not be read", false
 	}
 	if err := c.e.d.Store.SaveEngineMemory(c.e.memory()); err != nil {
-		c.problem("saving what the engine remembers: %v; nothing is changed at Cloudflare until it is saved", err)
-		return false
+		return c.problem("saving what the engine remembers: %v; nothing is changed at Cloudflare until it is saved", err), false
 	}
-	return true
+	return "", true
 }

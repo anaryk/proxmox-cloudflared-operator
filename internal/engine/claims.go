@@ -12,7 +12,13 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
+
+// lookTimeout bounds the fresh look at the inventory an admin action takes,
+// so that the action, with the wait for the cycle lock, ends within what a
+// client gives it.
+const lookTimeout = 20 * time.Second
 
 // The states of a claim, as the last cycle that settled the claims left it.
 const (
@@ -98,6 +104,10 @@ func claimState(c planner.Claim, served map[string]string) string {
 // own claim gives it, so that the hostname comes back to it when owner stops
 // asking.
 //
+// The fresh look is taken before the cycle lock, within lookTimeout, so that
+// a slow inventory holds up no cycle; the move is decided under the lock,
+// from that look and the claims as they are then.
+//
 // Nothing else changes: the claim rules keep the hostname with owner for as
 // long as owner asks for it, so the old holder and any clone of it wait as
 // every other claimant does. The move is saved before ResolveClaim returns,
@@ -109,6 +119,10 @@ func (e *Engine) ResolveClaim(ctx context.Context, name, owner string) error {
 	}
 	if !validOwner(owner) {
 		return fmt.Errorf("%w: %q is no owner: name a guest, as qemu/101 or lxc/200, or a manual route, as manual/<id>", ErrInvalid, owner)
+	}
+	now, err := e.claimantsNow(ctx, host)
+	if err != nil {
+		return err
 	}
 	if err := e.acquire(ctx); err != nil {
 		return err
@@ -125,10 +139,6 @@ func (e *Engine) ResolveClaim(ctx context.Context, name, owner string) error {
 		return fmt.Errorf("%w: nobody holds a claim on %s", ErrNotFound, host)
 	case old.Owner == owner:
 		return fmt.Errorf("%w: %s holds %s already", ErrInvalid, owner, host)
-	}
-	now, err := e.claimantsNow(ctx, host)
-	if err != nil {
-		return err
 	}
 	if !now.claims(host, owner) {
 		return fmt.Errorf("%w: %s no longer claims %s: it has no route for it and does not name it", ErrRefused, owner, host)
@@ -152,19 +162,26 @@ func (e *Engine) ResolveClaim(ctx context.Context, name, owner string) error {
 
 // claimantsNow lists the guests afresh and works out who claims what, as a
 // cycle does: the second look an admin action takes before it moves a
-// hostname, as the DNS run takes one before a delete. A listing that is not
-// complete, or settings with a policy that cannot be read, tell nothing, and
-// the action is refused. The caller holds the cycle lock.
+// hostname, as the DNS run takes one before a delete. Settings, manual routes
+// or approvals that cannot be read, a listing that is not complete, or a
+// policy that cannot be used tell nothing, and the action is refused. It
+// takes no lock: the store and the inventory are safe to read while a cycle
+// runs.
 func (e *Engine) claimantsNow(ctx context.Context, host string) (listing, error) {
 	s, err := e.d.Store.Settings()
 	if err != nil {
-		return listing{}, fmt.Errorf("reading the settings: %w", err)
+		return listing{}, notKnown("reading the settings", err, host)
 	}
+	return e.claimantsUnder(ctx, host, s)
+}
+
+// claimantsUnder is claimantsNow under the settings s.
+func (e *Engine) claimantsUnder(ctx context.Context, host string, s store.Settings) (listing, error) {
 	manual, approvals, doing, err := e.routeSources(s)
 	if err != nil {
-		return listing{}, fmt.Errorf("%s: %w", doing, err)
+		return listing{}, notKnown(doing, err, host)
 	}
-	ctx, cancel := e.timeout(ctx, refreshTimeout)
+	ctx, cancel := e.timeout(ctx, lookTimeout)
 	defer cancel()
 	snap := e.d.Inventory.Refresh(ctx)
 	if !snap.Complete {
@@ -177,6 +194,11 @@ func (e *Engine) claimantsNow(ctx context.Context, host string) (listing, error)
 			ErrRefused, host)
 	}
 	return listingOf(snap).withClaims(col), nil
+}
+
+// notKnown refuses an action for what the look it takes could not read.
+func notKnown(doing string, err error, host string) error {
+	return fmt.Errorf("%w: %s failed (%w), so who claims %s now is not known", ErrRefused, doing, err, host)
 }
 
 // movedWaiting is the line of those that wait for a hostname once its claim

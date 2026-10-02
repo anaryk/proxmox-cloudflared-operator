@@ -226,9 +226,67 @@ func TestResolveClaimLooksAtTheInventoryAgain(t *testing.T) {
 
 		err := e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102")
 
-		require.ErrorContains(t, err, "reading the settings")
+		require.ErrorIs(t, err, ErrRefused, "what cannot be read tells nothing of who claims it")
+		require.ErrorContains(t, err, "refused: reading the settings failed (")
+		require.ErrorContains(t, err, "), so who claims www.example.com now is not known")
 		require.Equal(t, "qemu/101", wwwClaim(t, e).Owner)
 	})
+	t.Run("a policy that cannot be used", func(t *testing.T) {
+		// The store refuses such settings, so the look is given them.
+		e := contested(t)
+		s, err := e.store.Settings()
+		require.NoError(t, err)
+		s.DenyHosts = []string{"bad host"}
+
+		_, err = e.eng.claimantsUnder(t.Context(), "www.example.com", s)
+
+		require.ErrorIs(t, err, ErrRefused)
+		require.EqualError(t, err, "refused: the settings contain an invalid allow or deny pattern, so who claims www.example.com is not known")
+	})
+	t.Run("the identity is the one of the fresh look", func(t *testing.T) {
+		e := contested(t)
+		recreated := webTwo
+		recreated.Identity = "uuid:102-recreated"
+		e.inv.set(snapshot(webOne, recreated))
+
+		require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+
+		require.Equal(t, "uuid:102-recreated", wwwClaim(t, e).Identity)
+	})
+	t.Run("the look has a deadline of its own", func(t *testing.T) {
+		e := contested(t)
+		deadlines := &timeouts{}
+		e.eng.timeout = deadlines.withTimeout
+
+		require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+
+		require.Equal(t, 1, deadlines.count(20*time.Second))
+		require.Zero(t, deadlines.count(refreshTimeout))
+	})
+}
+
+// The fresh look is taken before the cycle lock: a resolve that waits for
+// the inventory holds no cycle up.
+func TestAResolveLooksWithoutHoldingTheCycles(t *testing.T) {
+	e := contested(t)
+	cycled := false
+	e.inv.hook(func() {
+		e.inv.hook(nil)
+		select {
+		case e.eng.sem <- struct{}{}:
+			<-e.eng.sem
+		default:
+			return // the lock is held: no cycle could run now
+		}
+		e.clock.advance(20 * time.Second)
+		e.cycle()
+		cycled = true
+	})
+
+	require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+
+	require.True(t, cycled, "a cycle ran while the resolve looked")
+	require.Equal(t, "qemu/102", wwwClaim(t, e).Owner)
 }
 
 // The reviewed sequence: 101 holds, its clone 103 waits since t0, 102 since
@@ -375,6 +433,33 @@ func TestAClaimSaysWhatIsNotKnownAndWhatIsPending(t *testing.T) {
 	views, err = e.eng.Claims()
 	require.NoError(t, err)
 	require.Equal(t, ClaimConflict, views[0].State)
+}
+
+// The states are those of the last cycle that settled the claims: a cycle that
+// holds before it settles them changes none, and when no cycle of this
+// process has settled them, they are not known.
+func TestClaimStatesComeFromTheLastCycleThatSettledThem(t *testing.T) {
+	e := contested(t)
+	e.inv.set(incomplete("cluster status: no quorum", webOne, webTwo))
+	states := func() []string {
+		t.Helper()
+		views, err := e.eng.Claims()
+		require.NoError(t, err)
+		out := make([]string, len(views))
+		for i, v := range views {
+			out[i] = v.State
+		}
+		return out
+	}
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	require.Equal(t, []string{ClaimConflict}, states(), "kept from the cycle that settled them")
+
+	e.restart()
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	require.Equal(t, []string{ClaimUnknown}, states(), "no cycle of this process settled them")
 }
 
 func TestClaimsAreListedWithTheirState(t *testing.T) {

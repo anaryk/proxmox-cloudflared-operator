@@ -136,12 +136,12 @@ func (d *diagnosis) same(name string) bool {
 	return strings.EqualFold(strings.TrimSuffix(name, "."), d.host)
 }
 
-// unchecked is the held reason of the route's tunnel when the last cycle did
-// not check Cloudflare, and empty otherwise. What the state shows of the
-// records, the rules and the connectors is then not what is there now.
+// unchecked says why the last cycle did not check the route's tunnel, and is
+// empty when it did. What the state shows of the records, the rules and the
+// connectors is then not what is there now.
 func (d *diagnosis) unchecked() string {
-	if d.tunnel != nil && strings.HasPrefix(d.tunnel.Held, engine.HeldUnchecked) {
-		return d.tunnel.Held
+	if d.tunnel != nil && d.tunnel.Unchecked {
+		return cmp.Or(d.tunnel.Held, notChecked)
 	}
 	return ""
 }

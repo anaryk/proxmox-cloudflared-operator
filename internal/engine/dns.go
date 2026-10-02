@@ -51,7 +51,17 @@ func (c *cycleRun) reconcileDNS() {
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
-	if res.Looked && res.Verdict == reconcile.WriterProceed {
+	switch {
+	case !res.Looked:
+		why := "the DNS run did not look at the records"
+		if len(res.Problems) > 0 {
+			// A run that stops before it looks says why first.
+			why += ": " + res.Problems[0]
+		}
+		c.hold(why)
+	case res.Verdict != reconcile.WriterProceed:
+		c.hold(fmt.Sprintf("the DNS run found a %s writer", verdictName(res.Verdict)))
+	default:
 		c.st.Conflicts, c.st.Lost = c.lookedAt(res)
 		c.checked = true
 	}

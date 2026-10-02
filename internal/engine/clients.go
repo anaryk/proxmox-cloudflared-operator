@@ -15,8 +15,7 @@ import (
 func (c *cycleRun) syncCredentials() bool {
 	creds, err := c.e.d.Store.Credentials()
 	if err != nil {
-		c.storeProblem("reading the credentials", err)
-		c.cfHold = true
+		c.hold(c.storeProblem("reading the credentials", err))
 		return false
 	}
 	c.e.syncClients(c, creds)
@@ -28,8 +27,7 @@ func (c *cycleRun) syncCredentials() bool {
 	}
 	c.st.Credentials = c.e.credentialViews(info)
 	if len(creds) == 0 {
-		c.problem(problemNoCredential)
-		c.cfHold = true
+		c.hold(c.problem(problemNoCredential))
 		return true
 	}
 	c.refreshZones(ids)
@@ -38,8 +36,8 @@ func (c *cycleRun) syncCredentials() bool {
 	c.offer.stale = c.zones.staleShown
 	c.offer.lines = append(c.offer.lines, c.zones.staleLines...)
 	c.st.Problems = append(c.st.Problems, c.zones.problems...)
-	if !c.zones.ready {
-		c.cfHold = true
+	if c.zones.unlisted != "" {
+		c.hold(c.zones.unlisted)
 	}
 	return true
 }

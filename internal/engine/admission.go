@@ -20,7 +20,7 @@ const issueWaitingApproval = "waiting for approval"
 func (c *cycleRun) collect() bool {
 	manual, approvals, doing, err := c.e.routeSources(c.settings)
 	if err != nil {
-		c.storeProblem(doing, err)
+		c.hold(c.storeProblem(doing, err))
 		return false
 	}
 	c.manual, c.approvals = manual, approvals
@@ -36,7 +36,7 @@ func (c *cycleRun) collect() bool {
 		c.st.Unapproved = append(c.st.Unapproved, v)
 	}
 	if c.col.PolicyInvalid {
-		c.problem(problemPolicyInvalid)
+		c.hold(c.problem(problemPolicyInvalid))
 		return false
 	}
 	return true

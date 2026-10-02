@@ -369,9 +369,12 @@ func TestLinksALastCycleDidNotCheckAreNotOk(t *testing.T) {
 		name   string
 		tunnel func(tv *engine.TunnelView)
 	}{
-		{"a tunnel the state carries", func(tv *engine.TunnelView) { tv.Held, tv.Verified = held, false }},
+		{"a tunnel the state carries", func(tv *engine.TunnelView) { tv.Held, tv.Unchecked, tv.Verified = held, true, false }},
 		{"a tunnel not seen since a restart", func(tv *engine.TunnelView) {
-			*tv = engine.TunnelView{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", Unknown: true}, Held: held}
+			*tv = engine.TunnelView{
+				TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", Unknown: true},
+				Held:        held, Unchecked: true,
+			}
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

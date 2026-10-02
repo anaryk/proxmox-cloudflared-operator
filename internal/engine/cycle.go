@@ -57,9 +57,12 @@ type cycleRun struct {
 	plan      planner.Plan
 
 	// cfHold says that nothing is changed at Cloudflare or on the
-	// connectors in this cycle; the problems say why. checked says that the
-	// cycle got through to its DNS run and looked at the records.
+	// connectors in this cycle; the problems say why, and holdWhy is the
+	// reason of the step that first held the cycle or ended it before its DNS
+	// run looked. checked says that the cycle got through to its DNS run and
+	// that the run looked at the records as the writer.
 	cfHold        bool
+	holdWhy       string
 	checked       bool
 	recheck       recheck
 	tunnelVerdict reconcile.WriterVerdict
@@ -89,8 +92,8 @@ func (c *cycleRun) run() State {
 	c.expireRequests()
 	if c.prepare() && c.inspect() {
 		c.build()
-		if !c.saveMemory() {
-			c.cfHold = true
+		if why, saved := c.saveMemory(); !saved {
+			c.hold(why)
 		}
 		c.reconcile()
 	}
@@ -104,20 +107,32 @@ func (c *cycleRun) run() State {
 	return c.st.normalized()
 }
 
-func (c *cycleRun) problem(format string, args ...any) {
-	c.st.Problems = append(c.st.Problems, fmt.Sprintf(format, args...))
+// problem adds a problem line to the state and returns it.
+func (c *cycleRun) problem(format string, args ...any) string {
+	line := fmt.Sprintf(format, args...)
+	c.st.Problems = append(c.st.Problems, line)
+	return line
 }
 
-// storeProblem reports a store error. The cases that need the admin are named
-// as such, never taken for "nothing stored".
-func (c *cycleRun) storeProblem(doing string, err error) {
+// storeProblem reports a store error and returns the line. The cases that need
+// the admin are named as such, never taken for "nothing stored".
+func (c *cycleRun) storeProblem(doing string, err error) string {
 	switch {
 	case errors.Is(err, store.ErrNotMounted):
-		c.problem(problemNotMounted)
+		return c.problem(problemNotMounted)
 	case errors.Is(err, store.ErrNoRoot):
-		c.problem(problemNotSetUp)
-	default:
-		c.problem("%s: %v", doing, err)
+		return c.problem(problemNotSetUp)
+	}
+	return c.problem("%s: %v", doing, err)
+}
+
+// hold leaves Cloudflare and the connectors as they are for the rest of the
+// cycle, which is then not checked. why says so, as a problem line does: the
+// first reason given is the one the state names the hold by.
+func (c *cycleRun) hold(why string) {
+	c.cfHold = true
+	if c.holdWhy == "" {
+		c.holdWhy = why
 	}
 }
 
@@ -126,7 +141,7 @@ func (c *cycleRun) storeProblem(doing string, err error) {
 func (c *cycleRun) prepare() bool {
 	s, err := c.e.d.Store.Settings()
 	if err != nil {
-		c.storeProblem("reading the settings", err)
+		c.hold(c.storeProblem("reading the settings", err))
 		return false
 	}
 	c.settings = s
@@ -136,10 +151,10 @@ func (c *cycleRun) prepare() bool {
 	inst, found, err := c.e.d.Store.Install()
 	switch {
 	case err != nil:
-		c.storeProblem("reading the install identity", err)
+		c.hold(c.storeProblem("reading the install identity", err))
 		return false
 	case !found:
-		c.problem(problemNotSetUp)
+		c.hold(c.problem(problemNotSetUp))
 		return false
 	}
 	c.install = inst
@@ -150,10 +165,9 @@ func (c *cycleRun) prepare() bool {
 	c.readWriter()
 	switch note, err := c.e.recall(c.install.ID); {
 	case err != nil:
-		c.problem("reading what the engine remembered: %v; nothing is changed at Cloudflare until it can be read: "+
+		c.hold(c.problem("reading what the engine remembered: %v; nothing is changed at Cloudflare until it can be read: "+
 			"fix the file or remove it; removing it forgets the connectors kept for tunnels no credential sees, "+
-			"the zones that left their listing and the guests confirmed gone", err)
-		c.cfHold = true
+			"the zones that left their listing and the guests confirmed gone", err))
 	case note != "":
 		c.problem("%s", note)
 	}
@@ -165,7 +179,7 @@ func (c *cycleRun) prepare() bool {
 func (c *cycleRun) registered() bool {
 	nodes, err := c.e.d.Store.Nodes()
 	if err != nil {
-		c.storeProblem("reading the node registry", err)
+		c.hold(c.storeProblem("reading the node registry", err))
 		return false
 	}
 	self := false
@@ -179,12 +193,12 @@ func (c *cycleRun) registered() bool {
 	}
 	switch {
 	case !self:
-		c.problem(problemNotRegistered, c.e.d.Node)
+		c.hold(c.problem(problemNotRegistered, c.e.d.Node))
 		return false
 	case len(others) > 0:
 		slices.Sort(others)
-		c.problem("the node registry names %s besides %s; pco runs on one registered node only",
-			strings.Join(others, ", "), c.e.d.Node)
+		c.hold(c.problem("the node registry names %s besides %s; pco runs on one registered node only",
+			strings.Join(others, ", "), c.e.d.Node))
 		return false
 	}
 	return true
@@ -196,20 +210,21 @@ func (c *cycleRun) registered() bool {
 func (c *cycleRun) readWriter() {
 	c.e.us = planner.Writer{}
 	w, found, err := c.e.d.Store.Writer()
+	var why string
 	switch {
 	case err != nil:
-		c.storeProblem("reading the writer identity", err)
+		why = c.storeProblem("reading the writer identity", err)
 	case !found:
-		c.problem(problemNoWriter)
+		why = c.problem(problemNoWriter)
 	case w.Validate() != nil:
-		c.problem("the writer identity in leader.json is not valid: %v", w.Validate())
+		why = c.problem("the writer identity in leader.json is not valid: %v", w.Validate())
 	case w.InstallID != c.install.ID:
-		c.problem("leader.json names install %s, but this is install %s; run pco setup --recover", w.InstallID, c.install.ID)
+		why = c.problem("leader.json names install %s, but this is install %s; run pco setup --recover", w.InstallID, c.install.ID)
 	default:
 		c.e.us = w
 		return
 	}
-	c.cfHold = true
+	c.hold(why)
 	c.st.WriterVerdict = VerdictUnknown
 }
 
@@ -235,7 +250,7 @@ func (c *cycleRun) refresh() bool {
 		return false
 	}
 	if !c.snap.Complete {
-		c.problem(problemIncomplete)
+		c.hold(c.problem(problemIncomplete))
 		return false
 	}
 	c.listing = listingOf(c.snap)
@@ -246,17 +261,17 @@ func (c *cycleRun) refresh() bool {
 func (c *cycleRun) load() bool {
 	claims, err := c.e.d.Store.Claims()
 	if err != nil {
-		c.storeProblem("reading the claims", err)
+		c.hold(c.storeProblem("reading the claims", err))
 		return false
 	}
 	bindings, err := c.e.d.Store.Bindings()
 	if err != nil {
-		c.problem("reading the bindings: %v", err)
+		c.hold(c.problem("reading the bindings: %v", err))
 		return false
 	}
 	deny, err := resolve.NewDenylist(c.e.addrs.list, nil)
 	if err != nil {
-		c.problem("building the denylist: %v", err)
+		c.hold(c.problem("building the denylist: %v", err))
 		return false
 	}
 	c.stored, c.bindings, c.deny = claims, bindings, deny
@@ -282,8 +297,7 @@ func (c *cycleRun) settleClaims() {
 	if err := c.e.d.Store.SaveClaims(c.claims.Claims); err != nil {
 		// The same changes are made again in the next cycle: they become
 		// events once they are saved.
-		c.problem("saving the claims: %v; nothing is changed at Cloudflare until they are saved", err)
-		c.cfHold = true
+		c.hold(c.problem("saving the claims: %v; nothing is changed at Cloudflare until they are saved", err))
 		return
 	}
 	c.settled = true
@@ -359,7 +373,7 @@ func (c *cycleRun) reconcile() {
 // goOn reports whether the cycle's context still lets it go on.
 func (c *cycleRun) goOn(where string) bool {
 	if err := c.ctx.Err(); err != nil {
-		c.problem("the cycle ended %s (%v); the rest is left as it is", where, err)
+		c.hold(c.problem("the cycle ended %s (%v); the rest is left as it is", where, err))
 		return false
 	}
 	return true

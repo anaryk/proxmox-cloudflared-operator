@@ -64,6 +64,10 @@ const (
 
 	fixProblems = "pco status lists the problems that say why"
 	fixNewToken = "add a new token with pco credential add, then remove this one"
+
+	// notChecked is what a tunnel the last cycle did not check is, when the
+	// state does not say why.
+	notChecked = "not checked in the last cycle"
 )
 
 // minPVE is the oldest Proxmox VE release pco supports.
@@ -274,8 +278,8 @@ func checkTunnels(ctx context.Context, st engine.State, env Env) []Finding {
 		name := fmt.Sprintf("%s in account %s", t.Name, t.AccountID)
 		check := "tunnel " + name
 		switch {
-		case strings.HasPrefix(t.Held, engine.HeldUnchecked):
-			out = append(out, warn(check, t.Held, fixProblems))
+		case t.Unchecked:
+			out = append(out, warn(check, cmp.Or(t.Held, notChecked), fixProblems))
 		case t.Held != "":
 			out = append(out, warn(check, "left as it is: "+t.Held, fixProblems))
 		case t.Unknown:
