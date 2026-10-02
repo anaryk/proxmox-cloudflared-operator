@@ -391,7 +391,8 @@ func TestLinksALastCycleDidNotCheckAreNotOk(t *testing.T) {
 			for _, i := range []int{2, 3, 4} {
 				require.Equal(t, Step{Name: stepNames[i], Level: LevelWarn, Detail: held}, steps[i])
 			}
-			require.Equal(t, LevelOK, steps[5].Level, "the identity is what resolution found")
+			require.Equal(t, LevelWarn, steps[5].Level, "the identity is what an earlier cycle found")
+			require.Contains(t, steps[5].Detail, "verified in an earlier cycle")
 			for _, i := range []int{6, 7} {
 				require.Equal(t, Step{Name: stepNames[i], Level: LevelWarn, Detail: "not asked: the target is from an earlier cycle"}, steps[i])
 			}

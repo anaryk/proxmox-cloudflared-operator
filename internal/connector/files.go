@@ -190,8 +190,7 @@ func writeAtomic(path string, data []byte, mode fs.FileMode) (err error) {
 	return os.Rename(tmp.Name(), path)
 }
 
-// staleFailure is a stale temporary file that could not be removed, or the
-// directory that could not be listed to find them.
+// staleFailure is a stale temporary file that could not be removed.
 type staleFailure struct {
 	name string
 	err  error
@@ -199,13 +198,15 @@ type staleFailure struct {
 
 // removeStaleTemps removes the temporary files that a write interrupted
 // between creating and renaming leaves behind. One of them may hold a token.
-func removeStaleTemps(dir string) []staleFailure {
-	entries, err := os.ReadDir(dir)
+// It returns those it could not remove, and an error when the directory could
+// not be listed to find them.
+func (m *Manager) removeStaleTemps() ([]staleFailure, error) {
+	entries, err := m.readDir(m.dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return []staleFailure{{dir, fmt.Errorf("listing %s: %w", dir, err)}}
+		return nil, fmt.Errorf("listing %s for stale temporary files: %w", m.dir, err)
 	}
 	var failed []staleFailure
 	for _, e := range entries {
@@ -213,10 +214,10 @@ func removeStaleTemps(dir string) []staleFailure {
 		if !hidden(name) || !strings.HasSuffix(name, tempExt) {
 			continue
 		}
-		path := filepath.Join(dir, name)
+		path := m.path(name)
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			failed = append(failed, staleFailure{path, fmt.Errorf("removing %s: %w", path, err)})
 		}
 	}
-	return failed
+	return failed, nil
 }

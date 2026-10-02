@@ -1,10 +1,12 @@
 package connector
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -165,4 +167,19 @@ func TestListSaysWhenTheUnitsCannotBeListed(t *testing.T) {
 
 	require.ErrorIs(t, err, errBoom)
 	require.Equal(t, []string{idA}, ids, "what the files show is there all the same")
+}
+
+func TestAStaleTemporaryFileSweepThatCannotListTheDirectorySaysSo(t *testing.T) {
+	sd := newFakeSystemd()
+	dir := filepath.Join(t.TempDir(), "tunnels")
+	var logged bytes.Buffer
+	m := NewManager(sd, dir, nil, zerolog.New(&logged))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	m.readDir = func(string) ([]os.DirEntry, error) { return nil, errBoom }
+
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.ErrorContains(t, m.PruneInstall(t.Context(), testInstall, []string{idA}), "listing "+dir+" for stale temporary files: boom")
+
+	require.Contains(t, logged.String(), `"message":"could not list the directory of the connectors for stale temporary files"`)
+	require.NotContains(t, logged.String(), "could not remove a stale temporary file")
 }

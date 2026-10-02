@@ -290,22 +290,29 @@ func checkTunnels(ctx context.Context, st engine.State, env Env) []Finding {
 			out = append(out, ok(check, fmt.Sprintf("configuration version %d is verified", t.Version)))
 		}
 		if t.ID != "" {
-			out = append(out, checkConnector(ctx, st, env, name, t.ID))
+			out = append(out, checkConnector(ctx, st, env, name, t))
 		}
 	}
 	return out
 }
 
-func checkConnector(ctx context.Context, st engine.State, env Env, name, id string) Finding {
+// checkConnector asks systemd whether the connector of a tunnel runs, and
+// takes from the state whether it is connected. For a tunnel the last cycle
+// did not check, the state has only what an earlier cycle found, so
+// systemd's answer is all there is.
+func checkConnector(ctx context.Context, st engine.State, env Env, name string, t engine.TunnelView) Finding {
 	check := "connector " + name
-	unit := connector.UnitName(id)
+	unit := connector.UnitName(t.ID)
 	active, err := env.UnitActive(ctx, unit)
 	switch {
 	case err != nil:
 		return warn(check, "systemd did not say whether it runs: "+err.Error(), "systemctl status "+unit)
 	case !active:
 		return fail(check, unit+" is not running", "systemctl status "+unit)
+	case t.Unchecked:
+		return warn(check, unit+" is running; whether it is connected was not checked in the last cycle", fixProblems)
 	}
+	id := t.ID
 	i := slices.IndexFunc(st.Connectors, func(c connector.Status) bool { return c.TunnelID == id })
 	switch {
 	case i < 0:
@@ -318,13 +325,14 @@ func checkConnector(ctx context.Context, st engine.State, env Env, name, id stri
 
 // checkOutbound tries the way out to Cloudflare over TCP. Connectors that are
 // all connected may be over QUIC, so then a TCP that does not get through is
-// only a warning.
+// only a warning; that they are connected counts only when the last cycle
+// checked them, as one that held did not.
 func checkOutbound(ctx context.Context, st engine.State, env Env) Finding {
 	err := env.CanDial(ctx, "tcp", edge)
 	switch {
 	case err == nil:
 		return ok("outbound", edge+" answers over TCP")
-	case allConnected(st.Connectors):
+	case st.Hold == "" && allConnected(st.Connectors):
 		return warn("outbound", edge+" cannot be reached over TCP: "+err.Error()+"; every connector is connected all the same, over QUIC perhaps",
 			fixOutbound)
 	}

@@ -67,11 +67,11 @@ func (m *Manager) markPending(id string) error {
 //
 // A marker that cannot be cleared must not turn into a restart on every call.
 // The marker for which a start or restart was queued is remembered, and while
-// it is still the same one, a call that wrote no file leaves the unit alone and
-// returns the error from clearing it, so that the problem stays visible. A call
-// that replaced a file restarts regardless: its change is new. A unit that is
-// not running is always started.
-func (m *Manager) apply(ctx context.Context, id string, wrote bool) error {
+// it is still the same one, the unit is left alone and the error from clearing
+// it is returned, so that the problem stays visible. A call that replaced a
+// file has forgotten the marker it remembered, so its change restarts the
+// unit: it is new. A unit that is not running is always started.
+func (m *Manager) apply(ctx context.Context, id string) error {
 	unit := UnitName(id)
 	active, err := m.sd.IsActive(ctx, unit)
 	if err != nil {
@@ -87,7 +87,7 @@ func (m *Manager) apply(ctx context.Context, id string, wrote bool) error {
 			return fmt.Errorf("starting %s: %w", unit, err)
 		}
 		m.log.Info().Str("tunnel", id).Msg("started connector")
-	case marker.present && (wrote || !marker.sameAs(m.queued[id])):
+	case marker.present && !marker.sameAs(m.queued[id]):
 		if err := m.sd.Restart(ctx, unit); err != nil {
 			return fmt.Errorf("restarting %s: %w", unit, err)
 		}

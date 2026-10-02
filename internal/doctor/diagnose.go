@@ -232,10 +232,16 @@ func (d *diagnosis) identity() Step {
 	if d.rt.Level != "" {
 		level = " at identity level " + d.rt.Level
 	}
-	if c, ok := d.candidate(ap.Addr()); ok {
-		return passed(fmt.Sprintf("%s is the address of %s, verified%s (%s)", ap.Addr(), d.rt.Owner, level, c.Source))
+	// What a cycle that did not check the tunnel shows is what an earlier
+	// one verified.
+	verified, step := "verified", passed
+	if d.unchecked() != "" {
+		verified, step = "verified in an earlier cycle", warned
 	}
-	return passed(fmt.Sprintf("%s is the address verified for %s%s", ap.Addr(), d.rt.Owner, level))
+	if c, ok := d.candidate(ap.Addr()); ok {
+		return step(fmt.Sprintf("%s is the address of %s, %s%s (%s)", ap.Addr(), d.rt.Owner, verified, level, c.Source))
+	}
+	return step(fmt.Sprintf("%s is the address %s for %s%s", ap.Addr(), verified, d.rt.Owner, level))
 }
 
 // tried lists the candidates resolution tried, and how each fared.

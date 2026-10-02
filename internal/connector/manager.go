@@ -44,9 +44,10 @@ type Manager struct {
 	httpc *http.Client
 	log   zerolog.Logger
 
-	firstPort int                               // where metrics ports are allocated from
-	lstat     func(string) (fs.FileInfo, error) // os.Lstat, replaceable so that a test can make a stat fail
-	readFile  func(string) ([]byte, error)      // os.ReadFile, replaceable so that a test can see what a read holds
+	firstPort int                                 // where metrics ports are allocated from
+	lstat     func(string) (fs.FileInfo, error)   // os.Lstat, replaceable so that a test can make a stat fail
+	readFile  func(string) ([]byte, error)        // os.ReadFile, replaceable so that a test can see what a read holds
+	readDir   func(string) ([]os.DirEntry, error) // os.ReadDir of the stale temporary files, replaceable so that a test can make it fail
 
 	mu     sync.Mutex              // guards the fields below and serialises the work on the files
 	queued map[string]pendingState // by tunnel id: the marker a start or restart was queued for
@@ -65,6 +66,7 @@ func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) 
 		firstPort: defaultFirstPort,
 		lstat:     os.Lstat,
 		readFile:  os.ReadFile,
+		readDir:   os.ReadDir,
 		queued:    make(map[string]pendingState),
 	}
 }
@@ -116,11 +118,10 @@ func (m *Manager) Ensure(ctx context.Context, installID, tunnelID, token string)
 		return err
 	}
 	m.sweepStaleTemps()
-	wrote, err := m.writeFiles(installID, tunnelID, token)
-	if err != nil {
+	if err := m.writeFiles(installID, tunnelID, token); err != nil {
 		return fmt.Errorf("tunnel %s: %w", tunnelID, err)
 	}
-	return m.apply(ctx, tunnelID, wrote)
+	return m.apply(ctx, tunnelID)
 }
 
 // prepareDir creates the directory and restores its mode.
@@ -135,12 +136,20 @@ func (m *Manager) prepareDir() error {
 }
 
 // sweepStaleTemps removes the leftovers of interrupted writes. A leftover that
-// cannot be removed is no reason to leave the connector as it is; it is logged,
-// by name and never by content, the first time it is seen and again only after
-// it was gone and came back, since Ensure runs for every tunnel on every poll.
+// cannot be removed, or a directory that cannot be listed for them, is no
+// reason to leave the connector as it is; it is logged, by name and never by
+// content, the first time it is seen and again only after it was gone and came
+// back, since Ensure runs for every tunnel on every poll.
 func (m *Manager) sweepStaleTemps() {
 	failing := make(map[string]struct{})
-	for _, f := range removeStaleTemps(m.dir) {
+	failed, err := m.removeStaleTemps()
+	if err != nil {
+		failing[m.dir] = struct{}{}
+		if _, known := m.stuck[m.dir]; !known {
+			m.log.Warn().Err(err).Str("dir", m.dir).Msg("could not list the directory of the connectors for stale temporary files")
+		}
+	}
+	for _, f := range failed {
 		failing[f.name] = struct{}{}
 		if _, known := m.stuck[f.name]; !known {
 			m.log.Warn().Err(f.err).Str("file", f.name).Msg("could not remove a stale temporary file")
@@ -150,14 +159,14 @@ func (m *Manager) sweepStaleTemps() {
 }
 
 // writeFiles brings the env, config and token file of a tunnel to the wanted
-// content and mode, and reports whether it replaced one of them. Their content
-// is replaced only when it differs; a mode is fixed in place and is no change
-// that needs a restart.
-func (m *Manager) writeFiles(installID, id, token string) (wrote bool, err error) {
+// content and mode. Their content is replaced only when it differs, under a
+// marker of the change; a mode is fixed in place and is no change that needs
+// a restart.
+func (m *Manager) writeFiles(installID, id, token string) error {
 	envPath, configPath, tokenPath := m.path(envFile(id)), m.path(configFile(id)), m.path(tokenFile(id))
 	env, replaceEnv, err := m.wantedEnv(installID, id)
 	if err != nil {
-		return false, err
+		return err
 	}
 	replaceConfig := !hasContent(configPath, []byte(configContent))
 	replaceToken := !hasContent(tokenPath, []byte(token))
@@ -167,7 +176,7 @@ func (m *Manager) writeFiles(installID, id, token string) (wrote bool, err error
 		// the next one must not take the marker for one that was dealt with.
 		delete(m.queued, id)
 		if err := m.markPending(id); err != nil {
-			return false, fmt.Errorf("marking the change as pending: %w", err)
+			return fmt.Errorf("marking the change as pending: %w", err)
 		}
 	}
 	for _, f := range []struct {
@@ -186,10 +195,10 @@ func (m *Manager) writeFiles(installID, id, token string) (wrote bool, err error
 			err = fixMode(f.path, f.mode)
 		}
 		if err != nil {
-			return false, fmt.Errorf("writing %s: %w", filepath.Base(f.path), err)
+			return fmt.Errorf("writing %s: %w", filepath.Base(f.path), err)
 		}
 	}
-	return replaceEnv || replaceConfig || replaceToken, nil
+	return nil
 }
 
 // wantedEnv returns the content of the env file of a tunnel and whether the
@@ -292,8 +301,9 @@ func (m *Manager) prune(ctx context.Context, keep []string, ours func(id string)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var errs []error
-	for _, f := range removeStaleTemps(m.dir) {
+	failed, err := m.removeStaleTemps()
+	errs := []error{err}
+	for _, f := range failed {
 		errs = append(errs, f.err)
 	}
 	ids, ignored, err := m.discover(ctx)

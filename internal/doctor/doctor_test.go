@@ -61,6 +61,18 @@ func (f *fakeEnv) NodeLock(context.Context) error             { return f.lockErr
 func (f *fakeEnv) PollInterval() time.Duration                { return f.interval }
 func (f *fakeEnv) Now() time.Time                             { return now }
 
+// holdOver makes st the state of a cycle that held: its tunnels and
+// connectors are those an earlier cycle found.
+func holdOver(st *engine.State) {
+	const why = "no writer identity; run pco setup"
+	st.Hold = why
+	st.Problems = []string{why}
+	for i := range st.Tunnels {
+		t := &st.Tunnels[i]
+		t.Held, t.Unchecked, t.Verified = "not checked in the last cycle: "+why, true, false
+	}
+}
+
 func healthyState() engine.State {
 	expires := now.Add(90 * 24 * time.Hour)
 	return engine.State{
@@ -243,15 +255,6 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
 				Detail: "left as it is: account frozen: zone example.com is no longer listed by credential cred1",
 				Fix:    "pco status lists the problems that say why"}},
-		{"a tunnel the last cycle did not check", func(st *engine.State) {
-			t := &st.Tunnels[0]
-			t.Held, t.Unchecked, t.Verified = "not checked in the last cycle: no writer identity; run pco setup", true, false
-		}, nil, Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
-			Detail: "not checked in the last cycle: no writer identity; run pco setup", Fix: "pco status lists the problems that say why"}},
-		{"a tunnel the last cycle did not check, without a reason", func(st *engine.State) {
-			st.Tunnels[0].Unchecked, st.Tunnels[0].Verified = true, false
-		}, nil, Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
-			Detail: "not checked in the last cycle", Fix: "pco status lists the problems that say why"}},
 		{"a configuration that is not verified", func(st *engine.State) { st.Tunnels[0].Verified = false }, nil,
 			Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn, Detail: "its configuration is not verified", Fix: "pco plan"}},
 		{"a tunnel not created yet", func(st *engine.State) {
@@ -473,4 +476,46 @@ func TestOneDoctorAtATime(t *testing.T) {
 	clock.advance(time.Second)
 	r.Doctor(t.Context())
 	require.Equal(t, 2, env.count())
+}
+
+// After a cycle that held, the connectors the state shows are those of an
+// earlier cycle: only what systemd says now counts.
+func TestTheDoctorReadsOnlyWhatTheLastCycleChecked(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		state  func(st *engine.State)
+		env    func(env *fakeEnv)
+		expect Finding
+	}{
+		{"the tunnel", nil, nil, Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
+			Detail: "not checked in the last cycle: no writer identity; run pco setup", Fix: "pco status lists the problems that say why"}},
+		{"the tunnel, without a reason", func(st *engine.State) { st.Tunnels[0].Held = "" }, nil,
+			Finding{Check: "tunnel pco-abc123 in account acc1", Level: LevelWarn,
+				Detail: "not checked in the last cycle", Fix: "pco status lists the problems that say why"}},
+		{"a connector that runs", nil, nil, Finding{Check: "connector pco-abc123 in account acc1", Level: LevelWarn,
+			Detail: "pco-cloudflared@" + tunnelID + ".service is running; whether it is connected was not checked in the last cycle",
+			Fix:    "pco status lists the problems that say why"}},
+		{"a connector that does not run", nil, func(env *fakeEnv) { env.inactive = map[string]bool{connector.UnitName(tunnelID): true} },
+			Finding{Check: "connector pco-abc123 in account acc1", Level: LevelFail, Detail: "pco-cloudflared@" + tunnelID + ".service is not running",
+				Fix: "systemctl status pco-cloudflared@" + tunnelID + ".service"}},
+		{"no way out over TCP", nil, func(env *fakeEnv) { env.dialErr = errors.New("dial tcp: i/o timeout") },
+			Finding{Check: "outbound", Level: LevelFail,
+				Detail: "region1.v2.argotunnel.com:7844 cannot be reached over TCP: dial tcp: i/o timeout",
+				Fix:    "allow outbound TCP and UDP to port 7844"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, env := healthyState(), healthyEnv()
+			holdOver(&st)
+			if tt.state != nil {
+				tt.state(&st)
+			}
+			if tt.env != nil {
+				tt.env(env)
+			}
+
+			findings := Run(t.Context(), st, env)
+
+			require.Contains(t, findings, tt.expect)
+		})
+	}
 }
