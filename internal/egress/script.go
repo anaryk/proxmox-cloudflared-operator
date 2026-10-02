@@ -72,9 +72,13 @@ func (c contents) equal(o contents) bool {
 	return slices.Equal(c.targets, o.targets) && slices.Equal(c.resolvers, o.resolvers)
 }
 
-// Base renders the table with empty sets: what is loaded at boot. Until the
-// daemon fills the sets, a connector reaches nothing but Cloudflare's edge.
-func Base(connectorUID uint32) string { return render(connectorUID, contents{}) }
+// Base renders the table that is loaded before the daemon has verified any
+// target, at boot among others: no targets, and the resolvers it is given less
+// the blocked addresses. Until the daemon fills the sets, a connector reaches
+// its resolvers and Cloudflare's edge and nothing else.
+func Base(connectorUID uint32, resolvers, blocked []netip.Addr) string {
+	return render(connectorUID, contents{resolvers: normalizeAddrs(resolvers)}.without(normalizeAddrs(blocked)))
+}
 
 // render returns the script that replaces the table, whatever it holds, with
 // one that holds c, in one transaction: the add makes the delete work when

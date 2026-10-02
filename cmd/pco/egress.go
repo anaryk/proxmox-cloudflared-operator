@@ -17,24 +17,26 @@ import (
 // egressEnv is what the egress commands take from the node. They work on its
 // ruleset and its local state directly, without the daemon and its socket.
 type egressEnv struct {
-	nft   egress.Nft
-	local string // the local state root, where the overrides are kept
-	euid  func() int
-	uid   func() (uint32, error) // of the connector user
+	nft       egress.Nft
+	local     string // the local state root, where the overrides are kept
+	euid      func() int
+	uid       func() (uint32, error) // of the connector user
+	resolvers func() ([]netip.Addr, error)
 }
 
 func defaultEgressEnv() egressEnv {
 	return egressEnv{
-		nft:   egress.NewNft(),
-		local: store.DefaultPaths().Local,
-		euid:  os.Geteuid,
-		uid:   egress.ConnectorUID,
+		nft:       egress.NewNft(),
+		local:     store.DefaultPaths().Local,
+		euid:      os.Geteuid,
+		uid:       egress.ConnectorUID,
+		resolvers: egress.SystemResolvers,
 	}
 }
 
-// loadedText is what the connectors reach once a table with empty sets is
+// loadedText is what the connectors reach once a table without targets is
 // loaded.
-const loadedText = "the connectors reach Cloudflare's edge and nothing else until the daemon adds their verified targets"
+const loadedText = "the connectors reach the resolvers of the node and Cloudflare's edge, and nothing else until the daemon adds their verified targets"
 
 func (a *app) egressCmd() *cobra.Command { return a.egressCmdWith(defaultEgressEnv()) }
 
@@ -70,7 +72,7 @@ func (a *app) egressCheck(cmd *cobra.Command, e egressEnv) error {
 func (a *app) egressLoadCmd(e egressEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:    "load",
-		Short:  "Load the egress table with empty sets, as the boot unit does",
+		Short:  "Load the egress table with the resolvers and no targets, as the boot unit does",
 		Args:   cobra.NoArgs,
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -91,7 +93,7 @@ func (a *app) egressLoadCmd(e egressEnv) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			loaded, err := egress.Load(cmd.Context(), e.nft, uid)
+			loaded, resolverErr, err := loadEgress(cmd, e, ov, uid)
 			if err != nil {
 				return err
 			}
@@ -100,9 +102,44 @@ func (a *app) egressLoadCmd(e egressEnv) *cobra.Command {
 			} else {
 				s.println("The egress table is loaded already; its sets were kept.")
 			}
-			return s.done()
+			return a.resolversFailed(s, loaded, resolverErr)
 		},
 	}
+}
+
+// loadEgress loads the table with the resolvers of the node and the blocked
+// addresses, unless an intact one is there. Resolvers that cannot be read
+// are none, and the error comes back beside the result: a table without them
+// is better than none, which the connectors cannot start without. A block
+// list that cannot be read loads nothing.
+func loadEgress(cmd *cobra.Command, e egressEnv, ov *egress.Overrides, uid uint32) (loaded bool, resolverErr, err error) {
+	blocked, err := ov.Blocked()
+	if err != nil {
+		return false, nil, err
+	}
+	resolvers, resolverErr := e.resolvers()
+	if resolverErr != nil {
+		resolvers = nil
+	}
+	loaded, err = egress.Load(cmd.Context(), e.nft, uid, resolvers, blocked)
+	return loaded, resolverErr, err
+}
+
+// resolversFailed says that the resolvers could not be read, which is an exit
+// status of 1, or returns what the screen returns.
+func (a *app) resolversFailed(s *screen, loaded bool, err error) error {
+	if err == nil {
+		return s.done()
+	}
+	if loaded {
+		s.printf("The resolvers could not be read (%v): the table lets the connectors reach none, so they cannot resolve names until the daemon's next cycle.\n", err)
+	} else {
+		s.printf("The resolvers could not be read (%v).\n", err)
+	}
+	if err := s.done(); err != nil {
+		return err
+	}
+	return errReported
 }
 
 func (a *app) egressShowCmd(e egressEnv) *cobra.Command {
@@ -123,9 +160,16 @@ func (a *app) egressShowCmd(e egressEnv) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			live, err := egress.ReadLive(cmd.Context(), e.nft)
-			loaded := err == nil
-			if err != nil && !errors.Is(err, egress.ErrNotLoaded) {
+			uid, err := e.uid()
+			if err != nil {
+				return err
+			}
+			live, err := egress.ReadLive(cmd.Context(), e.nft, uid)
+			loaded := !errors.Is(err, egress.ErrNotLoaded)
+			switch {
+			case errors.Is(err, egress.ErrUnreadable):
+				live.Differences = []string{err.Error()}
+			case loaded && err != nil:
 				return err
 			}
 			return a.renderEgress(cmd.OutOrStdout(), egressView{
@@ -152,6 +196,11 @@ func (a *app) renderEgress(w io.Writer, v egressView) error {
 		s.printf("The egress filter is switched off since %s: the connectors are not confined. pco egress on switches it back on.\n", a.since(v.since))
 	case !v.loaded:
 		s.println("The egress filter is on, but its table is not loaded: the connectors are not confined. pco egress on loads it.")
+	case len(v.live.Differences) > 0:
+		s.println("The egress filter is on, but its table is not as pco loads it, and the connectors may not be confined. pco egress on loads it again:")
+		for _, d := range v.live.Differences {
+			s.printf("  %s\n", d)
+		}
 	default:
 		s.println("The egress filter is on.")
 	}
@@ -339,8 +388,9 @@ func (a *app) egressOnCmd(e egressEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "on",
 		Short: "Switch the egress filter back on",
-		Long: "Let the daemon and the boot unit load the egress table again, and load it with empty sets\n" +
-			"unless it is loaded: the daemon adds the verified targets at its next cycle.",
+		Long: "Let the daemon and the boot unit load the egress table again, and load it, with the\n" +
+			"resolvers of the node and no targets, unless it is loaded as it should be: the daemon adds\n" +
+			"the verified targets at its next cycle.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.egressCheck(cmd, e); err != nil {
@@ -351,11 +401,12 @@ func (a *app) egressOnCmd(e egressEnv) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			wasOff, err := egress.NewOverrides(e.local).SwitchOn()
+			ov := egress.NewOverrides(e.local)
+			wasOff, err := ov.SwitchOn()
 			if err != nil {
 				return err
 			}
-			loaded, err := egress.Load(cmd.Context(), e.nft, uid)
+			loaded, resolverErr, err := loadEgress(cmd, e, ov, uid)
 			if err != nil {
 				return err
 			}
@@ -370,7 +421,7 @@ func (a *app) egressOnCmd(e egressEnv) *cobra.Command {
 			default:
 				s.println("The egress filter was on already, and its table is loaded.")
 			}
-			return s.done()
+			return a.resolversFailed(s, loaded, resolverErr)
 		},
 	}
 }

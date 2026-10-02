@@ -17,7 +17,7 @@ func TestReadLiveReturnsTheSetsAndTheCounters(t *testing.T) {
 		return l
 	}).with(t, targets("10.0.0.6:443", "[fd00::5]:80", "10.0.0.5:80"), []netip.Addr{addr("fd00::53"), addr("192.168.1.1")}).bytes(t))
 
-	live, err := ReadLive(t.Context(), n)
+	live, err := ReadLive(t.Context(), n, testUID)
 
 	require.NoError(t, err)
 	require.Equal(t, Live{
@@ -28,10 +28,30 @@ func TestReadLiveReturnsTheSetsAndTheCounters(t *testing.T) {
 	}, live)
 }
 
+func TestReadLiveSaysWhatIsNotAsItShouldBe(t *testing.T) {
+	n := &fakeNft{}
+	n.setLive(realListing(t, "1.1.3").bytes(t))
+	live, err := ReadLive(t.Context(), n, testUID)
+	require.NoError(t, err)
+	require.Empty(t, live.Differences)
+
+	for _, version := range []string{"1.1.3", "1.0.6"} {
+		n.setLive(dormant(t, version).bytes(t))
+		live, err = ReadLive(t.Context(), n, testUID)
+		require.NoError(t, err)
+		require.Len(t, live.Differences, 1, version)
+		require.Contains(t, live.Differences[0], "the table has flags", version)
+	}
+
+	live, err = ReadLive(t.Context(), n, 4242)
+	require.NoError(t, err)
+	require.NotEmpty(t, live.Differences, "a table for another user")
+}
+
 func TestReadLiveOfAMissingTable(t *testing.T) {
 	n := &fakeNft{listErr: ErrNotLoaded}
 
-	_, err := ReadLive(t.Context(), n)
+	_, err := ReadLive(t.Context(), n, testUID)
 
 	require.ErrorIs(t, err, ErrNotLoaded)
 }
@@ -43,7 +63,7 @@ func TestReadLiveRefusesAnElementItCannotRead(t *testing.T) {
 		return l
 	}).bytes(t))
 
-	_, err := ReadLive(t.Context(), n)
+	_, err := ReadLive(t.Context(), n, testUID)
 
 	require.ErrorContains(t, err, "set resolvers4 holds an element pco cannot read")
 }
@@ -96,18 +116,18 @@ func TestDropReturnsAFailedDelete(t *testing.T) {
 func TestLoadAppliesBaseWhenThereIsNoTable(t *testing.T) {
 	n := &fakeNft{listErr: ErrNotLoaded}
 
-	loaded, err := Load(t.Context(), n, testUID)
+	loaded, err := Load(t.Context(), n, testUID, nil, nil)
 
 	require.NoError(t, err)
 	require.True(t, loaded)
-	require.Equal(t, []string{Base(testUID)}, n.applied())
+	require.Equal(t, []string{Base(testUID, nil, nil)}, n.applied())
 }
 
 func TestLoadKeepsAnIntactTableWithItsSets(t *testing.T) {
 	n := &fakeNft{}
 	n.setLive(realListing(t, "1.0.6").bytes(t))
 
-	loaded, err := Load(t.Context(), n, testUID)
+	loaded, err := Load(t.Context(), n, testUID, nil, nil)
 
 	require.NoError(t, err)
 	require.False(t, loaded)
@@ -127,7 +147,9 @@ func TestLoadReplacesATableThatIsNotIntact(t *testing.T) {
 				return out
 			})
 		},
-		"another user": func(t *testing.T) listing { return realListing(t, "1.1.3") },
+		"another user":      func(t *testing.T) listing { return realListing(t, "1.1.3") },
+		"dormant":           func(t *testing.T) listing { return dormant(t, "1.1.3") },
+		"dormant, as 1.0.6": func(t *testing.T) listing { return dormant(t, "1.0.6") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			n := &fakeNft{}
@@ -137,19 +159,32 @@ func TestLoadReplacesATableThatIsNotIntact(t *testing.T) {
 				uid = 4242
 			}
 
-			loaded, err := Load(t.Context(), n, uid)
+			loaded, err := Load(t.Context(), n, uid, nil, nil)
 
 			require.NoError(t, err)
 			require.True(t, loaded)
-			require.Equal(t, []string{Base(uid)}, n.applied())
+			require.Equal(t, []string{Base(uid, nil, nil)}, n.applied())
 		})
 	}
+}
+
+func TestLoadLoadsTheResolversItIsGivenLessTheBlocked(t *testing.T) {
+	n := &fakeNft{listErr: ErrNotLoaded}
+	resolvers := []netip.Addr{addr("192.168.1.1"), addr("10.0.0.53")}
+	blocked := []netip.Addr{addr("10.0.0.53")}
+
+	loaded, err := Load(t.Context(), n, testUID, resolvers, blocked)
+
+	require.NoError(t, err)
+	require.True(t, loaded)
+	require.Equal(t, []string{Base(testUID, resolvers, blocked)}, n.applied())
+	require.Equal(t, []string{"192.168.1.1"}, elementsOf(t, n.applied()[0], setResolvers4))
 }
 
 func TestLoadReturnsAFailureToList(t *testing.T) {
 	n := &fakeNft{listErr: errBoom}
 
-	_, err := Load(t.Context(), n, testUID)
+	_, err := Load(t.Context(), n, testUID, nil, nil)
 
 	require.ErrorIs(t, err, errBoom)
 	require.Empty(t, n.applied())

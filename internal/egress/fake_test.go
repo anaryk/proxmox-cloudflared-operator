@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -121,6 +122,23 @@ func requireGolden(t *testing.T, name, got string) {
 	want, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, string(want), got, "the output changed; run the test with -update when that is intended")
+}
+
+// elementsOf returns the elements a script gives a set, in its order.
+func elementsOf(t *testing.T, script, set string) []string {
+	t.Helper()
+	_, block, ok := strings.Cut(script, "\tset "+set+" {\n")
+	require.True(t, ok, "no set %s in the script", set)
+	block, _, _ = strings.Cut(block, "\n\t}\n")
+	_, elems, ok := strings.Cut(block, "elements = {\n")
+	if !ok {
+		return nil
+	}
+	var out []string
+	for line := range strings.Lines(strings.TrimSuffix(elems, "\n\t\t}")) {
+		out = append(out, strings.TrimSuffix(strings.TrimSpace(line), ","))
+	}
+	return out
 }
 
 // listing is a table as nft -j lists it: the entries under "nftables".

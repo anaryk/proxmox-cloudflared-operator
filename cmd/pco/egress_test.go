@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,20 +50,24 @@ func (f *fakeNft) applied() []string {
 	return slices.Clone(f.scripts)
 }
 
-// liveTable is a listing of a loaded table with targets, a resolver and what
-// its counters counted. The commands read the sets and counters of a listing;
-// whether its rules are right is for Verify and load.
-const liveTable = `{"nftables": [
-{"metainfo": {"version": "1.1.3", "json_schema_version": 1}},
-{"table": {"family": "inet", "name": "pco_egress", "handle": 3}},
-{"counter": {"family": "inet", "name": "rejected_local", "table": "pco_egress", "handle": 3, "packets": 3, "bytes": 180}},
-{"counter": {"family": "inet", "name": "rejected", "table": "pco_egress", "handle": 4, "packets": 12, "bytes": 720}},
-{"set": {"family": "inet", "name": "targets4", "table": "pco_egress", "type": ["ipv4_addr", "inet_service"], "handle": 5,
-  "elem": [{"concat": ["10.0.0.6", 443]}, {"concat": ["10.0.0.5", 80]}, {"concat": ["10.0.0.5", 8080]}]}},
-{"set": {"family": "inet", "name": "targets6", "table": "pco_egress", "type": ["ipv6_addr", "inet_service"], "handle": 6}},
-{"set": {"family": "inet", "name": "resolvers4", "table": "pco_egress", "type": "ipv4_addr", "handle": 7, "elem": ["192.168.1.1"]}},
-{"set": {"family": "inet", "name": "resolvers6", "table": "pco_egress", "type": "ipv6_addr", "handle": 8}}
-]}`
+// liveTable is a listing nft printed for a table of the connector user 999
+// with the targets 10.0.0.5:80, 10.0.0.5:8080 and 10.0.0.6:443 and the
+// resolver 192.168.1.1, with what its counters counted put in.
+func liveTable(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "internal", "egress", "testdata", "listing-1.1.3.json"))
+	require.NoError(t, err)
+	live := string(b)
+	for name, counted := range map[string]string{
+		`"rejected_local", "table": "pco_egress", "handle": 3`: `"packets": 3, "bytes": 180`,
+		`"rejected", "table": "pco_egress", "handle": 4`:       `"packets": 12, "bytes": 720`,
+	} {
+		before := live
+		live = strings.Replace(live, name+`, "packets": 0, "bytes": 0`, name+", "+counted, 1)
+		require.NotEqual(t, before, live, "no counter %s in the listing", name)
+	}
+	return live
+}
 
 const testConnectorUID = 999
 
@@ -82,10 +87,11 @@ func newEgressRig(t *testing.T) *egressRig {
 		app: &app{env: testEnv()},
 		nft: n,
 		env: egressEnv{
-			nft:   n,
-			local: filepath.Join(t.TempDir(), "local"),
-			euid:  func() int { return 0 },
-			uid:   func() (uint32, error) { return testConnectorUID, nil },
+			nft:       n,
+			local:     filepath.Join(t.TempDir(), "local"),
+			euid:      func() int { return 0 },
+			uid:       func() (uint32, error) { return testConnectorUID, nil },
+			resolvers: func() ([]netip.Addr, error) { return nil, nil },
 		},
 	}
 }
@@ -153,12 +159,53 @@ func TestEgressCommandsPrintNoJSON(t *testing.T) {
 
 func TestEgressLoadLoadsTheBaseTable(t *testing.T) {
 	r := newEgressRig(t)
+	resolvers := []netip.Addr{netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("10.0.0.53")}
+	r.env.resolvers = func() ([]netip.Addr, error) { return resolvers, nil }
+	_, err := r.overrides().Block(netip.MustParseAddr("10.0.0.53"))
+	require.NoError(t, err)
 
 	res := r.run("load")
 
 	require.NoError(t, res.err)
-	require.Equal(t, []string{egress.Base(testConnectorUID)}, r.nft.applied())
-	require.Equal(t, "Loaded the egress table: the connectors reach Cloudflare's edge and nothing else until the daemon adds their verified targets.\n", res.out)
+	require.Equal(t, []string{egress.Base(testConnectorUID, resolvers, []netip.Addr{netip.MustParseAddr("10.0.0.53")})}, r.nft.applied())
+	require.Equal(t, "Loaded the egress table: the connectors reach the resolvers of the node and Cloudflare's edge, and nothing else until the daemon adds their verified targets.\n", res.out)
+}
+
+func TestEgressLoadWithResolversThatCannotBeReadStillLoads(t *testing.T) {
+	r := newEgressRig(t)
+	r.env.resolvers = func() ([]netip.Addr, error) {
+		return nil, errors.New("reading /etc/resolv.conf: permission denied")
+	}
+
+	res := r.run("load")
+
+	require.ErrorIs(t, res.err, errReported, "an exit status of 1")
+	require.Equal(t, []string{egress.Base(testConnectorUID, nil, nil)}, r.nft.applied())
+	require.Equal(t, "Loaded the egress table: "+loadedText+".\n"+
+		"The resolvers could not be read (reading /etc/resolv.conf: permission denied): the table lets the connectors reach none, so they cannot resolve names until the daemon's next cycle.\n", res.out)
+}
+
+func TestEgressLoadWithABlockListThatCannotBeReadLoadsNothing(t *testing.T) {
+	r := newEgressRig(t)
+	require.NoError(t, os.MkdirAll(r.env.local, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(r.env.local, "egress-blocked.json"), []byte("{"), 0o600))
+
+	res := r.run("load")
+
+	require.ErrorContains(t, res.err, "egress-blocked.json")
+	require.Empty(t, r.nft.applied())
+}
+
+func TestEgressShowOfATableThatIsNotAsItShouldBe(t *testing.T) {
+	r := newEgressRig(t)
+	r.nft.listErr = nil
+	r.nft.live = strings.Replace(liveTable(t), `"name": "pco_egress", "handle": 3}`, `"name": "pco_egress", "handle": 3, "flags": "dormant"}`, 1)
+	require.Contains(t, r.nft.live, "dormant")
+
+	res := r.run("show")
+
+	require.NotContains(t, res.out, "The egress filter is on.")
+	requireGolden(t, "egress_show_changed.golden", res.out)
 }
 
 func TestEgressLoadDoesNotLoadWhileTheFilterIsOff(t *testing.T) {
@@ -225,6 +272,8 @@ func TestEgressOffTwiceKeepsTheFirstTime(t *testing.T) {
 func TestEgressOnLoadsTheTableAgain(t *testing.T) {
 	r := newEgressRig(t)
 	require.NoError(t, r.overrides().SwitchOff(t0))
+	resolvers := []netip.Addr{netip.MustParseAddr("192.168.1.1")}
+	r.env.resolvers = func() ([]netip.Addr, error) { return resolvers, nil }
 
 	res := r.run("on")
 
@@ -232,17 +281,14 @@ func TestEgressOnLoadsTheTableAgain(t *testing.T) {
 	_, off, err := r.overrides().Off()
 	require.NoError(t, err)
 	require.False(t, off)
-	require.Equal(t, []string{egress.Base(testConnectorUID)}, r.nft.applied())
-	require.Equal(t, "Switched the egress filter on and loaded its table: the connectors reach Cloudflare's edge and nothing else until the daemon adds their verified targets at its next cycle.\n", res.out)
+	require.Equal(t, []string{egress.Base(testConnectorUID, resolvers, nil)}, r.nft.applied())
+	require.Equal(t, "Switched the egress filter on and loaded its table: "+loadedText+" at its next cycle.\n", res.out)
 }
 
 func TestEgressOnWhenItIsOnAlready(t *testing.T) {
 	r := newEgressRig(t)
 	r.nft.listErr = nil
-	// A listing nft printed for a table of the connector user 999.
-	b, err := os.ReadFile(filepath.Join("..", "..", "internal", "egress", "testdata", "listing-1.1.3.json"))
-	require.NoError(t, err)
-	r.nft.live = string(b)
+	r.nft.live = liveTable(t)
 
 	res := r.run("on")
 
@@ -267,7 +313,7 @@ func TestEgressOnLooksUpTheUserBeforeItChangesAnything(t *testing.T) {
 func TestEgressBlockTakesTheAddressOutOfTheLiveTable(t *testing.T) {
 	r := newEgressRig(t)
 	r.nft.listErr = nil
-	r.nft.live = liveTable
+	r.nft.live = liveTable(t)
 
 	res := r.run("block", "10.0.0.5")
 
@@ -282,7 +328,7 @@ func TestEgressBlockTakesTheAddressOutOfTheLiveTable(t *testing.T) {
 func TestEgressBlockPrintsTheAddressAsItParsedIt(t *testing.T) {
 	r := newEgressRig(t)
 	r.nft.listErr = nil
-	r.nft.live = liveTable
+	r.nft.live = liveTable(t)
 
 	res := r.run("block", "::ffff:10.0.0.6")
 
@@ -327,7 +373,7 @@ func TestEgressBlockWithoutATable(t *testing.T) {
 func TestEgressBlockOfAnAddressTheTableDoesNotHold(t *testing.T) {
 	r := newEgressRig(t)
 	r.nft.listErr = nil
-	r.nft.live = liveTable
+	r.nft.live = liveTable(t)
 	_, err := r.overrides().Block(netip.MustParseAddr("10.0.0.99"))
 	require.NoError(t, err)
 
@@ -360,7 +406,7 @@ func TestEgressShowGolden(t *testing.T) {
 		setup  func(r *egressRig)
 	}{
 		{name: "on", golden: "egress_show.golden", setup: func(r *egressRig) {
-			r.nft.listErr, r.nft.live = nil, liveTable
+			r.nft.listErr, r.nft.live = nil, liveTable(r.t)
 			_, err := r.overrides().Block(netip.MustParseAddr("10.0.0.9"))
 			require.NoError(r.t, err)
 		}},
@@ -369,7 +415,7 @@ func TestEgressShowGolden(t *testing.T) {
 			require.NoError(r.t, r.overrides().SwitchOff(t0))
 		}},
 		{name: "off with a table", golden: "egress_show_off_loaded.golden", setup: func(r *egressRig) {
-			r.nft.listErr, r.nft.live = nil, liveTable
+			r.nft.listErr, r.nft.live = nil, liveTable(r.t)
 			require.NoError(r.t, r.overrides().SwitchOff(t0))
 		}},
 	}

@@ -60,12 +60,16 @@ func TestLinuxEgressFilter(t *testing.T) {
 	allowed := []Target{{Addr: guest, Port: targetPort}}
 
 	var loaded bool
-	lab.inNode(t, func() (err error) { loaded, err = Load(t.Context(), nft, labUID); return err })
+	lab.inNode(t, func() (err error) {
+		loaded, err = Load(t.Context(), nft, labUID, []netip.Addr{addr(resolverIP)}, nil)
+		return err
+	})
 	require.True(t, loaded)
 	connector := lab.probe(t, labUID)
 	root := lab.probe(t, 0)
 
-	t.Run("base reaches the edge and nothing else", func(t *testing.T) {
+	t.Run("base reaches the resolvers and the edge and nothing else", func(t *testing.T) {
+		connector.reaches(t, "udp", hostPort(resolverIP, 53))
 		connector.refused(t, "tcp", hostPort(guestIP, targetPort))
 		connector.reaches(t, "tcp", hostPort(publicIP, edgePort))
 		connector.reaches(t, "udp", hostPort(publicIP, edgePort))
@@ -97,7 +101,7 @@ func TestLinuxEgressFilter(t *testing.T) {
 	t.Run("the table is the one applied and counts what it rejected", func(t *testing.T) {
 		lab.inNode(t, func() error { return f.Verify(t.Context()) })
 		var live Live
-		lab.inNode(t, func() (err error) { live, err = ReadLive(t.Context(), nft); return err })
+		lab.inNode(t, func() (err error) { live, err = ReadLive(t.Context(), nft, labUID); return err })
 		require.Equal(t, allowed, live.Targets)
 		require.Equal(t, []netip.Addr{addr(resolverIP)}, live.Resolvers)
 		require.NotZero(t, live.RejectedLocal.Packets)

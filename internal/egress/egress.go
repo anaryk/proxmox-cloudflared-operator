@@ -114,12 +114,13 @@ func (f *Filter) Remove(ctx context.Context, addr netip.Addr) error {
 }
 
 // Verify reads the live table back and reports whether it is the one last
-// applied, less the addresses blocked since: its chains, their hooks and
-// rules in order, its sets with their elements and its counters. Before the
-// filter applied anything, the elements are not compared. A difference, or a
-// table that is gone, is ErrChanged, and makes the next Set apply even with
-// the same targets; while the filter is switched off it is ErrOff. Other
-// errors say that the table could not be read.
+// applied, less the addresses blocked since: its flags, its chains, their
+// hooks and rules in order, its sets with their elements and its counters.
+// Before the filter applied anything, the elements are not compared. A
+// difference, a table that is gone or a listing that cannot be read is
+// ErrChanged, and makes the next Set apply even with the same targets; while
+// the filter is switched off it is ErrOff. Other errors say that nft could not
+// list the table.
 func (f *Filter) Verify(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -131,11 +132,12 @@ func (f *Filter) Verify(ctx context.Context) error {
 		return ErrOff
 	}
 	l, err := list(ctx, f.nft)
-	if errors.Is(err, ErrNotLoaded) {
+	switch {
+	case errors.Is(err, ErrNotLoaded), errors.Is(err, ErrUnreadable):
+		// A listing that cannot be read is no table pco applied either.
 		f.stale = true
-		return fmt.Errorf("%w: %w", ErrChanged, ErrNotLoaded)
-	}
-	if err != nil {
+		return fmt.Errorf("%w: %w", ErrChanged, err)
+	case err != nil:
 		return fmt.Errorf("listing the egress table: %w", err)
 	}
 	var want *contents

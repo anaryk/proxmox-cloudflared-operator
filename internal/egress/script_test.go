@@ -9,7 +9,13 @@ import (
 )
 
 func TestBaseGolden(t *testing.T) {
-	requireGolden(t, "base.nft", Base(testUID))
+	requireGolden(t, "base.nft", Base(testUID, nil, nil))
+}
+
+func TestTheBootTableHoldsTheResolversLessTheBlocked(t *testing.T) {
+	resolvers := []netip.Addr{addr("192.168.1.1"), addr("fd00::53"), addr("10.0.0.9"), addr("192.168.1.1"), addr("fe80::1%vmbr0")}
+
+	requireGolden(t, "boot.nft", Base(testUID, resolvers, []netip.Addr{addr("10.0.0.9")}))
 }
 
 func TestScriptGolden(t *testing.T) {
@@ -49,7 +55,7 @@ func TestScriptGolden(t *testing.T) {
 }
 
 func TestEveryScriptReplacesTheWholeTableInOneTransaction(t *testing.T) {
-	for _, script := range []string{Base(testUID), render(testUID, contents{targets: targets("10.0.0.5:80")})} {
+	for _, script := range []string{Base(testUID, nil, nil), render(testUID, contents{targets: targets("10.0.0.5:80")})} {
 		lines := strings.SplitN(script, "\n", 4)
 		// add makes the delete work when there is no table yet; the delete
 		// takes whatever is there, chains, sets and elements of others
@@ -71,7 +77,7 @@ func TestAnIPv6TargetGoesIntoItsOwnSet(t *testing.T) {
 }
 
 func TestOnlyTheConnectorUserIsSentToTheFilter(t *testing.T) {
-	script := Base(4242)
+	script := Base(4242, nil, nil)
 
 	require.Contains(t, script, "\t\ttype filter hook output priority filter - 10; policy accept;\n\t\tmeta skuid 4242 jump connector\n\t}\n")
 	require.Equal(t, 1, strings.Count(script, "skuid"))

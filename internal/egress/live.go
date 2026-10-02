@@ -48,37 +48,43 @@ type Live struct {
 	Resolvers     []netip.Addr
 	RejectedLocal Counter // packets to an address of the node
 	Rejected      Counter // packets to anything else no rule allows
+	// Differences says what of the table, but the elements of its sets, is
+	// not as pco loads it; a table with any is not to be trusted.
+	Differences []string
 }
 
-// ReadLive reads the table loaded on the node, or returns ErrNotLoaded.
-func ReadLive(ctx context.Context, n Nft) (Live, error) {
+// ReadLive reads the table loaded on the node, or returns ErrNotLoaded, or
+// ErrUnreadable for a listing it cannot read.
+func ReadLive(ctx context.Context, n Nft, connectorUID uint32) (Live, error) {
 	l, err := list(ctx, n)
 	if err != nil {
 		return Live{}, err
 	}
 	c, unreadable := l.contents()
 	if len(unreadable) > 0 {
-		return Live{}, errors.New(unreadable[0])
+		return Live{}, fmt.Errorf("%w: %s", ErrUnreadable, unreadable[0])
 	}
 	return Live{
 		Targets: c.targets, Resolvers: c.resolvers,
 		RejectedLocal: l.counters[counterLocal], Rejected: l.counters[counterOther],
+		Differences: l.differences(connectorUID, nil),
 	}, nil
 }
 
-// Load loads Base unless the table is there with the chains and rules it
-// should have: the sets of a table the daemon filled stay as they are. It
-// reports whether it loaded the table.
-func Load(ctx context.Context, n Nft, connectorUID uint32) (bool, error) {
+// Load loads Base with the resolvers and blocked addresses given, unless the
+// table is there with everything but the elements as it should be: the sets
+// of a table the daemon filled stay as they are. It reports whether it loaded
+// the table.
+func Load(ctx context.Context, n Nft, connectorUID uint32, resolvers, blocked []netip.Addr) (bool, error) {
 	l, err := list(ctx, n)
 	switch {
-	case errors.Is(err, ErrNotLoaded), errors.Is(err, errUnreadable):
+	case errors.Is(err, ErrNotLoaded), errors.Is(err, ErrUnreadable):
 	case err != nil:
 		return false, err
 	case len(l.differences(connectorUID, nil)) == 0:
 		return false, nil
 	}
-	if err := n.Apply(ctx, Base(connectorUID)); err != nil {
+	if err := n.Apply(ctx, Base(connectorUID, resolvers, blocked)); err != nil {
 		return false, fmt.Errorf("loading the egress table: %w", err)
 	}
 	return true, nil
@@ -114,8 +120,9 @@ func Drop(ctx context.Context, n Nft, addr netip.Addr) (int, error) {
 	return len(tg) + len(rs), nil
 }
 
-// errUnreadable is a listing that is not what nft prints.
-var errUnreadable = errors.New("the listing of the egress table cannot be read")
+// ErrUnreadable is a listing that is not what nft prints for the table. nft
+// 1.0.6 can print one for a table with flags.
+var ErrUnreadable = errors.New("the listing of the egress table cannot be read")
 
 func list(ctx context.Context, n Nft) (*listed, error) {
 	raw, err := n.List(ctx)
@@ -129,6 +136,7 @@ func list(ctx context.Context, n Nft) (*listed, error) {
 // with their hooks, the rules of each chain in order and in a canonical form,
 // the sets with their elements, the counters, and whatever else is there.
 type listed struct {
+	flags      string // of the table, as listed; dormant is one
 	chains     map[string]listedChain
 	rules      map[string][]string
 	sets       map[string]listedSet
@@ -173,10 +181,10 @@ func parseListing(raw []byte) (*listed, error) {
 		Nftables []map[string]json.RawMessage `json:"nftables"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("%w: %w", errUnreadable, err)
+		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
 	if doc.Nftables == nil {
-		return nil, fmt.Errorf("%w: no nftables array", errUnreadable)
+		return nil, fmt.Errorf("%w: no nftables array", ErrUnreadable)
 	}
 	l := &listed{
 		chains: map[string]listedChain{}, rules: map[string][]string{},
@@ -185,7 +193,7 @@ func parseListing(raw []byte) (*listed, error) {
 	for _, entry := range doc.Nftables {
 		for kind, body := range entry {
 			if err := l.add(kind, body); err != nil {
-				return nil, fmt.Errorf("%w: %s: %w", errUnreadable, kind, err)
+				return nil, fmt.Errorf("%w: %s: %w", ErrUnreadable, kind, err)
 			}
 		}
 	}
@@ -197,12 +205,22 @@ func (l *listed) add(kind string, body json.RawMessage) error {
 		Name  string          `json:"name"`
 		Chain string          `json:"chain"`
 		Expr  json.RawMessage `json:"expr"`
+		Flags json.RawMessage `json:"flags"`
 	}
 	if err := json.Unmarshal(body, &named); err != nil {
 		return err
 	}
 	switch kind {
-	case "metainfo", "table":
+	case "metainfo":
+		return nil
+	case "table":
+		// Any flag counts, whatever it is called: nft 1.0.6 prints the
+		// dormant flag as some other word.
+		switch f := compactJSON(named.Flags); f {
+		case "?", `""`, "[]", "null", "0":
+		default:
+			l.flags = f
+		}
 		return nil
 	case "chain":
 		var c listedChain
@@ -247,7 +265,12 @@ func setType(name string) (string, bool) {
 // chains, their rules and sets and counters, and, unless want is nil, the
 // elements of its sets.
 func (l *listed) differences(uid uint32, want *contents) []string {
-	d := slices.Clone(l.unexpected)
+	var d []string
+	if l.flags != "" {
+		// A dormant table holds every rule and filters nothing.
+		d = append(d, "the table has flags "+l.flags)
+	}
+	d = append(d, l.unexpected...)
 	for _, name := range slices.Sorted(maps.Keys(l.chains)) {
 		if name != chainOutput && name != chainConnector {
 			d = append(d, "an unexpected chain "+name)

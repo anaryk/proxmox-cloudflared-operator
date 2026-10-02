@@ -1,0 +1,15 @@
+The egress filter is on, but its table is not as pco loads it, and the connectors may not be confined. pco egress on loads it again:
+  the table has flags "dormant"
+
+Targets:
+  10.0.0.5:80
+  10.0.0.5:8080
+  10.0.0.6:443
+Resolvers:
+  192.168.1.1
+
+Rejected since the table was loaded:
+  to addresses of this node  3 packets
+  to anything else           12 packets
+
+Blocked on this node: none

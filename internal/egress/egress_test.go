@@ -39,7 +39,7 @@ func TestSetWithNoTargetsLoadsTheEmptySets(t *testing.T) {
 
 	require.NoError(t, f.Set(t.Context(), nil))
 
-	require.Equal(t, []string{Base(testUID)}, n.applied())
+	require.Equal(t, []string{Base(testUID, nil, nil)}, n.applied())
 }
 
 func TestSetTakesTheZoneAndTheIPv4MappingOffAnAddress(t *testing.T) {
@@ -289,7 +289,7 @@ func TestRemoveBeforeAnySetLoadsTheWholeTable(t *testing.T) {
 
 	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
 
-	require.Equal(t, []string{Base(testUID)}, n.applied())
+	require.Equal(t, []string{Base(testUID, nil, nil)}, n.applied())
 }
 
 func TestVerifyAcceptsTheTableLastApplied(t *testing.T) {
@@ -684,12 +684,60 @@ func TestVerifyReturnsAFailureToListAsItIs(t *testing.T) {
 	require.NotErrorIs(t, err, ErrChanged)
 }
 
-func TestVerifyRefusesWhatIsNoListing(t *testing.T) {
-	f, n, _, _ := newTestFilter(t)
-	n.setLive([]byte("Error: something"))
+// dormant returns the listing with flags on its table, written as an nft of
+// the given version writes the dormant flag: 1.0.6 prints it wrongly.
+func dormant(t *testing.T, version string) listing {
+	t.Helper()
+	spelling := map[string]any{"1.1.3": "dormant", "1.0.6": "rejected_local", "list": []any{"dormant"}}[version]
+	listed := version
+	if version == "list" {
+		listed = "1.1.3"
+	}
+	return realListing(t, listed).edit(t, func(l listing) listing {
+		for _, e := range l {
+			if table, ok := e["table"].(map[string]any); ok {
+				table["flags"] = spelling
+			}
+		}
+		return l
+	})
+}
 
-	err := f.Verify(t.Context())
+func TestVerifyReportsADormantTable(t *testing.T) {
+	for _, version := range []string{"1.1.3", "1.0.6", "list"} {
+		t.Run(version, func(t *testing.T) {
+			f, n, r, _ := newTestFilter(t)
+			r.set(addr("192.168.1.1"))
+			require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443")))
+			n.setLive(dormant(t, version).bytes(t))
 
-	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrChanged)
+			err := f.Verify(t.Context())
+
+			require.ErrorIs(t, err, ErrChanged)
+			require.ErrorContains(t, err, "the table has flags")
+		})
+	}
+}
+
+func TestVerifyTakesAListingItCannotReadForAChange(t *testing.T) {
+	// nft 1.0.6 can print a dormant table as a listing that is no JSON.
+	for name, raw := range map[string]string{
+		"cut short":   `{"nftables": [{"table": {"family": "inet", "name": "pco_egress", "handle": 1, "flags": `,
+		"not json":    "Error: something",
+		"no nftables": `{"other": []}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, n, _, _ := newTestFilter(t)
+			require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80")))
+			n.setLive([]byte(raw))
+
+			err := f.Verify(t.Context())
+
+			require.ErrorIs(t, err, ErrChanged)
+			require.ErrorContains(t, err, "cannot be read")
+			n.reset()
+			require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80")))
+			require.Len(t, n.applied(), 1, "the table is applied again")
+		})
+	}
 }
