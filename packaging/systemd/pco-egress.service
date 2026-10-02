@@ -1,0 +1,14 @@
+[Unit]
+Description=pco egress filter of the cloudflared connectors
+Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
+# The connectors order themselves after this unit: a Before= here cannot name
+# the template they come from.
+Before=pco.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pco egress load
+
+[Install]
+WantedBy=multi-user.target

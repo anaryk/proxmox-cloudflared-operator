@@ -74,6 +74,23 @@ func TestStatusOfAReadyConnector(t *testing.T) {
 	require.Equal(t, Status{TunnelID: idA, Active: true, Ready: true, Connections: 4, MetricsAddr: f.addr}, got)
 }
 
+func TestStatusReadsEnvFilesWithAndWithoutTheEdgeIPVersion(t *testing.T) {
+	for name, rest := range map[string]string{
+		"an env file of an earlier version": "",
+		"an env file of this version":       "EDGE_IP_VERSION=auto\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newStatusFixture(t, answer(http.StatusOK, `{"readyConnections":2}`))
+			writeFile(t, f.dir, idA+".env", "METRICS_ADDR="+f.addr+"\n"+rest)
+
+			got, err := f.m.Status(t.Context(), idA)
+
+			require.NoError(t, err)
+			require.Equal(t, Status{TunnelID: idA, Active: true, Ready: true, Connections: 2, MetricsAddr: f.addr}, got)
+		})
+	}
+}
+
 func TestStatusOfAConnectorThatIsNotReady(t *testing.T) {
 	f := newStatusFixture(t, answer(http.StatusServiceUnavailable, `{"status":503,"readyConnections":0}`))
 

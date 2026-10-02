@@ -1,22 +1,29 @@
 [Unit]
 Description=pco cloudflared connector (tunnel %i)
 Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
-After=network-online.target pco-netns.service
+Requires=pco-egress.service
+After=network-online.target pco-netns.service pco-egress.service
 Wants=network-online.target
 
 [Service]
 Type=notify
-DynamicUser=yes
+User=pco-connector
+Group=pco-connector
 LoadCredential=token:/var/lib/pco/tunnels/%i.token
+LoadCredential=config.yml:/var/lib/pco/tunnels/%i.yml
 EnvironmentFile=/var/lib/pco/tunnels/%i.env
-ExecStart=/usr/bin/cloudflared --no-autoupdate --metrics ${METRICS_ADDR} tunnel run --token-file %d/token
+ExecStart=/usr/bin/cloudflared --config %d/config.yml --no-autoupdate --metrics ${METRICS_ADDR} --edge-ip-version ${EDGE_IP_VERSION} --grace-period 30s tunnel run --token-file %d/token
 Restart=always
 RestartSec=5
 TimeoutStartSec=infinity
+TimeoutStopSec=45
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+RemoveIPC=yes
+RestrictSUIDSGID=yes
+InaccessiblePaths=-/etc/cloudflared -/usr/local/etc/cloudflared -/root/.cloudflared
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

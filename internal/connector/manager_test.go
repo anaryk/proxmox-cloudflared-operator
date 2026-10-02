@@ -17,6 +17,7 @@ import (
 
 const (
 	idD = "44444444-4444-4444-8444-444444444444"
+	idE = "55555555-5555-4555-8555-555555555555"
 
 	// idUpper is a valid id in the wrong case.
 	idUpper = "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC"
@@ -40,11 +41,14 @@ func TestEnsureWritesFilesAndEnablesTheUnit(t *testing.T) {
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
 
 	require.Equal(t, "token-1", readFile(t, dir, idA+".token"))
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\n", readFile(t, dir, idA+".env"))
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"))
+	require.Equal(t, "# Written by pco. A configuration of its own keeps cloudflared from reading one of the host.\n"+
+		"no-autoupdate: true\n", readFile(t, dir, idA+".yml"))
 	require.Equal(t, os.FileMode(0o700), fileMode(t, dir))
 	require.Equal(t, os.FileMode(0o600), fileMode(t, filepath.Join(dir, idA+".token")))
 	require.Equal(t, os.FileMode(0o644), fileMode(t, filepath.Join(dir, idA+".env")))
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env"}, listDir(t, dir), "no temporary file is left behind")
+	require.Equal(t, os.FileMode(0o600), fileMode(t, filepath.Join(dir, idA+".yml")))
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml"}, listDir(t, dir), "no temporary file is left behind")
 	require.Equal(t, []string{"IsActive " + unitA, "EnableNow " + unitA}, sd.calls)
 }
 
@@ -53,6 +57,7 @@ func TestEnsureTwiceWithTheSameInputChangesNothing(t *testing.T) {
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
 	tokenBefore := statFile(t, dir, idA+".token")
 	envBefore := statFile(t, dir, idA+".env")
+	configBefore := statFile(t, dir, idA+".yml")
 	sd.reset()
 
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
@@ -60,7 +65,65 @@ func TestEnsureTwiceWithTheSameInputChangesNothing(t *testing.T) {
 	require.Empty(t, sd.changes())
 	require.True(t, os.SameFile(tokenBefore, statFile(t, dir, idA+".token")), "token file was rewritten")
 	require.True(t, os.SameFile(envBefore, statFile(t, dir, idA+".env")), "env file was rewritten")
-	require.Len(t, listDir(t, dir), 2)
+	require.True(t, os.SameFile(configBefore, statFile(t, dir, idA+".yml")), "config file was rewritten")
+	require.Len(t, listDir(t, dir), 3)
+}
+
+func TestEnsureRestartsAConnectorWhoseConfigFileChanged(t *testing.T) {
+	for name, change := range map[string]func(t *testing.T, path string){
+		"edited": func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("url: http://10.0.0.1:8006\n"), 0o600))
+		},
+		"removed": func(t *testing.T, path string) { require.NoError(t, os.Remove(path)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, sd, dir := newTestManager(t)
+			require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+			want := readFile(t, dir, idA+".yml")
+			change(t, filepath.Join(dir, idA+".yml"))
+			sd.reset()
+
+			require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+
+			require.Equal(t, want, readFile(t, dir, idA+".yml"))
+			require.Equal(t, []string{"Restart " + unitA}, sd.changes())
+			require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
+		})
+	}
+}
+
+func TestEnsureBringsAConnectorOfAnEarlierVersionInLineWithOneRestart(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	// What the manager wrote before the connectors had a configuration of
+	// their own and an explicit edge IP version.
+	writeFile(t, dir, idA+".token", "token-1")
+	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\n")
+	sd.active[unitA] = true
+
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"), "the port stays")
+	require.FileExists(t, filepath.Join(dir, idA+".yml"))
+	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
+	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
+
+	sd.reset()
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	require.Empty(t, sd.changes())
+}
+
+func TestEnsureMarksTheConfigPendingBeforeReplacingIt(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
+	config := filepath.Join(dir, idA+".yml")
+	require.NoError(t, os.Remove(config))
+	require.NoError(t, os.MkdirAll(filepath.Join(config, "x"), 0o700))
+	sd.reset()
+
+	require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-1"), idA+".yml")
+
+	require.FileExists(t, filepath.Join(dir, pendingOf(idA)))
+	require.Empty(t, sd.calls)
 }
 
 func TestEnsureRestartsOnlyOnTokenChange(t *testing.T) {
@@ -251,7 +314,7 @@ func TestEnsureAllocatesStablePortsFromTheLowestFree(t *testing.T) {
 
 func TestEnsureKeepsAnExistingPort(t *testing.T) {
 	m, _, dir := newTestManager(t)
-	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\n")
+	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n")
 	before := statFile(t, dir, idA+".env")
 
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
@@ -268,7 +331,7 @@ func TestEnsureKeepsThePortWhenOnlyTheAddressIsOdd(t *testing.T) {
 
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
 
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\n", readFile(t, dir, idA+".env"))
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"))
 }
 
 func TestEnsureDoesNotTouchTheMalformedEnvFileOfAnotherTunnel(t *testing.T) {
@@ -381,7 +444,7 @@ func TestPruneRemovesTheUnwantedConnectorAndKeepsTheWanted(t *testing.T) {
 	require.NoError(t, m.Prune(t.Context(), []string{idA}))
 
 	require.Equal(t, []string{"ListUnits pco-cloudflared@*.service", "DisableNow " + unitB}, sd.calls)
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env"}, listDir(t, dir))
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml"}, listDir(t, dir))
 	require.True(t, sd.active[unitA])
 	require.False(t, sd.active[unitB])
 }
@@ -405,6 +468,7 @@ func TestPruneFindsConnectorsByFilesAndByUnits(t *testing.T) {
 	sd.loaded = []string{unitC}                                     // unit without files
 	writeFile(t, dir, idD+".token", "token-d")
 	writeFile(t, dir, idD+".env", "METRICS_ADDR=127.0.0.1:20301\n")
+	writeFile(t, dir, idE+".yml", "no-autoupdate: true\n") // config only
 
 	require.NoError(t, m.Prune(t.Context(), []string{idD}))
 
@@ -412,6 +476,7 @@ func TestPruneFindsConnectorsByFilesAndByUnits(t *testing.T) {
 		"DisableNow " + unitA,
 		"DisableNow " + unitB,
 		"DisableNow " + unitC,
+		"DisableNow " + UnitName(idE),
 	}, sd.changes())
 	require.ElementsMatch(t, []string{idD + ".token", idD + ".env"}, listDir(t, dir))
 }
@@ -426,7 +491,7 @@ func TestPruneKeepsTheFilesOfAUnitThatWillNotStop(t *testing.T) {
 
 	require.ErrorIs(t, err, errBoom)
 	require.ErrorContains(t, err, unitA)
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env"}, listDir(t, dir), "the connector that still runs keeps its files")
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml"}, listDir(t, dir), "the connector that still runs keeps its files")
 	require.Contains(t, sd.calls, "DisableNow "+unitB, "one failure does not stop the others")
 
 	delete(sd.fail, "DisableNow "+unitA)
@@ -474,7 +539,7 @@ func TestPruneLeavesNamesThatAreNoTunnelAlone(t *testing.T) {
 	require.NotContains(t, err.Error(), "README")
 	require.Equal(t, []string{"DisableNow " + unitB}, sd.changes(), "only a real tunnel id reaches systemd")
 	require.ElementsMatch(t, []string{
-		idA + ".token", idA + ".env", "foo.token", "notes.env", "README",
+		idA + ".token", idA + ".env", idA + ".yml", "foo.token", "notes.env", "README",
 	}, listDir(t, dir))
 }
 
@@ -529,10 +594,12 @@ func portOf(t *testing.T, dir, id string) int {
 func TestEnsureRepairsModesWithoutRewritingOrRestarting(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-1"))
-	token, env := filepath.Join(dir, idA+".token"), filepath.Join(dir, idA+".env")
+	token, env, config := filepath.Join(dir, idA+".token"), filepath.Join(dir, idA+".env"), filepath.Join(dir, idA+".yml")
 	tokenBefore, envBefore := statFile(t, dir, idA+".token"), statFile(t, dir, idA+".env")
+	configBefore := statFile(t, dir, idA+".yml")
 	require.NoError(t, os.Chmod(token, 0o644))
 	require.NoError(t, os.Chmod(env, 0o600))
+	require.NoError(t, os.Chmod(config, 0o644))
 	require.NoError(t, os.Chmod(dir, 0o755))
 	sd.reset()
 
@@ -540,11 +607,13 @@ func TestEnsureRepairsModesWithoutRewritingOrRestarting(t *testing.T) {
 
 	require.Equal(t, os.FileMode(0o600), fileMode(t, token))
 	require.Equal(t, os.FileMode(0o644), fileMode(t, env))
+	require.Equal(t, os.FileMode(0o600), fileMode(t, config))
 	require.Equal(t, os.FileMode(0o700), fileMode(t, dir))
 	require.True(t, os.SameFile(tokenBefore, statFile(t, dir, idA+".token")), "token file was rewritten")
 	require.True(t, os.SameFile(envBefore, statFile(t, dir, idA+".env")), "env file was rewritten")
+	require.True(t, os.SameFile(configBefore, statFile(t, dir, idA+".yml")), "config file was rewritten")
 	require.Empty(t, sd.changes(), "a mode alone is no reason to restart")
-	require.Len(t, listDir(t, dir), 2)
+	require.Len(t, listDir(t, dir), 3)
 }
 
 func TestEnsureRepairsTheModeOfADirectoryThatExists(t *testing.T) {
@@ -571,7 +640,7 @@ func TestEnsureRemovesStaleTemporaryFiles(t *testing.T) {
 
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
 
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", "plain.tmp", ".hidden"}, listDir(t, dir))
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml", "plain.tmp", ".hidden"}, listDir(t, dir))
 }
 
 func TestPruneRemovesStaleTemporaryFiles(t *testing.T) {
@@ -584,7 +653,7 @@ func TestPruneRemovesStaleTemporaryFiles(t *testing.T) {
 
 	require.NoError(t, m.Prune(t.Context(), []string{idA}), "a kept tunnel's leftovers go too")
 
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", "plain.tmp"}, listDir(t, dir))
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml", "plain.tmp"}, listDir(t, dir))
 }
 
 func TestPruneRejectsAnInvalidIDInKeepBeforeRemovingAnything(t *testing.T) {
@@ -605,7 +674,7 @@ func TestPruneRejectsAnInvalidIDInKeepBeforeRemovingAnything(t *testing.T) {
 
 			require.ErrorContains(t, err, "invalid tunnel id")
 			require.Empty(t, sd.calls)
-			require.Len(t, listDir(t, dir), 5)
+			require.Len(t, listDir(t, dir), 7)
 		})
 	}
 }
@@ -624,7 +693,7 @@ func TestDotNamesAreInvisibleToPruneAndPortAllocation(t *testing.T) {
 	require.NoError(t, m.Prune(t.Context(), []string{idA}), "hidden names are not reported")
 
 	require.Empty(t, sd.changes())
-	require.ElementsMatch(t, append([]string{idA + ".token", idA + ".env"}, hidden...), listDir(t, dir))
+	require.ElementsMatch(t, append([]string{idA + ".token", idA + ".env", idA + ".yml"}, hidden...), listDir(t, dir))
 }
 
 func TestPruneRemovesThePendingMarker(t *testing.T) {
@@ -637,7 +706,7 @@ func TestPruneRemovesThePendingMarker(t *testing.T) {
 
 	require.NoError(t, m.Prune(t.Context(), []string{idA}))
 
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env"}, listDir(t, dir))
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml"}, listDir(t, dir))
 }
 
 func TestEnsureFailsWhenNoPortIsLeft(t *testing.T) {
@@ -651,22 +720,27 @@ func TestEnsureFailsWhenNoPortIsLeft(t *testing.T) {
 
 	require.ErrorContains(t, err, "no free metrics port")
 	require.Empty(t, sd.calls)
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env"}, listDir(t, dir))
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml"}, listDir(t, dir))
 }
 
 func TestEnsureReadsQuotedAddressesLikeSystemdDoes(t *testing.T) {
+	const edge = "\nEDGE_IP_VERSION=auto\n"
 	tests := []struct {
 		name     string
 		content  string
 		wantPort int
 		rewrite  bool
 	}{
-		{"double quotes", `METRICS_ADDR="127.0.0.1:20450"` + "\n", 20450, false},
-		{"single quotes", `METRICS_ADDR='127.0.0.1:20450'` + "\n", 20450, false},
-		{"quotes and a comment", "# hand made\nMETRICS_ADDR=\"127.0.0.1:20450\"\n", 20450, false},
-		{"quoted other host", `METRICS_ADDR="0.0.0.0:20450"` + "\n", 20450, true},
-		{"quotes that do not match", `METRICS_ADDR="127.0.0.1:20450'` + "\n", 20300, true},
-		{"quote only at the start", `METRICS_ADDR="127.0.0.1:20450` + "\n", 20300, true},
+		{"double quotes", `METRICS_ADDR="127.0.0.1:20450"` + edge, 20450, false},
+		{"single quotes", `METRICS_ADDR='127.0.0.1:20450'` + edge, 20450, false},
+		{"quotes and a comment", "# hand made\nMETRICS_ADDR=\"127.0.0.1:20450\"" + edge, 20450, false},
+		{"quoted other host", `METRICS_ADDR="0.0.0.0:20450"` + edge, 20450, true},
+		{"quotes that do not match", `METRICS_ADDR="127.0.0.1:20450'` + edge, 20300, true},
+		{"quote only at the start", `METRICS_ADDR="127.0.0.1:20450` + edge, 20300, true},
+		{"edge IP version in quotes", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=\"auto\"\n", 20450, false},
+		{"another edge IP version", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=4\n", 20450, true},
+		{"a later edge IP version wins", "METRICS_ADDR=127.0.0.1:20450" + edge + "EDGE_IP_VERSION=6\n", 20450, true},
+		{"no edge IP version", "METRICS_ADDR=127.0.0.1:20450\n", 20450, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -692,15 +766,15 @@ func TestEnsureReadsQuotedAddressesLikeSystemdDoes(t *testing.T) {
 func TestEnsureRestartsAnActiveUnitWhoseEnvFileIsRewritten(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\n")
+	writeFile(t, dir, idA+".env", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n")
 	sd.reset()
 
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
 	require.Empty(t, sd.changes(), "an address the manager would have written is left alone")
 
-	writeFile(t, dir, idA+".env", "METRICS_ADDR=10.0.0.1:20450\n")
+	writeFile(t, dir, idA+".env", "METRICS_ADDR=10.0.0.1:20450\nEDGE_IP_VERSION=auto\n")
 	require.NoError(t, m.Ensure(t.Context(), idA, "token-a"))
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\n", readFile(t, dir, idA+".env"))
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"))
 	require.Equal(t, []string{"Restart " + unitA}, sd.changes(), "the process still holds the old address")
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
 
@@ -847,5 +921,5 @@ func TestPruneKeepsTheMarkerOfAKeptTunnel(t *testing.T) {
 	require.NoError(t, m.Prune(t.Context(), []string{idA}))
 
 	require.Equal(t, []string{"DisableNow " + unitB}, sd.changes())
-	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", pendingOf(idA)}, listDir(t, dir))
+	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml", pendingOf(idA)}, listDir(t, dir))
 }

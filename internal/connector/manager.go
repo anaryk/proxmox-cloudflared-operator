@@ -1,7 +1,7 @@
 // Package connector keeps one cloudflared systemd unit running per tunnel. A
-// tunnel's token and metrics address live in files the unit reads, so the
-// manager's job is to keep those files and the unit's state in line with the
-// tunnels it is told about.
+// tunnel's token, metrics address and configuration live in files the unit
+// reads, so the manager's job is to keep those files and the unit's state in
+// line with the tunnels it is told about.
 package connector
 
 import (
@@ -50,9 +50,9 @@ type Manager struct {
 	stuck  map[string]struct{}     // stale temporary files that could not be removed, by path
 }
 
-// NewManager returns a manager that keeps the token and env files of the
-// connectors in dir and probes their metrics endpoints with httpc. A nil httpc
-// means a default client.
+// NewManager returns a manager that keeps the token, env and config files of
+// the connectors in dir and probes their metrics endpoints with httpc. A nil
+// httpc means a default client.
 func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) *Manager {
 	if httpc == nil {
 		httpc = &http.Client{}
@@ -79,9 +79,9 @@ func checkID(id string) error {
 func (m *Manager) path(name string) string { return filepath.Join(m.dir, name) }
 
 // Ensure makes the connector for a tunnel run with the given token. It writes
-// the token and env files when their content differs, starts a unit that does
-// not run, and restarts a running unit whose files changed, since cloudflared
-// reads them only at start.
+// the token, env and config files when their content differs, starts a unit
+// that does not run, and restarts a running unit whose files changed, since
+// cloudflared reads them only at start.
 //
 // A change is recorded in a marker file before the first file is replaced and
 // the marker is removed only after the start or restart was queued, so that a
@@ -141,18 +141,19 @@ func (m *Manager) sweepStaleTemps() {
 	m.stuck = failing
 }
 
-// writeFiles brings the env and token file of a tunnel to the wanted content
-// and mode, and reports whether it replaced one of them. Their content is
-// replaced only when it differs; a mode is fixed in place and is no change
+// writeFiles brings the env, config and token file of a tunnel to the wanted
+// content and mode, and reports whether it replaced one of them. Their content
+// is replaced only when it differs; a mode is fixed in place and is no change
 // that needs a restart.
 func (m *Manager) writeFiles(id, token string) (wrote bool, err error) {
-	envPath, tokenPath := m.path(envFile(id)), m.path(tokenFile(id))
+	envPath, configPath, tokenPath := m.path(envFile(id)), m.path(configFile(id)), m.path(tokenFile(id))
 	env, replaceEnv, err := m.wantedEnv(id)
 	if err != nil {
 		return false, err
 	}
+	replaceConfig := !hasContent(configPath, []byte(configContent))
 	replaceToken := !hasContent(tokenPath, []byte(token))
-	if replaceEnv || replaceToken {
+	if replaceEnv || replaceConfig || replaceToken {
 		// What was queued for an earlier marker says nothing about this
 		// change, however this call ends: it may fail before it restarts, and
 		// the next one must not take the marker for one that was dealt with.
@@ -168,6 +169,7 @@ func (m *Manager) writeFiles(id, token string) (wrote bool, err error) {
 		replace bool
 	}{
 		{envPath, env, envMode, replaceEnv},
+		{configPath, []byte(configContent), configMode, replaceConfig},
 		{tokenPath, []byte(token), tokenMode, replaceToken},
 	} {
 		if f.replace {
@@ -179,23 +181,25 @@ func (m *Manager) writeFiles(id, token string) (wrote bool, err error) {
 			return false, fmt.Errorf("writing %s: %w", filepath.Base(f.path), err)
 		}
 	}
-	return replaceEnv || replaceToken, nil
+	return replaceEnv || replaceConfig || replaceToken, nil
 }
 
 // wantedEnv returns the content of the env file of a tunnel and whether the
 // file has to be replaced to hold it. An address that is already there keeps
 // its port, so that a tunnel's port does not move between runs; it is only
 // replaced when it does not name the loopback address. A file that says the
-// same address in other words, such as with quotes, stays as it is.
+// same in other words, such as with quotes, stays as it is; one written before
+// the edge IP version was set is replaced.
 func (m *Manager) wantedEnv(id string) (data []byte, replace bool, err error) {
-	addr, port, err := readMetricsAddr(m.path(envFile(id)))
-	if err != nil {
+	values, readErr := readEnv(m.path(envFile(id)))
+	addr, port, err := metricsOf(values)
+	if readErr != nil || err != nil {
 		if port, err = m.freePort(id); err != nil {
 			return nil, false, err
 		}
 		return envContent(port), true, nil
 	}
-	return envContent(port), addr != metricsAddr(port), nil
+	return envContent(port), addr != metricsAddr(port) || values[edgeKey] != edgeIPVersion, nil
 }
 
 // freePort returns the lowest port from firstPort that no env file of another
@@ -232,11 +236,11 @@ func (m *Manager) freePort(id string) (int, error) {
 }
 
 // Prune stops and removes the connectors of tunnels not in keep. It finds them
-// by their token and env files and by their loaded units, so that a connector
-// is removed even when one of the two is gone. An empty keep removes every
-// connector; the caller decides when it knows enough to ask for that. An id in
-// keep that is no tunnel id is an error and nothing is removed, since it could
-// be a tunnel that was meant to stay.
+// by their files and by their loaded units, so that a connector is removed
+// even when some of them are gone. An empty keep removes every connector; the
+// caller decides when it knows enough to ask for that. An id in keep that is
+// no tunnel id is an error and nothing is removed, since it could be a tunnel
+// that was meant to stay.
 //
 // A failure on one connector does not stop the others; the errors come back
 // joined. A connector whose stop could not be queued keeps its files, since
@@ -295,9 +299,12 @@ func (m *Manager) discover(ctx context.Context) ([]string, []error) {
 			}
 			continue
 		}
-		id, ok := strings.CutSuffix(name, tokenExt)
-		if !ok {
-			id, ok = strings.CutSuffix(name, envExt)
+		var id string
+		ok := false
+		for _, ext := range []string{tokenExt, envExt, configExt} {
+			if id, ok = strings.CutSuffix(name, ext); ok {
+				break
+			}
 		}
 		if !ok || hidden(name) {
 			continue
@@ -333,7 +340,7 @@ func (m *Manager) remove(ctx context.Context, id string) error {
 		return fmt.Errorf("stopping %s: %w", unit, err)
 	}
 	var errs []error
-	for _, name := range []string{pendingFile(id), envFile(id), tokenFile(id)} {
+	for _, name := range []string{pendingFile(id), envFile(id), configFile(id), tokenFile(id)} {
 		if err := os.Remove(m.path(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("removing %s: %w", m.path(name), err))
 		}

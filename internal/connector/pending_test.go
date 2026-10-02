@@ -76,7 +76,7 @@ func TestEnsureRestartsAfterAnEnvFileWasReplacedAndTheTokenWriteFailed(t *testin
 	require.NoError(t, os.Remove(token))
 	require.NoError(t, os.MkdirAll(filepath.Join(token, "x"), 0o700))
 	require.ErrorContains(t, m.Ensure(t.Context(), idA, "token-2"), "writing "+idA+".token")
-	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\n", readFile(t, dir, idA+".env"), "the env file was replaced first")
+	require.Equal(t, "METRICS_ADDR=127.0.0.1:20300\nEDGE_IP_VERSION=auto\n", readFile(t, dir, idA+".env"), "the env file was replaced first")
 
 	// The token is what it was, so that the next call replaces no file.
 	require.NoError(t, os.RemoveAll(token))

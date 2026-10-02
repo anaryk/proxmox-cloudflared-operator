@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 )
 
 // fakeSystemctl stands in for /usr/bin/systemctl. It appends its arguments to
@@ -234,16 +236,69 @@ func parseUnitFile(t *testing.T, path string) unitFile {
 func TestUnitFileMatchesWhatTheManagerWrites(t *testing.T) {
 	u := parseUnitFile(t, filepath.Join("..", "..", "packaging", "systemd", "pco-cloudflared@.service"))
 
-	require.Equal(t, []string{"yes"}, u["Service"]["DynamicUser"])
 	require.Equal(t, []string{"notify"}, u["Service"]["Type"])
-	require.Equal(t, []string{"token:/var/lib/pco/tunnels/%i.token"}, u["Service"]["LoadCredential"])
+	require.Equal(t, []string{
+		"token:/var/lib/pco/tunnels/%i.token",
+		"config.yml:/var/lib/pco/tunnels/%i.yml",
+	}, u["Service"]["LoadCredential"], "the directory is root's alone, so the files reach the connector as credentials")
 	require.Equal(t, []string{"/var/lib/pco/tunnels/%i.env"}, u["Service"]["EnvironmentFile"])
-	require.Len(t, u["Service"]["ExecStart"], 1)
-	require.Contains(t, u["Service"]["ExecStart"][0], "--token-file %d/token")
-	require.Contains(t, u["Service"]["ExecStart"][0], "--metrics ${"+metricsKey+"}")
+	require.Equal(t, []string{"/usr/bin/cloudflared --config %d/config.yml --no-autoupdate --metrics ${METRICS_ADDR}" +
+		" --edge-ip-version ${EDGE_IP_VERSION} --grace-period 30s tunnel run --token-file %d/token"}, u["Service"]["ExecStart"])
+	require.Equal(t, []string{"45"}, u["Service"]["TimeoutStopSec"], "longer than the grace period")
 	require.Equal(t, []string{"multi-user.target"}, u["Install"]["WantedBy"])
 
-	// The unit reads the files under the names the manager gives them.
+	// The unit reads the files and the variables under the names the
+	// manager gives them.
 	require.True(t, strings.HasSuffix(u["Service"]["LoadCredential"][0], "/"+tokenFile("%i")))
+	require.True(t, strings.HasSuffix(u["Service"]["LoadCredential"][1], "/"+configFile("%i")))
 	require.True(t, strings.HasSuffix(u["Service"]["EnvironmentFile"][0], "/"+envFile("%i")))
+	require.Contains(t, u["Service"]["ExecStart"][0], "${"+metricsKey+"}")
+	require.Contains(t, u["Service"]["ExecStart"][0], "${"+edgeKey+"}")
+}
+
+func TestTheConnectorRunsConfinedAsItsOwnUser(t *testing.T) {
+	u := parseUnitFile(t, filepath.Join("..", "..", "packaging", "systemd", "pco-cloudflared@.service"))
+
+	require.NotContains(t, u["Service"], "DynamicUser")
+	require.Equal(t, []string{egress.ConnectorUser}, u["Service"]["User"], "the user the egress filter matches")
+	require.Equal(t, []string{egress.ConnectorUser}, u["Service"]["Group"])
+	// What DynamicUser=yes implied.
+	for key, value := range map[string]string{
+		"RemoveIPC": "yes", "RestrictSUIDSGID": "yes", "ProtectSystem": "strict",
+		"ProtectHome": "yes", "PrivateTmp": "yes", "NoNewPrivileges": "yes",
+	} {
+		require.Equal(t, []string{value}, u["Service"][key], key)
+	}
+	require.Equal(t, []string{"-/etc/cloudflared -/usr/local/etc/cloudflared -/root/.cloudflared"}, u["Service"]["InaccessiblePaths"])
+	// A filter that failed to load stops the connector from starting.
+	require.Equal(t, []string{"pco-egress.service"}, u["Unit"]["Requires"])
+	require.Len(t, u["Unit"]["After"], 1)
+	require.Contains(t, strings.Fields(u["Unit"]["After"][0]), "pco-egress.service")
+}
+
+func TestTheEgressUnitLoadsTheFilterBeforeTheDaemon(t *testing.T) {
+	u := parseUnitFile(t, filepath.Join("..", "..", "packaging", "systemd", "pco-egress.service"))
+
+	require.Equal(t, []string{"oneshot"}, u["Service"]["Type"])
+	require.Equal(t, []string{"yes"}, u["Service"]["RemainAfterExit"])
+	require.Equal(t, []string{"/usr/bin/pco egress load"}, u["Service"]["ExecStart"])
+	require.Equal(t, []string{"pco.service"}, u["Unit"]["Before"], "the daemon's first table must not be replaced by the empty one")
+	require.Equal(t, []string{"multi-user.target"}, u["Install"]["WantedBy"])
+}
+
+func TestSysusersCreatesTheConnectorUser(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "packaging", "sysusers.d", "pco.conf"))
+	require.NoError(t, err)
+	var users [][]string
+	for line := range strings.Lines(string(b)) {
+		if f := strings.Fields(line); len(f) > 0 && !strings.HasPrefix(f[0], "#") {
+			users = append(users, f)
+		}
+	}
+
+	require.Len(t, users, 1)
+	// u creates the user and a group of the same name, with an id from the
+	// system range and no login.
+	require.Equal(t, []string{"u", egress.ConnectorUser, "-"}, users[0][:3])
+	require.Equal(t, []string{"-", "-"}, users[0][len(users[0])-2:])
 }
