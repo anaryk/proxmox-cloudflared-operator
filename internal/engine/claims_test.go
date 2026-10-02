@@ -60,7 +60,8 @@ func TestResolveClaimHandsTheHostnameToTheOwnerThatWaits(t *testing.T) {
 
 	require.NoError(t, e.eng.ResolveClaim(t.Context(), "WWW.Example.com.", "qemu/102"))
 
-	// Saved before the call returned, the holder last in line.
+	// Saved before the call returned; the holder keeps its place in line,
+	// which is where its claim began.
 	claim := wwwClaim(t, e)
 	require.Equal(t, "qemu/102", claim.Owner)
 	require.Equal(t, "uuid:102", claim.Identity)
@@ -68,7 +69,7 @@ func TestResolveClaimHandsTheHostnameToTheOwnerThatWaits(t *testing.T) {
 	require.Nil(t, claim.MissingSince)
 	require.Len(t, claim.Waiting, 1)
 	require.Equal(t, "qemu/101", claim.Waiting[0].Owner)
-	require.True(t, at.Equal(claim.Waiting[0].FirstSeen))
+	require.True(t, t0.Equal(claim.Waiting[0].FirstSeen))
 	require.Equal(t, []string{"www.example.com: the claim on www.example.com was moved from qemu/101 to qemu/102 by the admin; " +
 		"qemu/101 waits for it from now on"}, adminEvents(e, at.Add(-time.Nanosecond)))
 
@@ -144,18 +145,22 @@ func TestResolveClaimRefuses(t *testing.T) {
 		want              error
 		message           string
 	}{
-		{"a guest that does not claim the hostname", "www.example.com", "qemu/103", ErrNotFound,
-			"not found: qemu/103 does not claim www.example.com: it has no route for it and does not name it"},
-		{"a guest Proxmox does not list", "www.example.com", "qemu/104", ErrNotFound,
-			"not found: qemu/104 does not claim www.example.com: it has no route for it and does not name it"},
-		{"a manual route that does not claim it", "www.example.com", "manual/www", ErrNotFound,
-			"not found: manual/www does not claim www.example.com: it has no route for it and does not name it"},
+		{"a guest that does not claim the hostname", "www.example.com", "qemu/103", ErrRefused,
+			"refused: qemu/103 no longer claims www.example.com: it has no route for it and does not name it"},
+		{"a guest Proxmox does not list", "www.example.com", "qemu/104", ErrRefused,
+			"refused: qemu/104 no longer claims www.example.com: it has no route for it and does not name it"},
+		{"a manual route that does not claim it", "www.example.com", "manual/www", ErrRefused,
+			"refused: manual/www no longer claims www.example.com: it has no route for it and does not name it"},
 		{"the holder", "www.example.com", "qemu/101", ErrInvalid, "invalid request: qemu/101 holds www.example.com already"},
 		{"a hostname nobody holds", "nope.example.com", "qemu/102", ErrNotFound, "not found: nobody holds a claim on nope.example.com"},
 		{"no owner", "www.example.com", "web-2", ErrInvalid,
 			`invalid request: "web-2" is no owner: name a guest, as qemu/101 or lxc/200, or a manual route, as manual/<id>`},
 		{"a guest written another way", "www.example.com", "qemu/0102", ErrInvalid,
 			`invalid request: "qemu/0102" is no owner: name a guest, as qemu/101 or lxc/200, or a manual route, as manual/<id>`},
+		{"a manual route with white space", "www.example.com", "manual/ www", ErrInvalid,
+			`invalid request: "manual/ www" is no owner: name a guest, as qemu/101 or lxc/200, or a manual route, as manual/<id>`},
+		{"a manual route without an id", "www.example.com", "manual/", ErrInvalid,
+			`invalid request: "manual/" is no owner: name a guest, as qemu/101 or lxc/200, or a manual route, as manual/<id>`},
 		{"no hostname", "not a host", "qemu/102", ErrInvalid, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -179,41 +184,144 @@ func TestResolveClaimRefuses(t *testing.T) {
 
 // Whether an owner claims a hostname is known only from a listing of every
 // guest under a policy that could be read.
-func TestResolveClaimNeedsACompleteListing(t *testing.T) {
-	t.Run("before the first cycle", func(t *testing.T) {
+// Whether an owner claims a hostname is asked of the inventory afresh, when
+// the hostname is about to move: the last cycle may be a poll interval old.
+func TestResolveClaimLooksAtTheInventoryAgain(t *testing.T) {
+	t.Run("a fresh look is taken", func(t *testing.T) {
+		e := contested(t)
+		refreshes := e.inv.refreshes()
+
+		require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+
+		require.Equal(t, refreshes+1, e.inv.refreshes())
+	})
+	t.Run("before the first cycle of this process", func(t *testing.T) {
 		e := newEnv(t)
+		e.inv.set(snapshot(webOne, webTwo))
 		require.NoError(t, e.store.SaveClaims(map[string]planner.Claim{
 			"www.example.com": {Hostname: "www.example.com", Owner: "qemu/101", Since: t0},
 		}))
 
-		err := e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102")
+		require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
 
-		require.ErrorIs(t, err, ErrRefused)
-		require.Equal(t, "qemu/101", wwwClaim(t, e).Owner)
+		require.Equal(t, "qemu/102", wwwClaim(t, e).Owner)
 	})
-	t.Run("after a cycle that found the inventory incomplete", func(t *testing.T) {
+	t.Run("a fresh look that is incomplete", func(t *testing.T) {
 		e := contested(t)
-		e.inv.set(incomplete("cluster status: no quorum", webOne, webTwo))
-		e.clock.advance(10 * time.Second)
-		e.cycle()
+		e.inv.enqueue(incomplete("cluster status: no quorum", webOne, webTwo))
+		before := e.files()
 
 		err := e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102")
 
 		require.ErrorIs(t, err, ErrRefused)
-		require.EqualError(t, err, "refused: the last cycle did not list every guest under a policy it could read, "+
-			"so who claims www.example.com is not known; try again once it has")
-		require.Equal(t, "qemu/101", wwwClaim(t, e).Owner)
+		require.EqualError(t, err, "refused: the inventory is incomplete (cluster status: no quorum), "+
+			"so who claims www.example.com now is not known; try again once it is complete")
+		require.Equal(t, before, e.files())
 	})
-	t.Run("after a cycle that could not read the settings", func(t *testing.T) {
+	t.Run("settings that cannot be read", func(t *testing.T) {
 		e := contested(t)
 		require.NoError(t, os.WriteFile(filepath.Join(e.paths.Cluster, "meta", "settings.json"),
 			[]byte(`{"schemaVersion":1,"rev":9,"id":"settings","data":{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m0s",`+
 				`"admission":"tag","observeOnly":false,"denyHosts":["bad host"]}}`), 0o600))
-		e.clock.advance(10 * time.Second)
-		e.cycle()
 
-		require.ErrorIs(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"), ErrRefused)
+		err := e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102")
+
+		require.ErrorContains(t, err, "reading the settings")
+		require.Equal(t, "qemu/101", wwwClaim(t, e).Owner)
 	})
+}
+
+// The reviewed sequence: 101 holds, its clone 103 waits since t0, 102 since
+// t0+10s. 102 drops its route, and before a cycle notices, the admin resolves
+// to 102: nothing moves, and 101 goes on serving.
+func TestAResolveToAnOwnerThatJustDroppedItsRouteMovesNothing(t *testing.T) {
+	e, clone := threeClaimants(t)
+	e.inv.set(snapshot(webOne, untagged(webTwo), clone))
+	before := e.files()
+
+	err := e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102")
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.EqualError(t, err, "refused: qemu/102 no longer claims www.example.com: it has no route for it and does not name it")
+	require.Equal(t, before, e.files())
+	var st State
+	for range 3 {
+		e.clock.advance(61 * time.Second)
+		st = e.cycle()
+	}
+	require.Equal(t, planner.StateActive, wwwRoute(st, "qemu/101").State)
+	require.Equal(t, "qemu/101", wwwClaim(t, e).Owner)
+	require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
+}
+
+// The holder the admin moved the hostname away from keeps its place in line:
+// when the new holder stops asking, the hostname comes back to it, not to a
+// clone that waited behind it.
+func TestTheOldHolderGetsTheHostnameBackWhenTheNewHolderLetsGo(t *testing.T) {
+	e, clone := threeClaimants(t)
+	require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+	e.clock.advance(20 * time.Second)
+	require.Equal(t, planner.StateActive, wwwRoute(e.cycle(), "qemu/102").State)
+
+	e.inv.set(snapshot(webOne, untagged(webTwo), clone))
+	var st State
+	for range 3 {
+		e.clock.advance(61 * time.Second)
+		st = e.cycle()
+	}
+
+	require.Equal(t, "qemu/101", wwwClaim(t, e).Owner)
+	require.Equal(t, planner.StateActive, wwwRoute(st, "qemu/101").State)
+	require.Equal(t, planner.StateConflict, wwwRoute(st, "qemu/103").State)
+}
+
+// threeClaimants is an engine in enforce mode where qemu/101 holds
+// www.example.com, its clone qemu/103 waits since t0 and qemu/102 since
+// t0+10s.
+func threeClaimants(t *testing.T) (*env, model.Guest) {
+	t.Helper()
+	e := newEnv(t)
+	e.enforce()
+	clone := guest(103, "web-1-clone", "www.example.com -> :8080")
+	clone.Identity = webOne.Identity
+	e.inv.set(snapshot(webOne, clone))
+	e.cycle()
+	e.inv.set(snapshot(webOne, webTwo, clone))
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
+	require.Equal(t, planner.StateActive, wwwRoute(st, "qemu/101").State)
+	waiting := wwwClaim(t, e).Waiting
+	require.Len(t, waiting, 2)
+	require.Equal(t, "qemu/103", waiting[0].Owner)
+	require.True(t, t0.Equal(waiting[0].FirstSeen))
+	require.Equal(t, "qemu/102", waiting[1].Owner)
+	return e, clone
+}
+
+func TestResolveClaimAsksForACycle(t *testing.T) {
+	e := contested(t)
+	drain(e)
+
+	require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+
+	requireTriggered(t, e)
+}
+
+// drain empties the trigger of the engine.
+func drain(e *env) {
+	select {
+	case <-e.eng.trigger:
+	default:
+	}
+}
+
+func requireTriggered(t *testing.T, e *env) {
+	t.Helper()
+	select {
+	case <-e.eng.trigger:
+	default:
+		t.Fatal("no cycle was asked for")
+	}
 }
 
 func TestAClaimThatCannotBeSavedIsNotMoved(t *testing.T) {
@@ -242,6 +350,31 @@ func skipAsRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permissions do not bind root")
 	}
+}
+
+// What a claim's state is not known, or about to change, it says so.
+func TestAClaimSaysWhatIsNotKnownAndWhatIsPending(t *testing.T) {
+	e := contested(t)
+
+	e.restart()
+	views, err := e.eng.Claims()
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	require.Equal(t, ClaimUnknown, views[0].State, "no cycle of this process settled the claims")
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+	views, err = e.eng.Claims()
+	require.NoError(t, err)
+	require.Equal(t, "qemu/102", views[0].Holder)
+	require.Equal(t, ClaimPending, views[0].State, "the last cycle served it from qemu/101")
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	views, err = e.eng.Claims()
+	require.NoError(t, err)
+	require.Equal(t, ClaimConflict, views[0].State)
 }
 
 func TestClaimsAreListedWithTheirState(t *testing.T) {

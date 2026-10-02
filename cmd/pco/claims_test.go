@@ -160,7 +160,10 @@ func someApprovals() []engine.ApprovalView {
 
 func approvalState() engine.State {
 	st := healthyState()
-	st.Unapproved = []engine.GuestView{*qemu(103, "new-1"), *qemu(104, "")}
+	st.Unapproved = []engine.UnapprovedGuest{
+		{GuestView: *qemu(103, "new-1"), Identity: "uuid:103", Hostnames: []string{"new.example.com", "www.new.example.com"}},
+		{GuestView: *qemu(104, ""), Identity: "uuid:104", Hostnames: []string{"db.example.com"}},
+	}
 	return st
 }
 

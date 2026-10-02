@@ -43,7 +43,7 @@ type Engine interface {
 	Claims() ([]engine.ClaimView, error)
 	ResolveClaim(ctx context.Context, hostname, owner string) error
 	Approvals() ([]engine.ApprovalView, error)
-	ApproveGuest(ctx context.Context, owner string) error
+	ApproveGuest(ctx context.Context, owner, identity string) (engine.Approval, error)
 	RevokeGuest(ctx context.Context, owner string) error
 	// Diagnose and Doctor run in the daemon, against the state of the
 	// engine and the host it runs on.

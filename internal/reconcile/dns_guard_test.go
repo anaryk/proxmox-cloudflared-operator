@@ -64,9 +64,11 @@ func TestDNSMassDeleteGuard(t *testing.T) {
 			if tc.held == "" {
 				require.Empty(t, res.Problems)
 				require.Empty(t, store.m)
+				require.Nil(t, res.Guard)
 				return
 			}
 			require.Equal(t, []string{tc.held}, res.Problems)
+			require.Equal(t, &GuardCount{Pending: tc.unwanted, Owned: tc.owned}, res.Guard)
 			require.Len(t, res.Actions, tc.unwanted)
 			requireHeld(t, res.Actions, tc.held)
 			require.Equal(t, before, sinceOf(store.m), "held deletes keep their grace")
@@ -129,6 +131,7 @@ func TestDNSMassDeleteGuardCountsUnlistedZones(t *testing.T) {
 	held := "mass delete guard: 10 of 10 records are being removed (5 in zones that could not be listed); confirm to proceed"
 	requireHeld(t, res.Actions, held)
 	require.Contains(t, res.Problems, held)
+	require.Equal(t, &GuardCount{Pending: 10, Owned: 10, Unlisted: 5}, res.Guard)
 
 	*failing = false
 	res = newDNSWith(s, store, writerOf(ours, ours), t0.Add(30*time.Second)).Run(ctx, dnsIn(), Enforce)
@@ -748,6 +751,7 @@ func TestDNSMassDeleteGuardLineOnlyWhenAConfirmationHelps(t *testing.T) {
 			for _, p := range res.Problems {
 				require.NotContains(t, p, "mass delete guard")
 			}
+			require.Nil(t, res.Guard, "the guard says nothing where a confirmation does not help")
 			require.Len(t, callsTo(f, "DeleteRecord"), tc.deleted)
 			for _, a := range res.Actions {
 				require.Equal(t, tc.held, a.Held)

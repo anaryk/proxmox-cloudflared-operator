@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -49,8 +48,8 @@ func (s *Server) routes() http.Handler {
 	v1.GET("/claims", s.getClaims)
 	v1.POST("/claims/resolve", s.postResolveClaim)
 	v1.GET("/approvals", s.getApprovals)
-	v1.POST("/guests/approve", s.postGuest(s.engine.ApproveGuest))
-	v1.POST("/guests/revoke", s.postGuest(s.engine.RevokeGuest))
+	v1.POST("/guests/approve", s.postApproveGuest)
+	v1.POST("/guests/revoke", s.postRevokeGuest)
 	v1.GET("/diagnose", s.getDiagnose)
 	v1.GET("/doctor", s.getDoctor)
 	return s.logRequests(s.guard(r))
@@ -241,23 +240,39 @@ func (s *Server) getApprovals(c *gin.Context) {
 	c.JSON(http.StatusOK, nonNil(approvals))
 }
 
-// postGuest answers a request that names a guest, as an approval and its
-// revocation do, with what act makes of it.
-func (s *Server) postGuest(act func(ctx context.Context, owner string) error) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req struct {
-			Owner string `json:"owner"`
-		}
-		if err := decode(c, &req, false); err != nil {
-			s.fail(c, err)
-			return
-		}
-		if err := act(c.Request.Context(), req.Owner); err != nil {
-			s.fail(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, struct{}{})
+// postApproveGuest approves a guest and answers with the approval. The
+// identity, when the request has one, is the one the admin was shown: the
+// engine refuses a guest that has another one now.
+func (s *Server) postApproveGuest(c *gin.Context) {
+	var req struct {
+		Owner    string `json:"owner"`
+		Identity string `json:"identity"`
 	}
+	if err := decode(c, &req, false); err != nil {
+		s.fail(c, err)
+		return
+	}
+	approved, err := s.engine.ApproveGuest(c.Request.Context(), req.Owner, req.Identity)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, approved)
+}
+
+func (s *Server) postRevokeGuest(c *gin.Context) {
+	var req struct {
+		Owner string `json:"owner"`
+	}
+	if err := decode(c, &req, false); err != nil {
+		s.fail(c, err)
+		return
+	}
+	if err := s.engine.RevokeGuest(c.Request.Context(), req.Owner); err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, struct{}{})
 }
 
 // getDiagnose walks the chain of the route of one hostname. The daemon asks

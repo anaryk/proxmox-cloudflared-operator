@@ -186,9 +186,12 @@ func (f *fakeEngine) Approvals() ([]engine.ApprovalView, error) {
 	return f.approvals, f.err
 }
 
-func (f *fakeEngine) ApproveGuest(ctx context.Context, owner string) error {
-	f.record(ctx, "approve:"+owner)
-	return f.failure()
+func (f *fakeEngine) ApproveGuest(ctx context.Context, owner, identity string) (engine.Approval, error) {
+	f.record(ctx, "approve:"+owner+":"+identity)
+	if err := f.failure(); err != nil {
+		return engine.Approval{}, err
+	}
+	return engine.Approval{Owner: owner, Identity: "uuid:1", Mode: "approve"}, nil
 }
 
 func (f *fakeEngine) RevokeGuest(ctx context.Context, owner string) error {
@@ -445,7 +448,9 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	gotApprovals, err := c.Approvals(ctx)
 	require.NoError(t, err)
 	require.Equal(t, f.approvals, gotApprovals)
-	require.NoError(t, c.ApproveGuest(ctx, "qemu/101"))
+	approved, err := c.ApproveGuest(ctx, "qemu/101", "uuid:101")
+	require.NoError(t, err)
+	require.Equal(t, engine.Approval{Owner: "qemu/101", Identity: "uuid:1", Mode: "approve"}, approved)
 	require.NoError(t, c.RevokeGuest(ctx, "qemu/101"))
 	steps, err := c.Diagnose(ctx, "www.example.com")
 	require.NoError(t, err)
@@ -457,7 +462,7 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	require.Equal(t, []string{
 		"state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
 		"add:main:" + testToken, "check:abc12345:true", "remove:abc12345",
-		"claims", "resolve:www.example.com:qemu/102", "approvals", "approve:qemu/101", "revoke:qemu/101",
+		"claims", "resolve:www.example.com:qemu/102", "approvals", "approve:qemu/101:uuid:101", "revoke:qemu/101",
 		"diagnose:www.example.com", "doctor",
 	}, f.called())
 

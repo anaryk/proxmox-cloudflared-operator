@@ -98,7 +98,15 @@ type State struct {
 	Offer   string    `json:"offer,omitempty"`
 	// Unapproved are the guests whose routes are held until an admin approves
 	// them, in admission mode approve; [] in mode tag.
-	Unapproved []GuestView `json:"unapproved"`
+	Unapproved []UnapprovedGuest `json:"unapproved"`
+}
+
+// UnapprovedGuest is a guest whose routes wait for an approval: the identity
+// an approval would be of, and the hostnames the guest would publish.
+type UnapprovedGuest struct {
+	GuestView
+	Identity  string   `json:"identity,omitempty"`
+	Hostnames []string `json:"hostnames"`
 }
 
 func emptyState() State {
@@ -148,6 +156,9 @@ func (s State) clone() State {
 	s.Problems = slices.Clone(s.Problems)
 	s.Waiting = cloneWaiting(s.Waiting)
 	s.Unapproved = slices.Clone(s.Unapproved)
+	for i := range s.Unapproved {
+		s.Unapproved[i].Hostnames = slices.Clone(s.Unapproved[i].Hostnames)
+	}
 	return s
 }
 

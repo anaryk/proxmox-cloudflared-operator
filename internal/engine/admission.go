@@ -2,6 +2,7 @@ package engine
 
 import (
 	"cmp"
+	"maps"
 	"slices"
 	"strings"
 
@@ -14,76 +15,100 @@ import (
 const issueWaitingApproval = "waiting for approval"
 
 // collect turns the guests and the manual routes into candidate routes and
-// drops those of guests that wait for approval. What it found claimed under a
-// policy that could be read goes into the listing.
+// drops those of guests that wait for approval, which the state lists with
+// what they would publish.
 func (c *cycleRun) collect() bool {
-	manual, err := c.e.d.Store.ManualRoutes()
+	manual, approvals, doing, err := c.e.routeSources(c.settings)
 	if err != nil {
-		c.storeProblem("reading the manual routes", err)
+		c.storeProblem(doing, err)
 		return false
 	}
-	c.manual = manual
-	if c.settings.Admission == store.AdmissionApprove {
-		approvals, err := c.e.d.Store.Approvals()
-		if err != nil {
-			c.storeProblem("reading the approvals", err)
-			return false
-		}
-		c.approvals = approvals
-	}
-	var waiting []model.GuestRef
+	c.manual, c.approvals = manual, approvals
+	var waiting []waitingGuest
 	c.col, waiting = c.collectFrom(c.snap)
 	c.st.Issues = c.col.Issues
-	c.st.Unapproved = make([]GuestView, 0, len(waiting))
-	for _, ref := range waiting {
-		c.st.Unapproved = append(c.st.Unapproved, *c.guestView(ref))
+	c.st.Unapproved = make([]UnapprovedGuest, 0, len(waiting))
+	for _, w := range waiting {
+		v := UnapprovedGuest{GuestView: *c.guestView(w.ref), Hostnames: w.hostnames}
+		if g, ok := c.snap.Guest(w.ref); ok {
+			v.Identity = g.Identity
+		}
+		c.st.Unapproved = append(c.st.Unapproved, v)
 	}
 	if c.col.PolicyInvalid {
 		c.problem(problemPolicyInvalid)
 		return false
 	}
-	c.listing = c.listing.withClaims(c.col)
 	return true
 }
 
-// collectFrom collects the routes of a snapshot and, in admission mode
-// approve, takes out those of the guests that wait for approval, which it
-// returns too.
-func (c *cycleRun) collectFrom(snap inventory.Snapshot) (planner.Collected, []model.GuestRef) {
-	col := planner.Collect(snap.Guests, c.manual, planner.Settings{
-		GateTag:    c.settings.GateTag,
-		AllowHosts: c.settings.AllowHosts,
-		DenyHosts:  c.settings.DenyHosts,
+// routeSources reads what the routes are collected from besides the guests:
+// the manual routes and, in admission mode approve, the approvals. On an
+// error, doing says what was being read.
+func (e *Engine) routeSources(s store.Settings) (manual []model.Route, approvals map[string]string, doing string, err error) {
+	if manual, err = e.d.Store.ManualRoutes(); err != nil {
+		return nil, nil, "reading the manual routes", err
+	}
+	if s.Admission != store.AdmissionApprove {
+		return manual, nil, "", nil
+	}
+	if approvals, err = e.d.Store.Approvals(); err != nil {
+		return nil, nil, "reading the approvals", err
+	}
+	return manual, approvals, "", nil
+}
+
+// collectFrom collects the routes of a snapshot as the cycle does.
+func (c *cycleRun) collectFrom(snap inventory.Snapshot) (planner.Collected, []waitingGuest) {
+	return collectRoutes(snap, c.manual, c.settings, c.approvals)
+}
+
+// collectRoutes collects the routes of a snapshot and, when approvals is not
+// nil, takes out those of the guests that wait for approval, which it returns
+// too.
+func collectRoutes(snap inventory.Snapshot, manual []model.Route, s store.Settings, approvals map[string]string) (planner.Collected, []waitingGuest) {
+	col := planner.Collect(snap.Guests, manual, planner.Settings{
+		GateTag:    s.GateTag,
+		AllowHosts: s.AllowHosts,
+		DenyHosts:  s.DenyHosts,
 	})
-	if c.approvals == nil {
+	if approvals == nil {
 		return col, nil
 	}
-	return admit(col, snap, c.approvals)
+	return admit(col, snap, approvals)
+}
+
+// waitingGuest is a guest that waits for approval, with the hostnames of the
+// routes it would publish.
+type waitingGuest struct {
+	ref       model.GuestRef
+	hostnames []string
 }
 
 // admit takes the routes from guests whose identity is not approved, with
 // one issue per guest, and keeps their hostnames as held names: a guest that
 // waits for approval keeps its claims, served by nobody, as a guest whose
 // entry is broken does. Manual routes are the admin's own and pass. An empty
-// identity is never approved. It returns the guests that wait, sorted.
-func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]string) (planner.Collected, []model.GuestRef) {
-	waiting := make(map[model.GuestRef]bool)
-	approved := func(owner string) bool {
-		ref, err := model.ParseGuestRef(owner)
+// identity is never approved. It returns the guests that wait, in the order
+// of their owners.
+func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]string) (planner.Collected, []waitingGuest) {
+	waiting := make(map[model.GuestRef][]string)
+	approved := func(rt model.Route) bool {
+		ref, err := model.ParseGuestRef(rt.Owner())
 		if err != nil {
 			return true
 		}
 		g, ok := snap.Guest(ref)
-		if ok && g.Identity != "" && approvals[owner] == g.Identity {
+		if ok && g.Identity != "" && approvals[rt.Owner()] == g.Identity {
 			return true
 		}
-		waiting[ref] = true
+		waiting[ref] = append(waiting[ref], rt.Hostname)
 		return false
 	}
 	routes := make([]model.Route, 0, len(col.Routes))
 	held := slices.Clone(col.Held)
 	for _, rt := range col.Routes {
-		if approved(rt.Owner()) {
+		if approved(rt) {
 			routes = append(routes, rt)
 			continue
 		}
@@ -94,13 +119,14 @@ func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]
 	})
 	col.Routes, col.Held = routes, slices.Compact(held)
 	issues := slices.Clone(col.Issues)
-	refs := make([]model.GuestRef, 0, len(waiting))
-	for ref := range waiting {
+	out := make([]waitingGuest, 0, len(waiting))
+	for _, ref := range slices.SortedFunc(maps.Keys(waiting), func(a, b model.GuestRef) int {
+		return model.CompareOwners(a.String(), b.String())
+	}) {
 		issues = append(issues, planner.Issue{Guest: ref, Msg: issueWaitingApproval})
-		refs = append(refs, ref)
+		out = append(out, waitingGuest{ref: ref, hostnames: slices.Compact(slices.Sorted(slices.Values(waiting[ref])))})
 	}
 	slices.SortStableFunc(issues, planner.CompareIssues)
 	col.Issues = issues
-	slices.SortFunc(refs, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
-	return col, refs
+	return col, out
 }

@@ -225,7 +225,11 @@
     {
       "kind": "lxc",
       "vmid": 201,
-      "name": "new-1"
+      "name": "new-1",
+      "identity": "uuid:201",
+      "hostnames": [
+        "new.example.com"
+      ]
     }
   ]
 }

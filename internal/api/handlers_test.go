@@ -694,7 +694,8 @@ func TestTheAdminActionsOnClaimsAndGuests(t *testing.T) {
 		name, target, body, call string
 	}{
 		{"resolve a claim", "/v1/claims/resolve", `{"hostname":"www.example.com","owner":"qemu/102"}`, "resolve:www.example.com:qemu/102"},
-		{"approve a guest", "/v1/guests/approve", `{"owner":"qemu/101"}`, "approve:qemu/101"},
+		{"approve a guest", "/v1/guests/approve", `{"owner":"qemu/101"}`, "approve:qemu/101:"},
+		{"approve a guest as it was shown", "/v1/guests/approve", `{"owner":"qemu/101","identity":"uuid:101"}`, "approve:qemu/101:uuid:101"},
 		{"revoke a guest", "/v1/guests/revoke", `{"owner":"lxc/200"}`, "revoke:lxc/200"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -703,7 +704,11 @@ func TestTheAdminActionsOnClaimsAndGuests(t *testing.T) {
 			rec := do(newServer(f), http.MethodPost, tt.target, tt.body)
 
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			require.JSONEq(t, `{}`, rec.Body.String())
+			if strings.HasPrefix(tt.name, "approve") {
+				require.JSONEq(t, `{"owner":"qemu/101","identity":"uuid:1","mode":"approve"}`, rec.Body.String(), "the approval as it was made")
+			} else {
+				require.JSONEq(t, `{}`, rec.Body.String())
+			}
 			require.Equal(t, []string{tt.call}, f.called())
 		})
 		t.Run(tt.name+" needs a body", func(t *testing.T) {

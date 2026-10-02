@@ -203,8 +203,16 @@ func (c *Client) ApprovalsRaw(ctx context.Context) (json.RawMessage, error) {
 }
 
 // ApproveGuest approves a guest in the identity the daemon sees it in now.
-func (c *Client) ApproveGuest(ctx context.Context, owner string) error {
-	return c.call(ctx, c.long, http.MethodPost, "/v1/guests/approve", ownerBody{owner}, nil)
+// identity, when it is not empty, is the identity the admin was shown, which
+// the guest has to have still. The answer is the approval as it was made.
+func (c *Client) ApproveGuest(ctx context.Context, owner, identity string) (engine.Approval, error) {
+	body := struct {
+		Owner    string `json:"owner"`
+		Identity string `json:"identity,omitempty"`
+	}{owner, identity}
+	var approved engine.Approval
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/guests/approve", body, &approved)
+	return approved, err
 }
 
 // RevokeGuest removes the approval of a guest.

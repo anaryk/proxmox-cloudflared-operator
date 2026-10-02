@@ -49,7 +49,7 @@ func (a *app) guestListCmd() *cobra.Command {
 	}
 }
 
-func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine.GuestView) error {
+func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine.UnapprovedGuest) error {
 	s := &screen{w: w}
 	if len(approvals) == 0 {
 		s.println("No guest is approved.")
@@ -69,7 +69,7 @@ func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine
 	}
 	s.println("Waiting for approval (pco guest approve <owner>):")
 	for _, g := range waiting {
-		s.printf("  %s\n", ownerText(g.String(), &g))
+		s.printf("  %s\n", ownerText(g.String(), &g.GuestView))
 	}
 	return s.done()
 }
@@ -98,7 +98,7 @@ func (a *app) guestApproveCmd() *cobra.Command {
 			if err := a.noJSON(cmd); err != nil {
 				return err
 			}
-			if err := a.client().ApproveGuest(cmd.Context(), args[0]); err != nil {
+			if _, err := a.client().ApproveGuest(cmd.Context(), args[0], ""); err != nil {
 				return a.explain(cmd.Context(), err)
 			}
 			s := &screen{w: cmd.OutOrStdout()}

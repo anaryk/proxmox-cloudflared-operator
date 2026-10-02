@@ -22,8 +22,17 @@ func approving(t *testing.T) *env {
 	e.settings(func(s *store.Settings) { s.Admission = store.AdmissionApprove })
 	st := e.cycle()
 	require.Empty(t, st.Routes)
-	require.Equal(t, []GuestView{{GuestRef: refWeb, Name: "web-1"}}, st.Unapproved)
+	require.Equal(t, []UnapprovedGuest{{
+		GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Hostnames: []string{"www.example.com"},
+	}}, st.Unapproved)
 	return e
+}
+
+func approveWeb(t *testing.T, e *env) Approval {
+	t.Helper()
+	a, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "")
+	require.NoError(t, err)
+	return a
 }
 
 func approvals(t *testing.T, e *env) map[string]string {
@@ -36,9 +45,13 @@ func approvals(t *testing.T, e *env) map[string]string {
 func TestApprovingAGuestPublishesIt(t *testing.T) {
 	e := approving(t)
 	since := e.clock.now()
+	drain(e)
 
-	require.NoError(t, e.eng.ApproveGuest(t.Context(), "qemu/101"))
+	a, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101")
 
+	require.NoError(t, err)
+	require.Equal(t, Approval{Owner: "qemu/101", Guest: &GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Mode: "approve"}, a)
+	requireTriggered(t, e)
 	require.Equal(t, map[string]string{"qemu/101": "uuid:101"}, approvals(t, e), "the identity the listing showed")
 	require.Equal(t, []string{"qemu/101: qemu/101 (web-1) is approved in identity uuid:101"}, adminEvents(e, since.Add(-time.Nanosecond)))
 	e.clock.advance(10 * time.Second)
@@ -53,7 +66,7 @@ func TestApprovingAGuestPublishesIt(t *testing.T) {
 func TestAnApprovalIsOfOneIdentity(t *testing.T) {
 	t.Run("a re-created guest waits again", func(t *testing.T) {
 		e := approving(t)
-		require.NoError(t, e.eng.ApproveGuest(t.Context(), "qemu/101"))
+		approveWeb(t, e)
 		e.clock.advance(10 * time.Second)
 		require.Equal(t, planner.StateActive, route(e.cycle(), "www.example.com").State)
 
@@ -65,17 +78,19 @@ func TestAnApprovalIsOfOneIdentity(t *testing.T) {
 
 		require.Equal(t, planner.StateHeld, route(st, "www.example.com").State)
 		require.Contains(t, st.Issues, planner.Issue{Guest: refWeb, Msg: issueWaitingApproval})
-		require.Equal(t, []GuestView{{GuestRef: refWeb, Name: "web-1"}}, st.Unapproved)
+		require.Equal(t, []UnapprovedGuest{{
+			GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:999", Hostnames: []string{"www.example.com"},
+		}}, st.Unapproved)
 		require.Equal(t, withSentinel(), e.rules())
 
-		require.NoError(t, e.eng.ApproveGuest(t.Context(), "qemu/101"))
+		approveWeb(t, e)
 		require.Equal(t, "uuid:999", approvals(t, e)["qemu/101"])
 		e.clock.advance(10 * time.Second)
 		require.Equal(t, planner.StateActive, route(e.cycle(), "www.example.com").State)
 	})
 	t.Run("a clone waits", func(t *testing.T) {
 		e := approving(t)
-		require.NoError(t, e.eng.ApproveGuest(t.Context(), "qemu/101"))
+		approveWeb(t, e)
 		clone := guest(102, "web-1", "api.example.com -> :8080")
 		clone.Identity = "uuid:101"
 		e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), clone))
@@ -85,8 +100,45 @@ func TestAnApprovalIsOfOneIdentity(t *testing.T) {
 
 		require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
 		require.Empty(t, route(st, "api.example.com").State, "the clone serves nothing")
-		require.Equal(t, []GuestView{{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, Name: "web-1"}}, st.Unapproved)
+		require.Equal(t, []UnapprovedGuest{{
+			GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, Name: "web-1"},
+			Identity:  "uuid:101", Hostnames: []string{"api.example.com"},
+		}}, st.Unapproved)
 	})
+}
+
+// An approval names the identity the admin was shown: a guest re-created
+// since is not approved by it.
+func TestAnApprovalOfAnotherIdentityThanTheGuestHasIsRefused(t *testing.T) {
+	e := approving(t)
+	again := guest(101, "web-1", "www.example.com -> :8080")
+	again.Identity = "uuid:999"
+	e.inv.set(snapshot(again))
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	since := e.clock.now()
+
+	_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101")
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.EqualError(t, err, "refused: qemu/101 changed since it was shown: it was shown in identity uuid:101 "+
+		"and has identity uuid:999 now; look at it again")
+	require.Empty(t, approvals(t, e))
+	require.Empty(t, adminEvents(e, since.Add(-time.Nanosecond)))
+}
+
+// The guests that wait are listed in the natural order of their owners.
+func TestTheGuestsThatWaitAreInOrder(t *testing.T) {
+	e := newEnv(t)
+	e.settings(func(s *store.Settings) { s.Admission = store.AdmissionApprove })
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com api.example.com -> :8080"), guest(20, "old", "old.example.com -> :8080")))
+
+	st := e.cycle()
+
+	require.Equal(t, []UnapprovedGuest{
+		{GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 20}, Name: "old"}, Identity: "uuid:20", Hostnames: []string{"old.example.com"}},
+		{GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Hostnames: []string{"api.example.com", "www.example.com"}},
+	}, st.Unapproved)
 }
 
 // Only what a complete listing showed is approved.
@@ -116,7 +168,7 @@ func TestApprovingIsRefusedWithoutACompleteListing(t *testing.T) {
 			tt.setup(e)
 			since := e.clock.now()
 
-			err := e.eng.ApproveGuest(t.Context(), "qemu/101")
+			_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "")
 
 			require.ErrorIs(t, err, ErrRefused)
 			require.EqualError(t, err, tt.want)
@@ -133,7 +185,7 @@ func TestAGuestWithoutAnIdentityCannotBeApproved(t *testing.T) {
 	e.inv.set(snapshot(g))
 	e.cycle()
 
-	err := e.eng.ApproveGuest(t.Context(), "qemu/101")
+	_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "")
 
 	require.ErrorIs(t, err, ErrRefused)
 	require.EqualError(t, err, "refused: qemu/101 has no identity Proxmox reports, and an approval is of one")
@@ -144,7 +196,8 @@ func TestOnlyAGuestIsApproved(t *testing.T) {
 	e := newEnv(t)
 	e.cycle()
 	for _, owner := range []string{"manual/www", "web-1", "", "qemu/0101"} {
-		require.ErrorIs(t, e.eng.ApproveGuest(t.Context(), owner), ErrInvalid, owner)
+		_, err := e.eng.ApproveGuest(t.Context(), owner, "")
+		require.ErrorIs(t, err, ErrInvalid, owner)
 		require.ErrorIs(t, e.eng.RevokeGuest(t.Context(), owner), ErrInvalid, owner)
 	}
 	require.Empty(t, approvals(t, e))
@@ -152,7 +205,7 @@ func TestOnlyAGuestIsApproved(t *testing.T) {
 
 func TestRevokingAnApprovalHoldsTheGuestAgain(t *testing.T) {
 	e := approving(t)
-	require.NoError(t, e.eng.ApproveGuest(t.Context(), "qemu/101"))
+	approveWeb(t, e)
 	e.clock.advance(10 * time.Second)
 	require.Equal(t, planner.StateActive, route(e.cycle(), "www.example.com").State)
 	since := e.clock.now()
@@ -178,7 +231,8 @@ func TestApprovalsInTagModeAreRecorded(t *testing.T) {
 	e.cycle()
 	since := e.clock.now()
 
-	require.NoError(t, e.eng.ApproveGuest(t.Context(), "qemu/101"))
+	a := approveWeb(t, e)
+	require.Equal(t, "tag", a.Mode)
 	require.NoError(t, e.eng.RevokeGuest(t.Context(), "qemu/101"))
 
 	require.Equal(t, []string{
@@ -191,7 +245,7 @@ func TestApprovalsInTagModeAreRecorded(t *testing.T) {
 
 func TestApprovalsAreListedWithTheIdentityTheGuestHasNow(t *testing.T) {
 	e := approving(t)
-	require.NoError(t, e.eng.ApproveGuest(t.Context(), "qemu/101"))
+	approveWeb(t, e)
 	require.NoError(t, e.store.SaveApproval("qemu/102", "uuid:old"))
 	require.NoError(t, e.store.SaveApproval("lxc/300", "uuid:300"))
 	moved := guest(102, "db-1", "db.example.com -> :5432")

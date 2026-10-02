@@ -71,7 +71,7 @@ func healthyState() engine.State {
 			Report: credentials.Report{Token: cfapi.TokenStatus{Status: "active", ExpiresOn: &expires}, Usable: true},
 		}},
 		Waiting:    []engine.Waiting{},
-		Unapproved: []engine.GuestView{},
+		Unapproved: []engine.UnapprovedGuest{},
 	}
 }
 
@@ -232,7 +232,7 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 				"mass delete guard: 6 of 6 records are being removed; confirm to proceed",
 			Fix: "pco apply --confirm-deletes"}},
 		{"a guest that waits for approval", func(st *engine.State) {
-			st.Unapproved = []engine.GuestView{{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 200}, Name: "db"}}
+			st.Unapproved = []engine.UnapprovedGuest{{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 200}, Name: "db"}}}
 		}, nil, Finding{Check: "approval lxc/200", Level: LevelWarn, Detail: "lxc/200 (db) waits for approval", Fix: "pco guest approve lxc/200"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -261,9 +261,9 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 func TestFindingsAreSortedAndOnlyOkHasNoFix(t *testing.T) {
 	st := healthyState()
 	st.Mode, st.Complete, st.WriterVerdict = "observe", false, "foreign"
-	st.Unapproved = []engine.GuestView{
-		{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}},
-		{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}},
+	st.Unapproved = []engine.UnapprovedGuest{
+		{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}}},
+		{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}}},
 	}
 	env := healthyEnv()
 	env.dialErr = errors.New("refused")

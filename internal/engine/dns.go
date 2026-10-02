@@ -47,7 +47,7 @@ func (c *cycleRun) reconcileDNS() {
 		}
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
-	c.offerRemovals(res.Actions)
+	c.offerRemovals(res)
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
@@ -61,31 +61,41 @@ func (c *cycleRun) reconcileDNS() {
 	c.writerStill("after the DNS run")
 }
 
-// offerRemovals offers the removals the mass delete guard holds, when it
-// holds any. A confirmation lets through every pending removal the guard
-// counted, those still in their grace too, so all of them are offered. The
-// guard says what it holds in a problem line of its own words.
-func (c *cycleRun) offerRemovals(actions []reconcile.Action) {
-	var guard string
+// offerRemovals offers the removals the mass delete guard counted, when it
+// tripped: those it holds and those still in their grace, which a
+// confirmation lets through as well, also when every one of them is in its
+// grace. The guard says what it counted in a problem line of its own words.
+func (c *cycleRun) offerRemovals(res reconcile.DNSResult) {
+	if res.Guard == nil {
+		return
+	}
 	var names []string
 	inGrace := 0
-	for _, a := range actions {
+	for _, a := range res.Actions {
 		if a.Kind != reconcile.DeleteRecord || a.Applied {
 			continue
 		}
 		switch {
 		case strings.HasPrefix(a.Held, reconcile.HeldByGuard):
-			guard = a.Held
 			names = append(names, a.Target)
 		case strings.HasPrefix(a.Held, reconcile.HeldInGrace):
 			names = append(names, a.Target)
 			inGrace++
 		}
 	}
-	if guard != "" {
-		c.offer.guard, c.offer.removals, c.offer.inGrace = guard, names, inGrace
-		c.offer.lines = append(c.offer.lines, guard)
+	line := guardLine(res)
+	c.offer.guard, c.offer.removals, c.offer.inGrace = line, names, inGrace
+	c.offer.lines = append(c.offer.lines, line)
+}
+
+// guardLine is the problem line of a DNS run whose guard tripped, or, should
+// it have none, the count in the guard's words.
+func guardLine(res reconcile.DNSResult) string {
+	if i := slices.IndexFunc(res.Problems, func(p string) bool { return strings.HasPrefix(p, reconcile.HeldByGuard) }); i >= 0 {
+		return res.Problems[i]
 	}
+	g := res.Guard
+	return fmt.Sprintf("%s: %d of %d records are being removed; confirm to proceed", reconcile.HeldByGuard, g.Pending, g.Owned)
 }
 
 // publishedThrough maps every hostname with a record plan to the state of the

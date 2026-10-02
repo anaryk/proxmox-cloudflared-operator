@@ -89,7 +89,10 @@ func populatedState() State {
 		Profile:       "host",
 		Waiting:       waiting,
 		Offer:         offerOf(waiting),
-		Unapproved:    []GuestView{{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"}},
+		Unapproved: []UnapprovedGuest{{
+			GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"},
+			Identity:  "uuid:201", Hostnames: []string{"new.example.com"},
+		}},
 	}
 }
 
@@ -150,6 +153,8 @@ func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "apply_result_empty.json", ApplyResult{Accepted: []Waiting{}})
 	requireGolden(t, "claims.json", populatedClaims())
 	requireGolden(t, "approvals.json", populatedApprovals())
+	requireGolden(t, "approval.json", Approval{Owner: "qemu/101", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
+		Identity: "uuid:101", Mode: "approve"})
 }
 
 func populatedClaims() []ClaimView {
@@ -158,10 +163,12 @@ func populatedClaims() []ClaimView {
 	clone := model.GuestRef{Kind: model.KindQEMU, VMID: 102}
 	return []ClaimView{
 		{Hostname: "api.example.com", Holder: "manual/api", Since: t0, State: ClaimServing, Waiting: []ClaimantView{}},
+		{Hostname: "new.example.com", Holder: "qemu/102", Guest: &GuestView{GuestRef: clone, Name: "web-2"}, Since: t0, State: ClaimPending, Waiting: []ClaimantView{}},
 		{
 			Hostname: "old.example.com", Holder: "qemu/101", Guest: &GuestView{GuestRef: web, Name: "web-1"},
 			Since: t0, MissingSince: &missing, State: ClaimHeld, Waiting: []ClaimantView{},
 		},
+		{Hostname: "shop.example.com", Holder: "lxc/200", Since: t0, State: ClaimUnknown, Waiting: []ClaimantView{}},
 		{
 			Hostname: "www.example.com", Holder: "qemu/101", Guest: &GuestView{GuestRef: web, Name: "web-1"},
 			Since: t0, State: ClaimConflict,

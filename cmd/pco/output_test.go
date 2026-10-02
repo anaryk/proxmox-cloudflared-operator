@@ -147,7 +147,10 @@ func hostileState() engine.State {
 	st.Conflicts = []reconcile.Conflict{{Zone: "zone" + hostileText, Name: "shop.example.com", Type: "TXT", Content: "content" + hostileText}}
 	st.Lost = []string{"lost" + hostileText}
 	st.Credentials = []engine.CredentialView{hostileCredential()}
-	st.Unapproved = []engine.GuestView{{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 105}, Name: "new" + hostileText}}
+	st.Unapproved = []engine.UnapprovedGuest{{
+		GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 105}, Name: "new" + hostileText},
+		Identity:  "uuid" + hostileText, Hostnames: []string{"new" + hostileText + ".example.com"},
+	}}
 	return st
 }
 

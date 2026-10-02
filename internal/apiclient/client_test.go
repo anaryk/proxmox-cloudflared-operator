@@ -227,9 +227,21 @@ func TestRequests(t *testing.T) {
 			want: seen{Method: "GET", Path: "/v1/approvals"},
 		},
 		{
-			name: "approve a guest", reply: `{}`, status: 200,
-			call: func(c *Client) error { return c.ApproveGuest(t.Context(), "qemu/101") },
+			name: "approve a guest", reply: `{"owner":"qemu/101","identity":"uuid:101","mode":"tag"}`, status: 200,
+			call: func(c *Client) error {
+				a, err := c.ApproveGuest(t.Context(), "qemu/101", "")
+				require.Equal(t, engine.Approval{Owner: "qemu/101", Identity: "uuid:101", Mode: "tag"}, a)
+				return err
+			},
 			want: seen{Method: "POST", Path: "/v1/guests/approve", ContentType: "application/json", Body: `{"owner":"qemu/101"}`},
+		},
+		{
+			name: "approve a guest as it was shown", reply: `{"owner":"qemu/101","identity":"uuid:101","mode":"approve"}`, status: 200,
+			call: func(c *Client) error {
+				_, err := c.ApproveGuest(t.Context(), "qemu/101", "uuid:101")
+				return err
+			},
+			want: seen{Method: "POST", Path: "/v1/guests/approve", ContentType: "application/json", Body: `{"owner":"qemu/101","identity":"uuid:101"}`},
 		},
 		{
 			name: "revoke a guest", reply: `{}`, status: 200,
@@ -318,7 +330,8 @@ func everyCall(t *testing.T, c *Client) []result {
 	add("resolve", c.ResolveClaim(ctx, "www.example.com", "qemu/102"))
 	_, err = c.Approvals(ctx)
 	add("approvals", err)
-	add("approve", c.ApproveGuest(ctx, "qemu/101"))
+	_, err = c.ApproveGuest(ctx, "qemu/101", "")
+	add("approve", err)
 	add("revoke", c.RevokeGuest(ctx, "qemu/101"))
 	_, err = c.Diagnose(ctx, "www.example.com")
 	add("diagnose", err)
@@ -612,7 +625,7 @@ func TestTimeouts(t *testing.T) {
 	require.InDelta(t, 10, rec.last().Seconds(), 1, "approvals")
 	_ = c.ResolveClaim(t.Context(), "a.example.com", "qemu/1")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "resolve")
-	_ = c.ApproveGuest(t.Context(), "qemu/1")
+	_, _ = c.ApproveGuest(t.Context(), "qemu/1", "")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "approve")
 	_ = c.RevokeGuest(t.Context(), "qemu/1")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "revoke")

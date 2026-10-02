@@ -15,6 +15,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
 const offerChanged = "refused: what waits for a confirmation changed since it was shown; look again and repeat"
@@ -80,6 +81,52 @@ func TestAConfirmationOfTheGuardCoversTheRemovalsInTheirGrace(t *testing.T) {
 
 	require.Empty(t, st.Waiting, "the guard does not ask again")
 	require.Len(t, e.records(), 10, "the four went after their grace")
+}
+
+// The guard trips while every removal it counts is still in its grace: what
+// it counts is offered at once, one confirmation covers all of it, and the
+// records go as their graces end without another question.
+func TestRemovalsInTheirGraceAreOfferedWhenTheGuardTrips(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	hosts := []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com", "e.example.com", "f.example.com"}
+	e.inv.set(snapshot(guest(101, "web-1", strings.Join(hosts, " ")+" -> :8080")))
+	e.cycle()
+	require.Len(t, e.records(), 6)
+
+	// The claims are released after their grace, and the removals of the
+	// records start theirs.
+	e.inv.set(snapshot(untagged(guest(101, "web-1"))))
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	e.clock.advance(61 * time.Second)
+	shown := e.cycle()
+
+	deletes := 0
+	for _, a := range shown.Actions {
+		if a.Kind == reconcile.DeleteRecord {
+			deletes++
+			require.True(t, strings.HasPrefix(a.Held, "grace period"), "%s: %s", a.Target, a.Held)
+		}
+	}
+	require.Equal(t, 6, deletes)
+	require.Equal(t, []Waiting{{
+		Kind: "dns-removals",
+		Detail: "mass delete guard: 6 of 6 records are being removed; confirm to proceed; " +
+			"6 of them are still in their grace and go when it ends",
+		Items: hosts,
+	}}, shown.Waiting)
+	res, err := e.eng.Apply(t.Context(), true, shown.Offer)
+	require.NoError(t, err)
+	require.Equal(t, shown.Waiting, res.Accepted)
+
+	for range 4 {
+		e.clock.advance(20 * time.Second)
+		st := e.cycle()
+		require.Empty(t, st.Waiting, "nothing is asked again")
+		require.False(t, hasProblem(st, "mass delete guard"))
+	}
+	require.Empty(t, e.records(), "the six went when their graces ended")
 }
 
 // vanishSix is the snapshot in which six of the ten guests of many(10) are

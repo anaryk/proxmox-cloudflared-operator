@@ -30,9 +30,11 @@ func (a *app) claimsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the claims on the public hostnames",
-		Long: "List who holds each public hostname, since when, and who waits for it. A claim is\n" +
-			"serving when its holder publishes the hostname, conflict when others want it too, and\n" +
-			"held when nobody serves it.\n\n" + jsonHelp,
+		Long: "List who holds each public hostname, since when, and who waits for it. As the last cycle\n" +
+			"that settled the claims found it, a claim is serving when its holder publishes the\n" +
+			"hostname, conflict when others want it too, held when nobody serves it, and pending when\n" +
+			"another owner served it, as after a resolve. It is unknown until a cycle of the daemon\n" +
+			"has settled the claims.\n\n" + jsonHelp,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()

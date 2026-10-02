@@ -49,6 +49,7 @@ func (run *dnsRun) decideGuard(zones []*dnsZone) {
 	}
 	guard += "; confirm to proceed"
 	run.problem(guard)
+	run.res.Guard = &GuardCount{Pending: pending, Owned: owned, Unlisted: unlisted}
 	for _, z := range zones {
 		for name, held := range z.holds {
 			if held == "" && !run.confirmed(z, name) {

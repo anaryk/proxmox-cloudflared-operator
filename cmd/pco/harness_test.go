@@ -66,6 +66,7 @@ type fakeEngine struct {
 	steps                             []doctor.Step
 	findings                          []doctor.Finding
 	resolveErr, guestErr, diagnoseErr error
+	mode                              string // the admission mode an approval answers with; "approve" when empty
 
 	calls []string
 }
@@ -158,9 +159,20 @@ func (f *fakeEngine) Approvals() ([]engine.ApprovalView, error) {
 	return f.approvals, nil
 }
 
-func (f *fakeEngine) ApproveGuest(_ context.Context, owner string) error {
-	f.record("approve " + owner)
-	return f.guestErr
+func (f *fakeEngine) ApproveGuest(_ context.Context, owner, identity string) (engine.Approval, error) {
+	call := "approve " + owner
+	if identity != "" {
+		call += " identity=" + identity
+	}
+	f.record(call)
+	if f.guestErr != nil {
+		return engine.Approval{}, f.guestErr
+	}
+	mode := f.mode
+	if mode == "" {
+		mode = "approve"
+	}
+	return engine.Approval{Owner: owner, Identity: "uuid:" + strings.TrimPrefix(owner, "qemu/"), Mode: mode}, nil
 }
 
 func (f *fakeEngine) RevokeGuest(_ context.Context, owner string) error {

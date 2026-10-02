@@ -41,17 +41,28 @@ func (e *Engine) Approvals() ([]ApprovalView, error) {
 	return out, nil
 }
 
+// Approval is an approval as ApproveGuest recorded it, with the admission
+// mode it matters in.
+type Approval struct {
+	Owner    string     `json:"owner"`
+	Guest    *GuestView `json:"guest,omitempty"`
+	Identity string     `json:"identity"`
+	Mode     string     `json:"mode"` // the admission mode: "tag" or "approve"
+}
+
 // ApproveGuest approves a guest in the identity the last listing showed for
 // it, so that a guest re-created under its VMID, or a clone, is not approved
 // by it. A guest the last cycle did not see, as when it did not list every
-// guest, is refused: what is approved is what the admin can see.
-func (e *Engine) ApproveGuest(ctx context.Context, owner string) error {
+// guest, is refused: what is approved is what the admin can see. identity,
+// when it is not empty, is the identity the admin was shown: a guest that has
+// another one now changed since, and is refused.
+func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string) (Approval, error) {
 	ref, err := guestOwner(owner)
 	if err != nil {
-		return err
+		return Approval{}, err
 	}
 	if err := e.acquire(ctx); err != nil {
-		return err
+		return Approval{}, err
 	}
 	defer e.release()
 
@@ -59,23 +70,26 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner string) error {
 	g, listed := l.guests[ref]
 	switch {
 	case !l.complete:
-		return fmt.Errorf("%w: the last cycle did not list every guest, so %s cannot be approved as it is now; "+
+		return Approval{}, fmt.Errorf("%w: the last cycle did not list every guest, so %s cannot be approved as it is now; "+
 			"approve what you can see once a cycle has listed them all", ErrRefused, owner)
 	case !listed:
-		return fmt.Errorf("%w: %s is not in the last listing of Proxmox; approve what you can see", ErrRefused, owner)
+		return Approval{}, fmt.Errorf("%w: %s is not in the last listing of Proxmox; approve what you can see", ErrRefused, owner)
 	case g.identity == "":
-		return fmt.Errorf("%w: %s has no identity Proxmox reports, and an approval is of one", ErrRefused, owner)
+		return Approval{}, fmt.Errorf("%w: %s has no identity Proxmox reports, and an approval is of one", ErrRefused, owner)
+	case identity != "" && identity != g.identity:
+		return Approval{}, fmt.Errorf("%w: %s changed since it was shown: it was shown in identity %s and has identity %s now; "+
+			"look at it again", ErrRefused, owner, identity, g.identity)
 	}
-	note, err := e.admissionNote()
+	mode, note, err := e.admission()
 	if err != nil {
-		return err
+		return Approval{}, err
 	}
 	if err := e.d.Store.SaveApproval(owner, g.identity); err != nil {
-		return fmt.Errorf("saving the approval: %w", err)
+		return Approval{}, fmt.Errorf("saving the approval: %w", err)
 	}
 	e.adminEvent(owner, fmt.Sprintf("%s is approved in identity %s%s", describeGuest(ref, g.name), g.identity, note))
 	e.Trigger()
-	return nil
+	return Approval{Owner: owner, Guest: l.guestView(owner), Identity: g.identity, Mode: mode}, nil
 }
 
 // RevokeGuest removes the approval of a guest.
@@ -96,7 +110,7 @@ func (e *Engine) RevokeGuest(ctx context.Context, owner string) error {
 	if _, ok := approvals[owner]; !ok {
 		return fmt.Errorf("%w: %s has no approval", ErrNotFound, owner)
 	}
-	note, err := e.admissionNote()
+	_, note, err := e.admission()
 	if err != nil {
 		return err
 	}
@@ -117,16 +131,16 @@ func guestOwner(owner string) (model.GuestRef, error) {
 	return ref, nil
 }
 
-// admissionNote is what an approval event adds about the admission mode.
-func (e *Engine) admissionNote() (string, error) {
+// admission is the admission mode, and what an approval event adds about it.
+func (e *Engine) admission() (mode, note string, err error) {
 	s, err := e.d.Store.Settings()
 	if err != nil {
-		return "", fmt.Errorf("reading the settings: %w", err)
+		return "", "", fmt.Errorf("reading the settings: %w", err)
 	}
 	if s.Admission == store.AdmissionApprove {
-		return "", nil
+		return s.Admission, "", nil
 	}
-	return tagModeNote, nil
+	return s.Admission, tagModeNote, nil
 }
 
 // describeGuest names a guest as "qemu/101 (web-1)", or "qemu/101" when its

@@ -159,6 +159,20 @@ type DNSResult struct {
 	// otherwise WriterStale when this process is not, or stopped being, the
 	// stored writer.
 	Verdict WriterVerdict
+
+	// Guard is what the mass delete guard counted when it tripped, whether
+	// the removals it counts are due or still in their grace; nil when it did
+	// not trip.
+	Guard *GuardCount
+}
+
+// GuardCount is what the mass delete guard counted: the removals pending, the
+// records of this install, and how many of both are in zones that could not
+// be listed.
+type GuardCount struct {
+	Pending  int
+	Owned    int
+	Unlisted int
 }
 
 // DNSReconciler keeps a proxied CNAME to the tunnel for every published
