@@ -52,10 +52,11 @@ func newBinding(route model.Route, c Candidate, now time.Time, level Level) *Bin
 	}
 }
 
-// proven is the level b's proof stands for. Every proof of a version that
-// kept no level established at least that only the guest answers ARP for the
-// address, so a binding without one counts as observed.
-func (b *Binding) proven() Level {
+// Proven is the level b's last proof stands for, also once b is withdrawn.
+// Every proof of a version that kept no level established at least that only
+// the guest answers ARP for the address, so a binding without one counts as
+// observed.
+func (b *Binding) Proven() Level {
 	if b.Level == "" {
 		return LevelObserved
 	}

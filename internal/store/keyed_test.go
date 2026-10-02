@@ -335,6 +335,24 @@ func TestSaveBindingsWritesOnlyWhatChangedAndDeletesTheRest(t *testing.T) {
 	require.EqualValues(t, 2, revOf(t, filepath.Join(dir, "a.example.com.json")))
 }
 
+func TestSaveBindingsRefusesALevelItCouldNotReadBack(t *testing.T) {
+	for _, level := range []resolve.Level{resolve.LevelManual, "strict"} {
+		t.Run(string(level), func(t *testing.T) {
+			s, p := openStore(t)
+			ok := bindingOf("a.example.com", "qemu/101")
+			bad := bindingOf("b.example.com", "qemu/102")
+			bad.Level = level
+
+			require.Error(t, s.SaveBindings(map[string]resolve.Binding{"a.example.com": ok, "b.example.com": bad}))
+
+			require.Empty(t, stored(t, p.Local), "nothing is written")
+			got, err := s.Bindings()
+			require.NoError(t, err)
+			require.Empty(t, got)
+		})
+	}
+}
+
 func TestBindingsKeepTheirLevel(t *testing.T) {
 	s, p := openStore(t)
 	port := bindingOf("a.example.com", "qemu/101")

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -23,35 +24,56 @@ func (c *cycleRun) requiredLevel() resolve.Level {
 	return min
 }
 
-// holdBelowMinimum takes the address from the target of every winner that
-// resolution proved below the required level, so that the plan treats it as
-// one never verified: its rule answers 503 and no record is planned for it.
-// The level, the candidates and the binding stay as resolution found them. A
-// route without a guest has no identity to prove and is never held back. One
-// problem line says how many routes are held back.
+// holdBelowMinimum takes the address from the target of every winner whose
+// guest's address stands on a proof below the required level, so that the
+// plan treats it as one never verified: its rule answers 503 and no record is
+// planned for it. A target served now gets the reason that says so; a
+// withdrawn one keeps the reason resolution gave, and is held back by the
+// level of its last proof, so that a withdrawal does not publish a route the
+// minimum held back. The level, the candidates and the binding stay as
+// resolution found them. A route without a guest has no identity to prove
+// and is never held back, whatever level its result says. One problem line
+// says how many routes are held back.
 func (c *cycleRun) holdBelowMinimum() {
 	min := c.requiredLevel()
 	var held []resolve.Level
-	for host, res := range c.results {
-		if !belowMinimum(res, min) {
+	for _, rt := range c.claims.Winners {
+		res, ok := c.results[rt.Hostname]
+		if !ok || rt.Guest == nil {
 			continue
 		}
-		res.Target = planner.ResolvedTarget{Reason: fmt.Sprintf(reasonBelowMinimum, res.Level, min)}
-		c.results[host] = res
-		held = append(held, res.Level)
+		level, published := standsOn(res)
+		if !published || level.AtLeast(min) {
+			continue
+		}
+		if res.Target.Withdrawn {
+			res.Target.Addr = netip.Addr{}
+		} else {
+			res.Target = planner.ResolvedTarget{Reason: fmt.Sprintf(reasonBelowMinimum, level, min)}
+		}
+		c.results[rt.Hostname] = res
+		held = append(held, level)
 	}
 	if len(held) > 0 {
 		c.problem("%s", heldBack(held, min))
 	}
 }
 
-// belowMinimum reports whether res would serve an address proven below min.
-func belowMinimum(res resolve.Result, min resolve.Level) bool {
+// standsOn returns the level of the proof the plan would publish res's
+// target on, and false when it would publish nothing: no address, or one
+// that must never be served. A withdrawn address keeps its record on the
+// strength of its binding's last proof.
+func standsOn(res resolve.Result) (resolve.Level, bool) {
 	t := res.Target
-	if !t.Addr.IsValid() || t.Withdrawn || t.Rejected || res.Level == resolve.LevelManual {
-		return false
+	switch {
+	case !t.Addr.IsValid() || t.Rejected:
+		return "", false
+	case !t.Withdrawn:
+		return res.Level, true
+	case res.Binding == nil:
+		return "", false
 	}
-	return !res.Level.AtLeast(min)
+	return res.Binding.Proven(), true
 }
 
 // heldBack says how many routes the minimum holds back, at which levels, and

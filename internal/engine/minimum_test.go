@@ -157,14 +157,185 @@ func TestAManualRouteIsNotHeldBackByTheMinimum(t *testing.T) {
 		Target: model.Target{Scheme: model.SchemeHTTP, Addr: netip.MustParseAddr("10.0.0.50"), Port: 5000},
 	}))
 
+	// The second cycle reads what the first one stored.
+	for range 2 {
+		st := e.cycle()
+
+		nas := route(st, "nas.example.com")
+		require.Equal(t, planner.StateActive, nas.State)
+		require.Equal(t, "manual", nas.Level)
+		require.Equal(t, "http://10.0.0.50:5000", nas.Service)
+		require.Empty(t, st.Problems)
+		require.Equal(t, []string{"nas.example.com"}, e.recordNames())
+		e.clock.advance(10 * time.Second)
+	}
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.Empty(t, bindings, "a route without a guest is not bound")
+}
+
+// A manual route that names a guest has its identity proven, so the minimum
+// applies to it; only a route without a guest is exempt.
+func TestAManualRouteThatNamesAGuestIsHeldBack(t *testing.T) {
+	ref := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
+	e := newEnv(t)
+	e.enforce()
+	e.inv.set(snapshot(guest(101, "web-1")))
+	require.NoError(t, e.store.SaveManualRoute(model.Route{
+		Hostname: "web.example.com", ManualID: "web", Source: model.SourceManual, Guest: &ref,
+		Target: model.Target{Scheme: model.SchemeHTTP, Port: 8080},
+	}))
+	e.res.setLevel("web.example.com", resolve.LevelObserved)
+
 	st := e.cycle()
 
-	nas := route(st, "nas.example.com")
-	require.Equal(t, planner.StateActive, nas.State)
-	require.Equal(t, "manual", nas.Level)
-	require.Equal(t, "http://10.0.0.50:5000", nas.Service)
+	web := route(st, "web.example.com")
+	require.Equal(t, "manual/web", web.Owner)
+	require.Equal(t, planner.StateUnreachable, web.State)
+	require.Equal(t, belowPort, web.Reason)
+	require.Empty(t, e.recordNames())
+	require.Equal(t, []string{oneHeldBack}, st.Problems)
+}
+
+// A route the minimum holds back was never served, so a withdrawal must not
+// publish it either: the guest cannot be checked for a cycle, then answers
+// again.
+func TestAHeldBackRouteGetsNoRecordWhenItIsWithdrawn(t *testing.T) {
+	for _, why := range []string{"guest is not running", "guest not found in inventory", "no ARP answer on vmbr0"} {
+		t.Run(why, func(t *testing.T) {
+			e := webAndAPI(t)
+			e.res.setLevel("www.example.com", resolve.LevelObserved)
+			blocked := withSentinel(hostRule("api.example.com"), planner.IngressRule{Hostname: "www.example.com", Service: planner.BlockedService})
+			requireUnpublished := func(st State, step string) {
+				t.Helper()
+				require.Equal(t, []string{"api.example.com"}, e.recordNames(), step)
+				for _, a := range actionKinds(st) {
+					require.NotContains(t, a, "www.example.com", step)
+				}
+				require.Equal(t, blocked, e.rules(), step)
+				require.Equal(t, []string{oneHeldBack}, st.Problems, "%s: counted once", step)
+			}
+
+			requireUnpublished(e.cycle(), "held back")
+			bindings, err := e.store.Bindings()
+			require.NoError(t, err)
+			require.Equal(t, resolve.LevelObserved, bindings["www.example.com"].Level)
+
+			e.res.stop("www.example.com", why)
+			e.clock.advance(10 * time.Second)
+			st := e.cycle()
+			requireUnpublished(st, "withdrawn")
+			www := route(st, "www.example.com")
+			require.Equal(t, planner.StateUnreachable, www.State)
+			require.Equal(t, why, www.Reason, "the reason of the resolver stays")
+
+			e.res.start("www.example.com")
+			e.clock.advance(10 * time.Second)
+			st = e.cycle()
+			requireUnpublished(st, "answering again")
+			require.Equal(t, belowPort, route(st, "www.example.com").Reason)
+		})
+	}
+}
+
+func TestARouteServedAtPortKeepsItsRecordWhenWithdrawn(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+
+	e.res.stop("www.example.com", "guest is not running")
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
+
+	www := route(st, "www.example.com")
+	require.Equal(t, planner.StateWithdrawn, www.State)
+	require.Equal(t, "guest is not running", www.Reason)
+	require.Equal(t, []string{"www.example.com"}, e.recordNames())
 	require.Empty(t, st.Problems)
-	require.Equal(t, []string{"nas.example.com"}, e.recordNames())
+}
+
+// A target that was never verified keeps its own reason and is not counted
+// as held back.
+func TestAnUnverifiedTargetIsNotHeldBack(t *testing.T) {
+	e := webAndAPI(t)
+	e.res.stop("www.example.com", "guest is not running")
+
+	st := e.cycle()
+
+	www := route(st, "www.example.com")
+	require.Equal(t, planner.StateUnreachable, www.State)
+	require.Equal(t, "guest is not running", www.Reason)
+	require.Empty(t, www.Level)
+	require.Empty(t, st.Problems)
+}
+
+func TestWhatTheMinimumHoldsBack(t *testing.T) {
+	ref := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
+	annotated := model.Route{Hostname: "www.example.com", Source: model.SourceAnnotation, Guest: &ref, Target: model.Target{Scheme: model.SchemeHTTP, Port: 8080}}
+	manualToGuest := model.Route{Hostname: "www.example.com", Source: model.SourceManual, ManualID: "www", Guest: &ref, Target: model.Target{Scheme: model.SchemeHTTP, Port: 8080}}
+	manualToAddr := model.Route{Hostname: "www.example.com", Source: model.SourceManual, ManualID: "www", Target: model.Target{Scheme: model.SchemeHTTP, Addr: guestAddr, Port: 8080}}
+	served := planner.ResolvedTarget{Addr: guestAddr, Reachable: true, Owner: "qemu/101"}
+	withdrawn := planner.ResolvedTarget{Addr: guestAddr, Withdrawn: true, Reason: "guest is not running", Owner: "qemu/101"}
+	unpublished := withdrawn
+	unpublished.Addr = netip.Addr{}
+	bound := func(level resolve.Level) *resolve.Binding {
+		return &resolve.Binding{Owner: "qemu/101", Hostname: "www.example.com", Guest: "qemu/101", Addr: guestAddr, MAC: testMAC, VerifiedAt: t0, Level: level}
+	}
+	tests := []struct {
+		name   string
+		route  model.Route
+		res    resolve.Result
+		target planner.ResolvedTarget // what the plan is given
+		held   bool
+	}{
+		{name: "proven at port", route: annotated, res: resolve.Result{Target: served, Binding: bound(resolve.LevelPort), Level: resolve.LevelPort}, target: served},
+		{
+			name: "proven at observed", route: annotated, res: resolve.Result{Target: served, Binding: bound(resolve.LevelObserved), Level: resolve.LevelObserved},
+			target: planner.ResolvedTarget{Reason: belowPort}, held: true,
+		},
+		{
+			name: "a guest's route that says manual", route: annotated, res: resolve.Result{Target: served, Level: resolve.LevelManual},
+			target: planner.ResolvedTarget{Reason: "identity level manual is below the required port"}, held: true,
+		},
+		{
+			name: "a manual route that names a guest", route: manualToGuest, res: resolve.Result{Target: served, Binding: bound(resolve.LevelObserved), Level: resolve.LevelObserved},
+			target: planner.ResolvedTarget{Reason: belowPort}, held: true,
+		},
+		{name: "a route without a guest", route: manualToAddr, res: resolve.Result{Target: served, Level: resolve.LevelManual}, target: served},
+		{name: "a route without a guest whatever its level", route: manualToAddr, res: resolve.Result{Target: served, Level: resolve.LevelObserved}, target: served},
+		{name: "withdrawn after a proof at observed", route: annotated, res: resolve.Result{Target: withdrawn, Binding: bound(resolve.LevelObserved)}, target: unpublished, held: true},
+		{name: "withdrawn, bound by an older version", route: annotated, res: resolve.Result{Target: withdrawn, Binding: bound("")}, target: unpublished, held: true},
+		{name: "withdrawn after a proof at port", route: annotated, res: resolve.Result{Target: withdrawn, Binding: bound(resolve.LevelPort)}, target: withdrawn},
+		{name: "withdrawn without a binding", route: manualToAddr, res: resolve.Result{Target: withdrawn}, target: withdrawn},
+		{
+			name: "never verified", route: annotated, res: resolve.Result{Target: planner.ResolvedTarget{Reason: "guest is not running"}},
+			target: planner.ResolvedTarget{Reason: "guest is not running"},
+		},
+		{
+			name: "rejected", route: annotated, res: resolve.Result{Target: planner.ResolvedTarget{Rejected: true, Reason: "address of a cluster node"}},
+			target: planner.ResolvedTarget{Rejected: true, Reason: "address of a cluster node"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &cycleRun{
+				settings: store.DefaultSettings(),
+				install:  store.Install{ID: testInstall},
+				claims:   planner.ClaimResult{Winners: []model.Route{tt.route}},
+				results:  map[string]resolve.Result{"www.example.com": tt.res},
+			}
+
+			c.holdBelowMinimum()
+
+			require.Equal(t, tt.target, c.results["www.example.com"].Target)
+			if tt.held {
+				require.Len(t, c.st.Problems, 1)
+			} else {
+				require.Empty(t, c.st.Problems)
+			}
+		})
+	}
 }
 
 // A route held back by the minimum takes the path of a winner without a

@@ -61,6 +61,41 @@ func TestLevelDecodesOnlyWhatAProofCanHave(t *testing.T) {
 	}
 }
 
+// A binding is never written with a level it could not be read back with.
+func TestLevelEncodesOnlyWhatAProofCanHave(t *testing.T) {
+	for _, ok := range []Level{LevelObserved, LevelFiltered, LevelPort} {
+		b, err := json.Marshal(Binding{Level: ok})
+		require.NoError(t, err, ok)
+		require.Contains(t, string(b), `"level":"`+string(ok)+`"`)
+	}
+	b, err := json.Marshal(Binding{})
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "level")
+	for _, bad := range []Level{LevelManual, "Port", "anything"} {
+		_, err := json.Marshal(Binding{Level: bad})
+		require.ErrorIs(t, err, errUnknownLevel, bad)
+	}
+}
+
+func TestResolveManualRouteThatNamesAGuestIsProven(t *testing.T) {
+	s := newScenario(t)
+	ref := web1Ref
+	route := webRoute()
+	route.Source, route.ManualID, route.Guest = model.SourceManual, "web", &ref
+
+	res := s.resolve(t, route, nil)
+
+	require.True(t, res.Target.Reachable)
+	require.Equal(t, "manual/web", res.Target.Owner)
+	require.Equal(t, LevelPort, res.Level, "a route that names a guest has its identity proven, whoever wrote it")
+	require.Equal(t, LevelPort, res.Binding.Level)
+
+	s.web().Node = "pve2"
+	s.prober.fdb[fdbKey("vmbr0", 0, mac0)] = []string{"eno1"}
+	res = s.resolve(t, route, res.Binding)
+	require.Equal(t, LevelObserved, res.Level)
+}
+
 func requireLevel(t *testing.T, res Result, level Level) {
 	t.Helper()
 	require.Equal(t, level, res.Level, "level of the result")

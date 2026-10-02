@@ -482,7 +482,7 @@ func (a *attempt) result(target planner.ResolvedTarget, b *Binding) Result {
 	}
 	res := Result{Target: target, Binding: b, Candidates: out}
 	if b != nil && target.Addr.IsValid() && !target.Withdrawn && !target.Rejected {
-		res.Level = b.proven()
+		res.Level = b.Proven()
 	}
 	return res
 }

@@ -120,13 +120,16 @@ func (f *fakeInventory) refreshes() int {
 
 // fakeResolver verifies every route on guestAddr, or on the address the route
 // names, unless a test made its hostname unreachable. A guest's route is
-// proven at port and a route without a guest is manual, unless a test set
-// another level for its hostname.
+// proven at port and bound, a route without a guest is manual and not bound,
+// unless a test set another level for its hostname. A hostname whose guest a
+// test stopped is answered as resolve answers for a guest it cannot check:
+// its binding withdrawn, or nothing when it has none.
 type fakeResolver struct {
 	mu          sync.Mutex
 	now         func() time.Time
 	unreachable map[string]string        // hostname -> reason
 	rejected    map[string]string        // hostname -> reason
+	stopped     map[string]string        // hostname -> reason
 	levels      map[string]resolve.Level // hostname -> level
 	calls       int
 	denied      []netip.Addr // the node addresses the last denylist refused
@@ -134,7 +137,7 @@ type fakeResolver struct {
 	onResolve   func()
 }
 
-func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, _ *resolve.Binding, deny resolve.Denylist) resolve.Result {
+func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist) resolve.Result {
 	f.mu.Lock()
 	f.calls++
 	if d, ok := ctx.Deadline(); ok {
@@ -142,6 +145,7 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	}
 	reason, bad := f.unreachable[route.Hostname]
 	rejection, rejected := f.rejected[route.Hostname]
+	stop, stopped := f.stopped[route.Hostname]
 	level, set := f.levels[route.Hostname]
 	switch {
 	case set:
@@ -162,28 +166,49 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 		hook()
 	}
 
-	if rejected {
+	switch {
+	case rejected:
 		return resolve.Result{
 			Target:     planner.ResolvedTarget{Rejected: true, Reason: rejection},
 			Candidates: []resolve.CandidateResult{{Addr: guestAddr, Source: resolve.FromStatic, Reason: rejection}},
 		}
+	case stopped && prev == nil:
+		return resolve.Result{Target: planner.ResolvedTarget{Reason: stop}}
+	case stopped:
+		b := *prev
+		b.Withdrawn = true
+		return resolve.Result{Target: planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: stop, Owner: route.Owner()}, Binding: &b}
 	}
 	addr := guestAddr
 	if route.Target.Addr.IsValid() {
 		addr = route.Target.Addr
 	}
-	guest := ""
-	if route.Guest != nil {
-		guest = route.Guest.String()
-	}
-	b := &resolve.Binding{Owner: route.Owner(), Hostname: route.Hostname, Guest: guest, Addr: addr, MAC: testMAC, VerifiedAt: f.now(), Level: level}
 	res := resolve.Result{
 		Target:     planner.ResolvedTarget{Addr: addr, Reachable: !bad, Reason: reason, Owner: route.Owner()},
-		Binding:    b,
 		Candidates: []resolve.CandidateResult{{Addr: addr, Source: resolve.FromStatic, OK: !bad, Reason: reason}},
 		Level:      level,
 	}
+	if route.Guest != nil {
+		res.Binding = &resolve.Binding{
+			Owner: route.Owner(), Hostname: route.Hostname, Guest: route.Guest.String(),
+			Addr: addr, MAC: testMAC, VerifiedAt: f.now(), Level: level,
+		}
+	}
 	return res
+}
+
+// stop makes the guest of host one that cannot be checked, for reason.
+func (f *fakeResolver) stop(host, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped[host] = reason
+}
+
+// start undoes stop.
+func (f *fakeResolver) start(host string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.stopped, host)
 }
 
 // setLevel makes the routes of host proven at level.
@@ -453,7 +478,10 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 		cf:   cffake.New(),
 		apis: map[string]cfapi.API{},
 	}
-	e.res = &fakeResolver{now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{}, levels: map[string]resolve.Level{}}
+	e.res = &fakeResolver{
+		now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{},
+		stopped: map[string]string{}, levels: map[string]resolve.Level{},
+	}
 	if paths != nil {
 		paths(base, &e.paths)
 	}

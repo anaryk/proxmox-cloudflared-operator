@@ -53,14 +53,33 @@ func (l Level) AtLeast(min Level) bool {
 	return false
 }
 
+// storable reports whether l is a level a proof can have, or the zero level:
+// the only ones a stored binding may carry.
+func (l Level) storable() bool {
+	switch l {
+	case "", LevelObserved, LevelFiltered, LevelPort:
+		return true
+	}
+	return false
+}
+
+// MarshalText refuses what UnmarshalText refuses, so that nothing is stored
+// that cannot be read back.
+func (l Level) MarshalText() ([]byte, error) {
+	if !l.storable() {
+		return nil, errUnknownLevel
+	}
+	return []byte(l), nil
+}
+
 // UnmarshalText accepts the levels a proof can have, and the zero level, so
 // that a stored binding carries nothing else. The value is not repeated in
 // the error: the file may hold anything.
 func (l *Level) UnmarshalText(text []byte) error {
-	switch v := Level(text); v {
-	case "", LevelObserved, LevelFiltered, LevelPort:
-		*l = v
-		return nil
+	v := Level(text)
+	if !v.storable() {
+		return errUnknownLevel
 	}
-	return errUnknownLevel
+	*l = v
+	return nil
 }
