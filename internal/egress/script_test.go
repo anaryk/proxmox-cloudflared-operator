@@ -148,9 +148,33 @@ func TestABlockedAddressIsRejectedForEveryPortRightAfterTheReplyRule(t *testing.
 	require.Equal(t, []string{"192.168.1.1"}, elementsOf(t, script, setResolvers4), "and out of the other sets")
 	rules := rulesOf(t, script)
 	require.Equal(t, []string{
+		"ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
 		"ip daddr @blocked4 reject with icmpx admin-prohibited",
+		"ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
 		"ip6 daddr @blocked6 reject with icmpx admin-prohibited",
-	}, rules[2:4], "before any rule that accepts, the edge and DNS over TLS among them")
+	}, rules[2:6], "before any rule that accepts, the edge and DNS over TLS among them")
+}
+
+func TestEveryRejectAnswersTCPWithAReset(t *testing.T) {
+	rules := rulesOf(t, Base(testUID, nil, nil))
+
+	var rejects []string
+	for _, r := range rules {
+		if strings.Contains(r, "reject") {
+			rejects = append(rejects, r)
+		}
+	}
+	require.Equal(t, []string{
+		"ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
+		"ip daddr @blocked4 reject with icmpx admin-prohibited",
+		"ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
+		"ip6 daddr @blocked6 reject with icmpx admin-prohibited",
+		`fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset`,
+		`fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited`,
+		`meta l4proto tcp counter name "rejected" reject with tcp reset`,
+		`counter name "rejected" reject with icmpx admin-prohibited`,
+	}, rejects, "a reset fails a connect at once, for IPv6 too; both counters count both")
+	require.Equal(t, `counter name "rejected" reject with icmpx admin-prohibited`, rules[len(rules)-1])
 }
 
 func TestTheDeleteScriptNamesEachElement(t *testing.T) {

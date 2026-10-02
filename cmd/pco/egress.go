@@ -48,7 +48,10 @@ func (a *app) egressCmdWith(e egressEnv) *cobra.Command {
 			egress.ConnectorUser + ", which the connectors run as, open connections only to the targets the\n" +
 			"daemon verified, to the resolvers of the node on port 53 and to Cloudflare's edge, so that\n" +
 			"whoever changes a tunnel at Cloudflare cannot point a connector at anything else the node\n" +
-			"reaches. These commands work on this node directly, without the daemon, and need root.",
+			"reaches. These commands work on this node directly, without the daemon, and need root.\n\n" +
+			"pco egress load loads the table again when it is gone or not as it should be, and keeps the\n" +
+			"sets of an intact one. Never restart pco-egress.service for that: every connector restarts\n" +
+			"with it.",
 	}
 	cmd.AddCommand(
 		a.egressLoadCmd(e), a.egressShowCmd(e),
@@ -216,7 +219,7 @@ func (a *app) renderEgress(w io.Writer, v egressView) error {
 		printList(s, "Targets", tg)
 		printList(s, "Resolvers", rs)
 		s.println("")
-		s.println("Rejected since the table was loaded:")
+		s.println("Rejected since the table was last loaded in full:")
 		t := s.table()
 		t.row("  to addresses of this node", packets(v.live.RejectedLocal.Packets))
 		t.row("  to anything else", packets(v.live.Rejected.Packets))
@@ -228,7 +231,14 @@ func (a *app) renderEgress(w io.Writer, v egressView) error {
 		bl = append(bl, b.String())
 	}
 	printList(s, "Blocked on this node", bl)
-	return s.done()
+	if err := s.done(); err != nil {
+		return err
+	}
+	// A filter that is off, gone or not as pco loads it is a finding.
+	if v.off || !v.loaded || len(v.live.Differences) > 0 {
+		return errReported
+	}
+	return nil
 }
 
 func printList(s *screen, title string, items []string) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 )
 
@@ -27,10 +28,13 @@ const (
 // addresses it never lets a connector reach, and the switch that takes it
 // away. They live in two files of the local state root, which only root
 // reads and writes, and no command of the API changes them.
-type Overrides struct{ dir string }
+type Overrides struct {
+	dir     string
+	syncDir func(dir string) error // syncDir, replaceable so that a test can see it called
+}
 
 // NewOverrides returns the overrides kept in the local state root dir.
-func NewOverrides(dir string) *Overrides { return &Overrides{dir: dir} }
+func NewOverrides(dir string) *Overrides { return &Overrides{dir: dir, syncDir: syncDir} }
 
 type blockedDoc struct {
 	Addresses []netip.Addr `json:"addresses"`
@@ -135,6 +139,9 @@ func (o *Overrides) SwitchOn() (wasOff bool, err error) {
 	err = os.Remove(o.path(offFile))
 	switch {
 	case err == nil:
+		if err := o.syncDir(o.dir); err != nil {
+			return true, fmt.Errorf("switching the egress filter on: %w", err)
+		}
 		return true, nil
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil
@@ -176,7 +183,29 @@ func (o *Overrides) write(name string, v any) (err error) {
 	if err = os.Rename(tmp.Name(), o.path(name)); err != nil {
 		return fmt.Errorf("writing %s: %w", o.path(name), err)
 	}
+	// The rename is durable only once the directory is: a block that a crash
+	// undoes would come back unblocked.
+	if err := o.syncDir(o.dir); err != nil {
+		return fmt.Errorf("writing %s: %w", o.path(name), err)
+	}
 	return nil
+}
+
+// syncDir flushes the entries of a directory to disk. A file system that
+// cannot sync a directory says so with EINVAL, which leaves nothing to do.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if errors.Is(err, syscall.EINVAL) {
+		err = nil
+	}
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // readLimited reads a file of at most maxOverride bytes.

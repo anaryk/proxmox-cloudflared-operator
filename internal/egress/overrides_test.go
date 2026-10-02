@@ -56,6 +56,35 @@ func TestBlockKeepsASortedListWithoutDuplicates(t *testing.T) {
 	require.Equal(t, []string{blockedFile}, names(t, dir), "no temporary file is left behind")
 }
 
+func TestAWriteSyncsTheDirectoryAfterTheRename(t *testing.T) {
+	dir := t.TempDir()
+	ov := NewOverrides(dir)
+	var synced []string
+	ov.syncDir = func(d string) error {
+		require.FileExists(t, filepath.Join(d, blockedFile), "the new name is in place before the directory is synced")
+		synced = append(synced, d)
+		return nil
+	}
+
+	_, err := ov.Block(addr("10.0.0.9"))
+	require.NoError(t, err)
+	require.Equal(t, []string{dir}, synced)
+
+	ov.syncDir = func(d string) error { synced = append(synced, d); return nil }
+	require.NoError(t, ov.SwitchOff(time.Now()))
+	_, err = ov.SwitchOn()
+	require.NoError(t, err)
+	require.Equal(t, []string{dir, dir, dir}, synced, "the removal of the switch too")
+
+	ov.syncDir = func(string) error { return errBoom }
+	_, err = ov.Block(addr("10.0.0.10"))
+	require.ErrorIs(t, err, errBoom)
+}
+
+func TestTheDirectoryOfTheOverridesCanBeSynced(t *testing.T) {
+	require.NoError(t, syncDir(t.TempDir()))
+}
+
 func TestUnblockTakesAnAddressOut(t *testing.T) {
 	ov := NewOverrides(t.TempDir())
 	for _, a := range []string{"10.0.0.9", "10.0.0.10"} {

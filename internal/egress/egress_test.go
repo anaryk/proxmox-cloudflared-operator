@@ -357,14 +357,14 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				}}
 				return append(l[:first], append(listing{added}, l[first:]...)...)
 			})
-		}, "chain connector has 14 rules, want 13"},
+		}, "chain connector has 18 rules, want 17"},
 		{"a rule changed", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				last := l.rules(chainConnector)
 				l[last[len(last)-1]]["rule"].(map[string]any)["expr"] = []any{map[string]any{"accept": nil}}
 				return l
 			})
-		}, "chain connector: rule 13 differs"},
+		}, "chain connector: rule 17 differs"},
 		{"two rules swapped", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				r := l.rules(chainConnector)
@@ -385,6 +385,31 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				return l
 			})
 		}, "chain output is"},
+		{"another hook", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				l.object(t, "chain", chainOutput)["hook"] = "input"
+				return l
+			})
+		}, "chain output is filter hook input priority -10 policy accept"},
+		{"the exclusions of the edge turned into the only destinations", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				for _, i := range l.rules(chainConnector) {
+					expr := l[i]["rule"].(map[string]any)["expr"].([]any)
+					if m, ok := expr[0].(map[string]any)["match"].(map[string]any); ok && m["op"] == "!=" {
+						m["op"] = "=="
+					}
+				}
+				return l
+			})
+		}, "chain connector: rule 13 differs"},
+		{"the statements of a rule in another order", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				r := l.rules(chainConnector)
+				expr := l[r[len(r)-1]]["rule"].(map[string]any)["expr"].([]any)
+				expr[0], expr[1] = expr[1], expr[0]
+				return l
+			})
+		}, "chain connector: rule 17 differs"},
 		{"another priority", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				l.object(t, "chain", chainOutput)["prio"] = 10

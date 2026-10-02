@@ -274,6 +274,23 @@ func TestTheConnectorRunsConfinedAsItsOwnUser(t *testing.T) {
 	require.Equal(t, []string{"pco-egress.service"}, u["Unit"]["Requires"])
 	require.Len(t, u["Unit"]["After"], 1)
 	require.Contains(t, strings.Fields(u["Unit"]["After"][0]), "pco-egress.service")
+	// The filter sees only what passes the output hook of the node: a raw or
+	// packet socket, or a capability to change the ruleset, would get past it.
+	require.Equal(t, []string{""}, u["Service"]["CapabilityBoundingSet"])
+	require.Equal(t, []string{""}, u["Service"]["AmbientCapabilities"])
+	require.Equal(t, []string{"AF_INET AF_INET6 AF_UNIX AF_NETLINK"}, u["Service"]["RestrictAddressFamilies"])
+}
+
+func TestAnEnvFileWithoutTheEdgeIPVersionPassesTheDefault(t *testing.T) {
+	path := filepath.Join("..", "..", "packaging", "systemd", "pco-cloudflared@.service")
+	u := parseUnitFile(t, path)
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{edgeKey + "=" + edgeIPVersion}, u["Service"]["Environment"])
+	env := strings.Index(string(b), "\nEnvironment="+edgeKey+"=")
+	file := strings.Index(string(b), "\nEnvironmentFile=")
+	require.Less(t, env, file, "the env file, read after it, overrides it")
 }
 
 func TestTheEgressUnitLoadsTheFilterBeforeTheDaemon(t *testing.T) {

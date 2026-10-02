@@ -197,6 +197,17 @@ func TestLoadLoadsTheResolversItIsGivenLessTheBlocked(t *testing.T) {
 	require.Equal(t, []string{"192.168.1.1"}, elementsOf(t, n.applied()[0], setResolvers4))
 }
 
+func TestLoadReplacesATableWhoseListingCannotBeRead(t *testing.T) {
+	// What nft 1.0.6 can print for a table with flags.
+	n := &fakeNft{live: []byte(`{"nftables": [{"table": {"family": "inet", "name": "pco_egress", "handle": 1, "flags": `)}
+
+	loaded, err := Load(t.Context(), n, testUID, nil, nil)
+
+	require.NoError(t, err)
+	require.True(t, loaded)
+	require.Equal(t, []string{Base(testUID, nil, nil)}, n.applied())
+}
+
 func TestLoadReturnsAFailureToList(t *testing.T) {
 	n := &fakeNft{listErr: errBoom}
 

@@ -129,6 +129,16 @@ func TestEgressIsACommandOfPco(t *testing.T) {
 	require.Equal(t, []string{"load"}, hidden, "the boot unit runs load")
 }
 
+func TestEgressHelpSaysHowToLoadTheTableAgain(t *testing.T) {
+	r := newEgressRig(t)
+
+	res := r.run("--help")
+
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, "pco egress load loads the table again")
+	require.Contains(t, res.out, "Never restart pco-egress.service for that: every connector restarts\nwith it.")
+}
+
 func TestEgressCommandsNeedRoot(t *testing.T) {
 	for _, args := range [][]string{
 		{"load"}, {"show"}, {"block", "10.0.0.5"}, {"unblock", "10.0.0.5"}, {"off"}, {"on"},
@@ -204,6 +214,7 @@ func TestEgressShowOfATableThatIsNotAsItShouldBe(t *testing.T) {
 
 	res := r.run("show")
 
+	require.ErrorIs(t, res.err, errReported, "an exit status of 1")
 	require.NotContains(t, res.out, "The egress filter is on.")
 	requireGolden(t, "egress_show_changed.golden", res.out)
 }
@@ -417,20 +428,21 @@ func TestEgressUnblockTakesTheAddressOutOfTheBlockedSetOfTheLiveTable(t *testing
 
 func TestEgressShowGolden(t *testing.T) {
 	tests := []struct {
-		name   string
-		golden string
-		setup  func(r *egressRig)
+		name     string
+		golden   string
+		findings bool // an exit status of 1
+		setup    func(r *egressRig)
 	}{
 		{name: "on", golden: "egress_show.golden", setup: func(r *egressRig) {
 			r.nft.listErr, r.nft.live = nil, liveTable(r.t)
 			_, err := r.overrides().Block(netip.MustParseAddr("10.0.0.9"))
 			require.NoError(r.t, err)
 		}},
-		{name: "on without a table", golden: "egress_show_unloaded.golden", setup: func(*egressRig) {}},
-		{name: "off", golden: "egress_show_off.golden", setup: func(r *egressRig) {
+		{name: "on without a table", golden: "egress_show_unloaded.golden", findings: true, setup: func(*egressRig) {}},
+		{name: "off", golden: "egress_show_off.golden", findings: true, setup: func(r *egressRig) {
 			require.NoError(r.t, r.overrides().SwitchOff(t0))
 		}},
-		{name: "off with a table", golden: "egress_show_off_loaded.golden", setup: func(r *egressRig) {
+		{name: "off with a table", golden: "egress_show_off_loaded.golden", findings: true, setup: func(r *egressRig) {
 			r.nft.listErr, r.nft.live = nil, liveTable(r.t)
 			require.NoError(r.t, r.overrides().SwitchOff(t0))
 		}},
@@ -442,7 +454,11 @@ func TestEgressShowGolden(t *testing.T) {
 
 			res := r.run("show")
 
-			require.NoError(t, res.err)
+			if tc.findings {
+				require.ErrorIs(t, res.err, errReported)
+			} else {
+				require.NoError(t, res.err)
+			}
 			require.Empty(t, res.errOut)
 			require.Empty(t, r.nft.applied())
 			requireGolden(t, tc.golden, res.out)
@@ -466,6 +482,6 @@ func TestEgressShowWithAnOffSwitchThatCannotBeRead(t *testing.T) {
 
 	res := r.run("show")
 
-	require.NoError(t, res.err)
+	require.ErrorIs(t, res.err, errReported)
 	require.Contains(t, res.out, "The egress filter is switched off since an unknown time")
 }

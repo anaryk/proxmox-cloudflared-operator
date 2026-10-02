@@ -11,6 +11,7 @@ User=pco-connector
 Group=pco-connector
 LoadCredential=token:/var/lib/pco/tunnels/%i.token
 LoadCredential=config.yml:/var/lib/pco/tunnels/%i.yml
+Environment=EDGE_IP_VERSION=auto
 EnvironmentFile=/var/lib/pco/tunnels/%i.env
 ExecStart=/usr/bin/cloudflared --config %d/config.yml --no-autoupdate --metrics ${METRICS_ADDR} --edge-ip-version ${EDGE_IP_VERSION} --grace-period 30s tunnel run --token-file %d/token
 Restart=always

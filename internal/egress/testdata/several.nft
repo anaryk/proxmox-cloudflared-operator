@@ -41,16 +41,20 @@ table inet pco_egress {
 	chain connector {
 		ct state invalid drop
 		ct direction reply meta l4proto tcp fib daddr type local accept
+		ip daddr @blocked4 meta l4proto tcp reject with tcp reset
 		ip daddr @blocked4 reject with icmpx admin-prohibited
+		ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset
 		ip6 daddr @blocked6 reject with icmpx admin-prohibited
 		ip daddr . tcp dport @targets4 accept
 		ip6 daddr . tcp dport @targets6 accept
 		ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept
 		ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept
+		fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset
 		fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited
 		ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 198.18.0.0/15, 0.0.0.0/8, 192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/3 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept
 		ip6 daddr != { fc00::/7, fe80::/10, ::1, 64:ff9b::/96, 64:ff9b:1::/48, 2002::/16, 2001::/32, ff00::/8 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept
 		ip daddr { 1.1.1.1, 1.0.0.1 } tcp dport 853 accept
+		meta l4proto tcp counter name "rejected" reject with tcp reset
 		counter name "rejected" reject with icmpx admin-prohibited
 	}
 }

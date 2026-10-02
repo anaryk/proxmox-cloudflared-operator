@@ -7,7 +7,7 @@ Targets:
 Resolvers:
   192.168.1.1
 
-Rejected since the table was loaded:
+Rejected since the table was last loaded in full:
   to addresses of this node  3 packets
   to anything else           12 packets
 
