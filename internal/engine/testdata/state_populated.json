@@ -160,5 +160,6 @@
   "problems": [
     "a problem"
   ],
-  "writerVerdict": "ok"
+  "writerVerdict": "ok",
+  "profile": "host"
 }

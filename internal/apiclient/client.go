@@ -29,6 +29,10 @@ const (
 	maxResponse  = 32 << 20
 )
 
+// ErrUnknownRequest is what an error unwraps to when the daemon does not know
+// the request: it is another version than the client.
+var ErrUnknownRequest = errors.New("the daemon does not know the request")
+
 // Client calls the daemon on a unix socket.
 type Client struct {
 	socket string
@@ -64,6 +68,29 @@ func (c *Client) Status(ctx context.Context) (engine.State, error) {
 	var st engine.State
 	err := c.call(ctx, c.short, http.MethodGet, "/v1/state", nil, &st)
 	return st, err
+}
+
+// StatusRaw returns the state of the last cycle as the daemon sent it, for a
+// caller that prints it unchanged.
+func (c *Client) StatusRaw(ctx context.Context) (json.RawMessage, error) {
+	var raw json.RawMessage
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/state", nil, &raw)
+	return raw, err
+}
+
+// Credentials returns the stored credentials with the last check of each. The
+// answer has no token.
+func (c *Client) Credentials(ctx context.Context) ([]engine.CredentialView, error) {
+	var views []engine.CredentialView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/credentials", nil, &views)
+	return views, err
+}
+
+// CredentialsRaw is Credentials as the daemon sent it.
+func (c *Client) CredentialsRaw(ctx context.Context) (json.RawMessage, error) {
+	var raw json.RawMessage
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/credentials", nil, &raw)
+	return raw, err
 }
 
 // Events returns the events after since; the zero time asks for all of them.
@@ -219,7 +246,10 @@ func (c *Client) statusError(status int, body []byte) error {
 		return &daemonError{msg: "permission denied on " + c.socket + ": run as root", cause: fs.ErrPermission}
 	case answer.Code == "no_route", answer.Code == "method_not_allowed",
 		answer.Code == "" && (status == http.StatusNotFound || status == http.StatusMethodNotAllowed):
-		return &daemonError{msg: "the pco daemon at " + c.socket + " does not know this request: is it a different version than this pco?"}
+		return &daemonError{
+			msg:   "the pco daemon at " + c.socket + " does not know this request: is it a different version than this pco?",
+			cause: ErrUnknownRequest,
+		}
 	}
 	msg := answer.Error
 	if msg == "" {

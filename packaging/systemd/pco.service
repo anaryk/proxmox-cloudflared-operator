@@ -1,0 +1,26 @@
+[Unit]
+Description=pco, Cloudflare Tunnel operator for Proxmox VE
+Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
+After=network-online.target pve-cluster.service pveproxy.service
+Wants=network-online.target
+Before=pve-guests.service pve-ha-lrm.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/pco daemon
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+KillMode=process
+RuntimeDirectory=pco
+RuntimeDirectoryMode=0750
+StateDirectory=pco
+StateDirectoryMode=0700
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+ACTION         TARGET            DETAIL                                                  HELD
+create-record  blog.example.com  in zone example.com: tunnel pco-abc123 has no known id  tunnel not created yet
+update-record  api.example.com   in zone example.com                                     -
+delete-record  old.example.com   in zone example.com                                     grace period: 1m0s left
+delete-record  gone.example.com  in zone example.com                                     mass delete guard: 5 of 9 records are being removed; confirm to proceed
+
+Records of someone else that stand in the way (pco adopt replaces one):
+NAME              ZONE         TYPE  CONTENT
+shop.example.com  example.com  A     192.0.2.10
+
+Names that point at the tunnel but lost the marker of this install (pco adopt takes them back):
+  lost.example.com

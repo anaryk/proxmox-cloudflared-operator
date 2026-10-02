@@ -3,6 +3,7 @@ module github.com/anaryk/proxmox-cloudflared-operator
 go 1.26
 
 require (
+	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/mdlayher/packet v1.1.2
 	github.com/rs/zerolog v1.35.1
@@ -11,6 +12,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.41.0
+	golang.org/x/term v0.40.0
 )
 
 require (

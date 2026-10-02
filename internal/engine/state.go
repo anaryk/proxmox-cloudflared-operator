@@ -62,6 +62,9 @@ type State struct {
 	// could not be read or used. A cycle that did not get as far keeps the
 	// last one.
 	WriterVerdict string `json:"writerVerdict"`
+	// Profile is the profile of the install, "host" or "appliance". It is
+	// empty until a cycle has read the install.
+	Profile string `json:"profile,omitempty"`
 }
 
 func emptyState() State {

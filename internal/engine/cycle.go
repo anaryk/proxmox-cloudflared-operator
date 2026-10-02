@@ -122,6 +122,7 @@ func (c *cycleRun) prepare() bool {
 		return false
 	}
 	c.install = inst
+	c.st.Profile = inst.ProfileName()
 	if !c.registered() {
 		return false
 	}

@@ -78,6 +78,10 @@ func New(e Engine, version string, allowedUIDs []uint32, log zerolog.Logger) *Se
 	return s
 }
 
+// OnListening sets the function Serve calls, once, when the socket is ready
+// for connections. It has to be set before Serve is called.
+func (s *Server) OnListening(fn func()) { s.onListening = fn }
+
 // Handler returns the whole API, the peer check included. A request is
 // answered only when the context of its connection says who the peer is, which
 // Serve arranges.

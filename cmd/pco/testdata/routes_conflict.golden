@@ -1,0 +1,2 @@
+HOSTNAME         STATE     SERVICE  OWNER     ZONE  NOTE
+www.example.com  conflict  -        qemu/102  -     hostname is held by qemu/101

@@ -294,11 +294,48 @@ func TestAnUnknownRequestIsAVersionMismatch(t *testing.T) {
 
 			for _, r := range everyCall(t, New(socket)) {
 				require.EqualError(t, r.err, "the pco daemon at "+socket+" does not know this request: is it a different version than this pco?", r.name)
+				require.ErrorIs(t, r.err, ErrUnknownRequest, r.name)
 				require.NotErrorIs(t, r.err, engine.ErrNotFound, r.name)
 				require.NotErrorIs(t, r.err, engine.ErrInvalid, r.name)
 			}
 		})
 	}
+}
+
+func TestRawAnswersKeepTheBytesTheDaemonSent(t *testing.T) {
+	// The key order is not the one of the structs the client decodes into.
+	const state = `{"writerVerdict":"ok","mode":"observe","extra":{"b":1,"a":[1,2]}}`
+	const creds = `[{"label":"main","id":"abc12345","kind":"scoped","checked":false}]`
+
+	for _, tt := range []struct {
+		name  string
+		reply string
+		path  string
+		call  func(c *Client) (json.RawMessage, error)
+	}{
+		{"status", state, "/v1/state", func(c *Client) (json.RawMessage, error) { return c.StatusRaw(t.Context()) }},
+		{"credentials", creds, "/v1/credentials", func(c *Client) (json.RawMessage, error) { return c.CredentialsRaw(t.Context()) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, socket := fakeDaemon(t, reply(200, tt.reply))
+
+			got, err := tt.call(New(socket))
+
+			require.NoError(t, err)
+			require.JSONEq(t, tt.reply, string(got))
+			require.Equal(t, tt.reply, string(got))
+			require.Equal(t, seen{Method: "GET", Path: tt.path, Accept: "application/json"}, d.last(t))
+		})
+	}
+}
+
+func TestCredentials(t *testing.T) {
+	_, socket := fakeDaemon(t, reply(200, `[{"id":"abc12345","label":"main","kind":"scoped","checked":false}]`))
+
+	got, err := New(socket).Credentials(t.Context())
+
+	require.NoError(t, err)
+	require.Equal(t, []engine.CredentialView{{ID: "abc12345", Label: "main", Kind: "scoped"}}, got)
 }
 
 func TestAnAnswerWithoutAnErrorBody(t *testing.T) {

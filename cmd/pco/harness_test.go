@@ -1,0 +1,227 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"flag"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+)
+
+var update = flag.Bool("update", false, "write the golden files of the tests")
+
+// t0 is the time of the tests; the zone shows in every time the commands print.
+var (
+	t0       = time.Date(2026, 10, 1, 12, 0, 0, 123_000_000, time.UTC)
+	testZone = time.FixedZone("CEST", 2*60*60)
+)
+
+const cliVersion = "0.2.0"
+
+// testEnv is a machine where it is 2026-10-01 12:00 UTC, in a zone two hours
+// ahead, and where stdin is no terminal.
+func testEnv() env {
+	e := defaultEnv()
+	e.now = func() time.Time { return t0 }
+	e.loc = testZone
+	e.version = cliVersion
+	e.stdinTerminal = func(io.Reader) (int, bool) { return 0, false }
+	e.readPassword = func(int) ([]byte, error) { panic("no terminal in this test") }
+	return e
+}
+
+// shortDir returns a directory whose path is short enough for a unix socket.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "pco")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// fakeEngine is the engine behind a daemon of a test: it answers from its
+// fields and remembers what it was asked.
+type fakeEngine struct {
+	mu    sync.Mutex
+	state engine.State
+
+	addView, checkView engine.CredentialView
+	addErr, checkErr   error
+	applyErr, adoptErr error
+	removeErr          error
+
+	calls []string
+}
+
+func (f *fakeEngine) record(call string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+}
+
+func (f *fakeEngine) called() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
+func (f *fakeEngine) State() engine.State {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state
+}
+
+func (f *fakeEngine) Events(time.Time) []engine.Event { return nil }
+
+func (f *fakeEngine) Trigger() { f.record("sync") }
+
+func (f *fakeEngine) Apply(_ context.Context, confirmDeletes bool) error {
+	f.record("apply confirmDeletes=" + boolText(confirmDeletes))
+	return f.applyErr
+}
+
+func (f *fakeEngine) Adopt(_ context.Context, name string) error {
+	f.record("adopt " + name)
+	return f.adoptErr
+}
+
+func (f *fakeEngine) AddCredential(_ context.Context, label, token string) (engine.CredentialView, error) {
+	f.record("add " + label + " " + token)
+	return f.addView, f.addErr
+}
+
+func (f *fakeEngine) CheckCredential(_ context.Context, id string, deep bool) (engine.CredentialView, error) {
+	f.record("check " + id + " deep=" + boolText(deep))
+	return f.checkView, f.checkErr
+}
+
+func (f *fakeEngine) RemoveCredential(_ context.Context, id string) error {
+	f.record("remove " + id)
+	return f.removeErr
+}
+
+func boolText(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// serveFake runs the API of the daemon over the engine on a socket of its own
+// until the test ends, and returns the path of the socket.
+func serveFake(t *testing.T, e *fakeEngine) string {
+	t.Helper()
+	socket := filepath.Join(shortDir(t), "pco", "pco.sock")
+	srv := api.New(e, "1.2.3", []uint32{uint32(os.Getuid())}, zerolog.Nop())
+	ctx, cancel := context.WithCancel(t.Context())
+	ready := make(chan struct{})
+	srv.OnListening(func() { close(ready) })
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, socket, os.Getgid()) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		cancel()
+		t.Fatalf("the API ended before it listened: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return socket
+}
+
+// serveRaw runs a daemon that answers every request from replies, by path, with
+// a status and a body; a path it has no reply for is an unknown route.
+func serveRaw(t *testing.T, replies map[string]rawReply) string {
+	t.Helper()
+	socket := filepath.Join(shortDir(t), "pco.sock")
+	ln, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reply, ok := replies[r.Method+" "+r.URL.Path]
+		if !ok {
+			reply = rawReply{status: http.StatusNotFound, body: `{"error":"no such route","code":"no_route"}`}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(reply.status)
+		_, _ = io.WriteString(w, reply.body)
+	}))
+	ts.Listener = ln
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return socket
+}
+
+type rawReply struct {
+	status int
+	body   string
+}
+
+// result is what a command did.
+type result struct {
+	out    string // standard output
+	errOut string // standard error
+	err    error  // what Execute returned, which main turns into the exit code
+}
+
+// runner runs the commands of pco against a socket.
+type runner struct {
+	t      *testing.T
+	socket string
+	env    env
+}
+
+func newRunner(t *testing.T, socket string) *runner {
+	return &runner{t: t, socket: socket, env: testEnv()}
+}
+
+// run runs pco with args, reading stdin from in.
+func (r *runner) run(in string, args ...string) result {
+	r.t.Helper()
+	cmd := newRootCmdWith(r.env)
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetIn(strings.NewReader(in))
+	cmd.SetArgs(append([]string{"--socket", r.socket}, args...))
+	err := cmd.ExecuteContext(r.t.Context())
+	return result{out: out.String(), errOut: errOut.String(), err: err}
+}
+
+// requireGolden compares got with a file of testdata; run the tests with
+// -update to write them.
+func requireGolden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	if *update {
+		require.NoError(t, os.MkdirAll("testdata", 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(got), 0o644))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, string(want), got, "the output changed; run the test with -update when that is intended")
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
+}

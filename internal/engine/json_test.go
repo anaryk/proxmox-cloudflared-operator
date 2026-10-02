@@ -79,6 +79,7 @@ func populatedState() State {
 		Lost:          []string{"lost.example.com"},
 		Problems:      []string{"a problem"},
 		WriterVerdict: "ok",
+		Profile:       "host",
 	}
 }
 

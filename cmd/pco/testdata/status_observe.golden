@@ -1,0 +1,13 @@
+Mode:        observe-only
+Profile:     host
+Inventory:   complete
+Writer:      ok
+Routes:      active 3, unreachable 1
+Last cycle:  2026-10-01T14:00:00+02:00
+Tunnels:     none
+Credentials:
+  LABEL  STATE    NOTE
+  main   unknown  -
+Problems:    none
+
+Run pco apply to start publishing.

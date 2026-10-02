@@ -1,0 +1,19 @@
+Mode:        enforce
+Profile:     appliance
+Inventory:   incomplete: cluster status: proxmox api: HTTP 500: no quorum
+Writer:      stale (a newer generation of this install is writing)
+Routes:      active 3, unreachable 1
+Last cycle:  2026-10-01T14:00:00+02:00
+Tunnels:
+  NAME        ID        VERIFIED  CONNECTOR
+  pco-abc123  0a1b2c3d  yes       active, ready, 4 connections
+  pco-abc123  9f8e7d6c  no        active, not ready
+  pco-abc123  -         unknown   none
+Credentials:
+  LABEL  STATE    NOTE
+  main   problem  dns.read on example.com: grant Zone > DNS > Read on example.com
+  spare  unknown  -
+  old    usable   token expired 2026-09-29T14:00:00+02:00
+Problems:
+  - cluster status: proxmox api: HTTP 500: no quorum
+  - the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are
