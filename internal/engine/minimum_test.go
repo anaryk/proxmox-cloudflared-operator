@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"net/netip"
 	"testing"
 	"time"
@@ -285,11 +286,12 @@ func TestWhatTheMinimumHoldsBack(t *testing.T) {
 		return &resolve.Binding{Owner: "qemu/101", Hostname: "www.example.com", Guest: "qemu/101", Addr: guestAddr, MAC: testMAC, VerifiedAt: t0, Level: level}
 	}
 	tests := []struct {
-		name   string
-		route  model.Route
-		res    resolve.Result
-		target planner.ResolvedTarget // what the plan is given
-		held   bool
+		name    string
+		minimum string // the default when empty
+		route   model.Route
+		res     resolve.Result
+		target  planner.ResolvedTarget // what the plan is given
+		held    bool
 	}{
 		{name: "proven at port", route: annotated, res: resolve.Result{Target: served, Binding: bound(resolve.LevelPort), Level: resolve.LevelPort}, target: served},
 		{
@@ -308,6 +310,10 @@ func TestWhatTheMinimumHoldsBack(t *testing.T) {
 		{name: "a route without a guest whatever its level", route: manualToAddr, res: resolve.Result{Target: served, Level: resolve.LevelObserved}, target: served},
 		{name: "withdrawn after a proof at observed", route: annotated, res: resolve.Result{Target: withdrawn, Binding: bound(resolve.LevelObserved)}, target: unpublished, held: true},
 		{name: "withdrawn, bound by an older version", route: annotated, res: resolve.Result{Target: withdrawn, Binding: bound("")}, target: unpublished, held: true},
+		{
+			name: "withdrawn, bound by an older version, at minimum observed", minimum: "observed", route: annotated,
+			res: resolve.Result{Target: withdrawn, Binding: bound("")}, target: withdrawn,
+		},
 		{name: "withdrawn after a proof at port", route: annotated, res: resolve.Result{Target: withdrawn, Binding: bound(resolve.LevelPort)}, target: withdrawn},
 		{name: "withdrawn without a binding", route: manualToAddr, res: resolve.Result{Target: withdrawn}, target: withdrawn},
 		{
@@ -321,8 +327,10 @@ func TestWhatTheMinimumHoldsBack(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			settings := store.DefaultSettings()
+			settings.IdentityMinimum = cmp.Or(tt.minimum, settings.IdentityMinimum)
 			c := &cycleRun{
-				settings: store.DefaultSettings(),
+				settings: settings,
 				install:  store.Install{ID: testInstall},
 				claims:   planner.ClaimResult{Winners: []model.Route{tt.route}},
 				results:  map[string]resolve.Result{"www.example.com": tt.res},

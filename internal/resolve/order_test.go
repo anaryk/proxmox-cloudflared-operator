@@ -32,21 +32,40 @@ func TestResolveServesTheCandidateProvenAtTheHighestLevel(t *testing.T) {
 	}, res.Candidates)
 }
 
+// trustedOnly is web-1 on this node with four trusted static addresses in a
+// routed network and none the node has an address next to.
+func trustedOnly(t *testing.T) *scenario {
+	s := newScenario(t)
+	s.settings.TrustStatic = true
+	s.settings.TrustedCIDRs = prefixes("10.40.0.0/24")
+	s.web().NICs = []model.NIC{nicOn(0, mac0, "vmbr0", 0, "10.40.0.10", "10.40.0.11", "10.40.0.12", "10.40.0.13")}
+	return s
+}
+
 func TestResolveTakesTheFirstOfEqualLevels(t *testing.T) {
-	t.Run("both tried, as port could still be proven", func(t *testing.T) {
-		s := newScenario(t)
-		s.settings.TrustStatic = true
-		s.settings.TrustedCIDRs = prefixes("10.40.0.0/24")
-		s.web().NICs = []model.NIC{nicOn(0, mac0, "vmbr0", 0, "10.40.0.10", "10.40.0.11")}
+	// A trusted static address is proven at observed at most, so once the
+	// first passes the others cannot change the result and are not tried,
+	// although port could be proven for an address next to the node.
+	for _, prev := range []*Binding{nil, atLevel(boundTo("10.40.0.10"), LevelObserved)} {
+		t.Run("trusted static addresses, bound: "+boolWord(prev != nil), func(t *testing.T) {
+			s := trustedOnly(t)
 
-		res := s.resolve(t, webRoute(), nil)
+			res := s.resolve(t, webRoute(), prev)
 
-		requireServedAt(t, res, "10.40.0.10", t0, LevelObserved)
-		require.Equal(t, []CandidateResult{
-			{Addr: ip("10.40.0.10"), Source: FromStatic, OK: true, Level: "observed"},
-			{Addr: ip("10.40.0.11"), Source: FromStatic, OK: true, Level: "observed"},
-		}, res.Candidates)
-	})
+			requireServedAt(t, res, "10.40.0.10", t0, LevelObserved)
+			require.Equal(t, []CandidateResult{
+				{Addr: ip("10.40.0.10"), Source: FromStatic, OK: true, Level: "observed"},
+				{Addr: ip("10.40.0.11"), Source: FromStatic, Reason: "not tried"},
+				{Addr: ip("10.40.0.12"), Source: FromStatic, Reason: "not tried"},
+				{Addr: ip("10.40.0.13"), Source: FromStatic, Reason: "not tried"},
+			}, res.Candidates)
+			require.Equal(t, []probeCall{
+				{op: "interfaces"},
+				{op: "route", addr: ip("10.40.0.10")},
+				{op: "dial", addr: ip("10.40.0.10"), port: 80},
+			}, s.prober.calls, "the cost of one candidate")
+		})
+	}
 	t.Run("a guest on another node, where nothing beats observed", func(t *testing.T) {
 		s := newScenario(t)
 		s.web().Node = "pve2"
@@ -63,6 +82,30 @@ func TestResolveTakesTheFirstOfEqualLevels(t *testing.T) {
 		}, res.Candidates)
 		require.False(t, s.prober.touched(ip("10.20.0.11")))
 	})
+}
+
+func boolWord(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+// After a trusted static address passes, a later address next to the node is
+// still tried, as it can be proven at port; another trusted one is not.
+func TestResolveTriesOnlyCandidatesThatCanProveMore(t *testing.T) {
+	s := trustedFirst(t)
+	s.web().NICs = []model.NIC{nicOn(0, mac0, "vmbr0", 0, "10.40.0.10", "10.40.0.11", "10.20.0.10")}
+
+	res := s.resolve(t, webRoute(), nil)
+
+	requireServed(t, res, "10.20.0.10", t0)
+	require.Equal(t, []CandidateResult{
+		{Addr: ip("10.40.0.10"), Source: FromStatic, OK: true, Level: "observed"},
+		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"},
+		{Addr: ip("10.40.0.11"), Source: FromStatic, Reason: "not tried"},
+	}, res.Candidates)
+	require.False(t, s.prober.touched(ip("10.40.0.11")))
 }
 
 func TestResolveStopsAtPort(t *testing.T) {

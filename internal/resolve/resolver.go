@@ -311,9 +311,9 @@ func newAttempt(r *Resolver, route model.Route, guest model.Guest, snap inventor
 }
 
 // resolve serves, of the candidates that pass, the one proven at the highest
-// level, the first of them when several are equal; trying stops once one
-// reaches the highest level the guest can be proven at here. A candidate
-// proven before the call is cancelled is served all the same.
+// level, the first of them when several are equal. Once one passes, a
+// candidate that cannot be proven higher is not tried. A candidate proven
+// before the call is cancelled is served all the same.
 func (a *attempt) resolve(ctx context.Context) Result {
 	best := -1
 	if a.bound {
@@ -330,10 +330,7 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		}
 	}
 	for i := range a.list[:min(len(a.list), maxTries)] {
-		if best >= 0 && a.levels[best].AtLeast(a.ceiling()) {
-			break
-		}
-		if a.tried[i] {
+		if a.tried[i] || best >= 0 && a.levels[best].AtLeast(a.ceilingOf(a.list[i])) {
 			continue
 		}
 		switch o := a.try(ctx, i); {
@@ -402,6 +399,17 @@ func (a *attempt) ceiling() Level {
 		return LevelPort
 	}
 	return LevelObserved
+}
+
+// ceilingOf is the highest level c can be proven at: observed when the node
+// has no address next to it, as it then passes on the trusted path only, and
+// the guest's ceiling otherwise. It needs the host's interfaces, which have
+// been read once a candidate passed.
+func (a *attempt) ceilingOf(c Candidate) Level {
+	if arpInterface(a.ifaces, c) == "" {
+		return LevelObserved
+	}
+	return a.ceiling()
 }
 
 func (a *attempt) served(i int) Result {
