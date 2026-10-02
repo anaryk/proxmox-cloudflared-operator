@@ -13,16 +13,16 @@ import (
 // the listing at once before the cycle holds for the admin's confirmation.
 const (
 	vanishMax      = 5
-	vanishShare    = 0.30
+	vanishPercent  = 30
 	vanishExamples = 5
 )
 
 // guardVanished holds the cycle when the guests that hold a claim drop out of
 // a complete listing in numbers that look like a failure rather than their
 // removal: Proxmox lists no guest at all, or more than vanishMax of them and
-// more than vanishShare are gone. A guest that only lost its tag or its route
-// is still listed. Guests the admin confirmed gone do not count until they
-// are listed again.
+// more than vanishPercent per cent of them are gone. A guest that only lost
+// its tag or its route is still listed. Guests the admin confirmed gone do not
+// count until they are listed again.
 func (c *cycleRun) guardVanished() bool {
 	listed := make(map[model.GuestRef]bool, len(c.snap.Guests))
 	for _, g := range c.snap.Guests {
@@ -53,7 +53,7 @@ func (c *cycleRun) guardVanished() bool {
 			"check the privileges of the Proxmox API token, or run pco apply --confirm-deletes if they were removed on purpose",
 			len(vanished), examples(vanished))
 		return false
-	case len(vanished) > vanishMax && float64(len(vanished)) > vanishShare*float64(len(holders)):
+	case len(vanished) > vanishMax && 100*len(vanished) > vanishPercent*len(holders):
 		c.problem("%d of %d guests that hold a hostname are no longer listed by Proxmox (%s); nothing is changed "+
 			"until they are listed again, or run pco apply --confirm-deletes if they were removed on purpose",
 			len(vanished), len(holders), examples(vanished))

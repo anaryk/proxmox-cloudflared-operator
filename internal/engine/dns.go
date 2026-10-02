@@ -107,7 +107,14 @@ func (c *cycleRun) lookedAt(res reconcile.DNSResult) ([]reconcile.Conflict, []st
 // beforeReplace keeps a copy of the record an adoption is about to change or
 // delete, in the adopted log; the adoption goes ahead only once it is kept.
 func (c *cycleRun) beforeReplace(_ context.Context, zone reconcile.ZoneRef, rec cfapi.Record) error {
-	return c.e.d.Store.AppendAdopted(c.now, zone.Name, rec)
+	if err := c.e.d.Store.AppendAdopted(c.now, zone.Name, rec); err != nil {
+		return err
+	}
+	if c.adopted == nil {
+		c.adopted = make(map[string]bool)
+	}
+	c.adopted[recordName(rec)] = true
+	return nil
 }
 
 // kept are the hostnames claimed or published in this cycle that have no

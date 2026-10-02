@@ -123,3 +123,55 @@ func TestGuestsReturningBeforeAConfirmationLoseNothing(t *testing.T) {
 	require.Equal(t, stored, claims, "no claim moved")
 	require.Empty(t, claimEventsAfter(e, t0))
 }
+
+func TestFiveOfTenGuestsVanishingProceed(t *testing.T) {
+	e := publishedMany(t, 10)
+	e.inv.set(snapshot(many(10)[5:]...))
+
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.False(t, hasProblem(st, "no longer listed by Proxmox"), "five are not many")
+	claims, err := e.store.Claims()
+	require.NoError(t, err)
+	require.NotNil(t, claims["g101.example.com"].MissingSince)
+}
+
+func TestExactlyThirtyPercentVanishingProceed(t *testing.T) {
+	e := publishedMany(t, 20)
+	e.inv.set(snapshot(many(20)[6:]...))
+
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.False(t, hasProblem(st, "no longer listed by Proxmox"), "six of twenty is not more than 30 %")
+}
+
+func TestAConfirmedGuestThatComesBackIsCountedAgainWhenItGoes(t *testing.T) {
+	e := publishedMany(t, 10)
+	e.inv.set(snapshot(many(10)[6:]...))
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	e.apply(true)
+
+	e.inv.set(snapshot(many(10)...))
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	e.inv.set(snapshot(many(10)[6:]...))
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
+
+	require.True(t, hasProblem(st, "6 of 10 guests that hold a hostname are no longer listed by Proxmox"))
+}
+
+func TestAVanishConfirmationSaysTheRecordsMayAskAgain(t *testing.T) {
+	e := publishedMany(t, 10)
+	e.inv.set(snapshot(many(10)[6:]...))
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	e.apply(true)
+
+	require.Contains(t, adminEvents(e, time.Time{}), ": 6 guests that Proxmox no longer lists are confirmed removed; "+
+		"when their DNS records fall due, the mass delete guard may ask for a confirmation again")
+}

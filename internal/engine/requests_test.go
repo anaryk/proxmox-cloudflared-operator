@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,18 +175,102 @@ func TestAnAdoptionStoresTheRecordFirst(t *testing.T) {
 	require.Contains(t, string(b), `"zone":"example.com"`)
 }
 
-func TestAnAdoptionIsHeldWhenItsRecordCannotBeStored(t *testing.T) {
+// Reproduced: the adopted log cannot be written, so the reconciler holds the
+// adoption; the request waits and is carried out once the log works.
+func TestAnAdoptionWaitsWhileItsRecordCannotBeStored(t *testing.T) {
 	e, _ := conflicted(t)
 	// A directory where the log should be makes the write fail.
-	require.NoError(t, os.Mkdir(filepath.Join(e.paths.Cluster, "adopted.jsonl"), 0o700))
+	log := filepath.Join(e.paths.Cluster, "adopted.jsonl")
+	require.NoError(t, os.Mkdir(log, 0o700))
 	require.NoError(t, e.eng.Adopt(t.Context(), "www.example.com"))
 
+	for range 2 {
+		e.clock.advance(20 * time.Second)
+		st := e.cycle()
+
+		require.Equal(t, "A", e.records()[0].Type, "nothing is taken over without its copy")
+		require.True(t, hasProblem(st, "storing the record before the adoption"))
+	}
+	require.Contains(t, e.eng.adopt, "www.example.com")
+	require.Equal(t, 1, eventsContaining(e, "adoption of www.example.com waits: snapshot not stored"))
+
+	require.NoError(t, os.Remove(log))
 	e.clock.advance(20 * time.Second)
+	e.cycle()
+	require.Equal(t, "CNAME", e.records()[0].Type)
+	require.Empty(t, e.eng.adopt)
+	require.Equal(t, 1, eventsContaining(e, "adoption of www.example.com applied"))
+}
+
+func TestAnAdoptionWaitsOutAListingThatFailed(t *testing.T) {
+	e, _ := conflicted(t)
+	require.NoError(t, e.eng.Adopt(t.Context(), "www.example.com"))
+	e.cf.FailNext("dns.read", 1, errors.New("connection reset"))
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	require.Equal(t, "A", e.records()[0].Type)
+	require.Contains(t, e.eng.adopt, "www.example.com", "a listing that failed takes nothing over and uses nothing up")
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	require.Equal(t, "CNAME", e.records()[0].Type)
+	require.Empty(t, e.eng.adopt)
+}
+
+// C2: the engine's own reason, not the reconciler's: a verified tunnel is
+// asked for before an adoption is passed on at all.
+func TestAnAdoptionWaitsForAVerifiedTunnel(t *testing.T) {
+	e, _ := conflicted(t)
+	require.NoError(t, e.eng.Adopt(t.Context(), "www.example.com"))
+	// A change the rate limit holds leaves the tunnel unverified.
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com api.example.com -> :8080")))
+
+	e.clock.advance(2 * time.Second)
 	st := e.cycle()
 
-	require.Equal(t, "A", e.records()[0].Type, "nothing is taken over without its copy")
-	require.True(t, hasProblem(st, "storing the record before the adoption"))
-	require.Equal(t, 1, eventsContaining(e, "adoption of www.example.com was tried but replaced nothing"))
+	require.False(t, st.Tunnels[0].Verified)
+	require.Equal(t, "A", e.records()[0].Type)
+	require.Equal(t, 1, eventsContaining(e, "adoption of www.example.com waits: its tunnel is not verified or its connector is not ready"))
+}
+
+// B2: a confirmation that could not be saved, as the tombstones could not
+// be, or that the guard still needs, stays pending.
+func TestAConfirmationTheRunCouldNotKeepStaysPending(t *testing.T) {
+	for name, held := range map[string]string{
+		"tombstones not saved": "tombstones not saved",
+		"guard":                "mass delete guard: 6 of 6 records are being removed; confirm to proceed",
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			c := e.eng.newCycle(t.Context())
+			e.eng.confirm = &request{at: t0}
+			in := reconcile.DNSInput{ConfirmDeletes: true}
+			res := reconcile.DNSResult{Decided: true, Actions: []reconcile.Action{
+				{Kind: reconcile.DeleteRecord, Target: "a.example.com", Destructive: true, Held: held},
+			}}
+
+			c.settleRequests(in, res, reconcile.Enforce)
+			c.notePending(nil)
+
+			require.NotNil(t, e.eng.confirm)
+			require.Len(t, c.events, 1)
+			require.Contains(t, c.events[0].Message, "confirmation waits: the run could not keep the confirmation of the removals it holds ("+held+")")
+		})
+	}
+	t.Run("kept", func(t *testing.T) {
+		e := newEnv(t)
+		c := e.eng.newCycle(t.Context())
+		e.eng.confirm = &request{at: t0}
+		res := reconcile.DNSResult{Decided: true, Confirmed: 6, Actions: []reconcile.Action{
+			{Kind: reconcile.DeleteRecord, Target: "a.example.com", Destructive: true, Held: "grace period: 30s left"},
+		}}
+
+		c.settleRequests(reconcile.DNSInput{ConfirmDeletes: true}, res, reconcile.Enforce)
+
+		require.Nil(t, e.eng.confirm)
+	})
 }
 
 // E1: a DNS run that did not look leaves the conflicts as they were.

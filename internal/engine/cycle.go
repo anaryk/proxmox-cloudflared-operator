@@ -61,9 +61,13 @@ type cycleRun struct {
 	tunnelVerdict reconcile.WriterVerdict
 
 	// waitWhy says why the admin's requests wait, when the DNS step was
-	// reached; adoptWaits why each adoption waits.
+	// reached; confirmWhy why a confirmation the DNS run could not keep
+	// waits, and adoptWaits why each adoption waits. adopted holds the names
+	// whose adoption reached its write in this cycle.
 	waitWhy    string
+	confirmWhy string
 	adoptWaits map[string]string
+	adopted    map[string]bool
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {

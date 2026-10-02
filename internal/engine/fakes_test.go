@@ -271,6 +271,11 @@ func (h hookedAPI) CreateTunnel(ctx context.Context, account, name string) (cfap
 	return h.API.CreateTunnel(ctx, account, name)
 }
 
+func (h hookedAPI) PutTunnelConfig(ctx context.Context, account, id string, rules []planner.IngressRule) (int, error) {
+	h.before("PutTunnelConfig")
+	return h.API.PutTunnelConfig(ctx, account, id, rules)
+}
+
 func (h hookedAPI) Records(ctx context.Context, zoneID string, f cfapi.RecordFilter) ([]cfapi.Record, error) {
 	h.before("Records")
 	return h.API.Records(ctx, zoneID, f)

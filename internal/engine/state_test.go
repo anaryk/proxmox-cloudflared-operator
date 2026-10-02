@@ -309,7 +309,7 @@ func (f *fakeTimer) after(d time.Duration) (<-chan time.Time, func() bool) {
 
 func TestRunCyclesOnThePollIntervalAndOnTrigger(t *testing.T) {
 	e := newEnv(t)
-	timer := &fakeTimer{waits: make(chan time.Duration), fire: make(chan time.Time)}
+	timer := &fakeTimer{waits: make(chan time.Duration, 8), fire: make(chan time.Time)}
 	e.eng.after = timer.after
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error)
@@ -318,18 +318,25 @@ func TestRunCyclesOnThePollIntervalAndOnTrigger(t *testing.T) {
 	require.Equal(t, 10*time.Second, <-timer.waits, "the default poll interval")
 	require.Equal(t, 1, e.inv.refreshes())
 
-	timer.fire <- t0
-	<-timer.waits
-	require.Equal(t, 2, e.inv.refreshes())
-
+	// The second cycle is held in the resolver while two triggers arrive.
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.res.hook(func() { once.Do(func() { close(held); <-release }) })
 	e.settings(func(s *store.Settings) { s.PollInterval = store.Duration(30 * time.Second) })
+	timer.fire <- t0
+	<-held
 	e.eng.Trigger()
 	e.eng.Trigger()
+	close(release)
+
 	require.Equal(t, 30*time.Second, <-timer.waits, "the interval comes from the settings")
-	require.Equal(t, 3, e.inv.refreshes(), "two triggers while one is pending are one cycle")
+	require.Equal(t, 30*time.Second, <-timer.waits)
+	require.Equal(t, 3, e.inv.refreshes(), "two triggers during a cycle are one cycle after it")
 
 	cancel()
 	require.NoError(t, <-done)
+	require.Equal(t, 3, e.inv.refreshes())
+	require.Empty(t, timer.waits)
 }
 
 func TestConcurrentApplyAndCycle(t *testing.T) {

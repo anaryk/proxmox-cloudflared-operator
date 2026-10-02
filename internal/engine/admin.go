@@ -39,7 +39,10 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 			e.gone[ref] = true
 		}
 		if len(e.vanished) > 0 {
-			e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed", len(e.vanished)))
+			// The DNS guard confirms only removals that are pending already;
+			// those of these guests are not yet.
+			e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed; "+
+				"when their DNS records fall due, the mass delete guard may ask for a confirmation again", len(e.vanished)))
 		}
 		for _, name := range e.zones.confirmGone() {
 			e.adminEvent(name, "the zone that left its listing is confirmed gone")

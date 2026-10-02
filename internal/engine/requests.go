@@ -55,7 +55,12 @@ func (c *cycleRun) adoptable(records map[string]reconcile.TunnelState) (ready []
 }
 
 // settleRequests clears the requests an enforcing DNS run decided on and says
-// what came of them. A run that did not decide leaves them waiting.
+// what came of them. A run that did not decide leaves them waiting. Of a run
+// that decided, an adoption is cleared only when it reached its write, its
+// record stored first; one held for any other reason waits on. A
+// confirmation is cleared unless the run could not keep it: it confirmed
+// nothing and still holds removals by the mass delete guard, or because the
+// tombstones could not be saved.
 func (c *cycleRun) settleRequests(in reconcile.DNSInput, res reconcile.DNSResult, mode reconcile.Mode) {
 	switch {
 	case mode != reconcile.Enforce:
@@ -69,47 +74,90 @@ func (c *cycleRun) settleRequests(in reconcile.DNSInput, res reconcile.DNSResult
 		return
 	}
 	if in.ConfirmDeletes {
-		c.e.confirm = nil
-		c.adminEvent(levelInfo, "", fmt.Sprintf("deletes confirmed: %d pending removals now pass the mass delete guard", res.Confirmed))
+		if held := unkeptConfirmation(res); held != "" {
+			c.confirmWhy = fmt.Sprintf("the run could not keep the confirmation of the removals it holds (%s); "+
+				"it is tried again until it expires", held)
+		} else {
+			c.e.confirm = nil
+			c.adminEvent(levelInfo, "", fmt.Sprintf("deletes confirmed: %d pending removals now pass the mass delete guard", res.Confirmed))
+		}
 	}
 	replaced := make(map[string]bool, len(res.Replaced))
 	for _, rec := range res.Replaced {
 		replaced[recordName(rec)] = true
 	}
+	if c.adoptWaits == nil {
+		c.adoptWaits = make(map[string]string)
+	}
 	for _, name := range slices.Sorted(maps.Keys(in.Adopt)) {
+		if !c.adopted[name] {
+			c.adoptWaits[name] = heldReason(res, name)
+			continue
+		}
 		delete(c.e.adopt, name)
 		if replaced[name] {
 			c.adminEvent(levelInfo, name, fmt.Sprintf("adoption of %s applied: the record was replaced", name))
 			continue
 		}
-		c.adminEvent(levelWarn, name, fmt.Sprintf("adoption of %s was tried but replaced nothing; see the actions of the cycle", name))
+		c.adminEvent(levelWarn, name, fmt.Sprintf("adoption of %s reached its write but the record was not replaced; "+
+			"its copy is in the adopted log; see the actions of the cycle", name))
 	}
 }
 
-// notePending tells the admin, once per request, that it waits and why.
+// unkeptConfirmation returns why the deletes of a run that confirmed nothing
+// are still held, when that is the mass delete guard or tombstones that could
+// not be saved, and nothing otherwise.
+func unkeptConfirmation(res reconcile.DNSResult) string {
+	if res.Confirmed > 0 {
+		return ""
+	}
+	for _, a := range res.Actions {
+		if a.Kind == reconcile.DeleteRecord && !a.Applied &&
+			(strings.HasPrefix(a.Held, "mass delete guard") || a.Held == "tombstones not saved") {
+			return a.Held
+		}
+	}
+	return ""
+}
+
+// heldReason says why the run did not take over the record at name: the held
+// reason of its action, when it has one.
+func heldReason(res reconcile.DNSResult, name string) string {
+	for _, a := range res.Actions {
+		if !a.Applied && a.Held != "" && strings.EqualFold(strings.TrimSuffix(a.Target, "."), name) {
+			return a.Held
+		}
+	}
+	return "the DNS run did not get to its record; see the problems of the cycle"
+}
+
+// notePending tells the admin that a request waits and why, again only when
+// the reason changes.
 func (c *cycleRun) notePending(adoptWaits map[string]string) {
 	why := c.waitWhy
 	if why == "" {
 		why = "the cycle did not reach DNS"
-		if len(c.st.Problems) > 0 {
-			why += ": " + c.st.Problems[0]
-		}
 	}
-	if r := c.e.confirm; r != nil && !r.told {
-		r.told = true
-		c.adminEvent(levelInfo, "", "confirmation waits: "+why)
+	if r := c.e.confirm; r != nil {
+		reason := why
+		if c.confirmWhy != "" {
+			reason = c.confirmWhy
+		}
+		if reason != r.why {
+			r.why = reason
+			c.adminEvent(levelInfo, "", "confirmation waits: "+reason)
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.e.adopt)) {
 		r := c.e.adopt[name]
-		if r.told {
-			continue
-		}
-		r.told = true
-		w, ok := adoptWaits[name]
+		reason, ok := adoptWaits[name]
 		if !ok {
-			w = why
+			reason = why
 		}
-		c.adminEvent(levelInfo, name, fmt.Sprintf("adoption of %s waits: %s", name, w))
+		if reason != r.why {
+			r.why = reason
+			c.adminEvent(levelInfo, name, fmt.Sprintf("adoption of %s waits: %s", name, reason))
+		}
 	}
 }
 

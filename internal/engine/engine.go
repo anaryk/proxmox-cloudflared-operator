@@ -283,8 +283,8 @@ func (e *Engine) writer() (us, stored planner.Writer, err error) {
 
 // request is a one-shot request of the admin.
 type request struct {
-	at   time.Time // when it was made
-	told bool      // the admin was told that it waits
+	at  time.Time // when it was made
+	why string    // why it waits, as the admin was last told
 }
 
 // seenTunnel is where a tunnel of this install was seen, and through which

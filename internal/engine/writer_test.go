@@ -122,6 +122,25 @@ func TestLeaderJSONSpoiledInTheMiddleOfACycle(t *testing.T) {
 	}
 }
 
+func TestAWriterReplacedAtTheEndOfTheTunnelRunStopsTheConnectors(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	var once sync.Once
+	e.useAPI(testToken, hookedAPI{API: e.cf, before: func(method string) {
+		if method == "PutTunnelConfig" {
+			// After the last check of the tunnel run.
+			once.Do(func() { require.NoError(t, e.store.SaveWriter(takeover)) })
+		}
+	}})
+
+	st := e.cycle()
+
+	require.Equal(t, "stale", st.WriterVerdict)
+	require.Contains(t, st.Problems, "leader.json names another writer after the tunnel run; the rest is left as it is")
+	require.Empty(t, e.conn.ensures(), "no connector is started for a writer that is no more")
+	require.Zero(t, dnsCalls(e.cf.Calls()))
+}
+
 func TestForeignWriterStopsBeforeConnectorsAndDNS(t *testing.T) {
 	e := newEnv(t)
 	e.enforce()
