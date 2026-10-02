@@ -51,11 +51,12 @@ func twoHeld(t *testing.T) (*env, State) {
 	}
 	require.Equal(t, 2, held, "%v", actionKinds(st))
 	// A confirmation lets the four through too, when their grace ends: they
-	// are among what it accepts.
+	// are among what it accepts, and the detail says so.
 	require.Equal(t, []Waiting{{
-		Kind:   "dns-removals",
-		Detail: "mass delete guard: 6 of 16 records are being removed; confirm to proceed",
-		Items:  []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com", "e.example.com", "f.example.com"},
+		Kind: "dns-removals",
+		Detail: "mass delete guard: 6 of 16 records are being removed; confirm to proceed; " +
+			"4 of them are still in their grace and go when it ends",
+		Items: []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com", "e.example.com", "f.example.com"},
 	}}, st.Waiting)
 	require.NotEmpty(t, st.Offer)
 	return e, st

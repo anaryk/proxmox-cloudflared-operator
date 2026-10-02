@@ -213,5 +213,12 @@
       ]
     }
   ],
-  "offer": "9298960fb3d77f2d"
+  "offer": "9298960fb3d77f2d",
+  "unapproved": [
+    {
+      "kind": "lxc",
+      "vmid": 201,
+      "name": "new-1"
+    }
+  ]
 }

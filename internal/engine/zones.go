@@ -195,8 +195,9 @@ type zoneSet struct {
 	accounts map[string]string
 	ready    bool // the zones of every credential are known
 	problems []string
-	// staleShown are the stale zones the problems name.
+	// staleShown are the stale zones the problems name, in staleLines.
 	staleShown []staleZone
+	staleLines []string
 }
 
 // zoneEntry is one credential's view of a zone.
@@ -263,6 +264,9 @@ func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
 		}
 		if doubt != "" {
 			out.problems = append(out.problems, doubt)
+			if len(staleBy) > 0 {
+				out.staleLines = append(out.staleLines, doubt)
+			}
 			why, _, _ := strings.Cut(doubt, "; ")
 			for _, en := range entries {
 				out.frozen[en.zone.AccountID] = true

@@ -32,22 +32,54 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool, offer string) (
 	if err != nil {
 		return res, fmt.Errorf("reading the settings: %w", err)
 	}
+	// The confirmation must outlive a restart of the daemon. It is kept
+	// before anything takes effect, the mode too, so that one that cannot be
+	// kept changes nothing.
+	if confirmDeletes {
+		if err := e.keepConfirmation(e.offered.what); err != nil {
+			return res, err
+		}
+	}
 	if s.ObserveOnly {
 		s.ObserveOnly = false
 		if err := e.d.Store.SaveSettings(s); err != nil {
+			if confirmDeletes {
+				e.dropConfirmation()
+			}
 			return res, fmt.Errorf("leaving observe-only mode: %w", err)
 		}
 		res.LeftObserveOnly = true
 		e.adminEvent("", "observe-only mode ended; changes are applied from now on")
 	}
 	if confirmDeletes {
-		accepted, err := e.confirmShown()
-		if err != nil {
-			return res, err
-		}
-		res.Accepted = accepted
+		res.Accepted = e.confirmShown()
 	}
 	return res, nil
+}
+
+// keepConfirmation saves the memory as it is once what the last state offered
+// is accepted. A memory that was never read is not written over. The caller
+// holds the cycle lock.
+func (e *Engine) keepConfirmation(o confirmable) error {
+	if !e.remembered {
+		return nil
+	}
+	if err := e.d.Store.SaveEngineMemory(e.memoryAccepting(o)); err != nil {
+		return fmt.Errorf("keeping the confirmation: %w", err)
+	}
+	return nil
+}
+
+// dropConfirmation puts the memory back as it was before keepConfirmation,
+// for a call that fails after it. Should that fail too, the next cycle saves
+// it as it is. The caller holds the cycle lock.
+func (e *Engine) dropConfirmation() {
+	if !e.remembered {
+		return
+	}
+	if err := e.d.Store.SaveEngineMemory(e.memory()); err != nil {
+		e.d.Log.Warn().Err(err).Msg("putting back the memory after a confirmation that did not take effect failed")
+	}
 }
 
 // confirmShown accepts what the last published state showed waiting for a
@@ -55,17 +87,10 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool, offer string) (
 // removals the mass delete guard held, the vanished guests behind a vanish
 // hold, the zones that left their listing and the tunnels no credential sees.
 // It returns what it accepted. The offer is used up: until the next cycle
-// nothing waits. The caller holds the cycle lock.
-func (e *Engine) confirmShown() ([]Waiting, error) {
+// nothing waits, and the problem lines that asked for it are gone. The
+// caller holds the cycle lock and has kept the confirmation.
+func (e *Engine) confirmShown() []Waiting {
 	o := e.offered
-	// The confirmation must outlive a restart of the daemon. It is kept
-	// before it takes effect, so that one that cannot be kept changes
-	// nothing.
-	if e.remembered {
-		if err := e.d.Store.SaveEngineMemory(e.memoryAccepting(o.what)); err != nil {
-			return nil, fmt.Errorf("keeping the confirmation: %w", err)
-		}
-	}
 	e.withdrawOffer()
 	w := o.what
 	if w.guard != "" {
@@ -93,16 +118,18 @@ func (e *Engine) confirmShown() ([]Waiting, error) {
 	if len(o.waiting) == 0 {
 		e.adminEvent("", "the last state showed nothing that waits for a confirmation")
 	}
-	return nonNil(cloneWaiting(o.waiting)), nil
+	return nonNil(cloneWaiting(o.waiting))
 }
 
-// withdrawOffer ends the offer a confirmation used, in the state served too.
-// The caller holds the cycle lock.
+// withdrawOffer ends the offer a confirmation used, in the state served too,
+// with the problem lines that asked for it. The caller holds the cycle lock.
 func (e *Engine) withdrawOffer() {
+	lines := e.offered.what.lines
 	e.offered = offer{}
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 	e.state.Waiting, e.state.Offer = []Waiting{}, ""
+	e.state.Problems = slices.DeleteFunc(slices.Clone(e.state.Problems), func(p string) bool { return slices.Contains(lines, p) })
 }
 
 // Adopt asks an enforcing DNS run to take over the record that holds name, a

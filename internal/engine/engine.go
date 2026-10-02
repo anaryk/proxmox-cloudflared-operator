@@ -132,6 +132,10 @@ type Engine struct {
 
 	stateMu sync.RWMutex
 	state   State
+	// listed is what the last cycle saw of the guests; served is, by
+	// hostname, the owner that won it when claims were last settled.
+	listed listing
+	served map[string]string
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.
@@ -211,7 +215,7 @@ func (e *Engine) Cycle(ctx context.Context) State {
 	c := e.newCycle(ctx)
 	st := c.run()
 	e.offered = offer{what: c.offer, waiting: st.clone().Waiting, token: st.Offer}
-	e.publish(st.clone(), c.events)
+	e.publish(st.clone(), c.events, c.listing, c.served())
 	e.d.Log.Debug().
 		Str("mode", st.Mode).
 		Bool("complete", st.Complete).
@@ -261,12 +265,16 @@ func (e *Engine) State() State {
 // first.
 func (e *Engine) Events(since time.Time) []Event { return e.events.since(since) }
 
-// publish stores the state of a cycle and records what changed against the
-// one before, after the events the cycle itself reported.
-func (e *Engine) publish(st State, events []Event) {
+// publish stores the state of a cycle with what it saw of the guests and, when
+// it settled the claims, who won each hostname, and records what changed
+// against the state before, after the events the cycle itself reported.
+func (e *Engine) publish(st State, events []Event, l listing, served map[string]string) {
 	e.stateMu.Lock()
 	prev := e.state
-	e.state = st
+	e.state, e.listed = st, l
+	if served != nil {
+		e.served = served
+	}
 	e.stateMu.Unlock()
 	e.events.add(append(events, changes(prev, st)...)...)
 }
@@ -299,9 +307,14 @@ type confirmable struct {
 	invisible []unseenTunnel   // tunnels kept that no credential sees
 	// guard is what the mass delete guard said when it held removals, and
 	// removals the names of the records a confirmation lets through: those
-	// it held and those in their grace. Both are empty when it held none.
+	// it held and those in their grace, of which there are inGrace. All are
+	// empty when it held none.
 	guard    string
 	removals []string
+	inGrace  int
+	// lines are the problem lines of the state that ask for the
+	// confirmation of what is here.
+	lines []string
 }
 
 // offer is what one published state showed waiting for a confirmation: what

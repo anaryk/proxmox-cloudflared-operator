@@ -37,13 +37,18 @@ type ApplyResult struct {
 
 // waiting is what a state shows of what a confirmation would accept: one
 // entry for the DNS removals behind the mass delete guard, in the guard's own
-// words, one for the vanished guests, one per stale zone and one per tunnel no
-// credential sees, sorted by kind and subject. The guests are named as the
-// routes of the state last named them.
+// words and with how many of them are still in their grace, one for the
+// vanished guests, one per stale zone and one per tunnel no credential sees,
+// sorted by kind and subject. The guests are named as the routes of the state
+// last named them.
 func (o confirmable) waiting(routes []RouteView) []Waiting {
 	var out []Waiting
 	if o.guard != "" {
-		out = append(out, Waiting{Kind: WaitingRemovals, Detail: o.guard, Items: slices.Compact(slices.Sorted(slices.Values(o.removals)))})
+		detail := o.guard
+		if o.inGrace > 0 {
+			detail += fmt.Sprintf("; %d of them are still in their grace and go when it ends", o.inGrace)
+		}
+		out = append(out, Waiting{Kind: WaitingRemovals, Detail: detail, Items: slices.Compact(slices.Sorted(slices.Values(o.removals)))})
 	}
 	if len(o.vanished) > 0 {
 		names := make(map[model.GuestRef]string, len(routes))

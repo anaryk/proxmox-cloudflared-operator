@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -166,4 +169,92 @@ func TestOneConfirmationAcceptsEverythingTheStateShowed(t *testing.T) {
 	require.Empty(t, e.records(), "the removals the guard held went ahead")
 	keep, _ := e.conn.lastPrune()
 	require.NotContains(t, keep, invisible.ID)
+}
+
+// A confirmation that cannot be kept changes nothing, and that includes the
+// mode: the daemon stays in observe-only mode.
+func TestAConfirmationThatCannotBeKeptLeavesTheModeAsItWas(t *testing.T) {
+	e := newEnv(t)
+	e.inv.set(snapshot(many(10)...))
+	e.cycle()
+	e.inv.set(snapshot(many(10)[6:]...))
+	e.clock.advance(20 * time.Second)
+	shown := e.cycle()
+	require.Equal(t, "observe", shown.Mode)
+	require.NotEmpty(t, shown.Offer)
+	require.NoError(t, os.Remove(e.memoryFile()))
+	require.NoError(t, os.Mkdir(e.memoryFile(), 0o700))
+	before, since := e.files(), e.clock.now()
+
+	_, err := e.eng.Apply(t.Context(), true, shown.Offer)
+
+	require.ErrorContains(t, err, "keeping the confirmation")
+	s, err := e.store.Settings()
+	require.NoError(t, err)
+	require.True(t, s.ObserveOnly, "still observe-only")
+	require.Equal(t, before, e.files())
+	require.Empty(t, e.eng.gone)
+	require.Empty(t, adminEvents(e, since.Add(-time.Nanosecond)))
+	require.Equal(t, shown.Offer, e.eng.State().Offer)
+}
+
+// When the mode cannot be left after the confirmation was kept, the memory is
+// put back as it was: the call changes nothing.
+func TestAModeThatCannotBeLeftTakesTheKeptConfirmationBack(t *testing.T) {
+	skipAsRoot(t)
+	e := newEnv(t)
+	e.inv.set(snapshot(many(10)...))
+	e.cycle()
+	e.inv.set(snapshot(many(10)[6:]...))
+	e.clock.advance(20 * time.Second)
+	shown := e.cycle()
+	memory, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	meta := filepath.Join(e.paths.Cluster, "meta")
+	require.NoError(t, os.Chmod(meta, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(meta, 0o700) })
+
+	_, err = e.eng.Apply(t.Context(), true, shown.Offer)
+
+	require.ErrorContains(t, err, "leaving observe-only mode")
+	after, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, memory, after)
+	require.Empty(t, after.GoneGuests)
+	require.Empty(t, e.eng.gone)
+	require.Equal(t, shown.Offer, e.eng.State().Offer, "the offer still stands")
+}
+
+// Once confirmed, the problem lines that asked for the confirmation go with
+// what waited; the others stay until the next cycle.
+func TestAConfirmationTakesTheProblemsThatAskedForItAlong(t *testing.T) {
+	e, _ := everythingWaits(t)
+	// A tunnel of this install in an account without a zone is a problem
+	// that asks for nothing. The accounts are listed again at once.
+	e.cf.AddAccount("acc5", "Fifth")
+	e.cf.SeedTunnel("acc5", tunnelName, nil)
+	e.eng.zones.due = true
+	e.clock.advance(61 * time.Second)
+	shown := e.cycle()
+	asked := []string{
+		"mass delete guard: 6 of 6 records are being removed; confirm to proceed",
+		"zone example.info is no longer listed by credential cred1",
+		"is not visible through any credential",
+	}
+	for _, part := range asked {
+		require.True(t, hasProblem(shown, part), part)
+	}
+	var others []string
+	for _, p := range shown.Problems {
+		if !slices.ContainsFunc(asked, func(part string) bool { return strings.Contains(p, part) }) {
+			others = append(others, p)
+		}
+	}
+	require.NotEmpty(t, others, "the state shows other problems too")
+
+	e.apply(true)
+
+	st := e.eng.State()
+	require.Empty(t, st.Waiting)
+	require.Equal(t, others, st.Problems)
 }

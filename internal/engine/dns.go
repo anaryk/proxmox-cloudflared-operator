@@ -63,10 +63,12 @@ func (c *cycleRun) reconcileDNS() {
 
 // offerRemovals offers the removals the mass delete guard holds, when it
 // holds any. A confirmation lets through every pending removal the guard
-// counted, those still in their grace too, so all of them are offered.
+// counted, those still in their grace too, so all of them are offered. The
+// guard says what it holds in a problem line of its own words.
 func (c *cycleRun) offerRemovals(actions []reconcile.Action) {
 	var guard string
 	var names []string
+	inGrace := 0
 	for _, a := range actions {
 		if a.Kind != reconcile.DeleteRecord || a.Applied {
 			continue
@@ -77,10 +79,12 @@ func (c *cycleRun) offerRemovals(actions []reconcile.Action) {
 			names = append(names, a.Target)
 		case strings.HasPrefix(a.Held, reconcile.HeldInGrace):
 			names = append(names, a.Target)
+			inGrace++
 		}
 	}
 	if guard != "" {
-		c.offer.guard, c.offer.removals = guard, names
+		c.offer.guard, c.offer.removals, c.offer.inGrace = guard, names, inGrace
+		c.offer.lines = append(c.offer.lines, guard)
 	}
 }
 
@@ -238,7 +242,7 @@ func (c *cycleRun) wantedNow(ctx context.Context) (map[string]bool, error) {
 		// An empty answer is more likely a failure than every guest gone.
 		return nil, errors.New("the inventory lists no guest any more")
 	}
-	col := c.collectFrom(snap)
+	col, _ := c.collectFrom(snap)
 	if col.PolicyInvalid {
 		return nil, fmt.Errorf("the settings contain an invalid allow or deny pattern")
 	}

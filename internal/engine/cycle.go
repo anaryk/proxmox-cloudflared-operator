@@ -49,6 +49,8 @@ type cycleRun struct {
 	deny      resolve.Denylist
 	col       planner.Collected
 	claims    planner.ClaimResult
+	settled   bool                      // the claims were settled and saved
+	listing   listing                   // what this cycle saw of the guests; empty unless it saw all of them
 	results   map[string]resolve.Result // of the winners, by hostname
 	credIDs   []string                  // of the stored credentials, sorted
 	zones     zoneSet
@@ -231,6 +233,7 @@ func (c *cycleRun) refresh() bool {
 		c.problem(problemIncomplete)
 		return false
 	}
+	c.listing = listingOf(c.snap)
 	return true
 }
 
@@ -278,7 +281,21 @@ func (c *cycleRun) settleClaims() {
 		c.cfHold = true
 		return
 	}
+	c.settled = true
 	c.events = append(c.events, claimEvents(c.now, c.claims.Events)...)
+}
+
+// served maps every hostname to the owner that won it, when the cycle
+// settled the claims; nil otherwise.
+func (c *cycleRun) served() map[string]string {
+	if !c.settled {
+		return nil
+	}
+	out := make(map[string]string, len(c.claims.Winners))
+	for _, rt := range c.claims.Winners {
+		out[rt.Hostname] = rt.Owner()
+	}
+	return out
 }
 
 // build plans the Cloudflare state: the credentials and their zones first,

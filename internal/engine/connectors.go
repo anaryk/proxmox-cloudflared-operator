@@ -126,8 +126,10 @@ func (c *cycleRun) invisibleTunnels() []reconcile.TunnelState {
 		}
 		out = append(out, reconcile.TunnelState{AccountID: t.account, CredentialID: t.credential, Name: t.name, ID: id, Unknown: true})
 		c.offer.invisible = append(c.offer.invisible, unseenTunnel{id: id, name: t.name, account: t.account})
-		c.problem("tunnel %s in account %s is not visible through any credential; its connector is kept "+
+		line := fmt.Sprintf("tunnel %s in account %s is not visible through any credential; its connector is kept "+
 			"until a credential sees the account again or pco apply --confirm-deletes confirms the tunnel is gone", t.name, t.account)
+		c.offer.lines = append(c.offer.lines, line)
+		c.problem("%s", line)
 	}
 	return out
 }

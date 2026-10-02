@@ -87,6 +87,7 @@ func populatedState() State {
 		Profile:       "host",
 		Waiting:       waiting,
 		Offer:         offerOf(waiting),
+		Unapproved:    []GuestView{{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"}},
 	}
 }
 
@@ -145,6 +146,33 @@ func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "events.json", []Event{{Seq: 7, At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable"}})
 	requireGolden(t, "apply_result.json", ApplyResult{LeftObserveOnly: true, Accepted: populatedWaiting()[:1]})
 	requireGolden(t, "apply_result_empty.json", ApplyResult{Accepted: []Waiting{}})
+	requireGolden(t, "claims.json", populatedClaims())
+	requireGolden(t, "approvals.json", populatedApprovals())
+}
+
+func populatedClaims() []ClaimView {
+	missing := t0.Add(time.Minute)
+	web := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
+	clone := model.GuestRef{Kind: model.KindQEMU, VMID: 102}
+	return []ClaimView{
+		{Hostname: "api.example.com", Holder: "manual/api", Since: t0, State: ClaimServing, Waiting: []ClaimantView{}},
+		{
+			Hostname: "old.example.com", Holder: "qemu/101", Guest: &GuestView{GuestRef: web, Name: "web-1"},
+			Since: t0, MissingSince: &missing, State: ClaimHeld, Waiting: []ClaimantView{},
+		},
+		{
+			Hostname: "www.example.com", Holder: "qemu/101", Guest: &GuestView{GuestRef: web, Name: "web-1"},
+			Since: t0, State: ClaimConflict,
+			Waiting: []ClaimantView{{Owner: "qemu/102", Guest: &GuestView{GuestRef: clone, Name: "web-2"}, Since: missing}},
+		},
+	}
+}
+
+func populatedApprovals() []ApprovalView {
+	return []ApprovalView{
+		{Owner: "qemu/101", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"}, Identity: "uuid:101", Current: "uuid:101", Matches: true},
+		{Owner: "lxc/300", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 300}}, Identity: "uuid:300"},
+	}
 }
 
 // A copy of a state shares nothing with it, down to the items of what waits.

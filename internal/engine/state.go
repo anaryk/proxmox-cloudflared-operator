@@ -90,6 +90,9 @@ type State struct {
 	// confirmation must quote it; it is empty when nothing waits.
 	Waiting []Waiting `json:"waiting"`
 	Offer   string    `json:"offer,omitempty"`
+	// Unapproved are the guests whose routes are held until an admin approves
+	// them, in admission mode approve; [] in mode tag.
+	Unapproved []GuestView `json:"unapproved"`
 }
 
 func emptyState() State {
@@ -134,6 +137,7 @@ func (s State) clone() State {
 	s.Lost = slices.Clone(s.Lost)
 	s.Problems = slices.Clone(s.Problems)
 	s.Waiting = cloneWaiting(s.Waiting)
+	s.Unapproved = slices.Clone(s.Unapproved)
 	return s
 }
 
@@ -177,6 +181,7 @@ func (s State) normalized() State {
 	s.Lost = nonNil(s.Lost)
 	s.Problems = nonNil(s.Problems)
 	s.Waiting = nonNil(s.Waiting)
+	s.Unapproved = nonNil(s.Unapproved)
 	return s
 }
 
