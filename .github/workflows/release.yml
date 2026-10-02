@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Import the release key
+        env:
+          PCO_RELEASE_GPG_KEY: ${{ secrets.PCO_RELEASE_GPG_KEY }}
+        run: |
+          if [ -z "$PCO_RELEASE_GPG_KEY" ]; then
+            echo "::error::The secret PCO_RELEASE_GPG_KEY is empty. Add the armored private release key to the repository secrets, the release is not published without a signature."
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s\n' "$PCO_RELEASE_GPG_KEY" | gpg --batch --import
+          fpr=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+          if [ -z "$fpr" ]; then
+            echo "::error::The secret PCO_RELEASE_GPG_KEY holds no private key."
+            exit 1
+          fi
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "PCO_RELEASE_KEY_FPR=$fpr" >> "$GITHUB_ENV"
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Reads the signature the way scripts/install.sh does, with gpgv and a
+      # keyring that holds only the release key.
+      - name: Check the release files
+        run: |
+          packaging/check-artifacts.sh --signed
+          gpg --batch --export "$PCO_RELEASE_KEY_FPR" > "$RUNNER_TEMP/release.gpg"
+          gpgv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
+
+      - name: Remove the release key
+        if: always()
+        run: |
+          GNUPGHOME="$RUNNER_TEMP/gnupg" gpgconf --kill gpg-agent || true
+          rm -rf "$RUNNER_TEMP/gnupg" "$RUNNER_TEMP/release.gpg"

@@ -9,10 +9,11 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Date=$(DATE)
 
 # Without it gin links a msgpack codec the API never uses, about 6 MB of binary.
-# Keep it in sync with run.build-tags in .golangci.yml and the test job in CI.
+# Keep it in sync with run.build-tags in .golangci.yml, builds.tags in
+# .goreleaser.yaml and the test job in CI.
 TAGS := nomsgpack
 
-.PHONY: build test lint fmt test-scripts
+.PHONY: build test lint fmt test-scripts snapshot package
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -28,4 +29,13 @@ fmt:
 
 test-scripts:
 	bash scripts/install_test.sh
-	shellcheck scripts/*.sh
+	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh
+
+# Builds the .deb files without a tag and without publishing or signing anything.
+snapshot:
+	go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=sign
+	packaging/check-artifacts.sh
+
+package: snapshot
+	@echo "the .deb files are in dist/:"
+	@ls dist/*.deb
