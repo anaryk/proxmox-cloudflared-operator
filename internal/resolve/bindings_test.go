@@ -29,7 +29,7 @@ func TestResolveStickyBindingDoesNotFlap(t *testing.T) {
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: failed, Owner: webOwner}, res.Target, "after %s", after)
 		require.Equal(t, atLevel(provenAt(failingAt(boundTo("10.20.0.11"), t0), s.clock.t), LevelPort), res.Binding, "after %s", after)
 		require.Equal(t, []CandidateResult{
-			{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: failed},
+			{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: failed, Level: "port"},
 			{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "not tried"},
 		}, res.Candidates)
 		require.False(t, s.prober.touched(ip("10.20.0.10")), "after %s", after)
@@ -41,8 +41,8 @@ func TestResolveStickyBindingDoesNotFlap(t *testing.T) {
 
 	requireServed(t, res, "10.20.0.10", t0.Add(121*time.Second))
 	require.Equal(t, []CandidateResult{
-		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: failed},
-		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: failed, Level: "port"},
+		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"},
 	}, res.Candidates)
 }
 
@@ -57,8 +57,8 @@ func TestResolveStickyBindingKeptWithoutAlternative(t *testing.T) {
 	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
 	require.Equal(t, atLevel(provenAt(prev, s.clock.t), LevelPort), res.Binding)
 	require.Equal(t, []CandidateResult{
-		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: "port 80: connection refused"},
-		{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "port 80: connection refused"},
+		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: "port 80: connection refused", Level: "port"},
+		{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "port 80: connection refused", Level: "port"},
 	}, res.Candidates)
 }
 
@@ -188,7 +188,7 @@ func TestResolveIdentityLossTriesOthersAtOnce(t *testing.T) {
 		requireServed(t, res, "10.20.0.10", t0)
 		require.Equal(t, []CandidateResult{
 			{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: foreign},
-			{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+			{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"},
 		}, res.Candidates)
 	})
 
@@ -409,7 +409,7 @@ func TestResolveIgnoresBindingOfAnotherRoute(t *testing.T) {
 			res := s.resolve(t, webRoute(), prev)
 
 			requireServed(t, res, "10.20.0.10", t0)
-			require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true}}, res.Candidates)
+			require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"}}, res.Candidates)
 			require.False(t, s.prober.touched(ip("10.20.0.11")))
 		})
 	}
@@ -423,7 +423,7 @@ func TestResolveBindingOutlivesSources(t *testing.T) {
 		res := s.resolve(t, webRoute(), boundTo("10.20.0.10"))
 
 		requireServed(t, res, "10.20.0.10", t0)
-		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromBinding, OK: true}}, res.Candidates)
+		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromBinding, OK: true, Level: "port"}}, res.Candidates)
 	})
 
 	t.Run("verified before the other candidates", func(t *testing.T) {
@@ -434,7 +434,7 @@ func TestResolveBindingOutlivesSources(t *testing.T) {
 
 		requireServed(t, res, "10.20.0.11", t0)
 		require.Equal(t, []CandidateResult{
-			{Addr: ip("10.20.0.11"), Source: FromBinding, OK: true},
+			{Addr: ip("10.20.0.11"), Source: FromBinding, OK: true, Level: "port"},
 			{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "not tried"},
 		}, res.Candidates)
 	})
@@ -457,7 +457,7 @@ func TestResolveBindingOutlivesSources(t *testing.T) {
 		requireServed(t, res, "10.20.0.10", t0)
 		require.Equal(t, []CandidateResult{
 			{Addr: ip("10.20.0.99"), Source: FromBinding, Reason: "no ARP answer on vmbr0"},
-			{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+			{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"},
 		}, res.Candidates)
 	})
 
@@ -515,7 +515,7 @@ func TestResolveBindingDropped(t *testing.T) {
 
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
 		require.Equal(t, atLevel(provenAt(failingAt(boundTo("10.20.0.10"), t0), t0), LevelPort), res.Binding)
-		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromVia, Reason: "port 80: connection refused"}}, res.Candidates)
+		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromVia, Reason: "port 80: connection refused", Level: "port"}}, res.Candidates)
 	})
 
 	t.Run("via names another NIC", func(t *testing.T) {
@@ -528,7 +528,7 @@ func TestResolveBindingDropped(t *testing.T) {
 
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reachable: true, Owner: webOwner}, res.Target)
 		require.Equal(t, mac1, res.Binding.MAC)
-		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.11"), Source: FromStatic, OK: true}}, res.Candidates)
+		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.11"), Source: FromStatic, OK: true, Level: "port"}}, res.Candidates)
 		require.False(t, s.prober.touched(ip("10.20.0.10")))
 	})
 
@@ -557,7 +557,7 @@ func TestResolveAddressMovesToAnotherNIC(t *testing.T) {
 	require.Equal(t, mac1, res.Binding.MAC)
 	require.Equal(t, []CandidateResult{
 		{Addr: ip("10.20.0.10"), Source: FromBinding, Reason: "route to 10.20.0.10 leaves through vmbr1, not vmbr0"},
-		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"},
 	}, res.Candidates)
 }
 
@@ -736,8 +736,8 @@ func TestResolveStickyFailingSinceInTheFuture(t *testing.T) {
 
 	requireServed(t, res, "10.20.0.10", t0)
 	require.Equal(t, []CandidateResult{
-		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: "port 80: connection refused"},
-		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true},
+		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: "port 80: connection refused", Level: "port"},
+		{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"},
 	}, res.Candidates, "a binding failing since a time still to come is not sticky")
 }
 

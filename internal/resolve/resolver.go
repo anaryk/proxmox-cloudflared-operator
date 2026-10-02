@@ -94,12 +94,15 @@ type Settings struct {
 	MaxProofAge time.Duration
 }
 
-// CandidateResult is how one candidate fared.
+// CandidateResult is how one candidate fared. Level is the level its identity
+// was proven at, also when its port then failed; it is a plain string, as in
+// the other views of a route.
 type CandidateResult struct {
 	Addr   netip.Addr      `json:"addr"`
 	Source CandidateSource `json:"source"`
 	OK     bool            `json:"ok"`
 	Reason string          `json:"reason,omitempty"` // why it failed, or was not tried
+	Level  string          `json:"level,omitempty"`
 }
 
 // Result is the outcome of resolving one route.
@@ -147,7 +150,9 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 // of those MACs on exactly one port, the guest's own (for a guest known to
 // run on another node: on no port of a local guest), no other running guest
 // has those MACs configured unless the binding already had them and the
-// forwarding table placed them, and the port answers.
+// forwarding table placed them, and the port answers. Of the candidates that
+// pass, the one proven at the highest level is served; the order decides only
+// between equal levels.
 //
 // The previous binding is verified first, even when no source reports its
 // address any more. After a dial failure it stays the target for StickyFor
@@ -305,14 +310,19 @@ func newAttempt(r *Resolver, route model.Route, guest model.Guest, snap inventor
 	return a
 }
 
+// resolve serves, of the candidates that pass, the one proven at the highest
+// level, the first of them when several are equal; trying stops once one
+// reaches the highest level the guest can be proven at here. A candidate
+// proven before the call is cancelled is served all the same.
 func (a *attempt) resolve(ctx context.Context) Result {
+	best := -1
 	if a.bound {
 		o := a.try(ctx, 0)
 		switch {
 		case o.verdict == cancelled:
 			return a.cancelled()
 		case o.ok():
-			return a.served(0)
+			best = 0
 		case o.verdict == rejected:
 			a.prev, a.bound = nil, false
 		case a.keepsBound(o):
@@ -320,16 +330,23 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		}
 	}
 	for i := range a.list[:min(len(a.list), maxTries)] {
+		if best >= 0 && a.levels[best].AtLeast(a.ceiling()) {
+			break
+		}
 		if a.tried[i] {
 			continue
 		}
-		o := a.try(ctx, i)
-		switch {
+		switch o := a.try(ctx, i); {
+		case o.verdict == cancelled && best >= 0:
+			return a.served(best)
 		case o.verdict == cancelled:
 			return a.cancelled()
-		case o.ok():
-			return a.served(i)
+		case o.ok() && (best < 0 || !a.levels[best].AtLeast(a.levels[i])):
+			best = i
 		}
+	}
+	if best >= 0 {
+		return a.served(best)
 	}
 	var res Result
 	switch {
@@ -373,8 +390,18 @@ func (a *attempt) try(ctx context.Context, i int) outcome {
 	c := a.list[i]
 	level, o := a.verify(ctx, c)
 	a.outcomes[i], a.levels[i], a.tried[i] = o, level, true
-	a.results = append(a.results, CandidateResult{Addr: c.Addr, Source: c.Source, OK: o.ok(), Reason: o.reason})
+	a.results = append(a.results, CandidateResult{Addr: c.Addr, Source: c.Source, OK: o.ok(), Reason: o.reason, Level: string(level)})
 	return o
+}
+
+// ceiling is the highest level a candidate of this guest can be proven at:
+// port where the forwarding-table step applies, observed for a guest known to
+// run on another node.
+func (a *attempt) ceiling() Level {
+	if a.checksFDB() {
+		return LevelPort
+	}
+	return LevelObserved
 }
 
 func (a *attempt) served(i int) Result {
@@ -441,12 +468,18 @@ func (a *attempt) guestUnknown() Result {
 }
 
 // unproven returns b as the target of a call that did not prove its
-// identity, withdrawn when its old proof is in doubt.
+// identity, withdrawn when its old proof is in doubt. The old proof stands for
+// no more than observed while the guest runs, or may run, on another node,
+// where this node's forwarding table cannot place its MACs.
 func (a *attempt) unproven(b *Binding, reason string) Result {
 	if why, doubted := a.doubt(b); doubted && !b.Withdrawn {
 		b.Withdrawn, reason = true, why
 	}
-	return a.result(b.target(reason), b)
+	res := a.result(b.target(reason), b)
+	if res.Level != "" && (!a.checksFDB() || a.mayRunElsewhere()) {
+		res.Level = LevelObserved
+	}
+	return res
 }
 
 // doubt says why b may not be served on an old proof: another guest that runs

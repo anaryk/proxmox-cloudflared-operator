@@ -24,7 +24,7 @@ func TestResolveUntaggedBridge(t *testing.T) {
 	res := s.resolve(t, webRoute(), nil)
 
 	requireServed(t, res, "10.20.0.10", t0)
-	require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true}}, res.Candidates)
+	require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromStatic, OK: true, Level: "port"}}, res.Candidates)
 	require.Equal(t, []probeCall{
 		{op: "interfaces"},
 		{op: "route", addr: ip("10.20.0.10")},
@@ -40,7 +40,7 @@ func TestResolveExplicitAddress(t *testing.T) {
 	res := s.resolve(t, routeFor(ip("10.20.0.10"), ""), nil)
 
 	requireServed(t, res, "10.20.0.10", t0)
-	require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromVia, OK: true}}, res.Candidates)
+	require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromVia, OK: true, Level: "port"}}, res.Candidates)
 	require.Len(t, s.prober.ops("arp"), 1)
 	require.Len(t, s.prober.ops("fdb"), 1)
 }
@@ -762,7 +762,7 @@ func TestResolveDeniedAddressNeverProbed(t *testing.T) {
 		require.Equal(t, []CandidateResult{
 			{Addr: node, Source: FromStatic, Reason: "address of a cluster node"},
 			{Addr: ip("169.254.10.10"), Source: FromAgent, Reason: "link-local address"},
-			{Addr: ip("10.20.0.10"), Source: FromAgent, OK: true},
+			{Addr: ip("10.20.0.10"), Source: FromAgent, OK: true, Level: "port"},
 			{Addr: ip("10.20.0.11"), Source: FromAgent, Reason: "not tried"},
 		}, res.Candidates)
 		require.False(t, s.prober.touched(node))
@@ -880,7 +880,7 @@ func TestResolveListsEveryCandidate(t *testing.T) {
 		{Addr: ip("10.20.0.12"), Source: FromStatic, Reason: "no ARP answer on vmbr0"},
 		{Addr: ip("10.20.0.2"), Source: FromStatic, Reason: "address of a cluster node"},
 		{Addr: ip("10.30.0.10"), Source: FromStatic, Reason: "node has no address on vmbr1 in the guest's network"},
-		{Addr: ip("10.20.0.13"), Source: FromAgent, Reason: "port 80: connection refused"},
+		{Addr: ip("10.20.0.13"), Source: FromAgent, Reason: "port 80: connection refused", Level: "port"},
 	}, res.Candidates)
 	require.Len(t, s.prober.ops("interfaces"), 1, "interfaces are listed once per call")
 }
@@ -1249,7 +1249,7 @@ func TestResolveTriesEveryNICForAGuessedAddress(t *testing.T) {
 			require.Equal(t, mac1, res.Binding.MAC)
 			require.Equal(t, []CandidateResult{
 				{Addr: ip("10.30.0.10"), Source: FromVia, Reason: "node has no address on vmbr0 in the guest's network"},
-				{Addr: ip("10.30.0.10"), Source: FromVia, OK: true},
+				{Addr: ip("10.30.0.10"), Source: FromVia, OK: true, Level: "port"},
 			}, res.Candidates)
 		})
 	}

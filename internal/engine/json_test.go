@@ -38,7 +38,7 @@ func populatedState() State {
 					Service: "http://10.0.0.11:8080", Zone: "example.com", Warnings: []string{"a warning"},
 				},
 				Guest:      &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
-				Candidates: []resolve.CandidateResult{{Addr: netip.MustParseAddr("10.0.0.11"), Source: resolve.FromStatic, OK: true}},
+				Candidates: []resolve.CandidateResult{{Addr: netip.MustParseAddr("10.0.0.11"), Source: resolve.FromStatic, OK: true, Level: "port"}},
 				Account:    "acc1",
 				Rule:       &planner.IngressRule{Hostname: "www.example.com", Service: "http://10.0.0.11:8080", HTTPHostHeader: "intranet"},
 			},
