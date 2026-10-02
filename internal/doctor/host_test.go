@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -122,6 +123,15 @@ func TestTheHostDials(t *testing.T) {
 	require.NoError(t, env.CanDial(t.Context(), "tcp", addr))
 	srv.Close()
 	require.Error(t, env.CanDial(t.Context(), "tcp", addr))
+
+	var deadline time.Time
+	env.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		deadline, _ = ctx.Deadline()
+		return nil, errors.New("dialed " + network + " " + addr)
+	}
+	require.EqualError(t, env.CanDial(t.Context(), "tcp", "region1.v2.argotunnel.com:7844"), "dialed tcp region1.v2.argotunnel.com:7844")
+	require.False(t, deadline.IsZero())
+	require.LessOrEqual(t, time.Until(deadline), hostTimeout)
 }
 
 func TestTheHostPassesOnWhatTheDaemonKnows(t *testing.T) {

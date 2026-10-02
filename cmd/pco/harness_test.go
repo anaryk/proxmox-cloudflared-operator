@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
@@ -59,6 +60,12 @@ type fakeEngine struct {
 	applyErr, adoptErr error
 	removeErr          error
 	applied            *engine.ApplyResult // what Apply answers instead of what the state offers
+
+	claims                            []engine.ClaimView
+	approvals                         []engine.ApprovalView
+	steps                             []doctor.Step
+	findings                          []doctor.Finding
+	resolveErr, guestErr, diagnoseErr error
 
 	calls []string
 }
@@ -132,6 +139,45 @@ func (f *fakeEngine) CheckCredential(_ context.Context, id string, deep bool) (e
 func (f *fakeEngine) RemoveCredential(_ context.Context, id string) error {
 	f.record("remove " + id)
 	return f.removeErr
+}
+
+func (f *fakeEngine) Claims() ([]engine.ClaimView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.claims, nil
+}
+
+func (f *fakeEngine) ResolveClaim(_ context.Context, hostname, owner string) error {
+	f.record("resolve " + hostname + " " + owner)
+	return f.resolveErr
+}
+
+func (f *fakeEngine) Approvals() ([]engine.ApprovalView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.approvals, nil
+}
+
+func (f *fakeEngine) ApproveGuest(_ context.Context, owner string) error {
+	f.record("approve " + owner)
+	return f.guestErr
+}
+
+func (f *fakeEngine) RevokeGuest(_ context.Context, owner string) error {
+	f.record("revoke " + owner)
+	return f.guestErr
+}
+
+func (f *fakeEngine) Diagnose(_ context.Context, hostname string) ([]doctor.Step, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.steps, f.diagnoseErr
+}
+
+func (f *fakeEngine) Doctor(context.Context) []doctor.Finding {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.findings
 }
 
 func boolText(b bool) string {

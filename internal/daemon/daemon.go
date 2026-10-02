@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -61,6 +63,11 @@ type Deps struct {
 	// ShutdownTimeout is how long a stop waits for the requests that are
 	// running; default 30 s. What is still running then is cut off.
 	ShutdownTimeout time.Duration
+	// Dial is how the doctor tries the way out to Cloudflare; default: a
+	// net.Dialer. Cloudflared is the binary whose version it reads; default:
+	// the one the connectors run.
+	Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
+	Cloudflared string
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -123,11 +130,11 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	deps = deps.withDefaults()
 	log := cfg.Log
 
-	release, err := lockNode(cfg.Paths.Local)
+	lock, err := lockNode(cfg.Paths.Local)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer lock.release()
 
 	st, err := store.Open(cfg.Paths)
 	if err != nil {
@@ -144,12 +151,22 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	settings := startSettings(st, log)
 	logStart(log, cfg, st)
 
-	eng, err := build(cfg, deps, st, token, settings)
+	eng, client, err := build(cfg, deps, st, token, settings)
 	if err != nil {
 		return err
 	}
+	doc := doctor.Runner{State: eng.State, Env: &doctor.HostEnv{
+		Systemd:    deps.Systemd,
+		Proxmox:    client,
+		Interval:   eng.PollInterval,
+		Clock:      deps.Now,
+		StoreCheck: storeReady(st),
+		LockCheck:  lock.check,
+		Binary:     deps.Cloudflared,
+		Dial:       deps.Dial,
+	}}
 	gid, uids := socketAccess(deps.Accounts, log)
-	srv := api.New(eng, cfg.Version, uids, log)
+	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log)
 }
@@ -175,9 +192,36 @@ func logStart(log zerolog.Logger, cfg Config, st *store.Store) {
 	ev.Msg("pco daemon starting")
 }
 
-// build makes the engine out of the parts. The Proxmox token goes into the
-// client and nowhere else.
-func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, error) {
+// served is what the API answers for: the engine, and the doctor that reads
+// its state.
+type served struct {
+	*engine.Engine
+	doc doctor.Runner
+}
+
+func (s served) Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error) {
+	return s.doc.Diagnose(ctx, hostname)
+}
+
+func (s served) Doctor(ctx context.Context) []doctor.Finding { return s.doc.Doctor(ctx) }
+
+// storeReady says whether the store is mounted and set up on this node.
+func storeReady(st *store.Store) func() error {
+	return func() error {
+		_, found, err := st.Install()
+		switch {
+		case err != nil:
+			return err
+		case !found:
+			return errors.New("pco is not set up on this node; run pco setup")
+		}
+		return nil
+	}
+}
+
+// build makes the engine out of the parts, and returns the Proxmox client it
+// reads through too. The Proxmox token goes into the client and nowhere else.
+func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, *pve.Client, error) {
 	client, err := pve.New(pve.Config{
 		BaseURL: cfg.PVEURL,
 		TokenID: token.TokenID,
@@ -185,7 +229,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		CAFile:  cfg.PVECAFile,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("building the Proxmox client: %w", err)
+		return nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
 	}
 	log := cfg.Log
 	inv := inventory.New(client, inventory.Options{GateTags: []string{settings.GateTag}}, deps.Now, log)
@@ -208,9 +252,9 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		LocalDir:   cfg.Paths.Local,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("building the engine: %w", err)
+		return nil, nil, fmt.Errorf("building the engine: %w", err)
 	}
-	return eng, nil
+	return eng, client, nil
 }
 
 // serve runs the API, starts the engine once the socket is listening, and runs

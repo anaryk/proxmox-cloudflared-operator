@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -53,14 +54,69 @@ func TestTheDirectoriesMoveAllThreeOrNone(t *testing.T) {
 func TestTheNodeLockIsExclusiveAndGoesWithItsHolder(t *testing.T) {
 	dir := filepath.Join(testutil.ShortDir(t), "local") // made by the lock
 
-	release, err := lockNode(dir)
+	lock, err := lockNode(dir)
 	require.NoError(t, err)
 	_, err = lockNode(dir)
 	require.ErrorIs(t, err, ErrRunning)
 
-	release()
+	lock.release()
 	again, err := lockNode(dir)
 	require.NoError(t, err)
-	again()
+	again.release()
 	require.FileExists(t, filepath.Join(dir, lockName), "the lock file stays")
+}
+
+// The lock holds only while its file is the one at its path: once the file
+// is removed or replaced, a second daemon would get a lock of its own.
+func TestTheNodeLockSaysWhetherItStillHolds(t *testing.T) {
+	t.Run("held", func(t *testing.T) {
+		lock, err := lockNode(testutil.ShortDir(t))
+		require.NoError(t, err)
+		t.Cleanup(lock.release)
+
+		require.NoError(t, lock.check())
+	})
+	t.Run("removed", func(t *testing.T) {
+		dir := testutil.ShortDir(t)
+		lock, err := lockNode(dir)
+		require.NoError(t, err)
+		t.Cleanup(lock.release)
+		require.NoError(t, os.Remove(filepath.Join(dir, lockName)))
+
+		require.ErrorContains(t, lock.check(), "is gone; a second daemon could start")
+	})
+	t.Run("replaced", func(t *testing.T) {
+		dir := testutil.ShortDir(t)
+		lock, err := lockNode(dir)
+		require.NoError(t, err)
+		t.Cleanup(lock.release)
+		require.NoError(t, os.Remove(filepath.Join(dir, lockName)))
+		other, err := lockNode(dir)
+		require.NoError(t, err, "a second daemon gets a lock of its own")
+		t.Cleanup(other.release)
+
+		require.EqualError(t, lock.check(), "the lock of the node "+filepath.Join(dir, lockName)+
+			" is not the file this daemon locked; a second daemon could start")
+		require.NoError(t, other.check())
+	})
+}
+
+func TestTheStoreIsReadyWhenItIsMountedAndSetUp(t *testing.T) {
+	dir := testutil.ShortDir(t)
+	mount := filepath.Join(dir, "mounted")
+	require.NoError(t, os.WriteFile(mount, nil, 0o600))
+	paths := store.Paths{
+		Cluster: filepath.Join(dir, "cluster"), Private: filepath.Join(dir, "private"), Local: filepath.Join(dir, "local"), MountCheck: mount,
+	}
+	s, err := store.Open(paths)
+	require.NoError(t, err)
+	ready := storeReady(s)
+
+	require.ErrorIs(t, ready(), store.ErrNoRoot, "no roots yet")
+	require.NoError(t, s.Init())
+	require.EqualError(t, ready(), "pco is not set up on this node; run pco setup")
+	require.NoError(t, s.SaveInstall(store.Install{ID: "abc123"}))
+	require.NoError(t, ready())
+	require.NoError(t, os.Remove(mount))
+	require.ErrorIs(t, ready(), store.ErrNotMounted)
 }

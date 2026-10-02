@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -164,6 +165,90 @@ func (c *Client) CheckCredential(ctx context.Context, id string, deep bool) (eng
 // RemoveCredential deletes a credential, if nothing is left that it manages.
 func (c *Client) RemoveCredential(ctx context.Context, id string) error {
 	return c.call(ctx, c.long, http.MethodDelete, "/v1/credentials/"+url.PathEscape(id), nil, nil)
+}
+
+// Claims returns the claims on the hostnames, with who holds each and who
+// waits for it.
+func (c *Client) Claims(ctx context.Context) ([]engine.ClaimView, error) {
+	var claims []engine.ClaimView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/claims", nil, &claims)
+	return claims, err
+}
+
+// ClaimsRaw is Claims as the daemon sent it.
+func (c *Client) ClaimsRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, "/v1/claims")
+}
+
+// ResolveClaim hands the claim on hostname to owner, which has to claim it.
+func (c *Client) ResolveClaim(ctx context.Context, hostname, owner string) error {
+	body := struct {
+		Hostname string `json:"hostname"`
+		Owner    string `json:"owner"`
+	}{hostname, owner}
+	return c.call(ctx, c.long, http.MethodPost, "/v1/claims/resolve", body, nil)
+}
+
+// Approvals returns the approved guests, with the identity each was approved
+// in.
+func (c *Client) Approvals(ctx context.Context) ([]engine.ApprovalView, error) {
+	var approvals []engine.ApprovalView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/approvals", nil, &approvals)
+	return approvals, err
+}
+
+// ApprovalsRaw is Approvals as the daemon sent it.
+func (c *Client) ApprovalsRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, "/v1/approvals")
+}
+
+// ApproveGuest approves a guest in the identity the daemon sees it in now.
+func (c *Client) ApproveGuest(ctx context.Context, owner string) error {
+	return c.call(ctx, c.long, http.MethodPost, "/v1/guests/approve", ownerBody{owner}, nil)
+}
+
+// RevokeGuest removes the approval of a guest.
+func (c *Client) RevokeGuest(ctx context.Context, owner string) error {
+	return c.call(ctx, c.long, http.MethodPost, "/v1/guests/revoke", ownerBody{owner}, nil)
+}
+
+type ownerBody struct {
+	Owner string `json:"owner"`
+}
+
+// Diagnose walks the chain of the route of hostname, in the daemon.
+func (c *Client) Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error) {
+	var steps []doctor.Step
+	err := c.call(ctx, c.long, http.MethodGet, diagnosePath(hostname), nil, &steps)
+	return steps, err
+}
+
+// DiagnoseRaw is Diagnose as the daemon sent it.
+func (c *Client) DiagnoseRaw(ctx context.Context, hostname string) (json.RawMessage, error) {
+	return c.raw(ctx, c.long, diagnosePath(hostname))
+}
+
+func diagnosePath(hostname string) string {
+	return "/v1/diagnose?" + url.Values{"hostname": {hostname}}.Encode()
+}
+
+// Doctor checks the installation, in the daemon.
+func (c *Client) Doctor(ctx context.Context) ([]doctor.Finding, error) {
+	var findings []doctor.Finding
+	err := c.call(ctx, c.long, http.MethodGet, "/v1/doctor", nil, &findings)
+	return findings, err
+}
+
+// DoctorRaw is Doctor as the daemon sent it.
+func (c *Client) DoctorRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.long, "/v1/doctor")
+}
+
+// raw returns the answer to a GET as the daemon sent it.
+func (c *Client) raw(ctx context.Context, timeout time.Duration, path string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	err := c.call(ctx, timeout, http.MethodGet, path, nil, &raw)
+	return raw, err
 }
 
 // Version returns the version of the running daemon.

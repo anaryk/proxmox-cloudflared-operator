@@ -38,6 +38,8 @@ type HostEnv struct {
 	// Binary is the cloudflared the connectors run; empty is
 	// /usr/bin/cloudflared, as the unit of a connector has it.
 	Binary string
+	// Dial connects for CanDial; nil is a net.Dialer.
+	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 var _ Env = (*HostEnv)(nil)
@@ -70,8 +72,14 @@ func (h *HostEnv) UnitActive(ctx context.Context, unit string) (bool, error) {
 
 // CanDial connects to addr and hangs up.
 func (h *HostEnv) CanDial(ctx context.Context, network, addr string) error {
-	d := net.Dialer{Timeout: hostTimeout}
-	conn, err := d.DialContext(ctx, network, addr)
+	ctx, cancel := context.WithTimeout(ctx, hostTimeout)
+	defer cancel()
+	dial := h.Dial
+	if dial == nil {
+		var d net.Dialer
+		dial = d.DialContext
+	}
+	conn, err := dial(ctx, network, addr)
 	if err != nil {
 		return err
 	}

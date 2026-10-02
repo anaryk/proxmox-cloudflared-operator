@@ -16,6 +16,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -39,6 +40,15 @@ type Engine interface {
 	AddCredential(ctx context.Context, label, token string) (engine.CredentialView, error)
 	CheckCredential(ctx context.Context, id string, deep bool) (engine.CredentialView, error)
 	RemoveCredential(ctx context.Context, id string) error
+	Claims() ([]engine.ClaimView, error)
+	ResolveClaim(ctx context.Context, hostname, owner string) error
+	Approvals() ([]engine.ApprovalView, error)
+	ApproveGuest(ctx context.Context, owner string) error
+	RevokeGuest(ctx context.Context, owner string) error
+	// Diagnose and Doctor run in the daemon, against the state of the
+	// engine and the host it runs on.
+	Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error)
+	Doctor(ctx context.Context) []doctor.Finding
 }
 
 // Server answers API requests for an engine.

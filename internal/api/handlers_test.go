@@ -16,6 +16,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -431,6 +432,12 @@ var engineRoutes = []struct{ name, method, target, body string }{
 	{"add credential", http.MethodPost, "/v1/credentials", `{"label":"main","token":"` + testToken + `"}`},
 	{"check credential", http.MethodPost, "/v1/credentials/abc12345/check", `{}`},
 	{"remove credential", http.MethodDelete, "/v1/credentials/abc12345", ""},
+	{"claims", http.MethodGet, "/v1/claims", ""},
+	{"resolve claim", http.MethodPost, "/v1/claims/resolve", `{"hostname":"www.example.com","owner":"qemu/102"}`},
+	{"approvals", http.MethodGet, "/v1/approvals", ""},
+	{"approve guest", http.MethodPost, "/v1/guests/approve", `{"owner":"qemu/101"}`},
+	{"revoke guest", http.MethodPost, "/v1/guests/revoke", `{"owner":"qemu/101"}`},
+	{"diagnose", http.MethodGet, "/v1/diagnose?hostname=www.example.com", ""},
 }
 
 func TestEngineErrorsAreMapped(t *testing.T) {
@@ -633,6 +640,9 @@ func TestTheRequestContextReachesTheEngine(t *testing.T) {
 	type key struct{}
 	f := &fakeEngine{}
 	for _, rt := range engineRoutes {
+		if rt.name == "claims" || rt.name == "approvals" {
+			continue // read from the store, with nothing to cancel
+		}
 		t.Run(rt.name, func(t *testing.T) {
 			req := request(rt.method, rt.target, rt.body)
 			req = req.WithContext(context.WithValue(req.Context(), key{}, "marker"))
@@ -643,4 +653,121 @@ func TestTheRequestContextReachesTheEngine(t *testing.T) {
 			require.Equal(t, "marker", f.lastCtx().Value(key{}))
 		})
 	}
+}
+
+func TestClaimsAreListed(t *testing.T) {
+	f := &fakeEngine{claims: testClaims()}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/claims", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	want, err := json.Marshal(f.claims)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), rec.Body.String())
+
+	t.Run("none is an empty list", func(t *testing.T) {
+		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/claims", "")
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `[]`, rec.Body.String())
+	})
+}
+
+func TestApprovalsAreListed(t *testing.T) {
+	f := &fakeEngine{approvals: []engine.ApprovalView{{Owner: "qemu/101", Identity: "uuid:101"}}}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/approvals", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `[{"owner":"qemu/101","identity":"uuid:101","matches":false}]`, rec.Body.String())
+
+	t.Run("none is an empty list", func(t *testing.T) {
+		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/approvals", "")
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `[]`, rec.Body.String())
+	})
+}
+
+func TestTheAdminActionsOnClaimsAndGuests(t *testing.T) {
+	for _, tt := range []struct {
+		name, target, body, call string
+	}{
+		{"resolve a claim", "/v1/claims/resolve", `{"hostname":"www.example.com","owner":"qemu/102"}`, "resolve:www.example.com:qemu/102"},
+		{"approve a guest", "/v1/guests/approve", `{"owner":"qemu/101"}`, "approve:qemu/101"},
+		{"revoke a guest", "/v1/guests/revoke", `{"owner":"lxc/200"}`, "revoke:lxc/200"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodPost, tt.target, tt.body)
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.JSONEq(t, `{}`, rec.Body.String())
+			require.Equal(t, []string{tt.call}, f.called())
+		})
+		t.Run(tt.name+" needs a body", func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodPost, tt.target, "")
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "the request body is empty", errorMessage(t, rec))
+			require.Empty(t, f.called())
+		})
+		t.Run(tt.name+" takes no other field", func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodPost, tt.target, `{"owner":"qemu/1","force":true}`)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, errorMessage(t, rec), "force")
+			require.Empty(t, f.called())
+		})
+	}
+}
+
+func TestDiagnose(t *testing.T) {
+	steps := []doctor.Step{
+		{Name: "route", Level: doctor.LevelOK, Detail: "qemu/101 holds it"},
+		{Name: "zone", Level: doctor.LevelFail, Detail: "no Cloudflare zone for this hostname in any credential"},
+	}
+	f := &fakeEngine{steps: steps}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/diagnose?hostname=www.example.com", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	want, err := json.Marshal(steps)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), rec.Body.String())
+	require.Equal(t, []string{"diagnose:www.example.com"}, f.called())
+
+	for _, query := range []string{"", "?hostname=", "?host=www.example.com", "?hostname=a.example.com&hostname=b.example.com"} {
+		t.Run("query "+query, func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodGet, "/v1/diagnose"+query, "")
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "invalid", errorCode(t, rec))
+			require.Equal(t, "name one hostname: /v1/diagnose?hostname=<name>", errorMessage(t, rec))
+			require.Empty(t, f.called())
+		})
+	}
+}
+
+func TestDoctor(t *testing.T) {
+	findings := []doctor.Finding{
+		{Check: "mode", Level: doctor.LevelWarn, Detail: "observe-only: nothing is changed at Cloudflare", Fix: "pco apply"},
+		{Check: "store", Level: doctor.LevelOK, Detail: "the store is mounted and set up"},
+	}
+	f := &fakeEngine{findings: findings}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/doctor", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	want, err := json.Marshal(findings)
+	require.NoError(t, err)
+	require.JSONEq(t, string(want), rec.Body.String())
+	require.Equal(t, []string{"doctor"}, f.called())
 }

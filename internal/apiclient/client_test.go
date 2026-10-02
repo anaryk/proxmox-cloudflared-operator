@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -199,6 +200,68 @@ func TestRequests(t *testing.T) {
 			call: func(c *Client) error { return c.RemoveCredential(t.Context(), "a/b?c") },
 			want: seen{Method: "DELETE", Path: "/v1/credentials/a%2Fb%3Fc"},
 		},
+		{
+			name: "claims", reply: `[{"hostname":"www.example.com","holder":"qemu/101","since":"2026-03-04T05:06:07Z","state":"serving","waiting":[]}]`, status: 200,
+			call: func(c *Client) error {
+				claims, err := c.Claims(t.Context())
+				require.Equal(t, []engine.ClaimView{{
+					Hostname: "www.example.com", Holder: "qemu/101", Since: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
+					State: "serving", Waiting: []engine.ClaimantView{},
+				}}, claims)
+				return err
+			},
+			want: seen{Method: "GET", Path: "/v1/claims"},
+		},
+		{
+			name: "resolve a claim", reply: `{}`, status: 200,
+			call: func(c *Client) error { return c.ResolveClaim(t.Context(), "www.example.com", "qemu/102") },
+			want: seen{Method: "POST", Path: "/v1/claims/resolve", ContentType: "application/json", Body: `{"hostname":"www.example.com","owner":"qemu/102"}`},
+		},
+		{
+			name: "approvals", reply: `[{"owner":"qemu/101","identity":"uuid:1","matches":false}]`, status: 200,
+			call: func(c *Client) error {
+				approvals, err := c.Approvals(t.Context())
+				require.Equal(t, []engine.ApprovalView{{Owner: "qemu/101", Identity: "uuid:1"}}, approvals)
+				return err
+			},
+			want: seen{Method: "GET", Path: "/v1/approvals"},
+		},
+		{
+			name: "approve a guest", reply: `{}`, status: 200,
+			call: func(c *Client) error { return c.ApproveGuest(t.Context(), "qemu/101") },
+			want: seen{Method: "POST", Path: "/v1/guests/approve", ContentType: "application/json", Body: `{"owner":"qemu/101"}`},
+		},
+		{
+			name: "revoke a guest", reply: `{}`, status: 200,
+			call: func(c *Client) error { return c.RevokeGuest(t.Context(), "qemu/101") },
+			want: seen{Method: "POST", Path: "/v1/guests/revoke", ContentType: "application/json", Body: `{"owner":"qemu/101"}`},
+		},
+		{
+			name: "diagnose", reply: `[{"name":"route","level":"ok","detail":"fine"}]`, status: 200,
+			call: func(c *Client) error {
+				steps, err := c.Diagnose(t.Context(), "www.example.com")
+				require.Equal(t, []doctor.Step{{Name: "route", Level: doctor.LevelOK, Detail: "fine"}}, steps)
+				return err
+			},
+			want: seen{Method: "GET", Path: "/v1/diagnose", Query: "hostname=www.example.com"},
+		},
+		{
+			name: "a hostname is escaped", reply: `[]`, status: 200,
+			call: func(c *Client) error {
+				_, err := c.Diagnose(t.Context(), "a&b=c d")
+				return err
+			},
+			want: seen{Method: "GET", Path: "/v1/diagnose", Query: "hostname=a%26b%3Dc+d"},
+		},
+		{
+			name: "doctor", reply: `[{"check":"mode","level":"warn","detail":"observe-only","fix":"pco apply"}]`, status: 200,
+			call: func(c *Client) error {
+				findings, err := c.Doctor(t.Context())
+				require.Equal(t, []doctor.Finding{{Check: "mode", Level: doctor.LevelWarn, Detail: "observe-only", Fix: "pco apply"}}, findings)
+				return err
+			},
+			want: seen{Method: "GET", Path: "/v1/doctor"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d, socket := fakeDaemon(t, reply(tt.status, tt.reply))
@@ -250,6 +313,17 @@ func everyCall(t *testing.T, c *Client) []result {
 	_, err = c.CheckCredential(ctx, "abc", false)
 	add("check", err)
 	add("remove", c.RemoveCredential(ctx, "abc"))
+	_, err = c.Claims(ctx)
+	add("claims", err)
+	add("resolve", c.ResolveClaim(ctx, "www.example.com", "qemu/102"))
+	_, err = c.Approvals(ctx)
+	add("approvals", err)
+	add("approve", c.ApproveGuest(ctx, "qemu/101"))
+	add("revoke", c.RevokeGuest(ctx, "qemu/101"))
+	_, err = c.Diagnose(ctx, "www.example.com")
+	add("diagnose", err)
+	_, err = c.Doctor(ctx)
+	add("doctor", err)
 	return out
 }
 
@@ -334,6 +408,9 @@ func TestRawAnswersKeepTheBytesTheDaemonSent(t *testing.T) {
 	}{
 		{"status", state, "/v1/state", func(c *Client) (json.RawMessage, error) { return c.StatusRaw(t.Context()) }},
 		{"credentials", creds, "/v1/credentials", func(c *Client) (json.RawMessage, error) { return c.CredentialsRaw(t.Context()) }},
+		{"claims", `[{"state":"held","hostname":"a"}]`, "/v1/claims", func(c *Client) (json.RawMessage, error) { return c.ClaimsRaw(t.Context()) }},
+		{"approvals", `[{"matches":true,"owner":"qemu/1"}]`, "/v1/approvals", func(c *Client) (json.RawMessage, error) { return c.ApprovalsRaw(t.Context()) }},
+		{"doctor", `[{"level":"ok","check":"mode"}]`, "/v1/doctor", func(c *Client) (json.RawMessage, error) { return c.DoctorRaw(t.Context()) }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			d, socket := fakeDaemon(t, reply(200, tt.reply))
@@ -528,6 +605,21 @@ func TestTimeouts(t *testing.T) {
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "adopt")
 	_ = c.RemoveCredential(t.Context(), "a")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "remove")
+
+	_, _ = c.Claims(t.Context())
+	require.InDelta(t, 10, rec.last().Seconds(), 1, "claims")
+	_, _ = c.Approvals(t.Context())
+	require.InDelta(t, 10, rec.last().Seconds(), 1, "approvals")
+	_ = c.ResolveClaim(t.Context(), "a.example.com", "qemu/1")
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "resolve")
+	_ = c.ApproveGuest(t.Context(), "qemu/1")
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "approve")
+	_ = c.RevokeGuest(t.Context(), "qemu/1")
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "revoke")
+	_, _ = c.Diagnose(t.Context(), "a.example.com")
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "diagnose")
+	_, _ = c.Doctor(t.Context())
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "doctor")
 }
 
 // deadlines records how long each request has to finish.

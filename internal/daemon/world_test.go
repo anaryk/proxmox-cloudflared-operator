@@ -86,6 +86,8 @@ func (f *fakePVE) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var data any
 	switch r.URL.Path {
+	case "/api2/json/version":
+		data = map[string]any{"release": "9.0", "version": "9.0.3", "repoid": "ad1f0e1a"}
 	case "/api2/json/cluster/resources":
 		data = []map[string]any{{
 			"type": "qemu", "vmid": 101, "name": "web-1", "node": testNode, "status": "running",

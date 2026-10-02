@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -132,9 +136,64 @@ func TestOneDaemonRunsOnANode(t *testing.T) {
 	require.EqualError(t, err, "another pco daemon is running on this node")
 
 	require.NoError(t, d.stop())
-	release, err := lockNode(w.paths.Local)
+	lock, err := lockNode(w.paths.Local)
 	require.NoError(t, err, "the lock goes with the daemon")
-	release()
+	lock.release()
+}
+
+// The doctor and the diagnosis run inside the daemon, over its socket, with
+// the host's facts asked through what the daemon was given.
+func TestTheDaemonServesTheDoctorAndTheDiagnosis(t *testing.T) {
+	w := newWorld(t)
+	var mu sync.Mutex
+	var dialed []string
+	w.deps.Dial = func(_ context.Context, network, addr string) (net.Conn, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		dialed = append(dialed, network+" "+addr)
+		return nil, errors.New("no network in this test")
+	}
+	w.deps.Cloudflared = filepath.Join(w.dir, "no-cloudflared")
+	d := w.start()
+	ctx := t.Context()
+	require.NoError(t, d.client.Sync(ctx))
+	d.await(func(st engine.State) bool { return len(st.Routes) == 1 })
+
+	findings, err := d.client.Doctor(ctx)
+
+	require.NoError(t, err)
+	byCheck := map[string]doctor.Finding{}
+	for _, f := range findings {
+		byCheck[f.Check] = f
+	}
+	require.Equal(t, doctor.Finding{Check: "outbound", Level: doctor.LevelFail,
+		Detail: "region1.v2.argotunnel.com:7844 cannot be reached over TCP: no network in this test",
+		Fix:    "allow outbound TCP and UDP to port 7844"}, byCheck["outbound"])
+	require.Equal(t, doctor.LevelOK, byCheck["node lock"].Level, byCheck["node lock"].Detail)
+	require.Equal(t, doctor.LevelOK, byCheck["store"].Level, byCheck["store"].Detail)
+	require.Equal(t, doctor.Finding{Check: "proxmox", Level: doctor.LevelOK, Detail: "Proxmox VE 9.0"}, byCheck["proxmox"])
+	require.Equal(t, doctor.LevelFail, byCheck["cloudflared"].Level)
+	require.Equal(t, doctor.LevelWarn, byCheck["mode"].Level)
+	mu.Lock()
+	require.Equal(t, []string{"tcp region1.v2.argotunnel.com:7844"}, dialed)
+	mu.Unlock()
+
+	steps, err := d.client.Diagnose(ctx, "www.example.com")
+	require.NoError(t, err)
+	require.Equal(t, doctor.Step{Name: "route", Level: doctor.LevelOK, Detail: "qemu/101 (web-1) holds it; state active"}, steps[0])
+	require.Equal(t, doctor.Step{Name: "http", Level: doctor.LevelWarn, Detail: "skipped"}, steps[len(steps)-1],
+		"observe-only: the tunnel does not exist yet")
+	_, err = d.client.Diagnose(ctx, "nope.example.com")
+	require.ErrorIs(t, err, engine.ErrNotFound)
+
+	// The lock the doctor looks at is the one this daemon holds.
+	require.NoError(t, os.Remove(filepath.Join(w.paths.Local, lockName)))
+	findings, err = d.client.Doctor(ctx)
+	require.NoError(t, err)
+	i := slices.IndexFunc(findings, func(f doctor.Finding) bool { return f.Check == "node lock" })
+	require.GreaterOrEqual(t, i, 0)
+	require.Equal(t, doctor.LevelFail, findings[i].Level)
+	require.Contains(t, findings[i].Detail, "a second daemon could start")
 }
 
 func TestTheDaemonWontStartWithoutTheProxmoxToken(t *testing.T) {

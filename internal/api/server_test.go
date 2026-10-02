@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -59,6 +60,11 @@ type fakeEngine struct {
 	triggers int
 	panics   bool
 	addPanic string // AddCredential panics with this text
+
+	claims    []engine.ClaimView
+	approvals []engine.ApprovalView
+	steps     []doctor.Step
+	findings  []doctor.Finding
 }
 
 func (f *fakeEngine) record(ctx context.Context, call string) {
@@ -161,6 +167,49 @@ func (f *fakeEngine) RemoveCredential(ctx context.Context, id string) error {
 	return f.failure()
 }
 
+func (f *fakeEngine) Claims() ([]engine.ClaimView, error) {
+	f.record(context.Background(), "claims")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.claims, f.err
+}
+
+func (f *fakeEngine) ResolveClaim(ctx context.Context, hostname, owner string) error {
+	f.record(ctx, "resolve:"+hostname+":"+owner)
+	return f.failure()
+}
+
+func (f *fakeEngine) Approvals() ([]engine.ApprovalView, error) {
+	f.record(context.Background(), "approvals")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.approvals, f.err
+}
+
+func (f *fakeEngine) ApproveGuest(ctx context.Context, owner string) error {
+	f.record(ctx, "approve:"+owner)
+	return f.failure()
+}
+
+func (f *fakeEngine) RevokeGuest(ctx context.Context, owner string) error {
+	f.record(ctx, "revoke:"+owner)
+	return f.failure()
+}
+
+func (f *fakeEngine) Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error) {
+	f.record(ctx, "diagnose:"+hostname)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.steps, f.err
+}
+
+func (f *fakeEngine) Doctor(ctx context.Context) []doctor.Finding {
+	f.record(ctx, "doctor")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.findings
+}
+
 func (f *fakeEngine) lastCtx() context.Context {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -245,6 +294,13 @@ func testState() engine.State {
 			{ID: "def67890", Label: "spare", Kind: "scoped"},
 		},
 	}
+}
+
+func testClaims() []engine.ClaimView {
+	return []engine.ClaimView{{
+		Hostname: "www.example.com", Holder: "qemu/101", Since: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC), State: "conflict",
+		Waiting: []engine.ClaimantView{{Owner: "qemu/102", Since: time.Date(2026, 3, 4, 5, 7, 0, 0, time.UTC)}},
+	}}
 }
 
 // shortDir returns a directory whose path is short enough for a unix socket.
@@ -334,7 +390,13 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	st := testState()
 	view := engine.CredentialView{ID: "abc12345", Label: "main", Kind: "scoped"}
 	events := []engine.Event{{At: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC), Level: "info", Kind: "route", Subject: "a.example.com", Message: "up"}}
-	f := &fakeEngine{state: st, view: view, events: events}
+	f := &fakeEngine{
+		state: st, view: view, events: events,
+		claims:    testClaims(),
+		approvals: []engine.ApprovalView{{Owner: "qemu/101", Identity: "uuid:101", Current: "uuid:101", Matches: true}},
+		steps:     []doctor.Step{{Name: "route", Level: doctor.LevelOK, Detail: "qemu/101 holds it"}},
+		findings:  []doctor.Finding{{Check: "mode", Level: doctor.LevelWarn, Detail: "observe-only", Fix: "pco apply"}},
+	}
 	socket := socketPath(t)
 	stop := serve(t, newServer(f), socket)
 	c := apiclient.New(socket)
@@ -376,9 +438,27 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	require.Equal(t, view, checked)
 	require.NoError(t, c.RemoveCredential(ctx, "abc12345"))
 
+	gotClaims, err := c.Claims(ctx)
+	require.NoError(t, err)
+	require.Equal(t, f.claims, gotClaims)
+	require.NoError(t, c.ResolveClaim(ctx, "www.example.com", "qemu/102"))
+	gotApprovals, err := c.Approvals(ctx)
+	require.NoError(t, err)
+	require.Equal(t, f.approvals, gotApprovals)
+	require.NoError(t, c.ApproveGuest(ctx, "qemu/101"))
+	require.NoError(t, c.RevokeGuest(ctx, "qemu/101"))
+	steps, err := c.Diagnose(ctx, "www.example.com")
+	require.NoError(t, err)
+	require.Equal(t, f.steps, steps)
+	findings, err := c.Doctor(ctx)
+	require.NoError(t, err)
+	require.Equal(t, f.findings, findings)
+
 	require.Equal(t, []string{
 		"state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
 		"add:main:" + testToken, "check:abc12345:true", "remove:abc12345",
+		"claims", "resolve:www.example.com:qemu/102", "approvals", "approve:qemu/101", "revoke:qemu/101",
+		"diagnose:www.example.com", "doctor",
 	}, f.called())
 
 	// The sentinels survive the trip.

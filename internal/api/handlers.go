@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -16,8 +17,9 @@ const (
 )
 
 var (
-	errBadToken = &httpError{http.StatusBadRequest, codeInvalid, "the token is not a Cloudflare API token: it has 20 to 256 characters, all of A-Z a-z 0-9 _ -", false}
-	errBadSince = &httpError{http.StatusBadRequest, codeInvalid, "since must be a time in RFC 3339 format", false}
+	errBadToken   = &httpError{http.StatusBadRequest, codeInvalid, "the token is not a Cloudflare API token: it has 20 to 256 characters, all of A-Z a-z 0-9 _ -", false}
+	errBadSince   = &httpError{http.StatusBadRequest, codeInvalid, "since must be a time in RFC 3339 format", false}
+	errNoHostname = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/diagnose?hostname=<name>", false}
 )
 
 // routes builds the handler of the API: the router, behind the peer check, in
@@ -44,6 +46,13 @@ func (s *Server) routes() http.Handler {
 	v1.POST("/credentials", s.postCredential)
 	v1.POST("/credentials/:id/check", s.postCredentialCheck)
 	v1.DELETE("/credentials/:id", s.deleteCredential)
+	v1.GET("/claims", s.getClaims)
+	v1.POST("/claims/resolve", s.postResolveClaim)
+	v1.GET("/approvals", s.getApprovals)
+	v1.POST("/guests/approve", s.postGuest(s.engine.ApproveGuest))
+	v1.POST("/guests/revoke", s.postGuest(s.engine.RevokeGuest))
+	v1.GET("/diagnose", s.getDiagnose)
+	v1.GET("/doctor", s.getDoctor)
 	return s.logRequests(s.guard(r))
 }
 
@@ -194,4 +203,88 @@ func (s *Server) deleteCredential(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, struct{}{})
+}
+
+func (s *Server) getClaims(c *gin.Context) {
+	claims, err := s.engine.Claims()
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, nonNil(claims))
+}
+
+// postResolveClaim hands the claim on a hostname to one of the owners that
+// claim it.
+func (s *Server) postResolveClaim(c *gin.Context) {
+	var req struct {
+		Hostname string `json:"hostname"`
+		Owner    string `json:"owner"`
+	}
+	if err := decode(c, &req, false); err != nil {
+		s.fail(c, err)
+		return
+	}
+	if err := s.engine.ResolveClaim(c.Request.Context(), req.Hostname, req.Owner); err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, struct{}{})
+}
+
+func (s *Server) getApprovals(c *gin.Context) {
+	approvals, err := s.engine.Approvals()
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, nonNil(approvals))
+}
+
+// postGuest answers a request that names a guest, as an approval and its
+// revocation do, with what act makes of it.
+func (s *Server) postGuest(act func(ctx context.Context, owner string) error) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Owner string `json:"owner"`
+		}
+		if err := decode(c, &req, false); err != nil {
+			s.fail(c, err)
+			return
+		}
+		if err := act(c.Request.Context(), req.Owner); err != nil {
+			s.fail(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, struct{}{})
+	}
+}
+
+// getDiagnose walks the chain of the route of one hostname. The daemon asks
+// the target the state shows for it, and nothing the request names.
+func (s *Server) getDiagnose(c *gin.Context) {
+	hosts := c.QueryArray("hostname")
+	if len(hosts) != 1 || hosts[0] == "" {
+		s.fail(c, errNoHostname)
+		return
+	}
+	steps, err := s.engine.Diagnose(c.Request.Context(), hosts[0])
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, nonNil(steps))
+}
+
+func (s *Server) getDoctor(c *gin.Context) {
+	c.JSON(http.StatusOK, nonNil(s.engine.Doctor(c.Request.Context())))
+}
+
+// nonNil makes a list that is missing an empty one, as every list of an
+// answer is.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
