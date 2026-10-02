@@ -116,6 +116,22 @@ func TestStatusIssues(t *testing.T) {
 	}
 }
 
+func TestStatusNamesTheGuestsThatWaitForApproval(t *testing.T) {
+	r, _ := daemonWith(t, approvalState())
+
+	res := r.run("", "status")
+
+	require.NoError(t, res.err, "a guest that waits is no problem")
+	requireGolden(t, "status_unapproved.golden", res.out)
+
+	st := healthyState()
+	st.Unapproved = approvalState().Unapproved[:1]
+	r, _ = daemonWith(t, st)
+	require.Contains(t, r.run("", "status").out, "Approval:    1 guest waits (pco guest list)\n")
+	r, _ = daemonWith(t, healthyState())
+	require.NotContains(t, r.run("", "status").out, "Approval")
+}
+
 func TestStatusShowsTheProfileOnlyWhenTheDaemonKnowsIt(t *testing.T) {
 	st := healthyState()
 	st.Profile = ""
@@ -242,7 +258,7 @@ func TestPlanShowsWhatWaitsForAConfirmation(t *testing.T) {
 	require.NoError(t, res.err)
 	require.True(t, strings.HasPrefix(res.out, "Waits for a confirmation (pco apply --confirm-deletes accepts all of it):\n"+
 		"  - 23 guests that hold a hostname are no longer listed by Proxmox;"), res.out)
-	require.Contains(t, res.out, "      qemu/120 vm-120\n      ... and 3 more\n")
+	require.Contains(t, res.out, "      qemu/120 vm-120\n      ... and 3 more (pco plan --json shows all)\n")
 	require.NotContains(t, res.out, "qemu/121")
 	require.Empty(t, e.called(), "plan only reads")
 }
@@ -250,7 +266,10 @@ func TestPlanShowsWhatWaitsForAConfirmation(t *testing.T) {
 // --json prints what the daemon sent; its help says how it is changed.
 func TestTheHelpOfJSONSaysWhatIsChanged(t *testing.T) {
 	r := newRunner(t, "/nonexistent/pco/pco.sock")
-	for _, args := range [][]string{{"--help"}, {"status", "--help"}, {"routes", "--help"}, {"plan", "--help"}} {
+	for _, args := range [][]string{
+		{"--help"}, {"status", "--help"}, {"routes", "--help"}, {"plan", "--help"},
+		{"claims", "list", "--help"}, {"guest", "list", "--help"}, {"diagnose", "--help"}, {"doctor", "--help"},
+	} {
 		res := r.run("", args...)
 
 		require.NoError(t, res.err)
@@ -355,6 +374,9 @@ func TestWithoutADaemonTheSocketIsNamed(t *testing.T) {
 	for _, args := range [][]string{
 		{"status"}, {"routes"}, {"plan"}, {"sync"}, {"apply"}, {"adopt", "www.example.com"},
 		{"credential", "list"}, {"credential", "check", "abc"}, {"credential", "remove", "abc"},
+		{"claims", "list"}, {"claims", "resolve", "www.example.com", "qemu/102"},
+		{"guest", "list"}, {"guest", "approve", "qemu/101"}, {"guest", "revoke", "qemu/101"},
+		{"diagnose", "www.example.com"}, {"doctor"},
 	} {
 		res := r.run("", args...)
 

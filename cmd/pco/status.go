@@ -111,6 +111,11 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 	statusLine(s, "Inventory", inventoryText(st))
 	statusLine(s, "Writer", writerText(st.WriterVerdict))
 	statusLine(s, "Routes", routeCounts(st.Routes))
+	if n := len(st.Unapproved); n == 1 {
+		statusLine(s, "Approval", "1 guest waits (pco guest list)")
+	} else if n > 1 {
+		statusLine(s, "Approval", fmt.Sprintf("%d guests wait (pco guest list)", n))
+	}
 	if st.At.IsZero() {
 		statusLine(s, "Last cycle", "no cycle has run yet")
 	} else {

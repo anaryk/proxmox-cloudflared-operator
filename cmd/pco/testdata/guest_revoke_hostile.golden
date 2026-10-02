@@ -1,0 +1,4 @@
+qemu/101 (web?[2J?]0;pwned? ? ?31m ?evil?) is approved in identity uuid?[2J?]0;pwned? ? ?31m ?evil?.
+Revoking it stops its routes from being published while the admission mode is approve.
+--- stderr
+Revoke the approval of qemu/101? [y/N] 

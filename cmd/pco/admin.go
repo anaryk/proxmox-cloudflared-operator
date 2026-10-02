@@ -12,7 +12,20 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
-const applying = "Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status."
+const (
+	applying       = "Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status."
+	applyingAlways = "Observe-only mode was off already: the daemon applies changes in every cycle."
+)
+
+// sayApplied says what an apply without a confirmation did: only one that
+// left observe-only mode says that the daemon starts to apply.
+func sayApplied(s *screen, res engine.ApplyResult) {
+	if res.LeftObserveOnly {
+		s.println(applying)
+		return
+	}
+	s.println(applyingAlways)
+}
 
 func (a *app) syncCmd() *cobra.Command {
 	return &cobra.Command{
@@ -53,11 +66,12 @@ func (a *app) applyCmd() *cobra.Command {
 				return a.applyConfirming(cmd, yes)
 			}
 			ctx := cmd.Context()
-			if _, err := a.client().Apply(ctx, false, ""); err != nil {
+			res, err := a.client().Apply(ctx, false, "")
+			if err != nil {
 				return a.explain(ctx, err)
 			}
 			s := &screen{w: cmd.OutOrStdout()}
-			s.println(applying)
+			sayApplied(s, res)
 			return s.done()
 		},
 	}
@@ -94,10 +108,11 @@ func (a *app) applyConfirming(cmd *cobra.Command, yes bool) error {
 			return s.done()
 		}
 		s.println("Nothing waits for a confirmation, so none is given.")
-		if _, err := a.client().Apply(ctx, false, ""); err != nil {
+		res, err := a.client().Apply(ctx, false, "")
+		if err != nil {
 			return a.explain(ctx, err)
 		}
-		s.println(applying)
+		sayApplied(s, res)
 		return s.done()
 	}
 	if err := s.done(); err != nil {
@@ -122,7 +137,9 @@ func (a *app) applyConfirming(cmd *cobra.Command, yes bool) error {
 			s.printf("  - %s\n", w.Detail)
 		}
 	}
-	s.println(applying)
+	if res.LeftObserveOnly {
+		s.println(applying)
+	}
 	return s.done()
 }
 

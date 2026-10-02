@@ -24,7 +24,7 @@ func renderWaiting(s *screen, waiting []engine.Waiting) {
 			s.printf("      %s\n", item)
 		}
 		if more := len(w.Items) - maxItemsShown; more > 0 {
-			s.printf("      ... and %d more\n", more)
+			s.printf("      ... and %d more (pco plan --json shows all)\n", more)
 		}
 	}
 }

@@ -117,7 +117,8 @@ func TestTheDaemonLogsForATerminalAndForTheJournal(t *testing.T) {
 		a.stderrTerminal = func(io.Writer) bool { return terminal }
 		var buf bytes.Buffer
 		log := a.daemonLog(&buf, zerolog.InfoLevel)
-		log.Warn().Str("guest", "web"+hostileText).Err(errors.New("refused " + hostileText)).Msg("hello " + hostileText)
+		log.Warn().Str("guest", "web"+hostileText).Strs("hosts", []string{"a" + hostileText, "b"}).
+			Err(errors.New("refused " + hostileText)).Msg("hello " + hostileText)
 		return buf.String()
 	}
 
@@ -126,6 +127,7 @@ func TestTheDaemonLogsForATerminalAndForTheJournal(t *testing.T) {
 	require.Contains(t, console, " WRN hello "+printable(hostileText)+" ")
 	require.Contains(t, console, `error="refused `+printable(hostileText)+`"`)
 	require.Contains(t, console, `guest="web`+printable(hostileText)+`"`)
+	require.Contains(t, console, `hosts=["a`+printable(hostileText)+`","b"]`, "the strings inside a list are cleaned too")
 	require.False(t, strings.HasPrefix(console, "{"), "lines to read: %q", console)
 
 	journal := logOnce(false)

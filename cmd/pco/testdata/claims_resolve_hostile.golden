@@ -1,0 +1,4 @@
+www.example.com is held by qemu/101 (web?[2J?]0;pwned? ? ?31m ?evil?) since 2026-10-01T14:00:00+02:00.
+Resolving hands it to manual/x: the public hostname moves to that route, and qemu/101 (web?[2J?]0;pwned? ? ?31m ?evil?) waits for it.
+--- stderr
+Move www.example.com to manual/x? [y/N] 

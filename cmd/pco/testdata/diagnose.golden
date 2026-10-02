@@ -1,0 +1,8 @@
+✓ route      qemu/101 (web-1) holds it; state active
+✓ zone       zone example.com is active
+✓ dns        its record points at the tunnel
+✓ ingress    tunnel pco-abc123 sends it to http://10.0.0.11:8080 (configuration version 3)
+✗ connector  the connector of tunnel pco-abc123 is not connected to Cloudflare
+! identity   skipped
+! tcp        skipped
+! http       skipped

@@ -1,0 +1,4 @@
+HOSTNAME         HOLDER            STATE     SINCE                      WAITING                    NOTE
+api.example.com  manual/api        serving   2026-09-29T14:00:00+02:00  -                          -
+old.example.com  qemu/104 (old)    held      2026-09-30T14:00:00+02:00  -                          no longer asked for since 2026-10-01T13:59:30+02:00
+www.example.com  qemu/101 (web-1)  conflict  2026-09-28T14:00:00+02:00  qemu/102 (web-2), lxc/300  -

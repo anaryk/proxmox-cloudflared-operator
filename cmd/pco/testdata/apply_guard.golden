@@ -9,6 +9,5 @@ Waits for a confirmation (pco apply --confirm-deletes accepts all of it):
 
 Confirmed for the next run:
   - mass delete guard: 6 of 16 records are being removed; confirm to proceed
-Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status.
 --- stderr
 Accept this at the next run? [y/N] 

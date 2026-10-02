@@ -9,6 +9,5 @@ delete-record  old.example.com  in zone example.com  grace period: 1m0s left
 Confirmed for the next run:
   - zone example.net is no longer listed by credential cred1; a confirmation takes it as gone, and its hostnames are taken off the tunnel
   - tunnel pco-abc123 (5e5e5e5e-0000-4000-8000-000000000003) in account acc3 is not visible through any credential; a confirmation takes it as gone and removes its connector
-Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status.
 --- stderr
 Accept this at the next run? [y/N] 

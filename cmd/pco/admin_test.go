@@ -37,6 +37,39 @@ func TestSync(t *testing.T) {
 	require.Equal(t, []string{"sync"}, e.called())
 }
 
+// Only a call that left observe-only mode says that it did.
+func TestApplySaysThatObserveOnlyModeEndedOnlyWhenItDid(t *testing.T) {
+	t.Run("in enforce mode", func(t *testing.T) {
+		r, e := daemonWith(t, healthyState())
+
+		res := r.run("", "apply")
+
+		require.NoError(t, res.err)
+		require.Equal(t, "Observe-only mode was off already: the daemon applies changes in every cycle.\n", res.out)
+		require.Equal(t, []string{"apply confirmDeletes=false"}, e.called())
+	})
+	t.Run("a confirmation in enforce mode", func(t *testing.T) {
+		r, _ := daemonWith(t, planState())
+
+		res := r.tty().run("y\n", "apply", "--confirm-deletes")
+
+		require.NoError(t, res.err)
+		require.NotContains(t, res.out, "Applying")
+		require.True(t, strings.HasSuffix(res.out, "Confirmed for the next run:\n"+
+			"  - mass delete guard: 6 of 9 records are being removed; confirm to proceed\n"), res.out)
+	})
+	t.Run("a confirmation in observe-only mode", func(t *testing.T) {
+		st := planState()
+		st.Mode = "observe"
+		r, _ := daemonWith(t, st)
+
+		res := r.tty().run("y\n", "apply", "--confirm-deletes")
+
+		require.NoError(t, res.err)
+		require.True(t, strings.HasSuffix(res.out, applying+"\n"), res.out)
+	})
+}
+
 func TestApplyAsksNothingWithoutConfirmDeletes(t *testing.T) {
 	r, e := daemonWith(t, observeState())
 
@@ -237,9 +270,12 @@ func TestConfirmationsRefuseToRunWithoutATerminal(t *testing.T) {
 		{"apply --confirm-deletes with only the vanish guard", vanishState(), []string{"apply", "--confirm-deletes"}},
 		{"adopt", planState(), []string{"adopt", "shop.example.com"}},
 		{"credential check --deep", credentialsState(), []string{"credential", "check", "a1b2c3d4", "--deep"}},
+		{"claims resolve", healthyState(), []string{"claims", "resolve", "www.example.com", "qemu/102"}},
+		{"guest revoke", healthyState(), []string{"guest", "revoke", "qemu/101"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			r, e := daemonWith(t, tt.state)
+			e := &fakeEngine{state: tt.state, claims: someClaims(), approvals: someApprovals()}
+			r := newRunner(t, serveFake(t, e))
 
 			// A pipe that says yes does not confirm, and one that stays silent
 			// does not hang: stdin is not read at all.
@@ -367,6 +403,9 @@ func TestJSONMeansNothingToACommandWithoutAnAnswerToPrint(t *testing.T) {
 		{[]string{"apply"}, "pco apply"},
 		{[]string{"adopt", "shop.example.com", "--yes"}, "pco adopt"},
 		{[]string{"credential", "remove", "a1b2c3d4"}, "pco credential remove"},
+		{[]string{"claims", "resolve", "www.example.com", "qemu/102", "--yes"}, "pco claims resolve"},
+		{[]string{"guest", "approve", "qemu/101"}, "pco guest approve"},
+		{[]string{"guest", "revoke", "qemu/101", "--yes"}, "pco guest revoke"},
 		{[]string{"daemon"}, "pco daemon"},
 		{[]string{"version"}, "pco version"},
 	} {

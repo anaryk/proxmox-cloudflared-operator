@@ -20,10 +20,9 @@ Waits for a confirmation (pco apply --confirm-deletes accepts all of it):
       qemu/118 vm-118
       qemu/119 vm-119
       qemu/120 vm-120
-      ... and 3 more
+      ... and 3 more (pco plan --json shows all)
 
 Confirmed for the next run:
   - 23 guests that hold a hostname are no longer listed by Proxmox; a confirmation takes them as removed, and their hostnames are released after the grace period
-Applying: the daemon changes Cloudflare from the next cycle. Follow it with pco status.
 --- stderr
 Accept this at the next run? [y/N] 

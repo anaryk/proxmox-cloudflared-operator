@@ -1,0 +1,5 @@
+www.example.com is held by qemu/101 (web-1) since 2026-09-28T14:00:00+02:00.
+Resolving hands it to lxc/300: the public hostname moves to that guest, and qemu/101 (web-1) waits for it.
+The claim on www.example.com is now held by lxc/300; the next cycle publishes it.
+--- stderr
+Move www.example.com to lxc/300? [y/N] 

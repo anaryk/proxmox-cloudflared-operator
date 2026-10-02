@@ -1,0 +1,3 @@
+HOSTNAME         HOLDER                                      STATE                                 SINCE                      WAITING                               NOTE
+www.example.com  qemu/101 (web?[2J?]0;pwned? ? ?31m ?evil?)  conflict?[2J?]0;pwned? ? ?31m ?evil?  2026-10-01T14:00:00+02:00  manual/x?[2J?]0;pwned? ? ?31m ?evil?  -
+--- stderr

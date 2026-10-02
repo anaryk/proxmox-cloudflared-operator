@@ -1,0 +1,9 @@
+Approved guests:
+  GUEST             IDENTITY  NOW
+  qemu/101 (web-1)  uuid:101  the same
+  qemu/102 (db-1)   uuid:old  changed to uuid:102: approve it again to publish it
+  lxc/300           uuid:300  not in the last listing
+
+Waiting for approval (pco guest approve <owner>):
+  qemu/103 (new-1)
+  qemu/104

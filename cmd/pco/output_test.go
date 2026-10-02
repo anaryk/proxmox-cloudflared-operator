@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/term"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -144,7 +145,28 @@ func hostileState() engine.State {
 	st.Conflicts = []reconcile.Conflict{{Zone: "zone" + hostileText, Name: "shop.example.com", Type: "TXT", Content: "content" + hostileText}}
 	st.Lost = []string{"lost" + hostileText}
 	st.Credentials = []engine.CredentialView{hostileCredential()}
+	st.Unapproved = []engine.GuestView{{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 105}, Name: "new" + hostileText}}
 	return st
+}
+
+// hostileEngine is a daemon whose every answer carries hostileText where
+// others control the text.
+func hostileEngine() *fakeEngine {
+	guest := &engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web" + hostileText}
+	return &fakeEngine{
+		state:     hostileState(),
+		checkView: hostileCredential(),
+		claims: []engine.ClaimView{{
+			Hostname: "www.example.com", Holder: "qemu/101", Guest: guest, Since: t0, State: "conflict" + hostileText,
+			Waiting: []engine.ClaimantView{{Owner: "manual/x" + hostileText, Since: t0}},
+		}},
+		approvals: []engine.ApprovalView{{Owner: "qemu/101", Guest: guest, Identity: "uuid" + hostileText, Current: "uuid:2" + hostileText}},
+		steps:     []doctor.Step{{Name: "route" + hostileText, Level: doctor.LevelFail, Detail: "held " + hostileText}},
+		findings: []doctor.Finding{
+			{Check: "check" + hostileText, Level: doctor.LevelFail, Detail: "detail " + hostileText, Fix: "fix " + hostileText},
+			{Check: "odd", Level: doctor.Level("odd" + hostileText), Detail: "a level of another version"},
+		},
+	}
 }
 
 func hostileCredential() engine.CredentialView {
@@ -158,7 +180,6 @@ func hostileCredential() engine.CredentialView {
 }
 
 func TestNothingTheDaemonSendsReachesTheTerminalAsAControlCharacter(t *testing.T) {
-	st := hostileState()
 	for _, tt := range []struct {
 		name string
 		args []string
@@ -173,9 +194,15 @@ func TestNothingTheDaemonSendsReachesTheTerminalAsAControlCharacter(t *testing.T
 		{"adopt a lost name", []string{"adopt", "lost.example.com", "--yes"}, ""},
 		{"credential list", []string{"credential", "list"}, ""},
 		{"credential check", []string{"credential", "check", "a1b2c3d4"}, ""},
+		{"claims list", []string{"claims", "list"}, ""},
+		{"claims resolve", []string{"claims", "resolve", "www.example.com", "manual/x"}, "n\n"},
+		{"guest list", []string{"guest", "list"}, ""},
+		{"guest revoke", []string{"guest", "revoke", "qemu/101"}, "n\n"},
+		{"diagnose", []string{"diagnose", "www.example.com"}, ""},
+		{"doctor", []string{"doctor"}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &fakeEngine{state: st, checkView: hostileCredential()}
+			e := hostileEngine()
 			r := newRunner(t, serveFake(t, e)).tty()
 
 			res := r.run(tt.in, tt.args...)
@@ -225,6 +252,29 @@ func TestHostileConfirmationsGolden(t *testing.T) {
 
 	requireGolden(t, "apply_hostile.golden", apply.out+"--- stderr\n"+apply.errOut)
 	requireGolden(t, "adopt_hostile.golden", adopt.out+"--- stderr\n"+adopt.errOut)
+}
+
+func TestHostileAdminCommandsGolden(t *testing.T) {
+	r := newRunner(t, serveFake(t, hostileEngine()))
+
+	for _, tt := range []struct {
+		golden string
+		in     string
+		args   []string
+	}{
+		{"claims_list_hostile.golden", "", []string{"claims", "list"}},
+		{"claims_resolve_hostile.golden", "n\n", []string{"claims", "resolve", "www.example.com", "manual/x"}},
+		{"guest_list_hostile.golden", "", []string{"guest", "list"}},
+		{"guest_revoke_hostile.golden", "n\n", []string{"guest", "revoke", "qemu/101"}},
+		{"diagnose_hostile.golden", "", []string{"diagnose", "www.example.com"}},
+		{"doctor_hostile.golden", "", []string{"doctor"}},
+	} {
+		res := r.tty().run(tt.in, tt.args...)
+
+		requireClean(t, res.out, tt.golden)
+		requireClean(t, res.errOut, tt.golden)
+		requireGolden(t, tt.golden, res.out+"--- stderr\n"+res.errOut)
+	}
 }
 
 func TestJSONNeedsNoCleaning(t *testing.T) {
