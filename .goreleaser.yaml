@@ -62,6 +62,8 @@ nfpms:
     priority: optional
     bindir: /usr/bin
     mtime: "{{ .CommitDate }}"
+    dependencies:
+      - nftables
     recommends:
       - cloudflared
     contents:
@@ -71,6 +73,14 @@ nfpms:
           mode: 0644
       - src: packaging/systemd/pco-cloudflared@.service
         dst: /usr/lib/systemd/system/pco-cloudflared@.service
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/pco-egress.service
+        dst: /usr/lib/systemd/system/pco-egress.service
+        file_info:
+          mode: 0644
+      - src: packaging/sysusers.d/pco.conf
+        dst: /usr/lib/sysusers.d/pco.conf
         file_info:
           mode: 0644
       - src: README.md

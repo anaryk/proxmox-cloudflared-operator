@@ -6,9 +6,8 @@ if [ "$1" != configure ]; then
 	exit 0
 fi
 
-if [ -f /usr/lib/sysusers.d/pco.conf ] && command -v systemd-sysusers >/dev/null 2>&1; then
-	systemd-sysusers /usr/lib/sysusers.d/pco.conf
-fi
+# The connectors run as pco-connector, and the egress filter matches that user.
+systemd-sysusers /usr/lib/sysusers.d/pco.conf
 
 # $2 is the version that was configured before. It is empty on a first install,
 # but not after a remove that kept the configuration files, and prerm disabled
