@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
 const tunnelID = "00000000-0000-4000-8000-000000000001"
@@ -96,13 +98,16 @@ func TestApplyThroughTheSocketPublishesTheRoute(t *testing.T) {
 func TestReadyComesWhenTheSocketAnswersAndStoppingWhenTheStopBegins(t *testing.T) {
 	w := newWorld(t)
 	var answered error
+	var cyclesAtReady int64
 	w.notify.onReady = func() {
 		// The socket must be listening by the time systemd is told so.
 		_, answered = apiclient.New(w.cfg.SocketPath).Version(context.Background())
+		cyclesAtReady = w.cycles.Load()
 	}
 	d := w.start()
 
 	require.NoError(t, answered, "the socket answered when READY=1 was sent")
+	require.Zero(t, cyclesAtReady, "the engine starts once the socket listens, not before")
 	require.Equal(t, []string{"READY=1"}, w.notify.sent())
 
 	require.NoError(t, d.stop(), "a signal ends the daemon with exit code 0")
@@ -115,10 +120,13 @@ func TestOneDaemonRunsOnANode(t *testing.T) {
 	w := newWorld(t)
 	d := w.start()
 
-	// Another socket: only the lock of the node can stop this one.
+	// Another socket: only the lock of the node can stop this one. A lock that
+	// does not hold lets the second daemon run, and the deadline ends it.
 	second := w.cfg
-	second.SocketPath = filepath.Join(shortDir(t), "pco", "pco.sock")
-	err := Run(t.Context(), second, w.deps)
+	second.SocketPath = filepath.Join(testutil.ShortDir(t), "pco", "pco.sock")
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	err := Run(ctx, second, w.deps)
 	require.ErrorIs(t, err, ErrRunning)
 	require.EqualError(t, err, "another pco daemon is running on this node")
 
@@ -264,4 +272,81 @@ func containsProblem(st engine.State, text string) bool {
 		}
 	}
 	return false
+}
+
+func TestASocketThatCannotBeMadeLeavesTheEngineAlone(t *testing.T) {
+	w := newWorld(t)
+	// Serve refuses a socket whose directory is not named pco.
+	w.cfg.SocketPath = filepath.Join(w.dir, "run", "pco.sock")
+
+	err := Run(t.Context(), w.cfg, w.deps)
+
+	require.ErrorContains(t, err, "pco")
+	require.Empty(t, w.pve.authorizations(), "no cycle was started, so none was cut off")
+	require.Zero(t, w.cycles.Load())
+	require.NoFileExists(t, filepath.Join(w.paths.Local, "events.log"))
+	require.NotContains(t, w.notify.sent(), "READY=1")
+}
+
+func TestStoppingWhileWaitingForTheClusterFilesystemIsACleanStop(t *testing.T) {
+	w := newWorld(t)
+	require.NoError(t, os.Remove(w.mount))
+	ctx, cancel := context.WithCancel(t.Context())
+	w.deps.Sleep = func(ctx context.Context, _ time.Duration) error {
+		cancel() // SIGTERM, as far as the daemon can tell
+		return ctx.Err()
+	}
+
+	err := Run(ctx, w.cfg, w.deps)
+
+	require.NoError(t, err, "exit code 0")
+	require.Empty(t, w.notify.sent())
+	require.Empty(t, w.pve.authorizations())
+}
+
+// slowAPI is a Cloudflare whose token check does not answer before the request
+// that asked is over.
+type slowAPI struct {
+	cfapi.API
+	asked chan struct{}
+	once  *sync.Once
+}
+
+func (a slowAPI) VerifyToken(ctx context.Context) (cfapi.TokenStatus, error) {
+	a.once.Do(func() { close(a.asked) })
+	<-ctx.Done()
+	return cfapi.TokenStatus{}, ctx.Err()
+}
+
+const slowToken = "slow-token-0123456789-abcdefgh"
+
+func TestAStopGivesARequestInFlightTimeToFinishAndThenCutsItOffCleanly(t *testing.T) {
+	w := newWorld(t)
+	asked := make(chan struct{})
+	slow := slowAPI{API: w.cf, asked: asked, once: &sync.Once{}}
+	w.deps.NewClient = func(c store.Credential) (cfapi.API, error) {
+		if c.Token.Reveal() == slowToken {
+			return slow, nil
+		}
+		return w.cf, nil
+	}
+	w.deps.ShutdownTimeout = 20 * time.Millisecond
+	d := w.start()
+	added := make(chan error, 1)
+	go func() {
+		_, err := d.client.AddCredential(t.Context(), "slow", slowToken)
+		added <- err
+	}()
+	<-asked
+
+	require.NoError(t, d.stopWithin(3*time.Second), "running into the limit is a clean stop")
+
+	require.Error(t, <-added, "the request was cut off")
+	require.Contains(t, w.logs.String(), "they were cut off")
+	require.Contains(t, w.logs.String(), `"level":"warn"`)
+}
+
+func TestAStopWaitsThirtySecondsForRequestsUnlessToldOtherwise(t *testing.T) {
+	require.Equal(t, 30*time.Second, Deps{}.withDefaults().ShutdownTimeout)
+	require.Equal(t, time.Second, Deps{ShutdownTimeout: time.Second}.withDefaults().ShutdownTimeout)
 }

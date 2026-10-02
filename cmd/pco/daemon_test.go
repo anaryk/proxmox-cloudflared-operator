@@ -2,7 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
@@ -69,6 +76,30 @@ func TestTheDaemonSaysWhenTheNodeIsNotSetUp(t *testing.T) {
 	require.EqualError(t, res.err, "pco is not set up on this node; run pco setup")
 }
 
+// The lock of the node is in the local directory: another one with the same
+// cluster store would let a second daemon reconcile it.
+func TestTheLocalDirectoryNeedsAStoreOfItsOwn(t *testing.T) {
+	for name, others := range map[string][]string{
+		"alone":                 nil,
+		"with the cluster only": {"--cluster-dir", "cluster"},
+		"with the private only": {"--private-dir", "private"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			base := testutil.ShortDir(t)
+			args := []string{"daemon", "--node", "pve1", "--local-dir", filepath.Join(base, "local")}
+			for i := 0; i < len(others); i += 2 {
+				args = append(args, others[i], filepath.Join(base, others[i+1]))
+			}
+			r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
+
+			res := r.run("", args...)
+
+			require.ErrorContains(t, res.err, "--local-dir is refused without --cluster-dir and --private-dir")
+			require.NoDirExists(t, filepath.Join(base, "local"), "nothing was made")
+		})
+	}
+}
+
 // readyNotifier tells a test when the daemon says it is ready.
 type readyNotifier struct {
 	mu     sync.Mutex
@@ -97,14 +128,69 @@ func (n *readyNotifier) sent() []string {
 	return append([]string(nil), n.events...)
 }
 
+// noAccounts is a system without the user and the group of the web UI.
+type noAccounts struct{}
+
+func (noAccounts) LookupUser(name string) (*user.User, error) {
+	return nil, user.UnknownUserError(name)
+}
+
+func (noAccounts) LookupGroup(name string) (*user.Group, error) {
+	return nil, user.UnknownGroupError(name)
+}
+
+var errNoSystemd = errors.New("no systemd in this test")
+
+// noSystemd is a systemd that nothing is asked of in this test.
+type noSystemd struct{}
+
+func (noSystemd) EnableNow(context.Context, string) error  { return errNoSystemd }
+func (noSystemd) DisableNow(context.Context, string) error { return errNoSystemd }
+func (noSystemd) Restart(context.Context, string) error    { return errNoSystemd }
+
+func (noSystemd) IsActive(context.Context, string) (bool, error) {
+	return false, errNoSystemd
+}
+
+func (noSystemd) ListUnits(context.Context, string) ([]string, error) {
+	return nil, errNoSystemd
+}
+
+var errNoHost = errors.New("no host in this test")
+
+// noProber sees no network.
+type noProber struct{}
+
+func (noProber) Interfaces(context.Context) ([]resolve.HostIface, error) { return nil, errNoHost }
+
+func (noProber) Route(context.Context, netip.Addr) (string, bool, error) {
+	return "", false, errNoHost
+}
+
+func (noProber) ARP(context.Context, string, netip.Addr) ([]string, error) { return nil, errNoHost }
+
+func (noProber) FDBPorts(context.Context, string, int, string) ([]string, error) {
+	return nil, errNoHost
+}
+
+func (noProber) Dial(context.Context, netip.AddrPort) error { return errNoHost }
+
 // A signal ends the daemon with a clean stop. The signals are sent to the
 // process of the test, which is safe once the daemon has said it is ready: it
-// has installed its handler by then.
+// has installed its handler by then. Nothing here reaches outside the test: the
+// accounts, systemd and the network of the host are fakes, and Proxmox is a
+// server of the test that refuses every request.
 func TestASignalStopsTheDaemonCleanly(t *testing.T) {
+	proxmox := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"no ticket"}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(proxmox.Close)
+
 	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
 			base := testutil.ShortDir(t)
-			paths := daemon.StorePaths(filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
+			paths, err := daemon.StorePaths(filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
+			require.NoError(t, err)
 			s, err := store.Open(paths)
 			require.NoError(t, err)
 			require.NoError(t, s.Init())
@@ -112,7 +198,7 @@ func TestASignalStopsTheDaemonCleanly(t *testing.T) {
 
 			notify := &readyNotifier{ready: make(chan struct{})}
 			r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
-			r.env.daemon = daemon.Deps{Notifier: notify}
+			r.env.daemon = daemon.Deps{Notifier: notify, Accounts: noAccounts{}, Systemd: noSystemd{}, Prober: noProber{}}
 			cmd := newRootCmdWith(r.env)
 			var errOut testutil.SyncBuffer
 			cmd.SetErr(&errOut)
@@ -120,7 +206,7 @@ func TestASignalStopsTheDaemonCleanly(t *testing.T) {
 			cmd.SetArgs([]string{
 				"--socket", r.socket, "daemon",
 				"--cluster-dir", paths.Cluster, "--private-dir", paths.Private, "--local-dir", paths.Local,
-				"--node", "pve1", "--pve-url", "https://127.0.0.1:1", "--log-level", "debug",
+				"--node", "pve1", "--pve-url", proxmox.URL, "--log-level", "debug",
 			})
 			// The socket's directory is made by the daemon, in a directory of ours.
 			require.NoError(t, os.MkdirAll(filepath.Join(base, "run"), 0o700))

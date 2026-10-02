@@ -111,7 +111,7 @@ func New(opts Options) (*Client, error) {
 		userAgent: opts.UserAgent,
 	}
 	if c.limiter == nil {
-		c.limiter = NewLimiter(defaultLimit, defaultWindow, defaultBurst, time.Now)
+		c.limiter = NewDefaultLimiter(time.Now)
 	}
 	if c.userAgent == "" {
 		c.userAgent = "pco/" + version.Version

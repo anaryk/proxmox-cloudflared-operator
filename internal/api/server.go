@@ -82,6 +82,12 @@ func New(e Engine, version string, allowedUIDs []uint32, log zerolog.Logger) *Se
 // for connections. It has to be set before Serve is called.
 func (s *Server) OnListening(fn func()) { s.onListening = fn }
 
+// SetShutdownTimeout sets how long Serve waits for the requests that are
+// running when its context ends; what is still running then is cut off, and
+// Serve returns an error for which errors.Is(err, context.DeadlineExceeded)
+// holds. It has to be set before Serve is called.
+func (s *Server) SetShutdownTimeout(d time.Duration) { s.shutdownTimeout = d }
+
 // Handler returns the whole API, the peer check included. A request is
 // answered only when the context of its connection says who the peer is, which
 // Serve arranges.

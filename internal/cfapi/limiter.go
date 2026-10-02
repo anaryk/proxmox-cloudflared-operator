@@ -134,3 +134,11 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
+
+// NewDefaultLimiter returns the budget of one credential: 300 requests in 5
+// minutes, with room for 20 at once. It is what a client has that is not given
+// a limiter; a caller that builds many clients for one credential makes one and
+// gives it to all of them.
+func NewDefaultLimiter(now func() time.Time) *Limiter {
+	return NewLimiter(defaultLimit, defaultWindow, defaultBurst, now)
+}

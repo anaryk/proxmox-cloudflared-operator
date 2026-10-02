@@ -58,7 +58,7 @@ func TestTheUnitOfTheDaemon(t *testing.T) {
 	require.Equal(t, "0750", u.one(t, "Service", "RuntimeDirectoryMode"))
 	require.Equal(t, "pco", u.one(t, "Service", "StateDirectory"), "the local state directory")
 	require.Equal(t, "0700", u.one(t, "Service", "StateDirectoryMode"))
-	require.Equal(t, "process", u.one(t, "Service", "KillMode"), "stopping pco must not stop the connectors")
+	require.Equal(t, "150", u.one(t, "Service", "TimeoutStartSec"), "longer than the 2 minutes the daemon waits for the cluster filesystem at boot")
 	require.Equal(t, "always", u.one(t, "Service", "Restart"))
 	require.Equal(t, "multi-user.target", u.one(t, "Install", "WantedBy"))
 }

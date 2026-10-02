@@ -55,7 +55,17 @@ type Deps struct {
 	// Sleep waits between two reads of the Proxmox token while the cluster
 	// filesystem is not mounted; default: a timer that ctx ends.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// CloudflareURL is the base URL of the Cloudflare API that the default
+	// clients talk to; empty is Cloudflare. A test points it at a fake.
+	CloudflareURL string
+	// ShutdownTimeout is how long a stop waits for the requests that are
+	// running; default 30 s. What is still running then is cut off.
+	ShutdownTimeout time.Duration
 }
+
+// defaultShutdownTimeout lets a credential check or an apply, which may take a
+// minute at Cloudflare, mostly finish.
+const defaultShutdownTimeout = 30 * time.Second
 
 func (d Deps) withDefaults() Deps {
 	if d.Now == nil {
@@ -68,7 +78,7 @@ func (d Deps) withDefaults() Deps {
 		d.Systemd = connector.NewSystemctl()
 	}
 	if d.NewClient == nil {
-		d.NewClient = newCloudflareClients("", d.Now).New
+		d.NewClient = newCloudflareClients(d.CloudflareURL, d.Now).New
 	}
 	if d.Notifier == nil {
 		d.Notifier = systemdNotifier{}
@@ -78,6 +88,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.Sleep == nil {
 		d.Sleep = sleepContext
+	}
+	if d.ShutdownTimeout <= 0 {
+		d.ShutdownTimeout = defaultShutdownTimeout
 	}
 	return d
 }
@@ -95,9 +108,14 @@ func (c Config) check() error {
 }
 
 // Run runs the daemon until ctx ends, and returns nil when it stopped because
-// of that. It fails to start when another daemon holds the lock of the node,
-// and when there is no Proxmox API token to read the guests with; a store that
-// is not set up or not mounted is the engine's to report.
+// of that, also when it was told to stop while it waited for the cluster
+// filesystem, and when a request would not finish in time and was cut off.
+//
+// It fails to start when another daemon holds the lock of the node, and when it
+// cannot read the Proxmox API token to read the guests with: a store that is
+// not set up fails there, and one that is not mounted after the wait for it.
+// Once the token is read, a store that is gone is the engine's to report in its
+// state, and the daemon keeps running.
 func Run(ctx context.Context, cfg Config, deps Deps) error {
 	if err := cfg.check(); err != nil {
 		return err
@@ -117,6 +135,10 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	token, err := readPVEToken(ctx, st, deps.Sleep, log)
 	if err != nil {
+		if ctx.Err() != nil {
+			log.Info().Msg("told to stop while waiting for the cluster filesystem")
+			return nil
+		}
 		return err
 	}
 	settings := startSettings(st, log)
@@ -128,12 +150,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	}
 	gid, uids := socketAccess(deps.Accounts, log)
 	srv := api.New(eng, cfg.Version, uids, log)
-	srv.OnListening(func() {
-		if err := deps.Notifier.Ready(); err != nil {
-			log.Warn().Err(err).Msg("telling systemd that the daemon is ready failed")
-		}
-		log.Info().Str("socket", cfg.SocketPath).Msg("listening")
-	})
+	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log)
 }
 
@@ -196,28 +213,49 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	return eng, nil
 }
 
-// serve runs the engine and the API until ctx ends or the API fails, and then
-// stops both.
+// serve runs the API, starts the engine once the socket is listening, and runs
+// both until ctx ends or the API fails; then it stops both. The engine waits
+// for the socket so that a socket that cannot be made does not leave a first
+// cycle that is cut off at a point nobody chose.
+//
+// A request that does not finish within the shutdown time is cut off. That is
+// the end of a stop that was asked for, and not a failure of the daemon.
 func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket string, gid int, n Notifier, log zerolog.Logger) error {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	served := make(chan error, 1)
-	cycled := make(chan struct{})
-	go func() { served <- srv.Serve(ctx, socket, gid) }()
-	go func() {
-		defer close(cycled)
-		if err := eng.Run(ctx); err != nil {
-			log.Error().Err(err).Msg("the reconcile loop ended")
+	listening := make(chan struct{})
+	srv.OnListening(func() {
+		if err := n.Ready(); err != nil {
+			log.Warn().Err(err).Msg("telling systemd that the daemon is ready failed")
 		}
-	}()
+		log.Info().Str("socket", socket).Msg("listening")
+		close(listening)
+	})
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ctx, socket, gid) }()
 
 	var err error
+	cycled := make(chan struct{})
+	started := false
 	select {
+	case <-listening:
+		started = true
+		go func() {
+			defer close(cycled)
+			_ = eng.Run(ctx) // it ends with ctx and has no error to tell
+		}()
+		select {
+		case err = <-served:
+			served = nil
+		case <-ctx.Done():
+		}
 	case err = <-served:
 		served = nil
 	case <-ctx.Done():
 	}
+	asked := ctx.Err() != nil
+
 	// The stop begins here; the API takes a moment to finish its requests.
 	if nerr := n.Stopping(); nerr != nil {
 		log.Warn().Err(nerr).Msg("telling systemd that the daemon is stopping failed")
@@ -227,6 +265,12 @@ func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket stri
 	if served != nil {
 		err = <-served
 	}
-	<-cycled
+	if started {
+		<-cycled
+	}
+	if asked && errors.Is(err, context.DeadlineExceeded) {
+		log.Warn().Msg("requests were still running when the time to finish them ended; they were cut off")
+		return nil
+	}
 	return err
 }

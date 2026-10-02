@@ -3,8 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"os"
 	"os/user"
@@ -15,56 +13,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
-
-func TestStorePathsClearTheMountCheckWhenTheClusterOrPrivateRootMoves(t *testing.T) {
-	defaults := store.DefaultPaths()
-	require.NotEmpty(t, defaults.MountCheck)
-
-	for _, tt := range []struct {
-		name                    string
-		cluster, private, local string
-		want                    store.Paths
-	}{
-		{"defaults", "", "", "", defaults},
-		{
-			"only the local root moves", "", "", "/tmp/local",
-			store.Paths{Cluster: defaults.Cluster, Private: defaults.Private, Local: "/tmp/local", MountCheck: defaults.MountCheck},
-		},
-		{
-			"the cluster root moves", "/tmp/c", "", "",
-			store.Paths{Cluster: "/tmp/c", Private: defaults.Private, Local: defaults.Local},
-		},
-		{
-			"the private root moves", "", "/tmp/p", "",
-			store.Paths{Cluster: defaults.Cluster, Private: "/tmp/p", Local: defaults.Local},
-		},
-		{
-			"all move", "/tmp/c", "/tmp/p", "/tmp/l",
-			store.Paths{Cluster: "/tmp/c", Private: "/tmp/p", Local: "/tmp/l"},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, StorePaths(tt.cluster, tt.private, tt.local))
-		})
-	}
-}
-
-func TestTheNodeLockIsExclusiveAndGoesWithItsHolder(t *testing.T) {
-	dir := filepath.Join(shortDir(t), "local") // made by the lock
-
-	release, err := lockNode(dir)
-	require.NoError(t, err)
-	_, err = lockNode(dir)
-	require.ErrorIs(t, err, ErrRunning)
-
-	release()
-	again, err := lockNode(dir)
-	require.NoError(t, err)
-	again()
-	require.FileExists(t, filepath.Join(dir, lockName), "the lock file stays")
-}
 
 func TestSocketAccess(t *testing.T) {
 	webUser := &user.User{Uid: "998", Gid: "997", Username: webName}
@@ -91,7 +41,7 @@ func TestSocketAccess(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			logs := &syncBuffer{}
+			logs := &testutil.SyncBuffer{}
 
 			gid, uids := socketAccess(tt.accounts, zerolog.New(logs))
 
@@ -113,7 +63,7 @@ func (brokenAccounts) LookupUser(string) (*user.User, error)   { return nil, err
 func (brokenAccounts) LookupGroup(string) (*user.Group, error) { return nil, errors.New("nss is down") }
 
 func TestSocketAccessFallsBackToRootWhenALookupFails(t *testing.T) {
-	logs := &syncBuffer{}
+	logs := &testutil.SyncBuffer{}
 
 	gid, uids := socketAccess(brokenAccounts{}, zerolog.New(logs))
 
@@ -121,41 +71,6 @@ func TestSocketAccessFallsBackToRootWhenALookupFails(t *testing.T) {
 	require.Equal(t, []uint32{0}, uids)
 	require.Contains(t, logs.String(), "looking up the group failed")
 	require.Contains(t, logs.String(), "looking up the user failed")
-}
-
-func TestOneLimiterPerCredentialForTheLifeOfTheProcess(t *testing.T) {
-	f := newCloudflareClients("", time.Now)
-
-	a := f.limiter("cred1")
-	require.NotNil(t, a)
-	require.Same(t, a, f.limiter("cred1"), "every client of a credential gets the same limiter")
-	require.NotSame(t, a, f.limiter("cred2"))
-	require.Nil(t, f.limiter(""), "a token that is not stored yet paces itself")
-}
-
-func TestCloudflareClientsSendTheTokenOfTheCredential(t *testing.T) {
-	const token = "tok-0123456789"
-	var auth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"success":true,"errors":[],"messages":[],"result":{"id":"t1","status":"active"}}`))
-	}))
-	defer srv.Close()
-	f := newCloudflareClients(srv.URL, time.Now)
-
-	api, err := f.New(store.Credential{ID: "cred1", Label: "main", Token: store.NewSecret(token)})
-	require.NoError(t, err)
-	status, err := api.VerifyToken(t.Context())
-
-	require.NoError(t, err)
-	require.Equal(t, "active", status.Status)
-	require.Equal(t, "Bearer "+token, auth)
-}
-
-func TestACloudflareClientForAnEmptyTokenIsRefused(t *testing.T) {
-	_, err := newCloudflareClients("", time.Now).New(store.Credential{ID: "cred1", Label: "main"})
-	require.Error(t, err)
 }
 
 func TestWiredSettingsNameWhatChanged(t *testing.T) {

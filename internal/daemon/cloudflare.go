@@ -8,14 +8,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-// The budget of one credential: the same as a client has that is not given a
-// limiter.
-const (
-	cloudflareLimit  = 300
-	cloudflareWindow = 5 * time.Minute
-	cloudflareBurst  = 20
-)
-
 // cloudflareClients builds the Cloudflare clients of the daemon. A client is
 // built for every cycle that finds a new token, and for every check and
 // removal, so the budget cannot live in the client: one limiter per credential
@@ -54,7 +46,7 @@ func (f *cloudflareClients) limiter(id string) *cfapi.Limiter {
 	defer f.mu.Unlock()
 	l, ok := f.limiters[id]
 	if !ok {
-		l = cfapi.NewLimiter(cloudflareLimit, cloudflareWindow, cloudflareBurst, f.now)
+		l = cfapi.NewDefaultLimiter(f.now)
 		f.limiters[id] = l
 	}
 	return l

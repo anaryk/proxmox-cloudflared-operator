@@ -19,6 +19,8 @@ var ErrRunning = errors.New("another pco daemon is running on this node")
 //
 // This is the lock of the node. The one the API server takes belongs to its
 // socket and does not keep a second daemon with another socket from starting.
+// (internal/api has a copy of this helper for that one; the packages do not
+// share it.)
 func lockNode(dir string) (release func(), err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", dir, err)

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -15,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +28,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
 const (
@@ -42,33 +43,6 @@ const (
 )
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-
-// syncBuffer is a log destination that goroutines may write to.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// shortDir returns a directory whose path is short enough for a unix socket.
-func shortDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "pcod")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
-}
 
 // fakePVE is a Proxmox API with one node and one guest: web-1, qemu/101,
 // tagged for publishing, with the route www.example.com -> :8080.
@@ -307,14 +281,17 @@ type world struct {
 	cf     *cffake.Fake
 	sysd   *fakeSystemd
 	notify *fakeNotifier
-	logs   *syncBuffer
+	logs   *testutil.SyncBuffer
+	// cycles counts the reads of the clock, which every cycle starts with: it
+	// says whether a cycle has begun.
+	cycles atomic.Int64
 	cfg    Config
 	deps   Deps
 }
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
-	dir := shortDir(t)
+	dir := testutil.ShortDir(t)
 	w := &world{
 		t:      t,
 		dir:    dir,
@@ -323,7 +300,7 @@ func newWorld(t *testing.T) *world {
 		cf:     cffake.New(),
 		sysd:   &fakeSystemd{enabled: map[string]bool{}},
 		notify: newFakeNotifier(),
-		logs:   &syncBuffer{},
+		logs:   &testutil.SyncBuffer{},
 	}
 	require.NoError(t, os.WriteFile(w.mount, nil, 0o600))
 	w.paths = store.Paths{
@@ -361,6 +338,7 @@ func newWorld(t *testing.T) *world {
 		Notifier:  w.notify,
 		Accounts:  webAccounts(),
 		Sleep:     func(context.Context, time.Duration) error { return nil },
+		Now:       func() time.Time { w.cycles.Add(1); return time.Now() },
 	}
 	return w
 }
@@ -403,6 +381,21 @@ func (r *running) stop() error {
 		r.result = <-r.done
 	})
 	return r.result
+}
+
+// stopWithin ends the daemon and returns what Run returned, failing the test
+// when it takes longer than limit.
+func (r *running) stopWithin(limit time.Duration) error {
+	r.w.t.Helper()
+	r.cancel()
+	select {
+	case err := <-r.done:
+		r.once.Do(func() { r.result = err })
+		return err
+	case <-time.After(limit):
+		r.w.t.Fatalf("the daemon did not stop within %s", limit)
+		return nil
+	}
 }
 
 // await polls the state of the daemon until ok says so. The cycles run in the
