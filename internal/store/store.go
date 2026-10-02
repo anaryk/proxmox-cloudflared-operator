@@ -121,6 +121,9 @@ func prepareLocal(root string, cutoff time.Time) error {
 	return nil
 }
 
+// Paths returns the roots the store was opened at.
+func (s *Store) Paths() Paths { return s.paths }
+
 // Install returns the identity of this installation.
 func (s *Store) Install() (Install, bool, error) {
 	return getOne[Install](s.cluster, kindMeta, idInstall)

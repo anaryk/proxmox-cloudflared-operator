@@ -45,7 +45,7 @@ func (u *uninstall) survey(ctx context.Context) {
 		f.listed = true
 		f.cloudflare, f.cloudflareErr = u.listCloudflare(ctx)
 	}
-	p := u.host.paths
+	p := u.paths()
 	for _, dir := range []string{p.Cluster, p.Private, p.Local} {
 		if _, err := os.Stat(dir); err == nil {
 			f.stores = append(f.stores, dir)
@@ -66,7 +66,7 @@ func (u *uninstall) looksAtCloudflare() bool {
 // a unit.
 func (u *uninstall) listConnectors(ctx context.Context) ([]string, error) {
 	ids := make(map[string]bool)
-	entries, err := os.ReadDir(filepath.Join(u.host.paths.Local, tunnelsDir))
+	entries, err := os.ReadDir(filepath.Join(u.paths().Local, tunnelsDir))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}

@@ -220,8 +220,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		return api, nil
 	}
 	e.s = New(e.run, e.ask, st, newClient, func() time.Time { return t0 }, mathrand.NewChaCha8([32]byte{1}))
+	t.Cleanup(e.verify)
 	e.s.host = host{
-		paths:      e.paths,
 		pveDir:     "/etc/pve",
 		keyring:    filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
 		sources:    filepath.Join(base, "sources", "cloudflared.sources"),
@@ -233,20 +233,48 @@ func newTestEnv(t *testing.T) *testEnv {
 	return e
 }
 
-// script sets what the host expects next.
+// script sets what the host expects next, once it has had what it expected
+// before.
 func (e *testEnv) script(parts ...[]call) {
+	e.t.Helper()
+	for _, c := range e.run.script {
+		e.t.Errorf("the host still expected %q", c.line)
+	}
 	e.run.script = slices.Concat(parts...)
 	e.run.ran = nil
 }
 
-// done fails the test when the host still expects a command.
+// done fails the test when the host still expects a command, or the operator
+// still has an answer or a secret to give.
 func (e *testEnv) done() {
 	e.t.Helper()
-	var left []string
-	for _, c := range e.run.script {
-		left = append(left, c.line)
+	e.verify()
+	if e.t.Failed() {
+		e.t.FailNow()
 	}
-	require.Empty(e.t, left, "commands the host still expected")
+}
+
+// verify says what the scripts still held: every test ends with it.
+func (e *testEnv) verify() {
+	e.t.Helper()
+	for _, c := range e.run.script {
+		e.t.Errorf("the host still expected %q", c.line)
+	}
+	for _, a := range e.ask.answers {
+		e.t.Errorf("the operator still had an answer about %q", a.about)
+	}
+	if len(e.ask.secrets) > 0 {
+		e.t.Errorf("the operator still had %d secrets to give", len(e.ask.secrets))
+	}
+	e.run.script, e.ask.answers, e.ask.secrets = nil, nil, nil
+}
+
+// reopen opens the store again at e.paths, for a test that changes them.
+func (e *testEnv) reopen() {
+	e.t.Helper()
+	st, err := store.Open(e.paths)
+	require.NoError(e.t, err)
+	e.st, e.s.st = st, st
 }
 
 func (e *testEnv) setup(o Options) error {

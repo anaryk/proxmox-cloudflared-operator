@@ -208,7 +208,7 @@ func (u *uninstall) stopDaemon(ctx context.Context) error {
 }
 
 func (u *uninstall) pruneConnectors(ctx context.Context) {
-	m := connector.NewManager(unitControl{u.run}, filepath.Join(u.host.paths.Local, tunnelsDir), nil, zerolog.Nop())
+	m := connector.NewManager(unitControl{u.run}, filepath.Join(u.paths().Local, tunnelsDir), nil, zerolog.Nop())
 	if err := m.Prune(ctx, nil); err != nil {
 		u.fail("removing the connectors: %v", err)
 		return
@@ -250,10 +250,10 @@ func (u *uninstall) removeEgress(ctx context.Context) {
 // store. The shared ones are only touched while the cluster filesystem is
 // mounted: what lies under its mount point otherwise is not the store.
 func (u *uninstall) removeStore() error {
-	p := u.host.paths
+	p := u.paths()
 	if p.MountCheck != "" {
 		if _, err := os.Stat(p.MountCheck); err != nil {
-			return fmt.Errorf("removing the store: %w", store.ErrNotMounted)
+			return fmt.Errorf("removing the store: %w; run pco uninstall again once it is", store.ErrNotMounted)
 		}
 	}
 	if err := u.st.DeleteNode(u.node); err != nil && !errors.Is(err, store.ErrNoRoot) {

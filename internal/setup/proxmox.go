@@ -355,7 +355,7 @@ func tokenSecret(out string) (string, error) {
 		return "", errors.New("pveum user token add printed what is not the JSON expected")
 	}
 	if answer.FullID != "" && answer.FullID != tokenID {
-		return "", fmt.Errorf("pveum user token add made token %q, not %s", answer.FullID, tokenID)
+		return "", fmt.Errorf("pveum user token add made another token than %s", tokenID)
 	}
 	if strings.TrimSpace(answer.Value) == "" {
 		return "", errors.New("pveum user token add printed no secret")

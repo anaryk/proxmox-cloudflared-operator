@@ -89,11 +89,10 @@ type Setup struct {
 
 // host is where setup finds the parts of the node it works on.
 type host struct {
-	paths    store.Paths // of the store setup is given
-	pveDir   string      // the mount point of the cluster filesystem
-	keyring  string      // the key of Cloudflare's apt repository
-	sources  string      // the apt source of cloudflared
-	unitDirs []string    // where the units of the package may be installed
+	pveDir   string   // the mount point of the cluster filesystem
+	keyring  string   // the key of Cloudflare's apt repository
+	sources  string   // the apt source of cloudflared
+	unitDirs []string // where the units of the package may be installed
 	euid     func() int
 	hostname func() (string, error)
 	// checkToken makes one read of the Proxmox API with a token.
@@ -102,7 +101,6 @@ type host struct {
 
 func nodeHost() host {
 	return host{
-		paths:      store.DefaultPaths(),
 		pveDir:     "/etc/pve",
 		keyring:    "/usr/share/keyrings/cloudflare-main.gpg",
 		sources:    "/etc/apt/sources.list.d/cloudflared.sources",
@@ -127,8 +125,8 @@ func checkPVEToken(ctx context.Context, tok store.PVEToken) error {
 // New returns a setup that runs commands through r, asks p, keeps its state in
 // st, checks Cloudflare tokens through the clients newClient makes and draws
 // the install id, the writer nonce and the names of probe objects from rand.
-// st must be the store of the node, opened at store.DefaultPaths: setup works
-// on the node it runs on, and removes those directories on uninstall.
+// The manifest, the lock of the node and the connectors are found below the
+// roots of st, and uninstall removes those roots.
 func New(r Runner, p Prompter, st *store.Store, newClient func(token string) (cfapi.API, error), now func() time.Time, rand io.Reader) *Setup {
 	return &Setup{run: r, ask: p, st: st, newClient: newClient, now: now, rand: rand, host: nodeHost()}
 }
@@ -256,7 +254,10 @@ func (r *run) record(change func(*Manifest)) error {
 	return nil
 }
 
-func (s *Setup) manifestPath() string { return filepath.Join(s.host.paths.Local, manifestName) }
+// paths are the roots of the store setup works on.
+func (s *Setup) paths() store.Paths { return s.st.Paths() }
+
+func (s *Setup) manifestPath() string { return filepath.Join(s.paths().Local, manifestName) }
 
 // unitInstalled reports whether the unit file of a unit is where systemd
 // looks for it.

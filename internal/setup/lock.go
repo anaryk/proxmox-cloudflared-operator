@@ -13,7 +13,7 @@ import (
 // below the local root, also when it was not started by systemd.
 const lockName = "daemon.lock"
 
-func (s *Setup) lockPath() string { return filepath.Join(s.host.paths.Local, lockName) }
+func (s *Setup) lockPath() string { return filepath.Join(s.paths().Local, lockName) }
 
 // daemonLocked reports whether a daemon holds the lock of the node. It tries
 // the lock without waiting and lets it go at once; a missing file is no

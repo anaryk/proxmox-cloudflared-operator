@@ -63,6 +63,15 @@ func TestDefaultPaths(t *testing.T) {
 	}, DefaultPaths())
 }
 
+func TestTheStoreTellsItsPaths(t *testing.T) {
+	p := testPaths(t)
+	p.MountCheck = filepath.Join(t.TempDir(), "mounted")
+	s, err := Open(p)
+	require.NoError(t, err)
+
+	require.Equal(t, p, s.Paths())
+}
+
 func TestOpenRefusesAnEmptyPath(t *testing.T) {
 	good := testPaths(t)
 	for name, p := range map[string]Paths{
