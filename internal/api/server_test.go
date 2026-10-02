@@ -61,6 +61,7 @@ type fakeEngine struct {
 	panics   bool
 	addPanic string // AddCredential panics with this text
 
+	creds     []engine.CredentialView
 	claims    []engine.ClaimView
 	approvals []engine.ApprovalView
 	steps     []doctor.Step
@@ -165,6 +166,13 @@ func (f *fakeEngine) CheckCredential(ctx context.Context, id string, deep bool) 
 func (f *fakeEngine) RemoveCredential(ctx context.Context, id string) error {
 	f.record(ctx, "remove:"+id)
 	return f.failure()
+}
+
+func (f *fakeEngine) Credentials() ([]engine.CredentialView, error) {
+	f.record(context.Background(), "credentials")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.creds, f.err
 }
 
 func (f *fakeEngine) Claims() ([]engine.ClaimView, error) {

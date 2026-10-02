@@ -132,7 +132,7 @@ func (w screenWriter) Write(p []byte) (int, error) {
 func printJSON(w io.Writer, raw []byte) error {
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, raw, "", "  "); err != nil {
-		return fmt.Errorf("the answer of the daemon is not JSON: %w", err)
+		return couldNotAsk{fmt.Errorf("the answer of the daemon is not JSON: %w", err)}
 	}
 	buf.WriteByte('\n')
 	_, err := io.WriteString(w, escapeControls(buf.String()))
@@ -182,7 +182,7 @@ func (a *app) state(ctx context.Context) (engine.State, error) {
 	}
 	var st engine.State
 	if err := json.Unmarshal(raw, &st); err != nil {
-		return engine.State{}, fmt.Errorf("decoding the state of the daemon: %w", err)
+		return engine.State{}, couldNotAsk{fmt.Errorf("decoding the state of the daemon: %w", err)}
 	}
 	return st, nil
 }

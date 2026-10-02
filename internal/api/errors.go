@@ -83,6 +83,8 @@ func answer(err error) answered {
 		return answered{http.StatusNotFound, codeNotFound, err.Error(), false}
 	case errors.Is(err, engine.ErrRefused):
 		return answered{http.StatusConflict, codeRefused, err.Error(), false}
+	case errors.Is(err, engine.ErrBusy):
+		return answered{http.StatusServiceUnavailable, codeUnavailable, err.Error(), false}
 	case errors.Is(err, context.DeadlineExceeded):
 		return answered{http.StatusServiceUnavailable, codeUnavailable, "the operation timed out", false}
 	case errors.Is(err, context.Canceled):

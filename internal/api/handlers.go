@@ -124,12 +124,15 @@ func (s *Server) postAdopt(c *gin.Context) {
 	c.JSON(http.StatusOK, struct{}{})
 }
 
+// getCredentials answers from the store and the last check of each token, not
+// from the state of the last cycle.
 func (s *Server) getCredentials(c *gin.Context) {
-	creds := s.engine.State().Credentials
-	if creds == nil {
-		creds = []engine.CredentialView{}
+	creds, err := s.engine.Credentials()
+	if err != nil {
+		s.fail(c, err)
+		return
 	}
-	c.JSON(http.StatusOK, creds)
+	c.JSON(http.StatusOK, nonNil(creds))
 }
 
 // postCredential takes the token from the body only and answers with the view

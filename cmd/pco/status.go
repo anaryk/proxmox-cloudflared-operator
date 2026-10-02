@@ -41,7 +41,8 @@ func (a *app) statusCmd() *cobra.Command {
 		Short: "Show what the daemon found and did",
 		Long: "Show the mode of the daemon, whether the inventory is complete, the routes by state,\n" +
 			"the tunnels with their connectors, the credentials, the issues found in guest notes\n" +
-			"and the problems. The exit status is 1 when there are problems.\n\n" +
+			"and the problems. The exit status is 1 when there are problems, and 2 when the daemon\n" +
+			"could not be asked.\n\n" +
 			"With --json the state of the daemon is printed as the daemon sent it, re-indented, with\n" +
 			"control and bidirectional characters escaped.",
 		Args: cobra.NoArgs,
@@ -60,7 +61,7 @@ func (a *app) statusCmd() *cobra.Command {
 				}
 			}
 			if decodeErr != nil {
-				return fmt.Errorf("decoding the state of the daemon: %w", decodeErr)
+				return couldNotAsk{fmt.Errorf("decoding the state of the daemon: %w", decodeErr)}
 			}
 			if !a.json {
 				if err := a.renderStatus(cmd.OutOrStdout(), st); err != nil {

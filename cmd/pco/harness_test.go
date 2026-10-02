@@ -52,8 +52,10 @@ func testEnv() env {
 // fakeEngine is the engine behind a daemon of a test: it answers from its
 // fields and remembers what it was asked.
 type fakeEngine struct {
-	mu    sync.Mutex
-	state engine.State
+	mu     sync.Mutex
+	state  engine.State
+	events []engine.Event
+	since  time.Time // what the last request for the events asked for
 
 	addView, checkView engine.CredentialView
 	addErr, checkErr   error
@@ -89,7 +91,26 @@ func (f *fakeEngine) State() engine.State {
 	return f.state
 }
 
-func (f *fakeEngine) Events(time.Time) []engine.Event { return nil }
+func (f *fakeEngine) Events(since time.Time) []engine.Event {
+	f.record("events")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.since = since
+	return f.events
+}
+
+func (f *fakeEngine) lastSince() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.since
+}
+
+// Credentials answers with the credentials of the state.
+func (f *fakeEngine) Credentials() ([]engine.CredentialView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state.Credentials, nil
+}
 
 func (f *fakeEngine) Trigger() { f.record("sync") }
 

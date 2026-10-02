@@ -124,7 +124,7 @@ func (e *Engine) ResolveClaim(ctx context.Context, name, owner string) error {
 	if err != nil {
 		return err
 	}
-	if err := e.acquire(ctx); err != nil {
+	if err := e.acquireAdmin(ctx); err != nil {
 		return err
 	}
 	defer e.release()

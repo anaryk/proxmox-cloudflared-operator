@@ -30,9 +30,17 @@ const (
 	maxResponse  = 32 << 20
 )
 
-// ErrUnknownRequest is what an error unwraps to when the daemon does not know
-// the request: it is another version than the client.
-var ErrUnknownRequest = errors.New("the daemon does not know the request")
+var (
+	// ErrUnknownRequest is what an error unwraps to when the daemon does not
+	// know the request: it is another version than the client.
+	ErrUnknownRequest = errors.New("the daemon does not know the request")
+	// ErrNoAnswer is what an error unwraps to when no usable answer came
+	// from the daemon: it could not be reached, its socket refused the
+	// caller, it did not answer in time or gave up waiting for a cycle, it
+	// did not know the request, or what came was no answer of it. A command
+	// that gets one could not ask; one the daemon refused is not one.
+	ErrNoAnswer = errors.New("no usable answer from the pco daemon")
+)
 
 // Client calls the daemon on a unix socket.
 type Client struct {
@@ -94,15 +102,25 @@ func (c *Client) CredentialsRaw(ctx context.Context) (json.RawMessage, error) {
 	return raw, err
 }
 
-// Events returns the events after since; the zero time asks for all of them.
+// Events returns the events after since, oldest first; the zero time asks for
+// all of them.
 func (c *Client) Events(ctx context.Context, since time.Time) ([]engine.Event, error) {
+	var events []engine.Event
+	err := c.call(ctx, c.short, http.MethodGet, eventsPath(since), nil, &events)
+	return events, err
+}
+
+// EventsRaw is Events as the daemon sent it.
+func (c *Client) EventsRaw(ctx context.Context, since time.Time) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, eventsPath(since))
+}
+
+func eventsPath(since time.Time) string {
 	path := "/v1/events"
 	if !since.IsZero() {
 		path += "?" + url.Values{"since": {since.UTC().Format(time.RFC3339Nano)}}.Encode()
 	}
-	var events []engine.Event
-	err := c.call(ctx, c.short, http.MethodGet, path, nil, &events)
-	return events, err
+	return path
 }
 
 // Apply leaves observe-only mode. With confirmDeletes it confirms what waits
@@ -271,6 +289,7 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 // call sends one request and decodes a successful answer into out, unless out
 // is nil.
 func (c *Client) call(ctx context.Context, timeout time.Duration, method, path string, in, out any) error {
+	caller := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -292,16 +311,16 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, method, path s
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
-		return c.transportError(err)
+		return c.transportError(caller, err, timeout)
 	}
 	defer func() { _ = res.Body.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(res.Body, maxResponse+1))
 	if err != nil {
-		return c.transportError(err)
+		return c.transportError(caller, err, timeout)
 	}
 	if len(data) > maxResponse {
-		return errors.New("the answer of the pco daemon is too large")
+		return &daemonError{msg: "the answer of the pco daemon is too large", noAnswer: true}
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		return c.statusError(res.StatusCode, data)
@@ -310,22 +329,35 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, method, path s
 		return nil
 	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("decoding the answer of the pco daemon: %w", err)
+		return &daemonError{msg: "decoding the answer of the pco daemon: " + err.Error(), cause: err, noAnswer: true}
 	}
 	return nil
 }
 
-// daemonError is an error the daemon answered with. Its text is the message of
-// the daemon, and it unwraps to the sentinel of the engine that the code of the
-// answer stands for, if there is one.
+// daemonError is an error the daemon answered with, or one that says why no
+// usable answer came. Its text is the message of the daemon, or says what
+// went wrong; it unwraps to the sentinel of the engine that the code of the
+// answer stands for, or to the cause, and to ErrNoAnswer when it is no
+// answer.
 type daemonError struct {
 	msg        string
 	cause      error
+	noAnswer   bool
 	credential *engine.CredentialView // the report of a refused token
 }
 
 func (e *daemonError) Error() string { return e.msg }
-func (e *daemonError) Unwrap() error { return e.cause }
+
+func (e *daemonError) Unwrap() []error {
+	var out []error
+	if e.cause != nil {
+		out = append(out, e.cause)
+	}
+	if e.noAnswer {
+		out = append(out, ErrNoAnswer)
+	}
+	return out
+}
 
 // statusError makes the error of an answer that is not a success. What an
 // answer stands for is told by its code, not by its status: an unknown route
@@ -341,12 +373,13 @@ func (c *Client) statusError(status int, body []byte) error {
 	}
 	switch {
 	case status == http.StatusForbidden, answer.Code == "forbidden":
-		return &daemonError{msg: "permission denied on " + c.socket + ": run as root", cause: fs.ErrPermission}
+		return &daemonError{msg: "permission denied on " + c.socket + ": run as root", cause: fs.ErrPermission, noAnswer: true}
 	case answer.Code == "no_route", answer.Code == "method_not_allowed",
 		answer.Code == "" && (status == http.StatusNotFound || status == http.StatusMethodNotAllowed):
 		return &daemonError{
-			msg:   "the pco daemon at " + c.socket + " does not know this request: is it a different version than this pco?",
-			cause: ErrUnknownRequest,
+			msg:      "the pco daemon at " + c.socket + " does not know this request: is it a different version than this pco?",
+			cause:    ErrUnknownRequest,
+			noAnswer: true,
 		}
 	}
 	msg := answer.Error
@@ -362,20 +395,27 @@ func (c *Client) statusError(status int, body []byte) error {
 	case "refused":
 		cause = engine.ErrRefused
 	}
-	return &daemonError{msg: msg, cause: cause, credential: answer.Credential}
+	// A daemon that gave up, as on a cycle that ran too long, said why.
+	unavailable := answer.Code == "unavailable" || answer.Code == "" && status == http.StatusServiceUnavailable
+	return &daemonError{msg: msg, cause: cause, noAnswer: unavailable, credential: answer.Credential}
 }
 
-// transportError explains a request that did not get an answer.
-func (c *Client) transportError(err error) error {
+// transportError explains a request that did not get an answer. caller is the
+// context the call was made with: when that one still runs, a deadline that
+// passed is the timeout of the call.
+func (c *Client) transportError(caller context.Context, err error, timeout time.Duration) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		err = ue.Err
 	}
+	msg := fmt.Sprintf("talking to the pco daemon at %s: %v", c.socket, err)
 	switch {
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
-		return &daemonError{msg: "cannot reach the pco daemon at " + c.socket + ": is it running?", cause: err}
+		msg = "cannot reach the pco daemon at " + c.socket + ": is it running?"
 	case errors.Is(err, fs.ErrPermission):
-		return &daemonError{msg: "permission denied on " + c.socket + ": run as root", cause: err}
+		msg = "permission denied on " + c.socket + ": run as root"
+	case errors.Is(err, context.DeadlineExceeded) && caller.Err() == nil:
+		msg = fmt.Sprintf("the pco daemon at %s did not answer within %s", c.socket, timeout)
 	}
-	return fmt.Errorf("talking to the pco daemon at %s: %w", c.socket, err)
+	return &daemonError{msg: msg, cause: err, noAnswer: true}
 }

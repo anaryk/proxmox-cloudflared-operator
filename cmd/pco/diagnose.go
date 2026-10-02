@@ -35,7 +35,7 @@ func (a *app) diagnoseCmd() *cobra.Command {
 				}
 			}
 			if decodeErr != nil {
-				return fmt.Errorf("decoding the answer of the daemon: %w", decodeErr)
+				return couldNotAsk{fmt.Errorf("decoding the answer of the daemon: %w", decodeErr)}
 			}
 			if !a.json {
 				if err := renderSteps(cmd.OutOrStdout(), steps); err != nil {

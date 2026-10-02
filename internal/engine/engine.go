@@ -11,6 +11,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -85,7 +86,14 @@ var (
 	ErrInvalid  = errors.New("invalid request")
 	ErrNotFound = errors.New("not found")
 	ErrRefused  = errors.New("refused")
+	// ErrBusy says that an admin action gave up waiting for the cycle that
+	// runs; nothing was done.
+	ErrBusy = errors.New("a cycle is running")
 )
+
+// lockWait is how long an admin action waits for the cycle that runs: less
+// than the command line waits for an answer, so that the admin is told why.
+const lockWait = 45 * time.Second
 
 // Engine runs reconcile cycles, one at a time. Its methods are safe for
 // concurrent use.
@@ -218,6 +226,18 @@ func (e *Engine) acquire(ctx context.Context) error {
 }
 
 func (e *Engine) release() { <-e.sem }
+
+// acquireAdmin waits for the cycle lock as an admin action does: until ctx
+// ends, and no longer than lockWait.
+func (e *Engine) acquireAdmin(ctx context.Context) error {
+	wait, cancel := e.timeout(ctx, lockWait)
+	defer cancel()
+	err := e.acquire(wait)
+	if err != nil && ctx.Err() == nil {
+		return fmt.Errorf("%w and took longer than %s; try again", ErrBusy, lockWait)
+	}
+	return err
+}
 
 // Cycle runs one full pass and stores the resulting state. A call waits for a
 // cycle or admin action that is running; when ctx ends first, it runs nothing

@@ -1,0 +1,4 @@
+TIME                       LEVEL  KIND      SUBJECT                MESSAGE
+2026-10-01T12:00:00+02:00  info   admin     -                      observe-only mode ended; changes are applied from now on
+2026-10-01T13:00:00+02:00  info   route     www.example.com        qemu/101: active
+2026-10-01T13:59:00+02:00  warn   conflict  evil?[31m.example.com  A 192.0.2.1 in zone example.com is not ours; the hostname is not published?

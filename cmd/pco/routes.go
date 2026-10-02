@@ -45,7 +45,7 @@ func (a *app) routesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return renderRoutes(cmd.OutOrStdout(), st.Routes, want)
+			return renderRoutes(cmd.OutOrStdout(), st, want)
 		},
 	}
 	cmd.Flags().StringVar(&state, "state", "", "show only the routes in this state: "+routeStateNames())
@@ -72,9 +72,15 @@ func parseRouteState(s string) (planner.RouteState, error) {
 	return "", fmt.Errorf("unknown route state %q: want one of %s", s, routeStateNames())
 }
 
-func renderRoutes(w io.Writer, routes []engine.RouteView, state planner.RouteState) error {
+func renderRoutes(w io.Writer, st engine.State, state planner.RouteState) error {
 	s := &screen{w: w}
-	shown := slices.DeleteFunc(slices.Clone(routes), func(r engine.RouteView) bool {
+	switch {
+	case st.Hold != "":
+		s.printf("The last cycle held (%s): these are the routes of an earlier cycle.\n", st.Hold)
+	case !st.Complete && !st.At.IsZero():
+		s.println("The inventory is incomplete: these are the routes of an earlier cycle.")
+	}
+	shown := slices.DeleteFunc(slices.Clone(st.Routes), func(r engine.RouteView) bool {
 		return state != "" && r.State != state
 	})
 	if len(shown) == 0 {

@@ -412,7 +412,7 @@ func TestWithoutADaemonTheSocketIsNamed(t *testing.T) {
 		{"credential", "list"}, {"credential", "check", "abc"}, {"credential", "remove", "abc"},
 		{"claims", "list"}, {"claims", "resolve", "www.example.com", "qemu/102"},
 		{"guest", "list"}, {"guest", "approve", "qemu/101"}, {"guest", "revoke", "qemu/101"},
-		{"diagnose", "www.example.com"}, {"doctor"},
+		{"diagnose", "www.example.com"}, {"doctor"}, {"events"},
 	} {
 		res := r.run("", args...)
 

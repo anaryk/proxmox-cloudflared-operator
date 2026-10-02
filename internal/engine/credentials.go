@@ -53,7 +53,7 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 		return view, fmt.Errorf("%w: the token cannot be used: %s", ErrInvalid, failedChecks(report))
 	}
 
-	if err := e.acquire(ctx); err != nil {
+	if err := e.acquireAdmin(ctx); err != nil {
 		return CredentialView{}, err
 	}
 	defer e.Trigger()
@@ -96,7 +96,7 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 	}
 	// The credential may have been removed during the check; its report is
 	// kept only while it is stored, which the cycle lock makes sure of.
-	if err := e.acquire(ctx); err != nil {
+	if err := e.acquireAdmin(ctx); err != nil {
 		return CredentialView{}, err
 	}
 	defer e.Trigger()
@@ -113,7 +113,7 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 // accounts. A token Cloudflare rejects reaches nothing and is removed. When
 // Cloudflare cannot tell, nothing is removed.
 func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
-	if err := e.acquire(ctx); err != nil {
+	if err := e.acquireAdmin(ctx); err != nil {
 		return err
 	}
 	defer e.Trigger()
@@ -263,6 +263,23 @@ func NewCredential(stored []store.Credential, label string, token store.Secret, 
 			return store.Credential{ID: id, Label: label, Kind: credentialKind, Token: token, AddedAt: addedAt}, nil
 		}
 	}
+}
+
+// Credentials lists the stored credentials, each with the last report of its
+// token, as they are now: one added or removed shows at once, not only after
+// the next cycle.
+func (e *Engine) Credentials() ([]CredentialView, error) {
+	creds, err := e.d.Store.Credentials()
+	if err != nil {
+		return nil, fmt.Errorf("reading the credentials: %w", err)
+	}
+	info := make([]credentialInfo, len(creds))
+	for i, c := range creds {
+		info[i] = credentialInfo{id: c.ID, label: c.Label, kind: c.Kind}
+	}
+	views := e.credentialViews(info)
+	slices.SortFunc(views, func(a, b CredentialView) int { return cmp.Compare(a.ID, b.ID) })
+	return views, nil
 }
 
 // credential returns the stored credential with an id.

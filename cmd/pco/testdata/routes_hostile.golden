@@ -1,3 +1,4 @@
+The last cycle held (the writer ?[2J?]0;pwned? ? ?31m ?evil?): these are the routes of an earlier cycle.
 HOSTNAME                                      STATE        LEVEL                             SERVICE             OWNER     ZONE                              NOTE
 evil?[2J?]0;pwned? ? ?31m ?evil?.example.com  unreachable  -                                 -                   qemu/101  zone?[2J?]0;pwned? ? ?31m ?evil?  refused ?[2J?]0;pwned? ? ?31m ?evil?
 warn.example.com                              active       port?[2J?]0;pwned? ? ?31m ?evil?  http://10.0.0.1:80  qemu/102  example.com                       ?[2J?]0;pwned? ? ?31m ?evil?

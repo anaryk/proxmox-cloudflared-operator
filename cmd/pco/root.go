@@ -20,6 +20,20 @@ import (
 // main only turns it into the exit code.
 var errReported = errors.New("reported")
 
+// couldNotAsk is the error of a command that got no answer of the daemon it
+// could read: it exits with 2, like one that could not reach the daemon.
+type couldNotAsk struct{ error }
+
+func (e couldNotAsk) Unwrap() error { return e.error }
+
+// exitHelp is what the help says of the exit status, which scripts act on.
+const exitHelp = `Exit status:
+  0  all is well
+  1  the command ran and found something to look at: problems in the state, a failed
+     doctor check or diagnosis step, a request the daemon refused; or it failed otherwise
+  2  it could not ask the daemon: the daemon is not running, its socket refused the
+     connection, no answer came in time, or the answer could not be read`
+
 // env is what the commands take from the machine they run on. The zero parts
 // are filled by defaultEnv; tests replace them.
 type env struct {
@@ -73,6 +87,7 @@ func newRootCmdWith(e env) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "pco",
 		Short:         "Cloudflare Tunnel operator for Proxmox VE",
+		Long:          "Cloudflare Tunnel operator for Proxmox VE.\n\n" + exitHelp,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -80,8 +95,8 @@ func newRootCmdWith(e env) *cobra.Command {
 	flags.StringVar(&a.socket, "socket", daemon.DefaultSocket,
 		"unix socket of the daemon; its directory must be named pco and sit in a directory only the daemon's user can write")
 	flags.BoolVar(&a.json, "json", false,
-		"print the answer of the daemon as JSON (status, routes, plan, claims list, guest list, diagnose, doctor, "+
-			"credential list, add and check): printed as the daemon sent it, re-indented, with control and "+
+		"print the answer of the daemon as JSON (status, routes, plan, events, claims list, guest list, diagnose, "+
+			"doctor, credential list, add and check): printed as the daemon sent it, re-indented, with control and "+
 			"bidirectional characters escaped")
 
 	root.AddCommand(
@@ -90,6 +105,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.statusCmd(),
 		a.routesCmd(),
 		a.planCmd(),
+		a.eventsCmd(),
 		a.applyCmd(),
 		a.adoptCmd(),
 		a.syncCmd(),
@@ -144,5 +160,5 @@ func (a *app) explain(ctx context.Context, err error) error {
 	if v, verr := a.client().Version(ctx); verr == nil {
 		theirs = v
 	}
-	return fmt.Errorf("the daemon does not know this command; pco and the daemon are different versions (cli %s, daemon %s)", a.version, theirs)
+	return couldNotAsk{fmt.Errorf("the daemon does not know this command; pco and the daemon are different versions (cli %s, daemon %s)", a.version, theirs)}
 }

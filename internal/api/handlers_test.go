@@ -166,14 +166,16 @@ func TestAdopt(t *testing.T) {
 	require.Equal(t, []string{"adopt:www.example.com"}, f.called())
 }
 
-func TestCredentialsAreListedFromTheState(t *testing.T) {
+func TestCredentialsAreListedByTheEngine(t *testing.T) {
 	st := testState()
-	rec := do(newServer(&fakeEngine{state: st}), http.MethodGet, "/v1/credentials", "")
+	f := &fakeEngine{state: engine.State{}, creds: st.Credentials}
+	rec := do(newServer(f), http.MethodGet, "/v1/credentials", "")
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	want, err := json.Marshal(st.Credentials)
 	require.NoError(t, err)
 	require.JSONEq(t, string(want), rec.Body.String())
+	require.Equal(t, []string{"credentials"}, f.called(), "not from the state of the last cycle")
 
 	t.Run("none is an empty list", func(t *testing.T) {
 		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/credentials", "")
@@ -428,6 +430,7 @@ func TestRemoveCredential(t *testing.T) {
 
 var engineRoutes = []struct{ name, method, target, body string }{
 	{"apply", http.MethodPost, "/v1/apply", `{}`},
+	{"credentials", http.MethodGet, "/v1/credentials", ""},
 	{"adopt", http.MethodPost, "/v1/adopt", `{"name":"www.example.com"}`},
 	{"add credential", http.MethodPost, "/v1/credentials", `{"label":"main","token":"` + testToken + `"}`},
 	{"check credential", http.MethodPost, "/v1/credentials/abc12345/check", `{}`},
@@ -453,6 +456,8 @@ func TestEngineErrorsAreMapped(t *testing.T) {
 		{"refused", fmt.Errorf("%w: credential abc12345 still manages 2 records", engine.ErrRefused), http.StatusConflict, "refused", "refused: credential abc12345 still manages 2 records"},
 		{"deadline", fmt.Errorf("checking the token: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, "unavailable", "the operation timed out"},
 		{"cancelled", fmt.Errorf("checking the token: %w", context.Canceled), http.StatusServiceUnavailable, "unavailable", "the operation was cancelled"},
+		{"busy", fmt.Errorf("%w and took longer than 45s; try again", engine.ErrBusy), http.StatusServiceUnavailable, "unavailable",
+			"a cycle is running and took longer than 45s; try again"},
 		{"anything else", errors.New("reading the settings: disk gone"), http.StatusInternalServerError, "internal", "reading the settings: disk gone"},
 	} {
 		for _, rt := range engineRoutes {
@@ -640,7 +645,7 @@ func TestTheRequestContextReachesTheEngine(t *testing.T) {
 	type key struct{}
 	f := &fakeEngine{}
 	for _, rt := range engineRoutes {
-		if rt.name == "claims" || rt.name == "approvals" {
+		if rt.name == "claims" || rt.name == "approvals" || rt.name == "credentials" {
 			continue // read from the store, with nothing to cancel
 		}
 		t.Run(rt.name, func(t *testing.T) {

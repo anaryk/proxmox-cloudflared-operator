@@ -34,7 +34,7 @@ func (a *app) doctorCmd() *cobra.Command {
 				}
 			}
 			if decodeErr != nil {
-				return fmt.Errorf("decoding the answer of the daemon: %w", decodeErr)
+				return couldNotAsk{fmt.Errorf("decoding the answer of the daemon: %w", decodeErr)}
 			}
 			if !a.json {
 				if err := renderFindings(cmd.OutOrStdout(), findings); err != nil {

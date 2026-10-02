@@ -61,7 +61,7 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string) (Appr
 	if err != nil {
 		return Approval{}, err
 	}
-	if err := e.acquire(ctx); err != nil {
+	if err := e.acquireAdmin(ctx); err != nil {
 		return Approval{}, err
 	}
 	defer e.release()
@@ -97,7 +97,7 @@ func (e *Engine) RevokeGuest(ctx context.Context, owner string) error {
 	if _, err := guestOwner(owner); err != nil {
 		return err
 	}
-	if err := e.acquire(ctx); err != nil {
+	if err := e.acquireAdmin(ctx); err != nil {
 		return err
 	}
 	defer e.release()
