@@ -50,6 +50,21 @@ func answer(status int, body string) http.HandlerFunc {
 	}
 }
 
+func TestTheTextOfAStatus(t *testing.T) {
+	for _, tt := range []struct {
+		st   Status
+		want string
+	}{
+		{Status{}, "inactive"},
+		{Status{Active: true}, "active, not ready"},
+		{Status{Active: true, Ready: true, Connections: 1}, "active, ready, 1 connection"},
+		{Status{Active: true, Ready: true, Connections: 4}, "active, ready, 4 connections"},
+		{Status{Active: true, Ready: true}, "active, ready, 0 connections"},
+	} {
+		require.Equal(t, tt.want, tt.st.Text())
+	}
+}
+
 func TestStatusOfAReadyConnector(t *testing.T) {
 	f := newStatusFixture(t, answer(http.StatusOK, `{"status":200,"readyConnections":4,"connectorId":"c1"}`))
 

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -54,16 +53,10 @@ func (a *app) doctorCmd() *cobra.Command {
 // line below, and a summary.
 func renderFindings(w io.Writer, findings []doctor.Finding) error {
 	s := &screen{w: w}
-	width := 0
-	for _, f := range findings {
-		width = max(width, len([]rune(printable(f.Check))))
-	}
+	lines := make([]markedLine, len(findings))
 	fails, warns := 0, 0
-	for _, f := range findings {
-		s.printf("%s %-*s  %s\n", levelMark(f.Level), width, f.Check, f.Detail)
-		if f.Fix != "" {
-			s.printf("%s  fix: %s\n", strings.Repeat(" ", width+2), f.Fix)
-		}
+	for i, f := range findings {
+		lines[i] = markedLine{level: f.Level, name: f.Check, detail: f.Detail, fix: f.Fix}
 		switch f.Level {
 		case doctor.LevelFail:
 			fails++
@@ -71,6 +64,7 @@ func renderFindings(w io.Writer, findings []doctor.Finding) error {
 			warns++
 		}
 	}
+	renderMarked(s, lines)
 	s.printf("\n%s\n", summary(fails, warns))
 	return s.done()
 }

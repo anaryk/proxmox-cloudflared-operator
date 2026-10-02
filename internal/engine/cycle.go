@@ -210,7 +210,7 @@ func (c *cycleRun) readWriter() {
 		return
 	}
 	c.cfHold = true
-	c.st.WriterVerdict = verdictUnknown
+	c.st.WriterVerdict = VerdictUnknown
 }
 
 // inspect refreshes the inventory, collects the routes, settles the claims and

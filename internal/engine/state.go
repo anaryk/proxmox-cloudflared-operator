@@ -15,14 +15,15 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
+// The modes of State.Mode, and the verdicts of State.WriterVerdict.
 const (
-	modeObserve = "observe"
-	modeEnforce = "enforce"
+	ModeObserve = "observe"
+	ModeEnforce = "enforce"
 
-	verdictOK      = "ok"
-	verdictStale   = "stale"
-	verdictForeign = "foreign"
-	verdictUnknown = "unknown"
+	VerdictOK      = "ok"
+	VerdictStale   = "stale"
+	VerdictForeign = "foreign"
+	VerdictUnknown = "unknown"
 
 	// RouteFrozen is the state of a route whose account is frozen: what its
 	// tunnel serves for it is not known.
@@ -110,7 +111,7 @@ type UnapprovedGuest struct {
 }
 
 func emptyState() State {
-	return State{Mode: modeObserve, WriterVerdict: verdictOK}.normalized()
+	return State{Mode: ModeObserve, WriterVerdict: VerdictOK}.normalized()
 }
 
 // carried is the start of the next state: what the cycle does not find out
@@ -215,19 +216,19 @@ func nonNil[T any](s []T) []T {
 
 func modeName(observe bool) string {
 	if observe {
-		return modeObserve
+		return ModeObserve
 	}
-	return modeEnforce
+	return ModeEnforce
 }
 
 func verdictName(v reconcile.WriterVerdict) string {
 	switch v {
 	case reconcile.WriterStale:
-		return verdictStale
+		return VerdictStale
 	case reconcile.WriterForeign:
-		return verdictForeign
+		return VerdictForeign
 	}
-	return verdictOK
+	return VerdictOK
 }
 
 // routeViews pairs every route status of the plan with its guest and, for the

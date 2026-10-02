@@ -334,15 +334,17 @@ func TestFindingsAreSortedAndOnlyOkHasNoFix(t *testing.T) {
 	st := healthyState()
 	st.Mode, st.Complete, st.WriterVerdict = "observe", false, "foreign"
 	st.Unapproved = []engine.UnapprovedGuest{
-		{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}}},
 		{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}}},
+		{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 20}}},
 	}
 	env := healthyEnv()
 	env.dialErr = errors.New("refused")
 
 	findings := Run(t.Context(), st, env)
 
-	require.True(t, slices.IsSortedFunc(findings, func(a, b Finding) int { return strings.Compare(a.Check, b.Check) }))
+	require.True(t, slices.IsSortedFunc(findings, compareChecks))
+	require.Equal(t, "approval qemu/20", findings[0].Check, "owners in their natural order")
+	require.Equal(t, "approval qemu/101", findings[1].Check)
 	for _, f := range findings {
 		require.Contains(t, []Level{LevelOK, LevelWarn, LevelFail}, f.Level)
 		require.Equal(t, f.Level == LevelOK, f.Fix == "", "%s", f.Check)

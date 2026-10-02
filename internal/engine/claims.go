@@ -23,8 +23,6 @@ const (
 	ClaimUnknown  = "unknown"  // no cycle of this process has settled the claims yet
 )
 
-const manualOwnerPrefix = "manual/"
-
 // ClaimView is a claim on a hostname as the store keeps it, with who holds it
 // and who waits for it.
 type ClaimView struct {
@@ -201,6 +199,6 @@ func validOwner(owner string) bool {
 	if _, err := model.ParseGuestRef(owner); err == nil {
 		return true
 	}
-	id, ok := strings.CutPrefix(owner, manualOwnerPrefix)
+	id, ok := strings.CutPrefix(owner, model.ManualPrefix)
 	return ok && id != "" && strings.TrimSpace(id) == id
 }

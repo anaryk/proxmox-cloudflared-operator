@@ -10,6 +10,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
 func qemu(vmid int, name string) *engine.GuestView {
@@ -35,9 +36,17 @@ func someClaims() []engine.ClaimView {
 	}
 }
 
+// claimsState is a daemon where qemu/101 serves www.example.com and qemu/102
+// asks for it too.
+func claimsState() engine.State {
+	st := healthyState()
+	st.Routes = append(st.Routes, routeView("www.example.com", "qemu/102", planner.StateConflict, "", "", "hostname is held by qemu/101"))
+	return st
+}
+
 func daemonWithClaims(t *testing.T) (*runner, *fakeEngine) {
 	t.Helper()
-	e := &fakeEngine{state: healthyState(), claims: someClaims()}
+	e := &fakeEngine{state: claimsState(), claims: someClaims()}
 	return newRunner(t, serveFake(t, e)), e
 }
 
@@ -89,11 +98,13 @@ func TestClaimsResolveShowsTheMoveAndAsks(t *testing.T) {
 			res := r.tty().run(tt.in, append([]string{"claims", "resolve", "WWW.example.com.", "qemu/102"}, tt.args...)...)
 
 			require.Contains(t, res.out, "www.example.com is held by qemu/101 (web-1) since 2026-09-28T14:00:00+02:00.\n"+
-				"Resolving hands it to qemu/102 (web-2): the public hostname moves to that guest, and qemu/101 (web-1) waits for it.\n")
+				"Resolving hands it to qemu/102 (web-2); qemu/101 (web-1) waits for it from then on, in the place in line its claim gives it.\n"+
+				"From the next cycle qemu/102 holds it, and serves it once its address is verified: "+
+				"pco diagnose www.example.com shows how that goes.\n")
 			if tt.moved {
 				require.NoError(t, res.err)
 				require.Equal(t, []string{"resolve www.example.com qemu/102"}, e.called(), "the name in its normal form")
-				require.Contains(t, res.out, "The claim on www.example.com is now held by qemu/102; the next cycle publishes it.\n")
+				require.True(t, strings.HasSuffix(res.out, "The claim on www.example.com is now held by qemu/102.\n"), res.out)
 			} else {
 				require.ErrorIs(t, res.err, errAborted)
 				require.Empty(t, e.called())
@@ -114,25 +125,67 @@ func TestClaimsResolveGolden(t *testing.T) {
 	requireGolden(t, "claims_resolve.golden", res.out+"--- stderr\n"+res.errOut)
 }
 
-// What the state has no claim of, the daemon refuses and says why: nothing is
-// asked.
-func TestClaimsResolveLeavesTheAnswerToTheDaemon(t *testing.T) {
+// When there is nothing to move, it says so, and nothing is asked or sent.
+func TestClaimsResolveWithNothingToMoveSendsNothing(t *testing.T) {
 	for _, tt := range []struct {
-		name, host, owner string
+		name, host, owner, out string
 	}{
-		{"a hostname nobody holds", "nope.example.com", "qemu/102"},
-		{"the holder itself", "www.example.com", "qemu/101"},
+		{"a hostname nobody holds", "nope.example.com", "qemu/102", "Nobody holds a claim on nope.example.com; there is nothing to move.\n"},
+		{"the holder itself", "www.example.com", "qemu/101", "qemu/101 (web-1) holds www.example.com already; there is nothing to move.\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, e := daemonWithClaims(t)
-			e.resolveErr = fmt.Errorf("%w: the daemon says no", engine.ErrNotFound)
 
 			res := r.tty().run("y\n", "claims", "resolve", tt.host, tt.owner)
 
-			require.ErrorIs(t, res.err, engine.ErrNotFound)
-			require.Empty(t, res.out)
+			require.NoError(t, res.err)
+			require.Equal(t, tt.out, res.out)
 			require.Empty(t, res.errOut, "nothing was asked")
-			require.Equal(t, []string{"resolve " + tt.host + " " + tt.owner}, e.called())
+			require.Empty(t, e.called(), "nothing was sent")
+		})
+	}
+}
+
+// An owner that does not claim the hostname is the daemon's to refuse.
+func TestClaimsResolveToAnOwnerThatDoesNotClaimIt(t *testing.T) {
+	r, e := daemonWithClaims(t)
+	e.resolveErr = fmt.Errorf("%w: qemu/109 no longer claims www.example.com: it has no route for it and does not name it", engine.ErrRefused)
+
+	res := r.tty().run("y\n", "claims", "resolve", "www.example.com", "qemu/109")
+
+	require.EqualError(t, res.err, "refused: qemu/109 no longer claims www.example.com: it has no route for it and does not name it")
+	require.Equal(t, []string{"resolve www.example.com qemu/109"}, e.called())
+}
+
+// What a move does not bring about at once is said: nobody serves the
+// hostname until the new holder routes it, is approved, or the daemon goes on.
+func TestClaimsResolveSaysWhenNobodyWillServeTheHostname(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		state  func(st *engine.State)
+		saying string
+	}{
+		{"a holder that waits for approval", func(st *engine.State) {
+			st.Routes = st.Routes[:len(st.Routes)-1]
+			st.Unapproved = []engine.UnapprovedGuest{{GuestView: *qemu(102, "web-2"), Identity: "uuid:102", Hostnames: []string{"www.example.com"}}}
+		}, "qemu/102 waits for approval: nobody serves www.example.com until it is approved (pco guest approve qemu/102).\n"},
+		{"a holder that only names it", func(st *engine.State) { st.Routes = st.Routes[:len(st.Routes)-1] },
+			"qemu/102 names www.example.com without a route for it: nobody serves it until qemu/102 routes it.\n"},
+		{"a daemon that holds", func(st *engine.State) {
+			st.Tunnels[0].Held = engine.HeldUnchecked + ": no writer identity; run pco setup"
+		}, "The daemon holds, and pco status says why: nobody serves www.example.com from qemu/102 until that changes.\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st := claimsState()
+			tt.state(&st)
+			e := &fakeEngine{state: st, claims: someClaims()}
+			r := newRunner(t, serveFake(t, e))
+
+			res := r.run("", "claims", "resolve", "www.example.com", "qemu/102", "--yes")
+
+			require.NoError(t, res.err)
+			require.Contains(t, res.out, tt.saying)
+			require.NotContains(t, res.out, "From the next cycle")
 		})
 	}
 }
@@ -198,15 +251,32 @@ func TestGuestListJSONIsWhatTheDaemonSent(t *testing.T) {
 	require.Equal(t, indented(t, raw), res.out)
 }
 
+// An approval shows what the guest would publish, sends the identity it
+// showed, and says what was approved and what that does in the mode the
+// daemon is in.
 func TestGuestApprove(t *testing.T) {
 	r, e := daemonWith(t, approvalState())
 
 	res := r.runReader(unreadable{t}, "guest", "approve", "qemu/103")
 
 	require.NoError(t, res.err)
-	require.Equal(t, "Approved qemu/103 in the identity the daemon sees now; the next cycle publishes its routes.\n", res.out)
+	require.Equal(t, "qemu/103 (new-1) waits for approval in identity uuid:103; approved, it publishes new.example.com, www.new.example.com.\n"+
+		"Approved qemu/103 in identity uuid:103.\n"+
+		"From the next cycle its routes no longer wait for an approval.\n", res.out)
 	require.Empty(t, res.errOut, "nothing is asked")
-	require.Equal(t, []string{"approve qemu/103"}, e.called())
+	require.Equal(t, []string{"approve qemu/103 identity=uuid:103"}, e.called(), "the identity that was shown")
+}
+
+func TestGuestApproveInModeTag(t *testing.T) {
+	e := &fakeEngine{state: healthyState(), mode: "tag"}
+	r := newRunner(t, serveFake(t, e))
+
+	res := r.run("", "guest", "approve", "qemu/101")
+
+	require.NoError(t, res.err)
+	require.Equal(t, "Approved qemu/101 in identity uuid:101.\n"+
+		"The admission mode is tag: an approval matters only once it is approve.\n", res.out)
+	require.Equal(t, []string{"approve qemu/101"}, e.called(), "no identity was shown, so none is sent")
 }
 
 func TestGuestApproveRefused(t *testing.T) {
@@ -253,15 +323,16 @@ func TestGuestRevokeShowsTheApprovalAndAsks(t *testing.T) {
 	}
 }
 
-func TestGuestRevokeOfAGuestWithoutApprovalLeavesTheAnswerToTheDaemon(t *testing.T) {
-	e := &fakeEngine{state: approvalState(), approvals: someApprovals(), guestErr: fmt.Errorf("%w: qemu/109 has no approval", engine.ErrNotFound)}
+func TestGuestRevokeOfAGuestWithoutApprovalSendsNothing(t *testing.T) {
+	e := &fakeEngine{state: approvalState(), approvals: someApprovals()}
 	r := newRunner(t, serveFake(t, e))
 
 	res := r.tty().run("y\n", "guest", "revoke", "qemu/109")
 
-	require.EqualError(t, res.err, "not found: qemu/109 has no approval")
+	require.NoError(t, res.err)
+	require.Equal(t, "qemu/109 has no approval; there is nothing to revoke.\n", res.out)
 	require.Empty(t, res.errOut, "nothing was asked")
-	require.Equal(t, []string{"revoke qemu/109"}, e.called())
+	require.Empty(t, e.called(), "nothing was sent")
 }
 
 func TestGuestCommandsNeedOneOwner(t *testing.T) {

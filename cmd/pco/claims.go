@@ -10,7 +10,6 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
 // jsonHelp is what the help of a command that prints an answer says of --json.
@@ -65,13 +64,13 @@ func (a *app) renderClaims(w io.Writer, claims []engine.ClaimView) error {
 	for _, c := range claims {
 		waiting := make([]string, len(c.Waiting))
 		for i, w := range c.Waiting {
-			waiting[i] = ownerText(w.Owner, w.Guest)
+			waiting[i] = engine.OwnerName(w.Owner, w.Guest)
 		}
 		note := ""
 		if c.MissingSince != nil {
 			note = "no longer asked for since " + a.when(*c.MissingSince)
 		}
-		t.row(c.Hostname, ownerText(c.Holder, c.Guest), dash(c.State), a.when(c.Since), dash(strings.Join(waiting, ", ")), dash(note))
+		t.row(c.Hostname, engine.OwnerName(c.Holder, c.Guest), dash(c.State), a.when(c.Since), dash(strings.Join(waiting, ", ")), dash(note))
 	}
 	t.flush()
 	return s.done()
@@ -103,25 +102,36 @@ func (a *app) claimsResolveCmd() *cobra.Command {
 				return a.explain(ctx, err)
 			}
 			s := &screen{w: cmd.OutOrStdout()}
-			// Without a claim held by another owner the daemon refuses, and
-			// says why.
-			if i := slices.IndexFunc(claims, func(c engine.ClaimView) bool { return c.Hostname == host }); i >= 0 && claims[i].Holder != owner {
-				describeMove(s, a, claims[i], owner)
-				if err := s.done(); err != nil {
-					return err
-				}
-				ok, err := a.confirm(cmd, yes, fmt.Sprintf("Move %s to %s? [y/N]", host, owner))
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return errAborted
-				}
+			i := slices.IndexFunc(claims, func(c engine.ClaimView) bool { return c.Hostname == host })
+			switch {
+			case i < 0:
+				s.printf("Nobody holds a claim on %s; there is nothing to move.\n", host)
+				return s.done()
+			case claims[i].Holder == owner:
+				s.printf("%s holds %s already; there is nothing to move.\n", engine.OwnerName(owner, claims[i].Guest), host)
+				return s.done()
 			}
+			st, err := a.state(ctx)
+			if err != nil {
+				return err
+			}
+			describeMove(s, a, claims[i], owner, st)
+			if err := s.done(); err != nil {
+				return err
+			}
+			ok, err := a.confirm(cmd, yes, fmt.Sprintf("Move %s to %s? [y/N]", host, owner))
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errAborted
+			}
+			// An owner that does not claim the hostname the daemon refuses,
+			// and says why.
 			if err := a.client().ResolveClaim(ctx, host, owner); err != nil {
 				return a.explain(ctx, err)
 			}
-			s.printf("The claim on %s is now held by %s; the next cycle publishes it.\n", host, owner)
+			s.printf("The claim on %s is now held by %s.\n", host, owner)
 			return s.done()
 		},
 	}
@@ -129,27 +139,48 @@ func (a *app) claimsResolveCmd() *cobra.Command {
 	return cmd
 }
 
-// describeMove says who holds a hostname and what resolving it to owner does.
-func describeMove(s *screen, a *app, c engine.ClaimView, owner string) {
+// describeMove says who holds a hostname, who would, and what that brings
+// about as far as the state tells.
+func describeMove(s *screen, a *app, c engine.ClaimView, owner string, st engine.State) {
 	var guest *engine.GuestView
 	if i := slices.IndexFunc(c.Waiting, func(w engine.ClaimantView) bool { return w.Owner == owner }); i >= 0 {
 		guest = c.Waiting[i].Guest
 	}
-	what := "that route"
-	if _, err := model.ParseGuestRef(owner); err == nil {
-		what = "that guest"
-	}
-	holder := ownerText(c.Holder, c.Guest)
+	holder := engine.OwnerName(c.Holder, c.Guest)
 	s.printf("%s is held by %s since %s.\n", c.Hostname, holder, a.when(c.Since))
-	s.printf("Resolving hands it to %s: the public hostname moves to %s, and %s waits for it.\n",
-		ownerText(owner, guest), what, holder)
+	s.printf("Resolving hands it to %s; %s waits for it from then on, in the place in line its claim gives it.\n",
+		engine.OwnerName(owner, guest), holder)
+	for _, line := range moveOutcome(c.Hostname, owner, st) {
+		s.println(line)
+	}
 }
 
-// ownerText names an owner, with the name of its guest when it has one:
-// "qemu/101 (web-1)".
-func ownerText(owner string, guest *engine.GuestView) string {
-	if guest == nil || guest.Name == "" {
-		return owner
+// moveOutcome says when the new holder of a hostname will serve it: not
+// while it waits for approval, names the hostname without a route for it, or
+// the daemon holds; otherwise once a cycle has verified its address.
+func moveOutcome(host, owner string, st engine.State) []string {
+	var out []string
+	waits := slices.ContainsFunc(st.Unapproved, func(g engine.UnapprovedGuest) bool {
+		return g.String() == owner && slices.Contains(g.Hostnames, host)
+	})
+	routed := slices.ContainsFunc(st.Routes, func(r engine.RouteView) bool { return r.Hostname == host && r.Owner == owner })
+	switch {
+	case waits:
+		out = append(out, fmt.Sprintf("%s waits for approval: nobody serves %s until it is approved (pco guest approve %s).", owner, host, owner))
+	case !routed:
+		out = append(out, fmt.Sprintf("%s names %s without a route for it: nobody serves it until %s routes it.", owner, host, owner))
 	}
-	return owner + " (" + guest.Name + ")"
+	if daemonHolds(st) {
+		out = append(out, fmt.Sprintf("The daemon holds, and pco status says why: nobody serves %s from %s until that changes.", host, owner))
+	}
+	if len(out) == 0 {
+		out = append(out, fmt.Sprintf("From the next cycle %s holds it, and serves it once its address is verified: "+
+			"pco diagnose %s shows how that goes.", owner, host))
+	}
+	return out
+}
+
+// daemonHolds reports whether the last cycle left Cloudflare as it was.
+func daemonHolds(st engine.State) bool {
+	return slices.ContainsFunc(st.Tunnels, func(t engine.TunnelView) bool { return strings.HasPrefix(t.Held, engine.HeldUnchecked) })
 }

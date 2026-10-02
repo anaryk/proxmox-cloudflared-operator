@@ -138,7 +138,7 @@ func modeText(st engine.State) string {
 	switch {
 	case st.At.IsZero():
 		return "unknown"
-	case st.Mode == "observe":
+	case st.Mode == engine.ModeObserve:
 		return "observe-only"
 	}
 	return st.Mode
@@ -158,13 +158,13 @@ func inventoryText(st engine.State) string {
 
 func writerText(verdict string) string {
 	switch verdict {
-	case "ok":
+	case engine.VerdictOK:
 		return "ok"
-	case "stale":
+	case engine.VerdictStale:
 		return "stale (a newer generation of this install is writing)"
-	case "foreign":
+	case engine.VerdictForeign:
 		return "foreign (another installation is writing)"
-	case "unknown":
+	case engine.VerdictUnknown:
 		return "unknown (leader.json could not be used)"
 	}
 	return dash(verdict)
@@ -235,20 +235,13 @@ func verifiedText(t engine.TunnelView) string {
 }
 
 // connectorText describes the connector of a tunnel: active, ready and with
-// how many connections to Cloudflare.
+// how many connections to Cloudflare, or none.
 func connectorText(conns []connector.Status, tunnelID string) string {
 	i := slices.IndexFunc(conns, func(c connector.Status) bool { return c.TunnelID == tunnelID })
-	switch {
-	case tunnelID == "" || i < 0:
+	if tunnelID == "" || i < 0 {
 		return "none"
-	case !conns[i].Active:
-		return "inactive"
-	case !conns[i].Ready:
-		return "active, not ready"
-	case conns[i].Connections == 1:
-		return "active, ready, 1 connection"
 	}
-	return fmt.Sprintf("active, ready, %d connections", conns[i].Connections)
+	return conns[i].Text()
 }
 
 func (a *app) credentialSection(s *screen, st engine.State) {
@@ -316,7 +309,7 @@ func nextStep(st engine.State) string {
 		return ""
 	case len(st.Credentials) == 0:
 		return "Add a Cloudflare token with pco credential add."
-	case st.Mode == "observe":
+	case st.Mode == engine.ModeObserve:
 		return "Run pco apply to start publishing."
 	}
 	return ""

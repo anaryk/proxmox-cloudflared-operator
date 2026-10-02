@@ -13,9 +13,12 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
+// BlockedService is the service of a rule that answers 503 for a hostname
+// nobody serves, so that no other owner's wildcard serves it.
+const BlockedService = "http_status:503"
+
 const (
 	notFoundService = "http_status:404"
-	blockedService  = "http_status:503"
 
 	reasonNoZone       = "no Cloudflare zone for this hostname in any credential"
 	reasonSeveralCreds = "zone %s is visible through several credentials; pin it to one"
@@ -270,7 +273,7 @@ func heldReason(c Claim) string {
 
 // block plans a rule that answers 503 for host.
 func (b *builder) block(account, host string) {
-	b.addRule(account, IngressRule{Hostname: host, Service: blockedService})
+	b.addRule(account, IngressRule{Hostname: host, Service: BlockedService})
 }
 
 func (b *builder) addRule(account string, rule IngressRule) {

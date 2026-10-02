@@ -35,6 +35,12 @@ func approveWeb(t *testing.T, e *env) Approval {
 	return a
 }
 
+func TestAnOwnerIsNamedWithItsGuest(t *testing.T) {
+	require.Equal(t, "qemu/101 (web-1)", OwnerName("qemu/101", &GuestView{GuestRef: refWeb, Name: "web-1"}))
+	require.Equal(t, "qemu/101", OwnerName("qemu/101", &GuestView{GuestRef: refWeb}))
+	require.Equal(t, "manual/www", OwnerName("manual/www", nil))
+}
+
 func approvals(t *testing.T, e *env) map[string]string {
 	t.Helper()
 	a, err := e.store.Approvals()

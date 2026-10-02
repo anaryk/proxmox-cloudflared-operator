@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
@@ -161,6 +162,21 @@ func TestRoutesGolden(t *testing.T) {
 	require.NoError(t, res.err)
 	require.Empty(t, res.errOut)
 	requireGolden(t, "routes.golden", res.out)
+}
+
+// Owners are listed in their natural order: qemu/20 before qemu/101.
+func TestRoutesAreInTheNaturalOrderOfTheirOwners(t *testing.T) {
+	st := healthyState()
+	st.Routes = []engine.RouteView{
+		routeView("www.example.com", "qemu/101", planner.StateActive, "http://10.0.0.11:8080", "example.com", ""),
+		routeView("www.example.com", "qemu/20", planner.StateConflict, "", "", "hostname is held by qemu/101"),
+	}
+	r, _ := daemonWith(t, st)
+
+	res := r.run("", "routes")
+
+	require.NoError(t, res.err)
+	require.Less(t, strings.Index(res.out, "qemu/20 "), strings.Index(res.out, "qemu/101 "), res.out)
 }
 
 func TestRoutesStateFilter(t *testing.T) {

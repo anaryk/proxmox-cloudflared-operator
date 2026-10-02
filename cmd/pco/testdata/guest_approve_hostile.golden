@@ -1,0 +1,4 @@
+qemu/105 (new?[2J?]0;pwned? ? ?31m ?evil?) waits for approval in identity uuid?[2J?]0;pwned? ? ?31m ?evil?; approved, it publishes new?[2J?]0;pwned? ? ?31m ?evil?.example.com.
+Approved qemu/105 in identity uuid:105.
+From the next cycle its routes no longer wait for an approval.
+--- stderr

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -52,14 +53,34 @@ func (a *app) diagnoseCmd() *cobra.Command {
 // renderSteps writes a step a line: its mark, its name and what it found.
 func renderSteps(w io.Writer, steps []doctor.Step) error {
 	s := &screen{w: w}
-	width := 0
-	for _, st := range steps {
-		width = max(width, len([]rune(printable(st.Name))))
+	lines := make([]markedLine, len(steps))
+	for i, st := range steps {
+		lines[i] = markedLine{level: st.Level, name: st.Name, detail: st.Detail}
 	}
-	for _, st := range steps {
-		s.printf("%s %-*s  %s\n", levelMark(st.Level), width, st.Name, st.Detail)
-	}
+	renderMarked(s, lines)
 	return s.done()
+}
+
+// markedLine is a line of a diagnosis or of the doctor: the level of what it
+// is about, its name, what was found and, for a finding, what to do about it.
+type markedLine struct {
+	level             doctor.Level
+	name, detail, fix string
+}
+
+// renderMarked writes a line each: its mark, its name in a column of the
+// width of the longest, what was found, and a fix on the line below.
+func renderMarked(s *screen, lines []markedLine) {
+	width := 0
+	for _, l := range lines {
+		width = max(width, len([]rune(printable(l.name))))
+	}
+	for _, l := range lines {
+		s.printf("%s %-*s  %s\n", levelMark(l.level), width, l.name, l.detail)
+		if l.fix != "" {
+			s.printf("%s  fix: %s\n", strings.Repeat(" ", width+2), l.fix)
+		}
+	}
 }
 
 // levelMark is the mark of a level: ✓ ok, ! warn, ✗ fail, and ? for one this

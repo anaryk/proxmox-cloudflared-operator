@@ -17,6 +17,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -92,8 +93,17 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 		out = append(out, checkApprovals(st)...)
 	}
 	out = append(out, checkTunnels(ctx, st, env)...)
-	slices.SortStableFunc(out, func(a, b Finding) int { return cmp.Compare(a.Check, b.Check) })
+	slices.SortStableFunc(out, compareChecks)
 	return out
+}
+
+// compareChecks orders findings by check, and the checks of one kind, as
+// "approval qemu/20" and "approval qemu/101", by what they are of: owners in
+// their natural order.
+func compareChecks(a, b Finding) int {
+	kindA, ofA, _ := strings.Cut(a.Check, " ")
+	kindB, ofB, _ := strings.Cut(b.Check, " ")
+	return cmp.Or(strings.Compare(kindA, kindB), model.CompareOwners(ofA, ofB))
 }
 
 // Failed reports whether any finding is a failure.
@@ -112,7 +122,7 @@ func fail(check, detail, fix string) Finding {
 }
 
 func checkMode(st engine.State) Finding {
-	if st.Mode == "observe" {
+	if st.Mode == engine.ModeObserve {
 		return warn("mode", "observe-only: nothing is changed at Cloudflare", "pco apply")
 	}
 	return ok("mode", st.Mode+": changes are applied")
@@ -157,12 +167,12 @@ func checkInventory(st engine.State) Finding {
 
 func checkWriter(st engine.State) Finding {
 	switch st.WriterVerdict {
-	case "stale":
+	case engine.VerdictStale:
 		return fail("writer", "a newer generation of this install writes the tunnel configuration", "run pco setup --recover on the node that should write")
-	case "foreign":
+	case engine.VerdictForeign:
 		return fail("writer", "another installation writes the tunnel configuration",
 			"stop the other installation, or give this one an install of its own with pco setup")
-	case "unknown":
+	case engine.VerdictUnknown:
 		return fail("writer", "leader.json could not be used", "pco setup --recover")
 	}
 	return ok("writer", "this daemon writes the tunnel configuration")
@@ -301,14 +311,7 @@ func checkConnector(ctx context.Context, st engine.State, env Env, name, id stri
 	case !st.Connectors[i].Ready:
 		return fail(check, "not connected to Cloudflare", "journalctl -u "+unit)
 	}
-	return ok(check, connections(st.Connectors[i].Connections))
-}
-
-func connections(n int) string {
-	if n == 1 {
-		return "active, ready, 1 connection"
-	}
-	return fmt.Sprintf("active, ready, %d connections", n)
+	return ok(check, st.Connectors[i].Text())
 }
 
 // checkOutbound tries the way out to Cloudflare over TCP. Connectors that are
@@ -431,10 +434,7 @@ func checkApprovals(st engine.State) []Finding {
 	out := make([]Finding, 0, len(st.Unapproved))
 	for _, g := range st.Unapproved {
 		owner := g.String()
-		who := owner
-		if g.Name != "" {
-			who += " (" + g.Name + ")"
-		}
+		who := engine.OwnerName(owner, &g.GuestView)
 		out = append(out, warn("approval "+owner, who+" waits for approval", "pco guest approve "+owner))
 	}
 	return out

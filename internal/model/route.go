@@ -52,7 +52,8 @@ type Route struct {
 	ManualID string       `json:"manualId,omitempty"`
 }
 
-const manualPrefix = "manual/"
+// ManualPrefix begins the owner of a manual route: "manual/<id>".
+const ManualPrefix = "manual/"
 
 // Owner identifies who claims the hostname. An annotation route belongs to its
 // guest ("qemu/101", "lxc/200"). A manual route, that is one with Source
@@ -62,7 +63,7 @@ func (r Route) Owner() string {
 	if r.Source != SourceManual && r.ManualID == "" && r.Guest != nil {
 		return r.Guest.String()
 	}
-	return manualPrefix + r.ManualID
+	return ManualPrefix + r.ManualID
 }
 
 // CompareOwners orders owners deterministically: guests before manual routes,
@@ -87,7 +88,7 @@ func ownerKey(owner string) (rank, vmid int) {
 		}
 		return 1, ref.VMID
 	}
-	if strings.HasPrefix(owner, manualPrefix) {
+	if strings.HasPrefix(owner, ManualPrefix) {
 		return 2, 0
 	}
 	return 3, 0

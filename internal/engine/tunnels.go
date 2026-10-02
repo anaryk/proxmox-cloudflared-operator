@@ -40,11 +40,11 @@ func (c *cycleRun) writerStill(when string) bool {
 	us, stored, err := c.e.writer()
 	switch {
 	case err != nil:
-		c.st.WriterVerdict = verdictUnknown
+		c.st.WriterVerdict = VerdictUnknown
 		c.problem("the writer identity cannot be read %s (%v); the rest is left as it is", when, err)
 		return false
 	case stored.Generation != us.Generation || stored.Nonce != us.Nonce:
-		c.st.WriterVerdict = verdictStale
+		c.st.WriterVerdict = VerdictStale
 		c.problem("leader.json names another writer %s; the rest is left as it is", when)
 		return false
 	}

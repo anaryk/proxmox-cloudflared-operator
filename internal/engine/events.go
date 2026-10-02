@@ -150,7 +150,7 @@ func changes(prev, next State) []Event {
 	}
 	if next.WriterVerdict != prev.WriterVerdict {
 		level := levelError
-		if next.WriterVerdict == verdictOK {
+		if next.WriterVerdict == VerdictOK {
 			level = levelInfo
 		}
 		out = append(out, Event{At: next.At, Level: level, Kind: kindWriter, Subject: "leader.json", Message: "writer verdict is " + next.WriterVerdict})

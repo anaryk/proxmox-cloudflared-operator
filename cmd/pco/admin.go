@@ -103,7 +103,7 @@ func (a *app) applyConfirming(cmd *cobra.Command, yes bool) error {
 	if len(st.Waiting) == 0 {
 		// Nothing is confirmed: a confirmation that nothing waits for would
 		// land on what the admin did not see.
-		if st.Mode == "enforce" && !st.At.IsZero() {
+		if st.Mode == engine.ModeEnforce && !st.At.IsZero() {
 			s.println("Nothing waits for a confirmation, so there is nothing to do.")
 			return s.done()
 		}

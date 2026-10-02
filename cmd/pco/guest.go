@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 func (a *app) guestCmd() *cobra.Command {
@@ -58,7 +60,7 @@ func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine
 		t := s.table()
 		t.row("  GUEST", "IDENTITY", "NOW")
 		for _, v := range approvals {
-			t.row("  "+ownerText(v.Owner, v.Guest), dash(v.Identity), identityNow(v))
+			t.row("  "+engine.OwnerName(v.Owner, v.Guest), dash(v.Identity), identityNow(v))
 		}
 		t.flush()
 		s.println("")
@@ -69,7 +71,7 @@ func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine
 	}
 	s.println("Waiting for approval (pco guest approve <owner>):")
 	for _, g := range waiting {
-		s.printf("  %s\n", ownerText(g.String(), &g.GuestView))
+		s.printf("  %s\n", engine.OwnerName(g.String(), &g.GuestView))
 	}
 	return s.done()
 }
@@ -90,19 +92,40 @@ func (a *app) guestApproveCmd() *cobra.Command {
 		Use:   "approve <owner>",
 		Short: "Approve a guest in the identity it has now",
 		Long: "Approve a guest, named as qemu/101 or lxc/200, in the identity the daemon sees it in now:\n" +
-			"a guest re-created under the same VMID, or a clone, needs an approval of its own. The\n" +
-			"daemon refuses a guest the last cycle did not see. An approval matters while the\n" +
-			"admission mode is approve.",
+			"a guest re-created under the same VMID, or a clone, needs an approval of its own. A guest\n" +
+			"that waits for approval is shown first, with the hostnames it would publish, and the\n" +
+			"daemon refuses the approval when the guest changed since. The daemon refuses a guest the\n" +
+			"last cycle did not see. An approval matters while the admission mode is approve.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
 				return err
 			}
-			if _, err := a.client().ApproveGuest(cmd.Context(), args[0], ""); err != nil {
-				return a.explain(cmd.Context(), err)
+			ctx := cmd.Context()
+			owner := args[0]
+			st, err := a.state(ctx)
+			if err != nil {
+				return err
 			}
 			s := &screen{w: cmd.OutOrStdout()}
-			s.printf("Approved %s in the identity the daemon sees now; the next cycle publishes its routes.\n", args[0])
+			// What was shown is what is approved.
+			identity := ""
+			if i := slices.IndexFunc(st.Unapproved, func(g engine.UnapprovedGuest) bool { return g.String() == owner }); i >= 0 {
+				g := st.Unapproved[i]
+				identity = g.Identity
+				s.printf("%s waits for approval in identity %s; approved, it publishes %s.\n",
+					engine.OwnerName(owner, &g.GuestView), dash(g.Identity), dash(strings.Join(g.Hostnames, ", ")))
+			}
+			approved, err := a.client().ApproveGuest(ctx, owner, identity)
+			if err != nil {
+				return a.explain(ctx, err)
+			}
+			s.printf("Approved %s in identity %s.\n", engine.OwnerName(approved.Owner, approved.Guest), approved.Identity)
+			if approved.Mode == store.AdmissionApprove {
+				s.println("From the next cycle its routes no longer wait for an approval.")
+			} else {
+				s.printf("The admission mode is %s: an approval matters only once it is %s.\n", approved.Mode, store.AdmissionApprove)
+			}
 			return s.done()
 		},
 	}
@@ -128,21 +151,23 @@ func (a *app) guestRevokeCmd() *cobra.Command {
 				return a.explain(ctx, err)
 			}
 			s := &screen{w: cmd.OutOrStdout()}
-			// Without an approval the daemon refuses, and says why.
-			if i := slices.IndexFunc(approvals, func(v engine.ApprovalView) bool { return v.Owner == owner }); i >= 0 {
-				v := approvals[i]
-				s.printf("%s is approved in identity %s.\n", ownerText(v.Owner, v.Guest), v.Identity)
-				s.println("Revoking it stops its routes from being published while the admission mode is approve.")
-				if err := s.done(); err != nil {
-					return err
-				}
-				ok, err := a.confirm(cmd, yes, fmt.Sprintf("Revoke the approval of %s? [y/N]", owner))
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return errAborted
-				}
+			i := slices.IndexFunc(approvals, func(v engine.ApprovalView) bool { return v.Owner == owner })
+			if i < 0 {
+				s.printf("%s has no approval; there is nothing to revoke.\n", owner)
+				return s.done()
+			}
+			v := approvals[i]
+			s.printf("%s is approved in identity %s.\n", engine.OwnerName(v.Owner, v.Guest), v.Identity)
+			s.println("Revoking it stops its routes from being published while the admission mode is approve.")
+			if err := s.done(); err != nil {
+				return err
+			}
+			ok, err := a.confirm(cmd, yes, fmt.Sprintf("Revoke the approval of %s? [y/N]", owner))
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errAborted
 			}
 			if err := a.client().RevokeGuest(ctx, owner); err != nil {
 				return a.explain(ctx, err)

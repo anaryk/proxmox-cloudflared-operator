@@ -87,15 +87,14 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string) (Appr
 	if err := e.d.Store.SaveApproval(owner, g.identity); err != nil {
 		return Approval{}, fmt.Errorf("saving the approval: %w", err)
 	}
-	e.adminEvent(owner, fmt.Sprintf("%s is approved in identity %s%s", describeGuest(ref, g.name), g.identity, note))
+	e.adminEvent(owner, fmt.Sprintf("%s is approved in identity %s%s", OwnerName(owner, l.guestView(owner)), g.identity, note))
 	e.Trigger()
 	return Approval{Owner: owner, Guest: l.guestView(owner), Identity: g.identity, Mode: mode}, nil
 }
 
 // RevokeGuest removes the approval of a guest.
 func (e *Engine) RevokeGuest(ctx context.Context, owner string) error {
-	ref, err := guestOwner(owner)
-	if err != nil {
+	if _, err := guestOwner(owner); err != nil {
 		return err
 	}
 	if err := e.acquire(ctx); err != nil {
@@ -117,7 +116,7 @@ func (e *Engine) RevokeGuest(ctx context.Context, owner string) error {
 	if err := e.d.Store.DeleteApproval(owner); err != nil {
 		return fmt.Errorf("removing the approval: %w", err)
 	}
-	e.adminEvent(owner, fmt.Sprintf("the approval of %s is revoked%s", describeGuest(ref, e.lastListing().guests[ref].name), note))
+	e.adminEvent(owner, fmt.Sprintf("the approval of %s is revoked%s", OwnerName(owner, e.lastListing().guestView(owner)), note))
 	e.Trigger()
 	return nil
 }
@@ -143,11 +142,11 @@ func (e *Engine) admission() (mode, note string, err error) {
 	return s.Admission, tagModeNote, nil
 }
 
-// describeGuest names a guest as "qemu/101 (web-1)", or "qemu/101" when its
-// name is not known.
-func describeGuest(ref model.GuestRef, name string) string {
-	if name == "" {
-		return ref.String()
+// OwnerName names an owner, with the name of its guest when that is known:
+// "qemu/101 (web-1)", "qemu/101", "manual/www".
+func OwnerName(owner string, guest *GuestView) string {
+	if guest == nil || guest.Name == "" {
+		return owner
 	}
-	return fmt.Sprintf("%s (%s)", ref, name)
+	return owner + " (" + guest.Name + ")"
 }

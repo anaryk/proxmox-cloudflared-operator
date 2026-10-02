@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
@@ -85,7 +86,7 @@ func renderRoutes(w io.Writer, routes []engine.RouteView, state planner.RouteSta
 		return s.done()
 	}
 	slices.SortStableFunc(shown, func(x, y engine.RouteView) int {
-		return cmp.Or(cmp.Compare(x.Hostname, y.Hostname), cmp.Compare(x.Owner, y.Owner))
+		return cmp.Or(cmp.Compare(x.Hostname, y.Hostname), model.CompareOwners(x.Owner, y.Owner))
 	})
 	t := s.table()
 	t.row("HOSTNAME", "STATE", "LEVEL", "SERVICE", "OWNER", "ZONE", "NOTE")

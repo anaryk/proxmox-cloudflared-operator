@@ -203,6 +203,7 @@ func TestNothingTheDaemonSendsReachesTheTerminalAsAControlCharacter(t *testing.T
 		{"claims resolve", []string{"claims", "resolve", "www.example.com", "manual/x"}, "n\n"},
 		{"guest list", []string{"guest", "list"}, ""},
 		{"guest revoke", []string{"guest", "revoke", "qemu/101"}, "n\n"},
+		{"guest approve", []string{"guest", "approve", "qemu/105"}, ""},
 		{"diagnose", []string{"diagnose", "www.example.com"}, ""},
 		{"doctor", []string{"doctor"}, ""},
 	} {
@@ -271,6 +272,7 @@ func TestHostileAdminCommandsGolden(t *testing.T) {
 		{"claims_resolve_hostile.golden", "n\n", []string{"claims", "resolve", "www.example.com", "manual/x"}},
 		{"guest_list_hostile.golden", "", []string{"guest", "list"}},
 		{"guest_revoke_hostile.golden", "n\n", []string{"guest", "revoke", "qemu/101"}},
+		{"guest_approve_hostile.golden", "", []string{"guest", "approve", "qemu/105"}},
 		{"diagnose_hostile.golden", "", []string{"diagnose", "www.example.com"}},
 		{"doctor_hostile.golden", "", []string{"doctor"}},
 	} {

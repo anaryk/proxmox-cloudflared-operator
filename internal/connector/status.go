@@ -26,6 +26,20 @@ type Status struct {
 	MetricsAddr string `json:"metricsAddr,omitempty"` // empty when the tunnel has no usable env file
 }
 
+// Text says how a connector fares: "inactive", "active, not ready" or
+// "active, ready, 4 connections".
+func (s Status) Text() string {
+	switch {
+	case !s.Active:
+		return "inactive"
+	case !s.Ready:
+		return "active, not ready"
+	case s.Connections == 1:
+		return "active, ready, 1 connection"
+	}
+	return fmt.Sprintf("active, ready, %d connections", s.Connections)
+}
+
 // Status reports the unit's state and, when it runs, asks its metrics endpoint
 // whether it is connected. A connector that does not answer is not ready; that
 // is no error. A tunnel without a usable env file has no endpoint to ask and

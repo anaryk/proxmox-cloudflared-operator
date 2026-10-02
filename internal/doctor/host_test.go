@@ -69,6 +69,8 @@ func fakeBinary(t *testing.T, script string) string {
 
 func TestTheHostTellsTheVersionOfCloudflared(t *testing.T) {
 	env, _, _ := hostEnv(t)
+	// Not the deadline under test: a busy machine may take its time.
+	env.Timeout = time.Minute
 	env.Binary = fakeBinary(t, `[ "$1" = "--version" ] || exit 3
 echo "cloudflared version 2026.9.0 (built 2026-09-10-1200 UTC)"
 echo "second line"`)
