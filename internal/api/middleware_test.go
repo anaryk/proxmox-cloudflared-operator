@@ -271,7 +271,8 @@ func TestTheBodyDeadlineDoesNotCancelALongRequest(t *testing.T) {
 		socket := socketPath(t)
 		serve(t, s, socket)
 
-		require.NoError(t, apiclient.New(socket).Apply(t.Context(), false))
+		_, err := apiclient.New(socket).Apply(t.Context(), false, "")
+		require.NoError(t, err)
 	})
 
 	// Without a body net/http starts to watch the connection before the handler

@@ -104,13 +104,18 @@ func (c *Client) Events(ctx context.Context, since time.Time) ([]engine.Event, e
 	return events, err
 }
 
-// Apply leaves observe-only mode; confirmDeletes lets the next run delete more
-// DNS records than the mass delete guard allows.
-func (c *Client) Apply(ctx context.Context, confirmDeletes bool) error {
+// Apply leaves observe-only mode. With confirmDeletes it confirms what waits
+// for a confirmation, as the state with that offer showed it, such as more DNS
+// deletes than the mass delete guard allows; the daemon refuses an offer that
+// is not of what waits now. The result says what was accepted.
+func (c *Client) Apply(ctx context.Context, confirmDeletes bool, offer string) (engine.ApplyResult, error) {
 	body := struct {
-		ConfirmDeletes bool `json:"confirmDeletes"`
-	}{confirmDeletes}
-	return c.call(ctx, c.long, http.MethodPost, "/v1/apply", body, nil)
+		ConfirmDeletes bool   `json:"confirmDeletes"`
+		Offer          string `json:"offer,omitempty"`
+	}{confirmDeletes, offer}
+	var res engine.ApplyResult
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/apply", body, &res)
+	return res, err
 }
 
 // Adopt asks the daemon to take over the DNS record of someone else that holds

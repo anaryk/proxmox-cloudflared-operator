@@ -45,7 +45,10 @@ func TestSetShutdownTimeoutIsHowLongServeWaitsForARequest(t *testing.T) {
 	stop := serve(t, s, socket)
 
 	applied := make(chan error, 1)
-	go func() { applied <- apiclient.New(socket).Apply(t.Context(), false) }()
+	go func() {
+		_, err := apiclient.New(socket).Apply(t.Context(), false, "")
+		applied <- err
+	}()
 	<-started
 
 	require.ErrorIs(t, stop(), context.DeadlineExceeded)

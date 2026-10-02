@@ -116,20 +116,44 @@ func TestApply(t *testing.T) {
 		body string
 		call string
 	}{
-		{"confirming", `{"confirmDeletes":true}`, "apply:true"},
-		{"not confirming", `{"confirmDeletes":false}`, "apply:false"},
-		{"empty object", `{}`, "apply:false"},
-		{"no body", ``, "apply:false"},
+		{"confirming what was offered", `{"confirmDeletes":true,"offer":"0123456789abcdef"}`, "apply:true:0123456789abcdef"},
+		{"confirming without an offer", `{"confirmDeletes":true}`, "apply:true:"},
+		{"not confirming", `{"confirmDeletes":false}`, "apply:false:"},
+		{"empty object", `{}`, "apply:false:"},
+		{"no body", ``, "apply:false:"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeEngine{}
 			rec := do(newServer(f), http.MethodPost, "/v1/apply", tt.body)
 
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			require.JSONEq(t, `{}`, rec.Body.String())
+			require.JSONEq(t, `{"leftObserveOnly":false,"accepted":[]}`, rec.Body.String(), "nothing accepted is a list")
 			require.Equal(t, []string{tt.call}, f.called())
 		})
 	}
+}
+
+func TestApplyAnswersWhatWasAccepted(t *testing.T) {
+	f := &fakeEngine{applied: engine.ApplyResult{LeftObserveOnly: true, Accepted: []engine.Waiting{
+		{Kind: "dns-removals", Detail: "mass delete guard: 6 of 6 records are being removed; confirm to proceed", Items: []string{"a.example.com"}},
+	}}}
+
+	rec := do(newServer(f), http.MethodPost, "/v1/apply", `{"confirmDeletes":true,"offer":"0123456789abcdef"}`)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{"leftObserveOnly":true,"accepted":[{"kind":"dns-removals","subject":"",`+
+		`"detail":"mass delete guard: 6 of 6 records are being removed; confirm to proceed","items":["a.example.com"]}]}`, rec.Body.String())
+}
+
+func TestAnOfferThatChangedIsAConflict(t *testing.T) {
+	f := &fakeEngine{err: fmt.Errorf("%w: what waits for a confirmation changed since it was shown; look again and repeat", engine.ErrRefused)}
+
+	rec := do(newServer(f), http.MethodPost, "/v1/apply", `{"confirmDeletes":true,"offer":"0123456789abcdef"}`)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+	got := parseError(t, rec)
+	require.Equal(t, "refused", got.Code)
+	require.Equal(t, "refused: what waits for a confirmation changed since it was shown; look again and repeat", got.Message)
 }
 
 func TestAdopt(t *testing.T) {
@@ -549,6 +573,7 @@ func TestRequestBodies(t *testing.T) {
 		{"not json", "/v1/apply", "application/json", `confirmDeletes`, http.StatusBadRequest, "invalid", "JSON"},
 		{"truncated", "/v1/adopt", "application/json", `{"name":`, http.StatusBadRequest, "invalid", "JSON"},
 		{"wrong type", "/v1/apply", "application/json", `{"confirmDeletes":"yes"}`, http.StatusBadRequest, "invalid", "confirmDeletes"},
+		{"an offer that is no string", "/v1/apply", "application/json", `{"confirmDeletes":true,"offer":7}`, http.StatusBadRequest, "invalid", "offer"},
 		{"not an object", "/v1/apply", "application/json", `[true]`, http.StatusBadRequest, "invalid", "object"},
 		{"two objects", "/v1/apply", "application/json", `{} {}`, http.StatusBadRequest, "invalid", "after"},
 		{"trailing junk", "/v1/apply", "application/json", `{}x`, http.StatusBadRequest, "invalid", "after"},

@@ -76,7 +76,7 @@ func (a *app) applyCmd() *cobra.Command {
 					}
 				}
 			}
-			if err := a.client().Apply(ctx, confirmDeletes); err != nil {
+			if _, err := a.client().Apply(ctx, confirmDeletes, ""); err != nil {
 				return a.explain(ctx, err)
 			}
 			if confirmDeletes {

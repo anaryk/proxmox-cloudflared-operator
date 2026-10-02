@@ -124,7 +124,8 @@ func TestTheDaemonTalksToCloudflareThroughItsOwnClients(t *testing.T) {
 	w.deps.CloudflareURL = fake.URL + "/client/v4"
 	d := w.start()
 
-	require.NoError(t, d.client.Apply(t.Context(), false))
+	_, err := d.client.Apply(t.Context(), false, "")
+	require.NoError(t, err)
 	d.await(func(st engine.State) bool {
 		return st.Mode == "enforce" && len(st.Tunnels) == 1 && st.Tunnels[0].Verified
 	})

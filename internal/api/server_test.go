@@ -50,6 +50,7 @@ type fakeEngine struct {
 	state    engine.State
 	events   []engine.Event
 	view     engine.CredentialView
+	applied  engine.ApplyResult // what Apply answers
 	err      error
 	hook     func(ctx context.Context) error // runs first in Apply
 	calls    []string
@@ -99,6 +100,12 @@ func (f *fakeEngine) setErr(err error) {
 	f.err = err
 }
 
+func (f *fakeEngine) setApplied(res engine.ApplyResult) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.applied = res
+}
+
 func (f *fakeEngine) failure() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -119,14 +126,16 @@ func (f *fakeEngine) Trigger() {
 	f.triggers++
 }
 
-func (f *fakeEngine) Apply(ctx context.Context, confirmDeletes bool, _ string) (engine.ApplyResult, error) {
-	f.record(ctx, fmt.Sprintf("apply:%t", confirmDeletes))
+func (f *fakeEngine) Apply(ctx context.Context, confirmDeletes bool, offer string) (engine.ApplyResult, error) {
+	f.record(ctx, fmt.Sprintf("apply:%t:%s", confirmDeletes, offer))
 	if f.hook != nil {
 		if err := f.hook(ctx); err != nil {
 			return engine.ApplyResult{}, err
 		}
 	}
-	return engine.ApplyResult{}, f.failure()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.applied, f.err
 }
 
 func (f *fakeEngine) Adopt(ctx context.Context, name string) error {
@@ -350,7 +359,13 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 
 	require.NoError(t, c.Sync(ctx))
 	require.Equal(t, 1, f.triggered())
-	require.NoError(t, c.Apply(ctx, true))
+	accepted := engine.ApplyResult{LeftObserveOnly: true, Accepted: []engine.Waiting{
+		{Kind: "stale-zone", Subject: "example.net", Detail: "zone example.net is no longer listed by credential cred1", Items: []string{}},
+	}}
+	f.setApplied(accepted)
+	applied, err := c.Apply(ctx, true, "0123456789abcdef")
+	require.NoError(t, err)
+	require.Equal(t, accepted, applied)
 	require.NoError(t, c.Adopt(ctx, "www.example.com"))
 
 	added, err := c.AddCredential(ctx, "main", testToken)
@@ -362,7 +377,7 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	require.NoError(t, c.RemoveCredential(ctx, "abc12345"))
 
 	require.Equal(t, []string{
-		"state", "events", "events", "apply:true", "adopt:www.example.com",
+		"state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
 		"add:main:" + testToken, "check:abc12345:true", "remove:abc12345",
 	}, f.called())
 
@@ -443,7 +458,10 @@ func TestShutdownLetsARunningRequestFinish(t *testing.T) {
 	t.Cleanup(letGo)
 
 	applied := make(chan error, 1)
-	go func() { applied <- apiclient.New(socket).Apply(t.Context(), false) }()
+	go func() {
+		_, err := apiclient.New(socket).Apply(t.Context(), false, "")
+		applied <- err
+	}()
 	select {
 	case <-started:
 	case err := <-applied:
@@ -481,7 +499,10 @@ func TestShutdownGivesUpOnAStuckRequest(t *testing.T) {
 	stop := serve(t, s, socket)
 
 	applied := make(chan error, 1)
-	go func() { applied <- apiclient.New(socket).Apply(t.Context(), false) }()
+	go func() {
+		_, err := apiclient.New(socket).Apply(t.Context(), false, "")
+		applied <- err
+	}()
 	select {
 	case <-started:
 	case err := <-applied:

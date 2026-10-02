@@ -144,9 +144,27 @@ func TestRequests(t *testing.T) {
 			want: seen{Method: "POST", Path: "/v1/sync", ContentType: "application/json"},
 		},
 		{
-			name: "apply", reply: `{}`, status: 200,
-			call: func(c *Client) error { return c.Apply(t.Context(), true) },
-			want: seen{Method: "POST", Path: "/v1/apply", ContentType: "application/json", Body: `{"confirmDeletes":true}`},
+			name: "apply", reply: `{"leftObserveOnly":true,"accepted":[]}`, status: 200,
+			call: func(c *Client) error {
+				res, err := c.Apply(t.Context(), false, "")
+				require.Equal(t, engine.ApplyResult{LeftObserveOnly: true, Accepted: []engine.Waiting{}}, res)
+				return err
+			},
+			want: seen{Method: "POST", Path: "/v1/apply", ContentType: "application/json", Body: `{"confirmDeletes":false}`},
+		},
+		{
+			name: "apply with a confirmation",
+			reply: `{"leftObserveOnly":false,"accepted":[{"kind":"stale-zone","subject":"example.net",` +
+				`"detail":"zone example.net is no longer listed by credential cred1","items":[]}]}`,
+			status: 200,
+			call: func(c *Client) error {
+				res, err := c.Apply(t.Context(), true, "0123456789abcdef")
+				require.Equal(t, engine.ApplyResult{Accepted: []engine.Waiting{
+					{Kind: "stale-zone", Subject: "example.net", Detail: "zone example.net is no longer listed by credential cred1", Items: []string{}},
+				}}, res)
+				return err
+			},
+			want: seen{Method: "POST", Path: "/v1/apply", ContentType: "application/json", Body: `{"confirmDeletes":true,"offer":"0123456789abcdef"}`},
 		},
 		{
 			name: "adopt", reply: `{}`, status: 200,
@@ -224,7 +242,8 @@ func everyCall(t *testing.T, c *Client) []result {
 	_, err = c.Events(ctx, time.Time{})
 	add("events", err)
 	add("sync", c.Sync(ctx))
-	add("apply", c.Apply(ctx, false))
+	_, err = c.Apply(ctx, false, "")
+	add("apply", err)
 	add("adopt", c.Adopt(ctx, "www.example.com"))
 	_, err = c.AddCredential(ctx, "main", testToken)
 	add("add", err)
@@ -367,7 +386,7 @@ func TestAForbiddenAnswerSaysToRunAsRoot(t *testing.T) {
 	for _, body := range []string{`{"error":"not allowed","code":"forbidden"}`, `{"error":"not allowed"}`, ``} {
 		_, socket := fakeDaemon(t, reply(403, body))
 
-		err := New(socket).Apply(t.Context(), false)
+		_, err := New(socket).Apply(t.Context(), false, "")
 
 		require.EqualError(t, err, "permission denied on "+socket+": run as root")
 		require.ErrorIs(t, err, fs.ErrPermission)
@@ -410,7 +429,7 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 
 	_, err := c.Version(t.Context())
 	require.EqualError(t, err, "the pco daemon answered 302 Found")
-	err = c.Apply(t.Context(), true)
+	_, err = c.Apply(t.Context(), true, "0123456789abcdef")
 	require.EqualError(t, err, "the pco daemon answered 302 Found")
 
 	d.mu.Lock()
@@ -499,7 +518,7 @@ func TestTimeouts(t *testing.T) {
 	_ = c.Sync(t.Context())
 	require.InDelta(t, 10, rec.last().Seconds(), 1, "sync")
 
-	_ = c.Apply(t.Context(), false)
+	_, _ = c.Apply(t.Context(), false, "")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "apply")
 	_, _ = c.CheckCredential(t.Context(), "a", false)
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "check")

@@ -78,19 +78,27 @@ func (s *Server) postSync(c *gin.Context) {
 	c.JSON(http.StatusAccepted, struct{}{})
 }
 
+// postApply passes on the offer of the state the admin was shown: a
+// confirmation accepts what that state showed waiting, or nothing. The answer
+// says what was accepted.
 func (s *Server) postApply(c *gin.Context) {
 	var req struct {
-		ConfirmDeletes bool `json:"confirmDeletes"`
+		ConfirmDeletes bool   `json:"confirmDeletes"`
+		Offer          string `json:"offer"`
 	}
 	if err := decode(c, &req, true); err != nil {
 		s.fail(c, err)
 		return
 	}
-	if _, err := s.engine.Apply(c.Request.Context(), req.ConfirmDeletes, ""); err != nil {
+	res, err := s.engine.Apply(c.Request.Context(), req.ConfirmDeletes, req.Offer)
+	if err != nil {
 		s.fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, struct{}{})
+	if res.Accepted == nil {
+		res.Accepted = []engine.Waiting{}
+	}
+	c.JSON(http.StatusOK, res)
 }
 
 func (s *Server) postAdopt(c *gin.Context) {

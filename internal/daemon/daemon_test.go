@@ -60,7 +60,8 @@ func TestApplyThroughTheSocketPublishesTheRoute(t *testing.T) {
 	d := w.start()
 	ctx := t.Context()
 
-	require.NoError(t, d.client.Apply(ctx, false))
+	_, err := d.client.Apply(ctx, false, "")
+	require.NoError(t, err)
 	st := d.await(func(st engine.State) bool {
 		return st.Mode == "enforce" && len(st.Tunnels) == 1 && st.Tunnels[0].Verified && len(st.Connectors) == 1
 	})
