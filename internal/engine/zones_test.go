@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -98,13 +99,14 @@ func TestAConfirmationAcceptsAZoneThatLeftItsListing(t *testing.T) {
 		"confirmed gone, the zone no longer holds its account back")
 }
 
-// After a restart there is no memory of the zone, and the account has none.
+// A node with no memory of the zone, after a restart: the account has none.
 func TestAnAccountWithoutAZoneKeepsItsTunnel(t *testing.T) {
 	e, view, tun := servingThrough(t)
 	writes := e.writes()
 	view.hide(testZone, true)
 
-	e.eng = e.newEngine()
+	require.NoError(t, os.Remove(e.memoryFile()))
+	e.restart()
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 
@@ -206,8 +208,19 @@ func TestASecondCredentialForAServedZone(t *testing.T) {
 	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
 	requireUntouched(t, e, writes, tun)
 
-	// A restart forgets who served the zone: the account is frozen.
-	e.eng = e.newEngine()
+	// A restart remembers who served the zone.
+	e.restart()
+	e.clock.advance(20 * time.Second)
+	st = e.cycle()
+
+	require.Contains(t, st.Problems, "zone example.com is visible through credentials cred1 and cred2; pin it with zonePins (cred1 serves it until then)")
+	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
+	requireUntouched(t, e, writes, tun)
+
+	// Without that memory, as on a node that never served it, the account
+	// is frozen.
+	require.NoError(t, os.Remove(e.memoryFile()))
+	e.restart()
 	e.clock.advance(20 * time.Second)
 	st = e.cycle()
 
@@ -239,7 +252,8 @@ func TestAZoneInDoubtFreezesTheOtherZonesOfItsAccount(t *testing.T) {
 	second.hide(testZone, true)
 	e.addSecondCredential("second-token", second)
 
-	e.eng = e.newEngine()
+	require.NoError(t, os.Remove(e.memoryFile()))
+	e.restart()
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 

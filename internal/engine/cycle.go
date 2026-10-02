@@ -77,8 +77,12 @@ func (c *cycleRun) run() State {
 	c.expireRequests()
 	if c.prepare() && c.inspect() {
 		c.build()
+		if !c.saveMemory() {
+			c.cfHold = true
+		}
 		c.reconcile()
 	}
+	c.saveMemory()
 	c.notePending(c.adoptWaits)
 	return c.st.normalized()
 }
@@ -127,6 +131,10 @@ func (c *cycleRun) prepare() bool {
 		return false
 	}
 	c.readWriter()
+	if err := c.e.recall(); err != nil {
+		c.problem("reading what the engine remembered: %v; nothing is changed at Cloudflare until it can be read", err)
+		c.cfHold = true
+	}
 	return true
 }
 

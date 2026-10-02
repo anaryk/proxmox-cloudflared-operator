@@ -18,12 +18,15 @@ import (
 const zoneRefreshEvery = 5 * time.Minute
 
 // zoneCache is what was listed per credential, and which credential served
-// each zone. It lives across cycles, in memory only.
+// each zone. It lives across cycles; the served and the stale zones are also
+// kept in the engine's memory in the store.
 type zoneCache struct {
-	byCred   map[string]*credZones
-	at       time.Time         // of the last refresh of every credential
-	due      bool              // a credential changed: list again in the next cycle
-	servedBy map[string]string // zone name -> the credential that last served it alone
+	byCred map[string]*credZones
+	at     time.Time // of the last refresh of every credential
+	due    bool      // a credential changed: list again in the next cycle
+	// served holds, by zone name, the zone as it was last served by one
+	// credential alone.
+	served map[string]planner.Zone
 }
 
 // credZones is what one credential sees.
@@ -41,7 +44,30 @@ type credZones struct {
 }
 
 func newZoneCache() *zoneCache {
-	return &zoneCache{byCred: make(map[string]*credZones), servedBy: make(map[string]string)}
+	return &zoneCache{byCred: make(map[string]*credZones), served: make(map[string]planner.Zone)}
+}
+
+// credential returns what is known of credential id, made empty when nothing
+// is.
+func (z *zoneCache) credential(id string) *credZones {
+	cz := z.byCred[id]
+	if cz == nil {
+		cz = &credZones{stale: make(map[string]cfapi.Zone)}
+		z.byCred[id] = cz
+	}
+	return cz
+}
+
+// servedThrough returns the zones credential id served when they were last
+// served, as a listing would show them.
+func (z *zoneCache) servedThrough(id string) []cfapi.Zone {
+	var out []cfapi.Zone
+	for _, name := range slices.Sorted(maps.Keys(z.served)) {
+		if zone := z.served[name]; zone.CredentialID == id {
+			out = append(out, cfapi.Zone{ID: zone.ID, Name: zone.Name, Status: "active", AccountID: zone.AccountID})
+		}
+	}
+	return out
 }
 
 // forget drops what was listed with a credential, its stale zones and the
@@ -51,23 +77,30 @@ func (z *zoneCache) forget(id string) {
 		delete(z.byCred, id)
 		z.due = true
 	}
-	maps.DeleteFunc(z.servedBy, func(_, cred string) bool { return cred == id })
+	maps.DeleteFunc(z.served, func(_ string, zone planner.Zone) bool { return zone.CredentialID == id })
 }
 
 // confirmGone forgets every stale zone, as the admin confirmed that they are
-// gone, and returns their names.
+// gone, also as zones served, and returns their names.
 func (z *zoneCache) confirmGone() []string {
 	var names []string
-	for _, cz := range z.byCred {
-		names = append(names, slices.Collect(maps.Keys(cz.stale))...)
+	for id, cz := range z.byCred {
+		for name := range cz.stale {
+			names = append(names, name)
+			if z.served[name].CredentialID == id {
+				delete(z.served, name)
+			}
+		}
 		clear(cz.stale)
 	}
 	return slices.Compact(slices.Sorted(slices.Values(names)))
 }
 
 // update takes a zone listing that worked. A zone the previous listing had
-// and this one has not becomes stale; a stale zone listed again is not.
-func (cz *credZones) update(zones []cfapi.Zone, at time.Time) {
+// and this one has not becomes stale; a stale zone listed again is not. The
+// first listing in a process compares with the zones the credential served
+// before, so that a zone that left while the daemon was down is noticed.
+func (cz *credZones) update(zones []cfapi.Zone, at time.Time, servedBefore []cfapi.Zone) {
 	listed := make(map[string]bool, len(zones))
 	for _, zone := range zones {
 		listed[zoneName(zone)] = true
@@ -75,11 +108,13 @@ func (cz *credZones) update(zones []cfapi.Zone, at time.Time) {
 	if cz.stale == nil {
 		cz.stale = make(map[string]cfapi.Zone)
 	}
-	if cz.listed {
-		for _, old := range cz.zones {
-			if name := zoneName(old); !listed[name] {
-				cz.stale[name] = old
-			}
+	previous := cz.zones
+	if !cz.listed {
+		previous = servedBefore
+	}
+	for _, old := range previous {
+		if name := zoneName(old); !listed[name] {
+			cz.stale[name] = old
 		}
 	}
 	maps.DeleteFunc(cz.stale, func(name string, _ cfapi.Zone) bool { return listed[name] })
@@ -103,11 +138,7 @@ func (c *cycleRun) refreshZones(ids []string) {
 	z := c.e.zones
 	due := z.due || c.now.Sub(z.at) >= zoneRefreshEvery || c.now.Before(z.at)
 	for _, id := range ids {
-		cz := z.byCred[id]
-		if cz == nil {
-			cz = &credZones{}
-			z.byCred[id] = cz
-		}
+		cz := z.credential(id)
 		api := c.e.clients[id]
 		if api == nil {
 			cz.err, cz.accountsOK, cz.accountsErr = "it has no client", false, "it has no client"
@@ -117,7 +148,7 @@ func (c *cycleRun) refreshZones(ids []string) {
 			if got, err := api.Zones(c.ctx); err != nil {
 				cz.err = err.Error()
 			} else {
-				cz.update(activeZones(got), c.now)
+				cz.update(activeZones(got), c.now, z.servedThrough(id))
 			}
 		}
 		if got, err := api.Accounts(c.ctx); err != nil {
@@ -267,7 +298,7 @@ func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) (chosen
 			return nil, "", fmt.Sprintf("zone %s is pinned to credential %s, which does not see it; %s is left as it is until the pin is fixed",
 				name, pin, accounts)
 		}
-		z.servedBy[name] = pin
+		z.served[name] = pinned[0]
 		return pinned, "", ""
 	}
 	if len(staleBy) > 0 {
@@ -276,13 +307,13 @@ func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) (chosen
 	}
 	creds := credentialsOf(live)
 	if len(creds) == 1 {
-		z.servedBy[name] = creds[0]
+		z.served[name] = live[0]
 		return live, "", ""
 	}
-	if prev, ok := z.servedBy[name]; ok && slices.Contains(creds, prev) {
-		kept := slices.DeleteFunc(slices.Clone(live), func(zone planner.Zone) bool { return zone.CredentialID != prev })
+	if prev, ok := z.served[name]; ok && slices.Contains(creds, prev.CredentialID) {
+		kept := slices.DeleteFunc(slices.Clone(live), func(zone planner.Zone) bool { return zone.CredentialID != prev.CredentialID })
 		return kept, fmt.Sprintf("zone %s is visible through credentials %s; pin it with zonePins (%s serves it until then)",
-			name, andList(creds), prev), ""
+			name, andList(creds), prev.CredentialID), ""
 	}
 	return nil, "", fmt.Sprintf("zone %s is visible through credentials %s and none of them served it before; "+
 		"pin it with zonePins; %s is left as it is until then", name, andList(creds), accounts)

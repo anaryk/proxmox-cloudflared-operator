@@ -1,11 +1,13 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -121,12 +123,15 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if err := e.recall(); err != nil {
+		return fmt.Errorf("%w: cannot tell what credential %s managed: reading what the engine remembered: %w", ErrRefused, id, err)
+	}
 	// The stored token decides, not a client a cycle built from an older one.
 	api, err := e.d.NewClient(cred)
 	if err != nil {
 		return fmt.Errorf("building a Cloudflare client: %w", err)
 	}
-	left, refused, err := leftBehind(ctx, api, install)
+	left, refused, err := e.leftBehind(ctx, api, install, id)
 	if err != nil {
 		return fmt.Errorf("%w: cannot tell what credential %s still manages: %w", ErrRefused, id, err)
 	}
@@ -149,27 +154,39 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 	return nil
 }
 
-// leftBehind lists the records and tunnels of this install that api reaches.
-// What Cloudflare refuses to show the token, the token cannot manage either,
-// so a refusal counts as nothing reached, and refused says that there was
-// one; any other failure is an error.
-func leftBehind(ctx context.Context, api cfapi.API, installID string) (left []string, refused bool, err error) {
+// leftBehind lists the records and tunnels of this install that credential
+// id still reaches through api: the records in every zone it lists, serves or
+// served, also those that left its listing, and the tunnel in every account
+// it sees, those of its zones and those its tunnels were seen in. What
+// Cloudflare refuses to show the token, the token cannot manage either, so a
+// refusal counts as nothing reached and refused says that there was one; a
+// zone Cloudflare no longer has holds no record. Any other failure is an
+// error. The caller holds the cycle lock.
+func (e *Engine) leftBehind(ctx context.Context, api cfapi.API, installID, id string) (left []string, refused bool, err error) {
 	zones, err := api.Zones(ctx)
 	switch {
 	case cfapi.IsAuth(err):
-		return nil, true, nil
+		refused = true
 	case err != nil:
 		return nil, false, err
 	}
-	slices.SortFunc(zones, func(a, b cfapi.Zone) int { return strings.Compare(a.Name, b.Name) })
+	zones = append(zones, e.zones.servedThrough(id)...)
+	if cz := e.zones.byCred[id]; cz != nil {
+		zones = append(zones, slices.Collect(maps.Values(cz.stale))...)
+	}
+	slices.SortFunc(zones, func(a, b cfapi.Zone) int { return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ID, b.ID)) })
+	zones = slices.CompactFunc(zones, func(a, b cfapi.Zone) bool { return a.ID == b.ID })
+
 	marker := planner.DNSMarker(installID)
-	var accounts []string
+	accounts := map[string]bool{}
 	for _, z := range zones {
-		accounts = append(accounts, z.AccountID)
+		accounts[z.AccountID] = true
 		records, err := api.Records(ctx, z.ID, cfapi.RecordFilter{CommentPrefix: marker})
 		switch {
 		case cfapi.IsAuth(err):
 			refused = true
+			continue
+		case cfapi.IsNotFound(err):
 			continue
 		case err != nil:
 			return nil, false, err
@@ -180,7 +197,23 @@ func leftBehind(ctx context.Context, api cfapi.API, installID string) (left []st
 			}
 		}
 	}
-	for _, account := range slices.Compact(slices.Sorted(slices.Values(accounts))) {
+
+	seen, err := api.Accounts(ctx)
+	switch {
+	case cfapi.IsAuth(err):
+		refused = true
+	case err != nil:
+		return nil, false, err
+	}
+	for _, a := range seen {
+		accounts[a.ID] = true
+	}
+	for _, t := range e.seen {
+		if t.credential == id {
+			accounts[t.account] = true
+		}
+	}
+	for _, account := range slices.Sorted(maps.Keys(accounts)) {
 		t, found, err := api.FindTunnel(ctx, account, planner.TunnelName(installID))
 		switch {
 		case cfapi.IsAuth(err):

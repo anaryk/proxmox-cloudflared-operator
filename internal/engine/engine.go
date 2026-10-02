@@ -120,6 +120,9 @@ type Engine struct {
 	// seen are the tunnels of this install seen to exist, by id, so that a
 	// connector is kept until Cloudflare shows its tunnel gone.
 	seen map[string]seenTunnel
+	// remembered says that the memory in the store was read: the served and
+	// stale zones, the tunnels seen and the guests confirmed gone.
+	remembered bool
 
 	repMu   sync.Mutex
 	reports map[string]credentials.Report // by credential id: the last check in this process
@@ -284,8 +287,9 @@ type request struct {
 	told bool      // the admin was told that it waits
 }
 
-// seenTunnel is where a tunnel of this install was seen.
-type seenTunnel struct{ account, name string }
+// seenTunnel is where a tunnel of this install was seen, and through which
+// credential.
+type seenTunnel struct{ account, name, credential string }
 
 // nodeAddrs is every node address seen since the daemon started, together
 // with the ones saved before. It never shrinks.

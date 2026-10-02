@@ -44,6 +44,12 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 		for _, name := range e.zones.confirmGone() {
 			e.adminEvent(name, "the zone that left its listing is confirmed gone")
 		}
+		// The confirmation must outlive a restart of the daemon.
+		if e.remembered {
+			if err := e.d.Store.SaveEngineMemory(e.memory()); err != nil {
+				return fmt.Errorf("keeping the confirmation: %w", err)
+			}
+		}
 	}
 	return nil
 }

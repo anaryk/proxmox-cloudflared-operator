@@ -117,7 +117,7 @@ func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) {
 	keep := make([]string, 0, len(existing))
 	for _, t := range existing {
 		keep = append(keep, t.ID)
-		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name}
+		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name, credential: t.CredentialID}
 	}
 	for _, id := range slices.Sorted(maps.Keys(c.e.seen)) {
 		t := c.e.seen[id]
