@@ -15,8 +15,6 @@ import (
 )
 
 const (
-	// expiryWarning is how long before its expiry a token is pointed out.
-	expiryWarning = 30 * 24 * time.Hour
 	// maxTokenInput is how much of a token file or of stdin is read: a token
 	// has a few dozen characters.
 	maxTokenInput = 64 << 10
@@ -323,8 +321,8 @@ func zoneNames(r credentials.Report) string {
 }
 
 // credentialState is "usable" for a credential whose last check passed,
-// "problem" for one that failed it, and "unknown" for one that was not checked
-// since the daemon started.
+// "problem" for one that failed it, and "unknown" for one that was never
+// checked.
 func credentialState(v engine.CredentialView) string {
 	switch {
 	case !v.Checked:
@@ -367,7 +365,8 @@ func firstFailed(r credentials.Report) int {
 	return -1
 }
 
-// expiryNote warns of a token that has expired or does within expiryWarning.
+// expiryNote warns of a token that has expired or does within the warning
+// time of the engine, which the doctor uses too.
 func (a *app) expiryNote(expires *time.Time) string {
 	if expires == nil {
 		return ""
@@ -376,7 +375,7 @@ func (a *app) expiryNote(expires *time.Time) string {
 	switch {
 	case left <= 0:
 		return "token expired " + a.when(*expires)
-	case left >= expiryWarning:
+	case left >= engine.ExpiryWarning:
 		return ""
 	case left < 24*time.Hour:
 		return "token expires " + a.when(*expires) + " (in less than a day)"

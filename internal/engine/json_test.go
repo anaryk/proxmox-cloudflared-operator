@@ -28,9 +28,10 @@ func populatedState() State {
 	expires := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	waiting := populatedWaiting()
 	return State{
-		At:       t0,
-		Mode:     "enforce",
-		Complete: true,
+		At:         t0,
+		FinishedAt: t0.Add(2 * time.Second),
+		Mode:       "enforce",
+		Complete:   true,
 		Routes: []RouteView{
 			{
 				RouteStatus: planner.RouteStatus{
@@ -66,7 +67,7 @@ func populatedState() State {
 				Unchecked:   true,
 			},
 		},
-		Connectors: []connector.Status{{TunnelID: "00000000-0000-4000-8000-000000000001", Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"}},
+		Connectors: []connector.Status{{TunnelID: "00000000-0000-4000-8000-000000000001", Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300", Install: "abc123"}},
 		Credentials: []CredentialView{
 			{
 				ID: "cred1", Label: "main", Kind: "scoped", Checked: true,

@@ -111,6 +111,7 @@ func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name string, p pointin
 	}
 	found, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: name})
 	if err != nil {
+		run.unlisted(z)
 		run.problem(fmt.Sprintf("%s: looking up the records of that name: %v", z.about(name), err))
 		return
 	}

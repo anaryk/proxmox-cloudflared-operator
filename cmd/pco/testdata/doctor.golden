@@ -1,6 +1,6 @@
 ✗ cloudflared       cloudflared does not run: exec: no such file
                     fix: install cloudflared from the package repository of Cloudflare
-! credential cred1  not checked since the daemon started
+! credential cred1  not checked yet
                     fix: pco credential check cred1
 ✓ mode              enforce: changes are applied
 ✓ store             the store is mounted and set up

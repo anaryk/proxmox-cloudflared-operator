@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"slices"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
@@ -27,6 +28,15 @@ type EngineMemory struct {
 	// GoneGuests are guests that hold a claim, no longer listed by Proxmox,
 	// that the admin confirmed removed.
 	GoneGuests []model.GuestRef `json:"goneGuests,omitempty"`
+	// Reports are the last check of each credential: what its token could
+	// do, which holds no secret.
+	Reports []CheckedCredential `json:"reports,omitempty"`
+}
+
+// CheckedCredential is the last check of a credential.
+type CheckedCredential struct {
+	CredentialID string             `json:"credentialId"`
+	Report       credentials.Report `json:"report"`
 }
 
 // RememberedZone is a zone and the credential that saw it.
@@ -75,6 +85,8 @@ func (m EngineMemory) sorted() EngineMemory {
 	slices.SortFunc(m.Tunnels, func(a, b SeenTunnel) int { return cmp.Compare(a.ID, b.ID) })
 	m.GoneGuests = slices.Clone(m.GoneGuests)
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
+	m.Reports = slices.Clone(m.Reports)
+	slices.SortFunc(m.Reports, func(a, b CheckedCredential) int { return cmp.Compare(a.CredentialID, b.CredentialID) })
 	if len(m.Served) == 0 {
 		m.Served = nil
 	}
@@ -86,6 +98,9 @@ func (m EngineMemory) sorted() EngineMemory {
 	}
 	if len(m.GoneGuests) == 0 {
 		m.GoneGuests = nil
+	}
+	if len(m.Reports) == 0 {
+		m.Reports = nil
 	}
 	return m
 }

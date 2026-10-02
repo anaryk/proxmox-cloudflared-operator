@@ -73,6 +73,11 @@ type Deps struct {
 	// LocalDir is the node-local state directory, /var/lib/pco: the events
 	// are appended to events.log in it. Empty keeps them in memory only.
 	LocalDir string
+
+	// StartOnly names the settings in s that differ from those the daemon
+	// read once, at its start, and does not apply until it starts again; a
+	// cycle reports them. Nil when there are none.
+	StartOnly func(s store.Settings) []string
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -131,7 +136,14 @@ type Engine struct {
 	memoryOf   string // the install the memory is of
 
 	repMu   sync.Mutex
-	reports map[string]credentials.Report // by credential id: the last check in this process
+	reports map[string]credentials.Report // by credential id: the last check, also of an earlier process
+	// recheckAt is, by credential id, when its token is checked again; a
+	// credential not checked by this process is not in it, and due.
+	recheckAt map[string]time.Time
+	// rechecking is set while a recheck runs; storeHeld says that the last
+	// cycle held because the store could not be read or written.
+	rechecking atomic.Bool
+	storeHeld  atomic.Bool
 
 	stateMu sync.RWMutex
 	state   State
@@ -176,6 +188,7 @@ func New(d Deps) (*Engine, error) {
 		gone:      make(map[model.GuestRef]bool),
 		seen:      make(map[string]seenTunnel),
 		reports:   make(map[string]credentials.Report),
+		recheckAt: make(map[string]time.Time),
 		state:     emptyState(),
 	}
 	e.interval.Store(int64(defaultPollInterval))
@@ -217,6 +230,7 @@ func (e *Engine) Cycle(ctx context.Context) State {
 
 	c := e.newCycle(ctx)
 	st := c.run()
+	e.storeHeld.Store(c.storeHold)
 	e.offered = offer{what: c.offer, waiting: st.clone().Waiting, token: st.Offer}
 	e.publish(st.clone(), c.events, c.listing, c.served())
 	e.d.Log.Debug().
@@ -229,13 +243,18 @@ func (e *Engine) Cycle(ctx context.Context) State {
 	return st
 }
 
-// Run cycles on the poll interval until ctx ends; Trigger asks for an early cycle.
+// Run cycles on the poll interval until ctx ends; Trigger asks for an early
+// cycle. Between cycles it checks the credentials that are due again, beside
+// the cycles; it returns once that check has ended too.
 func (e *Engine) Run(ctx context.Context) error {
+	var checks sync.WaitGroup
+	defer checks.Wait()
 	for {
 		e.Cycle(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
+		checks.Go(func() { e.recheck(ctx) })
 		wait, stop := e.after(time.Duration(e.interval.Load()))
 		select {
 		case <-ctx.Done():

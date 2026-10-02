@@ -69,7 +69,7 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 		return CredentialView{}, fmt.Errorf("storing the credential: %w", err)
 	}
 	view.ID = cred.ID
-	e.setReport(cred.ID, report)
+	e.keepReport(cred.ID, report)
 	e.zones.due = true
 	e.adminEvent(cred.ID, fmt.Sprintf("credential %q added", label))
 	return view, nil
@@ -104,7 +104,7 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 	if _, err := e.credential(id); err != nil {
 		return CredentialView{}, err
 	}
-	e.setReport(id, report)
+	e.keepReport(id, report)
 	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Checked: true, Report: shownReport(report)}, nil
 }
 
@@ -146,9 +146,7 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 		return fmt.Errorf("removing the credential: %w", err)
 	}
 	e.dropClient(id)
-	e.repMu.Lock()
-	delete(e.reports, id)
-	e.repMu.Unlock()
+	e.forgetReport(id)
 	msg := fmt.Sprintf("credential %q removed", cred.Label)
 	if refused {
 		msg += "; Cloudflare refused its token, so what it managed could not be checked and may be left behind"
@@ -293,12 +291,6 @@ func (e *Engine) installID() (string, error) {
 
 func (e *Engine) checker(installID string) *credentials.Checker {
 	return credentials.NewChecker(installID, e.d.Now, randomHex(8))
-}
-
-func (e *Engine) setReport(id string, r credentials.Report) {
-	e.repMu.Lock()
-	defer e.repMu.Unlock()
-	e.reports[id] = r
 }
 
 // randomHex returns a function that makes 2n random lower-case hex characters

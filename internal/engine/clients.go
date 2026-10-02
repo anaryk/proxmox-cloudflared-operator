@@ -3,6 +3,7 @@ package engine
 import (
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -26,6 +27,12 @@ func (c *cycleRun) syncCredentials() bool {
 		ids[i] = cr.ID
 	}
 	c.st.Credentials = c.e.credentialViews(info)
+	for _, v := range c.st.Credentials {
+		if v.Checked && !v.Report.Usable {
+			c.problem("credential %s (%s): its last check found that the token cannot be used: %s; "+
+				"once it is fixed, pco credential check %s says so", v.ID, v.Label, failedChecks(v.Report), v.ID)
+		}
+	}
 	if len(creds) == 0 {
 		c.hold(c.problem(problemNoCredential))
 		return true
@@ -56,9 +63,7 @@ func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 		delete(e.clients, cr.ID)
 		delete(e.tokens, cr.ID)
 		if known && !old.Equal(cr.Token) {
-			e.repMu.Lock()
-			delete(e.reports, cr.ID)
-			e.repMu.Unlock()
+			e.forgetReport(cr.ID)
 		}
 		api, err := e.d.NewClient(cr)
 		if err != nil {
@@ -77,6 +82,7 @@ func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 	}
 	e.repMu.Lock()
 	maps.DeleteFunc(e.reports, func(id string, _ credentials.Report) bool { return !seen[id] })
+	maps.DeleteFunc(e.recheckAt, func(id string, _ time.Time) bool { return !seen[id] })
 	e.repMu.Unlock()
 }
 

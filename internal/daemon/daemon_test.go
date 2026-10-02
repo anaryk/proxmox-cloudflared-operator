@@ -316,6 +316,9 @@ func TestSettingsReadAtStartAreFlaggedWhenTheyChange(t *testing.T) {
 	require.NoError(t, d.client.Sync(ctx))
 	require.Eventually(t, func() bool { return strings.Contains(w.logs.String(), warning) }, 10*time.Second, 5*time.Millisecond)
 	require.Contains(t, w.logs.String(), `"settings":["gateTag"]`)
+	d.await(func(st engine.State) bool {
+		return containsProblem(st, "settings gateTag changed since pco started and are read only at start; restart pco")
+	})
 
 	// Cycles that follow say nothing more about the same change. The second
 	// one started after the warning was logged.

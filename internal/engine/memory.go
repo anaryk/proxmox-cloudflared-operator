@@ -41,6 +41,14 @@ func (e *Engine) recall(installID string) (note string, err error) {
 	for _, ref := range m.GoneGuests {
 		e.gone[ref] = true
 	}
+	e.repMu.Lock()
+	defer e.repMu.Unlock()
+	for _, r := range m.Reports {
+		// A check of this process is newer.
+		if _, ok := e.reports[r.CredentialID]; !ok {
+			e.reports[r.CredentialID] = r.Report
+		}
+	}
 	return "", nil
 }
 
@@ -66,6 +74,11 @@ func (e *Engine) memory() store.EngineMemory {
 		m.GoneGuests = append(m.GoneGuests, ref)
 	}
 	slices.SortFunc(m.GoneGuests, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
+	e.repMu.Lock()
+	defer e.repMu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(e.reports)) {
+		m.Reports = append(m.Reports, store.CheckedCredential{CredentialID: id, Report: cloneReport(e.reports[id])})
+	}
 	return m
 }
 
@@ -104,6 +117,7 @@ func (c *cycleRun) saveMemory() (string, bool) {
 		return "what the engine remembered could not be read", false
 	}
 	if err := c.e.d.Store.SaveEngineMemory(c.e.memory()); err != nil {
+		c.storeHold = true
 		return c.problem("saving what the engine remembers: %v; nothing is changed at Cloudflare until it is saved", err), false
 	}
 	return "", true

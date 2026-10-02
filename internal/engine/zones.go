@@ -138,8 +138,9 @@ func zoneName(z cfapi.Zone) string {
 
 // refreshZones lists the zones and the accounts of each credential every
 // zoneRefreshEvery, after a credential changed, and in every cycle for a
-// credential whose last listing failed or that was never listed; a listing
-// that fails keeps the previous list.
+// credential whose last listing failed or that was never listed, so that a
+// failure clears as soon as Cloudflare answers again; a listing that fails
+// keeps the previous list.
 func (c *cycleRun) refreshZones(ids []string) {
 	z := c.e.zones
 	due := z.due || c.now.Sub(z.at) >= zoneRefreshEvery || c.now.Before(z.at)
@@ -150,7 +151,7 @@ func (c *cycleRun) refreshZones(ids []string) {
 			cz.err, cz.accountsOK, cz.accountsErr = "it has no client", false, "it has no client"
 			continue
 		}
-		if due || !cz.listed {
+		if due || !cz.listed || cz.err != "" {
 			if got, err := api.Zones(c.ctx); err != nil {
 				cz.err = err.Error()
 			} else {

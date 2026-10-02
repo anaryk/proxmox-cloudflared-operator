@@ -160,3 +160,22 @@ func TestForeignWriterStopsBeforeConnectorsAndDNS(t *testing.T) {
 	require.Empty(t, e.conn.ensures(), "no connector for a tunnel another installation writes")
 	require.Empty(t, e.conn.prunes())
 }
+
+func TestAWriterOfTheSameGenerationWithAnotherNonceAfterTheTunnelRunStopsTheConnectors(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	var once sync.Once
+	twin := planner.Writer{InstallID: testInstall, Generation: testWriter.Generation, Nonce: "n9"}
+	e.useAPI(testToken, hookedAPI{API: e.cf, before: func(method string) {
+		if method == "PutTunnelConfig" {
+			once.Do(func() { require.NoError(t, e.store.SaveWriter(twin)) })
+		}
+	}})
+
+	st := e.cycle()
+
+	require.Equal(t, "stale", st.WriterVerdict)
+	require.Contains(t, st.Problems, "leader.json names another writer after the tunnel run; the rest is left as it is")
+	require.Empty(t, e.conn.ensures())
+	require.Zero(t, dnsCalls(e.cf.Calls()))
+}

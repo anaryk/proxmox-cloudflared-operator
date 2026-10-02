@@ -85,7 +85,7 @@ func TestDiagnoseJSONIsWhatTheDaemonSent(t *testing.T) {
 func someFindings() []doctor.Finding {
 	return []doctor.Finding{
 		{Check: "cloudflared", Level: doctor.LevelFail, Detail: "cloudflared does not run: exec: no such file", Fix: "install cloudflared from the package repository of Cloudflare"},
-		{Check: "credential cred1", Level: doctor.LevelWarn, Detail: "not checked since the daemon started", Fix: "pco credential check cred1"},
+		{Check: "credential cred1", Level: doctor.LevelWarn, Detail: "not checked yet", Fix: "pco credential check cred1"},
 		{Check: "mode", Level: doctor.LevelOK, Detail: "enforce: changes are applied"},
 		{Check: "store", Level: doctor.LevelOK, Detail: "the store is mounted and set up"},
 	}

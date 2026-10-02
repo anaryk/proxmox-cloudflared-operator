@@ -64,7 +64,7 @@ func (f *fakeEnv) Now() time.Time                             { return now }
 func healthyState() engine.State {
 	expires := now.Add(90 * 24 * time.Hour)
 	return engine.State{
-		At: now.Add(-5 * time.Second), Mode: "enforce", Complete: true, WriterVerdict: "ok",
+		At: now.Add(-6 * time.Second), FinishedAt: now.Add(-5 * time.Second), Mode: "enforce", Complete: true, WriterVerdict: "ok",
 		Tunnels: []engine.TunnelView{{TunnelState: reconcile.TunnelState{
 			AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", ID: tunnelID, Version: 3, Exists: true, Verified: true,
 		}}},
@@ -114,15 +114,15 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 	}{
 		{"observe-only mode", func(st *engine.State) { st.Mode = "observe" }, nil,
 			Finding{Check: "mode", Level: LevelWarn, Detail: "observe-only: nothing is changed at Cloudflare", Fix: "pco apply"}},
-		{"a cycle three intervals old", func(st *engine.State) { st.At = now.Add(-30 * time.Second) }, nil,
+		{"a cycle three intervals old", func(st *engine.State) { st.FinishedAt = now.Add(-30 * time.Second) }, nil,
 			Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 30s ago"}},
-		{"a cycle older than three intervals", func(st *engine.State) { st.At = now.Add(-31 * time.Second) }, nil,
+		{"a cycle older than three intervals", func(st *engine.State) { st.FinishedAt = now.Add(-31 * time.Second) }, nil,
 			Finding{Check: "cycle", Level: LevelWarn, Detail: "the last cycle ran 31s ago, more than three poll intervals of 10s",
 				Fix: "journalctl -u pco says what holds the cycles up"}},
-		{"a cycle six intervals old", func(st *engine.State) { st.At = now.Add(-60 * time.Second) }, nil,
+		{"a cycle six intervals old", func(st *engine.State) { st.FinishedAt = now.Add(-60 * time.Second) }, nil,
 			Finding{Check: "cycle", Level: LevelWarn, Detail: "the last cycle ran 1m0s ago, more than three poll intervals of 10s",
 				Fix: "journalctl -u pco says what holds the cycles up"}},
-		{"a cycle older than six intervals", func(st *engine.State) { st.At = now.Add(-61 * time.Second) }, nil,
+		{"a cycle older than six intervals", func(st *engine.State) { st.FinishedAt = now.Add(-61 * time.Second) }, nil,
 			Finding{Check: "cycle", Level: LevelFail, Detail: "the last cycle ran 1m1s ago, more than six poll intervals of 10s",
 				Fix: "journalctl -u pco says what holds the cycles up"}},
 		{"a daemon that holds", func(st *engine.State) {
@@ -136,8 +136,10 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			Fix: "pco status"}},
 		{"one problem", func(st *engine.State) { st.Problems = []string{"saving the claims: disk full"} }, nil,
 			Finding{Check: "problems", Level: LevelFail, Detail: "1 problem: saving the claims: disk full", Fix: "pco status"}},
-		{"a long poll interval", func(st *engine.State) { st.At = now.Add(-2 * time.Minute) }, func(env *fakeEnv) { env.interval = time.Minute },
+		{"a long poll interval", func(st *engine.State) { st.FinishedAt = now.Add(-2 * time.Minute) }, func(env *fakeEnv) { env.interval = time.Minute },
 			Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 2m0s ago"}},
+		{"a cycle that took long and ended a moment ago", func(st *engine.State) { st.At = now.Add(-90 * time.Second) }, nil,
+			Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 5s ago"}},
 		{"an incomplete inventory", func(st *engine.State) { st.Complete = false }, nil,
 			Finding{Check: "inventory", Level: LevelFail, Detail: "the inventory is incomplete: nothing is changed until it is complete",
 				Fix: "pco status lists the problems that say why"}},
@@ -145,7 +147,7 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			Finding{Check: "credentials", Level: LevelFail, Detail: "no Cloudflare credential", Fix: "pco credential add --label <label>"}},
 		{"a credential not checked", func(st *engine.State) {
 			st.Credentials[0].Checked, st.Credentials[0].Report = false, credentials.Report{}
-		}, nil, Finding{Check: "credential cred1", Level: LevelWarn, Detail: "not checked since the daemon started", Fix: "pco credential check cred1"}},
+		}, nil, Finding{Check: "credential cred1", Level: LevelWarn, Detail: "not checked yet", Fix: "pco credential check cred1"}},
 		{"a credential that cannot be used", func(st *engine.State) {
 			st.Credentials[0].Report.Usable = false
 			st.Credentials[0].Report.Checks = []credentials.Check{
@@ -159,15 +161,15 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			st.Credentials[0].Report.Token.ExpiresOn = &expired
 		}, nil, Finding{Check: "credential cred1", Level: LevelFail, Detail: "the token expired at 2026-10-01T11:00:00Z",
 			Fix: "add a new token with pco credential add, then remove this one"}},
-		{"a token that expires within 14 days", func(st *engine.State) {
-			soon := now.Add(13 * 24 * time.Hour)
+		{"a token that expires within 30 days", func(st *engine.State) {
+			soon := now.Add(29 * 24 * time.Hour)
 			st.Credentials[0].Report.Token.ExpiresOn = &soon
-		}, nil, Finding{Check: "credential cred1", Level: LevelWarn, Detail: "the token expires at 2026-10-14T12:00:00Z, in 13 days",
+		}, nil, Finding{Check: "credential cred1", Level: LevelWarn, Detail: "the token expires at 2026-10-30T12:00:00Z, in 29 days",
 			Fix: "add a new token with pco credential add, then remove this one"}},
-		{"a token that expires in 14 days", func(st *engine.State) {
-			later := now.Add(14 * 24 * time.Hour)
+		{"a token that expires in 30 days", func(st *engine.State) {
+			later := now.Add(30 * 24 * time.Hour)
 			st.Credentials[0].Report.Token.ExpiresOn = &later
-		}, nil, Finding{Check: "credential cred1", Level: LevelOK, Detail: "usable; the token expires 2026-10-15T12:00:00Z"}},
+		}, nil, Finding{Check: "credential cred1", Level: LevelOK, Detail: "usable; the token expires 2026-10-31T12:00:00Z"}},
 		{"a token that does not expire", func(st *engine.State) { st.Credentials[0].Report.Token.ExpiresOn = nil }, nil,
 			Finding{Check: "credential cred1", Level: LevelOK, Detail: "usable"}},
 		{"no cloudflared", nil, func(env *fakeEnv) { env.versionErr = errors.New(`exec: "/usr/bin/cloudflared": file does not exist`) },

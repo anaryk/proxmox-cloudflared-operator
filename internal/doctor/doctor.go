@@ -55,8 +55,6 @@ type Env interface {
 const (
 	// edge is where the connectors connect to Cloudflare.
 	edge = "region1.v2.argotunnel.com:7844"
-	// expirySoon is how long before its expiry a token is pointed out.
-	expirySoon = 14 * 24 * time.Hour
 	// lateCycles and staleCycles are how many poll intervals old the last
 	// cycle is late, and stale.
 	lateCycles  = 3
@@ -137,7 +135,7 @@ func checkCycle(st engine.State, env Env) Finding {
 	if st.At.IsZero() {
 		return warn("cycle", "no cycle has run yet", "wait for the first cycle; journalctl -u pco says why it does not come")
 	}
-	age := env.Now().Sub(st.At).Round(time.Second)
+	age := env.Now().Sub(st.FinishedAt).Round(time.Second)
 	switch {
 	case age > staleCycles*interval:
 		return fail("cycle", fmt.Sprintf("the last cycle ran %s ago, more than six poll intervals of %s", age, interval),
@@ -198,7 +196,7 @@ func checkCredential(c engine.CredentialView, now time.Time) Finding {
 	r := c.Report
 	switch {
 	case !c.Checked:
-		return warn(check, "not checked since the daemon started", "pco credential check "+c.ID)
+		return warn(check, "not checked yet", "pco credential check "+c.ID)
 	case !r.Usable:
 		return fail(check, "the token cannot be used: "+failedChecks(r), "grant what is missing, then pco credential check "+c.ID)
 	case r.Token.ExpiresOn == nil:
@@ -209,7 +207,7 @@ func checkCredential(c engine.CredentialView, now time.Time) Finding {
 	switch left := expires.Sub(now); {
 	case left <= 0:
 		return fail(check, "the token expired at "+at, fixNewToken)
-	case left < expirySoon:
+	case left < engine.ExpiryWarning:
 		return warn(check, fmt.Sprintf("the token expires at %s, in %s", at, days(left)), fixNewToken)
 	}
 	return ok(check, "usable; the token expires "+at)

@@ -244,9 +244,11 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	}, deps.Now)
 	conns := connector.NewManager(deps.Systemd, filepath.Join(cfg.Paths.Local, tunnelsDir), nil, log)
 
+	start := wiredFrom(settings)
 	eng, err := engine.New(engine.Deps{
 		Store:      st,
-		Inventory:  newSettingsWatch(inv, st, wiredFrom(settings), log),
+		Inventory:  newSettingsWatch(inv, st, start, log),
+		StartOnly:  func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Resolver:   res,
 		Connectors: conns,
 		NewClient:  deps.NewClient,

@@ -72,8 +72,8 @@ type CredentialView struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 	Kind  string `json:"kind"`
-	// Checked says whether Report holds a check: it is the last one run in
-	// this process, and zero when there was none.
+	// Checked says whether Report holds a check: the last one run, also by an
+	// earlier process of the daemon; zero when there was none.
 	Checked bool               `json:"checked"`
 	Report  credentials.Report `json:"report,omitzero"`
 }
@@ -81,7 +81,9 @@ type CredentialView struct {
 // State is what the last cycle found and did. Every slice is sorted, so that
 // two cycles over the same world give equal states.
 type State struct {
-	At          time.Time            `json:"at,omitzero"`
+	At time.Time `json:"at,omitzero"` // when the cycle began
+	// FinishedAt is when the cycle ended; zero before the first cycle.
+	FinishedAt  time.Time            `json:"finishedAt,omitzero"`
 	Mode        string               `json:"mode"`     // "observe" or "enforce"
 	Complete    bool                 `json:"complete"` // inventory completeness
 	Routes      []RouteView          `json:"routes"`   // by hostname, then owner

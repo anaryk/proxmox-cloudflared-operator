@@ -414,3 +414,17 @@ func TestAZoneThatIsNotActiveIsLeftOut(t *testing.T) {
 	require.Empty(t, e.writes())
 	noDNSIn(t, e.cf.Calls(), testZone)
 }
+
+func TestAFailedZoneListingIsTriedAgainInTheNextCycle(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	e.clock.advance(zoneRefreshEvery)
+	e.cf.FailNext("zones", 1, unavailable)
+	st := e.cycle()
+	require.True(t, hasProblem(st, "credential cred1: listing its zones failed"), "%v", st.Problems)
+
+	e.clock.advance(10 * time.Second)
+	st = e.cycle()
+
+	require.False(t, hasProblem(st, "listing its zones failed"), "cleared once Cloudflare answers: %v", st.Problems)
+}

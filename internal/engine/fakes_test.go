@@ -470,6 +470,9 @@ type env struct {
 	made []string             // credential ids NewClient was called for
 
 	eng *Engine
+	// startOnly is what the engine is told of the settings read only at the
+	// start of the daemon.
+	startOnly func(store.Settings) []string
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -526,6 +529,7 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		Inventory:  e.inv,
 		Resolver:   e.res,
 		Connectors: conns,
+		StartOnly:  e.startOnly,
 		NewClient:  e.newClient,
 		Node:       testNode,
 		Now:        e.clock.now,

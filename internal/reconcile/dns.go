@@ -130,6 +130,10 @@ type DNSResult struct {
 	Actions   []Action // by zone name, then record name
 	Conflicts []Conflict
 	Lost      []string // names that still point at our tunnel but lost the marker
+	// Unlisted names the zones whose records the run could not read in
+	// full, sorted: what it reports of conflicts and lost names there may
+	// lack some that are still there.
+	Unlisted []string
 
 	// Replaced lists records as they were before an adoption changed or
 	// replaced them. A record is listed as the write goes out, so also when
@@ -439,6 +443,7 @@ func describePlans(ps []planner.RecordPlan) string {
 // read stays unlisted and the run leaves it alone.
 func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	if z.api == nil {
+		run.unlisted(z)
 		run.problem(fmt.Sprintf("zone %s: no client for credential %s", z.Name, z.CredentialID))
 		return
 	}
@@ -446,6 +451,7 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	// install whose id begins with ours; owns sorts them out.
 	records, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{CommentPrefix: run.marker})
 	if err != nil {
+		run.unlisted(z)
 		run.problem(fmt.Sprintf("zone %s: listing the records of this install: %v", z.Name, err))
 		return
 	}
@@ -464,6 +470,13 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 }
 
 func (run *dnsRun) owns(rec cfapi.Record) bool { return Owned(run.r.s.InstallID, rec) }
+
+// unlisted notes a zone whose records the run could not read in full.
+func (run *dnsRun) unlisted(z *dnsZone) {
+	if !slices.Contains(run.res.Unlisted, z.Name) {
+		run.res.Unlisted = append(run.res.Unlisted, z.Name)
+	}
+}
 
 // recheck reads rec again by its id right before a write. found is false when
 // it is gone or now has another name; ours tells whether it is still of the
@@ -531,4 +544,5 @@ func (run *dnsRun) finish() {
 	})
 	slices.Sort(run.res.Lost)
 	run.res.Lost = slices.Compact(run.res.Lost)
+	slices.Sort(run.res.Unlisted)
 }

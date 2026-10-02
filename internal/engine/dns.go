@@ -124,16 +124,17 @@ func (c *cycleRun) publishedThrough(records []planner.RecordPlan) map[string]rec
 }
 
 // lookedAt is what a DNS run that decided found in conflict or lost. The
-// zones it did not manage in this cycle, as those of a frozen account, keep
-// what was found there before.
+// zones it did not manage in this cycle, as those of a frozen account, and
+// those whose records it could not read in full keep what was found there
+// before: a listing that failed shows nothing gone.
 func (c *cycleRun) lookedAt(res reconcile.DNSResult) ([]reconcile.Conflict, []string) {
-	managed := make(map[string]bool, len(c.zones.dns))
+	looked := make(map[string]bool, len(c.zones.dns))
 	for _, z := range c.zones.dns {
-		managed[z.Name] = true
+		looked[z.Name] = !slices.Contains(res.Unlisted, z.Name)
 	}
 	conflicts := slices.Clone(res.Conflicts)
 	for _, old := range c.st.Conflicts {
-		if !managed[old.Zone] {
+		if !looked[old.Zone] {
 			conflicts = append(conflicts, old)
 		}
 	}
@@ -147,7 +148,7 @@ func (c *cycleRun) lookedAt(res reconcile.DNSResult) ([]reconcile.Conflict, []st
 	})
 	lost := slices.Clone(res.Lost)
 	for _, name := range c.st.Lost {
-		if c.zones.zoneOf(name) == "" {
+		if zone := c.zones.zoneOf(name); !looked[zone] {
 			lost = append(lost, name)
 		}
 	}

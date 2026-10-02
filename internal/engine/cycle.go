@@ -60,8 +60,10 @@ type cycleRun struct {
 	// connectors in this cycle; the problems say why, and holdWhy is the
 	// reason of the step that first held the cycle or ended it before its DNS
 	// run looked. checked says that the cycle got through to its DNS run and
-	// that the run looked at the records as the writer.
+	// that the run looked at the records as the writer. storeHold says that
+	// it held because the store could not be read or written.
 	cfHold        bool
+	storeHold     bool
 	holdWhy       string
 	checked       bool
 	recheck       recheck
@@ -104,6 +106,7 @@ func (c *cycleRun) run() State {
 	c.notePending(c.adoptWaits)
 	c.st.Waiting = c.offer.waiting(c.st.Routes)
 	c.st.Offer = offerOf(c.st.Waiting)
+	c.st.FinishedAt = c.e.d.Now()
 	return c.st.normalized()
 }
 
@@ -117,6 +120,7 @@ func (c *cycleRun) problem(format string, args ...any) string {
 // storeProblem reports a store error and returns the line. The cases that need
 // the admin are named as such, never taken for "nothing stored".
 func (c *cycleRun) storeProblem(doing string, err error) string {
+	c.storeHold = true
 	switch {
 	case errors.Is(err, store.ErrNotMounted):
 		return c.problem(problemNotMounted)
@@ -147,6 +151,12 @@ func (c *cycleRun) prepare() bool {
 	c.settings = s
 	c.st.Mode = modeName(s.ObserveOnly)
 	c.e.interval.Store(int64(s.PollInterval))
+	if c.e.d.StartOnly != nil {
+		if names := c.e.d.StartOnly(s); len(names) > 0 {
+			c.problem("settings %s changed since pco started and are read only at start; "+
+				"restart pco (systemctl restart pco) for them to take effect", strings.Join(names, ", "))
+		}
+	}
 
 	inst, found, err := c.e.d.Store.Install()
 	switch {
@@ -165,6 +175,7 @@ func (c *cycleRun) prepare() bool {
 	c.readWriter()
 	switch note, err := c.e.recall(c.install.ID); {
 	case err != nil:
+		c.storeHold = true
 		c.hold(c.problem("reading what the engine remembered: %v; nothing is changed at Cloudflare until it can be read: "+
 			"fix the file or remove it; removing it forgets the connectors kept for tunnels no credential sees, "+
 			"the zones that left their listing and the guests confirmed gone", err))
@@ -266,6 +277,7 @@ func (c *cycleRun) load() bool {
 	}
 	bindings, err := c.e.d.Store.Bindings()
 	if err != nil {
+		c.storeHold = true
 		c.hold(c.problem("reading the bindings: %v", err))
 		return false
 	}
@@ -297,6 +309,7 @@ func (c *cycleRun) settleClaims() {
 	if err := c.e.d.Store.SaveClaims(c.claims.Claims); err != nil {
 		// The same changes are made again in the next cycle: they become
 		// events once they are saved.
+		c.storeHold = true
 		c.hold(c.problem("saving the claims: %v; nothing is changed at Cloudflare until they are saved", err))
 		return
 	}

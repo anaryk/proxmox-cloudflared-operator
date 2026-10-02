@@ -27,14 +27,15 @@ const (
 	levelWarn  = "warn"
 	levelError = "error"
 
-	kindRoute    = "route"
-	kindConflict = "conflict"
-	kindAction   = "action"
-	kindProblem  = "problem"
-	kindClaim    = "claim"
-	kindRollout  = "rollout"
-	kindWriter   = "writer"
-	kindAdmin    = "admin"
+	kindRoute      = "route"
+	kindConflict   = "conflict"
+	kindAction     = "action"
+	kindProblem    = "problem"
+	kindClaim      = "claim"
+	kindRollout    = "rollout"
+	kindWriter     = "writer"
+	kindAdmin      = "admin"
+	kindCredential = "credential"
 )
 
 // Event is something that changed, as the event log keeps it.

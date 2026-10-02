@@ -533,3 +533,14 @@ func TestClientsAreRebuiltOnlyWhenTheTokenChanges(t *testing.T) {
 	}, st.Problems)
 	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
 }
+
+func TestTheStateSaysWhenTheCycleEnded(t *testing.T) {
+	e := newEnv(t)
+	require.True(t, e.eng.State().FinishedAt.IsZero())
+	e.inv.hook(func() { e.clock.advance(3 * time.Second) })
+
+	st := e.cycle()
+
+	require.Equal(t, t0, st.At)
+	require.Equal(t, t0.Add(3*time.Second), st.FinishedAt)
+}

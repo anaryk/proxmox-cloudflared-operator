@@ -1,5 +1,6 @@
 {
   "at": "2026-10-01T12:00:00Z",
+  "finishedAt": "2026-10-01T12:00:02Z",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -112,7 +113,8 @@
       "active": true,
       "ready": true,
       "connections": 4,
-      "metricsAddr": "127.0.0.1:20300"
+      "metricsAddr": "127.0.0.1:20300",
+      "install": "abc123"
     }
   ],
   "credentials": [
