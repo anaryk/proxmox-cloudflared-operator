@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
@@ -362,7 +363,7 @@ func TestTheRunnerAsksAboutTheStateOfNow(t *testing.T) {
 	o := newOrigin(t, false, nil)
 	st := servedBy(t, o.Server, "http")
 	calls := 0
-	r := NewRunner(func() engine.State { calls++; return st }, healthyEnv(), nil, (&testClock{t: now}).now)
+	r := NewRunner(func() engine.State { calls++; return st }, healthyEnv(), nil, (&testClock{t: now}).now, zerolog.Nop())
 
 	steps, err := r.Diagnose(t.Context(), www)
 	require.NoError(t, err)
@@ -405,7 +406,7 @@ func TestOneDiagnosisOfAHostnameAtATime(t *testing.T) {
 	})
 	st := servedBy(t, o.Server, "http")
 	clock := &testClock{t: now}
-	r := NewRunner(func() engine.State { return st }, healthyEnv(), nil, clock.now)
+	r := NewRunner(func() engine.State { return st }, healthyEnv(), nil, clock.now, zerolog.Nop())
 
 	results := make(chan []Step, 2)
 	go func() { steps, _ := r.Diagnose(t.Context(), www); results <- steps }()
@@ -453,7 +454,7 @@ func (b *blockingEnv) count() int {
 func TestOneDoctorAtATime(t *testing.T) {
 	env := &blockingEnv{fakeEnv: healthyEnv(), arrived: make(chan struct{}, 4), release: make(chan struct{})}
 	clock := &testClock{t: now}
-	r := NewRunner(healthyState, env, nil, clock.now)
+	r := NewRunner(healthyState, env, nil, clock.now, zerolog.Nop())
 
 	results := make(chan []Finding, 2)
 	go func() { results <- r.Doctor(t.Context()) }()

@@ -94,11 +94,11 @@ func TestCloudflaredIsAskedWithinADeadline(t *testing.T) {
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 	t.Run("a child that keeps the output open", func(t *testing.T) {
-		// The script gets a second to start and end, however busy the
-		// machine; its child would hold the output for ten.
+		// The script gets five seconds to start and end, however busy the
+		// machine; its child would hold the output for twenty.
 		env, _, _ := hostEnv(t)
-		env.Timeout = 2 * time.Second
-		env.Binary = fakeBinary(t, `sleep 10 &
+		env.Timeout = 5 * time.Second
+		env.Binary = fakeBinary(t, `sleep 20 &
 echo "cloudflared version 2026.9.0"`)
 		start := time.Now()
 
@@ -106,7 +106,7 @@ echo "cloudflared version 2026.9.0"`)
 
 		require.NoError(t, err)
 		require.Equal(t, "cloudflared version 2026.9.0", v)
-		require.Less(t, time.Since(start), 8*time.Second, "the call did not wait for the child")
+		require.Less(t, time.Since(start), 15*time.Second, "the call did not wait for the child")
 	})
 	t.Run("an answer that does not end", func(t *testing.T) {
 		env, _, _ := hostEnv(t)

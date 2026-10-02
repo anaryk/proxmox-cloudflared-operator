@@ -68,6 +68,9 @@ type Deps struct {
 	// the one the connectors run.
 	Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
 	Cloudflared string
+	// HostTimeout bounds every question the doctor asks of the host;
+	// default: the doctor's own, 5 s.
+	HostTimeout time.Duration
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -164,7 +167,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		LockCheck:  lock.check,
 		Binary:     deps.Cloudflared,
 		Dial:       deps.Dial,
-	}, nil, deps.Now)
+		Timeout:    deps.HostTimeout,
+	}, nil, deps.Now, log)
 	gid, uids := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)

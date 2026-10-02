@@ -156,6 +156,9 @@ func TestTheDaemonServesTheDoctorAndTheDiagnosis(t *testing.T) {
 	}
 	w.deps.Cloudflared = filepath.Join(w.dir, "cloudflared")
 	require.NoError(t, os.WriteFile(w.deps.Cloudflared, []byte("#!/bin/sh\necho 'cloudflared version 2026.9.0 (built 2026-09-10-1200 UTC)'\n"), 0o700))
+	// A fresh script may take a while to start on a busy machine; the
+	// timeout of the host checks is not what this test is about.
+	w.deps.HostTimeout = time.Minute
 	// The clock of the daemon, which the test moves past the time a doctor
 	// run is kept.
 	var skew atomic.Int64

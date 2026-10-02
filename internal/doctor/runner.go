@@ -2,12 +2,16 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
@@ -16,6 +20,9 @@ import (
 // keepFor is how long the result of a doctor run, or of the diagnosis of a
 // hostname, answers the requests that follow it.
 const keepFor = 5 * time.Second
+
+// errStopped is the end of a run that panicked, for those that waited for it.
+var errStopped = errors.New("stopped on an internal error; the daemon log has the details")
 
 // Runner runs the doctor and the diagnosis for the API, against the state the
 // engine shows when it is asked. It runs one doctor at a time and one
@@ -27,6 +34,7 @@ type Runner struct {
 	env   Env
 	httpc *http.Client
 	now   func() time.Time
+	log   zerolog.Logger
 
 	mu        sync.Mutex
 	diagnoses map[string]*flight[[]Step] // by hostname
@@ -34,9 +42,10 @@ type Runner struct {
 }
 
 // NewRunner returns a runner. httpc lends the diagnosis the certificate
-// authorities it trusts; nil trusts those of the system.
-func NewRunner(state func() engine.State, env Env, httpc *http.Client, now func() time.Time) *Runner {
-	return &Runner{state: state, env: env, httpc: httpc, now: now, diagnoses: make(map[string]*flight[[]Step])}
+// authorities it trusts; nil trusts those of the system. A run that panics is
+// logged to log.
+func NewRunner(state func() engine.State, env Env, httpc *http.Client, now func() time.Time, log zerolog.Logger) *Runner {
+	return &Runner{state: state, env: env, httpc: httpc, now: now, log: log, diagnoses: make(map[string]*flight[[]Step])}
 }
 
 // flight is one run and, once it is done, its result.
@@ -44,15 +53,17 @@ type flight[T any] struct {
 	done chan struct{}
 	// Set under the lock of the runner before done is closed.
 	finished bool
+	failed   bool // it panicked: its result is for those that waited for it only
 	at       time.Time
 	val      T
 	err      error
 }
 
-// fresh reports whether f still answers at now: it runs, or ended less than
-// keepFor ago. The caller holds the lock of the runner.
+// fresh reports whether f still answers at now: it runs, or it ended without
+// a panic less than keepFor before now. The caller holds the lock of the
+// runner.
 func (f *flight[T]) fresh(now time.Time) bool {
-	return f != nil && (!f.finished || now.Sub(f.at) < keepFor && !now.Before(f.at))
+	return f != nil && (!f.finished || !f.failed && now.Sub(f.at) < keepFor && !now.Before(f.at))
 }
 
 // Diagnose walks the chain of the route of a hostname.
@@ -73,8 +84,9 @@ func (r *Runner) Diagnose(ctx context.Context, name string) ([]Step, error) {
 	if lead {
 		// The run is the daemon's own once it starts: a caller that leaves
 		// does not cut it short for the others.
-		steps, err := DiagnoseRoute(context.WithoutCancel(ctx), r.state(), host, r.httpc)
-		r.finish(f, steps, err)
+		fly(r, f, "the diagnosis of "+host, func() ([]Step, error) {
+			return DiagnoseRoute(context.WithoutCancel(ctx), r.state(), host, r.httpc)
+		})
 	}
 	return await(ctx, f)
 }
@@ -90,26 +102,40 @@ func (r *Runner) Doctor(ctx context.Context) []Finding {
 	}
 	r.mu.Unlock()
 	if lead {
-		findings := Run(context.WithoutCancel(ctx), r.state(), r.env)
-		r.finishDoctor(f, findings)
+		fly(r, f, "the doctor run", func() ([]Finding, error) {
+			return Run(context.WithoutCancel(ctx), r.state(), r.env), nil
+		})
+	}
+	findings, err := await(ctx, f)
+	if errors.Is(err, errStopped) {
+		return []Finding{fail("doctor", err.Error(), "journalctl -u pco shows where it stopped")}
 	}
 	// A caller whose request ended reads no answer.
-	findings, _ := await(ctx, f)
 	return findings
 }
 
-func (r *Runner) finish(f *flight[[]Step], steps []Step, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	f.finished, f.at, f.val, f.err = true, r.now(), steps, err
-	close(f.done)
-}
-
-func (r *Runner) finishDoctor(f *flight[[]Finding], findings []Finding) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	f.finished, f.at, f.val = true, r.now(), findings
-	close(f.done)
+// fly runs the flight f to its end, also when run panics: the panic is
+// logged once, with its stack, and is errStopped for all that wait for f,
+// which answers no later caller.
+func fly[T any](r *Runner, f *flight[T], what string, run func() (T, error)) {
+	var (
+		val T
+		err error
+	)
+	ended := false
+	defer func() {
+		if !ended {
+			p := recover()
+			r.log.Error().Str("panic", fmt.Sprint(p)).Bytes("stack", debug.Stack()).Msg(what + " panicked")
+			err = fmt.Errorf("%s %w", what, errStopped)
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		f.finished, f.failed, f.at, f.val, f.err = true, !ended, r.now(), val, err
+		close(f.done)
+	}()
+	val, err = run()
+	ended = true
 }
 
 // await waits for a flight, or for ctx, and returns a copy of its result.

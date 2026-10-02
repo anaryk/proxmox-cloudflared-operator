@@ -362,7 +362,9 @@ func TestARouteThatSaysHTTPToAnOriginThatSpeaksTLS(t *testing.T) {
 }
 
 // What the last cycle did not check is not told as ok: the dns, ingress and
-// connector steps warn, and say why.
+// connector steps warn, and say why. The target the state shows is from an
+// earlier cycle, or one Cloudflare may not have: the tcp step does not judge
+// it, and the http step does not ask it.
 func TestLinksALastCycleDidNotCheckAreNotOk(t *testing.T) {
 	const held = "not checked in the last cycle: no writer identity; run pco setup"
 	for _, tt := range []struct {
@@ -389,6 +391,11 @@ func TestLinksALastCycleDidNotCheckAreNotOk(t *testing.T) {
 			for _, i := range []int{2, 3, 4} {
 				require.Equal(t, Step{Name: stepNames[i], Level: LevelWarn, Detail: held}, steps[i])
 			}
+			require.Equal(t, LevelOK, steps[5].Level, "the identity is what resolution found")
+			for _, i := range []int{6, 7} {
+				require.Equal(t, Step{Name: stepNames[i], Level: LevelWarn, Detail: "not asked: the target is from an earlier cycle"}, steps[i])
+			}
+			require.Empty(t, o.requests(), "the origin was not asked")
 		})
 	}
 }

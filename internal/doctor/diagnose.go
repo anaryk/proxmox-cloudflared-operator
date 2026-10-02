@@ -265,7 +265,14 @@ func (d *diagnosis) candidate(addr netip.Addr) (resolve.CandidateResult, bool) {
 	return d.rt.Candidates[i], true
 }
 
+// notAsked is what the tcp and http steps say of a target from a cycle that
+// did not check Cloudflare.
+const notAsked = "not asked: the target is from an earlier cycle"
+
 func (d *diagnosis) tcp() Step {
+	if d.unchecked() != "" {
+		return warned(notAsked)
+	}
 	_, ap, err := parseService(d.rt.Service)
 	if err != nil {
 		return failed(fmt.Sprintf("the target %s is no address and port", d.rt.Service))

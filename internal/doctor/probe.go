@@ -105,7 +105,12 @@ func parseService(service string) (scheme model.Scheme, ap netip.AddrPort, err e
 	return scheme, ap, nil
 }
 
+// http asks the target as the tunnel would, unless the last cycle did not
+// check the tunnel: what it sends where is then not known.
 func (d *diagnosis) http(ctx context.Context, base *http.Client) Step {
+	if d.unchecked() != "" {
+		return warned(notAsked)
+	}
 	t, ok := d.target()
 	if !ok {
 		return failed("there is no verified target to ask")
