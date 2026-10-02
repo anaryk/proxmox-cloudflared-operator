@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // restart replaces the engine with a new one on the same store, as a
@@ -153,4 +155,39 @@ func TestAMemoryThatCannotBeReadHoldsCloudflare(t *testing.T) {
 	st = e.cycle()
 	require.False(t, hasProblem(st, "remembered"))
 	require.Equal(t, []string{"api.example.com", "www.example.com"}, e.recordNames())
+}
+
+// A1: a tunnel in an account the credential sees, though none of its zones
+// is there, keeps the credential.
+func TestRemovingACredentialWithATunnelInAnAccountWithoutZonesIsRefused(t *testing.T) {
+	e := newEnv(t)
+	other := cffake.New()
+	other.AddAccount("acc2", "Other")
+	other.SeedTunnel("acc2", tunnelName, nil)
+	e.addSecondCredential("other-token", other)
+
+	err := e.eng.RemoveCredential(t.Context(), "cred2")
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.Contains(t, err.Error(), "tunnel pco-abc123 in account acc2")
+}
+
+// The stale zones are kept for themselves: here the zones served name
+// another credential for the zone, as after a pin, so only the stale entry
+// keeps the account frozen.
+func TestARememberedStaleZoneIsInDoubtAfterARestart(t *testing.T) {
+	e, view, both := twoZones(t)
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	m.Served = slices.DeleteFunc(m.Served, func(z store.RememberedZone) bool { return z.Name == "example.net" })
+	m.Stale = []store.RememberedZone{{ID: "zone2", Name: "example.net", AccountID: testAccount, CredentialID: testCred}}
+	require.NoError(t, e.store.SaveEngineMemory(m))
+	view.hide("zone2", true)
+
+	e.restart()
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.True(t, hasProblem(st, "zone example.net is no longer listed by credential cred1"))
+	require.Equal(t, both, e.rules())
 }

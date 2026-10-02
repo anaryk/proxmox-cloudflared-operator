@@ -120,6 +120,9 @@ type Engine struct {
 	// seen are the tunnels of this install seen to exist, by id, so that a
 	// connector is kept until Cloudflare shows its tunnel gone.
 	seen map[string]seenTunnel
+	// invisible are the ids of the tunnels seen whose account no credential
+	// saw in the last cycle.
+	invisible []string
 	// remembered says that the memory in the store was read: the served and
 	// stale zones, the tunnels seen and the guests confirmed gone.
 	remembered bool

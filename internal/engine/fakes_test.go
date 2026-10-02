@@ -111,6 +111,7 @@ type fakeResolver struct {
 	mu          sync.Mutex
 	now         func() time.Time
 	unreachable map[string]string // hostname -> reason
+	rejected    map[string]string // hostname -> reason
 	calls       int
 	denied      []netip.Addr // the node addresses the last denylist refused
 	deadlines   []time.Time
@@ -124,6 +125,7 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 		f.deadlines = append(f.deadlines, d)
 	}
 	reason, bad := f.unreachable[route.Hostname]
+	rejection, rejected := f.rejected[route.Hostname]
 	f.denied = f.denied[:0]
 	for _, a := range []string{"10.0.0.2", "10.0.0.3", "10.0.0.4"} {
 		if _, d := deny.Check(netip.MustParseAddr(a)); d {
@@ -136,6 +138,12 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 		hook()
 	}
 
+	if rejected {
+		return resolve.Result{
+			Target:     planner.ResolvedTarget{Rejected: true, Reason: rejection},
+			Candidates: []resolve.CandidateResult{{Addr: guestAddr, Source: resolve.FromStatic, Reason: rejection}},
+		}
+	}
 	addr := guestAddr
 	if route.Target.Addr.IsValid() {
 		addr = route.Target.Addr
@@ -157,6 +165,12 @@ func (f *fakeResolver) hook(fn func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.onResolve = fn
+}
+
+func (f *fakeResolver) reject(host, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejected[host] = reason
 }
 
 func (f *fakeResolver) setUnreachable(host, reason string) {
@@ -390,7 +404,7 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 		cf:   cffake.New(),
 		apis: map[string]cfapi.API{},
 	}
-	e.res = &fakeResolver{now: e.clock.now, unreachable: map[string]string{}}
+	e.res = &fakeResolver{now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{}}
 	if paths != nil {
 		paths(base, &e.paths)
 	}
@@ -618,6 +632,16 @@ func (e *env) addSecondCredential(token string, api cfapi.API) {
 
 // callsSince returns the calls made to the fake after the first n.
 func (e *env) callsSince(n int) []string { return e.cf.Calls()[n:] }
+
+// unnumbered returns events without their sequence numbers, for comparing
+// them with expected ones.
+func unnumbered(events []Event) []Event {
+	out := slices.Clone(events)
+	for i := range out {
+		out[i].Seq = 0
+	}
+	return out
+}
 
 func hasProblem(st State, part string) bool {
 	return slices.ContainsFunc(st.Problems, func(p string) bool { return strings.Contains(p, part) })

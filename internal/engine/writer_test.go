@@ -45,7 +45,7 @@ func TestStaleWriterVerdictStopsBeforeDNS(t *testing.T) {
 	require.Zero(t, dnsCalls(e.cf.Calls()), "DNS is not looked at")
 	require.Empty(t, e.conn.ensures())
 	require.Empty(t, e.conn.prunes())
-	require.Contains(t, e.eng.Events(time.Time{}), Event{At: t0, Level: "error", Kind: "writer", Subject: "leader.json", Message: "writer verdict is stale"})
+	require.Contains(t, unnumbered(e.eng.Events(time.Time{})), Event{At: t0, Level: "error", Kind: "writer", Subject: "leader.json", Message: "writer verdict is stale"})
 
 	e.clock.advance(10 * time.Second)
 	st = e.cycle()

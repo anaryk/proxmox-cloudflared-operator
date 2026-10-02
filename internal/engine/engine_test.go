@@ -17,6 +17,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -66,7 +67,7 @@ func TestFirstCycleObservesAndWritesNothing(t *testing.T) {
 			Hostname: "www.example.com", Owner: "qemu/101", State: planner.StateActive,
 			Service: "http://10.0.0.11:8080", Zone: "example.com",
 		},
-		Guest:      "qemu/101 web-1",
+		Guest:      &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
 		Candidates: []resolve.CandidateResult{{Addr: guestAddr, Source: resolve.FromStatic, OK: true}},
 	}, route(st, "www.example.com"))
 	require.Equal(t, []reconcile.TunnelState{{AccountID: testAccount, CredentialID: testCred, Name: tunnelName}}, st.Tunnels)
@@ -187,6 +188,27 @@ func TestRouteRemovedRuleGoesAtOnceRecordAfterTheGrace(t *testing.T) {
 	require.Empty(t, claims)
 }
 
+// D2: the planner gives a route whose target was rejected no record, and its
+// record is retired rather than kept for the claim.
+func TestTheRecordOfARejectedTargetIsRetired(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+
+	e.res.reject("www.example.com", "address of a cluster node")
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.Contains(t, actionKinds(st), "delete-record www.example.com held: grace period: 1m0s left")
+	e.clock.advance(61 * time.Second)
+	e.cycle()
+	require.Empty(t, e.records())
+	claims, err := e.store.Claims()
+	require.NoError(t, err)
+	require.Contains(t, claims, "www.example.com", "the claim stays with its owner")
+}
+
 // Review Focus 1: the daemon was killed after it created the tunnel and
 // before it stored anything.
 func TestCycleRecoversTunnelByName(t *testing.T) {
@@ -263,7 +285,7 @@ func TestEventsForARouteGoingActiveThenUnreachable(t *testing.T) {
 	e := newEnv(t)
 	e.cycle()
 
-	require.Contains(t, e.eng.Events(time.Time{}), Event{
+	require.Contains(t, unnumbered(e.eng.Events(time.Time{})), Event{
 		At: t0, Level: "info", Kind: "route", Subject: "www.example.com", Message: "qemu/101: active",
 	})
 
@@ -275,7 +297,7 @@ func TestEventsForARouteGoingActiveThenUnreachable(t *testing.T) {
 	require.Equal(t, []Event{{
 		At: t0.Add(10 * time.Second), Level: "warn", Kind: "route", Subject: "www.example.com",
 		Message: "qemu/101: unreachable (connection refused)",
-	}}, later, "only what changed, and nothing from before since")
+	}}, unnumbered(later), "only what changed, and nothing from before since")
 
 	e.clock.advance(10 * time.Second)
 	e.cycle()

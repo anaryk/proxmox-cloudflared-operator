@@ -36,14 +36,14 @@ func populatedState() State {
 					Hostname: "www.example.com", Owner: "qemu/101", State: planner.StateActive,
 					Service: "http://10.0.0.11:8080", Zone: "example.com", Warnings: []string{"a warning"},
 				},
-				Guest:      "qemu/101 web-1",
+				Guest:      &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
 				Candidates: []resolve.CandidateResult{{Addr: netip.MustParseAddr("10.0.0.11"), Source: resolve.FromStatic, OK: true}},
 			},
 			{
 				RouteStatus: planner.RouteStatus{
 					Hostname: "www.example.com", Owner: "qemu/102", State: planner.StateConflict, Reason: "hostname is held by qemu/101",
 				},
-				Guest: "qemu/102 web-2",
+				Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, Name: "web-2"},
 			},
 		},
 		Issues: []planner.Issue{
@@ -107,7 +107,7 @@ func requireGolden(t *testing.T, name string, v any) {
 func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "state_populated.json", populatedState().normalized())
 	requireGolden(t, "state_empty.json", emptyState())
-	requireGolden(t, "events.json", []Event{{At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable"}})
+	requireGolden(t, "events.json", []Event{{Seq: 7, At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable"}})
 }
 
 func TestAStateComesBackFromItsJSON(t *testing.T) {

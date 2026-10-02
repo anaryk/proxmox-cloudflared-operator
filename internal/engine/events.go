@@ -39,6 +39,9 @@ const (
 
 // Event is something that changed, as the event log keeps it.
 type Event struct {
+	// Seq numbers the events of a process from 1, in the order they were
+	// made: a client resumes from the last one it saw.
+	Seq     uint64    `json:"seq"`
 	At      time.Time `json:"at,omitzero"`
 	Level   string    `json:"level"` // "info", "warn", "error"
 	Kind    string    `json:"kind"`
@@ -52,6 +55,7 @@ type Event struct {
 type eventLog struct {
 	mu   sync.Mutex
 	ring []Event // oldest first
+	seq  uint64  // of the last event
 	path string  // empty: memory only
 	log  zerolog.Logger
 }
@@ -70,6 +74,11 @@ func (l *eventLog) add(events ...Event) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	events = slices.Clone(events)
+	for i := range events {
+		l.seq++
+		events[i].Seq = l.seq
+	}
 	l.ring = append(l.ring, events...)
 	if n := len(l.ring) - maxEvents; n > 0 {
 		l.ring = slices.Delete(l.ring, 0, n)

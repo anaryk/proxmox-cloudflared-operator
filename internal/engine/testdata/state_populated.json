@@ -12,7 +12,11 @@
       "warnings": [
         "a warning"
       ],
-      "guest": "qemu/101 web-1",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 101,
+        "name": "web-1"
+      },
       "candidates": [
         {
           "addr": "10.0.0.11",
@@ -26,7 +30,11 @@
       "owner": "qemu/102",
       "state": "conflict",
       "reason": "hostname is held by qemu/101",
-      "guest": "qemu/102 web-2"
+      "guest": {
+        "kind": "qemu",
+        "vmid": 102,
+        "name": "web-2"
+      }
     }
   ],
   "issues": [
@@ -130,7 +138,7 @@
   "actions": [
     {
       "kind": "create-record",
-      "credential": "cred1",
+      "credentialId": "cred1",
       "target": "www.example.com",
       "detail": "in zone example.com",
       "destructive": false,
@@ -138,7 +146,7 @@
     },
     {
       "kind": "delete-record",
-      "credential": "cred1",
+      "credentialId": "cred1",
       "target": "old.example.com",
       "detail": "in zone example.com",
       "destructive": true,

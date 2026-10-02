@@ -118,7 +118,8 @@ func (c *cycleRun) beforeReplace(_ context.Context, zone reconcile.ZoneRef, rec 
 }
 
 // kept are the hostnames claimed or published in this cycle that have no
-// record plan, as their rule answers 503: their records are left alone.
+// record plan, as their rule answers 503: their records are left alone, but
+// for a target that was rejected.
 func (c *cycleRun) kept() map[string]bool {
 	keep := make(map[string]bool, len(c.claims.Claims))
 	for host := range c.claims.Claims {
@@ -130,7 +131,24 @@ func (c *cycleRun) kept() map[string]bool {
 	for _, rp := range c.plan.Records {
 		delete(keep, rp.Name)
 	}
+	// The planner gives a target that must never be served no record: one
+	// that is there is retired, not kept.
+	for host := range c.rejectedOwners() {
+		delete(keep, host)
+	}
 	return keep
+}
+
+// rejectedOwners maps every hostname whose winner's target was rejected in
+// this cycle to that owner.
+func (c *cycleRun) rejectedOwners() map[string]string {
+	out := make(map[string]string)
+	for _, rt := range c.claims.Winners {
+		if res, ok := c.results[rt.Hostname]; ok && res.Target.Rejected {
+			out[strings.ToLower(rt.Hostname)] = rt.Owner()
+		}
+	}
+	return out
 }
 
 func (c *cycleRun) dnsSettings() reconcile.DNSSettings {
@@ -192,9 +210,15 @@ func (c *cycleRun) wantedNow(ctx context.Context) (map[string]bool, error) {
 	if col.PolicyInvalid {
 		return nil, fmt.Errorf("the settings contain an invalid allow or deny pattern")
 	}
+	// A route this cycle found rejected wants no record; the same route
+	// found again does not either. Another owner's route does.
+	rejected := c.rejectedOwners()
 	names := make(map[string]bool, len(col.Routes)+len(col.Held))
 	for _, rt := range col.Routes {
-		names[strings.ToLower(rt.Hostname)] = true
+		host := strings.ToLower(rt.Hostname)
+		if rejected[host] != rt.Owner() {
+			names[host] = true
+		}
 	}
 	for _, h := range col.Held {
 		names[strings.ToLower(h.Hostname)] = true

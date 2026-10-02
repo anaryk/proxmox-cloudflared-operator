@@ -41,6 +41,7 @@ type credZones struct {
 	accounts    []cfapi.Account // of the last account listing that worked
 	accountsOK  bool            // the account listing of this cycle worked
 	accountsErr string
+	accountsAt  time.Time // of the last account listing that worked
 }
 
 func newZoneCache() *zoneCache {
@@ -130,10 +131,10 @@ func zoneName(z cfapi.Zone) string {
 	return z.Name
 }
 
-// refreshZones lists the zones of each credential every zoneRefreshEvery,
-// after a credential changed, and in every cycle for a credential that was
-// never listed; a listing that fails keeps the previous list. The accounts of
-// every credential are listed in every cycle, as pruning needs them current.
+// refreshZones lists the zones and the accounts of each credential every
+// zoneRefreshEvery, after a credential changed, and in every cycle for a
+// credential whose last listing failed or that was never listed; a listing
+// that fails keeps the previous list.
 func (c *cycleRun) refreshZones(ids []string) {
 	z := c.e.zones
 	due := z.due || c.now.Sub(z.at) >= zoneRefreshEvery || c.now.Before(z.at)
@@ -151,10 +152,12 @@ func (c *cycleRun) refreshZones(ids []string) {
 				cz.update(activeZones(got), c.now, z.servedThrough(id))
 			}
 		}
-		if got, err := api.Accounts(c.ctx); err != nil {
-			cz.accountsOK, cz.accountsErr = false, err.Error()
-		} else {
-			cz.accounts, cz.accountsOK, cz.accountsErr = got, true, ""
+		if due || !cz.accountsOK {
+			if got, err := api.Accounts(c.ctx); err != nil {
+				cz.accountsOK, cz.accountsErr = false, err.Error()
+			} else {
+				cz.accounts, cz.accountsOK, cz.accountsErr, cz.accountsAt = got, true, "", c.now
+			}
 		}
 	}
 	if due {
@@ -179,8 +182,9 @@ type zoneSet struct {
 	// and none is in doubt. An account without a zone is not in it.
 	known map[string]string
 	// frozen holds the accounts with a zone in doubt: their tunnel, records
-	// and connector are left as they are.
-	frozen map[string]bool
+	// and connector are left as they are. frozenWhy says why, by account.
+	frozen    map[string]bool
+	frozenWhy map[string]string
 	// accounts maps every account a credential sees to the first credential
 	// that sees it.
 	accounts map[string]string
@@ -203,7 +207,7 @@ type zoneEntry struct {
 // with one that served the zone before keep that one, with a problem asking
 // for a pin.
 func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
-	out := zoneSet{known: map[string]string{}, frozen: map[string]bool{}, accounts: map[string]string{}, ready: true}
+	out := zoneSet{known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{}, accounts: map[string]string{}, ready: true}
 	byName := map[string][]zoneEntry{}
 	for _, id := range ids {
 		cz := z.byCred[id]
@@ -249,8 +253,12 @@ func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
 		}
 		if doubt != "" {
 			out.problems = append(out.problems, doubt)
+			why, _, _ := strings.Cut(doubt, "; ")
 			for _, en := range entries {
 				out.frozen[en.zone.AccountID] = true
+				if _, ok := out.frozenWhy[en.zone.AccountID]; !ok {
+					out.frozenWhy[en.zone.AccountID] = why
+				}
 				// Planned all the same, so that the routes keep their state.
 				out.planned = append(out.planned, en.zone)
 			}

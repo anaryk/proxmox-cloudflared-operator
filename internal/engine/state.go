@@ -22,13 +22,23 @@ const (
 	verdictStale   = "stale"
 	verdictForeign = "foreign"
 	verdictUnknown = "unknown"
+
+	// stateFrozen is the state of a route whose account is frozen: what its
+	// tunnel serves for it is not known.
+	stateFrozen planner.RouteState = "frozen"
 )
 
 // RouteView is a route as the plan left it, with what resolution found.
 type RouteView struct {
 	planner.RouteStatus
-	Guest      string                    `json:"guest,omitempty"` // "qemu/101 web-1", empty for URL routes
+	Guest      *GuestView                `json:"guest,omitempty"` // nil for a route without a guest
 	Candidates []resolve.CandidateResult `json:"candidates,omitempty"`
+}
+
+// GuestView names a guest: its reference, as an issue names it, and its name.
+type GuestView struct {
+	model.GuestRef
+	Name string `json:"name,omitempty"`
 }
 
 // CredentialView is a stored Cloudflare credential without its token.
@@ -90,6 +100,10 @@ func (s State) clone() State {
 	for i := range s.Routes {
 		s.Routes[i].Warnings = slices.Clone(s.Routes[i].Warnings)
 		s.Routes[i].Candidates = slices.Clone(s.Routes[i].Candidates)
+		if g := s.Routes[i].Guest; g != nil {
+			copied := *g
+			s.Routes[i].Guest = &copied
+		}
 	}
 	s.Issues = slices.Clone(s.Issues)
 	s.Tunnels = slices.Clone(s.Tunnels)
@@ -184,17 +198,24 @@ func (c *cycleRun) routeViews() []RouteView {
 		winner[rt.Hostname] = rt.Owner()
 	}
 
+	accountOf := make(map[string]string, len(c.zones.planned))
+	for _, z := range c.zones.planned {
+		accountOf[z.Name] = z.AccountID
+	}
 	out := make([]RouteView, 0, len(c.plan.Routes))
 	for _, st := range c.plan.Routes {
+		if account := accountOf[st.Zone]; st.Zone != "" && c.zones.frozen[account] {
+			st.State, st.Reason, st.Service = stateFrozen, "account frozen: "+c.zones.frozenWhy[account], ""
+		}
 		v := RouteView{RouteStatus: st}
 		rt, ok := routes[key{st.Hostname, st.Owner}]
 		switch {
 		case ok && rt.Guest != nil:
-			v.Guest = c.guestLabel(*rt.Guest)
+			v.Guest = c.guestView(*rt.Guest)
 		case !ok:
 			// A claim nobody serves: its owner is a guest or a manual route.
 			if ref, err := model.ParseGuestRef(st.Owner); err == nil {
-				v.Guest = c.guestLabel(ref)
+				v.Guest = c.guestView(ref)
 			}
 		}
 		if res, ok := c.results[st.Hostname]; ok && winner[st.Hostname] == st.Owner {
@@ -205,13 +226,13 @@ func (c *cycleRun) routeViews() []RouteView {
 	return out
 }
 
-// guestLabel names a guest as "qemu/101 web-1".
-func (c *cycleRun) guestLabel(ref model.GuestRef) string {
-	g, ok := c.snap.Guest(ref)
-	if !ok || strings.TrimSpace(g.Name) == "" {
-		return ref.String()
+// guestView names a guest of the snapshot.
+func (c *cycleRun) guestView(ref model.GuestRef) *GuestView {
+	v := &GuestView{GuestRef: ref}
+	if g, ok := c.snap.Guest(ref); ok {
+		v.Name = strings.TrimSpace(g.Name)
 	}
-	return ref.String() + " " + g.Name
+	return v
 }
 
 // credentialViews lists the stored credentials with the last report of each.

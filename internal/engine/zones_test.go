@@ -61,7 +61,10 @@ func TestAZoneThatLeavesItsListingFreezesItsAccount(t *testing.T) {
 
 		require.Contains(t, st.Problems, "zone example.com is no longer listed by credential cred1; account acc1 is left as it is "+
 			"until the zone is listed again or pco apply --confirm-deletes confirms it is gone")
-		require.Equal(t, planner.StateActive, route(st, "www.example.com").State, "its rules are still planned")
+		r := route(st, "www.example.com")
+		require.Equal(t, planner.RouteState("frozen"), r.State)
+		require.Equal(t, "account frozen: zone example.com is no longer listed by credential cred1", r.Reason)
+		require.Empty(t, r.Service, "what the tunnel serves is not known")
 		noDNSIn(t, e.callsSince(n), testZone)
 		requireUntouched(t, e, writes, tun)
 	}
@@ -110,7 +113,8 @@ func TestAnAccountWithoutAZoneKeepsItsTunnel(t *testing.T) {
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 
-	require.Contains(t, st.Problems, "tunnel pco-abc123 in account acc1 serves no zone pco sees; the tunnel and its connector are left as they are")
+	require.Contains(t, st.Problems, "tunnel pco-abc123 in account acc1 serves no zone pco sees; the tunnel and its connector are left as they are "+
+		"until a credential lists a zone of the account or the tunnel is deleted at Cloudflare")
 	requireUntouched(t, e, writes, tun)
 }
 
@@ -126,6 +130,9 @@ func TestAPinToACredentialThatDoesNotSeeTheZoneFreezesItsAccount(t *testing.T) {
 
 	require.Contains(t, st.Problems, "zone example.com is pinned to credential cred9, which does not see it; account acc1 is left as it is until the pin is fixed")
 	noDNSIn(t, e.callsSince(n), testZone)
+	r := route(st, "www.example.com")
+	require.Equal(t, planner.RouteState("frozen"), r.State)
+	require.Equal(t, "account frozen: zone example.com is pinned to credential cred9, which does not see it", r.Reason)
 	requireUntouched(t, e, writes, tun)
 }
 
@@ -144,7 +151,8 @@ func TestARemovedCredentialLeavesTheConnectorsOfItsTunnels(t *testing.T) {
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 
-	require.Contains(t, st.Problems, "tunnel pco-abc123 in account acc1 is not visible through any credential; its connector is kept")
+	require.Contains(t, st.Problems, "tunnel pco-abc123 in account acc1 is not visible through any credential; its connector is kept "+
+		"until a credential sees the account again or pco apply --confirm-deletes confirms the tunnel is gone")
 	keep, pruned := e.conn.lastPrune()
 	require.True(t, pruned)
 	require.Contains(t, keep, tun.ID)
@@ -172,11 +180,17 @@ func TestNoPruneUnlessEveryAccountAndTunnelAnswered(t *testing.T) {
 		prunes := len(e.conn.prunes())
 		e.cf.FailNext("accounts", 1, errors.New("connection reset"))
 
-		e.clock.advance(20 * time.Second)
+		e.clock.advance(zoneRefreshEvery)
 		st := e.cycle()
 
 		require.Len(t, e.conn.prunes(), prunes)
 		require.Contains(t, st.Problems, "connectors are not pruned in this cycle: listing the accounts of credential cred1 failed: connection reset")
+
+		// A listing that failed is tried again in the next cycle.
+		e.clock.advance(20 * time.Second)
+		st = e.cycle()
+		require.Len(t, e.conn.prunes(), prunes+1)
+		require.False(t, hasProblem(st, "not pruned"))
 	})
 	t.Run("tunnel lookup failed", func(t *testing.T) {
 		e, _, _ := servingThrough(t)
@@ -262,6 +276,93 @@ func TestAZoneInDoubtFreezesTheOtherZonesOfItsAccount(t *testing.T) {
 	require.Equal(t, both, e.rules(), "the rules of example.com stay, and those of example.net with them")
 	require.Equal(t, []string{"www.example.com"}, e.recordNames())
 	require.Len(t, e.cf.RecordsIn("zone2"), 1)
+}
+
+func TestNoPruneOnAnAccountListingOlderThanTenMinutes(t *testing.T) {
+	e, _, _ := servingThrough(t)
+	prunes := len(e.conn.prunes())
+	e.eng.zones.byCred[testCred].accountsAt = t0.Add(-11 * time.Minute)
+
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.Len(t, e.conn.prunes(), prunes)
+	require.Contains(t, st.Problems, "connectors are not pruned in this cycle: the accounts of credential cred1 were last listed "+
+		"at 2026-10-01T11:49:00Z, more than 10m0s ago")
+}
+
+// D1: the accounts are listed with the zones, so that a cycle with nothing to
+// do asks Cloudflare for the tunnel, its configuration and the records only.
+func TestAnIdleCycleAsksCloudflareThreeTimes(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	e.cf.SetConnectors(testAccount, e.tunnels()[0].ID, []cfapi.Connector{{ID: "c1", ConfigVersion: 1}})
+	e.clock.advance(rolloutAskEvery)
+	e.cycle()
+
+	e.clock.advance(10 * time.Second)
+	n := len(e.cf.Calls())
+	st := e.cycle()
+
+	require.Empty(t, st.Problems)
+	require.Equal(t, []string{
+		"FindTunnel acc1 pco-abc123",
+		"TunnelConfig acc1 " + e.tunnels()[0].ID,
+		"Records zone1",
+	}, e.callsSince(n))
+	require.Len(t, e.conn.prunes(), 3, "the accounts listed with the zones are fresh enough to prune")
+}
+
+// D3: a stopped connector of a frozen account is started again, with the
+// token it has on disk.
+func TestTheConnectorOfAFrozenAccountKeepsRunning(t *testing.T) {
+	e, _, tun := servingThrough(t)
+	e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.com": "cred9"} })
+	ensures := len(e.conn.ensures())
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	require.Equal(t, []ensureCall{{id: tun.ID, token: "token-" + tun.ID}}, e.conn.ensures()[ensures:])
+	require.NotContains(t, e.cf.Calls(), "TunnelToken "+testAccount+" "+tun.ID+" ", "the token comes from disk")
+}
+
+func TestAFrozenConnectorWithoutATokenOnDiskIsNotStarted(t *testing.T) {
+	e, _, tun := servingThrough(t)
+	e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.com": "cred9"} })
+	delete(e.conn.tokens, tun.ID)
+	ensures, calls := len(e.conn.ensures()), len(e.cf.Calls())
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	require.Len(t, e.conn.ensures(), ensures)
+	require.NotContains(t, e.callsSince(calls), "TunnelToken "+testAccount+" "+tun.ID, "nothing is asked of a frozen tunnel")
+}
+
+// D4: the way out of keeping the connector of a tunnel no credential sees.
+func TestAConfirmationLetsGoOfATunnelNoCredentialSees(t *testing.T) {
+	e := newEnv(t)
+	other := cffake.New()
+	other.AddAccount("acc2", "Other")
+	other.AddZone("zone2", "example.org", "acc2")
+	e.addSecondCredential("other-token", other)
+	e.enforce()
+	e.cycle()
+	tun := e.tunnels()[0]
+	require.NoError(t, e.store.DeleteCredential(testCred))
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	e.apply(true)
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.False(t, hasProblem(st, "not visible through any credential"))
+	keep, _ := e.conn.lastPrune()
+	require.NotContains(t, keep, tun.ID)
+	require.Contains(t, adminEvents(e, time.Time{}), tun.ID+": the tunnel pco-abc123 in account acc1 is confirmed gone; its connector is removed")
 }
 
 func TestTheSameTokenTwiceIsRefused(t *testing.T) {

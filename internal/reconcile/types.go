@@ -29,7 +29,7 @@ const (
 // Action is a change a run made or would have made.
 type Action struct {
 	Kind        ActionKind `json:"kind"`
-	Credential  string     `json:"credential"`
+	Credential  string     `json:"credentialId"`
 	Target      string     `json:"target"` // tunnel name or record name
 	Detail      string     `json:"detail"`
 	Destructive bool       `json:"destructive"`

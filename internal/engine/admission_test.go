@@ -42,7 +42,7 @@ func TestAGuestWaitingForApprovalKeepsItsClaim(t *testing.T) {
 			Hostname: "www.example.com", Owner: "qemu/101", State: planner.StateHeld, Zone: "example.com",
 			Reason: "named in the Notes of qemu/101 but not routed; claim kept",
 		},
-		Guest: "qemu/101 web-1",
+		Guest: &GuestView{GuestRef: web.Ref, Name: "web-1"},
 	}, route(st, "www.example.com"))
 	// Nothing is served: a tunnel of 503 blocks alone is not planned, so the
 	// catch-all answers. The claim keeps the record.

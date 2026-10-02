@@ -139,7 +139,7 @@ func TestRolloutIsConfirmedOnlyAgainstAVerifiedVersion(t *testing.T) {
 	id := e.tunnels()[0].ID
 	rollouts := func() []Event {
 		var out []Event
-		for _, ev := range e.eng.Events(time.Time{}) {
+		for _, ev := range unnumbered(e.eng.Events(time.Time{})) {
 			if ev.Kind == "rollout" {
 				out = append(out, ev)
 			}
@@ -281,6 +281,22 @@ func TestEventLogIsRotated(t *testing.T) {
 	now, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(now), "after the limit")
+}
+
+func TestEventsAreNumbered(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	e.clock.advance(time.Second)
+	e.res.setUnreachable("www.example.com", "connection refused")
+	e.cycle()
+
+	events := e.eng.Events(time.Time{})
+	require.Greater(t, len(events), 2)
+	for i, ev := range events {
+		require.Equal(t, uint64(i+1), ev.Seq, "a number that only grows, from 1")
+	}
+	logged := readEventLog(t, e)
+	require.Equal(t, events, logged)
 }
 
 func TestEventsKeepTheLastThousand(t *testing.T) {

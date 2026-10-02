@@ -29,6 +29,11 @@ func (c *cycleRun) reconcileConnectors() {
 			c.ensure(t)
 		}
 		others, failed := c.lookUpOthers()
+		for _, t := range others {
+			if c.zones.frozen[t.AccountID] {
+				c.keepRunning(t)
+			}
+		}
 		c.prune(append(slices.Clone(existing), others...), failed)
 		c.confirmRollouts(existing)
 		shown = append(slices.Clone(existing), others...)
@@ -74,11 +79,27 @@ func (c *cycleRun) lookUpOthers() (found []reconcile.TunnelState, failed []strin
 		default:
 			found = append(found, reconcile.TunnelState{AccountID: account, CredentialID: cred, Name: t.Name, ID: t.ID, Exists: true})
 			if !c.zones.frozen[account] {
-				c.problem("tunnel %s in account %s serves no zone pco sees; the tunnel and its connector are left as they are", t.Name, account)
+				c.problem("tunnel %s in account %s serves no zone pco sees; the tunnel and its connector are left as they are "+
+					"until a credential lists a zone of the account or the tunnel is deleted at Cloudflare", t.Name, account)
 			}
 		}
 	}
 	return found, failed
+}
+
+// keepRunning starts the connector of a tunnel of a frozen account again,
+// when it is stopped, with the token it has on disk; nothing is asked of
+// Cloudflare about such a tunnel.
+func (c *cycleRun) keepRunning(t reconcile.TunnelState) {
+	token, found, err := c.e.d.Connectors.Token(t.ID)
+	switch {
+	case err != nil:
+		c.problem("tunnel %s in account %s: reading the connector token: %v", t.Name, t.AccountID, err)
+	case found:
+		if err := c.e.d.Connectors.Ensure(c.ctx, t.ID, token); err != nil {
+			c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
+		}
+	}
 }
 
 // forgetTunnelsOf forgets the tunnels seen in an account whose tunnel
@@ -104,12 +125,17 @@ func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) {
 		}
 	}
 	for _, id := range c.credIDs {
-		if cz := c.e.zones.byCred[id]; cz == nil || !cz.accountsOK {
+		cz := c.e.zones.byCred[id]
+		switch {
+		case cz == nil || !cz.accountsOK:
 			err := "never tried"
 			if cz != nil {
 				err = cz.accountsErr
 			}
 			why = append(why, fmt.Sprintf("listing the accounts of credential %s failed: %s", id, err))
+		case c.now.Sub(cz.accountsAt) > accountsFreshFor || c.now.Before(cz.accountsAt):
+			why = append(why, fmt.Sprintf("the accounts of credential %s were last listed at %s, more than %s ago",
+				id, cz.accountsAt.UTC().Format(time.RFC3339), accountsFreshFor))
 		}
 	}
 	why = append(why, failed...)
@@ -119,11 +145,14 @@ func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) {
 		keep = append(keep, t.ID)
 		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name, credential: t.CredentialID}
 	}
+	c.e.invisible = nil
 	for _, id := range slices.Sorted(maps.Keys(c.e.seen)) {
 		t := c.e.seen[id]
 		if _, visible := c.zones.accounts[t.account]; !visible {
 			keep = append(keep, id)
-			c.problem("tunnel %s in account %s is not visible through any credential; its connector is kept", t.name, t.account)
+			c.e.invisible = append(c.e.invisible, id)
+			c.problem("tunnel %s in account %s is not visible through any credential; its connector is kept "+
+				"until a credential sees the account again or pco apply --confirm-deletes confirms the tunnel is gone", t.name, t.account)
 		}
 	}
 	if len(why) > 0 {
@@ -173,6 +202,10 @@ func redact(msg, token string) string {
 	}
 	return strings.ReplaceAll(msg, token, "[redacted]")
 }
+
+// accountsFreshFor is how old the account listing of a credential may be for
+// a prune: a tunnel in an account found later would lose its connector.
+const accountsFreshFor = 10 * time.Minute
 
 // rolloutAskEvery is how often the connectors of a tunnel are asked for the
 // version they run while none reports the one written.

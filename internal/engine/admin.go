@@ -47,6 +47,13 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
 		for _, name := range e.zones.confirmGone() {
 			e.adminEvent(name, "the zone that left its listing is confirmed gone")
 		}
+		for _, id := range e.invisible {
+			if t, ok := e.seen[id]; ok {
+				delete(e.seen, id)
+				e.adminEvent(id, fmt.Sprintf("the tunnel %s in account %s is confirmed gone; its connector is removed", t.name, t.account))
+			}
+		}
+		e.invisible = nil
 		// The confirmation must outlive a restart of the daemon.
 		if e.remembered {
 			if err := e.d.Store.SaveEngineMemory(e.memory()); err != nil {
