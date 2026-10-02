@@ -206,8 +206,11 @@ func TestTheDaemonKeepsRunningWithoutTheClusterFilesystem(t *testing.T) {
 
 	require.NoError(t, os.Remove(w.mount))
 	require.NoError(t, d.client.Sync(ctx))
-	st := d.await(func(st engine.State) bool { return containsProblem(st, "cluster filesystem is not mounted") })
-	require.False(t, st.Complete)
+	// A cycle already under way when the mount went may have its inventory
+	// and still fail on the store; the one after it has nothing to go on.
+	d.await(func(st engine.State) bool {
+		return containsProblem(st, "cluster filesystem is not mounted") && !st.Complete
+	})
 	version, err := d.client.Version(ctx)
 	require.NoError(t, err, "the socket still answers")
 	require.Equal(t, "1.2.3", version)
