@@ -26,6 +26,7 @@ var update = flag.Bool("update", false, "write the golden files of the tests")
 // populatedState holds every type the state can carry, each field set.
 func populatedState() State {
 	expires := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	waiting := populatedWaiting()
 	return State{
 		At:       t0,
 		Mode:     "enforce",
@@ -84,6 +85,36 @@ func populatedState() State {
 		Problems:      []string{"a problem"},
 		WriterVerdict: "ok",
 		Profile:       "host",
+		Waiting:       waiting,
+		Offer:         offerOf(waiting),
+	}
+}
+
+// populatedWaiting holds one of each kind of what waits for a confirmation.
+func populatedWaiting() []Waiting {
+	return []Waiting{
+		{
+			Kind:   "dns-removals",
+			Detail: "mass delete guard: 7 of 9 records are being removed (1 in zones that could not be listed); confirm to proceed",
+			Items:  []string{"a.example.com", "b.example.com"},
+		},
+		{
+			Kind: "stale-zone", Subject: "example.info",
+			Detail: "zone example.info is no longer listed by credential cred1; a confirmation takes it as gone, and its hostnames are taken off the tunnel",
+			Items:  []string{},
+		},
+		{
+			Kind: "unseen-tunnel", Subject: "pco-abc123",
+			Detail: "tunnel pco-abc123 (00000000-0000-4000-8000-000000000002) in account acc2 is not visible through any credential; " +
+				"a confirmation takes it as gone and removes its connector",
+			Items: []string{},
+		},
+		{
+			Kind: "vanished-guests",
+			Detail: "2 guests that hold a hostname are no longer listed by Proxmox; " +
+				"a confirmation takes them as removed, and their hostnames are released after the grace period",
+			Items: []string{"qemu/104 db-1", "lxc/200"},
+		},
 	}
 }
 
@@ -112,6 +143,19 @@ func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "state_populated.json", populatedState().normalized())
 	requireGolden(t, "state_empty.json", emptyState())
 	requireGolden(t, "events.json", []Event{{Seq: 7, At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable"}})
+	requireGolden(t, "apply_result.json", ApplyResult{LeftObserveOnly: true, Accepted: populatedWaiting()[:1]})
+	requireGolden(t, "apply_result_empty.json", ApplyResult{Accepted: []Waiting{}})
+}
+
+// A copy of a state shares nothing with it, down to the items of what waits.
+func TestACloneOfTheStateOwnsWhatWaits(t *testing.T) {
+	st := populatedState()
+	c := st.clone()
+
+	c.Waiting[0].Items[0] = "changed"
+	c.Waiting[1].Detail = "changed"
+
+	require.Equal(t, populatedState(), st)
 }
 
 func TestAStateComesBackFromItsJSON(t *testing.T) {

@@ -85,6 +85,11 @@ type State struct {
 	// Profile is the profile of the install, "host" or "appliance". It is
 	// empty until a cycle has read the install.
 	Profile string `json:"profile,omitempty"`
+	// Waiting is what a confirmation would accept now, as the problems tell
+	// it in words; [] when nothing. Offer names exactly this Waiting, and a
+	// confirmation must quote it; it is empty when nothing waits.
+	Waiting []Waiting `json:"waiting"`
+	Offer   string    `json:"offer,omitempty"`
 }
 
 func emptyState() State {
@@ -92,14 +97,16 @@ func emptyState() State {
 }
 
 // carried is the start of the next state: what the cycle does not find out
-// again stays as the last cycle left it. Actions and problems are the
-// cycle's own.
+// again stays as the last cycle left it. Actions, problems and what waits are
+// the cycle's own.
 func (s State) carried(at time.Time) State {
 	next := s.clone()
 	next.At = at
 	next.Complete = false
 	next.Actions = nil
 	next.Problems = nil
+	next.Waiting = nil
+	next.Offer = ""
 	return next
 }
 
@@ -126,6 +133,7 @@ func (s State) clone() State {
 	s.Conflicts = slices.Clone(s.Conflicts)
 	s.Lost = slices.Clone(s.Lost)
 	s.Problems = slices.Clone(s.Problems)
+	s.Waiting = cloneWaiting(s.Waiting)
 	return s
 }
 
@@ -168,6 +176,7 @@ func (s State) normalized() State {
 	s.Conflicts = nonNil(s.Conflicts)
 	s.Lost = nonNil(s.Lost)
 	s.Problems = nonNil(s.Problems)
+	s.Waiting = nonNil(s.Waiting)
 	return s
 }
 

@@ -119,8 +119,9 @@ type Engine struct {
 	// connector is kept until Cloudflare shows its tunnel gone.
 	seen map[string]seenTunnel
 	// offered is what the last published state showed waiting for the
-	// admin's confirmation: a confirmation accepts that and nothing else.
-	offered confirmable
+	// admin's confirmation: a confirmation that names it accepts that and
+	// nothing else, once.
+	offered offer
 	// remembered says that the memory in the store was read: the served and
 	// stale zones, the tunnels seen and the guests confirmed gone.
 	remembered bool
@@ -209,7 +210,7 @@ func (e *Engine) Cycle(ctx context.Context) State {
 
 	c := e.newCycle(ctx)
 	st := c.run()
-	e.offered = c.offer
+	e.offered = offer{what: c.offer, waiting: st.clone().Waiting, token: st.Offer}
 	e.publish(st.clone(), c.events)
 	e.d.Log.Debug().
 		Str("mode", st.Mode).
@@ -295,12 +296,27 @@ type request struct {
 type confirmable struct {
 	vanished  []model.GuestRef // guests that hold a claim and no longer listed, behind a vanish hold
 	stale     []staleZone      // zones that left their listing
-	invisible []string         // ids of tunnels kept that no credential sees
-	guard     bool             // the mass delete guard held removals
+	invisible []unseenTunnel   // tunnels kept that no credential sees
+	// guard is what the mass delete guard said when it held removals, and
+	// removals the names of the records a confirmation lets through: those
+	// it held and those in their grace. Both are empty when it held none.
+	guard    string
+	removals []string
+}
+
+// offer is what one published state showed waiting for a confirmation: what
+// the engine accepts, what the admin was shown and the name of that.
+type offer struct {
+	what    confirmable
+	waiting []Waiting
+	token   string
 }
 
 // staleZone names a zone that left the listing of a credential.
 type staleZone struct{ credential, name string }
+
+// unseenTunnel is a tunnel of the install that no credential sees.
+type unseenTunnel struct{ id, name, account string }
 
 // seenTunnel is where a tunnel of this install was seen, and through which
 // credential.

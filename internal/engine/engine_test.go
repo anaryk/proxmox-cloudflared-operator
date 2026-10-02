@@ -129,9 +129,11 @@ func TestApplyPublishesTunnelConfigAndRecord(t *testing.T) {
 	require.Equal(t, guestAddr, bindings["www.example.com"].Addr)
 }
 
-// Apply waits for the running cycle and confirms what its state shows.
+// Apply waits for the running cycle and confirms what its state shows, when
+// that is still what the admin was shown.
 func TestApplyWaitsForTheRunningCycleAndKeepsItsConfirmation(t *testing.T) {
 	e := guarded(t, nil)
+	shown := e.eng.State().Offer
 	// A route of another guest, so that the cycle reaches the resolver.
 	e.inv.set(snapshot(untagged(guest(101, "web-1")), guest(102, "keep", "keep.example.com -> :8080")))
 	e.clock.advance(10 * time.Second)
@@ -146,7 +148,10 @@ func TestApplyWaitsForTheRunningCycleAndKeepsItsConfirmation(t *testing.T) {
 	<-inCycle
 
 	applied := make(chan error)
-	go func() { applied <- e.eng.Apply(t.Context(), true) }()
+	go func() {
+		_, err := e.eng.Apply(t.Context(), true, shown)
+		applied <- err
+	}()
 	e.res.hook(nil)
 	close(release)
 	require.Equal(t, "enforce", (<-done).Mode)
@@ -234,6 +239,18 @@ func TestTheSecondLookCountsAChangedRouteAsWanted(t *testing.T) {
 	e := rejectedAndDue(t)
 	web := guest(101, "web-1", "www.example.com -> :8080")
 	e.inv.enqueue(snapshot(web), snapshot(guest(101, "web-1", "www.example.com -> :9090")))
+
+	e.cycle()
+
+	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+}
+
+// Pin 3: a route whose options changed between the looks is another route,
+// and it wants its record.
+func TestTheSecondLookCountsChangedOptionsAsWanted(t *testing.T) {
+	e := rejectedAndDue(t)
+	web := guest(101, "web-1", "www.example.com -> :8080")
+	e.inv.enqueue(snapshot(web), snapshot(guest(101, "web-1", "www.example.com -> :8080 host-header=www.example.org")))
 
 	e.cycle()
 

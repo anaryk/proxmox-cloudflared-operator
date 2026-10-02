@@ -120,7 +120,7 @@ func (run *dnsRun) retireHold(z *dnsZone, name string) string {
 	}
 	t := run.seenUnwanted(tombstoneKey(z.ID, name))
 	if left := run.graceLeft(t); left > 0 {
-		return fmt.Sprintf("grace period: %s left", left)
+		return fmt.Sprintf("%s: %s left", HeldInGrace, left)
 	}
 	return ""
 }

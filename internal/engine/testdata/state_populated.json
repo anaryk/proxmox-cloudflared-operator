@@ -180,5 +180,38 @@
     "a problem"
   ],
   "writerVerdict": "ok",
-  "profile": "host"
+  "profile": "host",
+  "waiting": [
+    {
+      "kind": "dns-removals",
+      "subject": "",
+      "detail": "mass delete guard: 7 of 9 records are being removed (1 in zones that could not be listed); confirm to proceed",
+      "items": [
+        "a.example.com",
+        "b.example.com"
+      ]
+    },
+    {
+      "kind": "stale-zone",
+      "subject": "example.info",
+      "detail": "zone example.info is no longer listed by credential cred1; a confirmation takes it as gone, and its hostnames are taken off the tunnel",
+      "items": []
+    },
+    {
+      "kind": "unseen-tunnel",
+      "subject": "pco-abc123",
+      "detail": "tunnel pco-abc123 (00000000-0000-4000-8000-000000000002) in account acc2 is not visible through any credential; a confirmation takes it as gone and removes its connector",
+      "items": []
+    },
+    {
+      "kind": "vanished-guests",
+      "subject": "",
+      "detail": "2 guests that hold a hostname are no longer listed by Proxmox; a confirmation takes them as removed, and their hostnames are released after the grace period",
+      "items": [
+        "qemu/104 db-1",
+        "lxc/200"
+      ]
+    }
+  ],
+  "offer": "9298960fb3d77f2d"
 }

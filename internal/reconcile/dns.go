@@ -43,6 +43,9 @@ const (
 	// HeldByGuard begins the held reason of a delete the mass delete guard
 	// holds until the admin confirms it.
 	HeldByGuard = "mass delete guard"
+	// HeldInGrace begins the held reason of a delete whose removal is in its
+	// grace period.
+	HeldInGrace = "grace period"
 )
 
 // DNSSettings tune the DNS reconciler. A setting that is zero or negative

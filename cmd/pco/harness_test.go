@@ -83,9 +83,9 @@ func (f *fakeEngine) Events(time.Time) []engine.Event { return nil }
 
 func (f *fakeEngine) Trigger() { f.record("sync") }
 
-func (f *fakeEngine) Apply(_ context.Context, confirmDeletes bool) error {
+func (f *fakeEngine) Apply(_ context.Context, confirmDeletes bool, _ string) (engine.ApplyResult, error) {
 	f.record("apply confirmDeletes=" + boolText(confirmDeletes))
-	return f.applyErr
+	return engine.ApplyResult{}, f.applyErr
 }
 
 func (f *fakeEngine) Adopt(_ context.Context, name string) error {

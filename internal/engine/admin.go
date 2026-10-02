@@ -10,73 +10,99 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
-// Apply leaves observe-only mode. With confirmDeletes the next enforcing DNS
-// run may delete more records than the mass delete guard lets through. It
-// waits for a running cycle, so that the request is not used up by a cycle
-// that read the settings before it, and then asks for a cycle.
-func (e *Engine) Apply(ctx context.Context, confirmDeletes bool) error {
+// Apply leaves observe-only mode. With confirmDeletes it also accepts what
+// the last published state showed waiting for a confirmation, such as more
+// DNS deletes than the mass delete guard lets through, when offer names
+// exactly that; any other offer is refused and changes nothing. It waits for
+// a running cycle, so that the offer is compared with what that cycle showed
+// and the request is not used up by a cycle that read the settings before it,
+// and then asks for a cycle.
+func (e *Engine) Apply(ctx context.Context, confirmDeletes bool, offer string) (ApplyResult, error) {
 	if err := e.acquire(ctx); err != nil {
-		return err
+		return ApplyResult{}, err
+	}
+	defer e.release()
+	if confirmDeletes && offer != e.offered.token {
+		return ApplyResult{}, fmt.Errorf("%w: what waits for a confirmation changed since it was shown; look again and repeat", ErrRefused)
 	}
 	defer e.Trigger()
-	defer e.release()
 
+	res := ApplyResult{Accepted: []Waiting{}}
 	s, err := e.d.Store.Settings()
 	if err != nil {
-		return fmt.Errorf("reading the settings: %w", err)
+		return res, fmt.Errorf("reading the settings: %w", err)
 	}
 	if s.ObserveOnly {
 		s.ObserveOnly = false
 		if err := e.d.Store.SaveSettings(s); err != nil {
-			return fmt.Errorf("leaving observe-only mode: %w", err)
+			return res, fmt.Errorf("leaving observe-only mode: %w", err)
 		}
+		res.LeftObserveOnly = true
 		e.adminEvent("", "observe-only mode ended; changes are applied from now on")
 	}
 	if confirmDeletes {
-		e.confirmShown()
-		// The confirmation must outlive a restart of the daemon.
-		if e.remembered {
-			if err := e.d.Store.SaveEngineMemory(e.memory()); err != nil {
-				return fmt.Errorf("keeping the confirmation: %w", err)
-			}
+		accepted, err := e.confirmShown()
+		if err != nil {
+			return res, err
 		}
+		res.Accepted = accepted
 	}
-	return nil
+	return res, nil
 }
 
 // confirmShown accepts what the last published state showed waiting for a
 // confirmation, each with a problem line, and nothing it did not show: the
 // removals the mass delete guard held, the vanished guests behind a vanish
 // hold, the zones that left their listing and the tunnels no credential sees.
-// The caller holds the cycle lock.
-func (e *Engine) confirmShown() {
+// It returns what it accepted. The offer is used up: until the next cycle
+// nothing waits. The caller holds the cycle lock.
+func (e *Engine) confirmShown() ([]Waiting, error) {
 	o := e.offered
-	e.offered = confirmable{}
-	if o.guard {
+	// The confirmation must outlive a restart of the daemon. It is kept
+	// before it takes effect, so that one that cannot be kept changes
+	// nothing.
+	if e.remembered {
+		if err := e.d.Store.SaveEngineMemory(e.memoryAccepting(o.what)); err != nil {
+			return nil, fmt.Errorf("keeping the confirmation: %w", err)
+		}
+	}
+	e.withdrawOffer()
+	w := o.what
+	if w.guard != "" {
 		e.confirm = &request{at: e.d.Now()}
 		e.adminEvent("", "the deletes held by the mass delete guard are confirmed for the next run")
 	}
-	for _, ref := range o.vanished {
+	for _, ref := range w.vanished {
 		e.gone[ref] = true
 	}
-	if len(o.vanished) > 0 {
+	if len(w.vanished) > 0 {
 		// The DNS guard confirms only removals that are pending already;
 		// those of these guests are not yet.
 		e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed; "+
-			"when their DNS records fall due, the mass delete guard may ask for a confirmation again", len(o.vanished)))
+			"when their DNS records fall due, the mass delete guard may ask for a confirmation again", len(w.vanished)))
 	}
-	for _, name := range e.zones.confirmGone(o.stale) {
+	for _, name := range e.zones.confirmGone(w.stale) {
 		e.adminEvent(name, "the zone that left its listing is confirmed gone")
 	}
-	for _, id := range o.invisible {
-		if t, ok := e.seen[id]; ok {
-			delete(e.seen, id)
-			e.adminEvent(id, fmt.Sprintf("the tunnel %s in account %s is confirmed gone; its connector is removed", t.name, t.account))
+	for _, u := range w.invisible {
+		if t, ok := e.seen[u.id]; ok {
+			delete(e.seen, u.id)
+			e.adminEvent(u.id, fmt.Sprintf("the tunnel %s in account %s is confirmed gone; its connector is removed", t.name, t.account))
 		}
 	}
-	if !o.guard && len(o.vanished) == 0 && len(o.stale) == 0 && len(o.invisible) == 0 {
+	if len(o.waiting) == 0 {
 		e.adminEvent("", "the last state showed nothing that waits for a confirmation")
 	}
+	return nonNil(cloneWaiting(o.waiting)), nil
+}
+
+// withdrawOffer ends the offer a confirmation used, in the state served too.
+// The caller holds the cycle lock.
+func (e *Engine) withdrawOffer() {
+	e.offered = offer{}
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	e.state.Waiting, e.state.Offer = []Waiting{}, ""
 }
 
 // Adopt asks an enforcing DNS run to take over the record that holds name, a

@@ -102,6 +102,29 @@ func TestAConfirmationAcceptsAZoneThatLeftItsListing(t *testing.T) {
 		"confirmed gone, the zone no longer holds its account back")
 }
 
+// Pin 5: a confirmation forgets the stale zones it was offered and no other,
+// also not the same zone through another credential.
+func TestConfirmGoneForgetsOnlyTheZonesOffered(t *testing.T) {
+	z := newZoneCache()
+	for _, cred := range []string{"cred1", "cred2"} {
+		for _, name := range []string{"a.example", "b.example"} {
+			z.credential(cred).stale[name] = cfapi.Zone{ID: name + "-" + cred, Name: name, Status: "active", AccountID: "acc1"}
+		}
+	}
+	for _, name := range []string{"a.example", "b.example"} {
+		z.served[name] = planner.Zone{ID: name + "-cred1", Name: name, AccountID: "acc1", CredentialID: "cred1"}
+	}
+
+	names := z.confirmGone([]staleZone{{credential: "cred1", name: "a.example"}, {credential: "cred1", name: "c.example"}})
+
+	require.Equal(t, []string{"a.example"}, names, "a zone that is not stale is not confirmed")
+	require.NotContains(t, z.byCred["cred1"].stale, "a.example")
+	require.NotContains(t, z.served, "a.example")
+	require.Contains(t, z.byCred["cred1"].stale, "b.example")
+	require.Contains(t, z.served, "b.example")
+	require.Len(t, z.byCred["cred2"].stale, 2, "the listing of another credential is its own")
+}
+
 // A node with no memory of the zone, after a restart: the account has none.
 func TestAnAccountWithoutAZoneKeepsItsTunnel(t *testing.T) {
 	e, view, tun := servingThrough(t)

@@ -86,7 +86,7 @@ func (s *Server) postApply(c *gin.Context) {
 		s.fail(c, err)
 		return
 	}
-	if err := s.engine.Apply(c.Request.Context(), req.ConfirmDeletes); err != nil {
+	if _, err := s.engine.Apply(c.Request.Context(), req.ConfirmDeletes, ""); err != nil {
 		s.fail(c, err)
 		return
 	}

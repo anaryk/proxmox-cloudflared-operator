@@ -72,9 +72,16 @@ type fakeInventory struct {
 	calls       int
 	deadline    time.Time // of the last call
 	hasDeadline bool
+	onRefresh   func()
 }
 
 func (f *fakeInventory) Refresh(ctx context.Context) inventory.Snapshot {
+	f.mu.Lock()
+	hook := f.onRefresh
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -85,6 +92,12 @@ func (f *fakeInventory) Refresh(ctx context.Context) inventory.Snapshot {
 		return s
 	}
 	return f.snap
+}
+
+func (f *fakeInventory) hook(fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onRefresh = fn
 }
 
 func (f *fakeInventory) set(s inventory.Snapshot) {
@@ -482,9 +495,17 @@ func (e *env) cycle() State {
 	return e.eng.Cycle(e.t.Context())
 }
 
-func (e *env) apply(confirm bool) {
+// apply asks for what pco apply does: with confirm, a confirmation of what
+// the last state showed.
+func (e *env) apply(confirm bool) ApplyResult {
 	e.t.Helper()
-	require.NoError(e.t, e.eng.Apply(e.t.Context(), confirm))
+	offer := ""
+	if confirm {
+		offer = e.eng.State().Offer
+	}
+	res, err := e.eng.Apply(e.t.Context(), confirm, offer)
+	require.NoError(e.t, err)
+	return res
 }
 
 // enforce leaves observe-only mode without a cycle.

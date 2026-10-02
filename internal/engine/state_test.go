@@ -366,7 +366,10 @@ func TestConcurrentApplyAndCycle(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Go(func() { e.eng.Cycle(t.Context()) })
-		wg.Go(func() { errs <- e.eng.Apply(t.Context(), i%2 == 0) })
+		wg.Go(func() {
+			_, err := e.eng.Apply(t.Context(), i%2 == 0, "")
+			errs <- err
+		})
 		wg.Go(func() {
 			// Once another adoption went through, the name is in nobody's way.
 			if err := e.eng.Adopt(t.Context(), "api.example.com"); !errors.Is(err, ErrNotFound) {
@@ -412,7 +415,10 @@ func TestCallsWaitForTheCycleLockUntilTheirContextEnds(t *testing.T) {
 			}
 			return ctx.Err()
 		},
-		"Apply":            func(ctx context.Context) error { return e.eng.Apply(ctx, true) },
+		"Apply": func(ctx context.Context) error {
+			_, err := e.eng.Apply(ctx, true, "")
+			return err
+		},
 		"Adopt":            func(ctx context.Context) error { return e.eng.Adopt(ctx, "www.example.com") },
 		"RemoveCredential": func(ctx context.Context) error { return e.eng.RemoveCredential(ctx, testCred) },
 	} {

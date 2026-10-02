@@ -47,9 +47,7 @@ func (c *cycleRun) reconcileDNS() {
 		}
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
-	c.offer.guard = slices.ContainsFunc(res.Actions, func(a reconcile.Action) bool {
-		return a.Kind == reconcile.DeleteRecord && !a.Applied && strings.HasPrefix(a.Held, reconcile.HeldByGuard)
-	})
+	c.offerRemovals(res.Actions)
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
@@ -61,6 +59,29 @@ func (c *cycleRun) reconcileDNS() {
 		return
 	}
 	c.writerStill("after the DNS run")
+}
+
+// offerRemovals offers the removals the mass delete guard holds, when it
+// holds any. A confirmation lets through every pending removal the guard
+// counted, those still in their grace too, so all of them are offered.
+func (c *cycleRun) offerRemovals(actions []reconcile.Action) {
+	var guard string
+	var names []string
+	for _, a := range actions {
+		if a.Kind != reconcile.DeleteRecord || a.Applied {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(a.Held, reconcile.HeldByGuard):
+			guard = a.Held
+			names = append(names, a.Target)
+		case strings.HasPrefix(a.Held, reconcile.HeldInGrace):
+			names = append(names, a.Target)
+		}
+	}
+	if guard != "" {
+		c.offer.guard, c.offer.removals = guard, names
+	}
 }
 
 // publishedThrough maps every hostname with a record plan to the state of the

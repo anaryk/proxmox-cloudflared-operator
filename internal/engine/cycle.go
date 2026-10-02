@@ -92,6 +92,8 @@ func (c *cycleRun) run() State {
 	}
 	c.saveMemory()
 	c.notePending(c.adoptWaits)
+	c.st.Waiting = c.offer.waiting(c.st.Routes)
+	c.st.Offer = offerOf(c.st.Waiting)
 	return c.st.normalized()
 }
 

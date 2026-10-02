@@ -119,14 +119,14 @@ func (f *fakeEngine) Trigger() {
 	f.triggers++
 }
 
-func (f *fakeEngine) Apply(ctx context.Context, confirmDeletes bool) error {
+func (f *fakeEngine) Apply(ctx context.Context, confirmDeletes bool, _ string) (engine.ApplyResult, error) {
 	f.record(ctx, fmt.Sprintf("apply:%t", confirmDeletes))
 	if f.hook != nil {
 		if err := f.hook(ctx); err != nil {
-			return err
+			return engine.ApplyResult{}, err
 		}
 	}
-	return f.failure()
+	return engine.ApplyResult{}, f.failure()
 }
 
 func (f *fakeEngine) Adopt(ctx context.Context, name string) error {

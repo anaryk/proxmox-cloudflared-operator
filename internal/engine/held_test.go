@@ -10,6 +10,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -109,6 +110,27 @@ func TestTheRoutesOfATwoCredentialFreezeShowFrozen(t *testing.T) {
 	r := route(st, "www.example.com")
 	require.Equal(t, RouteFrozen, r.State)
 	require.Equal(t, "account frozen: zone example.com is visible through credentials cred1 and cred2 and none of them served it before", r.Reason)
+}
+
+// Pin 4: a route that lost its hostname to another owner is served by nobody
+// either way; in a frozen account it still says so.
+func TestARouteInConflictStaysInConflictInAFrozenAccount(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), guest(102, "web-2", "www.example.com -> :8080")))
+	e.cycle()
+	e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.com": "cred9"} })
+
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	states := map[string]planner.RouteState{}
+	for _, r := range st.Routes {
+		if r.Hostname == "www.example.com" {
+			states[r.Owner] = r.State
+		}
+	}
+	require.Equal(t, map[string]planner.RouteState{"qemu/101": RouteFrozen, "qemu/102": planner.StateConflict}, states)
 }
 
 // Item 6: a memory of another install is not this one's.

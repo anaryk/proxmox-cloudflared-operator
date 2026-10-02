@@ -69,6 +69,33 @@ func (e *Engine) memory() store.EngineMemory {
 	return m
 }
 
+// memoryAccepting is the memory as it is once the engine accepted o: the
+// guests are gone, and the zones still stale and the tunnels still seen are
+// forgotten, a zone also as served through the credential it left.
+func (e *Engine) memoryAccepting(o confirmable) store.EngineMemory {
+	m := e.memory()
+	confirmed := make(map[staleZone]bool, len(o.stale))
+	m.Stale = slices.DeleteFunc(m.Stale, func(z store.RememberedZone) bool {
+		sz := staleZone{credential: z.CredentialID, name: z.Name}
+		if slices.Contains(o.stale, sz) {
+			confirmed[sz] = true
+		}
+		return confirmed[sz]
+	})
+	m.Served = slices.DeleteFunc(m.Served, func(z store.RememberedZone) bool {
+		return confirmed[staleZone{credential: z.CredentialID, name: z.Name}]
+	})
+	m.Tunnels = slices.DeleteFunc(m.Tunnels, func(t store.SeenTunnel) bool {
+		return slices.ContainsFunc(o.invisible, func(u unseenTunnel) bool { return u.id == t.ID })
+	})
+	for _, ref := range o.vanished {
+		if !slices.Contains(m.GoneGuests, ref) {
+			m.GoneGuests = append(m.GoneGuests, ref)
+		}
+	}
+	return m
+}
+
 // saveMemory stores what the engine remembers, once it was read; the store
 // writes only a change. It reports whether the memory is safe in the store.
 func (c *cycleRun) saveMemory() bool {
