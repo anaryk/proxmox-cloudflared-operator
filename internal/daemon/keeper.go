@@ -65,6 +65,8 @@ func (k *keeper) check(ctx context.Context) time.Duration {
 		k.report(engine.EgressCheck{View: engine.EgressView{State: engine.EgressOff, Since: since}})
 	case errors.Is(err, egress.ErrChanged):
 		if wait := k.lastReload.Add(reloadEvery).Sub(k.now()); wait > 0 && !k.lastReload.After(k.now()) {
+			// Shown as it is until it is loaded again, which holds nothing.
+			k.report(engine.EgressCheck{View: engine.EgressView{State: changedState(err)}})
 			return wait
 		}
 		k.reload(ctx, err)
@@ -82,16 +84,22 @@ func (k *keeper) reload(ctx context.Context, changed error) {
 	k.lastReload = k.now()
 	what := strings.TrimPrefix(changed.Error(), egress.ErrChanged.Error()+": ")
 	if err := k.table.Reapply(ctx); err != nil {
-		state := engine.EgressChanged
-		if errors.Is(changed, egress.ErrNotLoaded) {
-			state = engine.EgressNotLoaded
-		}
+		state := changedState(changed)
 		k.log.Error().Err(err).Str("found", what).Msg("the egress table was changed or removed outside pco and could not be loaded again")
 		k.report(engine.EgressCheck{View: engine.EgressView{State: state}, Failed: err.Error(), Holds: true})
 		return
 	}
 	k.log.Warn().Str("found", what).Msg("the egress table was changed or removed outside pco and was loaded again")
 	k.report(engine.EgressCheck{View: engine.EgressView{State: engine.EgressOn}, Reloaded: what})
+}
+
+// changedState is the state of a table that is gone or not the one pco
+// applied.
+func changedState(changed error) string {
+	if errors.Is(changed, egress.ErrNotLoaded) {
+		return engine.EgressNotLoaded
+	}
+	return engine.EgressChanged
 }
 
 func (k *keeper) report(c engine.EgressCheck) {

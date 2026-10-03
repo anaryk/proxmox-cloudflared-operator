@@ -91,7 +91,7 @@ func Load(ctx context.Context, n Nft, connectorUID uint32, resolvers, blocked []
 	case errors.Is(err, ErrNotLoaded), errors.Is(err, ErrUnreadable):
 	case err != nil:
 		return false, err
-	case len(l.differences(connectorUID, nil)) == 0 && !l.lacksResolvers(resolvers):
+	case len(l.differences(connectorUID, nil)) == 0 && !l.lacksResolvers(resolvers, blocked):
 		return false, nil
 	}
 	if err := n.Apply(ctx, Base(connectorUID, resolvers, blocked)); err != nil {
@@ -101,10 +101,11 @@ func Load(ctx context.Context, n Nft, connectorUID uint32, resolvers, blocked []
 }
 
 // lacksResolvers reports whether the live table has no resolver although
-// some are given.
-func (l *listed) lacksResolvers(given []netip.Addr) bool {
+// some are given that are not blocked.
+func (l *listed) lacksResolvers(given, blocked []netip.Addr) bool {
 	c, _ := l.contents()
-	return len(c.resolvers) == 0 && len(normalizeAddrs(given)) > 0
+	want := contents{resolvers: normalizeAddrs(given)}.blocking(normalizeAddrs(blocked))
+	return len(c.resolvers) == 0 && len(want.resolvers) > 0
 }
 
 // Unload removes the table, if there is one.

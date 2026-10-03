@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"sync"
 	"time"
@@ -47,8 +48,9 @@ type egressFilter struct {
 	uid       func() (uint32, error)
 	resolvers func() ([]netip.Addr, error)
 
-	mu sync.Mutex
-	f  *egress.Filter
+	mu       sync.Mutex
+	f        *egress.Filter
+	confined uint32 // the uid the filter confines
 }
 
 func newEgressFilter(nft egress.Nft, local string, uid func() (uint32, error), resolvers func() ([]netip.Addr, error)) *egressFilter {
@@ -66,7 +68,7 @@ func (k *egressFilter) filter() (*egress.Filter, error) {
 	if err != nil {
 		return nil, err
 	}
-	k.f = egress.New(k.nft, uid, k.resolvers, k.ov)
+	k.f, k.confined = egress.New(k.nft, uid, k.resolvers, k.ov), uid
 	return k.f, nil
 }
 
@@ -96,7 +98,9 @@ func (k *egressFilter) Remove(ctx context.Context, addr netip.Addr) error {
 }
 
 // Verify verifies the live table; without a filter, it says that the filter
-// is off while it is, and why there is none otherwise.
+// is off while it is, and why there is none otherwise. It looks the connector
+// user up first: one made anew has another uid, which the table does not
+// confine until it is loaded again.
 func (k *egressFilter) Verify(ctx context.Context) error {
 	f, err := k.filter()
 	if err != nil {
@@ -105,7 +109,27 @@ func (k *egressFilter) Verify(ctx context.Context) error {
 		}
 		return err
 	}
+	if err := k.rebind(f); err != nil {
+		return err
+	}
 	return f.Verify(ctx)
+}
+
+// rebind gives the filter the uid the connector user has now, and says so
+// when it changed.
+func (k *egressFilter) rebind(f *egress.Filter) error {
+	uid, err := k.uid()
+	if err != nil {
+		return err
+	}
+	k.mu.Lock()
+	old := k.confined
+	k.confined = uid
+	k.mu.Unlock()
+	if f.Rebind(uid) {
+		return fmt.Errorf("%w: the connector user has uid %d, not %d", egress.ErrChanged, uid, old)
+	}
+	return nil
 }
 
 func (k *egressFilter) Reapply(ctx context.Context) error {

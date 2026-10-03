@@ -192,6 +192,19 @@ func (f *Filter) Verify(ctx context.Context) error {
 	return fmt.Errorf("%w: %s", ErrChanged, strings.Join(d, "; "))
 }
 
+// Rebind makes the filter confine the processes of another uid, as after
+// the connector user was made anew, and reports whether the uid changed. The
+// live table confines the old one until the next Set or Reapply.
+func (f *Filter) Rebind(connectorUID uint32) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if connectorUID == f.uid {
+		return false
+	}
+	f.uid, f.stale = connectorUID, true
+	return true
+}
+
 // Reapply loads the table again with what the filter was last given, also
 // when nothing changed since: after Verify found it gone, dormant or not the
 // one applied. While the filter is switched off it loads nothing.

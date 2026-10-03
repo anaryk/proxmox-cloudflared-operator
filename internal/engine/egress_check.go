@@ -53,9 +53,10 @@ func (e *Engine) NoteEgress(c EgressCheck) {
 	prev := e.notes.view
 	if c.View.State != "" {
 		e.notes.view = c.View
-		if !c.Holds {
-			e.notes.fault = ""
-		}
+	}
+	// Only a table found in place, or switched off, ends a hold.
+	if !c.Holds && (c.View.State == EgressOn || c.View.State == EgressOff) {
+		e.notes.fault = ""
 	}
 	switch next := e.notes.view.State; {
 	case next == prev.State:

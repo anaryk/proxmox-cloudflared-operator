@@ -126,6 +126,27 @@ func TestTheStateShowsAFilterSwitchedOffFromTheStart(t *testing.T) {
 	require.Equal(t, engine.EgressView{State: engine.EgressOff, Since: since}, st.Egress)
 }
 
+// The connector user was deleted and made again with another uid: the check
+// finds the table confining the old one and loads it for the new one.
+func TestACheckLooksTheConnectorUserUpAgain(t *testing.T) {
+	nft := newFakeNft()
+	var uid atomic.Uint32
+	uid.Store(testConnectorUID)
+	f := newEgressFilter(nft, t.TempDir(), func() (uint32, error) { return uid.Load(), nil },
+		func() ([]netip.Addr, error) { return nil, nil })
+	require.NoError(t, f.Set(t.Context(), []egress.Target{{Addr: netip.MustParseAddr(guestAddress), Port: 8080}}))
+
+	uid.Store(testConnectorUID + 1)
+	err := f.Verify(t.Context())
+
+	require.ErrorIs(t, err, egress.ErrChanged)
+	require.ErrorContains(t, err, "the connector user has uid 987, not 986")
+	require.NoError(t, f.Reapply(t.Context()))
+	last := nft.applied()[len(nft.applied())-1]
+	require.Contains(t, last, "meta skuid 987 jump connector")
+	require.Contains(t, last, guestAddress+" . 8080")
+}
+
 func TestTheFilterOfAnUnknownUserIsNoFailureWhileItIsOff(t *testing.T) {
 	w := newWorld(t)
 	w.deps.ConnectorUID = func() (uint32, error) { return 0, errors.New("no such user") }

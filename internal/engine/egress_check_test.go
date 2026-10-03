@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +93,38 @@ func TestATableThatCouldNotBeLoadedAgainHoldsTheTunnelRuns(t *testing.T) {
 
 	require.Empty(t, st.Problems)
 	require.Greater(t, len(e.writes()), writes)
+}
+
+// A table found changed again while pco waits to load it: the state says
+// so, and a hold that stands stays until a check finds the table in place.
+func TestATableFoundChangedAgainKeepsTheHold(t *testing.T) {
+	e := published(t)
+	e.eng.NoteEgress(EgressCheck{View: EgressView{State: EgressNotLoaded}, Failed: "nft -f -: exit status 1", Holds: true})
+
+	e.eng.NoteEgress(EgressCheck{View: EgressView{State: EgressChanged}})
+
+	require.Equal(t, EgressView{State: EgressChanged}, e.eng.State().Egress)
+	require.NotEmpty(t, e.eng.egressFault())
+	e.eng.NoteEgress(EgressCheck{View: EgressView{State: EgressOn}})
+	require.Empty(t, e.eng.egressFault())
+
+	t.Run("and it holds nothing by itself", func(t *testing.T) {
+		e.eng.NoteEgress(EgressCheck{View: EgressView{State: EgressNotLoaded}})
+		require.Empty(t, e.eng.egressFault())
+	})
+}
+
+// A check that comes while a cycle runs is what the state shows after it.
+func TestACheckDuringACycleOutlastsIt(t *testing.T) {
+	e := published(t)
+	off := EgressView{State: EgressOff, Since: t0}
+	var once sync.Once
+	e.res.hook(func() { once.Do(func() { e.eng.NoteEgress(EgressCheck{View: off}) }) })
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	require.Equal(t, off, e.eng.State().Egress)
 }
 
 // A table that cannot be listed says nothing about the filter: a problem line

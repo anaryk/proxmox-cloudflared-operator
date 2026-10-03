@@ -143,7 +143,10 @@ func TestTheKeeperLoadsTheTableAtMostOnceEveryFiveSeconds(t *testing.T) {
 
 	require.Equal(t, 4*time.Second, wait)
 	require.Equal(t, 1, r.table.loads())
-	require.Len(t, r.notes, 1)
+	require.Equal(t, []engine.EgressCheck{
+		{View: on, Reloaded: "the table has flags dormant"},
+		{View: engine.EgressView{State: engine.EgressChanged}},
+	}, r.notes, "what the table is meanwhile is shown, and holds nothing")
 
 	r.now = r.now.Add(wait)
 	require.Zero(t, r.k.check(t.Context()))

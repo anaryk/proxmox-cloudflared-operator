@@ -181,9 +181,9 @@ func egressText(v engine.EgressView) string {
 	case engine.EgressOff:
 		return "off: the connectors are not confined"
 	case engine.EgressNotLoaded:
-		return "not loaded, and pco could not load it again: the connectors are not confined"
+		return "not loaded: the connectors are not confined"
 	case engine.EgressChanged:
-		return "changed, and pco could not load it again: the connectors may not be confined"
+		return "not the one pco loads: the connectors may not be confined"
 	}
 	return v.State
 }

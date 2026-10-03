@@ -106,6 +106,48 @@ func TestLoadReplacesAnIntactTableWithoutResolversWhenItIsGivenSome(t *testing.T
 	})
 }
 
+// The node's only resolver is blocked: a table without resolvers is what
+// pco loads, and its targets stay.
+func TestLoadKeepsATableWithoutResolversWhenTheGivenOnesAreBlocked(t *testing.T) {
+	resolvers := []netip.Addr{addr("192.168.1.1")}
+	n := &fakeNft{}
+	n.setLive(realListing(t, "1.1.3").with(t, targets("10.0.0.5:80"), nil).withBlocked(t, addr("192.168.1.1")).bytes(t))
+
+	loaded, err := Load(t.Context(), n, testUID, resolvers, resolvers)
+
+	require.NoError(t, err)
+	require.False(t, loaded)
+	require.Empty(t, n.applied())
+}
+
+// The connector user was deleted and made again, with another uid: the
+// table must confine the new one.
+func TestRebindConfinesTheNewUID(t *testing.T) {
+	f, n, r, _ := newTestFilter(t)
+	r.set(addr("192.168.1.1"))
+	require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443")))
+	n.setLive(realListing(t, "1.1.3").bytes(t))
+	require.NoError(t, f.Verify(t.Context()))
+	n.reset()
+
+	require.False(t, f.Rebind(testUID))
+	require.True(t, f.Rebind(testUID+1))
+
+	require.ErrorIs(t, f.Verify(t.Context()), ErrChanged, "the table confines the old uid")
+	require.NoError(t, f.Reapply(t.Context()))
+	require.Len(t, n.applied(), 1)
+	require.Contains(t, n.applied()[0], "meta skuid 1000 jump connector")
+	require.Contains(t, n.applied()[0], "10.0.0.6 . 443")
+
+	t.Run("also by the next Set of the same targets", func(t *testing.T) {
+		require.True(t, f.Rebind(testUID+2))
+		n.reset()
+		require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443")))
+		require.Len(t, n.applied(), 1)
+		require.Contains(t, n.applied()[0], "meta skuid 1001 jump connector")
+	})
+}
+
 func TestReadLiveWithoutTheConnectorUserComparesTheRest(t *testing.T) {
 	n := &fakeNft{}
 	n.setLive(realListing(t, "1.1.3").bytes(t))

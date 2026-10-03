@@ -425,10 +425,9 @@ func checkEgress(st engine.State) Finding {
 		}
 		return fail("egress", "the egress filter is switched off since "+since+": the connectors are not confined", "pco egress on")
 	case engine.EgressNotLoaded:
-		return fail("egress", "the egress table is not loaded, and pco could not load it again: the connectors are not confined", fixTable)
+		return fail("egress", "the egress table is not loaded: the connectors are not confined", fixTable)
 	case engine.EgressChanged:
-		return fail("egress", "the egress table is not the one pco loads, and pco could not load it again: "+
-			"the connectors may not be confined", fixTable)
+		return fail("egress", "the egress table is not the one pco loads: the connectors may not be confined", fixTable)
 	}
 	return warn("egress", fmt.Sprintf("the daemon found the egress filter %q", st.Egress.State), fixTable)
 }
