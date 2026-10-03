@@ -380,7 +380,7 @@ routes of its tunnel are unreachable for a short moment while it reconnects:
 
     systemctl restart pco-cloudflared@<tunnel id>
 
-`pco doctor` warns when `cloudflared` is more than a year old.
+`pco doctor` warns when `cloudflared` is more than ten months old.
 
 ## One node
 

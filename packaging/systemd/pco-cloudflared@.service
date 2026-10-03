@@ -2,7 +2,7 @@
 Description=pco cloudflared connector (tunnel %i)
 Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
 Requires=pco-egress.service
-After=network-online.target pco-netns.service pco-egress.service
+After=network-online.target pco-egress.service
 Wants=network-online.target
 
 [Service]

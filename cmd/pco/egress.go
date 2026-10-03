@@ -229,9 +229,9 @@ func (a *app) renderEgress(w io.Writer, v egressView) error {
 	case v.off:
 		s.printf("The egress filter is switched off since %s: the connectors are not confined. pco egress on switches it back on.\n", a.since(v.since))
 	case !v.loaded:
-		s.println("The egress filter is on, but its table is not loaded: the connectors are not confined. pco egress on loads it.")
+		s.println("The egress filter is on, but its table is not loaded: the connectors are not confined. pco egress load loads it.")
 	case len(v.live.Differences) > 0:
-		s.println("The egress filter is on, but its table is not as pco loads it, and the connectors may not be confined. pco egress on loads it again:")
+		s.println("The egress filter is on, but its table is not as pco loads it, and the connectors may not be confined. pco egress load loads it again:")
 		for _, d := range v.live.Differences {
 			s.printf("  %s\n", d)
 		}

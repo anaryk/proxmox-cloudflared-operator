@@ -86,7 +86,7 @@ checks are:
 | Check | Fails or warns when |
 |---|---|
 | `cycle` | The last cycle is more than three poll intervals old (warning) or six (failure): the daemon is stuck. `journalctl -u pco` says why. |
-| `cloudflared` | It does not run, did not answer in time, or is more than a year old; the age counts from the first day of the month in its version number. |
+| `cloudflared` | It does not run, did not answer in time, or is more than ten months old; the age counts from the first day of the month in its version number. |
 | `outbound` | TCP to `region1.v2.argotunnel.com:7844` cannot be made. A warning when every connector is connected anyway, because they may be on UDP. Allow outbound TCP and UDP to port 7844. |
 | `proxmox` | The Proxmox API does not answer with the token of pco, or the version is older than 8.4. |
 | `egress` | The egress filter is switched off, or its table is not loaded or not the one pco loads: a failure, because the connectors are then not confined. A warning while the daemon has not checked it yet. |

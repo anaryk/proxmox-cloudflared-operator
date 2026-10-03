@@ -246,10 +246,10 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			Fix: "run cloudflared --version by hand to see what holds it up"}},
 		{"a version that cannot be read", nil, func(env *fakeEnv) { env.version = "cloudflared version DEV" },
 			Finding{Check: "cloudflared", Level: LevelWarn, Detail: `cannot tell the version from "cloudflared version DEV"`, Fix: "update cloudflared"}},
-		{"a cloudflared more than a year old", nil, func(env *fakeEnv) { env.version = "cloudflared version 2025.9.2 (built 2025-09-30)" },
-			Finding{Check: "cloudflared", Level: LevelWarn, Detail: "cloudflared 2025.9.2 is more than a year old", Fix: "update cloudflared"}},
-		{"a cloudflared less than a year old", nil, func(env *fakeEnv) { env.version = "cloudflared version 2025.11.0" },
-			Finding{Check: "cloudflared", Level: LevelOK, Detail: "cloudflared 2025.11.0"}},
+		{"a cloudflared more than ten months old", nil, func(env *fakeEnv) { env.version = "cloudflared version 2025.11.2 (built 2025-11-30)" },
+			Finding{Check: "cloudflared", Level: LevelWarn, Detail: "cloudflared 2025.11.2 is more than ten months old", Fix: "update cloudflared"}},
+		{"a cloudflared less than ten months old", nil, func(env *fakeEnv) { env.version = "cloudflared version 2026.1.0" },
+			Finding{Check: "cloudflared", Level: LevelOK, Detail: "cloudflared 2026.1.0"}},
 		{"a connector unit that is not running", nil, func(env *fakeEnv) {
 			env.inactive = map[string]bool{connector.UnitName(tunnelID): true}
 		}, Finding{Check: "connector pco-abc123 in account acc1", Level: LevelFail, Detail: "pco-cloudflared@" + tunnelID + ".service is not running",

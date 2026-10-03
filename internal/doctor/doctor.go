@@ -267,8 +267,8 @@ func checkCloudflared(ctx context.Context, env Env) Finding {
 	month, _ := strconv.Atoi(m[2])
 	version := m[1] + "." + m[2] + "." + m[3]
 	released := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
-	if env.Now().After(released.AddDate(1, 0, 0)) {
-		return warn("cloudflared", fmt.Sprintf("cloudflared %s is more than a year old", version), "update cloudflared")
+	if env.Now().After(released.AddDate(0, 10, 0)) {
+		return warn("cloudflared", fmt.Sprintf("cloudflared %s is more than ten months old", version), "update cloudflared")
 	}
 	return ok("cloudflared", "cloudflared "+version)
 }

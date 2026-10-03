@@ -1,4 +1,4 @@
-The egress filter is on, but its table is not as pco loads it, and the connectors may not be confined. pco egress on loads it again:
+The egress filter is on, but its table is not as pco loads it, and the connectors may not be confined. pco egress load loads it again:
   the table has flags "dormant"
 
 Targets:
