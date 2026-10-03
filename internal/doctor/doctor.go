@@ -200,6 +200,8 @@ func checkCredential(c engine.CredentialView, now time.Time) Finding {
 	switch {
 	case !c.Checked:
 		return warn(check, "not checked yet", "pco credential check "+c.ID)
+	case r.Unanswered():
+		return warn(check, "the token could not be checked: "+failedChecks(r), "once Cloudflare answers, run pco credential check "+c.ID)
 	case !r.Usable:
 		return fail(check, "the token cannot be used: "+failedChecks(r), "grant what is missing, then pco credential check "+c.ID)
 	case r.Token.ExpiresOn == nil:
@@ -227,8 +229,8 @@ func failedChecks(r credentials.Report) string {
 		if c.Scope != "" {
 			what += " on " + c.Scope
 		}
-		if c.Detail != "" {
-			what += ": " + c.Detail
+		if reason := c.Reason(); reason != "" {
+			what += ": " + reason
 		}
 		out = append(out, what)
 	}

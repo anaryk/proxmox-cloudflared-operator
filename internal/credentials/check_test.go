@@ -666,6 +666,7 @@ func TestFailedDeleteReportsTheLeftoverProbe(t *testing.T) {
 		name                       string
 		deleteErr                  error
 		recordDetail, tunnelDetail string
+		unanswered                 bool
 	}{
 		{
 			name:         "refused",
@@ -684,6 +685,7 @@ func TestFailedDeleteReportsTheLeftoverProbe(t *testing.T) {
 			deleteErr:    &cfapi.Error{Status: 500, Message: "internal error"},
 			recordDetail: "probe record left behind: " + probeRecord + " (" + (&cfapi.Error{Status: 500, Message: "internal error"}).Error() + ")",
 			tunnelDetail: "probe tunnel left behind: " + probeTunnel + " (" + (&cfapi.Error{Status: 500, Message: "internal error"}).Error() + ")",
+			unanswered:   true,
 		},
 	}
 	for _, tc := range tests {
@@ -693,8 +695,10 @@ func TestFailedDeleteReportsTheLeftoverProbe(t *testing.T) {
 
 			got := newChecker().Run(t.Context(), spy, true)
 
-			require.Equal(t, failed(CapDNSWrite, exampleCom, tc.recordDetail), find(t, got, CapDNSWrite, exampleCom))
-			require.Equal(t, failed(CapTunnelWrite, acme, tc.tunnelDetail), find(t, got, CapTunnelWrite, acme))
+			wantRecord, wantTunnel := failed(CapDNSWrite, exampleCom, tc.recordDetail), failed(CapTunnelWrite, acme, tc.tunnelDetail)
+			wantRecord.Unanswered, wantTunnel.Unanswered = tc.unanswered, tc.unanswered
+			require.Equal(t, wantRecord, find(t, got, CapDNSWrite, exampleCom))
+			require.Equal(t, wantTunnel, find(t, got, CapTunnelWrite, acme))
 			require.False(t, got.Usable)
 
 			records := f.RecordsIn("zone1")

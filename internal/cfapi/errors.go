@@ -59,10 +59,10 @@ type transportError struct{ err error }
 func (e transportError) Error() string { return e.err.Error() }
 func (e transportError) Unwrap() error { return e.err }
 
-// unanswered reports whether err leaves open what the server would have
+// IsUnanswered reports whether err leaves open what the server would have
 // answered: the request got no whole answer, the caller gave up, it was held
 // back or refused for the rate limit, or the server failed on it.
-func unanswered(err error) bool {
+func IsUnanswered(err error) bool {
 	var te transportError
 	var apiErr *Error
 	return errors.As(err, &te) || IsRateLimited(err) ||

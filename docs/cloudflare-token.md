@@ -105,7 +105,10 @@ the result of its own daily check of each stored token for `pco credential list`
       ✗ dns.read on example.com
           grant Zone > DNS > Read on example.com
 
-  Any other failure is shown as the error that Cloudflare or the network gave.
+  Any other failure is shown as the error that Cloudflare or the network gave. When
+  Cloudflare did not answer, with a network error, a server error or a rate limit, the
+  line is marked `?` and starts with `Cloudflare did not answer`: that says nothing about
+  the token, and `Usable` reads `not known, Cloudflare did not answer`.
 - `Usable: yes` means the token is active, at least one zone is active, and every check
   that concerns an active zone or its account passed. A zone that is not active, for
   example one that is pending, fails its own line and does not make the token unusable
@@ -130,7 +133,9 @@ stores it.
 (`usable`, `problem` or `unknown`) and a note, such as the first failed check or the
 expiry. `pco status` shows the same in its credentials table. The daemon checks every
 token again about once a day, and again after 15 minutes when a check found it
-unusable; those checks only read.
+unusable; those checks only read. A check that got no answer from Cloudflare leaves the
+result of the one before in place, adds a warning to the event log and is repeated after
+15 minutes.
 
 ## Several accounts and zone pins
 

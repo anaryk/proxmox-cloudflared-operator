@@ -259,20 +259,26 @@ func (a *app) renderChecklist(s *screen, v engine.CredentialView) {
 
 	for _, c := range r.Checks {
 		mark := "✗"
-		if c.OK {
+		switch {
+		case c.OK:
 			mark = "✓"
+		case c.Unanswered:
+			mark = "?"
 		}
 		s.printf("  %s %s\n", mark, checkName(c))
-		if !c.OK && c.Detail != "" {
-			s.printf("      %s\n", c.Detail)
+		if reason := c.Reason(); reason != "" {
+			s.printf("      %s\n", reason)
 		}
 	}
 	if len(r.Checks) > 0 {
 		s.println("")
 	}
-	if r.Usable {
+	switch {
+	case r.Usable:
 		s.println("Usable:    yes")
-	} else {
+	case r.Unanswered():
+		s.println("Usable:    not known, Cloudflare did not answer")
+	default:
 		s.println("Usable:    no")
 	}
 	if !r.Deep && v.ID != "" {
@@ -322,10 +328,10 @@ func zoneNames(r credentials.Report) string {
 
 // credentialState is "usable" for a credential whose last check passed,
 // "problem" for one that failed it, and "unknown" for one that was never
-// checked.
+// checked or whose check got no answer.
 func credentialState(v engine.CredentialView) string {
 	switch {
-	case !v.Checked:
+	case !v.Checked, v.Report.Unanswered():
 		return "unknown"
 	case v.Report.Usable:
 		return "usable"
@@ -344,8 +350,8 @@ func (a *app) credentialNote(v engine.CredentialView) string {
 		if i := firstFailed(v.Report); i >= 0 {
 			c := v.Report.Checks[i]
 			note := checkName(c)
-			if c.Detail != "" {
-				note += ": " + c.Detail
+			if reason := c.Reason(); reason != "" {
+				note += ": " + reason
 			}
 			notes = append(notes, note)
 		}

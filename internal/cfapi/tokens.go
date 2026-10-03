@@ -24,14 +24,14 @@ func (c *Client) VerifyToken(ctx context.Context) (TokenStatus, error) {
 	switch {
 	case userErr == nil:
 		return st, nil
-	case unanswered(userErr):
+	case IsUnanswered(userErr):
 		return TokenStatus{}, fmt.Errorf("verifying token: %w", userErr)
 	}
 	st, accountErr := c.verifyAsAccountToken(ctx)
 	switch {
 	case accountErr == nil:
 		return st, nil
-	case unanswered(accountErr):
+	case IsUnanswered(accountErr):
 		// The account form may still verify it: the error is one to try again.
 		return TokenStatus{}, fmt.Errorf("verifying token: as a user token: %s; as an account token: %w", userErr.Error(), accountErr)
 	}
@@ -66,7 +66,7 @@ func (c *Client) verifyAsAccountToken(ctx context.Context) (TokenStatus, error) 
 		switch {
 		case err == nil:
 			return st, nil
-		case unanswered(err):
+		case IsUnanswered(err):
 			return TokenStatus{}, fmt.Errorf("account %s: %w", a.ID, err)
 		}
 		refused = append(refused, fmt.Errorf("account %s: %w", a.ID, err))

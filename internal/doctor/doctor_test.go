@@ -202,6 +202,25 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			}
 		}, nil, Finding{Check: "credential cred1", Level: LevelFail, Detail: "the token cannot be used: dns.write on example.com: grant Zone > DNS > Edit on example.com",
 			Fix: "grant what is missing, then pco credential check cred1"}},
+		{"a credential whose check got no answer", func(st *engine.State) {
+			st.Credentials[0].Report.Usable = false
+			st.Credentials[0].Report.Checks = []credentials.Check{
+				{Capability: credentials.CapToken, OK: true},
+				{Capability: credentials.CapZones, Detail: "cloudflare api: HTTP 503: unavailable", Unanswered: true},
+			}
+		}, nil, Finding{Check: "credential cred1", Level: LevelWarn,
+			Detail: "the token could not be checked: zones: Cloudflare did not answer (cloudflare api: HTTP 503: unavailable)",
+			Fix:    "once Cloudflare answers, run pco credential check cred1"}},
+		{"a credential with a refusal beside a missing answer", func(st *engine.State) {
+			st.Credentials[0].Report.Usable = false
+			st.Credentials[0].Report.Checks = []credentials.Check{
+				{Capability: credentials.CapDNSRead, Scope: "example.com", Detail: "grant Zone > DNS > Read on example.com"},
+				{Capability: credentials.CapTunnelRead, Scope: "Main", Detail: "cloudflare api: HTTP 429: slow down", Unanswered: true},
+			}
+		}, nil, Finding{Check: "credential cred1", Level: LevelFail,
+			Detail: "the token cannot be used: dns.read on example.com: grant Zone > DNS > Read on example.com; " +
+				"tunnel.read on Main: Cloudflare did not answer (cloudflare api: HTTP 429: slow down)",
+			Fix: "grant what is missing, then pco credential check cred1"}},
 		{"an expired token", func(st *engine.State) {
 			expired := now.Add(-time.Hour)
 			st.Credentials[0].Report.Token.ExpiresOn = &expired

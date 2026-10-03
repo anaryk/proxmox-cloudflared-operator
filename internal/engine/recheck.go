@@ -16,8 +16,8 @@ const ExpiryWarning = 30 * 24 * time.Hour
 const (
 	// recheckEvery is how often the token of a credential is checked again.
 	recheckEvery = 24 * time.Hour
-	// recheckFailedEvery is how soon a check that found a token unusable is
-	// repeated: the failure may have been Cloudflare's own.
+	// recheckFailedEvery is how soon a check that found a token unusable, or
+	// got no answer, is repeated: the failure may have been Cloudflare's own.
 	recheckFailedEvery = 15 * time.Minute
 	// recheckTimeout bounds one check.
 	recheckTimeout = time.Minute
@@ -95,8 +95,24 @@ func (e *Engine) recheckOne(ctx context.Context, install string, cred store.Cred
 	if err != nil || !now.Token.Equal(cred.Token) {
 		return
 	}
+	if report.Unanswered() {
+		// Cloudflare saying nothing is no verdict on the token: what the last
+		// check found stays.
+		e.noteUnanswered(cred, report)
+		e.recheckLater(cred.ID)
+		return
+	}
 	e.keepReport(cred.ID, report)
 	e.noteExpiry(cred, report)
+}
+
+// noteUnanswered says, as an event, that a check of a token got no answer.
+func (e *Engine) noteUnanswered(cred store.Credential, r credentials.Report) {
+	e.events.add(Event{
+		At: e.d.Now(), Level: levelWarn, Kind: kindCredential, Subject: cred.ID,
+		Message: fmt.Sprintf("the token of credential %q could not be checked again: %s; it is checked again in %s",
+			cred.Label, failedChecks(r), recheckFailedEvery),
+	})
 }
 
 // recheckLater puts the next check of a credential whose check could not be

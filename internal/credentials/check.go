@@ -54,6 +54,10 @@ type Check struct {
 	ScopeID    string     `json:"scopeId,omitempty"` // account or zone id; empty for token-wide checks
 	OK         bool       `json:"ok"`
 	Detail     string     `json:"detail,omitempty"` // on failure: what to grant, e.g. "grant Zone > DNS > Edit on example.com"
+
+	// Unanswered marks a failure that says nothing about the token: Cloudflare
+	// did not answer, with a network error, a server error or a rate limit.
+	Unanswered bool `json:"unanswered,omitempty"`
 }
 
 // Report is what a token can do.
@@ -89,6 +93,40 @@ type Report struct {
 	Leftovers []string `json:"leftovers"`
 
 	CheckedAt time.Time `json:"checkedAt,omitzero"`
+}
+
+// Reason says why a check failed: what to grant, or that Cloudflare did not
+// answer. It is empty for a check that passed.
+func (c Check) Reason() string {
+	switch {
+	case c.OK:
+		return ""
+	case !c.Unanswered:
+		return c.Detail
+	case c.Detail == "":
+		return "Cloudflare did not answer"
+	}
+	return "Cloudflare did not answer (" + c.Detail + ")"
+}
+
+// Unanswered reports whether the report cannot say what the token can do: it
+// is not usable, and every check that failed did so because Cloudflare did not
+// answer. Asking again later may find the token fine.
+func (r Report) Unanswered() bool {
+	if r.Usable {
+		return false
+	}
+	failed := false
+	for _, c := range r.Checks {
+		switch {
+		case c.OK:
+		case !c.Unanswered:
+			return false
+		default:
+			failed = true
+		}
+	}
+	return failed
 }
 
 // The Cloudflare permissions a failed check asks the admin to grant, as the
@@ -184,8 +222,16 @@ func (r *run) note(c Capability, s scope, detail string) {
 }
 
 func (r *run) fail(c Capability, s scope, detail string) {
+	r.failBy(c, s, detail, nil)
+}
+
+// failBy adds a failed check that makes the token unusable and that err
+// caused; one that left Cloudflare unanswered is marked as such.
+func (r *run) failBy(c Capability, s scope, detail string, err error) {
 	r.blocked = true
-	r.note(c, s, detail)
+	r.report.Checks = append(r.report.Checks, Check{
+		Capability: c, Scope: s.name, ScopeID: s.id, Detail: detail, Unanswered: cfapi.IsUnanswered(err),
+	})
 }
 
 // result records the outcome of a probe call and reports whether it passed. An
@@ -198,7 +244,7 @@ func (r *run) result(c Capability, s scope, err error, hint string) bool {
 	case cfapi.IsAuth(err):
 		r.fail(c, s, hint)
 	default:
-		r.fail(c, s, err.Error())
+		r.failBy(c, s, err.Error(), err)
 	}
 	return false
 }
@@ -209,7 +255,7 @@ func grant(permission, where string) string { return "grant " + permission + " o
 func (r *run) verify(ctx context.Context) bool {
 	status, err := r.api.VerifyToken(ctx)
 	if err != nil {
-		r.fail(CapToken, scope{}, err.Error())
+		r.failBy(CapToken, scope{}, err.Error(), err)
 		return false
 	}
 	r.report.Token = status

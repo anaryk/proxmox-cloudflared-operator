@@ -83,7 +83,7 @@ func (p writeProbe) createFailed(ctx context.Context, err error, removeStray fun
 	if !refusal(err) && !removeStray(ctx) {
 		detail += "; probe may exist: " + p.name
 	}
-	p.r.fail(p.capability, p.scope, detail)
+	p.r.failBy(p.capability, p.scope, detail, err)
 }
 
 // unexpectedAnswer records a create whose answer is not the probe object, so
@@ -97,7 +97,7 @@ func (p writeProbe) remove(ctx context.Context, del func(context.Context) error)
 	cleanup, cancel := cleanupContext(ctx)
 	defer cancel()
 	if err := del(cleanup); err != nil && !cfapi.IsNotFound(err) {
-		p.r.fail(p.capability, p.scope, leftBehind(p.kind, p.name, err, p.hint))
+		p.r.failBy(p.capability, p.scope, leftBehind(p.kind, p.name, err, p.hint), err)
 		return
 	}
 	p.r.pass(p.capability, p.scope)

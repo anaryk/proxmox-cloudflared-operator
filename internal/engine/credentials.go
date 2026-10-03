@@ -49,7 +49,10 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 		return CredentialView{}, fmt.Errorf("checking the token: %w", err)
 	}
 	view := CredentialView{Label: label, Kind: credentialKind, Checked: true, Report: shownReport(report)}
-	if !report.Usable {
+	switch {
+	case report.Unanswered():
+		return view, fmt.Errorf("%w: the token could not be checked: %s", ErrInvalid, failedChecks(report))
+	case !report.Usable:
 		return view, fmt.Errorf("%w: the token cannot be used: %s", ErrInvalid, failedChecks(report))
 	}
 
@@ -104,7 +107,12 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 	if _, err := e.credential(id); err != nil {
 		return CredentialView{}, err
 	}
-	e.keepReport(id, report)
+	if report.Unanswered() {
+		// It says nothing of the token: the report of the check before stays.
+		e.recheckLater(id)
+	} else {
+		e.keepReport(id, report)
+	}
 	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Checked: true, Report: shownReport(report)}, nil
 }
 
@@ -331,7 +339,7 @@ func failedChecks(r credentials.Report) string {
 		if c.Scope != "" {
 			what += " on " + c.Scope
 		}
-		out = append(out, what+": "+c.Detail)
+		out = append(out, what+": "+c.Reason())
 	}
 	if len(out) == 0 {
 		return "no active zone"

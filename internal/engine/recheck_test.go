@@ -191,7 +191,11 @@ func TestRunChecksTheCredentialsBetweenCycles(t *testing.T) {
 	done := make(chan error)
 	go func() { done <- e.eng.Run(ctx) }()
 
-	<-api.verified
+	select {
+	case <-api.verified:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the credential was not checked")
+	}
 	<-timer.waits
 	cancel()
 
