@@ -303,7 +303,9 @@ To upgrade, install the new package, with the installer or with `apt install` of
 restarts `pco.service` if it was running. The connectors are not touched, because
 restarting them would drop the tunnels they serve; they run on with the binary they started
 with, and the files of a connector are rewritten and the connector is restarted only when
-the daemon finds them different from what it wants.
+the daemon finds them different from what it wants. A change that cloudflared does not read
+is no reason to restart it: the env file of a connector from an earlier version, which lacks
+the name of the install, is rewritten and the connector runs on.
 
 `pco setup` can be run again after an upgrade: it changes nothing that is in order and notes
 the new version in the node registry. `pco setup --repair` re-asserts the role, user, token

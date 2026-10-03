@@ -32,6 +32,12 @@ is-active)
 	block.service) echo started > "$0.ready"; exec sleep 30 ;;
 	*) echo "  unit exploded  " >&2; exit 1 ;;
 	esac ;;
+is-failed)
+	case "$last" in
+	failed.service) echo failed ;;
+	down.service) echo inactive; exit 1 ;;
+	*) echo "  unit exploded  " >&2; exit 4 ;;
+	esac ;;
 list-units)
 	printf '%s\n' 'pco-cloudflared@one.service loaded active running pco cloudflared connector' '' 'pco-cloudflared@two.service loaded inactive dead pco cloudflared connector'
 	;;
@@ -81,6 +87,32 @@ func TestSystemctlArguments(t *testing.T) {
 		"is-active -- up.service",
 		"list-units --all --plain --no-legend -- pco-cloudflared@*.service",
 	}, calls())
+}
+
+func TestSystemctlResetFailedClearsAUnitThatFailed(t *testing.T) {
+	ctl, calls := newFakeSystemctl(t)
+
+	require.NoError(t, ctl.ResetFailed(t.Context(), "failed.service"))
+
+	require.Equal(t, []string{"is-failed -- failed.service", "reset-failed -- failed.service"}, calls())
+}
+
+func TestSystemctlResetFailedLeavesAUnitThatDidNotFail(t *testing.T) {
+	ctl, calls := newFakeSystemctl(t)
+
+	require.NoError(t, ctl.ResetFailed(t.Context(), "down.service"))
+
+	require.Equal(t, []string{"is-failed -- down.service"}, calls())
+}
+
+func TestSystemctlResetFailedFailsOnOtherExitCodes(t *testing.T) {
+	ctl, calls := newFakeSystemctl(t)
+
+	err := ctl.ResetFailed(t.Context(), "unknown.service")
+
+	require.ErrorContains(t, err, "systemctl is-failed -- unknown.service")
+	require.ErrorContains(t, err, ": unit exploded")
+	require.Equal(t, []string{"is-failed -- unknown.service"}, calls(), "nothing is cleared on a guess")
 }
 
 func TestSystemctlIsActive(t *testing.T) {

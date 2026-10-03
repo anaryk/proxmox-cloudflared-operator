@@ -87,8 +87,8 @@ func (m *Manager) path(name string) string { return filepath.Join(m.dir, name) }
 // token. It writes the token, env and config files when their content
 // differs, starts a unit that does not run, and restarts a running unit whose
 // files changed, since cloudflared reads them only at start. The env file names
-// the install; one that names another, or none, is rewritten like any other
-// change.
+// the install; one that names another, or none, is rewritten, and that alone
+// restarts nothing: cloudflared does not read it.
 //
 // A change is recorded in a marker file before the first file is replaced and
 // the marker is removed only after the start or restart was queued, so that a
@@ -160,17 +160,17 @@ func (m *Manager) sweepStaleTemps() {
 
 // writeFiles brings the env, config and token file of a tunnel to the wanted
 // content and mode. Their content is replaced only when it differs, under a
-// marker of the change; a mode is fixed in place and is no change that needs
-// a restart.
+// marker of the change when cloudflared would read something new; a mode is
+// fixed in place and is no change that needs a restart.
 func (m *Manager) writeFiles(installID, id, token string) error {
 	envPath, configPath, tokenPath := m.path(envFile(id)), m.path(configFile(id)), m.path(tokenFile(id))
-	env, replaceEnv, err := m.wantedEnv(installID, id)
+	env, replaceEnv, restartEnv, err := m.wantedEnv(installID, id)
 	if err != nil {
 		return err
 	}
 	replaceConfig := !hasContent(configPath, []byte(configContent))
 	replaceToken := !hasContent(tokenPath, []byte(token))
-	if replaceEnv || replaceConfig || replaceToken {
+	if restartEnv || replaceConfig || replaceToken {
 		// What was queued for an earlier marker says nothing about this
 		// change, however this call ends: it may fail before it restarts, and
 		// the next one must not take the marker for one that was dealt with.
@@ -201,23 +201,28 @@ func (m *Manager) writeFiles(installID, id, token string) error {
 	return nil
 }
 
-// wantedEnv returns the content of the env file of a tunnel and whether the
-// file has to be replaced to hold it. An address that is already there keeps
-// its port, so that a tunnel's port does not move between runs; it is only
-// replaced when it does not name the loopback address. A file that says the
-// same in other words, such as with quotes, stays as it is; one written before
-// the edge IP version or the install was set is replaced.
-func (m *Manager) wantedEnv(installID, id string) (data []byte, replace bool, err error) {
+// wantedEnv returns the content of the env file of a tunnel, whether the file
+// has to be replaced to hold it, and whether the replacement changes what
+// cloudflared reads, so that its unit has to be restarted. An address that is
+// already there keeps its port, so that a tunnel's port does not move between
+// runs; it is only replaced when it does not name the loopback address. A file
+// that says the same in other words, such as with quotes, stays as it is. One
+// written before the edge IP version was set is replaced and restarts the unit.
+// The install is for pco alone: a file without it, or with another, is
+// replaced and the unit runs on, since restarting every connector of an
+// install at once drops all its tunnels.
+func (m *Manager) wantedEnv(installID, id string) (data []byte, replace, restart bool, err error) {
 	values, readErr := readEnv(m.path(envFile(id)))
 	addr, port, err := metricsOf(values)
 	if readErr != nil || err != nil {
 		if port, err = m.freePort(id); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
-		return envContent(port, installID), true, nil
+		return envContent(port, installID), true, true, nil
 	}
-	replace = addr != metricsAddr(port) || values[edgeKey] != edgeIPVersion || values[installKey] != installID
-	return envContent(port, installID), replace, nil
+	restart = addr != metricsAddr(port) || values[edgeKey] != edgeIPVersion
+	replace = restart || values[installKey] != installID
+	return envContent(port, installID), replace, restart, nil
 }
 
 // freePort returns the lowest port from firstPort that no env file of another
@@ -268,27 +273,63 @@ func (m *Manager) freePort(id string) (int, error) {
 // its unit still reads them. Names that are no tunnel id are never passed to
 // systemd and never removed; they are reported.
 func (m *Manager) Prune(ctx context.Context, keep []string) error {
-	return m.prune(ctx, keep, func(string) (bool, error) { return true, nil })
+	return m.prune(ctx, keep, func(string) (fate, error) { return removeIt, nil })
 }
 
 // PruneInstall is Prune for the connectors whose env file names installID: a
 // connector of another install, or of none, is never touched, as it may serve
-// tunnels this install knows nothing of. List finds those.
+// tunnels this install knows nothing of. List finds those. A unit with neither
+// an env file nor a token file is nobody's: it cannot serve a tunnel without its
+// token, so it is stopped, and reset when it had failed.
 func (m *Manager) PruneInstall(ctx context.Context, installID string, keep []string) error {
 	if err := checkInstall(installID); err != nil {
 		return err
 	}
-	return m.prune(ctx, keep, func(id string) (bool, error) {
+	return m.prune(ctx, keep, func(id string) (fate, error) {
 		values, err := readEnv(m.path(envFile(id)))
 		if err != nil {
-			return false, fmt.Errorf("tunnel %s: reading env file: %w", id, err)
+			return leaveAlone, fmt.Errorf("tunnel %s: reading env file: %w", id, err)
 		}
-		return values[installKey] == installID, nil
+		if values[installKey] == installID {
+			return removeIt, nil
+		}
+		nobodys, err := m.hasNoEnvAndNoToken(id)
+		switch {
+		case err != nil:
+			return leaveAlone, fmt.Errorf("tunnel %s: %w", id, err)
+		case nobodys:
+			return clearOut, nil
+		}
+		return leaveAlone, nil
 	})
 }
 
+// hasNoEnvAndNoToken reports whether a connector has neither an env file nor a
+// token file.
+func (m *Manager) hasNoEnvAndNoToken(id string) (bool, error) {
+	for _, name := range []string{envFile(id), tokenFile(id)} {
+		_, err := os.Lstat(m.path(name))
+		switch {
+		case err == nil:
+			return false, nil
+		case !errors.Is(err, fs.ErrNotExist):
+			return false, fmt.Errorf("looking for %s: %w", name, err)
+		}
+	}
+	return true, nil
+}
+
+// fate is what a prune decides for a connector it found.
+type fate int
+
+const (
+	leaveAlone fate = iota // not the caller's
+	removeIt               // stop it and remove its files
+	clearOut               // the same for a unit that is nobody's, and reset it when failed
+)
+
 // prune removes the connectors not in keep that ours says are to go.
-func (m *Manager) prune(ctx context.Context, keep []string, ours func(id string) (bool, error)) error {
+func (m *Manager) prune(ctx context.Context, keep []string, ours func(id string) (fate, error)) error {
 	var invalid []error
 	for _, id := range keep {
 		if err := checkID(id); err != nil {
@@ -313,14 +354,19 @@ func (m *Manager) prune(ctx context.Context, keep []string, ours func(id string)
 		if slices.Contains(keep, id) {
 			continue
 		}
-		switch remove, err := ours(id); {
+		f, err := ours(id)
+		switch {
 		case err != nil:
 			errs = append(errs, err)
 			continue
-		case !remove:
+		case f == leaveAlone:
 			continue
+		case f == clearOut:
+			err = m.removeNobodys(ctx, id)
+		default:
+			err = m.remove(ctx, id)
 		}
-		if err := m.remove(ctx, id); err != nil {
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -417,6 +463,24 @@ func (m *Manager) remove(ctx context.Context, id string) error {
 		return err
 	}
 	m.log.Info().Str("tunnel", id).Msg("removed connector")
+	return nil
+}
+
+// removeNobodys removes a unit that has neither an env file nor a token file,
+// with what files are left of it, and clears its failed state: a stop does not,
+// and the unit would stay loaded and listed.
+func (m *Manager) removeNobodys(ctx context.Context, id string) error {
+	m.log.Warn().Str("tunnel", id).Msg("stopping a connector unit with no env file and no token file: it cannot serve a tunnel without its token and names no install")
+	if err := m.remove(ctx, id); err != nil {
+		return err
+	}
+	r, ok := m.sd.(failedResetter)
+	if !ok {
+		return nil
+	}
+	if err := r.ResetFailed(ctx, UnitName(id)); err != nil {
+		return fmt.Errorf("resetting %s: %w", UnitName(id), err)
+	}
 	return nil
 }
 

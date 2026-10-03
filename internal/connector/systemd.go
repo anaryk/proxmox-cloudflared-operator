@@ -15,6 +15,9 @@ const (
 	// exitNotActive is the exit code of systemctl is-active for a unit that
 	// is not active.
 	exitNotActive = 3
+	// exitNotFailed is the exit code of systemctl is-failed for a unit that
+	// has not failed, or is not loaded.
+	exitNotFailed = 1
 	// stateStarting is what is-active prints for a unit that was started and
 	// has not signalled readiness yet, and for one that waits out its restart
 	// back-off. Both have a start queued or a process that is up.
@@ -39,6 +42,13 @@ type Systemd interface {
 	ListUnits(ctx context.Context, pattern string) ([]string, error)
 }
 
+// failedResetter is a Systemd that can also clear the failed state of a unit.
+// A stop leaves a unit that failed as it is, loaded and listed, so the manager
+// asks for the reset where it is there; a Systemd without it is left out.
+type failedResetter interface {
+	ResetFailed(ctx context.Context, unit string) error
+}
+
 // NewSystemctl returns a Systemd that runs /usr/bin/systemctl.
 func NewSystemctl() Systemd { return systemctl{bin: systemctlPath} }
 
@@ -51,6 +61,22 @@ func (s systemctl) EnableNow(ctx context.Context, unit string) error {
 
 func (s systemctl) DisableNow(ctx context.Context, unit string) error {
 	_, err := s.run(ctx, "disable", "--now", "--no-block", "--", unit)
+	return err
+}
+
+// ResetFailed clears the failed state of a unit that is in it and does nothing
+// to any other: reset-failed on a unit that is not loaded is an error.
+func (s systemctl) ResetFailed(ctx context.Context, unit string) error {
+	_, err := s.run(ctx, "is-failed", "--", unit)
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &exit) && exit.ExitCode() == exitNotFailed:
+		return nil
+	default:
+		return err
+	}
+	_, err = s.run(ctx, "reset-failed", "--", unit)
 	return err
 }
 

@@ -46,7 +46,7 @@ func TestEnsureRejectsAnInvalidInstallID(t *testing.T) {
 	}
 }
 
-func TestEnsureBringsAConnectorWithoutAnInstallInLineWithOneRestart(t *testing.T) {
+func TestEnsureBringsAConnectorWithoutAnInstallInLineWithoutARestart(t *testing.T) {
 	m, sd, dir := newTestManager(t)
 	connectorOf(t, sd, dir, idA, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n")
 	writeFile(t, dir, idA+".token", "token-1")
@@ -58,13 +58,12 @@ func TestEnsureBringsAConnectorWithoutAnInstallInLineWithOneRestart(t *testing.T
 	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
 
 	require.Equal(t, "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n", readFile(t, dir, idA+".env"), "the port stays")
-	require.Equal(t, []string{"Restart " + unitA}, sd.changes())
+	require.Empty(t, sd.changes(), "cloudflared does not read the install")
 	require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
 
-	sd.reset()
 	require.NoError(t, m.PruneInstall(t.Context(), testInstall, []string{idA}))
 	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-1"))
-	require.Empty(t, sd.changes(), "once")
+	require.Empty(t, sd.changes(), "and it is now the install's")
 }
 
 func TestPruneInstallRemovesOnlyTheConnectorsOfTheInstall(t *testing.T) {
@@ -73,12 +72,12 @@ func TestPruneInstallRemovesOnlyTheConnectorsOfTheInstall(t *testing.T) {
 	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
 	connectorOf(t, sd, dir, idC, "METRICS_ADDR=127.0.0.1:20500\nEDGE_IP_VERSION=auto\nPCO_INSTALL="+otherInstall+"\n")
 	connectorOf(t, sd, dir, idD, "METRICS_ADDR=127.0.0.1:20501\nEDGE_IP_VERSION=auto\n")
-	sd.active[UnitName(idE)] = true // a unit without files names no install either
+	sd.active[UnitName(idE)] = true // a unit without files is nobody's
 	sd.reset()
 
 	require.NoError(t, m.PruneInstall(t.Context(), testInstall, []string{idB}))
 
-	require.Equal(t, []string{"DisableNow " + unitA}, sd.changes())
+	require.Equal(t, []string{"DisableNow " + unitA, "DisableNow " + UnitName(idE), "ResetFailed " + UnitName(idE)}, sd.changes())
 	require.ElementsMatch(t, []string{
 		idB + ".token", idB + ".env", idB + ".yml",
 		idC + ".token", idC + ".env", idC + ".yml",

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -81,9 +80,12 @@ func (c *cycleRun) noteForeignConnectors(shown []reconcile.TunnelState) {
 		switch {
 		case err != nil:
 			c.problem("connector for tunnel %s: reading its status: %v", id, err)
+		case st.Install == "":
+			c.problem("connector for tunnel %s names no install; pco setup --recover adopts the install it was made for, "+
+				"pco uninstall on this node removes it", id)
 		case st.Install != c.install.ID:
 			c.problem("connector for tunnel %s belongs to install %s; pco setup --recover adopts that install, "+
-				"pco uninstall on this node removes it", id, cmp.Or(st.Install, "unknown"))
+				"pco uninstall on this node removes it", id, st.Install)
 		}
 	}
 }

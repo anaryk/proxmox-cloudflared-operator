@@ -24,11 +24,12 @@ type fakeSystemd struct {
 	calls  []string
 	active map[string]bool
 	loaded []string         // what ListUnits answers, besides the units that run
+	failed map[string]bool  // units that stopped by failing: loaded, not active, and a stop leaves them so
 	fail   map[string]error // by "Method unit"
 }
 
 func newFakeSystemd() *fakeSystemd {
-	return &fakeSystemd{active: map[string]bool{}, fail: map[string]error{}}
+	return &fakeSystemd{active: map[string]bool{}, failed: map[string]bool{}, fail: map[string]error{}}
 }
 
 func (f *fakeSystemd) record(method, unit string) error {
@@ -54,6 +55,15 @@ func (f *fakeSystemd) DisableNow(_ context.Context, unit string) error {
 	return nil
 }
 
+// ResetFailed is what a Systemd that can clear the failed state of a unit does.
+func (f *fakeSystemd) ResetFailed(_ context.Context, unit string) error {
+	if err := f.record("ResetFailed", unit); err != nil {
+		return err
+	}
+	delete(f.failed, unit)
+	return nil
+}
+
 func (f *fakeSystemd) Restart(_ context.Context, unit string) error {
 	if err := f.record("Restart", unit); err != nil {
 		return err
@@ -74,9 +84,11 @@ func (f *fakeSystemd) ListUnits(_ context.Context, pattern string) ([]string, er
 		return nil, err
 	}
 	units := slices.Clone(f.loaded)
-	for u := range f.active {
-		if !slices.Contains(units, u) {
-			units = append(units, u)
+	for _, set := range []map[string]bool{f.active, f.failed} {
+		for u := range set {
+			if !slices.Contains(units, u) {
+				units = append(units, u)
+			}
 		}
 	}
 	slices.Sort(units)

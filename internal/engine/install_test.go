@@ -116,6 +116,11 @@ func foreignLine(id, install string) string {
 		"; pco setup --recover adopts that install, pco uninstall on this node removes it"
 }
 
+func noInstallLine(id string) string {
+	return "connector for tunnel " + id + " names no install" +
+		"; pco setup --recover adopts the install it was made for, pco uninstall on this node removes it"
+}
+
 // The store was lost and pco set up anew: the connector of the old install
 // still runs and serves the old hostnames, and the new install must leave it
 // alone however sure it is of its own tunnels.
@@ -154,7 +159,27 @@ func TestAConnectorThatNamesNoInstallIsNeverPruned(t *testing.T) {
 	st := e.cycle()
 
 	require.True(t, sd.isRunning(connector.UnitName(oldTunnel)))
-	require.Contains(t, st.Problems, foreignLine(oldTunnel, "unknown"))
+	require.Contains(t, st.Problems, noInstallLine(oldTunnel))
+	require.False(t, hasProblem(st, "install unknown"), "%v", st.Problems)
+}
+
+// A unit that is loaded and has no files at all serves nothing and is nobody's:
+// it is reported until a prune stops it.
+func TestAUnitWithNoFilesIsReportedAndThenStoppedByAPrune(t *testing.T) {
+	e := newEnv(t)
+	_, sd, _ := withRealConnectors(e)
+	sd.set(connector.UnitName(oldTunnel), true)
+
+	st := e.cycle()
+
+	require.Contains(t, st.Problems, noInstallLine(oldTunnel), "observe-only says so")
+	require.True(t, sd.isRunning(connector.UnitName(oldTunnel)))
+
+	e.enforce()
+	st = e.cycle()
+
+	require.False(t, sd.isRunning(connector.UnitName(oldTunnel)))
+	require.False(t, hasProblem(st, oldTunnel), "%v", st.Problems)
 }
 
 func TestAConnectorOfThisInstallWhoseTunnelIsGoneIsPruned(t *testing.T) {
@@ -171,9 +196,9 @@ func TestAConnectorOfThisInstallWhoseTunnelIsGoneIsPruned(t *testing.T) {
 }
 
 // A connector of this install written before connectors named their install
-// is brought in line by one restart, and is not taken for a foreign one or
-// pruned on the way.
-func TestAConnectorOfThisInstallWithoutTheInstallIsRestartedOnce(t *testing.T) {
+// is brought in line without a restart, since cloudflared does not read the
+// install, and is not taken for a foreign one or pruned on the way.
+func TestAConnectorOfThisInstallWithoutTheInstallIsBroughtInLineWithoutARestart(t *testing.T) {
 	e := newEnv(t)
 	_, sd, dir := withRealConnectors(e)
 	e.enforce()
@@ -189,7 +214,7 @@ func TestAConnectorOfThisInstallWithoutTheInstallIsRestartedOnce(t *testing.T) {
 
 	st := e.cycle()
 
-	require.Equal(t, []string{"Restart " + connector.UnitName(id)}, sd.changes())
+	require.Empty(t, sd.changes())
 	require.Contains(t, readText(t, envPath), "PCO_INSTALL="+testInstall+"\n")
 	require.False(t, hasProblem(st, "belongs to install"), "%v", st.Problems)
 

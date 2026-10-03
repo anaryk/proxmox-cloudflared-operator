@@ -261,6 +261,11 @@ reports it as a problem, and pco never stops or removes a connector it did not s
 `pco setup --recover` adopts the earlier install, and `pco uninstall` removes it; see
 [Uninstall](uninstall.md).
 
+A connector from before pco wrote the install into its env file reads `names no install`
+instead of `belongs to install <old id>`. A unit that is loaded and has neither an env file nor a
+token file cannot serve anything, and the daemon stops it when it prunes connectors, which it
+does outside observe-only mode; a connector that has either file is left alone.
+
 ## The writer is stale, foreign or unknown
 
 The writer is the identity that is written into the configuration of every tunnel. A daemon

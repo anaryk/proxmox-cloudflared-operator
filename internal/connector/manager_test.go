@@ -742,9 +742,6 @@ func TestEnsureReadsQuotedAddressesLikeSystemdDoes(t *testing.T) {
 		{"a later edge IP version wins", "METRICS_ADDR=127.0.0.1:20450" + edge + "EDGE_IP_VERSION=6\n", 20450, true},
 		{"no edge IP version", "METRICS_ADDR=127.0.0.1:20450\nPCO_INSTALL=abc123\n", 20450, true},
 		{"install in quotes", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL='abc123'\n", 20450, false},
-		{"another install", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=def456\n", 20450, true},
-		{"a later install wins", "METRICS_ADDR=127.0.0.1:20450" + edge + "PCO_INSTALL=def456\n", 20450, true},
-		{"no install", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n", 20450, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -763,6 +760,29 @@ func TestEnsureReadsQuotedAddressesLikeSystemdDoes(t *testing.T) {
 			} else {
 				require.Empty(t, sd.changes(), "the same address in other words is no change")
 			}
+		})
+	}
+}
+
+func TestEnsureRewritesTheInstallInTheEnvFileWithoutARestart(t *testing.T) {
+	const edge = "\nEDGE_IP_VERSION=auto\nPCO_INSTALL=abc123\n"
+	tests := []struct{ name, content string }{
+		{"another install", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\nPCO_INSTALL=def456\n"},
+		{"a later install wins", "METRICS_ADDR=127.0.0.1:20450" + edge + "PCO_INSTALL=def456\n"},
+		{"no install", "METRICS_ADDR=127.0.0.1:20450\nEDGE_IP_VERSION=auto\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, sd, dir := newTestManager(t)
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+			writeFile(t, dir, idA+".env", tc.content)
+			sd.reset()
+
+			require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+
+			require.Equal(t, "METRICS_ADDR=127.0.0.1:20450"+edge, readFile(t, dir, idA+".env"))
+			require.Empty(t, sd.changes(), "cloudflared does not read the install")
+			require.NoFileExists(t, filepath.Join(dir, pendingOf(idA)))
 		})
 	}
 }
