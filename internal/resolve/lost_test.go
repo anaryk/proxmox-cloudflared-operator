@@ -88,7 +88,7 @@ func TestLostProof(t *testing.T) {
 // leaves passed, and lost nothing.
 func TestLostProofOfABindingThatMovesUp(t *testing.T) {
 	s := trustedFirst(t)
-	prev := atLevel(boundTo("10.40.0.10"), LevelObserved)
+	prev := boundSince(atLevel(boundTo("10.40.0.10"), LevelObserved), t0.Add(-time.Hour))
 
 	res := s.resolve(t, webRoute(), prev)
 

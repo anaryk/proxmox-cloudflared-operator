@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -130,11 +131,11 @@ func TestResolveStopsAtPort(t *testing.T) {
 	}, s.prober.calls, "an on-link first candidate costs what it did")
 }
 
-// Level comes first: a binding to a lower candidate stays only while no
-// other candidate is proven higher.
+// Level comes first: a binding to a lower candidate that has settled stays
+// only while no other candidate is proven higher.
 func TestResolveBindingMovesToAHigherLevel(t *testing.T) {
 	s := trustedFirst(t)
-	prev := atLevel(boundTo("10.40.0.10"), LevelObserved)
+	prev := boundSince(atLevel(boundTo("10.40.0.10"), LevelObserved), t0.Add(-time.Hour))
 
 	res := s.resolve(t, webRoute(), prev)
 

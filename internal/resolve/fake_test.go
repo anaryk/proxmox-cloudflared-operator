@@ -316,8 +316,19 @@ func requireServed(t *testing.T, res Result, addr string, at time.Time) {
 func requireServedAt(t *testing.T, res Result, addr string, at time.Time, level Level) {
 	t.Helper()
 	require.Equal(t, planner.ResolvedTarget{Addr: ip(addr), Reachable: true, Owner: webOwner}, res.Target)
-	require.Equal(t, &Binding{Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip(addr), MAC: mac0, VerifiedAt: at, Level: level}, res.Binding)
+	require.Equal(t, &Binding{Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip(addr), MAC: mac0, VerifiedAt: at, Level: level}, unplaced(res.Binding))
 	require.Equal(t, level, res.Level)
+}
+
+// unplaced returns a copy of b without when it was bound and where its MAC
+// was placed, which the tests of those compare.
+func unplaced(b *Binding) *Binding {
+	if b == nil {
+		return nil
+	}
+	c := *b
+	c.Since, c.Bridge, c.Port = time.Time{}, "", ""
+	return &c
 }
 
 // requireNotServed asserts the outcome for a candidate that never was bound:

@@ -52,70 +52,75 @@ func answered(ctx context.Context, err error, format string, args ...any) outcom
 }
 
 // verify runs the checks on one candidate in order and stops at the first
-// that fails. Once the identity holds, it returns the level that proves it,
-// also when the port then fails.
-func (a *attempt) verify(ctx context.Context, c Candidate) (Level, outcome) {
+// that fails. Once the identity holds, it returns what proves it, also when
+// the port then fails.
+func (a *attempt) verify(ctx context.Context, c Candidate) (proof, outcome) {
 	if why, denied := a.forbidden(c.Addr); denied {
-		return "", outcome{rejected, why}
+		return proof{}, outcome{rejected, why}
 	}
 	ifaces, o := a.hostIfaces(ctx)
 	if !o.ok() {
-		return "", o
+		return proof{}, o
 	}
 	if isNodeAddr(ifaces, c.Addr) {
-		return "", outcome{rejected, reasonNodeAddress}
+		return proof{}, outcome{rejected, reasonNodeAddress}
 	}
 	// A MAC that another guest which runs, or may, has too passes only on
 	// the forwarding table, so there is nothing to probe when that cannot
 	// happen.
 	if o := a.claimMAC(c.NIC.MAC, a.checksFDB()); !o.ok() {
-		return "", o
+		return proof{}, o
 	}
-	level, o := a.identify(ctx, ifaces, c)
+	p, o := a.identify(ctx, ifaces, c)
 	if !o.ok() {
-		return "", o
+		return proof{}, o
 	}
-	return level, a.r.dial(ctx, c.Addr, a.route.Target.Port)
+	return p, a.r.dial(ctx, c.Addr, a.route.Target.Port)
 }
 
 // identify checks that only this guest answers for c.Addr on its own network,
-// and returns the level that proves it.
-func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate) (Level, outcome) {
+// and returns the level that proves it, with the bridge and the port the
+// forwarding table placed the NIC's MAC on at level port.
+func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate) (proof, outcome) {
 	var macs []string
-	var placed map[string]bool
-	level := LevelObserved
+	var placed map[string]string
+	p := proof{level: LevelObserved}
 	switch iface := arpInterface(ifaces, c); {
 	case iface == "" && a.trusted(c):
 		if o := a.throughGateway(ctx, c); !o.ok() {
-			return "", o
+			return proof{}, o
 		}
 	case iface == "":
-		return "", lost("node has no address on %s in the guest's network", strings.Join(ifaceNames(c.NIC), " or "))
+		return proof{}, lost("node has no address on %s in the guest's network", strings.Join(ifaceNames(c.NIC), " or "))
 	default:
 		var o outcome
 		if macs, placed, o = a.onWire(ctx, iface, c); !o.ok() {
-			return "", o
+			return proof{}, o
 		}
-		level = wireLevel(macs, placed)
+		p.level = wireLevel(macs, placed)
+		if port := placed[normalMAC(c.NIC.MAC)]; p.level == LevelPort && port != "" {
+			p.bridge, _ = fdbOf(iface, c.NIC)
+			p.port = port
+		}
 	}
 	for _, mac := range append([]string{c.NIC.MAC}, macs...) {
-		if o := a.claimMAC(mac, placed[normalMAC(mac)]); !o.ok() {
-			return "", o
+		if o := a.claimMAC(mac, placed[normalMAC(mac)] != ""); !o.ok() {
+			return proof{}, o
 		}
 	}
-	return level, outcome{}
+	return p, outcome{}
 }
 
 // wireLevel is port when the forwarding table placed every MAC that answered
 // ARP on the guest's own port, and observed when it placed none, as for a
 // guest on another node, whose MACs are only checked to be on no local
 // guest's port.
-func wireLevel(macs []string, placed map[string]bool) Level {
+func wireLevel(macs []string, placed map[string]string) Level {
 	if len(macs) == 0 {
 		return LevelObserved
 	}
 	for _, mac := range macs {
-		if !placed[mac] {
+		if placed[mac] == "" {
 			return LevelObserved
 		}
 	}
@@ -124,9 +129,9 @@ func wireLevel(macs []string, placed map[string]bool) Level {
 
 // onWire checks c.Addr on iface: the host's traffic for it leaves there, only
 // this guest answers ARP for it, and the bridge has learned the MACs that
-// answered where they belong. It returns those MACs and the ones the
-// forwarding table placed on the guest's own ports.
-func (a *attempt) onWire(ctx context.Context, iface string, c Candidate) ([]string, map[string]bool, outcome) {
+// answered where they belong. It returns those MACs and, by MAC, the guest's
+// own port the forwarding table placed it on.
+func (a *attempt) onWire(ctx context.Context, iface string, c Candidate) ([]string, map[string]string, outcome) {
 	if o := a.followsRoute(ctx, iface, c.Addr); !o.ok() {
 		return nil, nil, o
 	}

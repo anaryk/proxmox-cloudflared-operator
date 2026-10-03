@@ -39,6 +39,7 @@ func (c *cycleRun) resolveTargets() bool {
 	}
 	c.blockLost()
 	c.holdBelowMinimum()
+	c.watch()
 
 	next := make(map[string]resolve.Binding, len(c.results))
 	for host, res := range c.results {

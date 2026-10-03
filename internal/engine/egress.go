@@ -78,7 +78,8 @@ func (c *cycleRun) blockLost() {
 // feedEgress gives the egress filter the targets of this cycle: every target
 // it verified for a winner, and every target of the last set that a tunnel
 // configuration as last verified at Cloudflare still sends a connector to,
-// less the addresses that lost their proof. A target thus enters the set
+// less the addresses that lost their proof; an address whose MAC moved stays
+// out until it is verified again. A target thus enters the set
 // before the tunnel run that publishes its rule, and leaves it only after a
 // tunnel run verified a configuration without it. A cycle that holds because
 // of the store leaves the set as it is. A set that cannot be given holds the
@@ -98,7 +99,9 @@ func (c *cycleRun) feedEgress() {
 	slices.SortFunc(set, compareTargets)
 	set = slices.Compact(set)
 	c.e.egress = set
-	err := c.e.d.Egress.Set(c.ctx, slices.Clone(set))
+	c.e.egMu.Lock()
+	err := c.e.d.Egress.Set(c.ctx, c.e.unsuspected())
+	c.e.egMu.Unlock()
 	switch {
 	case err == nil, errors.Is(err, egress.ErrOff):
 	default:

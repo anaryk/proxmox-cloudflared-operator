@@ -149,6 +149,18 @@ type Engine struct {
 	// verified at Cloudflare. Both are kept in the memory.
 	egress   []egress.Target
 	verified map[string][]egress.Target
+	watched  watched
+
+	// egMu guards what the watch of the network reads and changes beside
+	// the cycles: the pins it watches, the addresses whose MAC moved and that
+	// were not verified again yet, and the verifications that wait or run.
+	// It is held around every change of the egress filter that depends on
+	// the suspects.
+	egMu     sync.Mutex
+	pins     map[netip.Addr]egress.Pin
+	suspects map[netip.Addr]bool
+	checks   map[netip.Addr]*moveCheck
+	moving   sync.WaitGroup
 
 	repMu   sync.Mutex
 	reports map[string]credentials.Report // by credential id: the last check, also of an earlier process
@@ -207,6 +219,8 @@ func New(d Deps) (*Engine, error) {
 		reports:   make(map[string]credentials.Report),
 		recheckAt: make(map[string]time.Time),
 		verified:  make(map[string][]egress.Target),
+		suspects:  make(map[netip.Addr]bool),
+		checks:    make(map[netip.Addr]*moveCheck),
 		state:     emptyState(),
 	}
 	e.interval.Store(int64(defaultPollInterval))
@@ -294,6 +308,7 @@ func (e *Engine) logCycle(st State) {
 func (e *Engine) Run(ctx context.Context) error {
 	var checks sync.WaitGroup
 	defer checks.Wait()
+	defer e.moving.Wait()
 	for {
 		e.Cycle(ctx)
 		if ctx.Err() != nil {

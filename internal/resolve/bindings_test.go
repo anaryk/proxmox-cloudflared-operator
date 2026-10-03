@@ -27,7 +27,7 @@ func TestResolveStickyBindingDoesNotFlap(t *testing.T) {
 		res := s.resolve(t, webRoute(), prev)
 
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: failed, Owner: webOwner}, res.Target, "after %s", after)
-		require.Equal(t, atLevel(provenAt(failingAt(boundTo("10.20.0.11"), t0), s.clock.t), LevelPort), res.Binding, "after %s", after)
+		require.Equal(t, onPort(atLevel(provenAt(failingAt(boundTo("10.20.0.11"), t0), s.clock.t), LevelPort)), res.Binding, "after %s", after)
 		require.Equal(t, []CandidateResult{
 			{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: failed, Level: "port"},
 			{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "not tried"},
@@ -55,7 +55,7 @@ func TestResolveStickyBindingKeptWithoutAlternative(t *testing.T) {
 	res := s.resolve(t, webRoute(), prev)
 
 	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-	require.Equal(t, atLevel(provenAt(prev, s.clock.t), LevelPort), res.Binding)
+	require.Equal(t, onPort(atLevel(provenAt(prev, s.clock.t), LevelPort)), res.Binding)
 	require.Equal(t, []CandidateResult{
 		{Addr: ip("10.20.0.11"), Source: FromStatic, Reason: "port 80: connection refused", Level: "port"},
 		{Addr: ip("10.20.0.10"), Source: FromStatic, Reason: "port 80: connection refused", Level: "port"},
@@ -237,7 +237,7 @@ func TestResolveWithdrawnUntilIdentityPasses(t *testing.T) {
 	s.prober.dialErr[ip("10.20.0.10")] = errDial
 	res = s.resolve(t, webRoute(), res.Binding)
 	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-	require.Equal(t, atLevel(provenAt(failingAt(boundTo("10.20.0.10"), t0), t0.Add(30*time.Second)), LevelPort), res.Binding)
+	require.Equal(t, onPort(atLevel(provenAt(failingAt(boundTo("10.20.0.10"), t0), t0.Add(30*time.Second)), LevelPort)), res.Binding)
 
 	// Fully verified: served and reachable.
 	s.clock.t = t0.Add(40 * time.Second)
@@ -268,7 +268,7 @@ func TestResolveTakeoverDuringLaterCandidate(t *testing.T) {
 	s.prober.cancelOn, s.prober.cancelAddr, s.prober.cancel = "arp", ip("10.20.0.10"), cancel
 	res = s.resolveCtx(ctx, webRoute(), res.Binding)
 
-	want := atLevel(withdrawnAt(provenAt(boundTo("10.20.0.11"), t0.Add(3*time.Minute)), t0), LevelPort)
+	want := onPort(atLevel(withdrawnAt(provenAt(boundTo("10.20.0.11"), t0.Add(3*time.Minute)), t0), LevelPort))
 	requireWithdrawn(t, res, "10.20.0.11 answered by bc:24:11:ff:ff:01, which is not this guest", want)
 }
 
@@ -280,7 +280,7 @@ func TestResolveIdentityClearsWithdrawn(t *testing.T) {
 	res := s.resolve(t, webRoute(), prev)
 
 	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-	require.Equal(t, atLevel(provenAt(failingAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)), t0), LevelPort), res.Binding)
+	require.Equal(t, onPort(atLevel(provenAt(failingAt(boundTo("10.20.0.10"), t0.Add(-time.Minute)), t0), LevelPort)), res.Binding)
 }
 
 func TestResolveCapNotReportedWhenStickyKeepsBinding(t *testing.T) {
@@ -514,7 +514,7 @@ func TestResolveBindingDropped(t *testing.T) {
 		res := s.resolve(t, routeFor(ip("10.20.0.10"), ""), boundTo("10.20.0.10"))
 
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-		require.Equal(t, atLevel(provenAt(failingAt(boundTo("10.20.0.10"), t0), t0), LevelPort), res.Binding)
+		require.Equal(t, onPort(atLevel(provenAt(failingAt(boundTo("10.20.0.10"), t0), t0), LevelPort)), res.Binding)
 		require.Equal(t, []CandidateResult{{Addr: ip("10.20.0.10"), Source: FromVia, Reason: "port 80: connection refused", Level: "port"}}, res.Candidates)
 	})
 

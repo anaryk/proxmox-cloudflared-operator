@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -82,6 +83,9 @@ type Deps struct {
 	Nft          egress.Nft
 	ConnectorUID func() (uint32, error)
 	Resolvers    func() ([]netip.Addr, error)
+	// WatchNetwork calls onMove for every bound address whose MAC moves,
+	// until ctx ends; default: egress.Watch.
+	WatchNetwork func(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -121,6 +125,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.Resolvers == nil {
 		d.Resolvers = egress.SystemResolvers
+	}
+	if d.WatchNetwork == nil {
+		d.WatchNetwork = egress.Watch
 	}
 	return d
 }
@@ -192,7 +199,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	gid, uids := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log)
+	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch)
 }
 
 // startSettings reads the settings that are wired at start. Settings that
@@ -289,11 +297,12 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 // serve runs the API, starts the engine once the socket is listening, and runs
 // both until ctx ends or the API fails; then it stops both. The engine waits
 // for the socket so that a socket that cannot be made does not leave a first
-// cycle that is cut off at a point nobody chose.
+// cycle that is cut off at a point nobody chose. What runs beside the engine
+// starts and stops with it.
 //
 // A request that does not finish within the shutdown time is cut off. That is
 // the end of a stop that was asked for, and not a failure of the daemon.
-func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket string, gid int, n Notifier, log zerolog.Logger) error {
+func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket string, gid int, n Notifier, log zerolog.Logger, beside ...func(context.Context)) error {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
@@ -310,6 +319,7 @@ func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket stri
 
 	var err error
 	cycled := make(chan struct{})
+	var others sync.WaitGroup
 	started := false
 	select {
 	case <-listening:
@@ -318,6 +328,9 @@ func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket stri
 			defer close(cycled)
 			_ = eng.Run(ctx) // it ends with ctx and has no error to tell
 		}()
+		for _, run := range beside {
+			others.Go(func() { run(ctx) })
+		}
 		select {
 		case err = <-served:
 			served = nil
@@ -340,6 +353,7 @@ func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket stri
 	}
 	if started {
 		<-cycled
+		others.Wait()
 	}
 	if asked && errors.Is(err, context.DeadlineExceeded) {
 		log.Warn().Msg("requests were still running when the time to finish them ended; they were cut off")

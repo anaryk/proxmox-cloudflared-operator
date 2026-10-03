@@ -245,6 +245,13 @@ func atLevel(b *Binding, level Level) *Binding {
 	return &c
 }
 
+// onPort returns a copy of b whose MAC was placed on web-1's port of vmbr0.
+func onPort(b *Binding) *Binding {
+	c := *b
+	c.Bridge, c.Port = "vmbr0", "tap101i0"
+	return &c
+}
+
 func TestResolvePortFailureKeepsTheLevelJustProven(t *testing.T) {
 	s, prev := stickyScenario(t)
 	prev = atLevel(prev, LevelObserved)
@@ -252,7 +259,7 @@ func TestResolvePortFailureKeepsTheLevelJustProven(t *testing.T) {
 	res := s.resolve(t, webRoute(), prev)
 
 	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-	require.Equal(t, atLevel(provenAt(failingAt(prev, t0), t0), LevelPort), res.Binding, "the identity was proven again, on its port")
+	require.Equal(t, onPort(atLevel(provenAt(failingAt(prev, t0), t0), LevelPort)), res.Binding, "the identity was proven again, on its port")
 	require.Equal(t, LevelPort, res.Level)
 }
 

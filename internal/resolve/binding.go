@@ -31,6 +31,21 @@ type Binding struct {
 	// Level is the level of the proof made at VerifiedAt. A binding stored
 	// before levels were kept has none until its identity is proven again.
 	Level Level `json:"level,omitempty"`
+	// Since is when the route was bound to this address on this NIC; later
+	// proofs of the same candidate keep it.
+	Since time.Time `json:"since,omitzero"`
+	// Bridge and Port are where the proof made at VerifiedAt found the MAC:
+	// the bridge whose forwarding table placed it, and the port of the bridge
+	// it was learned on. Both are empty for a proof that placed it nowhere.
+	Bridge string `json:"bridge,omitempty"`
+	Port   string `json:"port,omitempty"`
+}
+
+// proof is what proved the identity of a candidate: its level, and where the
+// forwarding table placed the MAC of its NIC, if it did.
+type proof struct {
+	level        Level
+	bridge, port string
 }
 
 func guestOf(route model.Route) string {
@@ -40,7 +55,7 @@ func guestOf(route model.Route) string {
 	return route.Guest.String()
 }
 
-func newBinding(route model.Route, c Candidate, now time.Time, level Level) *Binding {
+func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding {
 	return &Binding{
 		Owner:      route.Owner(),
 		Hostname:   route.Hostname,
@@ -48,8 +63,35 @@ func newBinding(route model.Route, c Candidate, now time.Time, level Level) *Bin
 		Addr:       c.Addr,
 		MAC:        c.NIC.MAC,
 		VerifiedAt: now,
-		Level:      level,
+		Level:      p.level,
+		Since:      now,
+		Bridge:     p.bridge,
+		Port:       p.port,
 	}
+}
+
+// proven returns a copy of b renewed by a proof made at now.
+func (b *Binding) proven(now time.Time, p proof) *Binding {
+	c := b.clone()
+	c.VerifiedAt, c.Withdrawn, c.Level, c.Bridge, c.Port = now, false, p.level, p.bridge, p.port
+	return c
+}
+
+// boundSince is when b was bound. A binding stored before that was kept
+// counts from its last proof.
+func (b *Binding) boundSince() time.Time {
+	if b.Since.IsZero() {
+		return b.VerifiedAt
+	}
+	return b.Since
+}
+
+// settling reports whether b, bound at the latest, is too young at now to
+// give way to a candidate proven higher. A Since after now, as after the
+// clock was set back, says nothing and settles nothing.
+func (b *Binding) settling(now time.Time, stickyFor time.Duration) bool {
+	bound := now.Sub(b.boundSince())
+	return bound >= 0 && bound < stickyFor
 }
 
 // Proven is the level b's last proof stands for, also once b is withdrawn.

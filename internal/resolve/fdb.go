@@ -20,12 +20,13 @@ func fdbOf(iface string, nic model.NIC) (bridge string, vlan int) {
 }
 
 // forwarding checks that the bridge has learned each MAC on exactly one port,
-// the port of the guest NIC that has it, and returns the MACs it placed there.
-// A MAC that proves nothing either way does not end the check: what the table
-// says about the others can still show that the identity does not hold.
-func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, macs []string, own map[string][]int) (map[string]bool, outcome) {
+// the port of the guest NIC that has it, and returns, by MAC, the port it
+// placed it on. A MAC that proves nothing either way does not end the check:
+// what the table says about the others can still show that the identity does
+// not hold.
+func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, macs []string, own map[string][]int) (map[string]string, outcome) {
 	bridge, vlan := fdbOf(iface, nic)
-	placed := make(map[string]bool, len(macs))
+	placed := make(map[string]string, len(macs))
 	var unsure undecided
 	for _, mac := range macs {
 		ports, o := a.fdbPorts(ctx, bridge, vlan, mac)
@@ -36,7 +37,7 @@ func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, m
 			return nil, o
 		}
 		if o.ok() {
-			placed[mac] = true
+			placed[mac] = ports[0]
 		}
 	}
 	if !unsure.ok() {

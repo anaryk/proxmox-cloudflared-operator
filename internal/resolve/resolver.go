@@ -85,9 +85,12 @@ type Settings struct {
 	// inventory lists no node at all, a guest said to run elsewhere gets it
 	// too, but its failure proves nothing unless the MAC is on the port of a
 	// local guest.
-	LocalNode    string
-	StickyFor    time.Duration // keep a failing binding this long before trying others, default 2m
-	TrustStatic  bool          // resolve.trustStaticConfig
+	LocalNode string
+	// StickyFor is how long a failing binding is kept before other candidates
+	// are tried, and how long a new one is kept before a candidate proven
+	// higher is looked for; default 2m.
+	StickyFor    time.Duration
+	TrustStatic  bool // resolve.trustStaticConfig
 	TrustedCIDRs []netip.Prefix
 	// MaxProofAge is how long a bound address stays served on an old proof of
 	// identity when a call cannot prove it anew, default 5m.
@@ -152,7 +155,8 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 // has those MACs configured unless the binding already had them and the
 // forwarding table placed them, and the port answers. Of the candidates that
 // pass, the one proven at the highest level is served; the order decides only
-// between equal levels.
+// between equal levels. A binding that passes is kept without looking further
+// until it has been bound for StickyFor.
 //
 // The previous binding is verified first, even when no source reports its
 // address any more. After a dial failure it stays the target for StickyFor
@@ -284,7 +288,7 @@ type attempt struct {
 	list     []Candidate // in the order they are tried
 	bound    bool        // list[0] carries prev
 	outcomes []outcome   // by list index
-	levels   []Level     // by list index: what proved the identity, if it held
+	proofs   []proof     // by list index: what proved the identity, if it held
 	tried    []bool      // by list index
 	results  []CandidateResult
 
@@ -305,15 +309,18 @@ func newAttempt(r *Resolver, route model.Route, guest model.Guest, snap inventor
 		}
 	}
 	a.outcomes = make([]outcome, len(a.list))
-	a.levels = make([]Level, len(a.list))
+	a.proofs = make([]proof, len(a.list))
 	a.tried = make([]bool, len(a.list))
 	return a
 }
 
 // resolve serves, of the candidates that pass, the one proven at the highest
 // level, the first of them when several are equal. Once one passes, a
-// candidate that cannot be proven higher is not tried. A candidate proven
-// before the call is cancelled is served all the same.
+// candidate that cannot be proven higher is not tried, and none is while a
+// passing binding has been bound for less than StickyFor: a candidate whose
+// identity comes and goes would otherwise move the route up and down every
+// call. A candidate proven before the call is cancelled is served all the
+// same.
 func (a *attempt) resolve(ctx context.Context) Result {
 	best := -1
 	if a.bound {
@@ -321,6 +328,8 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		switch {
 		case o.verdict == cancelled:
 			return a.cancelled()
+		case o.ok() && a.prev.settling(a.now, a.r.settings.StickyFor):
+			return a.served(0)
 		case o.ok():
 			best = 0
 		case o.verdict == rejected:
@@ -330,7 +339,7 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		}
 	}
 	for i := range a.list[:min(len(a.list), maxTries)] {
-		if a.tried[i] || best >= 0 && a.levels[best].AtLeast(a.ceilingOf(a.list[i])) {
+		if a.tried[i] || best >= 0 && a.proofs[best].level.AtLeast(a.ceilingOf(a.list[i])) {
 			continue
 		}
 		switch o := a.try(ctx, i); {
@@ -338,7 +347,7 @@ func (a *attempt) resolve(ctx context.Context) Result {
 			return a.served(best)
 		case o.verdict == cancelled:
 			return a.cancelled()
-		case o.ok() && (best < 0 || !a.levels[best].AtLeast(a.levels[i])):
+		case o.ok() && (best < 0 || !a.proofs[best].level.AtLeast(a.proofs[i].level)):
 			best = i
 		}
 	}
@@ -385,9 +394,9 @@ func (a *attempt) keepsBound(o outcome) bool {
 
 func (a *attempt) try(ctx context.Context, i int) outcome {
 	c := a.list[i]
-	level, o := a.verify(ctx, c)
-	a.outcomes[i], a.levels[i], a.tried[i] = o, level, true
-	a.results = append(a.results, CandidateResult{Addr: c.Addr, Source: c.Source, OK: o.ok(), Reason: o.reason, Level: string(level)})
+	p, o := a.verify(ctx, c)
+	a.outcomes[i], a.proofs[i], a.tried[i] = o, p, true
+	a.results = append(a.results, CandidateResult{Addr: c.Addr, Source: c.Source, OK: o.ok(), Reason: o.reason, Level: string(p.level)})
 	return o
 }
 
@@ -412,9 +421,15 @@ func (a *attempt) ceilingOf(c Candidate) Level {
 	return a.ceiling()
 }
 
+// served binds the route to the candidate at i; the bound candidate keeps
+// the time it was bound.
 func (a *attempt) served(i int) Result {
 	c := a.list[i]
-	return a.result(planner.ResolvedTarget{Addr: c.Addr, Reachable: true}, newBinding(a.route, c, a.now, a.levels[i]))
+	b := newBinding(a.route, c, a.now, a.proofs[i])
+	if a.bound && i == 0 {
+		b.Since = a.prev.boundSince()
+	}
+	return a.result(planner.ResolvedTarget{Addr: c.Addr, Reachable: true}, b)
 }
 
 // boundFailed keeps the failing binding as the target. Lost identity
@@ -427,7 +442,7 @@ func (a *attempt) boundFailed(o outcome) Result {
 		b.Withdrawn = true
 		return a.result(planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: o.reason}, b)
 	case unreachable:
-		b.VerifiedAt, b.Withdrawn, b.Level = a.now, false, a.levels[0]
+		b = b.proven(a.now, a.proofs[0])
 		return a.result(planner.ResolvedTarget{Addr: b.Addr, Reason: o.reason}, b)
 	}
 	return a.unproven(b, o.reason)

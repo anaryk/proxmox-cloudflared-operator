@@ -2,9 +2,13 @@ package daemon
 
 import (
 	"errors"
+	"net"
+	"net/netip"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -55,6 +59,32 @@ func TestWithoutTheConnectorUserNoTunnelConfigurationIsWritten(t *testing.T) {
 	require.NoError(t, d.client.Sync(t.Context()))
 	d.await(func(st engine.State) bool { return len(st.Tunnels) == 1 && st.Tunnels[0].Verified })
 	require.NotEmpty(t, w.nft.applied())
+}
+
+// The watch is given the pins the resolver proved, and a move it reports
+// takes the address out of the table at once; the verification that follows
+// puts it back.
+func TestTheDaemonBlocksAnAddressWhoseMACMoved(t *testing.T) {
+	w := newWorld(t)
+	d := w.start()
+	d.await(func(st engine.State) bool { return len(st.Routes) == 1 })
+	bound, onMove := w.watch.running(t)
+
+	hw, err := net.ParseMAC(guestMAC)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return reflect.DeepEqual(map[netip.Addr]egress.Pin{
+			netip.MustParseAddr(guestAddress): {MAC: hw, Bridge: "vmbr0", Port: "tap101i0"},
+		}, bound())
+	}, 10*time.Second, 5*time.Millisecond, "%v", bound())
+	before := len(w.nft.applied())
+
+	onMove(netip.MustParseAddr(guestAddress))
+
+	require.Eventually(t, func() bool { return len(w.nft.applied()) >= before+2 }, 10*time.Second, 5*time.Millisecond)
+	scripts := w.nft.applied()[before:]
+	require.Equal(t, "delete element inet pco_egress targets4 { "+guestAddress+" . 8080 }\n", scripts[0])
+	require.Contains(t, scripts[1], guestAddress+" . 8080", "verified again and back")
 }
 
 func TestTheFilterOfAnUnknownUserIsNoFailureWhileItIsOff(t *testing.T) {

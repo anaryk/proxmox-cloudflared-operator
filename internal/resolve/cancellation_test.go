@@ -168,7 +168,7 @@ func TestResolveCancelled(t *testing.T) {
 		res := s.resolveCtx(ctx, webRoute(), prev)
 
 		require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reason: "port 80: connection refused", Owner: webOwner}, res.Target)
-		require.Equal(t, atLevel(provenAt(prev, t0), LevelPort), res.Binding)
+		require.Equal(t, onPort(atLevel(provenAt(prev, t0), LevelPort)), res.Binding)
 	})
 
 	t.Run("while trying other candidates after a stale prober error", func(t *testing.T) {

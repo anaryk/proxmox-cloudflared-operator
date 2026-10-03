@@ -4,9 +4,38 @@ import (
 	"context"
 	"net/netip"
 	"sync"
+	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
+
+// watchAgainAfter is how long a watch of the network that failed waits before
+// it starts again.
+const watchAgainAfter = time.Minute
+
+// watchNetwork runs the watch of the network for the engine until ctx ends:
+// an address whose MAC moves is taken out of the egress filter at once and
+// verified again. A watch that fails is started again after a while; until
+// then a move is seen by the next cycle only.
+func watchNetwork(ctx context.Context, eng *engine.Engine,
+	watch func(context.Context, func() map[netip.Addr]egress.Pin, func(netip.Addr)) error,
+	sleep func(context.Context, time.Duration) error, log zerolog.Logger,
+) {
+	for {
+		err := watch(ctx, eng.Bound, func(addr netip.Addr) { eng.Moved(ctx, addr) })
+		if ctx.Err() != nil {
+			return
+		}
+		log.Warn().Err(err).Dur("again", watchAgainAfter).Msg("watching the network for bound addresses that move failed; " +
+			"until it runs again, a MAC that moves is seen by the next cycle only")
+		if sleep(ctx, watchAgainAfter) != nil {
+			return
+		}
+	}
+}
 
 // egressFilter is the filter of the connectors, made once the uid of the
 // connector user is known: a user that the package or systemd-sysusers

@@ -71,6 +71,8 @@ func TestResolveVLANInterface(t *testing.T) {
 			requireServed(t, res, "10.30.0.10", t0)
 			require.Equal(t, []probeCall{{op: "arp", iface: tt.iface, addr: ip("10.30.0.10")}}, s.prober.ops("arp"))
 			require.Equal(t, []probeCall{{op: "fdb", iface: tt.fdbBridge, vlan: tt.fdbVLAN, mac: mac0}}, s.prober.ops("fdb"))
+			require.Equal(t, tt.fdbBridge, res.Binding.Bridge, "the bridge whose forwarding table placed the MAC")
+			require.Equal(t, "tap101i0", res.Binding.Port)
 		})
 	}
 }

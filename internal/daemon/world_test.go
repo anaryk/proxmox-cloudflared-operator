@@ -250,6 +250,37 @@ func (f *fakeNft) applied() []string {
 	return slices.Clone(f.scripts)
 }
 
+// fakeWatch is the watch of the network: it keeps what the daemon gave it,
+// for a test to call, and runs until its context ends.
+type fakeWatch struct {
+	mu     sync.Mutex
+	bound  func() map[netip.Addr]egress.Pin
+	onMove func(netip.Addr)
+	runs   int
+}
+
+func (f *fakeWatch) watch(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error {
+	f.mu.Lock()
+	f.bound, f.onMove = bound, onMove
+	f.runs++
+	f.mu.Unlock()
+	<-ctx.Done()
+	return nil
+}
+
+// running returns what the daemon gave the watch, once it started.
+func (f *fakeWatch) running(t *testing.T) (func() map[netip.Addr]egress.Pin, func(netip.Addr)) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.onMove != nil
+	}, 10*time.Second, 5*time.Millisecond)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bound, f.onMove
+}
+
 // fakeNotifier records what the daemon tells systemd.
 type fakeNotifier struct {
 	mu      sync.Mutex
@@ -328,6 +359,7 @@ type world struct {
 	cf     *cffake.Fake
 	sysd   *fakeSystemd
 	nft    *fakeNft
+	watch  *fakeWatch
 	notify *fakeNotifier
 	logs   *testutil.SyncBuffer
 	// cycles counts the reads of the clock, which every cycle starts with: it
@@ -348,6 +380,7 @@ func newWorld(t *testing.T) *world {
 		cf:     cffake.New(),
 		sysd:   &fakeSystemd{enabled: map[string]bool{}},
 		nft:    newFakeNft(),
+		watch:  &fakeWatch{},
 		notify: newFakeNotifier(),
 		logs:   &testutil.SyncBuffer{},
 	}
@@ -393,6 +426,7 @@ func newWorld(t *testing.T) *world {
 		Nft:          w.nft,
 		ConnectorUID: func() (uint32, error) { return testConnectorUID, nil },
 		Resolvers:    func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.20.0.1")}, nil },
+		WatchNetwork: w.watch.watch,
 	}
 	return w
 }
