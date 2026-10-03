@@ -40,10 +40,33 @@ func TestAnAdminRequestBehindALongCycleSaysSo(t *testing.T) {
 		err := call(t.Context())
 
 		require.ErrorIs(t, err, ErrBusy, name)
-		require.EqualError(t, err, "a cycle is running and took longer than 45s; try again", name)
+		require.EqualError(t, err, "a cycle is running and took longer than 35s; try again", name)
 	}
 	require.Equal(t, 3, waited.count(lockWait))
-	require.Less(t, lockWait, 60*time.Second, "the command line waits a minute for an answer")
+	require.Less(t, lockWait, clientWait)
+}
+
+// clientWait is how long the command line waits for the answer to a request
+// that changes something: apiclient.longTimeout.
+const clientWait = 60 * time.Second
+
+// The move of a claim looks at the inventory and then waits for the cycle that
+// runs. If the two could outlast the command line, it would give up while the
+// move still went through.
+func TestAClaimMoveEndsWithinWhatTheCommandLineWaits(t *testing.T) {
+	e := contested(t)
+	asked := &timeouts{}
+	e.eng.timeout = asked.withTimeout
+
+	require.NoError(t, e.eng.ResolveClaim(t.Context(), "www.example.com", "qemu/102"))
+
+	require.Equal(t, 1, asked.count(lockWait))
+	require.Equal(t, 1, asked.count(lookTimeout))
+	var worst time.Duration
+	for _, d := range asked.seen {
+		worst += d
+	}
+	require.Less(t, worst, clientWait, "the look and the wait for the cycle, one after the other")
 }
 
 func TestTheCredentialsAreAnsweredFromTheStore(t *testing.T) {

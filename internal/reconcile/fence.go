@@ -83,7 +83,7 @@ func (run *dnsRun) commit(z *dnsZone, a Action, call func() error) bool {
 		return false
 	}
 	z.add(a, "")
-	run.r.log.Info().Str("zone", z.Name).Str("record", a.Target).Str("action", string(a.Kind)).Str("detail", a.Detail).Msg("changed dns record")
+	run.r.log.Debug().Str("zone", z.Name).Str("record", a.Target).Str("action", string(a.Kind)).Str("detail", a.Detail).Msg("changed dns record")
 	return true
 }
 

@@ -286,7 +286,7 @@ func (run *tunnelRun) create(ctx context.Context, api cfapi.API, t target) (tun 
 	switch {
 	case err == nil:
 		run.act(t, CreateTunnel, createDetail(t), "")
-		run.r.log.Info().Str("account", t.account).Str("tunnel", t.name).Msg("created tunnel")
+		run.r.log.Debug().Str("account", t.account).Str("tunnel", t.name).Msg("created tunnel")
 		return tun, true, true
 	case !cfapi.IsConflict(err):
 		run.act(t, CreateTunnel, createDetail(t), err.Error())
@@ -478,7 +478,7 @@ func (run *tunnelRun) put(ctx context.Context, api cfapi.API, t target, st *Tunn
 	}
 	run.act(t, PutConfig, detail, "")
 	st.Version = version
-	run.r.log.Info().Str("account", t.account).Str("tunnel", t.name).Int("version", version).Msg("wrote tunnel configuration")
+	run.r.log.Debug().Str("account", t.account).Str("tunnel", t.name).Int("version", version).Msg("wrote tunnel configuration")
 
 	got, err := api.TunnelConfig(ctx, t.account, st.ID)
 	switch {

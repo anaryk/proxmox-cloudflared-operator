@@ -93,9 +93,11 @@ var (
 	ErrBusy = errors.New("a cycle is running")
 )
 
-// lockWait is how long an admin action waits for the cycle that runs: less
-// than the command line waits for an answer, so that the admin is told why.
-const lockWait = 45 * time.Second
+// lockWait is how long an admin action waits for the cycle that runs. With the
+// fresh look of lookTimeout, which a move of a claim takes first, it is less than
+// the command line waits for an answer, so that the admin is told why and the
+// move does not go through after the command line gave up.
+const lockWait = 35 * time.Second
 
 // Engine runs reconcile cycles, one at a time. Its methods are safe for
 // concurrent use.

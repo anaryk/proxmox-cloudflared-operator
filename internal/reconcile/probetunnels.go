@@ -97,5 +97,5 @@ func (run *tunnelRun) deleteProbe(ctx context.Context, api cfapi.API, probe targ
 		return
 	}
 	run.res.Actions = append(run.res.Actions, a)
-	run.r.log.Info().Str("account", probe.account).Str("tunnel", tun.Name).Msg("deleted probe tunnel left behind")
+	run.r.log.Debug().Str("account", probe.account).Str("tunnel", tun.Name).Msg("deleted probe tunnel left behind")
 }
