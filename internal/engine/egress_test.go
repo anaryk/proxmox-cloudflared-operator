@@ -342,6 +342,30 @@ func TestAWithdrawnAddressDoesNotComeBackThroughAStaleMemory(t *testing.T) {
 	}
 }
 
+// The same, for a route that is gone from the guest's Notes by the time the
+// daemon starts again: nothing resolves it, but its stored binding still says
+// the address lost its proof.
+func TestAWithdrawnAddressOfARouteThatIsGoneDoesNotComeBack(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	stale, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	e.settings(func(s *store.Settings) { s.ObserveOnly = true })
+	e.res.stop("www.example.com", "identity check failed: 10.0.0.11 answered by bc:24:11:ff:ff:01")
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	require.NoError(t, e.store.SaveEngineMemory(stale), "the memory that cycle could not save")
+	e.inv.set(snapshot(guest(101, "web-1")))
+	e.eng = e.newEngine()
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	got, _ := e.egr.last()
+	require.Empty(t, got, "a withdrawn address is fed back")
+}
+
 // An address whose proof falls below the minimum is still proven, at a lower
 // level: it is held back, and leaves the set the way a withdrawn route's
 // target leaves it, after the tunnel run took its rule out. Only a lost proof

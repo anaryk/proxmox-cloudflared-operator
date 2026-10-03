@@ -136,9 +136,15 @@ func (c *cycleRun) verifiedTargets() []egress.Target {
 }
 
 // withdrawnAddrs are the addresses of the winners whose binding is withdrawn
-// after this cycle's resolution.
+// after this cycle's resolution, and of every stored binding that was
+// withdrawn when the cycle began, which covers a route gone since.
 func (c *cycleRun) withdrawnAddrs() map[netip.Addr]bool {
 	out := map[netip.Addr]bool{}
+	for _, b := range c.bindings {
+		if b.Withdrawn {
+			out[b.Addr] = true
+		}
+	}
 	for _, rt := range c.claims.Winners {
 		if b := c.results[rt.Hostname].Binding; b != nil && b.Withdrawn {
 			out[b.Addr] = true
