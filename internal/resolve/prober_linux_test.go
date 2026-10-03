@@ -643,7 +643,7 @@ func TestLinuxProberOnBridge(t *testing.T) {
 				Source:   model.SourceAnnotation,
 				Guest:    &ref,
 			}
-			return r.Resolve(t.Context(), route, snap, nil, deny)
+			return r.Resolve(t.Context(), route, snap, nil, deny, LevelPort)
 		}
 
 		res := resolve(moved)

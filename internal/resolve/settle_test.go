@@ -43,6 +43,27 @@ func TestResolveAYoungBindingDoesNotMoveUp(t *testing.T) {
 	})
 }
 
+// A binding the minimum holds back is not served: it does not settle, and
+// the route moves up as soon as a candidate that meets the minimum passes.
+func TestResolveABindingBelowTheMinimumDoesNotSettle(t *testing.T) {
+	prev := boundSince(atLevel(boundTo("10.40.0.10"), LevelObserved), t0.Add(-30*time.Second))
+	s := trustedFirst(t)
+	s.required = LevelPort
+
+	res := s.resolve(t, webRoute(), prev)
+
+	requireServed(t, res, "10.20.0.10", t0)
+
+	t.Run("one that meets it does", func(t *testing.T) {
+		s := trustedFirst(t)
+		s.required = LevelObserved
+
+		res := s.resolve(t, webRoute(), prev)
+
+		requireServedAt(t, res, "10.40.0.10", t0, LevelObserved)
+	})
+}
+
 func TestResolveAMoveDownAfterAnIdentityFailureIsImmediate(t *testing.T) {
 	s := trustedFirst(t)
 	prev := boundSince(atLevel(boundTo("10.20.0.10"), LevelPort), t0.Add(-10*time.Second))

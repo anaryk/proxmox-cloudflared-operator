@@ -65,6 +65,7 @@ func (c *cycleRun) resolveTargets() bool {
 // many addresses cannot hold up the others.
 func (c *cycleRun) resolveAll(stored map[string]resolve.Binding, deny resolve.Denylist) map[string]resolve.Result {
 	winners := c.claims.Winners
+	required := c.requiredLevel()
 	out := make([]resolve.Result, len(winners))
 	slots := make(chan struct{}, resolveConcurrency)
 	done := make(chan struct{})
@@ -86,7 +87,7 @@ func (c *cycleRun) resolveAll(stored map[string]resolve.Binding, deny resolve.De
 			defer func() { <-slots; done <- struct{}{} }()
 			ctx, cancel := c.e.timeout(c.ctx, resolveTimeout)
 			defer cancel()
-			out[i] = c.e.d.Resolver.Resolve(ctx, rt, c.snap, prev, deny)
+			out[i] = c.e.d.Resolver.Resolve(ctx, rt, c.snap, prev, deny, required)
 		}()
 	}
 	for range started {

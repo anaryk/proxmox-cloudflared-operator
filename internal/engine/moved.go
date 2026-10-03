@@ -239,7 +239,7 @@ func (e *Engine) verifyMoved(ctx context.Context, addr netip.Addr) (why string, 
 	for i, wr := range routes {
 		rctx, cancel := e.timeout(ctx, resolveTimeout)
 		prev := wr.binding
-		res := e.d.Resolver.Resolve(rctx, wr.route, w.snap, &prev, w.deny)
+		res := e.d.Resolver.Resolve(rctx, wr.route, w.snap, &prev, w.deny, w.required)
 		cancel()
 		if ctx.Err() != nil {
 			return "the daemon stops", false

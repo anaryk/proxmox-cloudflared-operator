@@ -133,6 +133,7 @@ type fakeResolver struct {
 	rejected    map[string]string        // hostname -> reason
 	stopped     map[string]string        // hostname -> reason
 	levels      map[string]resolve.Level // hostname -> level
+	required    []resolve.Level          // what every call was told the minimum is
 	bridge      string                   // where every binding's MACs were placed, by MAC
 	placed      map[string]string
 	calls       int
@@ -141,9 +142,10 @@ type fakeResolver struct {
 	onResolve   func()
 }
 
-func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist) resolve.Result {
+func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level) resolve.Result {
 	f.mu.Lock()
 	f.calls++
+	f.required = append(f.required, required)
 	if d, ok := ctx.Deadline(); ok {
 		f.deadlines = append(f.deadlines, d)
 	}
@@ -203,6 +205,13 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 		}
 	}
 	return res
+}
+
+// minimums returns the minimum every call was told, in order.
+func (f *fakeResolver) minimums() []resolve.Level {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.required)
 }
 
 // place makes every binding say that its MACs were found on these ports of

@@ -171,15 +171,19 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 // Whether the binding still applies is decided before ctx is looked at; a
 // cancelled ctx then leaves the previous state as it was, except for what the
 // call has already learned about the bound address.
-func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist) Result {
-	res := r.resolve(ctx, route, snap, prev, deny)
+//
+// required is the least level the caller serves a guest's address at. A
+// binding proven below it is not kept without looking further, as it is not
+// served; what is served, and at which level, stays the caller's to decide.
+func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist, required Level) Result {
+	res := r.resolve(ctx, route, snap, prev, deny, required)
 	if res.Target.Addr.IsValid() {
 		res.Target.Owner = route.Owner()
 	}
 	return res
 }
 
-func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist) Result {
+func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist, required Level) Result {
 	if route.Guest == nil {
 		return r.resolveAddress(ctx, route, snap, deny)
 	}
@@ -204,6 +208,7 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 	// Whether the binding still applies is settled before ctx is looked at,
 	// so that a cancelled call cannot keep one that does not.
 	a := newAttempt(r, route, guest, snap, deny, prev, now, cands)
+	a.required = required
 	if !guest.Running {
 		return a.guestUnknown()
 	}
@@ -284,6 +289,9 @@ type attempt struct {
 	deny  Denylist
 	prev  *Binding // the binding of this route, if it still applies
 	now   time.Time
+	// required is the least level the caller serves at: a binding proven
+	// below it does not settle.
+	required Level
 
 	list     []Candidate // in the order they are tried
 	bound    bool        // list[0] carries prev
@@ -328,7 +336,7 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		switch {
 		case o.verdict == cancelled:
 			return a.cancelled()
-		case o.ok() && a.prev.settling(a.now, a.r.settings.StickyFor):
+		case o.ok() && a.proofs[0].level.AtLeast(a.required) && a.prev.settling(a.now, a.r.settings.StickyFor):
 			return a.served(0)
 		case o.ok():
 			best = 0

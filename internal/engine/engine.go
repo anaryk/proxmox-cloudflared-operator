@@ -41,7 +41,7 @@ type Inventory interface {
 // Resolver is the part of *resolve.Resolver the engine uses. It must be safe
 // for concurrent use.
 type Resolver interface {
-	Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist) resolve.Result
+	Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level) resolve.Result
 }
 
 // Connectors is the part of *connector.Manager the engine uses.

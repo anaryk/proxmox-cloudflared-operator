@@ -34,6 +34,18 @@ func webAndAPI(t *testing.T) *env {
 	return e
 }
 
+// The resolver keeps no binding the minimum holds back without looking for a
+// better one, so it is told the minimum; serving stays the engine's.
+func TestTheResolverIsToldTheMinimum(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	e.settings(func(s *store.Settings) { s.IdentityMinimum = string(resolve.LevelObserved) })
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	require.Equal(t, []resolve.Level{resolve.LevelPort, resolve.LevelObserved}, e.res.minimums())
+}
+
 func TestTheMinimumHoldsBackARouteProvenBelowIt(t *testing.T) {
 	e := webAndAPI(t)
 	e.res.setLevel("www.example.com", resolve.LevelObserved)
