@@ -12,14 +12,17 @@ import (
 // looked up by name whenever it is needed.
 const ConnectorUser = "pco-connector"
 
-// ConnectorUID returns the uid of the connector user.
+// ErrNoConnectorUser says that the connector user does not exist.
+var ErrNoConnectorUser = errors.New("the connector user does not exist: install the package or run systemd-sysusers")
+
+// ConnectorUID returns the uid of the connector user, or ErrNoConnectorUser.
 func ConnectorUID() (uint32, error) { return connectorUID(user.Lookup) }
 
 func connectorUID(lookup func(string) (*user.User, error)) (uint32, error) {
 	u, err := lookup(ConnectorUser)
 	var unknown user.UnknownUserError
 	if errors.As(err, &unknown) {
-		return 0, fmt.Errorf("user %s does not exist: install the pco package or run systemd-sysusers", ConnectorUser)
+		return 0, fmt.Errorf("%s: %w", ConnectorUser, ErrNoConnectorUser)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("looking up user %s: %w", ConnectorUser, err)

@@ -72,8 +72,10 @@ type Deps struct {
 	Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
 	Cloudflared string
 	// HostTimeout bounds every question the doctor asks of the host;
-	// default: the doctor's own, 5 s.
+	// default: the doctor's own, 5 s. UnitEnabled is how the doctor asks
+	// whether a unit starts at boot; default: systemctl is-enabled.
 	HostTimeout time.Duration
+	UnitEnabled func(ctx context.Context, unit string) (bool, error)
 	// PVECertDir is where the certificates of this node are, which the
 	// Proxmox API on a loopback URL must present; default /etc/pve/local.
 	PVECertDir string
@@ -84,8 +86,13 @@ type Deps struct {
 	ConnectorUID func() (uint32, error)
 	Resolvers    func() ([]netip.Addr, error)
 	// WatchNetwork calls onMove for every bound address whose MAC moves,
-	// until ctx ends; default: egress.Watch.
+	// until ctx ends; default: egress.Watch. WatchRuleset calls changed
+	// whenever the nftables ruleset changes; default: egress.WatchRuleset.
+	// EgressEvery is how often the egress table is checked besides; default
+	// 30 s.
 	WatchNetwork func(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error
+	WatchRuleset func(ctx context.Context, changed func()) error
+	EgressEvery  time.Duration
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -128,6 +135,12 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.WatchNetwork == nil {
 		d.WatchNetwork = egress.Watch
+	}
+	if d.WatchRuleset == nil {
+		d.WatchRuleset = egress.WatchRuleset
+	}
+	if d.EgressEvery <= 0 {
+		d.EgressEvery = checkEvery
 	}
 	return d
 }
@@ -181,7 +194,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	settings := startSettings(st, log)
 	logStart(log, cfg, st)
 
-	eng, client, err := build(cfg, deps, st, token, settings)
+	eng, client, filter, err := build(cfg, deps, st, token, settings)
 	if err != nil {
 		return err
 	}
@@ -195,12 +208,15 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		Binary:     deps.Cloudflared,
 		Dial:       deps.Dial,
 		Timeout:    deps.HostTimeout,
+		Enabled:    deps.UnitEnabled,
 	}, nil, deps.Now, log)
 	gid, uids := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch)
+	k := &keeper{table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log}
+	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep)
 }
 
 // startSettings reads the settings that are wired at start. Settings that
@@ -252,8 +268,9 @@ func storeReady(st *store.Store) func() error {
 }
 
 // build makes the engine out of the parts, and returns the Proxmox client it
-// reads through too. The Proxmox token goes into the client and nowhere else.
-func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, *pve.Client, error) {
+// reads through and the egress filter it feeds too. The Proxmox token goes
+// into the client and nowhere else.
+func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, *pve.Client, *egressFilter, error) {
 	client, err := pve.New(pve.Config{
 		BaseURL:     cfg.PVEURL,
 		TokenID:     token.TokenID,
@@ -262,7 +279,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		NodeCertDir: deps.PVECertDir,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
+		return nil, nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
 	}
 	log := cfg.Log
 	inv := inventory.New(client, inventory.Options{GateTags: []string{settings.GateTag}}, deps.Now, log)
@@ -289,9 +306,9 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		LocalDir:   cfg.Paths.Local,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("building the engine: %w", err)
+		return nil, nil, nil, fmt.Errorf("building the engine: %w", err)
 	}
-	return eng, client, nil
+	return eng, client, filter, nil
 }
 
 // serve runs the API, starts the engine once the socket is listening, and runs

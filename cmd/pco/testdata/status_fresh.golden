@@ -2,6 +2,7 @@ Mode:        observe-only
 Profile:     host
 Inventory:   complete
 Writer:      ok
+Egress:      not checked yet
 Routes:      none
 Last cycle:  2026-10-01T14:00:00+02:00
 Tunnels:     none

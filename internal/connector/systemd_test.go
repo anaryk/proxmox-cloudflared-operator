@@ -300,6 +300,7 @@ func TestTheEgressUnitLoadsTheFilterBeforeTheDaemon(t *testing.T) {
 	require.Equal(t, []string{"yes"}, u["Service"]["RemainAfterExit"])
 	require.Equal(t, []string{"/usr/bin/pco egress load"}, u["Service"]["ExecStart"])
 	require.Equal(t, []string{"pco.service"}, u["Unit"]["Before"], "the daemon's first table must not be replaced by the empty one")
+	require.Equal(t, []string{"nss-lookup.target"}, u["Unit"]["After"], "the resolvers it reads may be written by a resolver service")
 	require.Equal(t, []string{"multi-user.target"}, u["Install"]["WantedBy"])
 }
 

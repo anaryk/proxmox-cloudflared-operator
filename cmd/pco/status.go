@@ -39,10 +39,10 @@ func (a *app) statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show what the daemon found and did",
-		Long: "Show the mode of the daemon, whether the inventory is complete, the routes by state,\n" +
-			"the tunnels with their connectors, the credentials, the issues found in guest notes\n" +
-			"and the problems. The exit status is 1 when there are problems, and 2 when the daemon\n" +
-			"could not be asked.\n\n" +
+		Long: "Show the mode of the daemon, whether the inventory is complete, the egress filter, the\n" +
+			"routes by state, the tunnels with their connectors, the credentials, the issues found in\n" +
+			"guest notes and the problems. The exit status is 1 when there are problems or the egress\n" +
+			"filter does not confine the connectors, and 2 when the daemon could not be asked.\n\n" +
 			"With --json the state of the daemon is printed as the daemon sent it, re-indented, with\n" +
 			"control and bidirectional characters escaped.",
 		Args: cobra.NoArgs,
@@ -80,7 +80,7 @@ func (a *app) statusCmd() *cobra.Command {
 // A cycle that has run and found the inventory incomplete or the writer not
 // in order has said so in the problems too; the checks do not rely on that.
 func hasProblems(st engine.State) bool {
-	if len(st.Problems) > 0 {
+	if len(st.Problems) > 0 || unconfined(st) {
 		return true
 	}
 	if st.At.IsZero() {
@@ -103,14 +103,29 @@ func statusLine(s *screen, key, value string) {
 	s.printf("%-*s%s\n", statusKeyWidth, key+":", value)
 }
 
+// unconfined says whether the egress filter, as the daemon last found it,
+// does not confine the connectors.
+func unconfined(st engine.State) bool {
+	switch st.Egress.State {
+	case engine.EgressOff, engine.EgressNotLoaded, engine.EgressChanged:
+		return true
+	}
+	return false
+}
+
 func (a *app) renderStatus(w io.Writer, st engine.State) error {
 	s := &screen{w: w}
+	if st.Egress.State == engine.EgressOff {
+		s.printf("Warning: the egress filter is switched off since %s: the connectors are not confined. "+
+			"pco egress on switches it back on.\n\n", a.since(st.Egress.Since))
+	}
 	statusLine(s, "Mode", modeText(st))
 	if st.Profile != "" {
 		statusLine(s, "Profile", st.Profile)
 	}
 	statusLine(s, "Inventory", inventoryText(st))
 	statusLine(s, "Writer", writerText(st.WriterVerdict))
+	statusLine(s, "Egress", egressText(st.Egress))
 	statusLine(s, "Routes", routeCounts(st.Routes))
 	if n := len(st.Unapproved); n == 1 {
 		statusLine(s, "Approval", "1 guest waits (pco guest list)")
@@ -155,6 +170,22 @@ func inventoryText(st engine.State) string {
 		return "complete"
 	}
 	return "incomplete"
+}
+
+func egressText(v engine.EgressView) string {
+	switch v.State {
+	case "":
+		return "not checked yet"
+	case engine.EgressOn:
+		return "on"
+	case engine.EgressOff:
+		return "off: the connectors are not confined"
+	case engine.EgressNotLoaded:
+		return "not loaded, and pco could not load it again: the connectors are not confined"
+	case engine.EgressChanged:
+		return "changed, and pco could not load it again: the connectors may not be confined"
+	}
+	return v.State
 }
 
 func writerText(verdict string) string {

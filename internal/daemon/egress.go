@@ -94,3 +94,24 @@ func (k *egressFilter) Remove(ctx context.Context, addr netip.Addr) error {
 	}
 	return f.Remove(ctx, addr)
 }
+
+// Verify verifies the live table; without a filter, it says that the filter
+// is off while it is, and why there is none otherwise.
+func (k *egressFilter) Verify(ctx context.Context) error {
+	f, err := k.filter()
+	if err != nil {
+		if _, off, oerr := k.ov.Off(); oerr == nil && off {
+			return egress.ErrOff
+		}
+		return err
+	}
+	return f.Verify(ctx)
+}
+
+func (k *egressFilter) Reapply(ctx context.Context) error {
+	f, err := k.filter()
+	if err != nil {
+		return k.unmade(err)
+	}
+	return f.Reapply(ctx)
+}

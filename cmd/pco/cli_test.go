@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -33,6 +34,10 @@ func TestStatusGolden(t *testing.T) {
 		{"fresh install without a credential", freshState(), "status_fresh.golden", true},
 		{"problems", problemState(), "status_problems.golden", true},
 		{"no cycle has run", engine.State{Mode: "observe", WriterVerdict: "ok"}, "status_no_cycle.golden", false},
+		{"the egress filter switched off", egressState(engine.EgressView{State: engine.EgressOff, Since: t0.Add(-2 * time.Hour)}),
+			"status_egress_off.golden", true},
+		{"the egress table not loaded again", egressState(engine.EgressView{State: engine.EgressNotLoaded}),
+			"status_egress_unloaded.golden", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, _ := daemonWith(t, tt.state)

@@ -22,6 +22,7 @@ const (
 	maxVersionOutput = 4 << 10
 
 	defaultCloudflared = "/usr/bin/cloudflared"
+	systemctlPath      = "/usr/bin/systemctl"
 )
 
 // Proxmox is the part of the Proxmox client the doctor asks.
@@ -44,6 +45,9 @@ type HostEnv struct {
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// Timeout bounds every question to the host; zero is hostTimeout.
 	Timeout time.Duration
+	// Enabled asks systemd whether a unit starts at boot; nil runs
+	// systemctl is-enabled.
+	Enabled func(ctx context.Context, unit string) (bool, error)
 }
 
 func (h *HostEnv) timeout() time.Duration {
@@ -89,6 +93,39 @@ func (h *HostEnv) UnitActive(ctx context.Context, unit string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, h.timeout())
 	defer cancel()
 	return h.Systemd.IsActive(ctx, unit)
+}
+
+// UnitEnabled asks systemd whether a unit starts at boot.
+func (h *HostEnv) UnitEnabled(ctx context.Context, unit string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, h.timeout())
+	defer cancel()
+	if h.Enabled != nil {
+		return h.Enabled(ctx, unit)
+	}
+	return systemctlEnabled(ctx, unit)
+}
+
+// systemctlEnabled runs systemctl is-enabled. A unit that does not exist is
+// not enabled; what systemctl prints on another failure is the error.
+func systemctlEnabled(ctx context.Context, unit string) (bool, error) {
+	var stdout, stderr capped
+	stdout.max, stderr.max = maxVersionOutput, maxVersionOutput
+	cmd := exec.CommandContext(ctx, systemctlPath, "is-enabled", "--", unit)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	state, _, _ := strings.Cut(strings.TrimSpace(stdout.String()), "\n")
+	switch {
+	case state != "":
+		return state == "enabled" || state == "enabled-runtime", nil
+	case strings.Contains(stderr.String(), "No such file or directory"):
+		return false, nil
+	case err != nil:
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return false, fmt.Errorf("%w: %s", err, detail)
+		}
+		return false, err
+	}
+	return false, errors.New("systemctl is-enabled printed nothing")
 }
 
 // CanDial connects to addr and hangs up.

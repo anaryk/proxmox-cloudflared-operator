@@ -145,8 +145,13 @@ func (f *Filter) removeLive(ctx context.Context, addr netip.Addr) error {
 // Before the filter applied anything, the elements are not compared. A
 // difference, a table that is gone or a listing that cannot be read is
 // ErrChanged, and makes the next Set apply even with the same targets; while
-// the filter is switched off it is ErrOff. Other errors say that nft could not
-// list the table.
+// the filter is switched off it is ErrOff, and what the table holds once it is
+// switched on again is not known. Other errors say that nft could not list the
+// table.
+//
+// What pco egress block took out of the live table stays out of what Verify
+// expects, also once the address is unblocked: pco egress unblock puts
+// nothing back, the next Set does.
 func (f *Filter) Verify(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -155,6 +160,7 @@ func (f *Filter) Verify(ctx context.Context) error {
 		return err
 	}
 	if off {
+		f.applied = nil
 		return ErrOff
 	}
 	l, err := list(ctx, f.nft)
@@ -173,7 +179,7 @@ func (f *Filter) Verify(ctx context.Context) error {
 			return err
 		}
 		c := f.applied.blocking(blocked)
-		want = &c
+		f.applied, want = &c, &c
 	}
 	d := l.differences(f.uid, want)
 	if len(d) == 0 {
@@ -184,6 +190,16 @@ func (f *Filter) Verify(ctx context.Context) error {
 		d = append(d[:maxDifferences], fmt.Sprintf("and %d more", len(d)-maxDifferences))
 	}
 	return fmt.Errorf("%w: %s", ErrChanged, strings.Join(d, "; "))
+}
+
+// Reapply loads the table again with what the filter was last given, also
+// when nothing changed since: after Verify found it gone, dormant or not the
+// one applied. While the filter is switched off it loads nothing.
+func (f *Filter) Reapply(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stale = true
+	return f.sync(ctx)
 }
 
 // sync makes the live table hold the wanted targets and the resolvers, less

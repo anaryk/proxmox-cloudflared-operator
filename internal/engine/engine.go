@@ -162,6 +162,11 @@ type Engine struct {
 	checks   map[netip.Addr]*moveCheck
 	moving   sync.WaitGroup
 
+	// notes is what the checks of the egress table found since the last
+	// cycle.
+	noteMu sync.Mutex
+	notes  egressNotes
+
 	repMu   sync.Mutex
 	reports map[string]credentials.Report // by credential id: the last check, also of an earlier process
 	// recheckAt is, by credential id, when its token is checked again; a
@@ -355,6 +360,10 @@ func (e *Engine) Events(since time.Time) []Event { return e.events.since(since) 
 // against the state before, after the events the cycle itself reported.
 func (e *Engine) publish(st State, events []Event, l listing, served map[string]string) {
 	e.stateMu.Lock()
+	// A check of the egress table may have come while the cycle ran.
+	e.noteMu.Lock()
+	st.Egress = e.notes.view
+	e.noteMu.Unlock()
 	prev := e.state
 	e.state, e.listed = st, l
 	if served != nil {

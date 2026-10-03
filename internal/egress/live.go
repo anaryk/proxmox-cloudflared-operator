@@ -60,7 +60,9 @@ type Live struct {
 }
 
 // ReadLive reads the table loaded on the node, or returns ErrNotLoaded, or
-// ErrUnreadable for a listing it cannot read.
+// ErrUnreadable for a listing it cannot read. A connectorUID of 0 says that
+// the connector user is not known: the rule that matches it is then not
+// compared.
 func ReadLive(ctx context.Context, n Nft, connectorUID uint32) (Live, error) {
 	l, err := list(ctx, n)
 	if err != nil {
@@ -79,21 +81,30 @@ func ReadLive(ctx context.Context, n Nft, connectorUID uint32) (Live, error) {
 
 // Load loads Base with the resolvers and blocked addresses given, unless the
 // table is there with everything but the elements as it should be: the sets
-// of a table the daemon filled stay as they are. It reports whether it loaded
-// the table.
+// of a table the daemon filled stay as they are. A table whose resolver sets
+// are empty is loaded anew all the same when resolvers are given: one loaded
+// while the resolvers could not be read heals at the next start. It reports
+// whether it loaded the table.
 func Load(ctx context.Context, n Nft, connectorUID uint32, resolvers, blocked []netip.Addr) (bool, error) {
 	l, err := list(ctx, n)
 	switch {
 	case errors.Is(err, ErrNotLoaded), errors.Is(err, ErrUnreadable):
 	case err != nil:
 		return false, err
-	case len(l.differences(connectorUID, nil)) == 0:
+	case len(l.differences(connectorUID, nil)) == 0 && !l.lacksResolvers(resolvers):
 		return false, nil
 	}
 	if err := n.Apply(ctx, Base(connectorUID, resolvers, blocked)); err != nil {
 		return false, fmt.Errorf("loading the egress table: %w", err)
 	}
 	return true, nil
+}
+
+// lacksResolvers reports whether the live table has no resolver although
+// some are given.
+func (l *listed) lacksResolvers(given []netip.Addr) bool {
+	c, _ := l.contents()
+	return len(c.resolvers) == 0 && len(normalizeAddrs(given)) > 0
 }
 
 // Unload removes the table, if there is one.
@@ -286,7 +297,8 @@ func setType(name string) (string, bool) {
 
 // differences says what in the listing is not as the table should be: its
 // chains, their rules and sets and counters, and, unless want is nil, the
-// elements of its sets.
+// elements of its sets. A uid of 0 is the connector user not known, whose
+// rule is not compared; a filter never applies a table for it.
 func (l *listed) differences(uid uint32, want *contents) []string {
 	var d []string
 	if l.flags != "" {
@@ -315,7 +327,9 @@ func (l *listed) differences(uid uint32, want *contents) []string {
 			d = append(d, fmt.Sprintf("chain %s is %s, want %s", c.name, got, c.want))
 		}
 	}
-	d = append(d, l.ruleDifferences(chainOutput, fmt.Sprintf(wantOutputRules, uid))...)
+	if uid != 0 {
+		d = append(d, l.ruleDifferences(chainOutput, fmt.Sprintf(wantOutputRules, uid))...)
+	}
 	d = append(d, l.ruleDifferences(chainConnector, wantConnectorRules)...)
 	d = append(d, l.setDifferences(want)...)
 	for _, name := range slices.Sorted(maps.Keys(l.counters)) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -192,7 +193,38 @@ func TestEgressLoadWithResolversThatCannotBeReadStillLoads(t *testing.T) {
 	require.ErrorIs(t, res.err, errReported, "an exit status of 1")
 	require.Equal(t, []string{egress.Base(testConnectorUID, nil, nil)}, r.nft.applied())
 	require.Equal(t, "Loaded the egress table: "+loadedText+".\n"+
-		"The resolvers could not be read (reading /etc/resolv.conf: permission denied): the table lets the connectors reach none, so they cannot resolve names until the daemon's next cycle.\n", res.out)
+		"The resolvers could not be read (reading /etc/resolv.conf: permission denied). pco egress load fails for that: "+
+		"run by pco-egress.service, it fails the unit, and the connectors, which require the unit, do not start. "+
+		"Once the resolvers can be read, start pco-egress.service again.\n", res.out)
+}
+
+func TestEgressLoadSaysThatTheNodeNamesNoResolver(t *testing.T) {
+	r := newEgressRig(t)
+
+	res := r.run("load")
+
+	require.NoError(t, res.err, "the connectors start, and the daemon lets them reach a resolver once there is one")
+	require.Equal(t, []string{egress.Base(testConnectorUID, nil, nil)}, r.nft.applied())
+	require.Equal(t, "Loaded the egress table: "+loadedText+".\n"+
+		"No name server was found in /etc/resolv.conf: the connectors resolve no names until one is there "+
+		"and the daemon's next cycle lets them reach it.\n", res.out)
+}
+
+// The boot table that was loaded while the resolvers could not be read heals
+// at the next start of the unit.
+func TestEgressLoadReplacesATableWithoutResolvers(t *testing.T) {
+	r := newEgressRig(t)
+	r.nft.listErr = nil
+	r.nft.live = strings.Replace(liveTable(t), `"name": "resolvers4", "table": "pco_egress", "type": "ipv4_addr", "handle": 7, "elem": ["192.168.1.1"]}`,
+		`"name": "resolvers4", "table": "pco_egress", "type": "ipv4_addr", "handle": 7}`, 1)
+	require.NotContains(t, r.nft.live, `"elem": ["192.168.1.1"]`)
+	resolvers := []netip.Addr{netip.MustParseAddr("192.168.1.1")}
+	r.env.resolvers = func() ([]netip.Addr, error) { return resolvers, nil }
+
+	res := r.run("load")
+
+	require.NoError(t, res.err)
+	require.Equal(t, []string{egress.Base(testConnectorUID, resolvers, nil)}, r.nft.applied())
 }
 
 func TestEgressLoadWithABlockListThatCannotBeReadLoadsNothing(t *testing.T) {
@@ -306,6 +338,39 @@ func TestEgressOnWhenItIsOnAlready(t *testing.T) {
 	require.NoError(t, res.err)
 	require.Empty(t, r.nft.applied(), "the sets the daemon filled are kept")
 	require.Equal(t, "The egress filter was on already, and its table is loaded.\n", res.out)
+}
+
+func TestEgressOnReadsTheBlockListBeforeItChangesAnything(t *testing.T) {
+	r := newEgressRig(t)
+	require.NoError(t, r.overrides().SwitchOff(t0))
+	require.NoError(t, os.WriteFile(filepath.Join(r.env.local, "egress-blocked.json"), []byte("{"), 0o600))
+
+	res := r.run("on")
+
+	require.ErrorContains(t, res.err, "egress-blocked.json")
+	require.Empty(t, r.nft.applied())
+	_, off, err := r.overrides().Off()
+	require.NoError(t, err)
+	require.True(t, off, "the switch stays off: nothing could be loaded")
+}
+
+func TestEgressShowWithoutTheConnectorUserIsAFinding(t *testing.T) {
+	r := newEgressRig(t)
+	r.nft.listErr, r.nft.live = nil, liveTable(t)
+	r.env.uid = func() (uint32, error) { return 0, fmt.Errorf("pco-connector: %w", egress.ErrNoConnectorUser) }
+
+	res := r.run("show")
+
+	require.ErrorIs(t, res.err, errReported, "an exit status of 1")
+	require.True(t, strings.HasPrefix(res.out, "The connector user pco-connector does not exist: install the package or run systemd-sysusers."), res.out)
+	require.Contains(t, res.out, "  10.0.0.5:8080\n", "what the table holds is shown")
+	require.NotContains(t, res.out, "rule 1 differs")
+
+	t.Run("another failure to look the user up", func(t *testing.T) {
+		r.env.uid = func() (uint32, error) { return 0, errors.New("looking up user pco-connector: nss: timeout") }
+		res := r.run("show")
+		require.ErrorContains(t, res.err, "nss: timeout")
+	})
 }
 
 func TestEgressOnLooksUpTheUserBeforeItChangesAnything(t *testing.T) {

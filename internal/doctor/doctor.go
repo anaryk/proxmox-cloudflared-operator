@@ -42,6 +42,8 @@ type Finding struct {
 type Env interface {
 	CloudflaredVersion(ctx context.Context) (string, error)
 	UnitActive(ctx context.Context, unit string) (bool, error)
+	// UnitEnabled reports whether a unit starts at boot.
+	UnitEnabled(ctx context.Context, unit string) (bool, error)
 	CanDial(ctx context.Context, network, addr string) error
 	PVEVersion(ctx context.Context) (string, error)
 	// Store is nil when the store is mounted and set up.
@@ -84,6 +86,7 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 	out := []Finding{
 		checkCycle(st, env), checkCloudflared(ctx, env), checkOutbound(ctx, st, env),
 		checkProxmox(ctx, env), checkStore(ctx, env), checkLock(ctx, env),
+		checkEgress(st), checkNftables(ctx, env),
 	}
 	if st.At.IsZero() {
 		for _, check := range stateChecks {
@@ -404,6 +407,50 @@ func majorMinor(release string) (major, minor int, parsed bool) {
 	major, errA := strconv.Atoi(a)
 	minor, errB := strconv.Atoi(b)
 	return major, minor, errA == nil && errB == nil
+}
+
+// checkEgress says how the daemon last found the egress filter: a filter
+// that does not confine the connectors fails.
+func checkEgress(st engine.State) Finding {
+	const fixTable = "pco status says why; pco egress show shows the table"
+	switch v := st.Egress; v.State {
+	case "":
+		return warn("egress", "the daemon has not checked the egress table yet", "wait half a minute")
+	case engine.EgressOn:
+		return ok("egress", "the egress filter confines the connectors")
+	case engine.EgressOff:
+		since := "an unknown time"
+		if !v.Since.IsZero() {
+			since = v.Since.UTC().Format(time.RFC3339)
+		}
+		return fail("egress", "the egress filter is switched off since "+since+": the connectors are not confined", "pco egress on")
+	case engine.EgressNotLoaded:
+		return fail("egress", "the egress table is not loaded, and pco could not load it again: the connectors are not confined", fixTable)
+	case engine.EgressChanged:
+		return fail("egress", "the egress table is not the one pco loads, and pco could not load it again: "+
+			"the connectors may not be confined", fixTable)
+	}
+	return warn("egress", fmt.Sprintf("the daemon found the egress filter %q", st.Egress.State), fixTable)
+}
+
+// nftablesUnit loads /etc/nftables.conf, which flushes the whole ruleset as
+// Debian ships it.
+const nftablesUnit = "nftables.service"
+
+// checkNftables points out an nftables.service that starts at boot: when it
+// starts or restarts, the egress table goes with the ruleset until the daemon
+// loads it again.
+func checkNftables(ctx context.Context, env Env) Finding {
+	enabled, err := env.UnitEnabled(ctx, nftablesUnit)
+	switch {
+	case err != nil:
+		return warn("nftables", "systemd did not say whether "+nftablesUnit+" is enabled: "+err.Error(), "systemctl is-enabled "+nftablesUnit)
+	case enabled:
+		return warn("nftables", nftablesUnit+" is enabled: when it starts or restarts, the ruleset it loads flushes the egress table "+
+			"with the rest, and the connectors are not confined until pco loads it again, within 30 seconds",
+			"systemctl disable "+nftablesUnit+", or keep the rules it loads from flushing the whole ruleset")
+	}
+	return ok("nftables", nftablesUnit+" is not enabled")
 }
 
 func checkStore(ctx context.Context, env Env) Finding {

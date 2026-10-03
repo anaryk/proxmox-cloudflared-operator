@@ -2,9 +2,8 @@ Mode:        enforce
 Profile:     host
 Inventory:   complete
 Writer:      ok
-Egress:      on
+Egress:      not loaded, and pco could not load it again: the connectors are not confined
 Routes:      active 3, unreachable 1
-Approval:    2 guests wait (pco guest list)
 Last cycle:  2026-10-01T14:00:00+02:00
 Tunnels:
   NAME        ID        VERIFIED  CONNECTOR

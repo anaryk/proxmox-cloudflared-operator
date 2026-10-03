@@ -281,6 +281,35 @@ func (f *fakeWatch) running(t *testing.T) (func() map[netip.Addr]egress.Pin, fun
 	return f.bound, f.onMove
 }
 
+// fakeRuleset is the watch of the nftables ruleset: a test calls what the
+// daemon gave it to say that the ruleset changed.
+type fakeRuleset struct {
+	mu      sync.Mutex
+	changed func()
+}
+
+func (f *fakeRuleset) watch(ctx context.Context, changed func()) error {
+	f.mu.Lock()
+	f.changed = changed
+	f.mu.Unlock()
+	<-ctx.Done()
+	return nil
+}
+
+// change says that the ruleset changed, once the daemon watches it.
+func (f *fakeRuleset) change(t *testing.T) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.changed != nil
+	}, 10*time.Second, 5*time.Millisecond)
+	f.mu.Lock()
+	changed := f.changed
+	f.mu.Unlock()
+	changed()
+}
+
 // fakeNotifier records what the daemon tells systemd.
 type fakeNotifier struct {
 	mu      sync.Mutex
@@ -360,6 +389,7 @@ type world struct {
 	sysd   *fakeSystemd
 	nft    *fakeNft
 	watch  *fakeWatch
+	rules  *fakeRuleset
 	notify *fakeNotifier
 	logs   *testutil.SyncBuffer
 	// cycles counts the reads of the clock, which every cycle starts with: it
@@ -381,6 +411,7 @@ func newWorld(t *testing.T) *world {
 		sysd:   &fakeSystemd{enabled: map[string]bool{}},
 		nft:    newFakeNft(),
 		watch:  &fakeWatch{},
+		rules:  &fakeRuleset{},
 		notify: newFakeNotifier(),
 		logs:   &testutil.SyncBuffer{},
 	}
@@ -427,6 +458,8 @@ func newWorld(t *testing.T) *world {
 		ConnectorUID: func() (uint32, error) { return testConnectorUID, nil },
 		Resolvers:    func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.20.0.1")}, nil },
 		WatchNetwork: w.watch.watch,
+		WatchRuleset: w.rules.watch,
+		UnitEnabled:  func(context.Context, string) (bool, error) { return false, nil },
 	}
 	return w
 }

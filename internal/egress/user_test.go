@@ -22,7 +22,8 @@ func TestConnectorUIDIsLookedUpByName(t *testing.T) {
 func TestAMissingConnectorUserSaysHowToCreateIt(t *testing.T) {
 	_, err := connectorUID(func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) })
 
-	require.ErrorContains(t, err, "user pco-connector does not exist: install the pco package or run systemd-sysusers")
+	require.ErrorIs(t, err, ErrNoConnectorUser)
+	require.EqualError(t, err, "pco-connector: the connector user does not exist: install the package or run systemd-sysusers")
 }
 
 func TestAConnectorUserThatCannotBeUsedIsRefused(t *testing.T) {

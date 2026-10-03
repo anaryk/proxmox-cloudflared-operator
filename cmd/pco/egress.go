@@ -96,7 +96,7 @@ func (a *app) egressLoadCmd(e egressEnv) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			loaded, resolverErr, err := loadEgress(cmd, e, ov, uid)
+			loaded, found, resolverErr, err := loadEgress(cmd, e, ov, uid)
 			if err != nil {
 				return err
 			}
@@ -105,33 +105,56 @@ func (a *app) egressLoadCmd(e egressEnv) *cobra.Command {
 			} else {
 				s.println("The egress table is loaded already; its sets were kept.")
 			}
-			return a.resolversFailed(s, loaded, resolverErr)
+			if resolverErr != nil {
+				// What pco-egress.service runs: its failure keeps the
+				// connectors from starting at all.
+				s.printf("The resolvers could not be read (%v). pco egress load fails for that: run by pco-egress.service, "+
+					"it fails the unit, and the connectors, which require the unit, do not start. "+
+					"Once the resolvers can be read, start pco-egress.service again.\n", resolverErr)
+				if err := s.done(); err != nil {
+					return err
+				}
+				return errReported
+			}
+			noResolver(s, loaded, found)
+			return s.done()
 		},
 	}
 }
 
+// noResolver says that the table was loaded without a resolver, as the node
+// names none: the connectors cannot resolve names then.
+func noResolver(s *screen, loaded bool, found int) {
+	if loaded && found == 0 {
+		s.println("No name server was found in /etc/resolv.conf: the connectors resolve no names until one is there " +
+			"and the daemon's next cycle lets them reach it.")
+	}
+}
+
 // loadEgress loads the table with the resolvers of the node and the blocked
-// addresses, unless an intact one is there. Resolvers that cannot be read
-// are none, and the error comes back beside the result: a table without them
-// is better than none, which the connectors cannot start without. A block
-// list that cannot be read loads nothing.
-func loadEgress(cmd *cobra.Command, e egressEnv, ov *egress.Overrides, uid uint32) (loaded bool, resolverErr, err error) {
+// addresses, unless an intact one is there, and returns how many resolvers
+// it found. Resolvers that cannot be read are none, and the error comes back
+// beside the result: a table without them is better than none, which the
+// connectors cannot start without. A block list that cannot be read loads
+// nothing.
+func loadEgress(cmd *cobra.Command, e egressEnv, ov *egress.Overrides, uid uint32) (loaded bool, found int, resolverErr, err error) {
 	blocked, err := ov.Blocked()
 	if err != nil {
-		return false, nil, err
+		return false, 0, nil, err
 	}
 	resolvers, resolverErr := e.resolvers()
 	if resolverErr != nil {
 		resolvers = nil
 	}
 	loaded, err = egress.Load(cmd.Context(), e.nft, uid, resolvers, blocked)
-	return loaded, resolverErr, err
+	return loaded, len(resolvers), resolverErr, err
 }
 
 // resolversFailed says that the resolvers could not be read, which is an exit
-// status of 1, or returns what the screen returns.
-func (a *app) resolversFailed(s *screen, loaded bool, err error) error {
+// status of 1, or that none was found, or returns what the screen returns.
+func (a *app) resolversFailed(s *screen, loaded bool, found int, err error) error {
 	if err == nil {
+		noResolver(s, loaded, found)
 		return s.done()
 	}
 	if loaded {
@@ -163,8 +186,11 @@ func (a *app) egressShowCmd(e egressEnv) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Without the user, what the table holds is still worth
+			// seeing; the rule for the user cannot be compared.
 			uid, err := e.uid()
-			if err != nil {
+			noUser := errors.Is(err, egress.ErrNoConnectorUser)
+			if err != nil && !noUser {
 				return err
 			}
 			live, err := egress.ReadLive(cmd.Context(), e.nft, uid)
@@ -176,7 +202,7 @@ func (a *app) egressShowCmd(e egressEnv) *cobra.Command {
 				return err
 			}
 			return a.renderEgress(cmd.OutOrStdout(), egressView{
-				off: off, since: since, loaded: loaded, live: live, blocked: blocked,
+				off: off, since: since, loaded: loaded, live: live, blocked: blocked, noUser: noUser,
 			})
 		},
 	}
@@ -188,10 +214,15 @@ type egressView struct {
 	loaded  bool
 	live    egress.Live
 	blocked []netip.Addr
+	noUser  bool // the connector user does not exist
 }
 
 func (a *app) renderEgress(w io.Writer, v egressView) error {
 	s := &screen{w: w}
+	if v.noUser {
+		s.printf("The connector user %s does not exist: install the package or run systemd-sysusers. "+
+			"Until it exists, no connector starts, and the rule for the user is not compared.\n\n", egress.ConnectorUser)
+	}
 	switch {
 	case v.off && v.loaded:
 		s.printf("The egress filter is switched off since %s, but its table is loaded; the daemon does not keep it up to date. pco egress on switches it back on.\n", a.since(v.since))
@@ -234,8 +265,9 @@ func (a *app) renderEgress(w io.Writer, v egressView) error {
 	if err := s.done(); err != nil {
 		return err
 	}
-	// A filter that is off, gone or not as pco loads it is a finding.
-	if v.off || !v.loaded || len(v.live.Differences) > 0 {
+	// A filter that is off, gone or not as pco loads it is a finding, and so
+	// is a connector user that does not exist.
+	if v.off || !v.loaded || len(v.live.Differences) > 0 || v.noUser {
 		return errReported
 	}
 	return nil
@@ -418,17 +450,22 @@ func (a *app) egressOnCmd(e egressEnv) *cobra.Command {
 			if err := a.egressCheck(cmd, e); err != nil {
 				return err
 			}
-			// Before anything changes: without the user there is nothing to load.
+			// Before anything changes: without the user, or with a block
+			// list that cannot be read, there is nothing to load, and the
+			// switch stays off.
 			uid, err := e.uid()
 			if err != nil {
 				return err
 			}
 			ov := egress.NewOverrides(e.local)
+			if _, err := ov.Blocked(); err != nil {
+				return err
+			}
 			wasOff, err := ov.SwitchOn()
 			if err != nil {
 				return err
 			}
-			loaded, resolverErr, err := loadEgress(cmd, e, ov, uid)
+			loaded, found, resolverErr, err := loadEgress(cmd, e, ov, uid)
 			if err != nil {
 				return err
 			}
@@ -443,7 +480,7 @@ func (a *app) egressOnCmd(e egressEnv) *cobra.Command {
 			default:
 				s.println("The egress filter was on already, and its table is loaded.")
 			}
-			return a.resolversFailed(s, loaded, resolverErr)
+			return a.resolversFailed(s, loaded, found, resolverErr)
 		},
 	}
 }

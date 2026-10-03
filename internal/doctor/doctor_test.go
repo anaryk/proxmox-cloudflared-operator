@@ -31,6 +31,8 @@ type fakeEnv struct {
 	versionErr error
 	inactive   map[string]bool // units that are not active
 	unitErr    error
+	enabled    map[string]bool // units that start at boot
+	enabledErr error
 	dialErr    error
 	dialed     []string
 	pve        string
@@ -48,6 +50,10 @@ func (f *fakeEnv) CloudflaredVersion(context.Context) (string, error) { return f
 
 func (f *fakeEnv) UnitActive(_ context.Context, unit string) (bool, error) {
 	return !f.inactive[unit], f.unitErr
+}
+
+func (f *fakeEnv) UnitEnabled(_ context.Context, unit string) (bool, error) {
+	return f.enabled[unit], f.enabledErr
 }
 
 func (f *fakeEnv) CanDial(_ context.Context, network, addr string) error {
@@ -87,6 +93,7 @@ func healthyState() engine.State {
 		}},
 		Waiting:    []engine.Waiting{},
 		Unapproved: []engine.UnapprovedGuest{},
+		Egress:     engine.EgressView{State: engine.EgressOn},
 	}
 }
 
@@ -102,9 +109,11 @@ func TestAHealthyInstallation(t *testing.T) {
 		{Check: "connector pco-abc123 in account acc1", Level: LevelOK, Detail: "active, ready, 4 connections"},
 		{Check: "credential cred1", Level: LevelOK, Detail: "usable; the token expires 2026-12-30T12:00:00Z"},
 		{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 5s ago"},
+		{Check: "egress", Level: LevelOK, Detail: "the egress filter confines the connectors"},
 		{Check: "inventory", Level: LevelOK, Detail: "every guest is listed"},
 		{Check: "lost markers", Level: LevelOK, Detail: "no record of this install lost its marker"},
 		{Check: "mode", Level: LevelOK, Detail: "enforce: changes are applied"},
+		{Check: "nftables", Level: LevelOK, Detail: "nftables.service is not enabled"},
 		{Check: "node lock", Level: LevelOK, Detail: "this daemon holds the lock of the node"},
 		{Check: "outbound", Level: LevelOK, Detail: "region1.v2.argotunnel.com:7844 answers over TCP"},
 		{Check: "problems", Level: LevelOK, Detail: "the last cycle found no problem"},
@@ -146,6 +155,31 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			Detail: "2 problems; the first: reading what the engine remembered: unexpected end of JSON input; " +
 				"nothing is changed at Cloudflare until it can be read",
 			Fix: "pco status"}},
+		{"the egress filter switched off", func(st *engine.State) {
+			st.Egress = engine.EgressView{State: engine.EgressOff, Since: now.Add(-2 * time.Hour)}
+		}, nil, Finding{Check: "egress", Level: LevelFail,
+			Detail: "the egress filter is switched off since 2026-10-01T10:00:00Z: the connectors are not confined", Fix: "pco egress on"}},
+		{"the egress filter switched off at a time not known", func(st *engine.State) { st.Egress = engine.EgressView{State: engine.EgressOff} }, nil,
+			Finding{Check: "egress", Level: LevelFail,
+				Detail: "the egress filter is switched off since an unknown time: the connectors are not confined", Fix: "pco egress on"}},
+		{"an egress table not loaded", func(st *engine.State) { st.Egress = engine.EgressView{State: engine.EgressNotLoaded} }, nil,
+			Finding{Check: "egress", Level: LevelFail,
+				Detail: "the egress table is not loaded, and pco could not load it again: the connectors are not confined",
+				Fix:    "pco status says why; pco egress show shows the table"}},
+		{"an egress table changed", func(st *engine.State) { st.Egress = engine.EgressView{State: engine.EgressChanged} }, nil,
+			Finding{Check: "egress", Level: LevelFail,
+				Detail: "the egress table is not the one pco loads, and pco could not load it again: the connectors may not be confined",
+				Fix:    "pco status says why; pco egress show shows the table"}},
+		{"an egress table not checked yet", func(st *engine.State) { st.Egress = engine.EgressView{} }, nil,
+			Finding{Check: "egress", Level: LevelWarn, Detail: "the daemon has not checked the egress table yet", Fix: "wait half a minute"}},
+		{"nftables.service enabled", nil, func(env *fakeEnv) { env.enabled = map[string]bool{"nftables.service": true} },
+			Finding{Check: "nftables", Level: LevelWarn,
+				Detail: "nftables.service is enabled: when it starts or restarts, the ruleset it loads flushes the egress table with the rest, " +
+					"and the connectors are not confined until pco loads it again, within 30 seconds",
+				Fix: "systemctl disable nftables.service, or keep the rules it loads from flushing the whole ruleset"}},
+		{"systemd that does not say", nil, func(env *fakeEnv) { env.enabledErr = errors.New("Failed to connect to bus") },
+			Finding{Check: "nftables", Level: LevelWarn, Detail: "systemd did not say whether nftables.service is enabled: Failed to connect to bus",
+				Fix: "systemctl is-enabled nftables.service"}},
 		{"one problem", func(st *engine.State) { st.Problems = []string{"saving the claims: disk full"} }, nil,
 			Finding{Check: "problems", Level: LevelFail, Detail: "1 problem: saving the claims: disk full", Fix: "pco status"}},
 		{"a long poll interval", func(st *engine.State) { st.FinishedAt = now.Add(-2 * time.Minute) }, func(env *fakeEnv) { env.interval = time.Minute },

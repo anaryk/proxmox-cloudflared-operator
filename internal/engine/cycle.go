@@ -98,6 +98,7 @@ func (e *Engine) newCycle(ctx context.Context) *cycleRun {
 // safely ends the cycle; what it found so far is the state.
 func (c *cycleRun) run() State {
 	c.expireRequests()
+	c.noteEgress()
 	if c.prepare() && c.inspect() {
 		c.build()
 		c.feedEgress()

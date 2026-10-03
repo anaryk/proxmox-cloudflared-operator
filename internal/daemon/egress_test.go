@@ -87,6 +87,45 @@ func TestTheDaemonBlocksAnAddressWhoseMACMoved(t *testing.T) {
 	require.Contains(t, scripts[1], guestAddress+" . 8080", "verified again and back")
 }
 
+// The ruleset changed and the table is gone: the daemon loads it again with
+// its targets, says so as an event, and as a problem line of the next cycle.
+func TestTheDaemonLoadsTheEgressTableAgainWhenItIsGone(t *testing.T) {
+	w := newWorld(t)
+	d := w.start()
+	d.await(func(st engine.State) bool { return len(st.Routes) == 1 })
+	before := len(w.nft.applied())
+
+	w.rules.change(t)
+
+	require.Eventually(t, func() bool { return len(w.nft.applied()) > before }, 10*time.Second, 5*time.Millisecond)
+	require.Contains(t, w.nft.applied()[before], guestAddress+" . 8080", "loaded again with its targets")
+	require.Eventually(t, func() bool {
+		events, err := d.client.Events(t.Context(), time.Time{})
+		require.NoError(t, err)
+		for _, ev := range events {
+			if ev.Kind == "egress" && ev.Message == "the egress table was changed or removed outside pco and was loaded again" {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 5*time.Millisecond)
+	require.NoError(t, d.client.Sync(t.Context()))
+	st := d.await(func(st engine.State) bool { return len(st.Problems) > 0 })
+	require.Equal(t, []string{"the egress table was changed or removed outside pco and was loaded again (the egress table is not loaded)"}, st.Problems)
+	require.Equal(t, engine.EgressView{State: engine.EgressOn}, st.Egress)
+}
+
+func TestTheStateShowsAFilterSwitchedOffFromTheStart(t *testing.T) {
+	w := newWorld(t)
+	since := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	require.NoError(t, egress.NewOverrides(w.paths.Local).SwitchOff(since))
+	d := w.start()
+
+	st := d.await(func(st engine.State) bool { return st.Egress.State != "" })
+
+	require.Equal(t, engine.EgressView{State: engine.EgressOff, Since: since}, st.Egress)
+}
+
 func TestTheFilterOfAnUnknownUserIsNoFailureWhileItIsOff(t *testing.T) {
 	w := newWorld(t)
 	w.deps.ConnectorUID = func() (uint32, error) { return 0, errors.New("no such user") }

@@ -171,6 +171,29 @@ func TestTheHostAsksWithADeadline(t *testing.T) {
 	require.Equal(t, 5*time.Second, hostTimeout)
 }
 
+func TestTheHostAsksWhetherAUnitIsEnabledWithADeadline(t *testing.T) {
+	env, _, _ := hostEnv(t)
+	var asked string
+	var deadline time.Time
+	env.Enabled = func(ctx context.Context, unit string) (bool, error) {
+		asked, deadline = unit, deadlineOf(ctx)
+		return true, nil
+	}
+
+	enabled, err := env.UnitEnabled(t.Context(), "nftables.service")
+
+	require.NoError(t, err)
+	require.True(t, enabled)
+	require.Equal(t, "nftables.service", asked)
+	require.False(t, deadline.IsZero())
+	require.LessOrEqual(t, time.Until(deadline), hostTimeout)
+}
+
+func deadlineOf(ctx context.Context) time.Time {
+	d, _ := ctx.Deadline()
+	return d
+}
+
 func TestTheHostDials(t *testing.T) {
 	env, _, _ := hostEnv(t)
 	srv := httptest.NewServer(nil)

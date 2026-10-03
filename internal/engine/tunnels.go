@@ -18,10 +18,14 @@ func (c *cycleRun) mode() reconcile.Mode {
 // reconcileTunnels brings the tunnel of every planned account in line and
 // reports whether the cycle may go on: a stale or foreign writer stops it. A
 // frozen account is left out: its tunnel is not touched. While the egress
-// filter could not be set, the run writes nothing and only finds out what the
+// filter could not be set, or its table could not be loaded again after it
+// was changed outside pco, the run writes nothing and only finds out what the
 // tunnels hold.
 func (c *cycleRun) reconcileTunnels() bool {
 	plans := slices.DeleteFunc(slices.Clone(c.plan.Tunnels), func(p planner.TunnelPlan) bool { return c.zones.frozen[p.AccountID] })
+	if c.egressHeld == "" && c.e.egressFault() != "" {
+		c.egressHeld = heldEgress
+	}
 	var res reconcile.TunnelResult
 	if c.egressHeld != "" {
 		res = c.e.tunnels.RunHeld(c.ctx, plans, c.zones.known, c.egressHeld)

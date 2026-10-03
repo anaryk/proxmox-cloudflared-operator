@@ -4,6 +4,9 @@ Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
 # The connectors order themselves after this unit: a Before= here cannot name
 # the template they come from.
 Before=pco.service
+# The resolvers are read from /etc/resolv.conf, which a resolver service of
+# the node may only write once it runs.
+After=nss-lookup.target
 
 [Service]
 Type=oneshot

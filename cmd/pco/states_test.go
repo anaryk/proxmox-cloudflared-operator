@@ -83,7 +83,15 @@ func healthyState() engine.State {
 		},
 		Credentials:   []engine.CredentialView{usableCredential("cred1", "main", 12*24*time.Hour)},
 		WriterVerdict: "ok",
+		Egress:        engine.EgressView{State: engine.EgressOn},
 	}
+}
+
+// egressState is a healthy state whose egress filter is as v.
+func egressState(v engine.EgressView) engine.State {
+	st := healthyState()
+	st.Egress = v
+	return st
 }
 
 func observeState() engine.State {

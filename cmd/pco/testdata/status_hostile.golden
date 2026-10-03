@@ -2,6 +2,7 @@ Mode:        enforce
 Profile:     host
 Inventory:   incomplete
 Writer:      ok
+Egress:      on
 Routes:      active 1, unreachable 1
 Approval:    1 guest waits (pco guest list)
 Last cycle:  2026-10-01T14:00:00+02:00
