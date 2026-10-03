@@ -70,6 +70,7 @@ type Options struct {
 	Repair             bool
 	Recover            bool
 	InstallID          string // with Recover
+	NewInstall         bool   // start an install beside the connectors of another
 	Node               string // default: hostname
 }
 
@@ -79,6 +80,8 @@ func (o Options) check() error {
 		return errors.New("--repair and --recover do not go together")
 	case o.Repair && o.CloudflareToken != "":
 		return errors.New("--repair does not store a Cloudflare token: add it with pco credential add")
+	case o.NewInstall && (o.Repair || o.Recover):
+		return errors.New("--new-install goes with neither --repair nor --recover")
 	case o.InstallID != "" && !o.Recover:
 		return errors.New("--install-id goes with --recover")
 	case o.InstallID != "" && !validInstallID(o.InstallID):

@@ -376,6 +376,12 @@ func preflight(version string) []call {
 	}
 }
 
+// preflightNew is the preflight of a setup that creates the install, which
+// looks for the connectors of another install before it creates anything.
+func preflightNew(version string) []call {
+	return slices.Concat(preflight(version), noConnectorsSeen())
+}
+
 func roleCreated(privs string) []call {
 	return []call{
 		{line: "pveum role list --output-format json", out: `[{"roleid":"Administrator","privs":"Sys.Audit,VM.Audit","special":1}]`},

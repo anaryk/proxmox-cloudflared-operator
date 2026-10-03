@@ -262,7 +262,7 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 func (h *fakeHost) systemctl(args []string) (string, error) {
 	unit := args[len(args)-1]
 	switch strings.Join(args[:len(args)-1], " ") {
-	case "is-active":
+	case "is-active", "is-active --":
 		if h.active[unit] {
 			return "active\n", nil
 		}
@@ -272,13 +272,20 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 	case "start":
 		h.active[unit] = true
 	case "try-restart":
-	case "enable --now":
+	case "enable --now", "enable --now --":
 		h.active[unit], h.enabled[unit] = true, true
 	case "enable":
 		h.enabled[unit] = true
 	case "disable --now", "disable --now --":
 		h.active[unit], h.enabled[unit] = false, false
 	case "list-units --all --plain --no-legend --":
+		var out strings.Builder
+		for _, u := range slices.Sorted(maps.Keys(h.active)) {
+			if h.active[u] && strings.HasPrefix(u, "pco-cloudflared@") {
+				fmt.Fprintf(&out, "%s loaded active running pco cloudflared connector\n", u)
+			}
+		}
+		return out.String(), nil
 	default:
 		h.t.Errorf("the fake host does not know systemctl %v", args)
 		return "", errors.New("unknown command")

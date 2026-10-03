@@ -62,6 +62,11 @@ func (r *run) refuseOtherNode() error {
 // prepareStore makes the store and the identity of the install, or keeps the
 // ones there.
 func (r *run) prepareStore(ctx context.Context) error {
+	if !r.o.Recover && !r.o.NewInstall {
+		if err := r.refuseBesideConnectors(ctx); err != nil {
+			return err
+		}
+	}
 	if err := r.st.Init(); err != nil {
 		return fmt.Errorf("creating the store: %w", err)
 	}

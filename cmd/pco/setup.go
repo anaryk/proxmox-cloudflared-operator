@@ -19,7 +19,7 @@ import (
 // setupFlags are the flags of pco setup.
 type setupFlags struct {
 	yes, noTags, skipCloudflared bool
-	repair, recover              bool
+	repair, recover, newInstall  bool
 	tokenFile                    string
 	tokenStdin                   bool
 	installID                    string
@@ -40,7 +40,11 @@ func (a *app) setupCmd() *cobra.Command {
 			"only when it can do what pco needs, and only while the daemon is stopped.\n\n" +
 			"--repair re-asserts the role, the user, the token and the tags, as after a restore of the\n" +
 			"node. --recover adopts the install whose tunnels the Cloudflare token sees, after its store\n" +
-			"was lost; when the token sees several, --install-id chooses.",
+			"was lost; when the token sees several, --install-id chooses.\n\n" +
+			"A node whose store holds no install but that runs connectors of one is refused, as a new\n" +
+			"install would never prune them: pco setup --recover adopts that install, and pco uninstall\n" +
+			"--keep-cloudflare removes pco from the node so that setup can start over. --new-install\n" +
+			"starts a new install beside them regardless.",
 		// A token typed where a flag value belongs is an argument: the error
 		// must not repeat it.
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -77,13 +81,17 @@ func (a *app) setupCmd() *cobra.Command {
 	flags.BoolVar(&f.repair, "repair", false, "re-assert the role, the user, the token and the tags in Proxmox, and start the daemon")
 	flags.BoolVar(&f.recover, "recover", false, "adopt the install whose tunnels the Cloudflare token sees, after the store was lost")
 	flags.StringVar(&f.installID, "install-id", "", "with --recover: the install to adopt, when the token sees several")
+	flags.BoolVar(&f.newInstall, "new-install", false, "start a new install on a node that runs connectors of another install: "+
+		"the connectors of the other install keep running and are never pruned by the new one; pco status reports them")
 	cmd.MarkFlagsMutuallyExclusive("cf-token-file", "cf-token-stdin")
 	cmd.MarkFlagsMutuallyExclusive("repair", "recover")
+	cmd.MarkFlagsMutuallyExclusive("new-install", "repair")
+	cmd.MarkFlagsMutuallyExclusive("new-install", "recover")
 	return cmd
 }
 
 func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, error) {
-	o := setup.Options{Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID}
+	o := setup.Options{Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall}
 	no := false
 	if f.noTags {
 		o.RegisterTags = &no

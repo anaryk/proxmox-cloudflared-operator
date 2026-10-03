@@ -137,7 +137,7 @@ func TestTheStoreIsNotRemovedWhileItIsNotMounted(t *testing.T) {
 
 func TestATokenOfAnotherNameIsNotQuoted(t *testing.T) {
 	e := newTestEnv(t)
-	e.script(preflight("9.0.10"), roleKept(), userKept(),
+	e.script(preflightNew("9.0.10"), roleKept(), userKept(),
 		[]call{
 			{line: "pveum user token list pco@pve --output-format json", out: `[]`},
 			{

@@ -42,6 +42,7 @@ func TestSetupOptionsFromFlags(t *testing.T) {
 			setup.Options{Yes: true, RegisterTags: &no, InstallCloudflared: &no}},
 		{"repair", setupFlags{repair: true}, setup.Options{Repair: true}},
 		{"recover", setupFlags{recover: true, installID: "0123456789ab"}, setup.Options{Recover: true, InstallID: "0123456789ab"}},
+		{"new install", setupFlags{newInstall: true}, setup.Options{NewInstall: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			a, cmd, _, _ := commandWith(unreadable{t}, false)
@@ -122,6 +123,8 @@ func TestSetupFlagsThatDoNotGoTogether(t *testing.T) {
 	r := newRunner(t, "/nonexistent/pco/pco.sock")
 	for _, args := range [][]string{
 		{"setup", "--yes", "--repair", "--recover"},
+		{"setup", "--yes", "--new-install", "--recover"},
+		{"setup", "--yes", "--new-install", "--repair"},
 		{"setup", "--yes", "--cf-token-file", "/nonexistent", "--cf-token-stdin"},
 		{"setup", "--yes", "--json"},
 		{"uninstall", "--yes", "--json"},
@@ -210,6 +213,19 @@ func TestTheUninstallPrompter(t *testing.T) {
 			require.Equal(t, tt.interactive, p.interactive)
 		})
 	}
+}
+
+func TestTheHelpOfSetupSaysWhatNewInstallMeans(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+
+	res := r.run("", "setup", "--help")
+
+	require.NoError(t, res.err)
+	help := strings.Join(strings.Fields(res.out), " ")
+	require.Contains(t, help, "--new-install")
+	require.Contains(t, help, "the connectors of the other install keep running and are never pruned by the new one; pco status reports them")
+	require.Contains(t, help, "pco setup --recover")
+	require.Contains(t, help, "pco uninstall --keep-cloudflare")
 }
 
 func TestTheHelpOfUninstallYesNamesTheCloudflareFlags(t *testing.T) {

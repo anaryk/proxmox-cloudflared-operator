@@ -18,9 +18,12 @@ func ptr[T any](v T) *T { return &v }
 
 // freshInstall is the whole of a first setup on Proxmox VE 9 with --yes and a
 // Cloudflare token.
-func freshInstall() [][]call {
+func freshInstall() [][]call { return freshInstallAfter(preflightNew("9.0.10")) }
+
+// freshInstallAfter is a first setup that begins with the given preflight.
+func freshInstallAfter(first []call) [][]call {
 	return [][]call{
-		preflight("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(),
+		first, roleCreated(privs9), userCreated(), tokenCreated(),
 		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), cloudflaredInstalled(), daemonIs("inactive"), serviceStarted(),
 	}
 }
@@ -112,7 +115,7 @@ func TestSetupDefaultsTheNodeToTheHostName(t *testing.T) {
 
 func TestSetupOnPVE84GrantsVMMonitor(t *testing.T) {
 	e := newTestEnv(t)
-	e.script(preflight("8.4.1"), roleCreated(privs8),
+	e.script(preflightNew("8.4.1"), roleCreated(privs8),
 		[]call{{line: "pveum user list --output-format json", err: exitErr(255, "ipcc_send_rec failed")}})
 
 	err := e.setup(Options{Yes: true, Node: testNode})
@@ -190,7 +193,7 @@ func TestSetupTwiceConverges(t *testing.T) {
 func TestSetupContinuesAHalfFinishedRun(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")
-	e.script(preflight("9.0.10"), roleCreated(privs9),
+	e.script(preflightNew("9.0.10"), roleCreated(privs9),
 		[]call{{line: "pveum user list --output-format json", err: exitErr(255, "connection refused")}})
 	require.ErrorContains(t, e.setup(Options{Yes: true, Node: testNode}), "step user")
 	inst := e.install()
@@ -221,7 +224,7 @@ func TestSetupMergesTagsAndRole(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newTestEnv(t)
 			e.installUnit("pco.service")
-			e.script(preflight("9.0.10"),
+			e.script(preflightNew("9.0.10"),
 				[]call{
 					roleWith("VM.Audit,Sys.Audit,Datastore.Audit"),
 					{line: "pveum role modify PCO --append 1 --privs VM.GuestAgent.Audit,SDN.Audit"},
@@ -245,7 +248,7 @@ func TestSetupMergesTagsAndRole(t *testing.T) {
 func TestSetupRecreatesATokenWhoseSecretIsLost(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")
-	e.script(preflight("9.0.10"), roleKept(), userKept(),
+	e.script(preflightNew("9.0.10"), roleKept(), userKept(),
 		[]call{
 			{line: "pveum user token list pco@pve --output-format json", out: tokensWith},
 			{line: "pveum user token remove pco@pve pco"},
@@ -265,7 +268,7 @@ func TestSetupRecreatesATokenWhoseSecretIsLost(t *testing.T) {
 func TestSetupRestartsARunningDaemonForANewToken(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")
-	e.script(preflight("9.0.10"), roleKept(), userKept(),
+	e.script(preflightNew("9.0.10"), roleKept(), userKept(),
 		[]call{
 			{line: "pveum user token list pco@pve --output-format json", out: tokensWith},
 			{line: "pveum user token remove pco@pve pco"},
@@ -301,7 +304,7 @@ func TestSetupDeclinesTagsAndCloudflared(t *testing.T) {
 			e.installUnit("pco.service")
 			e.ask.answers, e.ask.secrets = tt.answers, tt.secrets
 			script := [][]call{
-				preflight("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(), tagsRead(""),
+				preflightNew("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(), tagsRead(""),
 				{{line: "/usr/bin/cloudflared --version", err: notFound("/usr/bin/cloudflared")}},
 			}
 			if tt.options.Yes {
@@ -361,7 +364,7 @@ func TestSetupDoesNotStoreAnUnusableToken(t *testing.T) {
 func TestSetupSkipsTheTokenWhileTheDaemonRuns(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")
-	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenCreated(),
+	e.script(preflightNew("9.0.10"), roleKept(), userKept(), tokenCreated(),
 		tagsKept(), cloudflaredKept(), daemonIs("active"), serviceRestarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
@@ -374,7 +377,7 @@ func TestSetupSkipsTheTokenWhileTheDaemonRuns(t *testing.T) {
 
 func TestSetupWithoutTheUnitFile(t *testing.T) {
 	e := newTestEnv(t)
-	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenCreated(),
+	e.script(preflightNew("9.0.10"), roleKept(), userKept(), tokenCreated(),
 		tagsKept(), cloudflaredKept())
 
 	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
@@ -387,7 +390,7 @@ func TestSetupRefusesWhenAnotherNodeIsRegistered(t *testing.T) {
 	e := newTestEnv(t)
 	require.NoError(t, e.st.Init())
 	require.NoError(t, e.st.SaveNode(store.NodeEntry{Name: "pve2", Since: t0}))
-	e.script(preflight("9.0.10"))
+	e.script(preflightNew("9.0.10"))
 
 	err := e.setup(Options{Yes: true, Node: testNode})
 
@@ -573,7 +576,7 @@ func TestRepairNeedsASetUpNode(t *testing.T) {
 func TestNoTokenIsShown(t *testing.T) {
 	t.Run("a token answer that is not JSON", func(t *testing.T) {
 		e := newTestEnv(t)
-		e.script(preflight("9.0.10"), roleKept(), userKept(),
+		e.script(preflightNew("9.0.10"), roleKept(), userKept(),
 			[]call{
 				{line: "pveum user token list pco@pve --output-format json", out: `[]`},
 				{
@@ -587,7 +590,7 @@ func TestNoTokenIsShown(t *testing.T) {
 	})
 	t.Run("a token answer without a value", func(t *testing.T) {
 		e := newTestEnv(t)
-		e.script(preflight("9.0.10"), roleKept(), userKept(),
+		e.script(preflightNew("9.0.10"), roleKept(), userKept(),
 			[]call{
 				{line: "pveum user token list pco@pve --output-format json", out: `[]`},
 				{
