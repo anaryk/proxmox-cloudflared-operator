@@ -9,7 +9,7 @@ them.
 
 | Part | Runs as | Can |
 |---|---|---|
-| The daemon, `pco.service` | root | Read Proxmox through its API token, open a raw socket to ask ARP, read the bridge forwarding table through netlink, run `systemctl` for the connectors and write their files, call the Cloudflare API with the stored tokens. It listens on a unix socket and nowhere else. |
+| The daemon, `pco.service` | root | Read Proxmox through its API token, open a raw socket to ask ARP, read the bridge forwarding table through netlink and watch it and the neighbour table for changes, load the egress table with `nft`, run `systemctl` for the connectors and write their files, call the Cloudflare API with the stored tokens. It listens on a unix socket and nowhere else. |
 | The connectors, `pco-cloudflared@<tunnel id>.service` | the system user `pco-connector`, with no capabilities | Open outbound connections, which the egress filter confines (below). |
 | The `pco` command | whoever runs it | `setup`, `uninstall` and `pco egress` work on the node directly and need root. The others ask the daemon through its socket, which also lets only root in. |
 
@@ -36,12 +36,13 @@ changes a guest, a tag or a Notes field. Only `pco setup` and `pco uninstall` ch
 Proxmox, as root, and what they change is listed in the manifest.
 
 The Cloudflare side is not read-only: the token can edit DNS records and tunnels in the
-zones and accounts you chose. Scope it narrowly; see [Cloudflare token](cloudflare-token.md).
+zones and accounts you chose. Scope it narrowly; see
+[Cloudflare token](cloudflare-token.md).
 
 ## The gate tag, and what it proves
 
-A guest is published only if it carries the gate tag, `cf-tunnel`, and its Notes hold
-routes. What does the tag prove?
+A guest is published only if it carries the gate tag, `cf-tunnel` unless the setting
+`gateTag` says otherwise, and its Notes hold routes. What does the tag prove?
 
 When the tag is a registered tag, which setup arranges unless you decline, only a user
 with `Sys.Modify` on `/` can set or remove it. The tag then proves that such a user tagged
@@ -52,9 +53,14 @@ that guest at some point. It does not prove more:
   (`allowHosts` and `denyHosts` in [Operations](operations.md)).
 - It is not tied to what the guest is. A clone and a restore keep the tags and the Notes.
 - If you decline to register the tag (`--no-registered-tags`), it proves nothing about
-  who set it: whoever can edit the guest can tag it.
+  who set it: whoever can edit the guest can tag it. Setup then warns, naming the gate
+  tag, unless it is registered already, and `pco setup --repair` registers it later.
 
-Setup also registers `cf-tunnel-managed`. Nothing reads it in this release.
+Setup registers `cf-tunnel` and `cf-tunnel-managed`, and the gate tag of the settings
+when that is another one. If you change `gateTag` afterwards, run `pco setup` again, or
+`pco setup --repair`, to register the new tag as well. Until you do, the new gate tag is
+one that anyone who may edit the options of a guest can set. Nothing reads
+`cf-tunnel-managed` in this release.
 
 ### Clones and restores
 
@@ -67,7 +73,8 @@ VMID of an old one: the claim belongs to the guest `qemu/101`, and the new one i
 A guest restored to a different VMID is a different owner and is in conflict while the
 original exists. A guest that is restored or created again under the VMID of a published
 guest publishes the same hostnames, without anyone approving it again, as long as it
-carries the tag and the Notes. Admission mode `approve` closes that.
+carries the tag and the Notes. Admission mode `approve` closes that for a guest that comes
+back with a new identity, and not for one that keeps its identity (see below).
 
 ### Approval mode
 
@@ -80,15 +87,21 @@ admin has approved it:
 
 An approval is of the identity the guest has when it is approved: for a virtual machine its
 SMBIOS UUID, or else its creation time, or else a hash of the MAC of its first card; for a
-container a hash of the MAC of its first card. A guest that is created again under the same
-VMID, and a clone, have another identity and need an approval of their own. The daemon
-refuses an approval when the guest has changed since it was shown.
+container a hash of the MAC of its first card. A clone has another identity, and so has a
+guest that is created again with a new UUID, or, for a container, a new MAC: each needs an
+approval of its own. The daemon refuses an approval when the guest has changed since it was
+shown.
+
+A guest that keeps its identity keeps its approval. A guest restored from a backup of
+itself keeps its UUID and its MACs unless the restore is asked to make new unique
+addresses (`--unique` of `qmrestore` and `pct restore`), and a container that is created
+again with the same MAC has the same identity. Approval mode does not close those.
 
 A guest that waits for approval is not published. A hostname it already holds stays
-claimed and answers 503, so nobody else gets it. `pco status` shows how many guests wait, `pco guest
-list` which, and `pco doctor` has a warning for each. Changing the mode to `approve`
-takes the routes of every guest that is not approved off the air at the next cycle: their
-hostnames answer 503.
+claimed and answers 503, so nobody else gets it. `pco status` shows how many guests wait
+(the `Approval:` line), `pco guest list` which, and `pco doctor` has a warning for each.
+Changing the mode to `approve` takes the routes of every guest that is not approved off the
+air at the next cycle: their hostnames answer 503.
 
 Approval mode is recommended when the people who can edit the guests are not the people who
 administer the node. It is off by default. The default is `tag`.
@@ -106,10 +119,10 @@ no host guest has it.
 
 | Attacker | `observed` | `port` |
 |---|---|---|
-| A device on the uplink, outside Proxmox | Stops a device that answers for a guest's address with its own MAC. Does not stop one that copies the guest's MAC too: ARP cannot tell the copy from the guest, and for a guest on another node this node cannot see where the table sends its frames. | Stops both. The bridge must have learned the guest's MAC on the guest's own port and on no other. A MAC the table has on the uplink fails, and the route is withdrawn. Limit: the table is read once per cycle. |
-| Root in another guest of this node | Stops a guest that answers with its own MAC, and a card configured with a MAC that a running guest has. Frames forged with the MAC of a guest of another node put that MAC on the port of the attacker's guest, which `observed` notices. | Stops forged frames as well. They move the entry to the attacker's port, so the victim's route is withdrawn (503); it is not taken over. That is a denial of service for the victim, not a hijack. Limit: the same. |
-| A Proxmox user with `VM.Config.Network` on another guest | Does not stop it. The user can give their guest the MAC of any device on the segment that is not a running guest and, since the Notes are theirs, aim a route at that device. Only a MAC that a running guest has is refused. | Mostly stops it. To pass, the table has to have the device's MAC on the user's own port, which it has only after the user's guest sent a frame with that MAC and before the device sent its next one. A user who keeps transmitting with that MAC can have the check pass at the moment it is made, while the device wins the table in between. It is not a complete defence. |
-| A Proxmox user with `VM.Config.Network` on the published guest | Cannot aim the route at another machine: the address must be one that the guest's own cards answer for. Can break the route, or move it between the guest's addresses, by editing its cards (MAC, bridge, VLAN, a new card). | The same. |
+| A device on the uplink, outside Proxmox | Stops a device that answers for a guest's address with its own MAC. Once the route is served, a stranger's MAC that the kernel learns for the address is noticed as well (see below). Does not stop a device that copies the guest's MAC too: ARP cannot tell the copy from the guest, and for a guest on another node this node cannot see where the table sends its frames. | Stops both. The bridge must have learned the guest's MAC on the guest's own port and on no other, and a MAC the table has on the uplink fails. A device that starts using the guest's MAC after the check makes the bridge learn it on the uplink: the daemon is told within about a millisecond, takes the address out of the egress filter, verifies the route again at once, and withdraws it at Cloudflare if that fails. Limit: the millisecond or so between the table changing and the filter following. |
+| Root in another guest of this node | Stops a guest that answers with its own MAC, and a card configured with a MAC that a running guest has. Frames forged with the MAC of a guest of another node put that MAC on the port of the attacker's guest, which `observed` notices when it checks. | Stops forged frames as well. They move the entry to the attacker's port, so the address leaves the filter within about a millisecond, the verification fails, and the victim's route is withdrawn (503). It is not taken over: that is a denial of service for the victim, not a hijack. Limit: the same. |
+| A Proxmox user with `VM.Config.Network` on another guest | Does not stop it. The user can give their guest the MAC of any device on the segment that is not a running guest and, since the Notes are theirs, aim a route at that device. Only a MAC that a running guest has is refused. | Mostly stops it. To pass, the table has to have the device's MAC on the user's own port, which it has only after the user's guest sent a frame with that MAC and before the device sent its next one. That next frame moves the entry back to the uplink, which the daemon sees within about a millisecond, and the address leaves the filter. A user who keeps transmitting can get the check to pass again, and what the device can then be asked for is limited to the moment after each of its frames. It is not a complete defence. |
+| A Proxmox user with `VM.Config.Network` on the published guest | Does not stop it. The user can give a card of the published guest the MAC of a device on the segment and set the card's static address to the device's address. The static addresses of a guest are tried before those its agent reports, so the route then points at the device, and nobody has to edit the Notes. | Mostly stops it, with the same race and the same watch as in the row above. |
 
 What this table shows is that `port` is meant to stand on its own and `observed` is not.
 At `observed`, whoever can set the MAC of a guest's card and write its Notes can reach any
@@ -117,10 +130,61 @@ device on the segment. If you lower `identityMinimum`, give `VM.Config.Network` 
 access on tagged guests only to people you would trust with the whole segment, keep the tag
 registered, and consider `admission: approve`.
 
-Every check is made when pco looks, once in each cycle. In this release pco does not pin
-neighbour entries of the node and does not react to a forwarding-table change between two
-cycles, so the window an attacker can use is at least the length of the cycle (10 seconds by
-default).
+### Trusted static addresses
+
+`trustStatic` and `trustedCIDRs` let an address behind a router through (see
+[Identity](identity.md)). Such an address is proven by the guest's Proxmox configuration
+alone: pco asks neither ARP nor the forwarding table. It checks that the address is one of
+the static addresses of the guest's card, that it lies in a trusted prefix, and that the
+kernel routes it through a gateway.
+
+Whoever may change the network configuration of a tagged guest can therefore point its
+routes at any host inside `trustedCIDRs`, by giving the card that host's address as its
+static address. There is no race to win, as in the last row of the table, because nothing
+on the wire is looked at. The level is `observed`, so such a route is served only while
+`identityMinimum` is `observed`. Keep `trustedCIDRs` as narrow as you can: the prefixes
+of the hosts you mean to publish, and nothing wider.
+
+### Manual routes
+
+The daemon also reads route files from `/etc/pve/pco/routes/`. No command writes them yet,
+and only root can. A manual route names an address and no guest, so nothing proves it:
+its level is `manual`, and only the denylist, the addresses of the nodes and a connection
+to the port apply. A manual route with `allowNode` may even point at an address of a node:
+that lifts the rules that keep the addresses of nodes out, and no other. Treat the directory
+as part of root's configuration of the node.
+
+### Between two cycles
+
+The checks in [Identity](identity.md) are made once in each cycle, 10 seconds by default.
+Between two cycles the daemon watches two tables of the kernel through netlink and acts on
+a change at once:
+
+- The forwarding table of the bridge, for every route proven at `port`: the MAC of the
+  guest, or any other MAC of the same guest, learned on a port that is not the guest's own.
+- The neighbour table of the node, for every served address: the kernel learns a MAC for
+  the address that is neither the one the proof found nor another MAC of the same guest.
+
+When one of them changes, the address leaves the egress filter on every port, within about
+a millisecond. The routes on it are verified again as soon as the cycle lock allows, at most
+once every five seconds for an address. If they all pass, the address comes back. If one
+fails, the address stays out and a cycle is asked for, which withdraws the route at
+Cloudflare (503). `pco events` shows both outcomes under the kind `egress`.
+
+What this leaves:
+
+- The millisecond or so between the kernel changing its table and the daemon taking the
+  address out of the filter.
+- A MAC of the guest's own that shows up only in the neighbour table is not a move: a guest
+  with two cards on one bridge may answer for its address with either.
+- A route whose proof placed no MAC in the forwarding table, which is every route at
+  `observed` (a guest on another node, a trusted static address), is watched in the
+  neighbour table only.
+- The watch can fail. When the daemon cannot subscribe, it logs that watching the network
+  for bound addresses that move failed, tries again after a minute, and until then sees a
+  move only at the next cycle. A subscription that overflowed under a burst of
+  notifications is made again after a second and compares both tables as they are, so a
+  move in the gap is not missed.
 
 ## The connector egress filter
 
@@ -167,17 +231,76 @@ Cloudflare for `http://10.0.0.1:8006` gets a refused connection.
 The daemon's own checks, among them the request that `pco diagnose` makes, come from the
 daemon and not from a connector, so the filter does not confine them.
 
+### How the daemon keeps the targets
+
+The daemon gives the filter the whole set of targets in every cycle. The set holds the
+address and port of every route that holds its hostname and whose address the cycle has
+just verified, and every target that a tunnel configuration last confirmed at Cloudflare
+still sends a connector to. From it the daemon takes the addresses that lost their proof in
+this cycle, and those whose MAC moved and have not been verified again. The order of
+changes follows from that:
+
+- A target enters the set before the tunnel configuration with its rule is written, so a
+  rule never sends a connector to a target it cannot reach.
+- A target leaves the set one cycle after a tunnel run has confirmed a configuration
+  without it. The rule goes first, then the target.
+- A target whose proof is lost leaves at once, in the cycle that finds it and before
+  anything is written at Cloudflare: its identity fails, its guest stops, or the guest is
+  gone. A target whose MAC moves leaves at once, between cycles (see above).
+- A cycle that holds because the store cannot be read leaves the set as it is. When the
+  filter cannot be given the set, the cycle writes no tunnel configuration and says so in
+  the problems, with the text `setting the egress filter: ...; no tunnel configuration is
+  written until it is set`.
+- The set, and the configurations that Cloudflare last confirmed, are kept in
+  `engine-memory.json` (see [Operations](operations.md)), so that a restart of the daemon
+  does not cut the routes that were being served.
+
+The filter looks at every packet of a connector and not only at the first of a
+connection, so a connection that is open to a target that leaves the set is reset at its
+next packet.
+
 ### The table at boot
 
-`pco-egress.service` loads the table before the daemon starts, with the resolvers of the node
-and no targets, and every connector unit requires it and starts after it. A connector can
-therefore not run without the table, and a table that fails to load keeps the connector from
-starting. After a reboot a connector reaches Cloudflare's edge and the resolvers, and
-nothing else, until the daemon has verified the targets and added them.
+`pco-egress.service` loads the table with the resolvers of the node and no targets. Every
+connector unit requires it and starts after it, so starting a connector, at boot or at any
+other time, starts the unit first, and a table that fails to load keeps the connector from
+starting. Setup does not enable the unit itself: nothing needs the table until there is a
+connector, and the daemon loads it too whenever it finds it gone.
+
+After a reboot a connector reaches Cloudflare's edge and the resolvers, and nothing else,
+until the daemon's first cycle gets through. That cycle needs a complete listing from
+Proxmox, verifies the routes, and then gives the filter the targets: the ones it verified,
+and those of the tunnel configurations it last confirmed at Cloudflare, which it remembers.
+Visitors get a 502 for a published hostname until then. How long that takes grows with the
+number of routes, which are verified up to eight at a time.
 
 The table is loaded in one nft transaction, so it is whole or not there. The commands that
 read it check not only the targets but the whole table, its chains, rules and counters, and
 say when it is not what pco loads.
+
+### Keeping the table in place
+
+The daemon checks the table every 30 seconds, and whenever the kernel reports a change of
+the nftables ruleset, after waiting 200 milliseconds for a burst of changes to pass. The
+check compares the whole table, its flags, chains, rules, sets and counters, with what pco
+loaded. A table that is gone, dormant, or not the one pco loaded is loaded again with the
+targets the filter was last given, at most once every five seconds. The daemon then writes
+the event
+
+    the egress table was changed or removed outside pco and was loaded again
+
+and `pco status` carries it as a problem, with what differed in brackets. If the daemon
+cannot load the table, the `Egress:` line of `pco status` reads `not loaded: the connectors
+are not confined` or `not the one pco loads: the connectors may not be confined`, the
+command exits 1, and the cycle writes no tunnel configuration until a check finds the table
+in place.
+
+`nft flush ruleset`, and an enabled `nftables.service` whose configuration begins with
+`flush ruleset` (which the Debian default does) when it is started or reloaded, remove the
+table. The connectors are not confined from then until the daemon loads it again. That is
+normally a fraction of a second, since the daemon is told by the kernel; if the
+notification does not arrive, it is the 30 seconds of the timer at most. `pco doctor` warns
+while `nftables.service` is enabled, in its `nftables` check.
 
 ### The `pco egress` commands
 
@@ -189,8 +312,8 @@ They work on the node directly, without the daemon, and need root.
 | `pco egress block <address>` | Puts the address on the block list of this node and takes its entries out of the table at once. The list is kept in `/var/lib/pco/egress-blocked.json` and is subtracted from every set the daemon loads, until `unblock`. It needs no daemon and no Cloudflare. |
 | `pco egress unblock <address>` | Takes the address off the list. If it is still a verified target, the daemon puts it back at its next cycle. |
 | `pco egress off` | Removes the table and writes `/var/lib/pco/egress-off.json`. While that file exists, neither the boot unit nor the daemon loads the table. The connectors are not confined. |
-| `pco egress on` | Removes the switch and loads the table, with the resolvers and no targets unless the table is there as it should be. |
-| `pco egress load` | Loads the table when it is gone or not as it should be, and leaves an intact one with its sets as they are. It is what the boot unit runs. It is not listed by `pco egress --help`. |
+| `pco egress on` | Removes the switch and loads the table, with the resolvers and no targets unless the table is there as it should be. The daemon gives the targets back as soon as it notices, within a second or so, or at its next check, which is 30 seconds at the longest. |
+| `pco egress load` | Loads the table when it is gone or not as it should be, and leaves an intact one with its sets as they are. It is what the boot unit runs. The text of `pco egress --help` names it; the list of commands there does not. |
 
 An example of `pco egress show` on a node with three targets and one blocked address:
 
@@ -215,25 +338,24 @@ An example of `pco egress show` on a node with three targets and one blocked add
 `pco egress off` exists for the case that the filter is itself the fault, and for nothing
 else, because with it the connectors can reach everything the node can. It is local root
 only: no request of the daemon's API can switch the filter off, and the switch is a file
-that only root can write. `pco egress show` says that the filter is off, since when, and exits 1.
+that only root can write. While it is off, `pco egress show` says that the filter is off,
+since when, and exits 1. `pco status` starts with a warning, shows `Egress: off: the
+connectors are not confined` and exits 1, `pco doctor` fails its `egress` check, and
+the daemon records the switch off and the switch on as events.
 
 ### If the table disappears
 
-`nft flush ruleset`, and an enabled `nftables.service` whose configuration begins with
-`flush ruleset` (which the Debian default does) when it is started or reloaded, remove the
-table. The connectors are then not confined until it is loaded again. `pco egress show` says
-`The egress filter is on, but its table is not loaded: the connectors are not confined`.
-
-To load it again, run
+The daemon loads it again by itself, as described above. When it cannot, or is not
+running, run
 
     pco egress load
 
 (`pco egress on`, which `pco egress show` suggests, loads it too, unless the filter was
-switched off.) Do not restart `pco-egress.service` for that. The connector units require it, and a restart
-of a unit that others require restarts them as well, so every connector would drop its
-connections to Cloudflare. For the same reason, do not stop it. `pco egress load` is the
-way to reload: it loads the table when it is gone or changed, and does nothing to one that
-is intact.
+switched off.) Do not restart `pco-egress.service` for that. The connector units require it,
+and a restart of a unit that others require restarts them as well, so every connector would
+drop its connections to Cloudflare. For the same reason, do not stop it. `pco egress load`
+is the way to reload: it loads the table when it is gone or changed, and does nothing to one
+that is intact.
 
 ## Secrets and where they live
 
@@ -244,9 +366,9 @@ is intact.
 | Tunnel run tokens of the connectors | `/var/lib/pco/tunnels/<tunnel id>.token` | Mode 0600 in a directory of mode 0700. Passed to cloudflared as a systemd credential. |
 
 `/var/lib/pco` is mode 0700. `/etc/pve` is the cluster filesystem, and Proxmox keeps
-`/etc/pve/priv` readable by root alone. On a cluster it is replicated to every node, so every node holds these files.
-Anything that backs up `/etc/pve` or `/var/lib/pco` copies the secrets with it: protect
-those backups as you protect the tokens.
+`/etc/pve/priv` readable by root alone. On a cluster it is replicated to every node, so
+every node holds these files. Anything that backs up `/etc/pve` or `/var/lib/pco` copies
+the secrets with it: protect those backups as you protect the tokens.
 
 pco never takes a token from an argument or the environment, and prints or encodes it as
 `[redacted]` when it must show a value. The daemon's API does not return tokens, error
@@ -290,14 +412,14 @@ the doctor. A request cannot read a token, and it cannot change the egress filte
   writer's generation and nonce in the sentinel rule.
 - API requests from the node's address, with the user agent `pco/<version>`.
 - The connector's outbound connections from the node's address.
-- The traffic of every proxied hostname, as for any proxied hostname at Cloudflare: it ends at
-  Cloudflare's edge in the clear, and from the connector to the guest it is plain HTTP unless
-  the route says `https`.
+- The traffic of every proxied hostname, as for any proxied hostname at Cloudflare: it ends
+  at Cloudflare's edge in the clear, and from the connector to the guest it is plain HTTP
+  unless the route says `https`.
 
 It does not see the Proxmox token, the other guests, the Notes beyond the hostnames and
 route options, or anything that is not published.
 
-A hostname you publish is public, as is the tunnel it points at (the CNAME holds the tunnel's
-id). pco puts nothing in front of it: no Cloudflare Access policy, no login. What protects an
-application is the application, or whatever you configure at Cloudflare for the hostname
-yourself.
+A hostname you publish is public, as is the tunnel it points at (the CNAME holds the
+tunnel's id). pco puts nothing in front of it: no Cloudflare Access policy, no login. What
+protects an application is the application, or whatever you configure at Cloudflare for the
+hostname yourself.

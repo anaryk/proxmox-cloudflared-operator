@@ -40,13 +40,15 @@ one at a time. A candidate is served only if all of the following hold.
    bridge's forwarding table (per VLAN on a VLAN-aware bridge) must have learned it on
    exactly one port, the port Proxmox made for that guest's card:
    `tap<vmid>i<n>` for a virtual machine, `veth<vmid>i<n>` for a container, or
-   `fwpr<vmid>p<n>` when the card has the firewall on. A MAC that the table has on the uplink, on
-   another guest's port, or on several ports fails.
+   `fwpr<vmid>p<n>` when the card has the firewall on. A MAC that the table has on the
+   uplink, on another guest's port, or on several ports fails.
 6. **The port answers.** pco makes a TCP connection to the address and port of the route,
    and gives it two seconds.
 
 The result of steps 1 to 5 is the identity level. Step 6 is not about identity: a route
 whose identity holds but whose port does not answer is kept and shown as `unreachable`.
+A trusted static address behind a router is proven in another way, which replaces steps 2,
+4 and 5; see [Static addresses behind a router](#static-addresses-behind-a-router).
 
 ## The levels
 
@@ -55,15 +57,19 @@ whose identity holds but whose port does not answer is kept and shown as `unreac
 | Level | What was proven |
 |---|---|
 | `port` | Steps 1 to 5: only the guest answers ARP for the address, and the forwarding table of this node places each of its MACs on the guest's own port. |
-| `observed` | Only the guest answers ARP for the address, but the forwarding table could not place its MACs, because the guest runs on another node of the cluster, or because the address is a trusted static one (see below). For a guest on another node pco checks that none of its MACs is on the port of a guest of this node, which would be a local guest answering in its name. |
+| `observed` | Less than `port`, in one of two ways. For a guest on another node of the cluster: only the guest answers ARP for the address, and none of its MACs is on the port of a guest of this node, which would be a local guest answering in its name; this node cannot see where the table sends the guest's own frames. For a trusted static address behind a router (see below): neither ARP nor the forwarding table is asked, and only the guest's Proxmox configuration vouches for the address, together with a kernel route to it through a gateway. |
 | `filtered` | Reserved. It is the level of a network in which every guest card is pinned to its address by the Proxmox firewall, which belongs to the appliance profile; see [Profiles](profiles.md). Nothing proves it in this release. |
 
-A route written for an address instead of a guest would have the level `manual`, but
-this release has no such routes.
+A route that names an address and no guest has the level `manual`. No command makes such
+a route yet: it exists only as a file in `/etc/pve/pco/routes/`, which only root can write,
+and nothing proves it; see [Security](security.md).
 
 `port` is the highest level, and only a guest on the node that pco runs on can reach it.
 When a route has several candidates, pco serves the one proven at the highest level, and
-it stops trying once one reaches `port`; the order below only decides between equals.
+it stops trying once one reaches `port`; the order below only decides between equals. A
+newly bound address is kept for two minutes before pco looks for a candidate that may be
+proven higher, unless the address is proven below `identityMinimum`, so that a candidate
+whose proof comes and goes does not move the route up and down.
 
 ## `identityMinimum`
 
@@ -95,9 +101,12 @@ At `observed`, ARP consistency is all that is proven, and that can be satisfied 
 configuration and not only by forging. A Proxmox user who can set the MAC of a guest's
 card and write its Notes can aim a route at any device on the segment whose MAC they
 copy. The table in [Security](security.md) spells out which attacker each level stops.
-Lowering the minimum applies to every guest of the install, also to those that could
-have been served at `port`. If the guests that need `observed` are few, the better
-answer is often to run pco on the node where they live.
+Lowering the minimum does not switch off the forwarding-table check of the guests of this
+node: they are still proven at `port` where they can be, and a local guest whose MAC is not
+on its own port still fails. What changes is that routes proven at `observed` are served,
+and the setting is the same for every guest of the install: any guest that is on another
+node, and any trusted static address, gets the lower proof. If the guests that need
+`observed` are few, the better answer is often to run pco on the node where they live.
 
 `filtered` is accepted as a value, because it is the name of a level the installation
 may have in another profile. On this profile it is treated as `port`.
@@ -122,7 +131,8 @@ IPv6 addresses are not candidates, and neither are addresses that are unspecifie
 multicast. At most 16 candidates are tried for one route in a call.
 
 pco remembers the address it verified for each hostname, with the MAC of the card, the
-level and the time (the files in `/var/lib/pco/bindings`). That address is verified
+level, the time and, for a proof at `port`, the bridge and the port the forwarding table
+placed the MAC on (the files in `/var/lib/pco/bindings`). That address is verified
 first in the next cycle, even when nothing reports it any more, so that a guest agent
 that stops answering for a while does not unpublish a route. If the address fails
 because its port does not answer, it stays the target for two minutes before other
@@ -143,6 +153,11 @@ no longer listed. It is served again when the identity check passes again, whate
 the port does. A route that was never verified is `unreachable` and has no DNS record
 yet.
 
+A route does not have to wait for the next cycle to be checked again. When the kernel
+reports that the MAC of a served address moved, the address leaves the egress filter at
+once and the route is verified again, and only a verification that fails withdraws it at
+Cloudflare. [Security](security.md) says what is watched and what that does not cover.
+
 The reasons say what failed. `pco diagnose <hostname>` lists every candidate that was
 tried and how it fared, in its `identity` step. [Troubleshooting](troubleshooting.md)
 has the reasons and what to do about each.
@@ -161,12 +176,14 @@ These addresses are never published, for any route, whatever it says:
 The reason is the node itself. Without this rule a guest could write the address of the
 hypervisor into its Notes and publish the Proxmox web interface on port 8006. A guest
 controls its own configuration and its own agent, so the denylist does not trust either
-of them.
+of them. The one exception is a manual route that root wrote with `allowNode`, which lifts
+the two rules about nodes and none of the others; no route from a guest's Notes can.
 
 It is not the only layer. The egress filter of the connectors (see
 [Security](security.md)) rejects every connection of a connector to an address of the
-node, whatever pco decided, so that someone who edits the tunnel configuration at
-Cloudflare directly cannot point the connector at the node either.
+node that is not one of its verified targets, and no guest's address is ever one of
+those. So someone who edits the tunnel configuration at Cloudflare directly cannot point
+the connector at the node either.
 
 ## Static addresses behind a router
 
@@ -180,17 +197,30 @@ Two settings let such an address through:
 An address then passes, with a route through a gateway in place of step 2 and without
 the ARP and forwarding-table steps 4 and 5, when it is a static address of the guest's
 Proxmox configuration, it lies in one of the prefixes, and the kernel's route to it goes
-through a gateway and not directly. Only the configuration of the guest vouches for it, so its level is `observed`, and it is served
-only if `identityMinimum` is `observed` as well. Both settings are read when the daemon
+through a gateway and not directly. Step 3 still applies: no other running guest may have
+the card's MAC.
+
+Read what that means. Nothing on the wire is looked at, and only the configuration of the
+guest vouches for the address, so its level is `observed`, and it is served only if
+`identityMinimum` is `observed` as well. Whoever can edit the network configuration of a
+tagged guest in Proxmox can give a card the address of any host inside `trustedCIDRs`, and
+the route then points at that host. Make the prefixes as narrow as you can; the table in
+[Security](security.md) has the attacker this is. Both settings are read when the daemon
 starts. [Operations](operations.md) says how to change them.
 
 ## What this does not do
 
-The checks are made when pco looks, once in every cycle (10 seconds by default), and not
-continuously. The table of forwarding entries and the ARP cache of the node are what they
-are between two looks. In this release pco does not pin neighbour entries and does not
-react to a forwarding-table change between cycles. [Security](security.md) says what that
-means against the attackers it considers.
+The checks are made when pco looks, once in every cycle (10 seconds by default). Between
+two cycles the daemon watches the neighbour table of the node and the forwarding tables of
+the bridges and reacts to a bound MAC that moves, but that watch has limits:
+
+- The address leaves the filter within about a millisecond of the change, not at the same
+  instant. [Security](security.md) says what can happen in that time.
+- A MAC of the guest's own that appears only in the neighbour table is not a move: a guest
+  with two cards on one bridge may answer for its address with either.
+- A route proven at `observed` placed no MAC in the forwarding table, so only the neighbour
+  table is watched for it.
+- If the watch cannot run, a move is seen at the next cycle only, and the daemon logs it.
 
 Only IPv4 origins are supported, and the guest and the node must be on a common layer 2
 network, except for the trusted static addresses above.

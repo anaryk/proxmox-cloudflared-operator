@@ -32,10 +32,11 @@ support: pco runs on one node.
 2. The daemon polls the Proxmox API, reads the Notes and works out who holds each
    hostname.
 3. For each target it proves that the address belongs to the guest, with ARP and the
-   forwarding table of the bridge, before anything is published.
+   forwarding table of the bridge, before anything is published, and goes on watching
+   the network: an address whose MAC moves is cut off at once.
 4. It writes the tunnel configuration and a proxied CNAME for each hostname at
-   Cloudflare, and runs one `cloudflared` for each tunnel on the node, confined to the
-   targets it verified.
+   Cloudflare, and runs one `cloudflared` for each tunnel on the node, confined by an
+   nftables filter to the targets it verified.
 5. Visitors reach Cloudflare's edge, which carries the request through the tunnel to
    the node and on to the guest.
 
@@ -74,7 +75,8 @@ the checksum file and the checksum of the package, installs it, and starts the s
 Read the script first, and run it as root on the node. The manual way is to download
 `pco_<version>_<arch>.deb` and `checksums.txt` from the releases page, check them, and
 install the package with `apt install ./pco_<version>_<arch>.deb`. Before the first
-release, `make snapshot` builds the packages from a checkout. Then run `pco setup`.
+release, `make snapshot` builds the packages from a checkout; it needs Go and network
+access, so build on another machine and copy the `.deb` to the node. Then run `pco setup`.
 [Quickstart](docs/quickstart.md) walks through all of it.
 
 ## A minimal example
@@ -124,10 +126,14 @@ Go 1.26 builds it.
     make snapshot       # builds the .deb packages into dist/, without signing
 
 The Makefile passes the build tag `nomsgpack`; see [Operations](docs/operations.md) for
-why. How a release is made is in [packaging/RELEASING.md](packaging/RELEASING.md).
+why. How a release is made is in [packaging/RELEASING.md][releasing], which the package
+does not ship.
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE][licence]. The package ships it as `/usr/share/doc/pco/copyright`.
 
 pco is not affiliated with Proxmox Server Solutions GmbH or Cloudflare, Inc.
+
+[releasing]: https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/packaging/RELEASING.md
+[licence]: https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/LICENSE

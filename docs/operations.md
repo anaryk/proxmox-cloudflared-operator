@@ -11,14 +11,15 @@ The package installs three systemd units.
 | Unit | What it does |
 |---|---|
 | `pco.service` | The daemon, `pco daemon`. It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service` and `pveproxy.service`, and before `pve-guests.service` and `pve-ha-lrm.service`. |
-| `pco-egress.service` | Loads the egress filter at boot by running `pco egress load`. It is a one-shot unit that stays active, and it starts before `pco.service`. |
+| `pco-egress.service` | Loads the egress filter by running `pco egress load`. It is a one-shot unit that stays active, and it is ordered before `pco.service`. The connector units require it, so it starts with the first connector, at boot too. Setup does not enable it by itself. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 
 The connectors keep running when the daemon stops, restarts or is upgraded. pco is never in
 the data path: a request goes from Cloudflare's edge to a connector and from there to the
 guest, and none of it passes through the daemon. If the daemon is down, published routes
 keep working; what stops is everything that needs a decision: new routes, withdrawals, and
-the removal of records.
+the removal of records. The egress table stays in the kernel as the daemon left it, with its
+targets, but nothing loads it again if something removes it: `pco egress load` does.
 
 The daemon waits for the cluster filesystem when it starts. Its first step is to read the
 Proxmox token from `/etc/pve/priv/pco`, and if `/etc/pve` is not mounted yet it tries again
@@ -29,6 +30,12 @@ running on this node`.
 
 A connector listens for metrics on `127.0.0.1`, on the lowest port from 20300 that no other
 connector uses; the daemon reads its `/ready` endpoint to tell whether it is connected.
+
+After a reboot the connectors start with an egress table that has no targets, so a published
+hostname answers 502 until the daemon's first cycle has got a complete listing from Proxmox,
+verified the routes and given the filter their targets (see [Security](security.md)). The
+daemon starts after `pve-cluster.service` and `pveproxy.service`, and the routes are verified
+up to eight at a time, so the time to the first serve grows with their number.
 
 ## Where the state lives
 
@@ -51,15 +58,16 @@ The files:
 | `/etc/pve/pco/nodes/<node>.json` | The node that runs pco, and the version. |
 | `/etc/pve/pco/claims/<hostname>.json` | Who holds a hostname, since when, and who waits. A wildcard is stored as `_wildcard.<name>.json`. |
 | `/etc/pve/pco/approvals/<owner>.json` | An approved guest and its identity. A guest `qemu/101` is stored as `qemu_101.json`. |
+| `/etc/pve/pco/routes/<id>.json` | Manual routes, which the daemon reads in every cycle. No command writes them yet, and only root can. A manual route names an address and not a guest, so it is not proven (its level is `manual`), and its `allowNode` option lifts the rules of the denylist that keep the addresses of nodes out. See [Security](security.md). |
 | `/etc/pve/pco/adopted.jsonl` | One line for each DNS record that `pco adopt` replaced, as it was; at most 256 KiB, oldest lines first out. |
 | `/etc/pve/priv/pco/meta/pve-token.json` | The secret of the Proxmox token. |
 | `/etc/pve/priv/pco/credentials/<id>.json` | One Cloudflare credential. |
 | `/var/lib/pco/manifest.json` | What `pco setup` created; `pco uninstall` follows it. |
-| `/var/lib/pco/bindings/<hostname>.json` | The address verified for each hostname. |
-| `/var/lib/pco/meta/engine-memory.json` | What the daemon must still know after a restart: the zones it served, the tunnels it saw, the guests you confirmed gone. |
+| `/var/lib/pco/bindings/<hostname>.json` | The address verified for each hostname, with the MAC, the level and, at `port`, where the forwarding table placed the MAC. |
+| `/var/lib/pco/meta/engine-memory.json` | What the daemon must still know after a restart: the zones it served, the tunnels it saw, the guests you confirmed gone, the last check of each credential, and the targets of the egress filter with the tunnel configurations that confirmed them. |
 | `/var/lib/pco/meta/node-addrs.json` | The addresses of the nodes, for the denylist. |
 | `/var/lib/pco/events.log` | The event log, one JSON object a line; rotated at 5 MiB, one earlier file is kept. |
-| `/var/lib/pco/tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector. |
+| `/var/lib/pco/tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector. The `.env` file names the install the connector belongs to. |
 | `/var/lib/pco/egress-blocked.json`, `egress-off.json` | The block list and the off switch of the egress filter. |
 | `/var/lib/pco/daemon.lock` | The lock of the node. |
 
@@ -97,10 +105,18 @@ ask: `pco sync`, `pco apply`, `pco adopt`, or when a credential is added. In eac
 6. Plans the state at Cloudflare: one tunnel for each account that holds a zone with routes,
    a rule for each route, a 503 rule for each hostname that is claimed and not served, and a
    proxied record for each hostname.
-7. Unless something holds the cycle, brings Cloudflare in line: creates the tunnel if it is
+7. Gives the egress filter its targets: those it verified and those a confirmed tunnel
+   configuration still uses, less the addresses that lost their proof (see
+   [Security](security.md)). This comes before anything is written at Cloudflare.
+8. Unless something holds the cycle, brings Cloudflare in line: creates the tunnel if it is
    missing, writes its configuration and reads it back, starts or restarts the connector,
    and creates or retargets DNS records, and removes the ones that are no longer wanted.
-8. Publishes what it found, which is what `pco status` shows.
+9. Publishes what it found, which is what `pco status` shows.
+
+Two things run beside the cycle. A watch of the network reacts to a served address whose
+MAC moves, without waiting for the next cycle. A keeper checks the egress table every 30
+seconds and whenever nftables reports a change, and loads it again when it is gone or
+changed. [Security](security.md) describes both.
 
 The zones and accounts of each credential are listed every five minutes, and each token is
 checked again once a day.
@@ -125,16 +141,25 @@ daemon holds when:
 - the inventory of Proxmox is incomplete: a listing or a configuration could not be read, a
   guest is of an unknown kind, or the cycle was cut short. A partial inventory never leads
   to a removal;
-- a credential's zones are not listed yet, or a zone is in doubt (see
-  [Cloudflare token](cloudflare-token.md)); that freezes the account of the zone and not
-  the whole cycle;
+- there is no Cloudflare credential, or a credential has not listed its zones since the
+  daemon started (`credential <id>: its zones are not listed yet`): that holds the whole
+  cycle, for every account, until its zones are listed or it is removed. It is what a
+  token that was revoked or expired before a restart does, even if it is not the one that
+  serves your zones (see [Cloudflare token](cloudflare-token.md));
+- a zone is in doubt: seen through several credentials with no pin when none of them served
+  it alone before, pinned to a credential that does not see it, or gone from its credential's
+  listing. That freezes the account of the zone, and not the whole cycle;
 - there is no writer identity, or the writer is stale or foreign (see
   [Troubleshooting](troubleshooting.md));
 - the guests that hold hostnames drop out of Proxmox's listing in numbers that look like a
   failure and not like their removal. Proxmox lists none of them, or more than five and
   more than 30 per cent are gone: this is what an API token that lost its privileges looks
   like, and the cycle holds until they are listed again or `pco apply --confirm-deletes`
-  says they were removed on purpose.
+  says they were removed on purpose;
+- the egress filter cannot be given its targets, or its table cannot be loaded again after
+  it was changed outside pco: the cycle then reads Cloudflare and writes no tunnel
+  configuration until it can, because a rule must not send a connector to a target it
+  cannot reach.
 
 ### Grace periods and the mass delete guard
 
@@ -165,20 +190,32 @@ make them, and expire after five minutes with an event.
     pco events --since 10m
 
 lists what changed, oldest first: routes that changed state, conflicts, what was applied at
-Cloudflare, holds that began or ended, problems that appeared, and what admins did. Each
-event has a time, a level (`info`, `warn`, `error`), a kind (`route`, `conflict`, `action`,
-`problem`, `claim`, `rollout`, `writer`, `admin`, `credential`, `hold`), a subject and a
-message. `--since` takes a duration such as `10m` or a time in RFC 3339 form. The daemon
-keeps the last thousand events since it started; the journal has all of them, and the event
-log file keeps the recent ones.
+Cloudflare, holds that began or ended, problems that appeared, what happened to the egress
+filter, and what admins did. Each event has a time, a level (`info`, `warn`, `error`), a
+kind (`route`, `conflict`, `action`, `problem`, `claim`, `rollout`, `writer`, `admin`,
+`credential`, `hold`, `egress`), a subject and a message. `--since` takes a duration such as
+`10m` or a time in RFC 3339 form. The daemon keeps the last thousand events since it
+started; the journal has all of them, and the event log file keeps the recent ones.
+
+The events of the kind `egress` say that the filter was switched off or on, that its table
+was changed outside pco and loaded again, and that the MAC of a served address moved, with
+what came of the verification that followed.
 
 The daemon logs to the journal as JSON lines:
 
     journalctl -u pco
 
 Events are logged too, with the field `event`. To change the level, give `pco daemon` the
-flag `--log-level` (`trace`, `debug`, `info`, `warn` or `error`) in a drop-in of the unit,
-`systemctl edit pco`. The connectors log to the journal under their own units.
+flag `--log-level` (`trace`, `debug`, `info`, `warn` or `error`) in a drop-in of the unit.
+`systemctl edit pco` opens one, and the lines to put in it are
+
+    [Service]
+    ExecStart=
+    ExecStart=/usr/bin/pco daemon --log-level debug
+
+The empty `ExecStart=` clears the one of the package; without it systemd refuses a second
+command. Then run `systemctl restart pco`; the connectors keep running. They log to the
+journal under their own units.
 
 ## Exit codes and `--json`
 
@@ -187,7 +224,7 @@ Every `pco` command that asks the daemon exits with one of three codes.
 | Code | Meaning |
 |---|---|
 | 0 | All is well. |
-| 1 | The command ran and found something to look at: problems in the state (`pco status`), a failed check (`pco doctor`), a failed step (`pco diagnose`), a filter that is off or changed (`pco egress show`), a request the daemon refused, or any other failure. |
+| 1 | The command ran and found something to look at: problems in the state, or an egress filter that does not confine the connectors (`pco status`), a failed check (`pco doctor`), a failed step (`pco diagnose`), a filter that is off, not loaded or changed (`pco egress show`), a request the daemon refused, or any other failure. |
 | 2 | The command could not ask the daemon: it is not running, its socket refused the connection, no answer came in time, or the answer could not be read. |
 
 `pco routes`, `pco plan`, `pco events`, `pco claims list` and `pco guest list` print what
@@ -219,6 +256,7 @@ fields:
 | `waiting`, `offer` | What waits for a confirmation. |
 | `unapproved` | In approve mode, the guests that wait. |
 | `hold`, `writerVerdict` | Why the last cycle did not check Cloudflare, and what it found of the writer. |
+| `egress` | The egress filter as the daemon last found it: `state` is `on`, `off`, `not loaded` or `changed`, and `since` says when the admin switched it off. Absent until the daemon has looked. |
 
 A script should read the fields and not match the text. The messages in `problems`, `held`,
 `reason` and `msg` are for people and can change; the field names, the route states and the
@@ -232,9 +270,20 @@ The route states are `active`, `unreachable`, `withdrawn`, `conflict`, `no-zone`
 
 The settings are one file, `/etc/pve/pco/meta/settings.json`, which `pco setup` makes with
 the defaults. There is no command to change them yet: edit the file. It is the object in
-`data`; leave the rest of the envelope as it is. A file that is invalid makes the daemon
-hold and say so as a problem, `reading the settings: stored settings are invalid: ...`,
-naming the field, until it is fixed. `python3 -m json.tool` checks the syntax.
+`data`; leave the rest of the envelope as it is. `python3 -m json.tool` checks the syntax.
+
+A file the daemon cannot use makes it hold, and `pco status` says why as a problem that
+begins `reading the settings:`, until the file is fixed. What follows tells which kind of
+mistake it is:
+
+| The problem says | What is wrong |
+|---|---|
+| `reading the settings: <file>: invalid JSON at offset 170` | The file is not valid JSON: a stray comma, a missing bracket. The offset counts bytes from the start of the file. |
+| `reading the settings: <file>: invalid: json: unknown field "denyhost"` | A key the daemon does not know, usually a misspelt one. Settings are read strictly. |
+| `reading the settings: <file>: field "observeOnly" cannot be read as bool` | A value of the wrong type. |
+| `reading the settings: <file>: invalid: time: invalid duration "ten"` | A duration that Go cannot read. |
+| `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` that is not IPv4, a pattern or zone pin that does not normalise. The problem names the field. |
+| `reading the settings: <file> has schema version 2, this build reads 1: ...` | The file was written by a newer version, which an older build never rewrites. |
 
     {
       "schemaVersion": 1,
@@ -255,7 +304,7 @@ Every field, with its default:
 
 | Field | Default | What it is |
 |---|---|---|
-| `gateTag` | `cf-tunnel` | The tag that makes a guest a candidate. A Proxmox tag: lower-case letters, digits and `_ - + .`, not starting with `-`, `+` or `.`, at most 64 characters. Read when the daemon starts. |
+| `gateTag` | `cf-tunnel` | The tag that makes a guest a candidate. A Proxmox tag: lower-case letters, digits and `_ - + .`, not starting with `-`, `+` or `.`, at most 64 characters. Read when the daemon starts. After you change it, run `pco setup` again (or `pco setup --repair`), which registers the new tag besides `cf-tunnel` and `cf-tunnel-managed`; see [Security](security.md). |
 | `allowHosts` | none | Patterns of the hostnames that may be published. Empty allows everything. |
 | `denyHosts` | none | Patterns of the hostnames that may not be published. A deny rule wins over an allow rule. |
 | `pollInterval` | `10s` | The time between two cycles. At least `5s`. |
@@ -283,10 +332,14 @@ starts. A change to those is noticed and shown as a problem,
 The two minimums are guards. A grace of a moment would remove a record when one cycle
 happened to miss its name, and cycles closer together would only ask Proxmox and Cloudflare
 more. A file that says `pollInterval` below 5 seconds or `grace` below 30 seconds is read with
-the minimum in its place, and `pco status` shows a problem that names the field, the value in
-the file, the value in use and the file to edit; the file is not rewritten for you. An unknown
-key is refused, so that a misspelt `denyhost` cannot silently drop a list that was meant to
-deny.
+the minimum in its place, and `pco status` shows a problem for each, in this form:
+
+    settings: pollInterval is 1s in /etc/pve/pco/meta/settings.json, below the minimum of 5s; 5s is used until it is raised there
+
+The daemon does not rewrite the file. A command that stores the settings does, with the
+raised values: `pco apply` when it leaves observe-only mode, and `pco setup` when it makes
+a new install or recovers one. An unknown key is refused, so that a misspelt `denyhost`
+cannot silently drop a list that was meant to deny.
 
 ### The rule for compatibility
 
@@ -314,9 +367,10 @@ the new version in the node registry. `pco setup --repair` re-asserts the role, 
 and tags in Proxmox, as after a restore of the node or an upgrade of Proxmox VE that changes
 privileges.
 
-The package does not touch the egress table either. When a release changes the filter,
-`pco egress show` says the table is not the one pco loads, and `pco egress load` replaces
-it. Downgrades are not supported: see the rule for compatibility above.
+The package does not touch the egress table either. When a release changes the filter, the
+table in place is not the one the new daemon loads: `pco egress show` and `pco status` say so
+until the daemon's next check loads the new one, and `pco egress load` does it by hand.
+Downgrades are not supported: see the rule for compatibility above.
 
 `cloudflared` comes from Cloudflare's apt repository, and `apt upgrade` updates it. A
 running connector keeps the binary it started with until it restarts. To use the new one,

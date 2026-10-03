@@ -22,6 +22,11 @@ And these on the guests:
 - The node reaches a guest as itself, so the node needs an IPv4 address on the
   bridge (and VLAN) the guest's network card is attached to. On a default install
   that is `vmbr0` and the management address. [Identity](identity.md) explains why.
+  Think before you give the node an address in a network that it does not have yet,
+  such as a VLAN of guests: the web interface (port 8006), `spiceproxy` and `sshd` of
+  Proxmox listen on every address of the node, so every guest in that network could
+  then reach them. Restrict them first, with the Proxmox firewall or with `LISTEN_IP`
+  and `ALLOW_FROM` in `/etc/default/pveproxy`.
 - The guest has an IPv4 address that pco can learn. For a container nothing more is
   needed. For a virtual machine the QEMU guest agent must run in the guest and be
   enabled in its options, or the route must name the address (see
@@ -50,18 +55,31 @@ installs a given release instead of the latest. The installer needs `curl`,
 them, or `apt-get install gpgv` adds the one that is missing.
 
 The manual way is to install the package yourself. From a release, download
-`pco_<version>_<arch>.deb` and `checksums.txt` from the releases page of the
-repository, compare the checksum, and install:
+`pco_<version>_<arch>.deb`, `checksums.txt` and its detached signature
+`checksums.txt.sig` from the releases page of the repository. A checksum that arrives from
+the same place as the package proves nothing by itself, so the signature has to be checked
+too, and the installer can do all of it for files you downloaded yourself: it checks the
+signature of `checksums.txt` against the release key it carries, the checksum of the package
+against `checksums.txt`, and then installs. Use the `scripts/install.sh` of the repository at
+the tag of the release, as that version of the script carries the key that signed it:
+
+    PCO_DEB=./pco_<version>_<arch>.deb PCO_CHECKSUMS=./checksums.txt \
+      PCO_SIGNATURE=./checksums.txt.sig PCO_SKIP_SETUP=1 bash scripts/install.sh
+
+Nothing is downloaded then, and `PCO_SKIP_SETUP=1` stops it before `pco setup`.
+
+To check by hand, compare the checksum first,
 
     sha256sum --check --ignore-missing checksums.txt
-    apt install ./pco_<version>_<arch>.deb
 
-`checksums.txt` comes with a detached signature, `checksums.txt.sig`. A checksum
-that arrives from the same place as the package proves nothing by itself, so
-check the signature as well, against the release key in `scripts/install.sh`
-(`packaging/release-key.sh scripts/install.sh release.gpg` writes the keyring and
-prints the fingerprints, and `gpgv --keyring ./release.gpg checksums.txt.sig
-checksums.txt` checks it).
+and then the signature against the key of that script.
+`packaging/release-key.sh scripts/install.sh release.gpg` writes its keyring and prints
+the fingerprints. Do not trust the exit status of a bare
+`gpgv --keyring ./release.gpg checksums.txt.sig checksums.txt`: `gpgv` exits 0 for a
+signature by a key that is revoked or has expired, and says so only in its status lines.
+`gpgv --status-fd 1` prints them; look for a `GOODSIG` line and for none of `REVKEYSIG`,
+`EXPKEYSIG` and `EXPSIG`. `sqv` refuses such a key by itself. When both checks are done,
+`apt install ./pco_<version>_<arch>.deb` installs the package.
 
 Before the first release there is nothing to download. Build the packages from a
 checkout of the repository instead:
@@ -69,12 +87,14 @@ checkout of the repository instead:
     make snapshot
     apt install ./dist/pco_*_amd64.deb
 
-`make snapshot` needs Go and network access and builds the packages without
-signing them. Use the file that matches the architecture of the node.
+`make snapshot` needs Go 1.26 and network access, and builds the packages without signing
+them. A node does not usually have Go, so build on another machine and copy the file
+for the architecture of the node to it, `amd64` or `arm64`, with `scp`.
 
 The package installs `/usr/bin/pco`, three systemd units, a `sysusers.d` file for
 the system user `pco-connector`, and depends on `nftables`. It does not enable or
-start anything. Setup does that.
+start anything. Setup enables the daemon, the daemon starts the connectors, and the
+connectors start the unit that loads the egress filter before them.
 
 ## Set up the node
 
@@ -92,11 +112,14 @@ run that stopped and changes nothing on a node that is set up. In order, it:
   `VM.Audit`, `Sys.Audit`, `SDN.Audit`, and `VM.GuestAgent.Audit` on Proxmox VE 9
   or `VM.Monitor` on 8.4;
 - registers the tags `cf-tunnel` and `cf-tunnel-managed` as registered tags, so
-  that only a user with `Sys.Modify` on `/` can set them on a guest (it asks;
-  `--no-registered-tags` declines);
+  that only a user with `Sys.Modify` on `/` can set them on a guest, and the gate
+  tag of your settings too if you changed `gateTag` (it asks; `--no-registered-tags`
+  declines, and warns that the gate tag can then be set by anyone who may edit a
+  guest's options);
 - installs `cloudflared` from Cloudflare's apt repository if it is missing (it
   asks; `--skip-cloudflared` declines);
-- asks for a Cloudflare token, checks it and stores it if it can do what pco needs;
+- asks for a Cloudflare token, checks it and stores it, as the credential `setup`, if it
+  can do what pco needs;
 - registers the node and enables and starts `pco.service`.
 
 Everything it creates is written down in `/var/lib/pco/manifest.json`, which is
@@ -124,11 +147,22 @@ the next step.
 A fresh install only observes. It reads the guests and works out what it would
 do, and changes nothing at Cloudflare until you say so with `pco apply`.
 
+If the node still runs connectors of another install, as after a lost store, setup
+refuses to make a new install beside them and says what to do instead; see
+[Uninstall](uninstall.md#after-a-lost-store).
+
 ## Add a Cloudflare token
 
-Create the token as described in [Cloudflare token](cloudflare-token.md), then give
-it to the daemon. The token is asked for without being shown; `--token-file <file>`
-or standard input work in a script:
+If you gave setup a token, its output has the line
+
+    credentials: stored the token as credential <id> (setup)
+
+and the token is stored, after the same `--deep` check as below: go on to the next
+section. Adding the same token again is refused (`credential "setup" has this token already`).
+
+Otherwise create the token as described in [Cloudflare token](cloudflare-token.md),
+then give it to the daemon. The token is asked for without being shown;
+`--token-file <file>` or standard input work in a script:
 
     pco credential add --label main
 
@@ -210,9 +244,10 @@ stand in the way of a hostname, and anything that waits for a confirmation.
 
     pco status
 
-is the overview: the mode, whether the inventory is complete, the routes by state,
-the tunnels and their connectors, the credentials, the problems in the Notes and
-the problems of the daemon. While nothing is applied it ends with the next step:
+is the overview: the mode, whether the inventory is complete, whether the egress
+filter is on, the routes by state, the tunnels and their connectors, the credentials,
+the problems in the Notes and the problems of the daemon. While nothing is applied it
+ends with the next step:
 
     Run pco apply to start publishing.
 
@@ -232,6 +267,10 @@ connector once it has connected:
     Tunnels:
       NAME              ID        VERIFIED  CONNECTOR
       pco-7f3a9c0d41b2  0a1b2c3d  yes       active, ready, 4 connections
+
+From then on the connectors run under an nftables filter that lets them reach the
+addresses pco verified, the resolvers of the node and Cloudflare, and nothing else.
+`pco egress show` lists what it holds; [Security](security.md) explains it.
 
 ## Check that it works
 
@@ -255,8 +294,8 @@ daemon, not from the connector.
 
 `pco doctor` checks the installation as a whole: the mode, the last cycle, the
 credentials, `cloudflared`, the tunnels and connectors, the way out to Cloudflare,
-the writer, Proxmox, the store. Every finding that is not fine comes with what to do
-about it:
+the writer, Proxmox, the store, the egress filter. Every finding that is not fine comes
+with what to do about it:
 
     ✗ cloudflared       cloudflared does not run: exec: no such file
                         fix: install cloudflared from the package repository of Cloudflare

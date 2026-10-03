@@ -18,6 +18,7 @@ use it.
     Profile:     host
     Inventory:   complete
     Writer:      ok
+    Egress:      on
     Routes:      active 3, unreachable 1
     Last cycle:  2026-10-01T14:00:00+02:00
     Tunnels:
@@ -35,14 +36,27 @@ use it.
   the problems say what was not readable.
 - **Writer** is `ok`, or `stale`, `foreign` or `unknown`; see
   [the writer](#the-writer-is-stale-foreign-or-unknown).
+- **Egress** is the filter that confines the connectors, as the daemon last found it:
+  - `on` is as it should be.
+  - `off: the connectors are not confined` means an admin switched it off with
+    `pco egress off`. The output then starts with a warning that says since when.
+  - `not loaded: the connectors are not confined` and
+    `not the one pco loads: the connectors may not be confined` mean the table is gone or
+    changed. The daemon loads it again by itself, so a state that stays means it could not;
+    see [the filter](#a-connector-cannot-reach-its-target).
+  - `not checked yet` is what it says in the first seconds after the daemon started, half a
+    minute at most.
 - **Routes** counts the routes by state: `active`, `unreachable`, `withdrawn`, `conflict`,
-  `no-zone`, `held`, `frozen`.
+  `no-zone`, `held`, `frozen`. It says `none` when there are no routes.
+- **Approval** appears only when guests wait for approval in approve mode, as
+  `2 guests wait (pco guest list)`.
 - **Tunnels** lists the tunnels of the install, with the first eight characters of the id.
   `VERIFIED` is `yes` when the configuration at Cloudflare was read back and equals the plan,
   `no` when a write was held or failed, `held` when the tunnel is left as it is on purpose
   (the account is frozen, no credential sees it), `unknown`, or `unchecked` when the last
   cycle held and did not look at Cloudflare at all: the line is then what an earlier cycle
-  found. `CONNECTOR` is `inactive`, `active, not ready`, or `active, ready, N connections`.
+  found. `CONNECTOR` is `inactive`, `active, not ready`, `active, ready, N connections`, or
+  `none` when the state has no connector for the tunnel: it has no id yet, or none was found.
 - **Credentials** shows `usable`, `problem` or `unknown` for each, with the first failed
   check or the expiry in the note.
 - **Issues** are the mistakes in the Notes and the settings, with a position (see
@@ -50,7 +64,7 @@ use it.
 - **Problems** are what the daemon found wrong in the last cycle. Most of them say what to do.
 
 The exit status is 1 when there are problems, or the inventory is incomplete, or the writer is
-not in order, and 0 otherwise.
+not in order, or the egress filter does not confine the connectors, and 0 otherwise.
 
 ## Reading `pco doctor`
 
@@ -72,15 +86,17 @@ checks are:
 | Check | Fails or warns when |
 |---|---|
 | `cycle` | The last cycle is more than three poll intervals old (warning) or six (failure): the daemon is stuck. `journalctl -u pco` says why. |
-| `cloudflared` | It does not run, did not answer in time, or is more than a year old. |
+| `cloudflared` | It does not run, did not answer in time, or is more than a year old; the age counts from the first day of the month in its version number. |
 | `outbound` | TCP to `region1.v2.argotunnel.com:7844` cannot be made. A warning when every connector is connected anyway, because they may be on UDP. Allow outbound TCP and UDP to port 7844. |
 | `proxmox` | The Proxmox API does not answer with the token of pco, or the version is older than 8.4. |
+| `egress` | The egress filter is switched off, or its table is not loaded or not the one pco loads: a failure, because the connectors are then not confined. A warning while the daemon has not checked it yet. |
+| `nftables` | `nftables.service` is enabled. When it starts or restarts, the rules it loads flush the egress table with the rest, and the connectors are not confined until the daemon loads it again, within 30 seconds. `systemctl disable nftables.service`, or keep its rules from flushing the whole ruleset. |
 | `store`, `node lock` | The cluster filesystem is not mounted or pco is not set up; this daemon does not hold the lock of the node. |
 | `mode` | A warning in observe-only mode. |
 | `inventory`, `writer`, `problems` | The inventory is incomplete, the writer is not in order, or the last cycle reported problems. |
 | `conflicts`, `lost markers` | Records of someone else stand in the way, or records of this install lost their marker; `pco adopt <name>`. |
 | `waiting` | Something waits for `pco apply --confirm-deletes`. |
-| `credential <id>` | A token is not checked, unusable, expired, or expires in less than 30 days. |
+| `credential <id>` | A token is not checked, unusable, expired, or expires in less than 30 days. A warning, `the token could not be checked`, when Cloudflare did not answer the check; it says nothing about the token. |
 | `approval <owner>` | A guest waits for approval. |
 | `tunnel <name>`, `connector <name>` | A tunnel is not verified or does not exist yet; a connector is not running, not connected, or was not found. |
 
@@ -114,10 +130,10 @@ If the last cycle held and did not look at Cloudflare, the `dns`, `ingress`, `co
 | Visitor sees | Meaning | Look at |
 |---|---|---|
 | Cloudflare error 1033 | The tunnel has no connected connector. | `pco status` connector column, `systemctl status pco-cloudflared@<tunnel id>`, `journalctl -u pco-cloudflared@<tunnel id>`, `pco doctor` for `cloudflared` and `outbound`. |
-| 502 Bad Gateway | The tunnel is connected, and the connector could not get an answer from the origin. | `pco diagnose` for `tcp` and `http`. The service is down, listens on 127.0.0.1 only, speaks TLS where the route says `http`, has a certificate that does not verify (`sni=` or `no-tls-verify`), or the egress filter refuses the target. |
+| 502 Bad Gateway | The tunnel is connected, and the connector could not get an answer from the origin. | `pco diagnose` for `tcp` and `http`. The service is down, listens on 127.0.0.1 only, speaks TLS where the route says `http`, has a certificate that does not verify (`sni=` or `no-tls-verify`), or the egress filter refuses the target: for every target after a reboot, until the daemon's first cycle has loaded them, and for a target whose MAC just moved. |
 | An empty 503 | The tunnel's own block rule: pco withdrew the route, or holds the hostname, or the guest waits for approval, or its identity is below `identityMinimum`. | `pco routes`: the state and the note. |
-| An empty 404 | The tunnel has no rule for this hostname. | The route is not published yet: pco is in observe-only mode, or the tunnel's configuration is not verified (`pco status`). Or the hostname is no longer in the Notes of a tagged guest. |
-| The hostname does not resolve | There is no record for it. | `pco plan`: the record is created by `pco apply`. A record of someone else is in the way. |
+| An empty 404 | The name resolves to the tunnel, and the tunnel has no rule for it. | The tunnel's configuration is not verified (`pco status`), or the hostname is no longer in the Notes of a tagged guest and its record waits out the grace period. |
+| The hostname does not resolve | There is no record for it. | In observe-only mode pco makes no record and no rule, so the name does not resolve at all and there is no 404: `pco plan` shows what `pco apply` would create. A record of someone else may be in the way. |
 
 For a 502, `pco diagnose` can say what to change in the route. When the origin speaks TLS and the
 route says `http`, the `http` step says `origin speaks TLS: use https:// in the route`. When the
@@ -138,13 +154,13 @@ candidate.
 |---|---|
 | `no candidate address` | pco found no IPv4 address for the guest. For a virtual machine, enable the guest agent in its options and run it in the guest, or give the address in the route, or set it in the cloud-init `ipconfig`. For a container, start it. |
 | `guest is not running`, `guest not found in inventory`, `guest state unknown` | The guest is stopped, is gone, or Proxmox has not said. The route is withdrawn. |
-| `node has no address on vmbr0 in the guest's network` | The node has no address of its own in the guest's network, on that bridge or VLAN interface (`vmbr0.20` for a tagged card). Give the bridge an address in that network, or for a network behind a router see `trustStatic`. |
+| `node has no address on vmbr0 in the guest's network` | The node has no address of its own in the guest's network, on that bridge or VLAN interface (`vmbr0.20` for a tagged card). Give the bridge an address in that network, or for a network behind a router see `trustStatic`. Read the warning below before you give the node an address. |
 | `route to <address> leaves through <interface>, not <interface>`, `... leaves through a gateway`, `node has no route to <address>`, `route to <address> changes with the source address` | The kernel does not reach the address directly through the guest's bridge. A more specific route on another bridge, a gateway, or a policy rule on the source address does it. Fix the routes of the node. |
 | `no ARP answer on vmbr0` | Nothing answered ARP for the address within the window. The address is not configured in the guest, is on another VLAN, or the guest is quiet or not up yet. |
 | `<address> answered by <MAC>, which is not this guest` | Another machine claims the address: a duplicate address, or a device on the network. Find it and fix the address. |
 | `too many stations claim <address> on vmbr0` | 64 or more MACs claim it. Something is flooding the network. |
 | `MAC <MAC> not seen on bridge vmbr0` | The bridge has not learned the guest's MAC. The guest has not sent anything yet. `bridge fdb show br vmbr0 \| grep <MAC>` shows the table. |
-| `MAC <MAC> is on several ports: ...`, `MAC <MAC> is on port <port>, not on the guest's own port` | The bridge puts the MAC somewhere else, or in two places: a copy of the MAC, a guest that was moved, or a device that forges frames. |
+| `MAC <MAC> is on several ports: ...`, `MAC <MAC> is on port <port>, not on the guest's own port` | The bridge puts the MAC somewhere else, or in two places: a copy of the MAC, a guest that was moved, or a device that forges frames. For a route that was being served, the daemon sees the move as it happens and takes the address out of the egress filter at once; `pco events` says so. |
 | `MAC <MAC> is on local port <port> but the guest runs on <node>` | A guest of this node sends frames with the MAC of a guest of another node. |
 | `MAC <MAC> is also configured on qemu/<id>` | Two running guests have one MAC, as after a clone or a restore. Change the MAC of one of them in its network device. |
 | `port 3000: ...` | Identity holds but the connection failed: `connection refused` when nothing listens on that address and port, a timeout when a firewall drops it. |
@@ -153,6 +169,14 @@ candidate.
 | `address of this node`, `address of a cluster node`, `loopback address`, `link-local address`, ... | The address is never published. The target is the node, or something that cannot be a guest. |
 | `identity level observed is below the required port` | The route is held back by `identityMinimum`; see [Identity](identity.md). |
 | `guest has no net1`, `address <address> is not a usable IPv4 address`, `guest has no network interface` | The route's `via=` or address names something the guest does not have. |
+
+Before you give the node an address in a guest's network, think about who is in it. The
+web interface and API of the node (`pveproxy`, port 8006), `spiceproxy` and `sshd` listen on
+every address of the node by default, so an address on a bridge or VLAN puts the node's
+management in reach of every guest there. Restrict that first: with the Proxmox firewall
+(datacenter or node rules that allow ports 8006 and 22 only from your management network),
+or with `LISTEN_IP` and `ALLOW_FROM` in `/etc/default/pveproxy`. The egress filter does not
+help here: it confines the connectors, and these are the guests.
 
 ## A route is held back by the identity minimum
 
@@ -229,17 +253,36 @@ token.
 
 If `pco routes` shows a route `active` and `pco diagnose` passes every step, but visitors get a
 502, the filter on the connector may be refusing its target, because `diagnose` asks from the
-daemon and the filter confines the connector only. On the node:
+daemon and the filter confines the connector only. Start with `pco status`: its `Egress:` line
+and its problems say what the daemon knows. Then, on the node:
 
     pco egress show
 
-- **`its table is not loaded`**, or **`not as pco loads it`**: the connectors are not confined,
-  or confined by something else. `pco egress load` loads the table again. Do not restart
-  `pco-egress.service`: every connector restarts with it.
-- The target is not under `Targets`. It is not in the table, and the counter `to anything else`
-  rises when the connector tries it.
-- The target address is under `Blocked on this node`: `pco egress unblock <address>`.
-- The filter is `off`: switch it on with `pco egress on`.
+- **`its table is not loaded`**, or **`not as pco loads it`**: the connectors are not
+  confined, or confined by something else. The daemon checks the table every 30 seconds and
+  whenever nftables reports a change, and loads it again by itself; if `pco status` still
+  says so, its problems and `journalctl -u pco` say why it could not. `pco egress load`
+  loads the table by hand. Do not restart `pco-egress.service`: every connector restarts with
+  it.
+- The target is not under `Targets`. Then it is not in the table, and the counter
+  `to anything else` rises when the connector tries it. The daemon puts a target in the table
+  in the cycle that verifies its address, so look at why it is not: `pco routes` and the
+  `identity` step of `pco diagnose`. Right after a reboot or a restart of the daemon, the
+  targets come with its first cycle. A cycle that cannot give the filter its targets says
+  `setting the egress filter: ...; no tunnel configuration is written until it is set` in the
+  problems of `pco status`.
+- The target was there and is gone: `pco events` has the kind `egress`. `the MAC of
+  10.0.0.11 moved; the connectors do not reach it until it is verified again` is the daemon
+  taking an address out at once because its MAC moved. If the verification that follows
+  passes, the event `10.0.0.11 was verified again after its MAC moved; the connectors reach
+  it again` follows. If it fails, the address stays out and its routes are withdrawn
+  (`10.0.0.11 did not pass its verification after its MAC moved`, with the reason); the route
+  shows that reason in `pco routes`. Look for a second guest or device with the same MAC, a
+  card whose MAC was changed, or a guest that was migrated.
+- The target address is under `Blocked on this node`: `pco egress unblock <address>`. The
+  daemon puts it back at its next cycle, if it is still a verified target.
+- The filter is `off`: switch it on with `pco egress on`. The daemon gives the targets back
+  within a second or so, or at its next check.
 
 To prove that the filter is the cause, switch it off, try again, and switch it on at once:
 
@@ -252,35 +295,55 @@ show` and the journal.
 
 ## A connector of another install
 
-After a lost store, a connector from an earlier install can still run on the node. `pco status`
-reports it as a problem, and pco never stops or removes a connector it did not start:
+After a lost store, connectors from an earlier install can still run on the node. `pco status`
+reports each one as a problem, and the daemon never stops or removes a connector that belongs
+to another install, or that names none:
 
     connector for tunnel <tunnel id> belongs to install <old id>; pco setup --recover adopts
     that install, pco uninstall on this node removes it
 
-`pco setup --recover` adopts the earlier install, and `pco uninstall` removes it; see
-[Uninstall](uninstall.md).
+A connector from before pco wrote the install into its env file gets this instead:
 
-A connector from before pco wrote the install into its env file reads `names no install`
-instead of `belongs to install <old id>`. A unit that is loaded and has neither an env file nor a
-token file cannot serve anything, and the daemon stops it when it prunes connectors, which it
-does outside observe-only mode; a connector that has either file is left alone.
+    connector for tunnel <tunnel id> names no install; pco setup --recover adopts the
+    install it was made for, pco uninstall on this node removes it
+
+`pco setup --recover` adopts the earlier install, and `pco uninstall` removes every connector
+on the node; see [Uninstall](uninstall.md), which also says what a plain `pco setup` does
+beside such connectors. It refuses, and tells you to use one of those two.
+
+A unit that is loaded and has neither an env file nor a token file cannot serve anything, and
+the daemon stops it and clears its failed state when it prunes connectors, which it does
+outside observe-only mode; a connector that has either file is left alone.
 
 ## The writer is stale, foreign or unknown
 
 The writer is the identity that is written into the configuration of every tunnel. A daemon
 writes only while the configuration carries its own mark or an older one.
 
-- **stale**: `a newer generation of this install writes the tunnel configuration`. Another process
-  of this install wrote with a higher generation, which a recovery on another copy of the store does.
-  `pco setup --recover` on the node that should write takes a generation above it.
+- **stale**: `a newer generation of this install writes the tunnel configuration`. Another
+  process of this install wrote with a higher generation, which a recovery on another copy of
+  the store does. `pco setup --recover` on the node that should write takes a generation above
+  it.
 - **foreign**: `another installation writes the tunnel configuration`. Another install uses the
   same install id. Stop the other one, or give this one an id of its own with `pco setup` on a
   clean store.
-- **unknown**: `leader.json could not be used`. The file is missing or invalid; `pco setup` writes one
-  for a store that has none, and `pco setup --recover` takes a generation above the one in use.
+- **unknown**: `leader.json could not be used`. The file is missing or invalid; `pco setup`
+  writes one for a store that has none, and `pco setup --recover` takes a generation above the
+  one in use.
 
 While the writer is not in order, the daemon changes nothing at Cloudflare.
+
+## Cloudflare did not answer
+
+A check of a token that gets no answer from Cloudflare, because of a network error, a server
+error or a rate limit, is no verdict on the token. `pco credential check` marks such a line
+with `?` and `Cloudflare did not answer`, and the result reads:
+
+    Usable:    not known, Cloudflare did not answer
+
+The daemon's own daily check keeps the report it had, adds a warning to the events, and checks
+again after 15 minutes; `pco doctor` shows a warning for the credential and no failure. A
+token that failed for another reason, `grant ...` for instance, is a failure as before.
 
 ## Credential expiry
 
@@ -298,6 +361,8 @@ Cloudflare through it, but the connectors keep serving what was published.
 | `node <name> is not registered; run pco setup` | The node registry does not name this node. Run `pco setup`. |
 | `Proxmox lists no guest at all, but N guests hold a hostname` | The Proxmox API token of pco lost its privileges, or the listing failed. Run `pco setup --repair`, and look at `pco doctor`. If the guests were removed on purpose, `pco apply --confirm-deletes`. |
 | `no Cloudflare credential; add one with pco credential add` | Add a token; see [Cloudflare token](cloudflare-token.md). |
-| `credential <id>: its zones are not listed yet (...)` | The token cannot list its zones. `pco credential check <id>` says what to grant. |
-| `settings gateTag changed since pco started ...` | `systemctl restart pco`. |
-| `reading the settings: stored settings are invalid: ...` | The settings file is wrong; fix the field it names. See [Operations](operations.md). |
+| `credential <id>: its zones are not listed yet (...)` | The token cannot list its zones, because it lacks `Zone > Zone > Read`, was revoked or has expired, or Cloudflare did not answer. Until it can, nothing is changed at Cloudflare for any account, not only for its own. `pco credential check <id>` says what to grant. If the token is dead, remove the credential: `pco credential remove <id>` (see [Cloudflare token](cloudflare-token.md)). |
+| `settings gateTag changed since pco started ...` | `systemctl restart pco`, and `pco setup` to register the new gate tag. |
+| `reading the settings: ...` | The settings file is wrong. Operations has the forms of the message and what each means: [Settings](operations.md#settings). |
+| `settings: pollInterval is ... below the minimum of 5s; ...` | A setting below its minimum; the minimum is used. Raise it in the file. See [Operations](operations.md#settings). |
+| `the egress table was changed or removed outside pco and was loaded again (...)` | Something changed the nftables ruleset, and the daemon put the table back. Find what: `nft flush ruleset`, or `nftables.service` starting or restarting (see `pco doctor`). |

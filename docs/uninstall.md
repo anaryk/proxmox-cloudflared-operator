@@ -56,9 +56,10 @@ A script that removes everything looks like this:
 2. **DNS records at Cloudflare** (with `--purge-cloudflare` or yes to the question): the
    records that carry the marker of this install, in every zone that a stored credential
    sees.
-3. **The connectors.** Each `pco-cloudflared@<tunnel id>.service` is stopped and disabled
-   and its files in `/var/lib/pco/tunnels` are removed. They stop before their tunnels are
-   deleted, because Cloudflare refuses to delete a tunnel that still has a connection.
+3. **The connectors.** Each `pco-cloudflared@<tunnel id>.service` on the node, whichever
+   install made it, is stopped and disabled and its files in `/var/lib/pco/tunnels` are
+   removed. They stop before their tunnels are deleted, because Cloudflare refuses to delete
+   a tunnel that still has a connection. The tunnel of another install stays at Cloudflare.
 4. **Tunnels at Cloudflare** (with purge): the tunnel `pco-<install id>`, and any test tunnel
    that a credential check left behind.
 5. **The egress filter.** It stops and disables `pco-egress.service` and deletes the
@@ -123,29 +124,51 @@ after a reinstall. It never touches `/etc/pve`.
 ## After a lost store
 
 The store is lost when `/etc/pve/pco` is gone and the Cloudflare side is not: the cluster
-filesystem was rebuilt, or the node was reinstalled. The tunnel `pco-<id>`, its records and
-probably its connector are still there, and nothing on the node knows them.
+filesystem was rebuilt, or the node was reinstalled. The tunnel `pco-<id>` and its records
+are still at Cloudflare, and if `/var/lib/pco` survived, so are its connectors on the node.
+Nothing on the node knows them any more. What `pco setup` does then depends on those
+connectors.
 
-If you run `pco setup` again it makes a new install with a new id and a new tunnel, and never
-touches objects that carry another id. The old connectors on the node are reported in
-`pco status`:
+If connectors of the old install are still on the node, a plain `pco setup` refuses before
+it creates anything, because a new install would never prune them:
 
-    connector for tunnel <tunnel id> belongs to install <old id>; pco setup --recover adopts
-    that install, pco uninstall on this node removes it
+    setup step store: the store holds no install, but this node runs connectors of install
+    7f3a9c0d41b2 (2 connectors), which a new install would never prune: run pco setup
+    --recover to adopt that install, or pco uninstall --keep-cloudflare to remove pco from
+    this node and start over; pco setup --new-install starts a new install beside them
 
-To take the old install back, give the token that sees its tunnel to `--recover`:
+(With connectors of several installs it names each one, and `--recover` then needs
+`--install-id`.) There are three ways on:
 
-    pco setup --recover --cf-token-file /root/cf-token
+- **Adopt the old install**, which is usually what you want. Give `--recover` the token that
+  sees its tunnel:
 
-Recovery looks for tunnels named like those of pco in every account the token sees. If it finds
-one install it adopts it. If it finds several it lists them and you choose with
+      pco setup --recover --cf-token-file /root/cf-token
+
+- **Start over.** `pco uninstall --keep-cloudflare` removes the old connectors and whatever
+  else of pco is on the node, and leaves Cloudflare as it is. Then `pco setup` makes a new
+  install. The old install's tunnel and records stay at Cloudflare, and nothing on this node
+  can remove them any more: delete them in the dashboard, the tunnel named `pco-<id>` and
+  the DNS records whose comment begins with `pco:<id>`.
+- **Go on beside them**, with `pco setup --new-install`. The old connectors keep running and
+  the new install never prunes them; `pco status` reports each one as a problem. Use it
+  only when you know why they are there.
+
+If no connector of the old install is on the node, as after a reinstall that also lost
+`/var/lib/pco`, a plain `pco setup` makes a new install with a new id, which only observes.
+It creates its own tunnel after you run `pco apply`, and it never touches objects that carry
+another id.
+
+Recovery looks for tunnels named like those of pco in every account the token sees. If it
+finds one install it adopts it. If it finds several it lists them and you choose with
 `--install-id <id>`. It then makes the install id of the store that id, and gives the writer
 identity a generation above the highest one found in the tunnels' configurations, so that the
-daemon is not taken for a stale or foreign writer. It refuses when the token sees no tunnel of
-an install of pco, when a configuration cannot be read, or when the store already holds a
-different install (`recovery never replaces an install`). It stops `pco.service` while it works,
-and starts it again if the recovery fails. A recovered install is in observe-only mode, as every
-new install is: look at `pco plan`, and run `pco apply` when you are satisfied.
+daemon is not taken for a stale or foreign writer. The connectors of that install on the node
+are then its own again. Recovery refuses when the token sees no tunnel of an install of pco,
+when a configuration cannot be read, or when the store already holds a different install
+(`recovery never replaces an install`). It stops `pco.service` while it works, and starts it
+again if the recovery fails. A recovered install is in observe-only mode, as every new
+install is: look at `pco plan`, and run `pco apply` when you are satisfied.
 
 To remove what a lost install left, adopt it first, because `pco uninstall` deletes only what
 it can tie to the install id:

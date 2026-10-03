@@ -137,6 +137,11 @@ unusable; those checks only read. A check that got no answer from Cloudflare lea
 result of the one before in place, adds a warning to the event log and is repeated after
 15 minutes.
 
+A check that only reads still makes calls: the three that open it, one read of this
+install's records in every active zone, and one lookup of the tunnel in every account the
+zones belong to. With many zones that is many calls once a day, and they count against the
+300 in five minutes of the credential.
+
 ## Several accounts and zone pins
 
 You can store any number of credentials, for several accounts or several tokens for one
@@ -192,18 +197,26 @@ not manage.
 pco has no command that replaces the secret of a credential. To rotate a token:
 
 1. Make the new token as above and add it with a new label:
-   `pco credential add --label main-2`.
+   `pco credential add --label main-2`. If the old credential came from `pco setup`, its
+   label is `setup`; `pco credential list` shows the ids.
 2. While both are valid, the zone is seen through two credentials. The one that served
    it keeps it and `pco status` shows the message above. Pin the zone to the new
-   credential in the settings to move it at once.
+   credential in the settings, as shown above, and wait for the message to go from
+   `pco status`. This step is not optional: the old credential would otherwise go on
+   serving the zone after its token is revoked, and every call through it would fail.
 3. Revoke the old token in the dashboard, or let it expire.
-4. Remove the old credential: `pco credential remove <id>`.
+4. Remove the old credential at once: `pco credential remove <id>`.
 
 The last step is refused while the credential can still reach anything of this install:
 a record of it in a zone the token sees, or its tunnel in an account the token sees.
 That is why the old token has to be revoked first. A token that Cloudflare no longer
 accepts reaches nothing, so it is removed, and the event log notes that what it managed
 could not be checked.
+
+Do not leave the dead credential in place. While the daemon runs, a credential whose
+token stopped working keeps the list of zones it had and fails its calls. After a restart
+it has no list, cannot get one, and holds the whole cycle for every account until it is
+removed (see below).
 
 ## Limits and expiry
 
@@ -214,8 +227,19 @@ not be done is tried again in a later cycle.
 
 A token that has expired, or was revoked, cannot be used for anything: every call with
 it fails, so pco can change nothing at Cloudflare through it, and `pco status` and
-`pco doctor` show the credential as a problem. The tunnel and its connector keep serving what was published, because the connector runs
-on a token of its own that Cloudflare gave the tunnel.
+`pco doctor` show the credential as a problem. The tunnel and its connector keep serving
+what was published, because the connector runs on a token of its own that Cloudflare gave
+the tunnel.
+
+What a dead token does to the other credentials depends on whether the daemon has listed
+its zones. A daemon that has, keeps that list, uses it, and puts a line in the problems
+(`credential <id>: listing its zones failed (...); using the list from ...`). A daemon that
+has not, such as one that was restarted after the token died, or one that was given a token
+that never worked, holds the whole cycle: `credential <id>: its zones are not listed yet
+(...); nothing is changed at Cloudflare until they are`. That holds every account, also
+those that other credentials serve, until the zones are listed or the credential is
+removed with `pco credential remove <id>`. A zone that is in doubt, such as one that
+several credentials see with no pin, freezes only its own account.
 
 `pco status` and `pco doctor` warn when a token expires in less than 30 days. The warning
 in `pco status` looks like this:

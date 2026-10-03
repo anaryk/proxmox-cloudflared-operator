@@ -247,21 +247,25 @@ dropped.
 
 ## What is rejected, and why
 
-Every message comes with the position of the word it is about. The first line of the
+Every message about a word comes with the position of that word. The first line of the
 Notes is line 1 and the first column is column 1; columns count characters, not
 bytes. `pco status` lists them under `Issues` as
 `qemu/101 line 2, column 5: message`, ten at most, and `pco status --json` has all
-of them in the field `issues`.
+of them in the field `issues`. Two messages are about the guest as a whole and have no
+position, and `pco status` lists them as `qemu/101: message`: `tagged cf-tunnel but no
+routes found in Notes` (the last row below), and `waiting for approval`, which says that
+admission mode `approve` holds the routes of the guest back until an admin approves it;
+see [Security](security.md).
 
 | Message | What went wrong |
 |---|---|
 | `invalid hostname "wiki": needs at least two labels` | The word before the arrow is not a hostname. The reason follows the name: a label with an invalid character, a hyphen at the edge, a name that is too long. |
-| `expected '->' after hostnames` | There is no arrow: a word with a colon or an equals sign stands where it belongs, or the entry ends after the hostnames. The position is that word, or the last hostname. This is also what `a.example.com->:80` says: the arrow has to be a word of its own. |
+| `expected '->' after hostnames` | There is no arrow: after at least one hostname, a word with a colon or an equals sign stands where the arrow belongs, or the entry ends after the hostnames. The position is that word, or the last hostname. The arrow has to be a word of its own: `a.example.com->:80` as the first word of an entry is an `invalid hostname`, with the label `com->:80` named as containing `>`, and after another hostname (`b.example.com a.example.com->:80`) it is this message. |
 | `expected a hostname before '->'` | The entry starts with an arrow. |
 | `invalid target "8080": expected [http\|https://][ipv4]:port` | The target has no colon, a port out of range or with leading zeros, an address that is not IPv4, or an unknown scheme. It points at the target. |
 | `invalid target ":80/wiki": paths are not supported` | The target has a path. |
 | `invalid target "127.0.0.1:80": address is not routable to a guest` | The address cannot belong to a guest. |
-| `unknown option "tls-verify"` | The word after the target is not an option, and does not start a new entry: on a continuation line, or because it is not a hostname. Options written wrongly end up here too. |
+| `unknown option "tls-verify"` | The word after the target is not an option, and does not start a new entry: on a continuation line, or because it is not a hostname. Options written wrongly end up here too, and so does an arrow stuck to a hostname after the target (`:81 a.example.com->:80`). |
 | `option "no-tls-verify" given twice` | An option repeated. |
 | `no-tls-verify only applies to https targets`, `sni= only applies to https targets` | The option needs `https://`. |
 | `invalid value for host-header=`, `... sni=`, `... via=` | The value has characters that are not allowed, is empty, or is not a hostname, a NIC name or an address. |
@@ -282,7 +286,9 @@ disappear, and never lets a hostname change hands.
 
 ## What there is not
 
-Routes come from Notes only. In this release there is no command for routes that an
-admin makes by hand, and no way to publish an address that is not a guest's own.
-Cloudflare Access policies, IPv6 origins, and protocols other than HTTP and HTTPS are
-not supported either.
+Routes come from Notes only. In this release there is no command, and no documented
+format, for routes that an admin makes by hand, and so no supported way to publish an
+address that is not a guest's own; the daemon does read route files from
+`/etc/pve/pco/routes/`, which [Operations](operations.md) and [Security](security.md)
+describe. Cloudflare Access policies, IPv6 origins, and protocols other than HTTP and
+HTTPS are not supported either.
