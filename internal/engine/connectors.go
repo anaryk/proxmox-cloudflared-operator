@@ -16,8 +16,9 @@ import (
 // reconcileConnectors keeps a connector running for every tunnel the tunnel
 // run found, and in enforce mode removes the connectors of tunnels Cloudflare
 // shows gone. The tunnels the cycle leaves as they are, as those of frozen
-// accounts, are looked up and shown in both modes, and the status of every
-// connector is read.
+// accounts, are looked up and shown in both modes, the status of every
+// connector is read, and the connectors Cloudflare lists on the tunnels found
+// are held against those of the node.
 func (c *cycleRun) reconcileConnectors() {
 	var existing []reconcile.TunnelState
 	for _, t := range c.tunnels {
@@ -37,7 +38,6 @@ func (c *cycleRun) reconcileConnectors() {
 			}
 		}
 		c.prune(append(slices.Clone(existing), others...), invisible, failed)
-		c.confirmRollouts(existing)
 	}
 	for _, t := range others {
 		held := "serves no zone pco sees"
@@ -50,6 +50,7 @@ func (c *cycleRun) reconcileConnectors() {
 		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: "not visible through any credential"})
 	}
 	shown := slices.Concat(existing, others, invisible)
+	before := c.st.Connectors
 	statuses := make([]connector.Status, 0, len(shown))
 	for _, t := range shown {
 		st, err := c.e.d.Connectors.Status(c.ctx, t.ID)
@@ -60,6 +61,8 @@ func (c *cycleRun) reconcileConnectors() {
 		statuses = append(statuses, st)
 	}
 	c.st.Connectors = statuses
+	c.watchConnectors(existing, before, statuses)
+	c.forgetRogues(shown)
 	c.noteForeignConnectors(shown)
 }
 
@@ -274,37 +277,27 @@ func redact(msg, token string) string {
 // a prune: a tunnel in an account found later would lose its connector.
 const accountsFreshFor = 10 * time.Minute
 
-// rolloutAskEvery is how often the connectors of a tunnel are asked for the
-// version they run while none reports the one written.
+// rolloutAskEvery is how often the connectors of a tunnel are listed while
+// none reports the version written, or one that pco does not run is shown.
 const rolloutAskEvery = 30 * time.Second
 
-// confirmRollouts checks, for each tunnel whose configuration was read back
-// equal to the plan, whether its connectors run that version. Only a verified
-// version counts: after a write that was held, failed or read back different,
-// Version says nothing about what Cloudflare serves.
-func (c *cycleRun) confirmRollouts(existing []reconcile.TunnelState) {
-	for _, t := range existing {
-		if !t.Verified || c.e.rolledOut[t.ID] == t.Version {
-			continue
-		}
-		api := c.e.clients[t.CredentialID]
-		last, asked := c.e.asked[t.ID]
-		if api == nil || asked && c.now.Sub(last) < rolloutAskEvery && !c.now.Before(last) {
-			continue
-		}
-		c.e.asked[t.ID] = c.now
-		conns, err := api.Connectors(c.ctx, t.AccountID, t.ID)
-		if err != nil {
-			c.e.d.Log.Debug().Err(err).Str("tunnel", t.Name).Msg("listing the connectors of a tunnel failed")
-			continue
-		}
-		if len(conns) == 0 || slices.ContainsFunc(conns, func(x cfapi.Connector) bool { return x.ConfigVersion < t.Version }) {
-			continue
-		}
-		c.e.rolledOut[t.ID] = t.Version
-		c.events = append(c.events, Event{
-			At: c.now, Level: levelInfo, Kind: kindRollout, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
-			Message: fmt.Sprintf("configuration version %d runs on %d connectors in account %s", t.Version, len(conns), t.AccountID),
-		})
+// awaitsRollout says whether the connectors of a tunnel are yet to be seen
+// running the configuration written in enforce mode. Only a verified version
+// counts: after a write that was held, failed or read back different, Version
+// says nothing about what Cloudflare serves.
+func (c *cycleRun) awaitsRollout(t reconcile.TunnelState) bool {
+	return c.mode() == reconcile.Enforce && t.Verified && c.e.rolledOut[t.ID] != t.Version
+}
+
+// confirmRollout notes that the connectors of a tunnel run its configuration,
+// once every one Cloudflare lists reports it.
+func (c *cycleRun) confirmRollout(t reconcile.TunnelState, conns []cfapi.Connector) {
+	if len(conns) == 0 || slices.ContainsFunc(conns, func(x cfapi.Connector) bool { return x.ConfigVersion < t.Version }) {
+		return
 	}
+	c.e.rolledOut[t.ID] = t.Version
+	c.events = append(c.events, Event{
+		At: c.now, Level: levelInfo, Kind: kindRollout, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
+		Message: fmt.Sprintf("configuration version %d runs on %d connectors in account %s", t.Version, len(conns), t.AccountID),
+	})
 }

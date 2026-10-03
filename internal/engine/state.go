@@ -121,6 +121,10 @@ type State struct {
 	// Egress is the egress filter as the daemon last found it; empty until
 	// it has looked.
 	Egress EgressView `json:"egress,omitzero"`
+	// RogueConnectors are the connectors Cloudflare lists on a tunnel of the
+	// install that pco does not run on this node, as the last listing of each
+	// tunnel's connectors showed them; by account, tunnel and id.
+	RogueConnectors []RogueConnector `json:"rogueConnectors"`
 }
 
 // UnapprovedGuest is a guest whose routes wait for an approval: the identity
@@ -182,6 +186,7 @@ func (s State) clone() State {
 	for i := range s.Unapproved {
 		s.Unapproved[i].Hostnames = slices.Clone(s.Unapproved[i].Hostnames)
 	}
+	s.RogueConnectors = slices.Clone(s.RogueConnectors)
 	return s
 }
 
@@ -217,6 +222,8 @@ func (s State) normalized() State {
 	})
 	slices.SortStableFunc(s.Connectors, func(a, b connector.Status) int { return cmp.Compare(a.TunnelID, b.TunnelID) })
 	slices.SortStableFunc(s.Credentials, func(a, b CredentialView) int { return cmp.Compare(a.ID, b.ID) })
+	slices.SortStableFunc(s.RogueConnectors, compareRogues)
+	s.RogueConnectors = nonNil(s.RogueConnectors)
 	s.Routes = nonNil(s.Routes)
 	s.Issues = nonNil(s.Issues)
 	s.Tunnels = nonNil(s.Tunnels)

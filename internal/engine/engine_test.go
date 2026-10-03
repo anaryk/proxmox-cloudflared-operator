@@ -122,7 +122,7 @@ func TestApplyPublishesTunnelConfigAndRecord(t *testing.T) {
 		"pco-abc123: put-config in account acc1: 3 rules, first configuration",
 		"www.example.com: create-record in zone example.com: CNAME " + tun.ID + ".cfargotunnel.com",
 	}, applied)
-	require.Equal(t, []connector.Status{{TunnelID: tun.ID, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300", Install: testInstall}}, st.Connectors)
+	require.Equal(t, []connector.Status{{TunnelID: tun.ID, Active: true, Ready: true, Connections: 4, ConnectorID: defaultConnectorID, MetricsAddr: "127.0.0.1:20300", Install: testInstall}}, st.Connectors)
 	require.Len(t, st.Tunnels, 1)
 	require.True(t, st.Tunnels[0].Exists)
 	require.True(t, st.Tunnels[0].Verified)

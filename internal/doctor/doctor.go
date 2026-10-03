@@ -78,7 +78,7 @@ var cloudflaredVersion = regexp.MustCompile(`\b(\d{4})\.(\d{1,2})\.(\d+)\b`)
 
 // stateChecks are the checks that read nothing but the state, which says
 // nothing before the first cycle.
-var stateChecks = []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "waiting", "writer"}
+var stateChecks = []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"}
 
 // Run checks the installation: the state the engine published and what env
 // tells of the host. Every check has a finding, sorted by check.
@@ -93,7 +93,8 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 			out = append(out, warn(check, "not known until the first cycle", "wait for the first cycle"))
 		}
 	} else {
-		out = append(out, checkMode(st), checkInventory(st), checkWriter(st), checkProblems(st), checkConflicts(st), checkLost(st), checkWaiting(st))
+		out = append(out, checkMode(st), checkInventory(st), checkWriter(st), checkProblems(st), checkConflicts(st), checkLost(st), checkWaiting(st),
+			checkRogue(st))
 		out = append(out, checkCredentials(st, env.Now())...)
 		out = append(out, checkApprovals(st)...)
 	}
@@ -161,6 +162,32 @@ func checkProblems(st engine.State) Finding {
 	default:
 		return fail("problems", fmt.Sprintf("%d problems; the first: %s", n, st.Problems[0]), "pco status")
 	}
+}
+
+// checkRogue fails while Cloudflare lists a connector on a tunnel of the
+// install that pco does not run: whoever runs it gets a share of the requests.
+func checkRogue(st engine.State) Finding {
+	const check = "rogue connectors"
+	n := len(st.RogueConnectors)
+	if n == 0 {
+		return ok(check, "every connector Cloudflare lists on the tunnels is one pco runs on this node")
+	}
+	var seen, fixes []string
+	for _, r := range st.RogueConnectors {
+		seen = append(seen, fmt.Sprintf("%s on tunnel %s in account %s, since %s", r.Text(), r.Tunnel, r.Account, r.Since.UTC().Format(time.RFC3339)))
+		if fix := "pco tunnel rotate --account " + r.Account; !slices.Contains(fixes, fix) {
+			fixes = append(fixes, fix)
+		}
+	}
+	fix := "unless you run it, rotate the tunnel secret: " + fixes[0]
+	switch {
+	case len(fixes) > 1:
+		fix = "unless you run them, rotate the tunnel secret of each: " + strings.Join(fixes, ", ")
+	case n > 1:
+		fix = "unless you run them, rotate the tunnel secret: " + fixes[0]
+	}
+	return fail(check, fmt.Sprintf("%s that pco does not run on this node %s its tunnels: %s",
+		count(n, "connector", "connectors"), verb(n, "serves", "serve"), strings.Join(seen, "; ")), fix)
 }
 
 func checkInventory(st engine.State) Finding {

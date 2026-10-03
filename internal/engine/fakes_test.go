@@ -277,8 +277,13 @@ type fakeConnectors struct {
 	pruned    [][]string
 	onEnsure  func()
 	ensureErr func(token string) error
-	notReady  map[string]bool // tunnels whose connector is not ready
+	notReady  map[string]bool   // tunnels whose connector is not ready
+	ids       map[string]string // the id /ready names, by tunnel; defaultConnectorID when not set
 }
+
+// defaultConnectorID is what the node's own connector of every tunnel calls
+// itself, unless a test names another.
+const defaultConnectorID = "c1"
 
 func (f *fakeConnectors) Ensure(_ context.Context, install, id, token string) error {
 	if install != testInstall {
@@ -322,7 +327,21 @@ func (f *fakeConnectors) Status(_ context.Context, id string) (connector.Status,
 	if f.notReady[id] {
 		return connector.Status{TunnelID: id, Active: true, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
 	}
-	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
+	cid, ok := f.ids[id]
+	if !ok {
+		cid = defaultConnectorID
+	}
+	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, ConnectorID: cid, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
+}
+
+// setConnectorID makes the node's connector of a tunnel name itself id.
+func (f *fakeConnectors) setConnectorID(tunnel, id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ids == nil {
+		f.ids = map[string]string{}
+	}
+	f.ids[tunnel] = id
 }
 
 func (f *fakeConnectors) setReady(id string, ready bool) {

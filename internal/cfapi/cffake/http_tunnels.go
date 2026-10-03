@@ -144,7 +144,8 @@ type wireConnector struct {
 }
 
 type wireConn struct {
-	ID string `json:"id"`
+	ID       string `json:"id"`
+	OriginIP string `json:"origin_ip,omitempty"`
 }
 
 func (h *handler) listConnections(r *http.Request, p params) (reply, error) {
@@ -159,7 +160,7 @@ func (h *handler) listConnections(r *http.Request, p params) (reply, error) {
 	for i, c := range all {
 		items[i] = wireConnector{ID: c.ID, Version: c.Version, ConfigVersion: c.ConfigVersion, Conns: make([]wireConn, max(c.Connections, 0))}
 		for n := range items[i].Conns {
-			items[i].Conns[n].ID = fmt.Sprintf("%s-%d", c.ID, n+1)
+			items[i].Conns[n] = wireConn{ID: fmt.Sprintf("%s-%d", c.ID, n+1), OriginIP: c.OriginIP}
 		}
 	}
 	return reply{result: items}, nil

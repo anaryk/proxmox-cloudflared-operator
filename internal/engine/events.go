@@ -39,6 +39,7 @@ const (
 	kindCredential = "credential"
 	kindHold       = "hold"
 	kindEgress     = "egress"
+	kindConnector  = "connector"
 )
 
 // Event is something that changed, as the event log keeps it.

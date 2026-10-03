@@ -122,6 +122,7 @@ func TestAHealthyInstallation(t *testing.T) {
 		{Check: "outbound", Level: LevelOK, Detail: "region1.v2.argotunnel.com:7844 answers over TCP"},
 		{Check: "problems", Level: LevelOK, Detail: "the last cycle found no problem"},
 		{Check: "proxmox", Level: LevelOK, Detail: "Proxmox VE 9.0"},
+		{Check: "rogue connectors", Level: LevelOK, Detail: "every connector Cloudflare lists on the tunnels is one pco runs on this node"},
 		{Check: "store", Level: LevelOK, Detail: "the store is mounted and set up"},
 		{Check: "tunnel pco-abc123 in account acc1", Level: LevelOK, Detail: "configuration version 3 is verified"},
 		{Check: "waiting", Level: LevelOK, Detail: "nothing waits for a confirmation"},
@@ -355,6 +356,25 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 		{"a guest that waits for approval", func(st *engine.State) {
 			st.Unapproved = []engine.UnapprovedGuest{{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 200}, Name: "db"}}}
 		}, nil, Finding{Check: "approval lxc/200", Level: LevelWarn, Detail: "lxc/200 (db) waits for approval", Fix: "pco guest approve lxc/200"}},
+		{"a connector that is not ours", func(st *engine.State) {
+			st.RogueConnectors = []engine.RogueConnector{{
+				Tunnel: "pco-abc123", TunnelID: tunnelID, Account: "acc1", ID: "attacker-elsewhere", OriginIP: "198.51.100.7", Version: "2026.8.0",
+				Since: now.Add(-time.Minute),
+			}}
+		}, nil, Finding{Check: "rogue connectors", Level: LevelFail,
+			Detail: "1 connector that pco does not run on this node serves its tunnels: " +
+				"attacker-elsewhere from 198.51.100.7 (cloudflared 2026.8.0) on tunnel pco-abc123 in account acc1, since 2026-10-01T11:59:00Z",
+			Fix: "unless you run it, rotate the tunnel secret: pco tunnel rotate --account acc1"}},
+		{"connectors that are not ours in two accounts", func(st *engine.State) {
+			st.RogueConnectors = []engine.RogueConnector{
+				{Tunnel: "pco-abc123", TunnelID: tunnelID, Account: "acc1", ID: "r1", Since: now},
+				{Tunnel: "pco-abc123", TunnelID: tunnelID, Account: "acc2", ID: "r2", OriginIP: "2001:db8::7", Version: "2026.9.1", Since: now},
+			}
+		}, nil, Finding{Check: "rogue connectors", Level: LevelFail,
+			Detail: "2 connectors that pco does not run on this node serve its tunnels: " +
+				"r1 from an unknown address (cloudflared of an unknown version) on tunnel pco-abc123 in account acc1, since 2026-10-01T12:00:00Z; " +
+				"r2 from 2001:db8::7 (cloudflared 2026.9.1) on tunnel pco-abc123 in account acc2, since 2026-10-01T12:00:00Z",
+			Fix: "unless you run them, rotate the tunnel secret of each: pco tunnel rotate --account acc1, pco tunnel rotate --account acc2"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			st, env := healthyState(), healthyEnv()
@@ -413,7 +433,7 @@ func TestBeforeTheFirstCycleTheStateTellsNothing(t *testing.T) {
 		byCheck[f.Check] = f
 		require.NotEqual(t, LevelFail, f.Level, "%s: %s", f.Check, f.Detail)
 	}
-	for _, check := range []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "waiting", "writer"} {
+	for _, check := range []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"} {
 		require.Equal(t, Finding{Check: check, Level: LevelWarn, Detail: "not known until the first cycle", Fix: "wait for the first cycle"},
 			byCheck[check], check)
 	}

@@ -1019,8 +1019,8 @@ func connectorScenarios() []scenario {
 			std(f)
 			tun := f.SeedTunnel(acct, "pco-abc", nil)
 			f.SetConnectors(acct, tun.ID, []cfapi.Connector{
-				{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4},
-				{ID: "c2", Version: "2026.8.1", ConfigVersion: 3, Connections: 1},
+				{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4, OriginIP: "203.0.113.10"},
+				{ID: "c2", Version: "2026.8.1", ConfigVersion: 3, Connections: 1, OriginIP: "2001:db8::7"},
 				{ID: "c3", Version: "2026.8.1"},
 			})
 			return connectors(acct, tun.ID)

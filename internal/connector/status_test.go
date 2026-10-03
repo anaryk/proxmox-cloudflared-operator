@@ -71,7 +71,31 @@ func TestStatusOfAReadyConnector(t *testing.T) {
 	got, err := f.m.Status(t.Context(), idA)
 
 	require.NoError(t, err)
-	require.Equal(t, Status{TunnelID: idA, Active: true, Ready: true, Connections: 4, MetricsAddr: f.addr}, got)
+	require.Equal(t, Status{TunnelID: idA, Active: true, Ready: true, Connections: 4, ConnectorID: "c1", MetricsAddr: f.addr}, got)
+}
+
+// The id /ready names is what the engine tells the node's own connectors
+// from others on the same tunnel by; one that is not ready has none.
+func TestStatusCarriesTheConnectorIDOnlyWhenReady(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"ready", http.StatusOK, `{"status":200,"readyConnections":4,"connectorId":"6b1f0e4c-29a4-4c43-9d2c-0f3a8c1b7d11"}`, "6b1f0e4c-29a4-4c43-9d2c-0f3a8c1b7d11"},
+		{"ready without an id", http.StatusOK, `{"status":200,"readyConnections":4}`, ""},
+		{"not ready", http.StatusServiceUnavailable, `{"status":503,"readyConnections":0,"connectorId":"6b1f0e4c-29a4-4c43-9d2c-0f3a8c1b7d11"}`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newStatusFixture(t, answer(tt.status, tt.body))
+
+			got, err := f.m.Status(t.Context(), idA)
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got.ConnectorID)
+		})
+	}
 }
 
 func TestStatusReadsEnvFilesWithAndWithoutTheEdgeIPVersion(t *testing.T) {

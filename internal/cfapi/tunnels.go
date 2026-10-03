@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -237,10 +238,12 @@ func (c *Client) Connectors(ctx context.Context, accountID, tunnelID string) ([]
 		return nil, nil
 	}
 	var got []struct {
-		ID            string     `json:"id"`
-		Version       string     `json:"version"`
-		ConfigVersion int        `json:"config_version"`
-		Conns         []struct{} `json:"conns"`
+		ID            string `json:"id"`
+		Version       string `json:"version"`
+		ConfigVersion int    `json:"config_version"`
+		Conns         []struct {
+			OriginIP string `json:"origin_ip"`
+		} `json:"conns"`
 	}
 	if err := json.Unmarshal(env.Result, &got); err != nil {
 		return nil, fmt.Errorf("listing connectors of tunnel %s: decoding result: %w", tunnelID, err)
@@ -250,11 +253,18 @@ func (c *Client) Connectors(ctx context.Context, accountID, tunnelID string) ([]
 		if w.ID == "" {
 			return nil, fmt.Errorf("listing connectors of tunnel %s: %w: connector without an id", tunnelID, errUnexpected)
 		}
+		var origins []string
+		for _, c := range w.Conns {
+			if c.OriginIP != "" {
+				origins = append(origins, c.OriginIP)
+			}
+		}
 		out = append(out, Connector{
 			ID:            w.ID,
 			Version:       w.Version,
 			ConfigVersion: w.ConfigVersion,
 			Connections:   len(w.Conns),
+			OriginIP:      strings.Join(slices.Compact(slices.Sorted(slices.Values(origins))), ", "),
 		})
 	}
 	return out, nil

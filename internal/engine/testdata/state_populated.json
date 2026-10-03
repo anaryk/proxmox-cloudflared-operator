@@ -113,6 +113,7 @@
       "active": true,
       "ready": true,
       "connections": 4,
+      "connectorId": "6b1f0e4c-29a4-4c43-9d2c-0f3a8c1b7d11",
       "metricsAddr": "127.0.0.1:20300",
       "install": "abc123"
     }
@@ -268,5 +269,16 @@
   "egress": {
     "state": "off",
     "since": "2026-10-01T11:00:00Z"
-  }
+  },
+  "rogueConnectors": [
+    {
+      "tunnel": "pco-abc123",
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "accountId": "acc1",
+      "id": "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
+      "originIp": "198.51.100.7",
+      "version": "2026.8.0",
+      "since": "2026-10-01T11:59:00Z"
+    }
+  ]
 }

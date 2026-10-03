@@ -22,6 +22,7 @@ type Status struct {
 	Active      bool   `json:"active"`                // unit started or starting, including the restart back-off
 	Ready       bool   `json:"ready"`                 // /ready answered 200
 	Connections int    `json:"connections"`           // readyConnections
+	ConnectorID string `json:"connectorId,omitempty"` // as /ready names the running cloudflared; empty when it is not ready
 	MetricsAddr string `json:"metricsAddr,omitempty"` // empty when the tunnel has no usable env file
 	// Install is the install the env file names; empty when it names none,
 	// as one written before connectors named their install.
@@ -68,35 +69,42 @@ func (m *Manager) Status(ctx context.Context, tunnelID string) (Status, error) {
 	}
 	st.MetricsAddr = addr
 	if active {
-		st.Ready, st.Connections = m.probe(ctx, addr)
+		r := m.probe(ctx, addr)
+		st.Ready, st.Connections, st.ConnectorID = r.ready, r.ReadyConnections, r.ConnectorID
 	}
 	return st, nil
+}
+
+// readiness is what /ready answered.
+type readiness struct {
+	ready            bool
+	ReadyConnections int    `json:"readyConnections"`
+	ConnectorID      string `json:"connectorId"`
 }
 
 // probe asks the /ready endpoint of cloudflared. It answers 200 once the
 // connector holds a connection to the edge, with a body such as
 // {"status":200,"readyConnections":4,"connectorId":"..."}.
-func (m *Manager) probe(ctx context.Context, addr string) (ready bool, connections int) {
+func (m *Manager) probe(ctx context.Context, addr string) readiness {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/ready", nil)
 	if err != nil {
-		return false, 0
+		return readiness{}
 	}
 	resp, err := m.httpc.Do(req)
 	if err != nil {
 		m.log.Debug().Err(err).Str("addr", addr).Msg("connector did not answer /ready")
-		return false, 0
+		return readiness{}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return false, 0
+		return readiness{}
 	}
-	var body struct {
-		ReadyConnections int `json:"readyConnections"`
+	var r readiness
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReadyBody)).Decode(&r); err != nil {
+		return readiness{ready: true}
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReadyBody)).Decode(&body); err != nil {
-		return true, 0
-	}
-	return true, body.ReadyConnections
+	r.ready = true
+	return r
 }

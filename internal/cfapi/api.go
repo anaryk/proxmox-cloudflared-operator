@@ -61,6 +61,9 @@ type Connector struct {
 	Version       string // cloudflared version
 	ConfigVersion int
 	Connections   int
+	// OriginIP is the address the connections come from, as Cloudflare saw
+	// it; the distinct ones, sorted and joined with ", ", when they differ.
+	OriginIP string
 }
 
 // Record is a DNS record.

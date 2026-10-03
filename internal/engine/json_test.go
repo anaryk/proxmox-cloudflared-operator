@@ -67,7 +67,10 @@ func populatedState() State {
 				Unchecked:   true,
 			},
 		},
-		Connectors: []connector.Status{{TunnelID: "00000000-0000-4000-8000-000000000001", Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300", Install: "abc123"}},
+		Connectors: []connector.Status{{
+			TunnelID: "00000000-0000-4000-8000-000000000001", Active: true, Ready: true, Connections: 4,
+			ConnectorID: "6b1f0e4c-29a4-4c43-9d2c-0f3a8c1b7d11", MetricsAddr: "127.0.0.1:20300", Install: "abc123",
+		}},
 		Credentials: []CredentialView{
 			{
 				ID: "cred1", Label: "main", Kind: "scoped", Checked: true,
@@ -107,6 +110,10 @@ func populatedState() State {
 			Identity:  "uuid:201", Hostnames: []string{"new.example.com"},
 		}},
 		Egress: EgressView{State: EgressOff, Since: t0.Add(-time.Hour)},
+		RogueConnectors: []RogueConnector{{
+			Tunnel: "pco-abc123", TunnelID: "00000000-0000-4000-8000-000000000001", Account: "acc1",
+			ID: "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807", OriginIP: "198.51.100.7", Version: "2026.8.0", Since: t0.Add(-time.Minute),
+		}},
 	}
 }
 

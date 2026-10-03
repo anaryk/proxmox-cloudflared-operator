@@ -109,6 +109,7 @@ func (c *cycleRun) run() State {
 		c.reconcile()
 	}
 	c.saveMemory()
+	c.noteRogueConnectors()
 	if !c.checked {
 		c.markUnchecked()
 	}

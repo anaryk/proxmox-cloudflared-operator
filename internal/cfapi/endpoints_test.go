@@ -889,8 +889,9 @@ func TestPutTunnelConfigWithoutResult(t *testing.T) {
 func TestConnectors(t *testing.T) {
 	env := setup(t, reply(http.StatusOK, okBody(`[
 		{"id":"c1","version":"2026.9.0","config_version":4,"arch":"linux_amd64","run_at":"2026-01-01T00:00:00Z",
-		 "conns":[{"id":"x","colo_name":"PRG"},{"id":"y","colo_name":"FRA"},{"id":"z","colo_name":"VIE"},{"id":"w","colo_name":"AMS"}]},
-		{"id":"c2","version":"2026.8.1","config_version":3,"conns":[{"id":"v"}]},
+		 "conns":[{"id":"x","colo_name":"PRG","origin_ip":"203.0.113.10"},{"id":"y","colo_name":"FRA","origin_ip":"203.0.113.10"},
+		          {"id":"z","colo_name":"VIE","origin_ip":"203.0.113.10"},{"id":"w","colo_name":"AMS","origin_ip":"203.0.113.10"}]},
+		{"id":"c2","version":"2026.8.1","config_version":3,"conns":[{"id":"v","origin_ip":"2001:db8::7"},{"id":"u","origin_ip":"198.51.100.7"}]},
 		{"id":"c3","version":"2026.8.1","config_version":0,"conns":[]},
 		{"id":"c4","version":"2026.8.1"}]`)))
 
@@ -898,8 +899,8 @@ func TestConnectors(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []Connector{
-		{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4},
-		{ID: "c2", Version: "2026.8.1", ConfigVersion: 3, Connections: 1},
+		{ID: "c1", Version: "2026.9.0", ConfigVersion: 4, Connections: 4, OriginIP: "203.0.113.10"},
+		{ID: "c2", Version: "2026.8.1", ConfigVersion: 3, Connections: 2, OriginIP: "198.51.100.7, 2001:db8::7"},
 		{ID: "c3", Version: "2026.8.1"},
 		{ID: "c4", Version: "2026.8.1"},
 	}, got)
