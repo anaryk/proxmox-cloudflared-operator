@@ -147,21 +147,38 @@ func (s *Store) SaveInstall(i Install) error {
 // would act on rules the admin did not write. That includes a key the settings
 // have no field for, such as a misspelt "denyhost", which would otherwise drop
 // the list it was meant to be. A field the stored settings leave out keeps its
-// default.
+// default. A grace or poll interval below its minimum is raised to it, as
+// LoadSettings says.
 func (s *Store) Settings() (Settings, error) {
+	v, _, err := s.LoadSettings()
+	return v, err
+}
+
+// LoadSettings is Settings with notes: a stored grace or poll interval below
+// its minimum, as one written before the minimum was raised, is raised to it
+// rather than refused, which would leave the admin with settings no command can
+// repair. Each raise is a note that names the field, the value found, the value
+// used and the file to edit. Nothing is written; SaveSettings still refuses a
+// value below the minimum.
+func (s *Store) LoadSettings() (Settings, []string, error) {
 	stored := DefaultSettings()
 	found, err := s.cluster.get(kindMeta, idSettings, &stored, true)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, nil, err
 	}
 	if !found {
-		return DefaultSettings(), nil
+		return DefaultSettings(), nil, nil
 	}
+	_, file, err := s.cluster.file(kindMeta, idSettings)
+	if err != nil {
+		return Settings{}, nil, err
+	}
+	notes := stored.raiseToMinimums(file)
 	n, err := stored.normalized()
 	if err != nil {
-		return Settings{}, fmt.Errorf("stored settings are invalid: %w", err)
+		return Settings{}, nil, fmt.Errorf("stored settings are invalid: %w", err)
 	}
-	return n, nil
+	return n, notes, nil
 }
 
 // SaveSettings validates the settings and stores them with their patterns and

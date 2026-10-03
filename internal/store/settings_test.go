@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -202,27 +203,106 @@ func TestTheMinimumsThemselvesAreAccepted(t *testing.T) {
 	require.Equal(t, Duration(30*time.Second), got.Grace)
 }
 
-func TestSettingsOnDiskBelowTheMinimumsAreRefusedByName(t *testing.T) {
-	for field, data := range map[string]string{
-		"pollInterval": `{"gateTag":"cf-tunnel","pollInterval":"1s","grace":"1m","admission":"tag","observeOnly":true}`,
-		"grace":        `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"60ms","admission":"tag","observeOnly":true}`,
-	} {
-		t.Run(field, func(t *testing.T) {
+// A build that raised a minimum meets settings written under the old one: it
+// loads them with the value raised and says so, as a file that cannot be loaded
+// would hold the whole daemon with no command to repair it.
+func TestSettingsOnDiskBelowTheMinimumsAreRaisedAndNoted(t *testing.T) {
+	file := func(p Paths) string { return filepath.Join(p.Cluster, "meta", "settings.json") }
+	tests := []struct {
+		name  string
+		data  string
+		poll  time.Duration
+		grace time.Duration
+		notes func(file string) []string
+	}{
+		{"poll interval", `{"gateTag":"cf-tunnel","pollInterval":"1s","grace":"1m","admission":"tag","observeOnly":true}`,
+			5 * time.Second, time.Minute, func(f string) []string {
+				return []string{"settings: pollInterval is 1s in " + f + ", below the minimum of 5s; 5s is used until it is raised there"}
+			}},
+		{"grace", `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"60ms","admission":"tag","observeOnly":true}`,
+			10 * time.Second, 30 * time.Second, func(f string) []string {
+				return []string{"settings: grace is 60ms in " + f + ", below the minimum of 30s; 30s is used until it is raised there"}
+			}},
+		{"zero grace", `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"0s","admission":"tag","observeOnly":true}`,
+			10 * time.Second, 30 * time.Second, func(f string) []string {
+				return []string{"settings: grace is 0s in " + f + ", below the minimum of 30s; 30s is used until it is raised there"}
+			}},
+		{"negative poll interval", `{"gateTag":"cf-tunnel","pollInterval":"-3s","grace":"1m","admission":"tag","observeOnly":true}`,
+			5 * time.Second, time.Minute, func(f string) []string {
+				return []string{"settings: pollInterval is -3s in " + f + ", below the minimum of 5s; 5s is used until it is raised there"}
+			}},
+		{"both", `{"gateTag":"cf-tunnel","pollInterval":"1s","grace":"10s","admission":"tag","observeOnly":true}`,
+			5 * time.Second, 30 * time.Second, func(f string) []string {
+				return []string{
+					"settings: pollInterval is 1s in " + f + ", below the minimum of 5s; 5s is used until it is raised there",
+					"settings: grace is 10s in " + f + ", below the minimum of 30s; 30s is used until it is raised there",
+				}
+			}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			s, p := openStore(t)
-			writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), envelopeJSON("settings", data))
+			raw := envelopeJSON("settings", tc.data)
+			writeFile(t, file(p), raw)
 
-			got, err := s.Settings()
+			got, notes, err := s.LoadSettings()
 
-			require.ErrorContains(t, err, "stored settings are invalid: "+field)
-			require.Equal(t, Settings{}, got)
+			require.NoError(t, err)
+			require.Equal(t, tc.notes(file(p)), notes)
+			require.Equal(t, Duration(tc.poll), got.PollInterval)
+			require.Equal(t, Duration(tc.grace), got.Grace)
+			require.Equal(t, "cf-tunnel", got.GateTag, "nothing else changes")
+			require.True(t, got.ObserveOnly)
+
+			plain, err := s.Settings()
+			require.NoError(t, err)
+			require.Equal(t, got, plain, "Settings says the same without the notes")
+
+			onDisk, err := os.ReadFile(file(p))
+			require.NoError(t, err)
+			require.Equal(t, raw, string(onDisk), "a load writes nothing")
 		})
 	}
+}
+
+func TestSettingsAtTheirMinimumsAndAboveNeedNoNote(t *testing.T) {
+	s, p := openStore(t)
+	writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"),
+		envelopeJSON("settings", `{"gateTag":"cf-tunnel","pollInterval":"5s","grace":"30s","admission":"tag","observeOnly":true}`))
+
+	got, notes, err := s.LoadSettings()
+
+	require.NoError(t, err)
+	require.Empty(t, notes)
+	require.Equal(t, Duration(5*time.Second), got.PollInterval)
+	require.Equal(t, Duration(30*time.Second), got.Grace)
+}
+
+func TestLoadSettingsOfNothingStoredIsTheDefaultsWithoutNotes(t *testing.T) {
+	s, _ := openStore(t)
+
+	got, notes, err := s.LoadSettings()
+
+	require.NoError(t, err)
+	require.Empty(t, notes)
+	require.Equal(t, DefaultSettings(), got)
+}
+
+func TestRaisingAValueDoesNotExcuseAnotherInvalidOne(t *testing.T) {
+	s, p := openStore(t)
+	writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"),
+		envelopeJSON("settings", `{"gateTag":"","pollInterval":"1s","grace":"1m","admission":"tag","observeOnly":true}`))
+
+	got, notes, err := s.LoadSettings()
+
+	require.ErrorContains(t, err, "stored settings are invalid: gateTag")
+	require.Equal(t, Settings{}, got)
+	require.Empty(t, notes)
 }
 
 func TestInvalidSettingsOnDiskAreAnErrorNotTheDefaults(t *testing.T) {
 	tests := map[string]string{
 		"empty gate tag":    `{"gateTag":"","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
-		"zero poll":         `{"gateTag":"cf-tunnel","pollInterval":"0s","grace":"1m","admission":"tag","observeOnly":true}`,
 		"unknown admission": `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"open","observeOnly":true}`,
 		"bad duration":      `{"gateTag":"cf-tunnel","pollInterval":"ten","grace":"1m","admission":"tag","observeOnly":true}`,
 		"numeric duration":  `{"gateTag":"cf-tunnel","pollInterval":10,"grace":"1m","admission":"tag","observeOnly":true}`,

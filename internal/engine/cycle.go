@@ -151,10 +151,13 @@ func (c *cycleRun) hold(why string) {
 // prepare reads the settings, the install, the node registry and the writer
 // identity. Without the first three nothing else is done.
 func (c *cycleRun) prepare() bool {
-	s, err := c.e.d.Store.Settings()
+	s, notes, err := c.e.d.Store.LoadSettings()
 	if err != nil {
 		c.hold(c.storeProblem("reading the settings", err))
 		return false
+	}
+	for _, note := range notes {
+		c.problem("%s", note)
 	}
 	c.settings = s
 	c.st.Mode = modeName(s.ObserveOnly)

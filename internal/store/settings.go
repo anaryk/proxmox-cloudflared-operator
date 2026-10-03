@@ -82,6 +82,29 @@ func DefaultSettings() Settings {
 	}
 }
 
+// raiseToMinimums raises the poll interval and the grace to their minimums where
+// they are below, and returns a note for each, naming the file they were read
+// from.
+func (s *Settings) raiseToMinimums(file string) []string {
+	var notes []string
+	for _, f := range []struct {
+		name    string
+		value   *Duration
+		minimum time.Duration
+	}{
+		{"pollInterval", &s.PollInterval, minPollInterval},
+		{"grace", &s.Grace, minGrace},
+	} {
+		if time.Duration(*f.value) >= f.minimum {
+			continue
+		}
+		notes = append(notes, fmt.Sprintf("settings: %s is %s in %s, below the minimum of %s; %s is used until it is raised there",
+			f.name, time.Duration(*f.value), file, f.minimum, f.minimum))
+		*f.value = Duration(f.minimum)
+	}
+	return notes
+}
+
 // normalized returns a copy of s with its patterns and zone names in their
 // normal form, or an error naming the first field that is invalid.
 func (s Settings) normalized() (Settings, error) {

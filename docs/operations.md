@@ -282,9 +282,11 @@ starts. A change to those is noticed and shown as a problem,
 
 The two minimums are guards. A grace of a moment would remove a record when one cycle
 happened to miss its name, and cycles closer together would only ask Proxmox and Cloudflare
-more, so the file is refused when `pollInterval` is below 5 seconds or `grace` below
-30 seconds. An unknown key is refused as well, so that a misspelt `denyhost` cannot silently
-drop a list that was meant to deny.
+more. A file that says `pollInterval` below 5 seconds or `grace` below 30 seconds is read with
+the minimum in its place, and `pco status` shows a problem that names the field, the value in
+the file, the value in use and the file to edit; the file is not rewritten for you. An unknown
+key is refused, so that a misspelt `denyhost` cannot silently drop a list that was meant to
+deny.
 
 ### The rule for compatibility
 
