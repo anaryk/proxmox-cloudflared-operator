@@ -134,7 +134,7 @@ func TestAnAddressThatLostItsProofLeavesTheEgressFilterAtOnce(t *testing.T) {
 	calls := log.all()[from:]
 	require.Equal(t, "egress remove 10.0.0.11", calls[0], "before anything else of the cycle: %v", calls)
 	got, _ := e.egr.last()
-	require.Equal(t, egressTargets(), got, "and out of the set of the cycle, whose rule still is at Cloudflare")
+	require.Empty(t, got, "and out of the set of the cycle, whose rule still is at Cloudflare")
 
 	t.Run("once", func(t *testing.T) {
 		e.clock.advance(20 * time.Second)
@@ -309,6 +309,67 @@ func TestAManualRouteToTheNodeIsAnExactEntry(t *testing.T) {
 // The set and the configuration verified last are in the memory: a restart
 // neither takes out a target whose rule is still at Cloudflare nor keeps one
 // whose rule is gone.
+// The process stops after a cycle saved a withdrawn binding and before it
+// saved its memory: the memory still has the address in the set and its rule
+// in the configuration verified last. The binding says it is withdrawn, and
+// that keeps it out, whatever the memory says.
+func TestAWithdrawnAddressDoesNotComeBackThroughAStaleMemory(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	stale, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.11:8080")}, stale.Egress)
+	// Nothing is written in the cycles that follow: the rule stays at
+	// Cloudflare.
+	e.settings(func(s *store.Settings) { s.ObserveOnly = true })
+	e.res.stop("www.example.com", "identity check failed: 10.0.0.11 answered by bc:24:11:ff:ff:01")
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.True(t, bindings["www.example.com"].Withdrawn)
+
+	require.NoError(t, e.store.SaveEngineMemory(stale), "the memory that cycle could not save")
+	e.eng = e.newEngine()
+	for range 2 {
+		e.clock.advance(20 * time.Second)
+		st := e.cycle()
+
+		require.Equal(t, "withdrawn", string(route(st, "www.example.com").State))
+		got, _ := e.egr.last()
+		require.Empty(t, got, "a withdrawn address is fed back")
+	}
+}
+
+// An address whose proof falls below the minimum is still proven, at a lower
+// level: it is held back, and leaves the set the way a withdrawn route's
+// target leaves it, after the tunnel run took its rule out. Only a lost proof
+// takes it out at once.
+func TestATargetThatFallsBelowTheMinimumLeavesAfterItsRule(t *testing.T) {
+	e, log := orderLogged(t)
+	e.enforce()
+	e.cycle()
+	e.res.setLevel("www.example.com", resolve.LevelObserved)
+
+	e.clock.advance(20 * time.Second)
+	from := len(log.all())
+	st := e.cycle()
+
+	require.Equal(t, planner.StateUnreachable, route(st, "www.example.com").State)
+	got, _ := e.egr.last()
+	require.Equal(t, egressTargets("10.0.0.11:8080"), got, "its rule is still at Cloudflare when the set is given")
+	require.Empty(t, e.egr.removes())
+	put := log.index("cf PutTunnelConfig", from)
+	require.Greater(t, put, log.index("egress set", from), log.all())
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	got, _ = e.egr.last()
+	require.Empty(t, got)
+}
+
 func TestTheEgressSetSurvivesARestart(t *testing.T) {
 	e := newEnv(t)
 	e.enforce()

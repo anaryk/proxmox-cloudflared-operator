@@ -78,20 +78,27 @@ func (c *cycleRun) blockLost() {
 // feedEgress gives the egress filter the targets of this cycle: every target
 // it verified for a winner, and every target of the last set that a tunnel
 // configuration as last verified at Cloudflare still sends a connector to,
-// less the addresses that lost their proof; an address whose MAC moved stays
-// out until it is verified again. A target thus enters the set
-// before the tunnel run that publishes its rule, and leaves it only after a
-// tunnel run verified a configuration without it. A cycle that holds because
-// of the store leaves the set as it is. A set that cannot be given holds the
-// writes of the tunnel run; a filter the admin switched off is no failure.
+// unless its binding is withdrawn, less the addresses that lost their proof;
+// an address whose MAC moved stays out until it is verified again. A target
+// thus enters the set before the tunnel run that publishes its rule, and
+// leaves it only after a tunnel run verified a configuration without it,
+// unless its proof is lost. A cycle that holds because of the store leaves the
+// set as it is. A set that cannot be given holds the writes of the tunnel run;
+// a filter the admin switched off is no failure.
 func (c *cycleRun) feedEgress() {
 	if c.storeHold {
 		return
 	}
 	set := c.verifiedTargets()
 	sent := c.e.sentTargets()
+	withdrawn := c.withdrawnAddrs()
 	for _, t := range c.e.egress {
-		if sent[t] {
+		// A target whose proof only fell below the minimum is still proven
+		// and leaves after its rule, as any other that is no longer served.
+		// A withdrawn one is not fed back, whether or not its proof was lost
+		// in this cycle: the memory of the set may be older than the binding
+		// that says so.
+		if sent[t] && !withdrawn[t.Addr] {
 			set = append(set, t)
 		}
 	}
@@ -124,6 +131,18 @@ func (c *cycleRun) verifiedTargets() []egress.Target {
 			continue
 		}
 		out = append(out, egress.Target{Addr: t.Addr, Port: rt.Target.Port})
+	}
+	return out
+}
+
+// withdrawnAddrs are the addresses of the winners whose binding is withdrawn
+// after this cycle's resolution.
+func (c *cycleRun) withdrawnAddrs() map[netip.Addr]bool {
+	out := map[netip.Addr]bool{}
+	for _, rt := range c.claims.Winners {
+		if b := c.results[rt.Hostname].Binding; b != nil && b.Withdrawn {
+			out[b.Addr] = true
+		}
 	}
 	return out
 }
