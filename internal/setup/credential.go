@@ -112,7 +112,7 @@ func (r *run) checkAndStore(ctx context.Context, creds []store.Credential) error
 }
 
 // showReport prints the checklist of a check, with what to grant where a
-// check failed.
+// check failed or a zone is left out.
 func (r *run) showReport(report credentials.Report) {
 	for _, c := range report.Checks {
 		mark := "✓"
@@ -130,6 +130,12 @@ func (r *run) showReport(report credentials.Report) {
 		r.ask.Info("  %s %s", mark, what)
 		if reason := c.Reason(); reason != "" {
 			r.ask.Info("      %s", reason)
+		}
+	}
+	for _, x := range report.Excluded {
+		r.ask.Info("  - %s left out: %s", x.Zone, x.Reason)
+		if x.Detail != "" {
+			r.ask.Info("      %s", x.Detail)
 		}
 	}
 	for _, name := range report.Leftovers {

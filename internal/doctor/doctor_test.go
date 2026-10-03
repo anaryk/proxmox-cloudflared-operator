@@ -97,6 +97,10 @@ func healthyState() engine.State {
 	}
 }
 
+func leftOut(zone string) credentials.Exclusion {
+	return credentials.Exclusion{Zone: zone, Reason: "no DNS read", Detail: "grant Zone > DNS > Edit on " + zone}
+}
+
 func TestAHealthyInstallation(t *testing.T) {
 	env := healthyEnv()
 
@@ -237,6 +241,32 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 		}, nil, Finding{Check: "credential cred1", Level: LevelOK, Detail: "usable; the token expires 2026-10-31T12:00:00Z"}},
 		{"a token that does not expire", func(st *engine.State) { st.Credentials[0].Report.Token.ExpiresOn = nil }, nil,
 			Finding{Check: "credential cred1", Level: LevelOK, Detail: "usable"}},
+		{"a credential that leaves zones out", func(st *engine.State) {
+			st.Credentials[0].Report.Excluded = []credentials.Exclusion{leftOut("example.net"), leftOut("example.org")}
+		}, nil, Finding{Check: "credential cred1", Level: LevelOK,
+			Detail: "usable; example.net, example.org left out: no DNS read; the token expires 2026-12-30T12:00:00Z"}},
+		{"a credential that leaves zones out and does not expire", func(st *engine.State) {
+			st.Credentials[0].Report.Token.ExpiresOn = nil
+			st.Credentials[0].Report.Excluded = []credentials.Exclusion{leftOut("example.org")}
+		}, nil, Finding{Check: "credential cred1", Level: LevelOK, Detail: "usable; example.org left out: no DNS read"}},
+		{"a credential that leaves zones out and expires soon", func(st *engine.State) {
+			soon := now.Add(29 * 24 * time.Hour)
+			st.Credentials[0].Report.Token.ExpiresOn = &soon
+			st.Credentials[0].Report.Excluded = []credentials.Exclusion{leftOut("example.org")}
+		}, nil, Finding{Check: "credential cred1", Level: LevelWarn,
+			Detail: "the token expires at 2026-10-30T12:00:00Z, in 29 days; example.org left out: no DNS read",
+			Fix:    "add a new token with pco credential add, then remove this one"}},
+		{"a credential that can read the DNS of no zone", func(st *engine.State) {
+			st.Credentials[0].Report.Usable = false
+			st.Credentials[0].Report.Checks = []credentials.Check{
+				{Capability: credentials.CapToken, OK: true},
+				{Capability: credentials.CapDNSRead, Detail: "token can read the DNS of no zone it lists; grant Zone > DNS > Edit on the zones to manage"},
+			}
+			st.Credentials[0].Report.Excluded = []credentials.Exclusion{leftOut("example.com")}
+		}, nil, Finding{Check: "credential cred1", Level: LevelFail,
+			Detail: "the token cannot be used: dns.read: token can read the DNS of no zone it lists; grant Zone > DNS > Edit on the zones to manage; " +
+				"example.com left out: no DNS read",
+			Fix: "grant what is missing, then pco credential check cred1"}},
 		{"no cloudflared", nil, func(env *fakeEnv) { env.versionErr = errors.New(`exec: "/usr/bin/cloudflared": file does not exist`) },
 			Finding{Check: "cloudflared", Level: LevelFail, Detail: `cloudflared does not run: exec: "/usr/bin/cloudflared": file does not exist`,
 				Fix: "install cloudflared from the package repository of Cloudflare"}},

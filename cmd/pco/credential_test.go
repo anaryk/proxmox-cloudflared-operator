@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
@@ -28,12 +29,26 @@ func withWrites(v engine.CredentialView) engine.CredentialView {
 	return v
 }
 
+// leavingOut is a credential whose token also lists zones whose DNS it may not
+// read.
+func leavingOut(v engine.CredentialView, zones ...string) engine.CredentialView {
+	for i, name := range zones {
+		id := fmt.Sprintf("zone%d", i+2)
+		v.Report.Zones = append(v.Report.Zones, cfapi.Zone{ID: id, Name: name, Status: "active", AccountID: "acc1"})
+		v.Report.Excluded = append(v.Report.Excluded, credentials.Exclusion{
+			Zone: name, ZoneID: id, Reason: "no DNS read", Detail: "grant Zone > DNS > Edit on " + name,
+		})
+	}
+	return v
+}
+
 func credentialsState() engine.State {
 	st := healthyState()
 	st.Credentials = []engine.CredentialView{
 		usableCredential("a1b2c3d4", "main", 12*24*time.Hour),
 		{ID: "e5f6a7b8", Label: "spare", Kind: "scoped"},
 		failingCredential("c9d0e1f2", "readonly"),
+		leavingOut(usableCredential("f0e1d2c3", "narrow", 365*24*time.Hour), "example.net", "example.org"),
 	}
 	return st
 }
@@ -279,6 +294,29 @@ func TestCredentialCheckWithoutDeepSaysWriteAccessWasNotTried(t *testing.T) {
 	require.Empty(t, res.errOut, "only a deep check asks")
 	requireGolden(t, "credential_check.golden", res.out)
 	require.Equal(t, []string{"check c9d0e1f2 deep=false"}, e.called())
+}
+
+func TestTheZonesATokenLeavesOutAreNoFailure(t *testing.T) {
+	r, e := daemonWith(t, credentialsState())
+	e.checkView = leavingOut(usableCredential("f0e1d2c3", "narrow", 365*24*time.Hour), "example.net", "example.org")
+
+	res := r.run("", "credential", "check", "f0e1d2c3")
+
+	require.NoError(t, res.err)
+	requireGolden(t, "credential_check_excluded.golden", res.out)
+	require.NotContains(t, res.out, "✗")
+}
+
+func TestAddingATokenThatLeavesZonesOutSaysSo(t *testing.T) {
+	r, e := daemonWith(t, freshState())
+	e.addView = leavingOut(usableCredential("a1b2c3d4", "main", 12*24*time.Hour), "example.org")
+
+	res := r.run(cfToken+"\n", "credential", "add", "--label", "main")
+
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, "  - example.org left out: no DNS read\n      grant Zone > DNS > Edit on example.org\n")
+	require.Contains(t, res.out, "Usable:    yes")
+	require.Contains(t, res.out, "Added credential a1b2c3d4 (main).")
 }
 
 func TestDeepCheckAsksFirst(t *testing.T) {

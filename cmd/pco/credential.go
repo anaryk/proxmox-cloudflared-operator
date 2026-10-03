@@ -243,7 +243,8 @@ func (a *app) printCredential(cmd *cobra.Command, v engine.CredentialView, closi
 
 // renderChecklist writes the outcome of a check: what the token is, what it
 // sees, a line for each capability that was tried with what to grant when it
-// failed, and whether the token can be used.
+// failed, one for each zone the credential leaves out with what would add
+// it, and whether the token can be used.
 func (a *app) renderChecklist(s *screen, v engine.CredentialView) {
 	r := v.Report
 	title := fmt.Sprintf("Credential %s", dash(v.Label))
@@ -270,7 +271,13 @@ func (a *app) renderChecklist(s *screen, v engine.CredentialView) {
 			s.printf("      %s\n", reason)
 		}
 	}
-	if len(r.Checks) > 0 {
+	for _, x := range r.Excluded {
+		s.printf("  - %s left out: %s\n", x.Zone, x.Reason)
+		if x.Detail != "" {
+			s.printf("      %s\n", x.Detail)
+		}
+	}
+	if len(r.Checks) > 0 || len(r.Excluded) > 0 {
 		s.println("")
 	}
 	switch {
@@ -340,7 +347,8 @@ func credentialState(v engine.CredentialView) string {
 }
 
 // credentialNote says what is wrong with a credential, if its last check found
-// something, and warns when its token is about to expire.
+// something, names the zones it leaves out, and warns when its token is about
+// to expire.
 func (a *app) credentialNote(v engine.CredentialView) string {
 	if !v.Checked {
 		return ""
@@ -355,6 +363,9 @@ func (a *app) credentialNote(v engine.CredentialView) string {
 			}
 			notes = append(notes, note)
 		}
+	}
+	if left := v.Report.LeftOut(); left != "" {
+		notes = append(notes, left)
 	}
 	if note := a.expiryNote(v.Report.Token.ExpiresOn); note != "" {
 		notes = append(notes, note)

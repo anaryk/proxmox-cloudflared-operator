@@ -194,18 +194,24 @@ func checkCredentials(st engine.State, now time.Time) []Finding {
 	return out
 }
 
+// checkCredential says how the last check of a credential's token found it.
+// The zones it leaves out are named, never as a failure.
 func checkCredential(c engine.CredentialView, now time.Time) Finding {
 	check := "credential " + c.ID
 	r := c.Report
+	leftOut := ""
+	if text := r.LeftOut(); text != "" {
+		leftOut = "; " + text
+	}
 	switch {
 	case !c.Checked:
 		return warn(check, "not checked yet", "pco credential check "+c.ID)
 	case r.Unanswered():
 		return warn(check, "the token could not be checked: "+failedChecks(r), "once Cloudflare answers, run pco credential check "+c.ID)
 	case !r.Usable:
-		return fail(check, "the token cannot be used: "+failedChecks(r), "grant what is missing, then pco credential check "+c.ID)
+		return fail(check, "the token cannot be used: "+failedChecks(r)+leftOut, "grant what is missing, then pco credential check "+c.ID)
 	case r.Token.ExpiresOn == nil:
-		return ok(check, "usable")
+		return ok(check, "usable"+leftOut)
 	}
 	expires := *r.Token.ExpiresOn
 	at := expires.UTC().Format(time.RFC3339)
@@ -213,9 +219,9 @@ func checkCredential(c engine.CredentialView, now time.Time) Finding {
 	case left <= 0:
 		return fail(check, "the token expired at "+at, fixNewToken)
 	case left < engine.ExpiryWarning:
-		return warn(check, fmt.Sprintf("the token expires at %s, in %s", at, days(left)), fixNewToken)
+		return warn(check, fmt.Sprintf("the token expires at %s, in %s%s", at, days(left), leftOut), fixNewToken)
 	}
-	return ok(check, "usable; the token expires "+at)
+	return ok(check, "usable"+leftOut+"; the token expires "+at)
 }
 
 // failedChecks says what a check of a token found wrong.

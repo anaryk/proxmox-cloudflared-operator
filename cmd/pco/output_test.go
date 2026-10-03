@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/term"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -182,6 +183,7 @@ func hostileCredential() engine.CredentialView {
 	v.Report.Checks[3].Scope = "zone" + hostileText
 	v.Report.Checks[3].Detail = "grant " + hostileText
 	v.Report.Leftovers = []string{"probe" + hostileText}
+	v.Report.Excluded = []credentials.Exclusion{{Zone: "left" + hostileText, Reason: "no DNS read" + hostileText, Detail: "grant " + hostileText}}
 	return v
 }
 

@@ -2,6 +2,8 @@ package engine
 
 import (
 	"cmp"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -188,6 +190,7 @@ func (s State) clone() State {
 func shownReport(r credentials.Report) credentials.Report {
 	r = cloneReport(r)
 	r.Accounts, r.Zones, r.Checks, r.Leftovers = nonNil(r.Accounts), nonNil(r.Zones), nonNil(r.Checks), nonNil(r.Leftovers)
+	r.Excluded = nonNil(r.Excluded)
 	return r
 }
 
@@ -199,6 +202,7 @@ func cloneReport(r credentials.Report) credentials.Report {
 	r.Accounts = slices.Clone(r.Accounts)
 	r.Zones = slices.Clone(r.Zones)
 	r.Checks = slices.Clone(r.Checks)
+	r.Excluded = slices.Clone(r.Excluded)
 	r.Leftovers = slices.Clone(r.Leftovers)
 	return r
 }
@@ -280,6 +284,8 @@ func (c *cycleRun) routeViews() []RouteView {
 	for _, st := range c.plan.Routes {
 		if why, frozen := c.frozenFor(st); frozen {
 			st.State, st.Reason, st.Service = RouteFrozen, "account frozen: "+why, ""
+		} else if why := c.leftOutFor(st); why != "" {
+			st.Reason = why
 		}
 		v := RouteView{RouteStatus: st}
 		if p, ok := rules[st.Hostname]; ok && st.State != planner.StateConflict {
@@ -326,6 +332,41 @@ func (c *cycleRun) frozenFor(st planner.RouteStatus) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// leftOutFor says why a route has no zone when the zone of its name is one
+// that the credentials listing it leave out; empty otherwise.
+func (c *cycleRun) leftOutFor(st planner.RouteStatus) string {
+	if st.State != planner.StateNoZone || st.Zone != "" || len(c.zones.excluded) == 0 {
+		return ""
+	}
+	names := slices.Collect(maps.Keys(c.zones.excluded))
+	for _, z := range c.zones.planned {
+		names = append(names, z.Name)
+	}
+	zone, _ := hostname.MatchZone(st.Hostname, names)
+	ids, left := c.zones.excluded[zone]
+	if !left {
+		return ""
+	}
+	labels := make([]string, len(ids))
+	for i, id := range ids {
+		labels[i] = c.labelOf(id)
+	}
+	who := "credential " + labels[0]
+	if len(labels) > 1 {
+		who = "credentials " + andList(labels)
+	}
+	return fmt.Sprintf("%s can list %s but not read its DNS: grant Zone > DNS > Edit to serve it", who, zone)
+}
+
+// labelOf is the label of a stored credential, or its id when it has none.
+func (c *cycleRun) labelOf(id string) string {
+	i := slices.IndexFunc(c.st.Credentials, func(v CredentialView) bool { return v.ID == id })
+	if i < 0 || c.st.Credentials[i].Label == "" {
+		return id
+	}
+	return c.st.Credentials[i].Label
 }
 
 // guestView names a guest of the snapshot.

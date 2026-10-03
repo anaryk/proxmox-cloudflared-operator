@@ -199,18 +199,35 @@ func (f *Fake) SeedDeletedTunnel(accountID, name string) cfapi.Tunnel {
 
 // Deny makes every call of an operation fail with a 403 until Allow. The
 // operations are "verify", "accounts", "zones", "tunnel.read", "tunnel.write",
-// "dns.read" and "dns.write".
-func (f *Fake) Deny(op string) {
+// "dns.read" and "dns.write". Given ids, it denies only the calls about those
+// zones or accounts: the zone of a DNS call, the account of a tunnel call, as
+// a token whose permission covers some of them only.
+func (f *Fake) Deny(op string, ids ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.denied[op] = true
+	for _, key := range denyKeys(op, ids) {
+		f.denied[key] = true
+	}
 }
 
-// Allow lifts a Deny.
-func (f *Fake) Allow(op string) {
+// Allow lifts a Deny made with the same arguments.
+func (f *Fake) Allow(op string, ids ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.denied, op)
+	for _, key := range denyKeys(op, ids) {
+		delete(f.denied, key)
+	}
+}
+
+func denyKeys(op string, ids []string) []string {
+	if len(ids) == 0 {
+		return []string{op}
+	}
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = op + " " + id
+	}
+	return keys
 }
 
 // FailNext makes the next n calls of op fail with err, whatever they would
@@ -288,7 +305,8 @@ func (f *Fake) begin(ctx context.Context, op, method string, args ...string) err
 		}
 		return next.err
 	}
-	if f.denied[op] {
+	// The zone or the account a call is about comes first.
+	if f.denied[op] || len(args) > 0 && f.denied[op+" "+args[0]] {
 		return &cfapi.Error{Status: http.StatusForbidden, Codes: []int{codeAuthentication}, Message: "Authentication error"}
 	}
 	return nil

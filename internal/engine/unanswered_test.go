@@ -95,7 +95,7 @@ func TestARefusalOnARecheckIsAProblemThatNamesWhatToGrant(t *testing.T) {
 	st := e.cycle()
 
 	require.True(t, hasProblem(st, "credential cred1 (main): its last check found that the token cannot be used: "+
-		"dns.read on example.com: grant Zone > DNS > Read on example.com"), "%v", st.Problems)
+		"dns.read: token can read the DNS of no zone it lists; grant Zone > DNS > Edit on the zones to manage"), "%v", st.Problems)
 	require.False(t, credentialView(st, testCred).Report.Usable)
 	require.Empty(t, credentialEvents(e))
 }
@@ -103,14 +103,14 @@ func TestARefusalOnARecheckIsAProblemThatNamesWhatToGrant(t *testing.T) {
 func TestARefusalBesideAMissingAnswerIsStillAProblem(t *testing.T) {
 	e := newEnv(t)
 	e.cycle()
-	e.cf.FailNext("dns.read", 1, &cfapi.Error{Status: http.StatusForbidden, Message: "denied"})
-	e.cf.FailNext("tunnel.read", 1, &cfapi.Error{Status: http.StatusServiceUnavailable, Message: "unavailable"})
+	e.cf.FailNext("dns.read", 1, &cfapi.Error{Status: http.StatusServiceUnavailable, Message: "unavailable"})
+	e.cf.FailNext("tunnel.read", 1, &cfapi.Error{Status: http.StatusForbidden, Message: "denied"})
 
 	e.eng.recheck(t.Context())
 	st := e.cycle()
 
-	require.True(t, hasProblem(st, "grant Zone > DNS > Read on example.com"), "%v", st.Problems)
-	require.True(t, hasProblem(st, "tunnel.read on Main: Cloudflare did not answer"), "%v", st.Problems)
+	require.True(t, hasProblem(st, "tunnel.read on Main: grant Account > Cloudflare Tunnel > Read on Main"), "%v", st.Problems)
+	require.True(t, hasProblem(st, "dns.read on example.com: Cloudflare did not answer"), "%v", st.Problems)
 }
 
 func TestACheckByTheAdminThatCloudflareDoesNotAnswerChangesNoReport(t *testing.T) {

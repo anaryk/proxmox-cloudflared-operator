@@ -354,45 +354,20 @@ func TestDeniedWriteInOneZoneNamesThatZone(t *testing.T) {
 	require.False(t, got.Usable)
 }
 
-func TestDeniedReadSkipsTheMatchingWriteProbe(t *testing.T) {
-	tests := []struct {
-		name    string
-		op      string
-		failed  Check
-		missing Capability
-		writes  string
-	}{
-		{
-			name:    "dns read",
-			op:      "dns.read",
-			failed:  failed(CapDNSRead, exampleCom, "grant Zone > DNS > Read on example.com"),
-			missing: CapDNSWrite,
-			writes:  "CreateRecord",
-		},
-		{
-			name:    "tunnel read",
-			op:      "tunnel.read",
-			failed:  failed(CapTunnelRead, acme, "grant Account > Cloudflare Tunnel > Read on Acme"),
-			missing: CapTunnelWrite,
-			writes:  "CreateTunnel",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFake()
-			f.Deny(tc.op)
+// A zone whose DNS read is refused is left out instead; see excluded_test.go.
+func TestDeniedTunnelReadSkipsTheTunnelWriteProbe(t *testing.T) {
+	f := newFake()
+	f.Deny("tunnel.read")
 
-			got := newChecker().Run(t.Context(), f, true)
+	got := newChecker().Run(t.Context(), f, true)
 
-			require.Equal(t, []Check{tc.failed}, failures(got))
-			require.Len(t, got.Checks, 6)
-			for _, check := range got.Checks {
-				require.NotEqual(t, tc.missing, check.Capability)
-			}
-			require.Empty(t, callsTo(f, tc.writes))
-			require.False(t, got.Usable)
-		})
+	require.Equal(t, []Check{failed(CapTunnelRead, acme, "grant Account > Cloudflare Tunnel > Read on Acme")}, failures(got))
+	require.Len(t, got.Checks, 6)
+	for _, check := range got.Checks {
+		require.NotEqual(t, CapTunnelWrite, check.Capability)
 	}
+	require.Empty(t, callsTo(f, "CreateTunnel"))
+	require.False(t, got.Usable)
 }
 
 func TestDeniedZoneListing(t *testing.T) {

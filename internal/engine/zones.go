@@ -128,11 +128,32 @@ func (z *zoneCache) confirmGone(zones []staleZone) []string {
 	return slices.Compact(slices.Sorted(slices.Values(names)))
 }
 
+// leftOut holds, by credential id, the ids of the zones the last check of
+// its token left out: zones it lists but whose DNS it may not read. They are
+// not served through that credential.
+type leftOut map[string]map[string]bool
+
+// leftOutOf collects what the last check of each credential left out.
+func leftOutOf(views []CredentialView) leftOut {
+	out := make(leftOut)
+	for _, v := range views {
+		for _, x := range v.Report.Excluded {
+			if out[v.ID] == nil {
+				out[v.ID] = make(map[string]bool)
+			}
+			out[v.ID][x.ZoneID] = true
+		}
+	}
+	return out
+}
+
 // update takes a zone listing that worked. A zone the previous listing had
-// and this one has not becomes stale; a stale zone listed again is not. The
-// first listing in a process compares with the zones the credential served
-// before, so that a zone that left while the daemon was down is noticed.
-func (cz *credZones) update(zones []cfapi.Zone, at time.Time, servedBefore []cfapi.Zone) {
+// and this one has not becomes stale, unless the credential leaves it out
+// (by id, in excluded), as it never served it then; a stale zone listed again
+// is not. The first listing in a process compares with the zones the
+// credential served before, so that a zone that left while the daemon was
+// down is noticed.
+func (cz *credZones) update(zones []cfapi.Zone, at time.Time, servedBefore []cfapi.Zone, excluded map[string]bool) {
 	listed := make(map[string]bool, len(zones))
 	for _, zone := range zones {
 		listed[zoneName(zone)] = true
@@ -145,7 +166,7 @@ func (cz *credZones) update(zones []cfapi.Zone, at time.Time, servedBefore []cfa
 		previous = servedBefore
 	}
 	for _, old := range previous {
-		if name := zoneName(old); !listed[name] {
+		if name := zoneName(old); !listed[name] && !excluded[old.ID] {
 			cz.stale[name] = old
 		}
 	}
@@ -167,7 +188,7 @@ func zoneName(z cfapi.Zone) string {
 // credential whose last listing failed or that was never listed, so that a
 // failure clears as soon as Cloudflare answers again; a listing that fails
 // keeps the previous list.
-func (c *cycleRun) refreshZones(ids []string) {
+func (c *cycleRun) refreshZones(ids []string, left leftOut) {
 	z := c.e.zones
 	due := z.due || c.now.Sub(z.at) >= zoneRefreshEvery || c.now.Before(z.at)
 	for _, id := range ids {
@@ -181,7 +202,7 @@ func (c *cycleRun) refreshZones(ids []string) {
 			if got, err := api.Zones(c.ctx); err != nil {
 				cz.err = err.Error()
 			} else {
-				cz.update(activeZones(got), c.now, z.servedThrough(id))
+				cz.update(activeZones(got), c.now, z.servedThrough(id), left[id])
 			}
 		}
 		if due || !cz.accountsOK {
@@ -227,24 +248,34 @@ type zoneSet struct {
 	// staleShown are the stale zones the problems name, in staleLines.
 	staleShown []staleZone
 	staleLines []string
+	// excluded maps every zone that is not served because the credentials
+	// that list it leave it out to their ids.
+	excluded map[string][]string
 }
 
 // zoneEntry is one credential's view of a zone.
 type zoneEntry struct {
-	zone  planner.Zone
-	stale bool
+	zone     planner.Zone
+	stale    bool
+	excluded bool // the credential lists the zone but may not read its DNS
 }
 
-// set works out the zones of the credentials ids, which are sorted.
+// set works out the zones of the credentials ids, which are sorted. A zone a
+// credential leaves out, as left says, is not served through it, and the
+// credential does not see its account for it.
 //
-// A zone is in doubt when more than one credential sees it, no pin names one
-// of them and none of them served it alone before; when a pin names a
-// credential that does not see it; or when it left the listing of its
+// A zone is in doubt when more than one credential can serve it, no pin
+// names one of them and none of them served it alone before; when a pin
+// names a credential that does not see it; or when it left the listing of its
 // credential. The account of a zone in doubt is frozen. Several credentials
 // with one that served the zone before keep that one, with a problem asking
-// for a pin.
-func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
-	out := zoneSet{known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{}, accounts: map[string]string{}}
+// for a pin. A pin to a credential that leaves the zone out serves it through
+// none, with a problem.
+func (z *zoneCache) set(ids []string, pins map[string]string, left leftOut) zoneSet {
+	out := zoneSet{
+		known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{},
+		accounts: map[string]string{}, excluded: map[string][]string{},
+	}
 	byName := map[string][]zoneEntry{}
 	for _, id := range ids {
 		cz := z.byCred[id]
@@ -265,19 +296,21 @@ func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
 		for _, a := range cz.accounts {
 			out.seen(a.ID, id)
 		}
-		add := func(zone cfapi.Zone, stale bool) {
-			out.seen(zone.AccountID, id)
+		add := func(zone cfapi.Zone, stale, excluded bool) {
+			if !excluded {
+				out.seen(zone.AccountID, id)
+			}
 			name := zoneName(zone)
 			byName[name] = append(byName[name], zoneEntry{
 				zone:  planner.Zone{ID: zone.ID, Name: name, AccountID: zone.AccountID, CredentialID: id},
-				stale: stale,
+				stale: stale, excluded: excluded,
 			})
 		}
 		for _, zone := range cz.zones {
-			add(zone, false)
+			add(zone, false, left[id][zone.ID])
 		}
 		for _, name := range slices.Sorted(maps.Keys(cz.stale)) {
-			add(cz.stale[name], true)
+			add(cz.stale[name], true, false)
 		}
 	}
 
@@ -307,6 +340,9 @@ func (z *zoneCache) set(ids []string, pins map[string]string) zoneSet {
 			}
 			continue
 		}
+		if by := excludedBy(entries); len(chosen) == 0 && len(by) > 0 {
+			out.excluded[name] = by
+		}
 		out.planned = append(out.planned, chosen...)
 		served = append(served, chosen...)
 	}
@@ -331,34 +367,43 @@ func (s zoneSet) seen(account, id string) {
 }
 
 // choose decides which credential's view of a zone is used. note is a problem
-// that leaves the zone served; doubt one that freezes its account. staleBy
+// that does not freeze the account of the zone; doubt one that does. staleBy
 // names the credentials whose listing the zone left, when that is the doubt.
+// A zone that every credential leaves out is chosen through none.
 func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) (chosen []planner.Zone, note, doubt string, staleBy []string) {
 	var live []planner.Zone
 	var stale []string
 	for _, en := range entries {
-		if en.stale {
+		switch {
+		case en.stale:
 			stale = append(stale, en.zone.CredentialID)
-			continue
+		case !en.excluded:
+			live = append(live, en.zone)
 		}
-		live = append(live, en.zone)
 	}
 	accounts := accountsOf(entries)
 	if pin != "" {
 		pinned := slices.DeleteFunc(slices.Clone(live), func(zone planner.Zone) bool { return zone.CredentialID != pin })
-		if len(pinned) == 0 {
-			return nil, "", fmt.Sprintf("zone %s is pinned to credential %s, which does not see it; %s is left as it is until the pin is fixed",
-				name, pin, accounts), nil
+		switch {
+		case len(pinned) > 0:
+			z.served[name] = pinned[0]
+			return pinned, "", "", nil
+		case slices.Contains(excludedBy(entries), pin):
+			return nil, fmt.Sprintf("zone %s is pinned to credential %s, which can list it but not read its DNS; "+
+				"it is not served until the pin is changed or the credential is granted Zone > DNS > Edit on it", name, pin), "", nil
 		}
-		z.served[name] = pinned[0]
-		return pinned, "", "", nil
+		return nil, "", fmt.Sprintf("zone %s is pinned to credential %s, which does not see it; %s is left as it is until the pin is fixed",
+			name, pin, accounts), nil
 	}
 	if len(stale) > 0 {
 		return nil, "", fmt.Sprintf("zone %s is no longer listed by credential %s; %s is left as it is "+
 			"until the zone is listed again or pco apply --confirm-deletes confirms it is gone", name, andList(stale), accounts), stale
 	}
 	creds := credentialsOf(live)
-	if len(creds) == 1 {
+	switch len(creds) {
+	case 0:
+		return nil, "", "", nil
+	case 1:
 		z.served[name] = live[0]
 		return live, "", "", nil
 	}
@@ -369,6 +414,18 @@ func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) (chosen
 	}
 	return nil, "", fmt.Sprintf("zone %s is visible through credentials %s and none of them served it before; "+
 		"pin it with zonePins; %s is left as it is until then", name, andList(creds), accounts), nil
+}
+
+// excludedBy returns the ids of the credentials whose entries leave the zone
+// out, sorted.
+func excludedBy(entries []zoneEntry) []string {
+	var ids []string
+	for _, en := range entries {
+		if en.excluded {
+			ids = append(ids, en.zone.CredentialID)
+		}
+	}
+	return slices.Compact(slices.Sorted(slices.Values(ids)))
 }
 
 // accountsOf names the accounts of the entries: "account a" or "accounts a and b".

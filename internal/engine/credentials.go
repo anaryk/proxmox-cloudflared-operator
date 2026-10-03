@@ -170,8 +170,9 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 // it sees, those of its zones and those its tunnels were seen in. What
 // Cloudflare refuses to show the token, the token cannot manage either, so a
 // refusal counts as nothing reached and refused says that there was one; a
-// zone Cloudflare no longer has holds no record. Any other failure is an
-// error. The caller holds the cycle lock.
+// zone Cloudflare no longer has holds no record. A listed zone the last check
+// left out is not read unless the credential served it. Any other failure is
+// an error. The caller holds the cycle lock.
 func (e *Engine) leftBehind(ctx context.Context, api cfapi.API, installID, id string) (left []string, refused bool, err error) {
 	zones, err := api.Zones(ctx)
 	switch {
@@ -180,6 +181,8 @@ func (e *Engine) leftBehind(ctx context.Context, api cfapi.API, installID, id st
 	case err != nil:
 		return nil, false, err
 	}
+	excluded := e.excludedBy(id)
+	zones = slices.DeleteFunc(zones, func(z cfapi.Zone) bool { return excluded[z.ID] })
 	zones = append(zones, e.zones.servedThrough(id)...)
 	if cz := e.zones.byCred[id]; cz != nil {
 		zones = append(zones, slices.Collect(maps.Values(cz.stale))...)
@@ -235,6 +238,18 @@ func (e *Engine) leftBehind(ctx context.Context, api cfapi.API, installID, id st
 		}
 	}
 	return left, refused, nil
+}
+
+// excludedBy returns the ids of the zones the last check of credential id
+// left out.
+func (e *Engine) excludedBy(id string) map[string]bool {
+	e.repMu.Lock()
+	defer e.repMu.Unlock()
+	out := make(map[string]bool)
+	for _, x := range e.reports[id].Excluded {
+		out[x.ZoneID] = true
+	}
+	return out
 }
 
 // refuseKnownToken refuses a token a stored credential has already.

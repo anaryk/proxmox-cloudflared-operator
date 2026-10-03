@@ -1282,6 +1282,36 @@ func TestDenyChangesNothingAndAllowLiftsIt(t *testing.T) {
 	require.NoError(t, f.DeleteTunnel(ctx, acct, fx.tunnel))
 }
 
+func TestDenyOfAZoneOrAnAccountRefusesOnlyTheCallsAboutIt(t *testing.T) {
+	f, fx := newFixture(t)
+	f.AddAccount("acct2", "Other")
+	f.AddZone("zone2", "example.org", "acct2")
+	f.Deny("dns.read", "zone2")
+	f.Deny("tunnel.write", "acct2")
+
+	_, err := f.Records(ctx, "zone2", cfapi.RecordFilter{})
+	require.True(t, cfapi.IsAuth(err), "%v", err)
+	_, err = f.Records(ctx, zone, cfapi.RecordFilter{})
+	require.NoError(t, err, "another zone is read")
+	_, err = f.CreateRecord(ctx, "zone2", cname("app.example.org", "x"))
+	require.NoError(t, err, "another operation in the zone is not refused")
+	_, err = f.CreateTunnel(ctx, "acct2", "pco-new")
+	require.True(t, cfapi.IsAuth(err), "%v", err)
+	require.True(t, cfapi.IsAuth(f.DeleteTunnel(ctx, "acct2", fx.tunnel)), "a call about the account, whatever the tunnel")
+	_, err = f.CreateTunnel(ctx, acct, "pco-new")
+	require.NoError(t, err, "another account is written")
+
+	f.Allow("dns.read")
+	_, err = f.Records(ctx, "zone2", cfapi.RecordFilter{})
+	require.True(t, cfapi.IsAuth(err), "lifting the operation leaves the deny of the zone")
+
+	f.Allow("dns.read", "zone2")
+	_, err = f.Records(ctx, "zone2", cfapi.RecordFilter{})
+	require.NoError(t, err)
+	_, err = f.CreateTunnel(ctx, "acct2", "pco-new")
+	require.True(t, cfapi.IsAuth(err), "an account stays denied until it is allowed")
+}
+
 func TestDenyIsA403(t *testing.T) {
 	f := New()
 	f.Deny("verify")

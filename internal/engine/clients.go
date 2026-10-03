@@ -10,9 +10,9 @@ import (
 )
 
 // syncCredentials reads the credentials, keeps a client for each and works
-// out the zones. It returns false when the credentials cannot be read.
-// Credentials that cannot be read, none at all, or zones that were never
-// listed hold Cloudflare.
+// out the zones, without those the last check of a credential left out. It
+// returns false when the credentials cannot be read. Credentials that cannot
+// be read, none at all, or zones that were never listed hold Cloudflare.
 func (c *cycleRun) syncCredentials() bool {
 	creds, err := c.e.d.Store.Credentials()
 	if err != nil {
@@ -37,9 +37,10 @@ func (c *cycleRun) syncCredentials() bool {
 		c.hold(c.problem(problemNoCredential))
 		return true
 	}
-	c.refreshZones(ids)
+	left := leftOutOf(c.st.Credentials)
+	c.refreshZones(ids, left)
 	c.credIDs = ids
-	c.zones = c.e.zones.set(ids, c.settings.ZonePins)
+	c.zones = c.e.zones.set(ids, c.settings.ZonePins, left)
 	c.offer.stale = c.zones.staleShown
 	c.offer.lines = append(c.offer.lines, c.zones.staleLines...)
 	c.st.Problems = append(c.st.Problems, c.zones.problems...)

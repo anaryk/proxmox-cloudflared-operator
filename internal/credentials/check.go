@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
@@ -72,14 +73,20 @@ type Report struct {
 	// Checks are sorted by capability, then by scope name and id.
 	Checks []Check `json:"checks"`
 
+	// Excluded are the active zones the token lists but whose DNS Cloudflare
+	// refuses to show it, sorted by name and id. The credential is used
+	// without them, and no check is made of them or of an account that only
+	// they are in.
+	Excluded []Exclusion `json:"excluded"`
+
 	// Deep is true when the run was asked to probe write access.
 	Deep bool `json:"deep"`
 
-	// Usable is true when the token is active, at least one zone is active
-	// and every check that concerns an active zone or its account passed, and
-	// the run was not cut short by its context. A zone that is not active
-	// fails its own check and does not make the token unusable while another
-	// zone is active.
+	// Usable is true when the token is active, can read the DNS of at least
+	// one active zone, every check that concerns such a zone or its account
+	// passed, and the run was not cut short by its context. A zone that is
+	// not active fails its own check, and one that is excluded fails none;
+	// neither makes the token unusable while another zone is served.
 	//
 	// With Deep false Usable says nothing about write access. A caller that
 	// is about to store a credential for use must run a deep check.
@@ -93,6 +100,36 @@ type Report struct {
 	Leftovers []string `json:"leftovers"`
 
 	CheckedAt time.Time `json:"checkedAt,omitzero"`
+}
+
+// Exclusion is a zone the token lists that the credential leaves out.
+type Exclusion struct {
+	Zone   string `json:"zone"`
+	ZoneID string `json:"zoneId"`
+	Reason string `json:"reason"` // why it is left out, e.g. "no DNS read"
+	Detail string `json:"detail"` // what to grant to serve it, e.g. "grant Zone > DNS > Edit on example.com"
+}
+
+// reasonNoDNSRead is why a zone whose DNS Cloudflare refuses to show the
+// token is left out.
+const reasonNoDNSRead = "no DNS read"
+
+// LeftOut names the excluded zones with the reason, as "a.com, b.com left
+// out: no DNS read". It is empty when no zone is excluded.
+func (r Report) LeftOut() string {
+	var reasons []string
+	zones := make(map[string][]string)
+	for _, x := range r.Excluded {
+		if _, seen := zones[x.Reason]; !seen {
+			reasons = append(reasons, x.Reason)
+		}
+		zones[x.Reason] = append(zones[x.Reason], x.Zone)
+	}
+	parts := make([]string, len(reasons))
+	for i, reason := range reasons {
+		parts[i] = strings.Join(zones[reason], ", ") + " left out: " + reason
+	}
+	return strings.Join(parts, "; ")
 }
 
 // Reason says why a check failed: what to grant, or that Cloudflare did not
@@ -135,7 +172,6 @@ const (
 	permTunnelRead = "Account > Cloudflare Tunnel > Read"
 	permTunnelEdit = "Account > Cloudflare Tunnel > Edit"
 	permZoneRead   = "Zone > Zone > Read"
-	permDNSRead    = "Zone > DNS > Read"
 	permDNSEdit    = "Zone > DNS > Edit"
 )
 
@@ -189,7 +225,7 @@ func (c *Checker) Run(ctx context.Context, api cfapi.API, deep bool) Report {
 			cmp.Compare(a.ScopeID, b.ScopeID))
 	})
 	slices.Sort(r.report.Leftovers)
-	r.report.Usable = !r.blocked && r.active > 0 && ctx.Err() == nil
+	r.report.Usable = !r.blocked && r.served > 0 && ctx.Err() == nil
 	return r.report
 }
 
@@ -201,7 +237,7 @@ type run struct {
 	suffix  string // makes the names of this run's probes unique
 
 	report  Report
-	active  int  // zones that are active
+	served  int  // zones that are active and not excluded
 	blocked bool // a check failed that makes the token unusable
 }
 
@@ -287,11 +323,17 @@ func (r *run) probe(ctx context.Context) {
 		}
 		active = append(active, z)
 	}
-	r.active = len(active)
+	var served []cfapi.Zone
 	for _, z := range active {
-		r.probeZone(ctx, z)
+		if r.probeZone(ctx, z) {
+			served = append(served, z)
+		}
 	}
-	for _, a := range r.probedAccounts(active) {
+	r.served = len(served)
+	if len(active) > 0 && len(served) == 0 {
+		r.fail(CapDNSRead, scope{}, "token can read the DNS of no zone it lists; "+grant(permDNSEdit, "the zones to manage"))
+	}
+	for _, a := range r.probedAccounts(served) {
 		r.probeAccount(ctx, a)
 	}
 }
@@ -334,11 +376,11 @@ func compareAccounts(a, b cfapi.Account) int {
 	return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
 }
 
-// probedAccounts returns the accounts that own an active zone. The zone names
+// probedAccounts returns the accounts that own a served zone. The zone names
 // its account, so an account the listing lacks is still probed, by id.
-func (r *run) probedAccounts(active []cfapi.Zone) []cfapi.Account {
+func (r *run) probedAccounts(served []cfapi.Zone) []cfapi.Account {
 	var out []cfapi.Account
-	for _, z := range active {
+	for _, z := range served {
 		if slices.ContainsFunc(out, func(a cfapi.Account) bool { return a.ID == z.AccountID }) {
 			continue
 		}
@@ -352,12 +394,23 @@ func (r *run) probedAccounts(active []cfapi.Zone) []cfapi.Account {
 	return out
 }
 
-func (r *run) probeZone(ctx context.Context, z cfapi.Zone) {
+// probeZone probes an active zone and reports whether the credential serves
+// it. A zone whose DNS Cloudflare refuses to show the token is excluded; one
+// whose read got no answer is not, and fails its check.
+func (r *run) probeZone(ctx context.Context, z cfapi.Zone) bool {
 	filter := cfapi.RecordFilter{CommentPrefix: planner.DNSMarker(r.checker.installID)}
 	owned, err := r.api.Records(ctx, z.ID, filter)
-	if !r.result(CapDNSRead, zoneScope(z), err, grant(permDNSRead, z.Name)) {
-		return
+	switch {
+	case cfapi.IsAuth(err):
+		r.report.Excluded = append(r.report.Excluded, Exclusion{
+			Zone: z.Name, ZoneID: z.ID, Reason: reasonNoDNSRead, Detail: grant(permDNSEdit, z.Name),
+		})
+		return false
+	case err != nil:
+		r.failBy(CapDNSRead, zoneScope(z), err.Error(), err)
+		return true
 	}
+	r.pass(CapDNSRead, zoneScope(z))
 	for _, rec := range owned {
 		if rec.Comment == r.probeComment() {
 			r.report.Leftovers = append(r.report.Leftovers, rec.Name)
@@ -366,6 +419,7 @@ func (r *run) probeZone(ctx context.Context, z cfapi.Zone) {
 	if r.deep {
 		r.probeDNSWrite(ctx, z)
 	}
+	return true
 }
 
 func (r *run) probeAccount(ctx context.Context, a cfapi.Account) {

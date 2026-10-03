@@ -141,6 +141,12 @@
             "name": "example.com",
             "status": "active",
             "accountId": "acc1"
+          },
+          {
+            "id": "zone2",
+            "name": "example.org",
+            "status": "active",
+            "accountId": "acc1"
           }
         ],
         "checks": [
@@ -154,6 +160,14 @@
             "scopeId": "zone1",
             "ok": false,
             "detail": "grant Zone > DNS > Read on example.com"
+          }
+        ],
+        "excluded": [
+          {
+            "zone": "example.org",
+            "zoneId": "zone2",
+            "reason": "no DNS read",
+            "detail": "grant Zone > DNS > Edit on example.org"
           }
         ],
         "deep": true,

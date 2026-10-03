@@ -72,10 +72,16 @@ func populatedState() State {
 			{
 				ID: "cred1", Label: "main", Kind: "scoped", Checked: true,
 				Report: credentials.Report{
-					Token:     cfapi.TokenStatus{ID: "token-1", Status: "active", ExpiresOn: &expires},
-					Accounts:  []cfapi.Account{{ID: "acc1", Name: "Main"}},
-					Zones:     []cfapi.Zone{{ID: "zone1", Name: "example.com", Status: "active", AccountID: "acc1"}},
-					Checks:    []credentials.Check{{Capability: credentials.CapToken, OK: true}, {Capability: credentials.CapDNSRead, Scope: "example.com", ScopeID: "zone1", Detail: "grant Zone > DNS > Read on example.com"}},
+					Token:    cfapi.TokenStatus{ID: "token-1", Status: "active", ExpiresOn: &expires},
+					Accounts: []cfapi.Account{{ID: "acc1", Name: "Main"}},
+					Zones: []cfapi.Zone{
+						{ID: "zone1", Name: "example.com", Status: "active", AccountID: "acc1"},
+						{ID: "zone2", Name: "example.org", Status: "active", AccountID: "acc1"},
+					},
+					Checks: []credentials.Check{{Capability: credentials.CapToken, OK: true}, {Capability: credentials.CapDNSRead, Scope: "example.com", ScopeID: "zone1", Detail: "grant Zone > DNS > Read on example.com"}},
+					Excluded: []credentials.Exclusion{
+						{Zone: "example.org", ZoneID: "zone2", Reason: "no DNS read", Detail: "grant Zone > DNS > Edit on example.org"},
+					},
 					Deep:      true,
 					Usable:    true,
 					Leftovers: []string{"_pco-probe-x.example.com"},

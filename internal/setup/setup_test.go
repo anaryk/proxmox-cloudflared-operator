@@ -362,6 +362,23 @@ func TestSetupDoesNotStoreAnUnusableToken(t *testing.T) {
 	e.requireNoSecret()
 }
 
+func TestSetupStoresATokenThatLeavesZonesOut(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit("pco.service")
+	e.cf.AddZone("zone2", "example.org", testAccount)
+	e.cf.Deny("dns.read", "zone2")
+	e.script(freshInstall()...)
+
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
+	e.done()
+
+	require.Len(t, e.credentials(), 1)
+	e.requireShown("  - example.org left out: no DNS read")
+	e.requireShown("      grant Zone > DNS > Edit on example.org")
+	require.NotContains(t, e.ask.text(), "✗", "a zone left out is no failure")
+	e.requireNoSecret()
+}
+
 func TestSetupSaysWhenCloudflareDidNotAnswer(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")
