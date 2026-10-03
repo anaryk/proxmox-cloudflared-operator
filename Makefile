@@ -13,7 +13,7 @@ LDFLAGS := -s -w \
 # .goreleaser.yaml and the test job in CI.
 TAGS := nomsgpack
 
-.PHONY: build test lint fmt test-scripts snapshot package
+.PHONY: build test lint fmt test-scripts snapshot package e2e-binaries
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -42,3 +42,9 @@ snapshot:
 package: snapshot
 	@echo "the .deb files are in dist/:"
 	@ls dist/*.deb
+
+# The end-to-end suite and a binary for a Proxmox VE node; test/e2e/README.md
+# says how to run them.
+e2e-binaries:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco-linux-amd64 ./cmd/pco
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -tags e2e,$(TAGS) -o bin/e2e.test ./test/e2e
