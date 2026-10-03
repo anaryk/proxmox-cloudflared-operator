@@ -13,13 +13,19 @@ LDFLAGS := -s -w \
 # .goreleaser.yaml and the test job in CI.
 TAGS := nomsgpack
 
-.PHONY: build test lint fmt test-scripts snapshot package e2e-binaries
+.PHONY: build test lint fmt test-scripts snapshot package e2e-binaries scale
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
 
 test:
 	go test -tags $(TAGS) -race ./...
+
+# Measures cycles of the engine at 100 to 2000 routes and prints the tables, see
+# test/scale/README.md. It takes several minutes; SCALE_DIR keeps its store on
+# another disk.
+scale:
+	go test -tags "$(TAGS) scale" -run 'TestScale|TestDefaultLimiter|TestDiskCost' -count=1 -v -timeout 10m ./test/scale/
 
 lint:
 	golangci-lint run
