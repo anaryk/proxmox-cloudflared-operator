@@ -301,7 +301,7 @@ func TestSetupDeclinesTagsAndCloudflared(t *testing.T) {
 			e.installUnit("pco.service")
 			e.ask.answers, e.ask.secrets = tt.answers, tt.secrets
 			script := [][]call{
-				preflight("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(),
+				preflight("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(), tagsRead(""),
 				{{line: "/usr/bin/cloudflared --version", err: notFound("/usr/bin/cloudflared")}},
 			}
 			if tt.options.Yes {
@@ -324,6 +324,7 @@ func TestSetupDeclinesTagsAndCloudflared(t *testing.T) {
 			require.NoFileExists(t, e.s.host.sources)
 			require.Empty(t, e.credentials())
 			e.requireShown("pco credential add")
+			e.requireShown("the gate tag cf-tunnel is not registered")
 		})
 	}
 }

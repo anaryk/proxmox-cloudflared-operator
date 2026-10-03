@@ -338,9 +338,22 @@ func (e *testEnv) requireNothingLeft(h *fakeHost) {
 }
 
 func TestSetupKilledAtAnyCommandLeavesNothingBehind(t *testing.T) {
+	killSweep(t, "")
+}
+
+func TestSetupKilledWithAnotherGateTagLeavesNothingBehind(t *testing.T) {
+	killSweep(t, "edge")
+}
+
+// killSweep kills a setup at every command of it, before and after, runs it
+// again and uninstalls, with the gate tag of the settings, if one is given.
+func killSweep(t *testing.T, gateTag string) {
 	full := Options{Yes: true, CloudflareToken: cfToken, Node: testNode}
 	clean := newTestEnv(t)
 	clean.installUnit(serviceUnit)
+	if gateTag != "" {
+		clean.saveGateTag(gateTag)
+	}
 	h := newFakeHost(t)
 	clean.onHost(h)
 	require.NoError(t, clean.setup(full))
@@ -354,6 +367,9 @@ func TestSetupKilledAtAnyCommandLeavesNothingBehind(t *testing.T) {
 				t.Parallel()
 				e := newTestEnv(t)
 				e.installUnit(serviceUnit)
+				if gateTag != "" {
+					e.saveGateTag(gateTag)
+				}
 				host := newFakeHost(t)
 				host.killedAt, host.before = k, before
 				e.onHost(host)

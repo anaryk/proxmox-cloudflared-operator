@@ -440,6 +440,11 @@ func tagsAdded(existing, set string) []call {
 	}
 }
 
+// tagsRead is a look at the registered tags that changes none.
+func tagsRead(existing string) []call {
+	return []call{{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"` + existing + `"}`}}
+}
+
 func tagsKept() []call {
 	return []call{{line: "pvesh get /cluster/options --output-format json", out: `{"registered-tags":"cf-tunnel;cf-tunnel-managed"}`}}
 }

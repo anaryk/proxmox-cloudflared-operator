@@ -434,20 +434,26 @@ func tokenSecret(out string) (string, error) {
 }
 
 func (r *run) ensureTags(ctx context.Context) error {
+	settings, err := r.st.Settings()
+	if err != nil {
+		return fmt.Errorf("reading the settings: %w", err)
+	}
+	r.gate = settings.GateTag
+	wanted := wantedTags(r.gate)
 	register, err := r.choose(r.o.RegisterTags, true, fmt.Sprintf(
-		"Register the gate tags %s, so that only admins can set them on a guest?", strings.Join(gateTags(), " and ")))
+		"Register the gate tags %s, so that only admins can set them on a guest?", strings.Join(wanted, ", ")))
 	if err != nil {
 		return err
-	}
-	if !register {
-		r.ask.Info("registered tags: skipped; whoever may edit a guest can set the gate tags")
-		return nil
 	}
 	tags, err := r.registeredTags(ctx)
 	if err != nil {
 		return err
 	}
-	if missing := without(gateTags(), tags); len(missing) == 0 {
+	if !register {
+		r.warnOpenGate(tags)
+		return nil
+	}
+	if missing := without(wanted, tags); len(missing) == 0 {
 		r.ask.Info("registered tags: nothing needed")
 	} else {
 		if err := r.record(func(m *Manifest) { m.addTags(missing) }); err != nil {
@@ -466,4 +472,15 @@ func (r *run) ensureTags(ctx context.Context) error {
 	}
 	r.ask.Info("note: clones and restores of a guest keep its tags, so the clone of a published guest asks to be published too")
 	return nil
+}
+
+// warnOpenGate says what a declined registration leaves open: with the gate
+// tag not registered, whoever may edit the options of a guest can set it.
+func (r *run) warnOpenGate(registered []string) {
+	if slices.Contains(registered, r.gate) {
+		r.ask.Info("registered tags: skipped; the gate tag %s is registered already", r.gate)
+		return
+	}
+	r.ask.Warn("registered tags: skipped, and the gate tag %s is not registered: any user who may edit the options of a guest "+
+		"(VM.Config.Options) can set it and so publish the guest; pco setup --repair registers it", r.gate)
 }

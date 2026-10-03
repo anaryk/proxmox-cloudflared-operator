@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,8 +43,19 @@ const (
 	credentialLabel = "setup"
 )
 
-// gateTags are the tags setup registers, so that only an admin may set them.
-func gateTags() []string { return []string{"cf-tunnel", "cf-tunnel-managed"} }
+// defaultTags are the tags setup registers whatever the settings say, so that
+// only an admin may set them.
+func defaultTags() []string { return []string{"cf-tunnel", "cf-tunnel-managed"} }
+
+// wantedTags are the tags to register: the default ones and the gate tag of
+// the settings, when it is another.
+func wantedTags(gate string) []string {
+	tags := defaultTags()
+	if !slices.Contains(tags, gate) {
+		tags = append(tags, gate)
+	}
+	return tags
+}
 
 // ErrAborted is the error of an uninstall the operator did not confirm.
 var ErrAborted = errors.New("aborted: nothing was changed")
@@ -138,8 +150,9 @@ type run struct {
 	version     pveVersion
 	install     store.Install
 	manifest    Manifest
-	running     *bool // whether the daemon runs, once that is known
-	newPVEToken bool  // the Proxmox token was made in this run
+	running     *bool  // whether the daemon runs, once that is known
+	newPVEToken bool   // the Proxmox token was made in this run
+	gate        string // the gate tag of the settings, once they are read
 	// What a recovery did with the daemon: looked at it, and stopped it as
 	// it was running.
 	looked, stopped bool

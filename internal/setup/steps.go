@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -230,7 +231,7 @@ func (r *run) startService(ctx context.Context) error {
 
 func (r *run) nextSteps() {
 	r.ask.Info("next: tag a guest with %s and write its routes into its notes, then run pco plan to see what "+
-		"would change and pco apply to make it so", gateTags()[0])
+		"would change and pco apply to make it so", cmp.Or(r.gate, defaultTags()[0]))
 }
 
 // newInstallID returns 12 random lower-case hex characters.
