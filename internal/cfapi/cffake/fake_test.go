@@ -452,8 +452,18 @@ func TestRecordConflicts(t *testing.T) {
 		new       string
 		sameName  bool
 		apex      bool // the name is the zone itself
+		proxied   bool // the CNAMEs of the pair are proxied
 		wantClash bool
 	}{
+		// Cloudflare answers a proxied name with addresses of its own, and
+		// keeps a TXT record beside a proxied CNAME, as a real account showed.
+		{name: "txt then proxied cname", existing: "TXT", new: "CNAME", sameName: true, proxied: true},
+		{name: "proxied cname then txt", existing: "CNAME", new: "TXT", sameName: true, proxied: true},
+		{name: "mx then proxied cname", existing: "MX", new: "CNAME", sameName: true, proxied: true, wantClash: true},
+		{name: "proxied cname then mx", existing: "CNAME", new: "MX", sameName: true, proxied: true, wantClash: true},
+		{name: "a then proxied cname", existing: "A", new: "CNAME", sameName: true, proxied: true, wantClash: true},
+		{name: "proxied cname then aaaa", existing: "CNAME", new: "AAAA", sameName: true, proxied: true, wantClash: true},
+		{name: "proxied cname then proxied cname", existing: "CNAME", new: "CNAME", sameName: true, proxied: true, wantClash: true},
 		{name: "cname then cname", existing: "CNAME", new: "CNAME", sameName: true, wantClash: true},
 		{name: "cname then a", existing: "CNAME", new: "A", sameName: true, wantClash: true},
 		{name: "cname then aaaa", existing: "CNAME", new: "AAAA", sameName: true, wantClash: true},
@@ -483,13 +493,17 @@ func TestRecordConflicts(t *testing.T) {
 			if tt.apex {
 				existing = "example.com"
 			}
-			seeded := f.SeedRecord(zone, rec(tt.existing, existing, "old"))
+			old := rec(tt.existing, existing, "old")
+			old.Proxied = tt.proxied && tt.existing == "CNAME"
+			seeded := f.SeedRecord(zone, old)
 
 			name := "other.example.com"
 			if tt.sameName {
 				name = existing
 			}
-			got, err := f.CreateRecord(ctx, zone, rec(tt.new, name, "new"))
+			made := rec(tt.new, name, "new")
+			made.Proxied = tt.proxied && tt.new == "CNAME"
+			got, err := f.CreateRecord(ctx, zone, made)
 
 			if tt.wantClash {
 				require.True(t, cfapi.IsConflict(err), "got %v", err)
@@ -685,6 +699,16 @@ func TestUpdateRecordConflicts(t *testing.T) {
 	other.Name = "a.example.com"
 	_, err = f.UpdateRecord(ctx, zone, other)
 	require.True(t, cfapi.IsConflict(err))
+
+	// A TXT record stands beside a CNAME only while that is proxied.
+	f.SeedRecord(zone, rec("TXT", "a.example.com", "v"))
+	cn.Proxied = false
+	_, err = f.UpdateRecord(ctx, zone, cn)
+	require.True(t, cfapi.IsConflict(err))
+	txt := f.SeedRecord(zone, rec("TXT", "c.example.com", "w"))
+	txt.Name = "a.example.com"
+	_, err = f.UpdateRecord(ctx, zone, txt)
+	require.NoError(t, err, "moved beside the proxied CNAME")
 }
 
 func TestRecordFilters(t *testing.T) {

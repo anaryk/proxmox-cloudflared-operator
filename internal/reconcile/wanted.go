@@ -102,7 +102,10 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, p
 }
 
 // claim creates the CNAME of a wanted name that has no record of this install,
-// unless a record of someone else holds the name.
+// unless a record of someone else holds the name. Only an address record holds
+// it: a TXT record stays beside the proxied CNAME, as Cloudflare allows, and
+// is neither a conflict nor adopted; beside a record of another type the
+// create is tried and Cloudflare's answer decides.
 func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name string, p pointing) {
 	create := Action{Kind: CreateRecord, Target: name, Detail: pointDetail(z, p.target)}
 	if run.stopped != "" {

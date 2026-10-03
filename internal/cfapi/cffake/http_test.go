@@ -1152,6 +1152,9 @@ func createRecordScenarios() []scenario {
 		ok("CreateRecord", "a name in capitals", create(rec("A", "HOST.Example.COM.", "192.0.2.77"))),
 		ok("CreateRecord", "the apex written as @", create(rec("TXT", "@", "x"))),
 		ok("CreateRecord", "a CNAME at the apex next to a TXT record", create(rec("CNAME", "example.com", "app.example.com"))),
+		ok("CreateRecord", "a proxied CNAME next to a TXT record", create(cname("_pco-probe-x.example.com", "t1.cfargotunnel.com"))),
+		refused("CreateRecord", "a CNAME that is not proxied next to a TXT record", cfapi.IsConflict,
+			create(rec("CNAME", "_pco-probe-x.example.com", "t1.cfargotunnel.com"))),
 		ok("CreateRecord", "the ID and time of the record given are ignored", create(cfapi.Record{
 			ID: "mine", ModifiedOn: time.Unix(1, 0), Type: "A", Name: "host.example.com", Content: "192.0.2.77",
 		})),

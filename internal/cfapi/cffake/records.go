@@ -11,7 +11,7 @@ import (
 )
 
 // Cloudflare answers these two refusals with a 400 and a code. The first is
-// also the refusal of a CNAME next to any other record of its name.
+// also the refusal of a CNAME next to another record of its name.
 const (
 	messageNameExists = "An A, AAAA, or CNAME record with that host already exists."
 	messageIdentical  = "An identical record already exists."
@@ -80,10 +80,11 @@ func qualify(name, zone string) string {
 }
 
 // clashes reports whether Cloudflare would refuse to hold both records in the
-// zone of name apex. A CNAME stands alone: no other record may share its name.
-// At the apex, where Cloudflare flattens a CNAME, only an address record or
-// another CNAME clashes with one. Any number of A and AAAA records may share
-// a name.
+// zone of name apex. A CNAME stands alone: no other record may share its name,
+// but for a TXT record beside a proxied CNAME, a name Cloudflare answers with
+// addresses of its own. At the apex, where Cloudflare flattens a CNAME, only an
+// address record or another CNAME clashes with one. Any number of A and AAAA
+// records may share a name.
 func clashes(a, b cfapi.Record, apex string) bool {
 	switch {
 	case !strings.EqualFold(a.Name, b.Name) || !isType(a, "CNAME") && !isType(b, "CNAME"):
@@ -91,7 +92,11 @@ func clashes(a, b cfapi.Record, apex string) bool {
 	case strings.EqualFold(a.Name, apex):
 		return isAddress(a) && isAddress(b)
 	}
-	return true
+	return !textBesideProxied(a, b) && !textBesideProxied(b, a)
+}
+
+func textBesideProxied(cname, other cfapi.Record) bool {
+	return isType(cname, "CNAME") && cname.Proxied && isType(other, "TXT")
 }
 
 func isAddress(r cfapi.Record) bool {

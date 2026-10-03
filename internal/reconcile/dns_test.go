@@ -239,19 +239,78 @@ func TestDNSForeignRecordUntouched(t *testing.T) {
 	}
 }
 
-func TestDNSTextRecordAtTheNameRefusesTheCNAME(t *testing.T) {
+// Cloudflare keeps a TXT record beside a proxied CNAME.
+func TestDNSTextRecordAtTheNameStandsBesideTheCNAME(t *testing.T) {
 	f := newDNSFake()
 	txt := f.SeedRecord(zone1.ID, cfapi.Record{Type: "TXT", Name: "app.example.com", Content: "v=spf1 -all"})
 
 	res := newDNS(f, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
 
-	require.Equal(t, []string{"CreateRecord zone1 app.example.com"}, dnsWrites(f), "a text record is no address: the create is tried")
+	require.Empty(t, res.Problems)
+	require.Empty(t, res.Conflicts, "a text record is no conflict")
+	require.Equal(t, []string{"CreateRecord zone1 app.example.com"}, dnsWrites(f))
+	require.Equal(t, []Action{dnsAction(CreateRecord, "app.example.com", "", false)}, withoutDetail(res.Actions))
+	records := recordsIn(f, zone1.ID)
+	require.Len(t, records, 2)
+	txt.ModifiedOn = time.Time{}
+	require.Equal(t, txt, records[0], "the text record is not touched")
+	require.Equal(t, cfapi.Record{ID: records[1].ID, Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, TTL: 1, Comment: testMarker},
+		records[1])
+
+	// Once there, the CNAME is the run's own and the text record still nobody's.
+	res = newDNS(f, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+	require.Empty(t, res.Problems)
+	require.Empty(t, res.Conflicts)
+	require.Empty(t, res.Actions)
+	require.Len(t, dnsWrites(f), 1)
+}
+
+func TestDNSTextRecordBesideAnAddressRecordIsNoConflict(t *testing.T) {
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, cfapi.Record{Type: "TXT", Name: "app.example.com", Content: "v=spf1 -all"})
+	addr := f.SeedRecord(zone1.ID, cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10"})
+	before := f.RecordsIn(zone1.ID)
+
+	res := newDNS(f, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+
+	require.Equal(t, []Conflict{{Zone: "example.com", Name: "app.example.com", Type: "A", Content: addr.Content}}, res.Conflicts)
+	require.Empty(t, dnsWrites(f))
+	require.Equal(t, before, f.RecordsIn(zone1.ID))
+}
+
+func TestDNSAdoptionLeavesTheTextRecordOfTheName(t *testing.T) {
+	f := newDNSFake()
+	txt := f.SeedRecord(zone1.ID, cfapi.Record{Type: "TXT", Name: "app.example.com", Content: "v=spf1 -all"})
+	addr := f.SeedRecord(zone1.ID, cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10"})
+	in := dnsIn("app.example.com")
+	in.Adopt = map[string]bool{"app.example.com": true}
+
+	res := newDNS(f, &memStore{}, t0).Run(context.Background(), in, Enforce)
+
+	require.Empty(t, res.Problems)
+	require.Equal(t, []string{"DeleteRecord zone1 " + addr.ID, "CreateRecord zone1 app.example.com"}, dnsWrites(f))
+	require.Equal(t, []cfapi.Record{addr}, res.Replaced)
+	records := f.RecordsIn(zone1.ID)
+	require.Len(t, records, 2)
+	require.Equal(t, txt, records[0])
+	require.Equal(t, "CNAME", records[1].Type)
+}
+
+// Any other record of someone else at the name is left to Cloudflare, as
+// before: the create is tried, and Cloudflare refuses a CNAME beside it.
+func TestDNSOtherRecordAtTheNameRefusesTheCNAME(t *testing.T) {
+	f := newDNSFake()
+	mx := f.SeedRecord(zone1.ID, cfapi.Record{Type: "MX", Name: "app.example.com", Content: "mail.example.com"})
+
+	res := newDNS(f, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+
+	require.Equal(t, []string{"CreateRecord zone1 app.example.com"}, dnsWrites(f))
 	require.Len(t, res.Problems, 1)
 	require.Contains(t, res.Problems[0], "app.example.com in zone example.com: creating the record")
 	require.Len(t, res.Actions, 1)
-	require.False(t, res.Actions[0].Applied)
-	require.Contains(t, res.Actions[0].Held, "(codes 81053)", "Cloudflare refuses a CNAME next to any other record")
-	require.Equal(t, []cfapi.Record{txt}, f.RecordsIn(zone1.ID))
+	require.Contains(t, res.Actions[0].Held, "(codes 81053)")
+	require.Empty(t, res.Conflicts)
+	require.Equal(t, []cfapi.Record{mx}, f.RecordsIn(zone1.ID))
 }
 
 func TestDNSOwnedAddressRecordAtWantedName(t *testing.T) {
