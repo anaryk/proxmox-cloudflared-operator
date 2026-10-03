@@ -599,7 +599,9 @@ type env struct {
 	// startOnly is what the engine is told of the settings read only at the
 	// start of the daemon.
 	startOnly func(store.Settings) []string
-	log       zerolog.Logger
+	// problems are the lines the engine is told every cycle reports.
+	problems []string
+	log      zerolog.Logger
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -660,6 +662,7 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		Connectors: conns,
 		Egress:     e.egr,
 		StartOnly:  e.startOnly,
+		Problems:   e.problems,
 		NewClient:  e.newClient,
 		Node:       testNode,
 		Now:        e.clock.now,

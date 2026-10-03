@@ -97,6 +97,7 @@ func (e *Engine) newCycle(ctx context.Context) *cycleRun {
 // run goes through the steps of a cycle in order. A step that cannot go on
 // safely ends the cycle; what it found so far is the state.
 func (c *cycleRun) run() State {
+	c.st.Problems = append(c.st.Problems, c.e.d.Problems...)
 	c.expireRequests()
 	c.noteEgress()
 	if c.prepare() && c.inspect() {

@@ -46,6 +46,7 @@ func testEnv() env {
 	e.version = cliVersion
 	e.stdinTerminal = func(io.Reader) (int, bool) { return 0, false }
 	e.readPassword = func(int) ([]byte, error) { panic("no terminal in this test") }
+	e.getenv = func(string) string { return "" }
 	return e
 }
 

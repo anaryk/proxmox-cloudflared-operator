@@ -45,10 +45,12 @@ func (a *app) daemonCmd() *cobra.Command {
 			if err != nil || level == zerolog.NoLevel {
 				return fmt.Errorf("unknown log level %q: want trace, debug, info, warn or error", logLevel)
 			}
+			override, err := a.cloudflareOverride()
+			if err != nil {
+				return err
+			}
 			log := a.daemonLog(cmd.ErrOrStderr(), level)
-			ctx, stop := signalContext(cmd.Context(), osSignals{}, os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			return daemon.Run(ctx, daemon.Config{
+			cfg := daemon.Config{
 				Version:    a.version,
 				PVEURL:     pveURL,
 				PVECAFile:  pveCA,
@@ -56,7 +58,17 @@ func (a *app) daemonCmd() *cobra.Command {
 				SocketPath: a.socket,
 				Paths:      paths,
 				Log:        log,
-			}, a.daemon)
+			}
+			deps := a.daemon
+			if override != "" {
+				line := overrideLine(override)
+				log.Warn().Msg(line)
+				cfg.Problems = append(cfg.Problems, line)
+				deps.CloudflareURL = override
+			}
+			ctx, stop := signalContext(cmd.Context(), osSignals{}, os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return daemon.Run(ctx, cfg, deps)
 		},
 	}
 	defaults := store.DefaultPaths()

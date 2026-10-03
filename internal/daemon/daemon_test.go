@@ -339,6 +339,17 @@ func TestTheDaemonLogsTheProfileAtStart(t *testing.T) {
 	require.Contains(t, w.logs.String(), `"message":"pco daemon starting"`)
 }
 
+func TestTheProblemsTheDaemonIsStartedWithAreInEveryState(t *testing.T) {
+	const line = "started with something to see"
+	w := newWorld(t)
+	w.cfg.Problems = []string{line}
+	d := w.start()
+
+	at := d.await(func(st engine.State) bool { return st.Complete && containsProblem(st, line) }).At
+	require.NoError(t, d.client.Sync(t.Context()))
+	d.await(func(st engine.State) bool { return st.At.After(at) && containsProblem(st, line) })
+}
+
 func containsProblem(st engine.State, text string) bool {
 	for _, p := range st.Problems {
 		if strings.Contains(p, text) {

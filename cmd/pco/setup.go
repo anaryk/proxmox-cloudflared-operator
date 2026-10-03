@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -158,15 +157,21 @@ func (a *app) prompter(cmd *cobra.Command, yes bool) (*cliPrompter, error) {
 // nodeSetup returns the setup of this node, which works on its store
 // directly and not through the daemon.
 func (a *app) nodeSetup(p setup.Prompter) (*setup.Setup, error) {
+	override, err := a.cloudflareOverride()
+	if err != nil {
+		return nil, err
+	}
 	if os.Geteuid() != 0 {
 		return nil, errors.New("this command changes the node: run it as root")
+	}
+	if override != "" {
+		p.Warn("%s", overrideLine(override))
 	}
 	st, err := store.Open(store.DefaultPaths())
 	if err != nil {
 		return nil, fmt.Errorf("opening the store: %w", err)
 	}
-	newClient := func(token string) (cfapi.API, error) { return cfapi.New(cfapi.Options{Token: token}) }
-	return setup.New(setup.NewHostRunner(), p, st, newClient, a.now, rand.Reader), nil
+	return setup.New(setup.NewHostRunner(), p, st, cloudflareClients(override), a.now, rand.Reader), nil
 }
 
 // cliPrompter is the operator at the terminal. What it prints is cleaned as

@@ -81,6 +81,10 @@ type Deps struct {
 	// read once, at its start, and does not apply until it starts again; a
 	// cycle reports them. Nil when there are none.
 	StartOnly func(s store.Settings) []string
+
+	// Problems are problem lines that every cycle reports: what the daemon
+	// was started with that must not go unnoticed.
+	Problems []string
 }
 
 // Errors the admin actions return, for callers that map them to answers.

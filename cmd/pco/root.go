@@ -47,6 +47,7 @@ type env struct {
 	readPassword  func(fd int) ([]byte, error)
 	// stderrTerminal says whether w, where the daemon logs, is a terminal.
 	stderrTerminal func(w io.Writer) bool
+	getenv         func(name string) string
 
 	// daemon is what pco daemon is run with: the parts of the daemon that a
 	// test replaces.
@@ -70,6 +71,7 @@ func defaultEnv() env {
 			f, ok := w.(*os.File)
 			return ok && term.IsTerminal(int(f.Fd()))
 		},
+		getenv: os.Getenv,
 	}
 }
 

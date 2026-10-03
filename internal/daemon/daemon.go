@@ -46,6 +46,9 @@ type Config struct {
 	SocketPath string
 	Paths      store.Paths
 	Log        zerolog.Logger
+	// Problems are problem lines that every cycle reports, about how the
+	// daemon was started.
+	Problems []string
 }
 
 // Deps are the parts of the daemon that a test replaces. The zero value is what
@@ -304,6 +307,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Now:        deps.Now,
 		Log:        log,
 		LocalDir:   cfg.Paths.Local,
+		Problems:   cfg.Problems,
 	})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("building the engine: %w", err)
