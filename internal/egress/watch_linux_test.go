@@ -185,6 +185,35 @@ func TestLinuxWatch(t *testing.T) {
 	})
 }
 
+// A machine on another port takes the guest's other MAC and the address: the
+// neighbour table may give the address that MAC, which the guest has too, but
+// the bridge learns it on a port the MAC does not belong on.
+func TestLinuxWatchSeesAStrangerWithTheGuestsOtherMAC(t *testing.T) {
+	const otherMAC = "bc:24:11:79:00:09"
+	lab := newWatchLab(t)
+	lab.speak(t, lab.guest)
+	lab.learned(t, watchMAC, "wport0")
+	lab.watch(t, map[netip.Addr]Pin{addr(watchGuest): {
+		MAC: mac(t, watchMAC), Bridge: watchBridge, Port: "wport0",
+		Own: []OwnMAC{{MAC: mac(t, otherMAC), Ports: []string{"wport0"}}},
+	}})
+	lab.still(t)
+
+	lab.machine(t, lab.other, otherMAC)
+	start := time.Now()
+	lab.speak(t, lab.other)
+
+	require.Equal(t, addr(watchGuest), lab.moved(t, watchWithin))
+	t.Logf("seen after %s", time.Since(start))
+	br, err := lab.h.LinkByName(watchBridge)
+	require.NoError(t, err)
+	require.NoError(t, lab.h.NeighSet(&netlink.Neigh{
+		LinkIndex: br.Attrs().Index, Family: netlink.FAMILY_V4, State: netlink.NUD_REACHABLE,
+		IP: net.ParseIP(watchGuest), HardwareAddr: mac(t, otherMAC),
+	}))
+	lab.still(t)
+}
+
 // A watch that starts after the MAC moved sees it in what the tables hold.
 func TestLinuxWatchSeesWhatMovedBeforeItStarted(t *testing.T) {
 	lab := newWatchLab(t)

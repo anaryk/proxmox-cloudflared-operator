@@ -63,18 +63,11 @@ func (c *cycleRun) watch() {
 		}
 		w.routes[t.Addr] = append(w.routes[t.Addr], watchedRoute{route: rt, binding: *res.Binding})
 		p, pinned := pins[t.Addr]
-		switch {
-		case !pinned:
+		if !pinned {
 			p = egress.Pin{MAC: hw, Bridge: res.Binding.Bridge, Port: res.Binding.Port}
-		case p.MAC.String() != hw.String():
-			p.Own = append(p.Own, hw)
 		}
 		if g, ok := c.snap.Guest(*rt.Guest); ok {
-			for _, n := range g.NICs {
-				if own, err := net.ParseMAC(n.MAC); err == nil && own.String() != p.MAC.String() {
-					p.Own = append(p.Own, own)
-				}
-			}
+			p.Own = ownMACs(p, g, res.Binding.Ports)
 		}
 		pins[t.Addr] = p
 	}
@@ -82,6 +75,27 @@ func (c *cycleRun) watch() {
 	c.e.egMu.Lock()
 	c.e.pins = pins
 	c.e.egMu.Unlock()
+}
+
+// ownMACs adds to the other MACs of a pin those of the guest's NICs, each
+// with the ports of the bridge it belongs on: the one the proof found it on,
+// or else those Proxmox gives its NIC. Only the pin's bridge is watched, and
+// a MAC learned there on another port has moved.
+func ownMACs(p egress.Pin, g model.Guest, placed map[string]string) []egress.OwnMAC {
+	own := p.Own
+	for _, n := range g.NICs {
+		hw, err := net.ParseMAC(n.MAC)
+		if err != nil || hw.String() == p.MAC.String() ||
+			slices.ContainsFunc(own, func(o egress.OwnMAC) bool { return o.MAC.String() == hw.String() }) {
+			continue
+		}
+		ports := resolve.GuestPorts(g.Ref.VMID, n.Index)
+		if port := placed[hw.String()]; port != "" {
+			ports = []string{port}
+		}
+		own = append(own, egress.OwnMAC{MAC: hw, Ports: ports})
+	}
+	return own
 }
 
 // Bound returns the pins of the addresses the last cycle served on a binding,

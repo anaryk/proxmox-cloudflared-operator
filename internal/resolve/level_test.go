@@ -248,7 +248,7 @@ func atLevel(b *Binding, level Level) *Binding {
 // onPort returns a copy of b whose MAC was placed on web-1's port of vmbr0.
 func onPort(b *Binding) *Binding {
 	c := *b
-	c.Bridge, c.Port = "vmbr0", "tap101i0"
+	c.Bridge, c.Port, c.Ports = "vmbr0", "tap101i0", map[string]string{mac0: "tap101i0"}
 	return &c
 }
 

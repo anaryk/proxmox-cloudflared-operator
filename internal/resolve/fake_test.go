@@ -327,7 +327,7 @@ func unplaced(b *Binding) *Binding {
 		return nil
 	}
 	c := *b
-	c.Since, c.Bridge, c.Port = time.Time{}, "", ""
+	c.Since, c.Bridge, c.Port, c.Ports = time.Time{}, "", "", nil
 	return &c
 }
 

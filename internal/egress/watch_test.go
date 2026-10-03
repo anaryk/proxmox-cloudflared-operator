@@ -16,9 +16,12 @@ func mac(t *testing.T, s string) net.HardwareAddr {
 }
 
 func TestWhatAMoveIs(t *testing.T) {
-	web, nic1, stranger := "bc:24:11:00:00:01", "bc:24:11:00:00:02", "bc:24:11:ff:ff:01"
+	web, nic1, nic2, stranger := "bc:24:11:00:00:01", "bc:24:11:00:00:02", "bc:24:11:00:00:04", "bc:24:11:ff:ff:01"
 	pins := map[netip.Addr]Pin{
-		addr("10.20.0.10"): {MAC: mac(t, web), Bridge: "vmbr0", Port: "tap101i0", Own: []net.HardwareAddr{mac(t, nic1)}},
+		addr("10.20.0.10"): {MAC: mac(t, web), Bridge: "vmbr0", Port: "tap101i0", Own: []OwnMAC{
+			{MAC: mac(t, nic1), Ports: []string{"tap101i1"}},
+			{MAC: mac(t, nic2)},
+		}},
 		addr("10.20.0.11"): {MAC: mac(t, web), Bridge: "vmbr0", Port: "tap101i0"},
 		addr("10.30.0.10"): {MAC: mac(t, "bc:24:11:00:00:03")},
 	}
@@ -33,6 +36,14 @@ func TestWhatAMoveIs(t *testing.T) {
 			entry: entry{addr: addr("10.20.0.10"), mac: mac(t, web)}},
 		{name: "the neighbour table gives it another MAC of its guest",
 			entry: entry{addr: addr("10.20.0.10"), mac: mac(t, nic1)}},
+		{name: "the bridge learns another MAC of the guest on another port",
+			entry: entry{mac: mac(t, nic1), bridge: "vmbr0", port: "veth200i0"}, moved: []netip.Addr{addr("10.20.0.10")}},
+		{name: "the bridge learns another MAC of the guest on its port",
+			entry: entry{mac: mac(t, nic1), bridge: "vmbr0", port: "tap101i1"}},
+		{name: "another bridge learns another MAC of the guest",
+			entry: entry{mac: mac(t, nic1), bridge: "vmbr1", port: "veth200i0"}},
+		{name: "a MAC of the guest without a port is not watched in the forwarding table",
+			entry: entry{mac: mac(t, nic2), bridge: "vmbr0", port: "veth200i0"}},
 		{name: "a pin without a port is watched in the neighbour table",
 			entry: entry{addr: addr("10.30.0.10"), mac: mac(t, stranger)}, moved: []netip.Addr{addr("10.30.0.10")}},
 		{name: "an address nothing is bound to",

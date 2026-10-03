@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
 // boundSince returns a copy of b bound since at.
@@ -73,6 +75,21 @@ func TestResolveABindingOfAnOlderVersionIsBoundSinceItsLastProof(t *testing.T) {
 	require.Equal(t, prev.VerifiedAt, res.Binding.Since)
 }
 
+// A guest with two NICs on the bridge answers from both: the port of each is
+// kept, for the watch.
+func TestResolveKeepsThePortOfEveryMACThatAnswered(t *testing.T) {
+	s := newScenario(t)
+	s.web().NICs = []model.NIC{nicOn(0, mac0, "vmbr0", 0, "10.20.0.10"), nicOn(1, mac1, "vmbr0", 0)}
+	s.prober.arp[arpKey("vmbr0", "10.20.0.10")] = []string{mac0, mac1}
+	s.prober.fdb[fdbKey("vmbr0", 0, mac1)] = []string{"fwpr101p1"}
+
+	res := s.resolve(t, webRoute(), nil)
+
+	requireServed(t, res, "10.20.0.10", t0)
+	require.Equal(t, map[string]string{mac0: "tap101i0", mac1: "fwpr101p1"}, res.Binding.Ports)
+	require.Equal(t, "tap101i0", res.Binding.Port)
+}
+
 func TestResolveKeepsWhenAndWhereTheBindingWasProven(t *testing.T) {
 	s := newScenario(t)
 	prev := boundSince(boundTo("10.20.0.10"), t0.Add(-time.Hour))
@@ -82,6 +99,7 @@ func TestResolveKeepsWhenAndWhereTheBindingWasProven(t *testing.T) {
 	require.Equal(t, &Binding{
 		Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip("10.20.0.10"), MAC: mac0,
 		VerifiedAt: t0, Level: LevelPort, Since: t0.Add(-time.Hour), Bridge: "vmbr0", Port: "tap101i0",
+		Ports: map[string]string{mac0: "tap101i0"},
 	}, res.Binding)
 
 	t.Run("and nowhere at a lower level", func(t *testing.T) {
@@ -93,5 +111,6 @@ func TestResolveKeepsWhenAndWhereTheBindingWasProven(t *testing.T) {
 		require.Equal(t, LevelObserved, res.Level)
 		require.Empty(t, res.Binding.Bridge)
 		require.Empty(t, res.Binding.Port)
+		require.Empty(t, res.Binding.Ports)
 	})
 }

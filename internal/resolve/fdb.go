@@ -57,7 +57,7 @@ func (a *attempt) onOwnPort(mac, bridge string, ports []string, indexes []int) o
 		o = lost("MAC %s not seen on bridge %s", mac, bridge)
 	case len(ports) > 1:
 		o = lost("MAC %s is on several ports: %s", mac, strings.Join(ports, ", "))
-	case !slices.Contains(guestPorts(a.guest.Ref.VMID, indexes), ports[0]):
+	case !slices.Contains(GuestPorts(a.guest.Ref.VMID, indexes...), ports[0]):
 		o = lost("MAC %s is on port %s, not on the guest's own port", mac, ports[0])
 	default:
 		return outcome{}
@@ -125,9 +125,9 @@ func (a *attempt) fdbPorts(ctx context.Context, bridge string, vlan int, mac str
 	return ports, outcome{}
 }
 
-// guestPorts names the bridge ports Proxmox creates for the guest NICs with
-// the given indexes.
-func guestPorts(vmid int, indexes []int) []string {
+// GuestPorts names the bridge ports Proxmox creates for the NICs of a guest
+// with the given indexes.
+func GuestPorts(vmid int, indexes ...int) []string {
 	out := make([]string, 0, 3*len(indexes))
 	for _, n := range indexes {
 		out = append(out,

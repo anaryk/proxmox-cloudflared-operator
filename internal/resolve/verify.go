@@ -98,9 +98,9 @@ func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate)
 			return proof{}, o
 		}
 		p.level = wireLevel(macs, placed)
-		if port := placed[normalMAC(c.NIC.MAC)]; p.level == LevelPort && port != "" {
+		if p.level == LevelPort {
 			p.bridge, _ = fdbOf(iface, c.NIC)
-			p.port = port
+			p.port, p.ports = placed[normalMAC(c.NIC.MAC)], placed
 		}
 	}
 	for _, mac := range append([]string{c.NIC.MAC}, macs...) {

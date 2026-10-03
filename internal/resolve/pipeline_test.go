@@ -260,7 +260,7 @@ func TestPipelineFirewalledGuestOnAVLAN(t *testing.T) {
 	require.Equal(t, &Binding{
 		Owner: "qemu/101", Hostname: "web.example.com", Guest: "qemu/101",
 		Addr: ip("10.30.0.11"), MAC: webMAC, VerifiedAt: t0, Level: LevelPort,
-		Since: t0, Bridge: "vmbr0", Port: "fwpr101p0",
+		Since: t0, Bridge: "vmbr0", Port: "fwpr101p0", Ports: map[string]string{webMAC: "fwpr101p0"},
 	}, p.bindings["web.example.com"], "the firewall bridge's port on the VLAN-aware bridge")
 	require.Equal(t, []probeCall{
 		{op: "interfaces"},

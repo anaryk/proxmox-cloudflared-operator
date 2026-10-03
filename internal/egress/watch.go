@@ -15,7 +15,15 @@ type Pin struct {
 	MAC    net.HardwareAddr
 	Bridge string
 	Port   string
-	Own    []net.HardwareAddr
+	Own    []OwnMAC
+}
+
+// OwnMAC is another MAC of a bound guest, with the ports of the bridge of
+// the pin it belongs on: the one the proof found it on, or else those of its
+// NIC. One without ports is not watched in the forwarding table.
+type OwnMAC struct {
+	MAC   net.HardwareAddr
+	Ports []string
 }
 
 // entry is a notification of the neighbour table of the node, or of the
@@ -29,7 +37,7 @@ type entry struct {
 
 // moved returns, sorted, the bound addresses e shows moved: the neighbour
 // table gives one of them a MAC its guest does not have, or the bridge of a
-// pin learned the pinned MAC on another port than the pinned one.
+// pin learned one of the guest's MACs on another port than its own.
 func (e entry) moved(pins map[netip.Addr]Pin) []netip.Addr {
 	if len(e.mac) == 0 {
 		return nil
@@ -37,16 +45,27 @@ func (e entry) moved(pins map[netip.Addr]Pin) []netip.Addr {
 	var out []netip.Addr
 	if e.addr.IsValid() {
 		p, ok := pins[e.addr]
-		if ok && !bytes.Equal(p.MAC, e.mac) && !slices.ContainsFunc(p.Own, func(m net.HardwareAddr) bool { return bytes.Equal(m, e.mac) }) {
+		if ok && !bytes.Equal(p.MAC, e.mac) && !slices.ContainsFunc(p.Own, func(o OwnMAC) bool { return bytes.Equal(o.MAC, e.mac) }) {
 			out = append(out, e.addr)
 		}
 		return out
 	}
 	for addr, p := range pins {
-		if p.Port != "" && p.Bridge == e.bridge && bytes.Equal(p.MAC, e.mac) && p.Port != e.port {
+		if p.Bridge == e.bridge && p.learnedElsewhere(e) {
 			out = append(out, addr)
 		}
 	}
 	slices.SortFunc(out, netip.Addr.Compare)
 	return out
+}
+
+// learnedElsewhere reports whether an entry of the forwarding table of the
+// pin's bridge puts one of the guest's MACs on a port it does not belong on.
+func (p Pin) learnedElsewhere(e entry) bool {
+	if p.Port != "" && bytes.Equal(p.MAC, e.mac) && p.Port != e.port {
+		return true
+	}
+	return slices.ContainsFunc(p.Own, func(o OwnMAC) bool {
+		return len(o.Ports) > 0 && bytes.Equal(o.MAC, e.mac) && !slices.Contains(o.Ports, e.port)
+	})
 }

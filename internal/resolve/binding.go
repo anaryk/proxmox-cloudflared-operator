@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"maps"
 	"net/netip"
 	"slices"
 	"time"
@@ -39,13 +40,17 @@ type Binding struct {
 	// it was learned on. Both are empty for a proof that placed it nowhere.
 	Bridge string `json:"bridge,omitempty"`
 	Port   string `json:"port,omitempty"`
+	// Ports are, by MAC, the ports of Bridge that same proof found every MAC
+	// that answered for the address on, the NIC's own among them.
+	Ports map[string]string `json:"ports,omitempty"`
 }
 
 // proof is what proved the identity of a candidate: its level, and where the
-// forwarding table placed the MAC of its NIC, if it did.
+// forwarding table placed the MAC of its NIC and every MAC that answered.
 type proof struct {
 	level        Level
 	bridge, port string
+	ports        map[string]string
 }
 
 func guestOf(route model.Route) string {
@@ -67,6 +72,7 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 		Since:      now,
 		Bridge:     p.bridge,
 		Port:       p.port,
+		Ports:      maps.Clone(p.ports),
 	}
 }
 
@@ -74,6 +80,7 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 func (b *Binding) proven(now time.Time, p proof) *Binding {
 	c := b.clone()
 	c.VerifiedAt, c.Withdrawn, c.Level, c.Bridge, c.Port = now, false, p.level, p.bridge, p.port
+	c.Ports = maps.Clone(p.ports)
 	return c
 }
 
@@ -144,6 +151,7 @@ func (b *Binding) clone() *Binding {
 		since := *b.FailingSince
 		c.FailingSince = &since
 	}
+	c.Ports = maps.Clone(b.Ports)
 	return &c
 }
 

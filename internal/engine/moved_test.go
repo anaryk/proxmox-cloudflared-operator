@@ -75,22 +75,42 @@ func watching(t *testing.T) (*env, *timers) {
 	return e, tm
 }
 
+func hardware(t *testing.T, s string) net.HardwareAddr {
+	t.Helper()
+	hw, err := net.ParseMAC(s)
+	require.NoError(t, err)
+	return hw
+}
+
 func TestTheWatchIsGivenThePinsOfTheServedAddresses(t *testing.T) {
+	const second, third = "bc:24:11:00:00:09", "bc:24:11:00:00:0a"
 	e := newEnv(t)
 	web := guest(101, "web-1", "www.example.com -> :8080")
-	web.NICs = []model.NIC{{Index: 0, MAC: testMAC, Bridge: "vmbr0"}, {Index: 1, MAC: "bc:24:11:00:00:09", Bridge: "vmbr0"}}
+	web.NICs = []model.NIC{
+		{Index: 0, MAC: testMAC, Bridge: "vmbr0"},
+		{Index: 1, MAC: second, Bridge: "vmbr0"},
+		{Index: 2, MAC: third, Bridge: "vmbr1"},
+	}
 	e.inv.set(snapshot(web, guest(102, "api", "api.example.com -> 10.0.0.20:8080")))
 	e.res.setLevel("api.example.com", resolve.LevelObserved)
+	e.res.place("vmbr0", map[string]string{testMAC: "tap101i0", second: "fwpr101p1"})
 
 	e.cycle()
 
-	hw, err := net.ParseMAC(testMAC)
-	require.NoError(t, err)
-	other, err := net.ParseMAC("bc:24:11:00:00:09")
-	require.NoError(t, err)
 	require.Equal(t, map[netip.Addr]egress.Pin{
-		guestAddr: {MAC: hw, Own: []net.HardwareAddr{other}},
+		guestAddr: {MAC: hardware(t, testMAC), Bridge: "vmbr0", Port: "tap101i0", Own: []egress.OwnMAC{
+			{MAC: hardware(t, second), Ports: []string{"fwpr101p1"}},
+			{MAC: hardware(t, third), Ports: []string{"tap101i2", "fwpr101p2", "veth101i2"}},
+		}},
 	}, e.eng.Bound(), "a route held back by the minimum is not served, and not watched")
+
+	t.Run("nor is a withdrawn one", func(t *testing.T) {
+		e.res.stop("www.example.com", "guest is not running")
+		e.clock.advance(20 * time.Second)
+		e.cycle()
+
+		require.Empty(t, e.eng.Bound())
+	})
 }
 
 func TestAnAddressWhoseMACMovedIsBlockedAtOnceAndComesBackOnceVerified(t *testing.T) {

@@ -133,6 +133,8 @@ type fakeResolver struct {
 	rejected    map[string]string        // hostname -> reason
 	stopped     map[string]string        // hostname -> reason
 	levels      map[string]resolve.Level // hostname -> level
+	bridge      string                   // where every binding's MACs were placed, by MAC
+	placed      map[string]string
 	calls       int
 	denied      []netip.Addr // the node addresses the last denylist refused
 	deadlines   []time.Time
@@ -195,8 +197,20 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 			Owner: route.Owner(), Hostname: route.Hostname, Guest: route.Guest.String(),
 			Addr: addr, MAC: testMAC, VerifiedAt: f.now(), Level: level,
 		}
+		if f.placed != nil {
+			b := res.Binding
+			b.Bridge, b.Port, b.Ports = f.bridge, f.placed[testMAC], maps.Clone(f.placed)
+		}
 	}
 	return res
+}
+
+// place makes every binding say that its MACs were found on these ports of
+// bridge.
+func (f *fakeResolver) place(bridge string, ports map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bridge, f.placed = bridge, ports
 }
 
 // stop makes the guest of host one that cannot be checked, for reason.
