@@ -92,7 +92,11 @@ func (r *run) checkAndStore(ctx context.Context, creds []store.Credential) error
 		return fmt.Errorf("checking the token: %w", err)
 	}
 	r.showReport(report)
-	if !report.Usable {
+	switch {
+	case report.Unanswered():
+		r.ask.Warn("credentials: Cloudflare did not answer every check, so the token is not stored; %s", addLater)
+		return nil
+	case !report.Usable:
 		r.ask.Warn("credentials: the token cannot do what pco needs, so it is not stored; grant what is missing and %s", addLater)
 		return nil
 	}
@@ -112,7 +116,11 @@ func (r *run) checkAndStore(ctx context.Context, creds []store.Credential) error
 func (r *run) showReport(report credentials.Report) {
 	for _, c := range report.Checks {
 		mark := "✓"
-		if !c.OK {
+		switch {
+		case c.OK:
+		case c.Unanswered:
+			mark = "?"
+		default:
 			mark = "✗"
 		}
 		what := string(c.Capability)
@@ -120,8 +128,8 @@ func (r *run) showReport(report credentials.Report) {
 			what += " on " + c.Scope
 		}
 		r.ask.Info("  %s %s", mark, what)
-		if !c.OK && c.Detail != "" {
-			r.ask.Info("      %s", c.Detail)
+		if reason := c.Reason(); reason != "" {
+			r.ask.Info("      %s", reason)
 		}
 	}
 	for _, name := range report.Leftovers {

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -358,6 +359,21 @@ func TestSetupDoesNotStoreAnUnusableToken(t *testing.T) {
 	require.Empty(t, e.credentials())
 	e.requireShown("dns.write on example.com")
 	e.requireShown("not stored")
+	e.requireNoSecret()
+}
+
+func TestSetupSaysWhenCloudflareDidNotAnswer(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit("pco.service")
+	e.cf.FailNext("zones", 10, &cfapi.Error{Status: http.StatusServiceUnavailable})
+	e.script(freshInstall()...)
+
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
+	e.done()
+
+	require.Empty(t, e.credentials())
+	e.requireShown("Cloudflare did not answer")
+	require.NotContains(t, e.ask.text(), "grant what is missing")
 	e.requireNoSecret()
 }
 
