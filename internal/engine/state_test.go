@@ -447,14 +447,12 @@ func TestResolutionRunsAFewAtATimeEachWithItsOwnDeadline(t *testing.T) {
 	e := newEnv(t)
 	deadlines := &timeouts{}
 	e.eng.timeout = deadlines.withTimeout
-	routes := make([]string, resolveConcurrency+4)
-	for i := range routes {
-		routes[i] = fmt.Sprintf("h%02d.example.com -> :80", i)
-	}
-	e.inv.set(snapshot(guest(101, "web-1", routes...)))
+	// One route a guest: a guest may name only so many hostnames.
+	guests := many(resolveConcurrency + 4)
+	e.inv.set(snapshot(guests...))
 	var mu sync.Mutex
 	inflight, most := 0, 0
-	started := make(chan struct{}, len(routes))
+	started := make(chan struct{}, len(guests))
 	release := make(chan struct{})
 	e.res.hook(func() {
 		mu.Lock()
@@ -476,10 +474,10 @@ func TestResolutionRunsAFewAtATimeEachWithItsOwnDeadline(t *testing.T) {
 	close(release)
 	st := <-done
 
-	require.Len(t, st.Routes, len(routes))
+	require.Len(t, st.Routes, len(guests))
 	require.Equal(t, resolveConcurrency, most, "so many at a time, never more")
-	require.Len(t, e.res.deadlines, len(routes), "each call has a deadline of its own")
-	require.Equal(t, len(routes), deadlines.count(15*time.Second))
+	require.Len(t, e.res.deadlines, len(guests), "each call has a deadline of its own")
+	require.Equal(t, len(guests), deadlines.count(15*time.Second))
 	require.Equal(t, 1, deadlines.count(60*time.Second), "the refresh has one too")
 }
 
