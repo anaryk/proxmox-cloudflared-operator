@@ -20,6 +20,9 @@ PrivateTmp=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 LockPersonality=yes
+ProtectProc=invisible
+# The daemon holds the Cloudflare tokens in memory; no core dump keeps them.
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

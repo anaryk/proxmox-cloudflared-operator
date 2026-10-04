@@ -311,6 +311,14 @@ func TestTheConnectorRunsConfinedAsItsOwnUser(t *testing.T) {
 	require.Equal(t, []string{""}, u["Service"]["CapabilityBoundingSet"])
 	require.Equal(t, []string{""}, u["Service"]["AmbientCapabilities"])
 	require.Equal(t, []string{"AF_INET AF_INET6 AF_UNIX AF_NETLINK"}, u["Service"]["RestrictAddressFamilies"])
+	// The connectors of all tunnels share the user: what one could do to the
+	// kernel, to memory it maps or to the processes of the others is cut down.
+	for key, value := range map[string]string{
+		"SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM", "RestrictRealtime": "yes",
+		"MemoryDenyWriteExecute": "yes", "ProtectProc": "invisible", "ProcSubset": "pid",
+	} {
+		require.Equal(t, []string{value}, u["Service"][key], key)
+	}
 }
 
 func TestAnEnvFileWithoutTheEdgeIPVersionPassesTheDefault(t *testing.T) {

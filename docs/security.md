@@ -16,14 +16,18 @@ them.
 The daemon is a root-equivalent part of the node. It runs as root, has the Cloudflare
 tokens, manages systemd units, and answers a socket. Anyone who can make it do things has
 the node. Its unit applies a few protections (`ProtectHome`, `PrivateTmp`,
-`ProtectKernelModules`, `ProtectControlGroups`, `LockPersonality`) but no more, because
-it needs systemd, nftables, raw sockets and files under `/var/lib` and `/etc/pve`.
+`ProtectKernelModules`, `ProtectControlGroups`, `LockPersonality`, `ProtectProc=invisible`)
+and writes no core dump (`LimitCORE=0`), since its memory holds the tokens, but no more,
+because it needs systemd, nftables, raw sockets and files under `/var/lib` and `/etc/pve`.
 
 The connector is where the confinement is. Its unit runs as `pco-connector` with
 `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`,
 `PrivateDevices`, the kernel-protection options, an empty capability set,
-`RestrictAddressFamilies` limited to IPv4, IPv6, unix sockets and netlink, and
-`RestrictNamespaces`. It cannot see `/etc/cloudflared`, `/usr/local/etc/cloudflared` or
+`RestrictAddressFamilies` limited to IPv4, IPv6, unix sockets and netlink,
+`RestrictNamespaces`, `RestrictRealtime`, `MemoryDenyWriteExecute`, the system call filter
+`@system-service` (a call outside it fails with `EPERM`), and `ProtectProc=invisible` with
+`ProcSubset=pid`, so that it sees no other process in `/proc`, the connectors of the other
+tunnels included, which run as the same user. It cannot see `/etc/cloudflared`, `/usr/local/etc/cloudflared` or
 `/root/.cloudflared`, and it is started with a configuration file of pco's own, so that
 cloudflared reads no configuration of the host. Its token is handed to it as a systemd
 credential and read from a file, so it never appears on a command line or in the
