@@ -34,8 +34,8 @@ connector uses; the daemon reads its `/ready` endpoint to tell whether it is con
 After a reboot the connectors start with an egress table that has no targets, so a published
 hostname answers 502 until the daemon's first cycle has got a complete listing from Proxmox,
 verified the routes and given the filter their targets (see [Security](security.md)). The
-daemon starts after `pve-cluster.service` and `pveproxy.service`, and the routes are verified
-up to eight at a time, so the time to the first serve grows with their number.
+daemon starts after `pve-cluster.service` and `pveproxy.service`, and the addresses are verified
+up to 32 at a time, so the time to the first serve grows with their number.
 
 ## Where the state lives
 
@@ -99,9 +99,11 @@ ask: `pco sync`, `pco apply`, `pco adopt`, or when a credential is added. In eac
 3. Reads the routes out of the Notes of the tagged guests and applies the hostname policy
    and, in approve mode, the approvals.
 4. Settles the claims: which guest holds each hostname.
-5. Verifies the address of each route that holds its hostname, up to eight at a time, with
+5. Verifies the address of each route that holds its hostname, up to 32 at a time, with
    15 seconds for each (see [Identity](identity.md)), and holds back what is below
-   `identityMinimum`.
+   `identityMinimum`. Routes on the same address of a guest share one check. A proof the
+   watch of the network vouches for is not made again until it is `reverifyInterval` old;
+   see below.
 6. Plans the state at Cloudflare: one tunnel for each account that holds a zone with routes,
    a rule for each route, a 503 rule for each hostname that is claimed and not served, and a
    proxied record for each hostname.
@@ -117,6 +119,26 @@ Two things run beside the cycle. A watch of the network reacts to a served addre
 MAC moves, without waiting for the next cycle. A keeper checks the egress table every 30
 seconds and whenever nftables reports a change, and loads it again when it is gone or
 changed. [Security](security.md) describes both.
+
+### How often an address is checked on the wire
+
+Checking an address takes the time of an ARP exchange, about 600 ms, which is what a cycle
+of many routes waits for. So an address is checked once in a cycle however many routes
+point at it, and a proof stands, in later cycles, for as long as the watch of the network
+vouches for it. Each cycle still checks what needs no wire, the denylist, the addresses of
+the nodes and the MACs of the other guests, and connects to the port. The address is checked
+on the wire again in the next cycle when:
+
+- the watch reported its MAC moved;
+- the configuration of its guest changed, or the guest stopped, or moved to another node;
+- the proof is `reverifyInterval` old (a minute by default);
+- the port did not answer, which has the address checked again in the same cycle;
+- the watch is not running: it could not start, the node is not Linux, or it started
+  after the proof was made.
+
+A new address is checked in two cycles in a row: the watch has it only after the first.
+With the defaults and 1000 routes, a cycle that checks every address on the wire takes about
+20 seconds, and the cycles in between take well under a second.
 
 The zones and accounts of each credential are listed every five minutes, and each token is
 checked again once a day. With the accounts, every five minutes, the daemon also reads the
@@ -323,6 +345,7 @@ Every field, with its default:
 | `observeOnly` | `true` | Whether the daemon only observes. `pco apply` sets it to `false`. |
 | `identityMinimum` | `port` | The lowest identity level that is served: `port`, `filtered` or `observed`. |
 | `maxHostnamesPerGuest` | `32` | How many hostnames the Notes of one guest may name. A guest that names more publishes none of them, and keeps the ones it holds. At least `1`. |
+| `reverifyInterval` | `1m0s` | How long a proof of identity that the watch of the network vouches for stands before the address is checked on the wire again. From `10s` to `5m0s`. |
 
 Durations are written as Go reads them, `30s`, `90s`, `2m`, `1m30s`. A pattern is `*`, a
 hostname, or `*.` followed by labels; `*.example.com` covers every name below `example.com`

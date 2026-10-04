@@ -142,7 +142,7 @@ type fakeResolver struct {
 	onResolve   func()
 }
 
-func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level) resolve.Result {
+func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level, _ *resolve.Shared) resolve.Result {
 	f.mu.Lock()
 	f.calls++
 	f.required = append(f.required, required)

@@ -198,7 +198,7 @@ func (p *pipeline) run(t *testing.T) cycle {
 	results := make(map[string]Result, len(col.Routes))
 	targets := make(map[string]planner.ResolvedTarget, len(col.Routes))
 	for _, route := range col.Routes {
-		res := p.resolver.Resolve(t.Context(), route, snap, p.bindings[route.Hostname], deny, LevelPort)
+		res := p.resolver.Resolve(t.Context(), route, snap, p.bindings[route.Hostname], deny, LevelPort, nil)
 		results[route.Hostname], targets[route.Hostname] = res, res.Target
 		p.bindings[route.Hostname] = nil
 		if res.Binding != nil {

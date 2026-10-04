@@ -28,7 +28,11 @@ const (
 	grace = 61 * time.Second
 
 	// resolveConcurrency is the number of routes the engine resolves at once.
-	resolveConcurrency = 8
+	resolveConcurrency = 32
+
+	// recheck is how old a proof is when it is made again although the watch
+	// vouches for it: the default reverifyInterval.
+	recheck = time.Minute
 
 	// realARP is the window the real prober waits for the answers to every ARP
 	// request, and shortARP a latency that checks the model at little cost.
@@ -67,17 +71,27 @@ func runSize(t *testing.T, guests, routes int) []row {
 	require.Equal(t, routes, b.records())
 	add("first enforcing cycle", "", first)
 
+	second := b.cycle()
+	require.Zero(t, second.calls.writes())
+	require.Empty(t, second.state.Problems)
+	add("second cycle", "proves again", second)
+
 	idle := b.cycle()
 	require.Zero(t, idle.calls.writes())
 	require.Empty(t, idle.state.Problems)
 	add("idle", "", idle)
 
 	for _, latency := range arpLatencies(routes) {
-		b.prober.setARPLatency(latency)
-		slow := b.cycle()
-		b.prober.setARPLatency(0)
 		model := idle.wall + time.Duration((routes+resolveConcurrency-1)/resolveConcurrency)*latency
-		add(fmt.Sprintf("idle, ARP %s", latency), "model "+model.Round(10*time.Millisecond).String(), slow)
+		note := "model " + model.Round(10*time.Millisecond).String()
+		b.prober.setARPLatency(latency)
+		add(fmt.Sprintf("idle, ARP %s", latency), "", b.cycle())
+		add(fmt.Sprintf("re-check, ARP %s", latency), note, b.after(recheck))
+		b.eng.Watching(false)
+		add(fmt.Sprintf("no watch, ARP %s", latency), note, b.cycle())
+		b.eng.Watching(true)
+		b.prober.setARPLatency(0)
+		b.cycle()
 	}
 
 	renamed := routes / 10
@@ -107,12 +121,13 @@ func runSize(t *testing.T, guests, routes int) []row {
 	return rows
 }
 
-// arpLatencies are the ARP latencies an idle cycle is run with. A cycle takes
-// routes/8 times the latency more, as the model of the table says, so the real
-// window is run only for the smaller sizes, where it fits the time of the
-// whole run; the larger ones follow from the model.
+// arpLatencies are the ARP latencies an idle cycle is run with. A cycle that
+// proves every address takes routes/32 times the latency more, as the model of
+// the table says, so the real window is run only up to the routes of the
+// design, where it fits the time of the whole run; the larger size follows
+// from the model.
 func arpLatencies(routes int) []time.Duration {
-	if routes <= 500 {
+	if routes <= 1000 {
 		return []time.Duration{shortARP, realARP}
 	}
 	return nil

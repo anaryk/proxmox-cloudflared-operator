@@ -19,9 +19,12 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
+// DefaultMaxProofAge is how long a bound address stays served on an old proof
+// of identity unless Settings say otherwise.
+const DefaultMaxProofAge = 5 * time.Minute
+
 const (
-	defaultStickyFor   = 2 * time.Minute
-	defaultMaxProofAge = 5 * time.Minute
+	defaultStickyFor = 2 * time.Minute
 
 	// maxTries bounds the candidates verified in one call, so that a guest
 	// reporting many addresses cannot make a call arbitrarily long.
@@ -135,7 +138,7 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 		s.StickyFor = defaultStickyFor
 	}
 	if s.MaxProofAge <= 0 {
-		s.MaxProofAge = defaultMaxProofAge
+		s.MaxProofAge = DefaultMaxProofAge
 	}
 	s.TrustedCIDRs = slices.Clone(s.TrustedCIDRs)
 	if now == nil {
@@ -175,17 +178,23 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 // required is the least level the caller serves a guest's address at. A
 // binding proven below it is not kept without looking further, as it is not
 // served; what is served, and at which level, stays the caller's to decide.
-func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist, required Level) Result {
-	res := r.resolve(ctx, route, snap, prev, deny, required)
+//
+// The calls of one cycle may share what they learn of the host through share,
+// which also decides whether the proof of the previous binding may stand
+// without being made again; then only what needs no wire and the dial are
+// checked, and a port that does not answer has the identity proven anew. A
+// nil share shares and reuses nothing.
+func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist, required Level, share *Shared) Result {
+	res := r.resolve(ctx, route, snap, prev, deny, required, share)
 	if res.Target.Addr.IsValid() {
 		res.Target.Owner = route.Owner()
 	}
 	return res
 }
 
-func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist, required Level) Result {
+func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist, required Level, share *Shared) Result {
 	if route.Guest == nil {
-		return r.resolveAddress(ctx, route, snap, deny)
+		return r.resolveAddress(ctx, route, snap, deny, share)
 	}
 	if !prev.appliesTo(route) {
 		prev = nil
@@ -194,7 +203,7 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 	guest, ok := snap.Guest(*route.Guest)
 	switch {
 	case !ok && !snap.Complete:
-		a := &attempt{r: r, route: route, guest: model.Guest{Ref: *route.Guest}, snap: snap, deny: deny, prev: prev, now: now}
+		a := &attempt{r: r, route: route, guest: model.Guest{Ref: *route.Guest}, snap: snap, deny: deny, prev: prev, now: now, share: share}
 		return a.guestUnknown()
 	case !ok:
 		return hold(prev, deny, snap, reasonNotFound, now)
@@ -208,7 +217,7 @@ func (r *Resolver) resolve(ctx context.Context, route model.Route, snap inventor
 	// Whether the binding still applies is settled before ctx is looked at,
 	// so that a cancelled call cannot keep one that does not.
 	a := newAttempt(r, route, guest, snap, deny, prev, now, cands)
-	a.required = required
+	a.required, a.share = required, share
 	if !guest.Running {
 		return a.guestUnknown()
 	}
@@ -234,15 +243,15 @@ func hold(prev *Binding, deny Denylist, snap inventory.Snapshot, reason string, 
 // identity to check, so only the denylist, the addresses of the nodes and the
 // dial apply. AllowNode lifts the node rules, nothing else, and only on a
 // manual route.
-func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, snap inventory.Snapshot, deny Denylist) Result {
+func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, snap inventory.Snapshot, deny Denylist, share *Shared) Result {
 	addr := route.Target.Addr
 	allowNode := route.Options.AllowNode && route.Source == model.SourceManual
 	if allowNode {
 		deny = deny.withoutNodes()
 	}
-	o := r.checkAddress(ctx, addr, allowNode, snap, deny)
+	o := r.checkAddress(ctx, addr, allowNode, snap, deny, share)
 	if o.ok() {
-		o = r.dial(ctx, addr, route.Target.Port)
+		o = r.dial(ctx, share, addr, route.Target.Port)
 	}
 	cr := []CandidateResult{{Addr: addr, Source: FromVia, OK: o.ok(), Reason: o.reason}}
 	switch o.verdict {
@@ -257,7 +266,7 @@ func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, snap i
 }
 
 // checkAddress rejects an address a guest-less route must not point at.
-func (r *Resolver) checkAddress(ctx context.Context, addr netip.Addr, allowNode bool, snap inventory.Snapshot, deny Denylist) outcome {
+func (r *Resolver) checkAddress(ctx context.Context, addr netip.Addr, allowNode bool, snap inventory.Snapshot, deny Denylist, share *Shared) outcome {
 	if why, denied := deny.Check(addr); denied {
 		return outcome{rejected, why}
 	}
@@ -270,11 +279,14 @@ func (r *Resolver) checkAddress(ctx context.Context, addr netip.Addr, allowNode 
 	if ctx.Err() != nil {
 		return stopped()
 	}
-	ifaces, err := r.prober.Interfaces(ctx)
-	if o := answered(ctx, err, "listing host interfaces: %v"); !o.ok() {
+	host, read := r.interfaces(ctx, share)
+	if !read {
+		return stopped()
+	}
+	if o := answered(ctx, host.err, "listing host interfaces: %v"); !o.ok() {
 		return o
 	}
-	if isNodeAddr(ifaces, addr) {
+	if isNodeAddr(host.ifaces, addr) {
 		return outcome{rejected, reasonNodeAddress}
 	}
 	return outcome{}
@@ -292,6 +304,8 @@ type attempt struct {
 	// required is the least level the caller serves at: a binding proven
 	// below it does not settle.
 	required Level
+	share    *Shared  // nil: nothing is shared
+	macs     macIndex // made on first use when nothing is shared
 
 	list     []Candidate // in the order they are tried
 	bound    bool        // list[0] carries prev
@@ -402,7 +416,7 @@ func (a *attempt) keepsBound(o outcome) bool {
 
 func (a *attempt) try(ctx context.Context, i int) outcome {
 	c := a.list[i]
-	p, o := a.verify(ctx, c)
+	p, o := a.verify(ctx, c, a.bound && i == 0)
 	a.outcomes[i], a.proofs[i], a.tried[i] = o, p, true
 	a.results = append(a.results, CandidateResult{Addr: c.Addr, Source: c.Source, OK: o.ok(), Reason: o.reason, Level: string(p.level)})
 	return o
@@ -450,7 +464,7 @@ func (a *attempt) boundFailed(o outcome) Result {
 		b.Withdrawn = true
 		return a.result(planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: o.reason}, b)
 	case unreachable:
-		b = b.proven(a.now, a.proofs[0])
+		b = b.proven(a.proofs[0])
 		return a.result(planner.ResolvedTarget{Addr: b.Addr, Reason: o.reason}, b)
 	}
 	return a.unproven(b, o.reason)

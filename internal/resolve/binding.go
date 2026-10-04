@@ -45,12 +45,14 @@ type Binding struct {
 	Ports map[string]string `json:"ports,omitempty"`
 }
 
-// proof is what proved the identity of a candidate: its level, and where the
-// forwarding table placed the MAC of its NIC and every MAC that answered.
+// proof is what proved the identity of a candidate: its level, where the
+// forwarding table placed the MAC of its NIC and every MAC that answered, and
+// when it was made.
 type proof struct {
 	level        Level
 	bridge, port string
 	ports        map[string]string
+	at           time.Time
 }
 
 func guestOf(route model.Route) string {
@@ -67,7 +69,7 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 		Guest:      guestOf(route),
 		Addr:       c.Addr,
 		MAC:        c.NIC.MAC,
-		VerifiedAt: now,
+		VerifiedAt: p.at,
 		Level:      p.level,
 		Since:      now,
 		Bridge:     p.bridge,
@@ -76,10 +78,10 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 	}
 }
 
-// proven returns a copy of b renewed by a proof made at now.
-func (b *Binding) proven(now time.Time, p proof) *Binding {
+// proven returns a copy of b renewed by the proof p.
+func (b *Binding) proven(p proof) *Binding {
 	c := b.clone()
-	c.VerifiedAt, c.Withdrawn, c.Level, c.Bridge, c.Port = now, false, p.level, p.bridge, p.port
+	c.VerifiedAt, c.Withdrawn, c.Level, c.Bridge, c.Port = p.at, false, p.level, p.bridge, p.port
 	c.Ports = maps.Clone(p.ports)
 	return c
 }

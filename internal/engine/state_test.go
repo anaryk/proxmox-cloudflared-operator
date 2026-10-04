@@ -443,11 +443,11 @@ func assertEqualState(a, b State) bool {
 	return bytes.Equal(x, y)
 }
 
-func TestResolutionRunsEightAtATimeEachWithItsOwnDeadline(t *testing.T) {
+func TestResolutionRunsAFewAtATimeEachWithItsOwnDeadline(t *testing.T) {
 	e := newEnv(t)
 	deadlines := &timeouts{}
 	e.eng.timeout = deadlines.withTimeout
-	routes := make([]string, 12)
+	routes := make([]string, resolveConcurrency+4)
 	for i := range routes {
 		routes[i] = fmt.Sprintf("h%02d.example.com -> :80", i)
 	}
@@ -476,10 +476,10 @@ func TestResolutionRunsEightAtATimeEachWithItsOwnDeadline(t *testing.T) {
 	close(release)
 	st := <-done
 
-	require.Len(t, st.Routes, 12)
-	require.Equal(t, resolveConcurrency, most, "eight at a time, never more")
-	require.Len(t, e.res.deadlines, 12, "each call has a deadline of its own")
-	require.Equal(t, 12, deadlines.count(15*time.Second))
+	require.Len(t, st.Routes, len(routes))
+	require.Equal(t, resolveConcurrency, most, "so many at a time, never more")
+	require.Len(t, e.res.deadlines, len(routes), "each call has a deadline of its own")
+	require.Equal(t, len(routes), deadlines.count(15*time.Second))
 	require.Equal(t, 1, deadlines.count(60*time.Second), "the refresh has one too")
 }
 

@@ -20,7 +20,7 @@ import (
 const (
 	refreshTimeout     = 60 * time.Second
 	resolveTimeout     = 15 * time.Second
-	resolveConcurrency = 8
+	resolveConcurrency = 32
 
 	problemNotSetUp       = "pco is not set up on this node; run pco setup"
 	problemNotMounted     = "cluster filesystem is not mounted"

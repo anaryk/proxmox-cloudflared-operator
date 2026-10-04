@@ -75,6 +75,7 @@ func (c *cycleRun) watch() {
 	c.e.egMu.Lock()
 	c.e.pins = pins
 	c.e.egMu.Unlock()
+	c.e.vouch.pin(pins, c.e.d.Now())
 }
 
 // ownMACs adds to the other MACs of a pin those of the guest's NICs, each
@@ -112,6 +113,7 @@ func (e *Engine) Bound() map[netip.Addr]egress.Pin {
 // when it fails, the address stays out and a cycle is asked for, which
 // withdraws its routes. Moved does not wait for the verification.
 func (e *Engine) Moved(ctx context.Context, addr netip.Addr) {
+	e.vouch.moved(addr, e.d.Now())
 	e.egMu.Lock()
 	first := !e.suspects[addr]
 	e.suspects[addr] = true
@@ -239,7 +241,7 @@ func (e *Engine) verifyMoved(ctx context.Context, addr netip.Addr) (why string, 
 	for i, wr := range routes {
 		rctx, cancel := e.timeout(ctx, resolveTimeout)
 		prev := wr.binding
-		res := e.d.Resolver.Resolve(rctx, wr.route, w.snap, &prev, w.deny, w.required)
+		res := e.d.Resolver.Resolve(rctx, wr.route, w.snap, &prev, w.deny, w.required, nil)
 		cancel()
 		if ctx.Err() != nil {
 			return "the daemon stops", false

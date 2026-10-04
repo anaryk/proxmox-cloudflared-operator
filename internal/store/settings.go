@@ -29,6 +29,11 @@ const (
 	minGrace        = 30 * time.Second
 	// minHostnamesPerGuest is the least cap of the hostnames of one guest.
 	minHostnamesPerGuest = 1
+
+	// A proof of identity is made again at least this often and never less
+	// often than it may stand at all.
+	minReverifyInterval = 10 * time.Second
+	maxReverifyInterval = resolve.DefaultMaxProofAge
 )
 
 // tagPattern is what Proxmox accepts as a tag, in lower case.
@@ -73,6 +78,9 @@ type Settings struct {
 	// MaxHostnamesPerGuest is how many hostnames the Notes of one guest may
 	// name; a guest that names more publishes none.
 	MaxHostnamesPerGuest int `json:"maxHostnamesPerGuest"`
+	// ReverifyInterval is how long a proof of identity that the watch of the
+	// network vouches for stands before it is made again.
+	ReverifyInterval Duration `json:"reverifyInterval"`
 }
 
 // DefaultSettings returns the settings of a fresh install, which only
@@ -86,6 +94,7 @@ func DefaultSettings() Settings {
 		ObserveOnly:          true,
 		IdentityMinimum:      string(resolve.LevelPort),
 		MaxHostnamesPerGuest: planner.DefaultMaxHostnamesPerGuest,
+		ReverifyInterval:     Duration(time.Minute),
 	}
 }
 
@@ -138,6 +147,12 @@ func (s Settings) normalized() (Settings, error) {
 	}
 	if s.MaxHostnamesPerGuest < minHostnamesPerGuest {
 		return Settings{}, fmt.Errorf("maxHostnamesPerGuest %d: at least %d", s.MaxHostnamesPerGuest, minHostnamesPerGuest)
+	}
+	switch every := time.Duration(s.ReverifyInterval); {
+	case every < minReverifyInterval:
+		return Settings{}, fmt.Errorf("reverifyInterval %s: at least %s", every, minReverifyInterval)
+	case every > maxReverifyInterval:
+		return Settings{}, fmt.Errorf("reverifyInterval %s: at most %s", every, maxReverifyInterval)
 	}
 	if s.Admission != AdmissionTag && s.Admission != AdmissionApprove {
 		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)

@@ -20,13 +20,16 @@ const watchAgainAfter = time.Minute
 // watchNetwork runs the watch of the network for the engine until ctx ends:
 // an address whose MAC moves is taken out of the egress filter at once and
 // verified again. A watch that fails is started again after a while; until
-// then a move is seen by the next cycle only.
+// then a move is seen by the next cycle only, and every cycle proves every
+// address anew.
 func watchNetwork(ctx context.Context, eng *engine.Engine,
 	watch func(context.Context, func() map[netip.Addr]egress.Pin, func(netip.Addr)) error,
 	sleep func(context.Context, time.Duration) error, log zerolog.Logger,
 ) {
 	for {
+		eng.Watching(true)
 		err := watch(ctx, eng.Bound, func(addr netip.Addr) { eng.Moved(ctx, addr) })
+		eng.Watching(false)
 		if ctx.Err() != nil {
 			return
 		}

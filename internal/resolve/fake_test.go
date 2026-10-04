@@ -268,7 +268,7 @@ func (s *scenario) resolve(t *testing.T, route model.Route, prev *Binding) Resul
 
 func (s *scenario) resolveCtx(ctx context.Context, route model.Route, prev *Binding) Result {
 	r := NewResolver(s.prober, s.settings, s.clock.now)
-	return r.Resolve(ctx, route, s.snapshot(), prev, s.deny, s.required)
+	return r.Resolve(ctx, route, s.snapshot(), prev, s.deny, s.required, nil)
 }
 
 func webRoute() model.Route { return routeFor(netip.Addr{}, "") }

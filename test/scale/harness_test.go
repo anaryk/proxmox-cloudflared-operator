@@ -118,6 +118,8 @@ func newBench(t *testing.T, guests, routes int, limiter *cfapi.Limiter) *bench {
 		LocalDir: paths.Local,
 	})
 	require.NoError(t, err)
+	// On a node the watch of the network runs beside the engine.
+	eng.Watching(true)
 	b.eng = eng
 	return b
 }

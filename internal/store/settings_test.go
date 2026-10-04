@@ -26,6 +26,7 @@ func TestDefaultSettings(t *testing.T) {
 	require.Empty(t, d.ZonePins)
 	require.Equal(t, "port", d.IdentityMinimum)
 	require.Equal(t, 32, d.MaxHostnamesPerGuest)
+	require.Equal(t, Duration(time.Minute), d.ReverifyInterval)
 }
 
 func TestSettingsDefaultsWhenMissing(t *testing.T) {
@@ -51,6 +52,7 @@ func customSettings() Settings {
 		// Guests on other nodes are served.
 		IdentityMinimum:      "observed",
 		MaxHostnamesPerGuest: 100,
+		ReverifyInterval:     Duration(2 * time.Minute),
 	}
 }
 
@@ -71,6 +73,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, "5m0s", wire["grace"])
 	require.Equal(t, []any{"10.20.0.0/16"}, wire["trustedCIDRs"])
 	require.Equal(t, "observed", wire["identityMinimum"])
+	require.Equal(t, "2m0s", wire["reverifyInterval"])
 }
 
 func TestSettingsAcceptEveryIdentityMinimum(t *testing.T) {
@@ -143,6 +146,11 @@ func TestSaveSettingsRefusesInvalidSettings(t *testing.T) {
 		{"manual as identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "manual" }},
 		{"no hostname for a guest", "maxHostnamesPerGuest 0: at least 1", func(s *Settings) { s.MaxHostnamesPerGuest = 0 }},
 		{"a negative cap", "maxHostnamesPerGuest -1: at least 1", func(s *Settings) { s.MaxHostnamesPerGuest = -1 }},
+		{"zero re-check interval", "reverifyInterval 0s: at least 10s", func(s *Settings) { s.ReverifyInterval = 0 }},
+		{"re-check interval below ten seconds", "reverifyInterval 9s: at least 10s", func(s *Settings) { s.ReverifyInterval = Duration(9 * time.Second) }},
+		{"re-check interval over the age of a proof", "reverifyInterval 5m1s: at most 5m0s", func(s *Settings) {
+			s.ReverifyInterval = Duration(5*time.Minute + time.Second)
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

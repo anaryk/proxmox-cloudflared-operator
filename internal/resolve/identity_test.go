@@ -1280,7 +1280,7 @@ func TestResolveConcurrentCalls(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range results {
-		wg.Go(func() { results[i] = r.Resolve(t.Context(), webRoute(), snap, prev, s.deny, s.required) })
+		wg.Go(func() { results[i] = r.Resolve(t.Context(), webRoute(), snap, prev, s.deny, s.required, nil) })
 	}
 	wg.Wait()
 

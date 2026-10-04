@@ -62,10 +62,14 @@ func (c *cycleRun) resolveTargets() bool {
 
 // resolveAll runs Resolve for each winner, at most resolveConcurrency at a
 // time and each with a deadline of its own, so that one guest that reports
-// many addresses cannot hold up the others.
+// many addresses cannot hold up the others. The calls share one proof for
+// each address of a guest NIC, and a proof the watch of the network vouches
+// for stands without being made again.
 func (c *cycleRun) resolveAll(stored map[string]resolve.Binding, deny resolve.Denylist) map[string]resolve.Result {
 	winners := c.claims.Winners
 	required := c.requiredLevel()
+	c.e.vouch.see(c.snap, c.now)
+	share := resolve.NewShared(c.reusable)
 	out := make([]resolve.Result, len(winners))
 	slots := make(chan struct{}, resolveConcurrency)
 	done := make(chan struct{})
@@ -87,7 +91,7 @@ func (c *cycleRun) resolveAll(stored map[string]resolve.Binding, deny resolve.De
 			defer func() { <-slots; done <- struct{}{} }()
 			ctx, cancel := c.e.timeout(c.ctx, resolveTimeout)
 			defer cancel()
-			out[i] = c.e.d.Resolver.Resolve(ctx, rt, c.snap, prev, deny, required)
+			out[i] = c.e.d.Resolver.Resolve(ctx, rt, c.snap, prev, deny, required, share)
 		}()
 	}
 	for range started {

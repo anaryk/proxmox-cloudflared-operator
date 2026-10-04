@@ -42,7 +42,7 @@ type Inventory interface {
 // Resolver is the part of *resolve.Resolver the engine uses. It must be safe
 // for concurrent use.
 type Resolver interface {
-	Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level) resolve.Result
+	Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level, share *resolve.Shared) resolve.Result
 }
 
 // Connectors is the part of *connector.Manager the engine uses.
@@ -157,6 +157,7 @@ type Engine struct {
 	egress   []egress.Target
 	verified map[string][]egress.Target
 	watched  watched
+	vouch    vouching
 
 	// egMu guards what the watch of the network reads and changes beside
 	// the cycles: the pins it watches, the addresses whose MAC moved and that
