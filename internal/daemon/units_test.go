@@ -28,16 +28,28 @@ func TestSocketAccess(t *testing.T) {
 		logged   string
 	}{
 		{"no pco-web at all", fakeAccounts{}, 0, []uint32{0}, ""},
-		{"user and group", fakeAccounts{user: webUser, group: webGroup}, 997, []uint32{0, 998}, ""},
-		{"only the group", fakeAccounts{group: webGroup}, 997, []uint32{0}, ""},
-		{"only the user", fakeAccounts{user: webUser}, 0, []uint32{0, 998}, ""},
+		{"no pco-web, and the unit", fakeAccounts{web: true}, 0, []uint32{0}, ""},
+		{"user and group", fakeAccounts{user: webUser, group: webGroup, web: true}, 997, []uint32{0, 998}, ""},
+		{"only the group", fakeAccounts{group: webGroup, web: true}, 997, []uint32{0}, ""},
+		{"only the user", fakeAccounts{user: webUser, web: true}, 0, []uint32{0, 998}, ""},
 		{
-			"a group id that is not a number", fakeAccounts{group: &user.Group{Gid: "web", Name: webName}},
+			"a group id that is not a number", fakeAccounts{group: &user.Group{Gid: "web", Name: webName}, web: true},
 			0, []uint32{0}, "the group id is not a number",
 		},
 		{
-			"a user id that is not a number", fakeAccounts{user: &user.User{Uid: "web", Username: webName}},
+			"a user id that is not a number", fakeAccounts{user: &user.User{Uid: "web", Username: webName}, web: true},
 			0, []uint32{0}, "the user id is not a number",
+		},
+		// A user named pco-web that anyone with useradd made, before the web UI
+		// is installed, is nobody the daemon answers.
+		{
+			"user and group without the unit", fakeAccounts{user: webUser, group: webGroup}, 0, []uint32{0},
+			"the user or the group pco-web exists, but the web UI is not installed (no /usr/lib/systemd/system/pco-web.service); " +
+				"it may not use the socket",
+		},
+		{
+			"only the user without the unit", fakeAccounts{user: webUser}, 0, []uint32{0},
+			"the user or the group pco-web exists, but the web UI is not installed",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,6 +71,8 @@ func TestSocketAccess(t *testing.T) {
 // brokenAccounts fails every lookup the way a system with a broken NSS does.
 type brokenAccounts struct{}
 
+func (brokenAccounts) WebInstalled() bool { return true }
+
 func (brokenAccounts) LookupUser(string) (*user.User, error)   { return nil, errors.New("nss is down") }
 func (brokenAccounts) LookupGroup(string) (*user.Group, error) { return nil, errors.New("nss is down") }
 
@@ -71,6 +85,21 @@ func TestSocketAccessFallsBackToRootWhenALookupFails(t *testing.T) {
 	require.Equal(t, []uint32{0}, uids)
 	require.Contains(t, logs.String(), "looking up the group failed")
 	require.Contains(t, logs.String(), "looking up the user failed")
+}
+
+func TestTheDaemonAsksWhetherTheWebUIIsInstalled(t *testing.T) {
+	var a Accounts = systemAccounts{}
+	_, ok := a.(webInstaller)
+	require.True(t, ok)
+}
+
+func TestTheWebUIIsInstalledWhenItsUnitIs(t *testing.T) {
+	require.Equal(t, "/usr/lib/systemd/system/pco-web.service", webUnit)
+	dir := t.TempDir()
+	unit := filepath.Join(dir, "pco-web.service")
+	require.False(t, unitInstalled(unit))
+	require.NoError(t, os.WriteFile(unit, []byte("[Unit]\n"), 0o644))
+	require.True(t, unitInstalled(unit))
 }
 
 func TestWiredSettingsNameWhatChanged(t *testing.T) {

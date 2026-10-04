@@ -348,11 +348,15 @@ func (n *fakeNotifier) sent() []string {
 	return slices.Clone(n.events)
 }
 
-// fakeAccounts is a system with the users and groups a test gives it.
+// fakeAccounts is a system with the users and groups a test gives it, and
+// with the unit of the web UI installed when web says so.
 type fakeAccounts struct {
 	user  *user.User
 	group *user.Group
+	web   bool
 }
+
+func (f fakeAccounts) WebInstalled() bool { return f.web }
 
 func (f fakeAccounts) LookupUser(name string) (*user.User, error) {
 	if f.user == nil {
@@ -373,6 +377,7 @@ func webAccounts() fakeAccounts {
 	return fakeAccounts{
 		user:  &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid()), Username: webName},
 		group: &user.Group{Gid: strconv.Itoa(os.Getgid()), Name: webName},
+		web:   true,
 	}
 }
 

@@ -457,7 +457,10 @@ The daemon answers on the unix socket `/run/pco/pco.sock`. It has no network lis
 directory `/run/pco` has mode 0750 and the socket 0660, both owned by root; the group is
 `pco-web` when that group exists, and root's group otherwise. The daemon also reads the
 user id of the process on the other end of every connection from the kernel and answers only
-root, and the user `pco-web` if there is one. Anyone else gets a refusal that says nothing
+root, and the user `pco-web` if there is one. Both names count only while the web UI is
+installed, that is while `/usr/lib/systemd/system/pco-web.service` is there: anyone who may
+add a user could otherwise make a `pco-web` that the daemon answers. Without the unit the
+daemon ignores the names, and says so in a warning at its start when either exists. Anyone else gets a refusal that says nothing
 about which requests exist. `pco` run as another user reports that it must run as root and
 exits 2.
 
