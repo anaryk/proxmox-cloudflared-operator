@@ -92,6 +92,16 @@ guest publishes the same hostnames, without anyone approving it again, as long a
 carries the tag and the Notes. Admission mode `approve` closes that for a guest that comes
 back with a new identity, and not for one that keeps its identity (see below).
 
+A clone is also how a user who may not set the tag gets a tagged guest. Whoever holds
+`VM.Clone` on a tagged guest, or on a tagged template, and `VM.Allocate` where the clone goes
+makes a guest that carries the tag, and once its Notes are theirs to edit, it publishes the
+hostnames they write there that nobody holds yet. A registered tag does not stop that:
+Proxmox copies the tags of the source. In admission mode `tag` it is published at the next
+cycle; in mode `approve` it waits, because a clone has an identity of its own. `pco doctor`
+warns in its `admission` check while the mode is `tag` and any guest carries the gate tag:
+pco does not read the ACLs yet, so it cannot tell whether anyone but the admins may clone
+them. Use `approve` when anyone but the admins holds `VM.Clone` on a tagged guest.
+
 ### Approval mode
 
 With the setting `admission` set to `approve`, a tagged guest is published only after an
@@ -122,11 +132,11 @@ air at the next cycle: their hostnames answer 503.
 Approval mode is recommended when the people who can edit the guests are not the people who
 administer the node. It is off by default. The default is `tag`.
 
-## Identity levels against four attackers
+## Identity levels against five attackers
 
 [Identity](identity.md) describes the checks. This table says what each level stops. Every
 row but the first assumes a guest that carries the tag: a user cannot tag their own guest
-when the tag is registered.
+when the tag is registered, unless they may clone one that has it (the last row).
 
 `port` is what a guest on this node gets. `observed` is what a guest on another node of the
 cluster gets, and what an address behind a router gets when you trust it, and only if
@@ -139,6 +149,7 @@ no host guest has it.
 | Root in another guest of this node | Stops a guest that answers with its own MAC, and a card configured with a MAC that a running guest has. Frames forged with the MAC of a guest of another node put that MAC on the port of the attacker's guest, which `observed` notices when it checks. | Stops forged frames as well. They move the entry to the attacker's port, so the address leaves the filter within about a millisecond, the verification fails, and the victim's route is withdrawn (503). It is not taken over: that is a denial of service for the victim, not a hijack. Limit: the same. |
 | A Proxmox user with `VM.Config.Network` on another guest | Does not stop it. The user can give their guest the MAC of any device on the segment that is not a running guest and, since the Notes are theirs, aim a route at that device. Only a MAC that a running guest has is refused. | Mostly stops it. To pass, the table has to have the device's MAC on the user's own port, which it has only after the user's guest sent a frame with that MAC and before the device sent its next one. That next frame moves the entry back to the uplink, which the daemon sees within about a millisecond, and the address leaves the filter. A user who keeps transmitting can get the check to pass again, and what the device can then be asked for is limited to the moment after each of its frames. It is not a complete defence. |
 | A Proxmox user with `VM.Config.Network` on the published guest | Does not stop it. The user can give a card of the published guest the MAC of a device on the segment and set the card's static address to the device's address. The static addresses of a guest are tried before those its agent reports, so the route then points at the device, and nobody has to edit the Notes. | Mostly stops it, with the same race and the same watch as in the row above. |
+| A Proxmox user with `VM.Clone` on a tagged guest and `VM.Allocate` | Does not stop it. The clone carries the tag, and its address is the clone's own, so it passes. Its Notes publish what the user writes there, within the hostname policy, and nothing that another guest holds. | Does not stop it either, for the same reason. Admission mode `approve` does: the clone has an identity of its own and waits for an admin. |
 
 What this table shows is that `port` is meant to stand on its own and `observed` is not.
 At `observed`, whoever can set the MAC of a guest's card and write its Notes can reach any
@@ -210,6 +221,24 @@ can reach, including the Proxmox web interface on port 8006. Checking addresses 
 not help against someone who writes the configuration behind its back. The egress filter
 does: it confines the connector processes on the node, whatever the configuration says.
 
+The filter is not all a stolen token with the permissions of pco's can do, and the rest is
+not confined on the node:
+
+- It can run a connector of its own for the tunnel, which receives a share of the requests
+  to every hostname of the tunnel. pco reports it; see
+  [A connector that is not pco's](#a-connector-that-is-not-pcos).
+- It can point a hostname elsewhere: rewrite the tunnel's configuration, or a DNS record.
+  pco writes them back in its next cycle, ten seconds later by default, and not before;
+  until then the requests go where the token sent them.
+- It can write a sentinel rule of a newer generation of this install into the
+  configuration. pco then takes itself for a stale writer, says `writer verdict is stale`,
+  fails the `writer` check of `pco doctor` and stops writing, so that whatever the token
+  wrote stays. When no other node runs pco, that verdict is a forgery: replace the token
+  (`pco credential add`, then `pco credential remove` of the old one, and revoke it at
+  Cloudflare), rotate the tunnel secret with `pco tunnel rotate`, and run
+  `pco setup --recover` on this node, which makes it the writer again with a newer
+  generation.
+
 ### What a connector can reach
 
 The filter is the nftables table `inet pco_egress`. Its chain sits on the output hook at
@@ -249,6 +278,15 @@ that matches decides:
 A connector can therefore reach Cloudflare's edge, the resolvers, and the verified targets,
 and cannot reach the management ports of the node or any other host. A rule written at
 Cloudflare for `http://10.0.0.1:8006` gets a refused connection.
+
+The filter decides where a connector connects, not what it sends. Two of the ways out are
+wide on purpose: port 7844 to any public address, since the edge's addresses are not
+listed, and port 53 to the resolvers, which pass a name on to anyone's name server. A
+connector process that is itself taken over, as through a flaw of cloudflared, can send
+what it has to a host of its choosing on port 7844, or in the names it asks the resolvers
+for. A rule at Cloudflare cannot make cloudflared do that; only code running as
+`pco-connector` can. Keep cloudflared up to date (`pco doctor` warns about one older than
+ten months).
 
 The daemon's own checks, among them the request that `pco diagnose` makes, come from the
 daemon and not from a connector, so the filter does not confine them.
@@ -473,7 +511,10 @@ Everything a request can do is what the CLI shows: read the state, ask for a cyc
 adopt, add and check and remove credentials, resolve claims, approve guests, rotate the
 secret of a tunnel, diagnose, run the doctor. Rotating a secret restarts every connector of
 the tunnel, so the daemon answers that request for root only, and not for `pco-web`. A
-request cannot read a token, and it cannot change the egress filter.
+request cannot read a token or switch the egress filter off. It changes the targets of the
+filter only as a cycle does, by changing what is published: whoever may use the socket may
+publish what the guests ask for, add a credential of another account, and confirm deletes,
+so treat `pco-web` as an admin of pco.
 
 ## What Cloudflare sees
 

@@ -318,7 +318,7 @@ Every field, with its default:
 | `grace` | `1m0s` | How long a removal waits (see above). At least `30s`. |
 | `trustStatic` | `false` | Trust static addresses behind a router; see [Identity](identity.md). Read when the daemon starts. |
 | `trustedCIDRs` | none | The IPv4 prefixes in which such addresses are trusted. Read when the daemon starts. |
-| `admission` | `tag` | `tag` publishes a guest that carries the tag, `approve` also needs the approval of an admin. |
+| `admission` | `tag` | `tag` publishes a guest that carries the tag, `approve` also needs the approval of an admin. Use `approve` when anyone but the admins holds `VM.Clone` on a tagged guest or template: Proxmox copies the tag to the clone (see [Security](security.md)). |
 | `zonePins` | none | A zone name and the id of the credential that serves it: `{ "example.com": "a1b2c3d4" }`. |
 | `observeOnly` | `true` | Whether the daemon only observes. `pco apply` sets it to `false`. |
 | `identityMinimum` | `port` | The lowest identity level that is served: `port`, `filtered` or `observed`. |

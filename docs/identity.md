@@ -28,7 +28,11 @@ one at a time. A candidate is served only if all of the following hold.
    while the node sends the real traffic somewhere else.
 3. **No other running guest has the MAC.** A MAC address that is configured on another
    guest that runs, or may run because Proxmox has not said whether it does, is
-   refused. A stopped guest does not count.
+   refused. A stopped guest does not count. One guest keeps a MAC that another has too:
+   the guest whose address was bound on that MAC before, for as long as the bridge's
+   forwarding table still has the MAC on its own port (step 5). A guest that starts with a
+   copy of a published guest's MAC therefore does not take its route away, while the
+   table places the MAC where it was; once the table moves it, the binding is withdrawn.
 4. **Only this guest answers ARP for it.** pco sends its own ARP requests on that
    interface, three of them a tenth of a second apart, and collects for about 600 ms
    every MAC that claims the address: replies, but also requests and announcements that

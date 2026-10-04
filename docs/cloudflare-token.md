@@ -190,7 +190,10 @@ holds a hostname that you publish, it stays and the route waits; see `pco adopt`
 
 pco owns its tunnel. A change you make to its configuration in the dashboard is not
 supported and is overwritten in the next cycle, and so is any setting in it that pco does
-not manage.
+not manage, with one exception: a configuration whose sentinel names a newer generation of
+this install is taken for the work of a newer writer, and pco stops writing. A token that
+can edit the tunnel can do that, and can also read the tunnel's run token and run a
+connector of its own; [Security](security.md) says what pco does then and what to do.
 
 ## Rotating a token
 
