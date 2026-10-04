@@ -242,6 +242,10 @@ func (a *app) renderEgress(w io.Writer, v egressView) error {
 		s.println("")
 		var tg, rs []string
 		for _, t := range v.live.Targets {
+			if t.AllowNode {
+				tg = append(tg, t.String()+" (allowNode)")
+				continue
+			}
 			tg = append(tg, t.String())
 		}
 		for _, r := range v.live.Resolvers {

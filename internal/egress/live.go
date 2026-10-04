@@ -28,12 +28,14 @@ const (
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@blocked4"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@blocked6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"reject":{"type":"tcp reset"}}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@blocked6"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
-[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets4"}},{"accept":null}],
-[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets6"}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@resolvers4"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@resolvers6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
+[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@allownode4"}},{"accept":null}],
+[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@allownode6"}},{"accept":null}],
 [{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"local"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"counter":"rejected_local"},{"reject":{"type":"tcp reset"}}],
 [{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"local"}},{"counter":"rejected_local"},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
+[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets4"}},{"accept":null}],
+[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets6"}},{"accept":null}],
 [{"match":{"op":"!=","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":[{"prefix":{"addr":"0.0.0.0","len":8}},{"prefix":{"addr":"10.0.0.0","len":8}},{"prefix":{"addr":"100.64.0.0","len":10}},{"prefix":{"addr":"127.0.0.0","len":8}},{"prefix":{"addr":"169.254.0.0","len":16}},{"prefix":{"addr":"172.16.0.0","len":12}},{"prefix":{"addr":"192.0.0.0","len":24}},{"prefix":{"addr":"192.0.2.0","len":24}},{"prefix":{"addr":"192.168.0.0","len":16}},{"prefix":{"addr":"198.18.0.0","len":15}},{"prefix":{"addr":"198.51.100.0","len":24}},{"prefix":{"addr":"203.0.113.0","len":24}},{"prefix":{"addr":"224.0.0.0","len":3}}]}}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"unicast"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
 [{"match":{"op":"!=","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":{"set":["::1",{"prefix":{"addr":"64:ff9b::","len":96}},{"prefix":{"addr":"64:ff9b:1::","len":48}},{"prefix":{"addr":"2001::","len":32}},{"prefix":{"addr":"2002::","len":16}},{"prefix":{"addr":"fc00::","len":7}},{"prefix":{"addr":"fe80::","len":10}},{"prefix":{"addr":"ff00::","len":8}}]}}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"unicast"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":["1.0.0.1","1.1.1.1"]}}},{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":853}},{"accept":null}],
@@ -284,9 +286,9 @@ func (l *listed) add(kind string, body json.RawMessage) error {
 // setType returns the type of each set of the table, by name.
 func setType(name string) (string, bool) {
 	switch name {
-	case setTargets4:
+	case setTargets4, setAllowNode4:
 		return typeTarget4, true
-	case setTargets6:
+	case setTargets6, setAllowNode6:
 		return typeTarget6, true
 	case setResolvers4, setBlocked4:
 		return typeAddr4, true
@@ -371,7 +373,7 @@ func (l *listed) setDifferences(want *contents) []string {
 			d = append(d, "an unexpected set "+name)
 		}
 	}
-	for _, name := range []string{setTargets4, setTargets6, setResolvers4, setResolvers6, setBlocked4, setBlocked6} {
+	for _, name := range []string{setTargets4, setTargets6, setAllowNode4, setAllowNode6, setResolvers4, setResolvers6, setBlocked4, setBlocked6} {
 		typ, _ := setType(name)
 		got, ok := l.sets[name]
 		wantSet := listedSet{Type: typeJSON(typ)}
@@ -411,7 +413,12 @@ func elementDifferences[T comparable](have, want []T, set func(T) string, text f
 }
 
 func targetSet(t Target) string {
-	if t.Addr.Is4() {
+	switch {
+	case t.AllowNode && t.Addr.Is4():
+		return setAllowNode4
+	case t.AllowNode:
+		return setAllowNode6
+	case t.Addr.Is4():
 		return setTargets4
 	}
 	return setTargets6
@@ -429,13 +436,14 @@ func resolverSet(a netip.Addr) string {
 func (l *listed) contents() (contents, []string) {
 	var c contents
 	var unreadable []string
-	for _, name := range []string{setTargets4, setTargets6} {
+	for _, name := range []string{setTargets4, setTargets6, setAllowNode4, setAllowNode6} {
 		for _, raw := range l.sets[name].Elem {
 			t, ok := parseTarget(raw)
 			if !ok {
 				unreadable = append(unreadable, fmt.Sprintf("set %s holds an element pco cannot read: %s", name, compactJSON(raw)))
 				continue
 			}
+			t.AllowNode = name == setAllowNode4 || name == setAllowNode6
 			c.targets = append(c.targets, t)
 		}
 	}

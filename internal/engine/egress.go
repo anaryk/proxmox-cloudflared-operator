@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -98,13 +99,17 @@ func (c *cycleRun) feedEgress() {
 		// A withdrawn one is not fed back, whether or not its proof was lost
 		// in this cycle: the memory of the set may be older than the binding
 		// that says so.
-		if sent[t] && !withdrawn[t.Addr] {
+		if sent[egress.Target{Addr: t.Addr, Port: t.Port}] && !withdrawn[t.Addr] {
 			set = append(set, t)
 		}
 	}
 	set = slices.DeleteFunc(set, func(t egress.Target) bool { return c.lost[t.Addr] })
-	slices.SortFunc(set, compareTargets)
-	set = slices.Compact(set)
+	// A target of allowNode sorts first among its equals, and is the one kept:
+	// one of an earlier process comes back from the memory without the mark.
+	slices.SortFunc(set, func(a, b egress.Target) int {
+		return cmp.Or(compareTargets(a, b), compareMarks(b.AllowNode, a.AllowNode))
+	})
+	set = slices.CompactFunc(set, func(a, b egress.Target) bool { return compareTargets(a, b) == 0 })
 	c.e.egress = set
 	c.e.egMu.Lock()
 	err := c.e.d.Egress.Set(c.ctx, c.e.unsuspected())
@@ -120,7 +125,8 @@ func (c *cycleRun) feedEgress() {
 // verifiedTargets are the targets this cycle verified for the winners: an
 // address resolution proved for the owner that serves the hostname, at the
 // route's port. A target the identity minimum holds back has no address any
-// more.
+// more. The target of a manual route with allowNode is marked so: it may be an
+// address of the node, which the filter refuses for any other.
 func (c *cycleRun) verifiedTargets() []egress.Target {
 	var out []egress.Target
 	for _, rt := range c.claims.Winners {
@@ -130,7 +136,7 @@ func (c *cycleRun) verifiedTargets() []egress.Target {
 		case !ok, !t.Addr.IsValid(), t.Withdrawn, t.Rejected, t.Owner != "" && t.Owner != rt.Owner(), rt.Target.Port == 0:
 			continue
 		}
-		out = append(out, egress.Target{Addr: t.Addr, Port: rt.Target.Port})
+		out = append(out, egress.Target{Addr: t.Addr, Port: rt.Target.Port, AllowNode: rt.Source == model.SourceManual && rt.Options.AllowNode})
 	}
 	return out
 }
@@ -205,6 +211,16 @@ func ruleTargets(rules []planner.IngressRule) []egress.Target {
 
 func compareTargets(a, b egress.Target) int {
 	return cmp.Or(a.Addr.Compare(b.Addr), cmp.Compare(a.Port, b.Port))
+}
+
+func compareMarks(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	}
+	return -1
 }
 
 // rememberEgress takes the set and the verified configurations from the

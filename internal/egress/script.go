@@ -17,6 +17,8 @@ const (
 
 	setTargets4   = "targets4"
 	setTargets6   = "targets6"
+	setAllowNode4 = "allownode4"
+	setAllowNode6 = "allownode6"
 	setResolvers4 = "resolvers4"
 	setResolvers6 = "resolvers6"
 	setBlocked4   = "blocked4"
@@ -47,7 +49,11 @@ const (
 	// Answers pass only for TCP to an address of the node, which is what the
 	// metrics scrape needs: a datagram from elsewhere to a closed port of the
 	// node seeds a flow whose reply direction would otherwise lead anywhere,
-	// while the node's reset ends a flow a TCP segment seeds. The edge is
+	// while the node's reset ends a flow a TCP segment seeds. The addresses
+	// of the node are refused before the targets are accepted, so that a
+	// verified address that becomes one of the node, as a virtual address
+	// that fails over to it, is never reached; only the resolvers and the
+	// targets of allowNode, which root wrote, come before. The edge is
 	// what is unicast and outside every range that is not the public
 	// internet: private, shared, loopback, link-local, benchmark,
 	// documentation, the IPv4 translation and 6to4 prefixes, Teredo and
@@ -64,12 +70,14 @@ const (
 		ip daddr @blocked4 reject with icmpx admin-prohibited
 		ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset
 		ip6 daddr @blocked6 reject with icmpx admin-prohibited
-		ip daddr . tcp dport @targets4 accept
-		ip6 daddr . tcp dport @targets6 accept
 		ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept
 		ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept
+		ip daddr . tcp dport @allownode4 accept
+		ip6 daddr . tcp dport @allownode6 accept
 		fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset
 		fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited
+		ip daddr . tcp dport @targets4 accept
+		ip6 daddr . tcp dport @targets6 accept
 		ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 198.18.0.0/15, 0.0.0.0/8, 192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/3 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept
 		ip6 daddr != { fc00::/7, fe80::/10, ::1, 64:ff9b::/96, 64:ff9b:1::/48, 2002::/16, 2001::/32, ff00::/8 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept
 		ip daddr { 1.1.1.1, 1.0.0.1 } tcp dport 853 accept
@@ -82,7 +90,7 @@ const (
 
 // contents is what the sets of the table hold.
 type contents struct {
-	targets   []Target     // sorted and distinct, of both families
+	targets   []Target     // sorted and distinct, of both families and both kinds
 	resolvers []netip.Addr // sorted and distinct, of both families
 	blocked   []netip.Addr // sorted and distinct, of both families
 }
@@ -109,11 +117,14 @@ func render(uid uint32, c contents) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "add table %s\ndelete table %s\ntable %s {\n", table, table, table)
 	fmt.Fprintf(&b, "\tcounter %s {\n\t}\n\tcounter %s {\n\t}\n", counterLocal, counterOther)
-	t4, t6 := targetElements(c.targets)
+	t4, t6 := targetElements(c.targets, false)
+	n4, n6 := targetElements(c.targets, true)
 	r4, r6 := addrElements(c.resolvers)
 	b4, b6 := addrElements(c.blocked)
 	writeSet(&b, setTargets4, typeTarget4, t4)
 	writeSet(&b, setTargets6, typeTarget6, t6)
+	writeSet(&b, setAllowNode4, typeTarget4, n4)
+	writeSet(&b, setAllowNode6, typeTarget6, n6)
 	writeSet(&b, setResolvers4, typeAddr4, r4)
 	writeSet(&b, setResolvers6, typeAddr6, r6)
 	writeSet(&b, setBlocked4, typeAddr4, b4)
@@ -134,12 +145,13 @@ func writeSet(b *strings.Builder, name, typ string, elems []string) {
 // out of the live table, one statement per set, in one transaction.
 func deleteScript(tg []Target, rs []netip.Addr) string {
 	var b strings.Builder
-	t4, t6 := targetElements(tg)
+	t4, t6 := targetElements(tg, false)
+	n4, n6 := targetElements(tg, true)
 	r4, r6 := addrElements(rs)
 	for _, s := range []struct {
 		name  string
 		elems []string
-	}{{setTargets4, t4}, {setTargets6, t6}, {setResolvers4, r4}, {setResolvers6, r6}} {
+	}{{setTargets4, t4}, {setTargets6, t6}, {setAllowNode4, n4}, {setAllowNode6, n6}, {setResolvers4, r4}, {setResolvers6, r6}} {
 		writeElements(&b, "delete", s.name, s.elems)
 	}
 	return b.String()
@@ -176,10 +188,14 @@ func blockedSet(addr netip.Addr) string {
 	return setBlocked6
 }
 
-// targetElements writes targets as set elements, by family. They are written
-// from parsed addresses, never from text that came from elsewhere.
-func targetElements(tg []Target) (v4, v6 []string) {
+// targetElements writes the targets of allowNode, or the others, as set
+// elements, by family. They are written from parsed addresses, never from
+// text that came from elsewhere.
+func targetElements(tg []Target, allowNode bool) (v4, v6 []string) {
 	for _, t := range tg {
+		if t.AllowNode != allowNode {
+			continue
+		}
 		e := t.Addr.String() + " . " + strconv.Itoa(int(t.Port))
 		if t.Addr.Is4() {
 			v4 = append(v4, e)

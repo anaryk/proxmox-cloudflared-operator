@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,13 +46,14 @@ const (
 	broadcastIP = "198.41.192.255"
 	resolverIP  = "127.0.0.53"
 
-	targetPort     = 8080
-	otherPort      = 8081
-	managementPort = 8006
-	edgePort       = 7844
-	metricsPort    = 20300
-	seedPort       = 5353  // of the guest, which seeds a flow towards the node
-	closedPort     = 40000 // of the node, where nothing listens
+	targetPort      = 8080
+	otherPort       = 8081
+	managementPort  = 8006
+	edgePort        = 7844
+	metricsPort     = 20300
+	nodeServicePort = 8082  // of the node, a service a manual route with allowNode publishes
+	seedPort        = 5353  // of the guest, which seeds a flow towards the node
+	closedPort      = 40000 // of the node, where nothing listens
 )
 
 func TestMain(m *testing.M) {
@@ -134,6 +136,29 @@ func TestLinuxEgressFilter(t *testing.T) {
 		root.reaches(t, hostPort("127.0.0.1", managementPort))
 		root.reaches(t, hostPort(nodeIP, managementPort))
 		root.reaches(t, hostPort(guestIP6, targetPort))
+	})
+
+	// A verified target that becomes an address of the node, as a virtual
+	// address that fails over to it, is refused; a target of a manual route
+	// with allowNode is reached.
+	t.Run("an address of the node is refused as a target and reached as one of allowNode", func(t *testing.T) {
+		root.listen(t, hostPort(nodeIP, nodeServicePort))
+		node := netip.MustParseAddr(nodeIP)
+		apply := func(extra Target) {
+			lab.inNode(t, func() error { return f.Set(t.Context(), append(slices.Clone(allowed), extra)) })
+		}
+
+		apply(Target{Addr: node, Port: nodeServicePort})
+		connector.refused(t, hostPort(nodeIP, nodeServicePort))
+		connector.reaches(t, hostPort(guestIP, targetPort))
+
+		apply(Target{Addr: node, Port: nodeServicePort, AllowNode: true})
+		connector.reaches(t, hostPort(nodeIP, nodeServicePort))
+		connector.refused(t, hostPort(nodeIP, managementPort))
+		require.NoError(t, verify(t))
+
+		set(t)
+		connector.refused(t, hostPort(nodeIP, nodeServicePort))
 	})
 
 	t.Run("the table is the one applied and counts what it rejected", func(t *testing.T) {

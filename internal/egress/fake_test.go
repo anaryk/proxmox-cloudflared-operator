@@ -173,10 +173,7 @@ func (l listing) with(t *testing.T, tg []Target, rs []netip.Addr) listing {
 	t.Helper()
 	elems := map[string][]any{}
 	for _, x := range tg {
-		name := setTargets4
-		if x.Addr.Is6() {
-			name = setTargets6
-		}
+		name := targetSet(x)
 		elems[name] = append(elems[name], map[string]any{"concat": []any{x.Addr.String(), x.Port}})
 	}
 	for _, a := range rs {

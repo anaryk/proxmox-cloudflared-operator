@@ -392,14 +392,14 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				}}
 				return append(l[:first], append(listing{added}, l[first:]...)...)
 			})
-		}, "chain connector has 18 rules, want 17"},
+		}, "chain connector has 20 rules, want 19"},
 		{"a rule changed", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				last := l.rules(chainConnector)
 				l[last[len(last)-1]]["rule"].(map[string]any)["expr"] = []any{map[string]any{"accept": nil}}
 				return l
 			})
-		}, "chain connector: rule 17 differs"},
+		}, "chain connector: rule 19 differs"},
 		{"two rules swapped", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				r := l.rules(chainConnector)
@@ -436,7 +436,7 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				}
 				return l
 			})
-		}, "chain connector: rule 13 differs"},
+		}, "chain connector: rule 15 differs"},
 		{"the statements of a rule in another order", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				r := l.rules(chainConnector)
@@ -444,7 +444,7 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				expr[0], expr[1] = expr[1], expr[0]
 				return l
 			})
-		}, "chain connector: rule 17 differs"},
+		}, "chain connector: rule 19 differs"},
 		{"another priority", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				l.object(t, "chain", chainOutput)["prio"] = 10

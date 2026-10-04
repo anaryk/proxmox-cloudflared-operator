@@ -33,12 +33,26 @@ const maxDifferences = 8
 type Target struct {
 	Addr netip.Addr
 	Port uint16
+	// AllowNode marks the target of a manual route with allowNode, which
+	// root wrote to publish an address of the node. Such a target is accepted
+	// before the addresses of the node are refused; every other one after.
+	AllowNode bool
 }
 
 func (t Target) String() string { return netip.AddrPortFrom(t.Addr, t.Port).String() }
 
 func (t Target) compare(o Target) int {
-	return cmp.Or(t.Addr.Compare(o.Addr), cmp.Compare(t.Port, o.Port))
+	return cmp.Or(t.Addr.Compare(o.Addr), cmp.Compare(t.Port, o.Port), compareBool(t.AllowNode, o.AllowNode))
+}
+
+func compareBool(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	}
+	return -1
 }
 
 // Filter keeps the table in line with the targets it is given. Its methods
@@ -275,16 +289,21 @@ func (c contents) blocking(blocked []netip.Addr) contents {
 }
 
 // normalizeTargets returns the targets sorted and once each, with the zone
-// and the IPv4 mapping taken off their addresses, which nft does not know.
+// and the IPv4 mapping taken off their addresses, which nft does not know. An
+// address and port given both as a target of allowNode and as another is one
+// of allowNode, so that it is one element of one set.
 func normalizeTargets(targets []Target) ([]Target, error) {
 	out := make([]Target, 0, len(targets))
 	for _, t := range targets {
 		if !t.Addr.IsValid() || t.Port == 0 {
 			return nil, fmt.Errorf("invalid egress target %q", t.String())
 		}
-		out = append(out, Target{Addr: normalizeAddr(t.Addr), Port: t.Port})
+		out = append(out, Target{Addr: normalizeAddr(t.Addr), Port: t.Port, AllowNode: t.AllowNode})
 	}
-	return sortTargets(out), nil
+	slices.SortFunc(out, func(a, b Target) int {
+		return cmp.Or(a.Addr.Compare(b.Addr), cmp.Compare(a.Port, b.Port), compareBool(b.AllowNode, a.AllowNode))
+	})
+	return slices.CompactFunc(out, func(a, b Target) bool { return a.Addr == b.Addr && a.Port == b.Port }), nil
 }
 
 func sortTargets(targets []Target) []Target {

@@ -214,20 +214,26 @@ that matches decides:
 2. Replies of TCP connections to an address of the node itself are accepted. That is how
    the daemon reads the `/ready` endpoint of a connector on 127.0.0.1.
 3. An address on the block list of this node is rejected on every port.
-4. The targets are accepted: a TCP connection to an address and port in the targets set,
-   which holds the origins the daemon verified.
-5. The resolvers of the node are accepted: the `nameserver` lines of `/etc/resolv.conf`, TCP
+4. The resolvers of the node are accepted: the `nameserver` lines of `/etc/resolv.conf`, TCP
    and UDP port 53.
-6. Anything else addressed to the node itself is rejected and counted.
-7. TCP and UDP port 7844 to a public unicast address is accepted. That is Cloudflare's
+5. The targets of manual routes with `allowNode` are accepted: a TCP connection to an
+   address and port in the `allownode4` or `allownode6` set. Root wrote those routes to
+   publish a service of the node itself.
+6. Anything else addressed to the node itself is rejected and counted. That includes a
+   verified target that has become an address of the node since it was verified, as a
+   virtual address that fails over to the node does: it is refused at once, and not only
+   once the next cycle has taken it out of the set.
+7. The targets are accepted: a TCP connection to an address and port in the targets set,
+   which holds the origins the daemon verified.
+8. TCP and UDP port 7844 to a public unicast address is accepted. That is Cloudflare's
    edge. The rule excludes the ranges that are not the public internet (private, shared,
    link-local, loopback, benchmark, documentation, translation prefixes, 6to4, Teredo,
    multicast and reserved ones, for IPv4 and IPv6) rather than list Cloudflare's addresses,
    so there is no list to keep up to date.
-8. TCP port 853 to 1.1.1.1 and 1.0.0.1 is accepted: the DNS over TLS fallback of cloudflared.
-9. Everything else is rejected and counted. TCP is answered with a reset and the rest with
-   ICMP administratively prohibited, not dropped, so that a connection to a withdrawn target
-   fails at once instead of waiting for a timeout.
+9. TCP port 853 to 1.1.1.1 and 1.0.0.1 is accepted: the DNS over TLS fallback of cloudflared.
+10. Everything else is rejected and counted. TCP is answered with a reset and the rest with
+    ICMP administratively prohibited, not dropped, so that a connection to a withdrawn target
+    fails at once instead of waiting for a timeout.
 
 A connector can therefore reach Cloudflare's edge, the resolvers, and the verified targets,
 and cannot reach the management ports of the node or any other host. A rule written at
@@ -313,7 +319,7 @@ They work on the node directly, without the daemon, and need root.
 
 | Command | What it does |
 |---|---|
-| `pco egress show` | Says whether the filter is on, off, not loaded, or loaded but not as pco loads it (it then names what differs). Lists the targets, the resolvers, the addresses blocked on this node, and what the table rejected since it was last loaded in full, in packets: to addresses of this node, and to anything else. Exits 1 when the filter is off, gone or changed. |
+| `pco egress show` | Says whether the filter is on, off, not loaded, or loaded but not as pco loads it (it then names what differs). Lists the targets, those of `allowNode` marked so, the resolvers, the addresses blocked on this node, and what the table rejected since it was last loaded in full, in packets: to addresses of this node, and to anything else. Exits 1 when the filter is off, gone or changed. |
 | `pco egress block <address>` | Puts the address on the block list of this node and takes its entries out of the table at once. The list is kept in `/var/lib/pco/egress-blocked.json` and is subtracted from every set the daemon loads, until `unblock`. It needs no daemon and no Cloudflare. |
 | `pco egress unblock <address>` | Takes the address off the list. If it is still a verified target, the daemon puts it back at its next cycle. |
 | `pco egress off` | Removes the table and writes `/var/lib/pco/egress-off.json`. While that file exists, neither the boot unit nor the daemon loads the table. The connectors are not confined. |

@@ -215,8 +215,8 @@ func TestEgressLoadSaysThatTheNodeNamesNoResolver(t *testing.T) {
 func TestEgressLoadReplacesATableWithoutResolvers(t *testing.T) {
 	r := newEgressRig(t)
 	r.nft.listErr = nil
-	r.nft.live = strings.Replace(liveTable(t), `"name": "resolvers4", "table": "pco_egress", "type": "ipv4_addr", "handle": 7, "elem": ["192.168.1.1"]}`,
-		`"name": "resolvers4", "table": "pco_egress", "type": "ipv4_addr", "handle": 7}`, 1)
+	r.nft.live = strings.Replace(liveTable(t), `"name": "resolvers4", "table": "pco_egress", "type": "ipv4_addr", "handle": 9, "elem": ["192.168.1.1"]}`,
+		`"name": "resolvers4", "table": "pco_egress", "type": "ipv4_addr", "handle": 9}`, 1)
 	require.NotContains(t, r.nft.live, `"elem": ["192.168.1.1"]`)
 	resolvers := []netip.Addr{netip.MustParseAddr("192.168.1.1")}
 	r.env.resolvers = func() ([]netip.Addr, error) { return resolvers, nil }
@@ -481,14 +481,29 @@ func TestEgressUnblockTakesTheAddressOutOfTheBlockedSetOfTheLiveTable(t *testing
 	_, err := r.overrides().Block(netip.MustParseAddr("10.0.0.9"))
 	require.NoError(t, err)
 	r.nft.listErr = nil
-	r.nft.live = strings.Replace(liveTable(t), `"name": "blocked4", "table": "pco_egress", "type": "ipv4_addr", "handle": 9}`,
-		`"name": "blocked4", "table": "pco_egress", "type": "ipv4_addr", "handle": 9, "elem": ["10.0.0.9"]}`, 1)
+	r.nft.live = strings.Replace(liveTable(t), `"name": "blocked4", "table": "pco_egress", "type": "ipv4_addr", "handle": 11}`,
+		`"name": "blocked4", "table": "pco_egress", "type": "ipv4_addr", "handle": 11, "elem": ["10.0.0.9"]}`, 1)
 	require.Contains(t, r.nft.live, `"elem": ["10.0.0.9"]`)
 
 	res := r.run("unblock", "10.0.0.9")
 
 	require.NoError(t, res.err)
 	require.Equal(t, []string{"delete element inet pco_egress blocked4 { 10.0.0.9 }\n"}, r.nft.applied())
+}
+
+// An address of the node that a manual route with allowNode publishes is in a
+// set of its own, which show names.
+func TestEgressShowMarksATargetOfAllowNode(t *testing.T) {
+	r := newEgressRig(t)
+	r.nft.listErr = nil
+	r.nft.live = strings.Replace(liveTable(t), `"name": "allownode4", "table": "pco_egress", "type": ["ipv4_addr", "inet_service"], "handle": 7}`,
+		`"name": "allownode4", "table": "pco_egress", "type": ["ipv4_addr", "inet_service"], "handle": 7, "elem": [{"concat": ["10.0.0.2", 8006]}]}`, 1)
+	require.Contains(t, r.nft.live, `"10.0.0.2", 8006`)
+
+	res := r.run("show")
+
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, "Targets:\n  10.0.0.2:8006 (allowNode)\n  10.0.0.5:80\n")
 }
 
 func TestEgressShowGolden(t *testing.T) {

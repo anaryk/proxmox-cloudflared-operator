@@ -303,7 +303,15 @@ func TestAManualRouteToTheNodeIsAnExactEntry(t *testing.T) {
 	e.cycle()
 
 	got, _ := e.egr.last()
-	require.Equal(t, egressTargets("10.0.0.2:8006"), got)
+	require.Equal(t, []egress.Target{{Addr: nodeAddr, Port: 8006, AllowNode: true}}, got, "accepted before the addresses of the node are refused")
+
+	// Kept as such in the cycles that follow, also from the memory of an
+	// earlier process.
+	e.eng = e.newEngine()
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	got, _ = e.egr.last()
+	require.Equal(t, []egress.Target{{Addr: nodeAddr, Port: 8006, AllowNode: true}}, got)
 }
 
 // The set and the configuration verified last are in the memory: a restart
