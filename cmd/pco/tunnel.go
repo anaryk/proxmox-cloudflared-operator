@@ -1,10 +1,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -42,7 +39,7 @@ func (a *app) tunnelRotateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, err := rotationTarget(st, account)
+			t, err := engine.RotationTarget(st.Tunnels, account)
 			if err != nil {
 				return err
 			}
@@ -70,34 +67,6 @@ func (a *app) tunnelRotateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&account, "account", "", "the account of the tunnel; needed when the install has tunnels in several")
 	addYesFlag(cmd, &yes)
 	return cmd
-}
-
-// rotationTarget finds the tunnel a rotation is of in the state, as the
-// daemon does: the one in account, or the only one.
-func rotationTarget(st engine.State, account string) (engine.TunnelView, error) {
-	var found []engine.TunnelView
-	for _, t := range st.Tunnels {
-		if t.Exists && t.ID != "" && !t.Unknown && (account == "" || t.AccountID == account) {
-			found = append(found, t)
-		}
-	}
-	switch {
-	case len(found) == 0 && account != "":
-		return engine.TunnelView{}, fmt.Errorf("no tunnel of this install is known in account %s; pco status lists the tunnels", account)
-	case len(found) == 0:
-		return engine.TunnelView{}, errors.New("no tunnel of this install is known; pco status lists the tunnels")
-	case len(found) > 1:
-		accounts := make([]string, 0, len(found))
-		for _, t := range found {
-			accounts = append(accounts, t.AccountID)
-		}
-		slices.Sort(accounts)
-		return engine.TunnelView{}, fmt.Errorf("the install has tunnels in accounts %s and %s; name one with --account",
-			strings.Join(accounts[:len(accounts)-1], ", "), accounts[len(accounts)-1])
-	case found[0].Held != "":
-		return engine.TunnelView{}, fmt.Errorf("tunnel %s in account %s is left as it is: %s; nothing was changed", found[0].Name, found[0].AccountID, found[0].Held)
-	}
-	return found[0], nil
 }
 
 // describeRotation says what a rotation does, and which connectors that pco

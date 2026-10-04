@@ -134,10 +134,11 @@ func TestTunnelRotateNamesTheAccount(t *testing.T) {
 	r := newRunner(t, serveRotation(t, st, d))
 
 	res := r.run("", "tunnel", "rotate", "--yes")
-	require.EqualError(t, res.err, "the install has tunnels in accounts acc1 and acc2; name one with --account")
+	require.EqualError(t, res.err, "invalid request: the install has tunnels in accounts acc1 and acc2; name one with --account",
+		"what the daemon would answer")
 
 	res = r.run("", "tunnel", "rotate", "--account", "acc9", "--yes")
-	require.EqualError(t, res.err, "no tunnel of this install is known in account acc9; pco status lists the tunnels")
+	require.EqualError(t, res.err, "not found: no tunnel of this install is known in account acc9; pco status lists the tunnels")
 
 	res = r.run("", "tunnel", "rotate", "--account", "acc2", "--yes")
 	require.NoError(t, res.err)
@@ -154,9 +155,23 @@ func TestTunnelRotateOfATunnelLeftAsItIs(t *testing.T) {
 
 	res := r.run("", "tunnel", "rotate", "--yes")
 
-	require.EqualError(t, res.err, "tunnel pco-abc123 in account acc1 is left as it is: "+
+	require.EqualError(t, res.err, "refused: tunnel pco-abc123 in account acc1 is left as it is: "+
 		"account frozen: zone example.com is no longer listed by credential cred1; nothing was changed")
 	require.Empty(t, d.rotations())
+}
+
+// A tunnel the last cycle did not check, as when a forged sentinel holds it,
+// can be rotated: that is the remedy.
+func TestTunnelRotateOfATunnelTheLastCycleDidNotCheck(t *testing.T) {
+	st := rotationState()
+	st.Tunnels[0].Held, st.Tunnels[0].Unchecked = "not checked in the last cycle: the tunnel run found a foreign writer", true
+	d := &rotationDaemon{}
+	r := newRunner(t, serveRotation(t, st, d))
+
+	res := r.run("", "tunnel", "rotate", "--yes")
+
+	require.NoError(t, res.err)
+	require.Equal(t, []string{`{"account":"acc1"}`}, d.rotations())
 }
 
 func TestTunnelRotateIsRootsAlone(t *testing.T) {

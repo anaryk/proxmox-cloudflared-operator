@@ -78,7 +78,7 @@ func (c *cycleRun) followRefusals(existing []reconcile.TunnelState, before, now 
 		c.problem("tunnel %s in account %s: Cloudflare refuses the token its connector runs with; "+
 			"pco reads the token again when that starts and every five minutes, and pco tunnel rotate gives the tunnel a new secret",
 			t.Name, t.AccountID)
-		if c.mode() != reconcile.Enforce || refused(before, t.ID) || c.accountsListed(t.CredentialID) {
+		if !c.mayEnsure() || refused(before, t.ID) || c.accountsListed(t.CredentialID) {
 			continue
 		}
 		stored, found, err := c.e.d.Connectors.Token(t.ID)
@@ -91,12 +91,20 @@ func (c *cycleRun) followRefusals(existing []reconcile.TunnelState, before, now 
 	}
 }
 
+// mayEnsure says whether the cycle may start or restart a connector: in
+// enforce mode, once the settings and the install were read. A cycle that
+// holds after that may, for a token of the install's own tunnel.
+func (c *cycleRun) mayEnsure() bool {
+	return c.install.ID != "" && c.mode() == reconcile.Enforce
+}
+
 // RotateTunnel gives the tunnel of the install in an account a new secret at
 // Cloudflare and ends the connections of all its connectors: one that runs
 // elsewhere with the old token cannot connect again, and the one on this node
 // is restarted at once with the new token. account may be empty when the
-// install has one tunnel. The tunnel is one the last state shows reconciled;
-// in observe-only mode nothing is done.
+// install has one tunnel. The tunnel is one the last state shows with its id
+// and credential, also when the last cycle held; in observe-only mode nothing
+// is done.
 func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotation, error) {
 	if err := e.acquireAdmin(ctx); err != nil {
 		return TunnelRotation{}, err
@@ -116,10 +124,11 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 	case !found:
 		return TunnelRotation{}, fmt.Errorf("%w: %s", ErrRefused, problemNotSetUp)
 	}
-	t, err := e.rotatable(account)
+	v, err := RotationTarget(e.State().Tunnels, account)
 	if err != nil {
 		return TunnelRotation{}, err
 	}
+	t := v.TunnelState
 	api := e.clients[t.CredentialID]
 	if api == nil {
 		return TunnelRotation{}, fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
@@ -161,30 +170,33 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 	return res, nil
 }
 
-// rotatable returns the tunnel of the install that a rotation is of, as the
-// last state shows it: the one in account, or the only one when account is
-// empty. It has to be one the last cycle reconciled.
-func (e *Engine) rotatable(account string) (reconcile.TunnelState, error) {
+// RotationTarget returns the tunnel a rotation is of among the tunnels of a
+// state: the one in account, or the only one when account is empty. It has to
+// exist with its id and credential known. A tunnel the last cycle left as it
+// is for a reason of its own, as a frozen account, is refused; one it did not
+// check, whatever held it, is not: a hold must not keep the secret of a tunnel
+// that someone else runs a connector of from being rotated.
+func RotationTarget(tunnels []TunnelView, account string) (TunnelView, error) {
 	var found []TunnelView
-	for _, t := range e.State().Tunnels {
-		if t.Exists && t.ID != "" && !t.Unknown && (account == "" || t.AccountID == account) {
+	for _, t := range tunnels {
+		if t.Exists && t.ID != "" && t.CredentialID != "" && !t.Unknown && (account == "" || t.AccountID == account) {
 			found = append(found, t)
 		}
 	}
 	switch {
 	case len(found) == 0 && account != "":
-		return reconcile.TunnelState{}, fmt.Errorf("%w: no tunnel of this install is known in account %s; pco status lists the tunnels", ErrNotFound, account)
+		return TunnelView{}, fmt.Errorf("%w: no tunnel of this install is known in account %s; pco status lists the tunnels", ErrNotFound, account)
 	case len(found) == 0:
-		return reconcile.TunnelState{}, fmt.Errorf("%w: no tunnel of this install is known; pco status lists the tunnels", ErrNotFound)
+		return TunnelView{}, fmt.Errorf("%w: no tunnel of this install is known; pco status lists the tunnels", ErrNotFound)
 	case len(found) > 1:
 		accounts := make([]string, 0, len(found))
 		for _, t := range found {
 			accounts = append(accounts, t.AccountID)
 		}
-		return reconcile.TunnelState{}, fmt.Errorf("%w: the install has tunnels in accounts %s; name one with --account", ErrInvalid, andList(accounts))
-	case found[0].Held != "":
-		return reconcile.TunnelState{}, fmt.Errorf("%w: tunnel %s in account %s is left as it is: %s; nothing was changed",
+		return TunnelView{}, fmt.Errorf("%w: the install has tunnels in accounts %s; name one with --account", ErrInvalid, andList(accounts))
+	case found[0].Held != "" && !found[0].Unchecked:
+		return TunnelView{}, fmt.Errorf("%w: tunnel %s in account %s is left as it is: %s; nothing was changed",
 			ErrRefused, found[0].Name, found[0].AccountID, found[0].Held)
 	}
-	return found[0].TunnelState, nil
+	return found[0], nil
 }

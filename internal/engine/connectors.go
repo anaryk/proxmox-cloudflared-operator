@@ -17,9 +17,9 @@ import (
 // reconcileConnectors keeps a connector running for every tunnel the tunnel
 // run found, and in enforce mode removes the connectors of tunnels Cloudflare
 // shows gone. The tunnels the cycle leaves as they are, as those of frozen
-// accounts, are looked up and shown in both modes, the status of every
-// connector is read, and the connectors Cloudflare lists on the tunnels found
-// are held against those of the node.
+// accounts, are looked up and shown in both modes, and the status of every
+// connector is read, for the DNS run that follows; watchTunnels holds them
+// against what Cloudflare lists.
 func (c *cycleRun) reconcileConnectors() {
 	var existing []reconcile.TunnelState
 	for _, t := range c.tunnels {
@@ -51,7 +51,15 @@ func (c *cycleRun) reconcileConnectors() {
 		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: "not visible through any credential"})
 	}
 	shown := slices.Concat(existing, others, invisible)
-	before := c.st.Connectors
+	c.connected, c.existing, c.shown = true, existing, shown
+	c.readStatuses(shown)
+	c.noteForeignConnectors(shown)
+}
+
+// readStatuses reads the status of the connectors of the tunnels into the
+// state, and keeps what the last cycle read.
+func (c *cycleRun) readStatuses(shown []reconcile.TunnelState) {
+	c.before = c.st.Connectors
 	statuses := make([]connector.Status, 0, len(shown))
 	for _, t := range shown {
 		st, err := c.e.d.Connectors.Status(c.ctx, t.ID)
@@ -62,11 +70,59 @@ func (c *cycleRun) reconcileConnectors() {
 		statuses = append(statuses, st)
 	}
 	c.st.Connectors = statuses
+}
+
+// watchTunnels reads the status of the connectors and holds the connectors
+// Cloudflare lists against them, in every cycle, held or not: what it asks
+// changes nothing, and a hold, as one a sentinel written with a stolen token
+// makes, must not hide a connector that pco does not run. A cycle that did
+// not get to the connectors watches the tunnels the tunnel run found, or else
+// those the last state showed: what it knows of them stays as it was.
+func (c *cycleRun) watchTunnels() {
+	if c.ctx.Err() != nil {
+		return
+	}
+	existing, shown := c.existing, c.shown
+	if !c.connected {
+		existing, shown = c.knownTunnels()
+		if len(shown) == 0 {
+			return
+		}
+		c.readStatuses(shown)
+	}
+	statuses := c.st.Connectors
 	c.notePortsHeld(shown, statuses)
-	c.followRefusals(existing, before, statuses)
-	c.watchConnectors(existing, before, statuses)
-	c.forgetRogues(shown)
-	c.noteForeignConnectors(shown)
+	c.followRefusals(existing, c.before, statuses)
+	c.watchConnectors(existing, c.before, statuses)
+	if c.connected {
+		c.forgetRogues(shown)
+	}
+}
+
+// knownTunnels are the tunnels a cycle that did not get to the connectors
+// knows to exist: those the tunnel run found, or else those the last state
+// showed with an id, unless that state left them as they are for a reason of
+// their own, as a frozen account. shown are those whose connectors the state
+// showed.
+func (c *cycleRun) knownTunnels() (existing, shown []reconcile.TunnelState) {
+	if c.tunnels != nil {
+		for _, t := range c.tunnels {
+			if t.Exists && t.ID != "" {
+				existing = append(existing, t)
+			}
+		}
+		return existing, existing
+	}
+	for _, v := range c.st.Tunnels {
+		if v.ID == "" {
+			continue
+		}
+		shown = append(shown, v.TunnelState)
+		if v.Exists && !v.Unknown && (v.Held == "" || v.Unchecked) {
+			existing = append(existing, v.TunnelState)
+		}
+	}
+	return existing, shown
 }
 
 // notePortsHeld names the connectors that another process keeps from starting

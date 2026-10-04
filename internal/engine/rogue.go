@@ -66,19 +66,18 @@ func (c *cycleRun) watchConnectors(existing []reconcile.TunnelState, before, now
 }
 
 // connectorsDue says whether the connectors of a tunnel are listed in this
-// cycle: whenever the accounts of its credential are listed, every
-// zoneRefreshEvery, and besides at most every rolloutAskEvery while its
-// configuration is not seen running yet or a connector pco does not run is
-// shown on it.
+// cycle: every zoneRefreshEvery, also in a cycle that holds, and besides at
+// most every rolloutAskEvery while its configuration is not seen running yet
+// or a connector pco does not run is shown on it.
 func (c *cycleRun) connectorsDue(t reconcile.TunnelState, rollout bool) bool {
-	if c.accountsListed(t.CredentialID) {
+	last, asked := c.e.asked[t.ID]
+	switch {
+	case !asked || c.now.Before(last) || c.now.Sub(last) >= zoneRefreshEvery:
 		return true
-	}
-	if !rollout && !slices.ContainsFunc(c.st.RogueConnectors, func(r RogueConnector) bool { return r.TunnelID == t.ID }) {
+	case !rollout && !slices.ContainsFunc(c.st.RogueConnectors, func(r RogueConnector) bool { return r.TunnelID == t.ID }):
 		return false
 	}
-	last, asked := c.e.asked[t.ID]
-	return !asked || c.now.Sub(last) >= rolloutAskEvery || c.now.Before(last)
+	return c.now.Sub(last) >= rolloutAskEvery
 }
 
 // compareConnectors holds the connectors Cloudflare lists on a tunnel against

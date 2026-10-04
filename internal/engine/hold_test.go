@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,10 +55,14 @@ func freeze(e *env) frozen {
 }
 
 // requireUnchanged checks that nothing on disk, at Cloudflare or on the
-// connectors changed, and that the state kept its routes.
+// connectors changed, and that the state kept its routes. Cloudflare is asked
+// nothing but the listing of the connectors, which a cycle makes whether it
+// holds or not.
 func (f *frozen) requireUnchanged(t *testing.T, e *env, st State) {
 	t.Helper()
-	require.Len(t, e.cf.Calls(), f.calls, "Cloudflare is not asked")
+	require.Empty(t, slices.DeleteFunc(slices.Clone(e.cf.Calls()[f.calls:]), func(c string) bool {
+		return strings.HasPrefix(c, "Connectors ")
+	}), "Cloudflare is not asked")
 	require.Equal(t, f.files, e.files(), "nothing on disk changes")
 	require.Len(t, e.conn.ensures(), f.ensures, "no connector is started")
 	require.Len(t, e.conn.prunes(), f.prunes, "no connector is pruned")
@@ -433,7 +439,9 @@ func TestCycleWithUnreadableCredentialsKeepsCloudflareAndTheRoutes(t *testing.T)
 	require.Len(t, st.Problems, 1)
 	require.Contains(t, st.Problems[0], "reading the credentials")
 	require.NotContains(t, st.Problems[0], testToken)
-	require.Len(t, e.cf.Calls(), calls)
+	require.Empty(t, slices.DeleteFunc(slices.Clone(e.cf.Calls()[calls:]), func(c string) bool {
+		return strings.HasPrefix(c, "Connectors ")
+	}), "nothing is asked but the listing of the connectors")
 	require.Equal(t, routes, st.Routes, "routes stay as they were shown")
 	require.Len(t, st.Credentials, 1)
 	require.Len(t, e.conn.prunes(), 1)

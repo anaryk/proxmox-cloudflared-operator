@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -71,6 +72,13 @@ type cycleRun struct {
 	tunnelVerdict reconcile.WriterVerdict
 	// tunnels are the states the tunnel run returned, which DNS must be given.
 	tunnels []reconcile.TunnelState
+	// connected says that the connector step ran: existing are the tunnels it
+	// found to exist and shown all whose connectors it shows. before are the
+	// statuses of the connectors as the last cycle read them.
+	connected bool
+	existing  []reconcile.TunnelState
+	shown     []reconcile.TunnelState
+	before    []connector.Status
 	// offer is what this cycle's state shows waiting for a confirmation.
 	offer confirmable
 	// lost are the addresses whose binding lost its proof in this cycle, and
@@ -108,6 +116,7 @@ func (c *cycleRun) run() State {
 		}
 		c.reconcile()
 	}
+	c.watchTunnels()
 	c.saveMemory()
 	c.noteRogueConnectors()
 	if !c.checked {
