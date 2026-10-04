@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -61,10 +62,26 @@ func (c *cycleRun) reconcileConnectors() {
 		statuses = append(statuses, st)
 	}
 	c.st.Connectors = statuses
+	c.notePortsHeld(shown, statuses)
 	c.followRefusals(existing, before, statuses)
 	c.watchConnectors(existing, before, statuses)
 	c.forgetRogues(shown)
 	c.noteForeignConnectors(shown)
+}
+
+// notePortsHeld names the connectors that another process keeps from starting
+// by holding their metrics port, as any local user can: the connector manager
+// gives each another port at its next Ensure.
+func (c *cycleRun) notePortsHeld(shown []reconcile.TunnelState, statuses []connector.Status) {
+	for _, t := range shown {
+		i := slices.IndexFunc(statuses, func(s connector.Status) bool { return s.TunnelID == t.ID && s.MetricsPortHeld })
+		if i < 0 {
+			continue
+		}
+		_, port, _ := net.SplitHostPort(statuses[i].MetricsAddr)
+		c.problem("tunnel %s in account %s: metrics port %s is held by another process, which keeps its connector from starting; "+
+			"the connector gets another port in the next cycle", t.Name, t.AccountID, port)
+	}
 }
 
 // noteForeignConnectors names the connectors on the node that are of another

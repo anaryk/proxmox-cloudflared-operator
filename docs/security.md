@@ -33,6 +33,13 @@ cloudflared reads no configuration of the host. Its token is handed to it as a s
 credential and read from a file, so it never appears on a command line or in the
 environment.
 
+A connector listens on 127.0.0.1 for its metrics, on a port from 20300 up. A local user who
+listens on that port first keeps it from starting: it exits and systemd starts it again,
+over and over. The daemon reads that from the connector's journal, says
+`metrics port 20300 is held by another process` as a problem, and in the next cycle moves
+the connector to a port of its own; the port that was taken is not given out again until
+the daemon restarts.
+
 The Proxmox side is read-only. Setup makes the role `PCO`, the user `pco@pve` and the
 token `pco@pve!pco`, and the role holds `VM.Audit`, `Sys.Audit`, `SDN.Audit` and
 `VM.GuestAgent.Audit` (`VM.Monitor` on Proxmox VE 8.4), granted on `/`. The daemon never

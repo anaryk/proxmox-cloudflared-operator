@@ -31,6 +31,10 @@ type Status struct {
 	// last that Cloudflare refused its token, as after the secret of the
 	// tunnel was rotated.
 	TokenRefused bool `json:"tokenRefused,omitempty"`
+	// MetricsPortHeld says that a connector that runs and is not ready logged
+	// last that another process holds its metrics port, so that it cannot
+	// start. The next Ensure gives it another port.
+	MetricsPortHeld bool `json:"metricsPortHeld,omitempty"`
 }
 
 // Text says how a connector fares: "inactive", "active, not ready" or
@@ -67,7 +71,7 @@ func (m *Manager) Status(ctx context.Context, tunnelID string) (Status, error) {
 		return Status{}, fmt.Errorf("tunnel %s: reading env file: %w", tunnelID, err)
 	}
 	st.Install = values[installKey]
-	addr, _, err := metricsOf(values)
+	addr, port, err := metricsOf(values)
 	if err != nil {
 		return st, nil
 	}
@@ -76,7 +80,7 @@ func (m *Manager) Status(ctx context.Context, tunnelID string) (Status, error) {
 		r := m.probe(ctx, addr)
 		st.Ready, st.Connections, st.ConnectorID = r.ready, r.ReadyConnections, r.ConnectorID
 		if !st.Ready {
-			m.readJournal(ctx, &st)
+			m.readJournal(ctx, &st, port)
 		}
 	}
 	return st, nil

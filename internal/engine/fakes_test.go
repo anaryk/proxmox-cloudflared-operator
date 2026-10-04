@@ -279,6 +279,7 @@ type fakeConnectors struct {
 	ensureErr func(token string) error
 	notReady  map[string]bool   // tunnels whose connector is not ready
 	refused   map[string]bool   // tunnels whose connector Cloudflare refuses: not ready, and its journal says so
+	portHeld  map[string]bool   // tunnels whose metrics port another process holds: not ready, and its journal says so
 	ids       map[string]string // the id /ready names, by tunnel; defaultConnectorID when not set
 }
 
@@ -325,8 +326,11 @@ func (f *fakeConnectors) List(context.Context) ([]string, error) {
 func (f *fakeConnectors) Status(_ context.Context, id string) (connector.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.notReady[id] || f.refused[id] {
-		return connector.Status{TunnelID: id, Active: true, TokenRefused: f.refused[id], MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
+	if f.notReady[id] || f.refused[id] || f.portHeld[id] {
+		return connector.Status{
+			TunnelID: id, Active: true, TokenRefused: f.refused[id], MetricsPortHeld: f.portHeld[id],
+			MetricsAddr: "127.0.0.1:20300", Install: testInstall,
+		}, nil
 	}
 	cid, ok := f.ids[id]
 	if !ok {
@@ -344,6 +348,17 @@ func (f *fakeConnectors) setRefused(id string, refused bool) {
 		f.refused = map[string]bool{}
 	}
 	f.refused[id] = refused
+}
+
+// setPortHeld makes another process hold the metrics port of the connector of
+// a tunnel.
+func (f *fakeConnectors) setPortHeld(id string, held bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.portHeld == nil {
+		f.portHeld = map[string]bool{}
+	}
+	f.portHeld[id] = held
 }
 
 // setConnectorID makes the node's connector of a tunnel name itself id.

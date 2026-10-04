@@ -14,25 +14,29 @@ type journalReader interface {
 	Journal(ctx context.Context, unit string, lines int) ([]string, error)
 }
 
-// tokenRefused reads what a connector logged last, oldest first, and reports
-// whether the last word on its connections is that Cloudflare refused its
-// token: a registration refused as unauthorized, and none that worked since.
-func tokenRefused(lines []string) bool {
+// whyNotReady reads what a connector logged last, oldest first, for the last
+// word on why it is not connected: that Cloudflare refused its token, a
+// registration refused as unauthorized, or that another process holds its
+// metrics address, which it fails to listen on at its start. A connection
+// registered since says neither.
+func whyNotReady(lines []string, metricsAddr string) (refused, portHeld bool) {
 	for i := len(lines) - 1; i >= 0; i-- {
 		switch line := lines[i]; {
 		case strings.Contains(line, "Registered tunnel connection"):
-			return false
+			return false, false
 		case strings.Contains(line, "Unauthorized"):
-			return true
+			return true, false
+		case metricsAddr != "" && strings.Contains(line, "address already in use") && strings.Contains(line, metricsAddr):
+			return false, true
 		}
 	}
-	return false
+	return false, false
 }
 
 // readJournal reads what the unit of a connector that is not ready logged
-// last, and notes on st what it says. A journal that cannot be read says
-// nothing.
-func (m *Manager) readJournal(ctx context.Context, st *Status) {
+// last, and notes on st what it says. A metrics port that another process
+// holds is not given out again. A journal that cannot be read says nothing.
+func (m *Manager) readJournal(ctx context.Context, st *Status, port int) {
 	if m.journal == nil {
 		return
 	}
@@ -41,5 +45,10 @@ func (m *Manager) readJournal(ctx context.Context, st *Status) {
 		m.log.Debug().Err(err).Str("tunnel", st.TunnelID).Msg("reading the journal of a connector failed")
 		return
 	}
-	st.TokenRefused = tokenRefused(lines)
+	st.TokenRefused, st.MetricsPortHeld = whyNotReady(lines, st.MetricsAddr)
+	if st.MetricsPortHeld {
+		m.mu.Lock()
+		m.held[port] = true
+		m.mu.Unlock()
+	}
 }
