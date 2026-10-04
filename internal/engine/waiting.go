@@ -75,12 +75,7 @@ func (o confirmable) waiting(routes []RouteView) []Waiting {
 			stale[sz.name] = append(stale[sz.name], sz.credential)
 			continue
 		}
-		out = append(out, Waiting{
-			Kind: WaitingZone, Subject: sz.name,
-			Detail: fmt.Sprintf("credential %s can no longer read the DNS of zone %s; a confirmation lets the zone go: "+
-				"its hostnames are taken off the tunnel, and its records are left as they are", sz.credential, sz.name),
-			Items: []string{},
-		})
+		out = append(out, Waiting{Kind: WaitingZone, Subject: sz.name, Detail: letGoDetail(sz), Items: []string{}})
 	}
 	for _, name := range slices.Sorted(maps.Keys(stale)) {
 		out = append(out, Waiting{
@@ -102,6 +97,18 @@ func (o confirmable) waiting(routes []RouteView) []Waiting {
 		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Subject, b.Subject), cmp.Compare(a.Detail, b.Detail))
 	})
 	return out
+}
+
+// letGoDetail says what a confirmation does to a zone whose DNS the credential
+// that serves it can no longer read. Without a credential that can read it,
+// the zone is not served; with one, a pin to it serves the zone through it.
+func letGoDetail(sz staleZone) string {
+	if sz.readers == "" {
+		return fmt.Sprintf("credential %s can no longer read the DNS of zone %s; a confirmation lets the zone go: "+
+			"its hostnames are taken off the tunnel, and its records are left as they are", sz.credential, sz.name)
+	}
+	return fmt.Sprintf("credential %s can no longer read the DNS of zone %s; a confirmation lets the zone go from it, "+
+		"and a pin to credential %s, which can read it, ends the freeze as well", sz.credential, sz.name, sz.readers)
 }
 
 // cloneWaiting copies what waits down to the items.

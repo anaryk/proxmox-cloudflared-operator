@@ -266,7 +266,7 @@ func TestDNSTextRecordAtTheNameStandsBesideTheCNAME(t *testing.T) {
 	require.Len(t, dnsWrites(f), 1)
 }
 
-func TestDNSTextRecordBesideAnAddressRecordIsNoConflict(t *testing.T) {
+func TestDNSAnAddressRecordBesideATextRecordIsTheConflict(t *testing.T) {
 	f := newDNSFake()
 	f.SeedRecord(zone1.ID, cfapi.Record{Type: "TXT", Name: "app.example.com", Content: "v=spf1 -all"})
 	addr := f.SeedRecord(zone1.ID, cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10"})

@@ -100,7 +100,9 @@ func (e *Engine) memoryAccepting(o confirmable) store.EngineMemory {
 	})
 	m.Served = slices.DeleteFunc(m.Served, func(z store.RememberedZone) bool {
 		sz := staleZone{credential: z.CredentialID, name: z.Name}
-		return confirmed[sz] || slices.Contains(o.stale, staleZone{credential: sz.credential, name: sz.name, refused: true})
+		return confirmed[sz] || slices.ContainsFunc(o.stale, func(x staleZone) bool {
+			return x.refused && x.credential == sz.credential && x.name == sz.name
+		})
 	})
 	m.Tunnels = slices.DeleteFunc(m.Tunnels, func(t store.SeenTunnel) bool {
 		return slices.ContainsFunc(o.invisible, func(u unseenTunnel) bool { return u.id == t.ID })

@@ -42,7 +42,7 @@ func (c *cycleRun) syncCredentials() bool {
 	checks := c.e.zoneChecks()
 	c.refreshZones(ids, checks)
 	c.credIDs = ids
-	c.zones = c.e.zones.set(ids, c.settings.ZonePins, checks)
+	c.zones = c.e.zones.set(ids, c.settings.ZonePins, checks, c.now)
 	for _, id := range c.zones.recheck {
 		c.e.recheckBy(id, c.now)
 	}
@@ -89,6 +89,7 @@ func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 	e.repMu.Lock()
 	maps.DeleteFunc(e.reports, func(id string, _ credentials.Report) bool { return !seen[id] })
 	maps.DeleteFunc(e.refusedAgain, func(id string, _ map[string]bool) bool { return !seen[id] })
+	maps.DeleteFunc(e.tried, func(id string, _ checkTry) bool { return !seen[id] })
 	maps.DeleteFunc(e.recheckAt, func(id string, _ time.Time) bool { return !seen[id] })
 	e.repMu.Unlock()
 }

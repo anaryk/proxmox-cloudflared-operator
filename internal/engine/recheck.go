@@ -118,12 +118,21 @@ func (e *Engine) noteUnanswered(cred store.Credential, r credentials.Report) {
 	})
 }
 
+// checkTry is a check of a token that was made: when, and whether Cloudflare
+// answered it so that its report was kept.
+type checkTry struct {
+	at       time.Time
+	answered bool
+}
+
 // recheckLater puts the next check of a credential whose check could not be
 // made off for a while.
 func (e *Engine) recheckLater(id string) {
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
-	e.recheckAt[id] = e.d.Now().Add(recheckFailedEvery)
+	now := e.d.Now()
+	e.tried[id] = checkTry{at: now}
+	e.recheckAt[id] = now.Add(recheckFailedEvery)
 }
 
 // keepReport keeps the report of a check of a credential, and when the
@@ -153,7 +162,9 @@ func (e *Engine) setReport(id string, r credentials.Report) (first bool) {
 	if !r.Usable || len(r.Excluded) > 0 {
 		every = recheckFailedEvery
 	}
-	e.recheckAt[id] = e.d.Now().Add(every)
+	now := e.d.Now()
+	e.tried[id] = checkTry{at: now, answered: true}
+	e.recheckAt[id] = now.Add(every)
 	return !had
 }
 
@@ -212,6 +223,7 @@ func (e *Engine) forgetReport(id string) {
 	defer e.repMu.Unlock()
 	delete(e.reports, id)
 	delete(e.refusedAgain, id)
+	delete(e.tried, id)
 	delete(e.recheckAt, id)
 }
 

@@ -183,6 +183,9 @@ type Engine struct {
 	// recheckAt is, by credential id, when its token is checked again; a
 	// credential not checked by this process is not in it, and due.
 	recheckAt map[string]time.Time
+	// tried is, by credential id, the last check of its token this process
+	// made, whether or not Cloudflare answered it.
+	tried map[string]checkTry
 	// rechecking is set while a recheck runs; storeHeld says that the last
 	// cycle held because the store could not be read or written.
 	rechecking atomic.Bool
@@ -244,6 +247,7 @@ func New(d Deps) (*Engine, error) {
 		state:     first.normalized(),
 
 		refusedAgain: make(map[string]map[string]bool),
+		tried:        make(map[string]checkTry),
 	}
 	e.interval.Store(int64(defaultPollInterval))
 	// The reconciler keeps the time of its last write per tunnel, so it lives
@@ -437,10 +441,12 @@ type offer struct {
 }
 
 // staleZone names a zone that left the listing of a credential or, when
-// refused, a zone the credential serves and can no longer read the DNS of.
+// refused, a zone the credential serves and can no longer read the DNS of;
+// readers then names the other credentials that can, as "a" or "a or b".
 type staleZone struct {
 	credential, name string
 	refused          bool
+	readers          string
 }
 
 // unseenTunnel is a tunnel of the install that no credential sees.

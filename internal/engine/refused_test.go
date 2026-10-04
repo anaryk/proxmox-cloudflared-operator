@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	refusedOnce = "account frozen: the last check of credential cred1 was refused the DNS of zone example.org, which it serves"
+	refusedOnce = "account frozen: the token of credential cred1 could not read the DNS of zone example.org, which it serves"
 	refusedLost = "credential cred1 can no longer read the DNS of zone example.org, which it serves: grant it Zone > DNS > Edit there; " +
 		"account acc1 is left as it is until a check finds it readable again or pco apply --confirm-deletes lets the zone go"
 	refusedWarning = `the check of credential "main" was refused the DNS of zone example.org, which it serves; ` +
@@ -66,7 +66,9 @@ func TestAServedZoneWhoseDNSIsRefusedFreezesItsAccount(t *testing.T) {
 	e.refuse()
 	st := e.cycle()
 
-	require.Empty(t, st.Problems, "one refusal is a warning")
+	require.Equal(t, []string{"the token of credential cred1 could not read the DNS of zone example.org, which it serves; " +
+		"account acc1 is left as it is, checking again at 12:15"}, st.Problems, "the check is due a quarter of an hour later")
+	require.Empty(t, st.Waiting, "one refusal is not offered to be let go")
 	require.Empty(t, st.Hold)
 	for _, host := range []string{"www.example.com", "www.example.org"} {
 		r := route(st, host)
@@ -260,8 +262,7 @@ func TestAZoneListedSinceTheLastCheckWaitsForTheNextOne(t *testing.T) {
 	e.clock.advance(zoneRefreshEvery)
 	st := e.cycle()
 
-	require.Equal(t, []string{"zone example.org is listed by credential cred1, whose last check did not look at it; " +
-		"account acc1 is left as it is until the next check of the credential, due now, does"}, st.Problems)
+	require.Equal(t, []string{uncheckedLine("12:05")}, st.Problems)
 	require.Equal(t, writes, e.writes(), "no rule is published for it")
 	require.True(t, e.eng.recheckDue(testCred), "the check is due at once")
 
@@ -273,6 +274,133 @@ func TestAZoneListedSinceTheLastCheckWaitsForTheNextOne(t *testing.T) {
 	require.Equal(t, planner.StateNoZone, org.State)
 	require.Equal(t, leftOutReason, org.Reason)
 	require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
+}
+
+func uncheckedLine(at string) string {
+	return "zone example.org is listed by credential cred1, whose last check did not look at it; " +
+		"account acc1 is left as it is, checking again at " + at
+}
+
+// Reproduced: a check that got no answer was tried again in every cycle.
+func TestAnOutageWhileAZoneIsNewlyListedChecksOncePerQuarterHour(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	e.check(testCred)
+	e.cf.AddZone("zone2", "example.org", testAccount)
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com www.example.org -> :8080")))
+	e.cf.FailNext("verify", 100, unavailable)
+	n := verifies(e.cf)
+
+	e.clock.advance(zoneRefreshEvery)
+	require.Equal(t, []string{uncheckedLine("12:05")}, e.cycle().Problems)
+	e.eng.recheck(t.Context())
+	require.Equal(t, n+1, verifies(e.cf))
+
+	for range int(recheckFailedEvery/(20*time.Second)) - 1 {
+		e.clock.advance(20 * time.Second)
+		st := e.cycle()
+		e.eng.recheck(t.Context())
+		require.Equal(t, []string{uncheckedLine("12:20")}, st.Problems, "the real time of the next check")
+	}
+	require.Equal(t, n+1, verifies(e.cf), "not while Cloudflare did not answer, also not for a newer listing")
+
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	e.eng.recheck(t.Context())
+	require.Equal(t, n+2, verifies(e.cf), "a quarter of an hour later")
+}
+
+// A check newer than the listing that still does not look at the zone is not
+// made again in every cycle: the next listing may tell more.
+func TestACheckThatDoesNotSeeAListedZoneIsNotRepeatedEveryCycle(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.cycle()
+	e.check(testCred)
+	e.cf.AddZone("zone2", "example.org", testAccount)
+	view := newZoneView(e.cf)
+	view.hide("zone2", true)
+	e.useAPI(testToken, view)
+	e.clock.advance(zoneRefreshEvery)
+	e.cycle()
+	e.eng.recheck(t.Context())
+	n := verifies(e.cf)
+
+	for range 5 {
+		e.clock.advance(20 * time.Second)
+		e.cycle()
+		e.eng.recheck(t.Context())
+	}
+
+	require.Equal(t, n, verifies(e.cf))
+}
+
+// The two ways out of a zone whose DNS its credential can no longer read
+// while another credential can read it.
+func TestAZoneAnotherCredentialReadsIsGivenToIt(t *testing.T) {
+	ways := map[string]func(e *env){
+		"a confirmation": func(e *env) { e.apply(true) },
+		"a pin": func(e *env) {
+			e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.org": "cred2"} })
+		},
+	}
+	for name, way := range ways {
+		t.Run(name, func(t *testing.T) {
+			e, _ := servingTwoZones(t)
+			second := newZoneView(e.cf)
+			second.hide(testZone, true)
+			e.addSecondCredential("second-token", second)
+			e.clock.advance(20 * time.Second)
+			require.True(t, hasProblem(e.cycle(), "cred1 serves it until then"))
+			e.check("cred2")
+			e.useAPI(testToken, unreadable{API: e.cf, zones: []string{"zone2"}})
+			e.clock.advance(recheckEvery)
+			e.eng.recheck(t.Context())
+			e.clock.advance(recheckFailedEvery)
+			e.eng.recheck(t.Context())
+			writes := e.writes()
+
+			st := e.cycle()
+
+			require.Equal(t, []string{"credential cred1 can no longer read the DNS of zone example.org, which it serves: " +
+				"grant it Zone > DNS > Edit there; account acc1 is left as it is until a check finds it readable again, " +
+				"a pin gives the zone to credential cred2, which can read it, or pco apply --confirm-deletes lets the zone go"}, st.Problems)
+			require.Equal(t, []Waiting{{
+				Kind: WaitingZone, Subject: "example.org",
+				Detail: "credential cred1 can no longer read the DNS of zone example.org; a confirmation lets the zone go from it, " +
+					"and a pin to credential cred2, which can read it, ends the freeze as well",
+				Items: []string{},
+			}}, st.Waiting)
+
+			way(e)
+			e.clock.advance(20 * time.Second)
+			st = e.cycle()
+
+			require.Empty(t, st.Problems)
+			require.Equal(t, planner.StateActive, route(st, "www.example.org").State, "served through cred2")
+			require.Equal(t, writes, e.writes(), "its hostnames stay on the tunnel")
+			requireBothServed(t, e)
+		})
+	}
+}
+
+// Reproduced: what was known of the checks of a credential removed from the
+// store behind the daemon's back was kept.
+func TestACredentialRemovedFromTheStoreLeavesNoCheckBehind(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	e.check(testCred)
+	require.NoError(t, e.store.DeleteCredential(testCred))
+
+	e.cycle()
+
+	e.eng.repMu.Lock()
+	defer e.eng.repMu.Unlock()
+	require.NotContains(t, e.eng.reports, testCred)
+	require.NotContains(t, e.eng.refusedAgain, testCred)
+	require.NotContains(t, e.eng.tried, testCred)
+	require.NotContains(t, e.eng.recheckAt, testCred)
 }
 
 func TestACredentialThatLeavesAZoneOutIsCheckedEveryQuarterHour(t *testing.T) {

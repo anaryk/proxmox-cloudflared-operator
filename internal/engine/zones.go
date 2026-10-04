@@ -137,14 +137,18 @@ func (z *zoneCache) confirmGone(zones []staleZone) (gone, letGo []string) {
 	return slices.Compact(slices.Sorted(slices.Values(gone))), slices.Compact(slices.Sorted(slices.Values(letGo)))
 }
 
-// zoneCheck is what the last check of a credential found of the zones it
-// lists, each by id.
+// zoneCheck is what the last check of a credential that was kept found of
+// the zones it lists, each by id, and when the token was and is checked.
 type zoneCheck struct {
-	at       time.Time
 	looked   map[string]bool // read the DNS of, or tried to
 	excluded map[string]bool // left out: its DNS was refused
 	again    map[string]bool // left out by the check before as well
+	tried    checkTry        // the last check made, kept or not
+	next     time.Time       // when the next check is due; zero when it is
 }
+
+// unchecked reports whether the check did not look at a zone.
+func (chk zoneCheck) unchecked(z cfapi.Zone) bool { return !chk.excluded[z.ID] && !chk.looked[z.ID] }
 
 // zoneChecks returns, by credential id, what the last check of each
 // credential found of its zones. Of a credential that was never checked, or
@@ -157,7 +161,10 @@ func (e *Engine) zoneChecks() map[string]zoneCheck {
 		if len(r.Zones) == 0 {
 			continue
 		}
-		chk := zoneCheck{at: r.CheckedAt, looked: map[string]bool{}, excluded: map[string]bool{}, again: e.refusedAgain[id]}
+		chk := zoneCheck{
+			looked: map[string]bool{}, excluded: map[string]bool{}, again: e.refusedAgain[id],
+			tried: e.tried[id], next: e.recheckAt[id],
+		}
 		for _, c := range r.Checks {
 			if c.Capability == credentials.CapDNSRead && c.ScopeID != "" {
 				chk.looked[c.ScopeID] = true
@@ -279,8 +286,9 @@ type zoneSet struct {
 	// excluded maps every zone that is not served because the credentials
 	// that list it leave it out to their ids.
 	excluded map[string][]string
-	// recheck are the credentials whose last check is older than the listing
-	// of a zone it did not look at: they are to be checked again now.
+	// recheck are the credentials whose last check, answered, is older than
+	// the listing of a zone it did not look at: they are to be checked again
+	// now. One whose last check got no answer waits for its next one.
 	recheck []string
 }
 
@@ -288,9 +296,10 @@ type zoneSet struct {
 type zoneEntry struct {
 	zone      planner.Zone
 	stale     bool
-	excluded  bool // the credential lists the zone but may not read its DNS
-	again     bool // excluded by the last two checks of the credential
-	unchecked bool // the last check of the credential did not look at the zone
+	excluded  bool      // the credential lists the zone but may not read its DNS
+	again     bool      // excluded by the last two checks of the credential
+	unchecked bool      // the last check of the credential did not look at the zone
+	next      time.Time // when the token of the credential is checked next
 }
 
 // set works out the zones of the credentials ids, which are sorted. A zone
@@ -306,7 +315,7 @@ type zoneEntry struct {
 // that served the zone before keep that one, with a problem asking for a pin.
 // A pin to a credential that leaves the zone out serves it through none, with
 // a problem.
-func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]zoneCheck) zoneSet {
+func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]zoneCheck, now time.Time) zoneSet {
 	out := zoneSet{
 		known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{},
 		accounts: map[string]string{}, excluded: map[string][]string{},
@@ -332,18 +341,23 @@ func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]
 			out.seen(a.ID, id)
 		}
 		chk, checked := checks[id]
+		next := now
+		if chk.next.After(now) {
+			next = chk.next
+		}
+		if checked && chk.tried.answered && chk.tried.at.Before(cz.at) && slices.ContainsFunc(cz.zones, chk.unchecked) {
+			out.recheck = append(out.recheck, id)
+			next = now
+		}
 		add := func(zone cfapi.Zone, stale bool) {
 			name := zoneName(zone)
-			en := zoneEntry{zone: planner.Zone{ID: zone.ID, Name: name, AccountID: zone.AccountID, CredentialID: id}, stale: stale}
+			en := zoneEntry{zone: planner.Zone{ID: zone.ID, Name: name, AccountID: zone.AccountID, CredentialID: id}, stale: stale, next: next}
 			if checked && !stale {
 				en.excluded, en.again = chk.excluded[zone.ID], chk.again[zone.ID]
-				en.unchecked = !en.excluded && !chk.looked[zone.ID]
+				en.unchecked = chk.unchecked(zone)
 			}
 			if !en.excluded {
 				out.seen(zone.AccountID, id)
-			}
-			if en.unchecked && chk.at.Before(cz.at) && !slices.Contains(out.recheck, id) {
-				out.recheck = append(out.recheck, id)
 			}
 			byName[name] = append(byName[name], en)
 		}
@@ -364,9 +378,7 @@ func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]
 			out.problems = append(out.problems, ch.note)
 		}
 		if ch.doubt != "" {
-			if !ch.quiet {
-				out.problems = append(out.problems, ch.doubt)
-			}
+			out.problems = append(out.problems, ch.doubt)
 			if len(ch.offered) > 0 {
 				out.staleLines = append(out.staleLines, ch.doubt)
 			}
@@ -416,8 +428,6 @@ type choice struct {
 	chosen []planner.Zone
 	note   string // a problem that does not freeze the account of the zone
 	doubt  string // a problem that does
-	// quiet says that the doubt freezes the account without a problem line.
-	quiet bool
 	// offered are the zones a confirmation lets go, which ends the doubt.
 	offered []staleZone
 }
@@ -426,13 +436,14 @@ type choice struct {
 // every credential leaves out is chosen through none.
 func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) choice {
 	var live []planner.Zone
-	var stale, unchecked []string
+	var stale []string
+	var unchecked []zoneEntry
 	for _, en := range entries {
 		switch {
 		case en.stale:
 			stale = append(stale, en.zone.CredentialID)
 		case en.unchecked:
-			unchecked = append(unchecked, en.zone.CredentialID)
+			unchecked = append(unchecked, en)
 		case !en.excluded:
 			live = append(live, en.zone)
 		}
@@ -444,11 +455,12 @@ func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) choice 
 		return choice{chosen: pinned}
 	}
 	if en, ok := z.refused(name, entries); ok {
-		return refusedChoice(name, en, accounts)
+		return refusedChoice(name, en, credentialsOf(live), accounts)
 	}
+	pinUnchecked := slices.DeleteFunc(slices.Clone(unchecked), func(en zoneEntry) bool { return en.zone.CredentialID != pin })
 	switch {
-	case pin != "" && slices.Contains(unchecked, pin):
-		return uncheckedChoice(name, []string{pin}, accounts)
+	case pin != "" && len(pinUnchecked) > 0:
+		return uncheckedChoice(name, pinUnchecked, accounts)
 	case pin != "" && slices.Contains(excludedBy(entries), pin):
 		return choice{note: fmt.Sprintf("zone %s is pinned to credential %s, which can list it but not read its DNS; "+
 			"it is not served until the pin is changed or the credential is granted Zone > DNS > Edit on it", name, pin)}
@@ -498,29 +510,47 @@ func (z *zoneCache) refused(name string, entries []zoneEntry) (zoneEntry, bool) 
 }
 
 // refusedChoice is the doubt of a zone whose DNS was refused to the
-// credential that serves it. One refusal may be Cloudflare's own: until the
-// next check, due within recheckFailedEvery, the account is frozen without a
-// problem line. Two in a row are a problem that ends when a check finds the
-// DNS readable again, or when a confirmation lets the zone go.
-func refusedChoice(name string, en zoneEntry, accounts string) choice {
+// credential that serves it, while readers can read it. One refusal may be
+// Cloudflare's own: the problem says when the token is checked again. Two in
+// a row are a problem that ends when a check finds the DNS readable again, a
+// pin gives the zone to a reader, or a confirmation lets the zone go.
+func refusedChoice(name string, en zoneEntry, readers []string, accounts string) choice {
 	cred := en.zone.CredentialID
 	if !en.again {
-		return choice{quiet: true, doubt: fmt.Sprintf("the last check of credential %s was refused the DNS of zone %s, which it serves; "+
-			"%s is left as it is until the next check, due within %s", cred, name, accounts, recheckFailedEvery)}
+		return choice{doubt: fmt.Sprintf("the token of credential %s could not read the DNS of zone %s, which it serves; "+
+			"%s is left as it is, checking again at %s", cred, name, accounts, clockTime(en.next))}
+	}
+	ways := "a check finds it readable again or pco apply --confirm-deletes lets the zone go"
+	if len(readers) > 0 {
+		ways = fmt.Sprintf("a check finds it readable again, a pin gives the zone to credential %s, which can read it, "+
+			"or pco apply --confirm-deletes lets the zone go", joinList(readers, "or"))
 	}
 	return choice{
 		doubt: fmt.Sprintf("credential %s can no longer read the DNS of zone %s, which it serves: grant it Zone > DNS > Edit there; "+
-			"%s is left as it is until a check finds it readable again or pco apply --confirm-deletes lets the zone go", cred, name, accounts),
-		offered: []staleZone{{credential: cred, name: name, refused: true}},
+			"%s is left as it is until %s", cred, name, accounts, ways),
+		offered: []staleZone{{credential: cred, name: name, refused: true, readers: joinList(readers, "or")}},
 	}
 }
 
 // uncheckedChoice is the doubt of a zone that only credentials whose last
-// check did not look at it could serve: its DNS may be one they cannot read.
-func uncheckedChoice(name string, creds []string, accounts string) choice {
+// check did not look at it could serve, as entries: its DNS may be one they
+// cannot read. The problem says when the first of them is checked again.
+func uncheckedChoice(name string, entries []zoneEntry, accounts string) choice {
+	creds := make([]string, len(entries))
+	next := entries[0].next
+	for i, en := range entries {
+		creds[i] = en.zone.CredentialID
+		if en.next.Before(next) {
+			next = en.next
+		}
+	}
 	return choice{doubt: fmt.Sprintf("zone %s is listed by credential %s, whose last check did not look at it; "+
-		"%s is left as it is until the next check of the credential, due now, does", name, andList(creds), accounts)}
+		"%s is left as it is, checking again at %s", name, andList(creds), accounts, clockTime(next))}
 }
+
+// clockTime is a time of the day as the engine's clock gives it: in the
+// daemon, the local time of the node.
+func clockTime(t time.Time) string { return t.Format("15:04") }
 
 // excludedBy returns the ids of the credentials whose entries leave the zone
 // out, sorted.
