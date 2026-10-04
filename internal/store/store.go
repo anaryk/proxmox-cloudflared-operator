@@ -52,6 +52,7 @@ type Store struct {
 	cluster Dir
 	private Dir
 	local   Dir
+	proofs  *proofTimes
 }
 
 // Open makes the local root, if it is missing, and removes the temporary files
@@ -87,6 +88,7 @@ func open(p Paths, now func() time.Time) (*Store, error) {
 		cluster: newDir(p.Cluster, guard),
 		private: newDir(p.Private, guard),
 		local:   NewDir(p.Local),
+		proofs:  &proofTimes{},
 	}, nil
 }
 
@@ -235,15 +237,30 @@ func (s *Store) SaveClaims(next map[string]planner.Claim) error {
 	return saveMap(s.cluster, kindClaims, next, func(c *planner.Claim) *string { return &c.Hostname })
 }
 
-// Bindings returns the bindings by hostname. They live on the node-local root,
-// as they change every cycle.
+// Bindings returns the bindings by hostname. They live on the node-local root.
+// A binding whose file SaveBindings left with an older time of its proof is
+// returned with the time it was given.
 func (s *Store) Bindings() (map[string]resolve.Binding, error) {
-	return loadMap(s.local, kindBindings, "hostname", func(b *resolve.Binding) *string { return &b.Hostname })
+	stored, err := loadMap(s.local, kindBindings, "hostname", func(b *resolve.Binding) *string { return &b.Hostname })
+	if err != nil {
+		return nil, err
+	}
+	s.proofs.restore(stored)
+	return stored, nil
 }
 
-// SaveBindings makes next the stored bindings, as SaveClaims does for claims.
+// SaveBindings makes next the stored bindings, as SaveClaims does for claims,
+// but leaves the file of a binding as it is while only the time of its proof
+// moved on, and by no more than a quarter of the age a proof may reach: a
+// cycle that proves its addresses again writes nothing. The time is kept in
+// memory for Bindings; a restart reads the older one from the file and takes
+// the proof for as old as that.
 func (s *Store) SaveBindings(next map[string]resolve.Binding) error {
-	return saveMap(s.local, kindBindings, next, func(b *resolve.Binding) *string { return &b.Hostname })
+	err := saveMapKeeping(s.local, kindBindings, next, func(b *resolve.Binding) *string { return &b.Hostname }, keepsProof)
+	if err == nil {
+		s.proofs.keep(next)
+	}
+	return err
 }
 
 // ManualRoutes returns the routes an admin made by hand, by id.

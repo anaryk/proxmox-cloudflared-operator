@@ -113,6 +113,12 @@ func loadMap[T any](d Dir, kind, field string, key func(*T) *string) (map[string
 // points at. Everything is checked and encoded before the first write, so a bad
 // entry changes nothing.
 func saveMap[T any](d Dir, kind string, next map[string]T, key func(*T) *string) error {
+	return saveMapKeeping(d, kind, next, key, nil)
+}
+
+// saveMapKeeping is saveMap that leaves a stored object as it is when keep,
+// if set, says that what its file holds may stand for the value.
+func saveMapKeeping[T any](d Dir, kind string, next map[string]T, key func(*T) *string, keep func(stored json.RawMessage, v T) bool) error {
 	keys := slices.Sorted(maps.Keys(next))
 	names := make(map[string]string, len(next)) // file name -> key
 	objs := make([]object, 0, len(next))
@@ -136,7 +142,11 @@ func saveMap[T any](d Dir, kind string, next map[string]T, key func(*T) *string)
 		if err != nil {
 			return fmt.Errorf("encoding %s %q: %w", kind, k, err)
 		}
-		objs = append(objs, object{id: k, data: data})
+		o := object{id: k, data: data}
+		if keep != nil {
+			o.keep = func(stored json.RawMessage) bool { return keep(stored, v) }
+		}
+		objs = append(objs, o)
 	}
 	return d.replace(kind, objs)
 }

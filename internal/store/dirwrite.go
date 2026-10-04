@@ -10,10 +10,13 @@ import (
 	"path/filepath"
 )
 
-// object is the JSON of a value, with the id it is stored under.
+// object is the JSON of a value, with the id it is stored under. keep, when
+// set, says whether what a file holds may stand for the value although it
+// differs.
 type object struct {
 	id   string
 	data []byte
+	keep func(stored json.RawMessage) bool
 }
 
 // write is a file that is to be written: everything about it is known, and
@@ -121,7 +124,7 @@ func (d Dir) prepare(kind string, o object, onlyIfChanged bool) (*write, error) 
 		old = envelope{} // not readable: the revision starts again
 	case found && old.ID != "" && old.ID != o.id:
 		return nil, fmt.Errorf("storing %s %q: %s already holds the object of %q", kind, o.id, path, old.ID)
-	case found && onlyIfChanged && old.ID == o.id && sameData(old.Data, o.data):
+	case found && onlyIfChanged && old.ID == o.id && (sameData(old.Data, o.data) || o.keep != nil && o.keep(old.Data)):
 		return nil, nil
 	}
 	out, err := json.MarshalIndent(envelope{SchemaVersion: schemaVersion, Rev: old.Rev + 1, ID: o.id, Data: o.data}, "", "  ")
