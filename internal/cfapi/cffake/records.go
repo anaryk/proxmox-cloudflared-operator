@@ -81,10 +81,14 @@ func qualify(name, zone string) string {
 
 // clashes reports whether Cloudflare would refuse to hold both records in the
 // zone of name apex. A CNAME stands alone: no other record may share its name,
-// but for a TXT record beside a proxied CNAME, a name Cloudflare answers with
-// addresses of its own. At the apex, where Cloudflare flattens a CNAME, only an
-// address record or another CNAME clashes with one. Any number of A and AAAA
-// records may share a name.
+// but for a TXT record beside a proxied CNAME. Observed on 2026-10-03: a
+// proxied CNAME created at a non-apex name that already had a TXT record was
+// accepted. The rest is assumed, not observed: that a TXT record created
+// beside a proxied CNAME is accepted too, that an update is judged as a
+// create, that an unproxied CNAME beside a TXT record is refused, and that a
+// proxied CNAME beside an MX record is refused. At the apex, where Cloudflare
+// flattens a CNAME, only an address record or another CNAME clashes with one.
+// Any number of A and AAAA records may share a name.
 func clashes(a, b cfapi.Record, apex string) bool {
 	switch {
 	case !strings.EqualFold(a.Name, b.Name) || !isType(a, "CNAME") && !isType(b, "CNAME"):

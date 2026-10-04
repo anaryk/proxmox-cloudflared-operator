@@ -54,7 +54,7 @@ func (u unreadable) Records(ctx context.Context, zoneID string, f cfapi.RecordFi
 	return u.API.Records(ctx, zoneID, f)
 }
 
-func TestATokenThatCannotReadTheDNSOfEveryZoneIsAdded(t *testing.T) {
+func TestATokenThatCanReadTheDNSOfOnlySomeZonesIsAdded(t *testing.T) {
 	e := unreadableEnv(t)
 	require.NoError(t, e.store.DeleteCredential(testCred))
 
@@ -105,7 +105,7 @@ func TestAZoneLeftOutIsNotServed(t *testing.T) {
 	require.Equal(t, "example.org left out: no DNS read", credentialView(st, testCred).Report.LeftOut())
 }
 
-func TestARouteThatLostItsNameInAZoneLeftOutKeepsItsReason(t *testing.T) {
+func TestARouteThatLostItsNameInAZoneLeftOutKeepsItsConflictReason(t *testing.T) {
 	e := unreadableEnv(t)
 	e.inv.set(snapshot(
 		guest(101, "web-1", "www.example.org -> :8080"),
@@ -210,6 +210,30 @@ func TestAZoneOneCredentialLeavesOutIsServedByTheOther(t *testing.T) {
 	org := route(st, "www.example.org")
 	require.Equal(t, planner.StateNoZone, org.State, "the pin keeps the other credential from serving it")
 	require.Equal(t, leftOutReason, org.Reason)
+}
+
+func TestAZoneTwoCredentialsLeaveOutNamesBoth(t *testing.T) {
+	e := newEnv(t)
+	e.cf.AddZone("zone2", "example.org", testAccount)
+	e.cf.AddZone("zone3", "example.net", testAccount)
+	e.cf.Deny("dns.read", "zone2")
+	first := newZoneView(e.cf)
+	first.hide("zone3", true)
+	e.useAPI(testToken, first)
+	second := newZoneView(e.cf)
+	second.hide(testZone, true)
+	e.addSecondCredential("second-token", second)
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com www.example.org -> :8080")))
+	e.enforce()
+	e.check(testCred)
+	e.check("cred2")
+
+	st := e.cycle()
+
+	require.Empty(t, st.Problems)
+	require.Equal(t, "credentials label-cred2 and main can list example.org but not read its DNS: grant Zone > DNS > Edit to serve it; "+
+		"pco credential check cred1 or cred2 picks the grant up at once", route(st, "www.example.org").Reason)
+	require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
 }
 
 func TestRemovingACredentialThatLeftAZoneOutIsNoRefusal(t *testing.T) {

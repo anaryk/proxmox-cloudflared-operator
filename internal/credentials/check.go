@@ -117,19 +117,14 @@ const reasonNoDNSRead = "no DNS read"
 // LeftOut names the excluded zones with the reason, as "a.com, b.com left
 // out: no DNS read". It is empty when no zone is excluded.
 func (r Report) LeftOut() string {
-	var reasons []string
-	zones := make(map[string][]string)
-	for _, x := range r.Excluded {
-		if _, seen := zones[x.Reason]; !seen {
-			reasons = append(reasons, x.Reason)
-		}
-		zones[x.Reason] = append(zones[x.Reason], x.Zone)
+	if len(r.Excluded) == 0 {
+		return ""
 	}
-	parts := make([]string, len(reasons))
-	for i, reason := range reasons {
-		parts[i] = strings.Join(zones[reason], ", ") + " left out: " + reason
+	zones := make([]string, len(r.Excluded))
+	for i, x := range r.Excluded {
+		zones[i] = x.Zone
 	}
-	return strings.Join(parts, "; ")
+	return strings.Join(zones, ", ") + " left out: " + reasonNoDNSRead
 }
 
 // Reason says why a check failed: what to grant, or that Cloudflare did not

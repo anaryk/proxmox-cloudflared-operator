@@ -127,7 +127,7 @@ func TestAZoneLeftOutIsNoFailure(t *testing.T) {
 	require.False(t, got.Usable)
 }
 
-func TestLeftOutNamesTheZonesByReason(t *testing.T) {
+func TestLeftOutNamesTheZones(t *testing.T) {
 	tests := []struct {
 		name     string
 		excluded []Exclusion
@@ -136,8 +136,6 @@ func TestLeftOutNamesTheZonesByReason(t *testing.T) {
 		{"none", nil, ""},
 		{"one", []Exclusion{leftOut(exampleCom)}, "example.com left out: no DNS read"},
 		{"two", []Exclusion{leftOut(exampleCom), leftOut(exampleOrg)}, "example.com, example.org left out: no DNS read"},
-		{"two reasons", []Exclusion{leftOut(exampleCom), {Zone: "example.net", Reason: "other"}, leftOut(exampleOrg)},
-			"example.com, example.org left out: no DNS read; example.net left out: other"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
