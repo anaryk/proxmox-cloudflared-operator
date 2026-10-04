@@ -1,9 +1,12 @@
 version: "2"
 
 run:
-  # Kept in sync with TAGS in the Makefile.
+  # nomsgpack is kept in sync with TAGS in the Makefile; scale and e2e have
+  # the benchmark and the end-to-end suite checked as well.
   build-tags:
     - nomsgpack
+    - scale
+    - e2e
 
 linters:
   default: standard
