@@ -140,6 +140,36 @@ A new address is checked in two cycles in a row: the watch has it only after the
 With the defaults and 1000 routes, a cycle that checks every address on the wire takes about
 20 seconds, and the cycles in between take well under a second.
 
+### What Cloudflare's rate limit costs
+
+Cloudflare allows a user 1200 requests in 5 minutes, whatever token they come with, and says
+in every answer how many are left and when the count starts again. pco spends at most
+`cloudflareBudget` of them for each credential, 1000 by default, which leaves 200 to the
+dashboard and other tools: when Cloudflare says that fewer are left, pco keeps to that, and to
+a lower limit Cloudflare names. Credentials of one Cloudflare user share the 1200, so give two
+such credentials budgets that add up to no more.
+
+A cycle reads each zone once, every record of it in one request up to 5000 records, and
+decides from that listing which names to create, which to point at the tunnel again and which
+are held by a record of someone else. A record costs one request to create; a change to one,
+a removal and an adoption read the name again first.
+
+A cycle does not wait for the budget for long. When the next request would wait longer than
+20 seconds, the cycle writes nothing more, ends, and its state says how many changes wait,
+in this form:
+
+    11 changes wait for Cloudflare's rate limit
+
+The cycles that follow make them once there are requests to spare; until then their reads are
+refused too, with `not sent: Cloudflare's rate limit leaves no request for now (retry after
+4m50s)`, and nothing is removed. The plan is the same in every cycle, so nothing is lost.
+
+A first start of 1000 routes thus costs about 1015 requests: a few for the tunnel, a listing
+of the zone and a create for each record. The first cycle makes about 990 of the records in a
+few seconds, and the rest follow about 5 minutes later, when Cloudflare starts its count again.
+An idle cycle costs three requests: the tunnel, its configuration and the listing of the
+zone.
+
 The zones and accounts of each credential are listed every five minutes, and each token is
 checked again once a day. With the accounts, every five minutes, the daemon also reads the
 run token of each tunnel again and lists the connectors Cloudflare shows on it: two calls
@@ -346,6 +376,7 @@ Every field, with its default:
 | `identityMinimum` | `port` | The lowest identity level that is served: `port`, `filtered` or `observed`. |
 | `maxHostnamesPerGuest` | `32` | How many hostnames the Notes of one guest may name. A guest that names more publishes none of them, and keeps the ones it holds. At least `1`. |
 | `reverifyInterval` | `1m0s` | How long a proof of identity that the watch of the network vouches for stands before the address is checked on the wire again. From `10s` to `5m0s`. |
+| `cloudflareBudget` | `1000` | How many requests in 5 minutes pco spends of each credential, of the 1200 that Cloudflare allows a user; see below. From `100` to `1150`. Read when the daemon starts. |
 
 Durations are written as Go reads them, `30s`, `90s`, `2m`, `1m30s`. A pattern is `*`, a
 hostname, or `*.` followed by labels; `*.example.com` covers every name below `example.com`
@@ -365,8 +396,8 @@ hostname answers 503 while the guest holds it. Manual routes are root's own and 
 limited.
 
 The daemon reads the file again at the start of each cycle, so a change takes effect at the
-next one. Three fields, `gateTag`, `trustStatic` and `trustedCIDRs`, are wired when the daemon
-starts. A change to those is noticed and shown as a problem,
+next one. Four fields, `gateTag`, `trustStatic`, `trustedCIDRs` and `cloudflareBudget`, are
+wired when the daemon starts. A change to those is noticed and shown as a problem,
 `settings gateTag changed since pco started and are read only at start; restart pco
 (systemctl restart pco) for them to take effect`, and applies after `systemctl restart pco`.
 

@@ -137,6 +137,8 @@ func (run *dnsRun) retire(ctx context.Context, z *dnsZone, name string) {
 		held = run.noDeletes
 	case run.stopped != "":
 		held = run.stopped
+	case run.spent:
+		held = HeldBudget
 	case run.in.StillUnwanted == nil:
 		held = heldUnconfirmed
 	case run.askFailed:
@@ -153,6 +155,12 @@ func (run *dnsRun) retire(ctx context.Context, z *dnsZone, name string) {
 	var doomed []cfapi.Record
 	for _, rec := range records {
 		fresh, found, ours, err := run.recheck(ctx, z, rec)
+		if err != nil && run.spend(err) {
+			for _, rec := range records {
+				z.add(deleteAction(z, rec), HeldBudget)
+			}
+			return
+		}
 		if err != nil {
 			run.problem(fmt.Sprintf("%s: reading the record again before deleting it: %v", z.about(rec.Name), err))
 			return

@@ -82,7 +82,7 @@ func TestDNSWriterChangesBeforeWrite(t *testing.T) {
 	}{
 		{"create", func(_ *cffake.Fake, _ *memStore, in *DNSInput) {
 			in.Records = append(in.Records, wantRecord(zone1, "app.example.com"), wantRecord(zone1, "www.example.com"))
-		}, oneRead, 2},
+		}, listings, 2},
 		{"update", func(f *cffake.Fake, _ *memStore, in *DNSInput) {
 			f.SeedRecord(zone1.ID, ourCNAME("app.example.com", "old"))
 			in.Records = append(in.Records, wantRecord(zone1, "app.example.com"))
@@ -104,7 +104,7 @@ func TestDNSWriterChangesBeforeWrite(t *testing.T) {
 			f.SeedRecord(zone1.ID, ourCNAME("www.example.com", "old"))
 			f.SeedRecord(zone1.ID, probeRecord("_pco-probe-x.example.com", t0.Add(-time.Hour)))
 			in.Records = append(in.Records, wantRecord(zone1, "app.example.com"), wantRecord(zone1, "www.example.com"))
-		}, oneRead, 3},
+		}, listings, 3},
 		{"tombstone save", func(f *cffake.Fake, _ *memStore, _ *DNSInput) {
 			f.SeedRecord(zone1.ID, ourCNAME("gone.example.com", testTunnelID))
 		}, listings, 0},

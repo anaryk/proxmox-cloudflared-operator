@@ -134,6 +134,7 @@ type handler struct {
 	tokens          []string // none: any non-empty token
 	filteredTotals  bool
 	ignoreIsDeleted bool
+	limit           *rateWindow // nil: no rate limit
 	routes          []route
 }
 
@@ -172,6 +173,9 @@ func (rt route) match(segments []string) (params, bool) {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.limit != nil && !h.limit.admit(w, h.f.clock()) {
+		return
+	}
 	segments, ok := splitPath(r.URL.EscapedPath())
 	if !ok {
 		writeError(w, apiError(http.StatusNotFound, codeNoRoute, "No route for that URI"))

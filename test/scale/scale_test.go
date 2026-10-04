@@ -59,7 +59,7 @@ func TestScale(t *testing.T) {
 }
 
 func runSize(t *testing.T, guests, routes int) []row {
-	b := newBench(t, guests, routes, unlimited())
+	b := newBench(t, guests, routes, unlimited)
 	size := fmt.Sprintf("%d/%d", guests, routes)
 	var rows []row
 	add := func(scenario, note string, res result) {
@@ -173,7 +173,7 @@ func TestDiskCost(t *testing.T) {
 
 func printCycles(rows []row) {
 	tab := newTable()
-	tab.line("guests/routes\tcycle\twall\tCF calls\tdns r/w\ttunnel r/w\tother\tleast at 300/5m\talloc MB\tallocs k\tpeak heap MB\tfiles written\tnote")
+	tab.line("guests/routes\tcycle\twall\tCF calls\tdns r/w\ttunnel r/w\tother\tleast at 1000/5m\talloc MB\tallocs k\tpeak heap MB\tfiles written\tnote")
 	for _, r := range rows {
 		c := r.res.calls
 		tab.line("%s\t%s\t%s\t%d\t%d/%d\t%d/%d\t%d\t%s\t%.0f\t%d\t%.0f\t%d\t%s",

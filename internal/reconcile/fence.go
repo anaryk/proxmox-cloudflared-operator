@@ -1,6 +1,10 @@
 package reconcile
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+)
 
 // start reads the identity the run writes as and reports whether the run may
 // go on. Every DNS write runs under step 1 of the write procedure, so a run
@@ -58,10 +62,22 @@ func (run *dnsRun) proceed(z *dnsZone, a Action) bool {
 		z.add(a, heldObserve)
 	case run.stopped != "":
 		z.add(a, run.stopped)
+	case run.spent:
+		z.add(a, HeldBudget)
 	default:
 		return true
 	}
 	return false
+}
+
+// spend reports whether err is a refusal of the rate limit, and when it is,
+// stops the writes of the run: the rest waits for a later one.
+func (run *dnsRun) spend(err error) bool {
+	if !cfapi.IsRateLimited(err) {
+		return false
+	}
+	run.spent = true
+	return true
 }
 
 // write makes one change, or only records it when the run may not write, and
@@ -78,6 +94,10 @@ func (run *dnsRun) commit(z *dnsZone, a Action, call func() error) bool {
 		return false
 	}
 	if err := call(); err != nil {
+		if run.spend(err) {
+			z.add(a, HeldBudget)
+			return false
+		}
 		z.add(a, err.Error())
 		run.problem(fmt.Sprintf("%s: %s the record: %v", z.about(a.Target), verb(a.Kind), err))
 		return false

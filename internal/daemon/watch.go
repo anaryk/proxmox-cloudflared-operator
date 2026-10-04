@@ -8,17 +8,19 @@ import (
 )
 
 // wired is what the daemon takes from the settings once, when it starts: the
-// gate tag the inventory watches and the settings of the resolver. The rest of
-// the settings is read afresh by every cycle, and a cycle reports a change to
-// these as a problem until the daemon is restarted.
+// gate tag the inventory watches, the settings of the resolver and the budget
+// of the Cloudflare clients. The rest of the settings is read afresh by every
+// cycle, and a cycle reports a change to these as a problem until the daemon
+// is restarted.
 type wired struct {
-	gateTag      string
-	trustStatic  bool
-	trustedCIDRs []netip.Prefix
+	gateTag          string
+	trustStatic      bool
+	trustedCIDRs     []netip.Prefix
+	cloudflareBudget int
 }
 
 func wiredFrom(s store.Settings) wired {
-	return wired{gateTag: s.GateTag, trustStatic: s.TrustStatic, trustedCIDRs: slices.Clone(s.TrustedCIDRs)}
+	return wired{gateTag: s.GateTag, trustStatic: s.TrustStatic, trustedCIDRs: slices.Clone(s.TrustedCIDRs), cloudflareBudget: s.CloudflareBudget}
 }
 
 // differences names the settings in which o is not what w was started with.
@@ -32,6 +34,9 @@ func (w wired) differences(o wired) []string {
 	}
 	if !slices.Equal(w.trustedCIDRs, o.trustedCIDRs) {
 		out = append(out, "trustedCIDRs")
+	}
+	if w.cloudflareBudget != o.cloudflareBudget {
+		out = append(out, "cloudflareBudget")
 	}
 	return out
 }

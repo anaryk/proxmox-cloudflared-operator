@@ -14,16 +14,26 @@ import (
 // window/limit of credit, the credit refills at one nanosecond per nanosecond
 // and holds at most burst requests' worth. That keeps every amount an exact
 // time.Duration.
+//
+// The answers of Cloudflare say what is left of its rate limit; a client
+// tells its limiter, which then never lets more through than that, and never
+// more than the limit Cloudflare names.
 type Limiter struct {
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) error
+	// maxWait, when set, is the longest Wait sleeps for a token: a request
+	// that would wait longer is refused.
+	maxWait time.Duration
 
 	mu       sync.Mutex
 	cost     time.Duration // credit one request takes
 	capacity time.Duration // burst * cost
+	base     time.Duration // the cost the limiter was made with
+	burst    time.Duration // the capacity it was made with
 	credit   time.Duration
 	last     time.Time // when credit was last refilled
 	until    time.Time // no request before this, set by Pause
+	held     time.Time // no request before this, as nothing is left until Cloudflare resets its count
 }
 
 // NewLimiter returns a full bucket. A nil now means time.Now; a limit, window
@@ -50,6 +60,8 @@ func newLimiter(limit int, window time.Duration, burst int, now func() time.Time
 		sleep:    sleep,
 		cost:     cost,
 		capacity: capacity,
+		base:     cost,
+		burst:    capacity,
 		credit:   capacity,
 		last:     now(),
 	}
@@ -59,8 +71,9 @@ func newLimiter(limit int, window time.Duration, burst int, now func() time.Time
 // pause is not waited out: while one is in force Wait returns at once, without
 // a token, an *Error with status 429 whose RetryAfter is what is left of the
 // pause, in whole seconds rounded up, so that a caller never sits on a lock for
-// as long as Cloudflare asked to wait. It returns the error of ctx if that ends
-// first.
+// as long as Cloudflare asked to wait. A limiter with a longest wait refuses a
+// request that would wait longer the same way. It returns the error of ctx if
+// that ends first.
 func (l *Limiter) Wait(ctx context.Context) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -69,16 +82,24 @@ func (l *Limiter) Wait(ctx context.Context) error {
 		d, paused := l.reserve()
 		switch {
 		case paused:
-			// Whole seconds, so that the same pause reads the same in every report.
-			left := (d + time.Second - 1).Truncate(time.Second)
-			return &Error{Status: http.StatusTooManyRequests, Message: "not sent: holding back after an earlier 429", RetryAfter: left}
+			return refused("not sent: holding back after an earlier 429", d)
 		case d == 0:
 			return nil
+		case l.maxWait > 0 && d > l.maxWait:
+			return refused("not sent: Cloudflare's rate limit leaves no request for now", d)
 		}
 		if err := l.sleep(ctx, d); err != nil {
 			return err
 		}
 	}
+}
+
+// refused is the 429 of a request the limiter does not let through for d.
+// RetryAfter is in whole seconds, so that the same wait reads the same in
+// every report.
+func refused(message string, d time.Duration) error {
+	left := (d + time.Second - 1).Truncate(time.Second)
+	return &Error{Status: http.StatusTooManyRequests, Message: message, RetryAfter: left}
 }
 
 // Pause refuses every Wait until d from now, whatever tokens are left, and
@@ -109,19 +130,26 @@ func (l *Limiter) reserve() (wait time.Duration, paused bool) {
 	if now.Before(l.until) {
 		return l.until.Sub(now), true
 	}
-	// A clock that steps back earns no credit.
+	l.refill(now)
+	if now.Before(l.held) {
+		return l.held.Sub(now), false
+	}
+	if l.credit >= l.cost {
+		l.credit -= l.cost
+		return 0, false
+	}
+	return l.cost - l.credit, false
+}
+
+// refill adds the credit earned since the last refill. A clock that steps back
+// earns none. The caller holds the lock.
+func (l *Limiter) refill(now time.Time) {
 	if elapsed := now.Sub(l.last); elapsed >= l.capacity-l.credit {
 		l.credit = l.capacity
 	} else if elapsed > 0 {
 		l.credit += elapsed
 	}
 	l.last = now
-
-	if l.credit >= l.cost {
-		l.credit -= l.cost
-		return 0, false
-	}
-	return l.cost - l.credit, false
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {
@@ -135,10 +163,30 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// NewDefaultLimiter returns the budget of one credential: 300 requests in 5
-// minutes, with room for 20 at once. It is what a client has that is not given
-// a limiter; a caller that builds many clients for one credential makes one and
-// gives it to all of them.
+// NewDefaultLimiter returns the budget of one credential: DefaultBudget
+// requests in 5 minutes. It is what a client has that is not given a limiter;
+// a caller that builds many clients for one credential makes one and gives it
+// to all of them.
 func NewDefaultLimiter(now func() time.Time) *Limiter {
-	return NewLimiter(defaultLimit, defaultWindow, defaultBurst, now)
+	return NewCredentialLimiter(DefaultBudget, now)
+}
+
+// NewCredentialLimiter returns a budget of requests in every 5 minutes, all
+// at once if need be, that refuses a request which would wait longer than 20
+// s for its turn: a cycle that has spent the budget stops and goes on in a
+// later one rather than hold its lock.
+func NewCredentialLimiter(budget int, now func() time.Time) *Limiter {
+	return NewBudgetLimiter(budget, budgetWindow, maxBudgetWait, now, nil)
+}
+
+// NewBudgetLimiter returns a budget of requests in every window, all at once
+// if need be, that refuses a request which would wait longer than maxWait for
+// its turn. sleep waits out a shorter wait; nil sleeps on the system clock.
+func NewBudgetLimiter(requests int, window, maxWait time.Duration, now func() time.Time, sleep func(context.Context, time.Duration) error) *Limiter {
+	if sleep == nil {
+		sleep = sleepContext
+	}
+	l := newLimiter(requests, window, requests, now, sleep)
+	l.maxWait = maxWait
+	return l
 }

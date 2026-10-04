@@ -46,6 +46,9 @@ const (
 	// HeldInGrace begins the held reason of a delete whose removal is in its
 	// grace period.
 	HeldInGrace = "grace period"
+	// HeldBudget holds the writes of a run after Cloudflare's rate limit, or
+	// the budget of the credential, refused one: a later run makes them.
+	HeldBudget = "Cloudflare's rate limit"
 )
 
 // DNSSettings tune the DNS reconciler. A setting that is zero or negative
@@ -352,6 +355,9 @@ type dnsRun struct {
 	// askFailed is set once the inventory could not answer before a delete:
 	// every delete left is held without further calls.
 	askFailed bool
+	// spent is set once the rate limit refused a call: every write left is
+	// held, and read again by a later run, without further calls.
+	spent bool
 	// confirmations counts the tombstones the run marked confirmed; the result
 	// reports them once a save holds them.
 	confirmations int
@@ -363,9 +369,10 @@ type dnsRun struct {
 type dnsZone struct {
 	ZoneRef
 	api     cfapi.API
-	listed  bool                          // the records of this install were read
+	listed  bool                          // the records of the zone were read
 	wanted  map[string]planner.RecordPlan // by name
 	owned   map[string][]cfapi.Record     // records of this install by name, probes left out
+	others  map[string][]cfapi.Record     // every other record by name
 	probes  []cfapi.Record
 	holds   map[string]string // unwanted names of owned records: why their delete is held, empty when it is due
 	actions []Action
@@ -439,7 +446,8 @@ func describePlans(ps []planner.RecordPlan) string {
 	return strings.Join(out, "; ")
 }
 
-// list reads the records of this install in a zone. A zone that cannot be
+// list reads every record of a zone, once in a run: what holds a wanted name
+// is decided from it as well as which records are ours. A zone that cannot be
 // read stays unlisted and the run leaves it alone.
 func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	if z.api == nil {
@@ -447,23 +455,23 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 		run.problem(fmt.Sprintf("zone %s: no client for credential %s", z.Name, z.CredentialID))
 		return
 	}
-	// The filter is a prefix match, so it also returns the records of an
-	// install whose id begins with ours; owns sorts them out.
-	records, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{CommentPrefix: run.marker})
+	records, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{})
 	if err != nil {
 		run.unlisted(z)
-		run.problem(fmt.Sprintf("zone %s: listing the records of this install: %v", z.Name, err))
+		run.problem(fmt.Sprintf("zone %s: listing the records: %v", z.Name, err))
 		return
 	}
 	z.listed = true
 	z.owned = make(map[string][]cfapi.Record)
+	z.others = make(map[string][]cfapi.Record)
 	for _, rec := range records {
+		name := strings.ToLower(rec.Name)
 		switch {
 		case !run.owns(rec):
+			z.others[name] = append(z.others[name], rec)
 		case run.isProbe(rec):
 			z.probes = append(z.probes, rec)
 		default:
-			name := strings.ToLower(rec.Name)
 			z.owned[name] = append(z.owned[name], rec)
 		}
 	}
@@ -532,8 +540,21 @@ func (run *dnsRun) problem(msg string) {
 	run.res.Problems = append(run.res.Problems, msg)
 }
 
-// finish puts the conflicts and lost names in a fixed order.
+// finish puts the conflicts and lost names in a fixed order, and says how
+// many changes wait for the rate limit.
 func (run *dnsRun) finish() {
+	waiting := 0
+	for _, a := range run.res.Actions {
+		if a.Held == HeldBudget {
+			waiting++
+		}
+	}
+	switch {
+	case waiting == 1:
+		run.problem("1 change waits for Cloudflare's rate limit")
+	case waiting > 1:
+		run.problem(fmt.Sprintf("%d changes wait for Cloudflare's rate limit", waiting))
+	}
 	slices.SortFunc(run.res.Conflicts, func(a, b Conflict) int {
 		return cmp.Or(
 			cmp.Compare(a.Zone, b.Zone),

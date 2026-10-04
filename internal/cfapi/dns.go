@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -59,6 +60,10 @@ func SentTTL(ttl int) int {
 	return ttl
 }
 
+// recordsPageSize is the page of a listing of records: a zone of thousands of
+// records is read in one request. Cloudflare takes far larger pages.
+const recordsPageSize = 5000
+
 func recordsPath(zoneID string) (string, error) {
 	if err := CheckID("zone id", zoneID); err != nil {
 		return "", err
@@ -84,7 +89,7 @@ func (c *Client) Records(ctx context.Context, zoneID string, f RecordFilter) ([]
 	if err != nil {
 		return nil, fmt.Errorf("listing dns records: %w", err)
 	}
-	query := url.Values{"per_page": {"100"}}
+	query := url.Values{"per_page": {strconv.Itoa(recordsPageSize)}}
 	if f.Type != "" {
 		query.Set("type", f.Type)
 	}

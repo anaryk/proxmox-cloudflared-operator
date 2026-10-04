@@ -1046,7 +1046,7 @@ func TestRecords(t *testing.T) {
 			req := only(t, env)
 			require.Equal(t, http.MethodGet, req.method)
 			require.Equal(t, "/client/v4/zones/z1/dns_records", req.path(t))
-			want := url.Values{"page": {"1"}, "per_page": {"100"}}
+			want := url.Values{"page": {"1"}, "per_page": {"5000"}}
 			for k, v := range tt.query {
 				want[k] = v
 			}

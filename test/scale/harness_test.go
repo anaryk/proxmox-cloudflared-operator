@@ -41,7 +41,9 @@ var start = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 
 // unlimited is a limiter that never makes a request wait, so that a cycle
 // shows its own cost and not the budget of a credential.
-func unlimited() *cfapi.Limiter { return cfapi.NewLimiter(1_000_000_000, time.Second, 1_000_000, nil) }
+func unlimited(*clock) *cfapi.Limiter {
+	return cfapi.NewLimiter(1_000_000_000, time.Second, 1_000_000, nil)
+}
 
 // bench is the real engine over a real store in a temporary directory, the
 // real Cloudflare client over HTTP to the fake Cloudflare, and the real
@@ -59,7 +61,9 @@ type bench struct {
 	renamed, gone map[int]bool
 }
 
-func newBench(t *testing.T, guests, routes int, limiter *cfapi.Limiter) *bench {
+// newBench is a bench whose clients share the limiter it is given for its
+// clock, and whose fake Cloudflare is served with opts.
+func newBench(t *testing.T, guests, routes int, limiterOf func(*clock) *cfapi.Limiter, opts ...cffake.Option) *bench {
 	t.Helper()
 	b := &bench{
 		t:       t,
@@ -95,8 +99,9 @@ func newBench(t *testing.T, guests, routes int, limiter *cfapi.Limiter) *bench {
 	b.cf.SetNow(b.clock.now)
 	b.cf.AddAccount(testAccount, "Main")
 	b.cf.AddZone(testZone, zoneName, testAccount)
-	srv := httptest.NewServer(cffake.Handler(b.cf))
+	srv := httptest.NewServer(cffake.Handler(b.cf, opts...))
 	t.Cleanup(srv.Close)
+	limiter := limiterOf(b.clock)
 
 	eng, err := engine.New(engine.Deps{
 		Store:      st,

@@ -46,6 +46,15 @@ func (c *clock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+// sleep is a wait of the limiter: the clock moves by it.
+func (c *clock) sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.advance(d)
+	return nil
+}
+
 // inventoryFake answers every refresh with the snapshot the benchmark set.
 type inventoryFake struct {
 	mu   sync.Mutex

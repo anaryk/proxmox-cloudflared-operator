@@ -114,9 +114,10 @@ func TestWiredSettingsNameWhatChanged(t *testing.T) {
 		{"the gate tag", wired{gateTag: "publish", trustedCIDRs: base.trustedCIDRs}, []string{"gateTag"}},
 		{"static trust", wired{gateTag: "cf-tunnel", trustStatic: true, trustedCIDRs: base.trustedCIDRs}, []string{"trustStatic"}},
 		{"the trusted networks", wired{gateTag: "cf-tunnel"}, []string{"trustedCIDRs"}},
+		{"the budget at Cloudflare", wired{gateTag: "cf-tunnel", trustedCIDRs: base.trustedCIDRs, cloudflareBudget: 500}, []string{"cloudflareBudget"}},
 		{
-			"all of it", wired{gateTag: "x", trustStatic: true},
-			[]string{"gateTag", "trustStatic", "trustedCIDRs"},
+			"all of it", wired{gateTag: "x", trustStatic: true, cloudflareBudget: 500},
+			[]string{"gateTag", "trustStatic", "trustedCIDRs", "cloudflareBudget"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

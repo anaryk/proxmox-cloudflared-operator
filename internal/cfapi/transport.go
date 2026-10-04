@@ -29,10 +29,10 @@ const (
 	defaultTimeout = 30 * time.Second
 	maxBodyBytes   = 16 << 20
 
-	// The budget of one credential: 300 requests per 5 minutes.
-	defaultLimit  = 300
-	defaultWindow = 5 * time.Minute
-	defaultBurst  = 20
+	// The budget of one credential is counted per 5 minutes, as Cloudflare
+	// counts its rate limit, and a request waits at most 20 s for its turn.
+	budgetWindow  = 5 * time.Minute
+	maxBudgetWait = 20 * time.Second
 
 	// How a Retry-After is read: missing or unreadable means a minute, and
 	// whatever the server asks is held between a second and an hour.
@@ -45,6 +45,11 @@ const (
 	maxMessageBytes = 512
 	redacted        = "[redacted]"
 )
+
+// DefaultBudget is how many requests of the 1200 in 5 minutes that Cloudflare
+// allows a user a credential spends by default: 200 are left to the dashboard
+// and other tools.
+const DefaultBudget = 1000
 
 // Options says how to reach the API. Only Token is required.
 type Options struct {
@@ -59,8 +64,8 @@ type Options struct {
 
 	// Limiter paces the requests. Cloudflare counts its rate limit per user,
 	// not per token, so share one limiter between all clients of one
-	// Cloudflare user (owner of the tokens). Default: 300 requests per 5
-	// minutes, burst 20, for this client alone.
+	// Cloudflare user (owner of the tokens). Default: NewDefaultLimiter, for
+	// this client alone.
 	Limiter *Limiter
 
 	UserAgent string // default "pco/<version>"
@@ -251,9 +256,11 @@ func (c *Client) roundTrip(ctx context.Context, method, path string, query url.V
 }
 
 // readAnswer turns the answer into an envelope when it is a success, and into
-// an error in every other case. The status is looked at before a failure to
-// read the body is reported, so that a 429 always pauses the limiter.
+// an error in every other case. Every answer tells the limiter what is left of
+// the rate limit, and the status is looked at before a failure to read the
+// body is reported, so that a 429 always pauses the limiter.
 func (c *Client) readAnswer(resp *http.Response, raw []byte, readErr error) (*envelope, error) {
+	c.limiter.observe(resp.Header)
 	tooBig := len(raw) > maxBodyBytes
 	var env envelope
 	var decodeErr error

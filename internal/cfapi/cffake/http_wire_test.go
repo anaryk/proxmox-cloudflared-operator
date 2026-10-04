@@ -827,6 +827,10 @@ func TestAListingThatFailsHalfWayIsAnError(t *testing.T) {
 		fx.f.SeedTunnel(acct, fmt.Sprintf("other-%03d", i), nil)
 		fx.f.SeedRecord(zone, rec("TXT", fmt.Sprintf("t%03d.example.com", i), "x"))
 	}
+	// The client reads records 5000 to a page.
+	for i := 120; i <= 5000; i++ {
+		fx.f.SeedRecord(zone, rec("TXT", fmt.Sprintf("t%04d.example.com", i), "x"))
+	}
 	for _, tc := range []struct {
 		name string
 		op   string

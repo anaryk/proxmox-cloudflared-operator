@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -34,6 +35,11 @@ const (
 	// often than it may stand at all.
 	minReverifyInterval = 10 * time.Second
 	maxReverifyInterval = resolve.DefaultMaxProofAge
+
+	// Cloudflare allows a user 1200 requests in 5 minutes: a budget leaves at
+	// least 50 of them to the dashboard and other tools.
+	minCloudflareBudget = 100
+	maxCloudflareBudget = 1150
 )
 
 // tagPattern is what Proxmox accepts as a tag, in lower case.
@@ -81,6 +87,9 @@ type Settings struct {
 	// ReverifyInterval is how long a proof of identity that the watch of the
 	// network vouches for stands before it is made again.
 	ReverifyInterval Duration `json:"reverifyInterval"`
+	// CloudflareBudget is how many requests in 5 minutes the clients of one
+	// credential spend at most.
+	CloudflareBudget int `json:"cloudflareBudget"`
 }
 
 // DefaultSettings returns the settings of a fresh install, which only
@@ -95,6 +104,7 @@ func DefaultSettings() Settings {
 		IdentityMinimum:      string(resolve.LevelPort),
 		MaxHostnamesPerGuest: planner.DefaultMaxHostnamesPerGuest,
 		ReverifyInterval:     Duration(time.Minute),
+		CloudflareBudget:     cfapi.DefaultBudget,
 	}
 }
 
@@ -153,6 +163,9 @@ func (s Settings) normalized() (Settings, error) {
 		return Settings{}, fmt.Errorf("reverifyInterval %s: at least %s", every, minReverifyInterval)
 	case every > maxReverifyInterval:
 		return Settings{}, fmt.Errorf("reverifyInterval %s: at most %s", every, maxReverifyInterval)
+	}
+	if s.CloudflareBudget < minCloudflareBudget || s.CloudflareBudget > maxCloudflareBudget {
+		return Settings{}, fmt.Errorf("cloudflareBudget %d: from %d to %d", s.CloudflareBudget, minCloudflareBudget, maxCloudflareBudget)
 	}
 	if s.Admission != AdmissionTag && s.Admission != AdmissionApprove {
 		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)

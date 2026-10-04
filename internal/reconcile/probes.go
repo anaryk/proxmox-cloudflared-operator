@@ -38,6 +38,8 @@ func (run *dnsRun) sweepProbes(ctx context.Context, z *dnsZone) {
 		}
 		fresh, found, ours, err := run.recheck(ctx, z, rec)
 		switch {
+		case err != nil && run.spend(err):
+			z.add(a, HeldBudget)
 		case err != nil:
 			run.problem(fmt.Sprintf("%s: reading the probe again before deleting it: %v", z.about(rec.Name), err))
 		case found && ours && run.isProbe(fresh) && run.leftBehind(fresh):

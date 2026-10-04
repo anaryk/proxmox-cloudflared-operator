@@ -61,7 +61,7 @@ func TestAFailedRecordListingKeepsWhatItHid(t *testing.T) {
 	e.clock.advance(10 * time.Second)
 	st := e.cycle()
 
-	require.True(t, hasProblem(st, "listing the records of this install"), "%v", st.Problems)
+	require.True(t, hasProblem(st, "listing the records"), "%v", st.Problems)
 	require.Len(t, st.Conflicts, 2, "what could not be listed is not gone")
 	require.Equal(t, []string{"api.example.com"}, st.Lost)
 	require.Empty(t, conflictEvents(e, seq), "nothing cleared")

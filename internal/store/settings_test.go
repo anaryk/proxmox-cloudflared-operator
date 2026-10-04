@@ -27,6 +27,7 @@ func TestDefaultSettings(t *testing.T) {
 	require.Equal(t, "port", d.IdentityMinimum)
 	require.Equal(t, 32, d.MaxHostnamesPerGuest)
 	require.Equal(t, Duration(time.Minute), d.ReverifyInterval)
+	require.Equal(t, 1000, d.CloudflareBudget)
 }
 
 func TestSettingsDefaultsWhenMissing(t *testing.T) {
@@ -53,6 +54,7 @@ func customSettings() Settings {
 		IdentityMinimum:      "observed",
 		MaxHostnamesPerGuest: 100,
 		ReverifyInterval:     Duration(2 * time.Minute),
+		CloudflareBudget:     800,
 	}
 }
 
@@ -74,6 +76,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, []any{"10.20.0.0/16"}, wire["trustedCIDRs"])
 	require.Equal(t, "observed", wire["identityMinimum"])
 	require.Equal(t, "2m0s", wire["reverifyInterval"])
+	require.InDelta(t, 800, wire["cloudflareBudget"], 0)
 }
 
 func TestSettingsAcceptEveryIdentityMinimum(t *testing.T) {
@@ -151,6 +154,9 @@ func TestSaveSettingsRefusesInvalidSettings(t *testing.T) {
 		{"re-check interval over the age of a proof", "reverifyInterval 5m1s: at most 5m0s", func(s *Settings) {
 			s.ReverifyInterval = Duration(5*time.Minute + time.Second)
 		}},
+		{"no budget", "cloudflareBudget 0: from 100 to 1150", func(s *Settings) { s.CloudflareBudget = 0 }},
+		{"a budget below 100", "cloudflareBudget 99: from 100 to 1150", func(s *Settings) { s.CloudflareBudget = 99 }},
+		{"a budget that leaves the dashboard nothing", "cloudflareBudget 1151: from 100 to 1150", func(s *Settings) { s.CloudflareBudget = 1151 }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

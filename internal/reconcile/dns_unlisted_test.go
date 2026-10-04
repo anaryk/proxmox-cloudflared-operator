@@ -21,27 +21,33 @@ func (f failingLookups) Records(ctx context.Context, zoneID string, filter cfapi
 }
 
 func TestDNSUnlistedNamesTheZonesItCouldNotRead(t *testing.T) {
+	both := []Mode{Observe, Enforce}
 	cases := []struct {
-		name string
-		api  func() cfapi.API
-		want []string
+		name  string
+		api   func() cfapi.API
+		modes []Mode
+		want  []string
 	}{
-		{name: "every zone read", api: func() cfapi.API { return newDNSFake() }},
-		{name: "the listing of a zone fails", want: []string{zone1.Name}, api: func() cfapi.API {
+		{name: "every zone read", modes: both, api: func() cfapi.API { return newDNSFake() }},
+		{name: "the listing of a zone fails", modes: both, want: []string{zone1.Name}, api: func() cfapi.API {
 			f := newDNSFake()
 			f.FailNext("dns.read", 1, errors.New("503 Service Unavailable"))
 			return f
 		}},
-		{name: "the lookup of a name fails", want: []string{zone1.Name}, api: func() cfapi.API {
-			return failingLookups{newDNSFake()}
+		{name: "the lookup of a name to adopt fails", modes: []Mode{Enforce}, want: []string{zone1.Name}, api: func() cfapi.API {
+			f := newDNSFake()
+			f.SeedRecord(zone1.ID, cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10"})
+			return failingLookups{f}
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, mode := range []Mode{Observe, Enforce} {
+			for _, mode := range tc.modes {
 				r := newDNS(tc.api(), &memStore{}, t0)
+				in := dnsIn("app.example.com")
+				in.Adopt = map[string]bool{"app.example.com": true}
 
-				res := r.Run(context.Background(), dnsIn("app.example.com"), mode)
+				res := r.Run(context.Background(), in, mode)
 
 				require.True(t, res.Looked)
 				require.Equal(t, tc.want, res.Unlisted)

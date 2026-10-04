@@ -25,7 +25,7 @@ func TestCloudflareClientsSendTheTokenOfTheCredential(t *testing.T) {
 		_, _ = w.Write([]byte(`{"success":true,"errors":[],"messages":[],"result":{"id":"t1","status":"active"}}`))
 	}))
 	defer srv.Close()
-	f := newCloudflareClients(srv.URL, time.Now)
+	f := newCloudflareClients(srv.URL, time.Now, cfapi.DefaultBudget)
 
 	api, err := f.New(store.Credential{ID: "cred1", Label: "main", Token: store.NewSecret(token)})
 	require.NoError(t, err)
@@ -37,7 +37,7 @@ func TestCloudflareClientsSendTheTokenOfTheCredential(t *testing.T) {
 }
 
 func TestACloudflareClientForAnEmptyTokenIsRefused(t *testing.T) {
-	_, err := newCloudflareClients("", time.Now).New(store.Credential{ID: "cred1", Label: "main"})
+	_, err := newCloudflareClients("", time.Now, cfapi.DefaultBudget).New(store.Credential{ID: "cred1", Label: "main"})
 	require.Error(t, err)
 }
 
@@ -72,7 +72,7 @@ func newRateLimited(t *testing.T) *rateLimited {
 // share their map, make each of these requests reach the server.
 func TestClientsOfOneCredentialShareOneBudget(t *testing.T) {
 	cf := newRateLimited(t)
-	build := Deps{CloudflareURL: cf.srv.URL}.withDefaults().NewClient
+	build := Deps{CloudflareURL: cf.srv.URL}.withDefaults().clients(cfapi.DefaultBudget)
 	credential := func(id string) store.Credential {
 		return store.Credential{ID: id, Label: id, Token: store.NewSecret("tok-" + id + "-0123456789")}
 	}
@@ -143,11 +143,44 @@ func TestARefusedTokenIsNotTheOneOfTheStore(t *testing.T) {
 	w := newWorld(t)
 	fake := httptest.NewServer(cffake.Handler(w.cf, cffake.WithToken("another-token-0123456789")))
 	t.Cleanup(fake.Close)
-	build := Deps{CloudflareURL: fake.URL + "/client/v4"}.withDefaults().NewClient
+	build := Deps{CloudflareURL: fake.URL + "/client/v4"}.withDefaults().clients(cfapi.DefaultBudget)
 
 	api, err := build(store.Credential{ID: testCred, Label: "main", Token: store.NewSecret(cfToken)})
 	require.NoError(t, err)
 	_, err = api.Zones(t.Context())
 
 	require.True(t, cfapi.IsAuth(err), "the fake refuses a token it does not know: %v", err)
+}
+
+// The budget of the settings is what the clients of a credential spend of the
+// 1200 requests Cloudflare allows: with 1000 used, a budget of 1000 has
+// nothing left, and the next request is not sent; a budget of 1150 still has
+// 150.
+func TestTheClientsSpendTheBudgetOfTheSettings(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Ratelimit", `"default";r=200;t=240`)
+		w.Header().Set("Ratelimit-Policy", `"default";q=1200;w=300`)
+		_, _ = w.Write([]byte(`{"success":true,"errors":[],"messages":[],"result":{"id":"t1","status":"active"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	cred := store.Credential{ID: "cred1", Label: "main", Token: store.NewSecret("tok-0123456789")}
+
+	for _, tc := range []struct {
+		budget int
+		sent   int32
+	}{{1000, 1}, {1150, 2}} {
+		hits.Store(0)
+		api, err := Deps{CloudflareURL: srv.URL}.withDefaults().clients(tc.budget)(cred)
+		require.NoError(t, err)
+
+		_, err = api.VerifyToken(t.Context())
+		require.NoError(t, err)
+		_, err = api.VerifyToken(t.Context())
+
+		require.Equal(t, tc.sent, hits.Load(), "budget %d", tc.budget)
+		require.Equal(t, tc.sent == 1, cfapi.IsRateLimited(err), "budget %d: %v", tc.budget, err)
+	}
 }

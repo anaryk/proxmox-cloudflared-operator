@@ -12,17 +12,18 @@ import (
 // built for every cycle that finds a new token, and for every check and
 // removal, so the budget cannot live in the client: one limiter per credential
 // id is made on first use and handed to every client of that credential, for as
-// long as the process runs.
+// long as the process runs. Each spends budget requests in 5 minutes.
 type cloudflareClients struct {
 	baseURL string // empty: the Cloudflare API
 	now     func() time.Time
+	budget  int
 
 	mu       sync.Mutex
 	limiters map[string]*cfapi.Limiter
 }
 
-func newCloudflareClients(baseURL string, now func() time.Time) *cloudflareClients {
-	return &cloudflareClients{baseURL: baseURL, now: now, limiters: make(map[string]*cfapi.Limiter)}
+func newCloudflareClients(baseURL string, now func() time.Time, budget int) *cloudflareClients {
+	return &cloudflareClients{baseURL: baseURL, now: now, budget: budget, limiters: make(map[string]*cfapi.Limiter)}
 }
 
 // New is the engine's client factory. The token is revealed here and nowhere
@@ -46,7 +47,7 @@ func (f *cloudflareClients) limiter(id string) *cfapi.Limiter {
 	defer f.mu.Unlock()
 	l, ok := f.limiters[id]
 	if !ok {
-		l = cfapi.NewDefaultLimiter(f.now)
+		l = cfapi.NewCredentialLimiter(f.budget, f.now)
 		f.limiters[id] = l
 	}
 	return l

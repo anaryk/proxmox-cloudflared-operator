@@ -24,7 +24,8 @@ func TestDNSCreate(t *testing.T) {
 
 	require.Empty(t, res.Problems)
 	require.Equal(t, WriterProceed, res.Verdict)
-	require.Equal(t, []string{"Records zone1", "Records zone2", "Records zone1", "CreateRecord zone1 app.example.com"}, f.Calls())
+	require.Equal(t, []string{"Records zone1", "Records zone2", "CreateRecord zone1 app.example.com"}, f.Calls(),
+		"the listing shows that nothing holds the name")
 	require.Equal(t, []cfapi.Record{{ID: "rec-1", Type: "CNAME", Name: "app.example.com", Content: testTarget, Proxied: true, TTL: 1, Comment: testMarker}},
 		recordsIn(f, zone1.ID))
 	require.Equal(t, []Action{dnsAction(CreateRecord, "app.example.com", "", false)}, withoutDetail(res.Actions))
@@ -544,16 +545,21 @@ func TestDNSWriteFailureGoesOn(t *testing.T) {
 	}
 }
 
-func TestDNSRecordOfOursAppearsDuringRun(t *testing.T) {
+// An adoption looks at the name again, and finds a record of this install
+// that the listing did not show.
+func TestDNSRecordOfOursAppearsDuringAnAdoption(t *testing.T) {
 	f := newDNSFake()
+	f.SeedRecord(zone1.ID, cfapi.Record{Type: "CNAME", Name: "app.example.com", Content: "app.other.net"})
 	s := &dnsSpy{API: f, lookup: func(_ string, filter cfapi.RecordFilter) error {
 		if filter.Name == "app.example.com" {
 			f.SeedRecord(zone1.ID, ourCNAME("app.example.com", "old"))
 		}
 		return nil
 	}}
+	in := dnsIn("app.example.com")
+	in.Adopt = map[string]bool{"app.example.com": true}
 
-	res := newDNS(s, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+	res := newDNS(s, &memStore{}, t0).Run(context.Background(), in, Enforce)
 
 	require.Len(t, res.Problems, 1)
 	require.Contains(t, res.Problems[0], "app.example.com in zone example.com: a record of this install appeared during the run")
@@ -563,16 +569,19 @@ func TestDNSRecordOfOursAppearsDuringRun(t *testing.T) {
 	require.Empty(t, res.Lost)
 }
 
-func TestDNSLookupFailureSkipsName(t *testing.T) {
+func TestDNSLookupFailureSkipsAnAdoption(t *testing.T) {
 	f := newDNSFake()
+	f.SeedRecord(zone1.ID, cfapi.Record{Type: "CNAME", Name: "app.example.com", Content: "app.other.net"})
 	s := &dnsSpy{API: f, lookup: func(_ string, filter cfapi.RecordFilter) error {
 		if filter.Name == "app.example.com" {
 			return errors.New("connection reset by peer")
 		}
 		return nil
 	}}
+	in := dnsIn("app.example.com", "www.example.com")
+	in.Adopt = map[string]bool{"app.example.com": true}
 
-	res := newDNS(s, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com", "www.example.com"), Enforce)
+	res := newDNS(s, &memStore{}, t0).Run(context.Background(), in, Enforce)
 
 	require.Len(t, res.Problems, 1)
 	require.Contains(t, res.Problems[0], "app.example.com in zone example.com")

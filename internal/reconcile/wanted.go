@@ -82,6 +82,9 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, p
 	}
 	fresh, found, ours, err := run.recheck(ctx, z, rec)
 	switch {
+	case err != nil && run.spend(err):
+		z.add(a, HeldBudget)
+		return
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: reading the record again before changing it: %v", z.about(rec.Name), err))
 		return
@@ -102,23 +105,32 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, p
 }
 
 // claim creates the CNAME of a wanted name that has no record of this install,
-// unless a record of someone else holds the name. Only an address record holds
-// it: a TXT record stays beside the proxied CNAME, as Cloudflare allows, and
-// is neither a conflict nor adopted; beside a record of another type the
-// create is tried and Cloudflare's answer decides.
+// unless a record of someone else holds the name, as the listing of the run
+// shows. Only an address record holds it: a TXT record stays beside the
+// proxied CNAME, as Cloudflare allows, and is neither a conflict nor adopted;
+// beside a record of another type the create is tried and Cloudflare's answer
+// decides. An adoption takes over the record of someone else, so it goes by a
+// fresh look at the name rather than by the listing.
 func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name string, p pointing) {
 	create := Action{Kind: CreateRecord, Target: name, Detail: pointDetail(z, p.target)}
 	if run.stopped != "" {
 		z.add(create, run.stopped)
 		return
 	}
-	found, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: name})
-	if err != nil {
-		run.unlisted(z)
-		run.problem(fmt.Sprintf("%s: looking up the records of that name: %v", z.about(name), err))
-		return
+	holders := addressesOf(z.others[name])
+	if len(holders) > 0 && run.adopt[name] && run.mode == Enforce && !run.spent {
+		found, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: name})
+		switch {
+		case err != nil && run.spend(err):
+			z.add(create, HeldBudget)
+			return
+		case err != nil:
+			run.unlisted(z)
+			run.problem(fmt.Sprintf("%s: looking up the records of that name: %v", z.about(name), err))
+			return
+		}
+		holders = addressesOf(found)
 	}
-	holders := slices.DeleteFunc(found, func(rec cfapi.Record) bool { return !isAddress(rec) })
 	switch {
 	case slices.ContainsFunc(holders, run.owns):
 		run.problem(fmt.Sprintf("%s: a record of this install appeared during the run; trying again on the next one", z.about(name)))
@@ -133,6 +145,11 @@ func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name string, p pointin
 			run.conflict(z, rec)
 		}
 	}
+}
+
+// addressesOf returns the address records of records, which hold their name.
+func addressesOf(records []cfapi.Record) []cfapi.Record {
+	return slices.DeleteFunc(slices.Clone(records), func(rec cfapi.Record) bool { return !isAddress(rec) })
 }
 
 // create creates the CNAME of a and reports whether it was created.
@@ -230,7 +247,8 @@ func (run *dnsRun) restore(ctx context.Context, z *dnsZone, rec cfapi.Record) {
 	if run.stopped == "" {
 		back := cfapi.Record{Type: rec.Type, Name: rec.Name, Content: rec.Content, Proxied: rec.Proxied, TTL: rec.TTL, Comment: rec.Comment}
 		a := Action{Kind: CreateRecord, Target: rec.Name, Detail: fmt.Sprintf("in zone %s: put back %s %s", z.Name, rec.Type, rec.Content)}
-		if run.write(z, a, func() error {
+		// It is tried even after the rate limit refused the create.
+		if run.commit(z, a, func() error {
 			_, err := z.api.CreateRecord(ctx, z.ID, back)
 			return err
 		}) {

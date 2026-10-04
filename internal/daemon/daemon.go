@@ -56,7 +56,7 @@ type Config struct {
 type Deps struct {
 	Prober    resolve.Prober       // the host's network view; default: the host prober
 	Systemd   connector.Systemd    // default: systemctl
-	NewClient engine.ClientFactory // default: Cloudflare, one limiter per credential
+	NewClient engine.ClientFactory // default: Cloudflare, one limiter per credential with the budget of the settings
 	Notifier  Notifier             // default: sd_notify
 	Accounts  Accounts             // default: the system's users and groups
 	Now       func() time.Time     // default: time.Now
@@ -112,9 +112,6 @@ func (d Deps) withDefaults() Deps {
 	if d.Systemd == nil {
 		d.Systemd = connector.NewSystemctl()
 	}
-	if d.NewClient == nil {
-		d.NewClient = newCloudflareClients(d.CloudflareURL, d.Now).New
-	}
 	if d.Notifier == nil {
 		d.Notifier = systemdNotifier{}
 	}
@@ -146,6 +143,16 @@ func (d Deps) withDefaults() Deps {
 		d.EgressEvery = checkEvery
 	}
 	return d
+}
+
+// clients returns the factory of the Cloudflare clients: the one the deps
+// were given, or the daemon's own, which spends budget requests of each
+// credential in 5 minutes.
+func (d Deps) clients(budget int) engine.ClientFactory {
+	if d.NewClient != nil {
+		return d.NewClient
+	}
+	return newCloudflareClients(d.CloudflareURL, d.Now, budget).New
 }
 
 func (c Config) check() error {
@@ -302,7 +309,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Resolver:   res,
 		Connectors: conns,
 		Egress:     filter,
-		NewClient:  deps.NewClient,
+		NewClient:  deps.clients(settings.CloudflareBudget),
 		Node:       cfg.Node,
 		Now:        deps.Now,
 		Log:        log,
