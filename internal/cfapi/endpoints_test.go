@@ -595,6 +595,68 @@ func TestTunnelTokenWithoutAToken(t *testing.T) {
 	}
 }
 
+func TestRotateTunnelSecret(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(tunnelJSON)))
+	secret := []byte("0123456789abcdef0123456789abcdef")
+
+	err := env.c.RotateTunnelSecret(context.Background(), "a1", "11111111-2222-4333-8444-555555555555", secret)
+
+	require.NoError(t, err)
+	req := only(t, env)
+	require.Equal(t, http.MethodPatch, req.method)
+	require.Equal(t, "/client/v4/accounts/a1/cfd_tunnel/11111111-2222-4333-8444-555555555555", req.uri)
+	require.Equal(t, "application/json", req.contentType)
+	require.JSONEq(t, `{"tunnel_secret":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}`, req.body)
+}
+
+func TestRotateTunnelSecretAnswers(t *testing.T) {
+	secret := make([]byte, 32)
+	for name, tt := range map[string]struct {
+		h  http.HandlerFunc
+		is func(error) bool
+	}{
+		"another tunnel":  {reply(http.StatusOK, okBody(`{"id":"99999999-2222-4333-8444-555555555555","name":"x"}`)), func(err error) bool { return err != nil }},
+		"no result":       {reply(http.StatusOK, okBody(`null`)), func(err error) bool { return err != nil }},
+		"refused":         {reply(http.StatusForbidden, `{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`), IsAuth},
+		"no such tunnel":  {reply(http.StatusNotFound, `{"success":false,"errors":[{"code":1003,"message":"no such tunnel"}]}`), IsNotFound},
+		"a short secret":  {reply(http.StatusBadRequest, `{"success":false,"errors":[{"code":1001,"message":"secret too short"}]}`), func(err error) bool { return err != nil }},
+		"rate limited":    {reply(http.StatusTooManyRequests, `{"success":false,"errors":[]}`), IsRateLimited},
+		"a server failed": {reply(http.StatusBadGateway, `{"success":false,"errors":[]}`), func(err error) bool { return err != nil }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := setup(t, tt.h)
+			err := env.c.RotateTunnelSecret(context.Background(), "a1", "11111111-2222-4333-8444-555555555555", secret)
+			require.True(t, tt.is(err), "%v", err)
+		})
+	}
+}
+
+// Cloudflare wants 32 bytes at least; a shorter secret never leaves.
+func TestRotateTunnelSecretRefusesAShortSecret(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(tunnelJSON)))
+
+	err := env.c.RotateTunnelSecret(context.Background(), "a1", "t1", make([]byte, 31))
+
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	require.Empty(t, env.requests())
+}
+
+func TestCleanUpConnections(t *testing.T) {
+	env := setup(t, reply(http.StatusOK, okBody(`null`)))
+
+	require.NoError(t, env.c.CleanUpConnections(context.Background(), "a1", "t1"))
+
+	req := only(t, env)
+	require.Equal(t, http.MethodDelete, req.method)
+	require.Equal(t, "/client/v4/accounts/a1/cfd_tunnel/t1/connections", req.uri)
+	require.Empty(t, req.body)
+}
+
+func TestCleanUpConnectionsFailure(t *testing.T) {
+	env := setup(t, reply(http.StatusForbidden, `{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`))
+	require.True(t, IsAuth(env.c.CleanUpConnections(context.Background(), "a1", "t1")))
+}
+
 // ruleCases pair the wire form of an ingress rule with the rule it maps to.
 var ruleCases = []struct {
 	name string
@@ -1312,6 +1374,11 @@ func TestEmptyArgumentsAreRejectedBeforeAnyRequest(t *testing.T) {
 		{"PutTunnelConfig without rules", func(c *Client) error { _, err := c.PutTunnelConfig(ctx, "a1", "t1", nil); return err }},
 		{"Connectors without account", func(c *Client) error { _, err := c.Connectors(ctx, "", "t1"); return err }},
 		{"Connectors without tunnel", func(c *Client) error { _, err := c.Connectors(ctx, "a1", ""); return err }},
+		{"RotateTunnelSecret without account", func(c *Client) error { return c.RotateTunnelSecret(ctx, "", "t1", make([]byte, 32)) }},
+		{"RotateTunnelSecret without tunnel", func(c *Client) error { return c.RotateTunnelSecret(ctx, "a1", "", make([]byte, 32)) }},
+		{"RotateTunnelSecret without secret", func(c *Client) error { return c.RotateTunnelSecret(ctx, "a1", "t1", nil) }},
+		{"CleanUpConnections without account", func(c *Client) error { return c.CleanUpConnections(ctx, "", "t1") }},
+		{"CleanUpConnections without tunnel", func(c *Client) error { return c.CleanUpConnections(ctx, "a1", "") }},
 		{"Records without zone", func(c *Client) error { _, err := c.Records(ctx, "", RecordFilter{}); return err }},
 		{"CreateRecord without zone", func(c *Client) error { _, err := c.CreateRecord(ctx, "", withID); return err }},
 		{"CreateRecord without name", func(c *Client) error { _, err := c.CreateRecord(ctx, "z1", noName); return err }},

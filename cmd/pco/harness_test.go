@@ -149,6 +149,13 @@ func (f *fakeEngine) Adopt(_ context.Context, name string) error {
 	return f.adoptErr
 }
 
+// RotateTunnel is root's alone, which no test is: the tests of pco tunnel
+// rotate answer from a daemon of their own.
+func (f *fakeEngine) RotateTunnel(_ context.Context, account string) (engine.TunnelRotation, error) {
+	f.record("rotate " + account)
+	return engine.TunnelRotation{}, fmt.Errorf("%w: not in this test", engine.ErrRefused)
+}
+
 func (f *fakeEngine) AddCredential(_ context.Context, label, token string) (engine.CredentialView, error) {
 	f.record("add " + label + " " + token)
 	return f.addView, f.addErr

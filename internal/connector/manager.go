@@ -48,6 +48,8 @@ type Manager struct {
 	lstat     func(string) (fs.FileInfo, error)   // os.Lstat, replaceable so that a test can make a stat fail
 	readFile  func(string) ([]byte, error)        // os.ReadFile, replaceable so that a test can see what a read holds
 	readDir   func(string) ([]os.DirEntry, error) // os.ReadDir of the stale temporary files, replaceable so that a test can make it fail
+	// journal reads what a unit logged last; nil when the Systemd cannot.
+	journal func(ctx context.Context, unit string, lines int) ([]string, error)
 
 	mu     sync.Mutex              // guards the fields below and serialises the work on the files
 	queued map[string]pendingState // by tunnel id: the marker a start or restart was queued for
@@ -61,7 +63,7 @@ func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) 
 	if httpc == nil {
 		httpc = &http.Client{}
 	}
-	return &Manager{
+	m := &Manager{
 		sd: sd, dir: dir, httpc: httpc, log: log,
 		firstPort: defaultFirstPort,
 		lstat:     os.Lstat,
@@ -69,6 +71,10 @@ func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) 
 		readDir:   os.ReadDir,
 		queued:    make(map[string]pendingState),
 	}
+	if j, ok := sd.(journalReader); ok {
+		m.journal = j.Journal
+	}
+	return m
 }
 
 // UnitName is the systemd unit that runs the connector of a tunnel.

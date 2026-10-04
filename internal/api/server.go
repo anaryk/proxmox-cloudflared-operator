@@ -37,6 +37,7 @@ type Engine interface {
 	Trigger()
 	Apply(ctx context.Context, confirmDeletes bool, offer string) (engine.ApplyResult, error)
 	Adopt(ctx context.Context, name string) error
+	RotateTunnel(ctx context.Context, account string) (engine.TunnelRotation, error)
 	AddCredential(ctx context.Context, label, token string) (engine.CredentialView, error)
 	Credentials() ([]engine.CredentialView, error)
 	CheckCredential(ctx context.Context, id string, deep bool) (engine.CredentialView, error)

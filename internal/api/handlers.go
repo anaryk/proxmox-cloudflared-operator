@@ -19,6 +19,7 @@ var (
 	errBadToken   = &httpError{http.StatusBadRequest, codeInvalid, "the token is not a Cloudflare API token: it has 20 to 256 characters, all of A-Z a-z 0-9 _ -", false}
 	errBadSince   = &httpError{http.StatusBadRequest, codeInvalid, "since must be a time in RFC 3339 format", false}
 	errNoHostname = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/diagnose?hostname=<name>", false}
+	errRootOnly   = &httpError{http.StatusForbidden, codeForbidden, "only root may rotate the secret of a tunnel", false}
 )
 
 // routes builds the handler of the API: the router, behind the peer check, in
@@ -41,6 +42,7 @@ func (s *Server) routes() http.Handler {
 	v1.POST("/sync", s.postSync)
 	v1.POST("/apply", s.postApply)
 	v1.POST("/adopt", s.postAdopt)
+	v1.POST("/tunnels/rotate", s.postRotateTunnel)
 	v1.GET("/credentials", s.getCredentials)
 	v1.POST("/credentials", s.postCredential)
 	v1.POST("/credentials/:id/check", s.postCredentialCheck)
@@ -122,6 +124,29 @@ func (s *Server) postAdopt(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, struct{}{})
+}
+
+// postRotateTunnel rotates the secret of a tunnel, which restarts every
+// connector of it. Of the users that may use the socket only root may ask,
+// where the peer can be told.
+func (s *Server) postRotateTunnel(c *gin.Context) {
+	if uid, ok := peerUID(c.Request.Context()); s.checkPeers && (!ok || uid != 0) {
+		s.fail(c, errRootOnly)
+		return
+	}
+	var req struct {
+		Account string `json:"account"`
+	}
+	if err := decode(c, &req, true); err != nil {
+		s.fail(c, err)
+		return
+	}
+	res, err := s.engine.RotateTunnel(c.Request.Context(), req.Account)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
 }
 
 // getCredentials answers from the store and the last check of each token, not

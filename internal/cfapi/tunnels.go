@@ -2,6 +2,7 @@ package cfapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -169,6 +170,57 @@ func (c *Client) TunnelToken(ctx context.Context, accountID, tunnelID string) (s
 		return "", fmt.Errorf("reading run token of tunnel %s: %w: token is empty", tunnelID, errUnexpected)
 	}
 	return token, nil
+}
+
+// MinTunnelSecret is the least number of bytes Cloudflare takes as the secret
+// of a tunnel.
+const MinTunnelSecret = 32
+
+// RotateTunnelSecret gives a tunnel a new secret, from which Cloudflare makes
+// its run tokens: a token handed out before no longer starts a connector.
+// Connectors that are connected stay so until their connections end, which
+// CleanUpConnections does. The secret is checked before anything is sent, and
+// never shows in an error.
+func (c *Client) RotateTunnelSecret(ctx context.Context, accountID, tunnelID string, secret []byte) error {
+	path, err := tunnelPath(accountID, tunnelID)
+	if err != nil {
+		return fmt.Errorf("rotating the tunnel secret: %w", err)
+	}
+	if err := CheckSecret(secret); err != nil {
+		return fmt.Errorf("rotating the secret of tunnel %s: %w", tunnelID, err)
+	}
+	body := map[string]string{"tunnel_secret": base64.StdEncoding.EncodeToString(secret)}
+	var got wireTunnel
+	if err := c.do(ctx, http.MethodPatch, path, nil, body, &got); err != nil {
+		return fmt.Errorf("rotating the secret of tunnel %s: %w", tunnelID, err)
+	}
+	if got.ID != tunnelID {
+		return fmt.Errorf("rotating the secret of tunnel %s: %w: the answer is about tunnel %q", tunnelID, errUnexpected, got.ID)
+	}
+	return nil
+}
+
+// CheckSecret refuses a tunnel secret shorter than Cloudflare takes. The fake
+// in cffake applies the same check.
+func CheckSecret(secret []byte) error {
+	if len(secret) < MinTunnelSecret {
+		return fmt.Errorf("%w: a tunnel secret has at least %d bytes, this one %d", ErrInvalidArgument, MinTunnelSecret, len(secret))
+	}
+	return nil
+}
+
+// CleanUpConnections ends the connections of every connector of a tunnel. A
+// connector whose token is still good connects again; one whose token was
+// made from a secret that was rotated since cannot.
+func (c *Client) CleanUpConnections(ctx context.Context, accountID, tunnelID string) error {
+	path, err := tunnelPath(accountID, tunnelID, "connections")
+	if err != nil {
+		return fmt.Errorf("cleaning up connections: %w", err)
+	}
+	if err := c.do(ctx, http.MethodDelete, path, nil, nil, nil); err != nil {
+		return fmt.Errorf("cleaning up the connections of tunnel %s: %w", tunnelID, err)
+	}
+	return nil
 }
 
 // TunnelConfig returns the ingress configuration of a tunnel. A tunnel that

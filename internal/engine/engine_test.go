@@ -293,12 +293,16 @@ func TestCycleRecoversTunnelByName(t *testing.T) {
 		e := newEnv(t)
 		e.enforce()
 		tun := e.cf.SeedTunnel(testAccount, tunnelName, nil)
-		e.conn.tokens[tun.ID] = "token-on-disk"
+		e.conn.tokens[tun.ID] = cffake.RunToken(testAccount, tun.ID)
 
 		e.cycle()
 
-		require.NotContains(t, e.cf.Calls(), "TunnelToken "+testAccount+" "+tun.ID)
-		require.Equal(t, []ensureCall{{id: tun.ID, token: "token-on-disk"}}, e.conn.ensures(), "a stopped unit is started with its own token")
+		require.Equal(t, []ensureCall{{id: tun.ID, token: cffake.RunToken(testAccount, tun.ID)}}, e.conn.ensures(), "a stopped unit is started with its own token")
+		require.Empty(t, connectorEvents(e), "the token is read again with the accounts, and is the one on disk")
+		reads := e.tokenReads()
+		e.clock.advance(10 * time.Second)
+		e.cycle()
+		require.Equal(t, reads, e.tokenReads(), "and only with the accounts")
 	})
 	t.Run("a fresh engine after a crash", func(t *testing.T) {
 		e := newEnv(t)

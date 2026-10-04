@@ -27,6 +27,10 @@ type Status struct {
 	// Install is the install the env file names; empty when it names none,
 	// as one written before connectors named their install.
 	Install string `json:"install,omitempty"`
+	// TokenRefused says that a connector that runs and is not ready logged
+	// last that Cloudflare refused its token, as after the secret of the
+	// tunnel was rotated.
+	TokenRefused bool `json:"tokenRefused,omitempty"`
 }
 
 // Text says how a connector fares: "inactive", "active, not ready" or
@@ -71,6 +75,9 @@ func (m *Manager) Status(ctx context.Context, tunnelID string) (Status, error) {
 	if active {
 		r := m.probe(ctx, addr)
 		st.Ready, st.Connections, st.ConnectorID = r.ready, r.ReadyConnections, r.ConnectorID
+		if !st.Ready {
+			m.readJournal(ctx, &st)
+		}
 	}
 	return st, nil
 }

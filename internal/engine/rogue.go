@@ -71,7 +71,7 @@ func (c *cycleRun) watchConnectors(existing []reconcile.TunnelState, before, now
 // configuration is not seen running yet or a connector pco does not run is
 // shown on it.
 func (c *cycleRun) connectorsDue(t reconcile.TunnelState, rollout bool) bool {
-	if cz := c.e.zones.byCred[t.CredentialID]; cz != nil && cz.accountsOK && cz.accountsAt.Equal(c.now) {
+	if c.accountsListed(t.CredentialID) {
 		return true
 	}
 	if !rollout && !slices.ContainsFunc(c.st.RogueConnectors, func(r RogueConnector) bool { return r.TunnelID == t.ID }) {

@@ -119,7 +119,14 @@ seconds and whenever nftables reports a change, and loads it again when it is go
 changed. [Security](security.md) describes both.
 
 The zones and accounts of each credential are listed every five minutes, and each token is
-checked again once a day.
+checked again once a day. With the accounts, every five minutes, the daemon also reads the
+run token of each tunnel again and lists the connectors Cloudflare shows on it: two calls
+for each tunnel, on top of the two listings of each credential. A run token that changed,
+as after its secret was rotated, is written to the connector's token file and the connector
+is restarted with it. When a connector logs that Cloudflare refuses its token, the token is
+read again at once, once for each refusal. While the configuration of a tunnel is not yet
+seen running, or a connector that pco does not run is shown on it, its connectors are
+listed every 30 seconds.
 
 ### Observe-only until `pco apply`
 

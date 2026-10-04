@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
 const (
-	systemctlPath = "/usr/bin/systemctl"
+	systemctlPath  = "/usr/bin/systemctl"
+	journalctlPath = "/usr/bin/journalctl"
 
 	// exitNotActive is the exit code of systemctl is-active for a unit that
 	// is not active.
@@ -49,10 +51,31 @@ type failedResetter interface {
 	ResetFailed(ctx context.Context, unit string) error
 }
 
-// NewSystemctl returns a Systemd that runs /usr/bin/systemctl.
-func NewSystemctl() Systemd { return systemctl{bin: systemctlPath} }
+// NewSystemctl returns a Systemd that runs /usr/bin/systemctl, and reads what
+// a unit logged with /usr/bin/journalctl.
+func NewSystemctl() Systemd { return systemctl{bin: systemctlPath, journal: journalctlPath} }
 
-type systemctl struct{ bin string }
+type systemctl struct{ bin, journal string }
+
+// Journal returns the last lines a unit logged, oldest first, without their
+// metadata.
+func (s systemctl) Journal(ctx context.Context, unit string, lines int) ([]string, error) {
+	args := []string{"--quiet", "--no-pager", "--output=cat", "--lines=" + strconv.Itoa(lines), "--unit=" + unit}
+	cmd := exec.CommandContext(ctx, s.journal, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return nil, fmt.Errorf("journalctl %s: %w: %s", strings.Join(args, " "), err, detail)
+		}
+		return nil, fmt.Errorf("journalctl %s: %w", strings.Join(args, " "), err)
+	}
+	var out []string
+	for line := range strings.Lines(stdout.String()) {
+		out = append(out, strings.TrimSuffix(line, "\n"))
+	}
+	return out, nil
+}
 
 func (s systemctl) EnableNow(ctx context.Context, unit string) error {
 	_, err := s.run(ctx, "enable", "--now", "--no-block", "--", unit)

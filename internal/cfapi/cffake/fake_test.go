@@ -176,6 +176,38 @@ func TestTunnelTokensDifferPerTunnel(t *testing.T) {
 	require.Equal(t, ta, again)
 }
 
+// A rotated secret makes the tokens handed out from then on; the connectors
+// stay until their connections are cleaned up.
+func TestARotatedSecretMakesTheTokens(t *testing.T) {
+	f := newFake()
+	a := f.SeedTunnel(acct, "pco-a", nil)
+	b := f.SeedTunnel(acct, "pco-b", nil)
+	f.SetConnectors(acct, a.ID, []cfapi.Connector{{ID: "c1", Connections: 4}})
+	before, err := f.TunnelToken(ctx, acct, a.ID)
+	require.NoError(t, err)
+	require.Equal(t, RunToken(acct, a.ID), before)
+	secret := []byte("new-secret-of-thirty-two-bytes!!")
+
+	require.NoError(t, f.RotateTunnelSecret(ctx, acct, a.ID, secret))
+
+	after, err := f.TunnelToken(ctx, acct, a.ID)
+	require.NoError(t, err)
+	require.Equal(t, RunTokenWith(acct, a.ID, secret), after)
+	require.NotEqual(t, before, after)
+	other, err := f.TunnelToken(ctx, acct, b.ID)
+	require.NoError(t, err)
+	require.Equal(t, RunToken(acct, b.ID), other)
+	conns, err := f.Connectors(ctx, acct, a.ID)
+	require.NoError(t, err)
+	require.Len(t, conns, 1)
+
+	require.NoError(t, f.CleanUpConnections(ctx, acct, a.ID))
+	conns, err = f.Connectors(ctx, acct, a.ID)
+	require.NoError(t, err)
+	require.Empty(t, conns)
+	require.Equal(t, "inactive", f.TunnelsIn(acct)[0].Status)
+}
+
 func TestCreateTunnelNameConflict(t *testing.T) {
 	f := newFake()
 	f.AddAccount("acct2", "Other")

@@ -65,7 +65,7 @@ func newFakeSystemctl(t *testing.T) (ctl systemctl, calls func() []string) {
 }
 
 func TestNewSystemctlRunsTheSystemBinary(t *testing.T) {
-	require.Equal(t, systemctl{bin: "/usr/bin/systemctl"}, NewSystemctl())
+	require.Equal(t, systemctl{bin: "/usr/bin/systemctl", journal: "/usr/bin/journalctl"}, NewSystemctl())
 }
 
 func TestSystemctlArguments(t *testing.T) {

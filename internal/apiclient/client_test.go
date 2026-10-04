@@ -173,6 +173,15 @@ func TestRequests(t *testing.T) {
 			want: seen{Method: "POST", Path: "/v1/adopt", ContentType: "application/json", Body: `{"name":"www.example.com"}`},
 		},
 		{
+			name: "rotate a tunnel", reply: `{"tunnel":"pco-abc123","tunnelId":"00000000-0000-4000-8000-000000000001","accountId":"acc1"}`, status: 200,
+			call: func(c *Client) error {
+				res, err := c.RotateTunnel(t.Context(), "acc1")
+				require.Equal(t, engine.TunnelRotation{Tunnel: "pco-abc123", TunnelID: "00000000-0000-4000-8000-000000000001", Account: "acc1"}, res)
+				return err
+			},
+			want: seen{Method: "POST", Path: "/v1/tunnels/rotate", ContentType: "application/json", Body: `{"account":"acc1"}`},
+		},
+		{
 			name: "add credential", reply: string(viewJSON), status: 201,
 			call: func(c *Client) error {
 				v, err := c.AddCredential(t.Context(), "main", testToken)
@@ -320,6 +329,8 @@ func everyCall(t *testing.T, c *Client) []result {
 	_, err = c.Apply(ctx, false, "")
 	add("apply", err)
 	add("adopt", c.Adopt(ctx, "www.example.com"))
+	_, err = c.RotateTunnel(ctx, "acc1")
+	add("rotate", err)
 	_, err = c.AddCredential(ctx, "main", testToken)
 	add("add", err)
 	_, err = c.CheckCredential(ctx, "abc", false)

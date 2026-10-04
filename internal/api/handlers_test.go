@@ -166,6 +166,80 @@ func TestAdopt(t *testing.T) {
 	require.Equal(t, []string{"adopt:www.example.com"}, f.called())
 }
 
+func TestRotateTunnel(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, call string
+	}{
+		{"an account", `{"account":"acc1"}`, "rotate:acc1"},
+		{"the only tunnel", `{}`, "rotate:"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			rec := do(newServer(f), http.MethodPost, "/v1/tunnels/rotate", tt.body)
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.JSONEq(t, `{"tunnel":"pco-abc123","tunnelId":"00000000-0000-4000-8000-000000000001","accountId":"acc1"}`, rec.Body.String())
+			require.Equal(t, []string{tt.call}, f.called())
+		})
+	}
+}
+
+func TestRotateTunnelRefusals(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"several tunnels", fmt.Errorf("%w: name one", engine.ErrInvalid), http.StatusBadRequest, "invalid"},
+		{"no tunnel", fmt.Errorf("%w: no tunnel", engine.ErrNotFound), http.StatusNotFound, "not_found"},
+		{"observe-only", fmt.Errorf("%w: observe-only", engine.ErrRefused), http.StatusConflict, "refused"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(newServer(&fakeEngine{err: tt.err}), http.MethodPost, "/v1/tunnels/rotate", `{}`)
+
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+			require.Equal(t, tt.code, errorCode(t, rec))
+		})
+	}
+	t.Run("a field it does not know", func(t *testing.T) {
+		f := &fakeEngine{}
+		rec := do(newServer(f), http.MethodPost, "/v1/tunnels/rotate", `{"acount":"acc1"}`)
+
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.Empty(t, f.called())
+	})
+}
+
+// The web user may use the socket; rotating the secret of a tunnel restarts
+// every connector of it and is root's alone.
+func TestOnlyRootRotatesASecret(t *testing.T) {
+	const web = 4242
+	for _, tt := range []struct {
+		name   string
+		uid    uint32
+		status int
+	}{
+		{"root", 0, http.StatusOK},
+		{"the web user", web, http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			s := New(f, "1.2.3", []uint32{0, web}, zerolog.Nop())
+			s.checkPeers = true
+
+			rec := send(s, requestFrom(tt.uid, http.MethodPost, "/v1/tunnels/rotate", `{}`))
+
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+			if tt.status == http.StatusForbidden {
+				require.Equal(t, "forbidden", errorCode(t, rec))
+				require.Equal(t, "only root may rotate the secret of a tunnel", errorMessage(t, rec))
+				require.Empty(t, f.called())
+			}
+		})
+	}
+}
+
 func TestCredentialsAreListedByTheEngine(t *testing.T) {
 	st := testState()
 	f := &fakeEngine{state: engine.State{}, creds: st.Credentials}

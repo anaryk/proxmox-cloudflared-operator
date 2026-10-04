@@ -130,7 +130,7 @@ func allScenarios() []scenario {
 	for _, group := range [][]scenario{
 		verifyScenarios(), accountScenarios(), zoneScenarios(),
 		findTunnelScenarios(), tunnelsScenarios(), createTunnelScenarios(), deleteTunnelScenarios(),
-		tokenScenarios(), configScenarios(), putConfigScenarios(), connectorScenarios(),
+		tokenScenarios(), rotateScenarios(), cleanUpScenarios(), configScenarios(), putConfigScenarios(), connectorScenarios(),
 		recordsScenarios(), createRecordScenarios(), updateRecordScenarios(), deleteRecordScenarios(),
 	} {
 		for _, sc := range group {
@@ -271,6 +271,7 @@ func requireSameError(t *testing.T, want, got error, plain bool) {
 }
 
 type state struct {
+	Tokens     map[string]string // the run token of each tunnel, by id
 	Tunnels    map[string][]cfapi.Tunnel
 	Deleted    map[string][]cfapi.Tunnel
 	Configs    map[string]cfapi.TunnelConfig
@@ -286,6 +287,7 @@ func snapshot(t *testing.T, f *cffake.Fake) state {
 		f.Allow(op)
 	}
 	s := state{
+		Tokens:     make(map[string]string),
 		Tunnels:    make(map[string][]cfapi.Tunnel),
 		Deleted:    make(map[string][]cfapi.Tunnel),
 		Configs:    make(map[string]cfapi.TunnelConfig),
@@ -302,6 +304,9 @@ func snapshot(t *testing.T, f *cffake.Fake) state {
 			conns, err := f.Connectors(ctx, account, tun.ID)
 			require.NoError(t, err)
 			s.Connectors[tun.ID] = conns
+			token, err := f.TunnelToken(ctx, account, tun.ID)
+			require.NoError(t, err)
+			s.Tokens[tun.ID] = token
 		}
 	}
 	for _, z := range []string{zone, "zone2", oddZone} {
@@ -366,6 +371,14 @@ func tunnelConfig(account, id string) call {
 
 func putTunnelConfig(account, id string, rules []planner.IngressRule) call {
 	return func(a cfapi.API) (any, error) { return a.PutTunnelConfig(ctx, account, id, rules) }
+}
+
+func rotateSecret(account, id string, secret []byte) call {
+	return func(a cfapi.API) (any, error) { return nil, a.RotateTunnelSecret(ctx, account, id, secret) }
+}
+
+func cleanUp(id string) call {
+	return func(a cfapi.API) (any, error) { return nil, a.CleanUpConnections(ctx, acct, id) }
 }
 
 func connectors(account, id string) call {
@@ -847,6 +860,85 @@ func tokenScenarios() []scenario {
 		refused("TunnelToken", "blank tunnel", isInvalid, func(f *cffake.Fake) call {
 			std(f)
 			return tunnelToken(acct, "")
+		}),
+	}
+}
+
+// newSecret is a tunnel secret of the length Cloudflare asks for.
+var newSecret = []byte("new-secret-of-thirty-two-bytes!!")
+
+func rotateScenarios() []scenario {
+	return []scenario{
+		ok("RotateTunnelSecret", "a tunnel", func(f *cffake.Fake) call {
+			std(f)
+			f.SeedTunnel(acct, "other", nil)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			return rotateSecret(acct, tun.ID, newSecret)
+		}).injecting("tunnel.write"),
+		ok("RotateTunnelSecret", "a tunnel with connectors, which keep their connections", func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Version: "2026.9.0", ConfigVersion: 1, Connections: 4}})
+			return rotateSecret(acct, tun.ID, newSecret)
+		}),
+		ok("RotateTunnelSecret", "twice", func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			return func(a cfapi.API) (any, error) {
+				if err := a.RotateTunnelSecret(ctx, acct, tun.ID, newSecret); err != nil {
+					return nil, err
+				}
+				return nil, a.RotateTunnelSecret(ctx, acct, tun.ID, []byte("and-another-one-of-thirty-two-by"))
+			}
+		}),
+		refused("RotateTunnelSecret", "a deleted tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedDeletedTunnel(acct, "pco-abc")
+			return rotateSecret(acct, tun.ID, newSecret)
+		}),
+		refused("RotateTunnelSecret", "unknown account", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			return rotateSecret("acct9", "no-such-tunnel", newSecret)
+		}),
+		refused("RotateTunnelSecret", "a short secret", isInvalid, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			return rotateSecret(acct, tun.ID, newSecret[:31])
+		}),
+		refused("RotateTunnelSecret", "an id that cannot be part of a path", isInvalid, func(f *cffake.Fake) call {
+			std(f)
+			return rotateSecret(acct, "a/b", newSecret)
+		}),
+	}
+}
+
+func cleanUpScenarios() []scenario {
+	return []scenario{
+		ok("CleanUpConnections", "a tunnel with connectors", func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			other := f.SeedTunnel(acct, "other", nil)
+			f.SetConnectors(acct, tun.ID, []cfapi.Connector{{ID: "c1", Version: "2026.9.0", ConfigVersion: 1, Connections: 4}, {ID: "c2", Connections: 1}})
+			f.SetConnectors(acct, other.ID, []cfapi.Connector{{ID: "c3", Version: "2026.9.0", ConfigVersion: 1, Connections: 2}})
+			return cleanUp(tun.ID)
+		}).injecting("tunnel.write"),
+		ok("CleanUpConnections", "a tunnel without connectors", func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedTunnel(acct, "pco-abc", nil)
+			return cleanUp(tun.ID)
+		}),
+		refused("CleanUpConnections", "a deleted tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			tun := f.SeedDeletedTunnel(acct, "pco-abc")
+			return cleanUp(tun.ID)
+		}),
+		refused("CleanUpConnections", "unknown tunnel", cfapi.IsNotFound, func(f *cffake.Fake) call {
+			std(f)
+			return cleanUp("no-such-tunnel")
+		}),
+		refused("CleanUpConnections", "blank tunnel", isInvalid, func(f *cffake.Fake) call {
+			std(f)
+			return cleanUp("")
 		}),
 	}
 }

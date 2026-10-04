@@ -1,0 +1,190 @@
+package engine
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
+)
+
+// TunnelRotation is what a rotation of the secret of a tunnel did.
+type TunnelRotation struct {
+	Tunnel   string `json:"tunnel"`
+	TunnelID string `json:"tunnelId"`
+	Account  string `json:"accountId"`
+}
+
+// accountsListed says whether the accounts of a credential were listed in
+// this cycle, which they are every zoneRefreshEvery.
+func (c *cycleRun) accountsListed(credential string) bool {
+	cz := c.e.zones.byCred[credential]
+	return cz != nil && cz.accountsOK && cz.accountsAt.Equal(c.now)
+}
+
+// fetchToken asks Cloudflare for the run token of a tunnel.
+func (c *cycleRun) fetchToken(t reconcile.TunnelState) (string, error) {
+	api := c.e.clients[t.CredentialID]
+	if api == nil {
+		return "", fmt.Errorf("no client for credential %s", t.CredentialID)
+	}
+	token, err := api.TunnelToken(c.ctx, t.AccountID, t.ID)
+	switch {
+	case err != nil:
+		return "", err
+	case strings.TrimSpace(token) == "":
+		return "", errors.New("the token Cloudflare returned is empty")
+	}
+	return token, nil
+}
+
+// freshToken reads the run token of a tunnel again and returns it, or the one
+// the connector has when it cannot be read. A token that changed, as after a
+// rotation of the tunnel's secret, is an event: Ensure writes it and restarts
+// the connector.
+func (c *cycleRun) freshToken(t reconcile.TunnelState, stored string) string {
+	token, err := c.fetchToken(t)
+	if err != nil {
+		c.problem("tunnel %s in account %s: reading its token again: %s; its connector keeps the one it has",
+			t.Name, t.AccountID, redact(err.Error(), stored))
+		return stored
+	}
+	if token != stored {
+		c.events = append(c.events, Event{
+			At: c.now, Level: levelInfo, Kind: kindConnector, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
+			Message: fmt.Sprintf("the run token of tunnel %s in account %s changed at Cloudflare; its connector restarts with the new one", t.Name, t.AccountID),
+		})
+	}
+	return token
+}
+
+// followRefusals reports every connector whose token Cloudflare refuses and,
+// in enforce mode, reads the token of its tunnel again at once when the
+// refusal starts, unless this cycle read it already: once per refusal, and
+// every zoneRefreshEvery while it lasts.
+func (c *cycleRun) followRefusals(existing []reconcile.TunnelState, before, now []connector.Status) {
+	refused := func(statuses []connector.Status, id string) bool {
+		return slices.ContainsFunc(statuses, func(s connector.Status) bool { return s.TunnelID == id && s.TokenRefused })
+	}
+	for _, t := range existing {
+		if !refused(now, t.ID) {
+			continue
+		}
+		c.problem("tunnel %s in account %s: Cloudflare refuses the token its connector runs with; "+
+			"pco reads the token again when that starts and every five minutes, and pco tunnel rotate gives the tunnel a new secret",
+			t.Name, t.AccountID)
+		if c.mode() != reconcile.Enforce || refused(before, t.ID) || c.accountsListed(t.CredentialID) {
+			continue
+		}
+		stored, found, err := c.e.d.Connectors.Token(t.ID)
+		if err != nil || !found {
+			continue
+		}
+		if token := c.freshToken(t, stored); token != stored {
+			c.ensureWith(t, token)
+		}
+	}
+}
+
+// RotateTunnel gives the tunnel of the install in an account a new secret at
+// Cloudflare and ends the connections of all its connectors: one that runs
+// elsewhere with the old token cannot connect again, and the one on this node
+// is restarted at once with the new token. account may be empty when the
+// install has one tunnel. The tunnel is one the last state shows reconciled;
+// in observe-only mode nothing is done.
+func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotation, error) {
+	if err := e.acquireAdmin(ctx); err != nil {
+		return TunnelRotation{}, err
+	}
+	defer e.release()
+	s, err := e.d.Store.Settings()
+	if err != nil {
+		return TunnelRotation{}, fmt.Errorf("reading the settings: %w", err)
+	}
+	if s.ObserveOnly {
+		return TunnelRotation{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare; pco apply ends it", ErrRefused)
+	}
+	inst, found, err := e.d.Store.Install()
+	switch {
+	case err != nil:
+		return TunnelRotation{}, fmt.Errorf("reading the install identity: %w", err)
+	case !found:
+		return TunnelRotation{}, fmt.Errorf("%w: %s", ErrRefused, problemNotSetUp)
+	}
+	t, err := e.rotatable(account)
+	if err != nil {
+		return TunnelRotation{}, err
+	}
+	api := e.clients[t.CredentialID]
+	if api == nil {
+		return TunnelRotation{}, fmt.Errorf("%w: no client for credential %s", ErrRefused, t.CredentialID)
+	}
+	res := TunnelRotation{Tunnel: t.Name, TunnelID: t.ID, Account: t.AccountID}
+	what := fmt.Sprintf("tunnel %s in account %s", t.Name, t.AccountID)
+
+	secret := make([]byte, cfapi.MinTunnelSecret)
+	if _, err := rand.Read(secret); err != nil {
+		return res, fmt.Errorf("making a secret: %w", err)
+	}
+	if err := api.RotateTunnelSecret(ctx, t.AccountID, t.ID, secret); err != nil {
+		return res, fmt.Errorf("rotating the secret of %s: %w", what, err)
+	}
+	cleanErr := api.CleanUpConnections(ctx, t.AccountID, t.ID)
+	// The connectors are listed in the next cycle: the rollout to the one
+	// restarted, and whether any other came back.
+	delete(e.rolledOut, t.ID)
+	delete(e.asked, t.ID)
+	defer e.Trigger()
+	token, err := api.TunnelToken(ctx, t.AccountID, t.ID)
+	if err == nil && strings.TrimSpace(token) == "" {
+		err = errors.New("the token Cloudflare returned is empty")
+	}
+	if err != nil {
+		return res, fmt.Errorf("the secret of %s was rotated, but its new token could not be read: %w; "+
+			"its connector on this node takes it up when Cloudflare refuses the old one", what, err)
+	}
+	if err := e.d.Connectors.Ensure(ctx, inst.ID, t.ID, token); err != nil {
+		return res, fmt.Errorf("the secret of %s was rotated, but its connector on this node could not be restarted: %s", what, redact(err.Error(), token))
+	}
+	if cleanErr != nil {
+		return res, fmt.Errorf("the secret of %s was rotated and its connector on this node restarts with the new token, "+
+			"but the connections of the tunnel could not be ended: %w; a connector elsewhere keeps its session until it reconnects: "+
+			"run pco tunnel rotate again", what, cleanErr)
+	}
+	e.adminEvent(t.Name, fmt.Sprintf("the secret of %s was rotated: every connector of the tunnel was disconnected, "+
+		"and the one on this node restarts with the new token", what))
+	return res, nil
+}
+
+// rotatable returns the tunnel of the install that a rotation is of, as the
+// last state shows it: the one in account, or the only one when account is
+// empty. It has to be one the last cycle reconciled.
+func (e *Engine) rotatable(account string) (reconcile.TunnelState, error) {
+	var found []TunnelView
+	for _, t := range e.State().Tunnels {
+		if t.Exists && t.ID != "" && !t.Unknown && (account == "" || t.AccountID == account) {
+			found = append(found, t)
+		}
+	}
+	switch {
+	case len(found) == 0 && account != "":
+		return reconcile.TunnelState{}, fmt.Errorf("%w: no tunnel of this install is known in account %s; pco status lists the tunnels", ErrNotFound, account)
+	case len(found) == 0:
+		return reconcile.TunnelState{}, fmt.Errorf("%w: no tunnel of this install is known; pco status lists the tunnels", ErrNotFound)
+	case len(found) > 1:
+		accounts := make([]string, 0, len(found))
+		for _, t := range found {
+			accounts = append(accounts, t.AccountID)
+		}
+		return reconcile.TunnelState{}, fmt.Errorf("%w: the install has tunnels in accounts %s; name one with --account", ErrInvalid, andList(accounts))
+	case found[0].Held != "":
+		return reconcile.TunnelState{}, fmt.Errorf("%w: tunnel %s in account %s is left as it is: %s; nothing was changed",
+			ErrRefused, found[0].Name, found[0].AccountID, found[0].Held)
+	}
+	return found[0].TunnelState, nil
+}

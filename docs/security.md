@@ -357,6 +357,50 @@ drop its connections to Cloudflare. For the same reason, do not stop it. `pco eg
 is the way to reload: it loads the table when it is gone or changed, and does nothing to one
 that is intact.
 
+## A connector that is not pco's
+
+Anyone who holds the run token of a tunnel can run a connector for it anywhere, and
+Cloudflare then spreads the requests to every hostname of the tunnel over all its
+connectors. A stolen Cloudflare token with `Cloudflare Tunnel: Edit`, which pco's own token
+needs, reads the run token with one request. Whoever runs that second connector receives
+part of the traffic of every published hostname, in the clear, and answers it as they like.
+
+The daemon looks for that. Every five minutes, and every 30 seconds while a rollout or a
+finding is pending, it lists the connectors Cloudflare shows on each tunnel and holds their
+ids against the id that the `/ready` endpoint of its own connector reports. A connector it
+does not know is an error event the first time it is seen, and a problem line in every
+cycle while it is listed:
+
+    tunnel pco-abc123 in account 0123abcd is served by connector 6f2d... from 198.51.100.7
+    (cloudflared 2026.8.0), which pco does not run on this node: it takes a share of the
+    requests to every hostname of the tunnel; unless you run it, rotate the tunnel secret
+    with pco tunnel rotate --account 0123abcd
+
+`pco status` exits 1, and `pco doctor` fails its `rogue connectors` check. The address and
+version are what Cloudflare reports. While the daemon's own connector is not ready it cannot
+tell its own id, so it compares nothing until it is; and the id its connector had in the
+cycle before counts as its own too, because Cloudflare lists a restarted connector under its
+old id for a moment.
+
+pco does not cut the other connector off by itself in this release. A second connector of
+the same tunnel is how a replica on another node of the cluster will run, which a later
+release brings, and a lockdown that guessed wrong would take the hostnames off the air. What
+to do is up to you:
+
+1. If you run that connector, nothing. pco keeps reporting it.
+2. If you do not, run `pco tunnel rotate` (with `--account` when the install has tunnels in
+   several accounts). It gives the tunnel a new secret at Cloudflare, ends the connections
+   of all its connectors, and restarts pco's connector with the new token at once. The other
+   connector loses its session and cannot connect again with the token it has. Every
+   published hostname of the tunnel is unreachable for the few seconds the connector on the
+   node takes to reconnect. Only root may run it.
+3. Replace the Cloudflare token that leaked: add a new one with `pco credential add` and
+   remove the old one, then revoke it at Cloudflare.
+
+The daemon also follows a secret that was rotated elsewhere, in the dashboard or with the
+API: it reads each run token again every five minutes, and at once when its connector logs
+that Cloudflare refuses the token, and restarts the connector with the new one.
+
 ## Secrets and where they live
 
 | What | Where | Notes |
@@ -401,8 +445,10 @@ that a socket path cannot be pointed at a directory such as `/tmp` whose mode an
 daemon would then change.
 
 Everything a request can do is what the CLI shows: read the state, ask for a cycle, apply,
-adopt, add and check and remove credentials, resolve claims, approve guests, diagnose, run
-the doctor. A request cannot read a token, and it cannot change the egress filter.
+adopt, add and check and remove credentials, resolve claims, approve guests, rotate the
+secret of a tunnel, diagnose, run the doctor. Rotating a secret restarts every connector of
+the tunnel, so the daemon answers that request for root only, and not for `pco-web`. A
+request cannot read a token, and it cannot change the egress filter.
 
 ## What Cloudflare sees
 

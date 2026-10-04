@@ -111,6 +111,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.applyCmd(),
 		a.adoptCmd(),
 		a.syncCmd(),
+		a.tunnelCmd(),
 		a.credentialCmd(),
 		a.claimsCmd(),
 		a.guestCmd(),

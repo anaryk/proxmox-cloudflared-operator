@@ -61,6 +61,7 @@ func (c *cycleRun) reconcileConnectors() {
 		statuses = append(statuses, st)
 	}
 	c.st.Connectors = statuses
+	c.followRefusals(existing, before, statuses)
 	c.watchConnectors(existing, before, statuses)
 	c.forgetRogues(shown)
 	c.noteForeignConnectors(shown)
@@ -236,30 +237,31 @@ func (c *cycleRun) prune(existing, invisible []reconcile.TunnelState, failed []s
 }
 
 // ensure starts the connector of a tunnel with the token it has on disk, or
-// with the one Cloudflare hands out when it has none. The connector manager
-// is the only one that writes the token.
+// with the one Cloudflare hands out when it has none. The token is read again
+// whenever the accounts of the tunnel's credential are listed, every
+// zoneRefreshEvery, so that a secret rotated at Cloudflare reaches the
+// connector. The connector manager is the only one that writes the token.
 func (c *cycleRun) ensure(t reconcile.TunnelState) {
 	token, found, err := c.e.d.Connectors.Token(t.ID)
 	if err != nil {
 		c.problem("tunnel %s in account %s: reading the connector token: %v", t.Name, t.AccountID, err)
 		return
 	}
-	if !found {
-		api := c.e.clients[t.CredentialID]
-		if api == nil {
-			c.problem("tunnel %s in account %s: no client for credential %s to fetch its token", t.Name, t.AccountID, t.CredentialID)
-			return
-		}
-		token, err = api.TunnelToken(c.ctx, t.AccountID, t.ID)
-		switch {
-		case err != nil:
+	switch {
+	case !found:
+		fetched, err := c.fetchToken(t)
+		if err != nil {
 			c.problem("tunnel %s in account %s: fetching its token: %v", t.Name, t.AccountID, err)
 			return
-		case strings.TrimSpace(token) == "":
-			c.problem("tunnel %s in account %s: Cloudflare returned an empty token", t.Name, t.AccountID)
-			return
 		}
+		token = fetched
+	case c.accountsListed(t.CredentialID):
+		token = c.freshToken(t, token)
 	}
+	c.ensureWith(t, token)
+}
+
+func (c *cycleRun) ensureWith(t reconcile.TunnelState, token string) {
 	if err := c.e.d.Connectors.Ensure(c.ctx, c.install.ID, t.ID, token); err != nil {
 		c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
 	}

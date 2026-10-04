@@ -150,6 +150,14 @@ func (f *fakeEngine) Adopt(ctx context.Context, name string) error {
 	return f.failure()
 }
 
+func (f *fakeEngine) RotateTunnel(ctx context.Context, account string) (engine.TunnelRotation, error) {
+	f.record(ctx, "rotate:"+account)
+	if err := f.failure(); err != nil {
+		return engine.TunnelRotation{}, err
+	}
+	return engine.TunnelRotation{Tunnel: "pco-abc123", TunnelID: "00000000-0000-4000-8000-000000000001", Account: "acc1"}, nil
+}
+
 func (f *fakeEngine) AddCredential(ctx context.Context, label, token string) (engine.CredentialView, error) {
 	f.record(ctx, fmt.Sprintf("add:%s:%s", label, token))
 	if f.addPanic != "" {

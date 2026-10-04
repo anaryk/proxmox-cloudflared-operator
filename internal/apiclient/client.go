@@ -146,6 +146,18 @@ func (c *Client) Adopt(ctx context.Context, name string) error {
 	return c.call(ctx, c.long, http.MethodPost, "/v1/adopt", body, nil)
 }
 
+// RotateTunnel asks the daemon to rotate the secret of the tunnel of the
+// install in account, or of its only tunnel when account is empty. Only root
+// may ask.
+func (c *Client) RotateTunnel(ctx context.Context, account string) (engine.TunnelRotation, error) {
+	body := struct {
+		Account string `json:"account,omitempty"`
+	}{account}
+	var res engine.TunnelRotation
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/tunnels/rotate", body, &res)
+	return res, err
+}
+
 // Sync asks for a reconcile cycle now.
 func (c *Client) Sync(ctx context.Context) error {
 	return c.call(ctx, c.short, http.MethodPost, "/v1/sync", nil, nil)

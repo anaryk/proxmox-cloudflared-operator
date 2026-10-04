@@ -27,6 +27,7 @@ type tunnel struct {
 	connectors []cfapi.Connector
 	deleted    bool // a tombstone: Cloudflare keeps the tunnel it deleted, and lists it
 	deletedAt  time.Time
+	secret     []byte // nil until it is rotated: runSecret
 }
 
 // listedTunnel is a tunnel of a listing, which holds the ones that were
@@ -67,11 +68,21 @@ func (flt tunnelFilter) matches(t *tunnel) bool {
 // and the secret. The secret is the same for every tunnel and is no secret, so
 // a cloudflared that is started with the token gets as far as the edge.
 func RunToken(accountID, tunnelID string) string {
+	return runToken(accountID, tunnelID, []byte(runSecret))
+}
+
+// RunTokenWith is the token the fake hands out for a tunnel whose secret was
+// rotated to secret.
+func RunTokenWith(accountID, tunnelID string, secret []byte) string {
+	return runToken(accountID, tunnelID, secret)
+}
+
+func runToken(accountID, tunnelID string, secret []byte) string {
 	payload, _ := json.Marshal(struct {
 		Account string `json:"a"`
 		Secret  []byte `json:"s"`
 		Tunnel  string `json:"t"`
-	}{accountID, []byte(runSecret), tunnelID}) // cannot fail: only strings and bytes
+	}{accountID, secret, tunnelID}) // cannot fail: only strings and bytes
 	return base64.StdEncoding.EncodeToString(payload)
 }
 
@@ -293,7 +304,63 @@ func (f *Fake) TunnelToken(ctx context.Context, accountID, tunnelID string) (str
 	if err != nil {
 		return "", err
 	}
+	if t.secret != nil {
+		return runToken(accountID, t.ID, t.secret), nil
+	}
 	return RunToken(accountID, t.ID), nil
+}
+
+// RotateTunnelSecret gives the tunnel a new secret, which the tokens it hands
+// out from then on are made of. The connectors it lists stay, as connected
+// ones do at Cloudflare.
+func (f *Fake) RotateTunnelSecret(ctx context.Context, accountID, tunnelID string, secret []byte) error {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return err
+	}
+	if err := cfapi.CheckSecret(secret); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin(ctx, opTunnelWrite, "RotateTunnelSecret", accountID, tunnelID); err != nil {
+		return err
+	}
+	t, err := f.tunnelIn(accountID, tunnelID)
+	if err != nil {
+		return err
+	}
+	t.secret = slices.Clone(secret)
+	return nil
+}
+
+// liveTunnel returns a tunnel of an account that is not deleted, as it is now.
+func (f *Fake) liveTunnel(accountID, tunnelID string) (cfapi.Tunnel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.tunnelIn(accountID, tunnelID)
+	if err != nil {
+		return cfapi.Tunnel{}, err
+	}
+	return t.Tunnel, nil
+}
+
+// CleanUpConnections drops the connectors of a tunnel, which is inactive
+// then.
+func (f *Fake) CleanUpConnections(ctx context.Context, accountID, tunnelID string) error {
+	if err := checkTunnelID(accountID, tunnelID); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.begin(ctx, opTunnelWrite, "CleanUpConnections", accountID, tunnelID); err != nil {
+		return err
+	}
+	t, err := f.tunnelIn(accountID, tunnelID)
+	if err != nil {
+		return err
+	}
+	t.connectors, t.Status = nil, "inactive"
+	return nil
 }
 
 func (f *Fake) TunnelConfig(ctx context.Context, accountID, tunnelID string) (cfapi.TunnelConfig, error) {

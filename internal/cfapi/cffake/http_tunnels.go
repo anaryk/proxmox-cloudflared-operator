@@ -1,6 +1,7 @@
 package cffake
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,6 +124,49 @@ func (h *handler) deleteTunnel(r *http.Request, p params) (reply, error) {
 		return reply{}, err
 	}
 	return reply{result: map[string]string{"id": p["tunnel"]}}, nil
+}
+
+// updateTunnel takes a new secret, which is all the client changes of a
+// tunnel, and answers with the tunnel.
+func (h *handler) updateTunnel(r *http.Request, p params) (reply, error) {
+	if err := checkQuery(r.URL.Query()); err != nil {
+		return reply{}, err
+	}
+	data, err := readBody(r)
+	if err != nil {
+		return reply{}, err
+	}
+	var body struct {
+		Secret *string `json:"tunnel_secret"`
+	}
+	if err := decodeObject(data, &body, "tunnel_secret"); err != nil {
+		return reply{}, err
+	}
+	if body.Secret == nil {
+		return reply{}, badRequest("the fake changes nothing of a tunnel but its tunnel_secret")
+	}
+	secret, err := base64.StdEncoding.DecodeString(*body.Secret)
+	if err != nil {
+		return reply{}, badRequest("tunnel_secret must be base64")
+	}
+	if err := h.f.RotateTunnelSecret(r.Context(), p["account"], p["tunnel"], secret); err != nil {
+		return reply{}, err
+	}
+	t, err := h.f.liveTunnel(p["account"], p["tunnel"])
+	if err != nil {
+		return reply{}, err
+	}
+	return reply{result: newWireTunnel(p["account"], listedTunnel{Tunnel: t})}, nil
+}
+
+func (h *handler) cleanUpConnections(r *http.Request, p params) (reply, error) {
+	if err := checkQuery(r.URL.Query()); err != nil {
+		return reply{}, err
+	}
+	if err := h.f.CleanUpConnections(r.Context(), p["account"], p["tunnel"]); err != nil {
+		return reply{}, err
+	}
+	return reply{result: nil}, nil
 }
 
 func (h *handler) tunnelToken(r *http.Request, p params) (reply, error) {

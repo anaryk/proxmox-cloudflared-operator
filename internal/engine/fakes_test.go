@@ -278,6 +278,7 @@ type fakeConnectors struct {
 	onEnsure  func()
 	ensureErr func(token string) error
 	notReady  map[string]bool   // tunnels whose connector is not ready
+	refused   map[string]bool   // tunnels whose connector Cloudflare refuses: not ready, and its journal says so
 	ids       map[string]string // the id /ready names, by tunnel; defaultConnectorID when not set
 }
 
@@ -324,14 +325,25 @@ func (f *fakeConnectors) List(context.Context) ([]string, error) {
 func (f *fakeConnectors) Status(_ context.Context, id string) (connector.Status, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.notReady[id] {
-		return connector.Status{TunnelID: id, Active: true, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
+	if f.notReady[id] || f.refused[id] {
+		return connector.Status{TunnelID: id, Active: true, TokenRefused: f.refused[id], MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
 	}
 	cid, ok := f.ids[id]
 	if !ok {
 		cid = defaultConnectorID
 	}
 	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, ConnectorID: cid, MetricsAddr: "127.0.0.1:20300", Install: testInstall}, nil
+}
+
+// setRefused makes Cloudflare refuse the token the connector of a tunnel runs
+// with, or take it again.
+func (f *fakeConnectors) setRefused(id string, refused bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refused == nil {
+		f.refused = map[string]bool{}
+	}
+	f.refused[id] = refused
 }
 
 // setConnectorID makes the node's connector of a tunnel name itself id.
