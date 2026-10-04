@@ -159,6 +159,14 @@ func TestEachStepFailsInTurn(t *testing.T) {
 				r.State, r.Reason, r.Service = planner.StateHeld, "named in the Notes of qemu/101 but not routed; claim kept", ""
 				r.Rule.Service = "http_status:503"
 			}},
+		{"a hostname the policy publishes only when allowHosts names it", "route",
+			`qemu/101 (web-1) holds it, but it is not published: a wildcard is published only when an allowHosts pattern names it: add "*.example.com" to allowHosts`,
+			func(st *engine.State) {
+				r := &st.Routes[0]
+				r.State, r.Service = planner.StateRejected, ""
+				r.Reason = `a wildcard is published only when an allowHosts pattern names it: add "*.example.com" to allowHosts`
+				r.Rule.Service = "http_status:503"
+			}},
 		{"no zone", "zone", "no Cloudflare zone for this hostname in any credential", func(st *engine.State) {
 			r := &st.Routes[0]
 			r.State, r.Reason, r.Service, r.Zone, r.Rule, r.Account = planner.StateNoZone, "no Cloudflare zone for this hostname in any credential", "", "", nil, ""

@@ -270,8 +270,8 @@ A script should read the fields and not match the text. The messages in `problem
 levels are the contract. A field that is added later is added next to the others and does not
 change those that are there.
 
-The route states are `active`, `unreachable`, `withdrawn`, `conflict`, `no-zone`, `held` and
-`frozen`. `pco routes --state <state>` shows one of them.
+The route states are `active`, `unreachable`, `withdrawn`, `conflict`, `no-zone`, `held`,
+`rejected` and `frozen`. `pco routes --state <state>` shows one of them.
 
 ## Settings
 
@@ -312,7 +312,7 @@ Every field, with its default:
 | Field | Default | What it is |
 |---|---|---|
 | `gateTag` | `cf-tunnel` | The tag that makes a guest a candidate. A Proxmox tag: lower-case letters, digits and `_ - + .`, not starting with `-`, `+` or `.`, at most 64 characters. Read when the daemon starts. After you change it, run `pco setup` again (or `pco setup --repair`), which registers the new tag besides `cf-tunnel` and `cf-tunnel-managed`; see [Security](security.md). |
-| `allowHosts` | none | Patterns of the hostnames that may be published. Empty allows everything. |
+| `allowHosts` | none | Patterns of the hostnames that may be published. Empty allows everything but the apex of a zone and a wildcard, which a guest publishes only when a pattern names them (below). |
 | `denyHosts` | none | Patterns of the hostnames that may not be published. A deny rule wins over an allow rule. |
 | `pollInterval` | `10s` | The time between two cycles. At least `5s`. |
 | `grace` | `1m0s` | How long a removal waits (see above). At least `30s`. |
@@ -322,6 +322,7 @@ Every field, with its default:
 | `zonePins` | none | A zone name and the id of the credential that serves it: `{ "example.com": "a1b2c3d4" }`. |
 | `observeOnly` | `true` | Whether the daemon only observes. `pco apply` sets it to `false`. |
 | `identityMinimum` | `port` | The lowest identity level that is served: `port`, `filtered` or `observed`. |
+| `maxHostnamesPerGuest` | `32` | How many hostnames the Notes of one guest may name. A guest that names more publishes none of them, and keeps the ones it holds. At least `1`. |
 
 Durations are written as Go reads them, `30s`, `90s`, `2m`, `1m30s`. A pattern is `*`, a
 hostname, or `*.` followed by labels; `*.example.com` covers every name below `example.com`
@@ -330,16 +331,27 @@ pattern names something below it, `secret.example.com` for `*.example.com`, beca
 wildcard would serve that name too. Patterns and zone names are lower-cased and checked when
 the file is read.
 
+The apex of a zone, `example.com`, and a wildcard, `*.example.com`, are published for a
+guest only when an `allowHosts` pattern names them: the apex by itself, a wildcard by a
+wildcard pattern at or above it (`*.example.com` names `*.example.com` and
+`*.shop.example.com`). `*`, and no `allowHosts` at all, name neither. Without that, whoever
+may edit the Notes of one tagged guest could take the apex of every zone pco serves, or the
+wildcard that answers every name of the zone that has no record of its own, with a valid
+certificate. Such a route is in the state `rejected`, says which pattern to add, and its
+hostname answers 503 while the guest holds it. Manual routes are root's own and are not
+limited.
+
 The daemon reads the file again at the start of each cycle, so a change takes effect at the
 next one. Three fields, `gateTag`, `trustStatic` and `trustedCIDRs`, are wired when the daemon
 starts. A change to those is noticed and shown as a problem,
 `settings gateTag changed since pco started and are read only at start; restart pco
 (systemctl restart pco) for them to take effect`, and applies after `systemctl restart pco`.
 
-The two minimums are guards. A grace of a moment would remove a record when one cycle
-happened to miss its name, and cycles closer together would only ask Proxmox and Cloudflare
-more. A file that says `pollInterval` below 5 seconds or `grace` below 30 seconds is read with
-the minimum in its place, and `pco status` shows a problem for each, in this form:
+The minimums are guards. A grace of a moment would remove a record when one cycle happened
+to miss its name, and cycles closer together would only ask Proxmox and Cloudflare more. A
+file that says `pollInterval` below 5 seconds, `grace` below 30 seconds or
+`maxHostnamesPerGuest` below 1 is read with the minimum in its place, and `pco status` shows a
+problem for each, in this form:
 
     settings: pollInterval is 1s in /etc/pve/pco/meta/settings.json, below the minimum of 5s; 5s is used until it is raised there
 

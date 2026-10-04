@@ -50,7 +50,12 @@ that guest at some point. It does not prove more:
 
 - It is not an approval of the hostnames. Whoever may edit the Notes of the guest
   (`VM.Config.Options`) chooses what the guest publishes, within the hostname policy
-  (`allowHosts` and `denyHosts` in [Operations](operations.md)).
+  (`allowHosts` and `denyHosts` in [Operations](operations.md)). Two kinds of name are kept
+  out unless `allowHosts` names them: the apex of a zone, and a wildcard, which would answer
+  every name of the zone that has no record of its own, with a valid certificate. And one
+  guest names at most `maxHostnamesPerGuest` hostnames, 32 by default; one that names more
+  publishes none. Set `allowHosts` to the names you mean to publish when the people who edit
+  the Notes are not the people who run the node.
 - It is not tied to what the guest is. A clone and a restore keep the tags and the Notes.
 - If you decline to register the tag (`--no-registered-tags`), it proves nothing about
   who set it: whoever can edit the guest can tag it. Setup then warns, naming the gate

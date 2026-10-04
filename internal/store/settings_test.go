@@ -25,6 +25,7 @@ func TestDefaultSettings(t *testing.T) {
 	require.Empty(t, d.TrustedCIDRs)
 	require.Empty(t, d.ZonePins)
 	require.Equal(t, "port", d.IdentityMinimum)
+	require.Equal(t, 32, d.MaxHostnamesPerGuest)
 }
 
 func TestSettingsDefaultsWhenMissing(t *testing.T) {
@@ -48,7 +49,8 @@ func customSettings() Settings {
 		ZonePins:     map[string]string{"example.com": "cred-1"},
 		ObserveOnly:  false,
 		// Guests on other nodes are served.
-		IdentityMinimum: "observed",
+		IdentityMinimum:      "observed",
+		MaxHostnamesPerGuest: 100,
 	}
 }
 
@@ -139,6 +141,8 @@ func TestSaveSettingsRefusesInvalidSettings(t *testing.T) {
 		{"unknown identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "strict" }},
 		{"upper case identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "Port" }},
 		{"manual as identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "manual" }},
+		{"no hostname for a guest", "maxHostnamesPerGuest 0: at least 1", func(s *Settings) { s.MaxHostnamesPerGuest = 0 }},
+		{"a negative cap", "maxHostnamesPerGuest -1: at least 1", func(s *Settings) { s.MaxHostnamesPerGuest = -1 }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,6 +267,42 @@ func TestSettingsOnDiskBelowTheMinimumsAreRaisedAndNoted(t *testing.T) {
 			require.Equal(t, raw, string(onDisk), "a load writes nothing")
 		})
 	}
+}
+
+// A cap of hostnames below one, written by hand, is raised as the durations
+// are: a file no command can repair would hold the daemon.
+func TestACapOfHostnamesOnDiskBelowOneIsRaisedAndNoted(t *testing.T) {
+	file := filepath.Join("meta", "settings.json")
+	s, p := openStore(t)
+	writeFile(t, filepath.Join(p.Cluster, file), envelopeJSON("settings",
+		`{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true,"maxHostnamesPerGuest":0}`))
+
+	got, notes, err := s.LoadSettings()
+
+	require.NoError(t, err)
+	require.Equal(t, 1, got.MaxHostnamesPerGuest)
+	require.Equal(t, []string{"settings: maxHostnamesPerGuest is 0 in " + filepath.Join(p.Cluster, file) +
+		", below the minimum of 1; 1 is used until it is raised there"}, notes)
+}
+
+func TestACapOfHostnamesIsKeptAndALeftOutOneIsTheDefault(t *testing.T) {
+	s, p := openStore(t)
+	path := filepath.Join(p.Cluster, "meta", "settings.json")
+	writeFile(t, path, envelopeJSON("settings",
+		`{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true,"maxHostnamesPerGuest":5}`))
+	got, err := s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, 5, got.MaxHostnamesPerGuest)
+
+	writeFile(t, path, envelopeJSON("settings", `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`))
+	got, err = s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, 32, got.MaxHostnamesPerGuest)
+
+	writeFile(t, path, envelopeJSON("settings",
+		`{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true,"maxHostnamePerGuest":5}`))
+	_, err = s.Settings()
+	require.ErrorContains(t, err, "maxHostnamePerGuest", "a misspelt key is refused, as any unknown one")
 }
 
 func TestSettingsAtTheirMinimumsAndAboveNeedNoNote(t *testing.T) {

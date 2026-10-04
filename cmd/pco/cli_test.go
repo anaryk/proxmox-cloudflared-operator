@@ -237,7 +237,7 @@ func TestRoutesRefusesWhatItDoesNotKnow(t *testing.T) {
 	r, _ := daemonWith(t, healthyState())
 
 	res := r.run("", "routes", "--state", "sleeping")
-	require.EqualError(t, res.err, `unknown route state "sleeping": want one of active, unreachable, withdrawn, conflict, no-zone, held, frozen`)
+	require.EqualError(t, res.err, `unknown route state "sleeping": want one of active, unreachable, withdrawn, conflict, no-zone, held, rejected, frozen`)
 
 	res = r.run("", "routes", "--json", "--state", "held")
 	require.ErrorContains(t, res.err, "--state cannot be used with --json")
@@ -258,7 +258,7 @@ func TestRoutesOfAFrozenAccount(t *testing.T) {
 	require.Contains(t, res.out, "frozen.example.com")
 
 	help := r.run("", "routes", "--help")
-	require.Contains(t, help.out, "active, unreachable, withdrawn, conflict, no-zone, held, frozen")
+	require.Contains(t, help.out, "active, unreachable, withdrawn, conflict, no-zone, held, rejected, frozen")
 
 	status := r.run("", "status")
 	require.Contains(t, status.out, "Routes:      active 1, unreachable 1, withdrawn 1, conflict 1, no-zone 1, held 1, frozen 1\n", "a frozen route is counted with the states of the others")

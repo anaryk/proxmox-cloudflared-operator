@@ -25,6 +25,7 @@ var routeStateOrder = []planner.RouteState{
 	planner.StateConflict,
 	planner.StateNoZone,
 	planner.StateHeld,
+	planner.StateRejected,
 	engine.RouteFrozen,
 }
 

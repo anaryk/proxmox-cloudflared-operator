@@ -24,7 +24,14 @@ type Settings struct {
 	GateTag    string   // default "cf-tunnel"
 	AllowHosts []string // empty: everything allowed
 	DenyHosts  []string
+	// MaxHostnamesPerGuest is how many hostnames the Notes of one guest may
+	// name; DefaultMaxHostnamesPerGuest when zero.
+	MaxHostnamesPerGuest int
 }
+
+// DefaultMaxHostnamesPerGuest is the cap of hostnames of a guest when the
+// settings name none.
+const DefaultMaxHostnamesPerGuest = 32
 
 // Issue is a problem with a guest's annotation or with the settings. It does
 // not stop collection; the affected route is left out and the issue is
@@ -77,11 +84,15 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 		Held:          []HeldName{},
 		PolicyInvalid: pol.invalid,
 	}
+	limit := s.MaxHostnamesPerGuest
+	if limit <= 0 {
+		limit = DefaultMaxHostnamesPerGuest
+	}
 	for _, g := range guests {
 		if g.Template || !g.HasTag(gate) {
 			continue
 		}
-		out.addGuest(g, gate, pol)
+		out.addGuest(g, gate, pol, limit)
 	}
 	out.addManual(manual)
 
@@ -111,12 +122,16 @@ func CompareIssues(a, b Issue) int {
 	)
 }
 
-func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
+// addGuest adds the routes of a guest. A guest whose Notes name more than
+// limit hostnames the policy lets through publishes none of them, and holds
+// them all: a Notes field is no place for hundreds of names.
+func (c *Collected) addGuest(g model.Guest, gate string, pol policy, limit int) {
 	res := annotation.Parse(g.Description)
 	if len(res.Entries) == 0 && len(res.Errors) == 0 {
 		c.addIssue(g.Ref, 0, 0, fmt.Sprintf("tagged %s but no routes found in Notes", gate))
 	}
-	routed := make(map[string]bool)
+	var routes []model.Route
+	named := make(map[string]bool)
 	for _, e := range res.Entries {
 		for i, host := range e.Hosts {
 			if !pol.allows(host) {
@@ -125,15 +140,25 @@ func (c *Collected) addGuest(g model.Guest, gate string, pol policy) {
 				continue
 			}
 			guest := g.Ref
-			c.Routes = append(c.Routes, model.Route{
+			routes = append(routes, model.Route{
 				Hostname: host,
 				Target:   e.Target,
 				Options:  e.Options,
 				Source:   model.SourceAnnotation,
 				Guest:    &guest,
 			})
-			routed[host] = true
+			named[host] = true
 		}
+	}
+	if len(named) > limit {
+		c.addIssue(g.Ref, 0, 0, fmt.Sprintf("the Notes name %d hostnames, more than maxHostnamesPerGuest allows (%d); "+
+			"none of them is published until they name at most %d", len(named), limit, limit))
+		routes = nil
+	}
+	routed := make(map[string]bool)
+	for _, rt := range routes {
+		c.Routes = append(c.Routes, rt)
+		routed[rt.Hostname] = true
 	}
 	// Hostnames covers res.Mentioned: every hostname of the route text is a
 	// word of the whole description.

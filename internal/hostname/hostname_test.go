@@ -301,3 +301,27 @@ func TestMatchPattern(t *testing.T) {
 		})
 	}
 }
+
+func TestNamesExplicitly(t *testing.T) {
+	tests := []struct {
+		name          string
+		pattern, host string
+		want          bool
+	}{
+		{"star names nothing", "*", "example.com", false},
+		{"star names no wildcard", "*", "*.example.com", false},
+		{"an exact apex", "example.com", "example.com", true},
+		{"a wildcard is not the apex", "*.example.com", "example.com", false},
+		{"a wildcard names itself", "*.example.com", "*.example.com", true},
+		{"a wildcard names a wildcard below it", "*.example.com", "*.shop.example.com", true},
+		{"a wildcard does not name one above it", "*.shop.example.com", "*.example.com", false},
+		{"a name is not a wildcard", "www.example.com", "*.example.com", false},
+		{"a wildcard of the top-level domain is a pattern too", "*.com", "*.example.com", true},
+		{"a wildcard above does not name an apex", "*.com", "example.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, NamesExplicitly(tt.pattern, tt.host))
+		})
+	}
+}

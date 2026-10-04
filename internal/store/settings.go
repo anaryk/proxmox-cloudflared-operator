@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
@@ -26,6 +27,8 @@ const (
 	// closer together would only ask Proxmox and Cloudflare more.
 	minPollInterval = 5 * time.Second
 	minGrace        = 30 * time.Second
+	// minHostnamesPerGuest is the least cap of the hostnames of one guest.
+	minHostnamesPerGuest = 1
 )
 
 // tagPattern is what Proxmox accepts as a tag, in lower case.
@@ -67,18 +70,22 @@ type Settings struct {
 	// IdentityMinimum is the least identity level a guest's address must be
 	// proven at to be served: "observed", "filtered" or "port".
 	IdentityMinimum string `json:"identityMinimum"`
+	// MaxHostnamesPerGuest is how many hostnames the Notes of one guest may
+	// name; a guest that names more publishes none.
+	MaxHostnamesPerGuest int `json:"maxHostnamesPerGuest"`
 }
 
 // DefaultSettings returns the settings of a fresh install, which only
 // observes until the admin applies.
 func DefaultSettings() Settings {
 	return Settings{
-		GateTag:         "cf-tunnel",
-		PollInterval:    Duration(10 * time.Second),
-		Grace:           Duration(60 * time.Second),
-		Admission:       AdmissionTag,
-		ObserveOnly:     true,
-		IdentityMinimum: string(resolve.LevelPort),
+		GateTag:              "cf-tunnel",
+		PollInterval:         Duration(10 * time.Second),
+		Grace:                Duration(60 * time.Second),
+		Admission:            AdmissionTag,
+		ObserveOnly:          true,
+		IdentityMinimum:      string(resolve.LevelPort),
+		MaxHostnamesPerGuest: planner.DefaultMaxHostnamesPerGuest,
 	}
 }
 
@@ -102,6 +109,11 @@ func (s *Settings) raiseToMinimums(file string) []string {
 			f.name, time.Duration(*f.value), file, f.minimum, f.minimum))
 		*f.value = Duration(f.minimum)
 	}
+	if s.MaxHostnamesPerGuest < minHostnamesPerGuest {
+		notes = append(notes, fmt.Sprintf("settings: maxHostnamesPerGuest is %d in %s, below the minimum of %d; %d is used until it is raised there",
+			s.MaxHostnamesPerGuest, file, minHostnamesPerGuest, minHostnamesPerGuest))
+		s.MaxHostnamesPerGuest = minHostnamesPerGuest
+	}
 	return notes
 }
 
@@ -123,6 +135,9 @@ func (s Settings) normalized() (Settings, error) {
 	}
 	if time.Duration(s.Grace) < minGrace {
 		return Settings{}, fmt.Errorf("grace %s: at least %s", time.Duration(s.Grace), minGrace)
+	}
+	if s.MaxHostnamesPerGuest < minHostnamesPerGuest {
+		return Settings{}, fmt.Errorf("maxHostnamesPerGuest %d: at least %d", s.MaxHostnamesPerGuest, minHostnamesPerGuest)
 	}
 	if s.Admission != AdmissionTag && s.Admission != AdmissionApprove {
 		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)

@@ -114,6 +114,8 @@ func (d *diagnosis) route() Step {
 		return failed(d.rt.Reason)
 	case planner.StateHeld:
 		return failed(fmt.Sprintf("%s holds it, but nobody serves it: %s", who, d.rt.Reason))
+	case planner.StateRejected:
+		return failed(fmt.Sprintf("%s holds it, but it is not published: %s", who, d.rt.Reason))
 	}
 	detail := fmt.Sprintf("%s holds it; state %s", who, d.rt.State)
 	if d.rt.Reason != "" {

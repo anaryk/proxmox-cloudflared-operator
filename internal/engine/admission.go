@@ -68,9 +68,10 @@ func (c *cycleRun) collectFrom(snap inventory.Snapshot) (planner.Collected, []wa
 // too.
 func collectRoutes(snap inventory.Snapshot, manual []model.Route, s store.Settings, approvals map[string]string) (planner.Collected, []waitingGuest) {
 	col := planner.Collect(snap.Guests, manual, planner.Settings{
-		GateTag:    s.GateTag,
-		AllowHosts: s.AllowHosts,
-		DenyHosts:  s.DenyHosts,
+		GateTag:              s.GateTag,
+		AllowHosts:           s.AllowHosts,
+		DenyHosts:            s.DenyHosts,
+		MaxHostnamesPerGuest: s.MaxHostnamesPerGuest,
 	})
 	if approvals == nil {
 		return col, nil

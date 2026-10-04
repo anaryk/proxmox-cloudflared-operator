@@ -356,12 +356,13 @@ func (c *cycleRun) build() {
 		writer = planner.Writer{InstallID: c.install.ID}
 	}
 	c.plan = planner.Build(planner.BuildInput{
-		Winners:   c.claims.Winners,
-		Conflicts: c.claims.Conflicts,
-		Claims:    c.claims.Claims,
-		Targets:   c.targets(),
-		Zones:     c.zones.planned,
-		Writer:    writer,
+		Winners:    c.claims.Winners,
+		Conflicts:  c.claims.Conflicts,
+		Claims:     c.claims.Claims,
+		Targets:    c.targets(),
+		Zones:      c.zones.planned,
+		Writer:     writer,
+		AllowHosts: c.settings.AllowHosts,
 	})
 	c.st.Routes = c.routeViews()
 }

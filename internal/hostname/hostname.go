@@ -200,3 +200,17 @@ func Denies(pattern, host string) bool {
 func labelCount(h string) int {
 	return strings.Count(h, ".") + 1
 }
+
+// NamesExplicitly reports whether an allow pattern names host on purpose, as
+// the apex of a zone and a wildcard host need: "*" names neither, an exact
+// pattern names the host it is, and a wildcard pattern names the wildcards at
+// and below it.
+func NamesExplicitly(pattern, host string) bool {
+	switch {
+	case pattern == "*":
+		return false
+	case IsWildcard(host):
+		return MatchPattern(pattern, host)
+	}
+	return pattern == host
+}
