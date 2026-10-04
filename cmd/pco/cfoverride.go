@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 )
@@ -34,7 +33,7 @@ func (a *app) cloudflareOverride() (string, error) {
 	if addr, err := netip.ParseAddr(host); err == nil && addr.Unmap().IsLoopback() {
 		return u.String(), nil
 	}
-	if !strings.EqualFold(host, "localhost") {
+	if !isLocalhost(host) {
 		return "", errOverride
 	}
 	if u.Scheme == "http" {
@@ -47,6 +46,21 @@ func (a *app) cloudflareOverride() (string, error) {
 		}
 	}
 	return u.String(), nil
+}
+
+// isLocalhost compares in ASCII only: strings.EqualFold also takes letters
+// such as the long s for the s of the name.
+func isLocalhost(host string) bool {
+	const name = "localhost"
+	if len(host) != len(name) {
+		return false
+	}
+	for i := range len(name) {
+		if host[i]|0x20 != name[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // overrideLine says that the Cloudflare API is overridden: a warning of the

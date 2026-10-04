@@ -3,11 +3,8 @@
 package e2e
 
 import (
-	"crypto/tls"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,8 +13,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
@@ -49,32 +44,6 @@ func TestEndToEnd(t *testing.T) {
 	} {
 		t.Run(sc.name, func(t *testing.T) { sc.run(t, s) })
 	}
-}
-
-// in puts the zone of the run into the notes of g.
-func (s *suite) in(g guest) guest {
-	g.notes = strings.ReplaceAll(g.notes, "ZONE", s.zone)
-	return g
-}
-
-// s1Guest is the guest of S1, which the scenarios that look at the whole node
-// make when S1 did not run.
-func (s *suite) s1Guest() guest {
-	return s.in(guest{vmid: 9101, notes: "cf-tunnel: e2e-s1.ZONE -> :8080"})
-}
-
-// ensureS1 makes the guest of S1 unless the run has it, and waits until it is
-// served and until nothing is left to do.
-func (s *suite) ensureS1(t *testing.T) guest {
-	t.Helper()
-	g := s.s1Guest()
-	if !s.guests[g.vmid] {
-		s.create(t, g)
-	}
-	s.enforce(t)
-	s.waitRoute(t, s.host("s1"), planner.StateActive)
-	s.settle(t)
-	return g
 }
 
 func testObserveApplyAndGuard(t *testing.T, s *suite) {
@@ -119,7 +88,7 @@ func testObserveApplyAndGuard(t *testing.T, s *suite) {
 	// also once their grace is over.
 	s.setTags(t, g.vmid, "")
 	st = s.waitState(t, "the mass-delete guard", 4*time.Minute, func(st engine.State) bool {
-		return slices.ContainsFunc(st.Problems, func(p string) bool { return strings.HasPrefix(p, "mass delete guard") })
+		return slices.ContainsFunc(st.Problems, func(p string) bool { return strings.HasPrefix(p, reconcile.HeldByGuard) })
 	})
 	require.NotEmpty(t, st.Waiting)
 	time.Sleep(grace + 2*pollInterval)
@@ -127,7 +96,7 @@ func testObserveApplyAndGuard(t *testing.T, s *suite) {
 		require.NotEmpty(t, s.records(t, h), "the guard deletes nothing")
 	}
 	held := s.must(t, s.pco, "plan")
-	require.Contains(t, held, "mass delete guard")
+	require.Contains(t, held, reconcile.HeldByGuard)
 
 	out := s.must(t, s.pco, "apply", "--confirm-deletes", "--yes")
 	t.Logf("pco apply --confirm-deletes:\n%s", out)
@@ -155,7 +124,7 @@ func testBasicRoute(t *testing.T, s *suite) {
 	s.waitIngress(t, tunnel, host, service)
 	s.waitRecord(t, host, tunnel, 2*time.Minute)
 	marker := planner.DNSMarker(s.install)
-	for _, rec := range s.cloud.Records(t, s.zone) {
+	for _, rec := range s.runRecords(t) {
 		if strings.EqualFold(rec.Name, host) {
 			require.True(t, rec.Proxied, "%+v", rec)
 			require.True(t, strings.HasPrefix(rec.Comment, marker), "%+v", rec)
@@ -166,77 +135,10 @@ func testBasicRoute(t *testing.T, s *suite) {
 	s.waitTarget(t, g.ip()+":8080", true, time.Minute, time.Second)
 	summary, _, ok := s.egress(t)
 	require.True(t, ok, summary)
-	require.Equal(t, "The egress filter is on.", summary)
+	require.Equal(t, filterOn, summary)
 
 	if s.fake == nil {
 		s.requireServed(t, host, g.body(8080))
-	}
-}
-
-// requireConnector checks the connector of the tunnel: its unit is enabled
-// and runs with the token of the tunnel. Against the fake it cannot connect,
-// so it is never ready; against Cloudflare it has to be.
-func (s *suite) requireConnector(t *testing.T, tunnel string) {
-	t.Helper()
-	unit := "pco-cloudflared@" + tunnel + ".service"
-	enabled, _ := s.run("systemctl", "is-enabled", unit)
-	require.Equal(t, "enabled", strings.TrimSpace(enabled), unit)
-	token, err := os.ReadFile("/var/lib/pco/tunnels/" + tunnel + ".token")
-	require.NoError(t, err)
-	require.Equal(t, s.cloud.RunToken(t, tunnel), strings.TrimSpace(string(token)))
-
-	st := s.waitState(t, "the connector in the state", time.Minute, func(st engine.State) bool {
-		return slices.ContainsFunc(st.Connectors, func(c connector.Status) bool { return c.TunnelID == tunnel })
-	})
-	i := slices.IndexFunc(st.Connectors, func(c connector.Status) bool { return c.TunnelID == tunnel })
-	conn := st.Connectors[i]
-	require.Equal(t, s.install, conn.Install)
-	if s.fake != nil {
-		require.False(t, conn.Ready, "a connector with the token of the fake does not connect")
-		return
-	}
-	s.waitState(t, "the connector to be ready", 2*time.Minute, func(st engine.State) bool {
-		return slices.ContainsFunc(st.Connectors, func(c connector.Status) bool { return c.TunnelID == tunnel && c.Ready })
-	})
-}
-
-// requireServed fetches the hostname through Cloudflare.
-func (s *suite) requireServed(t *testing.T, host, body string) {
-	t.Helper()
-	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}}
-	deadline := time.Now().Add(3 * time.Minute)
-	var last string
-	for time.Now().Before(deadline) {
-		resp, err := client.Get("https://" + host + "/")
-		if err == nil {
-			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-			_ = resp.Body.Close()
-			last = fmt.Sprintf("%d %s", resp.StatusCode, raw)
-			if resp.StatusCode == http.StatusOK && strings.TrimSpace(string(raw)) == body {
-				return
-			}
-		} else {
-			last = err.Error()
-		}
-		time.Sleep(5 * time.Second)
-	}
-	t.Fatalf("https://%s/ did not answer %q; the last answer: %s", host, body, last)
-}
-
-// waitIngress waits until the rule of host in the tunnel's configuration
-// sends it to service.
-func (s *suite) waitIngress(t testing.TB, tunnel, host, service string) []planner.IngressRule {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		rules := s.cloud.Ingress(t, tunnel)
-		if r, _, ok := ruleOf(rules, host); ok && r.Service == service {
-			return rules
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the ingress does not send %s to %s: %+v", host, service, rules)
-		}
-		time.Sleep(time.Second)
 	}
 }
 
@@ -399,11 +301,17 @@ func testClone(t *testing.T, s *suite) {
 func testForeignRecord(t *testing.T, s *suite) {
 	host := s.host("s10")
 	foreign := s.cloud.Foreign(t, s.zone, host, "foreign.example.net")
+	if s.fake == nil {
+		// A run cut off from here on leaves the record in the zone, which
+		// cleanup.sh cannot delete; it names it from this file.
+		marker(t, foreignFile, fmt.Sprintf("%s %s %s\n", s.zone, foreign.ID, host))
+	}
 	t.Cleanup(func() {
 		// An adopted record is the install's, which the purge removes.
 		if slices.Contains(s.records(t, host), "CNAME foreign.example.net") {
 			s.cloud.Remove(t, s.zone, foreign)
 		}
+		unmark(t, foreignFile)
 	})
 	g := s.in(guest{vmid: 9160, notes: "cf-tunnel: e2e-s10.ZONE -> :8080"})
 	s.create(t, g)
@@ -436,7 +344,7 @@ func testDNSWriteDenied(t *testing.T, s *suite) {
 	}
 	s.ensureS1(t)
 	tunnel := s.tunnel(t)
-	before := s.cloud.Records(t, s.zone)
+	before := s.runRecords(t)
 	from := len(s.fake.f.Calls())
 	s.fake.f.Deny("dns.write")
 	t.Cleanup(func() { s.fake.f.Allow("dns.write") })
@@ -453,7 +361,7 @@ func testDNSWriteDenied(t *testing.T, s *suite) {
 	for _, w := range s.fake.writes(from) {
 		require.False(t, strings.HasPrefix(w, "DeleteRecord"), "nothing is deleted: %s", w)
 	}
-	require.Subset(t, s.cloud.Records(t, s.zone), before, "every record is still there")
+	require.Subset(t, s.runRecords(t), before, "every record is still there")
 
 	s.fake.f.Allow("dns.write")
 	s.sync(t)
@@ -465,90 +373,55 @@ func testDNSWriteDenied(t *testing.T, s *suite) {
 
 func testOutages(t *testing.T, s *suite) {
 	s.ensureS1(t)
-	tunnel := s.tunnel(t)
-	active := activeRoutes(s.state(t))
-	records := s.cloud.Records(t, s.zone)
-	ingress := s.cloud.Ingress(t, tunnel)
+	b := s.takeBefore(t)
 	from := 0
 	if s.fake != nil {
 		from = len(s.fake.f.Calls())
 	}
 
 	t.Log("the daemon is killed in a cycle and comes back")
-	s.sync(t)
-	time.Sleep(300 * time.Millisecond)
-	killed := time.Now()
-	s.must(t, "systemctl", "kill", "--signal=SIGKILL", "pco.service")
+	killed := s.killInCycle(t)
 	s.waitState(t, "a cycle of the new daemon", 2*time.Minute, func(st engine.State) bool {
 		return st.At.After(killed) && !st.FinishedAt.IsZero() && st.Complete
 	})
-	s.requireSame(t, tunnel, active, records, ingress)
+	s.requireSame(t, b)
 
-	t.Log("Proxmox does not answer: the daemon holds")
-	s.must(t, "systemctl", "stop", "pveproxy")
-	t.Cleanup(func() { _, _ = s.run("systemctl", "start", "pveproxy") })
+	t.Logf("Proxmox does not answer for %s: the daemon holds", outage)
+	s.stopProxmoxAPI(t)
 	stopped := time.Now()
 	st := s.waitState(t, "a cycle without Proxmox", 2*time.Minute, func(st engine.State) bool {
 		return st.At.After(stopped) && !st.FinishedAt.IsZero() && !st.Complete
 	})
 	t.Logf("problems: %q", otherProblems(st))
-	time.Sleep(3 * pollInterval)
-	require.Equal(t, records, s.cloud.Records(t, s.zone))
-	require.Equal(t, ingress, s.cloud.Ingress(t, tunnel))
+	s.holdThrough(t, b)
 	s.must(t, "systemctl", "start", "pveproxy")
+	back := time.Now()
 	s.sync(t)
-	s.waitState(t, "a complete cycle", 2*time.Minute, func(st engine.State) bool { return st.Complete })
-	s.requireSame(t, tunnel, active, records, ingress)
+	s.waitState(t, "a complete cycle", 2*time.Minute, func(st engine.State) bool { return st.At.After(back) && st.Complete })
+	s.requireSame(t, b)
 
 	if s.fake == nil {
 		return
 	}
-	t.Log("Cloudflare does not answer: the daemon holds")
+	t.Logf("Cloudflare does not answer for %s: the daemon holds", outage)
 	baseline := otherProblems(s.state(t))
-	s.fake.srv.stop()
 	t.Cleanup(func() { _ = s.fake.srv.start() })
+	s.fake.srv.stop()
 	down := time.Now()
 	st = s.waitState(t, "a problem without Cloudflare", 2*time.Minute, func(st engine.State) bool {
 		return st.At.After(down) && slices.ContainsFunc(otherProblems(st), func(p string) bool { return !slices.Contains(baseline, p) })
 	})
 	t.Logf("problems: %q", otherProblems(st))
-	time.Sleep(3 * pollInterval)
+	s.holdThrough(t, b)
 	require.NoError(t, s.fake.srv.start())
 	s.sync(t)
 	s.waitState(t, "the problems of the outage to go", 3*time.Minute, func(st engine.State) bool {
 		return !slices.ContainsFunc(otherProblems(st), func(p string) bool { return !slices.Contains(baseline, p) })
 	})
-	s.requireSame(t, tunnel, active, records, ingress)
+	s.requireSame(t, b)
 	for _, w := range s.fake.writes(from) {
 		require.False(t, strings.HasPrefix(w, "Delete") || strings.HasPrefix(w, "CreateTunnel"), "an outage changes nothing: %s", w)
 	}
-}
-
-// requireSame checks that the routes, the records and the ingress are as they
-// were before an outage.
-func (s *suite) requireSame(t *testing.T, tunnel string, active []string, records []cfapi.Record, ingress []planner.IngressRule) {
-	t.Helper()
-	s.waitState(t, "the routes that were active", 2*time.Minute, func(st engine.State) bool {
-		return slices.Equal(activeRoutes(st), active)
-	})
-	require.Equal(t, records, s.cloud.Records(t, s.zone))
-	require.Equal(t, ingress, s.cloud.Ingress(t, tunnel))
-	tn, found := s.cloud.Tunnel(t, planner.TunnelName(s.install))
-	require.True(t, found)
-	require.Equal(t, tunnel, tn.ID)
-	enabled, _ := s.run("systemctl", "is-enabled", "pco-cloudflared@"+tunnel+".service")
-	require.Equal(t, "enabled", strings.TrimSpace(enabled))
-}
-
-func activeRoutes(st engine.State) []string {
-	var out []string
-	for _, r := range st.Routes {
-		if r.State == planner.StateActive {
-			out = append(out, r.Hostname+" "+r.Service)
-		}
-	}
-	slices.Sort(out)
-	return out
 }
 
 func testRulesetFlushed(t *testing.T, s *suite) {
@@ -556,58 +429,22 @@ func testRulesetFlushed(t *testing.T, s *suite) {
 	s.waitTarget(t, target, true, time.Minute, time.Second)
 	_, targets, ok := s.egress(t)
 	require.True(t, ok)
-	others := s.otherTables(t)
+	s.saveTables(t)
 
 	flushed := time.Now()
 	s.must(t, "nft", "flush", "ruleset")
+	t.Log("the ruleset is flushed")
 	s.waitEvent(t, flushed, "egress", "was loaded again")
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		summary, after, ok := s.egress(t)
-		if ok && slices.Equal(targets, after) {
+		if ok && summary == filterOn && slices.Equal(targets, after) {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the table did not come back with its targets %v: %s, %v", targets, summary, after)
 		}
 		time.Sleep(200 * time.Millisecond)
-	}
-	s.restoreTables(t, others)
-}
-
-// otherTables saves the tables of the ruleset that are not pco's, which a
-// flush takes as well.
-func (s *suite) otherTables(t *testing.T) map[string]string {
-	t.Helper()
-	tables := map[string]string{}
-	for line := range strings.Lines(s.must(t, "nft", "list", "tables")) {
-		f := strings.Fields(line)
-		if len(f) != 3 || f[0] != "table" || f[2] == "pco_egress" {
-			continue
-		}
-		tables[f[1]+" "+f[2]] = s.must(t, "nft", "list", "table", f[1], f[2])
-	}
-	t.Logf("tables besides pco's: %d", len(tables))
-	return tables
-}
-
-// restoreTables waits for whoever owns the tables to load them again, as the
-// Proxmox firewall does, and loads the ones still missing then as they were.
-func (s *suite) restoreTables(t *testing.T, tables map[string]string) {
-	t.Helper()
-	if len(tables) == 0 {
-		return
-	}
-	time.Sleep(30 * time.Second)
-	present := s.must(t, "nft", "list", "tables")
-	for name, def := range tables {
-		if strings.Contains(present, "table "+name+"\n") {
-			continue
-		}
-		t.Logf("table %s did not come back by itself; loading it as it was", name)
-		file := s.dir + "/table.nft"
-		require.NoError(t, os.WriteFile(file, []byte(def), 0o600))
-		s.must(t, "nft", "-f", file)
 	}
 }
 
@@ -620,15 +457,26 @@ func testMACMoved(t *testing.T, s *suite) {
 	s.waitTarget(t, target, true, time.Minute, time.Second)
 	own := s.hwaddr(t, g.vmid)
 
-	setMAC := func(mac string) {
-		s.exec(t, g.vmid, "ip link set eth0 down && ip link set eth0 address "+mac+" && ip link set eth0 up")
-	}
-	// The ping makes the guest ask for the node with its new MAC, which the
-	// neighbour table of the node takes at once. The 2 seconds count from
-	// there.
+	// The MAC changes with the link up, and nothing carries it to the node
+	// until the guest pings it: up to then the target stays in the set. The
+	// 2 seconds count from the moment the node's neighbour table has it.
 	const moved = "02:e2:e0:00:91:80"
 	seen := s.neighbourSeen(t, g.ip(), moved)
-	setMAC(moved)
+	changed := time.Now()
+	s.setMAC(t, g.vmid, moved)
+	unseen := func() {
+		t.Helper()
+		select {
+		case <-seen:
+			t.Fatalf("the node saw the MAC %s before the guest sent it anything", moved)
+		default:
+		}
+	}
+	unseen()
+	summary, targets, ok := s.egress(t)
+	require.True(t, ok && summary == filterOn && slices.Contains(targets, target),
+		"the target is in the set until the node sees the new MAC: %q, exit 0: %v, the set: %v", summary, ok, targets)
+	unseen()
 	pinged := make(chan error, 1)
 	go func() {
 		_, err := s.run("pct", "exec", strconv.Itoa(g.vmid), "--", "sh", "-c", "ping -c 1 -W 2 "+nodeAddr+" >/dev/null || true")
@@ -645,10 +493,12 @@ func testMACMoved(t *testing.T, s *suite) {
 	t.Logf("the target left the egress set at most %s after the node saw the new MAC", took.Round(10*time.Millisecond))
 	require.LessOrEqual(t, took, 2*time.Second)
 	require.NoError(t, <-pinged)
+	ev := s.waitEvent(t, changed, "egress", "the MAC of "+g.ip()+" moved")
+	t.Logf("%s", ev.Message)
 	route := s.waitRoute(t, host, planner.StateWithdrawn)
 	t.Logf("withdrawn: %s", route.Reason)
 
-	setMAC(own)
+	s.setMAC(t, g.vmid, own)
 	s.exec(t, g.vmid, "ping -c 1 -W 2 "+nodeAddr+" >/dev/null || true")
 	s.sync(t)
 	s.waitRoute(t, host, planner.StateActive)
@@ -660,6 +510,7 @@ func testIdentity(t *testing.T, s *suite) {
 	s.create(t, victim)
 	s.enforce(t)
 	s.waitRoute(t, s.host("s9v"), planner.StateActive)
+	tunnel := s.tunnel(t)
 
 	// The attacker answers for the node's address on the bridge and for the
 	// victim's, and names both in its notes.
@@ -669,6 +520,25 @@ func testIdentity(t *testing.T, s *suite) {
 		start: []string{"ip addr add " + nodeAddr + "/32 dev eth0", "ip addr add " + victim.ip() + "/32 dev eth0"}})
 	s.create(t, attacker)
 	stolen := []string{s.host("s9n"), s.host("s9g")}
+	// A stolen hostname has no rule but the one of a withdrawn route, which
+	// answers 503; no rule sends anything to the node, and the victim's
+	// address serves the victim's name only.
+	requireIngress := func() {
+		t.Helper()
+		for _, r := range s.cloud.Ingress(t, tunnel) {
+			if slices.Contains(stolen, r.Hostname) {
+				require.Equal(t, planner.BlockedService, r.Service, "%+v", r)
+			}
+			addr := ""
+			if u, err := url.Parse(r.Service); err == nil {
+				addr = u.Hostname()
+			}
+			require.NotEqual(t, nodeAddr, addr, "%+v", r)
+			if addr == victim.ip() {
+				require.Equal(t, s.host("s9v"), r.Hostname, "%+v", r)
+			}
+		}
+	}
 	until := time.Now().Add(6 * pollInterval)
 	seen := false
 	for time.Now().Before(until) {
@@ -679,9 +549,9 @@ func testIdentity(t *testing.T, s *suite) {
 			require.False(t, ok && r.State == planner.StateActive, "%s is served: %+v", h, r)
 			require.Empty(t, s.records(t, h), "%s has a record", h)
 		}
-		_, targets, _ := s.egress(t)
-		require.NotContains(t, targets, nodeAddr+":8080")
-		time.Sleep(time.Second)
+		s.requireNoTarget(t, nodeAddr+":8080")
+		requireIngress()
+		time.Sleep(s.every())
 	}
 	require.True(t, seen, "the routes of the attacker were read")
 	st := s.state(t)

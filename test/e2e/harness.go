@@ -5,16 +5,16 @@
 package e2e
 
 import (
-	"bufio"
 	"bytes"
+	"cmp"
 	"context"
-	"encoding/json"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -22,30 +22,43 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const (
-	bridge     = "vmbr1"
-	nodeAddr   = "10.77.0.1"
-	nodeCIDR   = nodeAddr + "/24"
-	firstVMID  = 9100
-	lastVMID   = 9199
-	gateTag    = "cf-tunnel"
-	dropInDir  = "/etc/systemd/system/pco.service.d"
-	dropInFile = dropInDir + "/e2e.conf"
-	overrideOf = "PCO_CLOUDFLARE_API_URL"
-	// bridgeMarker says that the suite brought the bridge up, which
-	// cleanup.sh takes down again when the suite could not.
-	bridgeMarker = "/run/pco-e2e-" + bridge + "-was-down"
-	cloudflared  = "/usr/bin/cloudflared"
+	bridge      = "vmbr1"
+	nodeAddr    = "10.77.0.1"
+	nodeCIDR    = nodeAddr + "/24"
+	firstVMID   = 9100
+	lastVMID    = 9199
+	gateTag     = "cf-tunnel"
+	dropInDir   = "/etc/systemd/system/pco.service.d"
+	dropInFile  = dropInDir + "/e2e.conf"
+	overrideOf  = "PCO_CLOUDFLARE_API_URL"
+	cloudflared = "/usr/bin/cloudflared"
+
+	// The token of the real API is read from the file tokenFileOf names,
+	// never from the environment or the command line; no command the suite
+	// runs gets a variable that begins with tokenVars.
+	tokenFileOf = "PCO_E2E_CF_TOKEN_FILE"
+	tokenVars   = "PCO_E2E_CF_TOKEN"
 
 	// The settings of the run: cycles as close as allowed, and the shortest
 	// grace, so that a removal can be waited for.
 	pollInterval = 5 * time.Second
 	grace        = 30 * time.Second
+	// outage is how long S13 keeps Proxmox and Cloudflare away: longer than
+	// the grace, which must not run out on what the daemon cannot see.
+	outage = grace + 5*time.Second
+
+	// A purge that fails at the end of the run is tried again this often,
+	// this far apart.
+	purgeAttempts = 3
+	purgeRetry    = 20 * time.Second
 
 	commandTimeout = 3 * time.Minute
 )
@@ -79,7 +92,8 @@ func envOr(name, def string) string {
 
 // newSuite prepares the node: the cloud, the drop-in that points the daemon
 // at the fake, the address of the node on the bridge of the guests, and pco
-// set up. Everything is undone when t ends, whatever happened.
+// set up. Everything is undone when t ends, whatever happened, and recorded
+// under markerDir for cleanup.sh until then.
 func newSuite(t *testing.T) *suite {
 	s := &suite{
 		pco:    envOr("PCO_E2E_PCO", "/usr/bin/pco"),
@@ -90,22 +104,8 @@ func newSuite(t *testing.T) *suite {
 		began:  time.Now(),
 	}
 	s.preflight(t)
-
-	token, zone := os.Getenv("PCO_E2E_CF_TOKEN"), os.Getenv("PCO_E2E_ZONE")
-	switch {
-	case token != "" && zone != "":
-		c, err := newRealCloud(t.Context(), token, zone)
-		require.NoError(t, err)
-		s.cloud, s.zone = c, zone
-		t.Logf("against the real Cloudflare API, zone %s", zone)
-	default:
-		c, err := newFakeCloud()
-		require.NoError(t, err)
-		t.Cleanup(c.srv.stop)
-		s.cloud, s.fake, s.zone, token = c, c, fakeZone, fakeToken
-		s.env = []string{overrideOf + "=" + c.url()}
-		t.Logf("against the fake Cloudflare at %s", c.url())
-	}
+	token := s.chooseCloud(t)
+	s.own(t)
 
 	// Cleanups run last first: the guests go after pco is uninstalled, so
 	// that their going away is nothing the daemon acts on.
@@ -123,87 +123,45 @@ func newSuite(t *testing.T) *suite {
 	return s
 }
 
-// preflight skips where the suite cannot run, and refuses a node where it
-// would change what it did not make.
-func (s *suite) preflight(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("the end-to-end suite runs as root on a Proxmox VE node")
+// chooseCloud starts the fake, or takes the real API when a token file and
+// a zone are given, and returns the token for setup.
+func (s *suite) chooseCloud(t *testing.T) string {
+	if os.Getenv(tokenVars) != "" {
+		t.Fatalf("%s is not read: put the token in a file and name it with %s, which keeps it off the command line", tokenVars, tokenFileOf)
 	}
-	for _, bin := range []string{"/usr/sbin/pct", s.pco} {
-		if _, err := os.Stat(bin); err != nil {
-			t.Skipf("the end-to-end suite needs %s: %v", bin, err)
-		}
+	file, zone := os.Getenv(tokenFileOf), strings.ToLower(strings.TrimSpace(os.Getenv("PCO_E2E_ZONE")))
+	switch {
+	case file == "" && zone == "":
+		c, err := newFakeCloud()
+		require.NoError(t, err)
+		t.Cleanup(c.srv.stop)
+		s.cloud, s.fake, s.zone = c, c, fakeZone
+		s.env = []string{overrideOf + "=" + c.url()}
+		t.Logf("against the fake Cloudflare at %s", c.url())
+		return fakeToken
+	case file == "" || zone == "":
+		t.Fatalf("against the real API the suite needs both %s and PCO_E2E_ZONE", tokenFileOf)
 	}
-	if _, err := os.Stat(store.DefaultPaths().Cluster + "/meta/install.json"); err == nil {
-		t.Fatal("pco is set up on this node already; the suite needs a node without it: run test/e2e/cleanup.sh")
-	}
-	out := s.must(t, "pct", "list")
-	for line := range strings.Lines(out) {
-		var id int
-		if _, err := fmt.Sscan(line, &id); err == nil && id >= firstVMID && id <= lastVMID {
-			t.Fatalf("container %d exists; the suite needs %d to %d free: run test/e2e/cleanup.sh", id, firstVMID, lastVMID)
-		}
-	}
-	link := s.must(t, "ip", "-o", "link", "show", "dev", bridge)
-	flags, _, _ := strings.Cut(link[strings.Index(link, "<")+1:], ">")
-	s.bridgeDown = !slices.Contains(strings.Split(flags, ","), "UP")
-	if addrs := s.must(t, "ip", "-4", "-o", "addr", "show", "dev", bridge); strings.Contains(addrs, nodeCIDR) {
-		t.Fatalf("%s has %s already; the suite gives it that address and takes it away: run test/e2e/cleanup.sh", bridge, nodeCIDR)
-	}
-	s.must(t, "pvesm", "status", "--storage", s.disk)
-	if _, err := os.Stat(cloudflared); err != nil && os.Getenv("PCO_E2E_CF_TOKEN") != "" {
+	if _, err := os.Stat(cloudflared); err != nil {
 		t.Fatalf("against the real API the connectors need %s: %v", cloudflared, err)
 	}
-}
-
-// addAddress gives the node its address on the bridge, and brings the
-// bridge up for the run when it is down.
-func (s *suite) addAddress(t *testing.T) {
-	if s.bridgeDown {
-		require.NoError(t, os.WriteFile(bridgeMarker, nil, 0o600))
-		s.must(t, "ip", "link", "set", "dev", bridge, "up")
-	}
-	s.must(t, "ip", "addr", "add", nodeCIDR, "dev", bridge)
-}
-
-func (s *suite) removeAddress(t *testing.T) {
-	if _, err := s.run("ip", "addr", "del", nodeCIDR, "dev", bridge); err != nil {
-		t.Errorf("removing %s from %s: %v", nodeCIDR, bridge, err)
-	}
-	if !s.bridgeDown {
-		return
-	}
-	if _, err := s.run("ip", "link", "set", "dev", bridge, "down"); err != nil {
-		t.Errorf("taking %s down again: %v", bridge, err)
-		return
-	}
-	_ = os.Remove(bridgeMarker)
-}
-
-func (s *suite) writeDropIn(t *testing.T) {
-	require.NoError(t, os.MkdirAll(dropInDir, 0o755))
-	unit := "[Service]\nEnvironment=" + s.env[0] + "\n"
-	require.NoError(t, os.WriteFile(dropInFile, []byte(unit), 0o644))
-	s.must(t, "systemctl", "daemon-reload")
-}
-
-func (s *suite) removeDropIn(t *testing.T) {
-	err := os.Remove(dropInFile)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("removing the drop-in: %v", err)
-	}
-	_ = os.Remove(dropInDir) // only when it is empty: it may hold drop-ins of the admin
-	if _, err := s.run("systemctl", "daemon-reload"); err != nil {
-		t.Errorf("reloading systemd: %v", err)
-	}
+	raw, err := os.ReadFile(file)
+	require.NoError(t, err)
+	token := strings.TrimSpace(string(raw))
+	require.NotEmpty(t, token, "%s is empty", file)
+	c, err := newRealCloud(t.Context(), token, zone)
+	require.NoError(t, err)
+	s.cloud, s.zone = c, zone
+	t.Logf("against the real Cloudflare API, zone %s", zone)
+	return token
 }
 
 // setup runs pco setup with the token and gives the install the settings of
-// the run.
+// the run. The token is on disk only while setup runs.
 func (s *suite) setup(t *testing.T, token string) {
-	file := filepath.Join(s.dir, "cf-token")
-	require.NoError(t, os.WriteFile(file, []byte(token+"\n"), 0o600))
-	args := []string{"setup", "--yes", "--cf-token-file", file}
+	marker(t, tokenFile, token+"\n")
+	t.Cleanup(func() { unmark(t, tokenFile) })
+	args := []string{"setup", "--yes", "--cf-token-file", tokenFile}
 	if _, err := os.Stat(cloudflared); err != nil {
 		// Setup would install it from Cloudflare's repository, which is more
 		// than the run may change. The connectors then cannot start, which
@@ -213,6 +171,7 @@ func (s *suite) setup(t *testing.T, token string) {
 	}
 	s.setUp = true
 	out, err := s.combined(s.pco, args...)
+	unmark(t, tokenFile)
 	t.Logf("pco setup:\n%s", out)
 	require.NoError(t, err)
 
@@ -222,6 +181,7 @@ func (s *suite) setup(t *testing.T, token string) {
 	require.NoError(t, err)
 	require.True(t, found, "setup made an install")
 	s.install = inst.ID
+	s.own(t)
 	creds, err := st.Credentials()
 	require.NoError(t, err)
 	require.Len(t, creds, 1, "setup stored the token")
@@ -232,31 +192,66 @@ func (s *suite) setup(t *testing.T, token string) {
 	settings.PollInterval = store.Duration(pollInterval)
 	settings.Grace = store.Duration(grace)
 	require.NoError(t, st.SaveSettings(settings))
-	s.waitState(t, "the daemon's first cycle", time.Minute, func(st engine.State) bool { return !st.FinishedAt.IsZero() })
+	first := s.waitState(t, "the daemon's first cycle", time.Minute, func(st engine.State) bool { return !st.FinishedAt.IsZero() })
+	s.requireOverrideLine(t, first)
 }
 
+// requireOverrideLine checks that a state shows the override of the API as a
+// problem against the fake, and that nothing is overridden against
+// Cloudflare.
+func (s *suite) requireOverrideLine(t *testing.T, st engine.State) {
+	t.Helper()
+	if s.fake == nil {
+		require.Empty(t, slices.DeleteFunc(slices.Clone(st.Problems), func(p string) bool { return !strings.Contains(p, overrideOf) }))
+		return
+	}
+	line := "the Cloudflare API is overridden to " + s.fake.url() + " (" + overrideOf + "); this is for tests only"
+	require.Contains(t, st.Problems, line)
+}
+
+// uninstall removes pco and purges what the install has at Cloudflare. A
+// purge that fails is tried again, and what is left is named.
 func (s *suite) uninstall(t *testing.T) {
 	if !s.setUp {
 		return
 	}
-	out, err := s.combined(s.pco, "uninstall", "--yes", "--purge-cloudflare")
-	t.Logf("pco uninstall:\n%s", out)
+	var err error
+	for attempt := 1; attempt <= purgeAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(purgeRetry)
+		}
+		var out string
+		out, err = s.combined(s.pco, "uninstall", "--yes", "--purge-cloudflare")
+		t.Logf("pco uninstall --purge-cloudflare, attempt %d of %d:\n%s", attempt, purgeAttempts, out)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
-		t.Errorf("pco uninstall: %v", err)
-		return
+		t.Errorf("pco uninstall: %v; %s names the install, and cleanup.sh purges it again", err, ownedFile)
 	}
 	if s.install == "" {
 		return
 	}
-	if tn, found := s.cloud.Tunnel(t, planner.TunnelName(s.install)); found {
-		t.Errorf("the tunnel %s is left at Cloudflare after the purge", tn.ID)
+	if left := s.leftAtCloudflare(t); len(left) > 0 {
+		t.Errorf("left at Cloudflare after the purge:\n  %s", strings.Join(left, "\n  "))
 	}
-	marker := planner.DNSMarker(s.install)
-	for _, rec := range s.cloud.Records(t, s.zone) {
-		if strings.HasPrefix(rec.Comment, marker) {
-			t.Errorf("the record %s is left at Cloudflare after the purge", rec.Name)
+}
+
+// leftAtCloudflare names what the install and the suite itself have at
+// Cloudflare.
+func (s *suite) leftAtCloudflare(t testing.TB) []string {
+	t.Helper()
+	var left []string
+	if tn, found := s.cloud.Tunnel(t, planner.TunnelName(s.install)); found {
+		left = append(left, fmt.Sprintf("the tunnel %s (%s)", tn.Name, tn.ID))
+	}
+	for _, prefix := range []string{planner.DNSMarker(s.install), foreignComment} {
+		for _, rec := range s.cloud.Records(t, s.zone, cfapi.RecordFilter{CommentPrefix: prefix}) {
+			left = append(left, fmt.Sprintf("the record %s %s %s (%s)", rec.Type, rec.Name, rec.Content, rec.ID))
 		}
 	}
+	return left
 }
 
 // diagnose logs what helps to understand a failed run.
@@ -273,13 +268,20 @@ func (s *suite) diagnose(t *testing.T) {
 	}
 }
 
+// childEnv is the environment of a command the suite runs: the suite's own
+// without the variables of the token, and the override of the run.
+func (s *suite) childEnv() []string {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, tokenVars) })
+	return append(env, s.env...)
+}
+
 // run runs a command of the node and returns what it wrote to stdout; the
 // error carries stderr.
 func (s *suite) run(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = append(os.Environ(), s.env...)
+	cmd.Env = s.childEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -293,7 +295,7 @@ func (s *suite) combined(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = append(os.Environ(), s.env...)
+	cmd.Env = s.childEnv()
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -317,161 +319,72 @@ func exitCode(err error) int {
 	return -1
 }
 
-// state is the state of the daemon, as pco routes --json prints it.
-func (s *suite) state(t testing.TB) engine.State {
-	t.Helper()
-	out := s.must(t, s.pco, "routes", "--json")
-	var st engine.State
-	require.NoError(t, json.Unmarshal([]byte(out), &st), out)
-	return st
-}
-
-// tryState is state for a wait, which goes on while the daemon does not
-// answer.
-func (s *suite) tryState() (engine.State, bool) {
-	out, err := s.run(s.pco, "routes", "--json")
-	if err != nil {
-		return engine.State{}, false
+// every is how often a wait asks Cloudflare: the real API no more than every
+// 3 seconds.
+func (s *suite) every() time.Duration {
+	if s.fake != nil {
+		return time.Second
 	}
-	var st engine.State
-	return st, json.Unmarshal([]byte(out), &st) == nil
-}
-
-func (s *suite) sync(t testing.TB) {
-	t.Helper()
-	s.must(t, s.pco, "sync")
-}
-
-// waitState polls the state until ok, and fails with the last one after
-// timeout.
-func (s *suite) waitState(t testing.TB, what string, timeout time.Duration, ok func(engine.State) bool) engine.State {
-	t.Helper()
-	var last engine.State
-	deadline := time.Now().Add(timeout)
-	for {
-		if st, answered := s.tryState(); answered {
-			last = st
-			if ok(st) {
-				return st
-			}
-		}
-		if time.Now().After(deadline) {
-			raw, _ := json.MarshalIndent(last, "", "  ")
-			t.Fatalf("waited %s for %s; the last state:\n%s", timeout, what, raw)
-		}
-		time.Sleep(time.Second)
-	}
-}
-
-// waitRoute waits until a route of host is in state, and returns it.
-func (s *suite) waitRoute(t testing.TB, host string, state planner.RouteState) engine.RouteView {
-	t.Helper()
-	return s.waitOwnerRoute(t, host, "", state)
-}
-
-// waitOwnerRoute is waitRoute for the route of one owner; any owner when owner
-// is empty.
-func (s *suite) waitOwnerRoute(t testing.TB, host, owner string, state planner.RouteState) engine.RouteView {
-	t.Helper()
-	var found engine.RouteView
-	s.waitState(t, fmt.Sprintf("route %s of %q to be %s", host, owner, state), 3*time.Minute, func(st engine.State) bool {
-		r, ok := routeOf(st, host, owner)
-		found = r
-		return ok && r.State == state
-	})
-	return found
-}
-
-// waitGone waits until no route of host is left.
-func (s *suite) waitGone(t testing.TB, host string) {
-	t.Helper()
-	s.waitState(t, "no route of "+host, 3*time.Minute, func(st engine.State) bool {
-		_, ok := routeOf(st, host, "")
-		return !ok
-	})
-}
-
-func routeOf(st engine.State, host, owner string) (engine.RouteView, bool) {
-	i := slices.IndexFunc(st.Routes, func(r engine.RouteView) bool {
-		return r.Hostname == host && (owner == "" || r.Owner == owner)
-	})
-	if i < 0 {
-		return engine.RouteView{}, false
-	}
-	return st.Routes[i], true
-}
-
-// settle waits until a cycle has nothing left to do, so that what a scenario
-// takes as before is not still changing.
-func (s *suite) settle(t testing.TB) {
-	t.Helper()
-	asked := time.Now()
-	s.sync(t)
-	s.waitState(t, "a cycle with nothing to do", 3*time.Minute, func(st engine.State) bool {
-		return st.At.After(asked) && st.Complete && len(st.Actions) == 0
-	})
-}
-
-// enforce leaves observe-only mode, unless it was left already.
-func (s *suite) enforce(t testing.TB) {
-	t.Helper()
-	if s.state(t).Mode == engine.ModeEnforce {
-		return
-	}
-	s.must(t, s.pco, "apply")
-	s.waitState(t, "enforce mode", time.Minute, func(st engine.State) bool { return st.Mode == engine.ModeEnforce })
+	return 3 * time.Second
 }
 
 // host is a hostname of the run in its zone.
 func (s *suite) host(name string) string { return "e2e-" + name + "." + s.zone }
 
-// tunnel is the tunnel of the install, once the daemon made it.
-func (s *suite) tunnel(t testing.TB) string {
-	t.Helper()
-	var id string
-	s.waitState(t, "the tunnel of the install", 2*time.Minute, func(st engine.State) bool {
-		for _, tn := range st.Tunnels {
-			if tn.Exists && tn.ID != "" {
-				id = tn.ID
-				return true
-			}
-		}
-		return false
-	})
-	return id
+// in puts the zone of the run into the notes of g.
+func (s *suite) in(g guest) guest {
+	g.notes = strings.ReplaceAll(g.notes, "ZONE", s.zone)
+	return g
 }
 
-// records returns the records of the zone that name has.
+// s1Guest is the guest of S1, which the scenarios that look at the whole node
+// make when S1 did not run.
+func (s *suite) s1Guest() guest {
+	return s.in(guest{vmid: 9101, notes: "cf-tunnel: e2e-s1.ZONE -> :8080"})
+}
+
+// ensureS1 makes the guest of S1 unless the run has it, and waits until it is
+// served and until nothing is left to do.
+func (s *suite) ensureS1(t *testing.T) guest {
+	t.Helper()
+	g := s.s1Guest()
+	if !s.guests[g.vmid] {
+		s.create(t, g)
+	}
+	s.enforce(t)
+	s.waitRoute(t, s.host("s1"), planner.StateActive)
+	s.settle(t)
+	return g
+}
+
+// records returns the records the zone has of name.
 func (s *suite) records(t testing.TB, name string) []string {
 	t.Helper()
 	var out []string
-	for _, rec := range s.cloud.Records(t, s.zone) {
-		if strings.EqualFold(rec.Name, name) {
-			out = append(out, rec.Type+" "+rec.Content)
-		}
+	for _, rec := range s.cloud.Records(t, s.zone, cfapi.RecordFilter{Name: name}) {
+		out = append(out, rec.Type+" "+rec.Content)
 	}
 	return out
 }
 
-// waitRecord waits until name has a CNAME to the tunnel, or none when tunnel
-// is empty.
-func (s *suite) waitRecord(t testing.TB, name, tunnel string, timeout time.Duration) {
+// runRecords returns the records of the run's names that pco made for the
+// install and that the suite made itself, without the time of their last
+// change, so that two reads compare.
+func (s *suite) runRecords(t testing.TB) []cfapi.Record {
 	t.Helper()
-	want := []string(nil)
-	if tunnel != "" {
-		want = []string{"CNAME " + tunnel + ".cfargotunnel.com"}
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		got := s.records(t, name)
-		if slices.Equal(got, want) {
-			return
+	var out []cfapi.Record
+	for _, prefix := range []string{planner.DNSMarker(s.install), foreignComment} {
+		for _, rec := range s.cloud.Records(t, s.zone, cfapi.RecordFilter{CommentPrefix: prefix}) {
+			if strings.HasPrefix(rec.Name, "e2e-") || strings.Contains(rec.Name, ".e2e-") {
+				rec.ModifiedOn = time.Time{}
+				out = append(out, rec)
+			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("waited %s for the records of %s to be %v; they are %v", timeout, name, want, got)
-		}
-		time.Sleep(time.Second)
 	}
+	slices.SortFunc(out, func(a, b cfapi.Record) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Type, b.Type), cmp.Compare(a.ID, b.ID))
+	})
+	return out
 }
 
 // ruleOf returns the rule of the ingress for host.
@@ -483,103 +396,127 @@ func ruleOf(rules []planner.IngressRule, host string) (planner.IngressRule, int,
 	return rules[i], i, true
 }
 
-// egress returns the state of the filter, from the first line of pco egress
-// show, and its targets; ok says the command exited 0.
-func (s *suite) egress(t testing.TB) (summary string, targets []string, ok bool) {
-	t.Helper()
-	out, err := s.run(s.pco, "egress", "show")
-	require.Contains(t, []int{0, 1}, exitCode(err), "pco egress show: %v", err)
-	in := false
-	for line := range strings.Lines(out) {
-		line = strings.TrimRight(line, "\n")
-		switch {
-		case summary == "":
-			summary = line
-		case line == "Targets:":
-			in = true
-		case in && strings.HasPrefix(line, "  "):
-			targets = append(targets, strings.TrimSpace(line))
-		default:
-			in = false
-		}
-	}
-	return summary, targets, err == nil
-}
-
-// waitTarget waits until the egress set has the target, or has it no more,
-// looking every so often.
-func (s *suite) waitTarget(t testing.TB, target string, in bool, timeout time.Duration, every time.Duration) {
-	t.Helper()
-	began := time.Now()
-	for {
-		_, targets, _ := s.egress(t)
-		if slices.Contains(targets, target) == in {
-			return
-		}
-		if time.Since(began) > timeout {
-			t.Fatalf("waited %s for %s to be in the egress set: %v; the set: %v", timeout, target, in, targets)
-		}
-		time.Sleep(every)
-	}
-}
-
-// neighbourSeen watches the neighbour table of the node on the bridge, and
-// sends the time it first gives addr the MAC mac.
-func (s *suite) neighbourSeen(t testing.TB, addr, mac string) <-chan time.Time {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "ip", "monitor", "neigh", "dev", bridge)
-	out, err := cmd.StdoutPipe()
-	require.NoError(t, err)
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() {
-		cancel()
-		_ = cmd.Wait()
-	})
-	seen := make(chan time.Time, 1)
-	go func() {
-		lines := bufio.NewScanner(out)
-		for lines.Scan() {
-			f := strings.Fields(strings.ToLower(lines.Text()))
-			if len(f) > 0 && f[0] == addr && slices.Contains(f, mac) {
-				seen <- time.Now()
-				break
-			}
-		}
-		_, _ = io.Copy(io.Discard, out)
-	}()
-	return seen
-}
-
-// events returns the events since a time.
-func (s *suite) events(t testing.TB, since time.Time) []engine.Event {
-	t.Helper()
-	out := s.must(t, s.pco, "events", "--json", "--since", since.UTC().Format(time.RFC3339))
-	var evs []engine.Event
-	require.NoError(t, json.Unmarshal([]byte(out), &evs), out)
-	return evs
-}
-
-// waitEvent waits for an event of a kind whose message has text.
-func (s *suite) waitEvent(t testing.TB, since time.Time, kind, text string) engine.Event {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		evs := s.events(t, since)
-		if i := slices.IndexFunc(evs, func(ev engine.Event) bool {
-			return ev.Kind == kind && strings.Contains(ev.Message, text)
-		}); i >= 0 {
-			return evs[i]
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no %s event with %q since %s; the events: %+v", kind, text, since, evs)
-		}
-		time.Sleep(time.Second)
-	}
-}
-
 // otherProblems returns the problems of st that the run does not cause
-// itself: the line of the override is in every state.
+// itself: the line of the override is in every state against the fake.
 func otherProblems(st engine.State) []string {
 	return slices.DeleteFunc(slices.Clone(st.Problems), func(p string) bool { return strings.Contains(p, overrideOf) })
+}
+
+// requireConnector checks the connector of the tunnel: its unit is enabled
+// and runs with the token of the tunnel. Against the fake it cannot connect,
+// so it is never ready; against Cloudflare it has to be. Neither token is
+// ever printed.
+func (s *suite) requireConnector(t *testing.T, tunnel string) {
+	t.Helper()
+	unit := "pco-cloudflared@" + tunnel + ".service"
+	enabled, _ := s.run("systemctl", "is-enabled", unit)
+	require.Equal(t, "enabled", strings.TrimSpace(enabled), unit)
+	token, err := os.ReadFile("/var/lib/pco/tunnels/" + tunnel + ".token")
+	require.NoError(t, err)
+	same := s.cloud.RunToken(t, tunnel) == strings.TrimSpace(string(token))
+	require.True(t, same, "the token file of the connector of %s does not hold the run token of the tunnel", tunnel)
+
+	st := s.waitState(t, "the connector in the state", time.Minute, func(st engine.State) bool {
+		return slices.ContainsFunc(st.Connectors, func(c connector.Status) bool { return c.TunnelID == tunnel })
+	})
+	i := slices.IndexFunc(st.Connectors, func(c connector.Status) bool { return c.TunnelID == tunnel })
+	conn := st.Connectors[i]
+	require.Equal(t, s.install, conn.Install)
+	if s.fake != nil {
+		require.False(t, conn.Ready, "a connector with the token of the fake does not connect")
+		return
+	}
+	s.waitState(t, "the connector to be ready", 2*time.Minute, func(st engine.State) bool {
+		return slices.ContainsFunc(st.Connectors, func(c connector.Status) bool { return c.TunnelID == tunnel && c.Ready })
+	})
+}
+
+// requireServed fetches the hostname through Cloudflare.
+func (s *suite) requireServed(t *testing.T, host, body string) {
+	t.Helper()
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}}
+	deadline := time.Now().Add(3 * time.Minute)
+	var last string
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("https://" + host + "/")
+		if err == nil {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+			_ = resp.Body.Close()
+			last = fmt.Sprintf("%d %s", resp.StatusCode, raw)
+			if resp.StatusCode == http.StatusOK && strings.TrimSpace(string(raw)) == body {
+				return
+			}
+		} else {
+			last = err.Error()
+		}
+		time.Sleep(5 * time.Second)
+	}
+	t.Fatalf("https://%s/ did not answer %q; the last answer: %s", host, body, last)
+}
+
+// before is what S13 expects to find unchanged after each outage.
+type before struct {
+	tunnel  string
+	active  []string
+	records []cfapi.Record
+	ingress []planner.IngressRule
+}
+
+func (s *suite) takeBefore(t *testing.T) before {
+	t.Helper()
+	tunnel := s.tunnel(t)
+	return before{tunnel: tunnel, active: activeRoutes(s.state(t)), records: s.runRecords(t), ingress: s.cloud.Ingress(t, tunnel)}
+}
+
+// requireSame checks that the routes, the records and the ingress are as they
+// were before an outage.
+func (s *suite) requireSame(t *testing.T, b before) {
+	t.Helper()
+	s.waitState(t, "the routes that were active", 2*time.Minute, func(st engine.State) bool {
+		return slices.Equal(activeRoutes(st), b.active)
+	})
+	require.Equal(t, b.records, s.runRecords(t))
+	require.Equal(t, b.ingress, s.cloud.Ingress(t, b.tunnel))
+	tn, found := s.cloud.Tunnel(t, planner.TunnelName(s.install))
+	require.True(t, found)
+	require.Equal(t, b.tunnel, tn.ID)
+	enabled, _ := s.run("systemctl", "is-enabled", "pco-cloudflared@"+b.tunnel+".service")
+	require.Equal(t, "enabled", strings.TrimSpace(enabled))
+}
+
+// holdThrough keeps an outage up for longer than the grace, and checks
+// meanwhile that nothing changes at Cloudflare.
+func (s *suite) holdThrough(t *testing.T, b before) {
+	t.Helper()
+	for until := time.Now().Add(outage); time.Now().Before(until); time.Sleep(s.every()) {
+		require.Equal(t, b.records, s.runRecords(t))
+		require.Equal(t, b.ingress, s.cloud.Ingress(t, b.tunnel))
+	}
+}
+
+// killInCycle kills the daemon with SIGKILL in a cycle, and returns when.
+// Against the fake the cycle is caught in its read of the tunnel's
+// configuration, which only a cycle makes, and the read is answered after
+// the kill. Against Cloudflare the kill follows a requested cycle closely,
+// which lands in it most of the time.
+func (s *suite) killInCycle(t *testing.T) time.Time {
+	t.Helper()
+	if s.fake != nil {
+		reached, release := s.fake.srv.hold(func(r *http.Request) bool {
+			return r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/configurations")
+		})
+		defer release()
+		s.sync(t)
+		select {
+		case <-reached:
+		case <-time.After(2 * time.Minute):
+			t.Fatal("no cycle read the configuration of the tunnel")
+		}
+	} else {
+		s.sync(t)
+		time.Sleep(100 * time.Millisecond)
+	}
+	killed := time.Now()
+	s.must(t, "systemctl", "kill", "--signal=SIGKILL", "pco.service")
+	return killed
 }

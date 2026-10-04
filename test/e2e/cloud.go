@@ -23,8 +23,10 @@ import (
 // cloud is Cloudflare as the suite looks at it: the fake, or the real API
 // with a zone of the owner's.
 type cloud interface {
-	// Records returns the records of the zone.
-	Records(t testing.TB, zone string) []cfapi.Record
+	// Records returns the records of the zone that f asks for. Against the
+	// real API a filter that names nothing reads the whole zone, which the
+	// suite never asks for.
+	Records(t testing.TB, zone string, f cfapi.RecordFilter) []cfapi.Record
 	// Tunnel returns the tunnel of that name, when one exists that is not
 	// deleted.
 	Tunnel(t testing.TB, name string) (cfapi.Tunnel, bool)
@@ -45,6 +47,10 @@ const (
 	fakeZoneID  = "zone-e2e"
 	fakeZone    = "example.test"
 	fakeToken   = "e2e-dummy-token-0123456789"
+
+	// foreignComment is the comment of the record the suite makes itself,
+	// by which it finds it again.
+	foreignComment = "pco end-to-end suite"
 )
 
 // fakeCloud is the in-memory Cloudflare, served over HTTP on a loopback port
@@ -74,8 +80,8 @@ func (c *fakeCloud) zoneID(t testing.TB, zone string) string {
 	return fakeZoneID
 }
 
-func (c *fakeCloud) Records(t testing.TB, zone string) []cfapi.Record {
-	return c.f.RecordsIn(c.zoneID(t, zone))
+func (c *fakeCloud) Records(t testing.TB, zone string, f cfapi.RecordFilter) []cfapi.Record {
+	return slices.DeleteFunc(c.f.RecordsIn(c.zoneID(t, zone)), func(r cfapi.Record) bool { return !f.Matches(r) })
 }
 
 func (c *fakeCloud) Tunnel(_ testing.TB, name string) (cfapi.Tunnel, bool) {
@@ -99,7 +105,7 @@ func (c *fakeCloud) RunToken(_ testing.TB, tunnelID string) string {
 }
 
 func (c *fakeCloud) Foreign(t testing.TB, zone, name, content string) cfapi.Record {
-	return c.f.SeedRecord(c.zoneID(t, zone), cfapi.Record{Type: "CNAME", Name: name, Content: content, TTL: 300})
+	return c.f.SeedRecord(c.zoneID(t, zone), cfapi.Record{Type: "CNAME", Name: name, Content: content, TTL: 300, Comment: foreignComment})
 }
 
 func (c *fakeCloud) Remove(t testing.TB, zone string, rec cfapi.Record) {
@@ -131,6 +137,15 @@ type fakeServer struct {
 	mu   sync.Mutex
 	addr string // 127.0.0.1:0 until the first start
 	srv  *http.Server
+	held *heldRequest
+}
+
+// heldRequest is a request that is made to wait: the first one that match
+// says yes to.
+type heldRequest struct {
+	match   func(*http.Request) bool
+	reached chan struct{}
+	release chan struct{}
 }
 
 // start serves the fake, unless it is served already.
@@ -153,9 +168,49 @@ func (s *fakeServer) start() error {
 		return err
 	}
 	s.addr = ln.Addr().String()
-	s.srv = &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
+	s.srv = &http.Server{Handler: http.HandlerFunc(s.serve), ReadHeaderTimeout: 10 * time.Second}
 	go func(srv *http.Server) { _ = srv.Serve(ln) }(s.srv)
 	return nil
+}
+
+func (s *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	h := s.held
+	if h != nil && h.match(r) {
+		s.held = nil
+	} else {
+		h = nil
+	}
+	s.mu.Unlock()
+	if h != nil {
+		close(h.reached)
+		select {
+		case <-h.release:
+		case <-r.Context().Done():
+		}
+	}
+	s.handler.ServeHTTP(w, r)
+}
+
+// hold makes the next request that match says yes to wait until release is
+// called; reached is closed when it arrives. release also takes back a hold
+// that no request met.
+func (s *fakeServer) hold(match func(*http.Request) bool) (reached <-chan struct{}, release func()) {
+	h := &heldRequest{match: match, reached: make(chan struct{}), release: make(chan struct{})}
+	s.mu.Lock()
+	s.held = h
+	s.mu.Unlock()
+	var once sync.Once
+	return h.reached, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if s.held == h {
+				s.held = nil
+			}
+			s.mu.Unlock()
+			close(h.release)
+		})
+	}
 }
 
 func (s *fakeServer) stop() {
@@ -203,9 +258,10 @@ func (c *realCloud) zoneID(t testing.TB, zone string) string {
 	return id
 }
 
-func (c *realCloud) Records(t testing.TB, zone string) []cfapi.Record {
+func (c *realCloud) Records(t testing.TB, zone string, f cfapi.RecordFilter) []cfapi.Record {
 	t.Helper()
-	recs, err := c.api.Records(context.Background(), c.zoneID(t, zone), cfapi.RecordFilter{})
+	require.NotEqual(t, cfapi.RecordFilter{}, f, "the suite does not read the whole zone")
+	recs, err := c.api.Records(context.Background(), c.zoneID(t, zone), f)
 	require.NoError(t, err)
 	return recs
 }
@@ -234,7 +290,7 @@ func (c *realCloud) RunToken(t testing.TB, tunnelID string) string {
 func (c *realCloud) Foreign(t testing.TB, zone, name, content string) cfapi.Record {
 	t.Helper()
 	rec, err := c.api.CreateRecord(context.Background(), c.zoneID(t, zone),
-		cfapi.Record{Type: "CNAME", Name: name, Content: content, TTL: 300, Comment: "pco end-to-end suite"})
+		cfapi.Record{Type: "CNAME", Name: name, Content: content, TTL: 300, Comment: foreignComment})
 	require.NoError(t, err)
 	return rec
 }

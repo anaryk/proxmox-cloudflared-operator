@@ -44,6 +44,8 @@ func TestTheCloudflareOverrideTakesOnlyThisMachine(t *testing.T) {
 		{"http://localhost:8787/client/v4", "http://127.0.0.1:8787/client/v4"},
 		{"http://LocalHost/client/v4", "http://127.0.0.1/client/v4"},
 		{"https://localhost:8443/client/v4", "https://localhost:8443/client/v4"},
+		{"http://[::ffff:127.0.0.1]:8787/client/v4", "http://[::ffff:127.0.0.1]:8787/client/v4"},
+		{"http://[::1%25lo]:8787/client/v4", "http://[::1%25lo]:8787/client/v4"},
 	} {
 		t.Run(tt.value, func(t *testing.T) {
 			a := &app{env: withOverride(testEnv(), tt.value)}
@@ -67,6 +69,15 @@ func TestTheCloudflareOverrideTakesOnlyThisMachine(t *testing.T) {
 		"http://127.0.0.1:8787/client/v4?a=b",
 		"http://127.0.0.1:8787/client/v4#top",
 		"http://127.0.0.1:8787/client/\x00v4",
+		"http://0.0.0.0:8787/client/v4",
+		"http://[::]:8787/client/v4",
+		"http://127.1:8787/client/v4",
+		"http://localhost.:8787/client/v4",
+		"https://localhost.:8443/client/v4",
+		"http://[::ffff:10.0.0.1]:8787/client/v4",
+		// The long s folds onto s for strings.EqualFold.
+		"http://localhoſt:8787/client/v4",
+		"https://localhoſt:8443/client/v4",
 	} {
 		t.Run(value, func(t *testing.T) {
 			a := &app{env: withOverride(testEnv(), value)}

@@ -205,6 +205,14 @@ func (s *suite) destroyGuests(t *testing.T) {
 	}
 }
 
+// setMAC gives eth0 of the guest another MAC while the link stays up, as a
+// veth allows, and empties the guest's neighbour table, so that its next
+// packet to the node is an ARP request that carries the new MAC.
+func (s *suite) setMAC(t testing.TB, vmid int, mac string) {
+	t.Helper()
+	s.exec(t, vmid, "ip link set dev eth0 address "+mac+" && ip neigh flush dev eth0")
+}
+
 // hwaddr is the MAC of net0 in the configuration of the guest.
 func (s *suite) hwaddr(t testing.TB, vmid int) string {
 	t.Helper()
