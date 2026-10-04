@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -212,6 +213,10 @@ func New(d Deps) (*Engine, error) {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	d.Problems = slices.Clone(d.Problems)
+	// Until the first cycle, the state says what the daemon was started with.
+	first := emptyState()
+	first.Problems = slices.Clone(d.Problems)
 	e := &Engine{
 		d:         d,
 		events:    newEventLog(d.LocalDir, d.Log),
@@ -232,7 +237,7 @@ func New(d Deps) (*Engine, error) {
 		verified:  make(map[string][]egress.Target),
 		suspects:  make(map[netip.Addr]bool),
 		checks:    make(map[netip.Addr]*moveCheck),
-		state:     emptyState(),
+		state:     first.normalized(),
 	}
 	e.interval.Store(int64(defaultPollInterval))
 	// The reconciler keeps the time of its last write per tunnel, so it lives

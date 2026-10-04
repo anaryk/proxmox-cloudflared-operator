@@ -24,3 +24,15 @@ func TestTheProblemsTheEngineIsStartedWithShowInEveryCycle(t *testing.T) {
 	st = e.cycle()
 	require.Equal(t, []string{line}, st.Problems, "once, beside nothing else in a cycle that went through")
 }
+
+func TestTheProblemsTheEngineIsStartedWithShowBeforeTheFirstCycle(t *testing.T) {
+	const line = "the daemon was started in an unusual way"
+	e := newEnv(t)
+	e.problems = []string{line}
+	e.eng = e.newEngine()
+	e.problems[0] = "changed by the caller after New"
+
+	require.Equal(t, []string{line}, e.eng.State().Problems)
+	require.True(t, e.eng.State().FinishedAt.IsZero(), "no cycle ran")
+	require.Equal(t, []string{line}, e.cycle().Problems, "New keeps a copy of the lines")
+}
