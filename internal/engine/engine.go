@@ -141,6 +141,9 @@ type Engine struct {
 	// retries are, by tunnel id, the reads of a run token again that failed
 	// and have not worked since.
 	retries map[string]tokenRetry
+	// ownIDs holds, by tunnel id, the ids /ready gave the connector of the
+	// node, with when each was last seen.
+	ownIDs map[string]map[string]time.Time
 	// gone are the guests holding a claim the admin confirmed removed.
 	gone map[model.GuestRef]bool
 	// seen are the tunnels of this install seen to exist, by id, so that a
@@ -240,6 +243,7 @@ func New(d Deps) (*Engine, error) {
 		adopt:     make(map[string]*request),
 		asked:     make(map[string]time.Time),
 		retries:   make(map[string]tokenRetry),
+		ownIDs:    make(map[string]map[string]time.Time),
 		rolledOut: make(map[string]int),
 		gone:      make(map[model.GuestRef]bool),
 		seen:      make(map[string]seenTunnel),

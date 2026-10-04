@@ -228,3 +228,30 @@ func TestTheConnectorsOfATunnelThatIsGoneAreForgotten(t *testing.T) {
 	require.Empty(t, st.RogueConnectors)
 	require.NotContains(t, st.Problems, theirProblem)
 }
+
+// A connector that dies without saying goodbye stays listed under its old id
+// for a while after its successor is up: an id the node's connector had within
+// accountsFreshFor is still its own.
+func TestAnIDOurConnectorHadWithinTenMinutesIsOurs(t *testing.T) {
+	e, id := rogueEnv(t)
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	e.conn.setConnectorID(id, "c2-after-a-crash")
+	// The configuration is not seen running, so the connectors are listed
+	// every rolloutAskEvery.
+	e.cf.SetConnectors(testAccount, id, []cfapi.Connector{
+		{ID: ourConnector.ID, Connections: 4}, {ID: "c2-after-a-crash", Connections: 4},
+	})
+
+	for range 3 {
+		e.clock.advance(rolloutAskEvery)
+		st := e.cycle()
+		require.Empty(t, st.RogueConnectors)
+	}
+	require.Empty(t, connectorEvents(e))
+
+	e.clock.advance(accountsFreshFor)
+	st := e.cycle()
+	require.Len(t, st.RogueConnectors, 1, "an id not seen for longer is not ours")
+	require.Equal(t, ourConnector.ID, st.RogueConnectors[0].ID)
+}

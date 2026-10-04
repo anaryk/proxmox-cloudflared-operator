@@ -45,7 +45,7 @@ func compareRogues(a, b RogueConnector) int {
 // watchConnectors lists the connectors Cloudflare shows on each tunnel the
 // tunnel run found, when that is due, to see its configuration rolled out and
 // to find the connectors that pco does not run. Each listing is one call.
-func (c *cycleRun) watchConnectors(existing []reconcile.TunnelState, before, now []connector.Status) {
+func (c *cycleRun) watchConnectors(existing []reconcile.TunnelState, now []connector.Status) {
 	for _, t := range existing {
 		rollout := c.awaitsRollout(t)
 		api := c.e.clients[t.CredentialID]
@@ -61,8 +61,35 @@ func (c *cycleRun) watchConnectors(existing []reconcile.TunnelState, before, now
 		if rollout {
 			c.confirmRollout(t, conns)
 		}
-		c.compareConnectors(t, conns, before, now)
+		c.compareConnectors(t, conns, now)
 	}
+}
+
+// noteOwnIDs remembers the id /ready gives each connector of the node that is
+// ready, and forgets the ids not seen for accountsFreshFor.
+func (c *cycleRun) noteOwnIDs(statuses []connector.Status) {
+	for _, st := range statuses {
+		if !st.Ready || st.ConnectorID == "" {
+			continue
+		}
+		if c.e.ownIDs[st.TunnelID] == nil {
+			c.e.ownIDs[st.TunnelID] = make(map[string]time.Time)
+		}
+		c.e.ownIDs[st.TunnelID][st.ConnectorID] = c.now
+	}
+	for tunnel, ids := range c.e.ownIDs {
+		maps.DeleteFunc(ids, func(_ string, seen time.Time) bool { return !c.ownStill(seen) })
+		if len(ids) == 0 {
+			delete(c.e.ownIDs, tunnel)
+		}
+	}
+}
+
+// ownStill says whether an id the node's connector had when it was last seen
+// still counts as its own: a connector that dies without saying goodbye stays
+// listed under its old id for a while after its successor is up.
+func (c *cycleRun) ownStill(seen time.Time) bool {
+	return !c.now.Before(seen) && c.now.Sub(seen) <= accountsFreshFor
 }
 
 // connectorsDue says whether the connectors of a tunnel are listed in this
@@ -81,18 +108,21 @@ func (c *cycleRun) connectorsDue(t reconcile.TunnelState, rollout bool) bool {
 }
 
 // compareConnectors holds the connectors Cloudflare lists on a tunnel against
-// the one pco runs for it on this node, as /ready names it now and named it in
-// the cycle before: a connector that restarted is listed under its old id for
-// a moment. Every other one is rogue, an error the first time it is seen.
-// Without a connector of its own that is ready pco cannot tell, as one that
-// just came up is listed before it says it is ready, and what was known of the
-// tunnel stays.
-func (c *cycleRun) compareConnectors(t reconcile.TunnelState, conns []cfapi.Connector, before, now []connector.Status) {
+// the one pco runs for it on this node, as /ready names it now and named it
+// within accountsFreshFor. Every other one is rogue, an error the first time
+// it is seen. Without a connector of its own that is ready pco cannot tell, as
+// one that just came up is listed before it says it is ready, and what was
+// known of the tunnel stays.
+func (c *cycleRun) compareConnectors(t reconcile.TunnelState, conns []cfapi.Connector, now []connector.Status) {
 	own := readyIDs(t.ID, now)
 	if len(own) == 0 {
 		return
 	}
-	own = append(own, readyIDs(t.ID, before)...)
+	for id, seen := range c.e.ownIDs[t.ID] {
+		if c.ownStill(seen) {
+			own = append(own, id)
+		}
+	}
 	known := make(map[string]RogueConnector)
 	var kept []RogueConnector
 	for _, r := range c.st.RogueConnectors {

@@ -91,9 +91,10 @@ func (c *cycleRun) watchTunnels() {
 		c.readStatuses(shown)
 	}
 	statuses := c.st.Connectors
+	c.noteOwnIDs(statuses)
 	c.notePortsHeld(shown, statuses)
 	c.followRefusals(existing, c.before, statuses)
-	c.watchConnectors(existing, c.before, statuses)
+	c.watchConnectors(existing, statuses)
 	if c.connected {
 		c.forgetRogues(shown)
 	}
