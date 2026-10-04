@@ -137,7 +137,10 @@ type Engine struct {
 	confirm   *request
 	adopt     map[string]*request  // by hostname
 	rolledOut map[string]int       // by tunnel id: the configuration version confirmed on its connectors
-	asked     map[string]time.Time // by tunnel id: when its connectors were last asked for the version
+	asked     map[string]time.Time // by tunnel id: when its connectors were last listed
+	// retries are, by tunnel id, the reads of a run token again that failed
+	// and have not worked since.
+	retries map[string]tokenRetry
 	// gone are the guests holding a claim the admin confirmed removed.
 	gone map[model.GuestRef]bool
 	// seen are the tunnels of this install seen to exist, by id, so that a
@@ -236,6 +239,7 @@ func New(d Deps) (*Engine, error) {
 		zones:     newZoneCache(),
 		adopt:     make(map[string]*request),
 		asked:     make(map[string]time.Time),
+		retries:   make(map[string]tokenRetry),
 		rolledOut: make(map[string]int),
 		gone:      make(map[model.GuestRef]bool),
 		seen:      make(map[string]seenTunnel),

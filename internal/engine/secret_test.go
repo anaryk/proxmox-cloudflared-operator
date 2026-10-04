@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -135,6 +136,65 @@ func (f *tokenFailing) TunnelToken(ctx context.Context, account, id string) (str
 		return "", errors.New("cloudflare api: HTTP 503: unavailable")
 	}
 	return f.API.TunnelToken(ctx, account, id)
+}
+
+const retryProblem = "tunnel pco-abc123 in account acc1: reading its token again failed: cloudflare api: HTTP 503: unavailable; " +
+	"it is read again at %s, while Cloudflare refuses the token its connector runs with"
+
+// A re-read that fails while Cloudflare refuses the token of the connector is
+// tried again every rolloutAskEvery, not only at the next account refresh:
+// the connector serves nothing meanwhile.
+func TestAFailedReReadIsTriedAgainWhileTheRefusalLasts(t *testing.T) {
+	e := newEnv(t)
+	api := &tokenFailing{API: e.cf}
+	e.useAPI(testToken, api)
+	e.enforce()
+	e.cycle()
+	id := e.tunnels()[0].ID
+	require.NoError(t, e.cf.RotateTunnelSecret(t.Context(), testAccount, id, rotatedSecret))
+	api.armed.Store(true)
+	e.conn.setRefused(id, true)
+
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
+	require.Contains(t, st.Problems, fmt.Sprintf(retryProblem, "2026-10-01T12:00:40Z"))
+
+	api.armed.Store(false)
+	e.clock.advance(10 * time.Second)
+	st = e.cycle()
+	require.Equal(t, cffake.RunToken(testAccount, id), e.lastToken(id), "not before rolloutAskEvery")
+	require.Contains(t, st.Problems, fmt.Sprintf(retryProblem, "2026-10-01T12:00:40Z"))
+
+	e.clock.advance(20 * time.Second)
+	st = e.cycle()
+	require.Equal(t, cffake.RunTokenWith(testAccount, id, rotatedSecret), e.lastToken(id), "the next paced read, not the account refresh")
+	require.False(t, hasProblem(st, "reading its token again failed"))
+}
+
+// A rotation whose read of the new token fails leaves the retry to the cycles,
+// also when the connector was refused before, so that no refusal starts.
+func TestARotationWhoseTokenReadFailsIsFollowedUp(t *testing.T) {
+	e := newEnv(t)
+	api := &tokenFailing{API: e.cf}
+	e.useAPI(testToken, api)
+	e.enforce()
+	e.cycle()
+	id := e.tunnels()[0].ID
+	e.conn.setRefused(id, true)
+	e.clock.advance(10 * time.Second)
+	e.cycle()
+	api.armed.Store(true)
+
+	_, err := e.eng.RotateTunnel(t.Context(), "")
+	require.ErrorContains(t, err, "its new token could not be read")
+	api.armed.Store(false)
+
+	e.clock.advance(rolloutAskEvery)
+	e.cycle()
+
+	token, err := e.cf.TunnelToken(t.Context(), testAccount, id)
+	require.NoError(t, err)
+	require.Equal(t, token, e.lastToken(id))
 }
 
 func TestATokenThatCannotBeReadAgainLeavesTheConnectorAsItIs(t *testing.T) {

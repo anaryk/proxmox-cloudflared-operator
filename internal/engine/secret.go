@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -43,17 +44,26 @@ func (c *cycleRun) fetchToken(t reconcile.TunnelState) (string, error) {
 	return token, nil
 }
 
+// tokenRetry is a read of a run token again that failed: when, and why.
+type tokenRetry struct {
+	at  time.Time
+	why string
+}
+
 // freshToken reads the run token of a tunnel again and returns it, or the one
-// the connector has when it cannot be read. A token that changed, as after a
-// rotation of the tunnel's secret, is an event: Ensure writes it and restarts
-// the connector.
+// the connector has when it cannot be read; a read that fails is kept, for
+// followRefusals to try again. A token that changed, as after a rotation of
+// the tunnel's secret, is an event: Ensure writes it and restarts the
+// connector.
 func (c *cycleRun) freshToken(t reconcile.TunnelState, stored string) string {
 	token, err := c.fetchToken(t)
 	if err != nil {
-		c.problem("tunnel %s in account %s: reading its token again: %s; its connector keeps the one it has",
-			t.Name, t.AccountID, redact(err.Error(), stored))
+		why := redact(err.Error(), stored)
+		c.e.retries[t.ID] = tokenRetry{at: c.now, why: why}
+		c.problem("tunnel %s in account %s: reading its token again: %s; its connector keeps the one it has", t.Name, t.AccountID, why)
 		return stored
 	}
+	delete(c.e.retries, t.ID)
 	if token != stored {
 		c.events = append(c.events, Event{
 			At: c.now, Level: levelInfo, Kind: kindConnector, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
@@ -65,20 +75,30 @@ func (c *cycleRun) freshToken(t reconcile.TunnelState, stored string) string {
 
 // followRefusals reports every connector whose token Cloudflare refuses and,
 // in enforce mode, reads the token of its tunnel again at once when the
-// refusal starts, unless this cycle read it already: once per refusal, and
-// every zoneRefreshEvery while it lasts.
+// refusal starts, unless this cycle read it already: once per refusal, every
+// zoneRefreshEvery while it lasts, and, while the last read failed, every
+// rolloutAskEvery, as the connector serves nothing meanwhile.
 func (c *cycleRun) followRefusals(existing []reconcile.TunnelState, before, now []connector.Status) {
 	refused := func(statuses []connector.Status, id string) bool {
 		return slices.ContainsFunc(statuses, func(s connector.Status) bool { return s.TunnelID == id && s.TokenRefused })
 	}
 	for _, t := range existing {
 		if !refused(now, t.ID) {
+			delete(c.e.retries, t.ID)
 			continue
 		}
 		c.problem("tunnel %s in account %s: Cloudflare refuses the token its connector runs with; "+
 			"pco reads the token again when that starts and every five minutes, and pco tunnel rotate gives the tunnel a new secret",
 			t.Name, t.AccountID)
-		if !c.mayEnsure() || refused(before, t.ID) || c.accountsListed(t.CredentialID) {
+		if !c.mayEnsure() {
+			continue
+		}
+		retry, failed := c.e.retries[t.ID]
+		switch {
+		case failed && c.now.Before(retry.at.Add(rolloutAskEvery)) && !c.now.Before(retry.at):
+			c.noteRetry(t, retry)
+			continue
+		case !failed && (refused(before, t.ID) || c.accountsListed(t.CredentialID)):
 			continue
 		}
 		stored, found, err := c.e.d.Connectors.Token(t.ID)
@@ -88,7 +108,17 @@ func (c *cycleRun) followRefusals(existing []reconcile.TunnelState, before, now 
 		if token := c.freshToken(t, stored); token != stored {
 			c.ensureWith(t, token)
 		}
+		if retry, failed := c.e.retries[t.ID]; failed {
+			c.noteRetry(t, retry)
+		}
 	}
+}
+
+// noteRetry says that the read of a token failed, and when it is tried again.
+func (c *cycleRun) noteRetry(t reconcile.TunnelState, retry tokenRetry) {
+	c.problem("tunnel %s in account %s: reading its token again failed: %s; it is read again at %s, "+
+		"while Cloudflare refuses the token its connector runs with",
+		t.Name, t.AccountID, retry.why, retry.at.Add(rolloutAskEvery).UTC().Format(time.RFC3339))
 }
 
 // mayEnsure says whether the cycle may start or restart a connector: in
@@ -154,6 +184,7 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 		err = errors.New("the token Cloudflare returned is empty")
 	}
 	if err != nil {
+		e.retries[t.ID] = tokenRetry{at: e.d.Now(), why: err.Error()}
 		return res, fmt.Errorf("the secret of %s was rotated, but its new token could not be read: %w; "+
 			"its connector on this node takes it up when Cloudflare refuses the old one", what, err)
 	}
