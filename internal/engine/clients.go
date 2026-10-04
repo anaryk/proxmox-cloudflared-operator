@@ -10,9 +10,11 @@ import (
 )
 
 // syncCredentials reads the credentials, keeps a client for each and works
-// out the zones, without those the last check of a credential left out. It
-// returns false when the credentials cannot be read. Credentials that cannot
-// be read, none at all, or zones that were never listed hold Cloudflare.
+// out the zones, without those the last check of a credential left out. A
+// credential whose last check did not look at a zone it lists now is checked
+// again at once. It returns false when the credentials cannot be read.
+// Credentials that cannot be read, none at all, or zones that were never
+// listed hold Cloudflare.
 func (c *cycleRun) syncCredentials() bool {
 	creds, err := c.e.d.Store.Credentials()
 	if err != nil {
@@ -37,10 +39,13 @@ func (c *cycleRun) syncCredentials() bool {
 		c.hold(c.problem(problemNoCredential))
 		return true
 	}
-	left := leftOutOf(c.st.Credentials)
-	c.refreshZones(ids, left)
+	checks := c.e.zoneChecks()
+	c.refreshZones(ids, checks)
 	c.credIDs = ids
-	c.zones = c.e.zones.set(ids, c.settings.ZonePins, left)
+	c.zones = c.e.zones.set(ids, c.settings.ZonePins, checks)
+	for _, id := range c.zones.recheck {
+		c.e.recheckBy(id, c.now)
+	}
 	c.offer.stale = c.zones.staleShown
 	c.offer.lines = append(c.offer.lines, c.zones.staleLines...)
 	c.st.Problems = append(c.st.Problems, c.zones.problems...)
@@ -83,6 +88,7 @@ func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 	}
 	e.repMu.Lock()
 	maps.DeleteFunc(e.reports, func(id string, _ credentials.Report) bool { return !seen[id] })
+	maps.DeleteFunc(e.refusedAgain, func(id string, _ map[string]bool) bool { return !seen[id] })
 	maps.DeleteFunc(e.recheckAt, func(id string, _ time.Time) bool { return !seen[id] })
 	e.repMu.Unlock()
 }

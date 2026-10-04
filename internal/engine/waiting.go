@@ -17,7 +17,7 @@ import (
 const (
 	WaitingRemovals = "dns-removals"    // DNS removals behind the mass delete guard
 	WaitingVanished = "vanished-guests" // guests Proxmox no longer lists, behind a vanish hold
-	WaitingZone     = "stale-zone"      // a zone that left the listing of its credential
+	WaitingZone     = "stale-zone"      // a zone that left the listing of its credential, or whose DNS it can no longer read
 	WaitingTunnel   = "unseen-tunnel"   // a tunnel no credential sees
 )
 
@@ -38,7 +38,8 @@ type ApplyResult struct {
 // waiting is what a state shows of what a confirmation would accept: one
 // entry for the DNS removals behind the mass delete guard, in the guard's own
 // words and with how many of them are still in their grace, one for the
-// vanished guests, one per stale zone and one per tunnel no credential sees,
+// vanished guests, one per stale zone, one per zone whose DNS its credential
+// can no longer read and one per tunnel no credential sees,
 // sorted by kind and subject. The guests are named as the routes of the state
 // last named them.
 func (o confirmable) waiting(routes []RouteView) []Waiting {
@@ -70,7 +71,16 @@ func (o confirmable) waiting(routes []RouteView) []Waiting {
 	}
 	stale := make(map[string][]string)
 	for _, sz := range o.stale {
-		stale[sz.name] = append(stale[sz.name], sz.credential)
+		if !sz.refused {
+			stale[sz.name] = append(stale[sz.name], sz.credential)
+			continue
+		}
+		out = append(out, Waiting{
+			Kind: WaitingZone, Subject: sz.name,
+			Detail: fmt.Sprintf("credential %s can no longer read the DNS of zone %s; a confirmation lets the zone go: "+
+				"its hostnames are taken off the tunnel, and its records are left as they are", sz.credential, sz.name),
+			Items: []string{},
+		})
 	}
 	for _, name := range slices.Sorted(maps.Keys(stale)) {
 		out = append(out, Waiting{

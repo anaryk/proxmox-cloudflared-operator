@@ -85,7 +85,8 @@ func (e *Engine) dropConfirmation() {
 // confirmShown accepts what the last published state showed waiting for a
 // confirmation, each with a problem line, and nothing it did not show: the
 // removals the mass delete guard held, the vanished guests behind a vanish
-// hold, the zones that left their listing and the tunnels no credential sees.
+// hold, the zones that left their listing or whose DNS can no longer be read,
+// and the tunnels no credential sees.
 // It returns what it accepted. The offer is used up: until the next cycle
 // nothing waits, and the problem lines that asked for it are gone. The
 // caller holds the cycle lock and has kept the confirmation.
@@ -106,8 +107,12 @@ func (e *Engine) confirmShown() []Waiting {
 		e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed; "+
 			"when their DNS records fall due, the mass delete guard may ask for a confirmation again", len(w.vanished)))
 	}
-	for _, name := range e.zones.confirmGone(w.stale) {
+	gone, letGo := e.zones.confirmGone(w.stale)
+	for _, name := range gone {
 		e.adminEvent(name, "the zone that left its listing is confirmed gone")
+	}
+	for _, name := range letGo {
+		e.adminEvent(name, "the zone whose DNS its credential can no longer read is let go")
 	}
 	for _, u := range w.invisible {
 		if t, ok := e.seen[u.id]; ok {

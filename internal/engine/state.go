@@ -335,7 +335,8 @@ func (c *cycleRun) frozenFor(st planner.RouteStatus) (string, bool) {
 }
 
 // leftOutFor says why a route has no zone when the zone of its name is one
-// that the credentials listing it leave out; empty otherwise.
+// that the credentials listing it leave out, and how a grant is picked up
+// before the next check; empty otherwise.
 func (c *cycleRun) leftOutFor(st planner.RouteStatus) string {
 	if st.State != planner.StateNoZone || st.Zone != "" || len(c.zones.excluded) == 0 {
 		return ""
@@ -357,7 +358,8 @@ func (c *cycleRun) leftOutFor(st planner.RouteStatus) string {
 	if len(labels) > 1 {
 		who = "credentials " + andList(labels)
 	}
-	return fmt.Sprintf("%s can list %s but not read its DNS: grant Zone > DNS > Edit to serve it", who, zone)
+	return fmt.Sprintf("%s can list %s but not read its DNS: grant Zone > DNS > Edit to serve it; "+
+		"pco credential check %s picks the grant up at once", who, zone, joinList(ids, "or"))
 }
 
 // labelOf is the label of a stored credential, or its id when it has none.

@@ -86,7 +86,8 @@ func (e *Engine) memory() store.EngineMemory {
 
 // memoryAccepting is the memory as it is once the engine accepted o: the
 // guests are gone, and the zones still stale and the tunnels still seen are
-// forgotten, a zone also as served through the credential it left.
+// forgotten, a zone also as served through the credential it left; a zone let
+// go is forgotten as served through the credential refused its DNS.
 func (e *Engine) memoryAccepting(o confirmable) store.EngineMemory {
 	m := e.memory()
 	confirmed := make(map[staleZone]bool, len(o.stale))
@@ -98,7 +99,8 @@ func (e *Engine) memoryAccepting(o confirmable) store.EngineMemory {
 		return confirmed[sz]
 	})
 	m.Served = slices.DeleteFunc(m.Served, func(z store.RememberedZone) bool {
-		return confirmed[staleZone{credential: z.CredentialID, name: z.Name}]
+		sz := staleZone{credential: z.CredentialID, name: z.Name}
+		return confirmed[sz] || slices.Contains(o.stale, staleZone{credential: sz.credential, name: sz.name, refused: true})
 	})
 	m.Tunnels = slices.DeleteFunc(m.Tunnels, func(t store.SeenTunnel) bool {
 		return slices.ContainsFunc(o.invisible, func(u unseenTunnel) bool { return u.id == t.ID })

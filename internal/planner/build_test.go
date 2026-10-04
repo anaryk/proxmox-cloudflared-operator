@@ -632,6 +632,29 @@ func TestBuildZones(t *testing.T) {
 		require.Equal(t, []string{"www.example.com"}, recordNames(plan.Records))
 	})
 
+	t.Run("a zone without a credential has its names, not its parent", func(t *testing.T) {
+		parent := Zone{ID: "z-parent", Name: "example.com", AccountID: "acc1", CredentialID: "cred1"}
+		unserved := Zone{ID: "z-child", Name: "dev.example.com"}
+
+		plan := Build(BuildInput{
+			Winners: []model.Route{winner(t, "app.dev.example.com", "qemu/1"), winner(t, "www.example.com", "qemu/2")},
+			Targets: allVerified("app.dev.example.com", "www.example.com"),
+			Claims:  claimed(map[string]string{"old.dev.example.com": "qemu/3"}),
+			Zones:   []Zone{parent, unserved},
+			Writer:  buildWriter,
+		})
+
+		require.Equal(t, RouteStatus{
+			Hostname: "app.dev.example.com", Owner: "qemu/1", State: StateNoZone, Reason: "zone dev.example.com is served through no credential",
+		}, plan.Routes[0])
+		require.Equal(t, "www.example.com", plan.Routes[1].Hostname)
+		require.Len(t, plan.Routes, 2, "a claim in it is not held in the parent")
+		require.Equal(t, []TunnelPlan{
+			{AccountID: "acc1", CredentialID: "cred1", Name: tunnelName, Rules: withSentinel(httpRule("www.example.com", originAddr))},
+		}, plan.Tunnels)
+		require.Equal(t, []string{"www.example.com"}, recordNames(plan.Records))
+	})
+
 	t.Run("the same zone listed twice by one credential is not ambiguous", func(t *testing.T) {
 		plan := Build(BuildInput{
 			Winners: []model.Route{winner(t, "a.shop.cz", "qemu/1")},

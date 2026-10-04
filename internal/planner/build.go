@@ -22,6 +22,7 @@ const (
 
 	reasonNoZone       = "no Cloudflare zone for this hostname in any credential"
 	reasonSeveralCreds = "zone %s is visible through several credentials; pin it to one"
+	reasonNotServed    = "zone %s is served through no credential"
 	reasonReserved     = "reserved hostname"
 	reasonNoAddr       = "no verified address yet"
 	reasonNotAnswering = "target is not answering"
@@ -30,7 +31,9 @@ const (
 	reasonOtherOwner   = "address was verified for another owner"
 )
 
-// Zone is a Cloudflare zone and the credential that can see it.
+// Zone is a Cloudflare zone and the credential that can see it. A zone with
+// no credential is one that none serves: a hostname in it has no zone, and is
+// not taken for one of a parent zone either.
 type Zone struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -388,6 +391,9 @@ func newZoneIndex(zones []Zone) zoneIndex {
 	idx := zoneIndex{byName: make(map[string][]Zone), credential: make(map[string]string)}
 	for _, z := range zones {
 		idx.byName[z.Name] = append(idx.byName[z.Name], z)
+		if z.CredentialID == "" {
+			continue
+		}
 		if cur, ok := idx.credential[z.AccountID]; !ok || z.CredentialID < cur {
 			idx.credential[z.AccountID] = z.CredentialID
 		}
@@ -412,7 +418,11 @@ func (x zoneIndex) find(host string) (zone Zone, reason string) {
 		return Zone{}, reasonNoZone
 	}
 	zs := x.byName[name]
-	if zs[0].CredentialID != zs[len(zs)-1].CredentialID {
+	switch {
+	case zs[0].CredentialID == "":
+		// Sorted by credential, a zone without one comes first.
+		return Zone{}, fmt.Sprintf(reasonNotServed, name)
+	case zs[0].CredentialID != zs[len(zs)-1].CredentialID:
 		return Zone{}, fmt.Sprintf(reasonSeveralCreds, name)
 	}
 	return zs[0], ""

@@ -72,7 +72,7 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 		return CredentialView{}, fmt.Errorf("storing the credential: %w", err)
 	}
 	view.ID = cred.ID
-	e.keepReport(cred.ID, report)
+	e.keepReport(cred, report)
 	e.zones.due = true
 	e.adminEvent(cred.ID, fmt.Sprintf("credential %q added", label))
 	return view, nil
@@ -111,7 +111,7 @@ func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (Cre
 		// It says nothing of the token: the report of the check before stays.
 		e.recheckLater(id)
 	} else {
-		e.keepReport(id, report)
+		e.keepReport(cred, report)
 	}
 	return CredentialView{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Checked: true, Report: shownReport(report)}, nil
 }

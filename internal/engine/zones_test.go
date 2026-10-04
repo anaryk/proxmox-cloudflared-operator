@@ -115,9 +115,10 @@ func TestConfirmGoneForgetsOnlyTheZonesOffered(t *testing.T) {
 		z.served[name] = planner.Zone{ID: name + "-cred1", Name: name, AccountID: "acc1", CredentialID: "cred1"}
 	}
 
-	names := z.confirmGone([]staleZone{{credential: "cred1", name: "a.example"}, {credential: "cred1", name: "c.example"}})
+	names, letGo := z.confirmGone([]staleZone{{credential: "cred1", name: "a.example"}, {credential: "cred1", name: "c.example"}})
 
 	require.Equal(t, []string{"a.example"}, names, "a zone that is not stale is not confirmed")
+	require.Empty(t, letGo)
 	require.NotContains(t, z.byCred["cred1"].stale, "a.example")
 	require.NotContains(t, z.served, "a.example")
 	require.Contains(t, z.byCred["cred1"].stale, "b.example")

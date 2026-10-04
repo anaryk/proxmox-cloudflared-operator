@@ -17,7 +17,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-const leftOutReason = "credential main can list example.org but not read its DNS: grant Zone > DNS > Edit to serve it"
+const leftOutReason = "credential main can list example.org but not read its DNS: grant Zone > DNS > Edit to serve it; " +
+	"pco credential check cred1 picks the grant up at once"
 
 // unreadableEnv is an engine in enforce mode whose credential lists
 // example.com and example.org but may read the DNS of example.com only, as

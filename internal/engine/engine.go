@@ -176,6 +176,9 @@ type Engine struct {
 
 	repMu   sync.Mutex
 	reports map[string]credentials.Report // by credential id: the last check, also of an earlier process
+	// refusedAgain holds, by credential id, the ids of the zones its last
+	// check left out and the check before it did as well.
+	refusedAgain map[string]map[string]bool
 	// recheckAt is, by credential id, when its token is checked again; a
 	// credential not checked by this process is not in it, and due.
 	recheckAt map[string]time.Time
@@ -238,6 +241,8 @@ func New(d Deps) (*Engine, error) {
 		suspects:  make(map[netip.Addr]bool),
 		checks:    make(map[netip.Addr]*moveCheck),
 		state:     first.normalized(),
+
+		refusedAgain: make(map[string]map[string]bool),
 	}
 	e.interval.Store(int64(defaultPollInterval))
 	// The reconciler keeps the time of its last write per tunnel, so it lives
@@ -408,7 +413,7 @@ type request struct {
 // confirmation, each with a problem line of its own.
 type confirmable struct {
 	vanished  []model.GuestRef // guests that hold a claim and no longer listed, behind a vanish hold
-	stale     []staleZone      // zones that left their listing
+	stale     []staleZone      // zones that left their listing, or whose DNS can no longer be read
 	invisible []unseenTunnel   // tunnels kept that no credential sees
 	// guard is what the mass delete guard said when it held removals, and
 	// removals the names of the records a confirmation lets through: those
@@ -430,8 +435,12 @@ type offer struct {
 	token   string
 }
 
-// staleZone names a zone that left the listing of a credential.
-type staleZone struct{ credential, name string }
+// staleZone names a zone that left the listing of a credential or, when
+// refused, a zone the credential serves and can no longer read the DNS of.
+type staleZone struct {
+	credential, name string
+	refused          bool
+}
 
 // unseenTunnel is a tunnel of the install that no credential sees.
 type unseenTunnel struct{ id, name, account string }
