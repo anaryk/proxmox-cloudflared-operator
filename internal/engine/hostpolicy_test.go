@@ -45,3 +45,22 @@ func TestAGuestOverTheCapOfHostnamesPublishesNothing(t *testing.T) {
 	require.Empty(t, st.Routes)
 	require.Empty(t, e.recordNames())
 }
+
+// Every guest with the gate tag counts, a template too: a clone of either is
+// a tagged guest.
+func TestTheStateCountsTheGuestsWithTheGateTag(t *testing.T) {
+	e := newEnv(t)
+	tmpl := guest(900, "base", "www.example.org -> :80")
+	tmpl.Template = true
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), untagged(guest(102, "db", "")), tmpl))
+
+	st := e.cycle()
+
+	require.Equal(t, "tag", st.Admission)
+	require.Equal(t, 2, st.GateTagged)
+
+	e.settings(func(s *store.Settings) { s.Admission = store.AdmissionApprove })
+	e.clock.advance(10 * time.Second)
+	st = e.cycle()
+	require.Equal(t, "approve", st.Admission)
+}

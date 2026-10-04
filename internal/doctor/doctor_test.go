@@ -107,6 +107,7 @@ func TestAHealthyInstallation(t *testing.T) {
 	findings := Run(t.Context(), healthyState(), env)
 
 	require.Equal(t, []Finding{
+		{Check: "admission", Level: LevelOK, Detail: "tag: no guest carries the gate tag"},
 		{Check: "approval", Level: LevelOK, Detail: "no guest waits for approval"},
 		{Check: "cloudflared", Level: LevelOK, Detail: "cloudflared 2026.9.0"},
 		{Check: "conflicts", Level: LevelOK, Detail: "no record of someone else stands in the way"},
@@ -356,6 +357,18 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 		{"a guest that waits for approval", func(st *engine.State) {
 			st.Unapproved = []engine.UnapprovedGuest{{GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 200}, Name: "db"}}}
 		}, nil, Finding{Check: "approval lxc/200", Level: LevelWarn, Detail: "lxc/200 (db) waits for approval", Fix: "pco guest approve lxc/200"}},
+		{"tagged guests in admission mode tag", func(st *engine.State) { st.Admission, st.GateTagged = "tag", 3 }, nil,
+			Finding{Check: "admission", Level: LevelWarn,
+				Detail: "tag: 3 guests carry the gate tag; whoever may clone one of them (VM.Clone on it, and VM.Allocate where the clone goes) " +
+					"makes a tagged guest of their own, whose Notes they may fill with hostnames, and pco cannot tell yet who may",
+				Fix: "set admission to approve in the settings unless only admins hold VM.Clone on the tagged guests"}},
+		{"one tagged guest", func(st *engine.State) { st.Admission, st.GateTagged = "tag", 1 }, nil,
+			Finding{Check: "admission", Level: LevelWarn,
+				Detail: "tag: 1 guest carries the gate tag; whoever may clone it (VM.Clone on it, and VM.Allocate where the clone goes) " +
+					"makes a tagged guest of their own, whose Notes they may fill with hostnames, and pco cannot tell yet who may",
+				Fix: "set admission to approve in the settings unless only admins hold VM.Clone on the tagged guests"}},
+		{"admission mode approve", func(st *engine.State) { st.Admission, st.GateTagged = "approve", 3 }, nil,
+			Finding{Check: "admission", Level: LevelOK, Detail: "approve: a tagged guest is published once an admin approved it"}},
 		{"a connector that is not ours", func(st *engine.State) {
 			st.RogueConnectors = []engine.RogueConnector{{
 				Tunnel: "pco-abc123", TunnelID: tunnelID, Account: "acc1", ID: "attacker-elsewhere", OriginIP: "198.51.100.7", Version: "2026.8.0",
@@ -433,7 +446,7 @@ func TestBeforeTheFirstCycleTheStateTellsNothing(t *testing.T) {
 		byCheck[f.Check] = f
 		require.NotEqual(t, LevelFail, f.Level, "%s: %s", f.Check, f.Detail)
 	}
-	for _, check := range []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"} {
+	for _, check := range []string{"admission", "approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"} {
 		require.Equal(t, Finding{Check: check, Level: LevelWarn, Detail: "not known until the first cycle", Fix: "wait for the first cycle"},
 			byCheck[check], check)
 	}
@@ -457,8 +470,13 @@ func TestFindingsAreSortedAndOnlyOkHasNoFix(t *testing.T) {
 	findings := Run(t.Context(), st, env)
 
 	require.True(t, slices.IsSortedFunc(findings, compareChecks))
-	require.Equal(t, "approval qemu/20", findings[0].Check, "owners in their natural order")
-	require.Equal(t, "approval qemu/101", findings[1].Check)
+	var approvals []string
+	for _, f := range findings {
+		if strings.HasPrefix(f.Check, "approval ") {
+			approvals = append(approvals, f.Check)
+		}
+	}
+	require.Equal(t, []string{"approval qemu/20", "approval qemu/101"}, approvals, "owners in their natural order")
 	for _, f := range findings {
 		require.Contains(t, []Level{LevelOK, LevelWarn, LevelFail}, f.Level)
 		require.Equal(t, f.Level == LevelOK, f.Fix == "", "%s", f.Check)

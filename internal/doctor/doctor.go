@@ -78,7 +78,7 @@ var cloudflaredVersion = regexp.MustCompile(`\b(\d{4})\.(\d{1,2})\.(\d+)\b`)
 
 // stateChecks are the checks that read nothing but the state, which says
 // nothing before the first cycle.
-var stateChecks = []string{"approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"}
+var stateChecks = []string{"admission", "approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"}
 
 // Run checks the installation: the state the engine published and what env
 // tells of the host. Every check has a finding, sorted by check.
@@ -94,7 +94,7 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 		}
 	} else {
 		out = append(out, checkMode(st), checkInventory(st), checkWriter(st), checkProblems(st), checkConflicts(st), checkLost(st), checkWaiting(st),
-			checkRogue(st))
+			checkRogue(st), checkAdmission(st))
 		out = append(out, checkCredentials(st, env.Now())...)
 		out = append(out, checkApprovals(st)...)
 	}
@@ -188,6 +188,27 @@ func checkRogue(st engine.State) Finding {
 	}
 	return fail(check, fmt.Sprintf("%s that pco does not run on this node %s its tunnels: %s",
 		count(n, "connector", "connectors"), verb(n, "serves", "serve"), strings.Join(seen, "; ")), fix)
+}
+
+// checkAdmission warns while guests carry the gate tag in admission mode
+// tag: Proxmox copies the tags to a clone, so whoever may clone a tagged guest
+// makes a tagged guest of their own. Who may is in the ACLs, which the doctor
+// does not read yet, so it cannot rule that out.
+func checkAdmission(st engine.State) Finding {
+	const check = "admission"
+	switch {
+	case st.Admission == store.AdmissionApprove:
+		return ok(check, "approve: a tagged guest is published once an admin approved it")
+	case st.GateTagged == 0:
+		return ok(check, "tag: no guest carries the gate tag")
+	}
+	which := fmt.Sprintf("%d guests carry the gate tag; whoever may clone one of them", st.GateTagged)
+	if st.GateTagged == 1 {
+		which = "1 guest carries the gate tag; whoever may clone it"
+	}
+	return warn(check, "tag: "+which+" (VM.Clone on it, and VM.Allocate where the clone goes) makes a tagged guest of their own, "+
+		"whose Notes they may fill with hostnames, and pco cannot tell yet who may",
+		"set admission to approve in the settings unless only admins hold VM.Clone on the tagged guests")
 }
 
 func checkInventory(st engine.State) Finding {

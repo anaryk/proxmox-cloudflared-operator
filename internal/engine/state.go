@@ -121,6 +121,11 @@ type State struct {
 	// Egress is the egress filter as the daemon last found it; empty until
 	// it has looked.
 	Egress EgressView `json:"egress,omitzero"`
+	// Admission is the admission mode of the settings, "tag" or "approve",
+	// and GateTagged how many guests, templates included, carry the gate tag;
+	// both as the last cycle that read the guests found them.
+	Admission  string `json:"admission,omitempty"`
+	GateTagged int    `json:"gateTagged"`
 	// RogueConnectors are the connectors Cloudflare lists on a tunnel of the
 	// install that pco does not run on this node, as the last listing of each
 	// tunnel's connectors showed them; by account, tunnel and id.

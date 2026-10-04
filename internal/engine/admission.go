@@ -24,6 +24,12 @@ func (c *cycleRun) collect() bool {
 		return false
 	}
 	c.manual, c.approvals = manual, approvals
+	c.st.Admission, c.st.GateTagged = c.settings.Admission, 0
+	for _, g := range c.snap.Guests {
+		if g.HasTag(c.settings.GateTag) {
+			c.st.GateTagged++
+		}
+	}
 	var waiting []waitingGuest
 	c.col, waiting = c.collectFrom(c.snap)
 	c.st.Issues = c.col.Issues

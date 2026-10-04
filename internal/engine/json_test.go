@@ -109,7 +109,9 @@ func populatedState() State {
 			GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"},
 			Identity:  "uuid:201", Hostnames: []string{"new.example.com"},
 		}},
-		Egress: EgressView{State: EgressOff, Since: t0.Add(-time.Hour)},
+		Egress:     EgressView{State: EgressOff, Since: t0.Add(-time.Hour)},
+		Admission:  "approve",
+		GateTagged: 2,
 		RogueConnectors: []RogueConnector{{
 			Tunnel: "pco-abc123", TunnelID: "00000000-0000-4000-8000-000000000001", Account: "acc1",
 			ID: "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807", OriginIP: "198.51.100.7", Version: "2026.8.0", Since: t0.Add(-time.Minute),
