@@ -849,3 +849,29 @@ func TestVerifyTakesAListingItCannotReadForAChange(t *testing.T) {
 		})
 	}
 }
+
+func TestTheComparatorsOrderTargetsByAddressAndPort(t *testing.T) {
+	at := func(s string, allowNode bool) Target {
+		ap := netip.MustParseAddrPort(s)
+		return Target{Addr: ap.Addr(), Port: ap.Port(), AllowNode: allowNode}
+	}
+	for _, tt := range []struct {
+		name                      string
+		a, b                      Target
+		endpoints, allowNodeFirst int
+	}{
+		{"the same", at("10.0.0.5:80", false), at("10.0.0.5:80", false), 0, 0},
+		{"another address", at("10.0.0.5:80", false), at("10.0.0.6:80", false), -1, -1},
+		{"another port", at("10.0.0.5:443", true), at("10.0.0.5:80", false), 1, 1},
+		{"allowNode against none", at("10.0.0.5:80", true), at("10.0.0.5:80", false), 0, -1},
+		{"none against allowNode", at("10.0.0.5:80", false), at("10.0.0.5:80", true), 0, 1},
+		{"the address before the mark", at("10.0.0.6:80", true), at("10.0.0.5:80", false), 1, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.endpoints, CompareEndpoints(tt.a, tt.b))
+			require.Equal(t, tt.allowNodeFirst, CompareAllowNodeFirst(tt.a, tt.b))
+			require.Equal(t, -tt.endpoints, CompareEndpoints(tt.b, tt.a))
+			require.Equal(t, -tt.allowNodeFirst, CompareAllowNodeFirst(tt.b, tt.a))
+		})
+	}
+}

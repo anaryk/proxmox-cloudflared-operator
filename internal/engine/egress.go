@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"maps"
@@ -106,10 +105,8 @@ func (c *cycleRun) feedEgress() {
 	set = slices.DeleteFunc(set, func(t egress.Target) bool { return c.lost[t.Addr] })
 	// A target of allowNode sorts first among its equals, and is the one kept:
 	// one of an earlier process comes back from the memory without the mark.
-	slices.SortFunc(set, func(a, b egress.Target) int {
-		return cmp.Or(compareTargets(a, b), compareMarks(b.AllowNode, a.AllowNode))
-	})
-	set = slices.CompactFunc(set, func(a, b egress.Target) bool { return compareTargets(a, b) == 0 })
+	slices.SortFunc(set, egress.CompareAllowNodeFirst)
+	set = slices.CompactFunc(set, func(a, b egress.Target) bool { return egress.CompareEndpoints(a, b) == 0 })
 	c.e.egress = set
 	c.e.egMu.Lock()
 	err := c.e.d.Egress.Set(c.ctx, c.e.unsuspected())
@@ -205,22 +202,8 @@ func ruleTargets(rules []planner.IngressRule) []egress.Target {
 		}
 		out = append(out, egress.Target{Addr: ap.Addr().Unmap(), Port: ap.Port()})
 	}
-	slices.SortFunc(out, compareTargets)
+	slices.SortFunc(out, egress.CompareEndpoints)
 	return slices.Compact(out)
-}
-
-func compareTargets(a, b egress.Target) int {
-	return cmp.Or(a.Addr.Compare(b.Addr), cmp.Compare(a.Port, b.Port))
-}
-
-func compareMarks(a, b bool) int {
-	switch {
-	case a == b:
-		return 0
-	case a:
-		return 1
-	}
-	return -1
 }
 
 // rememberEgress takes the set and the verified configurations from the

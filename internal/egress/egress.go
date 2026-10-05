@@ -42,7 +42,20 @@ type Target struct {
 func (t Target) String() string { return netip.AddrPortFrom(t.Addr, t.Port).String() }
 
 func (t Target) compare(o Target) int {
-	return cmp.Or(t.Addr.Compare(o.Addr), cmp.Compare(t.Port, o.Port), compareBool(t.AllowNode, o.AllowNode))
+	return cmp.Or(CompareEndpoints(t, o), compareBool(t.AllowNode, o.AllowNode))
+}
+
+// CompareEndpoints orders targets by address and port, whether they are of
+// allowNode or not: two that compare equal are the same element of a set.
+func CompareEndpoints(a, b Target) int {
+	return cmp.Or(a.Addr.Compare(b.Addr), cmp.Compare(a.Port, b.Port))
+}
+
+// CompareAllowNodeFirst orders targets by address and port, and one of
+// allowNode before the other of an endpoint: of the duplicates of an endpoint,
+// the first is the one to keep.
+func CompareAllowNodeFirst(a, b Target) int {
+	return cmp.Or(CompareEndpoints(a, b), compareBool(b.AllowNode, a.AllowNode))
 }
 
 func compareBool(a, b bool) int {
@@ -300,10 +313,8 @@ func normalizeTargets(targets []Target) ([]Target, error) {
 		}
 		out = append(out, Target{Addr: normalizeAddr(t.Addr), Port: t.Port, AllowNode: t.AllowNode})
 	}
-	slices.SortFunc(out, func(a, b Target) int {
-		return cmp.Or(a.Addr.Compare(b.Addr), cmp.Compare(a.Port, b.Port), compareBool(b.AllowNode, a.AllowNode))
-	})
-	return slices.CompactFunc(out, func(a, b Target) bool { return a.Addr == b.Addr && a.Port == b.Port }), nil
+	slices.SortFunc(out, CompareAllowNodeFirst)
+	return slices.CompactFunc(out, func(a, b Target) bool { return CompareEndpoints(a, b) == 0 }), nil
 }
 
 func sortTargets(targets []Target) []Target {
