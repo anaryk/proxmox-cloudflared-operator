@@ -1,12 +1,15 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/pvefake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/ui"
 )
 
@@ -85,8 +88,9 @@ func TestWebConfigRefuses(t *testing.T) {
 
 func TestWebStopsWithoutItsCertificate(t *testing.T) {
 	dir := t.TempDir()
+	pin := writePin(t, dir)
 	r := newRunner(t, filepath.Join(dir, "pco", "api.sock"))
-	res := r.run("", "web", "--listen", "127.0.0.1:0",
+	res := r.run("", "web", "--listen", "127.0.0.1:0", "--pin", pin,
 		"--cert", filepath.Join(dir, "tls.crt"), "--key", filepath.Join(dir, "tls.key"))
 	require.ErrorContains(t, res.err, filepath.Join(dir, "tls.crt"))
 
@@ -124,7 +128,8 @@ func TestWebLogsAtTheLevelGiven(t *testing.T) {
 	}
 	dir := t.TempDir()
 	r := newRunner(t, filepath.Join(dir, "pco", "api.sock"))
-	args := []string{"web", "--listen", "127.0.0.1:0", "--cert", filepath.Join(dir, "tls.crt"), "--key", filepath.Join(dir, "tls.key")}
+	args := []string{"web", "--listen", "127.0.0.1:0", "--pin", writePin(t, dir),
+		"--cert", filepath.Join(dir, "tls.crt"), "--key", filepath.Join(dir, "tls.key")}
 
 	res := r.run("", args...)
 	require.Error(t, res.err)
@@ -137,6 +142,76 @@ func TestWebLogsAtTheLevelGiven(t *testing.T) {
 
 	res = r.run("", append(args, "--log-level", "info")...)
 	require.Contains(t, res.errOut, "has no web interface")
+}
+
+func TestWebStopsWithoutThePin(t *testing.T) {
+	dir := t.TempDir()
+	r := newRunner(t, filepath.Join(dir, "pco", "api.sock"))
+	cert := []string{"--cert", filepath.Join(dir, "tls.crt"), "--key", filepath.Join(dir, "tls.key")}
+
+	res := r.run("", append([]string{"web", "--pin", filepath.Join(dir, "missing.crt")}, cert...)...)
+	require.ErrorContains(t, res.err, "reading the certificate of pveproxy")
+
+	notPEM := filepath.Join(dir, "not.crt")
+	require.NoError(t, os.WriteFile(notPEM, []byte("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"), 0o600))
+	res = r.run("", append([]string{"web", "--pin", notPEM}, cert...)...)
+	require.ErrorContains(t, res.err, "holds no certificate")
+
+	res = r.run("", append([]string{"web"}, cert...)...)
+	require.ErrorContains(t, res.err, "--pin")
+}
+
+func TestWebPinFile(t *testing.T) {
+	file, err := webApp(map[string]string{"CREDENTIALS_DIRECTORY": "/run/credentials/pco-web.service"}).webPinFile(webFlags{})
+	require.NoError(t, err)
+	require.Equal(t, "/run/credentials/pco-web.service/pveproxy.crt", file, "never tls.crt")
+
+	file, err = webApp(map[string]string{"CREDENTIALS_DIRECTORY": "/run/c"}).webPinFile(webFlags{pin: "/tmp/fakepve/pveproxy.crt"})
+	require.NoError(t, err)
+	require.Equal(t, "/tmp/fakepve/pveproxy.crt", file)
+
+	_, err = webApp(nil).webPinFile(webFlags{})
+	require.ErrorContains(t, err, "--pin")
+}
+
+func TestNodeNames(t *testing.T) {
+	hosts := []byte("127.0.0.1 localhost.localdomain localhost\n" +
+		"# 192.0.2.9 pve1.old.lan pve1\n" +
+		"192.0.2.10 pve1.example.lan pve1 # the node\n" +
+		"::1 ip6-localhost\n")
+	cases := []struct {
+		hostname, short, fqdn string
+		hosts                 []byte
+	}{
+		{"pve1", "pve1", "pve1.example.lan", hosts},
+		{"pve1.example.lan", "pve1", "pve1.example.lan", nil},
+		{"pve2", "pve2", "", hosts},
+		{"pve1", "pve1", "", nil},
+	}
+	for _, c := range cases {
+		short, fqdn := nodeNames(c.hostname, c.hosts)
+		require.Equal(t, c.short, short, c.hostname)
+		require.Equal(t, c.fqdn, fqdn, c.hostname)
+	}
+}
+
+func TestNodeZone(t *testing.T) {
+	require.Equal(t, "Europe/Prague", nodeZone("", "/usr/share/zoneinfo/Europe/Prague", nil))
+	require.Equal(t, "America/Argentina/Salta", nodeZone("", "../usr/share/zoneinfo/America/Argentina/Salta", nil))
+	require.Equal(t, "Asia/Tokyo", nodeZone(":Asia/Tokyo", "/usr/share/zoneinfo/Europe/Prague", nil), "TZ wins, as it does for the process")
+	require.Equal(t, "UTC", nodeZone("", "", os.ErrNotExist), "no /etc/localtime is UTC")
+	require.Empty(t, nodeZone("", "/etc/zone-copy", nil))
+	require.Empty(t, nodeZone("", "", os.ErrInvalid))
+}
+
+// writePin writes a certificate as pveproxy's and returns its file.
+func writePin(t *testing.T, dir string) string {
+	t.Helper()
+	_, certPEM, err := pvefake.SelfSigned(time.Now(), "127.0.0.1")
+	require.NoError(t, err)
+	file := filepath.Join(dir, "pveproxy.crt")
+	require.NoError(t, os.WriteFile(file, certPEM, 0o644))
+	return file
 }
 
 func webApp(vars map[string]string) *app {

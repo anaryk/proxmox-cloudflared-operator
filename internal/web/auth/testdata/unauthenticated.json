@@ -1,0 +1,8 @@
+{
+  "code": "unauthenticated",
+  "methods": [
+    "ticket",
+    "token"
+  ],
+  "ticket": true
+}
