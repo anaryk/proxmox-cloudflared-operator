@@ -9,22 +9,27 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 )
 
-// testRoles is a cut-down set of the built-in roles, small enough to read the
-// expected privileges off.
+// testRoles is a cut-down set of the built-in roles, and two an admin could
+// make, small enough to read the expected privileges off.
 var testRoles = []pve.Role{
-	{ID: "Administrator", Privs: []string{"Pool.Allocate", "Sys.Modify", "VM.Audit", "VM.Config.Network", "VM.Console"}},
+	{ID: "Administrator", Privs: []string{"Permissions.Modify", "Pool.Allocate", "Sys.Modify", "VM.Audit", "VM.Config.Network", "VM.Console"}},
 	{ID: "PVEVMAdmin", Privs: []string{"VM.Allocate", "VM.Audit", "VM.Config.Network", "VM.Console", "VM.Snapshot"}},
 	{ID: "PVEVMUser", Privs: []string{"VM.Audit", "VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}},
+	{ID: "PVETemplateUser", Privs: []string{"VM.Audit", "VM.Clone"}},
 	{ID: "PVEAuditor", Privs: []string{"Sys.Audit", "VM.Audit"}},
 	{ID: "PVEPoolAdmin", Privs: []string{"Pool.Allocate", "Pool.Audit"}},
 	{ID: "PCO", Privs: []string{"Pool.Audit", "SDN.Audit", "Sys.Audit", "VM.Audit"}},
+	{ID: "Migrate", Privs: []string{"VM.Migrate"}},
+	{ID: "Delegate", Privs: []string{"Permissions.Modify"}},
 	{ID: "NoAccess"},
 }
 
 var (
 	vmUserPrivs  = []string{"VM.Audit", "VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}
 	auditorPrivs = []string{"Sys.Audit", "VM.Audit"}
-	adminPrivs   = []string{"Pool.Allocate", "Sys.Modify", "VM.Audit", "VM.Config.Network", "VM.Console"}
+	adminPrivs   = []string{"Permissions.Modify", "Pool.Allocate", "Sys.Modify", "VM.Audit", "VM.Config.Network", "VM.Console"}
+	// vmUserReach is what of PVEVMUser Refused looks for.
+	vmUserReach = []string{"VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}
 
 	web      = model.GuestRef{Kind: model.KindQEMU, VMID: 100}
 	appl     = model.GuestRef{Kind: model.KindLXC, VMID: 120}
@@ -121,7 +126,9 @@ func TestRolesAndPrivileges(t *testing.T) {
 		{"a non-privsep token's own entries count for nothing", []pve.ACLEntry{
 			user(webPath, "alice@pve", "PVEVMUser"), token(webPath, "alice@pve!shared", "NoAccess"),
 		}, "alice@pve!shared", webPath, []string{"PVEVMUser"}, vmUserPrivs},
-		{"an unknown token", []pve.ACLEntry{token("/", "alice@pve!gone", "Administrator")}, "alice@pve!gone", webPath, nil, nil},
+		{"an unknown token", []pve.ACLEntry{
+			user(webPath, "alice@pve", "PVEVMUser"), token("/", "alice@pve!gone", "Administrator"),
+		}, "alice@pve!gone", webPath, nil, nil},
 		{"root@pam", nil, "root@pam", "/nodes/pve1", []string{"Administrator"}, adminPrivs},
 		{"a pool grant reaches a member", []pve.ACLEntry{user("/pool/tenants", "alice@pve", "PVEVMUser")}, "alice@pve", "/vms/200", nil, vmUserPrivs},
 		{"a pool grant does not reach another guest", []pve.ACLEntry{user("/pool/tenants", "alice@pve", "PVEVMUser")}, "alice@pve", webPath, nil, nil},
@@ -232,10 +239,14 @@ func TestRefused(t *testing.T) {
 		want []Principal
 	}{
 		{"PVEVMUser on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "PVEVMUser")},
-			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}}}},
+			[]Principal{{ID: "bob@pve", Privs: vmUserReach}}},
 		{"PVEAuditor on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "PVEAuditor")}, nil},
+		{"PVETemplateUser on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "PVETemplateUser")},
+			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Clone"}}}},
+		{"a role that only migrates", []pve.ACLEntry{user(applPath, "bob@pve", "Migrate")},
+			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Migrate"}}}},
 		{"PVEVMUser on the pool", []pve.ACLEntry{group("/pool/pco", "devs", "PVEVMUser")},
-			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}}}},
+			[]Principal{{ID: "bob@pve", Privs: vmUserReach}}},
 		{"Pool.Allocate on the pool", []pve.ACLEntry{user("/pool/pco", "bob@pve", "PVEPoolAdmin")},
 			[]Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}}}},
 		{"both", []pve.ACLEntry{user("/pool", "bob@pve", "PVEPoolAdmin"), user("/vms", "bob@pve", "PVEVMAdmin")},
@@ -243,11 +254,27 @@ func TestRefused(t *testing.T) {
 		{"another guest", []pve.ACLEntry{user(webPath, "bob@pve", "PVEVMAdmin")}, nil},
 		{"a token through its user", []pve.ACLEntry{user(applPath, "alice@pve", "PVEVMUser"), token(applPath, "alice@pve!sep", "PVEAuditor")},
 			[]Principal{
-				{ID: "alice@pve", Privs: []string{"VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}},
-				{ID: "alice@pve!shared", Privs: []string{"VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}},
+				{ID: "alice@pve", Privs: vmUserReach},
+				{ID: "alice@pve!shared", Privs: vmUserReach},
 			}},
 		{"an admin", []pve.ACLEntry{user("/", "bob@pve", "Administrator")}, nil},
 		{"pco itself", []pve.ACLEntry{user(applPath, "pco@pve", "PVEVMAdmin"), token(applPath, "pco@pve!vm120", "PVEVMAdmin")}, nil},
+		// Permissions.Modify on a path lets its holder grant itself any role
+		// there; on / and on /vms or /pool it may then propagate one down.
+		{"Permissions.Modify on / alone", []pve.ACLEntry{once(user("/", "bob@pve", "Delegate"))},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+		{"Permissions.Modify on /vms alone", []pve.ACLEntry{once(user("/vms", "bob@pve", "Delegate"))},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+		{"Permissions.Modify on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "Delegate")},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+		{"Permissions.Modify on /pool alone", []pve.ACLEntry{once(user("/pool", "bob@pve", "Delegate"))},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+		{"Permissions.Modify on the pool, NoAccess on the appliance", []pve.ACLEntry{
+			user(applPath, "bob@pve", "NoAccess"), user("/pool/pco", "bob@pve", "Delegate"),
+		}, []Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+		{"Permissions.Modify beside a console", []pve.ACLEntry{user("/", "bob@pve", "Delegate"), user(applPath, "bob@pve", "PVEVMUser")},
+			[]Principal{{ID: "bob@pve", Privs: append([]string{"Permissions.Modify"}, vmUserReach...)}}},
+		{"Permissions.Modify on another guest", []pve.ACLEntry{user(webPath, "bob@pve", "Delegate")}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, Refused(data(tt.acl...), 120, "pco", "pco@pve"))
@@ -256,9 +283,42 @@ func TestRefused(t *testing.T) {
 }
 
 func TestRefusedTakesTheGuestAsAMemberOfThePool(t *testing.T) {
-	d := data(user("/pool/pco", "bob@pve", "PVEVMUser"))
+	d := data(user("/pool/pco", "bob@pve", "PVEVMUser"), user("/pool/pco", "carol@pve", "PVEPoolAdmin"))
+	d.Users = append(d.Users, pve.User{ID: "carol@pve", Enabled: true})
 	d.Pools = nil
-	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"VM.Backup", "VM.Config.CDROM", "VM.Console", "VM.PowerMgmt"}}},
-		Refused(d, 120, "pco", "pco@pve"), "before the appliance is in its pool")
+	require.Equal(t, []Principal{
+		{ID: "bob@pve", Privs: vmUserReach},
+		{ID: "carol@pve", Privs: []string{"Pool.Allocate"}},
+	}, Refused(d, 120, "pco", "pco@pve"), "before the appliance is in its pool")
 	require.Empty(t, Refused(d, 120, "", "pco@pve"))
+
+	d.ACL = append(d.ACL, user(applPath, "bob@pve", "Migrate"))
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"VM.Migrate"}}}, Refused(d, 120, "", "pco@pve"), "in no pool at all")
+}
+
+// The daemon asks with pool pco, but an admin may have moved the appliance
+// into another pool: whoever reaches it through either is refused.
+func TestRefusedChecksBothPoolsOfAMovedGuest(t *testing.T) {
+	moved := func(acl ...pve.ACLEntry) Data {
+		d := data(acl...)
+		d.Pools[appl] = "infra"
+		return d
+	}
+	require.Equal(t, []Principal{
+		{ID: "alice@pve", Privs: vmUserReach},
+		{ID: "alice@pve!shared", Privs: vmUserReach},
+	}, Refused(moved(group("/pool/infra", "ops", "PVEVMUser")), 120, "pco", "pco@pve"), "the pool it is in")
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: vmUserReach}},
+		Refused(moved(user("/pool/pco", "bob@pve", "PVEVMUser")), 120, "pco", "pco@pve"), "the pool it is to be in")
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}}},
+		Refused(moved(user("/pool/infra", "bob@pve", "PVEPoolAdmin")), 120, "pco", "pco@pve"))
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}},
+		Refused(moved(user(applPath, "bob@pve", "NoAccess"), user("/pool/infra", "bob@pve", "Delegate")), 120, "pco", "pco@pve"))
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"VM.Clone", "VM.Migrate"}}},
+		Refused(moved(user("/pool/infra", "bob@pve", "PVETemplateUser"), user("/pool/pco", "bob@pve", "Migrate")), 120, "pco", "pco@pve"),
+		"what either pool gives adds up")
+
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}}},
+		Refused(moved(user("/pool/infra", "bob@pve", "PVEPoolAdmin")), 120, "", "pco@pve"), "without a pool to take it in")
+	require.Empty(t, Refused(moved(user("/pool/other", "bob@pve", "PVEVMAdmin")), 120, "pco", "pco@pve"))
 }

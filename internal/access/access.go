@@ -67,7 +67,7 @@ func Privileges(d Data, principal, path string) []string {
 // Effective returns every principal with any of privs on path, with those of
 // privs it holds there. Disabled users and their tokens are left out.
 func Effective(d Data, path string, privs []string) []Principal {
-	return newView(d).effective(path, func(p string) bool { return slices.Contains(privs, p) })
+	return newView(d).effective(path, is(privs...))
 }
 
 // Admins returns the principals holding Sys.Modify on "/".
@@ -79,7 +79,7 @@ func Admins(d Data) []string {
 // VM.Config.Network on it, pco's own user and tokens (ownUser) excluded.
 func Delegated(d Data, ref model.GuestRef, ownUser string) []Principal {
 	v := newView(d)
-	held := v.effective(vmPath(ref.VMID), func(p string) bool { return p == "VM.Config.Network" })
+	held := v.effective(vmPath(ref.VMID), is("VM.Config.Network"))
 	return v.others(held, ownUser)
 }
 
@@ -87,28 +87,57 @@ func Delegated(d Data, ref model.GuestRef, ownUser string) []Principal {
 // appliance: those holding on /vms/<vmid> a privilege that opens its console,
 // changes it, copies it or its data, moves it or starts and stops it
 // (VM.Console, VM.Config.*, VM.Clone, VM.Backup, VM.Snapshot*, VM.Migrate,
-// VM.PowerMgmt, VM.Allocate), or Pool.Allocate on /pool/<pool>. The guest is
-// taken as a member of pool, as the appliance is once installed. ownUser and
-// its tokens are left out.
+// VM.PowerMgmt, VM.Allocate), Pool.Allocate on the pool of the guest, or
+// Permissions.Modify, with which they can grant themselves any of these, on
+// either path or a node above one. ownUser and its tokens are left out.
+//
+// The guest is taken as a member of pool, as the appliance is once installed.
+// When the snapshot has it in another pool, it is taken as a member of each in
+// turn and what either gives counts.
 func Refused(d Data, vmid int, pool string, ownUser string) []Principal {
 	v := newView(d)
-	if pool != "" {
-		v.pools[vmid] = pool
+	var pools []string
+	for _, p := range []string{v.pools[vmid], pool} {
+		if p != "" && !slices.Contains(pools, p) {
+			pools = append(pools, p)
+		}
 	}
-	held := v.effective(vmPath(vmid), reachesIn)
-	if pool != "" {
-		held = merge(held, v.effective("/pool/"+pool, func(p string) bool { return p == "Pool.Allocate" }))
+
+	var held []Principal
+	check := func(path string, match func(priv string) bool) {
+		held = merge(held, v.effective(path, match))
+	}
+	vm := vmPath(vmid)
+	above := []string{"/", "/vms"}
+	if len(pools) == 0 {
+		check(vm, reachesIn)
+	} else {
+		above = append(above, "/pool")
+	}
+	for _, p := range pools {
+		v.pools[vmid] = p
+		check(vm, reachesIn)
+		check("/pool/"+p, is("Pool.Allocate", "Permissions.Modify"))
+	}
+	for _, path := range above {
+		check(path, is("Permissions.Modify"))
 	}
 	return v.others(held, ownUser)
 }
 
-// reachesIn reports whether a privilege is one of those Refused looks for.
+// reachesIn reports whether a privilege on the guest is one of those Refused
+// looks for.
 func reachesIn(priv string) bool {
 	switch priv {
-	case "VM.Console", "VM.Clone", "VM.Backup", "VM.Migrate", "VM.PowerMgmt", "VM.Allocate":
+	case "VM.Console", "VM.Clone", "VM.Backup", "VM.Migrate", "VM.PowerMgmt", "VM.Allocate", "Permissions.Modify":
 		return true
 	}
 	return strings.HasPrefix(priv, "VM.Config.") || strings.HasPrefix(priv, "VM.Snapshot")
+}
+
+// is returns a match for the privileges privs.
+func is(privs ...string) func(priv string) bool {
+	return func(priv string) bool { return slices.Contains(privs, priv) }
 }
 
 func vmPath(vmid int) string { return "/vms/" + strconv.Itoa(vmid) }
@@ -379,7 +408,7 @@ func (v *view) effective(path string, match func(priv string) bool) []Principal 
 }
 
 func (v *view) admins() []Principal {
-	return v.effective("/", func(p string) bool { return p == "Sys.Modify" })
+	return v.effective("/", is("Sys.Modify"))
 }
 
 // others leaves out of held the admins and ownUser with its tokens.
