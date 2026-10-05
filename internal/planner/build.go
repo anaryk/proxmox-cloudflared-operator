@@ -101,7 +101,7 @@ const (
 	StateConflict    RouteState = "conflict"
 	StateNoZone      RouteState = "no-zone"
 	StateHeld        RouteState = "held"     // claimed, but nobody serves it: blocked until its holder routes it or loses it
-	StateRejected    RouteState = "rejected" // a name the hostname policy publishes only when allowHosts names it: blocked
+	StateRejected    RouteState = "rejected" // a name the hostname policy publishes only when allowHosts names it: no claim, rule or record
 )
 
 // RouteStatus is the plan's verdict on one route.
@@ -124,9 +124,9 @@ type BuildInput struct {
 	Targets   map[string]ResolvedTarget // by hostname
 	Zones     []Zone
 	Writer    Writer
-	// AllowHosts are the allow patterns of the settings: the apex of a zone
-	// and a wildcard are published for a guest only when one names them.
-	AllowHosts []string
+	// Refused are the routes RefuseUnnamed took out: the plan shows them,
+	// with no rule and no record.
+	Refused []RouteStatus
 }
 
 // Plan is the desired Cloudflare state.
@@ -168,6 +168,7 @@ func Build(in BuildInput) Plan {
 	}
 	b.blockHeld()
 	b.addConflicts()
+	b.routes = append(b.routes, in.Refused...)
 
 	slices.SortStableFunc(b.routes, func(x, y RouteStatus) int {
 		return cmp.Or(
@@ -200,11 +201,6 @@ func (b *builder) addWinner(rt model.Route, warnings []string) {
 		st.State, st.Reason = StateNoZone, reason
 	default:
 		st.Zone = zone.Name
-		if why := b.unnamed(rt, zone.Name); why != "" {
-			st.State, st.Reason = StateRejected, why
-			b.block(zone.AccountID, rt.Hostname)
-			break
-		}
 		if hostname.Depth(rt.Hostname, zone.Name) > 1 {
 			warnings = append(warnings, fmt.Sprintf("more than one level below %s: needs an advanced certificate", zone.Name))
 		}
@@ -212,27 +208,6 @@ func (b *builder) addWinner(rt model.Route, warnings []string) {
 	}
 	st.Warnings = sortedUnique(warnings)
 	b.routes = append(b.routes, st)
-}
-
-// unnamed says why the route of a guest for the apex of its zone, or for a
-// wildcard, is not published: without an allowHosts pattern that names it,
-// whoever may edit the Notes of one tagged guest would take the zone's apex
-// or every name of the zone that has no record of its own. A pattern that
-// does not normalise names nothing. Manual routes are root's own.
-func (b *builder) unnamed(rt model.Route, zone string) string {
-	apex := rt.Hostname == zone
-	if rt.Source != model.SourceAnnotation || !apex && !hostname.IsWildcard(rt.Hostname) {
-		return ""
-	}
-	for _, p := range b.in.AllowHosts {
-		if pattern, err := hostname.NormalizePattern(p); err == nil && hostname.NamesExplicitly(pattern, rt.Hostname) {
-			return ""
-		}
-	}
-	if apex {
-		return fmt.Sprintf("the apex of zone %s is published only when allowHosts names it: add %q to allowHosts", zone, rt.Hostname)
-	}
-	return fmt.Sprintf("a wildcard is published only when an allowHosts pattern names it: add %q to allowHosts", rt.Hostname)
 }
 
 // serve plans the rule and the record of a route that has a zone and sets

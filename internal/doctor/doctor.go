@@ -18,6 +18,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -78,7 +79,10 @@ var cloudflaredVersion = regexp.MustCompile(`\b(\d{4})\.(\d{1,2})\.(\d+)\b`)
 
 // stateChecks are the checks that read nothing but the state, which says
 // nothing before the first cycle.
-var stateChecks = []string{"admission", "approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"}
+var stateChecks = []string{
+	"admission", "approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rejected routes", "rogue connectors",
+	"waiting", "writer",
+}
 
 // Run checks the installation: the state the engine published and what env
 // tells of the host. Every check has a finding, sorted by check.
@@ -94,7 +98,7 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 		}
 	} else {
 		out = append(out, checkMode(st), checkInventory(st), checkWriter(st), checkProblems(st), checkConflicts(st), checkLost(st), checkWaiting(st),
-			checkRogue(st), checkAdmission(st))
+			checkRogue(st), checkAdmission(st), checkRejected(st))
 		out = append(out, checkCredentials(st, env.Now())...)
 		out = append(out, checkApprovals(st)...)
 	}
@@ -188,6 +192,24 @@ func checkRogue(st engine.State) Finding {
 	}
 	return fail(check, fmt.Sprintf("%s that pco does not run on this node %s its tunnels: %s",
 		count(n, "connector", "connectors"), verb(n, "serves", "serve"), strings.Join(seen, "; ")), fix)
+}
+
+// checkRejected warns about the routes the hostname policy refuses: the apex
+// of a zone or a wildcard that no allowHosts pattern names. They are not
+// published and hold no claim.
+func checkRejected(st engine.State) Finding {
+	const check = "rejected routes"
+	var refused []string
+	for _, r := range st.Routes {
+		if r.State == planner.StateRejected {
+			refused = append(refused, fmt.Sprintf("%s of %s (%s)", r.Hostname, r.Owner, r.Reason))
+		}
+	}
+	if len(refused) == 0 {
+		return ok(check, "the hostname policy refuses no route")
+	}
+	return warn(check, fmt.Sprintf("%s not published: %s", count(len(refused), "route is", "routes are"), strings.Join(refused, "; ")),
+		"add the pattern to allowHosts in the settings if the name is meant to be published, or take it out of the Notes")
 }
 
 // checkAdmission warns while guests carry the gate tag in admission mode

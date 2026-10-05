@@ -51,6 +51,7 @@ type cycleRun struct {
 	deny      resolve.Denylist
 	col       planner.Collected
 	claims    planner.ClaimResult
+	refused   []planner.RouteStatus     // the routes the hostname policy took out before the claims
 	settled   bool                      // the claims were settled and saved
 	listing   listing                   // what this cycle saw of the guests; empty unless it saw all of them
 	results   map[string]resolve.Result // of the winners, by hostname, with what the identity minimum holds back
@@ -261,12 +262,14 @@ func (c *cycleRun) readWriter() {
 	c.st.WriterVerdict = VerdictUnknown
 }
 
-// inspect refreshes the inventory, collects the routes, settles the claims and
-// resolves the addresses of the winners. It returns false when the cycle has
-// to hold. Everything it needs from the store is read before anything is
-// saved, so that a hold changes nothing on disk.
+// inspect refreshes the inventory, collects the routes, reads the
+// credentials and their zones, settles the claims and resolves the addresses
+// of the winners. It returns false when the cycle has to hold. Everything it
+// needs from the store is read before anything is saved, so that a hold
+// changes nothing on disk. The zones come before the claims: a route the
+// hostname policy refuses, as the apex of a zone, must not take a claim.
 func (c *cycleRun) inspect() bool {
-	if !c.refresh() || !c.collect() || !c.load() || !c.guardVanished() {
+	if !c.refresh() || !c.collect() || !c.load() || !c.guardVanished() || !c.syncCredentials() {
 		return false
 	}
 	c.settleClaims()
@@ -320,8 +323,13 @@ func (c *cycleRun) settleClaims() {
 	for _, g := range c.snap.Guests {
 		identity[g.Ref.String()] = g.Identity
 	}
+	routes, refused := planner.RefuseUnnamed(c.col.Routes, c.zones.planned, c.settings.AllowHosts)
+	c.refused = refused
+	for _, st := range refused {
+		c.problem("hostname %s of %s is not published: %s", st.Hostname, st.Owner, st.Reason)
+	}
 	c.claims = planner.ResolveClaims(planner.ClaimInput{
-		Routes:   c.col.Routes,
+		Routes:   routes,
 		Held:     c.col.Held,
 		Claims:   c.stored,
 		Identity: identity,
@@ -352,26 +360,22 @@ func (c *cycleRun) served() map[string]string {
 	return out
 }
 
-// build plans the Cloudflare state: the credentials and their zones first,
-// then the plan itself. The plan is made even when Cloudflare is held, for
-// the route states, unless the credentials could not be read: then the routes
-// stay as the last cycle showed them.
+// build plans the Cloudflare state. The plan is made even when Cloudflare is
+// held, for the route states; a cycle that could not read the credentials
+// does not get here, and the routes stay as the last cycle showed them.
 func (c *cycleRun) build() {
-	if !c.syncCredentials() {
-		return
-	}
 	writer := c.e.us
 	if writer.InstallID == "" {
 		writer = planner.Writer{InstallID: c.install.ID}
 	}
 	c.plan = planner.Build(planner.BuildInput{
-		Winners:    c.claims.Winners,
-		Conflicts:  c.claims.Conflicts,
-		Claims:     c.claims.Claims,
-		Targets:    c.targets(),
-		Zones:      c.zones.planned,
-		Writer:     writer,
-		AllowHosts: c.settings.AllowHosts,
+		Winners:   c.claims.Winners,
+		Conflicts: c.claims.Conflicts,
+		Claims:    c.claims.Claims,
+		Targets:   c.targets(),
+		Zones:     c.zones.planned,
+		Writer:    writer,
+		Refused:   c.refused,
 	})
 	c.st.Routes = c.routeViews()
 }

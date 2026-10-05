@@ -19,6 +19,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -123,6 +124,7 @@ func TestAHealthyInstallation(t *testing.T) {
 		{Check: "outbound", Level: LevelOK, Detail: "region1.v2.argotunnel.com:7844 answers over TCP"},
 		{Check: "problems", Level: LevelOK, Detail: "the last cycle found no problem"},
 		{Check: "proxmox", Level: LevelOK, Detail: "Proxmox VE 9.0"},
+		{Check: "rejected routes", Level: LevelOK, Detail: "the hostname policy refuses no route"},
 		{Check: "rogue connectors", Level: LevelOK, Detail: "every connector Cloudflare lists on the tunnels is one pco runs on this node"},
 		{Check: "store", Level: LevelOK, Detail: "the store is mounted and set up"},
 		{Check: "tunnel pco-abc123 in account acc1", Level: LevelOK, Detail: "configuration version 3 is verified"},
@@ -369,6 +371,15 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 				Fix: "set admission to approve in the settings unless only admins hold VM.Clone on the tagged guests"}},
 		{"admission mode approve", func(st *engine.State) { st.Admission, st.GateTagged = "approve", 3 }, nil,
 			Finding{Check: "admission", Level: LevelOK, Detail: "approve: a tagged guest is published once an admin approved it"}},
+		{"a route the hostname policy refuses", func(st *engine.State) {
+			st.Routes = append(st.Routes, engine.RouteView{RouteStatus: planner.RouteStatus{
+				Hostname: "example.com", Owner: "qemu/101", State: planner.StateRejected, Zone: "example.com",
+				Reason: `the apex of zone example.com is published only when allowHosts names it: add "example.com" to allowHosts`,
+			}})
+		}, nil, Finding{Check: "rejected routes", Level: LevelWarn,
+			Detail: `1 route is not published: example.com of qemu/101 (the apex of zone example.com is published only when ` +
+				`allowHosts names it: add "example.com" to allowHosts)`,
+			Fix: "add the pattern to allowHosts in the settings if the name is meant to be published, or take it out of the Notes"}},
 		{"a connector that is not ours", func(st *engine.State) {
 			st.RogueConnectors = []engine.RogueConnector{{
 				Tunnel: "pco-abc123", TunnelID: tunnelID, Account: "acc1", ID: "attacker-elsewhere", OriginIP: "198.51.100.7", Version: "2026.8.0",
@@ -446,7 +457,7 @@ func TestBeforeTheFirstCycleTheStateTellsNothing(t *testing.T) {
 		byCheck[f.Check] = f
 		require.NotEqual(t, LevelFail, f.Level, "%s: %s", f.Check, f.Detail)
 	}
-	for _, check := range []string{"admission", "approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rogue connectors", "waiting", "writer"} {
+	for _, check := range []string{"admission", "approval", "conflicts", "credentials", "inventory", "lost markers", "mode", "problems", "rejected routes", "rogue connectors", "waiting", "writer"} {
 		require.Equal(t, Finding{Check: check, Level: LevelWarn, Detail: "not known until the first cycle", Fix: "wait for the first cycle"},
 			byCheck[check], check)
 	}

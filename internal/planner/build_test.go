@@ -20,10 +20,6 @@ var (
 	exampleZone = Zone{ID: "z-example", Name: "example.com", AccountID: "acc2", CredentialID: "cred2"}
 )
 
-// namedHere names the apexes and the wildcards of the zones of the tests,
-// which the planner publishes for a guest only when allowHosts names them.
-var namedHere = []string{"shop.cz", "*.shop.cz", "example.com", "*.example.com"}
-
 const (
 	tunnelName   = "pco-3f9a2c1e77b0"
 	deepWarning  = "more than one level below shop.cz: needs an advanced certificate"
@@ -136,10 +132,9 @@ func TestBuildExactBeforeWildcard(t *testing.T) {
 			winner(t, "api.shop.cz", "qemu/1"),
 			winner(t, "shop.cz", "qemu/1"),
 		},
-		Targets:    allVerified("*.shop.cz", "api.shop.cz", "shop.cz"),
-		Zones:      []Zone{shopZone},
-		Writer:     buildWriter,
-		AllowHosts: namedHere,
+		Targets: allVerified("*.shop.cz", "api.shop.cz", "shop.cz"),
+		Zones:   []Zone{shopZone},
+		Writer:  buildWriter,
 	}
 
 	plan := Build(in)
@@ -223,11 +218,10 @@ func TestBuildServiceAndTLSOptions(t *testing.T) {
 			rt.Options = tt.opts
 
 			plan := Build(BuildInput{
-				Winners:    []model.Route{rt},
-				Targets:    map[string]ResolvedTarget{tt.host: verified(tt.addr)},
-				Zones:      []Zone{shopZone},
-				Writer:     buildWriter,
-				AllowHosts: namedHere,
+				Winners: []model.Route{rt},
+				Targets: map[string]ResolvedTarget{tt.host: verified(tt.addr)},
+				Zones:   []Zone{shopZone},
+				Writer:  buildWriter,
 			})
 
 			require.Len(t, plan.Tunnels, 1)
@@ -498,10 +492,9 @@ func TestBuildBlocksClaimedNamesFromOtherWildcards(t *testing.T) {
 			"held.nowhere.org":   "qemu/3",
 			"x.pco-ab12.invalid": "qemu/3",
 		}),
-		Targets:    map[string]ResolvedTarget{"*.shop.cz": verified(originAddr)},
-		Zones:      []Zone{shopZone},
-		Writer:     buildWriter,
-		AllowHosts: namedHere,
+		Targets: map[string]ResolvedTarget{"*.shop.cz": verified(originAddr)},
+		Zones:   []Zone{shopZone},
+		Writer:  buildWriter,
 	})
 
 	require.Equal(t, []TunnelPlan{{
@@ -684,10 +677,9 @@ func TestBuildZones(t *testing.T) {
 				winner(t, "app.dev.example.com", "qemu/2"),
 				winner(t, "*.dev.example.com", "qemu/2"),
 			},
-			Targets:    allVerified("www.example.com", "app.dev.example.com", "*.dev.example.com"),
-			Zones:      []Zone{parent, child},
-			Writer:     buildWriter,
-			AllowHosts: namedHere,
+			Targets: allVerified("www.example.com", "app.dev.example.com", "*.dev.example.com"),
+			Zones:   []Zone{parent, child},
+			Writer:  buildWriter,
 		})
 
 		require.Equal(t, []RecordPlan{
@@ -734,7 +726,7 @@ func TestBuildWarnings(t *testing.T) {
 			targets[w.Hostname] = verified(originAddr)
 		}
 		return warningsByHost(Build(BuildInput{
-			Winners: winners, Targets: targets, Zones: []Zone{shopZone}, Writer: buildWriter, AllowHosts: namedHere,
+			Winners: winners, Targets: targets, Zones: []Zone{shopZone}, Writer: buildWriter,
 		}))
 	}
 

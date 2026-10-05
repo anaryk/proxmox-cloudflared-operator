@@ -17,16 +17,20 @@ const (
 	wildcardReason = `a wildcard is published only when an allowHosts pattern names it: add "*.example.com" to allowHosts`
 )
 
-// planOf collects the Notes of one tagged guest with the settings, settles
-// the claims and plans them in the zone example.com, every hostname verified.
+var policyZones = []Zone{{ID: "z1", Name: "example.com", AccountID: "acc1", CredentialID: "cred1"}}
+
+// planOf collects the Notes of one tagged guest with the settings, takes out
+// what the policy refuses, settles the claims and plans them in the zone
+// example.com, every hostname verified.
 func planOf(t *testing.T, notes string, s Settings) (Collected, Plan) {
 	t.Helper()
 	g := model.Guest{
 		Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Running: true, Tags: []string{"cf-tunnel"}, Description: notes,
 	}
 	col := Collect([]model.Guest{g}, nil, s)
+	routes, refused := RefuseUnnamed(col.Routes, policyZones, s.AllowHosts)
 	claims := ResolveClaims(ClaimInput{
-		Routes: col.Routes, Held: col.Held, Claims: map[string]Claim{},
+		Routes: routes, Held: col.Held, Claims: map[string]Claim{},
 		Now: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC), Grace: time.Minute,
 	})
 	targets := map[string]ResolvedTarget{}
@@ -34,12 +38,12 @@ func planOf(t *testing.T, notes string, s Settings) (Collected, Plan) {
 		targets[rt.Hostname] = ResolvedTarget{Addr: netip.MustParseAddr("10.0.0.11"), Reachable: true, Owner: rt.Owner(), Level: "port"}
 	}
 	plan := Build(BuildInput{
-		Winners:    claims.Winners,
-		Claims:     claims.Claims,
-		Targets:    targets,
-		Zones:      []Zone{{ID: "z1", Name: "example.com", AccountID: "acc1", CredentialID: "cred1"}},
-		Writer:     Writer{InstallID: "abc123", Generation: 1, Nonce: "n1"},
-		AllowHosts: s.AllowHosts,
+		Winners: claims.Winners,
+		Claims:  claims.Claims,
+		Targets: targets,
+		Zones:   policyZones,
+		Writer:  Writer{InstallID: "abc123", Generation: 1, Nonce: "n1"},
+		Refused: refused,
 	})
 	return col, plan
 }
@@ -74,10 +78,8 @@ func TestTheApexAndAWildcardAreRejectedUnlessAllowHostsNamesThem(t *testing.T) {
 	require.Equal(t, []string{"www.example.com"}, names, "no record for the apex or the wildcard")
 	require.Len(t, plan.Tunnels, 1)
 	require.Equal(t, []IngressRule{
-		{Hostname: "www.example.com", Service: "http://10.0.0.11:80"},
-		{Hostname: "example.com", Service: BlockedService},
-		{Hostname: "*.example.com", Service: BlockedService},
-	}, plan.Tunnels[0].Rules[:3], "claimed and not served: they answer 503")
+		{Hostname: "www.example.com", Service: "http://10.0.0.11:80"}, SentinelRule(Writer{InstallID: "abc123", Generation: 1, Nonce: "n1"}), CatchAllRule(),
+	}, plan.Tunnels[0].Rules, "no rule either: nothing at Cloudflare is theirs")
 }
 
 func TestWhatAnAllowHostsPatternNames(t *testing.T) {
@@ -116,11 +118,15 @@ func TestWhatAnAllowHostsPatternNames(t *testing.T) {
 
 // Manual routes are the admin's own: root wrote them.
 func TestAManualRouteMayBeTheApexOrAWildcard(t *testing.T) {
+	manual := []model.Route{
+		{Hostname: "example.com", Source: model.SourceManual, ManualID: "apex", Target: model.Target{Scheme: model.SchemeHTTP, Port: 80}},
+		{Hostname: "*.example.com", Source: model.SourceManual, ManualID: "all", Target: model.Target{Scheme: model.SchemeHTTP, Port: 80}},
+	}
+	kept, refused := RefuseUnnamed(manual, policyZones, nil)
+	require.Equal(t, manual, kept)
+	require.Empty(t, refused)
 	plan := Build(BuildInput{
-		Winners: []model.Route{
-			{Hostname: "example.com", Source: model.SourceManual, ManualID: "apex", Target: model.Target{Scheme: model.SchemeHTTP, Port: 80}},
-			{Hostname: "*.example.com", Source: model.SourceManual, ManualID: "all", Target: model.Target{Scheme: model.SchemeHTTP, Port: 80}},
-		},
+		Winners: kept,
 		Targets: map[string]ResolvedTarget{
 			"example.com":   {Addr: netip.MustParseAddr("10.0.0.11"), Reachable: true},
 			"*.example.com": {Addr: netip.MustParseAddr("10.0.0.11"), Reachable: true},
@@ -182,4 +188,52 @@ func TestTheCapCountsTheHostnamesThePolicyLetsThrough(t *testing.T) {
 	}}, nil, Settings{AllowHosts: []string{"*.example.com"}, MaxHostnamesPerGuest: 2})
 
 	require.Equal(t, []string{"a.example.com qemu/101", "b.example.com qemu/101"}, routeKeys(col.Routes))
+}
+
+// settleWith collects the Notes of the guests, takes out what the policy
+// refuses and settles the claims on top of stored, at now.
+func settleWith(guests []model.Guest, allow []string, stored map[string]Claim, now time.Time) (ClaimResult, []RouteStatus) {
+	col := Collect(guests, nil, Settings{AllowHosts: allow})
+	routes, refused := RefuseUnnamed(col.Routes, policyZones, allow)
+	return ResolveClaims(ClaimInput{Routes: routes, Held: col.Held, Claims: stored, Now: now, Grace: time.Minute}), refused
+}
+
+func apexGuest(vmid int) model.Guest {
+	return model.Guest{
+		Ref: model.GuestRef{Kind: model.KindQEMU, VMID: vmid}, Running: true, Tags: []string{"cf-tunnel"},
+		Description: "```cf-tunnel\nexample.com -> :80\n```",
+	}
+}
+
+// A guest that names the apex while the policy refuses it takes no claim and
+// holds none, however long it names it. Once allowHosts names it, it goes by
+// the rule for a hostname nobody holds: to the first of its claimants in owner
+// order, from that moment, as if the refused route had never been there.
+func TestARefusedNameTakesNoClaim(t *testing.T) {
+	t1 := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name           string
+		squat, second  int
+		winner, waiter string
+	}{
+		{"squatted by the guest first in order", 101, 200, "qemu/101", "qemu/200"},
+		{"squatted by the guest second in order", 300, 200, "qemu/200", "qemu/300"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res, refused := settleWith([]model.Guest{apexGuest(tt.squat)}, nil, map[string]Claim{}, t1)
+			require.Empty(t, res.Claims)
+			require.Len(t, refused, 1)
+			require.Equal(t, StateRejected, refused[0].State)
+
+			res, _ = settleWith([]model.Guest{apexGuest(tt.squat), apexGuest(tt.second)}, nil, res.Claims, t1.Add(time.Hour))
+			require.Empty(t, res.Claims, "nor while another names it too")
+
+			allowed := t1.Add(2 * time.Hour)
+			res, refused = settleWith([]model.Guest{apexGuest(tt.squat), apexGuest(tt.second)}, []string{"example.com"}, res.Claims, allowed)
+			require.Empty(t, refused)
+			require.Equal(t, Claim{
+				Hostname: "example.com", Owner: tt.winner, Since: allowed, Waiting: []Waiter{{Owner: tt.waiter, FirstSeen: allowed}},
+			}, res.Claims["example.com"])
+		})
+	}
 }

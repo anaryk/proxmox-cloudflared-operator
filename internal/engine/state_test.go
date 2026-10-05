@@ -206,6 +206,7 @@ func TestRolloutIsAskedAtMostEveryThirtySeconds(t *testing.T) {
 func TestTheStateHandedOutIsACopy(t *testing.T) {
 	e := newEnv(t)
 	e.inv.set(snapshot(guest(101, "web-1", "*.example.com -> :8080"), guest(102, "web-2", "www.example.com -> :8080")))
+	e.settings(func(s *store.Settings) { s.AllowHosts = []string{"*.example.com"} })
 	_, err := e.eng.CheckCredential(t.Context(), testCred, false)
 	require.NoError(t, err)
 

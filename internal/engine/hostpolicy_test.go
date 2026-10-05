@@ -23,6 +23,13 @@ func TestTheApexIsRejectedUntilAllowHostsNamesIt(t *testing.T) {
 		route(st, "example.com").Reason)
 	require.Equal(t, planner.StateRejected, route(st, "*.example.com").State)
 	require.Equal(t, []string{"www.example.com"}, e.recordNames())
+	require.Contains(t, st.Problems, `hostname example.com of qemu/101 is not published: the apex of zone example.com is published `+
+		`only when allowHosts names it: add "example.com" to allowHosts`)
+	claims, err := e.store.Claims()
+	require.NoError(t, err)
+	require.NotContains(t, claims, "example.com", "a refused route takes no claim")
+	require.NotContains(t, claims, "*.example.com")
+	require.Contains(t, claims, "www.example.com")
 
 	e.settings(func(s *store.Settings) { s.AllowHosts = []string{"example.com", "*.example.com"} })
 	e.clock.advance(time.Minute)
