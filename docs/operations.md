@@ -10,7 +10,7 @@ The package installs three systemd units.
 
 | Unit | What it does |
 |---|---|
-| `pco.service` | The daemon, `pco daemon`. It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service` and `pveproxy.service`, and before `pve-guests.service` and `pve-ha-lrm.service`. |
+| `pco.service` | The daemon, `pco daemon`. It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service` and `pveproxy.service`, and before `pve-ha-lrm.service`. It does not wait for the guests, and they do not wait for it. |
 | `pco-egress.service` | Loads the egress filter by running `pco egress load`. It is a one-shot unit that stays active, and it is ordered before `pco.service`. The connector units require it, so it starts with the first connector, at boot too. Setup does not enable it by itself. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 
@@ -36,6 +36,14 @@ hostname answers 502 until the daemon's first cycle has got a complete listing f
 verified the routes and given the filter their targets (see [Security](security.md)). The
 daemon starts after `pve-cluster.service` and `pveproxy.service`, and the addresses are verified
 up to 32 at a time, so the time to the first serve grows with their number.
+
+The daemon is not ordered before the start of the guests, so Proxmox may still be starting
+them when the first cycles run. A guest that does not run yet is listed as stopped, and a
+route that was served before the reboot is withdrawn with the reason `guest is not running`:
+its hostname answers 503 and its DNS record stays. The route is served again in the first
+cycle that finds the guest running and its address verified, which for the guests that start
+last is some cycles after the daemon's first. A VM whose address comes from the guest agent
+has it only once the agent runs in the guest.
 
 ## Where the state lives
 
