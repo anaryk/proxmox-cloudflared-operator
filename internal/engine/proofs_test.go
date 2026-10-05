@@ -239,10 +239,17 @@ func TestTheProofsOfOneCycleComeDueOverTheInterval(t *testing.T) {
 	require.LessOrEqual(t, oldest, every)
 }
 
+// A proof dated after now is due though now falls in the interval of the
+// proof, as a clock that went back a little does.
 func TestAProofDatedAfterNowIsDue(t *testing.T) {
+	const every = 24 * time.Hour
 	v, bindings := vouchedFleet(1, t0)
+	b := bindings[0]
+	now := b.VerifiedAt.Add(-time.Second)
+	require.False(t, due(b.Addr, now, b.VerifiedAt, every), "the two are in one interval")
 
-	require.False(t, v.vouches(bindings[0], t0.Add(-time.Second), time.Minute))
+	require.True(t, due(b.Addr, b.VerifiedAt, now, every))
+	require.False(t, v.vouches(b, now, every))
 }
 
 func TestAProofStandsOnlyForTheNodeAndPinItWasMadeWith(t *testing.T) {
