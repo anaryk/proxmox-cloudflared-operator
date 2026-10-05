@@ -85,6 +85,42 @@ func TestPruneInstallRemovesOnlyTheConnectorsOfTheInstall(t *testing.T) {
 	}, listDir(t, dir))
 }
 
+func TestStopAllStopsTheConnectorsOfTheInstallAndKeepsTheirFiles(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
+	connectorOf(t, sd, dir, idC, "METRICS_ADDR=127.0.0.1:20500\nEDGE_IP_VERSION=auto\nPCO_INSTALL="+otherInstall+"\n")
+	sd.active[UnitName(idE)] = true // a unit without files is nobody's
+	before := listDir(t, dir)
+	sd.reset()
+
+	require.NoError(t, m.StopAll(t.Context(), testInstall))
+
+	require.Equal(t, []string{"DisableNow " + unitA, "DisableNow " + UnitName(idB)}, sd.changes())
+	require.Equal(t, before, listDir(t, dir), "the files stay for Ensure")
+	require.True(t, sd.active[UnitName(idC)], "another install's connector runs on")
+
+	sd.reset()
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes(), "Ensure starts it again")
+
+	require.ErrorContains(t, m.StopAll(t.Context(), ""), "install id")
+}
+
+func TestStopAllGoesOnPastAConnectorThatWouldNotStop(t *testing.T) {
+	m, sd, _ := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
+	sd.fail["DisableNow "+unitA] = errBoom
+	sd.reset()
+
+	require.ErrorIs(t, m.StopAll(t.Context(), testInstall), errBoom)
+
+	require.Equal(t, []string{"DisableNow " + unitA, "DisableNow " + UnitName(idB)}, sd.changes())
+	require.True(t, sd.active[unitA])
+	require.False(t, sd.active[UnitName(idB)], "the next one is stopped all the same")
+}
+
 func TestPruneInstallRefusesAnInvalidInstallID(t *testing.T) {
 	m, sd, _ := newTestManager(t)
 	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))

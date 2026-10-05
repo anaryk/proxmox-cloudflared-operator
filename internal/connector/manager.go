@@ -333,6 +333,37 @@ func (m *Manager) PruneInstall(ctx context.Context, installID string, keep []str
 	})
 }
 
+// StopAll stops and disables every connector of the install and keeps their
+// files, so that Ensure can start them again. A connector of another install,
+// or of none, is left alone; one whose env file cannot be read is too, and is
+// an error.
+func (m *Manager) StopAll(ctx context.Context, installID string) error {
+	if err := checkInstall(installID); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids, _, err := m.discover(ctx)
+	errs := []error{err}
+	for _, id := range ids {
+		values, err := readEnv(m.path(envFile(id)))
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("tunnel %s: reading env file: %w", id, err))
+			continue
+		case values[installKey] != installID:
+			continue
+		}
+		if err := m.sd.DisableNow(ctx, UnitName(id)); err != nil {
+			errs = append(errs, fmt.Errorf("stopping %s: %w", UnitName(id), err))
+			continue
+		}
+		delete(m.queued, id)
+		m.log.Info().Str("tunnel", id).Msg("stopped connector")
+	}
+	return errors.Join(errs...)
+}
+
 // hasNoEnvAndNoToken reports whether a connector has neither an env file nor a
 // token file.
 func (m *Manager) hasNoEnvAndNoToken(id string) (bool, error) {
