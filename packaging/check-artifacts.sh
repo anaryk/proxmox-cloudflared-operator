@@ -7,7 +7,7 @@
 # also say, in its control file, that it is pco, of that version and of the
 # architecture in its name; dpkg writes a pre-release as 0.1.0~rc.1 there.
 #
-# Usage: packaging/check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [dist-dir]
+# Usage: packaging/check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [--require-ui] [dist-dir]
 #
 #   --version  the version the release is meant to have. Without it the check
 #              trusts dist/metadata.json for the version, which is right for
@@ -17,23 +17,30 @@
 #   --require-dpkg-deb
 #              fail when dpkg-deb is missing, instead of skipping the control
 #              fields with a note. CI and the release set it.
+#   --require-ui
+#              read ./usr/bin/pco out of each package and fail unless go
+#              version -m says it was built with -tags=nomsgpack,webui: without
+#              webui it serves a page that says it has no web interface. Needs
+#              dpkg-deb and go. CI, the release and make snapshot set it.
 #
 # Nothing else may be in dist/ besides the files goreleaser keeps for itself.
 
 set -euo pipefail
 
 usage() {
-	printf 'usage: check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [dist-dir]\n' >&2
+	printf 'usage: check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [--require-ui] [dist-dir]\n' >&2
 	exit 2
 }
 
 signed=0
 want=
 require_dpkg=0
+require_ui=0
 while [[ $# -gt 0 ]]; do
 	case $1 in
 	--signed) signed=1 ;;
 	--require-dpkg-deb) require_dpkg=1 ;;
+	--require-ui) require_ui=1 ;;
 	--version)
 		[[ $# -ge 2 && -n $2 ]] || usage
 		want=$2
@@ -176,6 +183,42 @@ elif [[ $require_dpkg == 1 ]]; then
 	fail "dpkg-deb is required to read the control files of the packages and was not found"
 else
 	printf 'check-artifacts.sh: dpkg-deb not found, the control files of the packages are not checked\n' >&2
+fi
+
+# tags <go binary>: the build tags go version -m lists for it, empty for none.
+tags() {
+	go version -m "$1" | awk -F'\t' '$2 == "build" && $3 ~ /^-tags=/ { sub(/^-tags=/, "", $3); print $3 }'
+}
+
+if [[ $require_ui == 1 ]]; then
+	if ! command -v dpkg-deb >/dev/null 2>&1; then
+		fail "dpkg-deb is required to read the binaries of the packages (--require-ui) and was not found"
+	elif ! command -v go >/dev/null 2>&1; then
+		fail "go is required to read the build tags of the binaries (--require-ui) and was not found"
+	else
+		work=$(mktemp -d "${TMPDIR:-/tmp}/check-artifacts.XXXXXXXX")
+		trap 'rm -rf "$work"' EXIT
+		for arch in amd64 arm64; do
+			deb=$dist/pco_${version}_$arch.deb
+			[[ -f $deb ]] || continue
+			if ! dpkg-deb --fsys-tarfile "$deb" 2>/dev/null | tar -xO ./usr/bin/pco >"$work/pco" 2>/dev/null; then
+				fail "${deb##*/} has no ./usr/bin/pco"
+				continue
+			fi
+			if ! got_tags=$(tags "$work/pco" 2>/dev/null); then
+				fail "go version -m cannot read ./usr/bin/pco of ${deb##*/}"
+				continue
+			fi
+			if [[ $got_tags != nomsgpack,webui ]]; then
+				if [[ -n $got_tags ]]; then
+					built="built with -tags=$got_tags"
+				else
+					built="built without tags"
+				fi
+				fail "${deb##*/} carries a pco $built; a release needs -tags=nomsgpack,webui, or it serves a page that says it has no web interface"
+			fi
+		done
+	fi
 fi
 
 if [[ $failures != 0 ]]; then

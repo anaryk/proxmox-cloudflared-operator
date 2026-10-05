@@ -8,6 +8,13 @@ project_name: pco
 git:
   prerelease_suffix: "-"
 
+# The interface is built before goreleaser runs, by make ui or by the ui job of
+# the workflows, never here: in a release this runs after the key import, and
+# nothing of npm may run on a runner that holds the key.
+before:
+  hooks:
+    - test -f internal/web/ui/dist/index.html
+
 builds:
   - id: pco
     main: ./cmd/pco
@@ -21,9 +28,11 @@ builds:
       - arm64
     flags:
       - -trimpath
-    # Keep it in sync with TAGS in the Makefile.
+    # Keep it in sync with TAGS in the Makefile; a package always carries the
+    # interface, which packaging/check-artifacts.sh --require-ui checks.
     tags:
       - nomsgpack
+      - webui
     # The same values the Makefile stamps. A release carries its tag, whatever
     # git describe says: it names an annotated tag first when a commit has two.
     # The date is the commit date rather than the time of the build, so that
@@ -88,12 +97,21 @@ nfpms:
         dst: /usr/share/doc/pco/README.md
         file_info:
           mode: 0644
-      - src: docs/*.md
-        dst: /usr/share/doc/pco/docs/
+      # The pages and docs/images, the screenshots they show. One glob for both:
+      # nfpm fails on a glob that matches nothing, as docs/images/* would
+      # before the first screenshot.
+      - src: docs/**
+        dst: /usr/share/doc/pco/docs
         file_info:
           mode: 0644
       - src: LICENSE
         dst: /usr/share/doc/pco/copyright
+        file_info:
+          mode: 0644
+      # The notices of the frontend packages the binary carries, also served
+      # as /licenses.txt.
+      - src: internal/web/ui/dist/licenses.txt
+        dst: /usr/share/doc/pco/web-licenses.txt
         file_info:
           mode: 0644
     scripts:

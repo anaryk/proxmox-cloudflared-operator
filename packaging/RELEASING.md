@@ -51,18 +51,63 @@ A release is a tag. The `release` workflow builds the packages from it, signs
        git tag -a v0.1.0 -m "pco 0.1.0"
        git push origin v0.1.0
 
-3. Approve the run of the `release` environment when the workflow waits for it.
+3. The job `ui` builds the web interface first (see below). Approve the run of
+   the `release` environment when the workflow waits for it.
 4. The workflow refuses to start building when `scripts/install.sh` at the tag
    still has the placeholder, has a block the installer cannot decode, or does
    not carry the key of the secret. Then it builds a draft release, checks the
-   file names, the checksums, the control files of the packages and the
-   signature (with `gpgv` and `sqv`, against the keys in `scripts/install.sh`),
-   and publishes the draft. Only the highest final version is marked as the
-   latest release, so a pre-release, or a fix for an older line, is not what the
-   installer picks.
+   file names, the checksums, the control files of the packages, that each
+   package carries the web interface, and the signature (with `gpgv` and
+   `sqv`, against the keys in `scripts/install.sh`), and publishes the draft.
+   Only the highest final version is marked as the latest release, so a
+   pre-release, or a fix for an older line, is not what the installer picks.
 
 A tag is never moved. If a run fails for a reason outside the repository, run
 the job again. Otherwise delete the draft release and release the next version.
+
+## The web interface
+
+The packages carry the web interface, which Vite builds from `web/` into
+`internal/web/ui/dist` and the build tag `webui` embeds. npm, and every package
+it installs, never runs where the release key is:
+
+- The job `ui` checks out the tag, sets up Node with `actions/setup-node`, runs
+  `make ui-test ui-budget` and uploads `internal/web/ui/dist` as the artifact
+  `ui-dist`. It may only read the repository, and has no environment and no
+  secret. The job of the same name in `ci` does the same for every push.
+- The job `release` needs `ui` and downloads `ui-dist` right after the
+  checkout, before the signature tools are installed and before the key is
+  imported. Nothing of npm runs in it; goreleaser's `before` hook only checks
+  that `internal/web/ui/dist/index.html` is there.
+- `packaging/check-artifacts.sh --require-ui` reads `usr/bin/pco` out of each
+  package and fails unless `go version -m` lists `-tags=nomsgpack,webui`.
+  Without the tag the binary serves a page that says it has no web interface.
+  The `package` job of `ci` and `make snapshot` run the same check, which needs
+  `dpkg-deb` and `go` (on macOS, `brew install dpkg`).
+
+`packaging/release-workflow_test.sh`, part of `make test-scripts`, fails when the
+release workflow loses this order. The workflow `ui-audit` runs
+`npm audit --omit=dev` every week and when `web/package-lock.json` changes; it
+is not a required check, so an advisory or a registry that does not answer
+blocks no pull request.
+
+## Node and npm
+
+Node and npm are pinned exactly, so a newer toolchain cannot change the build
+without a commit: Node 22.23.3 in `web/.nvmrc`, and npm 10.9.9, the npm that
+release of Node ships, in `packageManager` and `engines` of `web/package.json`.
+`web/.npmrc` sets `engine-strict`, so `npm ci` refuses any other version.
+`actions/setup-node` reads `web/.nvmrc` and brings the npm that goes with it.
+
+To raise them:
+
+1. Pick the release of Node from <https://nodejs.org/dist/index.json>; its
+   `npm` field is the version of npm it ships.
+2. Put the Node version into `web/.nvmrc` and `engines.node`, the npm version
+   into `engines.npm` and `packageManager`, and both into this section.
+3. With that Node installed (`nvm install` in `web/` reads `.nvmrc`), run
+   `make ui-test ui-budget` and commit the files, with `web/package-lock.json`
+   if npm changed it.
 
 ## Replacing the key
 

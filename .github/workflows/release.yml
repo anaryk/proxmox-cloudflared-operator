@@ -9,7 +9,32 @@ permissions:
   contents: read
 
 jobs:
+  # The web interface is built here, as in ci, and never in the job below: npm
+  # and every package it installs run without a secret, without the
+  # environment, and may only read the repository.
+  ui:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The Node of web/.nvmrc brings the npm web/package.json names. No cache:
+      # what npm installs comes from the lock file, never from an earlier run.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+          package-manager-cache: false
+      - run: make ui-test ui-budget
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-dist
+          path: internal/web/ui/dist
+          if-no-files-found: error
+
   release:
+    needs: ui
     runs-on: ubuntu-latest
     # The secret lives in this environment, which only the tags of a release can
     # deploy to and a reviewer has to approve. See packaging/RELEASING.md.
@@ -36,6 +61,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # The interface the ui job built; goreleaser embeds it with the tag webui.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ui-dist
+          path: internal/web/ui/dist
 
       # The build cache of another branch must not flow into a signed build.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -110,7 +141,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          packaging/check-artifacts.sh --signed --version "${TAG#v}" --require-dpkg-deb
+          packaging/check-artifacts.sh --signed --version "${TAG#v}" --require-dpkg-deb --require-ui
           env -u GNUPGHOME gpgv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
           env -u GNUPGHOME sqv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
 
