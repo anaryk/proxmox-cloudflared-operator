@@ -47,6 +47,74 @@ func (d Dir) put(kind, id string, v any, onlyIfChanged bool) error {
 	return d.commit(w)
 }
 
+// putIf is put for a value that was read at revision rev, 0 when there was
+// no object: it writes only while the file still has that revision, and
+// returns the revision the file has after. Otherwise the error is ErrRevision
+// with the revision the file has. A file that cannot be read is not replaced.
+func (d Dir) putIf(kind, id string, v any, rev int64) (int64, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0, fmt.Errorf("encoding %s %q: %w", kind, id, err)
+	}
+	_, path, err := d.file(kind, id)
+	if err != nil {
+		return 0, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	have, _, err := d.revisionIs(kind, id, path, rev)
+	if err != nil {
+		return have, err
+	}
+	w, err := d.prepare(kind, object{id: id, data: data}, true)
+	if err != nil || w == nil {
+		return have, err
+	}
+	if err := d.commit(w); err != nil {
+		return 0, err
+	}
+	return have + 1, nil
+}
+
+// deleteIf removes the object of kind and id when its file has revision rev.
+// Otherwise the error is ErrRevision, also when there is no file.
+func (d Dir) deleteIf(kind, id string, rev int64) error {
+	_, path, err := d.file(kind, id)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	switch _, found, err := d.revisionIs(kind, id, path, rev); {
+	case err != nil:
+		return err
+	case !found:
+		return fmt.Errorf("%w: there is no %s %q", ErrRevision, kind, id)
+	}
+	return d.removeFile(path)
+}
+
+// revisionIs checks that the file of an object at path has revision rev, 0
+// for no file, and returns the revision it has and whether it is there. The
+// caller holds the lock.
+func (d Dir) revisionIs(kind, id, path string, rev int64) (have int64, found bool, err error) {
+	old, found, err := readEnvelope(path)
+	switch {
+	case err != nil:
+		return 0, false, fmt.Errorf("%s %q: %w", kind, id, err)
+	case found && old.ID != "" && old.ID != id:
+		return 0, false, fmt.Errorf("%s %q: %s holds the object of %q", kind, id, path, old.ID)
+	case found:
+		have = old.Rev
+	}
+	if have != rev {
+		return have, found, fmt.Errorf("%w: %s %q is at revision %d, not %d", ErrRevision, kind, id, have, rev)
+	}
+	return have, found, nil
+}
+
 // replace makes the objects of a kind the ones in objs: it writes those that
 // differ from what is stored and removes every other. All of them are checked
 // before the first write or removal, so what could be known beforehand, such as

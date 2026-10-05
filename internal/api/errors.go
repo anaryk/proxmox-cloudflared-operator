@@ -32,11 +32,14 @@ const (
 
 const redacted = "[redacted]"
 
-// ErrorBody is every error answer. The credential is there when the engine
-// refused a token and has a report to show for it.
+// ErrorBody is every error answer. Field is the path, in the JSON of the
+// request, of the field a refusal is about, such as "denyHosts[2]"; the
+// credential is there when the engine refused a token and has a report to
+// show for it.
 type ErrorBody struct {
 	Error      string          `json:"error"`
 	Code       string          `json:"code"`
+	Field      string          `json:"field,omitempty"`
 	Credential json.RawMessage `json:"credential,omitempty"`
 }
 
@@ -67,30 +70,36 @@ type answered struct {
 	code   string
 	msg    string
 	stop   bool
+	field  string
 }
 
 // answer maps an error to its answer. The engine's own verdicts come first: an
 // engine that refused because Cloudflare did not answer in time has said what
 // it did, and the timeout is only the reason.
 func answer(err error) answered {
-	var he *httpError
+	var (
+		he *httpError
+		fe *engine.FieldError
+	)
 	switch {
 	case errors.As(err, &he):
-		return answered{he.status, he.code, he.msg, he.stop}
+		return answered{status: he.status, code: he.code, msg: he.msg, stop: he.stop}
+	case errors.As(err, &fe):
+		return answered{status: http.StatusBadRequest, code: codeInvalid, msg: err.Error(), field: fe.Field}
 	case errors.Is(err, engine.ErrInvalid):
-		return answered{http.StatusBadRequest, codeInvalid, err.Error(), false}
+		return answered{status: http.StatusBadRequest, code: codeInvalid, msg: err.Error()}
 	case errors.Is(err, engine.ErrNotFound):
-		return answered{http.StatusNotFound, codeNotFound, err.Error(), false}
+		return answered{status: http.StatusNotFound, code: codeNotFound, msg: err.Error()}
 	case errors.Is(err, engine.ErrRefused):
-		return answered{http.StatusConflict, codeRefused, err.Error(), false}
+		return answered{status: http.StatusConflict, code: codeRefused, msg: err.Error()}
 	case errors.Is(err, engine.ErrBusy):
-		return answered{http.StatusServiceUnavailable, codeUnavailable, err.Error(), false}
+		return answered{status: http.StatusServiceUnavailable, code: codeUnavailable, msg: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
-		return answered{http.StatusServiceUnavailable, codeUnavailable, "the operation timed out", false}
+		return answered{status: http.StatusServiceUnavailable, code: codeUnavailable, msg: "the operation timed out"}
 	case errors.Is(err, context.Canceled):
-		return answered{http.StatusServiceUnavailable, codeUnavailable, "the operation was cancelled", false}
+		return answered{status: http.StatusServiceUnavailable, code: codeUnavailable, msg: "the operation was cancelled"}
 	}
-	return answered{http.StatusInternalServerError, codeInternal, err.Error(), false}
+	return answered{status: http.StatusInternalServerError, code: codeInternal, msg: err.Error()}
 }
 
 // failure is what an error answer carries besides the error.
@@ -144,7 +153,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, f
 		// cannot hold the connection open with it.
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
 	}
-	body := ErrorBody{Error: redact(a.msg, f.secrets), Code: a.code}
+	body := ErrorBody{Error: redact(a.msg, f.secrets), Code: a.code, Field: a.field}
 	if f.credential != nil {
 		body.Credential = scrubbed(*f.credential, f.secrets)
 	}

@@ -7,12 +7,15 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
@@ -25,40 +28,47 @@ func TestSocketAccess(t *testing.T) {
 		accounts fakeAccounts
 		gid      int
 		uids     []uint32
+		web      uint32
 		logged   string
 	}{
-		{"no pco-web at all", fakeAccounts{}, 0, []uint32{0}, ""},
-		{"no pco-web, and the unit", fakeAccounts{web: true}, 0, []uint32{0}, ""},
-		{"user and group", fakeAccounts{user: webUser, group: webGroup, web: true}, 997, []uint32{0, 998}, ""},
-		{"only the group", fakeAccounts{group: webGroup, web: true}, 997, []uint32{0}, ""},
-		{"only the user", fakeAccounts{user: webUser, web: true}, 0, []uint32{0, 998}, ""},
+		{"no pco-web at all", fakeAccounts{}, 0, []uint32{0}, 0, ""},
+		{"no pco-web, and the unit", fakeAccounts{web: true}, 0, []uint32{0}, 0, ""},
+		{"user and group", fakeAccounts{user: webUser, group: webGroup, web: true}, 997, []uint32{0, 998}, 998, ""},
+		{"only the group", fakeAccounts{group: webGroup, web: true}, 997, []uint32{0}, 0, ""},
+		{"only the user", fakeAccounts{user: webUser, web: true}, 0, []uint32{0, 998}, 998, ""},
 		{
 			"a group id that is not a number", fakeAccounts{group: &user.Group{Gid: "web", Name: webName}, web: true},
-			0, []uint32{0}, "the group id is not a number",
+			0, []uint32{0}, 0, "the group id is not a number",
 		},
 		{
 			"a user id that is not a number", fakeAccounts{user: &user.User{Uid: "web", Username: webName}, web: true},
-			0, []uint32{0}, "the user id is not a number",
+			0, []uint32{0}, 0, "the user id is not a number",
+		},
+		// pco-web as root would make root's requests the web's.
+		{
+			"a user that is root", fakeAccounts{user: &user.User{Uid: "0", Username: webName}, web: true},
+			0, []uint32{0}, 0, "the user pco-web is root",
 		},
 		// A user named pco-web that anyone with useradd made, before the web UI
 		// is installed, is nobody the daemon answers.
 		{
-			"user and group without the unit", fakeAccounts{user: webUser, group: webGroup}, 0, []uint32{0},
+			"user and group without the unit", fakeAccounts{user: webUser, group: webGroup}, 0, []uint32{0}, 0,
 			"the user or the group pco-web exists, but the web UI is not installed (no /usr/lib/systemd/system/pco-web.service); " +
 				"it may not use the socket",
 		},
 		{
-			"only the user without the unit", fakeAccounts{user: webUser}, 0, []uint32{0},
+			"only the user without the unit", fakeAccounts{user: webUser}, 0, []uint32{0}, 0,
 			"the user or the group pco-web exists, but the web UI is not installed",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			logs := &testutil.SyncBuffer{}
 
-			gid, uids := socketAccess(tt.accounts, zerolog.New(logs))
+			gid, uids, web := socketAccess(tt.accounts, zerolog.New(logs))
 
 			require.Equal(t, tt.gid, gid)
 			require.Equal(t, tt.uids, uids)
+			require.Equal(t, tt.web, web)
 			if tt.logged == "" {
 				require.Empty(t, logs.String(), "a missing user or group is normal")
 			} else {
@@ -79,10 +89,11 @@ func (brokenAccounts) LookupGroup(string) (*user.Group, error) { return nil, err
 func TestSocketAccessFallsBackToRootWhenALookupFails(t *testing.T) {
 	logs := &testutil.SyncBuffer{}
 
-	gid, uids := socketAccess(brokenAccounts{}, zerolog.New(logs))
+	gid, uids, web := socketAccess(brokenAccounts{}, zerolog.New(logs))
 
 	require.Equal(t, 0, gid)
 	require.Equal(t, []uint32{0}, uids)
+	require.Zero(t, web)
 	require.Contains(t, logs.String(), "looking up the group failed")
 	require.Contains(t, logs.String(), "looking up the user failed")
 }
@@ -117,6 +128,43 @@ func TestWiredSettingsNameWhatChanged(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, base.differences(tt.now))
 		})
+	}
+}
+
+// The settings the engine is told are read at start are those differences
+// compares, every field of wired, and no list of them is written twice.
+func TestWiredFieldsAreWhatDifferencesCompares(t *testing.T) {
+	base := store.DefaultSettings()
+	var named []string
+	for i := range reflect.TypeFor[store.Settings]().NumField() {
+		changed := base
+		change(t, reflect.ValueOf(&changed).Elem().Field(i))
+		named = append(named, wiredFrom(base).differences(wiredFrom(changed))...)
+	}
+	slices.Sort(named)
+
+	require.Equal(t, slices.Sorted(slices.Values(wiredFields())), named)
+	require.Len(t, wiredFields(), reflect.TypeFor[wired]().NumField())
+}
+
+// change gives a field of the settings another value.
+func change(t *testing.T, v reflect.Value) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(v.String() + "x")
+	case reflect.Bool:
+		v.SetBool(!v.Bool())
+	case reflect.Int, reflect.Int64:
+		v.SetInt(v.Int() + 1)
+	case reflect.Slice:
+		v.Set(reflect.Append(v, reflect.Zero(v.Type().Elem())))
+	case reflect.Map:
+		m := reflect.MakeMap(v.Type())
+		m.SetMapIndex(reflect.ValueOf("x"), reflect.ValueOf("y"))
+		v.Set(m)
+	default:
+		t.Fatalf("no change for a field of kind %s", v.Kind())
 	}
 }
 

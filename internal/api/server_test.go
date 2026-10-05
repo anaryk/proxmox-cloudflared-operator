@@ -22,6 +22,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const (
@@ -82,6 +84,12 @@ type fakeEngine struct {
 	findings  []doctor.Finding
 	traffic   engine.TrafficView
 	series    map[string]engine.RouteSeries // by hostname: the routes with a target
+
+	settings   engine.SettingsView
+	restart    []string // what a save of the settings needs a restart for
+	manual     []engine.ManualRouteView
+	guests     []engine.GuestListView
+	annotation engine.AnnotationView
 }
 
 func (f *fakeEngine) record(ctx context.Context, call string) {
@@ -353,6 +361,75 @@ func (f *fakeEngine) RouteSeries(hostname string) (engine.RouteSeries, error) {
 	return s, nil
 }
 
+func (f *fakeEngine) SettingsView() (engine.SettingsView, error) {
+	f.record(context.Background(), "settings")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.settings, f.err
+}
+
+// SaveSettings answers with the settings saved at the next revision.
+func (f *fakeEngine) SaveSettings(ctx context.Context, rev int, s store.Settings) (engine.SettingsView, []string, error) {
+	f.record(ctx, fmt.Sprintf("save settings:%d:%s", rev, s.GateTag))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return engine.SettingsView{}, nil, f.err
+	}
+	v := f.settings
+	v.Rev, v.Settings = rev+1, s
+	return v, f.restart, nil
+}
+
+func (f *fakeEngine) ManualRoutes() ([]engine.ManualRouteView, error) {
+	f.record(context.Background(), "manual")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.manual, f.err
+}
+
+func (f *fakeEngine) CreateManualRoute(ctx context.Context, v engine.ManualRouteView) (engine.ManualRouteView, error) {
+	f.record(ctx, "create manual:"+v.ID+":"+v.Hostname)
+	if err := f.failure(); err != nil {
+		return engine.ManualRouteView{}, err
+	}
+	v.Rev = 1
+	return v, nil
+}
+
+func (f *fakeEngine) UpdateManualRoute(ctx context.Context, id string, rev int, v engine.ManualRouteView) (engine.ManualRouteView, error) {
+	f.record(ctx, fmt.Sprintf("update manual:%s:%d:%s", id, rev, v.Hostname))
+	if err := f.failure(); err != nil {
+		return engine.ManualRouteView{}, err
+	}
+	v.ID, v.Rev = id, rev+1
+	return v, nil
+}
+
+func (f *fakeEngine) DeleteManualRoute(ctx context.Context, id string, rev int) error {
+	f.record(ctx, fmt.Sprintf("delete manual:%s:%d", id, rev))
+	return f.failure()
+}
+
+func (f *fakeEngine) Guests() ([]engine.GuestListView, error) {
+	f.record(context.Background(), "guests")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.guests, f.err
+}
+
+func (f *fakeEngine) Annotation(ref model.GuestRef) (engine.AnnotationView, error) {
+	f.record(context.Background(), "annotation:"+ref.String())
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.annotation, f.err
+}
+
+func (f *fakeEngine) RequestRestart(ctx context.Context) error {
+	f.record(ctx, "restart")
+	return f.failure()
+}
+
 func (f *fakeEngine) PollInterval() time.Duration {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -374,10 +451,10 @@ func newServer(e *fakeEngine) *Server {
 }
 
 // requestFrom builds a request that came in on the socket from the peer with
-// uid. A POST carries the JSON content type.
+// uid. A POST and a PUT carry the JSON content type.
 func requestFrom(uid uint32, method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
-	if method == http.MethodPost {
+	if method == http.MethodPost || method == http.MethodPut {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return req.WithContext(withPeerUID(req.Context(), uid))
@@ -402,24 +479,29 @@ func do(s *Server, method, target, body string) *httptest.ResponseRecorder {
 type errorAnswer struct {
 	Message    string
 	Code       string
+	Field      string
 	Credential json.RawMessage // nil when the body has none
 }
 
 // parseError reads an error answer strictly: it carries the message and the
-// code, may carry a credential, and nothing else.
+// code, may carry a field or a credential, and nothing else.
 func parseError(t *testing.T, rec *httptest.ResponseRecorder) errorAnswer {
 	t.Helper()
 	require.True(t, strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json"), rec.Header().Get("Content-Type"))
 	var raw map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw), rec.Body.String())
 	for key := range raw {
-		require.Contains(t, []string{"error", "code", "credential"}, key, rec.Body.String())
+		require.Contains(t, []string{"error", "code", "field", "credential"}, key, rec.Body.String())
 	}
 	require.Contains(t, raw, "error", rec.Body.String())
 	require.Contains(t, raw, "code", rec.Body.String())
 	var a errorAnswer
 	require.NoError(t, json.Unmarshal(raw["error"], &a.Message))
 	require.NoError(t, json.Unmarshal(raw["code"], &a.Code))
+	if f, ok := raw["field"]; ok {
+		require.NoError(t, json.Unmarshal(f, &a.Field))
+		require.NotEmpty(t, a.Field, "a field is named or left out")
+	}
 	a.Credential = raw["credential"]
 	return a
 }

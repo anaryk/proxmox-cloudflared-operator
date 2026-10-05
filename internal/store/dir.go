@@ -27,6 +27,11 @@ const (
 // wrapped, with the path of the root.
 var ErrNoRoot = errors.New("store root is missing")
 
+// ErrRevision is the error of a write for an object read at a revision it no
+// longer has: someone else wrote it, made it or removed it in between.
+// Nothing was written.
+var ErrRevision = errors.New("the object changed since it was read")
+
 // errNewerSchema marks a file written by a newer version.
 var errNewerSchema = errors.New("written by a newer version")
 
@@ -147,21 +152,28 @@ func (d Dir) Get(kind, id string, v any) (found bool, err error) {
 
 // get is Get, which with strict also refuses a key the value has no field for.
 func (d Dir) get(kind, id string, v any, strict bool) (found bool, err error) {
+	_, found, err = d.getRev(kind, id, v, strict)
+	return found, err
+}
+
+// getRev is get that also returns the revision of the file, 0 when there is
+// none.
+func (d Dir) getRev(kind, id string, v any, strict bool) (rev int64, found bool, err error) {
 	_, path, err := d.file(kind, id)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	env, found, err := d.readFile(path)
 	if err != nil || !found {
-		return false, err
+		return 0, false, err
 	}
 	if env.ID != id {
-		return false, fmt.Errorf("%s holds the object of %q, not of %q", path, env.ID, id)
+		return 0, false, fmt.Errorf("%s holds the object of %q, not of %q", path, env.ID, id)
 	}
 	if err := decode(env.Data, v, strict); err != nil {
-		return false, fmt.Errorf("%s: %s", path, jsonProblem(err))
+		return 0, false, fmt.Errorf("%s: %s", path, jsonProblem(err))
 	}
-	return true, nil
+	return env.Rev, true, nil
 }
 
 // readFile reads the file at path, in a kind directory of the root. A file that

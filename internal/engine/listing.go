@@ -21,13 +21,23 @@ type listing struct {
 	claimed map[string]map[string]bool
 }
 
-type listedGuest struct{ name, identity string }
+// listedGuest is what the listing showed of a guest. The tags and the Notes
+// are those of the snapshot, not copies.
+type listedGuest struct {
+	name, identity, node string
+	running              bool
+	tags                 []string
+	notes                string
+}
 
 // listingOf is the listing of a complete snapshot, without the claims.
 func listingOf(snap inventory.Snapshot) listing {
 	l := listing{complete: true, guests: make(map[model.GuestRef]listedGuest, len(snap.Guests))}
 	for _, g := range snap.Guests {
-		l.guests[g.Ref] = listedGuest{name: strings.TrimSpace(g.Name), identity: g.Identity}
+		l.guests[g.Ref] = listedGuest{
+			name: strings.TrimSpace(g.Name), identity: g.Identity, node: g.Node,
+			running: g.Running, tags: g.Tags, notes: g.Description,
+		}
 	}
 	return l
 }

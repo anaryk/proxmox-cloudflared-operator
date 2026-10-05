@@ -42,6 +42,41 @@ const (
 	maxCloudflareBudget = 1150
 )
 
+// FieldError is a setting that is not valid. Field is its path in the JSON of
+// the settings, such as "pollInterval" or "denyHosts[2]".
+type FieldError struct {
+	Field string
+	Err   error
+}
+
+func (e *FieldError) Error() string { return e.Err.Error() }
+
+func (e *FieldError) Unwrap() error { return e.Err }
+
+// invalid is the FieldError of field, with the message format makes.
+func invalid(field, format string, args ...any) *FieldError {
+	return &FieldError{Field: field, Err: fmt.Errorf(format, args...)}
+}
+
+// Limit is the range the settings accept for one of them: a Duration or an
+// int, nil where there is no bound.
+type Limit struct {
+	Min any
+	Max any
+}
+
+// Limits are the ranges the settings are checked against, by the JSON name of
+// the setting, for those that have one.
+func Limits() map[string]Limit {
+	return map[string]Limit{
+		"pollInterval":         {Min: Duration(minPollInterval)},
+		"grace":                {Min: Duration(minGrace)},
+		"reverifyInterval":     {Min: Duration(minReverifyInterval), Max: Duration(maxReverifyInterval)},
+		"maxHostnamesPerGuest": {Min: minHostnamesPerGuest},
+		"cloudflareBudget":     {Min: minCloudflareBudget, Max: maxCloudflareBudget},
+	}
+}
+
 // tagPattern is what Proxmox accepts as a tag, in lower case.
 var tagPattern = regexp.MustCompile(`^[a-z0-9_][a-z0-9_\-+.]*$`)
 
@@ -137,11 +172,11 @@ func (s *Settings) raiseToMinimums(file string) []string {
 }
 
 // normalized returns a copy of s with its patterns and zone names in their
-// normal form, or an error naming the first field that is invalid.
+// normal form, or a *FieldError naming the first field that is invalid.
 func (s Settings) normalized() (Settings, error) {
 	var err error
 	if err = validateTag(s.GateTag); err != nil {
-		return Settings{}, fmt.Errorf("gateTag %q: %w", s.GateTag, err)
+		return Settings{}, invalid("gateTag", "gateTag %q: %w", s.GateTag, err)
 	}
 	if s.AllowHosts, err = normalizePatterns("allowHosts", s.AllowHosts); err != nil {
 		return Settings{}, err
@@ -150,35 +185,36 @@ func (s Settings) normalized() (Settings, error) {
 		return Settings{}, err
 	}
 	if time.Duration(s.PollInterval) < minPollInterval {
-		return Settings{}, fmt.Errorf("pollInterval %s: at least %s", time.Duration(s.PollInterval), minPollInterval)
+		return Settings{}, invalid("pollInterval", "pollInterval %s: at least %s", time.Duration(s.PollInterval), minPollInterval)
 	}
 	if time.Duration(s.Grace) < minGrace {
-		return Settings{}, fmt.Errorf("grace %s: at least %s", time.Duration(s.Grace), minGrace)
+		return Settings{}, invalid("grace", "grace %s: at least %s", time.Duration(s.Grace), minGrace)
 	}
 	if s.MaxHostnamesPerGuest < minHostnamesPerGuest {
-		return Settings{}, fmt.Errorf("maxHostnamesPerGuest %d: at least %d", s.MaxHostnamesPerGuest, minHostnamesPerGuest)
+		return Settings{}, invalid("maxHostnamesPerGuest", "maxHostnamesPerGuest %d: at least %d", s.MaxHostnamesPerGuest, minHostnamesPerGuest)
 	}
 	switch every := time.Duration(s.ReverifyInterval); {
 	case every < minReverifyInterval:
-		return Settings{}, fmt.Errorf("reverifyInterval %s: at least %s", every, minReverifyInterval)
+		return Settings{}, invalid("reverifyInterval", "reverifyInterval %s: at least %s", every, minReverifyInterval)
 	case every > maxReverifyInterval:
-		return Settings{}, fmt.Errorf("reverifyInterval %s: at most %s", every, maxReverifyInterval)
+		return Settings{}, invalid("reverifyInterval", "reverifyInterval %s: at most %s", every, maxReverifyInterval)
 	}
 	if s.CloudflareBudget < minCloudflareBudget || s.CloudflareBudget > maxCloudflareBudget {
-		return Settings{}, fmt.Errorf("cloudflareBudget %d: from %d to %d", s.CloudflareBudget, minCloudflareBudget, maxCloudflareBudget)
+		return Settings{}, invalid("cloudflareBudget", "cloudflareBudget %d: from %d to %d", s.CloudflareBudget, minCloudflareBudget, maxCloudflareBudget)
 	}
 	if s.Admission != AdmissionTag && s.Admission != AdmissionApprove {
-		return Settings{}, fmt.Errorf("admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)
+		return Settings{}, invalid("admission", "admission %q: want %q or %q", s.Admission, AdmissionTag, AdmissionApprove)
 	}
 	switch resolve.Level(s.IdentityMinimum) {
 	case resolve.LevelObserved, resolve.LevelFiltered, resolve.LevelPort:
 	default:
-		return Settings{}, fmt.Errorf("identityMinimum %q: want %q, %q or %q",
+		return Settings{}, invalid("identityMinimum", "identityMinimum %q: want %q, %q or %q",
 			s.IdentityMinimum, resolve.LevelObserved, resolve.LevelFiltered, resolve.LevelPort)
 	}
 	for i, p := range s.TrustedCIDRs {
 		if !p.IsValid() || !p.Addr().Is4() {
-			return Settings{}, fmt.Errorf("trustedCIDRs[%d] %s: want an IPv4 prefix", i, p)
+			field := fmt.Sprintf("trustedCIDRs[%d]", i)
+			return Settings{}, invalid(field, "%s %s: want an IPv4 prefix", field, p)
 		}
 	}
 	s.TrustedCIDRs = slices.Clone(s.TrustedCIDRs)
@@ -211,7 +247,8 @@ func normalizePatterns(field string, patterns []string) ([]string, error) {
 	for i, p := range patterns {
 		n, err := hostname.NormalizePattern(p)
 		if err != nil {
-			return nil, fmt.Errorf("%s[%d] %q: %w", field, i, p, err)
+			at := fmt.Sprintf("%s[%d]", field, i)
+			return nil, invalid(at, "%s %q: %w", at, p, err)
 		}
 		out[i] = n
 	}
@@ -227,15 +264,16 @@ func normalizePins(pins map[string]string) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(pins))
 	for _, zone := range slices.Sorted(maps.Keys(pins)) {
+		field := fmt.Sprintf("zonePins[%q]", zone)
 		name, err := hostname.Normalize(zone)
 		if err != nil {
-			return nil, fmt.Errorf("zonePins: %w", err)
+			return nil, invalid(field, "zonePins: %w", err)
 		}
 		if pins[zone] == "" {
-			return nil, fmt.Errorf("zonePins[%q]: the credential id is empty", zone)
+			return nil, invalid(field, "%s: the credential id is empty", field)
 		}
 		if _, dup := out[name]; dup {
-			return nil, fmt.Errorf("zonePins[%q]: another key names zone %s too", zone, name)
+			return nil, invalid(field, "%s: another key names zone %s too", field, name)
 		}
 		out[name] = pins[zone]
 	}

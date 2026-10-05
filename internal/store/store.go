@@ -208,28 +208,35 @@ func (s *Store) Settings() (Settings, error) {
 // used and the file to edit. Nothing is written; SaveSettings still refuses a
 // value below the minimum.
 func (s *Store) LoadSettings() (Settings, []string, error) {
+	v, _, notes, err := s.LoadSettingsRev()
+	return v, notes, err
+}
+
+// LoadSettingsRev is LoadSettings with the revision of the stored settings,
+// which SaveSettingsIf takes; 0 when none are stored.
+func (s *Store) LoadSettingsRev() (Settings, int, []string, error) {
 	stored := DefaultSettings()
-	found, err := s.cluster.get(kindMeta, idSettings, &stored, true)
+	rev, found, err := s.cluster.getRev(kindMeta, idSettings, &stored, true)
 	if err != nil {
-		return Settings{}, nil, err
+		return Settings{}, 0, nil, err
 	}
 	if !found {
-		return DefaultSettings(), nil, nil
+		return DefaultSettings(), 0, nil, nil
 	}
 	_, file, err := s.cluster.file(kindMeta, idSettings)
 	if err != nil {
-		return Settings{}, nil, err
+		return Settings{}, 0, nil, err
 	}
 	notes := stored.raiseToMinimums(file)
 	n, err := stored.normalized()
 	if err != nil {
-		return Settings{}, nil, fmt.Errorf("stored settings are invalid: %w", err)
+		return Settings{}, 0, nil, fmt.Errorf("stored settings are invalid: %w", err)
 	}
-	return n, notes, nil
+	return n, int(rev), notes, nil
 }
 
 // SaveSettings validates the settings and stores them with their patterns and
-// zone names in normal form. Invalid settings are refused, naming the field,
+// zone names in normal form. Invalid settings are refused with a *FieldError,
 // and nothing is written.
 func (s *Store) SaveSettings(v Settings) error {
 	n, err := v.normalized()
@@ -237,6 +244,19 @@ func (s *Store) SaveSettings(v Settings) error {
 		return fmt.Errorf("settings: %w", err)
 	}
 	return s.cluster.put(kindMeta, idSettings, n, true)
+}
+
+// SaveSettingsIf is SaveSettings for settings read at revision rev: they are
+// stored only while the stored ones still have it, else the error is
+// ErrRevision. It returns the revision the stored settings have after, which
+// is rev for settings that did not change.
+func (s *Store) SaveSettingsIf(rev int, v Settings) (int, error) {
+	n, err := v.normalized()
+	if err != nil {
+		return 0, fmt.Errorf("settings: %w", err)
+	}
+	now, err := s.cluster.putIf(kindMeta, idSettings, n, int64(rev))
+	return int(now), err
 }
 
 // Writer returns the writer named in leader.json. The file is read on every
@@ -317,19 +337,66 @@ func (s *Store) ManualRoutes() ([]model.Route, error) {
 // in normal form. A route without an id or with a hostname that is not valid
 // is refused, and so is one whose id maps to the file of another id.
 func (s *Store) SaveManualRoute(r model.Route) error {
+	r, err := checkManual(r)
+	if err != nil {
+		return err
+	}
+	return s.cluster.put(kindRoutes, r.ManualID, r, true)
+}
+
+// checkManual returns a manual route with its hostname in normal form, or
+// refuses it.
+func checkManual(r model.Route) (model.Route, error) {
 	if r.ManualID == "" {
-		return errors.New("manual route has no id")
+		return model.Route{}, errors.New("manual route has no id")
 	}
 	host, err := hostname.Normalize(r.Hostname)
 	if err != nil {
-		return fmt.Errorf("manual route %s: %w", r.ManualID, err)
+		return model.Route{}, fmt.Errorf("manual route %s: %w", r.ManualID, err)
 	}
 	r.Hostname = host
-	return s.cluster.put(kindRoutes, r.ManualID, r, true)
+	return r, nil
 }
 
 // DeleteManualRoute removes a manual route. A missing one is not an error.
 func (s *Store) DeleteManualRoute(id string) error { return s.cluster.Delete(kindRoutes, id) }
+
+// ManualRoute is a manual route with the revision of its file.
+type ManualRoute struct {
+	Route model.Route
+	Rev   int
+}
+
+// ManualRoutesRev is ManualRoutes with the revision of each.
+func (s *Store) ManualRoutesRev() ([]ManualRoute, error) {
+	out := []ManualRoute{}
+	err := eachRevision(s.cluster, kindRoutes, func(_, _ string, rev int64, r model.Route) error {
+		out = append(out, ManualRoute{Route: r, Rev: int(rev)})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SaveManualRouteIf is SaveManualRoute for a route read at revision rev, 0
+// for a new one: it is stored only while the stored one has that revision,
+// else the error is ErrRevision. It returns the revision the route has after.
+func (s *Store) SaveManualRouteIf(rev int, r model.Route) (int, error) {
+	r, err := checkManual(r)
+	if err != nil {
+		return 0, err
+	}
+	now, err := s.cluster.putIf(kindRoutes, r.ManualID, r, int64(rev))
+	return int(now), err
+}
+
+// DeleteManualRouteIf removes a manual route while it has revision rev, else
+// the error is ErrRevision, also for one that is not there.
+func (s *Store) DeleteManualRouteIf(id string, rev int) error {
+	return s.cluster.deleteIf(kindRoutes, id, int64(rev))
+}
 
 // Approvals returns the approvals by owner.
 func (s *Store) Approvals() (map[string]Approval, error) {

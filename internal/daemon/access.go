@@ -36,13 +36,14 @@ func unitInstalled(path string) bool {
 	return err == nil
 }
 
-// socketAccess returns the group that owns the socket and the users whose
-// requests are answered. The group is pco-web when there is one, else the
-// group of root; the users are root and pco-web when there is one. A user or a
-// group that does not exist is the normal case of a node without the web UI.
-// Without the unit of the web UI the name means nothing: anyone who may add a
-// user could have made it, and only root is answered.
-func socketAccess(a Accounts, log zerolog.Logger) (gid int, uids []uint32) {
+// socketAccess returns the group that owns the socket, the users whose
+// requests are answered and the user of the web UI, 0 for none. The group is
+// pco-web when there is one, else the group of root; the users are root and
+// pco-web when there is one. A user or a group that does not exist is the
+// normal case of a node without the web UI. Without the unit of the web UI
+// the name means nothing: anyone who may add a user could have made it, and
+// only root is answered.
+func socketAccess(a Accounts, log zerolog.Logger) (gid int, uids []uint32, web uint32) {
 	gid, uids = 0, []uint32{0}
 	if !a.WebInstalled() {
 		_, uerr := a.LookupUser(webName)
@@ -51,7 +52,7 @@ func socketAccess(a Accounts, log zerolog.Logger) (gid int, uids []uint32) {
 			log.Warn().Str("user", webName).Msg("the user or the group " + webName + " exists, but the web UI is not installed (no " +
 				webUnit + "); it may not use the socket")
 		}
-		return gid, uids
+		return gid, uids, 0
 	}
 
 	g, err := a.LookupGroup(webName)
@@ -69,15 +70,20 @@ func socketAccess(a Accounts, log zerolog.Logger) (gid int, uids []uint32) {
 	u, err := a.LookupUser(webName)
 	switch {
 	case err == nil:
-		if n, perr := strconv.ParseUint(u.Uid, 10, 32); perr == nil {
-			uids = append(uids, uint32(n))
-		} else {
+		n, perr := strconv.ParseUint(u.Uid, 10, 32)
+		switch {
+		case perr != nil:
 			log.Warn().Str("user", webName).Str("uid", u.Uid).Msg("the user id is not a number; only root may use the socket")
+		case n == 0:
+			log.Warn().Str("user", webName).Msg("the user " + webName + " is root; only root may use the socket, as the command line")
+		default:
+			web = uint32(n)
+			uids = append(uids, web)
 		}
 	case !isUnknownUser(err):
 		log.Warn().Err(err).Str("user", webName).Msg("looking up the user failed; only root may use the socket")
 	}
-	return gid, uids
+	return gid, uids, web
 }
 
 func isUnknownUser(err error) bool {

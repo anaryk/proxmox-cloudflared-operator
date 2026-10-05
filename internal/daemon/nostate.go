@@ -11,6 +11,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -156,3 +157,31 @@ func (n *noStateEngine) Traffic() engine.TrafficView {
 func (n *noStateEngine) RouteSeries(string) (engine.RouteSeries, error) {
 	return engine.RouteSeries{}, n.refuse()
 }
+
+func (n *noStateEngine) SettingsView() (engine.SettingsView, error) {
+	return engine.SettingsView{}, n.refuse()
+}
+
+func (n *noStateEngine) SaveSettings(context.Context, int, store.Settings) (engine.SettingsView, []string, error) {
+	return engine.SettingsView{}, nil, n.refuse()
+}
+
+func (n *noStateEngine) ManualRoutes() ([]engine.ManualRouteView, error) { return nil, n.refuse() }
+
+func (n *noStateEngine) CreateManualRoute(context.Context, engine.ManualRouteView) (engine.ManualRouteView, error) {
+	return engine.ManualRouteView{}, n.refuse()
+}
+
+func (n *noStateEngine) UpdateManualRoute(context.Context, string, int, engine.ManualRouteView) (engine.ManualRouteView, error) {
+	return engine.ManualRouteView{}, n.refuse()
+}
+
+func (n *noStateEngine) DeleteManualRoute(context.Context, string, int) error { return n.refuse() }
+
+func (n *noStateEngine) Guests() ([]engine.GuestListView, error) { return nil, n.refuse() }
+
+func (n *noStateEngine) Annotation(model.GuestRef) (engine.AnnotationView, error) {
+	return engine.AnnotationView{}, n.refuse()
+}
+
+func (n *noStateEngine) RequestRestart(context.Context) error { return n.refuse() }

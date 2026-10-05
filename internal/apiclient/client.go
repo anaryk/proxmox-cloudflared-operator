@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -331,6 +332,72 @@ func (c *Client) DoctorRaw(ctx context.Context) (json.RawMessage, error) {
 	return c.raw(ctx, c.long, "/v1/doctor")
 }
 
+// Settings returns the settings with the revision they are at.
+func (c *Client) Settings(ctx context.Context) (engine.SettingsView, error) {
+	var v engine.SettingsView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/settings", nil, &v)
+	return v, err
+}
+
+// SettingsRaw is Settings as the daemon sent it.
+func (c *Client) SettingsRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, "/v1/settings")
+}
+
+// SaveSettings saves settings that were read at revision rev. They go as
+// they are given, the JSON of store.Settings, for the daemon to read as
+// strictly as it reads its own. The answer, as the daemon sent it, has the
+// settings saved and restartNeeded.
+func (c *Client) SaveSettings(ctx context.Context, rev int, settings json.RawMessage) (json.RawMessage, error) {
+	body := struct {
+		Rev      int             `json:"rev"`
+		Settings json.RawMessage `json:"settings"`
+	}{rev, settings}
+	var raw json.RawMessage
+	err := c.call(ctx, c.long, http.MethodPut, "/v1/settings", body, &raw)
+	return raw, err
+}
+
+// ManualRoutes returns the routes an admin made, with their revisions.
+func (c *Client) ManualRoutes(ctx context.Context) ([]engine.ManualRouteView, error) {
+	var routes []engine.ManualRouteView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/routes/manual", nil, &routes)
+	return routes, err
+}
+
+// ManualRoutesRaw is ManualRoutes as the daemon sent it.
+func (c *Client) ManualRoutesRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, "/v1/routes/manual")
+}
+
+// CreateManualRoute makes a manual route; without an id the daemon gives it
+// one. The answer is the route as made.
+func (c *Client) CreateManualRoute(ctx context.Context, v engine.ManualRouteView) (engine.ManualRouteView, error) {
+	var made engine.ManualRouteView
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/routes/manual", v, &made)
+	return made, err
+}
+
+// DeleteManualRoute removes the manual route id, which was read at revision
+// rev.
+func (c *Client) DeleteManualRoute(ctx context.Context, id string, rev int) error {
+	path := "/v1/routes/manual/" + url.PathEscape(id) + "?" + url.Values{"rev": {strconv.Itoa(rev)}}.Encode()
+	return c.call(ctx, c.long, http.MethodDelete, path, nil, nil)
+}
+
+// Guests returns the guests of the last listing.
+func (c *Client) Guests(ctx context.Context) ([]engine.GuestListView, error) {
+	var guests []engine.GuestListView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/guests", nil, &guests)
+	return guests, err
+}
+
+// Restart asks the daemon to stop once the running cycle is done, for
+// systemd to start it again.
+func (c *Client) Restart(ctx context.Context) error {
+	return c.call(ctx, c.long, http.MethodPost, "/v1/daemon/restart", nil, nil)
+}
+
 // raw returns the answer to a GET as the daemon sent it.
 func (c *Client) raw(ctx context.Context, timeout time.Duration, path string) (json.RawMessage, error) {
 	var raw json.RawMessage
@@ -367,7 +434,7 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, method, path s
 		return fmt.Errorf("building the request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	if method == http.MethodPost {
+	if method == http.MethodPost || method == http.MethodPut {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := c.http.Do(req)

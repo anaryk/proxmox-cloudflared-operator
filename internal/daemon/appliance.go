@@ -119,7 +119,11 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	settings := startSettings(st, log)
 	logStart(log, cfg, st)
 
-	parts, err := buildAppliance(cfg, deps, app, st, state, settings)
+	// A restart the admin asks for stops the daemon as a signal does, and
+	// systemd starts it again.
+	ctx, restart := context.WithCancel(ctx)
+	defer restart()
+	parts, err := buildAppliance(cfg, deps, app, st, state, settings, restart)
 	if err != nil {
 		return err
 	}
@@ -147,8 +151,9 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 		now: deps.Now, log: log,
 	}
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
-	gid, uids := socketAccess(deps.Accounts, log)
+	gid, uids, web := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
+	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep, traffic.run)
 }
@@ -181,7 +186,10 @@ type applianceParts struct {
 // prober puts the container's interfaces on the segments of their NICs and
 // has no forwarding table to look at, and the engine runs with the
 // self-identification, the quorum and the incarnation of the container.
-func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, state applianceState, settings store.Settings) (applianceParts, error) {
+// restart stops the daemon for systemd to start it again.
+func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, state applianceState, settings store.Settings,
+	restart func(),
+) (applianceParts, error) {
 	log := cfg.Log
 	a := state.install.Appliance
 	ep := a.Endpoints[0]
@@ -230,6 +238,7 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		Store:       st,
 		Inventory:   inv,
 		StartOnly:   func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
+		Restart:     restart,
 		Resolver:    res,
 		Connectors:  conns,
 		Egress:      filter,
@@ -246,6 +255,8 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		Quorate:     quorate(client),
 		Incarnation: state.incarnation,
 		EpochDrawn:  self.EpochDrawn,
+
+		StartOnlyFields: wiredFields(),
 	})
 	if err != nil {
 		return applianceParts{}, fmt.Errorf("building the engine: %w", err)

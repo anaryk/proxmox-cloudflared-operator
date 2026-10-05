@@ -168,6 +168,9 @@ func TestWithoutStateTheSocketSaysWhatToDoAndNoCycleRuns(t *testing.T) {
 	_, err := d.client.Apply(t.Context(), false, "")
 	require.ErrorIs(t, err, engine.ErrRefused)
 	require.ErrorContains(t, err, line)
+	_, err = d.client.Settings(t.Context())
+	require.ErrorContains(t, err, line, "no settings without a state")
+	require.ErrorIs(t, d.client.Restart(t.Context()), engine.ErrRefused)
 	require.Empty(t, a.pve.authorizations(), "no cycle")
 	require.NoFileExists(t, a.flag)
 

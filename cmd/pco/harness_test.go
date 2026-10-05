@@ -25,6 +25,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
@@ -73,6 +75,12 @@ type fakeEngine struct {
 	findings                          []doctor.Finding
 	resolveErr, guestErr, diagnoseErr error
 	mode                              string // the admission mode an approval answers with; "approve" when empty
+
+	settings      engine.SettingsView
+	restartNeeded []string // what a save of the settings answers needs a restart
+	manual        []engine.ManualRouteView
+	guests        []engine.GuestListView
+	configErr     error // what a write of the settings or of a manual route fails with
 
 	calls []string
 }
@@ -262,6 +270,72 @@ func (f *fakeEngine) Doctor(context.Context) []doctor.Finding {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.findings
+}
+
+func (f *fakeEngine) SettingsView() (engine.SettingsView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.settings, nil
+}
+
+// SaveSettings answers with the settings at the next revision.
+func (f *fakeEngine) SaveSettings(_ context.Context, rev int, s store.Settings) (engine.SettingsView, []string, error) {
+	f.record(fmt.Sprintf("save settings rev=%d gateTag=%s cloudflareBudget=%d", rev, s.GateTag, s.CloudflareBudget))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.configErr != nil {
+		return engine.SettingsView{}, nil, f.configErr
+	}
+	v := f.settings
+	v.Rev, v.Settings = rev+1, s
+	return v, f.restartNeeded, nil
+}
+
+func (f *fakeEngine) ManualRoutes() ([]engine.ManualRouteView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.manual, nil
+}
+
+// CreateManualRoute makes the route at revision 1, under an id of its own
+// when it has none.
+func (f *fakeEngine) CreateManualRoute(_ context.Context, v engine.ManualRouteView) (engine.ManualRouteView, error) {
+	data, _ := json.Marshal(v)
+	f.record("add manual " + string(data))
+	if f.configErr != nil {
+		return engine.ManualRouteView{}, f.configErr
+	}
+	if v.ID == "" {
+		v.ID = "1a2b3c4d"
+	}
+	v.Rev = 1
+	return v, nil
+}
+
+func (f *fakeEngine) UpdateManualRoute(_ context.Context, id string, rev int, v engine.ManualRouteView) (engine.ManualRouteView, error) {
+	f.record(fmt.Sprintf("update manual %s rev=%d", id, rev))
+	v.ID, v.Rev = id, rev+1
+	return v, f.configErr
+}
+
+func (f *fakeEngine) DeleteManualRoute(_ context.Context, id string, rev int) error {
+	f.record(fmt.Sprintf("remove manual %s rev=%d", id, rev))
+	return f.configErr
+}
+
+func (f *fakeEngine) Guests() ([]engine.GuestListView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.guests, nil
+}
+
+func (f *fakeEngine) Annotation(ref model.GuestRef) (engine.AnnotationView, error) {
+	return engine.AnnotationView{}, fmt.Errorf("%w: %s is not in this test", engine.ErrNotFound, ref)
+}
+
+func (f *fakeEngine) RequestRestart(context.Context) error {
+	f.record("restart")
+	return nil
 }
 
 func (f *fakeEngine) PollInterval() time.Duration { return 10 * time.Second }

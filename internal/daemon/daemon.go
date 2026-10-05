@@ -239,7 +239,11 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	settings := startSettings(st, log)
 	logStart(log, cfg, st)
 
-	eng, client, filter, conns, err := build(cfg, deps, st, token, settings)
+	// A restart the admin asks for stops the daemon as a signal does, and
+	// systemd starts it again.
+	ctx, restart := context.WithCancel(ctx)
+	defer restart()
+	eng, client, filter, conns, err := build(cfg, deps, st, token, settings, restart)
 	if err != nil {
 		return err
 	}
@@ -269,8 +273,9 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		beside = append(beside, func(ctx context.Context) { web.keep(ctx, deps.WebEvery) })
 	}
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
-	gid, uids := socketAccess(deps.Accounts, log)
+	gid, uids, web := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
+	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, beside...)
 }
@@ -329,8 +334,8 @@ func StoreReady(st *store.Store) func() error {
 // build makes the engine out of the parts, and returns the Proxmox client it
 // reads through, the egress filter it feeds and the connector manager it
 // keeps the connectors with too. The Proxmox token goes into the client and
-// nowhere else.
-func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
+// nowhere else. restart stops the daemon for systemd to start it again.
+func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings, restart func()) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
 	client, err := pve.New(pve.Config{
 		BaseURL:     cfg.PVEURL,
 		TokenID:     token.TokenID,
@@ -360,6 +365,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Store:      st,
 		Inventory:  inv,
 		StartOnly:  func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
+		Restart:    restart,
 		Resolver:   res,
 		Connectors: conns,
 		Egress:     filter,
@@ -371,6 +377,8 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Problems:   cfg.Problems,
 		Access:     client,
 		OwnUser:    ownUser,
+
+		StartOnlyFields: wiredFields(),
 	})
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the engine: %w", err)

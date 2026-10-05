@@ -23,6 +23,14 @@ func wiredFrom(s store.Settings) wired {
 	return wired{gateTag: s.GateTag, trustStatic: s.TrustStatic, trustedCIDRs: slices.Clone(s.TrustedCIDRs), cloudflareBudget: s.CloudflareBudget}
 }
 
+// wiredFields names every setting that is wired at start, as differences
+// names them: those in which a wired that differs from the zero one in every
+// field differs from it.
+func wiredFields() []string {
+	every := wired{gateTag: "changed", trustStatic: true, trustedCIDRs: []netip.Prefix{{}}, cloudflareBudget: 1}
+	return wired{}.differences(every)
+}
+
 // differences names the settings in which o is not what w was started with.
 func (w wired) differences(o wired) []string {
 	var out []string

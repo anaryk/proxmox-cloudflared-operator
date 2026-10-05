@@ -23,6 +23,11 @@ func getOne[T any](d Dir, kind, id string) (v T, found bool, err error) {
 // that cannot be read stops it: a part of a set is not the set. One that is
 // deleted while it runs is skipped.
 func eachObject[T any](d Dir, kind string, fn func(path, id string, v T) error) error {
+	return eachRevision(d, kind, func(path, id string, _ int64, v T) error { return fn(path, id, v) })
+}
+
+// eachRevision is eachObject that also passes the revision of each file.
+func eachRevision[T any](d Dir, kind string, fn func(path, id string, rev int64, v T) error) error {
 	names, err := d.List(kind)
 	if err != nil {
 		return err
@@ -47,7 +52,7 @@ func eachObject[T any](d Dir, kind string, fn func(path, id string, v T) error) 
 		if err := decode(env.Data, &v, false); err != nil {
 			return fmt.Errorf("%s: %s", path, jsonProblem(err))
 		}
-		if err := fn(path, env.ID, v); err != nil {
+		if err := fn(path, env.ID, env.Rev, v); err != nil {
 			return err
 		}
 	}

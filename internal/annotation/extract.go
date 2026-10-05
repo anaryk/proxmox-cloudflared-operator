@@ -15,6 +15,9 @@ type span struct {
 	shorthand bool   // a "cf-tunnel:" line rather than a fenced block
 	reject    string // set when the span is rejected whole: the error message
 	rejectAt  int    // the offset the rejection points at
+	// start and end bound the block with its fences, or the line from its
+	// "cf-tunnel:" on.
+	start, end int
 }
 
 // extract finds the text that carries routes: fenced cf-tunnel blocks and
@@ -57,7 +60,7 @@ func extract(src string) []span {
 				continue
 			}
 			if from, ok := shorthandStart(src, first, eol); ok {
-				sp := span{from: from, to: eol, shorthand: true}
+				sp := span{from: from, to: eol, shorthand: true, start: first, end: eol}
 				if i := strings.Index(src[from:eol], fence); i >= 0 {
 					sp.reject, sp.rejectAt = msgShorthandFence, from+i
 				}
@@ -97,9 +100,9 @@ func readFence(src string, open, n int) (sp span, route bool, next int) {
 	}
 	closeAt, closeEnd := closingFence(src, textStart, n)
 	if closeAt < 0 {
-		sp, next = span{from: textStart, to: len(src)}, len(src)
+		sp, next = span{from: textStart, to: len(src), start: open, end: len(src)}, len(src)
 	} else {
-		sp, next = span{from: textStart, to: closeAt}, closeEnd
+		sp, next = span{from: textStart, to: closeAt, start: open, end: closeEnd}, closeEnd
 	}
 	if !route {
 		return sp, false, next

@@ -128,8 +128,9 @@ type stubServer struct {
 // nothing.
 func startStub(ctx context.Context, cfg Config, deps Deps, line string) *stubServer {
 	eng := newNoStateEngine(line, deps.Now(), deps.Appliance.withDefaults().StateRetry)
-	gid, uids := socketAccess(deps.Accounts, cfg.Log)
+	gid, uids, web := socketAccess(deps.Accounts, cfg.Log)
 	srv := api.New(eng, cfg.Version, uids, cfg.Log)
+	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	srv.OnListening(func() {
 		if err := deps.Notifier.Ready(); err != nil {

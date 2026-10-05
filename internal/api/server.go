@@ -21,6 +21,8 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const (
@@ -34,8 +36,6 @@ const (
 
 	// bootHeader names the process of the daemon in every answer.
 	bootHeader = "Pco-Boot"
-	// actorCLI is who the events of an admin action say asked, when root did.
-	actorCLI = "root (cli)"
 )
 
 // Engine is what the API asks of the engine.
@@ -74,6 +74,17 @@ type Engine interface {
 	// target of one route.
 	Traffic() engine.TrafficView
 	RouteSeries(hostname string) (engine.RouteSeries, error)
+	// The settings and the manual routes are written at the revision they
+	// were read at.
+	SettingsView() (engine.SettingsView, error)
+	SaveSettings(ctx context.Context, rev int, s store.Settings) (engine.SettingsView, []string, error)
+	ManualRoutes() ([]engine.ManualRouteView, error)
+	CreateManualRoute(ctx context.Context, v engine.ManualRouteView) (engine.ManualRouteView, error)
+	UpdateManualRoute(ctx context.Context, id string, rev int, v engine.ManualRouteView) (engine.ManualRouteView, error)
+	DeleteManualRoute(ctx context.Context, id string, rev int) error
+	Guests() ([]engine.GuestListView, error)
+	Annotation(ref model.GuestRef) (engine.AnnotationView, error)
+	RequestRestart(ctx context.Context) error
 }
 
 // Server answers API requests for an engine.
@@ -81,6 +92,7 @@ type Server struct {
 	engine      Engine
 	version     string
 	allowedUIDs []uint32
+	webUID      uint32 // the user of the web UI; 0 for none
 	log         zerolog.Logger
 	handler     http.Handler
 
@@ -169,18 +181,6 @@ type closingKey struct{}
 func closingOf(ctx context.Context) <-chan struct{} {
 	ch, _ := ctx.Value(closingKey{}).(<-chan struct{})
 	return ch
-}
-
-// stamp gives every answer to an allowed peer the boot of the daemon and,
-// when the peer is root, makes the command line the actor of what it asks for.
-func (s *Server) stamp(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(bootHeader, s.engine.Boot())
-		if uid, ok := peerUID(r.Context()); ok && uid == 0 {
-			r = r.WithContext(engine.WithActor(r.Context(), actorCLI))
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // httpErrorLog carries what net/http would print to the standard logger into

@@ -95,6 +95,12 @@ type Deps struct {
 	// read once, at its start, and does not apply until it starts again; a
 	// cycle reports them. Nil when there are none.
 	StartOnly func(s store.Settings) []string
+	// StartOnlyFields names the settings StartOnly compares: those the
+	// daemon reads once, at its start.
+	StartOnlyFields []string
+	// Restart stops the daemon, which systemd then starts again; nil where
+	// it cannot be restarted that way.
+	Restart func()
 
 	// Problems are problem lines that every cycle reports: what the daemon
 	// was started with that must not go unnoticed.
