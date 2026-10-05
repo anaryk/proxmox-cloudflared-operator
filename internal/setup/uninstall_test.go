@@ -572,20 +572,75 @@ func TestASecondUninstallListsOnlyWhatIsThere(t *testing.T) {
 // the account. Those this install never served hold none of its records, and
 // the purge says nothing of them; one it served it says it could not read.
 func TestThePurgeSaysNothingOfAZoneTheInstallNeverServed(t *testing.T) {
+	e := purgeUnreadable(t, func(e *testEnv) {
+		require.NoError(t, e.st.SaveEngineMemory(store.EngineMemory{InstallID: testInstall, Served: []store.RememberedZone{
+			{ID: "zone3", Name: "example.net", AccountID: testAccount, CredentialID: "c0ffee00"},
+		}}))
+	})
+
+	require.NotContains(t, e.ask.text(), "example.org")
+	e.requireShown(unreadableZone("example.net"))
+}
+
+// A zone the admin let go, or one the first check of its credential refused,
+// is no longer served but may still hold records of the install.
+func TestThePurgeSaysItCouldNotReadAZoneTheInstallServedOnce(t *testing.T) {
+	e := purgeUnreadable(t, func(e *testEnv) {
+		require.NoError(t, e.st.SaveEngineMemory(store.EngineMemory{InstallID: testInstall, EverServed: []store.RememberedZone{
+			{ID: "zone3", Name: "example.net", AccountID: testAccount, CredentialID: "c0ffee00"},
+		}}))
+	})
+
+	require.NotContains(t, e.ask.text(), "example.org")
+	e.requireShown(unreadableZone("example.net"))
+}
+
+// Without a memory of the install that can be read, which zones it served is
+// not known: the purge says of every zone it could not read.
+func TestThePurgeSaysItCouldNotReadAnyZoneWithoutAMemory(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		memory func(e *testEnv)
+	}{
+		{"no memory", func(*testEnv) {}},
+		{"a memory that cannot be read", func(e *testEnv) {
+			dir := filepath.Join(e.paths.Local, "meta")
+			require.NoError(e.t, os.MkdirAll(dir, 0o700))
+			require.NoError(e.t, os.WriteFile(filepath.Join(dir, "engine-memory.json"), []byte("{"), 0o600))
+		}},
+		{"a memory of another install", func(e *testEnv) {
+			require.NoError(e.t, e.st.SaveEngineMemory(store.EngineMemory{InstallID: "fedcba987654", Served: []store.RememberedZone{
+				{ID: "zone3", Name: "example.net", AccountID: testAccount, CredentialID: "c0ffee00"},
+			}}))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := purgeUnreadable(t, tt.memory)
+
+			e.requireShown(unreadableZone("example.org"))
+			e.requireShown(unreadableZone("example.net"))
+		})
+	}
+}
+
+// purgeUnreadable purges an install whose token may not read the records of
+// example.org and example.net, with the memory as memory leaves it.
+func purgeUnreadable(t *testing.T, memory func(e *testEnv)) *testEnv {
+	t.Helper()
 	e := newTestEnv(t)
 	e.installed(setupsUser)
 	e.atCloudflare()
 	e.cf.AddZone("zone2", "example.org", testAccount)
 	e.cf.AddZone("zone3", "example.net", testAccount)
 	e.cf.Deny("dns.read", "zone2", "zone3")
-	require.NoError(t, e.st.SaveEngineMemory(store.EngineMemory{InstallID: testInstall, Served: []store.RememberedZone{
-		{ID: "zone3", Name: "example.net", AccountID: testAccount, CredentialID: "c0ffee00"},
-	}}))
+	memory(e)
 	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
 	e.done()
+	return e
+}
 
-	require.NotContains(t, e.ask.text(), "example.org")
-	e.requireShown("credential c0ffee00 may not list the records of zone example.net; what is there is not deleted")
+func unreadableZone(name string) string {
+	return "credential c0ffee00 may not list the records of zone " + name + "; what is there is not deleted"
 }

@@ -143,13 +143,14 @@ func (r *run) showReport(report credentials.Report) {
 // excludedLines says which zones the token leaves out. A token scoped to one
 // zone of an account leaves out every other zone of the account: those the
 // install never served are counted in one line for each reason, unless
-// verbose; a zone it served is named, with what to grant.
+// verbose; a zone it served is named, with what to grant. With served nil,
+// what it served is not known and every zone is named.
 func excludedLines(excluded []credentials.Exclusion, served map[string]bool, verbose bool) []string {
 	var lines []string
 	never := make(map[string]int)
 	var reasons []string
 	for _, x := range excluded {
-		if !verbose && !served[x.ZoneID] {
+		if !verbose && served != nil && !served[x.ZoneID] {
 			if never[x.Reason] == 0 {
 				reasons = append(reasons, x.Reason)
 			}
@@ -172,18 +173,19 @@ func excludedLines(excluded []credentials.Exclusion, served map[string]bool, ver
 }
 
 // servedZones are the ids of the zones the engine's memory says the install
-// served. A memory that cannot be read, or is of another install, says none.
+// ever served, or nil when that is not known: the memory cannot be read or is
+// of another install. With no memory saved, the engine never ran on the node
+// and the install served none.
 func servedZones(st *store.Store, install string) map[string]bool {
-	served := make(map[string]bool)
 	m, err := st.EngineMemory()
-	if err != nil || install == "" || m.InstallID != install {
-		return served
+	if err != nil || install == "" || (m.InstallID != "" && m.InstallID != install) {
+		return nil
 	}
-	for _, z := range m.Served {
-		served[z.ID] = true
-	}
-	for _, z := range m.Stale {
-		served[z.ID] = true
+	served := make(map[string]bool)
+	for _, zones := range [][]store.RememberedZone{m.Served, m.Stale, m.EverServed} {
+		for _, z := range zones {
+			served[z.ID] = true
+		}
 	}
 	return served
 }

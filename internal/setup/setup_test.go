@@ -417,6 +417,42 @@ func TestAZoneLeftOutThatTheInstallServedIsNamed(t *testing.T) {
 	}, excludedLines(excluded, served, false))
 }
 
+// A memory that cannot be read, or is of another install, does not say what
+// the install served: every zone left out is named.
+func TestEveryZoneLeftOutIsNamedWhenTheMemoryCannotSayWhatWasServed(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		memory func(e *testEnv)
+	}{
+		{"a memory that cannot be read", func(e *testEnv) {
+			dir := filepath.Join(e.paths.Local, "meta")
+			require.NoError(e.t, os.MkdirAll(dir, 0o700))
+			require.NoError(e.t, os.WriteFile(filepath.Join(dir, "engine-memory.json"), []byte("{"), 0o600))
+		}},
+		{"a memory of another install", func(e *testEnv) {
+			require.NoError(e.t, e.st.SaveEngineMemory(store.EngineMemory{InstallID: "fedcba987654"}))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit("pco.service")
+			e.cf.AddZone("zone2", "example.org", testAccount)
+			e.cf.AddZone("zone3", "example.net", testAccount)
+			e.cf.Deny("dns.read", "zone2", "zone3")
+			require.NoError(t, e.st.Init())
+			tt.memory(e)
+			e.script(freshInstall()...)
+
+			require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
+			e.done()
+
+			e.requireShown("  - example.net left out: no DNS read")
+			e.requireShown("  - example.org left out: no DNS read")
+			require.NotContains(t, e.ask.text(), "never served")
+		})
+	}
+}
+
 func TestSetupSaysWhenCloudflareDidNotAnswer(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit("pco.service")

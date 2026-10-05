@@ -51,8 +51,8 @@ type uninstall struct {
 	manifest  Manifest
 	installID string // empty when the store holds no install
 	creds     []store.Credential
-	// served are the zones the install served, by id; nil when that is not
-	// known, and every zone counts.
+	// served are the zones the install ever served, by id; nil when that is
+	// not known, as without a memory of the install, and every zone counts.
 	served map[string]bool
 	node   string
 	found  survey   // what is on the node, read before anything is asked
