@@ -2,6 +2,7 @@ package engine
 
 import (
 	"cmp"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -67,7 +68,42 @@ func (e *Engine) routeSources() (manual []model.Route, approvals map[string]stor
 
 // collectFrom collects the routes of a snapshot as the cycle does.
 func (c *cycleRun) collectFrom(snap inventory.Snapshot) (planner.Collected, []waitingGuest) {
-	return collectRoutes(snap, c.manual, c.settings, c.approvals)
+	col, waiting := collectRoutes(snap, c.manual, c.settings, c.approvals)
+	return c.dropTenants(col), waiting
+}
+
+// dropTenants takes the routes of the guests configured with a MAC of the
+// appliance out, with an issue for each guest, and keeps their hostnames as
+// held names: what answers on such a guest's address may be the appliance.
+func (c *cycleRun) dropTenants(col planner.Collected) planner.Collected {
+	if len(c.tenants) == 0 {
+		return col
+	}
+	self := model.GuestRef{Kind: model.KindLXC, VMID: c.install.Appliance.VMID}
+	routes := make([]model.Route, 0, len(col.Routes))
+	held := slices.Clone(col.Held)
+	issued := map[model.GuestRef]bool{}
+	issues := slices.Clone(col.Issues)
+	for _, rt := range col.Routes {
+		// A manual route is the admin's own, whatever guest it names.
+		ref, err := model.ParseGuestRef(rt.Owner())
+		mac, tenant := c.tenants[ref]
+		if err != nil || !tenant {
+			routes = append(routes, rt)
+			continue
+		}
+		held = append(held, planner.HeldName{Hostname: rt.Hostname, Owner: rt.Owner()})
+		if !issued[ref] {
+			issued[ref] = true
+			issues = append(issues, planner.Issue{Guest: ref, Msg: fmt.Sprintf(issueTenant, mac, self)})
+		}
+	}
+	slices.SortFunc(held, func(a, b planner.HeldName) int {
+		return cmp.Or(strings.Compare(a.Hostname, b.Hostname), model.CompareOwners(a.Owner, b.Owner))
+	})
+	slices.SortStableFunc(issues, planner.CompareIssues)
+	col.Routes, col.Held, col.Issues = routes, slices.Compact(held), issues
+	return col
 }
 
 // collectRoutes collects the routes of a snapshot and, in admission mode

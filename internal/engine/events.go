@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,7 @@ const (
 	kindHold       = "hold"
 	kindEgress     = "egress"
 	kindConnector  = "connector"
+	kindIdentity   = "identity"
 )
 
 // Event is something that changed, as the event log keeps it.
@@ -218,6 +220,7 @@ func changes(prev, next State) []Event {
 	}
 	out = append(out, routeChanges(prev, next)...)
 	out = append(out, conflictChanges(prev, next)...)
+	out = append(out, identityChanges(prev.Identity, next.Identity, next.At)...)
 	for _, a := range next.Actions {
 		if a.Applied {
 			out = append(out, actionEvent(next.At, a))
@@ -309,6 +312,47 @@ func conflictChanges(prev, next State) []Event {
 			out = append(out, Event{At: next.At, Level: levelInfo, Kind: kindConflict, Subject: c.Name, Route: c.Name,
 				Message: fmt.Sprintf("%s %s in zone %s no longer conflicts", c.Type, c.Content, c.Zone)})
 		}
+	}
+	return out
+}
+
+// identityChanges tells, once per change, that the appliance found itself a
+// copy or no longer does, that copies of it run, that guests are configured
+// with its MAC and that principals can reach into it or no longer can.
+func identityChanges(prev, next *IdentityView, at time.Time) []Event {
+	if next == nil {
+		return nil
+	}
+	if prev == nil {
+		prev = &IdentityView{}
+	}
+	subject := fmt.Sprintf("lxc/%d", next.VMID)
+	event := func(level, msg string) Event {
+		return Event{At: at, Level: level, Kind: kindIdentity, Subject: subject, Guest: subject, Message: msg}
+	}
+	var out []Event
+	switch {
+	case next.Copy && !prev.Copy:
+		out = append(out, event(levelError, "this container is not "+subject+": "+next.Why+"; the connectors are stopped"))
+	case !next.Copy && prev.Copy:
+		out = append(out, event(levelInfo, "this container is no longer taken for a copy"))
+	}
+	if len(next.Copies) > 0 && !slices.Equal(next.Copies, prev.Copies) {
+		out = append(out, event(levelError, "guests carry a MAC of the appliance: "+strings.Join(next.Copies, ", ")))
+	}
+	for _, g := range next.Tenants {
+		if !slices.Contains(prev.Tenants, g) {
+			ev := event(levelWarn, fmt.Sprintf("%s is configured with a MAC of the appliance %s; its routes are not served", g, subject))
+			ev.Subject, ev.Guest = g, g
+			out = append(out, ev)
+		}
+	}
+	switch {
+	case len(next.Exposed) > 0 && !slices.Equal(next.Exposed, prev.Exposed):
+		out = append(out, event(levelError, "principals can reach into the appliance, which serves nothing while they can: "+
+			strings.Join(next.Exposed, ", ")))
+	case len(next.Exposed) == 0 && len(prev.Exposed) > 0:
+		out = append(out, event(levelInfo, "no principal can reach into the appliance any more"))
 	}
 	return out
 }

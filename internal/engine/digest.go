@@ -50,6 +50,10 @@ func (s State) digestView() State {
 		v.RogueConnectors[i].Since = time.Time{}
 	}
 	v.Egress.Since = time.Time{}
+	if v.Identity != nil {
+		v.Identity.CheckedAt = time.Time{}
+	}
+	v.EpochDrawnAt = time.Time{}
 	return v
 }
 

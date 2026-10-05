@@ -129,10 +129,11 @@ func (c *cycleRun) noteRetry(t reconcile.TunnelState, retry tokenRetry) {
 }
 
 // mayEnsure says whether the cycle may start or restart a connector: in
-// enforce mode, once the settings and the install were read. A cycle that
-// holds after that may, for a token of the install's own tunnel.
+// enforce mode, once the settings and the install were read, and not while an
+// appliance serves nothing. A cycle that holds after that may, for a token of
+// the install's own tunnel.
 func (c *cycleRun) mayEnsure() bool {
-	return c.install.ID != "" && c.mode() == reconcile.Enforce
+	return c.install.ID != "" && c.mode() == reconcile.Enforce && !c.e.notServing
 }
 
 // RotateTunnel gives the tunnel of the install in an account a new secret at
@@ -147,6 +148,9 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 		return TunnelRotation{}, err
 	}
 	defer e.release()
+	if err := e.refusedAsCopy(); err != nil {
+		return TunnelRotation{}, err
+	}
 	s, err := e.d.Store.Settings()
 	if err != nil {
 		return TunnelRotation{}, fmt.Errorf("reading the settings: %w", err)

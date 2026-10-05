@@ -27,11 +27,14 @@ func (c *cycleRun) reconcileTunnels() bool {
 		c.egressHeld = heldEgress
 	}
 	var res reconcile.TunnelResult
+	c.e.tunnels.SetRecoverHint(c.recoverHint())
 	if c.egressHeld != "" {
 		res = c.e.tunnels.RunHeld(c.ctx, plans, c.zones.known, c.egressHeld)
 	} else {
 		res = c.e.tunnels.Run(c.ctx, plans, c.zones.known, c.mode())
 	}
+	behind := c.behind(res)
+	c.noteFirstWrite(res)
 	c.noteVerified(res.Tunnels)
 	c.tunnelVerdict = res.Verdict
 	c.tunnels = nonNil(res.Tunnels)
@@ -49,11 +52,41 @@ func (c *cycleRun) reconcileTunnels() bool {
 	c.st.Problems = append(c.st.Problems, res.Problems...)
 	c.waiting.Add(res.Waiting)
 	c.st.WriterVerdict = verdictName(res.Verdict)
-	if res.Verdict != reconcile.WriterProceed {
+	switch {
+	case behind:
+		c.st.WriterVerdict = VerdictBehind
+		c.hold(problemBehind)
+		return false
+	case res.Verdict != reconcile.WriterProceed:
 		c.hold(fmt.Sprintf("the tunnel run found a %s writer", c.st.WriterVerdict))
 		return false
 	}
 	return c.writerStill("after the tunnel run")
+}
+
+// behind says whether the run stopped on a sentinel of this install that an
+// appliance which drew its epoch at this start, and has not written since,
+// does not know: after a rollback or a restore, its state is older than its
+// last write at Cloudflare (ruling 15, G2).
+func (c *cycleRun) behind(res reconcile.TunnelResult) bool {
+	switch res.Verdict {
+	case reconcile.WriterForeign, reconcile.WriterStale:
+		return c.appliance() && res.Sentinel.InstallID == c.install.ID && c.epochDrawn()
+	}
+	return false
+}
+
+// noteFirstWrite notes that Cloudflare holds what this process wrote: a
+// configuration verified at Cloudflare carries the sentinel of the epoch
+// drawn at this start, which no other process knows. From then on a sentinel
+// it does not know is another writer, not a state that fell behind.
+func (c *cycleRun) noteFirstWrite(res reconcile.TunnelResult) {
+	if res.Verdict != reconcile.WriterProceed {
+		return
+	}
+	if slices.ContainsFunc(res.Tunnels, func(t reconcile.TunnelState) bool { return t.Verified }) {
+		c.e.firstWrite = true
+	}
 }
 
 // sayWaiting adds what the runs of the cycle left waiting for Cloudflare's

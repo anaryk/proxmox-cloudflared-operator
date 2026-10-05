@@ -326,6 +326,7 @@ type fakeConnectors struct {
 	refused   map[string]bool   // tunnels whose connector Cloudflare refuses: not ready, and its journal says so
 	portHeld  map[string]bool   // tunnels whose metrics port another process holds: not ready, and its journal says so
 	ids       map[string]string // the id /ready names, by tunnel; defaultConnectorID when not set
+	stops     int               // calls of StopAll
 }
 
 // defaultConnectorID is what the node's own connector of every tunnel calls
@@ -434,6 +435,24 @@ func (f *fakeConnectors) lastPrune() ([]string, bool) {
 		return nil, false
 	}
 	return slices.Clone(f.pruned[len(f.pruned)-1]), true
+}
+
+// StopAll counts the stops of every connector of the install; the tokens stay,
+// as the files do.
+func (f *fakeConnectors) StopAll(_ context.Context, install string) error {
+	if install != testInstall {
+		return fmt.Errorf("stop all for install %q", install)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stops++
+	return nil
+}
+
+func (f *fakeConnectors) stopAlls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stops
 }
 
 func (f *fakeConnectors) Token(id string) (string, bool, error) {
@@ -699,6 +718,11 @@ type env struct {
 	// problems are the lines the engine is told every cycle reports.
 	problems []string
 	log      zerolog.Logger
+	// The appliance, which a test sets for the engines it makes next.
+	identity    Identity
+	quorate     func(context.Context) (bool, error)
+	incarnation string
+	epochDrawn  func() bool
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -769,6 +793,11 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		LocalDir:   e.paths.Local,
 		OwnUser:    "pco@pve",
 		OwnSoft:    e.ownSoft,
+
+		Identity:    e.identity,
+		Quorate:     e.quorate,
+		Incarnation: e.incarnation,
+		EpochDrawn:  e.epochDrawn,
 	}
 	if e.acc != nil {
 		d.Access = e.acc

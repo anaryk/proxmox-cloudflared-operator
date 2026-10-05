@@ -27,6 +27,9 @@ const (
 	VerdictStale   = "stale"
 	VerdictForeign = "foreign"
 	VerdictUnknown = "unknown"
+	// VerdictBehind is the writer verdict of an appliance whose state is
+	// older than its last write at Cloudflare (ruling 15).
+	VerdictBehind = "behind"
 
 	// RouteFrozen is the state of a route whose account is frozen: what its
 	// tunnel serves for it is not known.
@@ -159,6 +162,29 @@ type State struct {
 	// install that pco does not run on this node, as the last listing of each
 	// tunnel's connectors showed them; by account, tunnel and id.
 	RogueConnectors []RogueConnector `json:"rogueConnectors"`
+	// Identity is what the last self-identification of the appliance found;
+	// nil on the host.
+	Identity *IdentityView `json:"identity,omitempty"`
+	// EpochDrawnAt is when this process drew a new epoch after a container
+	// start; zero when it kept the stored one (ruling 15, failure mode 1).
+	EpochDrawnAt time.Time `json:"epochDrawnAt,omitzero"`
+}
+
+// IdentityView is the self-identification of the appliance as a cycle found
+// it: the guest it was installed as and whether this container proved to be
+// it.
+type IdentityView struct {
+	VMID    int      `json:"vmid"`
+	Node    string   `json:"node"`
+	OK      bool     `json:"ok"`
+	Why     string   `json:"why,omitempty"`
+	Copy    bool     `json:"copy"`
+	Copies  []string `json:"copies,omitempty"`
+	Tenants []string `json:"tenants,omitempty"`
+	// Exposed are the non-admin principals holding a refused privilege on the
+	// appliance (ruling 27); while there are any, the connectors are stopped.
+	Exposed   []string  `json:"exposed,omitempty"`
+	CheckedAt time.Time `json:"checkedAt,omitzero"`
 }
 
 // UnapprovedGuest is a guest whose routes wait for an approval: the identity
@@ -242,6 +268,11 @@ func (s State) clone() State {
 	}
 	s.Segments = slices.Clone(s.Segments)
 	s.RogueConnectors = slices.Clone(s.RogueConnectors)
+	if id := s.Identity; id != nil {
+		copied := *id
+		copied.Copies, copied.Tenants, copied.Exposed = slices.Clone(id.Copies), slices.Clone(id.Tenants), slices.Clone(id.Exposed)
+		s.Identity = &copied
+	}
 	return s
 }
 

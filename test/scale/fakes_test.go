@@ -218,6 +218,8 @@ func (c *connectors) Ensure(_ context.Context, _, id, token string) error {
 
 func (c *connectors) PruneInstall(context.Context, string, []string) error { return nil }
 
+func (c *connectors) StopAll(context.Context, string) error { return nil }
+
 func (c *connectors) List(context.Context) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

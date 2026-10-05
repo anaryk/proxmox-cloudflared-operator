@@ -20,6 +20,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
@@ -54,6 +55,18 @@ type Connectors interface {
 	List(ctx context.Context) ([]string, error) // every connector on the node, of any install
 	Status(ctx context.Context, tunnelID string) (connector.Status, error)
 	Token(tunnelID string) (token string, found bool, err error) // the token the connector has on disk
+	// StopAll stops and disables every connector of the install and keeps
+	// their files, so that Ensure can start them again.
+	StopAll(ctx context.Context, installID string) error
+}
+
+// Identity is the self-identification of the appliance; nil on the host.
+type Identity interface {
+	Check(ctx context.Context, snap inventory.Snapshot) appliance.Verdict
+	// SetFlag writes the flag the connectors start behind, or removes it:
+	// the engine removes it as well while a principal can reach into the
+	// appliance (ruling 27).
+	SetFlag(serve bool) error
 }
 
 // ClientFactory builds a Cloudflare client for a credential. It is called
@@ -95,6 +108,20 @@ type Deps struct {
 	// OwnSoft returns the appliance's own gateway and resolvers (appliance)
 	// or nil (host): they join the soft deny.
 	OwnSoft func() (gateways, resolvers []netip.Addr, err error)
+
+	Identity Identity
+	// Quorate reads the cluster's quorum (ruling 24); nil on the host.
+	Quorate func(ctx context.Context) (bool, error)
+	// Incarnation is this container's incarnation; empty on the host. The
+	// engine uses no leader.json of another incarnation (ruling 23).
+	Incarnation string
+	// EpochDrawn reports whether this process drew a new epoch (EpochAtStart
+	// did not keep the stored one); nil on the host. Until the first write
+	// of this process is verified at Cloudflare, a foreign or stale verdict
+	// on a sentinel of this install id is VerdictBehind (G2); after it, a
+	// foreign verdict (a second installation with the same install id)
+	// stays foreign (gate 3, suggestion 1).
+	EpochDrawn func() bool
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -218,6 +245,15 @@ type Engine struct {
 	// access is what was last read of the access control of Proxmox; it is
 	// refreshed outside the cycle lock.
 	access accessState
+
+	// The appliance, under the cycle lock: notServing says that the
+	// connectors were stopped and the egress filter emptied, for a copy or
+	// for principals that can reach into it; firstWrite says that a write of
+	// this process was verified at Cloudflare; epochAt is when this process
+	// drew its epoch, zero until it did.
+	notServing bool
+	firstWrite bool
+	epochAt    time.Time
 
 	stateMu sync.RWMutex
 	state   State

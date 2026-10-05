@@ -237,6 +237,10 @@ func TestTheJSONOfTheState(t *testing.T) {
 		Identity: "uuid:202", Mode: "tag", MACs: []string{"bc:24:11:00:02:02"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
 	})
 	requireGolden(t, "segments.json", populatedState().Segments)
+	requireGolden(t, "identity.json", IdentityView{
+		VMID: 9250, Node: "pve1", Why: "lxc/9295 in pool pco carries a MAC of lxc/9250: a copy of the appliance runs; writes are held until it is gone",
+		Copies: []string{"lxc/9295"}, Tenants: []string{"qemu/140"}, Exposed: []string{"alice@pve"}, CheckedAt: t0,
+	})
 }
 
 const testBoot = "9f2c4e1a0b7d3c55"

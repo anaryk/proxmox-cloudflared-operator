@@ -113,6 +113,10 @@ type cycleRun struct {
 	// waiting is what the runs of the cycle left for Cloudflare's rate limit
 	// and not said yet.
 	waiting reconcile.Waiting
+
+	// tenants are the guests outside the pool of the appliance configured
+	// with one of its MACs, each with that MAC: their routes are not served.
+	tenants map[model.GuestRef]string
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -260,7 +264,10 @@ func (c *cycleRun) registered() bool {
 
 // readWriter reads leader.json once; that identity is ours for the whole
 // cycle. Without a valid one of this install, Cloudflare is left alone, but
-// the inventory and the routes are still worked out for display.
+// the inventory and the routes are still worked out for display. In the
+// appliance it must be of this start of the container too: one of an earlier
+// start may be the record of a copy, and a new epoch is drawn only once the
+// container proved to be the one installed.
 func (c *cycleRun) readWriter() {
 	c.e.us = planner.Writer{}
 	w, found, err := c.e.d.Store.Writer()
@@ -273,7 +280,9 @@ func (c *cycleRun) readWriter() {
 	case w.Validate() != nil:
 		why = c.problem("the writer identity in leader.json is not valid: %v", w.Validate())
 	case w.InstallID != c.install.ID:
-		why = c.problem("leader.json names install %s, but this is install %s; run pco setup --recover", w.InstallID, c.install.ID)
+		why = c.problem("leader.json names install %s, but this is install %s; run %s", w.InstallID, c.install.ID, c.recoverCommand())
+	case c.e.d.Incarnation != "" && w.Incarnation != c.e.d.Incarnation:
+		why = c.problem(problemEarlierStart)
 	default:
 		c.e.us = w
 		return
@@ -302,7 +311,8 @@ func (c *cycleRun) refresh() bool {
 	c.snap = c.e.d.Inventory.Refresh(ctx)
 	c.st.Complete = c.snap.Complete
 	c.st.Problems = append(c.st.Problems, c.snap.Problems...)
-	if !c.learnNodeAddrs() {
+	// A copy learns nothing from the snapshot, not even into its own store.
+	if !c.identify() || !c.quorate() || !c.learnNodeAddrs() {
 		return false
 	}
 	if !c.snap.Complete {
