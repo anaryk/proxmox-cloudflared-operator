@@ -42,15 +42,7 @@ func (c unitControl) IsActive(ctx context.Context, unit string) (bool, error) {
 }
 
 func (c unitControl) ListUnits(ctx context.Context, pattern string) ([]string, error) {
-	out, err := c.run.Run(ctx, "systemctl", "list-units", "--all", "--plain", "--no-legend", "--", pattern)
-	if err != nil {
-		return nil, err
-	}
-	var units []string
-	for line := range strings.Lines(out) {
-		if fields := strings.Fields(line); len(fields) > 0 {
-			units = append(units, fields[0])
-		}
-	}
-	return units, nil
+	return connector.ListUnits(ctx, func(ctx context.Context, args ...string) (string, error) {
+		return c.run.Run(ctx, "systemctl", args...)
+	}, pattern)
 }

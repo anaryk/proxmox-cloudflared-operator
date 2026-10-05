@@ -177,6 +177,33 @@ func TestSystemctlListUnitsReturnsTheFirstColumn(t *testing.T) {
 	require.Equal(t, []string{"pco-cloudflared@one.service", "pco-cloudflared@two.service"}, got)
 }
 
+// The listing is the one thing of systemctl that the daemon and setup read
+// alike, whatever runs the command.
+func TestListUnitsKeepsTheFirstColumnOfWhatSystemctlListed(t *testing.T) {
+	var asked []string
+	run := func(_ context.Context, args ...string) (string, error) {
+		asked = args
+		return "pco-cloudflared@one.service loaded active running pco cloudflared connector\n\n" +
+			"  pco-cloudflared@two.service loaded failed failed pco cloudflared connector\n", nil
+	}
+
+	got, err := ListUnits(t.Context(), run, "pco-cloudflared@*.service")
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"pco-cloudflared@one.service", "pco-cloudflared@two.service"}, got)
+	require.Equal(t, []string{"list-units", "--all", "--plain", "--no-legend", "--", "pco-cloudflared@*.service"}, asked)
+}
+
+func TestListUnitsFailsWithTheErrorOfTheCommand(t *testing.T) {
+	boom := errors.New("boom")
+	run := func(context.Context, ...string) (string, error) { return "pco-cloudflared@one.service loaded\n", boom }
+
+	got, err := ListUnits(t.Context(), run, "pco-cloudflared@*.service")
+
+	require.ErrorIs(t, err, boom)
+	require.Nil(t, got)
+}
+
 func TestSystemctlWithoutABinaryFails(t *testing.T) {
 	ctl := systemctl{bin: filepath.Join(t.TempDir(), "missing")}
 

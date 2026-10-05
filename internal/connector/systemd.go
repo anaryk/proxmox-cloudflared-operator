@@ -121,7 +121,15 @@ func (s systemctl) IsActive(ctx context.Context, unit string) (bool, error) {
 }
 
 func (s systemctl) ListUnits(ctx context.Context, pattern string) ([]string, error) {
-	out, err := s.run(ctx, "list-units", "--all", "--plain", "--no-legend", "--", pattern)
+	return ListUnits(ctx, s.run, pattern)
+}
+
+// ListUnits lists the loaded units that match the glob, also those that
+// stopped or failed, with the systemctl that run stands for: run gets the
+// arguments and returns what the command wrote to stdout. It is the one
+// listing the daemon and setup share.
+func ListUnits(ctx context.Context, run func(ctx context.Context, args ...string) (string, error), pattern string) ([]string, error) {
+	out, err := run(ctx, "list-units", "--all", "--plain", "--no-legend", "--", pattern)
 	if err != nil {
 		return nil, err
 	}
