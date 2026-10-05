@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -95,22 +96,58 @@ func TestConcurrentRoutesOfOneAddressWaitForOneProof(t *testing.T) {
 	require.Equal(t, map[string]int{"interfaces": 1, "route": 1, "arp": 1, "fdb": 1, "dial": 1}, s.prober.countOps())
 }
 
-// A call cancelled while it proved an address hands nothing on: the next one
-// asks the wire itself.
-func TestACancelledProofIsNotShared(t *testing.T) {
+// A call cancelled while it asked the host hands nothing on: the next one
+// asks itself.
+func TestACancelledAnswerIsNotShared(t *testing.T) {
+	for _, op := range []string{"interfaces", "arp", "dial"} {
+		t.Run(op, func(t *testing.T) {
+			s := newScenario(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			s.prober.cancelOn, s.prober.cancel = op, cancel
+			r := NewResolver(s.prober, s.settings, s.clock.now)
+			share := NewShared(nil)
+
+			first := r.Resolve(ctx, webRoute(), s.snapshot(), nil, s.deny, s.required, share)
+			s.prober.cancel = nil
+			second := r.Resolve(t.Context(), apiRoute(80), s.snapshot(), nil, s.deny, s.required, share)
+
+			require.Equal(t, reasonCancelled, first.Target.Reason)
+			require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Owner: webOwner}, second.Target)
+			require.Equal(t, 2, s.prober.countOps()[op])
+		})
+	}
+}
+
+// Two addresses of one NIC are two answers of the wire.
+func TestEachAddressOfANICHasAnAnswerOfItsOwn(t *testing.T) {
 	s := newScenario(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	s.prober.cancelOn, s.prober.cancel = "arp", cancel
-	r := NewResolver(s.prober, s.settings, s.clock.now)
+	s.web().NICs[0].Static = ips("10.20.0.10", "10.20.0.11")
+	s.prober.arp[arpKey("vmbr0", "10.20.0.10")] = []string{foreignMAC}
+	s.prober.arp[arpKey("vmbr0", "10.20.0.11")] = []string{mac0}
 	share := NewShared(nil)
+	other := routeFor(netip.Addr{}, "10.20.0.11")
+	other.Hostname = "api.example.com"
 
-	first := r.Resolve(ctx, webRoute(), s.snapshot(), nil, s.deny, s.required, share)
-	s.prober.cancel = nil
-	second := r.Resolve(t.Context(), apiRoute(80), s.snapshot(), nil, s.deny, s.required, share)
+	first := s.resolveShared(t, routeFor(netip.Addr{}, "10.20.0.10"), nil, share)
+	second := s.resolveShared(t, other, nil, share)
 
-	require.Equal(t, reasonCancelled, first.Target.Reason)
-	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.10"), Reachable: true, Owner: webOwner}, second.Target)
-	require.Equal(t, 2, s.prober.countOps()["arp"])
+	require.Equal(t, "10.20.0.10 answered by bc:24:11:ff:ff:01, which is not this guest", first.Target.Reason)
+	require.Equal(t, planner.ResolvedTarget{Addr: ip("10.20.0.11"), Reachable: true, Owner: webOwner}, second.Target)
+}
+
+// A carried proof also checks every MAC that answered for the address: one
+// that another guest which runs has configured by now is a lost identity.
+func TestACarriedProofChecksEveryMACThatAnswered(t *testing.T) {
+	s := newScenario(t)
+	s.web().NICs = append(s.web().NICs, nicOn(1, mac1, "vmbr0", 0))
+	s.addDB1(true, nicOn(0, mac1, "vmbr0", 0))
+	prev := carrying()
+	prev.Ports = map[string]string{mac0: "tap101i0", mac1: "tap101i1"}
+
+	res := s.resolveShared(t, webRoute(), prev, NewShared(func(Binding) bool { return true }))
+
+	require.True(t, res.Target.Withdrawn)
+	require.Equal(t, "MAC bc:24:11:00:00:02 is also configured on qemu/102", res.Target.Reason)
 }
 
 func TestAProofTheShareLetsStandIsNotMadeAgain(t *testing.T) {
