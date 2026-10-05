@@ -26,10 +26,11 @@ func (a *app) guestCmd() *cobra.Command {
 func (a *app) guestListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the approved guests and the guests that wait for approval",
+		Short: "List the approved guests, the guests that wait for approval and the tagged guests",
 		Long: "List the approved guests, each with the identity it was approved in and whether it still\n" +
-			"has it, and the guests whose routes wait for an approval.\n\n" + jsonHelp + " It holds the\n" +
-			"approvals; pco status --json has the guests that wait.",
+			"has it, the guests whose routes wait for an approval, and the guests with the gate tag as\n" +
+			"the last cycle listed them, with how many routes and issues each has.\n\n" + jsonHelp + " It\n" +
+			"holds the approvals; pco status --json has the guests that wait.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -48,9 +49,40 @@ func (a *app) guestListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return renderGuests(cmd.OutOrStdout(), approvals, st.Unapproved)
+			guests, err := a.client().Guests(ctx)
+			if err != nil {
+				return a.explain(ctx, err)
+			}
+			if err := renderGuests(cmd.OutOrStdout(), approvals, st.Unapproved); err != nil {
+				return err
+			}
+			return renderTagged(cmd.OutOrStdout(), guests)
 		},
 	}
+}
+
+// renderTagged writes the guests of the last listing that have the gate tag.
+func renderTagged(w io.Writer, guests []engine.GuestListView) error {
+	s := &screen{w: w}
+	tagged := slices.DeleteFunc(slices.Clone(guests), func(g engine.GuestListView) bool { return !g.Tagged })
+	s.println("")
+	if len(tagged) == 0 {
+		s.println("No guest in the last listing has the gate tag.")
+		return s.done()
+	}
+	s.println("Tagged guests:")
+	t := s.table()
+	t.row("  GUEST", "NODE", "RUNNING", "IDENTITY", "APPROVAL", "ROUTES", "ISSUES")
+	for _, g := range tagged {
+		running := "no"
+		if g.Running {
+			running = "yes"
+		}
+		t.row("  "+engine.OwnerName(g.Ref, &engine.GuestView{Name: g.Name}), dash(g.Node), running, dash(g.Identity), dash(g.Approval),
+			fmt.Sprint(g.Routes), fmt.Sprint(g.Issues))
+	}
+	t.flush()
+	return s.done()
 }
 
 func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine.UnapprovedGuest) error {

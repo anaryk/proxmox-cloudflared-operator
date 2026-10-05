@@ -21,6 +21,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 func TestTheScreenCleansWhatItIsGiven(t *testing.T) {
@@ -127,12 +128,31 @@ func hostileEngine() *fakeEngine {
 			Waiting: []engine.ClaimantView{{Owner: "manual/x" + hostileText, Since: t0}},
 		}},
 		approvals: []engine.ApprovalView{{Owner: "qemu/101", Guest: guest, Identity: "uuid" + hostileText, Current: "uuid:2" + hostileText}},
-		segments:  hostileSegments(),
-		steps:     []doctor.Step{{Name: "route" + hostileText, Level: doctor.LevelFail, Detail: "held " + hostileText}},
+		guests: []engine.GuestListView{{
+			Ref: "qemu/101" + hostileText, Name: guest.Name, Node: "pve" + hostileText, Tagged: true,
+			Identity: "uuid" + hostileText, Approval: "odd" + hostileText,
+		}},
+		manual: []engine.ManualRouteView{{
+			ID: "x" + hostileText, Rev: 1, Hostname: "x.example.com" + hostileText,
+			Target:  engine.ManualTarget{Kind: "guest", Guest: "qemu/101" + hostileText, Scheme: "http" + hostileText, Port: 80},
+			Options: model.RouteOptions{HostHeader: "h" + hostileText, Via: "v" + hostileText},
+		}},
+		settings: hostileSettings(),
+		segments: hostileSegments(),
+		steps:    []doctor.Step{{Name: "route" + hostileText, Level: doctor.LevelFail, Detail: "held " + hostileText}},
 		findings: []doctor.Finding{
 			{Check: "check" + hostileText, Level: doctor.LevelFail, Detail: "detail " + hostileText, Fix: "fix " + hostileText},
 			{Check: "odd", Level: doctor.Level("odd" + hostileText), Detail: "a level of another version"},
 		},
+	}
+}
+
+func hostileSettings() engine.SettingsView {
+	s := store.DefaultSettings()
+	s.GateTag, s.DenyHosts = "cf"+hostileText, []string{"a" + hostileText}
+	return engine.SettingsView{
+		Rev: 1, Settings: s, ReadAtStart: []string{"gateTag" + hostileText},
+		Limits: map[string]engine.Limit{"grace": {Min: "30s" + hostileText}}, Notes: []string{"note " + hostileText},
 	}
 }
 
@@ -167,6 +187,9 @@ func TestNothingTheDaemonSendsReachesTheTerminalAsAControlCharacter(t *testing.T
 		{"guest list", []string{"guest", "list"}, ""},
 		{"guest revoke", []string{"guest", "revoke", "qemu/101"}, "n\n"},
 		{"guest approve", []string{"guest", "approve", "qemu/105"}, ""},
+		{"settings show", []string{"settings", "show"}, ""},
+		{"route manual list", []string{"route", "manual", "list"}, ""},
+		{"route manual remove", []string{"route", "manual", "remove", "x" + hostileText}, "n\n"},
 		{"segment list", []string{"segment", "list"}, ""},
 		{"segment acknowledge", []string{"segment", "acknowledge", "vmbr9"}, "n\n"},
 		{"diagnose", []string{"diagnose", "www.example.com"}, ""},
@@ -238,6 +261,8 @@ func TestHostileAdminCommandsGolden(t *testing.T) {
 		{"guest_list_hostile.golden", "", []string{"guest", "list"}},
 		{"guest_revoke_hostile.golden", "n\n", []string{"guest", "revoke", "qemu/101"}},
 		{"guest_approve_hostile.golden", "", []string{"guest", "approve", "qemu/105"}},
+		{"settings_show_hostile.golden", "", []string{"settings", "show"}},
+		{"route_manual_list_hostile.golden", "", []string{"route", "manual", "list"}},
 		{"segment_list_hostile.golden", "", []string{"segment", "list"}},
 		{"diagnose_hostile.golden", "", []string{"diagnose", "www.example.com"}},
 		{"doctor_hostile.golden", "", []string{"doctor"}},

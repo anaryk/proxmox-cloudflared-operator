@@ -1,0 +1,3 @@
+ID      REV  HOSTNAME            TARGET                 OPTIONS
+status  2    status.example.com  http://10.0.5.20:9000  -
+wiki    1    wiki.example.com    https://qemu/101:8443  no-tls-verify, via=net1

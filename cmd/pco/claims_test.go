@@ -235,8 +235,19 @@ func approvalState() engine.State {
 	return st
 }
 
+// someGuests is a listing: the guests of the approvals and one without the
+// gate tag.
+func someGuests() []engine.GuestListView {
+	return []engine.GuestListView{
+		{Ref: "qemu/101", Name: "web-1", Node: "pve1", Running: true, Tagged: true, Identity: "uuid:101", Approval: "approved", Routes: 2},
+		{Ref: "qemu/102", Name: "db-1", Node: "pve1", Tagged: true, Identity: "uuid:102", Approval: "changed", Issues: 1},
+		{Ref: "qemu/103", Name: "new-1", Node: "pve2", Running: true, Tagged: true, Identity: "uuid:103", Approval: "waiting"},
+		{Ref: "qemu/105", Name: "build", Node: "pve1", Running: true, Identity: "uuid:105", Approval: "not-needed"},
+	}
+}
+
 func TestGuestListGolden(t *testing.T) {
-	e := &fakeEngine{state: approvalState(), approvals: someApprovals()}
+	e := &fakeEngine{state: approvalState(), approvals: someApprovals(), guests: someGuests()}
 	r := newRunner(t, serveFake(t, e))
 
 	res := r.run("", "guest", "list")
@@ -253,7 +264,7 @@ func TestGuestListWithNothing(t *testing.T) {
 	res := r.run("", "guest", "list")
 
 	require.NoError(t, res.err)
-	require.Equal(t, "No guest is approved.\nNo guest waits for approval.\n", res.out)
+	require.Equal(t, "No guest is approved.\nNo guest waits for approval.\n\nNo guest in the last listing has the gate tag.\n", res.out)
 }
 
 func TestGuestListJSONIsWhatTheDaemonSent(t *testing.T) {

@@ -4,4 +4,8 @@ Approved guests:
 
 Waiting for approval (pco guest approve <owner>):
   qemu/105 (new?[2J?]0;pwned? ? ?31m ?evil?): delegated: alice?[2J?]0;pwned? ? ?31m ?evil? holds VM.Config.Network
+
+Tagged guests:
+  GUEST                                                                   NODE                             RUNNING  IDENTITY                          APPROVAL                         ROUTES  ISSUES
+  qemu/101?[2J?]0;pwned? ? ?31m ?evil? (web?[2J?]0;pwned? ? ?31m ?evil?)  pve?[2J?]0;pwned? ? ?31m ?evil?  no       uuid?[2J?]0;pwned? ? ?31m ?evil?  odd?[2J?]0;pwned? ? ?31m ?evil?  0       0
 --- stderr

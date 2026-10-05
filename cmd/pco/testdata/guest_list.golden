@@ -7,3 +7,9 @@ Approved guests:
 Waiting for approval (pco guest approve <owner>):
   qemu/103 (new-1)
   qemu/104
+
+Tagged guests:
+  GUEST             NODE  RUNNING  IDENTITY  APPROVAL  ROUTES  ISSUES
+  qemu/101 (web-1)  pve1  yes      uuid:101  approved  2       0
+  qemu/102 (db-1)   pve1  no       uuid:102  changed   0       1
+  qemu/103 (new-1)  pve2  yes      uuid:103  waiting   0       0

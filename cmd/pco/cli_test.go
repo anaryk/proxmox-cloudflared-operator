@@ -310,6 +310,7 @@ func TestTheHelpOfJSONSaysWhatIsChanged(t *testing.T) {
 	for _, args := range [][]string{
 		{"--help"}, {"status", "--help"}, {"routes", "--help"}, {"plan", "--help"},
 		{"claims", "list", "--help"}, {"guest", "list", "--help"}, {"diagnose", "--help"}, {"doctor", "--help"},
+		{"settings", "show", "--help"}, {"settings", "apply", "--help"}, {"route", "manual", "list", "--help"},
 	} {
 		res := r.run("", args...)
 
@@ -419,6 +420,8 @@ func TestWithoutADaemonTheSocketIsNamed(t *testing.T) {
 		{"guest", "list"}, {"guest", "approve", "qemu/101"}, {"guest", "revoke", "qemu/101"},
 		{"segment", "list"}, {"segment", "acknowledge", "vmbr1"}, {"segment", "revoke", "vmbr1"},
 		{"diagnose", "www.example.com"}, {"events"},
+		{"settings", "show"}, {"route", "manual", "list"}, {"route", "manual", "remove", "status"},
+		{"route", "manual", "add", "x.example.com", "--address", "10.0.5.20", "--port", "80"},
 	} {
 		res := r.run("", args...)
 

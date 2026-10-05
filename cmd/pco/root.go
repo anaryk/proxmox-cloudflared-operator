@@ -102,8 +102,8 @@ func newRootCmdWith(e env) *cobra.Command {
 		"unix socket of the daemon; its directory must be named pco and sit in a directory only the daemon's user can write")
 	flags.BoolVar(&a.json, "json", false,
 		"print the answer of the daemon as JSON (status, routes, plan, events, claims list, guest list, diagnose, "+
-			"doctor, credential list, add and check): printed as the daemon sent it, re-indented, with control and "+
-			"bidirectional characters escaped")
+			"doctor, credential list, add and check, settings show and apply, route manual list and add): printed as "+
+			"the daemon sent it, re-indented, with control and bidirectional characters escaped")
 
 	root.AddCommand(
 		a.versionCmd(),
@@ -119,6 +119,8 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.credentialCmd(),
 		a.claimsCmd(),
 		a.guestCmd(),
+		a.settingsCmd(),
+		a.routeCmd(),
 		a.segmentCmd(),
 		a.diagnoseCmd(),
 		a.doctorCmd(),

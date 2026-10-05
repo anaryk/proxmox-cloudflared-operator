@@ -1,0 +1,18 @@
+Settings at revision 1:
+  gateTag               cf?[2J?]0;pwned? ? ?31m ?evil?
+  allowHosts            -
+  denyHosts             a?[2J?]0;pwned? ? ?31m ?evil?
+  pollInterval          10s
+  grace                 1m0s (at least 30s?[2J?]0;pwned? ? ?31m ?evil?)
+  trustStatic           false
+  trustedCIDRs          -
+  admission             tag
+  zonePins              -
+  observeOnly           true
+  identityMinimum       port
+  maxHostnamesPerGuest  32
+  reverifyInterval      1m0s
+  cloudflareBudget      1000
+
+note ?[2J?]0;pwned? ? ?31m ?evil?
+--- stderr
