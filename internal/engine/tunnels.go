@@ -41,12 +41,27 @@ func (c *cycleRun) reconcileTunnels() bool {
 	}
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
+	c.waiting.Add(res.Waiting)
 	c.st.WriterVerdict = verdictName(res.Verdict)
 	if res.Verdict != reconcile.WriterProceed {
+		c.sayWaiting()
 		c.hold(fmt.Sprintf("the tunnel run found a %s writer", c.st.WriterVerdict))
 		return false
 	}
-	return c.writerStill("after the tunnel run")
+	if !c.writerStill("after the tunnel run") {
+		c.sayWaiting()
+		return false
+	}
+	return true
+}
+
+// sayWaiting adds what waits for Cloudflare's rate limit to the problems, in
+// one line, once.
+func (c *cycleRun) sayWaiting() {
+	if line := c.waiting.Line(); line != "" {
+		c.st.Problems = append(c.st.Problems, line)
+	}
+	c.waiting = reconcile.Waiting{}
 }
 
 // writerStill reads leader.json again after a reconciler run that let this

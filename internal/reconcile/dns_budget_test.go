@@ -58,7 +58,8 @@ func TestDNSStopsWritingWhenTheBudgetIsSpent(t *testing.T) {
 
 	res := newDNS(s, &memStore{}, t0).Run(context.Background(), dnsIn(names...), Enforce)
 
-	require.Equal(t, []string{"4 changes wait for Cloudflare's rate limit"}, res.Problems)
+	require.Empty(t, res.Problems)
+	require.Equal(t, Waiting{Changes: 4}, res.Waiting)
 	require.Len(t, dnsWrites(f), 3)
 	require.Equal(t, 4, creates, "nothing is sent after the refusal")
 	var held []Action
@@ -87,7 +88,8 @@ func TestDNSOneChangeWaitsForTheBudget(t *testing.T) {
 
 	res := newDNS(s, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
 
-	require.Equal(t, []string{"1 change waits for Cloudflare's rate limit"}, res.Problems)
+	require.Empty(t, res.Problems)
+	require.Equal(t, Waiting{Changes: 1}, res.Waiting)
 }
 
 // A delete that is due waits for the budget without reading the record again;
@@ -101,7 +103,8 @@ func TestDNSDeletesWaitForTheBudgetBehindTheGuard(t *testing.T) {
 
 		res := newDNS(s, store, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
 
-		require.Equal(t, []string{"2 changes wait for Cloudflare's rate limit"}, res.Problems)
+		require.Empty(t, res.Problems)
+		require.Equal(t, Waiting{Changes: 2}, res.Waiting)
 		require.Equal(t, []string{"Records zone1", "Records zone2"}, f.Calls(), "no read before a delete that waits")
 		require.Contains(t, withoutDetail(res.Actions), dnsAction(DeleteRecord, "old.example.com", HeldBudget, true))
 		require.Contains(t, store.m, stoneKey(zone1.ID, "old.example.com"), "its grace is kept")
@@ -119,7 +122,7 @@ func TestDNSDeletesWaitForTheBudgetBehindTheGuard(t *testing.T) {
 		res := newDNS(s, &memStore{m: stones}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
 
 		require.NotNil(t, res.Guard)
-		require.Contains(t, res.Problems, "1 change waits for Cloudflare's rate limit")
+		require.Equal(t, Waiting{Changes: 1}, res.Waiting)
 		for _, a := range res.Actions {
 			if a.Kind == DeleteRecord {
 				require.Contains(t, a.Held, HeldByGuard, a.Target)
@@ -165,4 +168,17 @@ func TestDNSAdoptionWhoseDeleteIsRefusedHoldsItsCreate(t *testing.T) {
 		dnsAction(DeleteRecord, "app.example.com", HeldBudget, true),
 		dnsAction(CreateRecord, "app.example.com", HeldBudget, true),
 	}, withoutDetail(res.Actions))
+}
+
+// A listing the rate limit refuses waits, and says so in what waits rather
+// than in a problem of its own.
+func TestDNSAListingTheRateLimitRefusesWaits(t *testing.T) {
+	f := newDNSFake()
+	f.FailNext("dns.read", 1, spent)
+
+	res := newDNS(f, &memStore{}, t0).Run(context.Background(), dnsIn("app.example.com"), Enforce)
+
+	require.Empty(t, res.Problems)
+	require.Equal(t, []string{"example.com"}, res.Unlisted)
+	require.Equal(t, Waiting{Reads: []string{"the listing of zone example.com"}}, res.Waiting)
 }

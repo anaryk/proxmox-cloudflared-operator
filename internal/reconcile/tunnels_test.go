@@ -878,8 +878,10 @@ func TestTunnelFailureOnOneAccount(t *testing.T) {
 			}, nil, Enforce)
 
 			require.Equal(t, attempts, callsTo(failing, "CreateTunnel", "PutTunnelConfig"), "nothing is written after the error")
-			require.Len(t, res.Problems, 1, "problems: %v", res.Problems)
-			require.Contains(t, res.Problems[0], "pco-abc in account acct1")
+			// A lookup the rate limit refuses waits rather than being a problem.
+			said := append(slices.Clone(res.Problems), res.Waiting.Reads...)
+			require.Len(t, said, 1, "problems: %v", said)
+			require.Contains(t, said[0], "account acct1")
 			require.Equal(t, WriterProceed, res.Verdict)
 			require.Len(t, res.Tunnels, 2)
 			require.False(t, res.Tunnels[0].Verified)
@@ -1345,4 +1347,15 @@ func TestTunnelRunCancelled(t *testing.T) {
 		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 2, Exists: true},
 		unknownIn("acct2"),
 	}, res.Tunnels)
+}
+
+func TestATunnelLookupTheRateLimitRefusesWaits(t *testing.T) {
+	f := newFake("acct1")
+	f.FailNext("tunnel.read", 1, &cfapi.Error{Status: http.StatusTooManyRequests, Message: "not sent", RetryAfter: time.Minute})
+
+	res := newReconciler(Clients{"cred1": f}, &clock{t0}).Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+
+	require.Empty(t, res.Problems)
+	require.Equal(t, Waiting{Reads: []string{"the tunnel of account acct1"}}, res.Waiting)
+	require.Equal(t, []TunnelState{unknownIn("acct1")}, res.Tunnels)
 }

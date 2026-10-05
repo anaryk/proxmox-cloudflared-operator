@@ -64,6 +64,9 @@ type TunnelResult struct {
 	Actions  []Action      // in the order performed or planned
 	Problems []string
 	Verdict  WriterVerdict // WriterProceed unless another writer stopped the run
+	// Waiting names the tunnels the run could not look up, as Cloudflare's
+	// rate limit refused it; that is not a problem of its own.
+	Waiting Waiting
 }
 
 // Run brings tunnels in line with plans. Accounts listed in `known` (account
@@ -236,7 +239,11 @@ func (run *tunnelRun) reconcile(ctx context.Context, t target) (TunnelState, boo
 	}
 
 	tun, found, err := api.FindTunnel(ctx, t.account, t.name)
-	if err != nil {
+	switch {
+	case err != nil && cfapi.IsRateLimited(err):
+		run.res.Waiting.Reads = append(run.res.Waiting.Reads, "the tunnel of account "+t.account)
+		return st, true
+	case err != nil:
 		run.problem(fmt.Sprintf("%s: finding the tunnel: %v", t, err))
 		return st, true
 	}

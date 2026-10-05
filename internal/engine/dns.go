@@ -51,6 +51,8 @@ func (c *cycleRun) reconcileDNS() {
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
 	c.st.Problems = append(c.st.Problems, res.Problems...)
+	c.waiting.Add(res.Waiting)
+	c.sayWaiting()
 	switch {
 	case !res.Looked:
 		why := "the DNS run did not look at the records"

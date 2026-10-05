@@ -97,6 +97,10 @@ type cycleRun struct {
 	confirmWhy string
 	adoptWaits map[string]string
 	adopted    map[string]bool
+
+	// waiting is what the runs of the cycle left for Cloudflare's rate limit
+	// and not said yet.
+	waiting reconcile.Waiting
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {

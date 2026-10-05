@@ -145,6 +145,11 @@ type DNSResult struct {
 
 	Problems []string
 
+	// Waiting is what the run left for Cloudflare's rate limit: the changes
+	// it held for it, and the zones it could not list. Neither is a problem
+	// of its own.
+	Waiting Waiting
+
 	// Looked is true when the run, observing or enforcing, listed its zones
 	// and compared them with the plan, so Conflicts and Lost describe what
 	// is there now. A run that stopped before leaves them empty without
@@ -456,7 +461,12 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 		return
 	}
 	records, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{})
-	if err != nil {
+	switch {
+	case err != nil && run.spend(err):
+		run.unlisted(z)
+		run.res.Waiting.Reads = append(run.res.Waiting.Reads, "the listing of zone "+z.Name)
+		return
+	case err != nil:
 		run.unlisted(z)
 		run.problem(fmt.Sprintf("zone %s: listing the records: %v", z.Name, err))
 		return
@@ -540,20 +550,13 @@ func (run *dnsRun) problem(msg string) {
 	run.res.Problems = append(run.res.Problems, msg)
 }
 
-// finish puts the conflicts and lost names in a fixed order, and says how
-// many changes wait for the rate limit.
+// finish puts the conflicts and lost names in a fixed order, and counts the
+// changes that wait for the rate limit.
 func (run *dnsRun) finish() {
-	waiting := 0
 	for _, a := range run.res.Actions {
 		if a.Held == HeldBudget {
-			waiting++
+			run.res.Waiting.Changes++
 		}
-	}
-	switch {
-	case waiting == 1:
-		run.problem("1 change waits for Cloudflare's rate limit")
-	case waiting > 1:
-		run.problem(fmt.Sprintf("%d changes wait for Cloudflare's rate limit", waiting))
 	}
 	slices.SortFunc(run.res.Conflicts, func(a, b Conflict) int {
 		return cmp.Or(
