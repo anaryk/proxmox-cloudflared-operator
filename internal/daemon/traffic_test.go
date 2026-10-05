@@ -68,15 +68,15 @@ type samplerRig struct {
 
 	mu     sync.Mutex
 	rounds []round
-	// reads are the reads of the counters of the egress filter: the time of
-	// the round each was for, and how long after it began each was made.
+	// reads are the reads of the counters of the egress filter: the time each
+	// was made as of, and how long it was given.
 	reads []counterRead
 	calls []string
 }
 
 type counterRead struct {
-	at    time.Time
-	after time.Duration
+	at     time.Time
+	within time.Duration
 }
 
 func newSamplerRig(statuses []connector.Status, took time.Duration) *samplerRig {
@@ -90,10 +90,14 @@ func newSamplerRig(statuses []connector.Status, took time.Duration) *samplerRig 
 			r.rounds = append(r.rounds, round{at, scrapes})
 			r.calls = append(r.calls, "record")
 		},
-		targets: func(_ context.Context, at time.Time) {
+		targets: func(ctx context.Context, at time.Time) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.reads = append(r.reads, counterRead{at, time.Since(at)})
+			var within time.Duration
+			if d, ok := ctx.Deadline(); ok {
+				within = time.Until(d)
+			}
+			r.reads = append(r.reads, counterRead{at, within})
 			r.calls = append(r.calls, "targets")
 		},
 		now: time.Now,
@@ -213,7 +217,8 @@ func TestTheRoundsComeOneAfterTheOther(t *testing.T) {
 
 // The counters of the egress filter are read in the same round, once the
 // scrapes are in, and recorded before the round is: the notice of the round
-// carries both.
+// carries both. They are of the time the read begins, not of the round: a slow
+// scrape would skew every rate otherwise.
 func TestTheCountersAreReadInTheRoundAfterTheScrapes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newSamplerRig([]connector.Status{scrapable(tunnelNumbered(1))}, 1500*time.Millisecond)
@@ -222,8 +227,29 @@ func TestTheCountersAreReadInTheRoundAfterTheScrapes(t *testing.T) {
 		r.s.round(t.Context())
 
 		reads, calls := r.counterReads()
-		require.Equal(t, []counterRead{{at: start, after: 1500 * time.Millisecond}}, reads)
+		require.Equal(t, []counterRead{{at: start.Add(1500 * time.Millisecond), within: engine.TrafficInterval}}, reads)
 		require.Equal(t, []string{"targets", "record"}, calls)
+		got := r.recorded()
+		require.Len(t, got, 1)
+		require.Equal(t, start, got[0].at, "the scrapes are of the round")
+	})
+}
+
+// A read that nft does not answer is cut off at the interval, and the round is
+// recorded: the notice of the round is not held for the minute nft is given.
+func TestAStuckReadDoesNotHoldTheRoundPastTheInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newSamplerRig([]connector.Status{scrapable(tunnelNumbered(1))}, time.Second)
+		r.s.targets = func(ctx context.Context, _ time.Time) { <-ctx.Done() }
+		start := time.Now()
+
+		r.s.round(t.Context())
+
+		require.Equal(t, time.Second+engine.TrafficInterval, time.Since(start))
+		got := r.recorded()
+		require.Len(t, got, 1)
+		require.Equal(t, start, got[0].at)
+		require.NotNil(t, got[0].scrapes[tunnelNumbered(1)], "with the scrapes it has")
 	})
 }
 

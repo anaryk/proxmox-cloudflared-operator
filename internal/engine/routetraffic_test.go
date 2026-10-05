@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -249,13 +252,90 @@ func TestAFailedReadKeepsTheSeries(t *testing.T) {
 
 	e.egr.failReads(errors.New("nft: signal: killed"))
 	e.eng.SampleTargets(t.Context(), at(2))
-	require.Equal(t, "the counters could not be read: nft: signal: killed", e.eng.Traffic().RoutesWhy)
+	v := e.eng.Traffic()
+	require.Equal(t, "the counters could not be read: nft: signal: killed", v.RoutesWhy)
+	require.Empty(t, v.Routes, "no figures while the last read gave none")
 
 	readFlows(e, 3, "3", map[string]uint64{targetWWW: 130})
 
 	require.Equal(t, []RouteSample{{At: at(1), FlowsPerSec: 2}, {At: at(3), FlowsPerSec: 2}},
 		seriesOf(t, e.eng, "www.example.com").Samples)
 	require.Empty(t, e.eng.Traffic().RoutesWhy)
+}
+
+// The daemon gives a read the interval: one that nft does not answer by then
+// is a read that failed, and says so. A read the stop cut off is not one.
+func TestAReadThatRanOutOfTimeFailsAndOneCutOffByTheStopRecordsNothing(t *testing.T) {
+	e := counting(t)
+	readFlows(e, 0, "3", map[string]uint64{targetWWW: 100})
+	readFlows(e, 1, "3", map[string]uint64{targetWWW: 110})
+	e.egr.failReads(errors.New("nft -j list table inet pco: signal: killed"))
+
+	stopped, stop := context.WithCancel(t.Context())
+	stop()
+	e.eng.SampleTargets(stopped, at(2))
+
+	require.Empty(t, e.eng.Traffic().RoutesWhy)
+	require.Equal(t, []RouteTraffic{www(2)}, e.eng.Traffic().Routes)
+
+	late, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	e.eng.SampleTargets(late, at(3))
+
+	require.Equal(t, "the counters could not be read: nft -j list table inet pco: signal: killed", e.eng.Traffic().RoutesWhy)
+}
+
+// Every browser is sent the reason: one line, and short.
+func TestTheReasonOfAFailedReadIsOneShortLine(t *testing.T) {
+	e := counting(t)
+	e.egr.failReads(errors.New("nft -j list table inet pco: exit status 1: Error: Could not process rule:\n\tNo such file or directory\n" +
+		strings.Repeat("list table inet pco ", 30)))
+
+	e.eng.SampleTargets(t.Context(), at(0))
+
+	why := e.eng.Traffic().RoutesWhy
+	require.True(t, strings.HasPrefix(why, "the counters could not be read: nft -j list table inet pco: exit status 1: Error: "), why)
+	require.NotContains(t, why, "\n")
+	require.NotContains(t, why, "\t")
+	require.Len(t, []rune(why), 200)
+	require.True(t, strings.HasSuffix(why, "..."), why)
+}
+
+// The address of a route that lost its proof is out of the set at once, with
+// every target on it, though another route proves the same address: none of
+// them has a figure, and the rest are not counted with them.
+func TestARouteWhoseTargetTheSetLostHasNoFigure(t *testing.T) {
+	e := newEnv(t)
+	e.inv.set(snapshot(
+		guest(101, "web-1", "www.example.com -> :8080", "api.example.com -> :9090"),
+		guest(102, "db-1", "db.example.com -> :5432"),
+	))
+	other := netip.MustParseAddr("10.0.0.12")
+	e.res.moveTo("db.example.com", other)
+	e.eng.NoteEgress(EgressCheck{View: EgressView{State: EgressOn}})
+	e.cycle()
+	db := netip.AddrPortFrom(other, 5432).String()
+	readFlows(e, 0, "3", map[string]uint64{targetWWW: 0, "10.0.0.11:9090": 0, db: 0})
+	readFlows(e, 1, "3", map[string]uint64{targetWWW: 5, "10.0.0.11:9090": 5, db: 5})
+	require.Equal(t, 3, e.eng.Traffic().RoutesTotal)
+	_, err := e.eng.RouteSeries("api.example.com")
+	require.NoError(t, err)
+
+	e.res.stop("www.example.com", "identity check failed: 10.0.0.11 answered by bc:24:11:ff:ff:01")
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	got, _ := e.egr.last()
+	require.Equal(t, egressTargets(db), got, "10.0.0.11 left the set, with api.example.com's target on it")
+	readFlows(e, 2, "4", map[string]uint64{db: 0})
+
+	v := e.eng.Traffic()
+	require.Equal(t, []RouteTraffic{{Hostname: "db.example.com", Owner: "qemu/102", Target: db, FlowsPerSec: 1}}, v.Routes)
+	require.Equal(t, 1, v.RoutesTotal)
+	for _, host := range []string{"www.example.com", "api.example.com"} {
+		_, err := e.eng.RouteSeries(host)
+		require.ErrorIs(t, err, ErrNotFound, host)
+	}
+	require.Zero(t, seriesOf(t, e.eng, "db.example.com").Shared)
 }
 
 func TestTheLast180SamplesOfATargetAreKept(t *testing.T) {
@@ -315,6 +395,44 @@ func TestANoticeCarriesTheHundredBusiestRoutes(t *testing.T) {
 	require.Equal(t, RouteTraffic{Hostname: "g0900.example.com", Owner: "qemu/1900", Target: "10.0.0.11:10900", FlowsPerSec: 900}, routes[99])
 	require.Equal(t, 1000, got[0].RoutesTotal)
 	require.Len(t, e.eng.Traffic().Routes, 1000, "the view has all of them")
+}
+
+// The zero of a route that stopped is sent once, and the cap must not cut it
+// for busier routes: the browser would go on showing the rate before.
+func TestTheZeroOfARouteThatStoppedIsNotCutByTheCap(t *testing.T) {
+	e := newEnv(t)
+	e.eng.NoteEgress(EgressCheck{View: EgressView{State: EgressOn}})
+	served := map[netip.AddrPort][]servedRoute{}
+	counts := func(n int, stuck string) map[string]uint64 {
+		out := map[string]uint64{}
+		for i := range 1000 {
+			ap := netip.AddrPortFrom(netip.MustParseAddr("10.0.0.11"), uint16(10000+i))
+			out[ap.String()] = uint64(5 * n * i)
+			if ap.String() == stuck {
+				out[ap.String()] = 5 * uint64(i)
+			}
+		}
+		return out
+	}
+	for i := range 1000 {
+		ap := netip.AddrPortFrom(netip.MustParseAddr("10.0.0.11"), uint16(10000+i))
+		served[ap] = []servedRoute{{hostname: fmt.Sprintf("g%04d.example.com", i), owner: fmt.Sprintf("qemu/%d", 1000+i)}}
+	}
+	e.eng.keepServed(served)
+	readFlows(e, 0, "3", counts(0, ""))
+	readFlows(e, 1, "3", counts(1, ""))
+	e.eng.RecordTraffic(at(1), nil)
+	ch := listen(t, e.eng)
+
+	readFlows(e, 2, "3", counts(2, "10.0.0.11:10001"))
+	e.eng.RecordTraffic(at(2), nil)
+
+	got := trafficNotices(until(t, e.eng, ch))
+	require.Len(t, got, 1)
+	routes := got[0].Routes
+	require.Len(t, routes, 100)
+	require.Equal(t, RouteTraffic{Hostname: "g0001.example.com", Owner: "qemu/1001", Target: "10.0.0.11:10001"}, routes[0])
+	require.Equal(t, "g0999.example.com", routes[1].Hostname)
 }
 
 // A notice tells of a route that stopped once, with no flows, and then no

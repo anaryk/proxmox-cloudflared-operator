@@ -25,7 +25,7 @@ type sampler struct {
 	scrape   func(ctx context.Context, tunnelID string) (connector.Metrics, error)
 	record   func(at time.Time, scrapes map[string]*connector.Metrics)
 	// targets reads the counters of the egress filter, while it is on, and
-	// records them as of at.
+	// records them as of at. It is given the interval at the most.
 	targets func(ctx context.Context, at time.Time)
 	now     func() time.Time
 	log     zerolog.Logger
@@ -47,12 +47,14 @@ func (s *sampler) run(ctx context.Context) {
 }
 
 // round scrapes the connectors of the last state's tunnels, at most
-// scrapesAtOnce at a time, then has the counters of the egress filter read,
-// and records both as of the time it began: the scrapes last, as their notice
-// carries the counters too. A connector that does not run, has no metrics
-// address or whose port another process holds is not asked: what answers
-// there is not the connector, and would be shown as its traffic. A round the
-// stop cut off is not recorded.
+// scrapesAtOnce at a time, then has the counters of the egress filter read, and
+// records the scrapes as of the time it began: they last, as their notice
+// carries the counters too. The counters are of the time their read begins, so
+// that a slow scrape does not skew their rates, and the read is given the
+// interval, as nft may not answer. A connector that does not run, has no
+// metrics address or whose port another process holds is not asked: what
+// answers there is not the connector, and would be shown as its traffic. A
+// round the stop cut off is not recorded.
 func (s *sampler) round(ctx context.Context) {
 	at := s.now()
 	statuses := s.statuses()
@@ -85,7 +87,9 @@ func (s *sampler) round(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	s.targets(ctx, at)
+	read, cancel := context.WithTimeout(ctx, engine.TrafficInterval)
+	s.targets(read, s.now())
+	cancel()
 	if ctx.Err() != nil {
 		return
 	}

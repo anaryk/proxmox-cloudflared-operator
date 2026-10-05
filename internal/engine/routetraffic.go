@@ -3,12 +3,14 @@ package engine
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
@@ -17,6 +19,10 @@ import (
 // noticeRoutes is the most routes a traffic notice carries: 1000 busy targets
 // would be about 130 KB every 5 s to every browser.
 const noticeRoutes = 100
+
+// maxWhy is the most characters of why there are no figures: every browser is
+// sent it, and what nft said of a failed read may be long.
+const maxWhy = 200
 
 // Why there are no per-route figures, in the words of the legend of the map.
 const (
@@ -134,8 +140,9 @@ func endpoint(t egress.Target) netip.AddrPort {
 // SampleTargets reads the counters of the egress filter and records them as
 // of t, while the last state says that the filter is on; otherwise it records
 // why there are none and asks the filter nothing. A read that fails is no
-// problem of the cycle: the figures say why they are missing. The stream
-// hears of the read with the RecordTraffic of the same round.
+// problem of the cycle: the figures say why they are missing, also when ctx
+// ran out of time; a read the stop cut off records nothing. The stream hears
+// of the read with the RecordTraffic of the same round.
 func (e *Engine) SampleTargets(ctx context.Context, t time.Time) {
 	state := e.egressState()
 	var (
@@ -145,7 +152,7 @@ func (e *Engine) SampleTargets(ctx context.Context, t time.Time) {
 	)
 	if state == EgressOn {
 		generation, counts, err = e.d.Egress.FlowCounts(ctx)
-		if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
 			return
 		}
 		if err != nil {
@@ -159,7 +166,7 @@ func (e *Engine) SampleTargets(ctx context.Context, t time.Time) {
 	case state != EgressOn:
 		tr.flows.forget(notOn(state))
 	case err != nil:
-		tr.flows.why = whyUnread + err.Error()
+		tr.flows.why = unread(err)
 	default:
 		tr.flows.add(t, generation, counts)
 	}
@@ -182,6 +189,15 @@ func notOn(state string) string {
 		return whyChanged
 	}
 	return whyNotChecked
+}
+
+// unread is why a read failed, on one line of at most maxWhy characters.
+func unread(err error) string {
+	why := []rune(whyUnread + strings.Join(strings.Fields(err.Error()), " "))
+	if len(why) > maxWhy {
+		return string(why[:maxWhy-3]) + "..."
+	}
+	return string(why)
 }
 
 // forget drops what the reads gave: the counters of a table pco did not load,
@@ -277,10 +293,10 @@ func (ft *flowTraffic) all() []RouteTraffic {
 	return out
 }
 
-// notice is what a traffic notice carries of the routes: those with the
-// highest rate now, then those whose rate was not zero at the last notice and
-// is now, at most noticeRoutes of them; how many routes have a figure; and
-// why none has.
+// notice is what a traffic notice carries of the routes, at most noticeRoutes
+// of them: first those whose rate was not zero at the last notice and is now,
+// which are told once, so that the cap does not cut them, then those with the
+// highest rate now; how many routes have a figure; and why none has.
 func (ft *flowTraffic) notice() (routes []RouteTraffic, total int, why string) {
 	all := ft.all()
 	var busy, stopped []RouteTraffic
@@ -296,7 +312,7 @@ func (ft *flowTraffic) notice() (routes []RouteTraffic, total int, why string) {
 	}
 	ft.moving = moving
 	slices.SortStableFunc(busy, func(a, b RouteTraffic) int { return cmp.Compare(b.FlowsPerSec, a.FlowsPerSec) })
-	routes = slices.Concat(busy, stopped)
+	routes = slices.Concat(stopped, busy)
 	return routes[:min(len(routes), noticeRoutes)], len(all), ft.why
 }
 
