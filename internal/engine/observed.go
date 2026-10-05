@@ -14,7 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-// cause is why a route served at observed is held.
+// cause is why the observed rules hold a route.
 type cause int
 
 const (
@@ -35,7 +35,7 @@ var causeNames = [causes]string{
 	causeSoft:       "soft-denied address",
 }
 
-// observedHold is what holds one winner served at observed, and what an
+// observedHold is what the observed rules hold one winner by, and what an
 // approval of its guest would record to release it.
 type observedHold struct {
 	causes  []cause
@@ -45,28 +45,27 @@ type observedHold struct {
 	addr    netip.Addr      // the soft-denied address an approval would allow
 }
 
-// holdObserved applies the rules of the observed level to every winner whose
-// guest's address is published on a proof at observed, after the minimum had
-// its say. The winner is held when its segment is not acknowledged, or when
-// it waits for an approval of its guest: its MAC is not the one its claim
-// pinned, others may configure the guest's network (or that cannot be told),
-// or its address is soft-denied, unless the approval of the guest in its
-// identity holds the MAC, and the address. A held target loses its address as
-// one below the minimum does, the claim is kept, and the guest is listed in
-// Unapproved with why. A claim without a MAC pins the one the address answers
-// from; the claims changed so are saved again. Routes at port are untouched.
+// holdObserved applies the observed rules to every winner whose guest's
+// address is published, after the minimum had its say. A winner proven at
+// observed is held when its segment is not acknowledged, or when it waits for
+// an approval of its guest: its MAC is not the one its claim pinned, or others
+// may configure the guest's network (or that cannot be told), unless the
+// approval of the guest in its identity holds the MAC. A winner at any level
+// is held when its address is soft-denied, unless that approval names the
+// address. A held target loses its address as one below the minimum does,
+// the claim is kept, and the guest is listed in Unapproved with why. At
+// observed a claim without a MAC pins the one the address answers from; the
+// claims changed so are saved again. Above observed nothing is pinned.
 func (c *cycleRun) holdObserved() {
 	acc := c.access
 	d := &delegates{v: acc, ownUser: c.e.d.OwnUser, byGuest: map[model.GuestRef][]access.Principal{}}
-	// What the access control and the facts read with it are for matters
-	// only where routes are served at observed.
-	if c.requiredLevel() == resolve.LevelObserved {
-		if acc.problem != "" {
-			c.problem("%s", acc.problem)
-		}
-		if acc.factsErr != "" {
-			c.problem("reading the SDN subnets or the resolvers of the nodes: %s; the ones read before stay denied", acc.factsErr)
-		}
+	// The access control matters only where routes are served at observed;
+	// the subnets and resolvers read with it are denied at any level.
+	if c.requiredLevel() == resolve.LevelObserved && acc.problem != "" {
+		c.problem("%s", acc.problem)
+	}
+	if acc.factsErr != "" {
+		c.problem("reading the SDN subnets or the resolvers of the nodes: %s; the ones read before stay denied", acc.factsErr)
 	}
 	seen := map[resolve.Segment]int{}
 	waiting := map[model.GuestRef]*UnapprovedGuest{}
@@ -78,13 +77,15 @@ func (c *cycleRun) holdObserved() {
 		if !ok || rt.Guest == nil || res.Binding == nil {
 			continue
 		}
-		if level, published := standsOn(res); !published || level != resolve.LevelObserved {
+		level, published := standsOn(res)
+		if !published {
 			continue
 		}
-		if seg := res.Binding.Segment; !seg.IsZero() {
+		atObserved := level == resolve.LevelObserved
+		if seg := res.Binding.Segment; atObserved && !seg.IsZero() {
 			seen[seg]++
 		}
-		h, pin := c.observedHoldOf(rt, res, d, acc.unreadable)
+		h, pin := c.observedHoldOf(rt, res, d, acc.unreadable, atObserved)
 		if pin != nil {
 			pinned = append(pinned, *pin)
 		}
@@ -95,7 +96,7 @@ func (c *cycleRun) holdObserved() {
 		for _, k := range h.causes {
 			counts[k]++
 		}
-		c.holdAtObserved(rt, res, h)
+		c.holdWinner(rt, res, h)
 		if len(h.why) > 0 {
 			c.waitFor(waiting, *rt.Guest, rt.Hostname, h)
 		}
@@ -109,50 +110,52 @@ func (c *cycleRun) holdObserved() {
 }
 
 // observedHoldOf says what holds the winner rt, whose result res stands on a
-// proof at observed, and pins the MAC of its address to its claim when the
-// claim has none or an approval lets it change. pin is the event of a pin
-// made, to be reported once it is saved.
-func (c *cycleRun) observedHoldOf(rt model.Route, res resolve.Result, d *delegates, unreadable bool) (h observedHold, pin *Event) {
+// published proof, at observed when atObserved, and there pins the MAC of its
+// address to its claim when the claim has none or an approval lets it change.
+// pin is the event of a pin made, to be reported once it is saved.
+func (c *cycleRun) observedHoldOf(rt model.Route, res resolve.Result, d *delegates, unreadable, atObserved bool) (h observedHold, pin *Event) {
 	ref := *rt.Guest
 	b := res.Binding
-	if seg := b.Segment; !seg.IsZero() && !c.acknowledged(seg) {
-		h.causes, h.segment = append(h.causes, causeSegment), seg
-	}
 	approval, approved := c.approvalOf(ref)
-	mac, macErr := model.NormalizeMAC(b.MAC)
-	if macErr != nil {
-		mac = b.MAC
-	}
-	macApproved := approved && slices.Contains(approval.MACs, mac)
-	claim, claimed := c.claims.Claims[rt.Hostname]
-	switch {
-	case !claimed || macErr != nil:
-	case claim.MAC == "" && !res.Target.Withdrawn:
-		claim.MAC = mac
-		c.claims.Claims[rt.Hostname] = claim
-		pin = c.pinEvent(rt, fmt.Sprintf("pinned MAC %s for %s", mac, rt.Hostname))
-	case claim.MAC == "" || claim.MAC == mac:
-	case macApproved && !res.Target.Withdrawn:
-		old := claim.MAC
-		claim.MAC = mac
-		c.claims.Claims[rt.Hostname] = claim
-		pin = c.pinEvent(rt, fmt.Sprintf("pinned MAC %s for %s in place of %s, as the approval of %s allows", mac, rt.Hostname, old, ref))
-	case !macApproved:
-		h.causes = append(h.causes, causeMAC)
-		h.why = append(h.why, fmt.Sprintf("MAC changed from %s to %s", claim.MAC, mac))
-		h.mac = mac
-	}
-	switch {
-	case macApproved:
-	case unreadable:
-		h.causes = append(h.causes, causeUnreadable)
-		h.why = append(h.why, whyUnreadable)
-		h.mac = mac
-	default:
-		if delegated := d.of(ref); len(delegated) > 0 {
-			h.causes = append(h.causes, causeDelegated)
-			h.why = append(h.why, delegatedWhy(delegated))
+	if atObserved {
+		if seg := b.Segment; !seg.IsZero() && !c.acknowledged(seg) {
+			h.causes, h.segment = append(h.causes, causeSegment), seg
+		}
+		mac, macErr := model.NormalizeMAC(b.MAC)
+		if macErr != nil {
+			mac = b.MAC
+		}
+		macApproved := approved && slices.Contains(approval.MACs, mac)
+		claim, claimed := c.claims.Claims[rt.Hostname]
+		switch {
+		case !claimed || macErr != nil:
+		case claim.MAC == "" && !res.Target.Withdrawn:
+			claim.MAC = mac
+			c.claims.Claims[rt.Hostname] = claim
+			pin = c.pinEvent(rt, fmt.Sprintf("pinned MAC %s for %s", mac, rt.Hostname))
+		case claim.MAC == "" || claim.MAC == mac:
+		case macApproved && !res.Target.Withdrawn:
+			old := claim.MAC
+			claim.MAC = mac
+			c.claims.Claims[rt.Hostname] = claim
+			pin = c.pinEvent(rt, fmt.Sprintf("pinned MAC %s for %s in place of %s, as the approval of %s allows", mac, rt.Hostname, old, ref))
+		case !macApproved:
+			h.causes = append(h.causes, causeMAC)
+			h.why = append(h.why, fmt.Sprintf("MAC changed from %s to %s", claim.MAC, mac))
 			h.mac = mac
+		}
+		switch {
+		case macApproved:
+		case unreadable:
+			h.causes = append(h.causes, causeUnreadable)
+			h.why = append(h.why, whyUnreadable)
+			h.mac = mac
+		default:
+			if delegated := d.of(ref); len(delegated) > 0 {
+				h.causes = append(h.causes, causeDelegated)
+				h.why = append(h.why, delegatedWhy(delegated))
+				h.mac = mac
+			}
 		}
 	}
 	if res.SoftDenied != "" {
@@ -192,9 +195,9 @@ func (c *cycleRun) acknowledged(seg resolve.Segment) bool {
 	return ok
 }
 
-// holdAtObserved takes the address from the target of rt, as the minimum
-// does, with the reason the first thing to do says.
-func (c *cycleRun) holdAtObserved(rt model.Route, res resolve.Result, h observedHold) {
+// holdWinner takes the address from the target of rt, as the minimum does,
+// with the reason the first thing to do says.
+func (c *cycleRun) holdWinner(rt model.Route, res resolve.Result, h observedHold) {
 	reason := approvalReason(h.why, *rt.Guest)
 	if slices.Contains(h.causes, causeSegment) {
 		reason = SegmentReason(h.segment.Bridge, h.segment.VLAN)
@@ -241,7 +244,7 @@ func (c *cycleRun) waitFor(waiting map[model.GuestRef]*UnapprovedGuest, ref mode
 	}
 }
 
-// listWaiting adds the guests that wait at observed to those that wait for
+// listWaiting adds the guests the observed rules hold to those that wait for
 // admission, in the order of their owners.
 func (c *cycleRun) listWaiting(waiting map[model.GuestRef]*UnapprovedGuest) {
 	for _, w := range waiting {
@@ -255,11 +258,11 @@ func (c *cycleRun) listWaiting(waiting map[model.GuestRef]*UnapprovedGuest) {
 	})
 }
 
-// observedHeld says how many routes at observed are held, by cause.
+// observedHeld says how many routes the observed rules hold, by cause.
 func observedHeld(n int, counts [causes]int) string {
-	which := "1 route at observed is held"
+	which := "1 route is held"
 	if n != 1 {
-		which = fmt.Sprintf("%d routes at observed are held", n)
+		which = fmt.Sprintf("%d routes are held", n)
 	}
 	var parts []string
 	for k, count := range counts {
@@ -267,7 +270,7 @@ func observedHeld(n int, counts [causes]int) string {
 			parts = append(parts, fmt.Sprintf("%s %d", causeNames[k], count))
 		}
 	}
-	return fmt.Sprintf("%s, by cause: %s; pco routes says why each is held", which, strings.Join(parts, ", "))
+	return fmt.Sprintf("%s by the observed rules: %s; pco routes says why each is held", which, strings.Join(parts, ", "))
 }
 
 // pinEvent is the event of a MAC pinned to the claim of rt.

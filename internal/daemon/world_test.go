@@ -113,6 +113,10 @@ func (f *fakePVE) serve(w http.ResponseWriter, r *http.Request) {
 			{"type": "cluster", "name": "lab", "nodes": 1, "quorate": 1},
 			{"type": "node", "name": testNode, "ip": "10.20.0.2", "online": 1, "local": 1},
 		}
+	case "/api2/json/cluster/sdn/vnets":
+		data = []map[string]any{}
+	case "/api2/json/nodes/pve1/dns":
+		data = map[string]any{"search": "lab.example", "dns1": "10.20.0.1"}
 	case "/api2/json/nodes/pve1/network":
 		data = []map[string]any{
 			{"iface": "vmbr0", "type": "bridge", "active": 1, "cidr": "10.20.0.2/24", "bridge_ports": "nic3"},

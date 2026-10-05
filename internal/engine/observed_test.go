@@ -44,7 +44,7 @@ func observing(t *testing.T) *env {
 }
 
 func heldLine(n string, causes string) string {
-	return n + " at observed " + map[bool]string{true: "is", false: "are"}[n == "1 route"] + " held, by cause: " + causes +
+	return n + " " + map[bool]string{true: "is", false: "are"}[n == "1 route"] + " held by the observed rules: " + causes +
 		"; pco routes says why each is held"
 }
 
@@ -443,6 +443,26 @@ func TestASoftDeniedAddressWaitsForAnAllowance(t *testing.T) {
 	www := route(st, "www.example.com")
 	require.Equal(t, planner.StateActive, www.State, www.Reason)
 	require.Equal(t, "http://10.0.0.1:8080", www.Service)
+
+	t.Run("an approval that does not name the address does not release it", func(t *testing.T) {
+		e := observing(t)
+		e.inv.set(gatewayOf(snapshot(guest(101, "web-1", "www.example.com -> :8080")), gatewayIP))
+		e.res.moveTo("www.example.com", gatewayIP)
+		e.cycle()
+		require.NoError(t, e.store.SaveApproval(store.Approval{Owner: "qemu/101", Identity: "uuid:101", MACs: []string{testMAC}}))
+		e.clock.advance(10 * time.Second)
+
+		requireHeld(t, e.cycle(), why+approveWebTo)
+
+		_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", nil, []netip.Addr{gatewayIP})
+		require.NoError(t, err)
+		e.clock.advance(10 * time.Second)
+		st := e.cycle()
+
+		www := route(st, "www.example.com")
+		require.Equal(t, planner.StateActive, www.State, www.Reason)
+		require.Equal(t, "http://10.0.0.1:8080", www.Service)
+	})
 }
 
 func TestWhatIsSoftDenied(t *testing.T) {
@@ -539,7 +559,7 @@ func TestTheGatewayOfAnSDNSubnetIsNeverServed(t *testing.T) {
 }
 
 // Subnets that cannot be read again stay denied as they were read last, and
-// the state says so where it matters.
+// the state says so at any level: the deny and the soft deny hold at each.
 func TestTheSubnetsReadLastStayDenied(t *testing.T) {
 	e := observing(t)
 	e.acc.subnets = []pve.Subnet{{Vnet: "v1", Prefix: netip.MustParsePrefix("10.0.0.0/24"), Gateway: gatewayIP}}
@@ -557,18 +577,32 @@ func TestTheSubnetsReadLastStayDenied(t *testing.T) {
 
 	e.settings(func(s *store.Settings) { s.IdentityMinimum = "port" })
 	e.clock.advance(10 * time.Second)
-	require.False(t, hasProblem(e.cycle(), "SDN"), "at port nothing of it is said")
+	require.True(t, hasProblem(e.cycle(), "SDN"), "at port it is said too")
 }
 
+// A route proven at port is on no segment to acknowledge, pins no MAC and
+// does not wait for the guest's delegates; only a soft-denied address waits
+// for an allowance, as at any level.
 func TestARouteAtPortNeverPinsOrWaits(t *testing.T) {
+	atPort := func(t *testing.T, minimum string) *env {
+		t.Helper()
+		e := newEnv(t)
+		e.enforce()
+		e.settings(func(s *store.Settings) { s.IdentityMinimum = minimum })
+		e.res.proveOn(resolve.Segment{Bridge: "vmbr9"})
+		e.acc.grant("alice@pve", "/vms/101", "NetAdmin", "VM.Config.Network")
+		e.inv.set(gatewayOf(snapshot(guest(101, "web-1", "www.example.com -> :8080")), gatewayIP))
+		return e
+	}
+	requireNoPin := func(t *testing.T, e *env) {
+		t.Helper()
+		claims, err := e.store.Claims()
+		require.NoError(t, err)
+		require.Empty(t, claims["www.example.com"].MAC)
+	}
 	for _, minimum := range []string{"port", "observed"} {
 		t.Run("minimum "+minimum, func(t *testing.T) {
-			e := newEnv(t)
-			e.enforce()
-			e.settings(func(s *store.Settings) { s.IdentityMinimum = minimum })
-			e.res.proveOn(resolve.Segment{Bridge: "vmbr9"})
-			e.acc.grant("alice@pve", "/vms/101", "NetAdmin", "VM.Config.Network")
-			e.inv.set(gatewayOf(snapshot(guest(101, "web-1", "www.example.com -> :8080")), guestAddr))
+			e := atPort(t, minimum)
 
 			st := e.cycle()
 
@@ -577,12 +611,39 @@ func TestARouteAtPortNeverPinsOrWaits(t *testing.T) {
 			require.Equal(t, "port", www.Level)
 			require.Empty(t, st.Unapproved)
 			require.Empty(t, st.Problems)
-			claims, err := e.store.Claims()
-			require.NoError(t, err)
-			require.Empty(t, claims["www.example.com"].MAC)
+			requireNoPin(t, e)
 			require.Empty(t, st.Segments, "a segment is seen at observed only")
 		})
 	}
+	t.Run("a soft-denied address waits at port too", func(t *testing.T) {
+		const why = "address 10.0.0.1 is the gateway of node pve1"
+		e := atPort(t, "port")
+		e.res.moveTo("www.example.com", gatewayIP)
+
+		st := e.cycle()
+
+		www := route(st, "www.example.com")
+		require.Equal(t, planner.StateUnreachable, www.State)
+		require.Equal(t, "port", www.Level)
+		require.Equal(t, why+approveWebTo, www.Reason)
+		require.Empty(t, www.Service)
+		require.Equal(t, webWaits([]string{why}, nil, gatewayIP), st.Unapproved, "no MAC: the delegation counts at observed only")
+		require.Equal(t, []string{heldLine("1 route", "soft-denied address 1")}, st.Problems)
+		require.Empty(t, st.Segments)
+		requireNoPin(t, e)
+
+		_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", nil, []netip.Addr{gatewayIP})
+		require.NoError(t, err)
+		e.clock.advance(10 * time.Second)
+		st = e.cycle()
+
+		www = route(st, "www.example.com")
+		require.Equal(t, planner.StateActive, www.State, www.Reason)
+		require.Equal(t, "http://10.0.0.1:8080", www.Service)
+		require.Empty(t, st.Unapproved)
+		require.Empty(t, st.Problems)
+		requireNoPin(t, e)
+	})
 }
 
 // The observed rules are of the guest whose identity was proven, also for a

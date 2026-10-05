@@ -91,12 +91,12 @@ func (a *app) guestApproveCmd() *cobra.Command {
 		Long: "Approve a guest, named as qemu/101 or lxc/200, in the identity the daemon sees it in now:\n" +
 			"a guest re-created under the same VMID, or a clone, needs an approval of its own. A guest\n" +
 			"that waits for approval is shown first, with the hostnames it would publish, why it waits\n" +
-			"and what the approval records: at the observed level, the MACs its addresses answer from\n" +
-			"and the soft-denied addresses, as the gateway of a node, it may be published at. The daemon\n" +
-			"refuses the approval when the guest changed since it was shown, and a guest the last cycle\n" +
-			"did not see. --allow-address allows an address the guest was not shown at. An approval\n" +
-			"admits a guest while the admission mode is approve, and releases what waits at observed\n" +
-			"in either mode.",
+			"and what the approval records: the MACs its addresses answer from at the observed level,\n" +
+			"and the soft-denied addresses, as the gateway of a node, it may be published at whatever\n" +
+			"the level. The daemon refuses the approval when the guest changed since it was shown, and\n" +
+			"a guest the last cycle did not see. --allow-address allows an address the guest was not\n" +
+			"shown at. An approval admits a guest while the admission mode is approve, and releases\n" +
+			"what waits at observed, or on a soft-denied address, in either mode.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
