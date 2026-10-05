@@ -265,6 +265,7 @@ func (r *DNSReconciler) Run(ctx context.Context, in DNSInput, mode Mode) DNSResu
 		marker: planner.DNSMarker(r.s.InstallID),
 		adopt:  lowerKeys(in.Adopt),
 		keep:   lowerKeys(in.Keep),
+		spent:  make(map[string]bool),
 	}
 	started := false
 	if in.TunnelVerdict != WriterProceed {
@@ -360,9 +361,10 @@ type dnsRun struct {
 	// askFailed is set once the inventory could not answer before a delete:
 	// every delete left is held without further calls.
 	askFailed bool
-	// spent is set once the rate limit refused a call: every write left is
-	// held, and read again by a later run, without further calls.
-	spent bool
+	// spent holds, by credential id, those the rate limit refused a call
+	// through: every write left in their zones is held, and read again by a
+	// later run, without further calls.
+	spent map[string]bool
 	// confirmations counts the tombstones the run marked confirmed; the result
 	// reports them once a save holds them.
 	confirmations int
@@ -462,7 +464,7 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	}
 	records, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{})
 	switch {
-	case err != nil && run.spend(err):
+	case err != nil && run.spend(z, err):
 		run.unlisted(z)
 		run.res.Waiting.Reads = append(run.res.Waiting.Reads, "the listing of zone "+z.Name)
 		return

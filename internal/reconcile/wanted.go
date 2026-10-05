@@ -98,7 +98,7 @@ func (run *dnsRun) retarget(ctx context.Context, z *dnsZone, rec cfapi.Record, p
 	}
 	fresh, found, ours, err := run.recheck(ctx, z, rec)
 	switch {
-	case err != nil && run.spend(err):
+	case err != nil && run.spend(z, err):
 		z.add(a, HeldBudget)
 		return
 	case err != nil:
@@ -134,10 +134,10 @@ func (run *dnsRun) claim(ctx context.Context, z *dnsZone, name string, p pointin
 		return
 	}
 	holders := addressesOf(z.others[name])
-	if len(holders) > 0 && run.adopt[name] && run.mode == Enforce && !run.spent {
+	if len(holders) > 0 && run.adopt[name] && run.mode == Enforce && !run.spent[z.CredentialID] {
 		found, err := z.api.Records(ctx, z.ID, cfapi.RecordFilter{Name: name})
 		switch {
-		case err != nil && run.spend(err):
+		case err != nil && run.spend(z, err):
 			z.add(create, HeldBudget)
 			return
 		case err != nil:
@@ -211,7 +211,7 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		held = p.held
 	case run.noDeletes != "":
 		held = run.noDeletes
-	case run.spent, !run.room(z, adoptRequests):
+	case run.spent[z.CredentialID], !run.room(z, adoptRequests):
 		// Begun without room, it could leave the name empty.
 		held = HeldBudget
 	}
@@ -230,7 +230,7 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		switch {
 		case run.stopped != "":
 			z.add(add, run.stopped)
-		case run.spent:
+		case run.spent[z.CredentialID]:
 			z.add(add, HeldBudget)
 		}
 		return

@@ -62,7 +62,7 @@ func (run *dnsRun) proceed(z *dnsZone, a Action) bool {
 		z.add(a, heldObserve)
 	case run.stopped != "":
 		z.add(a, run.stopped)
-	case run.spent:
+	case run.spent[z.CredentialID]:
 		z.add(a, HeldBudget)
 	default:
 		return true
@@ -70,13 +70,15 @@ func (run *dnsRun) proceed(z *dnsZone, a Action) bool {
 	return false
 }
 
-// spend reports whether err is a refusal of the rate limit, and when it is,
-// stops the writes of the run: the rest waits for a later one.
-func (run *dnsRun) spend(err error) bool {
+// spend reports whether err, of a call for zone z, is a refusal of the rate
+// limit, and when it is, stops the writes of the run through the credential of
+// z: the rest of them wait for a later run. Another credential has a limit of
+// its own.
+func (run *dnsRun) spend(z *dnsZone, err error) bool {
 	if !cfapi.IsRateLimited(err) {
 		return false
 	}
-	run.spent = true
+	run.spent[z.CredentialID] = true
 	return true
 }
 
@@ -94,7 +96,7 @@ func (run *dnsRun) commit(z *dnsZone, a Action, call func() error) bool {
 		return false
 	}
 	if err := call(); err != nil {
-		if run.spend(err) {
+		if run.spend(z, err) {
 			z.add(a, HeldBudget)
 			return false
 		}

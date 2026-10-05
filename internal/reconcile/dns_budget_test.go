@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 )
 
 // spent is the refusal of a limiter whose budget is spent for longer than a
@@ -181,4 +183,66 @@ func TestDNSAListingTheRateLimitRefusesWaits(t *testing.T) {
 	require.Empty(t, res.Problems)
 	require.Equal(t, []string{"example.com"}, res.Unlisted)
 	require.Equal(t, Waiting{Reads: []string{"the listing of zone example.com"}}, res.Waiting)
+}
+
+// The rate limit is one credential's: once it refuses a call through one, the
+// writes through another go on, in the zone it serves.
+func TestDNSTheBudgetOfOneCredentialHoldsNoOther(t *testing.T) {
+	f := newDNSFake()
+	refused := &dnsSpy{API: f, failCreate: func(cfapi.Record) error { return spent }}
+	var looked []string
+	free := &dnsSpy{API: f, lookup: func(_ string, filter cfapi.RecordFilter) error {
+		looked = append(looked, filter.Name)
+		return nil
+	}}
+	store := &memStore{m: map[string]Tombstone{stoneKey(zone2.ID, "old.shop.cz"): overdue}}
+	r, in := twoCredentials(f, refused, free, store)
+
+	res := r.Run(context.Background(), in, Enforce)
+
+	require.Empty(t, res.Problems)
+	require.Equal(t, Waiting{Changes: 1}, res.Waiting, "only the change of the credential that is spent waits")
+	require.Empty(t, f.RecordsIn(zone1.ID))
+	var names []string
+	for _, rec := range f.RecordsIn(zone2.ID) {
+		names = append(names, rec.Name+" "+rec.Type)
+	}
+	require.ElementsMatch(t, []string{"www.shop.cz CNAME", "taken.shop.cz CNAME"}, names,
+		"one created and one adopted, and the old one deleted")
+	require.Contains(t, looked, "taken.shop.cz", "the name to adopt is looked up afresh")
+}
+
+// A write that failed for another reason is not put down to the budget of
+// another credential.
+func TestDNSAnAdoptionThatFailsIsNotHeldForTheBudgetOfAnotherCredential(t *testing.T) {
+	f := newDNSFake()
+	refused := &dnsSpy{API: f, failCreate: func(cfapi.Record) error { return spent }}
+	failing := &dnsSpy{API: f, deleteErr: errLostAnswer}
+	r, in := twoCredentials(f, refused, failing, &memStore{})
+
+	res := r.Run(context.Background(), in, Enforce)
+
+	require.Equal(t, Waiting{Changes: 1}, res.Waiting)
+	for _, a := range res.Actions {
+		if a.Kind == CreateRecord && a.Target == "taken.shop.cz" {
+			require.Fail(t, "the create after the failed delete is not held", "%+v", a)
+		}
+	}
+}
+
+// twoCredentials is a reconciler of two credentials, with the run it is to
+// make: app.example.com in zone1, through cred1 (first), and in zone2, through
+// cred2 (second), www.shop.cz, an old record of the install to retire and an
+// address record at taken.shop.cz, to adopt.
+func twoCredentials(f *cffake.Fake, first, second cfapi.API, store *memStore) (*DNSReconciler, DNSInput) {
+	f.SeedRecord(zone2.ID, ourCNAME("old.shop.cz", testTunnelID))
+	f.SeedRecord(zone2.ID, cfapi.Record{Type: "A", Name: "taken.shop.cz", Content: "192.0.2.10"})
+	other := ZoneRef{ID: zone2.ID, Name: zone2.Name, CredentialID: "cred2"}
+	in := dnsIn("app.example.com")
+	in.Zones = []ZoneRef{zone1, other}
+	in.Records = append(in.Records, wantRecord(other, "www.shop.cz"), wantRecord(other, "taken.shop.cz"))
+	in.Adopt = map[string]bool{"taken.shop.cz": true}
+	r := NewDNSReconciler(Clients{"cred1": first, "cred2": second}, store, writerOf(ours, ours),
+		DNSSettings{InstallID: testInstall}, (&clock{t0}).now, zerolog.Nop())
+	return r, in
 }
