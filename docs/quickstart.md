@@ -127,7 +127,8 @@ run that stopped and changes nothing on a node that is set up. In order, it:
   asks; `--skip-cloudflared` declines);
 - asks for a Cloudflare token, checks it and stores it, as the credential `setup`, if it
   can do what pco needs;
-- registers the node and enables and starts `pco.service`.
+- registers the node, enables and starts `pco-egress.service`, which loads the egress
+  filter at every boot, and enables and starts `pco.service`.
 
 Everything it creates is written down in `/var/lib/pco/manifest.json`, which is
 what [uninstall](uninstall.md) follows. A run looks like this (the versions and the
@@ -143,6 +144,7 @@ id will differ):
     cloudflared: installed from https://pkg.cloudflare.com/cloudflared
     credentials: skipped; add one later with pco credential add --label <label>
     node registry: registered pve1
+    pco-egress.service: enabled and running
     pco.service: enabled and running
     next: tag a guest with cf-tunnel and write its routes into its notes, then run pco plan to see what would change and pco apply to make it so
 

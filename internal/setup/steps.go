@@ -201,6 +201,9 @@ func (r *run) startService(ctx context.Context) error {
 		r.nextSteps()
 		return nil
 	}
+	if err := r.enableEgress(ctx); err != nil {
+		return err
+	}
 	// A daemon run by hand holds the lock of the node; another one started
 	// next to it would not start.
 	byHand, err := r.runsByHand(ctx)
@@ -231,6 +234,20 @@ func (r *run) startService(ctx context.Context) error {
 	}
 	r.ask.Info("%s: enabled and running", serviceUnit)
 	r.nextSteps()
+	return nil
+}
+
+// enableEgress enables the unit that loads the egress table and starts it, so
+// that the table is there at every boot, also before a connector exists to
+// start it, and before the daemon, which it is ordered ahead of.
+func (r *run) enableEgress(ctx context.Context) error {
+	if !r.unitInstalled(egressUnit) {
+		return nil
+	}
+	if _, err := r.run.Run(ctx, "systemctl", "enable", "--now", egressUnit); err != nil {
+		return fmt.Errorf("enabling %s: %w", egressUnit, err)
+	}
+	r.ask.Info("%s: enabled and running", egressUnit)
 	return nil
 }
 

@@ -345,8 +345,9 @@ next packet.
 `pco-egress.service` loads the table with the resolvers of the node and no targets. Every
 connector unit requires it and starts after it, so starting a connector, at boot or at any
 other time, starts the unit first, and a table that fails to load keeps the connector from
-starting. Setup does not enable the unit itself: nothing needs the table until there is a
-connector, and the daemon loads it too whenever it finds it gone.
+starting. Setup enables and starts the unit, so the table is loaded at every boot, also
+while there is no connector yet, and the daemon loads it too whenever it finds it gone.
+Uninstall disables it and removes the table.
 
 After a reboot a connector reaches Cloudflare's edge and the resolvers, and nothing else,
 until the daemon's first cycle gets through. That cycle needs a complete listing from

@@ -78,6 +78,8 @@ func (h *fakeHost) requireUntouched() {
 	require.False(t, h.cloudflared, "cloudflared is removed")
 	require.False(t, h.active[serviceUnit])
 	require.False(t, h.enabled[serviceUnit])
+	require.False(t, h.active[egressUnit])
+	require.False(t, h.enabled[egressUnit])
 }
 
 func (h *fakeHost) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -358,6 +360,7 @@ func killSweep(t *testing.T, gateTag string) {
 	full := Options{Yes: true, CloudflareToken: cfToken, Node: testNode}
 	clean := newTestEnv(t)
 	clean.installUnit(serviceUnit)
+	clean.installUnit(egressUnit)
 	if gateTag != "" {
 		clean.saveGateTag(gateTag)
 	}
@@ -374,6 +377,7 @@ func killSweep(t *testing.T, gateTag string) {
 				t.Parallel()
 				e := newTestEnv(t)
 				e.installUnit(serviceUnit)
+				e.installUnit(egressUnit)
 				if gateTag != "" {
 					e.saveGateTag(gateTag)
 				}
