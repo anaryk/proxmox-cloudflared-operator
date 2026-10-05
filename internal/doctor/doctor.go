@@ -219,6 +219,8 @@ func checkRejected(st engine.State) Finding {
 func checkAdmission(st engine.State) Finding {
 	const check = "admission"
 	switch {
+	case st.Admission == "":
+		return warn(check, "not known: no cycle got as far as reading the guests", "pco status says what holds the cycles")
 	case st.Admission == store.AdmissionApprove:
 		return ok(check, "approve: a tagged guest is published once an admin approved it")
 	case st.GateTagged == 0:
@@ -245,8 +247,10 @@ func checkWriter(st engine.State) Finding {
 	case engine.VerdictStale:
 		return fail("writer", "a newer generation of this install writes the tunnel configuration", "run pco setup --recover on the node that should write")
 	case engine.VerdictForeign:
-		return fail("writer", "another installation writes the tunnel configuration",
-			"stop the other installation, or give this one an install of its own with pco setup")
+		return fail("writer", "a writer of this install that leader.json does not know wrote the tunnel configuration: "+
+			"another installation with this install's id, or a sentinel written with a stolen Cloudflare token",
+			"if no other node runs pco with this install, replace the Cloudflare token, run pco tunnel rotate "+
+				"and pco setup --recover on this node, then pco apply; otherwise stop the other installation")
 	case engine.VerdictUnknown:
 		return fail("writer", "leader.json could not be used", "pco setup --recover")
 	}

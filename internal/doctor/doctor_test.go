@@ -93,6 +93,7 @@ func healthyState() engine.State {
 			Report: credentials.Report{Token: cfapi.TokenStatus{Status: "active", ExpiresOn: &expires}, Usable: true},
 		}},
 		Waiting:    []engine.Waiting{},
+		Admission:  "tag",
 		Unapproved: []engine.UnapprovedGuest{},
 		Egress:     engine.EgressView{State: engine.EgressOn},
 	}
@@ -304,9 +305,14 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 		{"a stale writer", func(st *engine.State) { st.WriterVerdict = "stale" }, nil,
 			Finding{Check: "writer", Level: LevelFail, Detail: "a newer generation of this install writes the tunnel configuration",
 				Fix: "run pco setup --recover on the node that should write"}},
+		// A sentinel of this install that leader.json does not know, as one
+		// written with a stolen token, is judged foreign too.
 		{"a foreign writer", func(st *engine.State) { st.WriterVerdict = "foreign" }, nil,
-			Finding{Check: "writer", Level: LevelFail, Detail: "another installation writes the tunnel configuration",
-				Fix: "stop the other installation, or give this one an install of its own with pco setup"}},
+			Finding{Check: "writer", Level: LevelFail,
+				Detail: "a writer of this install that leader.json does not know wrote the tunnel configuration: " +
+					"another installation with this install's id, or a sentinel written with a stolen Cloudflare token",
+				Fix: "if no other node runs pco with this install, replace the Cloudflare token, run pco tunnel rotate " +
+					"and pco setup --recover on this node, then pco apply; otherwise stop the other installation"}},
 		{"an unknown writer", func(st *engine.State) { st.WriterVerdict = "unknown" }, nil,
 			Finding{Check: "writer", Level: LevelFail, Detail: "leader.json could not be used", Fix: "pco setup --recover"}},
 		{"records of someone else", func(st *engine.State) {
@@ -369,6 +375,9 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 				Detail: "tag: 1 guest carries the gate tag; whoever may clone it (VM.Clone on it, and VM.Allocate where the clone goes) " +
 					"makes a tagged guest of their own, whose Notes they may fill with hostnames, and pco cannot tell yet who may",
 				Fix: "set admission to approve in the settings unless only admins hold VM.Clone on the tagged guests"}},
+		{"an admission mode not known", func(st *engine.State) { st.Admission = "" }, nil,
+			Finding{Check: "admission", Level: LevelWarn, Detail: "not known: no cycle got as far as reading the guests",
+				Fix: "pco status says what holds the cycles"}},
 		{"admission mode approve", func(st *engine.State) { st.Admission, st.GateTagged = "approve", 3 }, nil,
 			Finding{Check: "admission", Level: LevelOK, Detail: "approve: a tagged guest is published once an admin approved it"}},
 		{"a route the hostname policy refuses", func(st *engine.State) {
