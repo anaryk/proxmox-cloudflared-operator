@@ -167,18 +167,43 @@ export function compareRouteStates(a: string, b: string): number {
   return rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0)
 }
 
-declare const composed: unique symbol
+const making = Symbol('command')
 
 // Command is a command for a root shell that this module made: a constant,
-// or words with values that passed commandArg. Nothing else type-checks as
-// one, so a page cannot hand CopyCommand a string it put together itself.
-export type Command = string & { readonly [composed]: true }
+// or words with values that passed commandArg. The class is not exported and
+// its constructor takes a key only this module holds, so a page cannot hand
+// CopyCommand a string it put together itself: a string does not type-check
+// as one, and an object cast to one fails isCommand, which CopyCommand asks.
+class Command {
+  readonly #text: string
+
+  constructor(key: symbol, text: string) {
+    if (key !== making) throw new TypeError('a command is made in words.ts only')
+    this.#text = text
+  }
+
+  static is(value: unknown): value is Command {
+    return typeof value === 'object' && value !== null && #text in value
+  }
+
+  get text(): string {
+    return this.#text
+  }
+}
+
+export type { Command }
+
+export function isCommand(value: unknown): value is Command {
+  return Command.is(value)
+}
+
+const command = (text: string) => new Command(making, text)
 
 // CommandWords is a command, or why there is none.
 export type CommandWords = { command: Command; refused?: undefined } | { command?: undefined; refused: string }
 
-export const egressOnCommand: CommandWords = { command: 'pco egress on' as Command }
-export const setupCommand: CommandWords = { command: 'pco setup' as Command }
+export const egressOnCommand: CommandWords = { command: command('pco egress on') }
+export const setupCommand: CommandWords = { command: command('pco setup') }
 
 // commandArg is present.CommandArg: value when it has the form of its kind,
 // else why not. A value that begins with a dash is refused whatever its
@@ -215,7 +240,7 @@ export function rotateCommand(tunnels: readonly TunnelView[], account: string): 
       refused: `refused: tunnel ${first.name ?? ''} in account ${first.accountId} is left as it is: ${first.held ?? ''}; nothing was changed`,
     }
   }
-  return { command: `pco tunnel rotate --account ${arg.value}` as Command }
+  return { command: command(`pco tunnel rotate --account ${arg.value}`) }
 }
 
 // The line reconcile.Waiting writes for what waits for Cloudflare's rate limit.

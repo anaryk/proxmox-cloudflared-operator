@@ -13,10 +13,12 @@ import {
   egressText,
   identityNow,
   inventoryText,
+  isCommand,
   modeText,
   nextStep,
   rotateCommand,
   routeNote,
+  setupCommand,
   type TunnelView,
   unaffected,
   verifiedText,
@@ -30,7 +32,7 @@ interface Case {
   want: unknown
 }
 
-const composed = (c: CommandWords) => ({ command: c.command ?? '', refused: c.refused ?? '' })
+const composed = (c: CommandWords) => ({ command: c.command?.text ?? '', refused: c.refused ?? '' })
 
 // As the Go test: each of the characters in place of each character of each
 // value, and between any two, must be refused as of an unexpected form; each
@@ -124,6 +126,23 @@ describe('rotateCommand', () => {
 
   test('a tunnel whose existence is not known is no target', () => {
     expect(rotateCommand([{ ...tunnel, unknown: true }], tunnel.accountId).refused).toMatch(/^not found: /)
+  })
+})
+
+describe('Command', () => {
+  const made = setupCommand.command
+
+  test('is what this module made, and nothing that looks like it', () => {
+    expect(made?.text).toBe('pco setup')
+    expect(isCommand(made)).toBe(true)
+    expect(isCommand('pco setup')).toBe(false)
+    expect(isCommand({ text: 'pco setup' })).toBe(false)
+    expect(isCommand(Object.create(Object.getPrototypeOf(made)))).toBe(false)
+  })
+
+  test('cannot be made elsewhere, not even with its constructor', () => {
+    const Made = Object.getPrototypeOf(made).constructor
+    expect(() => new Made(Symbol('command'), 'reboot')).toThrow(TypeError)
   })
 })
 
