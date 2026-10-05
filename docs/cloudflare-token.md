@@ -177,6 +177,45 @@ routes then have the state `frozen`, and nothing is changed at Cloudflare for th
 account until the zone is listed again, the pin is fixed, or `pco apply --confirm-deletes`
 confirms that the zone is gone.
 
+## A zone whose DNS the token stops reading
+
+A token can lose the permission to read the DNS of a zone that pco serves: the grant on the
+zone is taken away, or the token is made narrower. pco does not take the zone for gone,
+because its records are still there and cannot be managed without being read. The daily
+check finds it, and the account of the zone is left as it is, as for a zone in doubt: its
+routes have the state `frozen`, nothing is changed at Cloudflare for that account, and the
+tunnel and its connector keep serving what was published. A restart of the daemon does not
+end it. (A zone that the very first check of a credential cannot read was never served
+through it, so it is only left out, as above.)
+
+A refusal can be Cloudflare's own mistake, so the first one is only a provisional line in
+`pco status`, with the time of the next check, which is at most 15 minutes away and is the
+local time of the node:
+
+    the token of credential a1b2c3d4 could not read the DNS of zone example.org, which it
+    serves; account acc1 is left as it is, checking again at 14:15
+
+If the DNS can be read by then, the account is served again and nothing was changed. While
+the store cannot be read or written no token is checked, and the line says `and the check
+waits for the store` in place of a time.
+
+When the next check is refused too, the permission is taken as lost, and the line says what
+ends the freeze:
+
+    credential a1b2c3d4 can no longer read the DNS of zone example.org, which it serves: grant
+    it Zone > DNS > Edit there; account acc1 is left as it is until a check finds it readable
+    again or pco apply --confirm-deletes lets the zone go
+
+- Grant Zone > DNS > Edit on the zone again. The next check finds it, and
+  `pco credential check <id>` makes that check at once. The account is served again.
+- `pco apply --confirm-deletes` lets the zone go: its hostnames are taken off the tunnel,
+  and its records are left as they are, because pco cannot read them. The routes in it then
+  have the state `no-zone`, as for any zone the token lists and cannot read. It is listed
+  among what waits, which `pco plan` shows and the command asks about.
+- When another credential can read the zone, the line names it, as `a pin gives the zone to
+  credential e5f6a7b8, which can read it`. A pin to it in `zonePins` ends the freeze and
+  hands the zone over with its hostnames on the tunnel, and so does the confirmation.
+
 ## What pco names and marks
 
 Everything pco makes at Cloudflare can be told from your own objects by name or marker,

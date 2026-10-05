@@ -216,8 +216,10 @@ daemon holds when:
   token that was revoked or expired before a restart does, even if it is not the one that
   serves your zones (see [Cloudflare token](cloudflare-token.md));
 - a zone is in doubt: seen through several credentials with no pin when none of them served
-  it alone before, pinned to a credential that does not see it, or gone from its credential's
-  listing. That freezes the account of the zone, and not the whole cycle;
+  it alone before, pinned to a credential that does not see it, gone from its credential's
+  listing, or refused its DNS by the credential that serves it (see
+  [Troubleshooting](troubleshooting.md#a-served-zone-whose-dns-is-refused)). That freezes the
+  account of the zone, and not the whole cycle;
 - there is no writer identity, or the writer is stale or foreign (see
   [Troubleshooting](troubleshooting.md));
 - the guests that hold hostnames drop out of Proxmox's listing in numbers that look like a

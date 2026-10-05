@@ -217,7 +217,54 @@ There are three ways out:
   hostname is reserved. In a zone this install never served, the route takes no claim: when
   the zone is served, the guests that name the hostname then get it as any free one.
 - **`frozen`**: the account of the zone is left as it is, because a zone is in doubt. The note
-  says which.
+  says which; for a zone whose DNS its token cannot read, see
+  [the next section](#a-served-zone-whose-dns-is-refused).
+
+## A served zone whose DNS is refused
+
+The check of a token reads the DNS of every active zone. When a zone pco serves is refused,
+its account is frozen: its routes have the state `frozen`, nothing is changed at Cloudflare
+for it, and what was published keeps serving. `pco status` has the problem line, and the note
+of each route in the account gives its reason. The line says which of two steps this is.
+
+**The first refusal**, which can be Cloudflare's own mistake:
+
+    the token of credential a1b2c3d4 could not read the DNS of zone example.org, which it
+    serves; account acc1 is left as it is, checking again at 14:15
+
+The time is the local time of the node, at most 15 minutes ahead, and `pco events` has a
+warning for it. If the next check reads the DNS, the account is served again and nothing was
+changed. `and the check waits for the store` stands in place of the time while the store
+cannot be read or written, because no token is checked then: look for the problem that says
+why the store is held, and at `pco doctor`.
+
+**The second one in a row**, which is taken as a permission that is gone:
+
+    credential a1b2c3d4 can no longer read the DNS of zone example.org, which it serves: grant
+    it Zone > DNS > Edit there; account acc1 is left as it is until a check finds it readable
+    again or pco apply --confirm-deletes lets the zone go
+
+Three things end it:
+
+- Grant Zone > DNS > Edit on the zone to the token, and `pco credential check <id>`. The
+  account is served again in the next cycle.
+- `pco apply --confirm-deletes` lets the zone go. `pco plan` lists it among what waits, with
+  what the confirmation does: its hostnames are taken off the tunnel, and its records stay
+  as they are, as pco cannot read them. Its routes then say `no-zone`.
+- When another credential can read the zone, the line says `a pin gives the zone to credential
+  <id>, which can read it`. Pin the zone to it in `zonePins` (see
+  [Cloudflare token](cloudflare-token.md)). The zone, and its hostnames on the tunnel, then
+  pass to that credential, as they do on a confirmation.
+
+A zone that appears in a listing after the last check of its token has no verdict yet, and
+the account is frozen for it in the same way until a check has looked at it:
+
+    zone example.org is listed by credential a1b2c3d4, whose last check did not look at it;
+    account acc1 is left as it is, checking again at 14:15
+
+The check is made as soon as the cycle that listed the zone ends, and the next cycle serves the
+zone or says why not. When Cloudflare does not answer that check, the line stays until the time
+it names.
 
 ## Records in the way, and `pco adopt`
 
