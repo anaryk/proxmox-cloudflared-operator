@@ -51,7 +51,7 @@ Read a script before you pipe it into a shell: `scripts/install.sh` is short, an
 it is the one thing in this chain that you have to trust. Arguments after `bash -s --`
 go to `pco setup`, so `bash -s -- --yes` takes every default. `PCO_VERSION=1.2.3`
 installs a given release instead of the latest. The installer needs `curl`,
-`sha256sum`, `base64`, `apt-get` and either `gpgv` or `sqv`; a Proxmox VE node has
+`sha256sum`, `base64`, `mktemp`, `apt-get` and either `gpgv` or `sqv`; a Proxmox VE node has
 them, or `apt-get install gpgv` adds the one that is missing.
 
 The release key is an ed25519 key with the user ID `pco release signing key
