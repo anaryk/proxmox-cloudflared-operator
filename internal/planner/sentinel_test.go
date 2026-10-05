@@ -20,6 +20,27 @@ func TestSentinelRoundTrip(t *testing.T) {
 	require.Equal(t, w, got)
 }
 
+// The incarnation of an appliance's writer is its own business: the sentinel
+// at Cloudflare is the same with it or without it, and what is read back
+// from Cloudflare has none.
+func TestAnIncarnationStaysOutOfTheSentinel(t *testing.T) {
+	plain := Writer{InstallID: "3f9a2c1e77b0", Generation: 12, Nonce: "k3x9q1"}
+	w := plain
+	w.Incarnation = "5b0d7a2e-31c4-4f6e-9d43-0c1f2a3b4c5d/123456"
+
+	require.NoError(t, w.Validate())
+	host := SentinelHostname(w)
+	require.Equal(t, SentinelHostname(plain), host)
+	got, ok := ParseSentinel(host)
+	require.True(t, ok)
+	require.Equal(t, plain, got)
+
+	for _, odd := range []string{"Not/Lower.Case with spaces", strings.Repeat("x", 300)} {
+		w.Incarnation = odd
+		require.NoError(t, w.Validate(), "whatever the incarnation is: %q", odd)
+	}
+}
+
 func TestSentinelParsesEveryGeneration(t *testing.T) {
 	for _, gen := range []int{0, 1, 9, 10, 4096, math.MaxInt} {
 		t.Run(strconv.Itoa(gen), func(t *testing.T) {

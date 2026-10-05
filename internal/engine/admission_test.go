@@ -19,8 +19,8 @@ func TestAGuestWaitingForApprovalKeepsItsClaim(t *testing.T) {
 	e.settings(func(s *store.Settings) { s.Admission = "approve" })
 	web := guest(101, "web-1", "www.example.com -> :8080")
 	clone := guest(102, "web-2", "www.example.com -> :8080")
-	require.NoError(t, e.store.SaveApproval("qemu/101", "uuid:101"))
-	require.NoError(t, e.store.SaveApproval("qemu/102", "uuid:102"))
+	require.NoError(t, e.store.SaveApproval(store.Approval{Owner: "qemu/101", Identity: "uuid:101"}))
+	require.NoError(t, e.store.SaveApproval(store.Approval{Owner: "qemu/102", Identity: "uuid:102"}))
 	e.inv.set(snapshot(web, clone))
 	e.cycle()
 	require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
@@ -69,7 +69,7 @@ func TestApprovalModeHoldsAnUnapprovedGuest(t *testing.T) {
 	e.settings(func(s *store.Settings) { s.Admission = "approve" })
 	ref := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
 	// An approval of another guest that once had this VMID does not count.
-	require.NoError(t, e.store.SaveApproval("qemu/101", "uuid:999"))
+	require.NoError(t, e.store.SaveApproval(store.Approval{Owner: "qemu/101", Identity: "uuid:999"}))
 
 	st := e.cycle()
 
@@ -80,7 +80,7 @@ func TestApprovalModeHoldsAnUnapprovedGuest(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, claims, "an unapproved guest claims nothing")
 
-	require.NoError(t, e.store.SaveApproval("qemu/101", "uuid:101"))
+	require.NoError(t, e.store.SaveApproval(store.Approval{Owner: "qemu/101", Identity: "uuid:101"}))
 	e.clock.advance(10 * time.Second)
 	st = e.cycle()
 

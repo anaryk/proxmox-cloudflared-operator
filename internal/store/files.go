@@ -83,8 +83,9 @@ func setDirMode(dir string) error {
 // never a part of it, and writers of the same file do not meet in one temporary
 // file. The temporary file is removed again if anything fails. It is made with
 // mode 0600 and the file is never chmod-ed: the cluster filesystem decides the
-// modes of its files by path.
-func writeFileAtomic(path string, data []byte) (err error) {
+// modes of its files by path. synced is called with the directory after the
+// rename, which a rename needs to be durable.
+func writeFileAtomic(path string, data []byte, synced func(dir string) error) (err error) {
 	if len(data) > maxFileSize {
 		return fmt.Errorf("%d bytes are over the %d byte limit of a file", len(data), maxFileSize)
 	}
@@ -108,7 +109,27 @@ func writeFileAtomic(path string, data []byte) (err error) {
 	if err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), path)
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	return synced(filepath.Dir(path))
+}
+
+// syncDir flushes the entries of a directory to disk. A filesystem that cannot
+// sync a directory says EINVAL, which is no failure.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if errors.Is(err, syscall.EINVAL) {
+		err = nil
+	}
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // removeStaleTemps removes the temporary files in each of dirs that were last

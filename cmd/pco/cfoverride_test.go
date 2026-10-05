@@ -154,7 +154,7 @@ func TestTheDaemonWarnsOfTheOverrideAndCarriesItAsAProblem(t *testing.T) {
 	line := "the Cloudflare API is overridden to " + override + " (PCO_CLOUDFLARE_API_URL); this is for tests only"
 
 	base := testutil.ShortDir(t)
-	paths, err := daemon.StorePaths(filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
+	paths, err := daemon.StorePaths(store.ProfileHost, filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
 	require.NoError(t, err)
 	s, err := store.Open(paths)
 	require.NoError(t, err)

@@ -203,8 +203,8 @@ func TestStoreIDsThatShareAFileDoNotReplaceEachOther(t *testing.T) {
 	})
 	t.Run("approvals", func(t *testing.T) {
 		s, _ := openStore(t)
-		require.NoError(t, s.SaveApproval("qemu/101", "ident-a"))
-		err := s.SaveApproval("qemu_101", "ident-b")
+		require.NoError(t, s.SaveApproval(approvalOf("qemu/101", "ident-a")))
+		err := s.SaveApproval(approvalOf("qemu_101", "ident-b"))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "qemu/101")
 		require.Contains(t, err.Error(), "qemu_101")
@@ -212,7 +212,7 @@ func TestStoreIDsThatShareAFileDoNotReplaceEachOther(t *testing.T) {
 
 		got, err := s.Approvals()
 		require.NoError(t, err)
-		require.Equal(t, map[string]string{"qemu/101": "ident-a"}, got)
+		require.Equal(t, map[string]Approval{"qemu/101": approvalOf("qemu/101", "ident-a")}, got)
 	})
 	t.Run("nodes", func(t *testing.T) {
 		s, _ := openStore(t)

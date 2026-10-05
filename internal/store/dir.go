@@ -53,13 +53,30 @@ type Dir struct {
 	root  string
 	mu    *sync.Mutex
 	guard func() error // run before every operation; nil for none
+
+	// durable makes every rename, removal and new directory outlive a crash,
+	// through a sync of the directory it changed. pmxcfs refuses that sync,
+	// so it is off there. flush is the sync, which a test replaces.
+	durable bool
+	flush   func(dir string) error
 }
 
 // NewDir returns the store rooted at root.
 func NewDir(root string) Dir { return newDir(root, nil) }
 
 func newDir(root string, guard func() error) Dir {
-	return Dir{root: root, mu: new(sync.Mutex), guard: guard}
+	return Dir{root: root, mu: new(sync.Mutex), guard: guard, flush: syncDir}
+}
+
+// synced makes the entries of dir durable, when the Dir is.
+func (d Dir) synced(dir string) error {
+	if !d.durable {
+		return nil
+	}
+	if err := d.flush(dir); err != nil {
+		return fmt.Errorf("syncing %s: %w", dir, err)
+	}
+	return nil
 }
 
 // check refuses an operation on a Dir that was not made by NewDir, and one the
@@ -273,6 +290,9 @@ func (d Dir) removeFile(path string) error {
 	err := os.Remove(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return d.requireRoot()
+	}
+	if err == nil {
+		err = d.synced(filepath.Dir(path))
 	}
 	if err != nil {
 		return fmt.Errorf("deleting %s: %w", filepath.Base(path), err)

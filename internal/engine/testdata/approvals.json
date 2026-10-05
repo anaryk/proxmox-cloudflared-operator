@@ -17,6 +17,13 @@
       "vmid": 300
     },
     "identity": "uuid:300",
-    "matches": false
+    "matches": false,
+    "macs": [
+      "bc:24:11:00:03:00",
+      "bc:24:11:00:03:01"
+    ],
+    "addresses": [
+      "10.0.0.1"
+    ]
   }
 ]

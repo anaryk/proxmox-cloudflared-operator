@@ -154,6 +154,34 @@ func TestWriterRoundTrip(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, want, got)
 	require.Equal(t, []string{"meta/leader.json"}, stored(t, p.Cluster))
+	raw, err := os.ReadFile(filepath.Join(p.Cluster, "meta", "leader.json"))
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "incarnation", "a host writer has none")
+}
+
+func TestAClaimKeepsTheMACItWasPinnedTo(t *testing.T) {
+	s, _ := openStore(t)
+	pinned := claimOf("a.example.com", "qemu/101")
+	pinned.MAC = "bc:24:11:00:aa:b5"
+	want := map[string]planner.Claim{"a.example.com": pinned, "b.example.com": claimOf("b.example.com", "qemu/102")}
+
+	require.NoError(t, s.SaveClaims(want))
+
+	got, err := s.Claims()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func TestWriterKeepsItsIncarnation(t *testing.T) {
+	s, _ := openStore(t)
+	want := planner.Writer{InstallID: "abc123", Generation: 3, Nonce: "n0nce", Incarnation: "5b0d7a2e-31c4-4f6e-9d43-0c1f2a3b4c5d/123456"}
+
+	require.NoError(t, s.SaveWriter(want))
+
+	got, found, err := s.Writer()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, want, got)
 }
 
 func TestWriterIsReadFromDiskEveryTime(t *testing.T) {
@@ -351,23 +379,75 @@ func TestApprovals(t *testing.T) {
 	require.NotNil(t, got)
 	require.Empty(t, got)
 
-	require.NoError(t, s.SaveApproval("qemu/101", "ident-a"))
-	require.NoError(t, s.SaveApproval("lxc/200", "ident-b"))
+	require.NoError(t, s.SaveApproval(approvalOf("qemu/101", "ident-a")))
+	require.NoError(t, s.SaveApproval(approvalOf("lxc/200", "ident-b")))
 	got, err = s.Approvals()
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{"qemu/101": "ident-a", "lxc/200": "ident-b"}, got)
+	require.Equal(t, map[string]Approval{
+		"qemu/101": approvalOf("qemu/101", "ident-a"),
+		"lxc/200":  approvalOf("lxc/200", "ident-b"),
+	}, got)
 	require.Equal(t, []string{"approvals/lxc_200.json", "approvals/qemu_101.json"}, stored(t, p.Cluster))
 
-	require.NoError(t, s.SaveApproval("qemu/101", "ident-c"))
+	require.NoError(t, s.SaveApproval(approvalOf("qemu/101", "ident-c")))
 	require.EqualValues(t, 2, revOf(t, filepath.Join(p.Cluster, "approvals", "qemu_101.json")))
-	require.NoError(t, s.SaveApproval("qemu/101", "ident-c"))
+	require.NoError(t, s.SaveApproval(approvalOf("qemu/101", "ident-c")))
 	require.EqualValues(t, 2, revOf(t, filepath.Join(p.Cluster, "approvals", "qemu_101.json")))
 
 	require.NoError(t, s.DeleteApproval("lxc/200"))
 	require.NoError(t, s.DeleteApproval("lxc/200"))
 	got, err = s.Approvals()
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{"qemu/101": "ident-c"}, got)
+	require.Equal(t, map[string]Approval{"qemu/101": approvalOf("qemu/101", "ident-c")}, got)
+}
+
+func approvalOf(owner, identity string) Approval { return Approval{Owner: owner, Identity: identity} }
+
+func TestAnApprovalKeepsItsMACsAndAddresses(t *testing.T) {
+	s, p := openStore(t)
+	a := Approval{
+		Owner:     "qemu/101",
+		Identity:  "uuid:101",
+		MACs:      []string{"bc:24:11:00:aa:b6", "bc:24:11:00:aa:b5", "bc:24:11:00:aa:b6"},
+		Addresses: []netip.Addr{netip.MustParseAddr("fd00::1"), netip.MustParseAddr("10.0.0.9"), netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.9")},
+	}
+	require.NoError(t, s.SaveApproval(a))
+	require.NoError(t, s.SaveApproval(approvalOf("lxc/200", "uuid:200")))
+
+	got, err := s.Approvals()
+	require.NoError(t, err)
+	require.Equal(t, map[string]Approval{
+		"qemu/101": {
+			Owner:     "qemu/101",
+			Identity:  "uuid:101",
+			MACs:      []string{"bc:24:11:00:aa:b5", "bc:24:11:00:aa:b6"},
+			Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("10.0.0.9"), netip.MustParseAddr("fd00::1")},
+		},
+		"lxc/200": approvalOf("lxc/200", "uuid:200"),
+	}, got, "sorted, each once")
+	require.Equal(t, "bc:24:11:00:aa:b6", a.MACs[0], "the caller's approval is not changed")
+
+	raw, err := os.ReadFile(filepath.Join(p.Cluster, "approvals", "lxc_200.json"))
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "macs", "an approval of the identity alone is written as before")
+	require.NotContains(t, string(raw), "addresses")
+}
+
+func TestSaveApprovalRefusesAMACOrAnAddressThatIsNotValid(t *testing.T) {
+	for name, a := range map[string]Approval{
+		"a MAC in capitals":     {MACs: []string{"BC:24:11:00:AA:B5"}},
+		"something else":        {MACs: []string{"eth0"}},
+		"an empty MAC":          {MACs: []string{""}},
+		"an address of nothing": {Addresses: []netip.Addr{{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, p := openStore(t)
+			a.Owner, a.Identity = "qemu/101", "uuid:101"
+
+			require.Error(t, s.SaveApproval(a))
+			require.Empty(t, stored(t, p.Cluster))
+		})
+	}
 }
 
 func TestApprovalsRefuseAFileUnderTheWrongName(t *testing.T) {
@@ -393,9 +473,73 @@ func TestApprovalsRefuseAFileWithoutAnOwner(t *testing.T) {
 
 func TestSaveApprovalRefusesEmptyValues(t *testing.T) {
 	s, p := openStore(t)
-	require.Error(t, s.SaveApproval("", "i"))
-	require.Error(t, s.SaveApproval("qemu/101", ""))
-	require.Error(t, s.SaveApproval("../x", "i"))
+	require.Error(t, s.SaveApproval(approvalOf("", "i")))
+	require.Error(t, s.SaveApproval(approvalOf("qemu/101", "")))
+	require.Error(t, s.SaveApproval(approvalOf("../x", "i")))
 	require.Empty(t, stored(t, p.Cluster))
 	require.Error(t, s.DeleteApproval(""))
+}
+
+// recordSyncs makes the roots of s record what they sync.
+func recordSyncs(s *Store) (cluster, private, local *syncs) {
+	cluster, private, local = &syncs{}, &syncs{}, &syncs{}
+	s.cluster.flush, s.private.flush, s.local.flush = cluster.flush, private.flush, local.flush
+	return cluster, private, local
+}
+
+func TestTheSharedRootsOfADurableStoreSyncEveryChange(t *testing.T) {
+	p, marker := appliancePaths(t)
+	writeFile(t, marker, "")
+	s, err := Open(p)
+	require.NoError(t, err)
+	cluster, private, local := recordSyncs(s)
+
+	require.NoError(t, s.Init())
+	require.Equal(t, []string{p.Local, p.Local}, cluster.take(), "the two roots made below the local one")
+
+	meta, claims := filepath.Join(p.Cluster, "meta"), filepath.Join(p.Cluster, "claims")
+	require.NoError(t, s.SaveInstall(applianceInstall()))
+	require.Equal(t, []string{p.Cluster, meta}, cluster.take())
+	require.NoError(t, s.SaveWriter(planner.Writer{InstallID: "abc", Generation: 1, Nonce: "aa", Incarnation: "boot/1"}))
+	require.Equal(t, []string{meta}, cluster.take(), "the write-ahead of an epoch is durable")
+
+	two := map[string]planner.Claim{"a.example.com": claimOf("a.example.com", "qemu/101"), "b.example.com": claimOf("b.example.com", "qemu/102")}
+	require.NoError(t, s.SaveClaims(two))
+	require.Equal(t, []string{p.Cluster, claims, claims}, cluster.take())
+	delete(two, "b.example.com")
+	require.NoError(t, s.SaveClaims(two))
+	require.Equal(t, []string{claims}, cluster.take(), "the removal of the claim that is gone")
+	require.NoError(t, s.AppendAdopted(t0, "example.com", adoptedSample(0)))
+	require.Equal(t, []string{p.Cluster}, cluster.take())
+
+	credentials := filepath.Join(p.Private, "credentials")
+	require.NoError(t, s.SaveCredential(credentialOf("c1")))
+	require.Equal(t, []string{p.Private, credentials}, private.take())
+	require.NoError(t, s.DeleteCredential("c1"))
+	require.Equal(t, []string{credentials}, private.take())
+
+	require.NoError(t, s.SaveNodeAddrs([]netip.Addr{netip.MustParseAddr("10.92.0.1")}))
+	require.Empty(t, local.take(), "the local root is not a shared one")
+}
+
+func TestAStoreOnPmxcfsNeverSyncsADirectory(t *testing.T) {
+	p, _ := mountedPaths(t)
+	require.False(t, p.Durable)
+	s, err := Open(p)
+	require.NoError(t, err)
+	cluster, private, local := recordSyncs(s)
+
+	require.NoError(t, s.Init())
+	require.NoError(t, s.SaveInstall(Install{ID: "abc", CreatedAt: t0}))
+	require.NoError(t, s.SaveWriter(planner.Writer{InstallID: "abc", Generation: 1, Nonce: "aa"}))
+	require.NoError(t, s.SaveClaims(map[string]planner.Claim{"a.example.com": claimOf("a.example.com", "qemu/101")}))
+	require.NoError(t, s.SaveClaims(nil))
+	require.NoError(t, s.AppendAdopted(t0, "example.com", adoptedSample(0)))
+	require.NoError(t, s.SaveCredential(credentialOf("c1")))
+	require.NoError(t, s.DeleteCredential("c1"))
+	require.NoError(t, s.SaveNodeAddrs([]netip.Addr{netip.MustParseAddr("10.92.0.1")}))
+
+	require.Empty(t, cluster.take())
+	require.Empty(t, private.take())
+	require.Empty(t, local.take())
 }

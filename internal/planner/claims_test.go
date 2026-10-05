@@ -380,6 +380,7 @@ func TestClaimJSONShape(t *testing.T) {
 			Since:        at(-time.Hour),
 			MissingSince: &missing,
 			Waiting:      []Waiter{{Owner: "lxc/5", FirstSeen: at(-5 * time.Minute)}},
+			MAC:          "bc:24:11:00:aa:b5",
 		},
 		"b.example.com": {Hostname: "b.example.com", Owner: "manual/grafana", Since: t0},
 	}
@@ -394,7 +395,8 @@ func TestClaimJSONShape(t *testing.T) {
 			"identity": "id3",
 			"since": "2026-03-01T11:00:00Z",
 			"missingSince": "2026-03-01T11:59:30Z",
-			"waiting": [{"owner": "lxc/5", "firstSeen": "2026-03-01T11:55:00Z"}]
+			"waiting": [{"owner": "lxc/5", "firstSeen": "2026-03-01T11:55:00Z"}],
+			"mac": "bc:24:11:00:aa:b5"
 		},
 		"b.example.com": {
 			"hostname": "b.example.com",
@@ -406,6 +408,78 @@ func TestClaimJSONShape(t *testing.T) {
 	var back map[string]Claim
 	require.NoError(t, json.Unmarshal(data, &back))
 	require.Equal(t, claims, back)
+}
+
+// The MAC a claim was pinned to stays with its holder for as long as the
+// holder keeps the claim, present, held or missing within the grace. A new
+// holder starts unpinned.
+func TestClaimsCarryTheMACOfTheirHolder(t *testing.T) {
+	const mac = "bc:24:11:00:aa:b5"
+	pinned := func() map[string]Claim {
+		c := holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)})
+		c.MAC = mac
+		return map[string]Claim{primary: c}
+	}
+	ids := map[string]string{"qemu/3": "id3", "qemu/9": "id9"}
+
+	for _, tt := range []struct {
+		name   string
+		in     ClaimInput
+		holder string
+		mac    string
+	}{
+		{
+			name:   "kept by its holder",
+			in:     ClaimInput{Routes: routes(t, primary, "qemu/3", "qemu/9"), Claims: pinned(), Identity: ids, Now: t0, Grace: grace},
+			holder: "qemu/3", mac: mac,
+		},
+		{
+			name:   "kept with a new identity",
+			in:     ClaimInput{Routes: routes(t, primary, "qemu/3"), Claims: pinned(), Identity: map[string]string{"qemu/3": "id3b"}, Now: t0, Grace: grace},
+			holder: "qemu/3", mac: mac,
+		},
+		{
+			name: "held",
+			in: ClaimInput{
+				Routes: routes(t, primary, "qemu/9"), Held: []HeldName{{Hostname: primary, Owner: "qemu/3"}},
+				Claims: pinned(), Identity: ids, Now: t0, Grace: grace,
+			},
+			holder: "qemu/3", mac: mac,
+		},
+		{
+			name:   "missing within the grace",
+			in:     ClaimInput{Routes: routes(t, primary, "qemu/9"), Claims: pinned(), Identity: ids, Now: t0, Grace: grace},
+			holder: "qemu/3", mac: mac,
+		},
+		{
+			name:   "transferred after the grace",
+			in:     ClaimInput{Routes: routes(t, primary, "qemu/9"), Claims: pinned(), Identity: ids, Now: t0, Grace: 0},
+			holder: "qemu/9", mac: "",
+		},
+		{
+			name: "transferred from a refused holder",
+			in: ClaimInput{
+				Routes: routes(t, primary, "qemu/9"), Refused: []RouteStatus{{Hostname: primary, Owner: "qemu/3", Reason: "no zone"}},
+				Claims: pinned(), Identity: ids, Now: t0, Grace: grace,
+			},
+			holder: "qemu/9", mac: "",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := ResolveClaims(tt.in)
+
+			require.Contains(t, res.Claims, primary)
+			require.Equal(t, tt.holder, res.Claims[primary].Owner)
+			require.Equal(t, tt.mac, res.Claims[primary].MAC)
+			require.Equal(t, mac, tt.in.Claims[primary].MAC, "the input is not changed")
+		})
+	}
+
+	t.Run("a first claim is unpinned", func(t *testing.T) {
+		res := ResolveClaims(ClaimInput{Routes: routes(t, primary, "qemu/3"), Identity: ids, Now: t0, Grace: grace})
+
+		require.Empty(t, res.Claims[primary].MAC)
+	})
 }
 
 func TestClaimsManualRouteKeepsEmptyIdentity(t *testing.T) {

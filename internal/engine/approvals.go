@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -20,6 +21,10 @@ type ApprovalView struct {
 	Identity string     `json:"identity"`          // the identity that was approved
 	Current  string     `json:"current,omitempty"` // the identity the last listing showed; empty when it did not have the guest
 	Matches  bool       `json:"matches"`           // the guest has the identity that was approved
+	// MACs may answer for the routes of the guest at the observed level, and
+	// Addresses are the soft-denied addresses it may be published at.
+	MACs      []string     `json:"macs,omitempty"`
+	Addresses []netip.Addr `json:"addresses,omitempty"`
 }
 
 // Approvals returns the approvals the store keeps, by owner, with what the
@@ -33,7 +38,8 @@ func (e *Engine) Approvals() ([]ApprovalView, error) {
 	owners := slices.SortedFunc(maps.Keys(approvals), model.CompareOwners)
 	out := make([]ApprovalView, 0, len(owners))
 	for _, owner := range owners {
-		v := ApprovalView{Owner: owner, Guest: l.guestView(owner), Identity: approvals[owner]}
+		a := approvals[owner]
+		v := ApprovalView{Owner: owner, Guest: l.guestView(owner), Identity: a.Identity, MACs: a.MACs, Addresses: a.Addresses}
 		v.Current = l.identity(owner)
 		v.Matches = v.Current != "" && v.Current == v.Identity
 		out = append(out, v)
@@ -84,7 +90,7 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string) (Appr
 	if err != nil {
 		return Approval{}, err
 	}
-	if err := e.d.Store.SaveApproval(owner, g.identity); err != nil {
+	if err := e.d.Store.SaveApproval(store.Approval{Owner: owner, Identity: g.identity}); err != nil {
 		return Approval{}, fmt.Errorf("saving the approval: %w", err)
 	}
 	e.adminEvent(owner, fmt.Sprintf("%s is approved in identity %s%s", OwnerName(owner, l.guestView(owner)), g.identity, note))

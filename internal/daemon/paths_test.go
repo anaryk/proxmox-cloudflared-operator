@@ -11,18 +11,35 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
-func TestStorePathsAreTheNodesOrAStoreOfItsOwn(t *testing.T) {
-	defaults := store.DefaultPaths()
-	require.NotEmpty(t, defaults.MountCheck)
+func TestStorePathsAreTheProfilesOrAStoreOfItsOwn(t *testing.T) {
+	for _, profile := range []string{store.ProfileHost, store.ProfileAppliance} {
+		want, err := store.PathsFor(profile)
+		require.NoError(t, err)
+		require.NotEmpty(t, want.MountCheck)
 
-	got, err := StorePaths("", "", "")
+		got, err := StorePaths(profile, "", "", "")
+		require.NoError(t, err)
+		require.Equal(t, want, got, profile)
+	}
+	defaults, err := StorePaths(store.ProfileHost, "", "", "")
 	require.NoError(t, err)
-	require.Equal(t, defaults, got)
+	require.Equal(t, store.DefaultPaths(), defaults)
 
-	got, err = StorePaths("/tmp/c", "/tmp/p", "/tmp/l")
+	got, err := StorePaths(store.ProfileHost, "/tmp/c", "/tmp/p", "/tmp/l")
 	require.NoError(t, err)
 	require.Equal(t, store.Paths{Cluster: "/tmp/c", Private: "/tmp/p", Local: "/tmp/l"}, got,
 		"nothing is mounted behind the directories of a test")
+
+	got, err = StorePaths(store.ProfileAppliance, "/tmp/c", "/tmp/p", "/tmp/l")
+	require.NoError(t, err)
+	require.Equal(t, store.Paths{Cluster: "/tmp/c", Private: "/tmp/p", Local: "/tmp/l", Durable: true}, got,
+		"the writes of an appliance stay durable")
+}
+
+func TestStorePathsRefuseAnUnknownProfile(t *testing.T) {
+	_, err := StorePaths("container", "", "", "")
+
+	require.ErrorContains(t, err, `"container"`)
 }
 
 // The lock of a node is in its local directory, the tokens in the private one
@@ -42,7 +59,7 @@ func TestTheDirectoriesMoveAllThreeOrNone(t *testing.T) {
 		{"the private and the local ones", "", "/tmp/p", "/tmp/l"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := StorePaths(tt.cluster, tt.private, tt.local)
+			_, err := StorePaths(store.ProfileHost, tt.cluster, tt.private, tt.local)
 
 			require.EqualError(t, err, "--cluster-dir, --private-dir and --local-dir are given all three or none: "+
 				"a daemon that kept some of the directories of the node would reconcile its store a second time, "+

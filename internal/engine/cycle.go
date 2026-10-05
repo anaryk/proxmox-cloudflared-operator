@@ -45,7 +45,7 @@ type cycleRun struct {
 	install   store.Install
 	snap      inventory.Snapshot
 	manual    []model.Route
-	approvals map[string]string // nil unless admission is approve
+	approvals map[string]store.Approval // nil unless admission is approve
 	stored    map[string]planner.Claim
 	bindings  map[string]resolve.Binding
 	deny      resolve.Denylist

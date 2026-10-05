@@ -19,12 +19,16 @@ type Writer struct {
 	InstallID  string `json:"installId"`
 	Generation int    `json:"generation"`
 	Nonce      string `json:"nonce"`
+	// Incarnation is the start of the appliance container that drew the
+	// writer, "<boot id>/<start of PID 1>". It stays in leader.json and never
+	// reaches the sentinel. A host leaves it empty.
+	Incarnation string `json:"incarnation,omitempty"`
 }
 
 // Validate reports whether w can be written into a sentinel that ParseSentinel
 // reads back: install id and nonce are non-empty lower-case letters and
 // digits, the generation is not negative, and every label of the sentinel
-// fits the 63 characters DNS allows.
+// fits the 63 characters DNS allows. The incarnation is not looked at.
 func (w Writer) Validate() error {
 	switch {
 	case !isLowerAlnum(w.InstallID):

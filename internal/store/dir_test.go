@@ -471,3 +471,94 @@ func TestReadOnlyErrors(t *testing.T) {
 	}
 	require.False(t, readOnly(&fs.PathError{Op: "mkdir", Path: "/etc/pve/pco", Err: syscall.ENOTDIR}))
 }
+
+// syncs records the directories a durable Dir syncs, in order.
+type syncs struct {
+	mu   sync.Mutex
+	dirs []string
+	err  error
+}
+
+func (s *syncs) flush(dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dirs = append(s.dirs, dir)
+	return s.err
+}
+
+// take returns what was synced since the last call.
+func (s *syncs) take() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.dirs
+	s.dirs = nil
+	return out
+}
+
+func durableDir(root string, rec *syncs) Dir {
+	d := newDir(root, nil)
+	d.durable, d.flush = true, rec.flush
+	return d
+}
+
+func TestADurableDirSyncsTheDirectoryOfEveryWriteAndRemoval(t *testing.T) {
+	root := t.TempDir()
+	things := filepath.Join(root, "things")
+	require.NoError(t, os.Mkdir(things, 0o700))
+	rec := &syncs{}
+	d := durableDir(root, rec)
+
+	require.NoError(t, d.Put("things", "a", sample{N: 1}))
+	require.Equal(t, []string{things}, rec.take(), "once per write")
+	require.NoError(t, d.Put("things", "a", sample{N: 2}))
+	require.NoError(t, d.Put("things", "b", sample{N: 1}))
+	require.Equal(t, []string{things, things}, rec.take())
+
+	require.NoError(t, d.put("things", "a", sample{N: 2}, true))
+	require.Empty(t, rec.take(), "nothing written, nothing to sync")
+
+	require.NoError(t, d.Delete("things", "a"))
+	require.Equal(t, []string{things}, rec.take(), "once per removal")
+	require.NoError(t, d.Delete("things", "a"))
+	require.Empty(t, rec.take(), "nothing removed, nothing to sync")
+}
+
+func TestADurableDirSyncsTheRootOfAKindDirectoryItMakes(t *testing.T) {
+	root := t.TempDir()
+	rec := &syncs{}
+	d := durableDir(root, rec)
+
+	require.NoError(t, d.Put("things", "a", sample{}))
+
+	require.Equal(t, []string{root, filepath.Join(root, "things")}, rec.take(), "the new directory, then the file in it")
+}
+
+func TestADirThatIsNotDurableNeverSyncs(t *testing.T) {
+	root := t.TempDir()
+	rec := &syncs{}
+	d := NewDir(root)
+	d.flush = rec.flush
+
+	require.NoError(t, d.Put("things", "a", sample{N: 1}))
+	require.NoError(t, d.put("things", "b", sample{N: 1}, true))
+	require.NoError(t, d.Delete("things", "a"))
+	require.NoError(t, d.updateFile("log", func([]byte) []byte { return []byte("x\n") }))
+
+	require.Empty(t, rec.take())
+}
+
+func TestAFailedSyncFailsTheWriteAndTheRemoval(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "things"), 0o700))
+	errBoom := errors.New("boom")
+	d := durableDir(root, &syncs{err: errBoom})
+
+	require.ErrorIs(t, d.Put("things", "a", sample{}), errBoom)
+	require.ErrorIs(t, d.Delete("things", "a"), errBoom)
+	require.ErrorIs(t, d.updateFile("log", func([]byte) []byte { return nil }), errBoom)
+}
+
+func TestADirectoryCanBeSynced(t *testing.T) {
+	require.NoError(t, syncDir(t.TempDir()))
+	require.Error(t, syncDir(filepath.Join(t.TempDir(), "absent")))
+}

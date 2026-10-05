@@ -43,6 +43,7 @@ type Config struct {
 	PVEURL     string // base URL of the Proxmox API
 	PVECAFile  string // CA bundle for the Proxmox API; not needed for a loopback URL
 	Node       string // the name of this node in Proxmox
+	Profile    string // what the daemon runs as: store.ProfileHost or store.ProfileAppliance; empty is the host
 	SocketPath string
 	Paths      store.Paths
 	Log        zerolog.Logger
@@ -163,8 +164,18 @@ func (c Config) check() error {
 		return errors.New("the socket path is empty")
 	case c.PVEURL == "":
 		return errors.New("the Proxmox URL is empty")
+	case c.Profile != "" && c.Profile != store.ProfileHost && c.Profile != store.ProfileAppliance:
+		return fmt.Errorf("profile %q: want %q or %q", c.Profile, store.ProfileHost, store.ProfileAppliance)
 	}
 	return nil
+}
+
+// profile is the profile the daemon runs in, never an empty one.
+func (c Config) profile() string {
+	if c.Profile == "" {
+		return store.ProfileHost
+	}
+	return c.Profile
 }
 
 // Run runs the daemon until ctx ends, and returns nil when it stopped because
@@ -240,12 +251,14 @@ func startSettings(st *store.Store, log zerolog.Logger) store.Settings {
 	return s
 }
 
+// logStart logs the profile the daemon runs in next to the one the install
+// recorded, so that a marker that disagrees with the install shows.
 func logStart(log zerolog.Logger, cfg Config, st *store.Store) {
-	ev := log.Info().Str("version", cfg.Version).Str("node", cfg.Node)
+	ev := log.Info().Str("version", cfg.Version).Str("node", cfg.Node).Str("profile", cfg.profile())
 	if inst, found, err := st.Install(); err == nil && found {
-		ev = ev.Str("profile", inst.ProfileName())
+		ev = ev.Str("installProfile", inst.ProfileName())
 	} else {
-		ev = ev.Str("profile", "unknown")
+		ev = ev.Str("installProfile", "unknown")
 	}
 	ev.Msg("pco daemon starting")
 }

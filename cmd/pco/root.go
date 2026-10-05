@@ -13,6 +13,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/version"
 )
 
@@ -48,6 +49,8 @@ type env struct {
 	// stderrTerminal says whether w, where the daemon logs, is a terminal.
 	stderrTerminal func(w io.Writer) bool
 	getenv         func(name string) string
+	// profileFile is the marker that names the profile of the machine.
+	profileFile string
 
 	// daemon is what pco daemon is run with: the parts of the daemon that a
 	// test replaces.
@@ -71,7 +74,8 @@ func defaultEnv() env {
 			f, ok := w.(*os.File)
 			return ok && term.IsTerminal(int(f.Fd()))
 		},
-		getenv: os.Getenv,
+		getenv:      os.Getenv,
+		profileFile: store.ProfileFile,
 	}
 }
 

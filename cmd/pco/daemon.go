@@ -19,6 +19,7 @@ func (a *app) daemonCmd() *cobra.Command {
 	var (
 		pveURL, pveCA, node, logLevel string
 		clusterDir, privateDir, local string
+		givenProfile                  string
 	)
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -26,7 +27,8 @@ func (a *app) daemonCmd() *cobra.Command {
 		Long: "Run the daemon: it reads the guests from Proxmox, keeps the tunnels, the connectors and\n" +
 			"the DNS records at Cloudflare in line with their notes, and answers the commands of\n" +
 			"pco on its socket. It runs until SIGINT or SIGTERM.\n\n" +
-			"The directories of the store are those of a Proxmox node; the flags move them for a test\n" +
+			"The directories of the store are those of the profile: of a Proxmox node, or of the\n" +
+			"appliance when " + store.ProfileFile + " says appliance. The flags move them for a test\n" +
 			"or an unusual install, all three or none: a store of its own, without the check for the\n" +
 			"cluster filesystem. Moving only some of them would mix it with the tokens, the connectors\n" +
 			"and the lock of the node.\n\n" +
@@ -37,7 +39,11 @@ func (a *app) daemonCmd() *cobra.Command {
 			if err := a.noJSON(cmd); err != nil {
 				return err
 			}
-			paths, err := daemon.StorePaths(clusterDir, privateDir, local)
+			profile, err := a.daemonProfile(givenProfile)
+			if err != nil {
+				return err
+			}
+			paths, err := daemon.StorePaths(profile, clusterDir, privateDir, local)
 			if err != nil {
 				return err
 			}
@@ -55,6 +61,7 @@ func (a *app) daemonCmd() *cobra.Command {
 				PVEURL:     pveURL,
 				PVECAFile:  pveCA,
 				Node:       node,
+				Profile:    profile,
 				SocketPath: a.socket,
 				Paths:      paths,
 				Log:        log,
@@ -80,7 +87,20 @@ func (a *app) daemonCmd() *cobra.Command {
 	flags.StringVar(&clusterDir, "cluster-dir", "", "directory of the state the cluster shares; only with the two others (default "+defaults.Cluster+")")
 	flags.StringVar(&privateDir, "private-dir", "", "directory of the secrets the cluster shares; only with the two others (default "+defaults.Private+")")
 	flags.StringVar(&local, "local-dir", "", "directory of the state of this node and of the lock of the daemon; only with the two others (default "+defaults.Local+")")
+	flags.StringVar(&givenProfile, "profile", "", "run as host or appliance, for a test (default: what "+store.ProfileFile+" says, host without it)")
 	return cmd
+}
+
+// daemonProfile is the profile the daemon runs in: the one given, or the one
+// the profile marker of the machine names.
+func (a *app) daemonProfile(given string) (string, error) {
+	switch given {
+	case "":
+		return store.DetectProfile(a.profileFile)
+	case store.ProfileHost, store.ProfileAppliance:
+		return given, nil
+	}
+	return "", fmt.Errorf("unknown profile %q: want host or appliance", given)
 }
 
 // daemonLog is the log of the daemon, written to w: JSON lines for the

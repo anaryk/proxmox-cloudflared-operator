@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"net/netip"
 	"testing"
 	"time"
 
@@ -41,11 +42,16 @@ func TestAnOwnerIsNamedWithItsGuest(t *testing.T) {
 	require.Equal(t, "manual/www", OwnerName("manual/www", nil))
 }
 
+// approvals returns the identity approved for each owner.
 func approvals(t *testing.T, e *env) map[string]string {
 	t.Helper()
 	a, err := e.store.Approvals()
 	require.NoError(t, err)
-	return a
+	out := make(map[string]string, len(a))
+	for owner, approval := range a {
+		out[owner] = approval.Identity
+	}
+	return out
 }
 
 func TestApprovingAGuestPublishesIt(t *testing.T) {
@@ -252,8 +258,10 @@ func TestApprovalsInTagModeAreRecorded(t *testing.T) {
 func TestApprovalsAreListedWithTheIdentityTheGuestHasNow(t *testing.T) {
 	e := approving(t)
 	approveWeb(t, e)
-	require.NoError(t, e.store.SaveApproval("qemu/102", "uuid:old"))
-	require.NoError(t, e.store.SaveApproval("lxc/300", "uuid:300"))
+	require.NoError(t, e.store.SaveApproval(store.Approval{Owner: "qemu/102", Identity: "uuid:old"}))
+	require.NoError(t, e.store.SaveApproval(store.Approval{
+		Owner: "lxc/300", Identity: "uuid:300", MACs: []string{"bc:24:11:00:03:00"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+	}))
 	moved := guest(102, "db-1", "db.example.com -> :5432")
 	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), moved))
 	e.clock.advance(10 * time.Second)
@@ -265,6 +273,9 @@ func TestApprovalsAreListedWithTheIdentityTheGuestHasNow(t *testing.T) {
 	require.Equal(t, []ApprovalView{
 		{Owner: "qemu/101", Guest: &GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Current: "uuid:101", Matches: true},
 		{Owner: "qemu/102", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, Name: "db-1"}, Identity: "uuid:old", Current: "uuid:102"},
-		{Owner: "lxc/300", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 300}}, Identity: "uuid:300"},
+		{
+			Owner: "lxc/300", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 300}}, Identity: "uuid:300",
+			MACs: []string{"bc:24:11:00:03:00"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+		},
 	}, views)
 }

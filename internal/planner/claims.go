@@ -27,6 +27,10 @@ type Claim struct {
 	Since        time.Time  `json:"since"`
 	MissingSince *time.Time `json:"missingSince,omitempty"` // set while the holder has no route for the hostname
 	Waiting      []Waiter   `json:"waiting,omitempty"`
+	// MAC is the card the holder's address answered from when it was first
+	// verified at the observed level. It stays for as long as the holder
+	// keeps the claim; a new holder starts without one.
+	MAC string `json:"mac,omitempty"`
 }
 
 // ClaimInput is everything ResolveClaims needs.
@@ -202,7 +206,7 @@ func (r *resolver) firstClaim(host string, cs []claimant) {
 // that becomes known is stored without an event.
 func (r *resolver) keep(host string, claim Claim, cs []claimant, i int) {
 	holder := cs[i]
-	next := Claim{Hostname: host, Owner: claim.Owner, Identity: claim.Identity, Since: claim.Since}
+	next := Claim{Hostname: host, Owner: claim.Owner, Identity: claim.Identity, Since: claim.Since, MAC: claim.MAC}
 	switch now := r.in.Identity[claim.Owner]; {
 	case now == "" || now == claim.Identity:
 		// Nothing new is known.
@@ -219,7 +223,7 @@ func (r *resolver) keep(host string, claim Claim, cs []claimant, i int) {
 // names it. The claim stays as it is, no longer missing, and nobody wins the
 // hostname; the other claimants wait as they would behind a present holder.
 func (r *resolver) hold(host string, claim Claim, cs []claimant) {
-	next := Claim{Hostname: host, Owner: claim.Owner, Identity: claim.Identity, Since: claim.Since}
+	next := Claim{Hostname: host, Owner: claim.Owner, Identity: claim.Identity, Since: claim.Since, MAC: claim.MAC}
 	if next.Identity == "" {
 		// As in keep, the first identity that becomes known is stored without
 		// an event. A change of a known one is left for keep to report once
@@ -249,6 +253,7 @@ func (r *resolver) holderMissing(host string, claim Claim, cs []claimant) {
 			Since:        claim.Since,
 			MissingSince: &missing,
 			Waiting:      r.queue(host, claim.Owner, claim.Waiting, cs),
+			MAC:          claim.MAC,
 		}
 		r.res.Claims[host] = next
 		return

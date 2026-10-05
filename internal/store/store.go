@@ -2,13 +2,14 @@
 // object, under three roots.
 //
 // The cluster root holds what every node shares, the private root the secrets
-// every node shares, and the local root what belongs to this node. The first
-// two live on pmxcfs, which fixes the modes of files by path, has no links,
-// refuses files over 1 MiB, replicates every write to every node and is
+// every node shares, and the local root what belongs to this node. On a node
+// the first two live on pmxcfs, which fixes the modes of files by path, has no
+// links, refuses files over 1 MiB, replicates every write to every node and is
 // read-only without quorum. So the store never chmods a file, replaces a
 // file through a rename within its directory, leaves an object alone when a
 // save would not change it, and reports a write that fails as an error of
-// that write while reads go on.
+// that write while reads go on. In the appliance all three are on its state
+// volume, where a rename is made durable as well (Paths.Durable).
 //
 // The cluster and private roots are never created by Open, and never taken for
 // empty when they are gone: see Paths.MountCheck, ErrNotMounted and Init. The
@@ -37,6 +38,7 @@ const (
 	kindApprovals   = "approvals"
 	kindCredentials = "credentials"
 	kindBindings    = "bindings"
+	kindSegments    = "segments"
 
 	idInstall    = "install"
 	idSettings   = "settings"
@@ -80,13 +82,15 @@ func open(p Paths, now func() time.Time) (*Store, error) {
 	// What lies under a mount point that is not mounted is not ours to touch.
 	// A refusal to remove a leftover from a read-only root is no failure.
 	if guard == nil || guard() == nil {
-		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals)...)
+		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals, kindSegments)...)
 		_ = removeStaleTemps(cutoff, tempDirs(p.Private, kindCredentials, kindMeta)...)
 	}
+	cluster, private := newDir(p.Cluster, guard), newDir(p.Private, guard)
+	cluster.durable, private.durable = p.Durable, p.Durable
 	return &Store{
 		paths:   p,
-		cluster: newDir(p.Cluster, guard),
-		private: newDir(p.Private, guard),
+		cluster: cluster,
+		private: private,
 		local:   NewDir(p.Local),
 		proofs:  &proofTimes{},
 	}, nil
@@ -131,7 +135,9 @@ func (s *Store) Install() (Install, bool, error) {
 	return getOne[Install](s.cluster, kindMeta, idInstall)
 }
 
-// SaveInstall stores the identity of this installation.
+// SaveInstall stores the identity of this installation. The install of an
+// appliance carries a complete appliance block, with its MACs stored sorted;
+// any other install carries none.
 func (s *Store) SaveInstall(i Install) error {
 	if i.ID == "" {
 		return errors.New("install id is empty")
@@ -141,6 +147,11 @@ func (s *Store) SaveInstall(i Install) error {
 	default:
 		return fmt.Errorf("install profile %q: want %q or %q", i.Profile, ProfileHost, ProfileAppliance)
 	}
+	a, err := checkAppliance(i)
+	if err != nil {
+		return err
+	}
+	i.Appliance = a
 	return s.cluster.put(kindMeta, idInstall, i, true)
 }
 
@@ -286,26 +297,29 @@ func (s *Store) SaveManualRoute(r model.Route) error {
 // DeleteManualRoute removes a manual route. A missing one is not an error.
 func (s *Store) DeleteManualRoute(id string) error { return s.cluster.Delete(kindRoutes, id) }
 
-// Approvals returns the identity approved for each owner.
-func (s *Store) Approvals() (map[string]string, error) {
-	byOwner, err := loadMap(s.cluster, kindApprovals, "owner", func(a *approval) *string { return &a.Owner })
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]string, len(byOwner))
-	for owner, a := range byOwner {
-		out[owner] = a.Identity
-	}
-	return out, nil
+// Approvals returns the approvals by owner.
+func (s *Store) Approvals() (map[string]Approval, error) {
+	return loadMap(s.cluster, kindApprovals, "owner", func(a *Approval) *string { return &a.Owner })
 }
 
-// SaveApproval records that the guest owner, in the identity given, may be
-// published.
-func (s *Store) SaveApproval(owner, identity string) error {
-	if owner == "" || identity == "" {
+// SaveApproval records that the guest a.Owner, in the identity a.Identity, may
+// be published. Its MACs, which must be in normal form, and its addresses are
+// stored sorted and each once.
+func (s *Store) SaveApproval(a Approval) error {
+	if a.Owner == "" || a.Identity == "" {
 		return errors.New("approval needs an owner and an identity")
 	}
-	return s.cluster.put(kindApprovals, owner, approval{Owner: owner, Identity: identity}, true)
+	macs, err := sortedMACs(a.MACs)
+	if err != nil {
+		return fmt.Errorf("approval of %s: %w", a.Owner, err)
+	}
+	for _, addr := range a.Addresses {
+		if !addr.IsValid() {
+			return fmt.Errorf("approval of %s: address %v is not valid", a.Owner, addr)
+		}
+	}
+	a.MACs, a.Addresses = macs, sortedAddrs(a.Addresses)
+	return s.cluster.put(kindApprovals, a.Owner, a, true)
 }
 
 // DeleteApproval removes the approval of an owner. A missing one is not an

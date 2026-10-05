@@ -51,7 +51,7 @@ func (c *cycleRun) collect() bool {
 // routeSources reads what the routes are collected from besides the guests:
 // the manual routes and, in admission mode approve, the approvals. On an
 // error, doing says what was being read.
-func (e *Engine) routeSources(s store.Settings) (manual []model.Route, approvals map[string]string, doing string, err error) {
+func (e *Engine) routeSources(s store.Settings) (manual []model.Route, approvals map[string]store.Approval, doing string, err error) {
 	if manual, err = e.d.Store.ManualRoutes(); err != nil {
 		return nil, nil, "reading the manual routes", err
 	}
@@ -72,7 +72,7 @@ func (c *cycleRun) collectFrom(snap inventory.Snapshot) (planner.Collected, []wa
 // collectRoutes collects the routes of a snapshot and, when approvals is not
 // nil, takes out those of the guests that wait for approval, which it returns
 // too.
-func collectRoutes(snap inventory.Snapshot, manual []model.Route, s store.Settings, approvals map[string]string) (planner.Collected, []waitingGuest) {
+func collectRoutes(snap inventory.Snapshot, manual []model.Route, s store.Settings, approvals map[string]store.Approval) (planner.Collected, []waitingGuest) {
 	col := planner.Collect(snap.Guests, manual, planner.Settings{
 		GateTag:              s.GateTag,
 		AllowHosts:           s.AllowHosts,
@@ -98,7 +98,7 @@ type waitingGuest struct {
 // entry is broken does. Manual routes are the admin's own and pass. An empty
 // identity is never approved. It returns the guests that wait, in the order
 // of their owners.
-func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]string) (planner.Collected, []waitingGuest) {
+func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]store.Approval) (planner.Collected, []waitingGuest) {
 	waiting := make(map[model.GuestRef][]string)
 	approved := func(rt model.Route) bool {
 		ref, err := model.ParseGuestRef(rt.Owner())
@@ -106,7 +106,7 @@ func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]
 			return true
 		}
 		g, ok := snap.Guest(ref)
-		if ok && g.Identity != "" && approvals[rt.Owner()] == g.Identity {
+		if ok && g.Identity != "" && approvals[rt.Owner()].Identity == g.Identity {
 			return true
 		}
 		waiting[ref] = append(waiting[ref], rt.Hostname)

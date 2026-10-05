@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"time"
 )
@@ -19,6 +20,8 @@ type Install struct {
 	// Profile is ProfileHost or ProfileAppliance. An install made before
 	// profiles existed has none, which means the host profile.
 	Profile string `json:"profile,omitempty"`
+	// Appliance is set for ProfileAppliance and for no other profile.
+	Appliance *ApplianceInstall `json:"appliance,omitempty"`
 }
 
 // ProfileName returns the profile of the install, never an empty one.
@@ -98,12 +101,17 @@ type Paths struct {
 	Private string // secrets every node shares: /etc/pve/priv/pco
 	Local   string // state of this node: /var/lib/pco
 
-	// MountCheck is a file that exists only while the cluster filesystem is
-	// mounted. While it is missing, every operation on the cluster and private
-	// roots fails with ErrNotMounted. An empty value switches the check off,
-	// which is for tests: callers start from DefaultPaths and override the
-	// roots, not build a Paths from nothing.
+	// MountCheck is a file that exists only while the filesystem of the
+	// cluster and private roots is mounted: pmxcfs on a node, the state volume
+	// in the appliance. While it is missing, every operation on those roots
+	// fails with ErrNotMounted. An empty value switches the check off, which
+	// is for tests: callers start from PathsFor and override the roots, not
+	// build a Paths from nothing.
 	MountCheck string
+
+	// Durable makes every write of the shared roots fsync its directory
+	// after the rename. Off on pmxcfs, which refuses it; on for a volume.
+	Durable bool
 }
 
 // NodeLock is the file a daemon holds locked for as long as it runs on the
@@ -120,8 +128,12 @@ func DefaultPaths() Paths {
 	}
 }
 
-// approval is the file of one approved owner.
-type approval struct {
-	Owner    string `json:"owner"`
-	Identity string `json:"identity"`
+// Approval is what an admin approved of a guest: its identity, and at the
+// observed level the MACs that may answer for its routes and the soft-denied
+// addresses it may be published at.
+type Approval struct {
+	Owner     string       `json:"owner"`
+	Identity  string       `json:"identity"`
+	MACs      []string     `json:"macs,omitempty"` // normalised, sorted
+	Addresses []netip.Addr `json:"addresses,omitempty"`
 }

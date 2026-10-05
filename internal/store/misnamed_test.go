@@ -41,7 +41,7 @@ func TestACopyUnderAnotherNameFailsTheLoad(t *testing.T) {
 		{
 			name: "approvals", dir: func(p Paths) string { return filepath.Join(p.Cluster, "approvals") },
 			file: "qemu_101.json",
-			save: func(s *Store) error { return s.SaveApproval("qemu/101", "ident") },
+			save: func(s *Store) error { return s.SaveApproval(approvalOf("qemu/101", "ident")) },
 			load: func(s *Store) error { _, err := s.Approvals(); return err },
 			del:  func(s *Store) error { return s.DeleteApproval("qemu/101") },
 		},
@@ -117,7 +117,7 @@ func TestACopyOfARouteDoesNotPublishTwoRoutes(t *testing.T) {
 func TestFilesUnderTheNameOfTheirIDStillLoad(t *testing.T) {
 	s, p := openStore(t)
 	require.NoError(t, s.SaveManualRoute(manualRoute("NAS")))
-	require.NoError(t, s.SaveApproval("qemu/101", "ident"))
+	require.NoError(t, s.SaveApproval(approvalOf("qemu/101", "ident")))
 	require.Equal(t, []string{"approvals/qemu_101.json", "routes/nas.json"}, stored(t, p.Cluster))
 
 	routes, err := s.ManualRoutes()
@@ -126,7 +126,7 @@ func TestFilesUnderTheNameOfTheirIDStillLoad(t *testing.T) {
 	require.Equal(t, "NAS", routes[0].ManualID)
 	approvals, err := s.Approvals()
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{"qemu/101": "ident"}, approvals)
+	require.Equal(t, map[string]Approval{"qemu/101": approvalOf("qemu/101", "ident")}, approvals)
 
 	require.NoError(t, s.DeleteManualRoute("NAS"))
 	require.NoError(t, s.DeleteApproval("qemu/101"))

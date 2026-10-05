@@ -97,7 +97,7 @@ func TestTheMinimumServesWhatIsProvenAtOrAboveIt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
 			if tt.appliance {
-				require.NoError(t, e.store.SaveInstall(store.Install{ID: testInstall, CreatedAt: t0, Profile: store.ProfileAppliance}))
+				require.NoError(t, e.store.SaveInstall(applianceInstall()))
 			}
 			e.settings(func(s *store.Settings) { s.IdentityMinimum = tt.minimum })
 			e.res.setLevel("www.example.com", tt.level)

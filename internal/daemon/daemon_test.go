@@ -331,12 +331,39 @@ func TestSettingsReadAtStartAreFlaggedWhenTheyChange(t *testing.T) {
 
 func TestTheDaemonLogsTheProfileAtStart(t *testing.T) {
 	w := newWorld(t)
-	require.NoError(t, w.store.SaveInstall(store.Install{ID: testInstall, CreatedAt: t0, Profile: store.ProfileAppliance}))
+	w.cfg.Profile = store.ProfileAppliance
+	require.NoError(t, w.store.SaveInstall(store.Install{ID: testInstall, CreatedAt: t0, Profile: store.ProfileAppliance,
+		Appliance: &store.ApplianceInstall{
+			VMID: 9200, Node: testNode, MACs: []string{"bc:24:11:00:92:00"},
+			Endpoints: []store.Endpoint{{Address: "10.92.0.1:8006", ServerName: testNode}},
+		},
+	}))
 	d := w.start()
 	require.NoError(t, d.stop())
 
 	require.Contains(t, w.logs.String(), `"profile":"appliance"`)
+	require.Contains(t, w.logs.String(), `"installProfile":"appliance"`)
 	require.Contains(t, w.logs.String(), `"message":"pco daemon starting"`)
+}
+
+// The profile the daemon runs in is the one it detected; the one the install
+// recorded is logged next to it, so that a marker that disagrees shows.
+func TestTheDaemonLogsTheProfileItDetectedAndTheOneOfTheInstall(t *testing.T) {
+	w := newWorld(t)
+	d := w.start()
+	require.NoError(t, d.stop())
+
+	require.Contains(t, w.logs.String(), `"profile":"host"`, "no profile is the host")
+	require.Contains(t, w.logs.String(), `"installProfile":"host"`)
+}
+
+func TestTheDaemonRefusesAnUnknownProfile(t *testing.T) {
+	w := newWorld(t)
+	w.cfg.Profile = "container"
+
+	err := Run(t.Context(), w.cfg, w.deps)
+
+	require.ErrorContains(t, err, `"container"`)
 }
 
 func TestTheProblemsTheDaemonIsStartedWithAreInEveryState(t *testing.T) {

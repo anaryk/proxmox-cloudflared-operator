@@ -143,7 +143,7 @@ func (d Dir) commit(w *write) error {
 	if err := d.ensureKindDir(w.dir); err != nil {
 		return fmt.Errorf("storing %s %q: %w", w.kind, w.id, err)
 	}
-	if err := writeFileAtomic(w.path, w.out); err != nil {
+	if err := writeFileAtomic(w.path, w.out, d.synced); err != nil {
 		return fmt.Errorf("storing %s %q: %w", w.kind, w.id, err)
 	}
 	return nil
@@ -161,13 +161,16 @@ func (d Dir) ensureKindDir(dir string) error {
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return nil
 	}
-	_, err := makeLeaf(dir)
+	created, err := makeLeaf(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		if rootErr := d.requireRoot(); rootErr != nil {
 			return rootErr
 		}
 	}
-	return err
+	if err != nil || !created {
+		return err
+	}
+	return d.synced(d.root)
 }
 
 // updateFile replaces the file name, which is in the root itself, with what
@@ -190,7 +193,7 @@ func (d Dir) updateFile(name string, update func(old []byte) []byte) error {
 	case err != nil:
 		return fmt.Errorf("reading %s: %w", name, err)
 	}
-	if err := writeFileAtomic(path, update(old)); err != nil {
+	if err := writeFileAtomic(path, update(old), d.synced); err != nil {
 		return fmt.Errorf("writing %s: %w", name, err)
 	}
 	return nil

@@ -38,6 +38,7 @@ func TestTheDaemonCommandFlags(t *testing.T) {
 		"cluster-dir": "",
 		"private-dir": "",
 		"local-dir":   "",
+		"profile":     "",
 	} {
 		f := flags.Lookup(name)
 		require.NotNil(t, f, name)
@@ -64,6 +65,59 @@ func TestTheDaemonRefusesAnUnknownLogLevel(t *testing.T) {
 	res := newRunner(t, "/nonexistent/pco/pco.sock").run("", "daemon", "--log-level", "chatty")
 
 	require.EqualError(t, res.err, `unknown log level "chatty": want trace, debug, info, warn or error`)
+}
+
+func TestTheDaemonRefusesAnUnknownProfile(t *testing.T) {
+	res := newRunner(t, "/nonexistent/pco/pco.sock").run("", "daemon", "--profile", "container")
+
+	require.EqualError(t, res.err, `unknown profile "container": want host or appliance`)
+}
+
+func TestTheProfileOfTheDaemonIsTheMarkersUnlessOneIsGiven(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "profile")
+	a := &app{env: testEnv()}
+	a.profileFile = marker
+
+	for _, tt := range []struct {
+		name, marker, given, want string
+	}{
+		{"no marker", "", "", store.ProfileHost},
+		{"the marker of an appliance", "appliance\n", "", store.ProfileAppliance},
+		{"the marker of a host", "host\n", "", store.ProfileHost},
+		{"a profile given over the marker", "appliance\n", "host", store.ProfileHost},
+		{"the appliance given without a marker", "", "appliance", store.ProfileAppliance},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Remove(marker)
+			if tt.marker != "" {
+				require.NoError(t, os.WriteFile(marker, []byte(tt.marker), 0o600))
+			}
+
+			got, err := a.daemonProfile(tt.given)
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// A marker that says something else than a profile stops the daemon before it
+// makes anything: on an appliance, the paths of a host would be the wrong ones.
+func TestTheDaemonRefusesAMarkerThatNamesNoProfile(t *testing.T) {
+	base := testutil.ShortDir(t)
+	r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
+	r.env.profileFile = filepath.Join(base, "profile")
+	require.NoError(t, os.WriteFile(r.env.profileFile, []byte("container\n"), 0o600))
+
+	res := r.run("", "daemon",
+		"--cluster-dir", filepath.Join(base, "cluster"),
+		"--private-dir", filepath.Join(base, "private"),
+		"--local-dir", filepath.Join(base, "local"),
+		"--node", "pve1")
+
+	require.ErrorContains(t, res.err, r.env.profileFile)
+	require.ErrorContains(t, res.err, `"container"`)
+	require.NoDirExists(t, filepath.Join(base, "local"), "nothing was made")
 }
 
 func TestTheDaemonSaysWhenTheNodeIsNotSetUp(t *testing.T) {
@@ -227,7 +281,7 @@ func TestASignalStopsTheDaemonCleanly(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
 			base := testutil.ShortDir(t)
-			paths, err := daemon.StorePaths(filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
+			paths, err := daemon.StorePaths(store.ProfileHost, filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
 			require.NoError(t, err)
 			s, err := store.Open(paths)
 			require.NoError(t, err)

@@ -208,7 +208,10 @@ func populatedClaims() []ClaimView {
 func populatedApprovals() []ApprovalView {
 	return []ApprovalView{
 		{Owner: "qemu/101", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"}, Identity: "uuid:101", Current: "uuid:101", Matches: true},
-		{Owner: "lxc/300", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 300}}, Identity: "uuid:300"},
+		{
+			Owner: "lxc/300", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 300}}, Identity: "uuid:300",
+			MACs: []string{"bc:24:11:00:03:00", "bc:24:11:00:03:01"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+		},
 	}
 }
 
