@@ -16,8 +16,8 @@ import (
 // it to the policy. What is left counts less the requests of the policy the
 // limiter leaves to others; when that is fewer than the limiter thinks it has,
 // it keeps to that, and when nothing is left it lets no request through until
-// the count resets. What is left never adds to what the limiter has, and a
-// header that does not parse says nothing.
+// the count resets, for an hour at most. What is left never adds to what the
+// limiter has, and a header that does not parse says nothing.
 func (l *Limiter) observe(h http.Header) {
 	policies := parseLimits(h.Get("Ratelimit-Policy"))
 	left := parseLimits(h.Get("Ratelimit"))
@@ -43,6 +43,8 @@ func (l *Limiter) observe(h http.Header) {
 			l.credit = time.Duration(max(usable, 0)) * l.cost
 		}
 		if t := rl["t"]; usable <= 0 && t > 0 {
+			// As for the Retry-After of a 429, no longer than an hour.
+			t = min(t, int64(maxRetryAfter/time.Second))
 			if held := now.Add(time.Duration(t) * time.Second); held.After(l.held) {
 				l.held = held
 			}

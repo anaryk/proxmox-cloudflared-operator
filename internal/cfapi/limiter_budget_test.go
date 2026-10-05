@@ -63,6 +63,7 @@ func TestTheLimiterFollowsWhatCloudflareSaysIsLeft(t *testing.T) {
 		{"more left than it thinks is not taken", 900, `"default";r=1199;t=100`, cloudflarePolicy, 100, []time.Duration{300 * time.Millisecond}, 0},
 		{"nothing left, waited for when it is short", 0, `"default";r=150;t=15`, cloudflarePolicy, 0, []time.Duration{15 * s}, 0},
 		{"nothing left for longer than 20 s", 0, `"default";r=200;t=240`, cloudflarePolicy, 0, nil, 240 * s},
+		{"nothing left for days is held back for an hour", 0, `"default";r=200;t=900000`, cloudflarePolicy, 0, nil, time.Hour},
 		{"what is left without a policy", 0, `"default";r=10;t=30`, "", 10, []time.Duration{300 * time.Millisecond}, 0},
 		{"a policy below the budget", 0, "", `"default";q=500;w=300`, 500, []time.Duration{600 * time.Millisecond}, 0},
 		{"a policy below the budget leaves nothing to others", 0, `"default";r=50;t=300`, `"default";q=500;w=300`, 50, []time.Duration{600 * time.Millisecond}, 0},
