@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"hash/fnv"
 	"net"
 	"net/netip"
 	"sync"
@@ -37,6 +38,13 @@ type guestSeen struct {
 
 // Watching tells the engine whether the watch of the network runs. Until it
 // does, and again after it stopped, every cycle proves every address anew.
+//
+// The daemon says so as it starts the watch, before the watch has subscribed
+// to the tables of the kernel. That is sound: the watch reads both tables
+// whole when it subscribes, and again whenever it subscribes anew, so what
+// moved before then is reported then; and a proof stands only when the watch
+// ran, and had the address pinned, before the proof was made, so the first
+// proof after the start of the watch is made anew in the next cycle.
 func (e *Engine) Watching(on bool) {
 	v := &e.vouch
 	v.mu.Lock()
@@ -103,7 +111,7 @@ func (v *vouching) see(snap inventory.Snapshot, now time.Time) {
 // made again: the watch ran when the proof was made and has not stopped
 // since, it watched the address with the MAC of b from before then and has
 // not reported it moved since, the guest has run on the same node with the
-// same configuration from before then, and the proof is younger than every.
+// same configuration from before then, and the proof is not due, see due.
 // Whatever happened at the very time of the proof counts as after it.
 func (v *vouching) vouches(b resolve.Binding, now time.Time, every time.Duration) bool {
 	v.mu.Lock()
@@ -122,8 +130,24 @@ func (v *vouching) vouches(b resolve.Binding, now time.Time, every time.Duration
 	case !seen || g.since.After(at) || !g.running:
 		return false
 	}
-	age := now.Sub(at)
-	return age >= 0 && age < every
+	return !due(b.Addr, at, now, every)
+}
+
+// due reports whether a proof of addr made at at is to be made again at now:
+// once the time of the address in each interval came between the two, a time
+// the address takes from its hash. A proof is thus never every old, and the
+// proofs made in one cycle come due over a whole interval, a share of them in
+// each cycle, and stay apart in later ones. One dated after now is due.
+func due(addr netip.Addr, at, now time.Time, every time.Duration) bool {
+	if now.Before(at) {
+		return true
+	}
+	h := fnv.New64a()
+	b := addr.As16()
+	_, _ = h.Write(b[:])
+	offset := int64(h.Sum64() % uint64(every))
+	interval := func(t time.Time) int64 { return (t.UnixNano() - offset) / int64(every) }
+	return interval(now) != interval(at)
 }
 
 func sameHardware(a, b string) bool {

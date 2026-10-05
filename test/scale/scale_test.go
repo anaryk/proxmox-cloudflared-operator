@@ -30,8 +30,8 @@ const (
 	// resolveConcurrency is the number of routes the engine resolves at once.
 	resolveConcurrency = 32
 
-	// recheck is how old a proof is when it is made again although the watch
-	// vouches for it: the default reverifyInterval.
+	// recheck is the default reverifyInterval: in every one of them, each
+	// address is proven again once, at a time of its own.
 	recheck = time.Minute
 
 	// realARP is the window the real prober waits for the answers to every ARP
@@ -71,24 +71,36 @@ func runSize(t *testing.T, guests, routes int) []row {
 	require.Equal(t, routes, b.records())
 	add("first enforcing cycle", "", first)
 
+	b.prober.proven()
 	second := b.cycle()
 	require.Zero(t, second.calls.writes())
 	require.Empty(t, second.state.Problems)
-	add("second cycle", "proves again", second)
+	add("second cycle", fmt.Sprintf("proves again: %d proven", b.prober.proven()), second)
 
 	idle := b.cycle()
 	require.Zero(t, idle.calls.writes())
 	require.Empty(t, idle.state.Problems)
-	add("idle", "", idle)
+	add("idle", fmt.Sprintf("%d proven", b.prober.proven()), idle)
 
 	for _, latency := range arpLatencies(routes) {
-		model := idle.wall + time.Duration((routes+resolveConcurrency-1)/resolveConcurrency)*latency
-		note := "model " + model.Round(10*time.Millisecond).String()
+		model := func(proven int) string {
+			m := time.Duration((proven+resolveConcurrency-1)/resolveConcurrency) * latency
+			return fmt.Sprintf("%d proven, model %s", proven, m.Round(10*time.Millisecond))
+		}
 		b.prober.setARPLatency(latency)
-		add(fmt.Sprintf("idle, ARP %s", latency), "", b.cycle())
-		add(fmt.Sprintf("re-check, ARP %s", latency), note, b.after(recheck))
+		b.prober.proven()
+		var busiest result
+		var most int
+		for range recheck / pollEvery {
+			res := b.cycle()
+			if n := b.prober.proven(); res.wall > busiest.wall {
+				busiest, most = res, n
+			}
+		}
+		add(fmt.Sprintf("busiest of a minute, ARP %s", latency), model(most), busiest)
 		b.eng.Watching(false)
-		add(fmt.Sprintf("no watch, ARP %s", latency), note, b.cycle())
+		res := b.cycle()
+		add(fmt.Sprintf("no watch, ARP %s", latency), model(b.prober.proven()), res)
 		b.eng.Watching(true)
 		b.prober.setARPLatency(0)
 		b.cycle()

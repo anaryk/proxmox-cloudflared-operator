@@ -151,6 +151,7 @@ type prober struct {
 	owner map[netip.Addr]string
 	port  map[string]string
 	calls atomic.Int64
+	arps  atomic.Int64 // ARP requests since the last proven
 }
 
 func newProber(f *fleet) *prober {
@@ -174,8 +175,12 @@ func (p *prober) Route(context.Context, netip.Addr) (string, bool, error) {
 	return "vmbr0", true, nil
 }
 
+// proven returns the addresses asked for on the wire since the last call.
+func (p *prober) proven() int { return int(p.arps.Swap(0)) }
+
 func (p *prober) ARP(ctx context.Context, _ string, addr netip.Addr) ([]string, error) {
 	p.calls.Add(1)
+	p.arps.Add(1)
 	if d := time.Duration(p.arp.Load()); d > 0 {
 		t := time.NewTimer(d)
 		defer t.Stop()
