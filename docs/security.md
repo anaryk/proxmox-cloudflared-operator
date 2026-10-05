@@ -43,10 +43,12 @@ port of its own in the next cycle that keeps it running, which is the next one i
 mode; the problem says when. The port that was taken is not given out again for an hour.
 
 The Proxmox side is read-only. Setup makes the role `PCO`, the user `pco@pve` and the
-token `pco@pve!pco`, and the role holds `VM.Audit`, `Sys.Audit`, `SDN.Audit` and
-`VM.GuestAgent.Audit` (`VM.Monitor` on Proxmox VE 8.4), granted on `/`. The daemon never
-changes a guest, a tag or a Notes field. Only `pco setup` and `pco uninstall` change
-Proxmox, as root, and what they change is listed in the manifest.
+token `pco@pve!pco`, and the role holds `VM.Audit`, `Sys.Audit`, `SDN.Audit`,
+`VM.GuestAgent.Audit` (`VM.Monitor` on Proxmox VE 8.4) and `Pool.Audit`, granted on `/`.
+pco reads the pool of each guest from `/cluster/resources`, which shows it only to a
+token with `Pool.Audit`. The daemon never changes a guest, a tag or a Notes field. Only
+`pco setup` and `pco uninstall` change Proxmox, as root, and what they change is listed
+in the manifest.
 
 The Cloudflare side is not read-only: the token can edit DNS records and tunnels in the
 zones and accounts you chose. Scope it narrowly; see

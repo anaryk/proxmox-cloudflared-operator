@@ -116,8 +116,9 @@ run that stopped and changes nothing on a node that is set up. In order, it:
   install, a random 12 character id, in observe-only mode;
 - creates the Proxmox role `PCO`, the user `pco@pve`, grants the role to the user
   on `/`, and makes the API token `pco@pve!pco`. The role is read-only: it holds
-  `VM.Audit`, `Sys.Audit`, `SDN.Audit`, and `VM.GuestAgent.Audit` on Proxmox VE 9
-  or `VM.Monitor` on 8.4;
+  `VM.Audit`, `Sys.Audit`, `SDN.Audit`, `VM.GuestAgent.Audit` on Proxmox VE 9
+  or `VM.Monitor` on 8.4, and `Pool.Audit`, without which `/cluster/resources`,
+  where pco reads the pool of each guest, leaves the pools out;
 - registers the tags `cf-tunnel` and `cf-tunnel-managed` as registered tags, so
   that only a user with `Sys.Modify` on `/` can set them on a guest, and the gate
   tag of your settings too if you changed `gateTag` (it asks; `--no-registered-tags`
@@ -136,7 +137,7 @@ id will differ):
 
     preflight: Proxmox VE 9.0.10 on amd64
     store: created install 7f3a9c0d41b2; it only observes until pco apply
-    role PCO: created with VM.Audit, Sys.Audit, VM.GuestAgent.Audit, SDN.Audit
+    role PCO: created with VM.Audit, Sys.Audit, VM.GuestAgent.Audit, SDN.Audit, Pool.Audit
     user pco@pve: created, granted role PCO on /
     token pco@pve!pco: created
     registered tags: added cf-tunnel, cf-tunnel-managed
