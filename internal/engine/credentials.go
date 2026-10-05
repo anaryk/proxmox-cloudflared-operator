@@ -74,7 +74,7 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 	view.ID = cred.ID
 	e.keepReport(cred, report)
 	e.zones.due = true
-	e.adminEvent(cred.ID, fmt.Sprintf("credential %q added", label))
+	e.adminEvent(ctx, cred.ID, fmt.Sprintf("credential %q added", label))
 	return view, nil
 }
 
@@ -160,7 +160,7 @@ func (e *Engine) RemoveCredential(ctx context.Context, id string) error {
 		msg += "; Cloudflare refused its token, so what it managed could not be checked and may be left behind"
 		e.d.Log.Warn().Str("credential", id).Msg("removed a credential whose token Cloudflare refused; what it managed may be left behind")
 	}
-	e.adminEvent(id, msg)
+	e.adminEvent(ctx, id, msg)
 	return nil
 }
 

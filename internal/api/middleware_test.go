@@ -353,7 +353,7 @@ func TestAPanicIsLoggedAndAnswered(t *testing.T) {
 	require.NotContains(t, logged.String(), "querysecret")
 
 	t.Run("and the server goes on", func(t *testing.T) {
-		rec := send(s, request(http.MethodGet, "/v1/version", ""))
+		rec := send(s, request(http.MethodGet, "/v1/events", ""))
 		require.Equal(t, http.StatusOK, rec.Code)
 	})
 }

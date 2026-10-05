@@ -203,7 +203,7 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 			"but the connections of the tunnel could not be ended: %w; a connector elsewhere keeps its session until it reconnects: "+
 			"run pco tunnel rotate again", what, cleanErr)
 	}
-	e.adminEvent(t.Name, fmt.Sprintf("the secret of %s was rotated: every connector of the tunnel was disconnected, "+
+	e.adminEvent(ctx, t.Name, fmt.Sprintf("the secret of %s was rotated: every connector of the tunnel was disconnected, "+
 		"and the one on this node restarts with the new token", what))
 	return res, nil
 }

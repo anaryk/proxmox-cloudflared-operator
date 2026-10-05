@@ -93,12 +93,24 @@ func (f *fakeEngine) State() engine.State {
 	return f.state
 }
 
-func (f *fakeEngine) Events(since time.Time) []engine.Event {
+func (f *fakeEngine) QueryEvents(q engine.EventQuery) ([]engine.Event, error) {
 	f.record("events")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.since = since
-	return f.events
+	f.since = q.Since
+	return f.events, nil
+}
+
+func (f *fakeEngine) Boot() string { return "9f2c4e1a0b7d3c55" }
+
+// Subscribe answers with a stream that has nothing to say until ctx ends.
+func (f *fakeEngine) Subscribe(ctx context.Context, _ string, _ uint64) (<-chan engine.Notice, engine.Hello, error) {
+	ch := make(chan engine.Notice)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, engine.Hello{Boot: f.Boot(), PollInterval: "10s"}, nil
 }
 
 func (f *fakeEngine) lastSince() time.Time {

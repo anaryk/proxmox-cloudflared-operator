@@ -49,10 +49,10 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool, offer string) (
 			return res, fmt.Errorf("leaving observe-only mode: %w", err)
 		}
 		res.LeftObserveOnly = true
-		e.adminEvent("", "observe-only mode ended; changes are applied from now on")
+		e.adminEvent(ctx, "", "observe-only mode ended; changes are applied from now on")
 	}
 	if confirmDeletes {
-		res.Accepted = e.confirmShown()
+		res.Accepted = e.confirmShown(ctx)
 	}
 	return res, nil
 }
@@ -90,13 +90,13 @@ func (e *Engine) dropConfirmation() {
 // It returns what it accepted. The offer is used up: until the next cycle
 // nothing waits, and the problem lines that asked for it are gone. The
 // caller holds the cycle lock and has kept the confirmation.
-func (e *Engine) confirmShown() []Waiting {
+func (e *Engine) confirmShown(ctx context.Context) []Waiting {
 	o := e.offered
 	e.withdrawOffer()
 	w := o.what
 	if w.guard != "" {
 		e.confirm = &request{at: e.d.Now()}
-		e.adminEvent("", "the deletes held by the mass delete guard are confirmed for the next run")
+		e.adminEvent(ctx, "", "the deletes held by the mass delete guard are confirmed for the next run")
 	}
 	for _, ref := range w.vanished {
 		e.gone[ref] = true
@@ -104,24 +104,24 @@ func (e *Engine) confirmShown() []Waiting {
 	if len(w.vanished) > 0 {
 		// The DNS guard confirms only removals that are pending already;
 		// those of these guests are not yet.
-		e.adminEvent("", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed; "+
+		e.adminEvent(ctx, "", fmt.Sprintf("%d guests that Proxmox no longer lists are confirmed removed; "+
 			"when their DNS records fall due, the mass delete guard may ask for a confirmation again", len(w.vanished)))
 	}
 	gone, letGo := e.zones.confirmGone(w.stale)
 	for _, name := range gone {
-		e.adminEvent(name, "the zone that left its listing is confirmed gone")
+		e.adminEvent(ctx, name, "the zone that left its listing is confirmed gone")
 	}
 	for _, name := range letGo {
-		e.adminEvent(name, "the zone whose DNS its credential can no longer read is let go")
+		e.adminEvent(ctx, name, "the zone whose DNS its credential can no longer read is let go")
 	}
 	for _, u := range w.invisible {
 		if t, ok := e.seen[u.id]; ok {
 			delete(e.seen, u.id)
-			e.adminEvent(u.id, fmt.Sprintf("the tunnel %s in account %s is confirmed gone; its connector is removed", t.name, t.account))
+			e.adminEvent(ctx, u.id, fmt.Sprintf("the tunnel %s in account %s is confirmed gone; its connector is removed", t.name, t.account))
 		}
 	}
 	if len(o.waiting) == 0 {
-		e.adminEvent("", "the last state showed nothing that waits for a confirmation")
+		e.adminEvent(ctx, "", "the last state showed nothing that waits for a confirmation")
 	}
 	return nonNil(cloneWaiting(o.waiting))
 }
@@ -135,6 +135,7 @@ func (e *Engine) withdrawOffer() {
 	defer e.stateMu.Unlock()
 	e.state.Waiting, e.state.Offer = []Waiting{}, ""
 	e.state.Problems = slices.DeleteFunc(slices.Clone(e.state.Problems), func(p string) bool { return slices.Contains(lines, p) })
+	e.redigest()
 }
 
 // Adopt asks an enforcing DNS run to take over the record that holds name, a
@@ -155,7 +156,7 @@ func (e *Engine) Adopt(ctx context.Context, name string) error {
 	defer e.Trigger()
 	defer e.release()
 	e.adopt[host] = &request{at: e.d.Now()}
-	e.adminEvent(host, "adoption requested for the next run")
+	e.adminEvent(ctx, host, "adoption requested for the next run")
 	return nil
 }
 
@@ -169,6 +170,7 @@ func (e *Engine) inTheWay(host string) bool {
 		slices.ContainsFunc(st.Lost, same)
 }
 
-func (e *Engine) adminEvent(subject, msg string) {
-	e.events.add(Event{At: e.d.Now(), Level: levelInfo, Kind: kindAdmin, Subject: subject, Message: msg})
+// adminEvent records an admin action, with who asked for it.
+func (e *Engine) adminEvent(ctx context.Context, subject, msg string) {
+	e.events.add(Event{At: e.d.Now(), Level: levelInfo, Kind: kindAdmin, Subject: subject, Message: msg, Actor: ActorOf(ctx)})
 }

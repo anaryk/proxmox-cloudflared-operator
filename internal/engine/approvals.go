@@ -93,7 +93,7 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string) (Appr
 	if err := e.d.Store.SaveApproval(store.Approval{Owner: owner, Identity: g.identity}); err != nil {
 		return Approval{}, fmt.Errorf("saving the approval: %w", err)
 	}
-	e.adminEvent(owner, fmt.Sprintf("%s is approved in identity %s%s", OwnerName(owner, l.guestView(owner)), g.identity, note))
+	e.adminEvent(ctx, owner, fmt.Sprintf("%s is approved in identity %s%s", OwnerName(owner, l.guestView(owner)), g.identity, note))
 	e.Trigger()
 	return Approval{Owner: owner, Guest: l.guestView(owner), Identity: g.identity, Mode: mode}, nil
 }
@@ -122,7 +122,7 @@ func (e *Engine) RevokeGuest(ctx context.Context, owner string) error {
 	if err := e.d.Store.DeleteApproval(owner); err != nil {
 		return fmt.Errorf("removing the approval: %w", err)
 	}
-	e.adminEvent(owner, fmt.Sprintf("the approval of %s is revoked%s", OwnerName(owner, e.lastListing().guestView(owner)), note))
+	e.adminEvent(ctx, owner, fmt.Sprintf("the approval of %s is revoked%s", OwnerName(owner, e.lastListing().guestView(owner)), note))
 	e.Trigger()
 	return nil
 }

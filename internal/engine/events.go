@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,8 +46,10 @@ const (
 // Event is something that changed, as the event log keeps it.
 type Event struct {
 	// Seq numbers the events of a process from 1, in the order they were
-	// made: a client resumes from the last one it saw.
+	// made, and Boot names that process: a client resumes from the last one
+	// it saw.
 	Seq     uint64    `json:"seq"`
+	Boot    string    `json:"boot,omitempty"`
 	At      time.Time `json:"at,omitzero"`
 	Level   string    `json:"level"` // "info", "warn", "error"
 	Kind    string    `json:"kind"`
@@ -59,6 +62,22 @@ type Event struct {
 	Guest   string `json:"guest,omitempty"`
 	Tunnel  string `json:"tunnel,omitempty"`
 	Account string `json:"account,omitempty"`
+	// Actor is who asked for an admin action, as the API was told.
+	Actor string `json:"actor,omitempty"`
+}
+
+type actorKey struct{}
+
+// WithActor returns ctx carrying who asks for what is done with it, as the
+// events of an admin action record it.
+func WithActor(ctx context.Context, actor string) context.Context {
+	return context.WithValue(ctx, actorKey{}, actor)
+}
+
+// ActorOf is the actor ctx carries, or empty.
+func ActorOf(ctx context.Context) string {
+	actor, _ := ctx.Value(actorKey{}).(string)
+	return actor
 }
 
 // eventLog keeps the last maxEvents events in memory, appends every event to
@@ -68,8 +87,12 @@ type eventLog struct {
 	mu   sync.Mutex
 	ring []Event // oldest first
 	seq  uint64  // of the last event
+	boot string  // of this process, on every event
 	path string  // empty: memory only
 	log  zerolog.Logger
+	// sent is given every batch once it is numbered, under the lock, so
+	// that the stream has the batches in the order of their numbers.
+	sent func([]Event)
 }
 
 func newEventLog(dir string, log zerolog.Logger) *eventLog {
@@ -89,7 +112,7 @@ func (l *eventLog) add(events ...Event) {
 	events = slices.Clone(events)
 	for i := range events {
 		l.seq++
-		events[i].Seq = l.seq
+		events[i].Seq, events[i].Boot = l.seq, l.boot
 	}
 	for _, ev := range events {
 		l.logEvent(ev)
@@ -97,6 +120,9 @@ func (l *eventLog) add(events ...Event) {
 	l.ring = append(l.ring, events...)
 	if n := len(l.ring) - maxEvents; n > 0 {
 		l.ring = slices.Delete(l.ring, 0, n)
+	}
+	if l.sent != nil {
+		l.sent(events)
 	}
 	if l.path == "" {
 		return
@@ -169,6 +195,14 @@ func (l *eventLog) since(t time.Time) []Event {
 		}
 	}
 	return out
+}
+
+// locked runs fn with the ring and the number of the last event while no
+// event can be added.
+func (l *eventLog) locked(fn func(ring []Event, seq uint64)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fn(l.ring, l.seq)
 }
 
 // changes lists what differs between two states: a hold that began, changed

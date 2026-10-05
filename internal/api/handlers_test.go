@@ -61,13 +61,14 @@ func requireGolden(t *testing.T, name string, body []byte) {
 }
 
 func TestVersion(t *testing.T) {
-	rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/version", "")
+	rec := do(newServer(&fakeEngine{state: engine.State{Profile: "host", Node: "pve1"}}), http.MethodGet, "/v1/version", "")
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	requireGolden(t, "version.json", rec.Body.Bytes())
 
 	rec = do(newServer(&fakeEngine{interval: 90 * time.Second}), http.MethodGet, "/v1/version", "")
-	require.JSONEq(t, `{"version":"1.2.3","pollInterval":"1m30s"}`, rec.Body.String(), "the interval of the last settings read")
+	require.JSONEq(t, `{"version":"1.2.3","boot":"9f2c4e1a0b7d3c55","profile":"","node":"","pollInterval":"1m30s"}`, rec.Body.String(),
+		"the interval of the last settings read, and no profile before a cycle read the install")
 }
 
 func TestStateIsTheEngineState(t *testing.T) {
@@ -78,6 +79,89 @@ func TestStateIsTheEngineState(t *testing.T) {
 	want, err := json.Marshal(st)
 	require.NoError(t, err)
 	require.JSONEq(t, string(want), rec.Body.String())
+	require.Equal(t, `"5e0c1f7a92b4d3e8"`, rec.Header().Get("ETag"))
+}
+
+func TestAStateTheClientHoldsIsNotSentAgain(t *testing.T) {
+	for _, tt := range []struct {
+		name, match string
+		status      int
+	}{
+		{"the digest", `"5e0c1f7a92b4d3e8"`, http.StatusNotModified},
+		{"weak", `W/"5e0c1f7a92b4d3e8"`, http.StatusNotModified},
+		{"one of several", `"0123456789abcdef", "5e0c1f7a92b4d3e8"`, http.StatusNotModified},
+		{"any", `*`, http.StatusNotModified},
+		{"another digest", `"0123456789abcdef"`, http.StatusOK},
+		{"unquoted", `5e0c1f7a92b4d3e8`, http.StatusOK},
+		{"none", ``, http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := request(http.MethodGet, "/v1/state", "")
+			if tt.match != "" {
+				req.Header.Set("If-None-Match", tt.match)
+			}
+
+			rec := send(newServer(&fakeEngine{state: testState()}), req)
+
+			require.Equal(t, tt.status, rec.Code)
+			require.Equal(t, `"5e0c1f7a92b4d3e8"`, rec.Header().Get("ETag"))
+			if tt.status == http.StatusNotModified {
+				require.Empty(t, rec.Body.String())
+			} else {
+				require.Contains(t, rec.Body.String(), `"digest":"5e0c1f7a92b4d3e8"`)
+			}
+		})
+	}
+}
+
+func TestEveryAnswerCarriesTheBoot(t *testing.T) {
+	for _, tt := range []struct {
+		name, method, target, body string
+		err                        error
+		status                     int
+	}{
+		{"version", http.MethodGet, "/v1/version", "", nil, http.StatusOK},
+		{"state", http.MethodGet, "/v1/state", "", nil, http.StatusOK},
+		{"a refusal of the engine", http.MethodPost, "/v1/adopt", `{"name":"www.example.com"}`, engine.ErrNotFound, http.StatusNotFound},
+		{"a malformed request", http.MethodGet, "/v1/events?since=yesterday", "", nil, http.StatusBadRequest},
+		{"an unknown route", http.MethodGet, "/v1/nothing", "", nil, http.StatusNotFound},
+		{"a wrong method", http.MethodPut, "/v1/state", "", nil, http.StatusMethodNotAllowed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(newServer(&fakeEngine{err: tt.err}), tt.method, tt.target, tt.body)
+
+			require.Equal(t, tt.status, rec.Code, rec.Body.String())
+			require.Equal(t, testBoot, rec.Header().Get("Pco-Boot"))
+		})
+	}
+
+	t.Run("not to a peer that is refused", func(t *testing.T) {
+		rec := send(checkedServer(&fakeEngine{}, testUID), requestFrom(testUID+1, http.MethodGet, "/v1/version", ""))
+
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		require.Empty(t, rec.Header().Values("Pco-Boot"))
+	})
+}
+
+func TestTheCommandLineOfRootIsTheActor(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		uid   uint32
+		actor string
+	}{
+		{"root", 0, "root (cli)"},
+		{"another user", testUID + 1, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			s := New(f, "1.2.3", []uint32{0, testUID + 1}, zerolog.Nop())
+
+			rec := send(s, requestFrom(tt.uid, http.MethodPost, "/v1/adopt", `{"name":"www.example.com"}`))
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Equal(t, tt.actor, engine.ActorOf(f.lastCtx()))
+		})
+	}
 }
 
 func TestEvents(t *testing.T) {
@@ -123,6 +207,58 @@ func TestEvents(t *testing.T) {
 			require.Equal(t, http.StatusBadRequest, rec.Code)
 			require.Equal(t, "invalid", errorCode(t, rec))
 			require.Contains(t, errorMessage(t, rec), "since")
+			require.Empty(t, f.called())
+		})
+	}
+}
+
+func TestTheQueryOfTheEvents(t *testing.T) {
+	for _, tt := range []struct {
+		name, query string
+		want        engine.EventQuery
+	}{
+		{"nothing", "", engine.EventQuery{}},
+		{"after a seq of a boot", "?after=812&boot=9f2c4e1a0b7d3c55", engine.EventQuery{After: 812, Boot: testBoot}},
+		{"after a seq of this boot", "?after=812", engine.EventQuery{After: 812}},
+		{
+			"every list", "?route=a.example.com&route=b.example.com&guest=qemu/101&tunnel=pco-abc123&account=acc1&kind=route&kind=claim&level=warn",
+			engine.EventQuery{
+				Route: []string{"a.example.com", "b.example.com"}, Guest: []string{"qemu/101"}, Tunnel: []string{"pco-abc123"},
+				Account: []string{"acc1"}, Kind: []string{"route", "claim"}, Level: []string{"warn"},
+			},
+		},
+		{"an empty value", "?route=", engine.EventQuery{Route: []string{""}}},
+		{"a limit and the history", "?limit=5000&history=1", engine.EventQuery{Limit: 5000, History: true}},
+		{"no history", "?history=0&limit=1", engine.EventQuery{Limit: 1}},
+		{"since", "?since=2026-10-01T12:00:00Z&kind=admin", engine.EventQuery{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Kind: []string{"admin"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+			rec := do(newServer(f), http.MethodGet, "/v1/events"+tt.query, "")
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			got := f.lastQuery()
+			require.True(t, tt.want.Since.Equal(got.Since))
+			got.Since, tt.want.Since = time.Time{}, time.Time{}
+			require.Equal(t, tt.want, got)
+		})
+	}
+
+	for _, tt := range []struct{ query, field string }{
+		{"?after=-1", "after"},
+		{"?after=one", "after"},
+		{"?limit=0", "limit"},
+		{"?limit=5001", "limit"},
+		{"?limit=ten", "limit"},
+		{"?history=yes", "history"},
+	} {
+		t.Run("malformed "+tt.query, func(t *testing.T) {
+			f := &fakeEngine{}
+			rec := do(newServer(f), http.MethodGet, "/v1/events"+tt.query, "")
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "invalid", errorCode(t, rec))
+			require.Contains(t, errorMessage(t, rec), tt.field)
 			require.Empty(t, f.called())
 		})
 	}

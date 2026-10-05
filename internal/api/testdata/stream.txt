@@ -1,0 +1,26 @@
+event: hello
+data: {"boot":"9f2c4e1a0b7d3c55","version":"1.2.3","seq":812,"digest":"5e0c1f7a92b4d3e8","pollInterval":"10s"}
+
+event: state
+data: {"at":"2026-10-01T12:00:00Z","finishedAt":"2026-10-01T12:00:02Z","digest":"77a1c0de5f3b2a90"}
+
+id: 9f2c4e1a0b7d3c55:813
+event: event
+data: {"seq":813,"boot":"9f2c4e1a0b7d3c55","at":"2026-10-01T12:00:00Z","level":"warn","kind":"route","subject":"www.example.com","message":"qemu/101: unreachable (connection refused)","route":"www.example.com","guest":"qemu/101","account":"acc1"}
+
+id: 9f2c4e1a0b7d3c55:1826
+event: gap
+data: {"boot":"9f2c4e1a0b7d3c55","from":814,"to":1826,"count":1013,"level":"warn"}
+
+event: traffic
+data: {"at":"2026-10-01T12:00:05Z"}
+
+id: 9f2c4e1a0b7d3c55:1827
+event: event
+data: {"seq":1827,"boot":"9f2c4e1a0b7d3c55","at":"2026-10-01T12:00:00Z","level":"info","kind":"admin","subject":"www.example.com","message":"adoption requested for the next run","actor":"alice@pve (ticket)"}
+
+event: reset
+data: {"reason":"boot changed"}
+
+: ping
+

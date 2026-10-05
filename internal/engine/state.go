@@ -92,7 +92,12 @@ type CredentialView struct {
 type State struct {
 	At time.Time `json:"at,omitzero"` // when the cycle began
 	// FinishedAt is when the cycle ended; zero before the first cycle.
-	FinishedAt  time.Time            `json:"finishedAt,omitzero"`
+	FinishedAt time.Time `json:"finishedAt,omitzero"`
+	// Node is the node the daemon is registered as. Digest names what the
+	// state holds, leaving out the times of its cycle: two cycles over the
+	// same world have the same one.
+	Node        string               `json:"node,omitempty"`
+	Digest      string               `json:"digest,omitempty"`
 	Mode        string               `json:"mode"`     // "observe" or "enforce"
 	Complete    bool                 `json:"complete"` // inventory completeness
 	Routes      []RouteView          `json:"routes"`   // by hostname, then owner
@@ -154,10 +159,11 @@ func emptyState() State {
 
 // carried is the start of the next state: what the cycle does not find out
 // again stays as the last cycle left it. Actions, problems, what waits and the
-// hold are the cycle's own.
+// hold are the cycle's own, and the digest is given when it is published.
 func (s State) carried(at time.Time) State {
 	next := s.clone()
 	next.At = at
+	next.Digest = ""
 	next.Complete = false
 	next.Actions = nil
 	next.Problems = nil

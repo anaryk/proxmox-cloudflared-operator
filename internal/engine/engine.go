@@ -94,7 +94,7 @@ var (
 	ErrNotFound = errors.New("not found")
 	ErrRefused  = errors.New("refused")
 	// ErrBusy says that an admin action gave up waiting for the cycle that
-	// runs; nothing was done.
+	// runs, or that every stream is taken; nothing was done.
 	ErrBusy = errors.New("a cycle is running")
 )
 
@@ -108,7 +108,9 @@ const lockWait = 35 * time.Second
 // concurrent use.
 type Engine struct {
 	d       Deps
+	boot    string
 	events  *eventLog
+	notify  *notifier
 	trigger chan struct{}
 	// after starts the wait between two cycles of Run, and timeout gives a
 	// call its deadline; tests replace them.
@@ -236,10 +238,14 @@ func New(d Deps) (*Engine, error) {
 	d.Problems = slices.Clone(d.Problems)
 	// Until the first cycle, the state says what the daemon was started with.
 	first := emptyState()
-	first.Problems = slices.Clone(d.Problems)
+	first.Problems, first.Node = slices.Clone(d.Problems), d.Node
+	first = first.normalized()
+	first.Digest = digestOf(first)
 	e := &Engine{
 		d:         d,
+		boot:      randomHex(8)(),
 		events:    newEventLog(d.LocalDir, d.Log),
+		notify:    newNotifier(first.stateNotice()),
 		trigger:   make(chan struct{}, 1),
 		after:     startTimer,
 		timeout:   context.WithTimeout,
@@ -259,11 +265,12 @@ func New(d Deps) (*Engine, error) {
 		verified:  make(map[string][]egress.Target),
 		suspects:  make(map[netip.Addr]bool),
 		checks:    make(map[netip.Addr]*moveCheck),
-		state:     first.normalized(),
+		state:     first,
 
 		refusedAgain: make(map[string]map[string]bool),
 		tried:        make(map[string]checkTry),
 	}
+	e.events.boot, e.events.sent = e.boot, e.notify.events
 	e.interval.Store(int64(defaultPollInterval))
 	e.unchecked.Store(true)
 	// The reconciler keeps the time of its last write per tunnel, so it lives
@@ -396,18 +403,22 @@ func (e *Engine) Events(since time.Time) []Event { return e.events.since(since) 
 
 // publish stores the state of a cycle with what it saw of the guests and, when
 // it settled the claims, who won each hostname, and records what changed
-// against the state before, after the events the cycle itself reported.
+// against the state before, after the events the cycle itself reported. The
+// stream is told of the state, changed or not, and then of the events.
 func (e *Engine) publish(st State, events []Event, l listing, served map[string]string) {
 	e.stateMu.Lock()
 	// A check of the egress table may have come while the cycle ran.
 	e.noteMu.Lock()
 	st.Egress = e.notes.view
 	e.noteMu.Unlock()
+	st.Node = e.d.Node
+	st.Digest = digestOf(st)
 	prev := e.state
 	e.state, e.listed = st, l
 	if served != nil {
 		e.served = served
 	}
+	e.notify.state(st.stateNotice())
 	e.stateMu.Unlock()
 	e.events.add(append(events, changes(prev, st)...)...)
 }

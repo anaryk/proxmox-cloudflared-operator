@@ -78,6 +78,14 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// Flush is there for gin, whose writer flushes only a writer that has it.
+func (w *statusWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
 func (w *statusWriter) code() int {
 	if w.status == 0 {
 		return http.StatusOK

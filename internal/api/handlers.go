@@ -1,8 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
-	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,9 @@ const (
 var (
 	errBadToken   = &httpError{http.StatusBadRequest, codeInvalid, "the token is not a Cloudflare API token: it has 20 to 256 characters, all of A-Z a-z 0-9 _ -", false}
 	errBadSince   = &httpError{http.StatusBadRequest, codeInvalid, "since must be a time in RFC 3339 format", false}
+	errBadAfter   = &httpError{http.StatusBadRequest, codeInvalid, "after must be the seq of an event, a whole number", false}
+	errBadLimit   = &httpError{http.StatusBadRequest, codeInvalid, fmt.Sprintf("limit must be a whole number from 1 to %d", engine.MaxEventLimit), false}
+	errBadHistory = &httpError{http.StatusBadRequest, codeInvalid, "history must be 1 or 0", false}
 	errNoHostname = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/diagnose?hostname=<name>", false}
 	errRootOnly   = &httpError{http.StatusForbidden, codeForbidden, "only root may rotate the secret of a tunnel", false}
 )
@@ -40,6 +44,7 @@ func (s *Server) routes() http.Handler {
 	v1.GET("/version", s.getVersion)
 	v1.GET("/state", s.getState)
 	v1.GET("/events", s.getEvents)
+	v1.GET("/stream", s.getStream)
 	v1.POST("/sync", s.postSync)
 	v1.POST("/apply", s.postApply)
 	v1.POST("/adopt", s.postAdopt)
@@ -55,47 +60,108 @@ func (s *Server) routes() http.Handler {
 	v1.POST("/guests/revoke", s.postRevokeGuest)
 	v1.GET("/diagnose", s.getDiagnose)
 	v1.GET("/doctor", s.getDoctor)
-	return s.logRequests(s.guard(r))
+	return s.logRequests(s.guard(s.stamp(r)))
 }
 
-// getVersion answers with the version of the daemon and the poll interval,
-// as a Go duration like the settings write it.
+// Version is the answer of GET /v1/version: the version of the daemon, its
+// boot, the profile of the install and the node it is registered as, as the
+// last cycle found them, and the poll interval of the last settings read, as
+// a Go duration like the settings write it.
+type Version struct {
+	Version      string `json:"version"`
+	Boot         string `json:"boot"`
+	Profile      string `json:"profile"`
+	Node         string `json:"node"`
+	PollInterval string `json:"pollInterval"`
+}
+
 func (s *Server) getVersion(c *gin.Context) {
-	c.JSON(http.StatusOK, struct {
-		Version      string `json:"version"`
-		PollInterval string `json:"pollInterval"`
-	}{s.version, s.engine.PollInterval().String()})
+	st := s.engine.State()
+	c.JSON(http.StatusOK, Version{
+		Version: s.version, Boot: s.engine.Boot(), Profile: st.Profile, Node: st.Node,
+		PollInterval: s.engine.PollInterval().String(),
+	})
 }
 
+// getState answers with the state, named by its digest: a client that holds
+// it already gets a 304 without it.
 func (s *Server) getState(c *gin.Context) {
-	c.JSON(http.StatusOK, s.engine.State())
-}
-
-func (s *Server) getEvents(c *gin.Context) {
-	var since time.Time
-	if raw, ok := c.GetQuery("since"); ok {
-		var err error
-		if since, err = time.Parse(time.RFC3339, raw); err != nil {
-			s.fail(c, errBadSince)
+	st := s.engine.State()
+	if st.Digest != "" {
+		tag := `"` + st.Digest + `"`
+		c.Header("ETag", tag)
+		if holds(c.GetHeader("If-None-Match"), tag) {
+			c.Status(http.StatusNotModified)
 			return
 		}
 	}
-	c.JSON(http.StatusOK, ofAccounts(s.engine.Events(since), c.QueryArray("account")))
+	c.JSON(http.StatusOK, st)
 }
 
-// ofAccounts keeps the events whose account is one of accounts, by exact id;
-// without accounts, every event. An event of no account is of none of them.
-func ofAccounts(events []engine.Event, accounts []string) []engine.Event {
-	if len(accounts) == 0 {
-		return nonNil(events)
-	}
-	out := []engine.Event{}
-	for _, ev := range events {
-		if ev.Account != "" && slices.Contains(accounts, ev.Account) {
-			out = append(out, ev)
+// holds reports whether an If-None-Match names the entity tag.
+func holds(ifNoneMatch, tag string) bool {
+	for candidate := range strings.SplitSeq(ifNoneMatch, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == tag {
+			return true
 		}
 	}
-	return out
+	return false
+}
+
+func (s *Server) getEvents(c *gin.Context) {
+	q, err := eventQuery(c)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	events, err := s.engine.QueryEvents(q)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, nonNil(events))
+}
+
+// eventQuery reads the query of GET /v1/events. Every list may be given more
+// than once; a value is matched exactly.
+func eventQuery(c *gin.Context) (engine.EventQuery, error) {
+	list := func(key string) []string {
+		values, ok := c.GetQueryArray(key)
+		if !ok {
+			return nil
+		}
+		return values
+	}
+	q := engine.EventQuery{
+		Boot:  c.Query("boot"),
+		Route: list("route"), Guest: list("guest"), Tunnel: list("tunnel"),
+		Account: list("account"), Kind: list("kind"), Level: list("level"),
+	}
+	var err error
+	if raw, ok := c.GetQuery("since"); ok {
+		if q.Since, err = time.Parse(time.RFC3339, raw); err != nil {
+			return q, errBadSince
+		}
+	}
+	if raw, ok := c.GetQuery("after"); ok {
+		if q.After, err = strconv.ParseUint(raw, 10, 64); err != nil {
+			return q, errBadAfter
+		}
+	}
+	if raw, ok := c.GetQuery("limit"); ok {
+		if q.Limit, err = strconv.Atoi(raw); err != nil || q.Limit < 1 || q.Limit > engine.MaxEventLimit {
+			return q, errBadLimit
+		}
+	}
+	switch raw, _ := c.GetQuery("history"); raw {
+	case "", "0":
+	case "1":
+		q.History = true
+	default:
+		return q, errBadHistory
+	}
+	return q, nil
 }
 
 func (s *Server) postSync(c *gin.Context) {

@@ -82,6 +82,7 @@ func (e *Engine) NoteEgress(c EgressCheck) {
 
 	e.stateMu.Lock()
 	e.state.Egress = view
+	e.redigest()
 	e.stateMu.Unlock()
 	e.events.add(events...)
 }

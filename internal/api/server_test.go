@@ -23,7 +23,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
-const testToken = "s3cr3t-token-value-0123456789"
+const (
+	testToken = "s3cr3t-token-value-0123456789"
+	testBoot  = "9f2c4e1a0b7d3c55"
+)
 
 var testUID = uint32(os.Getuid())
 
@@ -59,8 +62,14 @@ type fakeEngine struct {
 	ctx      context.Context
 	triggers int
 	panics   bool
-	addPanic string        // AddCredential panics with this text
-	interval time.Duration // the poll interval; 10s when zero
+	addPanic string            // AddCredential panics with this text
+	interval time.Duration     // the poll interval; 10s when zero
+	query    engine.EventQuery // of the last request for the events
+
+	// Subscribe answers with notices and hello, or fails with subErr.
+	notices chan engine.Notice
+	hello   engine.Hello
+	subErr  error
 
 	creds     []engine.CredentialView
 	claims    []engine.ClaimView
@@ -120,12 +129,38 @@ func (f *fakeEngine) failure() error {
 	return f.err
 }
 
-func (f *fakeEngine) Events(since time.Time) []engine.Event {
+// QueryEvents answers with the events that match the query; the limit and
+// the seq are the engine's to apply.
+func (f *fakeEngine) QueryEvents(q engine.EventQuery) ([]engine.Event, error) {
 	f.record(context.Background(), "events")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.since = since
-	return f.events
+	f.since, f.query = q.Since, q
+	var out []engine.Event
+	for _, ev := range f.events {
+		if q.Match(ev) {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeEngine) lastQuery() engine.EventQuery {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.query
+}
+
+func (f *fakeEngine) Boot() string { return testBoot }
+
+func (f *fakeEngine) Subscribe(ctx context.Context, boot string, after uint64) (<-chan engine.Notice, engine.Hello, error) {
+	f.record(ctx, fmt.Sprintf("subscribe:%s:%d", boot, after))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.subErr != nil {
+		return nil, engine.Hello{}, f.subErr
+	}
+	return f.notices, f.hello, nil
 }
 
 func (f *fakeEngine) Trigger() {
@@ -314,6 +349,7 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 func testState() engine.State {
 	return engine.State{
 		At:            time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
+		Digest:        "5e0c1f7a92b4d3e8",
 		Mode:          "enforce",
 		Complete:      true,
 		Problems:      []string{"something is off"},
@@ -486,7 +522,7 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	require.Equal(t, f.findings, findings)
 
 	require.Equal(t, []string{
-		"state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
+		"state", "state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
 		"add:main:" + testToken, "check:abc12345:true", "remove:abc12345",
 		"claims", "resolve:www.example.com:qemu/102", "approvals", "approve:qemu/101:uuid:101", "revoke:qemu/101",
 		"diagnose:www.example.com", "doctor",

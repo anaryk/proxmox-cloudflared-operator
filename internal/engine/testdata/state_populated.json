@@ -1,6 +1,8 @@
 {
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
+  "node": "pve1",
+  "digest": "5e0c1f7a92b4d3e8",
   "mode": "enforce",
   "complete": true,
   "routes": [

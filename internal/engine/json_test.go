@@ -30,6 +30,8 @@ func populatedState() State {
 	return State{
 		At:         t0,
 		FinishedAt: t0.Add(2 * time.Second),
+		Node:       "pve1",
+		Digest:     "5e0c1f7a92b4d3e8",
 		Mode:       "enforce",
 		Complete:   true,
 		Routes: []RouteView{
@@ -201,11 +203,13 @@ func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "state_populated.json", populatedState().normalized())
 	requireGolden(t, "state_empty.json", emptyState())
 	requireGolden(t, "events.json", []Event{
-		{Seq: 7, At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable",
+		{Seq: 7, Boot: testBoot, At: t0, Level: "warn", Kind: "route", Subject: "www.example.com", Message: "qemu/101: unreachable",
 			Route: "www.example.com", Guest: "qemu/101", Account: "acc1"},
-		{Seq: 8, At: t0, Level: "info", Kind: "rollout", Subject: "pco-abc123", Message: "configuration version 3 runs on 2 connectors in account acc1",
+		{Seq: 8, Boot: testBoot, At: t0, Level: "info", Kind: "rollout", Subject: "pco-abc123", Message: "configuration version 3 runs on 2 connectors in account acc1",
 			Tunnel: "pco-abc123", Account: "acc1"},
 		numbered(9, actionEvent(t0, populatedState().Actions[0])),
+		{Seq: 10, Boot: testBoot, At: t0, Level: "info", Kind: "admin", Subject: "www.example.com", Message: "adoption requested for the next run",
+			Actor: "alice@pve (ticket)"},
 	})
 	requireGolden(t, "apply_result.json", ApplyResult{LeftObserveOnly: true, Accepted: populatedWaiting()[:1]})
 	requireGolden(t, "apply_result_empty.json", ApplyResult{Accepted: []Waiting{}})
@@ -215,8 +219,10 @@ func TestTheJSONOfTheState(t *testing.T) {
 		Identity: "uuid:101", Mode: "approve"})
 }
 
+const testBoot = "9f2c4e1a0b7d3c55"
+
 func numbered(seq uint64, ev Event) Event {
-	ev.Seq = seq
+	ev.Seq, ev.Boot = seq, testBoot
 	return ev
 }
 

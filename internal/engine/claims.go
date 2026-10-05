@@ -154,7 +154,7 @@ func (e *Engine) ResolveClaim(ctx context.Context, name, owner string) error {
 	if err := e.d.Store.SaveClaims(claims); err != nil {
 		return fmt.Errorf("saving the claims: %w", err)
 	}
-	e.adminEvent(host, fmt.Sprintf("the claim on %s was moved from %s to %s by the admin; %s waits for it from now on",
+	e.adminEvent(ctx, host, fmt.Sprintf("the claim on %s was moved from %s to %s by the admin; %s waits for it from now on",
 		host, old.Owner, owner, old.Owner))
 	e.Trigger()
 	return nil

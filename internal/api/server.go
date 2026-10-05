@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	stdlog "log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -28,12 +30,20 @@ const (
 	idleTimeout     = time.Minute
 	shutdownTimeout = 5 * time.Second
 	bodyReadTimeout = 30 * time.Second
+
+	// bootHeader names the process of the daemon in every answer.
+	bootHeader = "Pco-Boot"
+	// actorCLI is who the events of an admin action say asked, when root did.
+	actorCLI = "root (cli)"
 )
 
 // Engine is what the API asks of the engine.
 type Engine interface {
 	State() engine.State
-	Events(since time.Time) []engine.Event
+	// Boot names the process of the daemon.
+	Boot() string
+	QueryEvents(q engine.EventQuery) ([]engine.Event, error)
+	Subscribe(ctx context.Context, boot string, after uint64) (<-chan engine.Notice, engine.Hello, error)
 	Trigger()
 	Apply(ctx context.Context, confirmDeletes bool, offer string) (engine.ApplyResult, error)
 	Adopt(ctx context.Context, name string) error
@@ -70,6 +80,11 @@ type Server struct {
 	bodyTimeout time.Duration
 	// shutdownTimeout is how long Serve waits for running requests.
 	shutdownTimeout time.Duration
+	// writeTimeout is the server's, for a whole answer; a stream moves it
+	// on with every write.
+	writeTimeout time.Duration
+	// ticker starts the pings of a stream; tests replace it.
+	ticker func(every time.Duration) (<-chan time.Time, func())
 	// onListening runs once the socket is ready, and onShutdown when a
 	// shutdown begins; tests wait on them.
 	onListening func()
@@ -87,9 +102,16 @@ func New(e Engine, version string, allowedUIDs []uint32, log zerolog.Logger) *Se
 		checkPeers:      peerChecks,
 		bodyTimeout:     bodyReadTimeout,
 		shutdownTimeout: shutdownTimeout,
+		writeTimeout:    writeTimeout,
+		ticker:          startTicker,
 	}
 	s.handler = s.routes()
 	return s
+}
+
+func startTicker(every time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(every)
+	return t.C, t.Stop
 }
 
 // OnListening sets the function Serve calls, once, when the socket is ready
@@ -107,19 +129,47 @@ func (s *Server) SetShutdownTimeout(d time.Duration) { s.shutdownTimeout = d }
 // Serve arranges.
 func (s *Server) Handler() http.Handler { return s.handler }
 
+// httpServer is the server of one Serve. A shutdown waits for the requests
+// that run, but a stream would run on: the requests are told when it begins,
+// and the streams end.
 func (s *Server) httpServer() *http.Server {
+	closing := make(chan struct{})
 	srv := &http.Server{
-		Handler:           s.handler,
-		ConnContext:       connContext,
+		Handler: s.handler,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(connContext(ctx, c), closingKey{}, (<-chan struct{})(closing))
+		},
 		ReadHeaderTimeout: readHeaderTimeout,
-		WriteTimeout:      writeTimeout,
+		WriteTimeout:      s.writeTimeout,
 		IdleTimeout:       idleTimeout,
 		ErrorLog:          stdlog.New(httpErrorLog{s.log}, "", 0),
 	}
+	srv.RegisterOnShutdown(sync.OnceFunc(func() { close(closing) }))
 	if s.onShutdown != nil {
 		srv.RegisterOnShutdown(s.onShutdown)
 	}
 	return srv
+}
+
+type closingKey struct{}
+
+// closingOf is closed when the server that took the request of ctx shuts
+// down; nil when it is not known.
+func closingOf(ctx context.Context) <-chan struct{} {
+	ch, _ := ctx.Value(closingKey{}).(<-chan struct{})
+	return ch
+}
+
+// stamp gives every answer to an allowed peer the boot of the daemon and,
+// when the peer is root, makes the command line the actor of what it asks for.
+func (s *Server) stamp(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(bootHeader, s.engine.Boot())
+		if uid, ok := peerUID(r.Context()); ok && uid == 0 {
+			r = r.WithContext(engine.WithActor(r.Context(), actorCLI))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // httpErrorLog carries what net/http would print to the standard logger into

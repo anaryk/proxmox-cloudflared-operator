@@ -917,12 +917,12 @@ func (e *env) addSecondCredential(token string, api cfapi.API) {
 // callsSince returns the calls made to the fake after the first n.
 func (e *env) callsSince(n int) []string { return e.cf.Calls()[n:] }
 
-// unnumbered returns events without their sequence numbers, for comparing
-// them with expected ones.
+// unnumbered returns events without their sequence numbers and boot, for
+// comparing them with expected ones.
 func unnumbered(events []Event) []Event {
 	out := slices.Clone(events)
 	for i := range out {
-		out[i].Seq = 0
+		out[i].Seq, out[i].Boot = 0, ""
 	}
 	return out
 }

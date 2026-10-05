@@ -1,4 +1,7 @@
 {
   "version": "1.2.3",
+  "boot": "9f2c4e1a0b7d3c55",
+  "profile": "host",
+  "node": "pve1",
   "pollInterval": "10s"
 }
