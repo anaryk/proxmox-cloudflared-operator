@@ -42,11 +42,15 @@ type TunnelTraffic struct {
 }
 
 // TrafficView is the traffic of the connectors on this node as the last
-// round of scrapes left it.
+// round of scrapes left it, and the rate of new connections to the target of
+// each route as the last read of the counters of the egress filter did.
 type TrafficView struct {
-	At       time.Time       `json:"at"`
-	Interval string          `json:"interval"`
-	Tunnels  []TunnelTraffic `json:"tunnels"` // by tunnel id
+	At          time.Time       `json:"at"`
+	Interval    string          `json:"interval"`
+	Tunnels     []TunnelTraffic `json:"tunnels"` // by tunnel id
+	Routes      []RouteTraffic  `json:"routes"`  // by hostname; those with a target the read counted
+	RoutesTotal int             `json:"routesTotal"`
+	RoutesWhy   string          `json:"routesWhy,omitempty"` // why there are no routes
 }
 
 // TunnelNotice is the newest sample of a tunnel, zero before its first.
@@ -59,10 +63,15 @@ type TunnelNotice struct {
 	Stale         bool    `json:"stale"`
 }
 
-// TrafficNotice is what the stream is told of a round of scrapes.
+// TrafficNotice is what the stream is told of a round of scrapes. Of the
+// routes it carries at most 100: the busiest, then those that stopped since
+// the last notice; RoutesTotal says how many have a figure.
 type TrafficNotice struct {
-	At      time.Time      `json:"at"`
-	Tunnels []TunnelNotice `json:"tunnels"` // by tunnel id
+	At          time.Time      `json:"at"`
+	Tunnels     []TunnelNotice `json:"tunnels"` // by tunnel id
+	Routes      []RouteTraffic `json:"routes,omitempty"`
+	RoutesTotal int            `json:"routesTotal"`
+	RoutesWhy   string         `json:"routesWhy,omitempty"`
 }
 
 // traffic holds the samples of every tunnel scraped in the last round. It is
@@ -72,6 +81,7 @@ type traffic struct {
 	mu      sync.Mutex
 	at      time.Time
 	tunnels map[string]*tunnelSeries
+	flows   flowTraffic
 }
 
 // tunnelSeries is what the scrapes of one tunnel gave so far.
@@ -135,7 +145,8 @@ func (s *tunnelSeries) add(t time.Time, m *connector.Metrics) {
 
 func (s *tunnelSeries) stale() bool { return s.misses >= staleAfter }
 
-// notice is the newest sample of every tunnel. The caller holds mu.
+// notice is the newest sample of every tunnel, and the figures of the routes
+// a notice carries. The caller holds mu.
 func (tr *traffic) notice() TrafficNotice {
 	n := TrafficNotice{At: tr.at, Tunnels: make([]TunnelNotice, 0, len(tr.tunnels))}
 	for _, id := range slices.Sorted(maps.Keys(tr.tunnels)) {
@@ -150,6 +161,7 @@ func (tr *traffic) notice() TrafficNotice {
 		}
 		n.Tunnels = append(n.Tunnels, tn)
 	}
+	n.Routes, n.RoutesTotal, n.RoutesWhy = tr.flows.notice()
 	return n
 }
 
@@ -161,7 +173,8 @@ func (e *Engine) ConnectorStatuses() []connector.Status {
 	return slices.Clone(e.state.Connectors)
 }
 
-// Traffic returns the samples of the connectors on this node, a copy.
+// Traffic returns the samples of the connectors on this node and the figures
+// of every route with one, a copy.
 func (e *Engine) Traffic() TrafficView {
 	tr := &e.traffic
 	tr.mu.Lock()
@@ -180,5 +193,7 @@ func (e *Engine) Traffic() TrafficView {
 		}
 		v.Tunnels = append(v.Tunnels, tt)
 	}
+	v.Routes, v.RoutesWhy = tr.flows.all(), tr.flows.why
+	v.RoutesTotal = len(v.Routes)
 	return v
 }

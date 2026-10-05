@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -158,4 +160,36 @@ func TestTheFilterOfAnUnknownUserIsNoFailureWhileItIsOff(t *testing.T) {
 
 	require.Empty(t, st.Problems)
 	require.Empty(t, w.nft.applied())
+}
+
+// The engine reads the counters of the egress table through the filter: by
+// target, the connections the connectors opened to it, and the handle of the
+// table as its generation.
+func TestTheCountersAreReadFromTheLiveTable(t *testing.T) {
+	listing, err := os.ReadFile(filepath.Join("..", "egress", "testdata", "listing-counters.json"))
+	require.NoError(t, err)
+	nft := newFakeNft()
+	nft.live, nft.listErr = listing, nil
+	f := newEgressFilter(nft, t.TempDir(), func() (uint32, error) { return testConnectorUID, nil },
+		func() ([]netip.Addr, error) { return nil, nil })
+
+	generation, counts, err := f.FlowCounts(t.Context())
+
+	require.NoError(t, err)
+	require.Equal(t, "249", generation)
+	require.Equal(t, map[netip.AddrPort]uint64{
+		netip.MustParseAddrPort("10.77.9.2:8080"):   10,
+		netip.MustParseAddrPort("10.77.9.2:8081"):   1,
+		netip.MustParseAddrPort("[fd77:9::2]:8080"): 3,
+	}, counts)
+}
+
+func TestWithoutTheConnectorUserNoCounterIsRead(t *testing.T) {
+	noUser := errors.New("user pco-connector does not exist")
+	f := newEgressFilter(newFakeNft(), t.TempDir(), func() (uint32, error) { return 0, noUser },
+		func() ([]netip.Addr, error) { return nil, nil })
+
+	_, _, err := f.FlowCounts(t.Context())
+
+	require.ErrorIs(t, err, noUser)
 }

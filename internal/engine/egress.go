@@ -24,6 +24,10 @@ type Egress interface {
 	Set(ctx context.Context, targets []egress.Target) error
 	// Remove takes every target of an address out at once.
 	Remove(ctx context.Context, addr netip.Addr) error
+	// FlowCounts reads the counters of the live table: by target, the
+	// connections a connector opened to it, and the generation of the table.
+	// Two reads of one generation are of the same counters.
+	FlowCounts(ctx context.Context) (generation string, counts map[netip.AddrPort]uint64, err error)
 }
 
 // The states of the egress filter, as EgressView says them.
@@ -84,7 +88,8 @@ func (c *cycleRun) blockLost() {
 // leaves it only after a tunnel run verified a configuration without it,
 // unless its proof is lost. A cycle that holds because of the store leaves the
 // set as it is. A set that cannot be given holds the writes of the tunnel run;
-// a filter the admin switched off is no failure.
+// a filter the admin switched off is no failure. The traffic keeps, for each
+// target of the set, the routes it serves.
 func (c *cycleRun) feedEgress() {
 	if c.storeHold {
 		return
@@ -108,6 +113,7 @@ func (c *cycleRun) feedEgress() {
 	slices.SortFunc(set, egress.CompareAllowNodeFirst)
 	set = slices.CompactFunc(set, func(a, b egress.Target) bool { return egress.CompareEndpoints(a, b) == 0 })
 	c.e.egress = set
+	c.e.keepServed(c.servedTargets())
 	c.e.egMu.Lock()
 	err := c.e.d.Egress.Set(c.ctx, c.e.unsuspected())
 	c.e.egMu.Unlock()
@@ -127,15 +133,22 @@ func (c *cycleRun) feedEgress() {
 func (c *cycleRun) verifiedTargets() []egress.Target {
 	var out []egress.Target
 	for _, rt := range c.claims.Winners {
-		res, ok := c.results[rt.Hostname]
-		t := res.Target
-		switch {
-		case !ok, !t.Addr.IsValid(), t.Withdrawn, t.Rejected, t.Owner != "" && t.Owner != rt.Owner(), rt.Target.Port == 0:
-			continue
+		if t, ok := c.verifiedTarget(rt); ok {
+			out = append(out, t)
 		}
-		out = append(out, egress.Target{Addr: t.Addr, Port: rt.Target.Port, AllowNode: rt.Source == model.SourceManual && rt.Options.AllowNode})
 	}
 	return out
+}
+
+// verifiedTarget is the target this cycle verified for a winner, if any.
+func (c *cycleRun) verifiedTarget(rt model.Route) (egress.Target, bool) {
+	res, ok := c.results[rt.Hostname]
+	t := res.Target
+	switch {
+	case !ok, !t.Addr.IsValid(), t.Withdrawn, t.Rejected, t.Owner != "" && t.Owner != rt.Owner(), rt.Target.Port == 0:
+		return egress.Target{}, false
+	}
+	return egress.Target{Addr: t.Addr, Port: rt.Target.Port, AllowNode: rt.Source == model.SourceManual && rt.Options.AllowNode}, true
 }
 
 // withdrawnAddrs are the addresses of the winners whose binding is withdrawn

@@ -17,15 +17,18 @@ import (
 const scrapesAtOnce = 8
 
 // sampler scrapes the metrics of the connectors on the node every
-// engine.TrafficInterval and hands each round to the engine. It reads, and
-// never changes, anything: a scrape that fails is a missed sample, not a
-// problem of the cycle.
+// engine.TrafficInterval, has the counters of the egress filter read, and
+// hands each round to the engine. It reads, and never changes, anything: a
+// scrape that fails is a missed sample, not a problem of the cycle.
 type sampler struct {
 	statuses func() []connector.Status
 	scrape   func(ctx context.Context, tunnelID string) (connector.Metrics, error)
 	record   func(at time.Time, scrapes map[string]*connector.Metrics)
-	now      func() time.Time
-	log      zerolog.Logger
+	// targets reads the counters of the egress filter, while it is on, and
+	// records them as of at.
+	targets func(ctx context.Context, at time.Time)
+	now     func() time.Time
+	log     zerolog.Logger
 }
 
 // run samples until ctx ends. A round that takes longer than the interval is
@@ -44,10 +47,12 @@ func (s *sampler) run(ctx context.Context) {
 }
 
 // round scrapes the connectors of the last state's tunnels, at most
-// scrapesAtOnce at a time, and records them as of the time it began. A
-// connector that does not run, has no metrics address or whose port another
-// process holds is not asked: what answers there is not the connector, and
-// would be shown as its traffic. A round the stop cut off is not recorded.
+// scrapesAtOnce at a time, then has the counters of the egress filter read,
+// and records both as of the time it began: the scrapes last, as their notice
+// carries the counters too. A connector that does not run, has no metrics
+// address or whose port another process holds is not asked: what answers
+// there is not the connector, and would be shown as its traffic. A round the
+// stop cut off is not recorded.
 func (s *sampler) round(ctx context.Context) {
 	at := s.now()
 	statuses := s.statuses()
@@ -77,6 +82,10 @@ func (s *sampler) round(ctx context.Context) {
 		})
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		return
+	}
+	s.targets(ctx, at)
 	if ctx.Err() != nil {
 		return
 	}

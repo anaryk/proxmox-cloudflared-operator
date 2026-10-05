@@ -100,6 +100,15 @@ func (k *egressFilter) Remove(ctx context.Context, addr netip.Addr) error {
 	return f.Remove(ctx, addr)
 }
 
+// FlowCounts reads the counters of the live table through the filter.
+func (k *egressFilter) FlowCounts(ctx context.Context) (string, map[netip.AddrPort]uint64, error) {
+	f, err := k.filter()
+	if err != nil {
+		return "", nil, err
+	}
+	return f.FlowCounts(ctx)
+}
+
 // Verify verifies the live table; without a filter, it says that the filter
 // is off while it is, and why there is none otherwise. It looks the connector
 // user up first: one made anew has another uid, which the table does not

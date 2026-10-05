@@ -25,6 +25,7 @@ var (
 	errBadLimit   = &httpError{http.StatusBadRequest, codeInvalid, fmt.Sprintf("limit must be a whole number from 1 to %d", engine.MaxEventLimit), false}
 	errBadHistory = &httpError{http.StatusBadRequest, codeInvalid, "history must be 1 or 0", false}
 	errNoHostname = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/diagnose?hostname=<name>", false}
+	errNoRouteOf  = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/traffic/route?hostname=<name>", false}
 	errRootOnly   = &httpError{http.StatusForbidden, codeForbidden, "only root may rotate the secret of a tunnel", false}
 )
 
@@ -47,6 +48,7 @@ func (s *Server) routes() http.Handler {
 	v1.GET("/events", s.getEvents)
 	v1.GET("/stream", s.getStream)
 	v1.GET("/traffic", s.getTraffic)
+	v1.GET("/traffic/route", s.getRouteTraffic)
 	v1.POST("/sync", s.postSync)
 	v1.POST("/apply", s.postApply)
 	v1.POST("/adopt", s.postAdopt)
@@ -118,6 +120,22 @@ func holds(ifNoneMatch, tag string) bool {
 // no part of the state, whose digest changes only with what a cycle finds.
 func (s *Server) getTraffic(c *gin.Context) {
 	c.JSON(http.StatusOK, s.engine.Traffic())
+}
+
+// getRouteTraffic answers with the rates of new connections to the target of
+// one route, for its detail.
+func (s *Server) getRouteTraffic(c *gin.Context) {
+	hosts := c.QueryArray("hostname")
+	if len(hosts) != 1 || hosts[0] == "" {
+		s.fail(c, errNoRouteOf)
+		return
+	}
+	series, err := s.engine.RouteSeries(hosts[0])
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, series)
 }
 
 func (s *Server) getEvents(c *gin.Context) {

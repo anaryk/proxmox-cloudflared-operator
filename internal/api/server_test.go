@@ -81,6 +81,7 @@ type fakeEngine struct {
 	steps     []doctor.Step
 	findings  []doctor.Finding
 	traffic   engine.TrafficView
+	series    map[string]engine.RouteSeries // by hostname: the routes with a target
 }
 
 func (f *fakeEngine) record(ctx context.Context, call string) {
@@ -336,6 +337,20 @@ func (f *fakeEngine) Traffic() engine.TrafficView {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.traffic
+}
+
+func (f *fakeEngine) RouteSeries(hostname string) (engine.RouteSeries, error) {
+	f.record(context.Background(), "route traffic:"+hostname)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return engine.RouteSeries{}, f.err
+	}
+	s, ok := f.series[hostname]
+	if !ok {
+		return engine.RouteSeries{}, fmt.Errorf("%w: %s has no target", engine.ErrNotFound, hostname)
+	}
+	return s, nil
 }
 
 func (f *fakeEngine) PollInterval() time.Duration {

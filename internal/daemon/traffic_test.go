@@ -67,6 +67,15 @@ type samplerRig struct {
 
 	mu     sync.Mutex
 	rounds []round
+	// reads are the reads of the counters of the egress filter: the time of
+	// the round each was for, and how long after it began each was made.
+	reads []counterRead
+	calls []string
+}
+
+type counterRead struct {
+	at    time.Time
+	after time.Duration
 }
 
 func newSamplerRig(statuses []connector.Status, took time.Duration) *samplerRig {
@@ -78,6 +87,13 @@ func newSamplerRig(statuses []connector.Status, took time.Duration) *samplerRig 
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.rounds = append(r.rounds, round{at, scrapes})
+			r.calls = append(r.calls, "record")
+		},
+		targets: func(_ context.Context, at time.Time) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.reads = append(r.reads, counterRead{at, time.Since(at)})
+			r.calls = append(r.calls, "targets")
 		},
 		now: time.Now,
 		log: zerolog.Nop(),
@@ -89,6 +105,12 @@ func (r *samplerRig) recorded() []round {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.rounds)
+}
+
+func (r *samplerRig) counterReads() ([]counterRead, []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.reads), slices.Clone(r.calls)
 }
 
 func tunnelNumbered(i int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012d", i) }
@@ -182,4 +204,34 @@ func TestTheRoundsComeOneAfterTheOther(t *testing.T) {
 			})
 		})
 	}
+}
+
+// The counters of the egress filter are read in the same round, once the
+// scrapes are in, and recorded before the round is: the notice of the round
+// carries both.
+func TestTheCountersAreReadInTheRoundAfterTheScrapes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newSamplerRig([]connector.Status{scrapable(tunnelNumbered(1))}, 1500*time.Millisecond)
+		start := time.Now()
+
+		r.s.round(t.Context())
+
+		reads, calls := r.counterReads()
+		require.Equal(t, []counterRead{{at: start, after: 1500 * time.Millisecond}}, reads)
+		require.Equal(t, []string{"targets", "record"}, calls)
+	})
+}
+
+func TestARoundCutOffBeforeTheReadReadsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newSamplerRig([]connector.Status{scrapable(tunnelNumbered(1))}, time.Minute)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+
+		r.s.round(ctx)
+
+		reads, calls := r.counterReads()
+		require.Empty(t, reads)
+		require.Empty(t, calls)
+	})
 }

@@ -268,6 +268,10 @@ func (f *fakeEngine) PollInterval() time.Duration { return 10 * time.Second }
 
 func (f *fakeEngine) Traffic() engine.TrafficView { return engine.TrafficView{} }
 
+func (f *fakeEngine) RouteSeries(string) (engine.RouteSeries, error) {
+	return engine.RouteSeries{}, engine.ErrNotFound
+}
+
 func boolText(b bool) string {
 	if b {
 		return "true"

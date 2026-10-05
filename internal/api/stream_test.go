@@ -120,7 +120,9 @@ func streamNotices() []engine.Notice {
 		{Kind: engine.NoticeGap, Gap: &engine.GapNotice{Boot: testBoot, From: 814, To: 1826, Count: 1013, Level: "warn"}},
 		{Kind: engine.NoticeTraffic, Traffic: &engine.TrafficNotice{At: at.Add(5 * time.Second), Tunnels: []engine.TunnelNotice{
 			{TunnelID: "00000000-0000-4000-8000-000000000001", RPS: 38.2, ErrorsPerSec: 0.1, Concurrent: 3, HAConnections: 4},
-		}}},
+		}, Routes: []engine.RouteTraffic{
+			{Hostname: "www.example.com", Owner: "qemu/101", Target: "10.0.0.11:8080", FlowsPerSec: 2.4},
+		}, RoutesTotal: 1}},
 		{Kind: engine.NoticeEvent, Event: &engine.Event{
 			Seq: 1827, Boot: testBoot, At: at, Level: "info", Kind: "admin", Subject: "www.example.com",
 			Message: "adoption requested for the next run", Actor: "alice@pve (ticket)",

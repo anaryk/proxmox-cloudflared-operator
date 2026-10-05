@@ -59,7 +59,7 @@ func TestRatesComeFromTheCountersOfTwoScrapes(t *testing.T) {
 
 func TestTheTrafficView(t *testing.T) {
 	e := newEnv(t).eng
-	require.Equal(t, TrafficView{Interval: "5s", Tunnels: []TunnelTraffic{}}, e.Traffic(), "before the first round")
+	require.Equal(t, TrafficView{Interval: "5s", Tunnels: []TunnelTraffic{}, Routes: []RouteTraffic{}}, e.Traffic(), "before the first round")
 
 	round(e, 0, map[string]*connector.Metrics{tunnelB: scraped(0, 0, 0), tunnelA: nil})
 	round(e, 1, map[string]*connector.Metrics{tunnelB: scraped(5, 0, 1), tunnelA: nil})
@@ -87,7 +87,9 @@ func TestTheTrafficView(t *testing.T) {
 					{"at": "2026-10-01T12:00:10Z", "rps": 1, "errorsPerSec": 0, "concurrent": 0}
 				]
 			}
-		]
+		],
+		"routes": [],
+		"routesTotal": 0
 	}`, string(got))
 }
 

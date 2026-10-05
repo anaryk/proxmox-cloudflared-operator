@@ -1077,7 +1077,10 @@ func TestTheTrafficOfTheConnectors(t *testing.T) {
 		Edges:     []connector.Edge{{Connection: 0, Location: "fra08"}},
 		RTTMillis: []float64{11.2},
 		Samples:   []engine.TrafficSample{{At: at, RPS: 38.2, ErrorsPerSec: 0.1, Concurrent: 3}},
-	}}}}
+	}}, Routes: []engine.RouteTraffic{
+		{Hostname: "api.example.com", Owner: "qemu/101", Target: "10.0.0.11:8080", FlowsPerSec: 2.4, Shared: 1},
+		{Hostname: "www.example.com", Owner: "qemu/101", Target: "10.0.0.11:8080", FlowsPerSec: 2.4, Shared: 1, Stale: true},
+	}, RoutesTotal: 2}}
 
 	rec := do(newServer(f), http.MethodGet, "/v1/traffic", "")
 
@@ -1089,9 +1092,65 @@ func TestTheTrafficOfTheConnectors(t *testing.T) {
 			"configVersion": 14, "haConnections": 4,
 			"edges": [{"connection": 0, "location": "fra08"}], "rttMs": [11.2], "stale": false,
 			"samples": [{"at": "2026-10-01T12:00:05Z", "rps": 38.2, "errorsPerSec": 0.1, "concurrent": 3}]
-		}]
+		}],
+		"routes": [
+			{"hostname": "api.example.com", "owner": "qemu/101", "target": "10.0.0.11:8080", "flowsPerSec": 2.4, "shared": 1, "stale": false},
+			{"hostname": "www.example.com", "owner": "qemu/101", "target": "10.0.0.11:8080", "flowsPerSec": 2.4, "shared": 1, "stale": true}
+		],
+		"routesTotal": 2
 	}`, rec.Body.String())
 	require.Equal(t, []string{"traffic"}, f.called())
+
+	t.Run("without counters", func(t *testing.T) {
+		f := &fakeEngine{traffic: engine.TrafficView{At: at, Interval: "5s", Tunnels: []engine.TunnelTraffic{},
+			Routes: []engine.RouteTraffic{}, RoutesWhy: "the egress filter is not loaded"}}
+
+		rec := do(newServer(f), http.MethodGet, "/v1/traffic", "")
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `{
+			"at": "2026-10-01T12:00:05Z", "interval": "5s", "tunnels": [],
+			"routes": [], "routesTotal": 0, "routesWhy": "the egress filter is not loaded"
+		}`, rec.Body.String())
+	})
+}
+
+func TestTheTrafficOfOneRoute(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 5, 0, time.UTC)
+	f := &fakeEngine{series: map[string]engine.RouteSeries{"www.example.com": {
+		Hostname: "www.example.com", Target: "10.0.0.11:8080",
+		Samples: []engine.RouteSample{{At: at, FlowsPerSec: 2.4}, {At: at.Add(5 * time.Second), FlowsPerSec: 0}},
+	}}}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/traffic/route?hostname=www.example.com", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{
+		"hostname": "www.example.com", "target": "10.0.0.11:8080", "shared": 0,
+		"samples": [{"at": "2026-10-01T12:00:05Z", "flowsPerSec": 2.4}, {"at": "2026-10-01T12:00:10Z", "flowsPerSec": 0}]
+	}`, rec.Body.String())
+	require.Equal(t, []string{"route traffic:www.example.com"}, f.called())
+
+	t.Run("a route without a target", func(t *testing.T) {
+		rec := do(newServer(f), http.MethodGet, "/v1/traffic/route?hostname=api.example.com", "")
+
+		require.Equal(t, http.StatusNotFound, rec.Code)
+		require.Equal(t, "not_found", errorCode(t, rec))
+		require.Equal(t, "not found: api.example.com has no target", errorMessage(t, rec))
+	})
+
+	for _, query := range []string{"", "?hostname=", "?host=www.example.com", "?hostname=a.example.com&hostname=b.example.com"} {
+		t.Run("query "+query, func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodGet, "/v1/traffic/route"+query, "")
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "invalid", errorCode(t, rec))
+			require.Equal(t, "name one hostname: /v1/traffic/route?hostname=<name>", errorMessage(t, rec))
+			require.Empty(t, f.called())
+		})
+	}
 }
 
 func TestTheAdminActionsOnSegments(t *testing.T) {

@@ -235,8 +235,11 @@ func (c *connectors) Token(id string) (string, bool, error) {
 	return t, ok, nil
 }
 
-// egressFake accepts every set of targets.
+// egressFake accepts every set of targets and has counted nothing.
 type egressFake struct{}
 
 func (egressFake) Set(context.Context, []egress.Target) error { return nil }
 func (egressFake) Remove(context.Context, netip.Addr) error   { return nil }
+func (egressFake) FlowCounts(context.Context) (string, map[netip.AddrPort]uint64, error) {
+	return "", nil, egress.ErrNoCounters
+}

@@ -69,8 +69,11 @@ type Engine interface {
 	Doctor(ctx context.Context) []doctor.Finding
 	// PollInterval is the interval of the last settings read.
 	PollInterval() time.Duration
-	// Traffic is what the last scrapes of the connectors on the node gave.
+	// Traffic is what the last scrapes of the connectors on the node gave,
+	// and RouteSeries what the counters of the egress filter gave of the
+	// target of one route.
 	Traffic() engine.TrafficView
+	RouteSeries(hostname string) (engine.RouteSeries, error)
 }
 
 // Server answers API requests for an engine.

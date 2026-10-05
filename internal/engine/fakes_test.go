@@ -459,6 +459,8 @@ func (f *fakeConnectors) prunes() [][]string {
 // writes every call there too, in one order with the other calls a test
 // records in it.
 type fakeEgress struct {
+	fakeCounters
+
 	mu        sync.Mutex
 	sets      [][]egress.Target
 	removed   []netip.Addr

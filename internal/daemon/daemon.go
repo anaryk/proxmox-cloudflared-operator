@@ -251,7 +251,10 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
-	traffic := &sampler{statuses: eng.ConnectorStatuses, scrape: conns.Metrics, record: eng.RecordTraffic, now: deps.Now, log: log}
+	traffic := &sampler{
+		statuses: eng.ConnectorStatuses, scrape: conns.Metrics, record: eng.RecordTraffic, targets: eng.SampleTargets,
+		now: deps.Now, log: log,
+	}
 	beside := []func(context.Context){watch, keep, traffic.run}
 	if cfg.profile() == store.ProfileHost {
 		web := newWebKeeper(cfg, deps, client, eng.NoteWeb, log)
