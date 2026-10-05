@@ -50,19 +50,15 @@ func (c *cycleRun) reconcileTunnels() bool {
 	c.waiting.Add(res.Waiting)
 	c.st.WriterVerdict = verdictName(res.Verdict)
 	if res.Verdict != reconcile.WriterProceed {
-		c.sayWaiting()
 		c.hold(fmt.Sprintf("the tunnel run found a %s writer", c.st.WriterVerdict))
 		return false
 	}
-	if !c.writerStill("after the tunnel run") {
-		c.sayWaiting()
-		return false
-	}
-	return true
+	return c.writerStill("after the tunnel run")
 }
 
-// sayWaiting adds what waits for Cloudflare's rate limit to the problems, in
-// one line, once.
+// sayWaiting adds what the runs of the cycle left waiting for Cloudflare's
+// rate limit to the problems, in one line. It is said once, at the end of the
+// cycle, whichever step ended it.
 func (c *cycleRun) sayWaiting() {
 	if line := c.waiting.Line(); line != "" {
 		c.st.Problems = append(c.st.Problems, line)

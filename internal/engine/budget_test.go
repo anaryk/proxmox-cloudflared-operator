@@ -84,6 +84,31 @@ func TestWhatWaitsForTheBudgetIsOneLine(t *testing.T) {
 	require.Equal(t, []string{"the tunnel of account acc1 and the listing of zone example.com wait for Cloudflare's rate limit"}, said)
 }
 
+// What the tunnel run left for the rate limit is said though the cycle ends
+// before the DNS run, which used to say it.
+func TestWhatTheTunnelRunLeavesWaitingIsSaidWhenTheCycleEndsBeforeDNS(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	api := &spentClient{API: e.cf}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var armed atomic.Bool
+	e.useAPI(testToken, hookedAPI{API: api, before: func(method string) {
+		if method == "FindTunnel" && armed.Load() {
+			cancel()
+		}
+	}})
+	require.Empty(t, e.cycle().Problems)
+	api.spent.Store(true)
+	armed.Store(true)
+	e.clock.advance(10 * time.Second)
+
+	st := e.eng.Cycle(ctx)
+
+	require.Contains(t, st.Problems, "the cycle ended before the connectors (context canceled); the rest is left as it is")
+	require.Contains(t, st.Problems, "the tunnel of account acc1 waits for Cloudflare's rate limit")
+}
+
 // spentClient refuses the lookup of a tunnel and the listing of records, once
 // spent, as a limiter whose budget is spent does.
 type spentClient struct {

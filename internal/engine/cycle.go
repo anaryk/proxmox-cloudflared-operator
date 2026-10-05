@@ -131,6 +131,7 @@ func (c *cycleRun) run() State {
 	c.watchTunnels()
 	c.saveMemory()
 	c.noteRogueConnectors()
+	c.sayWaiting()
 	if !c.checked {
 		c.markUnchecked()
 	}
