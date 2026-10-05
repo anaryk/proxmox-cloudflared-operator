@@ -27,11 +27,19 @@
 
 set -euo pipefail
 
-# Base64 of the binary OpenPGP keyring that holds the release signing key.
-# Until the first release is signed it is a placeholder, and the script then
-# refuses to install unless PCO_INSECURE_SKIP_SIGNATURE=1 is set.
+# Base64 of the binary OpenPGP keyring that holds the release signing key,
+# "pco release signing key <tomas.marek@computer-solutions.cz>", fingerprint
+# 3D326CB52862A2E91C9919EFA98A1ED57B31F91B. A copy of this script that has the
+# placeholder REPLACE-WITH-THE-RELEASE-KEY here instead (a fork that has not set
+# its own key) refuses to install unless PCO_INSECURE_SKIP_SIGNATURE=1 is set.
 read -r -d '' PCO_RELEASE_KEY_B64 <<'EOF' || true
-REPLACE-WITH-THE-RELEASE-KEY
+mDMEasOF+BYJKwYBBAHaRw8BAQdAhXUiIlxzF5qW7lDub4IE4s2vSHPWLsfDNI6N
+hj3aena0O3BjbyByZWxlYXNlIHNpZ25pbmcga2V5IDx0b21hcy5tYXJla0Bjb21w
+dXRlci1zb2x1dGlvbnMuY3o+iK8EExYKAFcWIQQ9Mmy1KGKi6RyZGe+pih7VezH5
+GwUCasOF+BsUgAAAAAAEAA5tYW51MiwyLjUrMS4xMiwwLDMCGwMFCwkIBwICIgIG
+FQoJCAsCBBYCAwECHgcCF4AACgkQqYoe1Xsx+RvFtQEAy5H5rDr1lREdBLYMQ33B
+m39c8FXBeMaqAsX91wXzjF8A/0xGgRQQrGH9lM1wOrl8elJhj460YhduDkgM5R9q
+a98D
 EOF
 
 DEFAULT_REPO=anaryk/proxmox-cloudflared-operator

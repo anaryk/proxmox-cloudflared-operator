@@ -11,6 +11,11 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 INSTALL=$HERE/install.sh
 PLACEHOLDER=REPLACE-WITH-THE-RELEASE-KEY
+KEY_HEADER="read -r -d '' PCO_RELEASE_KEY_B64 <<'EOF' || true"
+# The keys the script carries, in the order of the block: one while there is one
+# release key, two while one is replaced by the other. Changing the block means
+# changing this list too.
+RELEASE_FPRS=(3D326CB52862A2E91C9919EFA98A1ED57B31F91B)
 PCO_BIN_LINE=PCO_BIN=/usr/bin/pco
 TTY_LINE=TTY_DEVICE=/dev/tty
 
@@ -240,16 +245,23 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 PYTHON
 }
 
-# A copy of install.sh with the placeholder line swapped for a key, and the
-# lines that name the installed binary and the terminal swapped for other
-# paths: a test can put nothing at /usr/bin/pco and has no terminal. The script
-# takes neither from the environment, so that root's cannot change them.
-# Nothing else differs from the real script.
+# A copy of install.sh with the key block, whatever it holds, swapped for a
+# key, and the lines that name the installed binary and the terminal swapped
+# for other paths: a test can put nothing at /usr/bin/pco and has no terminal.
+# The script takes neither from the environment, so that root's cannot change
+# them. Nothing else differs from the real script.
 make_variant_script() {
-	local out=$1 key=$2 pco_bin=$3 tty=$4 line keys=0 bins=0 ttys=0
+	local out=$1 key=$2 pco_bin=$3 tty=$4 line keys=0 bins=0 ttys=0 inside=0
 	while IFS= read -r line; do
-		if [[ $line == "$PLACEHOLDER" ]]; then
-			printf '%s\n' "$key"
+		if [[ $inside == 1 ]]; then
+			# The lines of the block are dropped; the EOF that closes it stays.
+			if [[ $line == EOF ]]; then
+				inside=0
+				printf '%s\n' "$line"
+			fi
+		elif [[ $line == "$KEY_HEADER" ]]; then
+			printf '%s\n%s\n' "$line" "$key"
+			inside=1
 			keys=$((keys + 1))
 		elif [[ $line == "$PCO_BIN_LINE" ]]; then
 			printf 'PCO_BIN=%s\n' "$pco_bin"
@@ -261,8 +273,8 @@ make_variant_script() {
 			printf '%s\n' "$line"
 		fi
 	done <"$INSTALL" >"$out"
-	if [[ $keys != 1 || $bins != 1 || $ttys != 1 ]]; then
-		echo "install_test.sh: install.sh has $keys key placeholders, $bins lines naming the binary and $ttys naming the terminal, expected one of each" >&2
+	if [[ $keys != 1 || $inside != 0 || $bins != 1 || $ttys != 1 ]]; then
+		echo "install_test.sh: install.sh has $keys closed key blocks, $bins lines naming the binary and $ttys naming the terminal, expected one of each" >&2
 		exit 1
 	fi
 }
@@ -1497,6 +1509,52 @@ real_sha256() {
 	printf '%s\n' "${sum%% *}"
 }
 
+# The lines of the key block of the real install.sh, between its header and the
+# EOF that closes it.
+real_key_block() {
+	local line inside=0
+	while IFS= read -r line; do
+		if [[ $inside == 1 ]]; then
+			if [[ $line == EOF ]]; then
+				return 0
+			fi
+			printf '%s\n' "$line"
+		elif [[ $line == "$KEY_HEADER" ]]; then
+			inside=1
+		fi
+	done <"$INSTALL"
+}
+
+# The fingerprint of every primary key of a keyring, one per line.
+primary_fingerprints() {
+	GNUPGHOME=$1 gpg --batch --show-keys --with-colons "$2" 2>/dev/null |
+		awk -F: '$1 == "pub" { want = 1; next } $1 == "sub" { want = 0 } $1 == "fpr" && want { print $10; want = 0 }'
+}
+
+# What install.sh trusts as it stands in the repository, not the keys the other
+# cases make: the block decodes, and the keyring holds the release keys and no
+# other primary key. A signature by that key cannot be made here, the private
+# half is not in the repository, so it is the fingerprint that is pinned.
+case_embedded_key() {
+	local block home keyring fprs expected
+	new_case "the key block of install.sh holds the release key"
+	if ! command -v gpg >/dev/null 2>&1; then
+		skip_crypto "gpg is not installed"
+		return
+	fi
+	home=$CASE_DIR/gnupg
+	keyring=$CASE_DIR/release.gpg
+	mkdir -m 700 "$home"
+	block=$(real_key_block)
+	ensure "the key block is not empty" differs "$block" ""
+	ensure "the key block is not the placeholder" differs "$block" "$PLACEHOLDER"
+	printf '%s\n' "$block" | base64 -d >"$keyring" 2>/dev/null
+	ensure "the key block is valid base64" equals "$?" 0
+	fprs=$(primary_fingerprints "$home" "$keyring")
+	expected=$(printf '%s\n' "${RELEASE_FPRS[@]}")
+	ensure "the keyring holds the release key and no other" equals "$fprs" "$expected"
+}
+
 # Makes a key in the throwaway keyring and prints its fingerprint. More
 # arguments go to gpg, for a key made at another time.
 make_real_key() {
@@ -1687,6 +1745,7 @@ case_hand_over_terminal
 case_progress_messages
 case_structure
 case_crypto_switch
+case_embedded_key
 case_real_signature
 
 printf '%d cases, %d checks, %d failed, %d skipped (bash %s)\n' "$CASES" "$CHECKS" "$FAILS" "$SKIPPED" "$BASH_VERSION"
