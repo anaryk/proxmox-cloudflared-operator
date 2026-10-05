@@ -103,6 +103,9 @@ jobs:
           sudo apt-get install -y mmdebstrap zstd systemd-container uidmap debian-archive-keyring arch-test qemu-user-static
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # The cloudflared packages stay beside the templates (--cache), for the
+      # job sign to check them against the manifest of the repository and
+      # the templates against them.
       - name: Build the templates
         env:
           TAG: ${{ github.ref_name }}
@@ -111,7 +114,8 @@ jobs:
           version=${TAG#v}
           for arch in amd64 arm64; do
             packaging/appliance/build.sh --arch "$arch" --version "$version" \
-              --deb "dist/pco_${version}_$arch.deb" ${SNAPSHOT:+--snapshot "$SNAPSHOT"} --out build/appliance
+              --deb "dist/pco_${version}_$arch.deb" ${SNAPSHOT:+--snapshot "$SNAPSHOT"} \
+              --out build/appliance --cache build/appliance
           done
 
       - name: Boot the amd64 template
@@ -181,9 +185,10 @@ jobs:
       # with it embedded. Go only, before anything else is installed.
       - run: go test -tags nomsgpack,webui ./internal/web/ui/
 
-      # Everything that is installed, is installed before the key is on the runner.
+      # Everything that is installed, is installed before the key is on the
+      # runner; zstd is for check-artifacts.sh, which reads the templates.
       - name: Install the signature tools
-        run: sudo apt-get update && sudo apt-get install -y gpgv sqv
+        run: sudo apt-get update && sudo apt-get install -y gpgv sqv zstd
 
       # With cosign on the PATH the goreleaser action checks the signature of
       # the goreleaser it downloads.
@@ -246,8 +251,9 @@ jobs:
 
       # What the installer does, with the keyring it was given and neither the
       # keys of the signing home nor the word of goreleaser. With
-      # --require-template it also refuses a template whose package is not
-      # the one built here, byte for byte.
+      # --require-template it also refuses a template whose pco is not the
+      # one of the package built here, or whose cloudflared is not the one of
+      # the package the manifest of the repository lists, byte for byte.
       - name: Check the release files
         env:
           TAG: ${{ github.ref_name }}

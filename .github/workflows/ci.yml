@@ -41,8 +41,9 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-      # Proxmox VE 9 verifies with sqv, which the runner image does not carry.
-      - run: sudo apt-get update && sudo apt-get install -y gpgv sqv
+      # Proxmox VE 9 verifies with sqv, which the runner image does not carry;
+      # check-artifacts_test.sh makes and reads templates with zstd.
+      - run: sudo apt-get update && sudo apt-get install -y gpgv sqv zstd
       - run: make test-scripts
 
   linux-probe:

@@ -32,12 +32,20 @@
 #              cloudflared-versions.json. Each template must carry the package
 #              of this release: its pco-appliance_<version>_<arch>.deb.sha256,
 #              which build.sh writes beside it, must hold the sha256 of
-#              pco_<version>_<arch>.deb. The release sets it.
+#              pco_<version>_<arch>.deb, and its ./usr/bin/pco must be the
+#              one in that package, byte for byte. Its ./usr/bin/cloudflared
+#              must be the one in cloudflared_<cf>_<arch>.deb in the same
+#              directory, whose sha256 is the one cloudflared-versions.json
+#              beside this script lists for the newest version it allows;
+#              the copy of that file in the directory must be the same file.
+#              Needs dpkg-deb, zstd and jq. The release sets it.
 #
 # Nothing else may be in dist/ besides the files goreleaser keeps for itself,
 # and checksums.txt may list nothing else.
 
 set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
 
 usage() {
 	printf 'usage: check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [--require-ui] [--require-template] [dist-dir]\n' >&2
@@ -142,6 +150,13 @@ while IFS= read -r name; do
 	fi
 done <<<"$actual"
 
+# Where the programs read out of the packages and the templates go.
+work=
+if [[ $require_ui == 1 || $require_template == 1 ]]; then
+	work=$(mktemp -d "${TMPDIR:-/tmp}/check-artifacts.XXXXXXXX")
+	trap 'rm -rf "$work"' EXIT
+fi
+
 # The files of the appliance, which goreleaser lists and uploads from where
 # build.sh wrote them rather than from dist/.
 appliance=${PCO_APPLIANCE_DIR:-build/appliance}
@@ -200,9 +215,46 @@ if [[ -f $dist/checksums.txt ]]; then
 	done <<<"$files"
 fi
 
+# carries <arch> <name> <template> <package>: fails unless ./usr/bin/<name> of
+# the template is the one in the package, byte for byte.
+carries() {
+	if ! zstd --decompress --stdout --long=27 --quiet "$3" 2>/dev/null | tar -xO "./usr/bin/$2" >"$work/template" 2>/dev/null; then
+		fail "cannot read ./usr/bin/$2 out of ${3##*/}"
+	elif ! dpkg-deb --fsys-tarfile "$4" 2>/dev/null | tar -xO "./usr/bin/$2" >"$work/package" 2>/dev/null; then
+		fail "cannot read ./usr/bin/$2 out of ${4##*/}"
+	elif ! cmp -s "$work/template" "$work/package"; then
+		fail "the $1 template carries a /usr/bin/$2 other than the one in ${4##*/}"
+	fi
+}
+
 if [[ $require_template == 1 ]]; then
+	missing=
+	for tool in dpkg-deb zstd jq; do
+		command -v "$tool" >/dev/null 2>&1 || missing="${missing:+$missing, }$tool"
+	done
+	if [[ -n $missing ]]; then
+		fail "--require-template reads the programs out of the templates and the packages, which needs dpkg-deb, zstd and jq; not found: $missing"
+	fi
+	# The cloudflared the templates carry: the newest version the manifest
+	# of the repository allows, as build.sh picks it, and the sha256 listed
+	# there. The copy that ships with the release must be that file.
+	manifest=$HERE/cloudflared-versions.json
+	cf_version=
+	if [[ -z $missing ]]; then
+		cf_version=$(jq -r '.versions | map(.version) | sort_by(split(".") | map(tonumber)) | last // empty' "$manifest" 2>/dev/null) || cf_version=
+		if [[ -z $cf_version ]]; then
+			fail "$manifest names no cloudflared version"
+		fi
+	fi
+	if [[ -f $appliance/cloudflared-versions.json ]] && ! cmp -s "$manifest" "$appliance/cloudflared-versions.json"; then
+		fail "$appliance/cloudflared-versions.json differs from $manifest"
+	fi
+
 	for arch in amd64 arm64; do
 		deb=pco_${version}_$arch.deb
+		template=$appliance/pco-appliance_${version}_$arch.tar.zst
+		# The sum build.sh wrote is a first look; the programs in the
+		# template are what count.
 		sums=$appliance/pco-appliance_${version}_$arch.deb.sha256
 		if [[ ! -f $sums ]]; then
 			fail "$appliance has no ${sums##*/}, so nothing says which package the $arch template carries"
@@ -211,8 +263,25 @@ if [[ $require_template == 1 ]]; then
 		read -r built built_name <"$sums" || true
 		if [[ ${built_name:-} != "$deb" || ! ${built:-} =~ ^[0-9a-f]{64}$ ]]; then
 			fail "${sums##*/} is not one line \"<sha256>  $deb\""
+			continue
 		elif [[ -f $dist/$deb && $(sha256 "$dist/$deb") != "$built" ]]; then
 			fail "the $arch template was built from a $deb with the sha256 $built, which is not the package of this release"
+			continue
+		fi
+		if [[ -n $missing || ! -f $template || ! -f $dist/$deb ]]; then
+			continue
+		fi
+		carries "$arch" pco "$template" "$dist/$deb"
+
+		[[ -n $cf_version ]] || continue
+		cf_deb=$appliance/cloudflared_${cf_version}_$arch.deb
+		cf_sha256=$(jq -r --arg v "$cf_version" --arg a "$arch" '.versions[] | select(.version == $v) | .[$a].sha256 // empty' "$manifest")
+		if [[ ! -f $cf_deb ]]; then
+			fail "$appliance has no ${cf_deb##*/}, the cloudflared package the $arch template was built from"
+		elif [[ $(sha256 "$cf_deb") != "$cf_sha256" ]]; then
+			fail "${cf_deb##*/} has the sha256 $(sha256 "$cf_deb"), $manifest lists ${cf_sha256:-none}"
+		else
+			carries "$arch" cloudflared "$template" "$cf_deb"
 		fi
 	done
 	pin=$appliance/pco-appliance_${version}.pin.conf
@@ -261,8 +330,6 @@ if [[ $require_ui == 1 ]]; then
 	elif ! command -v go >/dev/null 2>&1; then
 		fail "go is required to read the build tags of the binaries (--require-ui) and was not found"
 	else
-		work=$(mktemp -d "${TMPDIR:-/tmp}/check-artifacts.XXXXXXXX")
-		trap 'rm -rf "$work"' EXIT
 		for arch in amd64 arm64; do
 			deb=$dist/pco_${version}_$arch.deb
 			[[ -f $deb ]] || continue

@@ -52,20 +52,28 @@ on any system.
 
 ## The same bytes twice
 
-Two builds from the same `pin.conf` and the same packages give the same files.
-Every file of the template carries the time of the snapshot (also the
-`SOURCE_DATE_EPOCH` of the build), mmdebstrap writes the tar sorted by name with
-numeric owners, the overlay goes in as root's with fixed modes, and zstd writes
-the same output for the same input and options. `build_test.sh` builds twice and
-compares the sha256 of every file; the `template` job of CI runs it.
+Two builds from the same `pin.conf` and the same packages give the same files
+on the same host. Every file of the template carries the time of the snapshot
+(also the `SOURCE_DATE_EPOCH` of the build), mmdebstrap writes the tar sorted by
+name with numeric owners, the overlay goes in as root's with fixed modes, and
+zstd writes the same output for the same input and options. `build_test.sh`
+builds twice and compares the sha256 of every file; the `template` job of CI
+runs it. The promise holds within one runner image: the mmdebstrap and zstd of
+the host take part in the bytes, and the versions Ubuntu ships change between
+images, so a build on another runner, or a month later, may differ while
+carrying the same packages.
 
-A release builds the packages twice as well: once in its job `build`, which
-makes the templates from them, and once in its job `sign`, which signs. The
-templates do not keep the package they installed, so `build.sh` writes its
-sha256 into `pco-appliance_<version>_<arch>.deb.sha256`, and
-`check-artifacts.sh --require-template` refuses a release whose package is
-another. The `package` job of CI builds the packages in two checkouts and
-compares them, so that a change that breaks this fails there first.
+A release builds the packages twice: once in its job `build`, which makes the
+templates from them, and once in its job `sign`, which signs. The templates do
+not keep the package they installed. `build.sh` writes its sha256 into
+`pco-appliance_<version>_<arch>.deb.sha256`, which `check-artifacts.sh
+--require-template` looks at first; then it reads `/usr/bin/pco` out of each
+template and out of the package the job `sign` built, and refuses the release
+unless they are the same bytes. It does the same for `/usr/bin/cloudflared`,
+against the cloudflared package the job `build` keeps beside the templates,
+once that package has the sha256 `../cloudflared-versions.json` lists. The
+`package` job of CI builds the packages in two checkouts and compares them, so
+that a change that breaks this fails there first.
 
 ## The snapshot
 

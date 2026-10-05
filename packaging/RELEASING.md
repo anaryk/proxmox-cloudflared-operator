@@ -96,11 +96,14 @@ of the release.
 `packaging/appliance/README.md` says what a template holds and how it is
 built. In a release the job `build` makes them, without a secret and outside
 the environment `release`, so that mmdebstrap, Debian's packages and qemu never
-run where the key is. The job `sign` downloads them, builds the packages again
-from the same tag and refuses the release unless the sha256 of each of its
-packages is the one `pco-appliance_<version>_<arch>.deb.sha256` says the
-template was built from (`check-artifacts.sh --require-template`). The two
-builds are the same as long as the packages are reproducible; the `package`
+run where the key is, and keeps the cloudflared packages it installed beside
+them. The job `sign` downloads them, builds the packages again from the same
+tag and refuses the release (`check-artifacts.sh --require-template`) unless
+each template carries the `/usr/bin/pco` of the package built there and the
+`/usr/bin/cloudflared` of the cloudflared package whose sha256
+`packaging/cloudflared-versions.json` lists, byte for byte. The sha256 in
+`pco-appliance_<version>_<arch>.deb.sha256` is looked at first. The two builds
+of the packages are the same as long as they are reproducible; the `package`
 job of `ci` builds them twice on every push to find out.
 
 ## The monthly rebuild
