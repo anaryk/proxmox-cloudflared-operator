@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -132,7 +133,8 @@ func (f *Filter) Remove(ctx context.Context, addr netip.Addr) error {
 	if len(gone) == 0 {
 		return nil
 	}
-	if err := f.nft.Apply(ctx, deleteScript(gone, nil)); err == nil {
+	// The table last applied counts every target it holds.
+	if err := f.nft.Apply(ctx, deleteScript(gone, gone, nil)); err == nil {
 		next := *f.applied
 		next.targets = slices.DeleteFunc(slices.Clone(next.targets), func(t Target) bool { return t.Addr == addr })
 		f.applied = &next
@@ -147,6 +149,7 @@ func (f *Filter) Remove(ctx context.Context, addr netip.Addr) error {
 // that has applied nothing yet: a daemon that starts finds the table it loaded
 // before, or the one of the boot unit, and does not know its targets until its
 // first Set. Loading the table anew would take the other targets out as well.
+// The table may be one an older pco loaded, without the counting sets.
 func (f *Filter) removeLive(ctx context.Context, addr netip.Addr) error {
 	l, err := list(ctx, f.nft)
 	switch {
@@ -157,10 +160,11 @@ func (f *Filter) removeLive(ctx context.Context, addr netip.Addr) error {
 	}
 	c, _ := l.contents()
 	gone := slices.DeleteFunc(c.targets, func(t Target) bool { return t.Addr != addr })
-	if len(gone) == 0 {
+	counted := l.countedOf(addr)
+	if len(gone) == 0 && len(counted) == 0 {
 		return nil
 	}
-	if err := f.nft.Apply(ctx, deleteScript(gone, nil)); err != nil {
+	if err := f.nft.Apply(ctx, deleteScript(gone, counted, nil)); err != nil {
 		return fmt.Errorf("taking %s out of the egress table: %w", addr, err)
 	}
 	return nil
@@ -217,6 +221,35 @@ func (f *Filter) Verify(ctx context.Context) error {
 		d = append(d[:maxDifferences], fmt.Sprintf("and %d more", len(d)-maxDifferences))
 	}
 	return fmt.Errorf("%w: %s", ErrChanged, strings.Join(d, "; "))
+}
+
+// Counters reads the counters of the counting sets of the live table, each
+// with the generation of the table it was read from. It reads what the table
+// holds, whatever the filter applied, without waiting for a Set or a Verify
+// under way: the generation tells a table loaded in between.
+func (f *Filter) Counters(ctx context.Context) ([]TargetFlows, error) {
+	table, flows, err := ReadCounters(ctx, f.nft)
+	if err != nil {
+		return nil, err
+	}
+	for i := range flows {
+		flows[i].Generation = Generation{Table: table}
+	}
+	return flows, nil
+}
+
+// FlowCounts is Counters by address and port, with the generation as text:
+// two reads with the same generation are of the same counters.
+func (f *Filter) FlowCounts(ctx context.Context) (generation string, counts map[netip.AddrPort]uint64, err error) {
+	table, flows, err := ReadCounters(ctx, f.nft)
+	if err != nil {
+		return "", nil, err
+	}
+	counts = make(map[netip.AddrPort]uint64, len(flows))
+	for _, fl := range flows {
+		counts[netip.AddrPortFrom(fl.Target.Addr, fl.Target.Port)] = fl.Flows
+	}
+	return strconv.FormatUint(table, 10), counts, nil
 }
 
 // Rebind makes the filter confine the processes of another uid, as after

@@ -80,7 +80,22 @@ func TestBlockLiveTakesAnAddressOutOfEverySetAndBlocksItInOneTransaction(t *test
 	require.Equal(t, 3, removed)
 	require.Equal(t, []string{
 		"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
+			"delete element inet pco_egress flows4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
 			"delete element inet pco_egress resolvers4 { 10.0.0.5 }\n" +
+			"add element inet pco_egress blocked4 { 10.0.0.5 }\n",
+	}, n.applied())
+}
+
+func TestBlockLiveLeavesTheCountingSetsOfAnOlderTableAlone(t *testing.T) {
+	n := &fakeNft{}
+	n.setLive(older(t, "1.1.3").bytes(t))
+
+	removed, err := BlockLive(t.Context(), n, addr("10.0.0.5"))
+
+	require.NoError(t, err)
+	require.Equal(t, 2, removed)
+	require.Equal(t, []string{
+		"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
 			"add element inet pco_egress blocked4 { 10.0.0.5 }\n",
 	}, n.applied())
 }
@@ -164,6 +179,7 @@ func TestLoadReplacesATableThatIsNotIntact(t *testing.T) {
 			})
 		},
 		"another user":      func(t *testing.T) listing { return realListing(t, "1.1.3") },
+		"of an older pco":   func(t *testing.T) listing { return older(t, "1.0.6") },
 		"dormant":           func(t *testing.T) listing { return dormant(t, "1.1.3") },
 		"dormant, as 1.0.6": func(t *testing.T) listing { return dormant(t, "1.0.6") },
 	} {

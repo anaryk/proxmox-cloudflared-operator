@@ -24,8 +24,12 @@ const (
 	maxStderr = 4 << 10
 )
 
-// ErrNotLoaded says that the table is not there.
-var ErrNotLoaded = errors.New("the egress table is not loaded")
+var (
+	// ErrNotLoaded says that the table is not there.
+	ErrNotLoaded = errors.New("the egress table is not loaded")
+
+	errTooLong = fmt.Errorf("more than %d bytes of output", maxListing)
+)
 
 // Nft runs nft for the filter.
 type Nft interface {
@@ -50,8 +54,12 @@ func (n nftCmd) Apply(ctx context.Context, script string) error {
 func (n nftCmd) List(ctx context.Context) ([]byte, error) {
 	out, err := n.run(ctx, nil, "-j", "list", "table", "inet", tableName)
 	var ne *nftError
-	if errors.As(err, &ne) && ne.missing() {
+	switch {
+	case errors.As(err, &ne) && ne.missing():
 		return nil, ErrNotLoaded
+	case errors.Is(err, errTooLong):
+		// What is cut short is no listing nft printed for the table.
+		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
 	return out, err
 }
@@ -71,7 +79,7 @@ func (n nftCmd) run(ctx context.Context, stdin io.Reader, args ...string) ([]byt
 		return nil, &nftError{args: args, err: err, stderr: oneLine(stderr.buf.String())}
 	}
 	if stdout.over {
-		return nil, fmt.Errorf("nft %s: more than %d bytes of output", strings.Join(args, " "), maxListing)
+		return nil, fmt.Errorf("nft %s: %w", strings.Join(args, " "), errTooLong)
 	}
 	return stdout.buf.Bytes(), nil
 }

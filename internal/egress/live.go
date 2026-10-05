@@ -16,7 +16,8 @@ import (
 // The rules of the two chains as nft -j lists them, in order: what a listing
 // is compared with. The first takes the uid of the connector user. The script
 // in script.go says the same in the language of nft; the tests hold the two
-// against listings that nft 1.0.6 and 1.1.3 printed.
+// against listings that nft 1.0.6 and 1.1.3 printed. nft lists the counting
+// rules without their match on TCP, which the match on the TCP port implies.
 const (
 	wantOutputRules = `[
 [{"match":{"op":"==","left":{"meta":{"key":"skuid"}},"right":%d}},{"jump":{"target":"connector"}}]
@@ -28,6 +29,8 @@ const (
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@blocked4"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@blocked6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"reject":{"type":"tcp reset"}}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@blocked6"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
+[{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"new"}},{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@flows4"}}],
+[{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"new"}},{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@flows6"}}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@resolvers4"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@resolvers6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
 [{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@allownode4"}},{"accept":null}],
@@ -132,7 +135,7 @@ func BlockLive(ctx context.Context, n Nft, addr netip.Addr) (int, error) {
 	c, _ := l.contents()
 	tg := slices.DeleteFunc(c.targets, func(t Target) bool { return t.Addr != addr })
 	rs := slices.DeleteFunc(c.resolvers, func(a netip.Addr) bool { return a != addr })
-	if err := n.Apply(ctx, blockScript(tg, rs, addr)); err != nil {
+	if err := n.Apply(ctx, blockScript(tg, l.countedOf(addr), rs, addr)); err != nil {
 		return 0, fmt.Errorf("blocking %s in the egress table: %w", addr, err)
 	}
 	return len(tg) + len(rs), nil
@@ -173,6 +176,7 @@ func list(ctx context.Context, n Nft) (*listed, error) {
 // with their hooks, the rules of each chain in order and in a canonical form,
 // the sets with their elements, the counters, and whatever else is there.
 type listed struct {
+	handle     uint64 // of the table: a table loaded anew has another one
 	flags      string // of the table, as listed; dormant is one
 	chains     map[string]listedChain
 	rules      map[string][]string
@@ -203,15 +207,42 @@ type listedSet struct {
 	Type  json.RawMessage   `json:"type"`
 	Flags json.RawMessage   `json:"flags"`
 	Elem  []json.RawMessage `json:"elem"`
+	Stmt  json.RawMessage   `json:"stmt"` // what the set does to each of its elements
 }
+
+// counterStmt is the statement of a counting set as nft lists it.
+const counterStmt = `[{"counter":null}]`
 
 func (s listedSet) String() string {
 	d := compactJSON(s.Type)
 	if len(s.Flags) > 0 {
 		d += " with flags " + compactJSON(s.Flags)
 	}
+	if stmts := s.statements(); len(stmts) > 0 {
+		d += " with " + strings.Join(stmts, ", ")
+	}
 	return d
 }
+
+// statements names the statements of the set by their kind: what a counter
+// holds is no part of what the set is.
+func (s listedSet) statements() []string {
+	if len(s.Stmt) == 0 {
+		return nil
+	}
+	var stmts []map[string]json.RawMessage
+	if json.Unmarshal(s.Stmt, &stmts) != nil {
+		return []string{"statements " + compactJSON(s.Stmt)}
+	}
+	var names []string
+	for _, stmt := range stmts {
+		names = append(names, slices.Sorted(maps.Keys(stmt))...)
+	}
+	return names
+}
+
+// counts reports whether the set gives each of its elements a counter.
+func (s listedSet) counts() bool { return slices.Contains(s.statements(), "counter") }
 
 func parseListing(raw []byte) (*listed, error) {
 	var doc struct {
@@ -258,7 +289,12 @@ func (l *listed) add(kind string, body json.RawMessage) error {
 		default:
 			l.flags = f
 		}
-		return nil
+		var t struct {
+			Handle uint64 `json:"handle"`
+		}
+		err := json.Unmarshal(body, &t)
+		l.handle = t.Handle
+		return err
 	case "chain":
 		var c listedChain
 		err := json.Unmarshal(body, &c)
@@ -286,9 +322,9 @@ func (l *listed) add(kind string, body json.RawMessage) error {
 // setType returns the type of each set of the table, by name.
 func setType(name string) (string, bool) {
 	switch name {
-	case setTargets4, setAllowNode4:
+	case setTargets4, setAllowNode4, setFlows4:
 		return typeTarget4, true
-	case setTargets6, setAllowNode6:
+	case setTargets6, setAllowNode6, setFlows6:
 		return typeTarget6, true
 	case setResolvers4, setBlocked4:
 		return typeAddr4, true
@@ -373,13 +409,22 @@ func (l *listed) setDifferences(want *contents) []string {
 			d = append(d, "an unexpected set "+name)
 		}
 	}
-	for _, name := range []string{setTargets4, setTargets6, setAllowNode4, setAllowNode6, setResolvers4, setResolvers6, setBlocked4, setBlocked6} {
+	for _, name := range []string{
+		setTargets4, setTargets6, setAllowNode4, setAllowNode6, setResolvers4, setResolvers6,
+		setBlocked4, setBlocked6, setFlows4, setFlows6,
+	} {
 		typ, _ := setType(name)
 		got, ok := l.sets[name]
+		counting := name == setFlows4 || name == setFlows6
 		wantSet := listedSet{Type: typeJSON(typ)}
+		if counting {
+			wantSet.Stmt = json.RawMessage(counterStmt)
+		}
 		switch {
 		case !ok:
 			d = append(d, "no set "+name)
+		case counting && !got.counts():
+			d = append(d, "set "+name+" has no counters")
 		case got.String() != wantSet.String():
 			d = append(d, fmt.Sprintf("set %s is %s, want %s", name, got, wantSet))
 		}
@@ -388,11 +433,37 @@ func (l *listed) setDifferences(want *contents) []string {
 		return d
 	}
 	have, unreadable := l.contents()
+	flows, flowsUnreadable, _ := l.flows()
 	d = append(d, unreadable...)
+	d = append(d, flowsUnreadable...)
 	d = append(d, elementDifferences(have.targets, want.targets, targetSet, Target.String)...)
 	d = append(d, elementDifferences(have.resolvers, want.resolvers, resolverSet, netip.Addr.String)...)
 	d = append(d, elementDifferences(have.blocked, want.blocked, blockedSet, netip.Addr.String)...)
-	return d
+	// A counting set that is missing is said once, not once for each target.
+	wantCounted := slices.DeleteFunc(endpoints(want.targets), func(t Target) bool {
+		_, ok := l.sets[flowSet(t)]
+		return !ok
+	})
+	return append(d, elementDifferences(endpoints(targetsOf(flows)), wantCounted, flowSet, Target.String)...)
+}
+
+// endpoints returns the addresses and ports of the targets, sorted and once
+// each, without the mark of allowNode, which the counting sets do not hold.
+func endpoints(tg []Target) []Target {
+	out := make([]Target, 0, len(tg))
+	for _, t := range tg {
+		out = append(out, Target{Addr: t.Addr, Port: t.Port})
+	}
+	slices.SortFunc(out, CompareEndpoints)
+	return slices.Compact(out)
+}
+
+func targetsOf(flows []TargetFlows) []Target {
+	out := make([]Target, 0, len(flows))
+	for _, f := range flows {
+		out = append(out, f.Target)
+	}
+	return out
 }
 
 // elementDifferences says which elements of the sets have is missing and
@@ -422,6 +493,13 @@ func targetSet(t Target) string {
 		return setTargets4
 	}
 	return setTargets6
+}
+
+func flowSet(t Target) string {
+	if t.Addr.Is4() {
+		return setFlows4
+	}
+	return setFlows6
 }
 
 func resolverSet(a netip.Addr) string {
@@ -471,25 +549,64 @@ func (l *listed) contents() (contents, []string) {
 	return c, unreadable
 }
 
+// flows returns the elements of the counting sets with the packets their
+// counters counted, sorted, and says which elements could not be read and
+// which have no counter.
+func (l *listed) flows() (flows []TargetFlows, unreadable, uncounted []string) {
+	for _, name := range []string{setFlows4, setFlows6} {
+		for _, raw := range l.sets[name].Elem {
+			t, ok := parseTarget(raw)
+			_, counter := element(raw)
+			switch {
+			case !ok:
+				unreadable = append(unreadable, fmt.Sprintf("set %s holds an element pco cannot read: %s", name, compactJSON(raw)))
+			case counter == nil:
+				uncounted = append(uncounted, fmt.Sprintf("set %s holds %s without a counter", name, t))
+			default:
+				flows = append(flows, TargetFlows{Target: t, Flows: counter.Packets})
+			}
+		}
+	}
+	slices.SortFunc(flows, func(a, b TargetFlows) int { return CompareEndpoints(a.Target, b.Target) })
+	return flows, unreadable, uncounted
+}
+
+// countedOf returns the elements of the counting sets with an address, with
+// a counter or without.
+func (l *listed) countedOf(addr netip.Addr) []Target {
+	var out []Target
+	for _, name := range []string{setFlows4, setFlows6} {
+		for _, raw := range l.sets[name].Elem {
+			if t, ok := parseTarget(raw); ok && t.Addr == addr {
+				out = append(out, t)
+			}
+		}
+	}
+	return endpoints(out)
+}
+
 // element returns the value of a set element: as it is, or out of the object
-// nft writes for an element with fields of its own, such as a comment.
-func element(raw json.RawMessage) json.RawMessage {
+// nft writes for an element with fields of its own, such as a comment, or the
+// counter of an element of a counting set, which it returns as well.
+func element(raw json.RawMessage) (json.RawMessage, *Counter) {
 	var wrapped struct {
 		Elem *struct {
-			Val json.RawMessage `json:"val"`
+			Val     json.RawMessage `json:"val"`
+			Counter *Counter        `json:"counter"`
 		} `json:"elem"`
 	}
 	if json.Unmarshal(raw, &wrapped) == nil && wrapped.Elem != nil {
-		return wrapped.Elem.Val
+		return wrapped.Elem.Val, wrapped.Elem.Counter
 	}
-	return raw
+	return raw, nil
 }
 
 func parseTarget(raw json.RawMessage) (Target, bool) {
 	var v struct {
 		Concat []json.RawMessage `json:"concat"`
 	}
-	if json.Unmarshal(element(raw), &v) != nil || len(v.Concat) != 2 {
+	val, _ := element(raw)
+	if json.Unmarshal(val, &v) != nil || len(v.Concat) != 2 {
 		return Target{}, false
 	}
 	a, ok := parseAddr(v.Concat[0])
@@ -502,7 +619,8 @@ func parseTarget(raw json.RawMessage) (Target, bool) {
 
 func parseAddr(raw json.RawMessage) (netip.Addr, bool) {
 	var s string
-	if json.Unmarshal(element(raw), &s) != nil {
+	val, _ := element(raw)
+	if json.Unmarshal(val, &s) != nil {
 		return netip.Addr{}, false
 	}
 	a, err := netip.ParseAddr(s)

@@ -176,6 +176,58 @@ func TestLinuxEgressFilter(t *testing.T) {
 		require.NotZero(t, live.Rejected.Packets)
 	})
 
+	t.Run("the counting sets count the connections a connector opens", func(t *testing.T) {
+		counted := []Target{
+			{Addr: guest, Port: targetPort},
+			{Addr: netip.MustParseAddr(guestIP6), Port: targetPort},
+			{Addr: netip.MustParseAddr(nodeIP), Port: nodeServicePort, AllowNode: true},
+		}
+		lab.inNode(t, func() error { return f.Set(t.Context(), counted) })
+		read := func(t *testing.T) (Generation, map[Target]uint64) {
+			t.Helper()
+			var flows []TargetFlows
+			lab.inNode(t, func() (err error) { flows, err = f.Counters(t.Context()); return err })
+			require.Len(t, flows, len(counted))
+			got := map[Target]uint64{}
+			for _, fl := range flows {
+				require.Equal(t, flows[0].Generation, fl.Generation)
+				got[fl.Target] = fl.Flows
+			}
+			return flows[0].Generation, got
+		}
+		gen, before := read(t)
+		require.Equal(t, map[Target]uint64{counted[0]: 0, counted[1]: 0, counted[2]: 0}, before)
+
+		const n = 5
+		for range n {
+			connector.reaches(t, hostPort(guestIP, targetPort))
+		}
+		connector.reaches(t, hostPort(guestIP6, targetPort))
+		connector.reaches(t, hostPort(guestIP6, targetPort))
+		connector.reaches(t, hostPort(nodeIP, nodeServicePort))
+		connector.refused(t, hostPort(guestIP, otherPort))
+		_, after := read(t)
+		require.Equal(t, map[Target]uint64{counted[0]: n, counted[1]: 2, counted[2]: 1}, after)
+
+		// A connection that carries much is one connection.
+		connector.hold(t, hostPort(guestIP, targetPort))
+		for range 5 {
+			connector.echoes(t)
+		}
+		held, busy := read(t)
+		require.Equal(t, gen, held)
+		require.Equal(t, uint64(n+1), busy[counted[0]])
+		require.NoError(t, verify(t), "counters that counted are no change")
+
+		// A table loaded anew is another generation, its counters at zero.
+		lab.inNode(t, func() error { return f.Reapply(t.Context()) })
+		reloaded, zero := read(t)
+		require.NotEqual(t, gen, reloaded)
+		require.Equal(t, map[Target]uint64{counted[0]: 0, counted[1]: 0, counted[2]: 0}, zero)
+		require.NoError(t, verify(t))
+		set(t)
+	})
+
 	t.Run("a block is absolute", func(t *testing.T) {
 		public := netip.MustParseAddr(publicIP)
 		_, err := ov.Block(public)

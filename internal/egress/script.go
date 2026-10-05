@@ -23,6 +23,8 @@ const (
 	setResolvers6 = "resolvers6"
 	setBlocked4   = "blocked4"
 	setBlocked6   = "blocked6"
+	setFlows4     = "flows4"
+	setFlows6     = "flows6"
 
 	typeTarget4 = "ipv4_addr . inet_service"
 	typeTarget6 = "ipv6_addr . inet_service"
@@ -59,6 +61,11 @@ const (
 	// documentation, the IPv4 translation and 6to4 prefixes, Teredo and
 	// multicast. A rejected TCP connection is reset, which fails a connect at
 	// once; ICMP alone makes an IPv6 connect wait for a retransmission.
+	//
+	// The rules on the counting sets decide nothing: they count a new
+	// connection to a target in the element of its address and port. Every
+	// packet of a connection reaches the accepts of the targets, so a counter
+	// there would count packets; only the first one is new.
 	chains = `	chain output {
 		type filter hook output priority filter - 10; policy accept;
 		meta skuid %d jump connector
@@ -70,6 +77,8 @@ const (
 		ip daddr @blocked4 reject with icmpx admin-prohibited
 		ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset
 		ip6 daddr @blocked6 reject with icmpx admin-prohibited
+		meta l4proto tcp ct state new ip daddr . tcp dport @flows4
+		meta l4proto tcp ct state new ip6 daddr . tcp dport @flows6
 		ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept
 		ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept
 		ip daddr . tcp dport @allownode4 accept
@@ -121,48 +130,63 @@ func render(uid uint32, c contents) string {
 	n4, n6 := targetElements(c.targets, true)
 	r4, r6 := addrElements(c.resolvers)
 	b4, b6 := addrElements(c.blocked)
-	writeSet(&b, setTargets4, typeTarget4, t4)
-	writeSet(&b, setTargets6, typeTarget6, t6)
-	writeSet(&b, setAllowNode4, typeTarget4, n4)
-	writeSet(&b, setAllowNode6, typeTarget6, n6)
-	writeSet(&b, setResolvers4, typeAddr4, r4)
-	writeSet(&b, setResolvers6, typeAddr6, r6)
-	writeSet(&b, setBlocked4, typeAddr4, b4)
-	writeSet(&b, setBlocked6, typeAddr6, b6)
+	f4, f6 := endpointElements(c.targets)
+	writeSet(&b, setTargets4, typeTarget4, false, t4)
+	writeSet(&b, setTargets6, typeTarget6, false, t6)
+	writeSet(&b, setAllowNode4, typeTarget4, false, n4)
+	writeSet(&b, setAllowNode6, typeTarget6, false, n6)
+	writeSet(&b, setResolvers4, typeAddr4, false, r4)
+	writeSet(&b, setResolvers6, typeAddr6, false, r6)
+	writeSet(&b, setBlocked4, typeAddr4, false, b4)
+	writeSet(&b, setBlocked6, typeAddr6, false, b6)
+	writeSet(&b, setFlows4, typeTarget4, true, f4)
+	writeSet(&b, setFlows6, typeTarget6, true, f6)
 	fmt.Fprintf(&b, chains, uid)
 	return b.String()
 }
 
-func writeSet(b *strings.Builder, name, typ string, elems []string) {
+// writeSet declares a set; one that counts gives each of its elements a
+// counter.
+func writeSet(b *strings.Builder, name, typ string, counts bool, elems []string) {
 	fmt.Fprintf(b, "\tset %s {\n\t\ttype %s\n", name, typ)
+	if counts {
+		b.WriteString("\t\tcounter\n")
+	}
 	if len(elems) > 0 {
 		fmt.Fprintf(b, "\t\telements = {\n\t\t\t%s\n\t\t}\n", strings.Join(elems, ",\n\t\t\t"))
 	}
 	b.WriteString("\t}\n")
 }
 
-// deleteScript returns the script that takes the given targets and resolvers
-// out of the live table, one statement per set, in one transaction.
-func deleteScript(tg []Target, rs []netip.Addr) string {
+// deleteScript returns the script that takes the given targets out of their
+// sets of the live table, the counted ones out of the counting sets, and the
+// resolvers out of theirs, one statement per set, in one transaction. A delete
+// of an element that is not there fails the transaction, so counted is what
+// the counting sets hold.
+func deleteScript(tg, counted []Target, rs []netip.Addr) string {
 	var b strings.Builder
 	t4, t6 := targetElements(tg, false)
 	n4, n6 := targetElements(tg, true)
+	f4, f6 := endpointElements(counted)
 	r4, r6 := addrElements(rs)
 	for _, s := range []struct {
 		name  string
 		elems []string
-	}{{setTargets4, t4}, {setTargets6, t6}, {setAllowNode4, n4}, {setAllowNode6, n6}, {setResolvers4, r4}, {setResolvers6, r6}} {
+	}{
+		{setTargets4, t4}, {setTargets6, t6}, {setAllowNode4, n4}, {setAllowNode6, n6},
+		{setFlows4, f4}, {setFlows6, f6}, {setResolvers4, r4}, {setResolvers6, r6},
+	} {
 		writeElements(&b, "delete", s.name, s.elems)
 	}
 	return b.String()
 }
 
-// blockScript returns the script that takes the given targets and resolvers
-// out of the live table and puts addr into its blocked set, in one
-// transaction.
-func blockScript(tg []Target, rs []netip.Addr, addr netip.Addr) string {
+// blockScript returns the script that takes the given targets, counted ones
+// and resolvers out of the live table, as deleteScript does, and puts addr
+// into its blocked set, in one transaction.
+func blockScript(tg, counted []Target, rs []netip.Addr, addr netip.Addr) string {
 	var b strings.Builder
-	b.WriteString(deleteScript(tg, rs))
+	b.WriteString(deleteScript(tg, counted, rs))
 	writeElements(&b, "add", blockedSet(addr), []string{addr.String()})
 	return b.String()
 }
@@ -189,13 +213,16 @@ func blockedSet(addr netip.Addr) string {
 }
 
 // targetElements writes the targets of allowNode, or the others, as set
-// elements, by family. They are written from parsed addresses, never from
-// text that came from elsewhere.
+// elements, by family.
 func targetElements(tg []Target, allowNode bool) (v4, v6 []string) {
+	return endpointElements(slices.DeleteFunc(slices.Clone(tg), func(t Target) bool { return t.AllowNode != allowNode }))
+}
+
+// endpointElements writes the targets, of allowNode or not, as elements of a
+// set of addresses and ports, by family. They are written from parsed
+// addresses, never from text that came from elsewhere.
+func endpointElements(tg []Target) (v4, v6 []string) {
 	for _, t := range tg {
-		if t.AllowNode != allowNode {
-			continue
-		}
 		e := t.Addr.String() + " . " + strconv.Itoa(int(t.Port))
 		if t.Addr.Is4() {
 			v4 = append(v4, e)

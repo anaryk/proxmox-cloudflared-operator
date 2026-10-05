@@ -83,7 +83,8 @@ func TestTheDaemonBlocksAnAddressWhoseMACMoved(t *testing.T) {
 
 	require.Eventually(t, func() bool { return len(w.nft.applied()) >= before+2 }, 10*time.Second, 5*time.Millisecond)
 	scripts := w.nft.applied()[before:]
-	require.Equal(t, "delete element inet pco_egress targets4 { "+guestAddress+" . 8080 }\n", scripts[0])
+	require.Equal(t, "delete element inet pco_egress targets4 { "+guestAddress+" . 8080 }\n"+
+		"delete element inet pco_egress flows4 { "+guestAddress+" . 8080 }\n", scripts[0])
 	require.Contains(t, scripts[1], guestAddress+" . 8080", "verified again and back")
 }
 

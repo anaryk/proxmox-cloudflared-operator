@@ -2,6 +2,7 @@ package egress
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -178,10 +179,77 @@ func TestEveryRejectAnswersTCPWithAReset(t *testing.T) {
 }
 
 func TestTheDeleteScriptNamesEachElement(t *testing.T) {
-	got := deleteScript(targets("10.0.0.5:80", "10.0.0.5:443", "[fd00::5]:80"), nil)
+	tg := targets("10.0.0.5:80", "10.0.0.5:443", "[fd00::5]:80")
+	got := deleteScript(tg, tg, nil)
 
 	require.Equal(t, "delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 443 }\n"+
-		"delete element inet pco_egress targets6 { fd00::5 . 80 }\n", got)
+		"delete element inet pco_egress targets6 { fd00::5 . 80 }\n"+
+		"delete element inet pco_egress flows4 { 10.0.0.5 . 80, 10.0.0.5 . 443 }\n"+
+		"delete element inet pco_egress flows6 { fd00::5 . 80 }\n", got)
 	require.Equal(t, "delete element inet pco_egress resolvers4 { 10.0.0.53 }\n",
-		deleteScript(nil, []netip.Addr{addr("10.0.0.53")}))
+		deleteScript(nil, nil, []netip.Addr{addr("10.0.0.53")}))
+	require.Equal(t, "delete element inet pco_egress targets4 { 10.0.0.5 . 80 }\n",
+		deleteScript(targets("10.0.0.5:80"), nil, nil), "what the counting sets do not hold is not deleted from them")
+}
+
+// The counting sets hold every target, of allowNode or not, and count the
+// connections opened to each: the statement counter in their body gives every
+// element a counter of its own.
+func TestTheCountingSetsHoldEveryTargetWithACounter(t *testing.T) {
+	script := render(testUID, contents{targets: []Target{
+		nodeTarget("10.0.0.2:8006"), target("10.0.0.5:80"), target("10.0.0.5:443"), nodeTarget("[fd00::2]:8006"), target("[fd00::5]:80"),
+	}})
+
+	require.Contains(t, script, "\tset flows4 {\n\t\ttype ipv4_addr . inet_service\n\t\tcounter\n\t\telements = {\n"+
+		"\t\t\t10.0.0.2 . 8006,\n\t\t\t10.0.0.5 . 80,\n\t\t\t10.0.0.5 . 443\n\t\t}\n\t}\n")
+	require.Contains(t, script, "\tset flows6 {\n\t\ttype ipv6_addr . inet_service\n\t\tcounter\n\t\telements = {\n"+
+		"\t\t\tfd00::2 . 8006,\n\t\t\tfd00::5 . 80\n\t\t}\n\t}\n")
+	require.Equal(t, []string{"10.0.0.5 . 80", "10.0.0.5 . 443"}, elementsOf(t, script, setTargets4), "the target sets are as they were")
+	require.Equal(t, []string{"10.0.0.2 . 8006"}, elementsOf(t, script, setAllowNode4))
+	require.Contains(t, Base(testUID, nil, nil), "\tset flows4 {\n\t\ttype ipv4_addr . inet_service\n\t\tcounter\n\t}\n")
+	require.Contains(t, Base(testUID, nil, nil), "\tset flows6 {\n\t\ttype ipv6_addr . inet_service\n\t\tcounter\n\t}\n")
+	require.Equal(t, 2, strings.Count(script, "\t\tcounter\n"), "no other set counts")
+}
+
+// Only the first packet of a connection is new, so the counting rules count
+// connections; they come before every accept of a target and decide nothing,
+// and the rules that decide are the ones the chain had without them, in their
+// order.
+func TestTheCountingRulesComeRightAfterTheBlockedRulesAndDecideNothing(t *testing.T) {
+	rules := rulesOf(t, Base(testUID, nil, nil))
+
+	counting := []string{
+		"meta l4proto tcp ct state new ip daddr . tcp dport @flows4",
+		"meta l4proto tcp ct state new ip6 daddr . tcp dport @flows6",
+	}
+	require.Equal(t, counting, rules[6:8])
+	require.Equal(t, verdictRules, slices.Concat(rules[:6], rules[8:]))
+	for _, r := range counting {
+		for _, verdict := range []string{"accept", "drop", "reject", "jump", "goto", "return", "queue"} {
+			require.NotContains(t, r, verdict)
+		}
+	}
+}
+
+// verdictRules are the rules of the connector chain that decide, in order.
+var verdictRules = []string{
+	"ct state invalid drop",
+	"ct direction reply meta l4proto tcp fib daddr type local accept",
+	"ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
+	"ip daddr @blocked4 reject with icmpx admin-prohibited",
+	"ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
+	"ip6 daddr @blocked6 reject with icmpx admin-prohibited",
+	"ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept",
+	"ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept",
+	"ip daddr . tcp dport @allownode4 accept",
+	"ip6 daddr . tcp dport @allownode6 accept",
+	`fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset`,
+	`fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited`,
+	"ip daddr . tcp dport @targets4 accept",
+	"ip6 daddr . tcp dport @targets6 accept",
+	"ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 198.18.0.0/15, 0.0.0.0/8, 192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/3 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept",
+	"ip6 daddr != { fc00::/7, fe80::/10, ::1, 64:ff9b::/96, 64:ff9b:1::/48, 2002::/16, 2001::/32, ff00::/8 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept",
+	"ip daddr { 1.1.1.1, 1.0.0.1 } tcp dport 853 accept",
+	`meta l4proto tcp counter name "rejected" reject with tcp reset`,
+	`counter name "rejected" reject with icmpx admin-prohibited`,
 }

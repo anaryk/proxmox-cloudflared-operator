@@ -145,11 +145,11 @@ func elementsOf(t *testing.T, script, set string) []string {
 type listing []map[string]any
 
 // realListing reads a listing that an nft of the given version printed for
-// the table of testdata/listed.nft. The kernel they were taken on had no fib
-// expression for inet tables, so the fib match in them is the one the same
-// nft printed for an ip table; the Linux test compares a real one. nft names
-// a protocol only where /etc/protocols has it, as on a node: the 1.1.3 listing
-// names them, the 1.0.6 one has their numbers.
+// the table of testdata/listed.nft, loaded twice into a network namespace of a
+// Proxmox VE 9 node: 1.1.3 is the node's own nft, 1.0.6 the one of Debian 12.
+// nft names a protocol where /etc/protocols has it, as on a node: the 1.1.3
+// listing names them, the 1.0.6 one has their numbers (nft -p), as nft prints
+// them without that file.
 func realListing(t *testing.T, version string) listing {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "listing-"+version+".json"))
@@ -169,14 +169,39 @@ func (l listing) bytes(t *testing.T) []byte {
 	return b
 }
 
+// older returns the listing without the counting sets and the rules that
+// count: the table an older pco loaded.
+func older(t *testing.T, version string) listing {
+	t.Helper()
+	return realListing(t, version).edit(t, func(l listing) listing {
+		return slices.DeleteFunc(l, func(e map[string]any) bool {
+			if s, ok := e["set"].(map[string]any); ok {
+				return s["name"] == setFlows4 || s["name"] == setFlows6
+			}
+			r, ok := e["rule"].(map[string]any)
+			return ok && strings.Contains(jsonText(r["expr"]), `"@flows`)
+		})
+	})
+}
+
+// countedElement is an element of a counting set as nft lists it, with the
+// counter of the target.
+func countedElement(x Target, packets int) map[string]any {
+	return map[string]any{"elem": map[string]any{
+		"val":     map[string]any{"concat": []any{x.Addr.String(), x.Port}},
+		"counter": map[string]any{"packets": packets, "bytes": packets * 60},
+	}}
+}
+
 // with returns the listing with the elements of its sets replaced by the
-// targets and resolvers given.
+// targets and resolvers given, the counting sets holding every target.
 func (l listing) with(t *testing.T, tg []Target, rs []netip.Addr) listing {
 	t.Helper()
 	elems := map[string][]any{}
 	for _, x := range tg {
 		name := targetSet(x)
 		elems[name] = append(elems[name], map[string]any{"concat": []any{x.Addr.String(), x.Port}})
+		elems[flowSet(x)] = append(elems[flowSet(x)], countedElement(x, 0))
 	}
 	for _, a := range rs {
 		name := setResolvers4

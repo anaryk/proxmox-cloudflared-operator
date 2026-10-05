@@ -105,6 +105,7 @@ func TestListRefusesMoreOutputThanItKeeps(t *testing.T) {
 	_, err := n.List(t.Context())
 
 	require.ErrorContains(t, err, "more than")
+	require.ErrorIs(t, err, ErrUnreadable, "a listing cut short is none nft printed for the table")
 }
 
 func TestNftWithoutABinaryFails(t *testing.T) {

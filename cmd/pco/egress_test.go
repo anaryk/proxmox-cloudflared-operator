@@ -395,6 +395,7 @@ func TestEgressBlockTakesTheAddressOutOfTheLiveTable(t *testing.T) {
 
 	require.NoError(t, res.err)
 	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
+		"delete element inet pco_egress flows4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
 		"add element inet pco_egress blocked4 { 10.0.0.5 }\n"}, r.nft.applied())
 	blocked, err := r.overrides().Blocked()
 	require.NoError(t, err)

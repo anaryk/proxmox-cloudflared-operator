@@ -82,7 +82,8 @@ func TestRemoveTakesATargetOfAllowNodeOutOfItsSet(t *testing.T) {
 	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.2")))
 
 	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.2 . 80 }\n" +
-		"delete element inet pco_egress allownode4 { 10.0.0.2 . 8006 }\n"}, n.applied())
+		"delete element inet pco_egress allownode4 { 10.0.0.2 . 8006 }\n" +
+		"delete element inet pco_egress flows4 { 10.0.0.2 . 80, 10.0.0.2 . 8006 }\n"}, n.applied())
 }
 
 // A table with a target of allowNode besides the others reads back as what

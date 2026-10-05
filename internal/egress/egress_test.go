@@ -217,7 +217,8 @@ func TestRemoveTakesTheAddressOutAtOnce(t *testing.T) {
 
 	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
 
-	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 443 }\n"}, n.applied())
+	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 443 }\n" +
+		"delete element inet pco_egress flows4 { 10.0.0.5 . 80, 10.0.0.5 . 443 }\n"}, n.applied(), "out of the counting set in the same transaction")
 }
 
 func TestRemoveOfAnAddressTheTableDoesNotHoldAppliesNothing(t *testing.T) {
@@ -238,7 +239,8 @@ func TestRemoveLeavesAResolverWithTheSameAddress(t *testing.T) {
 
 	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
 
-	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80 }\n"}, n.applied())
+	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80 }\n" +
+		"delete element inet pco_egress flows4 { 10.0.0.5 . 80 }\n"}, n.applied())
 }
 
 func TestTheNextSetAfterRemoveAppliesTheSetItIsGiven(t *testing.T) {
@@ -306,7 +308,8 @@ func TestRemoveBeforeAnySetTakesTheAddressOutOfTheTableAsItIs(t *testing.T) {
 
 	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
 
-	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n"}, n.applied())
+	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n" +
+		"delete element inet pco_egress flows4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n"}, n.applied())
 
 	t.Run("and the next Set loads the whole table", func(t *testing.T) {
 		n.reset()
@@ -330,6 +333,17 @@ func TestRemoveBeforeAnySetOfAnAddressTheTableDoesNotHold(t *testing.T) {
 			require.Empty(t, n.applied())
 		})
 	}
+}
+
+// The table of an older pco has no counting sets, and a delete of an element
+// that is not there fails the whole transaction.
+func TestRemoveBeforeAnySetLeavesTheCountingSetsOfAnOlderTableAlone(t *testing.T) {
+	f, n, _, _ := newTestFilter(t)
+	n.setLive(older(t, "1.1.3").bytes(t))
+
+	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
+
+	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n"}, n.applied())
 }
 
 func TestRemoveBeforeAnySetReturnsAListingItCannotRead(t *testing.T) {
@@ -393,14 +407,14 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				}}
 				return append(l[:first], append(listing{added}, l[first:]...)...)
 			})
-		}, "chain connector has 20 rules, want 19"},
+		}, "chain connector has 22 rules, want 21"},
 		{"a rule changed", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				last := l.rules(chainConnector)
 				l[last[len(last)-1]]["rule"].(map[string]any)["expr"] = []any{map[string]any{"accept": nil}}
 				return l
 			})
-		}, "chain connector: rule 19 differs"},
+		}, "chain connector: rule 21 differs"},
 		{"two rules swapped", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				r := l.rules(chainConnector)
@@ -437,7 +451,7 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				}
 				return l
 			})
-		}, "chain connector: rule 15 differs"},
+		}, "chain connector: rule 17 differs"},
 		{"the statements of a rule in another order", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				r := l.rules(chainConnector)
@@ -445,7 +459,7 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				expr[0], expr[1] = expr[1], expr[0]
 				return l
 			})
-		}, "chain connector: rule 19 differs"},
+		}, "chain connector: rule 21 differs"},
 		{"another priority", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				l.object(t, "chain", chainOutput)["prio"] = 10
@@ -473,6 +487,64 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				return l
 			})
 		}, `set allownode4 is "ipv4_addr", want ["ipv4_addr","inet_service"]`},
+		{"no counting set", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				return drop(l, "set", setFlows6)
+			})
+		}, "no set flows6"},
+		{"a counting set without counters", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				s := l.object(t, "set", setFlows4)
+				delete(s, "stmt")
+				var bare []any
+				for _, e := range s["elem"].([]any) {
+					bare = append(bare, e.(map[string]any)["elem"].(map[string]any)["val"])
+				}
+				s["elem"] = bare
+				return l
+			})
+		}, "set flows4 has no counters"},
+		{"a counting set with another statement", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				s := l.object(t, "set", setFlows4)
+				s["stmt"] = append(s["stmt"].([]any), map[string]any{"limit": map[string]any{"rate": 1, "per": "second"}})
+				return l
+			})
+		}, `set flows4 is ["ipv4_addr","inet_service"] with counter, limit, want ["ipv4_addr","inet_service"] with counter`},
+		{"a counting set that lacks a target", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				s := l.object(t, "set", setFlows4)
+				s["elem"] = s["elem"].([]any)[1:]
+				return l
+			})
+		}, "set flows4 lacks 10.0.0.5:80"},
+		{"a counting set that holds more", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				l.object(t, "set", setFlows6)["elem"] = []any{countedElement(target("[fd00::7]:22"), 0)}
+				return l
+			})
+		}, "set flows6 holds [fd00::7]:22"},
+		{"no counting rule", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				r := l.rules(chainConnector)
+				return slices.Delete(l, r[6], r[6]+1)
+			})
+		}, "chain connector has 20 rules, want 21"},
+		{"the counting rules after the accept of the targets", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				r := l.rules(chainConnector)
+				moved := slices.Clone(l[r[6] : r[7]+1])
+				l = slices.Insert(l, r[15]+1, moved...)
+				return slices.Delete(l, r[6], r[7]+1)
+			})
+		}, "chain connector: rule 7 differs"},
+		{"a counting rule that accepts", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				rule := l[l.rules(chainConnector)[6]]["rule"].(map[string]any)
+				rule["expr"] = append(rule["expr"].([]any), map[string]any{"accept": nil})
+				return l
+			})
+		}, "chain connector: rule 7 differs"},
 		{"a missing element", func(t *testing.T, l listing) listing {
 			return l.with(t, tg[1:], rs)
 		}, "set targets4 lacks 10.0.0.5:80"},
@@ -792,6 +864,44 @@ func TestVerifyBeforeAnythingWasAppliedComparesAllButTheElements(t *testing.T) {
 		return l
 	}).bytes(t))
 	require.ErrorIs(t, f.Verify(t.Context()), ErrChanged)
+}
+
+// After an upgrade the daemon finds the table the older pco loaded, without
+// the counting sets: its check finds it changed, the keeper loads it again,
+// and the table loaded then is in place, which shows the filter as on.
+func TestATableOfAnOlderPcoIsLoadedAgainAndThenInPlace(t *testing.T) {
+	for _, version := range []string{"1.0.6", "1.1.3"} {
+		t.Run(version, func(t *testing.T) {
+			f, n, r, _ := newTestFilter(t)
+			r.set(addr("192.168.1.1"))
+			tg := targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443")
+			n.setLive(older(t, version).bytes(t))
+
+			err := f.Verify(t.Context())
+			require.ErrorIs(t, err, ErrChanged)
+			require.ErrorContains(t, err, "chain connector has 19 rules, want 21; no set flows4; no set flows6")
+
+			require.NoError(t, f.Reapply(t.Context()))
+			require.NoError(t, f.Set(t.Context(), tg))
+			require.Len(t, n.applied(), 2)
+			require.Equal(t, render(testUID, contents{targets: tg, resolvers: []netip.Addr{addr("192.168.1.1")}}), n.applied()[1])
+			n.setLive(realListing(t, version).bytes(t))
+			require.NoError(t, f.Verify(t.Context()))
+		})
+	}
+}
+
+func TestVerifySaysOnceThatACountingSetIsMissing(t *testing.T) {
+	f, n, r, _ := newTestFilter(t)
+	r.set(addr("192.168.1.1"))
+	require.NoError(t, f.Set(t.Context(), targets("10.0.0.5:80", "10.0.0.5:8080", "10.0.0.6:443")))
+	n.setLive(older(t, "1.1.3").bytes(t))
+
+	err := f.Verify(t.Context())
+
+	require.ErrorIs(t, err, ErrChanged)
+	require.ErrorContains(t, err, "no set flows4; no set flows6")
+	require.NotContains(t, err.Error(), "lacks")
 }
 
 func TestVerifyReturnsAFailureToListAsItIs(t *testing.T) {
