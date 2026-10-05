@@ -147,7 +147,9 @@ type listing []map[string]any
 // realListing reads a listing that an nft of the given version printed for
 // the table of testdata/listed.nft. The kernel they were taken on had no fib
 // expression for inet tables, so the fib match in them is the one the same
-// nft printed for an ip table; the Linux test compares a real one.
+// nft printed for an ip table; the Linux test compares a real one. nft names
+// a protocol only where /etc/protocols has it, as on a node: the 1.1.3 listing
+// names them, the 1.0.6 one has their numbers.
 func realListing(t *testing.T, version string) listing {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "listing-"+version+".json"))

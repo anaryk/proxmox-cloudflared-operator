@@ -613,9 +613,18 @@ func TestVerifyDoesNotTakeOtherWordsForAChange(t *testing.T) {
 		{"elements in another order", func(t *testing.T, l listing) listing {
 			return l.with(t, []Target{tg[2], tg[0], tg[1]}, rs)
 		}},
-		{"protocols by name", func(t *testing.T, l listing) listing {
+		{"protocols by number, as without /etc/protocols", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
-				replaceAll(l, map[string]any{"set": []any{6, 17}}, map[string]any{"set": []any{"udp", "tcp"}})
+				l4proto := map[string]any{"meta": map[string]any{"key": "l4proto"}}
+				require.Equal(t, 5, replaceAll(l, map[string]any{"op": "==", "left": l4proto, "right": "tcp"},
+					map[string]any{"op": "==", "left": l4proto, "right": 6}))
+				require.Equal(t, 4, replaceAll(l, map[string]any{"set": []any{"tcp", "udp"}}, map[string]any{"set": []any{6, 17}}))
+				return l
+			})
+		}},
+		{"protocols in another order", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				require.Equal(t, 4, replaceAll(l, map[string]any{"set": []any{"tcp", "udp"}}, map[string]any{"set": []any{"udp", "tcp"}}))
 				return l
 			})
 		}},
@@ -659,27 +668,30 @@ func TestVerifyDoesNotTakeOtherWordsForAChange(t *testing.T) {
 }
 
 // replaceAll replaces every value in the listing that equals old, compared as
-// JSON, with replacement.
-func replaceAll(l listing, old, replacement any) {
+// JSON, with replacement, and returns how many it replaced.
+func replaceAll(l listing, old, replacement any) int {
+	n := 0
 	for _, e := range l {
 		for k, v := range e {
-			e[k] = replaced(v, old, replacement)
+			e[k] = replaced(v, old, replacement, &n)
 		}
 	}
+	return n
 }
 
-func replaced(v, old, replacement any) any {
+func replaced(v, old, replacement any, n *int) any {
 	if jsonEqual(v, old) {
+		*n++
 		return replacement
 	}
 	switch x := v.(type) {
 	case map[string]any:
 		for k, e := range x {
-			x[k] = replaced(e, old, replacement)
+			x[k] = replaced(e, old, replacement, n)
 		}
 	case []any:
 		for i, e := range x {
-			x[i] = replaced(e, old, replacement)
+			x[i] = replaced(e, old, replacement, n)
 		}
 	}
 	return v
