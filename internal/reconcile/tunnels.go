@@ -35,6 +35,17 @@ type TunnelReconciler struct {
 	mu        sync.Mutex
 	lastPut   map[string]time.Time // by account id and tunnel id
 	lastSweep map[string]time.Time // of the probe tunnels, by account id
+	hint      string               // what a foreign verdict says to do; empty for the host's words
+}
+
+// SetRecoverHint sets what the next runs say to do about a configuration
+// written by a writer leader.json does not know, in place of "another
+// installation uses install id <id>, or the store was lost (pco setup
+// --recover)"; empty puts that back.
+func (r *TunnelReconciler) SetRecoverHint(hint string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hint = hint
 }
 
 // NewTunnelReconciler returns a reconciler that reaches each account through
@@ -64,6 +75,9 @@ type TunnelResult struct {
 	Actions  []Action      // in the order performed or planned
 	Problems []string
 	Verdict  WriterVerdict // WriterProceed unless another writer stopped the run
+	// Sentinel is the writer whose sentinel in a configuration stopped the
+	// run; zero when the run went on, or stopped on leader.json alone.
+	Sentinel planner.Writer
 	// Waiting names the tunnels the run could not look up, as Cloudflare's
 	// rate limit refused it; that is not a problem of its own.
 	Waiting Waiting
@@ -110,7 +124,7 @@ func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	run := &tunnelRun{r: r, mode: mode, held: held}
+	run := &tunnelRun{r: r, mode: mode, held: held, hint: r.hint}
 	goOn := run.start()
 	for _, t := range targets(plans, known, run.us) {
 		if goOn && ctx.Err() != nil {
@@ -180,6 +194,7 @@ type tunnelRun struct {
 	r    *TunnelReconciler
 	mode Mode
 	held string         // why a write is held in Observe mode
+	hint string         // what a foreign verdict says to do, as SetRecoverHint set it
 	us   planner.Writer // set once start has validated it
 	res  TunnelResult
 }
@@ -409,32 +424,34 @@ func (run *tunnelRun) refuse(t target, detail string, remote []planner.IngressRu
 	us, stored, err := run.r.writer()
 	var v WriterVerdict
 	var why string
+	var by planner.Writer
 	switch {
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: reading the writer identity: %v", t, err))
-		v, why = judgeUnread(run.us, remote)
+		v, by, why = judgeUnread(run.us, remote, run.hint)
 	case us != run.us:
 		v, why = WriterStale, writerFault(run.us, us, stored)
 	default:
 		// The table answers proceed from the sentinels and us alone, and
 		// those did not let this writer proceed: the verdict stops the run
 		// either way.
-		var by planner.Writer
 		v, by = judgeConfig(run.us, stored, remote)
-		why = foreignWhy(run.us, by)
+		why = foreignWhy(run.us, by, run.hint)
 		if v == WriterStale {
 			why = writerFault(run.us, run.us, stored)
 		}
 	}
 	run.act(t, PutConfig, detail, heldVerdict(v))
 	run.stop(t.String()+": ", v, why)
+	run.res.Sentinel = by
 }
 
 // judgeUnread is the verdict on remote rules that do not let us proceed, when
-// leader.json cannot be read. A sentinel of our generation with another nonce
-// is foreign whatever leader.json holds; a newer one leader.json may name, so
-// the writer is taken to be stale.
-func judgeUnread(us planner.Writer, remote []planner.IngressRule) (WriterVerdict, string) {
+// leader.json cannot be read, with the writer of the sentinel it rests on. A
+// sentinel of our generation with another nonce is foreign whatever
+// leader.json holds; a newer one leader.json may name, so the writer is taken
+// to be stale.
+func judgeUnread(us planner.Writer, remote []planner.IngressRule, hint string) (WriterVerdict, planner.Writer, string) {
 	var newer planner.Writer
 	for _, rule := range remote {
 		w, ok := planner.ParseSentinel(rule.Hostname)
@@ -442,19 +459,24 @@ func judgeUnread(us planner.Writer, remote []planner.IngressRule) (WriterVerdict
 		case !ok || JudgeWriter(us, w, true, us) == WriterProceed:
 		case JudgeWriter(us, w, true, w) == WriterForeign:
 			// Foreign even with leader.json naming that very writer.
-			return WriterForeign, foreignWhy(us, w)
+			return WriterForeign, w, foreignWhy(us, w, hint)
 		case newer == (planner.Writer{}):
 			newer = w
 		}
 	}
-	return WriterStale, fmt.Sprintf("the configuration was written by generation %d nonce %s, newer than this writer",
+	return WriterStale, newer, fmt.Sprintf("the configuration was written by generation %d nonce %s, newer than this writer",
 		newer.Generation, newer.Nonce)
 }
 
-func foreignWhy(us, by planner.Writer) string {
-	return fmt.Sprintf("the configuration was written by generation %d nonce %s, which leader.json does not know: "+
-		"another installation uses install id %s, or the store was lost (pco setup --recover)",
-		by.Generation, by.Nonce, us.InstallID)
+// foreignWhy says why a configuration by a writer leader.json does not know
+// stops the run, and what to do about it: hint, or the host's words when it
+// is empty.
+func foreignWhy(us, by planner.Writer, hint string) string {
+	if hint == "" {
+		hint = fmt.Sprintf("another installation uses install id %s, or the store was lost (pco setup --recover)", us.InstallID)
+	}
+	return fmt.Sprintf("the configuration was written by generation %d nonce %s, which leader.json does not know: %s",
+		by.Generation, by.Nonce, hint)
 }
 
 // putWait returns how long the configuration of a tunnel must wait before it

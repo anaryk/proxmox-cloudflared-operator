@@ -649,6 +649,54 @@ func TestTunnelForeignWriterStops(t *testing.T) {
 	require.Equal(t, rulesOf(twin, app), configIn(t, f, "acct1").Ingress)
 }
 
+// What the foreign verdict says to do is the host's, unless the caller says
+// otherwise, as the appliance does; the sentinel it rests on comes with it.
+func TestTheForeignVerdictSaysWhatTheCallerSetsToDo(t *testing.T) {
+	const hint = "the state of this appliance is older than its last write at Cloudflare (rollback or restore); run pco appliance recover"
+	for _, tt := range []struct {
+		name, hint, want string
+		remote           planner.Writer
+		stored           answer
+	}{
+		{name: "the host", remote: writerAt(5, "zz"), stored: answer{us: ours, stored: ours},
+			want: "pco-abc in account acct1: the configuration was written by generation 5 nonce zz, which leader.json does not know: " +
+				"another installation uses install id abc, or the store was lost (pco setup --recover); writing stops"},
+		{name: "a hint, equal generation", hint: hint, remote: writerAt(5, "zz"), stored: answer{us: ours, stored: ours},
+			want: "pco-abc in account acct1: the configuration was written by generation 5 nonce zz, which leader.json does not know: " + hint + "; writing stops"},
+		{name: "a hint, a higher generation", hint: hint, remote: writerAt(7, "n7"), stored: answer{us: ours, stored: ours},
+			want: "pco-abc in account acct1: the configuration was written by generation 7 nonce n7, which leader.json does not know: " + hint + "; writing stops"},
+		{name: "a hint, leader.json unread", hint: hint, remote: writerAt(5, "zz"), stored: answer{us: ours, stored: ours, err: errors.New("gone")},
+			want: "pco-abc in account acct1: the configuration was written by generation 5 nonce zz, which leader.json does not know: " + hint + "; writing stops"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake("acct1")
+			f.SeedTunnel("acct1", testTunnel, rulesOf(tt.remote, app))
+			writer, _ := scripted(answer{us: ours, stored: ours}, answer{us: ours, stored: ours}, tt.stored)
+			r := reconcilerWith(Clients{"cred1": f}, writer)
+			r.SetRecoverHint(tt.hint)
+
+			res := r.Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+
+			require.Equal(t, WriterForeign, res.Verdict)
+			require.Contains(t, res.Problems, tt.want)
+			require.Equal(t, tt.remote, res.Sentinel)
+		})
+	}
+}
+
+func TestARunThatGoesOnOrStopsOnLeaderJSONNamesNoSentinel(t *testing.T) {
+	f := newFake("acct1")
+	f.SeedTunnel("acct1", testTunnel, rulesOf(ours, app))
+	res := newReconciler(Clients{"cred1": f}, &clock{t0}).Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+	require.Equal(t, WriterProceed, res.Verdict)
+	require.Zero(t, res.Sentinel)
+
+	writer, _ := scripted(answer{us: ours, stored: writerAt(6, "n6")})
+	res = reconcilerWith(Clients{"cred1": f}, writer).Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
+	require.Equal(t, WriterStale, res.Verdict)
+	require.Zero(t, res.Sentinel)
+}
+
 func TestTunnelObserveMode(t *testing.T) {
 	f := newFake("acct1", "acct2")
 	drifted := rulesOf(writerAt(3, "n3"), app)
