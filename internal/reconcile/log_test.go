@@ -46,7 +46,7 @@ func TestTheWritesOfTunnelsAreDebugLines(t *testing.T) {
 
 	res := r.Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
 
-	require.Equal(t, []Action{action(CreateTunnel, "cred1", ""), action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(CreateTunnel, ""), action(PutConfig, "")}, withoutDetail(res.Actions))
 	requireOnlyDebugLines(t, &buf, "created tunnel", "wrote tunnel configuration")
 }
 

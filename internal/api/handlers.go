@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -57,10 +58,13 @@ func (s *Server) routes() http.Handler {
 	return s.logRequests(s.guard(r))
 }
 
+// getVersion answers with the version of the daemon and the poll interval,
+// as a Go duration like the settings write it.
 func (s *Server) getVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, struct {
-		Version string `json:"version"`
-	}{s.version})
+		Version      string `json:"version"`
+		PollInterval string `json:"pollInterval"`
+	}{s.version, s.engine.PollInterval().String()})
 }
 
 func (s *Server) getState(c *gin.Context) {
@@ -76,11 +80,22 @@ func (s *Server) getEvents(c *gin.Context) {
 			return
 		}
 	}
-	events := s.engine.Events(since)
-	if events == nil {
-		events = []engine.Event{}
+	c.JSON(http.StatusOK, ofAccounts(s.engine.Events(since), c.QueryArray("account")))
+}
+
+// ofAccounts keeps the events whose account is one of accounts, by exact id;
+// without accounts, every event. An event of no account is of none of them.
+func ofAccounts(events []engine.Event, accounts []string) []engine.Event {
+	if len(accounts) == 0 {
+		return nonNil(events)
 	}
-	c.JSON(http.StatusOK, events)
+	out := []engine.Event{}
+	for _, ev := range events {
+		if ev.Account != "" && slices.Contains(accounts, ev.Account) {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 func (s *Server) postSync(c *gin.Context) {

@@ -22,6 +22,9 @@ type Step struct {
 	Name   string `json:"name"` // "route", "zone", "dns", "ingress", "connector", "identity", "tcp", "http"
 	Level  Level  `json:"level"`
 	Detail string `json:"detail"`
+	// Skipped says that an earlier step failed; Level stays "warn" and
+	// Detail "skipped", as clients that came before it read them.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // DiagnoseRoute walks the chain of the route that holds a hostname in st:
@@ -44,7 +47,7 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", engine.ErrInvalid, err)
 	}
-	rt, found := holderOf(st, host)
+	rt, found := HolderOf(st, host)
 	if !found {
 		return nil, fmt.Errorf("%w: the last cycle has no route for %s", engine.ErrNotFound, host)
 	}
@@ -64,7 +67,7 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 	failed := false
 	for _, l := range links {
 		if failed {
-			steps = append(steps, Step{Name: l.name, Level: LevelWarn, Detail: "skipped"})
+			steps = append(steps, Step{Name: l.name, Level: LevelWarn, Detail: "skipped", Skipped: true})
 			continue
 		}
 		s := l.check()
@@ -75,9 +78,9 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 	return steps, nil
 }
 
-// holderOf returns the route of host that did not lose it to another owner,
-// or, failing that, any route of host.
-func holderOf(st engine.State, host string) (engine.RouteView, bool) {
+// HolderOf returns the route of host that did not lose it to another owner,
+// or, failing that, any route of host: the route DiagnoseRoute walks.
+func HolderOf(st engine.State, host string) (engine.RouteView, bool) {
 	var fallback *engine.RouteView
 	for i, r := range st.Routes {
 		if !strings.EqualFold(r.Hostname, host) {

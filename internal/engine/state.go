@@ -43,6 +43,10 @@ type RouteView struct {
 	// empty for a route that lost its hostname or has no tunnel.
 	Account string               `json:"accountId,omitempty"`
 	Rule    *planner.IngressRule `json:"rule,omitempty"`
+	// Path is where the route was proven, for a route that won its hostname
+	// and has a binding; nil for one that lost it and for a manual route
+	// without a guest.
+	Path *PathView `json:"path,omitempty"`
 }
 
 // TunnelView is a tunnel of the install as the last cycle found it, or, when
@@ -96,6 +100,7 @@ type State struct {
 	Tunnels     []TunnelView         `json:"tunnels"`  // by account id
 	Connectors  []connector.Status   `json:"connectors"`
 	Credentials []CredentialView     `json:"credentials"`
+	Zones       []ZoneView           `json:"zones"`   // by name
 	Actions     []reconcile.Action   `json:"actions"` // tunnels by account, then records by zone and name
 	Conflicts   []reconcile.Conflict `json:"conflicts"`
 	Lost        []string             `json:"lost"`
@@ -177,6 +182,10 @@ func (s State) clone() State {
 			copied := *r
 			s.Routes[i].Rule = &copied
 		}
+		if p := s.Routes[i].Path; p != nil {
+			copied := *p
+			s.Routes[i].Path = &copied
+		}
 	}
 	s.Issues = slices.Clone(s.Issues)
 	s.Tunnels = slices.Clone(s.Tunnels)
@@ -185,6 +194,7 @@ func (s State) clone() State {
 	for i := range s.Credentials {
 		s.Credentials[i].Report = cloneReport(s.Credentials[i].Report)
 	}
+	s.Zones = cloneZones(s.Zones)
 	s.Actions = slices.Clone(s.Actions)
 	s.Conflicts = slices.Clone(s.Conflicts)
 	s.Lost = slices.Clone(s.Lost)
@@ -237,6 +247,7 @@ func (s State) normalized() State {
 	s.Tunnels = nonNil(s.Tunnels)
 	s.Connectors = nonNil(s.Connectors)
 	s.Credentials = nonNil(s.Credentials)
+	s.Zones = nonNil(s.Zones)
 	s.Actions = nonNil(s.Actions)
 	s.Conflicts = nonNil(s.Conflicts)
 	s.Lost = nonNil(s.Lost)
@@ -319,6 +330,7 @@ func (c *cycleRun) routeViews() []RouteView {
 		}
 		if res, ok := c.results[st.Hostname]; ok && winner[st.Hostname] == st.Owner {
 			v.Candidates = slices.Clone(res.Candidates)
+			v.Path = pathOf(c.e.d.Node, st.Owner, res.Binding, c.snap)
 		}
 		out = append(out, v)
 	}

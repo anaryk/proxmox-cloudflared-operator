@@ -85,6 +85,7 @@ func (run *tunnelRun) deleteProbe(ctx context.Context, api cfapi.API, probe targ
 	a := Action{
 		Kind:        DeleteTunnel,
 		Credential:  probe.credential,
+		AccountID:   probe.account,
 		Target:      tun.Name,
 		Detail:      fmt.Sprintf("in account %s: probe left behind, created %s", probe.account, tun.CreatedAt.UTC().Format(time.RFC3339)),
 		Destructive: true,

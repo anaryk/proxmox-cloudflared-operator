@@ -22,8 +22,11 @@ func seedAt(f *cffake.Fake, account, name string, at time.Time) cfapi.Tunnel {
 	return f.SeedTunnel(account, name, nil)
 }
 
-func deleteTunnel(name, held string) Action {
-	return Action{Kind: DeleteTunnel, Credential: "cred1", Target: name, Destructive: true, Applied: held == "", Held: held}
+// deleteTunnel is the delete of a probe tunnel in account acct1.
+func deleteTunnel(name, held string) Action { return deleteTunnelIn("acct1", name, held) }
+
+func deleteTunnelIn(account, name, held string) Action {
+	return Action{Kind: DeleteTunnel, Credential: "cred1", AccountID: account, Target: name, Destructive: true, Applied: held == "", Held: held}
 }
 
 func TestTunnelProbeSweep(t *testing.T) {
@@ -135,7 +138,7 @@ func TestTunnelProbeSweepFailuresGoOn(t *testing.T) {
 		deleteTunnel("pco-abc_probe_b", statusError(http.StatusForbidden).Error()),
 		deleteTunnel("pco-abc_probe_c", ""),
 		deleteTunnel("pco-abc_probe_d", ""),
-		deleteTunnel("pco-abc_probe_e", ""),
+		deleteTunnelIn("acct2", "pco-abc_probe_e", ""),
 	}, withoutDetail(res.Actions), "a probe that is gone already counts as deleted")
 	require.NotContains(t, f.TunnelsIn("acct1"), swept)
 	require.NotContains(t, f.TunnelsIn("acct2"), elsewhere)

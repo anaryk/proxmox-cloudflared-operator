@@ -195,6 +195,27 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 			Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 2m0s ago"}},
 		{"a cycle that took long and ended a moment ago", func(st *engine.State) { st.At = now.Add(-90 * time.Second) }, nil,
 			Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 5s ago"}},
+		{"a cycle of 40s that ended less than three of its durations ago", func(st *engine.State) {
+			st.FinishedAt = now.Add(-100 * time.Second)
+			st.At = st.FinishedAt.Add(-40 * time.Second)
+		}, nil, Finding{Check: "cycle", Level: LevelOK, Detail: "the last cycle ran 1m40s ago"}},
+		{"a cycle of 40s that ended more than three of its durations ago", func(st *engine.State) {
+			st.FinishedAt = now.Add(-130 * time.Second)
+			st.At = st.FinishedAt.Add(-40 * time.Second)
+		}, nil, Finding{Check: "cycle", Level: LevelWarn,
+			Detail: "the last cycle ran 2m10s ago, more than three times the last cycle's duration of 40s",
+			Fix:    "journalctl -u pco says what holds the cycles up"}},
+		{"a cycle of 40s that ended more than six of its durations ago", func(st *engine.State) {
+			st.FinishedAt = now.Add(-250 * time.Second)
+			st.At = st.FinishedAt.Add(-40 * time.Second)
+		}, nil, Finding{Check: "cycle", Level: LevelFail,
+			Detail: "the last cycle ran 4m10s ago, more than six times the last cycle's duration of 40s",
+			Fix:    "journalctl -u pco says what holds the cycles up"}},
+		{"a cycle shorter than the poll interval", func(st *engine.State) {
+			st.FinishedAt = now.Add(-31 * time.Second)
+			st.At = st.FinishedAt.Add(-8 * time.Second)
+		}, nil, Finding{Check: "cycle", Level: LevelWarn, Detail: "the last cycle ran 31s ago, more than three poll intervals of 10s",
+			Fix: "journalctl -u pco says what holds the cycles up"}},
 		{"an incomplete inventory", func(st *engine.State) { st.Complete = false }, nil,
 			Finding{Check: "inventory", Level: LevelFail, Detail: "the inventory is incomplete: nothing is changed until it is complete",
 				Fix: "pco status lists the problems that say why"}},

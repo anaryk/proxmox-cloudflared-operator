@@ -311,11 +311,14 @@ type zoneSet struct {
 	// the listing of a zone it did not look at: they are to be checked again
 	// now. One whose last check got no answer waits for its next one.
 	recheck []string
+	// views are the zones as the state shows them, by name.
+	views []ZoneView
 }
 
 // zoneEntry is one credential's view of a zone.
 type zoneEntry struct {
 	zone      planner.Zone
+	status    string // as the listing gave it
 	stale     bool
 	excluded  bool      // the credential lists the zone but may not read its DNS
 	again     bool      // excluded by the last two checks of the credential
@@ -337,7 +340,8 @@ type zoneEntry struct {
 // that served the zone before keep that one, with a problem asking for a pin.
 // A pin to a credential that leaves the zone out serves it through none, with
 // a problem. held says that the store is held: no token is checked then, and
-// the problems say so instead of when.
+// the problems say so instead of when. Every zone a credential lists, or
+// listed until it went stale, has a view.
 func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]zoneCheck, now time.Time, held bool) zoneSet {
 	out := zoneSet{
 		known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{},
@@ -374,7 +378,10 @@ func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]
 		}
 		add := func(zone cfapi.Zone, stale bool) {
 			name := zoneName(zone)
-			en := zoneEntry{zone: planner.Zone{ID: zone.ID, Name: name, AccountID: zone.AccountID, CredentialID: id}, stale: stale, next: next, held: held}
+			en := zoneEntry{
+				zone:   planner.Zone{ID: zone.ID, Name: name, AccountID: zone.AccountID, CredentialID: id},
+				status: zone.Status, stale: stale, next: next, held: held,
+			}
 			if checked && !stale {
 				en.excluded, en.again = chk.excluded[zone.ID], chk.again[zone.ID]
 				en.unchecked = chk.unchecked(zone)
@@ -396,6 +403,7 @@ func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
 		entries := byName[name]
 		ch := z.choose(name, entries, pins[name])
+		out.views = append(out.views, zoneViewOf(name, entries, pins[name], ch))
 		out.staleShown = append(out.staleShown, ch.offered...)
 		if ch.note != "" {
 			out.problems = append(out.problems, ch.note)
@@ -424,6 +432,9 @@ func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]
 		}
 		out.planned = append(out.planned, ch.chosen...)
 		served = append(served, ch.chosen...)
+	}
+	for i, v := range out.views {
+		out.views[i].FrozenWhy = out.frozenWhy[v.AccountID]
 	}
 	for _, zone := range served {
 		if out.frozen[zone.AccountID] {

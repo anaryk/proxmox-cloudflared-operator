@@ -51,6 +51,8 @@ type Engine interface {
 	// engine and the host it runs on.
 	Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error)
 	Doctor(ctx context.Context) []doctor.Finding
+	// PollInterval is the interval of the last settings read.
+	PollInterval() time.Duration
 }
 
 // Server answers API requests for an engine.

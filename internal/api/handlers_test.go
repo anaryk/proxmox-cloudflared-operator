@@ -1,12 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,11 +41,33 @@ func refusedView() engine.CredentialView {
 	}
 }
 
+var update = flag.Bool("update", false, "write the golden files of the tests")
+
+// requireGolden checks the JSON of an answer, indented, against the golden
+// file name.
+func requireGolden(t *testing.T, name string, body []byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, json.Indent(&buf, body, "", "  "))
+	buf.WriteByte('\n')
+	path := filepath.Join("testdata", name)
+	if *update {
+		require.NoError(t, os.MkdirAll("testdata", 0o755))
+		require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, string(want), buf.String(), "the answer changed; run the test with -update when that is intended")
+}
+
 func TestVersion(t *testing.T) {
 	rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/version", "")
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.JSONEq(t, `{"version":"1.2.3"}`, rec.Body.String())
+	requireGolden(t, "version.json", rec.Body.Bytes())
+
+	rec = do(newServer(&fakeEngine{interval: 90 * time.Second}), http.MethodGet, "/v1/version", "")
+	require.JSONEq(t, `{"version":"1.2.3","pollInterval":"1m30s"}`, rec.Body.String(), "the interval of the last settings read")
 }
 
 func TestStateIsTheEngineState(t *testing.T) {
@@ -100,6 +126,66 @@ func TestEvents(t *testing.T) {
 			require.Empty(t, f.called())
 		})
 	}
+}
+
+// Every tunnel of an install has the same name: the account tells their
+// events apart.
+func TestEventsOfAnAccount(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	events := []engine.Event{
+		{Seq: 1, At: at, Level: "info", Kind: "action", Subject: "pco-abc123", Message: "put-config in account acc1: 3 rules replace version 2",
+			Tunnel: "pco-abc123", Account: "acc1"},
+		{Seq: 2, At: at, Level: "info", Kind: "action", Subject: "pco-abc123", Message: "put-config in account acc2: 2 rules replace version 7",
+			Tunnel: "pco-abc123", Account: "acc2"},
+		{Seq: 3, At: at, Level: "info", Kind: "route", Subject: "www.example.com", Message: "qemu/101: active",
+			Route: "www.example.com", Guest: "qemu/101", Account: "acc1"},
+		{Seq: 4, At: at, Level: "warn", Kind: "problem", Message: "a problem"},
+		{Seq: 5, At: at, Level: "info", Kind: "rollout", Subject: "pco-abc123", Message: "configuration version 4 runs on 1 connector in account acc3",
+			Tunnel: "pco-abc123", Account: "acc3"},
+		{Seq: 6, At: at, Level: "info", Kind: "action", Subject: "www.example.com", Message: "create-record in zone example.com",
+			Route: "www.example.com"},
+	}
+	seqs := func(t *testing.T, rec *httptest.ResponseRecorder) []uint64 {
+		t.Helper()
+		var got []engine.Event
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		out := []uint64{}
+		for _, ev := range got {
+			out = append(out, ev.Seq)
+		}
+		return out
+	}
+
+	rec := do(newServer(&fakeEngine{events: events}), http.MethodGet, "/v1/events?account=acc1", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	requireGolden(t, "events_account.json", rec.Body.Bytes())
+
+	for _, tt := range []struct {
+		name, query string
+		want        []uint64
+	}{
+		{"two accounts", "?account=acc3&account=acc1", []uint64{1, 3, 5}},
+		{"an account no event is of", "?account=acc9", []uint64{}},
+		{"an empty account", "?account=", []uint64{}},
+		{"the case of an id", "?account=ACC1", []uint64{}},
+		{"no account", "", []uint64{1, 2, 3, 4, 5, 6}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(newServer(&fakeEngine{events: events}), http.MethodGet, "/v1/events"+tt.query, "")
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Equal(t, tt.want, seqs(t, rec))
+		})
+	}
+
+	t.Run("with since", func(t *testing.T) {
+		f := &fakeEngine{events: events[1:]}
+		rec := do(newServer(f), http.MethodGet, "/v1/events?since=2026-10-01T11:00:00Z&account=acc1", "")
+
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, []uint64{3}, seqs(t, rec), "the events since then, of the account")
+		require.True(t, at.Add(-time.Hour).Equal(f.lastSince()))
+	})
 }
 
 func TestSyncTriggersACycle(t *testing.T) {

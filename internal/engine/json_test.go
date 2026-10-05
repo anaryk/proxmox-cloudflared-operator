@@ -42,6 +42,10 @@ func populatedState() State {
 				Candidates: []resolve.CandidateResult{{Addr: netip.MustParseAddr("10.0.0.11"), Source: resolve.FromStatic, OK: true, Level: "port"}},
 				Account:    "acc1",
 				Rule:       &planner.IngressRule{Hostname: "www.example.com", Service: "http://10.0.0.11:8080", HTTPHostHeader: "intranet"},
+				Path: &PathView{
+					Node: "pve1", Bridge: "vmbr0", VLAN: 20, Port: "tap101i0", MAC: "bc:24:11:5e:7a:01",
+					VerifiedAt: t0, Since: t0.Add(-28 * time.Hour),
+				},
 			},
 			{
 				RouteStatus: planner.RouteStatus{
@@ -93,7 +97,9 @@ func populatedState() State {
 			},
 			{ID: "cred2", Label: "spare", Kind: "scoped"},
 		},
+		Zones: populatedZones(),
 		Actions: []reconcile.Action{
+			{Kind: reconcile.PutConfig, Credential: "cred1", AccountID: "acc1", Target: "pco-abc123", Detail: "in account acc1: 3 rules replace version 2", Applied: true},
 			{Kind: reconcile.CreateRecord, Credential: "cred1", Target: "www.example.com", Detail: "in zone example.com", Applied: true},
 			{Kind: reconcile.DeleteRecord, Credential: "cred1", Target: "old.example.com", Detail: "in zone example.com", Destructive: true, Held: "grace period: 1m0s left"},
 		},
@@ -116,6 +122,29 @@ func populatedState() State {
 			Tunnel: "pco-abc123", TunnelID: "00000000-0000-4000-8000-000000000001", Account: "acc1",
 			ID: "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807", OriginIP: "198.51.100.7", Version: "2026.8.0", Since: t0.Add(-time.Minute),
 		}},
+	}
+}
+
+// populatedZones holds a zone in each state.
+func populatedZones() []ZoneView {
+	return []ZoneView{
+		{
+			Name: "example.com", ID: "zone1", Status: "active", AccountID: "acc1", State: ZoneServed,
+			Credentials: []string{"cred1", "cred2"}, ServedBy: "cred1", Pinned: "cred1", Stale: []string{}, Excluded: []string{},
+		},
+		{
+			Name: "example.info", ID: "zone3", Status: "active", AccountID: "acc3", State: ZoneFrozen,
+			Credentials: []string{"cred1"}, Stale: []string{"cred1"}, Excluded: []string{},
+			FrozenWhy: "zone example.info is no longer listed by credential cred1",
+		},
+		{
+			Name: "example.net", ID: "zone4", Status: "active", AccountID: "acc2", State: ZoneNotServed,
+			Credentials: []string{"cred1", "cred2"}, Pinned: "cred2", Stale: []string{}, Excluded: []string{"cred2"},
+		},
+		{
+			Name: "example.org", ID: "zone2", Status: "active", AccountID: "acc1", State: ZoneLeftOut,
+			Credentials: []string{"cred1"}, Stale: []string{}, Excluded: []string{"cred1"},
+		},
 	}
 }
 
@@ -176,6 +205,7 @@ func TestTheJSONOfTheState(t *testing.T) {
 			Route: "www.example.com", Guest: "qemu/101", Account: "acc1"},
 		{Seq: 8, At: t0, Level: "info", Kind: "rollout", Subject: "pco-abc123", Message: "configuration version 3 runs on 2 connectors in account acc1",
 			Tunnel: "pco-abc123", Account: "acc1"},
+		numbered(9, actionEvent(t0, populatedState().Actions[0])),
 	})
 	requireGolden(t, "apply_result.json", ApplyResult{LeftObserveOnly: true, Accepted: populatedWaiting()[:1]})
 	requireGolden(t, "apply_result_empty.json", ApplyResult{Accepted: []Waiting{}})
@@ -183,6 +213,11 @@ func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "approvals.json", populatedApprovals())
 	requireGolden(t, "approval.json", Approval{Owner: "qemu/101", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
 		Identity: "uuid:101", Mode: "approve"})
+}
+
+func numbered(seq uint64, ev Event) Event {
+	ev.Seq = seq
+	return ev
 }
 
 func populatedClaims() []ClaimView {

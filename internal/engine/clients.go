@@ -36,6 +36,7 @@ func (c *cycleRun) syncCredentials() bool {
 		}
 	}
 	if len(creds) == 0 {
+		c.st.Zones = nil
 		c.hold(c.problem(problemNoCredential))
 		return true
 	}
@@ -43,6 +44,7 @@ func (c *cycleRun) syncCredentials() bool {
 	c.refreshZones(ids, checks)
 	c.credIDs = ids
 	c.zones = c.e.zones.set(ids, c.settings.ZonePins, checks, c.now, c.storeHold || c.e.storeHeld.Load())
+	c.st.Zones = c.zones.views
 	for _, id := range c.zones.recheck {
 		c.e.recheckBy(id, c.now)
 	}

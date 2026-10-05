@@ -58,8 +58,8 @@ type Env interface {
 const (
 	// edge is where the connectors connect to Cloudflare.
 	edge = "region1.v2.argotunnel.com:7844"
-	// lateCycles and staleCycles are how many poll intervals old the last
-	// cycle is late, and stale.
+	// lateCycles and staleCycles are how many times the base of checkCycle
+	// the last cycle is old when it is late, and stale.
 	lateCycles  = 3
 	staleCycles = 6
 
@@ -138,18 +138,24 @@ func checkMode(st engine.State) Finding {
 	return ok("mode", st.Mode+": changes are applied")
 }
 
+// checkCycle measures the age of the last cycle against the poll interval,
+// or against the duration of that cycle when it took longer: a large install
+// whose healthy cycle outlasts several polls is not late.
 func checkCycle(st engine.State, env Env) Finding {
-	interval := env.PollInterval()
 	if st.At.IsZero() {
 		return warn("cycle", "no cycle has run yet", "wait for the first cycle; journalctl -u pco says why it does not come")
 	}
+	base, of := env.PollInterval(), "poll intervals of"
+	if took := st.FinishedAt.Sub(st.At); took > base {
+		base, of = took, "times the last cycle's duration of"
+	}
 	age := env.Now().Sub(st.FinishedAt).Round(time.Second)
 	switch {
-	case age > staleCycles*interval:
-		return fail("cycle", fmt.Sprintf("the last cycle ran %s ago, more than six poll intervals of %s", age, interval),
+	case age > staleCycles*base:
+		return fail("cycle", fmt.Sprintf("the last cycle ran %s ago, more than six %s %s", age, of, base),
 			"journalctl -u pco says what holds the cycles up")
-	case age > lateCycles*interval:
-		return warn("cycle", fmt.Sprintf("the last cycle ran %s ago, more than three poll intervals of %s", age, interval),
+	case age > lateCycles*base:
+		return warn("cycle", fmt.Sprintf("the last cycle ran %s ago, more than three %s %s", age, of, base),
 			"journalctl -u pco says what holds the cycles up")
 	}
 	return ok("cycle", fmt.Sprintf("the last cycle ran %s ago", max(age, 0)))

@@ -503,6 +503,7 @@ func (run *tunnelRun) act(t target, kind ActionKind, detail, held string) {
 	run.res.Actions = append(run.res.Actions, Action{
 		Kind:       kind,
 		Credential: t.credential,
+		AccountID:  t.account,
 		Target:     t.name,
 		Detail:     detail,
 		Applied:    held == "",

@@ -18,9 +18,9 @@ func failingSteps() []doctor.Step {
 		{Name: "dns", Level: doctor.LevelOK, Detail: "its record points at the tunnel"},
 		{Name: "ingress", Level: doctor.LevelOK, Detail: "tunnel pco-abc123 sends it to http://10.0.0.11:8080 (configuration version 3)"},
 		{Name: "connector", Level: doctor.LevelFail, Detail: "the connector of tunnel pco-abc123 is not connected to Cloudflare"},
-		{Name: "identity", Level: doctor.LevelWarn, Detail: "skipped"},
-		{Name: "tcp", Level: doctor.LevelWarn, Detail: "skipped"},
-		{Name: "http", Level: doctor.LevelWarn, Detail: "skipped"},
+		{Name: "identity", Level: doctor.LevelWarn, Detail: "skipped", Skipped: true},
+		{Name: "tcp", Level: doctor.LevelWarn, Detail: "skipped", Skipped: true},
+		{Name: "http", Level: doctor.LevelWarn, Detail: "skipped", Skipped: true},
 	}
 }
 

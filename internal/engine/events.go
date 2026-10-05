@@ -252,7 +252,7 @@ func guestOf(owner string) string {
 }
 
 func actionEvent(at time.Time, a reconcile.Action) Event {
-	ev := Event{At: at, Level: levelInfo, Kind: kindAction, Subject: a.Target, Message: actionText(a)}
+	ev := Event{At: at, Level: levelInfo, Kind: kindAction, Subject: a.Target, Message: actionText(a), Account: a.AccountID}
 	switch a.Kind {
 	case reconcile.CreateTunnel, reconcile.DeleteTunnel, reconcile.PutConfig:
 		ev.Tunnel = a.Target

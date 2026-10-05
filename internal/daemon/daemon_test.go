@@ -192,7 +192,7 @@ func TestTheDaemonServesTheDoctorAndTheDiagnosis(t *testing.T) {
 	steps, err := d.client.Diagnose(ctx, "www.example.com")
 	require.NoError(t, err)
 	require.Equal(t, doctor.Step{Name: "route", Level: doctor.LevelOK, Detail: "qemu/101 (web-1) holds it; state active"}, steps[0])
-	require.Equal(t, doctor.Step{Name: "http", Level: doctor.LevelWarn, Detail: "skipped"}, steps[len(steps)-1],
+	require.Equal(t, doctor.Step{Name: "http", Level: doctor.LevelWarn, Detail: "skipped", Skipped: true}, steps[len(steps)-1],
 		"observe-only: the tunnel does not exist yet")
 	_, err = d.client.Diagnose(ctx, "nope.example.com")
 	require.ErrorIs(t, err, engine.ErrNotFound)

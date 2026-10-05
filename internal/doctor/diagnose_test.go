@@ -2,11 +2,15 @@ package doctor
 
 import (
 	"cmp"
+	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +32,24 @@ const (
 )
 
 var stepNames = []string{"route", "zone", "dns", "ingress", "connector", "identity", "tcp", "http"}
+
+var update = flag.Bool("update", false, "write the golden files of the tests")
+
+// requireGolden checks v, as JSON, against the golden file name.
+func requireGolden(t *testing.T, name string, v any) {
+	t.Helper()
+	got, err := json.MarshalIndent(v, "", "  ")
+	require.NoError(t, err)
+	got = append(got, '\n')
+	path := filepath.Join("testdata", name)
+	if *update {
+		require.NoError(t, os.MkdirAll("testdata", 0o755))
+		require.NoError(t, os.WriteFile(path, got, 0o644))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(got), "the JSON changed; run the test with -update when that is intended")
+}
 
 // origin is a server of a test that remembers what it was asked.
 type origin struct {
@@ -116,7 +138,7 @@ func requireFailsAt(t *testing.T, steps []Step, name, detail string) {
 	for _, s := range steps {
 		switch {
 		case failed:
-			require.Equal(t, Step{Name: s.Name, Level: LevelWarn, Detail: "skipped"}, s)
+			require.Equal(t, Step{Name: s.Name, Level: LevelWarn, Detail: "skipped", Skipped: true}, s)
 		case s.Name == name:
 			require.Equal(t, Step{Name: name, Level: LevelFail, Detail: detail}, s)
 			failed = true
@@ -423,6 +445,33 @@ func TestTheHolderIsDiagnosedWhicheverRouteComesFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "qemu/101 (web-1) holds it; state active", steps[0].Detail)
 	require.Equal(t, LevelOK, steps[7].Level)
+	holder, found := HolderOf(st, www)
+	require.True(t, found)
+	require.Equal(t, "qemu/101", holder.Owner)
+	holder, found = HolderOf(engine.State{Routes: st.Routes[:1]}, "WWW.example.com")
+	require.True(t, found)
+	require.Equal(t, "qemu/102", holder.Owner, "a route that lost the name is all there is")
+	_, found = HolderOf(st, "api.example.com")
+	require.False(t, found)
+}
+
+// A step after the first failure is skipped, and says so in a field of its
+// own; a diagnosis that skips nothing has none.
+func TestASkippedStepSaysSo(t *testing.T) {
+	o := newOrigin(t, false, nil)
+	st := servedBy(t, o.Server, "http")
+	passed, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+	require.NoError(t, err)
+	data, err := json.Marshal(passed)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "skipped")
+
+	r := &st.Routes[0]
+	r.State, r.Reason, r.Service = engine.RouteFrozen, "account frozen: zone example.com is no longer listed by credential cred1", ""
+	steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+
+	require.NoError(t, err)
+	requireGolden(t, "diagnose_skipped.json", steps)
 }
 
 // When the rule says the name TLS asks for follows the Host, it is the Host

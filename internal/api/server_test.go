@@ -59,7 +59,8 @@ type fakeEngine struct {
 	ctx      context.Context
 	triggers int
 	panics   bool
-	addPanic string // AddCredential panics with this text
+	addPanic string        // AddCredential panics with this text
+	interval time.Duration // the poll interval; 10s when zero
 
 	creds     []engine.CredentialView
 	claims    []engine.ClaimView
@@ -227,6 +228,15 @@ func (f *fakeEngine) Doctor(ctx context.Context) []doctor.Finding {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.findings
+}
+
+func (f *fakeEngine) PollInterval() time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.interval == 0 {
+		return 10 * time.Second
+	}
+	return f.interval
 }
 
 func (f *fakeEngine) lastCtx() context.Context {

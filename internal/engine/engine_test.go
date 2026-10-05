@@ -72,6 +72,7 @@ func TestFirstCycleObservesAndWritesNothing(t *testing.T) {
 		Candidates: []resolve.CandidateResult{{Addr: guestAddr, Source: resolve.FromStatic, OK: true}},
 		Account:    testAccount,
 		Rule:       &planner.IngressRule{Hostname: "www.example.com", Service: "http://10.0.0.11:8080"},
+		Path:       &PathView{Node: testNode, MAC: testMAC, VerifiedAt: t0},
 	}, route(st, "www.example.com"))
 	require.Equal(t, []TunnelView{{TunnelState: reconcile.TunnelState{AccountID: testAccount, CredentialID: testCred, Name: tunnelName}}}, st.Tunnels)
 	require.Empty(t, e.conn.ensures(), "observe mode starts no connector")
@@ -80,6 +81,28 @@ func TestFirstCycleObservesAndWritesNothing(t *testing.T) {
 	claims, err := e.store.Claims()
 	require.NoError(t, err)
 	require.Equal(t, "qemu/101", claims["www.example.com"].Owner, "claims are pco's own state and kept in observe mode too")
+}
+
+// Every tunnel of an install has the same name: the account tells the
+// actions on them and their events apart.
+func TestTheActionsOnATunnelNameItsAccount(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+
+	st := e.cycle()
+
+	var actions, events []string
+	for _, a := range st.Actions {
+		actions = append(actions, a.Target+" "+a.AccountID)
+	}
+	for _, ev := range e.eng.Events(time.Time{}) {
+		if ev.Kind == kindAction {
+			events = append(events, ev.Tunnel+ev.Route+" "+ev.Account)
+		}
+	}
+	want := []string{tunnelName + " " + testAccount, tunnelName + " " + testAccount, "www.example.com "}
+	require.Equal(t, want, actions)
+	require.Equal(t, want, events, "a record is of a zone, not of an account")
 }
 
 func TestApplyPublishesTunnelConfigAndRecord(t *testing.T) {

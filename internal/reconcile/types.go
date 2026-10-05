@@ -28,13 +28,16 @@ const (
 
 // Action is a change a run made or would have made.
 type Action struct {
-	Kind        ActionKind `json:"kind"`
-	Credential  string     `json:"credentialId"`
-	Target      string     `json:"target"` // tunnel name or record name
-	Detail      string     `json:"detail"`
-	Destructive bool       `json:"destructive"`
-	Applied     bool       `json:"applied"`
-	Held        string     `json:"held,omitempty"` // why it was not applied (observe mode, guard, error)
+	Kind       ActionKind `json:"kind"`
+	Credential string     `json:"credentialId"`
+	// AccountID is the account of the tunnel of a tunnel action: every
+	// tunnel of an install has the same name. Empty for a record action.
+	AccountID   string `json:"accountId,omitempty"`
+	Target      string `json:"target"` // tunnel name or record name
+	Detail      string `json:"detail"`
+	Destructive bool   `json:"destructive"`
+	Applied     bool   `json:"applied"`
+	Held        string `json:"held,omitempty"` // why it was not applied (observe mode, guard, error)
 }
 
 // TunnelState is what a run knows about the tunnel of one account.

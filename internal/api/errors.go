@@ -32,9 +32,9 @@ const (
 
 const redacted = "[redacted]"
 
-// errorBody is every error answer. The credential is there when the engine
+// ErrorBody is every error answer. The credential is there when the engine
 // refused a token and has a report to show for it.
-type errorBody struct {
+type ErrorBody struct {
 	Error      string          `json:"error"`
 	Code       string          `json:"code"`
 	Credential json.RawMessage `json:"credential,omitempty"`
@@ -144,7 +144,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, f
 		// cannot hold the connection open with it.
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now())
 	}
-	body := errorBody{Error: redact(a.msg, f.secrets), Code: a.code}
+	body := ErrorBody{Error: redact(a.msg, f.secrets), Code: a.code}
 	if f.credential != nil {
 		body.Credential = scrubbed(*f.credential, f.secrets)
 	}

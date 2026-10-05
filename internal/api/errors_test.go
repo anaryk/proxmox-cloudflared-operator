@@ -1,11 +1,24 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// Every error answer is an ErrorBody, which clients take their type from.
+func TestAnErrorAnswerIsAnErrorBody(t *testing.T) {
+	rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/nowhere", "")
+
+	dec := json.NewDecoder(rec.Body)
+	dec.DisallowUnknownFields()
+	var body ErrorBody
+	require.NoError(t, dec.Decode(&body))
+	require.Equal(t, ErrorBody{Error: "no such route", Code: codeNoRoute}, body)
+}
 
 func TestRedact(t *testing.T) {
 	const secret = "abcdef0123456789ABCD"

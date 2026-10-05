@@ -140,8 +140,13 @@ func withoutDetail(actions []Action) []Action {
 	return out
 }
 
-func action(kind ActionKind, credential, held string) Action {
-	return Action{Kind: kind, Credential: credential, Target: testTunnel, Applied: held == "", Held: held}
+// action is an action through cred1 on the tunnel of account acct1.
+func action(kind ActionKind, held string) Action {
+	return actionIn("acct1", kind, "cred1", held)
+}
+
+func actionIn(account string, kind ActionKind, credential, held string) Action {
+	return Action{Kind: kind, Credential: credential, AccountID: account, Target: testTunnel, Applied: held == "", Held: held}
 }
 
 // unknownIn is the state of the tunnel of an account reached through cred1
@@ -349,7 +354,7 @@ func TestTunnelCreateAndPut(t *testing.T) {
 		"TunnelConfig acct1 " + id,
 		"Tunnels acct1 pco-abc_probe_",
 	}, f.Calls())
-	require.Equal(t, []Action{action(CreateTunnel, "cred1", ""), action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(CreateTunnel, ""), action(PutConfig, "")}, withoutDetail(res.Actions))
 	require.Equal(t, []TunnelState{
 		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: id, Version: 1, Exists: true, Verified: true},
 	}, res.Tunnels)
@@ -381,7 +386,7 @@ func TestTunnelForeignConfigRewritten(t *testing.T) {
 		Run(context.Background(), []planner.TunnelPlan{planFor("acct1", "cred1", app)}, nil, Enforce)
 
 	require.Empty(t, res.Problems)
-	require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "")}, withoutDetail(res.Actions))
 	require.Contains(t, res.Actions[0].Detail, "settings pco does not manage")
 	require.Len(t, callsTo(f, "PutTunnelConfig"), 1)
 	require.Equal(t, 2, res.Tunnels[0].Version)
@@ -401,7 +406,7 @@ func TestTunnelExternalEditOverwritten(t *testing.T) {
 
 	require.Empty(t, res.Problems)
 	require.Equal(t, WriterProceed, res.Verdict)
-	require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "")}, withoutDetail(res.Actions))
 	require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
 }
 
@@ -452,7 +457,7 @@ func TestTunnelStaleWriterStops(t *testing.T) {
 			require.Contains(t, res.Problems[0], "this writer is stale and stops")
 			if tc.held {
 				require.Contains(t, res.Problems[0], "pco-abc in account acct1")
-				require.Equal(t, []Action{action(PutConfig, "cred1", "stale writer")}, withoutDetail(res.Actions))
+				require.Equal(t, []Action{action(PutConfig, "stale writer")}, withoutDetail(res.Actions))
 			} else {
 				require.Empty(t, res.Actions)
 			}
@@ -547,7 +552,7 @@ func TestTunnelCreateFencedByWriter(t *testing.T) {
 	}, f.Calls())
 	require.Len(t, res.Problems, 1)
 	require.Contains(t, res.Problems[0], "pco-abc in account acct2: leader.json names generation 6 nonce n6")
-	require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "")}, withoutDetail(res.Actions))
 	require.Equal(t, []TunnelState{
 		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 2, Exists: true, Verified: true},
 		{AccountID: "acct2", CredentialID: "cred1", Name: testTunnel}, // the lookup found no tunnel
@@ -580,7 +585,7 @@ func TestTunnelVerdictJudgedAgainstFreshWriter(t *testing.T) {
 			require.Empty(t, callsTo(f, "PutTunnelConfig"))
 			require.Len(t, res.Problems, 1)
 			require.Contains(t, res.Problems[0], tc.says)
-			require.Equal(t, []Action{action(PutConfig, "cred1", heldVerdict(tc.want))}, withoutDetail(res.Actions))
+			require.Equal(t, []Action{action(PutConfig, heldVerdict(tc.want))}, withoutDetail(res.Actions))
 		})
 	}
 }
@@ -616,7 +621,7 @@ func TestTunnelVerdictWhenTheWriterCannotBeRead(t *testing.T) {
 			require.Len(t, res.Problems, 2)
 			require.Equal(t, "pco-abc in account acct1: reading the writer identity: lease lost", res.Problems[0])
 			require.Contains(t, res.Problems[1], tc.says)
-			require.Equal(t, []Action{action(PutConfig, "cred1", heldVerdict(tc.want))}, withoutDetail(res.Actions))
+			require.Equal(t, []Action{action(PutConfig, heldVerdict(tc.want))}, withoutDetail(res.Actions))
 		})
 	}
 }
@@ -639,7 +644,7 @@ func TestTunnelForeignWriterStops(t *testing.T) {
 	require.Len(t, res.Problems, 1)
 	require.Contains(t, res.Problems[0], "pco-abc in account acct1")
 	require.Contains(t, res.Problems[0], "another installation")
-	require.Equal(t, []Action{action(PutConfig, "cred1", "foreign writer")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "foreign writer")}, withoutDetail(res.Actions))
 	require.Equal(t, unknownIn("acct2"), res.Tunnels[1])
 	require.Equal(t, rulesOf(twin, app), configIn(t, f, "acct1").Ingress)
 }
@@ -662,9 +667,9 @@ func TestTunnelObserveMode(t *testing.T) {
 		"TunnelConfig acct2 " + tun.ID,
 	}, f.Calls())
 	require.Equal(t, []Action{
-		action(CreateTunnel, "cred1", "observe mode"),
-		action(PutConfig, "cred1", "observe mode"),
-		action(PutConfig, "cred1", "observe mode"),
+		action(CreateTunnel, "observe mode"),
+		action(PutConfig, "observe mode"),
+		actionIn("acct2", PutConfig, "cred1", "observe mode"),
 	}, withoutDetail(res.Actions))
 	require.Contains(t, res.Actions[0].Detail, "acct1")
 	require.Contains(t, res.Actions[2].Detail, "acct2")
@@ -694,9 +699,9 @@ func TestTunnelRunHeldWritesNothingAndSaysWhy(t *testing.T) {
 
 	require.Empty(t, res.Problems)
 	require.Equal(t, []Action{
-		action(CreateTunnel, "cred1", "the egress filter could not be set"),
-		action(PutConfig, "cred1", "the egress filter could not be set"),
-		action(PutConfig, "cred1", "the egress filter could not be set"),
+		action(CreateTunnel, "the egress filter could not be set"),
+		action(PutConfig, "the egress filter could not be set"),
+		actionIn("acct2", PutConfig, "cred1", "the egress filter could not be set"),
 	}, withoutDetail(res.Actions))
 	require.Equal(t, []TunnelState{
 		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel},
@@ -724,7 +729,7 @@ func TestTunnelPutRateLimited(t *testing.T) {
 	c.t = t0.Add(10 * time.Second)
 	res = r.Run(ctx, plans, nil, Enforce)
 	require.Empty(t, res.Problems)
-	require.Equal(t, []Action{action(PutConfig, "cred1", "rate limit: next write in 5s")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "rate limit: next write in 5s")}, withoutDetail(res.Actions))
 	require.Len(t, callsTo(f, "PutTunnelConfig"), 2, "the first run's write and the edit")
 	require.Equal(t, 2, res.Tunnels[0].Version)
 	require.False(t, res.Tunnels[0].Verified)
@@ -732,7 +737,7 @@ func TestTunnelPutRateLimited(t *testing.T) {
 	c.t = t0.Add(15 * time.Second)
 	res = r.Run(ctx, plans, nil, Enforce)
 	require.Empty(t, res.Problems)
-	require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "")}, withoutDetail(res.Actions))
 	require.Equal(t, 3, res.Tunnels[0].Version)
 	require.True(t, res.Tunnels[0].Verified)
 	require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
@@ -752,12 +757,12 @@ func TestTunnelRateLimitClockStepsBack(t *testing.T) {
 
 	c.t = t0.Add(-time.Hour)
 	res = r.Run(ctx, plans, nil, Enforce)
-	require.Equal(t, []Action{action(PutConfig, "cred1", "rate limit: next write in 15s")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "rate limit: next write in 15s")}, withoutDetail(res.Actions))
 
 	c.t = t0.Add(-time.Hour + 15*time.Second)
 	res = r.Run(ctx, plans, nil, Enforce)
 	require.Empty(t, res.Problems)
-	require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "")}, withoutDetail(res.Actions))
 	require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct1").Ingress)
 }
 
@@ -773,7 +778,7 @@ func TestTunnelRateLimitIsPerTunnel(t *testing.T) {
 	c.t = t0.Add(time.Second)
 	res = r.Run(ctx, []planner.TunnelPlan{planFor("acct1", "cred1", app), planFor("acct2", "cred1", app)}, nil, Enforce)
 	require.Empty(t, res.Problems)
-	require.Equal(t, []Action{action(CreateTunnel, "cred1", ""), action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{actionIn("acct2", CreateTunnel, "cred1", ""), actionIn("acct2", PutConfig, "cred1", "")}, withoutDetail(res.Actions))
 	require.Equal(t, rulesOf(ours, app), configIn(t, f, "acct2").Ingress)
 }
 
@@ -794,9 +799,9 @@ func TestTunnelUnplannedKnownEmptied(t *testing.T) {
 		{AccountID: "acct3", CredentialID: "cred1", Name: testTunnel, ID: created.ID, Version: 1, Exists: true, Verified: true},
 	}, res.Tunnels)
 	require.Equal(t, []Action{
-		action(PutConfig, "cred1", ""),
-		action(CreateTunnel, "cred1", ""),
-		action(PutConfig, "cred1", ""),
+		actionIn("acct2", PutConfig, "cred1", ""),
+		actionIn("acct3", CreateTunnel, "cred1", ""),
+		actionIn("acct3", PutConfig, "cred1", ""),
 	}, withoutDetail(res.Actions))
 	require.Equal(t, []planner.IngressRule{sentinelOf(ours), catchAll}, configIn(t, f, "acct2").Ingress)
 	require.Equal(t, rulesOf(ours, web), configIn(t, f, "acct3").Ingress)
@@ -945,7 +950,7 @@ func TestTunnelVerifyAfterPutMismatch(t *testing.T) {
 
 			require.Equal(t, []string{"config changed under us on pco-abc in account acct1"}, res.Problems)
 			require.Equal(t, 1, s.puts, "no second write in the same run")
-			require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+			require.Equal(t, []Action{action(PutConfig, "")}, withoutDetail(res.Actions))
 			require.Equal(t, []TunnelState{
 				{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 2, Exists: true},
 			}, res.Tunnels, "the version of our write, not verified")
@@ -984,7 +989,7 @@ func TestTunnelVerifyReadFails(t *testing.T) {
 
 	require.Len(t, res.Problems, 1)
 	require.Contains(t, res.Problems[0], "pco-abc in account acct1: reading the configuration back")
-	require.Equal(t, []Action{action(PutConfig, "cred1", "")}, withoutDetail(res.Actions))
+	require.Equal(t, []Action{action(PutConfig, "")}, withoutDetail(res.Actions))
 	require.Equal(t, []TunnelState{
 		{AccountID: "acct1", CredentialID: "cred1", Name: testTunnel, ID: tun.ID, Version: 2, Exists: true},
 	}, res.Tunnels, "the version of our write, not verified")
@@ -1103,9 +1108,9 @@ func TestTunnelFoundWithoutConfigurationIsReadTwice(t *testing.T) {
 		problem string
 	}{
 		{name: "two 404s", errs: []error{notFound, notFound}, puts: 1,
-			actions: []Action{action(PutConfig, "cred1", "")}},
+			actions: []Action{action(PutConfig, "")}},
 		{name: "a 404, then the configuration of a newer writer", rules: rulesOf(newer, app), errs: []error{notFound},
-			verdict: WriterStale, actions: []Action{action(PutConfig, "cred1", "stale writer")},
+			verdict: WriterStale, actions: []Action{action(PutConfig, "stale writer")},
 			problem: "this writer is stale and stops"},
 		{name: "a 404, then the planned configuration", rules: rulesOf(ours, app), errs: []error{notFound}},
 		{name: "a 404, then a failed read", errs: []error{notFound, errors.New("connection reset by peer")},
@@ -1166,8 +1171,8 @@ func TestTunnelCreateConflictFindsTunnel(t *testing.T) {
 		"Tunnels acct1 pco-abc_probe_",
 	}, f.Calls())
 	require.Equal(t, []Action{
-		action(CreateTunnel, "cred1", "tunnel already exists"),
-		action(PutConfig, "cred1", ""),
+		action(CreateTunnel, "tunnel already exists"),
+		action(PutConfig, ""),
 	}, withoutDetail(res.Actions))
 	require.Equal(t, tun.ID, res.Tunnels[0].ID)
 	require.True(t, res.Tunnels[0].Verified)
@@ -1205,9 +1210,9 @@ func TestTunnelCreateConflictUnresolved(t *testing.T) {
 			require.Len(t, f.TunnelsIn("acct1"), 1)
 			require.Empty(t, callsTo(f, "PutTunnelConfig"))
 			require.Equal(t, []Action{
-				action(CreateTunnel, "cred1", "tunnel already exists"),
-				action(CreateTunnel, "cred2", ""),
-				action(PutConfig, "cred2", ""),
+				action(CreateTunnel, "tunnel already exists"),
+				actionIn("acct2", CreateTunnel, "cred2", ""),
+				actionIn("acct2", PutConfig, "cred2", ""),
 			}, withoutDetail(res.Actions))
 			require.Equal(t, []TunnelState{
 				unknownIn("acct1"),

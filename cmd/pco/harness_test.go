@@ -222,6 +222,8 @@ func (f *fakeEngine) Doctor(context.Context) []doctor.Finding {
 	return f.findings
 }
 
+func (f *fakeEngine) PollInterval() time.Duration { return 10 * time.Second }
+
 func boolText(b bool) string {
 	if b {
 		return "true"
