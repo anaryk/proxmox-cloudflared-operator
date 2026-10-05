@@ -72,7 +72,11 @@ so an IPv4 address is never a hostname. Internationalised names are written in t
 `xn--` form. Underscores are not accepted.
 
 A leading `*.` makes a wildcard: `*.shop.example.com` with at least two labels after
-the star. `*.com` is an error.
+the star. `*.com` is an error. A wildcard, and the apex of a zone such as `example.com`
+itself, are published only when an `allowHosts` pattern of the settings names them;
+otherwise the route is `rejected` and takes no claim (see [Operations](operations.md)). The
+Notes of one guest may name at most `maxHostnamesPerGuest` hostnames, 32 by default; a guest
+that names more publishes none of them, and `pco status` says why.
 
 Several hostnames in front of one arrow share the target and the options:
 
@@ -197,8 +201,9 @@ nas.example.com   -> http://10.0.0.50:5000
 
 ### Wildcards and their order
 
-A wildcard serves every name below it that reaches the tunnel and has no rule of its
-own:
+A wildcard is published once an `allowHosts` pattern names it, as `*.example.com` in the
+settings for the one below. It serves every name below it that reaches the tunnel and has
+no rule of its own:
 
 ~~~text
 ```cf-tunnel

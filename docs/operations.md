@@ -176,9 +176,10 @@ run token of each tunnel again and lists the connectors Cloudflare shows on it: 
 for each tunnel, on top of the two listings of each credential. A run token that changed,
 as after its secret was rotated, is written to the connector's token file and the connector
 is restarted with it. When a connector logs that Cloudflare refuses its token, the token is
-read again at once, once for each refusal. While the configuration of a tunnel is not yet
-seen running, or a connector that pco does not run is shown on it, its connectors are
-listed every 30 seconds.
+read again at once, once for each refusal, and every 30 seconds while a read fails. While the
+configuration of a tunnel is not yet seen running, or a connector that pco does not run is
+shown on it, its connectors are listed every 30 seconds. The listing of the connectors goes
+on in a cycle that holds, every five minutes; see [Security](security.md).
 
 ### Observe-only until `pco apply`
 
@@ -308,7 +309,9 @@ fields:
 | `profile` | `host`. |
 | `routes` | One object for each route: `hostname`, `owner`, `state`, `level`, `reason`, `service`, `zone`, `warnings`, `guest`, `candidates`. |
 | `issues` | Problems in the Notes and the settings: `guest`, `line`, `col`, `msg`. |
-| `tunnels`, `connectors` | The tunnels and the state of their connectors. `unchecked` on a tunnel says the last cycle did not look at Cloudflare. |
+| `tunnels`, `connectors` | The tunnels and the state of their connectors. `unchecked` on a tunnel says the last cycle did not look at Cloudflare. A connector has the `connectorId` its `/ready` gives, and `tokenRefused` or `metricsPortHeld` when its journal says Cloudflare refuses its token or another process holds its metrics port. |
+| `rogueConnectors` | The connectors Cloudflare lists on a tunnel of the install that pco does not run: `tunnel`, `tunnelId`, `accountId`, `id`, `originIp`, `version`, `since`. |
+| `admission`, `gateTagged` | The admission mode, and how many guests, templates included, carry the gate tag. |
 | `credentials` | The credentials and the report of their last check. |
 | `actions`, `conflicts`, `lost` | The pending actions, the records of someone else in the way, and the names that lost the marker. |
 | `problems` | What the daemon found wrong, as text. |
@@ -391,9 +394,12 @@ wildcard pattern at or above it (`*.example.com` names `*.example.com` and
 `*.shop.example.com`). `*`, and no `allowHosts` at all, name neither. Without that, whoever
 may edit the Notes of one tagged guest could take the apex of every zone pco serves, or the
 wildcard that answers every name of the zone that has no record of its own, with a valid
-certificate. Such a route is in the state `rejected`, says which pattern to add, and its
-hostname answers 503 while the guest holds it. Manual routes are root's own and are not
-limited.
+certificate. Such a route is in the state `rejected`, says which pattern to add, and is a
+problem line of `pco status` and a warning of `pco doctor` (`rejected routes`). It takes no
+claim and holds none, so that naming a hostname before you allow it wins nothing: once a
+pattern names it, the hostname goes to whoever claims it then, as any free one does. A
+rejected route has no rule and no record at Cloudflare; a record pco made for it before is
+kept and left alone. Manual routes are root's own and are not limited.
 
 The daemon reads the file again at the start of each cycle, so a change takes effect at the
 next one. Four fields, `gateTag`, `trustStatic`, `trustedCIDRs` and `cloudflareBudget`, are
@@ -434,6 +440,14 @@ with, and the files of a connector are rewritten and the connector is restarted 
 the daemon finds them different from what it wants. A change that cloudflared does not read
 is no reason to restart it: the env file of a connector from an earlier version, which lacks
 the name of the install, is rewritten and the connector runs on.
+
+From this release on, a guest's route for the apex of a zone or for a wildcard is published
+only when an `allowHosts` pattern names it (see [Settings](#settings)), and a guest whose
+Notes name more than `maxHostnamesPerGuest` hostnames, 32 by default, publishes none. Such
+routes stop at the first cycle after the upgrade: they are `rejected`, their hostnames are no
+longer in the tunnel's configuration, and the records pco made for them are kept and left
+alone, so that they serve again once a pattern names them. Add the patterns before you
+upgrade if those names are to go on.
 
 `pco setup` can be run again after an upgrade: it changes nothing that is in order and notes
 the new version in the node registry. `pco setup --repair` re-asserts the role, user, token

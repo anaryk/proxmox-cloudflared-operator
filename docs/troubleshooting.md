@@ -47,7 +47,7 @@ use it.
   - `not checked yet` is what it says in the first seconds after the daemon started, half a
     minute at most.
 - **Routes** counts the routes by state: `active`, `unreachable`, `withdrawn`, `conflict`,
-  `no-zone`, `held`, `frozen`. It says `none` when there are no routes.
+  `no-zone`, `held`, `rejected`, `frozen`. It says `none` when there are no routes.
 - **Approval** appears only when guests wait for approval in approve mode, as
   `2 guests wait (pco guest list)`.
 - **Tunnels** lists the tunnels of the install, with the first eight characters of the id.
@@ -205,6 +205,12 @@ There are three ways out:
   waits. To hand the hostname over on purpose, `pco claims resolve <hostname> <owner>`; the
   owner is a guest, as `qemu/102`, and has to claim the hostname itself. The holder then waits for
   it, in the place its claim gives it in the line.
+- **`rejected`**: the hostname is the apex of a zone or a wildcard, which a guest publishes only
+  when an `allowHosts` pattern names it. The note names the pattern to add, as
+  `add "*.example.com" to allowHosts`. Add it to the settings if the name is meant to be
+  published, or take the name out of the Notes. A rejected route holds no claim, and a record
+  pco made for it is left alone. A guest whose Notes name more than `maxHostnamesPerGuest`
+  hostnames has no route at all, and an issue says so.
 - **`no-zone`**: no credential serves the zone of the hostname (`no Cloudflare zone for this
   hostname in any credential`: the token does not see it, or the zone is not active), or two
   credentials see it (`pin it to one`, see [Cloudflare token](cloudflare-token.md)), or the
@@ -324,9 +330,12 @@ writes only while the configuration carries its own mark or an older one.
   process of this install wrote with a higher generation, which a recovery on another copy of
   the store does. `pco setup --recover` on the node that should write takes a generation above
   it.
-- **foreign**: `another installation writes the tunnel configuration`. Another install uses the
-  same install id. Stop the other one, or give this one an id of its own with `pco setup` on a
-  clean store.
+- **foreign**: `a writer of this install that leader.json does not know wrote the tunnel
+  configuration`. Another install uses the same install id, or someone wrote a sentinel of a
+  newer generation with a stolen Cloudflare token. If no other node runs pco with this
+  install, follow the order in [Security](security.md): replace the token, `pco tunnel
+  rotate`, `pco setup --recover` on this node, then `pco apply`. Otherwise stop the other
+  one.
 - **unknown**: `leader.json could not be used`. The file is missing or invalid; `pco setup`
   writes one for a store that has none, and `pco setup --recover` takes a generation above the
   one in use.

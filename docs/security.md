@@ -26,8 +26,10 @@ The connector is where the confinement is. Its unit runs as `pco-connector` with
 `RestrictAddressFamilies` limited to IPv4, IPv6, unix sockets and netlink,
 `RestrictNamespaces`, `RestrictRealtime`, `MemoryDenyWriteExecute`, the system call filter
 `@system-service` (a call outside it fails with `EPERM`), and `ProtectProc=invisible` with
-`ProcSubset=pid`, so that it sees no other process in `/proc`, the connectors of the other
-tunnels included, which run as the same user. It cannot see `/etc/cloudflared`, `/usr/local/etc/cloudflared` or
+`ProcSubset=pid`: in `/proc` it sees no process of another user, so neither the daemon, which
+runs as root, nor the Proxmox services, and nothing of the kernel but the processes. The
+connectors of the other tunnels run as the same user and stay visible to it; a user of its
+own for each tunnel is a later hardening. It cannot see `/etc/cloudflared`, `/usr/local/etc/cloudflared` or
 `/root/.cloudflared`, and it is started with a configuration file of pco's own, so that
 cloudflared reads no configuration of the host. Its token is handed to it as a systemd
 credential and read from a file, so it never appears on a command line or in the
@@ -36,9 +38,9 @@ environment.
 A connector listens on 127.0.0.1 for its metrics, on a port from 20300 up. A local user who
 listens on that port first keeps it from starting: it exits and systemd starts it again,
 over and over. The daemon reads that from the connector's journal, says
-`metrics port 20300 is held by another process` as a problem, and in the next cycle moves
-the connector to a port of its own; the port that was taken is not given out again until
-the daemon restarts.
+`metrics port 20300 is held by another process` as a problem, and moves the connector to a
+port of its own in the next cycle that keeps it running, which is the next one in enforce
+mode; the problem says when. The port that was taken is not given out again for an hour.
 
 The Proxmox side is read-only. Setup makes the role `PCO`, the user `pco@pve` and the
 token `pco@pve!pco`, and the role holds `VM.Audit`, `Sys.Audit`, `SDN.Audit` and
@@ -227,17 +229,26 @@ not confined on the node:
 - It can run a connector of its own for the tunnel, which receives a share of the requests
   to every hostname of the tunnel. pco reports it; see
   [A connector that is not pco's](#a-connector-that-is-not-pcos).
-- It can point a hostname elsewhere: rewrite the tunnel's configuration, or a DNS record.
-  pco writes them back in its next cycle, ten seconds later by default, and not before;
-  until then the requests go where the token sent them.
+- It can point a hostname elsewhere. What pco puts back in its next cycle, ten seconds
+  later by default, and not before: the tunnel's configuration, a record of pco's that was
+  deleted, and a record of pco's whose target was changed but that still carries its
+  marker. What it does not: a record changed to another type, or stripped of its marker,
+  is no longer pco's. `pco status` shows it as a conflict, or as a name that lost its
+  marker, and the hostname is not published there until `pco adopt <name>` takes it back.
+  Until then the requests go where the token sent them.
 - It can write a sentinel rule of a newer generation of this install into the
-  configuration. pco then takes itself for a stale writer, says `writer verdict is stale`,
-  fails the `writer` check of `pco doctor` and stops writing, so that whatever the token
-  wrote stays. When no other node runs pco, that verdict is a forgery: replace the token
-  (`pco credential add`, then `pco credential remove` of the old one, and revoke it at
-  Cloudflare), rotate the tunnel secret with `pco tunnel rotate`, and run
-  `pco setup --recover` on this node, which makes it the writer again with a newer
-  generation.
+  configuration. pco then takes the writer for one it does not know, says
+  `writer verdict is foreign`, fails the `writer` check of `pco doctor` and stops writing, so
+  that whatever the token wrote stays. The connectors are still watched while it holds. When
+  no other node runs pco with this install, the verdict is a forgery, and this order puts it
+  right:
+  1. Replace the token: add a new one with `pco credential add`, revoke the old one at
+     Cloudflare, then `pco credential remove` it.
+  2. `pco tunnel rotate`, which works while the cycle holds: the connector that the token
+     made loses its session for good.
+  3. `pco setup --recover` on this node: it takes a writer generation above every one in
+     the tunnels, and leaves pco in observe-only mode.
+  4. `pco apply`. The next cycle writes the configuration again, with its own sentinel.
 
 ### What a connector can reach
 
@@ -427,9 +438,10 @@ part of the traffic of every published hostname, in the clear, and answers it as
 
 The daemon looks for that. Every five minutes, and every 30 seconds while a rollout or a
 finding is pending, it lists the connectors Cloudflare shows on each tunnel and holds their
-ids against the id that the `/ready` endpoint of its own connector reports. A connector it
-does not know is an error event the first time it is seen, and a problem line in every
-cycle while it is listed:
+ids against the id that the `/ready` endpoint of its own connector reports. It does so in
+every cycle, also one that holds, as a cycle whose writer is not in order does: a hold must
+not hide that connector. A connector it does not know is an error event the first time it
+is seen, and a problem line in every cycle while it is listed:
 
     tunnel pco-abc123 in account 0123abcd is served by connector 6f2d... from 198.51.100.7
     (cloudflared 2026.8.0), which pco does not run on this node: it takes a share of the
@@ -438,9 +450,15 @@ cycle while it is listed:
 
 `pco status` exits 1, and `pco doctor` fails its `rogue connectors` check. The address and
 version are what Cloudflare reports. While the daemon's own connector is not ready it cannot
-tell its own id, so it compares nothing until it is; and the id its connector had in the
-cycle before counts as its own too, because Cloudflare lists a restarted connector under its
-old id for a moment.
+tell its own id, so it compares nothing until it is; and an id its connector had within the
+last ten minutes counts as its own too, because Cloudflare lists a connector that restarted,
+or died without saying goodbye, under its old id for a while.
+
+The comparison is by id. A connector that someone changed to give itself the id of pco's
+would pass for pco's. The listing could tell it apart, by more connections under that id than
+pco's own holds and an origin address of its own, but connections come and go with
+reconnects and may come from both an IPv4 and an IPv6 address, so pco does not compare them in
+this release.
 
 pco does not cut the other connector off by itself in this release. A second connector of
 the same tunnel is how a replica on another node of the cluster will run, which a later
@@ -453,13 +471,16 @@ to do is up to you:
    of all its connectors, and restarts pco's connector with the new token at once. The other
    connector loses its session and cannot connect again with the token it has. Every
    published hostname of the tunnel is unreachable for the few seconds the connector on the
-   node takes to reconnect. Only root may run it.
+   node takes to reconnect. Only root may run it. It works while the cycle holds, for a
+   tunnel the last cycle did not check, as long as its id and credential are known.
 3. Replace the Cloudflare token that leaked: add a new one with `pco credential add` and
    remove the old one, then revoke it at Cloudflare.
 
 The daemon also follows a secret that was rotated elsewhere, in the dashboard or with the
 API: it reads each run token again every five minutes, and at once when its connector logs
-that Cloudflare refuses the token, and restarts the connector with the new one.
+that Cloudflare refuses the token, and restarts the connector with the new one. A read that
+fails while the refusal lasts is tried again every 30 seconds, and the problem line says
+when.
 
 ## Secrets and where they live
 
@@ -495,10 +516,12 @@ The daemon answers on the unix socket `/run/pco/pco.sock`. It has no network lis
 directory `/run/pco` has mode 0750 and the socket 0660, both owned by root; the group is
 `pco-web` when that group exists, and root's group otherwise. The daemon also reads the
 user id of the process on the other end of every connection from the kernel and answers only
-root, and the user `pco-web` if there is one. Both names count only while the web UI is
-installed, that is while `/usr/lib/systemd/system/pco-web.service` is there: anyone who may
-add a user could otherwise make a `pco-web` that the daemon answers. Without the unit the
-daemon ignores the names, and says so in a warning at its start when either exists. Anyone else gets a refusal that says nothing
+root, and the user `pco-web` if there is one. The user and the group `pco-web` count only
+while the web UI is installed, that is while `/usr/lib/systemd/system/pco-web.service` is
+there: anyone who may add a user could otherwise make a `pco-web` that the daemon answers.
+Without the unit the daemon ignores both, and says so in a warning at its start when either
+exists. The daemon decides this when it starts: after the web package is installed or
+removed, restart it (`systemctl restart pco`). Anyone else gets a refusal that says nothing
 about which requests exist. `pco` run as another user reports that it must run as root and
 exits 2.
 

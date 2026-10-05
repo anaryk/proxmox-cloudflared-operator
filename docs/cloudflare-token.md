@@ -109,6 +109,12 @@ the result of its own daily check of each stored token for `pco credential list`
   Cloudflare did not answer, with a network error, a server error or a rate limit, the
   line is marked `?` and starts with `Cloudflare did not answer`: that says nothing about
   the token, and `Usable` reads `not known, Cloudflare did not answer`.
+- A token scoped to some zones of an account may not read the records of the others, which
+  are left out: `credential add` and `credential check` name each, as
+  `example.org left out: no DNS read`. `pco setup` names only those this install served, and
+  counts the others in one line; `pco setup --verbose` names them all. `pco uninstall
+  --purge-cloudflare` says nothing of a zone this install never served, as none of its
+  records is there, and warns about one it served that it cannot read.
 - `Usable: yes` means the token is active, at least one zone is active, and every check
   that concerns an active zone or its account passed. A zone that is not active, for
   example one that is pending, fails its own line and does not make the token unusable
