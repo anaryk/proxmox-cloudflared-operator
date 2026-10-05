@@ -43,15 +43,19 @@ type Binding struct {
 	// Ports are, by MAC, the ports of Bridge that same proof found every MAC
 	// that answered for the address on, the NIC's own among them.
 	Ports map[string]string `json:"ports,omitempty"`
+	// Segment is the bridge and VLAN the proof made at VerifiedAt asked ARP
+	// on; zero for an address proven on the trusted path, through a gateway.
+	Segment Segment `json:"segment,omitzero"`
 }
 
 // proof is what proved the identity of a candidate: its level, where the
-// forwarding table placed the MAC of its NIC and every MAC that answered, and
-// when it was made.
+// forwarding table placed the MAC of its NIC and every MAC that answered, the
+// segment it was asked on, and when it was made.
 type proof struct {
 	level        Level
 	bridge, port string
 	ports        map[string]string
+	segment      Segment
 	at           time.Time
 }
 
@@ -75,6 +79,7 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 		Bridge:     p.bridge,
 		Port:       p.port,
 		Ports:      maps.Clone(p.ports),
+		Segment:    p.segment,
 	}
 }
 
@@ -82,7 +87,7 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 func (b *Binding) proven(p proof) *Binding {
 	c := b.clone()
 	c.VerifiedAt, c.Withdrawn, c.Level, c.Bridge, c.Port = p.at, false, p.level, p.bridge, p.port
-	c.Ports = maps.Clone(p.ports)
+	c.Ports, c.Segment = maps.Clone(p.ports), p.segment
 	return c
 }
 

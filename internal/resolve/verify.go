@@ -126,7 +126,7 @@ func (a *attempt) carried(c Candidate) (proof, outcome) {
 			return proof{}, o
 		}
 	}
-	return proof{level: b.Proven(), bridge: b.Bridge, port: b.Port, ports: b.Ports, at: b.VerifiedAt}, outcome{}
+	return proof{level: b.Proven(), bridge: b.Bridge, port: b.Port, ports: b.Ports, segment: b.Segment, at: b.VerifiedAt}, outcome{}
 }
 
 // identify checks that only this guest answers for c.Addr on its own network,
@@ -182,6 +182,7 @@ func (a *attempt) wireCheck(ctx context.Context, ifaces []HostIface, c Candidate
 		if !o.ok() {
 			return wireAnswer{o: o}
 		}
+		p.segment = SegmentOf(c.NIC)
 		p.level = wireLevel(macs, placed)
 		if p.level == LevelPort {
 			p.bridge, _ = fdbOf(iface, c.NIC)
@@ -220,7 +221,10 @@ func (a *attempt) onWire(ctx context.Context, iface string, c Candidate) ([]stri
 	if !o.ok() {
 		return nil, nil, o
 	}
-	if !a.checksFDB() {
+	switch {
+	case a.r.settings.NoForwardingTable:
+		return macs, nil, outcome{}
+	case !a.checksFDB():
 		return macs, nil, a.notOnLocalPorts(ctx, iface, c.NIC, macs)
 	}
 	placed, o := a.forwarding(ctx, iface, c.NIC, macs, own)
@@ -295,9 +299,13 @@ func (a *attempt) forbidden(addr netip.Addr) (string, bool) {
 
 // checksFDB reports whether the forwarding-table step applies: on the node
 // that hosts the guest, and whenever it is not known that the guest runs on
-// another node. A LocalNode that names no node of the inventory is a mistake
-// in the settings, which must not switch the step off.
+// another node, unless the settings turn it off. A LocalNode that names no
+// node of the inventory is a mistake in the settings, which must not switch
+// the step off.
 func (a *attempt) checksFDB() bool {
+	if a.r.settings.NoForwardingTable {
+		return false
+	}
 	node, local := a.guest.Node, a.r.settings.LocalNode
 	listed := slices.ContainsFunc(a.snap.Nodes, func(n inventory.Node) bool { return n.Name == local })
 	return node == "" || local == "" || node == local || !listed
@@ -341,12 +349,28 @@ func (a *attempt) macIndex() macIndex {
 }
 
 // arpInterface returns the host interface on the NIC's bridge and VLAN that
-// has an address in the candidate's network, or "" when there is none.
+// has an address in the candidate's network, or "" when there is none. That is
+// an interface on the NIC's segment, of those the one Proxmox names for it
+// first; an interface on no known segment is taken by its name alone, as one
+// of those Proxmox names.
 func arpInterface(ifaces []HostIface, c Candidate) string {
 	onLink := func(p netip.Prefix) bool { return p.Contains(c.Addr) }
-	for _, name := range ifaceNames(c.NIC) {
+	want, names := SegmentOf(c.NIC), ifaceNames(c.NIC)
+	var on []string
+	for _, ifc := range ifaces {
+		if ifc.Segment == want && slices.ContainsFunc(ifc.Addrs, onLink) {
+			on = append(on, ifc.Name)
+		}
+	}
+	if len(on) > 0 {
+		if i := slices.IndexFunc(names, func(name string) bool { return slices.Contains(on, name) }); i >= 0 {
+			return names[i]
+		}
+		return on[0]
+	}
+	for _, name := range names {
 		for _, ifc := range ifaces {
-			if ifc.Name == name && slices.ContainsFunc(ifc.Addrs, onLink) {
+			if ifc.Segment.IsZero() && ifc.Name == name && slices.ContainsFunc(ifc.Addrs, onLink) {
 				return name
 			}
 		}

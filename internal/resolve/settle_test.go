@@ -120,7 +120,7 @@ func TestResolveKeepsWhenAndWhereTheBindingWasProven(t *testing.T) {
 	require.Equal(t, &Binding{
 		Owner: webOwner, Hostname: webHost, Guest: webOwner, Addr: ip("10.20.0.10"), MAC: mac0,
 		VerifiedAt: t0, Level: LevelPort, Since: t0.Add(-time.Hour), Bridge: "vmbr0", Port: "tap101i0",
-		Ports: map[string]string{mac0: "tap101i0"},
+		Ports: map[string]string{mac0: "tap101i0"}, Segment: Segment{Bridge: "vmbr0"},
 	}, res.Binding)
 
 	t.Run("and nowhere at a lower level", func(t *testing.T) {

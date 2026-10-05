@@ -321,14 +321,14 @@ func requireServedAt(t *testing.T, res Result, addr string, at time.Time, level 
 	require.Equal(t, level, res.Level)
 }
 
-// unplaced returns a copy of b without when it was bound and where its MAC
-// was placed, which the tests of those compare.
+// unplaced returns a copy of b without when it was bound, where its MAC was
+// placed and the segment it was asked on, which the tests of those compare.
 func unplaced(b *Binding) *Binding {
 	if b == nil {
 		return nil
 	}
 	c := *b
-	c.Since, c.Bridge, c.Port, c.Ports = time.Time{}, "", "", nil
+	c.Since, c.Bridge, c.Port, c.Ports, c.Segment = time.Time{}, "", "", nil, Segment{}
 	return &c
 }
 

@@ -500,8 +500,28 @@ func TestLinuxProberOnBridge(t *testing.T) {
 	t.Run("interfaces", func(t *testing.T) {
 		ifaces, err := p.Interfaces(t.Context())
 		require.NoError(t, err)
-		require.Contains(t, ifaces, HostIface{Name: labBridge, Addrs: []netip.Prefix{netip.MustParsePrefix("10.99.0.1/24")}})
-		require.Contains(t, ifaces, HostIface{Name: labPort1, Master: labBridge})
+		require.Contains(t, ifaces, HostIface{
+			Name: labBridge, Addrs: []netip.Prefix{netip.MustParsePrefix("10.99.0.1/24")}, Segment: Segment{Bridge: labBridge},
+		})
+		require.Contains(t, ifaces, HostIface{Name: labPort1, Master: labBridge}, "a port of the bridge is on no segment")
+	})
+
+	t.Run("segments of a VLAN interface and of the bridge of a VLAN", func(t *testing.T) {
+		br, err := netlink.LinkByName(labBridge)
+		require.NoError(t, err)
+		addLabLink(t, &netlink.Vlan{LinkAttrs: netlink.LinkAttrs{Name: labBridge + ".20", ParentIndex: br.Attrs().Index}, VlanId: 20})
+		addLabLink(t, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: labBridge + "v30"}})
+
+		ifaces, err := p.Interfaces(t.Context())
+
+		require.NoError(t, err)
+		segments := map[string]Segment{}
+		for _, ifc := range ifaces {
+			segments[ifc.Name] = ifc.Segment
+		}
+		require.Equal(t, Segment{Bridge: labBridge, VLAN: 20}, segments[labBridge+".20"])
+		require.Equal(t, Segment{Bridge: labBridge, VLAN: 30}, segments[labBridge+"v30"])
+		require.Equal(t, Segment{Bridge: labBridge}, segments[labBridge])
 	})
 
 	t.Run("arp answered by one guest", func(t *testing.T) {

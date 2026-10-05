@@ -43,9 +43,10 @@ const (
 
 // HostIface is a network interface of the node.
 type HostIface struct {
-	Name   string
-	Addrs  []netip.Prefix
-	Master string // bridge this interface is enslaved to, if any
+	Name    string
+	Addrs   []netip.Prefix
+	Master  string  // bridge this interface is enslaved to, if any
+	Segment Segment // zero when the interface is on no bridge segment
 }
 
 // ErrTooManyClaimants is wrapped by an ARP error when so many stations claim
@@ -98,6 +99,10 @@ type Settings struct {
 	// MaxProofAge is how long a bound address stays served on an old proof of
 	// identity when a call cannot prove it anew, default 5m.
 	MaxProofAge time.Duration
+	// NoForwardingTable turns the forwarding-table step off for every guest,
+	// as in the appliance, whose bridge tables are invisible: the ceiling of
+	// every proof is observed.
+	NoForwardingTable bool
 }
 
 // CandidateResult is how one candidate fared. Level is the level its identity
@@ -120,6 +125,10 @@ type Result struct {
 	// its port answers. It is empty when the target has no address, or one
 	// that is withdrawn or rejected.
 	Level Level
+	// SoftDenied says why the target's address is one that needs the
+	// admin's allowance: a gateway or resolver of a node or appliance. It is
+	// set for a guest's target with an address, withdrawn or not.
+	SoftDenied string
 }
 
 // Resolver decides which address a route may be served on. It keeps nothing
@@ -179,6 +188,10 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 // binding proven below it is not kept without looking further, as it is not
 // served; what is served, and at which level, stays the caller's to decide.
 //
+// An address the denylist only soft-denies, as the gateway of a node, is
+// verified and served as any other; SoftDenied says so, and whether it is
+// published is the caller's to decide.
+//
 // The calls of one cycle may share what they learn of the host through share,
 // which also decides whether the proof of the previous binding may stand
 // without being made again; then only what needs no wire and the dial are
@@ -188,6 +201,9 @@ func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventor
 	res := r.resolve(ctx, route, snap, prev, deny, required, share)
 	if res.Target.Addr.IsValid() {
 		res.Target.Owner = route.Owner()
+		if route.Guest != nil {
+			res.SoftDenied, _ = deny.Soft(res.Target.Addr)
+		}
 	}
 	return res
 }

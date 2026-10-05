@@ -75,13 +75,24 @@ func (p *hostProber) Interfaces(context.Context) ([]HostIface, error) {
 		}
 	}
 	names := make(map[int]string, len(links))
+	bridges := map[string]bool{}
 	for _, l := range links {
 		names[l.Attrs().Index] = l.Attrs().Name
+		if _, ok := l.(*netlink.Bridge); ok {
+			bridges[l.Attrs().Name] = true
+		}
 	}
 	out := make([]HostIface, 0, len(links))
 	for _, l := range links {
 		at := l.Attrs()
-		out = append(out, HostIface{Name: at.Name, Addrs: prefixes[at.Index], Master: names[at.MasterIndex]})
+		info := linkInfo{name: at.Name}
+		switch v := l.(type) {
+		case *netlink.Bridge:
+			info.bridge = true
+		case *netlink.Vlan:
+			info.vlanParent, info.vlanID = names[at.ParentIndex], v.VlanId
+		}
+		out = append(out, HostIface{Name: at.Name, Addrs: prefixes[at.Index], Master: names[at.MasterIndex], Segment: segmentOf(info, bridges)})
 	}
 	return out, nil
 }

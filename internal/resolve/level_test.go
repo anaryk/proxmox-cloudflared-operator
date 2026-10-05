@@ -245,10 +245,12 @@ func atLevel(b *Binding, level Level) *Binding {
 	return &c
 }
 
-// onPort returns a copy of b whose MAC was placed on web-1's port of vmbr0.
+// onPort returns a copy of b proven on vmbr0, whose MAC was placed on web-1's
+// port there.
 func onPort(b *Binding) *Binding {
 	c := *b
 	c.Bridge, c.Port, c.Ports = "vmbr0", "tap101i0", map[string]string{mac0: "tap101i0"}
+	c.Segment = Segment{Bridge: "vmbr0"}
 	return &c
 }
 
