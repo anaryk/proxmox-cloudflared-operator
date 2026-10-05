@@ -31,8 +31,16 @@ func TestAllowedHosts(t *testing.T) {
 		{"IPv6", "[2001:db8::10]:8643", []string{"2001:db8::11", "[2001:db8::12]"}, []string{
 			"[2001:db8::10]:8643", "[2001:db8::11]:8643", "[2001:db8::12]:8643",
 		}},
-		{"a name given with its port", "127.0.0.1:8643", []string{"pco.example.com:443", ""}, []string{
-			"127.0.0.1:8643", "pco.example.com:443",
+		{"a name given with its port", "127.0.0.1:8643", []string{"pco.example.com:9443", ""}, []string{
+			"127.0.0.1:8643", "pco.example.com:9443",
+		}},
+		{"port 443, which browsers leave out", "192.0.2.10:443", []string{"pve1", "2001:db8::11"}, []string{
+			"192.0.2.10", "192.0.2.10:443", "192.0.2.10:8643",
+			"[2001:db8::11]", "[2001:db8::11]:443", "[2001:db8::11]:8643",
+			"pve1", "pve1:443", "pve1:8643",
+		}},
+		{"a name given with port 443", "127.0.0.1:8643", []string{"pco.example.com:443", "[2001:db8::12]:443"}, []string{
+			"127.0.0.1:8643", "[2001:db8::12]", "[2001:db8::12]:443", "pco.example.com", "pco.example.com:443",
 		}},
 		{"the same name twice", "127.0.0.1:8643", []string{"pve1", "pve1"}, []string{"127.0.0.1:8643", "pve1:8643"}},
 	}
@@ -88,6 +96,8 @@ func TestAdmit(t *testing.T) {
 		{"a foreign Origin", with(func(r *req) { r.origin = []string{"https://evil.example"} }), 403, wire.CodeForbidden},
 		{"an Origin of plain HTTP", with(func(r *req) { r.origin = []string{"http://pve1.example.lan:8643"} }), 403, wire.CodeForbidden},
 		{"the Origin of Proxmox VE", with(func(r *req) { r.origin = []string{"https://pve1.example.lan:8006"} }), 403, wire.CodeForbidden},
+		{"the Origin with more after the port", with(func(r *req) { r.origin = []string{testOrigin + ".evil"} }), 403, wire.CodeForbidden},
+		{"the Origin with a path", with(func(r *req) { r.origin = []string{testOrigin + "/"} }), 403, wire.CodeForbidden},
 		{"the null Origin", with(func(r *req) { r.origin = []string{"null"} }), 403, wire.CodeForbidden},
 		{"two Origins", with(func(r *req) { r.origin = []string{testOrigin, testOrigin} }), 403, wire.CodeForbidden},
 		{"same-site", with(func(r *req) { r.fetchSite = "same-site" }), 403, wire.CodeForbidden},
@@ -126,6 +136,31 @@ func TestAdmit(t *testing.T) {
 			require.NotContains(t, rec.Body.String(), "evil", "the answer does not repeat what the request claimed")
 		})
 	}
+}
+
+func TestAdmitOnPort443(t *testing.T) {
+	a := New(staticPVE{}, Config{Hosts: func() []string { return AllowedHosts("192.0.2.10:443", "pve1.example.lan") }})
+	admit := func(host, origin string) int {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/session/ticket", nil)
+		ctx.Request.Host = host
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		ctx.Request.Header.Set("Origin", origin)
+		ctx.Request.Header.Set("Sec-Fetch-Site", "same-origin")
+		if !a.admit(ctx) {
+			return rec.Code
+		}
+		return 0
+	}
+	require.Zero(t, admit("pve1.example.lan", "https://pve1.example.lan"), "the Host and Origin a browser sends for port 443")
+	require.Zero(t, admit("192.0.2.10", "https://192.0.2.10"))
+	require.Zero(t, admit("pve1.example.lan:443", "https://pve1.example.lan:443"))
+	require.Equal(t, http.StatusForbidden, admit("pve1.example.lan", "https://pve1.example.lan:443"))
+	require.Equal(t, http.StatusForbidden, admit("pve1.example.lan", "https://pve1.example.lan.evil"))
+
+	a = New(staticPVE{}, Config{Hosts: func() []string { return AllowedHosts("192.0.2.10:8643", "pve1.example.lan") }})
+	require.Equal(t, http.StatusForbidden, admit("pve1.example.lan", "https://pve1.example.lan"), "only when pco listens on 443")
 }
 
 func TestNoHostIsAllowedWithoutAList(t *testing.T) {

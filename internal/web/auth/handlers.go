@@ -8,7 +8,6 @@ package auth
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -41,11 +40,12 @@ type Config struct {
 
 // Auth is the sign-in and the sessions of the web interface.
 type Auth struct {
-	pve      PVE
-	cfg      Config
-	sessions *store
-	tickets  *ticketChecks
-	limit    *limiter
+	pve         PVE
+	cfg         Config
+	sessions    *store
+	tickets     *ticketChecks
+	tokenChecks flight[string, Role] // by session id
+	limit       *limiter
 }
 
 // New returns the sessions of the web process, checked with p.
@@ -61,7 +61,7 @@ func New(p PVE, cfg Config) *Auth {
 		cfg:      cfg,
 		sessions: newStore(),
 		tickets:  newTicketChecks(p, cfg.Now),
-		limit:    newLimiter(signInsPerMinute, limitWindow, maxLimitedPeers),
+		limit:    newLimiter(maxLimitedPeers),
 	}
 }
 
@@ -107,8 +107,12 @@ func (a *Auth) signOut(c *gin.Context) {
 	if !a.admit(c) {
 		return
 	}
-	s, ok := a.session(c)
+	s, ok := a.lookup(c)
 	if !ok {
+		// The session is over already, as after half an hour without use;
+		// the browser forgets the cookie all the same.
+		http.SetCookie(c.Writer, clearedCookie())
+		a.unauthenticated(c)
 		return
 	}
 	if !csrfOK(c, s) {
@@ -147,7 +151,7 @@ func (a *Auth) signInTicket(c *gin.Context) {
 		a.signInUnreachable(c, p, err)
 		return
 	}
-	a.start(c, p, func(s *Session) { s.binding = sha256.Sum256([]byte(ticket)) })
+	a.start(c, p, nil)
 }
 
 // tokenForm is an API token as Proxmox VE makes them: user@realm!id=uuid.
@@ -158,7 +162,7 @@ func (a *Auth) signInToken(c *gin.Context) {
 		return
 	}
 	p := Principal{Method: MethodToken}
-	if ok, wait := a.limit.allow(client(c.Request), a.cfg.Now()); !ok {
+	if ok, wait := a.limit.allow(bucket(client(c.Request)), a.cfg.Now()); !ok {
 		after := int(math.Ceil(wait.Seconds()))
 		c.Header("Retry-After", strconv.Itoa(after))
 		a.signInRefused(c, p, "too many attempts", http.StatusTooManyRequests, wire.Error{
@@ -201,9 +205,10 @@ func (a *Auth) signInToken(c *gin.Context) {
 }
 
 // start makes a new session for p, whose role Proxmox VE just gave, unless
-// that role is none or the user cannot be named as the actor of a change.
-// The session the browser had is over: an id is never kept across a sign-in,
-// so one an attacker planted is worth nothing.
+// that role is none or the user cannot be named as the actor of a change;
+// bind, when given, adds what the method keeps. The session the browser had
+// is over: an id is never kept across a sign-in, so one an attacker planted
+// is worth nothing.
 func (a *Auth) start(c *gin.Context, p Principal, bind func(*Session)) {
 	switch {
 	case p.Role == RoleNone:
@@ -235,7 +240,9 @@ func (a *Auth) start(c *gin.Context, p Principal, bind func(*Session)) {
 	}
 	now := a.cfg.Now()
 	s := &Session{ID: id, CSRF: csrf, Principal: p, created: now, lastSeen: now}
-	bind(s)
+	if bind != nil {
+		bind(s)
+	}
 	for _, gone := range a.sessions.add(s, now) {
 		a.signedOut(c, gone, "evicted")
 	}

@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"crypto/sha256"
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -66,9 +66,8 @@ type Session struct {
 	ID, CSRF  string
 	Principal Principal
 
-	binding [sha256.Size]byte // ticket sessions: the SHA-256 of the ticket
-	token   string            // token sessions: the token
-	checked time.Time         // token sessions: when Proxmox VE last accepted it
+	token   string    // token sessions: the token
+	checked time.Time // token sessions: when Proxmox VE last accepted it
 
 	visible   map[int]bool // readers: the VMIDs they may see
 	visibleOf string       // the hash of visible
@@ -167,6 +166,17 @@ func (st *store) lookup(id string, now time.Time) (Session, lookupState) {
 	return *s, found
 }
 
+// get is the session id as it is, over or not.
+func (st *store) get(id string) (Session, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s, ok := st.byID[id]
+	if !ok {
+		return Session{}, false
+	}
+	return *s, true
+}
+
 // touch is activity: the idle timer starts again.
 func (st *store) touch(id string, now time.Time) (Session, error) {
 	st.mu.Lock()
@@ -232,12 +242,20 @@ func cookieValue(r *http.Request, name string) string {
 // session finds the session of the request without asking Proxmox VE, and
 // answers 401 when there is none.
 func (a *Auth) session(c *gin.Context) (Session, bool) {
+	s, ok := a.lookup(c)
+	if !ok {
+		a.unauthenticated(c)
+	}
+	return s, ok
+}
+
+// lookup finds the session of the request; one that has just ended is logged.
+func (a *Auth) lookup(c *gin.Context) (Session, bool) {
 	s, state := a.sessions.lookup(cookieValue(c.Request, cookieName), a.cfg.Now())
 	if state == expired {
 		a.signedOut(c, s, "expired")
 	}
 	if state != found {
-		a.unauthenticated(c)
 		return Session{}, false
 	}
 	return s, true
@@ -245,12 +263,13 @@ func (a *Auth) session(c *gin.Context) (Session, bool) {
 
 // check asks Proxmox VE whether the session still holds, as its method
 // says: the ticket of the request, through the cache of 30 s, or the token
-// once a minute. Either sets the role again. A ticket that is gone, refused
-// or another user's ends the session; Proxmox VE out of reach refuses the
-// request and keeps the session.
+// once a minute, one call at a time for each session. Either sets the role
+// again. A ticket that is gone, refused or another user's ends the session;
+// Proxmox VE out of reach refuses the request and keeps the session. The
+// session is bound to its user: a renewed ticket of the same user is the
+// session's from then on.
 func (a *Auth) check(c *gin.Context, s Session) (Session, bool) {
-	now := a.cfg.Now()
-	var fn func(*Session)
+	var role Role
 	switch s.Principal.Method {
 	case MethodTicket:
 		ticket := cookieValue(c.Request, ticketCookieName)
@@ -269,13 +288,15 @@ func (a *Auth) check(c *gin.Context, s Session) (Session, bool) {
 		case got.role == RoleNone:
 			return a.end(c, s, "no Sys.Audit on /")
 		}
-		fn = func(x *Session) { x.binding, x.Principal.Role = sha256.Sum256([]byte(ticket)), got.role }
+		role = got.role
 	case MethodToken:
-		if now.Sub(s.checked) < tokenCheckAge {
+		if a.cfg.Now().Sub(s.checked) < tokenCheckAge {
 			return s, true
 		}
-		privs, err := a.pve.Privileges(c.Request.Context(), Credential{Token: s.token}, "/")
-		role := roleOf(privs)
+		var err error
+		role, err = a.tokenChecks.do(c.Request.Context(), s.ID, func(ctx context.Context) (Role, error) {
+			return a.checkToken(ctx, s)
+		})
 		switch {
 		case errors.Is(err, ErrRefused):
 			return a.end(c, s, "the token is no longer valid")
@@ -285,13 +306,31 @@ func (a *Auth) check(c *gin.Context, s Session) (Session, bool) {
 		case role == RoleNone:
 			return a.end(c, s, "no Sys.Audit on /")
 		}
-		fn = func(x *Session) { x.checked, x.Principal.Role = now, role }
 	}
-	s, ok := a.sessions.update(s.ID, fn)
+	s, ok := a.sessions.update(s.ID, func(x *Session) { x.Principal.Role = role })
 	if !ok {
 		a.unauthenticated(c)
 	}
 	return s, ok
+}
+
+// checkToken asks Proxmox VE about the token of s and keeps the answer in the
+// session, unless a check that ended after the request read its session has
+// done so already.
+func (a *Auth) checkToken(ctx context.Context, s Session) (Role, error) {
+	now := a.cfg.Now()
+	if cur, ok := a.sessions.get(s.ID); ok && now.Sub(cur.checked) < tokenCheckAge {
+		return cur.Principal.Role, nil
+	}
+	privs, err := a.pve.Privileges(ctx, Credential{Token: s.token}, "/")
+	if err != nil {
+		return RoleNone, err
+	}
+	role := roleOf(privs)
+	if role != RoleNone {
+		a.sessions.update(s.ID, func(x *Session) { x.checked, x.Principal.Role = now, role })
+	}
+	return role, nil
 }
 
 // end ends the session s, and answers 401.

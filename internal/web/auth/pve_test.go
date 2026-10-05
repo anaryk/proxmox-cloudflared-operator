@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -160,6 +162,51 @@ func TestRefusedAndUnreachable(t *testing.T) {
 			require.NotContains(t, err.Error(), tokenSecret, "an error never repeats the token")
 			_, err = c.pve.VisibleVMIDs(ctx, c.cred)
 			require.ErrorIs(t, err, c.want)
+		})
+	}
+}
+
+func TestThePinIsTheWholeCertificate(t *testing.T) {
+	f, srv := fakePVE(t, testUsers())
+	leaf := srv.Certificate()
+	template := *leaf
+	template.SerialNumber = new(big.Int).Add(leaf.SerialNumber, big.NewInt(1))
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, leaf.PublicKey, srv.TLS.Certificates[0].PrivateKey)
+	require.NoError(t, err)
+	reissued, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	require.Equal(t, leaf.RawSubjectPublicKeyInfo, reissued.RawSubjectPublicKeyInfo, "the same key")
+	require.Equal(t, leaf.RawSubject, reissued.RawSubject)
+	require.Equal(t, leaf.DNSNames, reissued.DNSNames)
+	require.Equal(t, leaf.IPAddresses, reissued.IPAddresses)
+
+	_, err = NewPVE(apiURL(srv), reissued, 5*time.Second).Privileges(context.Background(), Credential{Ticket: aliceTicket}, "/")
+	require.ErrorIs(t, err, ErrUnreachable, "a certificate re-issued with another serial is not the pin")
+	require.Zero(t, f.Calls("access/permissions"))
+}
+
+func TestARedirectIsNotFollowed(t *testing.T) {
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var (
+				mu    sync.Mutex
+				there int
+			)
+			srv := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api2/json/access/permissions" {
+					http.Redirect(w, r, "/api2/json/elsewhere", status)
+					return
+				}
+				mu.Lock()
+				there++
+				mu.Unlock()
+				_, _ = w.Write([]byte(`{"data":{"/":{"Sys.Modify":1}}}`))
+			}))
+			_, err := NewPVE(apiURL(srv), srv.Certificate(), 5*time.Second).Privileges(context.Background(), Credential{Ticket: aliceTicket}, "/")
+			require.ErrorIs(t, err, ErrUnreachable)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Zero(t, there, "the ticket is not carried to another path of the same server")
 		})
 	}
 }

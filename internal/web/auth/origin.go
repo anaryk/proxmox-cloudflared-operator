@@ -30,6 +30,8 @@ const DefaultPort = "8643"
 // AllowedHosts are the Host headers the interface answers to: each name, and
 // the address listen is on unless it is 0.0.0.0 or ::, with port 8643 and
 // with the port of listen. A name that comes with a port keeps only that one.
+// A browser leaves port 443 out of Host and Origin, so with 443 the name
+// alone is accepted too.
 func AllowedHosts(listen string, names ...string) []string {
 	ports := []string{DefaultPort}
 	names = slices.Clone(names)
@@ -43,18 +45,27 @@ func AllowedHosts(listen string, names ...string) []string {
 		}
 	}
 	var out []string
+	add := func(h, p string) {
+		out = append(out, net.JoinHostPort(h, p))
+		if p == "443" {
+			if strings.Contains(h, ":") {
+				h = "[" + h + "]"
+			}
+			out = append(out, h)
+		}
+	}
 	for _, n := range names {
 		n = strings.ToLower(strings.TrimSpace(n))
 		if n == "" {
 			continue
 		}
 		if h, p, err := net.SplitHostPort(n); err == nil {
-			out = append(out, net.JoinHostPort(h, p))
+			add(h, p)
 			continue
 		}
 		n = strings.TrimSuffix(strings.TrimPrefix(n, "["), "]")
 		for _, p := range ports {
-			out = append(out, net.JoinHostPort(n, p))
+			add(n, p)
 		}
 	}
 	slices.Sort(out)

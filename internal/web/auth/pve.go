@@ -220,14 +220,16 @@ type ticketCheck struct {
 }
 
 // ticketChecks keeps the answers for tickets for 30 s, by the SHA-256 of the
-// ticket, so that the requests of a page do not each ask pveproxy. Refusals
-// are not kept: a refused ticket ends its session.
+// ticket, so that the requests of a page do not each ask pveproxy, and asks
+// once for the requests that find no answer at the same time. Refusals are
+// not kept: a refused ticket ends its session.
 type ticketChecks struct {
 	pve PVE
 	now func() time.Time
 
 	mu     sync.Mutex
 	byHash map[[sha256.Size]byte]ticketCheck
+	asking flight[[sha256.Size]byte, ticketCheck]
 }
 
 func newTicketChecks(pve PVE, now func() time.Time) *ticketChecks {
@@ -236,13 +238,28 @@ func newTicketChecks(pve PVE, now func() time.Time) *ticketChecks {
 
 func (t *ticketChecks) check(ctx context.Context, ticket string) (ticketCheck, error) {
 	h := sha256.Sum256([]byte(ticket))
-	now := t.now()
-	t.mu.Lock()
-	got, ok := t.byHash[h]
-	t.mu.Unlock()
-	if ok && now.Sub(got.at) < ticketCheckAge {
+	if got, ok := t.cached(h); ok {
 		return got, nil
 	}
+	return t.asking.do(ctx, h, func(ctx context.Context) (ticketCheck, error) {
+		// A call that ended after the look above has the answer.
+		if got, ok := t.cached(h); ok {
+			return got, nil
+		}
+		return t.ask(ctx, h, ticket)
+	})
+}
+
+func (t *ticketChecks) cached(h [sha256.Size]byte) (ticketCheck, bool) {
+	now := t.now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	got, ok := t.byHash[h]
+	return got, ok && now.Sub(got.at) < ticketCheckAge
+}
+
+func (t *ticketChecks) ask(ctx context.Context, h [sha256.Size]byte, ticket string) (ticketCheck, error) {
+	now := t.now()
 	privs, err := t.pve.Privileges(ctx, Credential{Ticket: ticket}, "/")
 	if err != nil {
 		return ticketCheck{}, err
@@ -251,7 +268,7 @@ func (t *ticketChecks) check(ctx context.Context, ticket string) (ticketCheck, e
 	if !ok {
 		return ticketCheck{}, fmt.Errorf("%w: the ticket names no user", ErrRefused)
 	}
-	got = ticketCheck{user: user, role: roleOf(privs), at: now}
+	got := ticketCheck{user: user, role: roleOf(privs), at: now}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

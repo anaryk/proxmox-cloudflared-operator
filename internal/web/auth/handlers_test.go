@@ -658,6 +658,17 @@ func TestCSRF(t *testing.T) {
 			require.Equal(t, wire.CodeForbidden, errorOf(t, rec).Code)
 		}
 	}
+	// More than one value is refused, even when the first is right.
+	for name, values := range map[string][]string{
+		"the token twice":         {b.csrf, b.csrf},
+		"the token, then another": {b.csrf, other.csrf},
+		"another, then the token": {other.csrf, b.csrf},
+		"two in one line":         {b.csrf + ", " + b.csrf},
+	} {
+		r := b.request(http.MethodPost, "/api/v1/sync", "{}")
+		r.Header["Pco-Csrf"] = values
+		require.Equal(t, http.StatusForbidden, b.send(r).Code, name)
+	}
 	r := b.request(http.MethodDelete, "/api/session", "")
 	r.Header.Del("Pco-Csrf")
 	require.Equal(t, http.StatusForbidden, b.send(r).Code)
@@ -864,6 +875,29 @@ func TestSignOut(t *testing.T) {
 	gone.session = id
 	require.Equal(t, http.StatusUnauthorized, gone.do(http.MethodGet, "/api/session", "").Code)
 	require.Equal(t, http.StatusUnauthorized, b.do(http.MethodDelete, "/api/session", "").Code)
+}
+
+func TestSigningOutOfAnIdledOutSessionClearsTheCookie(t *testing.T) {
+	h := newHarness(t)
+	b := h.browser(aliceTicket)
+	b.signIn()
+	h.clock.Add(idleTimeout)
+	rec := b.do(http.MethodDelete, "/api/session", "")
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, []string{"__Host-pco-session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"}, rec.Header().Values("Set-Cookie"))
+	require.Empty(t, b.session)
+	require.Contains(t, h.log.String(), `"result":"expired"`)
+
+	rec = b.do(http.MethodDelete, "/api/session", "")
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "without a session cookie as well")
+	require.Len(t, rec.Header().Values("Set-Cookie"), 1)
+
+	b.signIn()
+	r := b.request(http.MethodDelete, "/api/session", "")
+	r.Header.Del("Pco-Csrf")
+	rec = b.send(r)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Empty(t, rec.Header().Values("Set-Cookie"), "a sign-out without the token of a live session leaves the cookie alone")
 }
 
 func TestVisible(t *testing.T) {
