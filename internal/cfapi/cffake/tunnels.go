@@ -344,8 +344,9 @@ func (f *Fake) liveTunnel(accountID, tunnelID string) (cfapi.Tunnel, error) {
 	return t.Tunnel, nil
 }
 
-// CleanUpConnections drops the connectors of a tunnel, which is inactive
-// then.
+// CleanUpConnections drops the connectors of a tunnel, which is down then: it
+// ran and has no connection, as Cloudflare says of it, where inactive is a
+// tunnel that never ran.
 func (f *Fake) CleanUpConnections(ctx context.Context, accountID, tunnelID string) error {
 	if err := checkTunnelID(accountID, tunnelID); err != nil {
 		return err
@@ -359,7 +360,7 @@ func (f *Fake) CleanUpConnections(ctx context.Context, accountID, tunnelID strin
 	if err != nil {
 		return err
 	}
-	t.connectors, t.Status = nil, "inactive"
+	t.connectors, t.Status = nil, "down"
 	return nil
 }
 

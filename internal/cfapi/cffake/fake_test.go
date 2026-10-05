@@ -205,7 +205,7 @@ func TestARotatedSecretMakesTheTokens(t *testing.T) {
 	conns, err = f.Connectors(ctx, acct, a.ID)
 	require.NoError(t, err)
 	require.Empty(t, conns)
-	require.Equal(t, "inactive", f.TunnelsIn(acct)[0].Status)
+	require.Equal(t, "down", f.TunnelsIn(acct)[0].Status, "it ran and has no connection: down, not inactive, which is never run")
 }
 
 func TestCreateTunnelNameConflict(t *testing.T) {
