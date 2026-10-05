@@ -314,6 +314,34 @@ func TestAManualRouteToTheNodeIsAnExactEntry(t *testing.T) {
 	require.Equal(t, []egress.Target{{Addr: nodeAddr, Port: 8006, AllowNode: true}}, got)
 }
 
+// A target of allowNode leaves the set as any other does: only after a tunnel
+// run verified a configuration without its rule, and until then it is still
+// one of allowNode, accepted before the addresses of the node are refused.
+func TestATargetOfAllowNodeStaysWhileItsRuleIsVerified(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.inv.set(snapshot())
+	require.NoError(t, e.store.SaveManualRoute(model.Route{
+		Hostname: "pve.example.com", ManualID: "pve", Source: model.SourceManual,
+		Target:  model.Target{Scheme: model.SchemeHTTPS, Addr: nodeAddr, Port: 8006},
+		Options: model.RouteOptions{AllowNode: true, NoTLSVerify: true},
+	}))
+	e.cycle()
+	require.NoError(t, e.store.DeleteManualRoute("pve"))
+
+	e.clock.advance(time.Minute)
+	e.cycle()
+	sets := e.egr.setCount()
+	got, _ := e.egr.last()
+	require.Contains(t, got, egress.Target{Addr: nodeAddr, Port: 8006, AllowNode: true}, "its rule was verified at Cloudflare until this cycle")
+
+	e.clock.advance(time.Minute)
+	e.cycle()
+	require.Greater(t, e.egr.setCount(), sets)
+	got, _ = e.egr.last()
+	require.Empty(t, got)
+}
+
 // The set and the configuration verified last are in the memory: a restart
 // neither takes out a target whose rule is still at Cloudflare nor keeps one
 // whose rule is gone.

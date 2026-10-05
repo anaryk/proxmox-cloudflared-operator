@@ -3,6 +3,7 @@ package egress
 import (
 	"errors"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -458,6 +459,20 @@ func TestVerifyReportsWhatDiffers(t *testing.T) {
 				return l
 			})
 		}, "chain connector is"},
+		{"no set of the targets of allowNode", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				return slices.DeleteFunc(l, func(e map[string]any) bool {
+					s, ok := e["set"].(map[string]any)
+					return ok && s["name"] == setAllowNode6
+				})
+			})
+		}, "no set allownode6"},
+		{"a set of the targets of allowNode of another type", func(t *testing.T, l listing) listing {
+			return l.edit(t, func(l listing) listing {
+				l.object(t, "set", setAllowNode4)["type"] = "ipv4_addr"
+				return l
+			})
+		}, `set allownode4 is "ipv4_addr", want ["ipv4_addr","inet_service"]`},
 		{"a missing element", func(t *testing.T, l listing) listing {
 			return l.with(t, tg[1:], rs)
 		}, "set targets4 lacks 10.0.0.5:80"},
