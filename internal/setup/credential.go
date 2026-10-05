@@ -108,7 +108,26 @@ func (r *run) checkAndStore(ctx context.Context, creds []store.Credential) error
 		return fmt.Errorf("storing the credential: %w", err)
 	}
 	r.ask.Info("credentials: stored the token as credential %s (%s)", cred.ID, cred.Label)
+	r.keepReport(cred.ID, report)
 	return nil
+}
+
+// keepReport keeps the report of the check in the engine's memory, so that the
+// daemon starts knowing which zones the token may not read. A memory of
+// another install is the daemon's to set aside, and one that cannot be read
+// is the daemon's to report; without the report, the daemon checks the token
+// before its first cycle.
+func (r *run) keepReport(id string, report credentials.Report) {
+	m, err := r.st.EngineMemory()
+	if err != nil || (m.InstallID != "" && m.InstallID != r.install.ID) {
+		return
+	}
+	m.InstallID = r.install.ID
+	m.Reports = slices.DeleteFunc(m.Reports, func(c store.CheckedCredential) bool { return c.CredentialID == id })
+	m.Reports = append(m.Reports, store.CheckedCredential{CredentialID: id, Report: report})
+	if err := r.st.SaveEngineMemory(m); err != nil {
+		r.ask.Warn("credentials: the check is not kept for the daemon, which checks the token again when it starts: %v", err)
+	}
 }
 
 // showReport prints the checklist of a check, with what to grant where a

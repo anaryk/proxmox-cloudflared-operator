@@ -401,6 +401,63 @@ func TestSetupStoresATokenThatLeavesZonesOut(t *testing.T) {
 	}
 }
 
+// The daemon starts with the check setup made, so its first cycle does not
+// take the zones the token may not read for zones to serve.
+func TestSetupKeepsTheReportOfItsCheckForTheDaemon(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit("pco.service")
+	e.cf.AddZone("zone2", "example.org", testAccount)
+	e.cf.Deny("dns.read", "zone2")
+	e.script(freshInstall()...)
+
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
+	e.done()
+
+	creds := e.credentials()
+	require.Len(t, creds, 1)
+	m, err := e.st.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, e.install().ID, m.InstallID)
+	require.Len(t, m.Reports, 1)
+	require.Equal(t, creds[0].ID, m.Reports[0].CredentialID)
+	r := m.Reports[0].Report
+	require.True(t, r.Usable)
+	require.True(t, r.Deep)
+	require.Equal(t, []string{"zone2"}, excludedIDs(r))
+	e.requireNoSecret()
+	raw, err := os.ReadFile(filepath.Join(e.paths.Local, "meta", "engine-memory.json"))
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), cfToken)
+}
+
+// A memory of another install is the daemon's to set aside, which it says.
+func TestSetupLeavesTheMemoryOfAnotherInstallAlone(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit("pco.service")
+	require.NoError(t, e.st.Init())
+	other := store.EngineMemory{InstallID: "fedcba987654", EverServed: []store.RememberedZone{
+		{ID: "zone3", Name: "example.net", AccountID: testAccount, CredentialID: "c0ffee00"},
+	}}
+	require.NoError(t, e.st.SaveEngineMemory(other))
+	e.script(freshInstall()...)
+
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
+	e.done()
+
+	require.Len(t, e.credentials(), 1)
+	m, err := e.st.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, other, m)
+}
+
+func excludedIDs(r credentials.Report) []string {
+	ids := make([]string, 0, len(r.Excluded))
+	for _, x := range r.Excluded {
+		ids = append(ids, x.ZoneID)
+	}
+	return ids
+}
+
 // A zone this install served is named whatever the flags say: losing it is
 // news.
 func TestAZoneLeftOutThatTheInstallServedIsNamed(t *testing.T) {

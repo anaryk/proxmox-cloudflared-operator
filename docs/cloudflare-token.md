@@ -135,7 +135,7 @@ A deep check creates a `TXT` record `_pco-probe-<suffix>.<zone>` and a tunnel
 lists leftover probe records under the checklist. The record the probe makes carries
 the comment `pco:<id> probe`, which is how a later run tells it from a record that
 publishes a hostname. `pco setup` runs the deep check on the token it is given before it
-stores it.
+stores it, and keeps the result for the daemon, which starts with it.
 
 `pco credential list` shows the stored credentials with the outcome of the last check
 (`usable`, `problem` or `unknown`) and a note, such as the first failed check or the

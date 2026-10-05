@@ -2,6 +2,7 @@ package setup
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -580,6 +581,32 @@ func TestThePurgeSaysNothingOfAZoneTheInstallNeverServed(t *testing.T) {
 
 	require.NotContains(t, e.ask.text(), "example.org")
 	e.requireShown(unreadableZone("example.net"))
+}
+
+// As on the lab's node: a token scoped to example.com lists seven more zones
+// of the account, and the memory the daemon leaves names example.com alone.
+func TestThePurgeSaysNothingOfTheZonesAScopedTokenNeverRead(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(setupsUser)
+	e.atCloudflare()
+	var names []string
+	for i := 2; i <= 8; i++ {
+		id, name := fmt.Sprintf("zone%d", i), fmt.Sprintf("other%d.org", i)
+		e.cf.AddZone(id, name, testAccount)
+		e.cf.Deny("dns.read", id)
+		names = append(names, name)
+	}
+	served := []store.RememberedZone{{ID: testZone, Name: "example.com", AccountID: testAccount, CredentialID: "c0ffee00"}}
+	require.NoError(t, e.st.SaveEngineMemory(store.EngineMemory{InstallID: testInstall, Served: served, EverServed: served}))
+	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
+	e.done()
+
+	for _, name := range names {
+		require.NotContains(t, e.ask.text(), name)
+	}
+	require.Equal(t, []string{"rec-other-install", "rec-by-hand"}, e.recordIDs(), "the record of the install is deleted")
 }
 
 // A zone the admin let go, or one the first check of its credential refused,
