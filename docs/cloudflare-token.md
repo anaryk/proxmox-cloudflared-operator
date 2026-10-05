@@ -141,7 +141,10 @@ stores it.
 (`usable`, `problem` or `unknown`) and a note, such as the first failed check or the
 expiry. `pco status` shows the same in its credentials table. The daemon checks every
 token again about once a day, and again after 15 minutes when a check found it
-unusable; those checks only read. A check that got no answer from Cloudflare leaves the
+unusable; those checks only read. A token it knows no check of, as after its memory on the
+node was removed, is checked before the first cycle uses its zones: until a check says
+which zones the token may not read, every zone it lists is served through it. The cycle
+waits up to 20 seconds for that check, then goes on without it. A check that got no answer from Cloudflare leaves the
 result of the one before in place, adds a warning to the event log and is repeated after
 15 minutes.
 

@@ -208,14 +208,15 @@ func (c *cycleRun) prepare() bool {
 		return false
 	}
 	c.readWriter()
-	switch note, err := c.e.recall(c.install.ID); {
+	switch err := c.e.recall(c.install.ID); {
 	case err != nil:
 		c.storeHold = true
 		c.hold(c.problem("reading what the engine remembered: %v; nothing is changed at Cloudflare until it can be read: "+
 			"fix the file or remove it; removing it forgets the connectors kept for tunnels no credential sees, "+
 			"the zones that left their listing and the guests confirmed gone", err))
-	case note != "":
-		c.problem("%s", note)
+	case c.e.setAside != "":
+		c.problem("%s", c.e.setAside)
+		c.e.setAside = ""
 	}
 	return true
 }

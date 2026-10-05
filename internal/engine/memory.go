@@ -15,19 +15,20 @@ import (
 // it is read, the caller must not act on the zones, the tunnels or the gone
 // guests it holds: a memory that cannot be read is not an empty one. A memory
 // of another install, as after a new setup on this node, is set aside, and
-// note says so. The caller holds the cycle lock.
-func (e *Engine) recall(installID string) (note string, err error) {
+// the next cycle says so. The caller holds the cycle lock.
+func (e *Engine) recall(installID string) error {
 	if e.remembered {
-		return "", nil
+		return nil
 	}
 	m, err := e.d.Store.EngineMemory()
 	if err != nil {
-		return "", err
+		return err
 	}
 	e.memoryOf, e.remembered = installID, true
 	if m.InstallID != "" && m.InstallID != installID {
-		return fmt.Sprintf("the engine memory on this node is of install %s, not %s; it is set aside and replaced",
-			m.InstallID, installID), nil
+		e.setAside = fmt.Sprintf("the engine memory on this node is of install %s, not %s; it is set aside and replaced",
+			m.InstallID, installID)
+		return nil
 	}
 	for _, z := range m.EverServed {
 		e.zones.ever[z.ID] = planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID}
@@ -57,7 +58,7 @@ func (e *Engine) recall(installID string) (note string, err error) {
 			e.reports[r.CredentialID] = r.Report
 		}
 	}
-	return "", nil
+	return nil
 }
 
 // memory is what the engine remembers, as the store keeps it.

@@ -157,6 +157,9 @@ type Engine struct {
 	// stale zones, the tunnels seen and the guests confirmed gone.
 	remembered bool
 	memoryOf   string // the install the memory is of
+	// setAside says that the memory read was of another install, until a
+	// cycle says so.
+	setAside string
 	// egress is the set of targets the egress filter was last given, and
 	// verified, by account, the targets of the tunnel configuration last
 	// verified at Cloudflare. Both are kept in the memory.
@@ -337,13 +340,15 @@ func (e *Engine) logCycle(st State) {
 }
 
 // Run cycles on the poll interval until ctx ends; Trigger asks for an early
-// cycle. Between cycles it checks the credentials that are due again, beside
-// the cycles; it returns once that check has ended too.
+// cycle. Before a cycle it checks the credentials never checked, and between
+// cycles those that are due again, beside the cycles; it returns once that
+// check has ended too.
 func (e *Engine) Run(ctx context.Context) error {
 	var checks sync.WaitGroup
 	defer checks.Wait()
 	defer e.moving.Wait()
 	for {
+		e.checkNew(ctx)
 		e.Cycle(ctx)
 		if ctx.Err() != nil {
 			return nil

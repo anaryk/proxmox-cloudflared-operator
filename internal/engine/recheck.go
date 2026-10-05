@@ -24,6 +24,9 @@ const (
 	recheckFailedEvery = 15 * time.Minute
 	// recheckTimeout bounds one check.
 	recheckTimeout = time.Minute
+	// firstCheckTimeout bounds the checks of the credentials never checked,
+	// which a cycle of the daemon waits for.
+	firstCheckTimeout = 20 * time.Second
 )
 
 // recheck checks the token of every credential again that is due: each once
@@ -69,44 +72,118 @@ func (e *Engine) recheckDue(id string) bool {
 }
 
 func (e *Engine) recheckOne(ctx context.Context, install string, cred store.Credential) {
-	log := e.d.Log.With().Str("credential", cred.ID).Logger()
-	api, err := e.d.NewClient(cred)
-	if err != nil {
-		log.Warn().Err(err).Msg("checking the token again: building a Cloudflare client failed")
+	cctx, cancel := e.timeout(ctx, recheckTimeout)
+	defer cancel()
+	if !e.checkOne(ctx, cctx, install, cred) {
+		e.d.Log.Warn().Str("credential", cred.ID).Dur("timeout", recheckTimeout).Msg("checking the token again did not finish in time")
 		e.recheckLater(cred.ID)
+	}
+}
+
+// checkNew checks the tokens no check is known of before the next cycle plans
+// their zones: until then, every zone a credential lists is taken as served
+// through it, also one whose DNS the token may not read. At a start these are
+// the credentials the memory keeps no report of; setup and pco credential add
+// keep the report of the check they made. The checks run one after the other
+// outside the cycle lock and end together after firstCheckTimeout: the zones
+// of a credential not checked by then are planned without a check, and the
+// recheck after the cycle finds it due. A call while a recheck runs returns at
+// once.
+func (e *Engine) checkNew(ctx context.Context) {
+	if !e.rechecking.CompareAndSwap(false, true) {
 		return
 	}
-	cctx, cancel := e.timeout(ctx, recheckTimeout)
-	report := e.checker(install).Run(cctx, api, false)
-	cut := cctx.Err()
-	cancel()
-	switch {
-	case ctx.Err() != nil:
+	defer e.rechecking.Store(false)
+	install, creds := e.neverChecked(ctx)
+	if len(creds) == 0 {
 		return
-	case cut != nil:
-		log.Warn().Dur("timeout", recheckTimeout).Msg("checking the token again did not finish in time")
-		e.recheckLater(cred.ID)
-		return
+	}
+	cctx, cancel := e.timeout(ctx, firstCheckTimeout)
+	defer cancel()
+	for _, cred := range creds {
+		if !e.checkOne(ctx, cctx, install, cred) {
+			e.d.Log.Warn().Str("credential", cred.ID).Dur("timeout", firstCheckTimeout).
+				Msg("the first check of the token did not finish in time; its zones are planned without it")
+			e.checkedLate(cred.ID)
+		}
+	}
+}
+
+// neverChecked returns the install and the stored credentials with no report
+// that this process did not try to check either, once the memory is read: the
+// reports it keeps count. Nothing is checked while the last cycle held
+// because of the store.
+func (e *Engine) neverChecked(ctx context.Context) (string, []store.Credential) {
+	if e.storeHeld.Load() {
+		return "", nil
 	}
 	if err := e.acquire(ctx); err != nil {
-		return
+		return "", nil
+	}
+	defer e.release()
+	install, err := e.installID()
+	if err != nil || e.recall(install) != nil {
+		return "", nil
+	}
+	creds, err := e.d.Store.Credentials()
+	if err != nil {
+		return "", nil
+	}
+	e.repMu.Lock()
+	defer e.repMu.Unlock()
+	return install, slices.DeleteFunc(creds, func(c store.Credential) bool {
+		_, checked := e.reports[c.ID]
+		_, tried := e.tried[c.ID]
+		return checked || tried
+	})
+}
+
+// checkOne checks the token of a credential within cctx, which ends no later
+// than ctx, and keeps the report while the credential still has that token. It
+// reports false, having kept nothing, when cctx ended before the check did.
+func (e *Engine) checkOne(ctx, cctx context.Context, install string, cred store.Credential) (inTime bool) {
+	api, err := e.d.NewClient(cred)
+	if err != nil {
+		e.d.Log.Warn().Err(err).Str("credential", cred.ID).Msg("checking the token: building a Cloudflare client failed")
+		e.recheckLater(cred.ID)
+		return true
+	}
+	report := e.checker(install).Run(cctx, api, false)
+	switch {
+	case ctx.Err() != nil:
+		return true
+	case cctx.Err() != nil:
+		return false
+	}
+	if err := e.acquire(ctx); err != nil {
+		return true
 	}
 	defer e.release()
 	// The credential may have been removed or given another token meanwhile:
 	// the report is of a token it no longer has.
 	now, err := e.credential(cred.ID)
 	if err != nil || !now.Token.Equal(cred.Token) {
-		return
+		return true
 	}
 	if report.Unanswered() {
 		// Cloudflare saying nothing is no verdict on the token: what the last
 		// check found stays.
 		e.noteUnanswered(cred, report)
 		e.recheckLater(cred.ID)
-		return
+		return true
 	}
 	e.keepReport(cred, report)
 	e.noteExpiry(cred, report)
+	return true
+}
+
+// checkedLate notes that the first check of a credential did not end in time,
+// so that the next cycle does not wait for it again; the recheck finds it due
+// all the same.
+func (e *Engine) checkedLate(id string) {
+	e.repMu.Lock()
+	defer e.repMu.Unlock()
+	e.tried[id] = checkTry{at: e.d.Now()}
 }
 
 // noteUnanswered says, as an event, that a check of a token got no answer.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -183,6 +185,9 @@ func (v verifying) VerifyToken(ctx context.Context) (cfapi.TokenStatus, error) {
 
 func TestRunChecksTheCredentialsBetweenCycles(t *testing.T) {
 	e := newEnv(t)
+	e.cycle()
+	e.eng.recheck(t.Context())
+	e.restart()
 	api := verifying{API: e.cf, verified: make(chan struct{})}
 	e.useAPI(testToken, api)
 	timer := &fakeTimer{waits: make(chan time.Duration, 8), fire: make(chan time.Time)}
@@ -200,5 +205,126 @@ func TestRunChecksTheCredentialsBetweenCycles(t *testing.T) {
 	cancel()
 
 	require.NoError(t, <-done)
+	require.Equal(t, 2, verifies(e.cf))
+}
+
+// startRun starts the loop of the daemon and returns the state of its first
+// cycle, and stop, which ends the loop and waits for it.
+func (e *env) startRun() (State, func()) {
+	e.t.Helper()
+	timer := &fakeTimer{waits: make(chan time.Duration, 8), fire: make(chan time.Time)}
+	e.eng.after = timer.after
+	ctx, cancel := context.WithCancel(e.t.Context())
+	done := make(chan error)
+	go func() { done <- e.eng.Run(ctx) }()
+	<-timer.waits
+	return e.eng.State(), func() {
+		cancel()
+		require.NoError(e.t, <-done)
+	}
+}
+
+// checksBeforeFirstCycle returns what tells, once the first cycle started,
+// how many token checks the fake had answered by then.
+func (e *env) checksBeforeFirstCycle() func() int {
+	n := -1
+	e.inv.hook(func() {
+		if n < 0 {
+			n = verifies(e.cf)
+		}
+	})
+	return func() int { return n }
+}
+
+// Reproduced on a node: the daemon started with a credential setup had
+// checked and kept no report of, its first cycles tried the records of seven
+// zones the token may not read, and remembered them as served once.
+func TestAStartChecksACredentialNeverCheckedBeforeTheFirstCycle(t *testing.T) {
+	e := sevenUnreadable(t)
+	before := e.checksBeforeFirstCycle()
+
+	st, stop := e.startRun()
+	stop()
+
+	require.Equal(t, 1, before(), "checked before the first cycle")
+	require.Empty(t, st.Problems)
+	for range 3 {
+		e.clock.advance(20 * time.Second)
+		require.Empty(t, e.cycle().Problems)
+	}
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.com"}, zoneNames(m.EverServed))
 	require.Equal(t, 1, verifies(e.cf))
+}
+
+// pco setup keeps the report of the check it made before it stored the token.
+func TestAStartWithTheReportOfSetupChecksNothingFirst(t *testing.T) {
+	e := sevenUnreadable(t)
+	report := credentials.NewChecker(testInstall, e.clock.now, func() string { return "s1" }).Run(t.Context(), e.cf, true)
+	require.True(t, report.Usable)
+	require.NoError(t, e.store.SaveEngineMemory(store.EngineMemory{
+		InstallID: testInstall,
+		Reports:   []store.CheckedCredential{{CredentialID: testCred, Report: report}},
+	}))
+	n := verifies(e.cf)
+	before := e.checksBeforeFirstCycle()
+
+	st, stop := e.startRun()
+	stop()
+
+	require.Equal(t, n, before())
+	require.Empty(t, st.Problems)
+}
+
+// stalling holds the first token check it is asked for until the time of the
+// check is up, as a Cloudflare that does not answer does.
+type stalling struct {
+	cfapi.API
+	stalled *atomic.Bool
+}
+
+func (s stalling) VerifyToken(ctx context.Context) (cfapi.TokenStatus, error) {
+	if s.stalled.CompareAndSwap(false, true) {
+		<-ctx.Done()
+		return cfapi.TokenStatus{}, ctx.Err()
+	}
+	return s.API.VerifyToken(ctx)
+}
+
+func TestAFirstCheckThatDoesNotEndInTimeLeavesTheCycleAsBefore(t *testing.T) {
+	e := sevenUnreadable(t)
+	e.useAPI(testToken, stalling{API: e.cf, stalled: new(atomic.Bool)})
+	e.eng.timeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		if d == firstCheckTimeout {
+			d = time.Millisecond
+		}
+		return context.WithTimeout(ctx, d)
+	}
+
+	st, stop := e.startRun()
+	require.True(t, hasProblem(st, "zone other2.org: listing the records"), "planned as before a check: %v", st.Problems)
+	require.Eventually(t, func() bool {
+		e.eng.repMu.Lock()
+		defer e.eng.repMu.Unlock()
+		_, ok := e.eng.reports[testCred]
+		return ok
+	}, 10*time.Second, 10*time.Millisecond, "checked beside the cycles at once")
+	stop()
+
+	e.clock.advance(20 * time.Second)
+	require.Empty(t, e.cycle().Problems)
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.com"}, zoneNames(m.EverServed))
+}
+
+func TestAStartSaysItSetAsideTheMemoryOfAnotherInstall(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, e.store.SaveEngineMemory(store.EngineMemory{InstallID: "other1"}))
+
+	st, stop := e.startRun()
+	stop()
+
+	require.True(t, hasProblem(st, "the engine memory on this node is of install other1, not abc123; it is set aside"), "%v", st.Problems)
 }
