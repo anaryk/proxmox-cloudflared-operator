@@ -95,6 +95,12 @@ func (f *fakeEngine) State() engine.State {
 	return f.state
 }
 
+func (f *fakeEngine) RunsAs() (profile, node string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state.Profile, f.state.Node
+}
+
 func (f *fakeEngine) QueryEvents(q engine.EventQuery) ([]engine.Event, error) {
 	f.record("events")
 	f.mu.Lock()

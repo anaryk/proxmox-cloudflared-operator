@@ -61,10 +61,12 @@ func requireGolden(t *testing.T, name string, body []byte) {
 }
 
 func TestVersion(t *testing.T) {
-	rec := do(newServer(&fakeEngine{state: engine.State{Profile: "host", Node: "pve1"}}), http.MethodGet, "/v1/version", "")
+	f := &fakeEngine{state: engine.State{Profile: "host", Node: "pve1"}}
+	rec := do(newServer(f), http.MethodGet, "/v1/version", "")
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	requireGolden(t, "version.json", rec.Body.Bytes())
+	require.NotContains(t, f.called(), "state", "the version does not copy the state")
 
 	rec = do(newServer(&fakeEngine{interval: 90 * time.Second}), http.MethodGet, "/v1/version", "")
 	require.JSONEq(t, `{"version":"1.2.3","boot":"9f2c4e1a0b7d3c55","profile":"","node":"","pollInterval":"1m30s"}`, rec.Body.String(),

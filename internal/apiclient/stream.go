@@ -173,7 +173,7 @@ func (s *sseReader) next() (sseEvent, error) {
 				m.data = data.Bytes()
 				return m, nil
 			}
-			m = sseEvent{}
+			m, size = sseEvent{}, 0
 			continue
 		}
 		if size += len(line); size > maxMessage {

@@ -145,14 +145,16 @@ func TestTheWireFormatOfTheStream(t *testing.T) {
 		hello, "before any notice")
 	require.Equal(t, []time.Duration{15 * time.Second}, tick.asked())
 
+	text := hello
 	for _, n := range streamNotices() {
 		f.notices <- n
+		text += nextMessage(t, r)
 	}
 	tick.c <- time.Time{}
 	close(f.notices)
 	rest, err := io.ReadAll(r)
 	require.NoError(t, err)
-	requireText(t, "stream.txt", hello+string(rest))
+	requireText(t, "stream.txt", text+string(rest))
 }
 
 func TestTheStreamResumesAfterTheLastEventID(t *testing.T) {
@@ -241,6 +243,19 @@ func TestTheStreamEndsCleanlyOnShutdown(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the stream did not end")
 	}
+}
+
+func TestAStreamIsGivenUpBeforeItsAnswerEnds(t *testing.T) {
+	f, _, s := streamServer()
+	closing := make(chan struct{})
+	close(closing)
+	req := request(http.MethodGet, "/v1/stream", "")
+	req = req.WithContext(context.WithValue(req.Context(), closingKey{}, (<-chan struct{})(closing)))
+
+	rec := send(s, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Zero(t, f.streams(), "a client that comes back at once finds its place free")
 }
 
 func TestAStreamOutlivesTheWriteTimeout(t *testing.T) {

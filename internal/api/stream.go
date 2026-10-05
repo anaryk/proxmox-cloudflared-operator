@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,12 +36,20 @@ func (s *Server) getStream(c *gin.Context) {
 		s.fail(c, err)
 		return
 	}
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
 	notices, hello, err := s.engine.Subscribe(ctx, boot, after)
 	if err != nil {
 		s.fail(c, err)
 		return
 	}
+	// The engine closes the stream once it has given up its place: waiting
+	// for that leaves the place free for a client that comes back at once.
+	defer func() {
+		cancel()
+		for range notices {
+		}
+	}()
 	hello.Version = s.version
 	h := c.Writer.Header()
 	h.Set("Content-Type", "text/event-stream")

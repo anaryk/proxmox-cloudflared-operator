@@ -41,8 +41,10 @@ const (
 // Engine is what the API asks of the engine.
 type Engine interface {
 	State() engine.State
-	// Boot names the process of the daemon.
+	// Boot names the process of the daemon, and RunsAs the profile of its
+	// install and its node.
 	Boot() string
+	RunsAs() (profile, node string)
 	QueryEvents(q engine.EventQuery) ([]engine.Event, error)
 	Subscribe(ctx context.Context, boot string, after uint64) (<-chan engine.Notice, engine.Hello, error)
 	Trigger()

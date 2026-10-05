@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +116,18 @@ func TestAStreamEndsOnABrokenNotice(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Empty(t, all(t, ch), "what follows a notice that cannot be read is not trusted")
+}
+
+func TestCommentsDoNotAddUpToATooLargeMessage(t *testing.T) {
+	comment := ": " + strings.Repeat("x", 1022) + "\n\n"
+	text := hello + strings.Repeat(comment, maxMessage/len(comment)+10) + "event: reset\ndata: {\"reason\":\"boot changed\"}\n\n"
+	_, socket := fakeDaemon(t, streams(text, nil))
+
+	ch, _, err := New(socket).Stream(t.Context(), "", 0)
+
+	require.NoError(t, err)
+	require.Equal(t, []engine.Notice{{Kind: engine.NoticeReset, Reason: "boot changed"}}, all(t, ch),
+		"more comments than one message may hold, each a message of its own")
 }
 
 func TestAStreamWaitsForTheHelloOnlySoLong(t *testing.T) {

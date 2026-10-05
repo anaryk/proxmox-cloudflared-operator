@@ -67,10 +67,12 @@ type fakeEngine struct {
 	interval time.Duration     // the poll interval; 10s when zero
 	query    engine.EventQuery // of the last request for the events
 
-	// Subscribe answers with notices and hello, or fails with subErr.
+	// Subscribe answers with notices and hello, or fails with subErr; open
+	// counts the streams it has not closed.
 	notices chan engine.Notice
 	hello   engine.Hello
 	subErr  error
+	open    int
 
 	creds     []engine.CredentialView
 	claims    []engine.ClaimView
@@ -155,6 +157,8 @@ func (f *fakeEngine) lastQuery() engine.EventQuery {
 
 func (f *fakeEngine) Boot() string { return testBoot }
 
+// Subscribe hands on what the test sends on notices until the test closes it
+// or ctx ends, and then closes the stream, as the engine does.
 func (f *fakeEngine) Subscribe(ctx context.Context, boot string, after uint64) (<-chan engine.Notice, engine.Hello, error) {
 	f.record(ctx, fmt.Sprintf("subscribe:%s:%d", boot, after))
 	f.mu.Lock()
@@ -162,7 +166,45 @@ func (f *fakeEngine) Subscribe(ctx context.Context, boot string, after uint64) (
 	if f.subErr != nil {
 		return nil, engine.Hello{}, f.subErr
 	}
-	return f.notices, f.hello, nil
+	f.open++
+	out := make(chan engine.Notice)
+	go func() {
+		defer close(out)
+		defer func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.open--
+		}()
+		for {
+			select {
+			case n, ok := <-f.notices:
+				if !ok {
+					return
+				}
+				select {
+				case out <- n:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, f.hello, nil
+}
+
+func (f *fakeEngine) streams() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.open
+}
+
+func (f *fakeEngine) RunsAs() (profile, node string) {
+	f.record(context.Background(), "runs as")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state.Profile, f.state.Node
 }
 
 func (f *fakeEngine) Trigger() {
@@ -554,7 +596,7 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	require.Equal(t, f.findings, findings)
 
 	require.Equal(t, []string{
-		"state", "state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
+		"runs as", "state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
 		"add:main:" + testToken, "check:abc12345:true", "remove:abc12345",
 		"claims", "resolve:www.example.com:qemu/102", "approvals",
 		"approve:qemu/101:uuid:101 macs=[bc:24:11:00:00:09] addresses=[10.0.0.1]", "revoke:qemu/101",

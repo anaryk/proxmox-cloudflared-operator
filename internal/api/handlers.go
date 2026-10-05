@@ -80,9 +80,9 @@ type Version struct {
 }
 
 func (s *Server) getVersion(c *gin.Context) {
-	st := s.engine.State()
+	profile, node := s.engine.RunsAs()
 	c.JSON(http.StatusOK, Version{
-		Version: s.version, Boot: s.engine.Boot(), Profile: st.Profile, Node: st.Node,
+		Version: s.version, Boot: s.engine.Boot(), Profile: profile, Node: node,
 		PollInterval: s.engine.PollInterval().String(),
 	})
 }

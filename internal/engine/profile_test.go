@@ -19,6 +19,18 @@ func TestTheStateNamesTheProfileOfTheInstall(t *testing.T) {
 	require.Equal(t, store.ProfileAppliance, e.eng.State().Profile)
 }
 
+func TestTheEngineSaysWhatItRunsAs(t *testing.T) {
+	e := newEnv(t)
+	profile, node := e.eng.RunsAs()
+	require.Empty(t, profile, "no cycle has read the install yet")
+	require.Equal(t, testNode, node)
+
+	e.cycle()
+	profile, node = e.eng.RunsAs()
+	require.Equal(t, store.ProfileHost, profile)
+	require.Equal(t, testNode, node)
+}
+
 func applianceInstall() store.Install {
 	return store.Install{ID: testInstall, CreatedAt: t0, Profile: store.ProfileAppliance, Appliance: &store.ApplianceInstall{
 		VMID:      9200,

@@ -412,6 +412,15 @@ func (e *Engine) State() State {
 	return e.state.clone()
 }
 
+// RunsAs says, without a copy of the state, what the daemon runs as: the
+// profile of the install, empty until a cycle has read it, and the node it
+// is registered as.
+func (e *Engine) RunsAs() (profile, node string) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	return e.state.Profile, e.state.Node
+}
+
 // Events returns the events kept in memory that happened after since, oldest
 // first.
 func (e *Engine) Events(since time.Time) []Event { return e.events.since(since) }
