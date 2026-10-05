@@ -42,7 +42,7 @@ func (c *cycleRun) syncCredentials() bool {
 	checks := c.e.zoneChecks()
 	c.refreshZones(ids, checks)
 	c.credIDs = ids
-	c.zones = c.e.zones.set(ids, c.settings.ZonePins, checks, c.now)
+	c.zones = c.e.zones.set(ids, c.settings.ZonePins, checks, c.now, c.storeHold || c.e.storeHeld.Load())
 	for _, id := range c.zones.recheck {
 		c.e.recheckBy(id, c.now)
 	}

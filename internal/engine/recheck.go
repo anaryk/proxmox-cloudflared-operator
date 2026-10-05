@@ -118,8 +118,8 @@ func (e *Engine) noteUnanswered(cred store.Credential, r credentials.Report) {
 	})
 }
 
-// checkTry is a check of a token that was made: when, and whether Cloudflare
-// answered it so that its report was kept.
+// checkTry is a check of a token that was made: when it started, and whether
+// Cloudflare answered it so that its report was kept.
 type checkTry struct {
 	at       time.Time
 	answered bool
@@ -152,6 +152,8 @@ func (e *Engine) keepReport(cred store.Credential, r credentials.Report) {
 
 // setReport keeps the report of a check of a credential and when its token is
 // checked again, and reports whether it is the first one of the credential.
+// The check counts from when it started, not from when its report is kept: a
+// zone listed in between is not in it.
 func (e *Engine) setReport(id string, r credentials.Report) (first bool) {
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
@@ -163,7 +165,7 @@ func (e *Engine) setReport(id string, r credentials.Report) (first bool) {
 		every = recheckFailedEvery
 	}
 	now := e.d.Now()
-	e.tried[id] = checkTry{at: now, answered: true}
+	e.tried[id] = checkTry{at: r.CheckedAt, answered: true}
 	e.recheckAt[id] = now.Add(every)
 	return !had
 }

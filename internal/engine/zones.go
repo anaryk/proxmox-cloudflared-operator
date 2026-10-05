@@ -321,6 +321,7 @@ type zoneEntry struct {
 	again     bool      // excluded by the last two checks of the credential
 	unchecked bool      // the last check of the credential did not look at the zone
 	next      time.Time // when the token of the credential is checked next
+	held      bool      // no check is made while the store is held
 }
 
 // set works out the zones of the credentials ids, which are sorted. A zone
@@ -335,8 +336,9 @@ type zoneEntry struct {
 // it. The account of a zone in doubt is frozen. Several credentials with one
 // that served the zone before keep that one, with a problem asking for a pin.
 // A pin to a credential that leaves the zone out serves it through none, with
-// a problem.
-func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]zoneCheck, now time.Time) zoneSet {
+// a problem. held says that the store is held: no token is checked then, and
+// the problems say so instead of when.
+func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]zoneCheck, now time.Time, held bool) zoneSet {
 	out := zoneSet{
 		known: map[string]string{}, frozen: map[string]bool{}, frozenWhy: map[string]string{},
 		accounts: map[string]string{}, excluded: map[string][]string{},
@@ -372,7 +374,7 @@ func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]
 		}
 		add := func(zone cfapi.Zone, stale bool) {
 			name := zoneName(zone)
-			en := zoneEntry{zone: planner.Zone{ID: zone.ID, Name: name, AccountID: zone.AccountID, CredentialID: id}, stale: stale, next: next}
+			en := zoneEntry{zone: planner.Zone{ID: zone.ID, Name: name, AccountID: zone.AccountID, CredentialID: id}, stale: stale, next: next, held: held}
 			if checked && !stale {
 				en.excluded, en.again = chk.excluded[zone.ID], chk.again[zone.ID]
 				en.unchecked = chk.unchecked(zone)
@@ -539,7 +541,7 @@ func refusedChoice(name string, en zoneEntry, readers []string, accounts string)
 	cred := en.zone.CredentialID
 	if !en.again {
 		return choice{doubt: fmt.Sprintf("the token of credential %s could not read the DNS of zone %s, which it serves; "+
-			"%s is left as it is, checking again at %s", cred, name, accounts, clockTime(en.next))}
+			"%s is left as it is, %s", cred, name, accounts, checkingAgain(en))}
 	}
 	ways := "a check finds it readable again or pco apply --confirm-deletes lets the zone go"
 	if len(readers) > 0 {
@@ -558,15 +560,25 @@ func refusedChoice(name string, en zoneEntry, readers []string, accounts string)
 // cannot read. The problem says when the first of them is checked again.
 func uncheckedChoice(name string, entries []zoneEntry, accounts string) choice {
 	creds := make([]string, len(entries))
-	next := entries[0].next
+	first := entries[0]
 	for i, en := range entries {
 		creds[i] = en.zone.CredentialID
-		if en.next.Before(next) {
-			next = en.next
+		if en.next.Before(first.next) {
+			first = en
 		}
 	}
 	return choice{doubt: fmt.Sprintf("zone %s is listed by credential %s, whose last check did not look at it; "+
-		"%s is left as it is, checking again at %s", name, andList(creds), accounts, clockTime(next))}
+		"%s is left as it is, %s", name, andList(creds), accounts, checkingAgain(first))}
+}
+
+// checkingAgain says when the token of the credential of an entry is checked
+// next, or that the check waits for the store: while it is held, no token is
+// checked.
+func checkingAgain(en zoneEntry) string {
+	if en.held {
+		return "and the check waits for the store"
+	}
+	return "checking again at " + clockTime(en.next)
 }
 
 // clockTime is a time of the day as the engine's clock gives it: in the
