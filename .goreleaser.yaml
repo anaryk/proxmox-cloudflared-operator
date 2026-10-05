@@ -97,10 +97,14 @@ nfpms:
         dst: /usr/share/doc/pco/README.md
         file_info:
           mode: 0644
-      # The pages and docs/images, the screenshots they show. One glob for both:
-      # nfpm fails on a glob that matches nothing, as docs/images/* would
-      # before the first screenshot.
-      - src: docs/**
+      # The pages and docs/images, the screenshots they show: docs/ may hold only
+      # what ships. Names with an extension and without a leading dot ship, in
+      # docs/ and one directory down; dotfiles and anything deeper do not. One
+      # glob for both, as nfpm fails on a glob that matches nothing, which
+      # docs/images/* would before the first screenshot. The empty first choice
+      # is needed: the glob library of nfpm matches nothing when the first
+      # choice starts with a bracket.
+      - src: "docs/{,[!.]*.*,[!.]*/[!.]*.*}"
         dst: /usr/share/doc/pco/docs
         file_info:
           mode: 0644

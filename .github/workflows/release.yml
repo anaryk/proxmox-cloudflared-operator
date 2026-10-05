@@ -74,6 +74,10 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # What the ui job uploaded is the interface: the tests of internal/web/ui
+      # with it embedded. Go only, before anything else is installed.
+      - run: go test -tags nomsgpack,webui ./internal/web/ui/
+
       # Everything that is installed, is installed before the key is on the runner.
       - name: Install the signature tools
         run: sudo apt-get update && sudo apt-get install -y gpgv sqv

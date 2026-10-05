@@ -3,9 +3,10 @@
 # Checks the order .github/workflows/release.yml keeps around the signing key.
 # The interface is built by the job ui, which holds no secret and may only read
 # the repository. The job release needs it, downloads what it built as the
-# first step after the checkout, before anything is installed and before the
-# key is imported, and runs nothing of npm. The checks run on small workflows
-# with each rule broken first, so that they cannot pass by reading nothing.
+# first step after the checkout, tests it with Go before anything else is
+# installed and before the key is imported, and runs nothing of npm. The
+# checks run on small workflows with each rule broken first, so that they
+# cannot pass by reading nothing.
 #
 # Run it with: bash packaging/release-workflow_test.sh
 
@@ -35,18 +36,19 @@ block() {
 	' <<<"$1"
 }
 
-# steps <job>: one line per step, its name and the action it uses without the
-# version, separated by a bar.
+# steps <job>: one line per step, its name, the action it uses without the
+# version and the command of a one-line run, separated by bars.
 steps() {
 	awk '
 		function key(s) {
 			if (s ~ /^name: /) name[n] = substr(s, 7)
 			if (s ~ /^uses: /) { uses[n] = substr(s, 7); sub(/@.*/, "", uses[n]) }
+			if (s ~ /^run: [^|>]/) run[n] = substr(s, 6)
 		}
 		/^    steps:$/ { inside = 1; next }
 		inside && /^      - / { n++; key(substr($0, 9)); next }
 		inside && /^        [a-z-]+: / { key(substr($0, 9)) }
-		END { for (i = 1; i <= n; i++) printf "%s|%s\n", name[i], uses[i] }
+		END { for (i = 1; i <= n; i++) printf "%s|%s|%s\n", name[i], uses[i], run[i] }
 	' <<<"$1"
 }
 
@@ -61,7 +63,7 @@ step() {
 
 # check <workflow>: prints each rule the workflow breaks, one line each.
 check() {
-	local ui release name uses n=0 checkout=0 download=0 tools=0 key=0
+	local ui release name uses cmd n=0 checkout=0 download=0 tested=0 tools=0 key=0
 	ui=$(job "$1" ui)
 	release=$(job "$1" release)
 
@@ -96,13 +98,16 @@ check() {
 		echo "the job release runs npm"
 	fi
 
-	while IFS='|' read -r name uses; do
+	while IFS='|' read -r name uses cmd; do
 		n=$((n + 1))
 		if [[ $uses == actions/checkout && $checkout == 0 ]]; then
 			checkout=$n
 		fi
 		if [[ $uses == actions/download-artifact && $download == 0 ]]; then
 			download=$n
+		fi
+		if [[ $cmd == "go test -tags nomsgpack,webui ./internal/web/ui/" && $tested == 0 ]]; then
+			tested=$n
 		fi
 		if [[ $name == "Install the signature tools" ]]; then
 			tools=$n
@@ -129,6 +134,11 @@ check() {
 	if ! step "$release" "$download" | grep -Eq '^          name: ui-dist$' ||
 		! step "$release" "$download" | grep -Eq '^          path: internal/web/ui/dist$'; then
 		echo "the download is not ui-dist into internal/web/ui/dist"
+	fi
+	if [[ $tested == 0 ]]; then
+		echo "the job release does not test the interface it downloaded"
+	elif ((tested < download || tested > tools || tested > key)); then
+		echo "the test of the interface is not between the download and the signature tools and the key"
 	fi
 }
 
@@ -161,6 +171,8 @@ release_step() {
 	download) printf '      - uses: actions/download-artifact@0123 # v8\n        with:\n          name: ui-dist\n          path: internal/web/ui/dist\n' ;;
 	elsewhere) printf '      - uses: actions/download-artifact@0123 # v8\n        with:\n          name: ui-dist\n          path: dist\n' ;;
 	go) printf '      - uses: actions/setup-go@0123 # v5\n' ;;
+	test) printf '      - run: go test -tags nomsgpack,webui ./internal/web/ui/\n' ;;
+	untagged) printf '      - run: go test -tags nomsgpack ./internal/web/ui/\n' ;;
 	tools) printf '      - name: Install the signature tools\n        run: "true"\n' ;;
 	key) printf '      - name: Import the release key\n        run: "true"\n' ;;
 	npm) printf '      - run: cd web && npm ci --ignore-scripts\n' ;;
@@ -170,7 +182,7 @@ release_step() {
 UI_HEAD='    permissions:
       contents: read'
 RELEASE_HEAD='    needs: ui'
-STEPS='tag checkout download go tools key'
+STEPS='tag checkout download go test tools key'
 
 # workflow <file> <ui head> <release head> <release steps>
 workflow() {
@@ -208,6 +220,15 @@ expect fail 'no download' "$f" "does not download ui-dist"
 
 workflow "$f" "$UI_HEAD" "$RELEASE_HEAD" 'tag checkout elsewhere go tools key'
 expect fail 'a download to another place' "$f" "not ui-dist into internal/web/ui/dist"
+
+workflow "$f" "$UI_HEAD" "$RELEASE_HEAD" 'tag checkout download go tools key'
+expect fail 'no test of the interface' "$f" "does not test the interface it downloaded"
+
+workflow "$f" "$UI_HEAD" "$RELEASE_HEAD" 'tag checkout download go untagged tools key'
+expect fail 'a test without the webui tag' "$f" "does not test the interface it downloaded"
+
+workflow "$f" "$UI_HEAD" "$RELEASE_HEAD" 'tag checkout download go tools key test'
+expect fail 'the test after the key' "$f" "not between the download and the signature tools and the key"
 
 workflow "$f" "$UI_HEAD" '' "$STEPS"
 expect fail 'the release does not need ui' "$f" "does not need ui"
