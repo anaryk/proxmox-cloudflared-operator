@@ -162,6 +162,10 @@ func TestLinuxEgressFilter(t *testing.T) {
 	})
 
 	t.Run("the table is the one applied and counts what it rejected", func(t *testing.T) {
+		// Every Set loads the table again, which starts its counters at zero:
+		// what is counted here is refused here.
+		connector.refused(t, hostPort(guestIP, otherPort))
+		connector.refused(t, hostPort(nodeIP, managementPort))
 		require.NoError(t, verify(t))
 		var live Live
 		lab.inNode(t, func() (err error) { live, err = ReadLive(t.Context(), nft, labUID); return err })
