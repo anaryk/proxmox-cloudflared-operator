@@ -1,0 +1,19 @@
+{
+  "data": {
+    "cores": 1,
+    "unprivileged": 1,
+    "mp0": "pcotest-zfs:subvol-9201-disk-1,mp=/var/lib/pco,backup=0,size=1G",
+    "hostname": "pcot-app",
+    "arch": "amd64",
+    "ostype": "debian",
+    "swap": 512,
+    "net0": "name=eth0,bridge=vmbr1,gw=10.92.0.1,hwaddr=BC:24:11:92:00:10,ip=10.92.0.10/24,type=veth",
+    "memory": 768,
+    "features": "nesting=1",
+    "parent": "pcotest-before",
+    "net10": "name=eth10,bridge=vmbr1,hwaddr=BC:24:11:92:01:0A,type=veth",
+    "nameserver": "10.92.0.1",
+    "rootfs": "pcotest-zfs:subvol-9201-disk-0,size=4G",
+    "digest": "256cbbe2f7cd3a686dc9ab8854c9a7f61057830b"
+  }
+}

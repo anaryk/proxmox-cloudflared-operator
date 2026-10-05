@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "nodeid": 0,
+      "name": "pco-test-2",
+      "local": 1,
+      "online": 1,
+      "level": "",
+      "ip": "192.168.4.208",
+      "id": "node/pco-test-2",
+      "type": "node"
+    }
+  ]
+}

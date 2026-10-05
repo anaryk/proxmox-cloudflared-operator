@@ -1,6 +1,7 @@
 package pve
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -23,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -133,11 +135,17 @@ func writeCA(t *testing.T, cert *x509.Certificate) string {
 // test servers present.
 func unrelatedCA(t *testing.T) *x509.Certificate {
 	t.Helper()
+	return namedCA(t, "unrelated test ca")
+}
+
+// namedCA returns a fresh self-signed CA certificate with the given name.
+func namedCA(t *testing.T, name string) *x509.Certificate {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "unrelated test ca"},
+		Subject:               pkix.Name{CommonName: name},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		IsCA:                  true,
@@ -231,37 +239,120 @@ func TestNewDefaultsTimeout(t *testing.T) {
 	require.Equal(t, 3*time.Second, c.timeout)
 }
 
-func TestCAFileIsUsedForRemoteHosts(t *testing.T) {
-	versionHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+// remoteServer serves the version fixture over TLS. Its certificate is valid
+// for example.com; the clients of remote reach it whatever host they are
+// pointed at.
+func remoteServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, fixture(t, "version.json"))
-	})
-	srv := httptest.NewTLSServer(versionHandler)
+	}))
 	t.Cleanup(srv.Close)
+	return srv
+}
 
+// remote is a client for cfg, with host the host of its base URL, whose
+// connections go to srv.
+func remote(t *testing.T, srv *httptest.Server, host string, cfg Config) *Client {
+	t.Helper()
 	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
 	require.NoError(t, err)
-	// The test certificate is valid for example.com, so the client is
-	// pointed at that name while the connection goes to the test server.
-	remote := func(caFile string) *Client {
-		cfg := testConfig("https://example.com:" + port)
+	cfg.BaseURL = "https://" + host + ":" + port
+	base, err := parseConfig(cfg)
+	require.NoError(t, err)
+	hc, err := newHTTPClient(base, cfg, x509.SystemCertPool)
+	require.NoError(t, err)
+	hc.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}
+	return newClient(cfg, base, hc)
+}
+
+func TestCAFileIsUsedForRemoteHosts(t *testing.T) {
+	srv := remoteServer(t)
+	withCA := func(caFile string) Config {
+		cfg := testConfig("")
 		cfg.CAFile = caFile
-		base, err := parseConfig(cfg)
-		require.NoError(t, err)
-		hc, err := newHTTPClient(base, cfg.CAFile, "")
-		require.NoError(t, err)
-		hc.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
-		}
-		return newClient(cfg, base, hc)
+		return cfg
 	}
 
-	v, err := remote(writeCA(t, srv.Certificate())).Version(context.Background())
+	v, err := remote(t, srv, "example.com", withCA(writeCA(t, srv.Certificate()))).Version(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "9.1", v.Release)
 
-	_, err = remote(writeCA(t, unrelatedCA(t))).Version(context.Background())
+	_, err = remote(t, srv, "example.com", withCA(writeCA(t, unrelatedCA(t)))).Version(context.Background())
 	var unknown x509.UnknownAuthorityError
 	require.ErrorAs(t, err, &unknown)
+}
+
+func TestServerNameIsWhatTheCertificateIsVerifiedUnder(t *testing.T) {
+	srv := remoteServer(t)
+	cfg := testConfig("")
+	cfg.CAFile = writeCA(t, srv.Certificate())
+
+	// The address is not in the certificate; the name is.
+	_, err := remote(t, srv, "10.20.0.2", cfg).Version(context.Background())
+	var wrongName x509.HostnameError
+	require.ErrorAs(t, err, &wrongName)
+
+	cfg.ServerName = "example.com"
+	c := remote(t, srv, "10.20.0.2", cfg)
+	require.Equal(t, "example.com", c.hc.Transport.(*http.Transport).TLSClientConfig.ServerName)
+	v, err := c.Version(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "9.1", v.Release)
+
+	cfg.ServerName = "pve1.lab.invalid"
+	_, err = remote(t, srv, "10.20.0.2", cfg).Version(context.Background())
+	require.ErrorAs(t, err, &wrongName)
+}
+
+func TestNewTrustsTheSystemRootsBesidesTheCAFile(t *testing.T) {
+	system, err := x509.SystemCertPool()
+	if err != nil {
+		t.Skipf("no system roots here: %v", err)
+	}
+	ca := namedCA(t, "cluster ca")
+	caFile := writeCA(t, ca)
+	c, err := New(Config{BaseURL: "https://10.20.0.2:8006", TokenID: testTokenID, Secret: testSecret, CAFile: caFile})
+	require.NoError(t, err)
+
+	system.AddCert(ca)
+	require.True(t, system.Equal(c.hc.Transport.(*http.Transport).TLSClientConfig.RootCAs))
+}
+
+func TestCAPoolHoldsTheSystemRootsAndTheFile(t *testing.T) {
+	system, file := namedCA(t, "a public root"), namedCA(t, "cluster ca")
+	roots := func() (*x509.CertPool, error) {
+		pool := x509.NewCertPool()
+		pool.AddCert(system)
+		return pool, nil
+	}
+	pool, err := loadCAPool(writeCA(t, file), roots, zerolog.Nop())
+	require.NoError(t, err)
+
+	for name, cert := range map[string]*x509.Certificate{"system root": system, "file": file} {
+		_, err := cert.Verify(x509.VerifyOptions{Roots: pool})
+		require.NoError(t, err, name)
+	}
+	_, err = unrelatedCA(t).Verify(x509.VerifyOptions{Roots: pool})
+	require.Error(t, err)
+}
+
+func TestCAPoolWithoutSystemRootsIsTheFileAlone(t *testing.T) {
+	var logged bytes.Buffer
+	file := namedCA(t, "cluster ca")
+	noRoots := func() (*x509.CertPool, error) { return nil, errors.New("no root store here") }
+
+	pool, err := loadCAPool(writeCA(t, file), noRoots, zerolog.New(&logged))
+	require.NoError(t, err)
+	_, err = file.Verify(x509.VerifyOptions{Roots: pool})
+	require.NoError(t, err)
+	require.Contains(t, logged.String(), "system roots")
+	require.Contains(t, logged.String(), "no root store here")
+
+	_, err = loadCAPool(filepath.Join(t.TempDir(), "missing.pem"), noRoots, zerolog.Nop())
+	require.ErrorContains(t, err, "CA file")
 }
 
 func TestRequestCarriesAuthAndAccept(t *testing.T) {

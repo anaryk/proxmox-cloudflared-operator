@@ -58,6 +58,19 @@ func TestResources(t *testing.T) {
 	require.Equal(t, "/api2/json/cluster/resources?type=vm", rec.requests()[0].uri)
 }
 
+func TestResourcesCarryThePool(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{
+		"/cluster/resources?type=vm": okReply(t, "resources_pools.json"),
+	})
+	got, err := c.Resources(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []Resource{
+		{Kind: model.KindLXC, VMID: 9200, Name: "pcot-edge", Node: "pco-test-2", Status: "running"},
+		{Kind: model.KindLXC, VMID: 9201, Name: "pcot-app", Node: "pco-test-2", Status: "running", Pool: "pco"},
+		{Kind: model.KindQEMU, VMID: 9220, Name: "pcot-guest", Node: "pco-test-2", Status: "stopped", Pool: "pcotest"},
+	}, got)
+}
+
 func TestResourcesSkipsOtherTypes(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
 		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[
@@ -177,7 +190,7 @@ func TestResourceTagsDecode(t *testing.T) {
 
 func TestGuestConfig(t *testing.T) {
 	c, rec := newTestClient(t, map[string]reply{
-		"/nodes/pve1/qemu/101/config": okReply(t, "qemu_config.json"),
+		"/nodes/pve1/qemu/101/config?current=1": okReply(t, "qemu_config.json"),
 	})
 	got, err := c.GuestConfig(context.Background(), "pve1", model.GuestRef{Kind: model.KindQEMU, VMID: 101})
 	require.NoError(t, err)
@@ -195,12 +208,12 @@ func TestGuestConfig(t *testing.T) {
 		"onboot":      "0",
 		"tags":        "cf-tunnel;prod",
 	}, got.Values)
-	require.Equal(t, "/api2/json/nodes/pve1/qemu/101/config", rec.requests()[0].uri)
+	require.Equal(t, "/api2/json/nodes/pve1/qemu/101/config?current=1", rec.requests()[0].uri)
 }
 
 func TestGuestConfigLXC(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
-		"/nodes/pve2/lxc/200/config": {http.StatusOK, `{"data":{"hostname":"db-1","memory":2048,"unprivileged":true,"net0":"name=eth0,bridge=vmbr0,hwaddr=BC:24:11:11:22:33,ip=dhcp,type=veth","digest":"abc123","lock":null}}`},
+		"/nodes/pve2/lxc/200/config?current=1": {http.StatusOK, `{"data":{"hostname":"db-1","memory":2048,"unprivileged":true,"net0":"name=eth0,bridge=vmbr0,hwaddr=BC:24:11:11:22:33,ip=dhcp,type=veth","digest":"abc123","lock":null}}`},
 	})
 	got, err := c.GuestConfig(context.Background(), "pve2", model.GuestRef{Kind: model.KindLXC, VMID: 200})
 	require.NoError(t, err)
@@ -216,7 +229,7 @@ func TestGuestConfigLXC(t *testing.T) {
 
 func TestGuestConfigWithoutDigest(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
-		"/nodes/pve1/qemu/101/config": {http.StatusOK, `{"data":{"name":"web-1"}}`},
+		"/nodes/pve1/qemu/101/config?current=1": {http.StatusOK, `{"data":{"name":"web-1"}}`},
 	})
 	got, err := c.GuestConfig(context.Background(), "pve1", model.GuestRef{Kind: model.KindQEMU, VMID: 101})
 	require.NoError(t, err)
@@ -228,7 +241,7 @@ func TestGuestConfigWithoutData(t *testing.T) {
 	bodies := []string{`{}`, `{"data":null}`, `{"data":{}}`}
 	for _, body := range bodies {
 		t.Run(body, func(t *testing.T) {
-			c, _ := newTestClient(t, map[string]reply{"/nodes/pve1/qemu/101/config": {http.StatusOK, body}})
+			c, _ := newTestClient(t, map[string]reply{"/nodes/pve1/qemu/101/config?current=1": {http.StatusOK, body}})
 			got, err := c.GuestConfig(context.Background(), "pve1", model.GuestRef{Kind: model.KindQEMU, VMID: 101})
 			require.ErrorContains(t, err, "unexpected response")
 			require.Zero(t, got)
@@ -238,7 +251,7 @@ func TestGuestConfigWithoutData(t *testing.T) {
 
 func TestGuestConfigMissingGuest(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
-		"/nodes/pve1/qemu/999/config": {http.StatusInternalServerError, fixture(t, "config_missing.json")},
+		"/nodes/pve1/qemu/999/config?current=1": {http.StatusInternalServerError, fixture(t, "config_missing.json")},
 	})
 	_, err := c.GuestConfig(context.Background(), "pve1", model.GuestRef{Kind: model.KindQEMU, VMID: 999})
 	require.True(t, IsNotFound(err))
@@ -262,6 +275,14 @@ func TestPathArgumentsAreValidated(t *testing.T) {
 		{"unknown kind", func() error { _, err := c.GuestConfig(ctx, "pve1", model.GuestRef{Kind: "vm", VMID: 101}); return err }},
 		{"zero vmid", func() error { _, err := c.GuestConfig(ctx, "pve1", model.GuestRef{Kind: model.KindQEMU}); return err }},
 		{"negative vmid", func() error { _, err := c.AgentInterfaces(ctx, "pve1", -1); return err }},
+		{"node for dns", func() error { _, err := c.NodeDNS(ctx, "pve1/../.."); return err }},
+		{"node for the firewall", func() error { _, err := c.NodeFirewall(ctx, ""); return err }},
+		{"node for pending", func() error { _, err := c.PendingConfig(ctx, "pve1#x", qemu); return err }},
+		{"kind for pending", func() error {
+			_, err := c.PendingConfig(ctx, "pve1", model.GuestRef{Kind: "vm", VMID: 101})
+			return err
+		}},
+		{"vmid for snapshots", func() error { _, err := c.Snapshots(ctx, "pve1", model.GuestRef{Kind: model.KindLXC}); return err }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -480,6 +501,52 @@ func TestClusterNodesNeedsANode(t *testing.T) {
 	}
 }
 
+func TestClusterStatus(t *testing.T) {
+	nodes := []ClusterNode{
+		{Name: "pve1", Addr: netip.MustParseAddr("10.20.0.2"), Online: true, Local: true},
+		{Name: "pve2", Addr: netip.MustParseAddr("10.20.0.3")},
+	}
+	tests := []struct {
+		name string
+		body reply
+		want ClusterStatus
+	}{
+		{"quorate cluster", okReply(t, "cluster_status.json"), ClusterStatus{Nodes: nodes, Quorate: true}},
+		{"cluster without quorum", reply{http.StatusOK, `{"data":[
+			{"type":"cluster","name":"lab","nodes":2,"quorate":0},
+			{"type":"node","name":"pve1","ip":"10.20.0.2","online":1,"local":1},
+			{"type":"node","name":"pve2","ip":"10.20.0.3","online":0,"local":0}
+		]}`}, ClusterStatus{Nodes: nodes}},
+		{"cluster that does not say", reply{http.StatusOK, `{"data":[
+			{"type":"cluster","name":"lab","nodes":2},
+			{"type":"node","name":"pve1","ip":"10.20.0.2","online":1,"local":1},
+			{"type":"node","name":"pve2","ip":"10.20.0.3","online":0,"local":0}
+		]}`}, ClusterStatus{Nodes: nodes}},
+		{"standalone node", okReply(t, "cluster_status_standalone.json"), ClusterStatus{
+			Nodes:   []ClusterNode{{Name: "pco-test-2", Addr: netip.MustParseAddr("192.168.4.208"), Online: true, Local: true}},
+			Quorate: true,
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, rec := newTestClient(t, map[string]reply{"/cluster/status": tt.body})
+			got, err := c.ClusterStatus(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+			require.Equal(t, "/api2/json/cluster/status", rec.requests()[0].uri)
+		})
+	}
+}
+
+func TestClusterStatusRejectsAQuorumItCannotRead(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{"/cluster/status": {http.StatusOK, `{"data":[
+		{"type":"cluster","name":"lab","quorate":"perhaps"},
+		{"type":"node","name":"pve1","online":1,"local":1}
+	]}`}})
+	_, err := c.ClusterStatus(context.Background())
+	require.Error(t, err)
+}
+
 func TestNodeNetwork(t *testing.T) {
 	c, rec := newTestClient(t, map[string]reply{
 		"/nodes/pve1/network": okReply(t, "node_network.json"),
@@ -546,11 +613,25 @@ func TestWrongShapeIsAnError(t *testing.T) {
 	}{
 		{"Version", "/version", array, func(c *Client) error { _, err := c.Version(ctx); return err }},
 		{"Resources", "/cluster/resources?type=vm", object, func(c *Client) error { _, err := c.Resources(ctx); return err }},
-		{"GuestConfig", "/nodes/pve1/qemu/101/config", array, func(c *Client) error { _, err := c.GuestConfig(ctx, "pve1", qemu); return err }},
+		{"GuestConfig", "/nodes/pve1/qemu/101/config?current=1", array, func(c *Client) error { _, err := c.GuestConfig(ctx, "pve1", qemu); return err }},
 		{"AgentInterfaces", "/nodes/pve1/qemu/101/agent/network-get-interfaces", array, func(c *Client) error { _, err := c.AgentInterfaces(ctx, "pve1", 101); return err }},
 		{"LXCInterfaces", "/nodes/pve1/lxc/200/interfaces", object, func(c *Client) error { _, err := c.LXCInterfaces(ctx, "pve1", 200); return err }},
 		{"ClusterNodes", "/cluster/status", object, func(c *Client) error { _, err := c.ClusterNodes(ctx); return err }},
 		{"NodeNetwork", "/nodes/pve1/network", object, func(c *Client) error { _, err := c.NodeNetwork(ctx, "pve1"); return err }},
+		{"ClusterStatus", "/cluster/status", object, func(c *Client) error { _, err := c.ClusterStatus(ctx); return err }},
+		{"ACL", "/access/acl", object, func(c *Client) error { _, err := c.ACL(ctx); return err }},
+		{"Users", "/access/users?full=1", object, func(c *Client) error { _, err := c.Users(ctx); return err }},
+		{"Groups", "/access/groups", object, func(c *Client) error { _, err := c.Groups(ctx); return err }},
+		{"Roles", "/access/roles", object, func(c *Client) error { _, err := c.Roles(ctx); return err }},
+		{"Permissions", "/access/permissions", array, func(c *Client) error { _, err := c.Permissions(ctx, "", ""); return err }},
+		{"Subnets", "/cluster/sdn/vnets", object, func(c *Client) error { _, err := c.Subnets(ctx); return err }},
+		{"NodeDNS", "/nodes/pve1/dns", array, func(c *Client) error { _, err := c.NodeDNS(ctx, "pve1"); return err }},
+		{"DatacenterFirewall", "/cluster/firewall/options", array, func(c *Client) error { _, err := c.DatacenterFirewall(ctx); return err }},
+		{"NodeFirewall", "/nodes/pve1/firewall/options", array, func(c *Client) error { _, err := c.NodeFirewall(ctx, "pve1"); return err }},
+		{"PendingConfig", "/nodes/pve1/qemu/101/pending", object, func(c *Client) error { _, err := c.PendingConfig(ctx, "pve1", qemu); return err }},
+		{"Snapshots", "/nodes/pve1/qemu/101/snapshot", object, func(c *Client) error { _, err := c.Snapshots(ctx, "pve1", qemu); return err }},
+		{"Replication", "/cluster/replication", object, func(c *Client) error { _, err := c.Replication(ctx); return err }},
+		{"Uptimes", "/cluster/resources?type=vm", object, func(c *Client) error { _, err := c.Uptimes(ctx); return err }},
 	}
 	for _, ep := range endpoints {
 		bodies := []struct{ name, body string }{

@@ -52,6 +52,7 @@ func BuildGuest(res pve.Resource, cfg pve.GuestConfig) (model.Guest, error) {
 		Running:     res.Status == "running",
 		Template:    res.Template || cfg.Values["template"] == "1",
 		Tags:        guestTags(res, cfg.Values),
+		Pool:        res.Pool,
 		Description: cfg.Values["description"],
 		Digest:      cfg.Digest,
 		Identity:    guestIdentity(ref, cfg.Values),

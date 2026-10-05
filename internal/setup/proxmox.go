@@ -43,19 +43,29 @@ func parsePVEVersion(out string) (pveVersion, error) {
 func (v pveVersion) supported() bool { return v.major == 9 || v.major == 8 && v.minor >= 4 }
 
 // privileges is what role PCO grants: reading the guests, the node, the
-// addresses the guest agent reports and the SDN. Proxmox VE 8 has the guest
-// agent under VM.Monitor.
+// addresses the guest agent reports, the SDN and the pools, without which the
+// cluster resources leave out the pool of every guest. Proxmox VE 8 has the
+// guest agent under VM.Monitor.
 func (v pveVersion) privileges() []string {
+	return append(v.earlierPrivileges(), "Pool.Audit")
+}
+
+// earlierPrivileges is what setup gave the role before it read pools.
+func (v pveVersion) earlierPrivileges() []string {
 	if v.major == 8 {
 		return []string{"VM.Audit", "Sys.Audit", "VM.Monitor", "SDN.Audit"}
 	}
 	return []string{"VM.Audit", "Sys.Audit", "VM.GuestAgent.Audit", "SDN.Audit"}
 }
 
-// setupPrivileges are the privilege sets setup gives the role, on any
-// version.
+// setupPrivileges are the privilege sets setup gives the role, or gave it
+// before, on any version.
 func setupPrivileges() [][]string {
-	return [][]string{pveVersion{major: 9}.privileges(), pveVersion{major: 8}.privileges()}
+	var out [][]string
+	for _, v := range []pveVersion{{major: 9}, {major: 8}} {
+		out = append(out, v.privileges(), v.earlierPrivileges())
+	}
+	return out
 }
 
 // pveList is a list Proxmox gives as one string, separated by commas,

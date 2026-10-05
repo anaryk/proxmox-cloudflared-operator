@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -229,7 +230,7 @@ func TestSetupMergesTagsAndRole(t *testing.T) {
 			e.script(preflightNew("9.0.10"),
 				[]call{
 					roleWith("VM.Audit,Sys.Audit,Datastore.Audit"),
-					{line: "pveum role modify PCO --append 1 --privs VM.GuestAgent.Audit,SDN.Audit"},
+					{line: "pveum role modify PCO --append 1 --privs VM.GuestAgent.Audit,SDN.Audit,Pool.Audit"},
 				},
 				userKept(), tokenCreated(), tagsAdded(tt.existing, tt.set), cloudflaredKept(), serviceRestarted())
 
@@ -237,12 +238,39 @@ func TestSetupMergesTagsAndRole(t *testing.T) {
 			e.done()
 
 			// The difference is printed; what the admin added is kept.
-			e.requireShown("info: role PCO: added VM.GuestAgent.Audit, SDN.Audit")
+			e.requireShown("info: role PCO: added VM.GuestAgent.Audit, SDN.Audit, Pool.Audit")
 			e.requireShown("Datastore.Audit")
 			m := e.manifest()
 			require.False(t, m.CreatedRole, "a role that was there is not setup's")
 			require.False(t, m.CreatedUser)
 			require.Equal(t, tt.added, m.RegisteredTags, "only the tags setup added are setup's")
+		})
+	}
+}
+
+func TestRepairGivesTheRoleOfAnEarlierSetupPoolAudit(t *testing.T) {
+	for _, tt := range []struct {
+		version, earlier string
+	}{
+		{"9.0.10", earlierPrivs9},
+		{"8.4.1", earlierPrivs8},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit(serviceUnit)
+			h := newFakeHost(t)
+			h.version = tt.version
+			e.onHost(h)
+			require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+			require.Contains(t, h.roles[roleID], "Pool.Audit")
+
+			// Without Pool.Audit the cluster resources leave out the pool of
+			// every guest.
+			h.roles[roleID] = strings.Split(tt.earlier, ",")
+			require.NoError(t, e.setup(Options{Yes: true, Repair: true, Node: testNode}))
+			require.Contains(t, h.ran, "pveum role modify PCO --append 1 --privs Pool.Audit")
+			require.ElementsMatch(t, strings.Split(tt.earlier+",Pool.Audit", ","), h.roles[roleID])
+			e.requireShown("role PCO: added Pool.Audit")
 		})
 	}
 }

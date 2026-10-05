@@ -1,6 +1,7 @@
 // Package pve is a small client for the Proxmox VE API calls the operator
-// needs. It reads guests, their configuration, their addresses and the
-// network layout of the nodes; it never changes anything.
+// needs. It reads guests, their configuration, their addresses, the network
+// layout of the nodes and the access control of the cluster; it never
+// changes anything.
 package pve
 
 import (
@@ -18,6 +19,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -38,11 +41,19 @@ type Config struct {
 	BaseURL string        // e.g. "https://127.0.0.1:8006"
 	TokenID string        // "user@realm!tokenid"
 	Secret  string        // the token's secret value
-	CAFile  string        // PEM bundle; required unless the host is a loopback address
 	Timeout time.Duration // per request, default 10s
+	// CAFile is a PEM bundle trusted besides the system roots; required
+	// unless the host is a loopback address.
+	CAFile string
+	// ServerName is the name the certificate of a non-loopback endpoint is
+	// verified under, when it differs from the host of BaseURL.
+	ServerName string
 	// NodeCertDir is where the certificates of this node are, which the API
 	// on a loopback address must present; default DefaultNodeCertDir.
 	NodeCertDir string
+	// Log takes the note that the system roots could not be read; the zero
+	// value drops it.
+	Log zerolog.Logger
 }
 
 // Client talks to one Proxmox VE API endpoint. It is safe for concurrent use.
@@ -55,13 +66,15 @@ type Client struct {
 
 // New checks cfg and returns a client for it. A loopback host must present
 // the certificate this node serves, as it is in cfg.NodeCertDir; any other
-// host is verified against cfg.CAFile.
+// host is verified against the system roots and cfg.CAFile, under
+// cfg.ServerName when it is set.
 func New(cfg Config) (*Client, error) {
 	base, err := parseConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	hc, err := newHTTPClient(base, cfg.CAFile, cmp.Or(cfg.NodeCertDir, DefaultNodeCertDir))
+	cfg.NodeCertDir = cmp.Or(cfg.NodeCertDir, DefaultNodeCertDir)
+	hc, err := newHTTPClient(base, cfg, x509.SystemCertPool)
 	if err != nil {
 		return nil, err
 	}
@@ -127,12 +140,14 @@ func isLoopback(host string) bool {
 	return err == nil && addr.Unmap().IsLoopback()
 }
 
-func newHTTPClient(base *url.URL, caFile, nodeCertDir string) (*http.Client, error) {
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+// newHTTPClient builds the HTTP client for cfg; systemRoots reads the roots
+// of the system, x509.SystemCertPool outside tests.
+func newHTTPClient(base *url.URL, cfg Config, systemRoots func() (*x509.CertPool, error)) (*http.Client, error) {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: cfg.ServerName}
 	// A CA file that is given is always read, so that a wrong path is
 	// reported even where it would not be used.
-	if caFile != "" {
-		pool, err := loadCAPool(caFile)
+	if cfg.CAFile != "" {
+		pool, err := loadCAPool(cfg.CAFile, systemRoots, cfg.Log)
 		if err != nil {
 			return nil, err
 		}
@@ -142,7 +157,7 @@ func newHTTPClient(base *url.URL, caFile, nodeCertDir string) (*http.Client, err
 		// The certificate is pinned instead: it is self-signed, by the CA
 		// of the cluster, and checked in VerifyConnection.
 		tlsCfg.InsecureSkipVerify = true
-		tlsCfg.VerifyConnection = (&nodePin{dir: nodeCertDir}).verify
+		tlsCfg.VerifyConnection = (&nodePin{dir: cfg.NodeCertDir}).verify
 	}
 	return &http.Client{
 		// No proxy on purpose: the API is local or on the management network.
@@ -157,12 +172,20 @@ func newHTTPClient(base *url.URL, caFile, nodeCertDir string) (*http.Client, err
 	}, nil
 }
 
-func loadCAPool(path string) (*x509.CertPool, error) {
+// loadCAPool returns the system roots with the certificates of the file
+// added: the cluster CA for the certificate pveproxy has by default, the
+// system roots for one an admin installed. Without system roots it is the
+// file alone.
+func loadCAPool(path string, systemRoots func() (*x509.CertPool, error), log zerolog.Logger) (*x509.CertPool, error) {
 	pemBytes, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading CA file: %w", err)
 	}
-	pool := x509.NewCertPool()
+	pool, err := systemRoots()
+	if err != nil || pool == nil {
+		log.Warn().Err(err).Str("caFile", path).Msg("the system roots cannot be read; the Proxmox API is verified against the CA file alone")
+		pool = x509.NewCertPool()
+	}
 	if !pool.AppendCertsFromPEM(pemBytes) {
 		return nil, fmt.Errorf("CA file %q contains no certificates", path)
 	}

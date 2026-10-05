@@ -1,0 +1,64 @@
+{
+  "data": {
+    "/vms/9201": {
+      "SDN.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "VM.Audit": 1
+    },
+    "/vms": {
+      "VM.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "Sys.Audit": 1,
+      "SDN.Audit": 1
+    },
+    "/": {
+      "SDN.Audit": 1,
+      "VM.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.GuestAgent.Audit": 1
+    },
+    "/sdn": {
+      "VM.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "SDN.Audit": 1
+    },
+    "/nodes": {
+      "SDN.Audit": 1,
+      "VM.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "Sys.Audit": 1
+    },
+    "/pool": {
+      "VM.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "Sys.Audit": 1,
+      "SDN.Audit": 1
+    },
+    "/vms/9220": {
+      "VM.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "SDN.Audit": 1
+    },
+    "/access/groups": {
+      "SDN.Audit": 1,
+      "VM.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.GuestAgent.Audit": 1
+    },
+    "/access": {
+      "VM.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "SDN.Audit": 1
+    },
+    "/storage": {
+      "SDN.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "VM.Audit": 1
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "data": [
+    {
+      "enable": 1,
+      "userid": "pco@pve",
+      "expire": 0,
+      "email": "",
+      "realm-type": "pve",
+      "tokens": [
+        {
+          "privsep": 1,
+          "comment": "pco appliance vm9201",
+          "expire": 0,
+          "tokenid": "vm9201"
+        }
+      ],
+      "groups": "",
+      "comment": "pco operator"
+    },
+    {
+      "enable": 1,
+      "expire": 0,
+      "userid": "pcotest@pve",
+      "email": "",
+      "groups": "pcotestg,pcotestg2",
+      "realm-type": "pve",
+      "tokens": [
+        {
+          "tokenid": "nosep",
+          "expire": 0,
+          "comment": "pcotest no privsep",
+          "privsep": 0
+        },
+        {
+          "privsep": 1,
+          "comment": "pcotest privsep",
+          "expire": 0,
+          "tokenid": "sep"
+        }
+      ],
+      "comment": "pcotest"
+    },
+    {
+      "enable": 1,
+      "groups": "",
+      "realm-type": "pam",
+      "tokens": [
+        {
+          "privsep": 0,
+          "comment": "pcotest: the root view over HTTP",
+          "expire": 0,
+          "tokenid": "pcotest"
+        }
+      ],
+      "expire": 0,
+      "userid": "root@pam"
+    }
+  ]
+}

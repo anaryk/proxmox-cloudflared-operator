@@ -242,6 +242,18 @@ func TestBuildGuestLXC(t *testing.T) {
 	}, g)
 }
 
+func TestBuildGuestPool(t *testing.T) {
+	res := lxcResource()
+	res.Pool = "pco"
+	g, err := BuildGuest(res, config(map[string]string{"hostname": "db-1"}))
+	require.NoError(t, err)
+	require.Equal(t, "pco", g.Pool)
+
+	g, err = BuildGuest(lxcResource(), config(map[string]string{"hostname": "db-1"}))
+	require.NoError(t, err)
+	require.Empty(t, g.Pool)
+}
+
 func TestBuildGuestLXCIgnoresBadAddress(t *testing.T) {
 	for _, ip := range []string{"garbage", "10.20.0.30", "2001:db8::5/64", "0.0.0.0/0"} {
 		t.Run(ip, func(t *testing.T) {

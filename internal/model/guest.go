@@ -74,6 +74,7 @@ type Guest struct {
 	Running     bool           `json:"running"`
 	Template    bool           `json:"template,omitempty"`
 	Tags        []string       `json:"tags,omitempty"`
+	Pool        string         `json:"pool,omitempty"`
 	Description string         `json:"description,omitempty"`
 	Digest      string         `json:"digest,omitempty"`
 	Identity    string         `json:"identity"`

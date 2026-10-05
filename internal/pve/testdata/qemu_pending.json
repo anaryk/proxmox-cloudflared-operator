@@ -1,0 +1,40 @@
+{
+  "data": [
+    {
+      "value": "5b7a16ec-7e21-485c-9655-c3cf4511d37c",
+      "key": "vmgenid"
+    },
+    {
+      "value": "a3f58ea4dde41a34c23c9875148b6d461cab7dfa",
+      "key": "digest"
+    },
+    {
+      "value": "order=net0",
+      "key": "boot"
+    },
+    {
+      "key": "smbios1",
+      "value": "uuid=5eedcb80-73a5-4b1a-bf2f-f8de2930fc62"
+    },
+    {
+      "key": "meta",
+      "value": "creation-qemu=11.0.3,ctime=1791198696"
+    },
+    {
+      "key": "net0",
+      "value": "virtio=BC:24:11:92:02:20,bridge=vmbr1"
+    },
+    {
+      "key": "memory",
+      "value": "128"
+    },
+    {
+      "key": "name",
+      "value": "pcot-guest"
+    },
+    {
+      "key": "ostype",
+      "value": "l26"
+    }
+  ]
+}

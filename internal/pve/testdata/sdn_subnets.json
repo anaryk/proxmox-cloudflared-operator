@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "zone": "pcotest",
+      "subnet": "pcotest-10.92.1.0-24",
+      "gateway": "10.92.1.1",
+      "dhcp-range": [],
+      "network": "10.92.1.0",
+      "id": "pcotest-10.92.1.0-24",
+      "type": "subnet",
+      "mask": "24",
+      "cidr": "10.92.1.0/24",
+      "vnet": "pcotv1",
+      "digest": "02bb4ef325d97cc50788e8aa35c69888ee81418f"
+    }
+  ]
+}

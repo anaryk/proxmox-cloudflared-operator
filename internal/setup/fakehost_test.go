@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ var errKilled = errors.New("killed")
 // that goes takes its grants. It may be killed before or after a command.
 type fakeHost struct {
 	t           *testing.T
+	version     string // of pve-manager; empty: 9.0.10
 	roles       map[string][]string
 	users       []string
 	acl         []pveACL
@@ -123,7 +125,7 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 	}
 	switch {
 	case cmd == "pveversion":
-		return "pve-manager/9.0.10/0123456789abcdef (running kernel: 6.14.8-2-pve)\n", nil
+		return "pve-manager/" + cmp.Or(h.version, "9.0.10") + "/0123456789abcdef (running kernel: 6.14.8-2-pve)\n", nil
 	case cmd == "mountpoint -q /etc/pve":
 		return "", nil
 	case cmd == "dpkg --print-architecture":

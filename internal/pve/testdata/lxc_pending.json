@@ -1,0 +1,69 @@
+{
+  "data": [
+    {
+      "value": "name=eth10,bridge=vmbr1,hwaddr=BC:24:11:92:01:0A,type=veth",
+      "delete": 1,
+      "key": "net10"
+    },
+    {
+      "key": "parent",
+      "value": "pcotest-before"
+    },
+    {
+      "value": "nesting=1",
+      "key": "features"
+    },
+    {
+      "key": "rootfs",
+      "value": "pcotest-zfs:subvol-9201-disk-0,size=4G"
+    },
+    {
+      "key": "nameserver",
+      "value": "10.92.0.1"
+    },
+    {
+      "key": "digest",
+      "value": "256cbbe2f7cd3a686dc9ab8854c9a7f61057830b"
+    },
+    {
+      "value": "debian",
+      "key": "ostype"
+    },
+    {
+      "key": "arch",
+      "value": "amd64"
+    },
+    {
+      "key": "hostname",
+      "value": "pcot-app"
+    },
+    {
+      "value": "pcotest-zfs:subvol-9201-disk-1,mp=/var/lib/pco,backup=0,size=1G",
+      "key": "mp0"
+    },
+    {
+      "value": 1,
+      "key": "unprivileged"
+    },
+    {
+      "key": "cores",
+      "value": 1
+    },
+    {
+      "key": "memory",
+      "value": 768
+    },
+    {
+      "key": "swap",
+      "value": 512
+    },
+    {
+      "key": "net0",
+      "value": "name=eth0,bridge=vmbr1,gw=10.92.0.1,hwaddr=BC:24:11:92:00:10,ip=10.92.0.10/24,type=veth"
+    },
+    {
+      "key": "cmode",
+      "pending": "console"
+    }
+  ]
+}

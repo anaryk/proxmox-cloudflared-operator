@@ -116,6 +116,49 @@ func TestRefreshUsesCachedConfigWithCurrentResourceRow(t *testing.T) {
 	require.Equal(t, guestOf(t, first, refDB).NICs, db.NICs)
 }
 
+func TestRefreshAlwaysReadsWhatItIsTold(t *testing.T) {
+	src := newFake()
+	src.update(refDB, func(row *pve.Resource) { row.Pool = "pco" })
+	src.update(refWeb, func(row *pve.Resource) { row.Pool = "prod" })
+	asked := map[model.GuestRef]string{}
+	inv, clk := newInventory(src, Options{AlwaysRead: func(ref model.GuestRef, pool string) bool {
+		asked[ref] = pool
+		return pool == "pco"
+	}})
+
+	first := inv.Refresh(t.Context())
+	require.Equal(t, "pco", guestOf(t, first, refDB).Pool)
+	require.Equal(t, "prod", guestOf(t, first, refWeb).Pool)
+	require.Empty(t, guestOf(t, first, refApp).Pool)
+	for range 3 {
+		clk.advance(10 * time.Second)
+		inv.Refresh(t.Context())
+	}
+
+	require.Equal(t, 4, src.count("config "+refDB.String()), "an untagged guest in the pool is read every refresh")
+	require.Equal(t, "pco", asked[refDB], "asked with the pool of the resource row")
+
+	src.resourcesErr = serverErr()
+	clk.advance(10 * time.Second)
+	previous := inv.Refresh(t.Context())
+	require.False(t, previous.Complete)
+	require.Equal(t, "pco", guestOf(t, previous, refDB).Pool, "the previous guests keep their pool")
+}
+
+func TestRefreshAlwaysReadsTheOwnGuest(t *testing.T) {
+	src := newFake()
+	inv, clk := newInventory(src, Options{AlwaysRead: func(ref model.GuestRef, _ string) bool { return ref == refDB }})
+	inv.Refresh(t.Context())
+	clk.advance(10 * time.Second)
+	inv.Refresh(t.Context())
+	require.Equal(t, 2, src.count("config "+refDB.String()))
+
+	src.setOnline("pve2", false)
+	clk.advance(10 * time.Second)
+	inv.Refresh(t.Context())
+	require.Equal(t, 2, src.count("config "+refDB.String()), "nothing is asked of an offline node")
+}
+
 func TestRefreshGuestBecomingWatchedIsFetchedAtOnce(t *testing.T) {
 	src := newFake()
 	inv, clk := newInventory(src, Options{})

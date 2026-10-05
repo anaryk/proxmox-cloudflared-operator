@@ -111,6 +111,10 @@ type Options struct {
 	FullSweepEvery time.Duration // config refresh for unwatched guests, default 5m
 	ReportedTTL    time.Duration // agent / lxc interface cache, default 60s; quick answers without addresses are kept for 15s at most
 	Concurrency    int           // parallel API calls, default 4
+	// AlwaysRead names the guests whose config is read on every refresh,
+	// watched or not: the appliance itself and the members of its pool, whose
+	// NICs the self-identification compares every cycle. nil reads none.
+	AlwaysRead func(ref model.GuestRef, pool string) bool
 }
 
 // Inventory polls Proxmox and keeps what it learned between refreshes, so
@@ -347,6 +351,10 @@ func (i *Inventory) isWatched(row pve.Resource, cfg pve.GuestConfig) bool {
 	})
 }
 
+func (i *Inventory) alwaysRead(row pve.Resource) bool {
+	return i.opts.AlwaysRead != nil && i.opts.AlwaysRead(refOf(row), row.Pool)
+}
+
 // configResult is the outcome of one config fetch.
 type configResult struct {
 	attempted bool
@@ -355,11 +363,11 @@ type configResult struct {
 }
 
 // refreshConfigs fetches the configs that are due and combines them with the
-// cached ones. Watched guests are always due; the others on first sight and
-// then once per FullSweepEvery. The current resource row always wins over what
-// the cached config says about name, node, status and tags, except that a
-// status other than running or stopped keeps the last known state, or marks
-// the guest StatusUnknown when there is none.
+// cached ones. Watched guests and those AlwaysRead names are always due; the
+// others on first sight and then once per FullSweepEvery. The current
+// resource row always wins over what the cached config says about name, node,
+// status and tags, except that a status other than running or stopped keeps
+// the last known state, or marks the guest StatusUnknown when there is none.
 func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resource, offline map[string]bool) []tracked {
 	var due []int
 	for j, row := range rows {
@@ -367,7 +375,7 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 			continue
 		}
 		old, cached := i.cache[refOf(row)]
-		if !cached || i.isWatched(row, old.cfg) || r.now.Sub(old.cfgAt) >= i.opts.FullSweepEvery {
+		if !cached || i.isWatched(row, old.cfg) || i.alwaysRead(row) || r.now.Sub(old.cfgAt) >= i.opts.FullSweepEvery {
 			due = append(due, j)
 		}
 	}

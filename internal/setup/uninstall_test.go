@@ -366,8 +366,11 @@ func TestUninstallRemovesTheRoleOnlyWhenUnchanged(t *testing.T) {
 	}{
 		{"as setup made it on 9", privs9, true, ""},
 		{"as setup made it on 8", privs8, true, ""},
+		{"as an earlier setup made it on 9", earlierPrivs9, true, ""},
+		{"as an earlier setup made it on 8", earlierPrivs8, true, ""},
 		{"with a privilege an admin added", privs9 + ",Datastore.Audit", false, "it also grants Datastore.Audit"},
 		{"with a privilege an admin took away", "VM.Audit,Sys.Audit,SDN.Audit", false, "it no longer grants VM.GuestAgent.Audit"},
+		{"with Pool.Audit an admin added to an earlier one", "VM.Audit,Sys.Audit,SDN.Audit,Pool.Audit", false, "it no longer grants VM.GuestAgent.Audit"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newTestEnv(t)

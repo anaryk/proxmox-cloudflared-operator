@@ -1,0 +1,10 @@
+{
+  "data": {
+    "/vms/9201": {
+      "SDN.Audit": 1,
+      "VM.GuestAgent.Audit": 1,
+      "Sys.Audit": 1,
+      "VM.Audit": 1
+    }
+  }
+}

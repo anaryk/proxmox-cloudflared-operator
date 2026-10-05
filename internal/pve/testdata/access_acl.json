@@ -1,0 +1,18 @@
+{
+  "data": [
+    {
+      "ugid": "pco@pve",
+      "roleid": "PCO",
+      "path": "/",
+      "propagate": 1,
+      "type": "user"
+    },
+    {
+      "type": "token",
+      "path": "/",
+      "propagate": 1,
+      "roleid": "PCO",
+      "ugid": "pco@pve!vm9201"
+    }
+  ]
+}

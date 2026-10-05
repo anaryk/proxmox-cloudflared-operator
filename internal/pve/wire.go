@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -28,6 +29,31 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// commaList reads a list Proxmox gives as one string, "a,b", or as a JSON
+// list. Empty parts are dropped; nothing is nil.
+type commaList []string
+
+func (l *commaList) UnmarshalJSON(data []byte) error {
+	var (
+		s     string
+		parts []string
+	)
+	switch {
+	case string(bytes.TrimSpace(data)) == "null":
+	case json.Unmarshal(data, &s) == nil:
+		parts = strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' || unicode.IsSpace(r) })
+	case json.Unmarshal(data, &parts) == nil:
+		parts = slices.DeleteFunc(parts, func(p string) bool { return strings.TrimSpace(p) == "" })
+	default:
+		return fmt.Errorf("%s is neither a list nor a string", data)
+	}
+	if len(parts) == 0 {
+		parts = nil
+	}
+	*l = parts
+	return nil
+}
+
 type versionWire struct {
 	Release string `json:"release"`
 	Version string `json:"version"`
@@ -41,6 +67,8 @@ type resourceWire struct {
 	Status   string   `json:"status"`
 	Template flexBool `json:"template"`
 	Tags     string   `json:"tags"`
+	Pool     string   `json:"pool"`
+	Uptime   *int64   `json:"uptime"` // seconds; absent while pvestatd does not report
 }
 
 type agentWire struct {
@@ -65,11 +93,12 @@ type lxcIfaceWire struct {
 }
 
 type clusterEntryWire struct {
-	Type   string   `json:"type"`
-	Name   string   `json:"name"`
-	IP     string   `json:"ip"`
-	Online flexBool `json:"online"`
-	Local  flexBool `json:"local"`
+	Type    string   `json:"type"`
+	Name    string   `json:"name"`
+	IP      string   `json:"ip"`
+	Online  flexBool `json:"online"`
+	Local   flexBool `json:"local"`
+	Quorate flexBool `json:"quorate"` // on the entry of type cluster
 }
 
 type nodeIfaceWire struct {
@@ -77,6 +106,7 @@ type nodeIfaceWire struct {
 	Type        string   `json:"type"`
 	Active      flexBool `json:"active"`
 	CIDR        string   `json:"cidr"`
+	Gateway     string   `json:"gateway"`
 	BridgePorts string   `json:"bridge_ports"`
 }
 

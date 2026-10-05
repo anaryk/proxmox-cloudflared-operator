@@ -1,0 +1,3268 @@
+{
+  "about": "GET /access/permissions?userid=<p>&path=/vms/9220, asked as pco@pve!vm9201 under one ACL configuration per row, on a Proxmox VE 9.2.21 node (libpve-access-control 9.1.2) on 2026-10-05. acl and users are the data of GET /access/acl and GET /access/users?full=1 in that row; answers are the data of the permissions call, a map of privilege to propagate flag; privileges are their sorted names; probes are the status of GET /nodes/<node>/qemu/9220/config as each token. groups, roles and resources are the same for every row; pools are the members of each pool as root@pam sees them.",
+  "path": "/vms/9220",
+  "principals": {
+    "user": "pcotest@pve",
+    "privsep": "pcotest@pve!sep",
+    "shared": "pcotest@pve!nosep"
+  },
+  "groups": [
+    {
+      "comment": "pcotest",
+      "groupid": "pcotestg",
+      "users": "pcotest@pve"
+    },
+    {
+      "comment": "pcotest",
+      "groupid": "pcotestg2",
+      "users": "pcotest@pve"
+    }
+  ],
+  "roles": [
+    {
+      "roleid": "PVEMappingUser",
+      "special": 1,
+      "privs": "Mapping.Audit,Mapping.Use"
+    },
+    {
+      "privs": "Datastore.Allocate,Datastore.AllocateSpace,Datastore.AllocateTemplate,Datastore.Audit,Group.Allocate,Mapping.Audit,Mapping.Use,Pool.Allocate,Pool.Audit,Realm.AllocateUser,SDN.Allocate,SDN.Audit,SDN.Use,Sys.Audit,Sys.Console,Sys.Syslog,User.Modify,VM.Allocate,VM.Audit,VM.Backup,VM.Clone,VM.Config.CDROM,VM.Config.CPU,VM.Config.Cloudinit,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.Console,VM.GuestAgent.Audit,VM.GuestAgent.FileRead,VM.GuestAgent.FileSystemMgmt,VM.GuestAgent.FileWrite,VM.GuestAgent.Unrestricted,VM.Migrate,VM.PowerMgmt,VM.Replicate,VM.Snapshot,VM.Snapshot.Rollback",
+      "roleid": "PVEAdmin",
+      "special": 1
+    },
+    {
+      "roleid": "PVETemplateUser",
+      "special": 1,
+      "privs": "VM.Audit,VM.Clone"
+    },
+    {
+      "special": 0,
+      "roleid": "PCO",
+      "privs": "SDN.Audit,Sys.Audit,VM.Audit,VM.GuestAgent.Audit"
+    },
+    {
+      "privs": "Datastore.Allocate,Datastore.AllocateSpace,Datastore.AllocateTemplate,Datastore.Audit,Group.Allocate,Mapping.Audit,Mapping.Modify,Mapping.Use,Permissions.Modify,Pool.Allocate,Pool.Audit,Realm.Allocate,Realm.AllocateUser,SDN.Allocate,SDN.Audit,SDN.Use,Sys.AccessNetwork,Sys.Audit,Sys.Console,Sys.Incoming,Sys.Modify,Sys.PowerMgmt,Sys.Syslog,User.Modify,VM.Allocate,VM.Audit,VM.Backup,VM.Clone,VM.Config.CDROM,VM.Config.CPU,VM.Config.Cloudinit,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.Console,VM.GuestAgent.Audit,VM.GuestAgent.FileRead,VM.GuestAgent.FileSystemMgmt,VM.GuestAgent.FileWrite,VM.GuestAgent.Unrestricted,VM.Migrate,VM.PowerMgmt,VM.Replicate,VM.Snapshot,VM.Snapshot.Rollback",
+      "roleid": "Administrator",
+      "special": 1
+    },
+    {
+      "privs": "Pool.Audit",
+      "special": 1,
+      "roleid": "PVEPoolUser"
+    },
+    {
+      "privs": "SDN.Audit,SDN.Use",
+      "roleid": "PVESDNUser",
+      "special": 1
+    },
+    {
+      "roleid": "PVEVMAdmin",
+      "special": 1,
+      "privs": "VM.Allocate,VM.Audit,VM.Backup,VM.Clone,VM.Config.CDROM,VM.Config.CPU,VM.Config.Cloudinit,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.Console,VM.GuestAgent.Audit,VM.GuestAgent.FileRead,VM.GuestAgent.FileSystemMgmt,VM.GuestAgent.FileWrite,VM.GuestAgent.Unrestricted,VM.Migrate,VM.PowerMgmt,VM.Replicate,VM.Snapshot,VM.Snapshot.Rollback"
+    },
+    {
+      "special": 1,
+      "roleid": "PVEAuditor",
+      "privs": "Datastore.Audit,Mapping.Audit,Pool.Audit,SDN.Audit,Sys.Audit,VM.Audit,VM.GuestAgent.Audit"
+    },
+    {
+      "roleid": "PVEVMUser",
+      "special": 1,
+      "privs": "VM.Audit,VM.Backup,VM.Config.CDROM,VM.Config.Cloudinit,VM.Console,VM.GuestAgent.Audit,VM.GuestAgent.FileRead,VM.GuestAgent.FileSystemMgmt,VM.GuestAgent.FileWrite,VM.PowerMgmt"
+    },
+    {
+      "roleid": "PVESysAdmin",
+      "special": 1,
+      "privs": "Sys.Audit,Sys.Console,Sys.Syslog"
+    },
+    {
+      "special": 1,
+      "roleid": "PVEDatastoreUser",
+      "privs": "Datastore.AllocateSpace,Datastore.Audit"
+    },
+    {
+      "special": 1,
+      "roleid": "PVEDatastoreAdmin",
+      "privs": "Datastore.Allocate,Datastore.AllocateSpace,Datastore.AllocateTemplate,Datastore.Audit"
+    },
+    {
+      "privs": "SDN.Allocate,SDN.Audit,SDN.Use",
+      "roleid": "PVESDNAdmin",
+      "special": 1
+    },
+    {
+      "privs": "Group.Allocate,Realm.AllocateUser,User.Modify",
+      "special": 1,
+      "roleid": "PVEUserAdmin"
+    },
+    {
+      "privs": "Mapping.Audit,Mapping.Modify,Mapping.Use",
+      "roleid": "PVEMappingAdmin",
+      "special": 1
+    },
+    {
+      "privs": "Pool.Allocate,Pool.Audit",
+      "special": 1,
+      "roleid": "PVEPoolAdmin"
+    },
+    {
+      "privs": "",
+      "roleid": "NoAccess",
+      "special": 1
+    }
+  ],
+  "resources": [
+    {
+      "maxmem": 268435456,
+      "diskread": 0,
+      "diskwrite": 0,
+      "mem": 27512832,
+      "type": "lxc",
+      "netin": 2122,
+      "template": 0,
+      "memhost": 0,
+      "name": "pcot-edge",
+      "uptime": 339,
+      "node": "pco-test-2",
+      "maxcpu": 1,
+      "disk": 329515008,
+      "id": "lxc/9200",
+      "cpu": 0,
+      "netout": 936,
+      "status": "running",
+      "maxdisk": 2147483648,
+      "vmid": 9200
+    },
+    {
+      "memhost": 0,
+      "template": 0,
+      "type": "lxc",
+      "netin": 866,
+      "mem": 17838080,
+      "maxmem": 805306368,
+      "diskwrite": 0,
+      "diskread": 0,
+      "maxdisk": 4294967296,
+      "vmid": 9201,
+      "id": "lxc/9201",
+      "netout": 1592,
+      "status": "running",
+      "cpu": 0.000640562880686858,
+      "maxcpu": 1,
+      "node": "pco-test-2",
+      "disk": 381550592,
+      "uptime": 312,
+      "name": "pcot-app"
+    },
+    {
+      "diskread": 0,
+      "diskwrite": 0,
+      "maxmem": 134217728,
+      "mem": 0,
+      "netin": 0,
+      "type": "qemu",
+      "template": 0,
+      "memhost": 0,
+      "uptime": 0,
+      "name": "pcot-guest",
+      "disk": 0,
+      "maxcpu": 1,
+      "node": "pco-test-2",
+      "netout": 0,
+      "cpu": 0,
+      "status": "stopped",
+      "id": "qemu/9220",
+      "vmid": 9220,
+      "maxdisk": 0
+    }
+  ],
+  "pools": {
+    "pco": [
+      9201
+    ],
+    "pcotest": [
+      9220
+    ]
+  },
+  "root": {
+    "answer": {
+      "/vms/9220": {
+        "VM.Config.CDROM": 1,
+        "User.Modify": 1,
+        "Sys.Audit": 1,
+        "Sys.Incoming": 1,
+        "Sys.PowerMgmt": 1,
+        "VM.GuestAgent.FileRead": 1,
+        "VM.Config.Options": 1,
+        "VM.Backup": 1,
+        "VM.Snapshot.Rollback": 1,
+        "Datastore.Allocate": 1,
+        "VM.Config.Network": 1,
+        "VM.Config.Cloudinit": 1,
+        "VM.GuestAgent.FileSystemMgmt": 1,
+        "VM.Config.CPU": 1,
+        "VM.Config.Memory": 1,
+        "Pool.Allocate": 1,
+        "Datastore.AllocateTemplate": 1,
+        "VM.GuestAgent.Audit": 1,
+        "VM.GuestAgent.FileWrite": 1,
+        "VM.Config.HWType": 1,
+        "Datastore.Audit": 1,
+        "VM.Config.Disk": 1,
+        "Sys.Syslog": 1,
+        "VM.GuestAgent.Unrestricted": 1,
+        "VM.Audit": 1,
+        "VM.Allocate": 1,
+        "VM.Migrate": 1,
+        "VM.Snapshot": 1,
+        "SDN.Use": 1,
+        "VM.Replicate": 1,
+        "SDN.Allocate": 1,
+        "Mapping.Use": 1,
+        "Realm.AllocateUser": 1,
+        "Group.Allocate": 1,
+        "Sys.AccessNetwork": 1,
+        "SDN.Audit": 1,
+        "VM.Clone": 1,
+        "Pool.Audit": 1,
+        "VM.PowerMgmt": 1,
+        "Realm.Allocate": 1,
+        "VM.Console": 1,
+        "Mapping.Audit": 1,
+        "Sys.Console": 1,
+        "Permissions.Modify": 1,
+        "Mapping.Modify": 1,
+        "Datastore.AllocateSpace": 1,
+        "Sys.Modify": 1
+      }
+    }
+  },
+  "rows": [
+    {
+      "name": "B1-vms-grant",
+      "description": "a grant on /vms",
+      "grants": [
+        "g /vms PVEVMUser user pcotest@pve",
+        "g /vms PVEAuditor token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "ugid": "pco@pve",
+          "roleid": "PCO",
+          "type": "user",
+          "propagate": 1,
+          "path": "/"
+        },
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201",
+          "type": "token",
+          "propagate": 1,
+          "path": "/"
+        },
+        {
+          "type": "user",
+          "propagate": 1,
+          "path": "/vms",
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMUser"
+        },
+        {
+          "propagate": 1,
+          "path": "/vms",
+          "type": "token",
+          "roleid": "PVEAuditor",
+          "ugid": "pcotest@pve!sep"
+        }
+      ],
+      "users": [
+        {
+          "email": "",
+          "comment": "pco operator",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "comment": "pco appliance vm9201",
+              "expire": 0,
+              "privsep": 1,
+              "tokenid": "vm9201"
+            }
+          ],
+          "groups": "",
+          "enable": 1,
+          "userid": "pco@pve",
+          "expire": 0
+        },
+        {
+          "email": "",
+          "comment": "pcotest",
+          "groups": "pcotestg,pcotestg2",
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "privsep": 0
+            },
+            {
+              "tokenid": "sep",
+              "privsep": 1,
+              "comment": "pcotest privsep",
+              "expire": 0
+            }
+          ],
+          "realm-type": "pve",
+          "enable": 1,
+          "expire": 0,
+          "userid": "pcotest@pve"
+        },
+        {
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "privsep": 0
+            }
+          ],
+          "expire": 0,
+          "userid": "root@pam",
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.Config.CDROM": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Audit": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Console": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.Config.CDROM": 1,
+            "VM.PowerMgmt": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Console": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!sep": [
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!nosep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "B2-noaccess-under-vms-grant",
+      "description": "NoAccess on /vms/9220 under a grant on /vms",
+      "grants": [
+        "g /vms PVEVMUser user pcotest@pve",
+        "g /vms/9220 NoAccess user pcotest@pve",
+        "g /vms PVEVMUser token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "type": "user",
+          "path": "/",
+          "propagate": 1,
+          "roleid": "PCO",
+          "ugid": "pco@pve"
+        },
+        {
+          "ugid": "pco@pve!vm9201",
+          "roleid": "PCO",
+          "type": "token",
+          "path": "/",
+          "propagate": 1
+        },
+        {
+          "path": "/vms",
+          "propagate": 1,
+          "type": "user",
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMUser"
+        },
+        {
+          "path": "/vms",
+          "propagate": 1,
+          "type": "token",
+          "roleid": "PVEVMUser",
+          "ugid": "pcotest@pve!sep"
+        },
+        {
+          "ugid": "pcotest@pve",
+          "roleid": "NoAccess",
+          "type": "user",
+          "path": "/vms/9220",
+          "propagate": 1
+        }
+      ],
+      "users": [
+        {
+          "enable": 1,
+          "userid": "pco@pve",
+          "expire": 0,
+          "email": "",
+          "comment": "pco operator",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1,
+              "tokenid": "vm9201"
+            }
+          ],
+          "groups": ""
+        },
+        {
+          "comment": "pcotest",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "privsep": 0,
+              "tokenid": "nosep"
+            },
+            {
+              "tokenid": "sep",
+              "privsep": 1,
+              "expire": 0,
+              "comment": "pcotest privsep"
+            }
+          ],
+          "groups": "pcotestg,pcotestg2",
+          "email": "",
+          "userid": "pcotest@pve",
+          "expire": 0,
+          "enable": 1
+        },
+        {
+          "expire": 0,
+          "userid": "root@pam",
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "privsep": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0,
+              "tokenid": "pcotest"
+            }
+          ],
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {}
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [],
+        "pcotest@pve!sep": [],
+        "pcotest@pve!nosep": []
+      },
+      "probes": {
+        "pcotest@pve!sep": 403,
+        "pcotest@pve!nosep": 403
+      }
+    },
+    {
+      "name": "B3-group-and-user-same-path",
+      "description": "a group and the user with different roles at the same path",
+      "grants": [
+        "g /vms/9220 PVEAuditor group pcotestg",
+        "g /vms/9220 PVEVMUser user pcotest@pve",
+        "g /vms/9220 PVEVMAdmin token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "type": "user",
+          "path": "/",
+          "propagate": 1,
+          "ugid": "pco@pve",
+          "roleid": "PCO"
+        },
+        {
+          "type": "token",
+          "path": "/",
+          "propagate": 1,
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMUser",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "type": "user"
+        },
+        {
+          "type": "group",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "ugid": "pcotestg",
+          "roleid": "PVEAuditor"
+        },
+        {
+          "type": "token",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "ugid": "pcotest@pve!sep",
+          "roleid": "PVEVMAdmin"
+        }
+      ],
+      "users": [
+        {
+          "groups": "",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1
+            }
+          ],
+          "realm-type": "pve",
+          "comment": "pco operator",
+          "email": "",
+          "expire": 0,
+          "userid": "pco@pve",
+          "enable": 1
+        },
+        {
+          "email": "",
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "comment": "pcotest no privsep",
+              "expire": 0,
+              "privsep": 0
+            },
+            {
+              "comment": "pcotest privsep",
+              "expire": 0,
+              "privsep": 1,
+              "tokenid": "sep"
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "pcotestg,pcotestg2",
+          "comment": "pcotest",
+          "enable": 1,
+          "userid": "pcotest@pve",
+          "expire": 0
+        },
+        {
+          "userid": "root@pam",
+          "expire": 0,
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0,
+              "privsep": 0,
+              "tokenid": "pcotest"
+            }
+          ],
+          "groups": "",
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1,
+            "VM.Config.CDROM": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Console": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.PowerMgmt": 1,
+            "VM.Config.CDROM": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1,
+            "VM.Console": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1,
+            "VM.Config.CDROM": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Console": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Audit": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.GuestAgent.Audit": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!sep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!nosep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "B4-pool-grant",
+      "description": "a pool grant on /pool/pcotest with 9220 a member",
+      "grants": [
+        "g /pool/pcotest PVEVMUser user pcotest@pve",
+        "g /pool/pcotest PVEAuditor token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve",
+          "path": "/",
+          "propagate": 1,
+          "type": "user"
+        },
+        {
+          "type": "token",
+          "propagate": 1,
+          "path": "/",
+          "ugid": "pco@pve!vm9201",
+          "roleid": "PCO"
+        },
+        {
+          "path": "/pool/pcotest",
+          "propagate": 1,
+          "type": "user",
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMUser"
+        },
+        {
+          "roleid": "PVEAuditor",
+          "ugid": "pcotest@pve!sep",
+          "type": "token",
+          "path": "/pool/pcotest",
+          "propagate": 1
+        }
+      ],
+      "users": [
+        {
+          "userid": "pco@pve",
+          "expire": 0,
+          "enable": 1,
+          "comment": "pco operator",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1,
+              "tokenid": "vm9201"
+            }
+          ],
+          "groups": "",
+          "email": ""
+        },
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "pcotest@pve",
+          "email": "",
+          "comment": "pcotest",
+          "groups": "pcotestg,pcotestg2",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "privsep": 0,
+              "comment": "pcotest no privsep",
+              "expire": 0,
+              "tokenid": "nosep"
+            },
+            {
+              "privsep": 1,
+              "expire": 0,
+              "comment": "pcotest privsep",
+              "tokenid": "sep"
+            }
+          ]
+        },
+        {
+          "expire": 0,
+          "userid": "root@pam",
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "privsep": 0
+            }
+          ],
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.GuestAgent.Audit": 0,
+            "VM.GuestAgent.FileSystemMgmt": 0,
+            "VM.Config.Cloudinit": 0,
+            "VM.Audit": 0,
+            "VM.GuestAgent.FileRead": 0,
+            "VM.Console": 0,
+            "VM.PowerMgmt": 0,
+            "VM.Config.CDROM": 0,
+            "VM.Backup": 0,
+            "VM.GuestAgent.FileWrite": 0
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.Audit": 0,
+            "VM.GuestAgent.Audit": 0
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.PowerMgmt": 0,
+            "VM.Config.CDROM": 0,
+            "VM.Backup": 0,
+            "VM.GuestAgent.FileWrite": 0,
+            "VM.GuestAgent.FileRead": 0,
+            "VM.GuestAgent.FileSystemMgmt": 0,
+            "VM.GuestAgent.Audit": 0,
+            "VM.Config.Cloudinit": 0,
+            "VM.Audit": 0,
+            "VM.Console": 0
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!sep": [
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!nosep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "B5-propagate0-on-vms",
+      "description": "a propagate=0 grant on /vms",
+      "grants": [
+        "g /vms PVEVMUser user pcotest@pve 0",
+        "g /vms PVEVMUser token pcotest@pve!sep 0"
+      ],
+      "acl": [
+        {
+          "ugid": "pco@pve",
+          "roleid": "PCO",
+          "type": "user",
+          "propagate": 1,
+          "path": "/"
+        },
+        {
+          "type": "token",
+          "path": "/",
+          "propagate": 1,
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "roleid": "PVEVMUser",
+          "ugid": "pcotest@pve",
+          "type": "user",
+          "path": "/vms",
+          "propagate": 0
+        },
+        {
+          "propagate": 0,
+          "path": "/vms",
+          "type": "token",
+          "ugid": "pcotest@pve!sep",
+          "roleid": "PVEVMUser"
+        }
+      ],
+      "users": [
+        {
+          "userid": "pco@pve",
+          "expire": 0,
+          "enable": 1,
+          "comment": "pco operator",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "",
+          "email": ""
+        },
+        {
+          "userid": "pcotest@pve",
+          "expire": 0,
+          "enable": 1,
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "privsep": 0
+            },
+            {
+              "privsep": 1,
+              "comment": "pcotest privsep",
+              "expire": 0,
+              "tokenid": "sep"
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "pcotestg,pcotestg2",
+          "comment": "pcotest",
+          "email": ""
+        },
+        {
+          "expire": 0,
+          "userid": "root@pam",
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "privsep": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0
+            }
+          ],
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {}
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [],
+        "pcotest@pve!sep": [],
+        "pcotest@pve!nosep": []
+      },
+      "probes": {
+        "pcotest@pve!sep": 403,
+        "pcotest@pve!nosep": 403
+      }
+    },
+    {
+      "name": "B6-administrator-on-root",
+      "description": "Administrator on /",
+      "grants": [
+        "g / Administrator user pcotest@pve",
+        "g / PVEAuditor token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "type": "user",
+          "propagate": 1,
+          "path": "/",
+          "roleid": "PCO",
+          "ugid": "pco@pve"
+        },
+        {
+          "type": "user",
+          "propagate": 1,
+          "path": "/",
+          "roleid": "Administrator",
+          "ugid": "pcotest@pve"
+        },
+        {
+          "propagate": 1,
+          "path": "/",
+          "type": "token",
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "ugid": "pcotest@pve!sep",
+          "roleid": "PVEAuditor",
+          "path": "/",
+          "propagate": 1,
+          "type": "token"
+        }
+      ],
+      "users": [
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "pco@pve",
+          "email": "",
+          "comment": "pco operator",
+          "groups": "",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "comment": "pco appliance vm9201",
+              "expire": 0,
+              "privsep": 1
+            }
+          ],
+          "realm-type": "pve"
+        },
+        {
+          "comment": "pcotest",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "privsep": 0,
+              "comment": "pcotest no privsep",
+              "expire": 0,
+              "tokenid": "nosep"
+            },
+            {
+              "tokenid": "sep",
+              "privsep": 1,
+              "expire": 0,
+              "comment": "pcotest privsep"
+            }
+          ],
+          "groups": "pcotestg,pcotestg2",
+          "email": "",
+          "userid": "pcotest@pve",
+          "expire": 0,
+          "enable": 1
+        },
+        {
+          "enable": 1,
+          "tokens": [
+            {
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0,
+              "privsep": 0,
+              "tokenid": "pcotest"
+            }
+          ],
+          "realm-type": "pam",
+          "groups": "",
+          "userid": "root@pam",
+          "expire": 0
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "SDN.Allocate": 1,
+            "Mapping.Use": 1,
+            "VM.Migrate": 1,
+            "SDN.Use": 1,
+            "VM.Snapshot": 1,
+            "VM.Replicate": 1,
+            "SDN.Audit": 1,
+            "Sys.AccessNetwork": 1,
+            "VM.Clone": 1,
+            "Realm.AllocateUser": 1,
+            "Group.Allocate": 1,
+            "Realm.Allocate": 1,
+            "VM.Console": 1,
+            "Mapping.Audit": 1,
+            "Sys.Console": 1,
+            "Pool.Audit": 1,
+            "VM.PowerMgmt": 1,
+            "Datastore.AllocateSpace": 1,
+            "Sys.Modify": 1,
+            "Mapping.Modify": 1,
+            "Permissions.Modify": 1,
+            "Sys.Incoming": 1,
+            "Sys.PowerMgmt": 1,
+            "VM.Config.Options": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "Sys.Audit": 1,
+            "User.Modify": 1,
+            "VM.Config.CDROM": 1,
+            "VM.Config.Network": 1,
+            "Datastore.Allocate": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.Backup": 1,
+            "VM.Snapshot.Rollback": 1,
+            "Pool.Allocate": 1,
+            "Datastore.AllocateTemplate": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Config.CPU": 1,
+            "VM.Config.Memory": 1,
+            "Sys.Syslog": 1,
+            "VM.GuestAgent.Unrestricted": 1,
+            "VM.Allocate": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Config.HWType": 1,
+            "Datastore.Audit": 1,
+            "VM.Config.Disk": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.GuestAgent.Audit": 1,
+            "Sys.Audit": 1,
+            "VM.Audit": 1,
+            "Mapping.Audit": 1,
+            "Datastore.Audit": 1,
+            "SDN.Audit": 1,
+            "Pool.Audit": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.Config.CPU": 1,
+            "VM.Config.Memory": 1,
+            "Pool.Allocate": 1,
+            "Datastore.AllocateTemplate": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Config.HWType": 1,
+            "Datastore.Audit": 1,
+            "VM.Config.Disk": 1,
+            "Sys.Syslog": 1,
+            "VM.GuestAgent.Unrestricted": 1,
+            "VM.Audit": 1,
+            "VM.Allocate": 1,
+            "VM.Config.CDROM": 1,
+            "User.Modify": 1,
+            "Sys.Audit": 1,
+            "Sys.Incoming": 1,
+            "Sys.PowerMgmt": 1,
+            "VM.Config.Options": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Backup": 1,
+            "VM.Snapshot.Rollback": 1,
+            "Datastore.Allocate": 1,
+            "VM.Config.Network": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "Pool.Audit": 1,
+            "VM.PowerMgmt": 1,
+            "Realm.Allocate": 1,
+            "VM.Console": 1,
+            "Mapping.Audit": 1,
+            "Sys.Console": 1,
+            "Permissions.Modify": 1,
+            "Mapping.Modify": 1,
+            "Datastore.AllocateSpace": 1,
+            "Sys.Modify": 1,
+            "VM.Migrate": 1,
+            "VM.Snapshot": 1,
+            "SDN.Use": 1,
+            "VM.Replicate": 1,
+            "SDN.Allocate": 1,
+            "Mapping.Use": 1,
+            "Realm.AllocateUser": 1,
+            "Group.Allocate": 1,
+            "Sys.AccessNetwork": 1,
+            "SDN.Audit": 1,
+            "VM.Clone": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "Datastore.Allocate",
+          "Datastore.AllocateSpace",
+          "Datastore.AllocateTemplate",
+          "Datastore.Audit",
+          "Group.Allocate",
+          "Mapping.Audit",
+          "Mapping.Modify",
+          "Mapping.Use",
+          "Permissions.Modify",
+          "Pool.Allocate",
+          "Pool.Audit",
+          "Realm.Allocate",
+          "Realm.AllocateUser",
+          "SDN.Allocate",
+          "SDN.Audit",
+          "SDN.Use",
+          "Sys.AccessNetwork",
+          "Sys.Audit",
+          "Sys.Console",
+          "Sys.Incoming",
+          "Sys.Modify",
+          "Sys.PowerMgmt",
+          "Sys.Syslog",
+          "User.Modify",
+          "VM.Allocate",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Clone",
+          "VM.Config.CDROM",
+          "VM.Config.CPU",
+          "VM.Config.Cloudinit",
+          "VM.Config.Disk",
+          "VM.Config.HWType",
+          "VM.Config.Memory",
+          "VM.Config.Network",
+          "VM.Config.Options",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.GuestAgent.Unrestricted",
+          "VM.Migrate",
+          "VM.PowerMgmt",
+          "VM.Replicate",
+          "VM.Snapshot",
+          "VM.Snapshot.Rollback"
+        ],
+        "pcotest@pve!sep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!nosep": [
+          "Datastore.Allocate",
+          "Datastore.AllocateSpace",
+          "Datastore.AllocateTemplate",
+          "Datastore.Audit",
+          "Group.Allocate",
+          "Mapping.Audit",
+          "Mapping.Modify",
+          "Mapping.Use",
+          "Permissions.Modify",
+          "Pool.Allocate",
+          "Pool.Audit",
+          "Realm.Allocate",
+          "Realm.AllocateUser",
+          "SDN.Allocate",
+          "SDN.Audit",
+          "SDN.Use",
+          "Sys.AccessNetwork",
+          "Sys.Audit",
+          "Sys.Console",
+          "Sys.Incoming",
+          "Sys.Modify",
+          "Sys.PowerMgmt",
+          "Sys.Syslog",
+          "User.Modify",
+          "VM.Allocate",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Clone",
+          "VM.Config.CDROM",
+          "VM.Config.CPU",
+          "VM.Config.Cloudinit",
+          "VM.Config.Disk",
+          "VM.Config.HWType",
+          "VM.Config.Memory",
+          "VM.Config.Network",
+          "VM.Config.Options",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.GuestAgent.Unrestricted",
+          "VM.Migrate",
+          "VM.PowerMgmt",
+          "VM.Replicate",
+          "VM.Snapshot",
+          "VM.Snapshot.Rollback"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "B7-noaccess-for-nosep-token",
+      "description": "NoAccess for the non-privsep token on /vms/9220 under its user's PVEVMUser there",
+      "grants": [
+        "g /vms/9220 PVEVMUser user pcotest@pve",
+        "g /vms/9220 NoAccess token pcotest@pve!nosep",
+        "g /vms/9220 PVEVMUser token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "propagate": 1,
+          "path": "/",
+          "type": "user",
+          "ugid": "pco@pve",
+          "roleid": "PCO"
+        },
+        {
+          "propagate": 1,
+          "path": "/",
+          "type": "token",
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "propagate": 1,
+          "path": "/vms/9220",
+          "type": "user",
+          "roleid": "PVEVMUser",
+          "ugid": "pcotest@pve"
+        },
+        {
+          "roleid": "PVEVMUser",
+          "ugid": "pcotest@pve!sep",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "type": "token"
+        },
+        {
+          "type": "token",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "roleid": "NoAccess",
+          "ugid": "pcotest@pve!nosep"
+        }
+      ],
+      "users": [
+        {
+          "email": "",
+          "groups": "",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1
+            }
+          ],
+          "comment": "pco operator",
+          "enable": 1,
+          "expire": 0,
+          "userid": "pco@pve"
+        },
+        {
+          "enable": 1,
+          "userid": "pcotest@pve",
+          "expire": 0,
+          "email": "",
+          "comment": "pcotest",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "comment": "pcotest no privsep",
+              "expire": 0,
+              "privsep": 0
+            },
+            {
+              "comment": "pcotest privsep",
+              "expire": 0,
+              "privsep": 1,
+              "tokenid": "sep"
+            }
+          ],
+          "groups": "pcotestg,pcotestg2"
+        },
+        {
+          "expire": 0,
+          "userid": "root@pam",
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0,
+              "privsep": 0
+            }
+          ],
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1,
+            "VM.Config.CDROM": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Console": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Config.Cloudinit": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Console": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Config.CDROM": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.Console": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Config.CDROM": 1,
+            "VM.PowerMgmt": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!sep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!nosep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "B8-noaccess-for-user",
+      "description": "NoAccess for the user on /vms/9220, PVEVMUser for both tokens there",
+      "grants": [
+        "g /vms/9220 NoAccess user pcotest@pve",
+        "g /vms/9220 PVEVMUser token pcotest@pve!nosep",
+        "g /vms/9220 PVEVMUser token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "type": "user",
+          "path": "/",
+          "propagate": 1,
+          "roleid": "PCO",
+          "ugid": "pco@pve"
+        },
+        {
+          "path": "/",
+          "propagate": 1,
+          "type": "token",
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "ugid": "pcotest@pve",
+          "roleid": "NoAccess",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "type": "user"
+        },
+        {
+          "roleid": "PVEVMUser",
+          "ugid": "pcotest@pve!sep",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "type": "token"
+        },
+        {
+          "ugid": "pcotest@pve!nosep",
+          "roleid": "PVEVMUser",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "type": "token"
+        }
+      ],
+      "users": [
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "pco@pve",
+          "email": "",
+          "groups": "",
+          "tokens": [
+            {
+              "comment": "pco appliance vm9201",
+              "expire": 0,
+              "privsep": 1,
+              "tokenid": "vm9201"
+            }
+          ],
+          "realm-type": "pve",
+          "comment": "pco operator"
+        },
+        {
+          "userid": "pcotest@pve",
+          "expire": 0,
+          "enable": 1,
+          "comment": "pcotest",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "privsep": 0,
+              "expire": 0,
+              "comment": "pcotest no privsep"
+            },
+            {
+              "tokenid": "sep",
+              "privsep": 1,
+              "comment": "pcotest privsep",
+              "expire": 0
+            }
+          ],
+          "groups": "pcotestg,pcotestg2",
+          "email": ""
+        },
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "root@pam",
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "privsep": 0,
+              "tokenid": "pcotest"
+            }
+          ]
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {}
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [],
+        "pcotest@pve!sep": [],
+        "pcotest@pve!nosep": []
+      },
+      "probes": {
+        "pcotest@pve!sep": 403,
+        "pcotest@pve!nosep": 403
+      }
+    },
+    {
+      "name": "E1-specific-replaces-inherited",
+      "description": "PVEVMAdmin on /vms, PVEAuditor on /vms/9220, both the user's",
+      "grants": [
+        "g /vms PVEVMAdmin user pcotest@pve",
+        "g /vms/9220 PVEAuditor user pcotest@pve",
+        "g / Administrator token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve",
+          "path": "/",
+          "propagate": 1,
+          "type": "user"
+        },
+        {
+          "type": "token",
+          "propagate": 1,
+          "path": "/",
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "roleid": "Administrator",
+          "ugid": "pcotest@pve!sep",
+          "type": "token",
+          "propagate": 1,
+          "path": "/"
+        },
+        {
+          "type": "user",
+          "propagate": 1,
+          "path": "/vms",
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMAdmin"
+        },
+        {
+          "roleid": "PVEAuditor",
+          "ugid": "pcotest@pve",
+          "type": "user",
+          "propagate": 1,
+          "path": "/vms/9220"
+        }
+      ],
+      "users": [
+        {
+          "expire": 0,
+          "userid": "pco@pve",
+          "enable": 1,
+          "groups": "",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "privsep": 1,
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "tokenid": "vm9201"
+            }
+          ],
+          "comment": "pco operator",
+          "email": ""
+        },
+        {
+          "expire": 0,
+          "userid": "pcotest@pve",
+          "enable": 1,
+          "groups": "pcotestg,pcotestg2",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "privsep": 0,
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "tokenid": "nosep"
+            },
+            {
+              "tokenid": "sep",
+              "privsep": 1,
+              "comment": "pcotest privsep",
+              "expire": 0
+            }
+          ],
+          "comment": "pcotest",
+          "email": ""
+        },
+        {
+          "enable": 1,
+          "groups": "",
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "privsep": 0
+            }
+          ],
+          "realm-type": "pam",
+          "expire": 0,
+          "userid": "root@pam"
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "Datastore.Audit": 1,
+            "Sys.Audit": 1,
+            "Pool.Audit": 1,
+            "Mapping.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1,
+            "SDN.Audit": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "SDN.Audit": 1,
+            "Mapping.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1,
+            "Pool.Audit": 1,
+            "Datastore.Audit": 1,
+            "Sys.Audit": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "Pool.Audit": 1,
+            "Datastore.Audit": 1,
+            "Sys.Audit": 1,
+            "SDN.Audit": 1,
+            "Mapping.Audit": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.Audit": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!sep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!nosep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "E2-group-deeper-replaces-user",
+      "description": "the user's PVEVMAdmin on /vms, the group's PVEAuditor on /vms/9220",
+      "grants": [
+        "g /vms PVEVMAdmin user pcotest@pve",
+        "g /vms/9220 PVEAuditor group pcotestg",
+        "g / Administrator token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve",
+          "propagate": 1,
+          "path": "/",
+          "type": "user"
+        },
+        {
+          "type": "token",
+          "propagate": 1,
+          "path": "/",
+          "ugid": "pco@pve!vm9201",
+          "roleid": "PCO"
+        },
+        {
+          "propagate": 1,
+          "path": "/",
+          "type": "token",
+          "ugid": "pcotest@pve!sep",
+          "roleid": "Administrator"
+        },
+        {
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMAdmin",
+          "path": "/vms",
+          "propagate": 1,
+          "type": "user"
+        },
+        {
+          "roleid": "PVEAuditor",
+          "ugid": "pcotestg",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "type": "group"
+        }
+      ],
+      "users": [
+        {
+          "email": "",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "privsep": 1,
+              "comment": "pco appliance vm9201",
+              "expire": 0
+            }
+          ],
+          "groups": "",
+          "comment": "pco operator",
+          "enable": 1,
+          "userid": "pco@pve",
+          "expire": 0
+        },
+        {
+          "enable": 1,
+          "userid": "pcotest@pve",
+          "expire": 0,
+          "email": "",
+          "comment": "pcotest",
+          "tokens": [
+            {
+              "privsep": 0,
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "tokenid": "nosep"
+            },
+            {
+              "tokenid": "sep",
+              "expire": 0,
+              "comment": "pcotest privsep",
+              "privsep": 1
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "pcotestg,pcotestg2"
+        },
+        {
+          "enable": 1,
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "privsep": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0,
+              "tokenid": "pcotest"
+            }
+          ],
+          "expire": 0,
+          "userid": "root@pam"
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "Datastore.Audit": 1,
+            "Sys.Audit": 1,
+            "Pool.Audit": 1,
+            "Mapping.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1,
+            "SDN.Audit": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "Datastore.Audit": 1,
+            "Sys.Audit": 1,
+            "Pool.Audit": 1,
+            "Mapping.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1,
+            "SDN.Audit": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "Sys.Audit": 1,
+            "Datastore.Audit": 1,
+            "Pool.Audit": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "Mapping.Audit": 1,
+            "SDN.Audit": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!sep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!nosep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "E3-two-groups-same-path",
+      "description": "two groups of the user with different roles on /vms/9220",
+      "grants": [
+        "g /vms/9220 PVEAuditor group pcotestg",
+        "g /vms/9220 PVEVMUser group pcotestg2",
+        "g / Administrator token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "ugid": "pco@pve",
+          "roleid": "PCO",
+          "type": "user",
+          "propagate": 1,
+          "path": "/"
+        },
+        {
+          "ugid": "pcotest@pve!sep",
+          "roleid": "Administrator",
+          "propagate": 1,
+          "path": "/",
+          "type": "token"
+        },
+        {
+          "propagate": 1,
+          "path": "/",
+          "type": "token",
+          "ugid": "pco@pve!vm9201",
+          "roleid": "PCO"
+        },
+        {
+          "type": "group",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "ugid": "pcotestg",
+          "roleid": "PVEAuditor"
+        },
+        {
+          "ugid": "pcotestg2",
+          "roleid": "PVEVMUser",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "type": "group"
+        }
+      ],
+      "users": [
+        {
+          "userid": "pco@pve",
+          "expire": 0,
+          "enable": 1,
+          "tokens": [
+            {
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1,
+              "tokenid": "vm9201"
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "",
+          "comment": "pco operator",
+          "email": ""
+        },
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "pcotest@pve",
+          "email": "",
+          "comment": "pcotest",
+          "groups": "pcotestg,pcotestg2",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "privsep": 0
+            },
+            {
+              "tokenid": "sep",
+              "privsep": 1,
+              "comment": "pcotest privsep",
+              "expire": 0
+            }
+          ]
+        },
+        {
+          "enable": 1,
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "privsep": 0,
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP"
+            }
+          ],
+          "realm-type": "pam",
+          "groups": "",
+          "userid": "root@pam",
+          "expire": 0
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "Mapping.Audit": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Console": 1,
+            "VM.Config.CDROM": 1,
+            "Sys.Audit": 1,
+            "VM.PowerMgmt": 1,
+            "Pool.Audit": 1,
+            "VM.Audit": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "SDN.Audit": 1,
+            "Datastore.Audit": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "Pool.Audit": 1,
+            "VM.Config.CDROM": 1,
+            "Sys.Audit": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Console": 1,
+            "Mapping.Audit": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "Datastore.Audit": 1,
+            "SDN.Audit": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "Mapping.Audit": 1,
+            "VM.Console": 1,
+            "VM.PowerMgmt": 1,
+            "Sys.Audit": 1,
+            "VM.Config.CDROM": 1,
+            "Pool.Audit": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Audit": 1,
+            "SDN.Audit": 1,
+            "Datastore.Audit": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileWrite": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!sep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!nosep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "E4-propagate0-under-root-grant",
+      "description": "PVEAuditor on / and PVEVMAdmin with propagate=0 on /vms",
+      "grants": [
+        "g / PVEAuditor user pcotest@pve",
+        "g /vms PVEVMAdmin user pcotest@pve 0",
+        "g / Administrator token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "roleid": "PVEAuditor",
+          "ugid": "pcotest@pve",
+          "propagate": 1,
+          "path": "/",
+          "type": "user"
+        },
+        {
+          "ugid": "pco@pve",
+          "roleid": "PCO",
+          "type": "user",
+          "propagate": 1,
+          "path": "/"
+        },
+        {
+          "type": "token",
+          "propagate": 1,
+          "path": "/",
+          "roleid": "Administrator",
+          "ugid": "pcotest@pve!sep"
+        },
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201",
+          "path": "/",
+          "propagate": 1,
+          "type": "token"
+        },
+        {
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMAdmin",
+          "propagate": 0,
+          "path": "/vms",
+          "type": "user"
+        }
+      ],
+      "users": [
+        {
+          "groups": "",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1
+            }
+          ],
+          "comment": "pco operator",
+          "email": "",
+          "expire": 0,
+          "userid": "pco@pve",
+          "enable": 1
+        },
+        {
+          "email": "",
+          "tokens": [
+            {
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "privsep": 0,
+              "tokenid": "nosep"
+            },
+            {
+              "privsep": 1,
+              "comment": "pcotest privsep",
+              "expire": 0,
+              "tokenid": "sep"
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "pcotestg,pcotestg2",
+          "comment": "pcotest",
+          "enable": 1,
+          "userid": "pcotest@pve",
+          "expire": 0
+        },
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "root@pam",
+          "groups": "",
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "privsep": 0,
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP"
+            }
+          ]
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.GuestAgent.Audit": 1,
+            "VM.Audit": 1,
+            "Mapping.Audit": 1,
+            "SDN.Audit": 1,
+            "Sys.Audit": 1,
+            "Datastore.Audit": 1,
+            "Pool.Audit": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "Mapping.Audit": 1,
+            "SDN.Audit": 1,
+            "Sys.Audit": 1,
+            "Datastore.Audit": 1,
+            "Pool.Audit": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "Sys.Audit": 1,
+            "Datastore.Audit": 1,
+            "Pool.Audit": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "Mapping.Audit": 1,
+            "SDN.Audit": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!sep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ],
+        "pcotest@pve!nosep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.GuestAgent.Audit"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "E5-pool-noaccess",
+      "description": "PVEVMUser on /vms, NoAccess on /pool/pcotest",
+      "grants": [
+        "g /vms PVEVMUser user pcotest@pve",
+        "g /pool/pcotest NoAccess user pcotest@pve",
+        "g / Administrator token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "type": "user",
+          "propagate": 1,
+          "path": "/",
+          "ugid": "pco@pve",
+          "roleid": "PCO"
+        },
+        {
+          "type": "token",
+          "propagate": 1,
+          "path": "/",
+          "roleid": "Administrator",
+          "ugid": "pcotest@pve!sep"
+        },
+        {
+          "propagate": 1,
+          "path": "/",
+          "type": "token",
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "ugid": "pcotest@pve",
+          "roleid": "NoAccess",
+          "propagate": 1,
+          "path": "/pool/pcotest",
+          "type": "user"
+        },
+        {
+          "propagate": 1,
+          "path": "/vms",
+          "type": "user",
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMUser"
+        }
+      ],
+      "users": [
+        {
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "privsep": 1
+            }
+          ],
+          "groups": "",
+          "comment": "pco operator",
+          "email": "",
+          "userid": "pco@pve",
+          "expire": 0,
+          "enable": 1
+        },
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "pcotest@pve",
+          "email": "",
+          "comment": "pcotest",
+          "groups": "pcotestg,pcotestg2",
+          "tokens": [
+            {
+              "privsep": 0,
+              "comment": "pcotest no privsep",
+              "expire": 0,
+              "tokenid": "nosep"
+            },
+            {
+              "privsep": 1,
+              "comment": "pcotest privsep",
+              "expire": 0,
+              "tokenid": "sep"
+            }
+          ],
+          "realm-type": "pve"
+        },
+        {
+          "userid": "root@pam",
+          "expire": 0,
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "privsep": 0,
+              "tokenid": "pcotest"
+            }
+          ],
+          "groups": "",
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {}
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [],
+        "pcotest@pve!sep": [],
+        "pcotest@pve!nosep": []
+      },
+      "probes": {
+        "pcotest@pve!sep": 403,
+        "pcotest@pve!nosep": 403
+      }
+    },
+    {
+      "name": "E6-noaccess-blocks-pool",
+      "description": "NoAccess on /vms/9220, PVEVMAdmin on /pool/pcotest",
+      "grants": [
+        "g /vms/9220 NoAccess user pcotest@pve",
+        "g /pool/pcotest PVEVMAdmin user pcotest@pve",
+        "g / Administrator token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve",
+          "path": "/",
+          "propagate": 1,
+          "type": "user"
+        },
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201",
+          "type": "token",
+          "path": "/",
+          "propagate": 1
+        },
+        {
+          "type": "token",
+          "path": "/",
+          "propagate": 1,
+          "ugid": "pcotest@pve!sep",
+          "roleid": "Administrator"
+        },
+        {
+          "path": "/pool/pcotest",
+          "propagate": 1,
+          "type": "user",
+          "roleid": "PVEVMAdmin",
+          "ugid": "pcotest@pve"
+        },
+        {
+          "roleid": "NoAccess",
+          "ugid": "pcotest@pve",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "type": "user"
+        }
+      ],
+      "users": [
+        {
+          "expire": 0,
+          "userid": "pco@pve",
+          "enable": 1,
+          "comment": "pco operator",
+          "groups": "",
+          "tokens": [
+            {
+              "privsep": 1,
+              "expire": 0,
+              "comment": "pco appliance vm9201",
+              "tokenid": "vm9201"
+            }
+          ],
+          "realm-type": "pve",
+          "email": ""
+        },
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "pcotest@pve",
+          "email": "",
+          "groups": "pcotestg,pcotestg2",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "comment": "pcotest no privsep",
+              "expire": 0,
+              "privsep": 0,
+              "tokenid": "nosep"
+            },
+            {
+              "comment": "pcotest privsep",
+              "expire": 0,
+              "privsep": 1,
+              "tokenid": "sep"
+            }
+          ],
+          "comment": "pcotest"
+        },
+        {
+          "enable": 1,
+          "tokens": [
+            {
+              "privsep": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0,
+              "tokenid": "pcotest"
+            }
+          ],
+          "realm-type": "pam",
+          "groups": "",
+          "userid": "root@pam",
+          "expire": 0
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {}
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {}
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [],
+        "pcotest@pve!sep": [],
+        "pcotest@pve!nosep": []
+      },
+      "probes": {
+        "pcotest@pve!sep": 403,
+        "pcotest@pve!nosep": 403
+      }
+    },
+    {
+      "name": "E7-pool-and-direct",
+      "description": "PVEAuditor on /vms/9220 and PVEVMUser on /pool/pcotest; the token PVEVMAdmin on /vms",
+      "grants": [
+        "g /vms/9220 PVEAuditor user pcotest@pve",
+        "g /pool/pcotest PVEVMUser user pcotest@pve",
+        "g /vms PVEVMAdmin token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve",
+          "propagate": 1,
+          "path": "/",
+          "type": "user"
+        },
+        {
+          "type": "token",
+          "path": "/",
+          "propagate": 1,
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "path": "/pool/pcotest",
+          "propagate": 1,
+          "type": "user",
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMUser"
+        },
+        {
+          "ugid": "pcotest@pve!sep",
+          "roleid": "PVEVMAdmin",
+          "type": "token",
+          "propagate": 1,
+          "path": "/vms"
+        },
+        {
+          "roleid": "PVEAuditor",
+          "ugid": "pcotest@pve",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "type": "user"
+        }
+      ],
+      "users": [
+        {
+          "enable": 1,
+          "userid": "pco@pve",
+          "expire": 0,
+          "email": "",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "vm9201",
+              "privsep": 1,
+              "expire": 0,
+              "comment": "pco appliance vm9201"
+            }
+          ],
+          "groups": "",
+          "comment": "pco operator"
+        },
+        {
+          "email": "",
+          "comment": "pcotest",
+          "tokens": [
+            {
+              "privsep": 0,
+              "comment": "pcotest no privsep",
+              "expire": 0,
+              "tokenid": "nosep"
+            },
+            {
+              "comment": "pcotest privsep",
+              "expire": 0,
+              "privsep": 1,
+              "tokenid": "sep"
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "pcotestg,pcotestg2",
+          "enable": 1,
+          "userid": "pcotest@pve",
+          "expire": 0
+        },
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "root@pam",
+          "groups": "",
+          "tokens": [
+            {
+              "comment": "pcotest: the root view over HTTP",
+              "expire": 0,
+              "privsep": 0,
+              "tokenid": "pcotest"
+            }
+          ],
+          "realm-type": "pam"
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.Console": 0,
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileRead": 0,
+            "Mapping.Audit": 1,
+            "Pool.Audit": 1,
+            "VM.PowerMgmt": 0,
+            "Sys.Audit": 1,
+            "VM.Config.CDROM": 0,
+            "SDN.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 0,
+            "VM.Config.Cloudinit": 0,
+            "VM.Audit": 1,
+            "VM.Backup": 0,
+            "VM.GuestAgent.FileWrite": 0,
+            "Datastore.Audit": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.Config.CDROM": 0,
+            "VM.PowerMgmt": 0,
+            "VM.Backup": 0,
+            "VM.GuestAgent.FileWrite": 0,
+            "VM.GuestAgent.FileRead": 0,
+            "VM.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 0,
+            "VM.Config.Cloudinit": 0,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Console": 0
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "Pool.Audit": 1,
+            "Sys.Audit": 1,
+            "VM.PowerMgmt": 0,
+            "VM.Config.CDROM": 0,
+            "VM.Console": 0,
+            "VM.GuestAgent.FileRead": 0,
+            "Mapping.Audit": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Backup": 0,
+            "VM.GuestAgent.FileWrite": 0,
+            "Datastore.Audit": 1,
+            "SDN.Audit": 1,
+            "VM.Config.Cloudinit": 0,
+            "VM.GuestAgent.FileSystemMgmt": 0,
+            "VM.Audit": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!sep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!nosep": [
+          "Datastore.Audit",
+          "Mapping.Audit",
+          "Pool.Audit",
+          "SDN.Audit",
+          "Sys.Audit",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    },
+    {
+      "name": "E8-disabled-user",
+      "description": "PVEVMUser on /vms/9220 for the user and the token, the user disabled",
+      "grants": [
+        "g /vms/9220 PVEVMUser user pcotest@pve",
+        "g /vms/9220 PVEVMUser token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "type": "user",
+          "path": "/",
+          "propagate": 1,
+          "roleid": "PCO",
+          "ugid": "pco@pve"
+        },
+        {
+          "path": "/",
+          "propagate": 1,
+          "type": "token",
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201"
+        },
+        {
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMUser",
+          "propagate": 1,
+          "path": "/vms/9220",
+          "type": "user"
+        },
+        {
+          "ugid": "pcotest@pve!sep",
+          "roleid": "PVEVMUser",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "type": "token"
+        }
+      ],
+      "users": [
+        {
+          "enable": 1,
+          "expire": 0,
+          "userid": "pco@pve",
+          "email": "",
+          "groups": "",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "privsep": 1,
+              "comment": "pco appliance vm9201",
+              "expire": 0,
+              "tokenid": "vm9201"
+            }
+          ],
+          "comment": "pco operator"
+        },
+        {
+          "enable": 0,
+          "expire": 0,
+          "userid": "pcotest@pve",
+          "email": "",
+          "comment": "pcotest",
+          "groups": "pcotestg,pcotestg2",
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "expire": 0,
+              "comment": "pcotest no privsep",
+              "privsep": 0
+            },
+            {
+              "tokenid": "sep",
+              "expire": 0,
+              "comment": "pcotest privsep",
+              "privsep": 1
+            }
+          ],
+          "realm-type": "pve"
+        },
+        {
+          "enable": 1,
+          "groups": "",
+          "tokens": [
+            {
+              "tokenid": "pcotest",
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "privsep": 0
+            }
+          ],
+          "realm-type": "pam",
+          "expire": 0,
+          "userid": "root@pam"
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.PowerMgmt": 1,
+            "VM.Config.CDROM": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Audit": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Console": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.PowerMgmt": 1,
+            "VM.Config.CDROM": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.Audit": 1,
+            "VM.Console": 1
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.Console": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.Audit": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Config.CDROM": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!sep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ],
+        "pcotest@pve!nosep": [
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Config.CDROM",
+          "VM.Config.Cloudinit",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.PowerMgmt"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 401,
+        "pcotest@pve!nosep": 401
+      }
+    },
+    {
+      "name": "E9-token-deeper-than-user",
+      "description": "the user's PVEVMAdmin on /vms; the token's Administrator on / and PVEAuditor on /vms/9220",
+      "grants": [
+        "g /vms PVEVMAdmin user pcotest@pve",
+        "g / Administrator token pcotest@pve!sep",
+        "g /vms/9220 PVEAuditor token pcotest@pve!sep"
+      ],
+      "acl": [
+        {
+          "propagate": 1,
+          "path": "/",
+          "type": "user",
+          "ugid": "pco@pve",
+          "roleid": "PCO"
+        },
+        {
+          "roleid": "PCO",
+          "ugid": "pco@pve!vm9201",
+          "path": "/",
+          "propagate": 1,
+          "type": "token"
+        },
+        {
+          "ugid": "pcotest@pve!sep",
+          "roleid": "Administrator",
+          "propagate": 1,
+          "path": "/",
+          "type": "token"
+        },
+        {
+          "propagate": 1,
+          "path": "/vms",
+          "type": "user",
+          "ugid": "pcotest@pve",
+          "roleid": "PVEVMAdmin"
+        },
+        {
+          "ugid": "pcotest@pve!sep",
+          "roleid": "PVEAuditor",
+          "path": "/vms/9220",
+          "propagate": 1,
+          "type": "token"
+        }
+      ],
+      "users": [
+        {
+          "tokens": [
+            {
+              "comment": "pco appliance vm9201",
+              "expire": 0,
+              "privsep": 1,
+              "tokenid": "vm9201"
+            }
+          ],
+          "realm-type": "pve",
+          "groups": "",
+          "comment": "pco operator",
+          "email": "",
+          "userid": "pco@pve",
+          "expire": 0,
+          "enable": 1
+        },
+        {
+          "email": "",
+          "realm-type": "pve",
+          "tokens": [
+            {
+              "tokenid": "nosep",
+              "privsep": 0,
+              "comment": "pcotest no privsep",
+              "expire": 0
+            },
+            {
+              "tokenid": "sep",
+              "privsep": 1,
+              "expire": 0,
+              "comment": "pcotest privsep"
+            }
+          ],
+          "groups": "pcotestg,pcotestg2",
+          "comment": "pcotest",
+          "enable": 1,
+          "userid": "pcotest@pve",
+          "expire": 0
+        },
+        {
+          "userid": "root@pam",
+          "expire": 0,
+          "realm-type": "pam",
+          "tokens": [
+            {
+              "privsep": 0,
+              "expire": 0,
+              "comment": "pcotest: the root view over HTTP",
+              "tokenid": "pcotest"
+            }
+          ],
+          "groups": "",
+          "enable": 1
+        }
+      ],
+      "answers": {
+        "pcotest@pve": {
+          "/vms/9220": {
+            "VM.Config.Network": 1,
+            "VM.GuestAgent.Unrestricted": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.Allocate": 1,
+            "VM.Audit": 1,
+            "VM.Clone": 1,
+            "VM.Backup": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Config.HWType": 1,
+            "VM.Snapshot.Rollback": 1,
+            "VM.Config.Disk": 1,
+            "VM.Console": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Config.Options": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Config.CPU": 1,
+            "VM.Migrate": 1,
+            "VM.Snapshot": 1,
+            "VM.Config.Memory": 1,
+            "VM.Replicate": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Config.CDROM": 1
+          }
+        },
+        "pcotest@pve!sep": {
+          "/vms/9220": {
+            "VM.Config.CPU": 0,
+            "VM.Config.Memory": 0,
+            "VM.PowerMgmt": 0,
+            "VM.Console": 0,
+            "VM.GuestAgent.Audit": 1,
+            "VM.GuestAgent.FileWrite": 0,
+            "VM.Config.HWType": 0,
+            "VM.Config.Disk": 0,
+            "VM.GuestAgent.Unrestricted": 0,
+            "VM.Allocate": 0,
+            "VM.Audit": 1,
+            "VM.Migrate": 0,
+            "VM.Snapshot": 0,
+            "VM.Replicate": 0,
+            "VM.Config.CDROM": 0,
+            "VM.Config.Options": 0,
+            "VM.GuestAgent.FileRead": 0,
+            "VM.Backup": 0,
+            "VM.Snapshot.Rollback": 0,
+            "VM.Config.Network": 0,
+            "VM.GuestAgent.FileSystemMgmt": 0,
+            "VM.Config.Cloudinit": 0,
+            "VM.Clone": 0
+          }
+        },
+        "pcotest@pve!nosep": {
+          "/vms/9220": {
+            "VM.Console": 1,
+            "VM.GuestAgent.Audit": 1,
+            "VM.Config.Options": 1,
+            "VM.GuestAgent.FileRead": 1,
+            "VM.Snapshot": 1,
+            "VM.Migrate": 1,
+            "VM.Config.CPU": 1,
+            "VM.PowerMgmt": 1,
+            "VM.Config.CDROM": 1,
+            "VM.Config.Memory": 1,
+            "VM.Replicate": 1,
+            "VM.Allocate": 1,
+            "VM.Config.Cloudinit": 1,
+            "VM.GuestAgent.FileSystemMgmt": 1,
+            "VM.Clone": 1,
+            "VM.Audit": 1,
+            "VM.Config.Network": 1,
+            "VM.GuestAgent.Unrestricted": 1,
+            "VM.Config.HWType": 1,
+            "VM.GuestAgent.FileWrite": 1,
+            "VM.Backup": 1,
+            "VM.Snapshot.Rollback": 1,
+            "VM.Config.Disk": 1
+          }
+        }
+      },
+      "privileges": {
+        "pcotest@pve": [
+          "VM.Allocate",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Clone",
+          "VM.Config.CDROM",
+          "VM.Config.CPU",
+          "VM.Config.Cloudinit",
+          "VM.Config.Disk",
+          "VM.Config.HWType",
+          "VM.Config.Memory",
+          "VM.Config.Network",
+          "VM.Config.Options",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.GuestAgent.Unrestricted",
+          "VM.Migrate",
+          "VM.PowerMgmt",
+          "VM.Replicate",
+          "VM.Snapshot",
+          "VM.Snapshot.Rollback"
+        ],
+        "pcotest@pve!sep": [
+          "VM.Allocate",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Clone",
+          "VM.Config.CDROM",
+          "VM.Config.CPU",
+          "VM.Config.Cloudinit",
+          "VM.Config.Disk",
+          "VM.Config.HWType",
+          "VM.Config.Memory",
+          "VM.Config.Network",
+          "VM.Config.Options",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.GuestAgent.Unrestricted",
+          "VM.Migrate",
+          "VM.PowerMgmt",
+          "VM.Replicate",
+          "VM.Snapshot",
+          "VM.Snapshot.Rollback"
+        ],
+        "pcotest@pve!nosep": [
+          "VM.Allocate",
+          "VM.Audit",
+          "VM.Backup",
+          "VM.Clone",
+          "VM.Config.CDROM",
+          "VM.Config.CPU",
+          "VM.Config.Cloudinit",
+          "VM.Config.Disk",
+          "VM.Config.HWType",
+          "VM.Config.Memory",
+          "VM.Config.Network",
+          "VM.Config.Options",
+          "VM.Console",
+          "VM.GuestAgent.Audit",
+          "VM.GuestAgent.FileRead",
+          "VM.GuestAgent.FileSystemMgmt",
+          "VM.GuestAgent.FileWrite",
+          "VM.GuestAgent.Unrestricted",
+          "VM.Migrate",
+          "VM.PowerMgmt",
+          "VM.Replicate",
+          "VM.Snapshot",
+          "VM.Snapshot.Rollback"
+        ]
+      },
+      "probes": {
+        "pcotest@pve!sep": 200,
+        "pcotest@pve!nosep": 200
+      }
+    }
+  ]
+}

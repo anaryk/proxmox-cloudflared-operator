@@ -1,0 +1,53 @@
+{
+  "data": [
+    {
+      "altnames": [
+        "enp0s18",
+        "enxbc24114ba270"
+      ],
+      "priority": 3,
+      "iface": "ens18",
+      "active": 1,
+      "type": "eth",
+      "method6": "manual",
+      "exists": 1,
+      "families": [
+        "inet"
+      ],
+      "method": "manual"
+    },
+    {
+      "priority": 4,
+      "iface": "vmbr0",
+      "active": 1,
+      "type": "bridge",
+      "bridge_ports": "ens18",
+      "options": [
+        "hwaddress bc:24:11:4b:a2:70"
+      ],
+      "autostart": 1,
+      "bridge_stp": "off",
+      "method": "dhcp",
+      "bridge_fd": "0",
+      "method6": "manual",
+      "families": [
+        "inet"
+      ]
+    },
+    {
+      "type": "bridge",
+      "active": 1,
+      "priority": 5,
+      "iface": "vmbr1",
+      "method": "manual",
+      "families": [
+        "inet"
+      ],
+      "bridge_fd": "0",
+      "method6": "manual",
+      "bridge_ports": "",
+      "autostart": 1,
+      "bridge_stp": "off"
+    }
+  ]
+}

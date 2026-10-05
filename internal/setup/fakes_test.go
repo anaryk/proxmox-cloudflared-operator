@@ -32,8 +32,12 @@ const (
 	cfToken   = "cf-token-must-not-leak-4f1d2c"
 	pveSecret = "pve-secret-must-not-leak-9a8b7c"
 
-	privs9 = "VM.Audit,Sys.Audit,VM.GuestAgent.Audit,SDN.Audit"
-	privs8 = "VM.Audit,Sys.Audit,VM.Monitor,SDN.Audit"
+	privs9 = "VM.Audit,Sys.Audit,VM.GuestAgent.Audit,SDN.Audit,Pool.Audit"
+	privs8 = "VM.Audit,Sys.Audit,VM.Monitor,SDN.Audit,Pool.Audit"
+
+	// What setup gave the role before it read pools.
+	earlierPrivs9 = "VM.Audit,Sys.Audit,VM.GuestAgent.Audit,SDN.Audit"
+	earlierPrivs8 = "VM.Audit,Sys.Audit,VM.Monitor,SDN.Audit"
 )
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
