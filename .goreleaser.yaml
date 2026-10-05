@@ -89,6 +89,12 @@ nfpms:
         dst: /usr/lib/systemd/system/pco-egress.service
         file_info:
           mode: 0644
+      # Exactly here: the daemon answers the user pco-web on its socket only
+      # while this file exists.
+      - src: packaging/systemd/pco-web.service
+        dst: /usr/lib/systemd/system/pco-web.service
+        file_info:
+          mode: 0644
       - src: packaging/sysusers.d/pco.conf
         dst: /usr/lib/sysusers.d/pco.conf
         file_info:

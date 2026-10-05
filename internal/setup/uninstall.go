@@ -63,8 +63,8 @@ type uninstall struct {
 // it and asks, and only then removes, in an order that keeps what a later part
 // needs: what is at Cloudflare first, as it needs the stored credentials, with
 // the connectors stopped before their tunnels are deleted, then the egress
-// filter and what Proxmox holds, and the store last. Only what the manifest
-// lists is removed from Proxmox. A part that fails is reported and the others
+// filter, the web interface and what Proxmox holds, and the store last. Only
+// what the manifest lists is removed from Proxmox and of the web interface. A part that fails is reported and the others
 // go on, but the store is then kept, so that a second run finishes the rest.
 func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if err := o.check(); err != nil {
@@ -111,6 +111,7 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 		u.deleteTunnels(ctx)
 	}
 	u.removeEgress(ctx)
+	u.removeWeb(ctx)
 	u.removeProxmox(ctx)
 	if removeCloudflared {
 		u.removeCloudflared(ctx)

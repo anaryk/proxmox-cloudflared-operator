@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -381,9 +382,10 @@ func TestSysusersCreatesTheConnectorUser(t *testing.T) {
 		}
 	}
 
-	require.Len(t, users, 1)
+	i := slices.IndexFunc(users, func(u []string) bool { return len(u) > 1 && u[1] == egress.ConnectorUser })
+	require.GreaterOrEqual(t, i, 0, "%v", users)
 	// u creates the user and a group of the same name, with an id from the
 	// system range and no login.
-	require.Equal(t, []string{"u", egress.ConnectorUser, "-"}, users[0][:3])
-	require.Equal(t, []string{"-", "-"}, users[0][len(users[0])-2:])
+	require.Equal(t, []string{"u", egress.ConnectorUser, "-"}, users[i][:3])
+	require.Equal(t, []string{"-", "-"}, users[i][len(users[i])-2:])
 }

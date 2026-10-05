@@ -1,0 +1,4 @@
+mode         ca: a key of its own and a certificate signed by the cluster CA, renewed by pco
+names        pve1, pve1.example.lan, 192.0.2.10
+valid until  2026-12-30T14:00:00+02:00 (in 89 days)
+SHA-256      <fingerprint>

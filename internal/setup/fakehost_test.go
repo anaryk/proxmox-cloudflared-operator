@@ -42,6 +42,8 @@ type fakeHost struct {
 	tables      []string
 	secrets     int
 	secret      string // of the token pco@pve!pco, while there is one
+	addr        string // of the node in the cluster status; empty: 192.0.2.10
+	firewall    bool   // the firewall of the datacenter is on
 
 	ran      []string
 	killedAt int              // the command, counted from 1, that the host dies at; 0: none
@@ -82,6 +84,8 @@ func (h *fakeHost) requireUntouched() {
 	require.False(t, h.enabled[serviceUnit])
 	require.False(t, h.active[egressUnit])
 	require.False(t, h.enabled[egressUnit])
+	require.False(t, h.active[webUnit])
+	require.False(t, h.enabled[webUnit])
 }
 
 func (h *fakeHost) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -222,6 +226,10 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 
 	case cmd == "pvesh get /cluster/options --output-format json":
 		return asJSON(map[string]string{"registered-tags": strings.Join(h.tags, ";")}), nil
+	case cmd == "pvesh get /cluster/status --output-format json":
+		return clusterStatus(cmp.Or(h.addr, testAddr)), nil
+	case cmd == "pvesh get /cluster/firewall/options --output-format json":
+		return asJSON(map[string]any{"enable": map[bool]int{true: 1}[h.firewall], "policy_in": "DROP"}), nil
 	case cmd == "pvesh set /cluster/options --delete registered-tags":
 		h.tags = nil
 		return "", nil
@@ -340,11 +348,12 @@ func killed(t *testing.T, f func() error) bool {
 func (e *testEnv) requireNothingLeft(h *fakeHost) {
 	e.t.Helper()
 	h.requireUntouched()
-	for _, dir := range []string{"keyrings", "sources"} {
+	for _, dir := range []string{"keyrings", "sources", "default"} {
 		entries, err := os.ReadDir(filepath.Join(e.base, dir))
 		require.NoError(e.t, err)
 		require.Empty(e.t, entries, dir)
 	}
+	require.NoDirExists(e.t, filepath.Dir(e.s.host.webDir), "the directory of the web certificate is gone")
 	e.requireStoreGone()
 }
 
@@ -363,6 +372,7 @@ func killSweep(t *testing.T, gateTag string) {
 	clean := newTestEnv(t)
 	clean.installUnit(serviceUnit)
 	clean.installUnit(egressUnit)
+	clean.webNode()
 	if gateTag != "" {
 		clean.saveGateTag(gateTag)
 	}
@@ -380,6 +390,7 @@ func killSweep(t *testing.T, gateTag string) {
 				e := newTestEnv(t)
 				e.installUnit(serviceUnit)
 				e.installUnit(egressUnit)
+				e.webNode()
 				if gateTag != "" {
 					e.saveGateTag(gateTag)
 				}

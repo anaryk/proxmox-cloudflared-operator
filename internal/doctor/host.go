@@ -48,6 +48,9 @@ type HostEnv struct {
 	// Enabled asks systemd whether a unit starts at boot; nil runs
 	// systemctl is-enabled.
 	Enabled func(ctx context.Context, unit string) (bool, error)
+	// Web reads the certificate of the web interface, and says whether setup
+	// set the web interface up; nil is a node without it.
+	Web func(ctx context.Context) (WebCert, bool)
 }
 
 func (h *HostEnv) timeout() time.Duration {

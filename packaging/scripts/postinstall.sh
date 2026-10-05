@@ -6,7 +6,8 @@ if [ "$1" != configure ]; then
 	exit 0
 fi
 
-# The connectors run as pco-connector, and the egress filter matches that user.
+# The connectors run as pco-connector, and the egress filter matches that user;
+# the web interface runs as pco-web.
 systemd-sysusers /usr/lib/sysusers.d/pco.conf
 
 # $2 is the version that was configured before. It is empty on a first install,
@@ -22,11 +23,13 @@ fi
 # stuck half configured, so its errors are shown and not fatal.
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true
-	# Only an upgrade restarts the daemon, and only if it was running. The
+	# Only an upgrade restarts the daemon and the web interface, and only those
+	# that were running; pco setup enables the web interface. The
 	# pco-cloudflared@ connectors are never touched: restarting them would drop
 	# the tunnels they serve.
 	if [ -n "$2" ]; then
 		systemctl try-restart pco.service || true
+		systemctl try-restart pco-web.service || true
 	fi
 	if ! systemctl is-enabled --quiet pco.service 2>/dev/null; then
 		not_set_up=1

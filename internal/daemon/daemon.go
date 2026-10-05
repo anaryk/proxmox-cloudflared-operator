@@ -98,6 +98,16 @@ type Deps struct {
 	WatchNetwork func(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error
 	WatchRuleset func(ctx context.Context, changed func()) error
 	EgressEvery  time.Duration
+	// The web interface: WebDir holds its certificate, WebEnv is the
+	// environment file of its unit, WebLoaded is where systemd puts what
+	// pco-web.service loaded, ClusterCA and ClusterCAKey are the cluster CA;
+	// defaults: the node's. RestartWeb restarts pco-web.service if it runs;
+	// default: systemctl try-restart. WebEvery is how often its certificates
+	// are looked at; default a minute.
+	WebDir, WebEnv, WebLoaded string
+	ClusterCA, ClusterCAKey   string
+	RestartWeb                func(ctx context.Context) error
+	WebEvery                  time.Duration
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -143,6 +153,12 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.EgressEvery <= 0 {
 		d.EgressEvery = checkEvery
+	}
+	if d.RestartWeb == nil {
+		d.RestartWeb = tryRestartWeb
+	}
+	if d.WebEvery <= 0 {
+		d.WebEvery = webCheckEvery
 	}
 	return d
 }
@@ -220,7 +236,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
-	doc := doctor.NewRunner(eng.State, &doctor.HostEnv{
+	env := &doctor.HostEnv{
 		Systemd:    deps.Systemd,
 		Proxmox:    client,
 		Interval:   eng.PollInterval,
@@ -231,14 +247,21 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		Dial:       deps.Dial,
 		Timeout:    deps.HostTimeout,
 		Enabled:    deps.UnitEnabled,
-	}, nil, deps.Now, log)
-	gid, uids := socketAccess(deps.Accounts, log)
-	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
-	srv.SetShutdownTimeout(deps.ShutdownTimeout)
+	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep)
+	beside := []func(context.Context){watch, keep}
+	if cfg.profile() == store.ProfileHost {
+		web := newWebKeeper(cfg, deps, client, eng.NoteWeb, log)
+		env.Web = web.facts
+		beside = append(beside, func(ctx context.Context) { web.keep(ctx, deps.WebEvery) })
+	}
+	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
+	gid, uids := socketAccess(deps.Accounts, log)
+	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
+	srv.SetShutdownTimeout(deps.ShutdownTimeout)
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, beside...)
 }
 
 // startSettings reads the settings that are wired at start. Settings that

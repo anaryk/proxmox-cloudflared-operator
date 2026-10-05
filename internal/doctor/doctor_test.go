@@ -41,6 +41,7 @@ type fakeEnv struct {
 	storeErr   error
 	lockErr    error
 	interval   time.Duration
+	web        *WebCert // nil: setup did not set up the web interface
 }
 
 func healthyEnv() *fakeEnv {
@@ -67,6 +68,13 @@ func (f *fakeEnv) Store(context.Context) error                { return f.storeEr
 func (f *fakeEnv) NodeLock(context.Context) error             { return f.lockErr }
 func (f *fakeEnv) PollInterval() time.Duration                { return f.interval }
 func (f *fakeEnv) Now() time.Time                             { return now }
+
+func (f *fakeEnv) WebCert(context.Context) (WebCert, bool) {
+	if f.web == nil {
+		return WebCert{}, false
+	}
+	return *f.web, true
+}
 
 // holdOver makes st the state of a cycle that held: its tunnels and
 // connectors are those an earlier cycle found.

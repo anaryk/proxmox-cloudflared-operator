@@ -89,6 +89,7 @@ func (a *app) webCmd() *cobra.Command {
 	flags.StringVar(&f.logLevel, "log-level", "info", "log level: trace, debug, info, warn or error")
 	flags.StringVar(&f.pin, "pin", "", "the certificate pveproxy serves, PEM (default $CREDENTIALS_DIRECTORY/pveproxy.crt)")
 	flags.StringVar(&f.pveURL, "pve-url", defaultPVEURL, "the Proxmox VE API that checks sign-ins")
+	cmd.AddCommand(a.webCertCmd())
 	return cmd
 }
 

@@ -33,6 +33,39 @@ type Manifest struct {
 	// AddedKeyring is true when setup downloaded the key of the apt source,
 	// which may have been there before the source was.
 	AddedKeyring bool `json:"addedKeyring"`
+	// WebEnabled is true when setup enabled pco-web.service, WebEnv when it
+	// wrote /etc/default/pco-web. WebCert is the mode of the certificate the
+	// web interface serves: ca, own or pveproxy. WebTLS lists the files, links
+	// and directories setup made for it, in the order it made them.
+	WebEnabled bool     `json:"webEnabled"`
+	WebEnv     bool     `json:"webEnv"`
+	WebCert    string   `json:"webCert"`
+	WebTLS     []string `json:"webTLS"`
+}
+
+// addWebTLS notes a file, link or directory setup makes for the certificate
+// of the web interface.
+func (m *Manifest) addWebTLS(path string) {
+	if !slices.Contains(m.WebTLS, path) {
+		m.WebTLS = append(m.WebTLS, path)
+	}
+}
+
+// WebSetup is what setup did for the web interface of a node.
+type WebSetup struct {
+	Enabled bool   // setup enabled pco-web.service
+	Mode    string // of the certificate: webcert.ModeCA, ModeOwn or ModePVEProxy
+}
+
+// ReadWebSetup reads from the manifest in the local root of the store what
+// setup did for the web interface. A node without a manifest has nothing of
+// it.
+func ReadWebSetup(local string) (WebSetup, error) {
+	m, _, err := readManifest(filepath.Join(local, manifestName))
+	if err != nil {
+		return WebSetup{}, fmt.Errorf("reading the manifest: %w", err)
+	}
+	return WebSetup{Enabled: m.WebEnabled, Mode: m.WebCert}, nil
 }
 
 // addTags notes tags setup registered.

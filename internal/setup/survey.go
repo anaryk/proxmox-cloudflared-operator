@@ -18,6 +18,7 @@ import (
 // without changing anything: what is not there is neither listed nor removed.
 type survey struct {
 	unit, egressUnit bool     // the unit files of pco and of the egress filter
+	webUnit          bool     // the unit file of the web interface
 	connectors       []string // the tunnel ids of the connectors
 	connectorsErr    error
 	nft              bool // nft runs
@@ -36,6 +37,7 @@ func (u *uninstall) survey(ctx context.Context) {
 	f := &u.found
 	f.unit = u.unitInstalled(serviceUnit)
 	f.egressUnit = u.unitInstalled(egressUnit)
+	f.webUnit = u.unitInstalled(webUnit)
 	f.connectors, f.connectorsErr = u.listConnectors(ctx)
 	f.nft, f.table, f.nftErr = u.egressTableThere(ctx)
 	if u.manifest.inProxmox() {
@@ -127,6 +129,7 @@ func (u *uninstall) describe() {
 	case f.table:
 		u.ask.Info("  the egress filter: table inet %s", egressTable)
 	}
+	u.describeWeb()
 	u.describeProxmox()
 	if len(f.stores) > 0 {
 		u.ask.Info("  the store: %s", strings.Join(f.stores, ", "))

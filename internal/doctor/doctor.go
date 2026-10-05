@@ -58,6 +58,9 @@ type Env interface {
 	// NodeLock is nil when this daemon holds the lock of the node.
 	NodeLock(ctx context.Context) error
 	PollInterval() time.Duration
+	// WebCert is the certificate of the web interface; false when setup did
+	// not set the web interface up.
+	WebCert(ctx context.Context) (WebCert, bool)
 }
 
 const (
@@ -109,6 +112,9 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 		out = append(out, checkApprovals(st)...)
 	}
 	out = append(out, checkTunnels(ctx, st, env)...)
+	if w, enabled := env.WebCert(ctx); enabled {
+		out = append(out, checkWebCert(w, env.Now()))
+	}
 	slices.SortStableFunc(out, compareChecks)
 	return out
 }

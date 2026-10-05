@@ -1,0 +1,47 @@
+[Unit]
+Description=pco web interface
+Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
+After=network-online.target pve-cluster.service pco.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=pco-web
+Group=pco-web
+EnvironmentFile=-/etc/default/pco-web
+ExecStart=/usr/bin/pco web
+LoadCredential=tls.crt:/etc/pco/web/tls.crt
+LoadCredential=tls.key:/etc/pco/web/tls.key
+LoadCredential=pveproxy.crt:/etc/pco/web/pveproxy.crt
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=-/run/pco
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

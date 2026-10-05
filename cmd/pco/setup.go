@@ -23,6 +23,9 @@ type setupFlags struct {
 	tokenFile                    string
 	tokenStdin                   bool
 	installID                    string
+
+	webCert, webCertFile, webKeyFile, webListen string
+	noWeb                                       bool
 }
 
 func (a *app) setupCmd() *cobra.Command {
@@ -44,7 +47,16 @@ func (a *app) setupCmd() *cobra.Command {
 			"A node whose store holds no install but that runs connectors of one is refused, as a new\n" +
 			"install would never prune them: pco setup --recover adopts that install, and pco uninstall\n" +
 			"--keep-cloudflare removes pco from the node so that setup can start over. --new-install\n" +
-			"starts a new install beside them regardless.",
+			"starts a new install beside them regardless.\n\n" +
+			"The web interface, pco-web.service, listens on the node's address in the cluster status,\n" +
+			"port 8643, or on --web-listen; --no-web leaves it out. Its certificate, by --web-cert:\n" +
+			"  ca        a key of its own and a certificate signed by the cluster CA for 90 days, which\n" +
+			"            the daemon renews; browsers that trust the cluster CA, as for port 8006, take it\n" +
+			"            (the default)\n" +
+			"  own       the certificate and key of --web-cert-file and --web-key-file, copied in\n" +
+			"  pveproxy  the certificate and key pveproxy serves: the web interface then holds\n" +
+			"            pveproxy's own key\n" +
+			"--repair keeps the mode chosen before unless --web-cert says otherwise.",
 		// A token typed where a flag value belongs is an argument: the error
 		// must not repeat it.
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -84,6 +96,12 @@ func (a *app) setupCmd() *cobra.Command {
 	flags.StringVar(&f.installID, "install-id", "", "with --recover: the install to adopt, when the token sees several")
 	flags.BoolVar(&f.newInstall, "new-install", false, "start a new install on a node that runs connectors of another install: "+
 		"the connectors of the other install keep running and are never pruned by the new one; pco status reports them")
+	flags.StringVar(&f.webCert, "web-cert", "", "the certificate of the web interface: ca (the default), own or pveproxy")
+	flags.StringVar(&f.webCertFile, "web-cert-file", "", "with --web-cert own: the certificate, PEM")
+	flags.StringVar(&f.webKeyFile, "web-key-file", "", "with --web-cert own: the key of the certificate, PEM")
+	flags.StringVar(&f.webListen, "web-listen", "", "the address the web interface listens on, with or without a port "+
+		"(default: the node's address in the cluster status, port 8643)")
+	flags.BoolVar(&f.noWeb, "no-web", false, "do not set up the web interface")
 	cmd.MarkFlagsMutuallyExclusive("cf-token-file", "cf-token-stdin")
 	cmd.MarkFlagsMutuallyExclusive("repair", "recover")
 	cmd.MarkFlagsMutuallyExclusive("new-install", "repair")
@@ -92,7 +110,10 @@ func (a *app) setupCmd() *cobra.Command {
 }
 
 func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, error) {
-	o := setup.Options{Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall, Verbose: f.verbose}
+	o := setup.Options{
+		Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall, Verbose: f.verbose,
+		WebCert: f.webCert, WebCertFile: f.webCertFile, WebKeyFile: f.webKeyFile, WebListen: f.webListen, NoWeb: f.noWeb,
+	}
 	no := false
 	if f.noTags {
 		o.RegisterTags = &no

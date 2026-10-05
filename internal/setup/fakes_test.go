@@ -209,7 +209,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	e.cf.SetNow(func() time.Time { return t0 })
 	e.cf.AddAccount(testAccount, "Main")
 	e.cf.AddZone(testZone, "example.com", testAccount)
-	for _, dir := range []string{"keyrings", "sources", "units"} {
+	for _, dir := range []string{"keyrings", "sources", "units", "default"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(base, dir), 0o755))
 	}
 
@@ -233,6 +233,13 @@ func newTestEnv(t *testing.T) *testEnv {
 		euid:       func() int { return 0 },
 		hostname:   func() (string, error) { return testNode + ".example.com", nil },
 		checkToken: func(context.Context, store.PVEToken) error { return nil },
+
+		webDir:       filepath.Join(base, "pco", "web"),
+		webEnv:       filepath.Join(base, "default", "pco-web"),
+		clusterCA:    filepath.Join(base, "pve", "pve-root-ca.pem"),
+		clusterCAKey: filepath.Join(base, "pve", "priv", "pve-root-ca.key"),
+		nodeCertDir:  filepath.Join(base, "pve", "local"),
+		fqdn:         func(hostname string) string { return hostname },
 	}
 	return e
 }

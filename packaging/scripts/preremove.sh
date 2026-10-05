@@ -6,13 +6,17 @@ if [ "$1" != remove ]; then
 	exit 0
 fi
 
-# Only the operator is stopped. The pco-cloudflared@ connectors keep running so
-# that removing the package does not take the tunnels down; `pco uninstall`
-# removes them, and has to run while the binary is still there. A failing stop
-# is shown, but must not keep the package from being removed.
+# Only the operator and its web interface are stopped. The pco-cloudflared@
+# connectors keep running so that removing the package does not take the
+# tunnels down; `pco uninstall` removes them, and has to run while the binary is
+# still there. A failing stop is shown, but must not keep the package from being
+# removed.
 if [ -d /run/systemd/system ]; then
 	if systemctl cat pco.service >/dev/null 2>&1; then
 		systemctl disable --now pco.service || true
+	fi
+	if systemctl cat pco-web.service >/dev/null 2>&1; then
+		systemctl disable --now pco-web.service || true
 	fi
 	# What runs or has failed, and what is enabled and would come back at the
 	# next boot, running or not.

@@ -56,6 +56,10 @@ func (p *nodePin) verify(cs tls.ConnectionState) error {
 	return nil
 }
 
+// ServedCert returns the file of the certificate pveproxy serves, picked in
+// the order the pin picks it, and the certificate in DER.
+func ServedCert(dir string) (path string, der []byte, err error) { return readNodeCert(dir) }
+
 // readNodeCert returns the certificate pveproxy serves, and the file it is in.
 func readNodeCert(dir string) (string, []byte, error) {
 	var path string

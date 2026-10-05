@@ -1,7 +1,7 @@
 // Package setup prepares a Proxmox VE node for pco and takes it away again:
 // the role, user and API token the daemon reads Proxmox with, the gate tags,
-// the cloudflared package, the first Cloudflare token, the identity of the
-// install and the unit of the daemon.
+// the cloudflared package, the first Cloudflare token, the web interface with
+// its certificate, the identity of the install and the unit of the daemon.
 //
 // Every step looks at what is there before it changes anything, so a run that
 // stopped half way is finished by running it again, and a second run changes
@@ -26,6 +26,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
 // The objects setup makes in Proxmox and on the node.
@@ -38,6 +39,7 @@ const (
 
 	serviceUnit = "pco.service"
 	egressUnit  = "pco-egress.service"
+	webUnit     = "pco-web.service"
 
 	// credentialLabel is the label of the credential setup stores.
 	credentialLabel = "setup"
@@ -73,6 +75,16 @@ type Options struct {
 	NewInstall         bool   // start an install beside the connectors of another
 	Node               string // default: hostname
 	Verbose            bool   // name every zone the token leaves out, not only those the install served
+
+	// The web interface. WebCert is ca, own or pveproxy; empty keeps the mode
+	// setup chose before, or is ca. WebCertFile and WebKeyFile go with own.
+	// WebListen is the address pco-web listens on; empty keeps the one in
+	// /etc/default/pco-web, or is the node's address in the cluster status.
+	WebCert     string
+	WebCertFile string
+	WebKeyFile  string
+	WebListen   string
+	NoWeb       bool
 }
 
 func (o Options) check() error {
@@ -87,6 +99,22 @@ func (o Options) check() error {
 		return errors.New("--install-id goes with --recover")
 	case o.InstallID != "" && !validInstallID(o.InstallID):
 		return fmt.Errorf("install id %q: want 12 lower-case hex characters", o.InstallID)
+	}
+	return o.checkWeb()
+}
+
+func (o Options) checkWeb() error {
+	switch {
+	case o.NoWeb && (o.WebCert != "" || o.WebCertFile != "" || o.WebKeyFile != "" || o.WebListen != ""):
+		return errors.New("--no-web goes with none of --web-cert, --web-cert-file, --web-key-file and --web-listen")
+	case o.WebCert != "" && o.WebCert != webcert.ModeCA && o.WebCert != webcert.ModeOwn && o.WebCert != webcert.ModePVEProxy:
+		return fmt.Errorf("--web-cert %q: want ca, own or pveproxy", o.WebCert)
+	case (o.WebCertFile == "") != (o.WebKeyFile == ""):
+		return errors.New("--web-cert-file and --web-key-file go together")
+	case o.WebCertFile != "" && o.WebCert != webcert.ModeOwn:
+		return errors.New("--web-cert-file and --web-key-file go with --web-cert own")
+	case o.WebCert == webcert.ModeOwn && o.WebCertFile == "":
+		return errors.New("--web-cert own takes the certificate and its key from --web-cert-file and --web-key-file")
 	}
 	return nil
 }
@@ -112,6 +140,17 @@ type host struct {
 	hostname func() (string, error)
 	// checkToken makes one read of the Proxmox API with a token.
 	checkToken func(ctx context.Context, tok store.PVEToken) error
+
+	// The web interface: the directory of its certificate, the environment
+	// file of its unit, the cluster CA and the directory of the certificates
+	// pveproxy serves. fqdn finds the fully qualified name of a host name in
+	// /etc/hosts.
+	webDir       string
+	webEnv       string
+	clusterCA    string
+	clusterCAKey string
+	nodeCertDir  string
+	fqdn         func(hostname string) string
 }
 
 func nodeHost() host {
@@ -123,6 +162,16 @@ func nodeHost() host {
 		euid:       os.Geteuid,
 		hostname:   os.Hostname,
 		checkToken: checkPVEToken,
+
+		webDir:       webcert.Dir,
+		webEnv:       webcert.EnvFile,
+		clusterCA:    webcert.ClusterCA,
+		clusterCAKey: webcert.ClusterCAKey,
+		nodeCertDir:  pve.DefaultNodeCertDir,
+		fqdn: func(hostname string) string {
+			etcHosts, _ := os.ReadFile("/etc/hosts")
+			return webcert.FQDN(hostname, etcHosts)
+		},
 	}
 }
 
@@ -221,6 +270,7 @@ func (r *run) steps() []step {
 			{"user", r.ensureUser},
 			{"token", r.ensureToken},
 			{"tags", r.ensureTags},
+			{"web", r.ensureWeb},
 			{"registry", r.register},
 			{"service", r.startService},
 		}
@@ -234,6 +284,7 @@ func (r *run) steps() []step {
 		{"tags", r.ensureTags},
 		{"cloudflared", r.ensureCloudflared},
 		{"credential", r.addCredential},
+		{"web", r.ensureWeb},
 		{"registry", r.register},
 		{"service", r.startService},
 	}
