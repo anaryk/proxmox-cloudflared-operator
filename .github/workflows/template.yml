@@ -1,0 +1,241 @@
+name: template
+
+# The appliance templates of the latest release, built again each month from
+# the current Debian snapshot, for the security updates Debian published
+# since. When their packages changed and they boot, the job cut tags the next
+# patch version on the commit of that release and starts the release
+# workflow on the tag, which leaves a draft the maintainer publishes. When
+# nothing changed, nothing happens; when a build or a boot fails, an issue
+# says so. See packaging/RELEASING.md.
+on:
+  schedule:
+    # Every Monday; the job when lets the first one of each month through.
+    - cron: "37 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: template
+  cancel-in-progress: false
+
+jobs:
+  when:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.day.outputs.run }}
+    steps:
+      - id: day
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != schedule ] || [ "$(date -u +%d)" -le 7 ]; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+
+  # No secret here, and read access only. The packages of pco are those of the
+  # release, checked against its signed checksums.txt, so the templates carry
+  # the same pco; only Debian's packages can change.
+  rebuild:
+    needs: when
+    if: needs.when.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      notes: ${{ steps.compare.outputs.notes }}
+      snapshot: ${{ steps.build.outputs.snapshot }}
+      tag: ${{ steps.latest.outputs.tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Find the latest release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=$(gh release view --json tagName --jq .tagName)
+          if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The latest release is $tag, which is not a final version."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.latest.outputs.tag }}
+          persist-credentials: false
+
+      - name: Download the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          mkdir release
+          gh release download "$TAG" --dir release --pattern 'pco_*.deb' --pattern 'pco-appliance_*.spdx.json' \
+            --pattern checksums.txt --pattern checksums.txt.sig
+          if ! ls release/pco-appliance_*.spdx.json >/dev/null 2>&1; then
+            echo "$TAG carries no appliance template, so there is none to build again." >> "$GITHUB_STEP_SUMMARY"
+            echo "templates=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          packaging/release-key.sh scripts/install.sh "$RUNNER_TEMP/release.gpg" >/dev/null
+          gpgv --keyring "$RUNNER_TEMP/release.gpg" release/checksums.txt.sig release/checksums.txt
+          (cd release && sha256sum --check --ignore-missing --strict checksums.txt)
+          echo "templates=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install the tools of the template
+        if: steps.release.outputs.templates == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap debian-archive-keyring arch-test qemu-user-static
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build the templates
+        id: build
+        if: steps.release.outputs.templates == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          snapshot=$(date -u +%Y%m%dT000000Z)
+          echo "snapshot=$snapshot" >> "$GITHUB_OUTPUT"
+          version=${TAG#v}
+          for arch in amd64 arm64; do
+            packaging/appliance/build.sh --arch "$arch" --version "$version" --deb "release/pco_${version}_$arch.deb" \
+              --snapshot "$snapshot" --out build/appliance
+          done
+
+      - name: Boot the amd64 template
+        if: steps.release.outputs.templates == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: sudo packaging/appliance/smoke.sh --version "${TAG#v}" "build/appliance/pco-appliance_${TAG#v}_amd64.tar.zst"
+
+      - name: Boot it with a network
+        if: steps.release.outputs.templates == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: sudo packaging/appliance/smoke.sh --with-network --version "${TAG#v}" "build/appliance/pco-appliance_${TAG#v}_amd64.tar.zst"
+
+      - name: Compare the packages with the release
+        id: compare
+        if: steps.release.outputs.templates == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+          SNAPSHOT: ${{ steps.build.outputs.snapshot }}
+        run: |
+          version=${TAG#v}
+          # packages <spdx>: "<name> <version>" of each Debian package, sorted.
+          packages() {
+            jq -r '.packages[] | select(.SPDXID != "SPDXRef-pco-appliance") | "\(.name) \(.versionInfo)"' "$1" | LC_ALL=C sort
+          }
+          for arch in amd64 arm64; do
+            packages "release/pco-appliance_${version}_$arch.spdx.json" >"$RUNNER_TEMP/old"
+            packages "build/appliance/pco-appliance_${version}_$arch.spdx.json" >"$RUNNER_TEMP/new"
+            LC_ALL=C join -a 1 -a 2 -e none -o 0,1.2,2.2 "$RUNNER_TEMP/old" "$RUNNER_TEMP/new" |
+              awk '$2 != $3 { if ($2 == "none") print "- " $1 " " $3 " (new)"; else if ($3 == "none") print "- " $1 " (removed)"; else print "- " $1 " " $2 " → " $3 }'
+          done | LC_ALL=C sort -u >"$RUNNER_TEMP/changes"
+          if [[ ! -s $RUNNER_TEMP/changes ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The templates of $TAG built from the Debian snapshot $SNAPSHOT carry the packages they carry in the release: nothing to release." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "pco itself is unchanged from $TAG. This release builds the appliance templates again, from the Debian snapshot $SNAPSHOT, for the updates Debian published since."
+            echo
+            echo "The Debian packages that changed:"
+            echo
+            cat "$RUNNER_TEMP/changes"
+          } >"$RUNNER_TEMP/notes"
+          cat "$RUNNER_TEMP/notes" >> "$GITHUB_STEP_SUMMARY"
+          delimiter=notes-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+          {
+            echo "changed=true"
+            echo "notes<<$delimiter"
+            cat "$RUNNER_TEMP/notes"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+  # The next patch version on the same commit, as an annotated tag whose
+  # message says what changed, and the release workflow started on it. Two
+  # tags on one commit are what the release workflow handles through
+  # GORELEASER_CURRENT_TAG. A tag pushed with the token of the workflow
+  # starts no workflow, hence workflow_dispatch.
+  cut:
+    needs: rebuild
+    if: needs.rebuild.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.rebuild.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Tag the next patch version
+        id: tag
+        env:
+          TAG: ${{ needs.rebuild.outputs.tag }}
+          NOTES: ${{ needs.rebuild.outputs.notes }}
+        run: |
+          [[ $TAG =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]
+          next=v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))
+          if git rev-parse --quiet --verify "refs/tags/$next" >/dev/null; then
+            echo "::error::The tag $next exists already. Publish or delete its release, then run this workflow again."
+            exit 1
+          fi
+          printf 'pco %s\n\n%s\n' "${next#v}" "$NOTES" >"$RUNNER_TEMP/message"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            tag --annotate --file "$RUNNER_TEMP/message" "$next" "$TAG^{commit}"
+          git push origin "refs/tags/$next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEXT: ${{ steps.tag.outputs.tag }}
+          SNAPSHOT: ${{ needs.rebuild.outputs.snapshot }}
+        run: |
+          gh workflow run release.yml --ref "$NEXT" -f snapshot="$SNAPSHOT"
+          echo "Tagged $NEXT and started the release workflow on it with the snapshot $SNAPSHOT; its draft waits at the environment publish." >> "$GITHUB_STEP_SUMMARY"
+
+  report:
+    needs: [rebuild, cut]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REBUILD: ${{ needs.rebuild.result }}
+        run: |
+          title="template: the monthly rebuild failed"
+          if [ "$REBUILD" = failure ]; then
+            body="Building or booting the appliance templates failed, so no release was cut: $RUN. A build that could not reach snapshot.debian.org is worth a second run; a template that does not boot needs a look before the next release."
+          else
+            body="The templates changed and boot, but the next patch version was not tagged or its release not started: $RUN. packaging/RELEASING.md says what the workflow needs, and how to do it by hand."
+          fi
+          open=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

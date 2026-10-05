@@ -1,0 +1,22 @@
+# What the appliance template installs on top of Debian's minbase variant, one
+# package per line. Nothing that serves a login (no openssh-server, no sudo),
+# no cron (apt's timers run the updates) and no curl: pco fetches with Go.
+systemd
+systemd-sysv
+dbus-broker
+ifupdown
+# The DHCP client. With Debian's ifupdown both dhcpcd-base and
+# isc-dhcp-client get a lease in a Proxmox VE container; ifupdown2 works with
+# isc-dhcp-client only, which is why the template keeps ifupdown. dhcpcd-base
+# is the client Debian 13 installs by default and is maintained upstream,
+# where ISC stopped maintaining its client in 2022.
+dhcpcd-base
+iproute2
+nftables
+ca-certificates
+procps
+less
+apt-utils
+unattended-upgrades
+sqv
+zstd

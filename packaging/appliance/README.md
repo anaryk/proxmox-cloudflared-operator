@@ -1,0 +1,95 @@
+# The appliance template
+
+The appliance is pco in an unprivileged Proxmox VE container of its own. Its
+template, `pco-appliance_<version>_<arch>.tar.zst`, is a Debian 13 root file
+system with pco and cloudflared installed; `pco appliance install` makes the
+container from it. Every release carries one for amd64 and one for arm64.
+
+## What is in it
+
+- Debian's `minbase` variant and `packages.txt`, from the snapshot of
+  snapshot.debian.org that `pin.conf` names. No SSH server, no sudo, no cron
+  and no curl.
+- The pco package of the release and the newest cloudflared that
+  `../cloudflared-versions.json` allows, checked against the sha256 listed
+  there. Both are held: `pco upgrade` changes them, apt does not.
+- `overlay/`, copied onto the root: the profile marker `/etc/pco/profile`, the
+  apt sources of the live archives (`deb.debian.org` trixie and trixie-updates,
+  `security.debian.org` trixie-security), unattended upgrades of Debian's
+  security updates, `pco-first-boot.service`, which installs those published
+  since the snapshot at the first start that has a network, a journal of at most
+  64 MB, the host name `pco` and a short `/etc/motd`.
+- `pco-egress.service`, `pco.service`, `pco-first-boot.service` and
+  `unattended-upgrades.service` are enabled, `nftables.service` is masked (it
+  would flush the tables of pco), the root password is locked and
+  `/etc/machine-id` is empty.
+
+Nothing of the build stays: the snapshot sources, the apt option that let apt
+read their old Release files, the resolver and the logs of the host are taken
+out by the last step of the build. `pco-appliance_<version>_<arch>.spdx.json`
+lists the packages of a template as SPDX 2.3.
+
+## Building it
+
+    make snapshot        # the packages into dist/, and the amd64 template
+    make template        # the template of the package in dist/
+    make template TEMPLATE_ARCH=arm64
+
+The template lands in `build/appliance`. `build.sh` runs mmdebstrap in unshare
+mode, which needs Linux, `mmdebstrap`, `zstd`, `jq`, `curl` and `dpkg`, and
+either root or a user with a range in `/etc/subuid` and `/etc/subgid` (the
+`uidmap` package) on a kernel that lets users make user namespaces; Ubuntu
+24.04 forbids that until `sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
+On Ubuntu `debian-archive-keyring` is needed as well. The architecture the host
+is not needs `qemu-user-static` and binfmt. Elsewhere, run it as root in a
+Debian container, after `make snapshot` on the host:
+
+    docker run --rm --privileged -v "$PWD:/src" -w /src debian:trixie sh -c \
+      'apt-get update && apt-get install -y make mmdebstrap zstd jq curl ca-certificates && make template'
+
+`build.sh --dry-run` prints the mmdebstrap command without running anything,
+on any system.
+
+## The same bytes twice
+
+Two builds from the same `pin.conf` and the same packages give the same files.
+Every file of the template carries the time of the snapshot (also the
+`SOURCE_DATE_EPOCH` of the build), mmdebstrap writes the tar sorted by name with
+numeric owners, the overlay goes in as root's with fixed modes, and zstd writes
+the same output for the same input and options. `build_test.sh` builds twice and
+compares the sha256 of every file; the `template` job of CI runs it.
+
+A release builds the packages twice as well: once in its job `build`, which
+makes the templates from them, and once in its job `sign`, which signs. The
+templates do not keep the package they installed, so `build.sh` writes its
+sha256 into `pco-appliance_<version>_<arch>.deb.sha256`, and
+`check-artifacts.sh --require-template` refuses a release whose package is
+another. The `package` job of CI builds the packages in two checkouts and
+compares them, so that a change that breaks this fails there first.
+
+## The snapshot
+
+`pin.conf` names the snapshot as `SNAPSHOT=YYYYMMDDTHHMMSSZ`.
+`build.sh --snapshot` takes another one, and so does the input `snapshot` of
+the release workflow. Each release carries the one it was built from as
+`pco-appliance_<version>.pin.conf`. The workflow `template` builds the
+templates of the latest release from the current snapshot every month and
+cuts a patch release when their packages changed (see `../RELEASING.md`).
+
+## Testing it
+
+    sudo packaging/appliance/smoke.sh --version <version> build/appliance/pco-appliance_<version>_amd64.tar.zst
+    sudo packaging/appliance/smoke.sh --with-network --version <version> <template>
+
+`smoke.sh` boots the template in `systemd-nspawn` and checks it from inside:
+without a network it must come up running, or degraded by nothing but
+`pco.service` and `pco-first-boot.service`; pco must be the version of the
+file name, the egress table loaded, the profile `appliance`, pco and
+cloudflared held, root locked, `pco-connector` there, `nftables.service`
+masked, and apt must read the two live archives and nothing of the snapshot.
+With `--with-network` it boots once more with the network of the host, and the
+first start must have installed the security updates and left the package
+lists of the live archives only. For a snapshot, whose binary says what
+`git describe` says, add `--pco-version "$(git describe --tags --always --dirty)"`.
+It needs root and `systemd-container`, on a host whose kernel has the
+nftables modules pco loads (`nft_fib_inet` among them).

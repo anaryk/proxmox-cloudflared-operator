@@ -18,7 +18,7 @@ comma := ,
 UI ?= 0
 TAGS := nomsgpack$(if $(filter 1,$(UI)),$(comma)webui)
 
-.PHONY: build test lint fmt test-scripts snapshot package e2e-binaries scale ui ui-dist ui-test ui-budget ui-words
+.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-words
 
 build: $(if $(filter 1,$(UI)),ui-dist)
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -45,7 +45,8 @@ test-scripts:
 	bash packaging/is-latest_test.sh
 	bash packaging/check-artifacts_test.sh
 	bash packaging/release-workflow_test.sh
-	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh
+	bash packaging/cloudflared-versions_test.sh
+	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh packaging/appliance/*.sh
 
 # The frontend in web/, with Node and npm at the versions of web/.nvmrc and
 # web/package.json. The packages are installed once, and again when the lock
@@ -73,15 +74,31 @@ ui-words:
 	go run ./hack/tsgen -words > web/src/gen/words.gen.ts.tmp && mv web/src/gen/words.gen.ts.tmp web/src/gen/words.gen.ts || { rm -f web/src/gen/words.gen.ts.tmp; exit 1; }
 
 # Builds the interface and the .deb files without a tag and without publishing
-# or signing anything. Reading the binaries back takes dpkg-deb and go.
+# or signing anything, and the appliance template where mmdebstrap is
+# installed. Reading the binaries back takes dpkg-deb and go.
 # Keep the version in sync with the release and ci workflows.
 snapshot: ui
 	go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --snapshot --clean --skip=sign
 	packaging/check-artifacts.sh --require-ui
+	@if command -v mmdebstrap >/dev/null 2>&1; then \
+		$(MAKE) template; \
+	else \
+		echo "mmdebstrap is not installed, so there is no appliance template; packaging/appliance/README.md says how to build one"; \
+	fi
 
 package: snapshot
 	@echo "the .deb files are in dist/:"
 	@ls dist/*.deb
+
+# The appliance template of the package in dist/, into build/appliance. It
+# needs Linux and mmdebstrap, see packaging/appliance/README.md;
+# TEMPLATE_ARCH=arm64 builds the other one.
+TEMPLATE_ARCH ?= amd64
+template:
+	@test -f dist/metadata.json || { echo "dist/ holds no packages: run make snapshot first" >&2; exit 1; }
+	version=$$(jq -r .version dist/metadata.json) && \
+		packaging/appliance/build.sh --arch $(TEMPLATE_ARCH) --version "$$version" \
+			--deb "dist/pco_$${version}_$(TEMPLATE_ARCH).deb" --out build/appliance
 
 # The end-to-end suite and a binary for a Proxmox VE node; test/e2e/README.md
 # says how to run them.

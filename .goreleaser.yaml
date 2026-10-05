@@ -126,6 +126,16 @@ nfpms:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+  # The appliance templates and what goes with them, which
+  # packaging/appliance/build.sh writes outside dist/, as --clean empties it,
+  # into the directory PCO_APPLIANCE_DIR names. Without the variable, as in a
+  # snapshot, there are none. The two single files fail the run when they are
+  # missing; a missing template is found by check-artifacts.sh
+  # --require-template.
+  extra_files: &appliance
+    - glob: '{{ with index .Env "PCO_APPLIANCE_DIR" }}{{ . }}/pco-appliance_{{ $.Version }}_{amd64,arm64}.{tar.zst,spdx.json}{{ end }}'
+    - glob: '{{ with index .Env "PCO_APPLIANCE_DIR" }}{{ . }}/pco-appliance_{{ $.Version }}.pin.conf{{ end }}'
+    - glob: '{{ with index .Env "PCO_APPLIANCE_DIR" }}{{ . }}/cloudflared-versions.json{{ end }}'
 
 # Only the checksum file is signed, with a binary detached signature, the form
 # scripts/install.sh verifies. --snapshot does not skip this step, so a snapshot
@@ -154,10 +164,13 @@ changelog:
       - "^docs:"
       - "^test:"
 
-# A release is made as a draft, checked by the release workflow, and published
-# by it only after every check passed. A draft left by an earlier run of the
-# same tag is replaced.
+# A release is made as a draft and checked by the release workflow, and the
+# maintainer publishes it. A draft left by an earlier run of the same tag is
+# replaced. The body of the tag's message, if it has one, heads the notes: the
+# monthly rebuild of the template writes there what changed.
 release:
   draft: true
   replace_existing_draft: true
   prerelease: auto
+  header: "{{ .TagBody }}"
+  extra_files: *appliance

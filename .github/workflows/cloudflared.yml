@@ -1,0 +1,98 @@
+name: cloudflared
+
+# Each week: when Cloudflare has published a cloudflared that
+# packaging/cloudflared-versions.json does not name, allowed or denied, a pull
+# request adds it. Merging it is what vets the version; refusing it is an
+# entry in deny. See packaging/RELEASING.md.
+on:
+  schedule:
+    - cron: "11 5 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflared
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Find the latest cloudflared
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/cloudflare/cloudflared/releases/latest >"$RUNNER_TEMP/release.json"
+          version=$(jq -r .tag_name "$RUNNER_TEMP/release.json")
+          if ! [[ $version =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+            echo "::error::The latest release of cloudflared is $version, which is not a version YYYY.M.N."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if jq -e --arg v "$version" 'any(.versions[]; .version == $v) or any(.deny[]; .version == $v)' \
+            packaging/cloudflared-versions.json >/dev/null; then
+            echo "cloudflared $version is in the manifest already." >> "$GITHUB_STEP_SUMMARY"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          elif [[ -n $(gh pr list --head "cloudflared/$version" --state open --json number --jq '.[].number') ]]; then
+            echo "A pull request for cloudflared $version is open already." >> "$GITHUB_STEP_SUMMARY"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The sha256 of what was downloaded must be what GitHub computed when
+      # Cloudflare uploaded the files.
+      - name: Add it to the manifest
+        if: steps.latest.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          packaging/cloudflared-update.sh "$VERSION"
+          for arch in amd64 arm64; do
+            want=$(jq -r --arg n "cloudflared-linux-$arch.deb" '.assets[] | select(.name == $n) | .digest // empty' "$RUNNER_TEMP/release.json")
+            got=$(jq -r --arg v "$VERSION" --arg a "$arch" '.versions[] | select(.version == $v) | .[$a].sha256' packaging/cloudflared-versions.json)
+            if [[ $want != "sha256:$got" ]]; then
+              echo "::error::The $arch package of cloudflared $VERSION has the sha256 $got, GitHub lists ${want:-no digest}."
+              exit 1
+            fi
+          done
+
+      - name: Open the pull request
+        if: steps.latest.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          branch=cloudflared/$VERSION
+          git switch --create "$branch"
+          git add packaging/cloudflared-versions.json
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit --quiet --message "build: vet cloudflared $VERSION"
+          git push --force origin "$branch"
+          {
+            echo "Cloudflare published cloudflared $VERSION: <https://github.com/cloudflare/cloudflared/releases/tag/$VERSION>."
+            echo "This adds it to \`packaging/cloudflared-versions.json\` with the sha256 of both packages, which match the digests GitHub lists for the release files."
+            echo "The appliance templates carry the newest version the list allows and \`pco upgrade cloudflared\` installs from it, so merging this allows $VERSION."
+            echo
+            echo "Before merging:"
+            echo
+            echo "- read the release notes and \`RELEASE_NOTES\` of $VERSION: security fixes, and changes to \`tunnel run\`, \`--edge-ip-version\`, the metrics endpoint and the flags pco passes;"
+            echo "- look for issues reported against $VERSION, crashes and regressions above all;"
+            echo "- compare the sha256 values with those Cloudflare lists in the release text;"
+            echo "- run a connector with it on a test node."
+            echo
+            echo "To refuse it, move its entry from \`versions\` to \`deny\`, with the reason, and merge that instead."
+            echo "CI does not run on a pull request this workflow opened: close and reopen it to run CI."
+          } >"$RUNNER_TEMP/body.md"
+          gh pr create --head "$branch" --title "build: vet cloudflared $VERSION" --body-file "$RUNNER_TEMP/body.md"

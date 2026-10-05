@@ -4,12 +4,22 @@ on:
   push:
     tags:
       - "v*"
+  # A run on a tag that names the Debian snapshot the templates are built
+  # from. The monthly rebuild of the template starts it so; see
+  # packaging/RELEASING.md.
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "snapshot.debian.org timestamp (YYYYMMDDTHHMMSSZ) for the templates; empty for the one in pin.conf"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  # The web interface is built here, as in ci, and never in the job below: npm
+  # The web interface is built here, as in ci, and never in the jobs below: npm
   # and every package it installs run without a secret, without the
   # environment, and may only read the repository.
   ui:
@@ -33,11 +43,94 @@ jobs:
           path: internal/web/ui/dist
           if-no-files-found: error
 
-  release:
+  # The packages and the appliance templates, built without a secret and out
+  # of the environment of the key: mmdebstrap, Debian's packages and qemu run
+  # here only. The job sign builds the packages again and refuses a release
+  # whose templates do not carry them.
+  build:
     needs: ui
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SNAPSHOT: ${{ inputs.snapshot }}
+        run: |
+          if [[ $REF_TYPE != tag ]] || ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::$TAG is not a release tag. A release is vX.Y.Z or vX.Y.Z-rc.N."
+            exit 1
+          fi
+          if [[ -n $SNAPSHOT ]] && ! [[ $SNAPSHOT =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+            echo "::error::The snapshot $SNAPSHOT is not a timestamp YYYYMMDDTHHMMSSZ."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ui-dist
+          path: internal/web/ui/dist
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # The packages as the job sign builds them, but neither signed nor
+      # published.
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: v2.18.2
+          args: release --clean --skip=publish,sign,announce
+        env:
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+
+      # arm64 is built through qemu, which binfmt hands the binaries of the
+      # other architecture to.
+      - name: Install the tools of the template
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap debian-archive-keyring arch-test qemu-user-static
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build the templates
+        env:
+          TAG: ${{ github.ref_name }}
+          SNAPSHOT: ${{ inputs.snapshot }}
+        run: |
+          version=${TAG#v}
+          for arch in amd64 arm64; do
+            packaging/appliance/build.sh --arch "$arch" --version "$version" \
+              --deb "dist/pco_${version}_$arch.deb" ${SNAPSHOT:+--snapshot "$SNAPSHOT"} --out build/appliance
+          done
+
+      - name: Boot the amd64 template
+        env:
+          TAG: ${{ github.ref_name }}
+        run: sudo packaging/appliance/smoke.sh --version "${TAG#v}" "build/appliance/pco-appliance_${TAG#v}_amd64.tar.zst"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appliance
+          path: build/appliance
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: [ui, build]
     runs-on: ubuntu-latest
     # The secret lives in this environment, which only the tags of a release can
-    # deploy to and a reviewer has to approve. See packaging/RELEASING.md.
+    # deploy to. See packaging/RELEASING.md.
     environment: release
     concurrency:
       group: release
@@ -47,13 +140,17 @@ jobs:
     defaults:
       run:
         shell: bash
+    # Where goreleaser takes the templates from, and check-artifacts.sh too.
+    env:
+      PCO_APPLIANCE_DIR: build/appliance
     steps:
       - name: Check the tag
         env:
           TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-            echo "::error::The tag $TAG is not a release tag. A release is vX.Y.Z or vX.Y.Z-rc.N."
+          if [[ $REF_TYPE != tag ]] || ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::$TAG is not a release tag. A release is vX.Y.Z or vX.Y.Z-rc.N."
             exit 1
           fi
 
@@ -67,6 +164,12 @@ jobs:
         with:
           name: ui-dist
           path: internal/web/ui/dist
+
+      # The templates the job build made, which goreleaser lists and uploads.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: appliance
+          path: build/appliance
 
       # The build cache of another branch must not flow into a signed build.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -121,6 +224,8 @@ jobs:
             exit 1
           fi
 
+      # It builds the packages again, from the same tag, lists the templates
+      # in checksums.txt and leaves a draft.
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: v2.18.2
@@ -140,14 +245,38 @@ jobs:
           rm -rf "$RUNNER_TEMP/gnupg"
 
       # What the installer does, with the keyring it was given and neither the
-      # keys of the signing home nor the word of goreleaser.
+      # keys of the signing home nor the word of goreleaser. With
+      # --require-template it also refuses a template whose package is not
+      # the one built here, byte for byte.
       - name: Check the release files
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          packaging/check-artifacts.sh --signed --version "${TAG#v}" --require-dpkg-deb --require-ui
+          packaging/check-artifacts.sh --signed --version "${TAG#v}" --require-dpkg-deb --require-ui --require-template
           env -u GNUPGHOME gpgv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
           env -u GNUPGHOME sqv --keyring "$RUNNER_TEMP/release.gpg" dist/checksums.txt.sig dist/checksums.txt
+
+      - name: Remove the public keyring
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.gpg"
+
+  # The draft is published only here, once the maintainer approved the
+  # deployment to this environment; nothing else publishes a release.
+  publish:
+    needs: sign
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # is-latest.sh reads the tags of the repository.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       # Only the highest final version is the latest release: a fix for an older
       # line, tagged after a newer version, must not become what the installer picks.
@@ -162,7 +291,3 @@ jobs:
             flags=(--draft=false --latest)
           fi
           gh release edit "$TAG" "${flags[@]}"
-
-      - name: Remove the public keyring
-        if: always()
-        run: rm -f "$RUNNER_TEMP/release.gpg"

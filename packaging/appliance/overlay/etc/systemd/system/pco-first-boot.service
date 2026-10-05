@@ -1,0 +1,16 @@
+[Unit]
+Description=pco appliance: install the security updates published since the template was built
+Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
+# Runs at every start until it has once succeeded.
+ConditionPathExists=!/var/lib/misc/pco-first-upgrade
+After=network-online.target
+Wants=network-online.target
+
+# Without --error-on=any apt-get update succeeds when no archive could be
+# reached, and the marker would be written without a single update.
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'apt-get update -q --error-on=any && unattended-upgrade && touch /var/lib/misc/pco-first-upgrade'
+
+[Install]
+WantedBy=multi-user.target
