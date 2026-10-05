@@ -26,11 +26,16 @@ const (
 	// full, and what waits collapses.
 	queueNotices = 256
 	queueBytes   = 1 << 20
+	// A subscriber that has this many waiting even so is told to start over,
+	// and its stream ends.
+	maxNotices = 4096
+	maxBytes   = 4 << 20
 	// singleEvents is how many events of the high-volume kinds of one batch
 	// go out one by one; the rest go out as one gap.
 	singleEvents = 32
 
 	resetBootChanged = "boot changed"
+	resetBehind      = "too far behind"
 )
 
 // A Notice is one message of the stream; Kind says which of the others is
@@ -99,11 +104,12 @@ func (e *Engine) Boot() string { return e.boot }
 // channel is closed. With boot equal to Boot() and after > 0, the events of
 // the ring after that seq come first, as the events of a cycle would: beyond
 // the first 32 of the high-volume kinds as a gap. With another boot the first
-// notice is a reset. A subscriber is never closed for being slow: what waits
-// for it, at most 256 notices and 1 MiB, collapses instead. It fails with
-// ErrBusy while 16 subscribers exist.
+// notice is a reset. What waits for a slow subscriber, from 256 notices or
+// 1 MiB on, collapses; one that has 4096 notices or 4 MiB waiting even so is
+// sent a reset, and then the channel is closed. It fails with ErrBusy while
+// 16 subscribers exist.
 func (e *Engine) Subscribe(ctx context.Context, boot string, after uint64) (<-chan Notice, Hello, error) {
-	s := &subscriber{wake: make(chan struct{}, 1)}
+	s := newSubscriber()
 	hello := Hello{Boot: e.boot, PollInterval: e.PollInterval().String()}
 	var err error
 	e.events.locked(func(ring []Event, seq uint64) {
@@ -280,8 +286,17 @@ type subscriber struct {
 	mu    sync.Mutex
 	queue []queued
 	bytes int
-	wake  chan struct{}
+	// slack and slackBytes are what the last collapse left when it could not
+	// bring the queue back within its bounds: it collapses again only once
+	// another 256 notices or 1 MiB have come, so that notices that all stay
+	// are not walked on every push.
+	slack, slackBytes int
+	collapses         int  // how often what waits collapsed
+	closed            bool // told to start over; nothing is queued after the reset
+	wake              chan struct{}
 }
+
+func newSubscriber() *subscriber { return &subscriber{wake: make(chan struct{}, 1)} }
 
 type queued struct {
 	notice Notice
@@ -317,14 +332,21 @@ func sizeOf(n Notice) int {
 	return len(data)
 }
 
-// push queues notices; when the subscriber is full, what waits collapses.
+// push queues notices. When the subscriber is full, what waits collapses;
+// when that leaves it past the hard bounds, it is told to start over.
 func (s *subscriber) push(qs ...queued) {
 	s.mu.Lock()
 	for _, q := range qs {
+		if s.closed {
+			break
+		}
 		s.queue = append(s.queue, q)
 		s.bytes += q.size
-		if len(s.queue) > queueNotices || s.bytes > queueBytes {
+		if len(s.queue) > min(queueNotices+s.slack, maxNotices) || s.bytes > min(queueBytes+s.slackBytes, maxBytes) {
 			s.collapse()
+		}
+		if len(s.queue) > maxNotices || s.bytes > maxBytes {
+			s.giveUp()
 		}
 	}
 	s.mu.Unlock()
@@ -376,11 +398,25 @@ func (s *subscriber) collapse() {
 	for _, q := range kept {
 		s.bytes += q.size
 	}
+	s.collapses++
+	s.slack, s.slackBytes = 0, 0
+	if len(kept) > queueNotices || s.bytes > queueBytes {
+		s.slack, s.slackBytes = len(kept), s.bytes
+	}
 }
 
-// run hands the notices to out, oldest first, until ctx ends; then the
-// subscriber leaves and out is closed. A notice stays first in the queue
-// until it is taken.
+// giveUp drops what waits for a reset, after which the stream ends. The
+// first notice stays, as it may be on its way. The caller holds mu.
+func (s *subscriber) giveUp() {
+	s.queue = append(s.queue[:1:1], queuedOf(Notice{Kind: NoticeReset, Reason: resetBehind})...)
+	s.bytes = s.queue[0].size + s.queue[1].size
+	s.closed = true
+}
+
+// run hands the notices to out, oldest first, until ctx ends or the reset
+// of a subscriber told to start over was handed on; then the subscriber
+// leaves and out is closed. A notice stays first in the queue until it is
+// taken.
 func (s *subscriber) run(ctx context.Context, out chan<- Notice, leave func()) {
 	defer close(out)
 	defer leave()
@@ -396,7 +432,9 @@ func (s *subscriber) run(ctx context.Context, out chan<- Notice, leave func()) {
 		}
 		select {
 		case out <- n:
-			s.drop()
+			if s.drop() {
+				return
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -412,11 +450,13 @@ func (s *subscriber) first() (Notice, bool) {
 	return s.queue[0].notice, true
 }
 
-// drop takes away the first notice, once it was handed on.
-func (s *subscriber) drop() {
+// drop takes away the first notice, once it was handed on, and says whether
+// that was the last one of a subscriber told to start over.
+func (s *subscriber) drop() (last bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bytes -= s.queue[0].size
 	s.queue[0] = queued{}
 	s.queue = s.queue[1:]
+	return s.closed && len(s.queue) == 0
 }

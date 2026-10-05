@@ -95,8 +95,8 @@ type State struct {
 	// FinishedAt is when the cycle ended; zero before the first cycle.
 	FinishedAt time.Time `json:"finishedAt,omitzero"`
 	// Node is the node the daemon is registered as. Digest names what the
-	// state holds, leaving out the times of its cycle: two cycles over the
-	// same world have the same one.
+	// state holds, leaving out every time in it: two cycles over the same
+	// world have the same one.
 	Node        string               `json:"node,omitempty"`
 	Digest      string               `json:"digest,omitempty"`
 	Mode        string               `json:"mode"`     // "observe" or "enforce"

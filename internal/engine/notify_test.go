@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -134,6 +135,87 @@ func TestTheDigestNamesWhatAStateHoldsAndNotWhenItWasMade(t *testing.T) {
 	changed := st.clone()
 	changed.Routes[0].State = planner.StateUnreachable
 	require.NotEqual(t, d, digestOf(changed), "a route changed")
+}
+
+func TestTheDigestLeavesOutEveryTime(t *testing.T) {
+	st := populatedState().normalized()
+	d := digestOf(st)
+
+	later := st.clone()
+	later.Routes[0].Path.VerifiedAt = st.Routes[0].Path.VerifiedAt.Add(time.Hour)
+	later.Routes[0].Path.Since = st.Routes[0].Path.Since.Add(time.Hour)
+	for i := range later.Credentials {
+		r := &later.Credentials[i].Report
+		r.CheckedAt = r.CheckedAt.Add(time.Hour)
+		if r.Token.ExpiresOn != nil {
+			at := r.Token.ExpiresOn.Add(time.Hour)
+			r.Token.ExpiresOn = &at
+		}
+	}
+	later.Segments[0].AcknowledgedAt = st.Segments[0].AcknowledgedAt.Add(time.Hour)
+	later.Egress.Since = st.Egress.Since.Add(time.Hour)
+	later.RogueConnectors[0].Since = st.RogueConnectors[0].Since.Add(time.Hour)
+	require.Equal(t, d, digestOf(later), "only the times differ")
+	require.Equal(t, t0, st.Routes[0].Path.VerifiedAt, "the state itself keeps its times")
+
+	changed := st.clone()
+	changed.Routes[0].Path.Bridge = "vmbr9"
+	require.NotEqual(t, d, digestOf(changed), "a path changed")
+}
+
+// TestNoTimeOfTheStateReachesTheDigest fills a state with one of everything
+// and every time in it, so that a time a later change adds is left out too.
+func TestNoTimeOfTheStateReachesTheDigest(t *testing.T) {
+	st := filledState(t0)
+	d := digestOf(st)
+
+	require.Equal(t, d, digestOf(filledState(t0.Add(time.Hour))), "only the times differ")
+	st.Routes[0].Hostname = "y"
+	require.NotEqual(t, d, digestOf(st), "a route changed")
+}
+
+// filledState is a state with one element in every list, a value behind
+// every pointer, "x" in every string and at in every time.
+func filledState(at time.Time) State {
+	var st State
+	fill(reflect.ValueOf(&st).Elem(), at)
+	return st
+}
+
+func fill(v reflect.Value, at time.Time) {
+	if v.Type() == reflect.TypeFor[time.Time]() {
+		v.Set(reflect.ValueOf(at))
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fill(v.Elem(), at)
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fill(v.Index(0), at)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				fill(v.Field(i), at)
+			}
+		}
+	case reflect.String:
+		v.SetString("x")
+	}
+}
+
+func TestRenewedProofsKeepTheDigest(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	first := e.eng.State()
+
+	e.clock.advance(5 * time.Minute)
+	e.cycle()
+	second := e.eng.State()
+
+	require.True(t, second.Routes[0].Path.VerifiedAt.After(first.Routes[0].Path.VerifiedAt), "the proof was renewed")
+	require.Equal(t, first.Digest, second.Digest)
 }
 
 func TestTheBootIsSixteenHexDigitsOfItsOwn(t *testing.T) {
@@ -387,6 +469,140 @@ func TestOfTheTrafficOnlyTheNewestIsKept(t *testing.T) {
 		want = append(want, "traffic "+at(i).Format(time.TimeOnly))
 	}
 	require.Equal(t, want, got)
+}
+
+func TestACollapseJoinsTheGapsThatWait(t *testing.T) {
+	e := newEnv(t)
+	ch := listen(t, e.eng)
+	burst := eventsOf(kindRoute, 40)
+	burst[35].Level = levelError
+	e.eng.events.add(burst...)                      // 1-32 and gap 33-40
+	e.eng.events.add(eventsOf(kindProblem, 1)...)   // 41
+	e.eng.events.add(eventsOf(kindRoute, 100)...)   // 42-73 and gap 74-141
+	e.eng.events.add(eventsOf(kindWriter, 1)...)    // 142
+	e.eng.events.add(eventsOf(kindProblem, 189)...) // 143-331, the 257th notice
+
+	got := shown(until(t, e.eng, ch))
+
+	want := []string{"event route 1", "event problem 41", "gap 2-141 139 error", "event writer 142"}
+	for seq := 143; seq <= 331; seq++ {
+		want = append(want, fmt.Sprintf("event problem %d", seq))
+	}
+	require.Equal(t, want, got, "one gap for the events and the gaps that waited, where its last event was")
+}
+
+func TestASubscriberThatNeverReadsIsToldToStartOverAndClosed(t *testing.T) {
+	e := newEnv(t)
+	ch := listen(t, e.eng)
+
+	e.eng.events.add(eventsOf(kindProblem, 5000)...)
+
+	s := theSubscriber(t, e.eng)
+	s.mu.Lock()
+	queued, size, closed := len(s.queue), s.bytes, s.closed
+	s.mu.Unlock()
+	require.True(t, closed)
+	require.Equal(t, 2, queued, "the first, which may be on its way, and the reset")
+	require.Less(t, size, 1<<10)
+	require.Equal(t, []string{"event problem 1", "reset too far behind"}, shown([]Notice{receive(t, ch), receive(t, ch)}))
+	requireEnded(t, ch)
+	e.eng.notify.mu.Lock()
+	defer e.eng.notify.mu.Unlock()
+	require.Empty(t, e.eng.notify.subs, "its stream is free")
+}
+
+func TestFourMegabytesBehindIsTooFar(t *testing.T) {
+	e := newEnv(t)
+	ch := listen(t, e.eng)
+	for range 20 {
+		ev := eventsOf(kindProblem, 1)[0]
+		ev.Message = strings.Repeat("x", 300<<10)
+		e.eng.events.add(ev)
+	}
+
+	require.Equal(t, []string{"event problem 1", "reset too far behind"}, shown([]Notice{receive(t, ch), receive(t, ch)}))
+	requireEnded(t, ch)
+}
+
+func TestAQueueOfLowVolumeEventsDoesNotCollapseOnEveryPush(t *testing.T) {
+	s := newSubscriber()
+	seq := uint64(0)
+	push := func(kind string, n int) {
+		for _, ev := range eventsOf(kind, n) {
+			seq++
+			ev.Seq = seq
+			s.push(queuedOf(Notice{Kind: NoticeEvent, Event: &ev})...)
+		}
+	}
+
+	push(kindProblem, 1000)
+	require.Len(t, s.queue, 1000, "nothing to collapse")
+	require.LessOrEqual(t, s.collapses, 3, "once for every 256 notices at most")
+
+	push(kindRoute, 600)
+	gaps := 0
+	for _, q := range s.queue {
+		if q.notice.Kind == NoticeGap {
+			gaps++
+		}
+	}
+	require.Equal(t, 1, gaps, "what can collapse still does")
+	require.LessOrEqual(t, len(s.queue), 1000+1+queueNotices)
+	require.False(t, s.closed)
+
+	for len(s.queue) > 0 {
+		s.drop()
+	}
+	push(kindRoute, maxNotices)
+	require.LessOrEqual(t, len(s.queue), queueNotices, "a collapse that made room brought the bounds back")
+}
+
+func TestAQueueOfLargeEventsDoesNotCollapseOnEveryPush(t *testing.T) {
+	s := newSubscriber()
+	for i, ev := range eventsOf(kindProblem, 1000) {
+		ev.Seq = uint64(i + 1)
+		if i < 4 {
+			ev.Message = strings.Repeat("x", 300<<10)
+		}
+		s.push(queuedOf(Notice{Kind: NoticeEvent, Event: &ev})...)
+	}
+
+	require.Len(t, s.queue, 1000)
+	require.LessOrEqual(t, s.collapses, 4, "past a megabyte, once for every 256 notices at most")
+}
+
+func TestAFullQueueCollapsesBeforeItIsGivenUp(t *testing.T) {
+	s := newSubscriber()
+	for i, ev := range append(eventsOf(kindProblem, 4000), eventsOf(kindRoute, 200)...) {
+		ev.Seq = uint64(i + 1)
+		s.push(queuedOf(Notice{Kind: NoticeEvent, Event: &ev})...)
+	}
+
+	require.False(t, s.closed)
+	require.Equal(t, NoticeGap, s.queue[4000].notice.Kind)
+}
+
+// theSubscriber is the one subscriber of e.
+func theSubscriber(t *testing.T, e *Engine) *subscriber {
+	t.Helper()
+	e.notify.mu.Lock()
+	defer e.notify.mu.Unlock()
+	require.Len(t, e.notify.subs, 1)
+	for s := range e.notify.subs {
+		return s
+	}
+	return nil
+}
+
+// requireEnded checks that ch is closed once what it held was read.
+func requireEnded(t *testing.T, ch <-chan Notice) {
+	t.Helper()
+	select {
+	case n, ok := <-ch:
+		require.False(t, ok, "the stream goes on with %v", shown([]Notice{n}))
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stream did not end")
+	}
 }
 
 func TestSubscribeReplaysTheRingAfterASeq(t *testing.T) {
