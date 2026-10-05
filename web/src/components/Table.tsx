@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { type KeyboardEvent, type MouseEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { rowHeights, usePreferences } from '../theme/theme'
 
@@ -38,19 +38,33 @@ export const overscan = 10
 
 // Below this width each row is a card: a line per column (base.css).
 const cards = '(max-width: 719px)'
-const cardLine = 20
-const cardPadding = 17
-const headHeight = 30
+
+// The heights in pixels that base.css gives the header, a line of a card, and
+// the padding and rule of a card; the rows are rowHeights. base.test.tsx
+// checks them against the style sheet.
+export const headHeight = 30
+export const cardLine = 20
+export const cardPadding = 17
+
+function followCards(changed: () => void): () => void {
+  const query = window.matchMedia(cards)
+  query.addEventListener('change', changed)
+  return () => query.removeEventListener('change', changed)
+}
+
+const cardsNow = () => window.matchMedia(cards).matches
 
 function useCards(): boolean {
-  return useSyncExternalStore(
-    (changed) => {
-      const query = window.matchMedia(cards)
-      query.addEventListener('change', changed)
-      return () => query.removeEventListener('change', changed)
-    },
-    () => window.matchMedia(cards).matches,
-  )
+  return useSyncExternalStore(followCards, cardsNow)
+}
+
+// A click on a control in a cell is the control's, not the row's. The row is
+// in the list too, as it has a tabindex: a click on plain text finds the row.
+const controls = 'a[href], button, input, select, textarea, summary, label, [tabindex]'
+
+function onControl(e: MouseEvent<HTMLTableRowElement>): boolean {
+  const target = e.target instanceof Element ? e.target.closest(controls) : null
+  return target !== null && target !== e.currentTarget
 }
 
 // Table shows many rows, but has only those in view in the DOM, with a margin
@@ -120,7 +134,9 @@ export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate
     else focusAfter.current = to
   }
 
+  // The keys pressed in a control of a cell are the control's.
   const keyDown = (e: KeyboardEvent<HTMLTableRowElement>, index: number, row: T) => {
+    if (e.target !== e.currentTarget) return
     const page = Math.max(inView - 1, 1)
     const moves: Record<string, number> = {
       ArrowDown: index + 1,
@@ -144,6 +160,8 @@ export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate
 
   const leadKey = (columns.find((c) => c.lead) ?? columns[0])?.key
 
+  // The roles are those of the elements, set again: Safari drops them when a
+  // phone shows the rows as cards, which are blocks (base.css).
   return (
     <div
       ref={scroller}
@@ -151,13 +169,13 @@ export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate
       style={{ maxHeight: height }}
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
     >
-      <table className="table" aria-label={label} aria-rowcount={sorted.length + 1}>
+      <table role="table" className="table" aria-label={label} aria-rowcount={sorted.length + 1}>
         <thead>
-          <tr aria-rowindex={1}>
+          <tr role="row" aria-rowindex={1}>
             {columns.map((c) => {
               const on = sort?.key === c.key
               return (
-                <th key={c.key} scope="col" className={c.className} aria-sort={on ? sort.direction : undefined}>
+                <th key={c.key} role="columnheader" scope="col" className={c.className} aria-sort={on ? sort.direction : undefined}>
                   {c.sort ? (
                     <button type="button" className="th-sort" onClick={() => sortBy(c.key)}>
                       {c.header}
@@ -192,21 +210,30 @@ export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate
             return (
               <tr
                 key={key}
+                role="row"
                 data-index={index}
                 aria-rowindex={index + 2}
                 aria-current={key === current ? 'true' : undefined}
                 tabIndex={index === tabStop ? 0 : -1}
                 className={onActivate ? 'table-row table-row-open' : 'table-row'}
                 onFocus={() => setActive(key)}
-                onClick={() => {
+                onClick={(e) => {
+                  if (onControl(e)) return
                   setActive(key)
                   onActivate?.(row)
                 }}
                 onKeyDown={(e) => keyDown(e, index, row)}
               >
                 {columns.map((c) => (
-                  <td key={c.key} className={[c.className, c.key === leadKey && 'lead'].filter(Boolean).join(' ') || undefined} data-label={c.header}>
-                    {c.cell(row)}
+                  <td
+                    key={c.key}
+                    // jsx-a11y takes every td for a cell of an interactive grid
+                    // eslint-disable-next-line jsx-a11y/no-interactive-element-to-noninteractive-role
+                    role="cell"
+                    className={[c.className, c.key === leadKey && 'lead'].filter(Boolean).join(' ') || undefined}
+                    data-label={c.header}
+                  >
+                    <span className="cell">{c.cell(row)}</span>
                   </td>
                 ))}
               </tr>

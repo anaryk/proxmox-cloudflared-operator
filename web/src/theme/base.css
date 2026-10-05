@@ -374,11 +374,24 @@ button.pill {
   font-size: 9px;
 }
 
+/*
+ * A row is one line, as high as Table.tsx counts it: a long value is cut
+ * with an ellipsis, not wrapped. With no width of their own (max-width: 0)
+ * the columns share the width of the table, whatever the values in them.
+ */
 .table td {
+  max-width: 0;
   height: var(--row);
   padding: 0 10px;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.table td .idn {
+  flex-wrap: nowrap;
 }
 
 .table td.mono {
@@ -402,15 +415,25 @@ button.pill {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* Muted text is under 4.5:1 on the weak tints: on them it takes the
+ * secondary colour (contrast.test.ts). */
+.table-row[aria-current="true"],
+.banner,
+.step-fail > .step-detail {
+  --muted: var(--text2);
+}
+
 .table .table-spacer td {
   padding: 0;
   border: 0;
 }
 
 .table .table-empty {
+  max-width: none;
   height: auto;
   padding: 18px 14px;
   color: var(--text2);
+  white-space: normal;
 }
 
 /* tabs */
@@ -694,20 +717,24 @@ button.pill {
   background: none;
 }
 
-/* tooltip */
+/* the blue ring is under 3:1 on the dark of a toast */
+.toast :focus-visible {
+  outline-color: var(--surface);
+}
+
+/* tooltip: Tooltip.tsx places the bubble in the window */
 
 .tip {
-  position: relative;
   display: inline-block;
 }
 
 .tip-bubble {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
+  position: fixed;
+  top: 0;
+  left: 0;
   z-index: 60;
   width: max-content;
-  max-width: 320px;
+  max-width: min(320px, calc(100vw - 12px));
   padding: 4px 8px;
   border-radius: 3px;
   background: var(--text);
@@ -715,7 +742,6 @@ button.pill {
   font-size: 12px;
   line-height: 1.4;
   white-space: normal;
-  transform: translateX(-50%);
 }
 
 /* untrusted text */
@@ -968,6 +994,7 @@ bdi {
   .table td {
     display: block;
     width: 100%;
+    max-width: none;
   }
 
   /* 8 + 8 + 1 px and 20 px a line: the height Table.tsx counts with */
@@ -984,9 +1011,13 @@ bdi {
     height: 20px;
     padding: 0;
     border: 0;
-    overflow: hidden;
     line-height: 20px;
-    white-space: nowrap;
+  }
+
+  /* the cell is a flex box, which cannot end in an ellipsis: the value can */
+  .table .table-row td > .cell {
+    min-width: 0;
+    overflow: hidden;
     text-overflow: ellipsis;
   }
 

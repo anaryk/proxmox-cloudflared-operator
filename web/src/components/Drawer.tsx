@@ -35,8 +35,10 @@ export function Drawer({ open, onClose, title, children }: DrawerProps) {
   useEffect(() => {
     const drawer = ref.current
     if (!open || !drawer) return
+    // An Esc that something inside took, a dialog opened from the drawer
+    // most of all, is not the drawer's.
     const escape = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
+      if (e.key !== 'Escape' || e.defaultPrevented) return
       e.stopPropagation()
       onClose()
     }

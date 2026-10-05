@@ -26,6 +26,12 @@ function show(onActivate?: (r: Route) => void) {
 const bodyRows = () => screen.getAllByRole('row').filter((r) => r.closest('tbody') && r.getAttribute('aria-hidden') !== 'true')
 const indexes = () => bodyRows().map((r) => Number(r.getAttribute('aria-rowindex')))
 
+// What a browser does with a key on a button, which happy-dom does not:
+// Enter and Space press it, unless the keydown was prevented.
+function press(button: HTMLElement, key: string) {
+  if (fireEvent.keyDown(button, { key }) && (key === 'Enter' || key === ' ')) fireEvent.click(button)
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -89,15 +95,58 @@ describe('Table', () => {
     expect(bodyRows()).toHaveLength(40)
   })
 
-  test('Enter and a click open a row', () => {
+  test('Enter and a click open a row, on it or on the text of a cell', () => {
     const opened = vi.fn()
     show(opened)
     const second = bodyRows()[1] as HTMLElement
     fireEvent.click(second)
+    fireEvent.click(within(second).getByText('qemu/101'))
     second.focus()
     fireEvent.keyDown(second, { key: 'Enter' })
-    expect(opened).toHaveBeenCalledTimes(2)
+    expect(opened).toHaveBeenCalledTimes(3)
     expect(opened).toHaveBeenCalledWith(routes[1])
+  })
+
+  test('a button in a cell is pressed by Enter, Space and a click, and the row is not opened', () => {
+    const opened = vi.fn()
+    const approved = vi.fn()
+    const withButton: Column<Route>[] = [
+      ...columns,
+      {
+        key: 'approve',
+        header: 'Approval',
+        cell: (r) => (
+          <button type="button" onClick={() => approved(r.hostname)}>
+            Approve
+          </button>
+        ),
+      },
+    ]
+    render(<Table label="Routes" columns={withButton} rows={routes.slice(0, 3)} rowKey={(r) => r.hostname} onActivate={opened} />)
+    const button = within(bodyRows()[1] as HTMLElement).getByRole('button', { name: 'Approve' })
+    button.focus()
+    press(button, 'Enter')
+    press(button, ' ')
+    fireEvent.click(button)
+    expect(approved).toHaveBeenCalledTimes(3)
+    expect(approved).toHaveBeenCalledWith('host0001.example.com')
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  test('the keys in a field of a cell are the field’s, not moves between rows', () => {
+    const opened = vi.fn()
+    const withField: Column<Route>[] = [
+      ...columns,
+      { key: 'note', header: 'Note', cell: (r) => <input aria-label={`Note for ${r.hostname}`} /> },
+    ]
+    render(<Table label="Routes" columns={withField} rows={routes.slice(0, 3)} rowKey={(r) => r.hostname} onActivate={opened} />)
+    const field = screen.getByRole('textbox', { name: 'Note for host0001.example.com' })
+    field.focus()
+    for (const key of ['ArrowDown', 'ArrowUp', 'PageDown', 'Home', 'End', 'Enter', ' ']) {
+      expect(fireEvent.keyDown(field, { key }), key).toBe(true)
+    }
+    expect(document.activeElement).toBe(field)
+    expect(opened).not.toHaveBeenCalled()
   })
 
   test('a header sorts, and says how', () => {
@@ -134,5 +183,25 @@ describe('Table', () => {
     const cells = within(bodyRows()[0] as HTMLElement).getAllByRole('cell')
     expect(cells.map((c) => c.getAttribute('data-label'))).toEqual(['Hostname', 'Owner'])
     expect(cells[0]?.classList.contains('lead')).toBe(true)
+  })
+
+  // A table whose parts are shown as blocks loses its roles in Safari, and
+  // VoiceOver reads the cards as plain text; roles set on the elements stay.
+  test('the parts of the table name their roles, for the cards of a phone', () => {
+    const { container } = render(<Table label="Routes" columns={columns} rows={routes.slice(0, 1)} rowKey={(r) => r.hostname} />)
+    const roles = (selector: string) => [...container.querySelectorAll(selector)].map((el) => el.getAttribute('role'))
+    expect(roles('table')).toEqual(['table'])
+    expect(roles('tr')).toEqual(['row', 'row'])
+    expect(roles('th')).toEqual(['columnheader', 'columnheader'])
+    expect(roles('td')).toEqual(['cell', 'cell'])
+  })
+
+  test('the width of a phone is listened for once, not at each render', () => {
+    const listen = vi.spyOn(Object.getPrototypeOf(window.matchMedia('(max-width: 719px)')), 'addEventListener')
+    show()
+    bodyRows()[0]?.focus()
+    for (let i = 0; i < 3; i++) fireEvent.keyDown(document.activeElement as Element, { key: 'ArrowDown' })
+    expect(document.activeElement?.getAttribute('aria-rowindex')).toBe('5')
+    expect(listen.mock.calls.filter(([type]) => type === 'change')).toHaveLength(1)
   })
 })

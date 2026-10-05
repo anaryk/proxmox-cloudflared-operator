@@ -67,6 +67,16 @@ const pairs: [string, string, number, string, string][] = [
   ['--traffic-text', '--traffic-weak', text, '4.92', '6.55'],
 ]
 
+// The pairs base.css draws besides, at the precision of the weak pairs: the
+// focus ring on a toast, and muted text on the tints of the current row, the
+// banners and a failed step, where it takes the secondary colour.
+const drawn: typeof pairs = [
+  ['--surface', '--text', graphic, '16.4', '13.8'],
+  ['--text2', '--accent-weak', text, '6.58', '7.40'],
+  ['--text2', '--warn-weak', text, '6.71', '7.56'],
+  ['--text2', '--fail-weak', text, '6.43', '7.96'],
+]
+
 // Text that sits on the page itself, outside the cards: titles,
 // descriptions, the labels of the navigation.
 const onPage: [string, number][] = [
@@ -86,7 +96,7 @@ describe.each([
     return value
   }
 
-  test.each(pairs)('%s on %s', (fg, bg, least, ...stated) => {
+  test.each([...pairs, ...drawn])('%s on %s', (fg, bg, least, ...stated) => {
     const r = ratio(colour(fg), colour(bg))
     expect(r).toBeGreaterThanOrEqual(least)
     const want = stated[column] ?? ''

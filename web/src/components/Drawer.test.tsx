@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { expect, test } from 'vitest'
 
+import { Dialog } from './Dialog'
 import { Drawer } from './Drawer'
 
 function Page() {
@@ -60,6 +61,35 @@ test('the close button does the same', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Close' }))
   expect(screen.queryByRole('complementary')).toBeNull()
   expect(document.activeElement).toBe(opener)
+})
+
+test('Esc in a dialog opened from it closes the dialog only', () => {
+  function WithDialog() {
+    const [drawer, setDrawer] = useState(true)
+    const [dialog, setDialog] = useState(false)
+    return (
+      <Drawer open={drawer} onClose={() => setDrawer(false)} title="www.example.com">
+        <button type="button" onClick={() => setDialog(true)}>
+          Remove
+        </button>
+        <Dialog open={dialog} onClose={() => setDialog(false)} title="Remove www.example.com">
+          <input aria-label="Type the hostname" />
+        </Dialog>
+      </Drawer>
+    )
+  }
+  render(<WithDialog />)
+  const remove = screen.getByRole('button', { name: 'Remove' })
+  remove.focus()
+  fireEvent.click(remove)
+  const field = screen.getByRole('textbox', { name: 'Type the hostname' })
+  field.focus()
+  fireEvent.keyDown(field, { key: 'Escape' })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('complementary')).toBeTruthy()
+  expect(document.activeElement).toBe(remove)
+  fireEvent.keyDown(remove, { key: 'Escape' })
+  expect(screen.queryByRole('complementary')).toBeNull()
 })
 
 test('Esc on the page behind leaves it open', () => {
