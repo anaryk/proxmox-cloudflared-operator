@@ -1,10 +1,7 @@
 package main
 
 import (
-	"slices"
-
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
 const (
@@ -27,27 +24,4 @@ func renderWaiting(s *screen, waiting []engine.Waiting) {
 			s.printf("      ... and %d more (pco plan --json shows all)\n", more)
 		}
 	}
-}
-
-// unaffected returns the destructive actions of the last cycle that were not
-// carried out and that a confirmation does not let through: removals in their
-// grace while the guard holds nothing, holds of observe-only mode, adoptions.
-func unaffected(st engine.State) []reconcile.Action {
-	offered := make(map[string]bool)
-	for _, w := range st.Waiting {
-		if w.Kind == engine.WaitingRemovals {
-			for _, name := range w.Items {
-				offered[name] = true
-			}
-		}
-	}
-	return slices.DeleteFunc(heldDeletes(st.Actions), func(a reconcile.Action) bool {
-		return a.Kind == reconcile.DeleteRecord && offered[a.Target]
-	})
-}
-
-// heldDeletes returns the destructive actions the last cycle did not carry
-// out.
-func heldDeletes(actions []reconcile.Action) []reconcile.Action {
-	return slices.DeleteFunc(pending(actions), func(act reconcile.Action) bool { return !act.Destructive })
 }

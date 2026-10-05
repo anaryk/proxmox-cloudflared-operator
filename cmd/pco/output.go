@@ -13,60 +13,31 @@ import (
 	"unicode"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 )
-
-// printable returns s with every character that a terminal acts on replaced by
-// a question mark: the control characters of C0 and C1, which include escape,
-// bell, newline and tab, DEL, the characters that change the direction of the
-// text, which can make a hostname read as another, and the other characters
-// of format that show as nothing, as the zero-width ones, the byte order mark,
-// the soft hyphen and the tags, which can hide a difference between two names.
-// Names and messages come from guests, from the DNS records of other parties
-// and from Cloudflare, and none of them may write to the terminal of the
-// admin. JSON is exempt, as it is escaped.
-func printable(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || isBidi(r) || unicode.Is(unicode.Cf, r) {
-			return '?'
-		}
-		return r
-	}, s)
-}
-
-// isBidi reports whether r is a control of the direction of text, or one of
-// the separators of lines that a terminal may take for a line break.
-func isBidi(r rune) bool {
-	switch {
-	case r >= 0x202A && r <= 0x202E, // embeddings and overrides
-		r >= 0x2066 && r <= 0x2069,            // isolates
-		r == 0x200E, r == 0x200F, r == 0x061C, // marks of direction
-		r == 0x2028, r == 0x2029: // line and paragraph separators
-		return true
-	}
-	return false
-}
 
 // clean returns what a value prints as, with the text of it cleaned: a string,
 // an error or a Stringer, whatever its type. Numbers and the like are not text.
 func clean(arg any) any {
 	switch v := arg.(type) {
 	case string:
-		return printable(v)
+		return present.Printable(v)
 	case error:
-		return printable(v.Error())
+		return present.Printable(v.Error())
 	case fmt.Stringer:
-		return printable(v.String())
+		return present.Printable(v.String())
 	}
 	if rv := reflect.ValueOf(arg); rv.Kind() == reflect.String {
-		return printable(rv.String())
+		return present.Printable(rv.String())
 	}
 	return arg
 }
 
 // screen is where the commands write what the admin reads. Everything that
-// is given to it as an argument or as a cell is cleaned by printable, so that
-// no command has to remember to; the formats are the commands' own text. A
-// write that fails is remembered, and the first error is what done returns.
+// is given to it as an argument or as a cell is cleaned by present.Printable,
+// so that no command has to remember to; the formats are the commands' own
+// text. A write that fails is remembered, and the first error is what done
+// returns.
 type screen struct {
 	w   io.Writer
 	err error
@@ -102,7 +73,7 @@ func (s *screen) table() *table {
 // row writes a row of cells.
 func (t *table) row(cells ...string) {
 	for i, c := range cells {
-		cells[i] = printable(c)
+		cells[i] = present.Printable(c)
 	}
 	_, _ = fmt.Fprintln(t.tw, strings.Join(cells, "\t"))
 }
@@ -139,12 +110,12 @@ func printJSON(w io.Writer, raw []byte) error {
 	return err
 }
 
-// escapeControls writes the characters that printable replaces as JSON
-// escapes, and leaves the line breaks of the indentation.
+// escapeControls writes the characters that present.Printable replaces as
+// JSON escapes, and leaves the line breaks of the indentation.
 func escapeControls(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r != '\n' && (unicode.IsControl(r) || isBidi(r)) {
+		if r != '\n' && (unicode.IsControl(r) || present.IsBidi(r)) {
 			fmt.Fprintf(&b, `\u%04x`, r)
 			continue
 		}

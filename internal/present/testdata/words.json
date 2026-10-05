@@ -1,0 +1,192 @@
+[
+  {"fn": "modeText", "name": "before the first cycle", "input": {"mode": "observe"}, "want": "unknown"},
+  {"fn": "modeText", "name": "observe", "input": {"at": "2026-10-05T10:00:00Z", "mode": "observe"}, "want": "observe-only"},
+  {"fn": "modeText", "name": "enforce", "input": {"at": "2026-10-05T10:00:00Z", "mode": "enforce"}, "want": "enforce"},
+  {"fn": "modeText", "name": "a mode of another version", "input": {"at": "2026-10-05T10:00:00Z", "mode": "odd"}, "want": "odd"},
+
+  {"fn": "inventoryText", "name": "before the first cycle", "input": {"complete": true}, "want": "unknown"},
+  {"fn": "inventoryText", "name": "complete", "input": {"at": "2026-10-05T10:00:00Z", "complete": true}, "want": "complete"},
+  {"fn": "inventoryText", "name": "incomplete", "input": {"at": "2026-10-05T10:00:00Z", "complete": false}, "want": "incomplete"},
+
+  {"fn": "egressText", "name": "not checked yet", "input": {}, "want": "not checked yet"},
+  {"fn": "egressText", "name": "on", "input": {"state": "on"}, "want": "on"},
+  {"fn": "egressText", "name": "off", "input": {"state": "off", "since": "2026-10-05T09:00:00Z"}, "want": "off: the connectors are not confined"},
+  {"fn": "egressText", "name": "not loaded", "input": {"state": "not loaded"}, "want": "not loaded: the connectors are not confined"},
+  {"fn": "egressText", "name": "changed", "input": {"state": "changed"}, "want": "not the one pco loads: the connectors may not be confined"},
+  {"fn": "egressText", "name": "a state of another version", "input": {"state": "odd"}, "want": "odd"},
+
+  {"fn": "writerText", "name": "ok", "input": "ok", "want": "ok"},
+  {"fn": "writerText", "name": "stale", "input": "stale", "want": "stale (a newer generation of this install is writing)"},
+  {"fn": "writerText", "name": "foreign", "input": "foreign", "want": "foreign (another installation is writing)"},
+  {"fn": "writerText", "name": "unknown", "input": "unknown", "want": "unknown (leader.json could not be used)"},
+  {"fn": "writerText", "name": "none", "input": "", "want": "-"},
+  {"fn": "writerText", "name": "a verdict of another version", "input": "odd", "want": "odd"},
+
+  {"fn": "verifiedText", "name": "unchecked, though verified before", "input": {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": true, "unknown": false, "held": "not checked in the last cycle: the inventory is incomplete", "unchecked": true}, "want": "unchecked"},
+  {"fn": "verifiedText", "name": "held", "input": {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": false, "unknown": false, "held": "serves no zone pco sees", "leftAsIs": true, "unchecked": false}, "want": "held"},
+  {"fn": "verifiedText", "name": "not known to exist", "input": {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "version": 0, "exists": false, "verified": false, "unknown": true, "unchecked": false}, "want": "unknown"},
+  {"fn": "verifiedText", "name": "verified", "input": {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": true, "unknown": false, "unchecked": false}, "want": "yes"},
+  {"fn": "verifiedText", "name": "not verified", "input": {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": false, "unknown": false, "unchecked": false}, "want": "no"},
+
+  {"fn": "connectorText", "name": "inactive", "input": {"tunnelId": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "active": false, "ready": false, "connections": 0}, "want": "inactive"},
+  {"fn": "connectorText", "name": "not ready", "input": {"tunnelId": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "active": true, "ready": false, "connections": 0, "metricsAddr": "127.0.0.1:20241"}, "want": "active, not ready"},
+  {"fn": "connectorText", "name": "one connection", "input": {"tunnelId": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "active": true, "ready": true, "connections": 1, "connectorId": "c0ffee00-1111-4222-8333-444455556666", "metricsAddr": "127.0.0.1:20241"}, "want": "active, ready, 1 connection"},
+  {"fn": "connectorText", "name": "four connections", "input": {"tunnelId": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "active": true, "ready": true, "connections": 4, "connectorId": "c0ffee00-1111-4222-8333-444455556666", "metricsAddr": "127.0.0.1:20241"}, "want": "active, ready, 4 connections"},
+  {"fn": "connectorText", "name": "its token refused", "input": {"tunnelId": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "active": true, "ready": false, "connections": 0, "metricsAddr": "127.0.0.1:20241", "tokenRefused": true}, "want": "active, not ready, Cloudflare refuses its token"},
+  {"fn": "connectorText", "name": "its metrics port held", "input": {"tunnelId": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "active": true, "ready": false, "connections": 0, "metricsAddr": "127.0.0.1:20241", "metricsPortHeld": true}, "want": "active, not ready, its metrics port is held by another process"},
+  {"fn": "connectorText", "name": "both", "input": {"tunnelId": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "active": true, "ready": false, "connections": 0, "metricsAddr": "127.0.0.1:20241", "tokenRefused": true, "metricsPortHeld": true}, "want": "active, not ready, Cloudflare refuses its token, its metrics port is held by another process"},
+
+  {"fn": "credentialState", "name": "never checked", "input": {"id": "a1b2c3d4", "label": "main", "kind": "scoped", "checked": false}, "want": "unknown"},
+  {"fn": "credentialState", "name": "a check Cloudflare did not answer", "input": {"id": "a1b2c3d4", "label": "main", "kind": "scoped", "checked": true, "report": {"token": {"id": "t1", "status": "active"}, "accounts": [], "zones": [], "checks": [{"capability": "token", "ok": true}, {"capability": "dns.read", "scope": "example.com", "scopeId": "zone1", "ok": false, "unanswered": true}], "excluded": [], "deep": false, "usable": false, "leftovers": []}}, "want": "unknown"},
+  {"fn": "credentialState", "name": "usable", "input": {"id": "a1b2c3d4", "label": "main", "kind": "scoped", "checked": true, "report": {"token": {"id": "t1", "status": "active"}, "accounts": [], "zones": [], "checks": [{"capability": "token", "ok": true}, {"capability": "dns.read", "scope": "example.com", "scopeId": "zone1", "ok": true}], "excluded": [], "deep": false, "usable": true, "leftovers": []}}, "want": "usable"},
+  {"fn": "credentialState", "name": "a failed check", "input": {"id": "a1b2c3d4", "label": "main", "kind": "scoped", "checked": true, "report": {"token": {"id": "t1", "status": "active"}, "accounts": [], "zones": [], "checks": [{"capability": "token", "ok": true}, {"capability": "dns.read", "scope": "example.com", "scopeId": "zone1", "ok": false, "detail": "grant Zone > DNS > Read on example.com"}], "excluded": [], "deep": false, "usable": false, "leftovers": []}}, "want": "problem"},
+  {"fn": "credentialState", "name": "a failed check next to one without an answer", "input": {"id": "a1b2c3d4", "label": "main", "kind": "scoped", "checked": true, "report": {"token": {"id": "t1", "status": "active"}, "accounts": [], "zones": [], "checks": [{"capability": "dns.read", "scope": "example.com", "scopeId": "zone1", "ok": false, "unanswered": true}, {"capability": "tunnel.read", "scope": "Main", "scopeId": "0123456789abcdef0123456789abcdef", "ok": false, "detail": "grant Account > Cloudflare Tunnel > Read"}], "excluded": [], "deep": false, "usable": false, "leftovers": []}}, "want": "problem"},
+
+  {"fn": "identityNow", "name": "the same", "input": {"owner": "qemu/101", "identity": "uuid-1", "current": "uuid-1", "matches": true}, "want": "the same"},
+  {"fn": "identityNow", "name": "not in the last listing", "input": {"owner": "qemu/101", "identity": "uuid-1", "matches": false}, "want": "not in the last listing"},
+  {"fn": "identityNow", "name": "changed", "input": {"owner": "qemu/101", "identity": "uuid-1", "current": "uuid-2", "matches": false}, "want": "changed to uuid-2: approve it again to publish it"},
+
+  {"fn": "routeNote", "name": "the reason", "input": {"hostname": "www.example.com", "owner": "qemu/101", "state": "unreachable", "reason": "no address of qemu/101 answers on port 8080", "zone": "example.com", "warnings": ["the target is plain HTTP"]}, "want": "no address of qemu/101 answers on port 8080"},
+  {"fn": "routeNote", "name": "the first warning", "input": {"hostname": "www.example.com", "owner": "qemu/101", "state": "active", "level": "port", "service": "http://10.0.0.5:8080", "zone": "example.com", "warnings": ["the target is plain HTTP", "a second warning"]}, "want": "the target is plain HTTP"},
+  {"fn": "routeNote", "name": "nothing", "input": {"hostname": "www.example.com", "owner": "qemu/101", "state": "active", "level": "port", "service": "http://10.0.0.5:8080", "zone": "example.com"}, "want": ""},
+
+  {"fn": "nextStep", "name": "before the first cycle", "input": {"mode": "observe", "credentials": [], "problems": []}, "want": ""},
+  {"fn": "nextStep", "name": "waiting for a setup", "input": {"at": "2026-10-05T10:00:00Z", "mode": "observe", "credentials": [], "problems": ["pco is not set up on this node; run pco setup"]}, "want": ""},
+  {"fn": "nextStep", "name": "no credential", "input": {"at": "2026-10-05T10:00:00Z", "mode": "observe", "credentials": [], "problems": []}, "want": "Add a Cloudflare token with pco credential add."},
+  {"fn": "nextStep", "name": "observe-only", "input": {"at": "2026-10-05T10:00:00Z", "mode": "observe", "credentials": [{"id": "a1b2c3d4", "label": "main", "kind": "scoped", "checked": false}], "problems": []}, "want": "Run pco apply to start publishing."},
+  {"fn": "nextStep", "name": "nothing obvious", "input": {"at": "2026-10-05T10:00:00Z", "mode": "enforce", "credentials": [{"id": "a1b2c3d4", "label": "main", "kind": "scoped", "checked": false}], "problems": []}, "want": ""},
+
+  {"fn": "unaffected", "name": "nothing held", "input": {"at": "2026-10-05T10:00:00Z", "mode": "enforce", "waiting": [], "actions": [
+    {"kind": "create-record", "credentialId": "a1b2c3d4", "target": "www.example.com", "detail": "CNAME in zone example.com", "destructive": false, "applied": true}
+  ]}, "want": []},
+  {"fn": "unaffected", "name": "what a confirmation accepts is left out", "input": {"at": "2026-10-05T10:00:00Z", "mode": "enforce", "waiting": [
+    {"kind": "dns-removals", "subject": "", "detail": "1 DNS record waits behind the mass delete guard", "items": ["old.example.com"]}
+  ], "actions": [
+    {"kind": "delete-record", "credentialId": "a1b2c3d4", "target": "old.example.com", "detail": "CNAME in zone example.com", "destructive": true, "applied": false, "held": "mass delete guard"},
+    {"kind": "delete-record", "credentialId": "a1b2c3d4", "target": "gone.example.com", "detail": "CNAME in zone example.com", "destructive": true, "applied": false, "held": "grace period: 1m0s left"},
+    {"kind": "update-record", "credentialId": "a1b2c3d4", "target": "shop.example.com", "detail": "TXT in zone example.com", "destructive": true, "applied": false, "held": "pco adopt replaces it"},
+    {"kind": "create-record", "credentialId": "a1b2c3d4", "target": "new.example.com", "detail": "CNAME in zone example.com", "destructive": false, "applied": false, "held": "observe mode"},
+    {"kind": "delete-record", "credentialId": "a1b2c3d4", "target": "done.example.com", "detail": "CNAME in zone example.com", "destructive": true, "applied": true}
+  ]}, "want": [
+    {"kind": "delete-record", "credentialId": "a1b2c3d4", "target": "gone.example.com", "detail": "CNAME in zone example.com", "destructive": true, "applied": false, "held": "grace period: 1m0s left"},
+    {"kind": "update-record", "credentialId": "a1b2c3d4", "target": "shop.example.com", "detail": "TXT in zone example.com", "destructive": true, "applied": false, "held": "pco adopt replaces it"}
+  ]},
+  {"fn": "unaffected", "name": "only removals are accepted by name", "input": {"at": "2026-10-05T10:00:00Z", "mode": "enforce", "waiting": [
+    {"kind": "dns-removals", "subject": "", "detail": "1 DNS record waits behind the mass delete guard", "items": ["old.example.com"]}
+  ], "actions": [
+    {"kind": "update-record", "credentialId": "a1b2c3d4", "target": "old.example.com", "detail": "TXT in zone example.com", "destructive": true, "applied": false, "held": "pco adopt replaces it"}
+  ]}, "want": [
+    {"kind": "update-record", "credentialId": "a1b2c3d4", "target": "old.example.com", "detail": "TXT in zone example.com", "destructive": true, "applied": false, "held": "pco adopt replaces it"}
+  ]},
+  {"fn": "unaffected", "name": "the items of other kinds are no removals", "input": {"at": "2026-10-05T10:00:00Z", "mode": "enforce", "waiting": [
+    {"kind": "stale-zone", "subject": "example.com", "detail": "zone example.com left the listing of credential a1b2c3d4", "items": ["gone.example.com"]}
+  ], "actions": [
+    {"kind": "delete-record", "credentialId": "a1b2c3d4", "target": "gone.example.com", "detail": "CNAME in zone example.com", "destructive": true, "applied": false, "held": "zone example.com is left as it is"}
+  ]}, "want": [
+    {"kind": "delete-record", "credentialId": "a1b2c3d4", "target": "gone.example.com", "detail": "CNAME in zone example.com", "destructive": true, "applied": false, "held": "zone example.com is left as it is"}
+  ]},
+
+  {"fn": "routeStateOrder", "name": "rejected between held and frozen", "input": null, "want": ["active", "unreachable", "withdrawn", "conflict", "no-zone", "held", "rejected", "frozen"]},
+
+  {"fn": "commandArg", "name": "an account id", "input": {"kind": "account id", "value": "0123456789abcdef0123456789abcdef"}, "want": {"value": "0123456789abcdef0123456789abcdef", "refused": ""}},
+  {"fn": "commandArg", "name": "an account id with a command after it", "input": {"kind": "account id", "value": "abc; rm -rf /"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
+  {"fn": "commandArg", "name": "an account id in capitals", "input": {"kind": "account id", "value": "0123456789ABCDEF0123456789ABCDEF"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
+  {"fn": "commandArg", "name": "an account id too short", "input": {"kind": "account id", "value": "0123456789abcdef0123456789abcde"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
+  {"fn": "commandArg", "name": "an account id with a newline", "input": {"kind": "account id", "value": "0123456789abcdef0123456789abcdef\n"}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
+  {"fn": "commandArg", "name": "no account id", "input": {"kind": "account id", "value": ""}, "want": {"value": "", "refused": "the account id has an unexpected form"}},
+  {"fn": "commandArg", "name": "a virtual machine", "input": {"kind": "owner", "value": "qemu/101"}, "want": {"value": "qemu/101", "refused": ""}},
+  {"fn": "commandArg", "name": "a container", "input": {"kind": "owner", "value": "lxc/200"}, "want": {"value": "lxc/200", "refused": ""}},
+  {"fn": "commandArg", "name": "a manual route", "input": {"kind": "owner", "value": "manual/shop"}, "want": {"value": "", "refused": "the owner has an unexpected form"}},
+  {"fn": "commandArg", "name": "an owner with a space", "input": {"kind": "owner", "value": "qemu/101 lxc/200"}, "want": {"value": "", "refused": "the owner has an unexpected form"}},
+  {"fn": "commandArg", "name": "an owner with a quote", "input": {"kind": "owner", "value": "qemu/101'"}, "want": {"value": "", "refused": "the owner has an unexpected form"}},
+  {"fn": "commandArg", "name": "an owner with a dollar", "input": {"kind": "owner", "value": "qemu/$(id)"}, "want": {"value": "", "refused": "the owner has an unexpected form"}},
+  {"fn": "commandArg", "name": "an owner with a newline", "input": {"kind": "owner", "value": "qemu/101\nreboot"}, "want": {"value": "", "refused": "the owner has an unexpected form"}},
+  {"fn": "commandArg", "name": "a hostname", "input": {"kind": "hostname", "value": "www.example.com"}, "want": {"value": "www.example.com", "refused": ""}},
+  {"fn": "commandArg", "name": "a hostname in punycode", "input": {"kind": "hostname", "value": "xn--bcher-kva.example"}, "want": {"value": "xn--bcher-kva.example", "refused": ""}},
+  {"fn": "commandArg", "name": "a hostname with a space", "input": {"kind": "hostname", "value": "www.example.com reboot"}, "want": {"value": "", "refused": "the hostname has an unexpected form"}},
+  {"fn": "commandArg", "name": "a hostname with a quote", "input": {"kind": "hostname", "value": "www.example.com\"x"}, "want": {"value": "", "refused": "the hostname has an unexpected form"}},
+  {"fn": "commandArg", "name": "a hostname with a dollar", "input": {"kind": "hostname", "value": "$HOME.example.com"}, "want": {"value": "", "refused": "the hostname has an unexpected form"}},
+  {"fn": "commandArg", "name": "a hostname with a newline", "input": {"kind": "hostname", "value": "www.example.com\n"}, "want": {"value": "", "refused": "the hostname has an unexpected form"}},
+  {"fn": "commandArg", "name": "a hostname in capitals", "input": {"kind": "hostname", "value": "WWW.EXAMPLE.COM"}, "want": {"value": "", "refused": "the hostname has an unexpected form"}},
+  {"fn": "commandArg", "name": "a hostname of one label", "input": {"kind": "hostname", "value": "localhost"}, "want": {"value": "", "refused": "the hostname has an unexpected form"}},
+  {"fn": "commandArg", "name": "a wildcard", "input": {"kind": "hostname", "value": "*.example.com"}, "want": {"value": "", "refused": "the hostname has an unexpected form"}},
+  {"fn": "commandArg", "name": "a kind without a form", "input": {"kind": "path", "value": "/etc"}, "want": {"value": "", "refused": "the path has an unexpected form"}},
+
+  {"fn": "rotateCommand", "name": "a checked tunnel", "input": {"account": "0123456789abcdef0123456789abcdef", "tunnels": [
+    {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": true, "unknown": false, "unchecked": false},
+    {"accountId": "fedcba9876543210fedcba9876543210", "credentialId": "e5f6a7b8", "name": "pco-abc123", "id": "0b9c8d7e-6f5a-4b3c-8d2e-1f0a9b8c7d6e", "version": 1, "exists": true, "verified": true, "unknown": false, "unchecked": false}
+  ]}, "want": {"command": "pco tunnel rotate --account 0123456789abcdef0123456789abcdef", "refused": ""}},
+  {"fn": "rotateCommand", "name": "a tunnel a hold kept from being checked", "input": {"account": "0123456789abcdef0123456789abcdef", "tunnels": [
+    {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": false, "unknown": false, "held": "not checked in the last cycle: the inventory is incomplete", "unchecked": true}
+  ]}, "want": {"command": "pco tunnel rotate --account 0123456789abcdef0123456789abcdef", "refused": ""}},
+  {"fn": "rotateCommand", "name": "the tunnel of a frozen account", "input": {"account": "0123456789abcdef0123456789abcdef", "tunnels": [
+    {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": false, "unknown": false, "held": "account frozen: zone example.com is pinned to credential e5f6a7b8, which does not see it", "leftAsIs": true, "unchecked": false}
+  ]}, "want": {"command": "", "refused": "refused: tunnel pco-abc123 in account 0123456789abcdef0123456789abcdef is left as it is: account frozen: zone example.com is pinned to credential e5f6a7b8, which does not see it; nothing was changed"}},
+  {"fn": "rotateCommand", "name": "an account without a tunnel", "input": {"account": "fedcba9876543210fedcba9876543210", "tunnels": [
+    {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": true, "unknown": false, "unchecked": false}
+  ]}, "want": {"command": "", "refused": "not found: no tunnel of this install is known in account fedcba9876543210fedcba9876543210; pco status lists the tunnels"}},
+  {"fn": "rotateCommand", "name": "an account id of another form", "input": {"account": "abc; rm -rf /", "tunnels": [
+    {"accountId": "abc; rm -rf /", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": true, "unknown": false, "unchecked": false}
+  ]}, "want": {"command": "", "refused": "the account id has an unexpected form"}},
+  {"fn": "rotateCommand", "name": "no account", "input": {"account": "", "tunnels": [
+    {"accountId": "0123456789abcdef0123456789abcdef", "credentialId": "a1b2c3d4", "name": "pco-abc123", "id": "6f1d0c2e-2b8a-4c43-9a51-3e2d7b6c1a90", "version": 3, "exists": true, "verified": true, "unknown": false, "unchecked": false}
+  ]}, "want": {"command": "", "refused": "the account id has an unexpected form"}},
+
+  {"fn": "budgetWait", "name": "a change", "input": "1 change waits for Cloudflare's rate limit", "want": {"changes": 1, "matched": true}},
+  {"fn": "budgetWait", "name": "changes", "input": "23 changes wait for Cloudflare's rate limit", "want": {"changes": 23, "matched": true}},
+  {"fn": "budgetWait", "name": "a read", "input": "the listing of zone example.com waits for Cloudflare's rate limit", "want": {"changes": 0, "matched": true}},
+  {"fn": "budgetWait", "name": "reads and changes", "input": "the tunnel of account 0123456789abcdef0123456789abcdef, the listing of zone example.com and 2 changes wait for Cloudflare's rate limit", "want": {"changes": 2, "matched": true}},
+  {"fn": "budgetWait", "name": "reads and a change", "input": "the listing of zone example.com and 1 change wait for Cloudflare's rate limit", "want": {"changes": 1, "matched": true}},
+  {"fn": "budgetWait", "name": "a change that wait", "input": "1 change wait for Cloudflare's rate limit", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "changes that waits", "input": "2 changes waits for Cloudflare's rate limit", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "1 changes", "input": "1 changes wait for Cloudflare's rate limit", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "no changes", "input": "0 changes wait for Cloudflare's rate limit", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "another limit", "input": "1 change waits for the rate limit", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "a full stop", "input": "1 change waits for Cloudflare's rate limit.", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "a line that quotes the words", "input": "agent of qemu/101: 1 change waits for Cloudflare's rate limit", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "a read of an unknown kind", "input": "the notes of qemu/101 waits for Cloudflare's rate limit", "want": {"changes": 0, "matched": false}},
+  {"fn": "budgetWait", "name": "nothing", "input": "", "want": {"changes": 0, "matched": false}},
+
+  {"fn": "printable", "name": "plain text", "input": "www.example.com: connection refused", "want": "www.example.com: connection refused"},
+  {"fn": "printable", "name": "text that is not ASCII", "input": "služba é 日本語 🙂", "want": "služba é 日本語 🙂"},
+  {"fn": "printable", "name": "escape and bell", "input": "a\u001b[2Jb\u0007c", "want": "a?[2Jb?c"},
+  {"fn": "printable", "name": "the operating system command that sets a title", "input": "\u001b]0;pwned\u0007", "want": "?]0;pwned?"},
+  {"fn": "printable", "name": "every C0 control", "input": "\u0000\u0001\b\t\n\u000b\f\r\u001a\u001f", "want": "??????????"},
+  {"fn": "printable", "name": "delete", "input": "a\u007fb", "want": "a?b"},
+  {"fn": "printable", "name": "C1 controls", "input": "\u0080\u0085\u009b\u009f", "want": "????"},
+  {"fn": "printable", "name": "a bidirectional override", "input": "a\u202eb\u202ac\u202bd\u202cd\u202de", "want": "a?b?c?d?d?e"},
+  {"fn": "printable", "name": "bidirectional isolates", "input": "\u2066x\u2067y\u2068z\u2069", "want": "?x?y?z?"},
+  {"fn": "printable", "name": "marks of direction", "input": "\u200eA\u200fB\u061cC", "want": "?A?B?C"},
+  {"fn": "printable", "name": "line and paragraph separators", "input": "a\u2028b\u2029c", "want": "a?b?c"},
+  {"fn": "printable", "name": "zero-width characters", "input": "w\u200bw\u200cw\u200dw\u2060w", "want": "w?w?w?w?w"},
+  {"fn": "printable", "name": "a byte order mark", "input": "\ufeffbom", "want": "?bom"},
+  {"fn": "printable", "name": "a soft hyphen", "input": "ex\u00adample", "want": "ex?ample"},
+  {"fn": "printable", "name": "tag characters", "input": "flag\udb40\udc01\udb40\udc65\udb40\udc6e\udb40\udc7f", "want": "flag????"},
+  {"fn": "printable", "name": "other format characters", "input": "\u0600\u180e\ufff9", "want": "???"},
+  {"fn": "printable", "name": "spaces that are not ASCII stay", "input": "a\u00a0b\u3000c", "want": "a\u00a0b\u3000c"},
+  {"fn": "printable", "name": "nothing", "input": "", "want": ""},
+
+  {"fn": "isBidi", "name": "U+061C arabic letter mark", "input": "\u061c", "want": true},
+  {"fn": "isBidi", "name": "U+200E left-to-right mark", "input": "\u200e", "want": true},
+  {"fn": "isBidi", "name": "U+200F right-to-left mark", "input": "\u200f", "want": true},
+  {"fn": "isBidi", "name": "U+2028 line separator", "input": "\u2028", "want": true},
+  {"fn": "isBidi", "name": "U+2029 paragraph separator", "input": "\u2029", "want": true},
+  {"fn": "isBidi", "name": "U+202A left-to-right embedding", "input": "\u202a", "want": true},
+  {"fn": "isBidi", "name": "U+202B right-to-left embedding", "input": "\u202b", "want": true},
+  {"fn": "isBidi", "name": "U+202C pop directional formatting", "input": "\u202c", "want": true},
+  {"fn": "isBidi", "name": "U+202D left-to-right override", "input": "\u202d", "want": true},
+  {"fn": "isBidi", "name": "U+202E right-to-left override", "input": "\u202e", "want": true},
+  {"fn": "isBidi", "name": "U+2066 left-to-right isolate", "input": "\u2066", "want": true},
+  {"fn": "isBidi", "name": "U+2067 right-to-left isolate", "input": "\u2067", "want": true},
+  {"fn": "isBidi", "name": "U+2068 first strong isolate", "input": "\u2068", "want": true},
+  {"fn": "isBidi", "name": "U+2069 pop directional isolate", "input": "\u2069", "want": true},
+  {"fn": "isBidi", "name": "a letter", "input": "a", "want": false},
+  {"fn": "isBidi", "name": "U+061B arabic semicolon", "input": "\u061b", "want": false},
+  {"fn": "isBidi", "name": "U+200B zero width space", "input": "\u200b", "want": false},
+  {"fn": "isBidi", "name": "U+200D zero width joiner", "input": "\u200d", "want": false},
+  {"fn": "isBidi", "name": "U+2027 hyphenation point", "input": "\u2027", "want": false},
+  {"fn": "isBidi", "name": "U+202F narrow no-break space", "input": "\u202f", "want": false},
+  {"fn": "isBidi", "name": "U+2065, unassigned", "input": "\u2065", "want": false},
+  {"fn": "isBidi", "name": "U+206A inhibit symmetric swapping", "input": "\u206a", "want": false},
+  {"fn": "isBidi", "name": "U+FEFF byte order mark", "input": "\ufeff", "want": false}
+]

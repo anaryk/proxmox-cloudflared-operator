@@ -466,7 +466,7 @@ func (run *dnsRun) list(ctx context.Context, z *dnsZone) {
 	switch {
 	case err != nil && run.spend(z, err):
 		run.unlisted(z)
-		run.res.Waiting.Reads = append(run.res.Waiting.Reads, "the listing of zone "+z.Name)
+		run.res.Waiting.Reads = append(run.res.Waiting.Reads, ZoneListingRead+z.Name)
 		return
 	case err != nil:
 		run.unlisted(z)

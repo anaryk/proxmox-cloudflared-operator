@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
@@ -178,10 +179,10 @@ func TestTheDaemonLogsForATerminalAndForTheJournal(t *testing.T) {
 
 	console := logOnce(true)
 	requireClean(t, strings.TrimSuffix(console, "\n"), "console")
-	require.Contains(t, console, " WRN hello "+printable(hostileText)+" ")
-	require.Contains(t, console, `error="refused `+printable(hostileText)+`"`)
-	require.Contains(t, console, `guest="web`+printable(hostileText)+`"`)
-	require.Contains(t, console, `hosts=["a`+printable(hostileText)+`","b"]`, "the strings inside a list are cleaned too")
+	require.Contains(t, console, " WRN hello "+present.Printable(hostileText)+" ")
+	require.Contains(t, console, `error="refused `+present.Printable(hostileText)+`"`)
+	require.Contains(t, console, `guest="web`+present.Printable(hostileText)+`"`)
+	require.Contains(t, console, `hosts=["a`+present.Printable(hostileText)+`","b"]`, "the strings inside a list are cleaned too")
 	require.False(t, strings.HasPrefix(console, "{"), "lines to read: %q", console)
 
 	journal := logOnce(false)

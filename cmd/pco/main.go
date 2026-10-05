@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func exitCode(err error, stderr io.Writer) int {
 	case errors.Is(err, errReported):
 		return 1
 	}
-	_, _ = fmt.Fprintf(stderr, "pco: %s\n", printable(err.Error()))
+	_, _ = fmt.Fprintf(stderr, "pco: %s\n", present.Printable(err.Error()))
 	if errors.Is(err, apiclient.ErrNoAnswer) || errors.As(err, new(couldNotAsk)) {
 		return 2
 	}

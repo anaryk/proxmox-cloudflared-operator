@@ -12,6 +12,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 )
 
 const (
@@ -62,7 +63,7 @@ func (a *app) renderCredentials(w io.Writer, views []engine.CredentialView) erro
 	t := s.table()
 	t.row("ID", "LABEL", "KIND", "STATE", "NOTE")
 	for _, v := range views {
-		t.row(v.ID, dash(v.Label), dash(v.Kind), credentialState(v), dash(a.credentialNote(v)))
+		t.row(v.ID, dash(v.Label), dash(v.Kind), present.CredentialState(v), dash(a.credentialNote(v)))
 	}
 	t.flush()
 	return s.done()
@@ -331,19 +332,6 @@ func zoneNames(r credentials.Report) string {
 		return "none"
 	}
 	return strings.Join(names, ", ")
-}
-
-// credentialState is "usable" for a credential whose last check passed,
-// "problem" for one that failed it, and "unknown" for one that was never
-// checked or whose check got no answer.
-func credentialState(v engine.CredentialView) string {
-	switch {
-	case !v.Checked, v.Report.Unanswered():
-		return "unknown"
-	case v.Report.Usable:
-		return "usable"
-	}
-	return "problem"
 }
 
 // credentialNote says what is wrong with a credential, if its last check found

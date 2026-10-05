@@ -13,6 +13,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 )
 
 func (a *app) routesCmd() *cobra.Command {
@@ -53,8 +54,8 @@ func (a *app) routesCmd() *cobra.Command {
 }
 
 func routeStateNames() string {
-	names := make([]string, len(routeStateOrder))
-	for i, s := range routeStateOrder {
+	names := make([]string, len(present.RouteStateOrder))
+	for i, s := range present.RouteStateOrder {
 		names[i] = string(s)
 	}
 	return strings.Join(names, ", ")
@@ -64,7 +65,7 @@ func parseRouteState(s string) (planner.RouteState, error) {
 	if s == "" {
 		return "", nil
 	}
-	for _, known := range routeStateOrder {
+	for _, known := range present.RouteStateOrder {
 		if string(known) == s {
 			return known, nil
 		}
@@ -97,19 +98,8 @@ func renderRoutes(w io.Writer, st engine.State, state planner.RouteState) error 
 	t := s.table()
 	t.row("HOSTNAME", "STATE", "LEVEL", "SERVICE", "OWNER", "ZONE", "NOTE")
 	for _, r := range shown {
-		t.row(r.Hostname, string(r.State), dash(r.Level), dash(r.Service), dash(r.Owner), dash(r.Zone), dash(routeNote(r)))
+		t.row(r.Hostname, string(r.State), dash(r.Level), dash(r.Service), dash(r.Owner), dash(r.Zone), dash(present.RouteNote(r)))
 	}
 	t.flush()
 	return s.done()
-}
-
-// routeNote is the reason a route is in its state, or else its first warning.
-func routeNote(r engine.RouteView) string {
-	if r.Reason != "" {
-		return r.Reason
-	}
-	if len(r.Warnings) > 0 {
-		return r.Warnings[0]
-	}
-	return ""
 }

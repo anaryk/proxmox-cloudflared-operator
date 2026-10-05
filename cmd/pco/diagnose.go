@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 )
 
 func (a *app) diagnoseCmd() *cobra.Command {
@@ -73,7 +74,7 @@ type markedLine struct {
 func renderMarked(s *screen, lines []markedLine) {
 	width := 0
 	for _, l := range lines {
-		width = max(width, len([]rune(printable(l.name))))
+		width = max(width, len([]rune(present.Printable(l.name))))
 	}
 	for _, l := range lines {
 		s.printf("%s %-*s  %s\n", levelMark(l.level), width, l.name, l.detail)

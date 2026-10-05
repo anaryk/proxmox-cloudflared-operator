@@ -9,6 +9,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
@@ -95,7 +96,7 @@ func (a *app) applyConfirming(cmd *cobra.Command, yes bool) error {
 		renderWaiting(s, st.Waiting)
 		s.println("")
 	}
-	if other := unaffected(st); len(other) > 0 {
+	if other := present.Unaffected(st); len(other) > 0 {
 		s.println(unaffectedTitle)
 		actionTable(s, other)
 		s.println("")

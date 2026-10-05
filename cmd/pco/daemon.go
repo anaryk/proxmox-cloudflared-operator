@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -126,7 +127,7 @@ func cleanEvent(event map[string]any) error {
 func cleanValue(v any) any {
 	switch v := v.(type) {
 	case string:
-		return printable(v)
+		return present.Printable(v)
 	case []any:
 		for i := range v {
 			v[i] = cleanValue(v[i])

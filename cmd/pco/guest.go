@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -60,7 +61,7 @@ func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine
 		t := s.table()
 		t.row("  GUEST", "IDENTITY", "NOW")
 		for _, v := range approvals {
-			t.row("  "+engine.OwnerName(v.Owner, v.Guest), dash(v.Identity), identityNow(v))
+			t.row("  "+engine.OwnerName(v.Owner, v.Guest), dash(v.Identity), present.IdentityNow(v))
 		}
 		t.flush()
 		s.println("")
@@ -74,17 +75,6 @@ func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine
 		s.printf("  %s\n", engine.OwnerName(g.String(), &g.GuestView))
 	}
 	return s.done()
-}
-
-// identityNow says whether a guest still has the identity it was approved in.
-func identityNow(v engine.ApprovalView) string {
-	switch {
-	case v.Matches:
-		return "the same"
-	case v.Current == "":
-		return "not in the last listing"
-	}
-	return "changed to " + v.Current + ": approve it again to publish it"
 }
 
 func (a *app) guestApproveCmd() *cobra.Command {

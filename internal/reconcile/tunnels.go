@@ -241,7 +241,7 @@ func (run *tunnelRun) reconcile(ctx context.Context, t target) (TunnelState, boo
 	tun, found, err := api.FindTunnel(ctx, t.account, t.name)
 	switch {
 	case err != nil && cfapi.IsRateLimited(err):
-		run.res.Waiting.Reads = append(run.res.Waiting.Reads, "the tunnel of account "+t.account)
+		run.res.Waiting.Reads = append(run.res.Waiting.Reads, TunnelRead+t.account)
 		return st, true
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: finding the tunnel: %v", t, err))

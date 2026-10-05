@@ -14,20 +14,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 )
-
-// routeStateOrder is the order routes are counted in; a state that is not
-// listed follows, by name.
-var routeStateOrder = []planner.RouteState{
-	planner.StateActive,
-	planner.StateUnreachable,
-	planner.StateWithdrawn,
-	planner.StateConflict,
-	planner.StateNoZone,
-	planner.StateHeld,
-	planner.StateRejected,
-	engine.RouteFrozen,
-}
 
 const (
 	// tunnelIDWidth is how much of the id of a tunnel is shown.
@@ -120,13 +108,13 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 		s.printf("Warning: the egress filter is switched off since %s: the connectors are not confined. "+
 			"pco egress on switches it back on.\n\n", a.since(st.Egress.Since))
 	}
-	statusLine(s, "Mode", modeText(st))
+	statusLine(s, "Mode", present.ModeText(st))
 	if st.Profile != "" {
 		statusLine(s, "Profile", st.Profile)
 	}
-	statusLine(s, "Inventory", inventoryText(st))
-	statusLine(s, "Writer", writerText(st.WriterVerdict))
-	statusLine(s, "Egress", egressText(st.Egress))
+	statusLine(s, "Inventory", present.InventoryText(st))
+	statusLine(s, "Writer", present.WriterText(st.WriterVerdict))
+	statusLine(s, "Egress", present.EgressText(st.Egress))
 	statusLine(s, "Routes", routeCounts(st.Routes))
 	if n := len(st.Unapproved); n == 1 {
 		statusLine(s, "Approval", "1 guest waits (pco guest list)")
@@ -143,64 +131,10 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 	a.credentialSection(s, st)
 	issueSection(s, st.Issues)
 	problemSection(s, st.Problems)
-	if next := nextStep(st); next != "" {
+	if next := present.NextStep(st); next != "" {
 		s.printf("\n%s\n", next)
 	}
 	return s.done()
-}
-
-// modeText names the mode. Before the first cycle the state says "observe",
-// but only because that is its zero.
-func modeText(st engine.State) string {
-	switch {
-	case st.At.IsZero():
-		return "unknown"
-	case st.Mode == engine.ModeObserve:
-		return "observe-only"
-	}
-	return st.Mode
-}
-
-// inventoryText says whether the inventory is complete. What is wrong with it
-// is in the problems.
-func inventoryText(st engine.State) string {
-	switch {
-	case st.At.IsZero():
-		return "unknown"
-	case st.Complete:
-		return "complete"
-	}
-	return "incomplete"
-}
-
-func egressText(v engine.EgressView) string {
-	switch v.State {
-	case "":
-		return "not checked yet"
-	case engine.EgressOn:
-		return "on"
-	case engine.EgressOff:
-		return "off: the connectors are not confined"
-	case engine.EgressNotLoaded:
-		return "not loaded: the connectors are not confined"
-	case engine.EgressChanged:
-		return "not the one pco loads: the connectors may not be confined"
-	}
-	return v.State
-}
-
-func writerText(verdict string) string {
-	switch verdict {
-	case engine.VerdictOK:
-		return "ok"
-	case engine.VerdictStale:
-		return "stale (a newer generation of this install is writing)"
-	case engine.VerdictForeign:
-		return "foreign (another installation is writing)"
-	case engine.VerdictUnknown:
-		return "unknown (leader.json could not be used)"
-	}
-	return dash(verdict)
 }
 
 // routeCounts says how many routes are in each state: "active 3, held 1".
@@ -213,14 +147,14 @@ func routeCounts(routes []engine.RouteView) string {
 		count[r.State]++
 	}
 	var states []planner.RouteState
-	for _, s := range routeStateOrder {
+	for _, s := range present.RouteStateOrder {
 		if count[s] > 0 {
 			states = append(states, s)
 		}
 	}
 	var others []planner.RouteState
 	for s := range maps.Keys(count) {
-		if !slices.Contains(routeStateOrder, s) {
+		if !slices.Contains(present.RouteStateOrder, s) {
 			others = append(others, s)
 		}
 	}
@@ -243,7 +177,7 @@ func (a *app) tunnelSection(s *screen, st engine.State) {
 	t := s.table()
 	t.row("  NAME", "ID", "VERIFIED", "CONNECTOR")
 	for _, tun := range st.Tunnels {
-		t.row("  "+dash(tun.Name), shortID(tun.ID), verifiedText(tun), connectorText(st.Connectors, tun.ID))
+		t.row("  "+dash(tun.Name), shortID(tun.ID), present.VerifiedText(tun), connectorText(st.Connectors, tun.ID))
 	}
 	t.flush()
 }
@@ -253,20 +187,6 @@ func shortID(id string) string {
 		id = id[:tunnelIDWidth]
 	}
 	return dash(id)
-}
-
-func verifiedText(t engine.TunnelView) string {
-	switch {
-	case t.Unchecked:
-		return "unchecked"
-	case t.Held != "":
-		return "held"
-	case t.Unknown:
-		return "unknown"
-	case t.Verified:
-		return "yes"
-	}
-	return "no"
 }
 
 // connectorText describes the connector of a tunnel: active, ready and with
@@ -288,7 +208,7 @@ func (a *app) credentialSection(s *screen, st engine.State) {
 	t := s.table()
 	t.row("  LABEL", "STATE", "NOTE")
 	for _, c := range st.Credentials {
-		t.row("  "+dash(c.Label), credentialState(c), dash(a.credentialNote(c)))
+		t.row("  "+dash(c.Label), present.CredentialState(c), dash(a.credentialNote(c)))
 	}
 	t.flush()
 }
@@ -334,18 +254,4 @@ func problemSection(s *screen, problems []string) {
 	for _, p := range problems {
 		s.printf("  - %s\n", p)
 	}
-}
-
-// nextStep is the one thing to do next, when there is an obvious one. Nothing
-// is said while the daemon waits for a setup, as the problems say what to do.
-func nextStep(st engine.State) string {
-	switch {
-	case st.At.IsZero(), slices.ContainsFunc(st.Problems, func(p string) bool { return strings.Contains(p, "pco setup") }):
-		return ""
-	case len(st.Credentials) == 0:
-		return "Add a Cloudflare token with pco credential add."
-	case st.Mode == engine.ModeObserve:
-		return "Run pco apply to start publishing."
-	}
-	return ""
 }

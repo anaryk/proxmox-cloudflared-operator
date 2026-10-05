@@ -19,56 +19,9 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
-
-func TestPrintableReplacesWhatATerminalWouldObey(t *testing.T) {
-	for _, tt := range []struct {
-		name, in, want string
-	}{
-		{"plain text", "www.example.com: connection refused", "www.example.com: connection refused"},
-		{"text that is not ASCII", "služba é 日本語 🙂", "služba é 日本語 🙂"},
-		{"escape and bell", "a\x1b[2Jb\x07c", "a?[2Jb?c"},
-		{"the operating system command that sets a title", "\x1b]0;pwned\x07", "?]0;pwned?"},
-		{"every C0 control", "\x00\x01\x08\t\n\v\f\r\x1a\x1f", "??????????"},
-		{"delete", "a\x7fb", "a?b"},
-		{"C1 controls", runes(0x80, 0x85, 0x9b, 0x9f), "????"},
-		{"a bidirectional override", "a" + runes(0x202e) + "b" + runes(0x202a) + "c" + runes(0x202b) + "d" + runes(0x202c) + "d" + runes(0x202d) + "e", "a?b?c?d?d?e"},
-		{"bidirectional isolates", runes(0x2066) + "x" + runes(0x2067) + "y" + runes(0x2068) + "z" + runes(0x2069), "?x?y?z?"},
-		{"marks of direction", runes(0x200e) + "A" + runes(0x200f) + "B" + runes(0x61c) + "C", "?A?B?C"},
-		{"line and paragraph separators", "a" + runes(0x2028) + "b" + runes(0x2029) + "c", "a?b?c"},
-		{"zero-width characters", "w" + runes(0x200b) + "w" + runes(0x200c) + "w" + runes(0x200d) + "w" + runes(0x2060) + "w", "w?w?w?w?w"},
-		{"a byte order mark", runes(0xfeff) + "bom", "?bom"},
-		{"a soft hyphen", "ex" + runes(0xad) + "ample", "ex?ample"},
-		{"tag characters", "flag" + runes(0xe0001, 0xe0065, 0xe006e, 0xe007f), "flag????"},
-		{"other format characters", runes(0x600) + runes(0x180e) + runes(0xfff9), "???"},
-		{"spaces that are not ASCII stay", "a" + runes(0xa0) + "b" + runes(0x3000) + "c", "a" + runes(0xa0) + "b" + runes(0x3000) + "c"},
-		{"bytes that are no UTF-8", "a\xffb", "a�b"},
-		{"nothing", "", ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got := printable(tt.in)
-
-			require.Equal(t, tt.want, got)
-			for _, r := range got {
-				require.True(t, unicode.IsPrint(r) || unicode.IsSpace(r), "U+%04X is neither printable nor a space", r)
-			}
-		})
-	}
-}
-
-func TestPrintableLeavesNothingToChance(t *testing.T) {
-	// Every rune that is neither printable nor a space is gone, whatever the
-	// category: this walks the first planes.
-	for r := rune(0); r < 0x3000; r++ {
-		out := printable(string(r))
-		for _, got := range out {
-			require.False(t, unicode.IsControl(got), "U+%04X came out as a control character", r)
-			require.False(t, isBidi(got), "U+%04X came out as a bidirectional control", r)
-			require.False(t, unicode.Is(unicode.Cf, got), "U+%04X came out as a format character", r)
-		}
-	}
-}
 
 func TestTheScreenCleansWhatItIsGiven(t *testing.T) {
 	var buf bytes.Buffer
@@ -111,7 +64,7 @@ func requireClean(t *testing.T, text string, what string) {
 			continue
 		}
 		require.False(t, unicode.IsControl(r), "%s: control character U+%04X at byte %d of %q", what, r, i, text)
-		require.False(t, isBidi(r), "%s: bidirectional control U+%04X at byte %d of %q", what, r, i, text)
+		require.False(t, present.IsBidi(r), "%s: bidirectional control U+%04X at byte %d of %q", what, r, i, text)
 		require.False(t, unicode.Is(unicode.Cf, r), "%s: format character U+%04X at byte %d of %q", what, r, i, text)
 	}
 }
