@@ -1,0 +1,29 @@
+/* The baseline's cards and lines, in the mockup's look. */
+
+.baseline { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.baseline .view { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.baseline .lines { position: absolute; left: 0; top: 0; overflow: visible; }
+.baseline .place { position: absolute; left: 0; top: 0; }
+
+.card { box-sizing: border-box; width: 100%; height: 100%; overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.card .head { display: flex; align-items: center; gap: 6px; height: 30px; margin-bottom: 6px; padding: 0 8px; background: var(--raised); font-weight: 600; white-space: nowrap; }
+.card.target .head { margin-bottom: 0; }
+.card .meta { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 400; }
+.card .row { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; font: 11.5px var(--mono); white-space: nowrap; }
+.card .host { overflow: hidden; text-overflow: ellipsis; }
+.card .owner { margin-left: auto; color: var(--muted); font: 11px var(--font); }
+.card .tag { padding: 0 4px; border-radius: 3px; background: var(--fail-weak); color: var(--fail); font: 700 10.5px var(--font); }
+.card .port { display: flex; align-items: center; gap: 6px; box-sizing: border-box; height: 18px; margin: 0 6px 4px; padding: 0 6px; border: 1px solid var(--border); border-radius: 3px; background: var(--raised); font: 11.5px var(--mono); }
+.card .port[data-state="unreachable"] { border-color: var(--fail); background: var(--fail-weak); }
+.card .port[data-state="withdrawn"] { border-color: var(--warn); background: var(--warn-weak); }
+.card .i { flex: none; color: var(--accent); }
+.card [data-state="active"] .i { color: var(--ok); }
+.card [data-state="unreachable"] .i { color: var(--fail); }
+.card [data-state="withdrawn"] .i { color: var(--warn); }
+
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+.edge.hairline { stroke-width: 1; }
+.edge.pipe { stroke-width: 12; stroke-opacity: 0.16; }
+.edge.unreachable { stroke: var(--fail); stroke-dasharray: 6 4; }
+.edge.withdrawn { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 2 3; }
+.dots circle { fill: var(--traffic); }
