@@ -137,7 +137,8 @@ func TestTheIncidentResponseThatTheDocsGiveWorks(t *testing.T) {
 	require.NoError(t, e.store.SaveCredential(store.Credential{ID: "cred2", Label: "main-2", Kind: "scoped", Token: store.NewSecret(newToken), AddedAt: t0}))
 	require.NoError(t, e.store.DeleteCredential(testCred))
 	e.clock.advance(10 * time.Second)
-	e.cycle()
+	st = e.cycle()
+	require.Equal(t, VerdictForeign, st.WriterVerdict, "the forged sentinel still holds the writer")
 
 	// 2. The secret: the other connector loses its session for good.
 	_, err := e.eng.RotateTunnel(t.Context(), "")
@@ -163,4 +164,8 @@ func TestTheIncidentResponseThatTheDocsGiveWorks(t *testing.T) {
 	require.Contains(t, cfg.Ingress, planner.IngressRule{
 		Hostname: planner.SentinelHostname(planner.Writer{InstallID: testInstall, Generation: 8, Nonce: "recovered"}), Service: "http_status:404",
 	})
+	forged := planner.SentinelHostname(planner.Writer{InstallID: testInstall, Generation: 7, Nonce: "forged"})
+	for _, r := range cfg.Ingress {
+		require.NotEqual(t, forged, r.Hostname, "the forged sentinel is gone")
+	}
 }
