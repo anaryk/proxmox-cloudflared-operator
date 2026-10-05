@@ -170,10 +170,11 @@ changelog:
       - "^docs:"
       - "^test:"
 
-# A release is made as a draft and checked by the release workflow, and the
-# maintainer publishes it. A draft left by an earlier run of the same tag is
-# replaced. The body of the tag's message, if it has one, heads the notes: the
-# monthly rebuild of the template writes there what changed.
+# A release is made as a draft, checked by the release workflow and published
+# by its job publish. A draft left by an earlier run of the same tag is
+# replaced. The body of the tag's message, if it has one, heads the notes: a
+# tag the monthly rebuild of the template asks for names its Debian snapshot
+# there.
 release:
   draft: true
   replace_existing_draft: true

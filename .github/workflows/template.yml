@@ -2,11 +2,11 @@ name: template
 
 # The appliance templates of the latest release, built again each month from
 # the current Debian snapshot, for the security updates Debian published
-# since. When their packages changed and they boot, the job cut tags the next
-# patch version on the commit of that release and starts the release
-# workflow on the tag, which leaves a draft the maintainer publishes. When
-# nothing changed, nothing happens; when a build or a boot fails, an issue
-# says so. See packaging/RELEASING.md.
+# since. When their packages changed and they boot, the job cut opens an
+# issue that asks the maintainer to tag the next patch version on the commit
+# of that release, with the snapshot in the tag's message; the push of that
+# tag starts the release. When nothing changed, nothing happens; when a build
+# or a boot fails, an issue says so. See packaging/RELEASING.md.
 on:
   schedule:
     # Every Monday; the job when lets the first one of each month through.
@@ -164,18 +164,18 @@ jobs:
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
-  # The next patch version on the same commit, as an annotated tag whose
-  # message says what changed, and the release workflow started on it. Two
-  # tags on one commit are what the release workflow handles through
-  # GORELEASER_CURRENT_TAG. A tag pushed with the token of the workflow
-  # starts no workflow, hence workflow_dispatch.
+  # The next patch version on the same commit, asked of the maintainer: only
+  # the maintainers create release tags, so this job pushes none. The line
+  # "Snapshot:" of the tag's message is what the release workflow builds the
+  # templates from. Two tags on one commit are what the release workflow
+  # handles through GORELEASER_CURRENT_TAG.
   cut:
     needs: rebuild
     if: needs.rebuild.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      actions: write
+      contents: read
+      issues: write
     defaults:
       run:
         shell: bash
@@ -184,34 +184,48 @@ jobs:
         with:
           ref: ${{ needs.rebuild.outputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Tag the next patch version
-        id: tag
+      - name: Ask for the tag
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TAG: ${{ needs.rebuild.outputs.tag }}
           NOTES: ${{ needs.rebuild.outputs.notes }}
+          SNAPSHOT: ${{ needs.rebuild.outputs.snapshot }}
         run: |
           [[ $TAG =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]
           next=v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))
           if git rev-parse --quiet --verify "refs/tags/$next" >/dev/null; then
-            echo "::error::The tag $next exists already. Publish or delete its release, then run this workflow again."
+            echo "::error::The tag $next exists already, without a published release. Once it is published, the next run starts from it; if its release failed, release the version after it by hand."
             exit 1
           fi
-          printf 'pco %s\n\n%s\n' "${next#v}" "$NOTES" >"$RUNNER_TEMP/message"
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            tag --annotate --file "$RUNNER_TEMP/message" "$next" "$TAG^{commit}"
-          git push origin "refs/tags/$next"
-          echo "tag=$next" >> "$GITHUB_OUTPUT"
-
-      - name: Start the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          NEXT: ${{ steps.tag.outputs.tag }}
-          SNAPSHOT: ${{ needs.rebuild.outputs.snapshot }}
-        run: |
-          gh workflow run release.yml --ref "$NEXT" -f snapshot="$SNAPSHOT"
-          echo "Tagged $NEXT and started the release workflow on it with the snapshot $SNAPSHOT; its draft waits at the environment publish." >> "$GITHUB_STEP_SUMMARY"
+          commit=$(git rev-parse "$TAG^{commit}")
+          {
+            echo "The appliance templates of $TAG, built again from the Debian snapshot $SNAPSHOT, carry other Debian packages than the release, and they boot: $RUN."
+            echo
+            echo "To release them as $next, tag the commit of $TAG, $commit, and push the tag:"
+            echo
+            echo '```sh'
+            echo "git fetch --tags origin"
+            echo "git tag -a $next -m \"pco ${next#v}\" -m \"Snapshot: $SNAPSHOT\" $commit"
+            echo "git push origin $next"
+            echo '```'
+            echo
+            echo "The push starts the release workflow, which builds the templates from that snapshot and waits for the approval of the environment release. The notes of the release begin with the line Snapshot:; what follows belongs in them."
+            echo
+            echo "$NOTES"
+          } >"$RUNNER_TEMP/body.md"
+          title="template: tag $next"
+          open=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [[ -n $open ]]; then
+            gh issue comment "$open" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi
+          echo "Asked for the tag $next, on $commit with the Debian snapshot $SNAPSHOT, in an issue." >> "$GITHUB_STEP_SUMMARY"
 
   report:
     needs: [rebuild, cut]
@@ -231,7 +245,7 @@ jobs:
           if [ "$REBUILD" = failure ]; then
             body="Building or booting the appliance templates failed, so no release was cut: $RUN. A build that could not reach snapshot.debian.org is worth a second run; a template that does not boot needs a look before the next release."
           else
-            body="The templates changed and boot, but the next patch version was not tagged or its release not started: $RUN. packaging/RELEASING.md says what the workflow needs, and how to do it by hand."
+            body="The templates changed and boot, but no issue asks for the tag of the next patch version: $RUN. The log of the job cut says why; packaging/RELEASING.md says how to release by hand."
           fi
           open=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
           if [ -n "$open" ]; then

@@ -78,11 +78,13 @@ that a change that breaks this fails there first.
 ## The snapshot
 
 `pin.conf` names the snapshot as `SNAPSHOT=YYYYMMDDTHHMMSSZ`.
-`build.sh --snapshot` takes another one, and so does the input `snapshot` of
-the release workflow. Each release carries the one it was built from as
+`build.sh --snapshot` takes another one, and so does the release workflow, from
+a line `Snapshot: YYYYMMDDTHHMMSSZ` of the tag's message or from its input
+`snapshot`. Each release carries the one it was built from as
 `pco-appliance_<version>.pin.conf`. The workflow `template` builds the
-templates of the latest release from the current snapshot every month and
-cuts a patch release when their packages changed (see `../RELEASING.md`).
+templates of the latest release from the current snapshot every month and,
+when their packages changed, opens an issue that asks for the tag of a patch
+release with that snapshot (see `../RELEASING.md`).
 
 ## Testing it
 
