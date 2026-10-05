@@ -58,7 +58,8 @@ func (l *Limiter) follow(p map[string]int64) {
 		return
 	}
 	l.cost = max(l.base, time.Duration(w)*time.Second/time.Duration(q))
-	l.capacity = min(l.burst, time.Duration(q)*l.cost)
+	// The bucket holds one request at least, or none would ever go.
+	l.capacity = max(min(l.burst, time.Duration(q)*l.cost), l.cost)
 	l.credit = min(l.credit, l.capacity)
 }
 
@@ -72,9 +73,15 @@ func (l *Limiter) leftToOthers(p map[string]int64) int64 {
 	return max(q-int64(time.Duration(w)*time.Second/l.cost), 0)
 }
 
+// maxLimitValue is the largest count or number of seconds of a rate limit
+// field that is taken as an answer. Cloudflare counts in thousands and minutes;
+// a larger one would overflow what the limiter computes from it.
+const maxLimitValue = 1_000_000
+
 // parseLimits reads a header of the rate limit fields, a list of names each
 // with integer parameters: `"default";r=50;t=30, "other";r=5`. A member with
-// a parameter that is not a number keeps the others.
+// a parameter that is not a number, or is larger than maxLimitValue, keeps the
+// others.
 func parseLimits(v string) map[string]map[string]int64 {
 	out := map[string]map[string]int64{}
 	for member := range strings.SplitSeq(v, ",") {
@@ -87,7 +94,7 @@ func parseLimits(v string) map[string]map[string]int64 {
 		for _, p := range parts[1:] {
 			key, val, ok := strings.Cut(strings.TrimSpace(p), "=")
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
-			if ok && err == nil && n >= 0 {
+			if ok && err == nil && n >= 0 && n <= maxLimitValue {
 				params[strings.ToLower(strings.TrimSpace(key))] = n
 			}
 		}

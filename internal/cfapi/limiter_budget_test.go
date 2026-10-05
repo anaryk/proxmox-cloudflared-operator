@@ -68,6 +68,8 @@ func TestTheLimiterFollowsWhatCloudflareSaysIsLeft(t *testing.T) {
 		{"a policy below the budget leaves nothing to others", 0, `"default";r=50;t=300`, `"default";q=500;w=300`, 50, []time.Duration{600 * time.Millisecond}, 0},
 		{"tokens rather than strings", 0, `default;r=500;t=300`, `default;q=1200;w=300`, 300, []time.Duration{300 * time.Millisecond}, 0},
 		{"what does not parse is no answer", 0, `"default";r=lots`, `"default";q=;w=300`, 1000, []time.Duration{300 * time.Millisecond}, 0},
+		{"a policy beyond reason is no answer", 0, "", `"default";q=40000000000;w=300`, 1000, []time.Duration{300 * time.Millisecond}, 0},
+		{"a window beyond reason is no answer", 0, "", `"default";q=1200;w=20000000000`, 1000, []time.Duration{300 * time.Millisecond}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,4 +149,19 @@ func TestTheBudgetOfACredential(t *testing.T) {
 	wait, _ := l.reserve()
 	require.Equal(t, 2*time.Second, wait, "150 in 5 minutes")
 	require.Equal(t, 20*time.Second, l.maxWait)
+}
+
+// A policy of fewer requests than one a window lets that one through once the
+// window has passed.
+func TestAPolicyOfOneRequestLetsItThrough(t *testing.T) {
+	clock := newFakeClock()
+	l := budgetLimiter(clock)
+	waits(t, l, 1)
+	l.observe(rateHeaders("", `"default";q=1;w=600`))
+
+	requirePaused(t, l.Wait(context.Background()), 301*time.Second)
+	clock.advance(301 * time.Second)
+
+	require.NoError(t, l.Wait(context.Background()))
+	require.Empty(t, clock.takeSleeps())
 }
