@@ -1,0 +1,5 @@
+{
+  "error": "pco needs Sys.Audit on /",
+  "code": "forbidden",
+  "missing": "Sys.Audit"
+}

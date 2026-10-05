@@ -1,0 +1,5 @@
+{
+  "error": "too many sign-ins, try again in a minute",
+  "code": "rate_limited",
+  "retryAfter": 42
+}

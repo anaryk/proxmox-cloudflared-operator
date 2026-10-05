@@ -1,0 +1,5 @@
+{
+  "error": "the hostname is not valid",
+  "code": "invalid",
+  "field": "hostname"
+}

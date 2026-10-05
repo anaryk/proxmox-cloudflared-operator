@@ -1,0 +1,13 @@
+[
+  "unauthenticated",
+  "ticket_invalid",
+  "proxmox_unreachable",
+  "daemon_unreachable",
+  "rate_limited",
+  "forbidden",
+  "invalid",
+  "too_large",
+  "unsupported_media_type",
+  "second_factor",
+  "second_factor_key"
+]

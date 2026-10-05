@@ -124,6 +124,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.setupCmd(),
 		a.uninstallCmd(),
 		a.egressCmd(),
+		a.webCmd(),
 	)
 	return root
 }

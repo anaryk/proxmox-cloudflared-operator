@@ -1,0 +1,12 @@
+{
+  "code": "unauthenticated",
+  "methods": [
+    "password",
+    "token"
+  ],
+  "ticket": false,
+  "realms": [
+    "pam",
+    "pve"
+  ]
+}
