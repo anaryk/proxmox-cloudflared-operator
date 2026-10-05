@@ -51,18 +51,27 @@ func RefuseUnzoned(routes []model.Route, zones []Zone, served []string) (kept []
 	return kept, refused
 }
 
-// RefuseHeld takes out of held the names that RefuseUnnamed or RefuseUnzoned
-// would take out as routes, and returns them as statuses: a broken entry
-// keeps no claim on a name that a working one could not take.
-func RefuseHeld(held []HeldName, zones []Zone, allow, served []string) (kept []HeldName, refused []RouteStatus) {
-	p := newClaimRules(zones, allow, served)
+// RefuseHeldUnnamed takes out of held the names that RefuseUnnamed would take
+// out as routes, and returns them as statuses: a broken entry keeps no claim
+// on a name that a working one could not take.
+func RefuseHeldUnnamed(held []HeldName, zones []Zone, allow []string) (kept []HeldName, refused []RouteStatus) {
+	p := newClaimRules(zones, allow, nil)
+	return refuseHeld(held, p.unnamed)
+}
+
+// RefuseHeldUnzoned takes out of held the names that RefuseUnzoned would take
+// out as routes, and returns them as statuses, as RefuseHeldUnnamed does.
+func RefuseHeldUnzoned(held []HeldName, zones []Zone, served []string) (kept []HeldName, refused []RouteStatus) {
+	p := newClaimRules(zones, nil, served)
+	return refuseHeld(held, p.unzoned)
+}
+
+// refuseHeld takes out of held the names that refuse says no claim may be
+// taken on.
+func refuseHeld(held []HeldName, refuse func(host, owner string) (RouteStatus, bool)) (kept []HeldName, refused []RouteStatus) {
 	kept = make([]HeldName, 0, len(held))
 	for _, h := range held {
-		st, ok := p.unnamed(h.Hostname, h.Owner)
-		if !ok {
-			st, ok = p.unzoned(h.Hostname, h.Owner)
-		}
-		if ok {
+		if st, ok := refuse(h.Hostname, h.Owner); ok {
 			refused = append(refused, st)
 			continue
 		}

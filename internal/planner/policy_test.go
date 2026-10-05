@@ -186,13 +186,19 @@ func TestAHeldNameThatCouldTakeNoClaimKeepsNone(t *testing.T) {
 		return out
 	}
 
-	kept, refused := RefuseHeld(held("example.com", "*.example.com", "*.shop.example.com", "www.example.com", "www.example.org"),
-		policyZones, []string{"*.shop.example.com"}, []string{"example.com"})
+	kept, refused := RefuseHeldUnnamed(held("example.com", "*.example.com", "*.shop.example.com", "www.example.com", "www.example.org"),
+		policyZones, []string{"*.shop.example.com"})
 
-	require.Equal(t, held("*.shop.example.com", "www.example.com"), kept)
+	require.Equal(t, held("*.shop.example.com", "www.example.com", "www.example.org"), kept, "the zones served are not asked")
 	require.Equal(t, []RouteStatus{
 		{Hostname: "example.com", Owner: "qemu/101", State: StateRejected, Reason: apexReason, Zone: "example.com"},
 		{Hostname: "*.example.com", Owner: "qemu/101", State: StateRejected, Reason: wildcardReason, Zone: "example.com"},
+	}, refused)
+
+	kept, refused = RefuseHeldUnzoned(kept, policyZones, []string{"example.com"})
+
+	require.Equal(t, held("*.shop.example.com", "www.example.com"), kept)
+	require.Equal(t, []RouteStatus{
 		{Hostname: "www.example.org", Owner: "qemu/101", State: StateNoZone, Reason: reasonNoZone},
 	}, refused)
 }

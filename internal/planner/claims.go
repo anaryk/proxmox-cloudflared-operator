@@ -42,8 +42,9 @@ type ClaimInput struct {
 	Claims   map[string]Claim  // by hostname
 	Identity map[string]string // owner -> identity now; "" when unknown, as for manual routes
 	// Refused are the names owners give that may take no claim, as
-	// RefuseUnnamed, RefuseUnzoned and RefuseHeld took them out: a claim of
-	// such an owner on the hostname ends at once, whatever Held says.
+	// RefuseUnnamed, RefuseUnzoned and their two forms for Held took them
+	// out: a claim of such an owner on the hostname ends at once, whatever
+	// Held says.
 	Refused []RouteStatus
 	Now     time.Time
 	Grace   time.Duration // how long a holder may be absent before it loses the hostname

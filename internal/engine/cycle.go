@@ -340,14 +340,15 @@ func (c *cycleRun) settleClaims() {
 	for _, st := range refused {
 		c.problem("hostname %s of %s is not published: %s", st.Hostname, st.Owner, st.Reason)
 	}
-	held := c.col.Held
+	held, heldUnnamed := planner.RefuseHeldUnnamed(c.col.Held, c.zones.planned, c.settings.AllowHosts)
+	refused = slices.Concat(refused, heldUnnamed)
 	if c.e.remembered {
 		// Unread, the memory does not say which zones were served.
-		var heldRefused []planner.RouteStatus
+		var heldUnzoned []planner.RouteStatus
 		served := c.e.zones.servedOnce()
 		routes, c.unzoned = planner.RefuseUnzoned(routes, c.zones.planned, served)
-		held, heldRefused = planner.RefuseHeld(held, c.zones.planned, c.settings.AllowHosts, served)
-		refused = slices.Concat(refused, c.unzoned, heldRefused)
+		held, heldUnzoned = planner.RefuseHeldUnzoned(held, c.zones.planned, served)
+		refused = slices.Concat(refused, c.unzoned, heldUnzoned)
 	}
 	c.claims = planner.ResolveClaims(planner.ClaimInput{
 		Routes:   routes,

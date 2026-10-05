@@ -161,6 +161,32 @@ func TestAMemoryThatCannotBeReadLetsNoClaimGo(t *testing.T) {
 	require.Equal(t, "qemu/101", storedClaims(t, e)["www.example.org"].Owner)
 }
 
+// The apex and the wildcards that allowHosts does not name are refused whether
+// or not the memory could be read: only the zones served once need it.
+func TestAMemoryThatCannotBeReadStillReleasesARefusedHolder(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	e.settings(func(s *store.Settings) { s.AllowHosts = []string{"*", "example.com"} })
+	e.inv.set(snapshot(guest(101, "web-1", "example.com www.example.com -> :8080")))
+	e.cycle()
+	require.Equal(t, "qemu/101", storedClaims(t, e)["example.com"].Owner)
+	since := e.clock.now()
+
+	require.NoError(t, os.WriteFile(e.memoryFile(), []byte("{"), 0o600))
+	e.restart()
+	e.settings(func(s *store.Settings) { s.AllowHosts = []string{"*"} })
+	e.inv.set(snapshot(guest(101, "web-1", "example.com -> :80800", "www.example.com -> :8080")))
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
+
+	require.True(t, hasProblem(st, "reading what the engine remembered"), "%v", st.Problems)
+	require.NotContains(t, storedClaims(t, e), "example.com")
+	events := claimEventsAfter(e, since)
+	require.Len(t, events, 1)
+	require.Equal(t, `released qemu/101: it may take no claim on it: the apex of zone example.com is published only when `+
+		`allowHosts names it: add "example.com" to allowHosts`, events[0].Message)
+}
+
 func storedClaims(t *testing.T, e *env) map[string]planner.Claim {
 	t.Helper()
 	claims, err := e.store.Claims()
