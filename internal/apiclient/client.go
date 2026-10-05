@@ -42,6 +42,14 @@ var (
 	ErrNoAnswer = errors.New("no usable answer from the pco daemon")
 )
 
+// NotRunning reports whether err says that nothing listens on the socket: it
+// is not there, or no daemon is behind it. A daemon that did not answer, or
+// whose socket refused the caller, is not one that is not running.
+func NotRunning(err error) bool {
+	var d *daemonError
+	return errors.As(err, &d) && d.notRunning
+}
+
 // Client calls the daemon on a unix socket.
 type Client struct {
 	socket string
@@ -355,6 +363,7 @@ type daemonError struct {
 	msg        string
 	cause      error
 	noAnswer   bool
+	notRunning bool                   // nothing listens on the socket
 	credential *engine.CredentialView // the report of a refused token
 }
 
@@ -421,13 +430,14 @@ func (c *Client) transportError(caller context.Context, err error, timeout time.
 		err = ue.Err
 	}
 	msg := fmt.Sprintf("talking to the pco daemon at %s: %v", c.socket, err)
+	notRunning := errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
 	switch {
-	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
+	case notRunning:
 		msg = "cannot reach the pco daemon at " + c.socket + ": is it running?"
 	case errors.Is(err, fs.ErrPermission):
 		msg = "permission denied on " + c.socket + ": run as root"
 	case errors.Is(err, context.DeadlineExceeded) && caller.Err() == nil:
 		msg = fmt.Sprintf("the pco daemon at %s did not answer within %s", c.socket, timeout)
 	}
-	return &daemonError{msg: msg, cause: err, noAnswer: true}
+	return &daemonError{msg: msg, cause: err, noAnswer: true, notRunning: notRunning}
 }

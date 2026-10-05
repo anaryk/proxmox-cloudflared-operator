@@ -224,7 +224,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		Proxmox:    client,
 		Interval:   eng.PollInterval,
 		Clock:      deps.Now,
-		StoreCheck: storeReady(st),
+		StoreCheck: StoreReady(st),
 		LockCheck:  lock.check,
 		Binary:     deps.Cloudflared,
 		Dial:       deps.Dial,
@@ -276,8 +276,9 @@ func (s served) Diagnose(ctx context.Context, hostname string) ([]doctor.Step, e
 
 func (s served) Doctor(ctx context.Context) []doctor.Finding { return s.doc.Doctor(ctx) }
 
-// storeReady says whether the store is mounted and set up on this node.
-func storeReady(st *store.Store) func() error {
+// StoreReady returns the check of whether the store is mounted and set up on
+// this node.
+func StoreReady(st *store.Store) func() error {
 	return func() error {
 		_, found, err := st.Install()
 		switch {

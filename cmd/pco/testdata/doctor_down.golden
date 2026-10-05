@@ -1,0 +1,10 @@
+✓ cloudflared              cloudflared 2026.9.0
+! daemon                   the daemon does not run; the checks that need the daemon were not made: the mode, the last cycle, the inventory, the credentials, the tunnels and their connectors, the way out to Cloudflare, the writer, Proxmox, the lock of the node and what waits for a confirmation or an approval
+                           fix: start it with systemctl start pco.service, then run pco doctor again
+✓ egress                   the egress filter confines the connectors
+✓ store                    the store is mounted and set up
+✓ unit pco-egress.service  pco-egress.service is running and starts at boot
+✗ unit pco.service         pco.service is not running: no command is answered and no cycle runs
+                           fix: systemctl status pco.service; journalctl -u pco.service
+
+1 failure, 1 warning.

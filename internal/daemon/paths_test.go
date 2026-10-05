@@ -127,7 +127,7 @@ func TestTheStoreIsReadyWhenItIsMountedAndSetUp(t *testing.T) {
 	}
 	s, err := store.Open(paths)
 	require.NoError(t, err)
-	ready := storeReady(s)
+	ready := StoreReady(s)
 
 	require.ErrorIs(t, ready(), store.ErrNoRoot, "no roots yet")
 	require.NoError(t, s.Init())

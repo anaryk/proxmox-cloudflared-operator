@@ -12,6 +12,14 @@ Start with `systemctl status pco` and `journalctl -u pco`. A refusal that says
 `permission denied on /run/pco/pco.sock: run as root` is the socket telling you who may
 use it.
 
+`pco doctor` is the one command that still has something to say when the daemon is not
+running, if you run it as root. It makes the checks that need no daemon, on the node itself:
+whether `pco.service` and `pco-egress.service` run and start at boot, the store, `cloudflared`
+and the egress table. A `daemon` line says that the rest was not made, and the exit status is
+by what it found: 1 when `pco.service` does not run or another of these checks fails, 0 when
+there are warnings only, as for a daemon that is still starting. Run it again once the
+daemon answers.
+
 ## Reading `pco status`
 
     Mode:        enforce
@@ -92,6 +100,7 @@ checks are:
 | `egress` | The egress filter is switched off, or its table is not loaded or not the one pco loads: a failure, because the connectors are then not confined. A warning while the daemon has not checked it yet. |
 | `nftables` | `nftables.service` is enabled. When it starts or restarts, the rules it loads flush the egress table with the rest, and the connectors are not confined until the daemon loads it again, within 30 seconds. `systemctl disable nftables.service`, or keep its rules from flushing the whole ruleset. |
 | `store`, `node lock` | The cluster filesystem is not mounted or pco is not set up; this daemon does not hold the lock of the node. |
+| `unit pco.service`, `unit pco-egress.service`, `daemon` | Only while the daemon is not running, as root. The unit does not run (failure), or runs and does not start at boot (warning); `daemon` is a warning that says the checks that need the daemon were not made. |
 | `mode` | A warning in observe-only mode. |
 | `inventory`, `writer`, `problems` | The inventory is incomplete, the writer is not in order, or the last cycle reported problems. |
 | `conflicts`, `lost markers` | Records of someone else stand in the way, or records of this install lost their marker; `pco adopt <name>`. |

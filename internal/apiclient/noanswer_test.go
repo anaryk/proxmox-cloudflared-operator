@@ -2,6 +2,7 @@ package apiclient
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -90,4 +91,50 @@ func TestEventsRawKeepsTheBytesTheDaemonSent(t *testing.T) {
 	require.Equal(t, body, string(raw))
 	require.Equal(t, "/v1/events", d.last(t).Path)
 	require.Equal(t, "since=2026-10-01T12%3A00%3A00Z", d.last(t).Query)
+}
+
+// Only a daemon that is not there is not running: one that did not answer, or
+// whose socket refused the caller, may well be.
+func TestOnlyNothingBehindTheSocketIsNotRunning(t *testing.T) {
+	missing := filepath.Join(shortDir(t), "nope.sock")
+	stale := filepath.Join(shortDir(t), "stale.sock")
+	ln, err := net.Listen("unix", stale)
+	require.NoError(t, err)
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	require.NoError(t, ln.Close())
+
+	for _, tt := range []struct {
+		name       string
+		socket     func(t *testing.T) string
+		notRunning bool
+	}{
+		{"no socket", func(*testing.T) string { return missing }, true},
+		{"nothing listens on it", func(*testing.T) string { return stale }, true},
+		{"no directory", func(*testing.T) string { return filepath.Join(missing, "deeper.sock") }, true},
+		{"a socket that refuses the peer", func(t *testing.T) string {
+			_, s := fakeDaemon(t, reply(http.StatusForbidden, `{"error":"not allowed","code":"forbidden"}`))
+			return s
+		}, false},
+		{"a daemon that gave up waiting", func(t *testing.T) string {
+			_, s := fakeDaemon(t, reply(http.StatusServiceUnavailable, `{"error":"a cycle took too long","code":"unavailable"}`))
+			return s
+		}, false},
+		{"a daemon of another version", func(t *testing.T) string {
+			_, s := fakeDaemon(t, reply(http.StatusNotFound, `{"error":"no such route","code":"no_route"}`))
+			return s
+		}, false},
+		{"a refused request", func(t *testing.T) string {
+			_, s := fakeDaemon(t, reply(http.StatusConflict, `{"error":"refused: no","code":"refused"}`))
+			return s
+		}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(tt.socket(t)).Status(t.Context())
+
+			require.Error(t, err)
+			require.Equal(t, tt.notRunning, NotRunning(err), err.Error())
+		})
+	}
+	require.False(t, NotRunning(nil))
+	require.False(t, NotRunning(errors.New("cannot reach the pco daemon")), "an error that is not the client's")
 }

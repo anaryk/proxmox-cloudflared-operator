@@ -39,20 +39,25 @@ type Finding struct {
 	Fix    string `json:"fix,omitempty"` // what to do about it; empty when ok
 }
 
-// Env abstracts the host facts doctor reads.
-type Env interface {
+// facts are the host facts that need neither the daemon nor Proxmox.
+type facts interface {
 	CloudflaredVersion(ctx context.Context) (string, error)
 	UnitActive(ctx context.Context, unit string) (bool, error)
 	// UnitEnabled reports whether a unit starts at boot.
 	UnitEnabled(ctx context.Context, unit string) (bool, error)
-	CanDial(ctx context.Context, network, addr string) error
-	PVEVersion(ctx context.Context) (string, error)
 	// Store is nil when the store is mounted and set up.
 	Store(ctx context.Context) error
+	Now() time.Time
+}
+
+// Env abstracts the host facts doctor reads.
+type Env interface {
+	facts
+	CanDial(ctx context.Context, network, addr string) error
+	PVEVersion(ctx context.Context) (string, error)
 	// NodeLock is nil when this daemon holds the lock of the node.
 	NodeLock(ctx context.Context) error
 	PollInterval() time.Duration
-	Now() time.Time
 }
 
 const (
@@ -64,6 +69,7 @@ const (
 	staleCycles = 6
 
 	fixProblems = "pco status lists the problems that say why"
+	fixTable    = "pco status says why; pco egress show shows the table"
 	fixNewToken = "add a new token with pco credential add, then remove this one"
 
 	// notChecked is what a tunnel the last cycle did not check is, when the
@@ -90,7 +96,7 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 	out := []Finding{
 		checkCycle(st, env), checkCloudflared(ctx, env), checkOutbound(ctx, st, env),
 		checkProxmox(ctx, env), checkStore(ctx, env), checkLock(ctx, env),
-		checkEgress(st), checkNftables(ctx, env),
+		checkEgress(st.Egress, fixTable), checkNftables(ctx, env),
 	}
 	if st.At.IsZero() {
 		for _, check := range stateChecks {
@@ -337,7 +343,7 @@ func days(d time.Duration) string {
 	return fmt.Sprintf("%d days", n)
 }
 
-func checkCloudflared(ctx context.Context, env Env) Finding {
+func checkCloudflared(ctx context.Context, env facts) Finding {
 	out, err := env.CloudflaredVersion(ctx)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -497,11 +503,11 @@ func majorMinor(release string) (major, minor int, parsed bool) {
 	return major, minor, errA == nil && errB == nil
 }
 
-// checkEgress says how the daemon last found the egress filter: a filter
-// that does not confine the connectors fails.
-func checkEgress(st engine.State) Finding {
-	const fixTable = "pco status says why; pco egress show shows the table"
-	switch v := st.Egress; v.State {
+// checkEgress says how the egress filter was last found: a filter that does
+// not confine the connectors fails. fix is what to do about a table that is
+// gone or not as pco loads it.
+func checkEgress(v engine.EgressView, fix string) Finding {
+	switch v.State {
 	case "":
 		return warn("egress", "the daemon has not checked the egress table yet", "wait half a minute")
 	case engine.EgressOn:
@@ -513,11 +519,11 @@ func checkEgress(st engine.State) Finding {
 		}
 		return fail("egress", "the egress filter is switched off since "+since+": the connectors are not confined", "pco egress on")
 	case engine.EgressNotLoaded:
-		return fail("egress", "the egress table is not loaded: the connectors are not confined", fixTable)
+		return fail("egress", "the egress table is not loaded: the connectors are not confined", fix)
 	case engine.EgressChanged:
-		return fail("egress", "the egress table is not the one pco loads: the connectors may not be confined", fixTable)
+		return fail("egress", "the egress table is not the one pco loads: the connectors may not be confined", fix)
 	}
-	return warn("egress", fmt.Sprintf("the daemon found the egress filter %q", st.Egress.State), fixTable)
+	return warn("egress", fmt.Sprintf("the daemon found the egress filter %q", v.State), fix)
 }
 
 // nftablesUnit loads /etc/nftables.conf, which flushes the whole ruleset as
@@ -540,7 +546,7 @@ func checkNftables(ctx context.Context, env Env) Finding {
 	return ok("nftables", nftablesUnit+" is not enabled")
 }
 
-func checkStore(ctx context.Context, env Env) Finding {
+func checkStore(ctx context.Context, env facts) Finding {
 	err := env.Store(ctx)
 	switch {
 	case err == nil:

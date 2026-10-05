@@ -296,7 +296,7 @@ Every `pco` command that asks the daemon exits with one of three codes.
 |---|---|
 | 0 | All is well. |
 | 1 | The command ran and found something to look at: problems in the state, or an egress filter that does not confine the connectors (`pco status`), a failed check (`pco doctor`), a failed step (`pco diagnose`), a filter that is off, not loaded or changed (`pco egress show`), a request the daemon refused, or any other failure. |
-| 2 | The command could not ask the daemon: it is not running, its socket refused the connection, no answer came in time, or the answer could not be read. |
+| 2 | The command could not ask the daemon: it is not running, its socket refused the connection, no answer came in time, or the answer could not be read. Run as root with the daemon not running, `pco doctor` makes the checks that need no daemon instead and exits by what it finds. |
 
 `pco routes`, `pco plan`, `pco events`, `pco claims list` and `pco guest list` print what
 they find and exit 0. `pco doctor` exits 1 for a failure and not for a warning, and
