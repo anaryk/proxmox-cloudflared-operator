@@ -545,6 +545,36 @@ func TestTheZonesServedInAnOlderMemoryAreRememberedAsServedOnce(t *testing.T) {
 	require.Equal(t, []string{"example.net"}, zoneNames(m.EverServed), "example.com is not listed while its account is frozen")
 }
 
+// A memory this build saved keeps apart the zones it served and those whose
+// records it listed: one served but never listed, as when the first check of
+// its credential did not end in time before a restart, holds no record.
+func TestOnlyAMemorySavedBeforeTheZonesListedWereKeptCountsItsServedZones(t *testing.T) {
+	served := []store.RememberedZone{
+		{ID: "zone2", Name: "example.net", AccountID: testAccount, CredentialID: testCred},
+		{ID: "zone3", Name: "example.org", AccountID: testAccount, CredentialID: testCred},
+	}
+	for _, tt := range []struct {
+		name    string
+		version int
+		want    []string
+	}{
+		{"saved by this build", store.MemoryVersion, []string{}},
+		{"saved before", 0, []string{"example.net", "example.org"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			require.NoError(t, e.store.SaveEngineMemory(store.EngineMemory{Version: tt.version, InstallID: testInstall, Served: served}))
+
+			require.NoError(t, e.eng.recall(testInstall))
+
+			m := e.eng.memory()
+			require.Equal(t, tt.want, zoneNames(m.EverServed))
+			require.Equal(t, []string{"example.net", "example.org"}, zoneNames(m.Served))
+			require.Equal(t, store.MemoryVersion, m.Version)
+		})
+	}
+}
+
 func zoneNames(zones []store.RememberedZone) []string {
 	out := make([]string, 0, len(zones))
 	for _, z := range zones {

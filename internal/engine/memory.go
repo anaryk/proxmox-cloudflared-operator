@@ -36,9 +36,11 @@ func (e *Engine) recall(installID string) error {
 	for _, z := range m.Served {
 		zone := planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID}
 		e.zones.serve(z.Name, zone)
-		// A memory saved before the zones listed were kept apart holds them
-		// only here.
-		e.zones.listed(zone)
+		if m.Version == 0 {
+			// Saved before the zones listed were kept apart, it may hold
+			// them only here.
+			e.zones.listed(zone)
+		}
 	}
 	for _, z := range m.Stale {
 		e.zones.credential(z.CredentialID).stale[z.Name] = cfapi.Zone{ID: z.ID, Name: z.Name, Status: "active", AccountID: z.AccountID}
@@ -63,7 +65,7 @@ func (e *Engine) recall(installID string) error {
 
 // memory is what the engine remembers, as the store keeps it.
 func (e *Engine) memory() store.EngineMemory {
-	m := store.EngineMemory{InstallID: e.memoryOf}
+	m := store.EngineMemory{Version: store.MemoryVersion, InstallID: e.memoryOf}
 	for _, name := range slices.Sorted(maps.Keys(e.zones.served)) {
 		z := e.zones.served[name]
 		m.Served = append(m.Served, store.RememberedZone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID})

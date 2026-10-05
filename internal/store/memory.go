@@ -11,9 +11,16 @@ import (
 
 const idEngineMemory = "engine-memory"
 
+// MemoryVersion is the Version of the engine memory this build saves.
+const MemoryVersion = 1
+
 // EngineMemory is what the reconcile cycle learns and must still know after a
 // restart: forgetting any of it would turn a hold into a removal.
 type EngineMemory struct {
+	// Version is MemoryVersion for a memory this build saved. One without it
+	// was saved before EverServed held the zones whose records were listed,
+	// and may hold the zones it served only in Served.
+	Version int `json:"version,omitempty"`
 	// InstallID is the install the memory belongs to: a memory of another
 	// install, as after a new setup on the node, is not this one's.
 	InstallID string `json:"installId,omitempty"`

@@ -13,6 +13,7 @@ import (
 
 func memorySample() EngineMemory {
 	return EngineMemory{
+		Version:   MemoryVersion,
 		InstallID: "abc123",
 		Served: []RememberedZone{
 			{ID: "zone3", Name: "example.org", AccountID: "acc2", CredentialID: "cred2"},
@@ -65,6 +66,7 @@ func TestEngineMemoryComesBackInOrder(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, EngineMemory{
+		Version:   MemoryVersion,
 		InstallID: "abc123",
 		Served: []RememberedZone{
 			{ID: "zone1", Name: "example.com", AccountID: "acc1", CredentialID: "cred1"},
