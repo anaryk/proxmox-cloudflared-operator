@@ -346,6 +346,21 @@ func TestRemoveBeforeAnySetLeavesTheCountingSetsOfAnOlderTableAlone(t *testing.T
 	require.Equal(t, []string{"delete element inet pco_egress targets4 { 10.0.0.5 . 80, 10.0.0.5 . 8080 }\n"}, n.applied())
 }
 
+// A counting set can hold what the target sets do not; the address goes out
+// of it all the same.
+func TestRemoveBeforeAnySetTakesTheAddressOutOfACountingSetThatHoldsItAlone(t *testing.T) {
+	f, n, _, _ := newTestFilter(t)
+	n.setLive(realListing(t, "1.1.3").with(t, targets("10.0.0.6:443"), nil).edit(t, func(l listing) listing {
+		s := l.object(t, "set", setFlows4)
+		s["elem"] = append(s["elem"].([]any), countedElement(target("10.0.0.5:80"), 3))
+		return l
+	}).bytes(t))
+
+	require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
+
+	require.Equal(t, []string{"delete element inet pco_egress flows4 { 10.0.0.5 . 80 }\n"}, n.applied())
+}
+
 func TestRemoveBeforeAnySetReturnsAListingItCannotRead(t *testing.T) {
 	f, n, _, _ := newTestFilter(t)
 	n.setLive([]byte("{"))
@@ -868,7 +883,9 @@ func TestVerifyBeforeAnythingWasAppliedComparesAllButTheElements(t *testing.T) {
 
 // After an upgrade the daemon finds the table the older pco loaded, without
 // the counting sets: its check finds it changed, the keeper loads it again,
-// and the table loaded then is in place, which shows the filter as on.
+// and the table loaded then is in place, which shows the filter as on. The
+// targets of the old table stay until the first cycle: the connectors use
+// them, and a table without them would refuse their origins for a while.
 func TestATableOfAnOlderPcoIsLoadedAgainAndThenInPlace(t *testing.T) {
 	for _, version := range []string{"1.0.6", "1.1.3"} {
 		t.Run(version, func(t *testing.T) {
@@ -882,13 +899,107 @@ func TestATableOfAnOlderPcoIsLoadedAgainAndThenInPlace(t *testing.T) {
 			require.ErrorContains(t, err, "chain connector has 19 rules, want 21; no set flows4; no set flows6")
 
 			require.NoError(t, f.Reapply(t.Context()))
+			require.Equal(t, []string{render(testUID, contents{targets: tg, resolvers: []netip.Addr{addr("192.168.1.1")}})}, n.applied())
 			require.NoError(t, f.Set(t.Context(), tg))
-			require.Len(t, n.applied(), 2)
-			require.Equal(t, render(testUID, contents{targets: tg, resolvers: []netip.Addr{addr("192.168.1.1")}}), n.applied()[1])
+			require.Len(t, n.applied(), 1, "the table holds what the first cycle gives")
 			n.setLive(realListing(t, version).bytes(t))
 			require.NoError(t, f.Verify(t.Context()))
+
+			require.NoError(t, f.Set(t.Context(), targets("10.0.0.6:443")))
+			require.Len(t, n.applied(), 2)
+			require.Equal(t, render(testUID, contents{targets: targets("10.0.0.6:443"), resolvers: []netip.Addr{addr("192.168.1.1")}}), n.applied()[1])
 		})
 	}
+}
+
+// Until the first Set the filter does not know its targets, and a table it
+// loads in the meantime keeps those of the live one.
+func TestReapplyBeforeAnySetKeepsTheTargetsOfTheLiveTable(t *testing.T) {
+	tg := []Target{nodeTarget("10.0.0.2:8006"), target("10.0.0.5:80"), target("10.0.0.6:443"), target("[fd00::5]:80")}
+	live := func(t *testing.T) listing { return realListing(t, "1.1.3").with(t, tg, nil) }
+
+	t.Run("of both kinds and both families", func(t *testing.T) {
+		f, n, _, _ := newTestFilter(t)
+		n.setLive(live(t).bytes(t))
+
+		require.NoError(t, f.Reapply(t.Context()))
+
+		require.Equal(t, []string{render(testUID, contents{targets: tg})}, n.applied())
+	})
+	t.Run("again, as the keeper checks again before the first cycle", func(t *testing.T) {
+		f, n, _, _ := newTestFilter(t)
+		n.setLive(live(t).bytes(t))
+		require.NoError(t, f.Reapply(t.Context()))
+
+		require.NoError(t, f.Reapply(t.Context()))
+
+		require.Equal(t, []string{render(testUID, contents{targets: tg}), render(testUID, contents{targets: tg})}, n.applied())
+	})
+	t.Run("less the blocked addresses", func(t *testing.T) {
+		f, n, _, ov := newTestFilter(t)
+		_, err := ov.Block(addr("10.0.0.5"))
+		require.NoError(t, err)
+		n.setLive(live(t).bytes(t))
+
+		require.NoError(t, f.Reapply(t.Context()))
+
+		require.Equal(t, []string{render(testUID, contents{
+			targets: slices.DeleteFunc(slices.Clone(tg), func(x Target) bool { return x.Addr == addr("10.0.0.5") }),
+			blocked: []netip.Addr{addr("10.0.0.5")},
+		})}, n.applied())
+	})
+	t.Run("and a removed address stays out when the delete fails", func(t *testing.T) {
+		f, n, _, _ := newTestFilter(t)
+		n.setLive(live(t).bytes(t))
+		require.NoError(t, f.Reapply(t.Context()))
+		n.apply = func(script string) error {
+			if strings.HasPrefix(script, "delete element") {
+				return errBoom
+			}
+			return nil
+		}
+		n.reset()
+
+		require.NoError(t, f.Remove(t.Context(), addr("10.0.0.5")))
+
+		require.Len(t, n.applied(), 2)
+		require.Equal(t, render(testUID, contents{targets: slices.DeleteFunc(slices.Clone(tg), func(x Target) bool {
+			return x.Addr == addr("10.0.0.5")
+		})}), n.applied()[1])
+	})
+	t.Run("but none when there is no table, or none that can be read", func(t *testing.T) {
+		for name, set := range map[string]func(*fakeNft){
+			"not loaded": func(n *fakeNft) { n.listErr = ErrNotLoaded },
+			"unreadable": func(n *fakeNft) { n.setLive([]byte("{")) },
+		} {
+			f, n, _, _ := newTestFilter(t)
+			set(n)
+
+			require.NoError(t, f.Reapply(t.Context()), name)
+
+			require.Equal(t, []string{render(testUID, contents{})}, n.applied(), name)
+		}
+	})
+	t.Run("and none after a Set that gave none", func(t *testing.T) {
+		f, n, _, ov := newTestFilter(t)
+		require.NoError(t, ov.SwitchOff(time.Now()))
+		require.NoError(t, f.Set(t.Context(), nil))
+		_, err := ov.SwitchOn()
+		require.NoError(t, err)
+		n.setLive(live(t).bytes(t))
+
+		require.NoError(t, f.Reapply(t.Context()))
+
+		require.Equal(t, []string{render(testUID, contents{})}, n.applied())
+	})
+	t.Run("and a listing that fails is no reason to load an empty table", func(t *testing.T) {
+		f, n, _, _ := newTestFilter(t)
+		n.listErr = errBoom
+
+		require.ErrorIs(t, f.Reapply(t.Context()), errBoom)
+
+		require.Empty(t, n.applied())
+	})
 }
 
 func TestVerifySaysOnceThatACountingSetIsMissing(t *testing.T) {

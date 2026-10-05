@@ -78,7 +78,7 @@ type Filter struct {
 	ov        *Overrides
 
 	mu      sync.Mutex
-	want    []Target  // as the last Set gave them, less what Remove took out since
+	want    []Target  // as the last Set gave them, less what Remove took out since; nil until a Set or the first load of a table
 	applied *contents // what the live table was last made to hold; nil when that is not known
 	stale   bool      // apply at the next Set even when nothing changed
 }
@@ -267,7 +267,8 @@ func (f *Filter) Rebind(connectorUID uint32) bool {
 
 // Reapply loads the table again with what the filter was last given, also
 // when nothing changed since: after Verify found it gone, dormant or not the
-// one applied. While the filter is switched off it loads nothing.
+// one applied. Before the first Set, that is the targets of the table it
+// replaces. While the filter is switched off it loads nothing.
 func (f *Filter) Reapply(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -290,6 +291,11 @@ func (f *Filter) sync(ctx context.Context) error {
 		f.applied = nil
 		return nil
 	}
+	if f.want == nil {
+		if err := f.adoptLive(ctx); err != nil {
+			return err
+		}
+	}
 	next, err := f.contents()
 	if err != nil {
 		return err
@@ -305,6 +311,26 @@ func (f *Filter) sync(ctx context.Context) error {
 	}
 	f.applied, f.stale = &next, false
 	return nil
+}
+
+// adoptLive makes the targets of the live table the ones wanted, for a filter
+// that has been given none yet: a daemon that starts finds the table it
+// loaded before, and a table loaded in its place before the first Set, as the
+// keeper does after an upgrade, would refuse the origins the connectors use
+// until the first cycle. A table that is not there, or whose listing cannot
+// be read, holds none.
+func (f *Filter) adoptLive(ctx context.Context) error {
+	var c contents
+	l, err := list(ctx, f.nft)
+	switch {
+	case errors.Is(err, ErrNotLoaded), errors.Is(err, ErrUnreadable):
+	case err != nil:
+		return fmt.Errorf("reading the targets of the egress table: %w", err)
+	default:
+		c, _ = l.contents()
+	}
+	f.want, err = normalizeTargets(c.targets)
+	return err
 }
 
 func (f *Filter) contents() (contents, error) {

@@ -74,6 +74,34 @@ func TestReadCountersOfBothFamiliesAndKinds(t *testing.T) {
 	}, flows, "a target of allowNode is marked as the filter holds it")
 }
 
+// nft lists the elements of a set in the order of its own, not by address.
+func TestReadCountersReturnsTheTargetsByAddressAndPortWhateverTheOrderOfTheListing(t *testing.T) {
+	n := &fakeNft{}
+	n.setLive(realListing(t, "1.1.3").edit(t, func(l listing) listing {
+		l.object(t, "set", setFlows4)["elem"] = []any{
+			countedElement(target("10.0.0.6:443"), 2),
+			countedElement(target("10.0.0.5:8080"), 5),
+			countedElement(target("10.0.0.5:80"), 7),
+		}
+		l.object(t, "set", setFlows6)["elem"] = []any{
+			countedElement(target("[fd00::6]:80"), 1),
+			countedElement(target("[fd00::5]:80"), 3),
+		}
+		return l
+	}).bytes(t))
+
+	_, flows, err := ReadCounters(t.Context(), n)
+
+	require.NoError(t, err)
+	require.Equal(t, []TargetFlows{
+		{Target: target("10.0.0.5:80"), Flows: 7},
+		{Target: target("10.0.0.5:8080"), Flows: 5},
+		{Target: target("10.0.0.6:443"), Flows: 2},
+		{Target: target("[fd00::5]:80"), Flows: 3},
+		{Target: target("[fd00::6]:80"), Flows: 1},
+	}, flows)
+}
+
 func TestReadCountersOfATableWithoutTargets(t *testing.T) {
 	n := &fakeNft{}
 	n.setLive(realListing(t, "1.0.6").with(t, nil, nil).bytes(t))
