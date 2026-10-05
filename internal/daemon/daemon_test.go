@@ -81,16 +81,14 @@ func TestApplyThroughTheSocketPublishesTheRoute(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, files, "the token and env files of the connector are in the local root")
 
-	d.await(func(st engine.State) bool {
-		for _, a := range st.Actions {
-			if a.Kind == "create-record" && a.Applied {
-				return true
-			}
-		}
-		return false
-	})
-	records, err := w.cf.Records(ctx, "zone1", cfapi.RecordFilter{})
-	require.NoError(t, err)
+	// The record is looked for at Cloudflare: the state shows the actions of
+	// the last cycle only, and a busy machine can run the next cycle between
+	// two looks at it.
+	var records []cfapi.Record
+	require.Eventually(t, func() bool {
+		records, err = w.cf.Records(ctx, "zone1", cfapi.RecordFilter{})
+		return err == nil && len(records) > 0
+	}, 10*time.Second, 5*time.Millisecond)
 	require.Len(t, records, 1)
 	require.Equal(t, "www.example.com", records[0].Name)
 	require.Equal(t, tunnelID+".cfargotunnel.com", records[0].Content)
