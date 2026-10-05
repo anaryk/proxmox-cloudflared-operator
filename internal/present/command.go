@@ -2,6 +2,7 @@ package present
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
@@ -21,20 +22,28 @@ var argForms = map[string]*regexp.Regexp{
 	ArgHostname: regexp.MustCompile(`^([a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$`),
 }
 
-// ArgForm is the pattern a value of kind has to match; empty for a kind that
-// has none.
+// noForm is the pattern of a kind that has none. It matches nothing, so that
+// wherever it is used a value of that kind is refused.
+const noForm = `[^\s\S]`
+
+// ArgForm is the pattern a value of kind has to match, or one that matches
+// nothing for a kind that has none.
 func ArgForm(kind string) string {
 	if re, ok := argForms[kind]; ok {
 		return re.String()
 	}
-	return ""
+	return noForm
 }
 
-// CommandArg returns v when it has the form of its kind, else "" and the
-// refusal "the <kind> has an unexpected form". A command offered to be copied
-// into a root shell is made only of values that passed it: what the daemon
-// says comes in part from guests and from Cloudflare.
+// CommandArg returns v when it has the form of its kind, else "" and why not:
+// "the <kind> begins with a dash, which a command would take for an option",
+// whatever the kind, or "the <kind> has an unexpected form". A command offered
+// to be copied into a root shell is made only of values that passed it: what
+// the daemon says comes in part from guests and from Cloudflare.
 func CommandArg(kind, v string) (string, string) {
+	if strings.HasPrefix(v, "-") {
+		return "", "the " + kind + " begins with a dash, which a command would take for an option"
+	}
 	if re, ok := argForms[kind]; ok && re.MatchString(v) {
 		return v, ""
 	}
@@ -42,8 +51,11 @@ func CommandArg(kind, v string) (string, string) {
 }
 
 // RotateCommand is the command that rotates the secret of the tunnel in
-// account, or, when the account id has another form or the daemon would
-// refuse the rotation, no command and why.
+// account, or, when the account id has another form or engine.RotationTarget
+// refuses the tunnel, no command and why. It does not look at the mode: in
+// observe-only mode the daemon refuses the rotation when the command runs. A
+// command shown is no promise that the daemon carries it out; the daemon
+// decides when it is asked.
 func RotateCommand(tunnels []engine.TunnelView, account string) (cmd, refused string) {
 	id, refused := CommandArg(ArgAccount, account)
 	if refused != "" {

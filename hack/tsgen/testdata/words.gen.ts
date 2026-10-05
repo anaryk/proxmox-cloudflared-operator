@@ -7,23 +7,23 @@
 
 // present.EgressText, by the state of the egress filter; another state is shown
 // as it is.
-export const egressWords: Readonly<Record<string, string>> = {
-  "": "not checked yet",
-  "changed": "not the one pco loads: the connectors may not be confined",
-  "not loaded": "not loaded: the connectors are not confined",
-  "off": "off: the connectors are not confined",
-  "on": "on",
-}
+export const egressWords: ReadonlyMap<string, string> = new Map([
+  ["", "not checked yet"],
+  ["changed", "not the one pco loads: the connectors may not be confined"],
+  ["not loaded", "not loaded: the connectors are not confined"],
+  ["off", "off: the connectors are not confined"],
+  ["on", "on"],
+])
 
 // present.WriterText, by the verdict on the writer; another verdict is shown as
 // it is.
-export const writerWords: Readonly<Record<string, string>> = {
-  "": "-",
-  "foreign": "foreign (another installation is writing)",
-  "ok": "ok",
-  "stale": "stale (a newer generation of this install is writing)",
-  "unknown": "unknown (leader.json could not be used)",
-}
+export const writerWords: ReadonlyMap<string, string> = new Map([
+  ["", "-"],
+  ["foreign", "foreign (another installation is writing)"],
+  ["ok", "ok"],
+  ["stale", "stale (a newer generation of this install is writing)"],
+  ["unknown", "unknown (leader.json could not be used)"],
+])
 
 // The words of present.VerifiedText, in the order it looks at the tunnel.
 export const verifiedWords = {
@@ -48,12 +48,13 @@ export const routeStateOrder: readonly string[] = [
 ]
 
 // The forms of the values a command for a root shell may carry, by kind, as
-// present.CommandArg checks them.
-export const argForms: Readonly<Record<string, string>> = {
-  "account id": "^[0-9a-f]{32}$",
-  "hostname": "^([a-z0-9-]{1,63}\\.)+[a-z0-9-]{2,63}$",
-  "owner": "^(qemu|lxc)/[0-9]+$",
-}
+// present.CommandArg checks them; a value of a kind that is not here, or that
+// begins with a dash, is refused.
+export const argForms: ReadonlyMap<string, string> = new Map([
+  ["account id", "^[0-9a-f]{32}$"],
+  ["hostname", "^([a-z0-9-]{1,63}\\.)+[a-z0-9-]{2,63}$"],
+  ["owner", "^(qemu|lxc)/[0-9]+$"],
+])
 
 // The words of the line that says what waits for Cloudflare's rate limit, which
 // present.BudgetWait reads: its end, after the verb, and the beginnings of the

@@ -3,7 +3,11 @@ package present
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
+	"regexp"
+	"slices"
+	"strconv"
 	"testing"
 	"unicode"
 	"unicode/utf8"
@@ -51,6 +55,7 @@ var wordFuncs = map[string]func(t *testing.T, in json.RawMessage) any{
 		value, refused := CommandArg(arg.Kind, arg.Value)
 		return map[string]string{"value": value, "refused": refused}
 	},
+	"commandArgEveryPosition": commandArgEveryPosition,
 	"rotateCommand": func(t *testing.T, in json.RawMessage) any {
 		arg := decode[struct {
 			Tunnels []engine.TunnelView
@@ -146,24 +151,47 @@ func TestBudgetWaitReadsBackTheLineOfWhatWaits(t *testing.T) {
 	}
 }
 
-// No character a shell gives a meaning to gets into a command, wherever it is
-// in the value.
-func TestCommandArgRefusesWhatAShellReads(t *testing.T) {
-	shell := []string{" ", "\t", "\n", "'", "\"", "`", "$", ";", "&", "|", "<", ">", "(", ")", "{", "}", "\\", "*", "?", "#", "~", "!", "=", "\x00", "\u202e"}
-	for kind, valid := range map[string]string{
-		ArgAccount:  "0123456789abcdef0123456789abcdef",
-		ArgOwner:    "qemu/101",
-		ArgHostname: "www.example.com",
-	} {
-		got, refused := CommandArg(kind, valid)
-		require.Equal(t, valid, got)
-		require.Empty(t, refused)
-		for _, c := range shell {
-			for _, v := range []string{c + valid, valid + c, valid[:5] + c + valid[5:]} {
-				got, refused := CommandArg(kind, v)
-				require.Empty(t, got, "%s %q", kind, v)
-				require.Equal(t, "the "+kind+" has an unexpected form", refused)
+// The pattern of a kind without one refuses whatever it is given, in the
+// web interface too.
+func TestArgFormOfAKindWithoutOneMatchesNothing(t *testing.T) {
+	re := regexp.MustCompile(ArgForm("path"))
+	for _, v := range []string{"", "a", "/etc", "-", "\n", "0123456789abcdef0123456789abcdef", "qemu/101", "www.example.com"} {
+		require.False(t, re.MatchString(v), "%q", v)
+	}
+	for kind, form := range argForms {
+		require.Equal(t, form.String(), ArgForm(kind))
+	}
+}
+
+// commandArgEveryPosition puts each of the characters in place of each
+// character of each value, and between any two of them, and lists what
+// CommandArg did not refuse as of an unexpected form. Each value must pass
+// as it is.
+func commandArgEveryPosition(t *testing.T, in json.RawMessage) any {
+	arg := decode[struct {
+		Chars  []string
+		Values map[string]string
+	}](t, in)
+	wrong := []string{}
+	for _, kind := range slices.Sorted(maps.Keys(arg.Values)) {
+		v := arg.Values[kind]
+		if got, _ := CommandArg(kind, v); got != v {
+			wrong = append(wrong, kind+" "+strconv.Quote(v)+" is refused")
+		}
+		for _, c := range arg.Chars {
+			var spliced []string
+			for i := range len(v) + 1 {
+				if i < len(v) && v[i:i+1] != c {
+					spliced = append(spliced, v[:i]+c+v[i+1:])
+				}
+				spliced = append(spliced, v[:i]+c+v[i:])
+			}
+			for _, s := range spliced {
+				if got, refused := CommandArg(kind, s); got != "" || refused != "the "+kind+" has an unexpected form" {
+					wrong = append(wrong, kind+" "+strconv.Quote(s))
+				}
 			}
 		}
 	}
+	return wrong
 }

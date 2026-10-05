@@ -9,8 +9,9 @@ import (
 // The words of the line of Waiting. present.BudgetWait reads the line back by
 // them, so that the two say the same.
 const (
-	// RateLimitWait ends the line, after its verb.
-	RateLimitWait = "for Cloudflare's rate limit"
+	// RateLimitWait ends the line, after its verb: the changes wait for what
+	// they are held for.
+	RateLimitWait = "for " + HeldBudget
 	// ZoneListingRead and TunnelRead begin what a run could not read, before
 	// the name of the zone or the id of the account.
 	ZoneListingRead = "the listing of zone "

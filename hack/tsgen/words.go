@@ -48,14 +48,14 @@ func wordsModule() string {
 		egress[s] = present.EgressText(engine.EgressView{State: s})
 	}
 	section(&b, "present.EgressText, by the state of the egress filter; another state is shown as it is.")
-	record(&b, "egressWords", egress)
+	table(&b, "egressWords", egress)
 
 	writer := make(map[string]string)
 	for _, v := range []string{"", engine.VerdictOK, engine.VerdictStale, engine.VerdictForeign, engine.VerdictUnknown} {
 		writer[v] = present.WriterText(v)
 	}
 	section(&b, "present.WriterText, by the verdict on the writer; another verdict is shown as it is.")
-	record(&b, "writerWords", writer)
+	table(&b, "writerWords", writer)
 
 	section(&b, "The words of present.VerifiedText, in the order it looks at the tunnel.")
 	object(&b, "verifiedWords", [][2]string{
@@ -77,8 +77,8 @@ func wordsModule() string {
 	for _, kind := range []string{present.ArgAccount, present.ArgOwner, present.ArgHostname} {
 		forms[kind] = present.ArgForm(kind)
 	}
-	section(&b, "The forms of the values a command for a root shell may carry, by kind, as present.CommandArg checks them.")
-	record(&b, "argForms", forms)
+	section(&b, "The forms of the values a command for a root shell may carry, by kind, as present.CommandArg checks them; a value of a kind that is not here, or that begins with a dash, is refused.")
+	table(&b, "argForms", forms)
 
 	section(&b, "The words of the line that says what waits for Cloudflare's rate limit, which present.BudgetWait reads: its end, after the verb, and the beginnings of the reads that wait.")
 	fmt.Fprintf(&b, "export const rateLimitWait = %s\n", quote(reconcile.RateLimitWait))
@@ -126,12 +126,14 @@ func section(b *strings.Builder, doc string) {
 	b.WriteString(line + "\n")
 }
 
-func record(b *strings.Builder, name string, m map[string]string) {
-	fmt.Fprintf(b, "export const %s: Readonly<Record<string, string>> = {\n", name)
+// table writes a lookup as a Map: a key it does not have is undefined, where
+// an object would answer with what it inherits, as for "constructor".
+func table(b *strings.Builder, name string, m map[string]string) {
+	fmt.Fprintf(b, "export const %s: ReadonlyMap<string, string> = new Map([\n", name)
 	for _, k := range slices.Sorted(maps.Keys(m)) {
-		fmt.Fprintf(b, "  %s: %s,\n", quote(k), quote(m[k]))
+		fmt.Fprintf(b, "  [%s, %s],\n", quote(k), quote(m[k]))
 	}
-	b.WriteString("}\n")
+	b.WriteString("])\n")
 }
 
 func object(b *strings.Builder, name string, fields [][2]string) {
