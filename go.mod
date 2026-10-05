@@ -2,6 +2,8 @@ module github.com/anaryk/proxmox-cloudflared-operator
 
 go 1.26
 
+toolchain go1.27.1
+
 require (
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/gin-gonic/gin v1.12.0
