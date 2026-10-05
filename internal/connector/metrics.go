@@ -8,15 +8,27 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
-// maxMetricsBody is how much of /metrics is read. cloudflared serves about
-// 20 KiB.
-const maxMetricsBody = 1 << 20
+const (
+	// maxMetricsBody is how much of /metrics is read. cloudflared serves about
+	// 20 KiB.
+	maxMetricsBody = 1 << 20
+	// maxCount is the largest value taken for a series that counts connections
+	// or versions.
+	maxCount = 1 << 20
+	// maxConnection is the last connection index: cloudflared numbers its
+	// connections with a uint8.
+	maxConnection = 255
+	// maxLabel is how much of the version and of an edge location is kept.
+	maxLabel = 64
+)
 
 // The series of cloudflared's /metrics that the traffic is made of.
 const (
@@ -28,6 +40,7 @@ const (
 	seriesBuild      = "build_info"
 	seriesLocations  = "cloudflared_tunnel_server_locations"
 	seriesRTT        = "quic_client_smoothed_rtt"
+	seriesStart      = "process_start_time_seconds"
 )
 
 // Edge is a connection of a connector to Cloudflare's edge and where it ends.
@@ -44,9 +57,10 @@ type Metrics struct {
 	Concurrent    float64   // cloudflared_tunnel_concurrent_requests_per_tunnel
 	HAConnections int       // cloudflared_tunnel_ha_connections
 	ConfigVersion int       // cloudflared_orchestration_config_version
-	Version       string    // build_info{version}
+	Version       string    // build_info{version}, at most 64 bytes
+	Started       float64   // process_start_time_seconds, 0 when missing
 	Edges         []Edge    // cloudflared_tunnel_server_locations{connection_id,edge_location}, by connection
-	RTTMillis     []float64 // quic_client_smoothed_rtt{conn_index}, by index; empty over http2
+	RTTMillis     []float64 // quic_client_smoothed_rtt{conn_index}, by index, 0 for a connection that has none; empty over http2
 }
 
 // Metrics scrapes the connector's /metrics, at the address its env file
@@ -87,7 +101,10 @@ func (m *Manager) Metrics(ctx context.Context, tunnelID string) (Metrics, error)
 // ParseMetrics reads the Prometheus text format and keeps the series of
 // Metrics; others are skipped. At most limit bytes are read: a longer answer
 // is an error. Both counters must be there, as no rate can be made without
-// them; the rest is zero or empty when it is missing.
+// them; the rest is zero or empty when it is missing. The port is a local one
+// that another process could answer on, so a value that is no finite number,
+// a count out of range and a connection index above 255 are errors, and the
+// strings are cut short.
 func ParseMetrics(r io.Reader, limit int64) (Metrics, error) {
 	var (
 		m        Metrics
@@ -118,8 +135,11 @@ func ParseMetrics(r io.Reader, limit int64) (Metrics, error) {
 			return Metrics{}, fmt.Errorf("no %s in the metrics", name)
 		}
 	}
-	for _, conn := range slices.Sorted(maps.Keys(rtts)) {
-		m.RTTMillis = append(m.RTTMillis, rtts[conn])
+	if len(rtts) > 0 {
+		m.RTTMillis = make([]float64, slices.Max(slices.Collect(maps.Keys(rtts)))+1)
+		for conn, rtt := range rtts {
+			m.RTTMillis[conn] = rtt
+		}
 	}
 	for conn, loc := range at {
 		m.Edges = append(m.Edges, Edge{Connection: conn, Location: loc})
@@ -135,13 +155,16 @@ func parseLine(m *Metrics, line string, seen map[string]bool, rtts map[int]float
 	}
 	name := line[:strings.IndexAny(line+" ", "{ \t")]
 	switch name {
-	case seriesRequests, seriesErrors, seriesConcurrent, seriesHA, seriesConfig, seriesBuild, seriesLocations, seriesRTT:
+	case seriesRequests, seriesErrors, seriesConcurrent, seriesHA, seriesConfig, seriesBuild, seriesLocations, seriesRTT, seriesStart:
 	default:
 		return nil
 	}
 	labels, value, err := splitSample(line[len(name):])
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", name, err)
+	}
+	if (name == seriesHA || name == seriesConfig) && (value < 0 || value > maxCount) {
+		return fmt.Errorf("reading %s: value %v is out of range", name, value)
 	}
 	seen[name] = true
 	switch name {
@@ -156,29 +179,52 @@ func parseLine(m *Metrics, line string, seen map[string]bool, rtts map[int]float
 	case seriesConfig:
 		m.ConfigVersion = int(value)
 	case seriesBuild:
-		m.Version = labels["version"]
+		m.Version = capped(labels["version"])
+	case seriesStart:
+		m.Started = value
 	case seriesLocations:
-		conn, err := strconv.Atoi(labels["connection_id"])
+		conn, err := connection(labels["connection_id"])
 		if err != nil {
-			return fmt.Errorf("reading %s: connection_id %q is no number", name, labels["connection_id"])
+			return fmt.Errorf("reading %s: connection_id %w", name, err)
 		}
 		// 1 is where a connection is now, 0 where it was before.
 		if value > 0 {
-			at[conn] = labels["edge_location"]
+			at[conn] = capped(labels["edge_location"])
 		}
 	case seriesRTT:
-		conn, err := strconv.Atoi(labels["conn_index"])
+		conn, err := connection(labels["conn_index"])
 		if err != nil {
-			return fmt.Errorf("reading %s: conn_index %q is no number", name, labels["conn_index"])
+			return fmt.Errorf("reading %s: conn_index %w", name, err)
 		}
 		rtts[conn] = value
 	}
 	return nil
 }
 
+// connection reads the index of a connection, from 0 to maxConnection.
+func connection(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 || n > maxConnection {
+		return 0, fmt.Errorf("%q is no connection index from 0 to %d", s, maxConnection)
+	}
+	return n, nil
+}
+
+// capped cuts s to maxLabel bytes, between two characters.
+func capped(s string) string {
+	if len(s) <= maxLabel {
+		return s
+	}
+	cut := maxLabel
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // splitSample reads what follows the name of a series on its line: the
-// labels, when there are any, and the value. A timestamp after the value is
-// left alone.
+// labels, when there are any, and the value, which is finite. A timestamp
+// after the value is left alone.
 func splitSample(rest string) (map[string]string, float64, error) {
 	labels := map[string]string{}
 	if strings.HasPrefix(rest, "{") {
@@ -194,6 +240,9 @@ func splitSample(rest string) (map[string]string, float64, error) {
 	value, err := strconv.ParseFloat(fields[0], 64)
 	if err != nil {
 		return nil, 0, fmt.Errorf("value %q is no number", fields[0])
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, 0, fmt.Errorf("value %q is not finite", fields[0])
 	}
 	return labels, value, nil
 }

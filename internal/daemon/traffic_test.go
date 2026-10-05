@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
 // fakeScrapes answers a scrape after took, on the clock of the bubble, and
@@ -119,19 +120,23 @@ func scrapable(id string) connector.Status {
 	return connector.Status{TunnelID: id, Active: true, Ready: true, Connections: 4, MetricsAddr: "127.0.0.1:20300"}
 }
 
-func TestARoundOfThirtyTunnelsEndsWithinTheInterval(t *testing.T) {
+// Thirty scrapes that each take the most the manager allows go in four turns
+// of eight, which is longer than the interval: the next round begins as this
+// one ends.
+func TestARoundOfThirtySlowScrapesTakesFourTurns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var statuses []connector.Status
 		for i := range 30 {
 			statuses = append(statuses, scrapable(tunnelNumbered(i)))
 		}
-		r := newSamplerRig(statuses, 1900*time.Millisecond)
+		r := newSamplerRig(statuses, 2*time.Second)
 
 		start := time.Now()
 		r.s.round(t.Context())
 		took := time.Since(start)
 
-		require.Less(t, took, 10*time.Second)
+		require.Equal(t, 8*time.Second, took)
+		require.Greater(t, took, engine.TrafficInterval)
 		require.Equal(t, 8, r.scrapes.most, "at most 8 at once")
 		got := r.recorded()
 		require.Len(t, got, 1)

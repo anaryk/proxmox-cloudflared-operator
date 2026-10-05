@@ -11,9 +11,9 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
-// scrapesAtOnce bounds the scrapes of a round: with each one bounded to 2 s
-// by the connector manager, 30 tunnels take four of them, within the
-// interval.
+// scrapesAtOnce bounds the scrapes of a round. The connector manager bounds
+// each to 2 s, so 30 tunnels take 8 s at the most. A round of scrapes that are
+// slow does not fit the interval; the next one then begins as it ends.
 const scrapesAtOnce = 8
 
 // sampler scrapes the metrics of the connectors on the node every

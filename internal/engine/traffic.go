@@ -2,6 +2,7 @@ package engine
 
 import (
 	"maps"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -53,7 +54,8 @@ type TrafficView struct {
 	RoutesWhy   string          `json:"routesWhy,omitempty"` // why there are no routes
 }
 
-// TunnelNotice is the newest sample of a tunnel, zero before its first.
+// TunnelNotice is the newest sample of a tunnel. Before its first the figures
+// are zero and Sampled is left out of the JSON.
 type TunnelNotice struct {
 	TunnelID      string  `json:"tunnelId"`
 	RPS           float64 `json:"rps"`
@@ -61,6 +63,7 @@ type TunnelNotice struct {
 	Concurrent    float64 `json:"concurrent"`
 	HAConnections int     `json:"haConnections"`
 	Stale         bool    `json:"stale"`
+	Sampled       bool    `json:"sampled,omitempty"`
 }
 
 // TrafficNotice is what the stream is told of a round of scrapes. Of the
@@ -96,8 +99,8 @@ type tunnelSeries struct {
 // scrape failed. A tunnel not in the round is forgotten. The rates are the
 // growth of the counters over the time since the last scrape that worked, on
 // the monotonic clock when t has it; an interval in which a counter went
-// down, as when the connector started again, has none. The stream is told of
-// every round.
+// down or the process started again, or whose figures are no finite numbers,
+// has none. The stream is told of every round.
 func (e *Engine) RecordTraffic(t time.Time, scrapes map[string]*connector.Metrics) {
 	tr := &e.traffic
 	tr.mu.Lock()
@@ -128,19 +131,31 @@ func (s *tunnelSeries) add(t time.Time, m *connector.Metrics) {
 		return
 	}
 	s.misses = 0
-	if s.last != nil {
+	if s.last != nil && !restarted(s.last, m) {
 		elapsed := t.Sub(s.lastAt).Seconds()
 		requests, failed := m.Requests-s.last.Requests, m.RequestErrors-s.last.RequestErrors
 		if elapsed > 0 && requests >= 0 && failed >= 0 {
-			s.samples = append(s.samples, TrafficSample{
-				At: t, RPS: requests / elapsed, ErrorsPerSec: failed / elapsed, Concurrent: m.Concurrent,
-			})
-			if extra := len(s.samples) - trafficSamples; extra > 0 {
-				s.samples = slices.Delete(s.samples, 0, extra)
+			sample := TrafficSample{At: t, RPS: requests / elapsed, ErrorsPerSec: failed / elapsed, Concurrent: m.Concurrent}
+			// The figures come from a port another process could answer on.
+			if finite(sample.RPS, sample.ErrorsPerSec, sample.Concurrent) {
+				s.samples = append(s.samples, sample)
+				if extra := len(s.samples) - trafficSamples; extra > 0 {
+					s.samples = slices.Delete(s.samples, 0, extra)
+				}
 			}
 		}
 	}
 	s.last, s.lastAt = m, t
+}
+
+// restarted is whether the process is another than the one scraped before, by
+// its start time. A counter says so only when it fell below the old one.
+func restarted(before, now *connector.Metrics) bool {
+	return before.Started != 0 && now.Started != 0 && before.Started != now.Started
+}
+
+func finite(figures ...float64) bool {
+	return !slices.ContainsFunc(figures, func(f float64) bool { return math.IsNaN(f) || math.IsInf(f, 0) })
 }
 
 func (s *tunnelSeries) stale() bool { return s.misses >= staleAfter }
@@ -155,6 +170,7 @@ func (tr *traffic) notice() TrafficNotice {
 		if len(s.samples) > 0 {
 			newest := s.samples[len(s.samples)-1]
 			tn.RPS, tn.ErrorsPerSec, tn.Concurrent = newest.RPS, newest.ErrorsPerSec, newest.Concurrent
+			tn.Sampled = true
 		}
 		if s.last != nil {
 			tn.HAConnections = s.last.HAConnections

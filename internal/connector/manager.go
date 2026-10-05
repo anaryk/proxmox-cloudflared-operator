@@ -75,10 +75,13 @@ func (m *Manager) heldNow(port int) bool {
 
 // NewManager returns a manager that keeps the token, env and config files of
 // the connectors in dir and probes their metrics endpoints with httpc. A nil
-// httpc means a default client.
+// httpc means a client that does not follow redirects: what answers on the
+// port of a connector is not sent elsewhere.
 func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) *Manager {
 	if httpc == nil {
-		httpc = &http.Client{}
+		httpc = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
 	}
 	m := &Manager{
 		sd: sd, dir: dir, httpc: httpc, log: log,

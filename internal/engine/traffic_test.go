@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -118,6 +119,67 @@ func TestACounterThatWentDownDropsTheInterval(t *testing.T) {
 	}
 }
 
+// A restart after which the counters are already above the old ones is told by
+// the start time of the process.
+func TestARestartIsSeenByTheStartTimeOfTheProcess(t *testing.T) {
+	startedAt := func(started float64, requests float64) *connector.Metrics {
+		m := scraped(requests, 0, 0)
+		m.Started = started
+		return m
+	}
+	e := newEnv(t).eng
+	round(e, 0, map[string]*connector.Metrics{tunnelA: startedAt(1000, 100)})
+	round(e, 1, map[string]*connector.Metrics{tunnelA: startedAt(1000, 150)})
+	require.Equal(t, []TrafficSample{{At: at(1), RPS: 10}}, samplesOfA(t, e))
+
+	round(e, 2, map[string]*connector.Metrics{tunnelA: startedAt(1003, 900)})
+	require.Len(t, samplesOfA(t, e), 1, "the interval of the restart has no sample")
+
+	round(e, 3, map[string]*connector.Metrics{tunnelA: startedAt(1003, 950)})
+	require.Equal(t, TrafficSample{At: at(3), RPS: 10}, samplesOfA(t, e)[1])
+
+	// A connector that does not say when it started leaves nothing to tell.
+	round(e, 4, map[string]*connector.Metrics{tunnelA: startedAt(0, 1000)})
+	require.Equal(t, TrafficSample{At: at(4), RPS: 10}, samplesOfA(t, e)[2])
+}
+
+// The metrics port is a local one and what answers there may say anything. A
+// figure that is no finite number makes no sample, and what is left stays
+// something JSON can carry.
+func TestFiguresThatAreNotFiniteMakeNoSample(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		from, to *connector.Metrics
+	}{
+		{"concurrent requests NaN", scraped(100, 0, 0), scraped(150, 0, math.NaN())},
+		{"concurrent requests +Inf", scraped(100, 0, 0), scraped(150, 0, math.Inf(1))},
+		{"requests NaN", scraped(100, 0, 0), scraped(math.NaN(), 0, 0)},
+		{"requests +Inf", scraped(100, 0, 0), scraped(math.Inf(1), 0, 0)},
+		{"errors +Inf", scraped(100, 0, 0), scraped(150, math.Inf(1), 0)},
+		{"counters that overflow", scraped(-math.MaxFloat64, 0, 0), scraped(math.MaxFloat64, 0, 0)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t).eng
+			ch := listen(t, e)
+			round(e, 0, map[string]*connector.Metrics{tunnelA: tt.from})
+			round(e, 1, map[string]*connector.Metrics{tunnelA: tt.to})
+
+			require.Empty(t, samplesOfA(t, e))
+			_, err := json.Marshal(e.Traffic())
+			require.NoError(t, err)
+			for _, n := range until(t, e, ch) {
+				_, err := json.Marshal(n.Traffic)
+				require.NoError(t, err)
+			}
+
+			round(e, 2, map[string]*connector.Metrics{tunnelA: scraped(1000, 0, 1)})
+			round(e, 3, map[string]*connector.Metrics{tunnelA: scraped(1050, 0, 1)})
+			samples := samplesOfA(t, e)
+			require.Equal(t, TrafficSample{At: at(3), RPS: 10, Concurrent: 1}, samples[len(samples)-1], "the next figures that can be used")
+		})
+	}
+}
+
 func TestAnIntervalWithoutTimeHasNoRate(t *testing.T) {
 	e := newEnv(t).eng
 	e.RecordTraffic(t0, map[string]*connector.Metrics{tunnelA: scraped(100, 0, 0)})
@@ -187,14 +249,34 @@ func TestEveryRoundSendsOneTrafficNotice(t *testing.T) {
 		"traffic " + at(2).Format(time.TimeOnly), "traffic " + at(3).Format(time.TimeOnly),
 	}, shown(got), "one notice a round, and no state")
 	require.Equal(t, &TrafficNotice{At: at(1), Tunnels: []TunnelNotice{
-		{TunnelID: tunnelA, RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4},
+		{TunnelID: tunnelA, RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4, Sampled: true},
 		{TunnelID: tunnelB},
 	}}, got[1].Traffic)
 	require.Equal(t, &TrafficNotice{At: at(3), Tunnels: []TunnelNotice{
-		{TunnelID: tunnelA, RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4},
+		{TunnelID: tunnelA, RPS: 10, ErrorsPerSec: 1, Concurrent: 3, HAConnections: 4, Sampled: true},
 		{TunnelID: tunnelB, Stale: true},
 	}}, got[3].Traffic, "the newest sample of each tunnel")
 	require.Equal(t, digest, e.State().Digest, "the traffic is not part of the state")
+}
+
+// The figures of a notice are zero before the first rate: the notice says
+// that none was made yet, and the zeros are not shown as a calm tunnel.
+func TestATunnelHasNoRateBeforeItsSecondScrape(t *testing.T) {
+	e := newEnv(t).eng
+	ch := listen(t, e)
+
+	round(e, 0, map[string]*connector.Metrics{tunnelA: scraped(100, 0, 0)})
+	round(e, 1, map[string]*connector.Metrics{tunnelA: scraped(150, 0, 2)})
+
+	got := until(t, e, ch)
+	require.Equal(t, []TunnelNotice{{TunnelID: tunnelA, HAConnections: 4}}, got[0].Traffic.Tunnels)
+	require.Equal(t, []TunnelNotice{{TunnelID: tunnelA, RPS: 10, Concurrent: 2, HAConnections: 4, Sampled: true}}, got[1].Traffic.Tunnels)
+	first, err := json.Marshal(got[0].Traffic.Tunnels[0])
+	require.NoError(t, err)
+	require.JSONEq(t, `{"tunnelId": "`+tunnelA+`", "rps": 0, "errorsPerSec": 0, "concurrent": 0, "haConnections": 4, "stale": false}`, string(first))
+	second, err := json.Marshal(got[1].Traffic.Tunnels[0])
+	require.NoError(t, err)
+	require.JSONEq(t, `{"tunnelId": "`+tunnelA+`", "rps": 10, "errorsPerSec": 0, "concurrent": 2, "haConnections": 4, "stale": false, "sampled": true}`, string(second))
 }
 
 func TestATrafficViewHandedOutIsACopy(t *testing.T) {
