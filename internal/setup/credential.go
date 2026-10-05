@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -15,6 +16,10 @@ import (
 // checkTimeout bounds the two checks of a token, the deep one of which makes
 // and removes test objects in every zone and account.
 const checkTimeout = 3 * time.Minute
+
+// memoryTries is how often keepReport starts over because the memory changed
+// under it.
+const memoryTries = 3
 
 const addLater = "add one later with pco credential add --label <label>"
 
@@ -116,18 +121,38 @@ func (r *run) checkAndStore(ctx context.Context, creds []store.Credential) error
 // daemon starts knowing which zones the token may not read. A memory of
 // another install is the daemon's to set aside, and one that cannot be read
 // is the daemon's to report; without the report, the daemon checks the token
-// before its first cycle.
+// before its first cycle. A daemon that runs by now may save its own memory
+// meanwhile: the memory is read again right before the save, and the report
+// goes into the newer one, so that an older memory is not put back.
 func (r *run) keepReport(id string, report credentials.Report) {
-	m, err := r.st.EngineMemory()
-	if err != nil || (m.InstallID != "" && m.InstallID != r.install.ID) {
+	r.keepReportAfter(id, report, func() {})
+}
+
+// keepReportAfter is keepReport that calls between each time after it read the
+// memory and before it reads it again to save.
+func (r *run) keepReportAfter(id string, report credentials.Report, between func()) {
+	for range memoryTries {
+		m, err := r.st.EngineMemory()
+		if err != nil || (m.InstallID != "" && m.InstallID != r.install.ID) {
+			return
+		}
+		between()
+		again, err := r.st.EngineMemory()
+		if err != nil {
+			return
+		}
+		if !reflect.DeepEqual(again, m) {
+			continue
+		}
+		m.InstallID = r.install.ID
+		m.Reports = slices.DeleteFunc(m.Reports, func(c store.CheckedCredential) bool { return c.CredentialID == id })
+		m.Reports = append(m.Reports, store.CheckedCredential{CredentialID: id, Report: report})
+		if err := r.st.SaveEngineMemory(m); err != nil {
+			r.ask.Warn("credentials: the check is not kept for the daemon, which checks the token again when it starts: %v", err)
+		}
 		return
 	}
-	m.InstallID = r.install.ID
-	m.Reports = slices.DeleteFunc(m.Reports, func(c store.CheckedCredential) bool { return c.CredentialID == id })
-	m.Reports = append(m.Reports, store.CheckedCredential{CredentialID: id, Report: report})
-	if err := r.st.SaveEngineMemory(m); err != nil {
-		r.ask.Warn("credentials: the check is not kept for the daemon, which checks the token again when it starts: %v", err)
-	}
+	r.ask.Warn("credentials: the memory of the daemon kept changing, so the check is not kept for it; the daemon checks the token again when it starts")
 }
 
 // showReport prints the checklist of a check, with what to grant where a

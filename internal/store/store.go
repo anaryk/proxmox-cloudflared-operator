@@ -19,6 +19,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -67,12 +68,8 @@ func Open(p Paths) (*Store, error) { return open(p, time.Now) }
 
 // open is Open with a clock, to tell an old temporary file from a young one.
 func open(p Paths, now func() time.Time) (*Store, error) {
-	for _, r := range []struct{ name, path string }{
-		{"cluster", p.Cluster}, {"private", p.Private}, {"local", p.Local},
-	} {
-		if r.path == "" {
-			return nil, fmt.Errorf("store: the %s path is empty", r.name)
-		}
+	if err := checkPaths(p); err != nil {
+		return nil, err
 	}
 	guard := mountGuard(p.MountCheck)
 	cutoff := now().Add(-staleTempAge)
@@ -85,6 +82,43 @@ func open(p Paths, now func() time.Time) (*Store, error) {
 		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals, kindSegments)...)
 		_ = removeStaleTemps(cutoff, tempDirs(p.Private, kindCredentials, kindMeta)...)
 	}
+	return build(p, guard), nil
+}
+
+// OpenExisting opens the store as it is on the node, for a command that only
+// looks: it makes no directory, writes no probe and removes no leftover. The
+// local root must be there already, as setup made it; if it is not, the error
+// is ErrNoRoot. Nothing stops a write through the store it returns.
+func OpenExisting(p Paths) (*Store, error) {
+	if err := checkPaths(p); err != nil {
+		return nil, err
+	}
+	switch info, err := os.Stat(p.Local); {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("%w: %s", ErrNoRoot, p.Local)
+	case err != nil:
+		return nil, fmt.Errorf("store: local root: %w", err)
+	case !info.IsDir():
+		return nil, fmt.Errorf("store: local root %s is not a directory", p.Local)
+	}
+	return build(p, mountGuard(p.MountCheck)), nil
+}
+
+// checkPaths refuses a root with no path.
+func checkPaths(p Paths) error {
+	for _, r := range []struct{ name, path string }{
+		{"cluster", p.Cluster}, {"private", p.Private}, {"local", p.Local},
+	} {
+		if r.path == "" {
+			return fmt.Errorf("store: the %s path is empty", r.name)
+		}
+	}
+	return nil
+}
+
+// build is the store over the roots of p, whose cluster and private roots are
+// guarded by guard.
+func build(p Paths, guard func() error) *Store {
 	cluster, private := newDir(p.Cluster, guard), newDir(p.Private, guard)
 	cluster.durable, private.durable = p.Durable, p.Durable
 	return &Store{
@@ -93,7 +127,7 @@ func open(p Paths, now func() time.Time) (*Store, error) {
 		private: private,
 		local:   NewDir(p.Local),
 		proofs:  &proofTimes{},
-	}, nil
+	}
 }
 
 // tempDirs returns the directories of a root that can hold a temporary file of

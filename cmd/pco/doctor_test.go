@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
@@ -366,4 +368,38 @@ func TestTheEgressTableOfANodeWithoutTheDaemon(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The doctor looks at the node and changes nothing on it: a node that was
+// never set up stays without a store, and the roots of one that was are left
+// as they are.
+func TestTheDoctorChecksTheStoreWithoutMakingIt(t *testing.T) {
+	base := t.TempDir()
+	p := store.Paths{
+		Cluster: filepath.Join(base, "cluster"),
+		Private: filepath.Join(base, "private"),
+		Local:   filepath.Join(base, "var", "lib", "pco"),
+	}
+
+	err := storeReadyAt(p)
+
+	require.ErrorIs(t, err, store.ErrNoRoot)
+	entries, err := os.ReadDir(base)
+	require.NoError(t, err)
+	require.Empty(t, entries, "nothing was made")
+
+	st, err := store.Open(p)
+	require.NoError(t, err)
+	require.NoError(t, st.Init())
+	require.ErrorContains(t, storeReadyAt(p), "run pco setup")
+	require.NoError(t, st.SaveInstall(store.Install{ID: "0123456789ab", CreatedAt: t0}))
+	old := time.Now().Add(-time.Hour)
+	leftover := filepath.Join(p.Local, "bindings", ".a.json.1.tmp")
+	require.NoError(t, os.MkdirAll(filepath.Dir(leftover), 0o700))
+	require.NoError(t, os.WriteFile(leftover, []byte("x"), 0o600))
+	require.NoError(t, os.Chtimes(leftover, old, old))
+
+	require.NoError(t, storeReadyAt(p))
+	_, err = os.Stat(leftover)
+	require.NoError(t, err, "a leftover of a crashed write is the daemon's to remove")
 }

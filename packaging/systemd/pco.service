@@ -3,7 +3,6 @@ Description=pco, Cloudflare Tunnel operator for Proxmox VE
 Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
 After=network-online.target pve-cluster.service pveproxy.service
 Wants=network-online.target
-Before=pve-ha-lrm.service
 
 [Service]
 Type=notify

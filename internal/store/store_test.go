@@ -109,6 +109,75 @@ func TestOpenRefusesALocalRootThatIsNotWritable(t *testing.T) {
 	require.Contains(t, err.Error(), p.Local)
 }
 
+func TestOpenExistingMakesNothing(t *testing.T) {
+	p := testPaths(t)
+
+	_, err := OpenExisting(p)
+	require.ErrorIs(t, err, ErrNoRoot)
+	require.Contains(t, err.Error(), p.Local)
+	requireMissing(t, p.Local)
+	requireMissing(t, p.Cluster)
+	requireMissing(t, p.Private)
+}
+
+func TestOpenExistingRefusesAnEmptyPathAndALocalRootThatIsAFile(t *testing.T) {
+	good := testPaths(t)
+	_, err := OpenExisting(Paths{Cluster: good.Cluster, Private: good.Private})
+	require.ErrorContains(t, err, "local")
+
+	writeFile(t, good.Local, "x")
+	_, err = OpenExisting(good)
+	require.ErrorContains(t, err, "not a directory")
+}
+
+// A command that looks leaves the roots as they are: no probe, and the
+// leftovers of a crashed write stay for the daemon's own Open to remove.
+func TestOpenExistingLeavesTheRootsAsTheyAre(t *testing.T) {
+	s, p := openStore(t)
+	require.NoError(t, s.SaveInstall(Install{ID: "0123456789ab", CreatedAt: t0}))
+	old := time.Now().Add(-time.Hour)
+	var leftovers []string
+	for _, path := range []string{
+		filepath.Join(p.Local, "bindings", ".a.json.1.tmp"),
+		filepath.Join(p.Cluster, "claims", ".b.json.1.tmp"),
+	} {
+		writeFile(t, path, "x")
+		require.NoError(t, os.Chtimes(path, old, old))
+		leftovers = append(leftovers, path)
+	}
+	local, err := os.Stat(p.Local)
+	require.NoError(t, err)
+
+	got, err := OpenExisting(p)
+	require.NoError(t, err)
+	install, found, err := got.Install()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "0123456789ab", install.ID)
+
+	for _, path := range leftovers {
+		_, err := os.Stat(path)
+		require.NoError(t, err, path)
+	}
+	after, err := os.Stat(p.Local)
+	require.NoError(t, err)
+	require.Equal(t, local.ModTime(), after.ModTime(), "nothing was made in the local root, not even a probe that was removed again")
+}
+
+func TestOpenExistingWorksOnALocalRootThatIsNotWritable(t *testing.T) {
+	skipAsRoot(t)
+	s, p := openStore(t)
+	require.NoError(t, s.SaveInstall(Install{ID: "0123456789ab", CreatedAt: t0}))
+	require.NoError(t, os.Chmod(p.Local, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(p.Local, 0o700) })
+
+	got, err := OpenExisting(p)
+	require.NoError(t, err)
+	_, found, err := got.Install()
+	require.NoError(t, err)
+	require.True(t, found)
+}
+
 func TestInstallRoundTrip(t *testing.T) {
 	s, p := openStore(t)
 	_, found, err := s.Install()

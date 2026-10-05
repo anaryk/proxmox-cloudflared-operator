@@ -38,9 +38,14 @@ func defaultDoctorEnv() doctorEnv {
 	}
 }
 
-// nodeStoreReady opens the store of the node and says whether it is set up.
-func nodeStoreReady() error {
-	st, err := store.Open(store.DefaultPaths())
+// nodeStoreReady says whether the store of the node is set up.
+func nodeStoreReady() error { return storeReadyAt(store.DefaultPaths()) }
+
+// storeReadyAt says whether the store at p is mounted and set up. It only
+// looks: the doctor changes nothing on the node, so the store is not made
+// when it is missing.
+func storeReadyAt(p store.Paths) error {
+	st, err := store.OpenExisting(p)
 	if err != nil {
 		return fmt.Errorf("opening the store: %w", err)
 	}

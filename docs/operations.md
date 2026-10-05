@@ -10,7 +10,7 @@ The package installs three systemd units.
 
 | Unit | What it does |
 |---|---|
-| `pco.service` | The daemon, `pco daemon`. It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service` and `pveproxy.service`, and before `pve-ha-lrm.service`. It does not wait for the guests, and they do not wait for it. |
+| `pco.service` | The daemon, `pco daemon`. It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service` and `pveproxy.service`, and no unit is ordered after it. It does not wait for the guests, and they do not wait for it, those managed by HA included. |
 | `pco-egress.service` | Loads the egress filter by running `pco egress load`. It is a one-shot unit that stays active, and it is ordered before `pco.service`. Setup enables and starts it, so the table is loaded at every boot, also before a connector exists, and uninstall disables it. The connector units require it, so starting a connector starts it too. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 
