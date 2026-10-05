@@ -29,8 +29,11 @@ func (e *Engine) recall(installID string) (note string, err error) {
 		return fmt.Sprintf("the engine memory on this node is of install %s, not %s; it is set aside and replaced",
 			m.InstallID, installID), nil
 	}
+	for _, z := range m.EverServed {
+		e.zones.ever[z.ID] = planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID}
+	}
 	for _, z := range m.Served {
-		e.zones.served[z.Name] = planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID}
+		e.zones.serve(z.Name, planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID})
 	}
 	for _, z := range m.Stale {
 		e.zones.credential(z.CredentialID).stale[z.Name] = cfapi.Zone{ID: z.ID, Name: z.Name, Status: "active", AccountID: z.AccountID}
@@ -67,6 +70,10 @@ func (e *Engine) memory() store.EngineMemory {
 			m.Stale = append(m.Stale, store.RememberedZone{ID: z.ID, Name: name, AccountID: z.AccountID, CredentialID: id})
 		}
 	}
+	for _, id := range slices.Sorted(maps.Keys(e.zones.ever)) {
+		z := e.zones.ever[id]
+		m.EverServed = append(m.EverServed, store.RememberedZone{ID: id, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID})
+	}
 	for _, id := range slices.Sorted(maps.Keys(e.seen)) {
 		t := e.seen[id]
 		m.Tunnels = append(m.Tunnels, store.SeenTunnel{ID: id, Name: t.name, AccountID: t.account, CredentialID: t.credential})
@@ -87,7 +94,8 @@ func (e *Engine) memory() store.EngineMemory {
 // memoryAccepting is the memory as it is once the engine accepted o: the
 // guests are gone, and the zones still stale and the tunnels still seen are
 // forgotten, a zone also as served through the credential it left; a zone let
-// go is forgotten as served through the credential refused its DNS.
+// go is forgotten as served through the credential refused its DNS. Either is
+// still remembered as served once: its records may be there.
 func (e *Engine) memoryAccepting(o confirmable) store.EngineMemory {
 	m := e.memory()
 	confirmed := make(map[staleZone]bool, len(o.stale))

@@ -432,3 +432,58 @@ func TestANameUnderAZoneLeftOutIsNotPlacedInItsParent(t *testing.T) {
 	require.Equal(t, withSentinel(hostRule("www.example.com")), e.rules())
 	require.Equal(t, []string{"www.example.com"}, e.recordNames())
 }
+
+// A zone let go may still hold records of the install, which its credential
+// cannot read: the memory keeps it as served once, also across a restart.
+func TestAZoneLetGoIsRememberedAsServedOnce(t *testing.T) {
+	e := letGo(t, true)
+
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.NotContains(t, zoneNames(m.Served), "example.org")
+	require.Equal(t, []string{"example.com", "example.org"}, zoneNames(m.EverServed))
+}
+
+// Served before the first check of its credential, a zone may hold records
+// of the install that the check then finds it cannot read.
+func TestAZoneServedBeforeAFirstCheckThatRefusesItIsRememberedAsServedOnce(t *testing.T) {
+	e := newEnv(t)
+	e.cf.AddZone("zone2", "example.org", testAccount)
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.org -> :8080")))
+	e.enforce()
+	e.cycle()
+	require.Len(t, e.cf.RecordsIn("zone2"), 1)
+
+	e.cf.Deny("dns.read", "zone2")
+	e.eng.recheck(t.Context())
+	e.cycle()
+
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.NotContains(t, zoneNames(m.Served), "example.org")
+	require.Equal(t, []string{"example.com", "example.org"}, zoneNames(m.EverServed))
+}
+
+// A memory saved before the zones served once were kept counts those it
+// served then.
+func TestTheZonesServedInAnOlderMemoryAreRememberedAsServedOnce(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, e.store.SaveEngineMemory(store.EngineMemory{
+		InstallID: testInstall,
+		Served:    []store.RememberedZone{{ID: "zone9", Name: "example.net", AccountID: testAccount, CredentialID: testCred}},
+	}))
+
+	e.cycle()
+
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.com", "example.net"}, zoneNames(m.EverServed))
+}
+
+func zoneNames(zones []store.RememberedZone) []string {
+	out := make([]string, 0, len(zones))
+	for _, z := range zones {
+		out = append(out, z.Name)
+	}
+	return out
+}

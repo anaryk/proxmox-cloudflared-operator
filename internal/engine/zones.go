@@ -28,6 +28,9 @@ type zoneCache struct {
 	// served holds, by zone name, the zone as it was last served by one
 	// credential alone.
 	served map[string]planner.Zone
+	// ever holds, by id, every zone that was served at some time: it may
+	// hold records of the install, also once it is no longer served.
+	ever map[string]planner.Zone
 	// lookups holds, by account, what the last lookup of the tunnel of an
 	// account the tunnel run does not report on found. A lookup that failed
 	// is not kept.
@@ -59,7 +62,16 @@ type credZones struct {
 }
 
 func newZoneCache() *zoneCache {
-	return &zoneCache{byCred: make(map[string]*credZones), served: make(map[string]planner.Zone), lookups: make(map[string]tunnelLookup)}
+	return &zoneCache{
+		byCred: make(map[string]*credZones), served: make(map[string]planner.Zone), ever: make(map[string]planner.Zone),
+		lookups: make(map[string]tunnelLookup),
+	}
+}
+
+// serve has zone served under name, by its credential alone.
+func (z *zoneCache) serve(name string, zone planner.Zone) {
+	z.served[name] = zone
+	z.ever[zone.ID] = zone
 }
 
 // credential returns what is known of credential id, made empty when nothing
@@ -451,7 +463,7 @@ func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) choice 
 	accounts := accountsOf(entries)
 	pinned := slices.DeleteFunc(slices.Clone(live), func(zone planner.Zone) bool { return zone.CredentialID != pin })
 	if pin != "" && len(pinned) > 0 {
-		z.served[name] = pinned[0]
+		z.serve(name, pinned[0])
 		return choice{chosen: pinned}
 	}
 	if en, ok := z.refused(name, entries); ok {
@@ -483,7 +495,7 @@ func (z *zoneCache) choose(name string, entries []zoneEntry, pin string) choice 
 		}
 		return choice{}
 	case 1:
-		z.served[name] = live[0]
+		z.serve(name, live[0])
 		return choice{chosen: live}
 	}
 	if prev, ok := z.served[name]; ok && slices.Contains(creds, prev.CredentialID) {

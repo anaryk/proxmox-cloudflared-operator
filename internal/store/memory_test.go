@@ -22,6 +22,10 @@ func memorySample() EngineMemory {
 			{ID: "zone2", Name: "example.net", AccountID: "acc1", CredentialID: "cred1"},
 			{ID: "zone4", Name: "example.info", AccountID: "acc1", CredentialID: "cred1"},
 		},
+		EverServed: []RememberedZone{
+			{ID: "zone4", Name: "example.info", AccountID: "acc1", CredentialID: "cred1"},
+			{ID: "zone1", Name: "example.com", AccountID: "acc1", CredentialID: "cred1"},
+		},
 		Tunnels: []SeenTunnel{
 			{ID: "00000000-0000-4000-8000-000000000002", Name: "pco-abc", AccountID: "acc2", CredentialID: "cred2"},
 			{ID: "00000000-0000-4000-8000-000000000001", Name: "pco-abc", AccountID: "acc1", CredentialID: "cred1"},
@@ -69,6 +73,10 @@ func TestEngineMemoryComesBackInOrder(t *testing.T) {
 		Stale: []RememberedZone{
 			{ID: "zone4", Name: "example.info", AccountID: "acc1", CredentialID: "cred1"},
 			{ID: "zone2", Name: "example.net", AccountID: "acc1", CredentialID: "cred1"},
+		},
+		EverServed: []RememberedZone{
+			{ID: "zone1", Name: "example.com", AccountID: "acc1", CredentialID: "cred1"},
+			{ID: "zone4", Name: "example.info", AccountID: "acc1", CredentialID: "cred1"},
 		},
 		Tunnels: []SeenTunnel{
 			{ID: "00000000-0000-4000-8000-000000000001", Name: "pco-abc", AccountID: "acc1", CredentialID: "cred1"},

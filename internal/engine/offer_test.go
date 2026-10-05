@@ -377,7 +377,11 @@ func TestAnUnchangedOfferStaysAndIsAcceptedAsShown(t *testing.T) {
 	again, err := os.ReadFile(e.memoryFile())
 	require.NoError(t, err)
 	require.Equal(t, string(kept), string(again))
-	require.NotContains(t, string(kept), "example.info")
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.NotContains(t, zoneNames(m.Served), "example.info")
+	require.Empty(t, m.Stale)
+	require.Contains(t, zoneNames(m.EverServed), "example.info", "its records may still be there")
 	require.NotContains(t, string(kept), invisible)
 
 	e.clock.advance(10 * time.Second)

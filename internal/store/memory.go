@@ -24,6 +24,10 @@ type EngineMemory struct {
 	Served []RememberedZone `json:"served,omitempty"`
 	// Stale are zones a credential listed once and lists no more.
 	Stale []RememberedZone `json:"stale,omitempty"`
+	// EverServed are the zones the install served at some time, each once,
+	// also those it no longer serves: they may hold its records, and only a
+	// purge that deletes those forgets them.
+	EverServed []RememberedZone `json:"everServed,omitempty"`
 	// Tunnels are the tunnels of the install seen to exist.
 	Tunnels []SeenTunnel `json:"tunnels,omitempty"`
 	// GoneGuests are guests that hold a claim, no longer listed by Proxmox,
@@ -95,6 +99,10 @@ func (m EngineMemory) sorted() EngineMemory {
 	slices.SortFunc(m.Served, byCredential)
 	m.Stale = slices.Clone(m.Stale)
 	slices.SortFunc(m.Stale, byCredential)
+	m.EverServed = slices.Clone(m.EverServed)
+	slices.SortFunc(m.EverServed, func(a, b RememberedZone) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+	})
 	m.Tunnels = slices.Clone(m.Tunnels)
 	slices.SortFunc(m.Tunnels, func(a, b SeenTunnel) int { return cmp.Compare(a.ID, b.ID) })
 	m.GoneGuests = slices.Clone(m.GoneGuests)
@@ -112,6 +120,9 @@ func (m EngineMemory) sorted() EngineMemory {
 	}
 	if len(m.Stale) == 0 {
 		m.Stale = nil
+	}
+	if len(m.EverServed) == 0 {
+		m.EverServed = nil
 	}
 	if len(m.Tunnels) == 0 {
 		m.Tunnels = nil
