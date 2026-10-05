@@ -165,3 +165,30 @@ func TestAPolicyOfOneRequestLetsItThrough(t *testing.T) {
 	require.NoError(t, l.Wait(context.Background()))
 	require.Empty(t, clock.takeSleeps())
 }
+
+// Room says whether so many requests would go now without one of them being
+// refused.
+func TestTheRoomOfALimiter(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(l *Limiter)
+		n     int
+		room  bool
+	}{
+		{"a full budget", func(*Limiter) {}, 3, true},
+		{"a spent budget, for what refills within 20 s", func(l *Limiter) { waits(t, l, 1000) }, 3, true},
+		{"a spent budget, for more", func(l *Limiter) { waits(t, l, 1000) }, 100, false},
+		{"nothing left until Cloudflare resets its count", func(l *Limiter) {
+			l.observe(rateHeaders(`"default";r=200;t=240`, cloudflarePolicy))
+		}, 1, false},
+		{"a pause", func(l *Limiter) { l.Pause(time.Minute) }, 1, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := budgetLimiter(newFakeClock())
+			tt.setup(l)
+
+			require.Equal(t, tt.room, l.Room(tt.n))
+		})
+	}
+}

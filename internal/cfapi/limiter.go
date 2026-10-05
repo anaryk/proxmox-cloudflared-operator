@@ -141,6 +141,21 @@ func (l *Limiter) reserve() (wait time.Duration, paused bool) {
 	return l.cost - l.credit, false
 }
 
+// Room reports whether n requests could go now, one after the other, without
+// one of them being refused: no pause is in force, and neither what is left
+// of a hold nor the credit they need takes longer than the longest wait.
+func (l *Limiter) Room(n int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	if now.Before(l.until) {
+		return false
+	}
+	l.refill(now)
+	wait := max(l.held.Sub(now), time.Duration(n)*l.cost-l.credit)
+	return l.maxWait <= 0 || wait <= l.maxWait
+}
+
 // refill adds the credit earned since the last refill. A clock that steps back
 // earns none. The caller holds the lock.
 func (l *Limiter) refill(now time.Time) {

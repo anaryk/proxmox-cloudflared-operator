@@ -97,7 +97,10 @@ type dnsSpy struct {
 	afterWrite  func(method string)
 	deletes     int
 	updates     []cfapi.Record
+	room        func(n int) bool // nil: room for anything
 }
+
+func (s *dnsSpy) Room(n int) bool { return s.room == nil || s.room(n) }
 
 var errLostAnswer = errors.New("connection reset by peer")
 

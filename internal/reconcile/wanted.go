@@ -14,6 +14,22 @@ import (
 // and the put-back after it, which outlive a cancelled run.
 const adoptTimeout = 30 * time.Second
 
+// adoptRequests are the requests an adoption that replaces a record may make:
+// the delete, the create, and the put-back of the record when the create
+// fails.
+const adoptRequests = 3
+
+// budgeted is a client that can say whether its budget has room for n
+// requests now.
+type budgeted interface{ Room(n int) bool }
+
+// room reports whether the client of z has room for n requests; one that
+// cannot say has.
+func (run *dnsRun) room(z *dnsZone, n int) bool {
+	b, ok := z.api.(budgeted)
+	return !ok || b.Room(n)
+}
+
 // want gives a wanted name its CNAME to the tunnel.
 func (run *dnsRun) want(ctx context.Context, z *dnsZone, name string) {
 	if run.twice[name] {
@@ -195,6 +211,9 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		held = p.held
 	case run.noDeletes != "":
 		held = run.noDeletes
+	case run.spent, !run.room(z, adoptRequests):
+		// Begun without room, it could leave the name empty.
+		held = HeldBudget
 	}
 	if held != "" {
 		z.add(del, held)
@@ -208,8 +227,11 @@ func (run *dnsRun) adoptRecord(ctx context.Context, z *dnsZone, rec cfapi.Record
 		run.res.Replaced = append(run.res.Replaced, rec)
 		return deleteRecord(ctx, z, rec.ID)
 	}) {
-		if run.stopped != "" {
+		switch {
+		case run.stopped != "":
 			z.add(add, run.stopped)
+		case run.spent:
+			z.add(add, HeldBudget)
 		}
 		return
 	}

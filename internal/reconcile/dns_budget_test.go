@@ -127,3 +127,42 @@ func TestDNSDeletesWaitForTheBudgetBehindTheGuard(t *testing.T) {
 		}
 	})
 }
+
+// An adoption that replaces a record takes three requests: the delete, the
+// create, and the put-back should the create fail. It is not begun without
+// room for them, as a name left empty stays so until a later cycle.
+func TestDNSAdoptionWaitsForRoomForItsRequests(t *testing.T) {
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10"})
+	var asked []int
+	s := &dnsSpy{API: f, room: func(n int) bool { asked = append(asked, n); return false }}
+	in := dnsIn("app.example.com")
+	in.Adopt = map[string]bool{"app.example.com": true}
+
+	res := newDNS(s, &memStore{}, t0).Run(context.Background(), in, Enforce)
+
+	require.Equal(t, []int{3}, asked)
+	require.Empty(t, dnsWrites(f))
+	require.Len(t, f.RecordsIn(zone1.ID), 1)
+	require.Equal(t, []Action{
+		dnsAction(DeleteRecord, "app.example.com", HeldBudget, true),
+		dnsAction(CreateRecord, "app.example.com", HeldBudget, true),
+	}, withoutDetail(res.Actions))
+}
+
+// A delete of an adoption that the rate limit refuses holds its create too.
+func TestDNSAdoptionWhoseDeleteIsRefusedHoldsItsCreate(t *testing.T) {
+	f := newDNSFake()
+	f.SeedRecord(zone1.ID, cfapi.Record{Type: "A", Name: "app.example.com", Content: "192.0.2.10"})
+	s := &dnsSpy{API: f, deleteErr: spent}
+	in := dnsIn("app.example.com")
+	in.Adopt = map[string]bool{"app.example.com": true}
+
+	res := newDNS(s, &memStore{}, t0).Run(context.Background(), in, Enforce)
+
+	require.Empty(t, dnsWrites(f))
+	require.Equal(t, []Action{
+		dnsAction(DeleteRecord, "app.example.com", HeldBudget, true),
+		dnsAction(CreateRecord, "app.example.com", HeldBudget, true),
+	}, withoutDetail(res.Actions))
+}

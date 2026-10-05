@@ -124,6 +124,10 @@ func New(opts Options) (*Client, error) {
 	return c, nil
 }
 
+// Room reports whether the budget of the client has room for n requests now;
+// see Limiter.Room.
+func (c *Client) Room(n int) bool { return c.limiter.Room(n) }
+
 func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // parseBaseURL returns the base URL to use. The messages do not quote raw,
