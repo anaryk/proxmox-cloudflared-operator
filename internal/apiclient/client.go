@@ -96,6 +96,13 @@ func (c *Client) StatusRaw(ctx context.Context) (json.RawMessage, error) {
 	return raw, err
 }
 
+// Traffic returns the samples of the traffic of the connectors on the node.
+func (c *Client) Traffic(ctx context.Context) (engine.TrafficView, error) {
+	var v engine.TrafficView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/traffic", nil, &v)
+	return v, err
+}
+
 // Credentials returns the stored credentials with the last check of each. The
 // answer has no token.
 func (c *Client) Credentials(ctx context.Context) ([]engine.CredentialView, error) {

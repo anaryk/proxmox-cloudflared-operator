@@ -84,3 +84,16 @@ func (c *cycleRun) writerStill(when string) bool {
 	}
 	return true
 }
+
+// showRollouts gives every tunnel of the state the rollout last confirmed on
+// its connectors, also one this cycle did not look at: what was confirmed
+// stays true of the time it was confirmed.
+func (c *cycleRun) showRollouts() {
+	for i := range c.st.Tunnels {
+		t := &c.st.Tunnels[i]
+		t.Rollout = nil
+		if r, ok := c.e.rolledOut[t.ID]; ok && t.ID != "" {
+			t.Rollout = &r
+		}
+	}
+}

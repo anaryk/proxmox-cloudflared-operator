@@ -46,6 +46,7 @@ func (s *Server) routes() http.Handler {
 	v1.GET("/state", s.getState)
 	v1.GET("/events", s.getEvents)
 	v1.GET("/stream", s.getStream)
+	v1.GET("/traffic", s.getTraffic)
 	v1.POST("/sync", s.postSync)
 	v1.POST("/apply", s.postApply)
 	v1.POST("/adopt", s.postAdopt)
@@ -111,6 +112,12 @@ func holds(ifNoneMatch, tag string) bool {
 		}
 	}
 	return false
+}
+
+// getTraffic answers with the samples of the connectors' traffic. They are
+// no part of the state, whose digest changes only with what a cycle finds.
+func (s *Server) getTraffic(c *gin.Context) {
+	c.JSON(http.StatusOK, s.engine.Traffic())
 }
 
 func (s *Server) getEvents(c *gin.Context) {

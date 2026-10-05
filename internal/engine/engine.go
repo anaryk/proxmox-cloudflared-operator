@@ -146,9 +146,9 @@ type Engine struct {
 	// confirm and adopt are the admin's one-shot requests that wait for a
 	// DNS run to decide on them.
 	confirm   *request
-	adopt     map[string]*request  // by hostname
-	rolledOut map[string]int       // by tunnel id: the configuration version confirmed on its connectors
-	asked     map[string]time.Time // by tunnel id: when its connectors were last listed
+	adopt     map[string]*request    // by hostname
+	rolledOut map[string]RolloutView // by tunnel id: the configuration version confirmed on its connectors
+	asked     map[string]time.Time   // by tunnel id: when its connectors were last listed
 	// retries are, by tunnel id, the reads of a run token again that failed
 	// and have not worked since.
 	retries map[string]tokenRetry
@@ -225,6 +225,9 @@ type Engine struct {
 	// hostname, the owner that won it when claims were last settled.
 	listed listing
 	served map[string]string
+
+	// traffic is what the daemon sampled of the connectors' traffic.
+	traffic traffic
 }
 
 // New returns an engine. It reads nothing yet: the first cycle does.
@@ -270,7 +273,7 @@ func New(d Deps) (*Engine, error) {
 		asked:     make(map[string]time.Time),
 		retries:   make(map[string]tokenRetry),
 		ownIDs:    make(map[string]map[string]time.Time),
-		rolledOut: make(map[string]int),
+		rolledOut: make(map[string]RolloutView),
 		gone:      make(map[model.GuestRef]bool),
 		seen:      make(map[string]seenTunnel),
 		reports:   make(map[string]credentials.Report),

@@ -81,7 +81,12 @@
       "exists": true,
       "verified": true,
       "unknown": false,
-      "unchecked": false
+      "unchecked": false,
+      "rollout": {
+        "version": 3,
+        "connectors": 1,
+        "confirmedAt": "2026-10-01T12:00:01Z"
+      }
     },
     {
       "accountId": "acc2",

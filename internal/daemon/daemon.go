@@ -232,7 +232,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	settings := startSettings(st, log)
 	logStart(log, cfg, st)
 
-	eng, client, filter, err := build(cfg, deps, st, token, settings)
+	eng, client, filter, conns, err := build(cfg, deps, st, token, settings)
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
-	beside := []func(context.Context){watch, keep}
+	traffic := &sampler{statuses: eng.ConnectorStatuses, scrape: conns.Metrics, record: eng.RecordTraffic, now: deps.Now, log: log}
+	beside := []func(context.Context){watch, keep, traffic.run}
 	if cfg.profile() == store.ProfileHost {
 		web := newWebKeeper(cfg, deps, client, eng.NoteWeb, log)
 		env.Web = web.facts
@@ -316,9 +317,10 @@ func StoreReady(st *store.Store) func() error {
 }
 
 // build makes the engine out of the parts, and returns the Proxmox client it
-// reads through and the egress filter it feeds too. The Proxmox token goes
-// into the client and nowhere else.
-func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, *pve.Client, *egressFilter, error) {
+// reads through, the egress filter it feeds and the connector manager it
+// keeps the connectors with too. The Proxmox token goes into the client and
+// nowhere else.
+func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
 	client, err := pve.New(pve.Config{
 		BaseURL:     cfg.PVEURL,
 		TokenID:     token.TokenID,
@@ -327,7 +329,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		NodeCertDir: deps.PVECertDir,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
 	}
 	log := cfg.Log
 	inv := inventory.New(client, inventory.Options{GateTags: []string{settings.GateTag}}, deps.Now, log)
@@ -361,9 +363,9 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		OwnUser:    ownUser,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("building the engine: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("building the engine: %w", err)
 	}
-	return eng, client, filter, nil
+	return eng, client, filter, conns, nil
 }
 
 // serve runs the API, starts the engine once the socket is listening, and runs

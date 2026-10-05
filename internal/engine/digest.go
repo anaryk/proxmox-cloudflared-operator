@@ -38,6 +38,11 @@ func (s State) digestView() State {
 			r.Token.ExpiresOn = new(time.Time)
 		}
 	}
+	for i := range v.Tunnels {
+		if r := v.Tunnels[i].Rollout; r != nil {
+			r.ConfirmedAt = time.Time{}
+		}
+	}
 	for i := range v.Segments {
 		v.Segments[i].AcknowledgedAt = time.Time{}
 	}

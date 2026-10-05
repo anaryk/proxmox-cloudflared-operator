@@ -135,6 +135,7 @@ func (c *cycleRun) run() State {
 		c.reconcile()
 	}
 	c.watchTunnels()
+	c.showRollouts()
 	c.saveMemory()
 	c.noteRogueConnectors()
 	c.sayWaiting()

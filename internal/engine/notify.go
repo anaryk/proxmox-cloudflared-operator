@@ -70,11 +70,6 @@ type GapNotice struct {
 	Level string `json:"level"`
 }
 
-// TrafficNotice is the newest sample of the traffic.
-type TrafficNotice struct {
-	At time.Time `json:"at"`
-}
-
 // Hello is what a stream begins with: the process of the daemon, the number
 // of its last event, the digest of its state and the poll interval of the
 // last settings read. Version is the daemon's, which the API fills in.

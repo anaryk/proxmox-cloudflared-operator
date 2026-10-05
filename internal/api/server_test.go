@@ -80,6 +80,7 @@ type fakeEngine struct {
 	segments  []engine.SegmentView
 	steps     []doctor.Step
 	findings  []doctor.Finding
+	traffic   engine.TrafficView
 }
 
 func (f *fakeEngine) record(ctx context.Context, call string) {
@@ -328,6 +329,13 @@ func (f *fakeEngine) Doctor(ctx context.Context) []doctor.Finding {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.findings
+}
+
+func (f *fakeEngine) Traffic() engine.TrafficView {
+	f.record(context.Background(), "traffic")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.traffic
 }
 
 func (f *fakeEngine) PollInterval() time.Duration {

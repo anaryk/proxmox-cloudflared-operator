@@ -61,7 +61,10 @@ func populatedState() State {
 			{Msg: "an issue of the settings"},
 		},
 		Tunnels: []TunnelView{
-			{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000001", Version: 3, Exists: true, Verified: true}},
+			{
+				TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000001", Version: 3, Exists: true, Verified: true},
+				Rollout:     &RolloutView{Version: 3, Connectors: 1, ConfirmedAt: t0.Add(time.Second)},
+			},
 			{TunnelState: reconcile.TunnelState{AccountID: "acc2", CredentialID: "cred1", Name: "pco-abc123", Unknown: true}},
 			{
 				TunnelState: reconcile.TunnelState{AccountID: "acc3", CredentialID: "cred1", Name: "pco-abc123", ID: "00000000-0000-4000-8000-000000000003", Exists: true},
@@ -284,6 +287,7 @@ func TestACloneOfTheStateOwnsWhatWaits(t *testing.T) {
 	c.Unapproved[1].MACs[0] = "changed"
 	c.Unapproved[1].Addresses[0] = netip.MustParseAddr("10.9.9.9")
 	c.Segments[0].Routes = 9
+	c.Tunnels[0].Rollout.Version = 9
 
 	require.Equal(t, populatedState(), st)
 }

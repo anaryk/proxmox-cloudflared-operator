@@ -69,6 +69,17 @@ type TunnelView struct {
 	// known to be there now; such a tunnel is never Verified. State.Hold
 	// says why.
 	Unchecked bool `json:"unchecked"`
+	// Rollout is the configuration the engine last saw running on every
+	// connector Cloudflare lists for the tunnel; nil before it saw one.
+	Rollout *RolloutView `json:"rollout,omitempty"`
+}
+
+// RolloutView is a configuration version seen running: on how many
+// connectors, and when the engine saw it, as its rollout event says.
+type RolloutView struct {
+	Version     int       `json:"version"`
+	Connectors  int       `json:"connectors"`
+	ConfirmedAt time.Time `json:"confirmedAt"`
 }
 
 // GuestView names a guest: its reference, as an issue names it, and its name.
@@ -207,6 +218,12 @@ func (s State) clone() State {
 	}
 	s.Issues = slices.Clone(s.Issues)
 	s.Tunnels = slices.Clone(s.Tunnels)
+	for i := range s.Tunnels {
+		if r := s.Tunnels[i].Rollout; r != nil {
+			copied := *r
+			s.Tunnels[i].Rollout = &copied
+		}
+	}
 	s.Connectors = slices.Clone(s.Connectors)
 	s.Credentials = slices.Clone(s.Credentials)
 	for i := range s.Credentials {

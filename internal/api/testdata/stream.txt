@@ -13,7 +13,7 @@ event: gap
 data: {"boot":"9f2c4e1a0b7d3c55","from":814,"to":1826,"count":1013,"level":"warn"}
 
 event: traffic
-data: {"at":"2026-10-01T12:00:05Z"}
+data: {"at":"2026-10-01T12:00:05Z","tunnels":[{"tunnelId":"00000000-0000-4000-8000-000000000001","rps":38.2,"errorsPerSec":0.1,"concurrent":3,"haConnections":4,"stale":false}]}
 
 id: 9f2c4e1a0b7d3c55:1827
 event: event

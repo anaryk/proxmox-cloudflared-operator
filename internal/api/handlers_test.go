@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
@@ -1067,6 +1068,30 @@ func TestTheSegmentsAreListed(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.JSONEq(t, `[]`, rec.Body.String())
 	})
+}
+
+func TestTheTrafficOfTheConnectors(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 5, 0, time.UTC)
+	f := &fakeEngine{traffic: engine.TrafficView{At: at, Interval: "5s", Tunnels: []engine.TunnelTraffic{{
+		TunnelID: "00000000-0000-4000-8000-000000000001", Node: "pve1", Cloudflared: "2026.9.3", ConfigVersion: 14, HAConnections: 4,
+		Edges:     []connector.Edge{{Connection: 0, Location: "fra08"}},
+		RTTMillis: []float64{11.2},
+		Samples:   []engine.TrafficSample{{At: at, RPS: 38.2, ErrorsPerSec: 0.1, Concurrent: 3}},
+	}}}}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/traffic", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{
+		"at": "2026-10-01T12:00:05Z", "interval": "5s",
+		"tunnels": [{
+			"tunnelId": "00000000-0000-4000-8000-000000000001", "node": "pve1", "cloudflared": "2026.9.3",
+			"configVersion": 14, "haConnections": 4,
+			"edges": [{"connection": 0, "location": "fra08"}], "rttMs": [11.2], "stale": false,
+			"samples": [{"at": "2026-10-01T12:00:05Z", "rps": 38.2, "errorsPerSec": 0.1, "concurrent": 3}]
+		}]
+	}`, rec.Body.String())
+	require.Equal(t, []string{"traffic"}, f.called())
 }
 
 func TestTheAdminActionsOnSegments(t *testing.T) {

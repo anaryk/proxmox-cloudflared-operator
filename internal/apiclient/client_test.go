@@ -19,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
@@ -321,6 +322,22 @@ func TestRequests(t *testing.T) {
 				return err
 			},
 			want: seen{Method: "GET", Path: "/v1/doctor"},
+		},
+		{
+			name: "traffic", status: 200,
+			reply: `{"at":"2026-10-01T12:00:05Z","interval":"5s","tunnels":[{"tunnelId":"t1","node":"pve1","configVersion":14,"haConnections":4,` +
+				`"edges":[{"connection":0,"location":"fra08"}],"rttMs":[11.2],"stale":true,"samples":[{"at":"2026-10-01T12:00:05Z","rps":38.2,"errorsPerSec":0.1,"concurrent":3}]}]}`,
+			call: func(c *Client) error {
+				v, err := c.Traffic(t.Context())
+				at := time.Date(2026, 10, 1, 12, 0, 5, 0, time.UTC)
+				require.Equal(t, engine.TrafficView{At: at, Interval: "5s", Tunnels: []engine.TunnelTraffic{{
+					TunnelID: "t1", Node: "pve1", ConfigVersion: 14, HAConnections: 4,
+					Edges: []connector.Edge{{Connection: 0, Location: "fra08"}}, RTTMillis: []float64{11.2}, Stale: true,
+					Samples: []engine.TrafficSample{{At: at, RPS: 38.2, ErrorsPerSec: 0.1, Concurrent: 3}},
+				}}}, v)
+				return err
+			},
+			want: seen{Method: "GET", Path: "/v1/traffic"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -662,6 +679,8 @@ func TestTimeouts(t *testing.T) {
 	require.InDelta(t, 10, rec.last().Seconds(), 1, "events")
 	_ = c.Sync(t.Context())
 	require.InDelta(t, 10, rec.last().Seconds(), 1, "sync")
+	_, _ = c.Traffic(t.Context())
+	require.InDelta(t, 10, rec.last().Seconds(), 1, "traffic")
 
 	_, _ = c.Apply(t.Context(), false, "")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "apply")

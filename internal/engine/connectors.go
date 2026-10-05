@@ -391,7 +391,7 @@ const rolloutAskEvery = 30 * time.Second
 // counts: after a write that was held, failed or read back different, Version
 // says nothing about what Cloudflare serves.
 func (c *cycleRun) awaitsRollout(t reconcile.TunnelState) bool {
-	return c.mode() == reconcile.Enforce && t.Verified && c.e.rolledOut[t.ID] != t.Version
+	return c.mode() == reconcile.Enforce && t.Verified && c.e.rolledOut[t.ID].Version != t.Version
 }
 
 // confirmRollout notes that the connectors of a tunnel run its configuration,
@@ -400,7 +400,7 @@ func (c *cycleRun) confirmRollout(t reconcile.TunnelState, conns []cfapi.Connect
 	if len(conns) == 0 || slices.ContainsFunc(conns, func(x cfapi.Connector) bool { return x.ConfigVersion < t.Version }) {
 		return
 	}
-	c.e.rolledOut[t.ID] = t.Version
+	c.e.rolledOut[t.ID] = RolloutView{Version: t.Version, Connectors: len(conns), ConfirmedAt: c.now}
 	c.events = append(c.events, Event{
 		At: c.now, Level: levelInfo, Kind: kindRollout, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
 		Message: fmt.Sprintf("configuration version %d runs on %d connectors in account %s", t.Version, len(conns), t.AccountID),
