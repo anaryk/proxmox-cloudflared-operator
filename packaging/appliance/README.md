@@ -91,12 +91,16 @@ release with that snapshot (see `../RELEASING.md`).
     sudo packaging/appliance/smoke.sh --version <version> build/appliance/pco-appliance_<version>_amd64.tar.zst
     sudo packaging/appliance/smoke.sh --with-network --version <version> <template>
 
-`smoke.sh` boots the template in `systemd-nspawn` and checks it from inside:
-without a network it must come up running, or degraded by nothing but
-`pco.service` and `pco-first-boot.service`; pco must be the version of the
-file name, the egress table loaded, the profile `appliance`, pco and
-cloudflared held, root locked, `pco-connector` there, `nftables.service`
-masked, and apt must read the two live archives and nothing of the snapshot.
+`smoke.sh` first reads the files of the template: `/etc/machine-id` must be
+empty, `/etc/resolv.conf` and `/root/.ssh` absent, and the dpkg database must
+list neither `openssh-server`, `sudo`, `cron` nor `curl`. Then it boots the
+template in `systemd-nspawn` and checks it from inside: without a network it
+must come up running, or degraded by nothing but `pco.service` and
+`pco-first-boot.service`; pco must be the version of the file name, the
+egress table loaded, the profile `appliance`, pco and cloudflared held, root
+locked, `pco-connector` there, `nftables.service` masked, apt must read the
+two live archives and nothing of the snapshot, and `unattended-upgrade
+--dry-run -v` must allow the origins labelled `Debian-Security` and no other.
 With `--with-network` it boots once more with the network of the host, and the
 first start must have installed the security updates and left the package
 lists of the live archives only. For a snapshot, whose binary says what

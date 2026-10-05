@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Boots an appliance template in systemd-nspawn and checks it, from inside,
-# against what build.sh promises.
+# Checks an appliance template against what build.sh promises: its files
+# before the first start, then, booted in systemd-nspawn, from inside.
 #
 # Usage: sudo packaging/appliance/smoke.sh [--with-network] --version VERSION
 #            [--pco-version TEXT] <pco-appliance_VERSION_ARCH.tar.zst>
@@ -18,8 +18,8 @@
 # Without --with-network the container has no network at all: the system must
 # come up within 180 seconds, running, or degraded by nothing but pco.service
 # (pco is not set up) and pco-first-boot.service (no network to update from).
-# It needs root, systemd-nspawn, machinectl and systemd-run (systemd-container)
-# and zstd, on a host whose systemd runs systemd-machined.
+# It needs root, systemd-nspawn, machinectl and systemd-run (systemd-container),
+# zstd and dpkg-query, on a host whose systemd runs systemd-machined.
 
 set -euo pipefail
 
@@ -58,7 +58,7 @@ template=$1
 [[ -f $template && -r $template ]] || die "not a readable file: $template"
 pco_version=${pco_version:-v$version}
 [[ $(id -u) == 0 ]] || die "systemd-nspawn needs root"
-for tool in systemd-nspawn machinectl systemd-run zstd tar; do
+for tool in systemd-nspawn machinectl systemd-run zstd tar dpkg-query; do
 	command -v "$tool" >/dev/null 2>&1 || die "$tool is needed and was not found"
 done
 
@@ -92,7 +92,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
+CHECKS=0
+FAILS=0
+
+# check <what holds> <command...>
+check() {
+	local what=$1
+	shift
+	CHECKS=$((CHECKS + 1))
+	if ! "$@"; then
+		FAILS=$((FAILS + 1))
+		printf 'FAIL %s\n' "$what"
+	fi
+}
+
+is() { [[ $1 == "$2" ]]; }
+starts() { [[ $1 == "$2"* ]]; }
+absent() { [[ ! -e $1 && ! -L $1 ]]; }
+empty_file() { [[ -f $1 && ! -L $1 && ! -s $1 ]]; }
+
 zstd --decompress --stdout --long=27 --quiet "$template" | tar --extract --numeric-owner --directory "$root"
+
+# What the build must have left out, read from the tree before the first
+# start writes into it: the machine ID is made at that start, the resolver
+# comes from Proxmox VE, nothing serves a login, and pco fetches with Go.
+check "/etc/machine-id is empty" empty_file "$root/etc/machine-id"
+check "/etc/resolv.conf is absent" absent "$root/etc/resolv.conf"
+check "/root/.ssh is absent" absent "$root/root/.ssh"
+# installed: the packages in the dpkg database of the tree, in any state but
+# not-installed, one per line.
+# shellcheck disable=SC2016
+installed=$(dpkg-query "--admindir=$root/var/lib/dpkg" --show --showformat='${db:Status-Status} ${Package}\n' |
+	awk '$1 != "not-installed" { print $2 }') || true
+listed() { grep -Fxq -- "$1" <<<"$installed"; }
+unlisted() { ! listed "$1"; }
+check "the dpkg database of the tree lists pco" listed pco
+for package in openssh-server sudo cron curl; do
+	check "the package $package is not installed" unlisted "$package"
+done
 
 args=(--quiet --boot --directory "$root" --machine "$machine" --console=passive)
 if [[ $network == 0 ]]; then
@@ -124,22 +161,6 @@ state=$(timeout "$left" systemd-run --machine "$machine" --quiet --wait --pipe -
 	systemctl is-system-running --wait </dev/null) || true
 state=${state:-not started within $limit seconds}
 
-CHECKS=0
-FAILS=0
-
-# check <what holds> <command...>
-check() {
-	local what=$1
-	shift
-	CHECKS=$((CHECKS + 1))
-	if ! "$@"; then
-		FAILS=$((FAILS + 1))
-		printf 'FAIL %s\n' "$what"
-	fi
-}
-
-is() { [[ $1 == "$2" ]]; }
-starts() { [[ $1 == "$2"* ]]; }
 user_exists() { inside getent passwd "$1" >/dev/null; }
 
 failed=$(inside systemctl list-units --state=failed --plain --no-legend --no-pager | awk '{ print $1 }' | LC_ALL=C sort | paste -s -d ' ' -)
@@ -179,6 +200,21 @@ if [[ $network == 0 ]]; then
 		"http://deb.debian.org/debian http://security.debian.org/debian-security"
 	check "apt has no Check-Valid-Until option" is "$(inside apt-config dump | grep -ci check-valid-until || true)" 0
 	check "/etc/apt/apt.conf.d/99mmdebstrap is gone" inside test ! -e /etc/apt/apt.conf.d/99mmdebstrap
+	# security_only: unattended-upgrade allows the origins labelled
+	# Debian-Security and no other. It prints them joined by ", ", and each
+	# holds commas of its own.
+	origins=$(inside unattended-upgrade --dry-run -v 2>&1 |
+		sed -n '/Allowed origins are: /{s/^.*Allowed origins are: //;p;q;}' | awk -F', ' '{ for (i = 1; i <= NF; i++) print $i }') || true
+	security_only() {
+		local origin count=0
+		while IFS= read -r origin; do
+			[[ -n $origin ]] || continue
+			[[ ,$origin, == *,label=Debian-Security,* ]] || return 1
+			count=$((count + 1))
+		done <<<"$origins"
+		((count > 0))
+	}
+	check "unattended-upgrade allows Debian-Security only, not: ${origins//$'\n'/; }" security_only
 else
 	# lists_from_live: the package lists were downloaded from the two live
 	# archives, from both and from nothing else.
