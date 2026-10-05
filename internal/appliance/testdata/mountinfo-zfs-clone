@@ -1,0 +1,45 @@
+674 500 0:74 / / rw,relatime shared:501 master:341 - zfs pcotestpool/subvol-9210-disk-0 rw,xattr,posixacl,casesensitive
+675 674 0:80 / /var/lib/pco rw,relatime shared:502 master:494 - zfs pcotestpool/subvol-9210-disk-1 rw,xattr,posixacl,casesensitive
+676 674 0:83 / /dev rw,relatime shared:503 - tmpfs none rw,size=492k,mode=755,uid=100000,gid=100000,inode64
+677 674 0:84 / /proc rw,nosuid,nodev,noexec,relatime shared:517 - proc proc rw
+678 679 0:84 /sys/net /proc/sys/net rw,nosuid,nodev,noexec,relatime shared:519 - proc proc rw
+679 677 0:84 /sys /proc/sys ro,relatime shared:518 - proc proc rw
+680 677 0:84 /sysrq-trigger /proc/sysrq-trigger ro,relatime shared:520 - proc proc rw
+682 674 0:85 / /sys ro,nosuid,nodev,noexec,relatime shared:530 - sysfs sysfs rw
+683 682 0:85 /devices/virtual/net /sys/devices/virtual/net rw,nosuid,nodev,noexec,relatime shared:531 - sysfs sysfs rw
+681 682 0:37 / /sys/fs/fuse/connections rw,nosuid,nodev,noexec,relatime shared:532 master:20 - fusectl fusectl rw
+684 676 0:86 / /dev/.lxc/proc rw,relatime shared:504 - proc proc rw
+685 676 0:85 / /dev/.lxc/sys rw,relatime shared:505 - sysfs sys rw
+686 682 0:29 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:533 - cgroup2 none rw,nsdelegate,memory_recursiveprot
+687 677 0:48 /proc/cpuinfo /proc/cpuinfo rw,nosuid,nodev,relatime shared:521 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+688 677 0:48 /proc/diskstats /proc/diskstats rw,nosuid,nodev,relatime shared:522 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+689 677 0:48 /proc/loadavg /proc/loadavg rw,nosuid,nodev,relatime shared:523 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+690 677 0:48 /proc/meminfo /proc/meminfo rw,nosuid,nodev,relatime shared:524 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+691 677 0:48 /proc/pressure /proc/pressure rw,nosuid,nodev,relatime shared:525 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+692 677 0:48 /proc/slabinfo /proc/slabinfo rw,nosuid,nodev,relatime shared:526 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+693 677 0:48 /proc/stat /proc/stat rw,nosuid,nodev,relatime shared:527 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+694 677 0:48 /proc/swaps /proc/swaps rw,nosuid,nodev,relatime shared:528 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+695 677 0:48 /proc/uptime /proc/uptime rw,nosuid,nodev,relatime shared:529 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+696 682 0:48 /sys/devices/system/cpu /sys/devices/system/cpu rw,nosuid,nodev,relatime shared:534 master:111 - fuse.lxcfs lxcfs rw,user_id=0,group_id=0,allow_other
+697 676 0:7 /full /dev/full rw,nosuid,relatime shared:506 master:2 - devtmpfs udev rw,size=3438616k,nr_inodes=859654,mode=755,inode64
+698 676 0:7 /null /dev/null rw,nosuid,relatime shared:507 master:2 - devtmpfs udev rw,size=3438616k,nr_inodes=859654,mode=755,inode64
+699 676 0:7 /random /dev/random rw,nosuid,relatime shared:508 master:2 - devtmpfs udev rw,size=3438616k,nr_inodes=859654,mode=755,inode64
+700 676 0:7 /tty /dev/tty rw,nosuid,relatime shared:509 master:2 - devtmpfs udev rw,size=3438616k,nr_inodes=859654,mode=755,inode64
+701 676 0:7 /urandom /dev/urandom rw,nosuid,relatime shared:510 master:2 - devtmpfs udev rw,size=3438616k,nr_inodes=859654,mode=755,inode64
+702 676 0:7 /zero /dev/zero rw,nosuid,relatime shared:511 master:2 - devtmpfs udev rw,size=3438616k,nr_inodes=859654,mode=755,inode64
+703 676 0:87 / /dev/pts rw,nosuid,noexec,relatime shared:512 - devpts devpts rw,gid=100005,mode=620,ptmxmode=666,max=1026
+704 676 0:87 /ptmx /dev/ptmx rw,nosuid,noexec,relatime shared:513 - devpts devpts rw,gid=100005,mode=620,ptmxmode=666,max=1026
+705 676 0:87 /0 /dev/console rw,nosuid,noexec,relatime shared:514 - devpts devpts rw,gid=100005,mode=620,ptmxmode=666,max=1026
+706 676 0:87 /1 /dev/tty1 rw,nosuid,noexec,relatime shared:515 - devpts devpts rw,gid=100005,mode=620,ptmxmode=666,max=1026
+707 676 0:87 /2 /dev/tty2 rw,nosuid,noexec,relatime shared:516 - devpts devpts rw,gid=100005,mode=620,ptmxmode=666,max=1026
+708 679 0:83 /.lxc-boot-id /proc/sys/kernel/random/boot_id ro,nosuid,nodev,noexec,relatime shared:503 - tmpfs none rw,size=492k,mode=755,uid=100000,gid=100000,inode64
+501 676 0:88 / /dev/shm rw,nosuid,nodev shared:535 - tmpfs tmpfs rw,uid=100000,gid=100000,inode64
+502 674 0:89 / /run rw,nosuid,nodev shared:536 - tmpfs tmpfs rw,size=1626052k,nr_inodes=819200,mode=755,uid=100000,gid=100000,inode64
+505 676 0:82 / /dev/mqueue rw,nosuid,nodev,noexec,relatime shared:537 - mqueue mqueue rw
+506 502 0:90 / /run/lock rw,nosuid,nodev,noexec,relatime shared:538 - tmpfs tmpfs rw,size=5120k,uid=100000,gid=100000,inode64
+507 674 0:91 / /tmp rw,nosuid,nodev shared:539 - tmpfs tmpfs rw,size=4065124k,nr_inodes=1048576,uid=100000,gid=100000,inode64
+820 502 0:92 / /run/credentials/systemd-journald.service ro,nosuid,nodev,noexec,relatime,nosymfollow shared:540 - ramfs ramfs rw,mode=700
+922 502 0:95 / /run/credentials/systemd-networkd.service ro,nosuid,nodev,noexec,relatime,nosymfollow shared:610 - ramfs ramfs rw,mode=700
+898 502 0:100 / /run/credentials/container-getty@1.service ro,nosuid,nodev,noexec,relatime,nosymfollow shared:555 - ramfs ramfs rw,mode=700
+904 502 0:101 / /run/credentials/container-getty@2.service ro,nosuid,nodev,noexec,relatime,nosymfollow shared:575 - ramfs ramfs rw,mode=700
+732 502 0:94 / /run/credentials/console-getty.service ro,nosuid,nodev,noexec,relatime,nosymfollow shared:579 - ramfs ramfs rw,mode=700
