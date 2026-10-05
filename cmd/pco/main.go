@@ -26,8 +26,14 @@ func exitCode(err error, stderr io.Writer) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(stderr, "pco: %s\n", present.Printable(err.Error()))
-	if errors.Is(err, apiclient.ErrNoAnswer) || errors.As(err, new(couldNotAsk)) {
+	var coded interface{ ExitCode() int }
+	switch {
+	case errors.Is(err, apiclient.ErrNoAnswer) || errors.As(err, new(couldNotAsk)):
 		return 2
+	case errors.As(err, &coded):
+		// The daemon of an appliance without its volume: its unit does not
+		// start it again on this status.
+		return coded.ExitCode()
 	}
 	return 1
 }

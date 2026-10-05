@@ -108,6 +108,8 @@ type Deps struct {
 	ClusterCA, ClusterCAKey   string
 	RestartWeb                func(ctx context.Context) error
 	WebEvery                  time.Duration
+	// Appliance is what only the daemon of an appliance uses.
+	Appliance ApplianceDeps
 }
 
 // defaultShutdownTimeout lets a credential check or an apply, which may take a
@@ -204,7 +206,12 @@ func (c Config) profile() string {
 // not set up fails there, and one that is not mounted after the wait for it.
 // Once the token is read, a store that is gone is the engine's to report in its
 // state, and the daemon keeps running.
+//
+// An appliance runs as RunAppliance says.
 func Run(ctx context.Context, cfg Config, deps Deps) error {
+	if cfg.Profile == store.ProfileAppliance {
+		return RunAppliance(ctx, cfg, deps)
+	}
 	if err := cfg.check(); err != nil {
 		return err
 	}

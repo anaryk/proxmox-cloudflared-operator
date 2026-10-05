@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,10 @@ func (a *app) daemonCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Its default is the host name, which in the container is pco.
+			if profile == store.ProfileAppliance && cmd.Flags().Changed("node") {
+				return errors.New("--node is not taken in the appliance: it runs as the node its install records")
+			}
 			paths, err := daemon.StorePaths(profile, clusterDir, privateDir, local)
 			if err != nil {
 				return err
@@ -83,7 +88,7 @@ func (a *app) daemonCmd() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&pveURL, "pve-url", daemon.DefaultPVEURL, "base URL of the Proxmox API")
 	flags.StringVar(&pveCA, "pve-ca-file", "", "CA bundle to verify the Proxmox API with; not needed for a loopback URL")
-	flags.StringVar(&node, "node", defaultNode(), "name of this node in Proxmox")
+	flags.StringVar(&node, "node", defaultNode(), "name of this node in Proxmox; not taken in the appliance")
 	flags.StringVar(&logLevel, "log-level", "info", "log level: trace, debug, info, warn or error")
 	flags.StringVar(&clusterDir, "cluster-dir", "", "directory of the state the cluster shares; only with the two others (default "+defaults.Cluster+")")
 	flags.StringVar(&privateDir, "private-dir", "", "directory of the secrets the cluster shares; only with the two others (default "+defaults.Private+")")

@@ -52,8 +52,19 @@ var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 type fakePVE struct {
 	srv *httptest.Server
 
-	mu   sync.Mutex
-	auth []string // the Authorization header of every request
+	mu     sync.Mutex
+	auth   []string       // the Authorization header of every request
+	routes map[string]any // answers a test adds or changes, by path
+}
+
+// answer makes the API answer data at path.
+func (f *fakePVE) answer(path string, data any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.routes == nil {
+		f.routes = map[string]any{}
+	}
+	f.routes[path] = data
 }
 
 func newFakePVE(t *testing.T) *fakePVE {
@@ -94,9 +105,15 @@ func (f *fakePVE) authorizations() []string {
 func (f *fakePVE) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.auth = append(f.auth, r.Header.Get("Authorization"))
+	extra, added := f.routes[r.URL.Path]
 	f.mu.Unlock()
 	if r.Header.Get("Authorization") != "PVEAPIToken="+pveTokenID+"="+pveSecret {
 		http.Error(w, `{"message":"authentication failure"}`, http.StatusUnauthorized)
+		return
+	}
+	if added {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": extra})
 		return
 	}
 	var data any

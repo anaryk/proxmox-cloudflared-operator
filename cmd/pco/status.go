@@ -2,19 +2,24 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const (
@@ -38,6 +43,9 @@ func (a *app) statusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			raw, err := a.rawState(cmd.Context())
 			if err != nil {
+				if line := a.noVolumeLine(err); line != "" {
+					return couldNotAsk{errors.New(line)}
+				}
 				return err
 			}
 			var st engine.State
@@ -63,6 +71,45 @@ func (a *app) statusCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// noVolumeLine says, in an appliance whose daemon is not running, why: its
+// state volume is not there, as the daemon would say. It is empty on the host,
+// for any other failure to ask, and while the volume is there.
+func (a *app) noVolumeLine(err error) string {
+	if !apiclient.NotRunning(err) {
+		return ""
+	}
+	if profile, perr := store.DetectProfile(a.profileFile); perr != nil || profile != store.ProfileAppliance {
+		return ""
+	}
+	mounted := a.daemon.Appliance.Volume
+	if mounted == nil {
+		mounted = appliance.VolumeMounted
+	}
+	switch err := mounted(store.ApplianceLocal, store.VolumeMarker); {
+	case err == nil:
+		return ""
+	case errors.Is(err, fs.ErrPermission):
+		return "cannot read " + store.ApplianceLocal + ": run pco status as root"
+	default:
+		return appliance.VolumeLine(store.ApplianceLocal, err, a.daemon.Appliance.System.VMIDHint(store.ApplianceLocal))
+	}
+}
+
+// identityText says what the last self-identification of the appliance
+// found: "ok (lxc/120 on pve1)", or why not.
+func identityText(id *engine.IdentityView) string {
+	self := fmt.Sprintf("lxc/%d on %s", id.VMID, id.Node)
+	switch {
+	case id.Copy:
+		return fmt.Sprintf("copy: connectors stopped (not %s: %s)", self, id.Why)
+	case len(id.Exposed) > 0:
+		return fmt.Sprintf("serving nothing: %s can reach into %s", strings.Join(id.Exposed, ", "), self)
+	case !id.OK:
+		return fmt.Sprintf("not proven (%s): %s", self, id.Why)
+	}
+	return "ok (" + self + ")"
 }
 
 // hasProblems says whether the state shows anything the admin has to look at.
@@ -111,6 +158,9 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 	statusLine(s, "Mode", present.ModeText(st))
 	if st.Profile != "" {
 		statusLine(s, "Profile", st.Profile)
+	}
+	if st.Identity != nil {
+		statusLine(s, "Identity", identityText(st.Identity))
 	}
 	statusLine(s, "Inventory", present.InventoryText(st))
 	statusLine(s, "Writer", present.WriterText(st.WriterVerdict))

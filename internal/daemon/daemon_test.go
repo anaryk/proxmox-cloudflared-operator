@@ -328,14 +328,7 @@ func TestSettingsReadAtStartAreFlaggedWhenTheyChange(t *testing.T) {
 }
 
 func TestTheDaemonLogsTheProfileAtStart(t *testing.T) {
-	w := newWorld(t)
-	w.cfg.Profile = store.ProfileAppliance
-	require.NoError(t, w.store.SaveInstall(store.Install{ID: testInstall, CreatedAt: t0, Profile: store.ProfileAppliance,
-		Appliance: &store.ApplianceInstall{
-			VMID: 9200, Node: testNode, MACs: []string{"bc:24:11:00:92:00"},
-			Endpoints: []store.Endpoint{{Address: "10.92.0.1:8006", ServerName: testNode}},
-		},
-	}))
+	w := newApplianceWorld(t)
 	d := w.start()
 	require.NoError(t, d.stop())
 
