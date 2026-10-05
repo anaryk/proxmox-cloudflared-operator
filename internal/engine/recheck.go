@@ -87,8 +87,8 @@ func (e *Engine) recheckOne(ctx context.Context, install string, cred store.Cred
 // keep the report of the check they made. The checks run one after the other
 // outside the cycle lock and end together after firstCheckTimeout: the zones
 // of a credential not checked by then are planned without a check, and the
-// recheck after the cycle finds it due. A call while a recheck runs returns at
-// once.
+// recheck after the cycle finds it due. A credential the time ran out before
+// its turn is not tried at all. A call while a recheck runs returns at once.
 func (e *Engine) checkNew(ctx context.Context) {
 	if !e.rechecking.CompareAndSwap(false, true) {
 		return
@@ -101,7 +101,14 @@ func (e *Engine) checkNew(ctx context.Context) {
 	cctx, cancel := e.timeout(ctx, firstCheckTimeout)
 	defer cancel()
 	for _, cred := range creds {
-		if !e.checkOne(ctx, cctx, install, cred) {
+		switch {
+		case ctx.Err() != nil:
+			return
+		case cctx.Err() != nil:
+			e.d.Log.Warn().Str("credential", cred.ID).Dur("timeout", firstCheckTimeout).
+				Msg("the first check of the token was not tried in time; its zones are planned without it")
+			e.checkedLate(cred.ID)
+		case !e.checkOne(ctx, cctx, install, cred):
 			e.d.Log.Warn().Str("credential", cred.ID).Dur("timeout", firstCheckTimeout).
 				Msg("the first check of the token did not finish in time; its zones are planned without it")
 			e.checkedLate(cred.ID)
@@ -112,9 +119,10 @@ func (e *Engine) checkNew(ctx context.Context) {
 // neverChecked returns the install and the stored credentials with no report
 // that this process did not try to check either, once the memory is read: the
 // reports it keeps count. Nothing is checked while the last cycle held
-// because of the store.
+// because of the store, and the store is not read while no credential can be
+// new: see Engine.unchecked.
 func (e *Engine) neverChecked(ctx context.Context) (string, []store.Credential) {
-	if e.storeHeld.Load() {
+	if e.storeHeld.Load() || !e.unchecked.Load() {
 		return "", nil
 	}
 	if err := e.acquire(ctx); err != nil {
@@ -131,11 +139,14 @@ func (e *Engine) neverChecked(ctx context.Context) (string, []store.Credential) 
 	}
 	e.repMu.Lock()
 	defer e.repMu.Unlock()
-	return install, slices.DeleteFunc(creds, func(c store.Credential) bool {
+	creds = slices.DeleteFunc(creds, func(c store.Credential) bool {
 		_, checked := e.reports[c.ID]
 		_, tried := e.tried[c.ID]
 		return checked || tried
 	})
+	// Those left are checked now; one more look finds that done.
+	e.unchecked.Store(len(creds) > 0)
+	return install, creds
 }
 
 // checkOne checks the token of a credential within cctx, which ends no later

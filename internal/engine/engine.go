@@ -199,6 +199,10 @@ type Engine struct {
 	// cycle held because the store could not be read or written.
 	rechecking atomic.Bool
 	storeHeld  atomic.Bool
+	// unchecked says that a credential may be stored that no check is known
+	// of: it is set at a start and by a cycle that reads such a credential, and
+	// cleared by a look at the store that finds none.
+	unchecked atomic.Bool
 
 	stateMu sync.RWMutex
 	state   State
@@ -261,6 +265,7 @@ func New(d Deps) (*Engine, error) {
 		tried:        make(map[string]checkTry),
 	}
 	e.interval.Store(int64(defaultPollInterval))
+	e.unchecked.Store(true)
 	// The reconciler keeps the time of its last write per tunnel, so it lives
 	// as long as the engine. The DNS reconciler is made by the first cycle
 	// that knows the install and the settings.

@@ -58,7 +58,9 @@ func (c *cycleRun) syncCredentials() bool {
 }
 
 // syncClients keeps one client per stored credential, built anew when its
-// token changed. A credential whose client is new has its zones listed anew.
+// token changed. A credential whose client is new has its zones listed anew,
+// and one that no check is known of makes the engine look for such credentials
+// before the next cycle.
 func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 	seen := make(map[string]bool, len(creds))
 	for _, cr := range creds {
@@ -93,6 +95,13 @@ func (e *Engine) syncClients(c *cycleRun, creds []store.Credential) {
 	maps.DeleteFunc(e.refusedAgain, func(id string, _ map[string]bool) bool { return !seen[id] })
 	maps.DeleteFunc(e.tried, func(id string, _ checkTry) bool { return !seen[id] })
 	maps.DeleteFunc(e.recheckAt, func(id string, _ time.Time) bool { return !seen[id] })
+	for id := range seen {
+		_, checked := e.reports[id]
+		_, tried := e.tried[id]
+		if !checked && !tried {
+			e.unchecked.Store(true)
+		}
+	}
 	e.repMu.Unlock()
 }
 
