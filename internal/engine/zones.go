@@ -74,6 +74,15 @@ func (z *zoneCache) serve(name string, zone planner.Zone) {
 	z.ever[zone.ID] = zone
 }
 
+// servedOnce returns the names of the zones that were served at some time.
+func (z *zoneCache) servedOnce() []string {
+	names := make([]string, 0, len(z.ever))
+	for _, zone := range z.ever {
+		names = append(names, zone.Name)
+	}
+	return slices.Compact(slices.Sorted(slices.Values(names)))
+}
+
 // credential returns what is known of credential id, made empty when nothing
 // is.
 func (z *zoneCache) credential(id string) *credZones {

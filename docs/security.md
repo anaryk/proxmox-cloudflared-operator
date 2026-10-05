@@ -88,6 +88,13 @@ as it keeps asking, so the clone's route is in the state `conflict` and serves n
 Identity alone never moves a claim, and neither does a new guest that is created under the
 VMID of an old one: the claim belongs to the guest `qemu/101`, and the new one inherits it.
 
+Naming a hostname early wins nothing. A guest takes no claim on a name in a zone this install
+never served, nor on an apex or a wildcard that `allowHosts` does not name. Once the zone is
+served and the name allowed, the guests that name it then get it as any free hostname: the
+first in owner order. A holder whose name comes to be rejected loses its claim at once, also
+when a broken entry in its Notes still names it. The claims in a zone the install served are
+kept as they are while the zone is in doubt, left out or gone from its listing.
+
 A guest restored to a different VMID is a different owner and is in conflict while the
 original exists. A guest that is restored or created again under the VMID of a published
 guest publishes the same hostnames, without anyone approving it again, as long as it

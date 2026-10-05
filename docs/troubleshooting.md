@@ -208,13 +208,14 @@ There are three ways out:
 - **`rejected`**: the hostname is the apex of a zone or a wildcard, which a guest publishes only
   when an `allowHosts` pattern names it. The note names the pattern to add, as
   `add "*.example.com" to allowHosts`. Add it to the settings if the name is meant to be
-  published, or take the name out of the Notes. A rejected route holds no claim, and a record
-  pco made for it is left alone. A guest whose Notes name more than `maxHostnamesPerGuest`
-  hostnames has no route at all, and an issue says so.
+  published, or take the name out of the Notes. A rejected route holds no claim, a claim its
+  guest had goes at once, and a record pco made for it is left alone. A guest whose Notes
+  name more than `maxHostnamesPerGuest` hostnames has no route at all, and an issue says so.
 - **`no-zone`**: no credential serves the zone of the hostname (`no Cloudflare zone for this
   hostname in any credential`: the token does not see it, or the zone is not active), or two
   credentials see it (`pin it to one`, see [Cloudflare token](cloudflare-token.md)), or the
-  hostname is reserved.
+  hostname is reserved. In a zone this install never served, the route takes no claim: when
+  the zone is served, the guests that name the hostname then get it as any free one.
 - **`frozen`**: the account of the zone is left as it is, because a zone is in doubt. The note
   says which.
 

@@ -105,21 +105,38 @@ func TestAZoneLeftOutIsNotServed(t *testing.T) {
 	require.Equal(t, "example.org left out: no DNS read", credentialView(st, testCred).Report.LeftOut())
 }
 
+// In a zone left out that the install served before, the claims hold as
+// they are, and a route that lost its name keeps its conflict reason. In one
+// it never served, no route takes a claim.
 func TestARouteThatLostItsNameInAZoneLeftOutKeepsItsConflictReason(t *testing.T) {
-	e := unreadableEnv(t)
-	e.inv.set(snapshot(
-		guest(101, "web-1", "www.example.org -> :8080"),
-		guest(102, "web-2", "www.example.org -> :8080"),
-	))
-	e.check(testCred)
+	for _, tt := range []struct {
+		name   string
+		served []store.RememberedZone
+		want   []string
+	}{
+		{"served before", []store.RememberedZone{{ID: "zone2", Name: "example.org", AccountID: testAccount, CredentialID: testCred}},
+			[]string{"no-zone: " + leftOutReason, "conflict: hostname is held by qemu/101"}},
+		{"never served", nil, []string{"no-zone: " + leftOutReason, "no-zone: " + leftOutReason}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := unreadableEnv(t)
+			require.NoError(t, e.store.SaveEngineMemory(store.EngineMemory{InstallID: testInstall, EverServed: tt.served}))
+			e.inv.set(snapshot(
+				guest(101, "web-1", "www.example.org -> :8080"),
+				guest(102, "web-2", "www.example.org -> :8080"),
+			))
+			e.check(testCred)
 
-	st := e.cycle()
+			st := e.cycle()
 
-	var reasons []string
-	for _, r := range st.Routes {
-		reasons = append(reasons, string(r.State)+": "+r.Reason)
+			var reasons []string
+			for _, r := range st.Routes {
+				reasons = append(reasons, string(r.State)+": "+r.Reason)
+			}
+			require.Equal(t, tt.want, reasons)
+			require.Equal(t, len(tt.served) > 0, storedClaims(t, e)["www.example.org"].Owner == "qemu/101")
+		})
 	}
-	require.Equal(t, []string{"no-zone: " + leftOutReason, "conflict: hostname is held by qemu/101"}, reasons)
 }
 
 // The check of the token does not probe the account either: the token may

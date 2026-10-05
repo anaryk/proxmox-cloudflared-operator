@@ -52,6 +52,7 @@ type cycleRun struct {
 	col       planner.Collected
 	claims    planner.ClaimResult
 	refused   []planner.RouteStatus     // the routes the hostname policy took out before the claims
+	unzoned   []planner.RouteStatus     // the routes in no zone ever served, taken out before the claims
 	settled   bool                      // the claims were settled and saved
 	listing   listing                   // what this cycle saw of the guests; empty unless it saw all of them
 	results   map[string]resolve.Result // of the winners, by hostname, with what the identity minimum holds back
@@ -333,11 +334,21 @@ func (c *cycleRun) settleClaims() {
 	for _, st := range refused {
 		c.problem("hostname %s of %s is not published: %s", st.Hostname, st.Owner, st.Reason)
 	}
+	held := c.col.Held
+	if c.e.remembered {
+		// Unread, the memory does not say which zones were served.
+		var heldRefused []planner.RouteStatus
+		served := c.e.zones.servedOnce()
+		routes, c.unzoned = planner.RefuseUnzoned(routes, c.zones.planned, served)
+		held, heldRefused = planner.RefuseHeld(held, c.zones.planned, c.settings.AllowHosts, served)
+		refused = slices.Concat(refused, c.unzoned, heldRefused)
+	}
 	c.claims = planner.ResolveClaims(planner.ClaimInput{
 		Routes:   routes,
-		Held:     c.col.Held,
+		Held:     held,
 		Claims:   c.stored,
 		Identity: identity,
+		Refused:  refused,
 		Now:      c.now,
 		Grace:    time.Duration(c.settings.Grace),
 	})
@@ -380,7 +391,7 @@ func (c *cycleRun) build() {
 		Targets:   c.targets(),
 		Zones:     c.zones.planned,
 		Writer:    writer,
-		Refused:   c.refused,
+		Refused:   slices.Concat(c.refused, c.unzoned),
 	})
 	c.st.Routes = c.routeViews()
 }
