@@ -187,6 +187,7 @@ func TestNodeNames(t *testing.T) {
 		{"pve1.example.lan", "pve1", "pve1.example.lan", nil},
 		{"pve2", "pve2", "", hosts},
 		{"pve1", "pve1", "", nil},
+		{"pve1", "pve1", "", []byte("192.0.2.10 pve1\n")},
 	}
 	for _, c := range cases {
 		short, fqdn := nodeNames(c.hostname, c.hosts)

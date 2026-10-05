@@ -46,10 +46,11 @@ func (u *uninstall) removeWeb(ctx context.Context) {
 // removeWebPath removes one thing setup made for the certificate. Only what
 // lies in the parent of the directory of the certificate is touched, whatever
 // the manifest lists.
-func (u *uninstall) removeWebPath(path string) {
+func (u *uninstall) removeWebPath(listed string) {
 	root := filepath.Dir(u.host.webDir)
+	path := filepath.Clean(listed)
 	if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
-		u.ask.Warn("the manifest lists %s, which is not below %s; it is left as it is", path, root)
+		u.ask.Warn("the manifest lists %s, which is not below %s; it is left as it is", listed, root)
 		return
 	}
 	info, err := os.Lstat(path)

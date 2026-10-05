@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/auth"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/ui"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
 // webFlags are the flags of pco web. What is not given comes from the
@@ -166,27 +166,11 @@ func readCertificate(file string) (*x509.Certificate, error) {
 	}
 }
 
-// nodeNames are the node's short name and its FQDN. Proxmox VE has the node's
-// name mapped to its FQDN in /etc/hosts, which is where hostname -f finds it
-// too; no resolver is asked.
+// nodeNames are the node's short name and its FQDN, the second read as the
+// leaf of the web interface reads it, so that the names it is made for and the
+// Host headers pco web answers to are the same.
 func nodeNames(hostname string, etcHosts []byte) (string, string) {
-	short := shortHostname(hostname)
-	if short != hostname {
-		return short, hostname
-	}
-	for line := range strings.Lines(string(etcHosts)) {
-		line, _, _ = strings.Cut(line, "#")
-		fields := strings.Fields(line)
-		if len(fields) < 2 || !slices.Contains(fields[1:], short) {
-			continue
-		}
-		for _, name := range fields[1:] {
-			if strings.HasPrefix(name, short+".") {
-				return short, name
-			}
-		}
-	}
-	return short, ""
+	return shortHostname(hostname), webcert.FQDN(hostname, etcHosts)
 }
 
 // nodeZone is the name of the node's time zone, as the page shows the node's

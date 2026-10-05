@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math/big"
 	"net"
@@ -67,6 +68,14 @@ func (ca testCA) pool() *x509.CertPool {
 var testNames = Names{
 	DNS:   []string{"pve1", "pve1.example.lan"},
 	Addrs: []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("2001:db8::10")},
+}
+
+// nodeNames is NodeNames of the node pve1 with hosts that are good.
+func nodeNames(t *testing.T, addrs []netip.Addr, listen string, hosts ...string) Names {
+	t.Helper()
+	n, err := NodeNames("pve1", "pve1.example.lan", addrs, listen, hosts)
+	require.NoError(t, err)
+	return n
 }
 
 func issue(t *testing.T, ca testCA, names Names, now time.Time) (*x509.Certificate, []byte, []byte) {
@@ -149,6 +158,7 @@ func TestIssueGivesEveryLeafAnotherRandomSerial(t *testing.T) {
 	require.NotEqual(t, a.SerialNumber, b.SerialNumber)
 	for _, s := range []*big.Int{a.SerialNumber, b.SerialNumber} {
 		require.Positive(t, s.Sign())
+		require.Greater(t, s.BitLen(), 100, "128 random bits, not a counter")
 		require.LessOrEqual(t, s.BitLen(), 128)
 	}
 }
@@ -214,7 +224,7 @@ func TestSelfSigned(t *testing.T) {
 func TestDue(t *testing.T) {
 	ca := newTestCA(t, "ca")
 	other := newTestCA(t, "other")
-	names := NodeNames("pve1", "pve1.example.lan", []netip.Addr{netip.MustParseAddr("192.0.2.10")}, "192.0.2.10:8643", nil)
+	names := nodeNames(t, []netip.Addr{netip.MustParseAddr("192.0.2.10")}, "192.0.2.10:8643")
 	leaf, _, _ := issue(t, ca, names, t0)
 	expires := t0.Add(Lifetime).Format(time.RFC3339)
 
@@ -227,17 +237,20 @@ func TestDue(t *testing.T) {
 	}{
 		{name: "fresh", ca: ca.cert, names: names, now: t0},
 		{name: "31 days left", ca: ca.cert, names: names, now: t0.Add(Lifetime - 31*24*time.Hour)},
+		{name: "exactly 30 days left", ca: ca.cert, names: names, now: t0.Add(Lifetime - RenewBefore)},
+		{name: "a second short of 30 days left", ca: ca.cert, names: names, now: t0.Add(Lifetime - RenewBefore + time.Second),
+			why: "it expires at " + expires + ", in less than 30 days"},
 		{name: "29 days left", ca: ca.cert, names: names, now: t0.Add(Lifetime - 29*24*time.Hour),
 			why: "it expires at " + expires + ", in less than 30 days"},
 		{name: "expired", ca: ca.cert, names: names, now: t0.Add(Lifetime + time.Hour),
 			why: "it expires at " + expires + ", in less than 30 days"},
 		{name: "another CA", ca: other.cert, names: names, now: t0, why: "it is not signed by the cluster CA"},
 		{name: "a new address", ca: ca.cert, now: t0, why: "it does not name 192.0.2.11",
-			names: NodeNames("pve1", "pve1.example.lan", []netip.Addr{netip.MustParseAddr("192.0.2.11")}, "192.0.2.10:8643", nil)},
+			names: nodeNames(t, []netip.Addr{netip.MustParseAddr("192.0.2.11")}, "192.0.2.10:8643")},
 		{name: "a new listen address", ca: ca.cert, now: t0, why: "it does not name 198.51.100.4",
-			names: NodeNames("pve1", "pve1.example.lan", []netip.Addr{netip.MustParseAddr("192.0.2.10")}, "198.51.100.4:8643", nil)},
+			names: nodeNames(t, []netip.Addr{netip.MustParseAddr("192.0.2.10")}, "198.51.100.4:8643")},
 		{name: "a new host name", ca: ca.cert, now: t0, why: "it does not name pve.example.org",
-			names: NodeNames("pve1", "pve1.example.lan", []netip.Addr{netip.MustParseAddr("192.0.2.10")}, "192.0.2.10:8643", []string{"pve.example.org"})},
+			names: nodeNames(t, []netip.Addr{netip.MustParseAddr("192.0.2.10")}, "192.0.2.10:8643", "pve.example.org")},
 		{name: "a name in capitals", ca: ca.cert, now: t0,
 			names: Names{DNS: []string{"PVE1.example.lan"}, Addrs: names.Addrs}},
 		{name: "fewer names", ca: ca.cert, now: t0, names: Names{DNS: []string{"pve1"}}},
@@ -329,19 +342,50 @@ func TestNodeNames(t *testing.T) {
 		{name: "all addresses name nothing", node: "pve1", listen: "0.0.0.0:8643", clusterAddrs: addrs,
 			dns: []string{"pve1"}, addrsWant: []string{"192.0.2.10"}},
 		{name: "the hosts", node: "PVE1", fqdn: "pve1", listen: "192.0.2.10:8643",
-			hosts: []string{"Pve.Example.org", " 203.0.113.9", "", "pve1"},
-			dns:   []string{"pve1", "pve.example.org"}, addrsWant: []string{"192.0.2.10", "203.0.113.9"}},
+			hosts: []string{"Pve.Example.org", " 203.0.113.9", "", "pve.example.org.", "2001:DB8::9", "pve1", "PVE2"},
+			dns:   []string{"pve1", "pve.example.org", "pve2"}, addrsWant: []string{"192.0.2.10", "203.0.113.9", "2001:db8::9"}},
 		{name: "a name to listen on", node: "pve1", listen: "localhost:8643", dns: []string{"pve1", "localhost"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			n := NodeNames(tt.node, tt.fqdn, tt.clusterAddrs, tt.listen, tt.hosts)
+			n, err := NodeNames(tt.node, tt.fqdn, tt.clusterAddrs, tt.listen, tt.hosts)
 
+			require.NoError(t, err)
 			require.Equal(t, tt.dns, n.DNS)
 			var got []string
 			for _, a := range n.Addrs {
 				got = append(got, a.String())
 			}
 			require.Equal(t, tt.addrsWant, got)
+		})
+	}
+}
+
+// A name of PCO_WEB_HOSTS goes into the leaf and the list of Host headers, so
+// it has to be a host name or an address and nothing else.
+func TestNodeNamesRefuseAHostThatIsNotAName(t *testing.T) {
+	for _, host := range []string{
+		"*.example.org", "*", "pve.*.org", "pve example.org", "pve.example.org/path", "pve.example.org:8643",
+		"pve_1.example.org", "[2001:db8::9]", "pve..example.org", ".example.org", "*.lan", "-x", "x-", "a..b",
+		"pve.-x.org", "pve.x-.org", "pve1.exämple.org", strings.Repeat("a", 64) + ".example.org",
+		strings.Repeat("a.", 127) + "a",
+	} {
+		t.Run(host, func(t *testing.T) {
+			_, err := NodeNames("pve1", "pve1.example.lan", nil, "192.0.2.10:8643", []string{"pve.example.org", host})
+
+			require.EqualError(t, err, fmt.Sprintf("PCO_WEB_HOSTS lists %q, which is neither an address nor a host name such as pve.example.org", host))
+		})
+	}
+}
+
+func TestNodeNamesTakeAHostThatIsAName(t *testing.T) {
+	longest := strings.Join([]string{strings.Repeat("a", 63), strings.Repeat("b", 63), strings.Repeat("c", 63), strings.Repeat("d", 61)}, ".")
+	require.Len(t, longest, 253)
+	for _, host := range []string{"pve2", "x-y", "9", "a.b", "xn--exmple-cua.example.org", strings.Repeat("a", 63), longest} {
+		t.Run(host, func(t *testing.T) {
+			n, err := NodeNames("pve1", "pve1.example.lan", nil, "192.0.2.10:8643", []string{host})
+
+			require.NoError(t, err)
+			require.Contains(t, n.DNS, host)
 		})
 	}
 }
@@ -355,6 +399,7 @@ func TestFQDN(t *testing.T) {
 	require.Equal(t, "pve1.example.org", FQDN("pve1.example.org", hosts), "a host name with a dot is one")
 	require.Empty(t, FQDN("pve2", hosts), "a comment names nothing")
 	require.Empty(t, FQDN("pve3", hosts))
+	require.Empty(t, FQDN("pve1", []byte("192.0.2.10 pve1\n")), "a line with the short name alone has no FQDN")
 }
 
 func TestWriteAtomicWritesThePair(t *testing.T) {

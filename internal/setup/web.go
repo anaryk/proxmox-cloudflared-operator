@@ -105,8 +105,8 @@ func (r *run) planWeb(ctx context.Context) (webPlan, error) {
 		return p, fmt.Errorf("reading the host name: %w", err)
 	}
 	p.fqdn = r.host.fqdn(name)
-	p.names = webcert.NodeNames(r.o.Node, p.fqdn, addrs, p.listen, env.Hosts)
-	return p, nil
+	p.names, err = webcert.NodeNames(r.o.Node, p.fqdn, addrs, p.listen, env.Hosts)
+	return p, err
 }
 
 // listenAddress reads --web-listen: an address, to which the port of the web

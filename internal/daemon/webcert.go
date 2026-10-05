@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -61,6 +62,9 @@ type webKeeper struct {
 	rand       io.Reader
 	log        zerolog.Logger
 	failedLast map[string]string // the failure said last, by what failed
+
+	restartedFor string // digest of the files pco-web was last restarted for; empty once it loads them
+	unchanged    bool   // said that a restart left pco-web on what it loaded before
 }
 
 // newWebKeeper returns the keeper of the node the daemon runs on.
@@ -167,8 +171,8 @@ func (k *webKeeper) repoint(name, target string) {
 }
 
 // renew makes a new key and leaf of the cluster CA when the one there is due:
-// it expires within 30 days, another CA signed it, or it does not name every
-// name and address the node has now.
+// it expires within 30 days, another CA signed it, it does not name every name
+// and address the node has now, or tls.crt is a link to somebody else's file.
 func (k *webKeeper) renew(ctx context.Context) {
 	const what = "renewing the certificate of the web interface"
 	ca, err := readCertFile(k.ca)
@@ -217,6 +221,9 @@ func (k *webKeeper) renew(ctx context.Context) {
 
 // due says why the pair there must be made anew; empty when it need not.
 func (k *webKeeper) due(ca *x509.Certificate, names webcert.Names) string {
+	if info, err := os.Lstat(filepath.Join(k.dir, webcert.CertName)); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		return webcert.CertName + " is a link, not a leaf of its own"
+	}
 	certPEM, keyPEM, err := webcert.ReadPair(k.dir)
 	if err != nil {
 		return "it could not be read"
@@ -242,14 +249,18 @@ func (k *webKeeper) names(ctx context.Context) (webcert.Names, error) {
 	if err != nil {
 		return webcert.Names{}, fmt.Errorf("reading the cluster status: %w", err)
 	}
-	return webcert.NodeNames(k.node, k.fqdn(), addrs, env.Listen, env.Hosts), nil
+	return webcert.NodeNames(k.node, k.fqdn(), addrs, env.Listen, env.Hosts)
 }
 
 // restartIfStale restarts pco-web when what it loaded as it started is not
-// what the files hold now. One that does not run reads them as it starts.
+// what the files hold now. One that does not run reads them as it starts. A
+// restart is not repeated for the files it was made for: when pco-web still
+// loads something else after it, a drop-in of the unit points the credentials
+// elsewhere, and more restarts would change nothing.
 func (k *webKeeper) restartIfStale(ctx context.Context) {
 	const what = "restarting " + webService
 	stale := false
+	var files []byte
 	for _, name := range []string{webcert.CertName, webcert.KeyName, webcert.PinName} {
 		loaded, err := os.ReadFile(filepath.Join(k.loaded, name))
 		switch {
@@ -265,14 +276,26 @@ func (k *webKeeper) restartIfStale(ctx context.Context) {
 			return
 		}
 		stale = stale || !bytes.Equal(loaded, have)
+		files = fmt.Appendf(files, "%s %d\n%s", name, len(have), have)
 	}
 	if !stale {
+		k.restartedFor, k.unchanged = "", false
+		return
+	}
+	sum := sha256.Sum256(files)
+	digest := string(sum[:])
+	if digest == k.restartedFor {
+		if !k.unchanged {
+			k.unchanged = true
+			k.log.Warn().Msg("restarted for this change already; pco-web still loads something else, check the unit's drop-ins")
+		}
 		return
 	}
 	if err := k.restart(ctx); err != nil {
 		k.failed(what, err)
 		return
 	}
+	k.restartedFor, k.unchanged = digest, false
 	k.recovered(what)
 	k.log.Info().Msg(webService + " is restarted, so that it loads the certificates as they are now")
 }

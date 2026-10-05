@@ -79,7 +79,8 @@ func newWebRig(t *testing.T, mode string) *webRig {
 	require.NoError(t, webcert.LinkAtomic(filepath.Join(r.dir, webcert.PinName), pin))
 	switch mode {
 	case webcert.ModeCA:
-		names := webcert.NodeNames("pve1", "pve1.example.lan", r.addrs, "192.0.2.10:8643", nil)
+		names, err := webcert.NodeNames("pve1", "pve1.example.lan", r.addrs, "192.0.2.10:8643", nil)
+		require.NoError(t, err)
 		ca, key := r.readCA()
 		certPEM, keyPEM, err := webcert.Issue(ca, key, names, t0, webcert.Lifetime, rand.Reader)
 		require.NoError(t, err)
@@ -337,6 +338,44 @@ func TestTheWebKeeperTriesAFailedRestartAgain(t *testing.T) {
 	require.Equal(t, 1, strings.Count(r.logs.String(), "restarting pco-web.service failed"))
 }
 
+// A drop-in that points LoadCredential= elsewhere makes every restart load
+// what was loaded before: the keeper restarts once for a change, says so, and
+// waits for the next one.
+func TestTheWebKeeperDoesNotRestartAgainForWhatARestartCannotChange(t *testing.T) {
+	r := newWebRig(t, webcert.ModeCA)
+	r.running = false
+	r.pveproxyCert("pveproxy-ssl")
+
+	for range 3 {
+		r.check()
+	}
+
+	require.Equal(t, 1, r.restarts)
+	require.Equal(t, 1, strings.Count(r.logs.String(),
+		"restarted for this change already; pco-web still loads something else, check the unit's drop-ins"), r.logs.String())
+
+	r.pveproxyCert("pveproxy-ssl")
+	for range 3 {
+		r.check()
+	}
+
+	require.Equal(t, 2, r.restarts, "another change, another restart")
+}
+
+func TestTheWebKeeperRestartsAgainWhenPcoWebLoadsSomethingElseLater(t *testing.T) {
+	r := newWebRig(t, webcert.ModeCA)
+	r.pveproxyCert("pveproxy-ssl")
+	r.check()
+	r.check()
+	require.Equal(t, 1, r.restarts)
+	require.NoError(t, os.WriteFile(filepath.Join(r.loaded, webcert.PinName), []byte("another\n"), 0o600))
+
+	r.check()
+
+	require.Equal(t, 2, r.restarts, "the files are the same, what is loaded is not")
+	require.NotContains(t, r.logs.String(), "restarted for this change already")
+}
+
 func TestTheWebKeeperThatCannotRenewSaysSoOnce(t *testing.T) {
 	r := newWebRig(t, webcert.ModeCA)
 	old := r.leaf()
@@ -351,6 +390,53 @@ func TestTheWebKeeperThatCannotRenewSaysSoOnce(t *testing.T) {
 	require.Zero(t, r.restarts)
 	require.Empty(t, r.notes)
 	require.Equal(t, 1, strings.Count(r.logs.String(), "renewing the certificate of the web interface failed"), r.logs.String())
+}
+
+// A link to the certificate pveproxy serves, which the cluster CA signed and
+// which names the node, is no leaf of pco-web's own: pco-web would hold the
+// key of pveproxy.
+func TestTheWebKeeperReplacesALinkToPveproxysCertificateWithALeaf(t *testing.T) {
+	r := newWebRig(t, webcert.ModeCA)
+	ca, key := r.readCA()
+	names, err := webcert.NodeNames("pve1", "pve1.example.lan", r.addrs, "192.0.2.10:8643", nil)
+	require.NoError(t, err)
+	certPEM, keyPEM, err := webcert.Issue(ca, key, names, t0, webcert.Lifetime, rand.Reader)
+	require.NoError(t, err)
+	pveCert, pveKey := filepath.Join(r.local, "pve-ssl.pem"), filepath.Join(r.local, "pve-ssl.key")
+	require.NoError(t, os.WriteFile(pveCert, certPEM, 0o640))
+	require.NoError(t, os.WriteFile(pveKey, keyPEM, 0o640))
+	require.NoError(t, webcert.LinkAtomic(filepath.Join(r.dir, webcert.CertName), pveCert))
+	require.NoError(t, webcert.LinkAtomic(filepath.Join(r.dir, webcert.KeyName), pveKey))
+
+	r.check()
+	r.check()
+
+	for _, name := range []string{webcert.CertName, webcert.KeyName} {
+		info, err := os.Lstat(filepath.Join(r.dir, name))
+		require.NoError(t, err)
+		require.True(t, info.Mode().IsRegular(), "%s is a file of its own", name)
+	}
+	require.Len(t, r.notes, 1)
+	require.True(t, strings.HasPrefix(r.notes[0], "web certificate renewed: tls.crt is a link, not a leaf of its own, fingerprint "), r.notes[0])
+	after, err := os.ReadFile(pveCert)
+	require.NoError(t, err)
+	require.Equal(t, certPEM, after, "pveproxy's certificate stays")
+	require.Equal(t, 1, r.restarts)
+}
+
+func TestTheWebKeeperThatReadsAHostThatIsNoNameSaysSoOnce(t *testing.T) {
+	r := newWebRig(t, webcert.ModeCA)
+	old := r.leaf()
+	r.writeEnv("PCO_WEB_LISTEN=192.0.2.10:8643\nPCO_WEB_HOSTS=*.example.org\n")
+
+	for range 3 {
+		r.check()
+	}
+
+	require.Equal(t, old.Raw, r.leaf().Raw)
+	require.Empty(t, r.notes)
+	require.Equal(t, 1, strings.Count(r.logs.String(), "renewing the certificate of the web interface failed"), r.logs.String())
+	require.Contains(t, r.logs.String(), `PCO_WEB_HOSTS lists \"*.example.org\"`)
 }
 
 func TestTheWebKeeperGivesTheDoctorTheCertificate(t *testing.T) {

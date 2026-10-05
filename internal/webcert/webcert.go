@@ -65,14 +65,39 @@ func (n Names) String() string {
 	return strings.Join(all, ", ")
 }
 
+// normalName is name as the leaf and the Host allow-list have it.
+func normalName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+}
+
+// isHostName reports whether name, as normalName leaves it, is a host name: up
+// to 253 characters in labels of 1 to 63 letters, digits and hyphens, none of
+// which starts or ends with a hyphen. A name of one label, an alias the node
+// is reached by, is one; a wildcard is not.
+func isHostName(name string) bool {
+	if len(name) > 253 {
+		return false
+	}
+	allowed := func(r rune) bool { return r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' }
+	for label := range strings.SplitSeq(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' ||
+			strings.IndexFunc(label, func(r rune) bool { return !allowed(r) }) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // NodeNames are the names of a node's leaf: its short name, its FQDN, the
 // addresses cluster status lists for it, the address of the listen address
 // and the names and addresses of PCO_WEB_HOSTS, each once, in that order. An
-// unspecified listen address, such as 0.0.0.0, names nothing.
-func NodeNames(node, fqdn string, addrs []netip.Addr, listen string, hosts []string) Names {
+// unspecified listen address, such as 0.0.0.0, names nothing. A name of
+// PCO_WEB_HOSTS that is neither an address nor a host name is an error: it
+// would go into the leaf and the Host allow-list as it stands.
+func NodeNames(node, fqdn string, addrs []netip.Addr, listen string, hosts []string) (Names, error) {
 	var n Names
 	add := func(name string) {
-		name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+		name = normalName(name)
 		if name == "" {
 			return
 		}
@@ -95,9 +120,14 @@ func NodeNames(node, fqdn string, addrs []netip.Addr, listen string, hosts []str
 	}
 	add(host)
 	for _, h := range hosts {
+		if name := normalName(h); name != "" && !isHostName(name) {
+			if _, err := netip.ParseAddr(name); err != nil {
+				return Names{}, fmt.Errorf("PCO_WEB_HOSTS lists %q, which is neither an address nor a host name such as pve.example.org", strings.TrimSpace(h))
+			}
+		}
 		add(h)
 	}
-	return n
+	return n, nil
 }
 
 // FQDN returns the fully qualified name of a host name as /etc/hosts has it,

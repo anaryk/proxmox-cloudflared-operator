@@ -261,6 +261,21 @@ func TestTheEnvironmentFileKeepsWhatTheAdminWrote(t *testing.T) {
 	require.FileExists(t, e.s.host.webEnv, "uninstall leaves the admin's file")
 }
 
+func TestAHostThatIsNoNameFailsTheWebStep(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.webNode()
+	e.writeFile(e.s.host.webEnv, []byte("PCO_WEB_HOSTS=pve.example.org,*.example.org\n"), 0o644)
+	h := newFakeHost(t)
+	e.onHost(h)
+
+	err := e.setup(full())
+
+	require.EqualError(t, err, `setup step web: PCO_WEB_HOSTS lists "*.example.org", `+
+		"which is neither an address nor a host name such as pve.example.org")
+	require.NoFileExists(t, e.webFile(webcert.CertName), "no leaf for names that are none")
+}
+
 func TestTheWebInterfaceWithTheAdminsOwnCertificate(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)
@@ -541,6 +556,27 @@ func TestUninstallTouchesNothingOutsideTheWebDirectory(t *testing.T) {
 
 	require.FileExists(t, e.s.host.clusterCAKey)
 	e.requireShown("the manifest lists " + e.s.host.clusterCAKey + ", which is not below")
+}
+
+// The manifest is a file on the node: a path that goes up and down again
+// has to be judged by where it leads.
+func TestUninstallTouchesNothingBeyondADotDotOfTheWebDirectory(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.webNode()
+	h := newFakeHost(t)
+	e.onHost(h)
+	require.NoError(t, e.setup(full()))
+	outside := filepath.Join(filepath.Dir(filepath.Dir(e.s.host.webDir)), "keep.txt")
+	e.writeFile(outside, []byte("mine\n"), 0o600)
+	m := e.manifest()
+	m.WebTLS = append(m.WebTLS, e.s.host.webDir+"/../../keep.txt")
+	require.NoError(t, writeManifest(filepath.Join(e.paths.Local, manifestName), m))
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true, RemoveCloudflared: true}))
+
+	require.FileExists(t, outside)
+	e.requireShown("the manifest lists " + e.s.host.webDir + "/../../keep.txt, which is not below")
 }
 
 func TestTheCommandsOfTheWebCertificate(t *testing.T) {
