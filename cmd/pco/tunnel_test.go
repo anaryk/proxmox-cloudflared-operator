@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -186,11 +187,21 @@ func TestTunnelRotateIsRootsAlone(t *testing.T) {
 }
 
 func TestTunnelRotateSaysWhatTheDaemonRefused(t *testing.T) {
-	d := &rotationDaemon{status: http.StatusConflict, answer: `{"error":"pco is in observe-only mode and changes nothing at Cloudflare; pco apply ends it","code":"refused"}`}
+	d := &rotationDaemon{status: http.StatusConflict, answer: `{"error":"pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it","code":"refused"}`}
 	r := newRunner(t, serveRotation(t, rotationState(), d))
 
 	res := r.run("", "tunnel", "rotate", "--yes")
 
-	require.EqualError(t, res.err, "pco is in observe-only mode and changes nothing at Cloudflare; pco apply ends it")
+	require.EqualError(t, res.err, "pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it")
 	require.ErrorIs(t, res.err, engine.ErrRefused)
+}
+
+func TestTheHelpOfTunnelRotateSaysItRefusesInObserveOnlyMode(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+
+	res := r.run("", "tunnel", "rotate", "--help")
+
+	require.NoError(t, res.err)
+	help := strings.Join(strings.Fields(res.out), " ")
+	require.Contains(t, help, "It refuses while pco is in observe-only mode, which changes nothing at Cloudflare; pco apply ends that mode.")
 }

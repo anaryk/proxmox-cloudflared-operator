@@ -28,7 +28,8 @@ func (a *app) tunnelRotateCmd() *cobra.Command {
 			"connectors. The connector pco runs on this node restarts with the new token at once; a\n" +
 			"connector elsewhere, started with a token that was read with a stolen API token, loses its\n" +
 			"session and cannot connect again. Do it when pco status names a connector that you do not\n" +
-			"run. Only root may, and the question needs a terminal; a script passes --yes.",
+			"run. It refuses while pco is in observe-only mode, which changes nothing at Cloudflare; pco apply\n" +
+			"ends that mode. Only root may, and the question needs a terminal; a script passes --yes.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {

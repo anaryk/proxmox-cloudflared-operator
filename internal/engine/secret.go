@@ -152,7 +152,7 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 		return TunnelRotation{}, fmt.Errorf("reading the settings: %w", err)
 	}
 	if s.ObserveOnly {
-		return TunnelRotation{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare; pco apply ends it", ErrRefused)
+		return TunnelRotation{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it", ErrRefused)
 	}
 	inst, found, err := e.d.Store.Install()
 	switch {

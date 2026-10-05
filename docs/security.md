@@ -484,6 +484,8 @@ to do is up to you:
    node takes to reconnect. Only root may run it. It works while the cycle holds, for a
    tunnel the last cycle did not check, as long as its id and credential are known; a tunnel
    left as it is for a reason of its own, as in a frozen account, is refused, held or not.
+   It is also refused while pco is in observe-only mode, as it changes things at Cloudflare;
+   run `pco apply` first.
 3. Replace the Cloudflare token that leaked: add a new one with `pco credential add` and
    remove the old one, then revoke it at Cloudflare.
 

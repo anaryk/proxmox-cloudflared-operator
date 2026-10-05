@@ -305,7 +305,7 @@ func TestRotateRefusesWhatItCannotDo(t *testing.T) {
 		{"before the first cycle", func(e *env) { e.enforce() }, "", ErrNotFound, "no tunnel of this install is known"},
 		{"another account", func(e *env) { e.enforce(); e.cycle() }, "acc9", ErrNotFound, "no tunnel of this install is known in account acc9"},
 		{"observe-only mode", func(e *env) { e.enforce(); e.cycle(); e.settings(func(s *store.Settings) { s.ObserveOnly = true }) }, "",
-			ErrRefused, "pco is in observe-only mode and changes nothing at Cloudflare; pco apply ends it"},
+			ErrRefused, "pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it"},
 		{"a tunnel left as it is", func(e *env) {
 			e.enforce()
 			e.cycle()
