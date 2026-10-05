@@ -29,10 +29,12 @@ import (
 // DefaultListen is the address without PCO_WEB_LISTEN.
 const DefaultListen = "127.0.0.1:8643"
 
+// The server has no ReadTimeout or WriteTimeout: they would cut the streams.
 const (
 	readHeaderTimeout = 10 * time.Second
 	idleTimeout       = 2 * time.Minute
 	shutdownTimeout   = 5 * time.Second
+	maxHeaderBytes    = 64 << 10
 )
 
 // Mounter adds its routes to the router. The session and the gateway are
@@ -57,6 +59,8 @@ type Server struct {
 	handler http.Handler
 	// listening is called once the listener is up; tests set it.
 	listening func(net.Addr)
+	// shutdownAfter is how long a stop waits for the requests; tests shorten it.
+	shutdownAfter time.Duration
 }
 
 // New returns a server for cfg with the routes of mounts. The build is read
@@ -72,7 +76,7 @@ func New(cfg Config, mounts ...Mounter) (*Server, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	s := &Server{cfg: cfg}
+	s := &Server{cfg: cfg, shutdownAfter: shutdownTimeout}
 	s.handler = s.routes(files, mounts)
 	return s, nil
 }
@@ -101,15 +105,21 @@ func (s *Server) routes(files *assets, mounts []Mounter) http.Handler {
 }
 
 // logRequests logs every answer with its method, path, status, duration and
-// the TCP peer. Never the query, a header or the body: they carry tickets,
-// tokens and the session cookie.
+// the TCP peer: at Info when it was a failure, 4xx or 5xx, otherwise at Debug.
+// Never the query, a header or the body: they carry tickets, tokens and the
+// session cookie.
 func (s *Server) logRequests(c *gin.Context) {
 	start := s.cfg.Now()
 	c.Next()
-	s.cfg.Log.Info().
+	status := c.Writer.Status()
+	event := s.cfg.Log.Debug()
+	if status >= http.StatusBadRequest {
+		event = s.cfg.Log.Info()
+	}
+	event.
 		Str("method", c.Request.Method).
 		Str("path", c.Request.URL.Path).
-		Int("status", c.Writer.Status()).
+		Int("status", status).
 		Dur("duration", s.cfg.Now().Sub(start)).
 		Str("peer", c.Request.RemoteAddr).
 		Msg("request")
@@ -151,7 +161,11 @@ func plain(c *gin.Context, status int, msg string) {
 
 // Run serves on the listen address until ctx ends, and tells systemd it is
 // ready once it listens. The certificate is read once: the daemon restarts
-// the unit when it changes. A clean stop returns nil.
+// the unit when it changes.
+//
+// On a stop the requests are ended first, so that the streams, which would
+// never finish by themselves, let the connections go. What still holds on after
+// the grace period is cut off, and that is a stop all the same: it returns nil.
 func (s *Server) Run(ctx context.Context) error {
 	cert, err := tls.LoadX509KeyPair(s.cfg.CertFile, s.cfg.KeyFile)
 	if err != nil {
@@ -161,12 +175,17 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.cfg.Listen, err)
 	}
+	requests, endRequests := context.WithCancel(context.WithoutCancel(ctx))
+	defer endRequests()
 	srv := &http.Server{
 		Handler: s.handler,
+		// The context of every request descends from this one.
+		BaseContext: func(net.Listener) context.Context { return requests },
 		// HTTP/2 is on: ServeTLS offers it unless TLSNextProto is set.
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}},
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 		// "OPTIONS *" goes to the router, which answers it with the headers
 		// of every answer.
 		DisableGeneralOptionsHandler: true,
@@ -187,11 +206,12 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	s.notify(sd.SdNotifyStopping)
-	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	endRequests()
+	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdownAfter)
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
+		s.cfg.Log.Warn().Err(err).Msg("the shutdown did not finish, closing the connections")
 		_ = srv.Close()
-		return fmt.Errorf("shutting down: %w", err)
 	}
 	if err := <-done; !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serving on %s: %w", s.cfg.Listen, err)

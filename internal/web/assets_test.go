@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -82,6 +83,14 @@ func TestGzipIsTheSameEveryTime(t *testing.T) {
 	b := get(newTestServer(t, Config{Assets: testAssets()}), "/assets/x.js", "gzip")
 	require.Equal(t, a.Body.Bytes(), b.Body.Bytes())
 	require.Equal(t, first, a.Body.Bytes())
+}
+
+func TestGzipIsAsTightAsItGets(t *testing.T) {
+	out, err := gzipped([]byte(strings.Repeat("export const a = () => 1;\n", 50)))
+	require.NoError(t, err)
+	// The extra flags of the header: 2 for the best compression, 4 for the
+	// fastest, 0 for anything between.
+	require.Equal(t, byte(2), out[8])
 }
 
 func TestAcceptsGzip(t *testing.T) {
@@ -178,7 +187,14 @@ func TestHeadAndOtherMethods(t *testing.T) {
 	require.Equal(t, http.StatusOK, head.Code)
 	require.Empty(t, head.Body.Bytes())
 	require.Equal(t, "public, max-age=31536000, immutable", head.Header().Get("Cache-Control"))
-	require.Equal(t, get(s, "/assets/x.js", "").Header().Get("Content-Length"), head.Header().Get("Content-Length"))
+	require.Equal(t, strconv.Itoa(len(testAssets()["assets/x.js"].Data)), head.Header().Get("Content-Length"))
+
+	// It says as long as a GET would, with gzip too.
+	zippedHead := request(http.MethodHead, "/assets/x.js")
+	zippedHead.Header.Set("Accept-Encoding", "gzip")
+	zipped := get(s, "/assets/x.js", "gzip")
+	require.NotEmpty(t, zipped.Body.Bytes())
+	require.Equal(t, strconv.Itoa(zipped.Body.Len()), do(s, zippedHead).Header().Get("Content-Length"))
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions} {
 		for _, path := range []string{"/", "/routes/plan", "/assets/x.js", "/licenses.txt"} {

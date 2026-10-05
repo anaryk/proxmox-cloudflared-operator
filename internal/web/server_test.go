@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -21,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
@@ -89,7 +91,7 @@ func TestTheRequestLog(t *testing.T) {
 	var entry map[string]any
 	require.NoError(t, json.Unmarshal([]byte(line), &entry))
 	require.Equal(t, map[string]any{
-		"level":    "info",
+		"level":    "debug",
 		"method":   "GET",
 		"path":     "/routes/app.example.com",
 		"status":   float64(200),
@@ -131,8 +133,46 @@ func TestTheRequestLogOfAFailure(t *testing.T) {
 			require.Contains(t, entry["stack"], "stubMounter")
 			continue
 		}
+		require.Equal(t, "info", entry["level"], line)
 		require.Equal(t, want[i].status, entry["status"], line)
 	}
+}
+
+// A request that went well is for debugging, one that failed is for the
+// journal of every day.
+func TestTheRequestLogLevels(t *testing.T) {
+	cases := []struct {
+		method, path string
+		status       int
+		logged       bool
+	}{
+		{http.MethodGet, "/", http.StatusOK, false},
+		{http.MethodGet, "/api/moved", http.StatusFound, false},
+		{http.MethodGet, "/nope", http.StatusNotFound, true},
+		{http.MethodDelete, "/", http.StatusMethodNotAllowed, true},
+		{http.MethodGet, "/api/fail", http.StatusBadGateway, true},
+	}
+	for _, c := range cases {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			var buf testutil.SyncBuffer
+			s := newTestServer(t, Config{Assets: testAssets(), Log: zerolog.New(&buf).Level(zerolog.InfoLevel)}, testRoutes{})
+			require.Equal(t, c.status, do(s, request(c.method, c.path)).Code)
+
+			if !c.logged {
+				require.Empty(t, buf.String())
+				return
+			}
+			require.Contains(t, buf.String(), `"level":"info"`)
+			require.Contains(t, buf.String(), `"message":"request"`)
+		})
+	}
+
+	t.Run("at debug", func(t *testing.T) {
+		var buf testutil.SyncBuffer
+		s := newTestServer(t, Config{Assets: testAssets(), Log: zerolog.New(&buf).Level(zerolog.DebugLevel)})
+		require.Equal(t, http.StatusOK, get(s, "/", "").Code)
+		require.Contains(t, buf.String(), `"level":"debug"`)
+	})
 }
 
 func TestTheClientAddressIsTheTCPPeer(t *testing.T) {
@@ -143,38 +183,156 @@ func TestTheClientAddressIsTheTCPPeer(t *testing.T) {
 	require.Equal(t, "192.0.2.7", do(s, r).Body.String())
 }
 
-func TestRun(t *testing.T) {
-	dir := testutil.ShortDir(t)
-	notified := listenNotify(t, filepath.Join(dir, "notify"))
-	certFile, keyFile, pool := writeCertificate(t, dir)
+// testRoutes are the routes of the tests that need a handler to fail, to move
+// on or to hold a request open.
+type testRoutes struct {
+	// entered gets a value when a handler has begun; release lets the handler
+	// that ignores its context go.
+	entered chan struct{}
+	release chan struct{}
+}
 
-	s := newTestServer(t, Config{
-		Listen:   "127.0.0.1:0",
-		CertFile: certFile,
-		KeyFile:  keyFile,
-		Assets:   testAssets(),
+func newTestRoutes() testRoutes {
+	return testRoutes{entered: make(chan struct{}, 4), release: make(chan struct{})}
+}
+
+func (m testRoutes) Mount(r gin.IRouter) {
+	r.GET("/api/moved", func(c *gin.Context) { c.Redirect(http.StatusFound, "/") })
+	r.GET("/api/fail", func(c *gin.Context) { c.String(http.StatusBadGateway, "bad gateway") })
+	r.GET("/api/partial", func(c *gin.Context) {
+		_, _ = c.Writer.WriteString("partial")
+		panic("ticket PVE:alice@pve:SECRET")
 	})
-	addrs := make(chan net.Addr, 1)
-	s.listening = func(a net.Addr) { addrs <- a }
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx) }()
+	r.GET("/api/unwritten", func(c *gin.Context) {
+		c.Header("Content-Encoding", "gzip")
+		panic("ticket PVE:alice@pve:SECRET")
+	})
+	r.GET("/api/abort", func(*gin.Context) { panic(http.ErrAbortHandler) })
+	// A stream: it sends an event and then waits for the end of its request.
+	r.GET("/api/stream", func(c *gin.Context) {
+		c.Header("Content-Type", "text/event-stream")
+		_, _ = c.Writer.WriteString("data: hello\n\n")
+		c.Writer.Flush()
+		m.entered <- struct{}{}
+		<-c.Request.Context().Done()
+	})
+	// A handler that never looks at its context.
+	r.GET("/api/stuck", func(*gin.Context) {
+		m.entered <- struct{}{}
+		<-m.release
+	})
+}
 
-	var addr net.Addr
+func TestARouteThatPanicsAfterItWroteTheAnswer(t *testing.T) {
+	var buf testutil.SyncBuffer
+	s := newTestServer(t, Config{Assets: testAssets(), Log: zerolog.New(&buf)}, testRoutes{})
+
+	rec := do(s, request(http.MethodGet, "/api/partial"))
+
+	// The status and the first bytes are on the wire; a 500 after them would
+	// only add its text to the answer.
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "partial", rec.Body.String())
+	require.Contains(t, buf.String(), "request handler panicked")
+	require.NotContains(t, buf.String(), "SECRET")
+}
+
+func TestARouteThatPanicsBeforeItWroteAnything(t *testing.T) {
+	s := newTestServer(t, Config{Assets: testAssets()}, testRoutes{})
+
+	rec := do(s, request(http.MethodGet, "/api/unwritten"))
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, "internal error\n", rec.Body.String())
+	require.Empty(t, rec.Header().Get("Content-Encoding"), "the error is plain text, whatever the handler had announced")
+	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+}
+
+// net/http ends the connection of a handler that panics with ErrAbortHandler
+// and logs nothing; the server has to let the panic through.
+func TestAnAbortedRequestIsLeftToNetHTTP(t *testing.T) {
+	var buf testutil.SyncBuffer
+	s := newTestServer(t, Config{Assets: testAssets(), Log: zerolog.New(&buf)}, testRoutes{})
+
+	require.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		do(s, request(http.MethodGet, "/api/abort"))
+	})
+	require.Empty(t, buf.String())
+}
+
+// running is a server that Run serves on a port of the machine.
+type running struct {
+	s      *Server
+	addr   net.Addr
+	pool   *x509.CertPool
+	cancel context.CancelFunc
+	done   chan error
+}
+
+func serve(t *testing.T, cfg Config, mounts ...Mounter) *running {
+	t.Helper()
+	certFile, keyFile, pool := writeCertificate(t, testutil.ShortDir(t))
+	cfg.Listen, cfg.CertFile, cfg.KeyFile = "127.0.0.1:0", certFile, keyFile
+	if cfg.Assets == nil {
+		cfg.Assets = testAssets()
+	}
+	run := &running{s: newTestServer(t, cfg, mounts...), pool: pool, done: make(chan error, 1)}
+	addrs := make(chan net.Addr, 1)
+	run.s.listening = func(a net.Addr) { addrs <- a }
+	ctx, cancel := context.WithCancel(context.Background())
+	run.cancel = cancel
+	t.Cleanup(cancel)
+	go func() { run.done <- run.s.Run(ctx) }()
+
 	select {
-	case addr = <-addrs:
-	case err := <-done:
+	case run.addr = <-addrs:
+	case err := <-run.done:
 		t.Fatalf("Run returned before listening: %v", err)
 	}
+	return run
+}
+
+// stop ends Run and returns what it returned, failing the test when that takes
+// longer than within.
+func (r *running) stop(t *testing.T, within time.Duration) error {
+	t.Helper()
+	r.cancel()
+	select {
+	case err := <-r.done:
+		return err
+	case <-time.After(within):
+		t.Fatalf("Run did not return within %s of the stop", within)
+		return nil
+	}
+}
+
+// client reaches the server over HTTP/2, or over HTTP/1.1 without h2.
+func (r *running) client(t *testing.T, h2 bool) *http.Client {
+	t.Helper()
+	c := &http.Client{Transport: &http.Transport{
+		TLSClientConfig:   &tls.Config{RootCAs: r.pool, MinVersion: tls.VersionTLS12},
+		ForceAttemptHTTP2: h2,
+	}}
+	t.Cleanup(c.CloseIdleConnections)
+	return c
+}
+
+func (r *running) url(path string) string { return "https://" + r.addr.String() + path }
+
+func protocol(h2 bool) string {
+	if h2 {
+		return "HTTP/2"
+	}
+	return "HTTP/1.1"
+}
+
+func TestRun(t *testing.T) {
+	notified := listenNotify(t, filepath.Join(testutil.ShortDir(t), "notify"))
+	srv := serve(t, Config{Assets: testAssets()})
 	require.Equal(t, "READY=1", <-notified)
 
 	t.Run("over HTTP/2 with TLS", func(t *testing.T) {
-		client := &http.Client{Transport: &http.Transport{
-			TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-			ForceAttemptHTTP2: true,
-		}}
-		defer client.CloseIdleConnections()
-		resp, err := client.Get("https://" + addr.String() + "/")
+		resp, err := srv.client(t, true).Get(srv.url("/"))
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -186,23 +344,139 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("not under TLS 1.2", func(t *testing.T) {
-		conn, err := tls.Dial("tcp", addr.String(), &tls.Config{RootCAs: pool, MaxVersion: tls.VersionTLS11})
-		if err == nil {
-			_ = conn.Close()
-		}
-		require.Error(t, err)
+		_, err := tls.Dial("tcp", srv.addr.String(), &tls.Config{
+			RootCAs: srv.pool, MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11,
+		})
+		require.ErrorContains(t, err, "protocol version not supported")
+	})
+
+	t.Run("under TLS 1.2", func(t *testing.T) {
+		conn, err := tls.Dial("tcp", srv.addr.String(), &tls.Config{
+			RootCAs: srv.pool, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12,
+		})
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		require.Equal(t, uint16(tls.VersionTLS12), conn.ConnectionState().Version)
 	})
 
 	t.Run("not in plain HTTP", func(t *testing.T) {
-		resp, err := http.Get("http://" + addr.String() + "/")
+		resp, err := http.Get("http://" + srv.addr.String() + "/")
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 
-	cancel()
-	require.NoError(t, <-done)
+	// net/http would answer "OPTIONS *" itself, without the headers.
+	t.Run("OPTIONS * is the router's", func(t *testing.T) {
+		conn, err := tls.Dial("tcp", srv.addr.String(), &tls.Config{RootCAs: srv.pool, MinVersion: tls.VersionTLS12})
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		_, err = io.WriteString(conn, "OPTIONS * HTTP/1.1\r\nHost: "+srv.addr.String()+"\r\nConnection: close\r\n\r\n")
+		require.NoError(t, err)
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		for name, want := range everyAnswer {
+			require.Equal(t, want, resp.Header.Values(name), name)
+		}
+		require.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+	})
+
+	require.NoError(t, srv.stop(t, shutdownTimeout))
 	require.Equal(t, "STOPPING=1", <-notified)
+}
+
+func TestTheSizeOfTheHeaders(t *testing.T) {
+	srv := serve(t, Config{Assets: testAssets()})
+	for _, h2 := range []bool{false, true} {
+		t.Run(protocol(h2), func(t *testing.T) {
+			client := srv.client(t, h2)
+			pad := func(n int) *http.Request {
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.url("/"), nil)
+				require.NoError(t, err)
+				req.Header.Set("X-Padding", strings.Repeat("a", n))
+				return req
+			}
+
+			resp, err := client.Do(pad(32 << 10))
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			// An HTTP/2 client does not send what the server announced it does
+			// not take.
+			resp, err = client.Do(pad(100 << 10))
+			if h2 {
+				require.ErrorContains(t, err, "larger than peer's advertised limit")
+				return
+			}
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusRequestHeaderFieldsTooLarge, resp.StatusCode)
+		})
+	}
+}
+
+// A browser with a stream open must not make the stop slow or the unit fail:
+// the requests are ended, the connections are drained, and Run returns nil.
+func TestStopWithAStreamOpen(t *testing.T) {
+	for _, h2 := range []bool{true, false} {
+		t.Run(protocol(h2), func(t *testing.T) {
+			var buf testutil.SyncBuffer
+			m := newTestRoutes()
+			srv := serve(t, Config{Assets: testAssets(), Log: zerolog.New(&buf)}, m)
+			srv.s.shutdownAfter = 30 * time.Second
+
+			resp, err := srv.client(t, h2).Get(srv.url("/api/stream"))
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			<-m.entered
+			line, err := bufio.NewReader(resp.Body).ReadString('\n')
+			require.NoError(t, err)
+			require.Equal(t, "data: hello\n", line)
+
+			require.NoError(t, srv.stop(t, 10*time.Second))
+			require.NotContains(t, buf.String(), "closing")
+
+			// The stream ends for the client as well.
+			ended := make(chan struct{})
+			go func() { _, _ = io.Copy(io.Discard, resp.Body); close(ended) }()
+			select {
+			case <-ended:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the stream is still open at the client")
+			}
+		})
+	}
+}
+
+// A handler that does not look at its context holds the stop until the grace
+// runs out; then the connections are closed, and the stop is still a clean one.
+func TestStopWithAHandlerThatDoesNotEnd(t *testing.T) {
+	var buf testutil.SyncBuffer
+	m := newTestRoutes()
+	srv := serve(t, Config{Assets: testAssets(), Log: zerolog.New(&buf)}, m)
+	srv.s.shutdownAfter = 200 * time.Millisecond
+	t.Cleanup(func() { close(m.release) })
+
+	failed := make(chan error, 1)
+	go func() {
+		resp, err := srv.client(t, true).Get(srv.url("/api/stuck"))
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		failed <- err
+	}()
+	<-m.entered
+
+	require.NoError(t, srv.stop(t, 10*time.Second))
+	require.Contains(t, buf.String(), "closing the connections")
+	select {
+	case err := <-failed:
+		require.Error(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request is still open at the client")
+	}
 }
 
 func TestRunWithoutItsCertificate(t *testing.T) {

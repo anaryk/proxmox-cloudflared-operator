@@ -4,7 +4,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/ui"
 )
 
 func TestWebConfig(t *testing.T) {
@@ -89,6 +92,51 @@ func TestWebStopsWithoutItsCertificate(t *testing.T) {
 
 	res = r.run("", "web", "--json")
 	require.ErrorContains(t, res.err, "--json has no meaning")
+}
+
+func TestWebRefusesAnUnknownLogLevel(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+	for _, level := range []string{"chatty", "none", ""} {
+		res := r.run("", "web", "--log-level", level, "--cert", "/c", "--key", "/k")
+		require.EqualError(t, res.err, `unknown log level "`+level+`": want trace, debug, info, warn or error`)
+	}
+}
+
+func TestTheLogLevelOfWeb(t *testing.T) {
+	for name, want := range map[string]zerolog.Level{
+		"trace": zerolog.TraceLevel,
+		"debug": zerolog.DebugLevel,
+		"info":  zerolog.InfoLevel,
+		"warn":  zerolog.WarnLevel,
+		"error": zerolog.ErrorLevel,
+	} {
+		got, err := logLevel(name)
+		require.NoError(t, err, name)
+		require.Equal(t, want, got, name)
+	}
+}
+
+// The level reaches the log of the server: a build without the interface warns
+// at start, and an error level leaves the warning out.
+func TestWebLogsAtTheLevelGiven(t *testing.T) {
+	if ui.Built {
+		t.Skip("this build has the interface, so there is nothing to warn about")
+	}
+	dir := t.TempDir()
+	r := newRunner(t, filepath.Join(dir, "pco", "api.sock"))
+	args := []string{"web", "--listen", "127.0.0.1:0", "--cert", filepath.Join(dir, "tls.crt"), "--key", filepath.Join(dir, "tls.key")}
+
+	res := r.run("", args...)
+	require.Error(t, res.err)
+	require.Contains(t, res.errOut, "has no web interface")
+	require.Contains(t, res.errOut, `"level":"warn"`)
+
+	res = r.run("", append(args, "--log-level", "error")...)
+	require.Error(t, res.err)
+	require.Empty(t, res.errOut)
+
+	res = r.run("", append(args, "--log-level", "info")...)
+	require.Contains(t, res.errOut, "has no web interface")
 }
 
 func webApp(vars map[string]string) *app {

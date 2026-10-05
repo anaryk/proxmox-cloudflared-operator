@@ -19,7 +19,7 @@ import (
 // webFlags are the flags of pco web. What is not given comes from the
 // environment of the unit.
 type webFlags struct {
-	listen, cert, key, hosts string
+	listen, cert, key, hosts, logLevel string
 }
 
 func (a *app) webCmd() *cobra.Command {
@@ -41,11 +41,15 @@ func (a *app) webCmd() *cobra.Command {
 			if err := a.noJSON(cmd); err != nil {
 				return err
 			}
+			level, err := logLevel(f.logLevel)
+			if err != nil {
+				return err
+			}
 			cfg, err := a.webConfig(f)
 			if err != nil {
 				return err
 			}
-			cfg.Log = a.daemonLog(cmd.ErrOrStderr(), zerolog.InfoLevel)
+			cfg.Log = a.daemonLog(cmd.ErrOrStderr(), level)
 			if !ui.Built {
 				cfg.Log.Warn().Msg("this build of pco has no web interface; it serves a page that says so")
 			}
@@ -63,7 +67,17 @@ func (a *app) webCmd() *cobra.Command {
 	flags.StringVar(&f.cert, "cert", "", "certificate file, PEM (default $CREDENTIALS_DIRECTORY/tls.crt)")
 	flags.StringVar(&f.key, "key", "", "key file of the certificate, PEM (default $CREDENTIALS_DIRECTORY/tls.key)")
 	flags.StringVar(&f.hosts, "hosts", "", "more host names the interface is reached by, comma separated (default $PCO_WEB_HOSTS)")
+	flags.StringVar(&f.logLevel, "log-level", "info", "log level: trace, debug, info, warn or error")
 	return cmd
+}
+
+// logLevel is the level a --log-level names.
+func logLevel(name string) (zerolog.Level, error) {
+	level, err := zerolog.ParseLevel(name)
+	if err != nil || level == zerolog.NoLevel {
+		return zerolog.NoLevel, fmt.Errorf("unknown log level %q: want trace, debug, info, warn or error", name)
+	}
+	return level, nil
 }
 
 // webConfig is what pco web serves, from the flags and the environment.
