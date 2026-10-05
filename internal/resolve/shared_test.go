@@ -143,6 +143,10 @@ func TestAProofIsMadeAgain(t *testing.T) {
 		{"when the binding kept no level", NewShared(yes), func() *Binding { b := carrying(); b.Level = ""; return b }, nil},
 		{"when the proof is too old", NewShared(yes), func() *Binding { return provenAt(carrying(), t0.Add(-6*time.Minute)) }, nil},
 		{"when the guest runs elsewhere now", NewShared(yes), carrying, func(s *scenario) { s.web().Node = "pve2" }},
+		// The watch looks for a MAC in the forwarding table of the bridge the
+		// proof placed it on, and only there.
+		{"when the proof is observed", NewShared(yes), func() *Binding { b := carrying(); b.Level = LevelObserved; return b }, nil},
+		{"when the proof placed the MAC on no bridge", NewShared(yes), func() *Binding { b := carrying(); b.Bridge = ""; return b }, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -95,15 +95,17 @@ func (a *attempt) verify(ctx context.Context, c Candidate, bound bool) (proof, o
 
 // reusable reports whether the proof the binding carries may stand without
 // being made again: the caller's share lets it, and the binding gives no
-// doubt of its own. One that is withdrawn, failing, of a version that kept no
-// level, or proven at port for a guest whose MACs this node's forwarding
-// table cannot place now, is proven again.
+// doubt of its own. Only a proof at port that placed the MAC on a bridge may
+// stand, as the watch of the network looks for a MAC that moves in the
+// forwarding table of that bridge and nowhere else; one that is withdrawn or
+// failing, or of a guest whose MACs this node's forwarding table cannot place
+// now, is proven again.
 func (a *attempt) reusable() bool {
 	b := a.prev
 	switch {
-	case a.share == nil, b.Withdrawn, b.FailingSince != nil, b.Level == "":
+	case a.share == nil, b.Withdrawn, b.FailingSince != nil:
 		return false
-	case b.Level == LevelPort && (!a.checksFDB() || a.mayRunElsewhere()):
+	case b.Level != LevelPort || b.Bridge == "", !a.checksFDB(), a.mayRunElsewhere():
 		return false
 	}
 	if _, doubted := a.doubt(b); doubted {
