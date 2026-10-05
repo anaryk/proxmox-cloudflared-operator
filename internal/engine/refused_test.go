@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -123,6 +125,27 @@ func TestASingleRefusalOfAServedZoneChangesNothing(t *testing.T) {
 	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
 	require.Equal(t, planner.StateActive, route(st, "www.example.org").State)
 	require.Len(t, credentialEvents(e), 1, "the warning is all there is")
+	require.Equal(t, writes, e.writes())
+	requireBothServed(t, e)
+}
+
+// While the store is held no check is made: the line says so instead of
+// promising one for the time of the cycle.
+func TestAServedZoneWhoseDNSIsRefusedWaitsForAHeldStore(t *testing.T) {
+	const waits = "the token of credential cred1 could not read the DNS of zone example.org, which it serves; " +
+		"account acc1 is left as it is, and the check waits for the store"
+	e, _ := servingTwoZones(t)
+	writes := e.writes()
+	e.refuse()
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com www.example.org api.example.com -> :8080")))
+	require.NoError(t, os.MkdirAll(filepath.Join(e.paths.Cluster, "claims", "api.example.com.json"), 0o700))
+	e.cycle()
+
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.True(t, hasProblem(st, "saving the claims"), "%v", st.Problems)
+	require.Contains(t, st.Problems, waits)
 	require.Equal(t, writes, e.writes())
 	requireBothServed(t, e)
 }
