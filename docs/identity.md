@@ -223,7 +223,7 @@ the watch reports a move, the guest's configuration changes or its port stops an
 neighbour table of the node and the forwarding tables of the bridges and reacts to a bound
 MAC that moves, but that watch has limits:
 
-- The address leaves the filter within about a millisecond of the change, not at the same
+- The address leaves the filter within tens of milliseconds of the change, not at the same
   instant. [Security](security.md) says what can happen in that time.
 - A MAC of the guest's own that appears only in the neighbour table is not a move: a guest
   with two cards on one bridge may answer for its address with either.
