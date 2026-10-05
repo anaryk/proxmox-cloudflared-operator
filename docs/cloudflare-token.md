@@ -148,7 +148,8 @@ result of the one before in place, adds a warning to the event log and is repeat
 A check that only reads still makes calls: the three that open it, one read of this
 install's records in every active zone, and one lookup of the tunnel in every account the
 zones belong to. With many zones that is many calls once a day, and they count against the
-300 in five minutes of the credential.
+`cloudflareBudget` of the credential, 1000 requests in five minutes by default (the section
+"Limits and expiry" below says more).
 
 ## Several accounts and zone pins
 
