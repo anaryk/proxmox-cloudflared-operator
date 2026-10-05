@@ -18,7 +18,7 @@ comma := ,
 UI ?= 0
 TAGS := nomsgpack$(if $(filter 1,$(UI)),$(comma)webui)
 
-.PHONY: build test lint fmt test-scripts snapshot package e2e-binaries scale ui ui-dist ui-test ui-budget
+.PHONY: build test lint fmt test-scripts snapshot package e2e-binaries scale ui ui-dist ui-test ui-budget ui-words
 
 build: $(if $(filter 1,$(UI)),ui-dist)
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -66,6 +66,11 @@ ui-test: web/node_modules
 
 ui-budget: ui
 	cd web && npm run budget
+
+# The word tables of internal/present for the interface, generated from the Go
+# code and committed. A failed run leaves the committed file as it was.
+ui-words:
+	go run ./hack/tsgen -words > web/src/gen/words.gen.ts.tmp && mv web/src/gen/words.gen.ts.tmp web/src/gen/words.gen.ts || { rm -f web/src/gen/words.gen.ts.tmp; exit 1; }
 
 # Builds the interface and the .deb files without a tag and without publishing
 # or signing anything. Reading the binaries back takes dpkg-deb and go.

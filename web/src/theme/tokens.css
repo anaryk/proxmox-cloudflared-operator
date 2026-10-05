@@ -1,0 +1,115 @@
+/*
+ * The colours and sizes of the interface. The light theme is the default;
+ * the dark one follows the system unless the user chose light, or applies
+ * when the user chose it. contrast.test.ts measures every pair the text and
+ * the controls are drawn in, from this file: keep one declaration per line.
+ */
+
+:root {
+  color-scheme: light;
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --raised: #f8f9fb;
+  --border: #d5d9df;
+  --control-border: #808a96;
+  --text: #1c2026;
+  --text2: #4b5563;
+  --muted: #667080;
+  --accent: #1b63c6;
+  --on-accent: #ffffff;
+  --accent-weak: #e8f0fb;
+  --traffic: #ea7317;
+  --traffic-text: #a84e00;
+  --traffic-weak: #fdeedf;
+  --ok: #177a34;
+  --ok-weak: #e7f4ea;
+  --warn: #8f5f00;
+  --warn-weak: #fbf1d6;
+  --fail: #cf222e;
+  --fail-weak: #fce8e9;
+  --idle: #5f6977;
+  --idle-weak: #eef0f3;
+  --edge: #8a94a3;
+  --shadow: 0 10px 28px rgba(16, 24, 40, 0.16);
+  --backdrop: rgba(10, 14, 20, 0.45);
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, monospace;
+  --row: 34px;
+  --radius: 4px;
+  --topbar: 46px;
+  --nav: 212px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111317;
+    --surface: #1a1d22;
+    --raised: #22262c;
+    --border: #323841;
+    --control-border: #737c88;
+    --text: #e6e8eb;
+    --text2: #b3bac4;
+    --muted: #8f98a4;
+    --accent: #5c9ef5;
+    --on-accent: #0b1220;
+    --accent-weak: #1b2a40;
+    --traffic: #f3862a;
+    --traffic-text: #f59a4a;
+    --traffic-weak: #3a2614;
+    --ok: #3fb950;
+    --ok-weak: #15291b;
+    --warn: #d4a72c;
+    --warn-weak: #2f2713;
+    --fail: #f85149;
+    --fail-weak: #3b1a1b;
+    --idle: #8f98a4;
+    --idle-weak: #262a31;
+    --edge: #6b7480;
+    --shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+    --backdrop: rgba(0, 0, 0, 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111317;
+  --surface: #1a1d22;
+  --raised: #22262c;
+  --border: #323841;
+  --control-border: #737c88;
+  --text: #e6e8eb;
+  --text2: #b3bac4;
+  --muted: #8f98a4;
+  --accent: #5c9ef5;
+  --on-accent: #0b1220;
+  --accent-weak: #1b2a40;
+  --traffic: #f3862a;
+  --traffic-text: #f59a4a;
+  --traffic-weak: #3a2614;
+  --ok: #3fb950;
+  --ok-weak: #15291b;
+  --warn: #d4a72c;
+  --warn-weak: #2f2713;
+  --fail: #f85149;
+  --fail-weak: #3b1a1b;
+  --idle: #8f98a4;
+  --idle-weak: #262a31;
+  --edge: #6b7480;
+  --shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --backdrop: rgba(0, 0, 0, 0.6);
+}
+
+:root[data-density="compact"] {
+  --row: 28px;
+}
+
+/* Stronger lines for those who ask the system for more contrast, in either
+ * theme: :root twice outweighs the selectors of the dark one. */
+@media (prefers-contrast: more) {
+  :root:root {
+    --border: var(--control-border);
+    --edge: var(--text2);
+  }
+}

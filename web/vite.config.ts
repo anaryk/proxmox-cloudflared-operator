@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath } from 'node:url'
 
 import react from '@vitejs/plugin-react'
@@ -36,5 +37,22 @@ export default defineConfig({
     cssCodeSplit: true,
     modulePreload: { polyfill: false },
     sourcemap: false,
+  },
+  // The tests of the scripts run in Node, those of the interface in a DOM.
+  test: {
+    projects: [
+      { extends: true, test: { name: 'scripts', include: ['*.test.mjs', 'scripts/**/*.test.mjs'], environment: 'node' } },
+      {
+        extends: true,
+        test: {
+          name: 'src',
+          include: ['src/**/*.test.{ts,tsx}'],
+          environment: 'happy-dom',
+          setupFiles: ['src/test/setup.ts'],
+          // contrast.test.ts reads the tokens as text.
+          css: { include: [/\.css\?raw$/] },
+        },
+      },
+    ],
   },
 })
