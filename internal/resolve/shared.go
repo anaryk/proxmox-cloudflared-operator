@@ -116,6 +116,22 @@ func (m *memo[K, T]) get(ctx context.Context, key K, fn func() (T, bool)) (val T
 	}
 }
 
+// has reports whether a call for key has ended and its answer is kept.
+func (m *memo[K, T]) has(key K) bool {
+	m.mu.Lock()
+	c, found := m.calls[key]
+	m.mu.Unlock()
+	if !found {
+		return false
+	}
+	select {
+	case <-c.done:
+		return c.kept
+	default:
+		return false
+	}
+}
+
 // macIndex maps every MAC configured on a guest that runs, or may run because
 // Proxmox has never said whether it does, to those guests, in the order of the
 // snapshot.

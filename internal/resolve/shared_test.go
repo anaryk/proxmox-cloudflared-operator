@@ -209,3 +209,19 @@ func TestAMACOfTwoGuestsIsProvenOnTheWire(t *testing.T) {
 	require.True(t, res.Target.Withdrawn)
 	require.Equal(t, "MAC bc:24:11:00:00:01 is on port tap102i0, not on the guest's own port", res.Target.Reason)
 }
+
+// A route on a carried proof takes what another route of the cycle just found
+// on the wire for the same address: a lost identity is not served on.
+func TestAFreshAnswerOfTheCycleWinsOverACarriedProof(t *testing.T) {
+	s := newScenario(t)
+	s.prober.arp[arpKey("vmbr0", "10.20.0.10")] = []string{foreignMAC}
+	share := NewShared(func(Binding) bool { return true })
+
+	api := s.resolveShared(t, apiRoute(80), nil, share)
+	web := s.resolveShared(t, webRoute(), carrying(), share)
+
+	require.Equal(t, "10.20.0.10 answered by bc:24:11:ff:ff:01, which is not this guest", api.Target.Reason)
+	require.True(t, web.Target.Withdrawn)
+	require.Equal(t, api.Target.Reason, web.Target.Reason)
+	require.Equal(t, 1, s.prober.countOps()["arp"], "the answer is shared")
+}

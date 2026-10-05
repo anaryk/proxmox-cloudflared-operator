@@ -74,7 +74,9 @@ func (a *attempt) verify(ctx context.Context, c Candidate, bound bool) (proof, o
 	if o := a.claimMAC(c.NIC.MAC, a.checksFDB()); !o.ok() {
 		return proof{}, o
 	}
-	reused := bound && a.reusable()
+	// A proof made on the wire in this cycle, by another route of the same
+	// address, is fresher than the one the binding carries.
+	reused := bound && a.reusable() && !a.share.wire.has(a.wireKeyOf(c))
 	var p proof
 	if reused {
 		p, o = a.carried(c)
@@ -149,8 +151,7 @@ func (a *attempt) onTheWire(ctx context.Context, ifaces []HostIface, c Candidate
 	if a.share == nil {
 		return a.wireCheck(ctx, ifaces, c)
 	}
-	key := wireKey{guest: a.guest.Ref, nic: c.NIC.Index, mac: normalMAC(c.NIC.MAC), addr: c.Addr}
-	w, ok := a.share.wire.get(ctx, key, func() (wireAnswer, bool) {
+	w, ok := a.share.wire.get(ctx, a.wireKeyOf(c), func() (wireAnswer, bool) {
 		w := a.wireCheck(ctx, ifaces, c)
 		return w, w.o.verdict != cancelled
 	})
@@ -158,6 +159,11 @@ func (a *attempt) onTheWire(ctx context.Context, ifaces []HostIface, c Candidate
 		return wireAnswer{o: stopped()}
 	}
 	return w
+}
+
+// wireKeyOf is the key of the answer of the wire about c.
+func (a *attempt) wireKeyOf(c Candidate) wireKey {
+	return wireKey{guest: a.guest.Ref, nic: c.NIC.Index, mac: normalMAC(c.NIC.MAC), addr: c.Addr}
 }
 
 // wireCheck runs the checks of identify that ask the host.
