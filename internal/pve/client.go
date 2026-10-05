@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -62,6 +63,11 @@ type Client struct {
 	auth    string
 	hc      *http.Client
 	timeout time.Duration
+
+	// verifyErr is why the certificate failed to verify on the last request
+	// that got as far as the TLS handshake; nil once one verified.
+	mu        sync.Mutex
+	verifyErr error
 }
 
 // New checks cfg and returns a client for it. A loopback host must present
@@ -241,8 +247,12 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, out
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		if notVerified(err) {
+			c.noteVerify(err)
+		}
 		return err
 	}
+	c.noteVerify(nil)
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
@@ -261,6 +271,32 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, out
 		return fmt.Errorf("response exceeds %d bytes", maxBodyBytes)
 	}
 	return decodeData(body, out)
+}
+
+// LastVerifyError is why the certificate of the API failed to verify on the
+// last request that got as far as the TLS handshake, or nil when that one
+// verified. A cluster CA made anew, ACME turned on or a certificate put in
+// makes every request fail so, until the endpoint is repaired.
+func (c *Client) LastVerifyError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.verifyErr
+}
+
+func (c *Client) noteVerify(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.verifyErr = err
+}
+
+// notVerified reports whether err says that a certificate did not verify.
+func notVerified(err error) bool {
+	var (
+		failed   *tls.CertificateVerificationError
+		unknown  x509.UnknownAuthorityError
+		wrongFor x509.HostnameError
+	)
+	return errors.As(err, &failed) || errors.As(err, &unknown) || errors.As(err, &wrongFor)
 }
 
 func newAPIError(status int, body []byte) *APIError {

@@ -307,6 +307,53 @@ func TestServerNameIsWhatTheCertificateIsVerifiedUnder(t *testing.T) {
 	require.ErrorAs(t, err, &wrongName)
 }
 
+func TestTheClientKeepsWhyTheCertificateStoppedVerifying(t *testing.T) {
+	srv := remoteServer(t)
+	cfg := testConfig("")
+	cfg.CAFile = writeCA(t, unrelatedCA(t))
+	cfg.ServerName = "example.com"
+	c := remote(t, srv, "10.20.0.2", cfg)
+	require.NoError(t, c.LastVerifyError(), "nothing asked yet")
+
+	_, err := c.Version(t.Context())
+	require.Error(t, err)
+	var unknown x509.UnknownAuthorityError
+	require.ErrorAs(t, c.LastVerifyError(), &unknown, "another CA signed the certificate")
+
+	// The certificate is put back in order: the next request verifies.
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	c.hc.Transport.(*http.Transport).TLSClientConfig.RootCAs = pool
+	_, err = c.Version(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, c.LastVerifyError())
+
+	// Under a name it is not valid for, it does not.
+	c.hc.Transport.(*http.Transport).TLSClientConfig.ServerName = "pve1.lab.invalid"
+	c.hc.Transport.(*http.Transport).CloseIdleConnections()
+	_, err = c.Version(t.Context())
+	require.Error(t, err)
+	var wrongName x509.HostnameError
+	require.ErrorAs(t, c.LastVerifyError(), &wrongName)
+}
+
+func TestAFailureBeforeTheHandshakeLeavesTheVerifyErrorAlone(t *testing.T) {
+	srv := remoteServer(t)
+	cfg := testConfig("")
+	cfg.CAFile = writeCA(t, unrelatedCA(t))
+	cfg.ServerName = "example.com"
+	c := remote(t, srv, "10.20.0.2", cfg)
+	_, err := c.Version(t.Context())
+	require.Error(t, err)
+	before := c.LastVerifyError()
+	require.Error(t, before)
+
+	srv.Close()
+	_, err = c.Version(t.Context())
+	require.Error(t, err)
+	require.Equal(t, before, c.LastVerifyError(), "a server that is gone says nothing of its certificate")
+}
+
 func TestNewTrustsTheSystemRootsBesidesTheCAFile(t *testing.T) {
 	system, err := x509.SystemCertPool()
 	if err != nil {
