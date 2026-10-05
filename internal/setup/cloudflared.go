@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 )
 
 const (
@@ -138,7 +140,7 @@ func (r *run) ensureSources() error {
 	if err := r.record(func(m *Manifest) { m.AddedAptSource = true }); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(path, want, 0o644); err != nil {
+	if err := atomicfile.Write(path, want, atomicfile.Options{Mode: 0o644}); err != nil {
 		r.takeBack(func() (bool, error) { return exists(path) }, func(m *Manifest) { m.AddedAptSource = false })
 		return fmt.Errorf("writing %s: %w", path, err)
 	}

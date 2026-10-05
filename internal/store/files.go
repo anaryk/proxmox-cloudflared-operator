@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 )
 
 const (
@@ -18,7 +20,7 @@ const (
 
 	dirMode fs.FileMode = 0o700
 
-	tempExt = ".tmp"
+	tempExt = atomicfile.TempExt
 
 	// staleTempAge is how old a temporary file must be before Open takes it
 	// for the leftover of a crash. A younger one may be a write in progress of
@@ -85,31 +87,14 @@ func setDirMode(dir string) error {
 // mode 0600 and the file is never chmod-ed: the cluster filesystem decides the
 // modes of its files by path. synced is called with the directory after the
 // rename, which a rename needs to be durable.
-func writeFileAtomic(path string, data []byte, synced func(dir string) error) (err error) {
+func writeFileAtomic(path string, data []byte, synced func(dir string) error) error {
 	if len(data) > maxFileSize {
 		return fmt.Errorf("%d bytes are over the %d byte limit of a file", len(data), maxFileSize)
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*"+tempExt)
+	err := atomicfile.Write(path, data, atomicfile.Options{
+		SyncIgnored: func(err error) bool { return unsupported(err) || errors.Is(err, syscall.EINVAL) },
+	})
 	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(f.Name())
-		}
-	}()
-	if _, err = f.Write(data); err == nil {
-		if err = f.Sync(); unsupported(err) || errors.Is(err, syscall.EINVAL) {
-			err = nil
-		}
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.Rename(f.Name(), path); err != nil {
 		return err
 	}
 	return synced(filepath.Dir(path))

@@ -12,6 +12,8 @@ import (
 	"slices"
 	"syscall"
 	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 )
 
 const (
@@ -151,7 +153,7 @@ func (o *Overrides) SwitchOn() (wasOff bool, err error) {
 
 // write replaces a file through a temporary one in the same directory, so
 // that a reader sees the old content or the new one.
-func (o *Overrides) write(name string, v any) (err error) {
+func (o *Overrides) write(name string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("encoding %s: %w", name, err)
@@ -159,28 +161,7 @@ func (o *Overrides) write(name string, v any) (err error) {
 	if err := os.MkdirAll(o.dir, overrideDir); err != nil {
 		return fmt.Errorf("creating %s: %w", o.dir, err)
 	}
-	tmp, err := os.CreateTemp(o.dir, "."+name+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("writing %s: %w", o.path(name), err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	if err = tmp.Chmod(overrideMode); err == nil {
-		if _, err = tmp.Write(data); err == nil {
-			err = tmp.Sync()
-		}
-	}
-	if err != nil {
-		return fmt.Errorf("writing %s: %w", tmp.Name(), err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("writing %s: %w", tmp.Name(), err)
-	}
-	if err = os.Rename(tmp.Name(), o.path(name)); err != nil {
+	if err := atomicfile.Write(o.path(name), data, atomicfile.Options{Mode: overrideMode}); err != nil {
 		return fmt.Errorf("writing %s: %w", o.path(name), err)
 	}
 	// The rename is durable only once the directory is: a block that a crash

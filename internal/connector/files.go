@@ -8,9 +8,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 	envExt     = ".env"
 	configExt  = ".yml"
 	pendingExt = ".pending"
-	tempExt    = ".tmp"
+	tempExt    = atomicfile.TempExt
 
 	dirMode     fs.FileMode = 0o700
 	tokenMode   fs.FileMode = 0o600
@@ -160,34 +161,6 @@ func fixMode(path string, mode fs.FileMode) error {
 		return nil
 	}
 	return os.Chmod(path, mode)
-}
-
-// writeAtomic writes through a temporary file in the same directory, so that
-// a reader sees the old or the new content, never a part of it.
-func writeAtomic(path string, data []byte, mode fs.FileMode) (err error) {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*"+tempExt)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	if _, err = tmp.Write(data); err != nil {
-		return fmt.Errorf("writing %s: %w", tmp.Name(), err)
-	}
-	if err = tmp.Chmod(mode); err != nil {
-		return fmt.Errorf("setting mode of %s: %w", tmp.Name(), err)
-	}
-	if err = tmp.Sync(); err != nil {
-		return fmt.Errorf("syncing %s: %w", tmp.Name(), err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("closing %s: %w", tmp.Name(), err)
-	}
-	return os.Rename(tmp.Name(), path)
 }
 
 // staleFailure is a stale temporary file that could not be removed.

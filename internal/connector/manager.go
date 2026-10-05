@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 )
 
 const (
@@ -214,7 +216,7 @@ func (m *Manager) writeFiles(installID, id, token string) error {
 		{tokenPath, []byte(token), tokenMode, replaceToken},
 	} {
 		if f.replace {
-			err = writeAtomic(f.path, f.data, f.mode)
+			err = atomicfile.Write(f.path, f.data, atomicfile.Options{Mode: f.mode})
 		} else {
 			err = fixMode(f.path, f.mode)
 		}

@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 )
 
 // pendingFile is the marker that says the files of a tunnel changed and its
@@ -59,7 +61,7 @@ func (m *Manager) markPending(id string) error {
 	if m.statPending(id).present {
 		return nil
 	}
-	return writeAtomic(m.path(pendingFile(id)), nil, pendingMode)
+	return atomicfile.Write(m.path(pendingFile(id)), nil, atomicfile.Options{Mode: pendingMode})
 }
 
 // apply starts a unit that does not run, restarts one whose files changed,

@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 )
 
 // manifestName is the file of the manifest, in the local root of the store.
@@ -63,36 +65,7 @@ func writeManifest(path string, m Manifest) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, append(b, '\n'), 0o600)
-}
-
-// writeFileAtomic replaces path with data through a temporary file in the
-// same directory, so that a reader sees the old or the new content and never
-// a part of it.
-func writeFileAtomic(path string, data []byte, mode fs.FileMode) (err error) {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	if _, err = tmp.Write(data); err != nil {
-		return err
-	}
-	if err = tmp.Chmod(mode); err != nil {
-		return err
-	}
-	if err = tmp.Sync(); err != nil {
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Write(path, append(b, '\n'), atomicfile.Options{Mode: 0o600})
 }
 
 // removeLeftovers removes the temporary files that a write of path, cut
@@ -104,7 +77,7 @@ func removeLeftovers(path string) {
 		return
 	}
 	for _, e := range entries {
-		if name := e.Name(); e.Type().IsRegular() && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".tmp") {
+		if name := e.Name(); e.Type().IsRegular() && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, atomicfile.TempExt) {
 			_ = os.Remove(filepath.Join(dir, name))
 		}
 	}
