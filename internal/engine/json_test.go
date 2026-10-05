@@ -113,10 +113,22 @@ func populatedState() State {
 		Profile:       "host",
 		Waiting:       waiting,
 		Offer:         offerOf(waiting),
-		Unapproved: []UnapprovedGuest{{
-			GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"},
-			Identity:  "uuid:201", Hostnames: []string{"new.example.com"},
-		}},
+		Unapproved: []UnapprovedGuest{
+			{
+				GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"},
+				Identity:  "uuid:201", Hostnames: []string{"new.example.com"}, Why: []string{"admission mode approve"},
+			},
+			{
+				GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 202}, Name: "dns-1"},
+				Identity:  "uuid:202", Hostnames: []string{"dns.example.com"},
+				Why:  []string{"delegated: alice@pve holds VM.Config.Network", "address 10.0.0.1 is the gateway of node pve1"},
+				MACs: []string{"bc:24:11:00:02:02"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+			},
+		},
+		Segments: []SegmentView{
+			{Bridge: "vmbr1", Acknowledged: true, AcknowledgedAt: t0, Routes: 2},
+			{Bridge: "vmbr1", VLAN: 20, Routes: 1},
+		},
 		Egress:     EgressView{State: EgressOff, Since: t0.Add(-time.Hour)},
 		Admission:  "approve",
 		GateTagged: 2,
@@ -217,6 +229,11 @@ func TestTheJSONOfTheState(t *testing.T) {
 	requireGolden(t, "approvals.json", populatedApprovals())
 	requireGolden(t, "approval.json", Approval{Owner: "qemu/101", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Name: "web-1"},
 		Identity: "uuid:101", Mode: "approve"})
+	requireGolden(t, "approval_observed.json", Approval{
+		Owner: "lxc/202", Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 202}, Name: "dns-1"},
+		Identity: "uuid:202", Mode: "tag", MACs: []string{"bc:24:11:00:02:02"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+	})
+	requireGolden(t, "segments.json", populatedState().Segments)
 }
 
 const testBoot = "9f2c4e1a0b7d3c55"
@@ -263,6 +280,10 @@ func TestACloneOfTheStateOwnsWhatWaits(t *testing.T) {
 
 	c.Waiting[0].Items[0] = "changed"
 	c.Waiting[1].Detail = "changed"
+	c.Unapproved[1].Why[0] = "changed"
+	c.Unapproved[1].MACs[0] = "changed"
+	c.Unapproved[1].Addresses[0] = netip.MustParseAddr("10.9.9.9")
+	c.Segments[0].Routes = 9
 
 	require.Equal(t, populatedState(), st)
 }

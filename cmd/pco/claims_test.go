@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -289,8 +290,87 @@ func TestGuestApproveInModeTag(t *testing.T) {
 
 	require.NoError(t, res.err)
 	require.Equal(t, "Approved qemu/101 in identity uuid:101.\n"+
-		"The admission mode is tag: an approval matters only once it is approve.\n", res.out)
+		"The admission mode is tag: the approval matters only for its routes at observed until the mode is approve.\n", res.out)
 	require.Equal(t, []string{"approve qemu/101"}, e.called(), "no identity was shown, so none is sent")
+}
+
+// observedWaitState has qemu/101 wait at observed for three reasons.
+func observedWaitState() engine.State {
+	st := healthyState()
+	st.Unapproved = []engine.UnapprovedGuest{{
+		GuestView: *qemu(101, "web-1"), Identity: "uuid:101", Hostnames: []string{"www.example.com"},
+		Why: []string{
+			"MAC changed from bc:24:11:00:00:01 to bc:24:11:00:00:09",
+			"delegated: alice@pve holds VM.Config.Network",
+			"address 10.0.0.1 is the gateway of node pve1",
+		},
+		MACs: []string{"bc:24:11:00:00:09"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+	}}
+	return st
+}
+
+// An approval of a guest that waits at observed says why it waits and what
+// the approval records, and sends what was shown.
+func TestGuestApproveOfAGuestThatWaitsAtObserved(t *testing.T) {
+	const why = "qemu/101 (web-1) waits for approval in identity uuid:101; approved, it publishes www.example.com.\n" +
+		"It waits because:\n" +
+		"  MAC changed from bc:24:11:00:00:01 to bc:24:11:00:00:09\n" +
+		"  delegated: alice@pve holds VM.Config.Network\n" +
+		"  address 10.0.0.1 is the gateway of node pve1\n"
+	t.Run("as shown", func(t *testing.T) {
+		e := &fakeEngine{state: observedWaitState(), mode: "tag"}
+		r := newRunner(t, serveFake(t, e))
+
+		res := r.runReader(unreadable{t}, "guest", "approve", "qemu/101")
+
+		require.NoError(t, res.err)
+		require.Equal(t, why+
+			"Approving it records MAC bc:24:11:00:00:09 and allows address 10.0.0.1.\n"+
+			"Approved qemu/101 in identity uuid:101.\n"+
+			"From the next cycle its routes no longer wait for an approval.\n", res.out)
+		require.Equal(t, []string{"approve qemu/101 identity=uuid:101 macs=[bc:24:11:00:00:09] addresses=[10.0.0.1]"}, e.called())
+	})
+	t.Run("with an address the state did not list", func(t *testing.T) {
+		r, e := daemonWith(t, observedWaitState())
+
+		res := r.run("", "guest", "approve", "qemu/101", "--allow-address", "10.0.0.53", "--allow-address", "10.0.0.1")
+
+		require.NoError(t, res.err)
+		require.Contains(t, res.out, "Approving it records MAC bc:24:11:00:00:09 and allows addresses 10.0.0.1, 10.0.0.53.\n")
+		require.Equal(t, []string{"approve qemu/101 identity=uuid:101 macs=[bc:24:11:00:00:09] addresses=[10.0.0.1 10.0.0.53]"}, e.called())
+	})
+	t.Run("an address only", func(t *testing.T) {
+		r, e := daemonWith(t, healthyState())
+
+		res := r.run("", "guest", "approve", "qemu/101", "--allow-address", "10.0.0.53")
+
+		require.NoError(t, res.err)
+		require.Equal(t, "Approving it allows address 10.0.0.53.\n"+
+			"Approved qemu/101 in identity uuid:101.\n"+
+			"From the next cycle its routes no longer wait for an approval.\n", res.out)
+		require.Equal(t, []string{"approve qemu/101 addresses=[10.0.0.53]"}, e.called())
+	})
+	t.Run("no address", func(t *testing.T) {
+		r, e := daemonWith(t, observedWaitState())
+
+		for _, bad := range []string{"gateway", "fd00::1", "10.0.0.1/24"} {
+			res := r.run("", "guest", "approve", "qemu/101", "--allow-address", bad)
+
+			require.EqualError(t, res.err, `--allow-address "`+bad+`": want an IPv4 address`, bad)
+		}
+		require.Empty(t, e.called())
+	})
+}
+
+func TestGuestListSaysWhyAGuestWaits(t *testing.T) {
+	r, _ := daemonWith(t, observedWaitState())
+
+	res := r.run("", "guest", "list")
+
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, "Waiting for approval (pco guest approve <owner>):\n"+
+		"  qemu/101 (web-1): MAC changed from bc:24:11:00:00:01 to bc:24:11:00:00:09; "+
+		"delegated: alice@pve holds VM.Config.Network; address 10.0.0.1 is the gateway of node pve1\n")
 }
 
 func TestGuestApproveRefused(t *testing.T) {

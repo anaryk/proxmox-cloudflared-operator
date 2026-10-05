@@ -24,6 +24,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -125,7 +126,8 @@ func (f *fakeInventory) refreshes() int {
 // proven at port and bound, a route without a guest is manual and not bound,
 // unless a test set another level for its hostname. A hostname whose guest a
 // test stopped is answered as resolve answers for a guest it cannot check:
-// its binding withdrawn, or nothing when it has none.
+// its binding withdrawn, or nothing when it has none. A guest's target is
+// marked soft-denied as the denylist says.
 type fakeResolver struct {
 	mu          sync.Mutex
 	now         func() time.Time
@@ -136,8 +138,12 @@ type fakeResolver struct {
 	required    []resolve.Level          // what every call was told the minimum is
 	bridge      string                   // where every binding's MACs were placed, by MAC
 	placed      map[string]string
+	segment     resolve.Segment       // where every binding was proven
+	macs        map[string]string     // hostname -> the MAC its address answers from; testMAC when not set
+	addrs       map[string]netip.Addr // hostname -> its guest's address; guestAddr when not set
 	calls       int
-	denied      []netip.Addr // the node addresses the last denylist refused
+	deny        resolve.Denylist // of the last call
+	denied      []netip.Addr     // the node addresses the last denylist refused
 	deadlines   []time.Time
 	onResolve   func()
 }
@@ -160,6 +166,7 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	default:
 		level = resolve.LevelPort
 	}
+	f.deny = deny
 	f.denied = f.denied[:0]
 	for _, a := range []string{"10.0.0.2", "10.0.0.3", "10.0.0.4"} {
 		if _, d := deny.Check(netip.MustParseAddr(a)); d {
@@ -167,6 +174,15 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 		}
 	}
 	hook := f.onResolve
+	addr, set := f.addrs[route.Hostname]
+	if !set {
+		addr = guestAddr
+	}
+	mac, set := f.macs[route.Hostname]
+	if !set {
+		mac = testMAC
+	}
+	segment := f.segment
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
@@ -183,9 +199,10 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	case stopped:
 		b := *prev
 		b.Withdrawn = true
-		return resolve.Result{Target: planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: stop, Owner: route.Owner()}, Binding: &b}
+		res := resolve.Result{Target: planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: stop, Owner: route.Owner()}, Binding: &b}
+		res.SoftDenied, _ = deny.Soft(b.Addr)
+		return res
 	}
-	addr := guestAddr
 	if route.Target.Addr.IsValid() {
 		addr = route.Target.Addr
 	}
@@ -197,14 +214,36 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	if route.Guest != nil {
 		res.Binding = &resolve.Binding{
 			Owner: route.Owner(), Hostname: route.Hostname, Guest: route.Guest.String(),
-			Addr: addr, MAC: testMAC, VerifiedAt: f.now(), Level: level,
+			Addr: addr, MAC: mac, VerifiedAt: f.now(), Level: level, Segment: segment,
 		}
 		if f.placed != nil {
 			b := res.Binding
 			b.Bridge, b.Port, b.Ports = f.bridge, f.placed[testMAC], maps.Clone(f.placed)
 		}
+		res.SoftDenied, _ = deny.Soft(addr)
 	}
 	return res
+}
+
+// proveOn makes every binding say it was proven on seg.
+func (f *fakeResolver) proveOn(seg resolve.Segment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.segment = seg
+}
+
+// answerFrom makes the address of host answer from mac.
+func (f *fakeResolver) answerFrom(host, mac string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.macs[host] = mac
+}
+
+// moveTo gives the guest of host the address addr.
+func (f *fakeResolver) moveTo(host string, addr netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addrs[host] = addr
 }
 
 // minimums returns the minimum every call was told, in order.
@@ -259,6 +298,12 @@ func (f *fakeResolver) setUnreachable(host, reason string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unreachable[host] = reason
+}
+
+func (f *fakeResolver) lastDeny() resolve.Denylist {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deny
 }
 
 func (f *fakeResolver) deniedNodes() []netip.Addr {
@@ -642,6 +687,10 @@ type env struct {
 	made []string             // credential ids NewClient was called for
 
 	eng *Engine
+	// acc is the access control of Proxmox the engine reads; nil gives the
+	// engine none. ownSoft is the gateway and resolvers of the appliance.
+	acc     *fakeAccess
+	ownSoft func() (gateways, resolvers []netip.Addr, err error)
 	// startOnly is what the engine is told of the settings read only at the
 	// start of the daemon.
 	startOnly func(store.Settings) []string
@@ -675,7 +724,9 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 	e.res = &fakeResolver{
 		now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{},
 		stopped: map[string]string{}, levels: map[string]resolve.Level{},
+		macs: map[string]string{}, addrs: map[string]netip.Addr{},
 	}
+	e.acc = newFakeAccess()
 	if paths != nil {
 		paths(base, &e.paths)
 	}
@@ -701,7 +752,7 @@ func (e *env) newEngine() *Engine { return e.newEngineWith(e.conn) }
 
 func (e *env) newEngineWith(conns Connectors) *Engine {
 	e.t.Helper()
-	eng, err := New(Deps{
+	d := Deps{
 		Store:      e.store,
 		Inventory:  e.inv,
 		Resolver:   e.res,
@@ -714,9 +765,127 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		Now:        e.clock.now,
 		Log:        e.log,
 		LocalDir:   e.paths.Local,
-	})
+		OwnUser:    "pco@pve",
+		OwnSoft:    e.ownSoft,
+	}
+	if e.acc != nil {
+		d.Access = e.acc
+	}
+	eng, err := New(d)
 	require.NoError(e.t, err)
 	return eng
+}
+
+// fakeAccess is the access control of Proxmox as a test sets it. It starts
+// with root@pam alone, and pco's token holds Sys.Audit where it needs it.
+type fakeAccess struct {
+	mu         sync.Mutex
+	acl        []pve.ACLEntry
+	users      []pve.User
+	groups     []pve.Group
+	roles      []pve.Role
+	perms      map[string][]string // the privileges of pco's token, by path
+	subnets    []pve.Subnet
+	subnetsErr error
+	dns        map[string]pve.NodeDNS
+	err        error // what every call of the access control fails with
+	reads      int   // of the ACL
+}
+
+func newFakeAccess() *fakeAccess {
+	return &fakeAccess{
+		users: []pve.User{{ID: "root@pam", Enabled: true}},
+		perms: map[string][]string{"/access": {"Sys.Audit"}, "/access/groups": {"Sys.Audit"}},
+		dns:   map[string]pve.NodeDNS{},
+	}
+}
+
+func (f *fakeAccess) ACL(context.Context) ([]pve.ACLEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	return slices.Clone(f.acl), f.err
+}
+
+func (f *fakeAccess) Users(context.Context) ([]pve.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.users), f.err
+}
+
+func (f *fakeAccess) Groups(context.Context) ([]pve.Group, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.groups), f.err
+}
+
+func (f *fakeAccess) Roles(context.Context) ([]pve.Role, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.roles), f.err
+}
+
+// Permissions answers for pco's token only, as the engine asks.
+func (f *fakeAccess) Permissions(_ context.Context, userid, path string) (map[string][]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if userid != "" {
+		return nil, fmt.Errorf("permissions of %s asked", userid)
+	}
+	return map[string][]string{path: slices.Clone(f.perms[path])}, f.err
+}
+
+func (f *fakeAccess) Subnets(context.Context) ([]pve.Subnet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.subnetsErr != nil {
+		return nil, f.subnetsErr
+	}
+	return slices.Clone(f.subnets), nil
+}
+
+func (f *fakeAccess) NodeDNS(_ context.Context, node string) (pve.NodeDNS, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dns[node], nil
+}
+
+// grant gives user role on path, the user and the role made when missing.
+func (f *fakeAccess) grant(user, path, role string, privs ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.ContainsFunc(f.users, func(u pve.User) bool { return u.ID == user }) {
+		f.users = append(f.users, pve.User{ID: user, Enabled: true})
+	}
+	if !slices.ContainsFunc(f.roles, func(r pve.Role) bool { return r.ID == role }) {
+		f.roles = append(f.roles, pve.Role{ID: role, Privs: privs})
+	}
+	f.acl = append(f.acl, pve.ACLEntry{Path: path, Type: "user", UGID: user, RoleID: role, Propagate: true})
+}
+
+// revokeAll takes every line of the ACL away.
+func (f *fakeAccess) revokeAll() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.acl = nil
+}
+
+func (f *fakeAccess) fail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeAccess) setPerms(path string, privs ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.perms[path] = privs
+}
+
+func (f *fakeAccess) aclReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
 }
 
 func (e *env) newClient(c store.Credential) (cfapi.API, error) {

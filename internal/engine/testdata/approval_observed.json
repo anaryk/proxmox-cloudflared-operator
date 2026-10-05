@@ -1,0 +1,16 @@
+{
+  "owner": "lxc/202",
+  "guest": {
+    "kind": "lxc",
+    "vmid": 202,
+    "name": "dns-1"
+  },
+  "identity": "uuid:202",
+  "mode": "tag",
+  "macs": [
+    "bc:24:11:00:02:02"
+  ],
+  "addresses": [
+    "10.0.0.1"
+  ]
+}

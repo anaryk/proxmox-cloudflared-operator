@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,9 @@ func (s *Server) routes() http.Handler {
 	v1.GET("/approvals", s.getApprovals)
 	v1.POST("/guests/approve", s.postApproveGuest)
 	v1.POST("/guests/revoke", s.postRevokeGuest)
+	v1.GET("/segments", s.getSegments)
+	v1.POST("/segments/acknowledge", s.postAcknowledgeSegment)
+	v1.POST("/segments/revoke", s.postRevokeSegment)
 	v1.GET("/diagnose", s.getDiagnose)
 	v1.GET("/doctor", s.getDoctor)
 	return s.logRequests(s.guard(s.stamp(r)))
@@ -350,18 +354,21 @@ func (s *Server) getApprovals(c *gin.Context) {
 }
 
 // postApproveGuest approves a guest and answers with the approval. The
-// identity, when the request has one, is the one the admin was shown: the
-// engine refuses a guest that has another one now.
+// identity and the MACs, when the request has them, are those the admin was
+// shown: the engine refuses a guest that has another identity, or waits for
+// other MACs, now. The addresses are those the admin allows.
 func (s *Server) postApproveGuest(c *gin.Context) {
 	var req struct {
-		Owner    string `json:"owner"`
-		Identity string `json:"identity"`
+		Owner     string       `json:"owner"`
+		Identity  string       `json:"identity"`
+		MACs      []string     `json:"macs"`
+		Addresses []netip.Addr `json:"addresses"`
 	}
 	if err := decode(c, &req, false); err != nil {
 		s.fail(c, err)
 		return
 	}
-	approved, err := s.engine.ApproveGuest(c.Request.Context(), req.Owner, req.Identity)
+	approved, err := s.engine.ApproveGuest(c.Request.Context(), req.Owner, req.Identity, req.MACs, req.Addresses)
 	if err != nil {
 		s.fail(c, err)
 		return
@@ -378,6 +385,47 @@ func (s *Server) postRevokeGuest(c *gin.Context) {
 		return
 	}
 	if err := s.engine.RevokeGuest(c.Request.Context(), req.Owner); err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, struct{}{})
+}
+
+func (s *Server) getSegments(c *gin.Context) {
+	segments, err := s.engine.Segments()
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, nonNil(segments))
+}
+
+// segmentRequest names a segment: a bridge, and its VLAN or 0 for untagged.
+type segmentRequest struct {
+	Bridge string `json:"bridge"`
+	VLAN   int    `json:"vlan"`
+}
+
+func (s *Server) postAcknowledgeSegment(c *gin.Context) {
+	var req segmentRequest
+	if err := decode(c, &req, false); err != nil {
+		s.fail(c, err)
+		return
+	}
+	if err := s.engine.AcknowledgeSegment(c.Request.Context(), req.Bridge, req.VLAN); err != nil {
+		s.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, struct{}{})
+}
+
+func (s *Server) postRevokeSegment(c *gin.Context) {
+	var req segmentRequest
+	if err := decode(c, &req, false); err != nil {
+		s.fail(c, err)
+		return
+	}
+	if err := s.engine.RevokeSegment(c.Request.Context(), req.Bridge, req.VLAN); err != nil {
 		s.fail(c, err)
 		return
 	}

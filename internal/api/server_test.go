@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +75,7 @@ type fakeEngine struct {
 	creds     []engine.CredentialView
 	claims    []engine.ClaimView
 	approvals []engine.ApprovalView
+	segments  []engine.SegmentView
 	steps     []doctor.Step
 	findings  []doctor.Finding
 }
@@ -238,12 +240,33 @@ func (f *fakeEngine) Approvals() ([]engine.ApprovalView, error) {
 	return f.approvals, f.err
 }
 
-func (f *fakeEngine) ApproveGuest(ctx context.Context, owner, identity string) (engine.Approval, error) {
-	f.record(ctx, "approve:"+owner+":"+identity)
+func (f *fakeEngine) ApproveGuest(ctx context.Context, owner, identity string, macs []string, addrs []netip.Addr) (engine.Approval, error) {
+	call := "approve:" + owner + ":" + identity
+	if len(macs) > 0 || len(addrs) > 0 {
+		call += fmt.Sprintf(" macs=%v addresses=%v", macs, addrs)
+	}
+	f.record(ctx, call)
 	if err := f.failure(); err != nil {
 		return engine.Approval{}, err
 	}
-	return engine.Approval{Owner: owner, Identity: "uuid:1", Mode: "approve"}, nil
+	return engine.Approval{Owner: owner, Identity: "uuid:1", Mode: "approve", MACs: macs, Addresses: addrs}, nil
+}
+
+func (f *fakeEngine) Segments() ([]engine.SegmentView, error) {
+	f.record(context.Background(), "segments")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.segments, f.err
+}
+
+func (f *fakeEngine) AcknowledgeSegment(ctx context.Context, bridge string, vlan int) error {
+	f.record(ctx, fmt.Sprintf("acknowledge:%s:%d", bridge, vlan))
+	return f.failure()
+}
+
+func (f *fakeEngine) RevokeSegment(ctx context.Context, bridge string, vlan int) error {
+	f.record(ctx, fmt.Sprintf("unacknowledge:%s:%d", bridge, vlan))
+	return f.failure()
 }
 
 func (f *fakeEngine) RevokeGuest(ctx context.Context, owner string) error {
@@ -459,6 +482,7 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 		state: st, view: view, events: events,
 		claims:    testClaims(),
 		approvals: []engine.ApprovalView{{Owner: "qemu/101", Identity: "uuid:101", Current: "uuid:101", Matches: true}},
+		segments:  []engine.SegmentView{{Bridge: "vmbr1", VLAN: 20, Routes: 1}},
 		steps:     []doctor.Step{{Name: "route", Level: doctor.LevelOK, Detail: "qemu/101 holds it"}},
 		findings:  []doctor.Finding{{Check: "mode", Level: doctor.LevelWarn, Detail: "observe-only", Fix: "pco apply"}},
 	}
@@ -510,10 +534,18 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	gotApprovals, err := c.Approvals(ctx)
 	require.NoError(t, err)
 	require.Equal(t, f.approvals, gotApprovals)
-	approved, err := c.ApproveGuest(ctx, "qemu/101", "uuid:101")
+	approved, err := c.ApproveGuest(ctx, "qemu/101", "uuid:101", []string{"bc:24:11:00:00:09"}, []netip.Addr{netip.MustParseAddr("10.0.0.1")})
 	require.NoError(t, err)
-	require.Equal(t, engine.Approval{Owner: "qemu/101", Identity: "uuid:1", Mode: "approve"}, approved)
+	require.Equal(t, engine.Approval{
+		Owner: "qemu/101", Identity: "uuid:1", Mode: "approve",
+		MACs: []string{"bc:24:11:00:00:09"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+	}, approved)
 	require.NoError(t, c.RevokeGuest(ctx, "qemu/101"))
+	gotSegments, err := c.Segments(ctx)
+	require.NoError(t, err)
+	require.Equal(t, f.segments, gotSegments)
+	require.NoError(t, c.AcknowledgeSegment(ctx, "vmbr1", 20))
+	require.NoError(t, c.RevokeSegment(ctx, "vmbr1", 20))
 	steps, err := c.Diagnose(ctx, "www.example.com")
 	require.NoError(t, err)
 	require.Equal(t, f.steps, steps)
@@ -524,7 +556,9 @@ func TestEveryClientMethodOverTheSocket(t *testing.T) {
 	require.Equal(t, []string{
 		"state", "state", "events", "events", "apply:true:0123456789abcdef", "adopt:www.example.com",
 		"add:main:" + testToken, "check:abc12345:true", "remove:abc12345",
-		"claims", "resolve:www.example.com:qemu/102", "approvals", "approve:qemu/101:uuid:101", "revoke:qemu/101",
+		"claims", "resolve:www.example.com:qemu/102", "approvals",
+		"approve:qemu/101:uuid:101 macs=[bc:24:11:00:00:09] addresses=[10.0.0.1]", "revoke:qemu/101",
+		"segments", "acknowledge:vmbr1:20", "unacknowledge:vmbr1:20",
 		"diagnose:www.example.com", "doctor",
 	}, f.called())
 

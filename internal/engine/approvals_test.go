@@ -24,14 +24,14 @@ func approving(t *testing.T) *env {
 	st := e.cycle()
 	require.Empty(t, st.Routes)
 	require.Equal(t, []UnapprovedGuest{{
-		GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Hostnames: []string{"www.example.com"},
+		GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Hostnames: []string{"www.example.com"}, Why: admissionWhy,
 	}}, st.Unapproved)
 	return e
 }
 
 func approveWeb(t *testing.T, e *env) Approval {
 	t.Helper()
-	a, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "")
+	a, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "", nil, nil)
 	require.NoError(t, err)
 	return a
 }
@@ -59,7 +59,7 @@ func TestApprovingAGuestPublishesIt(t *testing.T) {
 	since := e.clock.now()
 	drain(e)
 
-	a, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101")
+	a, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", nil, nil)
 
 	require.NoError(t, err)
 	require.Equal(t, Approval{Owner: "qemu/101", Guest: &GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Mode: "approve"}, a)
@@ -91,7 +91,7 @@ func TestAnApprovalIsOfOneIdentity(t *testing.T) {
 		require.Equal(t, planner.StateHeld, route(st, "www.example.com").State)
 		require.Contains(t, st.Issues, planner.Issue{Guest: refWeb, Msg: issueWaitingApproval})
 		require.Equal(t, []UnapprovedGuest{{
-			GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:999", Hostnames: []string{"www.example.com"},
+			GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:999", Hostnames: []string{"www.example.com"}, Why: admissionWhy,
 		}}, st.Unapproved)
 		require.Equal(t, withSentinel(), e.rules())
 
@@ -114,7 +114,7 @@ func TestAnApprovalIsOfOneIdentity(t *testing.T) {
 		require.Empty(t, route(st, "api.example.com").State, "the clone serves nothing")
 		require.Equal(t, []UnapprovedGuest{{
 			GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, Name: "web-1"},
-			Identity:  "uuid:101", Hostnames: []string{"api.example.com"},
+			Identity:  "uuid:101", Hostnames: []string{"api.example.com"}, Why: admissionWhy,
 		}}, st.Unapproved)
 	})
 }
@@ -130,7 +130,7 @@ func TestAnApprovalOfAnotherIdentityThanTheGuestHasIsRefused(t *testing.T) {
 	e.cycle()
 	since := e.clock.now()
 
-	_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101")
+	_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", nil, nil)
 
 	require.ErrorIs(t, err, ErrRefused)
 	require.EqualError(t, err, "refused: qemu/101 changed since it was shown: it was shown in identity uuid:101 "+
@@ -148,8 +148,8 @@ func TestTheGuestsThatWaitAreInOrder(t *testing.T) {
 	st := e.cycle()
 
 	require.Equal(t, []UnapprovedGuest{
-		{GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 20}, Name: "old"}, Identity: "uuid:20", Hostnames: []string{"old.example.com"}},
-		{GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Hostnames: []string{"api.example.com", "www.example.com"}},
+		{GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 20}, Name: "old"}, Identity: "uuid:20", Hostnames: []string{"old.example.com"}, Why: admissionWhy},
+		{GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Hostnames: []string{"api.example.com", "www.example.com"}, Why: admissionWhy},
 	}, st.Unapproved)
 }
 
@@ -180,7 +180,7 @@ func TestApprovingIsRefusedWithoutACompleteListing(t *testing.T) {
 			tt.setup(e)
 			since := e.clock.now()
 
-			_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "")
+			_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "", nil, nil)
 
 			require.ErrorIs(t, err, ErrRefused)
 			require.EqualError(t, err, tt.want)
@@ -197,7 +197,7 @@ func TestAGuestWithoutAnIdentityCannotBeApproved(t *testing.T) {
 	e.inv.set(snapshot(g))
 	e.cycle()
 
-	_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "")
+	_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "", nil, nil)
 
 	require.ErrorIs(t, err, ErrRefused)
 	require.EqualError(t, err, "refused: qemu/101 has no identity Proxmox reports, and an approval is of one")
@@ -208,7 +208,7 @@ func TestOnlyAGuestIsApproved(t *testing.T) {
 	e := newEnv(t)
 	e.cycle()
 	for _, owner := range []string{"manual/www", "web-1", "", "qemu/0101"} {
-		_, err := e.eng.ApproveGuest(t.Context(), owner, "")
+		_, err := e.eng.ApproveGuest(t.Context(), owner, "", nil, nil)
 		require.ErrorIs(t, err, ErrInvalid, owner)
 		require.ErrorIs(t, e.eng.RevokeGuest(t.Context(), owner), ErrInvalid, owner)
 	}
@@ -237,7 +237,7 @@ func TestRevokingAnApprovalHoldsTheGuestAgain(t *testing.T) {
 }
 
 // In admission mode tag an approval is recorded all the same, and the event
-// says that it does not matter yet.
+// says that it matters only for what waits at observed.
 func TestApprovalsInTagModeAreRecorded(t *testing.T) {
 	e := newEnv(t)
 	e.cycle()
@@ -248,8 +248,10 @@ func TestApprovalsInTagModeAreRecorded(t *testing.T) {
 	require.NoError(t, e.eng.RevokeGuest(t.Context(), "qemu/101"))
 
 	require.Equal(t, []string{
-		"qemu/101: qemu/101 (web-1) is approved in identity uuid:101; the admission mode is tag, so it matters only once the mode is approve",
-		"qemu/101: the approval of qemu/101 (web-1) is revoked; the admission mode is tag, so it matters only once the mode is approve",
+		"qemu/101: qemu/101 (web-1) is approved in identity uuid:101; the admission mode is tag, " +
+			"so it matters only for the routes at observed until the mode is approve",
+		"qemu/101: the approval of qemu/101 (web-1) is revoked; the admission mode is tag, " +
+			"so it matters only for the routes at observed until the mode is approve",
 	}, adminEvents(e, since.Add(-time.Nanosecond)))
 	st := e.cycle()
 	require.Empty(t, st.Unapproved, "in mode tag nobody waits for approval")
@@ -278,4 +280,143 @@ func TestApprovalsAreListedWithTheIdentityTheGuestHasNow(t *testing.T) {
 			MACs: []string{"bc:24:11:00:03:00"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
 		},
 	}, views)
+}
+
+var admissionWhy = []string{"admission mode approve"}
+
+// storedApproval returns the approval the store keeps for qemu/101.
+func storedApproval(t *testing.T, e *env) store.Approval {
+	t.Helper()
+	a, err := e.store.Approvals()
+	require.NoError(t, err)
+	return a["qemu/101"]
+}
+
+// waitForOtherMAC leaves qemu/101 waiting at observed for its MAC changed to
+// otherMAC.
+func waitForOtherMAC(t *testing.T, e *env) {
+	t.Helper()
+	e.cycle()
+	e.res.answerFrom("www.example.com", otherMAC)
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
+	require.Equal(t, []string{otherMAC}, st.Unapproved[0].MACs)
+}
+
+// An approval records what the state showed: the MACs that wait, and the
+// addresses the admin allows, those the state did not list included.
+func TestAnApprovalRecordsWhatTheStateShows(t *testing.T) {
+	extra := netip.MustParseAddr("10.0.0.77")
+	e := observing(t)
+	waitForOtherMAC(t, e)
+	since := e.clock.now()
+
+	a, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", []string{"BC:24:11:00:00:09"}, []netip.Addr{extra})
+
+	require.NoError(t, err)
+	require.Equal(t, Approval{
+		Owner: "qemu/101", Guest: &GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:101", Mode: "tag",
+		MACs: []string{otherMAC}, Addresses: []netip.Addr{extra},
+	}, a)
+	require.Equal(t, store.Approval{Owner: "qemu/101", Identity: "uuid:101", MACs: []string{otherMAC}, Addresses: []netip.Addr{extra}},
+		storedApproval(t, e))
+	require.Equal(t, []string{
+		"qemu/101: qemu/101 (web-1) is approved in identity uuid:101 with MAC bc:24:11:00:00:09 and address 10.0.0.77; " +
+			"the admission mode is tag, so it matters only for the routes at observed until the mode is approve",
+	}, adminEvents(e, since.Add(-time.Nanosecond)))
+}
+
+// Approving the same identity again keeps the MACs approved before; an
+// approval of another identity drops them. The allowed addresses stay.
+func TestAReapprovalKeepsWhatWasApproved(t *testing.T) {
+	kept := netip.MustParseAddr("10.0.0.77")
+	t.Run("the same identity", func(t *testing.T) {
+		e := observing(t)
+		require.NoError(t, e.store.SaveApproval(store.Approval{
+			Owner: "qemu/101", Identity: "uuid:101", MACs: []string{"bc:24:11:00:00:07"}, Addresses: []netip.Addr{kept},
+		}))
+		waitForOtherMAC(t, e)
+
+		_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", []string{otherMAC}, nil)
+
+		require.NoError(t, err)
+		require.Equal(t, store.Approval{
+			Owner: "qemu/101", Identity: "uuid:101", MACs: []string{"bc:24:11:00:00:07", otherMAC}, Addresses: []netip.Addr{kept},
+		}, storedApproval(t, e))
+	})
+	t.Run("another identity", func(t *testing.T) {
+		e := observing(t)
+		require.NoError(t, e.store.SaveApproval(store.Approval{
+			Owner: "qemu/101", Identity: "uuid:old", MACs: []string{"bc:24:11:00:00:07"}, Addresses: []netip.Addr{kept},
+		}))
+		waitForOtherMAC(t, e)
+
+		_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", []string{otherMAC}, nil)
+
+		require.NoError(t, err)
+		require.Equal(t, store.Approval{
+			Owner: "qemu/101", Identity: "uuid:101", MACs: []string{otherMAC}, Addresses: []netip.Addr{kept},
+		}, storedApproval(t, e))
+	})
+}
+
+func TestAnApprovalOfMACsTheGuestNoLongerShowsIsRefused(t *testing.T) {
+	tests := []struct {
+		name string
+		macs []string
+		want string
+	}{
+		{name: "another MAC", macs: []string{"bc:24:11:00:00:08"},
+			want: "refused: qemu/101 changed since it was shown: it was shown with MAC bc:24:11:00:00:08 and waits for MAC " +
+				"bc:24:11:00:00:09 now; look at it again"},
+		{name: "none", want: "refused: qemu/101 changed since it was shown: it was shown with no MAC and waits for MAC " +
+			"bc:24:11:00:00:09 now; look at it again"},
+		{name: "one more", macs: []string{otherMAC, "bc:24:11:00:00:08"},
+			want: "refused: qemu/101 changed since it was shown: it was shown with MACs bc:24:11:00:00:08, bc:24:11:00:00:09 " +
+				"and waits for MAC bc:24:11:00:00:09 now; look at it again"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := observing(t)
+			waitForOtherMAC(t, e)
+
+			_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", tt.macs, nil)
+
+			require.ErrorIs(t, err, ErrRefused)
+			require.EqualError(t, err, tt.want)
+			require.Empty(t, approvals(t, e))
+		})
+	}
+	t.Run("a guest that waits for no MAC", func(t *testing.T) {
+		e := observing(t)
+		e.cycle()
+
+		_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", []string{otherMAC}, nil)
+
+		require.ErrorIs(t, err, ErrRefused)
+		require.EqualError(t, err, "refused: qemu/101 changed since it was shown: it was shown with MAC bc:24:11:00:00:09 "+
+			"and waits for no MAC now; look at it again")
+	})
+}
+
+func TestAnApprovalOfWhatIsNoMACOrAddressIsInvalid(t *testing.T) {
+	e := observing(t)
+	e.cycle()
+	for name, call := range map[string]func() error{
+		"a MAC": func() error {
+			_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", []string{"not-a-mac"}, nil)
+			return err
+		},
+		"an IPv6 address": func() error {
+			_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", nil, []netip.Addr{netip.MustParseAddr("fd00::1")})
+			return err
+		},
+		"no address": func() error {
+			_, err := e.eng.ApproveGuest(t.Context(), "qemu/101", "uuid:101", nil, []netip.Addr{{}})
+			return err
+		},
+	} {
+		require.ErrorIs(t, call(), ErrInvalid, name)
+	}
+	require.Empty(t, approvals(t, e))
 }

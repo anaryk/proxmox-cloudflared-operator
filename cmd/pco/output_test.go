@@ -105,8 +105,14 @@ func hostileState() engine.State {
 	st.Unapproved = []engine.UnapprovedGuest{{
 		GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 105}, Name: "new" + hostileText},
 		Identity:  "uuid" + hostileText, Hostnames: []string{"new" + hostileText + ".example.com"},
+		Why: []string{"delegated: alice" + hostileText + " holds VM.Config.Network"},
 	}}
+	st.Segments = hostileSegments()
 	return st
+}
+
+func hostileSegments() []engine.SegmentView {
+	return []engine.SegmentView{{Bridge: "vmbr" + hostileText, Routes: 1}}
 }
 
 // hostileEngine is a daemon whose every answer carries hostileText where
@@ -121,6 +127,7 @@ func hostileEngine() *fakeEngine {
 			Waiting: []engine.ClaimantView{{Owner: "manual/x" + hostileText, Since: t0}},
 		}},
 		approvals: []engine.ApprovalView{{Owner: "qemu/101", Guest: guest, Identity: "uuid" + hostileText, Current: "uuid:2" + hostileText}},
+		segments:  hostileSegments(),
 		steps:     []doctor.Step{{Name: "route" + hostileText, Level: doctor.LevelFail, Detail: "held " + hostileText}},
 		findings: []doctor.Finding{
 			{Check: "check" + hostileText, Level: doctor.LevelFail, Detail: "detail " + hostileText, Fix: "fix " + hostileText},
@@ -160,6 +167,8 @@ func TestNothingTheDaemonSendsReachesTheTerminalAsAControlCharacter(t *testing.T
 		{"guest list", []string{"guest", "list"}, ""},
 		{"guest revoke", []string{"guest", "revoke", "qemu/101"}, "n\n"},
 		{"guest approve", []string{"guest", "approve", "qemu/105"}, ""},
+		{"segment list", []string{"segment", "list"}, ""},
+		{"segment acknowledge", []string{"segment", "acknowledge", "vmbr9"}, "n\n"},
 		{"diagnose", []string{"diagnose", "www.example.com"}, ""},
 		{"doctor", []string{"doctor"}, ""},
 	} {
@@ -229,6 +238,7 @@ func TestHostileAdminCommandsGolden(t *testing.T) {
 		{"guest_list_hostile.golden", "", []string{"guest", "list"}},
 		{"guest_revoke_hostile.golden", "n\n", []string{"guest", "revoke", "qemu/101"}},
 		{"guest_approve_hostile.golden", "", []string{"guest", "approve", "qemu/105"}},
+		{"segment_list_hostile.golden", "", []string{"segment", "list"}},
 		{"diagnose_hostile.golden", "", []string{"diagnose", "www.example.com"}},
 		{"doctor_hostile.golden", "", []string{"doctor"}},
 	} {

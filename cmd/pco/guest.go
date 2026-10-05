@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -72,23 +73,37 @@ func renderGuests(w io.Writer, approvals []engine.ApprovalView, waiting []engine
 	}
 	s.println("Waiting for approval (pco guest approve <owner>):")
 	for _, g := range waiting {
-		s.printf("  %s\n", engine.OwnerName(g.String(), &g.GuestView))
+		name := engine.OwnerName(g.String(), &g.GuestView)
+		if len(g.Why) == 0 {
+			s.printf("  %s\n", name)
+			continue
+		}
+		s.printf("  %s: %s\n", name, strings.Join(g.Why, "; "))
 	}
 	return s.done()
 }
 
 func (a *app) guestApproveCmd() *cobra.Command {
-	return &cobra.Command{
+	var allow []string
+	cmd := &cobra.Command{
 		Use:   "approve <owner>",
 		Short: "Approve a guest in the identity it has now",
 		Long: "Approve a guest, named as qemu/101 or lxc/200, in the identity the daemon sees it in now:\n" +
 			"a guest re-created under the same VMID, or a clone, needs an approval of its own. A guest\n" +
-			"that waits for approval is shown first, with the hostnames it would publish, and the\n" +
-			"daemon refuses the approval when the guest changed since. The daemon refuses a guest the\n" +
-			"last cycle did not see. An approval matters while the admission mode is approve.",
+			"that waits for approval is shown first, with the hostnames it would publish, why it waits\n" +
+			"and what the approval records: at the observed level, the MACs its addresses answer from\n" +
+			"and the soft-denied addresses, as the gateway of a node, it may be published at. The daemon\n" +
+			"refuses the approval when the guest changed since it was shown, and a guest the last cycle\n" +
+			"did not see. --allow-address allows an address the guest was not shown at. An approval\n" +
+			"admits a guest while the admission mode is approve, and releases what waits at observed\n" +
+			"in either mode.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			extra, err := allowedAddrs(allow)
+			if err != nil {
 				return err
 			}
 			ctx := cmd.Context()
@@ -99,26 +114,78 @@ func (a *app) guestApproveCmd() *cobra.Command {
 			}
 			s := &screen{w: cmd.OutOrStdout()}
 			// What was shown is what is approved.
-			identity := ""
-			if i := slices.IndexFunc(st.Unapproved, func(g engine.UnapprovedGuest) bool { return g.String() == owner }); i >= 0 {
-				g := st.Unapproved[i]
-				identity = g.Identity
+			var shown engine.UnapprovedGuest
+			i := slices.IndexFunc(st.Unapproved, func(g engine.UnapprovedGuest) bool { return g.String() == owner })
+			if i >= 0 {
+				shown = st.Unapproved[i]
 				s.printf("%s waits for approval in identity %s; approved, it publishes %s.\n",
-					engine.OwnerName(owner, &g.GuestView), dash(g.Identity), dash(strings.Join(g.Hostnames, ", ")))
+					engine.OwnerName(owner, &shown.GuestView), dash(shown.Identity), dash(strings.Join(shown.Hostnames, ", ")))
+				if len(shown.Why) > 0 {
+					s.println("It waits because:")
+					for _, why := range shown.Why {
+						s.printf("  %s\n", why)
+					}
+				}
 			}
-			approved, err := a.client().ApproveGuest(ctx, owner, identity)
+			addrs := slices.Compact(slices.SortedFunc(slices.Values(slices.Concat(shown.Addresses, extra)), netip.Addr.Compare))
+			if records := recordsText(shown.MACs, addrs); records != "" {
+				s.printf("Approving it %s.\n", records)
+			}
+			approved, err := a.client().ApproveGuest(ctx, owner, shown.Identity, shown.MACs, addrs)
 			if err != nil {
 				return a.explain(ctx, err)
 			}
 			s.printf("Approved %s in identity %s.\n", engine.OwnerName(approved.Owner, approved.Guest), approved.Identity)
-			if approved.Mode == store.AdmissionApprove {
+			if approved.Mode == store.AdmissionApprove || i >= 0 || len(addrs) > 0 {
 				s.println("From the next cycle its routes no longer wait for an approval.")
 			} else {
-				s.printf("The admission mode is %s: an approval matters only once it is %s.\n", approved.Mode, store.AdmissionApprove)
+				s.printf("The admission mode is %s: the approval matters only for its routes at observed until the mode is %s.\n",
+					approved.Mode, store.AdmissionApprove)
 			}
 			return s.done()
 		},
 	}
+	cmd.Flags().StringArrayVar(&allow, "allow-address", nil,
+		"allow the guest to be published at this soft-denied address too (repeatable)")
+	return cmd
+}
+
+// allowedAddrs reads the addresses of --allow-address.
+func allowedAddrs(raw []string) ([]netip.Addr, error) {
+	out := make([]netip.Addr, 0, len(raw))
+	for _, r := range raw {
+		addr, err := netip.ParseAddr(r)
+		if err != nil || !addr.Is4() {
+			return nil, fmt.Errorf("--allow-address %q: want an IPv4 address", r)
+		}
+		out = append(out, addr)
+	}
+	return out, nil
+}
+
+// recordsText says what an approval records besides the identity: "records
+// MAC m and allows address a", or nothing.
+func recordsText(macs []string, addrs []netip.Addr) string {
+	var parts []string
+	switch len(macs) {
+	case 0:
+	case 1:
+		parts = append(parts, "records MAC "+macs[0])
+	default:
+		parts = append(parts, "records MACs "+strings.Join(macs, ", "))
+	}
+	names := make([]string, len(addrs))
+	for i, addr := range addrs {
+		names[i] = addr.String()
+	}
+	switch len(names) {
+	case 0:
+	case 1:
+		parts = append(parts, "allows address "+names[0])
+	default:
+		parts = append(parts, "allows addresses "+strings.Join(names, ", "))
+	}
+	return strings.Join(parts, " and ")
 }
 
 func (a *app) guestRevokeCmd() *cobra.Command {

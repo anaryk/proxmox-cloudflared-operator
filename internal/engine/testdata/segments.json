@@ -1,0 +1,14 @@
+[
+  {
+    "bridge": "vmbr1",
+    "acknowledged": true,
+    "acknowledgedAt": "2026-10-01T12:00:00Z",
+    "routes": 2
+  },
+  {
+    "bridge": "vmbr1",
+    "vlan": 20,
+    "acknowledged": false,
+    "routes": 1
+  }
+]

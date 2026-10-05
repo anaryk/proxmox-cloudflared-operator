@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -129,8 +130,12 @@ type State struct {
 	Waiting []Waiting `json:"waiting"`
 	Offer   string    `json:"offer,omitempty"`
 	// Unapproved are the guests whose routes are held until an admin approves
-	// them, in admission mode approve; [] in mode tag.
+	// them: in admission mode approve before their routes are resolved, and in
+	// either mode for what holds a route served at observed.
 	Unapproved []UnapprovedGuest `json:"unapproved"`
+	// Segments are the bridges and VLANs routes at observed were proven on,
+	// and those acknowledged, by bridge and VLAN.
+	Segments []SegmentView `json:"segments"`
 	// Egress is the egress filter as the daemon last found it; empty until
 	// it has looked.
 	Egress EgressView `json:"egress,omitzero"`
@@ -151,6 +156,13 @@ type UnapprovedGuest struct {
 	GuestView
 	Identity  string   `json:"identity,omitempty"`
 	Hostnames []string `json:"hostnames"`
+	// Why says what makes the guest wait: "admission mode approve",
+	// "delegated: <principals> hold VM.Config.Network", "MAC changed from
+	// <old> to <new>", "address <ip> is the gateway of node <n>", "the access
+	// control could not be read". Several may apply.
+	Why       []string     `json:"why"`
+	MACs      []string     `json:"macs,omitempty"`      // the MACs an approval would record
+	Addresses []netip.Addr `json:"addresses,omitempty"` // the soft-denied addresses an approval would allow
 }
 
 func emptyState() State {
@@ -208,8 +220,10 @@ func (s State) clone() State {
 	s.Waiting = cloneWaiting(s.Waiting)
 	s.Unapproved = slices.Clone(s.Unapproved)
 	for i := range s.Unapproved {
-		s.Unapproved[i].Hostnames = slices.Clone(s.Unapproved[i].Hostnames)
+		u := &s.Unapproved[i]
+		u.Hostnames, u.Why, u.MACs, u.Addresses = slices.Clone(u.Hostnames), slices.Clone(u.Why), slices.Clone(u.MACs), slices.Clone(u.Addresses)
 	}
+	s.Segments = slices.Clone(s.Segments)
 	s.RogueConnectors = slices.Clone(s.RogueConnectors)
 	return s
 }
@@ -260,6 +274,10 @@ func (s State) normalized() State {
 	s.Problems = nonNil(s.Problems)
 	s.Waiting = nonNil(s.Waiting)
 	s.Unapproved = nonNil(s.Unapproved)
+	for i := range s.Unapproved {
+		s.Unapproved[i].Why = nonNil(s.Unapproved[i].Why)
+	}
+	s.Segments = nonNil(s.Segments)
 	return s
 }
 

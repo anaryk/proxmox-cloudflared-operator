@@ -116,6 +116,9 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 	statusLine(s, "Writer", present.WriterText(st.WriterVerdict))
 	statusLine(s, "Egress", present.EgressText(st.Egress))
 	statusLine(s, "Routes", routeCounts(st.Routes))
+	if n := unacknowledged(st.Segments); n > 0 {
+		statusLine(s, "Segments", fmt.Sprintf("%d not acknowledged (pco segment list)", n))
+	}
 	if n := len(st.Unapproved); n == 1 {
 		statusLine(s, "Approval", "1 guest waits (pco guest list)")
 	} else if n > 1 {
@@ -135,6 +138,18 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 		s.printf("\n%s\n", next)
 	}
 	return s.done()
+}
+
+// unacknowledged counts the segments routes at observed were proven on that
+// nobody acknowledged.
+func unacknowledged(segments []engine.SegmentView) int {
+	n := 0
+	for _, v := range segments {
+		if !v.Acknowledged {
+			n++
+		}
+	}
+	return n
 }
 
 // routeCounts says how many routes are in each state: "active 3, held 1".

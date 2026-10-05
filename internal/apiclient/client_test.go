@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,7 +239,7 @@ func TestRequests(t *testing.T) {
 		{
 			name: "approve a guest", reply: `{"owner":"qemu/101","identity":"uuid:101","mode":"tag"}`, status: 200,
 			call: func(c *Client) error {
-				a, err := c.ApproveGuest(t.Context(), "qemu/101", "")
+				a, err := c.ApproveGuest(t.Context(), "qemu/101", "", nil, nil)
 				require.Equal(t, engine.Approval{Owner: "qemu/101", Identity: "uuid:101", Mode: "tag"}, a)
 				return err
 			},
@@ -247,10 +248,48 @@ func TestRequests(t *testing.T) {
 		{
 			name: "approve a guest as it was shown", reply: `{"owner":"qemu/101","identity":"uuid:101","mode":"approve"}`, status: 200,
 			call: func(c *Client) error {
-				_, err := c.ApproveGuest(t.Context(), "qemu/101", "uuid:101")
+				_, err := c.ApproveGuest(t.Context(), "qemu/101", "uuid:101", nil, nil)
 				return err
 			},
 			want: seen{Method: "POST", Path: "/v1/guests/approve", ContentType: "application/json", Body: `{"owner":"qemu/101","identity":"uuid:101"}`},
+		},
+		{
+			name: "approve a guest with what it waits for", status: 200,
+			reply: `{"owner":"qemu/101","identity":"uuid:101","mode":"tag","macs":["bc:24:11:00:00:09"],"addresses":["10.0.0.1"]}`,
+			call: func(c *Client) error {
+				a, err := c.ApproveGuest(t.Context(), "qemu/101", "uuid:101", []string{"bc:24:11:00:00:09"}, []netip.Addr{netip.MustParseAddr("10.0.0.1")})
+				require.Equal(t, engine.Approval{
+					Owner: "qemu/101", Identity: "uuid:101", Mode: "tag",
+					MACs: []string{"bc:24:11:00:00:09"}, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+				}, a)
+				return err
+			},
+			want: seen{Method: "POST", Path: "/v1/guests/approve", ContentType: "application/json",
+				Body: `{"owner":"qemu/101","identity":"uuid:101","macs":["bc:24:11:00:00:09"],"addresses":["10.0.0.1"]}`},
+		},
+		{
+			name: "segments", reply: `[{"bridge":"vmbr1","vlan":20,"acknowledged":false,"routes":1}]`, status: 200,
+			call: func(c *Client) error {
+				segments, err := c.Segments(t.Context())
+				require.Equal(t, []engine.SegmentView{{Bridge: "vmbr1", VLAN: 20, Routes: 1}}, segments)
+				return err
+			},
+			want: seen{Method: "GET", Path: "/v1/segments"},
+		},
+		{
+			name: "acknowledge a segment", reply: `{}`, status: 200,
+			call: func(c *Client) error { return c.AcknowledgeSegment(t.Context(), "vmbr1", 20) },
+			want: seen{Method: "POST", Path: "/v1/segments/acknowledge", ContentType: "application/json", Body: `{"bridge":"vmbr1","vlan":20}`},
+		},
+		{
+			name: "acknowledge an untagged segment", reply: `{}`, status: 200,
+			call: func(c *Client) error { return c.AcknowledgeSegment(t.Context(), "vmbr1", 0) },
+			want: seen{Method: "POST", Path: "/v1/segments/acknowledge", ContentType: "application/json", Body: `{"bridge":"vmbr1"}`},
+		},
+		{
+			name: "revoke a segment", reply: `{}`, status: 200,
+			call: func(c *Client) error { return c.RevokeSegment(t.Context(), "vmbr1", 20) },
+			want: seen{Method: "POST", Path: "/v1/segments/revoke", ContentType: "application/json", Body: `{"bridge":"vmbr1","vlan":20}`},
 		},
 		{
 			name: "revoke a guest", reply: `{}`, status: 200,
@@ -341,9 +380,13 @@ func everyCall(t *testing.T, c *Client) []result {
 	add("resolve", c.ResolveClaim(ctx, "www.example.com", "qemu/102"))
 	_, err = c.Approvals(ctx)
 	add("approvals", err)
-	_, err = c.ApproveGuest(ctx, "qemu/101", "")
+	_, err = c.ApproveGuest(ctx, "qemu/101", "", nil, nil)
 	add("approve", err)
 	add("revoke", c.RevokeGuest(ctx, "qemu/101"))
+	_, err = c.Segments(ctx)
+	add("segments", err)
+	add("acknowledge", c.AcknowledgeSegment(ctx, "vmbr1", 0))
+	add("revoke segment", c.RevokeSegment(ctx, "vmbr1", 0))
 	_, err = c.Diagnose(ctx, "www.example.com")
 	add("diagnose", err)
 	_, err = c.Doctor(ctx)
@@ -434,6 +477,7 @@ func TestRawAnswersKeepTheBytesTheDaemonSent(t *testing.T) {
 		{"credentials", creds, "/v1/credentials", func(c *Client) (json.RawMessage, error) { return c.CredentialsRaw(t.Context()) }},
 		{"claims", `[{"state":"held","hostname":"a"}]`, "/v1/claims", func(c *Client) (json.RawMessage, error) { return c.ClaimsRaw(t.Context()) }},
 		{"approvals", `[{"matches":true,"owner":"qemu/1"}]`, "/v1/approvals", func(c *Client) (json.RawMessage, error) { return c.ApprovalsRaw(t.Context()) }},
+		{"segments", `[{"routes":1,"bridge":"vmbr1"}]`, "/v1/segments", func(c *Client) (json.RawMessage, error) { return c.SegmentsRaw(t.Context()) }},
 		{"doctor", `[{"level":"ok","check":"mode"}]`, "/v1/doctor", func(c *Client) (json.RawMessage, error) { return c.DoctorRaw(t.Context()) }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -636,10 +680,16 @@ func TestTimeouts(t *testing.T) {
 	require.InDelta(t, 10, rec.last().Seconds(), 1, "approvals")
 	_ = c.ResolveClaim(t.Context(), "a.example.com", "qemu/1")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "resolve")
-	_, _ = c.ApproveGuest(t.Context(), "qemu/1", "")
+	_, _ = c.ApproveGuest(t.Context(), "qemu/1", "", nil, nil)
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "approve")
 	_ = c.RevokeGuest(t.Context(), "qemu/1")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "revoke")
+	_, _ = c.Segments(t.Context())
+	require.InDelta(t, 10, rec.last().Seconds(), 1, "segments")
+	_ = c.AcknowledgeSegment(t.Context(), "vmbr1", 0)
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "acknowledge")
+	_ = c.RevokeSegment(t.Context(), "vmbr1", 0)
+	require.InDelta(t, 60, rec.last().Seconds(), 1, "revoke segment")
 	_, _ = c.Diagnose(t.Context(), "a.example.com")
 	require.InDelta(t, 60, rec.last().Seconds(), 1, "diagnose")
 	_, _ = c.Doctor(t.Context())

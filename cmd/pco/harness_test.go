@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,6 +68,7 @@ type fakeEngine struct {
 
 	claims                            []engine.ClaimView
 	approvals                         []engine.ApprovalView
+	segments                          []engine.SegmentView
 	steps                             []doctor.Step
 	findings                          []doctor.Finding
 	resolveErr, guestErr, diagnoseErr error
@@ -201,10 +203,16 @@ func (f *fakeEngine) Approvals() ([]engine.ApprovalView, error) {
 	return f.approvals, nil
 }
 
-func (f *fakeEngine) ApproveGuest(_ context.Context, owner, identity string) (engine.Approval, error) {
+func (f *fakeEngine) ApproveGuest(_ context.Context, owner, identity string, macs []string, addrs []netip.Addr) (engine.Approval, error) {
 	call := "approve " + owner
 	if identity != "" {
 		call += " identity=" + identity
+	}
+	if len(macs) > 0 {
+		call += fmt.Sprintf(" macs=%v", macs)
+	}
+	if len(addrs) > 0 {
+		call += fmt.Sprintf(" addresses=%v", addrs)
 	}
 	f.record(call)
 	if f.guestErr != nil {
@@ -220,6 +228,22 @@ func (f *fakeEngine) ApproveGuest(_ context.Context, owner, identity string) (en
 func (f *fakeEngine) RevokeGuest(_ context.Context, owner string) error {
 	f.record("revoke " + owner)
 	return f.guestErr
+}
+
+func (f *fakeEngine) Segments() ([]engine.SegmentView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.segments, nil
+}
+
+func (f *fakeEngine) AcknowledgeSegment(_ context.Context, bridge string, vlan int) error {
+	f.record(fmt.Sprintf("acknowledge %s:%d", bridge, vlan))
+	return nil
+}
+
+func (f *fakeEngine) RevokeSegment(_ context.Context, bridge string, vlan int) error {
+	f.record(fmt.Sprintf("revoke segment %s:%d", bridge, vlan))
+	return nil
 }
 
 func (f *fakeEngine) Diagnose(_ context.Context, hostname string) ([]doctor.Step, error) {

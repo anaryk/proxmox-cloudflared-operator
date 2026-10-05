@@ -119,6 +119,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.credentialCmd(),
 		a.claimsCmd(),
 		a.guestCmd(),
+		a.segmentCmd(),
 		a.diagnoseCmd(),
 		a.doctorCmd(),
 		a.setupCmd(),

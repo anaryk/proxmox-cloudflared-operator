@@ -12,13 +12,16 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-const issueWaitingApproval = "waiting for approval"
+const (
+	issueWaitingApproval = "waiting for approval"
+	whyAdmission         = "admission mode approve"
+)
 
 // collect turns the guests and the manual routes into candidate routes and
 // drops those of guests that wait for approval, which the state lists with
 // what they would publish.
 func (c *cycleRun) collect() bool {
-	manual, approvals, doing, err := c.e.routeSources(c.settings)
+	manual, approvals, doing, err := c.e.routeSources()
 	if err != nil {
 		c.hold(c.storeProblem(doing, err))
 		return false
@@ -35,7 +38,7 @@ func (c *cycleRun) collect() bool {
 	c.st.Issues = c.col.Issues
 	c.st.Unapproved = make([]UnapprovedGuest, 0, len(waiting))
 	for _, w := range waiting {
-		v := UnapprovedGuest{GuestView: *c.guestView(w.ref), Hostnames: w.hostnames}
+		v := UnapprovedGuest{GuestView: *c.guestView(w.ref), Hostnames: w.hostnames, Why: []string{whyAdmission}}
 		if g, ok := c.snap.Guest(w.ref); ok {
 			v.Identity = g.Identity
 		}
@@ -49,14 +52,12 @@ func (c *cycleRun) collect() bool {
 }
 
 // routeSources reads what the routes are collected from besides the guests:
-// the manual routes and, in admission mode approve, the approvals. On an
-// error, doing says what was being read.
-func (e *Engine) routeSources(s store.Settings) (manual []model.Route, approvals map[string]store.Approval, doing string, err error) {
+// the manual routes and the approvals, which admit guests in admission mode
+// approve and release what waits at observed in either mode. On an error,
+// doing says what was being read.
+func (e *Engine) routeSources() (manual []model.Route, approvals map[string]store.Approval, doing string, err error) {
 	if manual, err = e.d.Store.ManualRoutes(); err != nil {
 		return nil, nil, "reading the manual routes", err
-	}
-	if s.Admission != store.AdmissionApprove {
-		return manual, nil, "", nil
 	}
 	if approvals, err = e.d.Store.Approvals(); err != nil {
 		return nil, nil, "reading the approvals", err
@@ -69,9 +70,9 @@ func (c *cycleRun) collectFrom(snap inventory.Snapshot) (planner.Collected, []wa
 	return collectRoutes(snap, c.manual, c.settings, c.approvals)
 }
 
-// collectRoutes collects the routes of a snapshot and, when approvals is not
-// nil, takes out those of the guests that wait for approval, which it returns
-// too.
+// collectRoutes collects the routes of a snapshot and, in admission mode
+// approve, takes out those of the guests that wait for approval, which it
+// returns too.
 func collectRoutes(snap inventory.Snapshot, manual []model.Route, s store.Settings, approvals map[string]store.Approval) (planner.Collected, []waitingGuest) {
 	col := planner.Collect(snap.Guests, manual, planner.Settings{
 		GateTag:              s.GateTag,
@@ -79,7 +80,7 @@ func collectRoutes(snap inventory.Snapshot, manual []model.Route, s store.Settin
 		DenyHosts:            s.DenyHosts,
 		MaxHostnamesPerGuest: s.MaxHostnamesPerGuest,
 	})
-	if approvals == nil {
+	if s.Admission != store.AdmissionApprove {
 		return col, nil
 	}
 	return admit(col, snap, approvals)

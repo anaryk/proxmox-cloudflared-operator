@@ -736,6 +736,9 @@ var engineRoutes = []struct{ name, method, target, body string }{
 	{"approvals", http.MethodGet, "/v1/approvals", ""},
 	{"approve guest", http.MethodPost, "/v1/guests/approve", `{"owner":"qemu/101"}`},
 	{"revoke guest", http.MethodPost, "/v1/guests/revoke", `{"owner":"qemu/101"}`},
+	{"segments", http.MethodGet, "/v1/segments", ""},
+	{"acknowledge segment", http.MethodPost, "/v1/segments/acknowledge", `{"bridge":"vmbr1"}`},
+	{"revoke segment", http.MethodPost, "/v1/segments/revoke", `{"bridge":"vmbr1"}`},
 	{"diagnose", http.MethodGet, "/v1/diagnose?hostname=www.example.com", ""},
 }
 
@@ -941,7 +944,7 @@ func TestTheRequestContextReachesTheEngine(t *testing.T) {
 	type key struct{}
 	f := &fakeEngine{}
 	for _, rt := range engineRoutes {
-		if rt.name == "claims" || rt.name == "approvals" || rt.name == "credentials" {
+		if rt.name == "claims" || rt.name == "approvals" || rt.name == "credentials" || rt.name == "segments" {
 			continue // read from the store, with nothing to cancel
 		}
 		t.Run(rt.name, func(t *testing.T) {
@@ -997,6 +1000,11 @@ func TestTheAdminActionsOnClaimsAndGuests(t *testing.T) {
 		{"resolve a claim", "/v1/claims/resolve", `{"hostname":"www.example.com","owner":"qemu/102"}`, "resolve:www.example.com:qemu/102"},
 		{"approve a guest", "/v1/guests/approve", `{"owner":"qemu/101"}`, "approve:qemu/101:"},
 		{"approve a guest as it was shown", "/v1/guests/approve", `{"owner":"qemu/101","identity":"uuid:101"}`, "approve:qemu/101:uuid:101"},
+		{
+			"approve a guest with what it waits for", "/v1/guests/approve",
+			`{"owner":"qemu/101","identity":"uuid:101","macs":["bc:24:11:00:00:09"],"addresses":["10.0.0.1"]}`,
+			"approve:qemu/101:uuid:101 macs=[bc:24:11:00:00:09] addresses=[10.0.0.1]",
+		},
 		{"revoke a guest", "/v1/guests/revoke", `{"owner":"lxc/200"}`, "revoke:lxc/200"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1005,9 +1013,13 @@ func TestTheAdminActionsOnClaimsAndGuests(t *testing.T) {
 			rec := do(newServer(f), http.MethodPost, tt.target, tt.body)
 
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			if strings.HasPrefix(tt.name, "approve") {
+			switch {
+			case strings.HasSuffix(tt.name, "waits for"):
+				require.JSONEq(t, `{"owner":"qemu/101","identity":"uuid:1","mode":"approve","macs":["bc:24:11:00:00:09"],"addresses":["10.0.0.1"]}`,
+					rec.Body.String(), "the approval as it was made")
+			case strings.HasPrefix(tt.name, "approve"):
 				require.JSONEq(t, `{"owner":"qemu/101","identity":"uuid:1","mode":"approve"}`, rec.Body.String(), "the approval as it was made")
-			} else {
+			default:
 				require.JSONEq(t, `{}`, rec.Body.String())
 			}
 			require.Equal(t, []string{tt.call}, f.called())
@@ -1025,6 +1037,66 @@ func TestTheAdminActionsOnClaimsAndGuests(t *testing.T) {
 			f := &fakeEngine{}
 
 			rec := do(newServer(f), http.MethodPost, tt.target, `{"owner":"qemu/1","force":true}`)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, errorMessage(t, rec), "force")
+			require.Empty(t, f.called())
+		})
+	}
+}
+
+func TestTheSegmentsAreListed(t *testing.T) {
+	f := &fakeEngine{segments: []engine.SegmentView{
+		{Bridge: "vmbr1", Acknowledged: true, AcknowledgedAt: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Routes: 2},
+		{Bridge: "vmbr1", VLAN: 20, Routes: 1},
+	}}
+
+	rec := do(newServer(f), http.MethodGet, "/v1/segments", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `[
+		{"bridge":"vmbr1","acknowledged":true,"acknowledgedAt":"2026-10-01T12:00:00Z","routes":2},
+		{"bridge":"vmbr1","vlan":20,"acknowledged":false,"routes":1}
+	]`, rec.Body.String())
+
+	t.Run("none is an empty list", func(t *testing.T) {
+		rec := do(newServer(&fakeEngine{}), http.MethodGet, "/v1/segments", "")
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `[]`, rec.Body.String())
+	})
+}
+
+func TestTheAdminActionsOnSegments(t *testing.T) {
+	for _, tt := range []struct {
+		name, target, body, call string
+	}{
+		{"acknowledge a bridge", "/v1/segments/acknowledge", `{"bridge":"vmbr1"}`, "acknowledge:vmbr1:0"},
+		{"acknowledge a VLAN", "/v1/segments/acknowledge", `{"bridge":"vmbr1","vlan":20}`, "acknowledge:vmbr1:20"},
+		{"revoke a VLAN", "/v1/segments/revoke", `{"bridge":"vmbr1","vlan":20}`, "unacknowledge:vmbr1:20"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodPost, tt.target, tt.body)
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.JSONEq(t, `{}`, rec.Body.String())
+			require.Equal(t, []string{tt.call}, f.called())
+		})
+		t.Run(tt.name+" needs a body", func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodPost, tt.target, "")
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "the request body is empty", errorMessage(t, rec))
+			require.Empty(t, f.called())
+		})
+		t.Run(tt.name+" takes no other field", func(t *testing.T) {
+			f := &fakeEngine{}
+
+			rec := do(newServer(f), http.MethodPost, tt.target, `{"bridge":"vmbr1","force":true}`)
 
 			require.Equal(t, http.StatusBadRequest, rec.Code)
 			require.Contains(t, errorMessage(t, rec), "force")

@@ -177,7 +177,7 @@ func (e *Engine) claimantsNow(ctx context.Context, host string) (listing, error)
 
 // claimantsUnder is claimantsNow under the settings s.
 func (e *Engine) claimantsUnder(ctx context.Context, host string, s store.Settings) (listing, error) {
-	manual, approvals, doing, err := e.routeSources(s)
+	manual, approvals, doing, err := e.routeSources()
 	if err != nil {
 		return listing{}, notKnown(doing, err, host)
 	}

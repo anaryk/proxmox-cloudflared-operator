@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"syscall"
 	"time"
@@ -242,12 +243,16 @@ func (c *Client) ApprovalsRaw(ctx context.Context) (json.RawMessage, error) {
 
 // ApproveGuest approves a guest in the identity the daemon sees it in now.
 // identity, when it is not empty, is the identity the admin was shown, which
-// the guest has to have still. The answer is the approval as it was made.
-func (c *Client) ApproveGuest(ctx context.Context, owner, identity string) (engine.Approval, error) {
+// the guest has to have still, and macs are the MACs it was shown to wait
+// for, which it has to wait for still; addrs are the soft-denied addresses
+// the admin allows it. The answer is the approval as it was made.
+func (c *Client) ApproveGuest(ctx context.Context, owner, identity string, macs []string, addrs []netip.Addr) (engine.Approval, error) {
 	body := struct {
-		Owner    string `json:"owner"`
-		Identity string `json:"identity,omitempty"`
-	}{owner, identity}
+		Owner     string       `json:"owner"`
+		Identity  string       `json:"identity,omitempty"`
+		MACs      []string     `json:"macs,omitempty"`
+		Addresses []netip.Addr `json:"addresses,omitempty"`
+	}{owner, identity, macs, addrs}
 	var approved engine.Approval
 	err := c.call(ctx, c.long, http.MethodPost, "/v1/guests/approve", body, &approved)
 	return approved, err
@@ -260,6 +265,35 @@ func (c *Client) RevokeGuest(ctx context.Context, owner string) error {
 
 type ownerBody struct {
 	Owner string `json:"owner"`
+}
+
+// Segments returns the segments routes at observed were proven on, and those
+// acknowledged.
+func (c *Client) Segments(ctx context.Context) ([]engine.SegmentView, error) {
+	var segments []engine.SegmentView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/segments", nil, &segments)
+	return segments, err
+}
+
+// SegmentsRaw is Segments as the daemon sent it.
+func (c *Client) SegmentsRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, "/v1/segments")
+}
+
+// AcknowledgeSegment lets routes at observed be served on a bridge and VLAN,
+// 0 for untagged.
+func (c *Client) AcknowledgeSegment(ctx context.Context, bridge string, vlan int) error {
+	return c.call(ctx, c.long, http.MethodPost, "/v1/segments/acknowledge", segmentBody{bridge, vlan}, nil)
+}
+
+// RevokeSegment takes the acknowledgement of a segment back.
+func (c *Client) RevokeSegment(ctx context.Context, bridge string, vlan int) error {
+	return c.call(ctx, c.long, http.MethodPost, "/v1/segments/revoke", segmentBody{bridge, vlan}, nil)
+}
+
+type segmentBody struct {
+	Bridge string `json:"bridge"`
+	VLAN   int    `json:"vlan,omitempty"`
 }
 
 // Diagnose walks the chain of the route of hostname, in the daemon.

@@ -45,10 +45,16 @@ type cycleRun struct {
 	install   store.Install
 	snap      inventory.Snapshot
 	manual    []model.Route
-	approvals map[string]store.Approval // nil unless admission is approve
+	approvals map[string]store.Approval
 	stored    map[string]planner.Claim
 	bindings  map[string]resolve.Binding
+	segments  map[string]store.Segment // acknowledged, by id
+	access    accessView               // the access control as this cycle goes by it
 	deny      resolve.Denylist
+	// soft is the soft deny list as this cycle saves it, once it goes on;
+	// softSaved says whether the store has it so already.
+	soft      store.SoftDeny
+	softSaved bool
 	col       planner.Collected
 	claims    planner.ClaimResult
 	refused   []planner.RouteStatus     // the routes the hostname policy took out before the claims
@@ -306,7 +312,9 @@ func (c *cycleRun) refresh() bool {
 	return true
 }
 
-// load reads the claims and the bindings and builds the denylist.
+// load reads the claims, the bindings and the acknowledged segments and
+// builds the denylist, with the gateways of the SDN subnets denied and the
+// gateways and resolvers of the nodes and the appliance soft-denied.
 func (c *cycleRun) load() bool {
 	claims, err := c.e.d.Store.Claims()
 	if err != nil {
@@ -319,12 +327,22 @@ func (c *cycleRun) load() bool {
 		c.hold(c.problem("reading the bindings: %v", err))
 		return false
 	}
+	segments, err := c.e.d.Store.Segments()
+	if err != nil {
+		c.hold(c.storeProblem("reading the acknowledged segments", err))
+		return false
+	}
 	deny, err := resolve.NewDenylist(c.e.addrs.list, nil)
 	if err != nil {
 		c.hold(c.problem("building the denylist: %v", err))
 		return false
 	}
-	c.stored, c.bindings, c.deny = claims, bindings, deny
+	acc := c.e.accessNow(c.now, c.snap)
+	if !c.learnSoft(acc) {
+		return false
+	}
+	c.stored, c.bindings, c.segments, c.access = claims, bindings, segments, acc
+	c.deny = deny.WithDenied(sdnGateways(acc.subnets)).WithSoft(softMap(c.soft))
 	return true
 }
 

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -316,6 +317,10 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	filter := newEgressFilter(deps.Nft, cfg.Paths.Local, deps.ConnectorUID, deps.Resolvers)
 
 	start := wiredFrom(settings)
+	// The access control is read through the same client; pco's own user,
+	// whose tokens are not delegates, is the user of the token. The host has
+	// no gateway or resolver of its own to soft-deny beyond the node's.
+	ownUser, _, _ := strings.Cut(token.TokenID, "!")
 	eng, err := engine.New(engine.Deps{
 		Store:      st,
 		Inventory:  inv,
@@ -329,6 +334,8 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Log:        log,
 		LocalDir:   cfg.Paths.Local,
 		Problems:   cfg.Problems,
+		Access:     client,
+		OwnUser:    ownUser,
 	})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("building the engine: %w", err)

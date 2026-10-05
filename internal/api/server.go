@@ -10,6 +10,7 @@ import (
 	stdlog "log"
 	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -55,8 +56,11 @@ type Engine interface {
 	Claims() ([]engine.ClaimView, error)
 	ResolveClaim(ctx context.Context, hostname, owner string) error
 	Approvals() ([]engine.ApprovalView, error)
-	ApproveGuest(ctx context.Context, owner, identity string) (engine.Approval, error)
+	ApproveGuest(ctx context.Context, owner, identity string, macs []string, addrs []netip.Addr) (engine.Approval, error)
 	RevokeGuest(ctx context.Context, owner string) error
+	Segments() ([]engine.SegmentView, error)
+	AcknowledgeSegment(ctx context.Context, bridge string, vlan int) error
+	RevokeSegment(ctx context.Context, bridge string, vlan int) error
 	// Diagnose and Doctor run in the daemon, against the state of the
 	// engine and the host it runs on.
 	Diagnose(ctx context.Context, hostname string) ([]doctor.Step, error)

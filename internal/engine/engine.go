@@ -86,6 +86,15 @@ type Deps struct {
 	// Problems are problem lines that every cycle reports: what the daemon
 	// was started with that must not go unnoticed.
 	Problems []string
+
+	// Access reads the access control of Proxmox, by which a guest whose
+	// network others may configure is told apart. It is nil in tests that do
+	// not need it: every guest counts as delegated then.
+	Access  Access
+	OwnUser string // "pco@pve": its tokens are not delegates
+	// OwnSoft returns the appliance's own gateway and resolvers (appliance)
+	// or nil (host): they join the soft deny.
+	OwnSoft func() (gateways, resolvers []netip.Addr, err error)
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -206,6 +215,10 @@ type Engine struct {
 	// cleared by a look at the store that finds none.
 	unchecked atomic.Bool
 
+	// access is what was last read of the access control of Proxmox; it is
+	// refreshed outside the cycle lock.
+	access accessState
+
 	stateMu sync.RWMutex
 	state   State
 	// listed is what the last cycle saw of the guests; served is, by
@@ -314,8 +327,10 @@ func (e *Engine) acquireAdmin(ctx context.Context) error {
 
 // Cycle runs one full pass and stores the resulting state. A call waits for a
 // cycle or admin action that is running; when ctx ends first, it runs nothing
-// and returns the last state.
+// and returns the last state. The access control of Proxmox is read before,
+// when it is due, without the cycle lock.
 func (e *Engine) Cycle(ctx context.Context) State {
+	e.refreshAccess(ctx)
 	if err := e.acquire(ctx); err != nil {
 		return e.State()
 	}

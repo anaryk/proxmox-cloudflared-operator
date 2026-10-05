@@ -406,6 +406,8 @@ func TestJSONMeansNothingToACommandWithoutAnAnswerToPrint(t *testing.T) {
 		{[]string{"claims", "resolve", "www.example.com", "qemu/102", "--yes"}, "pco claims resolve"},
 		{[]string{"guest", "approve", "qemu/101"}, "pco guest approve"},
 		{[]string{"guest", "revoke", "qemu/101", "--yes"}, "pco guest revoke"},
+		{[]string{"segment", "acknowledge", "vmbr1", "--yes"}, "pco segment acknowledge"},
+		{[]string{"segment", "revoke", "vmbr1", "--yes"}, "pco segment revoke"},
 		{[]string{"daemon"}, "pco daemon"},
 		{[]string{"version"}, "pco version"},
 	} {
