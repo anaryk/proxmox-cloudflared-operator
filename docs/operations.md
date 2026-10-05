@@ -318,7 +318,7 @@ fields:
 | `profile` | `host`. |
 | `routes` | One object for each route: `hostname`, `owner`, `state`, `level`, `reason`, `service`, `zone`, `warnings`, `guest`, `candidates`. |
 | `issues` | Problems in the Notes and the settings: `guest`, `line`, `col`, `msg`. |
-| `tunnels`, `connectors` | The tunnels and the state of their connectors. `unchecked` on a tunnel says the last cycle did not look at Cloudflare. A connector has the `connectorId` its `/ready` gives, and `tokenRefused` or `metricsPortHeld` when its journal says Cloudflare refuses its token or another process holds its metrics port. |
+| `tunnels`, `connectors` | The tunnels and the state of their connectors. `unchecked` on a tunnel says the last cycle did not look at Cloudflare, and `leftAsIs` that the tunnel is left as it is for a reason of its own, which `held` gives, as a frozen account. A connector has the `connectorId` its `/ready` gives, and `tokenRefused` or `metricsPortHeld` when its journal says Cloudflare refuses its token or another process holds its metrics port. |
 | `rogueConnectors` | The connectors Cloudflare lists on a tunnel of the install that pco does not run: `tunnel`, `tunnelId`, `accountId`, `id`, `originIp`, `version`, `since`. |
 | `admission`, `gateTagged` | The admission mode, and how many guests, templates included, carry the gate tag. |
 | `credentials` | The credentials and the report of their last check. |

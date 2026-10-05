@@ -313,6 +313,18 @@ func TestRotateRefusesWhatItCannotDo(t *testing.T) {
 			e.clock.advance(10 * time.Second)
 			e.cycle()
 		}, "", ErrRefused, "tunnel pco-abc123 in account acc1 is left as it is: account frozen"},
+		{"a tunnel left as it is, after cycles that held", func(e *env) {
+			e.enforce()
+			e.cycle()
+			e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.com": "cred9"} })
+			e.clock.advance(10 * time.Second)
+			e.cycle()
+			e.inv.set(incomplete("node pve2 did not answer"))
+			for range 2 {
+				e.clock.advance(10 * time.Second)
+				e.cycle()
+			}
+		}, "", ErrRefused, "tunnel pco-abc123 in account acc1 is left as it is: account frozen"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)

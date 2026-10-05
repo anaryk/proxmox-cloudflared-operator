@@ -13,8 +13,9 @@ const heldUnchecked = "not checked in the last cycle"
 // whatever held it: none of what the state shows of the tunnels, the
 // connectors or the records was checked, so the tunnels the state carries,
 // and those the plan wants that it has not seen yet, are shown as unchecked
-// and none as verified. Their held reason, and the hold of the state, is the
-// reason of the step that held the cycle.
+// and none as verified. The hold of the state is the reason of the step that
+// held the cycle, and so is the held reason of each tunnel but one left as
+// it is for a reason of its own, which keeps that.
 func (c *cycleRun) markUnchecked() {
 	why := c.holdWhy
 	if why == "" {
@@ -25,7 +26,10 @@ func (c *cycleRun) markUnchecked() {
 	shown := make(map[string]bool, len(c.st.Tunnels))
 	for i := range c.st.Tunnels {
 		t := &c.st.Tunnels[i]
-		t.Held, t.Unchecked, t.Verified = held, true, false
+		if !t.LeftAsIs {
+			t.Held = held
+		}
+		t.Unchecked, t.Verified = true, false
 		shown[t.AccountID] = true
 	}
 	for _, p := range c.plan.Tunnels {

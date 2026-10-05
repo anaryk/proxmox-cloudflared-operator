@@ -82,6 +82,42 @@ func TestALongHoldDoesNotStopTheWatch(t *testing.T) {
 	require.Empty(t, st.RogueConnectors, "listed again every rolloutAskEvery while one is shown")
 }
 
+// Reproduced: a hold after the tunnel run showed the tunnels of that run
+// alone, and the tunnel of a frozen account left the state with its
+// connector.
+func TestAWriterHoldKeepsTheTunnelOfAFrozenAccount(t *testing.T) {
+	e := newEnv(t)
+	e.cf.AddAccount("acc2", "Other")
+	e.cf.AddZone("zone2", "example.org", "acc2")
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com www.example.org -> :8080")))
+	e.enforce()
+	e.cycle()
+	frozen := e.cf.TunnelsIn("acc2")
+	require.Len(t, frozen, 1)
+	e.settings(func(s *store.Settings) { s.ZonePins = map[string]string{"example.org": "cred9"} })
+	e.clock.advance(10 * time.Second)
+	st := e.cycle()
+	v, ok := tunnelView(st, frozen[0].ID)
+	require.True(t, ok)
+	require.True(t, connectorOf(st, frozen[0].ID))
+	held := v.Held
+
+	forgeSentinel(t, e, e.tunnels()[0].ID, 2)
+	e.clock.advance(zoneRefreshEvery)
+	n := len(e.cf.Calls())
+	st = e.cycle()
+
+	require.Equal(t, VerdictForeign, st.WriterVerdict)
+	v, ok = tunnelView(st, frozen[0].ID)
+	require.True(t, ok, "the tunnel of the frozen account is still shown")
+	require.True(t, v.Unchecked)
+	require.Equal(t, held, v.Held)
+	require.True(t, connectorOf(st, frozen[0].ID), "and its connector")
+	for _, call := range e.callsSince(n) {
+		require.NotContains(t, call, frozen[0].ID, "nothing is asked of Cloudflare about it")
+	}
+}
+
 // The order docs/security.md gives after a stolen token was used, end to
 // end: replace the token, rotate the secret, recover the writer, apply, and
 // one cycle writes the configuration again.

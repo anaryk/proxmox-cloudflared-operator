@@ -481,7 +481,8 @@ to do is up to you:
    connector loses its session and cannot connect again with the token it has. Every
    published hostname of the tunnel is unreachable for the few seconds the connector on the
    node takes to reconnect. Only root may run it. It works while the cycle holds, for a
-   tunnel the last cycle did not check, as long as its id and credential are known.
+   tunnel the last cycle did not check, as long as its id and credential are known; a tunnel
+   left as it is for a reason of its own, as in a frozen account, is refused, held or not.
 3. Replace the Cloudflare token that leaked: add a new one with `pco credential add` and
    remove the old one, then revoke it at Cloudflare.
 

@@ -150,6 +150,7 @@ func TestTunnelRotateNamesTheAccount(t *testing.T) {
 func TestTunnelRotateOfATunnelLeftAsItIs(t *testing.T) {
 	st := rotationState()
 	st.Tunnels[0].Held = "account frozen: zone example.com is no longer listed by credential cred1"
+	st.Tunnels[0].LeftAsIs = true
 	d := &rotationDaemon{}
 	r := newRunner(t, serveRotation(t, st, d))
 

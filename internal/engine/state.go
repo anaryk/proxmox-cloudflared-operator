@@ -49,13 +49,16 @@ type RouteView struct {
 // Unchecked, as an earlier cycle found it or only as the plan wants it.
 type TunnelView struct {
 	reconcile.TunnelState
-	// Held says in words why the tunnel is left as it is: for a tunnel the
-	// cycle looked up without bringing it in line, that its account is
-	// frozen, that it serves no zone pco sees, or that no credential sees
-	// its account; for an Unchecked one, why the cycle did not check it.
-	// Empty for a tunnel the cycle reconciled. Read Unchecked, not the
-	// words, to tell the two apart.
+	// Held says in words why the tunnel is left as it is: for a tunnel left
+	// as it is for a reason of its own, that its account is frozen, that it
+	// serves no zone pco sees, or that no credential sees its account, also
+	// once a cycle did not check it; for another Unchecked one, why the cycle
+	// did not check it. Empty for a tunnel the cycle reconciled. Read
+	// LeftAsIs and Unchecked, not the words, to tell them apart.
 	Held string `json:"held,omitempty"`
+	// LeftAsIs says that the last cycle that looked at the tunnel left it as
+	// it is for a reason of its own, which Held gives.
+	LeftAsIs bool `json:"leftAsIs,omitempty"`
 	// Unchecked says that the last cycle did not check Cloudflare, so that
 	// nothing the view shows of the tunnel, its connector or its records is
 	// known to be there now; such a tunnel is never Verified. State.Hold

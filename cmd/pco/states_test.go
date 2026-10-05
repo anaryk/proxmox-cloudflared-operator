@@ -136,6 +136,7 @@ func problemState() engine.State {
 	st.Tunnels = append(st.Tunnels, engine.TunnelView{
 		TunnelState: reconcile.TunnelState{AccountID: "acc4", CredentialID: "cred1", Name: "pco-abc123", ID: tunnelC, Exists: true},
 		Held:        frozen,
+		LeftAsIs:    true,
 	})
 	st.Connectors = append(st.Connectors, connector.Status{TunnelID: tunnelC, Active: true, Ready: true, Connections: 2, MetricsAddr: "127.0.0.1:20302"})
 	return st

@@ -34,7 +34,13 @@ func (c *cycleRun) reconcileTunnels() bool {
 	}
 	c.noteVerified(res.Tunnels)
 	c.tunnelVerdict = res.Verdict
-	c.tunnels = res.Tunnels
+	c.tunnels = nonNil(res.Tunnels)
+	c.unreported = nil
+	for _, v := range c.st.Tunnels {
+		if v.ID != "" && !slices.ContainsFunc(res.Tunnels, func(t reconcile.TunnelState) bool { return t.AccountID == v.AccountID }) {
+			c.unreported = append(c.unreported, v)
+		}
+	}
 	c.st.Tunnels = make([]TunnelView, 0, len(res.Tunnels))
 	for _, t := range res.Tunnels {
 		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t})

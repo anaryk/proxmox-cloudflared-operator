@@ -210,10 +210,11 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 
 // RotationTarget returns the tunnel a rotation is of among the tunnels of a
 // state: the one in account, or the only one when account is empty. It has to
-// exist with its id and credential known. A tunnel the last cycle left as it
-// is for a reason of its own, as a frozen account, is refused; one it did not
-// check, whatever held it, is not: a hold must not keep the secret of a tunnel
-// that someone else runs a connector of from being rotated.
+// exist with its id and credential known. A tunnel left as it is for a reason
+// of its own, as a frozen account, is refused, also when the last cycle did
+// not check it; one the last cycle did not check, whatever held it, is not: a
+// hold must not keep the secret of a tunnel that someone else runs a
+// connector of from being rotated.
 func RotationTarget(tunnels []TunnelView, account string) (TunnelView, error) {
 	var found []TunnelView
 	for _, t := range tunnels {
@@ -232,7 +233,7 @@ func RotationTarget(tunnels []TunnelView, account string) (TunnelView, error) {
 			accounts = append(accounts, t.AccountID)
 		}
 		return TunnelView{}, fmt.Errorf("%w: the install has tunnels in accounts %s; name one with --account", ErrInvalid, andList(accounts))
-	case found[0].Held != "" && !found[0].Unchecked:
+	case found[0].LeftAsIs:
 		return TunnelView{}, fmt.Errorf("%w: tunnel %s in account %s is left as it is: %s; nothing was changed",
 			ErrRefused, found[0].Name, found[0].AccountID, found[0].Held)
 	}

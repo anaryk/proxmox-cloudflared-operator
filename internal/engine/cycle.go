@@ -74,6 +74,10 @@ type cycleRun struct {
 	tunnelVerdict reconcile.WriterVerdict
 	// tunnels are the states the tunnel run returned, which DNS must be given.
 	tunnels []reconcile.TunnelState
+	// unreported are the tunnels with an id the last state showed in the
+	// accounts the tunnel run did not report on, as those of frozen accounts:
+	// the connector step looks them up again.
+	unreported []TunnelView
 	// connected says that the connector step ran: existing are the tunnels it
 	// found to exist and shown all whose connectors it shows. before are the
 	// statuses of the connectors as the last cycle read them.

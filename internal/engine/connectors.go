@@ -45,10 +45,10 @@ func (c *cycleRun) reconcileConnectors() {
 		if c.zones.frozen[t.AccountID] {
 			held = "account frozen: " + c.zones.frozenWhy[t.AccountID]
 		}
-		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: held})
+		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: held, LeftAsIs: true})
 	}
 	for _, t := range invisible {
-		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: "not visible through any credential"})
+		c.st.Tunnels = append(c.st.Tunnels, TunnelView{TunnelState: t, Held: "not visible through any credential", LeftAsIs: true})
 	}
 	shown := slices.Concat(existing, others, invisible)
 	c.connected, c.existing, c.shown = true, existing, shown
@@ -77,8 +77,12 @@ func (c *cycleRun) readStatuses(shown []reconcile.TunnelState) {
 // changes nothing, and a hold, as one a sentinel written with a stolen token
 // makes, must not hide a connector that pco does not run. A cycle that did
 // not get to the connectors watches the tunnels the tunnel run found, or else
-// those the last state showed: what it knows of them stays as it was.
+// those the last state showed: what it knows of them stays as it was, and so
+// do the tunnels of the accounts the run did not report on.
 func (c *cycleRun) watchTunnels() {
+	if !c.connected {
+		c.st.Tunnels = append(c.st.Tunnels, c.unreported...)
+	}
 	if c.ctx.Err() != nil {
 		return
 	}
@@ -104,7 +108,8 @@ func (c *cycleRun) watchTunnels() {
 // knows to exist: those the tunnel run found, or else those the last state
 // showed with an id, unless that state left them as they are for a reason of
 // their own, as a frozen account. shown are those whose connectors the state
-// showed.
+// shows, also those of the accounts the tunnel run did not report on, of
+// which nothing is asked.
 func (c *cycleRun) knownTunnels() (existing, shown []reconcile.TunnelState) {
 	if c.tunnels != nil {
 		for _, t := range c.tunnels {
@@ -112,14 +117,18 @@ func (c *cycleRun) knownTunnels() (existing, shown []reconcile.TunnelState) {
 				existing = append(existing, t)
 			}
 		}
-		return existing, existing
+		shown = slices.Clone(existing)
+		for _, v := range c.unreported {
+			shown = append(shown, v.TunnelState)
+		}
+		return existing, shown
 	}
 	for _, v := range c.st.Tunnels {
 		if v.ID == "" {
 			continue
 		}
 		shown = append(shown, v.TunnelState)
-		if v.Exists && !v.Unknown && (v.Held == "" || v.Unchecked) {
+		if v.Exists && !v.Unknown && !v.LeftAsIs {
 			existing = append(existing, v.TunnelState)
 		}
 	}
