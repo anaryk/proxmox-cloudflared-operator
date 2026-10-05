@@ -23,6 +23,7 @@ const (
 	reasonNoZone       = "no Cloudflare zone for this hostname in any credential"
 	reasonSeveralCreds = "zone %s is visible through several credentials; pin it to one"
 	reasonNotServed    = "zone %s is served through no credential"
+	reasonUnserved     = "zone %s is not served yet"
 	reasonReserved     = "reserved hostname"
 	reasonNoAddr       = "no verified address yet"
 	reasonNotAnswering = "target is not answering"
@@ -124,8 +125,8 @@ type BuildInput struct {
 	Targets   map[string]ResolvedTarget // by hostname
 	Zones     []Zone
 	Writer    Writer
-	// Refused are the routes RefuseUnnamed took out: the plan shows them,
-	// with no rule and no record.
+	// Refused are the routes RefuseUnnamed and RefuseUnzoned took out: the
+	// plan shows them, with no rule and no record.
 	Refused []RouteStatus
 }
 

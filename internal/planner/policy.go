@@ -2,6 +2,7 @@ package planner
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -17,31 +18,113 @@ import (
 // and no record. A pattern that does not normalise names nothing. Manual
 // routes are root's own and pass. The routes keep their order.
 func RefuseUnnamed(routes []model.Route, zones []Zone, allow []string) (kept []model.Route, refused []RouteStatus) {
-	names := make([]string, 0, len(zones))
-	for _, z := range zones {
-		names = append(names, z.Name)
-	}
-	var patterns []string
-	for _, p := range allow {
-		if pattern, err := hostname.NormalizePattern(p); err == nil {
-			patterns = append(patterns, pattern)
-		}
-	}
+	p := newClaimRules(zones, allow, nil)
 	kept = make([]model.Route, 0, len(routes))
 	for _, rt := range routes {
-		zone, inZone := hostname.MatchZone(rt.Hostname, names)
-		apex := inZone && rt.Hostname == zone
-		if rt.Source != model.SourceAnnotation || !apex && !hostname.IsWildcard(rt.Hostname) || namedBy(patterns, rt.Hostname) {
-			kept = append(kept, rt)
+		if st, ok := p.unnamed(rt.Hostname, rt.Owner()); ok && rt.Source == model.SourceAnnotation {
+			refused = append(refused, st)
 			continue
 		}
-		reason := fmt.Sprintf("a wildcard is published only when an allowHosts pattern names it: add %q to allowHosts", rt.Hostname)
-		if apex {
-			reason = fmt.Sprintf("the apex of zone %s is published only when allowHosts names it: add %q to allowHosts", zone, rt.Hostname)
-		}
-		refused = append(refused, RouteStatus{Hostname: rt.Hostname, Owner: rt.Owner(), State: StateRejected, Reason: reason, Zone: zone})
+		kept = append(kept, rt)
 	}
 	return kept, refused
+}
+
+// RefuseUnzoned takes out of routes the guest routes for a name in no zone
+// of served, the names of the zones the install ever served, and returns them
+// as statuses in the state no-zone, with the reason Build would give. Such a
+// route takes no claim: naming a hostname before its zone is served wins
+// nothing, and once it is, whoever names it then gets it by the rule for a
+// hostname nobody holds. A route in a zone that was served keeps its claim as
+// it is, also while the zone is in doubt, gone from its listing or let go.
+// Manual routes pass. The routes keep their order.
+func RefuseUnzoned(routes []model.Route, zones []Zone, served []string) (kept []model.Route, refused []RouteStatus) {
+	p := newClaimRules(zones, nil, served)
+	kept = make([]model.Route, 0, len(routes))
+	for _, rt := range routes {
+		if st, ok := p.unzoned(rt.Hostname, rt.Owner()); ok && rt.Source == model.SourceAnnotation {
+			refused = append(refused, st)
+			continue
+		}
+		kept = append(kept, rt)
+	}
+	return kept, refused
+}
+
+// RefuseHeld takes out of held the names that RefuseUnnamed or RefuseUnzoned
+// would take out as routes, and returns them as statuses: a broken entry
+// keeps no claim on a name that a working one could not take.
+func RefuseHeld(held []HeldName, zones []Zone, allow, served []string) (kept []HeldName, refused []RouteStatus) {
+	p := newClaimRules(zones, allow, served)
+	kept = make([]HeldName, 0, len(held))
+	for _, h := range held {
+		st, ok := p.unnamed(h.Hostname, h.Owner)
+		if !ok {
+			st, ok = p.unzoned(h.Hostname, h.Owner)
+		}
+		if ok {
+			refused = append(refused, st)
+			continue
+		}
+		kept = append(kept, h)
+	}
+	return kept, refused
+}
+
+// claimRules say what a guest may take a claim on: the zones of the plan, the
+// allowHosts patterns and the zones the install served.
+type claimRules struct {
+	zones    zoneIndex
+	names    []string // of the zones of the plan
+	known    []string // of those and the zones served
+	served   map[string]bool
+	patterns []string
+}
+
+func newClaimRules(zones []Zone, allow, served []string) claimRules {
+	p := claimRules{zones: newZoneIndex(zones), served: make(map[string]bool, len(served))}
+	p.names = p.zones.names
+	p.known = append(slices.Clone(p.names), served...)
+	for _, name := range served {
+		p.served[name] = true
+	}
+	for _, pattern := range allow {
+		if pattern, err := hostname.NormalizePattern(pattern); err == nil {
+			p.patterns = append(p.patterns, pattern)
+		}
+	}
+	return p
+}
+
+// unnamed returns the status of host when it is the apex of a zone of the
+// plan, or a wildcard, that no pattern names.
+func (p claimRules) unnamed(host, owner string) (RouteStatus, bool) {
+	zone, inZone := hostname.MatchZone(host, p.names)
+	apex := inZone && host == zone
+	if !apex && !hostname.IsWildcard(host) || namedBy(p.patterns, host) {
+		return RouteStatus{}, false
+	}
+	reason := fmt.Sprintf("a wildcard is published only when an allowHosts pattern names it: add %q to allowHosts", host)
+	if apex {
+		reason = fmt.Sprintf("the apex of zone %s is published only when allowHosts names it: add %q to allowHosts", zone, host)
+	}
+	return RouteStatus{Hostname: host, Owner: owner, State: StateRejected, Reason: reason, Zone: zone}, true
+}
+
+// unzoned returns the status of host when its zone, the closest of the plan
+// and of those served, is not one the install served.
+func (p claimRules) unzoned(host, owner string) (RouteStatus, bool) {
+	if zone, _ := hostname.MatchZone(host, p.known); p.served[zone] {
+		return RouteStatus{}, false
+	}
+	zone, reason := p.zones.find(host)
+	switch {
+	case reserved(host):
+		reason = reasonReserved
+	case reason == "":
+		reason = fmt.Sprintf(reasonUnserved, zone.Name)
+	}
+	return RouteStatus{Hostname: host, Owner: owner, State: StateNoZone, Reason: reason}, true
 }
 
 func namedBy(patterns []string, host string) bool {

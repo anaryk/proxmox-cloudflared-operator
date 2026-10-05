@@ -138,6 +138,65 @@ func TestAManualRouteMayBeTheApexOrAWildcard(t *testing.T) {
 	require.Equal(t, map[string]string{"example.com": "active: ", "*.example.com": "active: "}, statesOf(plan))
 }
 
+// A guest route in a zone the install never served takes no claim: naming a
+// hostname before its zone is served wins nothing. A route in a zone that was
+// served keeps its claim as it is, also while the zone is left out or in
+// doubt.
+func TestARouteInAZoneNeverServedTakesNoClaim(t *testing.T) {
+	zones := []Zone{
+		{ID: "z1", Name: "example.com", AccountID: "acc1", CredentialID: "cred1"},
+		{ID: "z2", Name: "app.example.com"},
+		{ID: "z3", Name: "example.net"},
+		{ID: "z4", Name: "example.info", AccountID: "acc2", CredentialID: "cred1"},
+		{ID: "z4", Name: "example.info", AccountID: "acc2", CredentialID: "cred2"},
+		{ID: "z5", Name: "example.dev", AccountID: "acc2", CredentialID: "cred1"},
+		{ID: "z6", Name: "example.eu", AccountID: "acc2", CredentialID: "cred1"},
+		{ID: "z6", Name: "example.eu", AccountID: "acc2", CredentialID: "cred2"},
+	}
+	served := []string{"example.com", "example.net", "example.eu", "example.org.uk"}
+	guestRoute := func(host string) model.Route {
+		return model.Route{Hostname: host, Source: model.SourceAnnotation, Guest: &model.GuestRef{Kind: model.KindQEMU, VMID: 101}}
+	}
+	manual := model.Route{Hostname: "www.example.org", Source: model.SourceManual, ManualID: "m1"}
+	in := []model.Route{
+		guestRoute("www.example.com"), guestRoute("www.example.org"), guestRoute("www.app.example.com"),
+		guestRoute("www.example.net"), guestRoute("www.example.info"), guestRoute("www.example.dev"),
+		guestRoute("www.example.eu"), guestRoute("www.example.org.uk"), guestRoute("sentinel.invalid"), manual,
+	}
+
+	kept, refused := RefuseUnzoned(in, zones, served)
+
+	require.Equal(t, []model.Route{in[0], in[3], in[6], in[7], manual}, kept)
+	require.Equal(t, []RouteStatus{
+		{Hostname: "www.example.org", Owner: "qemu/101", State: StateNoZone, Reason: reasonNoZone},
+		{Hostname: "www.app.example.com", Owner: "qemu/101", State: StateNoZone, Reason: "zone app.example.com is served through no credential"},
+		{Hostname: "www.example.info", Owner: "qemu/101", State: StateNoZone, Reason: "zone example.info is visible through several credentials; pin it to one"},
+		{Hostname: "www.example.dev", Owner: "qemu/101", State: StateNoZone, Reason: "zone example.dev is not served yet"},
+		{Hostname: "sentinel.invalid", Owner: "qemu/101", State: StateNoZone, Reason: reasonReserved},
+	}, refused)
+}
+
+// A broken entry keeps no claim on a name that a working one could not take.
+func TestAHeldNameThatCouldTakeNoClaimKeepsNone(t *testing.T) {
+	held := func(hosts ...string) []HeldName {
+		out := []HeldName{}
+		for _, h := range hosts {
+			out = append(out, HeldName{Hostname: h, Owner: "qemu/101"})
+		}
+		return out
+	}
+
+	kept, refused := RefuseHeld(held("example.com", "*.example.com", "*.shop.example.com", "www.example.com", "www.example.org"),
+		policyZones, []string{"*.shop.example.com"}, []string{"example.com"})
+
+	require.Equal(t, held("*.shop.example.com", "www.example.com"), kept)
+	require.Equal(t, []RouteStatus{
+		{Hostname: "example.com", Owner: "qemu/101", State: StateRejected, Reason: apexReason, Zone: "example.com"},
+		{Hostname: "*.example.com", Owner: "qemu/101", State: StateRejected, Reason: wildcardReason, Zone: "example.com"},
+		{Hostname: "www.example.org", Owner: "qemu/101", State: StateNoZone, Reason: reasonNoZone},
+	}, refused)
+}
+
 func hostnames(n int) string {
 	names := make([]string, n)
 	for i := range names {

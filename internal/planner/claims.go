@@ -41,8 +41,12 @@ type ClaimInput struct {
 	Held     []HeldName        // hostnames owners still name without a route; see Collected.Held
 	Claims   map[string]Claim  // by hostname
 	Identity map[string]string // owner -> identity now; "" when unknown, as for manual routes
-	Now      time.Time
-	Grace    time.Duration // how long a holder may be absent before it loses the hostname
+	// Refused are the names owners give that may take no claim, as
+	// RefuseUnnamed, RefuseUnzoned and RefuseHeld took them out: a claim of
+	// such an owner on the hostname ends at once, whatever Held says.
+	Refused []RouteStatus
+	Now     time.Time
+	Grace   time.Duration // how long a holder may be absent before it loses the hostname
 }
 
 // ClaimEventKind says what happened to a claim.
@@ -84,11 +88,14 @@ type ClaimResult struct {
 // entry is broken, or the policy cannot be read. It keeps the claim for as
 // long as that lasts, and nobody serves the hostname meanwhile. A waiter that
 // still names it keeps its place in line the same way. Held only ever keeps
-// what exists: it never creates a claim and never lets a waiter win.
+// what exists: it never creates a claim and never lets a waiter win. A holder
+// whose name for the hostname is in Refused loses the claim at once, as if its
+// grace were over, whatever Held says.
 func ResolveClaims(in ClaimInput) ClaimResult {
 	r := resolver{
-		in:   in,
-		held: make(map[HeldName]bool, len(in.Held)),
+		in:      in,
+		held:    make(map[HeldName]bool, len(in.Held)),
+		refused: make(map[HeldName]string, len(in.Refused)),
 		res: ClaimResult{
 			Winners:   []model.Route{},
 			Conflicts: []model.Route{},
@@ -98,6 +105,9 @@ func ResolveClaims(in ClaimInput) ClaimResult {
 	}
 	for _, h := range in.Held {
 		r.held[h] = true
+	}
+	for _, st := range in.Refused {
+		r.refused[HeldName{Hostname: st.Hostname, Owner: st.Owner}] = st.Reason
 	}
 	groups := groupClaimants(in.Routes)
 	for _, host := range hostnamesOf(groups, in.Claims) {
@@ -150,9 +160,10 @@ func hostnamesOf(groups map[string][]claimant, claims map[string]Claim) []string
 }
 
 type resolver struct {
-	in   ClaimInput
-	held map[HeldName]bool
-	res  ClaimResult
+	in      ClaimInput
+	held    map[HeldName]bool
+	refused map[HeldName]string // why, of each name that may take no claim
+	res     ClaimResult
 }
 
 // resolve settles one hostname. Claimants are in CompareOwners order.
@@ -162,9 +173,12 @@ func (r *resolver) resolve(host string, cs []claimant) {
 		r.firstClaim(host, cs)
 		return
 	}
+	why, refused := r.refused[HeldName{Hostname: host, Owner: claim.Owner}]
 	switch i := slices.IndexFunc(cs, func(c claimant) bool { return c.owner == claim.Owner }); {
 	case i >= 0:
 		r.keep(host, claim, cs, i)
+	case refused:
+		r.end(host, claim, cs, "may take no claim on it: "+why)
 	case r.held[HeldName{Hostname: host, Owner: claim.Owner}]:
 		r.hold(host, claim, cs)
 	default:
@@ -243,11 +257,27 @@ func (r *resolver) holderMissing(host string, claim Claim, cs []claimant) {
 		r.event(ClaimReleased, host, claim.Owner, fmt.Sprintf("holder missing for %s and nobody else claims it", absent))
 		return
 	}
+	r.handOn(host, claim, cs, fmt.Sprintf("previous holder %s was missing for %s", claim.Owner, absent))
+}
+
+// end ends at once a claim whose holder names the hostname where it may take
+// no claim, as if its grace were over: why says so.
+func (r *resolver) end(host string, claim Claim, cs []claimant, why string) {
+	if len(cs) == 0 {
+		r.event(ClaimReleased, host, claim.Owner, "it "+why)
+		return
+	}
+	r.handOn(host, claim, cs, "previous holder "+claim.Owner+" "+why)
+}
+
+// handOn gives the hostname of claim, which its holder lost, to the claimant
+// that has waited longest.
+func (r *resolver) handOn(host string, claim Claim, cs []claimant, detail string) {
 	i := r.longestWaiting(claim.Waiting, cs)
 	winner := cs[i]
 	next := Claim{Hostname: host, Owner: winner.owner, Identity: r.in.Identity[winner.owner], Since: r.in.Now}
 	r.award(next, winner, without(cs, i), claim.Waiting)
-	r.event(ClaimTransferred, host, winner.owner, fmt.Sprintf("previous holder %s was missing for %s", claim.Owner, absent))
+	r.event(ClaimTransferred, host, winner.owner, detail)
 }
 
 // longestWaiting returns the index of the claimant that has been waiting the

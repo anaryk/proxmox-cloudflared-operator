@@ -747,6 +747,56 @@ func TestClaimsZeroGraceActsImmediately(t *testing.T) {
 	}, eventKeys(t, res.Events))
 }
 
+// A holder whose route, or broken entry, names the hostname where it may take
+// no claim loses the claim at once, whatever Held says: the hostname goes on
+// as when the grace of a missing holder ends.
+func TestClaimsARefusedHolderLosesTheClaimAtOnce(t *testing.T) {
+	const other = "b.example.com"
+	refused := []RouteStatus{
+		{Hostname: primary, Owner: "qemu/3", State: StateRejected, Reason: "not allowed"},
+		{Hostname: other, Owner: "qemu/4", State: StateNoZone, Reason: "no zone"},
+		{Hostname: other, Owner: "qemu/2", State: StateNoZone, Reason: "no zone"},
+	}
+	in := ClaimInput{
+		Routes: routes(t, primary, "qemu/2", "qemu/9"),
+		Held:   []HeldName{{Hostname: primary, Owner: "qemu/3"}, {Hostname: other, Owner: "qemu/4"}},
+		Claims: map[string]Claim{
+			primary: holding("qemu/3", "id3", at(-time.Hour), Waiter{"qemu/9", at(-5 * time.Minute)}),
+			other:   {Hostname: other, Owner: "qemu/4", Since: at(-time.Hour)},
+		},
+		Identity: map[string]string{"qemu/2": "id2", "qemu/9": "id9"},
+		Refused:  refused,
+		Now:      t0,
+		Grace:    time.Hour,
+	}
+
+	res := ResolveClaims(in)
+
+	require.Equal(t, []string{"qemu/9"}, ownersOf(res.Winners), "the longest waiter, as after the grace")
+	require.Equal(t, []string{"qemu/2"}, ownersOf(res.Conflicts))
+	require.Equal(t, map[string]Claim{primary: {Hostname: primary, Owner: "qemu/9", Identity: "id9", Since: t0, Waiting: []Waiter{
+		{"qemu/2", t0},
+	}}}, res.Claims)
+	require.Equal(t, []string{
+		"conflict a.example.com qemu/2",
+		"transferred a.example.com qemu/9",
+		"released b.example.com qemu/4",
+	}, eventKeys(t, res.Events))
+	require.Equal(t, "previous holder qemu/3 may take no claim on it: not allowed", res.Events[1].Detail)
+	require.Equal(t, "it may take no claim on it: no zone", res.Events[2].Detail)
+
+	t.Run("a refusal of another owner leaves the claim", func(t *testing.T) {
+		in := in
+		in.Refused = refused[2:]
+
+		got := ResolveClaims(in)
+
+		require.Empty(t, got.Winners)
+		require.Equal(t, in.Claims[primary].Owner, got.Claims[primary].Owner)
+		require.Equal(t, in.Claims[other], got.Claims[other])
+	})
+}
+
 func TestClaimsOneOwnerClaimsAHostnameOnce(t *testing.T) {
 	two := routes(t, primary, "qemu/3", "qemu/3")
 	two[1].Target.Port = 8080
