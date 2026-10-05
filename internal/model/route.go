@@ -34,6 +34,10 @@ type RouteOptions struct {
 	AllowNode bool `json:"allowNode,omitempty"`
 }
 
+// DefaultMaxHostnamesPerGuest is how many hostnames the Notes of one guest
+// may name when the settings say nothing else.
+const DefaultMaxHostnamesPerGuest = 32
+
 // SourceKind says where a route definition came from.
 type SourceKind string
 

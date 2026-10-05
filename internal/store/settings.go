@@ -11,7 +11,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
@@ -102,7 +102,7 @@ func DefaultSettings() Settings {
 		Admission:            AdmissionTag,
 		ObserveOnly:          true,
 		IdentityMinimum:      string(resolve.LevelPort),
-		MaxHostnamesPerGuest: planner.DefaultMaxHostnamesPerGuest,
+		MaxHostnamesPerGuest: model.DefaultMaxHostnamesPerGuest,
 		ReverifyInterval:     Duration(time.Minute),
 		CloudflareBudget:     cfapi.DefaultBudget,
 	}

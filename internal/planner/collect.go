@@ -25,13 +25,9 @@ type Settings struct {
 	AllowHosts []string // empty: everything allowed
 	DenyHosts  []string
 	// MaxHostnamesPerGuest is how many hostnames the Notes of one guest may
-	// name; DefaultMaxHostnamesPerGuest when zero.
+	// name; model.DefaultMaxHostnamesPerGuest when zero.
 	MaxHostnamesPerGuest int
 }
-
-// DefaultMaxHostnamesPerGuest is the cap of hostnames of a guest when the
-// settings name none.
-const DefaultMaxHostnamesPerGuest = 32
 
 // Issue is a problem with a guest's annotation or with the settings. It does
 // not stop collection; the affected route is left out and the issue is
@@ -86,7 +82,7 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 	}
 	limit := s.MaxHostnamesPerGuest
 	if limit <= 0 {
-		limit = DefaultMaxHostnamesPerGuest
+		limit = model.DefaultMaxHostnamesPerGuest
 	}
 	for _, g := range guests {
 		if g.Template || !g.HasTag(gate) {

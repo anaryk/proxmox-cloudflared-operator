@@ -168,7 +168,7 @@ func TestAGuestOverTheCapPublishesNoneOfItsRoutes(t *testing.T) {
 			}
 			limit := tt.limit
 			if limit == 0 {
-				limit = DefaultMaxHostnamesPerGuest
+				limit = model.DefaultMaxHostnamesPerGuest
 			}
 			require.Equal(t, []Issue{{Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Msg: fmt.Sprintf(
 				"the Notes name %d hostnames, more than maxHostnamesPerGuest allows (%d); none of them is published until they name at most %d",
