@@ -139,7 +139,9 @@ The appliance carries cloudflared from `packaging/cloudflared-versions.json`,
 the versions that were vetted, not from Cloudflare's apt repository, which
 offers only the newest one. Each entry names the packages of both
 architectures and their sha256; `deny` lists versions that must not be used,
-with the reason; `updated` is the day the list last changed. The newest version
+each with a reason that names something a reader can check: an issue
+(`cloudflare/cloudflared#1737`), an advisory (a CVE or GHSA id) or an https
+URL. `updated` is the day the list last changed. The newest version
 it allows is the one the templates carry. The file ships in every release,
 listed in the signed `checksums.txt`; `packaging/cloudflared-versions_test.sh`,
 part of `make test-scripts`, checks its rules.
@@ -151,7 +153,7 @@ writes their entry, checks the sha256 values against the digests GitHub lists,
 and opens the pull request `build: vet cloudflared <version>` from the branch
 `cloudflared/<version>`. An open pull request for the same version is left as
 it is. Merging it is the vetting: the pull request says what to read and test
-first. To refuse a version, move its entry to `deny` with the reason. CI does
+first. To refuse a version, move its entry to `deny` with such a reason. CI does
 not run on a pull request the workflow's token opened; close and reopen it to
 run CI.
 

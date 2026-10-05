@@ -16,14 +16,6 @@
   ],
   "deny": [
     {
-      "version": "2026.8.0",
-      "reason": "VULN-141859"
-    },
-    {
-      "version": "2026.8.1",
-      "reason": "VULN-141859"
-    },
-    {
       "version": "2026.9.0",
       "reason": "cloudflare/cloudflared#1737"
     }

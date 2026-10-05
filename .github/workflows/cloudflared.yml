@@ -92,7 +92,7 @@ jobs:
             echo "- compare the sha256 values with those Cloudflare lists in the release text;"
             echo "- run a connector with it on a test node."
             echo
-            echo "To refuse it, move its entry from \`versions\` to \`deny\`, with the reason, and merge that instead."
+            echo "To refuse it, move its entry from \`versions\` to \`deny\`, with a reason that names an issue, an advisory or a page to check, and merge that instead."
             echo "CI does not run on a pull request this workflow opened: close and reopen it to run CI."
           } >"$RUNNER_TEMP/body.md"
           gh pr create --head "$branch" --title "build: vet cloudflared $VERSION" --body-file "$RUNNER_TEMP/body.md"

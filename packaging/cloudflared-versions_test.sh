@@ -26,6 +26,8 @@ trap 'rm -rf "$ROOT"' EXIT
 problems() {
 	jq -r '
 		def ver: type == "string" and test("^[0-9]{4}\\.[0-9]{1,2}\\.[0-9]+$");
+		# Something a reader can look up: an issue, an advisory or a page.
+		def checkable: test("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|CVE-[0-9]{4}-[0-9]{4,}|GHSA(-[0-9a-z]{4}){3}|https://[^[:space:]]+");
 		def key: split(".") | map(tonumber);
 		def month: split(".") | .[0] + "-" + (if (.[1] | length) == 1 then "0" + .[1] else .[1] end) + "-01";
 		def date: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -49,6 +51,8 @@ problems() {
 		($versions | map(.version) | group_by(.)[] | select(length > 1) | "\(.[0]) is allowed \(length) times"),
 		($deny[] | if (.version | ver) | not then "the denied version \(.version | tojson) is not a version of cloudflared"
 			elif (.reason | type) != "string" or .reason == "" then "the denial of \(.version) gives no reason"
+			elif (.reason | checkable) | not
+			then "the denial of \(.version) names nothing to check: \(.reason | tojson) is no issue (owner/repo#N), advisory (CVE, GHSA) or https URL"
 			else empty end),
 		($deny | map(.version) | group_by(.)[] | select(length > 1) | "\(.[0]) is denied \(length) times"),
 		($versions[] | .version as $v | select(any($deny[]; .version == $v)) | "\($v) is allowed and denied"),
@@ -90,7 +94,7 @@ GOOD='{
       "arm64": {"url": "https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-linux-arm64.deb", "sha256": "'$SHA'"}
     }
   ],
-  "deny": [{"version": "2026.8.0", "reason": "VULN-141859"}]
+  "deny": [{"version": "2026.9.0", "reason": "cloudflare/cloudflared#1737"}]
 }'
 
 # variant <jq filter>: the good manifest changed by the filter, as a file.
@@ -118,8 +122,15 @@ expect fail 'the package of another release' \
 expect fail 'no sha256' "$(variant 'del(.versions[0].amd64.sha256)')" '2026.9.3 has no sha256 for amd64'
 expect fail 'a sha256 that is not one' "$(variant '.versions[0].arm64.sha256 = "ABC"')" 'no sha256 for arm64'
 expect fail 'a version allowed twice' "$(variant '.versions += [.versions[0]]')" '2026.9.3 is allowed 2 times'
-expect fail 'a version denied twice' "$(variant '.deny += [.deny[0]]')" '2026.8.0 is denied 2 times'
-expect fail 'a denial without a reason' "$(variant '.deny[0].reason = ""')" 'the denial of 2026.8.0 gives no reason'
+expect fail 'a version denied twice' "$(variant '.deny += [.deny[0]]')" '2026.9.0 is denied 2 times'
+expect fail 'a denial without a reason' "$(variant '.deny[0].reason = ""')" 'the denial of 2026.9.0 gives no reason'
+expect fail 'a denial that names nothing to check' "$(variant '.deny[0].reason = "VULN-141859"')" \
+	'the denial of 2026.9.0 names nothing to check: "VULN-141859"'
+expect fail 'a denial that names a repository without an issue' "$(variant '.deny[0].reason = "cloudflare/cloudflared"')" \
+	'the denial of 2026.9.0 names nothing to check'
+expect pass 'a denial that names an advisory' "$(variant '.deny[0].reason = "crashes on start, CVE-2026-12345"')"
+expect pass 'a denial that names a GitHub advisory' "$(variant '.deny[0].reason = "GHSA-7xq2-9m4c-vh3p"')"
+expect pass 'a denial that names a page' "$(variant '.deny[0].reason = "https://example.com/notes"')"
 expect fail 'a denied version that is not one' "$(variant '.deny[0].version = "2026.8"')" 'the denied version "2026.8"'
 expect fail 'a version allowed and denied' "$(variant '.deny += [{"version": "2026.9.3", "reason": "x"}]')" '2026.9.3 is allowed and denied'
 expect fail 'updated before the newest version' "$(variant '.updated = "2026-08-31"')" 'before the month of the newest version, 2026.9.3'
@@ -230,7 +241,7 @@ assert "with the sha256 of the amd64 package" \
 assert "and of the arm64 package" \
 	[ "$(value "$ROOT/m.json" '.versions[0].arm64.sha256')" == "$(sha256 "$SERVE/2026.10.0/cloudflared-linux-arm64.deb")" ]
 assert "keeps the version that was there" [ "$(value "$ROOT/m.json" '.versions[1].version')" == 2026.9.3 ]
-assert "and the denied ones" [ "$(value "$ROOT/m.json" '.deny | map(.version) | join(" ")')" == 2026.8.0 ]
+assert "and the denied ones" [ "$(value "$ROOT/m.json" '.deny | map(.version) | join(" ")')" == 2026.9.0 ]
 assert "sets updated to the day" [ "$(value "$ROOT/m.json" '.updated')" == "$today" ]
 assert "prints the entry" contains "$OUT" '"version": "2026.10.0"'
 assert "and the result keeps every rule" [ -z "$(problems "$ROOT/m.json")" ]
@@ -244,9 +255,9 @@ assert "without a download" no_download
 assert "and changes nothing" unchanged "$ROOT/m.json"
 
 CASE='a denied version'
-update "$ROOT/m.json" 2026.8.0
+update "$ROOT/m.json" 2026.9.0
 assert "fails" rc_is 1
-assert "and says so" contains "$ERR" "denies cloudflared 2026.8.0"
+assert "and says so" contains "$ERR" "denies cloudflared 2026.9.0"
 assert "and changes nothing" unchanged "$ROOT/m.json"
 
 CASE='not a version'
