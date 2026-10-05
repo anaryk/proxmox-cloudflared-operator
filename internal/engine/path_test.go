@@ -70,6 +70,45 @@ func TestOnlyABoundWinnerHasAPath(t *testing.T) {
 	}
 }
 
+// A manual route that names a guest has the guest's address proven, and
+// bound: it has a path like the route of a guest.
+func TestAManualRouteThatNamesAGuestHasAPath(t *testing.T) {
+	e := newEnv(t)
+	g := tagged()
+	g.Description = ""
+	g.NICs[1].Bridge, g.NICs[1].VLAN = "vmbr1", 30
+	e.inv.set(snapshot(g))
+	e.res.place("vmbr1", map[string]string{testMAC: "tap101i1"})
+	require.NoError(t, e.store.SaveManualRoute(model.Route{
+		Hostname: "web.example.com", ManualID: "web", Source: model.SourceManual, Guest: &g.Ref,
+		Target: model.Target{Scheme: model.SchemeHTTP, Port: 8080},
+	}))
+
+	st := e.cycle()
+
+	web := route(st, "web.example.com")
+	require.Equal(t, "manual/web", web.Owner)
+	require.Equal(t, &PathView{Node: testNode, Bridge: "vmbr1", VLAN: 30, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0}, web.Path)
+}
+
+// A binding withdrawn when its guest stopped keeps where and when its last
+// proof was made.
+func TestAWithdrawnBindingKeepsThePathOfItsLastProof(t *testing.T) {
+	e := newEnv(t)
+	e.inv.set(snapshot(tagged()))
+	e.res.place("vmbr0", map[string]string{testMAC: "tap101i1"})
+	proven := route(e.cycle(), "www.example.com").Path
+	require.Equal(t, &PathView{Node: testNode, Bridge: "vmbr0", VLAN: 20, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0}, proven)
+
+	e.res.stop("www.example.com", "the guest is stopped")
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	r := route(st, "www.example.com")
+	require.Equal(t, planner.StateWithdrawn, r.State)
+	require.Equal(t, proven, r.Path)
+}
+
 func TestThePathOfABinding(t *testing.T) {
 	since := t0.Add(-48 * time.Hour)
 	b := resolve.Binding{

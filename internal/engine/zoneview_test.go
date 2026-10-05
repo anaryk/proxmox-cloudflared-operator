@@ -151,6 +151,46 @@ func TestTheViewOfEachZone(t *testing.T) {
 			},
 		},
 		{
+			// A frozen zone says why it is in doubt; a zone served in the
+			// frozen account says what its routes say, the doubt of the
+			// account's first zone; a zone in another state says nothing.
+			name: "a frozen account with a zone in each state",
+			cache: func() *zoneCache {
+				z := listedZones(map[string][]cfapi.Zone{"cred1": {
+					{ID: "zone5", Name: "example.dev", Status: "active", AccountID: "acc1"},
+					{ID: "zone3", Name: "example.info", Status: "active", AccountID: "acc1"},
+					{ID: "zone4", Name: "example.net", Status: "active", AccountID: "acc1"},
+					exampleOrg,
+				}})
+				z.credential("cred1").stale["example.com"] = exampleCom
+				return z
+			},
+			ids:  []string{"cred1"},
+			pins: map[string]string{"example.dev": "cred9", "example.net": "cred1"},
+			checks: map[string]zoneCheck{"cred1": {
+				looked: map[string]bool{"zone2": true, "zone5": true}, excluded: map[string]bool{"zone3": true, "zone4": true},
+			}},
+			want: func() []ZoneView {
+				view := func(name, id, state string) ZoneView {
+					return ZoneView{
+						Name: name, ID: id, Status: "active", AccountID: "acc1", State: state,
+						Credentials: []string{"cred1"}, Stale: []string{}, Excluded: []string{},
+					}
+				}
+				com := view("example.com", "zone1", ZoneFrozen)
+				com.Stale, com.FrozenWhy = []string{"cred1"}, "zone example.com is no longer listed by credential cred1"
+				dev := view("example.dev", "zone5", ZoneFrozen)
+				dev.Pinned, dev.FrozenWhy = "cred9", "zone example.dev is pinned to credential cred9, which does not see it"
+				info := view("example.info", "zone3", ZoneLeftOut)
+				info.Excluded = []string{"cred1"}
+				net := view("example.net", "zone4", ZoneNotServed)
+				net.Pinned, net.Excluded = "cred1", []string{"cred1"}
+				org := view("example.org", "zone2", ZoneServed)
+				org.ServedBy, org.FrozenWhy = "cred1", com.FrozenWhy
+				return []ZoneView{com, dev, info, net, org}
+			}(),
+		},
+		{
 			name:   "a zone the last check did not look at",
 			cache:  func() *zoneCache { return listedZones(map[string][]cfapi.Zone{"cred1": {exampleCom}}) },
 			ids:    []string{"cred1"},

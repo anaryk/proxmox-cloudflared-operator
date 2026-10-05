@@ -152,7 +152,7 @@ func checkCycle(st engine.State, env Env) Finding {
 		return warn("cycle", "no cycle has run yet", "wait for the first cycle; journalctl -u pco says why it does not come")
 	}
 	base, of := env.PollInterval(), "poll intervals of"
-	if took := st.FinishedAt.Sub(st.At); took > base {
+	if took := st.FinishedAt.Sub(st.At).Round(time.Second); took > base {
 		base, of = took, "times the last cycle's duration of"
 	}
 	age := env.Now().Sub(st.FinishedAt).Round(time.Second)

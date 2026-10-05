@@ -1,6 +1,9 @@
 package engine
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // The states of ZoneView.State.
 const (
@@ -23,14 +26,17 @@ type ZoneView struct {
 	Pinned      string   `json:"pinned,omitempty"`
 	Stale       []string `json:"stale"`    // credentials whose listing lost it
 	Excluded    []string `json:"excluded"` // credentials refused its DNS
-	// FrozenWhy says why the account of the zone is frozen, as the reason of
-	// its routes does; it is set for a zone served in a frozen account too.
+	// FrozenWhy is set for a frozen zone and for a zone served in a frozen
+	// account, and empty in the other states. A frozen zone says why it is in
+	// doubt; a served one why its account is frozen, as the reason of its
+	// routes does.
 	FrozenWhy string `json:"frozenWhy,omitempty"`
 }
 
 // zoneViewOf is the view of zone name from the entries of the credentials
-// that list it, the pin of the settings and the choice made of it. FrozenWhy
-// is the account's, which set knows once every zone is chosen.
+// that list it, the pin of the settings and the choice made of it. The
+// FrozenWhy of a served zone is the account's, which set knows once every
+// zone is chosen.
 func zoneViewOf(name string, entries []zoneEntry, pin string, ch choice) ZoneView {
 	shown := entries[0]
 	if i := slices.IndexFunc(entries, func(en zoneEntry) bool { return !en.stale }); i >= 0 {
@@ -53,6 +59,7 @@ func zoneViewOf(name string, entries []zoneEntry, pin string, ch choice) ZoneVie
 		v.State, v.ServedBy = ZoneServed, by.CredentialID
 	case ch.doubt != "":
 		v.State = ZoneFrozen
+		v.FrozenWhy, _, _ = strings.Cut(ch.doubt, "; ")
 	case ch.note != "":
 		v.State = ZoneNotServed
 	default:

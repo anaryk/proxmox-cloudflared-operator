@@ -211,6 +211,17 @@ func TestWhatTheDoctorFinds(t *testing.T) {
 		}, nil, Finding{Check: "cycle", Level: LevelFail,
 			Detail: "the last cycle ran 4m10s ago, more than six times the last cycle's duration of 40s",
 			Fix:    "journalctl -u pco says what holds the cycles up"}},
+		{"a cycle whose duration is not a whole number of seconds", func(st *engine.State) {
+			st.FinishedAt = now.Add(-130 * time.Second)
+			st.At = st.FinishedAt.Add(-40400 * time.Millisecond)
+		}, nil, Finding{Check: "cycle", Level: LevelWarn,
+			Detail: "the last cycle ran 2m10s ago, more than three times the last cycle's duration of 40s",
+			Fix:    "journalctl -u pco says what holds the cycles up"}},
+		{"a cycle that took a fraction of a second longer than the poll interval", func(st *engine.State) {
+			st.FinishedAt = now.Add(-31 * time.Second)
+			st.At = st.FinishedAt.Add(-10400 * time.Millisecond)
+		}, nil, Finding{Check: "cycle", Level: LevelWarn, Detail: "the last cycle ran 31s ago, more than three poll intervals of 10s",
+			Fix: "journalctl -u pco says what holds the cycles up"}},
 		{"a cycle shorter than the poll interval", func(st *engine.State) {
 			st.FinishedAt = now.Add(-31 * time.Second)
 			st.At = st.FinishedAt.Add(-8 * time.Second)

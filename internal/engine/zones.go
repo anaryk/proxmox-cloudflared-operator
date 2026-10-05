@@ -439,7 +439,9 @@ func (z *zoneCache) set(ids []string, pins map[string]string, checks map[string]
 		served = append(served, ch.chosen...)
 	}
 	for i, v := range out.views {
-		out.views[i].FrozenWhy = out.frozenWhy[v.AccountID]
+		if v.State == ZoneServed {
+			out.views[i].FrozenWhy = out.frozenWhy[v.AccountID]
+		}
 	}
 	for _, zone := range served {
 		if out.frozen[zone.AccountID] {
