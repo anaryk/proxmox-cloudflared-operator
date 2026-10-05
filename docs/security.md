@@ -185,9 +185,11 @@ as part of root's configuration of the node.
 
 ### Between two cycles
 
-The checks in [Identity](identity.md) are made once in each cycle, 10 seconds by default.
-Between two cycles the daemon watches two tables of the kernel through netlink and acts on
-a change at once:
+The checks in [Identity](identity.md) are made when pco looks: in each cycle, 10 seconds by
+default, while the watch below is not running, and while it runs, once in every
+`reverifyInterval` (a minute by default) for an address proven at `port`, and at once when
+the watch reports a move. Between two cycles the daemon watches two tables of the kernel
+through netlink and acts on a change at once:
 
 - The forwarding table of the bridge, for every route proven at `port`: the MAC of the
   guest, or any other MAC of the same guest, learned on a port that is not the guest's own.
@@ -343,7 +345,7 @@ until the daemon's first cycle gets through. That cycle needs a complete listing
 Proxmox, verifies the routes, and then gives the filter the targets: the ones it verified,
 and those of the tunnel configurations it last confirmed at Cloudflare, which it remembers.
 Visitors get a 502 for a published hostname until then. How long that takes grows with the
-number of routes, which are verified up to eight at a time.
+number of addresses, which are verified up to 32 at a time.
 
 The table is loaded in one nft transaction, so it is whole or not there. The commands that
 read it check not only the targets but the whole table, its chains, rules and counters, and

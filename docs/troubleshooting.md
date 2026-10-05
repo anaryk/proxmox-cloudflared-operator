@@ -249,10 +249,18 @@ each action held by `observe mode`. Run `pco apply` when it is what you expect.
 
 ## Rate limits
 
-pco keeps to 300 requests in 5 minutes for each credential. If Cloudflare answers 429 anyway,
-pco stops calling for as long as Cloudflare asked, and the calls that fail say
-`not sent: holding back after an earlier 429`. Nothing is lost: the cycle tries again. If it
-recurs, raise `pollInterval` in the settings, or check that no other program uses the same
+pco keeps to `cloudflareBudget` requests in 5 minutes for each credential, 1000 by default,
+and to what Cloudflare says is left of the 1200 it allows a user. When that is spent, a cycle
+stops writing, and `pco status` says what waits in one line: `11 changes wait for
+Cloudflare's rate limit`, or, while not even a read is left, `the tunnel of account <id> and
+the listing of zone <name> wait for Cloudflare's rate limit`. The cycles after Cloudflare
+starts its count again go on. A first start of many routes does this once; see
+[Operations](operations.md).
+
+If Cloudflare answers 429 anyway, pco stops calling for as long as Cloudflare asked, and the
+calls that fail say `not sent: holding back after an earlier 429`. Nothing is lost: the cycle
+tries again. If it recurs, raise `pollInterval` in the settings, lower `cloudflareBudget`
+when other tools use the same Cloudflare user, or check that no other program uses the same
 token.
 
 ## A connector cannot reach its target

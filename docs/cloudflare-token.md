@@ -229,10 +229,14 @@ removed (see below).
 
 ## Limits and expiry
 
-pco spends at most 300 requests in 5 minutes on each credential, with room for 20 at
-once. When Cloudflare answers 429 it stops calling for as long as Cloudflare asked and
-fails calls fast meanwhile, with `not sent: holding back after an earlier 429`; what could
-not be done is tried again in a later cycle.
+pco spends at most `cloudflareBudget` requests in 5 minutes on each credential, 1000 by
+default of the 1200 that Cloudflare allows a user, all at once if need be, and keeps to
+what Cloudflare says in its answers is left. A request that would wait for longer than 20
+seconds is not sent: the cycle writes nothing more and says what waits, in one line such as
+`11 changes wait for Cloudflare's rate limit`, and a later cycle makes it. When Cloudflare
+answers 429 pco stops calling for as long as Cloudflare asked and fails calls fast
+meanwhile, with `not sent: holding back after an earlier 429`; what could not be done is
+tried again in a later cycle.
 
 A token that has expired, or was revoked, cannot be used for anything: every call with
 it fails, so pco can change nothing at Cloudflare through it, and `pco status` and

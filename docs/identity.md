@@ -214,17 +214,23 @@ starts. [Operations](operations.md) says how to change them.
 
 ## What this does not do
 
-The checks are made when pco looks, once in every cycle (10 seconds by default). Between
-two cycles the daemon watches the neighbour table of the node and the forwarding tables of
-the bridges and reacts to a bound MAC that moves, but that watch has limits:
+The checks are made when pco looks. A cycle, every 10 seconds by default, checks an address
+on the wire once however many routes point at it, 32 addresses at a time. While the watch
+below runs, a proof at `port` stands in the cycles after it until its address comes due,
+once in every `reverifyInterval` (a minute by default) at a time of its own, or at once when
+the watch reports a move, the guest's configuration changes or its port stops answering;
+[Operations](operations.md) has the details. Between two cycles the daemon watches the
+neighbour table of the node and the forwarding tables of the bridges and reacts to a bound
+MAC that moves, but that watch has limits:
 
 - The address leaves the filter within about a millisecond of the change, not at the same
   instant. [Security](security.md) says what can happen in that time.
 - A MAC of the guest's own that appears only in the neighbour table is not a move: a guest
   with two cards on one bridge may answer for its address with either.
 - A route proven at `observed` placed no MAC in the forwarding table, so only the neighbour
-  table is watched for it.
-- If the watch cannot run, a move is seen at the next cycle only, and the daemon logs it.
+  table is watched for it, and its address is checked on the wire in every cycle.
+- If the watch cannot run, a move is seen at the next cycle only, and the daemon logs it;
+  every cycle then checks every address on the wire.
 
 Only IPv4 origins are supported, and the guest and the node must be on a common layer 2
 network, except for the trusted static addresses above.

@@ -124,21 +124,25 @@ changed. [Security](security.md) describes both.
 
 Checking an address takes the time of an ARP exchange, about 600 ms, which is what a cycle
 of many routes waits for. So an address is checked once in a cycle however many routes
-point at it, and a proof stands, in later cycles, for as long as the watch of the network
-vouches for it. Each cycle still checks what needs no wire, the denylist, the addresses of
-the nodes and the MACs of the other guests, and connects to the port. The address is checked
-on the wire again in the next cycle when:
+point at it, and a proof at `port` stands, in later cycles, for as long as the watch of the
+network vouches for it. Each cycle still checks what needs no wire, the denylist, the
+addresses of the nodes and the MACs of the other guests, and connects to the port. The
+address is checked on the wire again in the next cycle when:
 
 - the watch reported its MAC moved;
 - the configuration of its guest changed, or the guest stopped, or moved to another node;
-- the proof is `reverifyInterval` old (a minute by default);
+- its address comes due: once in every `reverifyInterval` (a minute by default), at a time
+  each address takes from its own, so that the addresses proven in one cycle come due a
+  share in each of the cycles that follow;
 - the port did not answer, which has the address checked again in the same cycle;
+- the proof is at `observed`, or placed the MAC on no bridge: the watch cannot see it move;
 - the watch is not running: it could not start, the node is not Linux, or it started
   after the proof was made.
 
 A new address is checked in two cycles in a row: the watch has it only after the first.
-With the defaults and 1000 routes, a cycle that checks every address on the wire takes about
-20 seconds, and the cycles in between take well under a second.
+With the defaults and 1000 routes, each cycle checks about a sixth of the addresses on the
+wire, which takes about 4 seconds; a cycle that checks every address, as one does while the
+watch is not running, takes about 20 seconds.
 
 ### What Cloudflare's rate limit costs
 
@@ -160,9 +164,14 @@ in this form:
 
     11 changes wait for Cloudflare's rate limit
 
-The cycles that follow make them once there are requests to spare; until then their reads are
-refused too, with `not sent: Cloudflare's rate limit leaves no request for now (retry after
-4m50s)`, and nothing is removed. The plan is the same in every cycle, so nothing is lost.
+The cycles that follow make them once there are requests to spare. Until then their reads
+are refused too, and they say so in one line,
+
+    the tunnel of account <id> and the listing of zone <name> wait for Cloudflare's rate limit
+
+and nothing is removed. The plan is the same in every cycle, so nothing is lost. An adoption
+that replaces a record is begun only while there is room for its three requests: the delete,
+the create, and the put-back should the create fail.
 
 A first start of 1000 routes thus costs about 1015 requests: a few for the tunnel, a listing
 of the zone and a create for each record. The first cycle makes about 990 of the records in a
