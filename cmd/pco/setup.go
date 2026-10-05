@@ -19,6 +19,7 @@ import (
 type setupFlags struct {
 	yes, noTags, skipCloudflared bool
 	repair, recover, newInstall  bool
+	verbose                      bool
 	tokenFile                    string
 	tokenStdin                   bool
 	installID                    string
@@ -78,6 +79,7 @@ func (a *app) setupCmd() *cobra.Command {
 	flags.BoolVar(&f.noTags, "no-registered-tags", false, "do not register the gate tags, which lets whoever may edit a guest set them")
 	flags.BoolVar(&f.skipCloudflared, "skip-cloudflared", false, "do not install cloudflared when it is missing")
 	flags.BoolVar(&f.repair, "repair", false, "re-assert the role, the user, the token and the tags in Proxmox, and start the daemon")
+	flags.BoolVar(&f.verbose, "verbose", false, "name every zone the Cloudflare token leaves out, not only those this install served")
 	flags.BoolVar(&f.recover, "recover", false, "adopt the install whose tunnels the Cloudflare token sees, after the store was lost")
 	flags.StringVar(&f.installID, "install-id", "", "with --recover: the install to adopt, when the token sees several")
 	flags.BoolVar(&f.newInstall, "new-install", false, "start a new install on a node that runs connectors of another install: "+
@@ -90,7 +92,7 @@ func (a *app) setupCmd() *cobra.Command {
 }
 
 func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, error) {
-	o := setup.Options{Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall}
+	o := setup.Options{Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall, Verbose: f.verbose}
 	no := false
 	if f.noTags {
 		o.RegisterTags = &no

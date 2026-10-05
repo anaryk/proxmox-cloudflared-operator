@@ -72,6 +72,7 @@ type Options struct {
 	InstallID          string // with Recover
 	NewInstall         bool   // start an install beside the connectors of another
 	Node               string // default: hostname
+	Verbose            bool   // name every zone the token leaves out, not only those the install served
 }
 
 func (o Options) check() error {

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/version"
@@ -362,21 +363,58 @@ func TestSetupDoesNotStoreAnUnusableToken(t *testing.T) {
 	e.requireNoSecret()
 }
 
+// A token scoped to one zone of an account leaves out every other zone of the
+// account: zones this install never served are said in one line.
 func TestSetupStoresATokenThatLeavesZonesOut(t *testing.T) {
-	e := newTestEnv(t)
-	e.installUnit("pco.service")
-	e.cf.AddZone("zone2", "example.org", testAccount)
-	e.cf.Deny("dns.read", "zone2")
-	e.script(freshInstall()...)
+	for _, tt := range []struct {
+		name    string
+		verbose bool
+		shown   []string
+		hidden  []string
+	}{
+		{"by default", false, []string{"  - 2 zones this install never served are left out: no DNS read; pco setup --verbose names them"},
+			[]string{"example.org", "example.net"}},
+		{"with --verbose", true, []string{"  - example.net left out: no DNS read", "  - example.org left out: no DNS read",
+			"      grant Zone > DNS > Edit on example.org"}, []string{"never served"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit("pco.service")
+			e.cf.AddZone("zone2", "example.org", testAccount)
+			e.cf.AddZone("zone3", "example.net", testAccount)
+			e.cf.Deny("dns.read", "zone2", "zone3")
+			e.script(freshInstall()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
-	e.done()
+			require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, Verbose: tt.verbose}))
+			e.done()
 
-	require.Len(t, e.credentials(), 1)
-	e.requireShown("  - example.org left out: no DNS read")
-	e.requireShown("      grant Zone > DNS > Edit on example.org")
-	require.NotContains(t, e.ask.text(), "✗", "a zone left out is no failure")
-	e.requireNoSecret()
+			require.Len(t, e.credentials(), 1)
+			for _, line := range tt.shown {
+				e.requireShown(line)
+			}
+			for _, part := range tt.hidden {
+				require.NotContains(t, e.ask.text(), part)
+			}
+			require.NotContains(t, e.ask.text(), "✗", "a zone left out is no failure")
+			e.requireNoSecret()
+		})
+	}
+}
+
+// A zone this install served is named whatever the flags say: losing it is
+// news.
+func TestAZoneLeftOutThatTheInstallServedIsNamed(t *testing.T) {
+	served := map[string]bool{"zone2": true}
+	excluded := []credentials.Exclusion{
+		{Zone: "example.org", ZoneID: "zone2", Reason: "no DNS read", Detail: "grant Zone > DNS > Edit on example.org"},
+		{Zone: "example.net", ZoneID: "zone3", Reason: "no DNS read"},
+	}
+
+	require.Equal(t, []string{
+		"  - example.org left out: no DNS read",
+		"      grant Zone > DNS > Edit on example.org",
+		"  - 1 zone this install never served is left out: no DNS read; pco setup --verbose names it",
+	}, excludedLines(excluded, served, false))
 }
 
 func TestSetupSaysWhenCloudflareDidNotAnswer(t *testing.T) {

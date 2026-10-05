@@ -132,13 +132,58 @@ func (r *run) showReport(report credentials.Report) {
 			r.ask.Info("      %s", reason)
 		}
 	}
-	for _, x := range report.Excluded {
-		r.ask.Info("  - %s left out: %s", x.Zone, x.Reason)
-		if x.Detail != "" {
-			r.ask.Info("      %s", x.Detail)
-		}
+	for _, line := range excludedLines(report.Excluded, servedZones(r.st, r.install.ID), r.o.Verbose) {
+		r.ask.Info("%s", line)
 	}
 	for _, name := range report.Leftovers {
 		r.ask.Warn("a probe record of an earlier check is left in Cloudflare, to be removed by hand: %s", name)
 	}
+}
+
+// excludedLines says which zones the token leaves out. A token scoped to one
+// zone of an account leaves out every other zone of the account: those the
+// install never served are counted in one line for each reason, unless
+// verbose; a zone it served is named, with what to grant.
+func excludedLines(excluded []credentials.Exclusion, served map[string]bool, verbose bool) []string {
+	var lines []string
+	never := make(map[string]int)
+	var reasons []string
+	for _, x := range excluded {
+		if !verbose && !served[x.ZoneID] {
+			if never[x.Reason] == 0 {
+				reasons = append(reasons, x.Reason)
+			}
+			never[x.Reason]++
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  - %s left out: %s", x.Zone, x.Reason))
+		if x.Detail != "" {
+			lines = append(lines, "      "+x.Detail)
+		}
+	}
+	for _, reason := range reasons {
+		if n := never[reason]; n == 1 {
+			lines = append(lines, fmt.Sprintf("  - 1 zone this install never served is left out: %s; pco setup --verbose names it", reason))
+		} else {
+			lines = append(lines, fmt.Sprintf("  - %d zones this install never served are left out: %s; pco setup --verbose names them", n, reason))
+		}
+	}
+	return lines
+}
+
+// servedZones are the ids of the zones the engine's memory says the install
+// served. A memory that cannot be read, or is of another install, says none.
+func servedZones(st *store.Store, install string) map[string]bool {
+	served := make(map[string]bool)
+	m, err := st.EngineMemory()
+	if err != nil || install == "" || m.InstallID != install {
+		return served
+	}
+	for _, z := range m.Served {
+		served[z.ID] = true
+	}
+	for _, z := range m.Stale {
+		served[z.ID] = true
+	}
+	return served
 }

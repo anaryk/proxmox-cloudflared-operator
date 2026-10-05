@@ -89,7 +89,12 @@ func (u *uninstall) listRecords(ctx context.Context, credID string, api cfapi.AP
 	for _, z := range zones {
 		accounts[z.AccountID] = true
 		records, err := api.Records(ctx, z.ID, cfapi.RecordFilter{CommentPrefix: planner.DNSMarker(u.installID)})
-		if err != nil {
+		switch {
+		case err != nil && cfapi.IsAuth(err) && u.served != nil && !u.served[z.ID]:
+			// A zone the install never served holds none of its records: a
+			// token scoped to another zone of the account may not read it.
+			continue
+		case err != nil:
 			errs = append(errs, u.unlisted(credID, "the records of zone "+z.Name, err))
 			continue
 		}

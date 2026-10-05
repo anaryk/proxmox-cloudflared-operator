@@ -567,3 +567,25 @@ func TestASecondUninstallListsOnlyWhatIsThere(t *testing.T) {
 	}
 	e.requireNothingLeft(h)
 }
+
+// A token scoped to one zone may not read the records of the other zones of
+// the account. Those this install never served hold none of its records, and
+// the purge says nothing of them; one it served it says it could not read.
+func TestThePurgeSaysNothingOfAZoneTheInstallNeverServed(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(setupsUser)
+	e.atCloudflare()
+	e.cf.AddZone("zone2", "example.org", testAccount)
+	e.cf.AddZone("zone3", "example.net", testAccount)
+	e.cf.Deny("dns.read", "zone2", "zone3")
+	require.NoError(t, e.st.SaveEngineMemory(store.EngineMemory{InstallID: testInstall, Served: []store.RememberedZone{
+		{ID: "zone3", Name: "example.net", AccountID: testAccount, CredentialID: "c0ffee00"},
+	}}))
+	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
+	e.done()
+
+	require.NotContains(t, e.ask.text(), "example.org")
+	e.requireShown("credential c0ffee00 may not list the records of zone example.net; what is there is not deleted")
+}

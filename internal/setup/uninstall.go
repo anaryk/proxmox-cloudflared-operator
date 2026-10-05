@@ -51,9 +51,12 @@ type uninstall struct {
 	manifest  Manifest
 	installID string // empty when the store holds no install
 	creds     []store.Credential
-	node      string
-	found     survey   // what is on the node, read before anything is asked
-	failed    []string // what could not be done
+	// served are the zones the install served, by id; nil when that is not
+	// known, and every zone counts.
+	served map[string]bool
+	node   string
+	found  survey   // what is on the node, read before anything is asked
+	failed []string // what could not be done
 }
 
 // Uninstall removes pco from the node. It first looks at what is there, lists
@@ -133,6 +136,9 @@ func (s *Setup) newUninstall(o UninstallOptions) (*uninstall, error) {
 		return nil, fmt.Errorf("reading the install: %w", err)
 	case found:
 		u.installID = inst.ID
+		if m, err := s.st.EngineMemory(); err == nil && m.InstallID == inst.ID {
+			u.served = servedZones(s.st, inst.ID)
+		}
 	}
 	u.creds, err = s.st.Credentials()
 	if err != nil && !errors.Is(err, store.ErrNoRoot) {
