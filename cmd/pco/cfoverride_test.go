@@ -129,6 +129,8 @@ func (m meAsWeb) LookupUser(name string) (*user.User, error) {
 	return m.me, nil
 }
 
+func (meAsWeb) WebInstalled() bool { return true }
+
 func (m meAsWeb) LookupGroup(name string) (*user.Group, error) {
 	if name != "pco-web" {
 		return nil, user.UnknownGroupError(name)

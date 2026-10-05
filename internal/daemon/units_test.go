@@ -87,12 +87,6 @@ func TestSocketAccessFallsBackToRootWhenALookupFails(t *testing.T) {
 	require.Contains(t, logs.String(), "looking up the user failed")
 }
 
-func TestTheDaemonAsksWhetherTheWebUIIsInstalled(t *testing.T) {
-	var a Accounts = systemAccounts{}
-	_, ok := a.(webInstaller)
-	require.True(t, ok)
-}
-
 func TestTheWebUIIsInstalledWhenItsUnitIs(t *testing.T) {
 	require.Equal(t, "/usr/lib/systemd/system/pco-web.service", webUnit)
 	dir := t.TempDir()

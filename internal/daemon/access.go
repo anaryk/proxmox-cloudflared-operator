@@ -16,17 +16,12 @@ const webName = "pco-web"
 // webUnit is the unit of the web UI, which its package installs.
 const webUnit = "/usr/lib/systemd/system/pco-web.service"
 
-// Accounts looks up users and groups by name. A name nobody has is an error of
-// the types os/user has for it.
+// Accounts looks up users and groups by name, and says whether the web UI is
+// installed: its unit file is there. A name nobody has is an error of the
+// types os/user has for it.
 type Accounts interface {
 	LookupUser(name string) (*user.User, error)
 	LookupGroup(name string) (*user.Group, error)
-}
-
-// webInstaller is Accounts that can tell whether the web UI is installed: its
-// unit file is there. The daemon's own always can; a double of a test that
-// cannot stands for a node with the web UI.
-type webInstaller interface {
 	WebInstalled() bool
 }
 
@@ -49,7 +44,7 @@ func unitInstalled(path string) bool {
 // user could have made it, and only root is answered.
 func socketAccess(a Accounts, log zerolog.Logger) (gid int, uids []uint32) {
 	gid, uids = 0, []uint32{0}
-	if w, ok := a.(webInstaller); ok && !w.WebInstalled() {
+	if !a.WebInstalled() {
 		_, uerr := a.LookupUser(webName)
 		_, gerr := a.LookupGroup(webName)
 		if uerr == nil || gerr == nil {

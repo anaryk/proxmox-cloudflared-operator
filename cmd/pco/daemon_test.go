@@ -171,6 +171,8 @@ func (noAccounts) LookupUser(name string) (*user.User, error) {
 	return nil, user.UnknownUserError(name)
 }
 
+func (noAccounts) WebInstalled() bool { return false }
+
 func (noAccounts) LookupGroup(name string) (*user.Group, error) {
 	return nil, user.UnknownGroupError(name)
 }
