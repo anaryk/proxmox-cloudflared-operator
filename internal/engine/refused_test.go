@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -487,6 +488,47 @@ func TestAZoneServedBeforeAFirstCheckThatRefusesItIsRememberedAsServedOnce(t *te
 	require.Equal(t, []string{"example.com", "example.org"}, zoneNames(m.EverServed))
 }
 
+// sevenUnreadable is an engine in enforce mode whose credential lists
+// example.com and seven more zones of the account but may read the DNS of
+// example.com only, as a token scoped to one zone of the account does.
+func sevenUnreadable(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t)
+	for i := 2; i <= 8; i++ {
+		id := fmt.Sprintf("zone%d", i)
+		e.cf.AddZone(id, fmt.Sprintf("other%d.org", i), testAccount)
+		e.cf.Deny("dns.read", id)
+	}
+	e.enforce()
+	return e
+}
+
+// Reproduced on a node: the first cycle came before the first check of a
+// token scoped to one of eight zones, all eight were remembered as served
+// once, and the purge warned of the seven it may not read.
+func TestOnlyAZoneWhoseRecordsWereListedIsRememberedAsServedOnce(t *testing.T) {
+	e := sevenUnreadable(t)
+	st := e.cycle()
+	require.True(t, hasProblem(st, "zone other2.org: listing the records"), "unchecked, the zones are tried: %v", st.Problems)
+
+	e.eng.recheck(t.Context())
+	e.cycle()
+
+	m, err := e.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.com"}, zoneNames(m.EverServed))
+	require.Equal(t, []string{"example.com"}, zoneNames(m.Served))
+
+	e.cf.Deny("dns.read", testZone)
+	e.clock.advance(recheckFailedEvery)
+	e.eng.recheck(t.Context())
+	e.cycle()
+
+	m, err = e.store.EngineMemory()
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.com"}, zoneNames(m.EverServed), "listed once, its records may be there")
+}
+
 // A memory saved before the zones served once were kept counts those it
 // served then.
 func TestTheZonesServedInAnOlderMemoryAreRememberedAsServedOnce(t *testing.T) {
@@ -500,7 +542,7 @@ func TestTheZonesServedInAnOlderMemoryAreRememberedAsServedOnce(t *testing.T) {
 
 	m, err := e.store.EngineMemory()
 	require.NoError(t, err)
-	require.Equal(t, []string{"example.com", "example.net"}, zoneNames(m.EverServed))
+	require.Equal(t, []string{"example.net"}, zoneNames(m.EverServed), "example.com is not listed while its account is frozen")
 }
 
 func zoneNames(zones []store.RememberedZone) []string {

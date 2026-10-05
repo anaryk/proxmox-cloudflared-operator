@@ -72,7 +72,7 @@ The files:
 | `/etc/pve/priv/pco/credentials/<id>.json` | One Cloudflare credential. |
 | `/var/lib/pco/manifest.json` | What `pco setup` created; `pco uninstall` follows it. |
 | `/var/lib/pco/bindings/<hostname>.json` | The address verified for each hostname, with the MAC, the level and, at `port`, where the forwarding table placed the MAC. A file is written when its binding changes, and for the time of the last proof alone only once that moved on by more than 75 seconds: after a restart a proof counts as up to that much older than it is. |
-| `/var/lib/pco/meta/engine-memory.json` | What the daemon must still know after a restart: the zones it serves and every zone it ever served, the tunnels it saw, the guests you confirmed gone, the last check of each credential, and the targets of the egress filter with the tunnel configurations that confirmed them. |
+| `/var/lib/pco/meta/engine-memory.json` | What the daemon must still know after a restart: the zones it serves and every zone whose records it ever listed, the tunnels it saw, the guests you confirmed gone, the last check of each credential, and the targets of the egress filter with the tunnel configurations that confirmed them. |
 | `/var/lib/pco/meta/node-addrs.json` | The addresses of the nodes, for the denylist. |
 | `/var/lib/pco/events.log` | The event log, one JSON object a line; rotated at 5 MiB, one earlier file is kept. |
 | `/var/lib/pco/tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector. The `.env` file names the install the connector belongs to. |

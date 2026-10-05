@@ -28,8 +28,9 @@ type zoneCache struct {
 	// served holds, by zone name, the zone as it was last served by one
 	// credential alone.
 	served map[string]planner.Zone
-	// ever holds, by id, every zone that was served at some time: it may
-	// hold records of the install, also once it is no longer served.
+	// ever holds, by id, every zone whose records a DNS run listed at some
+	// time: only there can the install have made records, which may still be
+	// there once the zone is no longer served.
 	ever map[string]planner.Zone
 	// lookups holds, by account, what the last lookup of the tunnel of an
 	// account the tunnel run does not report on found. A lookup that failed
@@ -69,15 +70,19 @@ func newZoneCache() *zoneCache {
 }
 
 // serve has zone served under name, by its credential alone.
-func (z *zoneCache) serve(name string, zone planner.Zone) {
-	z.served[name] = zone
-	z.ever[zone.ID] = zone
-}
+func (z *zoneCache) serve(name string, zone planner.Zone) { z.served[name] = zone }
 
-// servedOnce returns the names of the zones that were served at some time.
+// listed notes a zone whose records a DNS run listed.
+func (z *zoneCache) listed(zone planner.Zone) { z.ever[zone.ID] = zone }
+
+// servedOnce returns the names of the zones served now, or listed at some
+// time.
 func (z *zoneCache) servedOnce() []string {
-	names := make([]string, 0, len(z.ever))
+	names := make([]string, 0, len(z.ever)+len(z.served))
 	for _, zone := range z.ever {
+		names = append(names, zone.Name)
+	}
+	for _, zone := range z.served {
 		names = append(names, zone.Name)
 	}
 	return slices.Compact(slices.Sorted(slices.Values(names)))

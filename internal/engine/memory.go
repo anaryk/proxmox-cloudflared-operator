@@ -33,7 +33,11 @@ func (e *Engine) recall(installID string) (note string, err error) {
 		e.zones.ever[z.ID] = planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID}
 	}
 	for _, z := range m.Served {
-		e.zones.serve(z.Name, planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID})
+		zone := planner.Zone{ID: z.ID, Name: z.Name, AccountID: z.AccountID, CredentialID: z.CredentialID}
+		e.zones.serve(z.Name, zone)
+		// A memory saved before the zones listed were kept apart holds them
+		// only here.
+		e.zones.listed(zone)
 	}
 	for _, z := range m.Stale {
 		e.zones.credential(z.CredentialID).stale[z.Name] = cfapi.Zone{ID: z.ID, Name: z.Name, Status: "active", AccountID: z.AccountID}
@@ -94,8 +98,9 @@ func (e *Engine) memory() store.EngineMemory {
 // memoryAccepting is the memory as it is once the engine accepted o: the
 // guests are gone, and the zones still stale and the tunnels still seen are
 // forgotten, a zone also as served through the credential it left; a zone let
-// go is forgotten as served through the credential refused its DNS. Either is
-// still remembered as served once: its records may be there.
+// go is forgotten as served through the credential refused its DNS. Either
+// stays remembered as served once when its records were listed: they may be
+// there.
 func (e *Engine) memoryAccepting(o confirmable) store.EngineMemory {
 	m := e.memory()
 	confirmed := make(map[staleZone]bool, len(o.stale))

@@ -113,9 +113,9 @@ the result of its own daily check of each stored token for `pco credential list`
   are left out: `credential add` and `credential check` name each, as
   `example.org left out: no DNS read`. `pco setup` names only those this install served, and
   counts the others in one line; `pco setup --verbose` names them all. `pco uninstall
-  --purge-cloudflare` says nothing of a zone this install never served, as none of its
-  records is there, and warns about one it served at any time, also one you let go, that it
-  cannot read. When the daemon's memory on the node cannot tell, as when it cannot be read
+  --purge-cloudflare` says nothing of a zone whose records this install never listed, as it
+  makes a record only where a listing worked first, and warns about one it listed at any
+  time, also one you let go, that it cannot read. When the daemon's memory on the node cannot tell, as when it cannot be read
   or is of another install, both name every zone.
 - `Usable: yes` means the token is active, at least one zone is active, and every check
   that concerns an active zone or its account passed. A zone that is not active, for

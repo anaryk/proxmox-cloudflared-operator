@@ -47,6 +47,7 @@ func (c *cycleRun) reconcileDNS() {
 		}
 	}
 	res := c.e.dnsReconciler(c.dnsSettings()).Run(c.ctx, in, mode)
+	c.noteListed(res)
 	c.offerRemovals(res)
 	c.settleRequests(in, res, mode)
 	c.st.Actions = append(c.st.Actions, res.Actions...)
@@ -71,6 +72,26 @@ func (c *cycleRun) reconcileDNS() {
 		return
 	}
 	c.writerStill("after the DNS run")
+}
+
+// noteListed remembers the zones whose records the run listed as served once.
+// The install makes a record only where a listing worked first, so a zone
+// whose DNS its credential may not read holds none.
+func (c *cycleRun) noteListed(res reconcile.DNSResult) {
+	if !res.Looked {
+		return
+	}
+	listed := make(map[string]string, len(c.zones.dns))
+	for _, ref := range c.zones.dns {
+		if !slices.Contains(res.Unlisted, ref.Name) {
+			listed[ref.ID] = ref.CredentialID
+		}
+	}
+	for _, zone := range c.zones.planned {
+		if cred, ok := listed[zone.ID]; ok && zone.CredentialID == cred {
+			c.e.zones.listed(zone)
+		}
+	}
 }
 
 // offerRemovals offers the removals the mass delete guard counted, when it
