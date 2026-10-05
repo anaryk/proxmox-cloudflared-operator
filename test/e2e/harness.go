@@ -196,6 +196,19 @@ func (s *suite) setup(t *testing.T, token string) {
 	s.requireOverrideLine(t, first)
 }
 
+// allowHosts sets the allow patterns of the settings, as an admin edits
+// them, and asks for a cycle.
+func (s *suite) allowHosts(t testing.TB, patterns ...string) {
+	t.Helper()
+	st, err := store.Open(store.DefaultPaths())
+	require.NoError(t, err)
+	settings, err := st.Settings()
+	require.NoError(t, err)
+	settings.AllowHosts = patterns
+	require.NoError(t, st.SaveSettings(settings))
+	s.sync(t)
+}
+
 // requireOverrideLine checks that a state shows the override of the API as a
 // problem against the fake, and that nothing is overridden against
 // Cloudflare.

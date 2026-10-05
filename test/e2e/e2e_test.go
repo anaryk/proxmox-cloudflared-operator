@@ -180,8 +180,12 @@ func testWildcardOrder(t *testing.T, s *suite) {
 	s.enforce(t)
 	tunnel := s.tunnel(t)
 	wild, exact := "*.e2e-s5."+s.zone, "www.e2e-s5."+s.zone
-	s.waitRoute(t, wild, planner.StateActive)
+	// A wildcard is published only once an allowHosts pattern names it.
+	refused := s.waitRoute(t, wild, planner.StateRejected)
+	require.Contains(t, refused.Reason, `add "`+wild+`" to allowHosts`)
 	s.waitRoute(t, exact, planner.StateActive)
+	s.allowHosts(t, "*", wild)
+	s.waitRoute(t, wild, planner.StateActive)
 	s.waitIngress(t, tunnel, wild, "http://"+g.ip()+":8080")
 	rules := s.waitIngress(t, tunnel, exact, "http://"+g.ip()+":8081")
 	_, wi, _ := ruleOf(rules, wild)
@@ -457,36 +461,42 @@ func testMACMoved(t *testing.T, s *suite) {
 	s.waitTarget(t, target, true, time.Minute, time.Second)
 	own := s.hwaddr(t, g.vmid)
 
-	// The MAC changes with the link up, and nothing carries it to the node
-	// until the guest pings it: up to then the target stays in the set. The
-	// 2 seconds count from the moment the node's neighbour table has it.
+	// The MAC changes with the link up. Until the node's neighbour table has
+	// it the target stays in the set; the guest's ping carries it there, or
+	// pco's own verification, which asks the guest by ARP, does first. The 2
+	// seconds count from the moment the table has it.
 	const moved = "02:e2:e0:00:91:80"
 	seen := s.neighbourSeen(t, g.ip(), moved)
 	changed := time.Now()
 	s.setMAC(t, g.vmid, moved)
-	unseen := func() {
-		t.Helper()
+	var at time.Time
+	seenAlready := func() bool {
 		select {
-		case <-seen:
-			t.Fatalf("the node saw the MAC %s before the guest sent it anything", moved)
+		case at = <-seen:
+			t.Logf("the node saw the MAC %s before the guest sent it anything: pco asked for it", moved)
+			return true
 		default:
+			return false
 		}
 	}
-	unseen()
-	summary, targets, ok := s.egress(t)
-	require.True(t, ok && summary == filterOn && slices.Contains(targets, target),
-		"the target is in the set until the node sees the new MAC: %q, exit 0: %v, the set: %v", summary, ok, targets)
-	unseen()
+	if !seenAlready() {
+		summary, targets, ok := s.egress(t)
+		inSet := ok && summary == filterOn && slices.Contains(targets, target)
+		if !inSet && !seenAlready() {
+			t.Fatalf("the target left the set before the node saw the new MAC: %q, exit 0: %v, the set: %v", summary, ok, targets)
+		}
+	}
 	pinged := make(chan error, 1)
 	go func() {
 		_, err := s.run("pct", "exec", strconv.Itoa(g.vmid), "--", "sh", "-c", "ping -c 1 -W 2 "+nodeAddr+" >/dev/null || true")
 		pinged <- err
 	}()
-	var at time.Time
-	select {
-	case at = <-seen:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the neighbour table of the node never gave %s the MAC %s", g.ip(), moved)
+	if at.IsZero() {
+		select {
+		case at = <-seen:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the neighbour table of the node never gave %s the MAC %s", g.ip(), moved)
+		}
 	}
 	s.waitTarget(t, target, false, 10*time.Second, 50*time.Millisecond)
 	took := time.Since(at)
