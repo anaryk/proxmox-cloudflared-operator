@@ -8,10 +8,13 @@ A release is a tag. The `release` workflow builds the packages from it, signs
 1. Make the release key: one OpenPGP signing key without a passphrase, which
    the workflow imports with `gpg --batch`. Keep a copy of the private key
    outside GitHub.
-2. Adapt `scripts/install_test.sh` first: it finds the key block in
-   `scripts/install.sh` by the placeholder line and fails once a real key
-   stands there. That change lands with the first release.
-3. Paste the public key into `scripts/install.sh`, in place of the placeholder:
+2. `scripts/install_test.sh` finds the key block in `scripts/install.sh` by its
+   `read -r -d '' PCO_RELEASE_KEY_B64` line and the `EOF` that closes it, so it
+   works with any key in the block. It pins the fingerprint of the key, in
+   `RELEASE_FPRS`, and checks that the keyring in the script holds that key and
+   no other primary key.
+3. Paste the public key into `scripts/install.sh`, in place of what the block
+   holds:
 
        gpg --export <fingerprint> | base64 | tr -d '\n' | fold -w 64
 
@@ -19,6 +22,11 @@ A release is a tag. The `release` workflow builds the packages from it, signs
    fingerprint of every key in the block:
 
        packaging/release-key.sh scripts/install.sh /tmp/release.gpg
+
+   Change `RELEASE_FPRS` in `scripts/install_test.sh` to match, and name the
+   fingerprint where `README.md` and `docs/quickstart.md` do, so that an admin can
+   check the key of the script against it. The key in the repository now is
+   `3D326CB52862A2E91C9919EFA98A1ED57B31F91B`.
 
 4. On GitHub, in this order:
    - Settings, Environments: create `release`. Add a required reviewer. Under
@@ -62,8 +70,11 @@ The installers of old releases carry the old key only, so the new key goes in
 beside it first:
 
 1. Put both public keys into the block of `scripts/install.sh`
-   (`gpg --export <old> <new> | base64 ...`) and release, still signed with the
-   old key.
+   (`gpg --export <old> <new> | base64 ...`), list both fingerprints in
+   `RELEASE_FPRS` of `scripts/install_test.sh`, and release, still signed with
+   the old key.
 2. Replace the secret with the new private key and release again. The workflow
    accepts a secret that is any of the keys in `install.sh`.
-3. Later, when the old installers are gone, drop the old key from `install.sh`.
+3. Later, when the old installers are gone, drop the old key from `install.sh`
+   and from `RELEASE_FPRS`, and change the fingerprint in `README.md` and
+   `docs/quickstart.md` to the new one.

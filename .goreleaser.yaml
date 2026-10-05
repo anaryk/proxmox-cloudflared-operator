@@ -49,7 +49,7 @@ nfpms:
     # scripts/install.sh downloads pco_<tag without the v>_<arch>.deb. Left to
     # itself nfpm writes a pre-release as 0.1.0~rc.1 in the file name too.
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
-    maintainer: Tomáš Marek <tomas.marek@pellera.com>
+    maintainer: Tomáš Marek <tomas.marek@computer-solutions.cz>
     description: |-
       Cloudflare Tunnel operator for Proxmox VE
       pco runs on a Proxmox VE node and reads the hostnames that tagged guests

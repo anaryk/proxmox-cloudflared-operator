@@ -54,6 +54,12 @@ installs a given release instead of the latest. The installer needs `curl`,
 `sha256sum`, `base64`, `apt-get` and either `gpgv` or `sqv`; a Proxmox VE node has
 them, or `apt-get install gpgv` adds the one that is missing.
 
+The release key is an ed25519 key with the user ID `pco release signing key
+<tomas.marek@computer-solutions.cz>` and the fingerprint
+`3D326CB52862A2E91C9919EFA98A1ED57B31F91B` (`gpg` prints it in groups of four).
+Before it installs the package the installer prints `verified by: signature by key` and
+the fingerprint of the key the signature was made with; it should be this one.
+
 The manual way is to install the package yourself. From a release, download
 `pco_<version>_<arch>.deb`, `checksums.txt` and its detached signature
 `checksums.txt.sig` from the releases page of the repository. A checksum that arrives from
@@ -74,7 +80,8 @@ To check by hand, compare the checksum first,
 
 and then the signature against the key of that script.
 `packaging/release-key.sh scripts/install.sh release.gpg` writes its keyring and prints
-the fingerprints. Do not trust the exit status of a bare
+the fingerprints; one of them should be `3D326CB52862A2E91C9919EFA98A1ED57B31F91B`, and
+while one release key replaces another, a second one may stand beside it. Do not trust the exit status of a bare
 `gpgv --keyring ./release.gpg checksums.txt.sig checksums.txt`: `gpgv` exits 0 for a
 signature by a key that is revoked or has expired, and says so only in its status lines.
 `gpgv --status-fd 1` prints them; look for a `GOODSIG` line and for none of `REVKEYSIG`,

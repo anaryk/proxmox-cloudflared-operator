@@ -72,6 +72,10 @@ the checksum file and the checksum of the package, installs it, and starts the s
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash
 
+The release key the script carries has the fingerprint
+`3D326CB52862A2E91C9919EFA98A1ED57B31F91B`, and before it installs anything it says
+which key the signature was made with.
+
 Read the script first, and run it as root on the node. The manual way is to download
 `pco_<version>_<arch>.deb` and `checksums.txt` from the releases page, check them, and
 install the package with `apt install ./pco_<version>_<arch>.deb`. Before the first
