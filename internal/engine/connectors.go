@@ -346,7 +346,10 @@ func (c *cycleRun) ensure(t reconcile.TunnelState) {
 		}
 		token = fetched
 	case c.accountsListed(t.CredentialID):
-		token = c.freshToken(t, token)
+		var why string
+		if token, why = c.freshToken(t, token); why != "" {
+			c.problem("tunnel %s in account %s: reading its token again: %s; its connector keeps the one it has", t.Name, t.AccountID, why)
+		}
 	}
 	c.ensureWith(t, token)
 }

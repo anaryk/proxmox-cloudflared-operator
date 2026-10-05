@@ -51,17 +51,20 @@ type tokenRetry struct {
 }
 
 // freshToken reads the run token of a tunnel again and returns it, or the one
-// the connector has when it cannot be read; a read that fails is kept, for
-// followRefusals to try again. A token that changed, as after a rotation of
-// the tunnel's secret, is an event: Ensure writes it and restarts the
-// connector.
-func (c *cycleRun) freshToken(t reconcile.TunnelState, stored string) string {
+// the connector has when it cannot be read, with why; a read that fails is
+// kept, for followRefusals to try again. A token that changed, as after a
+// rotation of the tunnel's secret, is an event: Ensure writes it and restarts
+// the connector.
+func (c *cycleRun) freshToken(t reconcile.TunnelState, stored string) (token, why string) {
+	if c.reread == nil {
+		c.reread = make(map[string]bool)
+	}
+	c.reread[t.ID] = true
 	token, err := c.fetchToken(t)
 	if err != nil {
 		why := redact(err.Error(), stored)
 		c.e.retries[t.ID] = tokenRetry{at: c.now, why: why}
-		c.problem("tunnel %s in account %s: reading its token again: %s; its connector keeps the one it has", t.Name, t.AccountID, why)
-		return stored
+		return stored, why
 	}
 	delete(c.e.retries, t.ID)
 	if token != stored {
@@ -70,7 +73,7 @@ func (c *cycleRun) freshToken(t reconcile.TunnelState, stored string) string {
 			Message: fmt.Sprintf("the run token of tunnel %s in account %s changed at Cloudflare; its connector restarts with the new one", t.Name, t.AccountID),
 		})
 	}
-	return token
+	return token, ""
 }
 
 // followRefusals reports every connector whose token Cloudflare refuses and,
@@ -95,21 +98,25 @@ func (c *cycleRun) followRefusals(existing []reconcile.TunnelState, before, now 
 		}
 		retry, failed := c.e.retries[t.ID]
 		switch {
+		case c.reread[t.ID]:
+			// Read in this cycle, which said so when it failed.
+			continue
 		case failed && c.now.Before(retry.at.Add(rolloutAskEvery)) && !c.now.Before(retry.at):
 			c.noteRetry(t, retry)
 			continue
-		case !failed && (refused(before, t.ID) || c.accountsListed(t.CredentialID)):
+		case !failed && refused(before, t.ID):
 			continue
 		}
 		stored, found, err := c.e.d.Connectors.Token(t.ID)
 		if err != nil || !found {
 			continue
 		}
-		if token := c.freshToken(t, stored); token != stored {
+		token, why := c.freshToken(t, stored)
+		switch {
+		case why != "":
+			c.noteRetry(t, c.e.retries[t.ID])
+		case token != stored:
 			c.ensureWith(t, token)
-		}
-		if retry, failed := c.e.retries[t.ID]; failed {
-			c.noteRetry(t, retry)
 		}
 	}
 }

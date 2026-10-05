@@ -157,7 +157,7 @@ func TestAFailedReReadIsTriedAgainWhileTheRefusalLasts(t *testing.T) {
 
 	e.clock.advance(10 * time.Second)
 	st := e.cycle()
-	require.Contains(t, st.Problems, fmt.Sprintf(retryProblem, "2026-10-01T12:00:40Z"))
+	require.Equal(t, []string{fmt.Sprintf(retryProblem, "2026-10-01T12:00:40Z")}, tokenProblems(st), "one line")
 
 	api.armed.Store(false)
 	e.clock.advance(10 * time.Second)
@@ -214,6 +214,30 @@ func TestATokenThatCannotBeReadAgainLeavesTheConnectorAsItIs(t *testing.T) {
 		"its connector keeps the one it has")
 	require.Len(t, e.conn.ensures(), ensures+1, "the connector is still kept running")
 	require.Equal(t, cffake.RunToken(testAccount, id), e.lastToken(id))
+
+	t.Run("while Cloudflare refuses the token of the connector", func(t *testing.T) {
+		e.conn.setRefused(id, true)
+		e.clock.advance(zoneRefreshEvery)
+		st := e.cycle()
+
+		require.Equal(t, []string{"tunnel pco-abc123 in account acc1: reading its token again: cloudflare api: HTTP 503: unavailable; " +
+			"its connector keeps the one it has"}, tokenProblems(st), "one line")
+
+		e.clock.advance(10 * time.Second)
+		st = e.cycle()
+		require.Equal(t, []string{fmt.Sprintf(retryProblem, "2026-10-01T12:10:30Z")}, tokenProblems(st))
+	})
+}
+
+// tokenProblems are the problems that say a token could not be read again.
+func tokenProblems(st State) []string {
+	var out []string
+	for _, p := range st.Problems {
+		if strings.Contains(p, "reading its token again") {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func TestRotateGivesTheTunnelANewSecretAndRestartsItsConnector(t *testing.T) {

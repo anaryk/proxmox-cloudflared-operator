@@ -79,6 +79,7 @@ type cycleRun struct {
 	// statuses of the connectors as the last cycle read them.
 	connected bool
 	ensured   map[string]bool // the tunnels whose connector this cycle kept running
+	reread    map[string]bool // the tunnels whose token this cycle read again
 	existing  []reconcile.TunnelState
 	shown     []reconcile.TunnelState
 	before    []connector.Status
