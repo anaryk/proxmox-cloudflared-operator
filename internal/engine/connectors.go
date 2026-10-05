@@ -126,9 +126,17 @@ func (c *cycleRun) knownTunnels() (existing, shown []reconcile.TunnelState) {
 	return existing, shown
 }
 
+func (c *cycleRun) noteEnsured(id string) {
+	if c.ensured == nil {
+		c.ensured = make(map[string]bool)
+	}
+	c.ensured[id] = true
+}
+
 // notePortsHeld names the connectors that another process keeps from starting
 // by holding their metrics port, as any local user can: the connector manager
-// gives each another port at its next Ensure.
+// gives each another port at its next Ensure, which the line says when to
+// expect.
 func (c *cycleRun) notePortsHeld(shown []reconcile.TunnelState, statuses []connector.Status) {
 	for _, t := range shown {
 		i := slices.IndexFunc(statuses, func(s connector.Status) bool { return s.TunnelID == t.ID && s.MetricsPortHeld })
@@ -136,8 +144,15 @@ func (c *cycleRun) notePortsHeld(shown []reconcile.TunnelState, statuses []conne
 			continue
 		}
 		_, port, _ := net.SplitHostPort(statuses[i].MetricsAddr)
-		c.problem("tunnel %s in account %s: metrics port %s is held by another process, which keeps its connector from starting; "+
-			"the connector gets another port in the next cycle", t.Name, t.AccountID, port)
+		remedy := "the connector gets another port in the first cycle that keeps it running"
+		switch {
+		case c.ensured[t.ID]:
+			remedy = "the connector gets another port in the next cycle"
+		case c.install.ID != "" && c.mode() == reconcile.Observe:
+			remedy = "pco gives the connector another port once it changes things again, after pco apply"
+		}
+		c.problem("tunnel %s in account %s: metrics port %s is held by another process, which keeps its connector from starting; %s",
+			t.Name, t.AccountID, port, remedy)
 	}
 }
 
@@ -228,6 +243,7 @@ func (c *cycleRun) keepRunning(t reconcile.TunnelState) {
 	case err != nil:
 		c.problem("tunnel %s in account %s: reading the connector token: %v", t.Name, t.AccountID, err)
 	case found:
+		c.noteEnsured(t.ID)
 		if err := c.e.d.Connectors.Ensure(c.ctx, c.install.ID, t.ID, token); err != nil {
 			c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
 		}
@@ -336,6 +352,7 @@ func (c *cycleRun) ensure(t reconcile.TunnelState) {
 }
 
 func (c *cycleRun) ensureWith(t reconcile.TunnelState, token string) {
+	c.noteEnsured(t.ID)
 	if err := c.e.d.Connectors.Ensure(c.ctx, c.install.ID, t.ID, token); err != nil {
 		c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
 	}

@@ -48,7 +48,7 @@ func (m *Manager) readJournal(ctx context.Context, st *Status, port int) {
 	st.TokenRefused, st.MetricsPortHeld = whyNotReady(lines, st.MetricsAddr)
 	if st.MetricsPortHeld {
 		m.mu.Lock()
-		m.held[port] = true
+		m.held[port] = m.now()
 		m.mu.Unlock()
 	}
 }

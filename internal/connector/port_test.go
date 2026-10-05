@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -81,4 +82,27 @@ func TestEnsureKeepsAPortNobodyElseHolds(t *testing.T) {
 
 	require.Equal(t, 20300, portOf(t, dir, idA))
 	require.Empty(t, sd.changes())
+}
+
+// A port that was held is not given out again for an hour: the process that
+// held it may be gone by then, and ports are not to run out.
+func TestAHeldPortIsGivenOutAgainAfterAnHour(t *testing.T) {
+	m, _, dir := newTestManager(t)
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return now }
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	m.httpc = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, context.Canceled })}
+	journalOf(t, m, []string{logStarting, logPortHeld}, nil)
+	_, err := m.Status(t.Context(), idA)
+	require.NoError(t, err)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.Equal(t, 20301, portOf(t, dir, idA))
+
+	now = now.Add(59 * time.Minute)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
+	require.Equal(t, 20302, portOf(t, dir, idB))
+
+	now = now.Add(2 * time.Minute)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idC, "token-c"))
+	require.Equal(t, 20300, portOf(t, dir, idC))
 }

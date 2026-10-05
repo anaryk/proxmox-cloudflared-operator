@@ -77,6 +77,7 @@ type cycleRun struct {
 	// found to exist and shown all whose connectors it shows. before are the
 	// statuses of the connectors as the last cycle read them.
 	connected bool
+	ensured   map[string]bool // the tunnels whose connector this cycle kept running
 	existing  []reconcile.TunnelState
 	shown     []reconcile.TunnelState
 	before    []connector.Status

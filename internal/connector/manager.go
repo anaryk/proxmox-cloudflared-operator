@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -54,7 +55,20 @@ type Manager struct {
 	mu     sync.Mutex              // guards the fields below and serialises the work on the files
 	queued map[string]pendingState // by tunnel id: the marker a start or restart was queued for
 	stuck  map[string]struct{}     // stale temporary files that could not be removed, by path
-	held   map[int]bool            // metrics ports another process held, which are not given out again
+	held   map[int]time.Time       // metrics ports another process held, and when, which are not given out for heldFor
+	now    func() time.Time
+}
+
+// heldFor is how long a metrics port that another process held is not given
+// out again: that process may be gone after a while, and ports are not to run
+// out.
+const heldFor = time.Hour
+
+// heldNow says whether another process held a port within heldFor. The caller
+// holds the lock.
+func (m *Manager) heldNow(port int) bool {
+	at, ok := m.held[port]
+	return ok && m.now().Sub(at) < heldFor && !m.now().Before(at)
 }
 
 // NewManager returns a manager that keeps the token, env and config files of
@@ -71,7 +85,8 @@ func NewManager(sd Systemd, dir string, httpc *http.Client, log zerolog.Logger) 
 		readFile:  os.ReadFile,
 		readDir:   os.ReadDir,
 		queued:    make(map[string]pendingState),
-		held:      make(map[int]bool),
+		held:      make(map[int]time.Time),
+		now:       time.Now,
 	}
 	if j, ok := sd.(journalReader); ok {
 		m.journal = j.Journal
@@ -109,7 +124,7 @@ func (m *Manager) path(name string) string { return filepath.Join(m.dir, name) }
 // The metrics port is the lowest from 20300 that no other env file names. A
 // port that another process on the host holds keeps the connector from
 // starting; Status finds that in its journal, and the next Ensure moves the
-// connector to another port.
+// connector to another port. Such a port is not given out for an hour.
 func (m *Manager) Ensure(ctx context.Context, installID, tunnelID, token string) error {
 	if err := checkID(tunnelID); err != nil {
 		return err
@@ -223,7 +238,7 @@ func (m *Manager) writeFiles(installID, id, token string) error {
 func (m *Manager) wantedEnv(installID, id string) (data []byte, replace, restart bool, err error) {
 	values, readErr := readEnv(m.path(envFile(id)))
 	addr, port, err := metricsOf(values)
-	if readErr != nil || err != nil || m.held[port] {
+	if readErr != nil || err != nil || m.heldNow(port) {
 		if port, err = m.freePort(id); err != nil {
 			return nil, false, false, err
 		}
@@ -258,7 +273,7 @@ func (m *Manager) freePort(id string) (int, error) {
 		}
 	}
 	port := m.firstPort
-	for used[port] || m.held[port] {
+	for used[port] || m.heldNow(port) {
 		port++
 	}
 	if port > maxPort {
