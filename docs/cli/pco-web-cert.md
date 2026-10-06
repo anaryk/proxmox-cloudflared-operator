@@ -7,6 +7,10 @@ In mode ca, pco setup's default, the key is the web interface's own and the cert
 signed by the cluster CA for 90 days; the daemon makes a new one 30 days before it expires,
 and when the node's names or addresses or the listen address change.
 
+In the appliance the key is its own and the certificate self-signed for 397 days, made by
+the daemon at its first start and again 30 days before it expires: a browser trusts it by
+the fingerprint this command prints.
+
 ## Usage
 
 ```text
@@ -27,7 +31,7 @@ pco web cert renew
 ## Commands
 
 - [pco web cert import](pco-web-cert-import.md): Serve a certificate and key of your own in the web interface
-- [pco web cert renew](pco-web-cert-renew.md): Make a new key and certificate of the cluster CA for the web interface now
+- [pco web cert renew](pco-web-cert-renew.md): Make a new key and certificate for the web interface now
 
 ## Flags
 

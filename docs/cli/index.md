@@ -92,7 +92,7 @@ pco help route manual add
 - [pco web](pco-web.md): Serve the web interface
   - [pco web cert](pco-web-cert.md): Show the certificate of the web interface
     - [pco web cert import](pco-web-cert-import.md): Serve a certificate and key of your own in the web interface
-    - [pco web cert renew](pco-web-cert-renew.md): Make a new key and certificate of the cluster CA for the web interface now
+    - [pco web cert renew](pco-web-cert-renew.md): Make a new key and certificate for the web interface now
 
 ## Lifecycle
 

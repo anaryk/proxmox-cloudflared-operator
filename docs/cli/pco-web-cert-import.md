@@ -2,8 +2,9 @@
 
 Check a certificate and its key, both PEM, and put them in place of the ones the web
 interface serves, which makes its mode own, then restart pco-web.service. The key must be
-the certificate's, the certificate valid now and for one of the node's names or addresses.
-pco does not renew it; pco doctor warns 30 days before it expires. It runs as root.
+the certificate's, the certificate valid now and for one of the node's names or addresses
+(the appliance's, in the appliance). pco does not renew it; pco doctor warns 30 days before
+it expires. It runs as root.
 
 ## Usage
 
