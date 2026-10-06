@@ -30,6 +30,8 @@ const (
 	inPrefix    = "198.18.0.5"
 	udpPort     = 9999
 	tcpPort     = 80
+	// nftPath is where the runner NewNft returns finds nft.
+	nftPath = "/usr/sbin/nft"
 )
 
 func TestLinuxTheServicePrefixNeverLeaves(t *testing.T) {
@@ -42,7 +44,7 @@ func TestLinuxTheServicePrefixNeverLeaves(t *testing.T) {
 
 	var changed []string
 	lab.in(t, func() (err error) { changed, err = Load(ctx, nl, nft); return err })
-	require.Equal(t, []string{nameDevice, nameAddr, nameRoute, nameRule, nameUnreach, nameTable}, changed)
+	require.Equal(t, []string{nameDevice, nameAddr, nameRoute, nameUnreach, nameRule, nameTable}, changed)
 	lab.in(t, func() (err error) { changed, err = Load(ctx, nl, nft); return err })
 	require.Empty(t, changed, "a second load changes nothing")
 	lab.in(t, func() error { return Verify(ctx, nl, nft) })

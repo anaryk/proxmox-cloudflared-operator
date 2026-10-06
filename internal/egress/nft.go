@@ -42,9 +42,14 @@ type Nft interface {
 }
 
 // NewNft returns an Nft that runs /usr/sbin/nft.
-func NewNft() Nft { return nftCmd{bin: nftPath} }
+func NewNft() Nft { return NewNftFor(tableName) }
 
-type nftCmd struct{ bin string }
+// NewNftFor returns an Nft that runs /usr/sbin/nft for another table of the
+// inet family, as the appliance's pco_net: List lists that one, and says
+// ErrNotLoaded and ErrUnreadable of it as of the egress table.
+func NewNftFor(name string) Nft { return nftCmd{bin: nftPath, table: name} }
+
+type nftCmd struct{ bin, table string }
 
 func (n nftCmd) Apply(ctx context.Context, script string) error {
 	_, err := n.run(ctx, strings.NewReader(script), "-f", "-")
@@ -52,7 +57,7 @@ func (n nftCmd) Apply(ctx context.Context, script string) error {
 }
 
 func (n nftCmd) List(ctx context.Context) ([]byte, error) {
-	out, err := n.run(ctx, nil, "-j", "list", "table", "inet", tableName)
+	out, err := n.run(ctx, nil, "-j", "list", "table", "inet", n.table)
 	var ne *nftError
 	switch {
 	case errors.As(err, &ne) && ne.missing():

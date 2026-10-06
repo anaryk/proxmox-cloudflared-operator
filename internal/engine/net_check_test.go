@@ -7,13 +7,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// netEvents returns the messages of the events of the service prefix after t.
+func netEvents(e *env, after time.Time) []string {
+	var out []string
+	for _, ev := range e.eng.Events(after) {
+		if ev.Kind == "net" {
+			require.Equal(e.t, "service prefix", ev.Subject)
+			out = append(out, ev.Message)
+		}
+	}
+	return out
+}
+
 func TestTheServicePrefixLoadedAgainIsAnEventAndAProblemOfTheNextCycle(t *testing.T) {
 	e := published(t)
 
 	e.eng.NoteNet(NetCheck{Reloaded: "the route 198.18.0.0/16 dev pco0 src 198.18.0.1 is missing"})
 
 	require.Equal(t, []string{"the service-prefix route or table was changed outside pco and was loaded again"},
-		egressEvents(e, t0.Add(-time.Hour)))
+		netEvents(e, t0.Add(-time.Hour)))
+	require.Empty(t, egressEvents(e, t0.Add(-time.Hour)), "an event of its own kind, not among those of the egress filter")
 	e.clock.advance(20 * time.Second)
 	st := e.cycle()
 	require.Equal(t, []string{"the service-prefix route or table was changed outside pco and was loaded again " +
@@ -38,7 +51,7 @@ func TestTheServicePrefixNotLoadedAgainIsAProblemThatHoldsNothing(t *testing.T) 
 
 	line := "the service-prefix route or table was changed outside pco and could not be loaded again: " +
 		"adding the dummy device pco0: operation not permitted"
-	require.Equal(t, []string{line}, egressEvents(e, t0.Add(-time.Hour)), "once")
+	require.Equal(t, []string{line}, netEvents(e, t0.Add(-time.Hour)), "once")
 	for range 2 {
 		e.clock.advance(20 * time.Second)
 		require.Equal(t, []string{line}, e.cycle().Problems)
@@ -58,5 +71,5 @@ func TestTheServicePrefixThatCannotBeCheckedIsAProblemOfTheNextCycle(t *testing.
 	e.clock.advance(20 * time.Second)
 	require.Equal(t, []string{"checking the service-prefix route and table: listing the table inet pco_net: signal: killed"},
 		e.cycle().Problems)
-	require.Empty(t, egressEvents(e, t0.Add(-time.Hour)))
+	require.Empty(t, netEvents(e, t0.Add(-time.Hour)))
 }

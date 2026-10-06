@@ -43,11 +43,22 @@ func newFakeNftBinary(t *testing.T) (nftCmd, string) {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "nft")
 	require.NoError(t, os.WriteFile(bin, []byte(fakeNftScript), 0o755))
-	return nftCmd{bin: bin}, bin
+	return nftCmd{bin: bin, table: tableName}, bin
 }
 
 func TestNewNftRunsTheSystemBinary(t *testing.T) {
-	require.Equal(t, nftCmd{bin: "/usr/sbin/nft"}, NewNft())
+	require.Equal(t, nftCmd{bin: "/usr/sbin/nft", table: "pco_egress"}, NewNft())
+	require.Equal(t, nftCmd{bin: "/usr/sbin/nft", table: "pco_net"}, NewNftFor("pco_net"))
+}
+
+func TestNftForAnotherTableListsThatOne(t *testing.T) {
+	n, bin := newFakeNftBinary(t)
+	n.table = "pco_net"
+
+	_, err := n.List(t.Context())
+
+	require.NoError(t, err)
+	require.Equal(t, "-j list table inet pco_net\n", readText(t, bin+".args"))
 }
 
 func TestApplyFeedsTheScriptToNftOnItsInput(t *testing.T) {
@@ -109,7 +120,7 @@ func TestListRefusesMoreOutputThanItKeeps(t *testing.T) {
 }
 
 func TestNftWithoutABinaryFails(t *testing.T) {
-	n := nftCmd{bin: filepath.Join(t.TempDir(), "nft")}
+	n := nftCmd{bin: filepath.Join(t.TempDir(), "nft"), table: tableName}
 
 	_, err := n.List(t.Context())
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -34,8 +35,12 @@ func (a *app) netCmdWith(e netEnv) *cobra.Command {
 			"to the dummy device " + appnet.Device + " before the connectors start, and the nftables table\n" +
 			appnet.Table + " rejects whatever is still sent to it, with or without the route. The daemon\n" +
 			"loads both again when they are changed. These commands run in the appliance and need root.\n\n" +
-			"pco net load puts back what is missing. Never restart pco-net.service for that: pco and\n" +
-			"every connector restart with it.",
+			"While pco runs, pco net load puts back what is missing. Never restart pco-net.service for\n" +
+			"that: pco and every connector restart with it.\n\n" +
+			"After a boot at which pco-net.service failed, pco and the connectors, which require it, did\n" +
+			"not start, and pco net load starts neither. Once pco net show names nothing a load cannot\n" +
+			"put back, systemctl start pco.service starts pco-net.service again and then pco, which\n" +
+			"starts the connectors once it has proved the container is the appliance.",
 	}
 	cmd.AddCommand(a.netLoadCmd(e), a.netShowCmd(e))
 	return cmd
@@ -61,8 +66,21 @@ func (a *app) netCheck(cmd *cobra.Command, e netEnv) error {
 
 func (a *app) netLoadCmd(e netEnv) *cobra.Command {
 	return &cobra.Command{
-		Use:    "load",
-		Short:  "Put the service-prefix route and table in place, as the boot unit does",
+		Use:   "load",
+		Short: "Put the service-prefix route and table in place, as the boot unit does",
+		Long: "Put in place what pco-net.service keeps: the dummy device " + appnet.Device + " with the address " +
+			appnet.ServiceSource.String() + ",\n" +
+			"the route of " + appnet.ServicePrefix.String() + " through it with that source, the policy rules at " +
+			strconv.Itoa(appnet.PrefUnreachable) + " and " + strconv.Itoa(appnet.PrefToPrefix) + ",\n" +
+			"and the table " + appnet.Table + ". What is there already stays, the table with its counter. It stops\n" +
+			"at the first step that fails and exits with 1: run by pco-net.service at boot, that fails the\n" +
+			"unit, and pco and the connectors do not start.",
+		Example: "  # Put back what is missing while pco runs\n" +
+			"  pco net load\n" +
+			"  # Then see that everything is in place\n" +
+			"  pco net show\n" +
+			"  # After a boot at which pco-net.service failed: load it, then pco and the connectors\n" +
+			"  systemctl start pco.service",
 		Args:   cobra.NoArgs,
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -98,7 +116,15 @@ func (a *app) netShowCmd(e netEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show",
 		Short: "Show the device, route, rules and table that keep the service prefix in the appliance",
-		Args:  cobra.NoArgs,
+		Long: "Show each thing pco-net.service keeps in place and whether it is, and how many packets the\n" +
+			"table " + appnet.Table + " rejected since it was loaded: each was sent to the service prefix\n" +
+			"and would otherwise have looked for it beyond the appliance. It changes nothing, and exits\n" +
+			"with 1 when anything is missing or not as pco loads it.",
+		Example: "  # In the appliance\n" +
+			"  pco net show\n" +
+			"  # On the node, for the appliance in container 9250\n" +
+			"  pct exec 9250 -- pco net show",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.netCheck(cmd, e); err != nil {
 				return err
@@ -108,7 +134,7 @@ func (a *app) netShowCmd(e netEnv) *cobra.Command {
 				return err
 			}
 			leaked, lerr := appnet.Leaked(cmd.Context(), e.nft)
-			if lerr != nil && !errors.Is(lerr, egress.ErrNotLoaded) {
+			if lerr != nil && !errors.Is(lerr, appnet.ErrNotLoaded) {
 				return lerr
 			}
 			return renderNet(&screen{w: cmd.OutOrStdout()}, parts, leaked, lerr == nil)

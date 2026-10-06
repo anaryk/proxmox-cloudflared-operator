@@ -42,6 +42,7 @@ const (
 	kindEgress     = "egress"
 	kindConnector  = "connector"
 	kindIdentity   = "identity"
+	kindNet        = "net" // what pco-net.service loads in the appliance
 )
 
 // Event is something that changed, as the event log keeps it.

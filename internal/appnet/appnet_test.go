@@ -27,6 +27,7 @@ type fakeNetlink struct {
 	ensured   []string
 	ensureErr error
 	hasErr    error
+	ruleErr   map[int]error // what adding the rule at a preference fails with
 }
 
 func newFakeNetlink() *fakeNetlink {
@@ -88,6 +89,9 @@ func (f *fakeNetlink) HasRoute(_ context.Context, prefix netip.Prefix, dev strin
 
 func (f *fakeNetlink) EnsureRule(_ context.Context, pref int, src netip.Addr, dst netip.Prefix, unreachable bool) error {
 	f.ensured = append(f.ensured, "rule "+ruleKey(pref, src, dst, unreachable))
+	if err := f.ruleErr[pref]; err != nil {
+		return err
+	}
 	f.rules[ruleKey(pref, src, dst, unreachable)] = true
 	return nil
 }
@@ -190,16 +194,29 @@ func TestLoadPutsEverythingInPlaceOnAnEmptySystem(t *testing.T) {
 	changed, err := Load(t.Context(), nl, nft)
 
 	require.NoError(t, err)
-	require.Equal(t, []string{nameDevice, nameAddr, nameRoute, nameRule, nameUnreach, nameTable}, changed)
+	require.Equal(t, []string{nameDevice, nameAddr, nameRoute, nameUnreach, nameRule, nameTable}, changed)
 	require.Equal(t, []string{
 		"dummy pco0",
 		"addr 198.18.0.1/32",
 		"route 198.18.0.0/16 dev pco0 src 198.18.0.1",
-		"rule 1890 from 198.18.0.1 to 198.18.0.0/16 unreachable false",
 		"rule 1900 from 198.18.0.1 to invalid Prefix unreachable true",
+		"rule 1890 from 198.18.0.1 to 198.18.0.0/16 unreachable false",
 	}, nl.ensured, "in an order the kernel accepts: the source of the route is an address of the device")
 	require.Equal(t, []string{Script()}, nft.scripts)
 	require.NoError(t, Verify(t.Context(), nl, nft))
+}
+
+// A load that ends between the two rules leaves the source going nowhere,
+// not anywhere main routes it: the unreachable rule comes first.
+func TestALoadCutShortBetweenTheRulesFailsClosed(t *testing.T) {
+	nl, nft := newFakeNetlink(), &fakeNft{t: t}
+	nl.ruleErr = map[int]error{PrefToPrefix: errors.New("no buffer space available")}
+
+	changed, err := Load(t.Context(), nl, nft)
+
+	require.EqualError(t, err, "adding the rule 1890: from 198.18.0.1 to 198.18.0.0/16 lookup main: no buffer space available")
+	require.Equal(t, []string{nameDevice, nameAddr, nameRoute, nameUnreach}, changed)
+	require.Equal(t, map[string]bool{ruleKey(PrefUnreachable, ServiceSource, netip.Prefix{}, true): true}, nl.rules)
 }
 
 func TestLoadChangesNothingOnACompleteSystem(t *testing.T) {
@@ -368,8 +385,8 @@ func TestVerifyNamesWhatIsMissing(t *testing.T) {
 			name:  "both rules",
 			spoil: func(_ *testing.T, nl *fakeNetlink, _ *fakeNft) { nl.rules = map[string]bool{} },
 			want: []string{
-				"the rule 1890: from 198.18.0.1 to 198.18.0.0/16 lookup main is missing",
 				"the rule 1900: from 198.18.0.1 unreachable is missing",
+				"the rule 1890: from 198.18.0.1 to 198.18.0.0/16 lookup main is missing",
 			},
 		},
 		{
@@ -441,6 +458,13 @@ func TestVerifyNamesWhatIsMissing(t *testing.T) {
 			},
 			want: []string{"the listing of the table inet pco_net cannot be read: no nftables array"},
 		},
+		{
+			name: "a listing nft cut short",
+			spoil: func(_ *testing.T, _ *fakeNetlink, nft *fakeNft) {
+				nft.listErr = fmt.Errorf("%w: nft -j list table inet pco_net: more than 33554432 bytes of output", egress.ErrUnreadable)
+			},
+			want: []string{"the listing of the table inet pco_net cannot be read: nft printed more than a listing of it takes"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -449,7 +473,8 @@ func TestVerifyNamesWhatIsMissing(t *testing.T) {
 
 			err := Verify(t.Context(), nl, nft)
 
-			require.ErrorIs(t, err, egress.ErrChanged)
+			require.ErrorIs(t, err, ErrChanged)
+			require.ErrorIs(t, err, egress.ErrChanged, "one branch in the keeper for both tables")
 			var changed *ChangedError
 			require.ErrorAs(t, err, &changed)
 			require.Equal(t, tc.want, changed.Differences)
@@ -510,7 +535,21 @@ func TestInspectShowsEachPart(t *testing.T) {
 		names = append(names, p.Name)
 		require.Equal(t, p.Name != nameRoute, p.OK(), p.Name)
 	}
-	require.Equal(t, []string{nameDevice, nameAddr, nameRoute, nameRule, nameUnreach, nameTable}, names)
+	require.Equal(t, []string{nameDevice, nameAddr, nameRoute, nameUnreach, nameRule, nameTable}, names)
+}
+
+// The errors of the package name the table they are about, and are the
+// egress ones of the same meaning for a caller that checks for those.
+func TestTheErrorsNameTheTableOfThePackage(t *testing.T) {
+	require.EqualError(t, ErrNotLoaded, "the table inet pco_net is not loaded")
+	require.ErrorIs(t, ErrNotLoaded, egress.ErrNotLoaded)
+	require.EqualError(t, ErrChanged, "the service-prefix route or table is not as pco loads it")
+	require.ErrorIs(t, ErrChanged, egress.ErrChanged)
+	require.NotErrorIs(t, ErrChanged, egress.ErrNotLoaded)
+}
+
+func TestTheNftOfThePackageListsItsTable(t *testing.T) {
+	require.Equal(t, egress.NewNftFor("pco_net"), NewNft())
 }
 
 func TestLeakedReadsTheCounter(t *testing.T) {
@@ -525,7 +564,14 @@ func TestLeakedReadsTheCounter(t *testing.T) {
 	t.Run("not without the table", func(t *testing.T) {
 		nft.live = nil
 		_, err := Leaked(t.Context(), nft)
-		require.ErrorIs(t, err, egress.ErrNotLoaded)
+		require.ErrorIs(t, err, ErrNotLoaded)
+		require.EqualError(t, err, "the table inet pco_net is not loaded", "not the words of the egress table")
+	})
+	t.Run("nor from a listing nft cut short", func(t *testing.T) {
+		nft.live, nft.listErr = nil, fmt.Errorf("%w: nft -j list table inet pco_net: more than 33554432 bytes of output", egress.ErrUnreadable)
+		_, err := Leaked(t.Context(), nft)
+		require.EqualError(t, err, "the listing of the table inet pco_net cannot be read: nft printed more than a listing of it takes")
+		nft.listErr = nil
 	})
 	t.Run("nor without the counter", func(t *testing.T) {
 		nft.live = []byte(`{"nftables": [{"table": {"family": "inet", "name": "pco_net", "handle": 3}}]}`)

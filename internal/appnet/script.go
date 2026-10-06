@@ -91,14 +91,22 @@ func (c listedChain) String() string {
 	return fmt.Sprintf("%s hook %s priority %s policy %s", c.Type, c.Hook, prio, c.Policy)
 }
 
-var errUnreadable = errors.New("the listing cannot be read")
+// NewNft returns the nft of the table: the egress filter's runner, listing
+// inet pco_net.
+func NewNft() egress.Nft { return egress.NewNftFor(tableName) }
 
-// list reads the table, or returns egress.ErrNotLoaded without one.
+var errUnreadable = errors.New("the listing of the table " + Table + " cannot be read")
+
+// list reads the table, or returns ErrNotLoaded without one. The runner
+// says both of the table in the words of the egress table, which are
+// replaced here.
 func list(ctx context.Context, nft egress.Nft) (*listed, error) {
 	raw, err := nft.List(ctx)
 	switch {
 	case errors.Is(err, egress.ErrNotLoaded):
-		return nil, err
+		return nil, ErrNotLoaded
+	case errors.Is(err, egress.ErrUnreadable):
+		return nil, fmt.Errorf("%w: nft printed more than a listing of it takes", errUnreadable)
 	case err != nil:
 		return nil, fmt.Errorf("listing the table %s: %w", Table, err)
 	}
@@ -197,11 +205,10 @@ func tablePart(ctx context.Context, nft egress.Nft) (Part, error) {
 	p := Part{Name: "the table " + Table}
 	l, err := list(ctx, nft)
 	switch {
-	case errors.Is(err, egress.ErrNotLoaded):
-		p.Missing, p.Differences = true, []string{p.Name + " is not loaded"}
+	case errors.Is(err, ErrNotLoaded):
+		p.Missing, p.Differences = true, []string{err.Error()}
 	case errors.Is(err, errUnreadable):
-		p.Differences = []string{fmt.Sprintf("the listing of the table %s cannot be read: %s",
-			Table, strings.TrimPrefix(err.Error(), errUnreadable.Error()+": "))}
+		p.Differences = []string{err.Error()}
 	case err != nil:
 		return Part{}, err
 	default:
@@ -251,7 +258,7 @@ func (l *listed) differences() []string {
 
 // Leaked returns what the counter of the reject rule counted since the table
 // was loaded: packets that were sent to the service prefix. Without the
-// table it returns egress.ErrNotLoaded.
+// table it returns ErrNotLoaded.
 func Leaked(ctx context.Context, nft egress.Nft) (egress.Counter, error) {
 	l, err := list(ctx, nft)
 	if err != nil {

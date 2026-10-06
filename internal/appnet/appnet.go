@@ -66,7 +66,9 @@ type link struct {
 }
 
 // links are the things in the order the kernel takes them: the route needs
-// the device up, and its source an address of the device.
+// the device up, and its source an address of the device. The unreachable
+// rule comes before the one to the prefix, so that a load cut short between
+// them leaves the source going nowhere rather than anywhere main routes it.
 func links(nl Netlink) []link {
 	addr := netip.PrefixFrom(ServiceSource, ServiceSource.BitLen())
 	route := fmt.Sprintf("the route %s dev %s src %s", ServicePrefix, Device, ServiceSource)
@@ -95,21 +97,21 @@ func links(nl Netlink) []link {
 			},
 		},
 		{
-			name: toPrefix,
-			has: func(ctx context.Context) (bool, error) {
-				return nl.HasRule(ctx, PrefToPrefix, ServiceSource, ServicePrefix, false)
-			},
-			ensure: func(ctx context.Context) error {
-				return nl.EnsureRule(ctx, PrefToPrefix, ServiceSource, ServicePrefix, false)
-			},
-		},
-		{
 			name: unreachable,
 			has: func(ctx context.Context) (bool, error) {
 				return nl.HasRule(ctx, PrefUnreachable, ServiceSource, netip.Prefix{}, true)
 			},
 			ensure: func(ctx context.Context) error {
 				return nl.EnsureRule(ctx, PrefUnreachable, ServiceSource, netip.Prefix{}, true)
+			},
+		},
+		{
+			name: toPrefix,
+			has: func(ctx context.Context) (bool, error) {
+				return nl.HasRule(ctx, PrefToPrefix, ServiceSource, ServicePrefix, false)
+			},
+			ensure: func(ctx context.Context) error {
+				return nl.EnsureRule(ctx, PrefToPrefix, ServiceSource, ServicePrefix, false)
 			},
 		},
 	}
@@ -123,7 +125,8 @@ func (l link) missingText() string {
 }
 
 // Load brings the device, its address, the route with its source, the two
-// rules and the table in place and reports what it changed, in that order. A
+// rules (the unreachable one first) and the table in place and reports what
+// it changed, in that order. A
 // table that is there as Script loads it is kept, with its counter. It stops
 // at the first step that fails.
 func Load(ctx context.Context, nl Netlink, nft egress.Nft) (changed []string, err error) {
@@ -187,15 +190,32 @@ func Inspect(ctx context.Context, nl Netlink, nft egress.Nft) ([]Part, error) {
 	return append(parts, table), nil
 }
 
+// ErrNotLoaded says that the table is not there, ErrChanged that what Load
+// puts in place is not as it leaves it. Each is also the egress error of the
+// same meaning, which a caller that keeps both tables checks for.
+var (
+	ErrNotLoaded error = &sentinel{msg: "the table " + Table + " is not loaded", also: egress.ErrNotLoaded}
+	ErrChanged   error = &sentinel{msg: "the service-prefix route or table is not as pco loads it", also: egress.ErrChanged}
+)
+
+type sentinel struct {
+	msg  string
+	also error
+}
+
+func (s *sentinel) Error() string { return s.msg }
+
+func (s *sentinel) Unwrap() error { return s.also }
+
 // ChangedError is what Verify says when the network is not as Load leaves
-// it. It is an egress.ErrChanged, and says nothing but the differences.
+// it. It is an ErrChanged, and says nothing but the differences.
 type ChangedError struct {
 	Differences []string
 }
 
 func (e *ChangedError) Error() string { return strings.Join(e.Differences, "; ") }
 
-func (e *ChangedError) Unwrap() error { return egress.ErrChanged }
+func (e *ChangedError) Unwrap() error { return ErrChanged }
 
 // Verify reports whether the device, the address, the route, the rules and
 // the table are as Load leaves them; the differences are a ChangedError. What

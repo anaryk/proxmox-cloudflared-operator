@@ -31,7 +31,7 @@ func (e *Engine) NoteNet(c NetCheck) {
 	now := e.d.Now()
 	var events []Event
 	add := func(level, msg string) {
-		events = append(events, Event{At: now, Level: level, Kind: kindEgress, Subject: "service prefix", Message: msg})
+		events = append(events, Event{At: now, Level: level, Kind: kindNet, Subject: "service prefix", Message: msg})
 	}
 
 	e.noteMu.Lock()

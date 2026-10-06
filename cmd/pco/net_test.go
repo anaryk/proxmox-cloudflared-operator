@@ -131,6 +131,31 @@ func TestNetIsACommandOfPco(t *testing.T) {
 	require.True(t, load.Hidden, "run by pco-net.service")
 }
 
+// After a boot at which pco-net.service failed, pco and the connectors did
+// not start: pco net load puts the network back but starts neither, so the
+// help names what does. Each command carries examples: a comment, then the
+// command it is about.
+func TestNetHelpSaysWhatToRun(t *testing.T) {
+	r := newNetRig(t)
+	cmd := r.app.netCmdWith(r.env)
+
+	require.Contains(t, cmd.Long, "systemctl start pco.service")
+	require.Len(t, cmd.Commands(), 2)
+	for _, sub := range cmd.Commands() {
+		t.Run(sub.Name(), func(t *testing.T) {
+			require.NotEmpty(t, sub.Long)
+			lines := strings.Split(strings.TrimRight(sub.Example, "\n"), "\n")
+			require.Zero(t, len(lines)%2, "a comment, then its command:\n%s", sub.Example)
+			require.GreaterOrEqual(t, len(lines)/2, 2)
+			require.LessOrEqual(t, len(lines)/2, 5)
+			for i := 0; i < len(lines); i += 2 {
+				require.Regexp(t, `^  # [A-Z]`, lines[i])
+				require.Regexp(t, `^  (pct exec [0-9]+ -- )?(pco net (load|show)|systemctl start pco\.service)( |$)`, lines[i+1])
+			}
+		})
+	}
+}
+
 func TestNetIsForTheApplianceProfile(t *testing.T) {
 	for _, sub := range []string{"load", "show"} {
 		t.Run(sub, func(t *testing.T) {
@@ -173,8 +198,8 @@ func TestNetLoadPutsEverythingInPlace(t *testing.T) {
 		"  the dummy device pco0\n"+
 		"  the address 198.18.0.1/32 on pco0\n"+
 		"  the route 198.18.0.0/16 dev pco0 src 198.18.0.1\n"+
-		"  the rule 1890: from 198.18.0.1 to 198.18.0.0/16 lookup main\n"+
 		"  the rule 1900: from 198.18.0.1 unreachable\n"+
+		"  the rule 1890: from 198.18.0.1 to 198.18.0.0/16 lookup main\n"+
 		"  the table inet pco_net\n", res.out)
 	require.Len(t, r.nft.scripts, 1)
 
@@ -211,8 +236,8 @@ func TestNetShowSaysAllIsInPlace(t *testing.T) {
 		"  the dummy device pco0                                        in place\n"+
 		"  the address 198.18.0.1/32 on pco0                            in place\n"+
 		"  the route 198.18.0.0/16 dev pco0 src 198.18.0.1              in place\n"+
-		"  the rule 1890: from 198.18.0.1 to 198.18.0.0/16 lookup main  in place\n"+
 		"  the rule 1900: from 198.18.0.1 unreachable                   in place\n"+
+		"  the rule 1890: from 198.18.0.1 to 198.18.0.0/16 lookup main  in place\n"+
 		"  the table inet pco_net                                       in place\n\n"+
 		"Rejected since the table was loaded: 3 packets\n", res.out)
 	require.Empty(t, r.nft.scripts, "show changes nothing")
