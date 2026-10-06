@@ -45,7 +45,7 @@ type plan struct {
 	grantRoles []string
 	pool       bool
 	tags       []string
-	templates  []string
+	template   string // the installer's, which goes unless KeepTemplate
 	kept       []string
 	notes      []string
 }
@@ -56,7 +56,8 @@ type plan struct {
 // container, which holds the credentials; then the container, the token
 // before its user, the grants, the NoAccess lines the installer added, the
 // user and the roles when nothing else uses them, the pool when it is empty,
-// the tags the installer added, and the template unless KeepTemplate.
+// the tags the installer added, and the template it downloaded unless
+// KeepTemplate.
 func (i *Installer) Uninstall(ctx context.Context, vmid int, o UninstallOptions) error {
 	switch {
 	case o.PurgeCloudflare && o.KeepCloudflare:
@@ -169,7 +170,7 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 	if s.tags, err = setup.RegisteredTags(ctx, r.r); err != nil {
 		return s, err
 	}
-	if s.templates, err = r.findTemplates(ctx, s.manifest); err != nil {
+	if s.templates, err = r.findTemplates(ctx); err != nil {
 		return s, err
 	}
 	s.hostInstall = r.hostInstalled()
@@ -185,8 +186,8 @@ func (r *run) hostInstalled() bool {
 }
 
 // findTemplates finds the templates of pco on the storages of the node that
-// hold templates; the manifest's first, which it names.
-func (r *run) findTemplates(ctx context.Context, m *setup.Manifest) ([]string, error) {
+// hold templates.
+func (r *run) findTemplates(ctx context.Context) ([]string, error) {
 	all, err := storages(ctx, r.r, r.node)
 	if err != nil {
 		return nil, err
@@ -204,11 +205,6 @@ func (r *run) findTemplates(ctx context.Context, m *setup.Manifest) ([]string, e
 			if isTemplateVolume(v) {
 				found = append(found, v)
 			}
-		}
-	}
-	if m != nil && m.Appliance != nil && m.Appliance.Template != "" {
-		if i := slices.Index(found, m.Appliance.Template); i > 0 {
-			found = append([]string{found[i]}, slices.Delete(found, i, i+1)...)
 		}
 	}
 	return found, nil
@@ -329,8 +325,17 @@ func (r *run) plan(vmid int, s survey) plan {
 			p.tags = added
 		}
 	}
+	// The template is the installer's when the manifest names it: it names
+	// one only when the installer downloaded it.
+	if s.manifest != nil && s.manifest.Appliance != nil && slices.Contains(s.templates, s.manifest.Appliance.Template) {
+		p.template = s.manifest.Appliance.Template
+	}
 	if !r.o.KeepTemplate {
-		p.templates = s.templates
+		for _, t := range s.templates {
+			if t != p.template {
+				p.kept = append(p.kept, fmt.Sprintf("the template %s, which the manifest of lxc/%d does not name as the installer's", t, vmid))
+			}
+		}
 	}
 	return p
 }
@@ -439,11 +444,12 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 	if len(p.tags) > 0 {
 		r.ask.Info("  the registered tags %s", strings.Join(p.tags, ", "))
 	}
-	for _, t := range p.templates {
-		r.ask.Info("  the template %s", t)
-	}
-	if o.KeepTemplate && len(s.templates) > 0 {
-		r.ask.Info("  (the template %s stays; --keep-template=false removes it)", strings.Join(s.templates, ", "))
+	switch {
+	case p.template == "":
+	case o.KeepTemplate:
+		r.ask.Info("  (the template %s stays; --keep-template=false removes it)", p.template)
+	default:
+		r.ask.Info("  the template %s", p.template)
 	}
 	for _, k := range p.kept {
 		r.ask.Info("  (kept: %s)", k)
@@ -560,8 +566,8 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 	if len(p.tags) > 0 {
 		fail(r.removeTags(ctx, p.tags))
 	}
-	for _, t := range p.templates {
-		fail(r.removeObject(ctx, "template "+t, "pvesm", "free", t))
+	if p.template != "" && !r.o.KeepTemplate {
+		fail(r.removeObject(ctx, "template "+p.template, "pvesm", "free", p.template))
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("the uninstall did not finish: %s; run it again to finish the rest", strings.Join(failed, "; "))

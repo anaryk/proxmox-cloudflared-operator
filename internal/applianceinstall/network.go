@@ -199,7 +199,7 @@ func (i *Installer) networkRun(ctx context.Context, o NetworkOptions) (*run, set
 		return nil, g, fmt.Errorf("--vmid %d: want 100 to 999999999", o.VMID)
 	}
 	if o.VLAN < 0 || o.VLAN > 4094 {
-		return nil, g, fmt.Errorf("--vlan %d: want 1 to 4094", o.VLAN)
+		return nil, g, fmt.Errorf("--vlan %d: want 1 to 4094, or none for the whole bridge", o.VLAN)
 	}
 	r := i.newRun(Options{Yes: o.Yes, VMID: o.VMID}, kindGrant)
 	r.j.VMID = o.VMID

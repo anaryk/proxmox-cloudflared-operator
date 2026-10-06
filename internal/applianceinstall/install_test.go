@@ -148,6 +148,42 @@ func TestTheBootstrapIsTheContainers(t *testing.T) {
 	require.Equal(t, t0, m.InstalledAt.UTC())
 }
 
+// A gate tag Proxmox or the store would refuse fails before anything is made,
+// not at step tags or in init after the container was.
+func TestAGateTagIsCheckedFirst(t *testing.T) {
+	const want = `--gate-tag "Cf Tunnel": want lower-case letters, digits and the characters _ - + ., the first one not - + or a dot`
+	e := newEnv(t)
+	o := e.options()
+	o.GateTag = "Cf Tunnel"
+
+	require.EqualError(t, e.in.Install(t.Context(), o), want)
+	require.Empty(t, e.node.ran)
+	e.nothingMade()
+
+	e = installed(t)
+	require.EqualError(t, e.in.Repair(t.Context(), 100, Options{Yes: true, GateTag: "Cf Tunnel"}), want)
+	require.Empty(t, e.node.ran)
+}
+
+// --api-ca by a relative path is kept by its absolute one: a resumed run, a
+// repair, may run from another directory.
+func TestTheAPICAIsKeptByItsAbsolutePath(t *testing.T) {
+	e := newEnv(t)
+	e.presented = e.certs.custom
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "custom-ca.pem"), e.certs.customCA, 0o644))
+	t.Chdir(dir)
+	o := e.options()
+	o.APICA = "custom-ca.pem"
+	e.node.killAt = "pveum acl modify / --tokens pco@pve!vm100"
+	require.PanicsWithValue(t, errKilled, func() { _ = e.in.Install(t.Context(), o) })
+	t.Chdir(t.TempDir())
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: e.journal(), Yes: true}), e.ask.text())
+
+	require.Contains(t, e.node.ran, "pct push 100 "+filepath.Join(dir, "custom-ca.pem")+" /var/lib/pco/pve-ca.pem --perms 0644")
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

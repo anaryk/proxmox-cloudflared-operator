@@ -112,6 +112,13 @@ func (o *Options) defaults() {
 	if o.GateTag == "" {
 		o.GateTag = store.DefaultSettings().GateTag
 	}
+	// The journal keeps the CA by its absolute path: a resumed run may run
+	// from another directory.
+	if o.APICA != "" && !filepath.IsAbs(o.APICA) {
+		if abs, err := filepath.Abs(o.APICA); err == nil {
+			o.APICA = abs
+		}
+	}
 }
 
 func (o Options) check() error {
@@ -119,7 +126,7 @@ func (o Options) check() error {
 	case o.VMID != 0 && (o.VMID < 100 || o.VMID > 999999999):
 		return fmt.Errorf("--vmid %d: want 100 to 999999999", o.VMID)
 	case o.VLAN < 0 || o.VLAN > 4094:
-		return fmt.Errorf("--vlan %d: want 1 to 4094", o.VLAN)
+		return fmt.Errorf("--vlan %d: want 1 to 4094, or none for a card without a tag", o.VLAN)
 	case o.Cores < 1 || o.Cores > 64:
 		return fmt.Errorf("--cores %d: want 1 to 64", o.Cores)
 	case o.MemoryMB < 256:
@@ -134,6 +141,9 @@ func (o Options) check() error {
 		return fmt.Errorf("--install-id %q: want 12 lower-case hex characters", o.InstallID)
 	case strings.ContainsFunc(o.CloudflareToken, func(r rune) bool { return r <= ' ' }):
 		return errors.New("the Cloudflare token holds white space")
+	}
+	if err := store.ValidateTag(o.GateTag); err != nil {
+		return fmt.Errorf("--gate-tag %q: %w", o.GateTag, err)
 	}
 	if _, _, err := parseIP(o.IP); err != nil {
 		return err

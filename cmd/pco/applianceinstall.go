@@ -253,17 +253,18 @@ const uninstallLong = "Remove the appliance and what the installer made for it f
 	"of the objects and the manifest in the appliance name them: the container with its state\n" +
 	"volume, its token, its network grants, the NoAccess lines the installer added while they\n" +
 	"are as it made them, and user pco@pve, role PCO and pool pco when nothing else uses them,\n" +
-	"the gate tags the installer registered, and the template with --keep-template=false. It\n" +
-	"lists what goes and what stays, and why, and asks once; --yes answers that. What the\n" +
-	"install has at Cloudflare is deleted through the running appliance with\n" +
+	"the gate tags the installer registered, and with --keep-template=false the template it\n" +
+	"downloaded for the appliance, which the manifest names. It lists what goes and what\n" +
+	"stays, and why, and asks once; --yes answers that.\n\n" +
+	"What the install has at Cloudflare is deleted through the running appliance with\n" +
 	"--purge-cloudflare, left with --keep-cloudflare, or asked about; with --yes, an install\n" +
 	"with something at Cloudflare needs one of the two, as the credentials that reach it go\n" +
 	"with the container. A copy of the appliance beside its original leaves Cloudflare alone,\n" +
-	"as what it reaches there is the original's. A part that fails is reported and the rest\n" +
-	"goes on; running it again finishes it. It runs as root on the node that has the\n" +
-	"container; on another node of the cluster it refuses and names that node, and only a\n" +
-	"container no node has counts as gone, whose leftovers it removes. It exits 0 once the\n" +
-	"appliance is removed, 1 otherwise."
+	"as what it reaches there is the original's.\n\n" +
+	"A part that fails is reported and the rest goes on; running it again finishes it. It\n" +
+	"runs as root on the node that has the container; on another node of the cluster it\n" +
+	"refuses and names that node, and only a container no node has counts as gone, whose\n" +
+	"leftovers it removes. It exits 0 once the appliance is removed, 1 otherwise."
 
 const uninstallExample = `  # Remove the appliance, asking about everything
   pco appliance uninstall --vmid 120
@@ -314,7 +315,7 @@ func (a *app) applianceUninstallCmd() *cobra.Command {
 		"Cloudflare, --purge-cloudflare or --keep-cloudflare as well")
 	flags.BoolVar(&o.PurgeCloudflare, "purge-cloudflare", false, "delete the DNS records and the tunnel of the install at Cloudflare, through the appliance")
 	flags.BoolVar(&o.KeepCloudflare, "keep-cloudflare", false, "leave the DNS records and the tunnel of the install at Cloudflare as they are")
-	flags.BoolVar(&o.KeepTemplate, "keep-template", true, "keep the template of pco on the node's storages")
+	flags.BoolVar(&o.KeepTemplate, "keep-template", true, "keep the template the installer downloaded for the appliance; another template of pco always stays")
 	cmd.MarkFlagsMutuallyExclusive("purge-cloudflare", "keep-cloudflare")
 	_ = cmd.MarkFlagRequired("vmid")
 	return cmd

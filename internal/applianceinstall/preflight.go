@@ -245,8 +245,8 @@ func (r *run) chooseVMID(ctx context.Context) error {
 }
 
 // otherInstalls warns of another install of pco: both would claim every guest
-// with the gate tag. It goes on with --yes, and at a
-// terminal only when the admin says so.
+// with the gate tag. It goes on with --yes, and at a terminal only when the
+// admin says so.
 func (r *run) otherInstalls() error {
 	var found []string
 	switch b, err := r.h.readFile(filepath.Join(r.h.pveDir, hostInstall)); {

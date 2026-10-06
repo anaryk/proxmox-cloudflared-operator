@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -79,6 +82,35 @@ func TestUninstallRemovesTheTemplateWhenTold(t *testing.T) {
 
 	require.Equal(t, "pvesm free local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst", e.node.ran[len(e.node.ran)-1])
 	require.Empty(t, e.node.volumes)
+}
+
+// --keep-template=false frees the template the installer downloaded for the
+// appliance, which its manifest names, and no other of pco: one kept for a
+// rebuild, or one the install found on the storage, is the admin's.
+func TestUninstallFreesOnlyTheTemplateItDownloaded(t *testing.T) {
+	e := installed(t)
+	older := "local:vztmpl/pco-appliance_1.1.0_amd64.tar.zst"
+	e.node.volumes[older] = "/var/lib/vz/template/cache/pco-appliance_1.1.0_amd64.tar.zst"
+	o := uninstallOptions()
+	o.KeepTemplate = false
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, o), e.ask.text())
+
+	require.Equal(t, 1, e.node.count("pvesm free"))
+	require.Contains(t, e.node.ran, "pvesm free local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst")
+	require.Equal(t, []string{older}, slices.Collect(maps.Keys(e.node.volumes)))
+	require.Contains(t, e.ask.text(), "(kept: the template "+older+", which the manifest of lxc/100 does not name as the installer's)")
+
+	e = newEnv(t)
+	file := filepath.Join(t.TempDir(), "pco-appliance_1.2.3_amd64.tar.zst")
+	require.NoError(t, os.WriteFile(file, e.node.urls[ReleaseBase(testVersion)+"/pco-appliance_1.2.3_amd64.tar.zst"], 0o644))
+	e.node.volumes["local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst"] = file
+	e.install(e.options())
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, o), e.ask.text())
+
+	require.Equal(t, 0, e.node.count("pvesm free"))
+	require.Contains(t, e.node.volumes, "local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst")
 }
 
 func TestUninstallKeepsWhatAnotherInstallUses(t *testing.T) {

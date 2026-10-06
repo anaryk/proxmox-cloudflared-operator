@@ -222,7 +222,7 @@ func (r *run) manifestFromMarks(ctx context.Context, vmid int) (setup.Manifest, 
 		return m, err
 	}
 	m.Appliance.CreatedPool = slices.ContainsFunc(ps, func(p poolEntry) bool { return p.ID == poolID && p.Comment == poolComment })
-	found, err := r.findTemplates(ctx, nil)
+	found, err := r.findTemplates(ctx)
 	if err != nil {
 		return m, err
 	}

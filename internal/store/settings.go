@@ -186,7 +186,7 @@ func (s *Settings) raiseToMinimums(file string) []string {
 // normal form, or a *FieldError naming the first field that is invalid.
 func (s Settings) normalized() (Settings, error) {
 	var err error
-	if err = validateTag(s.GateTag); err != nil {
+	if err = ValidateTag(s.GateTag); err != nil {
 		return Settings{}, invalid("gateTag", "gateTag %q: %w", s.GateTag, err)
 	}
 	if s.AllowHosts, err = normalizePatterns("allowHosts", s.AllowHosts); err != nil {
@@ -234,7 +234,9 @@ func (s Settings) normalized() (Settings, error) {
 	return s, nil
 }
 
-func validateTag(tag string) error {
+// ValidateTag checks a gate tag as the settings take it: a tag Proxmox
+// accepts, in lower case.
+func ValidateTag(tag string) error {
 	switch {
 	case len(tag) > maxTagLen:
 		return fmt.Errorf("longer than %d characters", maxTagLen)

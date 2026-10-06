@@ -1,6 +1,7 @@
 package applianceinstall
 
 import (
+	"context"
 	"maps"
 	"os"
 	"path/filepath"
@@ -253,6 +254,23 @@ func TestRepairRefusesACopyBesideItsOriginal(t *testing.T) {
 			require.False(t, e.node.cts[121].running)
 		})
 	}
+}
+
+// A bootstrap init turned away is kept by init for the init its message asks
+// for, until one takes it: the installer leaves it, and the next repair
+// pushes a new one over it.
+func TestABootstrapInitTurnedAwayIsLeftToIt(t *testing.T) {
+	e := installed(t)
+	e.node.on("pct exec 100 --keep-env 0 -- pco appliance init", func(context.Context, []string) (string, error) {
+		return "", exitError{1, "init: pco.service did not stop; run init again once it has: the bootstrap is kept"}
+	})
+
+	err := e.in.Repair(t.Context(), 100, Options{Yes: true})
+
+	require.ErrorContains(t, err, "the bootstrap is kept; run pco appliance repair --vmid 100 again once that is put right")
+	require.Contains(t, e.node.cts[100].files, bootstrapFile)
+	require.Equal(t, 0, e.node.count("pct exec 100 --keep-env 0 -- rm"))
+	require.Empty(t, entries(t, e.runDir), "the copy on the node is gone")
 }
 
 // A manifest rebuilt from the marks cannot name a NoAccess line, which
