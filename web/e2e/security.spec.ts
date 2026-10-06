@@ -28,6 +28,9 @@ test('the page, each part it loads later and the licences keep to the policy', a
     .filter((f) => f.endsWith('.js'))
     .map((f) => `/assets/${f}`)
     .filter((path) => !loaded.has(path))
+  // The flow map and the pages that are not on the first view are loaded
+  // when they are first shown.
+  expect(later.length, 'the parts of the build the page loads later').toBeGreaterThan(0)
   for (const path of later) {
     await page.evaluate(async (src) => {
       await import(src)

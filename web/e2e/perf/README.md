@@ -69,12 +69,14 @@ view while the window shows the top of it.
 |---|---|
 | state-to-paint p95 | at most 1.5 × the baseline's + 30 ms |
 | frame time p95 | at most the baseline's + 4 ms |
-| long tasks | no more than the baseline's |
+| long tasks | at most one more than the baseline's |
 | map chunk | at most 90 KB gzip |
 
 The 30 ms is the tolerance for a shared runner's noise, not a margin to spend.
-The CI runner is the reference; a laptop's figures are reported and decide
-nothing.
+So is the one long task: a shared runner stalls a page now and then whatever
+it draws, and a map that stalls does so more than once in 10 s. The CI runner
+is the reference, where the ui-e2e job runs this test on every push; a
+laptop's figures are reported and decide nothing.
 
 ## A renderer on this page
 

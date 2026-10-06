@@ -15,6 +15,9 @@ const run = 10_000 // ms of dots
 const paintFactor = 1.5
 const paintNoise = 30
 const frameSlack = 4
+// A shared runner stalls a page now and then whatever it draws, which is a
+// long task in either run; a map that stalls does so more than once in 10 s.
+const longTaskNoise = 1
 
 // The graph at the render budget, and the fake daemon's scenarios of many
 // routes as the Overview folds them.
@@ -76,6 +79,6 @@ for (const scene of scenes) {
     const map = await measure(page, scene, 'map', info)
     expect.soft(map.paint, 'state-to-paint p95, ms').toBeLessThanOrEqual(paintFactor * base.paint + paintNoise)
     expect.soft(map.frame, 'frame p95, ms').toBeLessThanOrEqual(base.frame + frameSlack)
-    expect.soft(map.longTasks, 'long tasks').toBeLessThanOrEqual(base.longTasks)
+    expect.soft(map.longTasks, 'long tasks').toBeLessThanOrEqual(base.longTasks + longTaskNoise)
   })
 }

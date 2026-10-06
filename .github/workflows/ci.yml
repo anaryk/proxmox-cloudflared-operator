@@ -142,9 +142,12 @@ jobs:
   # The browser suite: the real pco web with the interface the ui job built,
   # the fake daemon and the fake Proxmox VE behind it. Chromium decides;
   # Firefox and WebKit only warn until they have been green for two weeks.
+  # Then the flow map against its baseline on this runner, the reference of
+  # its budgets. A browser that hangs is cut short.
   ui-e2e:
     needs: ui
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -176,6 +179,7 @@ jobs:
         continue-on-error: true
       - run: make ui-e2e E2E='--project=webkit-* --output=test-results/webkit'
         continue-on-error: true
+      - run: make ui-e2e E2E='--project=perf --output=test-results/perf'
       # The traces and logs of the tests that failed.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
@@ -185,6 +189,7 @@ jobs:
             web/test-results/chromium
             web/test-results/firefox
             web/test-results/webkit
+            web/test-results/perf
           if-no-files-found: ignore
           retention-days: 7
 

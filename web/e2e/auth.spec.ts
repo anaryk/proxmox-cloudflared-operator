@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 
-import { admin, csrfOf, expect, populated, reader, test, withTicket } from './fixtures'
+import { admin, adminAction, csrfOf, expect, populated, reader, test, withTicket } from './fixtures'
 
 // Signing in with the session of Proxmox VE in the browser or with a pasted
 // API token, signing out, a session that ends under the page, and what each
@@ -20,16 +20,18 @@ async function whoIs(page: Page): Promise<string> {
   return text
 }
 
-// The actions only an admin may take, as their buttons read. A reader sees
-// none of them, or sees them disabled with what they need.
-const adminAction = /^(Approve|Revoke|Resolve|Confirm|Apply|Adopt|Sync|Add|Save|Import|Delete|Remove|Restart|Rotate|Check write access|Start publishing)\b/
-
 test('an admin with a Proxmox VE session lands on the overview', async ({ page, context, pco }) => {
   await withTicket(context, pco, admin)
   await page.goto('/')
   await expect(overview(page)).toBeVisible()
   await expect(page).toHaveURL(`${pco.url}/`)
   expect(await whoIs(page)).toBe('alice@pve admin · signed in with the Proxmox VE session')
+
+  // What the reader's test looks for is there for an admin.
+  for (const path of ['/routes', '/guests']) {
+    await page.goto(path)
+    await expect(page.getByRole('button', { name: adminAction, disabled: false }).first(), path).toBeVisible()
+  }
 })
 
 test('a reader sees no admin action, and of the doctor the counts only', async ({ page, context, pco }) => {

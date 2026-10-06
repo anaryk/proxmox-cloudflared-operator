@@ -15,6 +15,9 @@ async function signedIn(page: Page, context: BrowserContext, pco: Pco): Promise<
   await page.goto('/')
   await expect(overview(page)).toBeVisible()
   await expect(statusOf(page)).toContainText('Live')
+  // The map is loaded when it is first shown: a test that stops pco web
+  // lets it load first.
+  await expect(page.getByRole('main').locator('.skeleton')).toHaveCount(0)
 }
 
 // shows waits for the status of the top bar to say text at some moment, even
@@ -39,9 +42,9 @@ test('cycles that stop make the page stale after three poll intervals', async ({
   await page.reload()
   await expect(statusOf(page)).toContainText('Live')
 
-  await page.clock.fastForward(25_000)
+  await page.clock.fastForward(20_000)
   await expect(statusOf(page)).toContainText(/Live2\d s/)
-  await page.clock.fastForward(6_000)
+  await page.clock.fastForward(11_000)
   await expect(statusOf(page)).toContainText('Stale')
   await expect(page.getByText('no cycle of the daemon has finished since')).toBeVisible()
 })

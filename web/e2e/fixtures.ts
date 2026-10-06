@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { type BrowserContext, expect, type Page, test as base } from '@playwright/test'
+import { type BrowserContext, expect, type Locator, type Page, test as base } from '@playwright/test'
 
 import type { State } from '../src/api/types.gen'
 
@@ -52,6 +52,10 @@ export const reader: User = {
 // The guests the reader may audit, of those the scenarios have.
 const readerGuests = ['qemu/101', 'lxc/205']
 
+// The actions only an admin may take, as their buttons read. A reader sees
+// none of them, or sees them disabled with what they need.
+export const adminAction = /^(Approve|Revoke|Resolve|Confirm|Apply|Adopt|Sync|Add|Save|Import|Delete|Remove|Restart|Rotate|Check|Start publishing|Hand to|Pin|Take back|Review and confirm|New manual route|Return to observe-only)\b/
+
 const secretOf = (u: User) => u.token.slice(u.token.indexOf('=') + 1)
 
 const users = {
@@ -73,6 +77,28 @@ const users = {
   ],
 }
 
+// The process groups of the harness that run. Each process runs in a group
+// of its own, which is stopped as one; whatever is left when the worker
+// ends is killed with it.
+const groups = new Set<number>()
+process.once('exit', () => {
+  for (const pid of groups) {
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {
+      // gone already
+    }
+  }
+})
+
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    if (child.pid !== undefined) process.kill(-child.pid, signal)
+  } catch {
+    child.kill(signal)
+  }
+}
+
 // A process of the harness. What it prints is kept for the report of a test
 // that fails.
 class Proc {
@@ -89,9 +115,20 @@ class Proc {
   // start runs the process and waits for a line of its JSON log that ready
   // takes; ready answers undefined for the others.
   start<T>(ready: (line: Record<string, unknown>) => T | undefined, timeout = 20_000): Promise<T> {
-    const child = spawn(bin(this.name), this.args, { env: { PATH: process.env.PATH, HOME: process.env.HOME, ...this.env }, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(bin(this.name), this.args, {
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, ...this.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    })
     this.#child = child
-    this.#exited = new Promise((resolve) => child.once('exit', () => resolve()))
+    const pid = child.pid
+    if (pid !== undefined) groups.add(pid)
+    this.#exited = new Promise((resolve) =>
+      child.once('exit', () => {
+        if (pid !== undefined) groups.delete(pid)
+        resolve()
+      }),
+    )
     return new Promise<T>((resolve, reject) => {
       let done = false
       let pending = ''
@@ -137,13 +174,13 @@ class Proc {
     })
   }
 
-  // stop ends the process with signal, and with SIGKILL when it is still
-  // there after 10 s.
+  // stop ends the process and its group with signal, and with SIGKILL when
+  // it is still there after 10 s.
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     const child = this.#child
     if (!child || child.exitCode !== null || child.signalCode !== null) return
-    child.kill(signal)
-    const killer = setTimeout(() => child.kill('SIGKILL'), 10_000)
+    signalGroup(child, signal)
+    const killer = setTimeout(() => signalGroup(child, 'SIGKILL'), 10_000)
     await this.#exited
     clearTimeout(killer)
   }
@@ -229,17 +266,31 @@ async function startHarness(dir: string, procs: Proc[], scenario: string, hsts: 
   procs.push(daemon)
   const control = await daemon.start((l) => (l.message === 'serving' ? String(l.control) : undefined))
 
-  const host = `127.0.0.1:${await freePort()}`
-  const web = new Proc(
-    'pco',
-    ['--socket', socket, 'web', '--listen', host, '--cert', join(dir, 'tls.crt'), '--key', join(dir, 'tls.key'), '--pin', join(dir, 'pveproxy.crt'), '--pve-url', pveURL],
-    hsts ? { PCO_WEB_HSTS: '1' } : {},
-  )
-  procs.push(web)
-  const startWeb = async () => {
-    await web.start((l) => (l.message === 'serving the web interface' ? true : undefined))
+  // pco web takes the address it is given, not a port of its own choosing,
+  // as the hosts it answers for are that address. Another worker may take
+  // the free port first: then pco web tries another.
+  let host = ''
+  let web: Proc | undefined
+  const serving = (l: Record<string, unknown>) => (l.message === 'serving the web interface' ? true : undefined)
+  for (let attempt = 1; !web; attempt++) {
+    host = `127.0.0.1:${await freePort()}`
+    const p = new Proc(
+      'pco',
+      ['--socket', socket, 'web', '--listen', host, '--cert', join(dir, 'tls.crt'), '--key', join(dir, 'tls.key'), '--pin', join(dir, 'pveproxy.crt'), '--pve-url', pveURL],
+      hsts ? { PCO_WEB_HSTS: '1' } : {},
+    )
+    procs.push(p)
+    try {
+      await p.start(serving)
+      web = p
+    } catch (e) {
+      if (attempt >= 3 || !p.output.includes('address already in use')) throw e
+    }
   }
-  await startWeb()
+  const started = web
+  const startWeb = async () => {
+    await started.start(serving)
+  }
 
   const call = async (method: string, path: string, body?: unknown): Promise<Response> => {
     const res = await fetch(control + path, {
@@ -328,8 +379,14 @@ export const test = base.extend<Options & Fixtures & { harness: Harness }>({
   pco: async ({ harness }, provide) => provide(harness.pco),
   fake: async ({ harness }, provide) => provide(harness.fake),
   baseURL: async ({ harness }, provide) => provide(harness.pco.url),
-  // eslint-disable-next-line no-empty-pattern
-  watch: async ({}, provide) => provide(new Watch()),
+  watch: async ({ browserName }, provide) => {
+    const watch = new Watch()
+    // WebKit reports as an error, now and then and under load, that it left
+    // a change of size for the observers of the next frame: no error of the
+    // page, and nothing it can keep WebKit from saying.
+    if (browserName === 'webkit') watch.allow(/^uncaught error on \S+: ResizeObserver loop completed with undelivered notifications\.$/)
+    await provide(watch)
+  },
   context: async ({ context, harness, watch }, provide) => {
     const problems = await guard(context, harness.pco.url, watch)
     await provide(context)
@@ -343,6 +400,16 @@ export async function withTicket(context: BrowserContext, pco: Pco, u: User): Pr
   await context.addCookies([{ name: 'PVEAuthCookie', value: u.ticket, url: pco.url, secure: true, sameSite: 'Lax' }])
 }
 
+// signIn opens path in page as user, signed in with the session of Proxmox
+// VE, and waits for the page's first read of the state and its heading.
+export async function signIn(page: Page, pco: Pco, path = '/', u: User = admin): Promise<void> {
+  await withTicket(page.context(), pco, u)
+  const read = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v1/state' && r.ok())
+  await page.goto(path)
+  await read
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+}
+
 // csrfOf is the token of the page's session.
 export async function csrfOf(page: Page): Promise<string> {
   const res = await page.request.get('/api/session')
@@ -350,17 +417,28 @@ export async function csrfOf(page: Page): Promise<string> {
   return ((await res.json()) as { csrf: string }).csrf
 }
 
+// rowsOf are the rows of a table that hold data. On a phone a table has no
+// row of headers, and each of its rows is a card whose cells say what they
+// are, so a row is found by what it holds, not by its name.
+export const rowsOf = (table: Locator) => table.getByRole('row').filter({ has: table.page().getByRole('cell') })
+
+// onPhone says whether the window is as narrow as a phone's, where the
+// pages lay themselves out for one.
+export const onPhone = (viewport: { width: number } | null) => (viewport?.width ?? 0) < 720
+
 // The live status of the top bar, in either width: the five pills, or the
 // one and the list behind it.
 export const statusOf = (page: Page) => page.getByRole('group', { name: 'Status of pco' })
 
-// populated is the state of the populated scenario, its last cycle just
-// finished: the state to change for a control.
-export function populated(): State {
-  const file = join(repo, 'internal/api/apifake/testdata/scenarios/populated/state.json')
+// stateOf is the state of a scenario of the fake daemon that has one, its
+// last cycle just finished: the state to change for a control.
+export function stateOf(scenario: string): State {
+  const file = join(repo, 'internal/api/apifake/testdata/scenarios', scenario, 'state.json')
   const st = JSON.parse(readFileSync(file, 'utf8')) as State
   const now = Date.now()
   st.at = new Date(now - 2000).toISOString()
   st.finishedAt = new Date(now).toISOString()
   return st
 }
+
+export const populated = (): State => stateOf('populated')

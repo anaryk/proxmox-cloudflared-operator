@@ -18,8 +18,11 @@ const withoutBrowser = ['csrf.spec.ts']
 
 // Playwright's Firefox now and then never sees a navigation of the page
 // finish, though the page loads and runs: a test of Firefox gets a second
-// try, and one that passes on it is reported as flaky, not hidden.
+// try, and one that passes on it is reported as flaky, not hidden. Such a
+// navigation is given up after 30 s rather than the test's 90, which any
+// page of pco loads well within.
 const retries: Record<string, number> = { firefox: 1 }
+const navigationTimeout: Record<string, number> = { firefox: 30_000 }
 
 function suite(name: string, device: (typeof devices)[string], colorScheme?: 'light' | 'dark'): Project[] {
   return Object.entries(sizes).map(([size, viewport]) => {
@@ -28,7 +31,7 @@ function suite(name: string, device: (typeof devices)[string], colorScheme?: 'li
       name: project,
       testIgnore: ['perf/**', ...(project === first ? [] : withoutBrowser)],
       retries: retries[name] ?? 0,
-      use: { ...device, viewport, ...(colorScheme && { colorScheme }) },
+      use: { ...device, viewport, ...(colorScheme && { colorScheme }), navigationTimeout: navigationTimeout[name] },
     }
   })
 }
