@@ -89,7 +89,7 @@ func (r *run) createContainer(ctx context.Context) error {
 		}
 	}
 	for try := 1; ; try++ {
-		vmid, desc := r.j.VMID, description(r.j.VMID, r.now())
+		vmid, desc := r.j.VMID, description(r.j.VMID, r.now(), r.denied())
 		if err := r.record(func(j *journal) {
 			j.Container = desc
 			a := r.appliance()
@@ -162,12 +162,22 @@ func (r *run) ours(ctx context.Context, vmid int) bool {
 	return err == nil && r.j.Container != "" && strings.TrimSpace(cfg["description"]) == r.j.Container
 }
 
+// denied are the NoAccess lines the admin confirmed, as the manifest and the
+// description of the container name them.
+func (r *run) denied() []setup.NoAccessLine {
+	var lines []setup.NoAccessLine
+	for _, d := range r.j.Denials {
+		lines = append(lines, d.noAccess())
+	}
+	return lines
+}
+
 // denyAccess adds the NoAccess lines the admin confirmed and asks Proxmox
 // whether they hold: its answer is what counts, not pco's computation. Each
 // line is in the manifest before it is added, as uninstall takes it back.
 func (r *run) denyAccess(ctx context.Context) error {
 	for _, d := range r.j.Denials {
-		line := setup.NoAccessLine{Principal: d.Who, Path: d.Path, Role: roleNoAccess}
+		line := d.noAccess()
 		if err := r.record(func(*journal) {
 			if a := r.appliance(); !slices.Contains(a.NoAccess, line) {
 				a.NoAccess = append(a.NoAccess, line)

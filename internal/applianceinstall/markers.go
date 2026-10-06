@@ -38,22 +38,54 @@ const (
 // the start of the description of its container.
 func marker(vmid int) string { return fmt.Sprintf("pco appliance vm%d", vmid) }
 
-func description(vmid int, at time.Time) string {
-	return fmt.Sprintf("%s, installed %s by pco appliance install", marker(vmid), at.UTC().Format(time.DateOnly))
+// description is what the installer writes into the description of the
+// container of the appliance vmid: the mark, and a line for each NoAccess line
+// it added to keep a principal out of it. That is the node's own record of
+// them, which the appliance cannot change, as the privileges of its token only
+// audit. The manifest inside the container names the lines too, and a
+// compromised appliance could name others.
+func description(vmid int, at time.Time, lines []setup.NoAccessLine) string {
+	d := fmt.Sprintf("%s, installed %s by pco appliance install", marker(vmid), at.UTC().Format(time.DateOnly))
+	for _, l := range lines {
+		d += fmt.Sprintf("\nNoAccess for %s on %s", l.Principal, l.Path)
+	}
+	return d
 }
 
-var describedAs = regexp.MustCompile(`^pco appliance vm([1-9][0-9]{2,8}), installed [0-9-]+ by pco appliance install$`)
+var (
+	describedAs   = regexp.MustCompile(`^pco appliance vm([1-9][0-9]{2,8}), installed [0-9-]+ by pco appliance install$`)
+	describedLine = regexp.MustCompile(`^NoAccess for (\S+) on (/\S*)$`)
+)
 
-// describedVMID returns the VMID the description of a container names, when
-// it is the description the installer writes: a restore to another VMID keeps
-// the one of the container it was made from.
-func describedVMID(desc string) (int, bool) {
-	m := describedAs.FindStringSubmatch(strings.TrimSpace(desc))
+// parseDescription reads the description of a container, when it is the one
+// the installer writes: the VMID its mark names and the NoAccess lines it
+// records. A restore to another VMID keeps the description of the container it
+// was made from.
+func parseDescription(desc string) (vmid int, lines []setup.NoAccessLine, ok bool) {
+	first, rest, _ := strings.Cut(strings.TrimSpace(desc), "\n")
+	m := describedAs.FindStringSubmatch(strings.TrimSpace(first))
 	if m == nil {
-		return 0, false
+		return 0, nil, false
 	}
 	vmid, err := strconv.Atoi(m[1])
-	return vmid, err == nil
+	if err != nil {
+		return 0, nil, false
+	}
+	for line := range strings.Lines(rest) {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		l := describedLine.FindStringSubmatch(line)
+		if l == nil {
+			return 0, nil, false
+		}
+		n := setup.NoAccessLine{Principal: l[1], Path: l[2], Role: roleNoAccess}
+		if checkNoAccess(n, vmid) != nil {
+			return 0, nil, false
+		}
+		lines = append(lines, n)
+	}
+	return vmid, lines, true
 }
 
 func tokenName(vmid int) string { return "vm" + strconv.Itoa(vmid) }

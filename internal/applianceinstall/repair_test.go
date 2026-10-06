@@ -235,7 +235,7 @@ func TestRepairRefusesACopyBesideItsOriginal(t *testing.T) {
 		// manifest still names the original.
 		{"a clone marked as itself", func(e *testEnv) {
 			e.cloned()
-			e.node.cts[121].cfg["description"] = description(121, t0)
+			e.node.cts[121].cfg["description"] = description(121, t0, nil)
 		}, Options{Yes: true}, "pve1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

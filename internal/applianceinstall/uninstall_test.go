@@ -419,9 +419,10 @@ func TestUninstallTakesBackTheNoAccessLines(t *testing.T) {
 		{"while another appliance is there", func(e *testEnv) {
 			e.node.addToken("pco@pve", "vm200", "pco appliance vm200", true)
 		}, "(kept: NoAccess for ops@pve on /, which keeps ops@pve out of the appliance lxc/200 as well)"},
-		{"without the manifest", func(e *testEnv) {
-			e.node.cts[100].running = false
-		}, "(kept: NoAccess for ops@pve on /, which the installer may have added: without the manifest of lxc/100 nothing says so)"},
+		{"a description without the record of the lines", func(e *testEnv) {
+			e.node.cts[100].cfg["description"] = description(100, t0, nil)
+		}, "(kept: NoAccess for ops@pve on /, which nothing of lxc/100 names as added by the installer: " +
+			"if an install added it, pveum acl delete / --users ops@pve --roles NoAccess takes it back)"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := deniedTwice(t)
@@ -434,6 +435,97 @@ func TestUninstallTakesBackTheNoAccessLines(t *testing.T) {
 			require.Nil(t, e.node.cts[100])
 		})
 	}
+}
+
+// The description of the container is the node's note of the lines the
+// installer added.
+func TestTheDescriptionOfTheContainerRecordsTheNoAccessLines(t *testing.T) {
+	e := deniedTwice(t)
+
+	require.Equal(t, "pco appliance vm100, installed 2026-10-01 by pco appliance install\n"+
+		"NoAccess for ops@pve on /\n"+
+		"NoAccess for vmops@pve on /vms/100\n", e.node.cts[100].cfg["description"])
+}
+
+func TestParseDescription(t *testing.T) {
+	good := "pco appliance vm100, installed 2026-10-01 by pco appliance install"
+	vmid, lines, ok := parseDescription(good + "\nNoAccess for ops@pve on /\nNoAccess for ops@pve!ci on /vms/100\n")
+	require.True(t, ok)
+	require.Equal(t, 100, vmid)
+	require.Equal(t, []setup.NoAccessLine{
+		{Principal: "ops@pve", Path: "/", Role: "NoAccess"},
+		{Principal: "ops@pve!ci", Path: "/vms/100", Role: "NoAccess"},
+	}, lines)
+
+	for name, desc := range map[string]string{
+		"a note of the admin":    good + "\nbacked up on Fridays",
+		"a line of another path": good + "\nNoAccess for ops@pve on /storage/local",
+		"root@pam":               good + "\nNoAccess for root@pam on /",
+		"pco@pve":                good + "\nNoAccess for pco@pve!vm100 on /",
+		"the path of another VM": good + "\nNoAccess for ops@pve on /vms/101",
+		"no mark":                "NoAccess for ops@pve on /",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, ok := parseDescription(desc)
+			require.False(t, ok)
+		})
+	}
+}
+
+// A stopped container, whose manifest cannot be read, has the node's note: the
+// lines it names are taken back with it.
+func TestUninstallOfAStoppedContainerTakesBackTheLinesItsDescriptionNames(t *testing.T) {
+	e := deniedTwice(t)
+	e.node.cts[100].running = false
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.Contains(t, e.ask.text(), "info:   the line NoAccess for ops@pve on /, which the installer added")
+	require.False(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.Nil(t, e.node.cts[100])
+}
+
+// The manifest comes out of the appliance: a line it names that the
+// description does not is not the installer's, and the admin's own line stays;
+// a line the description names that the manifest does not stays too, as the
+// two disagree.
+func TestUninstallTakesBackOnlyTheLinesTheDescriptionAndTheManifestName(t *testing.T) {
+	e := deniedTwice(t)
+	e.node.users = append(e.node.users, &fakeUser{ID: "audit@pve", Enabled: true})
+	e.node.grant("/", "user", "audit@pve", "NoAccess")
+	ct := e.node.cts[100]
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(ct.files[manifestFile].data, &m))
+	m["appliance"].(map[string]any)["noAccess"] = []any{
+		map[string]any{"principal": "audit@pve", "path": "/", "role": "NoAccess"},
+		map[string]any{"principal": "vmops@pve", "path": "/vms/100", "role": "NoAccess"},
+	}
+	data, err := json.Marshal(m)
+	require.NoError(t, err)
+	ct.files[manifestFile] = fakeFile{data: data, perms: "0600"}
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.True(t, e.node.has("/", "user", "audit@pve", "NoAccess"), "the admin's line stays")
+	require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"), "the manifest does not name it")
+	require.Equal(t, 0, e.node.count("pveum acl delete / --users"))
+	require.Contains(t, e.ask.text(), "(kept: NoAccess for ops@pve on /, which the description of lxc/100 names and its manifest does not)")
+	require.Contains(t, e.ask.text(), "(kept: NoAccess for audit@pve on /, which nothing of lxc/100 names as added by the installer: "+
+		"if an install added it, pveum acl delete / --users audit@pve --roles NoAccess takes it back)")
+	require.Nil(t, e.node.cts[100])
+}
+
+// A restore keeps the lines above its container in its description, and
+// drops the one on the container it was made from.
+func TestARestoreKeepsTheLinesAboveItInItsDescription(t *testing.T) {
+	e := deniedTwice(t)
+	e.restored(101, true)
+	e.lose()
+
+	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}), e.ask.text())
+
+	require.Equal(t, "pco appliance vm101, installed 2026-10-01 by pco appliance install\nNoAccess for ops@pve on /",
+		e.node.cts[101].cfg["description"])
 }
 
 // A run taken back takes back its NoAccess lines too.

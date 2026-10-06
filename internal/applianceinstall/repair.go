@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 )
 
 // Repair puts the appliance vmid right after a restore, a changed certificate
@@ -131,7 +133,7 @@ func (r *run) repair(ctx context.Context) error {
 // which uninstall finds it.
 func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
 	vmid := r.j.VMID
-	from, ok := describedVMID(cfg["description"])
+	from, lines, ok := parseDescription(cfg["description"])
 	switch {
 	case !ok:
 		return refusal{fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was changed", vmid)}
@@ -141,9 +143,15 @@ func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
 	if err := r.notACopy(ctx, from); err != nil {
 		return err
 	}
-	if _, err := r.r.Run(ctx, "pct", "set", strconv.Itoa(vmid), "--description", description(vmid, r.now())); err != nil {
+	// The lines above the container are the restore's too; the one on the
+	// container it was made from is not.
+	old := "/vms/" + strconv.Itoa(from)
+	lines = slices.DeleteFunc(lines, func(n setup.NoAccessLine) bool { return n.Path == old })
+	desc := description(vmid, r.now(), lines)
+	if _, err := r.r.Run(ctx, "pct", "set", strconv.Itoa(vmid), "--description", desc); err != nil {
 		return fmt.Errorf("marking lxc/%d: %w", vmid, err)
 	}
+	cfg["description"] = desc
 	r.ask.Info("container lxc/%d: made from lxc/%d, and marked as itself now", vmid, from)
 	return nil
 }

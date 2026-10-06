@@ -319,6 +319,11 @@ type denial struct {
 	Why       string   `json:"why,omitempty"`
 }
 
+// noAccess is the line the manifest and the description of the container name.
+func (d denial) noAccess() setup.NoAccessLine {
+	return setup.NoAccessLine{Principal: d.Who, Path: d.Path, Role: roleNoAccess}
+}
+
 // line is the command an admin runs, with a token quoted for the shell.
 func (d denial) line() string {
 	who := d.Who

@@ -17,8 +17,9 @@ import (
 type survey struct {
 	exists, running bool
 	cfg             ctConfig
-	described       int    // the VMID the description of the container names
-	originalNode    string // of lxc/described, when the container is a copy of it that is still there
+	described       int                  // the VMID the description of the container names
+	noted           []setup.NoAccessLine // the NoAccess lines its description records
+	originalNode    string               // of lxc/described, when the container is a copy of it that is still there
 	manifest        *setup.Manifest
 	users           []userEntry
 	tokens          []tokenEntry
@@ -118,7 +119,7 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 	case err == nil:
 		s.exists = true
 		var ok bool
-		if s.described, ok = describedVMID(s.cfg["description"]); !ok {
+		if s.described, s.noted, ok = parseDescription(s.cfg["description"]); !ok {
 			return s, fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was removed", vmid)
 		}
 		if s.running, err = ctRunning(ctx, r.r, vmid); err != nil {
@@ -341,26 +342,26 @@ func (r *run) plan(vmid int, s survey) plan {
 }
 
 // planNoAccess decides which of the NoAccess lines the installer added go:
-// each the manifest names that is there as the installer made it, but for
-// one on the container, which goes with it, and one above the container
-// while another appliance is there, which it keeps the principal out of as
-// well. Without the manifest nothing says which lines are the installer's.
+// each the description of the container records, which is the node's own note
+// of them, and the manifest names too when it could be read, that is there as
+// the installer made it, but for one on the container, which goes with it, and
+// one above the container while another appliance is there, which it keeps the
+// principal out of as well. The manifest alone proves nothing, as a
+// compromised appliance could name any line. A NoAccess line above the
+// container that nothing names is kept and listed, with the command that takes
+// it back: another appliance's install may have added it.
 func (p *plan) planNoAccess(vmid int, s survey, appliances []int) {
 	paths := noAccessPaths(vmid)
 	vm := paths[len(paths)-1]
-	if s.manifest == nil || s.manifest.Appliance == nil {
-		for _, l := range s.acl {
-			if l.Role == roleNoAccess && slices.Contains(paths[:len(paths)-1], l.Path) {
-				p.kept = append(p.kept, fmt.Sprintf("NoAccess for %s on %s, which the installer may have added: "+
-					"without the manifest of lxc/%d nothing says so", l.UGID, l.Path, vmid))
-			}
-		}
-		return
-	}
-	for _, n := range s.manifest.Appliance.NoAccess {
+	manifest := s.manifest != nil && s.manifest.Appliance != nil
+	var accounted []aclLine
+	for _, n := range s.noted {
 		l := noAccessLine(n)
+		accounted = append(accounted, l)
 		line := fmt.Sprintf("NoAccess for %s on %s", n.Principal, n.Path)
 		switch {
+		case manifest && !slices.Contains(s.manifest.Appliance.NoAccess, n):
+			p.kept = append(p.kept, fmt.Sprintf("%s, which the description of lxc/%d names and its manifest does not", line, vmid))
 		case !slices.Contains(s.acl, l):
 			p.notes = append(p.notes, line+", which the installer added, is not there any more")
 		case l.Path == vm && p.container:
@@ -370,6 +371,12 @@ func (p *plan) planNoAccess(vmid int, s survey, appliances []int) {
 			p.kept = append(p.kept, fmt.Sprintf("%s, which keeps %s out of the appliance lxc/%d as well", line, n.Principal, appliances[0]))
 		default:
 			p.noAccess = append(p.noAccess, l)
+		}
+	}
+	for _, l := range s.acl {
+		if l.Role == roleNoAccess && slices.Contains(paths[:len(paths)-1], l.Path) && !slices.Contains(accounted, l) {
+			p.kept = append(p.kept, fmt.Sprintf("NoAccess for %s on %s, which nothing of lxc/%d names as added by the installer: "+
+				"if an install added it, pveum acl delete %s --%ss %s --roles %s takes it back", l.UGID, l.Path, vmid, l.Path, l.Type, l.UGID, roleNoAccess))
 		}
 	}
 }
