@@ -370,6 +370,8 @@ interface; [Appliance](appliance.md#the-web-interface) says how to sign in.
   [backups](guides/backup-and-recovery.md).
 - [Roll out in observe-only mode](guides/observe-then-enforce.md): more hostnames at once, read
   before they are published.
+- [Use cases](use-cases/index.md): six setups, from a homelab to a hosting company, and the
+  decisions each one makes.
 - [Annotations](annotations.md): everything you can write in the Notes.
 - [Identity](identity.md) and [Security](security.md): what pco proves before it
   publishes an address, and what it does not.

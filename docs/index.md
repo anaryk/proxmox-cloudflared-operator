@@ -63,6 +63,9 @@ The packages, their checksums and the signature of the checksum file are on the
 - **Start**: [Quickstart](quickstart.md) takes a node from nothing to one published
   hostname, [Cloudflare token](cloudflare-token.md) says what the token needs, and the
   [FAQ](faq.md) answers the questions that come up first.
+- **How to**: the [how-to guides](guides/index.md) are one task each, from publishing a guest to
+  backups and the appliance, and the [use cases](use-cases/index.md) are six setups, each from
+  the situation to the settings it ends with.
 - **Concepts**: [Architecture](architecture.md) says how pco is built,
   [Annotations](annotations.md) is everything you can write in the Notes,
   [Identity](identity.md) how pco proves that a guest owns an address,
