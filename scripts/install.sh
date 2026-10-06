@@ -10,9 +10,11 @@
 # and removes the directory when that returns. The profile is chosen by
 # --appliance or --profile host|appliance among the arguments, else by
 # PCO_PROFILE, else, on a terminal, by a question that Enter answers with the
-# host profile. --uninstall, with the appliance profile, runs
-# `pco appliance uninstall` in the same way. The other arguments are passed on
-# to the command the script hands over to.
+# host profile. With the appliance profile, --uninstall, --repair,
+# --grant-network and --revoke-network run `pco appliance uninstall`, `repair`,
+# `grant-network` and `revoke-network` in the same way, on a node that has no
+# pco to run them with. The other arguments are passed on to the command the
+# script hands over to.
 #
 # The package is verified through checksums.txt, and checksums.txt through its
 # detached signature by the release key embedded below: a checksum fetched from
@@ -44,10 +46,11 @@
 #                                  PCO_TEMPLATE gives it
 #   PCO_TEMPLATE                   appliance: the template as a local file, checked
 #                                  against checksums.txt and passed as --template;
-#                                  refused with the host profile and with --uninstall
+#                                  refused with the host profile and with the other
+#                                  commands of the appliance, --uninstall among them
 #   PCO_RESUME                     appliance: the journal of an install that did
 #                                  not finish, which the installer finishes or takes
-#                                  back; refused with the host profile and --uninstall
+#                                  back; refused as PCO_TEMPLATE is
 
 set -euo pipefail
 
@@ -82,10 +85,11 @@ MAX_VERSION_LENGTH=64
 MAX_SMALL_FILE=1048576
 MAX_PACKAGE_FILE=209715200
 TMP_DIR=
-# What the arguments chose: a profile, and --uninstall. ARGS are the other
-# arguments, which are passed on.
+# What the arguments chose: a profile, and the command of the appliance other
+# than its install, as uninstall for --uninstall; empty for the install. ARGS
+# are the other arguments, which are passed on.
 CHOSEN=
-UNINSTALL=0
+COMMAND=
 ARGS=()
 PROFILE=host
 # The template file of PCO_TEMPLATE, as an absolute path.
@@ -323,10 +327,33 @@ choose() {
 	CHOSEN=$1
 }
 
-# The profile and --uninstall are the script's own, wherever they stand among
-# the arguments, and are not passed on: neither pco setup nor pco appliance has
-# a flag of those names, so on they could only fail, after the package is
-# installed. The other arguments go to ARGS as they are.
+choose_command() {
+	if [[ -n $COMMAND && $COMMAND != "$1" ]]; then
+		die "the arguments name both --$COMMAND and --$1"
+	fi
+	COMMAND=$1
+}
+
+# A host install runs its commands with the pco it has.
+refuse_on_host() {
+	case $COMMAND in
+	uninstall)
+		die "use pco uninstall to take a host install off this node; an appliance is removed with install.sh --appliance --uninstall --vmid <vmid>"
+		;;
+	repair)
+		die "use pco setup --repair to repair a host install; an appliance is repaired with install.sh --appliance --repair --vmid <vmid>"
+		;;
+	*)
+		die "--$COMMAND is for an appliance: install.sh --appliance --$COMMAND --vmid <vmid> --bridge <bridge>"
+		;;
+	esac
+}
+
+# The profile and the commands of the appliance are the script's own, wherever
+# they stand among the arguments, and are not passed on: neither pco setup nor
+# pco appliance has a flag --appliance or --profile, and a command goes with
+# the appliance profile alone, which runs it as a subcommand. The other
+# arguments go to ARGS as they are.
 own_options() {
 	ARGS=()
 	while [[ $# -gt 0 ]]; do
@@ -346,8 +373,8 @@ own_options() {
 			choose "${1#--profile=}"
 			shift
 			;;
-		--uninstall)
-			UNINSTALL=1
+		--uninstall | --repair | --grant-network | --revoke-network)
+			choose_command "${1#--}"
 			shift
 			;;
 		*)
@@ -417,7 +444,7 @@ ask_profile() {
 
 # The arguments win over PCO_PROFILE, which wins over the question. The
 # question is for an install on a terminal: --yes takes the default answers and
-# --uninstall has nothing to choose between.
+# the other commands have nothing to choose between.
 choose_profile() {
 	local mode
 	if [[ -n ${PCO_PROFILE:-} ]]; then
@@ -428,7 +455,7 @@ choose_profile() {
 		PROFILE=$CHOSEN
 		return 0
 	fi
-	if [[ -n ${PCO_PROFILE:-} || $UNINSTALL == 1 ]] || has_yes "$@"; then
+	if [[ -n ${PCO_PROFILE:-} || -n $COMMAND ]] || has_yes "$@"; then
 		return 0
 	fi
 	mode=$(input_mode)
@@ -437,7 +464,7 @@ choose_profile() {
 	fi
 }
 
-# The installer and the uninstaller ask questions: without a terminal they need
+# The commands of the appliance ask questions: without a terminal they need
 # --yes, and the script says so before it downloads anything.
 require_input() {
 	if [[ $(input_mode "$@") == none ]]; then
@@ -483,12 +510,12 @@ check_profile_variables() {
 		fi
 		return 0
 	fi
-	if [[ $UNINSTALL == 1 ]]; then
+	if [[ -n $COMMAND ]]; then
 		if [[ -n ${PCO_RESUME:-} ]]; then
-			die "PCO_RESUME finishes an install, it does not go with --uninstall"
+			die "PCO_RESUME finishes an install, it does not go with --$COMMAND"
 		fi
 		if [[ -n ${PCO_TEMPLATE:-} ]]; then
-			die "PCO_TEMPLATE is for an install, it does not go with --uninstall"
+			die "PCO_TEMPLATE is for an install, it does not go with --$COMMAND"
 		fi
 	fi
 	if [[ -n ${PCO_RESUME:-} ]]; then
@@ -766,19 +793,16 @@ run_installer() {
 # The installer is told where the template comes from and what it has to match:
 # the release and the checksums.txt that was verified above, which it checks the
 # template against again. Offline there is no release to name, and the template
-# comes from PCO_TEMPLATE.
+# comes from PCO_TEMPLATE. The other commands get the arguments as they are.
 hand_over_appliance() {
-	local name=$1 base=$2 verb=install again='' quoted
+	local name=$1 base=$2 verb=${COMMAND:-install} again='' quoted
 	local -a args
 	shift 2
-	if [[ $UNINSTALL == 1 ]]; then
-		verb=uninstall
-	fi
 	if [[ ${PCO_SKIP_SETUP:-} == 1 ]]; then
 		# pco is not installed and the temporary directory is gone by the time
 		# anyone reads this, so what is printed is the script again.
-		if [[ $UNINSTALL == 1 ]]; then
-			again=--uninstall
+		if [[ -n $COMMAND ]]; then
+			again=--$COMMAND
 		fi
 		if [[ $# -gt 0 ]]; then
 			printf -v quoted '%q ' "$@"
@@ -788,8 +812,8 @@ hand_over_appliance() {
 		say "$SCRIPT_NOTE"
 		return 0
 	fi
-	if [[ $UNINSTALL == 1 ]]; then
-		args=(uninstall "$@")
+	if [[ -n $COMMAND ]]; then
+		args=("$COMMAND" "$@")
 	else
 		args=(install)
 		if [[ -n ${PCO_RESUME:-} ]]; then
@@ -824,8 +848,8 @@ main() {
 	require_pve
 	arch=$(detect_arch)
 	choose_profile "$@"
-	if [[ $UNINSTALL == 1 && $PROFILE == host ]]; then
-		die "use pco uninstall to take a host install off this node; an appliance is removed with install.sh --appliance --uninstall --vmid <vmid>"
+	if [[ -n $COMMAND && $PROFILE == host ]]; then
+		refuse_on_host
 	fi
 
 	if [[ -n ${PCO_DEB:-}${PCO_CHECKSUMS:-}${PCO_SIGNATURE:-} ]]; then

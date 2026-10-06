@@ -139,8 +139,9 @@ Everything else has a flag, and a default where one is safe:
 | `--resume` | none | Finish the run of a journal, or take it back (below). |
 
 [`pco appliance install`](cli/pco-appliance-install.md) has the full help. The script keeps
-`--appliance`, `--profile` and `--uninstall` for itself, wherever they stand, and passes every
-other argument on, so a run without questions looks like this:
+`--appliance`, `--profile` and the [commands on the node](#commands-on-the-node) for itself,
+wherever they stand, and passes every other argument on, so a run without questions looks like
+this:
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash -s -- --appliance --storage local-zfs --bridge vmbr0 --ip 192.0.2.120/24,gw=192.0.2.1 --vmid 120 --cf-token-file /root/cf-token --yes
 
@@ -242,31 +243,19 @@ anything, and does without it when it is gone.
 
 Nothing of pco is installed on the node, so the commands that run there come with the release
 each time they are needed. Use the release the appliance runs, which
-`pct exec 120 -- pco version` names. `install.sh` runs the uninstaller for you, from a temporary
-directory it removes when it returns, after the same checks of the release as for an install:
+`pct exec 120 -- pco version` names. `install.sh` runs them for you, from a temporary directory
+it removes when it returns, after the same checks of the release as for an install.
+`--uninstall`, `--repair`, `--grant-network` and `--revoke-network`, with `--appliance`, run
+`pco appliance uninstall`, `repair`, `grant-network` and `revoke-network`, and every other
+argument goes to that command:
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --uninstall --vmid 120
 
-The others, `pco appliance repair`, `grant-network` and `revoke-network`, run from a package
-you have the installer check and then unpack yourself. Download `pco_1.2.3_amd64.deb`,
-`checksums.txt` and `checksums.txt.sig` from the release, and `scripts/install.sh` of the tag
-`v1.2.3`, which carries the key that signed it (check that key as
-[SECURITY.md](https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/SECURITY.md#by-hand)
-says):
+    curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --repair --vmid 120
 
-    PCO_DEB=./pco_1.2.3_amd64.deb PCO_CHECKSUMS=./checksums.txt PCO_SIGNATURE=./checksums.txt.sig \
-      PCO_SKIP_SETUP=1 bash install.sh --appliance
-
-It checks the signature and the checksum, says `verified by: signature by key` with the
-fingerprint, and stops before it runs anything. Then unpack the package where only root can
-read, run the command, and remove the directory:
-
-    mkdir -m 700 /root/pco-1.2.3
-    dpkg-deb -x pco_1.2.3_amd64.deb /root/pco-1.2.3
-    /root/pco-1.2.3/usr/bin/pco appliance repair --vmid 120
-    rm -rf /root/pco-1.2.3
-
-`dpkg-deb -x` only unpacks: dpkg does not take the package for installed. Never run a `pco`
+With the host profile the script refuses them, as a host install runs its commands with the
+`pco` it has. A node without internet runs them from files you bring, `PCO_DEB`,
+`PCO_CHECKSUMS` and `PCO_SIGNATURE`, as an [offline](#offline) install does. Never run a `pco`
 taken out of the appliance on the node: root on the node would run what the container holds.
 
 ## The API endpoint and its certificate

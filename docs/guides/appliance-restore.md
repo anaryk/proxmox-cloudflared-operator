@@ -31,10 +31,10 @@ the container back, and a repair brings back its install, from what Cloudflare a
    marker of a volume of pco, and stays failed, which is expected. The steps below use 121; over
    the appliance, it is 120.
 
-2. Repair it with the token, on the node, with the binary of the release unpacked as
-   [commands on the node](../appliance.md#commands-on-the-node) says:
+2. Repair it with the token, on the node, through `install.sh` and the release the appliance
+   ran, as [commands on the node](../appliance.md#commands-on-the-node) says:
 
-       /root/pco-1.2.3/usr/bin/pco appliance repair --vmid 121 --recover --cf-token-file /root/cf-token
+       curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --repair --vmid 121 --recover --cf-token-file /root/cf-token
 
    It starts the container, marks a container restored to a new VMID as itself, marks the new
    volume, makes the Proxmox token anew, and has the appliance adopt the install whose tunnel the

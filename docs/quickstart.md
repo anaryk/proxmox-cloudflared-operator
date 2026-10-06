@@ -53,8 +53,9 @@ the script from the tag of the release and compare the key it carries, as
 [SECURITY.md](https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/SECURITY.md#with-the-installer)
 shows.
 
-Arguments after `bash -s --` go to `pco setup`, but for `--appliance`, `--profile` and
-`--uninstall`, which the script keeps for itself (see [Profiles](profiles.md)); so
+Arguments after `bash -s --` go to `pco setup`, but for `--appliance`, `--profile` and the
+[commands of an appliance](appliance.md#commands-on-the-node), such as `--uninstall`, which the
+script keeps for itself (see [Profiles](profiles.md)); so
 `bash -s -- --yes` takes every default. On a terminal the script first asks whether to
 install on the node or as an appliance, and `--yes`, `--appliance`, `--profile` or
 `PCO_PROFILE=host` answer that beforehand. `PCO_VERSION=1.2.3` installs a given release

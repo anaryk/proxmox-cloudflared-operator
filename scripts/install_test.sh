@@ -2298,6 +2298,193 @@ case_appliance_uninstall() {
 	assert_calls curl 0
 }
 
+# --repair, --grant-network and --revoke-network go the way of --uninstall.
+case_appliance_commands() {
+	local spec command
+	local -a lead
+
+	for spec in "--appliance --repair" "--repair --appliance" "--profile appliance --repair"; do
+		read -r -a lead <<<"$spec"
+		new_case "$spec runs pco appliance repair from the verified package"
+		run_install "${lead[@]}" --vmid 121 --recover --cf-token-file /root/cf-token --yes
+		assert_rc 0
+		assert_stderr_empty
+		assert_calls apt-get 0
+		assert_calls dpkg-deb 1
+		assert_calls pco 1
+		assert_log_has "pco appliance repair --vmid 121 --recover --cf-token-file /root/cf-token --yes"
+		assert_log_has "pco: run as $CASE_DIR/tmp/pco-install.*/root/usr/bin/pco"
+		assert_log_lacks "--release-base"
+		assert_log_lacks "--checksums"
+		assert_log_lacks "--repair"
+		assert_log_lacks "--appliance"
+		assert_before gpgv sha256sum
+		assert_before sha256sum dpkg-deb
+		assert_before dpkg-deb pco
+		assert_stdout_has "verified by: signature by key $STUB_FPR and checksum"
+		assert_stdout_has "starting pco appliance repair with the answers of --yes"
+		ensure "the downloads are those of an install: $(curl_urls)" \
+			equals "$(curl_urls)" "https://api.github.com/repos/$REPO/releases/latest $RELEASE_URL/$PKG $RELEASE_URL/checksums.txt $RELEASE_URL/checksums.txt.sig"
+		assert_tmp_gone
+		assert_nothing_elsewhere
+	done
+
+	for command in grant-network revoke-network; do
+		new_case "--$command runs pco appliance $command from the verified package"
+		run_install --appliance "--$command" --vmid 120 --bridge vmbr2 --vlan 20 --yes
+		assert_rc 0
+		assert_calls apt-get 0
+		assert_calls dpkg-deb 1
+		assert_calls pco 1
+		assert_log_has "pco appliance $command --vmid 120 --bridge vmbr2 --vlan 20 --yes"
+		assert_log_lacks "--$command --"
+		assert_log_lacks "--checksums"
+		assert_before sha256sum dpkg-deb
+		assert_stdout_has "starting pco appliance $command with the answers of --yes"
+		assert_tmp_gone
+
+		new_case "with the host profile --$command points at the appliance"
+		run_install "--$command" --vmid 120 --bridge vmbr1 --yes
+		assert_fail "--$command is for an appliance: install.sh --appliance --$command --vmid <vmid> --bridge <bridge>"
+		assert_calls curl 0
+		assert_nothing_unpacked
+	done
+
+	new_case "PCO_PROFILE=appliance with --repair"
+	set_env PCO_PROFILE appliance
+	run_install --repair --vmid 120 --yes
+	assert_rc 0
+	assert_log_has "pco appliance repair --vmid 120 --yes"
+
+	new_case "--repair after other arguments is not passed on, and the appliance profile takes it"
+	run_install --vmid 120 --yes --repair --appliance
+	assert_rc 0
+	assert_log_has "pco appliance repair --vmid 120 --yes"
+	assert_log_lacks "install --release-base"
+
+	new_case "with the host profile --repair points at pco setup --repair"
+	run_install --repair --yes
+	assert_fail "use pco setup --repair to repair a host install; an appliance is repaired with install.sh --appliance --repair --vmid <vmid>"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "--profile host with --repair points at pco setup --repair too"
+	run_install --profile host --repair --vmid 120 --yes
+	assert_fail "use pco setup --repair"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "--repair without a choice asks nothing and is the host profile"
+	use_terminal $'appliance\n'
+	run_install --repair --vmid 120
+	assert_fail "use pco setup --repair"
+	assert_stdout_lacks "$QUESTION"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	for spec in "--uninstall --repair" "--repair --grant-network" "--revoke-network --vmid 120 --grant-network"; do
+		read -r -a lead <<<"$spec"
+		new_case "$spec names two commands and is refused"
+		run_install --appliance "${lead[@]}" --yes
+		assert_fail "the arguments name both"
+		assert_calls curl 0
+		assert_nothing_unpacked
+	done
+
+	new_case "the two commands are named in the refusal"
+	run_install --appliance --uninstall --vmid 120 --repair --yes
+	assert_fail "the arguments name both --uninstall and --repair"
+
+	new_case "a command named twice is the command"
+	run_install --appliance --repair --vmid 120 --repair --yes
+	assert_rc 0
+	assert_log_has "pco appliance repair --vmid 120 --yes"
+
+	new_case "a repair is verified as an install is"
+	set_cfg gpgv bad
+	run_install --appliance --repair --vmid 120 --yes
+	assert_fail "signature of checksums.txt is not valid"
+	assert_nothing_unpacked
+	assert_tmp_gone
+
+	new_case "a grant from a package that does not match checksums.txt runs nothing"
+	set_cfg sha256 "$HASH_B"
+	run_install --appliance --grant-network --vmid 120 --bridge vmbr1 --yes
+	assert_fail "checksum of $PKG does not match checksums.txt"
+	assert_nothing_unpacked
+	assert_tmp_gone
+
+	new_case "the placeholder key refuses a repair too"
+	SCRIPT_UNDER_TEST=$PLACEHOLDER_SCRIPT
+	run_install --appliance --repair --vmid 120 --yes
+	assert_fail "this build of the script carries no release key"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "offline, a repair downloads nothing"
+	use_local_files
+	run_install --appliance --repair --vmid 120 --yes
+	assert_rc 0
+	assert_calls curl 0
+	assert_log_has "pco appliance repair --vmid 120 --yes"
+	assert_stdout_has "source: local files, nothing is downloaded"
+
+	new_case "a repair asks on the terminal, as the installer does"
+	use_terminal 'typed answers'
+	set_cfg pco-read-stdin 1
+	run_install --appliance --repair --vmid 120
+	assert_rc 0
+	assert_log_has "pco: stdin holds: typed answers"
+	assert_stdout_has "starting pco appliance repair on the terminal"
+
+	new_case "a repair without a terminal and without --yes stops before anything is downloaded"
+	run_install --appliance --repair --vmid 120
+	assert_fail "no terminal to ask the installer's questions on"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "the exit code of the repair is the exit code of the script, and it offers no journal"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	set_cfg pco-rc 1
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --repair --vmid 120 --yes
+	assert_rc 1
+	assert_stderr_empty
+	assert_tmp_gone
+
+	new_case "a repair that cannot be run is explained"
+	set_cfg dpkg-deb-noexec 1
+	run_install --appliance --repair --vmid 120 --yes
+	assert_rc 126
+	assert_stderr_has "could not run pco from /tmp (exit status 126)"
+	assert_tmp_gone
+
+	new_case "PCO_TEMPLATE does not go with --repair"
+	use_template
+	run_install --appliance --repair --vmid 120 --yes
+	assert_fail "PCO_TEMPLATE is for an install, it does not go with --repair"
+	assert_calls curl 0
+
+	new_case "PCO_RESUME does not go with --grant-network"
+	leave_journal "$JOURNAL"
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	run_install --appliance --grant-network --vmid 120 --bridge vmbr1 --yes
+	assert_fail "PCO_RESUME finishes an install, it does not go with --grant-network"
+	assert_calls curl 0
+
+	new_case "PCO_SKIP_SETUP=1 stops a repair after the verification, with the command to go on"
+	set_env PCO_SKIP_SETUP 1
+	run_install --appliance --repair --vmid 121 --recover --yes
+	assert_rc 0
+	assert_nothing_unpacked
+	assert_stdout_has "skipping the appliance repair (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; to go on, run again without PCO_SKIP_SETUP: PCO_PROFILE=appliance PCO_VERSION=1.2.3 install.sh --repair --vmid 121 --recover --yes"
+	assert_tmp_gone
+	use_printed "$(printed_after "$OUT" "without PCO_SKIP_SETUP: ")"
+	run_install ${PRINTED_ARGS[@]+"${PRINTED_ARGS[@]}"}
+	assert_rc 0
+	assert_log_has "pco appliance repair --vmid 121 --recover --yes"
+}
+
 case_appliance_skip_setup() {
 	new_case "PCO_SKIP_SETUP=1 verifies, prints the command to go on and stops, without a terminal"
 	set_env PCO_SKIP_SETUP 1
@@ -2739,6 +2926,7 @@ case_appliance_template
 case_appliance_failure
 case_appliance_resume
 case_appliance_uninstall
+case_appliance_commands
 case_appliance_skip_setup
 case_progress_messages
 case_structure
