@@ -516,6 +516,30 @@ func TestResumeAfterTheTemplateNeedsNoChecksums(t *testing.T) {
 	require.Empty(t, entries(t, e.journals))
 }
 
+// A container that holds the lock of a create but not the description of the
+// run is not the run's: the rollback neither unlocks nor destroys it.
+func TestARollbackLeavesALockedContainerOfAnotherDescriptionAlone(t *testing.T) {
+	e := newEnv(t)
+	e.node.killAt = "pct start 100"
+	require.PanicsWithValue(t, errKilled, func() { _ = e.in.Install(t.Context(), e.options()) })
+	path := e.journal()
+	ct := e.node.cts[100]
+	ct.running = false
+	ct.cfg["lock"] = "create"
+	ct.cfg["description"] = "restored over it by an admin\n"
+
+	err := e.in.Install(t.Context(), Options{Resume: path, Yes: true})
+
+	require.ErrorContains(t, err, "starting lxc/100")
+	require.Contains(t, e.ask.text(), "lxc/100 is not the container this run made: it is left as it is")
+	require.Equal(t, 0, e.node.count("pct unlock"))
+	require.Equal(t, 0, e.node.count("pct destroy"))
+	require.Same(t, ct, e.node.cts[100])
+	require.Equal(t, "create", ct.cfg["lock"])
+	require.Equal(t, "restored over it by an admin\n", ct.cfg["description"])
+	require.Empty(t, entries(t, e.journals), "what the run made is taken back, the container is not its own")
+}
+
 // The journal is written before every create, and never holds a secret.
 func TestTheJournalHoldsNoSecret(t *testing.T) {
 	e := newEnv(t)

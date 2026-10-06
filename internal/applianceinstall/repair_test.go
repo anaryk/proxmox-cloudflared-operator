@@ -201,7 +201,7 @@ func TestRepairRefuses(t *testing.T) {
 
 func TestRepairOfAContainerOnAnotherNodeIsRefused(t *testing.T) {
 	e := installed(t)
-	e.migrated(100, "pve2")
+	e.migrated()
 
 	err := e.in.Repair(t.Context(), 100, Options{Yes: true})
 
@@ -230,7 +230,7 @@ func TestRepairRefusesACopyBesideItsOriginal(t *testing.T) {
 			Options{Yes: true, Recover: true, CloudflareToken: cfToken}, "pve1"},
 		{"a clone of an appliance on another node", func(e *testEnv) {
 			e.cloned()
-			e.migrated(100, "pve2")
+			e.migrated()
 		}, Options{Yes: true}, "pve2"},
 		// A repair of an earlier version marked the copy as itself: its
 		// manifest still names the original.

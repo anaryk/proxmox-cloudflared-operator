@@ -344,23 +344,22 @@ func TestUninstallOfAContainerThatIsGone(t *testing.T) {
 	require.False(t, slices.ContainsFunc(e.node.ran, func(l string) bool { return strings.HasPrefix(l, "pct ") && !strings.HasPrefix(l, "pct status") }))
 }
 
-// migrated moves the container vmid to another node of the cluster, as pct
-// migrate does: this node no longer has its configuration, the cluster still
-// lists it.
-func (e *testEnv) migrated(vmid int, node string) {
+// migrated moves appliance 100 to node pve2 of the cluster, as pct migrate
+// does: this node no longer has its configuration, the cluster still lists it.
+func (e *testEnv) migrated() {
 	e.t.Helper()
-	ct := e.node.cts[vmid]
+	ct := e.node.cts[100]
 	require.NotNil(e.t, ct)
-	delete(e.node.cts, vmid)
-	e.node.elsewhere[vmid] = node
-	e.node.otherCTs[vmid] = ct
+	delete(e.node.cts, 100)
+	e.node.elsewhere[100] = "pve2"
+	e.node.otherCTs[100] = ct
 }
 
 // Only a container that is in no node's list is gone: on another node, the
 // uninstall would take the token of an appliance that runs.
 func TestUninstallOfAContainerOnAnotherNodeIsRefused(t *testing.T) {
 	e := installed(t)
-	e.migrated(100, "pve2")
+	e.migrated()
 
 	err := e.in.Uninstall(t.Context(), 100, uninstallOptions())
 
@@ -369,6 +368,42 @@ func TestUninstallOfAContainerOnAnotherNodeIsRefused(t *testing.T) {
 	require.Equal(t, 0, e.node.count("pveum user token remove"))
 	require.Equal(t, 0, e.node.count("pveum acl delete"))
 	require.Empty(t, entries(t, e.journals))
+}
+
+// A read of the cluster that fails is no answer that the container is gone:
+// the uninstall and the repair stop, and touch nothing.
+func TestAFailingReadOfTheClusterIsNotTakenForAContainerThatIsGone(t *testing.T) {
+	failing := func(e *testEnv) {
+		e.node.on("pvesh get /cluster/resources", func(context.Context, []string) (string, error) {
+			return "", errors.New("timeout")
+		})
+	}
+	t.Run("uninstall", func(t *testing.T) {
+		e := deniedTwice(t)
+		e.migrated()
+		failing(e)
+
+		err := e.in.Uninstall(t.Context(), 100, uninstallOptions())
+
+		require.ErrorContains(t, err, "reading /cluster/resources: timeout")
+		require.Equal(t, []string{"vm100"}, e.node.tokenNames("pco@pve"))
+		for _, change := range []string{"pveum user token remove", "pveum acl delete", "pveum user delete", "pveum role delete", "pveum pool delete"} {
+			require.Equal(t, 0, e.node.count(change), change)
+		}
+		require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	})
+	t.Run("repair", func(t *testing.T) {
+		e := installed(t)
+		e.migrated()
+		failing(e)
+
+		err := e.in.Repair(t.Context(), 100, Options{Yes: true})
+
+		require.ErrorContains(t, err, "reading /cluster/resources: timeout")
+		require.Equal(t, 0, e.node.count("pveum user token"))
+		require.Empty(t, e.node.pushes)
+		require.Empty(t, e.node.inits)
+	})
 }
 
 // deniedTwice is a node with appliance 100 installed with --deny-access: ops@pve
