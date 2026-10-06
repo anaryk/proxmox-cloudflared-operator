@@ -327,6 +327,88 @@ func TestALegWhoseBridgeEndLostItsPeerIsMadeAgain(t *testing.T) {
 	require.Less(t, index(t, c, "del host vethpco1"), index(t, c, "veth vethpco1"))
 }
 
+// A mark can pass to another network within one Sync: the engine gives a mark
+// that was freed to the network that takes its place. What the leg learned in
+// the old network is then wrong, not only stale: with identical subnets the
+// neighbour of an address is the MAC of a guest that is not in the bridge any
+// more, and the address would be tried there until the entry ages out. The
+// pair is made anew, which leaves no neighbour and makes the address go
+// through duplicate-address detection in its new bridge.
+func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
+	stale := neighbour{addr: addr("10.50.0.10"), mac: mac("bc:24:11:00:00:01")}
+	moved := func(l Leg, f func(*Leg)) Leg {
+		f(&l)
+		return l
+	}
+	uplink := moved(legA, func(l *Leg) { l.Uplink = true })
+	for _, tt := range []struct {
+		name      string
+		from, to  Leg
+		recreated bool
+	}{
+		{"to another bridge", legA, moved(legA, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" }), true},
+		{"to the bridge of an uplink", legA, moved(uplink, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" }), true},
+		{"to another VLAN of a bridge that filters VLANs", legB, moved(legB, func(l *Leg) { l.ID, l.VLAN = "vmbr2.30", 30 }), true},
+		{"to another prefix", legA, moved(legA, func(l *Leg) { l.Prefix = prefix("10.60.0.250/24") }), true},
+		{"to another address in its prefix", legA, moved(legA, func(l *Leg) { l.Prefix = prefix("10.50.0.251/24") }), false},
+		{"to its own network, with the mark unchanged", legA, legA, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t).node()
+			h.sys.bridge("vmbr3", false, 1500, "eno3")
+			h.up(t)
+			h.sync(t, []Leg{tt.from}, nil, nil, nil)
+			iface := tt.from.Iface()
+			h.sys.ns.learned[iface] = []neighbour{stale}
+			h.reset()
+
+			states := h.sync(t, []Leg{tt.to}, nil, nil, nil)
+			require.True(t, states[0].Up, states[0].Problem)
+			if !tt.recreated {
+				require.Equal(t, []neighbour{stale}, h.sys.ns.learned[iface], "the leg is where it was")
+				require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "del host")
+				return
+			}
+			require.Empty(t, h.sys.ns.learned[iface], "the neighbours of the old network are gone")
+			c := h.sys.changes()
+			port := bridgePort(tt.to.Mark)
+			require.Less(t, index(t, c, "del host "+port), index(t, c, "veth "+port), "the pair is made anew")
+			require.Equal(t, tt.to.Bridge, h.sys.host.links[port].master)
+
+			h.reset()
+			h.sync(t, []Leg{tt.to}, nil, nil, nil)
+			require.Empty(t, h.sys.changes(), "once moved, a Sync changes nothing")
+		})
+	}
+
+	t.Run("the address is probed in its new bridge", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.sys.bridge("vmbr3", false, 1500, "eno3")
+		h.up(t)
+		h.sync(t, []Leg{uplink}, nil, nil, nil)
+		to := moved(uplink, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" })
+		h.sys.answers[addr("10.50.0.250")] = []net.HardwareAddr{mac("52:54:00:12:34:56")}
+		h.reset()
+		states := h.sync(t, []Leg{to}, nil, nil, nil)
+		require.Contains(t, h.sys.calls, "probe leg1 10.50.0.250 300ms")
+		require.Equal(t, "address in use by 52:54:00:12:34:56", states[0].Problem)
+		require.False(t, states[0].Up)
+	})
+
+	t.Run("a bridge end that lost its bridge is put back, and the neighbours stay", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.up(t)
+		h.sync(t, []Leg{legA}, nil, nil, nil)
+		h.sys.ns.learned["leg1"] = []neighbour{stale}
+		h.sys.host.links["vethpco1"].master = ""
+		h.reset()
+		h.sync(t, []Leg{legA}, nil, nil, nil)
+		require.Contains(t, h.sys.changes(), "master vethpco1 vmbr1")
+		require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "del host")
+		require.Equal(t, []neighbour{stale}, h.sys.ns.learned["leg1"], "a bridge that came back is the same network")
+	})
+}
+
 // The backend does not take the engine's word for a service: one that would
 // put an address outside the prefix into the table, or DNAT to an address
 // outside its leg's network, is left out and reported on its leg.

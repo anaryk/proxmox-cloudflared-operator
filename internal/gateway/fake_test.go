@@ -56,6 +56,9 @@ type fakeNet struct {
 	routes  []route
 	rules   []rule
 	neigh   map[string][]neighbour
+	// learned are the neighbours the kernel learned: not permanent, so
+	// neighbours does not list them, and only a new device drops them.
+	learned map[string][]neighbour
 }
 
 type fakeLink struct {
@@ -68,7 +71,7 @@ type fakeLink struct {
 func newFakeNet() *fakeNet {
 	n := &fakeNet{
 		links: map[string]*fakeLink{}, sysctls: map[string]string{},
-		addrs: map[string][]address{}, neigh: map[string][]neighbour{},
+		addrs: map[string][]address{}, neigh: map[string][]neighbour{}, learned: map[string][]neighbour{},
 	}
 	n.links["lo"] = &fakeLink{link: link{name: "lo", kind: "loopback", mtu: 65536}}
 	return n
@@ -299,6 +302,7 @@ func (f *fakeSystem) dropLink(s side, name string) {
 	delete(n.links, name)
 	delete(n.addrs, name)
 	delete(n.neigh, name)
+	delete(n.learned, name)
 	n.routes = slices.DeleteFunc(n.routes, func(r route) bool { return r.dev == name })
 	for k := range n.sysctls {
 		if strings.Contains(k, "."+name+".") {

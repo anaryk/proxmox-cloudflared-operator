@@ -130,7 +130,8 @@ func (b *hostBackend) bridgeOf(bridge string, vlan int) (master string, filterin
 // leg sets up one leg: the pair with its MACs and the bridge's MTU, IPv6
 // off, the bridge end enslaved with its VLAN before it goes up, the sticky
 // entry of the leg's MAC, the address (after DAD on an uplink bridge), the
-// leg's table and its rule.
+// leg's table and its rule. A pair that was made for another network is made
+// anew first.
 func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 	st := LegState{ID: l.ID, Iface: l.Iface()}
 	rec := b.records[l.ID]
@@ -147,6 +148,16 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 		return st, nil
 	}
 	port, iface := bridgePort(l.Mark), l.Iface()
+	moved, err := b.legMoved(l, port, master, filtering)
+	if err != nil {
+		return st, err
+	}
+	if moved {
+		b.log.Info().Str("leg", iface).Str("network", l.ID).Msg("a mark passed to another network; making its pair anew")
+		if err := b.removePair(l.Mark); err != nil {
+			return st, err
+		}
+	}
 	if err := b.ensurePair(port, bridgeEndMAC(l.MAC), iface, l.MAC, mtu); err != nil {
 		return st, err
 	}
@@ -182,6 +193,46 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 	}
 	st.Up = raised
 	return st, nil
+}
+
+// legMoved reports whether the pair that is there for the leg's mark was set
+// up for another network: its bridge end is in another bridge, or in the
+// leg's bridge in another VLAN, or its address is in another prefix. A mark
+// moves so when the engine gives a freed mark to the network that takes the
+// old one's place within one Sync; the kernel's state says so, as a process
+// that did not make the pair, as pco netns sync is, has no memory of it.
+// What the leg learned in the old network, the neighbours of its addresses,
+// is the MACs of guests that are not in the bridge now, and where subnets
+// are identical it would be used for the address of a guest there. A pair
+// that lost its bridge is not moved: it was put back into the same network.
+func (b *hostBackend) legMoved(l Leg, port, master string, filtering bool) (bool, error) {
+	iface := l.Iface()
+	have, ok, err := b.sys.link(onHost, port)
+	if err != nil {
+		return false, fmt.Errorf("reading %s: %w", port, err)
+	}
+	if _, peer, err := b.sys.link(inNS, iface); err != nil {
+		return false, fmt.Errorf("reading %s in %s: %w", iface, inNS, err)
+	} else if !ok || !peer || have.master == "" {
+		return false, nil
+	}
+	if have.master != master {
+		return true, nil
+	}
+	if filtering && l.VLAN > 0 {
+		vlans, err := b.sys.portVLANs(port)
+		if err != nil {
+			return false, fmt.Errorf("reading the VLANs of %s: %w", port, err)
+		}
+		if len(vlans) > 0 && !slices.ContainsFunc(vlans, func(v portVLAN) bool { return v.vid == l.VLAN }) {
+			return true, nil
+		}
+	}
+	addrs, err := b.sys.addrs(inNS, iface)
+	if err != nil {
+		return false, fmt.Errorf("reading the addresses of %s: %w", iface, err)
+	}
+	return slices.ContainsFunc(addrs, func(a address) bool { return a.prefix.Masked() != l.Prefix.Masked() }), nil
 }
 
 // fdbVLAN is the VLAN of a forwarding entry on a leg's port: the tag on a
@@ -482,9 +533,11 @@ func (b *hostBackend) removeStrayLegs(legs []Leg) error {
 	return nil
 }
 
-// removeLeg removes what the leg with a mark has: its pair, its rule and the
-// routes of its table. Each part may be gone already.
-func (b *hostBackend) removeLeg(mark int) error {
+// removePair removes the pair of the leg with a mark, which takes the
+// neighbours, the address and the routes through the leg with it; the leg's
+// rule and the unreachable route of its table stay, so that what carries the
+// mark goes nowhere until the leg is made again. An end may be gone already.
+func (b *hostBackend) removePair(mark int) error {
 	for _, e := range []struct {
 		s    side
 		name string
@@ -500,6 +553,15 @@ func (b *hostBackend) removeLeg(mark int) error {
 			return fmt.Errorf("removing %s in %s: %w", e.name, e.s, err)
 		}
 		b.log.Info().Str("link", e.name).Msg("removed a leg")
+	}
+	return nil
+}
+
+// removeLeg removes what the leg with a mark has: its pair, its rule and the
+// routes of its table. Each part may be gone already.
+func (b *hostBackend) removeLeg(mark int) error {
+	if err := b.removePair(mark); err != nil {
+		return err
 	}
 	if err := b.ensureRoutes(tableBase+mark, nil); err != nil {
 		return err

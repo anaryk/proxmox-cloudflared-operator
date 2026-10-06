@@ -532,6 +532,51 @@ func TestLinuxALegAddedUnderTrafficInterruptsNoOther(t *testing.T) {
 	conns.check(t)
 }
 
+// A mark that passes to another bridge in one Sync, with a guest at the same
+// address behind its new bridge: the namespace has learned the MAC of the
+// guest of the old bridge for that address, and keeps sending to it unless
+// the leg starts without what it learned there.
+func TestLinuxAMarkThatMovesToAnotherBridgeReachesTheGuestThere(t *testing.T) {
+	l := newLabNet(t)
+	l.bridge("br1", false)
+	l.bridge("br3", false)
+	a := l.guest("a", "br1", 0, "10.50.0.10/24", "")
+	c := l.guest("c", "br3", 0, "10.50.0.10/24", "")
+	serve(t, a, "0.0.0.0:80", "a")
+	serve(t, c, "0.0.0.0:80", "c")
+	require.NoError(t, l.b.Up(t.Context()))
+	macA, macC := l.macOf(t, "pcotest-a-"+l.id), l.macOf(t, "pcotest-c-"+l.id)
+	neighbour := func() string {
+		out, err := exec.Command(ipPath, "-n", l.gwName, "neigh", "show", "dev", "leg1").CombinedOutput()
+		require.NoError(t, err, string(out))
+		return string(out)
+	}
+	services := func(leg string) []Service {
+		return []Service{{Leg: leg, Service: addr("198.18.1.1"), Addr: addr("10.50.0.10"), Ports: []uint16{80}}}
+	}
+	leg := func(bridge string) Leg {
+		return Leg{ID: bridge, Mark: 1, Bridge: bridge, Prefix: prefix("10.50.0.250/24"), MAC: mac("02:50:43:4f:00:01")}
+	}
+
+	states, err := l.b.Sync(t.Context(), []Leg{leg("br1")}, services("br1"), nil, nil)
+	require.NoError(t, err)
+	require.True(t, states[0].Up, states[0].Problem)
+	got, err := get(l.host, "198.18.1.1:80", nil, 2*time.Second)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(got, "a "), got)
+	require.Contains(t, neighbour(), "10.50.0.10 lladdr "+macA, "the namespace learned the guest of br1")
+
+	states, err = l.b.Sync(t.Context(), []Leg{leg("br3")}, services("br3"), nil, nil)
+	require.NoError(t, err)
+	require.True(t, states[0].Up, states[0].Problem)
+	require.NotContains(t, neighbour(), macA, "nothing of br1 is kept")
+	got, err = get(l.host, "198.18.1.1:80", nil, 2*time.Second)
+	require.NoError(t, err, "the guest of br3 answers, not the MAC learned in br1")
+	require.True(t, strings.HasPrefix(got, "c "), got)
+	require.Contains(t, neighbour(), "10.50.0.10 lladdr "+macC)
+	require.NoError(t, l.b.Verify(t.Context()))
+}
+
 // Duplicate-address detection through a leg on an uplink bridge: a guest
 // that holds the address keeps it off; a free one is raised; a bridge whose
 // other ports have no carrier cannot be probed, and the address is raised
