@@ -107,9 +107,9 @@ jobs:
           if-no-files-found: error
 
   # The documentation site: the build, which fails on a link to a page that
-  # does not exist, the Markdown of the pages, every link of the built site
-  # down to its fragment, the images and their budget, the tests of the site,
-  # and the licences of its packages.
+  # does not exist, the Markdown of the pages and the syntax that only the
+  # site reads, every link of the built site down to its fragment, the images
+  # and their budget, the tests of the site, and the licences of its packages.
   docs:
     runs-on: ubuntu-latest
     steps:

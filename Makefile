@@ -98,9 +98,10 @@ ui-types:
 # into site/.vitepress/dist, with the Node and npm of web/.nvmrc and
 # site/package.json. The build fails on a link to a page that does not exist;
 # docs-lint holds the pages to the rules of site/.markdownlint-cli2.jsonc,
-# checks every link of the built site down to its fragment, and the images
-# of docs/images against their budget. docs-test runs every test of the site,
-# those of test-scripts among them and those that need its packages.
+# refuses syntax that only the site reads, checks every link of the built site
+# down to its fragment, and the images of docs/images against their budget.
+# docs-test runs every test of the site, those of test-scripts among them and
+# those that need its packages.
 site/node_modules: site/package.json site/package-lock.json
 	cd site && npm ci --ignore-scripts || { rm -rf node_modules; exit 1; }
 	@touch site/node_modules
@@ -113,6 +114,7 @@ docs-serve: site/node_modules
 
 docs-lint: docs
 	cd site && npm run lint
+	node site/scripts/site-syntax.mjs
 	node site/scripts/anchors.mjs
 	node site/scripts/image-budget.mjs
 

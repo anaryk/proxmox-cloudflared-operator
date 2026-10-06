@@ -8,6 +8,8 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { proseLines } from './prose.mjs'
+
 export const limits = { file: 400 * 1024, total: 8 * 1024 * 1024 }
 
 const kinds = new Set(['.png', '.jpg', '.jpeg', '.webp'])
@@ -31,19 +33,8 @@ function pages(docs) {
 // imagesOf finds the Markdown images of a page, ![alt](src) and
 // ![alt][label] with its definition, outside fenced blocks and code spans.
 export function imagesOf(text) {
-  const prose = []
-  let fence = null
-  for (const line of text.split('\n')) {
-    const marker = /^\s*(`{3,}|~{3,})/.exec(line)
-    if (fence === null && marker) {
-      fence = marker[1]
-    } else if (fence !== null && marker && marker[1][0] === fence[0] && marker[1].length >= fence.length) {
-      fence = null
-    } else if (fence === null) {
-      prose.push(line)
-    }
-  }
-  const plain = prose.join('\n').replace(/(`+)[\s\S]*?\1/g, '')
+  const prose = [...proseLines(text)].map(({ line }) => line).join('\n')
+  const plain = prose.replace(/(`+)[\s\S]*?\1/g, '')
   const labels = new Map()
   for (const [, label, src] of plain.matchAll(/^ {0,3}\[([^\]]+)\]:\s*<?([^\s>]+)>?/gm)) {
     labels.set(label.toLowerCase(), src)
