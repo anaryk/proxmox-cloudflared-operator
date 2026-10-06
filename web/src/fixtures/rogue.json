@@ -29,7 +29,7 @@
           "level": "port"
         }
       ],
-      "accountId": "acc1",
+      "accountId": "00000000000000000000000000000001",
       "rule": {
         "hostname": "www.example.com",
         "service": "http://10.0.0.11:8080",
@@ -62,7 +62,7 @@
   ],
   "tunnels": [
     {
-      "accountId": "acc1",
+      "accountId": "00000000000000000000000000000001",
       "credentialId": "cred1",
       "name": "pco-abc123",
       "id": "00000000-0000-4000-8000-000000000001",
@@ -78,7 +78,7 @@
       }
     },
     {
-      "accountId": "acc2",
+      "accountId": "00000000000000000000000000000002",
       "credentialId": "cred1",
       "name": "pco-abc123",
       "version": 0,
@@ -88,7 +88,7 @@
       "unchecked": false
     },
     {
-      "accountId": "acc3",
+      "accountId": "00000000000000000000000000000003",
       "credentialId": "cred1",
       "name": "pco-abc123",
       "id": "00000000-0000-4000-8000-000000000003",
@@ -100,7 +100,7 @@
       "unchecked": false
     },
     {
-      "accountId": "acc4",
+      "accountId": "00000000000000000000000000000004",
       "credentialId": "cred2",
       "name": "pco-abc123",
       "id": "00000000-0000-4000-8000-000000000004",
@@ -137,7 +137,7 @@
         },
         "accounts": [
           {
-            "id": "acc1",
+            "id": "00000000000000000000000000000001",
             "name": "Main"
           }
         ],
@@ -146,13 +146,13 @@
             "id": "zone1",
             "name": "example.com",
             "status": "active",
-            "accountId": "acc1"
+            "accountId": "00000000000000000000000000000001"
           },
           {
             "id": "zone2",
             "name": "example.org",
             "status": "active",
-            "accountId": "acc1"
+            "accountId": "00000000000000000000000000000001"
           }
         ],
         "checks": [
@@ -197,7 +197,7 @@
         },
         "accounts": [
           {
-            "id": "acc1",
+            "id": "00000000000000000000000000000001",
             "name": "Main"
           }
         ],
@@ -206,13 +206,13 @@
             "id": "zone1",
             "name": "example.com",
             "status": "active",
-            "accountId": "acc1"
+            "accountId": "00000000000000000000000000000001"
           },
           {
             "id": "zone2",
             "name": "example.org",
             "status": "active",
-            "accountId": "acc1"
+            "accountId": "00000000000000000000000000000001"
           }
         ],
         "checks": [
@@ -250,7 +250,7 @@
       "name": "example.com",
       "id": "zone1",
       "status": "active",
-      "accountId": "acc1",
+      "accountId": "00000000000000000000000000000001",
       "state": "served",
       "credentials": [
         "cred1",
@@ -265,7 +265,7 @@
       "name": "example.net",
       "id": "zone4",
       "status": "active",
-      "accountId": "acc2",
+      "accountId": "00000000000000000000000000000002",
       "state": "not served",
       "credentials": [
         "cred1",
@@ -281,7 +281,7 @@
       "name": "example.org",
       "id": "zone2",
       "status": "active",
-      "accountId": "acc1",
+      "accountId": "00000000000000000000000000000001",
       "state": "left out",
       "credentials": [
         "cred1"
@@ -296,9 +296,9 @@
     {
       "kind": "put-config",
       "credentialId": "cred1",
-      "accountId": "acc1",
+      "accountId": "00000000000000000000000000000001",
       "target": "pco-abc123",
-      "detail": "in account acc1: 3 rules replace version 2",
+      "detail": "in account 00000000000000000000000000000001: 3 rules replace version 2",
       "destructive": false,
       "applied": true
     },
@@ -356,7 +356,7 @@
     {
       "kind": "unseen-tunnel",
       "subject": "pco-abc123",
-      "detail": "tunnel pco-abc123 (00000000-0000-4000-8000-000000000002) in account acc2 is not visible through any credential; a confirmation takes it as gone and removes its connector",
+      "detail": "tunnel pco-abc123 (00000000-0000-4000-8000-000000000002) in account 00000000000000000000000000000002 is not visible through any credential; a confirmation takes it as gone and removes its connector",
       "items": []
     },
     {
@@ -395,7 +395,7 @@
     {
       "tunnel": "pco-abc123",
       "tunnelId": "00000000-0000-4000-8000-000000000001",
-      "accountId": "acc1",
+      "accountId": "00000000000000000000000000000001",
       "id": "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
       "originIp": "198.51.100.7",
       "version": "2026.8.0",
@@ -404,7 +404,7 @@
     {
       "tunnel": "pco-abc123",
       "tunnelId": "00000000-0000-4000-8000-000000000001",
-      "accountId": "acc1",
+      "accountId": "00000000000000000000000000000001",
       "id": "7a2c4e91-5d3b-4f80-9e16-2b8d0c5a7f43",
       "originIp": "203.0.113.9",
       "version": "2026.8.0",

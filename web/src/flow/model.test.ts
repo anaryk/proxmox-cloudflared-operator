@@ -209,7 +209,7 @@ test('the connectors pco does not run: a red node each, joined to their tunnel, 
     ['rogue:7a2c4e91-5d3b-4f80-9e16-2b8d0c5a7f43', 'connector', 'not run by pco: 203.0.113.9'],
   ])
   const edges = m.edges.filter((e) => e.style === 'rogue')
-  expect(edges.map((e) => [e.from, e.to])).toEqual(rogues.map((n) => ['edge:acc1', n.id]))
+  expect(edges.map((e) => [e.from, e.to])).toEqual(rogues.map((n) => ['edge:00000000000000000000000000000001', n.id]))
   expect(edges.every((e) => e.rate === undefined)).toBe(true)
 })
 

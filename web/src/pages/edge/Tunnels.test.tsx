@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { State } from '../../api/types.gen'
 import populated from '../../fixtures/populated.json'
+import rogueMock from '../../fixtures/rogue.json'
 import rogue from '../../fixtures/rogue-scenario.json'
 import settings from '../../fixtures/settings.json'
 import traffic from '../../fixtures/traffic.json'
@@ -91,6 +92,15 @@ describe('the detail', () => {
     expect(write).toHaveBeenCalledWith(`pco tunnel rotate --account ${main}`)
     expect(within(block).getAllByRole('button').map((b) => b.textContent)).toEqual(['Copy'])
     expect(sent).toEqual([])
+  })
+
+  test("the mock's rogue state has accounts of Cloudflare's form, so its block has the command", async () => {
+    const { store } = await fakeStore({ state: rogueMock })
+    const account = (rogueMock as unknown as State).rogueConnectors[0]?.accountId ?? ''
+    expect(account).toMatch(/^[0-9a-f]{32}$/)
+    renderPage(store, <TunnelDetail accountId={account} variant="page" />)
+    const block = screen.getByRole('region', { name: 'Connectors pco does not run' })
+    expect(within(block).getByText(`pco tunnel rotate --account ${account}`).tagName).toBe('CODE')
   })
 
   test('a refused token shows the same command, and the connector its flag and id', async () => {

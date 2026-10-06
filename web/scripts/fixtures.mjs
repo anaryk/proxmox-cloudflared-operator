@@ -45,10 +45,16 @@ function noRoutes(populated) {
   }
 }
 
+// The account ids of the goldens are short names; Cloudflare's are 32 hex
+// digits, and the page builds the command that rotates a tunnel's secret only
+// for an id of that form.
+const hexAccounts = (st) => JSON.parse(JSON.stringify(st).replace(/\bacc([0-9])\b/g, (_, n) => n.padStart(32, '0')))
+
 // A state in which nothing needs a person but two connectors pco does not
-// run, which Cloudflare lists on the tunnel of the install.
+// run, which Cloudflare lists on the tunnel of the install, in accounts with
+// ids of Cloudflare's form so that the mock shows the command to run.
 function rogue(populated) {
-  const st = clone(populated)
+  const st = hexAccounts(clone(populated))
   const [first] = st.rogueConnectors
   return {
     ...st,
