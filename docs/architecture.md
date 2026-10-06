@@ -173,8 +173,9 @@ they serve keep answering. What stops is every decision: new routes, withdrawals
 
 The egress filter is the nftables table `inet pco_egress`. It applies to the packets of the
 user `pco-connector` alone, and lets a connector reach Cloudflare's edge, the resolvers of the
-node and the targets the daemon verified, and nothing else. The daemon gives it the targets in
-every cycle, before it writes anything at Cloudflare, and `pco-egress.service` loads it at boot.
+node, DNS over TLS at 1.1.1.1 and 1.0.0.1, and the targets the daemon gives it, those of manual
+routes with `allowNode` among them; nothing else. The daemon gives it the targets in every
+cycle, before it writes anything at Cloudflare, and `pco-egress.service` loads it at boot.
 [Security](security.md#the-connector-egress-filter) has its rules.
 
 ### The socket API
@@ -322,11 +323,14 @@ changes nothing at Cloudflare until the claims can be saved, a DNS record whose 
 recorded is not deleted, and an admin action that writes to the store, such as an approval, fails.
 A cycle with nothing to save goes on as before.
 
-In the appliance profile the writer identity is also bound to the start of its container. Once
-the appliance has proven that it is the container it was installed as, from facts a copy cannot
-share, it draws a new epoch at each start of the container: the generation one up and a new
-nonce. A copy of the container, such as a clone, serves nothing: it stops its connectors, empties
-its egress filter and changes nothing at Cloudflare.
+The appliance profile, which comes in a later release, also binds the writer identity to the
+start of its container. Once the appliance has proven that it is the container it was installed
+as, from facts a copy cannot share, it draws a new epoch at each start of the container: the
+generation one up and a new nonce. A copy of the container, such as a clone, serves nothing: it
+stops its connectors, empties its egress filter and changes nothing at Cloudflare. An appliance
+rolled back or restored to an earlier state, which finds a sentinel of its install that it does
+not know before it has written anything, has the verdict `behind` and writes nothing until
+`pco appliance recover`.
 
 ## pco on a cluster
 

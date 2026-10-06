@@ -7,8 +7,8 @@ them.
 
 ## Trust boundaries
 
-pco reads what several kinds of people and programs can write, and trusts none of it more than
-its writer. Who can write what pco acts on:
+pco reads what several kinds of people and programs can write, and treats none of it as proof.
+Who can write what pco acts on:
 
 ```mermaid
 flowchart LR
@@ -48,10 +48,9 @@ flowchart LR
     token -->|"reads"| runtoken
 ```
 
-None of these is taken as proof by itself: the tag says that a guest may publish, the Notes say
-what it asks for, and an address is served only once [Identity](identity.md) has shown on the
-network of the node that it is the guest's. Against each attacker stands one of the defences
-this page describes:
+The tag says that a guest may publish, the Notes say what it asks for, and an address is
+served only once [Identity](identity.md) has shown on the network of the node that it is the
+guest's. Against each attacker stands one of the defences this page describes:
 
 ```mermaid
 flowchart LR
@@ -340,31 +339,39 @@ of the Proxmox firewall, and it applies only to packets of sockets that belong t
 other process is untouched.
 
 The decision the filter makes for a packet that leaves the node, from the first question to
-the last:
+the last; each box begins with the answer that leads to it. First what is decided before the
+targets:
 
 ```mermaid
 flowchart TB
-    packet["A packet leaves a process on the node"] --> user{{"Its socket of pco-connector?"}}
-    user -->|"no"| untouched["Not looked at"]
-    user -->|"yes"| invalid{{"Invalid connection state?"}}
-    invalid -->|"no"| reply{{"A reply of a TCP connection to an address of the node?"}}
-    invalid -->|"yes"| drop["Dropped"]
-    reply -->|"yes"| a1["Accepted"]
-    reply -->|"no"| blocked{{"On the block list of this node?"}}
-    blocked -->|"no"| resolver{{"A resolver of the node, port 53?"}}
-    blocked -->|"yes"| r1["Rejected"]
-    resolver -->|"yes"| a2["Accepted"]
-    resolver -->|"no"| allownode{{"A target of a manual route with allowNode?"}}
-    allownode -->|"no"| local{{"Any other address of the node?"}}
-    allownode -->|"yes"| a3["Accepted"]
-    local -->|"yes"| r2["Rejected and counted"]
-    local -->|"no"| target{{"A verified target, address and port?"}}
-    target -->|"no"| edge{{"Port 7844 of a public unicast address?"}}
-    target -->|"yes"| a4["Accepted"]
-    edge -->|"yes"| a5["Accepted: Cloudflare's edge"]
-    edge -->|"no"| dot{{"TCP port 853 of 1.1.1.1 or 1.0.0.1?"}}
-    dot -->|"no"| r3["Rejected and counted"]
-    dot -->|"yes"| a6["Accepted: DNS over TLS"]
+    packet["A packet leaves the node"] --> user("Of pco-connector?")
+    user --> untouched["No: not looked at"]
+    user --> invalid("Yes. Invalid state?")
+    invalid --> reply("No. TCP reply to the node?")
+    invalid --> drop["Yes: dropped"]
+    reply --> a1["Yes: accepted"]
+    reply --> blocked("No. Blocked on this node?")
+    blocked --> resolver("No. Resolver, port 53?")
+    blocked --> r1["Yes: rejected"]
+    resolver --> a2["Yes: accepted"]
+    resolver --> next["No: the questions below"]
+```
+
+Then the rest, for a packet none of these decided:
+
+```mermaid
+flowchart TB
+    packet["Not decided above"] --> allownode("A target of a manual route with allowNode?")
+    allownode --> a3["Yes: accepted"]
+    allownode --> local("No. Any other address of the node?")
+    local --> target("No. A verified target?")
+    local --> r2["Yes: rejected, counted"]
+    target --> a4["Yes: accepted"]
+    target --> edge("No. Port 7844 of a public address?")
+    edge --> dot("No. TCP 853 of 1.1.1.1 or 1.0.0.1?")
+    edge --> a5["Yes: accepted, Cloudflare's edge"]
+    dot --> a6["Yes: accepted, DNS over TLS"]
+    dot --> r3["No: rejected, counted"]
 ```
 
 For a connector's packet the chain does the following, in this order, and the first rule

@@ -10,38 +10,56 @@ entries are not affected.
 
 ## From Notes to a published hostname
 
-The gates a hostname in the Notes passes, in this order and in every cycle of the daemon,
-before it is written at Cloudflare, each with where the hostname stops when it fails it:
+The gates a hostname in the Notes passes, in this order and in every cycle of the daemon, and
+where it stops when it fails one; each box begins with the answer that leads to it. First from
+the Notes to a route:
 
-~~~mermaid
+```mermaid
 flowchart TB
-    guest["A guest and its Notes"] --> tag{{"Gate tag, and not a template?"}}
-    tag -->|"no"| unread["Not read"]
-    tag -->|"yes"| parse{{"Parsed as a route?"}}
-    parse -->|"yes"| policy{{"Let through by allowHosts, denyHosts, maxHostnamesPerGuest?"}}
-    parse -->|"no"| issue["An issue: the entry is dropped, its hostnames stay reserved"]
-    policy -->|"no"| refused["An issue: not published"]
-    policy -->|"yes"| admission{{"Admitted: mode tag, or the guest approved?"}}
-    admission -->|"yes"| named{{"Not an apex or a wildcard that allowHosts leaves out?"}}
-    admission -->|"no"| waits["Waits for approval: a hostname it holds answers 503"]
-    named -->|"no"| rejected["rejected: no claim"]
-    named -->|"yes"| zone{{"In a zone a credential serves?"}}
-    zone -->|"yes"| claim{{"Held by no other guest?"}}
-    zone -->|"no"| nozone["no-zone"]
-    claim -->|"no"| conflict["conflict: serves nothing"]
-    claim -->|"yes"| identity{{"Address proven, at identityMinimum or above?"}}
-    identity -->|"yes"| mode{{"Enforce mode, after pco apply?"}}
-    identity -->|"no"| blocked["unreachable or withdrawn: a rule that answers 503"]
-    mode -->|"no"| shown["Observe-only: shown by pco plan, nothing written"]
-    mode -->|"yes"| published["Written at Cloudflare: the hostname answers"]
-~~~
+    guest["A guest and its Notes"] --> tag("Gate tag, and not a template?")
+    tag --> unread["No: not read"]
+    tag --> parse("Yes. Parsed as a route?")
+    parse --> policy("Yes. Allowed by the hostname policy?")
+    parse --> issue["No: an issue, its hostnames stay reserved"]
+    policy --> refused["No: an issue, not published"]
+    policy --> admission("Yes. Admitted?")
+    admission --> route["Yes: a route that asks for its hostname"]
+    admission --> waits["No: waits for approval, a hostname it holds answers 503"]
+```
+
+Then from the route to its claim:
+
+```mermaid
+flowchart TB
+    route["A route that asks for its hostname"] --> named("An apex or a wildcard that allowHosts leaves out?")
+    named --> rejected["Yes: rejected, no claim"]
+    named --> zone("No. In a zone a credential serves?")
+    zone --> claim("Yes. Held by no other guest?")
+    zone --> nozone["No: no-zone"]
+    claim --> conflict["No: conflict, serves nothing"]
+    claim --> holds["Yes: the route holds its hostname"]
+```
+
+And from the claim to Cloudflare:
+
+```mermaid
+flowchart TB
+    holds["The route holds its hostname"] --> identity("Address proven at identityMinimum or above?")
+    identity --> blocked["No: unreachable or withdrawn, a rule that answers 503"]
+    identity --> admin("Yes. Held for an admin?")
+    admin --> mode("No. Enforce mode, after pco apply?")
+    admin --> waitsadmin["Yes: unreachable, a rule that answers 503"]
+    mode --> published["Yes: written at Cloudflare, the hostname answers"]
+    mode --> shown["No: observe-only, shown by pco plan"]
+```
 
 The gate tag and the parse are this page. The hostname policy, `allowHosts` and the limit are
 in [Operations](operations.md#settings), admission and approval in
 [Security](security.md#approval-mode), the claims
-[below](#hostnames-belong-to-one-guest-at-a-time), and the proof of the address in
-[Identity](identity.md). [Architecture](architecture.md#the-reconcile-cycle) shows the cycle
-these steps belong to.
+[below](#hostnames-belong-to-one-guest-at-a-time), the proof of the address in
+[Identity](identity.md), and what holds a proven address in
+[Routes that wait for an admin](identity.md#routes-that-wait-for-an-admin).
+[Architecture](architecture.md#the-reconcile-cycle) shows the cycle these steps belong to.
 
 ## Where routes are read
 
@@ -53,18 +71,18 @@ Routes are written in one of two forms.
 
 A fenced block, whose tag is `cf-tunnel`:
 
-~~~text
+````text
 ```cf-tunnel
 app.example.com   -> :3000
 api.example.com   -> :8080
 ```
-~~~
+````
 
 or a single line that starts with `cf-tunnel:`:
 
-~~~text
+````text
 cf-tunnel: wiki.example.com -> :8080
-~~~
+````
 
 Both can appear in the same Notes, any number of times, and the text around them is
 ignored. Keys and the fence tag are case-insensitive.
@@ -115,9 +133,9 @@ that names more publishes none of them, and `pco status` says why.
 
 Several hostnames in front of one arrow share the target and the options:
 
-~~~text
+````text
 shop.example.com www.example.com *.shop.example.com -> :80
-~~~
+````
 
 ### Targets
 
@@ -168,7 +186,7 @@ following lines belong to the entry only if they start with that same indent and
 A line indented the same or less starts a new entry. This is how an entry can be
 spread over several lines:
 
-~~~text
+````text
 ```cf-tunnel
 shop.example.com
     www.example.com
@@ -176,7 +194,7 @@ shop.example.com
   -> https://:443
   no-tls-verify
 ```
-~~~
+````
 
 Rules about continuation lines:
 
@@ -198,41 +216,41 @@ every line still starts a new entry.
 One port per hostname, which is the usual case for services that each listen on their
 own port:
 
-~~~text
+````text
 ```cf-tunnel
 app.example.com   -> :3000
 api.example.com   -> :8080
 grafana.example.com -> :3001
 ```
-~~~
+````
 
 Many hostnames to one reverse proxy on the guest. The proxy gets the Host header of
 each request and chooses by it:
 
-~~~text
+````text
 ```cf-tunnel
 shop.example.com www.shop.example.com *.shop.example.com -> :80
 ```
-~~~
+````
 
 An origin that speaks TLS, with a certificate that is not valid for the public name:
 
-~~~text
+````text
 ```cf-tunnel
 vault.example.com   -> https://:8443 no-tls-verify
 admin.example.com   -> https://:443  sni=admin.internal.example.com
 ```
-~~~
+````
 
 A guest with two network cards, a route on the second one, and one with an explicit
 address:
 
-~~~text
+````text
 ```cf-tunnel
 files.example.com -> :8080 via=net1
 nas.example.com   -> http://10.0.0.50:5000
 ```
-~~~
+````
 
 ### Wildcards and their order
 
@@ -240,12 +258,12 @@ A wildcard is published once an `allowHosts` pattern names it, as `*.example.com
 settings for the one below. It serves every name below it that reaches the tunnel and has
 no rule of its own:
 
-~~~text
+````text
 ```cf-tunnel
 *.example.com   -> :80
 www.example.com -> :8080
 ```
-~~~
+````
 
 The order in the Notes does not matter. A tunnel uses the first rule that matches, so
 pco sorts the rules it writes: exact names before wildcards, names with more labels

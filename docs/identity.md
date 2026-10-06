@@ -60,7 +60,8 @@ A trusted static address behind a router is proven in another way, which replace
 `pco routes` shows the level of each route in the `LEVEL` column.
 
 The levels form a ladder, from the most proof at the top to the least, each with what proves it
-and which routes can reach it:
+and which routes can reach it; a route without a guest has the level `manual`, outside the
+ladder:
 
 ```mermaid
 flowchart TB
@@ -204,24 +205,21 @@ is withdrawn.
 the remembered address is tried first, and then the first candidate that passes at the
 highest level is used.
 
-How pco finds the address of a route, leaving out the two minutes for which a newly bound
-address, or a bound one whose port fails, is kept as it is:
+The way pco finds the address of a route is drawn below. The port is part of the check of
+each candidate, so a candidate whose port does not answer is passed over like one whose
+identity fails. Each box begins with the answer that leads to it. The drawing leaves out the
+two minutes for which a newly bound address, or a bound one whose port fails, is kept without
+trying the others, and a check the host could not make:
 
 ```mermaid
 flowchart TB
-    start["A route that holds its hostname"] --> listed{{"Guest listed and running?"}}
-    listed -->|"no"| gone["Not served: an address bound before is withdrawn"]
-    listed -->|"yes"| list["List the candidates, the remembered address first: the address the route names, else those of its card or of every card, static before reported"]
-    list --> try["Prove the next candidate: steps 1 to 5"]
-    try -->|"proven at port"| serve["Take the candidate proven highest"]
-    try -->|"proven lower, or failed"| left{{"Another of the first 16?"}}
-    left -->|"yes"| try
-    left -->|"no"| any{{"Any proven?"}}
-    any -->|"no"| none["No address: unreachable, with the reason the first candidate failed"]
-    any -->|"yes"| serve
-    serve --> dial{{"Does the port answer in two seconds?"}}
-    dial -->|"yes"| active["Served at the level of its proof"]
-    dial -->|"no"| unreachable["Kept as the target, shown as unreachable"]
+    listed("Guest listed and running?") --> gone["No: not served, an address bound before is withdrawn"]
+    listed --> check["Yes. Check the candidates in order, the remembered address first, at most 16, until one passes at port: steps 1 to 6 for each"]
+    check --> any("Did any pass?")
+    any --> serve["Yes: served, the one that passed at the highest level"]
+    any --> portonly("No. Did the remembered address fail on its port alone?")
+    portonly --> kept["Yes: kept as the target, unreachable; its rule and record stay"]
+    portonly --> none["No: not served. A remembered address whose identity failed is withdrawn; without one, unreachable, with the reason the first candidate failed"]
 ```
 
 ## When a check fails

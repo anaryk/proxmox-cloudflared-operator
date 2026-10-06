@@ -28,10 +28,10 @@ section of this page that deals with it. When the name does not resolve:
 
 ```mermaid
 flowchart TB
-    start["The name does not resolve"] --> mode{{"pco status: Mode observe-only?"}}
+    start["The name does not resolve"] --> mode("pco status: Mode observe-only?")
     mode -->|"yes"| observe["Nothing happens: observe-only"]
-    mode -->|"no"| plan{{"pco plan: a record of someone else in the way?"}}
-    plan -->|"no"| routes{{"pco routes: is the route unreachable?"}}
+    mode -->|"no"| plan("pco plan: a record of someone else in the way?")
+    plan -->|"no"| routes("pco routes: is the route unreachable?")
     plan -->|"yes"| adopt["Records in the way, and pco adopt"]
     routes -->|"yes"| unreachable["A route is unreachable"]
     routes -->|"no"| held["A route is held, withdrawn or in conflict"]
@@ -41,17 +41,17 @@ When it resolves, by what the visitor gets, an empty 503 or 404 being the tunnel
 
 ```mermaid
 flowchart LR
-    answer{{"The name resolves, and the visitor gets"}}
+    answer("The name resolves, and the visitor gets")
     answer -->|"1033"| doctor["Reading pco doctor: cloudflared, outbound, connector"]
-    answer -->|"503"| routes{{"pco routes: the state and the note"}}
+    answer -->|"503"| routes("pco routes: the state and the note")
     routes -->|"withdrawn, held, conflict"| held["A route is held, withdrawn or in conflict"]
     routes -->|"below the minimum"| minimum["A route is held back by the identity minimum"]
     routes -->|"waits for an admin"| admin["Identity: routes that wait for an admin"]
     routes -->|"another reason"| unreachable["A route is unreachable"]
-    answer -->|"502"| diagnose{{"pco diagnose: every step passes?"}}
+    answer -->|"502"| diagnose("pco diagnose: every step passes?")
     diagnose -->|"no"| step["Reading pco diagnose: fix what the failed step names"]
     diagnose -->|"yes"| egress["A connector cannot reach its target"]
-    answer -->|"404"| verified{{"pco status: the tunnel VERIFIED?"}}
+    answer -->|"404"| verified("pco status: the tunnel VERIFIED?")
     verified -->|"no"| writer["The problems of pco status: the writer, rate limits"]
     verified -->|"yes"| grace["The name left the Notes: its record goes after the grace period"]
 ```
@@ -442,16 +442,19 @@ outside observe-only mode; a connector that has either file is left alone.
 The writer is the identity that is written into the configuration of every tunnel. A daemon
 writes only while the configuration carries its own mark or an older one.
 
-- **stale**: `a newer generation of this install writes the tunnel configuration`. Another
-  process of this install wrote with a higher generation, which a recovery on another copy of
-  the store does. `pco setup --recover` on the node that should write takes a generation above
-  it.
+- **stale**: `a newer generation of this install writes the tunnel configuration`.
+  `leader.json` names a newer writer than the one the cycle started as: it was written again
+  while the cycle ran. The next cycle reads it again and writes as the writer it names; if the
+  verdict stays, run `pco setup --recover` on the node that should write.
 - **foreign**: `a writer of this install that leader.json does not know wrote the tunnel
-  configuration`. Another install uses the same install id, or someone wrote a sentinel of a
-  newer generation with a stolen Cloudflare token. If no other node runs pco with this
-  install, follow the order in [Security](security.md): replace the token, `pco tunnel
-  rotate`, `pco setup --recover` on this node, then `pco apply`. Otherwise stop the other
-  one.
+  configuration`. The tunnel configuration carries a writer, a generation and a nonce, that this
+  store's `leader.json` does not know. The usual cause is a copy of the store restored from
+  before the last recovery: run `pco setup --recover` on this node, which takes a generation
+  above the one in use, then `pco apply`. The others are another install that uses the same
+  install id, and a sentinel of a newer generation written with a stolen Cloudflare token. If
+  no other node runs pco with this install and the store was not restored, follow the order in
+  [Security](security.md): replace the token, `pco tunnel rotate`, `pco setup --recover` on this
+  node, then `pco apply`. Otherwise stop the other one.
 - **unknown**: `leader.json could not be used`. The file is missing or invalid; `pco setup`
   writes one for a store that has none, and `pco setup --recover` takes a generation above the
   one in use.

@@ -77,7 +77,9 @@ guest's, the addresses of the nodes, and the gateways of SDN subnets. See
 ## E
 
 **Egress filter**: The nftables table `inet pco_egress`, which lets the connectors reach
-Cloudflare's edge, the resolvers of the node and the verified targets, and nothing else. See
+Cloudflare's edge, the resolvers of the node, DNS over TLS at 1.1.1.1 and 1.0.0.1, and the
+targets the daemon gives it, those of manual routes with `allowNode` among them; nothing else.
+See
 [Security](security.md#the-connector-egress-filter).
 
 **Enforce**: The mode in which the daemon changes things at Cloudflare and on the node.
@@ -255,7 +257,8 @@ stopped. It answers 503 and keeps its record. See
 
 **Writer**: The one process that may write the tunnel configurations and the DNS records of an
 install, named by `/etc/pve/pco/meta/leader.json`. Its verdict, in `pco status`, is `ok`,
-`stale`, `foreign` or `unknown`. See [Architecture](architecture.md#one-writer).
+`stale`, `foreign` or `unknown`, and in the appliance also `behind`. See
+[Architecture](architecture.md#one-writer).
 
 ## Z
 
