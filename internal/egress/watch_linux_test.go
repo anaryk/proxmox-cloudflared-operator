@@ -124,13 +124,13 @@ func (l *watchLab) watch(t *testing.T, pins map[netip.Addr]Pin) {
 	})
 }
 
-func (l *watchLab) moved(t *testing.T, within time.Duration) netip.Addr {
+func (l *watchLab) moved(t *testing.T) netip.Addr {
 	t.Helper()
 	select {
 	case a := <-l.moves:
 		return a
-	case <-time.After(within):
-		t.Fatalf("no move within %s", within)
+	case <-time.After(watchWithin):
+		t.Fatalf("no move within %s", watchWithin)
 	}
 	return netip.Addr{}
 }
@@ -166,7 +166,7 @@ func TestLinuxWatch(t *testing.T) {
 			IP: net.ParseIP(watchGuest), HardwareAddr: mac(t, watchOther),
 		}))
 
-		require.Equal(t, addr(watchGuest), lab.moved(t, watchWithin))
+		require.Equal(t, addr(watchGuest), lab.moved(t))
 		t.Logf("seen after %s", time.Since(start))
 		require.NoError(t, lab.h.NeighSet(&netlink.Neigh{
 			LinkIndex: br.Attrs().Index, Family: netlink.FAMILY_V4, State: netlink.NUD_REACHABLE,
@@ -180,7 +180,7 @@ func TestLinuxWatch(t *testing.T) {
 		start := time.Now()
 		lab.speak(t, lab.other)
 
-		require.Equal(t, addr(watchGuest), lab.moved(t, watchWithin))
+		require.Equal(t, addr(watchGuest), lab.moved(t))
 		t.Logf("seen after %s", time.Since(start))
 	})
 }
@@ -203,7 +203,7 @@ func TestLinuxWatchSeesAStrangerWithTheGuestsOtherMAC(t *testing.T) {
 	start := time.Now()
 	lab.speak(t, lab.other)
 
-	require.Equal(t, addr(watchGuest), lab.moved(t, watchWithin))
+	require.Equal(t, addr(watchGuest), lab.moved(t))
 	t.Logf("seen after %s", time.Since(start))
 	br, err := lab.h.LinkByName(watchBridge)
 	require.NoError(t, err)
@@ -223,5 +223,5 @@ func TestLinuxWatchSeesWhatMovedBeforeItStarted(t *testing.T) {
 
 	lab.watch(t, map[netip.Addr]Pin{addr(watchGuest): {MAC: mac(t, watchMAC), Bridge: watchBridge, Port: "wport0"}})
 
-	require.Equal(t, addr(watchGuest), lab.moved(t, watchWithin))
+	require.Equal(t, addr(watchGuest), lab.moved(t))
 }
