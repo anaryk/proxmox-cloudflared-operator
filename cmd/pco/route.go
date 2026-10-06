@@ -139,10 +139,11 @@ func (a *app) manualAddCmd() *cobra.Command {
 		Short: "Make a manual route",
 		Long: "Make a manual route that publishes a hostname to a guest, named as qemu/101 or lxc/200,\n" +
 			"whose address is proven as for a route in its Notes, or to an IPv4 address inside the\n" +
-			"trusted prefixes of the settings (trustedCIDRs). The options are those of the Notes.\n" +
+			"manualCIDRs of the settings. The options are those of the Notes.\n" +
 			"--allow-node lets a route to an address point at a service of a node, which the egress\n" +
-			"filter lets the connectors reach; a route to a guest never may. Without --id the daemon\n" +
-			"gives the route an id of eight hex digits. It is published from the next cycle.\n\n" +
+			"filter lets the connectors reach; the network of the node has to be in manualCIDRs too,\n" +
+			"and a route to a guest never may. Without --id the daemon gives the route an id of\n" +
+			"eight hex digits. It is published from the next cycle.\n\n" +
 			"With --json the route as made is printed as JSON.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

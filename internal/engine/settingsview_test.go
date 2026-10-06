@@ -83,6 +83,7 @@ func TestSettingsOutOfTheirRangeAreRefusedWithTheirField(t *testing.T) {
 		{"cloudflareBudget", func(s *store.Settings) { s.CloudflareBudget = 1151 }},
 		{"denyHosts[2]", func(s *store.Settings) { s.DenyHosts = []string{"a.example.com", "b.example.com", "not a host"} }},
 		{"trustedCIDRs[0]", func(s *store.Settings) { s.TrustedCIDRs = []netip.Prefix{netip.MustParsePrefix("fd00::/8")} }},
+		{"manualCIDRs[0]", func(s *store.Settings) { s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("fd00::/8")} }},
 	} {
 		t.Run(tt.field, func(t *testing.T) {
 			e := newEnv(t)

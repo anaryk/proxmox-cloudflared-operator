@@ -22,6 +22,7 @@ func someSettings() engine.SettingsView {
 	s.ObserveOnly = false
 	s.DenyHosts = []string{"admin.example.com", "*.internal.example.com"}
 	s.TrustedCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24")}
+	s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24"), netip.MustParsePrefix("10.0.6.0/28")}
 	s.ZonePins = map[string]string{"example.com": "a1b2c3d4"}
 	s.ReverifyInterval = store.Duration(2 * time.Minute)
 	limits := map[string]engine.Limit{}

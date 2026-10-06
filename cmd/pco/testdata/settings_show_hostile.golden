@@ -6,6 +6,7 @@ Settings at revision 1:
   grace                 1m0s (at least 30s?[2J?]0;pwned? ? ?31m ?evil?)
   trustStatic           false
   trustedCIDRs          -
+  manualCIDRs           -
   admission             tag
   zonePins              -
   observeOnly           true

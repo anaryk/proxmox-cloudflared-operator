@@ -131,11 +131,11 @@ func TestRouteManualAddNeedsOneTargetAndAPort(t *testing.T) {
 func TestRouteManualAddRefusedByTheDaemon(t *testing.T) {
 	r, e := daemonWith(t, healthyState())
 	e.configErr = &engine.FieldError{Field: "target.addr",
-		Err: errors.New("target.addr 192.168.1.10: not inside the trusted prefixes of the settings (trustedCIDRs: 10.0.5.0/24)")}
+		Err: errors.New("target.addr 192.168.1.10: not inside the manualCIDRs of the settings (10.0.5.0/24)")}
 
 	res := r.run("", "route", "manual", "add", "x.example.com", "--address", "192.168.1.10", "--port", "80")
 
-	require.EqualError(t, res.err, "target.addr 192.168.1.10: not inside the trusted prefixes of the settings (trustedCIDRs: 10.0.5.0/24)")
+	require.EqualError(t, res.err, "target.addr 192.168.1.10: not inside the manualCIDRs of the settings (10.0.5.0/24)")
 	require.Empty(t, res.out)
 }
 

@@ -66,7 +66,7 @@ The files:
 | `/etc/pve/pco/nodes/<node>.json` | The node that runs pco, and the version. |
 | `/etc/pve/pco/claims/<hostname>.json` | Who holds a hostname, since when, and who waits. A wildcard is stored as `_wildcard.<name>.json`. |
 | `/etc/pve/pco/approvals/<owner>.json` | An approved guest and its identity. A guest `qemu/101` is stored as `qemu_101.json`. |
-| `/etc/pve/pco/routes/<id>.json` | Manual routes, which the daemon reads in every cycle. No command writes them yet, and only root can. A manual route names an address and not a guest, so it is not proven (its level is `manual`), and its `allowNode` option lifts the rules of the denylist that keep the addresses of nodes out. See [Security](security.md). |
+| `/etc/pve/pco/routes/<id>.json` | Manual routes, which the daemon reads in every cycle. `pco route manual add` and `remove` (root) and the web UI (admins) write them, within `manualCIDRs`. A manual route names an address and not a guest, so it is not proven (its level is `manual`), and its `allowNode` option lifts the rules of the denylist that keep the addresses of nodes out. See [Security](security.md). |
 | `/etc/pve/pco/adopted.jsonl` | One line for each DNS record that `pco adopt` replaced, as it was; at most 256 KiB, oldest lines first out. |
 | `/etc/pve/priv/pco/meta/pve-token.json` | The secret of the Proxmox token. |
 | `/etc/pve/priv/pco/credentials/<id>.json` | One Cloudflare credential. |
@@ -363,7 +363,7 @@ mistake it is:
 | `reading the settings: <file>: invalid: json: unknown field "denyhost"` | A key the daemon does not know, usually a misspelt one. Settings are read strictly. |
 | `reading the settings: <file>: field "observeOnly" cannot be read as bool` | A value of the wrong type. |
 | `reading the settings: <file>: invalid: time: invalid duration "ten"` | A duration that Go cannot read. |
-| `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` that is not IPv4, a pattern or zone pin that does not normalise. The problem names the field. |
+| `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` or `manualCIDRs` that is not IPv4, a pattern or zone pin that does not normalise. The problem names the field. |
 | `reading the settings: <file> has schema version 2, this build reads 1: ...` | The file was written by a newer version, which an older build never rewrites. |
 
     {
@@ -392,6 +392,7 @@ Every field, with its default:
 | `grace` | `1m0s` | How long a removal waits (see above). At least `30s`. |
 | `trustStatic` | `false` | Trust static addresses behind a router; see [Identity](identity.md). Read when the daemon starts. |
 | `trustedCIDRs` | none | The IPv4 prefixes in which such addresses are trusted. Read when the daemon starts. |
+| `manualCIDRs` | none | The IPv4 prefixes a manual route's address must lie in, which is checked when a route is made or changed, so a change here needs no restart. With none, no route to an address can be made. An address of a node needs its prefix listed here as well as the route's `allowNode`. `trustedCIDRs` has no say in this. |
 | `admission` | `tag` | `tag` publishes a guest that carries the tag, `approve` also needs the approval of an admin. Use `approve` when anyone but the admins holds `VM.Clone` on a tagged guest or template: Proxmox copies the tag to the clone (see [Security](security.md)). |
 | `zonePins` | none | A zone name and the id of the credential that serves it: `{ "example.com": "a1b2c3d4" }`. |
 | `observeOnly` | `true` | Whether the daemon only observes. `pco apply` sets it to `false`. |

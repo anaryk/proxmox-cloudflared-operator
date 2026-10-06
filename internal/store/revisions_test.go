@@ -77,6 +77,9 @@ func TestInvalidSettingsNameTheirField(t *testing.T) {
 		{"a trusted prefix", "trustedCIDRs[1]", func(s *Settings) {
 			s.TrustedCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("fd00::/8")}
 		}},
+		{"a manual prefix", "manualCIDRs[1]", func(s *Settings) {
+			s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("fd00::/8")}
+		}},
 		{"a zone pin", `zonePins["example.com"]`, func(s *Settings) { s.ZonePins = map[string]string{"example.com": ""} }},
 		{"a zone that is not one", `zonePins["not a zone"]`, func(s *Settings) { s.ZonePins = map[string]string{"not a zone": "c"} }},
 	} {

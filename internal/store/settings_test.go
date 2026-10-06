@@ -23,6 +23,7 @@ func TestDefaultSettings(t *testing.T) {
 	require.Empty(t, d.AllowHosts)
 	require.Empty(t, d.DenyHosts)
 	require.Empty(t, d.TrustedCIDRs)
+	require.Empty(t, d.ManualCIDRs)
 	require.Empty(t, d.ZonePins)
 	require.Equal(t, "port", d.IdentityMinimum)
 	require.Equal(t, 32, d.MaxHostnamesPerGuest)
@@ -47,6 +48,7 @@ func customSettings() Settings {
 		Grace:        Duration(5 * time.Minute),
 		TrustStatic:  true,
 		TrustedCIDRs: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+		ManualCIDRs:  []netip.Prefix{netip.MustParsePrefix("10.30.0.0/24")},
 		Admission:    "approve",
 		ZonePins:     map[string]string{"example.com": "cred-1"},
 		ObserveOnly:  false,
@@ -74,6 +76,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, "30s", wire["pollInterval"])
 	require.Equal(t, "5m0s", wire["grace"])
 	require.Equal(t, []any{"10.20.0.0/16"}, wire["trustedCIDRs"])
+	require.Equal(t, []any{"10.30.0.0/24"}, wire["manualCIDRs"])
 	require.Equal(t, "observed", wire["identityMinimum"])
 	require.Equal(t, "2m0s", wire["reverifyInterval"])
 	require.InDelta(t, 800, wire["cloudflareBudget"], 0)
@@ -143,6 +146,11 @@ func TestSaveSettingsRefusesInvalidSettings(t *testing.T) {
 			s.TrustedCIDRs = []netip.Prefix{netip.MustParsePrefix("::ffff:10.0.0.0/104")}
 		}},
 		{"zero trusted prefix", "trustedCIDRs[0]", func(s *Settings) { s.TrustedCIDRs = []netip.Prefix{{}} }},
+		{"ipv6 manual prefix", "manualCIDRs[0]", func(s *Settings) { s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("fd00::/8")} }},
+		{"mapped manual prefix", "manualCIDRs[0]", func(s *Settings) {
+			s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("::ffff:10.0.0.0/104")}
+		}},
+		{"zero manual prefix", "manualCIDRs[0]", func(s *Settings) { s.ManualCIDRs = []netip.Prefix{{}} }},
 		{"empty identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "" }},
 		{"unknown identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "strict" }},
 		{"upper case identity minimum", "identityMinimum", func(s *Settings) { s.IdentityMinimum = "Port" }},
@@ -362,6 +370,7 @@ func TestInvalidSettingsOnDiskAreAnErrorNotTheDefaults(t *testing.T) {
 		"numeric duration":  `{"gateTag":"cf-tunnel","pollInterval":10,"grace":"1m","admission":"tag","observeOnly":true}`,
 		"bad pattern":       `{"gateTag":"cf-tunnel","allowHosts":["a b"],"pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
 		"bad prefix":        `{"gateTag":"cf-tunnel","trustedCIDRs":["nope"],"pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
+		"ipv6 manual":       `{"gateTag":"cf-tunnel","manualCIDRs":["fd00::/8"],"pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
 		"ipv6 prefix":       `{"gateTag":"cf-tunnel","trustedCIDRs":["fd00::/8"],"pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`,
 		"unknown minimum":   `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true,"identityMinimum":"none"}`,
 		"empty minimum":     `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true,"identityMinimum":""}`,

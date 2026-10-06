@@ -6,6 +6,7 @@ Settings at revision 7:
   grace                 1m0s (at least 30s)
   trustStatic           false (read at start)
   trustedCIDRs          10.0.5.0/24 (read at start)
+  manualCIDRs           10.0.5.0/24, 10.0.6.0/28
   admission             tag
   zonePins              example.com=a1b2c3d4
   observeOnly           false

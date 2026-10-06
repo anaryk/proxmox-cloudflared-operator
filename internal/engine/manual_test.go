@@ -18,7 +18,7 @@ func withAllowList(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
 	e.settings(func(s *store.Settings) {
-		s.TrustedCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24"), netip.MustParsePrefix("10.0.0.0/30")}
+		s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24"), netip.MustParsePrefix("10.0.0.0/30")}
 	})
 	return e
 }
@@ -104,7 +104,7 @@ func TestManualRoutesThatAreNotValidAreRefusedWithTheirField(t *testing.T) {
 		{"no port", "target.port", func(v *ManualRouteView) { v.Target.Port = 0 }},
 		{"no address", "target.addr", func(v *ManualRouteView) { v.Target.Addr = netip.Addr{} }},
 		{"an IPv6 address", "target.addr", func(v *ManualRouteView) { v.Target.Addr = netip.MustParseAddr("fd00::1") }},
-		{"an address outside the allow-list", "target.addr", func(v *ManualRouteView) { v.Target.Addr = netip.MustParseAddr("192.168.1.10") }},
+		{"an address outside manualCIDRs", "target.addr", func(v *ManualRouteView) { v.Target.Addr = netip.MustParseAddr("192.168.1.10") }},
 		{"an address target with a guest", "target.guest", func(v *ManualRouteView) { v.Target.Guest = "qemu/101" }},
 		{"a guest that is no guest", "target.guest", func(v *ManualRouteView) {
 			v.Target = ManualTarget{Kind: "guest", Guest: "vm/1", Scheme: "http", Port: 80}
@@ -154,6 +154,66 @@ func TestAManualRouteToANodeNeedsAllowNode(t *testing.T) {
 	got, err := e.eng.CreateManualRoute(t.Context(), v)
 	require.NoError(t, err)
 	require.True(t, got.Options.AllowNode)
+}
+
+func TestAManualRouteToANodeNeedsItsNetworkInManualCIDRs(t *testing.T) {
+	e := newEnv(t)
+	e.settings(func(s *store.Settings) { s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24")} })
+	e.cycle()
+	v := statusRoute()
+	v.Target.Addr = nodeAddr
+	v.Options.AllowNode = true
+
+	_, err := e.eng.CreateManualRoute(t.Context(), v)
+	var fe *FieldError
+	require.ErrorAs(t, err, &fe, "allowNode does not lift manualCIDRs")
+	require.Equal(t, "target.addr", fe.Field)
+	require.Contains(t, err.Error(), "manualCIDRs")
+
+	e.settings(func(s *store.Settings) {
+		s.ManualCIDRs = append(s.ManualCIDRs, netip.MustParsePrefix("10.0.0.0/30"))
+	})
+	got, err := e.eng.CreateManualRoute(t.Context(), v)
+	require.NoError(t, err)
+	require.True(t, got.Options.AllowNode)
+}
+
+func TestTheTrustedCIDRsDoNotAdmitAManualRoute(t *testing.T) {
+	e := newEnv(t)
+	e.settings(func(s *store.Settings) { s.TrustedCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24")} })
+
+	_, err := e.eng.CreateManualRoute(t.Context(), statusRoute())
+
+	var fe *FieldError
+	require.ErrorAs(t, err, &fe)
+	require.Equal(t, "target.addr", fe.Field)
+	require.EqualError(t, err, "target.addr 10.0.5.20: not inside the manualCIDRs of the settings (none)")
+
+	e.settings(func(s *store.Settings) { s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24")} })
+	_, err = e.eng.CreateManualRoute(t.Context(), statusRoute())
+	require.NoError(t, err, "inside manualCIDRs, whatever trustedCIDRs say")
+
+	e.settings(func(s *store.Settings) { s.TrustedCIDRs = nil })
+	other := statusRoute()
+	other.ID, other.Hostname = "other", "other.example.com"
+	_, err = e.eng.CreateManualRoute(t.Context(), other)
+	require.NoError(t, err, "and an empty trustedCIDRs changes nothing")
+}
+
+func TestManualCIDRsAreReadAtEachChange(t *testing.T) {
+	e := withAllowList(t)
+	made, err := e.eng.CreateManualRoute(t.Context(), statusRoute())
+	require.NoError(t, err)
+
+	e.settings(func(s *store.Settings) { s.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("10.9.0.0/24")} })
+	moved := made
+	moved.Target.Port = 9001
+	_, err = e.eng.UpdateManualRoute(t.Context(), "status", made.Rev, moved)
+
+	var fe *FieldError
+	require.ErrorAs(t, err, &fe, "the new settings apply without a restart")
+	require.Equal(t, "target.addr", fe.Field)
+	require.EqualError(t, err, "target.addr 10.0.5.20: not inside the manualCIDRs of the settings (10.9.0.0/24)")
 }
 
 func TestAManualRouteIDIsTakenOnce(t *testing.T) {

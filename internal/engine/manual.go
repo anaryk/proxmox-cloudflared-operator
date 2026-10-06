@@ -255,9 +255,11 @@ func manualTarget(t ManualTarget) (model.Target, *model.GuestRef, error) {
 	return out, nil, fieldError("target.kind", "target.kind %q: want guest or address", t.Kind)
 }
 
-// checkManualAddr checks the address of a route to one against the trusted
-// prefixes of the settings and, unless the route has allowNode, against the
-// addresses of the nodes. The caller holds the cycle lock.
+// checkManualAddr checks the address of a route to one against manualCIDRs of
+// the settings and, unless the route has allowNode, against the addresses of
+// the nodes. allowNode does not lift manualCIDRs: the address of a node is
+// allowed only where its prefix is listed there. The caller holds the cycle
+// lock.
 func (e *Engine) checkManualAddr(r model.Route) error {
 	addr := r.Target.Addr
 	if !addr.IsValid() {
@@ -267,9 +269,9 @@ func (e *Engine) checkManualAddr(r model.Route) error {
 	if err != nil {
 		return fmt.Errorf("reading the settings: %w", err)
 	}
-	if !slices.ContainsFunc(s.TrustedCIDRs, func(p netip.Prefix) bool { return p.Contains(addr) }) {
-		return fieldError("target.addr", "target.addr %s: not inside the trusted prefixes of the settings (trustedCIDRs: %s)",
-			addr, prefixesText(s.TrustedCIDRs))
+	if !slices.ContainsFunc(s.ManualCIDRs, func(p netip.Prefix) bool { return p.Contains(addr) }) {
+		return fieldError("target.addr", "target.addr %s: not inside the manualCIDRs of the settings (%s)",
+			addr, prefixesText(s.ManualCIDRs))
 	}
 	if r.Options.AllowNode {
 		return nil

@@ -110,6 +110,7 @@ type Settings struct {
 	Grace        Duration          `json:"grace"`
 	TrustStatic  bool              `json:"trustStatic,omitempty"`
 	TrustedCIDRs []netip.Prefix    `json:"trustedCIDRs,omitempty"`
+	ManualCIDRs  []netip.Prefix    `json:"manualCIDRs,omitempty"`
 	Admission    string            `json:"admission"`          // "tag" or "approve"
 	ZonePins     map[string]string `json:"zonePins,omitempty"` // zone name -> credential id
 	ObserveOnly  bool              `json:"observeOnly"`
@@ -211,15 +212,11 @@ func (s Settings) normalized() (Settings, error) {
 		return Settings{}, invalid("identityMinimum", "identityMinimum %q: want %q, %q or %q",
 			s.IdentityMinimum, resolve.LevelObserved, resolve.LevelFiltered, resolve.LevelPort)
 	}
-	for i, p := range s.TrustedCIDRs {
-		if !p.IsValid() || !p.Addr().Is4() {
-			field := fmt.Sprintf("trustedCIDRs[%d]", i)
-			return Settings{}, invalid(field, "%s %s: want an IPv4 prefix", field, p)
-		}
+	if s.TrustedCIDRs, err = normalizePrefixes("trustedCIDRs", s.TrustedCIDRs); err != nil {
+		return Settings{}, err
 	}
-	s.TrustedCIDRs = slices.Clone(s.TrustedCIDRs)
-	if len(s.TrustedCIDRs) == 0 {
-		s.TrustedCIDRs = nil
+	if s.ManualCIDRs, err = normalizePrefixes("manualCIDRs", s.ManualCIDRs); err != nil {
+		return Settings{}, err
 	}
 	if s.ZonePins, err = normalizePins(s.ZonePins); err != nil {
 		return Settings{}, err
@@ -235,6 +232,21 @@ func validateTag(tag string) error {
 		return errors.New("want lower-case letters, digits and the characters _ - + ., the first one not - + or a dot")
 	}
 	return nil
+}
+
+// normalizePrefixes returns a copy of the prefixes, nil when there are none;
+// field names the setting in an error.
+func normalizePrefixes(field string, prefixes []netip.Prefix) ([]netip.Prefix, error) {
+	for i, p := range prefixes {
+		if !p.IsValid() || !p.Addr().Is4() {
+			at := fmt.Sprintf("%s[%d]", field, i)
+			return nil, invalid(at, "%s %s: want an IPv4 prefix", at, p)
+		}
+	}
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	return slices.Clone(prefixes), nil
 }
 
 // normalizePatterns returns the patterns in their normal form; field names

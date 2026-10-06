@@ -185,12 +185,16 @@ of the hosts you mean to publish, and nothing wider.
 
 ### Manual routes
 
-The daemon also reads route files from `/etc/pve/pco/routes/`. No command writes them yet,
-and only root can. A manual route names an address and no guest, so nothing proves it:
+The daemon also reads route files from `/etc/pve/pco/routes/`. `pco route manual add` and
+`pco route manual remove` write them (root only), and so does the web UI (admins only). Both
+accept an address only inside `manualCIDRs` of the settings, which is empty until you fill it,
+so that nobody can aim a route at an address you did not name. A file that root writes by hand
+is not checked against it. A manual route names an address and no guest, so nothing proves it:
 its level is `manual`, and only the denylist, the addresses of the nodes and a connection
 to the port apply. A manual route with `allowNode` may even point at an address of a node:
-that lifts the rules that keep the addresses of nodes out, and no other. Treat the directory
-as part of root's configuration of the node.
+that lifts the rules that keep the addresses of nodes out, and no other, and the prefix of the
+node has to be in `manualCIDRs` as well. Keep `manualCIDRs` to the networks of the services you
+mean to publish, and treat the directory as part of root's configuration of the node.
 
 ### Between two cycles
 
