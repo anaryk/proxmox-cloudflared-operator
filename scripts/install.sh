@@ -35,14 +35,19 @@
 #   PCO_VERSION                    release to install, default is the latest
 #   PCO_REPO                       GitHub repository, default anaryk/proxmox-cloudflared-operator
 #   PCO_SKIP_SETUP=1               verify, and for the host profile install the
-#                                  package, then stop and print the hand-over
+#                                  package, then stop and print how to go on
 #   PCO_INSECURE_SKIP_SIGNATURE=1  trust the checksum alone, without the signature
 #   PCO_DEB, PCO_CHECKSUMS, PCO_SIGNATURE
-#                                  local files to install from, nothing is downloaded
+#                                  local files to install from: the package and
+#                                  checksums.txt are not downloaded, but the template
+#                                  of the appliance still is, through Proxmox, unless
+#                                  PCO_TEMPLATE gives it
 #   PCO_TEMPLATE                   appliance: the template as a local file, checked
-#                                  against checksums.txt and passed as --template
+#                                  against checksums.txt and passed as --template;
+#                                  refused with the host profile and with --uninstall
 #   PCO_RESUME                     appliance: the journal of an install that did
-#                                  not finish, which the installer finishes or takes back
+#                                  not finish, which the installer finishes or takes
+#                                  back; refused with the host profile and --uninstall
 
 set -euo pipefail
 

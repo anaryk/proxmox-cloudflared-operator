@@ -49,7 +49,10 @@ the checksum of the package, installs it with apt and starts `pco setup`:
 
 Read a script before you pipe it into a shell: `scripts/install.sh` is short, and
 it is the one thing in this chain that you have to trust. Arguments after `bash -s --`
-go to `pco setup`, so `bash -s -- --yes` takes every default. `PCO_VERSION=1.2.3`
+go to `pco setup`, but for `--appliance`, `--profile` and `--uninstall`, which the script
+keeps for itself (see [Profiles](profiles.md)); so `bash -s -- --yes` takes every default.
+On a terminal the script first asks whether to install on the node or as an appliance, and
+`--yes`, `--appliance`, `--profile` or `PCO_PROFILE=host` answer that beforehand. `PCO_VERSION=1.2.3`
 installs a given release instead of the latest. The installer needs `curl`,
 `sha256sum`, `base64`, `mktemp`, `apt-get` and either `gpgv` or `sqv`; a Proxmox VE node has
 them, or `apt-get install gpgv` adds the one that is missing.
@@ -69,10 +72,11 @@ signature of `checksums.txt` against the release key it carries, the checksum of
 against `checksums.txt`, and then installs. Use the `scripts/install.sh` of the repository at
 the tag of the release, as that version of the script carries the key that signed it:
 
-    PCO_DEB=./pco_<version>_<arch>.deb PCO_CHECKSUMS=./checksums.txt \
+    PCO_PROFILE=host PCO_DEB=./pco_<version>_<arch>.deb PCO_CHECKSUMS=./checksums.txt \
       PCO_SIGNATURE=./checksums.txt.sig PCO_SKIP_SETUP=1 bash scripts/install.sh
 
-Nothing is downloaded then, and `PCO_SKIP_SETUP=1` stops it before `pco setup`.
+Nothing is downloaded then, `PCO_PROFILE=host` keeps the script from asking which profile
+you want, and `PCO_SKIP_SETUP=1` stops it before `pco setup`.
 
 To check by hand, compare the checksum first,
 
