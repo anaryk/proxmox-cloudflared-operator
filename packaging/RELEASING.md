@@ -182,10 +182,12 @@ The packages carry the web interface, which Vite builds from `web/` into
 `internal/web/ui/dist` and the build tag `webui` embeds. npm, and every package
 it installs, never runs where the release key is:
 
-- The job `ui` checks out the tag, sets up Node with `actions/setup-node`, runs
-  `make ui-test ui-budget` and uploads `internal/web/ui/dist` as the artifact
-  `ui-dist`. It may only read the repository, and has no environment and no
-  secret. The job of the same name in `ci` does the same for every push.
+- The job `ui` checks out the tag, sets up Node with `actions/setup-node` from
+  `web/.nvmrc`, without a cache, checks that `make ui-types ui-words` writes
+  what is committed, runs `make ui-test ui-budget` and uploads
+  `internal/web/ui/dist` as the artifact `ui-dist`. It may only read the
+  repository, and has no environment and no secret. The job of the same name
+  in `ci` does the same for every push.
 - The job `sign` needs `ui` and `build` and downloads `ui-dist` right after
   the checkout, and the templates right after that, before the signature
   tools are installed and before the key is imported. Nothing of npm runs in
@@ -234,6 +236,29 @@ To raise them:
 3. With that Node installed (`nvm install` in `web/` reads `.nvmrc`), run
    `make ui-test ui-budget` and commit the files, with `web/package-lock.json`
    if npm changed it.
+
+## The documentation site
+
+The pages of `docs/` are built into a site with VitePress in `site/`, with the
+Node and npm above; `site/README.md` says how. It is published on GitHub Pages,
+at <https://anaryk.github.io/proxmox-cloudflared-operator/>, by the workflow
+`docs`:
+
+- Run by hand (`workflow_dispatch`) with a branch, a tag or a commit: the job
+  `site` checks out that ref, runs `make docs docs-lint docs-test` with npm and
+  nothing but read access, and uploads the site; the job `pages` deploys it in
+  the environment `github-pages`, the only job with the permissions to. This is
+  how the site is published now: after a release, run it with the tag of the
+  release.
+
+      gh workflow run docs.yml -f ref=v0.1.0
+
+- Every Monday the job `links` checks the links of the pages to other sites
+  with lychee. It is not a required check, so a site that does not answer
+  blocks nothing.
+
+The job `docs` of `ci` builds and checks the site on every push and pull
+request, and checks the licences of its packages.
 
 ## Replacing the key
 
