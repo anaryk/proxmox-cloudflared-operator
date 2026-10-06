@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -57,6 +58,8 @@ type uninstall struct {
 	node   string
 	found  survey   // what is on the node, read before anything is asked
 	failed []string // what could not be done
+	// connectorsStay says that the connectors could not be removed.
+	connectorsStay bool
 }
 
 // Uninstall removes pco from the node. It first looks at what is there, lists
@@ -113,6 +116,7 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if purge {
 		u.deleteTunnels(ctx)
 	}
+	u.removeGateway(ctx)
 	u.removeEgress(ctx)
 	u.removeWeb(ctx)
 	u.removeProxmox(ctx)
@@ -249,9 +253,38 @@ func (u *uninstall) pruneConnectors(ctx context.Context) {
 	m := connector.NewManager(unitControl{u.run}, filepath.Join(u.paths().Local, tunnelsDir), nil, zerolog.Nop())
 	if err := m.Prune(ctx, nil); err != nil {
 		u.fail("removing the connectors: %v", err)
+		u.connectorsStay = true
 		return
 	}
 	u.ask.Info("connectors: stopped and removed")
+}
+
+// removeGateway removes the gateway namespace of the attached networks once
+// the connectors are gone: its unit is disabled, which stops nothing, and
+// pco netns down takes the legs, the namespace, both routes of the service
+// prefix and the host's table. While a connector may still run it stays:
+// without the unreachable route a request to a service address would follow
+// the default route.
+func (u *uninstall) removeGateway(ctx context.Context) {
+	f := u.found
+	if f.netnsUnit {
+		if _, err := u.run.Run(ctx, "systemctl", "disable", "--now", netnsUnit); err != nil {
+			u.fail("disabling %s: %v", netnsUnit, err)
+		}
+	}
+	switch {
+	case !f.gateway:
+		return
+	case u.connectorsStay:
+		u.fail("the gateway namespace %s is kept while connectors may still run", gateway.Namespace)
+		return
+	}
+	if _, err := u.run.Run(ctx, "pco", "netns", "down", "--uninstall"); err != nil {
+		u.fail("removing the gateway namespace %s: %v", gateway.Namespace, err)
+		return
+	}
+	u.ask.Info("gateway: removed the namespace %s with its legs, the routes of %s and table inet pco_host",
+		gateway.Namespace, gateway.ServicePrefix)
 }
 
 func (u *uninstall) removeEgress(ctx context.Context) {

@@ -230,6 +230,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		keyring:    filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
 		sources:    filepath.Join(base, "sources", "cloudflared.sources"),
 		unitDirs:   []string{filepath.Join(base, "units")},
+		netnsPin:   filepath.Join(base, "netns", "pco"),
 		euid:       func() int { return 0 },
 		hostname:   func() (string, error) { return testNode + ".example.com", nil },
 		checkToken: func(context.Context, store.PVEToken) error { return nil },

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -19,6 +20,8 @@ import (
 type survey struct {
 	unit, egressUnit bool     // the unit files of pco and of the egress filter
 	webUnit          bool     // the unit file of the web interface
+	netnsUnit        bool     // the unit file of the gateway namespace
+	gateway          bool     // the gateway namespace is pinned
 	connectors       []string // the tunnel ids of the connectors
 	connectorsErr    error
 	nft              bool // nft runs
@@ -38,6 +41,10 @@ func (u *uninstall) survey(ctx context.Context) {
 	f.unit = u.unitInstalled(serviceUnit)
 	f.egressUnit = u.unitInstalled(egressUnit)
 	f.webUnit = u.unitInstalled(webUnit)
+	f.netnsUnit = u.unitInstalled(netnsUnit)
+	if _, err := os.Stat(u.host.netnsPin); err == nil {
+		f.gateway = true
+	}
 	f.connectors, f.connectorsErr = u.listConnectors(ctx)
 	f.nft, f.table, f.nftErr = u.egressTableThere(ctx)
 	if u.manifest.inProxmox() {
@@ -119,6 +126,13 @@ func (u *uninstall) describe() {
 		u.ask.Info("  the connectors, as far as they can be found: %v", f.connectorsErr)
 	case len(f.connectors) > 0:
 		u.ask.Info("  the connectors of %d tunnels: their pco-cloudflared@ units and files", len(f.connectors))
+	}
+	if f.netnsUnit {
+		u.ask.Info("  the unit of the gateway namespace, %s", netnsUnit)
+	}
+	if f.gateway {
+		u.ask.Info("  the gateway namespace %s with its legs, the routes of %s and table inet pco_host",
+			gateway.Namespace, gateway.ServicePrefix)
 	}
 	if f.egressUnit {
 		u.ask.Info("  the unit of the egress filter, %s", egressUnit)

@@ -83,6 +83,8 @@ pco help route manual add
 - [pco events](pco-events.md): List what changed, as the daemon keeps it
 - [pco net](pco-net.md): Show how the appliance keeps the service prefix to itself
   - [pco net show](pco-net-show.md): Show the device, route, rules and table that keep the service prefix in the appliance
+- [pco netns](pco-netns.md): Show the gateway namespace the attached networks are reached through
+  - [pco netns status](pco-netns-status.md): Show the legs of the gateway namespace and whether it is as pco left it
 - [pco settings](pco-settings.md): Show the settings and save them
   - [pco settings apply](pco-settings-apply.md): Save the settings of a file, at the revision they were read at
   - [pco settings show](pco-settings-show.md): Show the settings with their revision

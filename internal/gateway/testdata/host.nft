@@ -1,0 +1,22 @@
+add table inet pco_host
+delete table inet pco_host
+table inet pco_host {
+	counter from_pconet {
+	}
+	counter from_transit {
+	}
+	counter routed_from_pconet {
+	}
+	counter to_transit {
+	}
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		iifname "pconet" counter name "from_pconet" drop
+		iifname "pcotr0" ct state new counter name "from_transit" drop
+	}
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		iifname "pconet" oifname != "pconet" counter name "routed_from_pconet" drop
+		oifname "pcotr0" counter name "to_transit" drop
+	}
+}

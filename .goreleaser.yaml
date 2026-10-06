@@ -100,6 +100,12 @@ nfpms:
         dst: /usr/lib/systemd/system/pco-egress.service
         file_info:
           mode: 0644
+      # Enabled by the daemon when a network is first attached; it has no
+      # stop action, so that no upgrade or restart takes the legs down.
+      - src: packaging/systemd/pco-netns.service
+        dst: /usr/lib/systemd/system/pco-netns.service
+        file_info:
+          mode: 0644
       # Enabled by the appliance template only; on a host nothing starts it.
       - src: packaging/systemd/pco-net.service
         dst: /usr/lib/systemd/system/pco-net.service

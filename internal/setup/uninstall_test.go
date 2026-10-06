@@ -425,6 +425,60 @@ func TestUninstallRemovesTheEgressFilter(t *testing.T) {
 	}
 }
 
+// The gateway namespace goes once the connectors are gone: its unit is
+// disabled, which stops nothing, and pco netns down removes the legs, the
+// namespace, the routes of the service prefix and the host's table.
+func TestUninstallRemovesTheGatewayNamespaceAfterTheConnectors(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(Manifest{})
+	e.installUnit("pco-netns.service")
+	e.pinNamespace()
+	e.script(connectorsSeen(), egressSeen(), serviceStopped(), connectorsPruned(),
+		[]call{{line: "systemctl disable --now pco-netns.service"}, {line: "pco netns down --uninstall"}},
+		egressDeleted())
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
+	e.done()
+	e.requireShown("the unit of the gateway namespace, pco-netns.service")
+	e.requireShown("the gateway namespace pco with its legs, the routes of 198.18.0.0/16 and table inet pco_host")
+	e.requireShown("gateway: removed the namespace pco")
+	e.requireStoreGone()
+}
+
+func TestUninstallWithoutTheGatewayLeavesItAlone(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(Manifest{})
+	e.installUnit("pco-netns.service")
+	e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned(),
+		[]call{{line: "systemctl disable --now pco-netns.service"}})
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
+	e.done()
+	e.requireStoreGone()
+}
+
+// While a connector may still run, its requests to service addresses need
+// the routes of the gateway: the namespace stays, and so does the store.
+func TestUninstallKeepsTheGatewayWhileConnectorsStay(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(Manifest{})
+	e.pinNamespace()
+	e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsSeen(),
+		[]call{{line: "systemctl disable --now -- pco-cloudflared@" + tunnelID + ".service", err: exitErr(1, "Failed to disable unit")}})
+
+	err := e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true})
+
+	require.ErrorContains(t, err, "the gateway namespace pco is kept while connectors may still run")
+	e.done()
+	e.requireStoreKept()
+}
+
+func (e *testEnv) pinNamespace() {
+	e.t.Helper()
+	require.NoError(e.t, os.MkdirAll(filepath.Join(e.base, "netns"), 0o755))
+	require.NoError(e.t, os.WriteFile(filepath.Join(e.base, "netns", "pco"), nil, 0o444))
+}
+
 func TestUninstallSkipsWhatACredentialMayNotList(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(setupsUser)

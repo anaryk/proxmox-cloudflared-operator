@@ -26,8 +26,15 @@ if [ -d /run/systemd/system ]; then
 	# Only an upgrade restarts the daemon and the web interface, and only those
 	# that were running; pco setup enables the web interface. The
 	# pco-cloudflared@ connectors are never touched: restarting them would drop
-	# the tunnels they serve.
+	# the tunnels they serve. Neither is pco-netns.service, which has no stop
+	# action: the legs, the service addresses and the routes it brings up carry
+	# what the connectors serve. Where it is enabled, pco netns up brings up
+	# what this version adds before the daemon restarts, and changes nothing
+	# that is in place.
 	if [ -n "$2" ]; then
+		if systemctl is-enabled --quiet pco-netns.service 2>/dev/null; then
+			/usr/bin/pco netns up || true
+		fi
 		systemctl try-restart pco.service || true
 		systemctl try-restart pco-web.service || true
 	fi

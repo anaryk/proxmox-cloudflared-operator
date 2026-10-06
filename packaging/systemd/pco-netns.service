@@ -1,0 +1,14 @@
+[Unit]
+Description=pco gateway network namespace
+Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+Before=pco.service pve-guests.service pve-ha-lrm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pco netns up
+
+[Install]
+WantedBy=multi-user.target

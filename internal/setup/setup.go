@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
@@ -41,6 +42,9 @@ const (
 	serviceUnit = "pco.service"
 	egressUnit  = "pco-egress.service"
 	webUnit     = "pco-web.service"
+	// netnsUnit brings the gateway namespace up; the daemon enables it when
+	// the first network is attached.
+	netnsUnit = "pco-netns.service"
 
 	// credentialLabel is the label of the credential setup stores.
 	credentialLabel = "setup"
@@ -141,6 +145,7 @@ type host struct {
 	keyring  string   // the key of Cloudflare's apt repository
 	sources  string   // the apt source of cloudflared
 	unitDirs []string // where the units of the package may be installed
+	netnsPin string   // where the gateway namespace is pinned
 	euid     func() int
 	hostname func() (string, error)
 	// checkToken makes one read of the Proxmox API with a token.
@@ -166,6 +171,7 @@ func nodeHost() host {
 		keyring:    "/usr/share/keyrings/cloudflare-main.gpg",
 		sources:    "/etc/apt/sources.list.d/cloudflared.sources",
 		unitDirs:   []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"},
+		netnsPin:   filepath.Join("/run/netns", gateway.Namespace),
 		euid:       os.Geteuid,
 		hostname:   os.Hostname,
 		checkToken: checkPVEToken,

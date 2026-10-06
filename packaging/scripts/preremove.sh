@@ -9,8 +9,10 @@ fi
 # Only the operator and its web interface are stopped. The pco-cloudflared@
 # connectors keep running so that removing the package does not take the
 # tunnels down; `pco uninstall` removes them, and has to run while the binary is
-# still there. A failing stop is shown, but must not keep the package from being
-# removed.
+# still there. pco-netns.service is not stopped either: it has no stop action,
+# and the gateway namespace it brought up carries what the connectors serve
+# through the legs; `pco uninstall` removes it too. A failing stop is shown, but
+# must not keep the package from being removed.
 if [ -d /run/systemd/system ]; then
 	if systemctl cat pco.service >/dev/null 2>&1; then
 		systemctl disable --now pco.service || true

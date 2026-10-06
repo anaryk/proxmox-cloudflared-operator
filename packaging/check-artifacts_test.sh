@@ -77,7 +77,7 @@ program() {
 # man page of pco and the completion scripts.
 FILES='usr/lib/systemd/system/pco.service usr/lib/systemd/system/pco-cloudflared@.service
 usr/lib/systemd/system/pco-egress.service usr/lib/systemd/system/pco-net.service
-usr/lib/systemd/system/pco-web.service usr/share/man/man1/pco.1.gz
+usr/lib/systemd/system/pco-netns.service usr/lib/systemd/system/pco-web.service usr/share/man/man1/pco.1.gz
 usr/share/bash-completion/completions/pco usr/share/zsh/vendor-completions/_pco
 usr/share/fish/vendor_completions.d/pco.fish'
 LEAVE_OUT=

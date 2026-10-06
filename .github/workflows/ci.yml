@@ -68,6 +68,11 @@ jobs:
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/egress/
       # The service prefix of the appliance: its device, route, rules and table.
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/appnet/
+      # The gateway namespace of the host: legs into bridges of a node the test
+      # builds in namespaces of its own, the tables, their guards and the SNAT
+      # through each leg with the bridged frames passing the node's conntrack.
+      - run: sudo modprobe br_netfilter
+      - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/gateway/
 
   build:
     runs-on: ubuntu-latest

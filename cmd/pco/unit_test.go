@@ -65,14 +65,14 @@ func TestTheUnitOfTheDaemon(t *testing.T) {
 	require.Equal(t, "multi-user.target", u.one(t, "Install", "WantedBy"))
 }
 
-// The daemon starts after the cluster filesystem and Proxmox and does not
-// order itself before the start of the guests, those managed by HA included:
-// they would wait for its start, up to TimeoutStartSec, and its first cycle
-// would find every one of them stopped.
+// The daemon starts after the cluster filesystem, Proxmox and the gateway
+// namespace and does not order itself before the start of the guests, those
+// managed by HA included: they would wait for its start, up to
+// TimeoutStartSec, and its first cycle would find every one of them stopped.
 func TestTheDaemonDoesNotHoldTheGuestsBack(t *testing.T) {
 	u := parseUnit(t, filepath.Join("..", "..", "packaging", "systemd", "pco.service"))
 
-	require.Equal(t, "network-online.target pve-cluster.service pveproxy.service", u.one(t, "Unit", "After"))
+	require.Equal(t, "network-online.target pve-cluster.service pveproxy.service pco-netns.service", u.one(t, "Unit", "After"))
 	for _, before := range u["Unit"]["Before"] {
 		require.NotContains(t, strings.Fields(before), "pve-guests.service")
 		require.NotContains(t, strings.Fields(before), "pve-ha-lrm.service")

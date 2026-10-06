@@ -298,7 +298,7 @@ fi
 if command -v dpkg-deb >/dev/null 2>&1; then
 	tilde='~'
 	deb_version=${version/-/$tilde}
-	units='pco.service pco-cloudflared@.service pco-egress.service pco-net.service pco-web.service'
+	units='pco.service pco-cloudflared@.service pco-egress.service pco-net.service pco-netns.service pco-web.service'
 	# Written by the hooks of goreleaser from the help of the commands.
 	docs='/usr/share/man/man1/pco.1.gz /usr/share/bash-completion/completions/pco /usr/share/zsh/vendor-completions/_pco /usr/share/fish/vendor_completions.d/pco.fish'
 	for arch in amd64 arm64; do
