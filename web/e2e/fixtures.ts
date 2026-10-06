@@ -8,7 +8,7 @@
 // header of CORS or another policy than the page's.
 
 import { type ChildProcess, spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -240,7 +240,25 @@ export class Watch {
 interface Options {
   scenario: string
   hsts: boolean
+  // clock, a time in RFC 3339, stops the fake daemon's clock there and
+  // pauses its streams: no cycle and no sample of the traffic moves a time
+  // of the scenario, as screenshots need.
+  clock: string
+  // appliance runs pco web as the appliance does, which only root on Linux
+  // can have it do here (applianceHarness).
+  appliance: boolean
 }
+
+// The files that make pco web the appliance's: its profile, and the address
+// of net0, which it listens on.
+const applianceDir = '/etc/pco'
+const applianceProfile = join(applianceDir, 'profile')
+const applianceNet0 = join(applianceDir, 'net0')
+
+// applianceHarness says whether pco web can be started as the appliance's
+// here: as root on Linux, as in a container, and never on a machine with an
+// /etc/pco of its own, which it would change.
+export const applianceHarness = process.platform === 'linux' && process.getuid?.() === 0 && !existsSync(applianceDir)
 
 interface Fixtures {
   pco: Pco
@@ -255,16 +273,30 @@ interface Harness {
 
 // startHarness starts the fakes and pco web in dir, each added to procs as
 // it starts, so that whoever holds procs stops what started.
-async function startHarness(dir: string, procs: Proc[], scenario: string, hsts: boolean): Promise<Harness> {
+async function startHarness(dir: string, procs: Proc[], { scenario, hsts, clock, appliance }: Options): Promise<Harness> {
   writeFileSync(join(dir, 'users.json'), JSON.stringify(users))
   const pve = new Proc('fakepve', ['-listen', '127.0.0.1:0', '-users', join(dir, 'users.json'), '-cert-dir', dir, '-web-cert'])
   procs.push(pve)
   const pveURL = await pve.start((l) => (l.message === 'serving' ? String(l.url) : undefined))
 
   const socket = join(dir, 'pco', 'pco.sock')
-  const daemon = new Proc('fakepco', ['-socket', socket, '-control', '127.0.0.1:0', '-scenario', scenario])
+  const daemon = new Proc('fakepco', ['-socket', socket, '-control', '127.0.0.1:0', '-scenario', scenario, ...(clock ? ['-now', clock, '-still'] : [])])
   procs.push(daemon)
   const control = await daemon.start((l) => (l.message === 'serving' ? String(l.control) : undefined))
+  if (clock) {
+    const res = await fetch(`${control}/streams/pause`, { method: 'POST' })
+    if (!res.ok) throw new Error(`pausing the fake daemon: ${res.status} ${await res.text()}`)
+  }
+
+  // In the appliance pco web signs users in at the node's API as the
+  // daemon writes it, verified against its CA: here the fake's certificate.
+  const webArgs: string[] = []
+  if (appliance) {
+    if (!applianceHarness) throw new Error(`pco web runs as the appliance's here only as root on Linux, without ${applianceDir}`)
+    const api = { url: pveURL, serverName: 'pve1', ca: readFileSync(join(dir, 'pveproxy.crt'), 'utf8'), node: 'pve1' }
+    writeFileSync(join(dir, 'pve-api.json'), JSON.stringify(api))
+    webArgs.push('--pve-api', join(dir, 'pve-api.json'))
+  }
 
   // pco web takes the address it is given, not a port of its own choosing,
   // as the hosts it answers for are that address. Another worker may take
@@ -276,15 +308,24 @@ async function startHarness(dir: string, procs: Proc[], scenario: string, hsts: 
     host = `127.0.0.1:${await freePort()}`
     const p = new Proc(
       'pco',
-      ['--socket', socket, 'web', '--listen', host, '--cert', join(dir, 'tls.crt'), '--key', join(dir, 'tls.key'), '--pin', join(dir, 'pveproxy.crt'), '--pve-url', pveURL],
+      ['--socket', socket, 'web', '--listen', host, '--cert', join(dir, 'tls.crt'), '--key', join(dir, 'tls.key'), '--pin', join(dir, 'pveproxy.crt'), '--pve-url', pveURL, ...webArgs],
       hsts ? { PCO_WEB_HSTS: '1' } : {},
     )
     procs.push(p)
+    // pco web reads the profile as it starts, and only then: the files are
+    // gone again before another starts.
+    if (appliance) {
+      mkdirSync(applianceDir)
+      writeFileSync(applianceNet0, '127.0.0.1\n')
+      writeFileSync(applianceProfile, 'appliance\n')
+    }
     try {
       await p.start(serving)
       web = p
     } catch (e) {
       if (attempt >= 3 || !p.output.includes('address already in use')) throw e
+    } finally {
+      if (appliance) rmSync(applianceDir, { recursive: true, force: true })
     }
   }
   const started = web
@@ -361,13 +402,15 @@ async function guard(context: BrowserContext, origin: string, watch: Watch): Pro
 export const test = base.extend<Options & Fixtures & { harness: Harness }>({
   scenario: ['populated', { option: true }],
   hsts: [false, { option: true }],
-  harness: async ({ scenario, hsts }, provide, testInfo) => {
+  clock: ['', { option: true }],
+  appliance: [false, { option: true }],
+  harness: async ({ scenario, hsts, clock, appliance }, provide, testInfo) => {
     // A unix socket needs a short path, which the test's own directory may
     // not have.
     const dir = mkdtempSync(join(tmpdir(), 'pco-e2e-'))
     const procs: Proc[] = []
     try {
-      await provide(await startHarness(dir, procs, scenario, hsts))
+      await provide(await startHarness(dir, procs, { scenario, hsts, clock, appliance }))
     } finally {
       if (testInfo.status !== testInfo.expectedStatus) {
         for (const p of procs) await testInfo.attach(`${p.name}.log`, { body: p.output, contentType: 'text/plain' })

@@ -5,7 +5,12 @@ import { defineConfig, devices, type Project } from '@playwright/test'
 // Chromium, Firefox and WebKit at the size of a desktop and of a phone, and
 // in Chromium in both colour schemes. Chromium decides; the others are
 // advisory until they have been green for two weeks. e2e/perf measures the
-// flow map in Chromium alone, one test at a time.
+// flow map in Chromium alone, one test at a time. e2e/docs takes the
+// screenshots of the documentation into the directory PCO_E2E_SHOTS names,
+// and only make docs-screenshots sets it, in the Playwright image of the
+// version of package.json: the project is there only then.
+const shots = process.env.PCO_E2E_SHOTS
+
 const sizes = {
   desktop: { width: 1440, height: 900 },
   phone: { width: 375, height: 812 },
@@ -29,7 +34,7 @@ function suite(name: string, device: (typeof devices)[string], colorScheme?: 'li
     const project = [name, size, colorScheme].filter(Boolean).join('-')
     return {
       name: project,
-      testIgnore: ['perf/**', ...(project === first ? [] : withoutBrowser)],
+      testIgnore: ['perf/**', 'docs/**', ...(project === first ? [] : withoutBrowser)],
       retries: retries[name] ?? 0,
       use: { ...device, viewport, ...(colorScheme && { colorScheme }), navigationTimeout: navigationTimeout[name] },
     }
@@ -63,5 +68,28 @@ export default defineConfig({
       timeout: 180_000,
       use: { ...devices['Desktop Chrome'], viewport: sizes.desktop },
     },
+    // One test at a time: the appliance's sign-in has every pco web that
+    // starts meanwhile read the appliance's profile.
+    ...(shots
+      ? [
+          {
+            name: 'docs',
+            testDir: 'e2e/docs',
+            workers: 1,
+            timeout: 300_000,
+            use: {
+              ...devices['Desktop Chrome'],
+              viewport: { width: 1280, height: 800 },
+              deviceScaleFactor: 1,
+              locale: 'en-US',
+              timezoneId: 'UTC',
+              // Chromium's zygote crashes under QEMU's emulation of amd64 on
+              // another machine; without it Chromium starts its processes
+              // itself, and draws the same.
+              launchOptions: { args: ['--no-zygote'] },
+            },
+          },
+        ]
+      : []),
   ],
 })

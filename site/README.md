@@ -17,6 +17,11 @@ From the repository root:
   site down to its fragment, and checks the images against their budget.
 - `make docs-test` runs every test of the site; it is `npm test` in this
   directory. `make test-scripts` runs the ones that need no packages.
+- `make docs-screenshots` takes the screenshots of the web interface in
+  `docs/images` again (`web/e2e/docs`), in Docker, in the Playwright image of
+  the version `web/package.json` pins, for amd64 on every machine. It writes
+  only the files whose picture changed, so a run that changes nothing in the
+  interface changes no file.
 
 `node --test scripts` does not work on Node 22, which reads a directory as a
 module to run. Use the commands above, or give `node --test` the files.

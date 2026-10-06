@@ -18,7 +18,7 @@ comma := ,
 UI ?= 0
 TAGS := nomsgpack$(if $(filter 1,$(UI)),$(comma)webui)
 
-.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types docs docs-serve docs-lint docs-test docs-cli
+.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types docs docs-serve docs-lint docs-test docs-cli docs-screenshots
 
 build: $(if $(filter 1,$(UI)),ui-dist)
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -125,6 +125,29 @@ docs-test: site/node_modules
 # help, and committed. A test of cmd/pco fails when it differs from the help.
 docs-cli:
 	go run -tags nomsgpack ./cmd/pco docs markdown docs/cli
+
+# The screenshots of the web interface in docs/images, ui-*.png, taken by the
+# docs project of the browser suite (web/e2e/docs) against the fakes, in the
+# Playwright image of the version web/package.json pins, for amd64 on every
+# machine: the pixels come from that image alone. A file is written only when
+# what it shows changes. It takes Docker, and where the machine is not amd64 an
+# emulator of it that Docker runs images with. The container runs as root,
+# which the appliance's sign-in needs; what it writes is given back to you.
+# SHOTS passes its flags on to Playwright, such as SHOTS='-g setup'.
+PLAYWRIGHT := $(shell sed -n 's/.*"@playwright\/test": "\([0-9.]*\)".*/\1/p' web/package.json)
+SHOTS_BIN := build/docs-screenshots/bin
+docs-screenshots: web/node_modules ui
+	@test -n "$(PLAYWRIGHT)" || { echo "web/package.json names no version of @playwright/test" >&2; exit 1; }
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nomsgpack,webui -trimpath -o $(SHOTS_BIN)/pco ./cmd/pco
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nomsgpack -trimpath -o $(SHOTS_BIN)/fakepco ./hack/fakepco
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nomsgpack -trimpath -o $(SHOTS_BIN)/fakepve ./hack/fakepve
+	mkdir -p docs/images web/test-results
+	docker run --rm --platform linux/amd64 --init --ipc=host --hostname pve1 \
+		-v "$(CURDIR):/src" -v "$(CURDIR)/$(SHOTS_BIN):/src/bin:ro" -w /src/web \
+		-e PCO_E2E_SHOTS=/src/docs/images -e FONTCONFIG_FILE=/src/web/e2e/docs/fonts.conf \
+		-e OWNER="$$(id -u):$$(id -g)" \
+		mcr.microsoft.com/playwright:v$(PLAYWRIGHT)-noble \
+		sh -c 'node_modules/.bin/playwright test --project docs --output test-results/docs $(SHOTS); s=$$?; chown -R "$$OWNER" /src/docs/images test-results; exit $$s'
 
 # Builds the interface and the .deb files without a tag and without publishing
 # or signing anything, and the appliance template where mmdebstrap is
