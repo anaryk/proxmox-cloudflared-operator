@@ -56,8 +56,8 @@ func (e *OptionError) Error() string { return e.Option + ": " + e.Msg }
 
 // CheckOptions checks the options of a route written elsewhere than in the
 // Notes, such as a manual route, by the rules the Notes have for them, and
-// returns them in normal form. AllowNode is no option of the Notes and is
-// left as it is.
+// returns them in normal form; via=managed is for the Notes alone. AllowNode
+// is no option of the Notes and is left as it is.
 func CheckOptions(t model.Target, o model.RouteOptions) (model.RouteOptions, error) {
 	https := t.Scheme == model.SchemeHTTPS
 	if o.NoTLSVerify && !https {
@@ -80,8 +80,10 @@ func CheckOptions(t model.Target, o model.RouteOptions) (model.RouteOptions, err
 		if t.Addr.IsValid() {
 			return o, &OptionError{"via", "cannot be combined with an address in the target"}
 		}
+		// The managed network gives a card to a guest that asks for it in its
+		// own Notes; a route written elsewhere names a card the guest has.
 		via, ok := parseVia(o.Via)
-		if !ok {
+		if !ok || via == viaManaged {
 			return o, &OptionError{"via", fmt.Sprintf("%q is neither a NIC from net0 to net%d nor an IPv4 address a guest can have", o.Via, maxNIC)}
 		}
 		o.Via = via

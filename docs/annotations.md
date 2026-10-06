@@ -165,7 +165,7 @@ Options follow the target. Each can be given once.
 | `sni=<hostname>` | The name to ask for in the TLS handshake. Only valid with `https`; a wildcard is not accepted. |
 | `via=net<N>` | Use the addresses of that network card of the guest, `net0` to `net31`, written without leading zeros. |
 | `via=<ipv4>` | Use this address of the guest. Cannot be combined with an address in the target. |
-| `via=managed` | Use the card pco gave the guest on its managed network, and ask for one. Cannot be combined with an address in the target. |
+| `via=managed` | Use the card pco gave the guest on its managed network, and ask for one. Cannot be combined with an address in the target. Only the Notes say it: a manual route refuses it. |
 
 By default the Host header of the visitor's request is passed through unchanged. For
 an `https` target the tunnel asks for the TLS name of the public hostname, unless

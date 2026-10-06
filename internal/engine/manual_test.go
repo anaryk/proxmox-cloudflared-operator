@@ -89,6 +89,30 @@ func TestAManualRouteToAGuest(t *testing.T) {
 	}}, routes)
 }
 
+// The managed network is for the cards of guests that ask for it in their own
+// Notes; a manual route to a guest names a card it has. The words are those
+// of the web page, which refuses it too.
+func TestAManualRouteViaTheManagedNetworkIsRefused(t *testing.T) {
+	for _, via := range []string{"managed", "Managed"} {
+		t.Run(via, func(t *testing.T) {
+			e := withAllowList(t)
+			v := statusRoute()
+			v.Target = ManualTarget{Kind: "guest", Guest: "qemu/101", Scheme: "http", Port: 80}
+			v.Options.Via = via
+
+			_, err := e.eng.CreateManualRoute(t.Context(), v)
+
+			var fe *FieldError
+			require.ErrorAs(t, err, &fe)
+			require.Equal(t, "options.via", fe.Field)
+			require.EqualError(t, err, `options.via: "`+via+`" is neither a NIC from net0 to net31 nor an IPv4 address a guest can have`)
+			routes, err := e.store.ManualRoutes()
+			require.NoError(t, err)
+			require.Empty(t, routes)
+		})
+	}
+}
+
 func TestManualRoutesThatAreNotValidAreRefusedWithTheirField(t *testing.T) {
 	for _, tt := range []struct {
 		name, field string
