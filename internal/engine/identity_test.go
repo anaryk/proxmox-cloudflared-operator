@@ -196,7 +196,8 @@ func TestACopyStopsServingOnceAndTheNextPassServesAgain(t *testing.T) {
 func TestAnApplianceThatIsNotProvenHoldsOnly(t *testing.T) {
 	a := newApplianceEnv(t, incA)
 	a.enforce()
-	a.cycle()
+	a.box.set(func(c *container) { c.mount = appliance.Source{Raw: "10.92.0.5:/export/pco /"} })
+	require.True(t, a.cycle().Identity.OK, "proven by the uptime")
 	sets := a.egr.setCount()
 
 	a.box.set(func(c *container) { c.uptimesErr = errors.New("proxmox does not answer") })

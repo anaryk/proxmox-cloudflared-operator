@@ -183,7 +183,8 @@ type carrier struct {
 // Once proven, a running guest in pool pco with one of our MACs is a copy of
 // us: the verdict is not OK (writes held, spec section 2) without Copy (we keep
 // serving), and Copies names it; one outside the pool is a tenant.
-// An incomplete snapshot or missing uptimes is not OK without Copy.
+// An incomplete snapshot is not OK without Copy, and so are missing uptimes
+// when the mount does not prove the VMID: only the fallback needs them.
 //
 // firstDiff is kept by the caller from one check to the next: when the
 // difference of the MACs was first seen, zero while there is none.
@@ -200,12 +201,12 @@ func (id Identity) Check(snap inventory.Snapshot, f Facts, uptimes map[model.Gue
 	if !listed {
 		return Verdict{Copy: true, Why: fmt.Sprintf("Proxmox lists no %s: this container is not the one installed", self)}
 	}
-	if uptimes == nil {
+	byMount := f.Mount.VMID == id.VMID
+	if uptimes == nil && !byMount {
 		return Verdict{Why: "the uptimes of the guests could not be read; self-identification waits for them"}
 	}
 	links, config := linkMACs(f.Links), nicMACs(own)
 	others := carriers(snap, self, slices.Concat(links, config))
-	byMount := f.Mount.VMID == id.VMID
 	if why := id.unproven(f, byMount, uptimes, others); why != "" {
 		return Verdict{Copy: true, Why: why, Copies: refsOf(others)}
 	}

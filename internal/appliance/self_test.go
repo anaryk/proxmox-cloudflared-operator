@@ -96,6 +96,7 @@ func TestACopyDrawsNothingAndLosesTheFlag(t *testing.T) {
 
 func TestAVerdictThatIsNotOKDrawsNothing(t *testing.T) {
 	f := newSelf(t)
+	f.facts = facts(unknown, time.Hour, macA)
 	f.uptimes = nil
 
 	v := f.self.Check(t.Context(), snap(lxc(ownVMID, Pool, macA)))
@@ -104,6 +105,19 @@ func TestAVerdictThatIsNotOKDrawsNothing(t *testing.T) {
 	require.False(t, v.Copy)
 	require.False(t, f.self.EpochDrawn())
 	require.Equal(t, 5, f.writer(t).Generation)
+}
+
+// C1: a lab node whose pvestatd had died answered no uptimes.
+func TestUptimesThatCannotBeReadDoNotMatterToAMountThatProvesIt(t *testing.T) {
+	f := newSelf(t)
+	f.self.Uptimes = func(context.Context) (map[model.GuestRef]time.Duration, error) {
+		return nil, errors.New("pvestatd does not answer")
+	}
+
+	v := f.self.Check(t.Context(), snap(lxc(ownVMID, Pool, macA)))
+
+	require.Equal(t, Verdict{OK: true}, v)
+	require.True(t, f.self.EpochDrawn())
 }
 
 func TestTheIncarnationOfTheStartThatWroteLeaderJSONKeepsTheEpoch(t *testing.T) {
