@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
@@ -22,8 +23,6 @@ const (
 	// managedVnet is the vnet of the managed network, and the id of its
 	// network.
 	managedVnet = "pconet"
-
-	maxMark = 250
 
 	// The MAC of the namespace end of a leg. An attach leg carries its mark
 	// in the last byte; the managed leg has one MAC, so that its guests see
@@ -42,7 +41,7 @@ type Network struct {
 	Prefix    netip.Prefix          `json:"prefix"`              // the guest network
 	Legs      map[string]netip.Addr `json:"legs"`                // by node: the leg address
 	LegMAC    string                `json:"legMAC"`              // the namespace end; fixed for managed, per network for attach
-	Mark      int                   `json:"mark"`                // 1..250, unique
+	Mark      int                   `json:"mark"`                // 1..gateway.MaxMark, unique
 	Uplink    bool                  `json:"uplink,omitempty"`    // bridge with a physical uplink, confirmed
 	OverlapOK bool                  `json:"overlapOK,omitempty"` // attached over a node route with --overlap-ok
 	CreatedAt time.Time             `json:"createdAt"`
@@ -66,8 +65,8 @@ func (n Network) checked() (Network, error) {
 		return n, err
 	}
 	switch {
-	case n.Mark < 1 || n.Mark > maxMark:
-		return n, fmt.Errorf("network %s: mark %d is not 1 to %d", n.ID, n.Mark, maxMark)
+	case n.Mark < 1 || n.Mark > gateway.MaxMark:
+		return n, fmt.Errorf("network %s: mark %d is not 1 to %d", n.ID, n.Mark, gateway.MaxMark)
 	case n.CreatedAt.IsZero():
 		return n, fmt.Errorf("network %s has no time it was made at", n.ID)
 	}
