@@ -12,7 +12,8 @@
   "scripts": {
     "build": "vitepress build",
     "dev": "vitepress dev",
-    "lint": "markdownlint-cli2"
+    "lint": "markdownlint-cli2",
+    "test": "node --test \"scripts/*.test.mjs\" \".vitepress/markdown/*.test.mjs\" \"test/*.test.mjs\""
   },
   "dependencies": {
     "mermaid": "12.1.0",

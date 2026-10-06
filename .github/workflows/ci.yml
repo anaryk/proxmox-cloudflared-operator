@@ -108,8 +108,8 @@ jobs:
 
   # The documentation site: the build, which fails on a link to a page that
   # does not exist, the Markdown of the pages, every link of the built site
-  # down to its fragment, the images and their budget, and the licences of
-  # the packages of the site.
+  # down to its fragment, the images and their budget, the tests of the site,
+  # and the licences of its packages.
   docs:
     runs-on: ubuntu-latest
     steps:
@@ -120,7 +120,7 @@ jobs:
         with:
           node-version-file: web/.nvmrc
           package-manager-cache: false
-      - run: make docs docs-lint
+      - run: make docs docs-lint docs-test
       - run: node web/scripts/check-licences.mjs site/package-lock.json
 
   build-ui:

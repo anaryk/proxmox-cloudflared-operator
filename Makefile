@@ -18,7 +18,7 @@ comma := ,
 UI ?= 0
 TAGS := nomsgpack$(if $(filter 1,$(UI)),$(comma)webui)
 
-.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types docs docs-serve docs-lint
+.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types docs docs-serve docs-lint docs-test
 
 build: $(if $(filter 1,$(UI)),ui-dist)
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -99,7 +99,8 @@ ui-types:
 # site/package.json. The build fails on a link to a page that does not exist;
 # docs-lint holds the pages to the rules of site/.markdownlint-cli2.jsonc,
 # checks every link of the built site down to its fragment, and the images
-# of docs/images against their budget.
+# of docs/images against their budget. docs-test runs every test of the site,
+# those of test-scripts among them and those that need its packages.
 site/node_modules: site/package.json site/package-lock.json
 	cd site && npm ci --ignore-scripts || { rm -rf node_modules; exit 1; }
 	@touch site/node_modules
@@ -114,6 +115,9 @@ docs-lint: docs
 	cd site && npm run lint
 	node site/scripts/anchors.mjs
 	node site/scripts/image-budget.mjs
+
+docs-test: site/node_modules
+	cd site && npm test
 
 # Builds the interface and the .deb files without a tag and without publishing
 # or signing anything, and the appliance template where mmdebstrap is

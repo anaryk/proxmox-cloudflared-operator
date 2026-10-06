@@ -3,9 +3,7 @@ import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { defineConfig, type DefaultTheme } from 'vitepress'
 
-import { themedImages } from './markdown/images.ts'
-import { mermaidFences } from './markdown/mermaid.ts'
-import { slugify } from './markdown/slug.mjs'
+import { markdown } from './markdown/options.ts'
 
 const repository = 'https://github.com/anaryk/proxmox-cloudflared-operator'
 const docs = fileURLToPath(new URL('../../docs/', import.meta.url))
@@ -163,20 +161,7 @@ export default defineConfig({
   sitemap: { hostname: 'https://anaryk.github.io/proxmox-cloudflared-operator/' },
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: mark('#ea7317') }]],
 
-  // The pages are written for GitHub and read as plain text in the package:
-  // ids as GitHub makes them, and no HTML or attribute syntax of their own,
-  // so that a <name> at the start of a line is text, as it is on GitHub,
-  // and not a tag that would end the paragraph.
-  markdown: {
-    html: false,
-    anchor: { slugify },
-    attrs: false,
-    image: { lazyLoad: true },
-    config(md) {
-      md.use(mermaidFences)
-      md.use(themedImages)
-    },
-  },
+  markdown,
 
   vite: {
     plugins: [packagesOfSite()],
