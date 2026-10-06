@@ -33,14 +33,17 @@ test:
 scale:
 	go test -tags nomsgpack,scale -run 'TestScale|TestDefaultLimiter|TestDiskCost' -count=1 -v -timeout 10m ./test/scale/
 
+# check-refs.sh fails on a citation of notes that are not in the repository.
 lint:
 	golangci-lint run
+	bash scripts/check-refs.sh
 
 fmt:
 	golangci-lint fmt
 
 test-scripts:
 	bash scripts/install_test.sh
+	bash scripts/check-refs_test.sh
 	bash packaging/release-key_test.sh
 	bash packaging/is-latest_test.sh
 	bash packaging/check-artifacts_test.sh
