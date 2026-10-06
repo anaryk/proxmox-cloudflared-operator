@@ -23,6 +23,12 @@ import (
 
 var update = flag.Bool("update", false, "write the golden files of the tests")
 
+// What asking dpkg for the installed version runs, as a transcript line.
+const (
+	queryPco         = "dpkg-query --show --showformat=${db:Status-Want} ${db:Status-Status} ${db:Status-Eflag} ${Version} pco\n"
+	queryCloudflared = "dpkg-query --show --showformat=${db:Status-Want} ${db:Status-Status} ${db:Status-Eflag} ${Version} cloudflared\n"
+)
+
 // fakeRunner is a host that runs nothing: do answers every command, and every
 // command line is remembered.
 type fakeRunner struct {
@@ -164,7 +170,7 @@ func (h *fakeHost) do(name string, args ...string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("dpkg-query: exit status 1: no packages found matching %s", pkg)
 		}
-		return "ii " + v, nil
+		return "hold installed ok " + v, nil
 	case name == "apt-get":
 		return "", h.aptErr
 	case name == "apt-mark":

@@ -117,7 +117,7 @@ func TestABadSignatureStopsBeforeThePackageIsDownloaded(t *testing.T) {
 
 	require.ErrorIs(t, err, ErrSignature)
 	require.Equal(t, []string{"latest", "get v1.2.4/checksums.txt", "get v1.2.4/checksums.txt.sig"}, r.fetch.asked)
-	require.Equal(t, "dpkg-query --show --showformat=${db:Status-Abbrev}${Version} pco\n", r.transcript(), "apt-get is not run")
+	require.Equal(t, queryPco, r.transcript(), "apt-get is not run")
 	r.noDownloadsLeft()
 }
 
@@ -140,7 +140,7 @@ func TestAPackageThatDoesNotMatchItsChecksumIsNotInstalled(t *testing.T) {
 
 	require.ErrorContains(t, err, "the sha256 of pco_1.2.4_amd64.deb is "+sum("a package changed on the way")+
 		", but checksums.txt of release v1.2.4 says "+sum(debNew))
-	require.Equal(t, "dpkg-query --show --showformat=${db:Status-Abbrev}${Version} pco\n", r.transcript(), "apt-get is not run")
+	require.Equal(t, queryPco, r.transcript(), "apt-get is not run")
 	r.noDownloadsLeft()
 }
 
@@ -225,7 +225,7 @@ func TestAVersionBelowOrAtTheInstalledOneIsRefused(t *testing.T) {
 			require.ErrorContains(t, err, "pco 1.2.3 is installed, and ")
 			require.ErrorContains(t, err, "--rollback goes back to the package the last upgrade kept")
 			require.Empty(t, r.fetch.asked)
-			require.Equal(t, "dpkg-query --show --showformat=${db:Status-Abbrev}${Version} pco\n", r.transcript())
+			require.Equal(t, queryPco, r.transcript())
 		})
 	}
 }
@@ -284,7 +284,7 @@ func TestACheckChangesNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, Result{Package: "pco", Installed: "1.2.3", Target: "1.2.4", Release: "1.2.4"}, res)
 	require.Equal(t, []string{"latest"}, r.fetch.asked)
-	require.Equal(t, "dpkg-query --show --showformat=${db:Status-Abbrev}${Version} pco\n", r.transcript())
+	require.Equal(t, queryPco, r.transcript())
 }
 
 func TestAnUpgradeThatWasNotConfirmedChangesNothing(t *testing.T) {
@@ -304,12 +304,45 @@ func TestAPackageThatIsNotInstalledIsNoUpgrade(t *testing.T) {
 	_, err := r.u.Pco(t.Context(), Options{Yes: true})
 
 	require.ErrorContains(t, err, "asking dpkg for the version of pco: dpkg-query: exit status 1: no packages found matching pco")
+}
 
-	r.host.installed["pco"] = "1.2.3"
-	for _, out := range []string{"rc 1.2.3", "iU 1.2.3", "ii", ""} {
-		r.run.do = func(string, ...string) (string, error) { return out, nil }
-		_, err = r.u.Pco(t.Context(), Options{Yes: true})
-		require.ErrorContains(t, err, "pco is not installed and configured: dpkg says", out)
+// What dpkg-query says of a package, as want, status, error flag and
+// version: on the appliance pco and cloudflared are held.
+func TestThePackageIsTakenInTheStatesDpkgCallsInstalled(t *testing.T) {
+	for _, tt := range []struct{ out, refusal string }{
+		{"hold installed ok 1.2.3", ""},
+		{"install installed ok 1.2.3", ""},
+		{"hold installed ok 1.2.3\n", ""},
+		{"deinstall installed ok 1.2.3", "pco is installed but selected for deinstall: apt-mark hold pco selects it again"},
+		{"hold installed reinstreq 1.2.3", "pco needs to be reinstalled, dpkg says: apt-get install --reinstall pco"},
+		{"hold unpacked ok 1.2.3", "pco is unpacked but not configured: a dpkg run did not finish, and dpkg --configure -a finishes it"},
+		{"hold half-configured ok 1.2.3", "pco is half-configured: a dpkg run did not finish, and dpkg --configure -a finishes it"},
+		{"hold half-installed ok 1.2.3", "pco is half-installed: a dpkg run did not finish, and dpkg --configure -a finishes it"},
+		{"hold triggers-awaited ok 1.2.3", "pco is waiting for triggers: a dpkg run did not finish, and dpkg --configure -a finishes it"},
+		{"hold triggers-pending ok 1.2.3", "pco is waiting for triggers: a dpkg run did not finish, and dpkg --configure -a finishes it"},
+		{"deinstall config-files ok 1.2.3", "pco is removed; only its configuration files are left"},
+		{"unknown not-installed ok ", "dpkg says \"unknown not-installed ok\" of pco, not its state and version"},
+		{"hold installed ok", "dpkg says \"hold installed ok\" of pco, not its state and version"},
+		{"", "dpkg says \"\" of pco, not its state and version"},
+	} {
+		t.Run(tt.out, func(t *testing.T) {
+			r := newRig(t)
+			r.run.do = func(name string, args ...string) (string, error) {
+				if name == "dpkg-query" {
+					return tt.out, nil
+				}
+				return r.host.do(name, args...)
+			}
+
+			res, err := r.u.Pco(t.Context(), Options{Check: true})
+
+			if tt.refusal == "" {
+				require.NoError(t, err)
+				require.Equal(t, "1.2.3", res.Installed)
+				return
+			}
+			require.EqualError(t, err, tt.refusal)
+		})
 	}
 }
 

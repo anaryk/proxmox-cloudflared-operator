@@ -64,7 +64,7 @@ func TestADeniedCloudflaredIsRefused(t *testing.T) {
 
 	require.EqualError(t, err, "cloudflared 2026.9.0 is denied: cloudflare/cloudflared#1737")
 	require.Empty(t, r.fetch.asked)
-	require.Equal(t, "dpkg-query --show --showformat=${db:Status-Abbrev}${Version} cloudflared\n", r.transcript())
+	require.Equal(t, queryCloudflared, r.transcript())
 	require.Zero(t, s.calls)
 }
 

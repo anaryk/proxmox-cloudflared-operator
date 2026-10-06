@@ -49,7 +49,7 @@ func (h *upgradeHost) Run(_ context.Context, name string, args ...string) (strin
 	h.ran = append(h.ran, strings.Join(append([]string{name}, args...), " "))
 	switch name {
 	case "dpkg-query":
-		return "ii " + h.installed[args[len(args)-1]], nil
+		return "hold installed ok " + h.installed[args[len(args)-1]], nil
 	case "apt-get", "apt-mark":
 		return "", nil
 	}

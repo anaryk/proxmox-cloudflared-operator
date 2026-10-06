@@ -139,21 +139,45 @@ func (u *Upgrader) Lock() (func(), error) {
 	return func() { _ = f.Close() }, nil
 }
 
-// installed returns the version of an installed package as dpkg names it.
+// installed returns the version of an installed package as dpkg names it. A
+// package the appliance keeps is held, which dpkg says as its want; its
+// status must be installed, with no error flag.
 func (u *Upgrader) installed(ctx context.Context, pkg string) (string, error) {
-	out, err := u.run.Run(ctx, "dpkg-query", "--show", "--showformat=${db:Status-Abbrev}${Version}", pkg)
+	out, err := u.run.Run(ctx, "dpkg-query", "--show",
+		"--showformat=${db:Status-Want} ${db:Status-Status} ${db:Status-Eflag} ${Version}", pkg)
 	if err != nil {
 		return "", fmt.Errorf("asking dpkg for the version of %s: %w", pkg, err)
 	}
-	status, version, ok := strings.Cut(strings.TrimSpace(out), " ")
-	if !ok || status != "ii" {
-		return "", fmt.Errorf("%s is not installed and configured: dpkg says %q of it", pkg, shorten(status))
+	fields := strings.Fields(out)
+	if len(fields) != 4 {
+		return "", fmt.Errorf("dpkg says %q of %s, not its state and version", shorten(strings.TrimSpace(out)), pkg)
 	}
-	version = strings.TrimSpace(version)
+	want, status, eflag, version := fields[0], fields[1], fields[2], fields[3]
+	switch {
+	case eflag != "ok":
+		return "", fmt.Errorf("%s needs to be reinstalled, dpkg says: apt-get install --reinstall %s", pkg, pkg)
+	case status == "config-files":
+		return "", fmt.Errorf("%s is removed; only its configuration files are left", pkg)
+	case status != "installed":
+		return "", fmt.Errorf("%s is %s: a dpkg run did not finish, and dpkg --configure -a finishes it", pkg, unfinished(status))
+	case want != "install" && want != "hold":
+		return "", fmt.Errorf("%s is installed but selected for %s: apt-mark hold %s selects it again", pkg, shorten(want), pkg)
+	}
 	if err := checkPackageVersion(version); err != nil {
 		return "", fmt.Errorf("dpkg names the version of %s: %w", pkg, err)
 	}
 	return version, nil
+}
+
+// unfinished says what a status of dpkg other than installed means.
+func unfinished(status string) string {
+	switch status {
+	case "unpacked":
+		return "unpacked but not configured"
+	case "triggers-awaited", "triggers-pending":
+		return "waiting for triggers"
+	}
+	return shorten(status)
 }
 
 // install installs a .deb over the held package, allowing a lower version
