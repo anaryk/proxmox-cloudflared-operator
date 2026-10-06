@@ -55,6 +55,7 @@ func (unsupported) delRule(side, rule) error                      { return errNo
 func (unsupported) neighbours(string) ([]neighbour, error)        { return nil, errNotLinux }
 func (unsupported) setNeighbour(string, neighbour) error          { return errNotLinux }
 func (unsupported) delNeighbour(string, netip.Addr) error         { return errNotLinux }
+func (unsupported) flushZone(int) error                           { return errNotLinux }
 func (unsupported) addSticky(string, net.HardwareAddr, int) error { return errNotLinux }
 
 func (unsupported) addVeth(string, net.HardwareAddr, string, net.HardwareAddr, int) error {

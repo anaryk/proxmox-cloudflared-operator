@@ -177,6 +177,12 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 		if err := b.removePair(l.Mark); err != nil {
 			return st, err
 		}
+		// The flows of the old network are in the zone of the mark. A zone
+		// that cannot be flushed is said and leaves the Sync as it is: the
+		// pair is gone, so a next Sync would not try again.
+		if err := b.sys.flushZone(l.Mark); err != nil {
+			b.log.Warn().Err(err).Str("leg", iface).Int("zone", l.Mark).Msg("the conntrack entries of the old network could not be removed")
+		}
 	}
 	if err := b.ensurePair(port, bridgeEndMAC(l.MAC), iface, l.MAC, mtu); err != nil {
 		return st, err

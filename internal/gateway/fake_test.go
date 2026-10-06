@@ -60,6 +60,8 @@ type fakeNet struct {
 	// learned are the neighbours the kernel learned: not permanent, so
 	// neighbours does not list them, and only a new device drops them.
 	learned map[string][]neighbour
+	// ct counts the conntrack entries of each zone.
+	ct map[int]int
 }
 
 type fakeLink struct {
@@ -72,7 +74,7 @@ type fakeLink struct {
 func newFakeNet() *fakeNet {
 	n := &fakeNet{
 		links: map[string]*fakeLink{}, sysctls: map[string]string{},
-		addrs: map[string][]address{}, neigh: map[string][]neighbour{}, learned: map[string][]neighbour{},
+		addrs: map[string][]address{}, neigh: map[string][]neighbour{}, learned: map[string][]neighbour{}, ct: map[int]int{},
 	}
 	n.links["lo"] = &fakeLink{link: link{name: "lo", kind: "loopback", mtu: 65536}}
 	return n
@@ -523,6 +525,14 @@ func (f *fakeSystem) delNeighbour(dev string, a netip.Addr) error {
 		return err
 	}
 	f.ns.neigh[dev] = slices.DeleteFunc(f.ns.neigh[dev], func(o neighbour) bool { return o.addr == a })
+	return nil
+}
+
+func (f *fakeSystem) flushZone(zone int) error {
+	if err := f.change("conntrack flush zone %d", zone); err != nil {
+		return err
+	}
+	delete(f.ns.ct, zone)
 	return nil
 }
 

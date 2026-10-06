@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -334,7 +335,8 @@ func TestALegWhoseBridgeEndLostItsPeerIsMadeAgain(t *testing.T) {
 // more, and the address would be tried there until the entry ages out. The
 // pair is made anew, which leaves no neighbour, puts the port in the VLAN of
 // the new network and makes the address go through duplicate-address
-// detection in its new bridge.
+// detection in its new bridge; the conntrack entries of the mark's zone go
+// with it.
 func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 	stale := neighbour{addr: addr("10.50.0.10"), mac: mac("bc:24:11:00:00:01")}
 	moved := func(l Leg, f func(*Leg)) Leg {
@@ -369,19 +371,23 @@ func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 			h.sync(t, []Leg{tt.from}, nil, nil, nil)
 			iface := tt.from.Iface()
 			h.sys.ns.learned[iface] = []neighbour{stale}
+			h.sys.ns.ct[tt.from.Mark] = 3
 			h.reset()
 
 			states := h.sync(t, []Leg{tt.to}, nil, nil, nil)
 			require.True(t, states[0].Up, states[0].Problem)
 			if !tt.recreated {
 				require.Equal(t, []neighbour{stale}, h.sys.ns.learned[iface], "the leg is where it was")
+				require.Equal(t, 3, h.sys.ns.ct[tt.from.Mark], "so are its flows")
 				require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "del host")
 				return
 			}
 			require.Empty(t, h.sys.ns.learned[iface], "the neighbours of the old network are gone")
+			require.Zero(t, h.sys.ns.ct[tt.to.Mark], "so are the flows of its zone")
 			c := h.sys.changes()
 			port := bridgePort(tt.to.Mark)
 			require.Less(t, index(t, c, "del host "+port), index(t, c, "veth "+port), "the pair is made anew")
+			require.Less(t, index(t, c, "del host "+port), index(t, c, "conntrack flush zone "+strconv.Itoa(tt.to.Mark)))
 			require.Equal(t, tt.to.Bridge, h.sys.host.links[port].master)
 			if tt.vlans != nil {
 				require.Equal(t, tt.vlans, h.sys.host.links[port].vlans)
@@ -431,6 +437,18 @@ func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 		h.reset()
 		h.sync(t, []Leg{untagged}, nil, nil, nil)
 		require.Empty(t, h.sys.changes())
+	})
+
+	t.Run("a failed flush of the conntrack zone does not fail the Sync", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.sys.bridge("vmbr3", false, 1500, "eno3")
+		h.up(t)
+		h.sync(t, []Leg{legA}, nil, nil, nil)
+		h.sys.fail["conntrack flush"] = errors.New("no conntrack netlink")
+		to := moved(legA, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" })
+		states := h.sync(t, []Leg{to}, nil, nil, nil)
+		require.True(t, states[0].Up, states[0].Problem)
+		require.Equal(t, "vmbr3", h.sys.host.links["vethpco1"].master)
 	})
 
 	t.Run("a bridge end that lost its bridge and whose prefix changed is a move", func(t *testing.T) {

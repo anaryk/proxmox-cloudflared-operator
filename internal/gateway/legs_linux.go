@@ -147,6 +147,21 @@ func (s *linuxSystem) setIsolated(name string, isolated bool) error {
 	return s.withLink(onHost, name, func(h *netlink.Handle, l netlink.Link) error { return h.LinkSetIsolated(l, isolated) })
 }
 
+// flushZone removes the IPv4 conntrack entries of a zone of the namespace:
+// the flows through the leg whose mark is the zone.
+func (s *linuxSystem) flushZone(zone int) error {
+	h, _, err := s.handles(inNS)
+	if err != nil {
+		return err
+	}
+	var f netlink.ConntrackFilter
+	if err := f.AddZone(uint16(zone)); err != nil {
+		return err
+	}
+	_, err = h.ConntrackDeleteFilters(netlink.ConntrackTable, unix.AF_INET, &f)
+	return err
+}
+
 func (s *linuxSystem) portVLANs(port string) ([]portVLAN, error) {
 	h, _, err := s.handles(onHost)
 	if err != nil {

@@ -263,6 +263,9 @@ type system interface {
 	setNeighbour(dev string, n neighbour) error
 	delNeighbour(dev string, addr netip.Addr) error
 
+	// flushZone removes the conntrack entries of a zone of the namespace.
+	flushZone(zone int) error
+
 	// arpProbe sends probes for addr with the sender 0.0.0.0 through an
 	// interface of the namespace and returns the MACs that claim it within
 	// the window.

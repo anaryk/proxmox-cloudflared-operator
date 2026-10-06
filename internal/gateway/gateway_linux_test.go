@@ -23,6 +23,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
+	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
@@ -565,16 +566,35 @@ func TestLinuxAMarkThatMovesToAnotherBridgeReachesTheGuestThere(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(got, "a "), got)
 	require.Contains(t, neighbour(), "10.50.0.10 lladdr "+macA, "the namespace learned the guest of br1")
+	require.Positive(t, l.zoneFlows(t, 1), "the flow of the request is in the zone of the mark")
 
 	states, err = l.b.Sync(t.Context(), []Leg{leg("br3")}, services("br3"), nil, nil)
 	require.NoError(t, err)
 	require.True(t, states[0].Up, states[0].Problem)
 	require.NotContains(t, neighbour(), macA, "nothing of br1 is kept")
+	require.Zero(t, l.zoneFlows(t, 1), "nor are the flows of its zone")
 	got, err = get(l.host, "198.18.1.1:80", nil, 2*time.Second)
 	require.NoError(t, err, "the guest of br3 answers, not the MAC learned in br1")
 	require.True(t, strings.HasPrefix(got, "c "), got)
 	require.Contains(t, neighbour(), "10.50.0.10 lladdr "+macC)
 	require.NoError(t, l.b.Verify(t.Context()))
+}
+
+// zoneFlows counts the IPv4 conntrack entries of a zone of the gateway
+// namespace.
+func (l *labNet) zoneFlows(t *testing.T, zone int) int {
+	t.Helper()
+	h, _, err := l.sys.handles(inNS)
+	require.NoError(t, err)
+	flows, err := h.ConntrackTableList(netlink.ConntrackTable, unix.AF_INET)
+	require.NoError(t, err)
+	n := 0
+	for _, f := range flows {
+		if int(f.Zone) == zone {
+			n++
+		}
+	}
+	return n
 }
 
 // ifindexOf is the index of an interface of the namespace ns: it changes when
@@ -632,6 +652,7 @@ func TestLinuxAMarkThatMovesFromAVLANToTheUntaggedNetworkReachesTheGuestThere(t 
 	vlans := l.portVLANsOf(t, "vethpco1")
 	require.Contains(t, vlans, "1 PVID Egress Untagged")
 	require.NotContains(t, vlans, "20", "the tag of the old network is gone")
+	require.Zero(t, l.zoneFlows(t, 1), "so are the flows of its zone")
 	got, err = get(l.host, "198.18.1.1:80", nil, 2*time.Second)
 	require.NoError(t, err, "the untagged guest answers")
 	require.True(t, strings.HasPrefix(got, "u "), got)
