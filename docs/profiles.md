@@ -10,6 +10,39 @@ The profile of an install is recorded when it is made, and `pco status` shows it
 
 ## Side by side
 
+Where the parts of pco run in each profile, and how each reaches Proxmox and the guests:
+
+```mermaid
+flowchart TB
+    subgraph host["Host profile: on the node"]
+        hdaemon["pco.service, as root"]
+        hstore[("Store: /etc/pve/pco, /var/lib/pco")]
+        hconn["pco-cloudflared@ units, as pco-connector"]
+        hfilter["Egress table in the nftables of the node"]
+        hpve["Proxmox API"]
+        hguests["Bridges and guests"]
+        hdaemon --> hstore
+        hdaemon -->|"read-only token"| hpve
+        hdaemon -->|"ARP, forwarding table"| hguests
+        hconn --> hfilter --> hguests
+    end
+    subgraph appliance["Appliance profile: in a container"]
+        subgraph ct["Unprivileged LXC container"]
+            adaemon["pco daemon"]
+            astore[("Store: a volume of the container")]
+            aconn["Connectors"]
+            afilter["Egress table of the container"]
+        end
+        apve["Proxmox API"]
+        aguests["Bridges and guests"]
+        adaemon --> astore
+        adaemon -->|"scoped token"| apve
+        adaemon -->|"ARP, its own cards"| aguests
+        aconn --> afilter -->|"the container's cards"| aguests
+    end
+    host ~~~ appliance
+```
+
 | | Host (this release) | Appliance (a later release) |
 |---|---|---|
 | Where pco and cloudflared run | systemd units on the node | an unprivileged LXC container with nesting enabled |
@@ -21,11 +54,12 @@ The profile of an install is recorded when it is made, and `pco status` shows it
 | Store | `/etc/pve/pco`, on the cluster filesystem | a volume of the container |
 | Control-plane failover | planned for clusters: a lease on the cluster filesystem, automatic | planned: a Proxmox HA resource, or restore and promote |
 | Data-path availability | one connector on the one node; a connector for each node is planned for clusters | the same |
-| Sign-in to a web interface | there is no web interface yet; the Proxmox ticket is planned | planned: its own sign-in |
+| Sign-in to a web interface | the ticket of the Proxmox web interface, or a Proxmox API token | planned: its own sign-in |
 
 The rows that say planned are direction, not behaviour: nothing in this release does them.
-In this release pco runs on one node, has a command line and no web interface, and does not
-attach network cards to guests or manage a network of its own.
+In this release pco runs on one node, has a command line and a web interface, and does not
+attach network cards to guests or manage a network of its own. [Architecture](architecture.md)
+describes the parts of the host profile.
 
 ## What they share
 

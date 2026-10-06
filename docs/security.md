@@ -5,6 +5,71 @@ and what each protection stops. It is written for the person who decides whether
 pco on a node, and who would like to know where the limits are before an incident shows
 them.
 
+## Trust boundaries
+
+pco reads what several kinds of people and programs can write, and trusts none of it more than
+its writer. Who can write what pco acts on:
+
+```mermaid
+flowchart LR
+    subgraph writers["Who"]
+        admin["Proxmox admin: Sys.Modify on /"]
+        options["Proxmox user with VM.Config.Options on a guest"]
+        network["Proxmox user with VM.Config.Network on a guest"]
+        cloner["Proxmox user with VM.Clone on a tagged guest and VM.Allocate"]
+        guestroot["Root in a guest"]
+        root["Root on the node"]
+        token["Whoever holds a Cloudflare token with Tunnel and DNS Edit"]
+    end
+    subgraph proxmox["Proxmox VE"]
+        tag["The gate tag, registered"]
+        notes["The Notes"]
+        card["The MAC and static address of a card"]
+        clone["A clone that carries the tag and the Notes"]
+    end
+    subgraph wire["The guest's network"]
+        agent["The addresses the agent reports, the ARP answers"]
+    end
+    subgraph pco["pco"]
+        settings["Settings, approvals, segments, manual routes"]
+    end
+    subgraph cloudflare["Cloudflare"]
+        config["The tunnel configuration and the DNS records"]
+        runtoken["The run token of the tunnel"]
+    end
+    admin --> tag
+    admin -->|"web interface"| settings
+    options --> notes
+    network --> card
+    cloner --> clone
+    guestroot --> agent
+    root -->|"pco command"| settings
+    token --> config
+    token -->|"reads"| runtoken
+```
+
+None of these is taken as proof by itself: the tag says that a guest may publish, the Notes say
+what it asks for, and an address is served only once [Identity](identity.md) has shown on the
+network of the node that it is the guest's. Against each attacker stands one of the defences
+this page describes:
+
+```mermaid
+flowchart LR
+    device["A device on the uplink"] -->|"answers for a guest's address"| proof["Identity: ARP and the forwarding table"]
+    otherguest["Root in another guest of this node"] -->|"forges frames"| proof
+    netuser["A user with VM.Config.Network"] -->|"copies a MAC or sets a static address"| proof
+    cloneuser["A user with VM.Clone"] -->|"clones a tagged guest"| approval["Admission mode approve"]
+    noteuser["A user who edits the Notes"] -->|"names an apex, a wildcard, many names"| policy["allowHosts, denyHosts, maxHostnamesPerGuest"]
+    noteuser -->|"names a name another guest holds"| claims["Claims: the first holder keeps it"]
+    anyguest["Any guest"] -->|"names the address of the node"| deny["Denylist"]
+    stolen["A stolen Cloudflare token"] -->|"points a rule at the node or another host"| egress["Egress filter"]
+    stolen -->|"runs a connector of its own"| rogue["Reported, pco tunnel rotate"]
+    stolen -->|"writes a newer sentinel"| writer["Writer verdict foreign: pco stops writing"]
+```
+
+How far each holds, and at which identity level, is the rest of this page; the
+[table of the five attackers](#identity-levels-against-five-attackers) is the short form.
+
 ## What runs with which rights
 
 | Part | Runs as | Can |
@@ -273,6 +338,34 @@ priority -10, after connection tracking and the destination NAT, before the filt
 of the Proxmox firewall, and it applies only to packets of sockets that belong to the user
 `pco-connector`. The uid is looked up by name, because it differs from node to node. Every
 other process is untouched.
+
+The decision the filter makes for a packet that leaves the node, from the first question to
+the last:
+
+```mermaid
+flowchart TB
+    packet["A packet leaves a process on the node"] --> user{{"Its socket of pco-connector?"}}
+    user -->|"no"| untouched["Not looked at"]
+    user -->|"yes"| invalid{{"Invalid connection state?"}}
+    invalid -->|"no"| reply{{"A reply of a TCP connection to an address of the node?"}}
+    invalid -->|"yes"| drop["Dropped"]
+    reply -->|"yes"| a1["Accepted"]
+    reply -->|"no"| blocked{{"On the block list of this node?"}}
+    blocked -->|"no"| resolver{{"A resolver of the node, port 53?"}}
+    blocked -->|"yes"| r1["Rejected"]
+    resolver -->|"yes"| a2["Accepted"]
+    resolver -->|"no"| allownode{{"A target of a manual route with allowNode?"}}
+    allownode -->|"no"| local{{"Any other address of the node?"}}
+    allownode -->|"yes"| a3["Accepted"]
+    local -->|"yes"| r2["Rejected and counted"]
+    local -->|"no"| target{{"A verified target, address and port?"}}
+    target -->|"no"| edge{{"Port 7844 of a public unicast address?"}}
+    target -->|"yes"| a4["Accepted"]
+    edge -->|"yes"| a5["Accepted: Cloudflare's edge"]
+    edge -->|"no"| dot{{"TCP port 853 of 1.1.1.1 or 1.0.0.1?"}}
+    dot -->|"no"| r3["Rejected and counted"]
+    dot -->|"yes"| a6["Accepted: DNS over TLS"]
+```
 
 For a connector's packet the chain does the following, in this order, and the first rule
 that matches decides:

@@ -8,6 +8,41 @@ What gets parsed decides what is published, so doubt is an error: anything that 
 not clearly a route is reported, and the entry it belongs to is dropped. The other
 entries are not affected.
 
+## From Notes to a published hostname
+
+The gates a hostname in the Notes passes, in this order and in every cycle of the daemon,
+before it is written at Cloudflare, each with where the hostname stops when it fails it:
+
+~~~mermaid
+flowchart TB
+    guest["A guest and its Notes"] --> tag{{"Gate tag, and not a template?"}}
+    tag -->|"no"| unread["Not read"]
+    tag -->|"yes"| parse{{"Parsed as a route?"}}
+    parse -->|"yes"| policy{{"Let through by allowHosts, denyHosts, maxHostnamesPerGuest?"}}
+    parse -->|"no"| issue["An issue: the entry is dropped, its hostnames stay reserved"]
+    policy -->|"no"| refused["An issue: not published"]
+    policy -->|"yes"| admission{{"Admitted: mode tag, or the guest approved?"}}
+    admission -->|"yes"| named{{"Not an apex or a wildcard that allowHosts leaves out?"}}
+    admission -->|"no"| waits["Waits for approval: a hostname it holds answers 503"]
+    named -->|"no"| rejected["rejected: no claim"]
+    named -->|"yes"| zone{{"In a zone a credential serves?"}}
+    zone -->|"yes"| claim{{"Held by no other guest?"}}
+    zone -->|"no"| nozone["no-zone"]
+    claim -->|"no"| conflict["conflict: serves nothing"]
+    claim -->|"yes"| identity{{"Address proven, at identityMinimum or above?"}}
+    identity -->|"yes"| mode{{"Enforce mode, after pco apply?"}}
+    identity -->|"no"| blocked["unreachable or withdrawn: a rule that answers 503"]
+    mode -->|"no"| shown["Observe-only: shown by pco plan, nothing written"]
+    mode -->|"yes"| published["Written at Cloudflare: the hostname answers"]
+~~~
+
+The gate tag and the parse are this page. The hostname policy, `allowHosts` and the limit are
+in [Operations](operations.md#settings), admission and approval in
+[Security](security.md#approval-mode), the claims
+[below](#hostnames-belong-to-one-guest-at-a-time), and the proof of the address in
+[Identity](identity.md). [Architecture](architecture.md#the-reconcile-cycle) shows the cycle
+these steps belong to.
+
 ## Where routes are read
 
 pco reads the Notes of every guest that carries the gate tag, `cf-tunnel` unless the

@@ -312,3 +312,40 @@ The token is stored in `/etc/pve/priv/pco/credentials/<id>.json`, a place that P
 makes readable by root alone, and on a cluster replicates to every node. The daemon never
 returns it through its socket and never writes it to a log; pco prints and encodes it as
 `[redacted]`. [Security](security.md) has the full list of secrets and where they live.
+
+The token you give pco is not the one a connector runs with. Each token, what it is used for
+and where it is kept:
+
+```mermaid
+flowchart TB
+    subgraph priv["/etc/pve/priv/pco: root only, on every node of the cluster"]
+        apitoken["Cloudflare API token: one file in credentials/ for each credential"]
+        pvetoken["Proxmox API token pco@pve!pco: meta/pve-token.json"]
+    end
+    daemon(["pco daemon"])
+    subgraph local["/var/lib/pco/tunnels: this node, mode 0600"]
+        runtoken["Run token of each tunnel: one .token file for each"]
+    end
+    cfapi["Cloudflare API"]
+    pveapi["Proxmox API"]
+    connector["Connector, user pco-connector"]
+    edge["Cloudflare edge"]
+    apitoken --> daemon
+    pvetoken --> daemon
+    daemon -->|"zones, tunnel, configuration, records"| cfapi
+    cfapi -->|"the run token of the tunnel"| daemon
+    daemon -->|"reads the guests"| pveapi
+    daemon -->|"writes"| runtoken
+    runtoken -->|"systemd credential"| connector
+    connector -->|"opens the tunnel"| edge
+```
+
+- The **Cloudflare API token** is the one this page is about. The daemon calls the Cloudflare
+  API with it, and so do `pco setup` and `pco uninstall` when they work at Cloudflare
+  themselves.
+- The **run token** is what Cloudflare gives for the tunnel. The daemon reads it with the API
+  token, again every five minutes and when the connector logs that Cloudflare refuses it, and
+  writes it where the connector's unit hands it to `cloudflared` as a systemd credential.
+  Whoever holds it can run a connector for the tunnel; `pco tunnel rotate` replaces it.
+- The **Proxmox API token** lets the daemon read Proxmox and change nothing; see
+  [Security](security.md#what-runs-with-which-rights).

@@ -18,8 +18,9 @@ For each route, pco makes a list of candidate addresses (see below) and verifies
 one at a time. A candidate is served only if all of the following hold.
 
 1. **It is not forbidden.** It is an IPv4 address, not loopback, link-local, multicast,
-   unspecified or broadcast, and not an address of any node of the cluster or of this
-   host. No setting lifts this. See [the denylist](#the-denylist-and-the-node).
+   unspecified or broadcast, not an address of any node of the cluster or of this host,
+   and not the gateway of an SDN subnet. No setting lifts this. See
+   [the denylist](#the-denylist-and-the-node).
 2. **The node reaches it directly.** The node has an address of its own in the guest's
    network, on the interface of the bridge (or of the VLAN) that the guest's network
    card is on, and the kernel sends traffic for the candidate out of that interface,
@@ -57,6 +58,26 @@ A trusted static address behind a router is proven in another way, which replace
 ## The levels
 
 `pco routes` shows the level of each route in the `LEVEL` column.
+
+The levels form a ladder, from the most proof at the top to the least, each with what proves it
+and which routes can reach it:
+
+```mermaid
+flowchart TB
+    subgraph port["port"]
+        portProof["Proof: only the guest answers ARP for the address, and this node's forwarding table has each of its MACs on the guest's own port"]
+        portServes["Reached by a guest on this node. Served at every identityMinimum."]
+    end
+    subgraph filtered["filtered"]
+        filteredProof["Reserved for a network that pins every card to its address. Nothing proves it in this release."]
+    end
+    subgraph observed["observed"]
+        observedProof["Proof: only the guest answers ARP and none of its MACs is on the port of a local guest; or a trusted static address, which only the guest's configuration vouches for"]
+        observedServes["Reached by a guest on another node, or a trusted static address. Served only with identityMinimum observed, and then as the rules at observed allow."]
+    end
+    port -->|"more proof than"| filtered
+    filtered -->|"more proof than"| observed
+```
 
 | Level | What was proven |
 |---|---|
@@ -108,13 +129,47 @@ card and write its Notes can aim a route at any device on the segment whose MAC 
 copy. The table in [Security](security.md) spells out which attacker each level stops.
 Lowering the minimum does not switch off the forwarding-table check of the guests of this
 node: they are still proven at `port` where they can be, and a local guest whose MAC is not
-on its own port still fails. What changes is that routes proven at `observed` are served,
-and the setting is the same for every guest of the install: any guest that is on another
+on its own port still fails. What changes is that routes proven at `observed` are served, as
+far as [the rules at `observed`](#routes-that-wait-for-an-admin) allow, and the setting is
+the same for every guest of the install: any guest that is on another
 node, and any trusted static address, gets the lower proof. If the guests that need
 `observed` are few, the better answer is often to run pco on the node where they live.
 
 `filtered` is accepted as a value, because it is the name of a level the installation
 may have in another profile. On this profile it is treated as `port`.
+
+## Routes that wait for an admin
+
+A proven address can still wait for an admin before it is served. Such a route is
+`unreachable` and its hostname stays claimed and answers 503; `pco routes` says what it waits
+for, `pco guest list` lists its guest among those that wait, and one problem line of
+`pco status` counts the routes held this way.
+
+At `observed`, which is served only while `identityMinimum` is `observed`:
+
+- **The segment.** A route proven by ARP at `observed`, which is the route of a guest on another
+  node, is served only on a segment an admin acknowledged: the bridge and VLAN of the guest's
+  card, named `vmbr0`, or `vmbr0:20` for VLAN 20. `pco segment list` shows the segments that
+  routes were proven on, and `pco segment acknowledge vmbr0:20` serves them from the next cycle.
+  A trusted static address is on no segment and does not wait for one.
+- **The MAC.** The first time an address of a route is verified at `observed`, the MAC it
+  answered from is pinned to the hostname's claim. When the address later answers from another
+  MAC, the route waits until an admin approves the guest, which records the new MAC.
+- **Delegated guests.** When anyone but the admins (`Sys.Modify` on `/`) and pco's own user holds
+  `VM.Config.Network` on the guest, the route waits for an approval of the guest. pco reads the
+  access control of Proxmox every minute; while the last read that worked is more than five
+  minutes old, or none has worked since the daemon started, every route at `observed` waits for
+  such an approval.
+
+At any level:
+
+- **Gateways and resolvers.** The address of a guest that is the gateway of an interface of a
+  node, or a resolver of a node, is served only once an approval of the guest names it. Such an
+  address stays on the list for 30 days after pco last saw it in that role.
+
+`pco guest approve <guest>` shows what the approval records before it asks: the MACs and the
+addresses. It releases these routes in either admission mode; [Security](security.md#approval-mode)
+says what else an approval does.
 
 ## Candidates and their order
 
@@ -149,6 +204,26 @@ is withdrawn.
 the remembered address is tried first, and then the first candidate that passes at the
 highest level is used.
 
+How pco finds the address of a route, leaving out the two minutes for which a newly bound
+address, or a bound one whose port fails, is kept as it is:
+
+```mermaid
+flowchart TB
+    start["A route that holds its hostname"] --> listed{{"Guest listed and running?"}}
+    listed -->|"no"| gone["Not served: an address bound before is withdrawn"]
+    listed -->|"yes"| list["List the candidates, the remembered address first: the address the route names, else those of its card or of every card, static before reported"]
+    list --> try["Prove the next candidate: steps 1 to 5"]
+    try -->|"proven at port"| serve["Take the candidate proven highest"]
+    try -->|"proven lower, or failed"| left{{"Another of the first 16?"}}
+    left -->|"yes"| try
+    left -->|"no"| any{{"Any proven?"}}
+    any -->|"no"| none["No address: unreachable, with the reason the first candidate failed"]
+    any -->|"yes"| serve
+    serve --> dial{{"Does the port answer in two seconds?"}}
+    dial -->|"yes"| active["Served at the level of its proof"]
+    dial -->|"no"| unreachable["Kept as the target, shown as unreachable"]
+```
+
 ## When a check fails
 
 A route that was verified and then fails its identity check is withdrawn: its rule
@@ -176,7 +251,8 @@ These addresses are never published, for any route, whatever it says:
 - the address of any node of the cluster, as Proxmox reports it, and every address
   configured on an interface of a node. The addresses are saved on the node, so that a
   node that is offline still counts with the addresses it had.
-- an address configured on an interface of this host.
+- an address configured on an interface of this host;
+- the gateway of an SDN subnet, as Proxmox lists it.
 
 The reason is the node itself. Without this rule a guest could write the address of the
 hypervisor into its Notes and publish the Proxmox web interface on port 8006. A guest

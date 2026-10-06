@@ -21,6 +21,56 @@ by what it found: 1 when `pco.service` does not run or another of these checks f
 there are warnings only, as for a daemon that is still starting. Run it again once the
 daemon answers.
 
+## A hostname does not answer
+
+Where to look when a published hostname does not answer, from what the visitor gets to the
+section of this page that deals with it. When the name does not resolve:
+
+```mermaid
+flowchart TB
+    start["The name does not resolve"] --> mode{{"pco status: Mode observe-only?"}}
+    mode -->|"yes"| observe["Nothing happens: observe-only"]
+    mode -->|"no"| plan{{"pco plan: a record of someone else in the way?"}}
+    plan -->|"no"| routes{{"pco routes: is the route unreachable?"}}
+    plan -->|"yes"| adopt["Records in the way, and pco adopt"]
+    routes -->|"yes"| unreachable["A route is unreachable"]
+    routes -->|"no"| held["A route is held, withdrawn or in conflict"]
+```
+
+When it resolves, by what the visitor gets, an empty 503 or 404 being the tunnel's own answer:
+
+```mermaid
+flowchart LR
+    answer{{"The name resolves, and the visitor gets"}}
+    answer -->|"1033"| doctor["Reading pco doctor: cloudflared, outbound, connector"]
+    answer -->|"503"| routes{{"pco routes: the state and the note"}}
+    routes -->|"withdrawn, held, conflict"| held["A route is held, withdrawn or in conflict"]
+    routes -->|"below the minimum"| minimum["A route is held back by the identity minimum"]
+    routes -->|"waits for an admin"| admin["Identity: routes that wait for an admin"]
+    routes -->|"another reason"| unreachable["A route is unreachable"]
+    answer -->|"502"| diagnose{{"pco diagnose: every step passes?"}}
+    diagnose -->|"no"| step["Reading pco diagnose: fix what the failed step names"]
+    diagnose -->|"yes"| egress["A connector cannot reach its target"]
+    answer -->|"404"| verified{{"pco status: the tunnel VERIFIED?"}}
+    verified -->|"no"| writer["The problems of pco status: the writer, rate limits"]
+    verified -->|"yes"| grace["The name left the Notes: its record goes after the grace period"]
+```
+
+The sections the two point at:
+
+- [Nothing happens: observe-only](#nothing-happens-observe-only)
+- [Records in the way, and `pco adopt`](#records-in-the-way-and-pco-adopt)
+- [A route is `unreachable`](#a-route-is-unreachable)
+- [A route is held, withdrawn or in conflict](#a-route-is-held-withdrawn-or-in-conflict)
+- [Reading `pco doctor`](#reading-pco-doctor)
+- [A route is held back by the identity minimum](#a-route-is-held-back-by-the-identity-minimum)
+- [Routes that wait for an admin](identity.md#routes-that-wait-for-an-admin), in Identity
+- [Reading `pco diagnose`](#reading-pco-diagnose)
+- [A connector cannot reach its target](#a-connector-cannot-reach-its-target)
+- [The writer is stale, foreign or unknown](#the-writer-is-stale-foreign-or-unknown) and
+  [Rate limits](#rate-limits)
+- [What a visitor sees](#what-a-visitor-sees), the same in a table
+
 ## Reading `pco status`
 
     Mode:        enforce
