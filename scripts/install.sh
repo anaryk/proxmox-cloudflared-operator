@@ -8,9 +8,9 @@
 # nothing on the node: it unpacks the verified package into a temporary
 # directory, runs `pco appliance install` from there, which makes a container,
 # and removes the directory when that returns. The profile is chosen by
-# --appliance or --profile host|appliance as leading arguments, else by
+# --appliance or --profile host|appliance among the arguments, else by
 # PCO_PROFILE, else, on a terminal, by a question that Enter answers with the
-# host profile. The leading --uninstall, with the appliance profile, runs
+# host profile. --uninstall, with the appliance profile, runs
 # `pco appliance uninstall` in the same way. The other arguments are passed on
 # to the command the script hands over to.
 #
@@ -76,11 +76,11 @@ MAX_VERSION_LENGTH=64
 MAX_SMALL_FILE=1048576
 MAX_PACKAGE_FILE=209715200
 TMP_DIR=
-# What the leading arguments chose: a profile, --uninstall, and how many of the
-# arguments they were.
+# What the arguments chose: a profile, and --uninstall. ARGS are the other
+# arguments, which are passed on.
 CHOSEN=
 UNINSTALL=0
-LEADING=0
+ARGS=()
 PROFILE=host
 # The template file of PCO_TEMPLATE, as an absolute path.
 TEMPLATE_FILE=
@@ -281,22 +281,21 @@ check_profile_name() {
 choose() {
 	check_profile_name "$1" --profile
 	if [[ -n $CHOSEN && $CHOSEN != "$1" ]]; then
-		die "the leading arguments name both profiles, host and appliance"
+		die "the arguments name both profiles, host and appliance"
 	fi
 	CHOSEN=$1
 }
 
-# The profile and --uninstall may lead the arguments, in any order. They are
-# not passed on: LEADING says how many of the arguments they are, for the caller
-# to shift off. An argument of the same name further on belongs to the command
-# the script hands over to.
-leading_options() {
-	LEADING=0
+# The profile and --uninstall are the script's own, wherever they stand among
+# the arguments, and are not passed on: neither pco setup nor pco appliance has
+# a flag of those names, so on they could only fail, after the package is
+# installed. The other arguments go to ARGS as they are.
+own_options() {
+	ARGS=()
 	while [[ $# -gt 0 ]]; do
 		case $1 in
 		--appliance)
 			choose appliance
-			LEADING=$((LEADING + 1))
 			shift
 			;;
 		--profile)
@@ -304,21 +303,19 @@ leading_options() {
 				die "--profile needs a value, host or appliance"
 			fi
 			choose "$2"
-			LEADING=$((LEADING + 2))
 			shift 2
 			;;
 		--profile=*)
 			choose "${1#--profile=}"
-			LEADING=$((LEADING + 1))
 			shift
 			;;
 		--uninstall)
 			UNINSTALL=1
-			LEADING=$((LEADING + 1))
 			shift
 			;;
 		*)
-			return 0
+			ARGS+=("$1")
+			shift
 			;;
 		esac
 	done
@@ -381,7 +378,7 @@ ask_profile() {
 	exec 3<&-
 }
 
-# The leading arguments win over PCO_PROFILE, which wins over the question. The
+# The arguments win over PCO_PROFILE, which wins over the question. The
 # question is for an install on a terminal: --yes takes the default answers and
 # --uninstall has nothing to choose between.
 choose_profile() {
@@ -765,8 +762,9 @@ main() {
 	local repo=${PCO_REPO:-$DEFAULT_REPO}
 	local arch version name base='' verified fpr offline=0 skip=0
 
-	leading_options "$@"
-	shift "$LEADING"
+	own_options "$@"
+	# ${ARGS[@]+...} keeps an empty ARGS from being an unbound variable in bash 3.2.
+	set -- ${ARGS[@]+"${ARGS[@]}"}
 
 	require_root
 	require_pve

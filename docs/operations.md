@@ -372,7 +372,7 @@ reads, and the installer script from the environment it is run in.
 
 | Variable | Read by | Meaning | Default | For production |
 |---|---|---|---|---|
-| `PCO_PROFILE` | `install.sh` | `host` or `appliance`: where pco is installed. `--appliance` and `--profile` as the first arguments win over it. | `host`; on a terminal and without `--yes` the script asks | yes |
+| `PCO_PROFILE` | `install.sh` | `host` or `appliance`: where pco is installed. `--appliance` and `--profile`, wherever they stand among the arguments, win over it. | `host`; on a terminal and without `--yes` the script asks | yes |
 | `PCO_VERSION` | `install.sh` | The release to install, as `1.2.3`. | the latest release | yes |
 | `PCO_REPO` | `install.sh` | The GitHub repository the release comes from, as `owner/name`. | `anaryk/proxmox-cloudflared-operator` | a fork only |
 | `PCO_SKIP_SETUP` | `install.sh` | `1` stops before the hand-over to `pco setup` (host: after the package is installed) or to `pco appliance install` (appliance: after the checks, with nothing installed) and prints the command. | unset | yes |

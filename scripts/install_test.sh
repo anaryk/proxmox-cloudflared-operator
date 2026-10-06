@@ -1636,12 +1636,45 @@ case_profile_choice() {
 	assert_calls apt-get 0
 	assert_calls dpkg-deb 1
 
-	new_case "--appliance after another argument is passed on and chooses nothing"
+	new_case "--yes --appliance takes the appliance path and never installs on the node"
 	run_install --yes --appliance
+	assert_rc 0
+	assert_calls apt-get 0
+	assert_calls dpkg-deb 1
+	assert_calls pco 1
+	assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --yes"
+	assert_log_lacks "--appliance"
+
+	for spec in "--yes --vmid 120 --profile appliance" "--vmid 120 --yes --profile=appliance"; do
+		read -r -a choice <<<"$spec"
+		new_case "$spec chooses the appliance wherever it stands and is not passed on"
+		run_install "${choice[@]}"
+		assert_rc 0
+		assert_calls apt-get 0
+		assert_calls dpkg-deb 1
+		assert_log_has "--checksums $CASE_DIR/tmp/pco-install.*/checksums.txt ${spec/ --profile*/}"
+		assert_log_lacks "--profile"
+	done
+
+	new_case "--profile host after other arguments chooses the host path and is not passed on"
+	run_install --name shop --profile host --yes
 	assert_rc 0
 	assert_calls apt-get 1
 	assert_calls dpkg-deb 0
-	assert_log_has "pco setup --yes --appliance"
+	assert_log_has "pco setup --name shop --yes"
+	assert_log_lacks "--profile"
+
+	new_case "a profile after other arguments wins over PCO_PROFILE"
+	set_env PCO_PROFILE host
+	run_install --yes --appliance
+	assert_rc 0
+	assert_calls apt-get 0
+	assert_calls dpkg-deb 1
+
+	new_case "the arguments around a profile keep their order and their words"
+	run_install --name 'two words' --appliance --yes --vmid 120
+	assert_rc 0
+	assert_log_has "--checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --name two words --yes --vmid 120"
 
 	new_case "a profile named twice is the profile"
 	run_install --appliance --profile appliance --yes
@@ -1678,7 +1711,25 @@ case_profile_choice() {
 
 	new_case "--appliance with --profile host is refused"
 	run_install --appliance --profile host --yes
-	assert_fail "the leading arguments name both profiles"
+	assert_fail "the arguments name both profiles"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "two profiles that are not next to each other are refused too"
+	run_install --yes --appliance --vmid 120 --profile=host
+	assert_fail "the arguments name both profiles"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "--profile as the last argument needs a value"
+	run_install --yes --profile
+	assert_fail "--profile needs a value"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "a profile that is refused after other arguments stops before anything is downloaded"
+	run_install --yes --profile=vm
+	assert_fail "--profile must be host or appliance, got vm"
 	assert_calls curl 0
 	assert_nothing_unpacked
 
@@ -2106,6 +2157,20 @@ case_appliance_uninstall() {
 	run_install --uninstall --vmid 120 --yes
 	assert_rc 0
 	assert_log_has "pco appliance uninstall --vmid 120 --yes"
+
+	new_case "--uninstall after other arguments is not passed on, and the appliance profile takes it"
+	run_install --vmid 120 --yes --uninstall --appliance
+	assert_rc 0
+	assert_calls apt-get 0
+	assert_log_has "pco appliance uninstall --vmid 120 --yes"
+	assert_log_lacks "--uninstall --"
+	assert_log_lacks "install --release-base"
+
+	new_case "--uninstall after other arguments, with the host profile, points at pco uninstall"
+	run_install --yes --uninstall
+	assert_fail "use pco uninstall"
+	assert_calls curl 0
+	assert_nothing_unpacked
 
 	new_case "an uninstall asks on the terminal, as the installer does"
 	use_terminal 'typed answers'
