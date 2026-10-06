@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -222,6 +223,7 @@ func newUpgradeRig(t *testing.T) *upgradeRig {
 		verifier: u.verify,
 		systemd:  noConnectors{},
 		sleep:    func(context.Context, time.Duration) error { return nil },
+		signals:  newFakeSignals(),
 		volume:   func() (store.Paths, error) { return u.paths, nil },
 		keyring:  "/usr/share/pco/release-key.gpg",
 		manifest: shipped,
@@ -393,6 +395,71 @@ func TestUpgradeSaysWhenTheDaemonDoesNotComeBack(t *testing.T) {
 
 	require.ErrorContains(t, res.err, "pco 1.2.4 is installed, but the daemon does not answer 1m0s later (")
 	require.ErrorContains(t, res.err, "systemctl status pco.service says why, and pco upgrade pco --rollback goes back to 1.2.3")
+}
+
+// A signal while apt-get runs does not end the run before the hold: it ends
+// it after, before cloudflared.
+func TestASignalStopsTheUpgradeOnlyOnceThePackagesAreHeld(t *testing.T) {
+	u := newUpgradeRig(t)
+	sigs := newFakeSignals()
+	u.r.env.upgrade.signals = sigs
+	caughtDuringInstall := false
+	u.host.onRun = func(line string) {
+		if installsPco(line) {
+			caughtDuringInstall = sigs.registered()
+			sigs.send(os.Interrupt)
+		}
+	}
+
+	res := u.r.run("", "upgrade", "--yes")
+
+	require.EqualError(t, res.err, "pco upgrade stopped on interrupt after pco 1.2.4 was installed; pco and cloudflared are held")
+	require.True(t, caughtDuringInstall, "the signals are caught while apt-get runs")
+	require.False(t, sigs.registered(), "and let go at the end")
+	require.Equal(t, []string{
+		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
+		"apt-mark hold pco cloudflared",
+	}, u.host.commands())
+	require.Contains(t, res.errOut, "From here a signal stops pco upgrade only once what it installs is held again.\n")
+	require.Contains(t, res.out, "pco 1.2.4 is installed, from release v1.2.4")
+}
+
+func TestASignalStopsTheWaitForTheConnectors(t *testing.T) {
+	u := newUpgradeRig(t)
+	sigs := newFakeSignals()
+	u.r.env.upgrade.signals = sigs
+	sd := &oneConnector{}
+	u.r.env.upgrade.systemd = sd
+	u.r.env.upgrade.sleep = func(context.Context, time.Duration) error {
+		sigs.send(syscall.SIGTERM)
+		return nil
+	}
+
+	res := u.r.run("", "upgrade", "cloudflared", "--yes")
+
+	require.EqualError(t, res.err, "cloudflared 2026.10.1 is installed, but pco upgrade stopped on terminated; "+
+		"pco upgrade cloudflared --rollback goes back to 2026.9.3")
+	require.Equal(t, []string{"pco-cloudflared@" + oneTunnel + ".service"}, sd.restarted)
+}
+
+const oneTunnel = "00000000-0000-4000-8000-000000000001"
+
+// oneConnector is a systemd with one connector, which runs and never gets
+// ready.
+type oneConnector struct {
+	connector.Systemd
+	restarted []string
+}
+
+func (*oneConnector) ListUnits(context.Context, string) ([]string, error) {
+	return []string{"pco-cloudflared@" + oneTunnel + ".service"}, nil
+}
+
+func (*oneConnector) IsActive(context.Context, string) (bool, error) { return true, nil }
+
+func (s *oneConnector) Restart(_ context.Context, unit string) error {
+	s.restarted = append(s.restarted, unit)
+	return nil
 }
 
 func TestARollbackOfPcoWaitsForTheDaemonToo(t *testing.T) {

@@ -31,6 +31,7 @@ type upgradeEnv struct {
 	verifier upgrade.Verifier
 	systemd  connector.Systemd
 	sleep    func(ctx context.Context, d time.Duration) error
+	signals  signalSource
 	// volume returns the roots of the store on the mounted state volume;
 	// nil is applianceVolume.
 	volume   func() (store.Paths, error)
@@ -51,6 +52,7 @@ func defaultUpgradeEnv() upgradeEnv {
 		verifier: upgrade.NewVerifier(run),
 		systemd:  connector.NewSystemctl(),
 		sleep:    sleepContext,
+		signals:  osSignals{},
 		keyring:  upgrade.Keyring,
 		manifest: upgrade.ShippedManifest,
 		workDir:  upgrade.WorkDir,
@@ -349,7 +351,11 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 	if !ok {
 		return errAborted
 	}
-	restart := a.connectorRestart(paths, out)
+	guard := guardUpgrade(a.upgrade.signals)
+	defer guard.release()
+	errOut.println("From here a signal stops pco upgrade only once what it installs is held again.")
+	sleep := guard.sleep(a.upgrade.sleep)
+	restart := a.connectorRestart(paths, sleep, out)
 	daemonRan := a.daemonAnswers(ctx)
 	for _, p := range changes {
 		do := upgrade.Options{Rollback: o.Rollback, Yes: true}
@@ -369,6 +375,9 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 			return err
 		}
 		printUpgraded(out, res, o.Rollback)
+		if err := guard.stopped(); err != nil {
+			return fmt.Errorf("%w after %s %s was installed; pco and cloudflared are held", err, res.Package, res.Target)
+		}
 		if p.res.Package != "pco" {
 			continue
 		}
@@ -376,7 +385,7 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 			out.println("the daemon did not answer before the upgrade, so it is not waited for")
 			continue
 		}
-		if err := a.waitForDaemon(ctx, res, o.Rollback, a.upgrade.sleep, out); err != nil {
+		if err := a.waitForDaemon(ctx, res, o.Rollback, sleep, out); err != nil {
 			return err
 		}
 	}
@@ -414,7 +423,7 @@ func remindOfSnapshot(errOut *screen, paths store.Paths, name string) {
 
 // connectorRestart restarts the connectors of the appliance on a new
 // cloudflared.
-func (a *app) connectorRestart(paths store.Paths, out *screen) func(ctx context.Context) error {
+func (a *app) connectorRestart(paths store.Paths, sleep func(context.Context, time.Duration) error, out *screen) func(ctx context.Context) error {
 	e := a.upgrade
 	return func(ctx context.Context) error {
 		conns := connector.NewManager(e.systemd, filepath.Join(paths.Local, tunnelsDir), nil, zerolog.Nop())
@@ -422,7 +431,7 @@ func (a *app) connectorRestart(paths store.Paths, out *screen) func(ctx context.
 			Connectors: conns,
 			Systemd:    e.systemd,
 			Now:        a.now,
-			Sleep:      e.sleep,
+			Sleep:      sleep,
 			Say:        func(format string, args ...any) { out.printf(format+"\n", args...) },
 		}.Restart(ctx)
 	}
