@@ -68,6 +68,7 @@ type accessState struct {
 type accessView struct {
 	data       access.Data
 	unreadable bool
+	neverRead  bool   // nothing was read since the start
 	problem    string // why it is unreadable, as a problem line; empty without Access
 	subnets    []pve.Subnet
 	dns        map[string][]netip.Addr
@@ -188,7 +189,7 @@ func (e *Engine) accessNow(now time.Time, snap inventory.Snapshot) accessView {
 		}
 	}
 	if e.d.Access == nil {
-		return accessView{data: access.Data{Pools: pools}, unreadable: true}
+		return accessView{data: access.Data{Pools: pools}, unreadable: true, neverRead: true}
 	}
 	a := &e.access
 	a.mu.Lock()
@@ -208,7 +209,7 @@ func (e *Engine) accessNow(now time.Time, snap inventory.Snapshot) accessView {
 	if !a.readAt.IsZero() && age >= 0 && age <= accessKeptFor {
 		return v
 	}
-	v.unreadable = true
+	v.unreadable, v.neverRead = true, a.readAt.IsZero()
 	switch {
 	case a.failedAt.IsZero():
 		v.problem = "the access control of Proxmox has not been read yet; every guest's observed routes wait for approval"

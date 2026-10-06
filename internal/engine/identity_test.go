@@ -561,16 +561,41 @@ func TestPermissionsModifyIsAnsweredWhereItIsGranted(t *testing.T) {
 	}
 }
 
-func TestAccessThatCannotBeReadLeavesTheConnectorsAlone(t *testing.T) {
+func TestAccessThatCannotBeReadAgainLeavesTheConnectorsAlone(t *testing.T) {
 	a := newApplianceEnv(t, incA)
+	a.cycle()
+	require.FileExists(t, a.flag)
 	a.acc.grant("alice@pve", "/vms/9250", "PVEVMUser", "VM.Console")
 	a.acc.fail(errors.New("proxmox does not answer"))
+	a.clock.advance(accessKeptFor + accessEvery)
 
 	st := a.cycle()
 
 	require.Empty(t, st.Identity.Exposed)
 	require.FileExists(t, a.flag)
 	require.Zero(t, a.conn.stopAlls())
+}
+
+// At boot the identity flag waits for the first read of the access control:
+// until then nothing says that no principal can reach into the appliance.
+func TestTheFlagWaitsForTheFirstReadOfTheAccessControl(t *testing.T) {
+	a := newApplianceEnv(t, incA)
+	a.enforce()
+	a.acc.fail(errors.New("proxmox does not answer"))
+
+	st := a.cycle()
+
+	require.True(t, st.Identity.OK)
+	require.NoFileExists(t, a.flag)
+	require.Zero(t, a.conn.stopAlls())
+	require.Contains(t, st.Problems, problemAccessFirst)
+
+	a.acc.fail(nil)
+	a.clock.advance(accessEvery)
+	st = a.cycle()
+
+	require.FileExists(t, a.flag)
+	require.NotContains(t, st.Problems, problemAccessFirst)
 }
 
 func TestAPrincipalKnownBeforeTheAccessControlWentUnreadableStaysStopped(t *testing.T) {

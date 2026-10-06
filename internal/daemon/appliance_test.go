@@ -71,6 +71,15 @@ func newApplianceWorld(t *testing.T) *applianceWorld {
 		"net0":     "name=eth0,bridge=vmbr1,hwaddr=" + strings.ToUpper(applianceMAC) + ",ip=dhcp,type=veth",
 		"digest":   "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
 	})
+	// The access control, which the identity flag waits for: root and pco.
+	w.pve.answer("/api2/json/access/permissions", map[string]any{"/access": map[string]int{"Sys.Audit": 1}, "/access/groups": map[string]int{"Sys.Audit": 1}})
+	w.pve.answer("/api2/json/access/acl", []map[string]any{{"path": "/", "type": "token", "ugid": pveTokenID, "roleid": "PCO", "propagate": 1}})
+	w.pve.answer("/api2/json/access/users", []map[string]any{
+		{"userid": "root@pam", "enable": 1},
+		{"userid": "pco@pve", "enable": 1, "tokens": []map[string]any{{"tokenid": "pco", "privsep": 1}}},
+	})
+	w.pve.answer("/api2/json/access/groups", []map[string]any{})
+	w.pve.answer("/api2/json/access/roles", []map[string]any{{"roleid": "PCO", "privs": "Pool.Audit,SDN.Audit,Sys.Audit,VM.Audit"}})
 
 	w.cfg.Profile = store.ProfileAppliance
 	w.cfg.Node = "pco" // the host name of the container, which --node defaults to

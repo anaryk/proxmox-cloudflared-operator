@@ -18,6 +18,8 @@ const (
 	problemNotQuorate   = "the cluster is not quorate; nothing is written"
 	problemBehind       = "the state of this appliance is older than its last write at Cloudflare (rollback or restore); run pco appliance recover"
 	problemEarlierStart = "leader.json belongs to an earlier start of this container; a new epoch is drawn once self-identification passes"
+	problemAccessFirst  = "the access control of Proxmox has not been read since pco started; " +
+		"the connectors start once it shows that no principal can reach into the appliance"
 
 	eventEpochDrawn = "epoch drawn after a container start; the state is the volume's"
 	issueTenant     = "configured with the MAC %s of the appliance %s"
@@ -31,7 +33,8 @@ const (
 // nothing feeds the filter again. An appliance that is not proven, without
 // being a copy, holds its writes and leaves the rest as it is. Once it is
 // proven again, the flag is written and the connectors start at the next
-// Ensure. On the host there is nothing to identify.
+// Ensure; after a start, not before the access control was read once. On the
+// host there is nothing to identify.
 func (c *cycleRun) identify() bool {
 	id := c.e.d.Identity
 	if id == nil {
@@ -69,7 +72,10 @@ func (c *cycleRun) identify() bool {
 		c.hold(c.problem("%s", v.Why))
 		return false
 	}
-	if err := id.SetFlag(true); err != nil {
+	if acc.neverRead {
+		// Nothing says yet that no principal can reach into it.
+		c.problem(problemAccessFirst)
+	} else if err := id.SetFlag(true); err != nil {
 		c.problem("writing the identity flag: %v; the connectors do not start until it is written", err)
 	} else {
 		c.e.notServing.Store(false)
