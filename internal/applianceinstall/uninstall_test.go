@@ -528,6 +528,29 @@ func TestARestoreKeepsTheLinesAboveItInItsDescription(t *testing.T) {
 		e.node.cts[101].cfg["description"])
 }
 
+// An appliance installed beside another, after it denied a principal, records
+// nothing for that line. Uninstalling the first keeps the line for the second,
+// and the last uninstall names it and says how to take it back, rather than
+// leaving it unmentioned.
+func TestTheLastUninstallNamesTheNoAccessLineAnEarlierOneLeft(t *testing.T) {
+	e := deniedTwice(t)
+	o := e.options()
+	o.VMID = 101
+	e.install(o)
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.Contains(t, e.ask.text(), "(kept: NoAccess for ops@pve on /, which keeps ops@pve out of the appliance lxc/101 as well)")
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 101, uninstallOptions()), e.ask.text())
+
+	require.Empty(t, e.node.cts)
+	require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"), "nothing says the installer added it for this appliance")
+	require.Contains(t, e.ask.text(), "(kept: NoAccess for ops@pve on /, which nothing of lxc/101 names as added by the installer: "+
+		"if an install added it, pveum acl delete / --users ops@pve --roles NoAccess takes it back)")
+}
+
 // The lines above the container keep principals away from the secrets on its
 // volume: while the container is there they stay, and the run that finds it
 // gone takes them back.
