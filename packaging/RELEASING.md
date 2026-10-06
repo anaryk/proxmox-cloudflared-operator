@@ -80,6 +80,8 @@ approval, the monthly ones included.
 5. The job `publish` publishes the draft. Only the highest final version is
    marked as the latest release, so a pre-release, or a fix for an older
    line, is not what the installer picks.
+6. For the latest release only, the jobs `site` and `pages` deploy the
+   documentation site built from the tag (see below).
 
 A tag is never moved or deleted. If a run fails for a reason outside the
 repository, run the failed jobs again. Otherwise release the next version.
@@ -207,14 +209,20 @@ it installs, never runs where the release key is:
 
 `packaging/release-workflow_test.sh`, part of `make test-scripts`, fails when the
 release workflow loses this order, when `ui` or `build` gets a secret or more
-than read access, when a job but `sign` runs in an environment, when `sign`
-no longer deletes the draft of a failed run, or deletes it before the key is
-gone, when any job but `publish` publishes, when a `before` hook of
+than read access, when a job but `sign` and `pages` runs in an environment,
+when `sign` no longer deletes the draft of a failed run, or deletes it before
+the key is gone, when any job but `publish` publishes, when a `before` hook of
 `.goreleaser.yaml` does not run as a step of `sign` before the import, when the
 goreleaser of `sign` runs the hooks, or when a step between the import and the
-removal of the key runs a program of the repository. It also runs the step of
-`build` that reads the tag against annotated and lightweight tags, with and
-without a line `Snapshot:`. The workflow `ui-audit` runs
+removal of the key runs a program of the repository. For the site it fails
+when `site` gets a secret or more than read access, when `pages` runs in any
+environment but `github-pages`, has a permission but `pages` and `id-token`, or
+runs a step but the deployment, when `site` or `pages` runs for a release that
+is not the latest, and when the latest is not what `publish` decided with
+`is-latest.sh` and marks the release by. It also runs the step of `build` that
+reads the tag against annotated and lightweight tags, with and without a line
+`Snapshot:`, and the step of `publish` that decides on the latest against a
+release, a candidate and a fix for an older line. The workflow `ui-audit` runs
 `npm audit --omit=dev` every week and when `web/package-lock.json` changes; it
 is not a required check, so an advisory or a registry that does not answer
 blocks no pull request.
@@ -241,21 +249,33 @@ To raise them:
 
 The pages of `docs/` are built into a site with VitePress in `site/`, with the
 Node and npm above; `site/README.md` says how. It is published on GitHub Pages,
-at <https://anaryk.github.io/proxmox-cloudflared-operator/>, by the workflow
-`docs`:
+at <https://anaryk.github.io/proxmox-cloudflared-operator/>, by two workflows:
 
-- Run by hand (`workflow_dispatch`) with a branch, a tag or a commit: the job
-  `site` checks out that ref, runs `make docs docs-lint docs-test` with npm and
-  nothing but read access, and uploads the site; the job `pages` deploys it in
-  the environment `github-pages`, the only job with the permissions to. This is
-  how the site is published now: after a release, run it with the tag of the
-  release.
+- The release workflow deploys the site of the latest release. Once `publish`
+  has published the release, and only when it marked it as the latest, the job
+  `site` checks out the tag, runs `make docs docs-lint docs-test` with npm,
+  with no secret and nothing but read access, and uploads the site; the job
+  `pages` deploys it in the environment `github-pages`. `pages` is the only job
+  of the workflow, besides `sign`, that runs in an environment, and it has the
+  permissions `pages` and `id-token` and nothing else. A release candidate and
+  a fix for an older line deploy nothing. If the site fails its checks, the
+  release stays published and the run fails: correct the pages, and deploy
+  them by hand as below.
 
-      gh workflow run docs.yml -f ref=v0.1.0
+- The workflow `docs` deploys the site of any ref by hand
+  (`workflow_dispatch`): the first deploy, and a correction between two
+  releases. The jobs `site` and `pages` are the same as those of the release.
+  The environment `github-pages` accepts deployments from the default branch
+  and from the tags `v*` only.
 
-- Every Monday the job `links` checks the links of the pages to other sites
-  with lychee. It is not a required check, so a site that does not answer
-  blocks nothing.
+      gh workflow run docs.yml -f ref=main
+
+  The deploys of both workflows share a concurrency group, so that two of
+  them never run together.
+
+- Every Monday the job `links` of `docs` checks the links of the pages to
+  other sites with lychee. It is not a required check, so a site that does not
+  answer blocks nothing.
 
 The job `docs` of `ci` builds and checks the site on every push and pull
 request, and checks the licences of its packages.
