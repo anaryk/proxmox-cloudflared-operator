@@ -40,7 +40,14 @@ type failures struct {
 	n       int
 	last    time.Time
 	until   time.Time
+
+	refused  int       // sign-ins refused as locked since the last line of the log
+	loggedAt time.Time // of that line
 }
+
+// lockLogEvery is how often the log names an account that is refused as
+// locked.
+const lockLogEvery = time.Minute
 
 func newLockout() *lockout {
 	return &lockout{max: maxLockedAcc, byAccount: map[string]*list.Element{}, order: list.New()}
@@ -95,6 +102,26 @@ func (l *lockout) fail(account string, now time.Time) time.Duration {
 	}
 	f.until = now.Add(d)
 	return d
+}
+
+// refused counts a sign-in of account refused as locked at now, and says
+// whether to log it, once a minute, with how many were refused since the line
+// before.
+func (l *lockout) refused(account string, now time.Time) (int, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.byAccount[account]
+	if !ok {
+		return 1, true
+	}
+	f := e.Value.(*failures)
+	f.refused++
+	if !f.loggedAt.IsZero() && now.Sub(f.loggedAt) < lockLogEvery {
+		return f.refused, false
+	}
+	n := f.refused
+	f.refused, f.loggedAt = 0, now
+	return n, true
 }
 
 // clear forgets account: it signed in.

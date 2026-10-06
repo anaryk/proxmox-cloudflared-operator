@@ -315,6 +315,133 @@ func TestThreeWrongCodesVoidTheStep(t *testing.T) {
 	require.Equal(t, 1, n, "a voided step is one failure of the account")
 }
 
+// heldLogin holds the codes it is given until the test lets them through.
+type heldLogin struct {
+	Login
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (l heldLogin) SecondFactor(ctx context.Context, c *Challenge, code string) (string, error) {
+	l.entered <- struct{}{}
+	<-l.release
+	return l.Login.SecondFactor(ctx, c, code)
+}
+
+func TestACodeSentTwiceWaitsForTheFirst(t *testing.T) {
+	h := newApplianceHarness(t, false)
+	b := h.browser("")
+	require.Equal(t, http.StatusUnauthorized, b.password("fred", "pve", fredPassword).Code)
+	held := heldLogin{Login: h.auth.login, entered: make(chan struct{}), release: make(chan struct{})}
+	h.auth.login = held
+	first := make(chan *httptest.ResponseRecorder, 1)
+	tab := *b // a second tab of the same browser, with the same cookies
+	go func() {
+		first <- b.send(b.request(http.MethodPost, "/api/session/second-factor", `{"code":"`+fredTOTP+`"}`))
+	}()
+	<-held.entered
+
+	rec := tab.send(tab.request(http.MethodPost, "/api/session/second-factor", `{"code":"`+fredTOTP+`"}`))
+
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	e := errorOf(t, rec)
+	require.Equal(t, wire.CodeRateLimited, e.Code)
+	require.Equal(t, 1, e.RetryAfter)
+	require.Equal(t, "a code of this sign-in is with Proxmox VE now; wait for its answer", e.Error)
+	require.Empty(t, rec.Result().Cookies(), "the step and its cookie live on")
+	close(held.release)
+	require.Equal(t, http.StatusOK, (<-first).Code)
+	h.auth.pending.mu.Lock()
+	defer h.auth.pending.mu.Unlock()
+	require.Empty(t, h.auth.pending.byID)
+	require.Empty(t, h.auth.pending.busy)
+}
+
+func TestTheLogNamesTheAccountOfAFailureAndOfTheLock(t *testing.T) {
+	h := newApplianceHarness(t, false)
+	try := func(i int, password string) *httptest.ResponseRecorder {
+		b := h.browser("")
+		b.peer = "192.0.2." + strconv.Itoa(100+i) + ":40000"
+		return b.password("Dora", "pve", password)
+	}
+	for i := range 5 {
+		require.Equal(t, http.StatusUnauthorized, try(i, "wrong-"+doraPassword).Code)
+	}
+	h.clock.Add(time.Minute)
+	require.Equal(t, http.StatusUnauthorized, try(5, "wrong-"+doraPassword).Code)
+	for i, after := range []time.Duration{0, 10 * time.Second, 20 * time.Second, 41 * time.Second} {
+		h.clock.Add(after)
+		require.Equal(t, http.StatusTooManyRequests, try(10+i, doraPassword).Code)
+	}
+
+	var failures, locked []map[string]any
+	for line := range strings.Lines(h.log.String()) {
+		var m map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &m))
+		switch result, _ := m["result"].(string); {
+		case strings.HasPrefix(result, "refused: Proxmox VE did not accept"):
+			failures = append(failures, m)
+		case result == "refused: the account is locked at pco":
+			locked = append(locked, m)
+		}
+	}
+	require.Len(t, failures, 6)
+	for _, m := range failures {
+		require.Equal(t, "dora@pve", m["account"])
+	}
+	require.Equal(t, "refused: Proxmox VE did not accept the user and password; the account is locked at pco for 1m0s", failures[4]["result"])
+	require.Equal(t, "refused: Proxmox VE did not accept the user and password; the account is locked at pco for 2m0s", failures[5]["result"])
+	require.Len(t, locked, 2, "the refusals while locked are named once a minute")
+	require.Equal(t, "dora@pve", locked[0]["account"])
+	require.InDelta(t, 1, locked[0]["refused"], 0)
+	require.InDelta(t, 3, locked[1]["refused"], 0)
+	require.NotContains(t, h.log.String(), doraPassword)
+}
+
+func TestARealmTheUserFieldNames(t *testing.T) {
+	h := newApplianceHarness(t, false)
+	s := sessionOf(t, h.browser("").password("dora@pve", "pve", doraPassword))
+	require.Equal(t, "dora@pve", s.User, "not dora@pve@pve")
+	s = sessionOf(t, h.browser("").password("dora@pve", "pam", doraPassword))
+	require.Equal(t, "dora@pve", s.User, "pve is a realm of the node")
+
+	calls := h.fake.Calls("access/ticket")
+	rec := h.browser("").password("root@pam", "pve", rootPassword)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, rootRefused, errorOf(t, rec).Error)
+	require.Equal(t, calls, h.fake.Calls("access/ticket"), "root's password never left the request")
+
+	require.Equal(t, [2]string{"john@example.com", "ad"}, func() [2]string {
+		u, r := ownRealm("john@example.com", "ad", []string{"pam", "pve", "ad"})
+		return [2]string{u, r}
+	}(), "a name with an @ of its own keeps the chosen realm")
+}
+
+// unreadLogin is a Proxmox VE whose second factor pco does not read.
+type unreadLogin struct{ Login }
+
+func (unreadLogin) Password(context.Context, string, string, string) (string, *Challenge, error) {
+	return "", nil, fmt.Errorf("%w: it asked for a second factor without a challenge", ErrUnknownChallenge)
+}
+
+func TestASecondFactorPcoDoesNotRead(t *testing.T) {
+	srv := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"username":"fred@pve","ticket":"PVE:fred@pve:66F20001::c2ln","NeedTFA":1}}`))
+	}))
+	_, _, err := NewLogin(apiURL(srv), Trust{Pin: srv.Certificate()}, 5*time.Second).Password(context.Background(), "fred", "pve", fredPassword)
+	require.ErrorIs(t, err, ErrUnknownChallenge, "NeedTFA without a challenge")
+
+	h := newApplianceHarness(t, false)
+	h.auth.login = unreadLogin{h.auth.login}
+	rec := h.browser("").password("fred", "pve", fredPassword)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	e := errorOf(t, rec)
+	require.Equal(t, wire.CodeSecondFactorKey, e.Code)
+	require.Equal(t, "Proxmox VE asks this account for a second factor in a form pco does not read. "+
+		"Sign in on Proxmox VE's own page, or with an API token.", e.Error)
+}
+
 // cookieOfLastStep is a step id as an attacker who kept the cookie would send
 // it: one that no longer is.
 func cookieOfLastStep(t *testing.T, h *harness) string {

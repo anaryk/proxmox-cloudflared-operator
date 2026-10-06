@@ -44,6 +44,9 @@ var (
 	// ErrUnreachable is every other failure, a certificate other than the pin
 	// among them: sign-in fails closed.
 	ErrUnreachable = errors.New("proxmox ve cannot be reached")
+	// ErrUnknownChallenge is a second factor Proxmox VE asks for in a form pco
+	// does not read, which fails closed as well.
+	ErrUnknownChallenge = errors.New("proxmox ve asks for a second factor pco does not read")
 )
 
 const maxAnswer = 8 << 20
@@ -63,30 +66,27 @@ type Trust struct {
 	ServerName string
 }
 
-func (t Trust) verify(cs tls.ConnectionState) error {
+// tlsConfig is the configuration of the connection t says: on a node the
+// chain is not what is checked, the pin is; in the appliance the default
+// verification against Roots under ServerName, as the daemon's client does.
+func (t Trust) tlsConfig() (*tls.Config, error) {
 	switch {
-	case len(cs.PeerCertificates) == 0:
-		return errors.New("what answers presents no certificate")
 	case t.Pin != nil:
-		if !bytes.Equal(cs.PeerCertificates[0].Raw, t.Pin.Raw) {
-			return errors.New("what answers presents another certificate than pveproxy's")
-		}
-		return nil
-	case t.Roots == nil || t.ServerName == "":
-		return errors.New("there is no certificate of pveproxy to check its answer against")
+		pin := t.Pin
+		return &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, pin.Raw) {
+					return errors.New("what answers presents another certificate than pveproxy's")
+				}
+				return nil
+			},
+		}, nil
+	case t.Roots != nil && t.ServerName != "":
+		return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: t.Roots, ServerName: t.ServerName}, nil
 	}
-	inter := x509.NewCertPool()
-	for _, c := range cs.PeerCertificates[1:] {
-		inter.AddCert(c)
-	}
-	_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-		DNSName: t.ServerName, Roots: t.Roots, Intermediates: inter,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	})
-	if err != nil {
-		return fmt.Errorf("the certificate of what answers does not verify as %s: %w", t.ServerName, err)
-	}
-	return nil
+	return nil, errors.New("there is no certificate of pveproxy to check its answer against")
 }
 
 // apiConn is the connection to the API at a base URL that every call makes.
@@ -107,16 +107,14 @@ func newAPIConn(baseURL string, t Trust, timeout time.Duration) apiConn {
 	case c.base.Scheme != "https" || c.base.Host == "":
 		c.err = errors.New("the address of Proxmox VE is not an https URL")
 	}
+	tc, err := t.tlsConfig()
+	if err != nil && c.err == nil {
+		c.err = err
+	}
 	c.hc = &http.Client{
 		Transport: &http.Transport{
 			// No proxy: the API is the node's own.
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-				// Trust.verify does what the default verification would,
-				// or checks the pin instead.
-				InsecureSkipVerify: true,
-				VerifyConnection:   t.verify,
-			},
+			TLSClientConfig:     tc,
 			TLSHandshakeTimeout: timeout,
 			MaxIdleConnsPerHost: 16,
 			IdleConnTimeout:     90 * time.Second,

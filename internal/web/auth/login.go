@@ -84,12 +84,15 @@ func (l *loginClient) Password(ctx context.Context, user, realm, password string
 		return "", nil, err
 	}
 	data, partial := partialData(a.Ticket)
-	if !partial && !truthy(a.NeedTFA) {
+	switch {
+	case !partial && !truthy(a.NeedTFA):
 		return a.Ticket, nil, nil
+	case !partial:
+		return "", nil, fmt.Errorf("%w: it asked for a second factor without a challenge", ErrUnknownChallenge)
 	}
 	kinds, err := challengeKinds(data)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
+		return "", nil, fmt.Errorf("%w: %w", ErrUnknownChallenge, err)
 	}
 	return "", &Challenge{User: a.Username, partial: a.Ticket, Kinds: kinds}, nil
 }
@@ -103,7 +106,7 @@ func (l *loginClient) SecondFactor(ctx context.Context, c *Challenge, code strin
 		return "", err
 	}
 	if _, partial := partialData(a.Ticket); partial {
-		return "", fmt.Errorf("%w: it asked for yet another factor", ErrUnreachable)
+		return "", fmt.Errorf("%w: it asked for yet another factor", ErrUnknownChallenge)
 	}
 	return a.Ticket, nil
 }
