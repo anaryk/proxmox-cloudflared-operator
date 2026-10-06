@@ -40,6 +40,7 @@ type labNet struct {
 	t                *testing.T
 	id               string
 	hostName, gwName string
+	guestNS          []string // the namespaces of the guests made so far
 	host             netns.NsHandle
 	sys              *linuxSystem
 	b                *hostBackend
@@ -103,6 +104,7 @@ func (l *labNet) guest(name, bridge string, vlan int, cidr, gateway string) netn
 	ns := "pcotest-" + name + "-" + l.id
 	l.ip("netns", "add", ns)
 	l.t.Cleanup(func() { _ = exec.Command(ipPath, "netns", "del", ns).Run() })
+	l.guestNS = append(l.guestNS, ns)
 	port := "g" + name
 	l.ip("-n", l.hostName, "link", "add", port, "type", "veth", "peer", "name", "eth0", "netns", ns)
 	l.ip("-n", l.hostName, "link", "set", port, "master", bridge)
@@ -828,10 +830,32 @@ func (l *labNet) macOf(t *testing.T, ns string) string {
 	return links[0].Address
 }
 
+// settleIPv6 waits until the link-local addresses of the node, the gateway
+// namespace and the guests have finished duplicate-address detection. The
+// kernel gives one to every interface that comes up, at once and tentative,
+// and a second later it is preferred and its local route appears; a dump
+// taken either side of that differs, though nothing was changed. An address
+// that appears later, as one the gateway gave a link, is not hidden by this:
+// it is in the dump that follows and not in the one before.
+func (l *labNet) settleIPv6() {
+	l.t.Helper()
+	spaces := append([]string{l.hostName, l.gwName}, l.guestNS...)
+	require.Eventually(l.t, func() bool {
+		for _, ns := range spaces {
+			out, err := exec.Command(ipPath, "-n", ns, "-6", "addr", "show", "tentative").CombinedOutput()
+			if err != nil || len(strings.TrimSpace(string(out))) > 0 {
+				return false
+			}
+		}
+		return true
+	}, 15*time.Second, 50*time.Millisecond, "an IPv6 address of the lab is still tentative")
+}
+
 // dump is what the node and the namespace hold, without counters and
 // handles, which a change of nothing leaves as they are.
 func dump(t *testing.T, l *gatewayLab) string {
 	t.Helper()
+	l.settleIPv6()
 	var b strings.Builder
 	for _, ns := range []string{l.hostName, l.gwName} {
 		for _, args := range [][]string{
