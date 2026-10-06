@@ -76,6 +76,9 @@ program() {
 # The units every package carries, but the one LEAVE_OUT names.
 UNITS='pco.service pco-cloudflared@.service pco-egress.service pco-net.service pco-web.service'
 LEAVE_OUT=
+# The keyring every package carries as ./usr/share/pco/release-key.gpg; none
+# when empty.
+KEYRING=
 
 # deb <dir> <arch> [program]: a package of pco with the program as
 # ./usr/bin/pco, or without that file when none is given, and the units.
@@ -87,6 +90,10 @@ deb() {
 		"$VERSION" "$2" >"$tree/DEBIAN/control"
 	if [[ -n ${3:-} ]]; then
 		cp "$3" "$tree/usr/bin/pco"
+	fi
+	if [[ -n $KEYRING ]]; then
+		mkdir -p "$tree/usr/share/pco"
+		cp "$KEYRING" "$tree/usr/share/pco/release-key.gpg"
 	fi
 	for unit in $UNITS; do
 		if [[ $unit != "$LEAVE_OUT" ]]; then
@@ -186,6 +193,60 @@ deb_cases() {
 	assert "fails" rc_is 1
 	assert "naming that package" contains "$ERR" "$ARM64 carries"
 	assert "and not the other" lacks "$ERR" "$AMD64"
+
+	key_cases "$with"
+}
+
+# signed <dir> <program>: the files of a release of VERSION whose packages
+# carry KEYRING; the signature is not looked at here.
+signed() {
+	dist "$1" "$2"
+	printf 'signature\n' >"$1/checksums.txt.sig"
+}
+
+key_cases() {
+	if ! command -v gpg >/dev/null 2>&1; then
+		if [[ ${PCO_REQUIRE_CRYPTO_TESTS:-} == 1 ]]; then
+			CASE='the cases with release keys'
+			RC=1
+			ERR=
+			assert "PCO_REQUIRE_CRYPTO_TESTS=1 but gpg is not installed" false
+		else
+			SKIPPED=$((SKIPPED + 1))
+			printf 'skipped [the cases with release keys]: gpg is not installed\n'
+		fi
+		return
+	fi
+
+	CASE='a release whose packages carry the keys of install.sh'
+	if bash "$HERE/release-key.sh" "$HERE/../scripts/install.sh" "$ROOT/install.gpg" >/dev/null 2>&1; then
+		KEYRING=$ROOT/install.gpg
+		signed "$ROOT/keyed" "$1"
+		run --signed --require-dpkg-deb "$ROOT/keyed"
+		assert "passes" rc_is 0
+	else
+		SKIPPED=$((SKIPPED + 1))
+		printf 'skipped [%s]: scripts/install.sh carries no release key\n' "$CASE"
+	fi
+
+	CASE='a release whose packages carry the test key of a snapshot'
+	bash "$HERE/release-key-file.sh" --snapshot "$ROOT/test.gpg" >/dev/null
+	KEYRING=$ROOT/test.gpg
+	signed "$ROOT/testkey" "$1"
+	run --signed --require-dpkg-deb "$ROOT/testkey"
+	assert "fails" rc_is 1
+	assert "naming the key of the package" contains "$ERR" "$AMD64 carries the release keys 62FD5D9D1E944F96940FB17ED1F3BF094E779032, scripts/install.sh carries "
+	assert "for both packages" contains "$ERR" "$ARM64 carries the release keys"
+	rm "$ROOT/testkey/checksums.txt.sig"
+	run --require-dpkg-deb "$ROOT/testkey"
+	assert "while a snapshot may carry it" rc_is 0
+
+	CASE='a release whose packages carry no key'
+	KEYRING=
+	signed "$ROOT/nokey" "$1"
+	run --signed --require-dpkg-deb "$ROOT/nokey"
+	assert "fails" rc_is 1
+	assert "and says so" contains "$ERR" "$AMD64 has no ./usr/share/pco/release-key.gpg"
 }
 deb_cases
 

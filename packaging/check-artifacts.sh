@@ -15,7 +15,10 @@
 #              trusts dist/metadata.json for the version, which is right for
 #              a snapshot and proves nothing in a release: goreleaser picks the
 #              tag it builds. With it, metadata.json and every file name must agree.
-#   --signed   a release also holds checksums.txt.sig; a snapshot has none.
+#   --signed   a release also holds checksums.txt.sig; a snapshot has none. And
+#              ./usr/share/pco/release-key.gpg in each package, which pco
+#              upgrade checks releases with, must hold the release keys of
+#              scripts/install.sh and no other. That takes dpkg-deb and gpg.
 #   --require-dpkg-deb
 #              fail when dpkg-deb is missing, instead of skipping the control
 #              fields with a note. CI and the release set it.
@@ -327,6 +330,43 @@ elif [[ $require_dpkg == 1 ]]; then
 	fail "dpkg-deb is required to read the control files of the packages and was not found"
 else
 	printf 'check-artifacts.sh: dpkg-deb not found, the control files of the packages are not checked\n' >&2
+fi
+
+# The keys pco upgrade checks a release with: the keyring each package of a
+# release carries must hold the release keys of scripts/install.sh and no
+# other, or the upgrade would trust another key than the installer.
+if [[ $signed == 1 ]]; then
+	if ! command -v dpkg-deb >/dev/null 2>&1 || ! command -v gpg >/dev/null 2>&1; then
+		if [[ $require_dpkg == 1 ]]; then
+			fail "dpkg-deb and gpg are required to read the release key out of the packages and were not found"
+		else
+			printf 'check-artifacts.sh: dpkg-deb or gpg not found, the release key in the packages is not checked\n' >&2
+		fi
+	else
+		keys=$(mktemp -d "${TMPDIR:-/tmp}/check-artifacts-keys.XXXXXXXX")
+		mkdir -m 700 "$keys/home"
+		if ! want_keys=$(bash "$HERE/release-key.sh" "$HERE/../scripts/install.sh" "$keys/install.gpg" 2>"$keys/err"); then
+			fail "scripts/install.sh carries no release key to compare with: $(<"$keys/err")"
+		else
+			for arch in amd64 arm64; do
+				deb=$dist/pco_${version}_$arch.deb
+				[[ -f $deb ]] || continue
+				if ! dpkg-deb --fsys-tarfile "$deb" 2>/dev/null | tar -xO ./usr/share/pco/release-key.gpg >"$keys/$arch.gpg" 2>/dev/null ||
+					[[ ! -s $keys/$arch.gpg ]]; then
+					fail "${deb##*/} has no ./usr/share/pco/release-key.gpg"
+					continue
+				fi
+				got_keys=$(GNUPGHOME=$keys/home gpg --batch --show-keys --with-colons "$keys/$arch.gpg" 2>/dev/null |
+					awk -F: '$1 == "pub" { want = 1; next } $1 == "sub" { want = 0 } $1 == "fpr" && want { print $10; want = 0 }')
+				if [[ $got_keys != "$want_keys" ]]; then
+					got_keys=${got_keys//$'\n'/ }
+					fail "${deb##*/} carries the release keys ${got_keys:-<none>}, scripts/install.sh carries ${want_keys//$'\n'/ }"
+				fi
+			done
+		fi
+		GNUPGHOME=$keys/home gpgconf --kill all >/dev/null 2>&1 || true
+		rm -rf "$keys"
+	fi
 fi
 
 # tags <go binary>: the build tags go version -m lists for it, empty for none.
