@@ -8,14 +8,15 @@ every path in [Files](files.md), and every problem line in [Problems](problems.m
 
 ## The daemon and its units
 
-The package installs five systemd units, in `/usr/lib/systemd/system`.
+The package installs six systemd units, in `/usr/lib/systemd/system`.
 
 | Unit | What it does |
 |---|---|
-| `pco.service` | The daemon, `pco daemon`. It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service` and `pveproxy.service`, and the only unit ordered after it is `pco-web.service`: no connector waits for it. It does not wait for the guests, and they do not wait for it, those managed by HA included. |
+| `pco.service` | The daemon, `pco daemon`. It is of type `notify`, restarts after 5 seconds when it stops, and has 150 seconds to start. It starts after `network-online.target`, `pve-cluster.service`, `pveproxy.service` and `pco-netns.service`, and the only unit ordered after it is `pco-web.service`: no connector waits for it. It does not wait for the guests, and they do not wait for it, those managed by HA included. |
 | `pco-egress.service` | Loads the egress filter by running `pco egress load`, a hidden command that puts the table in place with the resolvers of the node and no targets, and exits. It is a one-shot unit that stays active, and it is ordered before `pco.service`. Setup enables and starts it, so the table is loaded at every boot, also before a connector exists, and uninstall disables it. The connector units require it, so starting a connector starts it too. Do not restart it to load the table again: every connector restarts with it. `pco egress load` does that. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel, `cloudflared` with the files of the tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 | `pco-web.service` | The web interface, `pco web`. It runs as the user `pco-web`, starts after `network-online.target`, `pve-cluster.service` and `pco.service`, restarts after 2 seconds when it stops, and reads its address from `/etc/default/pco-web`. `pco setup` enables it, unless it is given `--no-web`. An upgrade of the package restarts it if it ran. |
+| `pco-netns.service` | Runs `pco netns up`, which brings back at boot the network namespace `pco` and the legs through which pco reaches a network the node has no address in, from what the daemon last applied. It is a one-shot unit that stays active, ordered before `pco.service`, the connectors, `pve-guests.service` and `pve-ha-lrm.service`. The daemon enables it when a network is first attached, and keeps the namespace after the boot. It has no stop action: a restart brings up only what is missing. `pco netns status` shows the legs; see [the command](cli/pco-netns.md). |
 | `pco-net.service` | For the appliance only; nothing starts it on a host. It runs `pco net load`, a hidden command that puts the dummy device, the route and the table that keep the appliance's service prefix to itself in place, before the network and before `pco.service` and the connectors, which require it in the appliance. Do not restart it to load them again, as `pco.service` and every connector restart with it: `pco net load` does that. |
 
 Who each runs as, and the sandbox of its unit:
@@ -23,7 +24,7 @@ Who each runs as, and the sandbox of its unit:
 | Unit | Runs as | Sandbox |
 |---|---|---|
 | `pco.service` | root | `ProtectHome`, `PrivateTmp`, `ProtectKernelModules`, `ProtectControlGroups`, `LockPersonality`, `ProtectProc=invisible`, and no core dump, as its memory holds the tokens. No more: it needs systemd, nftables, raw sockets, `/var/lib/pco` and `/etc/pve`. |
-| `pco-egress.service`, `pco-net.service` | root | None: each loads its tables and exits. |
+| `pco-egress.service`, `pco-netns.service`, `pco-net.service` | root | None: each puts its tables, namespace or routes in place and exits. |
 | `pco-cloudflared@<tunnel id>.service` | `pco-connector` | No capabilities, `NoNewPrivileges`, a read-only system, no home, devices or other users' processes, the system calls of `@system-service`; [Security](security.md#what-runs-with-which-rights) has the list. |
 | `pco-web.service` | `pco-web` | No capabilities, `NoNewPrivileges`, a read-only system but `/run/pco`, no home or devices, the system calls of `@system-service` without `@privileged` and `@resources`, IPv4, IPv6 and unix sockets only; [Security](security.md#the-process-and-what-it-can-reach) has the list. |
 

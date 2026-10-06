@@ -18,8 +18,8 @@ zone that froze, guests that wait for approval and changes that wait for a confi
 
 ## Opening it
 
-On a node, `pco setup` makes the web interface unless it is given `--no-web`, and ends with
-where it is and how to check its certificate:
+On a node, `pco setup` makes the web interface unless it is given `--no-web`, and prints where
+it is and how to check its certificate:
 
     web interface: https://node1.example.com:8643/
     web certificate: SHA-256 fingerprint AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89
@@ -67,7 +67,7 @@ The role comes from the privileges of the user, or of the token, on the path `/`
 |---|---|---|
 | `Sys.Modify` | admin | everything on this page |
 | `Sys.Audit`, without `Sys.Modify` | reader | look, run a diagnosis and the doctor, export the events and the settings |
-| neither | none | nothing: the sign-in is refused with `pco needs Sys.Audit on / to show you anything, and Sys.Modify on / to let you change it` |
+| neither | none | nothing: the sign-in is refused, and the page says `This user has no Sys.Audit on /: pco cannot show it anything.` |
 
 The sign-in page has the lines that give these rights, to run on the node. For a reader, the
 built-in role `PVEAuditor`, which also holds the `VM.Audit` that says which guests the reader
@@ -390,7 +390,7 @@ refuses, and Look again reads it as it is now; the changes made in the form are 
 | Action | What it does | Who | Confirmation | Command line |
 |---|---|---|---|---|
 | Make the route (`POST /api/v1/routes/manual`) | Makes the route; the next cycle publishes it. Without an id, pco gives it one of eight hex digits. | admin | the form checks what it can first; a route that publishes a service of a node asks once more, naming the service | `pco route manual add <hostname> --guest <owner> --port <port>`, or `--address <ipv4>` in place of `--guest` |
-| Save (`PUT /api/v1/routes/manual/:id`) | Changes the route, at the revision it was read at. | admin | as above | none changes a route in place: `pco route manual remove <id>`, then `pco route manual add` |
+| Save (`PUT /api/v1/routes/manual/:id`) | Changes the route, at the revision it was read at. | admin | as above | no command changes a route in place; remove it with `pco route manual remove <id>` and add it again |
 | Delete (`DELETE /api/v1/routes/manual/:id`) | Removes the route; from the next cycle pco stops publishing its hostname for it, and the claim goes to the next owner that waits. | admin | a dialog | `pco route manual remove <id>` |
 
 A reader sees the manual routes and their form, read-only.
@@ -669,6 +669,8 @@ whole. pco web filters what the daemon answers before it reaches the reader's br
 |---|---|
 | Routes | those of guests it sees, and every manual route |
 | Guests that wait for approval, approvals, the guest list, the Notes of a guest | those of guests it sees; the page of another guest is not found |
+| Issues | those in the Notes of guests it sees, and every issue of the settings |
+| The appliance's identity | its container and node, whether it proved to be it, and the principals that can reach into it, as an admin sees them; of its copies and tenants, the guests that carry a MAC of the appliance, those it sees; why the proof failed, as free text |
 | Pending actions, records in the way, names that lost the marker | those of the hostnames of routes it sees, and every action on a tunnel |
 | What waits for a confirmation, and its offer | nothing: a reader cannot confirm |
 | Claims | those whose holder it sees, with the owners it sees that wait; a claim whose holder it does not see is not there at all, also when its own guest waits for that hostname: the route's state, `conflict`, still shows it |
@@ -679,8 +681,8 @@ whole. pco web filters what the daemon answers before it reaches the reader's br
 | Zones, tunnels, connectors, connectors pco does not run, credentials, settings, segments, the egress filter, the admission mode | as an admin sees them; a credential never carries its token |
 
 The filter keeps out what names a guest in a field of its own. It cannot keep out what free text
-says, and pco does not try: the problems of the last cycle and the reason a cycle held are shown
-to a reader as they are; the message of an event it gets may name a guest it does not see, as a
+says, and pco does not try: the problems of the last cycle, the reason a cycle held and why the
+appliance's proof of itself failed are shown to a reader as they are; the message of an event it gets may name a guest it does not see, as a
 claim conflict quotes both owners; the reason of a route may name the holder of its hostname
 (`hostname is held by qemu/101`), and the steps of a diagnosis may name another owner of the
 hostname. Treat those texts as visible to every reader.

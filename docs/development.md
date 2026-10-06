@@ -26,7 +26,11 @@ gin links a msgpack codec the API never uses.
 | `make ui` | Builds the web interface with Vite into `internal/web/ui/dist`. |
 | `make build UI=1` | `bin/pco` with the web interface, the build tag `webui`. It fails when `make ui` has not run, rather than build the page that says there is none. |
 | `make snapshot` | The packages of every architecture into `dist/`, without a tag, a signature or a release, checked with `packaging/check-artifacts.sh --require-ui`; and the appliance template where `mmdebstrap` is installed. |
+| `make package` | `make snapshot`, and lists the `.deb` files it made. |
+| `make template` | The appliance template from the package in `dist/`, into `build/appliance`; Linux and `mmdebstrap` only, `TEMPLATE_ARCH=arm64` for the other architecture. |
 | `make e2e-binaries` | A `pco` for a Proxmox VE node, amd64, and the end-to-end suite as a binary. |
+| `make fmt` | Formats the Go code as `golangci-lint` wants it. |
+| `make docs-serve` | Serves the site with live reload while you write a page. |
 
 ## Tests and checks
 
@@ -48,7 +52,7 @@ When you touch the web interface, the site or a page:
 |---|---|
 | `make ui-test` | `eslint`, `tsc`, the unit tests of the page with Vitest, and the licences of its packages. |
 | `make ui-budget` | Builds the page and holds it to its size budget. |
-| `make ui-e2e` | The browser suite: the real `pco web` with the web interface, the fakes behind it, in the browsers Playwright installs; see below. |
+| `make ui-e2e` | The browser suite: the real `pco web` with the web interface, the fakes behind it, in the browsers Playwright installs; see below. It needs the page built: run `make ui` first, or it stops with `internal/web/ui/dist is missing: run make ui`. |
 | `make ui-types ui-words` | Writes the TypeScript types of the daemon's JSON, `web/src/api/types.gen.ts`, and the word tables of `internal/present`, `web/src/gen/words.gen.ts`, from the Go code. Run them after a change of either, and commit what they write: CI fails when they differ. |
 | `make docs docs-lint docs-test` | Builds the site, which fails on a link to a page that does not exist; holds the pages to the rules of markdownlint, refuses syntax only the site reads, checks every link down to its fragment and the images against their budget; and runs the tests of the site. |
 | `make docs-cli` | Writes the command reference in `docs/cli` from the help of the commands. A test of `cmd/pco` fails when the pages differ from the help. |
@@ -133,8 +137,8 @@ guests shows what a reader sees.
 
 ## The browser suite
 
-`make ui-e2e` builds `bin/pco` with the interface, `bin/fakepco` and `bin/fakepve`, and runs the
-Playwright suite of `web/e2e` against them: for each test a fake Proxmox VE, a fake daemon with a
+After `make ui`, `make ui-e2e` builds `bin/pco` with the interface, `bin/fakepco` and
+`bin/fakepve`, and runs the Playwright suite of `web/e2e` against them: for each test a fake Proxmox VE, a fake daemon with a
 scenario, and the real `pco web` between them and the browser. Every test fails on a violation of
 the Content-Security-Policy, on an error in the console of the page, and on an answer that carries
 a header of CORS. The browsers are installed once, by the Playwright of `web/package.json`:
