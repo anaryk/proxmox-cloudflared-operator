@@ -110,6 +110,18 @@ export function connectorText(s: ConnectorStatus): string {
   return text
 }
 
+export interface RogueConnector {
+  id: string
+  originIp?: string
+  version?: string
+}
+
+// rogueText is RogueConnector.Text of the engine: a connector pco does not
+// run, with what Cloudflare says of it.
+export function rogueText(r: RogueConnector): string {
+  return `${r.id} from ${r.originIp || 'an unknown address'} (cloudflared ${r.version || 'of an unknown version'})`
+}
+
 // A report that cannot say what the token can do: not usable, and every
 // check that failed got no answer.
 function unanswered(report: CredentialView['report']): boolean {

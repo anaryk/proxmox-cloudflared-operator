@@ -37,6 +37,7 @@ var wordFuncs = map[string]func(t *testing.T, in json.RawMessage) any{
 	"writerText":    func(t *testing.T, in json.RawMessage) any { return WriterText(decode[string](t, in)) },
 	"verifiedText":  func(t *testing.T, in json.RawMessage) any { return VerifiedText(decode[engine.TunnelView](t, in)) },
 	"connectorText": func(t *testing.T, in json.RawMessage) any { return ConnectorText(decode[connector.Status](t, in)) },
+	"rogueText":     func(t *testing.T, in json.RawMessage) any { return decode[engine.RogueConnector](t, in).Text() },
 	"credentialState": func(t *testing.T, in json.RawMessage) any {
 		return CredentialState(decode[engine.CredentialView](t, in))
 	},
