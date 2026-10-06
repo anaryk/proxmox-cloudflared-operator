@@ -256,6 +256,14 @@ func requireDurable(st *store.Store) error {
 func (r *initRun) saveSettings(context.Context) error {
 	if r.found {
 		r.d.Info("settings: those of install %s are kept", r.install.ID)
+		kept, err := r.st.Settings()
+		switch {
+		case err != nil:
+			r.d.Info("settings: the gate tag could not be compared with the bootstrap's: %v", err)
+		case kept.GateTag != r.b.GateTag:
+			r.d.Info("settings: the gate tag stays %s, and the bootstrap names %s: to change it, set gateTag in the file "+
+				"of pco settings show --json and apply it with pco settings apply", kept.GateTag, r.b.GateTag)
+		}
 		return nil
 	}
 	s := store.DefaultSettings()

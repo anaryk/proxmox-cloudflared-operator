@@ -785,6 +785,42 @@ func TestRepairKeepsTheInstallAndTheWriter(t *testing.T) {
 	}, e.order)
 }
 
+func TestRepairSaysWhenTheBootstrapNamesAnotherGateTag(t *testing.T) {
+	e := newInitEnv(t)
+	require.NoError(t, e.init(e.bootstrap("install")))
+	inst := e.install()
+	settings, err := e.st.Settings()
+	require.NoError(t, err)
+	settings.GateTag = "edge"
+	require.NoError(t, e.st.SaveSettings(settings))
+	e.lines = nil
+
+	require.NoError(t, e.init(e.bootstrap("repair", func(f map[string]any) { f["installId"] = inst.ID })))
+
+	got, err := e.st.Settings()
+	require.NoError(t, err)
+	require.Equal(t, "edge", got.GateTag, "the settings of the install are kept")
+	e.said("settings: the gate tag stays edge, and the bootstrap names cf-tunnel: to change it, set gateTag in the file " +
+		"of pco settings show --json and apply it with pco settings apply")
+
+	e.lines = nil
+	require.NoError(t, e.init(e.bootstrap("repair", func(f map[string]any) {
+		f["installId"], f["gateTag"] = inst.ID, "edge"
+	})))
+	require.NotContains(t, strings.Join(e.lines, "\n"), "the gate tag stays", "nothing to say when they agree")
+}
+
+func TestRepairGoesOnWhenTheGateTagOfTheSettingsCannotBeRead(t *testing.T) {
+	e := newInitEnv(t)
+	require.NoError(t, e.init(e.bootstrap("install")))
+	require.NoError(t, os.WriteFile(filepath.Join(e.local, "cluster", "meta", "settings.json"), []byte("{"), 0o600))
+	e.lines = nil
+
+	require.NoError(t, e.init(e.bootstrap("repair", func(f map[string]any) { f["installId"] = e.install().ID })))
+
+	e.said("settings: the gate tag could not be compared with the bootstrap's")
+}
+
 func TestRepairNeedsTheInstallItRepairs(t *testing.T) {
 	e := newInitEnv(t)
 
