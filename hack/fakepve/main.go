@@ -1,8 +1,9 @@
 // Command fakepve serves the Proxmox VE of internal/web/pvefake over TLS, so
 // that pco web can sign users in without a node:
 //
-//	go run ./hack/fakepve -users users.json -cert-dir /tmp/fakepve
-//	pco web --pin /tmp/fakepve/pveproxy.crt --pve-url https://127.0.0.1:8006/api2/json ...
+//	go run ./hack/fakepve -users users.json -cert-dir /tmp/fakepve -web-cert
+//	pco web --pin /tmp/fakepve/pveproxy.crt --pve-url https://127.0.0.1:8006/api2/json \
+//	  --cert /tmp/fakepve/tls.crt --key /tmp/fakepve/tls.key ...
 //
 // users.json lists the users, their privileges by path, the guests they may
 // see, the tickets (PVE:<user>:<anything>::<signature>, as the PVEAuthCookie
@@ -18,13 +19,16 @@
 //	}]}
 //
 // The certificate is made at start and written to pveproxy.crt in the
-// directory; its key stays in memory. Nothing else is kept past the end of
-// the process.
+// directory; its key stays in memory. With -web-cert a second one, for pco
+// web to serve, is written there as tls.crt and tls.key, as setup writes
+// them on a node. Nothing else is kept past the end of the process.
 package main
 
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -64,6 +68,7 @@ func run() error {
 	users := flag.String("users", "", "the users, their privileges, guests, tickets and tokens (JSON)")
 	certDir := flag.String("cert-dir", "", "directory to write the certificate to, as pveproxy.crt")
 	node := flag.String("node", "pve1", "the node the guests are on")
+	webCert := flag.Bool("web-cert", false, "also write a certificate and key for pco web, as tls.crt and tls.key")
 	flag.Parse()
 	if *users == "" || *certDir == "" {
 		return errors.New("-users and -cert-dir are required")
@@ -87,6 +92,11 @@ func run() error {
 	}
 	if err := os.WriteFile(certFile, certPEM, 0o644); err != nil {
 		return err
+	}
+	if *webCert {
+		if err := writeWebCert(*certDir, host, *node); err != nil {
+			return err
+		}
 	}
 
 	log := zerolog.New(os.Stdout).With().Timestamp().Logger()
@@ -119,4 +129,21 @@ func run() error {
 		return err
 	}
 	return <-stopped
+}
+
+// writeWebCert writes a certificate for pco web and its key, made for the
+// same names as the fake's own.
+func writeWebCert(dir string, names ...string) error {
+	pair, certPEM, err := pvefake.SelfSigned(time.Now(), append(names, "localhost")...)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tls.crt"), certPEM, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "tls.key"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600)
 }
