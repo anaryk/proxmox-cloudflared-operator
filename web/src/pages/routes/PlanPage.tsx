@@ -1,4 +1,4 @@
-import { type JSX, type ReactNode, useEffect, useState } from 'react'
+import { type JSX, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { api } from '../../api/client'
 import { useApp } from '../../api/store'
@@ -115,9 +115,17 @@ export function PlanSections({ compact }: { compact?: boolean }): JSX.Element {
   const [confirming, setConfirming] = useState(false)
   const [adopting, setAdopting] = useState<string>()
   const hash = decodeURIComponent(new URL(location, 'https://page.invalid').hash.slice(1))
+  // The fragment's entry is scrolled to once, when it is first there: a new
+  // state must not take the admin back to it while they read on.
+  const scrolledTo = useRef('')
 
   useEffect(() => {
-    if (hash) document.getElementById(hash)?.scrollIntoView?.({ block: 'center' })
+    if (!hash) scrolledTo.current = ''
+    if (!hash || scrolledTo.current === hash) return
+    const entry = document.getElementById(hash)
+    if (!entry) return
+    scrolledTo.current = hash
+    entry.scrollIntoView?.({ block: 'center' })
   }, [hash, st])
 
   if (!st) return <Skeleton lines={5} label="Loading the plan" />

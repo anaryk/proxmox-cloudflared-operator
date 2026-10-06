@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
@@ -7,7 +7,7 @@ import type { State, Waiting } from '../../api/types.gen'
 import { navigate } from '../../app/router'
 import { ToastProvider } from '../../components/Toast'
 import populated from '../../fixtures/populated.json'
-import { fakeStore } from '../../test/store'
+import { fakeStore, flush } from '../../test/store'
 import { planEntry, waitingId } from '../kit'
 import { budgetLine, counts, PlanPage, PlanSections } from './PlanPage'
 
@@ -90,6 +90,26 @@ describe('the plan', () => {
     const entry = document.getElementById('waiting-stale-zone-example.info')
     expect(entry?.classList.contains('highlighted')).toBe(true)
     expect(entry?.textContent).toBe(zone.detail)
+  })
+
+  test('the entry a link points at is scrolled to once, not again with every state', async () => {
+    const scrolled = vi.fn()
+    Element.prototype.scrollIntoView = scrolled
+    navigate('/routes/plan#waiting-stale-zone-example.info', true)
+    let current: State = golden
+    const { store } = await fakeStore({ state: golden, answers: { 'GET /api/v1/state': () => ({ status: 200, body: current, etag: current.digest }) } })
+    show(store, <PlanSections />)
+    expect(scrolled).toHaveBeenCalledTimes(1)
+    for (const digest of ['next-1', 'next-2']) {
+      current = { ...golden, digest }
+      await act(async () => {
+        store.notice({ kind: 'state', data: { at: '2026-10-01T12:00:10Z', finishedAt: '2026-10-01T12:00:12Z', digest } })
+        await flush()
+      })
+    }
+    expect(store.get().state?.digest).toBe('next-2')
+    expect(scrolled).toHaveBeenCalledTimes(1)
+    Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
   })
 
   test("another page's link names the entry the Plan draws, whatever the subject", async () => {
