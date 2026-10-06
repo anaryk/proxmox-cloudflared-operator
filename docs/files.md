@@ -145,6 +145,8 @@ in `pco setup` and in the daemon, never in `pco web`.
 | `/usr/bin/pco` | The binary. |
 | `/usr/share/pco/release-key.gpg` | The key `pco upgrade` checks a release with. |
 | `/usr/share/pco/cloudflared-versions.json` | The versions of `cloudflared` this release vetted. |
+| `/usr/share/man/man1/pco.1.gz`, `pco-*.1.gz` | A man page for each command, such as `man pco-route-manual-add`, with the text of the [command reference](cli/index.md). |
+| `/usr/share/bash-completion/completions/pco`, `/usr/share/zsh/vendor-completions/_pco`, `/usr/share/fish/vendor_completions.d/pco.fish` | The completion of `pco` in bash, zsh and fish, which a shell started after the install loads; `pco completion` prints the same scripts. |
 | `/usr/share/doc/pco/README.md`, `copyright`, `web-licenses.txt` | The readme, the licence and the notices of the packages the web interface carries. |
 | `/usr/share/doc/pco/docs/` | These pages. |
 
