@@ -776,11 +776,9 @@ func (f *fakeNode) pct(args []string) (string, error) {
 		if !ct.running {
 			return "", errors.New("can only pull files from a running VM")
 		}
-		file, ok := ct.files[args[2]]
-		if !ok {
-			return "", fmt.Errorf("failed to open %s: No such file or directory", args[2])
-		}
-		return "", os.WriteFile(args[3], file.data, 0o600)
+		// A file that is not there is pulled as an empty one, without an
+		// error, as Proxmox VE 9.2 does.
+		return "", os.WriteFile(args[3], ct.files[args[2]].data, 0o600)
 	case "exec":
 		if !ct.running {
 			return "", exitError{255, fmt.Sprintf("container '%d' not running!", id)}
@@ -909,7 +907,7 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 		return f.init(ct, id, env)
 	case line == "ip -j addr show dev eth0":
 		return f.eth0(ct), nil
-	case line == "test -f "+webcert.Net0File || line == "test -f "+webcert.EnvFile:
+	case line == "test -f "+webcert.Net0File || line == "test -f "+webcert.EnvFile || line == "test -f "+manifestFile:
 		if _, ok := ct.files[cmd[2]]; ok {
 			return "", nil
 		}

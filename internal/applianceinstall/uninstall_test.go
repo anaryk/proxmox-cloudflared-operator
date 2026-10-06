@@ -28,6 +28,7 @@ func TestUninstallRemovesWhatTheInstallerMade(t *testing.T) {
 	require.Equal(t, []string{
 		"pvesh get /nodes/pve1/lxc/100/config --current 1 --output-format json",
 		"pct status 100",
+		"pct exec 100 --keep-env 0 -- test -f /var/lib/pco/manifest.json",
 		"pct pull 100 /var/lib/pco/manifest.json <run>/manifest.json",
 		"pveum user list --output-format json",
 		"pveum user token list pco@pve --output-format json",
@@ -300,6 +301,28 @@ func TestUninstallAsksAboutCloudflare(t *testing.T) {
 
 // A copy removed while the appliance it was made from stays: its token, user,
 // role and pool stay too, and what is at Cloudflare, which is the original's.
+// A restore has an empty state volume and so no manifest, of which there is
+// nothing to say; a manifest that is there and empty is not one.
+func TestUninstallSaysNothingOfAManifestThatIsNotThere(t *testing.T) {
+	e := installed(t)
+	e.restored(121, true)
+	e.node.cts[121].running = true
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 121, UninstallOptions{Yes: true, KeepCloudflare: true, KeepTemplate: true}), e.ask.text())
+
+	require.NotContains(t, e.ask.text(), "manifest")
+	require.Nil(t, e.node.cts[121])
+	require.NotNil(t, e.node.cts[100])
+	require.Equal(t, 0, e.node.count("pct pull 121"), "nothing is pulled that is not there")
+
+	e = installed(t)
+	e.node.cts[100].files[manifestFile] = fakeFile{perms: "0600"}
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.Contains(t, e.ask.text(), "warn: the manifest of lxc/100: it is not a JSON object; ignored")
+}
+
 func TestUninstallOfACopyLeavesTheOriginal(t *testing.T) {
 	e := installed(t)
 	e.cloned()

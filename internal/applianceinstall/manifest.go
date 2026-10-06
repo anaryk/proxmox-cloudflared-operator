@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,6 +34,9 @@ var (
 // names, 0 when there is none.
 func (r *run) readManifest(ctx context.Context, vmid int, otherVMID bool) (m *setup.Manifest, named int) {
 	raw, err := r.pullManifest(ctx, vmid)
+	if errors.Is(err, errNoManifest) {
+		return nil, 0
+	}
 	if err != nil {
 		r.ask.Warn("the manifest of lxc/%d cannot be read (%v): the marks of the objects say what is pco's", vmid, err)
 		return nil, 0
@@ -44,9 +48,22 @@ func (r *run) readManifest(ctx context.Context, vmid int, otherVMID bool) (m *se
 	return m, named
 }
 
+// errNoManifest is the volume of a container without a manifest, as that of
+// a restore is: there is nothing to say of it.
+var errNoManifest = errors.New("no manifest")
+
 // pullManifest copies the manifest out of the container into the run's
-// directory under /run and reads at most maxManifest of it.
+// directory under /run and reads at most maxManifest of it. Whether it is
+// there is asked first: pct pull of a file that is not there pulls an empty
+// one, without an error.
 func (r *run) pullManifest(ctx context.Context, vmid int) ([]byte, error) {
+	if _, err := r.exec(ctx, vmid, "test", "-f", manifestFile); err != nil {
+		var code interface{ ExitCode() int }
+		if errors.As(err, &code) && code.ExitCode() == 1 {
+			return nil, errNoManifest
+		}
+		return nil, err
+	}
 	if err := r.makeTemp(); err != nil {
 		return nil, err
 	}
