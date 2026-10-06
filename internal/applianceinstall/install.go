@@ -112,13 +112,22 @@ func (o *Options) defaults() {
 	if o.GateTag == "" {
 		o.GateTag = store.DefaultSettings().GateTag
 	}
-	// The journal keeps the CA by its absolute path: a resumed run may run
-	// from another directory.
-	if o.APICA != "" && !filepath.IsAbs(o.APICA) {
-		if abs, err := filepath.Abs(o.APICA); err == nil {
-			o.APICA = abs
-		}
+	// The journal keeps the files by their absolute paths: a resumed run may
+	// run from another directory.
+	o.APICA = absolute(o.APICA)
+	o.ChecksumsFile = absolute(o.ChecksumsFile)
+}
+
+// absolute is a path by the directory the process is in now, when it is
+// relative; empty stays empty.
+func absolute(path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
 	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }
 
 func (o Options) check() error {

@@ -446,7 +446,7 @@ func (i *Installer) resume(ctx context.Context, o Options) error {
 	// Where the template comes from and what it is checked against are what the
 	// call says, not what the journal kept: the checksums.txt it names may be in
 	// a directory that is gone.
-	opts.ChecksumsFile = cmp.Or(o.ChecksumsFile, opts.ChecksumsFile)
+	opts.ChecksumsFile = absolute(cmp.Or(o.ChecksumsFile, opts.ChecksumsFile))
 	opts.ReleaseBase = cmp.Or(o.ReleaseBase, opts.ReleaseBase)
 	opts.Template = cmp.Or(o.Template, opts.Template)
 	if err := i.checkResumeInputs(j, o, opts); err != nil {

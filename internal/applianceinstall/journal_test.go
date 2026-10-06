@@ -356,6 +356,26 @@ func TestResumeTakesTheChecksumsItIsGiven(t *testing.T) {
 	require.Empty(t, entries(t, e.journals))
 }
 
+// --checksums as typed, checksums.txt, is a path of the directory the install
+// ran in: the journal keeps it by its absolute path, as it does --api-ca, so
+// that a resume from another directory finds the file.
+func TestTheJournalKeepsTheChecksumsByTheirAbsolutePath(t *testing.T) {
+	e := newEnv(t)
+	t.Chdir(filepath.Dir(e.checksums))
+	o := e.options()
+	o.ChecksumsFile = "checksums.txt"
+	path := e.killedAtTheDownload(o)
+
+	j, err := readJournal(path)
+	require.NoError(t, err)
+	require.Equal(t, e.checksums, j.Options.ChecksumsFile)
+	t.Chdir(t.TempDir())
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true}), e.ask.text())
+	require.Equal(t, 1, e.node.count("pct create"))
+	require.Empty(t, entries(t, e.journals))
+}
+
 func TestResumeChecksTheTemplateAgainstTheChecksumsItIsGiven(t *testing.T) {
 	e := newEnv(t)
 	path := e.killedAtTheDownload(e.options())
