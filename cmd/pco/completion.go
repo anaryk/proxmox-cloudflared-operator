@@ -3,12 +3,15 @@ package main
 import (
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/spf13/cobra"
 )
 
 // shells are the shells pco completion writes a script for.
 var shells = []string{"bash", "zsh", "fish", "powershell"}
+
+const shellList = "bash, zsh, fish or powershell"
 
 // completionCmd takes the place of the one cobra adds, so that its help can
 // say how the scripts are used with pco.
@@ -32,7 +35,13 @@ func (a *app) completionCmd() *cobra.Command {
 			"  source <(pco completion zsh)\n\n" +
 			"  # In the fish you are in\n" +
 			"  pco completion fish | source",
-		Args:      cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		// The shell is named by the error, not only the number of arguments.
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 || !slices.Contains(shells, args[0]) {
+				return fmt.Errorf("%s takes one shell: %s", cmd.CommandPath(), shellList)
+			}
+			return nil
+		},
 		ValidArgs: shells,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -64,5 +73,5 @@ func writeCompletion(root *cobra.Command, shell string, w io.Writer, description
 		}
 		return root.GenPowerShellCompletion(w)
 	}
-	return fmt.Errorf("no completion for the shell %q: want bash, zsh, fish or powershell", shell)
+	return fmt.Errorf("no completion for the shell %q: want %s", shell, shellList)
 }

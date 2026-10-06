@@ -88,10 +88,11 @@ func walk(c *cobra.Command, fn func(*cobra.Command)) {
 	}
 }
 
-// writeTree writes files into dir, and removes what else dir holds whose
-// name stale matches: what the generator wrote before for a command that is
-// gone.
-func writeTree(dir string, files map[string][]byte, stale func(name string) bool) error {
+// writeTree writes files into dir, a directory of their own, and removes
+// what else dir holds that ours names: what the generator wrote before for a
+// command that is gone. A directory that holds anything else, such as the
+// pages of docs/, is refused before anything is written or removed.
+func writeTree(dir string, files map[string][]byte, ours func(name string) bool) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -99,11 +100,20 @@ func writeTree(dir string, files map[string][]byte, stale func(name string) bool
 	if err != nil {
 		return err
 	}
+	var stale []string
 	for _, e := range entries {
-		if _, ok := files[e.Name()]; !ok && e.Type().IsRegular() && stale(e.Name()) {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-				return err
-			}
+		name := e.Name()
+		switch _, written := files[name]; {
+		case strings.HasPrefix(name, "."):
+		case !e.Type().IsRegular() || !ours(name):
+			return fmt.Errorf("%s holds %s, which pco docs does not write: give it a directory of its own", dir, name)
+		case !written:
+			stale = append(stale, name)
+		}
+	}
+	for _, name := range stale {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			return err
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(files)) {
@@ -133,7 +143,9 @@ func markdownPages(root *cobra.Command) map[string][]byte {
 }
 
 func writeMarkdown(root *cobra.Command, dir string) error {
-	return writeTree(dir, markdownPages(root), func(name string) bool { return strings.HasSuffix(name, ".md") })
+	return writeTree(dir, markdownPages(root), func(name string) bool {
+		return name == "index.md" || strings.HasPrefix(name, "pco-") && strings.HasSuffix(name, ".md")
+	})
 }
 
 // pageName is the file of the page of a command: pco-route-manual-add.md.
@@ -428,7 +440,9 @@ func writeMan(root *cobra.Command, dir string, date time.Time) error {
 	if err != nil {
 		return err
 	}
-	return writeTree(dir, pages, func(name string) bool { return strings.HasSuffix(name, ".1.gz") })
+	return writeTree(dir, pages, func(name string) bool {
+		return strings.HasPrefix(name, "pco") && strings.HasSuffix(name, ".1.gz")
+	})
 }
 
 // The completion scripts the package installs, by the names of their files
@@ -452,5 +466,5 @@ func writeCompletionFiles(root *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	return writeTree(dir, files, func(string) bool { return false })
+	return writeTree(dir, files, func(name string) bool { return completionFiles[name] != "" })
 }

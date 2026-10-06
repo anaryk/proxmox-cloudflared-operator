@@ -23,7 +23,7 @@ func (a *app) routeCmd() *cobra.Command {
 			"of them, the manual routes of pco route manual.",
 		Example: "  # The manual routes\n" +
 			"  pco route manual list\n\n" +
-			"  # Publish status.example.com to port 9000 of 10.0.5.20\n" +
+			"  # Publish status.example.com to port 9000 of 10.0.5.20, with 10.0.5.0/24 in manualCIDRs\n" +
 			"  pco route manual add status.example.com --address 10.0.5.20 --port 9000",
 	}
 	manual := &cobra.Command{
@@ -36,7 +36,7 @@ func (a *app) routeCmd() *cobra.Command {
 			"every cycle.",
 		Example: "  # The manual routes\n" +
 			"  pco route manual list\n\n" +
-			"  # Publish status.example.com to port 9000 of 10.0.5.20\n" +
+			"  # Publish status.example.com to port 9000 of 10.0.5.20, with 10.0.5.0/24 in manualCIDRs\n" +
 			"  pco route manual add status.example.com --address 10.0.5.20 --port 9000\n\n" +
 			"  # Remove the route status\n" +
 			"  pco route manual remove status",
@@ -158,7 +158,7 @@ func (a *app) manualAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <hostname> (--guest <owner> | --address <ipv4>) --port <port>",
 		Short: "Make a manual route",
-		Long: "Make a manual route that publishes a hostname to a guest, named as qemu/101 or lxc/200,\n" +
+		Long: "Make a manual route that publishes a hostname to a guest, named as qemu/101 or lxc/120,\n" +
 			"whose address is proven as for a route in its Notes, or to an IPv4 address inside the\n" +
 			"manualCIDRs of the settings. The options are those of the Notes.\n" +
 			"--allow-node lets a route to an address point at a service of a node, which the egress\n" +
@@ -166,11 +166,11 @@ func (a *app) manualAddCmd() *cobra.Command {
 			"and a route to a guest never may. Without --id the daemon gives the route an id of\n" +
 			"eight hex digits. It is published from the next cycle.\n\n" +
 			"With --json the route as made is printed as JSON.\n\n" + askHelp,
-		Example: "  # Publish status.example.com to port 9000 of 10.0.5.20\n" +
+		Example: "  # Publish status.example.com to port 9000 of 10.0.5.20, with 10.0.5.0/24 in manualCIDRs\n" +
 			"  pco route manual add status.example.com --address 10.0.5.20 --port 9000\n\n" +
 			"  # wiki.example.com to the HTTPS service on port 8443 of qemu/101, on its card net1\n" +
 			"  pco route manual add wiki.example.com --guest qemu/101 --port 8443 --https --no-tls-verify --via net1\n\n" +
-			"  # With an id of your own, and the Host header the service expects\n" +
+			"  # In the same prefix, with an id of your own and the Host header the service expects\n" +
 			"  pco route manual add api.example.com --address 10.0.5.21 --port 8080 --id api --host-header api.internal.example.com",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -200,7 +200,7 @@ func (a *app) manualAddCmd() *cobra.Command {
 		},
 	}
 	flags := cmd.Flags()
-	flags.StringVar(&f.guest, "guest", "", "the guest the route goes to, as qemu/101 or lxc/200")
+	flags.StringVar(&f.guest, "guest", "", "the guest the route goes to, as qemu/101 or lxc/120")
 	flags.StringVar(&f.address, "address", "", "the IPv4 address the route goes to")
 	flags.Uint16Var(&f.port, "port", 0, "the port of the service")
 	flags.BoolVar(&f.https, "https", false, "the service speaks HTTPS")

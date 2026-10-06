@@ -18,7 +18,7 @@ pco route manual [command]
 # The manual routes
 pco route manual list
 
-# Publish status.example.com to port 9000 of 10.0.5.20
+# Publish status.example.com to port 9000 of 10.0.5.20, with 10.0.5.0/24 in manualCIDRs
 pco route manual add status.example.com --address 10.0.5.20 --port 9000
 
 # Remove the route status

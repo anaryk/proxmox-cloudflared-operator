@@ -52,7 +52,7 @@ pco upgrade cloudflared --rollback
 ## Flags
 
 ```text
-    --check            only say what is installed and what is available; exit status 1 when an upgrade is
+    --check            only say what is installed and what is available; exit status 1 when an upgrade is available
 -h, --help             help for upgrade
     --rollback         install the package the last upgrade replaced
     --version string   the version of pco or of cloudflared to install, instead of the newest

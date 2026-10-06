@@ -6,8 +6,9 @@ command, its examples and its flags.
 Cloudflare Tunnel operator for Proxmox VE. pco publishes the hostnames that tagged guests
 list in their Notes through Cloudflare Tunnels: it keeps the DNS records, the tunnels and a
 cloudflared connector for each tunnel in line with the Notes. pco daemon does that work.
-Most other commands ask it through its socket, which answers root; the others work on the
-machine directly, and the help of each says who may run it.
+Most other commands ask it through its socket, which answers only root and pco-web, the user
+of the web interface; the others work on the machine directly, and the help of each says who
+may run it.
 
 Exit status:
 

@@ -141,6 +141,51 @@ func docsInto(t *testing.T, kind, dir string) {
 	require.NoError(t, cmd.ExecuteContext(t.Context()))
 }
 
+// The generator writes a directory of its own: it removes the pages it wrote
+// for a command that is gone, and refuses one that holds pages of others,
+// such as docs/, before it writes or removes anything.
+func TestTheGeneratorKeepsToItsOwnDirectory(t *testing.T) {
+	dir := t.TempDir()
+	for name, text := range map[string]string{"pco-gone.md": "# pco gone\n", "index.md": "old\n", ".DS_Store": "x"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644))
+	}
+	docsInto(t, "markdown", dir)
+	require.NoFileExists(t, filepath.Join(dir, "pco-gone.md"), "the page of a command that is gone")
+	require.FileExists(t, filepath.Join(dir, "pco-status.md"))
+	require.FileExists(t, filepath.Join(dir, ".DS_Store"), "a dotfile is left alone")
+	index, err := os.ReadFile(filepath.Join(dir, "index.md"))
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(index), "# Command reference\n"))
+
+	pages := t.TempDir()
+	quickstart := filepath.Join(pages, "quickstart.md")
+	require.NoError(t, os.WriteFile(quickstart, []byte("# Quickstart\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(pages, "index.md"), []byte("# pco\n"), 0o644))
+	cmd := newRootCmdWith(defaultEnv())
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"docs", "markdown", pages})
+	require.EqualError(t, cmd.ExecuteContext(t.Context()),
+		pages+" holds quickstart.md, which pco docs does not write: give it a directory of its own")
+	entries, err := os.ReadDir(pages)
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "nothing was written")
+	index, err = os.ReadFile(filepath.Join(pages, "index.md"))
+	require.NoError(t, err)
+	require.Equal(t, "# pco\n", string(index), "nor overwritten")
+}
+
+// pco completion names the shells it takes when it is given none, or another.
+func TestCompletionNamesItsShells(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+	for _, args := range [][]string{{"completion"}, {"completion", "tcsh"}, {"completion", "bash", "zsh"}} {
+		res := r.run("", args...)
+		require.EqualError(t, res.err, "pco completion takes one shell: bash, zsh, fish or powershell", args)
+	}
+	res := r.run("", "completion", "fish")
+	require.NoError(t, res.err)
+	require.Contains(t, res.out, "complete -c pco")
+}
+
 // files reads every file of dir, the man pages unpacked.
 func files(t *testing.T, dir string) map[string][]byte {
 	t.Helper()

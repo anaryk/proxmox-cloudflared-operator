@@ -137,6 +137,32 @@ func TestTheDaemonSaysWhenTheNodeIsNotSetUp(t *testing.T) {
 	require.EqualError(t, res.err, "pco is not set up on this node; run pco setup")
 }
 
+// pco.service runs pco daemon without --node: the node is the host name up to
+// its first dot, and without one the daemon refuses to start.
+func TestTheDaemonTakesItsNodeFromTheHostName(t *testing.T) {
+	base := testutil.ShortDir(t)
+	r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
+	args := []string{"daemon",
+		"--cluster-dir", filepath.Join(base, "nowhere", "cluster"),
+		"--private-dir", filepath.Join(base, "nowhere", "private"),
+		"--local-dir", filepath.Join(base, "local")}
+
+	r.env.hostname = func() (string, error) { return "", errors.New("no host name") }
+	res := r.run("", args...)
+	require.EqualError(t, res.err, "the node name is empty")
+
+	asked := 0
+	r.env.hostname = func() (string, error) { asked++; return "pve7.example.com", nil }
+	res = r.run("", args...)
+	require.EqualError(t, res.err, "pco is not set up on this node; run pco setup", "a node, so the daemon goes on to the store")
+	require.Equal(t, 1, asked)
+
+	asked = 0
+	res = r.run("", append(args, "--node", "pve1")...)
+	require.EqualError(t, res.err, "pco is not set up on this node; run pco setup")
+	require.Zero(t, asked, "--node wins over the host name")
+}
+
 // The directories of the store move together or not at all: some of them
 // moved would mix a store of a test with the tokens, the connectors and the
 // lock of the node.

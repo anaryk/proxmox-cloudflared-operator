@@ -1,6 +1,6 @@
 # pco route manual add
 
-Make a manual route that publishes a hostname to a guest, named as qemu/101 or lxc/200,
+Make a manual route that publishes a hostname to a guest, named as qemu/101 or lxc/120,
 whose address is proven as for a route in its Notes, or to an IPv4 address inside the
 manualCIDRs of the settings. The options are those of the Notes.
 `--allow-node` lets a route to an address point at a service of a node, which the egress
@@ -22,13 +22,13 @@ pco route manual add <hostname> (--guest <owner> | --address <ipv4>) --port <por
 ## Examples
 
 ```text
-# Publish status.example.com to port 9000 of 10.0.5.20
+# Publish status.example.com to port 9000 of 10.0.5.20, with 10.0.5.0/24 in manualCIDRs
 pco route manual add status.example.com --address 10.0.5.20 --port 9000
 
 # wiki.example.com to the HTTPS service on port 8443 of qemu/101, on its card net1
 pco route manual add wiki.example.com --guest qemu/101 --port 8443 --https --no-tls-verify --via net1
 
-# With an id of your own, and the Host header the service expects
+# In the same prefix, with an id of your own and the Host header the service expects
 pco route manual add api.example.com --address 10.0.5.21 --port 8080 --id api --host-header api.internal.example.com
 ```
 
@@ -37,7 +37,7 @@ pco route manual add api.example.com --address 10.0.5.21 --port 8080 --id api --
 ```text
     --address string       the IPv4 address the route goes to
     --allow-node           let a route to an address point at a service of a node
-    --guest string         the guest the route goes to, as qemu/101 or lxc/200
+    --guest string         the guest the route goes to, as qemu/101 or lxc/120
 -h, --help                 help for add
     --host-header string   the Host header the service is sent
     --https                the service speaks HTTPS

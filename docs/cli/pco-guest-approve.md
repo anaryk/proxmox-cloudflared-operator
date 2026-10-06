@@ -1,6 +1,6 @@
 # pco guest approve
 
-Approve a guest, named as qemu/101 or lxc/200, in the identity the daemon sees it in now:
+Approve a guest, named as qemu/101 or lxc/120, in the identity the daemon sees it in now:
 a guest re-created under the same VMID, or a clone, needs an approval of its own. A guest
 that waits for approval is shown first, with the hostnames it would publish, why it waits
 and what the approval records: the MACs its addresses answer from at the observed level,

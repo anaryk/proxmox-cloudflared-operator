@@ -129,7 +129,7 @@ func (a *app) upgradeCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&o.Version, "version", "", "the version of pco or of cloudflared to install, instead of the newest")
-	flags.BoolVar(&o.Check, "check", false, "only say what is installed and what is available; exit status 1 when an upgrade is")
+	flags.BoolVar(&o.Check, "check", false, "only say what is installed and what is available; exit status 1 when an upgrade is available")
 	flags.BoolVar(&o.Rollback, "rollback", false, "install the package the last upgrade replaced")
 	addYesFlag(cmd, &o.Yes)
 	return cmd

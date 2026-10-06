@@ -68,6 +68,9 @@ type env struct {
 	// stderrTerminal says whether w, where the daemon logs, is a terminal.
 	stderrTerminal func(w io.Writer) bool
 	getenv         func(name string) string
+	// hostname is the host name of the machine, whose first label pco
+	// daemon takes for the name of the node.
+	hostname func() (string, error)
 	// profileFile is the marker that names the profile of the machine.
 	profileFile string
 	// The appliance's web interface: webDir holds its certificate, net0File
@@ -99,6 +102,7 @@ func defaultEnv() env {
 			return ok && term.IsTerminal(int(f.Fd()))
 		},
 		getenv:      os.Getenv,
+		hostname:    os.Hostname,
 		profileFile: store.ProfileFile,
 		webDir:      webcert.Dir,
 		net0File:    webcert.Net0File,
@@ -123,8 +127,9 @@ func newRootCmdWith(e env) *cobra.Command {
 		Long: "Cloudflare Tunnel operator for Proxmox VE. pco publishes the hostnames that tagged guests\n" +
 			"list in their Notes through Cloudflare Tunnels: it keeps the DNS records, the tunnels and a\n" +
 			"cloudflared connector for each tunnel in line with the Notes. pco daemon does that work.\n" +
-			"Most other commands ask it through its socket, which answers root; the others work on the\n" +
-			"machine directly, and the help of each says who may run it.\n\n" + exitHelp,
+			"Most other commands ask it through its socket, which answers only root and pco-web, the user\n" +
+			"of the web interface; the others work on the machine directly, and the help of each says who\n" +
+			"may run it.\n\n" + exitHelp,
 		Example: "  # What pco found and did on this node\n" +
 			"  pco status\n\n" +
 			"  # The help of a command\n" +

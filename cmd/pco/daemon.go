@@ -58,7 +58,7 @@ func (a *app) daemonCmd() *cobra.Command {
 				return errors.New("--node is not taken in the appliance: it runs as the node its install records")
 			}
 			if !cmd.Flags().Changed("node") {
-				node = defaultNode()
+				node = a.defaultNode()
 			}
 			paths, err := daemon.StorePaths(profile, clusterDir, privateDir, local)
 			if err != nil {
@@ -166,8 +166,8 @@ func cleanValue(v any) any {
 
 // defaultNode is the name Proxmox gives this node: the host name up to its
 // first dot.
-func defaultNode() string {
-	host, err := os.Hostname()
+func (a *app) defaultNode() string {
+	host, err := a.hostname()
 	if err != nil {
 		return ""
 	}
