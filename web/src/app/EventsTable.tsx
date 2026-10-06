@@ -137,9 +137,12 @@ export function hasError(rows: readonly Row[]): boolean {
   return rows.some((r) => (r.type === 'gap' ? r.g.level : r.e.level) === 'error')
 }
 
-function GapCell({ row }: { row: Extract<Row, { type: 'gap' }> }) {
+// GapCell says what a gap stands for. The count of one a reader gets is that
+// of the seqs it spans, those of events it may not see among them: of its
+// events a reader sees up to that many.
+function GapCell({ row, reader }: { row: Extract<Row, { type: 'gap' }>; reader: boolean }) {
   const n = row.g.count
-  if (row.loaded === 'loading') return <span role="status">Loading {n} events…</span>
+  if (row.loaded === 'loading') return <span role="status">Loading {reader ? `up to ${n}` : n} events…</span>
   if (row.loaded instanceof ApiError) {
     return (
       <span>
@@ -150,14 +153,15 @@ function GapCell({ row }: { row: Extract<Row, { type: 'gap' }> }) {
   if (isPart(row.loaded)) {
     return (
       <span>
-        {row.loaded.events.length} of {n} events of one cycle loaded: the daemon no longer holds the rest, the journal on the node has them.{' '}
+        {row.loaded.events.length} of {reader ? `up to ${n}` : n} events of one cycle loaded:{' '}
+        {reader ? 'the rest are not yours to see, or the daemon no longer holds them.' : 'the daemon no longer holds the rest, the journal on the node has them.'}{' '}
         <span className="muted">(open to try again)</span>
       </span>
     )
   }
   return (
     <span>
-      {n === 1 ? '1 event' : `${n} events`} of one cycle <span className="muted">(open to load them)</span>
+      {reader ? `Up to ${n} events` : n === 1 ? '1 event' : `${n} events`} of one cycle <span className="muted">(open to load them)</span>
     </span>
   )
 }
@@ -234,6 +238,7 @@ export function EventsTable({
   const events = older && older.length > 0 ? [...held, ...older] : held
   const gaps = useApp((s) => s.gaps)
   const nodeZone = useApp((s) => s.session?.nodeZone)
+  const reader = useApp((s) => s.session?.role === 'reader')
   const lastSeq = useApp((s) => Math.max(s.hello?.seq ?? 0, s.events.at(-1)?.seq ?? 0, s.gaps.at(-1)?.to ?? 0))
   const { density } = usePreferences()
   const [loaded, setLoaded] = useState<ReadonlyMap<string, Loaded>>(new Map())
@@ -274,7 +279,7 @@ export function EventsTable({
     },
     { key: 'level', header: 'Level', className: 'col-level', cell: (r) => <LevelBadge level={r.type === 'gap' ? r.g.level : r.e.level} /> },
     { key: 'kind', header: 'Kind', className: 'col-kind', cell: (r) => (r.type === 'gap' ? <span className="muted">route, action, claim</span> : <Untrusted text={r.e.kind} />) },
-    { key: 'subject', header: 'Subject', lead: true, cell: (r) => (r.type === 'gap' ? <GapCell row={r} /> : <Untrusted text={r.e.subject} max={80} />) },
+    { key: 'subject', header: 'Subject', lead: true, cell: (r) => (r.type === 'gap' ? <GapCell row={r} reader={reader} /> : <Untrusted text={r.e.subject} max={80} />) },
     { key: 'message', header: 'Message', cell: (r) => (r.type === 'gap' ? null : <Untrusted text={r.e.message} max={200} />) },
     { key: 'actor', header: 'Actor', className: 'col-actor', cell: (r) => (r.type === 'gap' || !r.e.actor ? null : <Untrusted text={r.e.actor} />) },
   ]

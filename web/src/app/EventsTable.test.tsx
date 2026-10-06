@@ -112,6 +112,28 @@ describe('a gap older than what the daemon holds in memory', () => {
   })
 })
 
+// The count of a gap a reader is told of is that of its seqs, among them the
+// events the reader may not see: its row does not say it holds that many, and
+// does not blame the daemon for the events that are not shown.
+test('a gap of a reader says up to that many events, and why some are missing', async () => {
+  const { store } = await fakeStore({ state: untagged, session: { role: 'reader' } })
+  store.notice({ kind: 'gap', data: gap })
+  const ev = (seq: number) => ({ ...(evs[0] as Event), seq, boot, message: `event ${seq}` })
+  const fetch = vi.fn<(url: string) => Promise<Response>>(async () => new Response(JSON.stringify([ev(12)]), { status: 200 }))
+  vi.stubGlobal('fetch', fetch)
+  render(
+    <StoreProvider store={store}>
+      <EventsTable filter={{}} live />
+    </StoreProvider>,
+  )
+  const row = screen.getByText(/Up to 3 events of one cycle/).closest('tr')
+  if (!row) throw new Error('no gap row')
+  fireEvent.click(row)
+  expect(await screen.findByText(/1 of up to 3 events of one cycle loaded: the rest are not yours to see, or the daemon no longer holds them\./)).toBeTruthy()
+  expect(screen.getByText('event 12')).toBeTruthy()
+  expect(screen.queryByText(/journal on the node/)).toBeNull()
+})
+
 test("a row's detail has the times of the tooltip, for the keyboard", async () => {
   const { store } = await fakeStore({ state: untagged })
   render(
