@@ -45,6 +45,6 @@ test.each([
       </ToastProvider>
     </StoreProvider>,
   )
-  expect(screen.getByRole('heading', { level: 1, name: title })).toBeTruthy()
+  expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy()
   expect(screen.queryByText(/not part of this build yet/)).toBeNull()
 })

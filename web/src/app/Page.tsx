@@ -1,23 +1,36 @@
-import type { ReactNode } from 'react'
+import { lazy, type ReactNode, Suspense } from 'react'
 
+import { Skeleton } from '../components/Skeleton'
 import { Untrusted } from '../components/Untrusted'
-import { DoctorPage } from '../pages/doctor/DoctorPage'
 import { CredentialDetail } from '../pages/edge/CredentialDetail'
 import { Credentials } from '../pages/edge/Credentials'
 import { TunnelDetail } from '../pages/edge/TunnelDetail'
 import { Tunnels } from '../pages/edge/Tunnels'
 import { ZoneDetail } from '../pages/edge/ZoneDetail'
 import { Zones } from '../pages/edge/Zones'
-import { EventsPage } from '../pages/events/EventsPage'
 import { GuestDetail } from '../pages/guests/GuestDetail'
 import { GuestsPage } from '../pages/guests/GuestsPage'
-import { NetworksPage } from '../pages/networks/NetworksPage'
 import { RoutesSection } from '../pages/routes/RoutesPage'
-import { SettingsPage } from '../pages/settings/SettingsPage'
 import { SetupPage, Start } from '../pages/setup/Wizard'
 import { Head } from './Head'
 import { Link } from './Link'
+import { loadPart, Part } from './part'
 import type { View } from './router'
+
+// The pages that are not on the first view and have much code of their own
+// are loaded when they are first shown.
+const SettingsPage = lazy(() => loadPart(() => import('../pages/settings/SettingsPage')).then((m) => ({ default: m.SettingsPage })))
+const DoctorPage = lazy(() => loadPart(() => import('../pages/doctor/DoctorPage')).then((m) => ({ default: m.DoctorPage })))
+const EventsPage = lazy(() => loadPart(() => import('../pages/events/EventsPage')).then((m) => ({ default: m.EventsPage })))
+const NetworksPage = lazy(() => loadPart(() => import('../pages/networks/NetworksPage')).then((m) => ({ default: m.NetworksPage })))
+
+function Later({ children }: { children: ReactNode }) {
+  return (
+    <Part what="This page">
+      <Suspense fallback={<Skeleton lines={6} label="Loading the page" />}>{children}</Suspense>
+    </Part>
+  )
+}
 
 const titles: Readonly<Record<string, [string, string]>> = {
   guests: ['Guests', 'The guests that carry the tag, their approvals and the issues in their Notes.'],
@@ -87,11 +100,23 @@ export function Page({ view }: { view: View }) {
     case 'setup':
       return <SetupPage />
     case 'networks':
-      return <NetworksPage />
+      return (
+        <Later>
+          <NetworksPage />
+        </Later>
+      )
     case 'events':
-      return <EventsPage />
+      return (
+        <Later>
+          <EventsPage />
+        </Later>
+      )
     case 'doctor':
-      return <DoctorPage />
+      return (
+        <Later>
+          <DoctorPage />
+        </Later>
+      )
     case 'settings': {
       const [title, description] = titleOf(view)
       return (
@@ -105,7 +130,9 @@ export function Page({ view }: { view: View }) {
               </Link>
             }
           />
-          <SettingsPage />
+          <Later>
+            <SettingsPage />
+          </Later>
         </>
       )
     }
