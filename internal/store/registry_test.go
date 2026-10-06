@@ -132,6 +132,45 @@ func TestSaveNodeRefusesAnIndexOutOfRange(t *testing.T) {
 	require.NoError(t, s.SaveNode(clusterNode("pve1", 254)), "254 is the last index of a node")
 }
 
+// Two nodes with one index would give their legs one MAC on an uplinked
+// bridge. The controller picks the index; the store makes a second holder
+// impossible, also for a node that is removed, whose name keeps its index.
+func TestAnIndexBelongsToOneNode(t *testing.T) {
+	s, p := openStore(t)
+	_, err := s.SaveNodeIf(clusterNode("pve-a", 3), 0)
+	require.NoError(t, err)
+	gone := clusterNode("pve-c", 4)
+	gone.State = NodeRemoved
+	require.NoError(t, s.SaveNode(gone))
+
+	_, err = s.SaveNodeIf(clusterNode("pve-b", 3), 0)
+	require.ErrorContains(t, err, "index 3 is the index of node pve-a")
+	require.ErrorContains(t, s.SaveNode(clusterNode("pve-b", 4)), "pve-c")
+	require.NoFileExists(t, filepath.Join(p.Cluster, "nodes", "pve-b.json"))
+
+	again := clusterNode("pve-a", 3)
+	again.State = NodeActive
+	_, err = s.SaveNodeIf(again, 1)
+	require.NoError(t, err, "a node keeps its own index")
+	noIndex := clusterNode("pve-b", 0)
+	noIndex.Index = nil
+	require.NoError(t, s.SaveNode(noIndex), "an entry gets its index at admission, not before")
+}
+
+func TestANodeStateIsOneOfTheStates(t *testing.T) {
+	s, _ := openStore(t)
+	for _, state := range []string{"", NodeJoining, NodeActive, NodeDraining, NodeUnknown, NodeDown, NodeContested, NodeRemoved} {
+		n := clusterNode("pve1", 0)
+		n.State = state
+		require.NoError(t, s.SaveNode(n), state)
+	}
+	for _, state := range []string{"Removed", "gone", " active"} {
+		n := clusterNode("pve1", 0)
+		n.State = state
+		require.ErrorContains(t, s.SaveNode(n), "state", state)
+	}
+}
+
 func TestTheInstallRecordsItsCluster(t *testing.T) {
 	s, p := openStore(t)
 	i := Install{ID: "0123456789ab", CreatedAt: t0, Cluster: &ClusterIdentity{CASHA256: sha("pve-root-ca"), Name: "pco-lab"}}

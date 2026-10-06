@@ -19,9 +19,9 @@ The state is a set of small JSON files, one for each object, in three roots.
 
 | Root | Holds | Shared | Owner and mode |
 |---|---|---|---|
-| `/etc/pve/pco` | State that is not secret: the install, the settings, the writer identity, claims, approvals, manual routes, the node registry. | On the cluster filesystem. | As the cluster filesystem sets. |
-| `/etc/pve/priv/pco` | Secrets: the Proxmox token and the Cloudflare credentials. | On the cluster filesystem. | Readable by root only, as everything below `/etc/pve/priv`. |
-| `/var/lib/pco` | State of this node: the connectors' files, bindings, the event log, the lock. | No. | `root`, mode `0700`; files `0600` unless a row says otherwise. |
+| `/etc/pve/pco` | State that is not secret: the install, the settings, the writer identity, claims, approvals, manual routes, the node registry; in a cluster also where each route is placed, the moves under way, the acknowledgements of segments per node and the security events of each node. | On the cluster filesystem. | As the cluster filesystem sets. |
+| `/etc/pve/priv/pco` | Secrets: the Proxmox token and the Cloudflare credentials; in a cluster also the CA of the install, the certificate each node's agent was given and the join tokens. | On the cluster filesystem. | Readable by root only, as everything below `/etc/pve/priv`. |
+| `/var/lib/pco` | State of this node: the connectors' files, bindings, the event log, the lock, and the state of the node's agent. | No. | `root`, mode `0700`; files `0600` unless a row says otherwise. |
 
 Each object file wraps its data in an envelope with a schema version, a revision and the id
 it was stored under:
@@ -36,8 +36,10 @@ it was stored under:
 ```
 
 The daemon refuses a file written by a newer schema version and a file that holds the object
-of another id. A file larger than 1 MiB is not written, as the cluster filesystem accepts
-none. The daemon never creates the shared roots, only `pco setup` does, and it checks that
+of another id. The schema version of `meta/leader.json` and of `nodes/<node>.json` stays 1 in
+every release, so that every build of a cluster can tell which node holds the lease. A file of
+the two shared roots larger than 1 MiB is not written, as the cluster filesystem accepts
+none; one of `/var/lib/pco`, on the node's own disk, may be up to 64 MiB. The daemon never creates the shared roots, only `pco setup` does, and it checks that
 the cluster filesystem is mounted before it touches them: while `pve-cluster` restarts,
 `/etc/pve` is an empty directory of the node's own disk, and what is read from it says
 nothing. It tests for the file `/etc/pve/.version`, which exists only while the filesystem is
@@ -47,11 +49,19 @@ mounted.
 
 | Path | Holds | Written by | Owner and mode | Back up |
 | --- | --- | --- | --- | --- |
-| `meta/install.json` | The install id (12 hexadecimal characters), when it was made, and the profile, `host`. | `pco setup` | as the cluster filesystem sets | Yes; `pco setup --recover` takes the id from Cloudflare when it is lost. |
+| `meta/install.json` | The install id (12 hexadecimal characters), when it was made, and the profile, `host`. On a host it also records the cluster the store was made in: the SHA-256 of `/etc/pve/pve-root-ca.pem` and the cluster's name, so that a store restored into another cluster writes nothing before an admin says so. | `pco setup` | as the cluster filesystem sets | Yes; `pco setup --recover` takes the id from Cloudflare when it is lost. |
 | `meta/settings.json` | The settings; see [Settings](settings.md). | `pco setup`, `pco apply`, `pco settings apply`, the web interface; by hand | as the cluster filesystem sets | Yes: nothing makes your values again. |
-| `meta/leader.json` | The writer identity: install id, generation and a nonce. The tunnel configuration carries it, and it is how pco tells its own writes from those of a stale or a foreign writer. | `pco setup`, `pco setup --recover` | as the cluster filesystem sets | No; a recovery draws a generation above every one in use. |
+| `meta/leader.json` | The writer identity: install id, generation and a nonce. The tunnel configuration carries it, and it is how pco tells its own writes from those of a stale or a foreign writer. In a cluster also the node that holds the lease, since when, a hand-off under way and the SHA-256 of the install's CA. | `pco setup`, `pco setup --recover`; in a cluster the controller | as the cluster filesystem sets | No; a recovery draws a generation above every one in use. |
 | `meta/tombstones.json` | DNS records waiting out their grace period. | The daemon | as the cluster filesystem sets | No. |
-| `nodes/<node>.json` | The node that runs pco, and its version. | `pco setup` | as the cluster filesystem sets | No; `pco setup` registers the node again. |
+| `nodes/<node>.json` | The node that runs pco, its version and since when. In a cluster also its state and since when, the index its legs' MACs carry, the kind of its agent, the address the agent listens on, the protocol versions and store schema its build speaks, the serial and SHA-256 of its agent's certificate, whether it may hold the lease, and the uses of its join token that made it contested. | `pco setup`; in a cluster the controller | as the cluster filesystem sets | No; `pco setup` registers the node again. A node keeps its index for as long as the install lives. |
+| `meta/engine-memory.json`, `meta/nodeaddrs.json`, `meta/softdeny.json` | In a cluster, copies of the files of the same names in `/var/lib/pco` (the engine memory without the targets of the egress filter, the node addresses, the soft deny list), so that a controller on another node knows them. Each names the node and revision of the file it was made from; a file the previous release wrote later wins, and the copy is made again from it. | The controller | as the cluster filesystem sets | No; the copies are made again from the files of the node. |
+| `meta/ca-rotation.json` | The progress of the rotation of every secret a node forgotten as compromised held, so that a controller that takes over in the middle finishes it. | The controller | as the cluster filesystem sets | No. |
+| `meta/upgrade.json` | The release an upgrade that is not finished came from, and since when. While it is there, the previous release can be installed again, and a setting it would refuse cannot be set. | The daemon | as the cluster filesystem sets | No. |
+| `placements/<hostname>.json` | In a cluster, where the route of a hostname is served: the shared tunnel or the tunnel pinned to one node, the address and the node that resolves it. A wildcard is stored as `_wildcard.<name>.json`. | The controller | as the cluster filesystem sets | No; a new controller places the routes again, and keeps these to move nothing at a takeover. |
+| `moves/<owner>.json` | In a cluster, a move of the routes of a guest or a manual route from one tunnel to another, and how far it got. | The controller | as the cluster filesystem sets | No. |
+| `nodesegments/<node>-<bridge>.json`, `nodesegments/<node>-<bridge>.<vlan>.json` | In a cluster, a segment acknowledged on one node. Until the upgrade is finished an acknowledgement in `segments/` counts on every node. | The controller | as the cluster filesystem sets | Yes: an acknowledgement is a decision of an admin. |
+| `nodesvcaddrs/<network>-<node>-<address>.json` | In a cluster, the service address of a guest behind an isolated bridge of one node, which another node's bridge of the same name may hold too. It takes its address from the same pool as the other service addresses. | The controller | as the cluster filesystem sets | No. |
+| `security-events/<node>.json` | In a cluster, the last 500 security events of a node: join tokens, admissions, forgets, promotions, hand-offs, rotations, epochs drawn, takeovers and admin actions, so that the trail survives the loss of a node. Only that node writes its file. | The daemon of that node | as the cluster filesystem sets | If you want the history; the journal of each node has it too. |
 | `claims/<hostname>.json` | Who holds a hostname, since when, and who waits. A wildcard is stored as `_wildcard.<name>.json`. | The daemon, `pco claims resolve` | as the cluster filesystem sets | No; the daemon settles claims again from the Notes, and the guest that holds a hostname may then be another. |
 | `approvals/<owner>.json` | An approved guest and its identity. A guest `qemu/101` is stored as `qemu_101.json`. | `pco guest approve`, the web interface | as the cluster filesystem sets | Yes: an approval is a decision of an admin. |
 | `routes/<id>.json` | Manual routes, which the daemon reads in every cycle. A manual route names a guest, whose address is proven as for its Notes, or an address, which nothing proves: its level is `manual`. | `pco route manual add` and `remove`, the web interface | as the cluster filesystem sets | Yes. |
@@ -64,6 +74,10 @@ mounted.
 | --- | --- | --- | --- | --- |
 | `meta/pve-token.json` | The secret of the Proxmox API token of pco. | `pco setup` | root only, as below `/etc/pve/priv` | Only with the care a secret needs; `pco setup --repair` makes the token again. |
 | `credentials/<id>.json` | One Cloudflare credential: its label, kind and token, in the clear. | `pco credential add`, `pco setup`, the web interface | root only, as below `/etc/pve/priv` | Only with the care a secret needs; a token can be made again at Cloudflare. |
+| `ca/current.json` | In a cluster, the CA of the install, its certificate and its key in the clear, which signs the certificates of the agents and of the controller, and when it last replaced another. | `pco setup`; the controller at a rotation | root only, as below `/etc/pve/priv` | Yes, with the care a secret needs: without it every certificate of every node must be issued again. Whoever holds the key can pass for any node. |
+| `ca/previous.json` | The CA a rotation replaced, kept for ten minutes after it, while certificates of both are accepted. | The controller | root only, as below `/etc/pve/priv` | No. |
+| `enrol/<node>.json` | The certificate the agent of a node was given, with its serial and SHA-256: a certificate a request presents must be this one. | `pco setup`, the daemon of the node, the controller | root only, as below `/etc/pve/priv` | No; a node issues its certificate again, an appliance agent is enrolled again. |
+| `jointokens/<id>.json` | A join token of an appliance agent: the SHA-256 of its secret, never the secret, the node it is for, when it expires and every use of it. | The controller | root only, as below `/etc/pve/priv` | No; a new token is made for a new join. |
 
 ### `/var/lib/pco`
 
@@ -73,13 +87,16 @@ mounted.
 | `bindings/<hostname>.json` | The address verified for each hostname, with the MAC, the level and, at `port`, where the forwarding table placed the MAC. A file is written when its binding changes, and for the time of the last proof alone only once that moved on by more than 75 seconds: after a restart a proof counts as up to that much older than it is. | The daemon | root, `0600` | No; the addresses are verified again. |
 | `meta/engine-memory.json` | What the daemon must still know after a restart: the zones it serves and every zone whose records it ever listed, the tunnels it saw, the guests you confirmed gone, the last check of each credential, and the targets of the egress filter with the tunnel configurations that confirmed them. | The daemon | root, `0600` | No. Removing it forgets the connectors kept for tunnels no credential sees, the zones that left their listing and the guests confirmed gone. |
 | `meta/node-addrs.json` | The addresses of the nodes, for the denylist. | The daemon | root, `0600` | No. |
+| `agent/desired.json` | The desired state the node's agent last accepted from the controller, with the run tokens of the tunnels it runs. | The daemon | root, `0600` | No: it holds secrets, and the controller sends it again. |
+| `agent/epoch.json` | The epoch the agent follows: the install, generation and nonce of the controller it takes desired state from. It never goes down, except when an admin resets it; a controller whose store is below it knows its store went back. | The daemon | root, `0600` | No. |
+| `agent/actions.json` | The newest 1000 actions of the controller the agent ran, so that a restart runs none twice. | The daemon | root, `0600` | No. |
 | `meta/soft-deny.json` | The gateways and DNS resolvers of the nodes, and in the appliance of the appliance, each with when it was last seen. A guest whose address is one of them waits for an approval. An address that is not seen for 30 days ages out. | The daemon | root, `0600` | No. |
 | `events.log`, `events.log.1` | The event log, one JSON object a line; rotated at 5 MiB, one earlier file is kept. | The daemon | root, `0600` | If you want the history. |
 | `tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector, in a directory of mode `0700`; the token and the configuration are `0600`, the env file `0644`. The `.env` file names the install the connector belongs to. A hidden file `.<tunnel id>.pending`, `0600`, says that the files of a tunnel changed and its unit has not been started or restarted since. | The daemon | root; the directory `0700`, `.token` and `.yml` `0600`, `.env` `0644` | No; the daemon reads the token of a tunnel again from Cloudflare. |
 | `egress-blocked.json`, `egress-off.json` | The block list and the off switch of the egress filter, `0600`. The off switch is a file that is there while the filter is off. | `pco egress block`, `unblock`, `off` and `on` | root, `0600` | If you keep addresses blocked on purpose. |
 | `daemon.lock` | The lock of the node: the daemon holds it for as long as it runs. The file stays where it is, since removing it would let two daemons lock two different files. | The daemon | root, `0600` | No. |
 
-The files of `meta/` and `bindings/` are objects of the same envelope.
+The files of `meta/`, `bindings/` and `agent/` are objects of the same envelope.
 
 ## The socket and the lock of the socket
 

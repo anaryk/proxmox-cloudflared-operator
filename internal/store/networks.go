@@ -51,9 +51,12 @@ type Network struct {
 	Uplink    bool                  `json:"uplink,omitempty"`    // bridge with a physical uplink, confirmed
 	OverlapOK bool                  `json:"overlapOK,omitempty"` // attached over a node route with --overlap-ok
 	CreatedAt time.Time             `json:"createdAt"`
-	// LegMACs are the MACs of the legs by node, where a node's differs from
-	// LegMAC: on an uplinked bridge every node's leg is seen on one LAN. They
-	// sit beside Legs, which the previous release reads as it was.
+	// LegMACs are the MACs of the legs of an attached network by node, each
+	// with the index of its node: on an uplinked bridge every node's leg is
+	// seen on one LAN. Saved with the indexes of the registry, every leg has
+	// one. They sit beside Legs, which the previous release reads as it was,
+	// and which it writes without them: LegMACOn makes them again from the
+	// indexes. The managed network has one MAC on every node and none here.
 	LegMACs map[string]string `json:"legMACs,omitempty"`
 	// Scope is ScopeCluster or ScopeNode; a network stored before scopes
 	// has none, which is ScopeCluster.
@@ -81,13 +84,34 @@ func (n Network) ScopeName() string {
 	return n.Scope
 }
 
-// LegMACOn returns the MAC of the leg of the network on a node: its own, or
-// the network's.
-func (n Network) LegMACOn(node string) string {
-	if mac, ok := n.LegMACs[node]; ok {
-		return mac
+// LegMACOn returns the MAC of the leg of the network on a node: the managed
+// network's one MAC; else the one the index the registry gave the node makes,
+// in indexes by node name; else the one LegMACs holds for the node. A node of
+// neither has no MAC known, which is an error and never the MAC of node 0's
+// leg.
+func (n Network) LegMACOn(node string, indexes map[string]int) (string, error) {
+	if n.Kind == NetworkManaged {
+		return managedLegMAC, nil
 	}
-	return n.LegMAC
+	if index, ok := indexes[node]; ok {
+		return NodeLegMAC(index, n.Mark), nil
+	}
+	if mac, ok := n.LegMACs[node]; ok {
+		return mac, nil
+	}
+	return "", fmt.Errorf("network %s: node %s has no index, so the MAC of its leg is not known", n.ID, node)
+}
+
+// LegIndexes returns the indexes the leg MACs of the nodes carry, by node: a
+// registry entry that lost its index finds it here again.
+func (n Network) LegIndexes() map[string]int {
+	out := make(map[string]int, len(n.LegMACs))
+	for node, mac := range n.LegMACs {
+		if index, _, err := parseNodeLegMAC(mac); err == nil {
+			out[node] = index
+		}
+	}
+	return out
 }
 
 // LegMACFor returns the MAC of the namespace end of the leg of a network of
@@ -131,7 +155,7 @@ func (n Network) checked(indexes map[string]int) (Network, error) {
 		return n, fmt.Errorf("network %s: leg MAC: %w", n.ID, err)
 	}
 	if want := LegMACFor(n.Kind, n.Mark); mac != want {
-		return n, fmt.Errorf("network %s: the leg MAC is %s, not %s", n.ID, want, mac)
+		return n, fmt.Errorf("network %s: the leg MAC is %s, want %s", n.ID, mac, want)
 	}
 	n.LegMAC = mac
 	switch n.Scope {
@@ -148,12 +172,14 @@ func (n Network) checked(indexes map[string]int) (Network, error) {
 }
 
 // checkLegMACs returns the leg MACs of the nodes in normal form, or refuses
-// one of a node without a leg, or one that is not the MAC of the node's leg.
+// one of a node without a leg, one that is not the MAC of the node's leg, and
+// two legs with one MAC. With indexes, the store makes the MAC of every leg
+// whose node has one from the index and the mark, and a MAC given for it must
+// be that one; a leg of a node without an index needs a MAC given, which is
+// checked by its form. Without indexes, as before a cluster, a leg without a
+// MAC of its own has the network's.
 func (n Network) checkLegMACs(indexes map[string]int) (map[string]string, error) {
-	if len(n.LegMACs) == 0 {
-		return nil, nil
-	}
-	out := make(map[string]string, len(n.LegMACs))
+	given := make(map[string]string, len(n.LegMACs))
 	for _, node := range slices.Sorted(maps.Keys(n.LegMACs)) {
 		if _, ok := n.Legs[node]; !ok {
 			return nil, fmt.Errorf("network %s: a leg MAC of node %s, which has no leg", n.ID, node)
@@ -162,37 +188,68 @@ func (n Network) checkLegMACs(indexes map[string]int) (map[string]string, error)
 		if err != nil {
 			return nil, fmt.Errorf("network %s: leg MAC of node %s: %w", n.ID, node, err)
 		}
+		given[node] = mac
+	}
+	if n.Kind == NetworkManaged {
+		for _, node := range slices.Sorted(maps.Keys(given)) {
+			if mac := given[node]; mac != managedLegMAC {
+				return nil, fmt.Errorf("network %s: the leg MAC of node %s is %s, want %s: the managed leg has one MAC on every node", n.ID, node, mac, managedLegMAC)
+			}
+		}
+		return nil, nil
+	}
+	out := make(map[string]string, len(n.Legs))
+	owner := make(map[string]string, len(n.Legs)) // MAC -> node
+	for _, node := range slices.Sorted(maps.Keys(n.Legs)) {
+		mac, has := given[node]
 		switch index, known := indexes[node]; {
-		case n.Kind == NetworkManaged:
-			if mac != managedLegMAC {
-				return nil, fmt.Errorf("network %s: the leg MAC of node %s is %s, not %s", n.ID, node, managedLegMAC, mac)
-			}
 		case known:
-			if want := NodeLegMAC(index, n.Mark); mac != want {
-				return nil, fmt.Errorf("network %s: the leg MAC of node %s is %s, not %s", n.ID, node, want, mac)
+			want := NodeLegMAC(index, n.Mark)
+			if has && mac != want {
+				return nil, fmt.Errorf("network %s: the leg MAC of node %s is %s, want %s", n.ID, node, mac, want)
 			}
-		default:
+			mac = want
+			out[node] = mac
+		case has:
 			if err := checkNodeLegMAC(mac, n.Mark); err != nil {
 				return nil, fmt.Errorf("network %s: the leg MAC of node %s: %w", n.ID, node, err)
 			}
+			out[node] = mac
+		case indexes != nil:
+			return nil, fmt.Errorf("network %s: node %s has no index yet, so its leg needs a MAC of its own", n.ID, node)
+		default:
+			mac = n.LegMAC
 		}
-		out[node] = mac
+		if other, taken := owner[mac]; taken {
+			return nil, fmt.Errorf("network %s: the legs of nodes %s and %s have the same MAC %s", n.ID, other, node, mac)
+		}
+		owner[mac] = node
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
+}
+
+// parseNodeLegMAC reads the index and the mark of a leg MAC in normal form.
+func parseNodeLegMAC(mac string) (index, mark int, err error) {
+	rest, ok := strings.CutPrefix(mac, nodeLegPrefix)
+	if !ok {
+		return 0, 0, fmt.Errorf("%s does not start with %s", mac, nodeLegPrefix)
+	}
+	if _, err := fmt.Sscanf(rest, "%02x:%02x", &index, &mark); err != nil {
+		return 0, 0, fmt.Errorf("%s is no leg MAC", mac)
+	}
+	return index, mark, nil
 }
 
 // checkNodeLegMAC checks a leg MAC in normal form by its form: pco's prefix,
 // the index of a node and the mark.
 func checkNodeLegMAC(mac string, mark int) error {
-	rest, ok := strings.CutPrefix(mac, nodeLegPrefix)
-	if !ok {
-		return fmt.Errorf("%s does not start with %s", mac, nodeLegPrefix)
-	}
-	var index, got int
-	if _, err := fmt.Sscanf(rest, "%02x:%02x", &index, &got); err != nil {
-		return fmt.Errorf("%s is no leg MAC", mac)
-	}
+	index, got, err := parseNodeLegMAC(mac)
 	switch {
+	case err != nil:
+		return err
 	case index > maxNodeIndex:
 		return fmt.Errorf("%s: index %d is not one of a node, 0 to %d", mac, index, maxNodeIndex)
 	case got != mark:

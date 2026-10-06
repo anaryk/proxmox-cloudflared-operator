@@ -22,6 +22,11 @@ const (
 	// maxGeneration is the highest generation of an epoch: one above it was
 	// forged, as no draw makes it.
 	maxGeneration = 1 << 53
+
+	// MaxAgentActions is how many of the actions it ran the agent keeps: an
+	// action is sent again only while it is in the desired state, which holds
+	// far fewer.
+	MaxAgentActions = 1000
 )
 
 // Epoch is the epoch an agent follows: the install, the generation and the
@@ -72,8 +77,14 @@ func (s *Store) AgentEpoch() (Epoch, bool, error) {
 	return getOne[Epoch](s.local, kindAgent, idAgentEpoch)
 }
 
-// SaveAgentEpoch stores the epoch the agent follows. Whether it may follow
-// it, being lower than the one remembered, is the agent's to judge.
+// ErrEpochBack is the error of SaveAgentEpoch for an epoch below the one the
+// agent remembers: a lower generation, the same one of another writer, or
+// another install. The remembered epoch is what tells that a store went back,
+// so it moves down only through DeleteAgentEpoch.
+var ErrEpochBack = errors.New("the epoch is not above the one the agent remembers")
+
+// SaveAgentEpoch stores the epoch the agent follows: the one it remembers, or
+// a higher one of the same install; anything else is ErrEpochBack.
 func (s *Store) SaveAgentEpoch(e Epoch) error {
 	switch {
 	case e.InstallID == "" || e.Nonce == "":
@@ -81,7 +92,24 @@ func (s *Store) SaveAgentEpoch(e Epoch) error {
 	case e.Generation < 0 || e.Generation > maxGeneration:
 		return fmt.Errorf("agent epoch: generation %d is not 0 to %d", e.Generation, maxGeneration)
 	}
-	return s.agent().put(kindAgent, idAgentEpoch, e, true)
+	d := s.agent()
+	var have Epoch
+	rev, found, err := d.getRev(kindAgent, idAgentEpoch, &have, false)
+	if err != nil {
+		return err
+	}
+	if found && have != e {
+		switch {
+		case have.InstallID != e.InstallID:
+			return fmt.Errorf("%w: it remembers install %s, not %s", ErrEpochBack, have.InstallID, e.InstallID)
+		case e.Generation < have.Generation:
+			return fmt.Errorf("%w: generation %d is below %d", ErrEpochBack, e.Generation, have.Generation)
+		case e.Generation == have.Generation:
+			return fmt.Errorf("%w: generation %d is the one it remembers, of another writer", ErrEpochBack, e.Generation)
+		}
+	}
+	_, err = d.putIf(kindAgent, idAgentEpoch, e, rev)
+	return err
 }
 
 // DeleteAgentEpoch forgets the epoch the agent remembers. A missing one is
@@ -101,9 +129,10 @@ func (s *Store) AgentActions() (map[string]ActionDone, error) {
 }
 
 // SaveAgentActions stores the actions the agent ran, unless they are what is
-// stored already.
+// stored already: the newest MaxAgentActions of them, by the time they ran.
 func (s *Store) SaveAgentActions(done map[string]ActionDone) error {
-	for _, id := range slices.Sorted(maps.Keys(done)) {
+	ids := slices.Sorted(maps.Keys(done))
+	for _, id := range ids {
 		switch a := done[id]; {
 		case id == "":
 			return errors.New("agent action has no id")
@@ -111,8 +140,10 @@ func (s *Store) SaveAgentActions(done map[string]ActionDone) error {
 			return fmt.Errorf("agent action %s has no kind", id)
 		}
 	}
-	if done == nil {
-		done = map[string]ActionDone{}
+	kept := make(map[string]ActionDone, min(len(done), MaxAgentActions))
+	slices.SortStableFunc(ids, func(a, b string) int { return done[b].At.Compare(done[a].At) })
+	for _, id := range ids[:min(len(ids), MaxAgentActions)] {
+		kept[id] = done[id]
 	}
-	return s.agent().put(kindAgent, idAgentActions, done, true)
+	return s.agent().put(kindAgent, idAgentActions, kept, true)
 }

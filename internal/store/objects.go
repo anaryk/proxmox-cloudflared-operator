@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 )
 
 // The profiles an installation is made for.
@@ -62,8 +66,7 @@ type NodeEntry struct {
 	// name for as long as the install lives; 255 is the managed leg's. The
 	// controller gives it at routing admission; an entry has none before.
 	Index *int `json:"index,omitempty"`
-	// Kind is the kind of the node's agent: "host" or "appliance", or
-	// "controller" for the controller container of an appliance.
+	// Kind is the kind of the node's agent: "host" or "appliance".
 	Kind string `json:"kind,omitempty"`
 	// VMID is the container of an appliance agent.
 	VMID int `json:"vmid,omitempty"`
@@ -77,8 +80,8 @@ type NodeEntry struct {
 	// CertSerial and CertSHA256 name the agent's client certificate.
 	CertSerial string `json:"certSerial,omitempty"`
 	CertSHA256 string `json:"certSHA256,omitempty"`
-	// State is the node's state, as of StateSince: joining, active,
-	// draining, unknown, down, contested or removed.
+	// State is the node's state, as of StateSince: one of the Node states
+	// below, or none for an entry made before states.
 	State      string    `json:"state,omitempty"`
 	StateSince time.Time `json:"stateSince,omitzero"`
 	// ControllerEligible says whether the node may hold the lease; unset is
@@ -95,14 +98,23 @@ type ProtocolRange struct {
 	Max int `json:"max"`
 }
 
+// The states of a node in the registry, as the agent protocol names them.
 const (
-	// maxNodeIndex is the highest index of a node: the next is the managed
-	// leg's.
-	maxNodeIndex = 254
-
-	// stateRemoved is the state of a node that was forgotten.
-	stateRemoved = "removed"
+	NodeJoining   = string(agentproto.Joining)
+	NodeActive    = string(agentproto.Active)
+	NodeDraining  = string(agentproto.Draining)
+	NodeUnknown   = string(agentproto.Unknown)
+	NodeDown      = string(agentproto.Down)
+	NodeContested = string(agentproto.Contested)
+	NodeRemoved   = string(agentproto.Removed)
 )
+
+// nodeStates are the states an entry may have; none is an entry made before
+// states.
+var nodeStates = []string{"", NodeJoining, NodeActive, NodeDraining, NodeUnknown, NodeDown, NodeContested, NodeRemoved}
+
+// maxNodeIndex is the highest index of a node: the next is the managed leg's.
+const maxNodeIndex = 254
 
 // check refuses an entry with no name, or with a field out of its range.
 func (n NodeEntry) check() error {
@@ -115,6 +127,8 @@ func (n NodeEntry) check() error {
 		return fmt.Errorf("node %s: VMID %d is negative", n.Name, n.VMID)
 	case n.Protocol.Min < 0 || n.Protocol.Min > n.Protocol.Max:
 		return fmt.Errorf("node %s: protocol %d to %d is no range", n.Name, n.Protocol.Min, n.Protocol.Max)
+	case !slices.Contains(nodeStates, n.State):
+		return fmt.Errorf("node %s: state %q is not one of %s", n.Name, n.State, strings.Join(nodeStates[1:], ", "))
 	}
 	return nil
 }

@@ -34,6 +34,24 @@ var ErrRevision = errors.New("the object changed since it was read")
 // errNewerSchema marks a file written by a newer version.
 var errNewerSchema = errors.New("written by a newer version")
 
+// damagedError is the error of a file that is there and holds no object this
+// build could have written: no envelope, no data, another id, data of another
+// shape. A file of a newer schema is not damaged, only newer. The message is
+// the error's own.
+type damagedError struct{ err error }
+
+func (e *damagedError) Error() string { return e.err.Error() }
+
+func (e *damagedError) Unwrap() error { return e.err }
+
+func damaged(err error) error { return &damagedError{err: err} }
+
+// isDamaged reports whether err says a file is damaged.
+func isDamaged(err error) bool {
+	var d *damagedError
+	return errors.As(err, &d)
+}
+
 // envelope is what a file holds around the value of an object. The id is the
 // one the object was stored under, since a file name cannot tell ids apart that
 // share it.
@@ -67,6 +85,10 @@ type Dir struct {
 	// tenure is the record of what this store wrote in the current tenure,
 	// shared by the roots of one Store; nil keeps none.
 	tenure *tenure
+
+	// maxSize is the largest file the Dir writes; 0 is maxFileSize, the most
+	// the cluster filesystem takes.
+	maxSize int
 }
 
 // NewDir returns the store rooted at root.
@@ -74,6 +96,14 @@ func NewDir(root string) Dir { return newDir(root, nil, nil) }
 
 func newDir(root string, guard func() error, t *tenure) Dir {
 	return Dir{root: root, mu: new(sync.Mutex), guard: guard, flush: syncDir, tenure: t}
+}
+
+// limit is the largest file the Dir writes.
+func (d Dir) limit() int {
+	if d.maxSize == 0 {
+		return maxFileSize
+	}
+	return d.maxSize
 }
 
 // synced makes the entries of dir durable, when the Dir is.
@@ -171,10 +201,10 @@ func (d Dir) getRev(kind, id string, v any, strict bool) (rev int64, found bool,
 		return 0, false, err
 	}
 	if env.ID != id {
-		return 0, false, fmt.Errorf("%s holds the object of %q, not of %q", path, env.ID, id)
+		return 0, false, damaged(fmt.Errorf("%s holds the object of %q, not of %q", path, env.ID, id))
 	}
 	if err := decode(env.Data, v, strict); err != nil {
-		return 0, false, fmt.Errorf("%s: %s", path, jsonProblem(err))
+		return 0, false, damaged(fmt.Errorf("%s: %s", path, jsonProblem(err)))
 	}
 	return env.Rev, true, nil
 }
@@ -199,7 +229,7 @@ func (d Dir) readFile(path string) (env envelope, found bool, err error) {
 		d.tenure.saw(path, envelope{}, false)
 		return envelope{}, false, nil
 	case env.ID == "":
-		return envelope{}, false, fmt.Errorf("%s has no id", path)
+		return envelope{}, false, damaged(fmt.Errorf("%s has no id", path))
 	}
 	d.tenure.saw(path, env, true)
 	return env, true, nil
@@ -227,18 +257,18 @@ func readEnvelope(path string) (env envelope, found bool, err error) {
 		return envelope{}, false, fmt.Errorf("reading object: %w", err)
 	}
 	if err := json.Unmarshal(b, &env); err != nil {
-		return envelope{}, false, fmt.Errorf("%s: %s", path, jsonProblem(err))
+		return envelope{}, false, damaged(fmt.Errorf("%s: %s", path, jsonProblem(err)))
 	}
 	switch want := schemaAt(path); {
 	case env.SchemaVersion > want:
 		return envelope{}, false, fmt.Errorf("%s has schema version %d, this build reads %d: %w",
 			path, env.SchemaVersion, want, errNewerSchema)
 	case env.SchemaVersion == 0:
-		return envelope{}, false, fmt.Errorf("%s has no schema version", path)
+		return envelope{}, false, damaged(fmt.Errorf("%s has no schema version", path))
 	case env.SchemaVersion != want:
 		return envelope{}, false, fmt.Errorf("%s has schema version %d, this build reads %d", path, env.SchemaVersion, want)
 	case len(env.Data) == 0 || string(bytes.TrimSpace(env.Data)) == "null":
-		return envelope{}, false, fmt.Errorf("%s has no data", path)
+		return envelope{}, false, damaged(fmt.Errorf("%s has no data", path))
 	}
 	return env, true, nil
 }

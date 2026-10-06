@@ -2,9 +2,12 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -93,4 +96,69 @@ func TestTheAgentsActionsAreKeptSoThatNoneRunsTwice(t *testing.T) {
 
 	require.Error(t, s.SaveAgentActions(map[string]ActionDone{"": {Kind: "probe", At: t0}}))
 	require.Error(t, s.SaveAgentActions(map[string]ActionDone{"a3": {At: t0}}))
+}
+
+// The epoch the agent remembers is what tells a store that went back: it
+// never moves down but through DeleteAgentEpoch.
+func TestTheAgentsEpochNeverGoesBack(t *testing.T) {
+	s, _ := openStore(t)
+	e := Epoch{InstallID: "0123456789ab", Generation: 7, Nonce: "n0nce"}
+	require.NoError(t, s.SaveAgentEpoch(e))
+	require.NoError(t, s.SaveAgentEpoch(e), "the same epoch again")
+
+	for name, bad := range map[string]Epoch{
+		"a lower generation":           {InstallID: "0123456789ab", Generation: 6, Nonce: "other"},
+		"the same generation, another": {InstallID: "0123456789ab", Generation: 7, Nonce: "other"},
+		"another install":              {InstallID: "ba9876543210", Generation: 9, Nonce: "n0nce"},
+	} {
+		err := s.SaveAgentEpoch(bad)
+		require.ErrorIs(t, err, ErrEpochBack, name)
+	}
+	got, _, err := s.AgentEpoch()
+	require.NoError(t, err)
+	require.Equal(t, e, got)
+
+	higher := Epoch{InstallID: "0123456789ab", Generation: 8, Nonce: "next"}
+	require.NoError(t, s.SaveAgentEpoch(higher))
+	require.NoError(t, s.DeleteAgentEpoch())
+	require.NoError(t, s.SaveAgentEpoch(Epoch{InstallID: "ba9876543210", Generation: 1, Nonce: "n"}), "after a reset any epoch")
+}
+
+func TestTheAgentsActionsKeepTheNewestThousand(t *testing.T) {
+	s, _ := openStore(t)
+	done := map[string]ActionDone{}
+	for i := range MaxAgentActions + 5 {
+		done[fmt.Sprintf("a%04d", i)] = ActionDone{Kind: "probe", At: t0.Add(time.Duration(i) * time.Second)}
+	}
+	require.NoError(t, s.SaveAgentActions(done))
+
+	got, err := s.AgentActions()
+
+	require.NoError(t, err)
+	require.Len(t, got, MaxAgentActions)
+	require.NotContains(t, got, "a0004", "the oldest go")
+	require.Contains(t, got, "a0005")
+	require.Contains(t, got, fmt.Sprintf("a%04d", MaxAgentActions+4))
+}
+
+// The local root is the node's own disk: a snapshot of a large install is
+// not held to the 1 MiB of the cluster filesystem.
+func TestALocalObjectMayBeLargerThanAFileOfTheClusterFilesystem(t *testing.T) {
+	s, p := openStore(t)
+	big := json.RawMessage(`{"pad":"` + strings.Repeat("x", 2<<20) + `"}`)
+
+	require.NoError(t, s.SaveAgentSnapshot(big))
+	got, found, err := s.AgentSnapshot()
+	require.NoError(t, err)
+	require.True(t, found)
+	var back struct{ Pad string }
+	require.NoError(t, json.Unmarshal(got, &back))
+	require.Equal(t, 2<<20, len(back.Pad))
+
+	version, _, err := NewestSchema(p)
+	require.NoError(t, err)
+	require.Equal(t, SchemaVersion(), version, "a large object still tells its schema")
+
+	require.ErrorContains(t, s.AppendSecurityEvent("pve1", SecurityEvent{At: t0, Kind: "enrol", Message: strings.Repeat("y", 2<<20)}),
+		"limit", "the cluster root keeps the limit of the cluster filesystem")
 }

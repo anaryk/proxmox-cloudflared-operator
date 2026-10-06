@@ -158,11 +158,13 @@ func build(p Paths, guard func() error) *Store {
 	t := &tenure{}
 	cluster, private := newDir(p.Cluster, guard, t), newDir(p.Private, guard, t)
 	cluster.durable, private.durable = p.Durable, p.Durable
+	local := NewDir(p.Local)
+	local.maxSize = maxLocalFileSize
 	return &Store{
 		paths:   p,
 		cluster: cluster,
 		private: private,
-		local:   NewDir(p.Local),
+		local:   local,
 		proofs:  &proofTimes{},
 		tenure:  t,
 	}
@@ -344,6 +346,11 @@ func (s *Store) Nodes() ([]NodeEntry, error) { return loadList[NodeEntry](s.clus
 // maps to the same file, as one that differs by case does, is refused.
 func (s *Store) SaveNode(n NodeEntry) error {
 	if err := n.check(); err != nil {
+		return err
+	}
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+	if err := s.indexIsFree(n); err != nil {
 		return err
 	}
 	return s.cluster.put(kindNodes, n.Name, n, true)

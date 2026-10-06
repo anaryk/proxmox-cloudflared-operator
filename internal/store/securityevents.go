@@ -77,6 +77,7 @@ func (s *Store) fitSecurityLog(node string, events []SecurityEvent) ([]SecurityE
 	if err != nil {
 		return nil, err
 	}
+	limit := s.cluster.limit()
 	var failed error
 	fits := func(drop int) bool {
 		data, err := json.Marshal(securityLog{Node: node, Events: events[drop:]})
@@ -85,7 +86,7 @@ func (s *Store) fitSecurityLog(node string, events []SecurityEvent) ([]SecurityE
 			// The revision only grows; one of the widest ones measures it.
 			out, err = encodeFile(path, 1<<62, node, data)
 			if err == nil {
-				return len(out) <= maxFileSize
+				return len(out) <= limit
 			}
 		}
 		failed = err
@@ -99,7 +100,7 @@ func (s *Store) fitSecurityLog(node string, events []SecurityEvent) ([]SecurityE
 	case failed != nil:
 		return nil, fmt.Errorf("encoding the security events of %s: %w", node, failed)
 	case drop == len(events):
-		return nil, fmt.Errorf("a security event of %s is over the %d byte limit of a file", node, maxFileSize)
+		return nil, fmt.Errorf("a security event of %s is over the %d byte limit of a file", node, limit)
 	}
 	return events[drop:], nil
 }

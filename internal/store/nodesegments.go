@@ -98,7 +98,8 @@ func (s *Store) SegmentsOn(node string) (map[string]Segment, error) {
 // An acknowledgement of the previous release would keep the segment
 // acknowledged there, so it goes too; every other node of the registry that
 // is not removed, and that it counted for, first gets one of its own with the
-// same time, so that only this node loses it.
+// same time, so that only this node loses it. A node registered after that
+// has none: the old acknowledgement it would have counted for is gone.
 func (s *Store) RevokeNodeSegment(node, bridge string, vlan int) error {
 	if err := checkNodeName("segment acknowledgement", node); err != nil {
 		return err
@@ -118,7 +119,7 @@ func (s *Store) RevokeNodeSegment(node, bridge string, vlan int) error {
 			return err
 		}
 		for _, n := range nodes {
-			if n.Name == node || n.State == stateRemoved {
+			if n.Name == node || n.State == NodeRemoved {
 				continue
 			}
 			if _, has := own[NodeSegmentID(n.Name, bridge, vlan)]; has {

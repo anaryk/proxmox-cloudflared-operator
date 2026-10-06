@@ -210,6 +210,46 @@ func TestTheSoftDenyListThePreviousReleaseWroteWinsOverTheCopy(t *testing.T) {
 	require.Equal(t, got, plain)
 }
 
+// A save that kept the old object and not the copy kept what it saved: it
+// says so with a note the caller can tell from a failure.
+func TestASaveWhoseCopyFailsKeepsTheOldObjectAndSaysSo(t *testing.T) {
+	now, _, p := copyStores(t)
+	require.NoError(t, now.SaveSoftDeny(SoftDeny{Entries: []SoftEntry{softEntry("192.168.4.1", "gateway of node pve1", t0)}}))
+	readOnlyDir(t, filepath.Join(p.Cluster, "meta"))
+	later := SoftDeny{Entries: []SoftEntry{softEntry("192.168.4.1", "gateway of node pve1", t0.Add(time.Hour))}}
+
+	err := now.SaveSoftDeny(later)
+
+	var note *CopyNote
+	require.ErrorAs(t, err, &note)
+	require.Equal(t, "soft deny list", note.What)
+	require.Contains(t, err.Error(), "soft deny list")
+	got, notes, err := now.LoadSoftDeny()
+	require.NoError(t, err)
+	require.Equal(t, later, got, "this node's own is the newer one, and is read")
+	require.Len(t, notes, 1)
+}
+
+// Until the upgrade is finished the old object is the authority: a copy
+// that is damaged is no reason to fail the read.
+func TestADamagedCopyFallsBackToTheOldObject(t *testing.T) {
+	now, _, p := copyStores(t)
+	m := memoryOf("example.com", "10.0.0.5:80")
+	require.NoError(t, now.SaveEngineMemory(m))
+	writeFile(t, filepath.Join(p.Cluster, "meta", "engine-memory.json"), "{ not json")
+
+	got, notes, err := now.LoadEngineMemory()
+
+	require.NoError(t, err)
+	require.Equal(t, m.sorted(), got)
+	require.Len(t, notes, 1)
+	require.Contains(t, notes[0], "cannot be read")
+
+	writeFile(t, filepath.Join(p.Cluster, "meta", "engine-memory.json"), `{"schemaVersion":99,"rev":1,"id":"engine-memory","data":{}}`)
+	_, _, err = now.LoadEngineMemory()
+	require.ErrorContains(t, err, "schema version 99", "a copy of a newer release is no damage to step over")
+}
+
 // A copy that cannot be written again is no reason to act on the older one:
 // the read returns what the old object holds, and says the copy is behind.
 func TestACopyThatCannotBeRewrittenStillReadsTheNewerObject(t *testing.T) {

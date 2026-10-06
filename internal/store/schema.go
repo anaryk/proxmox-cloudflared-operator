@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-// maxObjectFile is more than any object of the store holds: pmxcfs refuses
-// files over 1 MiB.
-const maxObjectFile = 1 << 20
+// maxObjectFile is the most of a file read for its schema version: no object
+// of the store is larger.
+const maxObjectFile = maxLocalFileSize
 
 // SchemaVersion is the version of the envelope this build reads and writes.
 // A build reads no object of a higher one.

@@ -36,7 +36,31 @@ func (s *Store) SaveNodeIf(n NodeEntry, rev int64) (int64, error) {
 	if err := n.check(); err != nil {
 		return 0, err
 	}
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+	if err := s.indexIsFree(n); err != nil {
+		return 0, err
+	}
 	return s.cluster.putIf(kindNodes, n.Name, n, rev)
+}
+
+// indexIsFree refuses an entry whose index another node holds, removed ones
+// too: a name keeps its index for as long as the install lives, and two
+// nodes of one index would give their legs one MAC. The caller holds keyMu.
+func (s *Store) indexIsFree(n NodeEntry) error {
+	if n.Index == nil {
+		return nil
+	}
+	nodes, err := s.Nodes()
+	if err != nil {
+		return err
+	}
+	for _, other := range nodes {
+		if other.Name != n.Name && other.Index != nil && *other.Index == *n.Index {
+			return fmt.Errorf("node %s: index %d is the index of node %s", n.Name, *n.Index, other.Name)
+		}
+	}
+	return nil
 }
 
 // nodeNamePattern is what Proxmox takes as the name of a node: a host name

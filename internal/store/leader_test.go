@@ -93,3 +93,32 @@ func TestSaveWriterKeepsWhatTheRecordAddsForTheSameWriter(t *testing.T) {
 	require.Equal(t, LeaderRecord{Writer: next, CASHA256: r.CASHA256}, got,
 		"another epoch keeps the CA and drops what was the other holder's")
 }
+
+// A holder that was paused through a takeover must not write over the
+// record of the epoch that followed it.
+func TestSaveLeaderIfWritesOnlyOverTheRecordItRead(t *testing.T) {
+	s, p := openStore(t)
+	r := someLeader()
+	rev, err := s.SaveLeaderIf(r, 0)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rev)
+
+	taken := someLeader()
+	taken.Generation, taken.Nonce, taken.Node = 5, "newer", "pve2"
+	rev, err = s.SaveLeaderIf(taken, 1)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, rev)
+
+	stale := r
+	stale.ReleasedAt = t0.Add(time.Hour)
+	before := readRaw(t, filepath.Join(p.Cluster, "meta", "leader.json"))
+	rev, err = s.SaveLeaderIf(stale, 1)
+	require.ErrorIs(t, err, ErrRevision)
+	require.EqualValues(t, 2, rev)
+	require.Equal(t, before, readRaw(t, filepath.Join(p.Cluster, "meta", "leader.json")))
+
+	bad := taken
+	bad.Nonce = "Not Valid"
+	_, err = s.SaveLeaderIf(bad, 2)
+	require.ErrorContains(t, err, "nonce")
+}

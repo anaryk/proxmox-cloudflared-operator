@@ -257,6 +257,9 @@ func TestSaveClaimsChecksEverythingBeforeItWritesOrDeletes(t *testing.T) {
 
 func TestSaveBindingsChecksEverythingBeforeItWrites(t *testing.T) {
 	s, p := openStore(t)
+	// The local root takes files far larger than 1 MiB; this one is held to
+	// it, to have a file that is too large without making one of 64 MiB.
+	s.local.maxSize = 1 << 20
 	require.NoError(t, s.SaveBindings(map[string]resolve.Binding{"a.example.com": bindingOf("a.example.com", "qemu/101")}))
 	before := identities(t, filepath.Join(p.Local, "bindings"))
 

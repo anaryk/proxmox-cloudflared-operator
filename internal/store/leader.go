@@ -41,14 +41,34 @@ func (s *Store) Leader() (r LeaderRecord, rev int64, found bool, err error) {
 	return r, rev, true, nil
 }
 
-// SaveLeader stores leader.json, unless it is what is stored already. Writer
-// returns its writer.
+// SaveLeader stores leader.json, unless it is what is stored already, over
+// whatever record is there. Writer returns its writer. A holder writes with
+// SaveLeaderIf, at the revision it read.
 func (s *Store) SaveLeader(r LeaderRecord) error {
+	if err := r.check(); err != nil {
+		return err
+	}
+	return s.cluster.put(kindMeta, idLeader, r, true)
+}
+
+// SaveLeaderIf stores leader.json read at revision rev, 0 for none, while
+// the file still has that revision; otherwise the error is ErrRevision with
+// the revision it has, and nothing is written: a holder paused through a
+// takeover does not write over the record of the epoch after it. It returns
+// the revision the record has after.
+func (s *Store) SaveLeaderIf(r LeaderRecord, rev int64) (int64, error) {
+	if err := r.check(); err != nil {
+		return 0, err
+	}
+	return s.cluster.putIf(kindMeta, idLeader, r, rev)
+}
+
+func (r LeaderRecord) check() error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
 	if r.Handoff != nil && r.Handoff.To == "" {
 		return errors.New("leader: the hand-off names no node")
 	}
-	return s.cluster.put(kindMeta, idLeader, r, true)
+	return nil
 }

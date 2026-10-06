@@ -182,6 +182,50 @@ func TestAJoinTokenIsMarkedUsedOnEveryUse(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoJoinToken)
 }
 
+// A token is made once: saving it again, as a retry after a crash would,
+// must not give back a use.
+func TestAJoinTokenIsMadeOnceAndNeverLosesAUse(t *testing.T) {
+	s, _ := openStore(t)
+	made := joinRecord("t1", "pve-b")
+	require.NoError(t, s.SaveJoinToken(made))
+	_, err := s.UseJoinToken("t1", JoinUse{At: t0})
+	require.NoError(t, err)
+
+	require.ErrorIs(t, s.SaveJoinToken(made), ErrRevision)
+	r, rev, found, err := s.JoinToken("t1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.EqualValues(t, 2, rev)
+	require.Len(t, r.Uses, 1, "the use is still there")
+
+	longer := r
+	longer.Expires = r.Expires.Add(time.Minute)
+	_, err = s.SaveJoinTokenIf(longer, 1)
+	require.ErrorIs(t, err, ErrRevision, "a change goes at the revision it was read at")
+
+	unused := longer
+	unused.Uses = nil
+	_, err = s.SaveJoinTokenIf(unused, 2)
+	require.ErrorContains(t, err, "use")
+	require.NotErrorIs(t, err, ErrRevision)
+
+	other := longer
+	other.Uses = []JoinUse{{At: t0.Add(time.Hour)}}
+	_, err = s.SaveJoinTokenIf(other, 2)
+	require.ErrorContains(t, err, "use", "a use is never written over")
+
+	rev, err = s.SaveJoinTokenIf(longer, 2)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, rev)
+	r, _, _, err = s.JoinToken("t1")
+	require.NoError(t, err)
+	require.Equal(t, longer, r)
+
+	_, _, found, err = s.JoinToken("t9")
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
 // Uses that race each other each find the record as the others left it:
 // a revision that moved in between is read again, and no use is lost.
 func TestUsesOfAJoinTokenAtOnceAreAllKept(t *testing.T) {

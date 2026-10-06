@@ -134,7 +134,8 @@ func TestTheTenureCheckWatchesTheSharedRootsAlone(t *testing.T) {
 	require.NoError(t, s.WentBack())
 
 	require.NoError(t, s.SaveJoinToken(joinRecord("t1", "pve-b")))
-	require.NoError(t, s.SaveJoinToken(func() JoinRecord { r := joinRecord("t1", "pve-b"); r.Uses = []JoinUse{{At: t0}}; return r }()))
+	_, err = s.UseJoinToken("t1", JoinUse{At: t0})
+	require.NoError(t, err)
 	writeFile(t, filepath.Join(p.Private, "jointokens", "t1.json"),
 		envelopeJSON("t1", `{"id":"t1","node":"pve-b","secretSHA256":"`+sha("secret of t1")+`","createdAt":"2026-10-01T12:00:00Z","expires":"2026-10-01T12:15:00Z"}`))
 

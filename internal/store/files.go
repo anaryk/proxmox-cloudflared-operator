@@ -17,6 +17,10 @@ const (
 	// maxFileSize is the largest file pmxcfs accepts. A write beyond it fails
 	// halfway and leaves a truncated file behind, so nothing larger is tried.
 	maxFileSize = 1 << 20
+	// maxLocalFileSize is the largest file of the local root, on the node's
+	// own disk: the agent's snapshot of a large install, which holds every
+	// target of its node, passes the limit of the cluster filesystem.
+	maxLocalFileSize = 64 << 20
 
 	dirMode fs.FileMode = 0o700
 
@@ -85,11 +89,12 @@ func setDirMode(dir string) error {
 // never a part of it, and writers of the same file do not meet in one temporary
 // file. The temporary file is removed again if anything fails. It is made with
 // mode 0600 and the file is never chmod-ed: the cluster filesystem decides the
-// modes of its files by path. synced is called with the directory after the
-// rename, which a rename needs to be durable.
-func writeFileAtomic(path string, data []byte, synced func(dir string) error) error {
-	if len(data) > maxFileSize {
-		return fmt.Errorf("%d bytes are over the %d byte limit of a file", len(data), maxFileSize)
+// modes of its files by path. Data over limit bytes is refused. synced is
+// called with the directory after the rename, which a rename needs to be
+// durable.
+func writeFileAtomic(path string, data []byte, limit int, synced func(dir string) error) error {
+	if len(data) > limit {
+		return fmt.Errorf("%d bytes are over the %d byte limit of a file", len(data), limit)
 	}
 	err := atomicfile.Write(path, data, atomicfile.Options{
 		SyncIgnored: func(err error) bool { return unsupported(err) || errors.Is(err, syscall.EINVAL) },

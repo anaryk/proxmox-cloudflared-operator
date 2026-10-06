@@ -221,12 +221,59 @@ func (s *Store) JoinTokens() (map[string]JoinRecord, error) {
 	return loadMap(s.private, kindJoinTokens, "id", func(r *JoinRecord) *string { return &r.ID })
 }
 
-// SaveJoinToken stores a join token, unless it is what is stored already.
-func (s *Store) SaveJoinToken(r JoinRecord) error {
-	if err := r.check(); err != nil {
-		return err
+// JoinToken returns one join token with the revision of its file, which
+// SaveJoinTokenIf takes.
+func (s *Store) JoinToken(id string) (JoinRecord, int64, bool, error) {
+	var r JoinRecord
+	rev, found, err := s.private.getRev(kindJoinTokens, id, &r, false)
+	if err != nil || !found {
+		return JoinRecord{}, 0, false, err
 	}
-	return s.private.put(kindJoinTokens, r.ID, r, true)
+	return r, rev, true, nil
+}
+
+// SaveJoinToken stores a new join token. A token is made once: one of the
+// id that is stored already is ErrRevision, and keeps its uses, as a retry of
+// the same save would otherwise give a used token back unused. A change of a
+// stored token is SaveJoinTokenIf's.
+func (s *Store) SaveJoinToken(r JoinRecord) error {
+	_, err := s.SaveJoinTokenIf(r, 0)
+	return err
+}
+
+// SaveJoinTokenIf stores a join token read at revision rev, 0 for a new one,
+// while its file still has that revision; otherwise the error is
+// ErrRevision, with the revision it has. The uses it records are never taken
+// back: a record that drops or changes one of the stored uses is refused. It
+// returns the revision the token has after.
+func (s *Store) SaveJoinTokenIf(r JoinRecord, rev int64) (int64, error) {
+	if err := r.check(); err != nil {
+		return 0, err
+	}
+	stored, have, found, err := s.JoinToken(r.ID)
+	switch {
+	case err != nil:
+		return 0, err
+	case have != rev:
+		return have, fmt.Errorf("%w: join token %s is at revision %d, not %d", ErrRevision, r.ID, have, rev)
+	case found && !keepsUses(stored.Uses, r.Uses):
+		return have, fmt.Errorf("join token %s: the %d uses recorded must stay as they are, and a use is never taken back", r.ID, len(stored.Uses))
+	}
+	return s.private.putIf(kindJoinTokens, r.ID, r, rev)
+}
+
+// keepsUses reports whether next begins with every use of stored, as it is.
+func keepsUses(stored, next []JoinUse) bool {
+	if len(next) < len(stored) {
+		return false
+	}
+	for i, u := range stored {
+		n := next[i]
+		if !u.At.Equal(n.At) || u.Source != n.Source || u.VMID != n.VMID || !slices.Equal(u.MACs, n.MACs) {
+			return false
+		}
+	}
+	return true
 }
 
 // DeleteJoinToken removes a join token. A missing one is not an error.

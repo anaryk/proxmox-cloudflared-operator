@@ -210,8 +210,8 @@ func (d Dir) prepare(kind string, o object, onlyIfChanged bool) (*write, int64, 
 	if err != nil {
 		return nil, 0, fmt.Errorf("encoding %s %q: %w", kind, o.id, err)
 	}
-	if len(out) > maxFileSize {
-		return nil, 0, fmt.Errorf("storing %s %q: %d bytes are over the %d byte limit of a file", kind, o.id, len(out), maxFileSize)
+	if limit := d.limit(); len(out) > limit {
+		return nil, 0, fmt.Errorf("storing %s %q: %d bytes are over the %d byte limit of a file", kind, o.id, len(out), limit)
 	}
 	return &write{kind: kind, id: o.id, dir: dir, path: path, rev: old.Rev + 1, out: out}, old.Rev, nil
 }
@@ -231,7 +231,7 @@ func (d Dir) commit(w *write) error {
 	if err := d.ensureKindDir(w.dir); err != nil {
 		return fmt.Errorf("storing %s %q: %w", w.kind, w.id, err)
 	}
-	if err := writeFileAtomic(w.path, w.out, d.synced); err != nil {
+	if err := writeFileAtomic(w.path, w.out, d.limit(), d.synced); err != nil {
 		return fmt.Errorf("storing %s %q: %w", w.kind, w.id, err)
 	}
 	d.tenure.wrote(d.root, w.kind, w.id, w.path, w.rev)
@@ -282,7 +282,7 @@ func (d Dir) updateFile(name string, update func(old []byte) []byte) error {
 	case err != nil:
 		return fmt.Errorf("reading %s: %w", name, err)
 	}
-	if err := writeFileAtomic(path, update(old), d.synced); err != nil {
+	if err := writeFileAtomic(path, update(old), d.limit(), d.synced); err != nil {
 		return fmt.Errorf("writing %s: %w", name, err)
 	}
 	return nil

@@ -66,6 +66,10 @@ func (c copied[T]) read(s *Store) (old, value T, notes []string, err error) {
 	var stored clusterCopy[T]
 	have, err := s.cluster.Get(kindMeta, c.clusterID, &stored)
 	switch {
+	case isDamaged(err):
+		// Until the upgrade is finished the old object is the authority, and
+		// the next write makes the copy anew.
+		return old, old, []string{fmt.Sprintf("the cluster copy of the %s cannot be read, and node %s's own is used: %v", c.what, node, err)}, nil
 	case err != nil:
 		return old, value, nil, err
 	case have && (stored.DerivedFrom.Node != node || rev <= stored.DerivedFrom.Rev):
@@ -88,7 +92,8 @@ func (c copied[T]) read(s *Store) (old, value T, notes []string, err error) {
 }
 
 // write stores v as the old object and then as the copy, each unless it is
-// what is stored already.
+// what is stored already. A copy that cannot be written after the old object
+// was is a *CopyNote: what was saved is kept.
 func (c copied[T]) write(s *Store, v T) error {
 	rev, err := s.local.putRev(kindMeta, c.localID, v, true)
 	if err != nil {
@@ -98,8 +103,27 @@ func (c copied[T]) write(s *Store, v T) error {
 	if node == "" {
 		return nil
 	}
-	return s.cluster.put(kindMeta, c.clusterID, clusterCopy[T]{DerivedFrom: DerivedFrom{Node: node, Rev: rev}, Value: c.shared(v)}, true)
+	if err := s.cluster.put(kindMeta, c.clusterID, clusterCopy[T]{DerivedFrom: DerivedFrom{Node: node, Rev: rev}, Value: c.shared(v)}, true); err != nil {
+		return &CopyNote{What: c.what, Node: node, Err: err}
+	}
+	return nil
 }
+
+// CopyNote is what a save of an object kept twice returns when it stored the
+// object on this node, where the previous release keeps it, and not its copy
+// on the cluster root: what was saved is kept on this node, and is no failure
+// to report as one; the copy waits for the next save that reaches it.
+type CopyNote struct {
+	What string // as "engine memory"
+	Node string
+	Err  error
+}
+
+func (n *CopyNote) Error() string {
+	return fmt.Sprintf("the %s is saved on node %s, and its cluster copy is not: %v", n.What, n.Node, n.Err)
+}
+
+func (n *CopyNote) Unwrap() error { return n.Err }
 
 // same is the copy of a value that is shared as it is.
 func same[T any](v T) T { return v }
