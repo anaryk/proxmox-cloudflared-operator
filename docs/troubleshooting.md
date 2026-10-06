@@ -2,7 +2,8 @@
 
 Start with the three commands that say what pco thinks: `pco status`, `pco doctor` and
 `pco diagnose <hostname>`. This page says how to read them, and then goes through the
-problems that come up, from what a visitor sees to what the daemon reports.
+problems that come up, from what a visitor sees to what the daemon reports. [Problems](problems.md)
+lists every problem line, event kind and doctor check, with its cause and what to do.
 
 Commands run as root on the node. `pco` exits with 2 when it cannot ask the daemon:
 
@@ -437,7 +438,7 @@ Cloudflare through it, but the connectors keep serving what was published.
 | `no Cloudflare credential; add one with pco credential add` | Add a token; see [Cloudflare token](cloudflare-token.md). |
 | `credential <id>: its zones are not listed yet (...)` | The token cannot list its zones, because it lacks `Zone > Zone > Read`, was revoked or has expired, or Cloudflare did not answer. Until it can, nothing is changed at Cloudflare for any account, not only for its own. `pco credential check <id>` says what to grant. If the token is dead, remove the credential: `pco credential remove <id>` (see [Cloudflare token](cloudflare-token.md)). |
 | `settings gateTag changed since pco started ...` | `systemctl restart pco`, and `pco setup` to register the new gate tag. |
-| `reading the settings: ...` | The settings file is wrong. Operations has the forms of the message and what each means: [Settings](operations.md#settings). |
-| `settings: pollInterval is ... below the minimum of 5s; ...` | A setting below its minimum; the minimum is used. Raise it in the file. See [Operations](operations.md#settings). |
+| `reading the settings: ...` | The settings file is wrong. Settings has the forms of the message and what each means: [Settings](settings.md#a-settings-file-the-daemon-cannot-use). |
+| `settings: pollInterval is ... below the minimum of 5s; ...` | A setting below its minimum; the minimum is used. Raise it with `pco settings apply`. See [Settings](settings.md#a-settings-file-the-daemon-cannot-use). |
 | `the Cloudflare API is overridden to <url> (PCO_CLOUDFLARE_API_URL); this is for tests only` | The daemon was started with `PCO_CLOUDFLARE_API_URL`, which the end-to-end tests set to point it at a fake Cloudflare on this node; nothing it does then reaches Cloudflare. A production node never has it: find where it is set with `systemctl cat pco` (usually a drop-in), remove it and `systemctl restart pco`. |
 | `the egress table was changed or removed outside pco and was loaded again (...)` | Something changed the nftables ruleset, and the daemon put the table back. Find what: `nft flush ruleset`, or `nftables.service` starting or restarting (see `pco doctor`). |
