@@ -3,6 +3,7 @@
 // at the field before anything is sent. The daemon's answer still wins.
 
 import type { ManualRouteView } from '../../api/types.gen'
+import { goQuote, goQuoteRune } from '../../text/quote'
 
 export interface ManualValues {
   id: string
@@ -60,13 +61,13 @@ export function hostnameError(raw: string, wildcard = true): string | undefined 
   }
   for (const l of labels) {
     if (l === '') return 'empty label'
-    if (l.length > maxLabel) return `label "${l}" is longer than ${maxLabel} characters`
+    if (l.length > maxLabel) return `label ${goQuote(l)} is longer than ${maxLabel} characters`
     const bad = [...l].find((c) => !/^[a-zA-Z0-9-]$/.test(c))
-    if (bad !== undefined) return `label "${l}" contains "${bad}"`
-    if (l.startsWith('-') || l.endsWith('-')) return `label "${l}" starts or ends with a hyphen`
+    if (bad !== undefined) return `label ${goQuote(l)} contains ${goQuoteRune(bad)}`
+    if (l.startsWith('-') || l.endsWith('-')) return `label ${goQuote(l)} starts or ends with a hyphen`
   }
   const last = labels[labels.length - 1] ?? ''
-  if (/^[0-9]+$/.test(last)) return `last label "${last}" is all digits`
+  if (/^[0-9]+$/.test(last)) return `last label ${goQuote(last)} is all digits`
   return undefined
 }
 

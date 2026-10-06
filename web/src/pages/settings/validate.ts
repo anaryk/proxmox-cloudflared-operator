@@ -5,6 +5,7 @@
 
 import type { Limit, Settings } from '../../api/types.gen'
 import { parseDuration } from '../../text/duration'
+import { goQuote, goQuoteRune } from '../../text/quote'
 
 export interface FieldIssue {
   // The path of the field in the JSON of the settings, as the daemon names
@@ -44,11 +45,11 @@ const maxTagLen = 64
 
 const label = (l: string): string | undefined => {
   if (l === '') return 'empty label'
-  if (l.length > maxLabelLen) return `label "${l}" is longer than ${maxLabelLen} characters`
+  if (l.length > maxLabelLen) return `label ${goQuote(l)} is longer than ${maxLabelLen} characters`
   for (const c of l) {
-    if (!/^[A-Za-z0-9-]$/.test(c)) return `label "${l}" contains "${c}"`
+    if (!/^[A-Za-z0-9-]$/.test(c)) return `label ${goQuote(l)} contains ${goQuoteRune(c)}`
   }
-  if (l.startsWith('-') || l.endsWith('-')) return `label "${l}" starts or ends with a hyphen`
+  if (l.startsWith('-') || l.endsWith('-')) return `label ${goQuote(l)} starts or ends with a hyphen`
   return undefined
 }
 
@@ -58,7 +59,7 @@ function labelsError(labels: string[]): string | undefined {
     if (e) return e
   }
   const last = labels[labels.length - 1] ?? ''
-  return /^[0-9]+$/.test(last) ? `last label "${last}" is all digits` : undefined
+  return /^[0-9]+$/.test(last) ? `last label ${goQuote(last)} is all digits` : undefined
 }
 
 function nameError(h: string): string | undefined {

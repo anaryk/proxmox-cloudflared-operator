@@ -16,12 +16,13 @@ describe('the hostname, as hostname.Normalize takes it', () => {
     ['example', 'needs at least two labels'],
     ['*.com', 'a wildcard needs at least two labels after the *'],
     ['a..example.com', 'empty label'],
-    ['a_b.example.com', 'label "a_b" contains "_"'],
+    ['a_b.example.com', `label "a_b" contains '_'`],
     ['-a.example.com', 'label "-a" starts or ends with a hyphen'],
     ['10.0.5.20', 'last label "20" is all digits'],
     [`${'a'.repeat(64)}.example.com`, `label "${'a'.repeat(64)}" is longer than 63 characters`],
     [`${'a.'.repeat(127)}com`, 'longer than 253 characters'],
-    ['bücher.example.com', 'label "bücher" contains "ü"'],
+    ['bücher.example.com', `label "bücher" contains 'ü'`],
+    ['a\u202eb.example.com', String.raw`label "a\u202eb" contains '\u202e'`],
   ])('%s', (name, want) => {
     expect(hostnameError(name)).toBe(want)
   })

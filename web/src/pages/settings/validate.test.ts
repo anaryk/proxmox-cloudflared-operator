@@ -178,9 +178,9 @@ describe('hostnames and patterns, as internal/hostname', () => {
     ['a..b', 'empty label'],
     ['-a.example.com', 'starts or ends with a hyphen'],
     ['a-.example.com', 'starts or ends with a hyphen'],
-    ['a b.example.com', 'contains " "'],
-    ['bücher.example', 'contains "ü"'],
-    ['a.*.example.com', 'contains "*"'],
+    ['a b.example.com', `label "a b" contains ' '`],
+    ['bücher.example', `contains 'ü'`],
+    ['a.*.example.com', `contains '*'`],
     ['10.0.0.5', 'last label "5" is all digits'],
     [`${'a'.repeat(64)}.example.com`, 'is longer than 63 characters'],
     [`${'a.'.repeat(130)}com`, 'longer than 253 characters'],
@@ -204,9 +204,9 @@ describe('hostnames and patterns, as internal/hostname', () => {
     ['*.', 'a bare * takes no trailing dot'],
     ['', 'empty'],
     ['localhost', 'needs at least two labels'],
-    ['*.*.com', 'contains "*"'],
+    ['*.*.com', `contains '*'`],
     ['**', 'needs at least two labels'],
-    ['a*.example.com', 'contains "*"'],
+    ['a*.example.com', `contains '*'`],
   ])('the pattern %j is refused: %s', (input, why) => {
     expect(normalizePattern(input).error).toContain(why)
   })
