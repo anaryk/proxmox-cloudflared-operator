@@ -43,6 +43,11 @@ type Manifest struct {
 	WebEnv     bool     `json:"webEnv"`
 	WebCert    string   `json:"webCert"`
 	WebTLS     []string `json:"webTLS"`
+	// CreatedZone and CreatedVnet say that the SDN zone pco and the vnet
+	// pconet of the managed network are pco's: on a host setup made them, in
+	// an appliance pco appliance managed enable did.
+	CreatedZone bool `json:"createdZone,omitempty"`
+	CreatedVnet bool `json:"createdVnet,omitempty"`
 	// Appliance is what pco appliance install made on the node besides the
 	// objects above; nil for a host. An appliance keeps its manifest on its
 	// state volume, and the installer reads it back as untrusted input.
