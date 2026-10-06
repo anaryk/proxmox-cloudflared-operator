@@ -1,9 +1,10 @@
 # How-to guides
 
-Each guide is one task on a node of the host profile, from start to end: when you need it, what
-to have ready, the steps with the commands and the Notes to write, how to check the result, and
-how to undo it. They start from a node set up as in [Quickstart](../quickstart.md), and link the
-concept pages and the reference where those say more.
+Each guide is one task, from start to end: when you need it, what to have ready, the steps with
+the commands and the Notes to write, how to check the result, and how to undo it. The guides
+under the first three headings are for a node of the host profile, set up as in
+[Quickstart](../quickstart.md); the last three are for the appliance. They link the concept pages
+and the reference where those say more.
 
 ## Publishing
 
@@ -44,3 +45,14 @@ concept pages and the reference where those say more.
   or guest, and moving pco to another node.
 - [Monitor pco](monitoring.md): `pco doctor` from a timer, `pco status --json`, events, the
   journal and the metrics of the connectors.
+
+## The appliance
+
+The same tasks for [the appliance](../appliance.md), pco in a container of its own.
+
+- [Install the appliance](appliance-install.md): the installer and its questions, the segment,
+  the approvals, and what `pco doctor` shows on a fresh install.
+- [Upgrade the appliance](appliance-upgrade.md): `pco upgrade --check`, the snapshot taken on the
+  node before it, and the upgrade of pco and `cloudflared`.
+- [Restore the appliance from a backup](appliance-restore.md): the container restored with
+  `pct restore`, and its install brought back with `pco appliance repair --recover`.
