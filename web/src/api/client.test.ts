@@ -121,6 +121,7 @@ describe('the error codes of the daemon and of the web process', () => {
   test.each([
     [400, { error: 'gateTag: not a tag', code: 'invalid', field: 'gateTag' }, 'gateTag: not a tag', undefined],
     [404, { error: 'no such route', code: 'not_found' }, 'This no longer exists; the view shows what there is now.', 'refresh'],
+    [409, { error: 'the holder changed: www.example.com is no longer held by qemu/101', code: 'holder_changed' }, 'Another guest holds this hostname now. Look at the route again before you diagnose it.', 'refresh'],
     [409, { error: 'the settings changed since revision 7', code: 'refused' }, 'the settings changed since revision 7', 'look-again'],
     [503, { error: 'a cycle is running; try again', code: 'unavailable' }, 'a cycle is running; try again', 'try-again'],
     [403, { error: 'your role cannot do this: it needs Sys.Modify on /', code: 'forbidden', missing: 'Sys.Modify' }, 'your role cannot do this: it needs Sys.Modify on /', undefined],

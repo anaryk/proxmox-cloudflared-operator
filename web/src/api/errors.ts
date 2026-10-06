@@ -71,6 +71,8 @@ export function explain(e: ApiError, at: Date = new Date()): Explained {
       return theirs()
     case 'not_found':
       return own('This no longer exists; the view shows what there is now.', 'refresh')
+    case 'holder_changed':
+      return own('Another guest holds this hostname now. Look at the route again before you diagnose it.', 'refresh')
     case 'refused':
       return theirs('look-again')
     case 'unavailable':
