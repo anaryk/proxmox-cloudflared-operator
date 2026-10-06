@@ -27,6 +27,10 @@ const (
 // route, for one, is of none.
 type EventQuery struct {
 	Since time.Time
+	// Until is the time of the last event that passes; the zero time sets
+	// no end. The limit counts back from it, so that a range in the past
+	// gets the newest events of that range.
+	Until time.Time
 	// After is the seq of the last event the client has, of Boot or, when
 	// Boot is empty, of this process. After a seq of another boot every
 	// event passes.
@@ -37,11 +41,11 @@ type EventQuery struct {
 	History                                    bool // also read events.log and events.log.1
 }
 
-// Match reports whether ev happened after Since and has a value of every list
-// of q that is not empty. After is QueryEvents' to apply: it depends on the
-// boot.
+// Match reports whether ev happened after Since and not after Until, and has
+// a value of every list of q that is not empty. After is QueryEvents' to
+// apply: it depends on the boot.
 func (q EventQuery) Match(ev Event) bool {
-	if !ev.At.After(q.Since) {
+	if !ev.At.After(q.Since) || !q.Until.IsZero() && ev.At.After(q.Until) {
 		return false
 	}
 	for _, f := range [...]struct {

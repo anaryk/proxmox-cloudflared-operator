@@ -36,8 +36,9 @@ var tableRows = map[string]tableRow{
 	"GET /state":  {local: true},
 	"GET /stream": {local: true},
 	"GET /events": {
-		query: "?after=3&route=www.example.com&history=1&cookie=x", upQuery: "after=3&history=1&route=www.example.com",
-		answer: eventsAnswer, golden: "events.json",
+		query:   "?after=3&route=www.example.com&history=1&until=2026-10-01T12:00:00Z&cookie=x",
+		upQuery: "after=3&history=1&route=www.example.com&until=2026-10-01T12%3A00%3A00Z",
+		answer:  eventsAnswer, golden: "events.json",
 	},
 	"GET /traffic": {answer: trafficAnswer, golden: "traffic.json"},
 	"GET /traffic/route": {

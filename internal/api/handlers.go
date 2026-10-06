@@ -22,6 +22,7 @@ const (
 var (
 	errBadToken   = &httpError{http.StatusBadRequest, codeInvalid, "the token is not a Cloudflare API token: it has 20 to 256 characters, all of A-Z a-z 0-9 _ -", false}
 	errBadSince   = &httpError{http.StatusBadRequest, codeInvalid, "since must be a time in RFC 3339 format", false}
+	errBadUntil   = &httpError{http.StatusBadRequest, codeInvalid, "until must be a time in RFC 3339 format", false}
 	errBadAfter   = &httpError{http.StatusBadRequest, codeInvalid, "after must be the seq of an event, a whole number", false}
 	errBadLimit   = &httpError{http.StatusBadRequest, codeInvalid, fmt.Sprintf("limit must be a whole number from 1 to %d", engine.MaxEventLimit), false}
 	errBadHistory = &httpError{http.StatusBadRequest, codeInvalid, "history must be 1 or 0", false}
@@ -174,6 +175,11 @@ func eventQuery(c *gin.Context) (engine.EventQuery, error) {
 	if raw, ok := c.GetQuery("since"); ok {
 		if q.Since, err = time.Parse(time.RFC3339, raw); err != nil {
 			return q, errBadSince
+		}
+	}
+	if raw, ok := c.GetQuery("until"); ok {
+		if q.Until, err = time.Parse(time.RFC3339, raw); err != nil {
+			return q, errBadUntil
 		}
 	}
 	if raw, ok := c.GetQuery("after"); ok {

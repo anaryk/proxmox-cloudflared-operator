@@ -90,6 +90,9 @@ func TestEventFiltersCombine(t *testing.T) {
 		{"an account and a level", EventQuery{Account: []string{"acc1", "acc2"}, Level: []string{levelWarn}}, []uint64{2}},
 		{"a level", EventQuery{Level: []string{levelError, levelWarn}}, []uint64{2, 5}},
 		{"since", EventQuery{Since: t0, Kind: []string{kindRoute}}, []uint64{2}},
+		{"until, the end included", EventQuery{Until: t0, Kind: []string{kindRoute}}, []uint64{1}},
+		{"since and until", EventQuery{Since: t0.Add(-time.Second), Until: at.Add(-time.Second)}, []uint64{1}},
+		{"until before every event", EventQuery{Until: t0.Add(-time.Second)}, []uint64{}},
 		{"an empty value matches nothing", EventQuery{Account: []string{""}}, []uint64{}},
 		{"the case of a value", EventQuery{Account: []string{"ACC1"}}, []uint64{}},
 		{"a filter and after", EventQuery{Route: []string{"a.example.com"}, After: 3}, []uint64{6}},
@@ -111,6 +114,18 @@ func TestALimitKeepsTheNewest(t *testing.T) {
 	require.Equal(t, span(4001, 6000), seqsOf(query(t, e.eng, EventQuery{Limit: 2000, History: true})))
 	require.Equal(t, span(1001, 6000), seqsOf(query(t, e.eng, EventQuery{Limit: 6000, History: true})), "at most 5000")
 	require.Equal(t, span(5991, 6000), seqsOf(query(t, e.eng, EventQuery{Limit: 10, History: true})))
+}
+
+// A range in the past gets the newest events of the range, not the newest
+// events of all that happen to be in it.
+func TestALimitCountsBackFromUntil(t *testing.T) {
+	e := newEnv(t)
+	for i := range 3000 {
+		e.eng.events.add(Event{At: t0.Add(time.Duration(i) * time.Second), Level: levelInfo, Kind: kindRoute, Message: "something changed"})
+	}
+
+	got := query(t, e.eng, EventQuery{Until: t0.Add(999 * time.Second), Limit: 10, History: true})
+	require.Equal(t, span(991, 1000), seqsOf(got))
 }
 
 func TestHistoryReadsBothFilesAndTheRing(t *testing.T) {

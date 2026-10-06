@@ -234,6 +234,14 @@ func TestTheQueryOfTheEvents(t *testing.T) {
 		{"a limit and the history", "?limit=5000&history=1", engine.EventQuery{Limit: 5000, History: true}},
 		{"no history", "?history=0&limit=1", engine.EventQuery{Limit: 1}},
 		{"since", "?since=2026-10-01T12:00:00Z&kind=admin", engine.EventQuery{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Kind: []string{"admin"}}},
+		{"until", "?until=2026-10-01T14:00:00%2B02:00", engine.EventQuery{Until: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}},
+		{
+			"a range", "?since=2026-10-01T11:00:00Z&until=2026-10-01T12:00:00.5Z&limit=5000&history=1",
+			engine.EventQuery{
+				Since: time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC), Until: time.Date(2026, 10, 1, 12, 0, 0, 5e8, time.UTC),
+				Limit: 5000, History: true,
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeEngine{}
@@ -242,7 +250,9 @@ func TestTheQueryOfTheEvents(t *testing.T) {
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 			got := f.lastQuery()
 			require.True(t, tt.want.Since.Equal(got.Since))
+			require.True(t, tt.want.Until.Equal(got.Until))
 			got.Since, tt.want.Since = time.Time{}, time.Time{}
+			got.Until, tt.want.Until = time.Time{}, time.Time{}
 			require.Equal(t, tt.want, got)
 		})
 	}
@@ -254,6 +264,9 @@ func TestTheQueryOfTheEvents(t *testing.T) {
 		{"?limit=5001", "limit"},
 		{"?limit=ten", "limit"},
 		{"?history=yes", "history"},
+		{"?until=yesterday", "until"},
+		{"?until=2026-10-01", "until"},
+		{"?until=", "until"},
 	} {
 		t.Run("malformed "+tt.query, func(t *testing.T) {
 			f := &fakeEngine{}

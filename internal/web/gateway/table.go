@@ -73,7 +73,7 @@ type Rule struct {
 }
 
 // eventParams are the parameters of GET /v1/events.
-var eventParams = []string{"since", "after", "boot", "route", "guest", "tunnel", "account", "kind", "level", "limit", "history"}
+var eventParams = []string{"since", "until", "after", "boot", "route", "guest", "tunnel", "account", "kind", "level", "limit", "history"}
 
 // Table is every call the page may make, and nothing else reaches the
 // socket: not the rotation of a tunnel's secret, which only root may ask
