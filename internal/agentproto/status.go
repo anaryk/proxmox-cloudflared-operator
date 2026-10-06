@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
@@ -15,7 +16,7 @@ type Status struct {
 	Protocol       Range     `json:"protocol"`
 	Build          string    `json:"build"`
 	Node           string    `json:"node"`
-	Kind           string    `json:"kind"`           // host or appliance
+	Kind           pki.Kind  `json:"kind"`           // host or appliance, as its certificate says
 	VMID           int       `json:"vmid,omitempty"` // the appliance container's
 	AgentStartedAt time.Time `json:"agentStartedAt"`
 	// WatchRunningSince is zero while the forwarding-table watch is not
@@ -38,7 +39,10 @@ type Status struct {
 	Events      []json.RawMessage `json:"events,omitempty"`
 	EventCursor uint64            `json:"eventCursor"`
 	// Resend is, while the agent sends the events of the last 24 hours again
-	// to a new epoch, how many that resend holds in all; zero otherwise.
+	// to a new epoch, how many that resend holds in all by its own count; zero
+	// otherwise. DecodeStatus refuses a count over MaxResend, but an agent
+	// could say less than it sends: the controller counts what it receives
+	// from each node and holds it to the bound itself.
 	Resend   int            `json:"resend,omitempty"`
 	Actions  []ActionResult `json:"actions,omitempty"`
 	Problems []string       `json:"problems,omitempty"`
@@ -88,7 +92,7 @@ type ActionResult struct {
 // AgentView is what pco agent status shows of the node's own agent.
 type AgentView struct {
 	Node            string        `json:"node"`
-	Kind            string        `json:"kind"`
+	Kind            pki.Kind      `json:"kind"`
 	Controller      string        `json:"controller,omitempty"` // the node or address it follows
 	SilentFor       time.Duration `json:"silentFor"`
 	Epoch           Epoch         `json:"epoch"`

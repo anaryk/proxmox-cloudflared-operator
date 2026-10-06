@@ -34,6 +34,11 @@ const (
 	MaxStatusBytes = 1 << 20
 	MaxEventBatch  = 500
 	MaxResend      = 10000
+
+	// MaxSnapshotBytes bounds what an agent reads of a snapshot, so that a
+	// controller gone wrong cannot make it hold more without end. A node
+	// that serves thousands of routes needs a fraction of it.
+	MaxSnapshotBytes = 8 << 20
 )
 
 // Epoch is the tenure of one controller. The generation grows with each new
@@ -94,12 +99,6 @@ const (
 	Down      NodeState = "down"
 	Contested NodeState = "contested"
 	Removed   NodeState = "removed"
-)
-
-// The kinds of agent.
-const (
-	KindHost      = "host"      // pco.service on a node of the cluster
-	KindAppliance = "appliance" // a container of the appliance
 )
 
 // Range is the protocol versions one end speaks, both included.

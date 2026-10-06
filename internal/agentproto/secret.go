@@ -62,7 +62,9 @@ func (Secret) MarshalText() ([]byte, error) { return []byte(redacted), nil }
 func (Secret) MarshalJSON() ([]byte, error) { return []byte(`"` + redacted + `"`), nil }
 
 // UnmarshalJSON reads the text of the secret. It refuses "[redacted]": what
-// was encoded for a log is no token to run a connector with.
+// was encoded for a log is no token to run a connector with. A null leaves s
+// as it was, as encoding/json does for every type, so decode into a fresh
+// value, never into one that already holds a token.
 func (s *Secret) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(data, []byte("null")) {
 		return nil

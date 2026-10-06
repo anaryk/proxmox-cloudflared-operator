@@ -15,12 +15,17 @@ var (
 	ErrLowerEpoch      = errors.New("snapshot of a lower epoch")
 	ErrOtherNonce      = errors.New("snapshot of another epoch of the same generation")
 	ErrSeqBack         = errors.New("snapshot whose seq goes back")
+
+	// ErrNoInstall is a bug of the caller, not something a controller sent:
+	// an agent always knows the install it was enrolled for.
+	ErrNoInstall = errors.New("no install to check the snapshot against")
 )
 
 // Validate reports whether the agent of node may apply s. remembered is the
 // epoch the agent follows, its install the one the agent was enrolled for, and
 // applied the seq it last applied under it. An agent that has heard no
-// controller yet passes its install with generation 0.
+// controller yet passes its install with generation 0; one that passes no
+// install gets ErrNoInstall.
 //
 // It refuses a snapshot for another node or install, of a lower epoch, of the
 // same generation with another nonce, of a generation above MaxGeneration, or
@@ -34,7 +39,7 @@ func (s Snapshot) Validate(node string, remembered Epoch, applied uint64) error 
 	case s.Node != node:
 		return fmt.Errorf("%w: %s, this is %s", ErrOtherNode, s.Node, node)
 	case remembered.InstallID == "":
-		return errors.New("no install to check the snapshot against")
+		return ErrNoInstall
 	case e.InstallID != remembered.InstallID:
 		return fmt.Errorf("%w: %s, this agent is of %s", ErrOtherInstall, e.InstallID, remembered.InstallID)
 	case e.Generation < 1 || !lowerAlnum(e.Nonce):

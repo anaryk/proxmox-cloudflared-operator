@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
@@ -20,7 +21,7 @@ const (
 
 func addr(s string) netip.Addr { return netip.MustParseAddr(s) }
 
-func epoch7() Epoch { return Epoch{InstallID: "k3x9q2", Generation: 7, Nonce: "a1b2c3d4"} }
+func epoch7() Epoch { return Epoch{InstallID: "0123456789ab", Generation: 7, Nonce: "a1b2c3d4"} }
 
 func yes() *bool { b := true; return &b }
 
@@ -67,7 +68,7 @@ func fullSnapshot() Snapshot {
 			{
 				AccountID: "0123456789abcdef0123456789abcdef",
 				TunnelID:  sharedID,
-				Name:      "pco-k3x9q2",
+				Name:      "pco-0123456789ab",
 				Kind:      TunnelShared,
 				Run:       true,
 				Token:     NewSecret(sharedToken),
@@ -76,7 +77,7 @@ func fullSnapshot() Snapshot {
 			{
 				AccountID: "0123456789abcdef0123456789abcdef",
 				TunnelID:  pinnedID,
-				Name:      "pco-k3x9q2-node2",
+				Name:      "pco-0123456789ab-node2",
 				Kind:      TunnelPinned,
 				Run:       true,
 				Token:     NewSecret(pinnedToken),
@@ -133,7 +134,7 @@ func fullStatus() Status {
 		Protocol:          Range{Min: 1, Max: 1},
 		Build:             "0.9.0",
 		Node:              "node2",
-		Kind:              KindAppliance,
+		Kind:              pki.KindAppliance,
 		VMID:              9005,
 		AgentStartedAt:    t0.Add(-time.Hour),
 		WatchRunningSince: t0.Add(-50 * time.Minute),
@@ -157,7 +158,7 @@ func fullStatus() Status {
 			{Kind: ObservationConflict, MAC: "bc:24:11:aa:bb:01", Bridge: "vmbr0", VLAN: 20, From: "tap101i1", Port: "veth202i0", Owner: &owner, At: t0.Add(-time.Minute)},
 		},
 		Connectors: []connector.Status{
-			{TunnelID: sharedID, Active: true, Ready: true, Connections: 4, ConnectorID: "e1f2", MetricsAddr: "127.0.0.1:20241", Install: "k3x9q2", TokenRefused: true, MetricsPortHeld: true},
+			{TunnelID: sharedID, Active: true, Ready: true, Connections: 4, ConnectorID: "e1f2", MetricsAddr: "127.0.0.1:20241", Install: "0123456789ab", TokenRefused: true, MetricsPortHeld: true},
 		},
 		Egress:       "on",
 		LocalBlocks:  []netip.Addr{addr("10.0.0.99")},
@@ -193,7 +194,7 @@ func fullHeartbeat() Heartbeat {
 func fullAgentView() AgentView {
 	return AgentView{
 		Node:            "node2",
-		Kind:            KindHost,
+		Kind:            pki.KindHost,
 		Controller:      "node1",
 		SilentFor:       3 * time.Second,
 		Epoch:           epoch7(),
@@ -201,7 +202,7 @@ func fullAgentView() AgentView {
 		SeqAge:          4 * time.Second,
 		Connectors:      2,
 		EgressTargets:   3,
-		StoodDown:       "this node was removed from install k3x9q2 at 2026-10-05 11:00",
+		StoodDown:       "this node was removed from install 0123456789ab at 2026-10-05 11:00",
 		CertFingerprint: "3b4c1d2e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00",
 		CertExpires:     t0.Add(90 * 24 * time.Hour),
 		ReadyReplicas:   map[string]int{sharedID: 2},
@@ -225,5 +226,5 @@ func fullPVEWrite() PVEWrite {
 }
 
 func fullRefusal() Refusal {
-	return Refusal{Code: RefusalRemoved, Message: "this node was removed from install k3x9q2"}
+	return Refusal{Code: RefusalRemoved, Message: "this node was removed from install 0123456789ab"}
 }

@@ -10,7 +10,7 @@
   "agentStartedAt": "2026-10-05T11:00:00Z",
   "watchRunningSince": "2026-10-05T11:10:00Z",
   "epochSeen": {
-    "installId": "k3x9q2",
+    "installId": "0123456789ab",
     "generation": 7,
     "nonce": "a1b2c3d4"
   },
@@ -69,7 +69,7 @@
       "connections": 4,
       "connectorId": "e1f2",
       "metricsAddr": "127.0.0.1:20241",
-      "install": "k3x9q2",
+      "install": "0123456789ab",
       "tokenRefused": true,
       "metricsPortHeld": true
     }

@@ -2,7 +2,6 @@ package agentproto
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -186,18 +185,4 @@ func EncodeSnapshot(w io.Writer, s Snapshot) error {
 		return fmt.Errorf("encoding the snapshot: %w", err)
 	}
 	return nil
-}
-
-// DecodeSnapshot reads what EncodeSnapshot writes, tokens included. Fields it
-// does not know are ignored; anything after the snapshot is an error.
-func DecodeSnapshot(r io.Reader) (Snapshot, error) {
-	dec := json.NewDecoder(r)
-	var s Snapshot
-	if err := dec.Decode(&s); err != nil {
-		return Snapshot{}, fmt.Errorf("decoding the snapshot: %w", err)
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return Snapshot{}, errors.New("decoding the snapshot: more follows it")
-	}
-	return s, nil
 }

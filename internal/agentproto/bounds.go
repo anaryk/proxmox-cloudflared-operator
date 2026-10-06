@@ -7,22 +7,47 @@ import (
 	"io"
 )
 
-// ErrTooLarge is a status over one of the bounds an agent is held to. The
-// controller answers it with 413 and records an event.
+// ErrTooLarge is a body over one of the bounds of the protocol. The
+// controller answers a status that is with 413 and records an event.
 var ErrTooLarge = errors.New("too large")
 
-// DecodeStatus reads a status body. r is the body once any content encoding
-// is undone, so a compressed body is held to what it expands to; DecodeStatus
-// reads at most one byte beyond MaxStatusBytes of it. It refuses a body over
-// MaxStatusBytes, more than MaxEventBatch events, and a resend of more than
-// MaxResend events with ErrTooLarge. Fields it does not know are ignored.
-func DecodeStatus(r io.Reader) (Status, error) {
-	body, err := io.ReadAll(io.LimitReader(r, MaxStatusBytes+1))
+// readAtMost reads r to its end, or fails with ErrTooLarge once it passes
+// limit bytes. It reads at most one byte beyond limit.
+func readAtMost(r io.Reader, limit int, what string) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
 	if err != nil {
-		return Status{}, fmt.Errorf("reading the status: %w", err)
+		return nil, fmt.Errorf("reading the %s: %w", what, err)
 	}
-	if len(body) > MaxStatusBytes {
-		return Status{}, fmt.Errorf("the status is %w: a body is at most %d bytes", ErrTooLarge, MaxStatusBytes)
+	if len(body) > limit {
+		return nil, fmt.Errorf("the %s is %w: a body is at most %d bytes", what, ErrTooLarge, limit)
+	}
+	return body, nil
+}
+
+// DecodeSnapshot reads what EncodeSnapshot writes, tokens included. It
+// refuses a body over MaxSnapshotBytes with ErrTooLarge, and anything after
+// the snapshot. Fields it does not know are ignored.
+func DecodeSnapshot(r io.Reader) (Snapshot, error) {
+	body, err := readAtMost(r, MaxSnapshotBytes, "snapshot")
+	if err != nil {
+		return Snapshot{}, err
+	}
+	var s Snapshot
+	if err := json.Unmarshal(body, &s); err != nil {
+		return Snapshot{}, fmt.Errorf("decoding the snapshot: %w", err)
+	}
+	return s, nil
+}
+
+// DecodeStatus reads a status body. r is the body once any content encoding
+// is undone, so a compressed body is held to what it expands to. It refuses a
+// body over MaxStatusBytes, more than MaxEventBatch events, and a resend of
+// more than MaxResend events with ErrTooLarge. Fields it does not know are
+// ignored.
+func DecodeStatus(r io.Reader) (Status, error) {
+	body, err := readAtMost(r, MaxStatusBytes, "status")
+	if err != nil {
+		return Status{}, err
 	}
 	var st Status
 	if err := json.Unmarshal(body, &st); err != nil {

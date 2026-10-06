@@ -1,7 +1,7 @@
 {
   "protocol": 1,
   "epoch": {
-    "installId": "k3x9q2",
+    "installId": "0123456789ab",
     "generation": 7,
     "nonce": "a1b2c3d4"
   },
@@ -53,7 +53,7 @@
     {
       "accountId": "0123456789abcdef0123456789abcdef",
       "tunnelId": "5f1c2c9e-8b1a-4d3e-9f6a-2b7c8d9e0f1a",
-      "name": "pco-k3x9q2",
+      "name": "pco-0123456789ab",
       "kind": "shared",
       "run": true,
       "token": "[redacted]",
@@ -65,7 +65,7 @@
     {
       "accountId": "0123456789abcdef0123456789abcdef",
       "tunnelId": "c0ffee00-1234-4abc-8def-0123456789ab",
-      "name": "pco-k3x9q2-node2",
+      "name": "pco-0123456789ab-node2",
       "kind": "pinned",
       "run": true,
       "token": "[redacted]",

@@ -3,7 +3,9 @@ package agentproto
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -57,6 +59,39 @@ func TestDecodeStatusBounds(t *testing.T) {
 			require.ErrorIs(t, err, ErrTooLarge)
 		})
 	}
+}
+
+func TestDecodeSnapshotBound(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, EncodeSnapshot(&buf, fullSnapshot()))
+	body := buf.Bytes()
+
+	s, err := DecodeSnapshot(padded(t, body, MaxSnapshotBytes))
+	require.NoError(t, err, "a body of 8 MiB")
+	require.Equal(t, fullSnapshot(), s)
+
+	_, err = DecodeSnapshot(padded(t, body, MaxSnapshotBytes+1))
+	require.ErrorIs(t, err, ErrTooLarge, "a body of 8 MiB and one byte")
+	_, err = DecodeSnapshot(infinite{})
+	require.ErrorIs(t, err, ErrTooLarge, "a body that never ends")
+}
+
+// The bound leaves room: the snapshot of a node that serves 2000 routes, each
+// of its own guest with the whole proof, is far below it.
+func TestALargeInstallFitsTheSnapshotBound(t *testing.T) {
+	s := fullSnapshot()
+	one := s.Targets[0]
+	s.Targets = nil
+	for i := range 2000 {
+		target := one
+		target.Key = fmt.Sprintf("app-%04d.example.com", i)
+		target.Route.Hostname = target.Key
+		s.Targets = append(s.Targets, target)
+		s.Deny.Denied = append(s.Deny.Denied, netip.AddrFrom4([4]byte{10, 1, byte(i >> 8), byte(i)}))
+	}
+	var buf bytes.Buffer
+	require.NoError(t, EncodeSnapshot(&buf, s))
+	require.Less(t, buf.Len(), MaxSnapshotBytes/2)
 }
 
 func TestDecodeStatusRefusesWhatIsNoStatus(t *testing.T) {

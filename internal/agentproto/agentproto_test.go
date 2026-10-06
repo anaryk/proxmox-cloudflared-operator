@@ -8,7 +8,7 @@ import (
 )
 
 func TestEpochOrder(t *testing.T) {
-	e := func(g int, nonce string) Epoch { return Epoch{InstallID: "k3x9q2", Generation: g, Nonce: nonce} }
+	e := func(g int, nonce string) Epoch { return Epoch{InstallID: "0123456789ab", Generation: g, Nonce: nonce} }
 	cases := []struct {
 		name    string
 		a, b    Epoch
@@ -20,7 +20,7 @@ func TestEpochOrder(t *testing.T) {
 		{"the same generation, another nonce", e(7, "aa"), e(7, "bb"), 0, false, ""},
 		{"a lower generation", e(6, "aa"), e(7, "aa"), -1, false, ""},
 		{"a higher generation", e(8, "aa"), e(7, "zz"), 1, false, ""},
-		{"the install is not compared", e(7, "aa"), e(7, "aa"), 0, true, "other1"},
+		{"the install is not compared", e(7, "aa"), e(7, "aa"), 0, true, "fedcba987654"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
