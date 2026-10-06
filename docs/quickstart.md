@@ -248,9 +248,10 @@ would serve the route, not that it does yet:
 
     pco plan
 
-lists the actions the daemon has not applied and why: in observe-only mode every
-one of them is held by `observe mode`. It also lists records of someone else that
-stand in the way of a hostname, and anything that waits for a confirmation.
+lists the actions the daemon has not applied and why. On a fresh install the tunnel and
+its configuration are held by `observe mode`, and each DNS record by `tunnel not created
+yet`. It also lists anything that waits for a confirmation, and, once the tunnel exists
+after `pco apply`, the records of someone else that stand in the way of a hostname.
 
     pco status
 
