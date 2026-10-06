@@ -3,16 +3,24 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
-// WebCert is the certificate of the web interface as the node has it.
+// WebCert is the certificate of the web interface as the node has it, and in
+// the appliance the address it listens on and net0's.
 type WebCert struct {
-	Mode      string // webcert.ModeCA, ModeOwn or ModePVEProxy
+	Mode      string // webcert.ModeCA, ModeOwn, ModePVEProxy or ModeSelfSigned
 	Cert, Key []byte // tls.crt and tls.key
 	Err       error  // why they could not be read
+
+	Appliance bool
+	Listen    string     // PCO_WEB_LISTEN, else net0's address and port 8643
+	ListenErr error      // why the environment of the unit could not be read
+	Net0      netip.Addr // as pco appliance install wrote it
+	Net0Err   error
 }
 
 // checkWebCert says how the certificate of the web interface stands: its
@@ -42,11 +50,33 @@ func checkWebCert(w WebCert, now time.Time) Finding {
 	case left >= webcert.RenewBefore:
 	case w.Mode == webcert.ModeOwn:
 		return warn(check, detail+"; it expires in "+days(left), fix)
-	case w.Mode == webcert.ModeCA:
+	case w.Mode == webcert.ModeCA || w.Mode == webcert.ModeSelfSigned:
 		return warn(check, detail+"; it expires in "+days(left)+", and pco renews it 30 days before",
 			"journalctl -u pco says why it was not renewed; pco web cert renew")
 	}
 	return ok(check, detail)
+}
+
+// checkWebListen says whether the web interface of the appliance listens on
+// net0's address only. Its other cards are legs into the networks of guests,
+// which would reach the sign-in page, and through it try the passwords of
+// the cluster, where Proxmox VE's own page is out of their reach.
+func checkWebListen(w WebCert) Finding {
+	const check = "web listen"
+	const fixListen = "set PCO_WEB_LISTEN=<net0's address>:8643 in /etc/default/pco-web, then systemctl restart pco-web"
+	switch {
+	case w.ListenErr != nil:
+		return warn(check, fmt.Sprintf("the address pco-web listens on cannot be read: %v", w.ListenErr), fixListen)
+	case w.Net0Err != nil:
+		return warn(check, fmt.Sprintf("net0's address is not known (%v), so pco-web refuses to start", w.Net0Err),
+			"write net0's address into "+webcert.Net0File+", then systemctl restart pco-web")
+	case w.Listen == "":
+		return warn(check, "pco-web has no address to listen on", fixListen)
+	}
+	if err := webcert.CheckListen(w.Listen, w.Net0); err != nil {
+		return warn(check, fmt.Sprintf("pco-web listens on %s, which is not net0's (%s): guests on a leg may reach the sign-in page", w.Listen, w.Net0), fixListen)
+	}
+	return ok(check, "pco-web listens on "+w.Listen+", net0's address")
 }
 
 // webCertFix is what puts a certificate of a mode right.

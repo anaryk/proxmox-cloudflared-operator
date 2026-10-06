@@ -119,6 +119,9 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 	out = append(out, checkTunnels(ctx, st, env)...)
 	if w, enabled := env.WebCert(ctx); enabled {
 		out = append(out, checkWebCert(w, env.Now()))
+		if w.Appliance {
+			out = append(out, checkWebListen(w))
+		}
 	}
 	if app != nil {
 		out = append(out, newApplianceRun(ctx, st, env, app).findings()...)

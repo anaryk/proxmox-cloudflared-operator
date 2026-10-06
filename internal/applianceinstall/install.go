@@ -284,6 +284,7 @@ type run struct {
 	tmp     string // the directory of the bootstrap under /run
 	unlock  func()
 	resumed bool
+	web     struct{ url, fingerprint string } // of the web interface, once started
 }
 
 func (i *Installer) newRun(o Options, kind string) *run {
@@ -301,7 +302,9 @@ const (
 	stepProxmox   = "proxmox"
 	stepTags      = "tags"
 	stepStart     = "start"
+	stepListen    = "listen"
 	stepPush      = "push"
+	stepWeb       = "web"
 	stepProtect   = "protection"
 )
 
@@ -320,7 +323,9 @@ func (r *run) installSteps() []step {
 		{stepProxmox, r.ensureProxmox},
 		{stepTags, r.ensureTags},
 		{stepStart, r.start},
+		{stepListen, r.writeListen},
 		{stepPush, r.push},
+		{stepWeb, r.startWeb},
 		{stepProtect, r.protect},
 	}
 }
@@ -391,6 +396,10 @@ func (r *run) summary() {
 	r.ask.Info("pco appliance lxc/%d is installed on %s, in pool %s", vmid, r.node, poolID)
 	r.ask.Info("  token: %s", tokenID(vmid))
 	r.ask.Info("  Proxmox API: %s, verified as %s against %s", r.j.Endpoint.Address, r.j.Endpoint.ServerName, r.j.Endpoint.Via)
+	if r.web.fingerprint != "" {
+		r.ask.Info("  web interface: %s, its certificate's SHA-256 fingerprint, which the browser shows at the first visit:", r.web.url)
+		r.ask.Info("    %s", r.web.fingerprint)
+	}
 	r.ask.Info("next:")
 	r.ask.Info("  pct exec %d -- pco status", vmid)
 	r.ask.Info("  pct exec %d -- pco credential add --label <label>      (unless a Cloudflare token was given)", vmid)

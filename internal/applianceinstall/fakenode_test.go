@@ -48,6 +48,8 @@ type fakeCT struct {
 	failed  []string // the failed units
 	version string   // of the pco inside
 	meta    bool     // /var/lib/pco/cluster/meta is there
+	lease   string   // the address DHCP gives eth0, as a CIDR; empty: none
+	web     bool     // pco-web.service is enabled
 }
 
 type fakeUser struct {
@@ -801,7 +803,8 @@ func (f *fakeNode) create(id int, args []string) (string, error) {
 		"mp0":         fmt.Sprintf("%s:subvol-%d-disk-1,%s,size=%sG", mpStorage, id, mpOpts, mpSize),
 		"net0":        strings.Replace(flag(args, "--net0"), ",", fmt.Sprintf(",hwaddr=BC:24:11:00:%02X:%02X,", id/256%256, id%256), 1) + ",type=veth",
 	}
-	f.cts[id] = &fakeCT{cfg: cfg, files: map[string]fakeFile{}, state: "degraded", failed: []string{"pco.service"}, version: f.pcoVersion}
+	f.cts[id] = &fakeCT{cfg: cfg, files: map[string]fakeFile{}, state: "degraded", failed: []string{"pco.service"}, version: f.pcoVersion,
+		lease: "192.0.2.150/24"}
 	if pool := flag(args, "--pool"); pool != "" {
 		p := f.pools[pool]
 		if p == nil {
@@ -865,6 +868,18 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 		return "", exitError{1, ""}
 	case line == "pco appliance init --bootstrap "+bootstrapFile:
 		return f.init(ct, id, env)
+	case line == "ip -j -4 addr show dev eth0":
+		return f.eth0(ct), nil
+	case line == "pco web cert":
+		// The daemon makes the certificate once init gave it a store.
+		if !ct.meta {
+			return "", exitError{1, "the web interface has no certificate yet"}
+		}
+		return "mode         self-signed: a key of its own and a self-signed certificate, renewed by pco\n" +
+			"SHA-256      " + fakeFingerprint + "\n", nil
+	case line == "systemctl enable --now pco-web.service":
+		ct.web = true
+		return "", nil
 	case line == "pco appliance purge --list":
 		return strings.Join(f.cfObjects, "\n"), nil
 	case line == "pco appliance purge":
@@ -876,6 +891,25 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 	}
 	f.t.Errorf("unexpected command in lxc/%d: %q", id, line)
 	return "", errors.New("unexpected command")
+}
+
+// fakeFingerprint is the fingerprint of the web certificate of every fake
+// container.
+const fakeFingerprint = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+
+// eth0 is what ip -j -4 addr prints of eth0: the address of net0, or the
+// lease DHCP gives it.
+func (f *fakeNode) eth0(ct *fakeCT) string {
+	cidr := option(ct.cfg["net0"], "ip")
+	if cidr == "dhcp" {
+		cidr = ct.lease
+	}
+	addr, bits, ok := strings.Cut(cidr, "/")
+	if !ok {
+		return `[{"ifindex":2,"ifname":"eth0","addr_info":[]}]`
+	}
+	return `[{"ifindex":2,"ifname":"eth0","addr_info":[{"family":"inet","local":"` + addr + `","prefixlen":` + bits +
+		`,"scope":"global","label":"eth0"}]}]`
 }
 
 func (f *fakeNode) init(ct *fakeCT, id int, env string) (string, error) {

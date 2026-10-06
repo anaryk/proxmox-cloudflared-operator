@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"math/big"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,28 @@ func TestWebCertOutputOfACertificateThatExpired(t *testing.T) {
 			require.Contains(t, out.String(), want)
 		}
 	}
+}
+
+func TestTheCertificateOfTheAppliance(t *testing.T) {
+	a := &app{env: applianceEnv(t, "192.0.2.30", nil)}
+	a.webDir = filepath.Join(t.TempDir(), "web")
+	_, err := a.applianceWebCert()
+	require.EqualError(t, err, "the web interface has no certificate yet: the daemon makes one as it starts, and systemctl status pco says whether it runs")
+
+	names, err := webcert.ApplianceNames("pco", "", "192.0.2.30:8643", nil)
+	require.NoError(t, err)
+	leaf, err := webcert.MakeSelfSigned(a.webDir, names, t0, rand.Reader)
+	require.NoError(t, err)
+	st, err := a.applianceWebCert()
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, a.printWebCert(&out, st))
+
+	require.Contains(t, out.String(), "mode         self-signed: a key of its own and a self-signed certificate, renewed by pco\n")
+	require.Contains(t, out.String(), "names        pco, 192.0.2.30\n")
+	require.Contains(t, out.String(), "valid until  ")
+	require.Contains(t, out.String(), "(in 396 days)", "397 days from a time the certificate keeps to the second")
+	require.Contains(t, out.String(), "SHA-256      "+webcert.Fingerprint(leaf)+"\n")
 }
 
 func TestSetupOptionsOfTheWebInterface(t *testing.T) {

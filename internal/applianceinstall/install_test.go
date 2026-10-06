@@ -73,13 +73,21 @@ func TestAFreshInstallRunsExactlyTheseCommands(t *testing.T) {
 		"pct exec 100 --keep-env 0 -- timeout 90 systemctl is-system-running --wait",
 		"pct exec 100 --keep-env 0 -- systemctl list-units --state=failed --plain --no-legend --no-pager",
 		"pct exec 100 --keep-env 0 -- pco version",
-		// 8. the CA, the marker and the bootstrap, then init
+		// 8. where the web interface listens: net0's address, before the
+		// daemon's first start makes its certificate
+		"pct exec 100 --keep-env 0 -- ip -j -4 addr show dev eth0",
+		"pct push 100 <run>/net0 /etc/pco/net0 --perms 0644",
+		"pct push 100 <run>/pco-web /etc/default/pco-web --perms 0644",
+		// 9. the CA, the marker and the bootstrap, then init
 		"pct push 100 " + filepath.Join(e.pveDir, "pve-root-ca.pem") + " /var/lib/pco/pve-ca.pem --perms 0644",
 		"pct push 100 <run>/volume /var/lib/pco/.volume --perms 0600",
 		"pvesh get /nodes/pve1/lxc/100/config --current 1 --output-format json",
 		"pct push 100 <run>/bootstrap.json /var/lib/pco/bootstrap.json --perms 0600",
 		"pct exec 100 --keep-env 0 -- pco appliance init --bootstrap /var/lib/pco/bootstrap.json",
-		// 9. protection last
+		// 10. the web interface, once the daemon made its certificate
+		"pct exec 100 --keep-env 0 -- pco web cert",
+		"pct exec 100 --keep-env 0 -- systemctl enable --now pco-web.service",
+		// 11. protection last
 		"pct set 100 --protection 1",
 	}, withRun(e.node.ran, e.runDir))
 
@@ -92,8 +100,14 @@ func TestAFreshInstallRunsExactlyTheseCommands(t *testing.T) {
 	require.True(t, e.node.has("/", "user", "pco@pve", "PCO"))
 	require.True(t, e.node.has("/", "token", "pco@pve!vm100", "PCO"))
 	require.Equal(t, []string{"admin-only", "cf-tunnel", "cf-tunnel-managed"}, e.node.tags)
-	require.Equal(t, []string{"100 /var/lib/pco/pve-ca.pem 0644", "100 /var/lib/pco/.volume 0600", "100 /var/lib/pco/bootstrap.json 0600"}, e.node.pushes)
+	require.Equal(t, []string{
+		"100 /etc/pco/net0 0644", "100 /etc/default/pco-web 0644",
+		"100 /var/lib/pco/pve-ca.pem 0644", "100 /var/lib/pco/.volume 0600", "100 /var/lib/pco/bootstrap.json 0600",
+	}, e.node.pushes)
 	require.NotContains(t, ct.files, bootstrapFile, "init consumed the bootstrap")
+	require.Equal(t, "192.0.2.150\n", string(ct.files["/etc/pco/net0"].data), "the lease of eth0")
+	require.Contains(t, string(ct.files["/etc/default/pco-web"].data), "\nPCO_WEB_LISTEN=192.0.2.150:8643\n")
+	require.True(t, ct.web, "pco-web.service is enabled")
 
 	// The journal directory is empty and nothing is left under /run.
 	require.Empty(t, entries(t, e.journals))
@@ -105,6 +119,8 @@ func TestAFreshInstallRunsExactlyTheseCommands(t *testing.T) {
 		"pct exec 100 -- pco credential add",
 		"snapshots, clones and storage replication of lxc/100 carry its secrets",
 		"the API at 192.0.2.10:8006 verifies as pve1 against the cluster CA",
+		"web interface: https://192.0.2.150:8643/, its certificate's SHA-256 fingerprint, which the browser shows at the first visit:\n" +
+			"info:     " + fakeFingerprint,
 	} {
 		require.Contains(t, text, want)
 	}

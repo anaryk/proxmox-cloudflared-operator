@@ -3,6 +3,7 @@ package doctor
 import (
 	"crypto/rand"
 	"errors"
+	"net/netip"
 	"slices"
 	"testing"
 	"time"
@@ -81,4 +82,52 @@ func TestNoWebCertificateWithoutTheWebInterface(t *testing.T) {
 	findings := Run(t.Context(), healthyState(), healthyEnv())
 
 	require.False(t, slices.ContainsFunc(findings, func(f Finding) bool { return f.Check == "web certificate" }))
+}
+
+func TestTheSelfSignedCertificateOfTheAppliance(t *testing.T) {
+	soon, soonKey := pair(t, 20*24*time.Hour)
+	leaf, err := webcert.ParseCert(soon)
+	require.NoError(t, err)
+	got := checkWebCert(WebCert{Mode: webcert.ModeSelfSigned, Cert: soon, Key: soonKey, Appliance: true}, now)
+
+	require.Equal(t, Finding{Check: "web certificate", Level: LevelWarn,
+		Detail: "mode self-signed, valid until " + leaf.NotAfter.Format(time.RFC3339) + ", SHA-256 fingerprint " +
+			webcert.Fingerprint(leaf) + "; it expires in 19 days, and pco renews it 30 days before",
+		Fix: "journalctl -u pco says why it was not renewed; pco web cert renew"}, got)
+}
+
+func TestWhereTheAppliancesWebInterfaceListens(t *testing.T) {
+	net0 := netip.MustParseAddr("10.92.0.150")
+	fix := "set PCO_WEB_LISTEN=<net0's address>:8643 in /etc/default/pco-web, then systemctl restart pco-web"
+	for _, tt := range []struct {
+		name string
+		web  WebCert
+		want Finding
+	}{
+		{"net0's address", WebCert{Listen: "10.92.0.150:8643", Net0: net0},
+			Finding{Level: LevelOK, Detail: "pco-web listens on 10.92.0.150:8643, net0's address"}},
+		{"every address", WebCert{Listen: "0.0.0.0:8643", Net0: net0},
+			Finding{Level: LevelWarn, Detail: "pco-web listens on 0.0.0.0:8643, which is not net0's (10.92.0.150): guests on a leg may reach the sign-in page", Fix: fix}},
+		{"a leg's address", WebCert{Listen: "10.92.1.1:8643", Net0: net0},
+			Finding{Level: LevelWarn, Detail: "pco-web listens on 10.92.1.1:8643, which is not net0's (10.92.0.150): guests on a leg may reach the sign-in page", Fix: fix}},
+		{"net0 unknown", WebCert{Listen: "10.92.0.150:8643", Net0Err: errors.New("open /etc/pco/net0: no such file or directory")},
+			Finding{Level: LevelWarn, Detail: "net0's address is not known (open /etc/pco/net0: no such file or directory), so pco-web refuses to start",
+				Fix: "write net0's address into /etc/pco/net0, then systemctl restart pco-web"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := healthyEnv()
+			web := tt.web
+			web.Appliance = true
+			env.web = &web
+
+			findings := Run(t.Context(), healthyState(), env)
+
+			i := slices.IndexFunc(findings, func(f Finding) bool { return f.Check == "web listen" })
+			require.GreaterOrEqual(t, i, 0)
+			tt.want.Check = "web listen"
+			require.Equal(t, tt.want, findings[i])
+		})
+	}
+	findings := Run(t.Context(), healthyState(), healthyEnv())
+	require.False(t, slices.ContainsFunc(findings, func(f Finding) bool { return f.Check == "web listen" }), "a node has no such check")
 }

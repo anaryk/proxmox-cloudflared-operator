@@ -54,6 +54,11 @@ type ApplianceDeps struct {
 	// Doctor changes the part of the doctor that reads the container's own
 	// system, which a test points at a directory and at functions.
 	Doctor func(*doctor.ApplianceHost)
+	// Hostname is the container's host name, which its web certificate
+	// names; default os.Hostname. Net0 is the file of net0's address;
+	// default webcert.Net0File.
+	Hostname func() (string, error)
+	Net0     string
 }
 
 func (a ApplianceDeps) withDefaults() ApplianceDeps {
@@ -170,12 +175,22 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 		statuses: eng.ConnectorStatuses, scrape: parts.conns.Metrics, record: eng.RecordTraffic, targets: eng.SampleTargets,
 		now: deps.Now, log: log,
 	}
+	web := newApplianceWebKeeper(deps, app, *a, eng.NoteWeb, log)
+	env.Web = func(ctx context.Context) (doctor.WebCert, bool) {
+		// The installer enables pco-web; an appliance without it has no web
+		// interface to check.
+		if on, err := env.UnitEnabled(ctx, webService); err == nil && !on {
+			return doctor.WebCert{}, false
+		}
+		return web.facts(ctx)
+	}
+	keepWeb := func(ctx context.Context) { web.keep(ctx, deps.WebEvery) }
 	doc := doctor.NewRunner(eng.State, env, nil, deps.Now, log)
-	gid, uids, web := socketAccess(deps.Accounts, log)
+	gid, uids, webUID := socketAccess(deps.Accounts, log)
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
-	srv.SetWebUID(web)
+	srv.SetWebUID(webUID)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep, traffic.run)
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep, traffic.run, keepWeb)
 }
 
 // applianceStore is the check of the store the doctor makes in the appliance:

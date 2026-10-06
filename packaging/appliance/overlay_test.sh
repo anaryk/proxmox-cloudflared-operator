@@ -15,6 +15,7 @@ UNITS=$HERE/../systemd
 DROPINS=$HERE/overlay/etc/systemd/system
 CONNECTOR=$DROPINS/pco-cloudflared@.service.d/appliance.conf
 DAEMON=$DROPINS/pco.service.d/appliance.conf
+WEB=$DROPINS/pco-web.service.d/appliance.conf
 
 CHECKS=0
 FAILS=0
@@ -68,6 +69,19 @@ assert "78 is the status the daemon exits with without its volume" \
 assert "the flag of the condition is the one the daemon writes" \
 	defined internal/appliance/identity.go '^[[:space:]]*IdentityFlag = "/run/pco-appliance/identity-ok"$'
 
+assert "pco-web loads its own pair and the node's API, never pveproxy's certificate, after the daemon" \
+	same "$(lines "$WEB")" "[Unit]
+After=pco.service
+[Service]
+LoadCredential=
+LoadCredential=tls.crt:/etc/pco/web/tls.crt
+LoadCredential=tls.key:/etc/pco/web/tls.key
+LoadCredential=pve-api.json:/etc/pco/web/pve-api.json"
+assert "pve-api.json is the file the daemon writes and pco web reads" \
+	defined internal/webcert/appliance.go '^[[:space:]]*APIName = "pve-api.json"$'
+assert "the directory is the one the daemon writes into" \
+	defined internal/webcert/files.go '^[[:space:]]*Dir[[:space:]]+= "/etc/pco/web"$'
+
 assert "pco-net.service runs pco net load once, before the network, after the sysctls" \
 	same "$(lines "$UNITS/pco-net.service")" "[Unit]
 Description=pco service-prefix route and filter of the appliance
@@ -106,16 +120,16 @@ verify_cases() {
 		cp -R /usr/lib/systemd/system/. "$root/usr/lib/systemd/system/"
 	fi
 	cp "$UNITS"/*.service "$root/usr/lib/systemd/system/"
-	cp -R "$DROPINS/pco.service.d" "$DROPINS/pco-cloudflared@.service.d" "$root/etc/systemd/system/"
+	cp -R "$DROPINS/pco.service.d" "$DROPINS/pco-cloudflared@.service.d" "$DROPINS/pco-web.service.d" "$root/etc/systemd/system/"
 	for unit in pco cloudflared; do
 		printf '#!/bin/sh\n' >"$root/usr/bin/$unit"
 		chmod 755 "$root/usr/bin/$unit"
 	done
 
 	rc=0
-	out=$(systemd-analyze verify --root="$root" pco.service pco-net.service pco-cloudflared@x.service 2>&1) || rc=$?
+	out=$(systemd-analyze verify --root="$root" pco.service pco-net.service pco-cloudflared@x.service pco-web.service 2>&1) || rc=$?
 	assert "systemd-analyze verify takes the units with the drop-ins, exit status $rc: $out" same "$rc:$out" "0:"
-	for unit in pco.service pco-cloudflared@x.service; do
+	for unit in pco.service pco-cloudflared@x.service pco-web.service; do
 		out=$(SYSTEMD_LOG_LEVEL=debug systemd-analyze verify --root="$root" "$unit" 2>&1)
 		assert "systemd reads the drop-in of $unit" grep -q "DropIn Path: $root/etc/systemd/system/${unit/@x/@}.d/appliance.conf" <<<"$out"
 	done

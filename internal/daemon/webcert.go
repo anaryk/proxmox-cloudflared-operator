@@ -117,8 +117,10 @@ func tryRestartWeb(ctx context.Context) error {
 }
 
 // keep checks at once and then every interval, until ctx ends.
-func (k *webKeeper) keep(ctx context.Context, every time.Duration) {
-	k.check(ctx)
+func (k *webKeeper) keep(ctx context.Context, every time.Duration) { keepChecking(ctx, every, k.check) }
+
+func keepChecking(ctx context.Context, every time.Duration, check func(context.Context)) {
+	check(ctx)
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -126,7 +128,7 @@ func (k *webKeeper) keep(ctx context.Context, every time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			k.check(ctx)
+			check(ctx)
 		}
 	}
 }
@@ -154,7 +156,7 @@ func (k *webKeeper) check(ctx context.Context) {
 		k.repoint(webcert.CertName, served)
 		k.repoint(webcert.KeyName, webcert.KeyOf(served))
 	}
-	k.restartIfStale(ctx)
+	k.restartIfStale(ctx, webcert.CertName, webcert.KeyName, webcert.PinName)
 }
 
 // repoint makes the link name lead to target, when it does not.
@@ -252,16 +254,16 @@ func (k *webKeeper) names(ctx context.Context) (webcert.Names, error) {
 	return webcert.NodeNames(k.node, k.fqdn(), addrs, env.Listen, env.Hosts)
 }
 
-// restartIfStale restarts pco-web when what it loaded as it started is not
-// what the files hold now. One that does not run reads them as it starts. A
-// restart is not repeated for the files it was made for: when pco-web still
-// loads something else after it, a drop-in of the unit points the credentials
-// elsewhere, and more restarts would change nothing.
-func (k *webKeeper) restartIfStale(ctx context.Context) {
+// restartIfStale restarts pco-web when what it loaded as it started of the
+// files names is not what they hold now. One that does not run reads them as
+// it starts. A restart is not repeated for the files it was made for: when
+// pco-web still loads something else after it, a drop-in of the unit points
+// the credentials elsewhere, and more restarts would change nothing.
+func (k *webKeeper) restartIfStale(ctx context.Context, names ...string) {
 	const what = "restarting " + webService
 	stale := false
 	var files []byte
-	for _, name := range []string{webcert.CertName, webcert.KeyName, webcert.PinName} {
+	for _, name := range names {
 		loaded, err := os.ReadFile(filepath.Join(k.loaded, name))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):

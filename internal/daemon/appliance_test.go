@@ -190,7 +190,16 @@ func newApplianceWorld(t *testing.T) *applianceWorld {
 		StateRetry: time.Millisecond,
 		Netlink:    a.net,
 		NetNft:     a.netNft,
+		Hostname:   func() (string, error) { return "pco", nil },
+		Net0:       filepath.Join(w.dir, "etc", "pco", "net0"),
 	}
+	// The web interface of the container, as pco appliance install sets it.
+	w.deps.WebDir = filepath.Join(w.dir, "etc", "pco", "web")
+	w.deps.WebEnv = filepath.Join(w.dir, "etc", "default", "pco-web")
+	w.deps.WebLoaded = filepath.Join(w.dir, "run", "credentials", "pco-web.service")
+	w.deps.RestartWeb = func(context.Context) error { return nil }
+	a.write(w.deps.Appliance.Net0, "10.92.0.150\n")
+	a.write(w.deps.WebEnv, "PCO_WEB_LISTEN=10.92.0.150:8643\n")
 	w.deps.Sleep = func(ctx context.Context, _ time.Duration) error {
 		select {
 		case <-time.After(5 * time.Millisecond):
