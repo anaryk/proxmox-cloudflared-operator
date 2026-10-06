@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 
 import { Untrusted } from '../components/Untrusted'
-import { Overview } from '../pages/Overview'
 import { DoctorPage } from '../pages/doctor/DoctorPage'
 import { CredentialDetail } from '../pages/edge/CredentialDetail'
 import { Credentials } from '../pages/edge/Credentials'
@@ -15,6 +14,7 @@ import { GuestsPage } from '../pages/guests/GuestsPage'
 import { NetworksPage } from '../pages/networks/NetworksPage'
 import { RoutesSection } from '../pages/routes/RoutesPage'
 import { SettingsPage } from '../pages/settings/SettingsPage'
+import { SetupPage, Start } from '../pages/setup/Wizard'
 import { Head } from './Head'
 import { Link } from './Link'
 import type { View } from './router'
@@ -26,7 +26,6 @@ const titles: Readonly<Record<string, [string, string]>> = {
   zones: ['Zones', 'The zones the credentials list, and which credential serves each.'],
   tunnels: ['Tunnels', 'The tunnel of the install in each account, and its connectors.'],
   settings: ['Settings', 'The settings of the daemon.'],
-  setup: ['First-run setup', 'A token, the zones, and the first route.'],
 }
 
 // titleOf is the title of a view. What comes from the address is anybody's
@@ -84,7 +83,9 @@ function Body({ view }: { view: View }) {
 export function Page({ view }: { view: View }) {
   switch (view.name) {
     case 'overview':
-      return <Overview />
+      return <Start />
+    case 'setup':
+      return <SetupPage />
     case 'networks':
       return <NetworksPage />
     case 'events':
@@ -95,7 +96,15 @@ export function Page({ view }: { view: View }) {
       const [title, description] = titleOf(view)
       return (
         <>
-          <Head title={title} description={description} />
+          <Head
+            title={title}
+            description={description}
+            actions={
+              <Link to="/setup" className="btn">
+                First-run setup
+              </Link>
+            }
+          />
           <SettingsPage />
         </>
       )

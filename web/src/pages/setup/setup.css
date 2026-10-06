@@ -1,0 +1,169 @@
+/* The first-run setup. */
+
+.wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wizard-step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.wizard-head {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.wizard-head > button,
+.wizard-readonly .wizard-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+.wizard-head > button {
+  cursor: pointer;
+}
+
+.wizard-head > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.wizard-num {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--edge);
+  border-radius: 50%;
+  font-size: 12px;
+}
+
+.wizard-done .wizard-num {
+  border-color: var(--ok);
+}
+
+.wizard-problem .wizard-num {
+  border-color: var(--fail);
+}
+
+.wizard-todo .wizard-num {
+  border-color: var(--accent);
+}
+
+.wizard-title {
+  flex: 1;
+}
+
+.wizard-open > .wizard-head {
+  border-bottom: 1px solid var(--border);
+}
+
+.wizard-body {
+  padding: 14px;
+}
+
+.wizard-body > p:first-child {
+  margin-top: 0;
+}
+
+.wizard-sub {
+  margin: 16px 0 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.wizard-next {
+  margin: 14px 0 0;
+}
+
+.permissions {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+.token-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.token-links .btn {
+  text-decoration: none;
+}
+
+.stored-token {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.stored-token h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 13.5px;
+}
+
+.stored-token summary {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.route-ways {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 18px 24px;
+}
+
+.route-ways > section > .wizard-sub:first-child {
+  margin-top: 0;
+}
+
+.route-watch {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-weak);
+}
+
+.builder .form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0 12px;
+}
+
+.builder-options {
+  margin: 8px 0;
+}
+
+.builder-options summary,
+.manual-details summary {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.manual-details[open] summary {
+  margin-bottom: 10px;
+}
