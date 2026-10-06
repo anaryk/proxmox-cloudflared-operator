@@ -86,6 +86,23 @@ func TestASaveOfTheSettingsIsRefusedAsTheEngineSays(t *testing.T) {
 	}
 }
 
+func TestAMalformedDurationSaysHowADurationIsWritten(t *testing.T) {
+	for _, text := range []string{"ten-seconds-hunter2", "", "10", "1 m"} {
+		t.Run(text, func(t *testing.T) {
+			f := &fakeEngine{settings: testSettingsView()}
+			body := `{"rev":7,"settings":{"gateTag":"cf-tunnel","pollInterval":"` + text + `","grace":"1m0s","admission":"tag",` +
+				`"observeOnly":true,"identityMinimum":"port","maxHostnamesPerGuest":32,"reverifyInterval":"1m0s","cloudflareBudget":1000}}`
+
+			rec := do(newServer(f), http.MethodPut, "/v1/settings", body)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			require.Equal(t, ErrorBody{Error: "a duration is written as 10s or 1m30s", Code: "invalid"}, errorBody(t, rec),
+				"it does not repeat the text it was sent")
+			require.Empty(t, f.called())
+		})
+	}
+}
+
 func TestAPutCarriesJSON(t *testing.T) {
 	req := request(http.MethodPut, "/v1/settings", `{"rev":7}`)
 	req.Header.Del("Content-Type")

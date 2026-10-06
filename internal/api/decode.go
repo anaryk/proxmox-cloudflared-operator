@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 var (
@@ -17,6 +19,7 @@ var (
 	errNotAnObject  = &httpError{http.StatusBadRequest, codeInvalid, "the request body must be a JSON object", false}
 	errTrailingData = &httpError{http.StatusBadRequest, codeInvalid, "unexpected data after the JSON object", false}
 	errBodyNotValid = &httpError{http.StatusBadRequest, codeInvalid, "the request body is not valid", false}
+	errNotADuration = &httpError{http.StatusBadRequest, codeInvalid, "a duration is written as 10s or 1m30s", false}
 )
 
 // decode reads the JSON object of a request into dst. An empty body is an
@@ -47,10 +50,13 @@ func bodyError(err error) *httpError {
 	var (
 		syntax *json.SyntaxError
 		typ    *json.UnmarshalTypeError
+		dur    *store.DurationError
 	)
 	switch {
 	case errors.Is(err, io.ErrUnexpectedEOF), errors.As(err, &syntax):
 		return errNotJSONBody
+	case errors.As(err, &dur):
+		return errNotADuration
 	case errors.As(err, &typ) && typ.Field != "":
 		return &httpError{http.StatusBadRequest, codeInvalid, fmt.Sprintf("the field %q has the wrong type", typ.Field), false}
 	case errors.As(err, &typ):

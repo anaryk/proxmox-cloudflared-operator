@@ -88,11 +88,21 @@ func (d Duration) MarshalText() ([]byte, error) {
 	return []byte(time.Duration(d).String()), nil
 }
 
-// UnmarshalText reads what MarshalText writes.
+// DurationError is a text that is no duration. Its message is that of
+// time.ParseDuration, which quotes the text; a caller that must not repeat
+// what it was sent finds the error with errors.As.
+type DurationError struct{ err error }
+
+func (e *DurationError) Error() string { return e.err.Error() }
+
+func (e *DurationError) Unwrap() error { return e.err }
+
+// UnmarshalText reads what MarshalText writes. A text that is no duration is
+// a *DurationError.
 func (d *Duration) UnmarshalText(text []byte) error {
 	v, err := time.ParseDuration(string(text))
 	if err != nil {
-		return err
+		return &DurationError{err}
 	}
 	*d = Duration(v)
 	return nil

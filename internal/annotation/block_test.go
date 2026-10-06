@@ -34,6 +34,16 @@ func TestTheBlockIsTheRouteTextAndNothingElse(t *testing.T) {
 			"      ```cf-tunnel a.example.com -> :80```", 1,
 		},
 		{
+			"prose before a second span on a line is blanked",
+			"cf-tunnel: a -> :80\nsecret ```cf-tunnel b -> :81```",
+			"cf-tunnel: a -> :80\n       ```cf-tunnel b -> :81```", 1,
+		},
+		{
+			"prose between two blocks on one line is blanked",
+			"```cf-tunnel a``` secret ```cf-tunnel b```",
+			"```cf-tunnel a```        ```cf-tunnel b```", 1,
+		},
+		{
 			"another kind of block is not route text",
 			"```sh\ncf-tunnel: x.example.com -> :1\n```\ncf-tunnel: y.example.com -> :2",
 			"cf-tunnel: y.example.com -> :2", 4,

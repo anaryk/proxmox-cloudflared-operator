@@ -441,6 +441,23 @@ func TestDurationJSON(t *testing.T) {
 	}
 }
 
+func TestATextThatIsNoDurationIsADurationError(t *testing.T) {
+	var d Duration
+	for _, text := range []string{"ten", "", "10", "1 m"} {
+		var de *DurationError
+		require.ErrorAs(t, d.UnmarshalText([]byte(text)), &de, text)
+	}
+	var w struct {
+		D Duration `json:"d"`
+	}
+	var de *DurationError
+	require.ErrorAs(t, json.Unmarshal([]byte(`{"d":"ten"}`), &w), &de, "also when it is read from JSON")
+	require.ErrorContains(t, de, "invalid duration", "the message is that of time.ParseDuration")
+
+	require.NoError(t, d.UnmarshalText([]byte("1m30s")))
+	require.Equal(t, Duration(90*time.Second), d)
+}
+
 func TestSettingsRefuseAnUnknownKey(t *testing.T) {
 	const rest = `"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true`
 	for name, tc := range map[string]struct{ data, key string }{
