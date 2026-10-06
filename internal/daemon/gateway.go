@@ -28,6 +28,10 @@ type gatewayPart struct {
 	local string
 	now   func() time.Time
 	log   zerolog.Logger
+	// allowed says whether the gateway may be changed outside a cycle; nil
+	// is always. The appliance's says no until it proved itself, so that a
+	// copy never adds the original's cards to itself.
+	allowed func() bool
 
 	// mu gives the backend's calls their turns and guards wanted, what the
 	// last Sync was given or the cache before the first; upMu guards up, the
@@ -43,13 +47,15 @@ func newGatewayPart(b gateway.Backend, local string, now func() time.Time, log z
 	return &gatewayPart{b: b, local: local, now: now, log: log}
 }
 
-// start takes the cache pco netns up restored the gateway from at boot as
-// what the gateway holds, so that a keeper that brings it back before the
-// first cycle loads the table with its elements, never with empty maps. A
-// gateway that is not as the cache says is restored from it, as pco netns up
-// does, with pins only while they are fresh. The legs then up are the ones
-// the first cycle probes through, before it syncs the gateway itself. A node
-// without a cache never had a network.
+// start takes the cache of the gateway, which the last sync wrote and which
+// pco netns up restores the host's namespace from at boot, as what the
+// gateway holds, so that a keeper that brings it back before the first cycle
+// loads the table with its elements, never with empty maps. A gateway that
+// is not as the cache says is restored from it, as pco netns up does, with
+// pins only while they are fresh. The legs then up are the ones the first
+// cycle probes through, before it syncs the gateway itself; a gateway that
+// cannot be checked is taken as its cache says. A node without a cache never
+// had a network.
 func (g *gatewayPart) start(ctx context.Context) {
 	c, found, err := gateway.ReadCache(g.local)
 	switch {
@@ -74,7 +80,15 @@ func (g *gatewayPart) start(ctx context.Context) {
 		g.setUp(slices.Clone(c.Legs))
 		return
 	case !errors.Is(err, gateway.ErrChanged):
-		g.log.Warn().Err(err).Msg("checking the gateway at the start failed; the keeper checks it again")
+		// Probing through no leg would withdraw every route behind one
+		// for a cycle; the first cycle's Sync corrects what is not so.
+		g.log.Warn().Err(err).Msg("checking the gateway at the start failed; its legs are taken as its cache says until the first cycle syncs it")
+		g.setUp(slices.Clone(c.Legs))
+		return
+	}
+	if !g.mayChange() {
+		g.log.Warn().Str("found", err.Error()).Msg("the gateway is not as its cache says; the first cycle that may change it syncs it")
+		g.setUp(slices.Clone(c.Legs))
 		return
 	}
 	states, rerr := gateway.Restore(ctx, g.b, c, g.now())
@@ -85,6 +99,9 @@ func (g *gatewayPart) start(ctx context.Context) {
 	g.log.Warn().Str("found", err.Error()).Msg("the gateway was not as its cache says and was restored from it")
 	g.setUp(upOf(c.Legs, states))
 }
+
+// mayChange says whether the gateway may be changed outside a cycle now.
+func (g *gatewayPart) mayChange() bool { return g.allowed == nil || g.allowed() }
 
 // upOf are the legs states says are up.
 func upOf(legs []gateway.Leg, states []gateway.LegState) []gateway.Leg {
@@ -190,8 +207,9 @@ var _ engine.Gateway = (*gatewayPart)(nil)
 // checkGateway checks the gateway, once something was wanted of it, and
 // brings it back to what was last wanted when it differs, no sooner than
 // reloadEvery after it last did, while no cycle runs: nothing probes through
-// a namespace that is made again. It returns how soon it has to check again,
-// when that is sooner than the next timed check, and zero otherwise.
+// a namespace that is made again. An appliance that has not proved itself
+// leaves it to the cycle. It returns how soon it has to check again, when
+// that is sooner than the next timed check, and zero otherwise.
 func (k *keeper) checkGateway(ctx context.Context) time.Duration {
 	if k.gw == nil || !k.gw.active() {
 		return 0
@@ -211,7 +229,12 @@ func (k *keeper) checkGateway(ctx context.Context) time.Duration {
 	}
 	k.lastGwRestore = k.now()
 	var rerr error
-	if ierr := k.idle(ctx, func() { rerr = k.gw.restore(ctx) }); ierr != nil {
+	allowed := true
+	if ierr := k.idle(ctx, func() {
+		if allowed = k.gw.mayChange(); allowed {
+			rerr = k.gw.restore(ctx)
+		}
+	}); ierr != nil || !allowed {
 		return 0
 	}
 	what := err.Error()

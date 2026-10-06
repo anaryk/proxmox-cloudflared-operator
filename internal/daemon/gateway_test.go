@@ -176,6 +176,17 @@ func TestTheGatewayStartsFromItsCache(t *testing.T) {
 		require.Empty(t, b.lastSync().Pins, "a pin to a MAC a guest may no longer have would cut it off")
 		require.Empty(t, g.wantedNow().Pins)
 	})
+	t.Run("not read", func(t *testing.T) {
+		local := t.TempDir()
+		require.NoError(t, gateway.WriteCache(local, testCache))
+		b := &fakeBackend{verify: []error{errors.New("listing the table: nft: signal: killed")}}
+		g := newGatewayPart(b, local, func() time.Time { return t0 }, zerolog.Nop())
+
+		g.start(t.Context())
+
+		require.Equal(t, testCache.Legs, g.UpLegs(), "taken as the cache says: the first cycle's sync corrects it")
+		require.Equal(t, []string{"verify"}, b.asked())
+	})
 	t.Run("gone", func(t *testing.T) {
 		local := t.TempDir()
 		require.NoError(t, gateway.WriteCache(local, testCache))
@@ -262,6 +273,32 @@ func TestTheKeeperBringsTheGatewayBack(t *testing.T) {
 	}
 }
 
+// An appliance that has not proved itself changes nothing of its gateway
+// outside a cycle: a copy would add the original's cards to itself.
+func TestAGatewayNotAllowedToChangeIsLeftToTheCycle(t *testing.T) {
+	t.Run("at the start", func(t *testing.T) {
+		local := t.TempDir()
+		require.NoError(t, gateway.WriteCache(local, testCache))
+		b := &fakeBackend{verify: []error{errNamespaceChanged}}
+		g := newGatewayPart(b, local, func() time.Time { return t0 }, zerolog.Nop())
+		g.allowed = func() bool { return false }
+
+		g.start(t.Context())
+
+		require.Equal(t, []string{"verify"}, b.asked())
+		require.Equal(t, testCache.Legs, g.UpLegs())
+	})
+	t.Run("in the keeper", func(t *testing.T) {
+		r := newGatewayRig(t, errNamespaceChanged)
+		r.g.allowed = func() bool { return false }
+
+		require.Zero(t, r.k.checkGateway(t.Context()))
+
+		require.Equal(t, []string{"verify"}, r.b.asked())
+		require.Empty(t, r.notes)
+	})
+}
+
 func TestTheKeeperBringsTheGatewayBackAtMostOnceEveryFiveSeconds(t *testing.T) {
 	r := newGatewayRig(t, errNamespaceChanged)
 	r.k.checkGateway(t.Context())
@@ -309,6 +346,50 @@ func TestTheDaemonDrivesTheGatewayOfItsNetworks(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, []gateway.Leg{testLeg("vmbr1", 1)}, c.Legs, "written again after the sync")
+}
+
+// The appliance runs the gateway as the host does: the cache at its start,
+// the sync of every cycle with the legs of the networks of its node, and the
+// keeper's check when a link or a route of the container changes.
+func TestTheApplianceDrivesTheGatewayOfItsNetworks(t *testing.T) {
+	a := newApplianceWorld(t)
+	require.NoError(t, gateway.WriteCache(a.paths.Local, testCache))
+	require.NoError(t, a.store.SaveNetwork(store.Network{
+		ID: "vmbr1", Kind: store.NetworkAttach, Bridge: "vmbr1", Prefix: netip.MustParsePrefix("10.50.0.0/24"),
+		Legs: map[string]netip.Addr{testNode: netip.MustParseAddr("10.50.0.250")}, LegMAC: store.LegMACFor(store.NetworkAttach, 1),
+		Mark: 1, CreatedAt: t0,
+	}, 0))
+	changedc := make(chan func(), 1)
+	a.deps.WatchGateway = func(ctx context.Context, changed func()) error {
+		changedc <- changed
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	d := a.start()
+	verifies := func() int {
+		n := 0
+		for _, call := range a.gw.asked() {
+			if call == "verify" {
+				n++
+			}
+		}
+		return n
+	}
+
+	d.await(func(st engine.State) bool { return st.Identity != nil && st.Identity.OK })
+	require.NoError(t, d.client.Sync(t.Context()))
+	d.await(func(st engine.State) bool { return len(st.Routes) == 1 })
+
+	require.Equal(t, "verify", a.gw.asked()[0], "the cache is checked at the start")
+	require.Equal(t, []gateway.Leg{testLeg("vmbr1", 1)}, a.gw.lastSync().Legs)
+	c, found, err := gateway.ReadCache(a.paths.Local)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []gateway.Leg{testLeg("vmbr1", 1)}, c.Legs)
+
+	before := verifies()
+	(<-changedc)()
+	require.Eventually(t, func() bool { return verifies() > before }, 10*time.Second, 5*time.Millisecond, "the keeper checks it")
 }
 
 // A change of a link or a route of the node has the gateway checked, and

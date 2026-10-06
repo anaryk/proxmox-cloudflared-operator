@@ -20,6 +20,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -155,6 +156,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	if why, isCopy := parts.self.CopyBeforeCycle(); isCopy && stopCopy(ctx, why, parts.filter, parts.conns, state.install.ID, log) {
 		parts.eng.StoppedServing()
 	}
+	parts.gw.start(ctx)
 	eng, client, filter := parts.eng, parts.client, parts.filter
 	env := &doctor.HostEnv{
 		Systemd:    deps.Systemd,
@@ -174,6 +176,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	k := &keeper{
 		table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log,
 		net: serviceNet{nl: app.Netlink, nft: app.NetNft}, noteNet: eng.NoteNet,
+		gw: parts.gw, noteGw: eng.NoteGateway, watchNet: deps.WatchGateway, idle: eng.Idle,
 	}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
 	traffic := &sampler{
@@ -261,6 +264,7 @@ type applianceParts struct {
 	filter *egressFilter
 	conns  *connector.Manager
 	self   *appliance.Self
+	gw     *gatewayPart
 }
 
 // buildAppliance makes the engine of the appliance: the Proxmox client dials
@@ -269,8 +273,10 @@ type applianceParts struct {
 // the guests of the manual routes as it reads tagged ones, the
 // prober puts the container's interfaces on the segments of their NICs and
 // has no forwarding table to look at, and the engine runs with the
-// self-identification, the quorum and the incarnation of the container.
-// restart stops the daemon for systemd to start it again.
+// self-identification, the quorum and the incarnation of the container. The
+// gateway's legs are network cards of the container, which it adds to its own
+// configuration through the same client; the resolver probes through those
+// that are up. restart stops the daemon for systemd to start it again.
 func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, state applianceState, settings store.Settings,
 	restart func(),
 ) (applianceParts, error) {
@@ -309,7 +315,12 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		AlwaysRead: func(ref model.GuestRef, pool string) bool { return ref == own || pool == appliance.Pool },
 		Routed:     routedGuests(st, log),
 	}, deps.Now, log)
-	res := resolve.NewResolver(appliance.NewProber(deps.Prober, self.Segments), resolve.Settings{
+	backend := deps.Gateway
+	if backend == nil {
+		backend = gateway.NewContainer(gateway.NewHostNft(), client, own, a.Node, self.Expect, log, gateway.WithNetTable(appnet.Script))
+	}
+	gw := newGatewayPart(backend, cfg.Paths.Local, deps.Now, log)
+	res := resolve.NewResolver(gateway.NewProber(appliance.NewProber(deps.Prober, self.Segments), gw.UpLegs, backend), resolve.Settings{
 		LocalNode:         a.Node,
 		TrustStatic:       settings.TrustStatic,
 		TrustedCIDRs:      settings.TrustedCIDRs,
@@ -340,13 +351,15 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		Quorate:     quorate(client),
 		Incarnation: state.incarnation,
 		EpochDrawn:  self.EpochDrawn,
+		Gateway:     gw,
 
 		StartOnlyFields: wiredFields(),
 	})
 	if err != nil {
 		return applianceParts{}, fmt.Errorf("building the engine: %w", err)
 	}
-	return applianceParts{eng: eng, client: client, filter: filter, conns: conns, self: self}, nil
+	gw.allowed = eng.GatewayAllowed
+	return applianceParts{eng: eng, client: client, filter: filter, conns: conns, self: self, gw: gw}, nil
 }
 
 // quorate reads whether the cluster is quorate; a node that is not in a

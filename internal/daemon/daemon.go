@@ -103,10 +103,11 @@ type Deps struct {
 	WatchNetwork func(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error
 	WatchRuleset func(ctx context.Context, changed func()) error
 	EgressEvery  time.Duration
-	// Gateway is the backend of the networks reached through a leg on the
-	// host; default: the namespace pco. WatchGateway calls changed whenever
-	// a link or a route of the node changes, which has the gateway checked;
-	// default: netlink.
+	// Gateway is the backend of the networks reached through a leg; default:
+	// on the host the namespace pco, in the appliance the container's own
+	// network cards, which it adds through the Proxmox API. WatchGateway
+	// calls changed whenever a link or a route of the node, or of the
+	// container, changes, which has the gateway checked; default: netlink.
 	Gateway      gateway.Backend
 	WatchGateway func(ctx context.Context, changed func()) error
 	// The web interface: WebDir holds its certificate, WebEnv is the
