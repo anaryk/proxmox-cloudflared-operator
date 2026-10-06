@@ -706,6 +706,21 @@ func TestAClosedGateHoldsANewServiceAddressInTheAppliance(t *testing.T) {
 	})
 }
 
+// Outside a cycle the gateway of an appliance is changed only while the
+// appliance proved itself and serves: a copy never adds a card of the
+// original to itself.
+func TestTheGatewayIsChangedOutsideACycleOnlyByAProvenAppliance(t *testing.T) {
+	require.True(t, newLegEnv(t).eng.GatewayAllowed(), "the host")
+
+	a := newApplianceLegEnv(t)
+	require.False(t, a.eng.GatewayAllowed(), "before the first self-identification")
+	a.warm()
+	require.True(t, a.eng.GatewayAllowed())
+	a.ident.fail("this container is not lxc/9250")
+	a.cycle()
+	require.False(t, a.eng.GatewayAllowed())
+}
+
 // After a restart the previous verdict is not known, which closes the gate:
 // the targets whose service addresses exist find them all the same, and the
 // first cycle writes nothing.
@@ -756,11 +771,11 @@ func TestAClosedGateNeverYieldsARuleWithARealAddress(t *testing.T) {
 	st := e.cycle()
 
 	r := route(st, legHost)
-	require.Equal(t, planner.StateActive, r.State)
+	require.Equal(t, planner.StateUnreachable, r.State)
 	require.Equal(t, "http://198.18.1.0:8080", r.Service)
-	require.Equal(t, "service address not allocated: the previous cycle found a stale writer; the last verified rule is kept", r.Reason)
-	require.Contains(t, st.Problems, "hostname www.example.com keeps its last verified rule: the service address of 10.50.0.11 on network vmbr1 "+
-		"is not allocated: the previous cycle found a stale writer")
+	require.Equal(t, "service address not moved: the previous cycle found a stale writer; the rule is kept and reaches nothing until it is", r.Reason)
+	require.Contains(t, st.Problems, "hostname www.example.com moved to 10.50.0.11 on network vmbr1; its rule is kept, "+
+		"and its service address 198.18.1.0 forwards nothing until it can follow: the previous cycle found a stale writer")
 	require.Equal(t, "service address not allocated: the previous cycle found a stale writer", route(st, "db.example.com").Reason)
 	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.10": svc0}, e.mappings())
 	requireOnlyServiceAddresses(t, st, e.rules(), legHost, "db.example.com")
@@ -768,6 +783,160 @@ func TestAClosedGateNeverYieldsARuleWithARealAddress(t *testing.T) {
 	e.requireNeverSet(netip.MustParseAddr("10.50.0.20"))
 	require.Contains(t, e.rules(), hostRuleAt(legHost, "http://198.18.1.0:8080"), "the rule of www.example.com did not change")
 	require.Contains(t, e.rules(), planner.IngressRule{Hostname: "db.example.com", Service: planner.BlockedService})
+}
+
+// web-1 leaves 10.50.0.10 for 10.50.0.11 while the gate is closed, and a
+// stranger takes 10.50.0.10. The rule of www.example.com stays as it is, so
+// that nothing is written at Cloudflare, but its service address forwards
+// nothing from the cycle that saw the move; once the gate is open it follows
+// web-1 to its new address, still without a write.
+func TestAStrangerOnTheVacatedAddressIsNeverForwardedTo(t *testing.T) {
+	e := newLegEnv(t)
+	e.warm()
+	e.next()
+	writes := len(e.writes())
+	removes := len(e.egr.removes())
+	synced := e.gw.syncCount()
+	e.eng.lastVerdict = VerdictStale
+	e.res.moveTo(legHost, netip.MustParseAddr("10.50.0.11"))
+
+	e.next()
+
+	require.Empty(t, e.gw.last(t).services, "no DNAT to the address web-1 left")
+	got, _ := e.egr.last()
+	require.Empty(t, got)
+	require.Equal(t, []netip.Addr{svc0}, e.egr.removes()[removes:], "out of the filter at once")
+	require.Len(t, e.writes(), writes, "the rule stays as it is")
+
+	st := e.next()
+
+	require.Equal(t, []gateway.Service{{Leg: "vmbr1", Service: svc0, Addr: netip.MustParseAddr("10.50.0.11"), Ports: []uint16{8080}}},
+		e.gw.last(t).services, "it follows web-1")
+	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.11": svc0}, e.mappings())
+	got, _ = e.egr.last()
+	require.Equal(t, egressTargets("198.18.1.0:8080"), got)
+	require.Len(t, e.writes(), writes, "nothing was written at Cloudflare")
+	require.Equal(t, planner.StateActive, route(st, legHost).State)
+	require.Contains(t, unnumbered(e.eng.Events(time.Time{})), Event{At: st.At, Level: levelInfo, Kind: kindNetwork, Subject: "vmbr1", Route: legHost,
+		Message: "service address 198.18.1.0 moved from 10.50.0.10 on network vmbr1 to 10.50.0.11 on network vmbr1, with www.example.com"})
+	for _, s := range e.gw.syncs[synced:] {
+		for _, svc := range s.services {
+			if svc.Service == svc0 {
+				require.NotEqual(t, legAddr, svc.Addr, "after the move was seen, nothing forwards to the address left")
+			}
+		}
+	}
+}
+
+// The stranger on the address web-1 left has routes of its own: they wait
+// while the service address of that address waits for web-1, and get their
+// own once it followed web-1.
+func TestAStrangerWithARouteWaitsForTheServiceAddressToFollow(t *testing.T) {
+	e := newLegEnv(t)
+	e.warm()
+	e.next()
+	e.eng.lastVerdict = VerdictStale
+	e.res.moveTo(legHost, netip.MustParseAddr("10.50.0.11"))
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), guest(102, "x", "x.example.com -> :8080")))
+	e.res.goVia("x.example.com", "vmbr1")
+	e.res.moveTo("x.example.com", legAddr)
+	e.res.answerFrom("x.example.com", dbMAC)
+
+	st := e.next()
+
+	require.Equal(t, "service address not allocated: service address 198.18.1.0 of this address waits for the route that left it",
+		route(st, "x.example.com").Reason)
+	require.Empty(t, e.gw.last(t).services)
+
+	st = e.next()
+
+	require.Equal(t, "http://198.18.1.1:8080", route(st, "x.example.com").Service, "a service address of its own")
+	require.Equal(t, "http://198.18.1.0:8080", route(st, legHost).Service)
+	require.Equal(t, []gateway.Service{
+		{Leg: "vmbr1", Service: svc1, Addr: legAddr, Ports: []uint16{8080}},
+		{Leg: "vmbr1", Service: svc0, Addr: netip.MustParseAddr("10.50.0.11"), Ports: []uint16{8080}},
+	}, e.gw.last(t).services)
+}
+
+// A guest renumbered while the gate is open takes its service address along
+// in the same cycle: no write at Cloudflare, nothing forwards to the address
+// it left.
+func TestARouteThatMovesTakesItsServiceAddressAlong(t *testing.T) {
+	e := newLegEnv(t)
+	e.warm()
+	e.next()
+	writes := len(e.writes())
+	e.res.moveTo(legHost, netip.MustParseAddr("10.50.0.11"))
+
+	st := e.next()
+
+	require.Equal(t, planner.StateActive, route(st, legHost).State)
+	require.Equal(t, []gateway.Service{{Leg: "vmbr1", Service: svc0, Addr: netip.MustParseAddr("10.50.0.11"), Ports: []uint16{8080}}},
+		e.gw.last(t).services)
+	require.Equal(t, []gateway.Pin{{Leg: "vmbr1", Addr: netip.MustParseAddr("10.50.0.11"), MAC: hardware(t, testMAC)}}, e.gw.last(t).pins)
+	require.Len(t, e.writes(), writes)
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.Equal(t, svc0, bindings[legHost].Service)
+
+	t.Run("to another network", func(t *testing.T) {
+		e.res.goVia(legHost, "vmbr2")
+		e.next()
+
+		require.Equal(t, []gateway.Service{{Leg: "vmbr2", Service: svc0, Addr: netip.MustParseAddr("10.50.0.11"), Ports: []uint16{8080}}},
+			e.gw.last(t).services)
+		require.Len(t, e.writes(), writes)
+	})
+}
+
+// A route that moves to an address with a service address of its own, or off
+// the legs, cannot take its service address along: the old one is released
+// at once, and the route gets the one of its new address.
+func TestAServiceAddressNoRouteCanTakeAlongIsReleasedAtOnce(t *testing.T) {
+	e := newLegEnv(t)
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), guest(102, "db-1", "db.example.com -> :5432")))
+	e.res.goVia("db.example.com", "vmbr1")
+	e.res.moveTo("db.example.com", netip.MustParseAddr("10.50.0.11"))
+	e.res.answerFrom("db.example.com", dbMAC)
+	e.warm()
+	e.next()
+	m := e.mappings()
+	web, db := m["vmbr1 10.50.0.10"], m["vmbr1 10.50.0.11"]
+	e.res.moveTo(legHost, netip.MustParseAddr("10.50.0.11"))
+
+	st := e.next()
+
+	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.11": db}, e.mappings(), "released at once")
+	require.Equal(t, "http://"+netip.AddrPortFrom(db, 8080).String(), route(st, legHost).Service)
+	for _, svc := range e.gw.last(t).services {
+		require.NotEqual(t, web, svc.Service)
+	}
+
+	e.res.goVia(legHost, "")
+	e.res.moveTo(legHost, guestAddr)
+	e.next()
+	require.Equal(t, "http://10.0.0.11:8080", route(e.eng.State(), legHost).Service)
+}
+
+// The service addresses of a network with no leg on this node are another
+// node's: none is released here, and none is given for it.
+func TestTheServiceAddressesOfAnotherNodesNetworkAreLeftAlone(t *testing.T) {
+	e := newLegEnv(t)
+	require.NoError(t, e.store.SaveNetwork(store.Network{
+		ID: "vmbr9", Kind: store.NetworkAttach, Bridge: "vmbr9", Prefix: netip.MustParsePrefix("10.90.0.0/24"),
+		Legs: map[string]netip.Addr{"pve2": netip.MustParseAddr("10.90.0.250")}, LegMAC: store.LegMACFor(store.NetworkAttach, 9), Mark: 9, CreatedAt: t0,
+	}, 0))
+	other, err := e.store.AllocateServiceAddr("vmbr9", netip.MustParseAddr("10.90.0.10"), t0)
+	require.NoError(t, err)
+	e.res.goVia(legHost, "vmbr9")
+	e.res.moveTo(legHost, netip.MustParseAddr("10.90.0.11"))
+	e.warm()
+
+	st := e.next()
+
+	require.Equal(t, "service address not allocated: network vmbr9 has no leg on this node", route(st, legHost).Reason)
+	require.Equal(t, map[string]netip.Addr{"vmbr9 10.90.0.10": other.Service}, e.mappings())
+	require.Equal(t, []gateway.Leg{legOf(t, "vmbr1", 1), legOf(t, "vmbr2", 2)}, e.gw.last(t).legs)
 }
 
 func TestAnExhaustedPoolHoldsOnlyTheNewTarget(t *testing.T) {

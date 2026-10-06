@@ -38,7 +38,7 @@ const heldGateway = "the gateway could not be programmed; no tunnel configuratio
 
 const (
 	problemServiceHeld    = "hostname %s is not served through network %s: service address not allocated: %s"
-	problemServiceKept    = "hostname %s keeps its last verified rule: the service address of %s on network %s is not allocated: %s"
+	problemServiceKept    = "hostname %s moved to %s on network %s; its rule is kept, and its service address %s forwards nothing until it can follow: %s"
 	problemGatewaySync    = "programming the gateway: %v; no tunnel configuration is written until it is programmed"
 	problemLegDown        = "network %s: the leg is not up: %s"
 	problemLegNote        = "network %s: the leg is up, but %s"
@@ -46,9 +46,10 @@ const (
 	problemServiceRelease = "releasing the service address %s of %s on network %s: %v; the next cycle releases it"
 
 	// reasonNoService is the reason of a target on a leg that has no service
-	// address, and reasonKept what a target that keeps its last rule adds.
+	// address, and reasonNotMoved that of one whose service address did not
+	// follow it to its new address yet.
 	reasonNoService = "service address not allocated: %s"
-	reasonKept      = "; the last verified rule is kept"
+	reasonNotMoved  = "service address not moved: %s; the rule is kept and reaches nothing until it is"
 
 	// LegUp is PathView.Leg of a path through a leg that is up.
 	LegUp = "up"
@@ -70,6 +71,8 @@ const (
 	gateQuorum     = "the quorum of the cluster could not be read: %v"
 	gateEpoch      = "this process drew a new epoch and none of its writes is verified at Cloudflare yet"
 	gateNoGateway  = "no gateway runs on this node"
+	gateNoLeg      = "network %s has no leg on this node"
+	gateFrozen     = "service address %s of this address waits for the route that left it"
 
 	verdictNoRun = "no run"
 )
@@ -153,17 +156,54 @@ type mappingKey struct {
 	addr    netip.Addr
 }
 
+// mappings are the service addresses as the step knows them, by the real
+// address each forwards to and by itself.
+type mappings struct {
+	byKey     map[mappingKey]store.ServiceAddr
+	byService map[netip.Addr]store.ServiceAddr
+}
+
+func newMappings(all []store.ServiceAddr) mappings {
+	ms := mappings{byKey: map[mappingKey]store.ServiceAddr{}, byService: map[netip.Addr]store.ServiceAddr{}}
+	for _, m := range all {
+		ms.add(m)
+	}
+	return ms
+}
+
+func (ms mappings) add(m store.ServiceAddr) {
+	ms.byKey[mappingKey{m.Network, m.Addr}] = m
+	ms.byService[m.Service] = m
+}
+
+func (ms mappings) remove(m store.ServiceAddr) {
+	delete(ms.byKey, mappingKey{m.Network, m.Addr})
+	delete(ms.byService, m.Service)
+}
+
+// list is every mapping, by network and then by address.
+func (ms mappings) list() []store.ServiceAddr {
+	out := slices.Collect(maps.Values(ms.byKey))
+	slices.SortFunc(out, func(a, b store.ServiceAddr) int {
+		return cmp.Or(cmp.Compare(a.Network, b.Network), a.Addr.Compare(b.Addr))
+	})
+	return out
+}
+
 // gateway is the step between the resolution and the plan. Every winner
 // proven through a leg is a target on a leg, which a connector may dial at
 // its service address only: one that exists is looked up, a new one made when
-// the gate is open; without one, the target keeps the rule last verified for
-// it or is held. The gateway is then given the legs of this node, every
-// service address the egress set of this cycle holds with the ports it holds
-// it at, and the neighbours proven behind them, before anything is written
-// at Cloudflare; a service address neither in the set nor in a configuration
-// verified at Cloudflare is released after that.
+// the gate is open; without one, the target is held. A route that left the
+// address its service address forwards to takes that service address along
+// when the gate is open, and keeps a rule that reaches nothing while it is
+// not; either way nothing forwards to the address it left. The gateway is
+// then given the legs of this node, every service address the egress set of
+// this cycle holds with the ports it holds it at, and the neighbours proven
+// behind them, before anything is written at Cloudflare; a service address
+// neither in the set nor in a configuration verified at Cloudflare is
+// released after that.
 func (c *cycleRun) gateway() {
-	c.legKept, c.legIfaces = map[string]string{}, map[string]string{}
+	c.legKept, c.legIfaces, c.legNets, c.frozen = map[string]string{}, map[string]string{}, map[string]bool{}, map[netip.Addr]bool{}
 	legs := c.markLegTargets()
 	if c.e.d.Gateway == nil {
 		for _, rt := range legs {
@@ -180,26 +220,171 @@ func (c *cycleRun) gateway() {
 	}
 	for id, n := range nets {
 		c.legIfaces[id] = gateway.LegIface(n.Mark)
+		if _, ok := n.Legs[c.e.d.Node]; ok {
+			c.legNets[id] = true
+		}
 	}
-	mappings, err := c.e.d.Store.ServiceAddrs()
+	all, err := c.e.d.Store.ServiceAddrs()
 	if err != nil {
 		c.hold(c.storeProblem("reading the service addresses", err))
 		return
 	}
-	byKey := make(map[mappingKey]store.ServiceAddr, len(mappings))
-	for _, m := range mappings {
-		byKey[mappingKey{m.Network, m.Addr}] = m
-	}
+	ms := newMappings(all)
+	followed := c.followMovers(ms)
 	for _, rt := range legs {
-		if m, made := c.serviceAddr(rt, byKey); made {
-			byKey[mappingKey{m.Network, m.Addr}] = m
-			mappings = append(mappings, m)
+		if !followed[rt.Hostname] {
+			c.serviceAddr(rt, ms)
 		}
 	}
 	if c.storeHold {
 		return
 	}
-	c.syncGateway(nets, mappings)
+	c.syncGateway(nets, ms.list())
+}
+
+// leaving is a service address some of whose routes left the address it
+// forwards to: movers are the winners whose binding is elsewhere now, and
+// stayers says that a winner published under it is still there.
+type leaving struct {
+	m       store.ServiceAddr
+	movers  []model.Route
+	stayers bool
+}
+
+// leavers are the service addresses a route left in this cycle, as the
+// stored bindings, which say what each route was published under, and the
+// bindings of this cycle tell it.
+func (c *cycleRun) leavers(ms mappings) []*leaving {
+	by := map[netip.Addr]*leaving{}
+	for _, rt := range c.claims.Winners {
+		prev, bound := c.bindings[rt.Hostname]
+		res, ok := c.results[rt.Hostname]
+		if !bound || !ok || res.Binding == nil || prev.Via == "" || !prev.Service.IsValid() {
+			continue
+		}
+		m, mapped := ms.byService[prev.Service]
+		if !mapped {
+			continue
+		}
+		l := by[m.Service]
+		if l == nil {
+			l = &leaving{m: m}
+			by[m.Service] = l
+		}
+		if (mappingKey{res.Binding.Via, res.Binding.Addr}) == (mappingKey{m.Network, m.Addr}) {
+			l.stayers = true
+		} else {
+			l.movers = append(l.movers, rt)
+		}
+	}
+	var out []*leaving
+	for _, service := range slices.SortedFunc(maps.Keys(by), netip.Addr.Compare) {
+		if l := by[service]; len(l.movers) > 0 {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// followMovers deals with every service address a route left, and returns
+// the hostnames it published. Routes still at the address keep it. Otherwise
+// the routes that left take it along to the address they all went to, which
+// has none of its own, when the gate is open: their rules do not change, and
+// it forwards to their new address from now on. While the gate is closed
+// their rules are kept, and the service address forwards nothing. When they
+// cannot take it along, it is released at once, and they find their own.
+func (c *cycleRun) followMovers(ms mappings) map[string]bool {
+	followed := map[string]bool{}
+	for _, l := range c.leavers(ms) {
+		if l.stayers {
+			continue
+		}
+		to, ok := c.followTo(l, ms)
+		if !ok {
+			c.abandon(l.m, ms)
+			continue
+		}
+		host := l.movers[0].Hostname
+		open, why := c.gateOpen("service address for " + host)
+		if open {
+			moved, err := c.e.d.Store.MoveServiceAddr(l.m.Network, l.m.Addr, to.network, to.addr, c.now)
+			if err == nil {
+				ms.remove(l.m)
+				ms.add(moved)
+				for _, rt := range l.movers {
+					c.publishAt(rt, moved.Service)
+					followed[rt.Hostname] = true
+				}
+				c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: moved.Network, Route: host,
+					Message: fmt.Sprintf("service address %s moved from %s on network %s to %s on network %s, with %s",
+						moved.Service, l.m.Addr, l.m.Network, moved.Addr, moved.Network, host)})
+				continue
+			}
+			why = err.Error()
+		}
+		c.freeze(l.m.Service)
+		for _, rt := range l.movers {
+			c.publishAt(rt, l.m.Service)
+			res := c.results[rt.Hostname]
+			res.Target.Reachable, res.Target.Reason = false, fmt.Sprintf(reasonNotMoved, why)
+			c.results[rt.Hostname] = res
+			c.legKept[rt.Hostname] = res.Target.Reason
+			c.problem(problemServiceKept, rt.Hostname, to.addr, to.network, l.m.Service, why)
+			followed[rt.Hostname] = true
+		}
+	}
+	return followed
+}
+
+// followTo is the address every route that left l's service address went
+// to, when it can take the service address along: each is served there,
+// through a leg of this node, and the address has no service address yet.
+func (c *cycleRun) followTo(l *leaving, ms mappings) (mappingKey, bool) {
+	var to mappingKey
+	for i, rt := range l.movers {
+		res := c.results[rt.Hostname]
+		key := mappingKey{res.Binding.Via, res.Binding.Addr}
+		switch {
+		case !serves(rt, res), key.network == "", !c.legNets[key.network], i > 0 && key != to:
+			return mappingKey{}, false
+		}
+		to = key
+	}
+	if _, mapped := ms.byKey[to]; mapped {
+		return mappingKey{}, false
+	}
+	return to, true
+}
+
+// abandon releases a service address no route is at any more, at once: a
+// rule still sending a connector there reaches nothing, and the address it
+// forwarded to gets a new one when a route is proven there.
+func (c *cycleRun) abandon(m store.ServiceAddr, ms mappings) {
+	c.freeze(m.Service)
+	if err := c.e.d.Store.ReleaseServiceAddr(m.Network, m.Addr); err != nil {
+		c.problem(problemServiceRelease, m.Service, m.Addr, m.Network, err)
+		return
+	}
+	ms.remove(m)
+	c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: m.Network,
+		Message: fmt.Sprintf("service address %s of %s on network %s released", m.Service, m.Addr, m.Network)})
+}
+
+// freeze has a service address forward nothing in this cycle: it leaves the
+// egress filter at once and the set of this cycle, and so the services the
+// gateway is given.
+func (c *cycleRun) freeze(service netip.Addr) {
+	c.frozen[service] = true
+	if c.lost[service] {
+		return
+	}
+	c.lost[service] = true
+	if !slices.ContainsFunc(c.e.egress, func(t egress.Target) bool { return t.Addr == service }) {
+		return
+	}
+	if err := c.e.d.Egress.Remove(c.ctx, service); err != nil {
+		c.problem("taking %s out of the egress filter: %v", service, err)
+	}
 }
 
 // markLegTargets marks the target of every winner whose binding is on a leg,
@@ -238,32 +423,42 @@ func serves(rt model.Route, res resolve.Result) bool {
 
 // serviceAddr gives the target of a winner on a leg its service address: the
 // one its real address on the network has, or one made now, when the gate is
-// open. It returns the mapping it made. A target that is not served keeps
-// what its binding was published under, for the egress set to take it out by.
-func (c *cycleRun) serviceAddr(rt model.Route, byKey map[mappingKey]store.ServiceAddr) (store.ServiceAddr, bool) {
+// open. A target that is not served keeps what its binding was published
+// under, for the egress set to take it out by; one on a network with no leg
+// on this node, or at an address whose service address forwards nothing
+// while it waits for the route that left it, gets none.
+func (c *cycleRun) serviceAddr(rt model.Route, ms mappings) {
 	res := c.results[rt.Hostname]
 	if !serves(rt, res) {
-		return store.ServiceAddr{}, false
+		return
 	}
 	b := res.Binding
+	if !c.legNets[b.Via] {
+		c.withoutService(rt, fmt.Sprintf(gateNoLeg, b.Via))
+		return
+	}
 	key := mappingKey{b.Via, res.Target.Addr}
-	if m, ok := byKey[key]; ok {
+	if m, ok := ms.byKey[key]; ok {
+		if c.frozen[m.Service] {
+			c.withoutService(rt, fmt.Sprintf(gateFrozen, m.Service))
+			return
+		}
 		c.publishAt(rt, m.Service)
-		return store.ServiceAddr{}, false
+		return
 	}
 	open, why := c.gateOpen("service address for " + rt.Hostname)
 	if open {
 		m, err := c.e.d.Store.AllocateServiceAddr(key.network, key.addr, c.now)
 		if err == nil {
+			ms.add(m)
 			c.publishAt(rt, m.Service)
 			c.events = append(c.events, Event{At: c.now, Level: levelInfo, Kind: kindNetwork, Subject: m.Network, Route: rt.Hostname,
 				Message: fmt.Sprintf("service address %s allocated for %s on network %s", m.Service, m.Addr, m.Network)})
-			return m, true
+			return
 		}
 		why = err.Error()
 	}
 	c.withoutService(rt, why)
-	return store.ServiceAddr{}, false
 }
 
 // publishAt gives the target of a winner on a leg the service address it is
@@ -274,30 +469,14 @@ func (c *cycleRun) publishAt(rt model.Route, service netip.Addr) {
 	c.results[rt.Hostname] = res
 }
 
-// withoutService is the target of a winner on a leg that has no service
-// address this cycle, for why: it keeps the rule last verified for its
-// hostname, whose service address the tunnel configuration verified at
-// Cloudflare still sends a connector to, and is held otherwise. Its real
-// address is never what a rule sends a connector to.
+// withoutService holds the target of a winner on a leg that has no service
+// address this cycle, for why. Its real address is never what a rule sends
+// a connector to.
 func (c *cycleRun) withoutService(rt model.Route, why string) {
 	res := c.results[rt.Hostname]
-	b := res.Binding
-	prev, bound := c.bindings[rt.Hostname]
-	if bound && c.e.d.Gateway != nil && prev.Service.IsValid() && c.verifiedAt(prev.Service, rt.Target.Port) {
-		c.publishAt(rt, prev.Service)
-		c.legKept[rt.Hostname] = fmt.Sprintf(reasonNoService, why) + reasonKept
-		c.problem(problemServiceKept, rt.Hostname, res.Target.Addr, b.Via, why)
-		return
-	}
 	res.Target.Via, res.Target.Reason = netip.Addr{}, fmt.Sprintf(reasonNoService, why)
 	c.results[rt.Hostname] = res
-	c.problem(problemServiceHeld, rt.Hostname, b.Via, why)
-}
-
-// verifiedAt reports whether a tunnel configuration verified at Cloudflare
-// sends a connector to addr at port.
-func (c *cycleRun) verifiedAt(addr netip.Addr, port uint16) bool {
-	return c.e.sentTargets()[egress.Target{Addr: addr, Port: port}]
+	c.problem(problemServiceHeld, rt.Hostname, res.Binding.Via, why)
 }
 
 // syncGateway gives the gateway what this cycle wants of it and keeps what it
@@ -403,9 +582,11 @@ func (c *cycleRun) wantedPins(services []gateway.Service) []gateway.Pin {
 	return out
 }
 
-// releaseUnused deletes every mapping whose service address the gateway was
-// not given and no configuration verified at Cloudflare sends a connector to,
-// and returns the others. A released address is never given again.
+// releaseUnused deletes every mapping of a network with a leg on this node
+// whose service address the gateway was not given and no configuration
+// verified at Cloudflare sends a connector to, and returns the others. A
+// released address is never given again; the mappings of another node's
+// networks are its own to release.
 func (c *cycleRun) releaseUnused(mappings []store.ServiceAddr, services []gateway.Service) []store.ServiceAddr {
 	inUse := map[netip.Addr]bool{}
 	for _, s := range services {
@@ -416,7 +597,7 @@ func (c *cycleRun) releaseUnused(mappings []store.ServiceAddr, services []gatewa
 	}
 	var kept []store.ServiceAddr
 	for _, m := range mappings {
-		if inUse[m.Service] {
+		if inUse[m.Service] || !c.legNets[m.Network] {
 			kept = append(kept, m)
 			continue
 		}
@@ -543,6 +724,12 @@ func (e *Engine) NoteGateway(c GatewayCheck) {
 	e.noteMu.Unlock()
 	e.events.add(events...)
 }
+
+// GatewayAllowed reports whether the gateway may be changed outside a cycle:
+// always on the host; in the appliance only while its last
+// self-identification passed and it serves, so that a copy never adds a card
+// of the original to itself.
+func (e *Engine) GatewayAllowed() bool { return e.refusedAsCopy() == nil }
 
 // Idle runs fn while no cycle and no verification of a moved address runs,
 // so that nothing probes through the gateway while fn changes it. It waits

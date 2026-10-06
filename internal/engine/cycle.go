@@ -109,13 +109,17 @@ type cycleRun struct {
 	// may use, and gateVerdict is what the tunnel run found of the writer,
 	// for the gate of the next cycle. gatewayHeld says why the tunnel run
 	// writes nothing: the gateway could not be programmed. legKept says, by
-	// hostname, why a target on a leg keeps the rule last verified for it,
-	// and legIfaces is, by network, the interface of its leg.
+	// hostname, why a target on a leg keeps a rule that reaches nothing,
+	// legIfaces is, by network, the interface of its leg, legNets holds the
+	// networks with a leg on this node, and frozen the service addresses
+	// that forward nothing in this cycle: their routes left their address.
 	writerRead  bool
 	gateVerdict string
 	gatewayHeld string
 	legKept     map[string]string
 	legIfaces   map[string]string
+	legNets     map[string]bool
+	frozen      map[netip.Addr]bool
 
 	// waitWhy says why the admin's requests wait, when the DNS step was
 	// reached; confirmWhy why a confirmation the DNS run could not keep
