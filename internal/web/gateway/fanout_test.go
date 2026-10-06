@@ -628,6 +628,53 @@ func TestGapsAreReadOnlyForReaders(t *testing.T) {
 	bob.quiet()
 }
 
+// A reader that joins after a gap nobody read is told of it over the whole
+// range, as of events the web does not know: at level warn, whatever the
+// level of the daemon's gap, which says what hidden guests did.
+func TestAReaderJoiningAfterAnUnreadGapIsToldOfIt(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	s.daemon.serveEvents([]engine.Event{routeEvent(13, "error", "qemu/102"), routeEvent(14, "error", "qemu/102")})
+	conn := s.connect()
+	srv := s.streamServer()
+	alice := s.streamOf(srv, admin)
+	conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: 13, To: 14, Count: 2, Level: "error"})
+	require.Equal(t, "gap", alice.next().event)
+	require.Zero(t, s.daemon.count("GET /v1/events"), "no reader was there to read it for")
+
+	// The reader's tab reconnects with the id of the last event it saw.
+	s.pve.sees(reader, 101)
+	bob := s.signIn(reader).openStream(srv, bootA+":12")
+	got := bob.take(3)
+	require.Equal(t, "gap", got[2].event)
+	require.Equal(t, bootA+":14", got[2].id)
+	require.JSONEq(t, `{"boot":"`+bootA+`","from":13,"to":14,"count":2,"level":"warn"}`, got[2].data)
+	require.Zero(t, s.daemon.count("GET /v1/events"), "joining reads nothing")
+	bob.quiet()
+
+	// An admin is told what the daemon said.
+	again := s.signIn(admin).openStream(srv, bootA+":12")
+	got = again.take(3)
+	require.JSONEq(t, `{"boot":"`+bootA+`","from":13,"to":14,"count":2,"level":"error"}`, got[2].data)
+}
+
+// A gap whose events cannot be read is no reason to tell readers nothing: it
+// reaches them over its whole range at level warn.
+func TestAGapThatCannotBeReadIsAWarningToReaders(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	s.daemon.answer("GET /v1/events", http.StatusServiceUnavailable, wire.Error{Error: "the engine is starting", Code: codeUnavailable})
+	conn := s.connect()
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(s.streamServer(), reader)
+	conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: 13, To: 15, Count: 3, Level: "info"})
+	m := bob.next()
+	require.Equal(t, "gap", m.event)
+	require.JSONEq(t, `{"boot":"`+bootA+`","from":13,"to":15,"count":3,"level":"warn"}`, m.data)
+}
+
 // A daemon that is slow to answer a read does not hold up the subscription:
 // what comes meanwhile is taken off the stream and handed on in order once
 // the read is done.

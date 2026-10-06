@@ -212,7 +212,7 @@ func (g *Gateway) gapEvents(ctx context.Context, gap engine.GapNotice) (in []eng
 		err = json.Unmarshal(data, &in)
 	}
 	if err != nil {
-		g.log.Warn().Err(err).Msg("reading the events of a gap; readers are not told of it")
+		g.log.Warn().Err(err).Msg("reading the events of a gap; readers are told of the whole range")
 		return nil, false
 	}
 	return in, true
@@ -523,7 +523,8 @@ func (h *hub) replay(after uint64, r *Reader) []queued {
 		first = min(first, h.ring[0].first())
 	}
 	unknown := func(from, to uint64) queued {
-		return gapQueued(&engine.GapNotice{Boot: h.hello.Boot, From: from, To: to, Count: int(to - from + 1), Level: "warn"})
+		g := unseenGap(h.hello.Boot, from, to)
+		return gapQueued(&g)
 	}
 	var qs []queued
 	if first > after+1 {

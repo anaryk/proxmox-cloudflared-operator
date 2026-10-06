@@ -342,12 +342,21 @@ func trafficNotice(n engine.TrafficNotice, visible auth.Visible, all []engine.Ro
 	return n
 }
 
+// unseenGap stands for events from to to of the boot that the web does not
+// know of. Their levels are not known either, and the daemon's would say what
+// guests the reader may not see did: it says warn, so that the page looks.
+func unseenGap(boot string, from, to uint64) engine.GapNotice {
+	return engine.GapNotice{Boot: boot, From: from, To: to, Count: int(to - from + 1), Level: "warn"}
+}
+
 // readerGap is a gap of the daemon as a reader gets it: of the events in it,
 // those the reader sees, counted with their highest level, over the same
-// seqs; none when the reader sees none of them, or the events are not known.
+// seqs; none when the reader sees none of them. When the events were not
+// read, the reader is told of the whole range, as of events unknown: one
+// that could be told less would miss what it may see.
 func readerGap(g engine.GapNotice, in []engine.Event, known bool, visible auth.Visible, hosts map[string]bool) (engine.GapNotice, bool) {
 	if !known {
-		return engine.GapNotice{}, false
+		return unseenGap(g.Boot, g.From, g.To), true
 	}
 	var out *engine.GapNotice
 	for _, ev := range in {
