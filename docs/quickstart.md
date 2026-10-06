@@ -363,6 +363,12 @@ interface; [Appliance](appliance.md#the-web-interface) says how to sign in.
 
 ## Where to go next
 
+- [How-to guides](guides/index.md): one task each, from
+  [publishing a virtual machine](guides/publish-a-vm.md) or
+  [an HTTPS origin](guides/https-origins.md) to [monitoring](guides/monitoring.md) and
+  [backups](guides/backup-and-recovery.md).
+- [Roll out in observe-only mode](guides/observe-then-enforce.md): more hostnames at once, read
+  before they are published.
 - [Annotations](annotations.md): everything you can write in the Notes.
 - [Identity](identity.md) and [Security](security.md): what pco proves before it
   publishes an address, and what it does not.
