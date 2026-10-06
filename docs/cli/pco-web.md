@@ -20,9 +20,10 @@ is pveproxy.crt there.
 
 In the appliance users sign in with their user and password of Proxmox VE, at the node's
 API as the appliance's daemon reaches it (`--pve-api`, default pve-api.json in
-`$CREDENTIALS_DIRECTORY`, which the daemon writes). It listens on net0's address only, as
-pco appliance install wrote it into `/etc/pco/net0`, and refuses to start on any
-other. root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.
+`$CREDENTIALS_DIRECTORY`, which the daemon writes). It listens on net0's IPv4 address only,
+as `/etc/pco/net0` says it, which the installer writes and the daemon keeps current,
+port 8643 unless PCO_WEB_LISTEN names another, and refuses to start on any other address.
+root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.
 
 pco-web.service runs it as the user pco-web, whom the daemon answers on its socket while
 the unit is installed; by hand, run it as root.

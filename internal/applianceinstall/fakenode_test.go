@@ -19,6 +19,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
 // errKilled is what the fake node panics with where the installer is killed
@@ -889,8 +890,24 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 		return "", exitError{1, ""}
 	case line == "pco appliance init --bootstrap "+bootstrapFile:
 		return f.init(ct, id, env)
-	case line == "ip -j -4 addr show dev eth0":
+	case line == "ip -j addr show dev eth0":
 		return f.eth0(ct), nil
+	case line == "test -f "+webcert.Net0File || line == "test -f "+webcert.EnvFile:
+		if _, ok := ct.files[cmd[2]]; ok {
+			return "", nil
+		}
+		return "", exitError{1, ""}
+	case line == "cat "+webcert.Net0File:
+		file, ok := ct.files[webcert.Net0File]
+		if !ok {
+			return "", exitError{1, "cat: " + webcert.Net0File + ": No such file or directory"}
+		}
+		return string(file.data), nil
+	case line == "systemctl is-enabled --quiet pco-web.service":
+		if ct.web {
+			return "", nil
+		}
+		return "", exitError{1, ""}
 	case line == "pco web cert":
 		// The daemon makes the certificate once init gave it a store.
 		if !ct.meta {
@@ -918,7 +935,7 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 // container.
 const fakeFingerprint = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
 
-// eth0 is what ip -j -4 addr prints of eth0: the address of net0, or the
+// eth0 is what ip -j addr prints of eth0: the IPv4 address of net0, or the
 // lease DHCP gives it.
 func (f *fakeNode) eth0(ct *fakeCT) string {
 	cidr := option(ct.cfg["net0"], "ip")

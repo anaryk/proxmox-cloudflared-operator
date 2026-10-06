@@ -46,6 +46,40 @@ type applianceWorld struct {
 	flag   string
 	net    *fakeAppNet
 	netNft *fakeNetNft
+	eth0   *fakeEth0
+}
+
+// fakeEth0 is the card of net0 as netlink tells of it: its addresses, and the
+// watch that says when they change.
+type fakeEth0 struct {
+	mu      sync.Mutex
+	addrs   []netip.Addr
+	changed func()
+}
+
+func (f *fakeEth0) Addrs(context.Context) ([]netip.Addr, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.addrs), nil
+}
+
+func (f *fakeEth0) Watch(ctx context.Context, changed func()) error {
+	f.mu.Lock()
+	f.changed = changed
+	f.mu.Unlock()
+	<-ctx.Done()
+	return nil
+}
+
+// set gives the card these addresses, as a new lease of DHCP does.
+func (f *fakeEth0) set(addrs ...netip.Addr) {
+	f.mu.Lock()
+	f.addrs = addrs
+	changed := f.changed
+	f.mu.Unlock()
+	if changed != nil {
+		changed()
+	}
 }
 
 // fakeAppNet is the network of the container: everything pco-net.service
@@ -144,6 +178,7 @@ func newApplianceWorld(t *testing.T) *applianceWorld {
 		flag:   filepath.Join(w.dir, "run", "pco-appliance", "identity-ok"),
 		net:    &fakeAppNet{missing: map[string]bool{}},
 		netNft: &fakeNetNft{listing: listing, live: listing},
+		eth0:   &fakeEth0{addrs: []netip.Addr{netip.MustParseAddr("10.92.0.150")}},
 	}
 	a.mountVolumeOf(applianceVMID)
 	a.proc("uptime", "3600.00 7000.00\n")
@@ -192,14 +227,16 @@ func newApplianceWorld(t *testing.T) *applianceWorld {
 		NetNft:     a.netNft,
 		Hostname:   func() (string, error) { return "pco", nil },
 		Net0:       filepath.Join(w.dir, "etc", "pco", "net0"),
+		Net0Addrs:  a.eth0.Addrs,
+		WatchAddrs: a.eth0.Watch,
 	}
 	// The web interface of the container, as pco appliance install sets it.
 	w.deps.WebDir = filepath.Join(w.dir, "etc", "pco", "web")
 	w.deps.WebEnv = filepath.Join(w.dir, "etc", "default", "pco-web")
 	w.deps.WebLoaded = filepath.Join(w.dir, "run", "credentials", "pco-web.service")
-	w.deps.RestartWeb = func(context.Context) error { return nil }
+	w.deps.RestartWeb = func(ctx context.Context) error { return w.sysd.Restart(ctx, webService) }
 	a.write(w.deps.Appliance.Net0, "10.92.0.150\n")
-	a.write(w.deps.WebEnv, "PCO_WEB_LISTEN=10.92.0.150:8643\n")
+	a.write(w.deps.WebEnv, "# Written by pco appliance install.\n")
 	w.deps.Sleep = func(ctx context.Context, _ time.Duration) error {
 		select {
 		case <-time.After(5 * time.Millisecond):

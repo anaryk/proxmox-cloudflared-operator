@@ -98,21 +98,32 @@ func TestTheSelfSignedCertificateOfTheAppliance(t *testing.T) {
 
 func TestWhereTheAppliancesWebInterfaceListens(t *testing.T) {
 	net0 := netip.MustParseAddr("10.92.0.150")
-	fix := "set PCO_WEB_LISTEN=<net0's address>:8643 in /etc/default/pco-web, then systemctl restart pco-web"
+	live := []netip.Addr{net0}
+	fix := "take PCO_WEB_LISTEN out of /etc/default/pco-web, or give it net0's address, then systemctl restart pco-web"
 	for _, tt := range []struct {
 		name string
 		web  WebCert
 		want Finding
 	}{
-		{"net0's address", WebCert{Listen: "10.92.0.150:8643", Net0: net0},
+		{"net0's address", WebCert{Listen: "10.92.0.150:8643", Net0: net0, Live: live},
 			Finding{Level: LevelOK, Detail: "pco-web listens on 10.92.0.150:8643, net0's address"}},
-		{"every address", WebCert{Listen: "0.0.0.0:8643", Net0: net0},
+		{"net0's address among others of the card", WebCert{Listen: "10.92.0.150:8643", Net0: net0, Live: []netip.Addr{netip.MustParseAddr("10.92.0.9"), net0}},
+			Finding{Level: LevelOK, Detail: "pco-web listens on 10.92.0.150:8643, net0's address"}},
+		{"every address", WebCert{Listen: "0.0.0.0:8643", Net0: net0, Live: live},
 			Finding{Level: LevelWarn, Detail: "pco-web listens on 0.0.0.0:8643, which is not net0's (10.92.0.150): guests on a leg may reach the sign-in page", Fix: fix}},
-		{"a leg's address", WebCert{Listen: "10.92.1.1:8643", Net0: net0},
+		{"a leg's address", WebCert{Listen: "10.92.1.1:8643", Net0: net0, Live: live},
 			Finding{Level: LevelWarn, Detail: "pco-web listens on 10.92.1.1:8643, which is not net0's (10.92.0.150): guests on a leg may reach the sign-in page", Fix: fix}},
-		{"net0 unknown", WebCert{Listen: "10.92.0.150:8643", Net0Err: errors.New("open /etc/pco/net0: no such file or directory")},
+		{"net0 unknown", WebCert{VMID: 9250, Listen: "10.92.0.150:8643", Net0Err: errors.New("open /etc/pco/net0: no such file or directory")},
 			Finding{Level: LevelWarn, Detail: "net0's address is not known (open /etc/pco/net0: no such file or directory), so pco-web refuses to start",
-				Fix: "write net0's address into /etc/pco/net0, then systemctl restart pco-web"}},
+				Fix: "run pco appliance repair --vmid 9250 on the node, which writes it"}},
+		{"the card has another address", WebCert{VMID: 9250, Listen: "10.92.0.150:8643", Net0: net0, Live: []netip.Addr{netip.MustParseAddr("10.92.0.160")}},
+			Finding{Level: LevelFail, Detail: "/etc/pco/net0 says 10.92.0.150, but net0's card has 10.92.0.160 now: pco-web cannot listen there",
+				Fix: "the daemon writes the card's address there and restarts pco-web within a minute; journalctl -u pco says why it did not"}},
+		{"the card has no address", WebCert{VMID: 9250, Listen: "10.92.0.150:8643", Net0: net0},
+			Finding{Level: LevelFail, Detail: "net0's card has no IPv4 address; pco-web cannot listen on 10.92.0.150",
+				Fix: "check the DHCP server of net0's bridge, or give net0 a static address with pct set 9250 --net0 ...,ip=<cidr>"}},
+		{"the card cannot be read", WebCert{Listen: "10.92.0.150:8643", Net0: net0, LiveErr: errors.New("netlink: permission denied")},
+			Finding{Level: LevelWarn, Detail: "the addresses of net0's card cannot be read: netlink: permission denied", Fix: "journalctl -u pco says more"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			env := healthyEnv()

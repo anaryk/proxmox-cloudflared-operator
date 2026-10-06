@@ -93,6 +93,25 @@ func TestTheCertificateOfTheAppliance(t *testing.T) {
 	require.Contains(t, out.String(), "SHA-256      "+webcert.Fingerprint(leaf)+"\n")
 }
 
+func TestRenewLeavesTheAdminsOwnCertificateInTheAppliance(t *testing.T) {
+	a := &app{env: applianceEnv(t, "192.0.2.30", nil)}
+	a.webDir = t.TempDir()
+	names, err := webcert.ApplianceNames("pco", "", "192.0.2.30:8643", nil)
+	require.NoError(t, err)
+	certPEM, keyPEM, err := webcert.SelfSigned(names, t0, 90*24*time.Hour, rand.Reader)
+	require.NoError(t, err)
+	_, err = webcert.ImportOwn(a.webDir, certPEM, keyPEM, names, t0)
+	require.NoError(t, err)
+
+	err = a.applianceRenew(t.Context(), &bytes.Buffer{}, false)
+
+	require.EqualError(t, err, "the certificate of the web interface is your own (mode own), which pco does not renew: "+
+		"pco web cert import <crt> <key> puts another of yours in place, and pco web cert renew --force a self-signed one")
+	have, _, err := webcert.ReadPair(a.webDir)
+	require.NoError(t, err)
+	require.Equal(t, certPEM, have)
+}
+
 func TestSetupOptionsOfTheWebInterface(t *testing.T) {
 	a, cmd, _, _ := commandWith(unreadable{t}, false)
 

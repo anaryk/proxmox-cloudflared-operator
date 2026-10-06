@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
@@ -17,10 +20,13 @@ type WebCert struct {
 	Err       error  // why they could not be read
 
 	Appliance bool
+	VMID      int        // of the appliance
 	Listen    string     // PCO_WEB_LISTEN, else net0's address and port 8643
 	ListenErr error      // why the environment of the unit could not be read
-	Net0      netip.Addr // as pco appliance install wrote it
+	Net0      netip.Addr // as /etc/pco/net0 has it
 	Net0Err   error
+	Live      []netip.Addr // the global IPv4 addresses of net0's card now
+	LiveErr   error
 }
 
 // checkWebCert says how the certificate of the web interface stands: its
@@ -63,13 +69,25 @@ func checkWebCert(w WebCert, now time.Time) Finding {
 // the cluster, where Proxmox VE's own page is out of their reach.
 func checkWebListen(w WebCert) Finding {
 	const check = "web listen"
-	const fixListen = "set PCO_WEB_LISTEN=<net0's address>:8643 in /etc/default/pco-web, then systemctl restart pco-web"
+	const fixListen = "take PCO_WEB_LISTEN out of /etc/default/pco-web, or give it net0's address, then systemctl restart pco-web"
+	vmid := "<vmid>"
+	if w.VMID > 0 {
+		vmid = strconv.Itoa(w.VMID)
+	}
 	switch {
 	case w.ListenErr != nil:
 		return warn(check, fmt.Sprintf("the address pco-web listens on cannot be read: %v", w.ListenErr), fixListen)
 	case w.Net0Err != nil:
 		return warn(check, fmt.Sprintf("net0's address is not known (%v), so pco-web refuses to start", w.Net0Err),
-			"write net0's address into "+webcert.Net0File+", then systemctl restart pco-web")
+			RepairFix(vmid)+", which writes it")
+	case w.LiveErr != nil:
+		return warn(check, fmt.Sprintf("the addresses of net0's card cannot be read: %v", w.LiveErr), "journalctl -u pco says more")
+	case len(w.Live) == 0:
+		return fail(check, fmt.Sprintf("net0's card has no IPv4 address; pco-web cannot listen on %s", w.Net0),
+			"check the DHCP server of net0's bridge, or give net0 a static address with pct set "+vmid+" --net0 ...,ip=<cidr>")
+	case !slices.Contains(w.Live, w.Net0):
+		return fail(check, fmt.Sprintf("%s says %s, but net0's card has %s now: pco-web cannot listen there", webcert.Net0File, w.Net0, joinAddrs(w.Live)),
+			"the daemon writes the card's address there and restarts pco-web within a minute; journalctl -u pco says why it did not")
 	case w.Listen == "":
 		return warn(check, "pco-web has no address to listen on", fixListen)
 	}
@@ -77,6 +95,14 @@ func checkWebListen(w WebCert) Finding {
 		return warn(check, fmt.Sprintf("pco-web listens on %s, which is not net0's (%s): guests on a leg may reach the sign-in page", w.Listen, w.Net0), fixListen)
 	}
 	return ok(check, "pco-web listens on "+w.Listen+", net0's address")
+}
+
+func joinAddrs(addrs []netip.Addr) string {
+	s := make([]string, len(addrs))
+	for i, a := range addrs {
+		s[i] = a.String()
+	}
+	return strings.Join(s, ", ")
 }
 
 // webCertFix is what puts a certificate of a mode right.

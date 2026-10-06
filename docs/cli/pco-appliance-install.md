@@ -17,6 +17,11 @@ or /vms takes from its principal every privilege in the cluster, or on every gue
 no line further down grants it. The lines added are recorded in the appliance's
 manifest, and uninstall takes them back.
 
+The web interface of the appliance listens on the IPv4 address of net0 (`--ip`, or the lease
+DHCP gives it), port 8643, and nowhere else; it serves IPv4 only. The daemon follows a new
+address of net0. The installer prints the fingerprint of its certificate to compare at
+the first visit.
+
 The template is downloaded through Proxmox and checked against `--checksums`, the
 checksums.txt of the release, unless `--template` names it. Every object made is noted in
 a journal under `/root/.pco-appliance-install` first: a step that fails, and SIGINT, SIGTERM

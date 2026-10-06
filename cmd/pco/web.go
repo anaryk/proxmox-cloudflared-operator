@@ -63,9 +63,10 @@ func (a *app) webCmd() *cobra.Command {
 			"is pveproxy.crt there.\n\n" +
 			"In the appliance users sign in with their user and password of Proxmox VE, at the node's\n" +
 			"API as the appliance's daemon reaches it (--pve-api, default pve-api.json in\n" +
-			"$CREDENTIALS_DIRECTORY, which the daemon writes). It listens on net0's address only, as\n" +
-			"pco appliance install wrote it into " + webcert.Net0File + ", and refuses to start on any\n" +
-			"other. root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.\n\n" +
+			"$CREDENTIALS_DIRECTORY, which the daemon writes). It listens on net0's IPv4 address only,\n" +
+			"as " + webcert.Net0File + " says it, which the installer writes and the daemon keeps current,\n" +
+			"port 8643 unless PCO_WEB_LISTEN names another, and refuses to start on any other address.\n" +
+			"root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.\n\n" +
 			"pco-web.service runs it as the user pco-web, whom the daemon answers on its socket while\n" +
 			"the unit is installed; by hand, run it as root.",
 		Example: "  # By hand beside pco-web.service: on another port, with the files the unit reads\n" +

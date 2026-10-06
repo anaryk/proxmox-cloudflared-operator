@@ -49,6 +49,10 @@ const installLong = "Install the pco appliance on this Proxmox VE node: an unpri
 	"or /vms takes from its principal every privilege in the cluster, or on every guest, that\n" +
 	"no line further down grants it. The lines added are recorded in the appliance's\n" +
 	"manifest, and uninstall takes them back.\n\n" +
+	"The web interface of the appliance listens on the IPv4 address of net0 (--ip, or the lease\n" +
+	"DHCP gives it), port 8643, and nowhere else; it serves IPv4 only. The daemon follows a new\n" +
+	"address of net0. The installer prints the fingerprint of its certificate to compare at\n" +
+	"the first visit.\n\n" +
 	"The template is downloaded through Proxmox and checked against --checksums, the\n" +
 	"checksums.txt of the release, unless --template names it. Every object made is noted in\n" +
 	"a journal under /root/.pco-appliance-install first: a step that fails, and SIGINT, SIGTERM\n" +

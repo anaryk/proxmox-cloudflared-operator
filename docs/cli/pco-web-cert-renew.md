@@ -3,7 +3,7 @@
 Make a new key and certificate signed by the cluster CA for the web interface now, and
 restart pco-web.service so that it serves them, as after a suspected leak of its key.
 Only a certificate of mode ca is renewed. In the appliance it makes a new key and
-self-signed certificate, also in place of one of your own. It runs as root.
+self-signed certificate; one of your own it replaces only with `--force`. It runs as root.
 
 ## Usage
 
@@ -24,7 +24,8 @@ pco web cert
 ## Flags
 
 ```text
--h, --help   help for renew
+    --force   in the appliance, replace a certificate of your own with a self-signed one
+-h, --help    help for renew
 ```
 
 ## Global flags

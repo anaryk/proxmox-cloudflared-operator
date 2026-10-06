@@ -35,7 +35,16 @@ func (e *testEnv) restored(vmid int, withVolume bool) {
 	if !withVolume {
 		delete(cfg, "mp0")
 	}
-	e.node.cts[vmid] = &fakeCT{cfg: cfg, files: map[string]fakeFile{}, state: "degraded", failed: []string{"pco.service"}, version: testVersion}
+	// The root file system comes back with it, the files of the web
+	// interface among them; the state volume does not.
+	files := map[string]fakeFile{}
+	for path, f := range e.node.cts[100].files {
+		if !strings.HasPrefix(path, stateDir+"/") {
+			files[path] = f
+		}
+	}
+	e.node.cts[vmid] = &fakeCT{cfg: cfg, files: files, state: "degraded", failed: []string{"pco.service"}, version: testVersion,
+		lease: "192.0.2.151/24", web: e.node.cts[100].web}
 	e.node.pools["pco"].Members = append(e.node.pools["pco"].Members, vmid)
 }
 

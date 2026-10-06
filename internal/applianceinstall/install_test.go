@@ -75,7 +75,7 @@ func TestAFreshInstallRunsExactlyTheseCommands(t *testing.T) {
 		"pct exec 100 --keep-env 0 -- pco version",
 		// 8. where the web interface listens: net0's address, before the
 		// daemon's first start makes its certificate
-		"pct exec 100 --keep-env 0 -- ip -j -4 addr show dev eth0",
+		"pct exec 100 --keep-env 0 -- ip -j addr show dev eth0",
 		"pct push 100 <run>/net0 /etc/pco/net0 --perms 0644",
 		"pct push 100 <run>/pco-web /etc/default/pco-web --perms 0644",
 		// 9. the CA, the marker and the bootstrap, then init
@@ -106,7 +106,7 @@ func TestAFreshInstallRunsExactlyTheseCommands(t *testing.T) {
 	}, e.node.pushes)
 	require.NotContains(t, ct.files, bootstrapFile, "init consumed the bootstrap")
 	require.Equal(t, "192.0.2.150\n", string(ct.files["/etc/pco/net0"].data), "the lease of eth0")
-	require.Contains(t, string(ct.files["/etc/default/pco-web"].data), "\nPCO_WEB_LISTEN=192.0.2.150:8643\n")
+	require.NotContains(t, string(ct.files["/etc/default/pco-web"].data), "PCO_WEB_LISTEN=")
 	require.True(t, ct.web, "pco-web.service is enabled")
 
 	// The journal directory is empty and nothing is left under /run.

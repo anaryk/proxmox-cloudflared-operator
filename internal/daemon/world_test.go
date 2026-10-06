@@ -189,10 +189,12 @@ func (scriptedProber) FDBPorts(_ context.Context, _ string, _ int, mac string) (
 
 func (scriptedProber) Dial(context.Context, netip.AddrPort) error { return nil }
 
-// fakeSystemd keeps the units a connector manager enabled.
+// fakeSystemd keeps the units a connector manager enabled, and the units
+// restarted.
 type fakeSystemd struct {
-	mu      sync.Mutex
-	enabled map[string]bool
+	mu        sync.Mutex
+	enabled   map[string]bool
+	restarted []string
 }
 
 func (f *fakeSystemd) EnableNow(_ context.Context, unit string) error {
@@ -209,7 +211,24 @@ func (f *fakeSystemd) DisableNow(_ context.Context, unit string) error {
 	return nil
 }
 
-func (f *fakeSystemd) Restart(context.Context, string) error { return nil }
+func (f *fakeSystemd) Restart(_ context.Context, unit string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.restarted = append(f.restarted, unit)
+	return nil
+}
+
+func (f *fakeSystemd) restarts(unit string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, u := range f.restarted {
+		if u == unit {
+			n++
+		}
+	}
+	return n
+}
 
 func (f *fakeSystemd) IsActive(_ context.Context, unit string) (bool, error) {
 	f.mu.Lock()

@@ -75,13 +75,14 @@ func (a *app) webCertCmd() *cobra.Command {
 }
 
 func (a *app) webCertRenewCmd() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "renew",
 		Short: "Make a new key and certificate for the web interface now",
 		Long: "Make a new key and certificate signed by the cluster CA for the web interface now, and\n" +
 			"restart pco-web.service so that it serves them, as after a suspected leak of its key.\n" +
 			"Only a certificate of mode ca is renewed. In the appliance it makes a new key and\n" +
-			"self-signed certificate, also in place of one of your own. It runs as root.",
+			"self-signed certificate; one of your own it replaces only with --force. It runs as root.",
 		Example: "  # A new key and certificate of the cluster CA now\n" +
 			"  pco web cert renew\n\n" +
 			"  # And the fingerprint to compare in the browser\n" +
@@ -96,7 +97,7 @@ func (a *app) webCertRenewCmd() *cobra.Command {
 				return err
 			}
 			if appliance {
-				return a.applianceRenew(cmd.Context(), cmd.OutOrStdout())
+				return a.applianceRenew(cmd.Context(), cmd.OutOrStdout(), force)
 			}
 			s, err := a.webCertSetup(cmd)
 			if err != nil {
@@ -109,6 +110,8 @@ func (a *app) webCertRenewCmd() *cobra.Command {
 			return a.printWebCert(cmd.OutOrStdout(), st)
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "in the appliance, replace a certificate of your own with a self-signed one")
+	return cmd
 }
 
 func (a *app) webCertImportCmd() *cobra.Command {
@@ -202,7 +205,17 @@ func (a *app) applianceNames() (webcert.Names, error) {
 	return webcert.ApplianceNamesFrom(hostname, webcert.NodeFQDN(), webcert.EnvFile, a.net0File)
 }
 
-func (a *app) applianceRenew(ctx context.Context, w io.Writer) error {
+// applianceRenew makes a new self-signed pair in the appliance; the admin's
+// own only with force, as on a node pco renews none but its own.
+func (a *app) applianceRenew(ctx context.Context, w io.Writer, force bool) error {
+	mode, err := webcert.ReadMode(a.webDir)
+	if err != nil {
+		return err
+	}
+	if mode == webcert.ModeOwn && !force {
+		return errors.New("the certificate of the web interface is your own (mode own), which pco does not renew: " +
+			"pco web cert import <crt> <key> puts another of yours in place, and pco web cert renew --force a self-signed one")
+	}
 	names, err := a.applianceNames()
 	if err != nil {
 		return err

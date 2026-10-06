@@ -59,6 +59,11 @@ type ApplianceDeps struct {
 	// default webcert.Net0File.
 	Hostname func() (string, error)
 	Net0     string
+	// Net0Addrs are the global IPv4 addresses of net0's card, and WatchAddrs
+	// calls back whenever an address of the container changes; default: the
+	// container's netlink.
+	Net0Addrs  func(ctx context.Context) ([]netip.Addr, error)
+	WatchAddrs func(ctx context.Context, changed func()) error
 }
 
 func (a ApplianceDeps) withDefaults() ApplianceDeps {
@@ -175,7 +180,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 		statuses: eng.ConnectorStatuses, scrape: parts.conns.Metrics, record: eng.RecordTraffic, targets: eng.SampleTargets,
 		now: deps.Now, log: log,
 	}
-	web := newApplianceWebKeeper(deps, app, *a, eng.NoteWeb, log)
+	web := newApplianceWebKeeper(deps, app, *a, eng.NoteWeb, eng.NoteWebListen, log)
 	env.Web = func(ctx context.Context) (doctor.WebCert, bool) {
 		// The installer enables pco-web; an appliance without it has no web
 		// interface to check.

@@ -281,7 +281,19 @@ func (r *run) repairState(ctx context.Context) error {
 	if err := r.ensureTags(ctx); err != nil {
 		return err
 	}
-	return r.pushBootstrap(ctx, appliance.ModeRepair, false)
+	return r.withWeb(ctx, func() error { return r.pushBootstrap(ctx, appliance.ModeRepair, false) })
+}
+
+// withWeb runs push between the two halves of repairWeb: the address of net0
+// is in place before the daemon starts again, pco-web after it.
+func (r *run) withWeb(ctx context.Context, push func() error) error {
+	if err := r.repairWeb(ctx, true); err != nil {
+		return err
+	}
+	if err := push(); err != nil {
+		return err
+	}
+	return r.repairWeb(ctx, false)
 }
 
 func (r *run) recoverState(ctx context.Context, cfg ctConfig) error {
@@ -306,7 +318,7 @@ func (r *run) recoverState(ctx context.Context, cfg ctConfig) error {
 	if err := r.ensureProxmox(ctx); err != nil {
 		return err
 	}
-	return r.pushBootstrap(ctx, appliance.ModeRecover, false)
+	return r.withWeb(ctx, func() error { return r.pushBootstrap(ctx, appliance.ModeRecover, false) })
 }
 
 // recoveryToken makes sure there is a Cloudflare token to find the install
