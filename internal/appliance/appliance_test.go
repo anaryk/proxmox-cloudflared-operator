@@ -520,6 +520,35 @@ func TestTheGatewaysAreThoseOfTheDefaultRoutes(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestTheGatewaysOfTheIPv6DefaultRoutesJoinThem(t *testing.T) {
+	f := newFakeSystem(t)
+	f.proc("net/route", "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"+
+		"eth0\t00000000\t01005C0A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n")
+	b, err := os.ReadFile(filepath.Join("testdata", "ipv6_route"))
+	require.NoError(t, err)
+	f.proc("net/ipv6_route", string(b))
+
+	got, err := f.sys.Gateways()
+
+	require.NoError(t, err)
+	require.Equal(t, []netip.Addr{
+		netip.MustParseAddr("10.92.0.1"),
+		netip.MustParseAddr("fd92:1::1"),
+		netip.MustParseAddr("fe80::1"),
+	}, got, "the router of an advertisement once for both links; not the gateway of a prefix, nor the unreachable default of lo")
+}
+
+func TestAKernelWithoutIPv6HasNoIPv6Gateways(t *testing.T) {
+	f := newFakeSystem(t)
+	f.proc("net/route", "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"+
+		"eth0\t00000000\t01005C0A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n")
+
+	got, err := f.sys.Gateways()
+
+	require.NoError(t, err)
+	require.Equal(t, []netip.Addr{netip.MustParseAddr("10.92.0.1")}, got)
+}
+
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	base := t.TempDir()
