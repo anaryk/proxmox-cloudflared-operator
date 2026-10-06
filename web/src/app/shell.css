@@ -4,11 +4,12 @@
  */
 
 /* What takes the focus is scrolled clear of the top bar and the events
-   strip, which stay over the page. */
+   strip, which stay over the page; the strip says its height, which grows
+   when it is opened (EventsStrip.tsx). */
 
 html {
   scroll-padding-top: calc(var(--topbar) + 8px);
-  scroll-padding-bottom: 48px;
+  scroll-padding-bottom: calc(var(--strip-height, 35px) + 13px);
 }
 
 /* the top bar */
