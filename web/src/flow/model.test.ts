@@ -225,15 +225,32 @@ test('before the first cycle there is nothing to draw', () => {
   expect(buildChains(first as unknown as State, undefined)).toEqual([])
 })
 
-test('the populated golden draws its one route and the route that lost the name', () => {
+test('the populated golden draws its routes and the route that lost the name', () => {
   const m = buildModel(populated as unknown as State, trafficFixture as unknown as TrafficView)
   expect(m.nodes.find((n) => n.id === 'zone:example.com')?.rows?.map((r) => [r.hostname, r.owner, r.state])).toEqual([
     ['dns.example.com', 'lxc/202', 'unapproved'],
     ['new.example.com', 'lxc/201', 'unapproved'],
     ['www.example.com', 'qemu/101', 'active'],
     ['www.example.com', 'qemu/102', 'conflict'],
+    ['zabbix.example.com', 'qemu/107', 'active'],
   ])
   expect(m.edges.find((e) => e.to === 'guest:qemu/101')?.rate).toBe(2.4)
+})
+
+test('a route reached through the leg of an attached network has a path of its own, to a port of its guest', () => {
+  const m = buildModel(populated as unknown as State, trafficFixture as unknown as TrafficView)
+  const key = 'zabbix.example.com qemu/107'
+  expect(m.nodes.filter((n) => n.band === 'path').map((n) => [n.id, n.label])).toEqual([
+    ['path:attach:vmbr2', 'vmbr2 · attach'],
+    ['path:vmbr0.20', 'vmbr0 · VLAN 20 · direct'],
+  ])
+  expect(m.edges.filter((e) => e.routes?.includes(key)).map((e) => [e.from, e.to, e.port])).toEqual([
+    ['connector:acc1', 'path:attach:vmbr2', undefined],
+    ['edge:acc1', 'connector:acc1', undefined],
+    ['path:attach:vmbr2', 'guest:qemu/107', 'guest:qemu/107|198.18.1.5:8080'],
+    ['zone:example.com', 'edge:acc1', undefined],
+  ])
+  expect(m.nodes.find((n) => n.id === 'guest:qemu/107')?.ports).toMatchObject([{ label: ':8080 http', state: 'active', target: '198.18.1.5:8080', level: 'port', rate: 2.4 }])
 })
 
 test('targets and paths', () => {
@@ -242,6 +259,10 @@ test('targets and paths', () => {
   expect(targetOf('http_status:503')).toBeUndefined()
   expect(targetOf('')).toBeUndefined()
   expect(pathOf({ path: { node: 'pve1', verifiedAt: '' } })).toEqual({ id: 'path:none', label: 'no bridge proven' })
+  expect(pathOf({ path: { node: 'pve1', bridge: 'vmbr1', vlan: 20, via: 'direct', verifiedAt: '' } })).toEqual({ id: 'path:vmbr1.20', label: 'vmbr1 · VLAN 20 · direct' })
+  expect(pathOf({ path: { node: 'pve1', bridge: 'vmbr2', vlan: 20, via: 'attach:vmbr2.20', verifiedAt: '' } })).toEqual({ id: 'path:attach:vmbr2.20', label: 'vmbr2 · VLAN 20 · attach' })
+  expect(pathOf({ path: { node: 'pve1', bridge: 'pconet', via: 'managed', verifiedAt: '' } })).toEqual({ id: 'path:managed', label: 'pconet · managed' })
+  expect(pathOf({ path: { node: 'pve1', via: 'attach:vmbr2', verifiedAt: '' } })).toEqual({ id: 'path:attach:vmbr2', label: 'vmbr2 · attach' })
 })
 
 describe('the chains of the list', () => {
@@ -309,6 +330,17 @@ describe('the chains of the list', () => {
     expect(steps('intranet.example.com', 'manual/m1').slice(-2)).toEqual(['Path info: no bridge proven', 'Target ok: manual/m1 · 10.0.9.5:80 http · level manual'])
     expect(steps('lab.example.dev', 'qemu/108').slice(1, 3)).toEqual(['Edge warn: Lab · 00000000 · verified: unchecked: not checked in the last cycle: no writer identity; run pco setup', 'Connector ok: pve1 · active, ready, 2 connections'])
     expect(of('lab.example.dev', 'qemu/108').figure).toEqual({ target: '10.0.2.8:8080', rate: 1.2, shared: 1, stale: true })
+  })
+
+  test('through the leg of a network: the path says how the leg is, and fails when it is not up', () => {
+    const route = (populated.routes as unknown as State['routes']).find((r) => r.owner === 'qemu/107')
+    if (!route?.path) throw new Error('the populated state has no route of qemu/107 with a path')
+    const { path } = route
+    const stepOf = (p: typeof path) => buildChains({ ...(populated as unknown as State), routes: [{ ...route, path: p }] }, undefined).find((c) => c.owner === 'qemu/107')?.steps.find((x) => x.key === 'path')
+    expect(stepOf(path)).toEqual({ key: 'path', name: 'Path', level: 'ok', text: 'vmbr2 · attach · leg up, service 198.18.1.5 → 10.50.0.10' })
+    expect(stepOf({ ...path, leg: 'the bridge vmbr2 is absent' })).toMatchObject({ level: 'fail', text: 'vmbr2 · attach · the leg is not up: the bridge vmbr2 is absent' })
+    expect(stepOf({ ...path, leg: '' })).toMatchObject({ level: 'fail', text: 'vmbr2 · attach · the leg is not up: the gateway has not said how it is' })
+    expect(stepOf({ node: path.node, bridge: path.bridge, verifiedAt: path.verifiedAt, addr: path.addr, via: path.via, leg: 'up' })).toMatchObject({ level: 'fail', text: 'vmbr2 · attach · no service address' })
   })
 
   test('the trunks: each tunnel with a connector, its last figures', () => {

@@ -1,4 +1,5 @@
 import type { RouteView } from '../../api/types.gen'
+import { legOf } from '../../text/routes'
 
 // A network as the routes were proven on it: a bridge and the VLAN tag of the
 // guest's card, which is what the guest is configured with, not something the
@@ -16,6 +17,9 @@ export interface Networks {
   // routes none of whose addresses was proven: they lost their hostname, were
   // refused or are held
   unproven: number
+  // routes reached through the leg of a network: the node has no address on
+  // their bridge, so they are on none of these networks
+  throughLegs: number
 }
 
 // A route has a proof when a level says so, or it is a manual route, which
@@ -25,11 +29,17 @@ const proven = (r: RouteView) => Boolean(r.level) || r.owner.startsWith('manual/
 // networksOf places each route on the bridge and VLAN its path names: one
 // network each, by bridge and then VLAN with the untagged first, and last the
 // network without a bridge for the routes that have none, manual routes among
-// them.
+// them. A route whose path goes through the leg of a network is on none, and
+// only counted.
 export function networksOf(routes: readonly RouteView[]): Networks {
   const by = new Map<string, Network>()
   let unproven = 0
+  let throughLegs = 0
   for (const r of routes) {
+    if (legOf(r.path)) {
+      throughLegs++
+      continue
+    }
     const bridge = r.path?.bridge
     if (!bridge && !proven(r)) {
       unproven++
@@ -48,7 +58,7 @@ export function networksOf(routes: readonly RouteView[]): Networks {
     if (!a.bridge || !b.bridge) return Number(!a.bridge) - Number(!b.bridge)
     return a.bridge < b.bridge ? -1 : a.bridge > b.bridge ? 1 : (a.vlan ?? -1) - (b.vlan ?? -1)
   })
-  return { networks, unproven }
+  return { networks, unproven, throughLegs }
 }
 
 // The levels in the order of what they prove; one that is not listed follows

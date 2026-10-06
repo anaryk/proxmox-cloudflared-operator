@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 
-import { expect, onPhone, rowsOf, signIn, test } from './fixtures'
+import { expect, onPhone, populated, rowsOf, signIn, test } from './fixtures'
 
 // The routes of the populated scenario: the filters of the table, a route's
 // detail, its diagnosis, which the daemon runs on the route that holds the
@@ -8,6 +8,7 @@ import { expect, onPhone, rowsOf, signIn, test } from './fixtures'
 // at.
 
 const status = (page: Page) => page.getByRole('main').getByRole('status').filter({ hasText: /routes$/ })
+const total = populated().routes.length
 const table = (page: Page) => page.getByRole('table', { name: 'Routes' })
 const row = (page: Page, ...texts: string[]) => texts.reduce((rows, text) => rows.filter({ hasText: text }), rowsOf(table(page)))
 
@@ -17,21 +18,21 @@ const detailOf = (page: Page, phone: boolean, hostname: string) => (phone ? page
 
 test('the state chips, the zone and the search narrow the table', async ({ page, pco }) => {
   await signIn(page, pco, '/routes')
-  await expect(status(page)).toHaveText('16 routes')
+  await expect(status(page)).toHaveText(`${total} routes`)
 
   const unreachable = page.getByRole('group', { name: 'States' }).getByRole('button', { name: 'unreachable 1' })
   await unreachable.click()
   await expect(unreachable).toHaveAttribute('aria-pressed', 'true')
-  await expect(status(page)).toHaveText('1 of 16 routes')
+  await expect(status(page)).toHaveText(`1 of ${total} routes`)
   await expect(rowsOf(table(page))).toHaveCount(1)
   await expect(row(page, 'monitor.example.com')).toContainText('target is not answering')
   await page.getByRole('group', { name: 'States' }).getByRole('button', { name: 'no-zone 2' }).click()
-  await expect(status(page)).toHaveText('3 of 16 routes')
+  await expect(status(page)).toHaveText(`3 of ${total} routes`)
   await page.getByRole('button', { name: 'Clear the filter' }).click()
-  await expect(status(page)).toHaveText('16 routes')
+  await expect(status(page)).toHaveText(`${total} routes`)
 
   await page.getByRole('combobox', { name: 'Zone' }).selectOption('example.info')
-  await expect(status(page)).toHaveText('1 of 16 routes')
+  await expect(status(page)).toHaveText(`1 of ${total} routes`)
   await expect(row(page, 'notes.example.info')).toContainText('frozen')
   await page.getByRole('combobox', { name: 'Zone' }).selectOption('')
 
@@ -43,7 +44,7 @@ test('the state chips, the zone and the search narrow the table', async ({ page,
     ['nothing like it', 0],
   ] as const) {
     await page.getByRole('searchbox', { name: 'Search the routes' }).fill(text)
-    await expect(status(page), text).toHaveText(`${shown} of 16 routes`)
+    await expect(status(page), text).toHaveText(`${shown} of ${total} routes`)
   }
   await expect(table(page)).toContainText('No route matches the filter.')
 })
@@ -70,6 +71,20 @@ test('a row opens the route, at an address of its own', async ({ page, pco, view
   else await page.keyboard.press('Escape')
   await expect(page).toHaveURL(/\/routes$/)
   await expect(page.getByRole('tab', { name: 'Overview' })).toHaveCount(0)
+})
+
+test('a route reached through the leg of an attached network says how, in its detail and its diagnosis', async ({ page, pco, viewport }) => {
+  await signIn(page, pco, '/routes/zabbix.example.com?owner=qemu%2F107')
+  const detail = detailOf(page, onPhone(viewport), 'zabbix.example.com')
+  const overview = detail.getByRole('tabpanel', { name: 'Overview' })
+  await expect(overview).toContainText('http://198.18.1.5:8080')
+  await expect(overview).toContainText('pve1 · vmbr2 · tap107i0')
+  await expect(overview).toContainText('attach vmbr2: leg up, service 198.18.1.5 → 10.50.0.10')
+
+  await detail.getByRole('tab', { name: 'Diagnosis of the current holder' }).click()
+  await detail.getByRole('button', { name: 'Run diagnosis' }).click()
+  const steps = detail.getByRole('list', { name: 'Steps of the diagnosis' }).getByRole('listitem')
+  await expect(steps.filter({ has: page.locator('.step-name', { hasText: /^path$/ }) })).toHaveCount(1)
 })
 
 test('a diagnosis is posted with the hostname, and its steps come at once', async ({ page, pco, fake, viewport }) => {

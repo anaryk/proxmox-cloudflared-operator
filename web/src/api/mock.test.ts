@@ -47,7 +47,7 @@ test('a diagnosis gets the one of the fixture, and a route its series', () => {
   const m = new Mock('scenario-populated')
   const d = m.answer('POST', '/api/v1/diagnose', {})
   expect(d.status).toBe(200)
-  expect((d.body as { name: string }[]).map((s) => s.name)).toEqual(['route', 'zone', 'dns', 'ingress', 'connector', 'identity', 'tcp', 'http'])
+  expect((d.body as { name: string }[]).map((s) => s.name)).toEqual(['route', 'zone', 'dns', 'ingress', 'connector', 'identity', 'path', 'tcp', 'http'])
   const r = m.answer('GET', '/api/v1/traffic/route?hostname=store.example.com', {})
   const series = r.body as { target: string; shared: number; samples: { at: string }[] }
   expect([series.target, series.shared, series.samples.length, series.samples.at(-1)?.at]).toEqual(['10.0.0.40:80', 1, 180, '2026-10-01T12:00:05Z'])

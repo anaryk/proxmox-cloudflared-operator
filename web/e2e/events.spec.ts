@@ -131,5 +131,8 @@ test('the networks are the bridges the routes were proven on', async ({ page, pc
   const direct = rowsOf(page.getByRole('table').first())
   await expect(direct.filter({ hasText: 'vmbr0' })).toHaveCount(2)
   await expect(direct.filter({ hasText: 'no bridge proven' })).toHaveCount(1)
+  // zabbix.example.com is reached through the leg of an attached network on vmbr2, which is no direct network
+  await expect(direct.filter({ hasText: 'vmbr2' })).toHaveCount(0)
+  await expect(page.getByRole('main')).toContainText('1 route is reached through the leg of a network, not directly, so it is in no row.')
   await expect(page.getByRole('main')).toContainText('It shows no subnet: pco does not know the subnets of a network.')
 })

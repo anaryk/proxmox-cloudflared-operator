@@ -12,7 +12,7 @@ import { diagnoses } from './diagnosis.ts'
 import { RouteDetail } from './RouteDetail'
 
 // The golden of the daemon with the steps before identity passing, identity
-// failing, and the two after it skipped.
+// failing, and the three after it skipped.
 const steps: Step[] = (golden as Step[]).map((s, i) => {
   if (i < 5) return { name: s.name, level: 'ok', detail: `${s.name} is as it should be` }
   if (i === 5) return { name: s.name, level: 'fail', detail: 'the guest answered with another identity' }
@@ -64,11 +64,11 @@ describe('a diagnosis', () => {
     show(store)
     fireEvent.click(screen.getByRole('button', { name: 'Run diagnosis' }))
     const list = await screen.findByRole('list', { name: 'Steps of the diagnosis' })
-    // in the render that shows the first step, all eight are there
+    // in the render that shows the first step, all nine are there
     const items = within(list).getAllByRole('listitem')
-    expect(items.map((li) => li.querySelector('.step-name')?.textContent)).toEqual(['route', 'zone', 'dns', 'ingress', 'connector', 'identity', 'tcp', 'http'])
+    expect(items.map((li) => li.querySelector('.step-name')?.textContent)).toEqual(['route', 'zone', 'dns', 'ingress', 'connector', 'identity', 'path', 'tcp', 'http'])
     const skipped = items.filter((li) => li.classList.contains('step-skipped'))
-    expect(skipped.map((li) => li.querySelector('.step-name')?.textContent)).toEqual(['tcp', 'http'])
+    expect(skipped.map((li) => li.querySelector('.step-name')?.textContent)).toEqual(['path', 'tcp', 'http'])
     for (const li of skipped) {
       expect(li.querySelector('.status-word')?.textContent).toBe(skippedWord)
       expect(li.querySelector('.step-detail')).toBeNull()

@@ -34,6 +34,12 @@
     "skipped": true
   },
   {
+    "name": "path",
+    "level": "warn",
+    "detail": "skipped",
+    "skipped": true
+  },
+  {
     "name": "tcp",
     "level": "warn",
     "detail": "skipped",

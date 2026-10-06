@@ -540,11 +540,11 @@ describe('a link from a route that waits for allowHosts', () => {
     expect(within(dialog).getByText(/^allowHosts has no entry now/).textContent).toBe(
       'allowHosts has no entry now, so every hostname a guest names may be published but the apex of a zone and a wildcard. With this entry only the hostnames a pattern of the list matches are published, from the next cycle.',
     )
-    // www.example.com is active for qemu/101; qemu/102 lost it and publishes nothing
+    // www.example.com is active for qemu/101 and zabbix.example.com for qemu/107; qemu/102 lost the first and publishes nothing
     expect(within(dialog).getByText(/no pattern of the list/).textContent).toBe(
-      '1 route published now matches no pattern of the list and stops being published; their records and rules go once the grace has passed:',
+      '2 routes published now match no pattern of the list and stop being published; their records and rules go once the grace has passed:',
     )
-    expect(within(dialog).getByText(/no pattern of the list/).nextElementSibling?.textContent).toBe('www.example.com (qemu/101)')
+    expect(within(dialog).getByText(/no pattern of the list/).nextElementSibling?.textContent).toBe('www.example.com (qemu/101)zabbix.example.com (qemu/107)')
   })
 
   test('a list that had entries gets no such word, nor a hand-typed list that matches every route', async () => {

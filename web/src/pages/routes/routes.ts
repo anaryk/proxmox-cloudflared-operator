@@ -2,7 +2,7 @@
 // the CLI, the filters, the holder of a hostname, the path and the links.
 
 import type { PathView, RouteView } from '../../api/types.gen'
-import { compareOwners } from '../../text/routes'
+import { compareOwners, legOf, legState } from '../../text/routes'
 import { compareRouteStates } from '../../text/words'
 
 export const manualPrefix = 'manual/'
@@ -60,6 +60,15 @@ export function pathText(path: PathView | undefined): string {
   if (!path) return noBridge
   if (!path.bridge) return path.node ? `${path.node} · ${noBridge}` : noBridge
   return [path.node, path.bridge, path.vlan ? `VLAN ${path.vlan}` : '', path.port ?? ''].filter(Boolean).join(' · ')
+}
+
+// reachText is how the node reaches the guest of a path that goes through the
+// leg of a network, in the words of the path step of pco diagnose: "attach
+// vmbr2: leg up, service 198.18.1.5 → 10.50.0.10". A direct path has none.
+export function reachText(path: PathView | undefined): string | undefined {
+  const leg = legOf(path)
+  if (!path || !leg) return undefined
+  return `${leg.network === undefined ? leg.kind : `${leg.kind} ${leg.network}`}: ${legState(path).text}`
 }
 
 // The names a link may open: exact names, never a wildcard nor anything

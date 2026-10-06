@@ -42,7 +42,9 @@
         "port": "tap101i0",
         "mac": "bc:24:11:5e:7a:01",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.11",
+        "via": "direct"
       }
     },
     {
@@ -54,6 +56,44 @@
         "kind": "qemu",
         "vmid": 102,
         "name": "web-2"
+      }
+    },
+    {
+      "hostname": "zabbix.example.com",
+      "owner": "qemu/107",
+      "state": "active",
+      "level": "port",
+      "service": "http://198.18.1.5:8080",
+      "zone": "example.com",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 107,
+        "name": "zabbix"
+      },
+      "candidates": [
+        {
+          "addr": "10.50.0.10",
+          "source": "reported",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "acc1",
+      "rule": {
+        "hostname": "zabbix.example.com",
+        "service": "http://198.18.1.5:8080"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr2",
+        "port": "tap107i0",
+        "mac": "bc:24:11:5e:7a:07",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-10-01T09:00:00Z",
+        "addr": "10.50.0.10",
+        "via": "attach:vmbr2",
+        "service": "198.18.1.5",
+        "leg": "up"
       }
     }
   ],

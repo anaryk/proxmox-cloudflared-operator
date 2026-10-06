@@ -37,7 +37,7 @@ describe('the zones of the last cycle', () => {
   test('every state of the populated fixture, with the account, the credentials and the routes', async () => {
     await open(populated)
     expect(rows().map((r) => [r.Zone, r.State, r.Account, r['Listed by'], r['Served by'], r.Pin, r.Routes, r['Records in the way']])).toEqual([
-      ['example.com', 'served', 'Main', 'main, spare', 'main', 'main', '1', '1'],
+      ['example.com', 'served', 'Main', 'main, spare', 'main', 'main', '2', '1'],
       ['example.info', 'frozen', 'acc3', 'main', '-', '-', '0', '0'],
       ['example.net', 'not served', 'acc2', 'main, spare', '-', 'spare', '0', '0'],
       ['example.org', 'left out', 'Main', 'main', '-', '-', '0', '0'],

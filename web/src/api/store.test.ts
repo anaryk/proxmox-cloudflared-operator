@@ -259,7 +259,7 @@ describe('events, gaps, traffic, reset', () => {
   // that stopped, which no later notice tells again.
   test('a reset for a lost traffic notice reads the traffic again, and drops nothing else', async () => {
     const s = await opened()
-    expect(s.get().traffic?.routes).toHaveLength(1)
+    expect(s.get().traffic?.routes).toHaveLength(2)
     const { state: held, events: heldEvents } = s.get()
     calls = []
     replies.set('GET /api/v1/traffic', ok({ ...traffic, routes: [], routesTotal: 0 }))
@@ -282,12 +282,15 @@ describe('events, gaps, traffic, reset', () => {
         { tunnelId: 'new', rps: 0, errorsPerSec: 0, concurrent: 0, haConnections: 2, stale: false },
       ],
       routes: [{ hostname: 'www.example.com', owner: 'qemu/101', target: '10.0.0.11:8080', flowsPerSec: 3.1, stale: false }],
-      routesTotal: 1,
+      routesTotal: 2,
     })
     expect(n.tunnels[0]?.samples).toHaveLength(180)
     expect(n.tunnels[0]?.samples.at(-1)).toEqual({ at: '2026-10-01T12:00:10Z', rps: 40, errorsPerSec: 0.2, concurrent: 4 })
     expect(n.tunnels[1]).toMatchObject({ tunnelId: 'new', haConnections: 2, samples: [] })
-    expect(n.routes).toEqual([{ hostname: 'www.example.com', owner: 'qemu/101', target: '10.0.0.11:8080', flowsPerSec: 3.1, stale: false }])
+    expect(n.routes).toEqual([
+      { hostname: 'www.example.com', owner: 'qemu/101', target: '10.0.0.11:8080', flowsPerSec: 3.1, stale: false },
+      { hostname: 'zabbix.example.com', owner: 'qemu/107', target: '198.18.1.5:8080', flowsPerSec: 2.4, stale: false },
+    ])
 
     const why = mergeTraffic(n, { at: 'z', tunnels: [], routesTotal: 0, routesWhy: 'the egress filter was not checked yet' })
     expect(why.routes).toEqual([])

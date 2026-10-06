@@ -4,7 +4,7 @@
 // collapse.ts folds them to fit.
 
 import type { ConnectorStatus, RouteTraffic, RouteView, State, TrafficView, TunnelTraffic, TunnelView, ZoneView } from '../api/types.gen'
-import { compareOwners, routeKey } from '../text/routes'
+import { compareOwners, legOf, legState, routeKey } from '../text/routes'
 import { cardWords } from '../text/flow'
 import { connectorText, verifiedText } from '../text/words'
 import type { Band, FlowEdge, FlowNode, FlowPort, FlowRow, Model } from './types'
@@ -56,7 +56,8 @@ export function targetOf(service?: string): Target | undefined {
   return { scheme, host: u.hostname, port, target: `${u.hostname}:${port}` }
 }
 
-// PathRef is the bridge and VLAN a route was proven on, or none.
+// PathRef is the bridge and VLAN a route was proven on, and whether the node
+// reaches it directly or through the leg of a network, or none.
 export interface PathRef {
   id: string
   label: string
@@ -64,11 +65,11 @@ export interface PathRef {
 
 export function pathOf(r: Pick<RouteView, 'path'>): PathRef {
   const p = r.path
-  if (!p?.bridge) return { id: noPath, label: 'no bridge proven' }
-  return {
-    id: `path:${p.bridge}${p.vlan ? `.${p.vlan}` : ''}`,
-    label: `${p.bridge}${p.vlan ? ` · VLAN ${p.vlan}` : ''} · direct`,
-  }
+  const leg = legOf(p)
+  if (!p || (!p.bridge && !leg)) return { id: noPath, label: 'no bridge proven' }
+  const where = `${p.bridge || leg?.network || leg?.kind}${p.vlan ? ` · VLAN ${p.vlan}` : ''}`
+  if (leg) return { id: `path:${p.via}`, label: `${where} · ${leg.kind}` }
+  return { id: `path:${p.bridge}${p.vlan ? `.${p.vlan}` : ''}`, label: `${where} · direct` }
 }
 
 export const tunnelNodeId = (account: string): string => `edge:${account}`
@@ -517,7 +518,13 @@ function routeChain(ix: Index, r: RouteView): Chain {
     return chain
   }
   const path = pathOf(r)
-  steps.push({ key: 'path', name: 'Path', level: path.id === noPath ? 'info' : 'ok', text: path.label })
+  const leg = legOf(r.path)
+  if (r.path && leg) {
+    const state = legState(r.path)
+    steps.push({ key: 'path', name: 'Path', level: state.ok ? 'ok' : 'fail', text: `${path.label} · ${state.text}` })
+  } else {
+    steps.push({ key: 'path', name: 'Path', level: path.id === noPath ? 'info' : 'ok', text: path.label })
+  }
   const t2 = targetOf(r.service)
   const who = r.guest ? `${r.owner}${r.guest.name ? ` ${r.guest.name}` : ''}` : r.owner
   const where = t2 ? `${who} · ${t2.target} ${t2.scheme}` : who

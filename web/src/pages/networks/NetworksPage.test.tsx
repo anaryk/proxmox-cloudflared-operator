@@ -11,7 +11,8 @@ const base = populated as State
 const manual: RouteView = { hostname: 'status.example.com', owner: 'manual/status', state: 'active', level: 'manual', service: 'http://10.0.5.20:9000', zone: 'example.com' }
 
 // The populated state has a route of qemu/101 proven on vmbr0 with the tag 20,
-// and one that lost its hostname; a manual route is added to it.
+// one that lost its hostname and one of qemu/107 reached through the leg of an
+// attached network; a manual route is added to it.
 const state: State = { ...base, routes: [...base.routes, manual] }
 
 async function mount(st: State = state) {
@@ -52,8 +53,23 @@ describe('the Direct table', () => {
   })
 
   test('says why it is empty when no route was proven', async () => {
-    await mount({ ...base, routes: base.routes.slice(1) })
-    expect(screen.getByText(/No route has been proven on a bridge yet/)).toBeTruthy()
+    await mount({ ...base, routes: base.routes.slice(1, 2) })
+    expect(screen.getByText(/No route has been proven directly on a bridge yet/)).toBeTruthy()
+  })
+
+  test('has no row for a route reached through the leg of a network, and counts it', async () => {
+    await mount()
+    expect(rowsOf('Direct networks').map((r) => r[0])).not.toContain('vmbr2')
+    expect(screen.getByText(/^1 route is reached through the leg of a network, not directly, so it is in no row\./)).toBeTruthy()
+    // the route that is in no row for another reason is counted on its own
+    expect(screen.getByText(/1 route is in no row:/)).toBeTruthy()
+  })
+
+  test('is empty, and says so, when every route goes through a leg', async () => {
+    await mount({ ...base, routes: base.routes.slice(2) })
+    expect(screen.getByText(/No route has been proven directly on a bridge yet/)).toBeTruthy()
+    expect(screen.getByText(/^1 route is reached through the leg of a network/)).toBeTruthy()
+    expect(screen.queryByText(/is in no row:/)).toBeNull()
   })
 
   test('a row opens the routes and the guests of its network', async () => {

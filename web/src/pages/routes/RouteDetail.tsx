@@ -19,7 +19,7 @@ import { Diagnosis } from './Diagnosis.tsx'
 import { NoteLine, Owner, readerReason, useAdmin } from './parts'
 import { LevelOf } from './RouteTable'
 import { RouteTraffic } from './RouteTraffic'
-import { allowHostLink, holderOf, isManual, isWildcard, manualPrefix, openableURL, pathText, routeLink, unset } from './routes'
+import { allowHostLink, holderOf, isManual, isWildcard, manualPrefix, openableURL, pathText, reachText, routeLink, unset } from './routes'
 import { Timeline } from './Timeline'
 
 export const diagnosisTab = 'Diagnosis of the current holder'
@@ -37,16 +37,26 @@ function ownerLink(owner: string): string | undefined {
   return /^(qemu|lxc)\/[0-9]+$/.test(owner) ? `/guests/${owner}` : undefined
 }
 
-// PathLines are the path the route was proven on, when it was proven last,
+// PathLines are the path the route was proven on, how the node reaches the
+// guest when that is through the leg of a network, when it was proven last,
 // and since when the guest has been bound there.
 function PathLines({ route, nodeZone }: { route: RouteView; nodeZone?: string }) {
   const path = route.path
+  const reach = reachText(path)
   return (
     <>
       <dt>Path</dt>
       <dd>
         <Untrusted text={pathText(path)} />
       </dd>
+      {reach && (
+        <>
+          <dt>Via</dt>
+          <dd>
+            <Untrusted text={reach} />
+          </dd>
+        </>
+      )}
       {path && !unset(path.verifiedAt) && (
         <>
           <dt>Last proof stored</dt>

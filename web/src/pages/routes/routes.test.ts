@@ -12,6 +12,7 @@ import {
   noFilter,
   openableURL,
   pathText,
+  reachText,
   routeLink,
   stateCounts,
 } from './routes'
@@ -21,7 +22,7 @@ const routes = scenario.routes as RouteView[]
 test('routes by hostname, then owner', () => {
   const sorted = [...routes].sort(compareRoutes).map((r) => `${r.hostname} ${r.owner}`)
   expect(sorted.slice(0, 3)).toEqual(['*.store.example.com lxc/210', 'app.example.com qemu/101', 'db-admin.example.com qemu/106'])
-  expect(sorted.slice(-3)).toEqual(['www.example.com qemu/101', 'www.example.com qemu/102', 'www.store.example.com lxc/210'])
+  expect(sorted.slice(-4)).toEqual(['www.example.com qemu/101', 'www.example.com qemu/102', 'www.store.example.com lxc/210', 'zabbix.example.com qemu/107'])
 })
 
 describe('the filter', () => {
@@ -39,7 +40,7 @@ describe('the filter', () => {
 
   test('the counts of every state in the order of present.RouteStateOrder', () => {
     expect(stateCounts(routes, routeStateOrder)).toEqual([
-      ['active', 8],
+      ['active', 9],
       ['unreachable', 1],
       ['withdrawn', 1],
       ['conflict', 1],
@@ -65,6 +66,16 @@ test('the path: node, bridge, VLAN and port, or no bridge proven', () => {
   expect(pathText({ node: 'pve1', bridge: 'vmbr1', port: 'veth205i0', verifiedAt: '' })).toBe('pve1 · vmbr1 · veth205i0')
   expect(pathText({ node: 'pve1', verifiedAt: '' })).toBe('pve1 · no bridge proven')
   expect(pathText(undefined)).toBe('no bridge proven')
+})
+
+test('how the node reaches the guest is told of a path through a leg only', () => {
+  const path = { node: 'pve1', bridge: 'vmbr2', addr: '10.50.0.10', service: '198.18.1.5', verifiedAt: '' }
+  expect(reachText({ ...path, via: 'attach:vmbr2', leg: 'up' })).toBe('attach vmbr2: leg up, service 198.18.1.5 → 10.50.0.10')
+  expect(reachText({ ...path, via: 'managed', leg: 'up' })).toBe('managed: leg up, service 198.18.1.5 → 10.50.0.10')
+  expect(reachText({ ...path, via: 'attach:vmbr2', leg: 'no address on the bridge' })).toBe('attach vmbr2: the leg is not up: no address on the bridge')
+  expect(reachText({ ...path, via: 'direct' })).toBeUndefined()
+  expect(reachText({ node: 'pve1', verifiedAt: '' })).toBeUndefined()
+  expect(reachText(undefined)).toBeUndefined()
 })
 
 test('a link opens exact names only', () => {

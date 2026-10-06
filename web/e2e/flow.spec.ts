@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 
-import { expect, type FakeDaemon, type Pco, signIn, test } from './fixtures'
+import { expect, type FakeDaemon, type Pco, populated, signIn, test } from './fixtures'
 
 // The flow map of the Overview against the populated scenario: what it
 // draws, what the pointer lights, and its dots, which move only where a
@@ -19,6 +19,15 @@ const www = { hostname: 'www.example.com', owner: 'qemu/101', target: '10.0.0.11
 const trunk = '.fm-edge-trunk'
 const trunkFigure = `${trunk} .fm-figure:not(.fm-errors)`
 const portLine = `[data-edge$="|${www.target}"]`
+
+// Every route of the scenario, and every hostname of a guest that waits for
+// approval, has a chain on the list. It has a row on the card of its zone too,
+// unless it is a route in no zone.
+const scenario = populated()
+const waiting = scenario.unapproved.flatMap((g) => g.hostnames)
+const chainCount = scenario.routes.length + waiting.length
+const rowsOn = (zone: string) =>
+  [...scenario.routes.filter((r) => r.state !== 'no-zone').map((r) => r.hostname), ...waiting].filter((hostname) => hostname.endsWith(`.${zone}`)).length
 
 // dotsOn counts the dots that set off on the line of selector in seconds of
 // the map's motion. The motion moves by the time between two frames, at most
@@ -78,13 +87,16 @@ async function focusOnWww(page: Page, pco: Pco): Promise<void> {
 
 test('the map draws the populated scenario, a style for each state', async ({ page, pco }) => {
   await signIn(page, pco)
-  await expect(item(page, 'Zone example.com, served, account Main, 15 hostnames')).toBeVisible()
+  await expect(item(page, `Zone example.com, served, account Main, ${rowsOn('example.com')} hostnames`)).toBeVisible()
   await expect(item(page, 'www.example.com, active, served by qemu/101 web-1 on port 8080')).toBeVisible()
   await expect(item(page, /^www\.example\.com, conflict: hostname is held by qemu\/101/)).toBeVisible()
   await expect(item(page, /^Edge of tunnel Main · 00000000, verified: yes/)).toBeVisible()
   await expect(item(page, /^Connector on pve1 for tunnel Main · 00000000: active, ready, 4 connections/)).toBeVisible()
   await expect(item(page, /^Connector not run by pco: 198\.51\.100\.7/)).toBeVisible()
   await expect(item(page, 'Path vmbr0 · VLAN 20 · direct')).toBeVisible()
+  // the guest behind the leg of an attached network: a path of its own, and the service address the connector dials
+  await expect(item(page, /^Path vmbr2 · attach/)).toBeVisible()
+  await expect(item(page, /^Guest zabbix qemu\/107, ports :8080 http active/)).toBeVisible()
   await expect(item(page, /^Guest web-1 qemu\/101, ports :3000 http active, 3\.7 new connections per second; :8080 http active/)).toBeVisible()
 
   const lines = map(page).locator('.fm-lines')
@@ -224,7 +236,7 @@ test('the list view gives every chain as text', async ({ page, pco }) => {
   await expect(page).toHaveURL(/[?&]list=1/)
   await expect(map(page)).toHaveCount(0)
   const chains = page.getByRole('list', { name: 'Hostnames and their chains' })
-  await expect(chains.getByRole('listitem')).toHaveCount(18)
+  await expect(chains.getByRole('listitem')).toHaveCount(chainCount)
   await expect(page.getByRole('list', { name: 'Traffic between the edge and the connectors' })).toContainText('39.7 req/s')
 
   await chains.getByRole('button', { name: 'active www.example.com web-1 qemu/101' }).click()

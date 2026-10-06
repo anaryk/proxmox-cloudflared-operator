@@ -40,22 +40,22 @@ describe('the routes table', () => {
     expect(hostnames().slice(0, 3)).toEqual(['*.store.example.com', 'app.example.com', 'db-admin.example.com'])
     const www = bodyRows().filter((r) => r.querySelector('td.lead .cell-line')?.textContent === 'www.example.com')
     expect(www.map((r) => r.querySelector('td[data-label="Owner"] .mono')?.textContent)).toEqual(['qemu/101', 'qemu/102'])
-    expect(hostnames()).toHaveLength(16)
+    expect(hostnames()).toHaveLength(17)
   })
 
   test('the chips count every state in the order of pco status, and filter', async () => {
     const { store } = await fakeStore({ state: scenario })
     show(store, <RoutesSection view={{ name: 'routes' }} />)
     const chips = within(screen.getByRole('group', { name: 'States' })).getAllByRole('button')
-    expect(chips.map((c) => c.textContent)).toEqual(['active 8', 'unreachable 1', 'withdrawn 1', 'conflict 1', 'no-zone 2', 'held 1', 'rejected 1', 'frozen 1'])
+    expect(chips.map((c) => c.textContent)).toEqual(['active 9', 'unreachable 1', 'withdrawn 1', 'conflict 1', 'no-zone 2', 'held 1', 'rejected 1', 'frozen 1'])
     fireEvent.click(chips[4] as HTMLElement)
     expect(chips[4]?.getAttribute('aria-pressed')).toBe('true')
     expect(hostnames()).toEqual(['media.example.io', 'wiki.example.org'])
     fireEvent.click(chips[6] as HTMLElement)
     expect(hostnames()).toEqual(['*.store.example.com', 'media.example.io', 'wiki.example.org'])
-    expect(screen.getByText('3 of 16 routes')).toBeTruthy()
+    expect(screen.getByText('3 of 17 routes')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Clear the filter' }))
-    expect(hostnames()).toHaveLength(16)
+    expect(hostnames()).toHaveLength(17)
   })
 
   test('the search looks at the hostname, the owner, the guest name and the service', async () => {
@@ -72,13 +72,15 @@ describe('the routes table', () => {
     expect(screen.getByText(/No route matches the filter/)).toBeTruthy()
   })
 
-  test('the populated fixture of the engine: two owners of one hostname', async () => {
+  test('the populated fixture of the engine: two owners of one hostname, and a route behind an attach leg', async () => {
     const { store } = await fakeStore({ state: populated })
     show(store, <RoutesSection view={{ name: 'routes' }} />)
-    expect(hostnames()).toEqual(['www.example.com', 'www.example.com'])
-    expect(ownersShown()).toEqual(['qemu/101', 'qemu/102'])
+    expect(hostnames()).toEqual(['www.example.com', 'www.example.com', 'zabbix.example.com'])
+    expect(ownersShown()).toEqual(['qemu/101', 'qemu/102', 'qemu/107'])
     // the note under the hostname: the reason, else the first warning
-    expect(bodyRows().map((r) => r.querySelector('.route-note')?.textContent)).toEqual(['a warning', 'hostname is held by qemu/101'])
+    expect(bodyRows().map((r) => r.querySelector('.route-note')?.textContent)).toEqual(['a warning', 'hostname is held by qemu/101', ''])
+    // the service is what the connector dials: the service address of the leg, not the guest's own
+    expect(bodyRows().map((r) => r.querySelector('td[data-label="Service"]')?.textContent)).toEqual(['http://10.0.0.11:8080', '-', 'http://198.18.1.5:8080'])
     // a click selects the route in the address
     fireEvent.click(bodyRows()[1] as HTMLElement)
     expect(window.location.pathname + window.location.search).toBe('/routes/www.example.com?owner=qemu%2F102')

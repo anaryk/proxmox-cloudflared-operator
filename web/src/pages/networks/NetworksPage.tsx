@@ -129,9 +129,10 @@ const columns: Column<Network>[] = [
 
 // The table of the networks the routes were proven on, a row for each bridge
 // and VLAN, and the one for routes proven on none; a row opens the routes and
-// guests of it. There is no subnet: nothing in the daemon knows one.
+// guests of it. There is no subnet: nothing in the daemon knows one. A route
+// reached through the leg of a network has no row; a line counts them.
 function DirectTable({ routes, nodeZone }: { routes: RouteView[]; nodeZone?: string }) {
-  const { networks, unproven } = useMemo(() => networksOf(routes), [routes])
+  const { networks, unproven, throughLegs } = useMemo(() => networksOf(routes), [routes])
   const [open, setOpen] = useState<string>()
   const shown = networks.find((n) => n.key === open)
   return (
@@ -143,8 +144,14 @@ function DirectTable({ routes, nodeZone }: { routes: RouteView[]; nodeZone?: str
         rowKey={(n) => n.key}
         current={open}
         onActivate={(n) => setOpen(n.key)}
-        empty="No route has been proven on a bridge yet. A route shows here once a cycle has proven the address of its guest, or when it is a manual route."
+        empty="No route has been proven directly on a bridge yet. A route shows here once a cycle has proven the address of its guest, or when it is a manual route."
       />
+      {throughLegs > 0 && (
+        <p className="muted">
+          {plural(throughLegs, 'route is', 'routes are')} reached through the leg of {throughLegs === 1 ? 'a network' : 'networks'}, not directly, so {throughLegs === 1 ? 'it is' : 'they are'} in no row. The
+          routes page says how.
+        </p>
+      )}
       {unproven > 0 && (
         <p className="muted">
           {plural(unproven, 'route is', 'routes are')} in no row: none of {unproven === 1 ? 'its' : 'their'} addresses was proven, because{' '}

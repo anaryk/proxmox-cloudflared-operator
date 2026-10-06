@@ -55,6 +55,18 @@ describe('the overview of a route', () => {
     expect(detail('Bound since')?.querySelector('time')?.getAttribute('datetime')).toBe('2026-09-30T08:00:00Z')
   })
 
+  test('a route reached through the leg of an attached network says how, and a direct one does not', async () => {
+    stubFetch()
+    const { store } = await fakeStore({ state: populated })
+    const { unmount } = show(store, 'zabbix.example.com', 'qemu/107')
+    expect(detail('Path')?.textContent).toBe('pve1 · vmbr2 · tap107i0')
+    expect(detail('Via')?.textContent).toBe('attach vmbr2: leg up, service 198.18.1.5 → 10.50.0.10')
+    expect(detail('Service')?.textContent).toBe('http://198.18.1.5:8080')
+    unmount()
+    show(store, 'www.example.com', 'qemu/101')
+    expect(detail('Via')).toBeUndefined()
+  })
+
   test('no bridge proven for a route without a binding, as a manual route, and no proof to show', async () => {
     stubFetch()
     const { store } = await fakeStore({ state: scenario })

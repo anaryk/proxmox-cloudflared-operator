@@ -48,6 +48,17 @@ describe('networksOf', () => {
     expect(unproven).toBe(0)
   })
 
+  test('a route reached through the leg of a network is on none of them, and counted', () => {
+    const leg: PathView = { ...path('vmbr2'), addr: '10.50.0.10', via: 'attach:vmbr2', service: '198.18.1.5', leg: 'up' }
+    const { networks, unproven, throughLegs } = networksOf([
+      route('a.example.com', 'qemu/101', { path: { ...path('vmbr0'), addr: '10.0.0.11', via: 'direct' } }),
+      route('b.example.com', 'qemu/107', { path: leg }),
+      route('c.example.com', 'qemu/108', { path: { ...leg, via: 'managed' } }),
+    ])
+    expect(networks.map((n) => [n.bridge, n.routes.map((r) => r.hostname)])).toEqual([['vmbr0', ['a.example.com']]])
+    expect([unproven, throughLegs]).toEqual([0, 2])
+  })
+
   test('a VLAN without a bridge is not a network', () => {
     const { networks } = networksOf([route('a.example.com', 'qemu/101', { level: 'observed', path: { ...path(undefined, 20) } })])
     expect(networks.map((n) => [n.bridge, n.vlan])).toEqual([[undefined, undefined]])
