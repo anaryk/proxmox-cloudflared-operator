@@ -7,7 +7,8 @@ import { markdown } from './markdown/options.ts'
 import { escapeHtml, titleOf } from './markdown/title.mjs'
 
 const repository = 'https://github.com/anaryk/proxmox-cloudflared-operator'
-const docs = fileURLToPath(new URL('../../docs/', import.meta.url))
+// Vite names every file with a /, on Windows too.
+const docs = fileURLToPath(new URL('../../docs/', import.meta.url)).replaceAll('\\', '/')
 
 // The sections of the navigation, in order, and what each holds: a page of
 // docs/ by its file name, a heading of a page, or a directory, whose pages
