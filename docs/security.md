@@ -526,7 +526,7 @@ An example of `pco egress show` on a node with three targets and one blocked add
       10.0.0.5:8080
       10.0.0.6:443
     Resolvers:
-      192.168.1.1
+      192.0.2.53
 
     Rejected since the table was last loaded in full:
       to addresses of this node  3 packets
