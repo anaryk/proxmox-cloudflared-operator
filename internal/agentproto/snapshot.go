@@ -23,11 +23,20 @@ type Snapshot struct {
 	Deny     DenyList  `json:"deny"`
 	Tunnels  []Tunnel  `json:"tunnels"`
 	Targets  []Target  `json:"targets"`
+	// Guests are the guests besides those of the targets that resolution
+	// needs: every one that runs, or may run, with a MAC of a target's guest,
+	// which then does not prove that guest's address.
+	Guests []model.Guest `json:"guests,omitempty"`
 	// Networks are the node's legs, in the gateway's own form.
 	Networks  json.RawMessage `json:"networks,omitempty"`
 	Blocks    []Block         `json:"blocks"`
 	Actions   []Action        `json:"actions"`
 	Endpoints []string        `json:"endpoints"` // where the controller answers
+	// Prune says that Tunnels are every tunnel of the install whose connector
+	// the node keeps, so that the connectors of the install of any other
+	// tunnel are removed. Without it no connector is removed: the controller
+	// sets it only when it knows the tunnels it leaves out are gone.
+	Prune bool `json:"prune,omitempty"`
 }
 
 // Node is a cluster node as the agent needs it.
@@ -48,10 +57,15 @@ type Settings struct {
 	ReverifyInterval time.Duration  `json:"reverifyInterval"`
 }
 
-// DenyList are the addresses no route may reach.
+// DenyList are the addresses routes may not reach.
 type DenyList struct {
-	Denied []netip.Addr      `json:"denied"`
-	Soft   map[string]string `json:"soft,omitempty"` // address -> why
+	// Denied are the addresses of the nodes, also those seen earlier: only a
+	// manual route with allowNode reaches one.
+	Denied []netip.Addr `json:"denied"`
+	// Reasons are the addresses denied for a reason of their own, by address,
+	// as the gateway of an SDN subnet: no route reaches them.
+	Reasons map[string]string `json:"reasons,omitempty"`
+	Soft    map[string]string `json:"soft,omitempty"` // address -> why
 }
 
 // The kinds of tunnel.
@@ -143,18 +157,23 @@ type Action struct {
 	Args json.RawMessage `json:"args"`
 }
 
-// PVEWrite is the request of a pveWrite action: a change of one network card
-// of a guest on the agent's node, which the agent makes with qm or pct.
+// PVEWrite is the request of a pveWrite action: one network card of a guest
+// on the agent's node, set whole or removed, which the agent writes with qm
+// or pct.
 type PVEWrite struct {
-	Guest    model.GuestRef `json:"guest"`
-	NIC      int            `json:"nic"`
-	Bridge   string         `json:"bridge,omitempty"`
-	Tag      int            `json:"tag,omitempty"`
-	MAC      string         `json:"mac,omitempty"` // one of pco's, 06:50:43:4f:xx:xx
-	Firewall *bool          `json:"firewall,omitempty"`
-	LinkDown *bool          `json:"linkDown,omitempty"`
-	Remove   bool           `json:"remove,omitempty"`
-	Digest   string         `json:"digest"` // of the guest's config the change was made against
+	Guest  model.GuestRef `json:"guest"`
+	NIC    int            `json:"nic"`
+	Bridge string         `json:"bridge,omitempty"`
+	Tag    int            `json:"tag,omitempty"`
+	MAC    string         `json:"mac,omitempty"` // one of pco's, 06:50:43:4f:xx:xx
+	// Name and IP are a container's: the interface inside it and the address
+	// it holds there.
+	Name     string       `json:"name,omitempty"`
+	IP       netip.Prefix `json:"ip,omitzero"`
+	Firewall *bool        `json:"firewall,omitempty"`
+	LinkDown *bool        `json:"linkDown,omitempty"`
+	Remove   bool         `json:"remove,omitempty"`
+	Digest   string       `json:"digest"` // of the guest's config the change was made against
 }
 
 // wireSnapshot and wireTunnel are the snapshot as EncodeSnapshot writes it.

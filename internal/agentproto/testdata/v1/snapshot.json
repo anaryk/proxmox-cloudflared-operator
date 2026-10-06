@@ -45,6 +45,9 @@
       "192.168.4.12",
       "10.10.0.2"
     ],
+    "reasons": {
+      "10.0.0.1": "gateway of SDN subnet 10.0.0.0/24 of vnet lab"
+    },
     "soft": {
       "10.0.0.40": "a guest of another install had it"
     }
@@ -116,6 +119,26 @@
       "allowNode": true
     }
   ],
+  "guests": [
+    {
+      "ref": {
+        "kind": "lxc",
+        "vmid": 202
+      },
+      "name": "clone",
+      "node": "node2",
+      "running": true,
+      "identity": "77c0",
+      "nics": [
+        {
+          "index": 0,
+          "mac": "bc:24:11:aa:bb:01",
+          "bridge": "vmbr0",
+          "vlan": 20
+        }
+      ]
+    }
+  ],
   "networks": [
     {
       "bridge": "vmbr1",
@@ -152,6 +175,7 @@
   "endpoints": [
     "192.168.4.11:8644"
   ],
+  "prune": true,
   "tunnels": [
     {
       "accountId": "0123456789abcdef0123456789abcdef",

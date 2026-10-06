@@ -61,9 +61,21 @@ func fullSnapshot() Snapshot {
 			{Name: "node1", Addr: addr("192.168.4.11"), Online: true, Addrs: []netip.Addr{addr("192.168.4.11"), addr("10.10.0.1")}},
 		},
 		Deny: DenyList{
-			Denied: []netip.Addr{addr("192.168.4.11"), addr("10.10.0.1"), addr("192.168.4.12"), addr("10.10.0.2")},
-			Soft:   map[string]string{"10.0.0.40": "a guest of another install had it"},
+			Denied:  []netip.Addr{addr("192.168.4.11"), addr("10.10.0.1"), addr("192.168.4.12"), addr("10.10.0.2")},
+			Reasons: map[string]string{"10.0.0.1": "gateway of SDN subnet 10.0.0.0/24 of vnet lab"},
+			Soft:    map[string]string{"10.0.0.40": "a guest of another install had it"},
 		},
+		Guests: []model.Guest{
+			{
+				Ref:      model.GuestRef{Kind: model.KindLXC, VMID: 202},
+				Name:     "clone",
+				Node:     "node2",
+				Running:  true,
+				Identity: "77c0",
+				NICs:     []model.NIC{{Index: 0, MAC: "bc:24:11:aa:bb:01", Bridge: "vmbr0", VLAN: 20}},
+			},
+		},
+		Prune: true,
 		Tunnels: []Tunnel{
 			{
 				AccountID: "0123456789abcdef0123456789abcdef",
@@ -218,6 +230,8 @@ func fullPVEWrite() PVEWrite {
 		Bridge:   "vmbr1",
 		Tag:      20,
 		MAC:      "06:50:43:4f:00:15",
+		Name:     "eth1",
+		IP:       netip.MustParsePrefix("10.203.118.21/24"),
 		Firewall: yes(),
 		LinkDown: yes(),
 		Remove:   true,
