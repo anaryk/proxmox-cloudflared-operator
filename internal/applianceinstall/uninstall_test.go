@@ -291,9 +291,35 @@ func TestUninstallOfAContainerThatIsGone(t *testing.T) {
 
 	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
 
+	require.Contains(t, e.node.ran, "pvesh get /cluster/resources --type vm --output-format json", "no node of the cluster has it")
 	require.Empty(t, e.node.users[1:], "the marked user goes")
 	require.Equal(t, []string{"admin-only", "cf-tunnel", "cf-tunnel-managed"}, e.node.tags, "without the manifest, no tag is the installer's")
 	require.False(t, slices.ContainsFunc(e.node.ran, func(l string) bool { return strings.HasPrefix(l, "pct ") && !strings.HasPrefix(l, "pct status") }))
+}
+
+// migrated moves the container vmid to another node of the cluster, as pct
+// migrate does: this node no longer has its configuration, the cluster still
+// lists it.
+func (e *testEnv) migrated(vmid int, node string) {
+	e.t.Helper()
+	require.NotNil(e.t, e.node.cts[vmid])
+	delete(e.node.cts, vmid)
+	e.node.elsewhere[vmid] = node
+}
+
+// Only a container that is in no node's list is gone: on another node, the
+// uninstall would take the token of an appliance that runs.
+func TestUninstallOfAContainerOnAnotherNodeIsRefused(t *testing.T) {
+	e := installed(t)
+	e.migrated(100, "pve2")
+
+	err := e.in.Uninstall(t.Context(), 100, uninstallOptions())
+
+	require.EqualError(t, err, "lxc/100 is on node pve2, not on pve1: run the uninstall there; nothing was removed")
+	require.Equal(t, []string{"vm100"}, e.node.tokenNames("pco@pve"))
+	require.Equal(t, 0, e.node.count("pveum user token remove"))
+	require.Equal(t, 0, e.node.count("pveum acl delete"))
+	require.Empty(t, entries(t, e.journals))
 }
 
 // deniedTwice is a node with appliance 100 installed with --deny-access: ops@pve

@@ -461,6 +461,38 @@ func templates(ctx context.Context, r setup.Runner, node, storage string) ([]str
 	return ids, nil
 }
 
+// clusterGuest is a guest as /cluster/resources lists it, on whichever node
+// of the cluster it is.
+type clusterGuest struct {
+	Type string  `json:"type"`
+	VMID flexInt `json:"vmid"`
+	Node string  `json:"node"`
+	Pool string  `json:"pool"`
+}
+
+func clusterGuests(ctx context.Context, r setup.Runner) ([]clusterGuest, error) {
+	var out []clusterGuest
+	if err := pvesh(ctx, r, &out, "/cluster/resources", "--type", "vm"); err != nil {
+		return nil, fmt.Errorf("reading /cluster/resources: %w", err)
+	}
+	return out, nil
+}
+
+// containerNode returns the node of the cluster the container vmid is on;
+// false when no node has it.
+func containerNode(ctx context.Context, r setup.Runner, vmid int) (string, bool, error) {
+	guests, err := clusterGuests(ctx, r)
+	if err != nil {
+		return "", false, err
+	}
+	for _, g := range guests {
+		if g.Type == "lxc" && int(g.VMID) == vmid {
+			return g.Node, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // readAccess reads the access control of the cluster and the pool of every
 // guest, which only /cluster/resources gives reliably.
 func readAccess(ctx context.Context, r setup.Runner) (access.Data, error) {
@@ -497,13 +529,9 @@ func readAccess(ctx context.Context, r setup.Runner) (access.Data, error) {
 	if err := read("/access/roles", func(b []byte) error { d.Roles, err = pve.DecodeRoles(b); return err }); err != nil {
 		return d, err
 	}
-	var guests []struct {
-		Type string  `json:"type"`
-		VMID flexInt `json:"vmid"`
-		Pool string  `json:"pool"`
-	}
-	if err := pvesh(ctx, r, &guests, "/cluster/resources", "--type", "vm"); err != nil {
-		return d, fmt.Errorf("reading /cluster/resources: %w", err)
+	guests, err := clusterGuests(ctx, r)
+	if err != nil {
+		return d, err
 	}
 	d.Pools = map[model.GuestRef]string{}
 	for _, g := range guests {

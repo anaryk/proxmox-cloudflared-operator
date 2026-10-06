@@ -121,18 +121,19 @@ type fakeNode struct {
 	vnets    []fakeVNet
 	firewall bool
 
-	cts     map[int]*fakeCT
-	vms     map[int]bool
-	users   []*fakeUser
-	groups  []fakeGroup
-	roles   map[string][]string
-	acl     []fakeACL
-	pools   map[string]*fakePool
-	tags    []string
-	volumes map[string]string // volid -> the file on the node
-	urls    map[string][]byte // what a download of an URL fetches
-	tasks   map[string]string // upid -> exit status
-	polls   map[string]int
+	cts       map[int]*fakeCT
+	vms       map[int]bool
+	elsewhere map[int]string // containers on other nodes of the cluster, by node
+	users     []*fakeUser
+	groups    []fakeGroup
+	roles     map[string][]string
+	acl       []fakeACL
+	pools     map[string]*fakePool
+	tags      []string
+	volumes   map[string]string // volid -> the file on the node
+	urls      map[string][]byte // what a download of an URL fetches
+	tasks     map[string]string // upid -> exit status
+	polls     map[string]int
 
 	pcoVersion string // of the template's pco
 	secrets    int
@@ -156,12 +157,13 @@ type hook struct {
 func newFakeNode(t *testing.T) *fakeNode {
 	f := &fakeNode{
 		t: t, dir: t.TempDir(), name: "pve1", version: "9.2.21", arch: "amd64",
-		storages: []fakeStorage{{"local", "iso,vztmpl,backup"}, {"local-zfs", "images,rootdir"}},
-		ifaces:   []fakeIface{{"vmbr0", "bridge", false}, {"vmbr1", "bridge", true}, {"eno1", "eth", false}},
-		addrs:    []string{"vmbr0 192.0.2.10/24"},
-		cts:      map[int]*fakeCT{},
-		vms:      map[int]bool{},
-		users:    []*fakeUser{{ID: "root@pam", Enabled: true}},
+		storages:  []fakeStorage{{"local", "iso,vztmpl,backup"}, {"local-zfs", "images,rootdir"}},
+		ifaces:    []fakeIface{{"vmbr0", "bridge", false}, {"vmbr1", "bridge", true}, {"eno1", "eth", false}},
+		addrs:     []string{"vmbr0 192.0.2.10/24"},
+		cts:       map[int]*fakeCT{},
+		vms:       map[int]bool{},
+		elsewhere: map[int]string{},
+		users:     []*fakeUser{{ID: "root@pam", Enabled: true}},
 		roles: map[string][]string{
 			"Administrator": {"Sys.Modify", "Sys.Audit", "VM.Audit", "VM.Console", "VM.Config.Network", "Permissions.Modify", "Pool.Allocate"},
 			"PVEVMUser":     {"VM.Audit", "VM.Console", "VM.PowerMgmt", "VM.Backup", "VM.Config.CDROM", "VM.Config.Cloudinit"},
@@ -300,7 +302,7 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 		return asJSON(out), nil
 	case verb == "get" && path == "/cluster/nextid":
 		for id := 100; ; id++ {
-			if f.cts[id] == nil && !f.vms[id] {
+			if f.cts[id] == nil && !f.vms[id] && f.elsewhere[id] == "" {
 				return asJSON(strconv.Itoa(id)), nil
 			}
 		}
@@ -345,7 +347,13 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 	case verb == "get" && path == "/cluster/resources":
 		var out []map[string]any
 		for _, id := range slices.Sorted(maps.Keys(f.cts)) {
-			out = append(out, map[string]any{"type": "lxc", "vmid": id, "pool": f.poolOf(id)})
+			out = append(out, map[string]any{"id": fmt.Sprintf("lxc/%d", id), "type": "lxc", "vmid": id, "node": f.name, "pool": f.poolOf(id)})
+		}
+		for _, id := range slices.Sorted(maps.Keys(f.vms)) {
+			out = append(out, map[string]any{"id": fmt.Sprintf("qemu/%d", id), "type": "qemu", "vmid": id, "node": f.name})
+		}
+		for _, id := range slices.Sorted(maps.Keys(f.elsewhere)) {
+			out = append(out, map[string]any{"id": fmt.Sprintf("lxc/%d", id), "type": "lxc", "vmid": id, "node": f.elsewhere[id], "pool": f.poolOf(id)})
 		}
 		return asJSON(out), nil
 	case verb == "get" && path == "/access/permissions":

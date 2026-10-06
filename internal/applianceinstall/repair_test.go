@@ -167,11 +167,22 @@ func TestRepairRefuses(t *testing.T) {
 
 	e.node.cts[104] = &fakeCT{cfg: map[string]string{"description": "a guest of an admin\n"}, files: map[string]fakeFile{}}
 	err = e.in.Repair(t.Context(), 104, Options{Yes: true})
-	require.ErrorContains(t, err, "lxc/104 is not a pco appliance (its description lacks the mark of the installer): nothing was changed")
+	require.EqualError(t, err, "lxc/104 is not a pco appliance (its description lacks the mark of the installer): nothing was changed")
 
 	err = e.in.Repair(t.Context(), 105, Options{Yes: true})
-	require.ErrorContains(t, err, "lxc/105")
+	require.EqualError(t, err, "there is no container lxc/105 in the cluster")
 	require.Empty(t, entries(t, e.journals))
+}
+
+func TestRepairOfAContainerOnAnotherNodeIsRefused(t *testing.T) {
+	e := installed(t)
+	e.migrated(100, "pve2")
+
+	err := e.in.Repair(t.Context(), 100, Options{Yes: true})
+
+	require.EqualError(t, err, "lxc/100 is on node pve2, not on pve1: run the repair there; nothing was changed")
+	require.Equal(t, 0, e.node.count("pveum"))
+	require.Empty(t, e.node.inits)
 }
 
 // A manifest rebuilt from the marks cannot name a NoAccess line, which

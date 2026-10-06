@@ -203,7 +203,8 @@ const repairLong = "Put the appliance right on this node after a restore, after 
 	"  (--install-id when it sees several), with the manifest rebuilt from what pco made in\n" +
 	"  Proxmox.\n\n" +
 	"A repair takes nothing back when it fails; running it again finishes it. It runs as root\n" +
-	"on the node and exits 0 once the appliance is repaired, 1 otherwise."
+	"on the node that has the container; on another node of the cluster it refuses and names\n" +
+	"that node. It exits 0 once the appliance is repaired, 1 otherwise."
 
 const repairExample = `  # After the cluster CA was made anew
   pco appliance repair --vmid 120
@@ -251,8 +252,9 @@ const uninstallLong = "Remove the appliance and what the installer made for it f
 	"--purge-cloudflare, left with --keep-cloudflare, or asked about; with --yes, an install\n" +
 	"with something at Cloudflare needs one of the two, as the credentials that reach it go\n" +
 	"with the container. A part that fails is reported and the rest goes on; running it again\n" +
-	"finishes it. It runs as root on the node and exits 0 once the appliance is removed, 1\n" +
-	"otherwise."
+	"finishes it. It runs as root on the node that has the container; on another node of the\n" +
+	"cluster it refuses and names that node, and only a container no node has counts as gone,\n" +
+	"whose leftovers it removes. It exits 0 once the appliance is removed, 1 otherwise."
 
 const uninstallExample = `  # Remove the appliance, asking about everything
   pco appliance uninstall --vmid 120

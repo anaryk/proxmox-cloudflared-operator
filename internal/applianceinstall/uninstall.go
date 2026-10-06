@@ -111,7 +111,9 @@ func (r *run) whoami() error {
 func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey, error) {
 	var s survey
 	var err error
-	if s.cfg, err = readCTConfig(ctx, r.r, r.node, vmid); err == nil {
+	s.cfg, err = readCTConfig(ctx, r.r, r.node, vmid)
+	switch {
+	case err == nil:
 		s.exists = true
 		var ok bool
 		if s.described, ok = describedVMID(s.cfg["description"]); !ok {
@@ -120,8 +122,13 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 		if s.running, err = ctRunning(ctx, r.r, vmid); err != nil {
 			return s, err
 		}
-	} else if !notThere(err) {
+	case !notThere(err):
 		return s, fmt.Errorf("reading the configuration of lxc/%d: %w", vmid, err)
+	default:
+		// Only a container no node of the cluster has is gone.
+		if err := r.whereElse(ctx, vmid, "uninstall", "nothing was removed"); err != nil {
+			return s, err
+		}
 	}
 	if s.running {
 		s.manifest = r.readManifest(ctx, vmid, false)

@@ -42,10 +42,35 @@ func (i *Installer) Repair(ctx context.Context, vmid int, o Options) error {
 	if rerr := r.removeJournal(); rerr != nil {
 		r.ask.Warn("%v", rerr)
 	}
-	if err != nil {
-		return fmt.Errorf("%w; run pco appliance repair --vmid %d again once that is put right", err, vmid)
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, new(refusal)):
+		return err
 	}
-	return nil
+	return fmt.Errorf("%w; run pco appliance repair --vmid %d again once that is put right", err, vmid)
+}
+
+// refusal is an error that running the command again does not put right.
+type refusal struct{ error }
+
+func (e refusal) Unwrap() error { return e.error }
+
+// whereElse says where the container vmid is when this node has no
+// configuration of it: on another node of the cluster, where the command
+// must run, which it refuses with the outcome; or on none, which is nil, as
+// the container is gone.
+func (r *run) whereElse(ctx context.Context, vmid int, command, outcome string) error {
+	node, ok, err := containerNode(ctx, r.r, vmid)
+	switch {
+	case err != nil:
+		return err
+	case !ok:
+		return nil
+	case node == r.node:
+		return refusal{fmt.Errorf("lxc/%d is listed on %s, but its configuration cannot be read here; %s", vmid, node, outcome)}
+	}
+	return refusal{fmt.Errorf("lxc/%d is on node %s, not on %s: run the %s there; %s", vmid, node, r.node, command, outcome)}
 }
 
 func (r *run) repair(ctx context.Context) error {
@@ -57,8 +82,14 @@ func (r *run) repair(ctx context.Context) error {
 		return err
 	}
 	cfg, err := readCTConfig(ctx, r.r, r.node, vmid)
-	if err != nil {
-		return fmt.Errorf("reading the configuration of lxc/%d on %s: %w", vmid, r.node, err)
+	switch {
+	case err != nil && !notThere(err):
+		return fmt.Errorf("reading the configuration of lxc/%d: %w", vmid, err)
+	case err != nil:
+		if err := r.whereElse(ctx, vmid, "repair", "nothing was changed"); err != nil {
+			return err
+		}
+		return refusal{fmt.Errorf("there is no container lxc/%d in the cluster", vmid)}
 	}
 	if err := r.markContainer(ctx, cfg); err != nil {
 		return err
@@ -102,7 +133,7 @@ func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
 	from, ok := describedVMID(cfg["description"])
 	switch {
 	case !ok:
-		return fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was changed", vmid)
+		return refusal{fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was changed", vmid)}
 	case from == vmid:
 		return nil
 	}
