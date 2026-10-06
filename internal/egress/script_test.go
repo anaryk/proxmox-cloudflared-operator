@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 )
 
 func TestBaseGolden(t *testing.T) {
@@ -139,6 +141,25 @@ func TestTheEdgeRulesAdmitOnlyUnicastToThePublicInternet(t *testing.T) {
 	}, excluded(edge[1]))
 	require.True(t, strings.HasPrefix(edge[0], "ip daddr != { "))
 	require.True(t, strings.HasPrefix(edge[1], "ip6 daddr != { "))
+}
+
+// A service address is never Cloudflare's edge: the edge rule excludes the
+// whole prefix the gateway takes them from, so a connector reaches one only
+// as a target the daemon verified.
+func TestTheEdgeRuleExcludesTheServicePrefix(t *testing.T) {
+	var excluded []netip.Prefix
+	for _, r := range rulesOf(t, Base(testUID, nil, nil)) {
+		if !strings.HasPrefix(r, "ip daddr != { ") || !strings.Contains(r, "dport 7844") {
+			continue
+		}
+		set, _, _ := strings.Cut(strings.TrimPrefix(r, "ip daddr != { "), " }")
+		for _, p := range strings.Split(set, ", ") {
+			excluded = append(excluded, netip.MustParsePrefix(p))
+		}
+	}
+	require.True(t, slices.ContainsFunc(excluded, func(p netip.Prefix) bool {
+		return p.Bits() <= gateway.ServicePrefix.Bits() && p.Contains(gateway.ServicePrefix.Addr())
+	}), "the edge rule excludes %v, which does not hold %s", excluded, gateway.ServicePrefix)
 }
 
 func TestABlockedAddressIsRejectedForEveryPortRightAfterTheReplyRule(t *testing.T) {

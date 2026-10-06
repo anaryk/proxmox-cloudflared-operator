@@ -163,8 +163,8 @@ func complete(t *testing.T) (*fakeNetlink, *fakeNft) {
 	return nl, nft
 }
 
-// The two values are the ones the gateway of the managed network takes over
-// later; until then nothing may make them differ.
+// The two values are the gateway's: the appliance routes the prefix the
+// gateway programs, from the address its connectors' requests carry.
 func TestTheServicePrefixAndItsSourceAreTheGatewaysValues(t *testing.T) {
 	require.Equal(t, "198.18.0.0/16", ServicePrefix.String())
 	require.Equal(t, "198.18.0.1", ServiceSource.String())

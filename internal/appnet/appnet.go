@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 )
 
 const (
@@ -27,12 +28,11 @@ const (
 	PrefUnreachable = 1900
 )
 
-// ServicePrefix and ServiceSource carry the values and the meaning of the
-// gateway's ServicePrefix and TransitHost, which take their place once the
-// managed network has a gateway.
+// ServicePrefix is the gateway's; ServiceSource is the address the host side
+// of the gateway has on its transit link, which the appliance gives pco0.
 var (
-	ServicePrefix = netip.MustParsePrefix("198.18.0.0/16")
-	ServiceSource = netip.MustParseAddr("198.18.0.1")
+	ServicePrefix = gateway.ServicePrefix
+	ServiceSource = gateway.TransitHost
 )
 
 // Netlink is what Load and Verify change and read of the network of the
