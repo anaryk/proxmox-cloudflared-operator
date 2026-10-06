@@ -112,6 +112,8 @@ starts() { [[ $1 == "$2"* ]]; }
 has() { [[ $1 == *"$2"* ]]; }
 absent() { [[ ! -e $1 && ! -L $1 ]]; }
 empty_file() { [[ -f $1 && ! -L $1 && ! -s $1 ]]; }
+empty_dir() { [[ -d $1 && ! -L $1 && -z $(find "$1" -mindepth 1 -print -quit) ]]; }
+absent_or_empty() { absent "$1" || empty_dir "$1"; }
 
 zstd --decompress --stdout --long=27 --quiet "$template" | tar --extract --numeric-owner --directory "$root"
 
@@ -120,7 +122,9 @@ zstd --decompress --stdout --long=27 --quiet "$template" | tar --extract --numer
 # comes from Proxmox VE, nothing serves a login, and pco fetches with Go.
 check "/etc/machine-id is empty" empty_file "$root/etc/machine-id"
 check "/etc/resolv.conf is absent" absent "$root/etc/resolv.conf"
-check "/root/.ssh is absent" absent "$root/root/.ssh"
+# The package systemd makes /root/.ssh, empty, from its provision.conf; what
+# must not be there is a key.
+check "/root/.ssh is absent or empty" absent_or_empty "$root/root/.ssh"
 # installed: the packages in the dpkg database of the tree, in any state but
 # not-installed, one per line.
 # shellcheck disable=SC2016

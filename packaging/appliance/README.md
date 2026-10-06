@@ -108,8 +108,9 @@ which `make test-scripts` runs, checks what `build.sh` takes from `pin.conf`.
     sudo packaging/appliance/smoke.sh --with-network --version <version> <template>
 
 `smoke.sh` first reads the files of the template: `/etc/machine-id` must be
-empty, `/etc/resolv.conf` and `/root/.ssh` absent, and the dpkg database must
-list neither `openssh-server`, `sudo`, `cron` nor `curl`. Then it boots the
+empty, `/etc/resolv.conf` absent, `/root/.ssh` absent or empty (the package
+systemd makes the directory, but no key may be in it), and the dpkg database
+must list neither `openssh-server`, `sudo`, `cron` nor `curl`. Then it boots the
 template in `systemd-nspawn` and checks it from inside: without a network it
 must come up running, or degraded by nothing but `pco.service`,
 `pco-first-boot.service` and `pco-net.service`; pco must be the version of the
