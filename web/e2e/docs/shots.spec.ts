@@ -17,11 +17,11 @@ import type { Page } from '@playwright/test'
 import type { State } from '../../src/api/types.gen'
 import { admin, applianceHarness, expect, type FakeDaemon, type Pco, reader, type User, test, withTicket } from '../fixtures'
 import { recompress, samePicture } from './png'
-import { firstActions, firstRoute, firstRun, now, observing, pageTime, scenarioDir, setupDir } from './scenario'
+import { firstActions, firstRoute, firstRun, node, now, observing, pageTime, scenarioDir, setupDir } from './scenario'
 
 const out = process.env.PCO_E2E_SHOTS ?? ''
 
-test.use({ scenario: scenarioDir(), clock: now })
+test.use({ scenario: scenarioDir(), clock: now, node })
 
 test.beforeEach(async ({ page }) => {
   const at = Date.parse(pageTime)

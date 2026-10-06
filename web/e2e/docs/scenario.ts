@@ -16,14 +16,19 @@ import type { RouteView, State } from '../../src/api/types.gen'
 export const now = '2026-10-01T12:00:02Z'
 export const pageTime = '2026-10-01T12:00:05Z'
 
+// node is the name of the node, as the pages of docs/ name the nodes of their
+// examples: the fake Proxmox VE and pco web are given it too.
+export const node = 'node1'
+
 const populated = fileURLToPath(new URL('../../../internal/api/apifake/testdata/scenarios/populated/', import.meta.url))
 
-// The names of the test data, and those the pages use: the accounts, zones,
-// credentials and tunnel as Cloudflare and pco name them, the zone of a
-// registrable name as one of the names kept for examples, and a data centre
-// of Cloudflare's other than the one nearest the lab. Each is a whole word of
-// the data.
+// The names of the test data, and those the pages use: the node, the
+// accounts, zones, credentials and tunnel as Cloudflare and pco name them,
+// the zone of a registrable name as one of the names kept for examples, and a
+// data centre of Cloudflare's other than the one nearest the lab. Each is a
+// whole word of the data.
 const names: [RegExp, string][] = [
+  [/\bpve1\b/g, node],
   [/\bacc1\b/g, '0123456789abcdef0123456789abcdef'],
   [/\bacc2\b/g, '00112233445566778899aabbccddeeff'],
   [/\bacc3\b/g, 'fedcba9876543210fedcba9876543210'],

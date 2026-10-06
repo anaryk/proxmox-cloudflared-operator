@@ -247,6 +247,9 @@ interface Options {
   // appliance runs pco web as the appliance does, which only root on Linux
   // can have it do here (applianceHarness).
   appliance: boolean
+  // node is the name of the node of the fake Proxmox VE, which its guests
+  // are on and the appliance signs users in at.
+  node: string
 }
 
 // The files that make pco web the appliance's: its profile, and the address
@@ -273,9 +276,9 @@ interface Harness {
 
 // startHarness starts the fakes and pco web in dir, each added to procs as
 // it starts, so that whoever holds procs stops what started.
-async function startHarness(dir: string, procs: Proc[], { scenario, hsts, clock, appliance }: Options): Promise<Harness> {
+async function startHarness(dir: string, procs: Proc[], { scenario, hsts, clock, appliance, node }: Options): Promise<Harness> {
   writeFileSync(join(dir, 'users.json'), JSON.stringify(users))
-  const pve = new Proc('fakepve', ['-listen', '127.0.0.1:0', '-users', join(dir, 'users.json'), '-cert-dir', dir, '-web-cert'])
+  const pve = new Proc('fakepve', ['-listen', '127.0.0.1:0', '-users', join(dir, 'users.json'), '-cert-dir', dir, '-web-cert', '-node', node])
   procs.push(pve)
   const pveURL = await pve.start((l) => (l.message === 'serving' ? String(l.url) : undefined))
 
@@ -293,7 +296,7 @@ async function startHarness(dir: string, procs: Proc[], { scenario, hsts, clock,
   const webArgs: string[] = []
   if (appliance) {
     if (!applianceHarness) throw new Error(`pco web runs as the appliance's here only as root on Linux, without ${applianceDir}`)
-    const api = { url: pveURL, serverName: 'pve1', ca: readFileSync(join(dir, 'pveproxy.crt'), 'utf8'), node: 'pve1' }
+    const api = { url: pveURL, serverName: node, ca: readFileSync(join(dir, 'pveproxy.crt'), 'utf8'), node }
     writeFileSync(join(dir, 'pve-api.json'), JSON.stringify(api))
     webArgs.push('--pve-api', join(dir, 'pve-api.json'))
   }
@@ -404,13 +407,14 @@ export const test = base.extend<Options & Fixtures & { harness: Harness }>({
   hsts: [false, { option: true }],
   clock: ['', { option: true }],
   appliance: [false, { option: true }],
-  harness: async ({ scenario, hsts, clock, appliance }, provide, testInfo) => {
+  node: ['pve1', { option: true }],
+  harness: async ({ scenario, hsts, clock, appliance, node }, provide, testInfo) => {
     // A unix socket needs a short path, which the test's own directory may
     // not have.
     const dir = mkdtempSync(join(tmpdir(), 'pco-e2e-'))
     const procs: Proc[] = []
     try {
-      await provide(await startHarness(dir, procs, { scenario, hsts, clock, appliance }))
+      await provide(await startHarness(dir, procs, { scenario, hsts, clock, appliance, node }))
     } finally {
       if (testInfo.status !== testInfo.expectedStatus) {
         for (const p of procs) await testInfo.attach(`${p.name}.log`, { body: p.output, contentType: 'text/plain' })

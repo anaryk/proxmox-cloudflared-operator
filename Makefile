@@ -142,7 +142,7 @@ docs-screenshots: web/node_modules ui
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nomsgpack -trimpath -o $(SHOTS_BIN)/fakepco ./hack/fakepco
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nomsgpack -trimpath -o $(SHOTS_BIN)/fakepve ./hack/fakepve
 	mkdir -p docs/images web/test-results
-	docker run --rm --platform linux/amd64 --init --ipc=host --hostname pve1 \
+	docker run --rm --platform linux/amd64 --init --ipc=host --hostname node1 \
 		-v "$(CURDIR):/src" -v "$(CURDIR)/$(SHOTS_BIN):/src/bin:ro" -w /src/web \
 		-e PCO_E2E_SHOTS=/src/docs/images -e FONTCONFIG_FILE=/src/web/e2e/docs/fonts.conf \
 		-e OWNER="$$(id -u):$$(id -g)" \
