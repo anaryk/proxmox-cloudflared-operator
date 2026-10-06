@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { api, ApiError } from '../../api/client'
 import { explain } from '../../api/errors'
 import { useApp, useStore } from '../../api/store'
-import type { DoctorCounts, Finding } from '../../api/types.gen'
+import type { DoctorCounts, Finding, IdentityView } from '../../api/types.gen'
 import { Head } from '../../app/Head'
 import { Badge } from '../../components/Badge'
 import { Banner } from '../../components/Banner'
@@ -27,8 +27,117 @@ type Run =
   | { state: 'counts'; counts: DoctorCounts }
   | { state: 'failed'; error: ApiError }
 
-const isCounts = (body: unknown): body is DoctorCounts =>
-  typeof body === 'object' && body !== null && typeof (body as DoctorCounts).ok === 'number' && typeof (body as DoctorCounts).fail === 'number'
+const isCounts = (body: unknown): body is DoctorCounts => {
+  if (typeof body !== 'object' || body === null) return false
+  const c = body as Partial<DoctorCounts>
+  return typeof c.ok === 'number' && typeof c.warn === 'number' && typeof c.fail === 'number' && typeof c.at === 'string'
+}
+
+// countsOf is what a reader is shown of findings: how many ended how. The
+// web process gives a reader nothing else, and the page does not rely on it.
+function countsOf(findings: readonly Finding[], at: string): DoctorCounts {
+  const n = (level: string) => findings.filter((f) => f.level === level).length
+  return { ok: n('ok'), warn: n('warn'), fail: n('fail'), at }
+}
+
+// Go writes a time it never set as the zero time, or leaves it out.
+const unset = (at?: string) => !at || at.startsWith('0001-01-01T00:00:00')
+
+function Refs({ refs }: { refs: readonly string[] }) {
+  return (
+    <ul className="plain-list">
+      {refs.map((r) => (
+        <li key={r} className="mono">
+          <Untrusted text={r} />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function Identity({ id, nodeZone }: { id: IdentityView; nodeZone?: string }) {
+  return (
+    <dl className="details">
+      <dt>Installed as</dt>
+      <dd>
+        <span className="mono">lxc/{id.vmid}</span> on node <Untrusted text={id.node} />
+      </dd>
+      <dt>This container is it</dt>
+      <dd>
+        {id.ok ? 'yes, proven' : 'not proven'}
+        {id.why && (
+          <>
+            : <Untrusted text={id.why} />
+          </>
+        )}
+        {id.copy && <p>It is a copy of the appliance, and serves nothing.</p>}
+      </dd>
+      {(id.copies ?? []).length > 0 && (
+        <>
+          <dt>Copies</dt>
+          <dd>
+            <Refs refs={id.copies ?? []} />
+            <p className="field-hint">Guests that carry a MAC of the appliance.</p>
+          </dd>
+        </>
+      )}
+      {(id.tenants ?? []).length > 0 && (
+        <>
+          <dt>Tenants</dt>
+          <dd>
+            <Refs refs={id.tenants ?? []} />
+            <p className="field-hint">Guests outside the pool pco that carry a MAC of the appliance: their routes are rejected.</p>
+          </dd>
+        </>
+      )}
+      {(id.exposed ?? []).length > 0 && (
+        <>
+          <dt>Refused privileges</dt>
+          <dd>
+            <Refs refs={id.exposed ?? []} />
+            <p className="field-hint">They are not admins and hold a privilege on the appliance that pco refuses: the connectors stay stopped while any does.</p>
+          </dd>
+        </>
+      )}
+      {!unset(id.checkedAt) && (
+        <>
+          <dt>Checked</dt>
+          <dd>
+            <Time at={id.checkedAt ?? ''} nodeZone={nodeZone} />
+          </dd>
+        </>
+      )}
+    </dl>
+  )
+}
+
+// ThisInstall is what the daemon says of the install itself: on the
+// appliance, the container it was installed as, whether this one proved to
+// be it, and the epoch it drew after the container started.
+function ThisInstall({ nodeZone }: { nodeZone?: string }) {
+  const st = useApp((s) => s.state)
+  if (!st) return null
+  const drawn = !unset(st.epochDrawnAt)
+  let body
+  if (st.identity) body = <Identity id={st.identity} nodeZone={nodeZone} />
+  else if (st.profile === 'appliance') body = <p className="muted">The appliance has not identified itself yet: it does so in each cycle.</p>
+  else body = <p className="muted">pco runs on the host of this node: there is no appliance to identify.</p>
+  return (
+    <section className="card" aria-labelledby="doctor-install">
+      <div className="card-head">
+        <h2 id="doctor-install">This install</h2>
+      </div>
+      <div className="card-body">
+        {body}
+        {drawn && (
+          <p>
+            Epoch drawn at <Time at={st.epochDrawnAt ?? ''} nodeZone={nodeZone} />, after the container started: the state is the volume&apos;s.
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
 
 // The sentence a reader gets, and the admin's summary: how the checks ended
 // and when they ran.
@@ -152,10 +261,12 @@ export function DoctorPage() {
     setRun({ state: 'running', since: Date.now() })
     try {
       const body = await api<Finding[] | DoctorCounts | undefined>('POST', '/api/v1/doctor', {})
-      if (Array.isArray(body)) {
-        const at = new Date().toISOString()
+      const at = new Date().toISOString()
+      if (Array.isArray(body) && admin) {
         setRun({ state: 'findings', at, findings: body })
         store.setDoctorLast({ fail: failures(body).length, at })
+      } else if (Array.isArray(body)) {
+        setRun({ state: 'counts', counts: countsOf(body, at) })
       } else if (isCounts(body)) {
         setRun({ state: 'counts', counts: body })
       } else {
@@ -202,6 +313,7 @@ export function DoctorPage() {
           </div>
         </section>
       )}
+      <ThisInstall nodeZone={nodeZone} />
     </>
   )
 }

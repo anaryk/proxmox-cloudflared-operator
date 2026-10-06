@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { StoreProvider } from '../../api/store'
-import type { Finding } from '../../api/types.gen'
+import type { Finding, State } from '../../api/types.gen'
 import doctor from '../../fixtures/doctor.json'
 import counts from '../../fixtures/doctor-counts.json'
 import untagged from '../../fixtures/untagged.json'
@@ -21,8 +21,8 @@ function stub(...answers: Response[]) {
   return fetch
 }
 
-async function mount(role = 'admin') {
-  const fake = await fakeStore({ state: untagged, session: { role } })
+async function mount(role = 'admin', state: unknown = untagged) {
+  const fake = await fakeStore({ state, session: { role } })
   render(
     <StoreProvider store={fake.store}>
       <DoctorPage />
@@ -177,6 +177,19 @@ describe('a reader', () => {
     await screen.findByText(/^12 ok/)
     expect(copyButtons()).toHaveLength(0)
   })
+
+  test('handed the findings, still gets their counts only: the role decides, not the answer', async () => {
+    stub(answer(doctor))
+    const { store } = await mount('reader')
+    run()
+    const all = doctor as Finding[]
+    const n = (level: string) => all.filter((f) => f.level === level).length
+    expect(await screen.findByText(new RegExp(`^${n('ok')} ok, ${n('warn')} warnings, ${n('fail')} failures, run at$`))).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Failures' })).toBeNull()
+    expect(copyButtons()).toHaveLength(0)
+    for (const f of all) expect(screen.queryByText(f.detail)).toBeNull()
+    expect(store.get().doctorLast).toBeUndefined()
+  })
 })
 
 test('an answer it does not know is an error, not an empty list', async () => {
@@ -184,4 +197,63 @@ test('an answer it does not know is an error, not an empty list', async () => {
   await mount()
   run()
   expect(await screen.findByText(/The doctor did not run:/)).toBeTruthy()
+})
+
+test('counts without all their fields are an answer it does not know', async () => {
+  stub(answer({ ok: 3, fail: 0 }))
+  await mount('reader')
+  run()
+  expect(await screen.findByText(/The doctor did not run:/)).toBeTruthy()
+  expect(screen.queryByText(/undefined/)).toBeNull()
+})
+
+describe('this install', () => {
+  const st = untagged as unknown as State
+
+  test('on the host: no appliance to identify', async () => {
+    stub()
+    await mount('reader', { ...st, profile: 'host', identity: undefined })
+    expect(within(section('This install')).getByText('pco runs on the host of this node: there is no appliance to identify.')).toBeTruthy()
+  })
+
+  test('on the appliance before a cycle identified it', async () => {
+    stub()
+    await mount('reader', { ...st, profile: 'appliance', identity: undefined })
+    expect(within(section('This install')).getByText(/has not identified itself yet/)).toBeTruthy()
+  })
+
+  test('the container the appliance was installed as, what proved it, and the epoch drawn', async () => {
+    stub()
+    await mount('reader', {
+      ...st,
+      profile: 'appliance',
+      epochDrawnAt: '2026-10-01T11:58:00Z',
+      identity: {
+        vmid: 300,
+        node: 'pve1',
+        ok: false,
+        why: 'a guest outside the pool carries a MAC of the appliance',
+        copy: false,
+        copies: ['lxc/301'],
+        tenants: ['qemu/120'],
+        exposed: ['bob@pve'],
+        checkedAt: '2026-10-01T12:00:00Z',
+      },
+    })
+    const card = section('This install')
+    const detail = (term: string) => within(card).getByText(term, { selector: 'dt' }).nextElementSibling?.textContent
+    expect(detail('Installed as')).toBe('lxc/300 on node pve1')
+    expect(detail('This container is it')).toBe('not proven: a guest outside the pool carries a MAC of the appliance')
+    expect(detail('Copies')).toContain('lxc/301')
+    expect(detail('Tenants')).toContain('qemu/120')
+    expect(detail('Refused privileges')).toContain('bob@pve')
+    expect(card.querySelector('time[datetime="2026-10-01T12:00:00Z"]')).toBeTruthy()
+    expect(within(card).getByText(/^Epoch drawn at/).querySelector('time')?.getAttribute('datetime')).toBe('2026-10-01T11:58:00Z')
+  })
+
+  test('a copy says that it serves nothing', async () => {
+    stub()
+    await mount('reader', { ...st, profile: 'appliance', identity: { vmid: 300, node: 'pve1', ok: false, copy: true, why: 'this container is a copy' } })
+    expect(within(section('This install')).getByText('It is a copy of the appliance, and serves nothing.')).toBeTruthy()
+  })
 })
