@@ -145,3 +145,68 @@ test('a gap with level error colours the strip', async () => {
   expect(strip?.className).toBe('strip strip-error')
   expect(strip?.querySelector('summary')?.textContent).toContain('errors')
 })
+
+describe('the range of time', () => {
+  const at = (e: Event, when: string): Event => ({ ...e, at: when })
+  const timed = [at(evs[0] as Event, '2026-10-01T12:00:00Z'), at(evs[1] as Event, '2026-10-01T12:05:00Z'), at(evs[2] as Event, '2026-10-01T12:10:00Z')]
+
+  test('an event at either end is in it', () => {
+    const seqs = (f: { since?: string; until?: string }) => timed.filter((e) => matches(e, f)).map((e) => e.seq)
+    expect(seqs({ since: '2026-10-01T12:05:00Z' })).toEqual([8, 9])
+    expect(seqs({ until: '2026-10-01T12:05:00Z' })).toEqual([7, 8])
+    expect(seqs({ since: '2026-10-01T12:01:00Z', until: '2026-10-01T12:09:00Z' })).toEqual([8])
+  })
+
+  test('a bound that is no time sets none', () => {
+    expect(timed.filter((e) => matches(e, { since: 'yesterday', until: '' }))).toHaveLength(3)
+  })
+
+  test('an event without a time is in no range', () => {
+    expect(matches({ ...(evs[0] as Event), at: undefined }, { since: '2026-10-01T12:00:00Z' })).toBe(false)
+  })
+
+  test('a gap says no time, so a range does not show it', () => {
+    expect(rowsOf(timed, [gap], new Map(), { since: '2026-10-01T11:00:00Z' }).map((r) => r.type)).toEqual(['event', 'event', 'event'])
+    expect(rowsOf(timed, [gap], new Map(), {}).map((r) => r.type)).toEqual(['gap', 'event', 'event', 'event'])
+  })
+})
+
+describe('events of an earlier process of the daemon', () => {
+  const earlier = (seq: number, at: string): Event => ({ ...(evs[0] as Event), boot: 'ab12cd34ef567890', seq, at, message: `earlier ${seq}` })
+  // their seq is higher than those of the process now running
+  const before = [earlier(900, '2026-09-30T10:00:00Z'), earlier(901, '2026-09-30T10:00:05Z')]
+  const seqs = (rows: ReturnType<typeof rowsOf>) => rows.map((r) => (r.type === 'event' ? r.e.seq : 'gap'))
+
+  test('come after the events of the latest, whatever their seq', () => {
+    expect(seqs(rowsOf([...before, ...evs], [], new Map(), {}))).toEqual([10, 9, 8, 7, 901, 900])
+  })
+
+  test('are not cut when the list is paused', () => {
+    expect(seqs(rowsOf([...before, ...evs], [], new Map(), {}, 8))).toEqual([8, 7, 901, 900])
+  })
+
+  test('an event the stream and the log both have is one row', () => {
+    expect(seqs(rowsOf([...evs, ...evs.slice(1)], [], new Map(), {}))).toEqual([10, 9, 8, 7])
+  })
+
+  test('a gap of the process now running stays above them', () => {
+    expect(seqs(rowsOf([...before, ...evs], [gap], new Map(), {}))).toEqual(['gap', 10, 9, 8, 7, 901, 900])
+  })
+})
+
+test('the table has the older events its page read, and says what is empty in its own words', async () => {
+  const { store } = await fakeStore({ state: untagged })
+  const older: Event[] = [{ ...(evs[0] as Event), boot: 'ab12cd34ef567890', seq: 3, message: 'from before the restart' }]
+  const { rerender } = render(
+    <StoreProvider store={store}>
+      <EventsTable filter={{}} live older={older} />
+    </StoreProvider>,
+  )
+  expect(screen.getByText('from before the restart')).toBeTruthy()
+  rerender(
+    <StoreProvider store={store}>
+      <EventsTable filter={{ text: 'nothing says this' }} live older={older} empty="No event matches." />
+    </StoreProvider>,
+  )
+  expect(screen.getByText('No event matches.')).toBeTruthy()
+})
