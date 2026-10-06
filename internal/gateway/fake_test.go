@@ -106,6 +106,9 @@ func newFakeSystem() *fakeSystem {
 // bridge adds a bridge to the host, with ports that have a carrier.
 func (f *fakeSystem) bridge(name string, filtering bool, mtu int, ports ...string) {
 	f.host.links[name] = &fakeLink{link: link{name: name, kind: "bridge", mtu: mtu, up: true, carrier: true, vlanFiltering: filtering}}
+	if filtering {
+		f.host.links[name].defaultPVID = 1
+	}
 	for _, p := range ports {
 		f.host.links[p] = &fakeLink{link: link{name: p, kind: "device", mtu: mtu, up: true, carrier: true, master: name}}
 	}
@@ -335,8 +338,8 @@ func (f *fakeSystem) setMaster(name, master string) error {
 	}
 	l := f.host.links[name]
 	l.master, l.vlans, l.fdb = master, nil, nil
-	if br.vlanFiltering {
-		l.vlans = []portVLAN{{vid: 1, pvid: true, untagged: true}}
+	if br.vlanFiltering && br.defaultPVID > 0 {
+		l.vlans = []portVLAN{{vid: br.defaultPVID, pvid: true, untagged: true}}
 	}
 	return nil
 }

@@ -176,7 +176,7 @@ func (v *verifier) leg(l Leg) {
 		return
 	}
 	port, iface := bridgePort(l.Mark), l.Iface()
-	master, filtering, mtu, problem, err := v.b.bridgeOf(l.Bridge, l.VLAN)
+	end, problem, err := v.b.bridgeOf(l.Bridge, l.VLAN)
 	switch {
 	case err != nil:
 		v.fail(err)
@@ -185,6 +185,7 @@ func (v *verifier) leg(l Leg) {
 		v.differs("leg %s: %s", iface, problem)
 		return
 	}
+	master, filtering, mtu := end.master, end.filtering, end.mtu
 	h, hok := v.link(onHost, port, true)
 	n, nok := v.link(inNS, iface, true)
 	if !hok || !nok {
@@ -204,7 +205,7 @@ func (v *verifier) leg(l Leg) {
 	case h.mtu != mtu || n.mtu != mtu:
 		v.differs("leg %s has the MTU %d and %d, want that of %s, %d", iface, h.mtu, n.mtu, master, mtu)
 	}
-	v.vlans(port, filtering, l.VLAN)
+	v.vlans(port, end.vid)
 	v.fdb(port, l.MAC, fdbVLAN(filtering, l.VLAN))
 	v.sysctls(onHost, [][2]string{{"net.ipv6.conf." + port + ".disable_ipv6", "1"}})
 	v.sysctls(inNS, ifaceSysctls(iface))
@@ -238,16 +239,16 @@ func (v *verifier) table(table int, want []route) {
 	}
 }
 
-func (v *verifier) vlans(port string, filtering bool, vlan int) {
-	if v.err != nil || !filtering || vlan == 0 {
+func (v *verifier) vlans(port string, vid int) {
+	if v.err != nil || vid == 0 {
 		return
 	}
 	have, err := v.b.sys.portVLANs(port)
 	switch {
 	case err != nil:
 		v.fail(fmt.Errorf("reading the VLANs of %s: %w", port, err))
-	case !slices.Equal(have, []portVLAN{{vid: vlan, pvid: true, untagged: true}}):
-		v.differs("%s is in the VLANs %v, want only %d, untagged", port, vidsOf(have), vlan)
+	case !slices.Equal(have, []portVLAN{{vid: vid, pvid: true, untagged: true}}):
+		v.differs("%s is in the VLANs %v, want only %d, untagged", port, vidsOf(have), vid)
 	}
 }
 

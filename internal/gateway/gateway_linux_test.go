@@ -577,6 +577,96 @@ func TestLinuxAMarkThatMovesToAnotherBridgeReachesTheGuestThere(t *testing.T) {
 	require.NoError(t, l.b.Verify(t.Context()))
 }
 
+// ifindexOf is the index of an interface of the namespace ns: it changes when
+// the interface is made anew.
+func (l *labNet) ifindexOf(t *testing.T, ns, name string) int {
+	t.Helper()
+	out, err := exec.Command(ipPath, "-n", ns, "-j", "link", "show", name).Output()
+	require.NoError(t, err)
+	var links []struct {
+		Ifindex int `json:"ifindex"`
+	}
+	require.NoError(t, json.Unmarshal(out, &links))
+	require.Len(t, links, 1)
+	return links[0].Ifindex
+}
+
+// portVLANsOf is what `bridge vlan show` says of a port of the host.
+func (l *labNet) portVLANsOf(t *testing.T, port string) string {
+	t.Helper()
+	out, err := exec.Command("bridge", "-n", l.hostName, "vlan", "show", "dev", port).CombinedOutput()
+	require.NoError(t, err, string(out))
+	return strings.Join(strings.Fields(string(out)), " ")
+}
+
+// A mark that passes from a VLAN of a bridge that filters VLANs to the
+// untagged network of the same bridge, with the same prefix: the port is put
+// in the bridge's default VLAN, not left in the tag, and the guests of the
+// untagged network answer, those of the VLAN do not.
+func TestLinuxAMarkThatMovesFromAVLANToTheUntaggedNetworkReachesTheGuestThere(t *testing.T) {
+	l := newLabNet(t)
+	l.bridge("br2", true)
+	tagged := l.guest("b", "br2", 20, "10.50.0.10/24", "")
+	untagged := l.guest("u", "br2", 0, "10.50.0.10/24", "")
+	serve(t, tagged, "0.0.0.0:80", "b")
+	serve(t, untagged, "0.0.0.0:80", "u")
+	require.NoError(t, l.b.Up(t.Context()))
+	leg := func(id string, vlan int) Leg {
+		return Leg{ID: id, Mark: 1, Bridge: "br2", VLAN: vlan, Prefix: prefix("10.50.0.250/24"), MAC: mac("02:50:43:4f:00:01")}
+	}
+	services := func(leg string) []Service {
+		return []Service{{Leg: leg, Service: addr("198.18.1.1"), Addr: addr("10.50.0.10"), Ports: []uint16{80}}}
+	}
+
+	states, err := l.b.Sync(t.Context(), []Leg{leg("br2.20", 20)}, services("br2.20"), nil, nil)
+	require.NoError(t, err)
+	require.True(t, states[0].Up, states[0].Problem)
+	got, err := get(l.host, "198.18.1.1:80", nil, 2*time.Second)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(got, "b "), got)
+	require.Contains(t, l.portVLANsOf(t, "vethpco1"), "20 PVID Egress Untagged")
+
+	states, err = l.b.Sync(t.Context(), []Leg{leg("br2", 0)}, services("br2"), nil, nil)
+	require.NoError(t, err)
+	require.True(t, states[0].Up, states[0].Problem)
+	vlans := l.portVLANsOf(t, "vethpco1")
+	require.Contains(t, vlans, "1 PVID Egress Untagged")
+	require.NotContains(t, vlans, "20", "the tag of the old network is gone")
+	got, err = get(l.host, "198.18.1.1:80", nil, 2*time.Second)
+	require.NoError(t, err, "the untagged guest answers")
+	require.True(t, strings.HasPrefix(got, "u "), got)
+	require.NoError(t, l.b.Verify(t.Context()))
+}
+
+// A bridge whose default VLAN is not 1 is no reason to make a leg anew: its
+// ports get that VLAN, and every Sync finds the leg where it is.
+func TestLinuxABridgeWhoseDefaultVLANIsNotOneLeavesTheLegAlone(t *testing.T) {
+	l := newLabNet(t)
+	l.bridge("br2", true)
+	l.ip("-n", l.hostName, "link", "set", "br2", "type", "bridge", "vlan_default_pvid", "5")
+	untagged := l.guest("u", "br2", 0, "10.50.0.10/24", "")
+	serve(t, untagged, "0.0.0.0:80", "u")
+	require.NoError(t, l.b.Up(t.Context()))
+	leg := Leg{ID: "br2", Mark: 1, Bridge: "br2", Prefix: prefix("10.50.0.250/24"), MAC: mac("02:50:43:4f:00:01")}
+	services := []Service{{Leg: "br2", Service: addr("198.18.1.1"), Addr: addr("10.50.0.10"), Ports: []uint16{80}}}
+
+	_, err := l.b.Sync(t.Context(), []Leg{leg}, services, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, l.portVLANsOf(t, "vethpco1"), "5 PVID Egress Untagged")
+	index := l.ifindexOf(t, l.gwName, "leg1")
+	got, err := get(l.host, "198.18.1.1:80", nil, 2*time.Second)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(got, "u "), got)
+
+	for range 3 {
+		states, err := l.b.Sync(t.Context(), []Leg{leg}, services, nil, nil)
+		require.NoError(t, err)
+		require.True(t, states[0].Up, states[0].Problem)
+	}
+	require.Equal(t, index, l.ifindexOf(t, l.gwName, "leg1"), "the pair is the one that was made")
+	require.NoError(t, l.b.Verify(t.Context()))
+}
+
 // Duplicate-address detection through a leg on an uplink bridge: a guest
 // that holds the address keeps it off; a free one is raised; a bridge whose
 // other ports have no carrier cannot be probed, and the address is raised

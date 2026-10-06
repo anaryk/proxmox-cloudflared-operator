@@ -27,8 +27,13 @@ func linkOf(l netlink.Link, names map[int]string) link {
 		up: a.Flags&net.FlagUp != 0, carrier: a.RawFlags&unix.IFF_LOWER_UP != 0,
 		master: names[a.MasterIndex],
 	}
-	if br, ok := l.(*netlink.Bridge); ok && br.VlanFiltering != nil {
-		out.vlanFiltering = *br.VlanFiltering
+	if br, ok := l.(*netlink.Bridge); ok {
+		if br.VlanFiltering != nil {
+			out.vlanFiltering = *br.VlanFiltering
+		}
+		if br.VlanDefaultPVID != nil {
+			out.defaultPVID = int(*br.VlanDefaultPVID)
+		}
 	}
 	return out
 }

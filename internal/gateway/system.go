@@ -101,8 +101,10 @@ type link struct {
 	up      bool // set up
 	carrier bool // its lower layer is up
 	master  string
-	// A bridge that filters VLANs; a bridge port that is isolated.
+	// A bridge that filters VLANs, and the VLAN a port enslaved to it gets,
+	// untagged and its own, 0 for none; a bridge port that is isolated.
 	vlanFiltering bool
+	defaultPVID   int
 	isolated      bool
 }
 

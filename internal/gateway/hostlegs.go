@@ -102,29 +102,48 @@ func validLegs(legs []Leg) []Leg {
 	return slices.DeleteFunc(slices.Clone(legs), func(l Leg) bool { return legProblem(l, legs) != "" })
 }
 
-// bridgeOf returns the bridge a leg is enslaved to, whether that bridge
-// filters VLANs, and its MTU: the leg's bridge, or vmbr<X>v<tag> for a tag on
-// a bridge that does not filter VLANs. A bridge that is not there is a
-// problem, not an error.
-func (b *hostBackend) bridgeOf(bridge string, vlan int) (master string, filtering bool, mtu int, problem string, err error) {
+// bridgeEnd is where the bridge end of a leg goes.
+type bridgeEnd struct {
+	master    string
+	filtering bool // the bridge filters VLANs
+	// vid is the one VLAN the port has on a bridge that filters VLANs,
+	// untagged and its own: the leg's tag, and for no tag the bridge's default
+	// VLAN, which is what a port enslaved to it gets. 0 leaves the VLANs of
+	// the port alone.
+	vid int
+	mtu int
+}
+
+// bridgeOf returns where the bridge end of a leg goes: the leg's bridge, or
+// vmbr<X>v<tag> for a tag on a bridge that does not filter VLANs. A bridge
+// that is not there is a problem, not an error.
+func (b *hostBackend) bridgeOf(bridge string, vlan int) (end bridgeEnd, problem string, err error) {
 	br, ok, err := b.sys.link(onHost, bridge)
 	switch {
 	case err != nil:
-		return "", false, 0, "", fmt.Errorf("reading %s: %w", bridge, err)
+		return bridgeEnd{}, "", fmt.Errorf("reading %s: %w", bridge, err)
 	case !ok || br.kind != "bridge":
-		return "", false, 0, fmt.Sprintf("bridge %s is absent", bridge), nil
+		return bridgeEnd{}, fmt.Sprintf("bridge %s is absent", bridge), nil
 	case vlan == 0 || br.vlanFiltering:
-		return bridge, br.vlanFiltering, br.mtu, "", nil
+		end = bridgeEnd{master: bridge, filtering: br.vlanFiltering, mtu: br.mtu}
+		switch {
+		case !br.vlanFiltering:
+		case vlan > 0:
+			end.vid = vlan
+		default:
+			end.vid = br.defaultPVID
+		}
+		return end, "", nil
 	}
-	master = fmt.Sprintf("%sv%d", bridge, vlan)
+	master := fmt.Sprintf("%sv%d", bridge, vlan)
 	vb, ok, err := b.sys.link(onHost, master)
 	switch {
 	case err != nil:
-		return "", false, 0, "", fmt.Errorf("reading %s: %w", master, err)
+		return bridgeEnd{}, "", fmt.Errorf("reading %s: %w", master, err)
 	case !ok || vb.kind != "bridge":
-		return "", false, 0, fmt.Sprintf("bridge %s is absent", master), nil
+		return bridgeEnd{}, fmt.Sprintf("bridge %s is absent", master), nil
 	}
-	return master, false, vb.mtu, "", nil
+	return bridgeEnd{master: master, mtu: vb.mtu}, "", nil
 }
 
 // leg sets up one leg: the pair with its MACs and the bridge's MTU, IPv6
@@ -139,7 +158,7 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 		rec = &legRecord{mark: l.Mark}
 		b.records[l.ID] = rec
 	}
-	master, filtering, mtu, problem, err := b.bridgeOf(l.Bridge, l.VLAN)
+	end, problem, err := b.bridgeOf(l.Bridge, l.VLAN)
 	if err != nil {
 		return st, err
 	}
@@ -147,8 +166,9 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 		st.Problem = problem
 		return st, nil
 	}
+	master, filtering, mtu := end.master, end.filtering, end.mtu
 	port, iface := bridgePort(l.Mark), l.Iface()
-	moved, err := b.legMoved(l, port, master, filtering)
+	moved, err := b.legMoved(l, port, end)
 	if err != nil {
 		return st, err
 	}
@@ -170,7 +190,7 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 	if err := b.ensureMTU(port, iface, mtu); err != nil {
 		return st, err
 	}
-	if err := b.ensurePort(port, master, filtering, l.VLAN); err != nil {
+	if err := b.ensurePort(port, master, end.vid); err != nil {
 		return st, err
 	}
 	if err := b.ensureUp(onHost, port); err != nil {
@@ -205,7 +225,9 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 // is the MACs of guests that are not in the bridge now, and where subnets
 // are identical it would be used for the address of a guest there. A pair
 // that lost its bridge is not moved: it was put back into the same network.
-func (b *hostBackend) legMoved(l Leg, port, master string, filtering bool) (bool, error) {
+// The VLAN is the one ensurePort would give the port: the tag, or for the
+// untagged network the bridge's default, which is not always 1.
+func (b *hostBackend) legMoved(l Leg, port string, end bridgeEnd) (bool, error) {
 	iface := l.Iface()
 	have, ok, err := b.sys.link(onHost, port)
 	if err != nil {
@@ -216,15 +238,15 @@ func (b *hostBackend) legMoved(l Leg, port, master string, filtering bool) (bool
 	} else if !ok || !peer || have.master == "" {
 		return false, nil
 	}
-	if have.master != master {
+	if have.master != end.master {
 		return true, nil
 	}
-	if filtering && l.VLAN > 0 {
+	if end.vid > 0 {
 		vlans, err := b.sys.portVLANs(port)
 		if err != nil {
 			return false, fmt.Errorf("reading the VLANs of %s: %w", port, err)
 		}
-		if len(vlans) > 0 && !slices.ContainsFunc(vlans, func(v portVLAN) bool { return v.vid == l.VLAN }) {
+		if len(vlans) > 0 && !slices.ContainsFunc(vlans, func(v portVLAN) bool { return v.vid == end.vid }) {
 			return true, nil
 		}
 	}
@@ -264,10 +286,10 @@ func (b *hostBackend) ensureMTU(port, iface string, mtu int) error {
 }
 
 // ensurePort enslaves the bridge end to its bridge, on a bridge that filters
-// VLANs with the tag as its only VLAN, untagged and the port's own, and keeps
-// it from being isolated: guests on an isolating bridge reach the leg
-// through it.
-func (b *hostBackend) ensurePort(port, master string, filtering bool, vlan int) error {
+// VLANs with vid as its only VLAN, untagged and the port's own, and keeps it
+// from being isolated: guests on an isolating bridge reach the leg through
+// it. A vid of 0 leaves the VLANs of the port alone.
+func (b *hostBackend) ensurePort(port, master string, vid int) error {
 	l, _, err := b.sys.link(onHost, port)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", port, err)
@@ -278,19 +300,19 @@ func (b *hostBackend) ensurePort(port, master string, filtering bool, vlan int) 
 		}
 		b.log.Info().Str("port", port).Str("bridge", master).Msg("enslaved a leg to its bridge")
 	}
-	if filtering && vlan > 0 {
+	if vid > 0 {
 		have, err := b.sys.portVLANs(port)
 		if err != nil {
 			return fmt.Errorf("reading the VLANs of %s: %w", port, err)
 		}
-		want := portVLAN{vid: vlan, pvid: true, untagged: true}
+		want := portVLAN{vid: vid, pvid: true, untagged: true}
 		if !slices.Contains(have, want) {
 			if err := b.sys.addPortVLAN(port, want); err != nil {
-				return fmt.Errorf("adding VLAN %d to %s: %w", vlan, port, err)
+				return fmt.Errorf("adding VLAN %d to %s: %w", vid, port, err)
 			}
 		}
 		for _, v := range have {
-			if v.vid == vlan {
+			if v.vid == vid {
 				continue
 			}
 			if err := b.sys.delPortVLAN(port, v.vid); err != nil {
@@ -752,14 +774,14 @@ func (b *hostBackend) Probe(ctx context.Context, bridge string, vlan int, addr n
 			return b.claimants(ctx, l.Iface(), addr, l.MAC)
 		}
 	}
-	master, filtering, mtu, problem, err := b.bridgeOf(bridge, vlan)
+	end, problem, err := b.bridgeOf(bridge, vlan)
 	switch {
 	case err != nil:
 		return nil, err
 	case problem != "":
 		return nil, fmt.Errorf("%s", problem)
 	}
-	if err := b.ensurePair(probePort, probeBridgeMAC, probeIface, probeMAC, mtu); err != nil {
+	if err := b.ensurePair(probePort, probeBridgeMAC, probeIface, probeMAC, end.mtu); err != nil {
 		return nil, err
 	}
 	defer func() {
@@ -773,7 +795,7 @@ func (b *hostBackend) Probe(ctx context.Context, bridge string, vlan int, addr n
 	if err := b.ensureSysctls(inNS, ifaceSysctls(probeIface)); err != nil {
 		return nil, err
 	}
-	if err := b.ensurePort(probePort, master, filtering, vlan); err != nil {
+	if err := b.ensurePort(probePort, end.master, end.vid); err != nil {
 		return nil, err
 	}
 	if err := b.ensureUp(onHost, probePort); err != nil {

@@ -332,8 +332,9 @@ func TestALegWhoseBridgeEndLostItsPeerIsMadeAgain(t *testing.T) {
 // the old network is then wrong, not only stale: with identical subnets the
 // neighbour of an address is the MAC of a guest that is not in the bridge any
 // more, and the address would be tried there until the entry ages out. The
-// pair is made anew, which leaves no neighbour and makes the address go
-// through duplicate-address detection in its new bridge.
+// pair is made anew, which leaves no neighbour, puts the port in the VLAN of
+// the new network and makes the address go through duplicate-address
+// detection in its new bridge.
 func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 	stale := neighbour{addr: addr("10.50.0.10"), mac: mac("bc:24:11:00:00:01")}
 	moved := func(l Leg, f func(*Leg)) Leg {
@@ -341,17 +342,25 @@ func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 		return l
 	}
 	uplink := moved(legA, func(l *Leg) { l.Uplink = true })
+	untagged := moved(legB, func(l *Leg) { l.ID, l.VLAN = "vmbr2", 0 })
 	for _, tt := range []struct {
 		name      string
 		from, to  Leg
 		recreated bool
+		vlans     []portVLAN // those of the bridge end afterwards, when the bridge filters VLANs
 	}{
-		{"to another bridge", legA, moved(legA, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" }), true},
-		{"to the bridge of an uplink", legA, moved(uplink, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" }), true},
-		{"to another VLAN of a bridge that filters VLANs", legB, moved(legB, func(l *Leg) { l.ID, l.VLAN = "vmbr2.30", 30 }), true},
-		{"to another prefix", legA, moved(legA, func(l *Leg) { l.Prefix = prefix("10.60.0.250/24") }), true},
-		{"to another address in its prefix", legA, moved(legA, func(l *Leg) { l.Prefix = prefix("10.50.0.251/24") }), false},
-		{"to its own network, with the mark unchanged", legA, legA, false},
+		{"to another bridge", legA, moved(legA, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" }), true, nil},
+		{"to the bridge of an uplink", legA, moved(uplink, func(l *Leg) { l.ID, l.Bridge = "vmbr3", "vmbr3" }), true, nil},
+		{"to another VLAN of a bridge that filters VLANs", legB, moved(legB, func(l *Leg) { l.ID, l.VLAN = "vmbr2.30", 30 }), true,
+			[]portVLAN{{vid: 30, pvid: true, untagged: true}}},
+		{"from a VLAN to the untagged network of a bridge that filters VLANs", legB, untagged, true,
+			[]portVLAN{{vid: 1, pvid: true, untagged: true}}},
+		{"from the untagged network to a VLAN of its bridge", untagged, legB, true,
+			[]portVLAN{{vid: 20, pvid: true, untagged: true}}},
+		{"to another prefix", legA, moved(legA, func(l *Leg) { l.Prefix = prefix("10.60.0.250/24") }), true, nil},
+		{"to another address in its prefix", legA, moved(legA, func(l *Leg) { l.Prefix = prefix("10.50.0.251/24") }), false, nil},
+		{"to its own network, with the mark unchanged", legA, legA, false, nil},
+		{"to its own untagged network", untagged, untagged, false, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t).node()
@@ -374,6 +383,10 @@ func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 			port := bridgePort(tt.to.Mark)
 			require.Less(t, index(t, c, "del host "+port), index(t, c, "veth "+port), "the pair is made anew")
 			require.Equal(t, tt.to.Bridge, h.sys.host.links[port].master)
+			if tt.vlans != nil {
+				require.Equal(t, tt.vlans, h.sys.host.links[port].vlans)
+			}
+			require.NoError(t, h.b.Verify(t.Context()))
 
 			h.reset()
 			h.sync(t, []Leg{tt.to}, nil, nil, nil)
@@ -393,6 +406,31 @@ func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 		require.Contains(t, h.sys.calls, "probe leg1 10.50.0.250 300ms")
 		require.Equal(t, "address in use by 52:54:00:12:34:56", states[0].Problem)
 		require.False(t, states[0].Up)
+	})
+
+	t.Run("a bridge whose default VLAN is not 1 is no move, at any Sync", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.sys.host.links["vmbr2"].defaultPVID = 99
+		h.up(t)
+		h.sync(t, []Leg{untagged}, nil, nil, nil)
+		require.Equal(t, []portVLAN{{vid: 99, pvid: true, untagged: true}}, h.sys.host.links["vethpco2"].vlans)
+		h.sys.ns.learned["leg2"] = []neighbour{stale}
+		h.reset()
+		h.sync(t, []Leg{untagged}, nil, nil, nil)
+		require.Empty(t, h.sys.changes())
+		require.Equal(t, []neighbour{stale}, h.sys.ns.learned["leg2"])
+		require.NoError(t, h.b.Verify(t.Context()))
+	})
+
+	t.Run("a bridge that filters VLANs and has no default VLAN leaves the port's VLANs alone", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.sys.host.links["vmbr2"].defaultPVID = 0
+		h.up(t)
+		h.sync(t, []Leg{untagged}, nil, nil, nil)
+		require.Empty(t, h.sys.host.links["vethpco2"].vlans)
+		h.reset()
+		h.sync(t, []Leg{untagged}, nil, nil, nil)
+		require.Empty(t, h.sys.changes())
 	})
 
 	t.Run("a bridge end that lost its bridge is put back, and the neighbours stay", func(t *testing.T) {
