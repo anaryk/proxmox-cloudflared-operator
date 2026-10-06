@@ -45,13 +45,14 @@ func probeAsConnector(ctx context.Context, exe, addr string) error {
 			exe = defaultPco
 		}
 	}
-	return runProbe(ctx, exe, addr, &syscall.Credential{Uid: uid, Gid: gid})
+	return runProbe(ctx, exe, addr, &syscall.Credential{Uid: uid, Gid: gid}, probeTimeout)
 }
 
 // runProbe runs pco egress probe of exe for addr, with cred when there is one,
-// in a directory and with an environment of nothing the caller has.
-func runProbe(ctx context.Context, exe, addr string, cred *syscall.Credential) error {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+// for no longer than limit, in a directory and with an environment of nothing
+// the caller has.
+func runProbe(ctx context.Context, exe, addr string, cred *syscall.Credential, limit time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	var stdout, stderr capped
 	stdout.max, stderr.max = maxVersionOutput, maxVersionOutput

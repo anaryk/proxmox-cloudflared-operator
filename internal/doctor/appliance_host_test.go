@@ -329,6 +329,9 @@ func TestTheVersionsAreThoseOfPcoCloudflaredAndDebian(t *testing.T) {
 
 func TestVersionsWithoutDebianVersionOrCloudflared(t *testing.T) {
 	h, _ := newHost(t)
+	// A shell script may start slowly on a busy machine; the timeout is not
+	// what this tests.
+	h.Host.Timeout = 30 * time.Second
 	h.Host.Binary = filepath.Join(t.TempDir(), "missing")
 
 	_, _, _, err := h.Versions(t.Context())
@@ -665,8 +668,10 @@ func TestTheProbeRunsPcoEgressProbeWithTheAddressAndNothingElse(t *testing.T) {
 [ -z "$HOME" ] || { echo "failed: HOME is $HOME"; exit 1; }
 echo connected`)
 
-	require.NoError(t, runProbe(t.Context(), exe, "10.0.0.1:80", nil))
-	require.ErrorContains(t, runProbe(t.Context(), exe, "10.0.0.2:80", nil), "wrong address 10.0.0.2:80")
+	// A shell script may start slowly on a busy machine; the limit is not what
+	// this tests.
+	require.NoError(t, runProbe(t.Context(), exe, "10.0.0.1:80", nil, 30*time.Second))
+	require.ErrorContains(t, runProbe(t.Context(), exe, "10.0.0.2:80", nil, 30*time.Second), "wrong address 10.0.0.2:80")
 }
 
 func TestAProbeThatDoesNotEnd(t *testing.T) {
@@ -675,7 +680,7 @@ func TestAProbeThatDoesNotEnd(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err := runProbe(ctx, exe, "10.0.0.1:80", nil)
+	err := runProbe(ctx, exe, "10.0.0.1:80", nil, probeTimeout)
 
 	require.Error(t, err)
 	require.Less(t, time.Since(start), 10*time.Second)

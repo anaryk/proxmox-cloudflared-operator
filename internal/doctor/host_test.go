@@ -146,6 +146,7 @@ func TestACloudflaredThatDoesNotRun(t *testing.T) {
 	})
 	t.Run("failing", func(t *testing.T) {
 		env, _, _ := hostEnv(t)
+		env.Timeout = 30 * time.Second // a shell script may start slowly on a busy machine; the timeout is not what this tests
 		env.Binary = fakeBinary(t, "exit 1")
 
 		_, err := env.CloudflaredVersion(t.Context())
