@@ -11,13 +11,13 @@ From `web/`, with the packages installed (`make ui-test` installs them):
 
 ```sh
 node_modules/.bin/playwright install chromium   # once
-node_modules/.bin/playwright test e2e/perf
+node_modules/.bin/playwright test --project perf
 ```
 
-Playwright builds the page (`vite.config.ts` here, into
-`test-results/perf-page/`) and serves it on port 4174. Each line of output
-gives one renderer's figures; the samples are attached to the test's results
-in `test-results/playwright/`. To look at the page, serve it with
+The test builds the page (`vite.config.ts` here, into
+`test-results/perf-page/`) and serves it on a free port (`serve.ts`). Each
+line of output gives one renderer's figures; the samples are attached to the
+test's results in `test-results/playwright/`. To look at the page, serve it with
 `node_modules/.bin/vite preview --config e2e/perf/vite.config.ts` and open
 `/?renderer=baseline` or `/?renderer=map`.
 

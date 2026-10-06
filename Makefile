@@ -18,7 +18,7 @@ comma := ,
 UI ?= 0
 TAGS := nomsgpack$(if $(filter 1,$(UI)),$(comma)webui)
 
-.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-words ui-types
+.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types
 
 build: $(if $(filter 1,$(UI)),ui-dist)
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -72,6 +72,16 @@ ui-test: web/node_modules
 
 ui-budget: ui
 	cd web && npm run budget
+
+# The browser suite (web/e2e): the real pco web with the interface of
+# internal/web/ui/dist, the fake daemon and the fake Proxmox VE of hack/
+# behind it, in the browsers Playwright installs (node_modules/.bin/playwright
+# install, once). E2E passes its flags on, such as E2E='--project=chromium-*'.
+ui-e2e: web/node_modules ui-dist
+	go build -tags nomsgpack,webui -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
+	go build -tags nomsgpack -trimpath -o bin/fakepco ./hack/fakepco
+	go build -tags nomsgpack -trimpath -o bin/fakepve ./hack/fakepve
+	cd web && node_modules/.bin/playwright test $(E2E)
 
 # The word tables of internal/present for the interface, generated from the Go
 # code and committed. A failed run leaves the committed file as it was.

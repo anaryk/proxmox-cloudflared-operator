@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs'
 
-import { expect, type Page, test, type TestInfo } from '@playwright/test'
+import type { Page, TestInfo } from '@playwright/test'
 
 import type { FrameRun } from './harness'
+import { expect, test } from './serve'
 
 // The flow map against the baseline, both measured in this run, within the
 // budgets README.md lists. The baseline always runs; the map once

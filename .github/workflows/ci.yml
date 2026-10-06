@@ -122,6 +122,55 @@ jobs:
       # The tests of internal/web/ui once more, with the interface embedded.
       - run: go test -tags nomsgpack,webui ./internal/web/ui/
 
+  # The browser suite: the real pco web with the interface the ui job built,
+  # the fake daemon and the fake Proxmox VE behind it. Chromium decides;
+  # Firefox and WebKit only warn until they have been green for two weeks.
+  ui-e2e:
+    needs: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+          package-manager-cache: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ui-dist
+          path: internal/web/ui/dist
+      - run: make web/node_modules
+      - id: playwright
+        run: echo "version=$(node -p "require('./web/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      # The browsers of that version are kept between runs; the libraries
+      # they need come from the distribution every time.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - run: node_modules/.bin/playwright install --with-deps chromium firefox webkit
+        working-directory: web
+      - run: make ui-e2e E2E='--project=chromium-* --output=test-results/chromium'
+      - run: make ui-e2e E2E='--project=firefox-* --output=test-results/firefox'
+        continue-on-error: true
+      - run: make ui-e2e E2E='--project=webkit-* --output=test-results/webkit'
+        continue-on-error: true
+      # The traces and logs of the tests that failed.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: ui-e2e
+          path: |
+            web/test-results/chromium
+            web/test-results/firefox
+            web/test-results/webkit
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The packages, built in two checkouts of the same commit and compared. A
   # release refuses templates whose package is not the one it builds again,
   # byte for byte, and this finds what breaks that before a release does.
