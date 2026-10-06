@@ -993,7 +993,7 @@ func (f *fakeNode) manifestCmd(ct *fakeCT, args []string) (string, error) {
 	if err := json.Unmarshal(ct.files[manifestFile].data, &m); err != nil || m.Appliance == nil {
 		return "", errors.New("not the manifest of an appliance")
 	}
-	g := setup.NetworkGrant{Zone: flag(args, "--zone"), VNet: flag(args, "--vnet")}
+	g := setup.NetworkGrant{Zone: flag(args, "--zone"), VNet: flag(args, "--vnet"), Pool: flag(args, "--pool")}
 	g.VLAN, _ = strconv.Atoi(flag(args, "--vlan"))
 	for i, a := range args {
 		if a == "--created-role" {

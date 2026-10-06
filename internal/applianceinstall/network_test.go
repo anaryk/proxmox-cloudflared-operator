@@ -150,6 +150,118 @@ func TestUninstallTakesBackTheNetworkGrants(t *testing.T) {
 	e.takenBack()
 }
 
+// A pool grant is one pair of lines, for the user and the token, on the pool
+// and nowhere else, with the role of the cards alone.
+func TestGrantPoolGrantsTheCardsOfThePoolsMembers(t *testing.T) {
+	e := installed(t)
+	e.node.pools["web"] = &fakePool{Members: []int{200}}
+
+	g, err := GrantPool(t.Context(), e.node, 100, "web")
+
+	require.NoError(t, err)
+	require.Equal(t, setup.NetworkGrant{Pool: "web", CreatedRoles: []string{"PCOManaged"}}, g)
+	require.Equal(t, []string{
+		"/pool/web token pco@pve!vm100 PCOManaged",
+		"/pool/web user pco@pve PCOManaged",
+	}, e.node.pcoLines())
+	require.Equal(t, []string{
+		"pveum pool list --output-format json",
+		"pveum role list --output-format json",
+		"pveum role add PCOManaged --privs VM.Config.Network",
+		"pveum acl modify /pool/web --users pco@pve --tokens pco@pve!vm100 --roles PCOManaged",
+		"pvesh get /access/permissions --userid pco@pve!vm100 --path /pool/web --output-format json",
+	}, e.node.ran)
+	require.Nil(t, e.node.roles["PCOSDN"])
+
+	require.NoError(t, RevokePool(t.Context(), e.node, 100, "web"))
+
+	require.Empty(t, e.node.pcoLines())
+	require.Nil(t, e.node.roles["PCOManaged"])
+}
+
+func TestGrantPoolRefuses(t *testing.T) {
+	e := installed(t)
+	for _, tt := range []struct{ pool, want string }{
+		{"pco", "pool pco holds the appliances: grant the pool of the guests"},
+		{"", `pool "": want the name of a pool`},
+		{"a/b", `pool "a/b": want the name of a pool`},
+		{"web", "pool web does not exist"},
+	} {
+		_, err := GrantPool(t.Context(), e.node, 100, tt.pool)
+		require.EqualError(t, err, tt.want)
+	}
+	require.Empty(t, e.node.pcoLines())
+	require.False(t, slices.ContainsFunc(e.node.acl, func(a fakeACL) bool { return a.Path == "/" && a.Role == "PCOManaged" }),
+		"the cards are never granted on /")
+}
+
+// The role of the cards stays while a network grant names it, and the line
+// of pco@pve on the pool while another appliance's token has it as well.
+func TestRevokePoolKeepsWhatOthersNeed(t *testing.T) {
+	e := installed(t)
+	e.node.pools["web"] = &fakePool{}
+	_, err := GrantNetwork(t.Context(), e.node, 100, "pco", "pconet", 0)
+	require.NoError(t, err)
+	_, err = GrantPool(t.Context(), e.node, 100, "web")
+	require.NoError(t, err)
+	e.node.addToken("pco@pve", "vm200", "pco appliance vm200", true)
+	e.node.grant("/pool/web", "token", "pco@pve!vm200", "PCOManaged")
+
+	require.NoError(t, RevokePool(t.Context(), e.node, 100, "web"))
+
+	require.Equal(t, []string{
+		"/pool/web token pco@pve!vm200 PCOManaged",
+		"/pool/web user pco@pve PCOManaged",
+		"/sdn/zones/pco/pconet token pco@pve!vm100 PCOSDN",
+		"/sdn/zones/pco/pconet user pco@pve PCOSDN",
+		"/vms/100 token pco@pve!vm100 PCOManaged",
+		"/vms/100 user pco@pve PCOManaged",
+	}, e.node.pcoLines())
+	require.NotNil(t, e.node.roles["PCOManaged"])
+}
+
+// The uninstall finds a pool grant by the line of the appliance's token, as
+// it finds a network grant, and takes back the line of pco@pve with it.
+func TestUninstallTakesBackThePoolGrant(t *testing.T) {
+	e := installed(t)
+	e.node.pools["web"] = &fakePool{Members: []int{200}}
+	_, err := GrantPool(t.Context(), e.node, 100, "web")
+	require.NoError(t, err)
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.Empty(t, e.node.pcoLines())
+	require.Nil(t, e.node.roles["PCOManaged"])
+	require.Contains(t, e.ask.text(), "the grant of role PCOManaged on /pool/web to pco@pve")
+	require.NotNil(t, e.node.pools["web"], "the pool is the admin's")
+}
+
+// A pool grant has the shape of a network grant in the manifest, with the
+// pool in place of the network.
+func TestAPoolGrantInTheManifest(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		g    setup.NetworkGrant
+		want string
+	}{
+		{"a pool", setup.NetworkGrant{Pool: "web", CreatedRoles: []string{"PCOManaged"}}, ""},
+		{"a pool and a network", setup.NetworkGrant{Pool: "web", Zone: "pco", VNet: "pconet"}, "pool web: a pool grant names no network"},
+		{"the role of the vnets", setup.NetworkGrant{Pool: "web", CreatedRoles: []string{"PCOSDN"}}, `role "PCOSDN": a pool grant makes PCOManaged only`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.g.Check()
+			if tt.want == "" {
+				require.NoError(t, err)
+				require.Equal(t, "/pool/web", tt.g.Path())
+				return
+			}
+			require.EqualError(t, err, tt.want)
+		})
+	}
+	require.False(t, setup.NetworkGrant{Pool: "web"}.Same(setup.NetworkGrant{Pool: "db"}))
+	require.True(t, setup.NetworkGrant{Pool: "web"}.Same(setup.NetworkGrant{Pool: "web", CreatedRoles: []string{"PCOManaged"}}))
+}
+
 // The grant of pco@pve on a network another token of it has as well stays
 // for that token, which holds only what its user holds too.
 func TestAGrantAnotherTokenNeedsStays(t *testing.T) {

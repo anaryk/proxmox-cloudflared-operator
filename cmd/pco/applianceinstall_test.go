@@ -103,6 +103,8 @@ func TestApplianceCommandsOfTheInstallerRefuseOnTheHost(t *testing.T) {
 	for _, args := range [][]string{
 		{"appliance", "purge"},
 		{"appliance", "manifest", "add", "--zone", "localnetwork", "--vnet", "vmbr1"},
+		{"appliance", "manifest", "add", "--pool", "web"},
+		{"appliance", "manifest", "sdn", "--created-zone"},
 	} {
 		t.Run(strings.Join(args[1:], " "), func(t *testing.T) {
 			r := newRunner(t, filepath.Join(t.TempDir(), "pco", "pco.sock"))

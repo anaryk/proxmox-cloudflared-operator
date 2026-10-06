@@ -78,46 +78,9 @@ func RevokeNetwork(ctx context.Context, r setup.Runner, vmid int, zone, vnet str
 	if err := g.Check(); err != nil {
 		return err
 	}
-	acl, err := aclLines(ctx, r)
-	if err != nil {
-		return err
-	}
-	id, vm := tokenID(vmid), "/vms/"+strconv.Itoa(vmid)
-	var errs []error
-	del := func(l aclLine) {
-		if !slices.Contains(acl, l) {
-			return
-		}
-		if _, err := r.Run(ctx, "pveum", "acl", "delete", l.Path, "--"+l.Type+"s", l.UGID, "--roles", l.Role); err != nil {
-			errs = append(errs, fmt.Errorf("revoking role %s on %s from %s: %w", l.Role, l.Path, l.UGID, err))
-			return
-		}
-		acl = slices.DeleteFunc(acl, func(o aclLine) bool { return o == l })
-	}
-	shared := func(path, role string) bool {
-		return slices.ContainsFunc(acl, func(l aclLine) bool {
-			return l.Path == path && l.Role == role && l.Type == "token" && l.UGID != id && strings.HasPrefix(l.UGID, setup.UserID+"!")
-		})
-	}
-	for _, line := range [][2]string{{vm, setup.RoleManaged}, {g.Path(), setup.RoleSDN}} {
-		del(aclLine{Path: line[0], Type: "token", UGID: id, Role: line[1]})
-		if !shared(line[0], line[1]) {
-			del(aclLine{Path: line[0], Type: "user", UGID: setup.UserID, Role: line[1]})
-		}
-	}
-	all, err := roles(ctx, r)
-	if err != nil {
-		return errors.Join(append(errs, err)...)
-	}
-	for _, rid := range []string{setup.RoleManaged, setup.RoleSDN} {
-		role, found := findRole(all, rid)
-		if found && isGrantRole(rid, role.Privs) && !slices.ContainsFunc(acl, func(l aclLine) bool { return l.Role == rid }) {
-			if _, err := r.Run(ctx, "pveum", "role", "delete", rid); err != nil {
-				errs = append(errs, fmt.Errorf("removing role %s: %w", rid, err))
-			}
-		}
-	}
-	return errors.Join(errs...)
+	vm := "/vms/" + strconv.Itoa(vmid)
+	return revokeLines(ctx, r, vmid, [][2]string{{vm, setup.RoleManaged}, {g.Path(), setup.RoleSDN}},
+		[]string{setup.RoleManaged, setup.RoleSDN})
 }
 
 // NetworkOptions say what pco appliance grant-network and revoke-network
@@ -270,6 +233,9 @@ func (r *run) network(ctx context.Context, o NetworkOptions) (setup.NetworkGrant
 // run is only a warning.
 func (r *run) recordGrant(ctx context.Context, verb string, g setup.NetworkGrant) {
 	args := []string{"appliance", "manifest", verb, "--zone", g.Zone, "--vnet", g.VNet}
+	if g.Pool != "" {
+		args = []string{"appliance", "manifest", verb, "--pool", g.Pool}
+	}
 	if g.VLAN != 0 {
 		args = append(args, "--vlan", strconv.Itoa(g.VLAN))
 	}
@@ -283,8 +249,122 @@ func (r *run) recordGrant(ctx context.Context, verb string, g setup.NetworkGrant
 
 // rollbackGrant takes back a grant-network run that was cut short.
 func (r *run) rollbackGrant(ctx context.Context) error {
-	if g := r.j.Grant; g != nil {
+	switch g := r.j.Grant; {
+	case g == nil:
+	case g.Pool != "":
+		return RevokePool(ctx, r.r, r.j.VMID, g.Pool)
+	default:
 		return RevokeNetwork(ctx, r.r, r.j.VMID, g.Zone, g.VNet, g.VLAN)
 	}
 	return nil
+}
+
+// GrantPool grants pco@pve and the token of the appliance vmid role
+// PCOManaged (VM.Config.Network) on /pool/<pool>, and nowhere else: the token
+// may then change the network cards and the firewall of every guest in that
+// pool, so that the managed network attaches its members without a grant per
+// guest. The role is made when missing, and the token's privilege is asked of
+// Proxmox afterwards. It returns the grant with the role it made; on a
+// failure it takes back what it did.
+func GrantPool(ctx context.Context, r setup.Runner, vmid int, pool string) (setup.NetworkGrant, error) {
+	g := setup.NetworkGrant{Pool: pool}
+	if pool == "" {
+		return g, fmt.Errorf("pool %q: want the name of a pool", pool)
+	}
+	if err := g.Check(); err != nil {
+		return g, err
+	}
+	ps, err := pools(ctx, r)
+	if err != nil {
+		return g, err
+	}
+	if !slices.ContainsFunc(ps, func(p poolEntry) bool { return p.ID == pool }) {
+		return g, fmt.Errorf("pool %s does not exist", pool)
+	}
+	all, err := roles(ctx, r)
+	if err != nil {
+		return g, err
+	}
+	switch role, found := findRole(all, setup.RoleManaged); {
+	case found && !isGrantRole(setup.RoleManaged, role.Privs):
+		return g, fmt.Errorf("role %s grants %s, not only %s: pco does not use it", setup.RoleManaged,
+			strings.Join(role.Privs, ", "), grantRolePrivs[setup.RoleManaged])
+	case !found:
+		if _, err := r.Run(ctx, "pveum", "role", "add", setup.RoleManaged, "--privs", grantRolePrivs[setup.RoleManaged]); err != nil {
+			return g, fmt.Errorf("creating role %s: %w", setup.RoleManaged, err)
+		}
+		g.CreatedRoles = []string{setup.RoleManaged}
+	}
+	id := tokenID(vmid)
+	takeBack := func() { _ = RevokePool(context.WithoutCancel(ctx), r, vmid, pool) }
+	if _, err := r.Run(ctx, "pveum", "acl", "modify", g.Path(), "--users", setup.UserID, "--tokens", id, "--roles", setup.RoleManaged); err != nil {
+		takeBack()
+		return g, fmt.Errorf("granting role %s on %s: %w", setup.RoleManaged, g.Path(), err)
+	}
+	held, err := permissions(ctx, r, id, g.Path())
+	if err == nil && !slices.Contains(held, "VM.Config.Network") {
+		err = fmt.Errorf("%s does not hold VM.Config.Network on %s after the grant", id, g.Path())
+	}
+	if err != nil {
+		takeBack()
+		return g, err
+	}
+	return g, nil
+}
+
+// RevokePool takes back the grant of a pool: the line of the token, that of
+// pco@pve unless another token of it holds the same grant, and role
+// PCOManaged once no line names it.
+func RevokePool(ctx context.Context, r setup.Runner, vmid int, pool string) error {
+	g := setup.NetworkGrant{Pool: pool}
+	if err := g.Check(); err != nil {
+		return err
+	}
+	return revokeLines(ctx, r, vmid, [][2]string{{g.Path(), setup.RoleManaged}}, []string{setup.RoleManaged})
+}
+
+// revokeLines deletes the lines of the appliance's token and of pco@pve that
+// grant a role on a path, each {path, role}, but those of pco@pve another
+// token of it has as well, and then the roles no line names any more.
+func revokeLines(ctx context.Context, r setup.Runner, vmid int, lines [][2]string, roleIDs []string) error {
+	acl, err := aclLines(ctx, r)
+	if err != nil {
+		return err
+	}
+	id := tokenID(vmid)
+	var errs []error
+	del := func(l aclLine) {
+		if !slices.Contains(acl, l) {
+			return
+		}
+		if _, err := r.Run(ctx, "pveum", "acl", "delete", l.Path, "--"+l.Type+"s", l.UGID, "--roles", l.Role); err != nil {
+			errs = append(errs, fmt.Errorf("revoking role %s on %s from %s: %w", l.Role, l.Path, l.UGID, err))
+			return
+		}
+		acl = slices.DeleteFunc(acl, func(o aclLine) bool { return o == l })
+	}
+	shared := func(path, role string) bool {
+		return slices.ContainsFunc(acl, func(l aclLine) bool {
+			return l.Path == path && l.Role == role && l.Type == "token" && l.UGID != id && strings.HasPrefix(l.UGID, setup.UserID+"!")
+		})
+	}
+	for _, line := range lines {
+		del(aclLine{Path: line[0], Type: "token", UGID: id, Role: line[1]})
+		if !shared(line[0], line[1]) {
+			del(aclLine{Path: line[0], Type: "user", UGID: setup.UserID, Role: line[1]})
+		}
+	}
+	all, err := roles(ctx, r)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	for _, rid := range roleIDs {
+		role, found := findRole(all, rid)
+		if found && isGrantRole(rid, role.Privs) && !slices.ContainsFunc(acl, func(l aclLine) bool { return l.Role == rid }) {
+			if _, err := r.Run(ctx, "pveum", "role", "delete", rid); err != nil {
+				errs = append(errs, fmt.Errorf("removing role %s: %w", rid, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }

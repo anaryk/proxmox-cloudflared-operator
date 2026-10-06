@@ -465,7 +465,8 @@ func (a *app) appliancePurgeCmd() *cobra.Command {
 }
 
 // applianceManifestCmd changes the manifest of the appliance for pco
-// appliance grant-network and revoke-network, which run on the node.
+// appliance grant-network, revoke-network and managed enable, which run on
+// the node.
 func (a *app) applianceManifestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "manifest",
@@ -473,6 +474,7 @@ func (a *app) applianceManifestCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 	}
+	cmd.AddCommand(a.applianceManifestSDNCmd())
 	for _, verb := range []string{"add", "remove"} {
 		var (
 			g     setup.NetworkGrant
@@ -503,10 +505,47 @@ func (a *app) applianceManifestCmd() *cobra.Command {
 		sub.Flags().StringVar(&g.Zone, "zone", "", "the SDN zone, localnetwork for a Linux bridge")
 		sub.Flags().StringVar(&g.VNet, "vnet", "", "the bridge or vnet")
 		sub.Flags().IntVar(&g.VLAN, "vlan", 0, "the VLAN, if any")
+		sub.Flags().StringVar(&g.Pool, "pool", "", "the pool of a pool grant, in place of a network")
 		sub.Flags().StringArrayVar(&roles, "created-role", nil, "a role the grant made")
-		_ = sub.MarkFlagRequired("zone")
-		_ = sub.MarkFlagRequired("vnet")
+		sub.MarkFlagsOneRequired("vnet", "pool")
+		sub.MarkFlagsMutuallyExclusive("vnet", "pool")
 		cmd.AddCommand(sub)
 	}
+	return cmd
+}
+
+// applianceManifestSDNCmd notes in the manifest of the appliance whether pco
+// made the SDN zone and the vnet of the managed network, for pco appliance
+// managed enable, which notes each before it makes it.
+func (a *app) applianceManifestSDNCmd() *cobra.Command {
+	var zone, vnet bool
+	cmd := &cobra.Command{
+		Use:   "sdn",
+		Short: "note the SDN zone and vnet of the managed network",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			if err := a.insideAppliance(cmd, "pco setup --managed notes them itself"); err != nil {
+				return err
+			}
+			paths, err := a.applianceVolume()
+			if err != nil {
+				return err
+			}
+			var z, v *bool
+			if cmd.Flags().Changed("created-zone") {
+				z = &zone
+			}
+			if cmd.Flags().Changed("created-vnet") {
+				v = &vnet
+			}
+			return setup.NoteManagedObjects(paths.Local, z, v)
+		},
+	}
+	cmd.Flags().BoolVar(&zone, "created-zone", false, "pco made the SDN zone pco")
+	cmd.Flags().BoolVar(&vnet, "created-vnet", false, "pco made the SDN vnet pconet")
+	cmd.MarkFlagsOneRequired("created-zone", "created-vnet")
 	return cmd
 }

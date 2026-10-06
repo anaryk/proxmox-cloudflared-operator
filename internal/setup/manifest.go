@@ -94,19 +94,36 @@ const (
 // /sdn/zones/<zone>/<vnet>[/<vlan>] and VM.Config.Network on the appliance,
 // for pco@pve and the token of the appliance. A plain Linux bridge is the vnet
 // of zone localnetwork.
+//
+// A grant with a Pool is a pool grant instead: VM.Config.Network on
+// /pool/<pool>, which lets the token change the network cards and the
+// firewall of every guest in that pool, so that the managed network attaches
+// them without a grant per guest. It names no network.
 type NetworkGrant struct {
-	Zone string `json:"zone"`
-	VNet string `json:"vnet"`
+	Zone string `json:"zone,omitempty"`
+	VNet string `json:"vnet,omitempty"`
 	VLAN int    `json:"vlan,omitempty"`
+	Pool string `json:"pool,omitempty"`
 	// CreatedRoles are the roles the grant made, of RoleManaged and RoleSDN.
 	CreatedRoles []string `json:"createdRoles,omitempty"`
 }
 
-var networkName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{0,15}$`)
+var (
+	networkName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{0,15}$`)
+	poolName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+)
 
-// Check refuses a grant of another shape than a network grant has: never a
-// whole zone, never a role of its own.
+// AppliancePool is the pool the installer puts the appliances in, which a
+// pool grant never names: it would let one appliance change the cards of
+// another.
+const AppliancePool = "pco"
+
+// Check refuses a grant of another shape than a network grant or a pool
+// grant has: never a whole zone, never a role of its own.
 func (g NetworkGrant) Check() error {
+	if g.Pool != "" {
+		return g.checkPool()
+	}
 	switch {
 	case !networkName.MatchString(g.Zone):
 		return fmt.Errorf("zone %q: want the name of an SDN zone", g.Zone)
@@ -123,8 +140,28 @@ func (g NetworkGrant) Check() error {
 	return nil
 }
 
-// Path is the ACL path of the network.
+func (g NetworkGrant) checkPool() error {
+	switch {
+	case !poolName.MatchString(g.Pool):
+		return fmt.Errorf("pool %q: want the name of a pool", g.Pool)
+	case g.Zone != "" || g.VNet != "" || g.VLAN != 0:
+		return fmt.Errorf("pool %s: a pool grant names no network", g.Pool)
+	case g.Pool == AppliancePool:
+		return fmt.Errorf("pool %s holds the appliances: grant the pool of the guests", g.Pool)
+	}
+	for _, role := range g.CreatedRoles {
+		if role != RoleManaged {
+			return fmt.Errorf("role %q: a pool grant makes %s only", role, RoleManaged)
+		}
+	}
+	return nil
+}
+
+// Path is the ACL path of the network, or of the pool.
 func (g NetworkGrant) Path() string {
+	if g.Pool != "" {
+		return "/pool/" + g.Pool
+	}
 	p := "/sdn/zones/" + g.Zone + "/" + g.VNet
 	if g.VLAN != 0 {
 		p += "/" + strconv.Itoa(g.VLAN)
@@ -132,9 +169,9 @@ func (g NetworkGrant) Path() string {
 	return p
 }
 
-// Same reports whether two grants are of one network.
+// Same reports whether two grants are of one network, or of one pool.
 func (g NetworkGrant) Same(o NetworkGrant) bool {
-	return g.Zone == o.Zone && g.VNet == o.VNet && g.VLAN == o.VLAN
+	return g.Zone == o.Zone && g.VNet == o.VNet && g.VLAN == o.VLAN && g.Pool == o.Pool
 }
 
 // AddNetworkGrant adds a grant to the manifest of the appliance in the local
@@ -167,7 +204,27 @@ func RemoveNetworkGrant(local string, g NetworkGrant) error {
 	})
 }
 
+// NoteManagedObjects notes in the manifest of the appliance in the local root
+// of its store whether pco made the SDN zone and the vnet of the managed
+// network, as pco appliance managed enable on the node says before it makes
+// each; nil leaves a note as it is.
+func NoteManagedObjects(local string, zone, vnet *bool) error {
+	return changeManifestOfAppliance(local, func(m *Manifest) error {
+		if zone != nil {
+			m.CreatedZone = *zone
+		}
+		if vnet != nil {
+			m.CreatedVnet = *vnet
+		}
+		return nil
+	})
+}
+
 func changeApplianceManifest(local string, change func(*ApplianceManifest) error) error {
+	return changeManifestOfAppliance(local, func(m *Manifest) error { return change(m.Appliance) })
+}
+
+func changeManifestOfAppliance(local string, change func(*Manifest) error) error {
 	path := filepath.Join(local, manifestName)
 	m, found, err := readManifest(path)
 	switch {
@@ -176,7 +233,7 @@ func changeApplianceManifest(local string, change func(*ApplianceManifest) error
 	case !found || m.Appliance == nil:
 		return fmt.Errorf("%s is not the manifest of an appliance", path)
 	}
-	if err := change(m.Appliance); err != nil {
+	if err := change(&m); err != nil {
 		return err
 	}
 	if err := writeManifest(path, m); err != nil {

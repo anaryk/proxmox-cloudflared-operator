@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -58,5 +59,55 @@ func TestNetworkGrantsInTheManifestOfAnAppliance(t *testing.T) {
 	m, _, err = readManifest(path)
 	require.NoError(t, err)
 	require.Equal(t, []NetworkGrant{{Zone: "localnetwork", VNet: "vmbr1", VLAN: 20}}, m.Appliance.Grants)
+	require.Equal(t, 100, m.Appliance.VMID, "the rest is kept")
+}
+
+// A pool grant sits beside the network grants, and goes by its pool.
+func TestAPoolGrantInTheManifestOfAnAppliance(t *testing.T) {
+	local := t.TempDir()
+	path := filepath.Join(local, manifestName)
+	require.NoError(t, writeManifest(path, Manifest{Node: "pve1", Appliance: &ApplianceManifest{VMID: 100, Node: "pve1", Pool: "pco"}}))
+	network := NetworkGrant{Zone: "pco", VNet: "pconet", CreatedRoles: []string{RoleManaged, RoleSDN}}
+	pool := NetworkGrant{Pool: "web"}
+
+	require.NoError(t, AddNetworkGrant(local, network))
+	require.NoError(t, AddNetworkGrant(local, pool))
+	require.ErrorContains(t, AddNetworkGrant(local, NetworkGrant{Pool: AppliancePool}), "pool pco holds the appliances")
+
+	m, _, err := readManifest(path)
+	require.NoError(t, err)
+	require.Equal(t, []NetworkGrant{network, pool}, m.Appliance.Grants)
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Contains(t, string(b), `{
+        "pool": "web"
+      }`, "a pool grant names no network")
+
+	require.NoError(t, RemoveNetworkGrant(local, pool))
+	m, _, err = readManifest(path)
+	require.NoError(t, err)
+	require.Equal(t, []NetworkGrant{network}, m.Appliance.Grants)
+}
+
+func TestTheManagedObjectsInTheManifestOfAnAppliance(t *testing.T) {
+	local := t.TempDir()
+	path := filepath.Join(local, manifestName)
+	yes, no := true, false
+
+	require.ErrorContains(t, NoteManagedObjects(local, &yes, nil), "is not the manifest of an appliance")
+	require.NoError(t, writeManifest(path, Manifest{Node: "pve1", Appliance: &ApplianceManifest{VMID: 100, Node: "pve1", Pool: "pco"}}))
+
+	require.NoError(t, NoteManagedObjects(local, &yes, nil))
+	require.NoError(t, NoteManagedObjects(local, nil, &yes))
+	m, _, err := readManifest(path)
+	require.NoError(t, err)
+	require.True(t, m.CreatedZone)
+	require.True(t, m.CreatedVnet)
+
+	require.NoError(t, NoteManagedObjects(local, nil, &no))
+	m, _, err = readManifest(path)
+	require.NoError(t, err)
+	require.True(t, m.CreatedZone)
+	require.False(t, m.CreatedVnet)
 	require.Equal(t, 100, m.Appliance.VMID, "the rest is kept")
 }

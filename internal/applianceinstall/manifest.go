@@ -99,7 +99,7 @@ func checkManifest(raw []byte, vmid int, otherVMID bool) (m *setup.Manifest, nam
 		return nil, 0, []string{"it is not a JSON object"}
 	}
 	known := []string{"node", "installedAt", "createdRole", "createdUser", "createdToken", "grantedACL", "registeredTags", "appliance",
-		"installedCloudflared", "addedAptSource", "addedKeyring", "webEnabled", "webEnv", "webCert", "webTLS"}
+		"installedCloudflared", "addedAptSource", "addedKeyring", "webEnabled", "webEnv", "webCert", "webTLS", "createdZone", "createdVnet"}
 	for _, k := range sortedKeys(fields) {
 		if !slices.Contains(known, k) {
 			problems = append(problems, fmt.Sprintf("it holds %q, which no manifest has", k))
@@ -227,10 +227,10 @@ func (r *run) manifestFromMarks(ctx context.Context, vmid int) (setup.Manifest, 
 			r.ask.Warn("NoAccess for %s on %s carries no mark of the installer: the manifest rebuilt from the marks leaves it out, "+
 				"and uninstall leaves it", l.UGID, l.Path)
 		}
-		if l.Type != "token" || l.UGID != tokenID(vmid) || l.Role != setup.RoleSDN {
+		if l.Type != "token" || l.UGID != tokenID(vmid) {
 			continue
 		}
-		if g, ok := grantOfPath(l.Path); ok {
+		if g, ok := grantOfLine(l); ok {
 			m.Appliance.Grants = append(m.Appliance.Grants, g)
 		}
 	}
@@ -249,6 +249,19 @@ func (r *run) manifestFromMarks(ctx context.Context, vmid int) (setup.Manifest, 
 		}
 	}
 	return m, nil
+}
+
+// grantOfLine reads a grant from a line of the access control list: role
+// PCOSDN on a network, or role PCOManaged on a pool.
+func grantOfLine(l aclLine) (setup.NetworkGrant, bool) {
+	switch pool, ok := strings.CutPrefix(l.Path, "/pool/"); {
+	case l.Role == setup.RoleSDN:
+		return grantOfPath(l.Path)
+	case l.Role == setup.RoleManaged && ok:
+		g := setup.NetworkGrant{Pool: pool}
+		return g, pool != "" && g.Check() == nil
+	}
+	return setup.NetworkGrant{}, false
 }
 
 // grantOfPath reads a network grant from its ACL path.

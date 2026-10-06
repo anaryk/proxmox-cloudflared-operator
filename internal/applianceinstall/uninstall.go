@@ -381,26 +381,39 @@ func (p *plan) planNoAccess(vmid int, s survey, appliances []int) {
 	}
 }
 
-// grantLines are pco@pve's lines on the networks granted to the appliance,
-// as its manifest or the lines of its token name them; one another token of
-// pco@pve has the same grant on stays, as that token needs it.
+// grantLines are pco@pve's lines on the networks and the pools granted to
+// the appliance, as its manifest or the lines of its token name them; one
+// another token of pco@pve has the same grant on stays, as that token needs
+// it.
 func (r *run) grantLines(vmid int, s survey, others []string) []aclLine {
-	var paths []string
+	var grants []setup.NetworkGrant
+	add := func(g setup.NetworkGrant) {
+		if !slices.ContainsFunc(grants, g.Same) {
+			grants = append(grants, g)
+		}
+	}
 	if s.manifest != nil && s.manifest.Appliance != nil {
 		for _, g := range s.manifest.Appliance.Grants {
-			paths = append(paths, g.Path())
+			add(g)
 		}
 	}
 	for _, l := range s.acl {
-		if l.Type == "token" && l.UGID == tokenID(vmid) && l.Role == setup.RoleSDN && !slices.Contains(paths, l.Path) {
-			paths = append(paths, l.Path)
+		if l.Type != "token" || l.UGID != tokenID(vmid) {
+			continue
+		}
+		if g, ok := grantOfLine(l); ok {
+			add(g)
 		}
 	}
 	var out []aclLine
-	for _, path := range paths {
-		user := aclLine{Path: path, Type: "user", UGID: setup.UserID, Role: setup.RoleSDN}
+	for _, g := range grants {
+		path, role := g.Path(), setup.RoleSDN
+		if g.Pool != "" {
+			role = setup.RoleManaged
+		}
+		user := aclLine{Path: path, Type: "user", UGID: setup.UserID, Role: role}
 		shared := slices.ContainsFunc(s.acl, func(l aclLine) bool {
-			return l.Path == path && l.Role == setup.RoleSDN && l.Type == "token" && slices.Contains(others, l.UGID)
+			return l.Path == path && l.Role == role && l.Type == "token" && slices.Contains(others, l.UGID)
 		})
 		if slices.Contains(s.acl, user) && !shared {
 			out = append(out, user)
