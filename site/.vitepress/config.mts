@@ -4,6 +4,7 @@ import type { Plugin } from 'vite'
 import { defineConfig, type DefaultTheme } from 'vitepress'
 
 import { markdown } from './markdown/options.ts'
+import { escapeHtml, titleOf } from './markdown/title.mjs'
 
 const repository = 'https://github.com/anaryk/proxmox-cloudflared-operator'
 const docs = fileURLToPath(new URL('../../docs/', import.meta.url))
@@ -41,13 +42,9 @@ const sections: { text: string; entries: Entry[] }[] = [
 ]
 
 function title(page: string): string {
-  let fenced = false
-  for (const line of readFileSync(docs + page, 'utf8').split('\n')) {
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced
-    const heading = !fenced && /^# +(.+?)\s*#*\s*$/.exec(line)
-    if (heading) return heading[1].replace(/`/g, '')
-  }
-  throw new Error(`docs/${page} has no title: its first line should be "# " and the title`)
+  const name = titleOf(readFileSync(docs + page, 'utf8'))
+  if (name === undefined) throw new Error(`docs/${page} has no title: its first line should be "# " and the title`)
+  return name
 }
 
 function link(page: string): string {
@@ -63,8 +60,9 @@ function pagesOf(dir: string): string[] {
 
 function byTitle(pages: string[]): DefaultTheme.SidebarItem[] {
   return pages
-    .map((page) => ({ text: title(page), link: link(page) }))
-    .sort((a, b) => a.text.localeCompare(b.text, 'en'))
+    .map((page) => ({ page, name: title(page) }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'en'))
+    .map(({ page, name }) => ({ text: escapeHtml(name), link: link(page) }))
 }
 
 function items(entries: Entry[], listed: Set<string>): DefaultTheme.SidebarItem[] {
@@ -77,7 +75,7 @@ function items(entries: Entry[], listed: Set<string>): DefaultTheme.SidebarItem[
     if (!entry.endsWith('/')) {
       if (existsSync(docs + entry)) {
         listed.add(entry)
-        out.push({ text: title(entry), link: link(entry) })
+        out.push({ text: escapeHtml(title(entry)), link: link(entry) })
       }
       continue
     }
@@ -89,7 +87,7 @@ function items(entries: Entry[], listed: Set<string>): DefaultTheme.SidebarItem[
       continue
     }
     out.push({
-      text: title(index),
+      text: escapeHtml(title(index)),
       link: link(index),
       collapsed: true,
       items: byTitle(pages.filter((page) => page !== index)),
