@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react'
+import { useState } from 'react'
 
 import { useApp } from '../api/store'
 import { Button } from '../components/Button'
@@ -7,23 +7,12 @@ import { StateBadge } from '../components/StateBadge'
 import { Untrusted } from '../components/Untrusted'
 import { compareRouteStates } from '../text/words'
 import { type EventFilter, EventsTable } from './EventsTable'
+import { Head } from './Head'
 import { Link } from './Link'
 import { NoRoutes } from './NoRoutes'
 import { Problems } from './Problems'
 import type { View } from './router'
 import { useLocation } from './router'
-
-function Head({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
-  return (
-    <div className="page-head">
-      <div>
-        <h1>{title}</h1>
-        {description && <p className="page-description">{description}</p>}
-      </div>
-      {actions && <div className="page-actions">{actions}</div>}
-    </div>
-  )
-}
 
 // Routes says how many routes there are in each state, or why there are none.
 function RouteCounts() {
