@@ -45,7 +45,10 @@ const installLong = "Install the pco appliance on this Proxmox VE node: an unpri
 	"bridge), the name the API's certificate verifies under, another install of pco, and the\n" +
 	"principals other than the admins who could reach into the appliance. Those are refused\n" +
 	"unless a NoAccess line is added for each, which only --deny-access or a yes at the\n" +
-	"question does; --yes never does.\n\n" +
+	"question does; --yes never does. Each line is shown with what it takes first: one on /\n" +
+	"or /vms takes from its principal every privilege in the cluster, or on every guest, that\n" +
+	"no line further down grants it. The lines added are recorded in the appliance's\n" +
+	"manifest, and uninstall takes them back.\n\n" +
 	"The template is downloaded through Proxmox and checked against --checksums, the\n" +
 	"checksums.txt of the release, unless --template names it. Every object made is noted in\n" +
 	"a journal under /root/.pco-appliance-install first: a step that fails, and SIGINT, SIGTERM\n" +
@@ -98,7 +101,7 @@ func (a *app) applianceInstallCmd() *cobra.Command {
 	flags.StringVar(&f.o.ReleaseBase, "release-base", "", "where the template is downloaded from (default: the GitHub release of this version)")
 	flags.StringVar(&f.o.ChecksumsFile, "checksums", "", "the checksums.txt of the release, which the template is checked against")
 	flags.BoolVar(&f.keepTmpl, "keep-template", true, "keep a template this run downloaded when the run is taken back")
-	flags.BoolVar(&f.o.DenyAccess, "deny-access", false, "add a NoAccess line for each principal that could reach into the appliance, instead of refusing")
+	flags.BoolVar(&f.o.DenyAccess, "deny-access", false, "add the NoAccess lines shown, those on / or /vms too, for the principals that could reach into the appliance, instead of refusing")
 	flags.StringVar(&f.o.Resume, "resume", "", "finish the run of this journal, or take it back")
 	return cmd
 }
@@ -240,9 +243,10 @@ func (a *app) applianceRepairCmd() *cobra.Command {
 
 const uninstallLong = "Remove the appliance and what the installer made for it from this node, as the marks\n" +
 	"of the objects and the manifest in the appliance name them: the container with its state\n" +
-	"volume, its token, its network grants, and user pco@pve, role PCO and pool pco when\n" +
-	"nothing else uses them, the gate tags the installer registered, and the template with\n" +
-	"--keep-template=false. It lists what goes and asks once; --yes answers that. What the\n" +
+	"volume, its token, its network grants, the NoAccess lines the installer added while they\n" +
+	"are as it made them, and user pco@pve, role PCO and pool pco when nothing else uses them,\n" +
+	"the gate tags the installer registered, and the template with --keep-template=false. It\n" +
+	"lists what goes and what stays, and why, and asks once; --yes answers that. What the\n" +
 	"install has at Cloudflare is deleted through the running appliance with\n" +
 	"--purge-cloudflare, left with --keep-cloudflare, or asked about; with --yes, an install\n" +
 	"with something at Cloudflare needs one of the two, as the credentials that reach it go\n" +

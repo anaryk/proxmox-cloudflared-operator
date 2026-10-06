@@ -135,13 +135,19 @@ func (r *run) ours(ctx context.Context, vmid int) bool {
 }
 
 // denyAccess adds the NoAccess lines the admin confirmed and asks Proxmox
-// whether they hold: its answer is what counts, not pco's computation.
+// whether they hold: its answer is what counts, not pco's computation. Each
+// line is in the manifest before it is added, as uninstall takes it back.
 func (r *run) denyAccess(ctx context.Context) error {
-	for i, d := range r.j.Denials {
-		if err := r.record(func(j *journal) { j.Denials[i].Added = true }); err != nil {
+	for _, d := range r.j.Denials {
+		line := setup.NoAccessLine{Principal: d.Who, Path: d.Path, Role: roleNoAccess}
+		if err := r.record(func(*journal) {
+			if a := r.appliance(); !slices.Contains(a.NoAccess, line) {
+				a.NoAccess = append(a.NoAccess, line)
+			}
+		}); err != nil {
 			return err
 		}
-		if _, err := r.r.Run(ctx, "pveum", "acl", "modify", d.Path, d.Flag, d.Who, "--roles", "NoAccess"); err != nil {
+		if _, err := r.r.Run(ctx, "pveum", "acl", "modify", d.Path, d.Flag, d.Who, "--roles", roleNoAccess); err != nil {
 			return fmt.Errorf("adding NoAccess for %s on %s: %w", d.Who, d.Path, err)
 		}
 		r.ask.Info("acl %s: NoAccess for %s", d.Path, d.Who)

@@ -313,7 +313,6 @@ type denial struct {
 	Flag      string   `json:"flag"` // --users or --tokens
 	Who       string   `json:"who"`  // the user or the token the line names
 	Why       string   `json:"why,omitempty"`
-	Added     bool     `json:"added"`
 }
 
 // line is the command an admin runs, with a token quoted for the shell.
@@ -322,7 +321,30 @@ func (d denial) line() string {
 	if strings.Contains(who, "!") {
 		who = "'" + who + "'"
 	}
-	return fmt.Sprintf("pveum acl modify %s %s %s --roles NoAccess", d.Path, d.Flag, who)
+	return fmt.Sprintf("pveum acl modify %s %s %s --roles %s", d.Path, d.Flag, who, roleNoAccess)
+}
+
+// effect says what the line takes from the principal it names: on a path
+// above the appliance, far more than the appliance.
+func (d denial) effect(vmid int) []string {
+	var what string
+	switch d.Path {
+	case "/":
+		what = "every privilege in the whole cluster"
+	case "/vms":
+		what = "every privilege on every guest of the cluster"
+	case "/pool":
+		what = "every privilege on every pool of the cluster and on the guests in them"
+	case "/pool/" + poolID:
+		return []string{fmt.Sprintf("NoAccess on %s takes from %s what it holds on pool %s and the guests in it", d.Path, d.Who, poolID)}
+	default:
+		return []string{fmt.Sprintf("NoAccess on %s takes from %s what it holds on lxc/%d alone", d.Path, d.Who, vmid)}
+	}
+	return []string{
+		fmt.Sprintf("NoAccess on %s takes from %s %s that no line further down grants it, not only what it holds on lxc/%d",
+			d.Path, d.Who, what, vmid),
+		fmt.Sprintf("the other way out: take back the grant that gives %s %s, then run the installer again", d.Who, strings.Join(d.Privs, ", ")),
+	}
 }
 
 // denials are the NoAccess lines that keep every principal but the admins and
@@ -376,9 +398,10 @@ func privsep(d access.Data, user, name string) bool {
 	return true
 }
 
-// confirmDenials asks for each NoAccess line: only an explicit yes, at the
-// question or with --deny-access, adds it; --yes never does, as pco never
-// changes an ACL the admin did not ask for.
+// confirmDenials shows each NoAccess line with what it takes and asks once
+// for all: only an explicit yes, at the question or with --deny-access, adds
+// them; --yes never does, as pco never changes an ACL the admin did not ask
+// for.
 func (r *run) confirmDenials() error {
 	if len(r.j.Denials) == 0 {
 		r.ask.Info("preflight: no principal but the admins can reach into lxc/%d", r.j.VMID)
@@ -390,21 +413,24 @@ func (r *run) confirmDenials() error {
 			r.ask.Warn("  %s", d.Why)
 		}
 		r.ask.Warn("  %s", d.line())
+		for _, e := range d.effect(r.j.VMID) {
+			r.ask.Warn("  %s", e)
+		}
 	}
 	if r.o.DenyAccess {
 		r.ask.Info("preflight: the NoAccess lines above are added once the container exists (--deny-access)")
 		return nil
 	}
 	if !r.o.Yes {
-		all := true
-		for _, d := range r.j.Denials {
-			ok, err := r.ask.Confirm(fmt.Sprintf("Add NoAccess for %s on %s?", d.Who, d.Path), false)
-			if err != nil {
-				return err
-			}
-			all = all && ok
+		question := "Add the NoAccess line above?"
+		if n := len(r.j.Denials); n > 1 {
+			question = fmt.Sprintf("Add the %d NoAccess lines above?", n)
 		}
-		if all {
+		ok, err := r.ask.Confirm(question, false)
+		if err != nil {
+			return err
+		}
+		if ok {
 			return nil
 		}
 	}

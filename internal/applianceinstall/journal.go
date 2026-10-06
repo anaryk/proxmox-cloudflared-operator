@@ -46,7 +46,8 @@ type journal struct {
 	// Container is the description of the container the run made, the mark
 	// by which it is told from one of the same VMID that is not its own.
 	Container string `json:"container,omitempty"`
-	// Denials are the NoAccess lines the admin confirmed.
+	// Denials are the NoAccess lines the admin confirmed; the manifest names
+	// those added.
 	Denials []denial `json:"denials,omitempty"`
 	// AddedMP0 says a repair gave the container its state volume.
 	AddedMP0 bool `json:"addedMP0,omitempty"`
@@ -293,10 +294,11 @@ func (r *run) rollback(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(append(errs, err)...)
 	}
-	for _, d := range r.j.Denials {
-		line := aclLine{Path: d.Path, Type: strings.TrimSuffix(strings.TrimPrefix(d.Flag, "--"), "s"), UGID: d.Who, Role: "NoAccess"}
-		if d.Added && slices.Contains(acl, line) {
-			note(r.deleteLine(ctx, line))
+	if a := m.Appliance; a != nil {
+		for _, n := range a.NoAccess {
+			if line := noAccessLine(n); slices.Contains(acl, line) {
+				note(r.deleteLine(ctx, line))
+			}
 		}
 	}
 	if len(m.RegisteredTags) > 0 {

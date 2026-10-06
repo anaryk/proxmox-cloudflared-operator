@@ -100,8 +100,11 @@ func checkManifest(raw []byte, vmid int, otherVMID bool) (*setup.Manifest, []str
 		if !otherVMID {
 			return nil, append(problems, fmt.Sprintf("it is the manifest of lxc/%d, not of lxc/%d", a.VMID, vmid))
 		}
-		problems = append(problems, fmt.Sprintf("it is the manifest of lxc/%d, which lxc/%d was restored from: its token and grants are that one's", a.VMID, vmid))
+		old := "/vms/" + strconv.Itoa(a.VMID)
+		problems = append(problems, fmt.Sprintf("it is the manifest of lxc/%d, which lxc/%d was restored from: its token, its grants "+
+			"and its NoAccess lines on %s are that one's", a.VMID, vmid, old))
 		a.VMID, a.Token, a.Grants, m.CreatedToken = vmid, tokenID(vmid), nil, false
+		a.NoAccess = slices.DeleteFunc(a.NoAccess, func(n setup.NoAccessLine) bool { return n.Path == old })
 	}
 	if m.InstalledCloudflared || m.AddedAptSource || m.AddedKeyring || m.WebEnabled || m.WebEnv || m.WebCert != "" || len(m.WebTLS) > 0 {
 		problems = append(problems, "it names packages, files or units on the node, which an appliance's installer never makes")
@@ -134,6 +137,13 @@ func checkManifest(raw []byte, vmid int, otherVMID bool) (*setup.Manifest, []str
 		}
 		return false
 	})
+	a.NoAccess = slices.DeleteFunc(a.NoAccess, func(n setup.NoAccessLine) bool {
+		if err := checkNoAccess(n, vmid); err != nil {
+			problems = append(problems, "a NoAccess line: "+err.Error())
+			return true
+		}
+		return false
+	})
 	m.RegisteredTags = slices.DeleteFunc(m.RegisteredTags, func(t string) bool {
 		if !tagName.MatchString(t) {
 			problems = append(problems, fmt.Sprintf("tag %q is no tag", t))
@@ -142,6 +152,30 @@ func checkManifest(raw []byte, vmid int, otherVMID bool) (*setup.Manifest, []str
 		return false
 	})
 	return &m, problems
+}
+
+// principalID is the id of a Proxmox user, user@realm, or of its token,
+// user@realm!name.
+var principalID = regexp.MustCompile(`^[^\s:/!]+@[A-Za-z][A-Za-z0-9._-]*(![A-Za-z][A-Za-z0-9._-]*)?$`)
+
+// checkNoAccess refuses a NoAccess line of another shape than the installer
+// adds for the appliance vmid: removing a NoAccess line gives back what it
+// took, so one the admin added must never pass for the installer's.
+func checkNoAccess(n setup.NoAccessLine, vmid int) error {
+	paths := noAccessPaths(vmid)
+	user, _, _ := strings.Cut(n.Principal, "!")
+	switch {
+	case n.Role != roleNoAccess:
+		return fmt.Errorf("role %q on %s: the installer adds %s only", n.Role, n.Path, roleNoAccess)
+	case !slices.Contains(paths, n.Path):
+		return fmt.Errorf("path %q: the installer adds %s on %s and %s only", n.Path, roleNoAccess,
+			strings.Join(paths[:len(paths)-1], ", "), paths[len(paths)-1])
+	case !principalID.MatchString(n.Principal):
+		return fmt.Errorf("principal %q is no user or token", n.Principal)
+	case user == "root@pam" || user == setup.UserID:
+		return fmt.Errorf("principal %q is never one the installer denies", n.Principal)
+	}
+	return nil
 }
 
 // manifestFromMarks rebuilds the manifest of an appliance whose volume lost
@@ -167,7 +201,13 @@ func (r *run) manifestFromMarks(ctx context.Context, vmid int) (setup.Manifest, 
 		return m, err
 	}
 	m.GrantedACL = slices.Contains(acl, aclLine{Path: "/", Type: "user", UGID: setup.UserID, Role: setup.RoleID})
+	above := noAccessPaths(vmid)
+	above = above[:len(above)-1]
 	for _, l := range acl {
+		if l.Role == roleNoAccess && slices.Contains(above, l.Path) {
+			r.ask.Warn("NoAccess for %s on %s carries no mark of the installer: the manifest rebuilt from the marks leaves it out, "+
+				"and uninstall leaves it", l.UGID, l.Path)
+		}
 		if l.Type != "token" || l.UGID != tokenID(vmid) || l.Role != setup.RoleSDN {
 			continue
 		}

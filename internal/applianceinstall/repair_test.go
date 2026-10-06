@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 )
 
 // installed is a node with appliance 100 installed, the commands of the
@@ -170,6 +172,40 @@ func TestRepairRefuses(t *testing.T) {
 	err = e.in.Repair(t.Context(), 105, Options{Yes: true})
 	require.ErrorContains(t, err, "lxc/105")
 	require.Empty(t, entries(t, e.journals))
+}
+
+// A manifest rebuilt from the marks cannot name a NoAccess line, which
+// carries none: the repair says so.
+func TestARecoverSaysWhichNoAccessLinesItCannotKnow(t *testing.T) {
+	e := installed(t)
+	e.restored(101, true)
+	e.node.users = append(e.node.users, &fakeUser{ID: "ops@pve", Enabled: true})
+	e.node.grant("/", "user", "ops@pve", "NoAccess")
+
+	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}), e.ask.text())
+
+	require.Contains(t, e.ask.text(), "warn: NoAccess for ops@pve on / carries no mark of the installer: the manifest rebuilt from "+
+		"the marks leaves it out, and uninstall leaves it")
+	require.Nil(t, e.bootstrapAppliance()["noAccess"])
+}
+
+// A restore to another VMID takes over the NoAccess lines above the container
+// the installer added, but not the one on the container it was made from.
+func TestTheManifestOfARestoreKeepsTheNoAccessLinesAboveIt(t *testing.T) {
+	raw := `{"node":"pve1","appliance":{"vmid":100,"node":"pve1","token":"pco@pve!vm100","pool":"pco","noAccess":[` +
+		`{"principal":"ops@pve","path":"/","role":"NoAccess"},` +
+		`{"principal":"vmops@pve","path":"/vms/100","role":"NoAccess"},` +
+		`{"principal":"pools@pve!ci","path":"/pool/pco","role":"NoAccess"}]}}`
+
+	m, problems := checkManifest([]byte(raw), 101, true)
+
+	require.NotNil(t, m)
+	require.Equal(t, []setup.NoAccessLine{
+		{Principal: "ops@pve", Path: "/", Role: "NoAccess"},
+		{Principal: "pools@pve!ci", Path: "/pool/pco", Role: "NoAccess"},
+	}, m.Appliance.NoAccess)
+	require.Equal(t, []string{"it is the manifest of lxc/100, which lxc/101 was restored from: its token, its grants and its " +
+		"NoAccess lines on /vms/100 are that one's"}, problems)
 }
 
 func indexOf(t *testing.T, lines []string, line string) int {

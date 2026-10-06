@@ -65,6 +65,17 @@ type ApplianceManifest struct {
 	Template string `json:"template,omitempty"`
 	// Grants are the networks pco appliance grant-network granted.
 	Grants []NetworkGrant `json:"grants,omitempty"`
+	// NoAccess are the lines the installer added to keep principals out of
+	// the appliance, which uninstall takes back.
+	NoAccess []NoAccessLine `json:"noAccess,omitempty"`
+}
+
+// NoAccessLine is a line of the access control list the installer added for
+// the admin: a role, NoAccess, for a user or a token on a path.
+type NoAccessLine struct {
+	Principal string `json:"principal"` // user@realm, or user@realm!token
+	Path      string `json:"path"`
+	Role      string `json:"role"`
 }
 
 // The roles of a network grant: a card of the appliance on a network needs

@@ -205,6 +205,31 @@ func TestPrincipalsThatCanReachInAreRefusedOrDenied(t *testing.T) {
 			f.grant("/pool/pco", "user", "ops@pve", "PoolOps")
 		},
 		line: "pveum acl modify /pool/pco --users ops@pve --roles NoAccess", who: "ops@pve", flag: "user", path: "/pool/pco",
+		why: "NoAccess on /pool/pco takes from ops@pve what it holds on pool pco and the guests in it",
+	}
+	// Permissions.Modify on / or /vms reaches the appliance from there: the
+	// line goes there too, and takes far more than the appliance.
+	root := principal{
+		setup: func(f *fakeNode) {
+			f.roles["PermAdmin"] = []string{"Permissions.Modify", "Sys.Audit"}
+			f.users = append(f.users, &fakeUser{ID: "ops@pve", Enabled: true})
+			f.grant("/", "user", "ops@pve", "PermAdmin")
+		},
+		line: "pveum acl modify / --users ops@pve --roles NoAccess", who: "ops@pve", flag: "user", path: "/",
+		why: "NoAccess on / takes from ops@pve every privilege in the whole cluster that no line further down grants it, " +
+			"not only what it holds on lxc/100\n" +
+			"warn:   the other way out: take back the grant that gives ops@pve Permissions.Modify, then run the installer again",
+	}
+	vms := principal{
+		setup: func(f *fakeNode) {
+			f.roles["PermAdmin"] = []string{"Permissions.Modify", "Sys.Audit"}
+			f.users = append(f.users, &fakeUser{ID: "ops@pve", Enabled: true})
+			f.grant("/vms", "user", "ops@pve", "PermAdmin")
+		},
+		line: "pveum acl modify /vms --users ops@pve --roles NoAccess", who: "ops@pve", flag: "user", path: "/vms",
+		why: "NoAccess on /vms takes from ops@pve every privilege on every guest of the cluster that no line further down " +
+			"grants it, not only what it holds on lxc/100\n" +
+			"warn:   the other way out: take back the grant that gives ops@pve Permissions.Modify, then run the installer again",
 	}
 	for _, tt := range []struct {
 		name    string
@@ -215,15 +240,20 @@ func TestPrincipalsThatCanReachInAreRefusedOrDenied(t *testing.T) {
 		refused bool
 	}{
 		{name: "a user, with --yes", p: user, yes: true, refused: true},
-		{name: "a user, at the question answered with its default", p: user, answers: []answer{{"Add NoAccess for ops@pve on /vms/100", false}}, refused: true},
+		{name: "a user, at the question answered with its default", p: user, answers: []answer{{"Add the NoAccess line above?", false}}, refused: true},
 		{name: "a user, with --deny-access", p: user, yes: true, deny: true},
-		{name: "a user, at the question answered yes", p: user, answers: []answer{{"Add NoAccess for ops@pve on /vms/100", true}, {"Register the gate tags", true}}},
+		{name: "a user, at the question answered yes", p: user, answers: []answer{{"Add the NoAccess line above?", true}, {"Register the gate tags", true}}},
 		{name: "a token with privilege separation, with --yes", p: sep, yes: true, refused: true},
 		{name: "a token with privilege separation, with --deny-access", p: sep, yes: true, deny: true},
 		{name: "a token without privilege separation, with --yes", p: nosep, yes: true, refused: true},
 		{name: "a token without privilege separation, with --deny-access", p: nosep, yes: true, deny: true},
 		{name: "Pool.Allocate on the pool, with --yes", p: pool, yes: true, refused: true},
 		{name: "Pool.Allocate on the pool, with --deny-access", p: pool, yes: true, deny: true},
+		{name: "Permissions.Modify on /, with --yes", p: root, yes: true, refused: true},
+		{name: "Permissions.Modify on /, at the question answered with its default", p: root, answers: []answer{{"Add the NoAccess line above?", false}}, refused: true},
+		{name: "Permissions.Modify on /, with --deny-access", p: root, yes: true, deny: true},
+		{name: "Permissions.Modify on /vms, with --yes", p: vms, yes: true, refused: true},
+		{name: "Permissions.Modify on /vms, at the question answered yes", p: vms, answers: []answer{{"Add the NoAccess line above?", true}, {"Register the gate tags", true}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
@@ -257,8 +287,35 @@ func TestPrincipalsThatCanReachInAreRefusedOrDenied(t *testing.T) {
 			add := slices.Index(e.node.ran, "pveum acl modify "+path+" --"+tt.p.flag+"s "+tt.p.who+" --roles NoAccess")
 			check := slices.Index(e.node.ran, "pvesh get /access/permissions --userid "+tt.p.who+" --path "+path+" --output-format json")
 			require.True(t, create < add && add < check, "create %d, NoAccess %d, check %d", create, add, check)
+			// The appliance's manifest names the line, which uninstall takes back.
+			a := e.bootstrapAppliance()
+			require.Contains(t, a["noAccess"], map[string]any{"principal": tt.p.who, "path": path, "role": "NoAccess"})
 		})
 	}
+}
+
+// Several lines are shown with what each takes, and asked about once.
+func TestTheNoAccessLinesAreAskedAboutOnce(t *testing.T) {
+	e := newEnv(t)
+	e.node.roles["PermAdmin"] = []string{"Permissions.Modify", "Sys.Audit"}
+	e.node.users = append(e.node.users, &fakeUser{ID: "ops@pve", Enabled: true}, &fakeUser{ID: "vmops@pve", Enabled: true})
+	e.node.grant("/", "user", "ops@pve", "PermAdmin")
+	e.node.grant("/vms/100", "user", "vmops@pve", "PVEVMUser")
+	e.ask.answers = []answer{{"Add the 2 NoAccess lines above?", true}, {"Register the gate tags", true}}
+	o := e.options()
+	o.Yes = false
+
+	e.install(o)
+
+	text := e.ask.text()
+	require.Equal(t, 1, strings.Count(text, "ask: Add"), text)
+	require.Contains(t, text, "warn:   NoAccess on / takes from ops@pve every privilege in the whole cluster")
+	require.Contains(t, text, "warn:   NoAccess on /vms/100 takes from vmops@pve what it holds on lxc/100 alone")
+	require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.Equal(t, []any{
+		map[string]any{"principal": "ops@pve", "path": "/", "role": "NoAccess"},
+		map[string]any{"principal": "vmops@pve", "path": "/vms/100", "role": "NoAccess"},
+	}, e.bootstrapAppliance()["noAccess"])
 }
 
 func TestACleanNodeRefusesNobody(t *testing.T) {

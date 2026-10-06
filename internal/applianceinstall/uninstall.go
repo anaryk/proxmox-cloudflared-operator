@@ -23,6 +23,7 @@ type survey struct {
 	tokens          []tokenEntry
 	roles           []roleEntry
 	acl             []aclLine
+	unpropagated    []aclLine // the lines of acl that count on their own path only
 	pools           []poolEntry
 	members         []string // of pool pco
 	tags            []string
@@ -37,6 +38,7 @@ type plan struct {
 	container  bool
 	token      bool
 	grantLines []aclLine // pco@pve's lines on the networks of the appliance
+	noAccess   []aclLine // the NoAccess lines the installer added
 	user       bool
 	role       bool
 	grantRoles []string
@@ -44,15 +46,16 @@ type plan struct {
 	tags       []string
 	templates  []string
 	kept       []string
+	notes      []string
 }
 
 // Uninstall removes the appliance vmid and what the installer made for it,
 // as its marks and its manifest name them. It looks first, lists what goes
 // and asks, and only then removes: what is at Cloudflare first, through the
 // container, which holds the credentials; then the container, the token
-// before its user, the grants, the user and the roles when nothing else
-// uses them, the pool when it is empty, the tags the installer added, and the
-// template unless KeepTemplate.
+// before its user, the grants, the NoAccess lines the installer added, the
+// user and the roles when nothing else uses them, the pool when it is empty,
+// the tags the installer added, and the template unless KeepTemplate.
 func (i *Installer) Uninstall(ctx context.Context, vmid int, o UninstallOptions) error {
 	switch {
 	case o.PurgeCloudflare && o.KeepCloudflare:
@@ -132,8 +135,15 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 	if s.roles, err = roles(ctx, r.r); err != nil {
 		return s, err
 	}
-	if s.acl, err = aclLines(ctx, r.r); err != nil {
+	entries, err := aclEntries(ctx, r.r)
+	if err != nil {
 		return s, err
+	}
+	for _, e := range entries {
+		s.acl = append(s.acl, e.aclLine)
+		if !e.propagates() {
+			s.unpropagated = append(s.unpropagated, e.aclLine)
+		}
 	}
 	if s.pools, err = pools(ctx, r.r); err != nil {
 		return s, err
@@ -219,13 +229,20 @@ func (r *run) plan(vmid int, s survey) plan {
 	default:
 		p.kept = append(p.kept, fmt.Sprintf("token %s, whose comment is not %q", id, marker(vmid)))
 	}
-	var others []string
+	var (
+		others     []string
+		appliances []int
+	)
 	for _, t := range s.tokens {
 		if t.Name != tokenName(vmid) {
 			others = append(others, setup.UserID+"!"+t.Name)
+			if other, ok := applianceOf(t.Name); ok {
+				appliances = append(appliances, other)
+			}
 		}
 	}
 	p.grantLines = r.grantLines(vmid, s, others)
+	p.planNoAccess(vmid, s, appliances)
 
 	// A line goes when it is the token's, which goes with it, one on the
 	// container, which goes with it, or a grant line that is removed.
@@ -289,12 +306,6 @@ func (r *run) plan(vmid int, s survey) plan {
 	}
 	if s.manifest != nil && len(s.manifest.RegisteredTags) > 0 {
 		added := slices.DeleteFunc(slices.Clone(s.manifest.RegisteredTags), func(t string) bool { return !slices.Contains(s.tags, t) })
-		var appliances []string
-		for _, o := range others {
-			if _, ok := applianceOf(strings.TrimPrefix(o, setup.UserID+"!")); ok {
-				appliances = append(appliances, o)
-			}
-		}
 		switch {
 		case len(added) == 0:
 		case s.hostInstall:
@@ -309,6 +320,40 @@ func (r *run) plan(vmid int, s survey) plan {
 		p.templates = s.templates
 	}
 	return p
+}
+
+// planNoAccess decides which of the NoAccess lines the installer added go:
+// each the manifest names that is there as the installer made it, but for
+// one on the container, which goes with it, and one above the container
+// while another appliance is there, which it keeps the principal out of as
+// well. Without the manifest nothing says which lines are the installer's.
+func (p *plan) planNoAccess(vmid int, s survey, appliances []int) {
+	paths := noAccessPaths(vmid)
+	vm := paths[len(paths)-1]
+	if s.manifest == nil || s.manifest.Appliance == nil {
+		for _, l := range s.acl {
+			if l.Role == roleNoAccess && slices.Contains(paths[:len(paths)-1], l.Path) {
+				p.kept = append(p.kept, fmt.Sprintf("NoAccess for %s on %s, which the installer may have added: "+
+					"without the manifest of lxc/%d nothing says so", l.UGID, l.Path, vmid))
+			}
+		}
+		return
+	}
+	for _, n := range s.manifest.Appliance.NoAccess {
+		l := noAccessLine(n)
+		line := fmt.Sprintf("NoAccess for %s on %s", n.Principal, n.Path)
+		switch {
+		case !slices.Contains(s.acl, l):
+			p.notes = append(p.notes, line+", which the installer added, is not there any more")
+		case l.Path == vm && p.container:
+		case slices.Contains(s.unpropagated, l):
+			p.kept = append(p.kept, fmt.Sprintf("%s, which no longer reaches below %s as the installer made it", line, n.Path))
+		case l.Path != vm && len(appliances) > 0:
+			p.kept = append(p.kept, fmt.Sprintf("%s, which keeps %s out of the appliance lxc/%d as well", line, n.Principal, appliances[0]))
+		default:
+			p.noAccess = append(p.noAccess, l)
+		}
+	}
 }
 
 // grantLines are pco@pve's lines on the networks granted to the appliance,
@@ -359,6 +404,9 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 	for _, l := range p.grantLines {
 		r.ask.Info("  the grant of role %s on %s to %s", l.Role, l.Path, l.UGID)
 	}
+	for _, l := range p.noAccess {
+		r.ask.Info("  the line NoAccess for %s on %s, which the installer added", l.UGID, l.Path)
+	}
 	if p.user {
 		r.ask.Info("  Proxmox user %s", setup.UserID)
 	}
@@ -382,6 +430,9 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 	}
 	for _, k := range p.kept {
 		r.ask.Info("  (kept: %s)", k)
+	}
+	for _, n := range p.notes {
+		r.ask.Info("  (%s)", n)
 	}
 	switch {
 	case o.KeepCloudflare:
@@ -466,6 +517,9 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 		}
 	}
 	for _, l := range p.grantLines {
+		fail(r.deleteLine(ctx, l))
+	}
+	for _, l := range p.noAccess {
 		fail(r.deleteLine(ctx, l))
 	}
 	if p.user {

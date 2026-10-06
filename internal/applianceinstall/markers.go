@@ -84,6 +84,18 @@ var templateVolume = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_.-]*):vztmpl/(pco-
 // isTemplateVolume reports whether a volume is a template of pco.
 func isTemplateVolume(volid string) bool { return templateVolume.MatchString(volid) }
 
+// roleNoAccess is the role of the lines that keep a principal out of the
+// appliance. A line of the access control list carries no mark: the
+// manifest of the appliance is what says the installer added one.
+const roleNoAccess = "NoAccess"
+
+// noAccessPaths are the paths the installer adds NoAccess on for the
+// appliance vmid: the container's own, and those above it where a principal
+// holds what reaches into it.
+func noAccessPaths(vmid int) []string {
+	return []string{"/", "/vms", "/pool", "/pool/" + poolID, "/vms/" + strconv.Itoa(vmid)}
+}
+
 // The privileges of the roles of a network grant, their only mark.
 var grantRolePrivs = map[string]string{
 	setup.RoleManaged: "VM.Config.Network",

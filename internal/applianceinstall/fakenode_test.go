@@ -104,9 +104,9 @@ type initRun struct {
 
 // fakeNode is a Proxmox VE node that keeps what the installer's commands
 // change, as Proxmox does: a destroyed container takes its ACL lines and its
-// pool membership with it, a removed token its lines, a deleted user its
-// lines and those of its tokens (leaving the tokens' secrets behind, as
-// Proxmox does), and a deleted role its lines.
+// pool membership with it, a deleted pool its lines, a removed token its
+// lines, a deleted user its lines and those of its tokens (leaving the
+// tokens' secrets behind, as Proxmox does), and a deleted role its lines.
 type fakeNode struct {
 	t       *testing.T
 	dir     string
@@ -579,6 +579,7 @@ func (f *fakeNode) pveum(args []string) (string, error) {
 			return "", errors.New("pool is not empty")
 		}
 		delete(f.pools, args[2])
+		f.acl = slices.DeleteFunc(f.acl, func(a fakeACL) bool { return a.Path == "/pool/"+args[2] })
 		return "", nil
 	}
 	f.t.Errorf("unexpected pveum %v", args)
@@ -604,7 +605,10 @@ func (f *fakeNode) aclChange(verb, path string, args []string) (string, error) {
 		lines = append(lines, fakeACL{Path: path, Type: "token", UGID: t, Role: role})
 	}
 	for _, l := range lines {
-		f.acl = slices.DeleteFunc(f.acl, func(a fakeACL) bool { return a == l })
+		f.acl = slices.DeleteFunc(f.acl, func(a fakeACL) bool {
+			a.NoPropagate = false
+			return a == l
+		})
 		if verb == "modify" {
 			f.acl = append(f.acl, l)
 		}

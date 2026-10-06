@@ -373,12 +373,43 @@ type aclLine struct {
 	Role string `json:"roleid"`
 }
 
-func aclLines(ctx context.Context, r setup.Runner) ([]aclLine, error) {
-	var out []aclLine
+// noAccessLine is the line of the access control list a NoAccess line of the
+// manifest names: a token's id holds a "!", a user's never does.
+func noAccessLine(n setup.NoAccessLine) aclLine {
+	kind := "user"
+	if strings.Contains(n.Principal, "!") {
+		kind = "token"
+	}
+	return aclLine{Path: n.Path, Type: kind, UGID: n.Principal, Role: n.Role}
+}
+
+// aclEntry is a line as pveum lists it, with whether it counts below its
+// path, as one pveum acl modify adds does.
+type aclEntry struct {
+	aclLine
+	Propagate *flexBool `json:"propagate"`
+}
+
+func (e aclEntry) propagates() bool { return e.Propagate == nil || bool(*e.Propagate) }
+
+func aclEntries(ctx context.Context, r setup.Runner) ([]aclEntry, error) {
+	var out []aclEntry
 	if err := query(ctx, r, &out, "pveum", "acl", "list", "--output-format", "json"); err != nil {
 		return nil, fmt.Errorf("listing the access control list: %w", err)
 	}
 	return out, nil
+}
+
+func aclLines(ctx context.Context, r setup.Runner) ([]aclLine, error) {
+	entries, err := aclEntries(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]aclLine, 0, len(entries))
+	for _, e := range entries {
+		lines = append(lines, e.aclLine)
+	}
+	return lines, nil
 }
 
 type poolEntry struct {

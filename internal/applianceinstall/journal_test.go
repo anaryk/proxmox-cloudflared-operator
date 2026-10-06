@@ -301,7 +301,7 @@ func TestATemplateOnTheStorageIsTakenWhenItsChecksumIsTheReleases(t *testing.T) 
 
 	require.Equal(t, 0, e.node.count("pvesh create"))
 	require.Contains(t, e.node.ran, "pvesm path local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst")
-	require.Empty(t, e.bootstrapManifest(0)["appliance"].(map[string]any)["template"], "not the installer's to remove")
+	require.Empty(t, e.bootstrapAppliance()["template"], "not the installer's to remove")
 
 	e = newEnv(t)
 	require.NoError(t, os.WriteFile(file, []byte("something else"), 0o644))
@@ -331,9 +331,11 @@ func TestATemplateGivenAsAFile(t *testing.T) {
 	e.nothingMade()
 }
 
-func (e *testEnv) bootstrapManifest(n int) map[string]any {
+// bootstrapAppliance is the appliance's part of the manifest the first init
+// was given.
+func (e *testEnv) bootstrapAppliance() map[string]any {
 	e.t.Helper()
-	return e.bootstrap(n)["manifest"].(map[string]any)
+	return e.bootstrap(0)["manifest"].(map[string]any)["appliance"].(map[string]any)
 }
 
 func slicesIndexPrefix(lines []string, prefix string) int {

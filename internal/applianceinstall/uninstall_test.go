@@ -133,11 +133,23 @@ func TestUninstallTrustsNoManifest(t *testing.T) {
 			`it holds "users", which no manifest has`},
 		{"more than 64 KiB", func(m map[string]any) { m["node"] = strings.Repeat("a", 70<<10) },
 			"it is larger than 64 KiB"},
+		{"a NoAccess line for root@pam", func(m map[string]any) {
+			m["appliance"].(map[string]any)["noAccess"] = []any{map[string]any{"principal": "root@pam", "path": "/", "role": "NoAccess"}}
+		}, `a NoAccess line: principal "root@pam" is never one the installer denies`},
+		{"a line of another role", func(m map[string]any) {
+			m["appliance"].(map[string]any)["noAccess"] = []any{map[string]any{"principal": "root@pam!pco", "path": "/", "role": "Administrator"}}
+		}, `a NoAccess line: role "Administrator" on /: the installer adds NoAccess only`},
+		{"a NoAccess line on another path", func(m map[string]any) {
+			m["appliance"].(map[string]any)["noAccess"] = []any{map[string]any{"principal": "root@pam!pco", "path": "/storage/local", "role": "NoAccess"}}
+		}, `a NoAccess line: path "/storage/local": the installer adds NoAccess on /, /vms, /pool, /pool/pco and /vms/100 only`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := installed(t)
 			e.node.volumes["local:vztmpl/debian-13-standard_13.1-1_amd64.tar.zst"] = "/var/lib/vz/template/cache/debian-13-standard_13.1-1_amd64.tar.zst"
 			e.node.addToken("root@pam", "pco", "", false)
+			e.node.grant("/", "user", "root@pam", "NoAccess")
+			e.node.grant("/", "token", "root@pam!pco", "Administrator")
+			e.node.grant("/storage/local", "token", "root@pam!pco", "NoAccess")
 			ct := e.node.cts[100]
 			var m map[string]any
 			require.NoError(t, json.Unmarshal(ct.files[manifestFile].data, &m))
@@ -156,6 +168,9 @@ func TestUninstallTrustsNoManifest(t *testing.T) {
 				require.NotContains(t, line, "debian-13", "nothing of the admin's volumes is touched")
 			}
 			require.Equal(t, []string{"pco"}, e.node.tokenNames("root@pam"))
+			require.True(t, e.node.has("/", "user", "root@pam", "NoAccess"))
+			require.True(t, e.node.has("/", "token", "root@pam!pco", "Administrator"))
+			require.True(t, e.node.has("/storage/local", "token", "root@pam!pco", "NoAccess"))
 			require.Contains(t, e.node.volumes, "local:vztmpl/debian-13-standard_13.1-1_amd64.tar.zst")
 			require.Empty(t, e.node.cts)
 			require.Equal(t, []string{"root@pam"}, e.node.userIDs())
@@ -279,6 +294,92 @@ func TestUninstallOfAContainerThatIsGone(t *testing.T) {
 	require.Empty(t, e.node.users[1:], "the marked user goes")
 	require.Equal(t, []string{"admin-only", "cf-tunnel", "cf-tunnel-managed"}, e.node.tags, "without the manifest, no tag is the installer's")
 	require.False(t, slices.ContainsFunc(e.node.ran, func(l string) bool { return strings.HasPrefix(l, "pct ") && !strings.HasPrefix(l, "pct status") }))
+}
+
+// deniedTwice is a node with appliance 100 installed with --deny-access: ops@pve
+// holds Permissions.Modify on /, vmops@pve PVEVMUser on the appliance, and
+// the installer added NoAccess for each.
+func deniedTwice(t *testing.T) *testEnv {
+	t.Helper()
+	e := newEnv(t)
+	e.node.roles["PermAdmin"] = []string{"Permissions.Modify", "Sys.Audit"}
+	e.node.users = append(e.node.users, &fakeUser{ID: "ops@pve", Enabled: true}, &fakeUser{ID: "vmops@pve", Enabled: true})
+	e.node.grant("/", "user", "ops@pve", "PermAdmin")
+	e.node.grant("/vms/100", "user", "vmops@pve", "PVEVMUser")
+	o := e.options()
+	o.DenyAccess = true
+	e.install(o)
+	require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.True(t, e.node.has("/vms/100", "user", "vmops@pve", "NoAccess"))
+	e.node.ran = nil
+	return e
+}
+
+// The NoAccess lines the installer added are its own: uninstall takes back
+// those the manifest names while they are as it made them, and says why it
+// leaves the others.
+func TestUninstallTakesBackTheNoAccessLines(t *testing.T) {
+	t.Run("as the installer made them", func(t *testing.T) {
+		e := deniedTwice(t)
+
+		require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+		require.Contains(t, e.ask.text(), "info:   the line NoAccess for ops@pve on /, which the installer added")
+		require.Contains(t, e.node.ran, "pveum acl delete / --users ops@pve --roles NoAccess")
+		require.False(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+		require.False(t, e.node.has("/vms/100", "user", "vmops@pve", "NoAccess"), "it went with the container")
+		require.Equal(t, 0, e.node.count("pveum acl delete /vms/100"))
+		require.True(t, e.node.has("/", "user", "ops@pve", "PermAdmin"), "the admin's grant stays")
+	})
+	for _, tt := range []struct {
+		name   string
+		change func(e *testEnv)
+		says   string
+	}{
+		{"one an admin changed", func(e *testEnv) {
+			i := slices.Index(e.node.acl, fakeACL{Path: "/", Type: "user", UGID: "ops@pve", Role: "NoAccess"})
+			e.node.acl[i].NoPropagate = true
+		}, "(kept: NoAccess for ops@pve on /, which no longer reaches below / as the installer made it)"},
+		{"one that is gone", func(e *testEnv) {
+			e.node.acl = slices.DeleteFunc(e.node.acl, func(a fakeACL) bool { return a.UGID == "ops@pve" && a.Role == "NoAccess" })
+		}, "(NoAccess for ops@pve on /, which the installer added, is not there any more)"},
+		{"while another appliance is there", func(e *testEnv) {
+			e.node.addToken("pco@pve", "vm200", "pco appliance vm200", true)
+		}, "(kept: NoAccess for ops@pve on /, which keeps ops@pve out of the appliance lxc/200 as well)"},
+		{"without the manifest", func(e *testEnv) {
+			e.node.cts[100].running = false
+		}, "(kept: NoAccess for ops@pve on /, which the installer may have added: without the manifest of lxc/100 nothing says so)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := deniedTwice(t)
+			tt.change(e)
+
+			require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+			require.Contains(t, e.ask.text(), tt.says)
+			require.Equal(t, 0, e.node.count("pveum acl delete / --users ops@pve"))
+			require.Nil(t, e.node.cts[100])
+		})
+	}
+}
+
+// A run taken back takes back its NoAccess lines too.
+func TestAFailureTakesBackTheNoAccessLines(t *testing.T) {
+	e := newEnv(t)
+	e.node.roles["PermAdmin"] = []string{"Permissions.Modify", "Sys.Audit"}
+	e.node.users = append(e.node.users, &fakeUser{ID: "ops@pve", Enabled: true})
+	e.node.grant("/", "user", "ops@pve", "PermAdmin")
+	e.node.on("pct start 100", func(context.Context, []string) (string, error) { return "", errors.New("it broke") })
+	o := e.options()
+	o.DenyAccess = true
+
+	err := e.in.Install(t.Context(), o)
+
+	require.ErrorContains(t, err, "it broke; what the run made is taken back")
+	require.False(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.True(t, e.node.has("/", "user", "ops@pve", "PermAdmin"))
+	require.Empty(t, e.node.cts)
+	require.Empty(t, entries(t, e.journals))
 }
 
 func writeHostInstall(t *testing.T, e *testEnv) {
