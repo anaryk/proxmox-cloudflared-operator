@@ -391,6 +391,13 @@ func TestAdopt(t *testing.T) {
 	require.Equal(t, []string{"adopt:www.example.com"}, f.called())
 }
 
+// rotateAsRoot asks to rotate a secret as root, the one peer that may, also
+// where the peer is checked and the test does not run as root.
+func rotateAsRoot(f *fakeEngine, body string) *httptest.ResponseRecorder {
+	s := New(f, "1.2.3", []uint32{0}, zerolog.Nop())
+	return send(s, requestFrom(0, http.MethodPost, "/v1/tunnels/rotate", body))
+}
+
 func TestRotateTunnel(t *testing.T) {
 	for _, tt := range []struct {
 		name, body, call string
@@ -400,7 +407,7 @@ func TestRotateTunnel(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeEngine{}
-			rec := do(newServer(f), http.MethodPost, "/v1/tunnels/rotate", tt.body)
+			rec := rotateAsRoot(f, tt.body)
 
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 			require.JSONEq(t, `{"tunnel":"pco-abc123","tunnelId":"00000000-0000-4000-8000-000000000001","accountId":"acc1"}`, rec.Body.String())
@@ -421,7 +428,7 @@ func TestRotateTunnelRefusals(t *testing.T) {
 		{"observe-only", fmt.Errorf("%w: observe-only", engine.ErrRefused), http.StatusConflict, "refused"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := do(newServer(&fakeEngine{err: tt.err}), http.MethodPost, "/v1/tunnels/rotate", `{}`)
+			rec := rotateAsRoot(&fakeEngine{err: tt.err}, `{}`)
 
 			require.Equal(t, tt.status, rec.Code, rec.Body.String())
 			require.Equal(t, tt.code, errorCode(t, rec))
@@ -429,7 +436,7 @@ func TestRotateTunnelRefusals(t *testing.T) {
 	}
 	t.Run("a field it does not know", func(t *testing.T) {
 		f := &fakeEngine{}
-		rec := do(newServer(f), http.MethodPost, "/v1/tunnels/rotate", `{"acount":"acc1"}`)
+		rec := rotateAsRoot(f, `{"acount":"acc1"}`)
 
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 		require.Empty(t, f.called())
