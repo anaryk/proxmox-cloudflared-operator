@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { type RefObject, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import { type AppState, dataAge, monoNow, useApp, useStore } from '../api/store'
 import { IconButton } from '../components/Button'
@@ -184,6 +184,32 @@ function UserMenu({ onAbout }: { onAbout: () => void }) {
   )
 }
 
+// fitPills shows the summary pill in a bar that cannot hold the five pills
+// beside the rest of it, as in a narrow window: the words of the node, the
+// user and the pills vary too much for one width to say. It is measured with
+// the five shown, before the browser paints.
+function fitPills(bar: HTMLElement): void {
+  const pills = bar.querySelector<HTMLElement>('.pills')
+  if (!pills) return
+  delete bar.dataset.narrow
+  if (pills.scrollWidth - pills.clientWidth > 1) bar.dataset.narrow = ''
+}
+
+// useFitPills fits the pills when what they say changes and when the bar
+// changes width.
+function useFitPills(bar: RefObject<HTMLElement | null>, said: string): void {
+  useLayoutEffect(() => {
+    if (bar.current) fitPills(bar.current)
+  }, [bar, said])
+  useEffect(() => {
+    const el = bar.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(() => fitPills(el))
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [bar])
+}
+
 // TopBar is the bar that never scrolls away: the mark, the node, the five
 // statuses and the problems, and the user's menu.
 export function TopBar({ navOpen, onNav, onAbout }: { navOpen: boolean; onNav: () => void; onAbout: () => void }) {
@@ -196,9 +222,13 @@ export function TopBar({ navOpen, onNav, onAbout }: { navOpen: boolean; onNav: (
   const problems = app.state?.problems.length ?? 0
   const node = app.session?.node || app.state?.node
   const profile = app.session?.profile || app.state?.profile
+  const bar = useRef<HTMLElement>(null)
+  // The age of the data changes every second, its width only with its length.
+  const said = [node, profile, app.session?.user, problems, ...pills.map((p) => `${p.label} ${p.key === 'live' ? p.value.length : p.value}`)].join('\n')
+  useFitPills(bar, said)
 
   return (
-    <header className="topbar">
+    <header ref={bar} className="topbar">
       <span className="navtoggle">
         <IconButton label={navOpen ? 'Close navigation' : 'Open navigation'} icon={<MenuIcon />} aria-expanded={navOpen} aria-controls="nav" onClick={onNav} />
       </span>

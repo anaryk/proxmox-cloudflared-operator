@@ -81,3 +81,41 @@ test('the problems, the summary pill and its list, the user menu', async () => {
   fireEvent.keyDown(document, { key: 'Escape' })
   expect(menu.getAttribute('aria-expanded')).toBe('false')
 })
+
+test('a bar that cannot hold the five pills shows the summary pill', async () => {
+  const { store } = await fakeStore({ state: populated })
+  // The pills need 900 px and have 600.
+  const widths: Record<string, number> = { scrollWidth: 900, clientWidth: 600 }
+  const real = Object.keys(widths).map((k) => [k, Object.getOwnPropertyDescriptor(Element.prototype, k)] as const)
+  for (const [k, w] of Object.entries(widths)) {
+    Object.defineProperty(Element.prototype, k, {
+      configurable: true,
+      get(this: Element) {
+        return this.classList.contains('pills') ? w : 0
+      },
+    })
+  }
+  try {
+    const { container } = render(
+      <StoreProvider store={store}>
+        <TopBar navOpen={false} onNav={() => {}} onAbout={() => {}} />
+      </StoreProvider>,
+    )
+    expect(container.querySelector('.topbar')?.hasAttribute('data-narrow')).toBe(true)
+  } finally {
+    for (const [k, d] of real) {
+      if (d) Object.defineProperty(Element.prototype, k, d)
+      else Reflect.deleteProperty(Element.prototype, k)
+    }
+  }
+})
+
+test('a bar that holds the five pills shows them', async () => {
+  const { store } = await fakeStore({ state: populated })
+  const { container } = render(
+    <StoreProvider store={store}>
+      <TopBar navOpen={false} onNav={() => {}} onAbout={() => {}} />
+    </StoreProvider>,
+  )
+  expect(container.querySelector('.topbar')?.hasAttribute('data-narrow')).toBe(false)
+})

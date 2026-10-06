@@ -529,7 +529,8 @@ main > .card {
   margin: 48px auto;
 }
 
-/* below 960 px the five pills are one */
+/* below 960 px the five pills are one, and in a wider bar that cannot hold
+   them beside the node and the user (TopBar.tsx) */
 
 @media (max-width: 959px) {
   .pill-wide {
@@ -539,6 +540,14 @@ main > .card {
   .pill-summary {
     display: inline-flex;
   }
+}
+
+.topbar[data-narrow] .pill-wide {
+  display: none;
+}
+
+.topbar[data-narrow] .pill-summary {
+  display: inline-flex;
 }
 
 /* phones: the navigation is a drawer */
