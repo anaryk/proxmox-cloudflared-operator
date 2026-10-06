@@ -1,15 +1,18 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { expect, test, vi } from 'vitest'
 
 import { ApiError } from '../api/client'
 import type { ErrorFields } from '../api/errors'
 import { AppStore, StoreProvider } from '../api/store'
 import session from '../fixtures/session.json'
-import { flush, memoryStorage } from '../test/store'
+import { memoryStorage } from '../test/store'
 import { SignIn } from './SignIn'
 
 const appliance = { code: 'unauthenticated', methods: ['password', 'token'], ticket: false, realms: ['pve', 'pam', 'ad'] }
 const signedIn = { ...session, method: 'password', profile: 'appliance' }
+// A loaded machine may take its time to render what the answer changed: every
+// wait is for the page to show it, never for a moment to pass.
+const slow = { timeout: 10_000 }
 
 interface Call {
   method: string
@@ -62,17 +65,16 @@ test('the user, a realm of the node and the password; nothing of the password st
   expect(field('User').autocomplete).toBe('username')
 
   signInWith(' alice ', 'pw-Zebra-7731')
-  await flush()
+  await waitFor(() => expect(done).toHaveBeenCalled(), slow)
 
   expect(calls.slice(1)).toEqual([{ method: 'POST', path: '/api/session/password', body: { user: 'alice', realm: 'pam', password: 'pw-Zebra-7731' } }])
-  expect(done).toHaveBeenCalled()
   expect(JSON.stringify(store.get())).not.toContain('pw-Zebra-7731')
 })
 
 test('a wrong password is said, and the password field is empty again', async () => {
   await page(() => new ApiError(401, { code: 'ticket_invalid', error: 'Proxmox VE did not accept the user and password' }))
   signInWith('alice', 'wrong')
-  expect((await screen.findByRole('alert')).textContent).toBe('Proxmox VE did not accept the user and password')
+  expect((await screen.findByRole('alert', {}, slow)).textContent).toBe('Proxmox VE did not accept the user and password')
   expect(field('Password').value).toBe('')
   expect(field('User').value).toBe('alice')
 })
@@ -90,8 +92,7 @@ test('the refusals of root, of a locked account and of a user without Sys.Audit'
     'This user has no Sys.Audit on /: pco cannot show it anything.',
   ]) {
     signInWith('root', 'x')
-    await flush()
-    expect(screen.getByRole('alert').textContent).toBe(want)
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(want), slow)
   }
 })
 
@@ -103,7 +104,7 @@ test('the second factor: a wrong code, then the right one', async () => {
     return codes.length === 1 ? new ApiError(401, { code: 'second_factor', error: 'Proxmox VE did not accept the code', kinds: ['recovery', 'totp'] }) : signedIn
   })
   signInWith('fred', 'pw')
-  await flush()
+  await screen.findByLabelText('Code', {}, slow)
 
   expect(screen.queryByLabelText('Password')).toBeNull()
   expect(screen.getByText('The second factor of fred')).toBeTruthy()
@@ -113,14 +114,13 @@ test('the second factor: a wrong code, then the right one', async () => {
 
   fireEvent.change(field('Code'), { target: { value: '000000' } })
   fireEvent.click(screen.getByRole('button', { name: 'Verify' }))
-  expect(await screen.findByText('Proxmox VE did not accept the code')).toBeTruthy()
+  expect(await screen.findByText('Proxmox VE did not accept the code', {}, slow)).toBeTruthy()
   expect(field('Code').getAttribute('aria-invalid')).toBe('true')
 
   fireEvent.change(field('Code'), { target: { value: ' 424242 ' } })
   fireEvent.click(screen.getByRole('button', { name: 'Verify' }))
-  await flush()
+  await waitFor(() => expect(done).toHaveBeenCalled(), slow)
   expect(codes).toEqual([{ code: '000000' }, { code: '424242' }])
-  expect(done).toHaveBeenCalled()
 })
 
 test('a step that is over goes back to the password', async () => {
@@ -130,21 +130,17 @@ test('a step that is over goes back to the password', async () => {
       : new ApiError(401, { code: 'ticket_invalid', error: 'Proxmox VE did not accept the code three times. Start again with the password' }),
   )
   signInWith('fred', 'pw')
-  await flush()
-  expect(screen.getByText('The code of your authenticator app.')).toBeTruthy()
+  expect(await screen.findByText('The code of your authenticator app.', {}, slow)).toBeTruthy()
   expect(field('Code').inputMode).toBe('numeric')
   fireEvent.change(field('Code'), { target: { value: '000000' } })
   fireEvent.click(screen.getByRole('button', { name: 'Verify' }))
-  await flush()
-
-  expect(screen.getByRole('alert').textContent).toBe('Proxmox VE did not accept the code three times. Start again with the password')
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Proxmox VE did not accept the code three times. Start again with the password'), slow)
   expect(field('Password').value).toBe('')
   expect(field('User').value).toBe('fred')
 
   // and the link does the same at any time
   signInWith('fred', 'pw')
-  await flush()
-  fireEvent.click(screen.getByRole('button', { name: 'Start again with the password' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Start again with the password' }, slow))
   expect(field('Password')).toBeTruthy()
 })
 
@@ -152,7 +148,7 @@ test('a security key cannot work here, and the page says so', async () => {
   const sentence = "This account's second factor is a security key, which works only on Proxmox VE's own page. Use a TOTP or recovery code, or an API token."
   await page(() => new ApiError(401, { code: 'second_factor_key', error: sentence, kinds: ['webauthn'] }))
   signInWith('gina', 'pw')
-  expect((await screen.findByRole('alert')).textContent).toBe(sentence)
+  expect((await screen.findByRole('alert', {}, slow)).textContent).toBe(sentence)
   expect(screen.queryByLabelText('Code')).toBeNull()
 })
 
@@ -161,9 +157,8 @@ test('the token goes past the password', async () => {
   expect(screen.getByRole('heading', { name: 'Or with an API token' })).toBeTruthy()
   fireEvent.change(field('API token'), { target: { value: 'alice@pve!pco=00000000-0000-0000-0000-000000000000' } })
   fireEvent.click(within(screen.getByRole('form', { name: 'Or with an API token' })).getByRole('button', { name: 'Sign in' }))
-  await flush()
+  await waitFor(() => expect(done).toHaveBeenCalled(), slow)
   expect(calls.at(-1)?.path).toBe('/api/session/token')
-  expect(done).toHaveBeenCalled()
 })
 
 test('without the realms of the node, the realm is typed', async () => {
@@ -171,6 +166,5 @@ test('without the realms of the node, the realm is typed', async () => {
   expect(screen.getByText('The realm of the user, such as pam or pve: the list of the node could not be read.')).toBeTruthy()
   fireEvent.change(field('Realm'), { target: { value: 'pve' } })
   signInWith('alice', 'pw')
-  await flush()
-  expect(calls.at(-1)?.body).toEqual({ user: 'alice', realm: 'pve', password: 'pw' })
+  await waitFor(() => expect(calls.at(-1)?.body).toEqual({ user: 'alice', realm: 'pve', password: 'pw' }), slow)
 })

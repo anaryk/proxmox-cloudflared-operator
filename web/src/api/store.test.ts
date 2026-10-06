@@ -516,8 +516,7 @@ describe('sign-in and sign-out', () => {
     replies.set('DELETE /api/session', () => ({ status: 204, body: undefined }))
     await s.signOut()
     expect(s.get().unauthenticated?.methods).toEqual(['password', 'token'])
-    await flush()
-    expect(s.get().unauthenticated).toEqual(appliance)
+    await vi.waitFor(() => expect(s.get().unauthenticated).toEqual(appliance), { timeout: 10_000 })
   })
 
   test("this browser's last doctor run is kept", () => {
