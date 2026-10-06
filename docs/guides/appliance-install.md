@@ -20,8 +20,9 @@ what it costs against the host profile.
   TCP and UDP, and to Debian's mirrors for the security updates.
 - A Cloudflare token as [Cloudflare token](../cloudflare-token.md) describes, in a file only
   root can read, or added later.
-- No principal but the admins with privileges on `/vms` or `/`. The installer names any it
-  finds; see [who may reach the appliance](../appliance.md#who-may-reach-the-appliance).
+- No principal but the admins holds a privilege that reaches into the appliance, on it, on its
+  pool or above; [who may reach the appliance](../appliance.md#who-may-reach-the-appliance)
+  lists them. The installer names any it finds.
 
 ## Steps
 
@@ -75,9 +76,25 @@ what it costs against the host profile.
 
 `pco status` shows `Profile: appliance` and `Identity: ok (lxc/120 on node1)`, and once applied
 the tunnel with its connector ready. `pco doctor` runs the checks of the appliance besides the
-usual ones; every line should be `✓`. Open `https://192.0.2.120:8643/`, compare the fingerprint
-the browser shows with the one the installer printed, and sign in with a Proxmox VE user that
-holds `Sys.Modify` on `/`.
+usual ones. A fresh install is not all `✓`, and a `✗` is what to look at first. Two warnings
+are usual:
+
+- `quic buffer`: `net.core.rmem_max` of the node is under 7500000, the receive buffer
+  `cloudflared` asks for its QUIC connections, and a node has less unless someone raised it.
+  The container cannot set it. On the node:
+
+      echo net.core.rmem_max=7500000 >> /etc/sysctl.d/90-pco.conf
+      sysctl --system
+
+- `admission`: the admission of the settings is `tag`, the default, and the guest of step 4
+  carries the gate tag, so whoever may clone it makes a tagged guest of their own. Set
+  `admission` to `approve` in the [settings](../settings.md), unless only admins hold
+  `VM.Clone` on the tagged guests.
+
+[Problems](../problems.md#doctor-checks) says what each check means.
+
+Open `https://192.0.2.120:8643/`, compare the fingerprint the browser shows with the one the
+installer printed, and sign in with a Proxmox VE user that holds `Sys.Modify` on `/`.
 
 ## Undo
 
