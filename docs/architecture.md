@@ -178,6 +178,30 @@ routes with `allowNode` among them; nothing else. The daemon gives it the target
 cycle, before it writes anything at Cloudflare, and `pco-egress.service` loads it at boot.
 [Security](security.md#the-connector-egress-filter) has its rules.
 
+### The network gateway
+
+A network the node has no address in is reached through a leg of pco's own: a foot in the
+bridge and VLAN of that network, in the network namespace `pco`, which a veth pair links to
+the host. The connectors dial a service address of `198.18.0.0/16` for each target behind a
+leg, and the namespace NATs it to the target through the leg; [pco netns](cli/pco-netns.md)
+shows and restores it. A leg whose mark passes to another network is made anew, so that
+nothing it learned in the old one is kept.
+
+Each network has a mark, from 1 to 15, and the SNAT through its leg draws its source ports
+from a block of 4096 of its own: mark 1 has the ports 1024 to 5119, mark 2 has 5120 to 9215,
+and so on. The blocks keep two networks with the same addresses from presenting the same
+connection to the node's connection tracking, as they would where the node's firewall sees the
+bridged frames. They set two limits:
+
+- **15 networks per node.** Fifteen blocks end at port 62463, and a 16th would pass 65535.
+  pco refuses a 16th network and says why. The marks are kept once for the whole cluster, so
+  the 15 are those of the cluster.
+- **About 68 new connections a second to one target**, an address and a port of a guest. A
+  guest keeps a used source port in TIME_WAIT for 60 seconds, so a block of 4096 serves 4096 new
+  connections a minute to one target. Past that the guest refuses the SYNs, the connector
+  retries after 1 and 3 seconds, and a request can time out. A connector keeps its connections
+  to a guest open and reuses them, so only a very busy target comes near the limit.
+
 ### The socket API
 
 The daemon answers a JSON API on the unix socket `/run/pco/pco.sock` and has no network

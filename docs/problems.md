@@ -225,6 +225,12 @@ verified at Cloudflare yet` and `the previous cycle found this appliance behind 
 at Cloudflare`. Where no gateway runs, the reason is `no gateway runs on this node`. A pool that
 ran out gives the line of its error: `every service address was given out: ...`.
 
+## Networks behind a leg
+
+| Line | Meaning and cause | What to do |
+|---|---|---|
+| `network <id>: pco reaches at most 15 networks: the SNAT through each takes a block of 4096 source ports, and 15 blocks end at port 62463, where one more would pass 65535`, and the same words after `network <id>: mark <n> is not 1 to 15:` | A 16th network was refused. The SNAT through the leg of each network draws its source ports from a block of 4096 of its own, and 15 blocks are all that fit below port 65536. The marks are kept once for the whole cluster, so the 15 are those of the cluster, and the limit is in the code, not a setting. With the blocks a target takes about 68 new connections a second; see [Architecture](architecture.md#the-network-gateway). | Remove a network that nothing you publish needs before adding another. |
+
 ## The appliance
 
 These lines come from a daemon in the appliance, where the container proves in each cycle
