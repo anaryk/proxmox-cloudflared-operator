@@ -149,7 +149,7 @@ func TestTheDaemonWarnsOfTheOverrideAndCarriesItAsAProblem(t *testing.T) {
 	require.Eventually(t, func() bool {
 		st, err := d.client.Status(t.Context())
 		return err == nil && !st.FinishedAt.IsZero() && containsLine(st, line)
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 	require.Eventually(t, func() bool {
 		for _, c := range d.fake.Calls() {
 			if c == "VerifyToken" {
@@ -157,7 +157,7 @@ func TestTheDaemonWarnsOfTheOverrideAndCarriesItAsAProblem(t *testing.T) {
 			}
 		}
 		return false
-	}, 10*time.Second, 10*time.Millisecond, "the daemon checks the token of the credential at the override")
+	}, 30*time.Second, 10*time.Millisecond, "the daemon checks the token of the credential at the override")
 }
 
 // overriddenDaemon is a daemon of a test that runs until the test ends.

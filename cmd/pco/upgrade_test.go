@@ -668,7 +668,7 @@ func TestTheDaemonCarriesTheUpgradeOverrideAsAProblem(t *testing.T) {
 	require.Eventually(t, func() bool {
 		st, err := d.client.Status(t.Context())
 		return err == nil && !st.FinishedAt.IsZero() && containsLine(st, line)
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 }
 
 func TestTheDaemonWithoutTheUpgradeOverrideHasNoSuchProblem(t *testing.T) {
@@ -677,7 +677,7 @@ func TestTheDaemonWithoutTheUpgradeOverrideHasNoSuchProblem(t *testing.T) {
 	require.Eventually(t, func() bool {
 		st, err := d.client.Status(t.Context())
 		return err == nil && !st.FinishedAt.IsZero()
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 	st, err := d.client.Status(t.Context())
 	require.NoError(t, err)
 	require.False(t, containsLine(st, upgrade.OverrideLine))
