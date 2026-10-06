@@ -297,6 +297,7 @@ func (s SDN) Ensure(ctx context.Context) error {
 	}
 	if l.token == "" {
 		if err := s.recheck(ctx, madeZone, madeVnet, othersOnEnsure); err != nil {
+			s.takeBack(ctx, l, madeZone, madeVnet)
 			return err
 		}
 	}
@@ -358,6 +359,7 @@ func (s SDN) Remove(ctx context.Context) error {
 		}
 	}
 	if !removed && len(ours) == 0 {
+		s.Ask.Info("SDN: nothing of the managed network is left, nothing needed")
 		return nil
 	}
 	if l.token == "" {

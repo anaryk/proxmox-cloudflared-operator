@@ -210,7 +210,8 @@ func TestSDNWithoutTheLockRefusesAChangeThatCame(t *testing.T) {
 	noLock := sdnLocked()
 	noLock.err = exitErr(255, "No 'create' handler defined for '/cluster/sdn/lock'")
 	e.script([]call{noLock}, sdnRead(noZones, noVnets), []call{zoneCreated(false), vnetCreated("1", false)},
-		sdnRead(list(zoneNew, `{"zone":"tenants","type":"vlan","state":"new","pending":{"bridge":"vmbr1"}}`), list(vnetNew), [2]string{"pconet", "[]"}))
+		sdnRead(list(zoneNew, `{"zone":"tenants","type":"vlan","state":"new","pending":{"bridge":"vmbr1"}}`), list(vnetNew), [2]string{"pconet", "[]"}),
+		[]call{{line: "pvesh delete /cluster/sdn/vnets/pconet"}, {line: "pvesh delete /cluster/sdn/zones/pco"}})
 	s := e.sdn()
 	s.Yes = true
 
@@ -218,6 +219,7 @@ func TestSDNWithoutTheLockRefusesAChangeThatCame(t *testing.T) {
 
 	require.ErrorContains(t, err, "zone tenants (new)")
 	e.done()
+	require.Equal(t, Manifest{}, e.m, "what the run made goes again, so that the other apply does not apply it")
 }
 
 func TestSDNRefusesChangesOfOthers(t *testing.T) {
