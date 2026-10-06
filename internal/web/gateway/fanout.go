@@ -785,10 +785,13 @@ func (g *Gateway) stream(c *gin.Context, _ Rule, r *Reader) {
 		select {
 		case <-s.q.wake:
 		case <-ticks:
-			if !g.auth.Live(s.session) || out.send([]byte(": ping\n\n")) != nil {
+			if !g.auth.Live(s.session) {
 				return
 			}
 			checking, late = g.check(ctx, c.Request, s), time.After(g.checkWindow)
+			if out.send([]byte(": ping\n\n")) != nil {
+				return
+			}
 		case v := <-checking:
 			checking, late = nil, nil
 			if g.ends(s, v) {
@@ -823,6 +826,7 @@ func (g *Gateway) check(ctx context.Context, r *http.Request, s *stream) chan st
 // session does not hold, or whose checks had no answer unansweredLimit times
 // in a row.
 func (g *Gateway) ends(s *stream, v standing) bool {
+	defer g.judged()
 	if v.answered {
 		s.unanswered = 0
 		return !v.holds

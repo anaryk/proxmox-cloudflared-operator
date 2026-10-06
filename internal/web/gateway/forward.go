@@ -76,6 +76,8 @@ type Gateway struct {
 	checkWindow  time.Duration
 	readerWindow time.Duration
 	timeoutOf    func(Rule) time.Duration
+	// judged is called when a stream has taken the result of a check.
+	judged func()
 }
 
 // New returns the gateway to the daemon that listens on socket, for the
@@ -114,6 +116,7 @@ func New(socket string, a *auth.Auth, log zerolog.Logger) *Gateway {
 		checkWindow:  checkWindow,
 		readerWindow: readersWindow,
 		timeoutOf:    func(r Rule) time.Duration { return r.Timeout },
+		judged:       func() {},
 	}
 	g.hub = newHub(g)
 	// A stream ends with its session at once; the ping also finds a session

@@ -293,18 +293,19 @@ func TestTheUpstreamBacksOff(t *testing.T) {
 
 func TestStreamsArePinged(t *testing.T) {
 	s := newTestServer(t)
-	tick := make(chan time.Time)
-	s.gw.ticker = func(every time.Duration) (<-chan time.Time, func()) {
-		require.Equal(t, 15*time.Second, every)
-		return tick, func() {}
-	}
+	tick := s.ticks()
 	s.connect()
 	sr := s.signIn(reader).openStream(s.streamServer(), "")
 	sr.take(2)
-	tick <- t0
+	tick.pulse()
 	m := sr.next()
 	require.Equal(t, "comment", m.event)
 	require.Equal(t, "ping", m.data)
+
+	// Nothing changed, so the check keeps the stream, which takes the next tick.
+	tick.pulse()
+	require.Equal(t, "comment", sr.next().event)
+	require.True(t, sr.open())
 }
 
 func TestStreamsAreLimitedPerSessionAndInAll(t *testing.T) {
@@ -521,17 +522,6 @@ func (s *testServer) streamOf(srv *httptest.Server, user string) *streamReader {
 	return sr
 }
 
-// pulse sends a tick, and fails when the stream is not there to take it: one
-// that is still checking takes the next tick after its answer.
-func pulse(t *testing.T, tick chan<- time.Time) {
-	t.Helper()
-	select {
-	case tick <- t0:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the stream did not take the tick")
-	}
-}
-
 // requireEnds checks that the stream ends, now or after the tick it is
 // sent.
 func requireEnds(t *testing.T, sr *streamReader) {
@@ -562,14 +552,10 @@ func TestAStreamEndsWhenItsReaderSeesLess(t *testing.T) {
 	require.Equal(t, bootA+":13", sr.next().id)
 	require.Equal(t, bootA+":14", sr.next().id)
 
-	// Nothing changed: the tick is a ping.
-	tick <- t0
-	require.Equal(t, "comment", sr.next().event)
-
 	// qemu/102 taken away: the set is asked for again after a minute.
 	s.pve.sees(reader, 101)
 	s.clock.advance(61 * time.Second)
-	tick <- t0
+	tick.pulse()
 	requireEnds(t, sr)
 
 	again := b.openStream(srv, bootA+":12")
@@ -579,30 +565,52 @@ func TestAStreamEndsWhenItsReaderSeesLess(t *testing.T) {
 	again.quiet()
 }
 
+// demoted signs in an admin, opens its stream, and takes Sys.Modify away.
+func demoted(t *testing.T, s *testServer, signIn func(string) *browser) *streamReader {
+	t.Helper()
+	sr := signIn(admin).openStream(s.streamServer(), "")
+	sr.take(2)
+	s.pve.grant(admin, "Sys.Audit")
+	s.pve.sees(admin, 101)
+	return sr
+}
+
 // A role is looked at again with the tick, and the answer of Proxmox VE for
-// the ticket holds for 30 s: until then the stream is the admin's, after it
-// not. The page's next stream is the reader's.
-func TestAStreamEndsWhenTheRoleChanges(t *testing.T) {
+// the ticket holds for 30 s: until then the stream is the admin's.
+func TestARoleTakenAwayIsNotSeenWithinTheCacheOfTheTicket(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.connect()
+	sr := demoted(t, s, s.signIn)
+	s.clock.advance(20 * time.Second)
+	tick.pulse()
+	require.Equal(t, "comment", sr.next().event)
+	// The stream takes the next tick: the check kept it.
+	tick.pulse()
+	require.Equal(t, "comment", sr.next().event)
+	require.True(t, sr.open())
+}
+
+// Once the cache is over the stream ends, and the page's next stream is the
+// reader's.
+func TestARoleTakenAwayEndsTheStreamOnceTheCacheIsOver(t *testing.T) {
 	s := newTestServer(t)
 	tick := s.ticks()
 	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
 	s.daemon.serveState(populated(t))
 	conn := s.connect()
-	srv := s.streamServer()
 	b := s.signIn(admin)
+	srv := s.streamServer()
 	sr := b.openStream(srv, "")
 	sr.take(2)
 	conn.send <- eventMessage(routeEvent(13, "info", "qemu/101"))
 	conn.send <- eventMessage(routeEvent(14, "warn", "qemu/102"))
 	sr.take(2)
-
 	s.pve.grant(admin, "Sys.Audit")
 	s.pve.sees(admin, 101)
-	s.clock.advance(20 * time.Second)
-	pulse(t, tick)
-	require.Equal(t, "comment", sr.next().event)
-	s.clock.advance(11 * time.Second)
-	pulse(t, tick)
+
+	s.clock.advance(31 * time.Second)
+	tick.pulse()
 	require.Equal(t, "comment", sr.next().event)
 	requireEnds(t, sr)
 
@@ -613,30 +621,39 @@ func TestAStreamEndsWhenTheRoleChanges(t *testing.T) {
 }
 
 // A token has no ticket to cache: its role is asked for once a minute.
-func TestAStreamOfATokenEndsWhenItsRoleOrItsGuestsChange(t *testing.T) {
+func TestARoleTakenAwayFromATokenIsNotSeenWithinAMinute(t *testing.T) {
 	s := newTestServer(t)
 	tick := s.ticks()
 	s.connect()
-	srv := s.streamServer()
-
-	b := s.signInToken(admin)
-	sr := b.openStream(srv, "")
-	sr.take(2)
-	s.pve.grant(admin, "Sys.Audit")
+	sr := demoted(t, s, s.signInToken)
 	s.clock.advance(30 * time.Second)
-	pulse(t, tick)
+	tick.pulse()
 	require.Equal(t, "comment", sr.next().event)
-	s.clock.advance(31 * time.Second)
-	pulse(t, tick)
-	requireEnds(t, sr)
+	tick.pulse()
+	require.Equal(t, "comment", sr.next().event)
+	require.True(t, sr.open())
+}
 
+func TestARoleTakenAwayFromATokenEndsItsStreamAfterAMinute(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.connect()
+	sr := demoted(t, s, s.signInToken)
+	s.clock.advance(61 * time.Second)
+	tick.pulse()
+	requireEnds(t, sr)
+}
+
+func TestAStreamOfATokenEndsWhenItsGuestsChange(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.connect()
 	s.pve.sees(reader, 101, 102)
-	b = s.signInToken(reader)
-	sr = b.openStream(srv, "")
+	sr := s.signInToken(reader).openStream(s.streamServer(), "")
 	sr.take(2)
 	s.pve.sees(reader, 101)
 	s.clock.advance(61 * time.Second)
-	pulse(t, tick)
+	tick.pulse()
 	requireEnds(t, sr)
 }
 
@@ -664,7 +681,7 @@ func TestAStreamTakesTheSetAnyRequestOfItsSessionRead(t *testing.T) {
 	// By the tick Proxmox VE says 102 again; the stream has not asked.
 	s.pve.sees(reader, 101, 102)
 	s.clock.advance(10 * time.Second)
-	pulse(t, tick)
+	tick.pulse()
 	requireEnds(t, sr)
 	require.Equal(t, 2, s.pve.listings())
 }
@@ -681,11 +698,11 @@ func TestAStreamEndsAfterTwoChecksInARowWithoutAnAnswer(t *testing.T) {
 	s.pve.outagesOf(true, false, true, true)
 	for range 3 {
 		s.clock.advance(31 * time.Second)
-		pulse(t, tick)
+		tick.pulse()
 		require.Equal(t, "comment", sr.next().event)
 	}
 	s.clock.advance(31 * time.Second)
-	pulse(t, tick)
+	tick.pulse()
 	require.Equal(t, "comment", sr.next().event)
 	requireEnds(t, sr)
 }
@@ -703,7 +720,8 @@ func TestASlowCheckDoesNotHoldUpTheStream(t *testing.T) {
 	sr := s.streamOf(s.streamServer(), reader)
 	s.hangPVE()
 	s.clock.advance(31 * time.Second)
-	pulse(t, tick)
+	// The check does not end within the test: the tick is all there is to wait for.
+	tick.send()
 	require.Equal(t, "comment", sr.next().event)
 	conn.send <- eventMessage(routeEvent(13, "info", "qemu/101"))
 	require.Equal(t, bootA+":13", sr.next().id, "an event goes out while Proxmox VE is asked")
@@ -718,9 +736,9 @@ func TestACheckThatTakesTooLongKeepsTheStreamForOneTick(t *testing.T) {
 	sr := s.streamOf(s.streamServer(), admin)
 	s.hangPVE()
 	s.clock.advance(31 * time.Second)
-	pulse(t, tick)
+	tick.pulse()
 	require.Equal(t, "comment", sr.next().event)
-	pulse(t, tick)
+	tick.pulse()
 	require.Equal(t, "comment", sr.next().event)
 	requireEnds(t, sr)
 }
@@ -749,7 +767,7 @@ func TestAStreamEndsWithItsSession(t *testing.T) {
 	// ends it.
 	sr = s.streamOf(srv, reader)
 	s.clock.advance(31 * time.Minute)
-	tick <- t0
+	tick.send()
 	requireEnds(t, sr)
 }
 

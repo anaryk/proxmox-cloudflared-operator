@@ -425,12 +425,44 @@ func (f *fakePVE) listings() int {
 	return f.listed
 }
 
-// ticks makes the streams' ticker one the test drives: a stream checks its
-// session and pings on every tick it is sent.
-func (s *testServer) ticks() chan<- time.Time {
-	tick := make(chan time.Time)
-	s.gw.ticker = func(time.Duration) (<-chan time.Time, func()) { return tick, func() {} }
-	return tick
+// ticker is the tick of the streams, driven by the test: a stream pings and
+// checks its session on every tick it is sent.
+type ticker struct {
+	s *testServer
+	c chan time.Time
+}
+
+func (s *testServer) ticks() *ticker {
+	k := &ticker{s: s, c: make(chan time.Time)}
+	s.gw.ticker = func(every time.Duration) (<-chan time.Time, func()) {
+		require.Equal(s.t, pingEvery, every)
+		return k.c, func() {}
+	}
+	return k
+}
+
+// send sends a tick, and fails when the stream is not there to take it: one
+// that is still checking takes the next tick after its check is judged.
+func (k *ticker) send() {
+	k.s.t.Helper()
+	select {
+	case k.c <- t0:
+	case <-time.After(5 * time.Second):
+		k.s.t.Fatal("the stream did not take the tick")
+	}
+}
+
+// pulse sends a tick and waits until the stream has taken the result of its
+// check, so that the test changes nothing the check could still see: the
+// clock and Proxmox VE are the check's until then.
+func (k *ticker) pulse() {
+	k.s.t.Helper()
+	k.send()
+	select {
+	case <-k.s.judgements:
+	case <-time.After(5 * time.Second):
+		k.s.t.Fatal("the check of the tick was not judged")
+	}
 }
 
 // testServer is pco web with the sessions and the gateway, in front of a
@@ -447,13 +479,15 @@ type testServer struct {
 	// resume lets it go on.
 	sleeps chan time.Duration
 	resume chan struct{}
+	// judgements say that a stream took the result of a check.
+	judgements chan struct{}
 }
 
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	s := &testServer{
 		t: t, daemon: newFakeDaemon(t), pve: newFakePVE(), clock: &clock{now: t0}, logs: &testutil.SyncBuffer{},
-		sleeps: make(chan time.Duration), resume: make(chan struct{}),
+		sleeps: make(chan time.Duration), resume: make(chan struct{}), judgements: make(chan struct{}, 16),
 	}
 	log := zerolog.New(s.logs)
 	a := auth.New(s.pve, auth.Config{
@@ -467,6 +501,12 @@ func newTestServer(t *testing.T) *testServer {
 	s.gw = New(s.daemon.socket, a, log)
 	s.gw.now = s.clock.Now
 	s.gw.ticker = func(time.Duration) (<-chan time.Time, func()) { return nil, func() {} }
+	s.gw.judged = func() {
+		select {
+		case s.judgements <- struct{}{}:
+		default:
+		}
+	}
 	s.gw.sleep = func(ctx context.Context, d time.Duration) bool {
 		select {
 		case s.sleeps <- d:
