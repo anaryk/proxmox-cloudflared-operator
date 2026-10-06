@@ -26,7 +26,7 @@ A tenant's hostname reaches its machine through Cloudflare's edge and a connecto
 appliance. The appliance reaches each tenant network through a card of its own on it, and
 its web interface listens on the card on the management network, where tenants are not:
 
-~~~mermaid
+```mermaid
 flowchart TB
     visitor["Visitor"] --> edge["Cloudflare edge"]
     staff["Company staff"]
@@ -49,7 +49,7 @@ flowchart TB
     filter -->|"card net1"| acme
     filter -->|"card net2"| globex
     daemon -->|"scoped token"| pveapi
-~~~
+```
 
 ## Decisions
 
@@ -60,12 +60,12 @@ levels seriously: at `observed` the proof is that only the guest answers ARP for
 and that the card of the guest has the MAC it had the first time. Nothing proves that the
 frames of the guest go through its own port. [Identity](../identity.md) and the
 [table in Security](../security.md#identity-levels-against-five-attackers) say what that
-does not stop. The install makes the container, the pool, the token and the settings; the
-appliance page has its steps.
+does not stop. The install makes the container, the pool, the token and the settings;
+[Install the appliance](../guides/appliance-install.md) has its steps.
 
-The appliance runs on the one node it was installed on, and nothing moves it to another
-when that node fails. A copy of the container, such as a clone, serves nothing: the container proves in every
-cycle that it is the one that was installed.
+The appliance runs on the one node it was installed on, and nothing moves it to another when
+that node fails. A copy of the container, such as a clone, serves nothing: the container proves
+in every cycle that it is the one that was installed.
 
 ### Identity minimum and segments
 
@@ -176,21 +176,21 @@ other than an admin may use `SDN.Use` on that network.
 The settings the company sets, as in [Settings](../settings.md#changing-the-settings) (the
 installer has made `identityMinimum` `observed` already):
 
-~~~json
+```json
 {
   "admission": "approve",
   "allowHosts": ["acme.example.net", "globex.example.net"],
   "maxHostnamesPerGuest": 2
 }
-~~~
+```
 
 The Notes of the tenant's machine `151`:
 
-~~~text
+````text
 ```cf-tunnel
 acme.example.net -> :8080
 ```
-~~~
+````
 
 To take a tenant on: add its cards and its segment; tag the machine
 (`qm set 151 --tags 'cf-tunnel'`); add the name to `allowHosts`; let the tenant write its
@@ -256,15 +256,21 @@ appliance. The record is removed after the grace period.
   tokens. `pco doctor` warns for a snapshot and fails for a copy. The state volume is kept out
   of backups on purpose, as a backup would carry the credentials and the keys, and the
   `volume` check fails if that changes. After a restore or a rollback the commands are
-  `pco appliance repair` and `pco appliance recover`; the appliance page describes them.
+  `pco appliance repair` and `pco appliance recover`;
+  [Restore the appliance from a backup](../guides/appliance-restore.md) and
+  [the appliance page](../appliance.md#restore-and-repair) describe them.
 - **The node.** The appliance is on one node. While it is down, so is everything published.
 - **Names.** `pco claims list` says who holds each hostname and who waits for it, and
   `pco events` records what the admins did.
 
 ## Guides it uses
 
-- Who may publish: the gate tag, the admission modes, approvals.
-- Manual routes: the names the company writes itself.
-- Several tokens and accounts, and observe, then enforce.
-- The appliance guides: install, upgrade, and recovery of the appliance itself.
-- Monitoring.
+- [Decide who may publish](../guides/who-may-publish.md): the gate tag, the admission modes,
+  approvals.
+- [Publish a route by hand](../guides/manual-routes.md): the names the company writes itself.
+- [Use several tokens and accounts](../guides/several-tokens-and-accounts.md), and
+  [roll out in observe-only mode](../guides/observe-then-enforce.md).
+- The appliance guides: [install](../guides/appliance-install.md),
+  [upgrade](../guides/appliance-upgrade.md) and [restore](../guides/appliance-restore.md) the
+  appliance itself.
+- [Monitor pco](../guides/monitoring.md).

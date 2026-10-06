@@ -45,7 +45,7 @@ it either way ([Internal tools behind Cloudflare Access](internal-tools-behind-a
 For each name, before and after `pco adopt`: the record at Cloudflare points at another
 tunnel, and the connector that serves it is on the node and not in the guest:
 
-~~~mermaid
+```mermaid
 flowchart LR
     subgraph before["Before"]
         direction TB
@@ -60,7 +60,7 @@ flowchart LR
         filter --> guest["Guest, 10.0.0.12:8443"]
     end
     before --> after
-~~~
+```
 
 ## Decisions
 
@@ -82,8 +82,9 @@ guests are on the node that runs pco. A guest on another node can only be proven
 
 pco needs a Cloudflare API token with the three permissions of
 [Cloudflare token](../cloudflare-token.md#permissions). The credentials file of an old tunnel
-is not one, and pco has no use for it. Scope the token to the zones that you move names in. pco will not delete an old tunnel, so there is
-nothing to grant for that: you remove them yourself, at the end.
+is not one, and pco has no use for it. Scope the token to the zones that you move names in. pco
+will not delete an old tunnel, so there is nothing to grant for that: you remove them yourself,
+at the end.
 
 ### Egress filter
 
@@ -123,23 +124,23 @@ Nothing particular. An admin can request an adoption in the web interface as wel
    The Notes of `110`, `120` and a virtual machine `121` that is reached through a forwarded
    port today:
 
-   ~~~text
+   ````text
    ```cf-tunnel
    wiki.example.com -> :8080
    ```
-   ~~~
+   ````
 
-   ~~~text
+   ````text
    ```cf-tunnel
    shop.example.com -> https://:8443 no-tls-verify
    ```
-   ~~~
+   ````
 
-   ~~~text
+   ````text
    ```cf-tunnel
    www.example.com -> :80
    ```
-   ~~~
+   ````
 
 3. **Read the plan.** `pco plan` lists each name that a record of someone else holds. Every
    name that an old tunnel serves is there, and so is the one with the `A` record:
@@ -209,8 +210,11 @@ list of what is published, and `pco routes` is the answer to which tunnel serves
 
 ## Guides it uses
 
-- Adopt existing records: `pco adopt`, and moving from hand-run `cloudflared`.
-- Publish a container, publish a virtual machine, and HTTPS origins.
-- Wildcards.
-- Manual routes.
-- Observe, then enforce.
+- [Take over existing DNS records](../guides/adopt-existing-records.md): `pco adopt`, and moving
+  from hand-run `cloudflared`.
+- [Publish a container](../guides/publish-a-container.md),
+  [publish a virtual machine](../guides/publish-a-vm.md) and
+  [publish an HTTPS origin](../guides/https-origins.md).
+- [Publish a wildcard](../guides/wildcards.md).
+- [Publish a route by hand](../guides/manual-routes.md).
+- [Roll out in observe-only mode](../guides/observe-then-enforce.md).

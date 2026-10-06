@@ -44,7 +44,7 @@ goes on into the tunnel, to the connector on the node, which the egress filter c
 the addresses pco verified. pco writes the tunnel and the DNS records, and the admin writes
 the applications and policies:
 
-~~~mermaid
+```mermaid
 flowchart TB
     staff["Staff member"] --> access{{"Access: an application for the hostname, and an Allow policy that matches?"}}
     access -->|"no"| login["Sign-in page, or refused: the request goes no further"]
@@ -64,7 +64,7 @@ flowchart TB
     filter --> wiki
     daemon -. "tunnel configuration, DNS records" .-> tunnel
     admin["Admin, in the Zero Trust dashboard"] -. "applications and policies" .-> access
-~~~
+```
 
 ## Decisions
 
@@ -137,28 +137,28 @@ it on the management network, with the Proxmox account they have, as admins (`Sy
 
 The settings:
 
-~~~json
+```json
 {
   "allowHosts": ["grafana.example.com", "wiki.example.com", "console.example.com"]
 }
-~~~
+```
 
 Applied as in [Settings](../settings.md#changing-the-settings). The Notes of the Grafana
 container `130`:
 
-~~~text
+````text
 ```cf-tunnel
 grafana.example.com -> :3000
 ```
-~~~
+````
 
 and of the console, which speaks HTTPS with a certificate of its own:
 
-~~~text
+````text
 ```cf-tunnel
 console.example.com -> https://:8443 no-tls-verify
 ```
-~~~
+````
 
 To add a tool, in this order:
 
@@ -203,8 +203,10 @@ To take a tool down, in the opposite order: take the name out of the Notes and o
 
 ## Guides it uses
 
-- Publish a container, and publish a virtual machine.
-- HTTPS origins: the console above.
-- Who may publish: the hostname policy and the admission modes.
-- Observe, then enforce.
-- Monitoring.
+- [Publish a container](../guides/publish-a-container.md) and
+  [publish a virtual machine](../guides/publish-a-vm.md).
+- [Publish an HTTPS origin](../guides/https-origins.md): the console above.
+- [Decide who may publish](../guides/who-may-publish.md): the hostname policy and the admission
+  modes.
+- [Roll out in observe-only mode](../guides/observe-then-enforce.md).
+- [Monitor pco](../guides/monitoring.md).

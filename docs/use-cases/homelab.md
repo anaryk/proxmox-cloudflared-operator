@@ -23,7 +23,7 @@ A visitor reaches a hostname through Cloudflare's edge; the connector on the nod
 egress filter confines to the addresses pco verified, carries the request to a container, to
 a virtual machine and, for the NAS, to an address that is no guest's:
 
-~~~mermaid
+```mermaid
 flowchart TB
     visitor["Visitor"] --> edge["Cloudflare edge"]
     subgraph lan["Home network, 10.0.0.0/24"]
@@ -41,7 +41,7 @@ flowchart TB
     filter -->|"manual route"| nas
     daemon -. "tunnel configuration, DNS records" .-> edge
     daemon -. "verified targets" .-> filter
-~~~
+```
 
 ## Decisions
 
@@ -73,9 +73,10 @@ node that runs pco.
 
 ### Tokens
 
-One Cloudflare token, with the three permissions of [Cloudflare token](../cloudflare-token.md#permissions)
-on the account and on the one zone that is published in, `example.com`. A token that is
-scoped to the zone cannot publish anything in another.
+One Cloudflare token, with the three permissions of
+[Cloudflare token](../cloudflare-token.md#permissions) on the account and on the one zone that
+is published in, `example.com`. A token that is scoped to the zone cannot publish anything in
+another.
 
 Whether to give it a time to live is a real choice at home. pco has no command that replaces
 the secret of a credential, so rotating a token means adding a new one, pinning the zone to
@@ -102,21 +103,21 @@ confined until the daemon loads it again.
 
 The web interface listens on the node's own address, port 8643, and is reached from the home
 network. Sign in with the Proxmox account of the owner. It is not published: a guest cannot
-publish the address of the node, which is on [the denylist](../identity.md#the-denylist-and-the-node), so
-neither the web interface of pco nor that of Proxmox is reachable through a route written in
-a guest's Notes. Do not forward the port at the router. Reach it from outside through a VPN
-if you need it.
+publish the address of the node, which is on
+[the denylist](../identity.md#the-denylist-and-the-node), so neither the web interface of pco
+nor that of Proxmox is reachable through a route written in a guest's Notes. Do not forward the
+port at the router. Reach it from outside through a VPN if you need it.
 
 ## What it ends with
 
 The settings differ from the defaults in one place, the address that a manual route may
 point at, which is the NAS's:
 
-~~~json
+```json
 {
   "manualCIDRs": ["10.0.0.50/32"]
 }
-~~~
+```
 
 Put it in the `settings` object of the file that `pco settings show --json` prints and apply
 it ([Settings](../settings.md#changing-the-settings)):
@@ -126,19 +127,19 @@ it ([Settings](../settings.md#changing-the-settings)):
 
 The Notes of the container `110` hold one line:
 
-~~~text
+````text
 ```cf-tunnel
 dash.example.com -> :3000
 ```
-~~~
+````
 
 and those of the virtual machine `120` another:
 
-~~~text
+````text
 ```cf-tunnel
 photos.example.com -> :3001
 ```
-~~~
+````
 
 Both guests carry the tag, as `pct set 110 --tags 'cf-tunnel'` and
 `qm set 120 --tags 'cf-tunnel'` make it. The NAS is a route of its own:
@@ -189,9 +190,13 @@ denylist and a connection to the port are checked.
 
 ## Guides it uses
 
-- Publish a container, and publish a virtual machine: the tag, the Notes, `pco plan` and
+- [Publish a container](../guides/publish-a-container.md) and
+  [publish a virtual machine](../guides/publish-a-vm.md): the tag, the Notes, `pco plan` and
   `pco apply`.
-- Manual routes: the NAS.
-- Observe, then enforce: reading `pco plan` before the first `pco apply`.
-- Adopt existing records: for a name that already has a record at Cloudflare.
-- Backup and recovery, and upgrade and rollback.
+- [Publish a route by hand](../guides/manual-routes.md): the NAS.
+- [Roll out in observe-only mode](../guides/observe-then-enforce.md): reading `pco plan` before
+  the first `pco apply`.
+- [Take over existing DNS records](../guides/adopt-existing-records.md): for a name that already
+  has a record at Cloudflare.
+- [Back up and recover](../guides/backup-and-recovery.md) and
+  [Upgrade and go back](../guides/upgrade-and-rollback.md).

@@ -19,7 +19,8 @@ Two facts about pco decide the rest.
   the node registry names another node. The connectors run on that node too.
 - **It does not fail over.** If that node is down, every published hostname is down with it,
   and nothing takes over. Moving pco to another node is something an admin does, with the
-  steps of the backup and recovery guide; automatic failover is planned for a later release.
+  steps of [Back up and recover](../guides/backup-and-recovery.md#move-pco-to-another-node);
+  automatic failover is planned for a later release.
 
 ## The setup
 
@@ -28,7 +29,7 @@ A guest on `node2` is listed and its Notes are read, but this node cannot see wh
 of `node2` sends the guest's frames, so it is proven at `observed` at most, and is held back at
 the default minimum. The store is on the cluster filesystem and is the same on every node:
 
-~~~mermaid
+```mermaid
 flowchart TB
     visitor["Visitor"] --> edge["Cloudflare edge"]
     edge -->|"through the tunnel the connector opened"| connector
@@ -51,7 +52,7 @@ flowchart TB
     filter --> api
     daemon -->|"ARP only, no forwarding table"| reports
     daemon --> store
-~~~
+```
 
 ## Decisions
 
@@ -164,23 +165,23 @@ name of their own, put the name in `PCO_WEB_HOSTS` in `/etc/default/pco-web` and
 
 The settings that differ from the defaults:
 
-~~~json
+```json
 {
   "admission": "approve",
   "denyHosts": ["admin.example.com", "*.internal.example.com"],
   "maxHostnamesPerGuest": 4
 }
-~~~
+```
 
 Apply them as in [Settings](../settings.md#changing-the-settings). The Notes of the guest
 `131`, written by the team that owns it:
 
-~~~text
+````text
 ```cf-tunnel
 portal.example.com -> :8080
 api.example.com    -> :8081
 ```
-~~~
+````
 
 IT sets the tag, as a user with `Sys.Modify` on `/`, and approves:
 
@@ -192,20 +193,18 @@ IT sets the tag, as a user with `Sys.Modify` on `/`, and approves:
 runs on:
 
     Approved guests:
-      GUEST             IDENTITY  NOW
-      qemu/101 (web-1)  uuid:101  the same
-      qemu/102 (db-1)   uuid:old  changed to uuid:102: approve it again to publish it
-      lxc/300           uuid:300  not in the last listing
+      GUEST               IDENTITY  NOW
+      qemu/131 (portal)   uuid:131  the same
+      qemu/141 (reports)  uuid:141  changed to uuid:142: approve it again to publish it
 
     Waiting for approval (pco guest approve <owner>):
-      qemu/103 (new-1)
-      qemu/104
+      lxc/132 (api)
 
     Tagged guests:
-      GUEST             NODE  RUNNING  IDENTITY  APPROVAL  ROUTES  ISSUES
-      qemu/101 (web-1)  node1  yes      uuid:101  approved  2       0
-      qemu/102 (db-1)   node1  no       uuid:102  changed   0       1
-      qemu/103 (new-1)  node2  yes      uuid:103  waiting   0       0
+      GUEST               NODE   RUNNING  IDENTITY                              APPROVAL  ROUTES  ISSUES
+      qemu/131 (portal)   node1  yes      uuid:131                              approved  1       0
+      lxc/132 (api)       node1  yes      mac:3f2a91b47c0d5e6f8a9b0c1d2e3f4a5b  waiting   1       0
+      qemu/141 (reports)  node2  yes      uuid:142                              changed   1       0
 
 With the portal on `node1` and a report server on `node2`, `pco routes` shows what the default
 minimum does to the second:
@@ -235,13 +234,18 @@ minimum does to the second:
   hold, and why. A line that counts guests of other nodes means someone moved one.
 - **The token.** Its expiry, and who else spends the Cloudflare API of the same user.
 - **Monitoring.** `pco status` exits 1 when there is a problem, and `pco status --json` has
-  the fields to alert on; `pco doctor` can run from a timer ([Operations](../operations.md#exit-codes-and---json)).
+  the fields to alert on; `pco doctor` can run from a timer
+  ([Operations](../operations.md#exit-codes-and---json)).
 
 ## Guides it uses
 
-- Clusters: which node to install on, the guests of other nodes and segments, what stops
-  when that node is down.
-- Who may publish: the gate tag, the admission modes, approvals.
-- Several tokens and accounts, and observe, then enforce.
-- Backup and recovery: what to back up, and moving pco to another node.
-- Upgrade and rollback, and monitoring.
+- [Run pco on a cluster](../guides/clusters.md): which node to install on, the guests of other
+  nodes and segments, what stops when that node is down.
+- [Decide who may publish](../guides/who-may-publish.md): the gate tag, the admission modes,
+  approvals.
+- [Use several tokens and accounts](../guides/several-tokens-and-accounts.md), and
+  [roll out in observe-only mode](../guides/observe-then-enforce.md).
+- [Back up and recover](../guides/backup-and-recovery.md): what to back up, and moving pco to
+  another node.
+- [Upgrade and go back](../guides/upgrade-and-rollback.md), and
+  [monitor pco](../guides/monitoring.md).

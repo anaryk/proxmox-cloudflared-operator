@@ -31,7 +31,7 @@ pco reads the tagged guests, proves the address of the new one, and writes the t
 configuration and the DNS record. On the close of the pull request the job destroys the
 guest and pco takes its name down after the grace period:
 
-~~~mermaid
+```mermaid
 flowchart TB
     reviewer["Reviewer"] --> edge["Cloudflare edge"]
     edge -->|"through the tunnel"| connector
@@ -43,7 +43,7 @@ flowchart TB
     end
     daemon -. "tunnel rule, CNAME pr-121.example.net" .-> edge
     ci["CI job, as the account ci@pve"] -->|"clone, Notes, start; destroy when the pull request closes"| guest
-~~~
+```
 
 ## Decisions
 
@@ -128,14 +128,17 @@ so one application, made before the first preview, covers all of them.
 
 The settings:
 
-~~~json
+```json
 {
   "maxHostnamesPerGuest": 2
 }
-~~~
+```
 
-The job, written as the commands of the node; it sends the same calls to the Proxmox API
-under its token:
+The job, as an example to adapt: the commands of the node, which a CI job sends as the same
+calls to the Proxmox API under its token. They are Proxmox's own, not pco's, and the ids, the
+pool and the template are those of this page. What they need beyond the role above depends on
+your storage and your pool, so run them once with the account of the job before the job relies
+on them:
 
     pct clone 150 152 --hostname pr-121 --pool previews
     pct set 152 --description $'```cf-tunnel\npr-121.example.net -> :3000\n```'
@@ -143,11 +146,11 @@ under its token:
 
 so that the Notes of the new container are
 
-~~~text
+````text
 ```cf-tunnel
 pr-121.example.net -> :3000
 ```
-~~~
+````
 
 and, when the pull request closes:
 
@@ -196,8 +199,10 @@ carry the tag:
 
 ## Guides it uses
 
-- Publish a container, and publish a virtual machine.
-- Move a hostname: claims, clones, and handing a hostname to another guest.
-- Who may publish: the gate tag and the admission modes.
-- Several tokens and accounts.
-- Monitoring.
+- [Publish a container](../guides/publish-a-container.md) and
+  [publish a virtual machine](../guides/publish-a-vm.md).
+- [Move a hostname to another guest](../guides/move-a-hostname.md): claims, clones, and handing
+  a hostname to another guest.
+- [Decide who may publish](../guides/who-may-publish.md): the gate tag and the admission modes.
+- [Use several tokens and accounts](../guides/several-tokens-and-accounts.md).
+- [Monitor pco](../guides/monitoring.md).
