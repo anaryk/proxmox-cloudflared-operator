@@ -77,10 +77,11 @@ func (l *labNet) ip(args ...string) {
 	require.NoError(l.t, err, "ip %s: %s", strings.Join(args, " "), out)
 }
 
-func (l *labNet) inHost(name string, args ...string) {
+// bridgeCmd runs the bridge tool of iproute2 on the host.
+func (l *labNet) bridgeCmd(args ...string) {
 	l.t.Helper()
-	out, err := exec.Command(name, append([]string{}, args...)...).CombinedOutput()
-	require.NoError(l.t, err, "%s %s: %s", name, strings.Join(args, " "), out)
+	out, err := exec.Command("bridge", args...).CombinedOutput()
+	require.NoError(l.t, err, "bridge %s: %s", strings.Join(args, " "), out)
 }
 
 // bridge makes a bridge on the host, up.
@@ -105,8 +106,8 @@ func (l *labNet) guest(name, bridge string, vlan int, cidr, gateway string) netn
 	l.ip("-n", l.hostName, "link", "add", port, "type", "veth", "peer", "name", "eth0", "netns", ns)
 	l.ip("-n", l.hostName, "link", "set", port, "master", bridge)
 	if vlan > 0 {
-		l.inHost("bridge", "-n", l.hostName, "vlan", "add", "dev", port, "vid", strconv.Itoa(vlan), "pvid", "untagged")
-		l.inHost("bridge", "-n", l.hostName, "vlan", "del", "dev", port, "vid", "1")
+		l.bridgeCmd("-n", l.hostName, "vlan", "add", "dev", port, "vid", strconv.Itoa(vlan), "pvid", "untagged")
+		l.bridgeCmd("-n", l.hostName, "vlan", "del", "dev", port, "vid", "1")
 	}
 	l.ip("-n", l.hostName, "link", "set", port, "up")
 	l.ip("-n", ns, "link", "set", "lo", "up")
@@ -538,7 +539,7 @@ func TestLinuxDuplicateAddressDetection(t *testing.T) {
 	l.bridge("br1", false)
 	l.guest("a", "br1", 0, "10.77.0.5/24", "")
 	require.NoError(t, l.b.Up(t.Context()))
-	guestMAC := l.macOf(t, "pcotest-a-"+l.id, "eth0")
+	guestMAC := l.macOf(t, "pcotest-a-"+l.id)
 
 	taken := Leg{ID: "br1", Mark: 1, Bridge: "br1", Prefix: prefix("10.77.0.5/24"), MAC: mac("02:50:43:4f:00:01"), Uplink: true}
 	states, err := l.b.Sync(t.Context(), []Leg{taken}, nil, nil, nil)
@@ -616,7 +617,7 @@ func TestLinuxAProbeWithoutALegGoesThroughATemporaryPort(t *testing.T) {
 	macs, err := l.b.Probe(t.Context(), "br1", 0, addr("10.77.0.5"))
 	require.NoError(t, err)
 	require.Len(t, macs, 1)
-	require.Equal(t, l.macOf(t, "pcotest-a-"+l.id, "eth0"), macs[0].String())
+	require.Equal(t, l.macOf(t, "pcotest-a-"+l.id), macs[0].String())
 	_, ok, err := l.sys.link(onHost, probePort)
 	require.NoError(t, err)
 	require.False(t, ok)
@@ -656,9 +657,10 @@ func TestLinuxDownRemovesWhatAFailedPinLeft(t *testing.T) {
 	require.NoFileExists(t, pin)
 }
 
-func (l *labNet) macOf(t *testing.T, ns, dev string) string {
+// macOf is the MAC address of eth0 in the namespace ns.
+func (l *labNet) macOf(t *testing.T, ns string) string {
 	t.Helper()
-	out, err := exec.Command(ipPath, "-n", ns, "-j", "link", "show", dev).Output()
+	out, err := exec.Command(ipPath, "-n", ns, "-j", "link", "show", "eth0").Output()
 	require.NoError(t, err)
 	var links []struct {
 		Address string `json:"address"`

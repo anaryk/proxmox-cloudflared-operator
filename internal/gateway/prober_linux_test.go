@@ -59,8 +59,8 @@ func (l *gatewayLab) tapGuest(vmid int, bridge string, vlan int, cidr string) ne
 	l.ip("-n", l.hostName, "link", "add", port, "type", "veth", "peer", "name", "eth0", "netns", ns)
 	l.ip("-n", l.hostName, "link", "set", port, "master", bridge)
 	if vlan > 0 {
-		l.inHost("bridge", "-n", l.hostName, "vlan", "add", "dev", port, "vid", strconv.Itoa(vlan), "pvid", "untagged")
-		l.inHost("bridge", "-n", l.hostName, "vlan", "del", "dev", port, "vid", "1")
+		l.bridgeCmd("-n", l.hostName, "vlan", "add", "dev", port, "vid", strconv.Itoa(vlan), "pvid", "untagged")
+		l.bridgeCmd("-n", l.hostName, "vlan", "del", "dev", port, "vid", "1")
 	}
 	l.ip("-n", l.hostName, "link", "set", port, "up")
 	l.ip("-n", ns, "link", "set", "lo", "up")
@@ -81,7 +81,7 @@ func TestLinuxTheProberLooksThroughTheLegs(t *testing.T) {
 	legs := []Leg{linuxLegA, linuxLegB, linuxLegM}
 	p := NewProber(hostIn{ns: l.host, p: resolve.NewHostProber(0, 0)}, func() []Leg { return legs }, l.b)
 	guest := addr("10.50.0.10")
-	macA, macB := l.macOf(t, "pcotest-a-"+l.id, "eth0"), l.macOf(t, "pcotest-b-"+l.id, "eth0")
+	macA, macB := l.macOf(t, "pcotest-a-"+l.id), l.macOf(t, "pcotest-b-"+l.id)
 
 	t.Run("the legs are listed beside the host's interfaces", func(t *testing.T) {
 		ifaces, err := p.Interfaces(t.Context())
@@ -159,7 +159,7 @@ func TestLinuxTheProberLooksThroughTheLegs(t *testing.T) {
 		g1 := l.tapGuest(951, "br1", 0, "10.50.0.11/24")
 		l.tapGuest(952, "br2", 20, "10.50.0.11/24")
 		serve(t, g1, "0.0.0.0:80", "951")
-		mac1, mac2 := l.macOf(t, "pcotest-951-"+l.id, "eth0"), l.macOf(t, "pcotest-952-"+l.id, "eth0")
+		mac1, mac2 := l.macOf(t, "pcotest-951-"+l.id), l.macOf(t, "pcotest-952-"+l.id)
 		snap := inventory.Snapshot{Complete: true, Guests: []model.Guest{
 			running(951, model.NIC{Index: 0, MAC: mac1, Bridge: "br1", Static: []netip.Addr{addr("10.50.0.11")}}),
 			running(952, model.NIC{Index: 0, MAC: mac2, Bridge: "br2", VLAN: 20, Static: []netip.Addr{addr("10.50.0.11")}}),
@@ -183,7 +183,7 @@ func TestLinuxTheProberLooksThroughTheLegs(t *testing.T) {
 	})
 
 	t.Run("a guest that claims the leg's address is refused", func(t *testing.T) {
-		mac := l.macOf(t, "pcotest-a-"+l.id, "eth0")
+		mac := l.macOf(t, "pcotest-a-"+l.id)
 		snap := inventory.Snapshot{Complete: true, Guests: []model.Guest{
 			running(953, model.NIC{Index: 0, MAC: mac, Bridge: "br1", Static: []netip.Addr{linuxLegA.Prefix.Addr()}}),
 		}}
