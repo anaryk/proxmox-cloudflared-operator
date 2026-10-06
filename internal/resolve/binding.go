@@ -226,7 +226,7 @@ func (b *Binding) boundCandidate(route model.Route, guest model.Guest, cands []C
 	if index, ok := parseNICName(route.Options.Via); ok && index != nics[i].Index {
 		return Candidate{}, false
 	}
-	if route.Options.Via == viaManaged && nics[i].Bridge != managedBridge {
+	if route.Options.Via == ViaManaged && nics[i].Bridge != ManagedBridge {
 		return Candidate{}, false
 	}
 	c := Candidate{Addr: b.Addr, NIC: copyNIC(nics[i]), Source: FromBinding}

@@ -23,11 +23,14 @@ const (
 )
 
 const (
-	// viaManaged is the value of via= that names the card pco gave the guest
+	// ViaManaged is the value of via= that names the card pco gave the guest
 	// on its managed network.
-	viaManaged = "managed"
-	// managedBridge is the bridge of pco's managed network.
-	managedBridge = "pconet"
+	ViaManaged = "managed"
+	// ManagedBridge is the bridge of pco's managed network, and the id of
+	// its network. The gateway, the store and the annotation grammar write
+	// these names too, as they cannot take them from here without an import
+	// cycle; a test keeps them equal.
+	ManagedBridge = "pconet"
 )
 
 // Candidate is an address to try for a route.
@@ -55,7 +58,7 @@ func Candidates(route model.Route, guest model.Guest) ([]Candidate, error) {
 		return named(explicit, guest)
 	case via == "":
 		return discover(guest), nil
-	case via == viaManaged:
+	case via == ViaManaged:
 		return onManaged(guest)
 	}
 
@@ -192,13 +195,13 @@ func onManaged(guest model.Guest) ([]Candidate, error) {
 	var l candidateList
 	found := false
 	for _, nic := range sortedNICs(guest) {
-		if nic.Bridge == managedBridge {
+		if nic.Bridge == ManagedBridge {
 			found = true
 			l.addNIC(nic, guest.Reported)
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("guest has no network card on %s", managedBridge)
+		return nil, fmt.Errorf("guest has no network card on %s", ManagedBridge)
 	}
 	return l.out, nil
 }

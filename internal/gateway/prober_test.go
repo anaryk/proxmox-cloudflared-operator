@@ -8,7 +8,9 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netns"
 
@@ -97,9 +99,9 @@ var (
 	proberLegM = Leg{ID: ManagedBridge, Mark: 4, Bridge: ManagedBridge, Prefix: prefix("10.203.118.1/24"), MAC: ManagedLegMAC, Managed: true}
 )
 
-// proberHarness is a gateway prober over recording fakes: the host's
-// prober, the prober asked on a leg, the backend, the move into the
-// namespace and the route lookup in it.
+// proberHarness is a gateway prober of the host profile over recording
+// fakes: the host's prober, the prober asked on a leg, the backend, the hold
+// on the namespace, the move into it and the route lookup there.
 type proberHarness struct {
 	p      *prober
 	legs   []Leg
@@ -109,7 +111,14 @@ type proberHarness struct {
 	route  legRoute
 }
 
-const testNS = netns.NsHandle(42)
+// The backend's handle on the namespace, and the one a probe holds.
+const (
+	testNS = netns.NsHandle(42)
+	heldNS = netns.NsHandle(43)
+)
+
+// legPorts are the bridge ends of proberLegA and proberLegB on the host.
+var legPorts = []resolve.HostIface{{Name: "vethpco1", Master: "vmbr1"}, {Name: "vethpco2", Master: "vmbr0v20"}}
 
 func newProberHarness(host []resolve.HostIface, legs ...Leg) *proberHarness {
 	h := &proberHarness{legs: legs}
@@ -123,14 +132,19 @@ func newProberHarness(host []resolve.HostIface, legs ...Leg) *proberHarness {
 	legRec.macs = []string{"bc:24:11:00:00:01"}
 	b := dialBackend{ns: testNS, rec: rec("backend"), closed: &h.closed}
 	h.p = NewProber(hostRec, func() []Leg { return h.legs }, b).(*prober)
+	h.p.ownNamespace = true
 	h.p.arp = legRec
+	h.p.hold = func(ns netns.NsHandle) (netns.NsHandle, func(), error) {
+		hostRec.record("hold %d", ns)
+		return heldNS, func() { hostRec.record("release %d", heldNS) }, nil
+	}
 	h.p.do = func(ns netns.NsHandle, f func() error) error {
 		hostRec.record("enter %d", ns)
 		defer hostRec.record("leave %d", ns)
 		return f()
 	}
-	h.p.route = func(ns netns.NsHandle, mark int, src, dst netip.Addr) (legRoute, error) {
-		hostRec.record("lookup in %d mark %d from %s to %s", ns, mark, src, dst)
+	h.p.lookup = func(mark int, src, dst netip.Addr) (legRoute, error) {
+		hostRec.record("lookup mark %d from %s to %s", mark, src, dst)
 		return h.route, nil
 	}
 	return h
@@ -152,6 +166,7 @@ func TestTheProberListsTheLegsBesideTheHostsInterfaces(t *testing.T) {
 		{Name: "vethpco1", Master: "vmbr1"},
 		{Name: "vethpco2", Master: "vmbr0v20"},
 		{Name: "vethpco3", Master: "vmbr2"},
+		{Name: "vethpco4", Master: ManagedBridge},
 	}
 	h := newProberHarness(host, proberLegA, proberLegB, proberLegC, proberLegM)
 
@@ -178,23 +193,39 @@ func TestTheProberListsTheLegsBesideTheHostsInterfaces(t *testing.T) {
 	), got)
 }
 
+// On the host a leg is up only while its port is on a bridge: without one,
+// the frames of the leg are in no forwarding table, and the leg is not listed
+// rather than listed with a table that holds nothing.
+func TestALegWhosePortIsOnNoBridgeIsNotListed(t *testing.T) {
+	host := []resolve.HostIface{{Name: "vethpco1"}}
+	h := newProberHarness(host, proberLegA, proberLegB)
+
+	got, err := h.p.Interfaces(t.Context())
+
+	require.NoError(t, err)
+	require.Equal(t, host, got)
+}
+
 // In the appliance the legs are the container's own cards, which its
 // prober lists by name: each is the leg's entry once, on the leg's bridge
-// and VLAN.
+// and VLAN, and a card named like a leg that is no leg now is not listed as
+// one of the container's own.
 func TestTheAppliancesOwnLegIsReplacedNotListedTwice(t *testing.T) {
 	host := []resolve.HostIface{
 		{Name: "net0", Addrs: []netip.Prefix{prefix("10.20.0.150/24")}, Segment: resolve.Segment{Bridge: "vmbr0"}},
 		{Name: "leg1", Addrs: []netip.Prefix{prefix("10.50.0.250/24")}, Segment: resolve.Segment{Bridge: "vmbr1"}},
+		{Name: "leg5", Addrs: []netip.Prefix{prefix("10.80.0.250/24")}, Segment: resolve.Segment{Bridge: "vmbr5"}},
 		{Name: "pco0", Addrs: []netip.Prefix{prefix("198.18.0.1/32")}},
 	}
 	h := newProberHarness(host, proberLegA, proberLegC)
+	h.p.ownNamespace = false
 
 	got, err := h.p.Interfaces(t.Context())
 
 	require.NoError(t, err)
 	require.Equal(t, []resolve.HostIface{
 		host[0],
-		host[2],
+		host[3],
 		{
 			Name: "leg1", Addrs: []netip.Prefix{prefix("10.50.0.250/24")},
 			Segment: resolve.Segment{Bridge: "vmbr1"}, Table: resolve.FDBRef{Bridge: "vmbr1"}, Via: "vmbr1",
@@ -209,13 +240,13 @@ func TestTheAppliancesOwnLegIsReplacedNotListedTwice(t *testing.T) {
 func TestTheProberListsALegOnce(t *testing.T) {
 	again := proberLegA
 	again.ID = "vmbr9"
-	h := newProberHarness(nil, proberLegA, again)
+	h := newProberHarness(legPorts[:1], proberLegA, again)
 
 	got, err := h.p.Interfaces(t.Context())
 
 	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, "vmbr1", got[0].Via)
+	require.Len(t, got, 2)
+	require.Equal(t, "vmbr1", got[1].Via)
 }
 
 func TestTheProberFailsWithTheHost(t *testing.T) {
@@ -228,17 +259,18 @@ func TestTheProberFailsWithTheHost(t *testing.T) {
 }
 
 // ARP, the route and the dial of a leg happen in the namespace, the way the
-// leg sends; the forwarding table is the host's, where the bridges are.
+// leg sends, through a handle held for the probe; the forwarding table is the
+// host's, where the bridges are.
 func TestALegIsAskedInsideTheNamespace(t *testing.T) {
 	guest := addr("10.50.0.10")
-	h := newProberHarness(nil, proberLegA, proberLegB)
+	h := newProberHarness(legPorts, proberLegA, proberLegB)
 
 	t.Run("ARP", func(t *testing.T) {
 		macs, err := h.p.ARP(t.Context(), "leg1", guest)
 
 		require.NoError(t, err)
 		require.Equal(t, []string{"bc:24:11:00:00:01"}, macs)
-		require.Equal(t, []string{"host enter 42", "leg arp leg1 10.50.0.10", "host leave 42"}, h.take())
+		require.Equal(t, []string{"host hold 42", "host enter 43", "leg arp leg1 10.50.0.10", "host leave 43", "host release 43"}, h.take())
 	})
 
 	t.Run("the route of the leg's own table", func(t *testing.T) {
@@ -249,7 +281,7 @@ func TestALegIsAskedInsideTheNamespace(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "leg1", out)
 		require.True(t, onLink)
-		require.Equal(t, []string{"host lookup in 42 mark 1 from 10.50.0.250 to 10.50.0.10"}, h.take())
+		require.Equal(t, []string{"host hold 42", "host enter 43", "host lookup mark 1 from 10.50.0.250 to 10.50.0.10", "host leave 43", "host release 43"}, h.take())
 	})
 
 	t.Run("a route of another table is not on the leg's link", func(t *testing.T) {
@@ -292,6 +324,26 @@ func TestALegIsAskedInsideTheNamespace(t *testing.T) {
 	})
 }
 
+// In the appliance the legs are the process's own cards: a probe runs on a
+// thread of the process, with no handle to hold.
+func TestALegOfTheApplianceIsAskedInTheProcess(t *testing.T) {
+	h := newProberHarness(nil, proberLegA)
+	h.p.ownNamespace = false
+	h.route = legRoute{dev: "leg1", direct: true, table: 101}
+
+	_, err := h.p.ARP(t.Context(), "leg1", addr("10.50.0.10"))
+	require.NoError(t, err)
+	_, onLink, err := h.p.Route(t.Context(), "leg1", addr("10.50.0.10"))
+	require.NoError(t, err)
+	require.True(t, onLink)
+
+	none := netns.None()
+	require.Equal(t, []string{
+		fmt.Sprintf("host enter %d", none), "leg arp leg1 10.50.0.10", fmt.Sprintf("host leave %d", none),
+		fmt.Sprintf("host enter %d", none), "host lookup mark 1 from 10.50.0.250 to 10.50.0.10", fmt.Sprintf("host leave %d", none),
+	}, h.take())
+}
+
 func TestAnInterfaceThatIsNoLegIsTheHosts(t *testing.T) {
 	h := newProberHarness(nil, proberLegA)
 	target := netip.AddrPortFrom(addr("10.20.0.10"), 80)
@@ -313,16 +365,87 @@ func TestAnInterfaceThatIsNoLegIsTheHosts(t *testing.T) {
 		"host dial vmbr0 10.20.0.10:80",
 		"host dial  10.20.0.10:80",
 	}, h.take())
+}
 
-	// A leg that is gone is no leg any more.
+// A leg taken away after the interfaces were listed is no leg, and its name
+// is no interface of the host either: a probe of it fails, and nothing is
+// asked of the host, whose own route and dial would reach whatever holds
+// the address there.
+func TestALegThatIsGoneIsAnErrorNeverTheHost(t *testing.T) {
+	h := newProberHarness(legPorts, proberLegA)
 	h.legs = nil
-	_, err = h.p.ARP(t.Context(), "leg1", target.Addr())
-	require.NoError(t, err)
-	require.Equal(t, []string{"host arp leg1 10.20.0.10"}, h.take())
+	guest := addr("10.50.0.10")
+
+	_, err := h.p.ARP(t.Context(), "leg1", guest)
+	require.EqualError(t, err, "leg1 is no leg of the gateway now")
+	_, _, err = h.p.Route(t.Context(), "leg1", guest)
+	require.EqualError(t, err, "leg1 is no leg of the gateway now")
+	err = h.p.Dial(t.Context(), "leg1", netip.AddrPortFrom(guest, 80))
+	require.EqualError(t, err, "leg1 is no leg of the gateway now")
+
+	require.Empty(t, h.take())
+}
+
+// Without a namespace to probe in, a probe of a leg fails before anything
+// runs: it never runs in the host's namespace instead.
+func TestALegProbeWithoutTheNamespaceFailsBeforeAnythingRuns(t *testing.T) {
+	guest := addr("10.50.0.10")
+	probe := func(h *proberHarness) []error {
+		_, arpErr := h.p.ARP(t.Context(), "leg1", guest)
+		_, _, routeErr := h.p.Route(t.Context(), "leg1", guest)
+		return []error{arpErr, routeErr}
+	}
+
+	t.Run("the backend has no handle", func(t *testing.T) {
+		h := newProberHarness(legPorts, proberLegA)
+		h.p.b = dialBackend{ns: netns.None(), rec: recordingProber{name: "backend", mu: &h.mu, calls: &h.calls}, closed: &h.closed}
+
+		for _, err := range probe(h) {
+			require.ErrorIs(t, err, errNamespaceNotOpen)
+		}
+		require.Empty(t, h.take())
+	})
+
+	t.Run("the handle cannot be held", func(t *testing.T) {
+		h := newProberHarness(legPorts, proberLegA)
+		h.p.hold = func(netns.NsHandle) (netns.NsHandle, func(), error) {
+			return netns.None(), nil, errors.New("the handle is the namespace of the process")
+		}
+
+		for _, err := range probe(h) {
+			require.EqualError(t, err, "holding the gateway namespace: the handle is the namespace of the process")
+		}
+		require.Empty(t, h.take())
+	})
+
+	t.Run("the move into it fails", func(t *testing.T) {
+		h := newProberHarness(legPorts, proberLegA)
+		h.p.do = func(netns.NsHandle, func() error) error {
+			return errors.New("entering the network namespace: bad file descriptor")
+		}
+
+		for _, err := range probe(h) {
+			require.EqualError(t, err, "entering the network namespace: bad file descriptor")
+		}
+		require.Equal(t, []string{"host hold 42", "host release 43", "host hold 42", "host release 43"}, h.take(), "neither the host nor the leg is asked")
+	})
+
+	t.Run("the host backend before its namespace is open", func(t *testing.T) {
+		host := recordingProber{name: "host", mu: &sync.Mutex{}, calls: &[]string{}}
+		b := newHost(newFakeSystem(), newFakeNft(t), newFakeNft(t), zerolog.Nop(), time.Now)
+		p := NewProber(host, func() []Leg { return []Leg{proberLegA} }, b).(*prober)
+		require.True(t, p.ownNamespace, "the host backend's legs are in a namespace of their own")
+
+		_, err := p.ARP(t.Context(), "leg1", guest)
+		require.ErrorIs(t, err, errNamespaceNotOpen)
+		_, _, err = p.Route(t.Context(), "leg1", guest)
+		require.ErrorIs(t, err, errNamespaceNotOpen)
+		require.Empty(t, *host.calls)
+	})
 }
 
 func TestARouteOfALegIsLookedUpNoLongerOnceCancelled(t *testing.T) {
-	h := newProberHarness(nil, proberLegA)
+	h := newProberHarness(legPorts, proberLegA)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 

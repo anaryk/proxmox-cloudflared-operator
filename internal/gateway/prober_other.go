@@ -8,7 +8,12 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-// routeOnLeg needs Linux.
-func routeOnLeg(netns.NsHandle, int, netip.Addr, netip.Addr) (legRoute, error) {
+// routeHere needs Linux.
+func routeHere(int, netip.Addr, netip.Addr) (legRoute, error) {
 	return legRoute{}, errNotLinux
+}
+
+// namespaceHolder needs Linux.
+func namespaceHolder() func(netns.NsHandle) (netns.NsHandle, func(), error) {
+	return func(netns.NsHandle) (netns.NsHandle, func(), error) { return netns.None(), nil, errNotLinux }
 }

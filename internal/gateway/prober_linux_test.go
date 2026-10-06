@@ -5,12 +5,14 @@ package gateway
 import (
 	"context"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -192,5 +194,56 @@ func TestLinuxTheProberLooksThroughTheLegs(t *testing.T) {
 
 		require.True(t, res.Target.Rejected)
 		require.Equal(t, "address of this node", res.Target.Reason)
+	})
+
+	t.Run("a leg taken away is an error of the probe, never the host's", func(t *testing.T) {
+		legs = []Leg{linuxLegA, linuxLegM}
+		t.Cleanup(func() { legs = []Leg{linuxLegA, linuxLegB, linuxLegM} })
+
+		_, err := p.ARP(t.Context(), "leg2", guest)
+		require.EqualError(t, err, "leg2 is no leg of the gateway now")
+		require.EqualError(t, p.Dial(t.Context(), "leg2", netip.AddrPortFrom(guest, 81)), "leg2 is no leg of the gateway now")
+	})
+}
+
+// A probe holds a handle of its own on the namespace of the legs, which
+// outlives the backend closing its own, and refuses one that is no
+// namespace or the namespace of the process.
+func TestLinuxAProbeHoldsTheNamespaceOfTheLegs(t *testing.T) {
+	l := newGatewayLab(t)
+	hold := namespaceHolder()
+
+	t.Run("the namespace of the legs, after its handle was closed", func(t *testing.T) {
+		own, err := netns.GetFromName(l.gwName)
+		require.NoError(t, err)
+		held, release, err := hold(own)
+		require.NoError(t, err)
+		defer release()
+		require.NoError(t, own.Close())
+
+		var r legRoute
+		require.NoError(t, Do(held, func() (err error) { r, err = routeHere(1, linuxLegA.Prefix.Addr(), addr("10.50.0.10")); return err }))
+		require.Equal(t, legRoute{dev: "leg1", direct: true, table: tableBase + 1}, r)
+	})
+
+	t.Run("the namespace of the process", func(t *testing.T) {
+		self, err := netns.Get()
+		require.NoError(t, err)
+		defer func() { _ = self.Close() }()
+		_, _, err = hold(self)
+		require.EqualError(t, err, "the handle is the namespace of the process")
+	})
+
+	t.Run("a file that is no namespace", func(t *testing.T) {
+		f, err := os.Open(os.DevNull)
+		require.NoError(t, err)
+		defer func() { _ = f.Close() }()
+		_, _, err = hold(netns.NsHandle(f.Fd()))
+		require.EqualError(t, err, "the handle is no namespace")
+	})
+
+	t.Run("a handle that is no open file", func(t *testing.T) {
+		_, _, err := hold(netns.NsHandle(1 << 24))
+		require.ErrorIs(t, err, unix.EBADF)
 	})
 }
