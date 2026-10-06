@@ -72,7 +72,9 @@ func (i *Installer) ManagedEnableCommand(ctx context.Context, o ManagedOptions) 
 	}
 	r.ask.Info("the managed network is made for lxc/%d: vnet %s in zone %s, granted to %s", o.VMID, setup.ManagedVnet, setup.ManagedZone, tokenID(o.VMID))
 	if o.Pool != "" {
-		r.ask.Warn("%s may now change the network cards and the firewall of every guest in pool %s", tokenID(o.VMID), o.Pool)
+		r.ask.Warn("%s may now change the network cards and the firewall of every guest in pool %s; "+
+			"pveum acl delete /pool/%s --users %s --tokens '%s' --roles %s takes that back", tokenID(o.VMID), o.Pool,
+			o.Pool, setup.UserID, tokenID(o.VMID), setup.RoleManaged)
 	}
 	r.ask.Info("next: pct exec %d -- pco network managed enable", o.VMID)
 	return nil
