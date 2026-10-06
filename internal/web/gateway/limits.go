@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// What one session may ask of the daemon, and what all of them may: a
-// diagnosis probes a guest and the doctor the host and Cloudflare; streams
-// hold memory.
+// The limits of what a user may ask for: a diagnosis probes a guest and the
+// doctor the host and Cloudflare, so neither may run in a loop; streams hold
+// memory.
 const (
 	diagnosesPerMinute = 6
 	doctorsPerMinute   = 2

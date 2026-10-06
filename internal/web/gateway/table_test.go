@@ -148,8 +148,10 @@ func TestEveryRuleHasARow(t *testing.T) {
 	}
 }
 
-// The table holds exactly the calls the page makes, with the role each needs
-// and the timeout of its kind.
+// The table is exactly the calls the page makes, with the role each needs
+// and the timeout of its kind: a call that only reads 10 s, one that writes
+// 60 s, apply and the credential calls 75 s, past the daemon's own write
+// timeout of 70 s, a diagnosis 30 s and the doctor 60 s.
 func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 	readers := []string{
 		"GET /state", "GET /stream", "GET /events", "GET /traffic", "GET /traffic/route",

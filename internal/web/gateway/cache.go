@@ -69,8 +69,10 @@ type stateCache struct {
 	entries map[string]*list.Element // of *cached
 	order   *list.List               // used last first
 	making  map[string]*making
-	// filtered counts the states filtered for readers, for the tests.
+	// filtered counts the states filtered for readers, and waiting the
+	// callers that wait for an answer being made, for the tests.
 	filtered int
+	waiting  int
 }
 
 type cached struct {
@@ -97,6 +99,7 @@ func (c *stateCache) get(key string, fn func() (*encoded, error)) (*encoded, err
 		return e.Value.(*cached).enc, nil
 	}
 	if m, ok := c.making[key]; ok {
+		c.waiting++
 		c.mu.Unlock()
 		<-m.done
 		return m.enc, m.err
@@ -105,20 +108,33 @@ func (c *stateCache) get(key string, fn func() (*encoded, error)) (*encoded, err
 	c.making[key] = m
 	c.mu.Unlock()
 
-	m.enc, m.err = fn()
-	c.mu.Lock()
-	delete(c.making, key)
-	if m.err == nil {
-		c.entries[key] = c.order.PushFront(&cached{key: key, enc: m.enc})
-		for c.order.Len() > maxCached {
-			last := c.order.Back()
-			delete(c.entries, last.Value.(*cached).key)
-			c.order.Remove(last)
+	defer func() {
+		c.mu.Lock()
+		delete(c.making, key)
+		if m.err == nil {
+			c.entries[key] = c.order.PushFront(&cached{key: key, enc: m.enc})
+			for c.order.Len() > maxCached {
+				last := c.order.Back()
+				delete(c.entries, last.Value.(*cached).key)
+				c.order.Remove(last)
+			}
 		}
-	}
-	c.mu.Unlock()
-	close(m.done)
+		c.mu.Unlock()
+		close(m.done)
+	}()
+	m.enc, m.err = build(key, fn)
 	return m.enc, m.err
+}
+
+// build makes an answer with fn; a panic of fn is an error, so that the
+// callers waiting for the answer get one.
+func build(key string, fn func() (*encoded, error)) (enc *encoded, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			enc, err = nil, fmt.Errorf("making the answer %s stopped: %v", key, v)
+		}
+	}()
+	return fn()
 }
 
 func (c *stateCache) newest() *snapshot {
@@ -178,7 +194,7 @@ func (g *Gateway) adminState(s *snapshot) (*encoded, error) {
 // is the first 16 hex of the SHA-256 of the digest and the hash, so that it
 // changes with either.
 func (g *Gateway) readerState(s *snapshot, visible auth.Visible, hash string) (*encoded, error) {
-	build := func() (*encoded, error) {
+	filterFor := func() (*encoded, error) {
 		st, err := s.state()
 		if err != nil {
 			return nil, err
@@ -199,9 +215,9 @@ func (g *Gateway) readerState(s *snapshot, visible auth.Visible, hash string) (*
 		return enc, nil
 	}
 	if s.digest == "" {
-		return build()
+		return filterFor()
 	}
-	return g.states.get("r:"+s.digest+":"+hash, build)
+	return g.states.get("r:"+s.digest+":"+hash, filterFor)
 }
 
 // state answers GET /api/v1/state from the cache: as the daemon sent it to

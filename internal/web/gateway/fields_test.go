@@ -57,6 +57,12 @@ var fieldTables = []struct {
 	{reflect.TypeFor[engine.RouteView](), routeFields},
 	{reflect.TypeFor[engine.UnapprovedGuest](), unapprovedFields},
 	{reflect.TypeFor[engine.Waiting](), waitingFields},
+	{reflect.TypeFor[engine.IdentityView](), identityFields},
+	{reflect.TypeFor[engine.ClaimView](), claimFields},
+	{reflect.TypeFor[engine.ClaimantView](), claimantFields},
+	{reflect.TypeFor[engine.ApprovalView](), approvalFields},
+	{reflect.TypeFor[engine.GuestListView](), guestFields},
+	{reflect.TypeFor[engine.RouteTraffic](), routeTrafficFields},
 }
 
 func TestEveryFieldHasADecision(t *testing.T) {
@@ -101,11 +107,30 @@ func TestDecisionsNameTheirCases(t *testing.T) {
 	for name := range cases {
 		require.True(t, named[name], "the case %s filters no field", name)
 	}
-	for _, m := range []map[string]decision{routeFields, unapprovedFields, waitingFields} {
+	for _, m := range []map[string]decision{routeFields, unapprovedFields, waitingFields, claimantFields, approvalFields, guestFields} {
 		for field, d := range m {
-			require.Contains(t, []action{keep, remove}, d.action, "%s: a field inside a list goes with its entry", field)
+			require.Contains(t, []action{keep, remove}, d.action, "%s: a field of an entry of a list goes with its entry", field)
 		}
 	}
+	for _, m := range []map[string]decision{identityFields, claimFields, routeTrafficFields} {
+		for field, d := range m {
+			if d.action != keep {
+				require.NotEmpty(t, d.by, "%s says what filters it", field)
+			}
+		}
+	}
+	for _, field := range []string{"copies", "tenants"} {
+		require.True(t, cases[identityFields[field].by], "%s is filtered by a case of the state", field)
+	}
+}
+
+// A field the daemon adds to what the other answers carry is found as well.
+func TestAFieldOfAnotherAnswerWithoutADecisionFails(t *testing.T) {
+	type withOwners struct {
+		engine.ClaimView
+		Owners []string `json:"owners"`
+	}
+	require.Equal(t, []string{"owners"}, undecided(reflect.TypeFor[withOwners](), claimFields))
 }
 
 // What a decision says is what the filter does: a kept field reaches a reader

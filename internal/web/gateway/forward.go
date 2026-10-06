@@ -64,6 +64,8 @@ type Gateway struct {
 	hub    *hub
 	slots  *streamSlots
 	limits map[string]*userLimit
+	// inbox is what the subscription took and the worker has not handed on.
+	inbox chan upstreamItem
 
 	// Tests set these.
 	now       func() time.Time
@@ -101,12 +103,16 @@ func New(socket string, a *auth.Auth, log zerolog.Logger) *Gateway {
 			limitDiagnose: newUserLimit("diagnoses", diagnosesPerMinute, 1, time.Minute),
 			limitDoctor:   newUserLimit("doctor runs", doctorsPerMinute, 0, time.Minute),
 		},
+		inbox:     make(chan upstreamItem, inboxSize),
 		now:       time.Now,
 		sleep:     sleep,
 		ticker:    startTicker,
 		timeoutOf: func(r Rule) time.Duration { return r.Timeout },
 	}
 	g.hub = newHub(g)
+	// A stream ends with its session at once; the ping also finds a session
+	// that is over, or whose role or guests changed.
+	a.OnEnd(g.hub.endSession)
 	return g
 }
 

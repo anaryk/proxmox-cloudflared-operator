@@ -20,8 +20,9 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/auth"
 )
 
-// The timeouts of the calls. apply and the credential calls wait past
-// the daemon's own write timeout of 70 s, so that its answer comes first.
+// The timeouts of the calls: a read is quick, a write may wait for the
+// running cycle. apply and the credential calls wait past the daemon's own
+// write timeout of 70 s, so that its answer comes first.
 const (
 	readTimeout     = 10 * time.Second
 	writeTimeout    = 60 * time.Second
@@ -74,9 +75,11 @@ type Rule struct {
 // eventParams are the parameters of GET /v1/events.
 var eventParams = []string{"since", "after", "boot", "route", "guest", "tunnel", "account", "kind", "level", "limit", "history"}
 
-// Table is every call the page may make. The networking milestone adds its
-// own here, one entry each with its test; until then /networks and /managed
-// answer 404 like anything else that is not here.
+// Table is every call the page may make, and nothing else reaches the
+// socket: not the rotation of a tunnel's secret, which only root may ask
+// for, nor anything the page has no use for. The networking milestone adds
+// its own here, one entry each with its test; until then /networks and
+// /managed answer 404 like anything else that is not here.
 var Table = []Rule{
 	{Method: http.MethodGet, Path: "/state", Min: auth.RoleReader, Timeout: readTimeout, serve: (*Gateway).state},
 	{Method: http.MethodGet, Path: "/stream", Min: auth.RoleReader, serve: (*Gateway).stream},
@@ -96,7 +99,7 @@ var Table = []Rule{
 	{Method: http.MethodGet, Path: "/version", Min: auth.RoleReader, Timeout: readTimeout},
 	{
 		Method: http.MethodPost, Path: "/diagnose", Upstream: http.MethodGet, Query: hostnameQuery, Min: auth.RoleReader,
-		Body: maxBody, Timeout: diagnoseTimeout, Check: checkHolder, limit: limitDiagnose,
+		Body: maxBody, Timeout: diagnoseTimeout, Check: checkDiagnosis, limit: limitDiagnose,
 	},
 	{
 		Method: http.MethodPost, Path: "/doctor", Upstream: http.MethodGet, Query: emptyQuery, Min: auth.RoleReader,

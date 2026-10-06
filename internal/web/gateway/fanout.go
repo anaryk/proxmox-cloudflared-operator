@@ -33,16 +33,19 @@ const (
 	// out one by one; the rest go out as one gap, as the daemon sends them.
 	singleEvents = 32
 	// A browser with this many notices, or bytes of them, waiting is full,
-	// and what waits collapses.
+	// and what waits collapses; one that has as many even so is told to start
+	// over, and its stream ends. 200 streams hold 200 MiB at most.
 	queueNotices = 256
 	queueBytes   = 1 << 20
-	// One that has this many waiting even so is told to start over, and its
-	// stream ends.
-	maxNotices = 4096
-	maxBytes   = 4 << 20
 	// maxGapEvents is the most events of a gap the gateway reads, the most
 	// a query of the daemon answers with.
 	maxGapEvents = engine.MaxEventLimit
+	// inboxSize is how far the reads of the gateway may fall behind the
+	// subscription before it waits for them.
+	inboxSize = 1024
+	// figuresEvery is how many traffic notices the figures of every route
+	// answer for at most: they are read again with the next.
+	figuresEvery = 12
 
 	resetBootChanged = "boot changed"
 	resetBehind      = "too far behind"
@@ -56,19 +59,43 @@ var backoff = []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 
 
 // Run holds the one subscription to the daemon's stream that every browser
 // stream is fed from, until ctx ends. It resumes after the last event it
-// holds, so that its ring has no hole the daemon could fill, and tells the
-// browsers whenever the subscription goes down or comes up.
+// took, so that the ring has no hole the daemon could fill, and tells the
+// browsers whenever the subscription goes down or comes up. What the
+// browsers need read from the daemon is read by a worker, so that the
+// subscription goes on taking notices meanwhile.
 func (g *Gateway) Run(ctx context.Context) {
 	g.hub.started(g.now())
-	failures := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.work(ctx)
+	}()
+	defer func() { <-done }()
+	var (
+		boot     string
+		after    uint64
+		failures int
+	)
 	for {
-		boot, after := g.hub.resumeFrom()
 		notices, hello, err := g.subscribe(ctx, boot, after)
 		if err == nil {
 			failures = 0
-			g.connected(ctx, hello)
+			if hello.Boot != boot {
+				boot, after = hello.Boot, hello.Seq
+			}
+			if !g.hand(ctx, upstreamItem{hello: &hello}) {
+				return
+			}
 			for n := range notices {
-				g.receive(ctx, n)
+				switch {
+				case n.Kind == engine.NoticeEvent && n.Event != nil:
+					after = max(after, n.Event.Seq)
+				case n.Kind == engine.NoticeGap && n.Gap != nil:
+					after = max(after, n.Gap.To)
+				}
+				if !g.hand(ctx, upstreamItem{notice: &n}) {
+					return
+				}
 			}
 		}
 		if ctx.Err() != nil {
@@ -79,10 +106,51 @@ func (g *Gateway) Run(ctx context.Context) {
 		} else {
 			g.log.Info().Msg("the stream of the daemon ended")
 		}
-		g.hub.down(g.now())
+		if !g.hand(ctx, upstreamItem{lost: g.now()}) {
+			return
+		}
 		wait := backoff[min(failures, len(backoff)-1)]
 		failures++
 		if !g.sleep(ctx, wait) {
+			return
+		}
+	}
+}
+
+// upstreamItem is what the subscription hands the worker, in its order: the
+// hello of a new subscription, a notice, or the loss of the subscription.
+type upstreamItem struct {
+	hello  *engine.Hello
+	notice *engine.Notice
+	lost   time.Time
+}
+
+// hand passes an item to the worker; it waits only while the worker is
+// inboxSize items behind.
+func (g *Gateway) hand(ctx context.Context, it upstreamItem) bool {
+	select {
+	case g.inbox <- it:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// work hands what the subscription took on to the browsers, in order, until
+// ctx ends.
+func (g *Gateway) work(ctx context.Context) {
+	for {
+		select {
+		case it := <-g.inbox:
+			switch {
+			case it.hello != nil:
+				g.connected(ctx, *it.hello)
+			case it.notice != nil:
+				g.receive(ctx, *it.notice)
+			default:
+				g.hub.down(it.lost)
+			}
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -97,9 +165,10 @@ func (g *Gateway) connected(ctx context.Context, hello engine.Hello) {
 	g.hub.up(hello, g.now())
 }
 
-// receive hands a notice of the daemon on. What the browsers need to have
-// it filtered is read first: the state when its digest changed, the events
-// of a gap, the figures of every route for a notice that carries only some.
+// receive hands a notice of the daemon on. What the readers need to have it
+// filtered is read first: the state when its digest changed, the events of
+// a gap, the figures of every route for a notice that carries only some.
+// While no reader's stream is open, nothing but the state is read.
 func (g *Gateway) receive(ctx context.Context, n engine.Notice) {
 	switch {
 	case n.Kind == engine.NoticeState && n.State != nil:
@@ -111,12 +180,14 @@ func (g *Gateway) receive(ctx context.Context, n engine.Notice) {
 		g.hub.event(item{event: n.Event})
 	case n.Kind == engine.NoticeGap && n.Gap != nil:
 		it := item{gap: n.Gap}
-		it.in, it.known = g.gapEvents(ctx, *n.Gap)
+		if g.hub.readers() {
+			it.in, it.known = g.gapEvents(ctx, *n.Gap)
+		}
 		g.hub.event(it)
 	case n.Kind == engine.NoticeTraffic && n.Traffic != nil:
 		var all []engine.RouteTraffic
 		if g.hub.readers() && n.Traffic.RoutesWhy == "" && n.Traffic.RoutesTotal > len(n.Traffic.Routes) {
-			all = g.hub.figures(ctx, n.Traffic.RoutesTotal)
+			all = g.hub.figures(ctx, n.Traffic)
 		}
 		g.hub.notice(n, all)
 	}
@@ -194,10 +265,13 @@ type hub struct {
 	hosts   map[string]map[string]bool
 	hostsOf string
 	// all are the figures of every route, as the last read of them gave,
-	// read again when their number or the state changes.
+	// read again when their number or the state changes, when a notice has
+	// a route they lack, and after figuresEvery notices.
 	all       []engine.RouteTraffic
 	allTotal  int
 	allDigest string
+	allRoutes map[string]bool // hostname and owner of each of all
+	allUsed   int             // notices all answered for
 }
 
 func newHub(g *Gateway) *hub {
@@ -216,12 +290,6 @@ func (h *hub) status() wire.Upstream {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.link
-}
-
-func (h *hub) resumeFrom() (string, uint64) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.hello.Boot, h.hello.Seq
 }
 
 func (h *hub) streaming() bool {
@@ -335,12 +403,21 @@ func (h *hub) notice(n engine.Notice, all []engine.RouteTraffic) {
 	})
 }
 
-// figures are the figures of every route, read again when their number or
-// the state changed since the last read; nil when they cannot be read.
-func (h *hub) figures(ctx context.Context, total int) []engine.RouteTraffic {
+// figures are the figures of every route for a notice that carries some of
+// them; nil when they cannot be read. They are read again when the number
+// of routes with a figure or the state changed, when the notice has a route
+// they lack, and after figuresEvery notices, so that a reader's count of
+// its routes with a figure follows a route that stops and another that
+// starts.
+func (h *hub) figures(ctx context.Context, n *engine.TrafficNotice) []engine.RouteTraffic {
 	h.mu.Lock()
 	digest := h.hello.Digest
-	if h.all != nil && h.allTotal == total && h.allDigest == digest {
+	fresh := h.all != nil && h.allTotal == n.RoutesTotal && h.allDigest == digest && h.allUsed < figuresEvery
+	for _, r := range n.Routes {
+		fresh = fresh && h.allRoutes[r.Hostname+" "+r.Owner]
+	}
+	if fresh {
+		h.allUsed++
 		all := h.all
 		h.mu.Unlock()
 		return all
@@ -355,9 +432,13 @@ func (h *hub) figures(ctx context.Context, total int) []engine.RouteTraffic {
 		h.g.log.Warn().Err(err).Msg("reading the figures of the routes for the readers' streams")
 		return nil
 	}
+	routes := make(map[string]bool, len(tv.Routes))
+	for _, r := range tv.Routes {
+		routes[r.Hostname+" "+r.Owner] = true
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.all, h.allTotal, h.allDigest = tv.Routes, total, digest
+	h.all, h.allTotal, h.allDigest, h.allRoutes, h.allUsed = tv.Routes, n.RoutesTotal, digest, routes, 1
 	return tv.Routes
 }
 
@@ -412,8 +493,9 @@ func (h *hub) hostsFor(r *Reader) map[string]bool {
 }
 
 // join adds a stream: its hello, then whether the daemon is reached, then
-// what it missed of the boot it names, or a reset when the web does not
-// hold that.
+// what it missed of the boot it names, as the daemon replays its ring: a
+// gap for the events the ring no longer holds, then those it holds, for
+// what the session may see. Of another boot it gets a reset.
 func (h *hub) join(s *stream, boot string, after uint64) engine.Hello {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -425,19 +507,54 @@ func (h *hub) join(s *stream, boot string, after uint64) engine.Hello {
 	case boot == "":
 	case boot != hello.Boot:
 		s.q.push(resetQueued(resetBootChanged))
-	case after >= hello.Seq:
-	case len(h.ring) == 0 || h.ring[0].first() > after+1:
-		s.q.push(resetQueued(resetBehind))
-	default:
-		var qs []queued
-		for _, it := range h.ring {
-			if it.last() > after {
-				qs = append(qs, h.render(it, s.reader)...)
-			}
-		}
-		s.q.push(batched(qs)...)
+	case after < hello.Seq:
+		s.q.push(h.replay(after, s.reader)...)
 	}
 	return hello
+}
+
+// replay is what a stream that saw the events up to after is sent of the
+// ring. The levels of the events the ring no longer holds are not known; the
+// gap for them says warn, so that the page looks. A replay that would fill
+// the stream's queue is one such gap: the page reads the events it wants.
+func (h *hub) replay(after uint64, r *Reader) []queued {
+	first := h.hello.Seq + 1
+	if len(h.ring) > 0 {
+		first = min(first, h.ring[0].first())
+	}
+	unknown := func(from, to uint64) queued {
+		return gapQueued(&engine.GapNotice{Boot: h.hello.Boot, From: from, To: to, Count: int(to - from + 1), Level: "warn"})
+	}
+	var qs []queued
+	if first > after+1 {
+		qs = append(qs, unknown(after+1, first-1))
+	}
+	var held []queued
+	for _, it := range h.ring {
+		if it.last() > after {
+			held = append(held, h.render(it, r)...)
+		}
+	}
+	qs = append(qs, batched(held)...)
+	size := 0
+	for _, q := range qs {
+		size += len(q.msg)
+	}
+	if len(qs) >= queueNotices-1 || size >= queueBytes/2 {
+		return []queued{unknown(after+1, h.hello.Seq)}
+	}
+	return qs
+}
+
+// endSession ends the streams of a session that ended.
+func (h *hub) endSession(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for s := range h.streams {
+		if s.session == id {
+			s.q.end()
+		}
+	}
 }
 
 func (h *hub) leave(s *stream) {
@@ -448,31 +565,34 @@ func (h *hub) leave(s *stream) {
 
 // stream is a browser's stream: the notices that wait for it.
 type stream struct {
-	reader *Reader // nil for an admin
-	key    string  // of what it gets: "" for admins, the visible set for a reader
-	boot   string  // of the notices it was sent
-	q      *queue
+	session string
+	role    auth.Role
+	reader  *Reader // nil for an admin
+	key     string  // of what it gets: "" for admins, the visible set for a reader
+	boot    string  // of the notices it was sent
+	q       *queue
 }
 
 // stream answers GET /api/v1/stream: the hello, whether the daemon is
 // reached, then the notices of the shared subscription for this session, and
-// a comment every 15 s, until the browser goes or the server stops.
-// Last-Event-ID, or the query lastEventId, resumes after an event.
+// a comment every 15 s, until the browser goes, the server stops or the
+// session no longer holds as it did. Last-Event-ID, or the query
+// lastEventId, resumes after an event.
 func (g *Gateway) stream(c *gin.Context, _ Rule, r *Reader) {
 	boot, after, err := resumeFrom(c)
 	if err != nil {
 		refuse(c, http.StatusBadRequest, wire.Error{Error: err.Error(), Code: wire.CodeInvalid})
 		return
 	}
-	session := auth.SessionOf(c).ID
-	if !g.slots.take(session) {
+	session := auth.SessionOf(c)
+	if !g.slots.take(session.ID) {
 		refuse(c, http.StatusTooManyRequests, wire.Error{
 			Error: "too many streams are open: 3 for each session and 200 in all", Code: wire.CodeRateLimited, RetryAfter: streamRetryAfter,
 		})
 		return
 	}
-	defer g.slots.give(session)
-	s := &stream{reader: r, q: newQueue()}
+	defer g.slots.give(session.ID)
+	s := &stream{session: session.ID, role: session.Principal.Role, reader: r, q: newQueue()}
 	if r != nil {
 		// What the reader may see of the events comes from the state, which
 		// the gateway reads anew on every state notice from now on.
@@ -506,13 +626,39 @@ func (g *Gateway) stream(c *gin.Context, _ Rule, r *Reader) {
 		select {
 		case <-s.q.wake:
 		case <-ping:
-			if out.send([]byte(": ping\n\n")) != nil {
+			if !g.holds(c, s) || out.send([]byte(": ping\n\n")) != nil {
 				return
 			}
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// holds says whether the session of a stream still holds as it did when
+// the stream opened: it is there, its role is the same, and so is the set of
+// guests a reader sees. A stream whose session does not hold ends, and the
+// page opens another, which is checked as any request is and resumes from
+// the ring with what the session may see now. Proxmox VE out of reach keeps
+// the stream, as it keeps the session.
+func (g *Gateway) holds(c *gin.Context, s *stream) bool {
+	role, err := g.auth.Recheck(c.Request.Context(), c.Request, s.session)
+	if err != nil {
+		g.log.Warn().Err(err).Msg("checking the session of a stream")
+		return true
+	}
+	if role != s.role {
+		return false
+	}
+	if s.reader == nil {
+		return true
+	}
+	_, hash, err := g.auth.Visible(c)
+	if err != nil {
+		g.log.Warn().Err(err).Msg("listing the guests of a reader's stream")
+		return true
+	}
+	return hash == s.reader.Hash
 }
 
 var errBadResume = errors.New("Last-Event-ID must be <boot>:<seq>, as the id of an event of the stream has it")
@@ -670,17 +816,13 @@ func batched(qs []queued) []queued {
 // collapses, as the daemon's does: the events of the high-volume kinds and
 // the gaps become one gap with their highest level, of the state, traffic
 // and upstream notices only the newest stays, and every other event stays.
-// One that is past 4096 notices or 4 MiB even so is told to start over, and
-// its stream ends.
+// One that is past them even so is told to start over, and its stream ends.
 type queue struct {
-	mu    sync.Mutex
-	items []queued
-	bytes int
-	// slack and slackBytes are what the last collapse could not bring back
-	// within the bounds: the next waits for another 256 notices or 1 MiB.
-	slack, slackBytes int
-	closed            bool
-	wake              chan struct{}
+	mu     sync.Mutex
+	items  []queued
+	bytes  int
+	closed bool
+	wake   chan struct{}
 }
 
 func newQueue() *queue { return &queue{wake: make(chan struct{}, 1)} }
@@ -693,20 +835,34 @@ func (q *queue) push(qs ...queued) {
 		}
 		q.items = append(q.items, it)
 		q.bytes += len(it.msg)
-		if len(q.items) > min(queueNotices+q.slack, maxNotices) || q.bytes > min(queueBytes+q.slackBytes, maxBytes) {
+		if q.full() {
 			q.collapse()
 		}
-		if len(q.items) > maxNotices || q.bytes > maxBytes {
+		if q.full() {
 			q.items = []queued{resetQueued(resetBehind)}
 			q.bytes = len(q.items[0].msg)
 			q.closed = true
 		}
 	}
 	q.mu.Unlock()
+	q.signal()
+}
+
+func (q *queue) full() bool { return len(q.items) > queueNotices || q.bytes > queueBytes }
+
+func (q *queue) signal() {
 	select {
 	case q.wake <- struct{}{}:
 	default:
 	}
+}
+
+// end ends the stream once what waits is sent: its session ended.
+func (q *queue) end() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.signal()
 }
 
 // take hands out everything that waits, and says whether the stream ends
@@ -749,9 +905,5 @@ func (q *queue) collapse() {
 	q.items, q.bytes = kept, 0
 	for _, it := range kept {
 		q.bytes += len(it.msg)
-	}
-	q.slack, q.slackBytes = 0, 0
-	if len(kept) > queueNotices || q.bytes > queueBytes {
-		q.slack, q.slackBytes = len(kept), q.bytes
 	}
 }

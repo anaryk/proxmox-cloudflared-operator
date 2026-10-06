@@ -22,7 +22,9 @@ func filteredBy(name string) decision { return decision{action: filter, by: name
 func removedBy(name string) decision  { return decision{action: remove, by: name} }
 
 // stateFields is the decision for every field of engine.State, by its JSON
-// name. A field the daemon adds has none until it is given
+// name: a reader sees what belongs to the guests it may audit and the
+// configuration of the cluster, which it holds Sys.Audit on, and nothing an
+// admin alone acts on. A field the daemon adds has none until it is given
 // one here, and the test of this table fails meanwhile: nothing new reaches
 // a reader unseen. The networking milestone adds "networks" and "managed",
 // filtered by cases of their own.
@@ -82,4 +84,43 @@ var unapprovedFields = map[string]decision{
 // reader gets.
 var waitingFields = map[string]decision{
 	"kind": {action: remove}, "subject": {action: remove}, "detail": {action: remove}, "items": {action: remove},
+}
+
+// identityFields are the fields of the appliance's identity.
+var identityFields = map[string]decision{
+	"vmid": kept, "node": kept, "ok": kept, "copy": kept, "exposed": kept, "checkedAt": kept,
+	"why":     kept, // free text, as the problems are
+	"copies":  filteredBy("identity"),
+	"tenants": filteredBy("identity"),
+}
+
+// claimFields are the fields of a claim (GET /claims): a reader gets the
+// claims of the holders it sees, with the claimants it sees.
+var claimFields = map[string]decision{
+	"hostname": kept, "holder": kept, "guest": kept, "since": kept, "missingSince": kept, "state": kept,
+	"waiting": filteredBy("claims"),
+}
+
+// claimantFields are the fields of an owner that waits for a hostname: a
+// reader gets one whole, when it sees the owner.
+var claimantFields = map[string]decision{"owner": kept, "guest": kept, "since": kept}
+
+// approvalFields are the fields of an approval (GET /approvals): a reader
+// gets one whole, when it sees the guest.
+var approvalFields = map[string]decision{
+	"owner": kept, "guest": kept, "identity": kept, "current": kept, "matches": kept, "macs": kept, "addresses": kept,
+}
+
+// guestFields are the fields of a guest of GET /guests: a reader gets one
+// whole, when it sees the guest.
+var guestFields = map[string]decision{
+	"ref": kept, "name": kept, "node": kept, "running": kept, "tagged": kept, "identity": kept,
+	"approval": kept, "routes": kept, "issues": kept,
+}
+
+// routeTrafficFields are the fields of the figure of a route: a reader gets
+// those of the routes it sees, with shared counting only those.
+var routeTrafficFields = map[string]decision{
+	"hostname": kept, "owner": kept, "target": kept, "flowsPerSec": kept, "stale": kept,
+	"shared": filteredBy("traffic"),
 }

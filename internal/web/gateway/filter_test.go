@@ -322,13 +322,28 @@ func TestReadersDiagnoseOnlyWhatTheHolderOfSees(t *testing.T) {
 	rec := bob.do(http.MethodPost, "/api/v1/diagnose", `{"hostname":"api.example.com"}`)
 	require.Equal(t, http.StatusOK, rec.Code, "a manual route's chain is everyone's")
 
+	require.Equal(t, "hostname=api.example.com&owner=manual%2Fapi", s.daemon.last(t, "GET /v1/diagnose").RawQuery,
+		"the daemon is told the holder the gateway checked")
+
 	s.pve.sees(reader2, 101, 110)
 	carol := s.signIn(reader2)
-	for _, host := range []string{"www.example.com", "dup.example.com"} {
-		rec = carol.do(http.MethodPost, "/api/v1/diagnose", `{"hostname":"`+host+`"}`)
+	for _, c := range []struct{ host, owner string }{{"www.example.com", "qemu%2F101"}, {"dup.example.com", "qemu%2F110"}} {
+		rec = carol.do(http.MethodPost, "/api/v1/diagnose", `{"hostname":"`+c.host+`"}`)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, "hostname="+c.host+"&owner="+c.owner, s.daemon.last(t, "GET /v1/diagnose").RawQuery)
 	}
 	requireGoldenJSON(t, "filter/diagnose.json", rec.Body.Bytes())
+
+	// A holder that changed before the daemon walked it is the daemon's
+	// refusal, passed on.
+	s.daemon.answer("GET /v1/diagnose", http.StatusConflict, map[string]string{
+		"error": "the holder changed: www.example.com is no longer held by qemu/101", "code": "holder_changed",
+	})
+	requireError(t, carol.do(http.MethodPost, "/api/v1/diagnose", `{"hostname":"www.example.com"}`), http.StatusConflict, "holder_changed")
+
+	// An admin may diagnose whatever holds it: no holder is named.
+	require.Equal(t, http.StatusConflict, s.signIn(admin).do(http.MethodPost, "/api/v1/diagnose", `{"hostname":"www.example.com"}`).Code)
+	require.Equal(t, "hostname=www.example.com", s.daemon.last(t, "GET /v1/diagnose").RawQuery)
 }
 
 // The gateway decides by the route the daemon diagnoses: for every hostname

@@ -150,3 +150,36 @@ func TestAStateWithoutADigestIsNotCached(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Empty(t, s.daemon.last(t, "GET /v1/state").Header.Get("If-None-Match"))
 }
+
+// A builder that panics leaves nobody waiting: the caller that made it and
+// those that waited for it get an error, and the next one builds anew.
+func TestAPanickingBuilderLeavesNobodyWaiting(t *testing.T) {
+	c := newStateCache()
+	started, release := make(chan struct{}), make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		_, err := c.get("k", func() (*encoded, error) {
+			close(started)
+			<-release
+			panic("index out of range")
+		})
+		errs <- err
+	}()
+	<-started
+	go func() {
+		_, err := c.get("k", func() (*encoded, error) { return &encoded{}, nil })
+		errs <- err
+	}()
+	eventually(t, "the second caller to wait", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.making["k"] != nil && c.waiting > 0
+	})
+	close(release)
+	for range 2 {
+		require.EqualError(t, <-errs, "making the answer k stopped: index out of range")
+	}
+	enc, err := c.get("k", func() (*encoded, error) { return &encoded{etag: "x"}, nil })
+	require.NoError(t, err)
+	require.Equal(t, "x", enc.etag)
+}

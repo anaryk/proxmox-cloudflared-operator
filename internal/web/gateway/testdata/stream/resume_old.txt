@@ -1,0 +1,26 @@
+event: hello
+data: {"boot":"9f2c4e1a0b7d3c55","version":"v1.3.0","seq":23,"digest":"5e0c1f7a92b4d3e8","pollInterval":"10s"}
+
+event: upstream
+data: {"up":true,"since":"2026-10-01T12:00:00Z"}
+
+id: 9f2c4e1a0b7d3c55:12
+event: gap
+data: {"boot":"9f2c4e1a0b7d3c55","from":3,"to":12,"count":10,"level":"warn"}
+
+id: 9f2c4e1a0b7d3c55:13
+event: event
+data: {"seq":13,"boot":"9f2c4e1a0b7d3c55","at":"2026-10-01T12:00:00Z","level":"info","kind":"route","subject":"www.example.com","message":"qemu/101: active","route":"www.example.com","guest":"qemu/101"}
+
+id: 9f2c4e1a0b7d3c55:15
+event: event
+data: {"seq":15,"boot":"9f2c4e1a0b7d3c55","at":"2026-10-01T12:00:00Z","level":"warn","kind":"problem","subject":"","message":"a problem"}
+
+id: 9f2c4e1a0b7d3c55:19
+event: gap
+data: {"boot":"9f2c4e1a0b7d3c55","from":16,"to":19,"count":1,"level":"info"}
+
+id: 9f2c4e1a0b7d3c55:23
+event: event
+data: {"seq":23,"boot":"9f2c4e1a0b7d3c55","at":"2026-10-01T12:00:00Z","level":"info","kind":"rollout","subject":"pco-abc123","message":"version 3 runs on 1 connector","tunnel":"pco-abc123"}
+

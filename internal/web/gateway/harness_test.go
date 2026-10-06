@@ -363,6 +363,24 @@ func (f *fakePVE) sees(user string, vmids ...int) {
 	f.users[user].vmids = vmids
 }
 
+// grant sets the privileges user has on /.
+func (f *fakePVE) grant(user string, privs ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users[user].privs = map[string]bool{}
+	for _, p := range privs {
+		f.users[user].privs[p] = true
+	}
+}
+
+// ticks makes the streams' ticker one the test drives: a stream checks its
+// session and pings on every tick it is sent.
+func (s *testServer) ticks() chan<- time.Time {
+	tick := make(chan time.Time)
+	s.gw.ticker = func(time.Duration) (<-chan time.Time, func()) { return tick, func() {} }
+	return tick
+}
+
 // testServer is pco web with the sessions and the gateway, in front of a
 // fake daemon.
 type testServer struct {

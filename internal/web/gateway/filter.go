@@ -144,8 +144,9 @@ func FilterEvents(evs []engine.Event, visible auth.Visible, hosts map[string]boo
 
 // FilterTraffic keeps the routes whose owner the reader sees, counts in
 // Shared only the others of them on the same target, and sets RoutesTotal
-// to how many of them have a figure, so that a reader cannot count
-// hidden routes. The tunnels and why there are no figures stay.
+// to how many of them have a figure, so that a reader cannot count the
+// routes of guests it does not see. The tunnels and why there are no
+// figures stay.
 func FilterTraffic(tv engine.TrafficView, visible auth.Visible) engine.TrafficView {
 	tv.Routes = visibleFigures(tv.Routes, visible)
 	tv.RoutesTotal = len(tv.Routes)
@@ -275,30 +276,48 @@ func checkAnnotation(r *Reader, c *gin.Context, _ url.Values) error {
 	return errHidden
 }
 
-// checkHolder lets a reader diagnose a hostname, or read the figures of its
-// target, only when the route that holds it is the reader's to see: that of
-// a visible guest, or a manual route. The holder is the one the daemon
+// checkHolder lets a reader read the figures of the target of a hostname
+// only when the route that holds it is the reader's to see: that of a
+// visible guest, or a manual route. The holder is the one the daemon
 // diagnoses, chosen by its own function, so a reader who sees only the
-// losing route of a hostname does not read the holder's chain. A hostname
+// losing route of a hostname reads nothing of the holder's. A hostname
 // without a route and one of another's answer alike.
 func checkHolder(r *Reader, _ *gin.Context, q url.Values) error {
+	_, err := visibleHolder(r, q)
+	return err
+}
+
+// checkDiagnosis lets a reader diagnose a hostname as checkHolder lets it
+// read its figures, and names the holder it checked to the daemon, which
+// refuses when another holds the hostname by the time it walks the chain.
+func checkDiagnosis(r *Reader, _ *gin.Context, q url.Values) error {
+	owner, err := visibleHolder(r, q)
+	if err == nil {
+		q.Set("owner", owner)
+	}
+	return err
+}
+
+// visibleHolder is the owner of the route that holds the hostname of q, when
+// the reader sees it.
+func visibleHolder(r *Reader, q url.Values) (string, error) {
 	names := q["hostname"]
 	if len(names) != 1 {
-		return errHidden
+		return "", errHidden
 	}
 	host, err := hostname.Normalize(names[0])
 	if err != nil {
-		return errHidden
+		return "", errHidden
 	}
 	st, _, err := r.state()
 	if err != nil {
-		return err
+		return "", err
 	}
 	holder, ok := doctor.HolderOf(st, host)
 	if !ok || !ownerVisible(holder.Owner, r.Visible) {
-		return errHidden
+		return "", errHidden
 	}
-	return nil
+	return holder.Owner, nil
 }
 
 // trafficNotice is a traffic notice for a reader: the routes it sees, with

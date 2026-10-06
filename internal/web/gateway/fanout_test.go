@@ -157,14 +157,14 @@ func filterScenario(t *testing.T, s *testServer, conn *streamConn) {
 	}
 }
 
-// until reads messages up to the one with id.
-func (r *streamReader) until(id string) []readMessage {
+// throughScenario reads messages up to the last event of filterScenario.
+func (r *streamReader) throughScenario() []readMessage {
 	r.t.Helper()
 	var out []readMessage
 	for {
 		m := r.next()
 		out = append(out, m)
-		if m.id == id {
+		if m.id == bootA+":23" {
 			return out
 		}
 	}
@@ -183,28 +183,45 @@ func TestStreamsAreFilteredForTheirSession(t *testing.T) {
 	alice.take(2)
 
 	filterScenario(t, s, conn)
-	requireGolden(t, "stream/reader.txt", transcript(bob.until(bootA+":23")))
-	requireGolden(t, "stream/admin.txt", transcript(alice.until(bootA+":23")))
+	requireGolden(t, "stream/reader.txt", transcript(bob.throughScenario()))
+	requireGolden(t, "stream/admin.txt", transcript(alice.throughScenario()))
 	bob.quiet()
 	require.Equal(t, 1, s.daemon.count("GET /v1/traffic"), "one fetch of the figures for every reader")
 
 	// A browser that comes back resumes from the web's ring, filtered.
 	again := s.signIn(reader).openStream(srv, bootA+":14")
-	requireGolden(t, "stream/resume.txt", transcript(again.until(bootA+":23")))
+	requireGolden(t, "stream/resume.txt", transcript(again.throughScenario()))
 	again.quiet()
 
-	// One whose last event the ring does not hold starts over, and so does
-	// one of another boot; the stream stays open.
-	for i, c := range []struct{ last, reason string }{{bootA + ":2", "too far behind"}, {bootB + ":30", "boot changed"}} {
-		sr := s.signIn(reader).openStream(srv, c.last)
-		got := sr.take(3)
-		require.Equal(t, "reset", got[2].event, c.last)
-		require.JSONEq(t, `{"reason":"`+c.reason+`"}`, got[2].data)
-		seq := uint64(24 + i)
-		conn.send <- eventMessage(engine.Event{Seq: seq, Boot: bootA, At: t0, Level: "warn", Kind: "problem", Message: "another problem"})
-		require.Equal(t, fmt.Sprintf("%s:%d", bootA, seq), sr.next().id)
-		require.True(t, sr.open())
-	}
+	// One whose last event is older than the ring gets a gap for what the
+	// ring no longer holds, as the daemon's replay has it, then the ring.
+	old := s.signIn(reader).openStream(srv, bootA+":2")
+	requireGolden(t, "stream/resume_old.txt", transcript(old.throughScenario()))
+	old.quiet()
+
+	// One of another boot starts over; the stream stays open.
+	sr := s.signIn(reader).openStream(srv, bootB+":30")
+	got := sr.take(3)
+	require.Equal(t, "reset", got[2].event)
+	require.JSONEq(t, `{"reason":"boot changed"}`, got[2].data)
+	conn.send <- eventMessage(engine.Event{Seq: 24, Boot: bootA, At: t0, Level: "warn", Kind: "problem", Message: "another problem"})
+	require.Equal(t, bootA+":24", sr.next().id)
+	require.True(t, sr.open())
+}
+
+// A browser that comes back after events the web never held, as after a
+// start of pco web, gets a gap for them.
+func TestAResumeBeforeTheRingIsAGap(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	s.connect()
+	sr := s.signIn(reader).openStream(s.streamServer(), bootA+":5")
+	got := sr.take(3)
+	require.Equal(t, "gap", got[2].event)
+	require.Equal(t, bootA+":12", got[2].id)
+	require.JSONEq(t, `{"boot":"`+bootA+`","from":6,"to":12,"count":7,"level":"warn"}`, got[2].data)
+	sr.quiet()
 }
 
 func TestAMalformedLastEventIDIsRefused(t *testing.T) {
@@ -403,26 +420,76 @@ func TestTheQueueIsBoundInBytes(t *testing.T) {
 	for seq := uint64(1); seq <= 100; seq++ {
 		ev := engine.Event{Seq: seq, Boot: bootA, Level: "info", Kind: "action", Subject: big, Route: "www.example.com"}
 		q.push(eventQueued(&ev))
-		require.LessOrEqual(t, q.bytes, queueBytes+len(eventQueued(&ev).msg))
+		require.LessOrEqual(t, q.bytes, queueBytes)
 	}
 	items, closed := q.take()
-	require.False(t, closed)
+	require.False(t, closed, "events that collapse are no reason to cut")
 	require.Less(t, len(items), 60)
 	require.NotNil(t, items[0].gap)
 }
 
-// One that is far behind even so, with more than 4096 events that do not
-// collapse, is told to start over and its stream ends.
+// One that is behind even so, with more than 256 notices or 1 MiB that do
+// not collapse, is told to start over and its stream ends: no stream holds
+// more than that.
 func TestABrowserFarBehindStartsOver(t *testing.T) {
 	q := newQueue()
-	for seq := uint64(1); seq <= maxNotices+1; seq++ {
+	for seq := uint64(1); seq <= queueNotices; seq++ {
+		q.push(lowEvent(seq, "a problem"))
+	}
+	items, closed := q.take()
+	require.False(t, closed)
+	require.Len(t, items, queueNotices)
+
+	for seq := uint64(1); seq <= queueNotices+1; seq++ {
 		q.push(lowEvent(seq, "a problem"))
 	}
 	q.push(lowEvent(5000, "after the reset"))
-	items, closed := q.take()
+	items, closed = q.take()
 	require.True(t, closed)
 	require.Equal(t, "reset", kinds(items))
 	require.Contains(t, string(items[0].msg), `"reason":"too far behind"`)
+
+	q = newQueue()
+	big := strings.Repeat("x", 20<<10)
+	for seq := uint64(1); seq <= 60; seq++ {
+		q.push(lowEvent(seq, big))
+		require.LessOrEqual(t, q.bytes, queueBytes)
+	}
+	_, closed = q.take()
+	require.True(t, closed, "1 MiB that does not collapse")
+}
+
+// After a collapse the ids of the stream still only grow: the gap goes where
+// its last event was, after the events that stay before it.
+func TestACollapseKeepsTheIdsInOrder(t *testing.T) {
+	q := newQueue()
+	var seq uint64
+	for range 3 {
+		for range 100 {
+			seq++
+			q.push(hvEvent(seq, "info"))
+		}
+		seq++
+		q.push(lowEvent(seq, "a problem"))
+		q.push(stateQueued(fmt.Sprint(seq)))
+	}
+	items, closed := q.take()
+	require.False(t, closed)
+	var last uint64
+	for _, it := range items {
+		var id uint64
+		switch {
+		case it.gap != nil:
+			id = it.gap.To
+		case it.event != nil:
+			id = it.event.Seq
+		default:
+			continue
+		}
+		require.Greater(t, id, last, kinds(items))
+		last = id
+	}
+	require.Equal(t, uint64(303), last)
 }
 
 func TestAReplayIsBatchedAsTheDaemonDoes(t *testing.T) {
@@ -441,4 +508,193 @@ func TestAReplayIsBatchedAsTheDaemonDoes(t *testing.T) {
 	want = append(want, "event 100", "gap 33-40 8 info")
 	require.Equal(t, strings.Join(want, ", "), kinds(got))
 	require.Equal(t, "event 1", kinds(batched(qs[:1])))
+}
+
+// streamOf opens a stream of a new session of user and reads its hello and
+// whether the daemon is reached.
+func (s *testServer) streamOf(srv *httptest.Server, user string) *streamReader {
+	s.t.Helper()
+	sr := s.signIn(user).openStream(srv, "")
+	require.Equal(s.t, http.StatusOK, sr.status)
+	sr.take(2)
+	return sr
+}
+
+// requireEnds checks that the stream ends, now or after the tick it is
+// sent.
+func requireEnds(t *testing.T, sr *streamReader) {
+	t.Helper()
+	select {
+	case <-sr.ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream did not end")
+	}
+}
+
+// A stream is checked with every ping: when its reader may see less, it
+// ends, and the stream the page opens again resumes from the ring for what
+// the reader may see now.
+func TestAStreamEndsWhenItsReaderSeesLess(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	conn := s.connect()
+	srv := s.streamServer()
+	s.pve.sees(reader, 101, 102)
+	b := s.signIn(reader)
+	sr := b.openStream(srv, "")
+	sr.take(2)
+	conn.send <- eventMessage(routeEvent(13, "info", "qemu/101"))
+	conn.send <- eventMessage(routeEvent(14, "warn", "qemu/102"))
+	require.Equal(t, bootA+":13", sr.next().id)
+	require.Equal(t, bootA+":14", sr.next().id)
+
+	// Nothing changed: the tick is a ping.
+	tick <- t0
+	require.Equal(t, "comment", sr.next().event)
+
+	// qemu/102 taken away: the set is asked for again after a minute.
+	s.pve.sees(reader, 101)
+	s.clock.advance(61 * time.Second)
+	tick <- t0
+	requireEnds(t, sr)
+
+	again := b.openStream(srv, bootA+":12")
+	require.Equal(t, http.StatusOK, again.status)
+	got := again.take(3)
+	require.Equal(t, bootA+":13", got[2].id)
+	again.quiet()
+}
+
+func TestAStreamEndsWhenTheRoleChanges(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.connect()
+	srv := s.streamServer()
+	sr := s.streamOf(srv, admin)
+	s.pve.grant(admin, "Sys.Audit")
+	s.clock.advance(31 * time.Second)
+	tick <- t0
+	requireEnds(t, sr)
+}
+
+func TestAStreamEndsWithItsSession(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.connect()
+	srv := s.streamServer()
+
+	// Signed out: at once.
+	b := s.signIn(reader)
+	sr := b.openStream(srv, "")
+	sr.take(2)
+	require.Equal(t, http.StatusNoContent, b.do(http.MethodDelete, "/api/session", "").Code)
+	requireEnds(t, sr)
+
+	// Replaced by a new sign-in of the same browser: at once.
+	b = s.signIn(reader)
+	sr = b.openStream(srv, "")
+	sr.take(2)
+	b.do(http.MethodPost, "/api/session/ticket", "{}")
+	requireEnds(t, sr)
+
+	// Idle for half an hour: the stream is no activity, and the next tick
+	// ends it.
+	sr = s.streamOf(srv, reader)
+	s.clock.advance(31 * time.Minute)
+	tick <- t0
+	requireEnds(t, sr)
+}
+
+// No events of a gap are read while no reader would be told of them.
+func TestGapsAreReadOnlyForReaders(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	s.daemon.serveEvents([]engine.Event{routeEvent(13, "info", "qemu/101"), routeEvent(14, "info", "qemu/101")})
+	conn := s.connect()
+	srv := s.streamServer()
+	alice := s.streamOf(srv, admin)
+	conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: 13, To: 14, Count: 2, Level: "info"})
+	require.Equal(t, "gap", alice.next().event)
+	require.Zero(t, s.daemon.count("GET /v1/events"))
+
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(srv, reader)
+	conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: 15, To: 16, Count: 2, Level: "info"})
+	require.Equal(t, "gap", alice.next().event)
+	require.Equal(t, 1, s.daemon.count("GET /v1/events"))
+	bob.quiet()
+}
+
+// A daemon that is slow to answer a read does not hold up the subscription:
+// what comes meanwhile is taken off the stream and handed on in order once
+// the read is done.
+func TestASlowReadDoesNotHoldTheSubscription(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	release := make(chan struct{})
+	s.daemon.on("GET /v1/events", func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode([]engine.Event{routeEvent(13, "info", "qemu/101")})
+	})
+	conn := s.connect()
+	srv := s.streamServer()
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(srv, reader)
+	conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: 13, To: 13, Count: 1, Level: "info"})
+	for seq := uint64(14); seq <= 33; seq++ {
+		conn.send <- eventMessage(engine.Event{Seq: seq, Boot: bootA, At: t0, Level: "warn", Kind: "problem", Message: "a problem"})
+	}
+	eventually(t, "the subscription to take every notice", func() bool { return len(s.gw.inbox) == 20 })
+	bob.quiet()
+	close(release)
+	got := bob.take(21)
+	require.Equal(t, "gap", got[0].event)
+	for i, m := range got[1:] {
+		require.Equal(t, fmt.Sprintf("%s:%d", bootA, 14+i), m.id)
+	}
+}
+
+// A reader's count of routes with a figure follows the figures, also when
+// their number stays the same.
+func TestAReadersRoutesTotalFollowsTheFigures(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	conn := s.connect()
+	srv := s.streamServer()
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(srv, reader)
+	figures := func(routes ...engine.RouteTraffic) {
+		s.daemon.answer("GET /v1/traffic", http.StatusOK, engine.TrafficView{At: t0, Interval: "5s", Tunnels: []engine.TunnelTraffic{}, Routes: routes, RoutesTotal: len(routes)})
+	}
+	www := engine.RouteTraffic{Hostname: "www.example.com", Owner: "qemu/101", Target: "10.0.0.11:8080", FlowsPerSec: 1}
+	shop := engine.RouteTraffic{Hostname: "shop.example.com", Owner: "lxc/200", Target: "10.0.0.12:8080", FlowsPerSec: 1}
+	web := engine.RouteTraffic{Hostname: "web.example.com", Owner: "qemu/101", Target: "10.0.0.13:8080", FlowsPerSec: 1}
+	total := func() int {
+		m := bob.next()
+		require.Equal(t, "traffic", m.event)
+		var n engine.TrafficNotice
+		require.NoError(t, json.Unmarshal([]byte(m.data), &n))
+		return n.RoutesTotal
+	}
+
+	figures(www, shop)
+	conn.send <- sse("", "traffic", engine.TrafficNotice{At: t0, Tunnels: []engine.TunnelNotice{}, Routes: []engine.RouteTraffic{shop}, RoutesTotal: 2})
+	require.Equal(t, 1, total())
+
+	// shop stopped and web started: two figures still.
+	figures(www, web)
+	conn.send <- sse("", "traffic", engine.TrafficNotice{At: t0, Tunnels: []engine.TunnelNotice{}, Routes: []engine.RouteTraffic{web}, RoutesTotal: 2})
+	require.Equal(t, 2, total())
+	require.Equal(t, 2, s.daemon.count("GET /v1/traffic"))
+
+	// The same figures: they are not read again for every notice.
+	conn.send <- sse("", "traffic", engine.TrafficNotice{At: t0, Tunnels: []engine.TunnelNotice{}, Routes: []engine.RouteTraffic{web}, RoutesTotal: 2})
+	require.Equal(t, 2, total())
+	require.Equal(t, 2, s.daemon.count("GET /v1/traffic"))
 }
