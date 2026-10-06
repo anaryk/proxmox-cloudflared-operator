@@ -70,6 +70,10 @@ describe('the form', () => {
     for (const via of ['net32', 'net01', '127.0.0.1', '169.254.1.1', '224.0.0.1', 'eth0']) {
       expect(validate({ ...v, guest: 'qemu/101', via }, { isNew: true }).via, via).toBe(`"${via}" is neither a NIC from net0 to net31 nor an IPv4 address a guest can have`)
     }
+    // quoted as the daemon quotes it
+    expect(validate({ ...v, guest: 'qemu/101', via: 'net"1' }, { isNew: true }).via).toBe(
+      String.raw`"net\"1" is neither a NIC from net0 to net31 nor an IPv4 address a guest can have`,
+    )
   })
 
   test('the body: what applies to the target only, the id of a new route when given, and the revision', () => {

@@ -112,7 +112,7 @@ export function viaError(via: string): string | undefined {
   if (nic && Number(nic[1]) <= maxNIC) return undefined
   const addr = parseIPv4(via)
   if (addr !== undefined && routable(addr)) return undefined
-  return `"${via}" is neither a NIC from net0 to net${maxNIC} nor an IPv4 address a guest can have`
+  return `${goQuote(via)} is neither a NIC from net0 to net${maxNIC} nor an IPv4 address a guest can have`
 }
 
 export interface ValidateOptions {
@@ -143,9 +143,9 @@ export function validate(v: ManualValues, o: ValidateOptions): ManualErrors {
     }
   }
   if (v.hostHeader.trim() && !/^[A-Za-z0-9._:-]{1,253}$/.test(v.hostHeader.trim())) {
-    e.hostHeader = `"${v.hostHeader.trim()}" is not a host name with an optional port`
+    e.hostHeader = `${goQuote(v.hostHeader.trim())} is not a host name with an optional port`
   }
-  if (v.scheme === 'https' && v.sni.trim() && hostnameError(v.sni.trim(), false)) e.sni = `"${v.sni.trim()}" is not a host name`
+  if (v.scheme === 'https' && v.sni.trim() && hostnameError(v.sni.trim(), false)) e.sni = `${goQuote(v.sni.trim())} is not a host name`
   return e
 }
 
