@@ -17,7 +17,8 @@
 #
 # Without --with-network the container has no network at all: the system must
 # come up within 180 seconds, running, or degraded by nothing but pco.service
-# (pco is not set up) and pco-first-boot.service (no network to update from).
+# (pco is not set up), pco-first-boot.service (no network to update from) and
+# pco-net.service, should the container not get the dummy device pco0.
 # It needs root, systemd-nspawn, machinectl and systemd-run (systemd-container),
 # zstd and dpkg-query, on a host whose systemd runs systemd-machined.
 
@@ -108,6 +109,7 @@ check() {
 
 is() { [[ $1 == "$2" ]]; }
 starts() { [[ $1 == "$2"* ]]; }
+has() { [[ $1 == *"$2"* ]]; }
 absent() { [[ ! -e $1 && ! -L $1 ]]; }
 empty_file() { [[ -f $1 && ! -L $1 && ! -s $1 ]]; }
 
@@ -172,14 +174,14 @@ if [[ $network == 0 ]]; then
 		local unit
 		for unit in $failed; do
 			case $unit in
-			pco.service | pco-first-boot.service) ;;
+			pco.service | pco-first-boot.service | pco-net.service) ;;
 			*) return 1 ;;
 			esac
 		done
 	}
 	case $state in
 	running) ;;
-	degraded) check "only pco.service and pco-first-boot.service failed, not: $failed" allowed_failed ;;
+	degraded) check "only pco.service, pco-first-boot.service and pco-net.service failed, not: $failed" allowed_failed ;;
 	*) check "the system is running or degraded, not '$state'" false ;;
 	esac
 
@@ -189,6 +191,24 @@ if [[ $network == 0 ]]; then
 	check "the package pco is $version" is "$(inside dpkg-query --show --showformat='${Version}' pco)" "${version/-/$tilde}"
 	check "pco egress show finds the table pco-egress.service loaded" starts "$(inside pco egress show || true)" \
 		"The egress filter is on."
+	check "pco-net.service is enabled" is "$(inside systemctl is-enabled pco-net.service || true)" enabled
+	# Whether a container without a network gets the dummy device depends on
+	# the host; pco net show must say what pco-net.service found, either way.
+	net_result=$(inside systemctl show --property=Result --value pco-net.service) || net_result=
+	net_status=0
+	net_show=$(inside pco net show) || net_status=$?
+	net_agrees() {
+		if [[ $net_result == success ]]; then
+			[[ $net_status == 0 && $net_show == "The service prefix 198.18.0.0/16 stays in the appliance"* ]]
+		else
+			[[ $net_status == 1 && $net_show == *"the dummy device pco0 is missing or down"* ]]
+		fi
+	}
+	check "pco net show agrees with pco-net.service, which ended with ${net_result:-nothing}; pco net show exited with $net_status" net_agrees
+	connector_unit=$(inside systemctl cat pco-cloudflared@x.service || true)
+	check "a connector starts only behind pco-net.service" has "$connector_unit" $'\nRequires=pco-net.service\n'
+	check "and only once the daemon wrote the identity flag" has "$connector_unit" $'\nConditionPathExists=/run/pco-appliance/identity-ok\n'
+	check "pco stays failed without its volume" has "$(inside systemctl cat pco.service || true)" $'\nRestartPreventExitStatus=78\n'
 	check "/etc/pco/profile says appliance" is "$(inside cat /etc/pco/profile)" appliance
 	check "pco and cloudflared are held" is "$(inside apt-mark showhold | LC_ALL=C sort | paste -s -d ' ' -)" "cloudflared pco"
 	check "the password of root is locked" is "$(inside passwd --status root | awk '{ print $2 }')" L

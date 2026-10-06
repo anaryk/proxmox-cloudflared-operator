@@ -189,7 +189,7 @@ hooks() {
 		"upload $work/pco.deb /tmp/pco.deb" \
 		"upload $work/cloudflared.deb /tmp/cloudflared.deb" \
 		'chroot "$1" dpkg --install /tmp/pco.deb /tmp/cloudflared.deb' \
-		'chroot "$1" systemctl enable pco-egress.service pco.service pco-first-boot.service unattended-upgrades.service' \
+		'chroot "$1" systemctl enable pco-net.service pco-egress.service pco.service pco-first-boot.service unattended-upgrades.service' \
 		'chroot "$1" systemctl mask nftables.service' \
 		'chroot "$1" apt-mark hold pco cloudflared' \
 		'chroot "$1" passwd --lock root' \

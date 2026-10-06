@@ -1,0 +1,16 @@
+# The service prefix never leaves the appliance. The route through pco0 keeps
+# it off net0; this table rejects whatever is still sent to it, keyed on the
+# address so that it holds without the route too. A request to the prefix
+# fails at once, where a dropped one would wait out cloudflared's origin
+# timeout. An address of the appliance itself, as 198.18.0.1, is no way
+# out, and the reject answers the request there.
+add table inet pco_net
+delete table inet pco_net
+table inet pco_net {
+	counter leaked {
+	}
+	chain output {
+		type filter hook output priority filter - 20; policy accept;
+		ip daddr 198.18.0.0/16 fib daddr type != local counter name leaked reject
+	}
+}

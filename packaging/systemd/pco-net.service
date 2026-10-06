@@ -1,0 +1,18 @@
+[Unit]
+Description=pco service-prefix route and filter of the appliance
+Documentation=https://github.com/anaryk/proxmox-cloudflared-operator
+# Before any network and before pco and its connectors, which require it in
+# the appliance. After the sysctls: a value this unit sets must not be undone
+# by those of systemd-sysctl.service.
+DefaultDependencies=no
+After=local-fs.target systemd-sysctl.service
+Before=network-pre.target pco-egress.service pco.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pco net load
+
+[Install]
+WantedBy=multi-user.target

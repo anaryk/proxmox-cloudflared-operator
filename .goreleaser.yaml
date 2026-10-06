@@ -89,6 +89,11 @@ nfpms:
         dst: /usr/lib/systemd/system/pco-egress.service
         file_info:
           mode: 0644
+      # Enabled by the appliance template only; on a host nothing starts it.
+      - src: packaging/systemd/pco-net.service
+        dst: /usr/lib/systemd/system/pco-net.service
+        file_info:
+          mode: 0644
       # Exactly here: the daemon answers the user pco-web on its socket only
       # while this file exists.
       - src: packaging/systemd/pco-web.service

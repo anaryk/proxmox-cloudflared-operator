@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
@@ -51,6 +52,7 @@ type keeperRig struct {
 	table *fakeTable
 	now   time.Time
 	notes []engine.EgressCheck
+	nets  []engine.NetCheck
 }
 
 func newKeeperRig(verify ...error) *keeperRig {
@@ -157,6 +159,153 @@ func TestTheKeeperLoadsTheTableAtMostOnceEveryFiveSeconds(t *testing.T) {
 		require.Zero(t, r.k.check(t.Context()))
 		require.Equal(t, 3, r.table.loads())
 	})
+}
+
+// fakeNet is the service-prefix route and table of an appliance: Verify
+// answers from a queue, and the loads are counted.
+type fakeNet struct {
+	mu      sync.Mutex
+	verify  []error // answered in turn; the last one stays
+	loaded  int
+	loadErr error
+}
+
+func (f *fakeNet) Verify(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	err := f.verify[0]
+	if len(f.verify) > 1 {
+		f.verify = f.verify[1:]
+	}
+	return err
+}
+
+func (f *fakeNet) Load(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loaded++
+	return f.loadErr
+}
+
+func (f *fakeNet) loads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loaded
+}
+
+// withNet makes the rig an appliance's: the keeper checks the service-prefix
+// route and table beside the egress table.
+func (r *keeperRig) withNet(verify ...error) *fakeNet {
+	n := &fakeNet{verify: verify}
+	r.k.net = n
+	r.k.noteNet = func(c engine.NetCheck) { r.nets = append(r.nets, c) }
+	return n
+}
+
+var errRouteGone = &appnet.ChangedError{Differences: []string{"the route 198.18.0.0/16 dev pco0 src 198.18.0.1 is missing"}}
+
+func TestTheKeeperLoadsTheServicePrefixAgain(t *testing.T) {
+	tests := []struct {
+		name    string
+		verify  error
+		loadErr error
+		note    engine.NetCheck
+		loads   int
+	}{
+		{name: "in place"},
+		{name: "changed and loaded again", verify: errRouteGone, loads: 1,
+			note: engine.NetCheck{Reloaded: "the route 198.18.0.0/16 dev pco0 src 198.18.0.1 is missing"}},
+		{name: "changed and not loaded again", verify: errRouteGone, loadErr: errors.New("adding the dummy device pco0: operation not permitted"),
+			loads: 1, note: engine.NetCheck{NotKept: "adding the dummy device pco0: operation not permitted"}},
+		{name: "not read", verify: errors.New("listing the table inet pco_net: signal: killed"),
+			note: engine.NetCheck{Failed: "listing the table inet pco_net: signal: killed"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newKeeperRig(nil)
+			n := r.withNet(tc.verify)
+			n.loadErr = tc.loadErr
+
+			require.Zero(t, r.k.check(t.Context()))
+
+			require.Equal(t, []engine.NetCheck{tc.note}, r.nets)
+			require.Equal(t, tc.loads, n.loads())
+			require.Equal(t, []engine.EgressCheck{{View: on}}, r.notes, "the egress table is checked as before")
+			require.Zero(t, r.table.loads())
+		})
+	}
+}
+
+// The service prefix is loaded again no sooner than reloadEvery either, and
+// its wait does not hold the egress table's.
+func TestTheKeeperLoadsTheServicePrefixAtMostOnceEveryFiveSeconds(t *testing.T) {
+	r := newKeeperRig(nil)
+	n := r.withNet(errRouteGone)
+
+	require.Zero(t, r.k.check(t.Context()))
+	r.now = r.now.Add(time.Second)
+
+	require.Equal(t, 4*time.Second, r.k.check(t.Context()))
+	require.Equal(t, 1, n.loads())
+	require.Len(t, r.nets, 1, "nothing new to say while it waits")
+	r.now = r.now.Add(4 * time.Second)
+	require.Zero(t, r.k.check(t.Context()))
+	require.Equal(t, 2, n.loads())
+}
+
+// nft flush ruleset takes both tables in one transaction, which the ruleset
+// watch tells in a burst of notifications: each is loaded once, and each
+// load is one event.
+func TestOneBurstLoadsBothTablesOnce(t *testing.T) {
+	r := newKeeperRig(errGone, nil)
+	n := r.withNet(errRouteGone, nil)
+	var mu sync.Mutex
+	notes, nets := r.k.note, r.k.noteNet
+	r.k.note = func(c engine.EgressCheck) { mu.Lock(); defer mu.Unlock(); notes(c) }
+	r.k.noteNet = func(c engine.NetCheck) { mu.Lock(); defer mu.Unlock(); nets(c) }
+	r.k.off = func() (time.Time, bool, error) { return time.Time{}, false, nil }
+	reloaded := func() (egress, net []string) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range r.notes {
+			if c.Reloaded != "" {
+				egress = append(egress, c.Reloaded)
+			}
+		}
+		for _, c := range r.nets {
+			if c.Reloaded != "" {
+				net = append(net, c.Reloaded)
+			}
+		}
+		return egress, net
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	changedc := make(chan func(), 1)
+	watch := func(ctx context.Context, changed func()) error {
+		changedc <- changed
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.k.keep(ctx, watch, time.Hour, sleepContext)
+	}()
+
+	change := <-changedc
+	for range 20 {
+		change()
+	}
+	require.Eventually(t, func() bool { e, n := reloaded(); return len(e) == 1 && len(n) == 1 }, 5*time.Second, time.Millisecond)
+	cancel()
+	<-done
+
+	e, nt := reloaded()
+	require.Equal(t, []string{"the egress table is not loaded"}, e)
+	require.Equal(t, []string{"the route 198.18.0.0/16 dev pco0 src 198.18.0.1 is missing"}, nt)
+	require.Equal(t, 1, r.table.loads())
+	require.Equal(t, 1, n.loads())
 }
 
 // The keeper checks on its timer and after every burst of notifications, and

@@ -8,6 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
@@ -31,23 +32,59 @@ type table interface {
 	Reapply(ctx context.Context) error
 }
 
+// netTable is what pco-net.service loads in the appliance: the device that
+// takes the service prefix, its route and rules, and the table inet pco_net.
+type netTable interface {
+	Verify(ctx context.Context) error
+	Load(ctx context.Context) error
+}
+
+// serviceNet is the netTable of the container the daemon runs in.
+type serviceNet struct {
+	nl  appnet.Netlink
+	nft egress.Nft
+}
+
+func (s serviceNet) Verify(ctx context.Context) error { return appnet.Verify(ctx, s.nl, s.nft) }
+
+func (s serviceNet) Load(ctx context.Context) error {
+	_, err := appnet.Load(ctx, s.nl, s.nft)
+	return err
+}
+
 // keeper keeps the egress table in place: it checks it, loads it again when
 // it is gone, dormant or not the one pco applied, and tells the engine what
-// it found.
+// it found. In the appliance it does the same, in the same checks, for what
+// pco-net.service loads.
 type keeper struct {
 	table table
 	off   func() (since time.Time, off bool, err error)
 	note  func(engine.EgressCheck)
 	now   func() time.Time
 	log   zerolog.Logger
+	// net is nil on the host.
+	net     netTable
+	noteNet func(engine.NetCheck)
 
-	state      string    // as the last check that could tell found it
-	lastReload time.Time // when the table was last loaded again
+	state       string    // as the last check that could tell found it
+	lastReload  time.Time // when the table was last loaded again
+	lastNetLoad time.Time // when the service prefix was last loaded again
 }
 
-// check checks the table once. It returns how soon it has to check again,
-// when that is sooner than the next timed check, and zero otherwise.
+// check checks the egress table once, and what pco-net.service loads in the
+// appliance. It returns how soon it has to check again, when that is sooner
+// than the next timed check, and zero otherwise.
 func (k *keeper) check(ctx context.Context) time.Duration {
+	wait := k.checkEgress(ctx)
+	if k.net != nil {
+		if w := k.checkNet(ctx); w > 0 && (wait == 0 || w < wait) {
+			wait = w
+		}
+	}
+	return wait
+}
+
+func (k *keeper) checkEgress(ctx context.Context) time.Duration {
 	err := k.table.Verify(ctx)
 	switch {
 	case err == nil:
@@ -91,6 +128,36 @@ func (k *keeper) reload(ctx context.Context, changed error) {
 	}
 	k.log.Warn().Str("found", what).Msg("the egress table was changed or removed outside pco and was loaded again")
 	k.report(engine.EgressCheck{View: engine.EgressView{State: engine.EgressOn}, Reloaded: what})
+}
+
+// checkNet checks the service-prefix route and table and loads them again
+// when they differ, no sooner than reloadEvery after the last load. Unlike the
+// egress table's, a failure to load them holds nothing: the egress table
+// confines the connectors whatever happens to the route.
+func (k *keeper) checkNet(ctx context.Context) time.Duration {
+	err := k.net.Verify(ctx)
+	switch {
+	case err == nil:
+		k.noteNet(engine.NetCheck{})
+		return 0
+	case !errors.Is(err, egress.ErrChanged):
+		k.log.Warn().Err(err).Msg("checking the service-prefix route and table failed")
+		k.noteNet(engine.NetCheck{Failed: err.Error()})
+		return 0
+	}
+	if wait := k.lastNetLoad.Add(reloadEvery).Sub(k.now()); wait > 0 && !k.lastNetLoad.After(k.now()) {
+		return wait
+	}
+	k.lastNetLoad = k.now()
+	if lerr := k.net.Load(ctx); lerr != nil {
+		k.log.Error().Err(lerr).Str("found", err.Error()).
+			Msg("the service-prefix route or table was changed outside pco and could not be loaded again")
+		k.noteNet(engine.NetCheck{NotKept: lerr.Error()})
+		return 0
+	}
+	k.log.Warn().Str("found", err.Error()).Msg("the service-prefix route or table was changed outside pco and was loaded again")
+	k.noteNet(engine.NetCheck{Reloaded: err.Error()})
+	return 0
 }
 
 // changedState is the state of a table that is gone or not the one pco

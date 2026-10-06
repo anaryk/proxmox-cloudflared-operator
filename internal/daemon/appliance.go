@@ -15,6 +15,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
@@ -45,9 +46,20 @@ type ApplianceDeps struct {
 	Flag       string
 	Rand       io.Reader
 	StateRetry time.Duration
+	// Netlink and NetNft change and read what pco-net.service loads, which
+	// the keeper checks beside the egress table; default: the container's
+	// netlink and /usr/sbin/nft.
+	Netlink appnet.Netlink
+	NetNft  egress.Nft
 }
 
 func (a ApplianceDeps) withDefaults() ApplianceDeps {
+	if a.Netlink == nil {
+		a.Netlink = appnet.NewNetlink()
+	}
+	if a.NetNft == nil {
+		a.NetNft = appnet.NewNft()
+	}
 	if a.Volume == nil {
 		a.Volume = appliance.VolumeMounted
 	}
@@ -144,7 +156,10 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 		Enabled:    deps.UnitEnabled,
 	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
-	k := &keeper{table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log}
+	k := &keeper{
+		table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log,
+		net: serviceNet{nl: app.Netlink, nft: app.NetNft}, noteNet: eng.NoteNet,
+	}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
 	traffic := &sampler{
 		statuses: eng.ConnectorStatuses, scrape: parts.conns.Metrics, record: eng.RecordTraffic, targets: eng.SampleTargets,

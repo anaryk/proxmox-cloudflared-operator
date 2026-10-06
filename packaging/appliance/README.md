@@ -18,11 +18,14 @@ container from it. Every release carries one for amd64 and one for arm64.
   `security.debian.org` trixie-security), unattended upgrades of Debian's
   security updates, `pco-first-boot.service`, which installs those published
   since the snapshot at the first start that has a network, a journal of at most
-  64 MB, the host name `pco` and a short `/etc/motd`.
-- `pco-egress.service`, `pco.service`, `pco-first-boot.service` and
-  `unattended-upgrades.service` are enabled, `nftables.service` is masked (it
-  would flush the tables of pco), the root password is locked and
-  `/etc/machine-id` is empty.
+  64 MB, the host name `pco` and a short `/etc/motd`. Its drop-ins put
+  `pco.service` and the connectors behind `pco-net.service`, keep `pco.service`
+  failed when it exits with 78 (no volume), and start a connector only once the
+  daemon wrote `/run/pco-appliance/identity-ok`; `overlay_test.sh` checks them.
+- `pco-net.service`, `pco-egress.service`, `pco.service`,
+  `pco-first-boot.service` and `unattended-upgrades.service` are enabled,
+  `nftables.service` is masked (it would flush the tables of pco), the root
+  password is locked and `/etc/machine-id` is empty.
 
 Nothing of the build stays: the snapshot sources, the apt option that let apt
 read their old Release files, the resolver and the logs of the host are taken
@@ -108,9 +111,11 @@ which `make test-scripts` runs, checks what `build.sh` takes from `pin.conf`.
 empty, `/etc/resolv.conf` and `/root/.ssh` absent, and the dpkg database must
 list neither `openssh-server`, `sudo`, `cron` nor `curl`. Then it boots the
 template in `systemd-nspawn` and checks it from inside: without a network it
-must come up running, or degraded by nothing but `pco.service` and
-`pco-first-boot.service`; pco must be the version of the file name, the
-egress table loaded, the profile `appliance`, pco and cloudflared held, root
+must come up running, or degraded by nothing but `pco.service`,
+`pco-first-boot.service` and `pco-net.service`; pco must be the version of the
+file name, the egress table loaded, `pco net show` must say what
+`pco-net.service` found, the drop-ins must be in force, the profile
+`appliance`, pco and cloudflared held, root
 locked, `pco-connector` there, `nftables.service` masked, apt must read the
 two live archives and nothing of the snapshot, and `unattended-upgrade
 --dry-run -v` must allow the origins labelled `Debian-Security` and no other.

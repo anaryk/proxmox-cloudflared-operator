@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,17 +37,108 @@ const (
 // directory, and Proxmox lists the appliance besides the guest.
 type applianceWorld struct {
 	*world
-	sys  appliance.System
-	flag string
+	sys    appliance.System
+	flag   string
+	net    *fakeAppNet
+	netNft *fakeNetNft
+}
+
+// fakeAppNet is the network of the container: everything pco-net.service
+// loads is there but what a test takes away.
+type fakeAppNet struct {
+	mu      sync.Mutex
+	missing map[string]bool
+	added   []string
+}
+
+func (f *fakeAppNet) take(what string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.missing[what] = true
+}
+
+func (f *fakeAppNet) has(what string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.missing[what], nil
+}
+
+func (f *fakeAppNet) ensure(what string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.missing, what)
+	f.added = append(f.added, what)
+	return nil
+}
+
+func (f *fakeAppNet) addedSoFar() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.added)
+}
+
+func (f *fakeAppNet) EnsureDummy(context.Context, string) error { return f.ensure("device") }
+
+func (f *fakeAppNet) HasDummy(context.Context, string) (bool, error) { return f.has("device") }
+
+func (f *fakeAppNet) EnsureAddr(context.Context, string, netip.Prefix) error {
+	return f.ensure("address")
+}
+
+func (f *fakeAppNet) HasAddr(context.Context, string, netip.Prefix) (bool, error) {
+	return f.has("address")
+}
+
+func (f *fakeAppNet) EnsureRoute(context.Context, netip.Prefix, string, netip.Addr) error {
+	return f.ensure("route")
+}
+
+func (f *fakeAppNet) HasRoute(context.Context, netip.Prefix, string, netip.Addr) (bool, error) {
+	return f.has("route")
+}
+
+func (f *fakeAppNet) EnsureRule(_ context.Context, pref int, _ netip.Addr, _ netip.Prefix, _ bool) error {
+	return f.ensure(fmt.Sprint("rule ", pref))
+}
+
+func (f *fakeAppNet) HasRule(_ context.Context, pref int, _ netip.Addr, _ netip.Prefix, _ bool) (bool, error) {
+	return f.has(fmt.Sprint("rule ", pref))
+}
+
+// fakeNetNft holds inet pco_net as nft lists it once it was loaded.
+type fakeNetNft struct {
+	mu      sync.Mutex
+	listing []byte
+	live    []byte
+}
+
+func (f *fakeNetNft) Apply(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.live = f.listing
+	return nil
+}
+
+func (f *fakeNetNft) List(context.Context) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.live == nil {
+		return nil, egress.ErrNotLoaded
+	}
+	return f.live, nil
 }
 
 func newApplianceWorld(t *testing.T) *applianceWorld {
 	t.Helper()
 	w := newWorld(t)
+	listing, err := os.ReadFile(filepath.Join("..", "appnet", "testdata", "listing-1.1.3.json"))
+	require.NoError(t, err)
 	a := &applianceWorld{
-		world: w,
-		sys:   appliance.System{Proc: filepath.Join(w.dir, "proc"), Sys: filepath.Join(w.dir, "sys")},
-		flag:  filepath.Join(w.dir, "run", "pco-appliance", "identity-ok"),
+		world:  w,
+		sys:    appliance.System{Proc: filepath.Join(w.dir, "proc"), Sys: filepath.Join(w.dir, "sys")},
+		flag:   filepath.Join(w.dir, "run", "pco-appliance", "identity-ok"),
+		net:    &fakeAppNet{missing: map[string]bool{}},
+		netNft: &fakeNetNft{listing: listing, live: listing},
 	}
 	a.mountVolumeOf(applianceVMID)
 	a.proc("uptime", "3600.00 7000.00\n")
@@ -91,6 +183,8 @@ func newApplianceWorld(t *testing.T) *applianceWorld {
 		System:     a.sys,
 		Flag:       a.flag,
 		StateRetry: time.Millisecond,
+		Netlink:    a.net,
+		NetNft:     a.netNft,
 	}
 	w.deps.Sleep = func(ctx context.Context, _ time.Duration) error {
 		select {
@@ -245,6 +339,36 @@ func TestBeforeTheFirstCycleNothingButTheMountIsDecided(t *testing.T) {
 	require.False(t, flagAtReady, "the flag waits for the first cycle")
 	d.await(func(st engine.State) bool { return st.Identity != nil && st.Identity.OK })
 	require.FileExists(t, a.flag)
+}
+
+// A route someone deleted inside the container comes back with the next
+// check, which a change of the ruleset starts as well; the event says so.
+func TestTheApplianceLoadsTheServicePrefixAgain(t *testing.T) {
+	a := newApplianceWorld(t)
+	d := a.start()
+	d.await(func(st engine.State) bool { return st.Identity != nil && st.Identity.OK })
+	a.net.take("route")
+	a.netNft.mu.Lock()
+	a.netNft.live = nil
+	a.netNft.mu.Unlock()
+
+	a.rules.change(t)
+
+	require.Eventually(t, func() bool { return slices.Equal(a.net.addedSoFar(), []string{"route"}) }, 10*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool {
+		events, err := d.client.Events(t.Context(), time.Time{})
+		require.NoError(t, err)
+		for _, ev := range events {
+			if ev.Message == "the service-prefix route or table was changed outside pco and was loaded again" {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 5*time.Millisecond)
+	require.NoError(t, d.client.Sync(t.Context()))
+	line := "the service-prefix route or table was changed outside pco and was loaded again " +
+		"(the route 198.18.0.0/16 dev pco0 src 198.18.0.1 is missing; the table inet pco_net is not loaded)"
+	d.await(func(st engine.State) bool { return slices.Contains(st.Problems, line) })
 }
 
 func incarnationOf(t *testing.T, st *store.Store) string {

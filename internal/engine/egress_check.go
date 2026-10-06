@@ -35,6 +35,9 @@ type egressNotes struct {
 	view  EgressView
 	lines []string // problem lines for the next cycle
 	fault string   // why the table could not be loaded again; holds the tunnel runs
+	// netFault is why the service-prefix route or table could not be
+	// loaded again, which holds nothing.
+	netFault string
 }
 
 // NoteEgress takes what a check of the egress table found. The state shows
@@ -97,6 +100,9 @@ func (c *cycleRun) noteEgress() {
 	c.e.notes.lines = nil
 	if fault := c.e.notes.fault; fault != "" {
 		c.problem(problemNotKept, fault)
+	}
+	if fault := c.e.notes.netFault; fault != "" {
+		c.problem(problemNetNotKept, fault)
 	}
 }
 

@@ -5,7 +5,8 @@
 # "<sha256>  <file name>" for each package, as sha256sum writes it. The version
 # is the tag without the v, a pre-release suffix kept as it is. Each package must
 # also say, in its control file, that it is pco, of that version and of the
-# architecture in its name; dpkg writes a pre-release as 0.1.0~rc.1 there.
+# architecture in its name; dpkg writes a pre-release as 0.1.0~rc.1 there. And
+# it must list the systemd units of pco, which the appliance template enables.
 #
 # Usage: packaging/check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [--require-ui]
 #            [--require-template] [dist-dir]
@@ -293,6 +294,7 @@ fi
 if command -v dpkg-deb >/dev/null 2>&1; then
 	tilde='~'
 	deb_version=${version/-/$tilde}
+	units='pco.service pco-cloudflared@.service pco-egress.service pco-net.service pco-web.service'
 	for arch in amd64 arm64; do
 		deb=$dist/pco_${version}_$arch.deb
 		[[ -f $deb ]] || continue
@@ -312,6 +314,14 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 		if [[ $got_arch != "$arch" ]]; then
 			fail "${deb##*/} is built for ${got_arch:-<none>}, expected $arch"
 		fi
+		# The units the package installs, which the appliance template
+		# enables, pco-net.service among them, read from its listing.
+		listing=$(dpkg-deb --contents "$deb" 2>/dev/null) || listing=
+		for unit in $units; do
+			if ! grep -Eq "[[:space:]]\./usr/lib/systemd/system/${unit//./\\.}\$" <<<"$listing"; then
+				fail "${deb##*/} does not carry /usr/lib/systemd/system/$unit"
+			fi
+		done
 	done
 elif [[ $require_dpkg == 1 ]]; then
 	fail "dpkg-deb is required to read the control files of the packages and was not found"

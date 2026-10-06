@@ -73,17 +73,26 @@ program() {
 	printf '%s\n' "$out"
 }
 
+# The units every package carries, but the one LEAVE_OUT names.
+UNITS='pco.service pco-cloudflared@.service pco-egress.service pco-net.service pco-web.service'
+LEAVE_OUT=
+
 # deb <dir> <arch> [program]: a package of pco with the program as
-# ./usr/bin/pco, or without that file when none is given.
+# ./usr/bin/pco, or without that file when none is given, and the units.
 deb() {
-	local tree=$ROOT/tree-$2
+	local tree=$ROOT/tree-$2 unit
 	rm -rf "$tree"
-	mkdir -p "$tree/DEBIAN" "$tree/usr/bin"
+	mkdir -p "$tree/DEBIAN" "$tree/usr/bin" "$tree/usr/lib/systemd/system"
 	printf 'Package: pco\nVersion: %s\nArchitecture: %s\nMaintainer: Test <test@example.invalid>\nDescription: test\n' \
 		"$VERSION" "$2" >"$tree/DEBIAN/control"
 	if [[ -n ${3:-} ]]; then
 		cp "$3" "$tree/usr/bin/pco"
 	fi
+	for unit in $UNITS; do
+		if [[ $unit != "$LEAVE_OUT" ]]; then
+			printf '[Unit]\n' >"$tree/usr/lib/systemd/system/$unit"
+		fi
+	done
 	dpkg-deb --root-owner-group --build "$tree" "$1/pco_${VERSION}_$2.deb" >/dev/null
 }
 
@@ -138,6 +147,16 @@ deb_cases() {
 	dist "$ROOT/with" "$with"
 	run --require-dpkg-deb --require-ui "$ROOT/with"
 	assert "pass" rc_is 0
+
+	CASE='packages without pco-net.service'
+	LEAVE_OUT=pco-net.service
+	dist "$ROOT/nounit" "$with"
+	LEAVE_OUT=
+	run --require-dpkg-deb "$ROOT/nounit"
+	assert "fail" rc_is 1
+	assert "naming the unit in the amd64 package" contains "$ERR" "$AMD64 does not carry /usr/lib/systemd/system/pco-net.service"
+	assert "and in the arm64 one" contains "$ERR" "$ARM64 does not carry /usr/lib/systemd/system/pco-net.service"
+	assert "and no other unit" lacks "$ERR" "pco-egress.service"
 
 	CASE='packages built without the webui tag'
 	dist "$ROOT/without" "$without"

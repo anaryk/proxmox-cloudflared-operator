@@ -35,6 +35,8 @@ jobs:
       PCO_REQUIRE_CRYPTO_TESTS: "1"
       # Nor one without dpkg-deb or go the checks of the packages.
       PCO_REQUIRE_DEB_TESTS: "1"
+      # Nor one without systemd-analyze the check of the appliance's drop-ins.
+      PCO_REQUIRE_SYSTEMD_TESTS: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # check-artifacts_test.sh builds small programs and reads their build tags.
@@ -62,6 +64,8 @@ jobs:
       # The egress filter, loaded in network namespaces of the test's own.
       - run: sudo apt-get update && sudo apt-get install -y nftables
       - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/egress/
+      # The service prefix of the appliance: its device, route, rules and table.
+      - run: sudo env "PATH=$PATH" "PCO_REQUIRE_LINUX_TESTS=$PCO_REQUIRE_LINUX_TESTS" go test -tags nomsgpack -race -run 'Linux' -count=1 ./internal/appnet/
 
   build:
     runs-on: ubuntu-latest
