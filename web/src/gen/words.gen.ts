@@ -19,6 +19,7 @@ export const egressWords: ReadonlyMap<string, string> = new Map([
 // it is.
 export const writerWords: ReadonlyMap<string, string> = new Map([
   ["", "-"],
+  ["behind", "behind (the state is older than the last write at Cloudflare)"],
   ["foreign", "foreign (another installation is writing)"],
   ["ok", "ok"],
   ["stale", "stale (a newer generation of this install is writing)"],

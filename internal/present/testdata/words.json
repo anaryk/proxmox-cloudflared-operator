@@ -19,6 +19,7 @@
   {"fn": "writerText", "name": "stale", "input": "stale", "want": "stale (a newer generation of this install is writing)"},
   {"fn": "writerText", "name": "foreign", "input": "foreign", "want": "foreign (another installation is writing)"},
   {"fn": "writerText", "name": "unknown", "input": "unknown", "want": "unknown (leader.json could not be used)"},
+  {"fn": "writerText", "name": "behind", "input": "behind", "want": "behind (the state is older than the last write at Cloudflare)"},
   {"fn": "writerText", "name": "none", "input": "", "want": "-"},
   {"fn": "writerText", "name": "a verdict of another version", "input": "odd", "want": "odd"},
 

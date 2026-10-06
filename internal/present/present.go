@@ -81,6 +81,8 @@ func WriterText(verdict string) string {
 		return "foreign (another installation is writing)"
 	case engine.VerdictUnknown:
 		return "unknown (leader.json could not be used)"
+	case engine.VerdictBehind:
+		return "behind (the state is older than the last write at Cloudflare)"
 	case "":
 		return "-"
 	}

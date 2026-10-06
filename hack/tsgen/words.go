@@ -51,7 +51,7 @@ func wordsModule() string {
 	table(&b, "egressWords", egress)
 
 	writer := make(map[string]string)
-	for _, v := range []string{"", engine.VerdictOK, engine.VerdictStale, engine.VerdictForeign, engine.VerdictUnknown} {
+	for _, v := range []string{"", engine.VerdictOK, engine.VerdictStale, engine.VerdictForeign, engine.VerdictUnknown, engine.VerdictBehind} {
 		writer[v] = present.WriterText(v)
 	}
 	section(&b, "present.WriterText, by the verdict on the writer; another verdict is shown as it is.")
