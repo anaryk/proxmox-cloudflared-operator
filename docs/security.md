@@ -686,15 +686,14 @@ What differs is where the rights and the secrets are.
 ### Its rights in Proxmox
 
 The appliance has one Proxmox token, `pco@pve!vm<vmid>`, privilege-separated, with role `PCO` on
-`/` for the token and for its user: `VM.Audit`, `Sys.Audit`, `SDN.Audit`,
-`VM.GuestAgent.Audit` (`VM.Monitor` on Proxmox VE 8.4) and `Pool.Audit`, the read-only role of
-the host profile. A privilege-separated token holds only what its user holds as well, so every
-grant goes to both. The token lacks `Sys.Modify`, `VM.Allocate`, `Permissions.Modify` and every
-`VM.Config.*`, `VM.Snapshot*` and `VM.PowerMgmt`: it cannot change a guest, an ACL, or the
-appliance itself, nor take a snapshot of it, which is why `pco upgrade` asks you for one. The
-one way it gains a right is `pco appliance grant-network`, run by root on the node, which grants
-`VM.Config.Network` on the appliance and `SDN.Use` on one network, for the cards a later release
-attaches. Nothing is granted on a whole zone, and nothing beyond the read-only role on `/`.
+`/` for the token and for its user, the read-only role of the host profile, whose privileges
+[What runs with which rights](#what-runs-with-which-rights) lists. A privilege-separated token
+holds only what its user holds as well, so every grant goes to both. The token lacks
+`Sys.Modify`, `VM.Allocate`, `Permissions.Modify` and every `VM.Config.*`, `VM.Snapshot*` and
+`VM.PowerMgmt`: it cannot change a guest, an ACL, or the appliance itself, nor take a snapshot
+of it, which is why `pco upgrade` asks you for one. The one way it gains a right is `pco
+appliance grant-network`, run by root on the node, which grants `VM.Config.Network` on the
+appliance and `SDN.Use` on one network, for the cards a later release attaches. Nothing is granted on a whole zone, and nothing beyond the read-only role on `/`.
 
 The appliance reaches the API through its card, at an address of the node, and verifies its
 certificate under the name the installer chose, against the cluster CA it pushed or the system
@@ -711,20 +710,20 @@ mapped it reads `pve-www.key` and the node's `pve-ssl.key`, the key of its certi
 
 ### Who can reach into it
 
-Whoever can reach into the appliance can read its secrets, so it refuses to serve while anyone
-but the admins can. The privileges that count, on the appliance or on a path above it, are
-`VM.Console`, any `VM.Config.*`, `VM.PowerMgmt`, `VM.Clone`, `VM.Backup`, `VM.Snapshot*`,
-`VM.Migrate`, `VM.Allocate`, `Pool.Allocate` on `/pool/pco`, and `Permissions.Modify`, with
-which a principal grants itself any of them. The installer refuses while another principal
-holds one, and adds a `NoAccess` line for it only when you say yes at its question, whose
-default is no, or pass `--deny-access`; `--yes` never does. The daemon makes the same
-computation every minute, and while such a principal exists it serves nothing: it removes the
-flag its connectors start behind, empties the egress filter, stops the connectors and holds
-every write, with a line for each principal and the command that keeps it out. It never changes
-an ACL itself. [Appliance](appliance.md#who-may-reach-the-appliance) says how `NoAccess` and the
-pool of the appliance interact.
+Whoever can reach into the appliance can read its secrets, so it refuses to serve while anyone but
+the admins can. The privileges that count, on the appliance or on a path above it, are those that
+open its console, change its configuration, start or stop it, copy, move or replace it or its
+volumes, or let a principal grant itself any of them;
+[Appliance](appliance.md#who-may-reach-the-appliance) lists them. The installer refuses while
+another principal holds one, and adds a `NoAccess` line for it only when you say yes at its
+question, whose default is no, or pass `--deny-access`; `--yes` never does. The daemon makes the
+same computation every minute, and while such a principal exists it serves nothing: it removes the
+flag its connectors start behind, empties the egress filter, stops the connectors and holds every
+write, with a line for each principal and the command that keeps it out. It never changes an ACL
+itself. [Appliance](appliance.md#who-may-reach-the-appliance) says how `NoAccess` and the pool of
+the appliance interact.
 
-The console is why `VM.Config.*` and `VM.PowerMgmt` are on the list. With `VM.Console` alone the
+The console is why `VM.Config.*` and `VM.PowerMgmt` are on that list. With `VM.Console` alone the
 console of the appliance is a login on a tty whose root has no password; but any one of
 `VM.Config.Disk`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Network` or `VM.Config.Options`
 can set the console mode to `shell`, which the next start of the container turns into a root

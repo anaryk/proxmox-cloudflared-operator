@@ -138,15 +138,14 @@ the state volume of the appliance, which backups of the container leave out; `pc
 its `volume` check if that stops being so. The Proxmox token of the appliance is made by the
 installer and holds what the role `PCO` holds, which is read-only, on `/`.
 
-The privileges of the tenants matter as much. A principal that is not an admin and holds on
-the appliance any of `VM.Console`, `VM.Config.*`, `VM.Clone`, `VM.Backup`, `VM.Snapshot*`,
-`VM.Migrate`, `VM.PowerMgmt`, `VM.Allocate` or `Permissions.Modify`, whether it is granted
-on `/vms/120`, on a path above it or through the pool `pco`, can reach into the container
-and so to the tokens in it. While there is one, pco serves nothing and its connectors are
-stopped. Give each tenant its roles on its own machines, `/vms/151`, or on a pool of its own,
-and never on `/`, `/vms` or the pool `pco`.
-The installer refuses while such a principal exists, unless `--deny-access` adds a `NoAccess`
-line for each, and the `access` check of `pco doctor` fails while one exists.
+The privileges of the tenants matter as much. A principal that is not an admin and holds on the
+appliance any of the privileges [Appliance](../appliance.md#who-may-reach-the-appliance) lists,
+whether it is granted on `/vms/120`, on a path above it or through the pool `pco`, can reach
+into the container and so to the tokens in it. While there is one, pco serves nothing and its
+connectors are stopped. Give each tenant its roles on its own machines, `/vms/151`, or on a pool
+of its own, and never on `/`, `/vms` or the pool `pco`. The installer refuses while such a
+principal exists, unless `--deny-access` adds a `NoAccess` line for each, and the `access` check
+of `pco doctor` fails while one exists.
 
 ### Egress filter
 
