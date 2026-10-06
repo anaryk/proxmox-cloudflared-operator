@@ -6,18 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"time"
 )
 
 // The objects of the agent of a node, in the kind agent of its local root:
-// the desired state it follows, the epoch it remembers and the actions it
-// ran. The agent acts on each only once it is on disk, so they are written
-// durably wherever the local root is.
+// the desired state it follows, the epoch it remembers, the actions it ran
+// and the targets it last gave the egress filter. The agent acts on each only
+// once it is on disk, so they are written durably wherever the local root is.
 const (
 	idAgentDesired = "desired"
 	idAgentEpoch   = "epoch"
 	idAgentActions = "actions"
+	idAgentEgress  = "egress"
 
 	// maxGeneration is the highest generation of an epoch: one above it was
 	// forged, as no draw makes it.
@@ -70,6 +72,27 @@ func (s *Store) SaveAgentSnapshot(raw json.RawMessage) error {
 		return errors.New("agent snapshot: not a JSON value")
 	}
 	return s.agent().put(kindAgent, idAgentDesired, raw, true)
+}
+
+// DeleteAgentSnapshot forgets the desired state the agent accepted, as a node
+// that was removed from its install does. A missing one is not an error.
+func (s *Store) DeleteAgentSnapshot() error { return s.agent().Delete(kindAgent, idAgentDesired) }
+
+// AgentEgress returns the targets the agent last gave the egress filter, by
+// address and port. found is false when it never saved any.
+func (s *Store) AgentEgress() (set []netip.AddrPort, found bool, err error) {
+	set, found, err = getOne[[]netip.AddrPort](s.local, kindAgent, idAgentEgress)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return sortedTargets(set), true, nil
+}
+
+// SaveAgentEgress stores the targets the agent gave the egress filter, sorted
+// and once each, unless they are what is stored already: an agent that gives
+// the filter the same set again writes nothing.
+func (s *Store) SaveAgentEgress(set []netip.AddrPort) error {
+	return s.agent().put(kindAgent, idAgentEgress, sortedTargets(set), true)
 }
 
 // AgentEpoch returns the epoch the agent remembers.

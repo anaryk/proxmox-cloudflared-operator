@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,4 +162,42 @@ func TestALocalObjectMayBeLargerThanAFileOfTheClusterFilesystem(t *testing.T) {
 
 	require.ErrorContains(t, s.AppendSecurityEvent("pve1", SecurityEvent{At: t0, Kind: "enrol", Message: strings.Repeat("y", 2<<20)}),
 		"limit", "the cluster root keeps the limit of the cluster filesystem")
+}
+
+func TestTheAgentsSnapshotCanBeForgotten(t *testing.T) {
+	s, p := openStore(t)
+	require.NoError(t, s.DeleteAgentSnapshot(), "a missing one is no error")
+	require.NoError(t, s.SaveAgentSnapshot(json.RawMessage(`{"seq":1}`)))
+
+	require.NoError(t, s.DeleteAgentSnapshot())
+
+	_, found, err := s.AgentSnapshot()
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Empty(t, stored(t, p.Local))
+}
+
+func TestTheAgentsEgressSetIsKeptInOrderAndWrittenOnlyWhenItChanges(t *testing.T) {
+	s, p := openStore(t)
+	_, found, err := s.AgentEgress()
+	require.NoError(t, err)
+	require.False(t, found)
+
+	set := []netip.AddrPort{netip.MustParseAddrPort("10.0.0.12:443"), netip.MustParseAddrPort("10.0.0.11:8080"), netip.MustParseAddrPort("10.0.0.12:443")}
+	require.NoError(t, s.SaveAgentEgress(set))
+	got, found, err := s.AgentEgress()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.11:8080"), netip.MustParseAddrPort("10.0.0.12:443")}, got)
+	require.Equal(t, []string{"agent/egress.json"}, stored(t, p.Local))
+
+	require.NoError(t, s.SaveAgentEgress(got))
+	require.EqualValues(t, 1, revOf(t, filepath.Join(p.Local, "agent", "egress.json")), "the same set is not written again")
+
+	require.NoError(t, s.SaveAgentEgress(nil))
+	got, found, err = s.AgentEgress()
+	require.NoError(t, err)
+	require.True(t, found, "an empty set is a set")
+	require.Empty(t, got)
+	require.NotNil(t, got)
 }
