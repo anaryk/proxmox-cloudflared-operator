@@ -35,6 +35,13 @@ textarea {
   color: inherit;
 }
 
+/* WebKit keeps a select at a height of its own unless it is drawn as a
+   button, which takes the height (not a min-height), border and padding
+   given it. */
+select {
+  appearance: menulist-button;
+}
+
 h1 {
   margin: 0;
   font-size: 20px;
@@ -394,6 +401,11 @@ button.pill {
   flex-wrap: nowrap;
 }
 
+/* A link in a table is a target as high as a button, 24 px. */
+.table td a:not(.btn) {
+  padding-block: 5px;
+}
+
 .table td.mono {
   font-size: 12.5px;
 }
@@ -659,10 +671,30 @@ button.pill {
   background: var(--surface);
 }
 
+.field select {
+  height: 34px;
+}
+
 .field-invalid input,
 .field-invalid select,
 .field-invalid textarea {
   border-color: var(--fail);
+}
+
+/* A checkbox or a radio button is a target of 24 by 24 px, as every other
+   control, in a field as well. */
+input[type='checkbox'],
+input[type='radio'],
+.field input[type='checkbox'],
+.field input[type='radio'] {
+  flex: none;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
 }
 
 .field-hint {

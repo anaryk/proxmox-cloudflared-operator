@@ -50,11 +50,6 @@
   gap: 8px;
 }
 
-.field .check input {
-  width: auto;
-  min-height: 0;
-  padding: 0;
-}
 
 .radios {
   min-width: 0;
@@ -75,10 +70,6 @@
   grid-template-columns: max-content minmax(0, 1fr);
   column-gap: 8px;
   margin-bottom: 6px;
-}
-
-.radio input {
-  margin-top: 3px;
 }
 
 .radio .field-hint {

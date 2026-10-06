@@ -122,6 +122,10 @@
   background: var(--surface);
 }
 
+.filter-zone {
+  height: 32px;
+}
+
 .filter-search {
   display: inline-flex;
   flex: 1 1 260px;
