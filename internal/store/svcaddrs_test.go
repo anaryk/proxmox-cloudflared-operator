@@ -146,6 +146,48 @@ func TestAMappingStoredUnderAnotherIDIsAnError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A target that moved to another address keeps the service address it was
+// published under: the connectors dial the same address, which reaches it
+// where it is now, and the old address has none any more.
+func TestAServiceAddrFollowsItsTargetToAnotherAddress(t *testing.T) {
+	s, p := openStore(t)
+	old := allocate(t, s, "vmbr1", "10.20.0.5")
+	allocate(t, s, "vmbr2", "10.20.0.9")
+
+	moved, err := s.MoveServiceAddr("vmbr1", addr("10.20.0.5"), "vmbr1", addr("10.20.0.6"), t0.Add(time.Hour))
+
+	require.NoError(t, err)
+	require.Equal(t, ServiceAddr{Network: "vmbr1", Addr: addr("10.20.0.6"), Service: old.Service, AllocatedAt: t0.Add(time.Hour)}, moved)
+	requireMissing(t, filepath.Join(p.Cluster, "svcaddrs", "vmbr1-10.20.0.5.json"))
+	got, err := s.ServiceAddrs()
+	require.NoError(t, err)
+	require.Equal(t, []ServiceAddr{moved, {Network: "vmbr2", Addr: addr("10.20.0.9"), Service: addr("198.18.1.1"), AllocatedAt: t0}}, got)
+	requirePool(t, s, "198.18.1.2", 2)
+
+	again := allocate(t, s, "vmbr1", "10.20.0.5")
+	require.Equal(t, addr("198.18.1.2"), again.Service, "the old address gets a new one")
+
+	_, err = s.MoveServiceAddr("vmbr2", addr("10.20.0.9"), "vmbr3", addr("10.20.0.9"), t0)
+	require.NoError(t, err, "to another network")
+}
+
+func TestMoveServiceAddrRefusesWhatWouldMapAnAddressTwice(t *testing.T) {
+	s, _ := openStore(t)
+	allocate(t, s, "vmbr1", "10.20.0.5")
+	allocate(t, s, "vmbr1", "10.20.0.6")
+
+	_, err := s.MoveServiceAddr("vmbr1", addr("10.20.0.5"), "vmbr1", addr("10.20.0.6"), t0)
+	require.ErrorContains(t, err, "10.20.0.6 on vmbr1 has a service address already")
+	_, err = s.MoveServiceAddr("vmbr1", addr("10.20.0.7"), "vmbr1", addr("10.20.0.8"), t0)
+	require.ErrorContains(t, err, "10.20.0.7 on vmbr1 has no service address")
+	_, err = s.MoveServiceAddr("vmbr1", addr("10.20.0.5"), "", addr("10.20.0.8"), t0)
+	require.Error(t, err)
+
+	got, err := s.ServiceAddrs()
+	require.NoError(t, err)
+	require.Len(t, got, 2, "nothing changed")
+}
+
 func TestAllocateServiceAddrRefusesWhatNamesNoMapping(t *testing.T) {
 	for name, tc := range map[string]struct {
 		network string

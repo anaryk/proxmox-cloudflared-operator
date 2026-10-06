@@ -164,6 +164,53 @@ func (s *Store) takeFromPool() (netip.Addr, error) {
 	return next, nil
 }
 
+// MoveServiceAddr gives the service address of (network, addr) to (toNetwork,
+// toAddr), which has none: the target published under it moved there, and the
+// connectors go on dialing the address they have, which reaches it where it
+// is now. The old mapping is deleted first, so that a write that fails in
+// between leaves the service address mapped to nothing, never to two
+// addresses; the pool does not move.
+func (s *Store) MoveServiceAddr(network string, addr netip.Addr, toNetwork string, toAddr netip.Addr, now time.Time) (ServiceAddr, error) {
+	if err := checkServiceKey(network, addr); err != nil {
+		return ServiceAddr{}, err
+	}
+	if err := checkServiceKey(toNetwork, toAddr); err != nil {
+		return ServiceAddr{}, err
+	}
+	from, to := serviceAddrID(network, addr), serviceAddrID(toNetwork, toAddr)
+	s.netMu.Lock()
+	defer s.netMu.Unlock()
+
+	var m ServiceAddr
+	found, err := s.cluster.Get(kindSvcAddrs, from, &m)
+	switch {
+	case err != nil:
+		return ServiceAddr{}, err
+	case !found:
+		return ServiceAddr{}, fmt.Errorf("%v on %s has no service address to move", addr, network)
+	case m.Network != network || m.Addr != addr:
+		return ServiceAddr{}, fmt.Errorf("service address %s holds the mapping of %v on %s", from, m.Addr, m.Network)
+	}
+	if err := checkMapping("service address "+from, m); err != nil {
+		return ServiceAddr{}, err
+	}
+	var there ServiceAddr
+	switch found, err := s.cluster.Get(kindSvcAddrs, to, &there); {
+	case err != nil:
+		return ServiceAddr{}, err
+	case found:
+		return ServiceAddr{}, fmt.Errorf("%v on %s has a service address already, %v", toAddr, toNetwork, there.Service)
+	}
+	if err := s.cluster.Delete(kindSvcAddrs, from); err != nil {
+		return ServiceAddr{}, err
+	}
+	m = ServiceAddr{Network: toNetwork, Addr: toAddr, Service: m.Service, AllocatedAt: now}
+	if err := s.cluster.put(kindSvcAddrs, to, m, true); err != nil {
+		return ServiceAddr{}, err
+	}
+	return m, nil
+}
+
 // ReleaseServiceAddr deletes the mapping; the pool does not move back. A
 // mapping that is not there is no error.
 func (s *Store) ReleaseServiceAddr(network string, addr netip.Addr) error {
