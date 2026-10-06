@@ -260,7 +260,7 @@ export function rotateCommand(tunnels: readonly TunnelView[], account: string): 
 // more, such as "guest approve", and the flags after them.
 const commandWord = /^[a-z][a-z-]{0,23}$/
 const commandFlag = /^--[a-z][a-z-]{0,31}$/
-const fixValueKinds = ['account id', 'owner', 'hostname']
+const fixValueKinds = ['account id', 'owner', 'hostname', 'credential id']
 
 // fixCommand reads the fix of a finding of the doctor as a command for a root
 // shell. The fix is the daemon's text, which may quote what a guest or

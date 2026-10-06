@@ -74,7 +74,7 @@ func wordsModule() string {
 	list(&b, "routeStateOrder", order)
 
 	forms := make(map[string]string)
-	for _, kind := range []string{present.ArgAccount, present.ArgOwner, present.ArgHostname} {
+	for _, kind := range present.ArgKinds {
 		forms[kind] = present.ArgForm(kind)
 	}
 	section(&b, "The forms of the values a command for a root shell may carry, by kind, as present.CommandArg checks them; a value of a kind that is not here, or that begins with a dash, is refused.")

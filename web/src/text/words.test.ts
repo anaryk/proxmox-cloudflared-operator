@@ -143,6 +143,8 @@ describe('fixCommand', () => {
     'pco egress on',
     'pco apply',
     'pco diagnose www.example.com',
+    // the id pco gives a credential
+    'pco credential check a1b2c3d4',
   ])('%s is a command', (fix) => {
     const got = fixCommand(fix)
     expect(isCommand(got.command)).toBe(true)
@@ -161,7 +163,8 @@ describe('fixCommand', () => {
     ['a backtick', 'pco guest approve `reboot`'],
     ['a placeholder', 'pco credential add --label <label>'],
     ['a flag with its value attached', `pco tunnel rotate --account=${account}`],
-    ['a value of no known form', 'pco credential check a1b2c3d4'],
+    ['a value of no known form', 'pco credential check cred1'],
+    ['a credential id in capitals', 'pco credential check A1B2C3D4'],
     ['an owner of a manual route', 'pco guest approve manual/shop'],
     ['a value that is an option', 'pco guest approve -qemu/101'],
     ['a flag that ends the options', 'pco guest approve -- qemu/101'],
@@ -180,6 +183,28 @@ describe('fixCommand', () => {
     const got = fixCommand(fix)
     expect(got.command).toBeUndefined()
     expect(got.refused).not.toBe('')
+  })
+
+  // Characters that look like those of a command, and are not.
+  test.each([
+    ['a no-break space between the words', 'pco\u00a0guest approve qemu/101'],
+    ['a no-break space before the value', 'pco guest approve\u00a0qemu/101'],
+    ['a narrow no-break space', 'pco guest approve\u202fqemu/101'],
+    ['an ideographic space', 'pco guest\u3000approve qemu/101'],
+    ['a cyrillic p in pco', '\u0440co guest approve qemu/101'],
+    ['a cyrillic o in the subcommand', 'pco guest appr\u043eve qemu/101'],
+    ['a cyrillic a in a hostname', 'pco diagnose www.ex\u0430mple.com'],
+    ['a greek o in an owner', 'pco guest approve qem\u03bf/101'],
+    ['a full-width letter in the subcommand', 'pco \uff47uest approve qemu/101'],
+    ['a full-width digit in an owner', 'pco guest approve qemu/10\uff11'],
+    ['an arabic-indic digit in a credential id', 'pco credential check a1b2c3d\u0664'],
+    ['a full-width solidus in an owner', 'pco guest approve qemu\uff0f101'],
+    ['a fraction slash in an owner', 'pco guest approve qemu\u2044101'],
+    ['a dash that is no hyphen-minus in a flag', 'pco tunnel rotate \u2010\u2010account 0123456789abcdef0123456789abcdef'],
+    ['a zero-width joiner in a word', 'pco gu\u200dest approve qemu/101'],
+    ['a soft hyphen in a hostname', 'pco diagnose www.exam\u00adple.com'],
+  ])('%s is text', (_name, fix) => {
+    expect(fixCommand(fix).command).toBeUndefined()
   })
 })
 

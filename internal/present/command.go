@@ -9,17 +9,24 @@ import (
 
 // The kinds of value a command for a root shell may carry.
 const (
-	ArgAccount  = "account id"
-	ArgOwner    = "owner"
-	ArgHostname = "hostname"
+	ArgAccount    = "account id"
+	ArgOwner      = "owner"
+	ArgHostname   = "hostname"
+	ArgCredential = "credential id"
 )
 
+// ArgKinds are the kinds that have a form, in a fixed order.
+var ArgKinds = []string{ArgAccount, ArgOwner, ArgHostname, ArgCredential}
+
 // argForms are the forms of the kinds. The patterns mean the same in
-// JavaScript, which the web interface reads them in.
+// JavaScript, which the web interface reads them in. A credential id is
+// what engine.NewCredential gives a credential, the only ids pco credential
+// check finds.
 var argForms = map[string]*regexp.Regexp{
-	ArgAccount:  regexp.MustCompile(`^[0-9a-f]{32}$`),
-	ArgOwner:    regexp.MustCompile(`^(qemu|lxc)/[0-9]+$`),
-	ArgHostname: regexp.MustCompile(`^([a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$`),
+	ArgAccount:    regexp.MustCompile(`^[0-9a-f]{32}$`),
+	ArgOwner:      regexp.MustCompile(`^(qemu|lxc)/[0-9]+$`),
+	ArgHostname:   regexp.MustCompile(`^([a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$`),
+	ArgCredential: regexp.MustCompile(`^[0-9a-f]{8}$`),
 }
 
 // noForm is the pattern of a kind that has none. It matches nothing, so that
