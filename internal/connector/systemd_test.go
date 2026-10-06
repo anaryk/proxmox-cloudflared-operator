@@ -75,6 +75,7 @@ func TestSystemctlArguments(t *testing.T) {
 
 	require.NoError(t, ctl.EnableNow(ctx, "up.service"))
 	require.NoError(t, ctl.DisableNow(ctx, "up.service"))
+	require.NoError(t, ctl.Disable(ctx, "up.service"))
 	require.NoError(t, ctl.Restart(ctx, "up.service"))
 	_, err := ctl.IsActive(ctx, "up.service")
 	require.NoError(t, err)
@@ -84,6 +85,7 @@ func TestSystemctlArguments(t *testing.T) {
 	require.Equal(t, []string{
 		"enable --now --no-block -- up.service",
 		"disable --now --no-block -- up.service",
+		"disable -- up.service",
 		"restart --no-block -- up.service",
 		"is-active -- up.service",
 		"list-units --all --plain --no-legend -- pco-cloudflared@*.service",

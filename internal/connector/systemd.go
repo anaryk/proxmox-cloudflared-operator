@@ -44,6 +44,12 @@ type Systemd interface {
 	ListUnits(ctx context.Context, pattern string) ([]string, error)
 }
 
+// disabler is a Systemd that can also take the boot enable of a unit off and
+// leave it running: disable without --now.
+type disabler interface {
+	Disable(ctx context.Context, unit string) error
+}
+
 // failedResetter is a Systemd that can also clear the failed state of a unit.
 // A stop leaves a unit that failed as it is, loaded and listed, so the manager
 // asks for the reset where it is there; a Systemd without it is left out.
@@ -84,6 +90,12 @@ func (s systemctl) EnableNow(ctx context.Context, unit string) error {
 
 func (s systemctl) DisableNow(ctx context.Context, unit string) error {
 	_, err := s.run(ctx, "disable", "--now", "--no-block", "--", unit)
+	return err
+}
+
+// Disable takes the boot enable of a unit off and leaves it running.
+func (s systemctl) Disable(ctx context.Context, unit string) error {
+	_, err := s.run(ctx, "disable", "--", unit)
 	return err
 }
 

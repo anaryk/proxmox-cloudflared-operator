@@ -364,6 +364,43 @@ func (m *Manager) StopAll(ctx context.Context, installID string) error {
 	return errors.Join(errs...)
 }
 
+// Stop stops the connector of one tunnel and takes its boot enable off, and
+// keeps its files, so that Ensure can start it again. cloudflared drains its
+// connections before it exits, so the stop is graceful.
+func (m *Manager) Stop(ctx context.Context, tunnelID string) error {
+	if err := checkID(tunnelID); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.sd.DisableNow(ctx, UnitName(tunnelID)); err != nil {
+		return fmt.Errorf("stopping %s: %w", UnitName(tunnelID), err)
+	}
+	delete(m.queued, tunnelID)
+	m.log.Info().Str("tunnel", tunnelID).Msg("stopped connector")
+	return nil
+}
+
+// Disable takes the boot enable of the connector of a tunnel off and leaves it
+// running: a node that boots then starts it only when it is told to, not
+// before it verified anything. Ensure enables a unit it starts, so a caller
+// that wants it off disables it again after that.
+func (m *Manager) Disable(ctx context.Context, tunnelID string) error {
+	if err := checkID(tunnelID); err != nil {
+		return err
+	}
+	d, ok := m.sd.(disabler)
+	if !ok {
+		return fmt.Errorf("%s: the unit manager cannot take the boot enable of a unit off without stopping it", UnitName(tunnelID))
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := d.Disable(ctx, UnitName(tunnelID)); err != nil {
+		return fmt.Errorf("disabling %s: %w", UnitName(tunnelID), err)
+	}
+	return nil
+}
+
 // hasNoEnvAndNoToken reports whether a connector has neither an env file nor a
 // token file.
 func (m *Manager) hasNoEnvAndNoToken(id string) (bool, error) {

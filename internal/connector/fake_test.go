@@ -55,6 +55,12 @@ func (f *fakeSystemd) DisableNow(_ context.Context, unit string) error {
 	return nil
 }
 
+// Disable is what a Systemd that can take the boot enable of a unit off
+// without stopping it does.
+func (f *fakeSystemd) Disable(_ context.Context, unit string) error {
+	return f.record("Disable", unit)
+}
+
 // ResetFailed is what a Systemd that can clear the failed state of a unit does.
 func (f *fakeSystemd) ResetFailed(_ context.Context, unit string) error {
 	if err := f.record("ResetFailed", unit); err != nil {

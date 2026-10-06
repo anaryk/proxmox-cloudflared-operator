@@ -947,3 +947,57 @@ func TestPruneKeepsTheMarkerOfAKeptTunnel(t *testing.T) {
 	require.Equal(t, []string{"DisableNow " + unitB}, sd.changes())
 	require.ElementsMatch(t, []string{idA + ".token", idA + ".env", idA + ".yml", pendingOf(idA)}, listDir(t, dir))
 }
+
+func TestDisableTakesTheBootEnableOffAndLeavesTheConnectorRunning(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	before := listDir(t, dir)
+	sd.reset()
+
+	require.NoError(t, m.Disable(t.Context(), idA))
+
+	require.Equal(t, []string{"Disable " + unitA}, sd.changes())
+	require.True(t, sd.active[unitA], "the connector runs on")
+	require.Equal(t, before, listDir(t, dir))
+}
+
+func TestDisableRefusesAnInvalidID(t *testing.T) {
+	m, sd, _ := newTestManager(t)
+
+	require.ErrorContains(t, m.Disable(t.Context(), "../x"), "invalid tunnel id")
+
+	require.Empty(t, sd.calls)
+}
+
+// stopsOnly is a Systemd that cannot take the boot enable of a unit off
+// without stopping it.
+type stopsOnly struct{ Systemd }
+
+func TestDisableNeedsASystemdThatDisablesWithoutAStop(t *testing.T) {
+	sd := newFakeSystemd()
+	m := NewManager(stopsOnly{sd}, t.TempDir(), nil, zerolog.Nop())
+
+	require.ErrorContains(t, m.Disable(t.Context(), idA), "cannot take the boot enable")
+
+	require.Empty(t, sd.calls, "nothing is stopped in its place")
+}
+
+func TestStopStopsOneConnectorAndKeepsItsFiles(t *testing.T) {
+	m, sd, dir := newTestManager(t)
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idB, "token-b"))
+	before := listDir(t, dir)
+	sd.reset()
+
+	require.NoError(t, m.Stop(t.Context(), idA))
+
+	require.Equal(t, []string{"DisableNow " + unitA}, sd.changes())
+	require.False(t, sd.active[unitA])
+	require.True(t, sd.active[unitB], "the other connector runs on")
+	require.Equal(t, before, listDir(t, dir), "the files stay for Ensure")
+
+	sd.reset()
+	require.NoError(t, m.Ensure(t.Context(), testInstall, idA, "token-a"))
+	require.Equal(t, []string{"EnableNow " + unitA}, sd.changes(), "Ensure starts it again")
+	require.ErrorContains(t, m.Stop(t.Context(), "nope"), "invalid tunnel id")
+}
