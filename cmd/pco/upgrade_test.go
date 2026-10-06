@@ -151,6 +151,7 @@ type upgradeRig struct {
 	host   *upgradeHost
 	verify *signedBy
 	srv    *httptest.Server
+	files  map[string]string // what the release host serves, by path
 	paths  store.Paths
 	work   string
 }
@@ -201,11 +202,14 @@ func newUpgradeRig(t *testing.T) *upgradeRig {
 	require.NoError(t, os.WriteFile(profile, []byte("appliance\n"), 0o644))
 	shipped := filepath.Join(dir, "cloudflared-versions.json")
 	require.NoError(t, os.WriteFile(shipped, m, 0o644))
+	keyring := filepath.Join(dir, "release-key.gpg")
+	require.NoError(t, os.WriteFile(keyring, []byte("the release key"), 0o644))
 	u := &upgradeRig{
 		r:      newRunner(t, "/nonexistent/pco/pco.sock"),
 		host:   &upgradeHost{installed: map[string]string{"pco": "1.2.3", "cloudflared": "2026.9.3"}},
 		verify: &signedBy{},
 		srv:    srv,
+		files:  files,
 		work:   filepath.Join(dir, "upgrades"),
 		paths:  store.Paths{Cluster: filepath.Join(dir, "pco", "cluster"), Private: filepath.Join(dir, "pco", "private"), Local: filepath.Join(dir, "pco")},
 	}
@@ -225,12 +229,24 @@ func newUpgradeRig(t *testing.T) *upgradeRig {
 		sleep:    func(context.Context, time.Duration) error { return nil },
 		signals:  newFakeSignals(),
 		volume:   func() (store.Paths, error) { return u.paths, nil },
-		keyring:  "/usr/share/pco/release-key.gpg",
+		keyring:  keyring,
 		manifest: shipped,
 		workDir:  u.work,
 		arch:     "amd64",
 	}
 	return u
+}
+
+// confOpts are the options apt-get passes dpkg for configuration files.
+const confOpts = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "
+
+// keep puts a package where an upgrade keeps it, with its checksum beside it.
+func (u *upgradeRig) keep(t *testing.T, name string) {
+	t.Helper()
+	path := filepath.Join(u.work, "previous", name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("kept"), 0o600))
+	require.NoError(t, os.WriteFile(path+".sha256", []byte(sha("kept")+"  "+name+"\n"), 0o600))
 }
 
 func TestUpgradeIsRefusedOnAHost(t *testing.T) {
@@ -255,7 +271,9 @@ func TestUpgradeRunsAsRoot(t *testing.T) {
 
 func TestUpgradeSaysFirstThatTheReleaseIsOverridden(t *testing.T) {
 	u := newUpgradeRig(t)
-	vars := map[string]string{"PCO_UPGRADE_BASE": u.srv.URL, "PCO_UPGRADE_KEYRING": "/root/test-key.gpg"}
+	testKey := filepath.Join(t.TempDir(), "test-key.gpg")
+	require.NoError(t, os.WriteFile(testKey, []byte("a key of the test"), 0o600))
+	vars := map[string]string{"PCO_UPGRADE_BASE": u.srv.URL, "PCO_UPGRADE_KEYRING": testKey}
 	u.r.env.getenv = func(name string) string { return vars[name] }
 	u.r.env.upgrade.fetcher = defaultUpgradeEnv().fetcher
 
@@ -263,7 +281,7 @@ func TestUpgradeSaysFirstThatTheReleaseIsOverridden(t *testing.T) {
 
 	require.ErrorIs(t, res.err, errReported, "an upgrade is available")
 	require.Equal(t, "warning: the release host or key is overridden (PCO_UPGRADE_BASE, PCO_UPGRADE_KEYRING); this is for tests only\n", res.errOut)
-	require.Equal(t, []string{"/root/test-key.gpg"}, u.verify.keyrings, "the release is checked with the keyring of the override")
+	require.Equal(t, []string{testKey}, u.verify.keyrings, "the release is checked with the keyring of the override")
 
 	u.r.env.profileFile = "/nonexistent/pco/profile"
 	res = u.r.run("", "upgrade", "--check")
@@ -317,9 +335,9 @@ func TestUpgradeWithYesUpgradesPcoThenCloudflared(t *testing.T) {
 
 	require.NoError(t, res.err, res.errOut)
 	require.Equal(t, []string{
-		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
+		"apt-get install -y --allow-change-held-packages " + confOpts + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
 		"apt-mark hold pco cloudflared",
-		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "cloudflared_2026.10.1_amd64.deb"),
+		"apt-get install -y --allow-change-held-packages " + confOpts + filepath.Join(u.work, "cloudflared_2026.10.1_amd64.deb"),
 		"apt-mark hold pco cloudflared",
 	}, u.host.commands())
 	require.Contains(t, res.out, "pco 1.2.4 is installed, from release v1.2.4 signed by key 0123456789ABCDEF0123456789ABCDEF01234567\n")
@@ -329,6 +347,44 @@ func TestUpgradeWithYesUpgradesPcoThenCloudflared(t *testing.T) {
 	require.Contains(t, res.errOut, "pco-pre-upgrade-20261001", "the reminder is there with --yes too")
 	require.NotContains(t, res.errOut, "[y/N]")
 	require.Contains(t, res.out, "the daemon did not answer before the upgrade, so it is not waited for\n")
+}
+
+// The package of the installed version is kept before the question, so that
+// the admin knows whether --rollback will be there before saying yes.
+func TestUpgradeSaysBeforeItAsksThatNoRollbackWillBeThere(t *testing.T) {
+	u := newUpgradeRig(t)
+	for path := range u.files {
+		if strings.Contains(path, "/v1.2.3/") {
+			delete(u.files, path)
+		}
+	}
+	note := "warning: the package of pco 1.2.3 cannot be kept, so --rollback cannot go back to it: "
+
+	res := u.r.tty().run("n\n", "upgrade", "pco")
+
+	require.ErrorIs(t, res.err, errAborted)
+	at := strings.Index(res.errOut, note)
+	require.GreaterOrEqual(t, at, 0, res.errOut)
+	require.Less(t, at, strings.Index(res.errOut, "[y/N]"))
+	require.Empty(t, u.host.commands())
+
+	res = u.r.run("", "upgrade", "pco", "--yes")
+	require.NoError(t, res.err)
+	require.Equal(t, 1, strings.Count(res.errOut, note), "said once")
+}
+
+func TestUpgradeKeepsTheOldPackageBeforeItAsks(t *testing.T) {
+	u := newUpgradeRig(t)
+
+	res := u.r.tty().run("n\n", "upgrade")
+
+	require.ErrorIs(t, res.err, errAborted)
+	require.FileExists(t, filepath.Join(u.work, "previous", "pco_1.2.3_amd64.deb"))
+	require.FileExists(t, filepath.Join(u.work, "previous", "cloudflared_2026.9.3_amd64.deb"))
+
+	res = u.r.run("", "upgrade", "--check")
+	require.ErrorIs(t, res.err, errReported)
+	require.NotContains(t, res.out, "kept")
 }
 
 // installsPco says whether a command line installs a package of pco.
@@ -352,10 +408,10 @@ func TestUpgradeWaitsForTheDaemonOfTheNewPco(t *testing.T) {
 	require.NoError(t, res.err, res.errOut)
 	require.Contains(t, res.out, "the daemon runs pco v1.2.4\n")
 	require.Equal(t, []string{
-		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
+		"apt-get install -y --allow-change-held-packages " + confOpts + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
 		"apt-mark hold pco cloudflared",
 		"/usr/bin/pco version --json",
-		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "cloudflared_2026.10.1_amd64.deb"),
+		"apt-get install -y --allow-change-held-packages " + confOpts + filepath.Join(u.work, "cloudflared_2026.10.1_amd64.deb"),
 		"apt-mark hold pco cloudflared",
 	}, u.host.commands())
 }
@@ -374,7 +430,7 @@ func TestUpgradeSaysWhenTheDaemonStaysOnTheOldPco(t *testing.T) {
 		"systemctl status pco.service says why, and pco upgrade pco --rollback goes back to 1.2.3")
 	require.Equal(t, 1, exitCode(res.err, &strings.Builder{}))
 	require.Equal(t, []string{
-		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
+		"apt-get install -y --allow-change-held-packages " + confOpts + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
 		"apt-mark hold pco cloudflared",
 		"/usr/bin/pco version --json",
 	}, u.host.commands(), "cloudflared is left as it is")
@@ -417,7 +473,7 @@ func TestASignalStopsTheUpgradeOnlyOnceThePackagesAreHeld(t *testing.T) {
 	require.True(t, caughtDuringInstall, "the signals are caught while apt-get runs")
 	require.False(t, sigs.registered(), "and let go at the end")
 	require.Equal(t, []string{
-		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
+		"apt-get install -y --allow-change-held-packages " + confOpts + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
 		"apt-mark hold pco cloudflared",
 	}, u.host.commands())
 	require.Contains(t, res.errOut, "From here a signal stops pco upgrade only once what it installs is held again.\n")
@@ -466,7 +522,7 @@ func TestARollbackOfPcoWaitsForTheDaemonToo(t *testing.T) {
 	u := newUpgradeRig(t)
 	u.host.installed["pco"] = "1.2.4"
 	require.NoError(t, os.MkdirAll(filepath.Join(u.work, "previous"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(u.work, "previous", "pco_1.2.3_amd64.deb"), []byte("kept"), 0o600))
+	u.keep(t, "pco_1.2.3_amd64.deb")
 	d := startFakeDaemon(t, "v1.2.4")
 	u.r.socket = d.socket
 	u.host.binVersion = "v1.2.3"
@@ -532,13 +588,13 @@ func TestUpgradeRollbackGoesBackToTheKeptPackages(t *testing.T) {
 	u := newUpgradeRig(t)
 	u.host.installed = map[string]string{"pco": "1.2.4", "cloudflared": "2026.10.1"}
 	require.NoError(t, os.MkdirAll(filepath.Join(u.work, "previous"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(u.work, "previous", "cloudflared_2026.9.3_amd64.deb"), []byte("kept"), 0o600))
+	u.keep(t, "cloudflared_2026.9.3_amd64.deb")
 
 	res := u.r.run("", "upgrade", "--rollback", "--yes")
 
 	require.NoError(t, res.err, res.errOut)
 	require.Equal(t, []string{
-		"apt-get install -y --allow-change-held-packages --allow-downgrades " + filepath.Join(u.work, "previous", "cloudflared_2026.9.3_amd64.deb"),
+		"apt-get install -y --allow-change-held-packages --allow-downgrades " + confOpts + filepath.Join(u.work, "previous", "cloudflared_2026.9.3_amd64.deb"),
 		"apt-mark hold pco cloudflared",
 	}, u.host.commands(), "pco has nothing kept and is left as it is")
 	require.Contains(t, res.out, "no package is kept to roll back to: "+filepath.Join(u.work, "previous")+" holds no package of pco\n")

@@ -21,15 +21,17 @@ const (
 // rig is an appliance with pco 1.2.3 and cloudflared 2026.9.3 installed, and a
 // release host with the releases 1.2.3 and 1.2.4.
 type rig struct {
-	t      *testing.T
-	work   string
-	fetch  *fakeFetcher
-	verify *fakeVerifier
-	host   *fakeHost
-	run    *fakeRunner
-	paths  store.Paths
-	said   []string
-	u      *Upgrader
+	t       *testing.T
+	work    string
+	fetch   *fakeFetcher
+	verify  *fakeVerifier
+	host    *fakeHost
+	run     *fakeRunner
+	paths   store.Paths
+	keyring string
+	free    uint64 // what the volume has free
+	said    []string
+	u       *Upgrader
 }
 
 func newRig(t *testing.T) *rig {
@@ -51,10 +53,14 @@ func newRig(t *testing.T) *rig {
 	base := t.TempDir()
 	r.paths = store.Paths{Cluster: filepath.Join(base, "cluster"), Private: filepath.Join(base, "private"), Local: base}
 	r.writeObject(filepath.Join(r.paths.Cluster, "routes", "a.json"), 1)
+	r.keyring = filepath.Join(t.TempDir(), "release-key.gpg")
+	require.NoError(t, os.WriteFile(r.keyring, []byte("the release key"), 0o644))
+	r.free = 1 << 30
 	clock := &fakeClock{now: time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)}
-	r.u = New(r.run, r.fetch, r.verify, "/usr/share/pco/release-key.gpg", r.work, "amd64", clock.Now).
+	r.u = New(r.run, r.fetch, r.verify, r.keyring, r.work, "amd64", clock.Now).
 		WithStore(r.paths).
 		WithProgress(func(format string, args ...any) { r.said = append(r.said, fmt.Sprintf(format, args...)) })
+	r.u.free = func(string) (uint64, error) { return r.free, nil }
 	return r
 }
 
@@ -67,10 +73,13 @@ func (r *rig) writeObject(path string, schema int) {
 
 func (r *rig) previous(name string) string { return filepath.Join(r.work, "previous", name) }
 
+// keepFile keeps a package as an upgrade keeps it: with its checksum beside
+// it.
 func (r *rig) keepFile(name, content string) {
 	r.t.Helper()
 	require.NoError(r.t, os.MkdirAll(filepath.Join(r.work, "previous"), 0o700))
 	require.NoError(r.t, os.WriteFile(r.previous(name), []byte(content), 0o600))
+	require.NoError(r.t, os.WriteFile(r.previous(name)+".sha256", []byte(sum(content)+"  "+name+"\n"), 0o600))
 }
 
 func (r *rig) transcript() string { return transcript(r.run.lines(), r.work) }
@@ -101,7 +110,7 @@ func TestAnUpgradeOfPcoInstallsTheSignedPackageAndKeepsTheOldOne(t *testing.T) {
 		"get v1.2.4/checksums.txt", "get v1.2.4/checksums.txt.sig", "get v1.2.4/pco_1.2.4_amd64.deb",
 		"get v1.2.3/checksums.txt", "get v1.2.3/checksums.txt.sig", "get v1.2.3/pco_1.2.3_amd64.deb",
 	}, r.fetch.asked)
-	require.Equal(t, []string{"verify with /usr/share/pco/release-key.gpg", "verify with /usr/share/pco/release-key.gpg"}, r.verify.asked)
+	require.Equal(t, []string{"verify with " + r.keyring, "verify with " + r.keyring}, r.verify.asked)
 	kept, err := os.ReadFile(res.Kept)
 	require.NoError(t, err)
 	require.Equal(t, debOld, string(kept))
@@ -174,7 +183,110 @@ func TestAPackageKeptAlreadyIsKeptAndTheOlderOneGoes(t *testing.T) {
 	require.Equal(t, r.previous("pco_1.2.3_amd64.deb"), res.Kept)
 	require.NotContains(t, r.fetch.asked, "get v1.2.3/checksums.txt", "the release of the kept version is not fetched again")
 	require.NoFileExists(t, r.previous("pco_1.2.1_amd64.deb"))
+	require.NoFileExists(t, r.previous("pco_1.2.1_amd64.deb.sha256"))
+	require.FileExists(t, r.previous("pco_1.2.3_amd64.deb.sha256"))
 	require.FileExists(t, r.previous("cloudflared_2026.8.2_amd64.deb"), "the kept package of the other package stays")
+}
+
+func TestAKeptPackageCarriesItsChecksum(t *testing.T) {
+	r := newRig(t)
+
+	res, err := r.u.Pco(t.Context(), Options{Yes: true})
+
+	require.NoError(t, err)
+	b, err := os.ReadFile(res.Kept + ".sha256")
+	require.NoError(t, err)
+	require.Equal(t, sum(debOld)+"  pco_1.2.3_amd64.deb\n", string(b))
+}
+
+// A kept package that does not match the checksum beside it, or has none, is
+// fetched again before an upgrade.
+func TestAKeptPackageThatDoesNotMatchItsChecksumIsFetchedAgain(t *testing.T) {
+	for name, spoil := range map[string]func(r *rig){
+		"changed": func(r *rig) {
+			require.NoError(t, os.WriteFile(r.previous("pco_1.2.3_amd64.deb"), []byte("changed"), 0o600))
+		},
+		"without its sum": func(r *rig) { require.NoError(t, os.Remove(r.previous("pco_1.2.3_amd64.deb")+".sha256")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.keepFile("pco_1.2.3_amd64.deb", debOld)
+			spoil(r)
+
+			res, err := r.u.Pco(t.Context(), Options{Yes: true})
+
+			require.NoError(t, err)
+			require.Contains(t, r.fetch.asked, "get v1.2.3/pco_1.2.3_amd64.deb")
+			b, err := os.ReadFile(res.Kept)
+			require.NoError(t, err)
+			require.Equal(t, debOld, string(b))
+		})
+	}
+}
+
+// The plan of an upgrade keeps the old package, so that the question can say
+// whether a rollback will be there.
+func TestThePlanKeepsTheOldPackageBeforeTheQuestion(t *testing.T) {
+	r := newRig(t)
+
+	res, err := r.u.Pco(t.Context(), Options{Check: true, Keep: true})
+
+	require.NoError(t, err)
+	require.Equal(t, r.previous("pco_1.2.3_amd64.deb"), res.Kept)
+	require.Empty(t, res.Notes)
+	require.NotContains(t, r.transcript(), "apt-get")
+
+	delete(r.fetch.releases, "1.2.3")
+	r.u.releases = map[string]release{}
+	require.NoError(t, os.RemoveAll(filepath.Join(r.work, "previous")))
+	res, err = r.u.Pco(t.Context(), Options{Check: true, Keep: true})
+	require.NoError(t, err)
+	require.Empty(t, res.Kept)
+	require.Equal(t, []string{"the package of pco 1.2.3 cannot be kept, so --rollback cannot go back to it: " +
+		"downloading checksums.txt of release v1.2.3: GET v1.2.3/checksums.txt: 404 Not Found"}, res.Notes)
+
+	r.fetch.asked = nil
+	_, err = r.u.Pco(t.Context(), Options{Check: true})
+	require.NoError(t, err)
+	require.Equal(t, []string{"latest"}, r.fetch.asked, "a check alone keeps nothing")
+}
+
+func TestAMissingOrEmptyKeyringIsNamed(t *testing.T) {
+	r := newRig(t)
+	require.NoError(t, os.Remove(r.keyring))
+
+	_, err := r.u.Pco(t.Context(), Options{Yes: true})
+	require.EqualError(t, err, "the keyring "+r.keyring+" that releases are checked with is missing; the package of pco ships it")
+	require.Equal(t, []string{"latest"}, r.fetch.asked, "nothing of the release is fetched")
+
+	require.NoError(t, os.WriteFile(r.keyring, nil, 0o644))
+	_, err = r.u.Pco(t.Context(), Options{Yes: true})
+	require.EqualError(t, err, "the keyring "+r.keyring+" that releases are checked with is empty")
+	require.Empty(t, r.verify.asked)
+}
+
+func TestAReleaseSignedByAKeyOutsideTheKeyringIsSaidSo(t *testing.T) {
+	r := newRig(t)
+	r.verify.err = fmt.Errorf("%w (gpgv: exit status 2)", ErrUnknownKey)
+
+	_, err := r.u.Pco(t.Context(), Options{Yes: true})
+
+	require.ErrorIs(t, err, ErrUnknownKey)
+	require.EqualError(t, err, "release v1.2.4: checksums.txt is not signed by a key of the keyring: "+
+		"the release is not pco's, or the keyring is not the release key (gpgv: exit status 2); the keyring is "+r.keyring)
+}
+
+// The keyring of a snapshot build is a test key that signs nothing.
+func TestASnapshotIsToldItTrustsNoRelease(t *testing.T) {
+	r := newRig(t)
+	r.host.installed["pco"] = "0.0.0~SNAPSHOT-3c3b62f"
+	r.verify.err = ErrUnknownKey
+
+	_, err := r.u.Pco(t.Context(), Options{Yes: true})
+
+	require.ErrorIs(t, err, ErrUnknownKey)
+	require.ErrorContains(t, err, "; this pco is a snapshot build, whose keyring signs no release: "+
+		"PCO_UPGRADE_KEYRING names the keyring of the releases it is to take")
 }
 
 // A version without a release to fetch its package from is upgraded all the
@@ -187,7 +299,7 @@ func TestAnUpgradeGoesOnWhenTheOldPackageCannotBeKept(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Empty(t, res.Kept)
-	require.Equal(t, []string{"the package of pco 1.2.3 could not be kept, so --rollback cannot go back to it: " +
+	require.Equal(t, []string{"the package of pco 1.2.3 cannot be kept, so --rollback cannot go back to it: " +
 		"downloading checksums.txt of release v1.2.3: GET v1.2.3/checksums.txt: 404 Not Found"}, res.Notes)
 	golden(t, "pco_upgrade", r.transcript())
 	r.noDownloadsLeft()
@@ -441,6 +553,35 @@ func TestARollbackNeedsAKeptPackageOtherThanTheInstalledOne(t *testing.T) {
 	_, err = r.u.Pco(t.Context(), Options{Rollback: true, Yes: true})
 	require.NoError(t, err, "the package of another architecture is not this one's")
 	require.NotContains(t, r.transcript(), "--allow-downgrades "+r.previous("pco_1.2.3_arm64.deb"))
+}
+
+func TestARollbackChecksTheKeptPackageAgainstItsChecksum(t *testing.T) {
+	r := newRig(t)
+	r.host.installed["pco"] = "1.2.4"
+	r.keepFile("pco_1.2.3_amd64.deb", debOld)
+	kept := r.previous("pco_1.2.3_amd64.deb")
+	require.NoError(t, os.WriteFile(kept, []byte("changed since"), 0o600))
+
+	_, err := r.u.Pco(t.Context(), Options{Rollback: true, Yes: true})
+	require.EqualError(t, err, "the kept package "+kept+" does not match the checksum kept beside it; it is not installed")
+
+	require.NoError(t, os.Remove(kept+".sha256"))
+	_, err = r.u.Pco(t.Context(), Options{Rollback: true, Yes: true})
+	require.EqualError(t, err, "the kept package "+kept+" has no checksum beside it; it is not installed")
+	require.Equal(t, queryPco+queryPco, r.transcript(), "nothing is unpacked or installed")
+}
+
+func TestARollbackNeedsRoomToUnpackTheKeptPco(t *testing.T) {
+	r := newRig(t)
+	r.host.installed["pco"] = "1.2.4"
+	r.keepFile("pco_1.2.3_amd64.deb", debOld)
+	r.free = 20 << 20
+
+	_, err := r.u.Pco(t.Context(), Options{Rollback: true, Yes: true})
+
+	require.EqualError(t, err, "not enough room in "+r.work+" to unpack pco_1.2.3_amd64.deb: 20 MiB free, "+
+		"33 MiB needed with the 32 MiB kept free for the store")
+	require.Equal(t, queryPco, r.transcript())
 }
 
 func TestARollbackNeedsTheStoreToCheck(t *testing.T) {

@@ -120,6 +120,34 @@ func TestAFileOverItsCapIsRefused(t *testing.T) {
 	require.FileExists(t, path)
 }
 
+// A download needs room for the file, as much again for the package kept
+// beside it, and what the store keeps free; it is refused before anything is
+// written.
+func TestADownloadNeedsRoomOnTheVolume(t *testing.T) {
+	host := &releaseHost{files: map[string]string{
+		"/anaryk/proxmox-cloudflared-operator/releases/download/v1.2.4/pco_1.2.4_amd64.deb": strings.Repeat("x", 1000),
+	}}
+	srv := httptest.NewServer(host)
+	t.Cleanup(srv.Close)
+	free := uint64(32<<20 + 1999)
+	dir := t.TempDir()
+	f := NewFetcher(FetchConfig{Dir: dir, Base: srv.URL, Free: func(got string) (uint64, error) {
+		require.Equal(t, dir, got)
+		return free, nil
+	}})
+
+	_, err := f.Get(t.Context(), "1.2.4", "pco_1.2.4_amd64.deb", 4096)
+	require.EqualError(t, err, "not enough room in "+dir+" for pco_1.2.4_amd64.deb: 32 MiB free, "+
+		"33 MiB needed with the 32 MiB kept free for the store")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+
+	free++
+	_, err = f.Get(t.Context(), "1.2.4", "pco_1.2.4_amd64.deb", 4096)
+	require.NoError(t, err)
+}
+
 // A server that sends no length is cut off at the cap all the same.
 func TestAFileWithoutALengthIsCutAtItsCap(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

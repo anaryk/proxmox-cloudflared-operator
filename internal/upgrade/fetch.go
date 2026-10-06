@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"time"
 )
@@ -56,6 +57,8 @@ type FetchConfig struct {
 	Base    string         // the overridden release host, see Overrides; empty for GitHub
 	RootCAs *x509.CertPool // the roots TLS trusts; nil for those of the system
 	Timeout time.Duration  // for one file; 5 minutes when zero
+	// Free says how much can still be written in Dir; nil for statfs.
+	Free func(dir string) (uint64, error)
 }
 
 // NewFetcher returns the Fetcher of pco upgrade.
@@ -66,10 +69,15 @@ func NewFetcher(c FetchConfig) Fetcher {
 	if timeout == 0 {
 		timeout = fetchTimeout
 	}
+	free := c.Free
+	if free == nil {
+		free = freeSpace
+	}
 	return &httpFetcher{
 		dir:     c.Dir,
 		base:    c.Base,
 		timeout: timeout,
+		free:    free,
 		client: &http.Client{
 			Transport:     transport,
 			CheckRedirect: httpsOnly,
@@ -91,6 +99,7 @@ func httpsOnly(req *http.Request, via []*http.Request) error {
 
 type httpFetcher struct {
 	client  *http.Client
+	free    func(dir string) (uint64, error)
 	dir     string
 	base    string
 	timeout time.Duration
@@ -185,6 +194,16 @@ func (f *httpFetcher) download(ctx context.Context, u string, max int64) (path s
 	if resp.ContentLength > max {
 		return "", fmt.Errorf("%s is larger than %d bytes", u, max)
 	}
+	// Room for the file and as much again for the package kept beside it,
+	// which an upgrade downloads as well. A file of no length given is cut
+	// at its cap or by the full volume.
+	var size uint64
+	if resp.ContentLength > 0 {
+		size = uint64(resp.ContentLength)
+	}
+	if err := roomFor(f.free, f.dir, "for "+fileOf(req.URL), 2*size); err != nil {
+		return "", err
+	}
 	file, err := os.CreateTemp(f.dir, fetchPrefix+"*")
 	if err != nil {
 		return "", err
@@ -206,3 +225,6 @@ func (f *httpFetcher) download(ctx context.Context, u string, max int64) (path s
 	}
 	return file.Name(), nil
 }
+
+// fileOf is the name of the file a URL asks for.
+func fileOf(u *url.URL) string { return path.Base(u.Path) }

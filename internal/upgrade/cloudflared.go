@@ -34,6 +34,9 @@ func (u *Upgrader) Cloudflared(ctx context.Context, o Options, m Manifest, resta
 	}
 	res.Target = entry.Version
 	if o.Check {
+		if o.Keep {
+			u.keepCloudflaredNoted(ctx, &res, m)
+		}
 		return res, nil
 	}
 	if !o.Yes {
@@ -44,11 +47,7 @@ func (u *Upgrader) Cloudflared(ctx context.Context, o Options, m Manifest, resta
 		return res, err
 	}
 	defer func() { _ = os.Remove(deb) }()
-	if kept, err := u.keepCloudflared(ctx, installed, m); err != nil {
-		res.Notes = append(res.Notes, fmt.Sprintf("the package of cloudflared %s could not be kept, so --rollback cannot go back to it: %v", installed, err))
-	} else {
-		res.Kept = kept
-	}
+	u.keepCloudflaredNoted(ctx, &res, m)
 	if err := u.install(ctx, deb, false); err != nil {
 		return res, err
 	}
@@ -104,12 +103,23 @@ func (u *Upgrader) fetchPackage(ctx context.Context, e Entry) (string, error) {
 	return u.checked(file, cloudflaredFile(e.Version, u.arch), pkg.SHA256, "the manifest")
 }
 
+// keepCloudflaredNoted keeps the package of the installed version, or notes
+// why it cannot.
+func (u *Upgrader) keepCloudflaredNoted(ctx context.Context, res *Result, m Manifest) {
+	kept, err := u.keepCloudflared(ctx, res.Installed, m)
+	if err != nil {
+		res.Notes = append(res.Notes, fmt.Sprintf("the package of cloudflared %s cannot be kept, so --rollback cannot go back to it: %v", res.Installed, err))
+		return
+	}
+	res.Kept = kept
+}
+
 // keepCloudflared keeps the package of the installed version: the one kept
 // already, or the one the manifest names for it.
 func (u *Upgrader) keepCloudflared(ctx context.Context, installed string, m Manifest) (string, error) {
 	name := cloudflaredFile(installed, u.arch)
-	if kept, ok := u.alreadyKept(name); ok {
-		return u.keep("cloudflared", kept, name)
+	if kept, ok := u.alreadyKept("cloudflared", name); ok {
+		return kept, nil
 	}
 	e, ok := m.Allowed(installed)
 	if !ok {
@@ -119,7 +129,8 @@ func (u *Upgrader) keepCloudflared(ctx context.Context, installed string, m Mani
 	if err != nil {
 		return "", err
 	}
-	kept, err := u.keep("cloudflared", deb, name)
+	pkg, _ := e.Package(u.arch)
+	kept, err := u.keep("cloudflared", deb, name, pkg.SHA256)
 	if err != nil {
 		_ = os.Remove(deb)
 	}

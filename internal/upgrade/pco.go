@@ -35,6 +35,9 @@ func (u *Upgrader) Pco(ctx context.Context, o Options) (Result, error) {
 	}
 	res.Target, res.Release = target, target
 	if o.Check {
+		if o.Keep {
+			u.keepPcoNoted(ctx, &res)
+		}
 		return res, nil
 	}
 	if !o.Yes {
@@ -50,12 +53,19 @@ func (u *Upgrader) Pco(ctx context.Context, o Options) (Result, error) {
 		return res, err
 	}
 	defer func() { _ = os.Remove(deb) }()
-	if kept, err := u.keepPco(ctx, installed); err != nil {
-		res.Notes = append(res.Notes, fmt.Sprintf("the package of pco %s could not be kept, so --rollback cannot go back to it: %v", installed, err))
-	} else {
-		res.Kept = kept
-	}
+	u.keepPcoNoted(ctx, &res)
 	return res, u.install(ctx, deb, false)
+}
+
+// keepPcoNoted keeps the package of the installed version, or notes why it
+// cannot.
+func (u *Upgrader) keepPcoNoted(ctx context.Context, res *Result) {
+	kept, err := u.keepPco(ctx, res.Installed)
+	if err != nil {
+		res.Notes = append(res.Notes, fmt.Sprintf("the package of pco %s cannot be kept, so --rollback cannot go back to it: %v", res.Installed, err))
+		return
+	}
+	res.Kept = kept
 }
 
 // pcoTarget is the version to upgrade to: the one asked for, which must be
@@ -86,8 +96,8 @@ func (u *Upgrader) pcoTarget(ctx context.Context, version, installedDeb string) 
 // or the one of its release, checked as any other.
 func (u *Upgrader) keepPco(ctx context.Context, installed string) (string, error) {
 	name := pcoFile(installed, u.arch)
-	if path, ok := u.alreadyKept(name); ok {
-		return u.keep("pco", path, name)
+	if path, ok := u.alreadyKept("pco", name); ok {
+		return path, nil
 	}
 	if _, err := cleanRelease(installed); err != nil {
 		return "", err
@@ -100,7 +110,11 @@ func (u *Upgrader) keepPco(ctx context.Context, installed string) (string, error
 	if err != nil {
 		return "", err
 	}
-	kept, err := u.keep("pco", deb, name)
+	sum, err := r.sumOf(name)
+	if err != nil {
+		return "", err
+	}
+	kept, err := u.keep("pco", deb, name, sum)
 	if err != nil {
 		_ = os.Remove(deb)
 	}
@@ -137,6 +151,15 @@ func (u *Upgrader) rollbackPco(ctx context.Context, o Options, installed, instal
 func (u *Upgrader) checkSchema(ctx context.Context, deb, version string) error {
 	if u.store == nil {
 		return errors.New("a rollback of pco needs the store to check, and none was given")
+	}
+	// The unpacked pco takes about three times its package; four leave a
+	// margin.
+	info, err := os.Stat(deb)
+	if err != nil {
+		return err
+	}
+	if err := roomFor(u.free, u.workDir, "to unpack "+filepath.Base(deb), 4*uint64(info.Size())); err != nil {
+		return err
 	}
 	dir, err := os.MkdirTemp(u.workDir, extractDir)
 	if err != nil {

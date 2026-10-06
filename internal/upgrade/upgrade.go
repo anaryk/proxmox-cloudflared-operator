@@ -8,12 +8,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -31,6 +33,7 @@ const (
 	SnapshotPrefix = "pco-pre-upgrade-"
 
 	previousDir = "previous"
+	sumExt      = ".sha256"
 	lockName    = ".lock"
 	extractDir  = ".extract-"
 )
@@ -51,6 +54,9 @@ type Options struct {
 	Check    bool   // only say what would change
 	Rollback bool   // install the kept package
 	Yes      bool   // the change is confirmed; without it nothing is changed
+	// Keep keeps the package of the installed version already with Check,
+	// so that the question can say whether a rollback will be there.
+	Keep bool
 }
 
 // Result says what changed, or with Check what would change.
@@ -76,6 +82,7 @@ type Upgrader struct {
 
 	store    *store.Paths
 	say      func(format string, args ...any)
+	free     func(dir string) (uint64, error)
 	releases map[string]release
 }
 
@@ -85,6 +92,7 @@ func New(run setup.Runner, f Fetcher, v Verifier, keyring, workDir, arch string,
 	return &Upgrader{
 		run: run, fetch: f, verify: v, keyring: keyring, workDir: workDir, arch: arch, now: now,
 		say:      func(string, ...any) {},
+		free:     freeSpace,
 		releases: make(map[string]release),
 	}
 }
@@ -188,8 +196,11 @@ func (u *Upgrader) install(ctx context.Context, deb string, downgrade bool) erro
 	if downgrade {
 		args = append(args, "--allow-downgrades")
 	}
+	// dpkg would ask about a changed configuration file on a stdin that is
+	// /dev/null, and fail; the admin's version stays, a new default is taken.
+	args = append(args, "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", deb)
 	u.say("installing %s", filepath.Base(deb))
-	_, err := u.run.Run(ctx, "apt-get", append(args, deb)...)
+	_, err := u.run.Run(ctx, "apt-get", args...)
 	_, holdErr := u.run.Run(ctx, "apt-mark", "hold", "pco", "cloudflared")
 	switch {
 	case err != nil && holdErr != nil:
@@ -204,36 +215,65 @@ func (u *Upgrader) install(ctx context.Context, deb string, downgrade bool) erro
 }
 
 // keep moves a package of a verified version into the directory of the kept
-// packages, under name, and removes the other kept packages of pkg: one is
-// kept per package.
-func (u *Upgrader) keep(pkg, path, name string) (string, error) {
+// packages, under name and with its sha256 beside it, and removes the other
+// kept packages of pkg: one is kept per package.
+func (u *Upgrader) keep(pkg, path, name, sum string) (string, error) {
 	dir := filepath.Join(u.workDir, previousDir)
 	kept := filepath.Join(dir, name)
-	if path != kept {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return "", err
-		}
-		if err := os.Rename(path, kept); err != nil {
-			return "", err
-		}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return kept, err
+	if err := atomicfile.Write(kept+sumExt, []byte(sum+"  "+name+"\n"), atomicfile.Options{Mode: 0o600}); err != nil {
+		return "", err
 	}
-	for _, e := range entries {
-		if other := e.Name(); other != name && strings.HasPrefix(other, pkg+"_") {
-			_ = os.Remove(filepath.Join(dir, other))
-		}
+	if err := os.Rename(path, kept); err != nil {
+		return "", err
 	}
+	u.dropOthers(pkg, name)
 	return kept, nil
 }
 
-// alreadyKept returns the kept package of that name, if there is one.
-func (u *Upgrader) alreadyKept(name string) (string, bool) {
+// dropOthers removes the kept packages of pkg but the one of that name.
+func (u *Upgrader) dropOthers(pkg, name string) {
+	dir := filepath.Join(u.workDir, previousDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if other := e.Name(); other != name && other != name+sumExt && strings.HasPrefix(other, pkg+"_") {
+			_ = os.Remove(filepath.Join(dir, other))
+		}
+	}
+}
+
+// alreadyKept returns the kept package of that name when it is there and
+// matches the sha256 beside it, and drops the other kept packages of pkg.
+func (u *Upgrader) alreadyKept(pkg, name string) (string, bool) {
 	path := filepath.Join(u.workDir, previousDir, name)
-	info, err := os.Lstat(path)
-	return path, err == nil && info.Mode().IsRegular()
+	if checkKept(path) != nil {
+		return "", false
+	}
+	u.dropOthers(pkg, name)
+	return path, true
+}
+
+// checkKept compares a kept package with the sha256 kept beside it, so that
+// a rollback installs what an upgrade checked, whatever happened to the
+// directory since.
+func checkKept(path string) error {
+	b, err := os.ReadFile(path + sumExt)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("the kept package %s has no checksum beside it; it is not installed", path)
+	}
+	if err != nil {
+		return err
+	}
+	m := checksumLineRe.FindStringSubmatch(strings.TrimSpace(string(b)))
+	if m == nil || m[2] != filepath.Base(path) || checkSum(path, m[2], m[1], "") != nil {
+		return fmt.Errorf("the kept package %s does not match the checksum kept beside it; it is not installed", path)
+	}
+	return nil
 }
 
 // keptPackage returns the kept package of pkg for this architecture and its
@@ -258,6 +298,9 @@ func (u *Upgrader) keptPackage(pkg string) (path, version string, err error) {
 	}
 	if path == "" {
 		return "", "", fmt.Errorf("%w: %s holds no package of %s", ErrNothingKept, dir, pkg)
+	}
+	if err := checkKept(path); err != nil {
+		return "", "", err
 	}
 	return path, version, nil
 }

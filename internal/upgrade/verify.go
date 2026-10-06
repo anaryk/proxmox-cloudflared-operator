@@ -10,8 +10,15 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 )
 
-// ErrSignature is the error of a signature that does not hold.
-var ErrSignature = errors.New("the signature of checksums.txt is not valid for the release key, or the key was revoked or has expired")
+var (
+	// ErrSignature is the error of a signature that does not hold.
+	ErrSignature = errors.New("the signature of checksums.txt is not valid for the release key, or the key was revoked or has expired")
+	// ErrUnknownKey is the error of a signature by a key the keyring does
+	// not hold: a release of someone else, or a keyring that is not the
+	// release key, such as the test key of a snapshot build.
+	ErrUnknownKey = errors.New("checksums.txt is not signed by a key of the keyring: " +
+		"the release is not pco's, or the keyring is not the release key")
+)
 
 var fingerprintRe = regexp.MustCompile(`^[0-9A-Fa-f]{40}([0-9A-Fa-f]{24})?$`)
 
@@ -43,10 +50,12 @@ func (v toolVerifier) Verify(ctx context.Context, keyring, sig, file string) (st
 // signature by a key of the keyring that is valid.
 func (v toolVerifier) sqv(ctx context.Context, keyring, sig, file string) (string, error) {
 	out, err := v.run.Run(ctx, "sqv", "--keyring", keyring, sig, file)
-	if errors.Is(err, setup.ErrCommandNotFound) {
+	switch {
+	case errors.Is(err, setup.ErrCommandNotFound):
 		return "", err
-	}
-	if err != nil {
+	case err != nil && strings.Contains(err.Error(), "Missing key"):
+		return "", fmt.Errorf("%w (%w)", ErrUnknownKey, err)
+	case err != nil:
 		return "", fmt.Errorf("%w (%w)", ErrSignature, err)
 	}
 	for line := range strings.Lines(out) {
@@ -62,10 +71,12 @@ func (v toolVerifier) sqv(ctx context.Context, keyring, sig, file string) (strin
 // --keyring it does not fall back on the keys of a home directory.
 func (v toolVerifier) gpgv(ctx context.Context, keyring, sig, file string) (string, error) {
 	out, err := v.run.Run(ctx, "gpgv", "--status-fd", "1", "--keyring", keyring, sig, file)
-	if errors.Is(err, setup.ErrCommandNotFound) {
+	switch {
+	case errors.Is(err, setup.ErrCommandNotFound):
 		return "", err
-	}
-	if err != nil {
+	case strings.Contains(out, "[GNUPG:] NO_PUBKEY "):
+		return "", fmt.Errorf("%w (gpgv: NO_PUBKEY)", ErrUnknownKey)
+	case err != nil:
 		return "", fmt.Errorf("%w (%w)", ErrSignature, err)
 	}
 	good, fpr := false, ""

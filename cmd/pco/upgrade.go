@@ -230,7 +230,8 @@ func (a *app) upgradeVolume() (store.Paths, error) {
 // planUpgrade asks what each package is to do, pco first. A rollback of all
 // leaves out a package with nothing kept, and says why in skipped.
 func (a *app) planUpgrade(ctx context.Context, u *upgrade.Upgrader, which string, o upgrade.Options) (plans []upgradePlan, skipped []error, err error) {
-	ask := upgrade.Options{Version: o.Version, Rollback: o.Rollback, Check: true}
+	// An upgrade keeps the old packages before it asks; a check keeps nothing.
+	ask := upgrade.Options{Version: o.Version, Rollback: o.Rollback, Check: true, Keep: !o.Check}
 	skip := func(err error) bool {
 		if which == "all" && o.Rollback && errors.Is(err, upgrade.ErrNothingKept) {
 			skipped = append(skipped, err)
@@ -329,6 +330,13 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 	if !o.Rollback {
 		remindOfSnapshot(errOut, paths, u.SnapshotName())
 	}
+	said := make(map[string]bool)
+	for _, p := range changes {
+		for _, note := range p.res.Notes {
+			errOut.printf("warning: %s\n", note)
+			said[note] = true
+		}
+	}
 	var what []string
 	verb := "Upgrade"
 	if o.Rollback {
@@ -369,7 +377,9 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 			res, err = u.Cloudflared(ctx, do, p.manifest, restart)
 		}
 		for _, note := range res.Notes {
-			errOut.printf("warning: %s\n", note)
+			if !said[note] {
+				errOut.printf("warning: %s\n", note)
+			}
 		}
 		if err != nil {
 			return err

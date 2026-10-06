@@ -112,6 +112,32 @@ func TestASignatureThatIsNotGoodIsRefused(t *testing.T) {
 	}
 }
 
+// A signature by a key the keyring does not hold is told apart from one that
+// does not hold: the keyring may be the wrong one.
+func TestASignatureByAKeyOutsideTheKeyringIsToldApart(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		do   func(name string, args ...string) (string, error)
+	}{
+		{"sqv", func(string, ...string) (string, error) {
+			return "", errors.New("sqv: exit status 1: Missing key 0123456789ABCDEF0123456789ABCDEF01234567, which is needed to verify signature.")
+		}},
+		{"gpgv", func(name string, _ ...string) (string, error) {
+			if name == "sqv" {
+				return "", fmt.Errorf("sqv: %w", setup.ErrCommandNotFound)
+			}
+			return "[GNUPG:] NEWSIG\n[GNUPG:] ERRSIG 0123456789ABCDEF 22 10 00 1790000000 9 -\n[GNUPG:] NO_PUBKEY 0123456789ABCDEF\n",
+				errors.New("gpgv: exit status 2")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewVerifier(&fakeRunner{do: tt.do}).Verify(t.Context(), "/k.gpg", "/w/s.sig", "/w/s")
+			require.ErrorIs(t, err, ErrUnknownKey)
+			require.NotErrorIs(t, err, ErrSignature)
+		})
+	}
+}
+
 func TestWithoutAVerifierNothingIsChecked(t *testing.T) {
 	host := &fakeRunner{do: func(name string, _ ...string) (string, error) {
 		return "", fmt.Errorf("%s: %w", name, setup.ErrCommandNotFound)
@@ -212,7 +238,7 @@ func TestTheRealToolsCheckTheSignature(t *testing.T) {
 			require.Equal(t, good, fpr)
 
 			_, err = v.Verify(t.Context(), keyring, filepath.Join(dir, "other.sig"), sums)
-			require.ErrorIs(t, err, ErrSignature, "a signature by another key")
+			require.ErrorIs(t, err, ErrUnknownKey, "a signature by another key")
 
 			tampered := filepath.Join(dir, "tampered.txt")
 			require.NoError(t, os.WriteFile(tampered, []byte(strings.Repeat("b", 64)+"  pco_1.2.4_amd64.deb\n"), 0o600))

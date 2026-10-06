@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -59,6 +61,9 @@ func (u *Upgrader) release(ctx context.Context, version string) (release, error)
 	if r, ok := u.releases[version]; ok {
 		return r, nil
 	}
+	if err := u.checkKeyring(); err != nil {
+		return release{}, err
+	}
 	sums, err := u.fetch.Get(ctx, version, checksumsName, MaxSmallFile)
 	if err != nil {
 		return release{}, fmt.Errorf("downloading checksums.txt of release v%s: %w", version, err)
@@ -70,6 +75,9 @@ func (u *Upgrader) release(ctx context.Context, version string) (release, error)
 	}
 	defer func() { _ = os.Remove(sig) }()
 	fpr, err := u.verify.Verify(ctx, u.keyring, sig, sums)
+	if errors.Is(err, ErrUnknownKey) {
+		return release{}, fmt.Errorf("release v%s: %w; the keyring is %s%s", version, err, u.keyring, u.snapshotHint(ctx))
+	}
 	if err != nil {
 		return release{}, fmt.Errorf("release v%s: %w", version, err)
 	}
@@ -81,6 +89,32 @@ func (u *Upgrader) release(ctx context.Context, version string) (release, error)
 	u.releases[version] = r
 	u.say("release v%s: checksums.txt is signed by key %s", version, fpr)
 	return r, nil
+}
+
+// checkKeyring names a keyring that is missing or empty before anything is
+// fetched: the verifiers would call that a signature that does not hold.
+func (u *Upgrader) checkKeyring() error {
+	info, err := os.Stat(u.keyring)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("the keyring %s that releases are checked with is missing; the package of pco ships it", u.keyring)
+	case err != nil:
+		return fmt.Errorf("reading the keyring %s: %w", u.keyring, err)
+	case info.Size() == 0:
+		return fmt.Errorf("the keyring %s that releases are checked with is empty", u.keyring)
+	}
+	return nil
+}
+
+// snapshotHint says why a snapshot build of pco trusts no release, when the
+// installed pco is one.
+func (u *Upgrader) snapshotHint(ctx context.Context) string {
+	v, err := u.installed(ctx, "pco")
+	if err != nil || !strings.Contains(v, "SNAPSHOT") {
+		return ""
+	}
+	return "; this pco is a snapshot build, whose keyring signs no release: " +
+		KeyringVar + " names the keyring of the releases it is to take"
 }
 
 // fetchFile downloads a file of a verified release, checks it against the

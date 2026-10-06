@@ -98,7 +98,7 @@ func TestAVersionOfCloudflaredAskedForIsInstalled(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "2026.9.3", res.Target)
-	require.Equal(t, []string{"the package of cloudflared 2026.8.2 could not be kept, so --rollback cannot go back to it: " +
+	require.Equal(t, []string{"the package of cloudflared 2026.8.2 cannot be kept, so --rollback cannot go back to it: " +
 		"the manifest does not allow cloudflared 2026.8.2, so its package is not fetched"}, res.Notes)
 }
 
@@ -163,6 +163,17 @@ func TestACheckOfCloudflaredChangesNothing(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotConfirmed)
 	require.Empty(t, r.fetch.asked)
 	require.Zero(t, s.calls)
+}
+
+func TestThePlanOfCloudflaredKeepsTheOldPackage(t *testing.T) {
+	r, m := cloudflaredRig(t)
+
+	res, err := r.u.Cloudflared(t.Context(), Options{Check: true, Keep: true}, m, nil)
+
+	require.NoError(t, err)
+	require.Equal(t, r.previous("cloudflared_2026.9.3_amd64.deb"), res.Kept)
+	require.Equal(t, []string{"get " + cfURL("2026.9.3", "amd64")}, r.fetch.asked)
+	require.NotContains(t, r.transcript(), "apt-get")
 }
 
 func TestARollbackOfCloudflaredInstallsTheKeptPackage(t *testing.T) {
