@@ -291,9 +291,8 @@ disappear, and never lets a hostname change hands.
 
 ## What there is not
 
-Routes come from Notes only. In this release there is no command, and no documented
-format, for routes that an admin makes by hand, and so no supported way to publish an
-address that is not a guest's own; the daemon does read route files from
-`/etc/pve/pco/routes/`, which [Operations](operations.md) and [Security](security.md)
-describe. Cloudflare Access policies, IPv6 origins, and protocols other than HTTP and
-HTTPS are not supported either.
+A guest publishes only through its own Notes. A route to an address that is not a
+guest's own is a manual route, made by root with `pco route manual add` or by an admin in
+the web UI, within `manualCIDRs`; [Operations](operations.md) and
+[Security](security.md) describe it. Cloudflare Access policies, IPv6 origins, and
+protocols other than HTTP and HTTPS are not supported.

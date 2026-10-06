@@ -64,9 +64,10 @@ A trusted static address behind a router is proven in another way, which replace
 | `observed` | Less than `port`, in one of two ways. For a guest on another node of the cluster: only the guest answers ARP for the address, and none of its MACs is on the port of a guest of this node, which would be a local guest answering in its name; this node cannot see where the table sends the guest's own frames. For a trusted static address behind a router (see below): neither ARP nor the forwarding table is asked, and only the guest's Proxmox configuration vouches for the address, together with a kernel route to it through a gateway. |
 | `filtered` | Reserved. It is the level of a network in which every guest card is pinned to its address by the Proxmox firewall, which belongs to the appliance profile; see [Profiles](profiles.md). Nothing proves it in this release. |
 
-A route that names an address and no guest has the level `manual`. No command makes such
-a route yet: it exists only as a file in `/etc/pve/pco/routes/`, which only root can write,
-and nothing proves it; see [Security](security.md).
+A route that names an address and no guest has the level `manual`. Root makes it with
+`pco route manual add`, an admin in the web UI, and its address must lie in `manualCIDRs`;
+it is kept as a file in `/etc/pve/pco/routes/`, and nothing proves it; see
+[Security](security.md).
 
 `port` is the highest level, and only a guest on the node that pco runs on can reach it.
 When a route has several candidates, pco serves the one proven at the highest level, and
@@ -180,7 +181,7 @@ These addresses are never published, for any route, whatever it says:
 The reason is the node itself. Without this rule a guest could write the address of the
 hypervisor into its Notes and publish the Proxmox web interface on port 8006. A guest
 controls its own configuration and its own agent, so the denylist does not trust either
-of them. The one exception is a manual route that root wrote with `allowNode`, which lifts
+of them. The one exception is a manual route with `allowNode`, which lifts
 the two rules about nodes and none of the others; no route from a guest's Notes can.
 
 It is not the only layer. The egress filter of the connectors (see
