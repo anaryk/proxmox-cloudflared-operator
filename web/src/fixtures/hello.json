@@ -1,0 +1,7 @@
+{
+  "boot": "9f2c4e1a0b7d3c55",
+  "version": "1.2.3",
+  "seq": 10,
+  "digest": "5e0c1f7a92b4d3e8",
+  "pollInterval": "10s"
+}

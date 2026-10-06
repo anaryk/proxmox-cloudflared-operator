@@ -203,6 +203,7 @@ const command = (text: string) => new Command(making, text)
 export type CommandWords = { command: Command; refused?: undefined } | { command?: undefined; refused: string }
 
 export const egressOnCommand: CommandWords = { command: command('pco egress on') }
+export const egressLoadCommand: CommandWords = { command: command('pco egress load') }
 export const setupCommand: CommandWords = { command: command('pco setup') }
 
 // commandArg is present.CommandArg: value when it has the form of its kind,

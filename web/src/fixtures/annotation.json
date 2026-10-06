@@ -1,0 +1,16 @@
+{
+  "ref": "qemu/103",
+  "block": "```cf-tunnel\napp.example.com -> :3000\n```",
+  "startLine": 4,
+  "issues": [
+    {
+      "guest": {
+        "kind": "qemu",
+        "vmid": 103
+      },
+      "line": 5,
+      "col": 5,
+      "msg": "a broken entry"
+    }
+  ]
+}

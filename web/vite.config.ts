@@ -6,6 +6,7 @@ import license from 'rollup-plugin-license'
 import { defineConfig } from 'vite'
 
 import { licenceAllowed } from './scripts/check-licences.mjs'
+import { mockApi } from './src/api/mock.ts'
 
 // pco web embeds this directory (internal/web/ui, build tag webui) and gzips
 // it itself at start, so nothing here is compressed.
@@ -28,6 +29,9 @@ export default defineConfig({
         output: { file: `${dist}licenses.txt` },
       },
     }),
+    // VITE_MOCK=1 npm run dev: the development server answers /api from the
+    // fixtures, VITE_MOCK_STATE names the state (src/api/mock.ts).
+    process.env.VITE_MOCK === '1' && mockApi(process.env.VITE_MOCK_STATE),
   ],
   build: {
     outDir: dist,

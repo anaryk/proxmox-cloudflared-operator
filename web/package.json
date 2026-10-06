@@ -16,7 +16,8 @@
     "typecheck": "tsc",
     "test": "vitest run",
     "licences": "node scripts/check-licences.mjs",
-    "budget": "node scripts/size-budget.mjs"
+    "budget": "node scripts/size-budget.mjs",
+    "fixtures": "node scripts/fixtures.mjs"
   },
   "dependencies": {
     "react": "19.3.0",

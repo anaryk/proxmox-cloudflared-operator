@@ -1,0 +1,22 @@
+[
+  {
+    "ref": "qemu/101",
+    "name": "web-1",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:4c4c4544-0042-3510-8051-b4c04f4e3432",
+    "approval": "approved",
+    "routes": 2,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/200",
+    "node": "pve1",
+    "running": false,
+    "tagged": false,
+    "approval": "not-needed",
+    "routes": 0,
+    "issues": 0
+  }
+]

@@ -1,0 +1,595 @@
+/*
+ * The shell of every page (spec-ui 3.1): the top bar of 46 px, the
+ * navigation of 212 px in its groups, the banners and the events strip.
+ */
+
+/* the top bar */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--topbar);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.mark {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-decoration: none;
+}
+
+.chip {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--text2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pill-summary {
+  position: relative;
+  display: none;
+}
+
+.pill-list {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  z-index: 50;
+  min-width: 230px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  list-style: none;
+}
+
+.pill-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+
+a.pill {
+  text-decoration: none;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.navtoggle {
+  display: none;
+}
+
+.menu {
+  position: relative;
+}
+
+.menu-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.menu-button:hover {
+  border-color: var(--border);
+  background: var(--raised);
+}
+
+.menu-pop {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  z-index: 50;
+  width: 260px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+}
+
+.menu-who {
+  margin: 0 0 6px;
+}
+
+.menu-head {
+  margin: 10px 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.seg {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+}
+
+.seg button {
+  flex: 1;
+  padding: 5px 4px;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.seg button[aria-pressed="true"] {
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.menu-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.linkbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* the layout and the navigation */
+
+.layout {
+  display: grid;
+  grid-template-columns: var(--nav) minmax(0, 1fr);
+  min-height: calc(100vh - var(--topbar));
+}
+
+.layout-collapsed {
+  grid-template-columns: 52px minmax(0, 1fr);
+}
+
+.nav {
+  position: sticky;
+  top: var(--topbar);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: calc(100vh - var(--topbar));
+  overflow: auto;
+  padding: 10px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--raised);
+}
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.grp {
+  display: flex;
+  align-items: center;
+  margin: 12px 8px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.grp-count {
+  margin-left: 6px;
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.navlink {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  color: var(--text2);
+  font-size: 13.5px;
+  text-decoration: none;
+}
+
+.navlink:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.navlink[aria-current="page"] {
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.navlink .count {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--warn-weak);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.nav-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: auto;
+  padding: 10px 8px 2px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nav-collapsed .nav-label,
+.nav-collapsed .grp,
+.nav-collapsed .navlink .count {
+  display: none;
+}
+
+.nav-collapsed .navlink {
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+main {
+  flex: 1;
+  min-width: 0;
+  padding: 14px 20px 24px;
+}
+
+main:focus {
+  outline: none;
+}
+
+.banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.banner .command {
+  margin-top: 6px;
+}
+
+/* the head of a page */
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.page-description {
+  margin: 2px 0 0;
+  color: var(--text2);
+}
+
+.page-actions {
+  display: flex;
+  gap: 8px;
+}
+
+main > .card + .card,
+main > .card {
+  margin-bottom: 14px;
+}
+
+.problems {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.problems li + li {
+  margin-top: 4px;
+}
+
+.next-step {
+  margin: 10px 0 0;
+  font-weight: 600;
+}
+
+.route-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* the details of a row */
+
+.details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.details-row {
+  display: contents;
+}
+
+.details dt {
+  color: var(--muted);
+}
+
+.details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* the events strip */
+
+.strip {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.strip > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 20px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.strip > summary::-webkit-details-marker {
+  display: none;
+}
+
+.strip-last {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strip-error {
+  border-top: 2px solid var(--fail);
+}
+
+.strip-flag {
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--fail-weak);
+  color: var(--fail);
+  font-weight: 600;
+}
+
+.strip-body {
+  padding: 0 20px 8px;
+}
+
+.strip-more {
+  display: inline-block;
+  margin-top: 6px;
+}
+
+.table-row.row-error {
+  background: var(--fail-weak);
+}
+
+@media (min-width: 720px) {
+  .events .col-time {
+    width: 230px;
+  }
+
+  .events .col-level {
+    width: 90px;
+  }
+
+  .events .col-kind {
+    width: 110px;
+  }
+
+  .events .col-actor {
+    width: 160px;
+  }
+}
+
+/* sign-in */
+
+.signin-page {
+  display: grid;
+  place-items: start center;
+  min-height: 100vh;
+  padding: 48px 16px;
+}
+
+.signin-card {
+  width: min(560px, 100%);
+}
+
+.signin-card .card-head h1 {
+  font-size: 18px;
+}
+
+.signin {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.signin h2 {
+  margin: 0 0 6px;
+  font-size: 14.5px;
+}
+
+.signin form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.signin .field {
+  align-self: stretch;
+}
+
+.secret {
+  display: flex;
+  gap: 6px;
+}
+
+.secret input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-family: var(--mono);
+}
+
+.form-error {
+  color: var(--fail);
+}
+
+.signin-foot {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.loading {
+  max-width: 560px;
+  margin: 48px auto;
+}
+
+/* below 960 px the five pills are one */
+
+@media (max-width: 959px) {
+  .pill-wide {
+    display: none;
+  }
+
+  .pill-summary {
+    display: inline-flex;
+  }
+}
+
+/* phones: the navigation is a drawer */
+
+@media (max-width: 719px) {
+  .layout,
+  .layout-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .navtoggle {
+    display: inline-flex;
+  }
+
+  .chip,
+  .menu-user {
+    display: none;
+  }
+
+  .nav {
+    position: fixed;
+    top: var(--topbar);
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: 250px;
+    height: auto;
+    box-shadow: var(--shadow);
+    transform: translateX(-102%);
+    transition: transform 0.18s;
+    visibility: hidden;
+  }
+
+  .nav-open {
+    transform: none;
+    visibility: visible;
+  }
+
+  .nav-collapsed .nav-label,
+  .nav-collapsed .grp {
+    display: revert;
+  }
+
+  main {
+    padding: 12px 16px 20px;
+  }
+
+  .strip {
+    position: static;
+  }
+
+  .strip > summary,
+  .strip-body {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav {
+    transition: none;
+  }
+}

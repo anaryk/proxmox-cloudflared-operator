@@ -31,6 +31,8 @@ export interface TableProps<T> {
   // The most the table takes on the page, in pixels; it scrolls past that.
   height?: number
   empty?: ReactNode
+  // A class of its own for a row, such as one that marks an error.
+  rowClass?: (row: T) => string | undefined
 }
 
 // Rows above and below those in view that are in the DOM as well.
@@ -71,7 +73,7 @@ function onControl(e: MouseEvent<HTMLTableRowElement>): boolean {
 // (spec-ui 10). It is one stop of the Tab key; the arrow keys, Page Up, Page
 // Down, Home and End move between the rows, which keep the order they are
 // shown in. Screen readers are told the number of rows and where each one is.
-export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate, current, height = 560, empty }: TableProps<T>) {
+export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate, current, height = 560, empty, rowClass }: TableProps<T>) {
   const { density } = usePreferences()
   const asCards = useCards()
   const scroller = useRef<HTMLDivElement>(null)
@@ -215,7 +217,7 @@ export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate
                 aria-rowindex={index + 2}
                 aria-current={key === current ? 'true' : undefined}
                 tabIndex={index === tabStop ? 0 : -1}
-                className={onActivate ? 'table-row table-row-open' : 'table-row'}
+                className={['table-row', onActivate && 'table-row-open', rowClass?.(row)].filter(Boolean).join(' ')}
                 onFocus={() => setActive(key)}
                 onClick={(e) => {
                   if (onControl(e)) return

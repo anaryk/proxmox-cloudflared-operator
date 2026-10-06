@@ -1,0 +1,63 @@
+[
+  {
+    "hostname": "api.example.com",
+    "holder": "manual/api",
+    "since": "2026-10-01T12:00:00Z",
+    "state": "serving",
+    "waiting": []
+  },
+  {
+    "hostname": "new.example.com",
+    "holder": "qemu/102",
+    "guest": {
+      "kind": "qemu",
+      "vmid": 102,
+      "name": "web-2"
+    },
+    "since": "2026-10-01T12:00:00Z",
+    "state": "pending",
+    "waiting": []
+  },
+  {
+    "hostname": "old.example.com",
+    "holder": "qemu/101",
+    "guest": {
+      "kind": "qemu",
+      "vmid": 101,
+      "name": "web-1"
+    },
+    "since": "2026-10-01T12:00:00Z",
+    "missingSince": "2026-10-01T12:01:00Z",
+    "state": "held",
+    "waiting": []
+  },
+  {
+    "hostname": "shop.example.com",
+    "holder": "lxc/200",
+    "since": "2026-10-01T12:00:00Z",
+    "state": "unknown",
+    "waiting": []
+  },
+  {
+    "hostname": "www.example.com",
+    "holder": "qemu/101",
+    "guest": {
+      "kind": "qemu",
+      "vmid": 101,
+      "name": "web-1"
+    },
+    "since": "2026-10-01T12:00:00Z",
+    "state": "conflict",
+    "waiting": [
+      {
+        "owner": "qemu/102",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 102,
+          "name": "web-2"
+        },
+        "since": "2026-10-01T12:01:00Z"
+      }
+    ]
+  }
+]

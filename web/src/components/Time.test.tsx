@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
-import { partsIn, Time } from './Time'
+import { partsIn, Time, TimeLines } from './Time'
 
 // The browser runs in Prague, the node in New York.
 beforeEach(() => {
@@ -56,6 +56,33 @@ describe('Time', () => {
     const { container } = render(<Time at={at} />)
     expect(container.textContent).toBe('-')
     expect(container.querySelector('time')).toBeNull()
+  })
+})
+
+describe('TimeLines', () => {
+  test('the three times as lines of details, for the keyboard', () => {
+    const { container } = render(
+      <dl>
+        <TimeLines at="2026-10-05T10:01:05Z" nodeZone="America/New_York" />
+      </dl>,
+    )
+    expect([...container.querySelectorAll('dt, dd')].map((e) => e.textContent)).toEqual([
+      'Time here',
+      '2026-10-05 12:01:05 +02:00',
+      'On the node (America/New_York)',
+      '2026-10-05 06:01:05 -04:00',
+      'UTC',
+      '2026-10-05 10:01:05',
+    ])
+  })
+
+  test('nothing for a time never set', () => {
+    const { container } = render(
+      <dl>
+        <TimeLines at="0001-01-01T00:00:00Z" />
+      </dl>,
+    )
+    expect(container.querySelector('dl')?.childElementCount).toBe(0)
   })
 })
 

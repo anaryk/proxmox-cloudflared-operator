@@ -4,6 +4,7 @@ import './theme/base.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
+import { App } from './app/App'
 import { startPreferences } from './theme/theme'
 
 const root = document.getElementById('root')
@@ -15,9 +16,6 @@ startPreferences()
 
 createRoot(root).render(
   <StrictMode>
-    <main>
-      <h1>pco</h1>
-      <p>The web interface is on its way. Until then, pco status on the node shows the state.</p>
-    </main>
+    <App />
   </StrictMode>,
 )

@@ -1,0 +1,14 @@
+{
+  "leftObserveOnly": true,
+  "accepted": [
+    {
+      "kind": "dns-removals",
+      "subject": "",
+      "detail": "mass delete guard: 7 of 9 records are being removed (1 in zones that could not be listed); confirm to proceed",
+      "items": [
+        "a.example.com",
+        "b.example.com"
+      ]
+    }
+  ]
+}

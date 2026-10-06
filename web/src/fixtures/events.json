@@ -1,0 +1,46 @@
+[
+  {
+    "seq": 7,
+    "boot": "9f2c4e1a0b7d3c55",
+    "at": "2026-10-01T12:00:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "www.example.com",
+    "message": "qemu/101: unreachable",
+    "route": "www.example.com",
+    "guest": "qemu/101",
+    "account": "acc1"
+  },
+  {
+    "seq": 8,
+    "boot": "9f2c4e1a0b7d3c55",
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "rollout",
+    "subject": "pco-abc123",
+    "message": "configuration version 3 runs on 2 connectors in account acc1",
+    "tunnel": "pco-abc123",
+    "account": "acc1"
+  },
+  {
+    "seq": 9,
+    "boot": "9f2c4e1a0b7d3c55",
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "action",
+    "subject": "pco-abc123",
+    "message": "put-config in account acc1: 3 rules replace version 2",
+    "tunnel": "pco-abc123",
+    "account": "acc1"
+  },
+  {
+    "seq": 10,
+    "boot": "9f2c4e1a0b7d3c55",
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "admin",
+    "subject": "www.example.com",
+    "message": "adoption requested for the next run",
+    "actor": "alice@pve (ticket)"
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "mode": "observe",
+  "complete": false,
+  "routes": [],
+  "issues": [],
+  "tunnels": [],
+  "connectors": [],
+  "credentials": [],
+  "zones": [],
+  "actions": [],
+  "conflicts": [],
+  "lost": [],
+  "problems": [],
+  "writerVerdict": "ok",
+  "waiting": [],
+  "unapproved": [],
+  "segments": [],
+  "gateTagged": 0,
+  "rogueConnectors": []
+}

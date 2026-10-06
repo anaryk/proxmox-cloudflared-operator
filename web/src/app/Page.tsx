@@ -1,0 +1,155 @@
+import { type ReactNode, useState } from 'react'
+
+import { useApp } from '../api/store'
+import { Button } from '../components/Button'
+import { Skeleton } from '../components/Skeleton'
+import { StateBadge } from '../components/StateBadge'
+import { compareRouteStates } from '../text/words'
+import { type EventFilter, EventsTable } from './EventsTable'
+import { Link } from './Link'
+import { NoRoutes } from './NoRoutes'
+import { Problems } from './Problems'
+import type { View } from './router'
+import { useLocation } from './router'
+
+function Head({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
+  return (
+    <div className="page-head">
+      <div>
+        <h1>{title}</h1>
+        {description && <p className="page-description">{description}</p>}
+      </div>
+      {actions && <div className="page-actions">{actions}</div>}
+    </div>
+  )
+}
+
+// Routes says how many routes there are in each state, or why there are none.
+function RouteCounts() {
+  const st = useApp((s) => s.state)
+  const gateTag = useApp((s) => s.settings?.settings.gateTag)
+  if (!st) return <Skeleton lines={3} label="Loading the state" />
+  if (st.routes.length === 0) return <NoRoutes state={st} gateTag={gateTag} />
+  const counts = new Map<string, number>()
+  for (const r of st.routes) counts.set(r.state, (counts.get(r.state) ?? 0) + 1)
+  return (
+    <ul className="route-counts">
+      {[...counts.keys()].sort(compareRouteStates).map((state) => (
+        <li key={state}>
+          <StateBadge state={state} /> <b className="num">{counts.get(state)}</b>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function Overview() {
+  const st = useApp((s) => s.state)
+  return (
+    <>
+      <Head title="Overview" description="What pco publishes, and what needs you." />
+      {st && <Problems state={st} />}
+      <section className="card" aria-labelledby="overview-routes">
+        <div className="card-head">
+          <h2 id="overview-routes">Routes</h2>
+        </div>
+        <div className="card-body">
+          <RouteCounts />
+        </div>
+      </section>
+    </>
+  )
+}
+
+const listOf = (q: URLSearchParams, key: string) => {
+  const v = q.getAll(key).filter(Boolean)
+  return v.length > 0 ? v : undefined
+}
+
+function Events() {
+  const loc = useLocation()
+  const [live, setLive] = useState(true)
+  const q = new URL(loc, 'https://page.invalid').searchParams
+  const filter: EventFilter = {
+    route: listOf(q, 'route'),
+    guest: listOf(q, 'guest'),
+    account: listOf(q, 'account'),
+    kind: listOf(q, 'kind'),
+    level: listOf(q, 'level'),
+    text: q.get('text') ?? undefined,
+  }
+  return (
+    <>
+      <Head
+        title="Events"
+        description="The daemon keeps the last thousand events in memory; the journal on the node has them all."
+        actions={
+          <Button aria-pressed={!live} onClick={() => setLive(!live)}>
+            {live ? 'Pause' : 'Go live'}
+          </Button>
+        }
+      />
+      <EventsTable filter={filter} live={live} />
+    </>
+  )
+}
+
+const titles: Readonly<Record<string, [string, string]>> = {
+  routes: ['Routes', 'Every hostname the guests and the manual routes ask for, and what pco made of it.'],
+  plan: ['Plan', 'What the cycles would change at Cloudflare, and what waits for a confirmation.'],
+  'manual-new': ['New manual route', 'A hostname for an address that no guest annotation names.'],
+  guests: ['Guests', 'The guests that carry the tag, their approvals and the issues in their Notes.'],
+  claims: ['Claims', 'Who holds each hostname, and who waits for it.'],
+  networks: ['Networks', 'The bridges and VLANs the routes were proven on.'],
+  credentials: ['Credentials', 'The Cloudflare API tokens pco uses.'],
+  zones: ['Zones', 'The zones the credentials list, and which credential serves each.'],
+  tunnels: ['Tunnels', 'The tunnel of the install in each account, and its connectors.'],
+  doctor: ['Doctor', 'The checks of pco doctor, run when you ask.'],
+  settings: ['Settings', 'The settings of the daemon.'],
+  setup: ['First-run setup', 'A token, the zones, and the first route.'],
+}
+
+function titleOf(v: View): [string, string] {
+  switch (v.name) {
+    case 'route':
+      return [v.hostname, v.owner ? `The route of ${v.owner}.` : 'The routes of this hostname.']
+    case 'manual':
+      return [`Manual route ${v.id}`, '']
+    case 'guest':
+      return [`${v.kind}/${v.vmid}`, '']
+    case 'credential':
+      return [`Credential ${v.id}`, '']
+    case 'zone':
+      return [v.zone, '']
+    case 'tunnel':
+      return [`Tunnel in account ${v.account}`, '']
+  }
+  return titles[v.name] ?? ['', '']
+}
+
+// Page is the content of a view.
+export function Page({ view }: { view: View }) {
+  switch (view.name) {
+    case 'overview':
+      return <Overview />
+    case 'events':
+      return <Events />
+    case 'not-found':
+      return (
+        <>
+          <Head title="Not found" description="pco has no page at this address." />
+          <p>
+            <Link to="/">Go to the Overview</Link>
+          </p>
+        </>
+      )
+  }
+  const [title, description] = titleOf(view)
+  return (
+    <>
+      <Head title={title} description={description} />
+      {view.name === 'routes' && <RouteCounts />}
+      {view.name !== 'routes' && <p className="muted">This page is not part of this build yet.</p>}
+    </>
+  )
+}

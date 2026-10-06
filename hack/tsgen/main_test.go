@@ -17,17 +17,24 @@ import (
 
 var update = flag.Bool("update", false, "write the golden files of the tests")
 
-func TestTheWordsGolden(t *testing.T) {
-	var out bytes.Buffer
-	require.NoError(t, run([]string{"-words"}, &out))
+func TestTheGoldens(t *testing.T) {
+	for _, tc := range []struct{ flag, golden string }{
+		{"-words", "words.gen.ts"},
+		{"-types", "types.gen.ts"},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			var out bytes.Buffer
+			require.NoError(t, run([]string{tc.flag}, &out))
 
-	path := filepath.Join("testdata", "words.gen.ts")
-	if *update {
-		require.NoError(t, os.WriteFile(path, out.Bytes(), 0o644))
+			path := filepath.Join("testdata", tc.golden)
+			if *update {
+				require.NoError(t, os.WriteFile(path, out.Bytes(), 0o644))
+			}
+			want, err := os.ReadFile(path)
+			require.NoError(t, err)
+			require.Equal(t, string(want), out.String(), "the module changed; run the test with -update when that is intended")
+		})
 	}
-	want, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.Equal(t, string(want), out.String(), "the words changed; run the test with -update when that is intended")
 }
 
 // The ranges the interface gets are exactly the characters Printable
@@ -72,5 +79,6 @@ func TestRangesAreSortedAndApart(t *testing.T) {
 }
 
 func TestRunNeedsToBeToldWhatToWrite(t *testing.T) {
-	require.EqualError(t, run(nil, io.Discard), "nothing to write: pass -words")
+	require.EqualError(t, run(nil, io.Discard), "nothing to write: pass -words or -types")
+	require.EqualError(t, run([]string{"-words", "-types"}, io.Discard), "pass -words or -types, not both")
 }

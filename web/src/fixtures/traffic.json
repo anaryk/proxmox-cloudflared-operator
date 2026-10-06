@@ -1,0 +1,1120 @@
+{
+  "at": "2026-10-01T12:00:05Z",
+  "interval": "5s",
+  "tunnels": [
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "node": "pve1",
+      "cloudflared": "2026.9.3",
+      "configVersion": 3,
+      "haConnections": 4,
+      "edges": [
+        {
+          "connection": 0,
+          "location": "fra08"
+        },
+        {
+          "connection": 1,
+          "location": "prg01"
+        }
+      ],
+      "rttMs": [
+        11.2,
+        18.9
+      ],
+      "stale": false,
+      "samples": [
+        {
+          "at": "2026-10-01T11:45:10Z",
+          "rps": 30,
+          "errorsPerSec": 0.4,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:15Z",
+          "rps": 31.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:20Z",
+          "rps": 32.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:25Z",
+          "rps": 33.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:30Z",
+          "rps": 34.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:35Z",
+          "rps": 35.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:40Z",
+          "rps": 36.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:45Z",
+          "rps": 37,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:50Z",
+          "rps": 37.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:45:55Z",
+          "rps": 38.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:00Z",
+          "rps": 39,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:05Z",
+          "rps": 39.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:10Z",
+          "rps": 39.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:15Z",
+          "rps": 39.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:20Z",
+          "rps": 40,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:25Z",
+          "rps": 40,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:30Z",
+          "rps": 39.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:35Z",
+          "rps": 39.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:40Z",
+          "rps": 39.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:45Z",
+          "rps": 38.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:50Z",
+          "rps": 38,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:46:55Z",
+          "rps": 37.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:00Z",
+          "rps": 36.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:05Z",
+          "rps": 35.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:10Z",
+          "rps": 34.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:15Z",
+          "rps": 33.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:20Z",
+          "rps": 32.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:25Z",
+          "rps": 31.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:30Z",
+          "rps": 30.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:35Z",
+          "rps": 29.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:40Z",
+          "rps": 28.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:45Z",
+          "rps": 27,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:50Z",
+          "rps": 26,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:47:55Z",
+          "rps": 25,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:00Z",
+          "rps": 24.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:05Z",
+          "rps": 23.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:10Z",
+          "rps": 22.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:15Z",
+          "rps": 21.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:20Z",
+          "rps": 21.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:25Z",
+          "rps": 20.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:30Z",
+          "rps": 20.4,
+          "errorsPerSec": 0.4,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:35Z",
+          "rps": 20.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:40Z",
+          "rps": 20,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:45Z",
+          "rps": 20,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:50Z",
+          "rps": 20.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:48:55Z",
+          "rps": 20.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:00Z",
+          "rps": 20.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:05Z",
+          "rps": 21.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:10Z",
+          "rps": 21.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:15Z",
+          "rps": 22.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:20Z",
+          "rps": 23.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:25Z",
+          "rps": 24.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:30Z",
+          "rps": 25.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:35Z",
+          "rps": 26.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:40Z",
+          "rps": 27.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:45Z",
+          "rps": 28.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:50Z",
+          "rps": 29.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:49:55Z",
+          "rps": 30.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:00Z",
+          "rps": 31.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:05Z",
+          "rps": 32.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:10Z",
+          "rps": 33.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:15Z",
+          "rps": 34.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:20Z",
+          "rps": 35.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:25Z",
+          "rps": 36.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:30Z",
+          "rps": 37.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:35Z",
+          "rps": 38.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:40Z",
+          "rps": 38.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:45Z",
+          "rps": 39.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:50Z",
+          "rps": 39.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:50:55Z",
+          "rps": 39.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:00Z",
+          "rps": 40,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:05Z",
+          "rps": 40,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:10Z",
+          "rps": 39.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:15Z",
+          "rps": 39.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:20Z",
+          "rps": 39.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:25Z",
+          "rps": 38.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:30Z",
+          "rps": 38.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:35Z",
+          "rps": 37.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:40Z",
+          "rps": 36.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:45Z",
+          "rps": 36,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:50Z",
+          "rps": 35.1,
+          "errorsPerSec": 0.4,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:51:55Z",
+          "rps": 34.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:00Z",
+          "rps": 33.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:05Z",
+          "rps": 32,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:10Z",
+          "rps": 30.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:15Z",
+          "rps": 29.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:20Z",
+          "rps": 28.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:25Z",
+          "rps": 27.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:30Z",
+          "rps": 26.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:35Z",
+          "rps": 25.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:40Z",
+          "rps": 24.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:45Z",
+          "rps": 23.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:50Z",
+          "rps": 22.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:52:55Z",
+          "rps": 22.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:00Z",
+          "rps": 21.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:05Z",
+          "rps": 21,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:10Z",
+          "rps": 20.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:15Z",
+          "rps": 20.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:20Z",
+          "rps": 20.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:25Z",
+          "rps": 20,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:30Z",
+          "rps": 20.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:35Z",
+          "rps": 20.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:40Z",
+          "rps": 20.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:45Z",
+          "rps": 21,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:50Z",
+          "rps": 21.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:53:55Z",
+          "rps": 22.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:00Z",
+          "rps": 22.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:05Z",
+          "rps": 23.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:10Z",
+          "rps": 24.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:15Z",
+          "rps": 25.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:20Z",
+          "rps": 26.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:25Z",
+          "rps": 27.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:30Z",
+          "rps": 28.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:35Z",
+          "rps": 29.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:40Z",
+          "rps": 31,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:45Z",
+          "rps": 32.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:50Z",
+          "rps": 33.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:54:55Z",
+          "rps": 34.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:00Z",
+          "rps": 35.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:05Z",
+          "rps": 36.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:10Z",
+          "rps": 36.9,
+          "errorsPerSec": 0.4,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:15Z",
+          "rps": 37.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:20Z",
+          "rps": 38.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:25Z",
+          "rps": 38.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:30Z",
+          "rps": 39.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:35Z",
+          "rps": 39.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:40Z",
+          "rps": 39.9,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:45Z",
+          "rps": 40,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:50Z",
+          "rps": 40,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:55:55Z",
+          "rps": 39.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:00Z",
+          "rps": 39.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:05Z",
+          "rps": 39.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:10Z",
+          "rps": 38.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:15Z",
+          "rps": 38,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:20Z",
+          "rps": 37.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:25Z",
+          "rps": 36.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:30Z",
+          "rps": 35.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:35Z",
+          "rps": 34.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:40Z",
+          "rps": 33.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:45Z",
+          "rps": 32.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:50Z",
+          "rps": 31.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:56:55Z",
+          "rps": 30.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:00Z",
+          "rps": 29.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:05Z",
+          "rps": 28.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:10Z",
+          "rps": 27.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:15Z",
+          "rps": 26.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:20Z",
+          "rps": 25.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:25Z",
+          "rps": 24.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:30Z",
+          "rps": 23.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:35Z",
+          "rps": 22.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:40Z",
+          "rps": 21.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:45Z",
+          "rps": 21.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:50Z",
+          "rps": 20.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:57:55Z",
+          "rps": 20.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:00Z",
+          "rps": 20.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:05Z",
+          "rps": 20,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:10Z",
+          "rps": 20,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:15Z",
+          "rps": 20.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:20Z",
+          "rps": 20.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:25Z",
+          "rps": 20.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:30Z",
+          "rps": 21.2,
+          "errorsPerSec": 0.4,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:35Z",
+          "rps": 21.8,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:40Z",
+          "rps": 22.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:45Z",
+          "rps": 23.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:50Z",
+          "rps": 24.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:58:55Z",
+          "rps": 25.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:00Z",
+          "rps": 26.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:05Z",
+          "rps": 27.1,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:10Z",
+          "rps": 28.2,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:15Z",
+          "rps": 29.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:20Z",
+          "rps": 30.4,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:25Z",
+          "rps": 31.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:30Z",
+          "rps": 32.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:35Z",
+          "rps": 33.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:40Z",
+          "rps": 34.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:45Z",
+          "rps": 35.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:50Z",
+          "rps": 36.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:55Z",
+          "rps": 37.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T12:00:00Z",
+          "rps": 38,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T12:00:05Z",
+          "rps": 38.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        }
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "hostname": "www.example.com",
+      "owner": "qemu/101",
+      "target": "10.0.0.11:8080",
+      "flowsPerSec": 2.4,
+      "stale": false
+    }
+  ],
+  "routesTotal": 1
+}

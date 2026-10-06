@@ -52,6 +52,36 @@ function nodeTime(at: Date, zone: string | undefined): string | null {
 // Go writes a time it never set as the zero time.
 const unset = (at: string) => !at || at.startsWith('0001-01-01T00:00:00')
 
+// TimeLines says an instant in full: in the browser's zone, the node's and
+// UTC, as lines of a list of details. It is what a row's detail shows, so
+// that the times of the tooltip, which a pointer opens, are there for the
+// keyboard too.
+export function TimeLines({ at, nodeZone }: { at: string; nodeZone?: string }) {
+  const when = new Date(at)
+  if (unset(at) || Number.isNaN(when.getTime())) return null
+  const local = partsIn(when)
+  const node = nodeTime(when, nodeZone)
+  const utc = partsIn(when, 'UTC')
+  return (
+    <>
+      <dt>Time here</dt>
+      <dd className="num">
+        {local.date} {local.time} {local.offset}
+      </dd>
+      {node && (
+        <>
+          <dt>On the node ({nodeZone})</dt>
+          <dd className="num">{node}</dd>
+        </>
+      )}
+      <dt>UTC</dt>
+      <dd className="num">
+        {utc.date} {utc.time}
+      </dd>
+    </>
+  )
+}
+
 // Time shows an instant in the browser's time zone with its offset, and its
 // date when that is not today; the tooltip gives the node's time and UTC
 // (spec-ui 3.1). nodeZone is the session's.
