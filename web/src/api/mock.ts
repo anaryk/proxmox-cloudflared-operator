@@ -1,9 +1,9 @@
 // The answers of pco web for the development server, from the fixtures, so
 // that pages can be built without a node: VITE_MOCK=1 npm run dev, and
 // VITE_MOCK_STATE=<fixture> (populated, empty, untagged, tagged-empty,
-// rogue, large) for another state. Nothing changes: a write is refused as a
-// daemon that is busy would refuse it. It is used by vite.config.ts only and
-// is never part of the build.
+// rogue, frozen, rogue-scenario, large) for another state. Nothing changes:
+// a write is refused as a daemon that is busy would refuse it. It is used by
+// vite.config.ts only and is never part of the build.
 
 import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -32,7 +32,7 @@ interface MockEvent {
   seq: number
 }
 
-const states = ['populated', 'empty', 'untagged', 'tagged-empty', 'rogue']
+const states = ['populated', 'empty', 'untagged', 'tagged-empty', 'rogue', 'frozen', 'rogue-scenario']
 
 export interface MockAnswer {
   status: number

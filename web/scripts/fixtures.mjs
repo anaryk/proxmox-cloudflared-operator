@@ -18,6 +18,9 @@ const read = (path) => JSON.parse(readFileSync(new URL(path, root), 'utf8'))
 
 const clone = (v) => structuredClone(v)
 
+// The state of a scenario of the fake daemon, hack/fakepco -scenario <name>.
+const scenario = (name) => read(`internal/api/apifake/testdata/scenarios/${name}/state.json`)
+
 // A state after a cycle in which no guest names a hostname.
 function noRoutes(populated) {
   return {
@@ -167,6 +170,10 @@ export function fixtures() {
     untagged,
     'tagged-empty': { ...clone(untagged), digest: '6d0e2b4a9c7f1835', admission: 'approve', gateTagged: 3 },
     rogue: rogue(populated),
+    // the fake daemon's: frozen zones after one and after two refusals, and
+    // connectors pco does not run with the flags of its own connectors
+    frozen: scenario('frozen'),
+    'rogue-scenario': scenario('rogue'),
     // engine.Event, engine.Hello, engine.TrafficView
     events,
     hello: { boot: last.boot, version: version.version, seq: last.seq, digest: populated.digest, pollInterval: version.pollInterval },
