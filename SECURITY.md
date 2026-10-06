@@ -101,36 +101,53 @@ the package carries it as `/usr/share/pco/release-key.gpg`.
 
 `scripts/install.sh` carries the key. It downloads the package, `checksums.txt` and
 `checksums.txt.sig`, checks the signature, then the checksum of the package, and installs
-nothing before both pass. Before it installs, it prints the key the signature was made with:
+nothing before both pass. A signature that does not verify, or a key that has expired or was
+revoked, makes it stop. When both pass it prints what verified the release, and `apt-get`
+installs the package right after:
 
     verified by: signature by key 3D326CB52862A2E91C9919EFA98A1ED57B31F91B and checksum
 
-If the fingerprint is another one, or the line says `checksum only (signature check skipped)`,
-which `PCO_INSECURE_SKIP_SIGNATURE=1` does, stop. A signature that does not verify, or a key
-that has expired or was revoked, makes it stop by itself. Read the script before you run it as
-root; it is short. [Quickstart](docs/quickstart.md) has the commands.
+The line says `checksum only (signature check skipped)` instead when
+`PCO_INSECURE_SKIP_SIGNATURE=1` is set. Since apt follows at once, the line is a record and not
+a point to decide at. To know which key the installer trusts before it runs, take a copy of the
+repository at the tag of the release, print the fingerprints of the key it carries, which
+needs `gpg`, compare them with the one above, and run the installer from that copy:
+
+    git clone --branch v<version> --depth 1 https://github.com/anaryk/proxmox-cloudflared-operator
+    cd proxmox-cloudflared-operator
+    packaging/release-key.sh scripts/install.sh release.gpg
+    PCO_VERSION=<version> bash scripts/install.sh
+
+[Quickstart](docs/quickstart.md) has the rest of the commands.
 
 ### By hand
 
-1. Download `pco_<version>_<arch>.deb`, `checksums.txt` and `checksums.txt.sig` from the
-   release. For an appliance add `pco-appliance_<version>_<arch>.tar.zst`.
-2. In a checkout of the repository at the tag of the release, write the keyring of its
-   `scripts/install.sh` and print the fingerprint of each key in it:
+This needs `gpg` for step 2, and `gpgv` or `sqv` for step 3. A Proxmox VE 8 node has `gpgv`,
+and a Proxmox VE 9 node has `sqv`; `apt-get install gpgv` adds `gpgv` there.
 
-       packaging/release-key.sh scripts/install.sh release.gpg
+1. Download `pco_<version>_<arch>.deb`, `checksums.txt` and `checksums.txt.sig` from the
+   release, into one directory. For an appliance add `pco-appliance_<version>_<arch>.tar.zst`.
+2. From that directory, take a copy of the repository at the tag of the release, write the
+   keyring of its `scripts/install.sh` and print the fingerprint of each key in it:
+
+       git clone --branch v<version> --depth 1 https://github.com/anaryk/proxmox-cloudflared-operator
+       proxmox-cloudflared-operator/packaging/release-key.sh \
+         proxmox-cloudflared-operator/scripts/install.sh release.gpg
 
    One of them must be `3D326CB52862A2E91C9919EFA98A1ED57B31F91B`. While one release key
    replaces another, a second may stand beside it. Compare with this page as it is on GitHub,
-   and not with the copy in the checkout that you are verifying.
+   and not with the copy that you are verifying.
 3. Check the signature:
 
        gpgv --status-fd 1 --keyring ./release.gpg checksums.txt.sig checksums.txt
 
-   It is good when the output has a `GOODSIG` line and a `VALIDSIG` line that ends in the
-   fingerprint, and none of `BADSIG`, `ERRSIG`, `REVKEYSIG`, `EXPKEYSIG` and `EXPSIG`. Do not
-   go by the exit status alone: `gpgv` exits 0 for a signature by a key that has expired or was
-   revoked. `sqv --keyring ./release.gpg checksums.txt.sig checksums.txt`, which Proxmox VE 9
-   has in place of `gpgv`, refuses such a key itself and prints the fingerprint.
+   It is good when the output has a `GOODSIG` line and a `VALIDSIG` line whose last field is
+   `3D326CB52862A2E91C9919EFA98A1ED57B31F91B`, the fingerprint of step 2 and of this page: a
+   second key may stand in the keyring, and the signature has to be by this one. None of
+   `BADSIG`, `ERRSIG`, `REVKEYSIG`, `EXPKEYSIG` and `EXPSIG` may appear. Do not go by the exit
+   status alone: `gpgv` exits 0 for a signature by a key that has expired or was revoked.
+   `sqv --keyring ./release.gpg checksums.txt.sig checksums.txt` refuses such a key itself and
+   prints the fingerprint of the key that signed.
 4. Check the checksum of each file you downloaded:
 
        sha256sum --check --ignore-missing checksums.txt

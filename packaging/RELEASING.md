@@ -27,8 +27,8 @@ approval, the monthly ones included.
        packaging/release-key.sh scripts/install.sh /tmp/release.gpg
 
    Change `RELEASE_FPRS` in `scripts/install_test.sh` to match, and name the
-   fingerprint where `README.md` and `docs/quickstart.md` do, so that an admin can
-   check the key of the script against it. The key in the repository now is
+   fingerprint where `README.md`, `docs/quickstart.md` and `SECURITY.md` do, so
+   that an admin can check the key of the script against it. The key in the repository now is
    `3D326CB52862A2E91C9919EFA98A1ED57B31F91B`.
 
 4. On GitHub, in this order:
@@ -238,5 +238,5 @@ beside it first:
 2. Replace the secret with the new private key and release again. The workflow
    accepts a secret that is any of the keys in `install.sh`.
 3. Later, when the old installers are gone, drop the old key from `install.sh`
-   and from `RELEASE_FPRS`, and change the fingerprint in `README.md` and
-   `docs/quickstart.md` to the new one.
+   and from `RELEASE_FPRS`, and change the fingerprint in `README.md`,
+   `docs/quickstart.md` and `SECURITY.md` to the new one.
