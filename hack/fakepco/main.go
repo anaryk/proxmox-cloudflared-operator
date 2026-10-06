@@ -7,7 +7,8 @@
 //
 // The scenario is one of the package's, which -list names, or a directory of
 // one. Its times move with the clock, which -now starts at another time than
-// the real one, for screenshots and tests that show times. A cycle runs a
+// the real one, for tests that show times; with -still it stays there, for
+// screenshots, whose times must not depend on how long they took. A cycle runs a
 // poll interval of the settings after the last one ended and the traffic is
 // sampled every 5 s, as at the daemon. The controls, which
 // change what is served without any check, listen on loopback only; the
@@ -50,6 +51,7 @@ func run() error {
 	ver := flag.String("version", version.Version, "the version the daemon reports")
 	list := flag.Bool("list", false, "list the scenarios of the package and exit")
 	nowFlag := flag.String("now", "", "the time to start the clock at, in RFC 3339; the real time without it")
+	still := flag.Bool("still", false, "keep the clock at the time of -now")
 	flag.Parse()
 	if *list {
 		for _, name := range apifake.Scenarios() {
@@ -68,7 +70,7 @@ func run() error {
 		return err
 	}
 
-	clock, err := clockFrom(*nowFlag)
+	clock, err := clockFrom(*nowFlag, *still)
 	if err != nil {
 		return err
 	}
@@ -139,14 +141,20 @@ func load(scenario string, clock func() time.Time) (*apifake.Engine, error) {
 }
 
 // clockFrom is a clock that starts at the time of -now and runs on from
-// there; nil, the real one, without it.
-func clockFrom(at string) (func() time.Time, error) {
+// there, or stays there when still; nil, the real one, without it.
+func clockFrom(at string, still bool) (func() time.Time, error) {
 	if at == "" {
+		if still {
+			return nil, errors.New("-still keeps the clock at the time of -now, and there is none")
+		}
 		return nil, nil
 	}
 	start, err := time.Parse(time.RFC3339, at)
 	if err != nil {
 		return nil, fmt.Errorf("-now %q: want a time in RFC 3339, such as 2026-10-06T09:30:00Z", at)
+	}
+	if still {
+		return func() time.Time { return start }, nil
 	}
 	began := time.Now()
 	return func() time.Time { return start.Add(time.Since(began)) }, nil
