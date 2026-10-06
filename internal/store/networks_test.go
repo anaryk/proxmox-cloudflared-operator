@@ -94,15 +94,14 @@ func TestSaveNetworkComparesAndSwaps(t *testing.T) {
 	require.Empty(t, stored(t, p.Cluster))
 }
 
-// Each leg's source ports for SNAT are the block 1024+(mark-1)*1024 and the
-// 1023 after it; the block of mark 62 ends at 64511, and one more would not
-// fit below 65536 with room to spare.
-func TestTheMarksAreThoseOfTheSixtyTwoNetworksOfANode(t *testing.T) {
+// Each leg's source ports for SNAT are a block of 4096 from 1024 up; the
+// block of mark 15 ends at 62463, and a 16th would pass 65535.
+func TestTheMarksAreThoseOfTheFifteenNetworksOfANode(t *testing.T) {
 	s, _ := openStore(t)
 	require.NoError(t, s.SaveNetwork(attachNetwork("vmbr1", 0, 1), 0))
-	require.NoError(t, s.SaveNetwork(attachNetwork("vmbr2", 0, 62), 0))
-	require.ErrorContains(t, s.SaveNetwork(attachNetwork("vmbr3", 0, 63), 0), "mark 63 is not 1 to 62")
-	require.ErrorContains(t, s.SaveNetwork(managedNetwork(63), 0), "mark 63 is not 1 to 62")
+	require.NoError(t, s.SaveNetwork(attachNetwork("vmbr2", 0, 15), 0))
+	require.ErrorContains(t, s.SaveNetwork(attachNetwork("vmbr3", 0, 16), 0), "mark 16 is not 1 to 15")
+	require.ErrorContains(t, s.SaveNetwork(managedNetwork(16), 0), "mark 16 is not 1 to 15")
 }
 
 func TestSaveNetworkRefusesAMarkAnotherNetworkHolds(t *testing.T) {
@@ -125,7 +124,7 @@ func TestSaveNetworkRefusesAMarkAnotherNetworkHolds(t *testing.T) {
 
 func TestTheLegMACFollowsTheKindAndTheMark(t *testing.T) {
 	require.Equal(t, "02:50:43:4f:00:01", LegMACFor(NetworkAttach, 1))
-	require.Equal(t, "02:50:43:4f:00:3e", LegMACFor(NetworkAttach, 62))
+	require.Equal(t, "02:50:43:4f:00:0f", LegMACFor(NetworkAttach, 15))
 	require.Equal(t, "02:50:43:4f:ff:01", LegMACFor(NetworkManaged, 9))
 
 	s, p := openStore(t)
@@ -177,7 +176,7 @@ func TestSaveNetworkRefusesWhatDoesNotFit(t *testing.T) {
 		"the managed network on a bridge":       edit(managed, func(n *Network) { n.Bridge = "vmbr9" }),
 		"the managed network on a VLAN":         edit(managed, func(n *Network) { n.VLAN = 5 }),
 		"no mark":                               edit(attach, func(n *Network) { n.Mark, n.LegMAC = 0, LegMACFor(NetworkAttach, 0) }),
-		"a mark over 62":                        edit(attach, func(n *Network) { n.Mark, n.LegMAC = 63, "02:50:43:4f:00:3f" }),
+		"a mark over 15":                        edit(attach, func(n *Network) { n.Mark, n.LegMAC = 16, "02:50:43:4f:00:10" }),
 		"no time it was made at":                edit(attach, func(n *Network) { n.CreatedAt = time.Time{} }),
 		"no prefix":                             edit(attach, func(n *Network) { n.Prefix = netip.Prefix{} }),
 		"an IPv6 prefix":                        edit(attach, func(n *Network) { n.Prefix = netip.MustParsePrefix("fd00::/64") }),

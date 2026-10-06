@@ -96,9 +96,9 @@ table inet pco_gw {
 	}
 	chain post_nat {
 		type nat hook postrouting priority srcnat; policy accept;
-		meta l4proto tcp oifname "leg1" snat ip to 10.50.0.250:1024-2047
-		meta l4proto tcp oifname "leg2" snat ip to 10.50.0.250:2048-3071
-		meta l4proto tcp oifname "leg3" snat ip to 10.203.118.1:3072-4095
+		meta l4proto tcp oifname "leg1" snat ip to 10.50.0.250:1024-5119
+		meta l4proto tcp oifname "leg2" snat ip to 10.50.0.250:5120-9215
+		meta l4proto tcp oifname "leg3" snat ip to 10.203.118.1:9216-13311
 	}
 	chain forward {
 		type filter hook forward priority filter; policy drop;

@@ -38,9 +38,9 @@ table inet pco_gw {
 		type ifname : interval ipv4_addr . inet_service
 		flags interval
 		elements = {
-			"leg1" : 10.50.0.250 . 1024-2047,
-			"leg2" : 10.50.0.250 . 2048-3071,
-			"leg3" : 10.203.118.1 . 3072-4095
+			"leg1" : 10.50.0.250 . 1024-5119,
+			"leg2" : 10.50.0.250 . 5120-9215,
+			"leg3" : 10.203.118.1 . 9216-13311
 		}
 	}
 	set allowed {

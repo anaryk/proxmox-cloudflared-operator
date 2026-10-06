@@ -139,7 +139,7 @@ func TestALegIsMadeInOrder(t *testing.T) {
 		last = i
 	}
 	require.Equal(t, []portVLAN{{vid: 20, pvid: true, untagged: true}}, h.sys.host.links["vethpco2"].vlans)
-	require.Equal(t, `"leg2" : 10.50.0.250 . 2048-3071`, h.nsNft.tables[gwTable].elems[mapLegSNAT][0])
+	require.Equal(t, `"leg2" : 10.50.0.250 . 5120-9215`, h.nsNft.tables[gwTable].elems[mapLegSNAT][0])
 }
 
 func TestATagOnABridgeThatFiltersNoVLANsTakesItsVLANBridgeOnceThere(t *testing.T) {
@@ -360,11 +360,11 @@ func TestABadLegIsReportedAndLeftOut(t *testing.T) {
 	h := newHarness(t).node()
 	h.up(t)
 	bad := legA
-	bad.Mark = 63
+	bad.Mark = 16
 	twin := legB
 	twin.Mark = 1
 	states := h.sync(t, []Leg{bad, legA, twin}, nil, nil, nil)
-	require.Equal(t, "mark 63 is outside 1-62", states[0].Problem)
+	require.Equal(t, "mark 16 is outside 1-15", states[0].Problem)
 	require.True(t, states[1].Up)
 	require.Equal(t, "mark 1 is that of network vmbr1 too", states[2].Problem)
 }

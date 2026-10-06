@@ -38,9 +38,9 @@ func TestTheTableIsLoadedInTheMapForm(t *testing.T) {
 func TestEachLegSNATsFromItsOwnBlockOfPorts(t *testing.T) {
 	e := elementsOf(testLegs, testServices)
 	require.Equal(t, []string{
-		`"leg1" : 10.50.0.250 . 1024-2047`,
-		`"leg2" : 10.50.0.250 . 2048-3071`,
-		`"leg3" : 10.203.118.1 . 3072-4095`,
+		`"leg1" : 10.50.0.250 . 1024-5119`,
+		`"leg2" : 10.50.0.250 . 5120-9215`,
+		`"leg3" : 10.203.118.1 . 9216-13311`,
 	}, e[mapLegSNAT])
 	script := renderGateway(snatMap, e, testLegs)
 	require.Contains(t, script, "\t\ttype ifname : interval ipv4_addr . inet_service\n\t\tflags interval\n")
@@ -49,9 +49,9 @@ func TestEachLegSNATsFromItsOwnBlockOfPorts(t *testing.T) {
 	perLeg := renderGateway(snatRules, e, testLegs)
 	require.NotContains(t, perLeg, mapLegSNAT)
 	require.Equal(t, []string{
-		`meta l4proto tcp oifname "leg1" snat ip to 10.50.0.250:1024-2047`,
-		`meta l4proto tcp oifname "leg2" snat ip to 10.50.0.250:2048-3071`,
-		`meta l4proto tcp oifname "leg3" snat ip to 10.203.118.1:3072-4095`,
+		`meta l4proto tcp oifname "leg1" snat ip to 10.50.0.250:1024-5119`,
+		`meta l4proto tcp oifname "leg2" snat ip to 10.50.0.250:5120-9215`,
+		`meta l4proto tcp oifname "leg3" snat ip to 10.203.118.1:9216-13311`,
 	}, chainRules(t, perLeg, "post_nat"))
 }
 
@@ -119,7 +119,7 @@ func TestTheElementScriptAddsBeforeItRemoves(t *testing.T) {
 	}
 	require.Less(t, lastAdd, firstDelete, script)
 	require.Contains(t, script, "add element inet pco_gw legs { \"leg3\" }\n")
-	require.Contains(t, script, "delete element inet pco_gw leg_snat { \"leg2\" }\nadd element inet pco_gw leg_snat { \"leg2\" : 10.50.0.251 . 2048-3071 }\n")
+	require.Contains(t, script, "delete element inet pco_gw leg_snat { \"leg2\" }\nadd element inet pco_gw leg_snat { \"leg2\" : 10.50.0.251 . 5120-9215 }\n")
 	require.Contains(t, script, "delete element inet pco_gw svc_dnat { 198.18.1.0 . 443, 198.18.1.0 . 80 }\n")
 	require.Contains(t, script, "delete element inet pco_gw legs { \"leg1\" }\n")
 	require.Empty(t, elementScript(want, want), "nothing changes")

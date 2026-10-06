@@ -33,10 +33,19 @@ var (
 )
 
 const (
-	// MaxMark is the highest mark of a leg. Each mark owns a block of 1024
-	// source ports for the SNAT through its leg, from 1024 up; 62 blocks end
-	// at 64511.
-	MaxMark = 62
+	// PortBlockSize is the number of source ports the SNAT through a leg
+	// takes. A guest keeps a source port in TIME_WAIT for 60 seconds, so a
+	// block serves about its size in new connections a minute to one address
+	// and port of a guest: with 4096 ports, about 68 a second. A block of 1024
+	// had SYNs refused above about 17 a second.
+	PortBlockSize = 4096
+	// portBase is the first port of the first block.
+	portBase = 1024
+	// MaxMark is the highest mark of a leg, and so the most networks a node
+	// reaches. Each mark owns a block of PortBlockSize source ports from
+	// portBase up, and the blocks end below port 65536: 15 blocks end at 62463,
+	// and a 16th would pass 65535.
+	MaxMark = (65536 - portBase) / PortBlockSize
 	// ManagedBridge is the bridge of the managed network, and its id.
 	ManagedBridge = "pconet"
 )
@@ -71,8 +80,8 @@ func LegIface(mark int) string { return fmt.Sprintf("leg%d", mark) }
 // sees their frames (bridge-nf-call-iptables, which pve-firewall turns on)
 // then never present the same tuple there.
 func PortBlock(mark int) (lo, hi uint16) {
-	lo = uint16(1024 + (mark-1)*1024)
-	return lo, lo + 1023
+	lo = uint16(portBase + (mark-1)*PortBlockSize)
+	return lo, lo + PortBlockSize - 1
 }
 
 // Sticky is a static sticky forwarding entry for a managed guest's MAC on its
