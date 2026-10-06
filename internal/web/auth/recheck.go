@@ -31,8 +31,11 @@ func (a *Auth) Recheck(ctx context.Context, r *http.Request, id string) (Role, e
 		err  error
 	)
 	switch s.Principal.Method {
-	case MethodTicket:
+	case MethodTicket, MethodPassword:
 		ticket := cookieValue(r, ticketCookieName)
+		if s.Principal.Method == MethodPassword {
+			ticket = LoginTicket(s.ticket).Ticket
+		}
 		if ticket == "" {
 			return RoleNone, nil
 		}

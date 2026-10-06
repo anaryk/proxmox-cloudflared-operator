@@ -22,9 +22,11 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/web"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/pvefake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/ui"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/wire"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
 func TestWebConfig(t *testing.T) {
@@ -314,6 +316,154 @@ func TestWebForwardsTheCallsOfASession(t *testing.T) {
 	var st engine.State
 	require.NoError(t, json.Unmarshal([]byte(body), &st))
 	require.Equal(t, "pve1", st.Node)
+}
+
+// applianceEnv is the environment of pco web in an appliance whose net0 has
+// the address net0, with vars as the unit's environment.
+func applianceEnv(t *testing.T, net0 string, vars map[string]string) env {
+	t.Helper()
+	dir := t.TempDir()
+	e := testEnv()
+	e.profileFile = filepath.Join(dir, "profile")
+	require.NoError(t, os.WriteFile(e.profileFile, []byte("appliance\n"), 0o644))
+	e.net0File = filepath.Join(dir, "net0")
+	if net0 != "" {
+		require.NoError(t, os.WriteFile(e.net0File, []byte(net0+"\n"), 0o644))
+	}
+	e.getenv = func(name string) string { return vars[name] }
+	return e
+}
+
+func TestTheApplianceListensOnNet0Only(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile, _ := writeWebPair(t, dir)
+	for _, tt := range []struct {
+		name, net0, listen, want string
+	}{
+		{"every address", "127.0.0.1", "0.0.0.0:8643", "pco-web must listen on net0's address only (127.0.0.1), not 0.0.0.0:8643"},
+		{"every IPv6 address", "127.0.0.1", "[::]:8643", "pco-web must listen on net0's address only (127.0.0.1), not [::]:8643"},
+		{"a leg's address", "127.0.0.1", "127.0.0.2:8643", "pco-web must listen on net0's address only (127.0.0.1), not 127.0.0.2:8643"},
+		{"net0 unknown", "", "127.0.0.1:8643", "pco-web must listen on net0's address only, and its address is not known"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newRootCmdWith(applianceEnv(t, tt.net0, nil))
+			var out testutil.SyncBuffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{"--socket", filepath.Join(dir, "pco", "pco.sock"), "web", "--listen", tt.listen,
+				"--cert", certFile, "--key", keyFile, "--pve-api", filepath.Join(dir, "missing.json")})
+			require.ErrorContains(t, cmd.ExecuteContext(t.Context()), tt.want)
+		})
+	}
+
+	a := &app{env: applianceEnv(t, "192.0.2.30", nil)}
+	cfg := web.Config{Listen: web.DefaultListen}
+	require.NoError(t, a.applianceListen(webFlags{}, &cfg))
+	require.Equal(t, "192.0.2.30:8643", cfg.Listen, "without an address given, net0's")
+}
+
+func TestTheSignInOfTheApplianceRefusesWhatItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	_, caPEM, err := pvefake.SelfSigned(time.Now(), "pve1")
+	require.NoError(t, err)
+	apiFile := filepath.Join(dir, "pve-api.json")
+	require.NoError(t, os.WriteFile(apiFile, webcert.API{URL: "https://192.0.2.10:8006/api2/json", ServerName: "pve1", CA: string(caPEM)}.Encode(), 0o644))
+
+	a := &app{env: applianceEnv(t, "192.0.2.30", map[string]string{"PCO_WEB_ALLOW_ROOT": "yes"})}
+	_, err = a.applianceAuth(webFlags{pveAPI: apiFile}, web.Config{})
+	require.EqualError(t, err, `PCO_WEB_ALLOW_ROOT is "yes": want 1 or 0`)
+
+	a = &app{env: applianceEnv(t, "192.0.2.30", nil)}
+	_, err = a.applianceAuth(webFlags{}, web.Config{})
+	require.ErrorContains(t, err, "no API of the node to sign users in at: give --pve-api")
+	_, err = a.applianceAuth(webFlags{pveAPI: filepath.Join(dir, "missing.json")}, web.Config{})
+	require.ErrorContains(t, err, "reading the API of the node")
+}
+
+// In the appliance a user signs in with the user and password of Proxmox VE,
+// at the node's API as the daemon wrote it: verified under its server name
+// against its CA, not pinned.
+func TestTheApplianceSignsInWithAPassword(t *testing.T) {
+	const password = "pw-dora-Zebra-7731"
+	dir := t.TempDir()
+	pve, err := pvefake.New("pve1", pvefake.Users{Users: []pvefake.User{
+		{ID: "dora@pve", Password: password, Privileges: map[string][]string{"/": {"Sys.Audit", "Sys.Modify"}}},
+		{ID: "root@pam", Password: password, Privileges: map[string][]string{"/": {"Sys.Audit", "Sys.Modify"}}},
+	}})
+	require.NoError(t, err)
+	pvePair, caPEM, err := pvefake.SelfSigned(time.Now(), "pve1.example.lan", "127.0.0.1")
+	require.NoError(t, err)
+	proxmox := httptest.NewUnstartedServer(pve)
+	proxmox.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pvePair}}
+	proxmox.StartTLS()
+	t.Cleanup(proxmox.Close)
+	apiFile := filepath.Join(dir, "pve-api.json")
+	require.NoError(t, os.WriteFile(apiFile, webcert.API{
+		URL: proxmox.URL + "/api2/json", ServerName: "pve1.example.lan", CA: string(caPEM), Node: "pve1",
+	}.Encode(), 0o644))
+	certFile, keyFile, webCert := writeWebPair(t, dir)
+	socket := serveFake(t, &fakeEngine{state: engine.State{Node: "pve1", Digest: "d1"}})
+	listen := freeAddr(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var log testutil.SyncBuffer
+	cmd := newRootCmdWith(applianceEnv(t, "127.0.0.1", nil))
+	cmd.SetOut(&log)
+	cmd.SetErr(&log)
+	cmd.SetArgs([]string{"--socket", socket, "web", "--listen", listen, "--cert", certFile, "--key", keyFile, "--pve-api", apiFile})
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	defer func() {
+		cancel()
+		require.NoError(t, <-done, log.String())
+	}()
+
+	pool := x509.NewCertPool()
+	pool.AddCert(webCert)
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	origin := "https://" + listen
+	require.Eventually(t, func() bool {
+		res, err := client.Get(origin + "/api/session")
+		if err == nil {
+			_ = res.Body.Close()
+		}
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "pco web does not answer: %s", log.String())
+	post := func(body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, origin+"/api/session/password", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := client.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = res.Body.Close() }()
+		data, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+		return res.StatusCode, string(data)
+	}
+
+	res, err := client.Get(origin + "/api/session")
+	require.NoError(t, err)
+	var u wire.Unauthenticated
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&u))
+	_ = res.Body.Close()
+	require.Equal(t, []string{"password", "token"}, u.Methods)
+	require.Equal(t, []string{"pam", "pve"}, u.Realms)
+
+	status, body := post(`{"user":"dora","realm":"pve","password":"` + password + `"}`)
+	require.Equal(t, http.StatusOK, status, body)
+	var session wire.Session
+	require.NoError(t, json.Unmarshal([]byte(body), &session))
+	require.Equal(t, "dora@pve", session.User)
+	require.Equal(t, "password", session.Method)
+	require.Equal(t, "admin", session.Role)
+	require.Equal(t, "appliance", session.Profile)
+	require.Equal(t, "pve1", session.Node)
+
+	status, body = post(`{"user":"root","realm":"pam","password":"` + password + `"}`)
+	require.Equal(t, http.StatusForbidden, status, body)
+	require.NotContains(t, log.String(), password)
 }
 
 // writeWebPair writes a certificate of pco web for 127.0.0.1 and its key,

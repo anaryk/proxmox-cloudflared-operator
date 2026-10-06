@@ -1,7 +1,8 @@
 // Package pvefake is a Proxmox VE API with the few calls the sign-in of the web
 // interface makes: the privileges and the guests of whoever presents a ticket
-// or an API token, and the realms. The tests of the web process serve it over
-// TLS, and hack/fakepve serves it to a browser.
+// or an API token, the realms, and the tickets of access/ticket for a user
+// and password, a second factor, or a ticket to renew. The tests of the web
+// process serve it over TLS, and hack/fakepve serves it to a browser.
 package pvefake
 
 import (
@@ -12,6 +13,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -49,6 +51,15 @@ type User struct {
 	// PVE:<user>:<anything>::<signature>.
 	Tickets []string `json:"tickets"`
 	Tokens  []Token  `json:"tokens"`
+	// Password signs the user in through access/ticket; empty, it cannot.
+	Password string `json:"password,omitempty"`
+	// TOTP is the code of the user's authenticator app, which never changes
+	// here; Recovery are its recovery codes, each good once; WebAuthn gives
+	// it a security key. Any of them makes a sign-in with the password a
+	// challenge.
+	TOTP     string   `json:"totp,omitempty"`
+	Recovery []string `json:"recovery,omitempty"`
+	WebAuthn bool     `json:"webauthn,omitempty"`
 }
 
 // Token is an API token of a user, presented as <user>!<id>=<secret>.
@@ -66,14 +77,16 @@ type Token struct {
 type Fake struct {
 	node string
 
-	mu    sync.Mutex
-	users map[string]*User
-	calls map[string]int
+	mu       sync.Mutex
+	users    map[string]*User
+	calls    map[string]int
+	partials map[string]string // the partial tickets of challenges, to their user
+	issued   int
 }
 
 // New returns a fake for users on the node named node.
 func New(node string, users Users) (*Fake, error) {
-	f := &Fake{node: node, users: map[string]*User{}, calls: map[string]int{}}
+	f := &Fake{node: node, users: map[string]*User{}, calls: map[string]int{}, partials: map[string]string{}}
 	for i := range users.Users {
 		u := users.Users[i]
 		if err := check(u); err != nil {
@@ -176,6 +189,16 @@ func (f *Fake) RemoveToken(tokenID string) {
 	}
 }
 
+// Tickets are the tickets accepted for user now.
+func (f *Fake) Tickets(user string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if u, ok := f.users[user]; ok {
+		return slices.Clone(u.Tickets)
+	}
+	return nil
+}
+
 // Calls says how often endpoint, such as "access/permissions", was asked.
 func (f *Fake) Calls(endpoint string) int {
 	f.mu.Lock()
@@ -188,13 +211,17 @@ const apiPrefix = "/api2/json/"
 // ServeHTTP answers the calls of the API under /api2/json.
 func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	endpoint, ok := strings.CutPrefix(r.URL.Path, apiPrefix)
-	if !ok || r.Method != http.MethodGet {
+	if !ok || (r.Method != http.MethodGet && (r.Method != http.MethodPost || endpoint != "access/ticket")) {
 		answer(w, http.StatusNotImplemented, nil)
 		return
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls[endpoint]++
+	if r.Method == http.MethodPost {
+		f.ticket(w, r)
+		return
+	}
 	if endpoint == "access/domains" {
 		answer(w, http.StatusOK, f.domains())
 		return
@@ -329,6 +356,80 @@ func (f *Fake) resources(guests []string, kind string) []resource {
 		})
 	}
 	return out
+}
+
+// ticket answers access/ticket as Proxmox VE does: a password, or a ticket
+// of the user in its place to renew it, gets a new ticket; a password of a
+// user with a second factor gets a partial ticket with the challenge, which
+// tfa-challenge and "totp:<code>" or "recovery:<code>" as the password
+// complete. Anything else is 401.
+func (f *Fake) ticket(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		answer(w, http.StatusBadRequest, nil)
+		return
+	}
+	name, password := r.PostForm.Get("username"), r.PostForm.Get("password")
+	if realm := r.PostForm.Get("realm"); realm != "" && !strings.Contains(name, "@") {
+		name += "@" + realm
+	}
+	u, ok := f.users[name]
+	if !ok {
+		answer(w, http.StatusUnauthorized, nil)
+		return
+	}
+	if partial := r.PostForm.Get("tfa-challenge"); partial != "" {
+		kind, code, _ := strings.Cut(password, ":")
+		switch {
+		case f.partials[partial] != u.ID:
+		case kind == "totp" && u.TOTP != "" && code == u.TOTP:
+			f.issue(w, u)
+			return
+		case kind == "recovery" && slices.Contains(u.Recovery, code):
+			u.Recovery = slices.DeleteFunc(slices.Clone(u.Recovery), func(c string) bool { return c == code })
+			f.issue(w, u)
+			return
+		}
+		answer(w, http.StatusUnauthorized, nil)
+		return
+	}
+	switch {
+	case slices.Contains(u.Tickets, password):
+		f.issue(w, u)
+	case u.Password == "" || password != u.Password:
+		answer(w, http.StatusUnauthorized, nil)
+	case u.TOTP != "" || len(u.Recovery) > 0 || u.WebAuthn:
+		f.challenge(w, u)
+	default:
+		f.issue(w, u)
+	}
+}
+
+// issue makes a new ticket of u and accepts it from now on.
+func (f *Fake) issue(w http.ResponseWriter, u *User) {
+	f.issued++
+	t := fmt.Sprintf("PVE:%s:%08X::%s", u.ID, 0x66F20000+f.issued, base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "pvefake/%d", f.issued)))
+	u.Tickets = append(slices.Clone(u.Tickets), t)
+	answer(w, http.StatusOK, map[string]any{"username": u.ID, "ticket": t, "CSRFPreventionToken": "pvefake"})
+}
+
+// challenge answers a password of a user with a second factor: a partial
+// ticket that carries the challenge, escaped, as Proxmox VE makes it.
+func (f *Fake) challenge(w http.ResponseWriter, u *User) {
+	c := map[string]any{}
+	if u.TOTP != "" {
+		c["totp"] = true
+	}
+	if len(u.Recovery) > 0 {
+		c["recovery"] = "available"
+	}
+	if u.WebAuthn {
+		c["webauthn"] = map[string]any{"publicKey": map[string]any{"challenge": "cGNvLWZha2U", "rpId": f.node}}
+	}
+	data, _ := json.Marshal(c)
+	f.issued++
+	t := fmt.Sprintf("PVE:!tfa!%s:%08X::%s", url.QueryEscape(string(data)), 0x66F20000+f.issued, base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "pvefake/%d", f.issued)))
+	f.partials[t] = u.ID
+	answer(w, http.StatusOK, map[string]any{"username": u.ID, "ticket": t, "CSRFPreventionToken": "pvefake", "NeedTFA": 1})
 }
 
 type domain struct {

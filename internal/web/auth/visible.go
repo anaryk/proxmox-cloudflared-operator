@@ -61,8 +61,11 @@ func (a *Auth) visibleFor(ctx context.Context, r *http.Request, s *Session) (Vis
 		return byVMID(s.visible), s.visibleOf, nil
 	}
 	cred := Credential{Token: s.token}
-	if s.Principal.Method == MethodTicket {
+	switch s.Principal.Method {
+	case MethodTicket:
 		cred = Credential{Ticket: cookieValue(r, ticketCookieName)}
+	case MethodPassword:
+		cred = LoginTicket(s.ticket)
 	}
 	vmids, err := a.pve.VisibleVMIDs(ctx, cred)
 	if err != nil {

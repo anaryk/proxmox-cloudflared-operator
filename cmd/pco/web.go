@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,14 +30,19 @@ import (
 // environment of the unit.
 type webFlags struct {
 	listen, cert, key, hosts, logLevel string
-	pin, pveURL                        string
+	pin, pveURL, pveAPI                string
 }
 
 // defaultPVEURL is the API of the node's own pveproxy, which checks the
 // tickets and tokens of sign-ins.
 const defaultPVEURL = "https://127.0.0.1:8006/api2/json"
 
-const pveTimeout = 5 * time.Second
+// pveTimeout bounds a check of a ticket or a token; loginTimeout a sign-in
+// with a password, which Proxmox VE answers late when it is wrong.
+const (
+	pveTimeout   = 5 * time.Second
+	loginTimeout = 10 * time.Second
+)
 
 func (a *app) webCmd() *cobra.Command {
 	var f webFlags
@@ -54,7 +60,12 @@ func (a *app) webCmd() *cobra.Command {
 			"Without --cert and --key the certificate and its key are tls.crt and tls.key in\n" +
 			"$CREDENTIALS_DIRECTORY, where systemd puts the credentials of the unit, and without\n" +
 			"--pin the certificate pveproxy serves, which its answers to sign-ins must present,\n" +
-			"is pveproxy.crt there.",
+			"is pveproxy.crt there.\n\n" +
+			"In the appliance users sign in with their user and password of Proxmox VE, at the node's\n" +
+			"API as the appliance's daemon reaches it (--pve-api, default pve-api.json in\n" +
+			"$CREDENTIALS_DIRECTORY, which the daemon writes). It listens on net0's address only, as\n" +
+			"pco appliance install wrote it into " + webcert.Net0File + ", and refuses to start on any\n" +
+			"other. root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -68,11 +79,22 @@ func (a *app) webCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			profile, err := store.DetectProfile(a.profileFile)
+			if err != nil {
+				return err
+			}
+			webAuth := a.webAuth
+			if profile == store.ProfileAppliance {
+				if err := a.applianceListen(f, &cfg); err != nil {
+					return err
+				}
+				webAuth = a.applianceAuth
+			}
 			cfg.Log = a.daemonLog(cmd.ErrOrStderr(), level)
 			if !ui.Built {
 				cfg.Log.Warn().Msg("this build of pco has no web interface; it serves a page that says so")
 			}
-			sessions, err := a.webAuth(f, cfg)
+			sessions, err := webAuth(f, cfg)
 			if err != nil {
 				return err
 			}
@@ -94,6 +116,7 @@ func (a *app) webCmd() *cobra.Command {
 	flags.StringVar(&f.logLevel, "log-level", "info", "log level: trace, debug, info, warn or error")
 	flags.StringVar(&f.pin, "pin", "", "the certificate pveproxy serves, PEM (default $CREDENTIALS_DIRECTORY/pveproxy.crt)")
 	flags.StringVar(&f.pveURL, "pve-url", defaultPVEURL, "the Proxmox VE API that checks sign-ins")
+	flags.StringVar(&f.pveAPI, "pve-api", "", "in the appliance, the node's API as its daemon writes it (default $CREDENTIALS_DIRECTORY/"+webcert.APIName+")")
 	cmd.AddCommand(a.webCertCmd())
 	return cmd
 }
@@ -131,23 +154,90 @@ func (a *app) webAuth(f webFlags, cfg web.Config) (*auth.Auth, error) {
 	if err != nil {
 		return nil, err
 	}
+	c, err := a.authConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	c.Profile = store.ProfileHost
+	return auth.New(auth.NewPVE(f.pveURL, pin, pveTimeout), c), nil
+}
+
+// authConfig is what the sessions are made with on a node and in the
+// appliance alike: the Host headers of the machine's names, and its zone.
+func (a *app) authConfig(cfg web.Config) (auth.Config, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, fmt.Errorf("reading the host name: %w", err)
+		return auth.Config{}, fmt.Errorf("reading the host name: %w", err)
 	}
 	etcHosts, _ := os.ReadFile("/etc/hosts")
 	node, fqdn := nodeNames(hostname, etcHosts)
 	hosts := auth.AllowedHosts(cfg.Listen, append([]string{node, fqdn}, cfg.Hosts...)...)
 	link, linkErr := os.Readlink("/etc/localtime")
-	return auth.New(auth.NewPVE(f.pveURL, pin, pveTimeout), auth.Config{
+	return auth.Config{
 		Now:     a.now,
 		Hosts:   func() []string { return hosts },
-		Profile: store.ProfileHost,
 		Node:    node,
 		Zone:    nodeZone(a.getenv("TZ"), link, linkErr),
 		Version: a.version,
 		Log:     cfg.Log,
-	}), nil
+	}, nil
+}
+
+// applianceListen holds the appliance's web interface to net0's address: the
+// other cards are legs into the networks of guests, who would reach the
+// sign-in page through them. Without an address given it listens there.
+func (a *app) applianceListen(f webFlags, cfg *web.Config) error {
+	net0, err := webcert.ReadNet0(a.net0File)
+	if err != nil {
+		return fmt.Errorf("%w, and its address is not known: %w", webcert.ErrNotNet0, err)
+	}
+	if f.listen == "" && a.getenv("PCO_WEB_LISTEN") == "" {
+		cfg.Listen = net.JoinHostPort(net0.String(), webcert.Port)
+	}
+	return webcert.CheckListen(cfg.Listen, net0)
+}
+
+// applianceAuth is the sign-in of the appliance: the user and password of
+// Proxmox VE, or a token, checked at the node's API as the appliance's daemon
+// reaches it, verified under its server name against the system roots and
+// the CA the installer pushed.
+func (a *app) applianceAuth(f webFlags, cfg web.Config) (*auth.Auth, error) {
+	file := f.pveAPI
+	if file == "" {
+		creds := a.getenv("CREDENTIALS_DIRECTORY")
+		if creds == "" {
+			return nil, errors.New("no API of the node to sign users in at: give --pve-api, or run pco web from pco-web.service, which passes it as a credential")
+		}
+		file = filepath.Join(creds, webcert.APIName)
+	}
+	api, err := webcert.ReadAPI(file)
+	if err != nil {
+		return nil, fmt.Errorf("reading the API of the node: %w", err)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		cfg.Log.Warn().Err(err).Msg("the system roots cannot be read; the API is verified against its CA alone")
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM([]byte(api.CA)) {
+		return nil, fmt.Errorf("%s holds no CA that can be read", file)
+	}
+	allowRoot := false
+	switch v := a.getenv("PCO_WEB_ALLOW_ROOT"); v {
+	case "1":
+		allowRoot = true
+	case "", "0":
+	default:
+		return nil, fmt.Errorf("PCO_WEB_ALLOW_ROOT is %q: want 1 or 0", v)
+	}
+	c, err := a.authConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	trust := auth.Trust{Roots: roots, ServerName: api.ServerName}
+	c.Profile, c.Node = store.ProfileAppliance, api.Node
+	c.Login, c.AllowRoot = auth.NewLogin(api.URL, trust, loginTimeout), allowRoot
+	return auth.New(auth.NewTrustedPVE(api.URL, trust, pveTimeout), c), nil
 }
 
 // webPinFile is the certificate of pveproxy: never tls.crt, which is pco

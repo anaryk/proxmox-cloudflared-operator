@@ -598,6 +598,7 @@ export interface WebError {
   field?: string
   missing?: string
   retryAfter?: number
+  kinds?: string[]
 }
 
 // cfapi.Zone

@@ -18,8 +18,15 @@ import (
 	"time"
 )
 
-// Credential is what the browser presented; exactly one field is set.
+// Credential is what the browser presented, or what a sign-in with a password
+// obtained; exactly one field is set. Ticket is a PVEAuthCookie as the browser
+// sends it, escaped as Proxmox VE's page sets it: LoginTicket makes one of a
+// ticket from access/ticket, and pveproxy reads both the same way.
 type Credential struct{ Ticket, Token string }
+
+// LoginTicket is the credential of a ticket a sign-in obtained, escaped as
+// the cookie of Proxmox VE's page: pveproxy unescapes what it is sent.
+func LoginTicket(ticket string) Credential { return Credential{Ticket: url.PathEscape(ticket)} }
 
 // PVE is the Proxmox VE API as sign-in asks it, always with the user's own
 // credential: pveproxy checks the ticket's signature and expiry, or the token.
@@ -41,58 +48,96 @@ var (
 
 const maxAnswer = 8 << 20
 
-type pveClient struct {
+type pveClient struct{ apiConn }
+
+// Trust is how the answers of Proxmox VE are checked. On a node, Pin is the
+// certificate its pveproxy serves, which every answer must present byte for
+// byte: port 8006 is no privileged port, and while pveproxy is down any local
+// user could listen on it and collect the tickets of everyone who signs in.
+// In the appliance, which reaches the node's API over the network, the chain
+// must lead to Roots and name ServerName, as for the appliance's daemon.
+// Without either every call fails.
+type Trust struct {
+	Pin        *x509.Certificate
+	Roots      *x509.CertPool
+	ServerName string
+}
+
+func (t Trust) verify(cs tls.ConnectionState) error {
+	switch {
+	case len(cs.PeerCertificates) == 0:
+		return errors.New("what answers presents no certificate")
+	case t.Pin != nil:
+		if !bytes.Equal(cs.PeerCertificates[0].Raw, t.Pin.Raw) {
+			return errors.New("what answers presents another certificate than pveproxy's")
+		}
+		return nil
+	case t.Roots == nil || t.ServerName == "":
+		return errors.New("there is no certificate of pveproxy to check its answer against")
+	}
+	inter := x509.NewCertPool()
+	for _, c := range cs.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
+	_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
+		DNSName: t.ServerName, Roots: t.Roots, Intermediates: inter,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err != nil {
+		return fmt.Errorf("the certificate of what answers does not verify as %s: %w", t.ServerName, err)
+	}
+	return nil
+}
+
+// apiConn is the connection to the API at a base URL that every call makes.
+type apiConn struct {
 	base    *url.URL
 	err     error // what is wrong with the base URL
 	hc      *http.Client
 	timeout time.Duration
 }
 
-// NewPVE returns the API at baseURL, such as https://127.0.0.1:8006/api2/json.
-// Whatever answers there must present pin, byte for byte: port 8006 is no
-// privileged port, and while pveproxy is down any local user could listen on
-// it and collect the tickets of everyone who signs in. Without a pin every
-// call fails.
-func NewPVE(baseURL string, pin *x509.Certificate, timeout time.Duration) PVE {
-	p := &pveClient{timeout: timeout}
-	p.base, p.err = url.Parse(baseURL)
+func newAPIConn(baseURL string, t Trust, timeout time.Duration) apiConn {
+	c := apiConn{timeout: timeout}
+	c.base, c.err = url.Parse(baseURL)
 	switch {
-	case p.err != nil:
+	case c.err != nil:
 		// The error of url.Parse repeats the URL; the reason is enough.
-		p.err = fmt.Errorf("the address of Proxmox VE is not a URL: %w", errors.Unwrap(p.err))
-	case p.base.Scheme != "https" || p.base.Host == "":
-		p.err = errors.New("the address of Proxmox VE is not an https URL")
+		c.err = fmt.Errorf("the address of Proxmox VE is not a URL: %w", errors.Unwrap(c.err))
+	case c.base.Scheme != "https" || c.base.Host == "":
+		c.err = errors.New("the address of Proxmox VE is not an https URL")
 	}
-	p.hc = &http.Client{
+	c.hc = &http.Client{
 		Transport: &http.Transport{
 			// No proxy: the API is the node's own.
 			TLSClientConfig: &tls.Config{
 				MinVersion: tls.VersionTLS12,
-				// The chain is not what is checked; the pin is.
+				// Trust.verify does what the default verification would,
+				// or checks the pin instead.
 				InsecureSkipVerify: true,
-				VerifyConnection:   pinned(pin),
+				VerifyConnection:   t.verify,
 			},
 			TLSHandshakeTimeout: timeout,
 			MaxIdleConnsPerHost: 16,
 			IdleConnTimeout:     90 * time.Second,
 		},
-		// The API never redirects; following one would carry the ticket to
-		// wherever it points.
+		// The API never redirects; following one would carry the ticket or
+		// the password to wherever it points.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	return p
+	return c
 }
 
-func pinned(pin *x509.Certificate) func(tls.ConnectionState) error {
-	return func(cs tls.ConnectionState) error {
-		switch {
-		case pin == nil:
-			return errors.New("there is no certificate of pveproxy to check its answer against")
-		case len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, pin.Raw):
-			return errors.New("what answers presents another certificate than pveproxy's")
-		}
-		return nil
-	}
+// NewPVE returns the API at baseURL, such as https://127.0.0.1:8006/api2/json,
+// whose answers must present pin.
+func NewPVE(baseURL string, pin *x509.Certificate, timeout time.Duration) PVE {
+	return NewTrustedPVE(baseURL, Trust{Pin: pin}, timeout)
+}
+
+// NewTrustedPVE returns the API at baseURL, whose answers are checked as t
+// says.
+func NewTrustedPVE(baseURL string, t Trust, timeout time.Duration) PVE {
+	return &pveClient{apiConn: newAPIConn(baseURL, t, timeout)}
 }
 
 func (p *pveClient) Privileges(ctx context.Context, c Credential, path string) (map[string]bool, error) {
@@ -129,30 +174,55 @@ func (p *pveClient) VisibleVMIDs(ctx context.Context, c Credential) ([]int, erro
 // get calls GET <base>/<endpoint> with c and decodes the data of the answer
 // into out. No error carries the credential.
 func (p *pveClient) get(ctx context.Context, c Credential, endpoint string, query url.Values, out any) error {
-	if p.err != nil {
-		return fmt.Errorf("%w: %w", ErrUnreachable, p.err)
-	}
 	if (c.Ticket == "") == (c.Token == "") {
 		return errors.New("a credential is a ticket or a token")
 	}
-	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	return p.call(ctx, http.MethodGet, endpoint, query, func(req *http.Request) {
+		if c.Ticket != "" {
+			// As the browser sent it: pveproxy unescapes it as it does for
+			// its own page.
+			req.Header.Set("Cookie", "PVEAuthCookie="+c.Ticket)
+		} else {
+			req.Header.Set("Authorization", "PVEAPIToken="+c.Token)
+		}
+	}, out)
+}
+
+// call calls <method> <base>/<endpoint>, with values in the query of a GET
+// and as a form in the body of a POST, and decodes the data of the answer
+// into out. set adds what the call presents. A 401 is ErrRefused, any other
+// failure ErrUnreachable; no error carries what was sent.
+func (c apiConn) call(ctx context.Context, method, endpoint string, values url.Values, set func(*http.Request), out any) error {
+	if c.err != nil {
+		return fmt.Errorf("%w: %w", ErrUnreachable, c.err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	u := p.base.JoinPath(endpoint)
-	u.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	u := c.base.JoinPath(endpoint)
+	var form io.Reader
+	if method == http.MethodGet {
+		u.RawQuery = values.Encode()
+	} else {
+		form = strings.NewReader(values.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), form)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
-	if c.Ticket != "" {
-		// As the browser sent it: pveproxy unescapes it as it does for its
-		// own page.
-		req.Header.Set("Cookie", "PVEAuthCookie="+c.Ticket)
-	} else {
-		req.Header.Set("Authorization", "PVEAPIToken="+c.Token)
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if set != nil {
+		set(req)
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := p.hc.Do(req)
+	resp, err := c.hc.Do(req)
 	if err != nil {
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			// Its text repeats the URL; the cause is enough.
+			err = uerr.Err
+		}
 		return fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -177,7 +247,9 @@ func (p *pveClient) get(ctx context.Context, c Credential, endpoint string, quer
 		return fmt.Errorf("%w: decoding its answer: %w", ErrUnreachable, err)
 	}
 	if err := json.Unmarshal(envelope.Data, out); err != nil {
-		return fmt.Errorf("%w: decoding its answer: %w", ErrUnreachable, err)
+		// The error of a type that did not fit may quote the answer, which
+		// holds a ticket when it is the answer of a sign-in.
+		return fmt.Errorf("%w: its answer is not what the call returns", ErrUnreachable)
 	}
 	return nil
 }

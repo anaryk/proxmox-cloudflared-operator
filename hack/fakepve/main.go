@@ -18,6 +18,10 @@
 //	              "privsep": true, "privileges": {"/": ["Sys.Audit"]}, "guests": ["lxc/200"]}]
 //	}]}
 //
+// A user with a "password" signs in through access/ticket, as in the
+// appliance; "totp" (a code that never changes), "recovery" (codes good once)
+// or "webauthn": true give it a second factor.
+//
 // The certificate is made at start and written to pveproxy.crt in the
 // directory; its key stays in memory. With -web-cert a second one, for pco
 // web to serve, is written there as tls.crt and tls.key, as setup writes

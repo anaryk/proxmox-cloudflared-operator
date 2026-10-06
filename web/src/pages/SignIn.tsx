@@ -1,66 +1,44 @@
-import { type FormEvent, useState } from 'react'
+import { useState } from 'react'
 
 import { ApiError } from '../api/client'
-import { explain } from '../api/errors'
 import { useApp, useStore } from '../api/store'
 import { About, notAffiliated } from '../app/About'
 import { Button } from '../components/Button'
-import { Field } from '../components/Field'
 import { MarkIcon } from '../components/icons'
 import { Untrusted } from '../components/Untrusted'
+import { SignInAppliance } from './SignInAppliance'
+import { refusal, TokenSignIn } from './SignInToken'
 
-// The privileges pco asks for, and no more: a reader gets PVEAuditor, which
-// holds Sys.Audit and the VM.Audit that says which guests it may see; an
-// admin a role of its own with the two privileges pco checks on /.
-const readerLines = 'pveum acl modify / --roles PVEAuditor --users <user>'
-const adminLines = `pveum role add PCOAdmin --privs "Sys.Audit,Sys.Modify"
-pveum acl modify / --roles PCOAdmin --users <user>`
-const tokenLine = "pveum acl modify / --roles PCOAdmin --tokens '<user>!<name>'"
-
-// The sentence for a refused sign-in: the web process's own words, but for
-// what the page says better.
-function refusal(e: ApiError): string {
-  if (e.code === 'forbidden' && e.missing === 'Sys.Audit') return 'This user has no Sys.Audit on /: pco cannot show it anything.'
-  if (e.code === 'invalid' && e.field === 'token') return 'This is not an API token of the form user@realm!tokenid=secret.'
-  if (e.code === 'ticket_invalid') return e.message
-  return explain(e).text
-}
-
-// SignInCard is the sign-in of the host profile: the session of
-// Proxmox VE in this browser, or a pasted API token. It is the page at
-// /signin and the dialog that opens over a page whose session ended.
-export function SignInCard({ onSignedIn }: { onSignedIn?: () => void }) {
+// HostSignIn is the sign-in of the host profile: the session of Proxmox VE
+// in this browser, or a pasted API token.
+function HostSignIn({ onSignedIn }: { onSignedIn?: () => void }) {
   const store = useStore()
   const unauth = useApp((s) => s.unauthenticated)
   // why the page could not sign in by itself, as it loaded
   const authError = useApp((s) => s.authError)
-  const [token, setToken] = useState('')
-  const [shown, setShown] = useState(false)
-  const [busy, setBusy] = useState<'ticket' | 'token'>()
-  const [error, setError] = useState<{ method: 'ticket' | 'token'; text: string }>()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  // once the user tried a sign-in here, its own outcome is said instead
+  const [tried, setTried] = useState(false)
   const signedOut = store.signedOutHere()
   const host = window.location.hostname
   const proxmox = `https://${host.includes(':') ? `[${host}]` : host}:8006/`
 
-  const run = async (method: 'ticket' | 'token', call: () => Promise<void>) => {
-    setBusy(method)
+  const signInTicket = async () => {
+    setTried(true)
+    setBusy(true)
     setError(undefined)
     try {
-      await call()
-      setToken('')
+      await store.signInTicket()
       onSignedIn?.()
     } catch (e) {
-      setError({ method, text: e instanceof ApiError ? refusal(e) : String(e) })
+      setError(e instanceof ApiError ? refusal(e) : String(e))
     } finally {
-      setBusy(undefined)
+      setBusy(false)
     }
   }
 
-  const submit = (e: FormEvent) => {
-    e.preventDefault()
-    void run('token', () => store.signInToken(token.trim()))
-  }
-
+  const shown = error ?? (!tried && authError ? refusal(authError) : undefined)
   return (
     <div className="signin">
       <section aria-labelledby="signin-ticket">
@@ -81,62 +59,27 @@ export function SignInCard({ onSignedIn }: { onSignedIn?: () => void }) {
             under the same host name as Proxmox VE: the browser gives the session of Proxmox VE to that name only.
           </p>
         )}
-        <Button variant="primary" disabled={busy !== undefined} onClick={() => void run('ticket', () => store.signInTicket())}>
+        <Button variant="primary" disabled={busy} onClick={() => void signInTicket()}>
           Sign in with the Proxmox VE session
         </Button>
-        {(error?.method === 'ticket' || (!error && authError)) && (
+        {shown !== undefined && (
           <p className="form-error" role="alert">
-            <Untrusted text={error?.text ?? (authError ? refusal(authError) : '')} />
+            <Untrusted text={shown} />
           </p>
         )}
       </section>
-      <form onSubmit={submit} aria-labelledby="signin-token">
-        <h2 id="signin-token">Or with an API token</h2>
-        <Field
-          label="API token"
-          hint={
-            <>
-              A token of Proxmox VE, <span className="mono">user@realm!tokenid=secret</span>.
-            </>
-          }
-          error={error?.method === 'token' ? <Untrusted text={error.text} /> : undefined}
-        >
-          {(control) => (
-            <span className="secret">
-              <input
-                {...control}
-                type={shown ? 'text' : 'password'}
-                autoComplete="off"
-                spellCheck={false}
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-              />
-              <Button small aria-pressed={shown} onClick={() => setShown(!shown)}>
-                {shown ? 'Hide' : 'Show'}
-              </Button>
-            </span>
-          )}
-        </Field>
-        <Button type="submit" variant="primary" disabled={busy !== undefined || token.trim() === ''}>
-          {busy === 'token' ? 'Signing in…' : 'Sign in'}
-        </Button>
-        <p className="muted">The rights pco asks for, given on the node. For a reader:</p>
-        <pre className="snippet">
-          <code>{readerLines}</code>
-        </pre>
-        <p className="muted">For an admin, a role with Sys.Audit and Sys.Modify, nothing more:</p>
-        <pre className="snippet">
-          <code>{adminLines}</code>
-        </pre>
-        <p className="muted">
-          A token with privilege separation needs the same line for itself, with --tokens in place of --users (and PVEAuditor for a reader&apos;s):
-        </p>
-        <pre className="snippet">
-          <code>{tokenLine}</code>
-        </pre>
-      </form>
+      <TokenSignIn title="Or with an API token" onSignedIn={onSignedIn} onTry={() => setTried(true)} />
     </div>
   )
+}
+
+// SignInCard is the sign-in of the profile pco runs in: on a node the session
+// of Proxmox VE or a token, in the appliance the user and password of Proxmox
+// VE or a token. It is the page at /signin and the dialog that opens over a
+// page whose session ended.
+export function SignInCard({ onSignedIn }: { onSignedIn?: () => void }) {
+  const appliance = useApp((s) => s.unauthenticated?.methods.includes('password') ?? s.session?.profile === 'appliance')
+  return appliance ? <SignInAppliance onSignedIn={onSignedIn} /> : <HostSignIn onSignedIn={onSignedIn} />
 }
 
 // SignIn is the page at /signin.

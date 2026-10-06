@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sync"
@@ -32,8 +33,9 @@ func (r Role) String() string {
 
 // The methods of a sign-in.
 const (
-	MethodTicket = "ticket"
-	MethodToken  = "token"
+	MethodTicket   = "ticket"
+	MethodToken    = "token"
+	MethodPassword = "password" // the appliance
 )
 
 // Principal is who a session is.
@@ -68,6 +70,8 @@ type Session struct {
 
 	token   string    // token sessions: the token
 	checked time.Time // token sessions: when Proxmox VE last accepted it
+	ticket  string    // password sessions: the ticket the sign-in obtained, renewed
+	renewed time.Time // password sessions: when the ticket was obtained
 
 	visible   map[int]bool // readers: the VMIDs they may see
 	visibleOf string       // the hash of visible
@@ -262,8 +266,9 @@ func (a *Auth) lookup(c *gin.Context) (Session, bool) {
 }
 
 // check asks Proxmox VE whether the session still holds, as its method
-// says: the ticket of the request, through the cache of 30 s, or the token
-// once a minute, one call at a time for each session. Either sets the role
+// says: the ticket of the request, through the cache of 30 s (signed in with
+// a password, the session's own ticket, renewed first when it is due), or the
+// token once a minute, one call at a time for each session. Either sets the role
 // again. A ticket that is gone, refused or another user's ends the session;
 // Proxmox VE out of reach refuses the request and keeps the session. The
 // session is bound to its user: a renewed ticket of the same user is the
@@ -271,8 +276,20 @@ func (a *Auth) lookup(c *gin.Context) (Session, bool) {
 func (a *Auth) check(c *gin.Context, s Session) (Session, bool) {
 	var role Role
 	switch s.Principal.Method {
-	case MethodTicket:
+	case MethodTicket, MethodPassword:
 		ticket := cookieValue(c.Request, ticketCookieName)
+		if s.Principal.Method == MethodPassword {
+			var err error
+			s, err = a.renew(c.Request.Context(), s)
+			switch {
+			case errors.Is(err, ErrRefused):
+				return a.end(c, s, "Proxmox VE did not renew the ticket")
+			case err != nil:
+				a.unreachable(c, err)
+				return Session{}, false
+			}
+			ticket = LoginTicket(s.ticket).Ticket
+		}
 		if ticket == "" {
 			return a.end(c, s, "the browser has no Proxmox VE ticket any more")
 		}
@@ -331,6 +348,48 @@ func (a *Auth) checkToken(ctx context.Context, s Session) (Role, error) {
 		a.sessions.update(s.ID, func(x *Session) { x.checked, x.Principal.Role = now, role })
 	}
 	return role, nil
+}
+
+// renewEvery is how often the ticket of a password session is renewed while
+// the session is in use. Proxmox VE's tickets live two hours, and its own page
+// renews them as often.
+const renewEvery = 15 * time.Minute
+
+// renew renews the ticket of a password session that is 15 minutes old, one
+// call at a time for each session, and keeps the new one in the session.
+// Proxmox VE refusing it, or a session that is gone, is ErrRefused.
+func (a *Auth) renew(ctx context.Context, s Session) (Session, error) {
+	if a.login == nil || a.cfg.Now().Sub(s.renewed) < renewEvery {
+		return s, nil
+	}
+	ticket, err := a.renewals.do(ctx, s.ID, func(ctx context.Context) (string, error) {
+		now := a.cfg.Now()
+		cur, ok := a.sessions.get(s.ID)
+		switch {
+		case !ok:
+			return "", fmt.Errorf("%w: %w", ErrRefused, errNoSession)
+		case now.Sub(cur.renewed) < renewEvery:
+			// A call that ended after the request read its session renewed it.
+			return cur.ticket, nil
+		}
+		t, err := a.login.Renew(ctx, cur.Principal.User, cur.ticket)
+		if err != nil {
+			return "", err
+		}
+		if user, ok := ticketUser(t); !ok || user != cur.Principal.User {
+			return "", fmt.Errorf("%w: the renewed ticket names another user", ErrRefused)
+		}
+		a.sessions.update(s.ID, func(x *Session) { x.ticket, x.renewed = t, now })
+		return t, nil
+	})
+	if err != nil {
+		return s, err
+	}
+	if cur, ok := a.sessions.get(s.ID); ok {
+		s.renewed = cur.renewed
+	}
+	s.ticket = ticket
+	return s, nil
 }
 
 // end ends the session s, and answers 401.

@@ -35,6 +35,9 @@ type Error struct {
 	Field      string `json:"field,omitempty"`
 	Missing    string `json:"missing,omitempty"`    // "Sys.Audit"
 	RetryAfter int    `json:"retryAfter,omitempty"` // seconds, with 429
+	// Kinds are the second factors Proxmox VE takes for the account, with
+	// second_factor and second_factor_key: "totp", "recovery", "webauthn".
+	Kinds []string `json:"kinds,omitempty"`
 }
 
 // DoctorCounts is what a reader gets of the doctor: how many checks ended in

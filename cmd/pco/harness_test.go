@@ -51,6 +51,8 @@ func testEnv() env {
 	e.readPassword = func(int) ([]byte, error) { panic("no terminal in this test") }
 	e.getenv = func(string) string { return "" }
 	e.profileFile = "/nonexistent/pco/profile"
+	e.webDir = "/nonexistent/pco/web"
+	e.net0File = "/nonexistent/pco/net0"
 	return e
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/version"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
 // errReported is returned by a command that has printed what is wrong itself:
@@ -52,6 +53,9 @@ type env struct {
 	getenv         func(name string) string
 	// profileFile is the marker that names the profile of the machine.
 	profileFile string
+	// The appliance's web interface: webDir holds its certificate, net0File
+	// the address of net0, which it listens on.
+	webDir, net0File string
 
 	// daemon is what pco daemon is run with: the parts of the daemon that a
 	// test replaces.
@@ -79,6 +83,8 @@ func defaultEnv() env {
 		},
 		getenv:      os.Getenv,
 		profileFile: store.ProfileFile,
+		webDir:      webcert.Dir,
+		net0File:    webcert.Net0File,
 		upgrade:     defaultUpgradeEnv(),
 	}
 }

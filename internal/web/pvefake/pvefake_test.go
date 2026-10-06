@@ -6,8 +6,10 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +181,62 @@ func TestOtherCalls(t *testing.T) {
 	rec := httptest.NewRecorder()
 	f.ServeHTTP(rec, r)
 	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+func TestTickets(t *testing.T) {
+	f, err := pvefake.New("pve1", pvefake.Users{Users: []pvefake.User{
+		{ID: "dora@pve", Password: "dora-pw", Privileges: map[string][]string{"/": {"Sys.Audit"}}},
+		{ID: "fred@pve", Password: "fred-pw", TOTP: "424242", Recovery: []string{"a1b2-c3d4"}},
+		{ID: "gina@pve", Password: "gina-pw", WebAuthn: true},
+	}})
+	require.NoError(t, err)
+	post := func(form url.Values) (int, map[string]any) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/api2/json/access/ticket", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		f.ServeHTTP(rec, r)
+		var body struct{ Data map[string]any }
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		return rec.Code, body.Data
+	}
+
+	status, data := post(url.Values{"username": {"dora"}, "realm": {"pve"}, "password": {"dora-pw"}})
+	require.Equal(t, 200, status)
+	require.Equal(t, "dora@pve", data["username"])
+	dora := data["ticket"].(string)
+	require.Equal(t, []string{dora}, f.Tickets("dora@pve"))
+	status, _ = call(t, f, "/api2/json/access/permissions?path=/", ticket(dora))
+	require.Equal(t, 200, status, "the ticket is good")
+
+	status, _ = post(url.Values{"username": {"dora@pve"}, "password": {"wrong"}})
+	require.Equal(t, 401, status)
+	status, data = post(url.Values{"username": {"dora@pve"}, "password": {dora}})
+	require.Equal(t, 200, status, "a ticket in place of the password renews it")
+	require.NotEqual(t, dora, data["ticket"])
+
+	status, data = post(url.Values{"username": {"fred@pve"}, "password": {"fred-pw"}})
+	require.Equal(t, 200, status)
+	require.Equal(t, 1.0, data["NeedTFA"])
+	partial := data["ticket"].(string)
+	require.True(t, strings.HasPrefix(partial, "PVE:!tfa!%7B"), partial)
+	require.Empty(t, f.Tickets("fred@pve"))
+	status, _ = call(t, f, "/api2/json/access/permissions?path=/", ticket(partial))
+	require.Equal(t, 401, status, "a partial ticket is no ticket")
+	status, _ = post(url.Values{"username": {"fred@pve"}, "tfa-challenge": {partial}, "password": {"totp:000000"}})
+	require.Equal(t, 401, status)
+	status, _ = post(url.Values{"username": {"fred@pve"}, "tfa-challenge": {partial}, "password": {"totp:424242"}})
+	require.Equal(t, 200, status)
+	status, _ = post(url.Values{"username": {"fred@pve"}, "tfa-challenge": {partial}, "password": {"recovery:a1b2-c3d4"}})
+	require.Equal(t, 200, status)
+	status, _ = post(url.Values{"username": {"fred@pve"}, "tfa-challenge": {partial}, "password": {"recovery:a1b2-c3d4"}})
+	require.Equal(t, 401, status, "a recovery code is good once")
+	status, _ = post(url.Values{"username": {"fred@pve"}, "tfa-challenge": {"PVE:!tfa!forged:0::x"}, "password": {"totp:424242"}})
+	require.Equal(t, 401, status, "a challenge it did not give")
+
+	status, data = post(url.Values{"username": {"gina@pve"}, "password": {"gina-pw"}})
+	require.Equal(t, 200, status)
+	require.Contains(t, data["ticket"], "webauthn")
 }
 
 func TestControls(t *testing.T) {

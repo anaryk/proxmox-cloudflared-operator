@@ -158,6 +158,7 @@ type browser struct {
 	h       *harness
 	ticket  string // PVEAuthCookie
 	session string
+	step    string // the cookie of a pending second factor
 	csrf    string
 	peer    string
 }
@@ -183,6 +184,9 @@ func (b *browser) request(method, path, body string) *http.Request {
 	if b.session != "" {
 		r.AddCookie(&http.Cookie{Name: cookieName, Value: b.session})
 	}
+	if b.step != "" {
+		r.AddCookie(&http.Cookie{Name: stepCookieName, Value: b.step})
+	}
 	return r
 }
 
@@ -194,8 +198,11 @@ func (b *browser) send(r *http.Request) *httptest.ResponseRecorder {
 		require.False(b.h.t, strings.HasPrefix(strings.ToLower(name), "access-control-"), "no CORS header, ever: %s", name)
 	}
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == cookieName {
+		switch c.Name {
+		case cookieName:
 			b.session = c.Value
+		case stepCookieName:
+			b.step = c.Value
 		}
 	}
 	if rec.Code == http.StatusOK && strings.HasPrefix(r.URL.Path, "/api/session") {

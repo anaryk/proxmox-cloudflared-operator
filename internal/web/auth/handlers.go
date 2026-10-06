@@ -1,6 +1,8 @@
 // Package auth signs users of the web interface in with what Proxmox VE
-// already knows of them: the ticket of its own page, which the browser sends
-// to every port of the node's name, or a pasted API token. The role comes
+// already knows of them: on a node, the ticket of its own page, which the
+// browser sends to every port of the node's name; in the appliance, whose
+// address the browser has no ticket for, their user and password of Proxmox
+// VE and its second factor; and anywhere a pasted API token. The role comes
 // from their privileges at /, and readers see the guests they may audit.
 // Sessions live in the memory of the web process only.
 package auth
@@ -11,10 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,16 +37,26 @@ type Config struct {
 	Zone    string
 	Version string
 	Log     zerolog.Logger
+	// Login is the sign-in with a password, the appliance's; nil on a node,
+	// whose browsers carry the ticket of Proxmox VE's own page instead.
+	Login Login
+	// AllowRoot lets root@pam sign in with a password (PCO_WEB_ALLOW_ROOT=1).
+	AllowRoot bool
 }
 
 // Auth is the sign-in and the sessions of the web interface.
 type Auth struct {
 	pve         PVE
+	login       Login
 	cfg         Config
 	sessions    *store
 	tickets     *ticketChecks
-	tokenChecks flight[string, Role] // by session id
+	tokenChecks flight[string, Role]   // by session id
+	renewals    flight[string, string] // by session id
 	limit       *limiter
+	lockout     *lockout
+	pending     *pendingSteps
+	realms      *realmList
 
 	endsMu sync.Mutex
 	ends   []func(id string)
@@ -60,23 +70,37 @@ func New(p PVE, cfg Config) *Auth {
 	if cfg.Rand == nil {
 		cfg.Rand = rand.Reader
 	}
-	return &Auth{
+	a := &Auth{
 		pve:      p,
+		login:    cfg.Login,
 		cfg:      cfg,
 		sessions: newStore(),
 		tickets:  newTicketChecks(p, cfg.Now),
 		limit:    newLimiter(maxLimitedPeers),
 	}
+	if a.login != nil {
+		a.lockout = newLockout()
+		a.pending = newPendingSteps(maxPendingSteps)
+		a.realms = &realmList{login: a.login, now: cfg.Now}
+	}
+	return a
 }
 
 // Mount adds the routes of /api/session. None of their answers is ever
 // compressed: they carry the CSRF token, and a compressed secret beside text
-// an attacker chooses is what attacks on the length read.
+// an attacker chooses is what attacks on the length read. The sign-in with a
+// ticket is a node's, the sign-in with a password the appliance's: the
+// other's routes are not there.
 func (a *Auth) Mount(r gin.IRouter) {
 	g := r.Group("/api/session")
 	g.GET("", a.current)
 	g.DELETE("", a.signOut)
-	g.POST("/ticket", a.signInTicket)
+	if a.login == nil {
+		g.POST("/ticket", a.signInTicket)
+	} else {
+		g.POST("/password", a.signInPassword)
+		g.POST("/second-factor", a.signInSecondFactor)
+	}
 	g.POST("/token", a.signInToken)
 	g.POST("/touch", a.Require(RoleReader), a.touch)
 }
@@ -166,14 +190,7 @@ func (a *Auth) signInToken(c *gin.Context) {
 		return
 	}
 	p := Principal{Method: MethodToken}
-	if ok, wait := a.limit.allow(bucket(client(c.Request)), a.cfg.Now()); !ok {
-		after := int(math.Ceil(wait.Seconds()))
-		c.Header("Retry-After", strconv.Itoa(after))
-		a.signInRefused(c, p, "too many attempts", http.StatusTooManyRequests, wire.Error{
-			Error:      "too many sign-ins from this address; try again in " + strconv.Itoa(after) + " s",
-			Code:       wire.CodeRateLimited,
-			RetryAfter: after,
-		})
+	if !a.allowAttempt(c, p) {
 		return
 	}
 	var body struct {
@@ -296,11 +313,25 @@ func refuse(c *gin.Context, status int, body wire.Error) {
 
 // unauthenticated is the answer without a session: how to sign in.
 func (a *Auth) unauthenticated(c *gin.Context) {
-	c.AbortWithStatusJSON(http.StatusUnauthorized, wire.Unauthenticated{
+	c.AbortWithStatusJSON(http.StatusUnauthorized, a.howToSignIn(c))
+}
+
+// howToSignIn says how: in the appliance with a password, in one of the
+// realms of the node, which Proxmox VE's own sign-in page lists to whoever
+// reaches it too.
+func (a *Auth) howToSignIn(c *gin.Context) wire.Unauthenticated {
+	if a.login != nil {
+		return wire.Unauthenticated{
+			Code:    wire.CodeUnauthenticated,
+			Methods: []string{MethodPassword, MethodToken},
+			Realms:  a.realms.get(c.Request.Context(), a.cfg.Log),
+		}
+	}
+	return wire.Unauthenticated{
 		Code:    wire.CodeUnauthenticated,
 		Methods: []string{MethodTicket, MethodToken},
 		Ticket:  cookieValue(c.Request, ticketCookieName) != "",
-	})
+	}
 }
 
 func (a *Auth) unreachable(c *gin.Context, err error) {
