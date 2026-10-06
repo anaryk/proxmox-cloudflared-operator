@@ -56,6 +56,9 @@ type NIC struct {
 	VLAN     int          `json:"vlan,omitempty"`
 	Firewall bool         `json:"firewall,omitempty"`
 	Static   []netip.Addr `json:"static,omitempty"`
+	// Leased is the address pco gave the card on its managed network. The
+	// engine fills it from the leases; it is never read from a config.
+	Leased netip.Addr `json:"leased,omitzero"`
 }
 
 // ReportedAddr is an address the guest agent reports for an interface.

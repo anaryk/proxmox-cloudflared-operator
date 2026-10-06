@@ -161,3 +161,17 @@ func TestGuestStatusUnknownJSON(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(data), "statusUnknown")
 }
+
+func TestNICLeasedJSON(t *testing.T) {
+	nic := NIC{Index: 2, MAC: "06:50:43:4f:76:05", Bridge: "pconet", Leased: netip.MustParseAddr("10.203.118.5")}
+	data, err := json.Marshal(nic)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"leased":"10.203.118.5"`)
+	var got NIC
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, nic, got)
+
+	data, err = json.Marshal(NIC{Index: 0, Bridge: "vmbr0"})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "leased", "a card without a lease says nothing of one")
+}
