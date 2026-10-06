@@ -975,7 +975,8 @@ func TestAFailedReadOfAGapIsNotTriedAgainAtOnce(t *testing.T) {
 // When the worker is as far behind as the inbox holds, the subscription does
 // not wait for it: an event or a gap that finds no room is folded into one gap
 // of all that did not fit, which the worker gets first when it has room; a
-// state or traffic notice is dropped, the next one stands for it.
+// state notice is dropped, the next one stands for it; a traffic notice is
+// dropped and the loss of it handed on, behind the gap.
 func TestAFullInboxNeverHoldsTheSubscription(t *testing.T) {
 	s := newTestServer(t)
 	s.gw.inbox = make(chan upstreamItem, 2)
@@ -983,38 +984,78 @@ func TestAFullInboxNeverHoldsTheSubscription(t *testing.T) {
 	event := func(seq uint64, level string) upstreamItem {
 		return notice(engine.Notice{Kind: engine.NoticeEvent, Event: &engine.Event{Seq: seq, Boot: bootA, Level: level, Kind: "route"}})
 	}
-	var folded *engine.GapNotice
-	s.gw.offer(event(1, "info"), &folded)
-	s.gw.offer(event(2, "info"), &folded)
-	require.Nil(t, folded)
+	var dropped folded
+	s.gw.offer(event(1, "info"), &dropped)
+	s.gw.offer(event(2, "info"), &dropped)
+	require.True(t, dropped.empty())
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.gw.offer(event(3, "info"), &folded)
-		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeGap, Gap: &engine.GapNotice{Boot: bootA, From: 4, To: 5, Count: 2, Level: "error"}}), &folded)
-		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeState, State: &engine.StateNotice{Digest: "d2"}}), &folded)
-		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeTraffic, Traffic: &engine.TrafficNotice{}}), &folded)
-		s.gw.offer(event(6, "warn"), &folded)
+		s.gw.offer(event(3, "info"), &dropped)
+		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeGap, Gap: &engine.GapNotice{Boot: bootA, From: 4, To: 5, Count: 2, Level: "error"}}), &dropped)
+		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeState, State: &engine.StateNotice{Digest: "d2"}}), &dropped)
+		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeTraffic, Traffic: &engine.TrafficNotice{}}), &dropped)
+		s.gw.offer(event(6, "warn"), &dropped)
 	}()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the subscription waits for the worker")
 	}
-	require.Equal(t, &engine.GapNotice{Boot: bootA, From: 3, To: 6, Count: 4, Level: "error"}, folded)
+	require.Equal(t, folded{gap: &engine.GapNotice{Boot: bootA, From: 3, To: 6, Count: 4, Level: "error"}, traffic: true}, dropped)
 	require.Len(t, s.gw.inbox, 2)
 
-	// The worker takes what it had; the next notice finds room, behind the
-	// gap that stands for what came before it.
+	// The worker takes what it had; the next notice finds room for what did
+	// not fit, in the order it came, and none for itself.
 	require.Equal(t, uint64(1), (<-s.gw.inbox).notice.Event.Seq)
 	require.Equal(t, uint64(2), (<-s.gw.inbox).notice.Event.Seq)
-	s.gw.offer(event(7, "info"), &folded)
-	require.Nil(t, folded)
+	s.gw.offer(event(7, "info"), &dropped)
 	first, second := <-s.gw.inbox, <-s.gw.inbox
 	require.True(t, first.unread, "nobody read the events of the gap")
 	require.Equal(t, engine.GapNotice{Boot: bootA, From: 3, To: 6, Count: 4, Level: "error"}, *first.notice.Gap)
-	require.Equal(t, uint64(7), second.notice.Event.Seq)
+	require.True(t, second.trafficLost, "the loss of the traffic notice comes after the notices that were before it")
+	require.Equal(t, folded{gap: &engine.GapNotice{Boot: bootA, From: 7, To: 7, Count: 1, Level: "info"}}, dropped)
+}
+
+// A traffic notice that is lost may have told of a route that stopped, which
+// no notice tells again: every stream is told to read the figures again, after
+// the notices that were there before it.
+func TestAStreamIsToldToReadTheTrafficAgainWhenANoticeWasLost(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	release := s.holdDaemon("GET /v1/events", []engine.Event{routeEvent(13, "info", "qemu/101")})
+	s.gw.readerWindow = time.Minute
+	s.gw.inbox = make(chan upstreamItem, 2)
+	conn := s.connect()
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(s.streamServer(), reader)
+	alice := s.streamOf(s.streamServer(), admin)
+	stopped := engine.TrafficNotice{At: t0, Tunnels: []engine.TunnelNotice{}, RoutesTotal: 1,
+		Routes: []engine.RouteTraffic{{Hostname: "www.example.com", Owner: "qemu/101", Target: "10.0.0.11:8080"}}}
+	// The worker is stuck on the gap; two events fill the inbox, and the
+	// traffic notice that follows does not fit.
+	conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: 13, To: 13, Count: 1, Level: "info"})
+	eventually(t, "the worker to be in the read of the gap", func() bool { return s.daemon.count("GET /v1/events") == 1 })
+	conn.send <- eventMessage(routeEvent(14, "info", "qemu/101"))
+	conn.send <- eventMessage(routeEvent(15, "info", "qemu/101"))
+	eventually(t, "the inbox to fill", func() bool { return len(s.gw.inbox) == cap(s.gw.inbox) })
+	conn.send <- sse("", "traffic", stopped)
+	eventually(t, "the subscription to drop the traffic notice", func() bool { return strings.Contains(s.logs.String(), "is dropped") })
+	release()
+
+	for _, sr := range []*streamReader{alice, bob} {
+		var got []string
+		for len(got) < 4 {
+			m := sr.next()
+			if m.event == "reset" {
+				require.JSONEq(t, `{"reason":"traffic lost"}`, m.data)
+			}
+			got = append(got, m.event)
+		}
+		require.Equal(t, []string{"gap", "event", "event", "reset"}, got, "no traffic notice, and the reset last")
+	}
 }
 
 // A worker that is stuck on a read loses the browsers no event: what the

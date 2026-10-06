@@ -68,7 +68,9 @@ const (
 
 	resetBootChanged = "boot changed"
 	resetBehind      = "too far behind"
-	noticeUpstream   = "upstream"
+	// resetTraffic tells a page to read the figures of the routes again.
+	resetTraffic   = "traffic lost"
+	noticeUpstream = "upstream"
 )
 
 // backoff are the waits before the gateway connects to the daemon's stream
@@ -81,8 +83,8 @@ var backoff = []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 
 // took, so that the ring has no hole the daemon could fill, and tells the
 // browsers whenever the subscription goes down or comes up. What the
 // browsers need read from the daemon is read by a worker, so that the
-// subscription goes on taking notices meanwhile, and never waits for it: see
-// offer.
+// subscription goes on taking notices meanwhile, and but for a hello and the
+// loss of a subscription never waits for it: see offer.
 func (g *Gateway) Run(ctx context.Context) {
 	g.hub.started(g.now())
 	done := make(chan struct{})
@@ -133,8 +135,8 @@ func (g *Gateway) Run(ctx context.Context) {
 // and says false when ctx ended first. after is the last event it took.
 func (g *Gateway) follow(ctx context.Context, notices <-chan engine.Notice, after *uint64) bool {
 	var (
-		folded *engine.GapNotice
-		retry  <-chan time.Time
+		dropped folded
+		retry   <-chan time.Time
 	)
 	for {
 		select {
@@ -142,7 +144,7 @@ func (g *Gateway) follow(ctx context.Context, notices <-chan engine.Notice, afte
 			if !ok {
 				// What did not fit goes before the loss of the subscription,
 				// or the hello of the next.
-				return folded == nil || g.hand(ctx, foldedItem(folded))
+				return g.handFolded(ctx, &dropped)
 			}
 			switch {
 			case n.Kind == engine.NoticeEvent && n.Event != nil:
@@ -150,31 +152,49 @@ func (g *Gateway) follow(ctx context.Context, notices <-chan engine.Notice, afte
 			case n.Kind == engine.NoticeGap && n.Gap != nil:
 				*after = max(*after, n.Gap.To)
 			}
-			g.offer(upstreamItem{notice: &n}, &folded)
+			g.offer(upstreamItem{notice: &n}, &dropped)
 		case <-retry:
-			g.flush(&folded)
+			g.flush(&dropped)
 		case <-ctx.Done():
 			return false
 		}
 		retry = nil
-		if folded != nil {
+		if !dropped.empty() {
 			retry = time.After(foldedRetry)
 		}
 	}
 }
 
 // upstreamItem is what the subscription hands the worker, in its order: the
-// hello of a new subscription, a notice, or the loss of the subscription.
+// hello of a new subscription, a notice, the loss of the subscription, or the
+// loss of a traffic notice.
 type upstreamItem struct {
-	hello  *engine.Hello
-	notice *engine.Notice
-	lost   time.Time
-	unread bool // a gap whose events are not to be read
+	hello       *engine.Hello
+	notice      *engine.Notice
+	lost        time.Time
+	unread      bool // a gap whose events are not to be read
+	trafficLost bool
 }
 
-// foldedItem is the gap that stands for what did not fit.
-func foldedItem(gap *engine.GapNotice) upstreamItem {
-	return upstreamItem{notice: &engine.Notice{Kind: engine.NoticeGap, Gap: gap}, unread: true}
+// folded is what the worker had no room for.
+type folded struct {
+	gap     *engine.GapNotice // the events and gaps, as one gap
+	traffic bool              // a traffic notice
+}
+
+func (f folded) empty() bool { return f.gap == nil && !f.traffic }
+
+// items are what stands for it, in the order of the gap and then the loss of
+// the traffic notice.
+func (f folded) items() []upstreamItem {
+	var out []upstreamItem
+	if f.gap != nil {
+		out = append(out, upstreamItem{notice: &engine.Notice{Kind: engine.NoticeGap, Gap: f.gap}, unread: true})
+	}
+	if f.traffic {
+		out = append(out, upstreamItem{trafficLost: true})
+	}
+	return out
 }
 
 // hand passes an item to the worker, waiting while it is inboxSize items
@@ -193,34 +213,55 @@ func (g *Gateway) hand(ctx context.Context, it upstreamItem) bool {
 // is inboxSize items behind, what does not fit is dropped: an event or a gap
 // is folded into one gap of all that did not fit, which goes first when there
 // is room again and whose events nobody reads, so that a reader is told of it
-// over its whole range at warn; a state or traffic notice is not kept, the
-// next one stands for it.
-func (g *Gateway) offer(it upstreamItem, folded **engine.GapNotice) {
-	g.flush(folded)
-	if *folded == nil && g.send(it) {
+// over its whole range at warn; a state notice is not kept, the next one
+// stands for it. A traffic notice is a change from the last, and one that
+// is lost may have told of a route that stopped: the streams are told to read
+// the figures again, after the notices that were there before it.
+func (g *Gateway) offer(it upstreamItem, dropped *folded) {
+	g.flush(dropped)
+	if dropped.empty() && g.send(it) {
 		return
 	}
 	n := it.notice
 	switch {
 	case n.Kind == engine.NoticeEvent && n.Event != nil:
-		g.fold(folded, gapOf(*n.Event))
+		g.note(dropped)
+		dropped.gap = joined(dropped.gap, gapOf(*n.Event))
 	case n.Kind == engine.NoticeGap && n.Gap != nil:
-		g.fold(folded, *n.Gap)
+		g.note(dropped)
+		dropped.gap = joined(dropped.gap, *n.Gap)
+	case n.Kind == engine.NoticeTraffic:
+		g.note(dropped)
+		dropped.traffic = true
 	}
 }
 
-// flush hands the gap of what did not fit to the worker, when it has room.
-func (g *Gateway) flush(folded **engine.GapNotice) {
-	if *folded != nil && g.send(foldedItem(*folded)) {
-		*folded = nil
+// flush hands what did not fit to the worker, as far as it has room.
+func (g *Gateway) flush(dropped *folded) {
+	if dropped.gap != nil && g.send(upstreamItem{notice: &engine.Notice{Kind: engine.NoticeGap, Gap: dropped.gap}, unread: true}) {
+		dropped.gap = nil
+	}
+	if dropped.gap == nil && dropped.traffic && g.send(upstreamItem{trafficLost: true}) {
+		dropped.traffic = false
 	}
 }
 
-func (g *Gateway) fold(folded **engine.GapNotice, gap engine.GapNotice) {
-	if *folded == nil {
-		g.log.Warn().Msg("the streams of the browsers are far behind the daemon's: events are handed on as a gap")
+// handFolded hands what did not fit to the worker, waiting for room.
+func (g *Gateway) handFolded(ctx context.Context, dropped *folded) bool {
+	for _, it := range dropped.items() {
+		if !g.hand(ctx, it) {
+			return false
+		}
 	}
-	*folded = joined(*folded, gap)
+	*dropped = folded{}
+	return true
+}
+
+// note logs the first of what does not fit.
+func (g *Gateway) note(dropped *folded) {
+	if dropped.empty() {
+		g.log.Warn().Msg("the streams of the browsers are far behind the daemon's: what does not fit is dropped")
+	}
 }
 
 // send hands an item to the worker when it has room.
@@ -244,6 +285,8 @@ func (g *Gateway) work(ctx context.Context) {
 				g.connected(ctx, *it.hello)
 			case it.notice != nil:
 				g.receive(ctx, *it.notice, it.unread)
+			case it.trafficLost:
+				g.hub.trafficLost()
 			default:
 				g.hub.down(it.lost)
 			}
@@ -483,6 +526,16 @@ func (h *hub) up(hello engine.Hello, now time.Time) {
 		s.boot = hello.Boot
 		return []queued{reset}
 	})
+}
+
+// trafficLost tells every stream to read the figures of the routes again, and
+// forgets the figures the readers' notices were filtered with.
+func (h *hub) trafficLost() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.all = nil
+	q := resetQueued(resetTraffic)
+	h.broadcast(func(*stream) []queued { return []queued{q} })
 }
 
 // down says that the subscription is lost, when it was up.
@@ -857,6 +910,12 @@ func (g *Gateway) ends(s *stream, v standing) bool {
 //     for a token, which is asked once a minute, a minute and a half;
 //   - guests taken away: the session holds its set for a minute and any
 //     request may read it again, so also up to a minute and a half.
+//
+// With Proxmox VE out of reach, or too slow, none of this is seen, and the
+// stream is kept until two checks in a row have had no answer, the second a
+// tick after the first: for a ticket up to 70 s (the 30 s, the tick of 15 s,
+// and 25 s for the two checks), for a token or guests up to 100 s. A request
+// keeps its session through such an outage as well.
 //
 // Until then the events, gaps and traffic of what was taken away go out. The
 // stream asks with the ticket of the request that opened it: a ticket that
