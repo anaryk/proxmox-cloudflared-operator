@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -158,42 +155,6 @@ func TestInitAndRecoverNeedRoot(t *testing.T) {
 
 	res = r.run("", "appliance", "recover")
 	require.EqualError(t, res.err, "pco appliance recover changes the store of the appliance: run it as root")
-}
-
-func TestInitInModeInstallLeavesARunningDaemonAlone(t *testing.T) {
-	lock := filepath.Join(t.TempDir(), "daemon.lock")
-	f, err := os.OpenFile(lock, os.O_RDWR|os.O_CREATE, 0o600)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = f.Close() })
-	require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB))
-	var ran []string
-	d := appliance.Daemon{Lock: lock, Systemctl: func(_ context.Context, args ...string) (string, error) {
-		ran = append(ran, strings.Join(args, " "))
-		if args[0] == "is-active" {
-			return "active\n", nil
-		}
-		require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_UN))
-		return "", nil
-	}}
-
-	_, err = readyForInit(t.Context(), d, appliance.ModeInstall)
-	require.EqualError(t, err, "a pco daemon runs (it holds "+lock+"), and an init in mode install starts it itself: stop pco.service first")
-	require.Empty(t, ran, "nothing is stopped")
-
-	for _, mode := range []string{appliance.ModeRepair, appliance.ModeRecover} {
-		require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB))
-		ran = nil
-
-		stopped, err := readyForInit(t.Context(), d, mode)
-
-		require.NoError(t, err, mode)
-		require.True(t, stopped, mode)
-		require.Equal(t, []string{"is-active pco.service", "stop pco.service"}, ran, mode)
-	}
-
-	stopped, err := readyForInit(t.Context(), d, appliance.ModeInstall)
-	require.NoError(t, err, "no daemon runs")
-	require.False(t, stopped)
 }
 
 func TestStatusShowsTheIdentityOfTheAppliance(t *testing.T) {

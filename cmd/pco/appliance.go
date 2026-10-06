@@ -44,10 +44,10 @@ func (a *app) applianceInitCmd() *cobra.Command {
 		Long: "Make the store of this appliance from the bootstrap the installer on the node pushed into\n" +
 			"it, and remove the bootstrap, which holds the secrets. pco appliance install and repair run\n" +
 			"it; it runs as root inside the appliance. A bootstrap made for another container, by its\n" +
-			"MACs or the VMID its state volume names, changes nothing. In mode install the daemon must\n" +
-			"not run; in modes repair and recover pco.service is stopped first. Every mode restarts\n" +
-			"pco.service at the end. A step that fails is named, and an init of the same mode finishes\n" +
-			"what it left.",
+			"MACs or the VMID its state volume names, changes nothing, and is removed. In mode install\n" +
+			"the daemon must not run, and a bootstrap turned away for that stays for the next run; in\n" +
+			"modes repair and recover pco.service is stopped first. Every mode restarts pco.service at\n" +
+			"the end. A step that fails is named, and an init of the same mode finishes what it left.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -149,16 +149,11 @@ func (a *app) applianceInit(cmd *cobra.Command, path string) error {
 	if err != nil {
 		return err
 	}
-	// Init removes it first; whatever stops before Init does not leave it.
-	defer func() {
-		if err := b.Remove(); err != nil {
-			errOut.printf("warning: %v\n", err)
-		}
-	}()
+	deps := a.initDeps(override, out)
 	d := applianceDaemon(paths)
-	stopped, err := readyForInit(ctx, d, b.Mode)
+	stopped, err := d.ReadyForInit(ctx, b, paths.Local, deps)
 	if err == nil {
-		err = a.runInit(ctx, paths, override, b, out)
+		err = a.runInit(ctx, paths, b, deps)
 	}
 	if err != nil && stopped {
 		startAgain(ctx, d, errOut)
@@ -169,33 +164,20 @@ func (a *app) applianceInit(cmd *cobra.Command, path string) error {
 	return out.done()
 }
 
-// readyForInit makes sure no daemon writes the store under init: in mode
-// install it must not run, as init starts it; in the other modes pco.service
-// is stopped, and stopped says whether it was running.
-func readyForInit(ctx context.Context, d appliance.Daemon, mode string) (stopped bool, err error) {
-	if mode != appliance.ModeInstall {
-		return d.Stop(ctx)
-	}
-	running, err := d.Running()
-	switch {
-	case err != nil:
-		return false, err
-	case running:
-		return false, fmt.Errorf("a pco daemon runs (it holds %s), and an init in mode install starts it itself: "+
-			"stop %s first", d.Lock, appliance.Unit)
-	}
-	return false, nil
-}
-
-// runInit runs Init on the store of the volume, with the Cloudflare API at
-// override when it is not empty.
-func (a *app) runInit(ctx context.Context, paths store.Paths, override string, b appliance.Bootstrap, out *screen) error {
+// runInit runs Init, which removes the bootstrap, on the store of the volume.
+func (a *app) runInit(ctx context.Context, paths store.Paths, b appliance.Bootstrap, deps appliance.InitDeps) error {
 	st, err := store.Open(paths)
 	if err != nil {
 		return fmt.Errorf("opening the store: %w", err)
 	}
+	return appliance.Init(ctx, st, b, deps)
+}
+
+// initDeps are what Init works with, the Cloudflare API at override when it
+// is not empty.
+func (a *app) initDeps(override string, out *screen) appliance.InitDeps {
 	sys := a.daemon.Appliance.System
-	return appliance.Init(ctx, st, b, appliance.InitDeps{
+	return appliance.InitDeps{
 		CheckToken:     appliance.CheckToken,
 		NewClient:      cloudflareClients(override),
 		Systemd:        connector.NewSystemctl(),
@@ -206,7 +188,7 @@ func (a *app) runInit(ctx context.Context, paths store.Paths, override string, b
 		MountSource:    sys.MountSource,
 		RecoverInstall: setup.RecoverInstall,
 		Info:           func(format string, args ...any) { out.printf(format+"\n", args...) },
-	})
+	}
 }
 
 // startAgain starts pco.service again after a failure, as it ran before.

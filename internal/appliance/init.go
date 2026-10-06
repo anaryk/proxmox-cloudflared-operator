@@ -121,10 +121,26 @@ func (r *initRun) steps() []initStep {
 	}
 }
 
-// checkIdentity refuses a bootstrap made for another container: a copy of
-// the bootstrap in the wrong container does nothing.
-func (r *initRun) checkIdentity(context.Context) error {
-	links, err := r.d.Links()
+func (r *initRun) checkIdentity(context.Context) error { return CheckIdentity(r.b, r.local, r.d) }
+
+// CheckIdentity refuses a bootstrap made for another container: its MACs must
+// be among the links, and its VMID the one the state volume at local names, so
+// that a copy of the bootstrap in the wrong container does nothing. The
+// bootstrap that is refused is removed, so that its secrets do not stay in the
+// wrong container.
+func CheckIdentity(b Bootstrap, local string, deps InitDeps) error {
+	err := checkContainer(b, local, deps)
+	if err == nil {
+		return nil
+	}
+	if rerr := b.Remove(); rerr != nil {
+		return fmt.Errorf("%w (and %w)", err, rerr)
+	}
+	return err
+}
+
+func checkContainer(b Bootstrap, local string, deps InitDeps) error {
+	links, err := deps.Links()
 	if err != nil {
 		return fmt.Errorf("listing the links of this container: %w", err)
 	}
@@ -132,27 +148,59 @@ func (r *initRun) checkIdentity(context.Context) error {
 	for _, l := range links {
 		have = append(have, l.MAC)
 	}
-	for _, mac := range r.b.MACs {
+	for _, mac := range b.MACs {
 		if !slices.Contains(have, mac) {
 			return fmt.Errorf("the bootstrap names MAC %s, which no link of this container has (it has %s): "+
 				"it was pushed into another container", mac, cmp.Or(strings.Join(have, ", "), "none"))
 		}
 	}
-	src, err := r.d.MountSource(r.local)
+	src, err := deps.MountSource(local)
 	if err != nil {
-		return fmt.Errorf("reading the mount of %s: %w", r.local, err)
+		return fmt.Errorf("reading the mount of %s: %w", local, err)
 	}
 	switch src.VMID {
-	case r.b.VMID:
-		r.d.Info("identity: %s is a volume of lxc/%d (%s)", r.local, src.VMID, src.Volume)
+	case b.VMID:
+		deps.say("identity: %s is a volume of lxc/%d (%s)", local, src.VMID, src.Volume)
 	case 0:
-		r.d.Info("identity: the source of %s (%s) is of no form pco knows; it is taken for lxc/%d, "+
-			"which the installer pushed the bootstrap into", r.local, src.Raw, r.b.VMID)
+		deps.say("identity: the source of %s (%s) is of no form pco knows; it is taken for lxc/%d, "+
+			"which the installer pushed the bootstrap into", local, src.Raw, b.VMID)
 	default:
 		return fmt.Errorf("%s is a volume of lxc/%d (%s), but the bootstrap is for lxc/%d: it was pushed into another container",
-			r.local, src.VMID, src.Volume, r.b.VMID)
+			local, src.VMID, src.Volume, b.VMID)
 	}
 	return nil
+}
+
+// say passes on what a step did, if anyone listens.
+func (d InitDeps) say(format string, args ...any) {
+	if d.Info != nil {
+		d.Info(format, args...)
+	}
+}
+
+// ReadyForInit makes ready for Init what lies outside the store, touching
+// nothing until the bootstrap is known to be this container's: CheckIdentity
+// first, then the daemon, which in mode install must not run, as init starts
+// it itself, and in the other modes is stopped, which stopped reports it was
+// running. A bootstrap that is turned away because of the daemon is kept, so
+// that the init the message asks for has it; Init is what removes it.
+func (d Daemon) ReadyForInit(ctx context.Context, b Bootstrap, local string, deps InitDeps) (stopped bool, err error) {
+	deps.Info = nil
+	if err := CheckIdentity(b, local, deps); err != nil {
+		return false, err
+	}
+	if b.Mode != ModeInstall {
+		return d.Stop(ctx)
+	}
+	running, err := d.Running()
+	switch {
+	case err != nil:
+		return false, err
+	case running:
+		return false, fmt.Errorf("a pco daemon runs (it holds %s), and an init in mode install starts it itself: "+
+			"stop %s first and run init again: the bootstrap is kept", d.Lock, Unit)
+	}
+	return false, nil
 }
 
 func (r *initRun) prepareStore(context.Context) error {

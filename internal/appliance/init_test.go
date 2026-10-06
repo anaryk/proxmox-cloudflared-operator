@@ -261,6 +261,10 @@ type initEnv struct {
 	tokenErr error
 	lines    []string // what init said
 	order    []string // what init asked of the world besides the store
+
+	// beforeInit is set by a test that reads the links before Init does, as the
+	// command does, while the bootstrap is still there.
+	beforeInit bool
 }
 
 func newInitEnv(t *testing.T) *initEnv {
@@ -307,7 +311,9 @@ func (e *initEnv) deps() appliance.InitDeps {
 			return incarnation, nil
 		},
 		Links: func() ([]appliance.NamedLink, error) {
-			require.NoFileExists(e.t, e.path, "the bootstrap is gone before anything is looked at or written")
+			if !e.beforeInit {
+				require.NoFileExists(e.t, e.path, "the bootstrap is gone before anything is looked at or written")
+			}
 			return e.links, nil
 		},
 		MountSource: func(path string) (appliance.Source, error) {
@@ -485,6 +491,125 @@ func TestABootstrapForAnotherContainerDoesNothing(t *testing.T) {
 			require.NoDirExists(t, filepath.Join(e.local, "private"))
 			require.Empty(t, e.order)
 		})
+	}
+}
+
+// daemonOf is the daemon of the container with a lock of the node and a log of
+// what systemctl was asked. While running it holds the lock, until the unit is
+// stopped or stop is called, which is what a stop by hand does.
+func daemonOf(t *testing.T, running bool) (d appliance.Daemon, ran *[]string, stop func()) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(t.TempDir(), "daemon.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	stop = func() { require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_UN)) }
+	if running {
+		require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB))
+	}
+	ran = new([]string)
+	return appliance.Daemon{Lock: f.Name(), Systemctl: func(_ context.Context, args ...string) (string, error) {
+		*ran = append(*ran, strings.Join(args, " "))
+		switch args[0] {
+		case "is-active":
+			if running {
+				return "active\n", nil
+			}
+			return "inactive\n", errors.New("exit status 3")
+		case "stop":
+			stop()
+		}
+		return "", nil
+	}}, ran, stop
+}
+
+func TestABootstrapForAnotherContainerStopsNoDaemon(t *testing.T) {
+	for _, mode := range []string{appliance.ModeInstall, appliance.ModeRepair, appliance.ModeRecover} {
+		t.Run(mode, func(t *testing.T) {
+			e := newInitEnv(t)
+			e.beforeInit = true
+			e.links = []appliance.NamedLink{{Name: "eth0", MAC: "bc:24:11:00:00:99"}}
+			d, ran, _ := daemonOf(t, true)
+
+			stopped, err := d.ReadyForInit(context.Background(), e.bootstrap(mode), e.local, e.deps())
+
+			require.ErrorContains(t, err, "it was pushed into another container")
+			require.False(t, stopped)
+			require.Empty(t, *ran, "the daemon of the other container is neither stopped nor started")
+			require.NoFileExists(t, e.path, "the secrets do not stay in the wrong container")
+			require.Empty(t, e.lines, "Init says what it found, once")
+		})
+	}
+}
+
+func TestABootstrapStaysWhileTheDaemonRunsInModeInstall(t *testing.T) {
+	e := newInitEnv(t)
+	e.beforeInit = true
+	d, ran, stop := daemonOf(t, true)
+	b := e.bootstrap("install")
+
+	stopped, err := d.ReadyForInit(context.Background(), b, e.local, e.deps())
+
+	require.ErrorContains(t, err, "a pco daemon runs (it holds "+d.Lock+"), and an init in mode install starts it itself: stop pco.service first")
+	require.ErrorContains(t, err, "and run init again: the bootstrap is kept")
+	require.False(t, stopped)
+	require.Empty(t, *ran, "nothing is stopped")
+	require.FileExists(t, e.path, "the retry the message asks for has its bootstrap")
+
+	stop()
+	stopped, err = d.ReadyForInit(context.Background(), b, e.local, e.deps())
+	require.NoError(t, err)
+	require.False(t, stopped)
+	e.beforeInit = false
+	require.NoError(t, e.init(b))
+	require.NoFileExists(t, e.path)
+	require.Equal(t, vmid, e.install().Appliance.VMID)
+}
+
+func TestRepairAndRecoverStopTheDaemonBeforeInit(t *testing.T) {
+	for _, mode := range []string{appliance.ModeRepair, appliance.ModeRecover} {
+		t.Run(mode, func(t *testing.T) {
+			e := newInitEnv(t)
+			e.beforeInit = true
+			d, ran, _ := daemonOf(t, true)
+
+			stopped, err := d.ReadyForInit(context.Background(), e.bootstrap(mode), e.local, e.deps())
+
+			require.NoError(t, err)
+			require.True(t, stopped)
+			require.Equal(t, []string{"is-active pco.service", "stop pco.service"}, *ran)
+			require.FileExists(t, e.path, "Init removes it")
+		})
+	}
+
+	t.Run("a daemon that is not stopped", func(t *testing.T) {
+		e := newInitEnv(t)
+		e.beforeInit = true
+		d, _, _ := daemonOf(t, true)
+		d.Systemctl = func(_ context.Context, args ...string) (string, error) {
+			if args[0] == "is-active" {
+				return "active\n", nil
+			}
+			return "", errors.New("exit status 1")
+		}
+
+		stopped, err := d.ReadyForInit(context.Background(), e.bootstrap("repair"), e.local, e.deps())
+
+		require.ErrorContains(t, err, "stopping pco.service")
+		require.True(t, stopped, "it was running, and the caller starts it again")
+		require.FileExists(t, e.path)
+	})
+}
+
+func TestNoDaemonAtAllIsReadyInEveryMode(t *testing.T) {
+	for _, mode := range []string{appliance.ModeInstall, appliance.ModeRepair, appliance.ModeRecover} {
+		e := newInitEnv(t)
+		e.beforeInit = true
+		d, _, _ := daemonOf(t, false)
+
+		stopped, err := d.ReadyForInit(context.Background(), e.bootstrap(mode), e.local, e.deps())
+
+		require.NoError(t, err, mode)
+		require.False(t, stopped, mode)
 	}
 }
 
