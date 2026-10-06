@@ -221,7 +221,7 @@ func applianceDoctor(env *doctor.HostEnv, parts applianceParts, state applianceS
 		Proxmox: parts.client,
 		Install: doctor.Self{
 			VMID: a.VMID, Node: a.Node, Address: a.Endpoints[0].Address, ServerName: a.Endpoints[0].ServerName,
-			User: user, Token: state.token.TokenID,
+			User: user, Token: state.token.TokenID, MACs: a.MACs,
 		},
 		StateDir:      local,
 		Volume:        app.Volume,

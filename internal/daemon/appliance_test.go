@@ -513,8 +513,8 @@ func newDoctorOfTheAppliance(t *testing.T, a *applianceWorld) *doctorOfTheApplia
 
 var applianceDoctorChecks = []string{
 	"access", "api", "clock", "cloudflare api", "cmode", "disk", "dns", "egress probe", "etc-pve", "features", "firewall", "holds", "identity",
-	"journal", "memory", "net", "network grants", "nftables", "protection", "quic buffer", "segment access", "snapshots", "token",
-	"unattended-upgrades", "versions", "volume",
+	"journal", "memory", "net", "network grants", "nftables", "protection", "quic buffer", "segment access", "shared mac", "snapshots",
+	"token", "unattended-upgrades", "versions", "volume",
 }
 
 func TestTheDoctorOfTheApplianceChecksWhatItDependsOn(t *testing.T) {
@@ -536,7 +536,8 @@ func TestTheDoctorOfTheApplianceChecksWhatItDependsOn(t *testing.T) {
 	// What each reads comes from a part of the daemon.
 	require.Equal(t, doctor.Finding{Check: "nftables", Level: doctor.LevelOK, Detail: "nftables.service is masked"}, byCheck["nftables"],
 		"the file state of the unit is asked, not whether it is enabled")
-	for _, check := range []string{"features", "protection", "cmode", "volume", "snapshots", "token", "holds", "unattended-upgrades", "api", "firewall", "dns", "cloudflare api"} {
+	for _, check := range []string{"features", "protection", "cmode", "volume", "snapshots", "token", "holds", "unattended-upgrades", "api", "firewall", "dns",
+		"cloudflare api", "shared mac"} {
 		require.Equal(t, doctor.LevelOK, byCheck[check].Level, "%s: %s (%s)", check, byCheck[check].Detail, byCheck[check].Fix)
 	}
 	require.Equal(t, doctor.LevelOK, byCheck["identity"].Level)

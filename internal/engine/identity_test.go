@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -506,6 +507,42 @@ func TestATenantLosesItsRoutesAndNoOtherGuestDoes(t *testing.T) {
 	require.NotEqual(t, planner.StateActive, route(st, "t.example.com").State)
 	require.Contains(t, unnumbered(a.eng.Events(time.Time{})), Event{At: t0, Level: "warn", Kind: "identity", Subject: "qemu/140", Guest: "qemu/140",
 		Message: "qemu/140 is configured with a MAC of the appliance lxc/9250; its routes are not served"})
+}
+
+// A guest other than the appliance with one of its MACs is a problem line,
+// running or not, from the configurations the inventory reads anyway: a
+// restore of the appliance outside its pool, without a new MAC, stops itself
+// as a copy once started, but takes the appliance's traffic meanwhile. The
+// appliance goes on.
+func TestAGuestWithTheAppliancesMACIsAProblemLine(t *testing.T) {
+	a := newApplianceEnv(t, incA)
+	restore := ownGuest(ownMAC)
+	restore.Ref, restore.Pool, restore.Running = model.GuestRef{Kind: model.KindLXC, VMID: 9243}, "", false
+	restore.Tags = []string{"pco-appliance", "pco-combined"}
+	a.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), ownGuest(ownMAC), restore))
+
+	st := a.cycle()
+
+	require.True(t, st.Identity.OK)
+	require.True(t, hasProblem(st, fmt.Sprintf(problemHasMAC, "lxc/9243", ownMAC, "lxc/9250")), st.Problems)
+	require.Empty(t, st.Hold)
+	require.Equal(t, planner.StateActive, route(st, "www.example.com").State)
+
+	restore.Running = true
+	a.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), ownGuest(ownMAC), restore))
+	a.clock.advance(10 * time.Second)
+	st = a.cycle()
+
+	require.True(t, st.Identity.OK)
+	require.Equal(t, []string{"lxc/9243"}, st.Identity.Tenants)
+	require.True(t, hasProblem(st, fmt.Sprintf(problemRunsWithMAC, "lxc/9243", ownMAC, "lxc/9250")), st.Problems)
+	require.False(t, hasProblem(st, "once it is started"), st.Problems)
+	require.Empty(t, st.Hold)
+
+	a.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), ownGuest(ownMAC)))
+	a.clock.advance(10 * time.Second)
+	st = a.cycle()
+	require.False(t, hasProblem(st, "lxc/9243"), st.Problems)
 }
 
 // grantToken gives a token of user role on path; the user and the role are

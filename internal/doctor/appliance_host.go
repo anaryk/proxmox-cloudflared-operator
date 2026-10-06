@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -49,6 +51,7 @@ const (
 // appliance asks; *pve.Client satisfies it.
 type ApplianceProxmox interface {
 	engine.Access
+	Resources(ctx context.Context) ([]pve.Resource, error)
 	GuestConfig(ctx context.Context, node string, ref model.GuestRef) (pve.GuestConfig, error)
 	PendingConfig(ctx context.Context, node string, ref model.GuestRef) (map[string]string, error)
 	Snapshots(ctx context.Context, node string, ref model.GuestRef) ([]pve.Snapshot, error)
@@ -195,6 +198,63 @@ func (h *ApplianceHost) OwnConfig(ctx context.Context) (pve.GuestConfig, error) 
 	ctx, cancel := h.within(ctx)
 	defer cancel()
 	return h.Proxmox.GuestConfig(ctx, h.Install.Node, h.own())
+}
+
+// nodeGuestReaders is how many configurations NodeGuests reads at once.
+const nodeGuestReaders = 4
+
+// NodeGuests lists the guests of the appliance's node and reads the
+// configurations of the first maxNodeGuests of them, but the appliance's,
+// nodeGuestReaders at a time and each within the deadline of the host.
+func (h *ApplianceHost) NodeGuests(ctx context.Context) (NodeGuests, error) {
+	listCtx, cancel := h.within(ctx)
+	all, err := h.Proxmox.Resources(listCtx)
+	cancel()
+	if err != nil {
+		return NodeGuests{}, err
+	}
+	own := h.own()
+	var rows []pve.Resource
+	for _, r := range all {
+		if r.Node == h.Install.Node && (model.GuestRef{Kind: r.Kind, VMID: r.VMID}) != own {
+			rows = append(rows, r)
+		}
+	}
+	slices.SortFunc(rows, func(a, b pve.Resource) int {
+		return cmp.Or(strings.Compare(string(a.Kind), string(b.Kind)), cmp.Compare(a.VMID, b.VMID))
+	})
+	out := NodeGuests{Total: len(rows)}
+	rows = rows[:min(len(rows), maxNodeGuests)]
+	guests := make([]model.Guest, len(rows))
+	errs := make([]error, len(rows))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(nodeGuestReaders, len(rows)) {
+		wg.Go(func() {
+			for i := range next {
+				ctx, cancel := h.within(ctx)
+				cfg, err := h.Proxmox.GuestConfig(ctx, rows[i].Node, model.GuestRef{Kind: rows[i].Kind, VMID: rows[i].VMID})
+				cancel()
+				if err == nil {
+					guests[i], err = inventory.BuildGuest(rows[i], cfg)
+				}
+				errs[i] = err
+			}
+		})
+	}
+	for i := range rows {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	for i, r := range rows {
+		if errs[i] != nil {
+			out.Unread = append(out.Unread, fmt.Sprintf("%s/%d: %v", r.Kind, r.VMID, errs[i]))
+			continue
+		}
+		out.Guests = append(out.Guests, guests[i])
+	}
+	return out, nil
 }
 
 func (h *ApplianceHost) OwnPending(ctx context.Context) (map[string]string, error) {

@@ -603,9 +603,11 @@ than its last write at Cloudflare; see [Copies](appliance.md#copies).
 A guest outside the pool `pco` configured with a MAC of the appliance gets the issue
 `configured with the MAC <mac> of the appliance lxc/120`, and its routes are rejected. The
 appliance goes on writing, but on its segment that guest takes away the traffic sent to the
-appliance: hostnames answer slowly or not at all. Change the MAC of that guest, and keep
-`SDN.Use` on the appliance's segment to the admins, which `pco doctor` checks in
-`segment access`.
+appliance: hostnames answer slowly or not at all. A problem line names every guest with a MAC
+of the appliance, whether it runs or not, and `pco doctor` names them in its `shared mac` check.
+A restore of the appliance to another VMID without `--unique` is one: it stops itself as a copy,
+but not its card. Remove such a copy, or change the MAC of the guest, and keep `SDN.Use` on the
+appliance's segment to the admins, which `pco doctor` checks in `segment access`.
 
 ### Routes held by the observed rules
 

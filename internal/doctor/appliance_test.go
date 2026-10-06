@@ -88,6 +88,8 @@ type fakeApp struct {
 	etcPVEErr  error
 	rmem       int
 	rmemErr    error
+	guests     NodeGuests
+	guestsErr  error
 
 	mu     sync.Mutex
 	probed []string
@@ -95,7 +97,8 @@ type fakeApp struct {
 
 func healthyApp() *fakeApp {
 	return &fakeApp{
-		self: Self{VMID: testVMID, Node: "pve1", Address: apiAddr, ServerName: "pve1", User: "pco@pve", Token: pcoToken},
+		self: Self{VMID: testVMID, Node: "pve1", Address: apiAddr, ServerName: "pve1", User: "pco@pve", Token: pcoToken,
+			MACs: []string{"bc:24:11:00:92:40"}},
 		config: map[string]string{
 			"features":   "nesting=1",
 			"protection": "1",
@@ -131,6 +134,9 @@ func healthyApp() *fakeApp {
 		manifest:  upgrade.Manifest{Updated: now.AddDate(0, 0, -10), Deny: []upgrade.Denial{{Version: "2026.9.0", Reason: "a bug"}}},
 		resolvers: []netip.Addr{netip.MustParseAddr("10.92.0.1")},
 		rmem:      7500000,
+		guests: NodeGuests{Total: 1, Guests: []model.Guest{
+			{Ref: model.GuestRef{Kind: model.KindQEMU, VMID: 101}, Running: true, NICs: []model.NIC{{MAC: "bc:24:11:00:01:01"}}},
+		}},
 	}
 }
 
@@ -236,6 +242,8 @@ func (f *fakeApp) Lookup(context.Context, string) error { return f.lookupErr }
 func (f *fakeApp) EtcPVE() (bool, error)                { return f.etcPVE, f.etcPVEErr }
 func (f *fakeApp) RmemMax() (int, error)                { return f.rmem, f.rmemErr }
 
+func (f *fakeApp) NodeGuests(context.Context) (NodeGuests, error) { return f.guests, f.guestsErr }
+
 // applianceEnv is a host that has an appliance's part.
 type applianceEnv struct {
 	*fakeEnv
@@ -261,8 +269,8 @@ func healthyApplianceState() engine.State {
 // profile.
 var applianceChecks = []string{
 	"access", "api", "clock", "cloudflare api", "cmode", "disk", "dns", "egress probe", "etc-pve", "features", "firewall", "holds", "identity",
-	"journal", "memory", "net", "network grants", "protection", "quic buffer", "segment access", "snapshots", "token", "unattended-upgrades",
-	"versions", "volume",
+	"journal", "memory", "net", "network grants", "protection", "quic buffer", "segment access", "shared mac", "snapshots", "token",
+	"unattended-upgrades", "versions", "volume",
 }
 
 // found runs the doctor on an appliance changed by the two functions, and
@@ -339,6 +347,7 @@ func TestAHealthyApplianceSaysWhatItFound(t *testing.T) {
 		"network grants":      "pco@pve and its token may put no card on a network but their own",
 		"segment access":      "no principal other than an admin and pco's own may use /sdn/zones/localnetwork/vmbr1, the segment of net0",
 		"nftables":            "nftables.service is masked",
+		"shared mac":          "no other guest of node pve1 is configured with a MAC of lxc/9240; 1 guest read",
 	} {
 		require.Equal(t, Finding{Check: check, Level: LevelOK, Detail: detail}, have[check], check)
 	}
@@ -1314,4 +1323,66 @@ func TestTheApplianceDoctorSortsItsFindingsWithTheOthers(t *testing.T) {
 	require.True(t, slices.IsSortedFunc(findings, compareChecks))
 	require.Contains(t, checks(findings), "cycle")
 	require.Contains(t, checks(findings), "features")
+}
+
+// A guest of the node with a MAC of the appliance, as a restore or a clone of
+// it without a new MAC has, is named from the configurations read afresh: one
+// that runs takes the appliance's traffic now, one that does not once started.
+func TestAGuestWithAMACOfTheApplianceIsNamed(t *testing.T) {
+	const fix = "on the node: remove it if it is a copy of the appliance (pct destroy <vmid>, qm destroy for a VM), or give its card " +
+		"another MAC: set the card again without its MAC (pct set, or qm set for a VM), and Proxmox draws a new one"
+	ct := func(vmid int, running bool, macs ...string) model.Guest {
+		g := model.Guest{Ref: model.GuestRef{Kind: model.KindLXC, VMID: vmid}, Running: running}
+		for i, m := range macs {
+			g.NICs = append(g.NICs, model.NIC{Index: i, MAC: m})
+		}
+		return g
+	}
+	other := ct(101, true, "bc:24:11:00:01:01")
+	for _, tt := range []struct {
+		name   string
+		change func(*fakeApp)
+		want   Finding
+	}{
+		{"a restore that runs", func(a *fakeApp) {
+			a.guests = NodeGuests{Total: 2, Guests: []model.Guest{other, ct(9243, true, "bc:24:11:00:92:40")}}
+		}, Finding{Check: "shared mac", Level: LevelFail,
+			Detail: "lxc/9243 runs with bc:24:11:00:92:40, a MAC of lxc/9240, and takes the appliance's traffic on its network", Fix: fix}},
+		{"a restore that does not run", func(a *fakeApp) {
+			a.guests = NodeGuests{Total: 2, Guests: []model.Guest{other, ct(9243, false, "bc:24:11:00:92:40")}}
+		}, Finding{Check: "shared mac", Level: LevelWarn,
+			Detail: "lxc/9243 is configured with bc:24:11:00:92:40, a MAC of lxc/9240, and takes the appliance's traffic on its network " +
+				"once it is started", Fix: fix}},
+		{"one of each, by the MAC the install recorded and by the one of the configuration", func(a *fakeApp) {
+			a.config["net1"] = "name=eth1,bridge=vmbr2,hwaddr=BC:24:11:00:92:41,ip=dhcp,type=veth"
+			a.guests = NodeGuests{Total: 3, Guests: []model.Guest{other, ct(9243, false, "bc:24:11:00:92:40"), ct(9244, true, "bc:24:11:00:00:01", "bc:24:11:00:92:41")}}
+		}, Finding{Check: "shared mac", Level: LevelFail,
+			Detail: "lxc/9244 runs with bc:24:11:00:92:41, a MAC of lxc/9240, and takes the appliance's traffic on its network; " +
+				"lxc/9243 is configured with bc:24:11:00:92:40, a MAC of lxc/9240, and takes the appliance's traffic on its network " +
+				"once it is started", Fix: fix}},
+		{"the configuration of the appliance unread: the MACs of the install", func(a *fakeApp) {
+			a.configErr = errors.New("no answer")
+			a.guests = NodeGuests{Total: 1, Guests: []model.Guest{ct(9243, false, "bc:24:11:00:92:40")}}
+		}, Finding{Check: "shared mac", Level: LevelWarn,
+			Detail: "lxc/9243 is configured with bc:24:11:00:92:40, a MAC of lxc/9240, and takes the appliance's traffic on its network " +
+				"once it is started", Fix: fix}},
+		{"configurations that could not be read", func(a *fakeApp) {
+			a.guests = NodeGuests{Total: 3, Guests: []model.Guest{other}, Unread: []string{"qemu/300: no answer", "lxc/301: no answer"}}
+		}, Finding{Check: "shared mac", Level: LevelWarn,
+			Detail: "no other guest of node pve1 that was read is configured with a MAC of lxc/9240; 1 guest read, and the configurations " +
+				"of 2 guests could not be read: qemu/300: no answer, lxc/301: no answer", Fix: fixAPI}},
+		{"more guests than are read", func(a *fakeApp) {
+			a.guests = NodeGuests{Total: 1500, Guests: []model.Guest{other}}
+		}, Finding{Check: "shared mac", Level: LevelWarn,
+			Detail: "no other guest of node pve1 that was read is configured with a MAC of lxc/9240; 1 guest read of the 1500 the node has " +
+				"besides the appliance",
+			Fix: "on the node: grep -il -e bc:24:11:00:92:40 /etc/pve/nodes/*/lxc/*.conf /etc/pve/nodes/*/qemu-server/*.conf " +
+				"lists every guest with a MAC of the appliance"}},
+		{"the guests not listed", func(a *fakeApp) { a.guestsErr = errors.New("403 Forbidden") },
+			Finding{Check: "shared mac", Level: LevelWarn, Detail: "the guests of node pve1 could not be read: 403 Forbidden", Fix: fixAPI}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, found(t, "shared mac", nil, func(a *fakeApp, _ *fakeEnv) { tt.change(a) }))
+		})
+	}
 }

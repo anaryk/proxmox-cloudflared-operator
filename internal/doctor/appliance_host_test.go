@@ -36,6 +36,10 @@ type fakePVE struct {
 	// deadline is the deadline of the last call.
 	deadline time.Time
 	verify   error
+	// guests are the rows of the cluster resources, configs the
+	// configurations of guests by guest, an error for one that is not read.
+	guests  []pve.Resource
+	configs map[string]any
 }
 
 func (f *fakePVE) note(ctx context.Context, what string) {
@@ -76,8 +80,19 @@ func (f *fakePVE) Permissions(ctx context.Context, userid, path string) (map[str
 func (f *fakePVE) Subnets(context.Context) ([]pve.Subnet, error)        { return nil, nil }
 func (f *fakePVE) NodeDNS(context.Context, string) (pve.NodeDNS, error) { return pve.NodeDNS{}, nil }
 
+func (f *fakePVE) Resources(ctx context.Context) ([]pve.Resource, error) {
+	f.note(ctx, "resources")
+	return f.guests, nil
+}
+
 func (f *fakePVE) GuestConfig(ctx context.Context, node string, ref model.GuestRef) (pve.GuestConfig, error) {
 	f.note(ctx, fmt.Sprintf("config %s %s", node, ref))
+	switch c := f.configs[ref.String()].(type) {
+	case map[string]string:
+		return pve.GuestConfig{Values: c}, nil
+	case error:
+		return pve.GuestConfig{}, c
+	}
 	return pve.GuestConfig{Values: map[string]string{"protection": "1"}}, nil
 }
 
@@ -935,4 +950,55 @@ func TestTheChecksOfTheApplianceAreTheOnesTheTestsPin(t *testing.T) {
 	slices.Sort(got)
 
 	require.Equal(t, want, got)
+}
+
+// The guests of the node are read afresh, but the appliance and the guests of
+// other nodes, each within the deadline of the host; a configuration that
+// cannot be read is named, and the rest are read all the same.
+func TestTheApplianceHostReadsTheGuestsOfItsNode(t *testing.T) {
+	h, px := newHost(t)
+	row := func(kind model.GuestKind, vmid int, node, status string) pve.Resource {
+		return pve.Resource{Kind: kind, VMID: vmid, Node: node, Status: status}
+	}
+	px.guests = []pve.Resource{
+		row(model.KindLXC, 9243, "pve1", "running"), row(model.KindLXC, testVMID, "pve1", "running"),
+		row(model.KindQEMU, 101, "pve1", "stopped"), row(model.KindQEMU, 102, "pve2", "running"), row(model.KindLXC, 9244, "pve1", "stopped"),
+	}
+	px.configs = map[string]any{
+		"lxc/9243": map[string]string{"net0": "name=eth0,bridge=vmbr1,hwaddr=BC:24:11:00:92:40,ip=dhcp,type=veth"},
+		"qemu/101": map[string]string{"net0": "virtio=BC:24:11:00:01:01,bridge=vmbr0"},
+		"lxc/9244": errors.New("no answer"),
+		"lxc/9240": errors.New("the appliance is not read"),
+		"qemu/102": errors.New("another node is not read"),
+	}
+
+	got, err := h.NodeGuests(t.Context())
+
+	require.NoError(t, err)
+	require.Equal(t, 3, got.Total, "the guests of pve1 but the appliance")
+	require.Equal(t, []string{"lxc/9244: no answer"}, got.Unread)
+	require.Len(t, got.Guests, 2)
+	require.Equal(t, model.GuestRef{Kind: model.KindLXC, VMID: 9243}, got.Guests[0].Ref)
+	require.True(t, got.Guests[0].Running)
+	require.Equal(t, "bc:24:11:00:92:40", got.Guests[0].NICs[0].MAC)
+	require.Equal(t, model.GuestRef{Kind: model.KindQEMU, VMID: 101}, got.Guests[1].Ref)
+	require.False(t, got.Guests[1].Running)
+	require.Equal(t, "bc:24:11:00:01:01", got.Guests[1].NICs[0].MAC)
+	require.ElementsMatch(t, []string{"resources", "config pve1 lxc/9243", "config pve1 lxc/9244", "config pve1 qemu/101"}, px.asked)
+	require.False(t, px.deadline.IsZero(), "every call has the deadline of the host")
+}
+
+// A node with more guests than are read has the first ones read, in order.
+func TestTheApplianceHostReadsTheFirstGuestsOfABigNode(t *testing.T) {
+	h, px := newHost(t)
+	for vmid := 100; vmid < 100+maxNodeGuests+5; vmid++ {
+		px.guests = append(px.guests, pve.Resource{Kind: model.KindLXC, VMID: vmid, Node: "pve1", Status: "stopped"})
+	}
+
+	got, err := h.NodeGuests(t.Context())
+
+	require.NoError(t, err)
+	require.Equal(t, maxNodeGuests+5, got.Total)
+	require.Len(t, got.Guests, maxNodeGuests)
+	require.Equal(t, 100+maxNodeGuests-1, got.Guests[maxNodeGuests-1].Ref.VMID)
 }

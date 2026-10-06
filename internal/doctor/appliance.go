@@ -20,6 +20,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -35,6 +37,21 @@ type Self struct {
 	ServerName string // the name its certificate is verified under
 	User       string // the user of pco's token, pco@pve
 	Token      string // the token of the appliance, pco@pve!vm<vmid>
+	MACs       []string
+}
+
+// maxNodeGuests is how many guests of the node the check of a shared MAC
+// reads the configuration of, at most.
+const maxNodeGuests = 1000
+
+// NodeGuests are the guests of the appliance's node, but the appliance, as
+// their configurations are now: those read, the first maxNodeGuests at most;
+// how many there are; and those whose configuration could not be read, each
+// with why.
+type NodeGuests struct {
+	Guests []model.Guest
+	Total  int
+	Unread []string
 }
 
 // ErrRefused is what ProbeAsConnector returns for a connection that was
@@ -105,6 +122,8 @@ type ApplianceEnv interface {
 	EtcPVE() (bool, error)
 	// RmemMax is net.core.rmem_max.
 	RmemMax() (int, error)
+	// NodeGuests reads the configurations of the guests of the node.
+	NodeGuests(ctx context.Context) (NodeGuests, error)
 }
 
 // MemoryState is memory pressure as the kernel reports it. Some10 is the share
@@ -241,6 +260,7 @@ var applianceRuns = []struct {
 	{"protection", one((*applianceRun).checkProtection)},
 	{"quic buffer", one((*applianceRun).checkQUIC)},
 	{"segment access", one((*applianceRun).checkSegmentAccess)},
+	{"shared mac", one((*applianceRun).checkSharedMAC)},
 	{"snapshots", one((*applianceRun).checkSnapshots)},
 	{"token", one((*applianceRun).checkToken)},
 	{"unattended-upgrades", one((*applianceRun).checkUnattended)},
@@ -649,6 +669,67 @@ func (r *applianceRun) checkIdentity() Finding {
 		detail += fmt.Sprintf(", checked %s ago", max(r.now.Sub(id.CheckedAt), 0).Round(time.Second))
 	}
 	return ok(check, detail)
+}
+
+const fixSharedMAC = "on the node: remove it if it is a copy of the appliance (pct destroy <vmid>, qm destroy for a VM), or give its " +
+	"card another MAC: set the card again without its MAC (pct set, or qm set for a VM), and Proxmox draws a new one"
+
+// checkSharedMAC looks through the configurations of the guests of the node,
+// read afresh, for a card with a MAC of the appliance, as a restore or a
+// clone of it without a new MAC has: while it runs, it takes the appliance's
+// traffic on its network. The cycle finds the same in the configurations it
+// reads again every few minutes.
+func (r *applianceRun) checkSharedMAC() Finding {
+	const check = "shared mac"
+	self := model.GuestRef{Kind: model.KindLXC, VMID: r.self.VMID}
+	ours := slices.Clone(r.self.MACs)
+	if cfg, err := r.config(); err == nil {
+		if g, err := inventory.BuildGuest(pve.Resource{Kind: self.Kind, VMID: self.VMID}, cfg); err == nil {
+			for _, n := range g.NICs {
+				ours = append(ours, n.MAC)
+			}
+		}
+	}
+	ours = slices.Compact(slices.Sorted(slices.Values(ours)))
+	if len(ours) == 0 {
+		return warn(check, fmt.Sprintf("the MACs of %s are not known: neither the install nor the configuration names one", self), fixAPI)
+	}
+	scan, err := r.app.NodeGuests(r.ctx)
+	if err != nil {
+		return unread(check, "the guests of node "+r.self.Node, err)
+	}
+	var running, stopped []string
+	for _, g := range scan.Guests {
+		i := slices.IndexFunc(g.NICs, func(n model.NIC) bool { return slices.Contains(ours, n.MAC) })
+		if g.Ref == self || i < 0 {
+			continue
+		}
+		if g.Running {
+			running = append(running, fmt.Sprintf("%s runs with %s, a MAC of %s, and takes the appliance's traffic on its network",
+				g.Ref, g.NICs[i].MAC, self))
+		} else {
+			stopped = append(stopped, fmt.Sprintf("%s is configured with %s, a MAC of %s, and takes the appliance's traffic on its "+
+				"network once it is started", g.Ref, g.NICs[i].MAC, self))
+		}
+	}
+	switch {
+	case len(running) > 0:
+		return fail(check, strings.Join(append(running, stopped...), "; "), fixSharedMAC)
+	case len(stopped) > 0:
+		return warn(check, strings.Join(stopped, "; "), fixSharedMAC)
+	}
+	read := count(len(scan.Guests), "guest", "guests") + " read"
+	none := fmt.Sprintf("no other guest of node %s that was read is configured with a MAC of %s; %s", r.self.Node, self, read)
+	switch {
+	case len(scan.Unread) > 0:
+		return warn(check, fmt.Sprintf("%s, and the configurations of %s could not be read: %s", none,
+			count(len(scan.Unread), "guest", "guests"), strings.Join(scan.Unread, ", ")), fixAPI)
+	case scan.Total > len(scan.Guests):
+		return warn(check, fmt.Sprintf("%s of the %d the node has besides the appliance", none, scan.Total),
+			fmt.Sprintf("on the node: grep -il -e %s /etc/pve/nodes/*/lxc/*.conf /etc/pve/nodes/*/qemu-server/*.conf "+
+				"lists every guest with a MAC of the appliance", strings.Join(ours, " -e ")))
+	}
+	return ok(check, fmt.Sprintf("no other guest of node %s is configured with a MAC of %s; %s", r.self.Node, self, read))
 }
 
 // checkToken compares what pco's token holds on / with what role PCO gives on

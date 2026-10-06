@@ -602,6 +602,25 @@ The cases, and the command for each:
   With the marker and no state, the daemon runs, writes nothing, and says
   `pco has no state on its volume (restore?): run pco appliance repair --vmid 120 on the node`.
 
+A restore to another VMID keeps the appliance's MAC unless `pct restore` is given `--unique`,
+and it lands outside pool `pco`. Started while the original is there, it finds itself a copy by
+its volume and stops itself: it starts no connector and writes nothing. Its card carries the
+original's MAC all the same, and on the same network it takes the appliance's traffic for as
+long as it runs. The appliance names such a guest, whether it runs or not, in a problem line:
+
+    lxc/121 runs with the MAC bc:24:11:4b:a2:70 of the appliance lxc/120 and takes the appliance's traffic on its network: remove it if it is a copy of the appliance, as a restore or a clone without a new MAC is, or give its card another MAC
+
+It finds it in the configurations of the guests, which it reads again at least every five
+minutes, and `pco doctor` names it at once in its `shared mac` check, from the configurations of
+the node's guests read afresh. By hand, on the node, `pct config 120 | grep ^net` gives the MAC,
+and
+
+    grep -il -e bc:24:11:4b:a2:70 /etc/pve/nodes/*/lxc/*.conf /etc/pve/nodes/*/qemu-server/*.conf
+
+lists every guest with it, the appliance among them. Remove the copy. A restore made while the
+original is there, as one to try a backup, is best made with `--unique`, which gives it a MAC of
+its own.
+
 A restore over the appliance that brought its state with it, from a backup made while someone
 had set `backup=1` on `mp0`, is a rollback by another name: it holds every write as `behind`
 when Cloudflare is ahead of it, and `pco appliance recover` follows. [The restore
@@ -629,11 +648,15 @@ one of its MACs:
 
 - in pool `pco`, takes it for a copy of itself, names it, holds its writes and keeps serving:
   `lxc/125 in pool pco carries a MAC of lxc/120: a copy of the appliance runs; writes are held until it is gone`;
-- outside the pool, takes it for a tenant's doing: an event, the routes of that guest are
-  rejected with the issue `configured with the MAC <mac> of the appliance lxc/120`, and the
-  appliance carries on. Its writes may, its traffic may not: a guest with its MAC on its segment
-  takes away the requests to the appliance and the data Cloudflare pushes over the connectors'
-  connections. See [Security](security.md#the-appliance).
+- outside the pool, takes it for a tenant's doing or a restore without a new MAC: an event, a
+  problem line that names it, the routes of that guest are rejected with the issue
+  `configured with the MAC <mac> of the appliance lxc/120`, and the appliance carries on. Its
+  writes may, its traffic may not: a guest with its MAC on its segment takes away the requests
+  to the appliance and the data Cloudflare pushes over the connectors' connections. See
+  [Security](security.md#the-appliance).
+
+A guest with a MAC of the appliance that does not run is a problem line too, as it takes the
+traffic once it is started; see [restore and repair](#restore-and-repair) for how to find it.
 
 To clean up, remove the copy from the node, with the release the appliance runs:
 

@@ -21,6 +21,15 @@ const (
 	problemAccessFirst  = "the access control of Proxmox has not been read since pco started; " +
 		"the connectors start once it shows that no principal can reach into the appliance"
 
+	// problemRunsWithMAC and problemHasMAC name a guest other than the
+	// appliance with one of its MACs, as a restore or a clone of the
+	// appliance without a new MAC has: running, and not.
+	problemRunsWithMAC = "%s runs with the MAC %s of the appliance %s and takes the appliance's traffic on its network: " +
+		"remove it if it is a copy of the appliance, as a restore or a clone without a new MAC is, or give its card another MAC"
+	problemHasMAC = "%s is configured with the MAC %s of the appliance %s and takes the appliance's traffic on its network " +
+		"once it is started: remove it if it is a copy of the appliance, as a restore or a clone without a new MAC is, " +
+		"or give its card another MAC"
+
 	eventEpochDrawn = "epoch drawn after a container start; the state is the volume's"
 	issueTenant     = "configured with the MAC %s of the appliance %s"
 )
@@ -81,7 +90,9 @@ func (c *cycleRun) identify() bool {
 		c.e.notServing.Store(false)
 		c.e.stopped = false
 	}
-	c.tenants = tenantMACs(c.snap, v.Tenants, a.MACs, self)
+	ours := applianceMACs(c.snap, a.MACs, self)
+	c.tenants = tenantMACs(c.snap, v.Tenants, ours)
+	c.noteSharedMACs(ours, self)
 	if v.Pending {
 		c.problem("a NIC of the appliance %s appeared or vanished within the last minute; "+
 			"its links and its configuration in Proxmox must match by then", self)
@@ -167,17 +178,47 @@ func privsep(d access.Data, user, name string) bool {
 	return true
 }
 
-// tenantMACs maps each tenant to the MAC of the appliance it is configured
-// with.
-func tenantMACs(snap inventory.Snapshot, tenants []model.GuestRef, recorded []string, self model.GuestRef) map[model.GuestRef]string {
-	if len(tenants) == 0 {
-		return nil
-	}
+// applianceMACs are the MACs of the appliance: those the install recorded and those
+// of its configuration in the snapshot.
+func applianceMACs(snap inventory.Snapshot, recorded []string, self model.GuestRef) []string {
 	ours := slices.Clone(recorded)
 	if g, ok := snap.Guest(self); ok {
 		for _, n := range g.NICs {
 			ours = append(ours, n.MAC)
 		}
+	}
+	return ours
+}
+
+// noteSharedMACs says of every guest but the appliance that is configured with
+// one of its MACs, whether it runs or not, that it takes the appliance's
+// traffic. The snapshot holds the configuration of every guest, read again at
+// least every few minutes, so this costs nothing; a guest seen first while
+// Proxmox still made it shows its cards with the next read. The cycle goes on.
+func (c *cycleRun) noteSharedMACs(ours []string, self model.GuestRef) {
+	for _, g := range c.snap.Guests {
+		if g.Ref == self || g.Template {
+			continue
+		}
+		for _, n := range g.NICs {
+			if !slices.Contains(ours, n.MAC) {
+				continue
+			}
+			if g.Running {
+				c.problem(problemRunsWithMAC, g.Ref, n.MAC, self)
+			} else {
+				c.problem(problemHasMAC, g.Ref, n.MAC, self)
+			}
+			break
+		}
+	}
+}
+
+// tenantMACs maps each tenant to the MAC of the appliance, of ours, it is
+// configured with.
+func tenantMACs(snap inventory.Snapshot, tenants []model.GuestRef, ours []string) map[model.GuestRef]string {
+	if len(tenants) == 0 {
+		return nil
 	}
 	out := make(map[model.GuestRef]string, len(tenants))
 	for _, ref := range tenants {
