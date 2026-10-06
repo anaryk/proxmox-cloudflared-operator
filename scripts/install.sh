@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 #
 # Installs pco on a Proxmox VE node: downloads the release package, verifies
-# it, installs it and hands over to `pco setup`. Run it as root; the arguments
-# are passed on to `pco setup`.
+# it and hands over to the setup. Run it as root.
+#
+# There are two profiles. The host profile, the default, installs the package
+# on the node and hands over to `pco setup`. The appliance profile installs
+# nothing on the node: it unpacks the verified package into a temporary
+# directory, runs `pco appliance install` from there, which makes a container,
+# and removes the directory when that returns. The profile is chosen by
+# --appliance or --profile host|appliance as leading arguments, else by
+# PCO_PROFILE, else, on a terminal, by a question that Enter answers with the
+# host profile. The leading --uninstall, with the appliance profile, runs
+# `pco appliance uninstall` in the same way. The other arguments are passed on
+# to the command the script hands over to.
 #
 # The package is verified through checksums.txt, and checksums.txt through its
 # detached signature by the release key embedded below: a checksum fetched from
 # the place the package comes from proves nothing on its own. Every check runs
-# before apt-get is called, and the script stops at the first one that fails.
+# before the package is installed or unpacked, and the script stops at the
+# first one that fails.
 #
 # With PCO_INSECURE_SKIP_SIGNATURE=1 only the HTTPS connection to the release
 # host (offline: whoever supplied the files) decides what is installed. The
@@ -15,15 +26,23 @@
 #
 # The release is expected to hold pco_<version without the v>_<arch>.deb,
 # checksums.txt with lines of the form "<64 hex digits>  <file name>" as
-# sha256sum writes them, and the detached signature checksums.txt.sig.
+# sha256sum writes them, the detached signature checksums.txt.sig and, for the
+# appliance, pco-appliance_<version>_<arch>.tar.zst, which the installer has
+# Proxmox download and check against checksums.txt.
 #
 # Environment:
+#   PCO_PROFILE                    host (default) or appliance
 #   PCO_VERSION                    release to install, default is the latest
 #   PCO_REPO                       GitHub repository, default anaryk/proxmox-cloudflared-operator
-#   PCO_SKIP_SETUP=1               install the package and stop before `pco setup`
+#   PCO_SKIP_SETUP=1               verify, and for the host profile install the
+#                                  package, then stop and print the hand-over
 #   PCO_INSECURE_SKIP_SIGNATURE=1  trust the checksum alone, without the signature
 #   PCO_DEB, PCO_CHECKSUMS, PCO_SIGNATURE
 #                                  local files to install from, nothing is downloaded
+#   PCO_TEMPLATE                   appliance: the template as a local file, checked
+#                                  against checksums.txt and passed as --template
+#   PCO_RESUME                     appliance: the journal of an install that did
+#                                  not finish, which the installer finishes or takes back
 
 set -euo pipefail
 
@@ -47,12 +66,29 @@ DEFAULT_REPO=anaryk/proxmox-cloudflared-operator
 # PATH of root holds.
 PCO_BIN=/usr/bin/pco
 TTY_DEVICE=/dev/tty
+# Where `pco appliance install` keeps the journal of a run, outside the
+# temporary directory, so that a run that was killed can be finished.
+JOURNAL_DIR=/root/.pco-appliance-install
 PLACEHOLDER_KEY=REPLACE-WITH-THE-RELEASE-KEY
 SIGNATURE_REFUSED="the signature of checksums.txt is not valid for the release key, or the key was revoked or has expired"
+PROFILE_QUESTION="Install on this node (host profile, the default) or as an appliance (a container, nothing on the node)? [host/appliance]"
 MAX_VERSION_LENGTH=64
 MAX_SMALL_FILE=1048576
 MAX_PACKAGE_FILE=209715200
 TMP_DIR=
+# What the leading arguments chose: a profile, --uninstall, and how many of the
+# arguments they were.
+CHOSEN=
+UNINSTALL=0
+LEADING=0
+PROFILE=host
+# The template file of PCO_TEMPLATE, as an absolute path.
+TEMPLATE_FILE=
+# Set once the installer of the appliance has been started: from then on a
+# failure of the script offers the journal that run may have left.
+INSTALLER_STARTED=0
+JOURNALS_BEFORE=
+RELEASE_VERSION=
 
 say() {
 	printf '%s\n' "$*"
@@ -70,6 +106,48 @@ die() {
 cleanup() {
 	if [[ -n $TMP_DIR ]]; then
 		rm -rf -- "$TMP_DIR" || true
+	fi
+}
+
+# The journals of the installer, one path to a line.
+journals() {
+	local file
+	for file in "$JOURNAL_DIR"/*.json; do
+		if [[ -e $file ]]; then
+			printf '%s\n' "$file"
+		fi
+	done
+}
+
+# A run of the installer that failed, or was killed, keeps its journal outside
+# the temporary directory, which is removed first. The journals it names are
+# those that were not there before the run, and the one it was told to resume.
+offer_resume() {
+	local file quoted found=0
+	while IFS= read -r file; do
+		if [[ -z $file ]]; then
+			continue
+		fi
+		if [[ $'\n'$JOURNALS_BEFORE$'\n' == *$'\n'"$file"$'\n'* && $file != "${PCO_RESUME:-}" ]]; then
+			continue
+		fi
+		if [[ $found == 0 ]]; then
+			printf 'install.sh: the installer did not finish, and left its journal in %s\n' "$JOURNAL_DIR" >&2
+			found=1
+		fi
+		printf -v quoted '%q' "$file"
+		printf 'install.sh: to finish the run or take it back, run: PCO_RESUME=%s install.sh\n' "$quoted" >&2
+	done < <(journals)
+	if [[ $found == 1 && -n $RELEASE_VERSION ]]; then
+		printf 'install.sh: set PCO_VERSION=%s as well to run the release of this run again\n' "$RELEASE_VERSION" >&2
+	fi
+}
+
+on_exit() {
+	local status=$?
+	cleanup
+	if [[ $INSTALLER_STARTED == 1 && $status != 0 ]]; then
+		offer_resume || true
 	fi
 }
 
@@ -96,10 +174,14 @@ detect_arch() {
 }
 
 # Proxmox VE 9 is on Debian 13, whose apt depends on sqv and not on gpgv, while
-# Proxmox VE 8 has gpgv. Either one will do.
+# Proxmox VE 8 has gpgv. Either one will do. The host profile installs the
+# package with apt-get, the appliance profile only unpacks it with dpkg-deb.
 require_commands() {
-	local offline=$1 cmd missing='' hint=''
-	for cmd in curl sha256sum verifier base64 apt-get mktemp; do
+	local offline=$1 profile=$2 installer=apt-get cmd missing='' hint=''
+	if [[ $profile == appliance ]]; then
+		installer=dpkg-deb
+	fi
+	for cmd in curl sha256sum verifier base64 "$installer" mktemp; do
 		if [[ $cmd == curl && $offline == 1 ]]; then
 			continue
 		fi
@@ -184,8 +266,205 @@ check_local_files() {
 	fi
 }
 
+check_profile_name() {
+	local value=$1 what=$2 shown q
+	if [[ $value != host && $value != appliance ]]; then
+		shown=$value
+		if [[ ${#shown} -gt 40 ]]; then
+			shown="${shown:0:40}..."
+		fi
+		printf -v q '%q' "$shown"
+		die "$what must be host or appliance, got $q"
+	fi
+}
+
+choose() {
+	check_profile_name "$1" --profile
+	if [[ -n $CHOSEN && $CHOSEN != "$1" ]]; then
+		die "the leading arguments name both profiles, host and appliance"
+	fi
+	CHOSEN=$1
+}
+
+# The profile and --uninstall may lead the arguments, in any order. They are
+# not passed on: LEADING says how many of the arguments they are, for the caller
+# to shift off. An argument of the same name further on belongs to the command
+# the script hands over to.
+leading_options() {
+	LEADING=0
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--appliance)
+			choose appliance
+			LEADING=$((LEADING + 1))
+			shift
+			;;
+		--profile)
+			if [[ $# -lt 2 ]]; then
+				die "--profile needs a value, host or appliance"
+			fi
+			choose "$2"
+			LEADING=$((LEADING + 2))
+			shift 2
+			;;
+		--profile=*)
+			choose "${1#--profile=}"
+			LEADING=$((LEADING + 1))
+			shift
+			;;
+		--uninstall)
+			UNINSTALL=1
+			LEADING=$((LEADING + 1))
+			shift
+			;;
+		*)
+			return 0
+			;;
+		esac
+	done
+}
+
+has_yes() {
+	local arg
+	for arg in "$@"; do
+		if [[ $arg == --yes || $arg == -y ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Where the answers to the questions come from: stdin when it is a terminal,
+# the terminal when stdin is the script itself (curl | bash), the answers of
+# --yes, or nowhere. Opening /dev/tty fails when the process has no controlling
+# terminal, even though the file is readable, so it is tried instead of tested.
+input_mode() {
+	if [[ -t 0 ]]; then
+		printf 'stdin\n'
+	elif (: <"$TTY_DEVICE") 2>/dev/null; then
+		printf 'tty\n'
+	elif has_yes "$@"; then
+		printf 'yes\n'
+	else
+		printf 'none\n'
+	fi
+}
+
+# Asks on the terminal until the answer is one of the two; Enter is the host
+# profile. The terminal is opened once, so that an answer is not read twice.
+ask_profile() {
+	local answer
+	if [[ -t 0 ]]; then
+		exec 3<&0
+	else
+		exec 3<"$TTY_DEVICE"
+	fi
+	while true; do
+		printf '%s ' "$PROFILE_QUESTION"
+		answer=
+		if ! IFS= read -r answer <&3 && [[ -z $answer ]]; then
+			die "no answer to the question; PCO_PROFILE=host or PCO_PROFILE=appliance gives it beforehand"
+		fi
+		answer=${answer//[[:space:]]/}
+		case $answer in
+		'' | [Hh] | [Hh][Oo][Ss][Tt])
+			PROFILE=host
+			break
+			;;
+		[Aa] | [Aa][Pp][Pp][Ll][Ii][Aa][Nn][Cc][Ee])
+			PROFILE=appliance
+			break
+			;;
+		esac
+		say "answer host or appliance"
+	done
+	exec 3<&-
+}
+
+# The leading arguments win over PCO_PROFILE, which wins over the question. The
+# question is for an install on a terminal: --yes takes the default answers and
+# --uninstall has nothing to choose between.
+choose_profile() {
+	local mode
+	if [[ -n ${PCO_PROFILE:-} ]]; then
+		check_profile_name "$PCO_PROFILE" PCO_PROFILE
+		PROFILE=$PCO_PROFILE
+	fi
+	if [[ -n $CHOSEN ]]; then
+		PROFILE=$CHOSEN
+		return 0
+	fi
+	if [[ -n ${PCO_PROFILE:-} || $UNINSTALL == 1 ]] || has_yes "$@"; then
+		return 0
+	fi
+	mode=$(input_mode)
+	if [[ $mode == stdin || $mode == tty ]]; then
+		ask_profile
+	fi
+}
+
+# The installer and the uninstaller ask questions: without a terminal they need
+# --yes, and the script says so before it downloads anything.
+require_input() {
+	if [[ $(input_mode "$@") == none ]]; then
+		die "no terminal to ask the installer's questions on: run it from a terminal, or add --yes"
+	fi
+}
+
+check_resume_file() {
+	local file=$1 q
+	if [[ $file != /* ]]; then
+		printf -v q '%q' "$file"
+		die "PCO_RESUME must be the absolute path of a journal, got $q"
+	fi
+	if [[ ! -f $file || ! -r $file ]]; then
+		die "not a readable file: $file"
+	fi
+}
+
+check_template_file() {
+	local file=$1 name=${1##*/} re='^[A-Za-z0-9._+~-]+\.tar\.zst$' q
+	if ! [[ $name =~ $re ]]; then
+		printf -v q '%q' "$name"
+		die "PCO_TEMPLATE must name a .tar.zst file with a plain file name, got $q"
+	fi
+	if [[ ! -f $file || ! -r $file ]]; then
+		die "not a readable file: $file"
+	fi
+	if [[ $file != /* ]]; then
+		file=$PWD/$file
+	fi
+	TEMPLATE_FILE=$file
+}
+
+# What only the appliance profile reads. A variable the chosen profile does not
+# read is refused, as it means the profile is not the one that was meant.
+check_profile_variables() {
+	if [[ $PROFILE == host ]]; then
+		if [[ -n ${PCO_TEMPLATE:-} ]]; then
+			die "PCO_TEMPLATE is for the appliance profile, which --appliance or PCO_PROFILE=appliance chooses"
+		fi
+		if [[ -n ${PCO_RESUME:-} ]]; then
+			die "PCO_RESUME is for the appliance profile, which --appliance or PCO_PROFILE=appliance chooses"
+		fi
+		return 0
+	fi
+	if [[ -n ${PCO_RESUME:-} ]]; then
+		if [[ $UNINSTALL == 1 ]]; then
+			die "PCO_RESUME finishes an install, it does not go with --uninstall"
+		fi
+		check_resume_file "$PCO_RESUME"
+	fi
+	if [[ -n ${PCO_TEMPLATE:-} && $UNINSTALL != 1 ]]; then
+		check_template_file "$PCO_TEMPLATE"
+	fi
+	if [[ ${PCO_SKIP_SETUP:-} != 1 ]]; then
+		require_input "$@"
+	fi
+}
+
 make_tmp() {
-	trap cleanup EXIT
+	trap on_exit EXIT
 	trap 'exit 129' HUP
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
@@ -342,9 +621,9 @@ expected_checksum() {
 }
 
 verify_checksum() {
-	local deb=$1 name=$2 expected actual
+	local file=$1 name=$2 expected actual
 	expected=$(expected_checksum "$TMP_DIR/checksums.txt" "$name")
-	actual=$(sha256sum "$deb" 2>/dev/null) || die "sha256sum failed on $name"
+	actual=$(sha256sum "$file" 2>/dev/null) || die "sha256sum failed on $name"
 	actual=${actual%% *}
 	if [[ $actual != "$expected" ]]; then
 		die "checksum of $name does not match checksums.txt: expected $expected, got $actual"
@@ -360,16 +639,6 @@ install_package() {
 		die "apt-get could not install $name"
 }
 
-has_yes() {
-	local arg
-	for arg in "$@"; do
-		if [[ $arg == --yes || $arg == -y ]]; then
-			return 0
-		fi
-	done
-	return 1
-}
-
 # exec does not run the EXIT trap, so the temporary directory goes first.
 exec_setup() {
 	cleanup
@@ -377,8 +646,6 @@ exec_setup() {
 	exec "$PCO_BIN" setup "$@"
 }
 
-# Opening /dev/tty fails when the process has no controlling terminal, even
-# though the file is readable, so it is tried instead of tested.
 hand_over() {
 	if [[ ${PCO_SKIP_SETUP:-} == 1 ]]; then
 		say "skipping the setup (PCO_SKIP_SETUP=1); run: pco setup"
@@ -387,30 +654,127 @@ hand_over() {
 	if [[ ! -x $PCO_BIN ]]; then
 		die "$PCO_BIN is missing or not executable after the install, so the setup cannot start"
 	fi
-	if [[ -t 0 ]]; then
+	# Piped into bash, as in curl | bash, stdin is the script and not the
+	# terminal. --yes is already among the arguments, which are passed on as
+	# they are.
+	case $(input_mode "$@") in
+	stdin)
 		say "starting pco setup"
 		exec_setup "$@"
-	fi
-	# Piped into bash, as in curl | bash, stdin is the script and not the terminal.
-	if (: <"$TTY_DEVICE") 2>/dev/null; then
+		;;
+	tty)
 		say "starting pco setup on the terminal"
 		exec_setup "$@" <"$TTY_DEVICE"
-	fi
-	# --yes is already among the arguments, which are passed on as they are.
-	if has_yes "$@"; then
+		;;
+	yes)
 		say "no terminal, starting pco setup with the answers of --yes"
 		exec_setup "$@"
+		;;
+	*)
+		say "no terminal to ask the setup questions on; to finish, run: pco setup"
+		;;
+	esac
+}
+
+# The appliance profile installs nothing: the package is unpacked into the
+# temporary directory and pco runs from there.
+unpack_package() {
+	local deb=$1 name=$2 detail=''
+	say "unpacking $name, nothing is installed on this node"
+	# The first line of dpkg-deb's own message goes into the one line of the failure.
+	if ! dpkg-deb -x "$deb" "$TMP_DIR/root" </dev/null 2>"$TMP_DIR/dpkg-deb.err"; then
+		read -r detail <"$TMP_DIR/dpkg-deb.err" || true
+		die "dpkg-deb could not unpack $name${detail:+ ($detail)}"
 	fi
-	say "no terminal to ask the setup questions on; to finish, run: pco setup"
+	if [[ ! -x $TMP_DIR/root/usr/bin/pco ]]; then
+		die "$name holds no usr/bin/pco to run"
+	fi
+}
+
+# Not exec: the temporary directory holds the binary and goes when it returns.
+# A signal for the script waits until then, as bash runs its trap only when the
+# command it waits for is done; the installer gets the signals of the terminal
+# itself and takes back what it made. Its exit code is the exit code of the script.
+run_installer() {
+	local verb=$1 status=0
+	case $(input_mode "$@") in
+	stdin)
+		say "starting pco appliance $verb"
+		"$TMP_DIR/root/usr/bin/pco" appliance "$@" || status=$?
+		;;
+	tty)
+		say "starting pco appliance $verb on the terminal"
+		"$TMP_DIR/root/usr/bin/pco" appliance "$@" <"$TTY_DEVICE" || status=$?
+		;;
+	yes)
+		say "no terminal, starting pco appliance $verb with the answers of --yes"
+		"$TMP_DIR/root/usr/bin/pco" appliance "$@" || status=$?
+		;;
+	*)
+		die "no terminal to ask the installer's questions on: run it from a terminal, or add --yes"
+		;;
+	esac
+	if [[ $status != 0 ]]; then
+		exit "$status"
+	fi
+}
+
+# The installer is told where the template comes from and what it has to match:
+# the release and the checksums.txt that was verified above, which it checks the
+# template against again. Offline there is no release to name, and the template
+# comes from PCO_TEMPLATE.
+hand_over_appliance() {
+	local name=$1 base=$2 verb=install shown dir
+	local -a args
+	shift 2
+	if [[ $UNINSTALL == 1 ]]; then
+		verb=uninstall
+		args=(uninstall "$@")
+	else
+		args=(install)
+		if [[ -n ${PCO_RESUME:-} ]]; then
+			args+=(--resume "$PCO_RESUME")
+		fi
+		if [[ -n $base ]]; then
+			args+=(--release-base "$base")
+		fi
+		args+=(--checksums "$TMP_DIR/checksums.txt")
+		if [[ -n $TEMPLATE_FILE ]]; then
+			args+=(--template "$TEMPLATE_FILE")
+		fi
+		args+=("$@")
+	fi
+	if [[ ${PCO_SKIP_SETUP:-} == 1 ]]; then
+		printf -v shown '%q ' pco appliance "${args[@]}"
+		shown=${shown% }
+		# The temporary directory is gone by the time anyone reads the line.
+		dir=$TMP_DIR/
+		shown=${shown//$dir/}
+		say "skipping the appliance $verb (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; run: $shown"
+		return 0
+	fi
+	unpack_package "$TMP_DIR/$name" "$name"
+	if [[ $verb == install ]]; then
+		JOURNALS_BEFORE=$(journals)
+		INSTALLER_STARTED=1
+	fi
+	run_installer "${args[@]}"
 }
 
 main() {
 	local repo=${PCO_REPO:-$DEFAULT_REPO}
-	local arch version name base verified fpr offline=0 skip=0
+	local arch version name base='' verified fpr offline=0 skip=0
+
+	leading_options "$@"
+	shift "$LEADING"
 
 	require_root
 	require_pve
 	arch=$(detect_arch)
+	choose_profile "$@"
+	if [[ $UNINSTALL == 1 && $PROFILE == host ]]; then
+		die "use pco uninstall to take a host install off this node; an appliance is removed with install.sh --appliance --uninstall --vmid <vmid>"
+	fi
 
 	if [[ -n ${PCO_DEB:-}${PCO_CHECKSUMS:-}${PCO_SIGNATURE:-} ]]; then
 		offline=1
@@ -419,8 +783,9 @@ main() {
 		skip=1
 	fi
 
-	require_commands "$offline"
+	require_commands "$offline" "$PROFILE"
 	check_signature_policy "$skip" "$offline"
+	check_profile_variables "$@"
 	if [[ $offline == 1 ]]; then
 		check_local_files "$skip"
 	else
@@ -445,6 +810,7 @@ main() {
 			check_version "$version"
 		fi
 		version=${version#v}
+		RELEASE_VERSION=$version
 		name=pco_${version}_${arch}.deb
 		base=https://github.com/$repo/releases/download/v$version
 		say "package: pco $version, architecture $arch"
@@ -461,8 +827,16 @@ main() {
 	fi
 	say "checking the checksum of $name"
 	verify_checksum "$TMP_DIR/$name" "$name"
+	if [[ -n $TEMPLATE_FILE ]]; then
+		say "checking the checksum of ${TEMPLATE_FILE##*/}"
+		verify_checksum "$TEMPLATE_FILE" "${TEMPLATE_FILE##*/}"
+	fi
 
 	say "verified by: $verified"
+	if [[ $PROFILE == appliance ]]; then
+		hand_over_appliance "$name" "$base" "$@"
+		return 0
+	fi
 	say "installing $name"
 	install_package "$TMP_DIR/$name" "$name"
 

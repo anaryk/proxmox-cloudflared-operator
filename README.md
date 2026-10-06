@@ -72,6 +72,12 @@ the checksum file and the checksum of the package, installs it, and starts the s
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash
 
+On a terminal the script first asks whether to install on the node (the host profile,
+which Enter keeps) or as an appliance, a container with nothing installed on the node;
+`--appliance` answers that beforehand (see [Profiles](docs/profiles.md)):
+
+    curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash -s -- --appliance
+
 The release key the script carries has the fingerprint
 `3D326CB52862A2E91C9919EFA98A1ED57B31F91B`, and before it installs anything it says
 which key the signature was made with.

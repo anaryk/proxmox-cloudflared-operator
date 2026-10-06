@@ -21,12 +21,17 @@ TTY_LINE=TTY_DEVICE=/dev/tty
 
 HASH_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 HASH_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+HASH_C=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 STUB_FPR=0123456789ABCDEF0123456789ABCDEF01234567
 PKG=pco_1.2.3_amd64.deb
+TEMPLATE=pco-appliance_1.2.3_amd64.tar.zst
+JOURNAL=20261006T101500-3f2a.json
 REPO=anaryk/proxmox-cloudflared-operator
 RELEASE_URL=https://github.com/$REPO/releases/download/v1.2.3
+QUESTION="Install on this node (host profile, the default) or as an appliance (a container, nothing on the node)? [host/appliance]"
+JOURNAL_LINE=JOURNAL_DIR=/root/.pco-appliance-install
 
-STUBBED=(id pveversion dpkg curl sha256sum gpgv apt-get mktemp)
+STUBBED=(id pveversion dpkg dpkg-deb curl sha256sum gpgv apt-get mktemp)
 REAL=(base64 cp rm cat ls mkdir)
 APT_FLAGS="install -y --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 CURL_FLAGS="curl --disable --fail --silent --show-error --location --proto =https --proto-redir =https --tlsv1.2 --connect-timeout 20 --max-time 300"
@@ -109,7 +114,21 @@ curl)
 	;;
 sha256sum)
 	for last in "$@"; do :; done
-	printf '%s  %s\n' "$(cfg sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)" "$last"
+	printf '%s  %s\n' "$(cfg "sha256-${last##*/}" "$(cfg sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)")" "$last"
+	;;
+dpkg-deb)
+	# dpkg-deb -x PACKAGE DIRECTORY: the package holds the stub as usr/bin/pco.
+	for last in "$@"; do :; done
+	if [ -f "$STUB_CASE/cfg/dpkg-deb-fail" ]; then
+		echo "dpkg-deb: error: not a Debian format archive" >&2
+		exit 2
+	fi
+	note "dpkg-deb: package file exists: $([ -f "$2" ] && echo yes || echo no)"
+	mkdir "$last" || exit 1
+	if [ ! -f "$STUB_CASE/cfg/dpkg-deb-no-pco" ]; then
+		mkdir -p "$last/usr/bin"
+		cp "$0" "$last/usr/bin/pco"
+	fi
 	;;
 gpgv)
 	keyring=
@@ -200,6 +219,13 @@ pco)
 	note "pco: temporary directories left: $n"
 	if [ -t 0 ]; then note "pco: stdin is a terminal"; else note "pco: stdin is not a terminal"; fi
 	if [ -f "$STUB_CASE/cfg/pco-read-stdin" ]; then note "pco: stdin holds: $(cat)"; fi
+	# What an installer that dies leaves behind, and a kill of the script
+	# that runs it.
+	if [ -f "$STUB_CASE/cfg/pco-journal" ]; then
+		mkdir -p "$STUB_CASE/journals"
+		echo '{}' >"$STUB_CASE/journals/$(cfg pco-journal)"
+	fi
+	if [ -f "$STUB_CASE/cfg/pco-signal-parent" ]; then kill "-$(cfg pco-signal-parent)" "$PPID"; fi
 	exit "$(cfg pco-rc 0)"
 	;;
 esac
@@ -207,9 +233,10 @@ STUB
 	chmod +x "$ROOT/stub"
 }
 
-# Runs a command with a pseudo terminal as its stdin, stdout and stderr, and
-# passes on its output and exit code. pty.spawn is not used: it hangs on the
-# Python 3.9 that ships with macOS when its own stdin is closed.
+# Runs a command with a pseudo terminal as its stdin, stdout and stderr, types
+# PTY_INPUT at it when that is set, and passes on its output and exit code.
+# pty.spawn is not used: it hangs on the Python 3.9 that ships with macOS when
+# its own stdin is closed.
 write_pty_runner() {
 	cat >"$ROOT/pty_run.py" <<'PYTHON'
 import os, pty, select, signal, sys, time
@@ -217,6 +244,11 @@ import os, pty, select, signal, sys, time
 pid, fd = pty.fork()
 if pid == 0:
     os.execvp(sys.argv[1], sys.argv[1:])
+
+# What is typed at the terminal, taken from PTY_INPUT.
+typed = os.environ.get("PTY_INPUT")
+if typed:
+    os.write(fd, typed.encode())
 
 deadline = time.time() + 60
 out = b""
@@ -246,12 +278,14 @@ PYTHON
 }
 
 # A copy of install.sh with the key block, whatever it holds, swapped for a
-# key, and the lines that name the installed binary and the terminal swapped
-# for other paths: a test can put nothing at /usr/bin/pco and has no terminal.
-# The script takes neither from the environment, so that root's cannot change
-# them. Nothing else differs from the real script.
+# key, and the lines that name the installed binary, the terminal and the
+# directory of the journals swapped for other paths: a test can put nothing at
+# /usr/bin/pco, has no terminal and must not write to /root. The script takes
+# none of them from the environment, so that root's cannot change them. Nothing
+# else differs from the real script.
 make_variant_script() {
-	local out=$1 key=$2 pco_bin=$3 tty=$4 line keys=0 bins=0 ttys=0 inside=0
+	local out=$1 key=$2 pco_bin=$3 tty=$4 journals=${5:-$ROOT/no-journals}
+	local line keys=0 bins=0 ttys=0 dirs=0 inside=0
 	while IFS= read -r line; do
 		if [[ $inside == 1 ]]; then
 			# The lines of the block are dropped; the EOF that closes it stays.
@@ -269,12 +303,15 @@ make_variant_script() {
 		elif [[ $line == "$TTY_LINE" ]]; then
 			printf 'TTY_DEVICE=%s\n' "$tty"
 			ttys=$((ttys + 1))
+		elif [[ $line == "$JOURNAL_LINE" ]]; then
+			printf 'JOURNAL_DIR=%s\n' "$journals"
+			dirs=$((dirs + 1))
 		else
 			printf '%s\n' "$line"
 		fi
 	done <"$INSTALL" >"$out"
-	if [[ $keys != 1 || $inside != 0 || $bins != 1 || $ttys != 1 ]]; then
-		echo "install_test.sh: install.sh has $keys closed key blocks, $bins lines naming the binary and $ttys naming the terminal, expected one of each" >&2
+	if [[ $keys != 1 || $inside != 0 || $bins != 1 || $ttys != 1 || $dirs != 1 ]]; then
+		echo "install_test.sh: install.sh has $keys closed key blocks, $bins lines naming the binary, $ttys naming the terminal and $dirs naming the journals, expected one of each" >&2
 		exit 1
 	fi
 }
@@ -326,12 +363,25 @@ add_stub() {
 	ln -s "$ROOT/stub" "$CASE_DIR/bin/$1"
 }
 
-# The script under test, with the binary it hands over to and the terminal it
-# reads from at other paths than the usual.
+# The script under test, with the binary it hands over to, the terminal it
+# reads from and the directory it looks for journals in at other paths than the
+# usual; the journals of a case are in a directory of its own.
 use_variant() {
 	local pco_bin=$1 tty=$2
-	make_variant_script "$CASE_DIR/install.sh" "$(fake_key)" "$pco_bin" "$tty"
+	make_variant_script "$CASE_DIR/install.sh" "$(fake_key)" "$pco_bin" "$tty" "$CASE_DIR/journals"
 	SCRIPT_UNDER_TEST=$CASE_DIR/install.sh
+}
+
+# A case that has a terminal, which holds TEXT for the script to read.
+use_terminal() {
+	printf '%s' "$1" >"$CASE_DIR/tty"
+	use_variant "$ROOT/usrbin/pco" "$CASE_DIR/tty"
+}
+
+# A journal in the directory the script looks in, as an earlier run left it.
+leave_journal() {
+	mkdir -p "$CASE_DIR/journals"
+	printf '{}\n' >"$CASE_DIR/journals/$1"
 }
 
 use_real() {
@@ -569,6 +619,32 @@ assert_nothing_elsewhere() {
 assert_nothing_installed() {
 	assert_calls apt-get 0
 	assert_calls pco 0
+}
+
+assert_nothing_unpacked() {
+	assert_nothing_installed
+	assert_calls dpkg-deb 0
+}
+
+# Sets the case up to run on a pseudo terminal that INPUT is typed at. It
+# counts a skip and returns 1 when there is no python3 to make one.
+use_pty() {
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "skipped [$CASE_NAME]: no python3 to open a pseudo terminal"
+		SKIPPED=$((SKIPPED + 1))
+		return 1
+	fi
+	write_pty_runner
+	RUN_PREFIX=(env "PTY_INPUT=$1" python3 "$ROOT/pty_run.py")
+}
+
+# The template of the appliance as a local file, with the line of checksums.txt
+# that names it, and PCO_TEMPLATE pointing at it.
+use_template() {
+	printf 'template-bytes' >"$CASE_DIR/local/$TEMPLATE"
+	printf '%s  %s\n%s  %s\n' "$HASH_A" "$PKG" "$HASH_C" "$TEMPLATE" >"$CASE_DIR/fixtures/checksums.txt"
+	set_cfg "sha256-$TEMPLATE" "$HASH_C"
+	set_env PCO_TEMPLATE "$CASE_DIR/local/$TEMPLATE"
 }
 
 case_not_root() {
@@ -1253,6 +1329,7 @@ case_hand_over() {
 	new_case "the temporary directory is gone before pco setup takes over"
 	use_variant "$ROOT/usrbin/pco" "$CASE_DIR/tty"
 	: >"$CASE_DIR/tty"
+	set_env PCO_PROFILE host
 	run_install
 	assert_rc 0
 	assert_log_has "pco: temporary directories left: 0"
@@ -1270,6 +1347,7 @@ case_hand_over() {
 	printf 'typed answers' >"$CASE_DIR/tty"
 	use_variant "$ROOT/usrbin/pco" "$CASE_DIR/tty"
 	set_cfg pco-read-stdin 1
+	set_env PCO_PROFILE host
 	run_install
 	assert_rc 0
 	assert_log_has "pco setup"
@@ -1376,6 +1454,736 @@ case_hand_over_terminal() {
 	assert_tmp_gone
 }
 
+case_profile_question() {
+	local answer
+
+	new_case "without a choice and without a terminal it is the host profile"
+	run_install --name shop --yes
+	assert_rc 0
+	assert_calls apt-get 1
+	assert_calls dpkg-deb 0
+	assert_log_has "pco setup --name shop --yes"
+	assert_stdout_lacks "$QUESTION"
+
+	new_case "on a terminal, Enter at the question keeps the host profile"
+	use_terminal $'\n'
+	run_install --name shop
+	assert_rc 0
+	assert_stdout_has "$QUESTION"
+	assert_calls apt-get 1
+	assert_calls dpkg-deb 0
+	assert_log_has "pco setup --name shop"
+	assert_tmp_gone
+
+	for answer in host Host HOST h ' host '; do
+		new_case "on a terminal, the answer '$answer' is the host profile"
+		use_terminal "$answer"$'\n'
+		run_install
+		assert_rc 0
+		assert_calls apt-get 1
+		assert_calls dpkg-deb 0
+		assert_log_has "pco setup"
+	done
+
+	for answer in appliance Appliance APPLIANCE a ' appliance '; do
+		new_case "on a terminal, the answer '$answer' is the appliance profile"
+		use_terminal "$answer"$'\n'
+		run_install --vmid 120
+		assert_rc 0
+		assert_calls apt-get 0
+		assert_calls dpkg-deb 1
+		assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --vmid 120"
+		assert_tmp_gone
+	done
+
+	new_case "on a terminal, the last answer may lack its newline"
+	use_terminal appliance
+	run_install
+	assert_rc 0
+	assert_calls dpkg-deb 1
+
+	new_case "an answer that is neither is asked again"
+	use_terminal $'maybe\nappliance\n'
+	run_install
+	assert_rc 0
+	assert_stdout_has "answer host or appliance"
+	assert_calls dpkg-deb 1
+
+	new_case "a terminal that gives no answer stops before anything is downloaded"
+	use_terminal ''
+	run_install
+	assert_fail "no answer to the question"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "the question is not asked when --appliance chose"
+	use_terminal $'host\n'
+	run_install --appliance
+	assert_rc 0
+	assert_stdout_lacks "$QUESTION"
+	assert_calls dpkg-deb 1
+
+	new_case "the question is not asked when --profile host chose"
+	use_terminal $'appliance\n'
+	run_install --profile host
+	assert_rc 0
+	assert_stdout_lacks "$QUESTION"
+	assert_calls apt-get 1
+	assert_calls dpkg-deb 0
+
+	new_case "the question is not asked when PCO_PROFILE chose"
+	use_terminal $'appliance\n'
+	set_env PCO_PROFILE host
+	run_install
+	assert_rc 0
+	assert_stdout_lacks "$QUESTION"
+	assert_calls apt-get 1
+
+	new_case "--yes takes the host profile without asking"
+	use_terminal $'appliance\n'
+	run_install --yes
+	assert_rc 0
+	assert_stdout_lacks "$QUESTION"
+	assert_calls apt-get 1
+	assert_calls dpkg-deb 0
+
+	new_case "--uninstall without a choice asks nothing and is the host profile"
+	use_terminal $'appliance\n'
+	run_install --uninstall
+	assert_fail "use pco uninstall"
+	assert_stdout_lacks "$QUESTION"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "with stdin on a terminal, the question is asked there"
+	if use_pty $'\n'; then
+		run_install --name shop
+		assert_rc 0
+		assert_stdout_has "$QUESTION"
+		assert_calls apt-get 1
+		assert_calls dpkg-deb 0
+		assert_log_has "pco setup --name shop"
+		assert_log_has "pco: stdin is a terminal"
+		assert_tmp_gone
+	fi
+
+	new_case "with stdin on a terminal, appliance typed at the question is the appliance profile"
+	if use_pty $'appliance\n'; then
+		run_install --vmid 120
+		assert_rc 0
+		assert_stdout_has "$QUESTION"
+		assert_calls apt-get 0
+		assert_calls dpkg-deb 1
+		assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --vmid 120"
+		assert_log_has "pco: stdin is a terminal"
+		assert_tmp_gone
+	fi
+}
+
+case_profile_choice() {
+	local spec
+	local -a choice
+
+	for spec in "--appliance" "--profile appliance" "--profile=appliance"; do
+		read -r -a choice <<<"$spec"
+		new_case "$spec takes the appliance path and is not passed on"
+		run_install "${choice[@]}" --yes --vmid 120
+		assert_rc 0
+		assert_calls apt-get 0
+		assert_calls dpkg-deb 1
+		assert_calls pco 1
+		assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --yes --vmid 120"
+		assert_log_lacks "--appliance"
+		assert_log_lacks "--profile"
+	done
+
+	new_case "PCO_PROFILE=appliance takes the appliance path"
+	set_env PCO_PROFILE appliance
+	run_install --yes --vmid 120
+	assert_rc 0
+	assert_calls apt-get 0
+	assert_calls dpkg-deb 1
+	assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --yes --vmid 120"
+
+	for spec in "--profile host" "--profile=host"; do
+		read -r -a choice <<<"$spec"
+		new_case "$spec takes the host path and is not passed on"
+		run_install "${choice[@]}" --name shop --yes
+		assert_rc 0
+		assert_calls apt-get 1
+		assert_calls dpkg-deb 0
+		assert_log_has "pco setup --name shop --yes"
+		assert_log_lacks "--profile"
+	done
+
+	new_case "PCO_PROFILE=host takes the host path"
+	set_env PCO_PROFILE host
+	run_install --name shop --yes
+	assert_rc 0
+	assert_calls apt-get 1
+	assert_calls dpkg-deb 0
+
+	new_case "an empty PCO_PROFILE counts as not set"
+	set_env PCO_PROFILE ""
+	run_install --name shop --yes
+	assert_rc 0
+	assert_calls apt-get 1
+
+	new_case "an argument wins over PCO_PROFILE"
+	set_env PCO_PROFILE host
+	run_install --appliance --yes
+	assert_rc 0
+	assert_calls apt-get 0
+	assert_calls dpkg-deb 1
+
+	new_case "--appliance after another argument is passed on and chooses nothing"
+	run_install --yes --appliance
+	assert_rc 0
+	assert_calls apt-get 1
+	assert_calls dpkg-deb 0
+	assert_log_has "pco setup --yes --appliance"
+
+	new_case "a profile named twice is the profile"
+	run_install --appliance --profile appliance --yes
+	assert_rc 0
+	assert_calls dpkg-deb 1
+	assert_log_lacks "--profile"
+
+	new_case "PCO_PROFILE other than host or appliance is refused"
+	set_env PCO_PROFILE vm
+	run_install --yes
+	assert_fail "PCO_PROFILE must be host or appliance, got vm"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "a refused PCO_PROFILE is refused even when an argument chooses"
+	set_env PCO_PROFILE vm
+	run_install --appliance --yes
+	assert_fail "PCO_PROFILE must be host or appliance, got vm"
+	assert_calls curl 0
+
+	for spec in "--profile vm" "--profile=vm"; do
+		read -r -a choice <<<"$spec"
+		new_case "$spec is refused"
+		run_install "${choice[@]}" --yes
+		assert_fail "--profile must be host or appliance, got vm"
+		assert_calls curl 0
+		assert_nothing_unpacked
+	done
+
+	new_case "--profile without a value is refused"
+	run_install --profile
+	assert_fail "--profile needs a value"
+	assert_calls curl 0
+
+	new_case "--appliance with --profile host is refused"
+	run_install --appliance --profile host --yes
+	assert_fail "the leading arguments name both profiles"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "a refused argument shows a long value cut short"
+	run_install --profile "$(printf 'x%.0s' {1..100})"
+	assert_fail "--profile must be host or appliance, got xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+}
+
+case_appliance_install() {
+	new_case "the appliance path unpacks the verified package and runs the installer from it"
+	run_install --appliance --yes --vmid 120 'two words'
+	assert_rc 0
+	assert_stderr_empty
+	assert_calls apt-get 0
+	assert_calls dpkg-deb 1
+	assert_calls pco 1
+	assert_log_has "dpkg-deb -x $CASE_DIR/tmp/pco-install.*/$PKG $CASE_DIR/tmp/pco-install.*/root"
+	assert_log_has "dpkg-deb: package file exists: yes"
+	assert_log_has "pco: run as $CASE_DIR/tmp/pco-install.*/root/usr/bin/pco"
+	assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --yes --vmid 120 two words"
+	assert_log_has "pco: temporary directories left: 1"
+	assert_stdout_has "verified by: signature by key $STUB_FPR and checksum"
+	assert_stdout_has "unpacking $PKG, nothing is installed on this node"
+	assert_before gpgv sha256sum
+	assert_before sha256sum dpkg-deb
+	assert_before dpkg-deb pco
+	ensure "the downloads are those of the host profile: $(curl_urls)" \
+		equals "$(curl_urls)" "https://api.github.com/repos/$REPO/releases/latest $RELEASE_URL/$PKG $RELEASE_URL/checksums.txt $RELEASE_URL/checksums.txt.sig"
+	assert_tmp_gone
+	assert_nothing_elsewhere
+
+	new_case "the appliance path does not need apt-get"
+	drop_command apt-get
+	run_install --appliance --yes
+	assert_rc 0
+	assert_calls dpkg-deb 1
+	assert_calls pco 1
+
+	new_case "the appliance path needs dpkg-deb, and the host path does not"
+	drop_command dpkg-deb
+	run_install --appliance --yes
+	assert_fail "missing required command(s): dpkg-deb"
+	assert_calls curl 0
+
+	new_case "the host path needs no dpkg-deb"
+	drop_command dpkg-deb
+	run_install --yes
+	assert_rc 0
+	assert_calls apt-get 1
+
+	new_case "the exit code of the installer is the exit code of the script"
+	set_cfg pco-rc 3
+	run_install --appliance --yes
+	assert_rc 3
+	assert_stderr_empty
+	assert_tmp_gone
+
+	new_case "the release the template comes from follows PCO_REPO"
+	set_env PCO_REPO some-one/else_repo.v2
+	run_install --appliance --yes
+	assert_rc 0
+	assert_log_has "--release-base https://github.com/some-one/else_repo.v2/releases/download/v1.2.3 --checksums"
+
+	new_case "the release the template comes from follows PCO_VERSION"
+	set_env PCO_VERSION 0.9.1
+	cp "$CASE_DIR/fixtures/$PKG" "$CASE_DIR/fixtures/pco_0.9.1_amd64.deb"
+	printf '%s  pco_0.9.1_amd64.deb\n' "$HASH_A" >"$CASE_DIR/fixtures/checksums.txt"
+	run_install --appliance --yes
+	assert_rc 0
+	assert_log_has "--release-base https://github.com/$REPO/releases/download/v0.9.1 --checksums"
+
+	new_case "offline, nothing is downloaded and no release is named"
+	use_local_files
+	run_install --appliance --yes
+	assert_rc 0
+	assert_calls curl 0
+	assert_calls dpkg-deb 1
+	assert_log_lacks "--release-base"
+	assert_log_has "pco appliance install --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --yes"
+	assert_stdout_has "source: local files, nothing is downloaded"
+
+	new_case "a bad signature stops before the package is unpacked"
+	set_cfg gpgv bad
+	run_install --appliance --yes
+	assert_fail "signature of checksums.txt is not valid"
+	assert_nothing_unpacked
+	assert_tmp_gone
+
+	new_case "a checksum that does not match stops before the package is unpacked"
+	set_cfg sha256 "$HASH_B"
+	run_install --appliance --yes
+	assert_fail "checksum of $PKG does not match checksums.txt"
+	assert_nothing_unpacked
+	assert_tmp_gone
+
+	new_case "a package that cannot be unpacked stops before the installer"
+	set_cfg dpkg-deb-fail 1
+	run_install --appliance --yes
+	assert_fail "dpkg-deb could not unpack $PKG (dpkg-deb: error: not a Debian format archive)"
+	assert_calls pco 0
+	assert_tmp_gone
+
+	new_case "a package without pco stops before the installer"
+	set_cfg dpkg-deb-no-pco 1
+	run_install --appliance --yes
+	assert_fail "$PKG holds no usr/bin/pco to run"
+	assert_calls pco 0
+	assert_tmp_gone
+
+	new_case "the placeholder key refuses the appliance too"
+	SCRIPT_UNDER_TEST=$PLACEHOLDER_SCRIPT
+	run_install --appliance --yes
+	assert_fail "this build of the script carries no release key"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "the override of the signature goes for the appliance too, and says so"
+	SCRIPT_UNDER_TEST=$PLACEHOLDER_SCRIPT
+	set_env PCO_INSECURE_SKIP_SIGNATURE 1
+	run_install --appliance --yes
+	assert_rc 0
+	assert_stderr_has "install.sh: WARNING: PCO_INSECURE_SKIP_SIGNATURE=1, the signature of checksums.txt is NOT checked"
+	assert_stdout_has "verified by: checksum only (signature check skipped)"
+	assert_calls dpkg-deb 1
+}
+
+case_appliance_input() {
+	new_case "without stdin on a terminal, the installer reads from the terminal"
+	use_terminal 'typed answers'
+	set_cfg pco-read-stdin 1
+	run_install --appliance
+	assert_rc 0
+	assert_log_has "pco: stdin holds: typed answers"
+	assert_stdout_has "starting pco appliance install on the terminal"
+	assert_tmp_gone
+
+	new_case "without any terminal, --yes goes on"
+	set_cfg pco-read-stdin 1
+	run_install --appliance --yes
+	assert_rc 0
+	assert_log_has "pco: stdin holds:"
+	assert_stdout_has "no terminal, starting pco appliance install with the answers of --yes"
+
+	new_case "without any terminal, -y counts as --yes"
+	run_install --appliance -y
+	assert_rc 0
+	assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt -y"
+
+	new_case "without a terminal and without --yes it stops before anything is downloaded"
+	run_install --appliance --vmid 120
+	assert_fail "no terminal to ask the installer's questions on: run it from a terminal, or add --yes"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "with stdin on a terminal, the installer gets it as it is"
+	if use_pty ''; then
+		run_install --appliance
+		assert_rc 0
+		assert_log_has "pco appliance install"
+		assert_log_has "pco: stdin is a terminal"
+		assert_stdout_has "starting pco appliance install"
+		assert_tmp_gone
+	fi
+}
+
+case_appliance_template() {
+	new_case "PCO_TEMPLATE is checked against checksums.txt and passed on"
+	use_template
+	run_install --appliance --yes
+	assert_rc 0
+	assert_log_has "sha256sum $CASE_DIR/local/$TEMPLATE"
+	assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --template $CASE_DIR/local/$TEMPLATE --yes"
+	assert_stdout_has "checking the checksum of $TEMPLATE"
+	assert_before sha256sum dpkg-deb
+	assert_before sha256sum pco
+	assert_tmp_gone
+
+	new_case "offline, with a template of its own, nothing is downloaded"
+	use_template
+	use_local_files
+	run_install --appliance --yes
+	assert_rc 0
+	assert_calls curl 0
+	assert_log_lacks "--release-base"
+	assert_log_has "pco appliance install --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --template $CASE_DIR/local/$TEMPLATE --yes"
+
+	new_case "a relative PCO_TEMPLATE is passed on as an absolute path"
+	use_template
+	cp "$CASE_DIR/local/$TEMPLATE" "$CASE_DIR/work/$TEMPLATE"
+	CASE_ENV=("${CASE_ENV[@]/PCO_TEMPLATE=*/PCO_TEMPLATE=$TEMPLATE}")
+	run_install --appliance --yes
+	assert_rc 0
+	# The script starts with no PWD, so it is where the system says the directory is.
+	assert_log_has "--template $(cd "$CASE_DIR/work" && pwd -P)/$TEMPLATE --yes"
+	ensure "the file named by PCO_TEMPLATE is left alone" is_file "$CASE_DIR/work/$TEMPLATE"
+
+	new_case "a template that does not match checksums.txt stops before the hand-over"
+	use_template
+	set_cfg "sha256-$TEMPLATE" "$HASH_B"
+	run_install --appliance --yes
+	assert_fail "checksum of $TEMPLATE does not match checksums.txt: expected $HASH_C, got $HASH_B"
+	assert_nothing_unpacked
+	assert_tmp_gone
+
+	new_case "a template that checksums.txt does not name stops before the hand-over"
+	use_template
+	printf '%s  %s\n' "$HASH_A" "$PKG" >"$CASE_DIR/fixtures/checksums.txt"
+	run_install --appliance --yes
+	assert_fail "checksums.txt has no line for $TEMPLATE"
+	assert_nothing_unpacked
+	assert_tmp_gone
+
+	new_case "a template of another name is not the one checksums.txt names"
+	use_template
+	cp "$CASE_DIR/local/$TEMPLATE" "$CASE_DIR/local/other.tar.zst"
+	set_env PCO_TEMPLATE "$CASE_DIR/local/other.tar.zst"
+	run_install --appliance --yes
+	assert_fail "checksums.txt has no line for other.tar.zst"
+	assert_nothing_unpacked
+
+	new_case "a bad signature stops before the template is looked at"
+	use_template
+	set_cfg gpgv bad
+	run_install --appliance --yes
+	assert_fail "signature of checksums.txt is not valid"
+	assert_calls sha256sum 0
+	assert_nothing_unpacked
+
+	new_case "a template that is not a file stops before anything is downloaded"
+	use_template
+	rm "$CASE_DIR/local/$TEMPLATE"
+	run_install --appliance --yes
+	assert_fail "not a readable file: $CASE_DIR/local/$TEMPLATE"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "PCO_TEMPLATE must be a .tar.zst with a plain name"
+	use_template
+	cp "$CASE_DIR/local/$TEMPLATE" "$CASE_DIR/local/pco template.tar.zst"
+	set_env PCO_TEMPLATE "$CASE_DIR/local/pco template.tar.zst"
+	run_install --appliance --yes
+	assert_fail "PCO_TEMPLATE must name a .tar.zst file with a plain file name"
+	assert_calls curl 0
+
+	new_case "PCO_TEMPLATE is for the appliance profile"
+	use_template
+	run_install --yes
+	assert_fail "PCO_TEMPLATE is for the appliance profile"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "without PCO_TEMPLATE no template is passed on"
+	run_install --appliance --yes
+	assert_rc 0
+	assert_log_lacks "--template"
+
+	new_case "--uninstall has no use for PCO_TEMPLATE and does not check it"
+	use_template
+	run_install --appliance --uninstall --yes --vmid 120
+	assert_rc 0
+	assert_calls sha256sum 1
+	assert_log_lacks "--template"
+}
+
+case_appliance_failure() {
+	local spec sig status
+
+	new_case "a failing installer leaves no temporary directory and offers its journal"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	set_cfg pco-rc 1
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 1
+	assert_tmp_gone
+	assert_stderr_has "the installer did not finish, and left its journal in $CASE_DIR/journals"
+	assert_stderr_has "to finish the run or take it back, run: PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
+	assert_stderr_has "set PCO_VERSION=1.2.3 as well to run the release of this run again"
+	assert_nothing_elsewhere
+
+	new_case "a failing installer that left no journal offers nothing"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	set_cfg pco-rc 1
+	run_install --appliance --yes
+	assert_rc 1
+	assert_stderr_empty
+	assert_tmp_gone
+
+	new_case "a journal of an earlier run is not offered"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	leave_journal 20260101T000000-0000.json
+	set_cfg pco-rc 1
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 1
+	assert_stderr_has "PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
+	assert_stderr_lacks "20260101T000000-0000.json"
+
+	new_case "an installer that succeeds offers nothing"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 0
+	assert_stderr_empty
+
+	new_case "offline, the offer does not name a release"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	use_local_files
+	set_cfg pco-rc 1
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 1
+	assert_stderr_has "PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
+	assert_stderr_lacks "PCO_VERSION"
+
+	new_case "a failure before the installer starts offers nothing"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	leave_journal "$JOURNAL"
+	set_cfg dpkg-deb-fail 1
+	run_install --appliance --yes
+	assert_rc 1
+	assert_stderr_lacks "PCO_RESUME"
+
+	for spec in HUP:129 INT:130 TERM:143; do
+		sig=${spec%%:*}
+		status=${spec##*:}
+		new_case "SIG$sig for the script is handled when the installer returns, and the directory goes"
+		use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+		set_cfg pco-signal-parent "$sig"
+		set_cfg pco-journal "$JOURNAL"
+		set_cfg pco-rc 1
+		run_install --appliance --yes
+		assert_rc "$status"
+		assert_tmp_gone
+		assert_stderr_has "PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
+		assert_nothing_elsewhere
+	done
+}
+
+case_appliance_resume() {
+	new_case "PCO_RESUME hands the journal to --resume, and the package is fetched as always"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	leave_journal "$JOURNAL"
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 0
+	assert_log_has "pco appliance install --resume $CASE_DIR/journals/$JOURNAL --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --yes"
+	assert_calls curl 4
+	assert_calls dpkg-deb 1
+	assert_stderr_empty
+	assert_tmp_gone
+
+	new_case "offline, PCO_RESUME downloads nothing"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	leave_journal "$JOURNAL"
+	use_local_files
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 0
+	assert_calls curl 0
+	assert_log_has "pco appliance install --resume $CASE_DIR/journals/$JOURNAL --checksums"
+
+	new_case "a resumed run that fails offers its journal again"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	leave_journal "$JOURNAL"
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	set_cfg pco-rc 1
+	run_install --appliance --yes
+	assert_rc 1
+	assert_stderr_has "PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
+	assert_tmp_gone
+
+	new_case "PCO_RESUME that names no file stops before anything is downloaded"
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	run_install --appliance --yes
+	assert_fail "not a readable file: $CASE_DIR/journals/$JOURNAL"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "PCO_RESUME must be an absolute path"
+	set_env PCO_RESUME "journals/$JOURNAL"
+	run_install --appliance --yes
+	assert_fail "PCO_RESUME must be the absolute path of a journal, got journals/$JOURNAL"
+	assert_calls curl 0
+
+	new_case "PCO_RESUME is for the appliance profile"
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	run_install --yes
+	assert_fail "PCO_RESUME is for the appliance profile"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "PCO_RESUME does not go with --uninstall"
+	leave_journal "$JOURNAL"
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	run_install --appliance --uninstall --yes --vmid 120
+	assert_fail "PCO_RESUME finishes an install, it does not go with --uninstall"
+	assert_calls curl 0
+}
+
+case_appliance_uninstall() {
+	local spec
+	local -a lead
+
+	for spec in "--appliance --uninstall" "--uninstall --appliance" "--profile appliance --uninstall"; do
+		read -r -a lead <<<"$spec"
+		new_case "$spec runs pco appliance uninstall from the verified package"
+		run_install "${lead[@]}" --vmid 120 --yes --keep-cloudflare
+		assert_rc 0
+		assert_calls apt-get 0
+		assert_calls dpkg-deb 1
+		assert_calls pco 1
+		assert_log_has "pco appliance uninstall --vmid 120 --yes --keep-cloudflare"
+		assert_log_lacks "--release-base"
+		assert_log_lacks "--checksums"
+		assert_log_lacks "--uninstall"
+		assert_log_has "pco: run as $CASE_DIR/tmp/pco-install.*/root/usr/bin/pco"
+		assert_before sha256sum dpkg-deb
+		assert_before dpkg-deb pco
+		assert_stdout_has "starting pco appliance uninstall with the answers of --yes"
+		assert_tmp_gone
+	done
+
+	new_case "PCO_PROFILE=appliance with --uninstall"
+	set_env PCO_PROFILE appliance
+	run_install --uninstall --vmid 120 --yes
+	assert_rc 0
+	assert_log_has "pco appliance uninstall --vmid 120 --yes"
+
+	new_case "an uninstall asks on the terminal, as the installer does"
+	use_terminal 'typed answers'
+	set_cfg pco-read-stdin 1
+	run_install --appliance --uninstall --vmid 120
+	assert_rc 0
+	assert_log_has "pco: stdin holds: typed answers"
+	assert_stdout_has "starting pco appliance uninstall on the terminal"
+
+	new_case "an uninstall without a terminal and without --yes stops before anything is downloaded"
+	run_install --appliance --uninstall --vmid 120
+	assert_fail "no terminal to ask the installer's questions on"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "an uninstall is verified as an install is"
+	set_cfg gpgv bad
+	run_install --appliance --uninstall --vmid 120 --yes
+	assert_fail "signature of checksums.txt is not valid"
+	assert_nothing_unpacked
+	assert_tmp_gone
+
+	new_case "the exit code of the uninstaller is the exit code of the script, and it offers no journal"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	set_cfg pco-rc 2
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --uninstall --vmid 120 --yes
+	assert_rc 2
+	assert_stderr_empty
+	assert_tmp_gone
+
+	new_case "with the host profile --uninstall points at pco uninstall"
+	run_install --uninstall --yes
+	assert_fail "use pco uninstall to take a host install off this node; an appliance is removed with install.sh --appliance --uninstall --vmid <vmid>"
+	assert_calls curl 0
+	assert_nothing_unpacked
+
+	new_case "--profile host with --uninstall points at pco uninstall too"
+	run_install --profile host --uninstall --yes
+	assert_fail "use pco uninstall"
+	assert_calls curl 0
+}
+
+case_appliance_skip_setup() {
+	new_case "PCO_SKIP_SETUP=1 verifies, prints the hand-over and stops, without a terminal"
+	set_env PCO_SKIP_SETUP 1
+	run_install --appliance --vmid 120
+	assert_rc 0
+	assert_stderr_empty
+	assert_nothing_unpacked
+	assert_stdout_has "verified by: signature by key $STUB_FPR and checksum"
+	assert_stdout_has "skipping the appliance install (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; run: pco appliance install --release-base $RELEASE_URL --checksums checksums.txt --vmid 120"
+	assert_stdout_lacks "$CASE_DIR/tmp"
+	assert_tmp_gone
+
+	new_case "PCO_SKIP_SETUP=1 with a template names it in the hand-over"
+	use_template
+	set_env PCO_SKIP_SETUP 1
+	run_install --appliance
+	assert_rc 0
+	assert_nothing_unpacked
+	assert_stdout_has "run: pco appliance install --release-base $RELEASE_URL --checksums checksums.txt --template $CASE_DIR/local/$TEMPLATE"
+
+	new_case "PCO_SKIP_SETUP=1 stops an uninstall after the verification too"
+	set_env PCO_SKIP_SETUP 1
+	run_install --appliance --uninstall --vmid 120
+	assert_rc 0
+	assert_nothing_unpacked
+	assert_stdout_has "skipping the appliance uninstall (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; run: pco appliance uninstall --vmid 120"
+	assert_tmp_gone
+
+	new_case "PCO_SKIP_SETUP=1 does not hide a failed check"
+	set_env PCO_SKIP_SETUP 1
+	set_cfg sha256 "$HASH_B"
+	run_install --appliance
+	assert_fail "does not match checksums.txt"
+}
+
 case_progress_messages() {
 	new_case "it says what it is about to install and what verified it, before installing"
 	run_install
@@ -1434,11 +2242,14 @@ case_structure() {
 	ensure "the script sets -euo pipefail" grep -q '^set -euo pipefail$' "$INSTALL"
 	ensure "the script never uses eval" lacks_eval
 
-	new_case "the script takes the installed binary and the terminal from no variable"
+	new_case "the script takes the installed binary, the terminal and the journals from no variable"
 	ensure "the binary is named by its path" grep -qx 'PCO_BIN=/usr/bin/pco' "$INSTALL"
 	ensure "the terminal is named by its path" grep -qx 'TTY_DEVICE=/dev/tty' "$INSTALL"
+	ensure "the journals are named by their directory" grep -qx 'JOURNAL_DIR=/root/.pco-appliance-install' "$INSTALL"
 	# shellcheck disable=SC2016 # grep looks for the text, nothing is meant to expand
 	ensure "the hand-over goes through that path" grep -qF 'exec "$PCO_BIN" setup' "$INSTALL"
+	# shellcheck disable=SC2016 # grep looks for the text, nothing is meant to expand
+	ensure "the appliance installer runs from the unpacked package" grep -qF '"$TMP_DIR/root/usr/bin/pco" appliance' "$INSTALL"
 }
 
 lacks_eval() {
@@ -1451,7 +2262,7 @@ lacks_eval() {
 only_stubs() {
 	local t
 	rm -f "$CASE_DIR"/bin/*
-	for t in id pveversion dpkg curl sha256sum gpgv sqv apt-get pco mktemp base64 cp rm cat ls sed grep awk tr \
+	for t in id pveversion dpkg dpkg-deb curl sha256sum gpgv sqv apt-get pco mktemp base64 cp rm cat ls sed grep awk tr \
 		head tail dirname basename mkdir touch mv ln chmod date uname; do
 		add_stub "$t"
 	done
@@ -1742,6 +2553,15 @@ case_install_call
 case_temporary_directory
 case_hand_over
 case_hand_over_terminal
+case_profile_question
+case_profile_choice
+case_appliance_install
+case_appliance_input
+case_appliance_template
+case_appliance_failure
+case_appliance_resume
+case_appliance_uninstall
+case_appliance_skip_setup
 case_progress_messages
 case_structure
 case_crypto_switch

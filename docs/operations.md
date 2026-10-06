@@ -450,6 +450,23 @@ hand. The same holds for the schema version of every file: a file written by a n
 is refused and never rewritten. The envelope has version 1 and this is the only one that
 exists.
 
+## Environment variables
+
+The installer script, `scripts/install.sh`, reads these variables. It takes nothing else from
+the environment: not the binary it hands over to, nor the terminal it asks on, nor the
+directory of the journals, so that the environment of root cannot change what it runs.
+
+| Variable | Read by | Meaning | Default | For production |
+|---|---|---|---|---|
+| `PCO_PROFILE` | `install.sh` | `host` or `appliance`: where pco is installed. `--appliance` and `--profile` as the first arguments win over it. | `host`; on a terminal and without `--yes` the script asks | yes |
+| `PCO_VERSION` | `install.sh` | The release to install, as `1.2.3`. | the latest release | yes |
+| `PCO_REPO` | `install.sh` | The GitHub repository the release comes from, as `owner/name`. | `anaryk/proxmox-cloudflared-operator` | a fork only |
+| `PCO_SKIP_SETUP` | `install.sh` | `1` stops before the hand-over to `pco setup` (host: after the package is installed) or to `pco appliance install` (appliance: after the checks, with nothing installed) and prints the command. | unset | yes |
+| `PCO_DEB`, `PCO_CHECKSUMS`, `PCO_SIGNATURE` | `install.sh` | Local files to install from, so that nothing is downloaded. The signature is checked as always. | unset | yes, for a node without internet |
+| `PCO_INSECURE_SKIP_SIGNATURE` | `install.sh` | `1` trusts the checksum alone, without the signature of `checksums.txt`. | unset | no |
+| `PCO_TEMPLATE` | `install.sh`, appliance profile | The appliance template as a local file. It is checked against the signed `checksums.txt` and passed to the installer as `--template`; it is for a node that cannot download it. | unset: Proxmox downloads it | yes, for a node without internet |
+| `PCO_RESUME` | `install.sh`, appliance profile | The journal of an appliance install that did not finish, as the script names it when the installer fails. The installer finishes the run or takes it back. The package is still downloaded, as the node has no pco to run it with. | unset | yes |
+
 ## Upgrades
 
 To upgrade, install the new package, with the installer or with `apt install` of the new
