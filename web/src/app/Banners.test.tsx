@@ -20,7 +20,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-const keys = (s: Parameters<typeof bannersOf>[0]) => bannersOf(s, now).map((b) => b.key)
+const keys = (s: Parameters<typeof bannersOf>[0]) => bannersOf(s).map((b) => b.key)
 
 describe('the banners, most severe first', () => {
   test('every banner at once', () => {
@@ -52,9 +52,18 @@ describe('the banners, most severe first', () => {
     expect(keys(appState({ state: untagged as unknown as State }))).toEqual([])
   })
 
-  test('stale data says from when', () => {
-    const s = appState({ state: untagged as unknown as State, conn: 'stale', connSince: '2026-10-01T12:00:02Z' })
+  test('stale data says from when, and how long ago on the browser\'s clock', () => {
+    const s = appState({
+      state: untagged as unknown as State,
+      conn: 'stale',
+      connSince: '2026-10-01T12:00:02Z',
+      times: { at: '2026-10-01T12:00:00Z', finishedAt: '2026-10-01T12:00:02Z', digest: 'd' },
+      receivedAt: 1000,
+    })
     expect(keys(s)).toEqual(['stale'])
+    const [b] = bannersOf(s, 41_000)
+    const { container } = render(<>{b?.text}</>)
+    expect(container.textContent).toMatch(/^The data is from .+, 40 s ago: no cycle of the daemon has finished since\./)
   })
 })
 
@@ -75,7 +84,7 @@ test('the egress banner carries the command, to run as root', async () => {
 
 test('the egress filter not loaded asks for pco egress load', () => {
   const s = appState({ state: { ...st, egress: { state: 'not loaded' } } })
-  const [b] = bannersOf(s, now)
+  const [b] = bannersOf(s)
   const { container } = render(<>{b?.text}</>)
   expect(container.querySelector('code')?.textContent).toBe('pco egress load')
 })

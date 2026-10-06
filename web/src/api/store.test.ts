@@ -7,7 +7,7 @@ import session from '../fixtures/session.json'
 import traffic from '../fixtures/traffic.json'
 import unauthenticated from '../fixtures/unauthenticated.json'
 import { type Answer, ApiError, type Method, type RequestOptions } from './client'
-import { AppStore, fullFetchEvery, mergeTraffic, shareRoutes, staleAfterMs, type Storages } from './store'
+import { AppStore, dataAge, fullFetchEvery, mergeTraffic, shareRoutes, staleAfterMs, type Storages } from './store'
 import type { Shared } from './leader'
 import type { Link, Notice } from './stream'
 import type { Event, State, TrafficView } from './types.gen'
@@ -30,7 +30,8 @@ function memory(): Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
   }
 }
 
-let now: number
+let now: number // the browser's time
+let mono: number // its monotonic clock
 let calls: Call[]
 let replies: Map<string, Reply>
 let storages: Storages
@@ -41,6 +42,7 @@ const ok = (body: unknown, etag?: string): Reply => () => ({ status: 200, body, 
 function store() {
   return new AppStore({
     now: () => now,
+    mono: () => mono,
     storages,
     request: async <T,>(method: Method, path: string, body?: unknown, opts?: RequestOptions) => {
       const c = { method, path, body, opts }
@@ -60,10 +62,16 @@ function store() {
 
 const state = populated as unknown as State
 const flush = () => new Promise((r) => setTimeout(r, 0))
+// pass lets time go by, on both clocks of the browser
+const pass = (ms: number) => {
+  now += ms
+  mono += ms
+}
 const paths = () => calls.map((c) => `${c.method} ${c.path}`)
 
 beforeEach(() => {
   now = Date.parse('2026-10-01T12:00:05Z')
+  mono = 5000
   calls = []
   storages = { session: memory(), local: memory() }
   shared = { opened: 0, resumed: 0, closed: 0 }
@@ -162,10 +170,10 @@ describe('state notices', () => {
   test('the state is fetched whole every 5 minutes, as its digest has no times', async () => {
     const s = await opened()
     calls = []
-    now += fullFetchEvery - 1000
+    pass(fullFetchEvery - 1000)
     s.tick()
     expect(calls).toEqual([])
-    now += 1000
+    pass(1000)
     s.tick()
     await flush()
     expect(calls).toHaveLength(1)
@@ -247,12 +255,14 @@ describe('the connection', () => {
     const s = await opened()
     s.notice({ kind: 'state', data: { at: '2026-10-01T12:00:00Z', finishedAt: '2026-10-01T12:00:40Z', digest: populated.digest } })
     expect(staleAfterMs(s.get())).toBe(120_000)
-    now = Date.parse('2026-10-01T12:02:20Z') // 100 s after the cycle finished
+    pass(100_000)
     s.tick()
     expect(s.get().conn).toBe('live')
-    now = Date.parse('2026-10-01T12:02:41Z')
+    expect(dataAge(s.get(), mono)).toBe(100_000)
+    pass(20_001)
     s.tick()
     expect(s.get().conn).toBe('stale')
+    // the time shown is the node's
     expect(s.get().connSince).toBe('2026-10-01T12:00:40Z')
   })
 
@@ -266,11 +276,68 @@ describe('the connection', () => {
     const s = await opened()
     s.link({ state: 'reconnecting', since: '2026-10-01T12:00:05Z' })
     expect(s.get().conn).toBe('reconnecting')
-    now += 15_001
+    pass(15_001)
     s.tick()
     expect(s.get().conn).toBe('stale')
     s.link({ state: 'web-down', since: '2026-10-01T12:00:05Z' })
     expect(s.get()).toMatchObject({ conn: 'web-down', connSince: '2026-10-01T12:00:05Z' })
+  })
+
+  test('the same cycle fetched again is not news; a later one is', async () => {
+    const s = await opened()
+    const first = s.get().receivedAt
+    expect(first).toBe(mono)
+    pass(20_000)
+    await s.fetchState(false)
+    expect(s.get().receivedAt).toBe(first)
+    replies.set('GET /api/v1/state', ok({ ...state, finishedAt: '2026-10-01T12:00:12Z' }, state.digest))
+    await s.fetchState(false)
+    expect(s.get().receivedAt).toBe(mono)
+  })
+
+  test("a notice another tab kept is as old as it was there", async () => {
+    const s = await opened()
+    s.notice({ kind: 'state', data: { at: 'a', finishedAt: '2026-10-01T12:00:12Z', digest: populated.digest } }, '', 25_000)
+    expect(dataAge(s.get(), mono)).toBe(25_000)
+  })
+})
+
+// The browser's clock 31 s ahead of the node's, and 31 s behind: the age of
+// the data and the end of the session are measured on the browser's clock.
+describe.each([31_000, -31_000])("a browser %i ms off the node's clock", (skew) => {
+  const node = Date.parse('2026-10-01T12:00:05Z')
+
+  test('live while the news is fresh, stale 30 s after the last', async () => {
+    now = node + skew
+    const s = await opened()
+    s.notice({ kind: 'state', data: { at: '2026-10-01T12:00:03Z', finishedAt: '2026-10-01T12:00:05Z', digest: populated.digest } })
+    pass(29_000)
+    s.tick()
+    expect(s.get().conn).toBe('live')
+    pass(2000)
+    s.tick()
+    expect(s.get().conn).toBe('stale')
+  })
+
+  test('the session idles out 30 min after the last activity of any tab, on the browser\'s clock', async () => {
+    now = node + skew
+    const at = (t: number) => new Date(t).toISOString()
+    replies.set('GET /api/session', () => ({
+      status: 200,
+      body: { ...session, idleExpiresAt: at(node + 30 * 60_000), expiresAt: at(node + 12 * 3_600_000) },
+      date: new Date(node).toUTCString(),
+    }))
+    const s = await opened()
+    expect(s.idleDeadline()).toBe(node + skew + 30 * 60_000)
+    // another tab was active 10 minutes later
+    pass(10 * 60_000)
+    replies.set('GET /api/session', () => ({
+      status: 200,
+      body: { ...session, idleExpiresAt: at(node + 40 * 60_000), expiresAt: at(node + 12 * 3_600_000) },
+      date: new Date(node + 10 * 60_000).toUTCString(),
+    }))
+    await s.refreshSession()
+    expect(s.idleDeadline()).toBe(node + skew + 40 * 60_000)
   })
 })
 
@@ -306,24 +373,69 @@ describe('sign-in and sign-out', () => {
     expect(again.get().auth).toBe('signed-in')
   })
 
-  test('a 401 of the stream opens the dialog; signing in again resumes the stream', async () => {
+  test('a 401 over the page with a Proxmox VE session: the ticket is taken at once, and the page keeps what it shows', async () => {
     const s = await opened()
-    shared.link?.({ state: 'signed-out' })
+    const before = s.get().state
+    replies.set('POST /api/session/ticket', ok(session))
+    replies.set('GET /api/v1/state', (c) => (c.opts?.ifNoneMatch === state.digest ? { status: 304, body: undefined } : { status: 200, body: state, etag: state.digest }))
+    calls = []
+    s.clientHooks().unauthenticated(unauthenticated)
     expect(s.get().signInNeeded).toBe(true)
-    replies.set('POST /api/session/token', ok(session))
-    await s.signInToken('root@pam!pco=00000000-0000-0000-0000-000000000000')
+    await flush()
+    expect(paths()).toContain('POST /api/session/ticket')
     expect(s.get().signInNeeded).toBe(false)
+    expect(s.get().state).toBe(before)
     expect(shared.resumed).toBe(1)
+  })
+
+  test('without one, the dialog says so, and does not try the ticket by itself again', async () => {
+    const s = await opened()
+    calls = []
+    s.clientHooks().unauthenticated({ ...unauthenticated, ticket: false })
+    await flush()
+    expect(s.get()).toMatchObject({ signInNeeded: true, unauthenticated: { ticket: false } })
+    expect(paths()).not.toContain('POST /api/session/ticket')
+  })
+
+  test('a 401 in other words, or of the stream: /api/session says how to sign in', async () => {
+    const s = await opened()
+    replies.set('GET /api/session', () => new ApiError(401, unauthenticated))
+    replies.set('POST /api/session/ticket', () => new ApiError(401, { error: 'Proxmox VE did not accept the session of this browser', code: 'ticket_invalid' }))
+    calls = []
+    s.clientHooks().unauthenticated({ error: 'the ticket expired', code: 'ticket_invalid' })
+    await flush()
+    await flush()
+    expect(paths()).toEqual(['GET /api/session', 'POST /api/session/ticket'])
+    expect(s.get()).toMatchObject({ signInNeeded: true, auth: 'signed-in', unauthenticated: { ticket: true } })
+    // the stream's 401 now: the ticket was tried once already
+    calls = []
+    shared.link?.({ state: 'signed-out' })
+    await flush()
+    await flush()
+    expect(paths()).toEqual(['GET /api/session'])
   })
 
   test('signed in again in another tab: the stream is back, the dialog of this one closes', async () => {
     const s = await opened()
+    replies.set('GET /api/session', () => new ApiError(401, { ...unauthenticated, ticket: false }))
     shared.link?.({ state: 'signed-out' })
+    await flush()
     expect(s.get().signInNeeded).toBe(true)
+    replies.set('GET /api/session', ok(session))
     shared.link?.({ state: 'open', since: '2026-10-01T12:01:00Z' })
     await flush()
     expect(s.get().signInNeeded).toBe(false)
-    expect(calls.at(-1)).toMatchObject({ method: 'GET', path: '/api/session', opts: { background: true } })
+  })
+
+  test('signing in in the dialog resumes the stream', async () => {
+    const s = await opened()
+    replies.set('GET /api/session', () => new ApiError(401, { ...unauthenticated, ticket: false }))
+    shared.link?.({ state: 'signed-out' })
+    await flush()
+    replies.set('POST /api/session/token', ok(session))
+    await s.signInToken('root@pam!pco=00000000-0000-0000-0000-000000000000')
+    expect(s.get().signInNeeded).toBe(false)
+    expect(shared.resumed).toBe(1)
   })
 
   test("this browser's last doctor run is kept", () => {

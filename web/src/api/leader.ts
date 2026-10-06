@@ -21,7 +21,8 @@ export interface Channel {
 }
 
 type Message =
-  | { t: 'notice'; n: Notice; id: string }
+  // age: how long ago the leader received it, for one it keeps
+  | { t: 'notice'; n: Notice; id: string; age?: number }
   | { t: 'link'; link: Link }
   // A tab that just opened asks for what it missed; the leader answers.
   | { t: 'ask' }
@@ -32,9 +33,10 @@ export interface ShareOptions {
   locks?: Locks
   channel?: Channel
   open: (o: StreamOptions) => StreamHandle
-  onNotice: (n: Notice, id: string) => void
+  onNotice: (n: Notice, id: string, age?: number) => void
   onLink: (l: Link) => void
   lastEventId: () => string
+  mono?: () => number // the monotonic clock, performance.now()
 }
 
 export interface Shared {
@@ -50,7 +52,8 @@ export function shareStream(o: ShareOptions): Shared {
   let release: (() => void) | undefined
   let closed = false
   // What a tab that opens later needs to know at once: the last of these.
-  const kept = new Map<string, { n: Notice; id: string }>()
+  const kept = new Map<string, { n: Notice; id: string; at: number }>()
+  const mono = o.mono ?? (() => performance.now())
   let link: Link | undefined
 
   const post = (m: Message) => o.channel?.postMessage(m)
@@ -59,7 +62,7 @@ export function shareStream(o: ShareOptions): Shared {
     stream = o.open({
       lastEventId: o.lastEventId,
       onNotice: (n, id) => {
-        if (n.kind === 'hello' || n.kind === 'upstream' || n.kind === 'state' || n.kind === 'traffic') kept.set(n.kind, { n, id })
+        if (n.kind === 'hello' || n.kind === 'upstream' || n.kind === 'state' || n.kind === 'traffic') kept.set(n.kind, { n, id, at: mono() })
         if (n.kind === 'reset') kept.delete('state')
         o.onNotice(n, id)
         post({ t: 'notice', n, id })
@@ -77,7 +80,7 @@ export function shareStream(o: ShareOptions): Shared {
     if (!isMessage(m) || closed) return
     switch (m.t) {
       case 'notice':
-        if (!stream) o.onNotice(m.n, m.id)
+        if (!stream) o.onNotice(m.n, m.id, m.age)
         break
       case 'link':
         if (!stream) o.onLink(m.link)
@@ -86,7 +89,7 @@ export function shareStream(o: ShareOptions): Shared {
         if (!stream) break
         for (const kind of ['hello', 'upstream', 'state', 'traffic']) {
           const k = kept.get(kind)
-          if (k) post({ t: 'notice', n: k.n, id: k.id })
+          if (k) post({ t: 'notice', n: k.n, id: k.id, age: mono() - k.at })
         }
         if (link) post({ t: 'link', link })
         break

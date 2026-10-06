@@ -154,12 +154,22 @@ function follow(listener: () => void): () => void {
 
 const here = () => window.location.pathname + window.location.search + window.location.hash
 
-// navigate goes to a path of the page without loading it again.
+// navigate goes to a path of the page without loading it again. A fragment
+// names a part of the view, such as the Problems card of the Overview, which
+// is given the focus once the view is shown, as a browser would scroll to it.
 export function navigate(to: string, replace = false): void {
-  if (to === here()) return
-  if (replace) window.history.replaceState(null, '', to)
-  else window.history.pushState(null, '', to)
-  for (const l of changed) l()
+  if (to !== here()) {
+    if (replace) window.history.replaceState(null, '', to)
+    else window.history.pushState(null, '', to)
+    for (const l of changed) l()
+  }
+  const id = new URL(to, 'https://page.invalid').hash.slice(1)
+  if (id) {
+    setTimeout(() => {
+      const name = part(id)
+      if (name) document.getElementById(name)?.focus()
+    }, 0)
+  }
 }
 
 // useLocation is the path, query and fragment shown, as one string.

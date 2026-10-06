@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { type AppState, lastCycle, useApp } from '../api/store'
+import { type AppState, dataAge, lastCycle, monoNow, useApp } from '../api/store'
 import { tooManyText } from '../api/stream'
 import { Banner } from '../components/Banner'
 import { CopyCommand } from '../components/CopyCommand'
@@ -27,8 +27,9 @@ const review = (to: string, label = 'Review') => (
 )
 
 // bannersOf are the banners under the top bar, most severe first, each with
-// one action at most.
-export function bannersOf(s: AppState, now: number): BannerSpec[] {
+// one action at most. The age of the data is measured on the browser's
+// monotonic clock, mono.
+export function bannersOf(s: AppState, mono: number = monoNow()): BannerSpec[] {
   const zone = s.session?.nodeZone
   const at = (t: string) => <Time at={t} nodeZone={zone} />
   const st = s.state
@@ -83,6 +84,7 @@ export function bannersOf(s: AppState, now: number): BannerSpec[] {
 
   if (s.conn === 'stale') {
     const from = lastCycle(s)
+    const age = dataAge(s, mono)
     const reconnecting = s.link.state === 'reconnecting' || s.link.state === 'too-many'
     out.push({
       key: 'stale',
@@ -91,7 +93,8 @@ export function bannersOf(s: AppState, now: number): BannerSpec[] {
         <>
           {from ? (
             <>
-              The data is from {at(from)}, {durationText(now - Date.parse(from))} ago:{' '}
+              The data is from {at(from)}
+              {age !== undefined && `, ${durationText(age)} ago`}:{' '}
             </>
           ) : (
             'The page has no data yet: '
@@ -201,8 +204,9 @@ export function bannersOf(s: AppState, now: number): BannerSpec[] {
 
 export function Banners() {
   const app = useApp((s) => s)
-  const now = useNow()
-  const banners = bannersOf(app, now)
+  // again every second, for the age of the data
+  useNow()
+  const banners = bannersOf(app)
   if (banners.length === 0) return null
   return (
     <div className="banners">

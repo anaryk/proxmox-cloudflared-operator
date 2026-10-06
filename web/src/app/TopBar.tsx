@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 
-import { type AppState, lastCycle, useApp, useStore } from '../api/store'
+import { type AppState, dataAge, monoNow, useApp, useStore } from '../api/store'
 import { IconButton } from '../components/Button'
 import { MarkIcon, MenuIcon, type Tone, ToneIcon, UserIcon, WarnIcon } from '../components/icons'
 import { Pill } from '../components/Pill'
@@ -21,8 +21,9 @@ export interface PillSpec {
 
 const zeroTime = (at?: string) => !at || at.startsWith('0001-01-01T00:00:00')
 
-// pillsOf are the five statuses of the top bar.
-export function pillsOf(s: AppState, now: number): PillSpec[] {
+// pillsOf are the five statuses of the top bar. now is the browser's time,
+// mono its monotonic clock, which the age of the data is measured on.
+export function pillsOf(s: AppState, now: number, mono: number = monoNow()): PillSpec[] {
   const st = s.state
   const ran = st !== undefined && !zeroTime(st.at)
 
@@ -48,25 +49,25 @@ export function pillsOf(s: AppState, now: number): PillSpec[] {
     { key: 'inventory', tone: inventoryTone, label: 'Inventory', value: inventory },
     { key: 'writer', tone: writerTone, label: 'Writer', value: verdict, title: ran ? writerText(verdict) : undefined },
     { key: 'egress', tone: egressTone, label: 'Egress', value: egress || 'not checked yet', title: egressText({ state: egress }) },
-    livePill(s, now),
+    livePill(s, now, mono),
   ]
 }
 
-function livePill(s: AppState, now: number): PillSpec {
-  const since = s.connSince ? Date.parse(s.connSince) : NaN
-  const ago = Number.isFinite(since) ? durationText(now - since) : '-'
+function livePill(s: AppState, now: number, mono: number): PillSpec {
+  // How long the link has been down: the browser stamped that time itself.
+  const down = s.link.state === 'reconnecting' || s.link.state === 'too-many' ? now - Date.parse(s.link.since) : NaN
+  const age = dataAge(s, mono)
   switch (s.conn) {
     case 'web-down':
       return { key: 'live', tone: 'fail', label: 'pco web', value: 'no answer' }
     case 'daemon-down':
       return { key: 'live', tone: 'fail', label: 'Daemon', value: 'no answer' }
     case 'stale':
-      return { key: 'live', tone: 'warn', label: 'Stale', value: ago }
+      return { key: 'live', tone: 'warn', label: 'Stale', value: age !== undefined ? durationText(age) : Number.isFinite(down) ? durationText(down) : '-' }
     case 'reconnecting':
-      return { key: 'live', tone: 'warn', label: 'Reconnecting', value: Number.isFinite(since) ? ago : '…' }
+      return { key: 'live', tone: 'warn', label: 'Reconnecting', value: Number.isFinite(down) ? durationText(down) : '…' }
   }
-  const finished = lastCycle(s)
-  return { key: 'live', tone: 'ok', label: 'Live', value: finished ? durationText(now - Date.parse(finished)) : 'no cycle yet' }
+  return { key: 'live', tone: 'ok', label: 'Live', value: age !== undefined ? durationText(age) : 'no cycle yet' }
 }
 
 const worse: readonly Tone[] = ['fail', 'warn', 'info', 'idle', 'ok']

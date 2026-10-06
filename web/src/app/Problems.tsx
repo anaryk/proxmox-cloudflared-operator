@@ -18,8 +18,9 @@ export function Problems({ state }: { state: State }) {
       </div>
       <div className="card-body">
         <ul className="problems">
-          {state.problems.map((p) => (
-            <li key={p}>
+          {state.problems.map((p, at) => (
+            // a line may come twice: the daemon's lines carry no code
+            <li key={`${at}:${p}`}>
               <Untrusted text={p} />
             </li>
           ))}

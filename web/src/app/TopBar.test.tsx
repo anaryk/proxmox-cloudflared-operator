@@ -9,8 +9,11 @@ import untagged from '../fixtures/untagged.json'
 import { appState, fakeStore } from '../test/store'
 import { pillsOf, summaryOf, TopBar } from './TopBar'
 
-const now = Date.parse('2026-10-01T12:00:05Z')
-const words = (s: Parameters<typeof pillsOf>[0]) => pillsOf(s, now).map((p) => `${p.tone} ${p.label}: ${p.value}`)
+// The browser's clock, 31 s ahead of the node's, and its monotonic one: the
+// ages are those of the browser's own clocks.
+const now = Date.parse('2026-10-01T12:00:05Z') + 31_000
+const mono = 500_000
+const words = (s: Parameters<typeof pillsOf>[0]) => pillsOf(s, now, mono).map((p) => `${p.tone} ${p.label}: ${p.value}`)
 
 test('before the first cycle', () => {
   expect(words(appState({ state: empty as unknown as State, conn: 'reconnecting' }))).toEqual([
@@ -23,26 +26,36 @@ test('before the first cycle', () => {
 })
 
 test('the populated fixture: enforcing, egress off, live for 3 s', () => {
-  const s = appState({ state: populated as unknown as State, conn: 'live', times: { at: '2026-10-01T12:00:00Z', finishedAt: '2026-10-01T12:00:02Z', digest: 'd' } })
+  const s = appState({
+    state: populated as unknown as State,
+    conn: 'live',
+    times: { at: '2026-10-01T12:00:00Z', finishedAt: '2026-10-01T12:00:02Z', digest: 'd' },
+    receivedAt: mono - 3000,
+  })
   expect(words(s)).toEqual(['ok Mode: enforcing', 'ok Inventory: complete', 'ok Writer: ok', 'fail Egress: off', 'ok Live: 3 s'])
-  expect(summaryOf(pillsOf(s, now))).toMatchObject({ tone: 'fail', label: 'Egress', value: 'off' })
+  expect(summaryOf(pillsOf(s, now, mono))).toMatchObject({ tone: 'fail', label: 'Egress', value: 'off' })
 })
 
 test('observe-only, stale, and the daemon away', () => {
   const st = { ...(untagged as unknown as State), mode: 'observe' }
-  expect(words(appState({ state: st, conn: 'stale', connSince: '2026-10-01T11:56:05Z' }))).toEqual([
+  expect(words(appState({ state: st, conn: 'stale', connSince: '2026-10-01T11:56:05Z', receivedAt: mono - 240_000 }))).toEqual([
     'info Mode: observe-only',
     'ok Inventory: complete',
     'ok Writer: ok',
     'ok Egress: on',
     'warn Stale: 4 min',
   ])
-  expect(pillsOf(appState({ state: st, conn: 'daemon-down' }), now).at(-1)).toMatchObject({ tone: 'fail', label: 'Daemon', value: 'no answer' })
+  expect(pillsOf(appState({ state: st, conn: 'daemon-down' }), now, mono).at(-1)).toMatchObject({ tone: 'fail', label: 'Daemon', value: 'no answer' })
+})
+
+test('reconnecting: for how long, on the browser\'s clock', () => {
+  const s = appState({ state: untagged as unknown as State, conn: 'reconnecting', link: { state: 'reconnecting', since: new Date(now - 7000).toISOString() } })
+  expect(pillsOf(s, now, mono).at(-1)).toMatchObject({ label: 'Reconnecting', value: '7 s' })
 })
 
 test('all in order: the summary says the mode and live', () => {
   const s = appState({ state: untagged as unknown as State, conn: 'live' })
-  expect(summaryOf(pillsOf(s, now))).toMatchObject({ tone: 'ok', label: 'enforcing', value: 'live' })
+  expect(summaryOf(pillsOf(s, now, mono))).toMatchObject({ tone: 'ok', label: 'enforcing', value: 'live' })
 })
 
 test('the problems, the summary pill and its list, the user menu', async () => {

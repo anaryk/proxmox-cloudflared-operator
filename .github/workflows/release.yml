@@ -36,6 +36,12 @@ jobs:
         with:
           node-version-file: web/.nvmrc
           package-manager-cache: false
+      # The types and words the interface takes from the Go code are
+      # committed; they must be what the Go code makes now.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - run: make ui-types ui-words && git diff --exit-code
       - run: make ui-test ui-budget
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

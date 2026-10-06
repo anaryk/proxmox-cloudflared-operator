@@ -4,6 +4,7 @@ import { useApp } from '../api/store'
 import { Button } from '../components/Button'
 import { Skeleton } from '../components/Skeleton'
 import { StateBadge } from '../components/StateBadge'
+import { Untrusted } from '../components/Untrusted'
 import { compareRouteStates } from '../text/words'
 import { type EventFilter, EventsTable } from './EventsTable'
 import { Link } from './Link'
@@ -109,20 +110,46 @@ const titles: Readonly<Record<string, [string, string]>> = {
   setup: ['First-run setup', 'A token, the zones, and the first route.'],
 }
 
-function titleOf(v: View): [string, string] {
+// titleOf is the title of a view. What comes from the address is anybody's
+// text, as a shared link can carry anything: it is shown as untrusted.
+function titleOf(v: View): [ReactNode, ReactNode] {
   switch (v.name) {
     case 'route':
-      return [v.hostname, v.owner ? `The route of ${v.owner}.` : 'The routes of this hostname.']
+      return [
+        <Untrusted key="t" text={v.hostname} hostname />,
+        v.owner ? (
+          <>
+            The route of <Untrusted text={v.owner} />.
+          </>
+        ) : (
+          'The routes of this hostname.'
+        ),
+      ]
     case 'manual':
-      return [`Manual route ${v.id}`, '']
+      return [
+        <>
+          Manual route <Untrusted text={v.id} />
+        </>,
+        '',
+      ]
     case 'guest':
       return [`${v.kind}/${v.vmid}`, '']
     case 'credential':
-      return [`Credential ${v.id}`, '']
+      return [
+        <>
+          Credential <Untrusted text={v.id} />
+        </>,
+        '',
+      ]
     case 'zone':
-      return [v.zone, '']
+      return [<Untrusted key="t" text={v.zone} hostname />, '']
     case 'tunnel':
-      return [`Tunnel in account ${v.account}`, '']
+      return [
+        <>
+          Tunnel in account <Untrusted text={v.account} />
+        </>,
+        '',
+      ]
   }
   return titles[v.name] ?? ['', '']
 }

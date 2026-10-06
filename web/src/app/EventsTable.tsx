@@ -44,7 +44,18 @@ function gapMatches(f: EventFilter): boolean {
   return true
 }
 
-type Loaded = Event[] | 'loading' | ApiError
+// What was loaded of a gap: the events it stood for, and whether they are
+// all of them. The daemon answers the newest events after a seq, so what it
+// sends may begin after the gap's first, when more came since than it gives
+// at once or the gap is older than what it keeps in memory.
+export interface Part {
+  events: Event[]
+  complete: boolean
+}
+
+type Loaded = Part | 'loading' | ApiError
+
+const isPart = (l: Loaded | undefined): l is Part => typeof l === 'object' && !(l instanceof ApiError)
 
 type Row = { type: 'event'; e: Event } | { type: 'gap'; g: GapNotice; loaded?: Loaded }
 
@@ -63,11 +74,11 @@ export function rowsOf(events: readonly Event[], gaps: readonly GapNotice[], loa
   }
   for (const g of gaps) {
     const l = loaded.get(gapKey(g))
-    if (Array.isArray(l)) {
-      for (const e of l) if (!seen.has(e.seq) && matches(e, f)) rows.push({ type: 'event', e })
-    } else if (gapMatches(f) && has(f.level, g.level)) {
-      rows.push({ type: 'gap', g, loaded: l })
+    if (isPart(l)) {
+      for (const e of l.events) if (!seen.has(e.seq) && matches(e, f)) rows.push({ type: 'event', e })
+      if (l.complete) continue
     }
+    if (gapMatches(f) && has(f.level, g.level)) rows.push({ type: 'gap', g, loaded: l })
   }
   return rows.filter((r) => upTo === undefined || seqOf(r) <= upTo).sort((a, b) => seqOf(b) - seqOf(a))
 }
@@ -87,11 +98,32 @@ function GapCell({ row }: { row: Extract<Row, { type: 'gap' }> }) {
       </span>
     )
   }
+  if (isPart(row.loaded)) {
+    return (
+      <span>
+        {row.loaded.events.length} of {n} events of one cycle loaded: the daemon no longer holds the rest, the journal on the node has them.{' '}
+        <span className="muted">(open to try again)</span>
+      </span>
+    )
+  }
   return (
     <span>
       {n === 1 ? '1 event' : `${n} events`} of one cycle <span className="muted">(open to load them)</span>
     </span>
   )
+}
+
+// fetchGap asks the daemon for the events of a gap: the newest after the one
+// before it, as many as there have been since and a margin for those the
+// stream has not brought yet; with history, from its log on disk too.
+async function fetchGap(g: GapNotice, lastSeq: number, history: boolean): Promise<{ inGap: Event[]; first?: number }> {
+  const limit = history ? 5000 : Math.min(5000, Math.max(lastSeq, g.to) - g.from + 1 + 500)
+  const got = await api<Event[]>('GET', `/api/v1/events?after=${g.from - 1}&boot=${encodeURIComponent(g.boot)}&limit=${limit}${history ? '&history=1' : ''}`)
+  const mine = (got ?? []).filter((e) => e.boot === g.boot)
+  return {
+    inGap: mine.filter((e) => e.seq >= g.from && e.seq <= g.to),
+    first: mine.length > 0 ? Math.min(...mine.map((e) => e.seq)) : undefined,
+  }
 }
 
 function EventDetail({ e, nodeZone, onClose }: { e: Event; nodeZone?: string; onClose: () => void }) {
@@ -150,19 +182,21 @@ export function EventsTable({ filter, live, rows }: { filter: EventFilter; live:
 
   const shown = rowsOf(events, gaps, loaded, filter, live ? undefined : pausedAt)
 
+  // load loads a gap: from what the daemon holds in memory, then, when that
+  // does not reach back to the gap's first event, from its log as well. A
+  // gap that is still not whole says how much of it there is, and loads
+  // again when opened again.
   const load = async (g: GapNotice) => {
     const key = gapKey(g)
     const now = loaded.get(key)
-    if (now === 'loading' || Array.isArray(now)) return
+    if (now === 'loading' || (isPart(now) && now.complete)) return
     setLoaded((m) => new Map(m).set(key, 'loading'))
-    // The daemon answers the newest events after the one before the gap:
-    // as many as there have been since, and a margin for those the stream
-    // has not brought yet, so that those of the gap are among them.
-    const limit = Math.min(5000, Math.max(lastSeq, g.to) - g.from + 1 + 500)
+    const known = new Set(events.map((e) => e.seq))
     try {
-      const got = await api<Event[]>('GET', `/api/v1/events?after=${g.from - 1}&boot=${encodeURIComponent(g.boot)}&limit=${limit}`)
-      const inGap = (got ?? []).filter((e) => e.seq >= g.from && e.seq <= g.to && e.boot === g.boot)
-      setLoaded((m) => new Map(m).set(key, inGap))
+      let got = isPart(now) ? undefined : await fetchGap(g, lastSeq, false)
+      if (got?.first === undefined || got.first > g.from) got = await fetchGap(g, lastSeq, true)
+      const complete = got.first !== undefined && got.first <= g.from
+      setLoaded((m) => new Map(m).set(key, { events: got.inGap.filter((e) => !known.has(e.seq)), complete }))
     } catch (e) {
       setLoaded((m) => new Map(m).set(key, e instanceof ApiError ? e : new ApiError(0, { code: 'internal', error: String(e) })))
     }

@@ -5,7 +5,7 @@
 import { createContext, createElement, type ReactNode, useContext, useRef, useSyncExternalStore } from 'react'
 
 import { parseDuration } from '../text/duration'
-import { ApiError, type Answer, type Method, request as defaultRequest, type RequestOptions, setClientHooks } from './client'
+import { ApiError, type Answer, type ClientHooks, type Method, request as defaultRequest, type RequestOptions, setClientHooks } from './client'
 import { channelName, type Locks, shareStream, type Shared } from './leader'
 import { type Link, type Notice, openStream } from './stream'
 import type {
@@ -32,6 +32,10 @@ export interface AppState {
   hello?: Hello
   state?: State // routes shared by (hostname, owner) across updates
   times?: StateNotice // at, finishedAt, digest of the last notice
+  // When the last cycle's news reached this browser, on its monotonic
+  // clock (monoNow): the age of the data is measured from it, as the
+  // node's clock and the browser's need not agree.
+  receivedAt?: number
   traffic?: TrafficView
   events: Event[] // the last 500
   gaps: GapNotice[]
@@ -79,13 +83,26 @@ export function staleAfterMs(s: AppState): number {
   return 3 * Math.max(poll, Number.isFinite(cycle) ? cycle : 0)
 }
 
-// lastCycle is when the last cycle finished, if one has.
+// lastCycle is when the last cycle finished, if one has, on the node's
+// clock: a time to show, not one to subtract from the browser's.
 export function lastCycle(s: AppState): string | undefined {
   const finished = s.times?.finishedAt ?? s.state?.finishedAt
   return zeroTime(finished) ? undefined : finished
 }
 
-function connOf(s: AppState, now: number): { conn: Conn; since?: string } {
+// monoNow is the browser's monotonic clock, which no change of the system
+// time moves.
+export const monoNow = (): number => performance.now()
+
+// dataAge is how long ago, in milliseconds, the news of the last cycle
+// reached the page; undefined before any.
+export function dataAge(s: AppState, mono: number = monoNow()): number | undefined {
+  return s.receivedAt === undefined ? undefined : Math.max(mono - s.receivedAt, 0)
+}
+
+// connOf says how live the page is. now is the browser's time, for the
+// times of the link, which the browser stamped; mono its monotonic clock.
+function connOf(s: AppState, now: number, mono: number): { conn: Conn; since?: string } {
   const l = s.link
   if (l.state === 'web-down') return { conn: 'web-down', since: l.since }
   if (!s.upstream.up) return { conn: 'daemon-down', since: s.upstream.since }
@@ -95,7 +112,8 @@ function connOf(s: AppState, now: number): { conn: Conn; since?: string } {
     return { conn: 'reconnecting', since: l.since }
   }
   if (l.state !== 'open') return { conn: 'reconnecting' }
-  if (finished && now - Date.parse(finished) > staleAfterMs(s)) return { conn: 'stale', since: finished }
+  const age = dataAge(s, mono)
+  if (age !== undefined && age > staleAfterMs(s)) return { conn: 'stale', since: finished }
   return { conn: 'live', since: finished }
 }
 
@@ -195,11 +213,18 @@ function writeItem(s: Storages[keyof Storages], key: string, value: string | nul
 
 export interface StoreDeps {
   request?: <T>(method: Method, path: string, body?: unknown, opts?: RequestOptions) => Promise<Answer<T>>
-  now?: () => number
+  now?: () => number // the browser's time
+  mono?: () => number // its monotonic clock
   storages?: Storages
   // How the stream is shared between tabs; the browser's when not given.
-  share?: (o: { onNotice: (n: Notice, id: string) => void; onLink: (l: Link) => void; lastEventId: () => string }) => Shared
+  share?: (o: { onNotice: (n: Notice, id: string, age?: number) => void; onLink: (l: Link) => void; lastEventId: () => string }) => Shared
 }
+
+// How long pco web keeps a session without activity.
+const idleTimeout = 30 * 60_000
+
+const isUnauthenticated = (body: unknown): body is Unauthenticated =>
+  typeof body === 'object' && body !== null && Array.isArray((body as Unauthenticated).methods)
 
 type Listener = () => void
 
@@ -208,6 +233,7 @@ export class AppStore {
   #listeners = new Set<Listener>()
   #request: NonNullable<StoreDeps['request']>
   #now: () => number
+  #mono: () => number
   #storages: Storages
   #share: NonNullable<StoreDeps['share']>
   #shared?: Shared
@@ -221,10 +247,18 @@ export class AppStore {
   // The daemon was found away by a call, not by the stream.
   #downByCall = false
   #started = false
+  // The finishedAt receivedAt was stamped for.
+  #receivedFor?: string
+  // The browser's time less the node's, from the Date of an answer of
+  // /api/session.
+  #nodeOffset?: number
+  // The ticket was tried by itself since the session was lost.
+  #ticketTried = false
 
   constructor(deps: StoreDeps = {}) {
     this.#request = deps.request ?? defaultRequest
     this.#now = deps.now ?? Date.now
+    this.#mono = deps.mono ?? monoNow
     this.#storages = deps.storages ?? browserStorages()
     this.#share = deps.share ?? browserShare
     let doctorLast: AppState['doctorLast']
@@ -257,21 +291,18 @@ export class AppStore {
 
   #set(patch: Partial<AppState>): void {
     const next = { ...this.#s, ...patch }
-    const c = connOf(next, this.#now())
+    const c = connOf(next, this.#now(), this.#mono())
     next.conn = c.conn
     next.connSince = c.since
     this.#s = next
     for (const l of this.#listeners) l()
   }
 
-  // start signs in as far as the browser can by itself, then follows the
-  // stream. It is called once, by the page.
-  async start(): Promise<void> {
-    if (this.#started) return
-    this.#started = true
-    setClientHooks({
+  // clientHooks is what the store learns from every call of the page.
+  clientHooks(): ClientHooks {
+    return {
       csrf: () => this.#s.session?.csrf,
-      unauthenticated: () => this.#set({ signInNeeded: true }),
+      unauthenticated: (body) => this.#lost(body),
       versionSkew: () => this.#set({ skew: true }),
       daemonUnreachable: () => {
         if (!this.#s.upstream.up) return
@@ -286,7 +317,15 @@ export class AppStore {
       active: () => {
         this.#lastActive = this.#now()
       },
-    })
+    }
+  }
+
+  // start signs in as far as the browser can by itself, then follows the
+  // stream. It is called once, by the page.
+  async start(): Promise<void> {
+    if (this.#started) return
+    this.#started = true
+    setClientHooks(this.clientHooks())
     this.#timers.push(setInterval(() => this.tick(), 1000))
     await this.loadSession()
   }
@@ -302,7 +341,7 @@ export class AppStore {
   // tick is the passing of time: the connection goes stale, and the state
   // is fetched whole when it is due.
   tick(): void {
-    const c = connOf(this.#s, this.#now())
+    const c = connOf(this.#s, this.#now(), this.#mono())
     if (c.conn !== this.#s.conn || c.since !== this.#s.connSince) this.#set({})
     if (this.#s.auth === 'signed-in' && this.#s.state && this.#now() - this.#lastFull >= fullFetchEvery) void this.fetchState(false)
   }
@@ -312,6 +351,7 @@ export class AppStore {
   async loadSession(): Promise<void> {
     try {
       const a = await this.#request<Session>('GET', '/api/session')
+      this.#nodeClock(a)
       if (a.body) this.#signedIn(a.body)
       return
     } catch (e) {
@@ -344,6 +384,7 @@ export class AppStore {
   async #signIn(call: () => Promise<Answer<Session>>): Promise<void> {
     try {
       const a = await call()
+      this.#nodeClock(a)
       if (a.body) this.#signedIn(a.body)
     } catch (e) {
       this.#set({ auth: this.#s.signInNeeded ? this.#s.auth : 'signed-out', authError: e instanceof ApiError ? e : undefined })
@@ -351,8 +392,15 @@ export class AppStore {
     }
   }
 
+  // nodeClock measures, once, how far the browser's clock is from the node's.
+  #nodeClock(a: Answer<unknown>): void {
+    const date = a.date ? Date.parse(a.date) : NaN
+    if (this.#nodeOffset === undefined && Number.isFinite(date)) this.#nodeOffset = this.#now() - date
+  }
+
   #signedIn(session: Session): void {
     const again = this.#s.signInNeeded
+    this.#ticketTried = false
     this.#lastActive = this.#now()
     this.#set({ session, auth: 'signed-in', signInNeeded: false, authError: undefined, unauthenticated: undefined })
     if (!this.#shared) this.connect()
@@ -394,18 +442,52 @@ export class AppStore {
   async refreshSession(): Promise<void> {
     try {
       const a = await this.#request<Session>('GET', '/api/session', undefined, { background: true })
+      this.#nodeClock(a)
       if (a.body) this.#set({ session: a.body, signInNeeded: false })
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) this.#set({ signInNeeded: true })
+      if (e instanceof ApiError && e.status === 401) this.#lost(e.body)
     }
   }
 
-  // idleDeadline is when the session idles out, as far as this tab knows.
+  // lost is a session found gone by a call or by the stream: the dialog
+  // opens over the page. It offers the Proxmox VE session of the browser
+  // when there is one, and takes it at once unless the user signed out in
+  // this tab: the Proxmox VE interface renews its ticket, and pco's session
+  // only idled out.
+  #lost(body?: unknown): void {
+    if (this.#s.auth !== 'signed-in') return
+    if (!isUnauthenticated(body)) {
+      // The answer does not say how to sign in; /api/session does.
+      this.#set({ signInNeeded: true })
+      void this.#learnSignIn()
+      return
+    }
+    this.#set({ signInNeeded: true, unauthenticated: body })
+    if (body.ticket && !this.signedOutHere() && !this.#ticketTried) {
+      this.#ticketTried = true
+      void this.signInTicket().catch(() => undefined)
+    }
+  }
+
+  async #learnSignIn(): Promise<void> {
+    try {
+      const a = await this.#request<Session>('GET', '/api/session', undefined, { background: true })
+      if (a.body) this.#signedIn(a.body)
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401 && isUnauthenticated(e.body)) this.#lost(e.body)
+    }
+  }
+
+  // idleDeadline is when the session idles out, on the browser's clock: 30
+  // minutes after the last activity of this tab, or later when the web
+  // process says so (another tab kept it alive), its times moved onto the
+  // browser's clock.
   idleDeadline(): number | undefined {
     const s = this.#s.session
     if (!s) return undefined
-    const idle = Math.max(Date.parse(s.idleExpiresAt), this.#lastActive + 30 * 60_000)
-    return Math.min(idle, Date.parse(s.expiresAt))
+    const offset = this.#nodeOffset ?? 0
+    const idle = Math.max(this.#lastActive + idleTimeout, Date.parse(s.idleExpiresAt) + offset)
+    return Math.min(idle, Date.parse(s.expiresAt) + offset)
   }
 
   setDoctorLast(v: { fail: number; at: string }): void {
@@ -428,7 +510,7 @@ export class AppStore {
 
   connect(): void {
     this.#shared = this.#share({
-      onNotice: (n, id) => this.notice(n, id),
+      onNotice: (n, id, age) => this.notice(n, id, age),
       onLink: (l) => this.link(l),
       lastEventId: () => this.#lastId,
     })
@@ -436,7 +518,8 @@ export class AppStore {
 
   link(l: Link): void {
     if (l.state === 'signed-out') {
-      this.#set({ link: l, signInNeeded: true })
+      this.#set({ link: l })
+      this.#lost()
       return
     }
     this.#set({ link: l })
@@ -445,7 +528,9 @@ export class AppStore {
     if (l.state === 'open' && this.#s.signInNeeded) void this.refreshSession()
   }
 
-  notice(n: Notice, id = ''): void {
+  // notice takes a notice of the stream; age is how long ago another tab
+  // received it, for one it passes on later.
+  notice(n: Notice, id = '', age = 0): void {
     if (id) this.#lastId = id
     switch (n.kind) {
       case 'hello': {
@@ -463,7 +548,8 @@ export class AppStore {
         break
       }
       case 'state':
-        this.#set({ times: n.data })
+        this.#receivedFor = n.data.finishedAt
+        this.#set({ times: n.data, receivedAt: this.#mono() - age })
         if (n.data.digest !== this.#s.state?.digest) void this.fetchState(true)
         break
       case 'event':
@@ -496,7 +582,8 @@ export class AppStore {
   // it again.
   #drop(patch: Partial<AppState>): void {
     this.#etag = undefined
-    this.#set({ ...patch, state: undefined, times: undefined, traffic: undefined, events: [], gaps: [] })
+    this.#receivedFor = undefined
+    this.#set({ ...patch, state: undefined, times: undefined, receivedAt: undefined, traffic: undefined, events: [], gaps: [] })
     this.#loadAll()
     void this.fetchState(false)
   }
@@ -553,7 +640,15 @@ export class AppStore {
         const st = a.body
         this.#etag = a.etag ?? st.digest
         this.#lastFull = this.#now()
-        this.#set({ state: { ...st, routes: shareRoutes(this.#s.state?.routes, st.routes) } })
+        const patch: Partial<AppState> = { state: { ...st, routes: shareRoutes(this.#s.state?.routes, st.routes) } }
+        // The data is as new as the cycle it is of: a state that shows a
+        // later cycle than the page knew of (on loading, after a reconnect)
+        // is news now, the same cycle fetched again is not.
+        if (!zeroTime(st.finishedAt) && (this.#receivedFor === undefined || Date.parse(st.finishedAt ?? '') > Date.parse(this.#receivedFor))) {
+          this.#receivedFor = st.finishedAt
+          patch.receivedAt = this.#mono()
+        }
+        this.#set(patch)
       }
     } catch {
       // the next notice, or the next tick, tries again
@@ -569,12 +664,10 @@ export class AppStore {
 }
 
 function unauthenticatedOf(e: ApiError): Unauthenticated {
-  const body = e.body
-  if (body && typeof body === 'object' && Array.isArray((body as Unauthenticated).methods)) return body as Unauthenticated
-  return { code: 'unauthenticated', methods: ['ticket', 'token'], ticket: false }
+  return isUnauthenticated(e.body) ? e.body : { code: 'unauthenticated', methods: ['ticket', 'token'], ticket: false }
 }
 
-function browserShare(o: { onNotice: (n: Notice, id: string) => void; onLink: (l: Link) => void; lastEventId: () => string }): Shared {
+function browserShare(o: { onNotice: (n: Notice, id: string, age?: number) => void; onLink: (l: Link) => void; lastEventId: () => string }): Shared {
   const locks: Locks | undefined = typeof navigator !== 'undefined' && 'locks' in navigator ? navigator.locks : undefined
   const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel(channelName)
   return shareStream({ ...o, locks, channel, open: openStream })

@@ -11,9 +11,10 @@ export type Method = 'GET' | 'POST' | 'PUT' | 'DELETE'
 // What the rest of the page learns from the calls; the store sets them.
 export interface ClientHooks {
   csrf: () => string | undefined
-  // A call of /api/v1 found no session: the sign-in dialog opens over the
-  // page, which keeps what it shows.
-  unauthenticated: () => void
+  // A call of /api/v1 was answered 401, whatever its code: the sign-in
+  // dialog opens over the page, which keeps what it shows. body is the
+  // answer, which may say how to sign in.
+  unauthenticated: (body: unknown) => void
   // The daemon does not know the route or the method: it is another
   // version than the page.
   versionSkew: () => void
@@ -70,6 +71,8 @@ export interface Answer<T = unknown> {
   status: number
   body: T | undefined // undefined for 204 and 304
   etag?: string
+  // The Date header: the clock of the node, which the page's may not be.
+  date?: string
 }
 
 const isV1 = (path: string) => path.startsWith('/api/v1/')
@@ -118,7 +121,7 @@ export async function request<T = unknown>(method: Method, path: string, body?: 
   if (!opts.background) hooks.active()
   if (res.status === 304) {
     if (isV1(path)) hooks.daemonAnswered()
-    return { status: 304, body: undefined, etag: etagOf(res) }
+    return { status: 304, body: undefined, etag: etagOf(res), date: res.headers.get('Date') ?? undefined }
   }
   let parsed: unknown
   if (text !== '') {
@@ -130,15 +133,16 @@ export async function request<T = unknown>(method: Method, path: string, body?: 
   }
   if (res.ok) {
     if (isV1(path)) hooks.daemonAnswered()
-    return { status: res.status, body: parsed as T | undefined, etag: etagOf(res) }
+    return { status: res.status, body: parsed as T | undefined, etag: etagOf(res), date: res.headers.get('Date') ?? undefined }
   }
   const fields: ErrorFields = typeof parsed === 'object' && parsed !== null ? (parsed as ErrorFields) : { error: res.statusText }
   const e = new ApiError(res.status, { ...fields, code: fields.code ?? (res.status === 401 ? 'unauthenticated' : 'internal') })
-  if (isV1(path)) {
+  if (isV1(path) && res.status === 401) {
+    // An expired ticket may say so in words of its own: any 401 is a
+    // session that is gone.
+    hooks.unauthenticated(e.body)
+  } else if (isV1(path)) {
     switch (e.code) {
-      case 'unauthenticated':
-        hooks.unauthenticated()
-        break
       case 'no_route':
       case 'method_not_allowed':
         hooks.versionSkew()

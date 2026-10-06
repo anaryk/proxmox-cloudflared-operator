@@ -72,7 +72,13 @@ test('a token: hidden by default, its refusal at the field', async () => {
   expect(field.autocomplete).toBe('off')
   fireEvent.click(screen.getByRole('button', { name: 'Show' }))
   expect(field.type).toBe('text')
-  expect(document.querySelector('pre code')?.textContent).toContain('pveum acl modify / --tokens')
+  // least privilege: PVEAuditor for a reader, a role of the two privileges pco checks for an admin
+  expect([...document.querySelectorAll('pre code')].map((c) => c.textContent)).toEqual([
+    'pveum acl modify / --roles PVEAuditor --users <user>',
+    'pveum role add PCOAdmin --privs "Sys.Audit,Sys.Modify"\npveum acl modify / --roles PCOAdmin --users <user>',
+    "pveum acl modify / --roles PCOAdmin --tokens '<user>!<name>'",
+  ])
+  expect(document.body.textContent).not.toContain('Administrator')
   fireEvent.change(field, { target: { value: 'alice@pve!pco=00000000-0000-0000-0000-000000000000' } })
   fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
   expect(await screen.findByText('This user has no Sys.Audit on /: pco cannot show it anything.')).toBeTruthy()

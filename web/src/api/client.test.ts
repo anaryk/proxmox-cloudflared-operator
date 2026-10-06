@@ -171,8 +171,24 @@ describe('the error codes of the daemon and of the web process', () => {
       await api('GET', '/api/v1/state').catch(() => undefined)
     }
     expect(unauthenticated).toHaveBeenCalledTimes(1)
+    expect(unauthenticated).toHaveBeenCalledWith({ error: '', code: 'unauthenticated' })
     expect(versionSkew).toHaveBeenCalledTimes(2)
     expect(daemonUnreachable).toHaveBeenCalledTimes(1)
+  })
+
+  test('any 401 of the API opens the sign-in, an expired ticket in its own words or no body at all', async () => {
+    const unauthenticated = vi.fn()
+    setClientHooks({ unauthenticated })
+    vi.stubGlobal('fetch', answer(401, { error: 'the Proxmox VE ticket of this browser has expired', code: 'ticket_invalid' }))
+    await api('POST', '/api/v1/sync', {}).catch(() => undefined)
+    vi.stubGlobal('fetch', answer(401))
+    await api('GET', '/api/v1/state').catch(() => undefined)
+    expect(unauthenticated.mock.calls.map((c) => (c[0] as { code?: string }).code)).toEqual(['ticket_invalid', 'unauthenticated'])
+  })
+
+  test('an answer carries the Date header, the clock of the node', async () => {
+    vi.stubGlobal('fetch', answer(200, {}, { Date: 'Mon, 05 Oct 2026 12:00:00 GMT' }))
+    expect((await request('GET', '/api/session')).date).toBe('Mon, 05 Oct 2026 12:00:00 GMT')
   })
 
   test("a 401 of the session routes is the caller's to handle", async () => {

@@ -58,7 +58,7 @@ describe('SseParser', () => {
 
   test('a leading byte order mark is dropped, an id with NUL ignored, an empty id clears it', () => {
     const p = new SseParser('b:0')
-    expect(p.push('﻿id: a\0b\ndata: 1\n\nid\ndata: 2\n\n')).toEqual([
+    expect(p.push('\uFEFFid: a\0b\ndata: 1\n\nid\ndata: 2\n\n')).toEqual([
       { event: 'message', data: '1', id: 'b:0' },
       { event: 'message', data: '2', id: '' },
     ])

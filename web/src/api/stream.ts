@@ -32,6 +32,11 @@ export const tooManyText = 'Too many pco tabs are open in this browser session'
 // The waits between attempts, in milliseconds: then 10 s each.
 export const backoff: readonly number[] = [1000, 2000, 5000, 10_000]
 
+// A stream that stayed open this long starts the back-off over when it
+// breaks; one that breaks sooner, such as right after its hello, goes on
+// with it.
+export const steadyAfter = 30_000
+
 export interface StreamOptions {
   onNotice: (n: Notice, id: string) => void
   onLink: (l: Link) => void
@@ -92,6 +97,16 @@ export function openStream(opts: StreamOptions): StreamHandle {
     }
   }
 
+  // A notice the page fails to take is a bug of the page, not a break of the
+  // connection: it is reported, and the stream goes on.
+  const deliver = (n: Notice, id: string) => {
+    try {
+      opts.onNotice(n, id)
+    } catch (err) {
+      console.error(`pco: the page failed to take a ${n.kind} notice of the stream`, err)
+    }
+  }
+
   const lost = (state: 'reconnecting' | 'web-down') => {
     since ??= new Date().toISOString()
     opts.onLink({ state, since })
@@ -137,22 +152,24 @@ export function openStream(opts: StreamOptions): StreamHandle {
         continue
       }
 
+      let opened: number | undefined
       try {
         for await (const msg of readSse(res.body, lastId)) {
           lastId = msg.id
           const n = parse(msg.event, msg.data)
           if (!n) continue
           if (n.kind === 'hello') {
-            attempt = 0
+            opened = Date.now()
             since = undefined
             opts.onLink({ state: 'open', since: new Date().toISOString() })
           }
-          opts.onNotice(n, msg.id)
+          deliver(n, msg.id)
         }
       } catch {
         // the connection broke; it is opened again below
       }
       if (stop.signal.aborted) return
+      if (opened !== undefined && Date.now() - opened >= steadyAfter) attempt = 0
       lost('reconnecting')
       await sleep(backoff[Math.min(attempt++, backoff.length - 1)] ?? 10_000)
     }

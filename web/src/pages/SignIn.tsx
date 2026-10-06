@@ -9,11 +9,13 @@ import { Field } from '../components/Field'
 import { MarkIcon } from '../components/icons'
 import { Untrusted } from '../components/Untrusted'
 
-// The two lines that make a token pco accepts: read-only with the role
-// PVEAuditor (Sys.Audit on /), or an admin's with Administrator, which holds
-// Sys.Modify.
-const tokenLines = `pveum user token add <user@realm> pco --privsep 1
-pveum acl modify / --tokens '<user@realm>!pco' --roles PVEAuditor`
+// The privileges pco asks for, and no more: a reader gets PVEAuditor, which
+// holds Sys.Audit and the VM.Audit that says which guests it may see; an
+// admin a role of its own with the two privileges pco checks on /.
+const readerLines = 'pveum acl modify / --roles PVEAuditor --users <user>'
+const adminLines = `pveum role add PCOAdmin --privs "Sys.Audit,Sys.Modify"
+pveum acl modify / --roles PCOAdmin --users <user>`
+const tokenLine = "pveum acl modify / --roles PCOAdmin --tokens '<user>!<name>'"
 
 // The sentence for a refused sign-in: the web process's own words, but for
 // what the page says better.
@@ -63,19 +65,25 @@ export function SignInCard({ onSignedIn }: { onSignedIn?: () => void }) {
     <div className="signin">
       <section aria-labelledby="signin-ticket">
         <h2 id="signin-ticket">With your Proxmox VE session</h2>
-        {signedOut && unauth?.ticket ? (
-          <>
-            <p>You are signed out of pco. You are still signed in to Proxmox VE in this browser.</p>
-            <Button variant="primary" disabled={busy !== undefined} onClick={() => void run('ticket', () => store.signInTicket())}>
-              Sign in with the Proxmox VE session
-            </Button>
-          </>
+        {unauth?.ticket ? (
+          <p>
+            {signedOut
+              ? 'You are signed out of pco. You are still signed in to Proxmox VE in this browser.'
+              : 'This browser is signed in to Proxmox VE.'}
+          </p>
         ) : (
           <p>
-            Sign in to <a href={proxmox}>Proxmox VE</a> in this browser at the same address, then reload this page. pco must be opened under the same host name as
-            Proxmox VE: the browser gives the session of Proxmox VE to that name only.
+            Sign in to{' '}
+            <a href={proxmox} target="_blank" rel="noopener noreferrer">
+              Proxmox VE
+            </a>{' '}
+            in this browser at the same address, in another tab, then come back and sign in here with its session; this page keeps what it shows. pco must be opened
+            under the same host name as Proxmox VE: the browser gives the session of Proxmox VE to that name only.
           </p>
         )}
+        <Button variant="primary" disabled={busy !== undefined} onClick={() => void run('ticket', () => store.signInTicket())}>
+          Sign in with the Proxmox VE session
+        </Button>
         {(error?.method === 'ticket' || (!error && authError)) && (
           <p className="form-error" role="alert">
             <Untrusted text={error?.text ?? (authError ? refusal(authError) : '')} />
@@ -112,12 +120,19 @@ export function SignInCard({ onSignedIn }: { onSignedIn?: () => void }) {
         <Button type="submit" variant="primary" disabled={busy !== undefined || token.trim() === ''}>
           {busy === 'token' ? 'Signing in…' : 'Sign in'}
         </Button>
+        <p className="muted">The rights pco asks for, given on the node. For a reader:</p>
+        <pre className="snippet">
+          <code>{readerLines}</code>
+        </pre>
+        <p className="muted">For an admin, a role with Sys.Audit and Sys.Modify, nothing more:</p>
+        <pre className="snippet">
+          <code>{adminLines}</code>
+        </pre>
         <p className="muted">
-          These two lines make a read-only token (Sys.Audit on /); give it the role Administrator instead of PVEAuditor for one that may change things
-          (Sys.Modify on /):
+          A token with privilege separation needs the same line for itself, with --tokens in place of --users (and PVEAuditor for a reader&apos;s):
         </p>
         <pre className="snippet">
-          <code>{tokenLines}</code>
+          <code>{tokenLine}</code>
         </pre>
       </form>
     </div>

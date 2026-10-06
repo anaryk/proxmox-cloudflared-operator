@@ -1,9 +1,9 @@
+import { useApp } from '../api/store'
 import type { State } from '../api/types.gen'
 import { Empty } from '../components/Empty'
 import { Untrusted } from '../components/Untrusted'
+import { docsUrl } from './docs'
 import { Link } from './Link'
-
-const annotationsDoc = 'https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/docs/annotations.md'
 
 const snippet = '```cf-tunnel\napp.example.com -> :3000\n```'
 
@@ -23,14 +23,16 @@ function Notes() {
 // NoRoutes is what the Overview and the Routes page show without a route. No routes is two states, told apart by how many guests
 // carry the gate tag; before the first cycle it is neither.
 export function NoRoutes({ state, gateTag }: { state: State; gateTag?: string }) {
+  const version = useApp((s) => s.session?.version)
   const tag = <span className="mono">{gateTag ? <Untrusted text={gateTag} /> : 'of the settings'}</span>
   if (zeroTime(state.at)) {
     return (
       <Empty title="Waiting for the first cycle">
         {state.problems.length > 0 && (
           <ul className="problems">
-            {state.problems.map((p) => (
-              <li key={p}>
+            {state.problems.map((p, at) => (
+              // a line may come twice: the daemon's lines carry no code
+              <li key={`${at}:${p}`}>
                 <Untrusted text={p} />
               </li>
             ))}
@@ -49,7 +51,7 @@ export function NoRoutes({ state, gateTag }: { state: State; gateTag?: string })
         <Notes />
         {approve}
         <p>
-          <a href={annotationsDoc}>How to write routes in the Notes</a>
+          <a href={docsUrl('annotations.md', version)}>How to write routes in the Notes</a>
         </p>
       </Empty>
     )

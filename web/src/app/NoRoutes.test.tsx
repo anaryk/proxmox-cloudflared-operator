@@ -1,11 +1,31 @@
 import { render, screen } from '@testing-library/react'
 import { expect, test } from 'vitest'
 
+import { StoreProvider } from '../api/store'
 import type { State } from '../api/types.gen'
 import empty from '../fixtures/empty.json'
 import taggedEmpty from '../fixtures/tagged-empty.json'
 import untagged from '../fixtures/untagged.json'
+import { fakeStore } from '../test/store'
 import { NoRoutes } from './NoRoutes'
+
+test('the documentation is that of the version that runs', async () => {
+  const { store } = await fakeStore({ state: untagged, session: { version: '0.3.0' } })
+  render(
+    <StoreProvider store={store}>
+      <NoRoutes state={untagged as unknown as State} gateTag="cf-tunnel" />
+    </StoreProvider>,
+  )
+  expect(screen.getByRole('link', { name: 'How to write routes in the Notes' }).getAttribute('href')).toBe(
+    'https://github.com/anaryk/proxmox-cloudflared-operator/blob/v0.3.0/docs/annotations.md',
+  )
+})
+
+test('the same standing problem twice is shown twice', () => {
+  const st = { ...(empty as unknown as State), problems: ['a problem', 'a problem'] }
+  const { container } = render(<NoRoutes state={st} />)
+  expect(container.querySelectorAll('li')).toHaveLength(2)
+})
 
 test('no guest carries the tag: the tag, the Notes and the documentation', () => {
   const { container } = render(<NoRoutes state={untagged as unknown as State} gateTag="cf-tunnel" />)

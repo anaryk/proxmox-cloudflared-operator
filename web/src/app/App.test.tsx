@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { expect, test } from 'vitest'
 
 import { ApiError } from '../api/client'
@@ -53,5 +53,21 @@ test('signed in: the shell, with its skip link, banners and the strip', async ()
   expect(screen.getByRole('heading', { name: '1 problem' })).toBeTruthy()
   expect(document.querySelector('[data-banner="egress"]')).toBeTruthy()
   expect(document.querySelector('details.strip')).toBeTruthy()
+  store.stop()
+})
+
+test('the count of problems opens the Problems card of the Overview, from any page', async () => {
+  navigate('/events')
+  const { store } = await fakeStore({ state: populated })
+  render(<App store={store} />)
+  fireEvent.click(screen.getByRole('link', { name: '1 problem' }))
+  await flush()
+  expect(window.location.pathname + window.location.hash).toBe('/#problems')
+  expect(document.activeElement?.id).toBe('problems')
+  // again from there: the card is focused again
+  ;(document.activeElement as HTMLElement).blur()
+  fireEvent.click(screen.getByRole('link', { name: '1 problem' }))
+  await flush()
+  expect(document.activeElement?.id).toBe('problems')
   store.stop()
 })

@@ -82,7 +82,7 @@ describe('back-off', () => {
     expect(links.at(-1)).toEqual({ state: 'reconnecting', since: '2026-10-05T12:00:00.000Z' })
   })
 
-  test('a hello starts the back-off over, and the next connect resumes after the last event', async () => {
+  test('a stream that ends right after its hello does not start the back-off over; the next connect resumes after the last event', async () => {
     answers = [
       status(502),
       status(502),
@@ -90,13 +90,57 @@ describe('back-off', () => {
       status(502),
     ]
     const { notices, links } = start('b:2')
-    await vi.advanceTimersByTimeAsync(5000)
-    // 0, 1 s, 3 s (hello; the stream ends), 4 s
-    expect(offsets()).toEqual([0, 1000, 3000, 4000])
+    await vi.advanceTimersByTimeAsync(10_000)
+    // 0, 1 s, 3 s (hello; the stream ends at once), 8 s
+    expect(offsets()).toEqual([0, 1000, 3000, 8000])
     expect(connects.map((c) => c.lastEventId)).toEqual(['b:2', 'b:2', 'b:2', 'b:4'])
     expect(notices.map((n) => n.kind)).toEqual(['hello', 'event'])
     expect(links.map((l) => l.state)).toEqual(['connecting', 'reconnecting', 'reconnecting', 'open', 'reconnecting', 'reconnecting'])
   })
+
+  test('a stream that stayed open 30 s starts it over', async () => {
+    let end: (() => void) | undefined
+    answers = [
+      status(502),
+      status(502),
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(new TextEncoder().encode('event: hello\ndata: {}\n\n'))
+              end = () => c.close()
+            },
+          }),
+          { status: 200 },
+        ),
+      status(502),
+    ]
+    start()
+    await vi.advanceTimersByTimeAsync(3000 + 30_000)
+    end?.()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(offsets()).toEqual([0, 1000, 3000, 34_000])
+  })
+})
+
+test('a notice the page fails to take is reported, not taken for a broken connection', async () => {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+  answers = [sse('event: state\ndata: {}\n\nevent: upstream\ndata: {"up":true,"since":""}\n\n', true)]
+  const kinds: string[] = []
+  const links: Link[] = []
+  handle = openStream({
+    onNotice: (n) => {
+      kinds.push(n.kind)
+      if (n.kind === 'state') throw new TypeError('a bug of the page')
+    },
+    onLink: (l) => links.push(l),
+  })
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(kinds).toEqual(['state', 'upstream'])
+  expect(connects).toHaveLength(1)
+  expect(links.map((l) => l.state)).toEqual(['connecting'])
+  expect(error).toHaveBeenCalledTimes(1)
+  error.mockRestore()
 })
 
 test('401: the sign-in dialog, and no attempt until the user signed in again', async () => {

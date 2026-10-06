@@ -52,8 +52,11 @@ class FakeChannel implements Channel {
   }
 }
 
+let clock = 0
+
 function tab(locks: Locks, bus: Bus) {
   const notices: Notice[] = []
+  const ages: (number | undefined)[] = []
   const links: Link[] = []
   let stream: StreamOptions | undefined
   const opened = vi.fn()
@@ -66,13 +69,18 @@ function tab(locks: Locks, bus: Bus) {
       opened(o.lastEventId?.())
       return { close: () => (stream = undefined), resume: resumed }
     },
-    onNotice: (n) => notices.push(n),
+    onNotice: (n, _id, age) => {
+      notices.push(n)
+      ages.push(age)
+    },
     onLink: (l) => links.push(l),
     lastEventId: () => 'b:41',
+    mono: () => clock,
   })
   return {
     shared,
     notices,
+    ages,
     links,
     opened,
     resumed,
@@ -140,4 +148,19 @@ test('without the Web Locks API every tab holds its own stream', () => {
   const opened = vi.fn(() => ({ close: () => {}, resume: () => {} }))
   shareStream({ open: opened, onNotice: () => {}, onLink: () => {}, lastEventId: () => '' })
   expect(opened).toHaveBeenCalledTimes(1)
+})
+
+test('a notice the leader kept reaches a later tab with its age', async () => {
+  const locks = new FakeLocks()
+  const bus = new Bus()
+  const a = tab(locks, bus)
+  await settle()
+  clock = 1000
+  a.emit({ kind: 'state', data: { at: 'x', finishedAt: 'y', digest: 'd' } })
+  clock = 8000
+  const b = tab(locks, bus)
+  await settle()
+  await settle()
+  expect(b.notices.map((n) => n.kind)).toEqual(['state'])
+  expect(b.ages).toEqual([7000])
 })
