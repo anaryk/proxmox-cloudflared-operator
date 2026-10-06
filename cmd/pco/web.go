@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/auth"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/ui"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
@@ -41,7 +44,8 @@ func (a *app) webCmd() *cobra.Command {
 		Use:   "web",
 		Short: "Serve the web interface",
 		Long: "Serve the web interface over HTTPS, as pco-web.service does. It runs until SIGINT or\n" +
-			"SIGTERM.\n\n" +
+			"SIGTERM. The calls of the page go to the daemon on --socket, as those of the other\n" +
+			"commands do.\n\n" +
 			"The flags win over the environment, which the unit reads from /etc/default/pco-web:\n" +
 			"  PCO_WEB_LISTEN  the address to listen on (default " + web.DefaultListen + ")\n" +
 			"  PCO_WEB_HOSTS   more host names the interface is reached by, comma separated\n" +
@@ -72,13 +76,14 @@ func (a *app) webCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			srv, err := web.New(cfg, sessions)
+			gw := gateway.New(a.socket, sessions, cfg.Log)
+			srv, err := web.New(cfg, sessions, gw)
 			if err != nil {
 				return err
 			}
 			ctx, stop := signalContext(cmd.Context(), osSignals{}, os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return srv.Run(ctx)
+			return serveWeb(ctx, srv, gw)
 		},
 	}
 	flags := cmd.Flags()
@@ -91,6 +96,19 @@ func (a *app) webCmd() *cobra.Command {
 	flags.StringVar(&f.pveURL, "pve-url", defaultPVEURL, "the Proxmox VE API that checks sign-ins")
 	cmd.AddCommand(a.webCertCmd())
 	return cmd
+}
+
+// serveWeb serves the interface until ctx ends, and follows the daemon's
+// stream for as long as it does: the subscription starts before the first
+// request and ends after the last.
+func serveWeb(ctx context.Context, srv *web.Server, gw *gateway.Gateway) error {
+	follow, unfollow := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { gw.Run(follow) })
+	err := srv.Run(ctx)
+	unfollow()
+	wg.Wait()
+	return err
 }
 
 // logLevel is the level a --log-level names.

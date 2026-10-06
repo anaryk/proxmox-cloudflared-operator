@@ -1,16 +1,30 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"io"
+	"net"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/pvefake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/ui"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/wire"
 )
 
 func TestWebConfig(t *testing.T) {
@@ -203,6 +217,128 @@ func TestNodeZone(t *testing.T) {
 	require.Equal(t, "UTC", nodeZone("", "", os.ErrNotExist), "no /etc/localtime is UTC")
 	require.Empty(t, nodeZone("", "/etc/zone-copy", nil))
 	require.Empty(t, nodeZone("", "", os.ErrInvalid))
+}
+
+// A user signed in to pco web reaches the daemon on --socket: a change and a
+// read of the page go through to it, and one without the session does not.
+func TestWebForwardsTheCallsOfASession(t *testing.T) {
+	const token = "alice@pve!pco=0b5c3e7e-1d2f-4a6b-9c8d-7e6f5a4b3c2d"
+	dir := t.TempDir()
+	pve, err := pvefake.New("pve1", pvefake.Users{Users: []pvefake.User{{
+		ID:         "alice@pve",
+		Privileges: map[string][]string{"/": {"Sys.Audit", "Sys.Modify"}},
+		Tokens:     []pvefake.Token{{ID: "pco", Secret: "0b5c3e7e-1d2f-4a6b-9c8d-7e6f5a4b3c2d"}},
+	}}})
+	require.NoError(t, err)
+	pvePair, pinPEM, err := pvefake.SelfSigned(time.Now(), "127.0.0.1")
+	require.NoError(t, err)
+	proxmox := httptest.NewUnstartedServer(pve)
+	proxmox.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pvePair}}
+	proxmox.StartTLS()
+	t.Cleanup(proxmox.Close)
+	pin := filepath.Join(dir, "pveproxy.crt")
+	require.NoError(t, os.WriteFile(pin, pinPEM, 0o644))
+	certFile, keyFile, webCert := writeWebPair(t, dir)
+
+	daemon := &fakeEngine{state: engine.State{Node: "pve1", Digest: "d1"}}
+	socket := serveFake(t, daemon)
+	listen := freeAddr(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var log testutil.SyncBuffer
+	cmd := newRootCmdWith(testEnv())
+	cmd.SetOut(&log)
+	cmd.SetErr(&log)
+	cmd.SetArgs([]string{"--socket", socket, "web", "--listen", listen, "--cert", certFile, "--key", keyFile,
+		"--pin", pin, "--pve-url", proxmox.URL + "/api2/json"})
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	defer func() {
+		cancel()
+		require.NoError(t, <-done, log.String())
+	}()
+
+	pool := x509.NewCertPool()
+	pool.AddCert(webCert)
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar, Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	origin := "https://" + listen
+	call := func(method, path, csrf, body string) (int, string) {
+		t.Helper()
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, origin+path, rd)
+		require.NoError(t, err)
+		req.Header.Set("Origin", origin)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if csrf != "" {
+			req.Header.Set("Pco-Csrf", csrf)
+		}
+		res, err := client.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = res.Body.Close() }()
+		data, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+		return res.StatusCode, string(data)
+	}
+
+	require.Eventually(t, func() bool {
+		res, err := client.Get(origin + "/api/session")
+		if err == nil {
+			_ = res.Body.Close()
+		}
+		return err == nil
+	}, 10*time.Second, 20*time.Millisecond, "pco web does not answer: %s", log.String())
+
+	status, _ := call(http.MethodPost, "/api/v1/sync", "", "{}")
+	require.Equal(t, http.StatusUnauthorized, status)
+	require.Empty(t, daemon.called(), "a call without a session reaches no daemon")
+
+	status, body := call(http.MethodPost, "/api/session/token", "", `{"token":"`+token+`"}`)
+	require.Equal(t, http.StatusOK, status, body)
+	var session wire.Session
+	require.NoError(t, json.Unmarshal([]byte(body), &session))
+	require.Equal(t, "admin", session.Role)
+
+	status, body = call(http.MethodPost, "/api/v1/sync", session.CSRF, "{}")
+	require.Less(t, status, 300, body)
+	require.Equal(t, []string{"sync"}, daemon.called())
+
+	status, body = call(http.MethodGet, "/api/v1/state", "", "")
+	require.Equal(t, http.StatusOK, status, body)
+	var st engine.State
+	require.NoError(t, json.Unmarshal([]byte(body), &st))
+	require.Equal(t, "pve1", st.Node)
+}
+
+// writeWebPair writes a certificate of pco web for 127.0.0.1 and its key,
+// and returns their files and the certificate.
+func writeWebPair(t *testing.T, dir string) (string, string, *x509.Certificate) {
+	t.Helper()
+	pair, certPEM, err := pvefake.SelfSigned(time.Now(), "127.0.0.1")
+	require.NoError(t, err)
+	der, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
+	require.NoError(t, err)
+	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
+	require.NoError(t, os.WriteFile(certFile, certPEM, 0o644))
+	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
+	return certFile, keyFile, pair.Leaf
+}
+
+// freeAddr is an address on loopback whose port nothing listened on a moment
+// ago.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	return addr
 }
 
 // writePin writes a certificate as pveproxy's and returns its file.
