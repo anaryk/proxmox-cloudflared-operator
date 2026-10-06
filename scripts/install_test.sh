@@ -46,6 +46,7 @@ CASE_NAME=
 CASE_DIR=
 CASE_FAILED=0
 CASE_ENV=()
+PRINTED_ARGS=()
 RUN_PREFIX=()
 SCRIPT_UNDER_TEST=
 RC=0
@@ -645,6 +646,41 @@ use_template() {
 	printf '%s  %s\n%s  %s\n' "$HASH_A" "$PKG" "$HASH_C" "$TEMPLATE" >"$CASE_DIR/fixtures/checksums.txt"
 	set_cfg "sha256-$TEMPLATE" "$HASH_C"
 	set_env PCO_TEMPLATE "$CASE_DIR/local/$TEMPLATE"
+}
+
+# The command a message of the script gives, after MARKER on a line of TEXT, as
+# ENV... install.sh ARGS...
+printed_after() {
+	local line
+	while IFS= read -r line; do
+		if [[ $line == *"$2"* ]]; then
+			printf '%s\n' "${line#*"$2"}"
+			return 0
+		fi
+	done <<<"$1"
+	return 1
+}
+
+# Sets the next run up as the command says: its VAR=value words become the
+# environment, and the words after install.sh the arguments, which are left in
+# PRINTED_ARGS.
+use_printed() {
+	local word seen=0
+	local -a words
+	# The line is quoted the way a shell reads it.
+	eval "words=($1)"
+	CASE_ENV=()
+	PRINTED_ARGS=()
+	for word in "${words[@]}"; do
+		if [[ $seen == 1 ]]; then
+			PRINTED_ARGS+=("$word")
+		elif [[ $word == install.sh ]]; then
+			seen=1
+		else
+			set_env "${word%%=*}" "${word#*=}"
+		fi
+	done
+	ensure "the command names install.sh" equals "$seen" 1
 }
 
 case_not_root() {
@@ -2005,8 +2041,8 @@ case_appliance_failure() {
 	assert_rc 1
 	assert_tmp_gone
 	assert_stderr_has "the installer did not finish, and left its journal in $CASE_DIR/journals"
-	assert_stderr_has "to finish the run or take it back, run: PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
-	assert_stderr_has "set PCO_VERSION=1.2.3 as well to run the release of this run again"
+	assert_stderr_has "to finish the run or take it back, run: PCO_PROFILE=appliance PCO_VERSION=1.2.3 PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
+	assert_stderr_has "install.sh stands for the script as you ran it"
 	assert_nothing_elsewhere
 
 	new_case "a failing installer that left no journal offers nothing"
@@ -2043,6 +2079,35 @@ case_appliance_failure() {
 	assert_rc 1
 	assert_stderr_has "PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
 	assert_stderr_lacks "PCO_VERSION"
+	assert_stderr_has "run: PCO_PROFILE=appliance PCO_DEB=$CASE_DIR/local/$PKG PCO_CHECKSUMS=$CASE_DIR/local/checksums.txt PCO_SIGNATURE=$CASE_DIR/local/checksums.txt.sig PCO_RESUME="
+
+	new_case "the offer names every variable the run was made with"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	use_template
+	set_env PCO_REPO some-one/else_repo.v2
+	set_env PCO_INSECURE_SKIP_SIGNATURE 1
+	set_cfg pco-rc 1
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 1
+	assert_stderr_has "run: PCO_PROFILE=appliance PCO_VERSION=1.2.3 PCO_REPO=some-one/else_repo.v2 PCO_TEMPLATE=$CASE_DIR/local/$TEMPLATE PCO_INSECURE_SKIP_SIGNATURE=1 PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh"
+
+	new_case "the line of the offer, run as printed, resumes the run"
+	use_terminal 'typed answers'
+	set_cfg pco-rc 1
+	set_cfg pco-journal "$JOURNAL"
+	run_install --appliance --yes
+	assert_rc 1
+	use_printed "$(printed_after "$ERR" "run: ")"
+	# What the latest release is by now is not the release of the run.
+	printf '{\n  "tag_name": "v9.9.9"\n}\n' >"$CASE_DIR/cfg/api-response"
+	set_cfg pco-rc 0
+	run_install ${PRINTED_ARGS[@]+"${PRINTED_ARGS[@]}"}
+	assert_rc 0
+	assert_stderr_empty
+	assert_calls apt-get 0
+	assert_log_has "pco appliance install --resume $CASE_DIR/journals/$JOURNAL --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt"
+	assert_tmp_gone
 
 	new_case "a failure before the installer starts offers nothing"
 	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
@@ -2215,32 +2280,61 @@ case_appliance_uninstall() {
 }
 
 case_appliance_skip_setup() {
-	new_case "PCO_SKIP_SETUP=1 verifies, prints the hand-over and stops, without a terminal"
+	new_case "PCO_SKIP_SETUP=1 verifies, prints the command to go on and stops, without a terminal"
 	set_env PCO_SKIP_SETUP 1
-	run_install --appliance --vmid 120
+	run_install --appliance --yes --vmid 120
 	assert_rc 0
 	assert_stderr_empty
 	assert_nothing_unpacked
 	assert_stdout_has "verified by: signature by key $STUB_FPR and checksum"
-	assert_stdout_has "skipping the appliance install (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; run: pco appliance install --release-base $RELEASE_URL --checksums checksums.txt --vmid 120"
+	assert_stdout_has "skipping the appliance install (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; to go on, run again without PCO_SKIP_SETUP: PCO_PROFILE=appliance PCO_VERSION=1.2.3 install.sh --yes --vmid 120"
+	assert_stdout_has "install.sh stands for the script as you ran it"
 	assert_stdout_lacks "$CASE_DIR/tmp"
+	assert_stdout_lacks "pco appliance"
+	assert_tmp_gone
+	# The command, run as printed, goes on to the installer.
+	use_printed "$(printed_after "$OUT" "without PCO_SKIP_SETUP: ")"
+	printf '{\n  "tag_name": "v9.9.9"\n}\n' >"$CASE_DIR/cfg/api-response"
+	run_install ${PRINTED_ARGS[@]+"${PRINTED_ARGS[@]}"}
+	assert_rc 0
+	assert_calls apt-get 0
+	assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --yes --vmid 120"
 	assert_tmp_gone
 
-	new_case "PCO_SKIP_SETUP=1 with a template names it in the hand-over"
+	new_case "PCO_SKIP_SETUP=1 with a template names it in the command to go on"
 	use_template
 	set_env PCO_SKIP_SETUP 1
-	run_install --appliance
+	run_install --appliance --yes
 	assert_rc 0
 	assert_nothing_unpacked
-	assert_stdout_has "run: pco appliance install --release-base $RELEASE_URL --checksums checksums.txt --template $CASE_DIR/local/$TEMPLATE"
+	assert_stdout_has "run again without PCO_SKIP_SETUP: PCO_PROFILE=appliance PCO_VERSION=1.2.3 PCO_TEMPLATE=$CASE_DIR/local/$TEMPLATE install.sh --yes"
+	use_printed "$(printed_after "$OUT" "without PCO_SKIP_SETUP: ")"
+	run_install ${PRINTED_ARGS[@]+"${PRINTED_ARGS[@]}"}
+	assert_rc 0
+	assert_log_has "pco appliance install --release-base $RELEASE_URL --checksums $CASE_DIR/tmp/pco-install.*/checksums.txt --template $CASE_DIR/local/$TEMPLATE --yes"
+
+	new_case "PCO_SKIP_SETUP=1 with PCO_RESUME keeps the journal in the command to go on"
+	use_variant "$ROOT/usrbin/pco" "$ROOT/no-tty"
+	leave_journal "$JOURNAL"
+	set_env PCO_RESUME "$CASE_DIR/journals/$JOURNAL"
+	set_env PCO_SKIP_SETUP 1
+	run_install --appliance --yes
+	assert_rc 0
+	assert_nothing_unpacked
+	assert_stdout_has "run again without PCO_SKIP_SETUP: PCO_PROFILE=appliance PCO_VERSION=1.2.3 PCO_RESUME=$CASE_DIR/journals/$JOURNAL install.sh --yes"
 
 	new_case "PCO_SKIP_SETUP=1 stops an uninstall after the verification too"
 	set_env PCO_SKIP_SETUP 1
-	run_install --appliance --uninstall --vmid 120
+	run_install --appliance --uninstall --yes --vmid 120
 	assert_rc 0
 	assert_nothing_unpacked
-	assert_stdout_has "skipping the appliance uninstall (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; run: pco appliance uninstall --vmid 120"
+	assert_stdout_has "skipping the appliance uninstall (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; to go on, run again without PCO_SKIP_SETUP: PCO_PROFILE=appliance PCO_VERSION=1.2.3 install.sh --uninstall --yes --vmid 120"
 	assert_tmp_gone
+	use_printed "$(printed_after "$OUT" "without PCO_SKIP_SETUP: ")"
+	run_install ${PRINTED_ARGS[@]+"${PRINTED_ARGS[@]}"}
+	assert_rc 0
+	assert_log_has "pco appliance uninstall --yes --vmid 120"
+	assert_log_lacks "--release-base"
 
 	new_case "PCO_SKIP_SETUP=1 does not hide a failed check"
 	set_env PCO_SKIP_SETUP 1

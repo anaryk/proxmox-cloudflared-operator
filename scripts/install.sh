@@ -71,6 +71,7 @@ TTY_DEVICE=/dev/tty
 JOURNAL_DIR=/root/.pco-appliance-install
 PLACEHOLDER_KEY=REPLACE-WITH-THE-RELEASE-KEY
 SIGNATURE_REFUSED="the signature of checksums.txt is not valid for the release key, or the key was revoked or has expired"
+SCRIPT_NOTE="install.sh stands for the script as you ran it; when curl piped it into bash, put the variables before that bash"
 PROFILE_QUESTION="Install on this node (host profile, the default) or as an appliance (a container, nothing on the node)? [host/appliance]"
 MAX_VERSION_LENGTH=64
 MAX_SMALL_FILE=1048576
@@ -109,6 +110,38 @@ cleanup() {
 	fi
 }
 
+# The variables that made a run what it was, as the words that set them again
+# for a command to repeat it with: the appliance profile, which is not the
+# default; the release, as the latest one may be another by then, and an
+# installer does not go on with the template of another release; and the files
+# and settings the run was given. An argument is the journal of a run to finish.
+rerun_environment() {
+	local journal=${1:-} name pair quoted words=
+	local -a pairs=(PCO_PROFILE=appliance)
+	if [[ -n $RELEASE_VERSION ]]; then
+		pairs+=("PCO_VERSION=$RELEASE_VERSION")
+	fi
+	for name in PCO_REPO PCO_DEB PCO_CHECKSUMS PCO_SIGNATURE; do
+		if [[ -n ${!name:-} ]]; then
+			pairs+=("$name=${!name}")
+		fi
+	done
+	if [[ -n $TEMPLATE_FILE ]]; then
+		pairs+=("PCO_TEMPLATE=$TEMPLATE_FILE")
+	fi
+	if [[ ${PCO_INSECURE_SKIP_SIGNATURE:-} == 1 ]]; then
+		pairs+=(PCO_INSECURE_SKIP_SIGNATURE=1)
+	fi
+	if [[ -n $journal ]]; then
+		pairs+=("PCO_RESUME=$journal")
+	fi
+	for pair in "${pairs[@]}"; do
+		printf -v quoted '%q' "${pair#*=}"
+		words="$words ${pair%%=*}=$quoted"
+	done
+	printf '%s\n' "${words# }"
+}
+
 # The journals of the installer, one path to a line.
 journals() {
 	local file
@@ -123,7 +156,7 @@ journals() {
 # the temporary directory, which is removed first. The journals it names are
 # those that were not there before the run, and the one it was told to resume.
 offer_resume() {
-	local file quoted found=0
+	local file found=0
 	while IFS= read -r file; do
 		if [[ -z $file ]]; then
 			continue
@@ -135,11 +168,10 @@ offer_resume() {
 			printf 'install.sh: the installer did not finish, and left its journal in %s\n' "$JOURNAL_DIR" >&2
 			found=1
 		fi
-		printf -v quoted '%q' "$file"
-		printf 'install.sh: to finish the run or take it back, run: PCO_RESUME=%s install.sh\n' "$quoted" >&2
+		printf 'install.sh: to finish the run or take it back, run: %s install.sh\n' "$(rerun_environment "$file")" >&2
 	done < <(journals)
-	if [[ $found == 1 && -n $RELEASE_VERSION ]]; then
-		printf 'install.sh: set PCO_VERSION=%s as well to run the release of this run again\n' "$RELEASE_VERSION" >&2
+	if [[ $found == 1 ]]; then
+		printf 'install.sh: %s\n' "$SCRIPT_NOTE" >&2
 	fi
 }
 
@@ -721,11 +753,27 @@ run_installer() {
 # template against again. Offline there is no release to name, and the template
 # comes from PCO_TEMPLATE.
 hand_over_appliance() {
-	local name=$1 base=$2 verb=install shown dir
+	local name=$1 base=$2 verb=install again='' quoted
 	local -a args
 	shift 2
 	if [[ $UNINSTALL == 1 ]]; then
 		verb=uninstall
+	fi
+	if [[ ${PCO_SKIP_SETUP:-} == 1 ]]; then
+		# pco is not installed and the temporary directory is gone by the time
+		# anyone reads this, so what is printed is the script again.
+		if [[ $UNINSTALL == 1 ]]; then
+			again=--uninstall
+		fi
+		if [[ $# -gt 0 ]]; then
+			printf -v quoted '%q ' "$@"
+			again="$again ${quoted% }"
+		fi
+		say "skipping the appliance $verb (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; to go on, run again without PCO_SKIP_SETUP: $(rerun_environment "${PCO_RESUME:-}") install.sh${again:+ ${again# }}"
+		say "$SCRIPT_NOTE"
+		return 0
+	fi
+	if [[ $UNINSTALL == 1 ]]; then
 		args=(uninstall "$@")
 	else
 		args=(install)
@@ -740,15 +788,6 @@ hand_over_appliance() {
 			args+=(--template "$TEMPLATE_FILE")
 		fi
 		args+=("$@")
-	fi
-	if [[ ${PCO_SKIP_SETUP:-} == 1 ]]; then
-		printf -v shown '%q ' pco appliance "${args[@]}"
-		shown=${shown% }
-		# The temporary directory is gone by the time anyone reads the line.
-		dir=$TMP_DIR/
-		shown=${shown//$dir/}
-		say "skipping the appliance $verb (PCO_SKIP_SETUP=1); the package is verified and nothing was installed; run: $shown"
-		return 0
 	fi
 	unpack_package "$TMP_DIR/$name" "$name"
 	if [[ $verb == install ]]; then
