@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
@@ -190,4 +192,21 @@ func TestANoVolumeErrorExitsWithItsStatus(t *testing.T) {
 	require.Equal(t, 78, exitCode(err, &stderr))
 	require.Equal(t, "pco: running: no volume\n", stderr.String())
 	require.Equal(t, 1, exitCode(errors.New("other"), &stderr))
+}
+
+// A command of the node that failed in what it ran, as pco appliance install
+// does when the boot of the container outlasts timeout, which exits with 124,
+// exits 1 as its help says, and keeps the message.
+func TestACommandThatRanSomethingThatFailedExitsOne(t *testing.T) {
+	_, ran := setup.NewHostRunner().Run(t.Context(), "sh", "-c", "exit 124")
+	var exit *exec.ExitError
+	require.ErrorAs(t, ran, &exit)
+	require.Equal(t, 124, exit.ExitCode())
+	err := fmt.Errorf("install step start: lxc/9240 did not finish its boot within 90 s (systemd says \"\"): %w; "+
+		"what the run made is taken back", ran)
+	var stderr bytes.Buffer
+
+	require.Equal(t, 1, exitCode(err, &stderr))
+	require.Equal(t, "pco: install step start: lxc/9240 did not finish its boot within 90 s (systemd says \"\"): "+
+		"sh -c exit 124: exit status 124; what the run made is taken back\n", stderr.String())
 }

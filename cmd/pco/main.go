@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 )
 
@@ -26,14 +27,15 @@ func exitCode(err error, stderr io.Writer) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(stderr, "pco: %s\n", present.Printable(err.Error()))
-	var coded interface{ ExitCode() int }
+	var noVolume daemon.NoVolumeError
 	switch {
 	case errors.Is(err, apiclient.ErrNoAnswer) || errors.As(err, new(couldNotAsk)):
 		return 2
-	case errors.As(err, &coded):
+	case errors.As(err, &noVolume):
 		// The daemon of an appliance without its volume: its unit does not
-		// start it again on this status.
-		return coded.ExitCode()
+		// start it again on this status. The status of a program pco ran,
+		// which an error may carry too, is not pco's.
+		return noVolume.ExitCode()
 	}
 	return 1
 }
