@@ -54,7 +54,7 @@ mounted.
 | `nodes/<node>.json` | The node that runs pco, and its version. | `pco setup` | as the cluster filesystem sets | No; `pco setup` registers the node again. |
 | `claims/<hostname>.json` | Who holds a hostname, since when, and who waits. A wildcard is stored as `_wildcard.<name>.json`. | The daemon, `pco claims resolve` | as the cluster filesystem sets | No; the daemon settles claims again from the Notes, and the guest that holds a hostname may then be another. |
 | `approvals/<owner>.json` | An approved guest and its identity. A guest `qemu/101` is stored as `qemu_101.json`. | `pco guest approve`, the web interface | as the cluster filesystem sets | Yes: an approval is a decision of an admin. |
-| `routes/<id>.json` | Manual routes, which the daemon reads in every cycle. A manual route names an address and not a guest, so its level is `manual`. | `pco route manual add` and `remove`, the web interface | as the cluster filesystem sets | Yes. |
+| `routes/<id>.json` | Manual routes, which the daemon reads in every cycle. A manual route names a guest, whose address is proven as for its Notes, or an address, which nothing proves: its level is `manual`. | `pco route manual add` and `remove`, the web interface | as the cluster filesystem sets | Yes. |
 | `segments/<bridge>.json`, `segments/<bridge>.<vlan>.json` | A bridge and VLAN on which routes at `observed` may be served, once an admin acknowledged it. | `pco segment acknowledge` and `revoke` | as the cluster filesystem sets | Yes. |
 | `adopted.jsonl` | One line for each DNS record that `pco adopt` replaced, as it was; at most 256 KiB, oldest lines first out. | The daemon, for `pco adopt` | as the cluster filesystem sets | Yes: it is the only copy of those records. |
 

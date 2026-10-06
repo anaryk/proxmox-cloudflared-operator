@@ -60,8 +60,8 @@ A trusted static address behind a router is proven in another way, which replace
 `pco routes` shows the level of each route in the `LEVEL` column.
 
 The levels form a ladder, from the most proof at the top to the least, each with what proves it
-and which routes can reach it; a route without a guest has the level `manual`, outside the
-ladder:
+and which routes can reach it; a route to an address, with no guest, has the level `manual`,
+outside the ladder:
 
 ```mermaid
 flowchart TB
@@ -89,7 +89,8 @@ flowchart TB
 A route that names an address and no guest has the level `manual`. Root makes it with
 `pco route manual add`, an admin in the web UI, and its address must lie in `manualCIDRs`;
 it is kept as a file in `/etc/pve/pco/routes/`, and nothing proves it; see
-[Security](security.md).
+[Security](security.md). A manual route can also name a guest, with `--guest`: its address is
+proven as for a route in the guest's Notes, and its level is one of the ladder.
 
 `port` is the highest level, and only a guest on the node that pco runs on can reach it.
 When a route has several candidates, pco serves the one proven at the highest level, and

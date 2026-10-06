@@ -344,8 +344,9 @@ disappear, and never lets a hostname change hands.
 
 ## What there is not
 
-A guest publishes only through its own Notes. A route to an address that is not a
-guest's own is a manual route, made by root with `pco route manual add` or by an admin in
-the web UI, within `manualCIDRs`; [Operations](operations.md) and
-[Security](security.md) describe it. Cloudflare Access policies, IPv6 origins, and
-protocols other than HTTP and HTTPS are not supported.
+A guest publishes only through its own Notes. A route that is not in the Notes is a
+manual route, made by root with `pco route manual add` or by an admin in the web UI: to a
+guest, whose address is proven as for its Notes, or to an address inside `manualCIDRs`;
+[Publish a route by hand](guides/manual-routes.md) and [Security](security.md) describe it.
+Cloudflare Access policies, IPv6 origins, and protocols other than HTTP and HTTPS are not
+supported.

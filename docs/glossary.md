@@ -123,7 +123,7 @@ Cloudflare and on the connectors, and `pco status` says why. See
 ## I
 
 **Identity level**: How strongly pco proved that an address belongs to the guest of a route:
-`port`, `filtered` or `observed`, and `manual` for a route without a guest. Also called the
+`port`, `filtered` or `observed`, and `manual` for a route to an address, which names no guest. Also called the
 proof level. See [Identity](identity.md#the-levels).
 
 **`identityMinimum`**: The setting that names the lowest identity level at which a guest's
@@ -138,9 +138,10 @@ lists them. See [Annotations](annotations.md#what-is-rejected-and-why).
 
 ## M
 
-**Manual route**: A route that names an address and no guest, made by root with
-`pco route manual add` or by an admin in the web interface, within `manualCIDRs`. Its level is
-`manual`: nothing proves it. See [Security](security.md#manual-routes).
+**Manual route**: A route made by root with `pco route manual add` or by an admin in the web
+interface instead of in the Notes of a guest. It goes to a guest, whose address is proven as for
+its Notes, or to an address within `manualCIDRs`, and then its level is `manual`: nothing proves
+it. See [Security](security.md#manual-routes).
 
 **Marker**: The comment `pco:<install id>` on every DNS record pco made. pco changes only records
 that carry it. See [Cloudflare token](cloudflare-token.md#what-pco-names-and-marks).
