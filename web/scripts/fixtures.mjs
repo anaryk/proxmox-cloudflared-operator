@@ -175,6 +175,9 @@ export function fixtures() {
     // connectors pco does not run with the flags of its own connectors
     frozen: scenario('frozen'),
     'rogue-scenario': scenario('rogue'),
+    // the populated scenario of the fake daemon: a route in every state, a
+    // rejected wildcard and a manual route among them
+    'scenario-populated': scenario('populated'),
     // engine.Event, engine.Hello, engine.TrafficView
     events,
     hello: { boot: last.boot, version: version.version, seq: last.seq, digest: populated.digest, pollInterval: version.pollInterval },
@@ -191,6 +194,8 @@ export function fixtures() {
     // doctor.Finding for an admin, wire.DoctorCounts for a reader
     doctor: doctorFindings(),
     'doctor-counts': read('internal/web/wire/testdata/doctor_counts.json'),
+    // doctor.Step: a diagnosis whose zone step failed
+    diagnose: read('internal/doctor/testdata/diagnose_skipped.json'),
     // pco web's own
     session: read('internal/web/wire/testdata/session.json'),
     unauthenticated: read('internal/web/wire/testdata/unauthenticated.json'),

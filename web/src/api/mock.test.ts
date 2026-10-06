@@ -17,6 +17,8 @@ test('the state is the fixture, named by its digest', () => {
 test('another fixture, and the large one', () => {
   expect((new Mock('untagged').answer('GET', '/api/v1/state', {}).body as { gateTagged: number }).gateTagged).toBe(0)
   expect((new Mock('large').answer('GET', '/api/v1/state', {}).body as { routes: unknown[] }).routes).toHaveLength(1000)
+  const scenario = new Mock('scenario-populated').answer('GET', '/api/v1/state', {}).body as { routes: { state: string }[] }
+  expect(scenario.routes.some((r) => r.state === 'rejected')).toBe(true)
 })
 
 test('a sign-out holds until the page signs in again', () => {

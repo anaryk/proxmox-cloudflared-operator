@@ -1,0 +1,48 @@
+[
+  {
+    "name": "route",
+    "level": "ok",
+    "detail": "qemu/101 (web-1) holds it; state frozen: account frozen: zone example.com is no longer listed by credential cred1"
+  },
+  {
+    "name": "zone",
+    "level": "fail",
+    "detail": "account frozen: zone example.com is no longer listed by credential cred1"
+  },
+  {
+    "name": "dns",
+    "level": "warn",
+    "detail": "skipped",
+    "skipped": true
+  },
+  {
+    "name": "ingress",
+    "level": "warn",
+    "detail": "skipped",
+    "skipped": true
+  },
+  {
+    "name": "connector",
+    "level": "warn",
+    "detail": "skipped",
+    "skipped": true
+  },
+  {
+    "name": "identity",
+    "level": "warn",
+    "detail": "skipped",
+    "skipped": true
+  },
+  {
+    "name": "tcp",
+    "level": "warn",
+    "detail": "skipped",
+    "skipped": true
+  },
+  {
+    "name": "http",
+    "level": "warn",
+    "detail": "skipped",
+    "skipped": true
+  }
+]
