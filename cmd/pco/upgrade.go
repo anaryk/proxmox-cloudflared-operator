@@ -350,6 +350,7 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 		return errAborted
 	}
 	restart := a.connectorRestart(paths, out)
+	daemonRan := a.daemonAnswers(ctx)
 	for _, p := range changes {
 		do := upgrade.Options{Rollback: o.Rollback, Yes: true}
 		if !o.Rollback {
@@ -368,6 +369,16 @@ func (a *app) applyUpgrade(cmd *cobra.Command, u *upgrade.Upgrader, paths store.
 			return err
 		}
 		printUpgraded(out, res, o.Rollback)
+		if p.res.Package != "pco" {
+			continue
+		}
+		if !daemonRan {
+			out.println("the daemon did not answer before the upgrade, so it is not waited for")
+			continue
+		}
+		if err := a.waitForDaemon(ctx, res, o.Rollback, a.upgrade.sleep, out); err != nil {
+			return err
+		}
 	}
 	out.println("pco and cloudflared are held")
 	return out.done()

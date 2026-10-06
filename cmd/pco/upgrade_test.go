@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/upgrade"
 )
 
@@ -41,19 +43,68 @@ type upgradeHost struct {
 	mu        sync.Mutex
 	installed map[string]string
 	ran       []string
+	// binVersion is what the pco the package installed says it is.
+	binVersion string
+	// onRun is what a command does besides answering, such as a daemon
+	// that restarts when apt-get installs pco.
+	onRun func(line string)
 }
 
 func (h *upgradeHost) Run(_ context.Context, name string, args ...string) (string, error) {
+	line := strings.Join(append([]string{name}, args...), " ")
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.ran = append(h.ran, strings.Join(append([]string{name}, args...), " "))
-	switch name {
-	case "dpkg-query":
-		return "hold installed ok " + h.installed[args[len(args)-1]], nil
-	case "apt-get", "apt-mark":
+	h.ran = append(h.ran, line)
+	installed, binVersion, onRun := h.installed[args[len(args)-1]], h.binVersion, h.onRun
+	h.mu.Unlock()
+	if onRun != nil {
+		onRun(line)
+	}
+	switch {
+	case name == "dpkg-query":
+		return "hold installed ok " + installed, nil
+	case name == "apt-get" || name == "apt-mark" || name == "dpkg-deb":
 		return "", nil
+	case strings.HasSuffix(name, "/usr/bin/pco"):
+		return fmt.Sprintf(`{"version":%q,"commit":"abc1234","date":"2026-10-01","schemaVersion":1}`, binVersion), nil
 	}
 	return "", fmt.Errorf("unexpected command %s", name)
+}
+
+// fakeDaemon is a daemon on a socket of the test that answers its version,
+// until it stops.
+type fakeDaemon struct {
+	socket  string
+	mu      sync.Mutex
+	version string
+	srv     *httptest.Server
+}
+
+func startFakeDaemon(t *testing.T, version string) *fakeDaemon {
+	t.Helper()
+	d := &fakeDaemon{socket: filepath.Join(testutil.ShortDir(t), "pco.sock"), version: version}
+	ln, err := net.Listen("unix", d.socket)
+	require.NoError(t, err)
+	d.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/version" {
+			http.NotFound(w, r)
+			return
+		}
+		d.mu.Lock()
+		v := d.version
+		d.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"version":%q}`, v)
+	}))
+	d.srv.Listener = ln
+	d.srv.Start()
+	t.Cleanup(d.srv.Close)
+	return d
+}
+
+func (d *fakeDaemon) runs(version string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.version = version
 }
 
 func (h *upgradeHost) commands() []string {
@@ -275,6 +326,93 @@ func TestUpgradeWithYesUpgradesPcoThenCloudflared(t *testing.T) {
 	require.True(t, strings.HasSuffix(res.out, "pco and cloudflared are held\n"))
 	require.Contains(t, res.errOut, "pco-pre-upgrade-20261001", "the reminder is there with --yes too")
 	require.NotContains(t, res.errOut, "[y/N]")
+	require.Contains(t, res.out, "the daemon did not answer before the upgrade, so it is not waited for\n")
+}
+
+// installsPco says whether a command line installs a package of pco.
+func installsPco(line string) bool {
+	return strings.HasPrefix(line, "apt-get install") && strings.Contains(line, "/pco_")
+}
+
+func TestUpgradeWaitsForTheDaemonOfTheNewPco(t *testing.T) {
+	u := newUpgradeRig(t)
+	d := startFakeDaemon(t, "v1.2.3")
+	u.r.socket = d.socket
+	u.host.binVersion = "v1.2.4"
+	u.host.onRun = func(line string) {
+		if installsPco(line) {
+			d.runs("v1.2.4")
+		}
+	}
+
+	res := u.r.run("", "upgrade", "--yes")
+
+	require.NoError(t, res.err, res.errOut)
+	require.Contains(t, res.out, "the daemon runs pco v1.2.4\n")
+	require.Equal(t, []string{
+		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
+		"apt-mark hold pco cloudflared",
+		"/usr/bin/pco version --json",
+		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "cloudflared_2026.10.1_amd64.deb"),
+		"apt-mark hold pco cloudflared",
+	}, u.host.commands())
+}
+
+// A new pco whose daemon does not come back stops the upgrade before
+// cloudflared, with the way back.
+func TestUpgradeSaysWhenTheDaemonStaysOnTheOldPco(t *testing.T) {
+	u := newUpgradeRig(t)
+	d := startFakeDaemon(t, "v1.2.3")
+	u.r.socket = d.socket
+	u.host.binVersion = "v1.2.4"
+
+	res := u.r.run("", "upgrade", "--yes")
+
+	require.EqualError(t, res.err, "pco 1.2.4 is installed, but the daemon still answers as v1.2.3 1m0s later, not as v1.2.4: "+
+		"systemctl status pco.service says why, and pco upgrade pco --rollback goes back to 1.2.3")
+	require.Equal(t, 1, exitCode(res.err, &strings.Builder{}))
+	require.Equal(t, []string{
+		"apt-get install -y --allow-change-held-packages " + filepath.Join(u.work, "pco_1.2.4_amd64.deb"),
+		"apt-mark hold pco cloudflared",
+		"/usr/bin/pco version --json",
+	}, u.host.commands(), "cloudflared is left as it is")
+}
+
+func TestUpgradeSaysWhenTheDaemonDoesNotComeBack(t *testing.T) {
+	u := newUpgradeRig(t)
+	d := startFakeDaemon(t, "v1.2.3")
+	u.r.socket = d.socket
+	u.host.binVersion = "v1.2.4"
+	u.host.onRun = func(line string) {
+		if installsPco(line) {
+			d.srv.Close()
+		}
+	}
+
+	res := u.r.run("", "upgrade", "pco", "--yes")
+
+	require.ErrorContains(t, res.err, "pco 1.2.4 is installed, but the daemon does not answer 1m0s later (")
+	require.ErrorContains(t, res.err, "systemctl status pco.service says why, and pco upgrade pco --rollback goes back to 1.2.3")
+}
+
+func TestARollbackOfPcoWaitsForTheDaemonToo(t *testing.T) {
+	u := newUpgradeRig(t)
+	u.host.installed["pco"] = "1.2.4"
+	require.NoError(t, os.MkdirAll(filepath.Join(u.work, "previous"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(u.work, "previous", "pco_1.2.3_amd64.deb"), []byte("kept"), 0o600))
+	d := startFakeDaemon(t, "v1.2.4")
+	u.r.socket = d.socket
+	u.host.binVersion = "v1.2.3"
+	u.host.onRun = func(line string) {
+		if strings.HasPrefix(line, "apt-get install") {
+			d.runs("v1.2.3")
+		}
+	}
+
+	res := u.r.run("", "upgrade", "pco", "--rollback", "--yes")
+
+	require.NoError(t, res.err, res.errOut)
+	require.Contains(t, res.out, "the daemon runs pco v1.2.3\n")
 }
 
 func TestUpgradeOfTheNewestIsNothingToDo(t *testing.T) {
