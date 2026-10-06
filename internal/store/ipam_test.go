@@ -1,8 +1,10 @@
 package store
 
 import (
+	"errors"
 	"net/netip"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,14 +32,18 @@ func TestLeasesRoundTrip(t *testing.T) {
 	l := leaseOf("10.203.118.5")
 	l.MAC = "06:50:43:4F:76:05"
 	l.LastDHCP, l.Released = &seen, &released
-	require.NoError(t, s.SaveLease(l))
-	require.NoError(t, s.SaveLease(leaseOf("10.203.118.254")))
+	require.NoError(t, s.SaveLease(l, 0))
+	require.NoError(t, s.SaveLease(leaseOf("10.203.118.254"), 0))
 
 	got, err = s.Leases()
 	require.NoError(t, err)
-	l.MAC = "06:50:43:4f:76:05"
-	require.Equal(t, map[string]Lease{"06:50:43:4f:76:05": l, "06:50:43:4f:76:fe": leaseOf("10.203.118.254")}, got)
+	l.MAC, l.Rev = "06:50:43:4f:76:05", 1
+	other := leaseOf("10.203.118.254")
+	other.Rev = 1
+	require.Equal(t, map[string]Lease{"06:50:43:4f:76:05": l, "06:50:43:4f:76:fe": other}, got)
 	require.Equal(t, []string{"ipam/06-50-43-4f-76-05.json", "ipam/06-50-43-4f-76-fe.json"}, stored(t, p.Cluster))
+	require.NotContains(t, string(readRaw(t, filepath.Join(p.Cluster, "ipam", "06-50-43-4f-76-05.json")).Data), `"rev"`,
+		"the revision is the envelope's")
 
 	require.NoError(t, s.DeleteLease("06:50:43:4F:76:05"))
 	require.NoError(t, s.DeleteLease("06-50-43-4f-76-05"), "a lease that is gone is no error")
@@ -71,7 +77,7 @@ func TestSaveLeaseRefusesAnAddressAGuestCannotHave(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			s, p := openStore(t)
-			require.ErrorContains(t, s.SaveLease(tc.lease), tc.msg)
+			require.ErrorContains(t, s.SaveLease(tc.lease, 0), tc.msg)
 			require.Empty(t, stored(t, p.Cluster))
 		})
 	}
@@ -83,14 +89,14 @@ func TestALeaseIsCheckedAgainstTheManagedSubnetOfTheSettings(t *testing.T) {
 	settings.Managed.Subnet = netip.MustParsePrefix("10.50.0.0/16")
 	require.NoError(t, s.SaveSettings(settings))
 
-	require.NoError(t, s.SaveLease(leaseOf("10.50.3.4")))
-	require.NoError(t, s.SaveLease(leaseOf("10.50.255.254")))
-	require.Error(t, s.SaveLease(leaseOf("10.50.0.1")))
-	require.Error(t, s.SaveLease(leaseOf("10.50.255.255")))
-	require.Error(t, s.SaveLease(leaseOf("10.203.118.5")))
+	require.NoError(t, s.SaveLease(leaseOf("10.50.3.4"), 0))
+	require.NoError(t, s.SaveLease(leaseOf("10.50.255.254"), 0))
+	require.Error(t, s.SaveLease(leaseOf("10.50.0.1"), 0))
+	require.Error(t, s.SaveLease(leaseOf("10.50.255.255"), 0))
+	require.Error(t, s.SaveLease(leaseOf("10.203.118.5"), 0))
 
 	writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), envelopeJSON("settings", `{"admission":"nobody"}`))
-	require.ErrorContains(t, s.SaveLease(leaseOf("10.50.3.5")), "admission", "settings that cannot be read refuse every lease")
+	require.ErrorContains(t, s.SaveLease(leaseOf("10.50.3.5"), 0), "admission", "settings that cannot be read refuse every lease")
 }
 
 func TestALeaseStoredUnderAnotherMACIsAnError(t *testing.T) {
@@ -99,4 +105,91 @@ func TestALeaseStoredUnderAnotherMACIsAnError(t *testing.T) {
 		`{"mac":"06:50:43:4f:76:05","addr":"10.203.118.5","owner":"lxc/105","identity":"x","nic":1,"since":"2026-10-01T12:00:00Z"}`))
 	_, err := s.Leases()
 	require.ErrorContains(t, err, `holds the lease of "06:50:43:4f:76:05"`)
+}
+
+func TestSaveLeaseComparesAndSwaps(t *testing.T) {
+	s, p := openStore(t)
+	path := filepath.Join(p.Cluster, "ipam", "06-50-43-4f-76-05.json")
+	l := leaseOf("10.203.118.5")
+	require.NoError(t, s.SaveLease(l, 0))
+	require.ErrorIs(t, s.SaveLease(l, 0), ErrRevision, "a lease that exists is no new one")
+
+	seen := t0.Add(time.Minute)
+	l.LastDHCP = &seen
+	require.NoError(t, s.SaveLease(l, 1))
+	require.EqualValues(t, 2, revOf(t, path))
+
+	before := readRaw(t, path)
+	require.ErrorIs(t, s.SaveLease(leaseOf("10.203.118.5"), 1), ErrRevision)
+	require.Equal(t, before, readRaw(t, path), "nothing is written")
+
+	require.ErrorIs(t, s.SaveLease(leaseOf("10.203.118.6"), 3), ErrRevision, "a new lease has no revision yet")
+	requireMissing(t, filepath.Join(p.Cluster, "ipam", "06-50-43-4f-76-06.json"))
+}
+
+// The engine sets Released when the grace of a detach starts, the DHCP server
+// LastDHCP when a guest renews; each reads the lease, changes its field and
+// saves. Neither may undo the other's write.
+func TestTwoWritersOfALeaseDoNotLoseEachOthersWrite(t *testing.T) {
+	s, _ := openStore(t)
+	require.NoError(t, s.SaveLease(leaseOf("10.203.118.5"), 0))
+	const mac = "06:50:43:4f:76:05"
+	read := func() Lease {
+		t.Helper()
+		got, err := s.Leases()
+		require.NoError(t, err)
+		return got[mac]
+	}
+
+	engine, dhcp := read(), read()
+	released, renewed := t0.Add(time.Minute), t0.Add(2*time.Minute)
+	engine.Released = &released
+	require.NoError(t, s.SaveLease(engine, engine.Rev))
+	dhcp.LastDHCP = &renewed
+	require.ErrorIs(t, s.SaveLease(dhcp, dhcp.Rev), ErrRevision, "the second writer read before the first wrote")
+	again := read()
+	again.LastDHCP = &renewed
+	require.NoError(t, s.SaveLease(again, again.Rev))
+	got := read()
+	require.Equal(t, &released, got.Released)
+	require.Equal(t, &renewed, got.LastDHCP)
+
+	// The same with both at once, each trying again on a stale revision.
+	set := func(f func(*Lease)) {
+		for {
+			l := read()
+			f(&l)
+			err := s.SaveLease(l, l.Rev)
+			if !errors.Is(err, ErrRevision) {
+				require.NoError(t, err)
+				return
+			}
+		}
+	}
+	for i := range 20 {
+		at := t0.Add(time.Duration(i) * time.Hour)
+		var wg sync.WaitGroup
+		wg.Go(func() { set(func(l *Lease) { l.Released = &at }) })
+		wg.Go(func() { set(func(l *Lease) { l.LastDHCP = &at }) })
+		wg.Wait()
+		got := read()
+		require.Equal(t, &at, got.Released)
+		require.Equal(t, &at, got.LastDHCP)
+	}
+}
+
+// A lease the engine deleted does not come back with a write made from a
+// copy read before.
+func TestADeletedLeaseIsNotWrittenAgainFromAnOldCopy(t *testing.T) {
+	s, p := openStore(t)
+	require.NoError(t, s.SaveLease(leaseOf("10.203.118.5"), 0))
+	got, err := s.Leases()
+	require.NoError(t, err)
+	old := got["06:50:43:4f:76:05"]
+
+	require.NoError(t, s.DeleteLease(old.MAC))
+	seen := t0.Add(time.Minute)
+	old.LastDHCP = &seen
+	require.ErrorIs(t, s.SaveLease(old, old.Rev), ErrRevision)
+	require.Empty(t, stored(t, p.Cluster))
 }

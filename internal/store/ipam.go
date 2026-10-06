@@ -22,6 +22,10 @@ type Lease struct {
 	Since    time.Time  `json:"since"`
 	LastDHCP *time.Time `json:"lastDHCP,omitempty"`
 	Released *time.Time `json:"released,omitempty"` // detach grace running
+	// Rev is the revision of the lease's file, for compare-and-swap: the
+	// engine and the DHCP server each change a field of the same lease. The
+	// envelope holds it, not the lease.
+	Rev int64 `json:"rev,omitempty"`
 }
 
 // ManagedMAC returns the MAC of the card that holds addr on the managed
@@ -53,13 +57,14 @@ func checkManagedAddr(subnet netip.Prefix, addr netip.Addr) error {
 	return nil
 }
 
-// Leases returns the leases by MAC.
+// Leases returns the leases by MAC, each with the revision of its file.
 func (s *Store) Leases() (map[string]Lease, error) {
 	out := make(map[string]Lease)
-	err := eachObject(s.cluster, kindIPAM, func(path, id string, l Lease) error {
+	err := eachRevision(s.cluster, kindIPAM, func(path, id string, rev int64, l Lease) error {
 		if leaseID(l.MAC) != id {
 			return fmt.Errorf("%s holds the lease of %q, which is stored as %q", path, l.MAC, id)
 		}
+		l.Rev = rev
 		out[l.MAC] = l
 		return nil
 	})
@@ -69,10 +74,14 @@ func (s *Store) Leases() (map[string]Lease, error) {
 	return out, nil
 }
 
-// SaveLease stores a lease under its MAC, in normal form. An address outside
-// managed.subnet, the subnet's own, the leg's and the broadcast address are
-// refused, and so is a MAC that is not the one ManagedMAC gives the address.
-func (s *Store) SaveLease(l Lease) error {
+// SaveLease stores a lease read at revision rev, 0 for a new one, under its
+// MAC in normal form, while its file still has that revision; otherwise the
+// error is ErrRevision and nothing is written, so that a writer that read
+// before another wrote cannot undo that write, nor bring back a lease that was
+// deleted. An address outside managed.subnet, the subnet's own, the leg's and
+// the broadcast address are refused, and so is a MAC that is not the one
+// ManagedMAC gives the address.
+func (s *Store) SaveLease(l Lease, rev int64) error {
 	mac, err := model.NormalizeMAC(l.MAC)
 	if err != nil {
 		return fmt.Errorf("lease: %w", err)
@@ -94,10 +103,13 @@ func (s *Store) SaveLease(l Lease) error {
 	if want := ManagedMAC(l.Addr); mac != want {
 		return fmt.Errorf("lease %s: the card of %s has the MAC %s", mac, l.Addr, want)
 	}
-	return s.cluster.put(kindIPAM, leaseID(mac), l, true)
+	l.Rev = 0
+	_, err = s.cluster.putIf(kindIPAM, leaseID(mac), l, rev)
+	return err
 }
 
-// DeleteLease removes the lease of a MAC. A missing one is not an error.
+// DeleteLease removes the lease of a MAC, whatever its revision: a write from
+// a copy read before is refused afterwards. A missing one is not an error.
 func (s *Store) DeleteLease(mac string) error {
 	n, err := model.NormalizeMAC(mac)
 	if err != nil {
