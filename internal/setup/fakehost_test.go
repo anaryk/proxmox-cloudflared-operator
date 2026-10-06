@@ -162,7 +162,7 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		var users []map[string]any
 		for _, u := range h.users {
 			user := map[string]any{"userid": u}
-			if u == userID {
+			if u == UserID {
 				maps.Copy(user, h.userAttrs)
 			}
 			users = append(users, user)
@@ -180,7 +180,7 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		}
 		h.users = slices.DeleteFunc(h.users, func(u string) bool { return u == args[2] })
 		h.acl = slices.DeleteFunc(h.acl, func(a pveACL) bool { return a.UGID == args[2] })
-		if args[2] == userID {
+		if args[2] == UserID {
 			h.tokens, h.secret = nil, ""
 		}
 		return "", nil
@@ -199,7 +199,7 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 		return "", nil
 
 	case cmd == "pveum user token list pco@pve --output-format json":
-		if !slices.Contains(h.users, userID) {
+		if !slices.Contains(h.users, UserID) {
 			return "", exitErr(255, "no such user ('pco@pve')")
 		}
 		var tokens []map[string]any

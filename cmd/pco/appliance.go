@@ -33,6 +33,7 @@ func (a *app) applianceCmd() *cobra.Command {
 		},
 	}
 	cmd.AddCommand(a.applianceInitCmd(), a.applianceRecoverCmd())
+	cmd.AddCommand(a.applianceNodeCmds()...)
 	return cmd
 }
 

@@ -54,9 +54,9 @@ func TestSetupNotesTheGrantItAdds(t *testing.T) {
 	e = newTestEnv(t)
 	e.installUnit(serviceUnit)
 	h := newFakeHost(t)
-	h.users = append(h.users, userID)
-	h.roles[roleID] = []string{"VM.Audit", "Sys.Audit", "VM.GuestAgent.Audit", "SDN.Audit"}
-	h.acl = append(h.acl, pveACL{Path: "/", Type: "user", UGID: userID, Role: roleID})
+	h.users = append(h.users, UserID)
+	h.roles[RoleID] = []string{"VM.Audit", "Sys.Audit", "VM.GuestAgent.Audit", "SDN.Audit"}
+	h.acl = append(h.acl, pveACL{Path: "/", Type: "user", UGID: UserID, Role: RoleID})
 	e.onHost(h)
 	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
 	m := e.manifest()
@@ -79,10 +79,10 @@ func TestUninstallRevokesTheGrantOfAUserOrRoleThatStays(t *testing.T) {
 			e.installUnit(serviceUnit)
 			h := newFakeHost(t)
 			if tt.adminUser {
-				h.users = append(h.users, userID)
+				h.users = append(h.users, UserID)
 			}
 			if tt.adminRole {
-				h.roles[roleID] = []string{"VM.Audit", "Sys.Audit", "VM.GuestAgent.Audit", "SDN.Audit"}
+				h.roles[RoleID] = []string{"VM.Audit", "Sys.Audit", "VM.GuestAgent.Audit", "SDN.Audit"}
 			}
 			e.onHost(h)
 			require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
@@ -91,9 +91,9 @@ func TestUninstallRevokesTheGrantOfAUserOrRoleThatStays(t *testing.T) {
 			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true}))
 
 			require.Contains(t, h.ran, "pveum acl delete / --users pco@pve --roles PCO")
-			require.False(t, slices.ContainsFunc(h.acl, func(a pveACL) bool { return a.UGID == userID }), "the grant is gone")
-			require.Equal(t, tt.adminUser, slices.Contains(h.users, userID), "the admin's user stays")
-			_, role := h.roles[roleID]
+			require.False(t, slices.ContainsFunc(h.acl, func(a pveACL) bool { return a.UGID == UserID }), "the grant is gone")
+			require.Equal(t, tt.adminUser, slices.Contains(h.users, UserID), "the admin's user stays")
+			_, role := h.roles[RoleID]
 			require.Equal(t, tt.adminRole, role, "the admin's role stays")
 		})
 	}

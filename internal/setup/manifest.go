@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +43,130 @@ type Manifest struct {
 	WebEnv     bool     `json:"webEnv"`
 	WebCert    string   `json:"webCert"`
 	WebTLS     []string `json:"webTLS"`
+	// Appliance is what pco appliance install made on the node besides the
+	// objects above; nil for a host. An appliance keeps its manifest on its
+	// state volume, and the installer reads it back as untrusted input.
+	Appliance *ApplianceManifest `json:"appliance,omitempty"`
+}
+
+// ApplianceManifest is what the installer made for one appliance.
+type ApplianceManifest struct {
+	VMID int    `json:"vmid"`
+	Node string `json:"node"`
+	// Token is the API token of the appliance, pco@pve!vm<vmid>.
+	Token string `json:"token"`
+	// Pool is the pool of the container, pco; CreatedPool says the installer
+	// made it.
+	Pool        string `json:"pool"`
+	CreatedPool bool   `json:"createdPool"`
+	// Template is the volume of the template the installer downloaded,
+	// <storage>:vztmpl/pco-appliance_<version>_<arch>.tar.zst; empty when it
+	// was given a file or found the volume there.
+	Template string `json:"template,omitempty"`
+	// Grants are the networks pco appliance grant-network granted.
+	Grants []NetworkGrant `json:"grants,omitempty"`
+}
+
+// The roles of a network grant: a card of the appliance on a network needs
+// both, the first on the appliance and the second on the network.
+const (
+	RoleManaged = "PCOManaged" // VM.Config.Network
+	RoleSDN     = "PCOSDN"     // SDN.Use
+)
+
+// NetworkGrant is a network the appliance may put a card on: SDN.Use on
+// /sdn/zones/<zone>/<vnet>[/<vlan>] and VM.Config.Network on the appliance,
+// for pco@pve and the token of the appliance. A plain Linux bridge is the vnet
+// of zone localnetwork.
+type NetworkGrant struct {
+	Zone string `json:"zone"`
+	VNet string `json:"vnet"`
+	VLAN int    `json:"vlan,omitempty"`
+	// CreatedRoles are the roles the grant made, of RoleManaged and RoleSDN.
+	CreatedRoles []string `json:"createdRoles,omitempty"`
+}
+
+var networkName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]{0,15}$`)
+
+// Check refuses a grant of another shape than a network grant has: never a
+// whole zone, never a role of its own.
+func (g NetworkGrant) Check() error {
+	switch {
+	case !networkName.MatchString(g.Zone):
+		return fmt.Errorf("zone %q: want the name of an SDN zone", g.Zone)
+	case !networkName.MatchString(g.VNet):
+		return fmt.Errorf("vnet %q: want the name of a bridge or vnet", g.VNet)
+	case g.VLAN < 0 || g.VLAN > 4094:
+		return fmt.Errorf("vlan %d: want 1 to 4094, or none", g.VLAN)
+	}
+	for _, role := range g.CreatedRoles {
+		if role != RoleManaged && role != RoleSDN {
+			return fmt.Errorf("role %q: a network grant makes %s and %s only", role, RoleManaged, RoleSDN)
+		}
+	}
+	return nil
+}
+
+// Path is the ACL path of the network.
+func (g NetworkGrant) Path() string {
+	p := "/sdn/zones/" + g.Zone + "/" + g.VNet
+	if g.VLAN != 0 {
+		p += "/" + strconv.Itoa(g.VLAN)
+	}
+	return p
+}
+
+// Same reports whether two grants are of one network.
+func (g NetworkGrant) Same(o NetworkGrant) bool {
+	return g.Zone == o.Zone && g.VNet == o.VNet && g.VLAN == o.VLAN
+}
+
+// AddNetworkGrant adds a grant to the manifest of the appliance in the local
+// root of its store, or the roles it made to the grant of that network that
+// is there.
+func AddNetworkGrant(local string, g NetworkGrant) error {
+	return changeApplianceManifest(local, func(a *ApplianceManifest) error {
+		if err := g.Check(); err != nil {
+			return err
+		}
+		if i := slices.IndexFunc(a.Grants, g.Same); i >= 0 {
+			for _, role := range g.CreatedRoles {
+				if !slices.Contains(a.Grants[i].CreatedRoles, role) {
+					a.Grants[i].CreatedRoles = append(a.Grants[i].CreatedRoles, role)
+				}
+			}
+			return nil
+		}
+		a.Grants = append(a.Grants, g)
+		return nil
+	})
+}
+
+// RemoveNetworkGrant takes the grant of a network out of the manifest of the
+// appliance; one that is not there is no error.
+func RemoveNetworkGrant(local string, g NetworkGrant) error {
+	return changeApplianceManifest(local, func(a *ApplianceManifest) error {
+		a.Grants = slices.DeleteFunc(a.Grants, g.Same)
+		return nil
+	})
+}
+
+func changeApplianceManifest(local string, change func(*ApplianceManifest) error) error {
+	path := filepath.Join(local, manifestName)
+	m, found, err := readManifest(path)
+	switch {
+	case err != nil:
+		return fmt.Errorf("reading the manifest: %w", err)
+	case !found || m.Appliance == nil:
+		return fmt.Errorf("%s is not the manifest of an appliance", path)
+	}
+	if err := change(m.Appliance); err != nil {
+		return err
+	}
+	if err := writeManifest(path, m); err != nil {
+		return fmt.Errorf("writing the manifest: %w", err)
+	}
+	return nil
 }
 
 // addWebTLS notes a file, link or directory setup makes for the certificate

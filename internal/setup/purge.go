@@ -6,11 +6,60 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
+
+// Purge deletes what the install of the store has at Cloudflare through the
+// stored credentials, as the uninstall does: its DNS records, then, with the
+// daemon and the connectors stopped, its tunnels. pco appliance purge runs it
+// inside an appliance for the uninstall on the node, which cannot reach the
+// credentials. With list it only names what it would delete, one object a
+// line and nothing else, so that nothing printed is nothing to delete. A
+// store without an install or without credentials has nothing pco reaches.
+func (s *Setup) Purge(ctx context.Context, list bool) error {
+	u, err := s.newUninstall(UninstallOptions{Yes: true, PurgeCloudflare: !list})
+	if err != nil {
+		return err
+	}
+	if u.installID == "" || len(u.creds) == 0 {
+		if !list {
+			u.ask.Info("at Cloudflare: nothing pco can reach, as the store holds no install or no credential")
+		}
+		return nil
+	}
+	u.found.listed = true
+	if u.found.cloudflare, err = u.listCloudflare(ctx); err != nil {
+		return fmt.Errorf("listing what install %s has at Cloudflare: %w", u.installID, err)
+	}
+	if list {
+		for _, r := range u.found.cloudflare.records {
+			u.ask.Info("DNS record %s %s in zone %s", r.record.Type, r.record.Name, r.zone.Name)
+		}
+		for _, t := range u.found.cloudflare.tunnels {
+			u.ask.Info("tunnel %s (%s) in account %s", t.tunnel.Name, t.tunnel.ID, t.account)
+		}
+		return nil
+	}
+	if u.found.cloudflare.empty() {
+		u.ask.Info("at Cloudflare: nothing of install %s", u.installID)
+		return nil
+	}
+	u.found.unit = u.unitInstalled(serviceUnit)
+	if err := u.stopDaemon(ctx); err != nil {
+		return err
+	}
+	u.deleteRecords(ctx)
+	u.pruneConnectors(ctx)
+	u.deleteTunnels(ctx)
+	if len(u.failed) > 0 {
+		return fmt.Errorf("the purge did not finish: %s", strings.Join(u.failed, "; "))
+	}
+	return nil
+}
 
 // cfObjects is what an install has at Cloudflare, each with the client of a
 // credential that reaches it.

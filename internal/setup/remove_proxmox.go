@@ -59,12 +59,6 @@ func (u *uninstall) readProxmox(ctx context.Context) (proxmoxState, error) {
 	return s, nil
 }
 
-// isSetupRole reports whether a role grants what setup gives role PCO, on any
-// version, and nothing else.
-func isSetupRole(role pveRole) bool {
-	return slices.ContainsFunc(setupPrivileges(), func(privs []string) bool { return sameSet(role.Privs, privs) })
-}
-
 // removeProxmox removes what the manifest says setup created in Proxmox, as
 // the survey found it. Proxmox drops the grants of a user or a role that
 // goes, so setup's grant is only revoked by itself when the user or the role
@@ -96,19 +90,19 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 	}
 	switch {
 	case userGoes:
-		if _, err := u.run.Run(ctx, "pveum", "user", "delete", userID); err != nil {
-			u.fail("removing user %s: %v", userID, err)
+		if _, err := u.run.Run(ctx, "pveum", "user", "delete", UserID); err != nil {
+			u.fail("removing user %s: %v", UserID, err)
 		} else {
-			u.ask.Info("user %s: removed", userID)
+			u.ask.Info("user %s: removed", UserID)
 		}
 	case m.CreatedUser:
-		u.ask.Info("user %s: gone already", userID)
+		u.ask.Info("user %s: gone already", UserID)
 	}
 	if m.CreatedRole {
 		if roleGoes && !revoked {
 			// Deleting the role would leave the grant to the user that stays in
 			// user.cfg, where pveum no longer shows it and warns about it.
-			roleGoes, why = false, "the grant of it to "+userID+" could not be revoked; pco uninstall again tries again"
+			roleGoes, why = false, "the grant of it to "+UserID+" could not be revoked; pco uninstall again tries again"
 		}
 		u.removeRole(ctx, s.role, roleGoes, why)
 	}
@@ -122,11 +116,11 @@ func (u *uninstall) removeProxmox(ctx context.Context) {
 
 // revokeGrant revokes setup's grant and reports whether it did.
 func (u *uninstall) revokeGrant(ctx context.Context) bool {
-	if _, err := u.run.Run(ctx, "pveum", "acl", "delete", "/", "--users", userID, "--roles", roleID); err != nil {
-		u.fail("revoking role %s on / from %s: %v", roleID, userID, err)
+	if _, err := u.run.Run(ctx, "pveum", "acl", "delete", "/", "--users", UserID, "--roles", RoleID); err != nil {
+		u.fail("revoking role %s on / from %s: %v", RoleID, UserID, err)
 		return false
 	}
-	u.ask.Info("acl /: revoked role %s from %s", roleID, userID)
+	u.ask.Info("acl /: revoked role %s from %s", RoleID, UserID)
 	return true
 }
 
@@ -136,10 +130,10 @@ func (u *uninstall) checkGrantGone(ctx context.Context) {
 	acl, err := u.acl(ctx)
 	switch {
 	case err != nil:
-		u.ask.Warn("whether the grant of role %s on / to %s went with them cannot be told: %v", roleID, userID, err)
+		u.ask.Warn("whether the grant of role %s on / to %s went with them cannot be told: %v", RoleID, UserID, err)
 	case slices.ContainsFunc(acl, isGrant):
 		u.ask.Warn("the grant of role %s on / to %s is still there; remove it with pveum acl delete / --users %s --roles %s",
-			roleID, userID, userID, roleID)
+			RoleID, UserID, UserID, RoleID)
 	}
 }
 
@@ -154,12 +148,12 @@ func (u *uninstall) roleVerdict() (goes bool, why string) {
 		return false, "setup did not create it"
 	case role == nil:
 		return false, "it is gone"
-	case !isSetupRole(*role):
+	case !IsPCORole(role.Privs):
 		return false, roleChange(role.Privs)
 	}
 	var others []string
 	for _, a := range u.found.proxmox.acl {
-		if a.Role == roleID && !isGrant(a) && !slices.Contains(others, a.UGID) {
+		if a.Role == RoleID && !isGrant(a) && !slices.Contains(others, a.UGID) {
 			others = append(others, a.UGID)
 		}
 	}
@@ -193,15 +187,15 @@ func roleChange(privs []string) string {
 func (u *uninstall) removeRole(ctx context.Context, role *pveRole, goes bool, why string) {
 	switch {
 	case role == nil:
-		u.ask.Info("role %s: gone already", roleID)
+		u.ask.Info("role %s: gone already", RoleID)
 	case goes:
-		if _, err := u.run.Run(ctx, "pveum", "role", "delete", roleID); err != nil {
-			u.fail("removing role %s: %v", roleID, err)
+		if _, err := u.run.Run(ctx, "pveum", "role", "delete", RoleID); err != nil {
+			u.fail("removing role %s: %v", RoleID, err)
 			return
 		}
-		u.ask.Info("role %s: removed", roleID)
+		u.ask.Info("role %s: removed", RoleID)
 	default:
-		u.ask.Warn("role %s is kept: %s", roleID, why)
+		u.ask.Warn("role %s is kept: %s", RoleID, why)
 	}
 }
 

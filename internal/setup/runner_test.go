@@ -73,13 +73,13 @@ func TestParsePVEVersion(t *testing.T) {
 		{"pve-manager/10.0.0/ffff", 10, 0, "10.0.0", false},
 	} {
 		t.Run(tt.text, func(t *testing.T) {
-			v, err := parsePVEVersion(tt.out)
+			v, err := ParsePVEVersion(tt.out)
 			require.NoError(t, err)
-			require.Equal(t, pveVersion{major: tt.major, minor: tt.minor, text: tt.text}, v)
-			require.Equal(t, tt.supported, v.supported())
+			require.Equal(t, PVEVersion{major: tt.major, minor: tt.minor, text: tt.text}, v)
+			require.Equal(t, tt.supported, v.Supported())
 		})
 	}
-	_, err := parsePVEVersion("proxmox-ve: 9.0.0\n")
+	_, err := ParsePVEVersion("proxmox-ve: 9.0.0\n")
 	require.ErrorContains(t, err, "not a version of pve-manager")
 }
 

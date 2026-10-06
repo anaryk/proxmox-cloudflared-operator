@@ -262,14 +262,14 @@ func TestRepairGivesTheRoleOfAnEarlierSetupPoolAudit(t *testing.T) {
 			h.version = tt.version
 			e.onHost(h)
 			require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
-			require.Contains(t, h.roles[roleID], "Pool.Audit")
+			require.Contains(t, h.roles[RoleID], "Pool.Audit")
 
 			// Without Pool.Audit the cluster resources leave out the pool of
 			// every guest.
-			h.roles[roleID] = strings.Split(tt.earlier, ",")
+			h.roles[RoleID] = strings.Split(tt.earlier, ",")
 			require.NoError(t, e.setup(Options{Yes: true, Repair: true, Node: testNode}))
 			require.Contains(t, h.ran, "pveum role modify PCO --append 1 --privs Pool.Audit")
-			require.ElementsMatch(t, strings.Split(tt.earlier+",Pool.Audit", ","), h.roles[roleID])
+			require.ElementsMatch(t, strings.Split(tt.earlier+",Pool.Audit", ","), h.roles[RoleID])
 			e.requireShown("role PCO: added Pool.Audit")
 		})
 	}

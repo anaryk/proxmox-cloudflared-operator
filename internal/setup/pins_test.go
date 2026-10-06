@@ -34,14 +34,14 @@ func TestUninstallKeepsTheUserAndTokenSetupDidNotCreate(t *testing.T) {
 			e := newTestEnv(t)
 			e.installed(tt.manifest)
 			h := newFakeHost(t)
-			h.users = append(h.users, userID)
+			h.users = append(h.users, UserID)
 			h.tokens, h.secret = []string{tokenName}, pveSecret
-			h.acl = append(h.acl, pveACL{Path: "/", Type: "user", UGID: userID, Role: "Auditors"})
+			h.acl = append(h.acl, pveACL{Path: "/", Type: "user", UGID: UserID, Role: "Auditors"})
 			e.onHost(h)
 
 			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 
-			require.Equal(t, tt.userStays, slices.Contains(h.users, userID))
+			require.Equal(t, tt.userStays, slices.Contains(h.users, UserID))
 			require.Equal(t, tt.tokenStays, slices.Contains(h.tokens, tokenName))
 			require.Equal(t, tt.tokenRemoved, slices.Contains(h.ran, "pveum user token remove pco@pve pco"))
 			require.Equal(t, tt.userDeleted, slices.Contains(h.ran, "pveum user delete pco@pve"))

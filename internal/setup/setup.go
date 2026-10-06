@@ -29,13 +29,14 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
 )
 
-// The objects setup makes in Proxmox and on the node.
+// The objects setup makes in Proxmox and on the node. The role, the user and
+// its comment are those of the appliance's installer as well.
 const (
-	roleID      = "PCO"
-	userID      = "pco@pve"
+	RoleID      = "PCO"
+	UserID      = "pco@pve"
+	UserComment = "pco operator"
 	tokenName   = "pco"
-	tokenID     = userID + "!" + tokenName
-	userComment = "pco operator"
+	tokenID     = UserID + "!" + tokenName
 
 	serviceUnit = "pco.service"
 	egressUnit  = "pco-egress.service"
@@ -207,7 +208,7 @@ type run struct {
 	*Setup
 	o           Options
 	token       string // the Cloudflare token, once there is one
-	version     pveVersion
+	version     PVEVersion
 	install     store.Install
 	manifest    Manifest
 	running     *bool  // whether the daemon runs, once that is known

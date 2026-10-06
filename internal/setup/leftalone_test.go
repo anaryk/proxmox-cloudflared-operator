@@ -31,23 +31,23 @@ func TestAFailedCreateLeavesTheObjectToTheAdmin(t *testing.T) {
 			refuse: "pveum role add PCO --privs " + privs9,
 			noted:  func(m Manifest) bool { return m.CreatedRole },
 			admin: func(_ *testEnv, h *fakeHost) {
-				h.roles[roleID] = []string{"VM.Audit", "Sys.Audit", "VM.GuestAgent.Audit", "SDN.Audit"}
+				h.roles[RoleID] = []string{"VM.Audit", "Sys.Audit", "VM.GuestAgent.Audit", "SDN.Audit"}
 			},
-			stays: func(_ *testEnv, h *fakeHost) bool { _, ok := h.roles[roleID]; return ok },
+			stays: func(_ *testEnv, h *fakeHost) bool { _, ok := h.roles[RoleID]; return ok },
 		},
 		{
 			name:   "user",
 			refuse: "pveum user add pco@pve --comment pco operator",
 			noted:  func(m Manifest) bool { return m.CreatedUser },
-			admin:  func(_ *testEnv, h *fakeHost) { h.users = append(h.users, userID) },
-			stays:  func(_ *testEnv, h *fakeHost) bool { return slices.Contains(h.users, userID) },
+			admin:  func(_ *testEnv, h *fakeHost) { h.users = append(h.users, UserID) },
+			stays:  func(_ *testEnv, h *fakeHost) bool { return slices.Contains(h.users, UserID) },
 		},
 		{
 			name:   "grant",
 			refuse: "pveum acl modify / --users pco@pve --roles PCO",
 			noted:  func(m Manifest) bool { return m.GrantedACL },
 			admin: func(_ *testEnv, h *fakeHost) {
-				h.acl = append(h.acl, pveACL{Path: "/", Type: "user", UGID: userID, Role: roleID})
+				h.acl = append(h.acl, pveACL{Path: "/", Type: "user", UGID: UserID, Role: RoleID})
 			},
 		},
 		{
@@ -109,7 +109,7 @@ func TestAFailedRevokeKeepsTheRole(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)
 	h := newFakeHost(t)
-	h.users = append(h.users, userID) // the admin's
+	h.users = append(h.users, UserID) // the admin's
 	e.onHost(h)
 	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
 	m := e.manifest()
@@ -120,14 +120,14 @@ func TestAFailedRevokeKeepsTheRole(t *testing.T) {
 	err := e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true})
 
 	require.ErrorContains(t, err, "pco uninstall again")
-	require.Contains(t, h.roles, roleID)
+	require.Contains(t, h.roles, RoleID)
 	require.NotContains(t, h.ran, "pveum role delete PCO")
 	e.requireShown("role PCO is kept: the grant of it to pco@pve could not be revoked")
 
 	delete(h.refuse, "pveum acl delete / --users pco@pve --roles PCO")
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true}))
-	require.NotContains(t, h.roles, roleID)
-	require.Contains(t, h.users, userID, "the admin's user stays")
+	require.NotContains(t, h.roles, RoleID)
+	require.Contains(t, h.users, UserID, "the admin's user stays")
 }
 
 func TestSetupDoesNotStartASecondDaemon(t *testing.T) {
@@ -177,7 +177,7 @@ func TestUninstallSaysWhatItDidBeforeADaemonRunByHand(t *testing.T) {
 
 		require.ErrorContains(t, err, "pco.service was stopped and disabled")
 		require.ErrorContains(t, err, "nothing else was removed")
-		require.Contains(t, h.users, userID)
+		require.Contains(t, h.users, UserID)
 	})
 }
 

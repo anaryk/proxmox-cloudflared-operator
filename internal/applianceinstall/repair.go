@@ -1,0 +1,262 @@
+package applianceinstall
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
+)
+
+// Repair puts the appliance vmid right after a restore, a changed certificate
+// of the API or a lost token. Its volume decides how: with the state of
+// an install, the token is made anew, the tags and the certificate checked
+// again, and a bootstrap of mode repair carries the token, the MACs, the
+// endpoint and the node's addresses as they are now. Without state (a restore
+// to a new VMID, over the appliance, or a lost volume, and only with
+// Recover), the volume is given back, marked, and a bootstrap of mode recover
+// adopts the install the Cloudflare token sees, with a manifest rebuilt from
+// the marks in Proxmox.
+//
+// A repair takes nothing back when it fails: every step looks at what is
+// there, and running it again finishes it.
+func (i *Installer) Repair(ctx context.Context, vmid int, o Options) error {
+	if vmid < 100 || vmid > 999999999 {
+		return fmt.Errorf("--vmid %d: want 100 to 999999999", vmid)
+	}
+	o.VMID = vmid
+	o.defaults()
+	if err := o.check(); err != nil {
+		return err
+	}
+	unlock, err := i.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	r := i.newRun(o, kindRepair)
+	r.j.VMID = vmid
+	err = r.repair(ctx)
+	if rerr := r.removeJournal(); rerr != nil {
+		r.ask.Warn("%v", rerr)
+	}
+	if err != nil {
+		return fmt.Errorf("%w; run pco appliance repair --vmid %d again once that is put right", err, vmid)
+	}
+	return nil
+}
+
+func (r *run) repair(ctx context.Context) error {
+	vmid := r.j.VMID
+	if err := r.node0(ctx); err != nil {
+		return err
+	}
+	if err := r.cluster(ctx); err != nil {
+		return err
+	}
+	cfg, err := readCTConfig(ctx, r.r, r.node, vmid)
+	if err != nil {
+		return fmt.Errorf("reading the configuration of lxc/%d on %s: %w", vmid, r.node, err)
+	}
+	if err := r.markContainer(ctx, cfg); err != nil {
+		return err
+	}
+	r.fromConfig(cfg)
+	running, err := ctRunning(ctx, r.r, vmid)
+	if err != nil {
+		return err
+	}
+	// pct push and pull need the container running; it is put back as it was.
+	if !running {
+		if _, err := r.r.Run(ctx, "pct", "start", strconv.Itoa(vmid)); err != nil {
+			return fmt.Errorf("starting lxc/%d: %w", vmid, err)
+		}
+		defer r.stopAgain(ctx, vmid)
+	}
+	state, err := r.hasState(ctx, vmid)
+	if err != nil {
+		return err
+	}
+	switch {
+	case state && r.o.Recover:
+		return fmt.Errorf("the volume of lxc/%d holds the state of an install: repair it without --recover", vmid)
+	case !state && !r.o.Recover:
+		return fmt.Errorf("the volume of lxc/%d holds no state (a restore, or a lost volume): pco appliance repair --vmid %d "+
+			"--recover --cf-token-file <file> adopts the install the Cloudflare token sees", vmid, vmid)
+	}
+	if err := r.repairEndpoint(ctx); err != nil {
+		return err
+	}
+	if state {
+		return r.repairState(ctx)
+	}
+	return r.recoverState(ctx, cfg)
+}
+
+// markContainer refuses a container without the installer's mark, and gives
+// a restored one the mark of its own VMID, by which uninstall finds it.
+func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
+	vmid := r.j.VMID
+	from, ok := describedVMID(cfg["description"])
+	switch {
+	case !ok:
+		return fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was changed", vmid)
+	case from == vmid:
+		return nil
+	}
+	if _, err := r.r.Run(ctx, "pct", "set", strconv.Itoa(vmid), "--description", description(vmid, r.now())); err != nil {
+		return fmt.Errorf("marking lxc/%d: %w", vmid, err)
+	}
+	r.ask.Info("container lxc/%d: made from lxc/%d, and marked as itself now", vmid, from)
+	return nil
+}
+
+// fromConfig takes the bridge and the VLAN of the appliance's card, and its
+// storage, from its configuration unless the options name them.
+func (r *run) fromConfig(cfg ctConfig) {
+	net0 := cfg["net0"]
+	if b := option(net0, "bridge"); b != "" && r.o.Bridge == DefaultBridge {
+		r.o.Bridge = b
+	}
+	if v, err := strconv.Atoi(option(net0, "tag")); err == nil && r.o.VLAN == 0 {
+		r.o.VLAN = v
+	}
+	if r.o.Storage == "" {
+		r.o.Storage = cfg.volumeStorage("rootfs")
+	}
+}
+
+func (r *run) stopAgain(ctx context.Context, vmid int) {
+	if _, err := r.r.Run(context.WithoutCancel(ctx), "pct", "stop", strconv.Itoa(vmid)); err != nil {
+		r.ask.Warn("lxc/%d was stopped before the repair and could not be stopped again: %v", vmid, err)
+		return
+	}
+	r.ask.Info("container lxc/%d: stopped again, as it was", vmid)
+}
+
+// hasState reports whether the volume of the container holds a store: its
+// marker and the store's meta directory.
+func (r *run) hasState(ctx context.Context, vmid int) (bool, error) {
+	for _, test := range [][]string{{"test", "-f", markerFile}, {"test", "-d", stateMeta}} {
+		if _, err := r.exec(ctx, vmid, test...); err != nil {
+			var code interface{ ExitCode() int }
+			if errors.As(err, &code) && code.ExitCode() != 1 {
+				return false, fmt.Errorf("looking at the volume of lxc/%d: %w", vmid, err)
+			}
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// repairEndpoint probes the certificate of the API again: a regenerated
+// cluster CA, ACME turned on or a custom certificate changes the name it
+// verifies under and the CA the appliance needs.
+func (r *run) repairEndpoint(ctx context.Context) error {
+	host := r.o.APIHost
+	if host == "" {
+		addr, ok := r.bridgeAddr()
+		if !ok {
+			return fmt.Errorf("the node has no address on %s, which the appliance reaches the API at: name one with --api-host", r.netDevice())
+		}
+		host = addr
+	}
+	ep, err := r.chooseEndpoint(ctx, host)
+	if err != nil {
+		return err
+	}
+	r.j.Endpoint = ep
+	return nil
+}
+
+func (r *run) repairState(ctx context.Context) error {
+	vmid := r.j.VMID
+	if m := r.readManifest(ctx, vmid, true); m != nil {
+		r.j.Manifest = *m
+	} else {
+		m, err := r.manifestFromMarks(ctx, vmid)
+		if err != nil {
+			return err
+		}
+		r.j.Manifest = m
+	}
+	r.appliance().Node = r.node
+	if err := r.ensureProxmox(ctx); err != nil {
+		return err
+	}
+	if err := r.ensureTags(ctx); err != nil {
+		return err
+	}
+	return r.pushBootstrap(ctx, appliance.ModeRepair, false)
+}
+
+func (r *run) recoverState(ctx context.Context, cfg ctConfig) error {
+	vmid := r.j.VMID
+	if err := r.recoveryToken(); err != nil {
+		return err
+	}
+	if cfg["mp0"] == "" {
+		if err := r.addVolume(ctx); err != nil {
+			return err
+		}
+	}
+	if err := r.pushMarker(ctx); err != nil {
+		return err
+	}
+	r.removeTemp()
+	m, err := r.manifestFromMarks(ctx, vmid)
+	if err != nil {
+		return err
+	}
+	r.j.Manifest = m
+	if err := r.ensureProxmox(ctx); err != nil {
+		return err
+	}
+	return r.pushBootstrap(ctx, appliance.ModeRecover, false)
+}
+
+// recoveryToken makes sure there is a Cloudflare token to find the install
+// with: from --cf-token-file, or asked for.
+func (r *run) recoveryToken() error {
+	const missing = "--recover needs a Cloudflare token to find the install with: pass --cf-token-file"
+	if r.o.CloudflareToken != "" {
+		return nil
+	}
+	if r.o.Yes {
+		return errors.New(missing)
+	}
+	token, err := r.ask.Secret("Cloudflare API token, to find the install with: ")
+	if err != nil {
+		return fmt.Errorf("reading the token: %w", err)
+	}
+	if r.o.CloudflareToken = strings.TrimSpace(token); r.o.CloudflareToken == "" {
+		return errors.New(missing)
+	}
+	return nil
+}
+
+// addVolume gives a container restored without its state volume a new one;
+// a mount point is added to a stopped container.
+func (r *run) addVolume(ctx context.Context) error {
+	vmid := r.j.VMID
+	id := strconv.Itoa(vmid)
+	if err := r.record(func(j *journal) { j.AddedMP0 = true }); err != nil {
+		return err
+	}
+	if _, err := r.r.Run(ctx, "pct", "stop", id); err != nil {
+		return fmt.Errorf("stopping lxc/%d to give it a state volume: %w", vmid, err)
+	}
+	if _, err := r.r.Run(ctx, "pct", "set", id, "--mp0", r.mp0()); err != nil {
+		return fmt.Errorf("giving lxc/%d a state volume: %w", vmid, err)
+	}
+	if _, err := r.r.Run(ctx, "pct", "start", id); err != nil {
+		return fmt.Errorf("starting lxc/%d: %w", vmid, err)
+	}
+	if err := r.booted(ctx, vmid); err != nil {
+		return err
+	}
+	r.ask.Info("container lxc/%d: given a state volume on %s", vmid, r.o.Storage)
+	return nil
+}

@@ -177,7 +177,7 @@ func TestADaemonRunByHandCountsAsRunning(t *testing.T) {
 
 		require.ErrorContains(t, err, "daemon.lock")
 		require.ErrorContains(t, err, "nothing was removed")
-		require.Contains(t, h.users, userID)
+		require.Contains(t, h.users, UserID)
 		require.True(t, h.cloudflared)
 		require.Equal(t, testNode, e.manifest().Node, "the store stays")
 	})
@@ -261,13 +261,13 @@ func TestTheRoleOthersHoldStays(t *testing.T) {
 	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
 	require.True(t, e.manifest().CreatedRole)
 	h.users = append(h.users, "alice@pve")
-	h.acl = append(h.acl, pveACL{Path: "/vms/100", Type: "user", UGID: "alice@pve", Role: roleID})
+	h.acl = append(h.acl, pveACL{Path: "/vms/100", Type: "user", UGID: "alice@pve", Role: RoleID})
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, RemoveCloudflared: true}))
 
-	require.Contains(t, h.roles, roleID)
+	require.Contains(t, h.roles, RoleID)
 	require.NotContains(t, h.ran, "pveum role delete PCO")
 	e.requireShown("alice@pve")
-	require.Contains(t, h.acl, pveACL{Path: "/vms/100", Type: "user", UGID: "alice@pve", Role: roleID}, "alice keeps her grant")
-	require.NotContains(t, h.users, userID)
+	require.Contains(t, h.acl, pveACL{Path: "/vms/100", Type: "user", UGID: "alice@pve", Role: RoleID}, "alice keeps her grant")
+	require.NotContains(t, h.users, UserID)
 }

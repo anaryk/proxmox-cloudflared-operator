@@ -22,10 +22,10 @@ func (r *run) preflight(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reading the version of Proxmox VE, is this a Proxmox VE node? %w", err)
 	}
-	if r.version, err = parsePVEVersion(out); err != nil {
+	if r.version, err = ParsePVEVersion(out); err != nil {
 		return err
 	}
-	if !r.version.supported() {
+	if !r.version.Supported() {
 		return fmt.Errorf("version %s of Proxmox VE is not supported: pco needs 8.4 or later, or 9", r.version.text)
 	}
 	if _, err := r.run.Run(ctx, "mountpoint", "-q", r.host.pveDir); err != nil {

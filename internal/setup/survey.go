@@ -158,16 +158,16 @@ func (u *uninstall) describeProxmox() {
 		u.ask.Info("  Proxmox token %s", tokenID)
 	}
 	if m.CreatedUser && s.user {
-		u.ask.Info("  Proxmox user %s", userID)
+		u.ask.Info("  Proxmox user %s", UserID)
 	}
 	if m.GrantedACL && slices.ContainsFunc(s.acl, isGrant) {
-		u.ask.Info("  the grant of role %s on / to %s", roleID, userID)
+		u.ask.Info("  the grant of role %s on / to %s", RoleID, UserID)
 	}
 	if m.CreatedRole && s.role != nil {
 		if goes, why := u.roleVerdict(); goes {
-			u.ask.Info("  Proxmox role %s", roleID)
+			u.ask.Info("  Proxmox role %s", RoleID)
 		} else {
-			u.ask.Info("  (role %s is kept: %s)", roleID, why)
+			u.ask.Info("  (role %s is kept: %s)", RoleID, why)
 		}
 	}
 	if tags := without(m.RegisteredTags, without(m.RegisteredTags, s.tags)); len(tags) > 0 {

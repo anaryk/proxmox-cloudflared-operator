@@ -185,3 +185,35 @@ func TestPermissions(t *testing.T) {
 		"/api2/json/access/permissions?path=%2Fvms%2F9201&userid=pcotest%40pve%21sep",
 	}, uris)
 }
+
+// pvesh prints what the API answers without its envelope; the installer on the
+// node reads the access control that way.
+func TestDecodeWhatPveshPrints(t *testing.T) {
+	acl, err := DecodeACL([]byte(`[{"path":"/vms/100","type":"token","ugid":"a@pve!t","roleid":"NoAccess","propagate":1}]`))
+	require.NoError(t, err)
+	require.Equal(t, []ACLEntry{{Path: "/vms/100", Type: "token", UGID: "a@pve!t", RoleID: "NoAccess", Propagate: true}}, acl)
+
+	users, err := DecodeUsers([]byte(`[{"userid":"a@pve","enable":0,"groups":"g1,g2","tokens":[{"tokenid":"t","privsep":0}]}]`))
+	require.NoError(t, err)
+	require.Equal(t, []User{{ID: "a@pve", Groups: []string{"g1", "g2"}, Tokens: map[string]bool{"t": false}}}, users)
+
+	asked := ""
+	groups, err := DecodeGroups([]byte(`[{"groupid":"g1","users":"a@pve"},{"groupid":"g2"}]`), func(id string) ([]string, error) {
+		asked = id
+		return DecodeGroupMembers([]byte(`{"members":["b@pve"]}`))
+	})
+	require.NoError(t, err)
+	require.Equal(t, "g2", asked)
+	require.Equal(t, []Group{{ID: "g1", Members: []string{"a@pve"}}, {ID: "g2", Members: []string{"b@pve"}}}, groups)
+
+	roles, err := DecodeRoles([]byte(`[{"roleid":"PCO","privs":"VM.Audit,Sys.Audit"}]`))
+	require.NoError(t, err)
+	require.Equal(t, []Role{{ID: "PCO", Privs: []string{"VM.Audit", "Sys.Audit"}}}, roles)
+
+	perms, err := DecodePermissions([]byte(`{"/vms/100":{"VM.Console":1,"VM.Audit":1}}`))
+	require.NoError(t, err)
+	require.Equal(t, map[string][]string{"/vms/100": {"VM.Audit", "VM.Console"}}, perms)
+
+	_, err = DecodeACL([]byte(`{"data":[]}`))
+	require.Error(t, err, "an answer with its envelope is not what pvesh prints")
+}
