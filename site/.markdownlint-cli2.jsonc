@@ -1,0 +1,19 @@
+// What markdownlint holds the pages of docs/ to, fitted to the way they are
+// written. The pages of docs/cli are generated from the commands and are
+// checked against them instead.
+{
+  "config": {
+    "default": true,
+    // Lines are wrapped by hand, and a table row or a link is as long as it is.
+    "MD013": false,
+    // Commands and their output are indented blocks, and the examples of
+    // Notes are fences: both styles stand side by side.
+    "MD046": false,
+    // Cells with a space at each side, under a delimiter row of |---|.
+    "MD060": false,
+    // Pages repeat a heading such as "Examples" under different sections.
+    "MD024": { "siblings_only": true }
+  },
+  "globs": ["../docs/**/*.md"],
+  "ignores": ["../docs/cli/**"]
+}

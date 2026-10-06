@@ -18,7 +18,7 @@ comma := ,
 UI ?= 0
 TAGS := nomsgpack$(if $(filter 1,$(UI)),$(comma)webui)
 
-.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types
+.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types docs docs-serve docs-lint
 
 build: $(if $(filter 1,$(UI)),ui-dist)
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -53,6 +53,7 @@ test-scripts:
 	bash packaging/appliance/pin_test.sh
 	bash packaging/appliance/overlay_test.sh
 	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh packaging/appliance/*.sh
+	node --test site/scripts/*.test.mjs site/.vitepress/markdown/*.test.mjs
 
 # The frontend in web/, with Node and npm at the versions of web/.nvmrc and
 # web/package.json. The packages are installed once, and again when the lock
@@ -92,6 +93,27 @@ ui-words:
 # The types of the JSON of the daemon and of the web process, the same way.
 ui-types:
 	go run ./hack/tsgen -types > web/src/api/types.gen.ts.tmp && mv web/src/api/types.gen.ts.tmp web/src/api/types.gen.ts || { rm -f web/src/api/types.gen.ts.tmp; exit 1; }
+
+# The documentation site in site/, a VitePress build of the pages in docs/
+# into site/.vitepress/dist, with the Node and npm of web/.nvmrc and
+# site/package.json. The build fails on a link to a page that does not exist;
+# docs-lint holds the pages to the rules of site/.markdownlint-cli2.jsonc,
+# checks every link of the built site down to its fragment, and the images
+# of docs/images against their budget.
+site/node_modules: site/package.json site/package-lock.json
+	cd site && npm ci --ignore-scripts || { rm -rf node_modules; exit 1; }
+	@touch site/node_modules
+
+docs: site/node_modules
+	cd site && npm run build
+
+docs-serve: site/node_modules
+	cd site && npm run dev
+
+docs-lint: docs
+	cd site && npm run lint
+	node site/scripts/anchors.mjs
+	node site/scripts/image-budget.mjs
 
 # Builds the interface and the .deb files without a tag and without publishing
 # or signing anything, and the appliance template where mmdebstrap is

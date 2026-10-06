@@ -8,3 +8,6 @@ coverage.out
 /web/test-results/
 /web/playwright-report/
 /build/
+/site/node_modules/
+/site/.vitepress/dist/
+/site/.vitepress/cache/

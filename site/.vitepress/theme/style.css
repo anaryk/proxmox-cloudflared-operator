@@ -1,0 +1,161 @@
+/*
+ * The colours of the web interface (web/src/theme/tokens.css) on the
+ * variables of the VitePress theme: neutral greys, one blue for what can be
+ * clicked, and the orange of traffic for the mark only. Inline code is
+ * drawn in the colour of the text, so that blue stays a link.
+ */
+
+:root {
+  --pco-bg: #f3f4f6;
+  --pco-surface: #ffffff;
+  --pco-raised: #f8f9fb;
+  --pco-border: #d5d9df;
+  --pco-control-border: #808a96;
+  --pco-text: #1c2026;
+  --pco-text2: #4b5563;
+  --pco-muted: #667080;
+  --pco-accent: #1b63c6;
+  --pco-on-accent: #ffffff;
+  --pco-accent-weak: #e8f0fb;
+  --pco-traffic: #ea7317;
+  --pco-ok: #177a34;
+  --pco-ok-weak: #e7f4ea;
+  --pco-warn: #8f5f00;
+  --pco-warn-weak: #fbf1d6;
+  --pco-fail: #cf222e;
+  --pco-fail-weak: #fce8e9;
+  --pco-idle-weak: #eef0f3;
+  --pco-edge: #8a94a3;
+}
+
+.dark {
+  --pco-bg: #111317;
+  --pco-surface: #1a1d22;
+  --pco-raised: #22262c;
+  --pco-border: #323841;
+  --pco-control-border: #737c88;
+  --pco-text: #e6e8eb;
+  --pco-text2: #b3bac4;
+  --pco-muted: #8f98a4;
+  --pco-accent: #5c9ef5;
+  --pco-on-accent: #0b1220;
+  --pco-accent-weak: #1b2a40;
+  --pco-traffic: #f3862a;
+  --pco-ok: #3fb950;
+  --pco-ok-weak: #15291b;
+  --pco-warn: #d4a72c;
+  --pco-warn-weak: #2f2713;
+  --pco-fail: #f85149;
+  --pco-fail-weak: #3b1a1b;
+  --pco-idle-weak: #262a31;
+  --pco-edge: #6b7480;
+}
+
+:root,
+.dark {
+  --vp-c-bg: var(--pco-surface);
+  --vp-c-bg-alt: var(--pco-bg);
+  --vp-c-bg-elv: var(--pco-surface);
+  --vp-c-bg-soft: var(--pco-raised);
+
+  --vp-c-border: var(--pco-control-border);
+  --vp-c-divider: var(--pco-border);
+  --vp-c-gutter: var(--pco-border);
+
+  --vp-c-text-1: var(--pco-text);
+  --vp-c-text-2: var(--pco-text2);
+  --vp-c-text-3: var(--pco-muted);
+
+  --vp-c-default-soft: var(--pco-idle-weak);
+
+  --vp-c-brand-1: var(--pco-accent);
+  --vp-c-brand-2: var(--pco-accent);
+  --vp-c-brand-3: var(--pco-accent);
+  --vp-c-brand-soft: var(--pco-accent-weak);
+
+  --vp-c-success-1: var(--pco-ok);
+  --vp-c-success-2: var(--pco-ok);
+  --vp-c-success-3: var(--pco-ok);
+  --vp-c-success-soft: var(--pco-ok-weak);
+
+  --vp-c-important-1: var(--pco-accent);
+  --vp-c-important-2: var(--pco-accent);
+  --vp-c-important-3: var(--pco-accent);
+  --vp-c-important-soft: var(--pco-accent-weak);
+
+  --vp-c-warning-1: var(--pco-warn);
+  --vp-c-warning-2: var(--pco-warn);
+  --vp-c-warning-3: var(--pco-warn);
+  --vp-c-warning-soft: var(--pco-warn-weak);
+
+  --vp-c-danger-1: var(--pco-fail);
+  --vp-c-danger-2: var(--pco-fail);
+  --vp-c-danger-3: var(--pco-fail);
+  --vp-c-danger-soft: var(--pco-fail-weak);
+
+  --vp-c-caution-1: var(--pco-fail);
+  --vp-c-caution-2: var(--pco-fail);
+  --vp-c-caution-3: var(--pco-fail);
+  --vp-c-caution-soft: var(--pco-fail-weak);
+
+  --vp-button-brand-text: var(--pco-on-accent);
+  --vp-button-brand-hover-text: var(--pco-on-accent);
+  --vp-button-brand-active-text: var(--pco-on-accent);
+
+  --vp-code-color: var(--pco-text);
+  --vp-code-bg: var(--pco-idle-weak);
+
+  --vp-font-family-base: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  --vp-font-family-mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, monospace;
+}
+
+/* Each side of the custom blocks and GitHub alerts in its colour. */
+.vp-doc .custom-block {
+  border-left: 4px solid var(--pco-border);
+}
+
+.vp-doc .custom-block.tip,
+.vp-doc .custom-block.note,
+.vp-doc .custom-block.important {
+  border-left-color: var(--pco-accent);
+}
+
+.vp-doc .custom-block.warning {
+  border-left-color: var(--pco-warn);
+}
+
+.vp-doc .custom-block.danger,
+.vp-doc .custom-block.caution {
+  border-left-color: var(--pco-fail);
+}
+
+/* A screenshot with a twin for the dark theme shows the one of the theme. */
+html:not(.dark) .vp-doc img.pco-dark-only,
+.dark .vp-doc img.pco-light-only {
+  display: none;
+}
+
+.vp-doc img {
+  border: 1px solid var(--pco-border);
+  border-radius: 4px;
+}
+
+/* A Mermaid diagram: the source until the script has drawn it. */
+.pco-diagram {
+  margin: 16px 0;
+  overflow-x: auto;
+}
+
+.pco-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+/* Mermaid measures a label outside the page; inside it, the paragraphs of
+   the page would make it taller than its box. */
+.vp-doc .pco-diagram p {
+  margin: 0;
+  line-height: 1.5;
+}
