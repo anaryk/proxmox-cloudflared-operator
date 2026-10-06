@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -500,6 +502,9 @@ func newWorld(t *testing.T) *world {
 		Sleep:      func(context.Context, time.Duration) error { return nil },
 		Now:        func() time.Time { w.cycles.Add(1); return time.Now() },
 		PVECertDir: w.pve.certDir(t, dir),
+		Dial: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("no network in this test")
+		},
 
 		Nft:          w.nft,
 		ConnectorUID: func() (uint32, error) { return testConnectorUID, nil },
