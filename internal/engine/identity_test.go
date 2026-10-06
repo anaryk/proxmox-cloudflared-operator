@@ -646,6 +646,76 @@ func TestANICWithoutALinkHoldsWritesUnlessNothingButTheUptimeProves(t *testing.T
 	}
 }
 
+// A copy whose connectors could not be stopped starts none again when
+// Cloudflare refuses the token of one: what decides is the verdict, not
+// whether the stop went through.
+func TestACopyWhoseConnectorsDidNotStopRestartsNone(t *testing.T) {
+	a := newApplianceEnv(t, incA)
+	a.enforce()
+	a.cycle()
+	id := a.tunnels()[0].ID
+	require.NoError(t, a.cf.RotateTunnelSecret(t.Context(), testAccount, id, rotatedSecret))
+	a.conn.setRefused(id, true)
+	a.conn.failStopAll(errors.New("systemd does not answer"))
+	a.box.set(func(c *container) { c.mount = cloneVolume })
+	ensures, reads := len(a.conn.ensures()), a.tokenReads()
+
+	a.clock.advance(10 * time.Second)
+	st := a.cycle()
+
+	require.True(t, st.Identity.Copy)
+	require.Contains(t, st.Problems, "stopping the connectors: systemd does not answer")
+	require.Contains(t, st.Problems, refusedProblem)
+	require.Len(t, a.conn.ensures(), ensures, "no connector of a copy starts")
+	require.Equal(t, reads, a.tokenReads(), "nor is its token read again")
+
+	a.conn.failStopAll(nil)
+	a.clock.advance(10 * time.Second)
+	a.cycle()
+	require.Equal(t, 2, a.conn.stopAlls(), "the stop that failed is tried again")
+	a.clock.advance(10 * time.Second)
+	a.cycle()
+	require.Equal(t, 2, a.conn.stopAlls(), "and once it went through, not again")
+	require.Len(t, a.conn.ensures(), ensures)
+}
+
+// C2: the deep check of a credential makes a probe tunnel at Cloudflare,
+// which a copy must not.
+func TestADeepCheckIsRefusedWhileTheApplianceServesNothing(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(a *applianceEnv)
+	}{
+		{name: "a copy", change: func(a *applianceEnv) { a.box.set(func(c *container) { c.mount = cloneVolume }) }},
+		{name: "not proven", change: func(a *applianceEnv) {
+			a.box.set(func(c *container) {
+				c.mount = appliance.Source{Raw: "10.92.0.5:/export/pco /"}
+				c.uptimesErr = errors.New("proxmox does not answer")
+			})
+		}},
+		{name: "exposed", change: func(a *applianceEnv) {
+			a.acc.grant("alice@pve", "/vms/9250", "PVEVMUser", "VM.Console")
+			a.clock.advance(accessEvery)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newApplianceEnv(t, incA)
+			a.enforce()
+			a.cycle()
+			tt.change(a)
+			a.cycle()
+			calls := len(a.cf.Calls())
+
+			_, err := a.eng.CheckCredential(t.Context(), testCred, true)
+
+			require.ErrorIs(t, err, ErrRefused)
+			require.Empty(t, a.callsSince(calls), "no probe tunnel")
+			_, err = a.eng.CheckCredential(t.Context(), testCred, false)
+			require.NoError(t, err, "a check that only reads is no write")
+		})
+	}
+}
+
 func TestARotationIsRefusedWhileTheApplianceServesNothing(t *testing.T) {
 	a := newApplianceEnv(t, incA)
 	a.enforce()

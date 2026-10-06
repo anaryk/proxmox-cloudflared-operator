@@ -133,7 +133,7 @@ func (c *cycleRun) noteRetry(t reconcile.TunnelState, retry tokenRetry) {
 // appliance serves nothing. A cycle that holds after that may, for a token of
 // the install's own tunnel.
 func (c *cycleRun) mayEnsure() bool {
-	return c.install.ID != "" && c.mode() == reconcile.Enforce && !c.e.notServing
+	return c.install.ID != "" && c.mode() == reconcile.Enforce && !c.e.notServing.Load()
 }
 
 // RotateTunnel gives the tunnel of the install in an account a new secret at

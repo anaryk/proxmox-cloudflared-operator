@@ -72,7 +72,8 @@ func (c *cycleRun) identify() bool {
 	if err := id.SetFlag(true); err != nil {
 		c.problem("writing the identity flag: %v; the connectors do not start until it is written", err)
 	} else {
-		c.e.notServing = false
+		c.e.notServing.Store(false)
+		c.e.stopped = false
 	}
 	c.tenants = tenantMACs(c.snap, v.Tenants, a.MACs, self)
 	if v.Pending {
@@ -84,12 +85,15 @@ func (c *cycleRun) identify() bool {
 
 // stopServing removes the identity flag, so that no connector starts, and,
 // unless that was done since the appliance last served, empties the egress
-// filter and stops the connectors of the install.
+// filter and stops the connectors of the install. The appliance serves
+// nothing from here on, also when the stop fails and is tried again in the
+// next cycle: no connector is started meanwhile.
 func (c *cycleRun) stopServing() {
+	c.e.notServing.Store(true)
 	if err := c.e.d.Identity.SetFlag(false); err != nil {
 		c.problem("removing the identity flag: %v", err)
 	}
-	if c.e.notServing {
+	if c.e.stopped {
 		return
 	}
 	c.e.egMu.Lock()
@@ -103,7 +107,7 @@ func (c *cycleRun) stopServing() {
 		c.problem("stopping the connectors: %v", err)
 		return
 	}
-	c.e.notServing = true
+	c.e.stopped = true
 }
 
 // exposure returns the principals other than admins and pco's own that can
@@ -243,8 +247,8 @@ func (c *cycleRun) epochDrawn() bool {
 }
 
 // refusedAsCopy is why an admin action that writes to Cloudflare by itself
-// is refused in an appliance whose last self-identification did not pass;
-// nil when it may go on.
+// is refused in an appliance whose last self-identification did not pass, or
+// that serves nothing; nil when it may go on.
 func (e *Engine) refusedAsCopy() error {
 	if e.d.Identity == nil {
 		return nil
@@ -252,7 +256,7 @@ func (e *Engine) refusedAsCopy() error {
 	e.stateMu.RLock()
 	id := e.state.Identity
 	e.stateMu.RUnlock()
-	if id == nil || !id.OK || e.notServing {
+	if id == nil || !id.OK || e.notServing.Load() {
 		return fmt.Errorf("%w: the appliance changes nothing at Cloudflare until its self-identification passes "+
 			"and no principal can reach into it; pco status says why", ErrRefused)
 	}

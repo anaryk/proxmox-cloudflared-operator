@@ -252,12 +252,15 @@ type Engine struct {
 	// refreshed outside the cycle lock.
 	access accessState
 
-	// The appliance, under the cycle lock: notServing says that the
-	// connectors were stopped and the egress filter emptied, for a copy or
-	// for principals that can reach into it; firstWrite says that a write of
-	// this process was verified at Cloudflare; epochAt is when this process
-	// drew its epoch, zero until it did.
-	notServing bool
+	// The appliance: notServing says that it serves nothing, as a copy or
+	// while principals can reach into it, from the verdict that says so to the
+	// next one that writes the identity flag. Under the cycle lock, stopped
+	// says that its connectors were stopped and its egress filter emptied
+	// since it last served; firstWrite says that a write of this process was
+	// verified at Cloudflare; epochAt is when this process drew its epoch,
+	// zero until it did.
+	notServing atomic.Bool
+	stopped    bool
 	firstWrite bool
 	epochAt    time.Time
 

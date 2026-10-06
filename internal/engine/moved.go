@@ -201,7 +201,7 @@ func (e *Engine) reverify(ctx context.Context, addr netip.Addr) {
 	if !again {
 		check.pending = false
 		delete(e.suspects, addr)
-		if passed && !e.notServing {
+		if passed && !e.notServing.Load() {
 			err = e.d.Egress.Set(ctx, e.unsuspected())
 		}
 	}

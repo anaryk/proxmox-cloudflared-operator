@@ -79,8 +79,14 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 }
 
 // CheckCredential checks a stored credential again. A deep check proves the
-// write permissions by creating and deleting probe objects.
+// write permissions by creating and deleting probe objects, which an
+// appliance that serves nothing does not.
 func (e *Engine) CheckCredential(ctx context.Context, id string, deep bool) (CredentialView, error) {
+	if deep {
+		if err := e.refusedAsCopy(); err != nil {
+			return CredentialView{}, err
+		}
+	}
 	cred, err := e.credential(id)
 	if err != nil {
 		return CredentialView{}, err

@@ -327,6 +327,7 @@ type fakeConnectors struct {
 	portHeld  map[string]bool   // tunnels whose metrics port another process holds: not ready, and its journal says so
 	ids       map[string]string // the id /ready names, by tunnel; defaultConnectorID when not set
 	stops     int               // calls of StopAll
+	stopErr   error             // what StopAll fails with
 }
 
 // defaultConnectorID is what the node's own connector of every tunnel calls
@@ -437,8 +438,8 @@ func (f *fakeConnectors) lastPrune() ([]string, bool) {
 	return slices.Clone(f.pruned[len(f.pruned)-1]), true
 }
 
-// StopAll counts the stops of every connector of the install; the tokens stay,
-// as the files do.
+// StopAll counts the stops of every connector of the install, also those that
+// fail; the tokens stay, as the files do.
 func (f *fakeConnectors) StopAll(_ context.Context, install string) error {
 	if install != testInstall {
 		return fmt.Errorf("stop all for install %q", install)
@@ -446,7 +447,13 @@ func (f *fakeConnectors) StopAll(_ context.Context, install string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops++
-	return nil
+	return f.stopErr
+}
+
+func (f *fakeConnectors) failStopAll(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopErr = err
 }
 
 func (f *fakeConnectors) stopAlls() int {
