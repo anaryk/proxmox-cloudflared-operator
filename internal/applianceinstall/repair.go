@@ -126,8 +126,9 @@ func (r *run) repair(ctx context.Context) error {
 	return r.recoverState(ctx, cfg)
 }
 
-// markContainer refuses a container without the installer's mark, and gives
-// a restored one the mark of its own VMID, by which uninstall finds it.
+// markContainer refuses a container without the installer's mark and a copy
+// beside its original, and gives a restored one the mark of its own VMID, by
+// which uninstall finds it.
 func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
 	vmid := r.j.VMID
 	from, ok := describedVMID(cfg["description"])
@@ -137,11 +138,32 @@ func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
 	case from == vmid:
 		return nil
 	}
+	if err := r.notACopy(ctx, from); err != nil {
+		return err
+	}
 	if _, err := r.r.Run(ctx, "pct", "set", strconv.Itoa(vmid), "--description", description(vmid, r.now())); err != nil {
 		return fmt.Errorf("marking lxc/%d: %w", vmid, err)
 	}
 	r.ask.Info("container lxc/%d: made from lxc/%d, and marked as itself now", vmid, from)
 	return nil
+}
+
+// notACopy refuses to repair the container while lxc/from, which it is a copy
+// of, is in the cluster: both would write the one install, the copy with the
+// credentials of the original.
+func (r *run) notACopy(ctx context.Context, from int) error {
+	vmid := r.j.VMID
+	if from == 0 || from == vmid {
+		return nil
+	}
+	node, ok, err := containerNode(ctx, r.r, from)
+	if err != nil || !ok {
+		return err
+	}
+	return refusal{fmt.Errorf("lxc/%d is a copy of lxc/%d, which is still there, on node %s: repaired, the copy would write "+
+		"the install of lxc/%d beside it, with its credentials. Remove the copy with pco appliance uninstall --vmid %d "+
+		"--keep-cloudflare, or, for an appliance of its own, install one anew with pco appliance install; nothing was changed",
+		vmid, from, node, from, vmid)}
 }
 
 // fromConfig takes the bridge and the VLAN of the appliance's card, and its
@@ -204,8 +226,12 @@ func (r *run) repairEndpoint(ctx context.Context) error {
 
 func (r *run) repairState(ctx context.Context) error {
 	vmid := r.j.VMID
-	if m := r.readManifest(ctx, vmid, true); m != nil {
-		r.j.Manifest = *m
+	pulled, named := r.readManifest(ctx, vmid, true)
+	if err := r.notACopy(ctx, named); err != nil {
+		return err
+	}
+	if pulled != nil {
+		r.j.Manifest = *pulled
 	} else {
 		m, err := r.manifestFromMarks(ctx, vmid)
 		if err != nil {

@@ -17,7 +17,8 @@ import (
 type survey struct {
 	exists, running bool
 	cfg             ctConfig
-	described       int // the VMID the description of the container names
+	described       int    // the VMID the description of the container names
+	originalNode    string // of lxc/described, when the container is a copy of it that is still there
 	manifest        *setup.Manifest
 	users           []userEntry
 	tokens          []tokenEntry
@@ -122,6 +123,11 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 		if s.running, err = ctRunning(ctx, r.r, vmid); err != nil {
 			return s, err
 		}
+		if s.described != vmid {
+			if s.originalNode, _, err = containerNode(ctx, r.r, s.described); err != nil {
+				return s, err
+			}
+		}
 	case !notThere(err):
 		return s, fmt.Errorf("reading the configuration of lxc/%d: %w", vmid, err)
 	default:
@@ -131,7 +137,7 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 		}
 	}
 	if s.running {
-		s.manifest = r.readManifest(ctx, vmid, false)
+		s.manifest, _ = r.readManifest(ctx, vmid, false)
 	}
 	if s.users, err = users(ctx, r.r); err != nil {
 		return s, err
@@ -167,7 +173,7 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 		return s, err
 	}
 	s.hostInstall = r.hostInstalled()
-	if s.running && !o.KeepCloudflare {
+	if s.running && !o.KeepCloudflare && s.originalNode == "" {
 		s.cloudflare, s.cloudflareErr = r.listCloudflare(ctx, vmid)
 	}
 	return s, nil
@@ -399,7 +405,11 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 			state = "running"
 		}
 		r.ask.Info("  container lxc/%d (%s), with its state volume and the secrets on it", vmid, state)
-		if s.described != vmid {
+		switch {
+		case s.originalNode != "":
+			r.ask.Info("    (it is a copy of lxc/%d, which is still there, on node %s: what is at Cloudflare is that one's, and stays)",
+				s.described, s.originalNode)
+		case s.described != vmid:
 			r.ask.Info("    (it was made from lxc/%d, which its description names)", s.described)
 		}
 	} else {
@@ -442,6 +452,7 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 		r.ask.Info("  (%s)", n)
 	}
 	switch {
+	case s.originalNode != "":
 	case o.KeepCloudflare:
 		r.ask.Info("  (what the install has at Cloudflare stays, and nothing on this node can remove it later)")
 	case !s.running && s.exists:
@@ -460,10 +471,15 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 
 // decidePurge decides what becomes of what the install has at Cloudflare, as
 // pco uninstall does: --yes alone never decides it while there is something
-// there, as the credentials that reach it go with the container.
+// there, as the credentials that reach it go with the container. What a copy
+// beside its original reaches is the original's, and stays.
 func (r *run) decidePurge(vmid int, s survey, o UninstallOptions) (bool, error) {
 	switch {
-	case o.KeepCloudflare || !s.exists:
+	case s.originalNode != "" && o.PurgeCloudflare:
+		return false, fmt.Errorf("lxc/%d is a copy of lxc/%d, which is still there: what is at Cloudflare is the install of "+
+			"lxc/%d, which --purge-cloudflare would delete under it; remove the copy without it; nothing was removed",
+			vmid, s.described, s.described)
+	case s.originalNode != "" || o.KeepCloudflare || !s.exists:
 		return false, nil
 	case o.PurgeCloudflare && !s.running:
 		return false, fmt.Errorf("--purge-cloudflare needs lxc/%d running, as its credentials are in it: start it with "+

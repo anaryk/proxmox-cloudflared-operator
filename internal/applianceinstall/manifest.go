@@ -26,21 +26,22 @@ var (
 )
 
 // readManifest pulls the manifest from the running appliance and keeps what
-// has the shapes the installer writes, as anything in the container could
-// have written it; what it cannot read is reported
-// and nil returned, as the marks find everything without it. otherVMID lets a
-// repair take the manifest of the container a restore was made from.
-func (r *run) readManifest(ctx context.Context, vmid int, otherVMID bool) *setup.Manifest {
+// has the shapes the installer writes, as anything in the container could have
+// written it. What it cannot read is reported and nil returned, as the marks
+// find everything without it. otherVMID lets a repair take the manifest of
+// the container a restore was made from; named is the VMID the manifest
+// names, 0 when there is none.
+func (r *run) readManifest(ctx context.Context, vmid int, otherVMID bool) (m *setup.Manifest, named int) {
 	raw, err := r.pullManifest(ctx, vmid)
 	if err != nil {
 		r.ask.Warn("the manifest of lxc/%d cannot be read (%v): the marks of the objects say what is pco's", vmid, err)
-		return nil
+		return nil, 0
 	}
-	m, problems := checkManifest(raw, vmid, otherVMID)
+	m, named, problems := checkManifest(raw, vmid, otherVMID)
 	for _, p := range problems {
 		r.ask.Warn("the manifest of lxc/%d: %s; ignored", vmid, p)
 	}
-	return m
+	return m, named
 }
 
 // pullManifest copies the manifest out of the container into the run's
@@ -73,12 +74,12 @@ func (r *run) pullManifest(ctx context.Context, vmid int) ([]byte, error) {
 // appliance's: the objects of pco@pve, PCO, pool pco, the token of this
 // appliance, the gate tags, a template volume of pco and the network grants.
 // Anything else is reported. A manifest of another appliance is no manifest
-// of this one, unless otherVMID says the container was restored from it.
-func checkManifest(raw []byte, vmid int, otherVMID bool) (*setup.Manifest, []string) {
-	var problems []string
+// of this one, unless otherVMID says the container was restored from it;
+// named is the VMID the manifest names.
+func checkManifest(raw []byte, vmid int, otherVMID bool) (m *setup.Manifest, named int, problems []string) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
-		return nil, []string{"it is not a JSON object"}
+		return nil, 0, []string{"it is not a JSON object"}
 	}
 	known := []string{"node", "installedAt", "createdRole", "createdUser", "createdToken", "grantedACL", "registeredTags", "appliance",
 		"installedCloudflared", "addedAptSource", "addedKeyring", "webEnabled", "webEnv", "webCert", "webTLS"}
@@ -87,18 +88,19 @@ func checkManifest(raw []byte, vmid int, otherVMID bool) (*setup.Manifest, []str
 			problems = append(problems, fmt.Sprintf("it holds %q, which no manifest has", k))
 		}
 	}
-	var m setup.Manifest
+	m = &setup.Manifest{}
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	if err := dec.Decode(&m); err != nil {
-		return nil, append(problems, fmt.Sprintf("it cannot be read: %v", err))
+	if err := dec.Decode(m); err != nil {
+		return nil, 0, append(problems, fmt.Sprintf("it cannot be read: %v", err))
 	}
 	if m.Appliance == nil {
-		return nil, append(problems, "it is not the manifest of an appliance")
+		return nil, 0, append(problems, "it is not the manifest of an appliance")
 	}
 	a := m.Appliance
+	named = a.VMID
 	if a.VMID != vmid {
 		if !otherVMID {
-			return nil, append(problems, fmt.Sprintf("it is the manifest of lxc/%d, not of lxc/%d", a.VMID, vmid))
+			return nil, named, append(problems, fmt.Sprintf("it is the manifest of lxc/%d, not of lxc/%d", a.VMID, vmid))
 		}
 		old := "/vms/" + strconv.Itoa(a.VMID)
 		problems = append(problems, fmt.Sprintf("it is the manifest of lxc/%d, which lxc/%d was restored from: its token, its grants "+
@@ -151,7 +153,7 @@ func checkManifest(raw []byte, vmid int, otherVMID bool) (*setup.Manifest, []str
 		}
 		return false
 	})
-	return &m, problems
+	return m, named, problems
 }
 
 // principalID is the id of a Proxmox user, user@realm, or of its token,

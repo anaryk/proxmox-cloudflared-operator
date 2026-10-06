@@ -266,20 +266,35 @@ func TestUninstallAsksAboutCloudflare(t *testing.T) {
 	})
 }
 
-// A restore uninstalled while the appliance it was made from stays: its
-// token, user, role and pool stay too.
-func TestUninstallOfARestoreLeavesTheOriginal(t *testing.T) {
+// A copy removed while the appliance it was made from stays: its token, user,
+// role and pool stay too, and what is at Cloudflare, which is the original's.
+func TestUninstallOfACopyLeavesTheOriginal(t *testing.T) {
 	e := installed(t)
-	e.restored(101, true)
-	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}))
-	require.NoError(t, e.in.Uninstall(t.Context(), 101, uninstallOptions()), e.ask.text())
+	e.cloned()
+	e.node.cts[121].running = true
+	e.node.cfObjects = []string{"tunnel pco-0123456789ab (0000) in account acc1"}
 
-	require.Nil(t, e.node.cts[101])
+	require.NoError(t, e.in.Uninstall(t.Context(), 121, UninstallOptions{Yes: true, KeepTemplate: true}), e.ask.text())
+
+	require.Contains(t, e.ask.text(), "(it is a copy of lxc/100, which is still there, on node pve1: what is at Cloudflare is that one's, and stays)")
+	require.Nil(t, e.node.cts[121])
 	require.NotNil(t, e.node.cts[100])
+	require.Equal(t, 0, e.node.count("pct exec 121 --keep-env 0 -- pco appliance purge"), "nothing is asked of Cloudflare through the copy")
 	require.Equal(t, []string{"vm100"}, e.node.tokenNames("pco@pve"))
 	require.NotNil(t, e.node.roles["PCO"])
 	require.Equal(t, []int{100}, e.node.pools["pco"].Members)
 	require.True(t, e.node.has("/", "token", "pco@pve!vm100", "PCO"))
+
+	e = installed(t)
+	e.cloned()
+	e.node.cts[121].running = true
+
+	err := e.in.Uninstall(t.Context(), 121, UninstallOptions{Yes: true, PurgeCloudflare: true, KeepTemplate: true})
+
+	require.EqualError(t, err, "lxc/121 is a copy of lxc/100, which is still there: what is at Cloudflare is the install of "+
+		"lxc/100, which --purge-cloudflare would delete under it; remove the copy without it; nothing was removed")
+	require.NotNil(t, e.node.cts[121])
+	require.Empty(t, e.node.purges)
 }
 
 func TestUninstallOfAContainerThatIsGone(t *testing.T) {

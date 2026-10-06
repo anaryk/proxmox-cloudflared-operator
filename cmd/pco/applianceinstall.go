@@ -202,6 +202,9 @@ const repairLong = "Put the appliance right on this node after a restore, after 
 	"  volume is marked, and pco appliance init adopts the install the Cloudflare token sees\n" +
 	"  (--install-id when it sees several), with the manifest rebuilt from what pco made in\n" +
 	"  Proxmox.\n\n" +
+	"A copy of the appliance beside the one it was made from, a clone or a restore while the\n" +
+	"original is still there, is refused: it would write the install of the original with its\n" +
+	"credentials. Remove the copy, or install an appliance anew.\n\n" +
 	"A repair takes nothing back when it fails; running it again finishes it. It runs as root\n" +
 	"on the node that has the container; on another node of the cluster it refuses and names\n" +
 	"that node. It exits 0 once the appliance is repaired, 1 otherwise."
@@ -251,10 +254,12 @@ const uninstallLong = "Remove the appliance and what the installer made for it f
 	"install has at Cloudflare is deleted through the running appliance with\n" +
 	"--purge-cloudflare, left with --keep-cloudflare, or asked about; with --yes, an install\n" +
 	"with something at Cloudflare needs one of the two, as the credentials that reach it go\n" +
-	"with the container. A part that fails is reported and the rest goes on; running it again\n" +
-	"finishes it. It runs as root on the node that has the container; on another node of the\n" +
-	"cluster it refuses and names that node, and only a container no node has counts as gone,\n" +
-	"whose leftovers it removes. It exits 0 once the appliance is removed, 1 otherwise."
+	"with the container. A copy of the appliance beside its original leaves Cloudflare alone,\n" +
+	"as what it reaches there is the original's. A part that fails is reported and the rest\n" +
+	"goes on; running it again finishes it. It runs as root on the node that has the\n" +
+	"container; on another node of the cluster it refuses and names that node, and only a\n" +
+	"container no node has counts as gone, whose leftovers it removes. It exits 0 once the\n" +
+	"appliance is removed, 1 otherwise."
 
 const uninstallExample = `  # Remove the appliance, asking about everything
   pco appliance uninstall --vmid 120

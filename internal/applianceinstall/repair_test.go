@@ -4,6 +4,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,6 +35,24 @@ func (e *testEnv) restored(vmid int, withVolume bool) {
 	}
 	e.node.cts[vmid] = &fakeCT{cfg: cfg, files: map[string]fakeFile{}, state: "degraded", failed: []string{"pco.service"}, version: testVersion}
 	e.node.pools["pco"].Members = append(e.node.pools["pco"].Members, vmid)
+}
+
+// cloned is a full clone of appliance 100 to lxc/121, stopped: its state
+// volume with every secret on it, a new MAC, the description of 100.
+func (e *testEnv) cloned() {
+	e.t.Helper()
+	e.restored(121, true)
+	ct, original := e.node.cts[121], e.node.cts[100]
+	ct.files, ct.meta = maps.Clone(original.files), original.meta
+}
+
+// lose takes appliance 100 away as a lost node and an admin who removed what
+// was left of it would: the container and what refers to it, not its token.
+func (e *testEnv) lose() {
+	e.t.Helper()
+	delete(e.node.cts, 100)
+	e.node.acl = slices.DeleteFunc(e.node.acl, func(a fakeACL) bool { return a.Path == "/vms/100" })
+	e.node.pools["pco"].Members = slices.DeleteFunc(e.node.pools["pco"].Members, func(m int) bool { return m == 100 })
 }
 
 func TestRepairWithStateMakesTheTokenAnew(t *testing.T) {
@@ -106,10 +125,12 @@ func TestRepairStartsAStoppedContainerAndStopsItAgain(t *testing.T) {
 	require.Len(t, e.node.inits, 1)
 }
 
-// A restore to a new VMID brings a new, empty volume: no marker, no state.
+// A restore to a new VMID, the appliance it was made from lost, brings a new,
+// empty volume: no marker, no state.
 func TestRepairRecoversARestoreToAnotherVMID(t *testing.T) {
 	e := installed(t)
 	e.restored(101, true)
+	e.lose()
 
 	err := e.in.Repair(t.Context(), 101, Options{Yes: true})
 	require.ErrorContains(t, err, "the volume of lxc/101 holds no state (a restore, or a lost volume): pco appliance repair --vmid 101 --recover --cf-token-file <file>")
@@ -145,6 +166,7 @@ func TestRepairRecoversARestoreToAnotherVMID(t *testing.T) {
 func TestRepairGivesARestoreWithoutItsVolumeOneAgain(t *testing.T) {
 	e := installed(t)
 	e.restored(102, false)
+	e.lose()
 
 	require.NoError(t, e.in.Repair(t.Context(), 102, Options{Yes: true, Recover: true, CloudflareToken: cfToken, InstallID: "0123456789ab"}), e.ask.text())
 
@@ -162,6 +184,7 @@ func TestRepairRefuses(t *testing.T) {
 	require.ErrorContains(t, err, "the volume of lxc/100 holds the state of an install: repair it without --recover")
 
 	e.restored(103, true)
+	e.lose()
 	err = e.in.Repair(t.Context(), 103, Options{Yes: true, Recover: true})
 	require.ErrorContains(t, err, "--recover needs a Cloudflare token to find the install with: pass --cf-token-file")
 
@@ -185,11 +208,59 @@ func TestRepairOfAContainerOnAnotherNodeIsRefused(t *testing.T) {
 	require.Empty(t, e.node.inits)
 }
 
+// A copy beside the appliance it was made from carries the same install:
+// repaired, it would write that install as a second writer, with the
+// original's credentials. The repair refuses it before it changes anything.
+func TestRepairRefusesACopyBesideItsOriginal(t *testing.T) {
+	refusal := func(node string) string {
+		return "lxc/121 is a copy of lxc/100, which is still there, on node " + node + ": repaired, the copy would write the " +
+			"install of lxc/100 beside it, with its credentials. Remove the copy with pco appliance uninstall --vmid 121 " +
+			"--keep-cloudflare, or, for an appliance of its own, install one anew with pco appliance install; nothing was changed"
+	}
+	for _, tt := range []struct {
+		name  string
+		setup func(e *testEnv)
+		o     Options
+		node  string
+	}{
+		{"a clone with the state", func(e *testEnv) { e.cloned() }, Options{Yes: true}, "pve1"},
+		{"a restore, with --recover", func(e *testEnv) { e.restored(121, true) },
+			Options{Yes: true, Recover: true, CloudflareToken: cfToken}, "pve1"},
+		{"a clone of an appliance on another node", func(e *testEnv) {
+			e.cloned()
+			e.migrated(100, "pve2")
+		}, Options{Yes: true}, "pve2"},
+		// A repair of an earlier version marked the copy as itself: its
+		// manifest still names the original.
+		{"a clone marked as itself", func(e *testEnv) {
+			e.cloned()
+			e.node.cts[121].cfg["description"] = description(121, t0)
+		}, Options{Yes: true}, "pve1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := installed(t)
+			tt.setup(e)
+			desc := e.node.cts[121].cfg["description"]
+
+			err := e.in.Repair(t.Context(), 121, tt.o)
+
+			require.EqualError(t, err, refusal(tt.node))
+			require.Equal(t, desc, e.node.cts[121].cfg["description"])
+			require.Equal(t, []string{"vm100"}, e.node.tokenNames("pco@pve"))
+			require.Equal(t, 0, e.node.count("pveum user token"))
+			require.Empty(t, e.node.inits)
+			require.Empty(t, e.node.pushes)
+			require.False(t, e.node.cts[121].running)
+		})
+	}
+}
+
 // A manifest rebuilt from the marks cannot name a NoAccess line, which
 // carries none: the repair says so.
 func TestARecoverSaysWhichNoAccessLinesItCannotKnow(t *testing.T) {
 	e := installed(t)
 	e.restored(101, true)
+	e.lose()
 	e.node.users = append(e.node.users, &fakeUser{ID: "ops@pve", Enabled: true})
 	e.node.grant("/", "user", "ops@pve", "NoAccess")
 
@@ -208,9 +279,10 @@ func TestTheManifestOfARestoreKeepsTheNoAccessLinesAboveIt(t *testing.T) {
 		`{"principal":"vmops@pve","path":"/vms/100","role":"NoAccess"},` +
 		`{"principal":"pools@pve!ci","path":"/pool/pco","role":"NoAccess"}]}}`
 
-	m, problems := checkManifest([]byte(raw), 101, true)
+	m, named, problems := checkManifest([]byte(raw), 101, true)
 
 	require.NotNil(t, m)
+	require.Equal(t, 100, named)
 	require.Equal(t, []setup.NoAccessLine{
 		{Principal: "ops@pve", Path: "/", Role: "NoAccess"},
 		{Principal: "pools@pve!ci", Path: "/pool/pco", Role: "NoAccess"},
