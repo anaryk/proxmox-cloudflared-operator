@@ -60,6 +60,9 @@ const installLong = "Install the pco appliance on this Proxmox VE node: an unpri
 const installExample = `  # Install with the defaults: the next free VMID, DHCP on vmbr0
   pco appliance install --storage local-zfs --checksums checksums.txt
 
+  # On a VLAN-aware vmbr0, in the untagged VLAN the node's own address is in
+  pco appliance install --storage local-zfs --vlan 1 --checksums checksums.txt
+
   # A static address on VLAN 20 of a VLAN-aware bridge, and the first Cloudflare token
   pco appliance install --storage local-zfs --bridge vmbr1 --vlan 20 --ip 192.0.2.120/24,gw=192.0.2.1 --vmid 120 --cf-token-file /root/cf-token
 
@@ -92,7 +95,8 @@ func (a *app) applianceInstallCmd() *cobra.Command {
 	a.commonInstallFlags(cmd, &f)
 	flags.StringVar(&f.o.TemplateStorage, "template-storage", "", "the storage the template is downloaded to (default: --storage when it holds templates, else the one storage that does)")
 	flags.StringVar(&f.o.Bridge, "bridge", applianceinstall.DefaultBridge, "the bridge of the appliance's card")
-	flags.IntVar(&f.o.VLAN, "vlan", 0, "the VLAN of the card; a VLAN-aware bridge needs one")
+	flags.IntVar(&f.o.VLAN, "vlan", 0, "the VLAN of the card; a VLAN-aware bridge needs one, its PVID (1 unless bridge-pvid says otherwise) "+
+		"for the untagged VLAN the node's own address is in")
 	flags.StringVar(&f.o.IP, "ip", applianceinstall.DefaultIP, "dhcp, or the card's address with its prefix and an optional gateway, as 192.0.2.120/24,gw=192.0.2.1")
 	flags.IntVar(&f.o.Cores, "cores", applianceinstall.DefaultCores, "the cores of the container")
 	flags.IntVar(&f.o.MemoryMB, "memory", applianceinstall.DefaultMemoryMB, "the memory of the container, in MB")

@@ -210,6 +210,13 @@ func (r *run) hasState(ctx context.Context, vmid int) (bool, error) {
 func (r *run) repairEndpoint(ctx context.Context) error {
 	host := r.o.APIHost
 	if host == "" {
+		if r.o.VLAN != 0 {
+			// The node's address on the card's VLAN is on the bridge itself
+			// when the VLAN is the bridge's PVID.
+			if _, err := r.readBridge(ctx); err != nil {
+				return err
+			}
+		}
 		addr, ok := r.bridgeAddr()
 		if !ok {
 			return fmt.Errorf("the node has no address on %s, which the appliance reaches the API at: name one with --api-host", r.netDevice())

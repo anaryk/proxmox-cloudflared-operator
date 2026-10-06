@@ -3,6 +3,7 @@ package applianceinstall
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func TestTheBridgeAndItsVLAN(t *testing.T) {
 		{name: "a tag on a bridge that is not VLAN-aware", bridge: "vmbr0", vlan: 20,
 			want: "bridge vmbr0 is not VLAN-aware, so --vlan 20 cannot be given to the appliance's card"},
 		{name: "no tag on a VLAN-aware bridge", bridge: "vmbr1",
-			want: "bridge vmbr1 is VLAN-aware: name the VLAN of the appliance with --vlan"},
+			want: "bridge vmbr1 is VLAN-aware: name the VLAN of the appliance with --vlan (--vlan 1 for the bridge's untagged VLAN)"},
 		{name: "a tag on a VLAN-aware bridge", bridge: "vmbr1", vlan: 20, want: "--net0 name=eth0,bridge=vmbr1,tag=20,ip=dhcp "},
 		{name: "a bridge the node does not have", bridge: "vmbr7", want: "node pve1 has no bridge vmbr7"},
 		{name: "a card that is no bridge", bridge: "eno1", want: "node pve1 has no bridge eno1"},
@@ -60,6 +61,75 @@ func TestTheBridgeAndItsVLAN(t *testing.T) {
 			require.ErrorContains(t, err, tt.want)
 			e.nothingMade()
 		})
+	}
+}
+
+// On a VLAN-aware bridge the node's own address is mostly on the bridge
+// itself, untagged, in the bridge's PVID: the VLAN the refusal names, and
+// where the address is looked up for it. One on a VLAN device of the bridge
+// is the address of that VLAN.
+func TestTheNodesAddressOnAVLANAwareBridge(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		iface  fakeIface
+		addr   string // as ip prints it
+		vlan   int
+		hint   string // the VLAN the refusal without --vlan names
+		probed string
+	}{
+		{name: "untagged on the bridge", iface: fakeIface{Name: "vmbr0", Type: "bridge", VLANAware: true},
+			addr: "vmbr0 192.0.2.10/24", vlan: 1, hint: "--vlan 1", probed: "192.0.2.10:8006"},
+		{name: "untagged on a bridge of PVID 10", iface: fakeIface{Name: "vmbr0", Type: "bridge", VLANAware: true, PVID: 10},
+			addr: "vmbr0 192.0.2.10/24", vlan: 10, hint: "--vlan 10", probed: "192.0.2.10:8006"},
+		{name: "on a VLAN device of the bridge", iface: fakeIface{Name: "vmbr0", Type: "bridge", VLANAware: true},
+			addr: "vmbr0.20 10.20.0.1/24", vlan: 20, hint: "--vlan 1", probed: "10.20.0.1:8006"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.node.ifaces[0] = tt.iface
+			e.node.addrs = []string{tt.addr}
+
+			err := e.in.Install(t.Context(), e.options())
+
+			require.ErrorContains(t, err, "bridge vmbr0 is VLAN-aware: name the VLAN of the appliance with --vlan ("+tt.hint+
+				" for the bridge's untagged VLAN)")
+			e.nothingMade()
+
+			o := e.options()
+			o.VLAN = tt.vlan
+			e.install(o)
+
+			require.Equal(t, []string{tt.probed}, e.probed)
+			require.Contains(t, e.node.cts[100].cfg["net0"], fmt.Sprintf("bridge=vmbr0,tag=%d,", tt.vlan))
+
+			// A repair finds the address as the install did.
+			e.node.ran, e.node.inits, e.probed = nil, nil, nil
+			require.NoError(t, e.in.Repair(t.Context(), 100, Options{Yes: true}), e.ask.text())
+			require.Equal(t, []string{tt.probed}, e.probed)
+		})
+	}
+
+	e := newEnv(t)
+	e.node.ifaces[0] = fakeIface{Name: "vmbr0", Type: "bridge", VLANAware: true}
+	o := e.options()
+	o.VLAN = 20
+	err := e.in.Install(t.Context(), o)
+	require.ErrorContains(t, err, "the node has no address on vmbr0.20, which the appliance would reach the API at: name one with --api-host")
+}
+
+// Proxmox lists bridge-pvid among the options it does not parse; a version
+// that parses it lists it as a key of its own.
+func TestThePVIDOfABridge(t *testing.T) {
+	for raw, want := range map[string]int{
+		`{"iface":"vmbr0","type":"bridge"}`:                                           1,
+		`{"iface":"vmbr0","type":"bridge","options":["hwaddress bc:24:11:4b:a2:70"]}`: 1,
+		`{"iface":"vmbr0","type":"bridge","options":["bridge-pvid 30"]}`:              30,
+		`{"iface":"vmbr0","type":"bridge","bridge-pvid":"40"}`:                        40,
+		`{"iface":"vmbr0","type":"bridge","bridge_pvid":50}`:                          50,
+	} {
+		var i nodeIface
+		require.NoError(t, json.Unmarshal([]byte(raw), &i), raw)
+		require.Equal(t, want, i.pvid(), raw)
 	}
 }
 

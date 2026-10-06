@@ -228,9 +228,9 @@ func (r *run) network(ctx context.Context, o NetworkOptions) (setup.NetworkGrant
 	if err != nil {
 		return g, err
 	}
-	aware := false
+	aware, pvid := false, 1
 	if i := slices.IndexFunc(ifaces, func(i nodeIface) bool { return i.Name == o.Bridge && i.bridge() }); i >= 0 {
-		g.Zone, aware = localNetwork, ifaces[i].vlanAware()
+		g.Zone, aware, pvid = localNetwork, ifaces[i].vlanAware(), ifaces[i].pvid()
 	} else {
 		vs, err := vnets(ctx, r.r)
 		if err != nil {
@@ -253,7 +253,12 @@ func (r *run) network(ctx context.Context, o NetworkOptions) (setup.NetworkGrant
 		return g, err
 	}
 	for _, a := range addrs {
-		if a.Dev == o.Bridge || strings.HasPrefix(a.Dev, o.Bridge+".") {
+		// Without a VLAN the grant is of every VLAN of the bridge.
+		on := a.Dev == vlanDevice(o.Bridge, o.VLAN, pvid)
+		if o.VLAN == 0 {
+			on = on || strings.HasPrefix(a.Dev, o.Bridge+".")
+		}
+		if on {
 			r.ask.Warn("%s carries %s, an address of this node: a card of the appliance there reaches the node", a.Dev, a.Prefix)
 		}
 	}

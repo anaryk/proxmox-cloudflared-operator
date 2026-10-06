@@ -115,6 +115,11 @@ type nodeIface struct {
 	Name      string   `json:"iface"`
 	Type      string   `json:"type"`
 	VLANAware flexBool `json:"bridge_vlan_aware"`
+	// bridge-pvid of the stanza, which Proxmox lists among the options it
+	// does not parse, or under a key of its own once it does.
+	PVID       flexInt     `json:"bridge-pvid"`
+	PVIDParsed flexInt     `json:"bridge_pvid"`
+	Options    optionLines `json:"options"`
 }
 
 func (i nodeIface) bridge() bool { return i.Type == "bridge" || i.Type == "OVSBridge" }
@@ -122,6 +127,51 @@ func (i nodeIface) bridge() bool { return i.Type == "bridge" || i.Type == "OVSBr
 // vlanAware reports whether the bridge carries VLANs: a Linux bridge says so,
 // an Open vSwitch bridge always does.
 func (i nodeIface) vlanAware() bool { return bool(i.VLANAware) || i.Type == "OVSBridge" }
+
+// pvid is the VLAN of what the bridge carries untagged, its own address
+// among it: bridge-pvid of its stanza, or 1, as Linux makes it.
+func (i nodeIface) pvid() int {
+	for _, v := range []flexInt{i.PVID, i.PVIDParsed} {
+		if v > 0 && v < 4095 {
+			return int(v)
+		}
+	}
+	for _, o := range i.Options {
+		if f := strings.Fields(o); len(f) == 2 && (f[0] == "bridge-pvid" || f[0] == "bridge_pvid") {
+			if v, err := strconv.Atoi(f[1]); err == nil && v > 0 && v < 4095 {
+				return v
+			}
+		}
+	}
+	return 1
+}
+
+// optionLines are the lines of a stanza Proxmox lists as they are, a list or
+// one string; anything else is taken for none, as nothing needs it.
+type optionLines []string
+
+func (o *optionLines) UnmarshalJSON(data []byte) error {
+	var lines []string
+	if json.Unmarshal(data, &lines) == nil {
+		*o = lines
+		return nil
+	}
+	var s string
+	if json.Unmarshal(data, &s) == nil {
+		*o = strings.Split(s, "\n")
+	}
+	return nil
+}
+
+// vlanDevice is the device of the node on VLAN vlan of bridge: the bridge
+// itself for no VLAN and for its PVID, which it carries untagged, else its
+// VLAN device.
+func vlanDevice(bridge string, vlan, pvid int) string {
+	if vlan == 0 || vlan == pvid {
+		return bridge
+	}
+	return bridge + "." + strconv.Itoa(vlan)
+}
 
 func nodeNetwork(ctx context.Context, r setup.Runner, node string) ([]nodeIface, error) {
 	var out []nodeIface

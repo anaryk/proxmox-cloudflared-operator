@@ -267,6 +267,7 @@ type run struct {
 	version setup.PVEVersion
 	arch    string
 	addrs   []nodeAddr
+	pvid    int         // of the bridge, once read: the VLAN of the node's own address on it
 	data    access.Data // the access control, read in the preflight
 	chosen  bool        // the VMID is the cluster's next free one, and another is taken when it is gone
 	secret  store.Secret

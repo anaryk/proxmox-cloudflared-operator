@@ -61,13 +61,18 @@ func TestGrantNetworkCommand(t *testing.T) {
 		vlan  int
 		path  string
 		grant map[string]any
+		warns []string // the addresses of the node on the network granted
 	}{
-		{"a bridge", 0, "/sdn/zones/localnetwork/vmbr1", map[string]any{"zone": "localnetwork", "vnet": "vmbr1", "createdRoles": []any{"PCOManaged", "PCOSDN"}}},
-		{"a VLAN of a VLAN-aware bridge", 20, "/sdn/zones/localnetwork/vmbr1/20", map[string]any{"zone": "localnetwork", "vnet": "vmbr1", "vlan": float64(20), "createdRoles": []any{"PCOManaged", "PCOSDN"}}},
+		{"a bridge", 0, "/sdn/zones/localnetwork/vmbr1", map[string]any{"zone": "localnetwork", "vnet": "vmbr1", "createdRoles": []any{"PCOManaged", "PCOSDN"}},
+			[]string{"vmbr1 carries 10.92.0.2/24", "vmbr1.20 carries 10.20.0.1/24"}},
+		{"a VLAN of a VLAN-aware bridge", 20, "/sdn/zones/localnetwork/vmbr1/20", map[string]any{"zone": "localnetwork", "vnet": "vmbr1", "vlan": float64(20), "createdRoles": []any{"PCOManaged", "PCOSDN"}},
+			[]string{"vmbr1.20 carries 10.20.0.1/24"}},
+		{"the untagged VLAN of a VLAN-aware bridge", 1, "/sdn/zones/localnetwork/vmbr1/1", map[string]any{"zone": "localnetwork", "vnet": "vmbr1", "vlan": float64(1), "createdRoles": []any{"PCOManaged", "PCOSDN"}},
+			[]string{"vmbr1 carries 10.92.0.2/24"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := installed(t)
-			e.node.addrs = append(e.node.addrs, "vmbr1 10.92.0.2/24")
+			e.node.addrs = append(e.node.addrs, "vmbr1 10.92.0.2/24", "vmbr1.20 10.20.0.1/24")
 
 			require.NoError(t, e.in.GrantNetworkCommand(t.Context(), NetworkOptions{VMID: 100, Bridge: "vmbr1", VLAN: tt.vlan, Yes: true}), e.ask.text())
 
@@ -77,7 +82,13 @@ func TestGrantNetworkCommand(t *testing.T) {
 				"/vms/100 token pco@pve!vm100 PCOManaged",
 				"/vms/100 user pco@pve PCOManaged",
 			}, e.node.pcoLines(), "exactly the two lines, for user and token")
-			require.Contains(t, e.ask.text(), "warn: vmbr1 carries 10.92.0.2/24, an address of this node")
+			var warned []string
+			for _, l := range e.ask.lines {
+				if w, ok := strings.CutPrefix(l, "warn: "); ok && strings.Contains(w, " carries ") {
+					warned = append(warned, strings.TrimSuffix(w, ", an address of this node: a card of the appliance there reaches the node"))
+				}
+			}
+			require.Equal(t, tt.warns, warned)
 			var m setup.Manifest
 			require.NoError(t, json.Unmarshal(e.node.cts[100].files[manifestFile].data, &m))
 			require.Len(t, m.Appliance.Grants, 1)

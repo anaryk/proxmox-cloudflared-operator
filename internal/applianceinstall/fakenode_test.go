@@ -83,6 +83,7 @@ type fakeIface struct {
 	Name      string
 	Type      string
 	VLANAware bool
+	PVID      int // bridge-pvid in /etc/network/interfaces; 0: none, so 1
 }
 
 type fakeVNet struct {
@@ -158,7 +159,7 @@ func newFakeNode(t *testing.T) *fakeNode {
 	f := &fakeNode{
 		t: t, dir: t.TempDir(), name: "pve1", version: "9.2.21", arch: "amd64",
 		storages:  []fakeStorage{{"local", "iso,vztmpl,backup"}, {"local-zfs", "images,rootdir"}},
-		ifaces:    []fakeIface{{"vmbr0", "bridge", false}, {"vmbr1", "bridge", true}, {"eno1", "eth", false}},
+		ifaces:    []fakeIface{{Name: "vmbr0", Type: "bridge"}, {Name: "vmbr1", Type: "bridge", VLANAware: true}, {Name: "eno1", Type: "eth"}},
 		addrs:     []string{"vmbr0 192.0.2.10/24"},
 		cts:       map[int]*fakeCT{},
 		vms:       map[int]bool{},
@@ -286,6 +287,11 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 			e := map[string]any{"iface": i.Name, "type": i.Type}
 			if i.VLANAware {
 				e["bridge_vlan_aware"] = 1
+			}
+			// What Proxmox does not parse of a stanza it lists under options,
+			// as it does a hwaddress line.
+			if i.PVID != 0 {
+				e["options"] = []string{"bridge-pvid " + strconv.Itoa(i.PVID)}
 			}
 			out = append(out, e)
 		}

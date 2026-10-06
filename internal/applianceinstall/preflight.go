@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
@@ -182,32 +181,37 @@ func (r *run) chooseStorages(ctx context.Context) error {
 // chooseBridge checks the bridge and its VLANs: a card without a tag on a
 // VLAN-aware bridge would be a member of every VLAN.
 func (r *run) chooseBridge(ctx context.Context) error {
-	ifaces, err := nodeNetwork(ctx, r.r, r.node)
+	b, err := r.readBridge(ctx)
 	if err != nil {
 		return err
 	}
-	i := slices.IndexFunc(ifaces, func(i nodeIface) bool { return i.Name == r.o.Bridge && i.bridge() })
-	if i < 0 {
-		return fmt.Errorf("node %s has no bridge %s", r.node, r.o.Bridge)
-	}
-	switch b := ifaces[i]; {
+	switch {
 	case r.o.VLAN != 0 && !b.vlanAware():
 		return fmt.Errorf("bridge %s is not VLAN-aware, so --vlan %d cannot be given to the appliance's card", b.Name, r.o.VLAN)
 	case r.o.VLAN == 0 && b.vlanAware():
-		return fmt.Errorf("bridge %s is VLAN-aware: name the VLAN of the appliance with --vlan (--vlan 1 for the "+
-			"bridge's untagged VLAN), as a card without a tag is a member of every VLAN", b.Name)
+		return fmt.Errorf("bridge %s is VLAN-aware: name the VLAN of the appliance with --vlan (--vlan %d for the "+
+			"bridge's untagged VLAN), as a card without a tag is a member of every VLAN", b.Name, b.pvid())
 	}
 	return nil
 }
 
+// readBridge reads the bridge of the appliance's card, and its PVID.
+func (r *run) readBridge(ctx context.Context) (nodeIface, error) {
+	ifaces, err := nodeNetwork(ctx, r.r, r.node)
+	if err != nil {
+		return nodeIface{}, err
+	}
+	i := slices.IndexFunc(ifaces, func(i nodeIface) bool { return i.Name == r.o.Bridge && i.bridge() })
+	if i < 0 {
+		return nodeIface{}, fmt.Errorf("node %s has no bridge %s", r.node, r.o.Bridge)
+	}
+	r.pvid = ifaces[i].pvid()
+	return ifaces[i], nil
+}
+
 // netDevice is the device of the node the appliance's card is on the
 // network of: the bridge, or its VLAN device.
-func (r *run) netDevice() string {
-	if r.o.VLAN != 0 {
-		return r.o.Bridge + "." + strconv.Itoa(r.o.VLAN)
-	}
-	return r.o.Bridge
-}
+func (r *run) netDevice() string { return vlanDevice(r.o.Bridge, r.o.VLAN, r.pvid) }
 
 // bridgeAddr is the node's first address on the network of the appliance.
 func (r *run) bridgeAddr() (string, bool) {
