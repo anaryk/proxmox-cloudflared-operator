@@ -200,6 +200,8 @@ func newEnv(t *testing.T) *testEnv {
 		pveDir:      e.pveDir,
 		clusterCA:   filepath.Join(e.pveDir, "pve-root-ca.pem"),
 		runDir:      e.runDir,
+		resolv:      filepath.Join(base, "etc", "resolv.conf"),
+		resolved:    filepath.Join(base, "run", "systemd", "resolve", "resolv.conf"),
 		probeCert: func(_ context.Context, address string) ([]*x509.Certificate, error) {
 			e.probed = append(e.probed, address)
 			return chain(t, e.presented), nil
@@ -209,8 +211,23 @@ func newEnv(t *testing.T) *testEnv {
 		sleep:       func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
 		version:     testVersion,
 	}
+	e.resolvers("nameserver 192.0.2.1\n", "-")
 	t.Cleanup(e.checkNoSecret)
 	return e
+}
+
+// resolvers gives the node its /etc/resolv.conf and the file of
+// systemd-resolved, or takes either away with "-".
+func (e *testEnv) resolvers(etc, resolved string) {
+	e.t.Helper()
+	for path, content := range map[string]string{e.in.h.resolv: etc, e.in.h.resolved: resolved} {
+		if content == "-" {
+			require.NoError(e.t, os.RemoveAll(path))
+			continue
+		}
+		require.NoError(e.t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(e.t, os.WriteFile(path, []byte(content), 0o644))
+	}
 }
 
 // options are those of an install that asks nothing.

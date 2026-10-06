@@ -69,6 +69,7 @@ run on a node of its own, with the defaults and a yes to the one question:
     preflight: the container goes on storage local-zfs, the template on local
     preflight: the appliance will be lxc/120
     preflight: the datacenter firewall is off; the appliance reaches the API on port 8006 of the node
+    preflight: the appliance resolves names through 192.0.2.1, as the node does
     preflight: the API at 192.0.2.10:8006 verifies as node1 against the cluster CA
     preflight: no principal but the admins can reach into lxc/120
     template: downloaded local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst, checksum verified
@@ -125,6 +126,7 @@ Everything else has a flag, and a default where one is safe:
 | `--bridge` | `vmbr0` | The bridge of the container's card, `net0`. |
 | `--vlan` | none | The VLAN of `net0`. A VLAN-aware bridge needs one: its PVID, 1 unless `bridge-pvid` says otherwise, for the untagged VLAN the node's own address is in. |
 | `--ip` | `dhcp` | `dhcp`, or the address with its prefix and an optional gateway, as `192.0.2.120/24,gw=192.0.2.1`. |
+| `--nameserver` | the name servers the node asks; behind the stub of systemd-resolved, those it forwards to | The name servers of the container, up to three, repeated or separated by commas. An address of the loopback is refused: in the container it is the container's own. `pct set <vmid> --nameserver` changes them later. |
 | `--api-host` | the node's address on the bridge (or its VLAN) | The address the appliance reaches the Proxmox API at, on port 8006. |
 | `--api-ca` | none | A CA file for an API certificate that neither the cluster CA nor the system roots verify. |
 | `--vmid` | the next free VMID | The VMID of the container. A VMID that is taken is refused. |
@@ -159,6 +161,9 @@ line.
 | `choose the storage of the appliance with --storage: <storages>` | Several storages hold containers: name one. Snapshot-capable storage (ZFS, LVM-thin, Ceph) is what lets a backup run in snapshot mode; see [backups](#snapshots-backups-and-their-limits). |
 | `bridge <bridge> is VLAN-aware: name the VLAN of the appliance with --vlan (--vlan <pvid> for the bridge's untagged VLAN), as a card without a tag is a member of every VLAN` | Give `--vlan`. Untagged on a VLAN-aware bridge, the card would be on every VLAN of it. |
 | `bridge <bridge> is not VLAN-aware, so --vlan <n> cannot be given to the appliance's card` | Leave `--vlan` out, or choose a VLAN-aware bridge. A tagged card on such a bridge fails to start and leaves a virtual interface on the node that only root can remove, so the installer refuses it first. |
+| `the node resolves names through systemd-resolved at 127.0.0.53, and /run/systemd/resolve/resolv.conf names no server it forwards to: name the appliance's name servers with --nameserver` | Proxmox would give the container the node's `/etc/resolv.conf`, and in the container `127.0.0.53` is its own loopback, where nothing answers. The installer takes the servers systemd-resolved forwards to instead, and here it knows none. Give `--nameserver`. |
+| `the node resolves names through <addresses>, an address of the node itself that the container does not reach: name the appliance's name servers with --nameserver` | The node asks a resolver of its own on its loopback, as dnsmasq or unbound would be. Give `--nameserver` with servers the appliance reaches: that resolver at an address of the node on the appliance's bridge, if it listens there, or others. Beside other servers, a server on the loopback is left out with a warning. |
+| `the node's /etc/resolv.conf names no name server: name the appliance's name servers with --nameserver` | As it says. |
 | `the node has no address on <device>, which the appliance would reach the API at: name one with --api-host` | The appliance reaches the API through its card, and by default at the node's address on the same bridge and VLAN. Give `--api-host` with an address of the node the appliance can reach, through a router if need be. |
 | `the API at <address>:8006: the certificate verifies neither under the node name <node> against the cluster CA nor under a DNS name it carries (<names>) against the system roots: pass --api-ca with the CA that signed it, or --api-host with an address whose certificate verifies` | See [the API and its certificate](#the-api-endpoint-and-its-certificate). |
 | `principals other than the admins can reach into lxc/<vmid>: run the lines above, or let the installer add them with --deny-access (--yes never does)` | See [who may reach the appliance](#who-may-reach-the-appliance). |

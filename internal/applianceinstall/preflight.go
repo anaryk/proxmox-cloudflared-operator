@@ -47,6 +47,9 @@ func (r *run) preflight(ctx context.Context) error {
 	if err := r.firewall(ctx); err != nil {
 		return err
 	}
+	if err := r.chooseNameservers(); err != nil {
+		return err
+	}
 	host := r.o.APIHost
 	if host == "" {
 		addr, ok := r.bridgeAddr()

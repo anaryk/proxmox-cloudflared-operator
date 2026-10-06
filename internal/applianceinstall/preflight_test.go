@@ -459,3 +459,96 @@ func TestTheClusterIsPrintedAndWithoutQuorumRefused(t *testing.T) {
 	require.ErrorContains(t, err, "cluster lab has no quorum")
 	e.nothingMade()
 }
+
+// Proxmox copies the resolv.conf of the node into a container created without
+// --nameserver, and an address on the node's loopback, such as the stub of
+// systemd-resolved, reaches nothing there: the container gets the servers the
+// node asks in the end, or those of --nameserver.
+func TestTheApplianceGetsNameServersThatWork(t *testing.T) {
+	const stub = "# This is /run/systemd/resolve/stub-resolv.conf managed by man:systemd-resolved(8).\n" +
+		"nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n"
+	const none = "-"
+	const refusal = "name the appliance's name servers with --nameserver"
+	for _, tt := range []struct {
+		name     string
+		node     string // /etc/resolv.conf of the node, none for no file
+		resolved string // /run/systemd/resolve/resolv.conf, none for no file
+		flag     []string
+		want     string // the value of --nameserver; empty: refused
+		says     string // a line the run prints, or its refusal
+	}{
+		{name: "the node's", node: "search example.test\nnameserver 192.0.2.53\nnameserver 192.0.2.54\n", resolved: none,
+			want: "192.0.2.53 192.0.2.54", says: "info: preflight: the appliance resolves names through 192.0.2.53, 192.0.2.54, as the node does"},
+		{name: "those systemd-resolved forwards to", node: stub, resolved: "nameserver 192.0.2.53\nnameserver 2001:db8::53\nsearch .\n",
+			want: "192.0.2.53 2001:db8::53",
+			says: "info: preflight: the appliance resolves names through 192.0.2.53, 2001:db8::53, the servers systemd-resolved on the node forwards to"},
+		{name: "three of them, as the C library asks no more", resolved: none,
+			node: "nameserver 192.0.2.1\nnameserver 192.0.2.2\nnameserver 192.0.2.3\nnameserver 192.0.2.4\n",
+			want: "192.0.2.1 192.0.2.2 192.0.2.3", says: "through 192.0.2.1, 192.0.2.2, 192.0.2.3, as the node does"},
+		{name: "a server on the node's loopback beside another", node: "nameserver 127.0.0.1\nnameserver 192.0.2.53\n", resolved: none,
+			want: "192.0.2.53",
+			says: "warn: the node's name server 127.0.0.1 is on the node itself, which the container does not reach: the appliance goes without it"},
+		{name: "systemd-resolved without a server to forward to", node: stub, resolved: "# No DNS servers known.\nsearch .\n",
+			says: "the node resolves names through systemd-resolved at 127.0.0.53, and /run/systemd/resolve/resolv.conf names no server " +
+				"it forwards to: " + refusal},
+		{name: "systemd-resolved without its file", node: stub, resolved: none,
+			says: "the node resolves names through systemd-resolved at 127.0.0.53, and /run/systemd/resolve/resolv.conf names no server " +
+				"it forwards to: " + refusal},
+		{name: "a server on the node's loopback alone", node: "nameserver 127.0.0.1\n", resolved: none,
+			says: "the node resolves names through 127.0.0.1, an address of the node itself that the container does not reach: " + refusal},
+		{name: "no name server", node: "search example.test\n", resolved: none,
+			says: "the node's /etc/resolv.conf names no name server: " + refusal},
+		{name: "no resolv.conf", node: none, resolved: none,
+			says: "the node's /etc/resolv.conf names no name server: " + refusal},
+		{name: "--nameserver, where the node has none that works", node: stub, resolved: none, flag: []string{"192.0.2.99"},
+			want: "192.0.2.99", says: "info: preflight: the appliance resolves names through 192.0.2.99, as --nameserver says"},
+		{name: "--nameserver over the node's", node: "nameserver 192.0.2.53\n", resolved: none, flag: []string{"192.0.2.98", "2001:db8::98"},
+			want: "192.0.2.98 2001:db8::98", says: "info: preflight: the appliance resolves names through 192.0.2.98, 2001:db8::98, as --nameserver says"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.resolvers(tt.node, tt.resolved)
+			o := e.options()
+			o.Nameservers = tt.flag
+
+			err := e.in.Install(t.Context(), o)
+
+			if tt.want == "" {
+				require.ErrorContains(t, err, "install step preflight: "+tt.says)
+				e.nothingMade()
+				return
+			}
+			require.NoError(t, err, e.ask.text())
+			i := slices.IndexFunc(e.node.ran, func(l string) bool { return strings.HasPrefix(l, "pct create") })
+			require.Contains(t, e.node.ran[i], " --nameserver "+tt.want+" ")
+			require.Equal(t, tt.want, e.node.cts[100].cfg["nameserver"])
+			require.Contains(t, e.ask.text(), tt.says)
+		})
+	}
+}
+
+// A name server on the loopback is the container's own, where none listens;
+// one that is no address is refused too, before anything runs.
+func TestANameServerThatCannotWorkIsRefusedFirst(t *testing.T) {
+	for flag, want := range map[string]string{
+		"127.0.0.53": "--nameserver 127.0.0.53: an address of the loopback is the container's own, where no name server listens: " +
+			"name one the container reaches",
+		"::1":         "--nameserver ::1: an address of the loopback is the container's own, where no name server listens: name one the container reaches",
+		"dns.example": `--nameserver "dns.example": want the IP address of a name server`,
+		"0.0.0.0":     `--nameserver "0.0.0.0": want the IP address of a name server`,
+	} {
+		e := newEnv(t)
+		o := e.options()
+		o.Nameservers = []string{"192.0.2.53", flag}
+
+		require.EqualError(t, e.in.Install(t.Context(), o), want)
+		require.Empty(t, e.node.ran)
+		e.nothingMade()
+	}
+
+	e := newEnv(t)
+	o := e.options()
+	o.Nameservers = []string{"192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"}
+	require.EqualError(t, e.in.Install(t.Context(), o), "--nameserver: at most 3 name servers, as the C library of the container asks no more")
+	require.Empty(t, e.node.ran)
+}

@@ -8,14 +8,19 @@ pushes the cluster CA and a bootstrap with the token into the container and has 
 appliance init make its store; nothing is installed on the node itself.
 
 First it looks: the version of Proxmox VE, the storage, the bridge and its VLANs, the
-node's address the appliance reaches the API at (`--api-host` when it has none on the
-bridge), the name the API's certificate verifies under, another install of pco, and the
-principals other than the admins who could reach into the appliance. Those are refused
-unless a NoAccess line is added for each, which only `--deny-access` or a yes at the
-question does; `--yes` never does. Each line is shown with what it takes first: one on /
-or /vms takes from its principal every privilege in the cluster, or on every guest, that
-no line further down grants it. The lines added are recorded in the appliance's
-manifest, and uninstall takes them back.
+node's name servers, the node's address the appliance reaches the API at (`--api-host`
+when it has none on the bridge), the name the API's certificate verifies under, another
+install of pco, and the principals other than the admins who could reach into the
+appliance. Those are refused unless a NoAccess line is added for each, which only
+`--deny-access` or a yes at the question does; `--yes` never does. Each line is shown with
+what it takes first: one on / or /vms takes from its principal every privilege in the
+cluster, or on every guest, that no line further down grants it. The lines added are
+recorded in the appliance's manifest, and uninstall takes them back.
+
+The appliance asks the name servers the node asks; where the node asks the stub of
+systemd-resolved at 127.0.0.53, those systemd-resolved forwards to. A server on the node's
+loopback is one the container does not reach: with no other, the installer refuses and
+`--nameserver` names the servers.
 
 The web interface of the appliance listens on the IPv4 address of net0 (`--ip`, or the lease
 DHCP gives it), port 8643, and nowhere else; it serves IPv4 only. The daemon follows a new
@@ -71,6 +76,7 @@ pco appliance install --resume /root/.pco-appliance-install/20261006T101500-3f2a
     --ip string                 dhcp, or the card's address with its prefix and an optional gateway, as 192.0.2.120/24,gw=192.0.2.1 (default "dhcp")
     --keep-template             keep a template this run downloaded when the run is taken back (default true)
     --memory int                the memory of the container, in MB (default 768)
+    --nameserver strings        a name server of the appliance, up to 3, repeated or separated by commas (default: those the node asks, behind systemd-resolved's stub the ones it forwards to)
     --no-registered-tags        do not register the gate tags, which lets whoever may edit a guest set them
     --release-base string       where the template is downloaded from (default: the GitHub release of this version)
     --resume string             finish the run of this journal, or take it back

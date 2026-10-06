@@ -53,6 +53,8 @@ func (r *run) ensurePool(ctx context.Context) error {
 	return nil
 }
 
+// createArgs are the arguments of pct create, with the name servers the
+// preflight decided.
 func (r *run) createArgs(vmid int, desc string) []string {
 	return []string{"create", strconv.Itoa(vmid), r.j.Template,
 		"--unprivileged", "1",
@@ -65,6 +67,7 @@ func (r *run) createArgs(vmid int, desc string) []string {
 		"--rootfs", r.o.Storage + ":" + strconv.Itoa(r.o.RootFSGB),
 		"--mp0", r.mp0(),
 		"--net0", r.o.netSpec(),
+		"--nameserver", strings.Join(r.dns, " "),
 		"--onboot", "1",
 		"--startup", "order=1,up=20",
 		"--pool", poolID,

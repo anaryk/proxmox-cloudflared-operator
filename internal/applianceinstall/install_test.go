@@ -51,7 +51,7 @@ func TestAFreshInstallRunsExactlyTheseCommands(t *testing.T) {
 		// 4. the container
 		"pct create 100 local:vztmpl/" + tmpl + " --unprivileged 1 --features nesting=1 --ostype debian --hostname pco" +
 			" --cores 1 --memory 768 --swap 0 --rootfs local-zfs:4 --mp0 local-zfs:1,mp=/var/lib/pco,backup=0" +
-			" --net0 name=eth0,bridge=vmbr0,ip=dhcp --onboot 1 --startup order=1,up=20 --pool pco" +
+			" --net0 name=eth0,bridge=vmbr0,ip=dhcp --nameserver 192.0.2.1 --onboot 1 --startup order=1,up=20 --pool pco" +
 			" --tags pco-appliance;pco-combined --description pco appliance vm100, installed 2026-10-01 by pco appliance install",
 		// 5. role, user, token
 		"pveum role list --output-format json",

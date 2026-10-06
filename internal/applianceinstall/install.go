@@ -69,6 +69,9 @@ type Options struct {
 	IP              string // "dhcp" (default) or "<cidr>[,gw=<addr>]"
 	APIHost         string // default: the node's address on Bridge; required when it has none
 	APICA           string // a CA file for a certificate the system roots do not know
+	// Nameservers are the name servers of the container; empty: those the
+	// node asks.
+	Nameservers     []string
 	Cores, MemoryMB int
 	RootFSGB        int
 	StateGB         int
@@ -157,7 +160,7 @@ func (o Options) check() error {
 	if _, _, err := parseIP(o.IP); err != nil {
 		return err
 	}
-	return nil
+	return checkNameservers(o.Nameservers)
 }
 
 // parseIP reads the address of net0: dhcp, or a CIDR with an optional
@@ -227,6 +230,8 @@ type host struct {
 	pveDir      string // the mount point of the cluster filesystem
 	clusterCA   string // the CA of the cluster, which signs pveproxy's certificate
 	runDir      string // where the bootstrap is written for its push
+	resolv      string // the resolver file of the node
+	resolved    string // the one systemd-resolved writes, with the servers it forwards to
 	probeCert   func(ctx context.Context, address string) ([]*x509.Certificate, error)
 	systemRoots func() (*x509.CertPool, error)
 	signals     signalSource
@@ -250,6 +255,8 @@ func nodeHost() host {
 		pveDir:      "/etc/pve",
 		clusterCA:   "/etc/pve/pve-root-ca.pem",
 		runDir:      "/run",
+		resolv:      resolvConfPath,
+		resolved:    resolvedConfPath,
 		probeCert:   probeCert,
 		systemRoots: x509.SystemCertPool,
 		signals:     osSignals{},
@@ -288,6 +295,7 @@ type run struct {
 	addrs   []nodeAddr
 	pvid    int         // of the bridge, once read: the VLAN of the node's own address on it
 	data    access.Data // the access control, read in the preflight
+	dns     []string    // the name servers of the container, decided in the preflight
 	chosen  bool        // the VMID is the cluster's next free one, and another is taken when it is gone
 	secret  store.Secret
 	tmp     string // the directory of the bootstrap under /run

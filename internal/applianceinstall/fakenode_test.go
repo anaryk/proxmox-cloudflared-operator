@@ -839,6 +839,9 @@ func (f *fakeNode) create(id int, args []string) (string, error) {
 		"mp0":         fmt.Sprintf("%s:subvol-%d-disk-1,%s,size=%sG", mpStorage, id, mpOpts, mpSize),
 		"net0":        strings.Replace(flag(args, "--net0"), ",", fmt.Sprintf(",hwaddr=BC:24:11:00:%02X:%02X,", id/256%256, id%256), 1) + ",type=veth",
 	}
+	if ns := flag(args, "--nameserver"); ns != "" {
+		cfg["nameserver"] = ns
+	}
 	f.cts[id] = &fakeCT{cfg: cfg, files: map[string]fakeFile{}, state: "degraded", failed: []string{"pco.service"}, version: f.pcoVersion,
 		lease: "192.0.2.150/24"}
 	if pool := flag(args, "--pool"); pool != "" {

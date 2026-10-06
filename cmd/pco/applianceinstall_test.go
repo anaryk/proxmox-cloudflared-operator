@@ -39,6 +39,22 @@ func TestApplianceInstallTakesItsOptionsFromTheFlags(t *testing.T) {
 	require.Contains(t, errOut.String(), "warning: the Cloudflare API is overridden to http://127.0.0.1:8787/client/v4")
 }
 
+// --nameserver takes several servers, and one on the loopback is refused with
+// the flag named before the installer looks at the node.
+func TestApplianceInstallTakesItsNameServers(t *testing.T) {
+	a, _, _, _ := commandWith(unreadable{t}, false)
+	cmd := a.applianceInstallCmd()
+	require.NoError(t, cmd.ParseFlags([]string{"--nameserver", "192.0.2.53,192.0.2.54", "--nameserver", "2001:db8::53"}))
+	got, err := cmd.Flags().GetStringSlice("nameserver")
+	require.NoError(t, err)
+	require.Equal(t, []string{"192.0.2.53", "192.0.2.54", "2001:db8::53"}, got)
+
+	r := newRunner(t, filepath.Join(t.TempDir(), "pco", "pco.sock"))
+	res := r.runReader(unreadable{t}, "appliance", "install", "--yes", "--nameserver", "127.0.0.53")
+	require.EqualError(t, res.err, "--nameserver 127.0.0.53: an address of the loopback is the container's own, "+
+		"where no name server listens: name one the container reaches")
+}
+
 // The Cloudflare API of tests is checked as pco setup checks it, before
 // anything else.
 func TestApplianceNodeCommandsRefuseAnInvalidCloudflareAPI(t *testing.T) {

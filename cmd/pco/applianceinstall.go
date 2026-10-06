@@ -41,14 +41,18 @@ const installLong = "Install the pco appliance on this Proxmox VE node: an unpri
 	"pushes the cluster CA and a bootstrap with the token into the container and has pco\n" +
 	"appliance init make its store; nothing is installed on the node itself.\n\n" +
 	"First it looks: the version of Proxmox VE, the storage, the bridge and its VLANs, the\n" +
-	"node's address the appliance reaches the API at (--api-host when it has none on the\n" +
-	"bridge), the name the API's certificate verifies under, another install of pco, and the\n" +
-	"principals other than the admins who could reach into the appliance. Those are refused\n" +
-	"unless a NoAccess line is added for each, which only --deny-access or a yes at the\n" +
-	"question does; --yes never does. Each line is shown with what it takes first: one on /\n" +
-	"or /vms takes from its principal every privilege in the cluster, or on every guest, that\n" +
-	"no line further down grants it. The lines added are recorded in the appliance's\n" +
-	"manifest, and uninstall takes them back.\n\n" +
+	"node's name servers, the node's address the appliance reaches the API at (--api-host\n" +
+	"when it has none on the bridge), the name the API's certificate verifies under, another\n" +
+	"install of pco, and the principals other than the admins who could reach into the\n" +
+	"appliance. Those are refused unless a NoAccess line is added for each, which only\n" +
+	"--deny-access or a yes at the question does; --yes never does. Each line is shown with\n" +
+	"what it takes first: one on / or /vms takes from its principal every privilege in the\n" +
+	"cluster, or on every guest, that no line further down grants it. The lines added are\n" +
+	"recorded in the appliance's manifest, and uninstall takes them back.\n\n" +
+	"The appliance asks the name servers the node asks; where the node asks the stub of\n" +
+	"systemd-resolved at 127.0.0.53, those systemd-resolved forwards to. A server on the node's\n" +
+	"loopback is one the container does not reach: with no other, the installer refuses and\n" +
+	"--nameserver names the servers.\n\n" +
 	"The web interface of the appliance listens on the IPv4 address of net0 (--ip, or the lease\n" +
 	"DHCP gives it), port 8643, and nowhere else; it serves IPv4 only. The daemon follows a new\n" +
 	"address of net0. The installer prints the fingerprint of its certificate to compare at\n" +
@@ -103,6 +107,8 @@ func (a *app) applianceInstallCmd() *cobra.Command {
 	flags.IntVar(&f.o.VLAN, "vlan", 0, "the VLAN of the card; a VLAN-aware bridge needs one, its PVID (1 unless bridge-pvid says otherwise) "+
 		"for the untagged VLAN the node's own address is in")
 	flags.StringVar(&f.o.IP, "ip", applianceinstall.DefaultIP, "dhcp, or the card's address with its prefix and an optional gateway, as 192.0.2.120/24,gw=192.0.2.1")
+	flags.StringSliceVar(&f.o.Nameservers, "nameserver", nil, "a name server of the appliance, up to 3, repeated or separated by commas "+
+		"(default: those the node asks, behind systemd-resolved's stub the ones it forwards to)")
 	flags.IntVar(&f.o.Cores, "cores", applianceinstall.DefaultCores, "the cores of the container")
 	flags.IntVar(&f.o.MemoryMB, "memory", applianceinstall.DefaultMemoryMB, "the memory of the container, in MB")
 	flags.IntVar(&f.o.RootFSGB, "rootfs-size", applianceinstall.DefaultRootFSGB, "the size of the root filesystem, in GiB")
