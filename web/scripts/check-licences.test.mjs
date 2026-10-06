@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { licenceAllowed, runtimePackages } from './check-licences.mjs'
+import { licenceAllowed, refusedPackages, runtimePackages } from './check-licences.mjs'
 
 describe('licenceAllowed', () => {
   test.each([
@@ -53,5 +53,41 @@ describe('runtimePackages', () => {
 
   test('refuses a lock file without packages', () => {
     expect(() => runtimePackages({ lockfileVersion: 1, dependencies: {} })).toThrow(/npm 7 or later/)
+  })
+})
+
+describe('refusedPackages', () => {
+  const lock = (name, packages) => ({ name, lockfileVersion: 3, packages: { '': { name }, ...packages } })
+  const sitePackages = {
+    'node_modules/robust-predicates': { version: '3.0.3', license: 'Unlicense' },
+    'node_modules/elkjs': { version: '0.9.3', license: 'EPL-2.0' },
+    'node_modules/khroma': { version: '2.1.0' },
+    'node_modules/lightningcss': { version: '1.33.0', license: 'MPL-2.0' },
+    'node_modules/vue': { version: '3.5.0', license: 'MIT' },
+  }
+
+  test('holds the web interface to its list', () => {
+    const { refused } = refusedPackages(lock('pco-web', sitePackages))
+    expect(refused.map((pkg) => pkg.name)).toEqual(['robust-predicates', 'elkjs', 'khroma', 'lightningcss'])
+  })
+
+  test('allows the site what Mermaid and Vite bring', () => {
+    const { packages, refused } = refusedPackages(lock('pco-site', sitePackages))
+    expect(refused).toEqual([])
+    expect(packages.find((pkg) => pkg.name === 'khroma')?.license).toBe('MIT')
+  })
+
+  test('takes the permissive side of a choice on the site', () => {
+    const elkjs = { 'node_modules/elkjs': { version: '0.11.0', license: 'EPL-2.0 OR GPL-3.0-or-later' } }
+    expect(refusedPackages(lock('pco-site', elkjs)).refused).toEqual([])
+  })
+
+  test('names a licence for one version only', () => {
+    const { refused } = refusedPackages(lock('pco-site', { 'node_modules/khroma': { version: '2.2.0' } }))
+    expect(refused.map((pkg) => `${pkg.name}@${pkg.version}`)).toEqual(['khroma@2.2.0'])
+  })
+
+  test('refuses a project it has no list for', () => {
+    expect(() => refusedPackages(lock('other', {}))).toThrow(/no list of licences for the project other/)
   })
 })
