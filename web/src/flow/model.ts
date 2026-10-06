@@ -339,20 +339,23 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     const account = ix.accountOf(r)
     if (account === undefined) continue
     const t = ix.tunnels.get(account)
-    const muted = r.state === 'frozen' || !!t?.unchecked
     const edgeId = tunnelNodeId(account)
     if (!nodes.has(edgeId)) {
       nodes.set(edgeId, { id: edgeId, band: 'edge', kind: 'edge', label: ix.accountName(account), ref: account })
     }
     link({ id: `${card.id}>${edgeId}`, from: card.id, to: edgeId, style: 'hairline' }, key, undefined, r.state === 'frozen')
     touched(edgeId, key)
+    // Without a connector on this node the chain ends at the edge: nothing
+    // past it would be joined to anything.
     const connectorId = connectorNodeId(account)
     const trunk = edges.get(`${edgeId}>${connectorId}`)
-    if (trunk) {
-      trunk.routes.add(key)
-      touched(connectorId, key)
-    }
+    if (!trunk) continue
+    trunk.routes.add(key)
+    touched(connectorId, key)
     if (!downstream.has(r.state)) continue
+    // An unchecked tunnel, or a trunk whose figures are stale, greys
+    // everything downstream of the edge.
+    const muted = r.state === 'frozen' || !!t?.unchecked || !!trunk.edge.stale
 
     const t2 = targetOf(r.service)
     const tn = targetNode(r, t2)
@@ -367,7 +370,7 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     }
     target.routes.add(key)
     const f = ix.figureOf(r, t2)
-    if (trunk) link({ id: `${connectorId}>${path.id}`, from: connectorId, to: path.id, style: 'plain' }, key, t2 ? f : undefined, muted)
+    link({ id: `${connectorId}>${path.id}`, from: connectorId, to: path.id, style: 'plain' }, key, t2 ? f : undefined, muted)
 
     if (t2) {
       const portId = `${tn.id}|${t2.target}`
@@ -425,9 +428,12 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     if (e.style === 'hairline') e.label = plural(keys.size, 'rule')
     if (e.style !== 'trunk' && e.style !== 'rogue' && muted.length > 0 && muted.every(Boolean)) e.muted = true
     if (e.style !== 'trunk' && e.style !== 'hairline' && figures.size > 0) {
-      const fs = [...figures.values()]
-      e.rate = fs.reduce((sum, f) => sum + f.flowsPerSec, 0)
-      if (fs.every((f) => f.stale)) e.stale = true
+      // A stale figure is gone: the sum is that of the fresh ones, and the
+      // edge is stale, with the last figures, only when none is fresh.
+      const all = [...figures.values()]
+      const fresh = all.filter((f) => !f.stale)
+      e.rate = (fresh.length > 0 ? fresh : all).reduce((sum, f) => sum + f.flowsPerSec, 0)
+      if (fresh.length === 0) e.stale = true
     }
     out.push(e)
   }

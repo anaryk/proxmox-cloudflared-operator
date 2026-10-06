@@ -215,6 +215,17 @@ describe('what stops the dots', () => {
     expect(motion.dotsOn('a')).toBeGreaterThan(0)
   })
 
+  test('edges that come and go leave nothing behind', () => {
+    const { clock, motion } = setup([trunk(100, { errors: 3 })])
+    for (let round = 0; round < 50; round++) {
+      motion.setEdges([trunk(100, { errors: 3 }), port(`port-${round}`, 50, { errors: 1 })])
+      clock.run(0.5, motion)
+    }
+    expect(motion.remembered()).toBe(2)
+    motion.setEdges([trunk(100)])
+    expect(motion.remembered()).toBe(1)
+  })
+
   test('stop ends the loop for good', () => {
     const { clock, motion } = setup([trunk(100)])
     clock.run(1, motion)

@@ -11,7 +11,8 @@ import type { FlowEdge, FlowNode, FlowRow, Model } from './types'
 export type Level = 'full' | 'folded' | 'collapsed'
 
 // The render budget. The rows are those the budget's cards were measured
-// with; past them the problems of a collapsed map are grouped.
+// with; past them the problems of a collapsed map are grouped, and stay
+// grouped until they are 10 % fewer.
 export const budget = { cards: 150, edges: 400, rows: 240 }
 
 // A folded zone card shows this many rows, problems first.
@@ -241,7 +242,7 @@ function foldTargets(m: Model, chosen: (n: FlowNode, state: string) => boolean, 
   if (into.size === 0) return m
 
   const edges: FlowEdge[] = []
-  const merged = new Map<string, { e: FlowEdge; rates: Map<string, number>; stale: boolean[]; muted: boolean[]; routes: Set<string> }>()
+  const merged = new Map<string, { e: FlowEdge; rates: Map<string, { rate: number; stale: boolean }>; muted: boolean[]; routes: Set<string> }>()
   for (const e of m.edges) {
     const group = into.get(e.to)
     if (!group) {
@@ -252,18 +253,20 @@ function foldTargets(m: Model, chosen: (n: FlowNode, state: string) => boolean, 
     let g = merged.get(id)
     if (!g) {
       const state = byId.get(group)?.state ?? added.find((n) => n.id === group)?.state ?? 'active'
-      g = { e: { id, from: e.from, to: group, style: styleOf(state) }, rates: new Map(), stale: [], muted: [], routes: new Set() }
+      g = { e: { id, from: e.from, to: group, style: styleOf(state) }, rates: new Map(), muted: [], routes: new Set() }
       merged.set(id, g)
     }
-    if (e.rate !== undefined) g.rates.set(e.port ?? e.id, e.rate)
-    g.stale.push(!!e.stale)
+    if (e.rate !== undefined) g.rates.set(e.port ?? e.id, { rate: e.rate, stale: !!e.stale })
     g.muted.push(!!e.muted)
     for (const k of e.routes ?? []) g.routes.add(k)
   }
-  for (const { e, rates, stale, muted, routes } of merged.values()) {
+  for (const { e, rates, muted, routes } of merged.values()) {
     const out: FlowEdge = { ...e, routes: [...routes] }
-    if (rates.size > 0) out.rate = [...rates.values()].reduce((a, b) => a + b, 0)
-    if (stale.length > 0 && stale.every(Boolean) && rates.size > 0) out.stale = true
+    // As on the connector's edge: the fresh figures only, while there are any.
+    const all = [...rates.values()]
+    const fresh = all.filter((f) => !f.stale)
+    if (all.length > 0) out.rate = (fresh.length > 0 ? fresh : all).reduce((sum, f) => sum + f.rate, 0)
+    if (all.length > 0 && fresh.length === 0) out.stale = true
     if (muted.length > 0 && muted.every(Boolean)) out.muted = true
     if (out.style === 'withdrawn') out.label = '503'
     edges.push(out)
@@ -382,20 +385,26 @@ function problemCount(n: FlowNode): number {
 
 // fit keeps the map within its budget: the guests whose routes are all
 // active folded again whatever was opened, then the problems grouped, then
-// every guest folded, then the zone cards.
-function fit(m: Model): Model {
+// every guest folded, then the zone cards. It says whether it grouped the
+// problems, which the next view is given as wasGrouped.
+function fit(m: Model, wasGrouped: boolean): { model: Model; grouped: boolean } {
   let out = m
   if (over(out)) out = foldTargets(out, (_, state) => state === 'active', new Set())
-  if (over(out) || problemRows(out) > budget.rows) out = aggregate(out)
+  const rows = problemRows(out)
+  const grouped = over(out) || rows > budget.rows || (wasGrouped && rows >= budget.rows * leaveAt)
+  if (grouped) out = aggregate(out)
   if (over(out)) out = foldTargets(out, () => true, new Set())
   if (over(out)) out = foldZones(out)
-  return out
+  return { model: out, grouped }
 }
 
 export interface CollapseOptions {
   focus?: string
   expanded: ReadonlySet<string>
+  // What the view before was: its level, and whether its problems were
+  // grouped. Near a limit the view keeps what it was.
   previousLevel?: Level
+  previousGrouped?: boolean
   // Problems first: the routes that are not active stay drawn with their
   // chains. On by default when the map is collapsed.
   problems?: boolean
@@ -405,7 +414,7 @@ export interface CollapseOptions {
 // level before, and the model folded to that level and to the budget. The
 // level is that of the whole map; a focus shows its neighbourhood at the
 // level the neighbourhood's own size gives.
-export function collapse(model: Model, opts: CollapseOptions): { model: Model; level: Level } {
+export function collapse(model: Model, opts: CollapseOptions): { model: Model; level: Level; grouped: boolean } {
   const level = mapLevel(model, opts.previousLevel)
   let view = model
   let viewLevel = level
@@ -414,7 +423,8 @@ export function collapse(model: Model, opts: CollapseOptions): { model: Model; l
     viewLevel = mapLevel(view)
   }
   const problems = opts.problems ?? viewLevel === 'collapsed'
-  return { model: fit(shape(view, viewLevel, problems, opts.expanded)), level }
+  const fitted = fit(shape(view, viewLevel, problems, opts.expanded), opts.previousGrouped ?? false)
+  return { model: fitted.model, level, grouped: fitted.grouped }
 }
 
 // The view of the map in the address bar: /?focus=guest:qemu/101&expand=...

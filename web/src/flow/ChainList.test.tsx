@@ -81,6 +81,14 @@ describe('the chain list', () => {
     expect(`${end?.querySelector('.step-name')?.textContent}: ${end?.querySelector('.status-word')?.textContent}`).toBe(last)
   })
 
+  test('the name of the stepper shows what a hostname hides, as the row does', () => {
+    const odd = 'www.example.com\u202e'
+    const bidi = { ...st, routes: st.routes.map((r) => (r.owner === 'qemu/101' && r.hostname === 'www.example.com' ? { ...r, hostname: odd } : r)) }
+    render(<ChainList state={bidi} traffic={tv} />)
+    fireEvent.click(head('www.example.com⟨U+202E⟩', 'qemu/101'))
+    expect(screen.getByRole('list', { name: 'The chain of www.example.com⟨U+202E⟩' })).toBeTruthy()
+  })
+
   test('the figures of each trunk on top', () => {
     const { container } = render(<ChainList state={st} traffic={tv} />)
     const strip = within(screen.getByRole('list', { name: 'Traffic between the edge and the connectors' }))

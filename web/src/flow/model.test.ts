@@ -38,7 +38,7 @@ describe('the model of a state with a route of every kind', () => {
     expect(ids('edge')).toEqual(['edge:acc1', 'edge:acc2', 'edge:acc3', 'edge:acc4'])
     expect(ids('connector')).toEqual(['connector:acc1', 'connector:acc4', 'rogue:0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807'])
     expect(ids('path')).toEqual(['path:none', 'path:vmbr0', 'path:vmbr0.20', 'path:vmbr1', 'path:vmbr1.20'])
-    expect(ids('targets')).toEqual(['address:10.0.9.5', 'guest:qemu/101', 'guest:qemu/103', 'guest:qemu/104', 'guest:qemu/106', 'guest:qemu/108'])
+    expect(ids('targets')).toEqual(['address:10.0.9.5', 'guest:qemu/101', 'guest:qemu/103', 'guest:qemu/104', 'guest:qemu/108'])
     expect(node('zone:example.com')).toMatchObject({ kind: 'zone', label: 'example.com', state: 'served', lines: ['Main'] })
     expect(node('zone:example.info').state).toBe('frozen')
   })
@@ -98,9 +98,58 @@ describe('the model of a state with a route of every kind', () => {
     expect(edge('path:vmbr0>guest:qemu/103|10.0.0.13:9000').style).toBe('unreachable')
     // a withdrawn route has no address that passed: its edge ends at the card
     expect(edge('path:vmbr1.20>guest:qemu/104#withdrawn')).toMatchObject({ style: 'withdrawn', label: '503' })
-    const frozen = carrying(routeKey({ hostname: 'www.example.info', owner: 'qemu/106' }))
-    expect(frozen.map((e) => e.id)).toEqual(['path:vmbr0>guest:qemu/106#plain', 'zone:example.info>edge:acc3'])
+    // the frozen account's connector runs on this node here
+    const tunnel = st.tunnels.find((t) => t.accountId === 'acc3')
+    const connector = { ...(st.connectors[0] as State['connectors'][number]), tunnelId: tunnel?.id ?? '' }
+    const m = buildModel({ ...st, connectors: [...st.connectors, connector] }, tv)
+    const key = routeKey({ hostname: 'www.example.info', owner: 'qemu/106' })
+    const frozen = m.edges.filter((e) => e.routes?.includes(key) && e.style !== 'trunk')
+    expect(frozen.map((e) => e.id)).toEqual(['connector:acc3>path:vmbr0', 'path:vmbr0>guest:qemu/106#plain', 'zone:example.info>edge:acc3'])
     expect(frozen.every((e) => e.muted)).toBe(true)
+  })
+
+  test('without a connector on this node a chain ends at the edge, and nothing past it floats', () => {
+    // the frozen account has none here
+    expect(carrying(routeKey({ hostname: 'www.example.info', owner: 'qemu/106' })).map((e) => e.id)).toEqual(['zone:example.info>edge:acc3'])
+    // nor, now, the account of an active route
+    const lab = st.tunnels.find((t) => t.accountId === 'acc4')
+    const m = buildModel({ ...st, connectors: st.connectors.filter((c) => c.tunnelId !== lab?.id) }, tv)
+    const key = routeKey({ hostname: 'lab.example.dev', owner: 'qemu/108' })
+    expect(m.edges.filter((e) => e.routes?.includes(key)).map((e) => e.id)).toEqual(['zone:example.dev>edge:acc4'])
+    expect(m.nodes.some((n) => n.id === 'guest:qemu/108')).toBe(false)
+    expect(m.nodes.some((n) => n.id === 'path:vmbr1')).toBe(false)
+    const ends = new Set(m.nodes.map((n) => n.id))
+    expect(m.edges.filter((e) => !ends.has(e.from) || !ends.has(e.to))).toEqual([])
+  })
+
+  test('a trunk whose figures are stale greys everything downstream of the edge', () => {
+    const lab = st.tunnels.find((t) => t.accountId === 'acc4')
+    // checked, so only the stale sample greys it
+    const m = buildModel({ ...st, tunnels: st.tunnels.map((t) => (t === lab ? { ...t, unchecked: false } : t)) }, tv)
+    const key = routeKey({ hostname: 'lab.example.dev', owner: 'qemu/108' })
+    const downstream = m.edges.filter((e) => e.routes?.includes(key) && e.style !== 'hairline')
+    expect(downstream.map((e) => [e.id, e.muted])).toEqual([
+      ['connector:acc4>path:vmbr1', true],
+      ['edge:acc4>connector:acc4', true],
+      ['path:vmbr1>guest:qemu/108|10.0.2.8:8080', true],
+    ])
+    // a fresh trunk leaves them as they are
+    const fresh = { ...tv, tunnels: tv.tunnels.map((t) => ({ ...t, stale: false })) }
+    const live = buildModel({ ...st, tunnels: st.tunnels.map((t) => (t === lab ? { ...t, unchecked: false } : t)) }, fresh)
+    expect(live.edges.filter((e) => e.routes?.includes(key) && e.style !== 'hairline').some((e) => e.muted)).toBe(false)
+  })
+
+  test("a stale figure is no part of a sum: the connector's edge carries the fresh ones", () => {
+    // api.example.com moves to the VLAN of www and app, whose target is fresh
+    const routes = st.routes.map((r) => (r.owner === 'qemu/103' && r.path ? { ...r, state: 'active', path: { ...r.path, vlan: 20 } } : r))
+    const gone = { hostname: 'api.example.com', owner: 'qemu/103', target: '10.0.0.13:9000', flowsPerSec: 40, stale: true }
+    const m = buildModel({ ...st, routes }, { ...tv, routes: [...tv.routes, gone] })
+    const sum = m.edges.find((e) => e.id === 'connector:acc1>path:vmbr0.20')
+    expect(sum?.rate).toBeCloseTo(2.4)
+    expect(sum?.stale).toBeUndefined()
+    // with no fresh figure left, the last ones, marked stale
+    const old = buildModel({ ...st, routes }, { ...tv, routes: [...tv.routes, gone].map((f) => ({ ...f, stale: true })) })
+    expect(old.edges.find((e) => e.id === 'connector:acc1>path:vmbr0.20')).toMatchObject({ rate: expect.closeTo(42.4), stale: true })
   })
 
   test('held: a 503 tag, its rule in the tunnel and nothing past the connector', () => {

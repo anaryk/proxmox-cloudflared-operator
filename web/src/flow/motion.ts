@@ -61,6 +61,9 @@ export interface MotionLoop extends Motion {
   dots(): number
   dotsOn(edge: string): number
   errorsOn(edge: string): number
+  // remembered is how many edges the loop keeps a reckoning of: never more
+  // than it was last given, however long the map stays open.
+  remembered(): number
   // stop ends the loop for good, when the map goes.
   stop(): void
 }
@@ -249,6 +252,10 @@ export function createMotion(opts: MotionOptions): MotionLoop {
       edges = [...next].sort((a, b) => rank(b) - rank(a) || (a.edge.id < b.edge.id ? -1 : a.edge.id > b.edge.id ? 1 : 0))
       plan()
       keepLive()
+      const ids = new Set(edges.map((e) => e.edge.id))
+      for (const reckoning of [owed, errorsOwed, count]) {
+        for (const id of reckoning.keys()) if (!ids.has(id)) reckoning.delete(id)
+      }
       wake()
     },
     setVisible(ids) {
@@ -268,6 +275,7 @@ export function createMotion(opts: MotionOptions): MotionLoop {
     dots: () => live.length,
     dotsOn: (id) => live.filter((d) => d.edge.edge.id === id).length,
     errorsOn: (id) => live.filter((d) => d.edge.edge.id === id && d.error).length,
+    remembered: () => new Set([...owed.keys(), ...errorsOwed.keys(), ...count.keys()]).size,
     stop() {
       stopped = true
       halt()

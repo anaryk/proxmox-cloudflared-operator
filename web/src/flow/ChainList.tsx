@@ -8,6 +8,7 @@ import { WaitIcon } from '../components/icons'
 import { StateBadge, StatusBadge } from '../components/StateBadge'
 import { Stepper } from '../components/Stepper'
 import { Untrusted } from '../components/Untrusted'
+import { marked } from '../text/chars'
 import { buildChains, type Chain, trunksOf } from './model'
 
 // The height of a row that is not open, and the margin of rows kept in the
@@ -260,7 +261,7 @@ export function ChainList({ state, traffic, only, problemsFirst, height = 560, l
                   {expanded && (
                     <div id={body} className="chain-body">
                       <Stepper
-                        label={`The chain of ${c.hostname}`}
+                        label={`The chain of ${marked(c.hostname)}`}
                         steps={c.steps.map((s) => ({ key: s.key, name: s.name, level: s.level, word: <Untrusted text={s.text} /> }))}
                       />
                       {c.figure && <p className="chain-figure num">{figureText(c.figure)}</p>}

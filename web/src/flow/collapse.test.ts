@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'vitest'
 
 import type { State, TrafficView } from '../api/types.gen'
-import { budget, collapse, expandAll, focusRoutes, type Level, levelOf, mapViewQuery, moreId, readMapView, routesOf } from './collapse'
 import { routeKey } from '../text/routes'
+import { budget, collapse, expandAll, focusRoutes, type Level, levelOf, mapViewQuery, moreId, readMapView, routesOf } from './collapse'
 import { buildModel, type Model } from './model'
 import chains from './testdata/chains.json'
 import { large, outage, scaled, trafficFor, wide } from './testdata/scale'
@@ -118,6 +118,22 @@ describe('folded', () => {
     expect(rowsOf(all, 'zone:example.com')).toHaveLength(30)
   })
 
+  test("a group's edge sums the fresh figures of its guests only", () => {
+    const tv = trafficFor(st)
+    const figures = tv.routes.map((f, i) => ({ ...f, flowsPerSec: f.flowsPerSec + 1, stale: i % 2 === 1 }))
+    const into = (stale: (f: (typeof figures)[number]) => boolean) => {
+      const m = buildModel(st, { ...tv, routes: figures.map((f) => ({ ...f, stale: stale(f) })) })
+      return collapse(m, { expanded: none }).model.edges.find((e) => e.to === 'guests:path:vmbr0|active')
+    }
+    const some = into((f) => f.stale)
+    const carried = new Set(some?.routes)
+    const fresh = new Map(figures.filter((f) => !f.stale && carried.has(routeKey(f))).map((f) => [f.target, f.flowsPerSec]))
+    expect(fresh.size).toBeGreaterThan(0)
+    expect(some?.rate).toBeCloseTo([...fresh.values()].reduce((a, b) => a + b, 0))
+    expect(some?.stale).toBeUndefined()
+    expect(into(() => true)?.stale).toBe(true)
+  })
+
   test('what is opened still keeps to the budget', () => {
     const all = view(st, { expanded: new Set([expandAll]) }).model
     within(all)
@@ -173,6 +189,24 @@ describe('collapsed', () => {
     expect(new Set(grouped).size).toBe(600)
     expect(model.nodes.filter((n) => n.kind === 'target')).toEqual([])
     expect(model.edges.filter((e) => e.style === 'unreachable').map((e) => e.to)).toEqual(['guests:path:vmbr0|unreachable', 'guests:path:vmbr1.20|unreachable'])
+  })
+
+  test('near 240 problem rows the grouping holds, until they are 10 % fewer', () => {
+    // rejected routes have rows and no edges, so only the rows count
+    const down = (n: number) => (i: number) => (i < n ? { state: 'rejected', reason: i % 2 === 0 ? 'not named by allowHosts' : 'an apex' } : undefined)
+    const grouped = (n: number, previousGrouped?: boolean) => {
+      const st = scaled({ routes: 300, zones: 3, down: down(n) })
+      const v = collapse(buildModel(st, trafficFor(st)), { expanded: none, previousGrouped })
+      const groups = v.model.nodes.flatMap((node) => (node.rows ?? []).filter((r) => r.kind === 'group'))
+      expect(groups.length > 0).toBe(v.grouped)
+      within(v.model)
+      return v.grouped
+    }
+    expect(grouped(230)).toBe(false)
+    expect(grouped(241)).toBe(true)
+    expect(grouped(230, true)).toBe(true)
+    expect(grouped(216, true)).toBe(true)
+    expect(grouped(215, true)).toBe(false)
   })
 
   test('an opened group stays a group on the map; the chain list has its routes', () => {

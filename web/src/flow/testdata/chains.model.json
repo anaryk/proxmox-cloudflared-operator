@@ -330,8 +330,7 @@
       "label": "vmbr0 · direct",
       "ref": "path:vmbr0",
       "routes": [
-        "api.example.com qemu/103",
-        "www.example.info qemu/106"
+        "api.example.com qemu/103"
       ]
     },
     {
@@ -455,19 +454,6 @@
       ],
       "routes": [
         "old.example.com qemu/104"
-      ]
-    },
-    {
-      "id": "guest:qemu/106",
-      "band": "targets",
-      "kind": "target",
-      "label": "shop-1",
-      "ref": "qemu/106",
-      "lines": [
-        "qemu/106"
-      ],
-      "routes": [
-        "www.example.info qemu/106"
       ]
     },
     {
@@ -619,16 +605,6 @@
       "routes": [
         "api.example.com qemu/103"
       ]
-    },
-    {
-      "id": "path:vmbr0>guest:qemu/106#plain",
-      "from": "path:vmbr0",
-      "to": "guest:qemu/106",
-      "style": "plain",
-      "routes": [
-        "www.example.info qemu/106"
-      ],
-      "muted": true
     },
     {
       "id": "path:vmbr1.20>guest:qemu/104#withdrawn",
