@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -66,52 +64,72 @@ func (ca CA) IssueClient(csrDER []byte, want Identity, now time.Time, rand io.Re
 	return ca.sign(tmpl, pub, rand)
 }
 
-// IssueServer issues a server certificate for pub, naming names and addrs.
-func (ca CA) IssueServer(pub *ecdsa.PublicKey, names []string, addrs []netip.Addr, now time.Time, rand io.Reader) (*x509.Certificate, error) {
+// IssueServer issues a server certificate for pub, naming names, each of
+// which must be a host name under the install's domain, pco-<id>.invalid
+// (ControllerServerName and NodeServerName are): the CA vouches for no other
+// host, should anyone add it to a trust store. Agents verify the server by
+// name whatever address they reach it at, so the certificate names no
+// address.
+func (ca CA) IssueServer(pub *ecdsa.PublicKey, names []string, now time.Time, rand io.Reader) (*x509.Certificate, error) {
 	if pub == nil {
 		return nil, errors.New("no public key to issue a server certificate for")
 	}
 	if _, err := p256(pub); err != nil {
 		return nil, err
 	}
-	if len(names) == 0 && len(addrs) == 0 {
+	if len(names) == 0 {
 		return nil, errors.New("no names to issue a server certificate for")
 	}
 	tmpl, err := ca.leaf(now, rand)
 	if err != nil {
 		return nil, err
 	}
+	id, err := ca.installID()
+	if err != nil {
+		return nil, err
+	}
+	domain := installDomain(id)
 	for _, n := range names {
-		if n == "" {
-			return nil, errors.New("an empty name in a server certificate")
+		n = strings.ToLower(n)
+		if !underDomain(n, domain) {
+			return nil, fmt.Errorf("the CA may not sign %q, which is not a host name under %s", n, domain)
 		}
 		tmpl.DNSNames = append(tmpl.DNSNames, n)
 	}
-	for _, a := range addrs {
-		if !a.IsValid() {
-			return nil, errors.New("an invalid address in a server certificate")
-		}
-		tmpl.IPAddresses = append(tmpl.IPAddresses, net.IP(a.Unmap().AsSlice()))
-	}
-	if len(names) > 0 {
-		tmpl.Subject = pkix.Name{CommonName: names[0]}
-	} else {
-		tmpl.Subject = pkix.Name{CommonName: addrs[0].Unmap().String()}
-	}
+	tmpl.Subject = pkix.Name{CommonName: tmpl.DNSNames[0]}
 	tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	return ca.sign(tmpl, pub, rand)
+}
+
+// underDomain reports whether name is a host name under domain, not domain
+// itself.
+func underDomain(name, domain string) bool {
+	for label := range strings.SplitSeq(name, ".") {
+		if !nodeNameForm.MatchString(label) {
+			return false
+		}
+	}
+	return strings.HasSuffix(name, "."+domain)
+}
+
+// installDomain is the domain under which every server name of an install
+// is. The .invalid top-level domain resolves nowhere, so no name of it is
+// ever anyone else's.
+func installDomain(installID string) string {
+	return "pco-" + installID + ".invalid"
 }
 
 // ControllerServerName is the name an appliance agent verifies the
 // controller's certificate under, whichever address it reaches it at.
 func ControllerServerName(installID string) string {
-	return "controller.pco-" + installID + ".invalid"
+	return "controller." + installDomain(installID)
 }
 
 // NodeServerName is the name a host agent verifies the certificate of the
-// node holding the lease under.
+// node holding the lease under. The node name is lowered for DNS only; an
+// Identity keeps it as Proxmox VE has it.
 func NodeServerName(installID, node string) string {
-	return "node-" + strings.ToLower(node) + ".pco-" + installID + ".invalid"
+	return "node-" + strings.ToLower(node) + "." + installDomain(installID)
 }
 
 // leaf is the template of a leaf issued at now: a new serial, valid from

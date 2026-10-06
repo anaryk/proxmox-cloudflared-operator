@@ -9,14 +9,13 @@ import (
 	"strings"
 )
 
-// Kind is what a certificate's holder is: the agent of a host node, an agent
-// container of the appliance, or the controller.
+// Kind is what a client certificate's holder is: the agent of a host node or
+// an agent container of the appliance.
 type Kind string
 
 const (
-	KindHost       Kind = "host"
-	KindAppliance  Kind = "appliance"
-	KindController Kind = "controller"
+	KindHost      Kind = "host"
+	KindAppliance Kind = "appliance"
 )
 
 const uriScheme = "pco"
@@ -28,7 +27,8 @@ var (
 
 // Identity is who a client certificate speaks for. Its URI, the one URI SAN
 // of the certificate, is pco:<kind>:<install>:<node>, followed by :<vmid> for
-// an appliance agent.
+// an appliance agent. Node is the name exactly as Proxmox VE has it, and two
+// identities are the same only when every field is.
 type Identity struct {
 	Kind      Kind
 	InstallID string
@@ -49,9 +49,9 @@ func (id Identity) String() string { return id.URI().String() }
 
 func (id Identity) check() error {
 	switch id.Kind {
-	case KindHost, KindAppliance, KindController:
+	case KindHost, KindAppliance:
 	default:
-		return fmt.Errorf("unknown kind %q, want host, appliance or controller", string(id.Kind))
+		return fmt.Errorf("unknown kind %q, want host or appliance", string(id.Kind))
 	}
 	if err := checkInstallID(id.InstallID); err != nil {
 		return err
@@ -62,7 +62,7 @@ func (id Identity) check() error {
 	switch {
 	case id.Kind == KindAppliance && (id.VMID < 100 || id.VMID > 999999999):
 		return fmt.Errorf("an appliance agent's vmid must be 100 to 999999999, not %d", id.VMID)
-	case id.Kind != KindAppliance && id.VMID != 0:
+	case id.Kind == KindHost && id.VMID != 0:
 		return fmt.Errorf("a vmid names only an appliance agent, not a %s", id.Kind)
 	}
 	return nil

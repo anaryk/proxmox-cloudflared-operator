@@ -6,8 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"net"
-	"net/netip"
 	"net/url"
 	"testing"
 	"time"
@@ -30,7 +28,7 @@ func issueServer(t *testing.T, ca CA, name string, now time.Time) (*x509.Certifi
 	t.Helper()
 	key, err := NewKey(rand.Reader)
 	require.NoError(t, err)
-	cert, err := ca.IssueServer(&key.PublicKey, []string{name}, nil, now, rand.Reader)
+	cert, err := ca.IssueServer(&key.PublicKey, []string{name}, now, rand.Reader)
 	require.NoError(t, err)
 	return cert, key
 }
@@ -118,6 +116,7 @@ func TestIssueClientRefuses(t *testing.T) {
 		wantSubstring string
 	}{
 		{"another node", csrFor(hostID("node2")), hostID("node1"), "is for pco:host:0123456789ab:node2, not pco:host:0123456789ab:node1"},
+		{"the node in another case", csrFor(hostID("node1")), hostID("Node1"), "is for pco:host:0123456789ab:node1, not pco:host:0123456789ab:Node1"},
 		{"another kind", csrFor(applianceID("node1", 9100)), hostID("node1"), "is for pco:appliance"},
 		{"another install", csrFor(Identity{Kind: KindHost, InstallID: "ba9876543210", Node: "node1"}), hostID("node1"), "is for pco:host:ba9876543210"},
 		{"another vmid", csrFor(applianceID("node2", 9101)), applianceID("node2", 9100), "is for pco:appliance:0123456789ab:node2:9101"},
@@ -156,9 +155,8 @@ func TestIssueServer(t *testing.T) {
 	key, err := NewKey(rand.Reader)
 	require.NoError(t, err)
 	name := NodeServerName(testInstall, "node1")
-	addrs := []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("::ffff:192.0.2.11"), netip.MustParseAddr("2001:db8::10")}
 
-	cert, err := ca.IssueServer(&key.PublicKey, []string{name}, addrs, t0, rand.Reader)
+	cert, err := ca.IssueServer(&key.PublicKey, []string{name, ControllerServerName(testInstall)}, t0, rand.Reader)
 	require.NoError(t, err)
 
 	_, err = cert.Verify(x509.VerifyOptions{
@@ -174,10 +172,9 @@ func TestIssueServer(t *testing.T) {
 	})
 	require.Error(t, err, "a server certificate does not authenticate a client")
 
-	require.Equal(t, []string{name}, cert.DNSNames)
-	require.Len(t, cert.IPAddresses, 3)
-	require.True(t, cert.IPAddresses[1].Equal(net.ParseIP("192.0.2.11")))
-	require.Len(t, cert.IPAddresses[1], net.IPv4len, "a mapped address is named as the IPv4 one")
+	require.Equal(t, []string{name, "controller.pco-0123456789ab.invalid"}, cert.DNSNames)
+	require.Equal(t, name, cert.Subject.CommonName)
+	require.Empty(t, cert.IPAddresses)
 	require.Empty(t, cert.URIs)
 	require.Equal(t, t0.Add(-time.Hour), cert.NotBefore)
 	require.Equal(t, t0.Add(90*24*time.Hour), cert.NotAfter)
@@ -197,25 +194,43 @@ func TestIssueServerRefuses(t *testing.T) {
 		name          string
 		pub           *ecdsa.PublicKey
 		names         []string
-		addrs         []netip.Addr
 		wantSubstring string
 	}{
-		{"nothing to name", &key.PublicKey, nil, nil, "no names"},
-		{"an empty name", &key.PublicKey, []string{""}, nil, "empty name"},
-		{"an invalid address", &key.PublicKey, []string{name}, []netip.Addr{{}}, "invalid address"},
-		{"a P-384 key", &p384.PublicKey, []string{name}, nil, "P-256"},
-		{"no key", nil, []string{name}, nil, "no public key"},
+		{"nothing to name", &key.PublicKey, nil, "no names"},
+		{"an empty name", &key.PublicKey, []string{""}, "may not sign"},
+		{"a name elsewhere", &key.PublicKey, []string{name, "pve1.example.org"}, `may not sign "pve1.example.org", which is not a host name under pco-0123456789ab.invalid`},
+		{"an address", &key.PublicKey, []string{"192.0.2.10"}, "may not sign"},
+		{"a name of another install", &key.PublicKey, []string{ControllerServerName("ba9876543210")}, "may not sign"},
+		{"a domain that only ends like the install's", &key.PublicKey, []string{"evilpco-0123456789ab.invalid"}, "may not sign"},
+		{"the domain itself", &key.PublicKey, []string{"pco-0123456789ab.invalid"}, "may not sign"},
+		{"an empty label", &key.PublicKey, []string{"a..pco-0123456789ab.invalid"}, "may not sign"},
+		{"a wildcard", &key.PublicKey, []string{"*.pco-0123456789ab.invalid"}, "may not sign"},
+		{"a P-384 key", &p384.PublicKey, []string{name}, "P-256"},
+		{"no key", nil, []string{name}, "no public key"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := ca.IssueServer(c.pub, c.names, c.addrs, t0, rand.Reader)
+			_, err := ca.IssueServer(c.pub, c.names, t0, rand.Reader)
 			require.ErrorContains(t, err, c.wantSubstring)
 		})
 	}
+
+	t.Run("a CA pco did not make", func(t *testing.T) {
+		caKey, err := NewKey(rand.Reader)
+		require.NoError(t, err)
+		_, err = CA{Cert: selfSigned(t, caKey), Key: caKey}.IssueServer(&key.PublicKey, []string{name}, t0, rand.Reader)
+		require.ErrorContains(t, err, "not one pco made")
+	})
+
+	t.Run("upper case is lowered", func(t *testing.T) {
+		cert, err := ca.IssueServer(&key.PublicKey, []string{"Controller.PCO-0123456789ab.invalid"}, t0, rand.Reader)
+		require.NoError(t, err)
+		require.Equal(t, []string{name}, cert.DNSNames)
+	})
 }
 
 func TestServerNames(t *testing.T) {
 	require.Equal(t, "controller.pco-0123456789ab.invalid", ControllerServerName(testInstall))
 	require.Equal(t, "node-node1.pco-0123456789ab.invalid", NodeServerName(testInstall, "node1"))
-	require.Equal(t, "node-node1.pco-0123456789ab.invalid", NodeServerName(testInstall, "Node1"))
+	require.Equal(t, "node-node1.pco-0123456789ab.invalid", NodeServerName(testInstall, "Node1"), "lowered for DNS only")
 }

@@ -10,12 +10,19 @@ import (
 	"strings"
 )
 
-// ServerTLS is the configuration of the controller's listener: TLS 1.3 only,
-// and a client certificate for client authentication under one of pool's
-// CAs, two of them during a CA rotation. Whether the registry knows the
-// certificate is the caller's check, per request. cert is the server's
-// certificate followed by its CA, which a client needs to verify it by the
-// CA's fingerprint (TLSCertificate makes one).
+// ErrNoClientCert is PeerIdentity's refusal of a connection that brought no
+// client certificate.
+var ErrNoClientCert = errors.New("no client certificate verified under the install's CA")
+
+// ServerTLS is the configuration of the controller's listener: TLS 1.3 only.
+// A client certificate is optional at the TLS level, because an appliance
+// agent comes to the join without one; one that is sent must verify for
+// client authentication under one of pool's CAs, two of them during a CA
+// rotation, or the handshake fails. So every path but the join must refuse
+// through PeerIdentity, which also gives the identity for the registry
+// check, and the join ignores a certificate that is there. cert is the
+// server's certificate followed by its CA, which a client needs to verify it
+// by the CA's fingerprint (TLSCertificate makes one).
 func ServerTLS(cert tls.Certificate, pool *x509.CertPool) *tls.Config {
 	if pool == nil {
 		// A nil pool would be the system's roots.
@@ -24,12 +31,25 @@ func ServerTLS(cert tls.Certificate, pool *x509.CertPool) *tls.Config {
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ClientCAs:    pool,
-		// A resumed session is not checked against the pool again, which
-		// would let a certificate of the previous CA outlive a rotation.
+		// The agents hold long-lived HTTP/2 connections, so resumption
+		// saves nothing, and older toolchains resumed a session without
+		// checking its client certificate against the pool of the day,
+		// which would let a certificate of the previous CA outlive a
+		// rotation.
 		SessionTicketsDisabled: true,
 	}
+}
+
+// PeerIdentity is the identity of the client of a connection that
+// ServerTLS accepted, or ErrNoClientCert when it brought no certificate.
+// cs is nil for a request that did not come over TLS.
+func PeerIdentity(cs *tls.ConnectionState) (Identity, error) {
+	if cs == nil || len(cs.VerifiedChains) == 0 || len(cs.VerifiedChains[0]) == 0 {
+		return Identity{}, ErrNoClientCert
+	}
+	return IdentityOf(cs.VerifiedChains[0][0])
 }
 
 // ClientTLS is the configuration of an agent dialling the controller: TLS

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"strings"
 	"time"
 )
 
@@ -38,9 +39,27 @@ type CA struct {
 	Key  *ecdsa.PrivateKey
 }
 
+// caNamePrefix starts the common name of a CA, which the install id ends.
+const caNamePrefix = "pco CA "
+
+// installID is the install a CA is of, as NewCA named it.
+func (ca CA) installID() (string, error) {
+	id, ok := strings.CutPrefix(ca.Cert.Subject.CommonName, caNamePrefix)
+	if !ok || checkInstallID(id) != nil {
+		return "", fmt.Errorf("the CA %q is not one pco made for an install", ca.Cert.Subject.CommonName)
+	}
+	return id, nil
+}
+
 // NewCA makes the CA of an install: an ECDSA P-256 key and a self-signed
 // certificate valid for CAValidity, which signs leaves and nothing that
 // signs in turn.
+//
+// The CA carries no name constraints, though it names servers only under
+// pco-<id>.invalid: crypto/x509 refuses every certificate under a CA with
+// name constraints whose URI has no host, and the identity of every client
+// certificate is such a URI. IssueServer keeps to the install's domain
+// instead.
 func NewCA(installID string, now time.Time, rand io.Reader) (CA, error) {
 	if err := checkInstallID(installID); err != nil {
 		return CA{}, err
@@ -57,7 +76,7 @@ func NewCA(installID string, now time.Time, rand io.Reader) (CA, error) {
 	// CA rotation, which has two CAs of the install, has two issuers.
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "pco CA " + installID, SerialNumber: serial.Text(16)},
+		Subject:               pkix.Name{CommonName: caNamePrefix + installID, SerialNumber: serial.Text(16)},
 		NotBefore:             now.Add(-Backdate),
 		NotAfter:              now.Add(CAValidity),
 		KeyUsage:              x509.KeyUsageCertSign,

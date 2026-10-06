@@ -2,6 +2,7 @@ package pki
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -29,9 +30,9 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // JoinToken lets one appliance agent container of a node enrol, once, within
 // JoinTokenTTL. It tells the agent where the controller is and how to know
-// it, and carries the secret the controller keeps only the hash of. It prints
-// and encodes as JSON with the secret redacted; Encode is the one form that
-// carries it.
+// it, and carries the secret the controller keeps only the hash of. Encode
+// is the one form that carries the secret: it never prints, and encoding
+// the token as JSON leaves it out.
 type JoinToken struct {
 	Version    int       `json:"v"`
 	InstallID  string    `json:"install"`
@@ -39,12 +40,27 @@ type JoinToken struct {
 	Endpoints  []string  `json:"endpoints"`
 	ServerName string    `json:"serverName"`
 	CASHA256   string    `json:"ca"`
-	Secret     []byte    `json:"secret"` // 16 bytes
 	Expires    time.Time `json:"exp"`
+
+	// secret holds the 16 bytes as a string behind a pointer. fmt prints a
+	// token it reaches through reflection, such as one in an unexported
+	// field of another struct, field by field without asking it; a pointer
+	// to a string shows as an address whatever the verb, where a slice, an
+	// array or a pointer to either shows the bytes.
+	secret *string
 }
 
 // joinWire is a JoinToken as Encode writes it, secret and all.
-type joinWire JoinToken
+type joinWire struct {
+	Version    int       `json:"v"`
+	InstallID  string    `json:"install"`
+	Node       string    `json:"node"`
+	Endpoints  []string  `json:"endpoints"`
+	ServerName string    `json:"serverName"`
+	CASHA256   string    `json:"ca"`
+	Secret     []byte    `json:"secret"`
+	Expires    time.Time `json:"exp"`
+}
 
 // NewJoinToken makes the join token of node, whose agent reaches the
 // controller at one of endpoints (host:port) and pins ca.
@@ -52,10 +68,11 @@ func NewJoinToken(installID, node string, endpoints []string, ca CA, now time.Ti
 	if ca.Cert == nil {
 		return JoinToken{}, errors.New("no CA to make a join token for")
 	}
-	secret := make([]byte, joinSecretLen)
-	if _, err := io.ReadFull(rand, secret); err != nil {
+	b := make([]byte, joinSecretLen)
+	if _, err := io.ReadFull(rand, b); err != nil {
 		return JoinToken{}, fmt.Errorf("reading random bytes: %w", err)
 	}
+	secret := string(b)
 	t := JoinToken{
 		Version:    joinVersion,
 		InstallID:  installID,
@@ -63,8 +80,8 @@ func NewJoinToken(installID, node string, endpoints []string, ca CA, now time.Ti
 		Endpoints:  slices.Clone(endpoints),
 		ServerName: ControllerServerName(installID),
 		CASHA256:   ca.SHA256(),
-		Secret:     secret,
 		Expires:    now.Add(JoinTokenTTL).UTC().Truncate(time.Second),
+		secret:     &secret,
 	}
 	if err := t.check(); err != nil {
 		return JoinToken{}, err
@@ -76,7 +93,19 @@ func NewJoinToken(installID, node string, endpoints []string, ca CA, now time.Ti
 // pco1.<base64url of its JSON>. A token that NewJoinToken or ParseJoinToken
 // made always encodes; any other may encode as "".
 func (t JoinToken) Encode() string {
-	b, err := json.Marshal(joinWire(t))
+	if t.secret == nil {
+		return ""
+	}
+	b, err := json.Marshal(joinWire{
+		Version:    t.Version,
+		InstallID:  t.InstallID,
+		Node:       t.Node,
+		Endpoints:  t.Endpoints,
+		ServerName: t.ServerName,
+		CASHA256:   t.CASHA256,
+		Secret:     []byte(*t.secret),
+		Expires:    t.Expires,
+	})
 	if err != nil {
 		return ""
 	}
@@ -99,21 +128,48 @@ func ParseJoinToken(s string) (JoinToken, error) {
 	if err != nil {
 		return JoinToken{}, fmt.Errorf("reading the join token: %w", err)
 	}
-	var t JoinToken
-	if err := json.Unmarshal(b, (*joinWire)(&t)); err != nil {
+	var w joinWire
+	if err := json.Unmarshal(b, &w); err != nil {
 		return JoinToken{}, fmt.Errorf("reading the join token: %w", err)
+	}
+	t := JoinToken{
+		Version:    w.Version,
+		InstallID:  w.InstallID,
+		Node:       w.Node,
+		Endpoints:  w.Endpoints,
+		ServerName: w.ServerName,
+		CASHA256:   w.CASHA256,
+		Expires:    w.Expires,
 	}
 	if err := t.check(); err != nil {
 		return JoinToken{}, err
 	}
+	if len(w.Secret) != joinSecretLen {
+		return JoinToken{}, fmt.Errorf("the join token's secret has %d bytes, not %d", len(w.Secret), joinSecretLen)
+	}
+	secret := string(w.Secret)
+	t.secret = &secret
 	return t, nil
 }
 
 // SecretHash is the SHA-256 of the secret in lower-case hex, which the
-// controller stores in place of the secret.
+// controller stores in place of the secret; empty for a token without one.
 func (t JoinToken) SecretHash() string {
-	sum := sha256.Sum256(t.Secret)
+	if t.secret == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(*t.secret))
 	return hex.EncodeToString(sum[:])
+}
+
+// Matches reports whether storedHash, as the controller keeps it, is the
+// hash of the token's secret, comparing in time that does not depend on
+// where the two differ.
+func (t JoinToken) Matches(storedHash string) bool {
+	if t.secret == nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(t.SecretHash()), []byte(storedHash)) == 1
 }
 
 func (t JoinToken) String() string {
@@ -121,18 +177,11 @@ func (t JoinToken) String() string {
 		t.InstallID, t.Node, t.Expires.UTC().Format(time.RFC3339), redacted)
 }
 
-// Format prints String for every verb, so that no verb prints the secret.
+// Format prints String for every verb.
 func (t JoinToken) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, t.String()) }
 
-// MarshalJSON encodes the token with its secret as "[redacted]", for a log
-// line or a reply that holds one.
-func (t JoinToken) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		joinWire
-		Secret string `json:"secret"`
-	}{joinWire(t), redacted})
-}
-
+// check checks every field but the secret: NewJoinToken draws that one, and
+// ParseJoinToken checks its length.
 func (t JoinToken) check() error {
 	if t.Version != joinVersion {
 		return fmt.Errorf("join token version %d, where this build reads version %d", t.Version, joinVersion)
@@ -156,9 +205,6 @@ func (t JoinToken) check() error {
 	}
 	if !sha256Hex.MatchString(t.CASHA256) {
 		return fmt.Errorf("the join token's CA fingerprint %q is not a SHA-256 in lower-case hex", t.CASHA256)
-	}
-	if len(t.Secret) != joinSecretLen {
-		return fmt.Errorf("the join token's secret has %d bytes, not %d", len(t.Secret), joinSecretLen)
 	}
 	if t.Expires.IsZero() {
 		return errors.New("the join token has no expiry")

@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
-var testSecret = bytes.Repeat([]byte{0xab}, 16)
+var testSecret = []byte("s3cret-of-node-2")
 
 func newJoinToken(t *testing.T, ca CA, now time.Time) JoinToken {
 	t.Helper()
@@ -33,8 +34,8 @@ func TestNewJoinToken(t *testing.T) {
 		Endpoints:  []string{"192.0.2.10:8644", "[2001:db8::10]:8644"},
 		ServerName: "controller.pco-0123456789ab.invalid",
 		CASHA256:   ca.SHA256(),
-		Secret:     testSecret,
 		Expires:    t0.Add(15 * time.Minute),
+		secret:     new(string(testSecret)),
 	}, tok)
 }
 
@@ -155,35 +156,52 @@ func TestParseJoinTokenRefuses(t *testing.T) {
 	}
 }
 
+// heldToken holds a token where fmt cannot ask it how to print itself.
+type heldToken struct{ token JoinToken }
+
 func TestJoinTokenNeverPrintsItsSecret(t *testing.T) {
 	tok := newJoinToken(t, newCA(t, t0), t0)
+	held := heldToken{tok}
+	exported := struct{ Token JoinToken }{tok}
 	forms := []string{
+		string(testSecret),
 		hex.EncodeToString(testSecret),
+		strings.ToUpper(hex.EncodeToString(testSecret)),
 		base64.StdEncoding.EncodeToString(testSecret),
 		base64.RawURLEncoding.EncodeToString(testSecret),
 		fmt.Sprintf("%d", testSecret),
-		fmt.Sprintf("%x", testSecret),
 		fmt.Sprintf("%#v", testSecret),
+		fmt.Sprintf("%v", [16]byte(testSecret)),
 	}
-	inJSON, err := json.Marshal(tok)
-	require.NoError(t, err)
-	inStruct, err := json.Marshal(struct{ Token JoinToken }{tok})
-	require.NoError(t, err)
 
 	printed := map[string]string{
-		"String":         tok.String(),
-		"%v":             fmt.Sprintf("%v", tok),
-		"%+v":            fmt.Sprintf("%+v", tok),
-		"%#v":            fmt.Sprintf("%#v", tok),
-		"%s":             fmt.Sprintf("%s", tok),
-		"%d":             fmt.Sprintf("%d", tok),
-		"%x":             fmt.Sprintf("%x", tok),
-		"a pointer":      fmt.Sprintf("%+v", &tok),
-		"in a struct":    fmt.Sprintf("%+v", struct{ Token JoinToken }{tok}),
-		"an error":       fmt.Errorf("joining with %v", tok).Error(),
-		"JSON":           string(inJSON),
-		"JSON in struct": string(inStruct),
+		"String":   tok.String(),
+		"an error": fmt.Errorf("joining with %v", tok).Error(),
 	}
+	values := map[string]any{
+		"the token":                    tok,
+		"a pointer to it":              &tok,
+		"an exported field":            exported,
+		"an unexported field":          held,
+		"a pointer to the field owner": &held,
+	}
+	for name, v := range values {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d"} {
+			printed[name+" "+verb] = fmt.Sprintf(verb, v)
+		}
+		b, err := json.Marshal(v)
+		require.NoError(t, err)
+		printed[name+" JSON"] = string(b)
+	}
+	var buf bytes.Buffer
+	log := zerolog.New(&buf)
+	log.Info().
+		Interface("token", tok).
+		Any("held", held).
+		Any("exported", exported).
+		Msgf("joined with %v and %+v", tok, held)
+	printed["zerolog"] = buf.String()
+
 	for how, out := range printed {
 		t.Run(how, func(t *testing.T) {
 			for _, f := range forms {
@@ -193,7 +211,8 @@ func TestJoinTokenNeverPrintsItsSecret(t *testing.T) {
 	}
 	require.Contains(t, tok.String(), "node2")
 	require.Contains(t, tok.String(), testInstall)
-	require.Contains(t, string(inJSON), `"secret":"[redacted]"`)
+	require.Contains(t, printed["the token JSON"], `"node":"node2"`)
+	require.NotContains(t, printed["the token JSON"], "secret")
 }
 
 func TestJoinTokenSecretHash(t *testing.T) {
@@ -202,6 +221,28 @@ func TestJoinTokenSecretHash(t *testing.T) {
 	require.Equal(t, hex.EncodeToString(sum[:]), tok.SecretHash())
 
 	other := tok
-	other.Secret = bytes.Repeat([]byte{0xcd}, 16)
+	other.secret = new("another secret!!")
 	require.NotEqual(t, tok.SecretHash(), other.SecretHash())
+
+	require.Empty(t, JoinToken{}.SecretHash())
+}
+
+func TestJoinTokenMatches(t *testing.T) {
+	tok := newJoinToken(t, newCA(t, t0), t0)
+	stored := tok.SecretHash()
+	parsed, err := ParseJoinToken(tok.Encode())
+	require.NoError(t, err)
+
+	require.True(t, tok.Matches(stored))
+	require.True(t, parsed.Matches(stored), "the token the agent sends matches what the controller stored")
+	require.False(t, tok.Matches(strings.ToUpper(stored)))
+	require.False(t, tok.Matches(stored[:63]))
+	require.False(t, tok.Matches(""))
+	another := sha256.Sum256([]byte("another secret"))
+	require.False(t, tok.Matches(hex.EncodeToString(another[:])))
+
+	var none JoinToken
+	require.False(t, none.Matches(""), "a token without a secret matches nothing")
+	require.False(t, none.Matches(stored))
+	require.Empty(t, none.Encode())
 }

@@ -15,9 +15,9 @@ import (
 // handshake runs a TLS handshake between server and client over loopback
 // and one byte of data from the server, so that a client certificate the
 // server refuses after the client's side of the handshake is done fails the
-// client too. It returns the client certificate the server accepted and what
-// each side saw.
-func handshake(t *testing.T, server, client *tls.Config) (peer *x509.Certificate, serverErr, clientErr error) {
+// client too. It returns the server's state of a connection it accepted and
+// what each side saw.
+func handshake(t *testing.T, server, client *tls.Config) (state *tls.ConnectionState, serverErr, clientErr error) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -25,8 +25,8 @@ func handshake(t *testing.T, server, client *tls.Config) (peer *x509.Certificate
 	deadline := time.Now().Add(10 * time.Second)
 
 	type result struct {
-		err  error
-		peer *x509.Certificate
+		err   error
+		state *tls.ConnectionState
 	}
 	done := make(chan result, 1)
 	go func() {
@@ -43,9 +43,8 @@ func handshake(t *testing.T, server, client *tls.Config) (peer *x509.Certificate
 		if r.err = s.Handshake(); r.err != nil {
 			return
 		}
-		if certs := s.ConnectionState().PeerCertificates; len(certs) > 0 {
-			r.peer = certs[0]
-		}
+		cs := s.ConnectionState()
+		r.state = &cs
 		_, r.err = s.Write([]byte{1})
 	}()
 
@@ -59,7 +58,7 @@ func handshake(t *testing.T, server, client *tls.Config) (peer *x509.Certificate
 	}
 	_ = conn.Close()
 	r := <-done
-	return r.peer, r.err, clientErr
+	return r.state, r.err, clientErr
 }
 
 type tlsFixture struct {
@@ -94,15 +93,35 @@ func newTLSFixture(t *testing.T) tlsFixture {
 
 func TestMutualTLS(t *testing.T) {
 	f := newTLSFixture(t)
-	peer, serverErr, clientErr := handshake(t,
+	state, serverErr, clientErr := handshake(t,
 		ServerTLS(f.server, poolOf(f.ca)),
 		ClientTLS(f.client, f.ca.SHA256(), f.serverName))
 	require.NoError(t, serverErr)
 	require.NoError(t, clientErr)
-	require.Equal(t, f.clientCert.Raw, peer.Raw)
-	id, err := IdentityOf(peer)
+	require.Equal(t, f.clientCert.Raw, state.PeerCertificates[0].Raw)
+	id, err := PeerIdentity(state)
 	require.NoError(t, err)
 	require.Equal(t, hostID("node2"), id)
+}
+
+func TestPeerIdentityRefusesAConnectionWithoutACertificate(t *testing.T) {
+	f := newTLSFixture(t)
+	state, serverErr, clientErr := handshake(t,
+		ServerTLS(f.server, poolOf(f.ca)),
+		ClientTLS(tls.Certificate{}, f.ca.SHA256(), f.serverName))
+	require.NoError(t, serverErr, "the join comes without a certificate")
+	require.NoError(t, clientErr)
+	_, err := PeerIdentity(state)
+	require.ErrorIs(t, err, ErrNoClientCert)
+
+	_, err = PeerIdentity(nil)
+	require.ErrorIs(t, err, ErrNoClientCert, "a request that did not come over TLS")
+
+	_, err = PeerIdentity(&tls.ConnectionState{PeerCertificates: []*x509.Certificate{f.clientCert}})
+	require.ErrorIs(t, err, ErrNoClientCert, "a certificate is not taken unless it was verified")
+
+	_, err = PeerIdentity(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{f.serverCert, f.ca.Cert}}})
+	require.ErrorContains(t, err, "carries no pco identity")
 }
 
 func TestTLSConfigsSpeakOnlyTLS13(t *testing.T) {
@@ -169,7 +188,6 @@ func TestServerTLSRefuses(t *testing.T) {
 		wantSubstring string
 	}{
 		{"TLS 1.2", tls12, poolOf(f.ca), "unsupported versions"},
-		{"no client certificate", ClientTLS(tls.Certificate{}, f.ca.SHA256(), f.serverName), poolOf(f.ca), "didn't provide a certificate"},
 		{"a client under another CA", ClientTLS(TLSCertificate(otherKey, otherCli), f.ca.SHA256(), f.serverName), poolOf(f.ca), "unknown authority"},
 		{"a server certificate as a client's", ClientTLS(TLSCertificate(srvAsClientKey, srvAsClient), f.ca.SHA256(), f.serverName), poolOf(f.ca), "usage"},
 		{"no pool", ClientTLS(f.client, f.ca.SHA256(), f.serverName), nil, "unknown authority"},
@@ -197,17 +215,18 @@ func TestServerTLSTakesBothCAsOfARotation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, serverErr, clientErr := handshake(t,
+			state, serverErr, clientErr := handshake(t,
 				ServerTLS(f.server, poolOf(f.ca, next)),
 				ClientTLS(c.client, f.ca.SHA256(), f.serverName))
 			require.NoError(t, serverErr)
 			require.NoError(t, clientErr)
+			_, err := PeerIdentity(state)
+			require.NoError(t, err)
 		})
 	}
 }
 
 func TestServerTLSResumesNoSession(t *testing.T) {
 	f := newTLSFixture(t)
-	require.True(t, ServerTLS(f.server, poolOf(f.ca)).SessionTicketsDisabled,
-		"a resumed session would skip the check of the client certificate against the pool of the day")
+	require.True(t, ServerTLS(f.server, poolOf(f.ca)).SessionTicketsDisabled)
 }

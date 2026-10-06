@@ -66,6 +66,7 @@ func TestCAThroughPEM(t *testing.T) {
 	require.Equal(t, ca.Cert.Raw, got.Cert.Raw)
 	require.True(t, ca.Key.Equal(got.Key))
 	require.Equal(t, ca.SHA256(), got.SHA256())
+	issueServer(t, got, ControllerServerName(testInstall), t0)
 
 	// A key in SEC 1, as openssl ec writes it, is read too.
 	sec1, err := x509.MarshalECPrivateKey(ca.Key)
