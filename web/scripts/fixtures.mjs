@@ -167,6 +167,7 @@ export function fixtures() {
     // engine.State
     populated,
     empty,
+    'first-run': scenario('first-run'),
     untagged,
     'tagged-empty': { ...clone(untagged), digest: '6d0e2b4a9c7f1835', admission: 'approve', gateTagged: 3 },
     rogue: rogue(populated),

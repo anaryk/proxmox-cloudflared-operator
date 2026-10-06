@@ -1,0 +1,23 @@
+{
+  "digest": "0d2ca49e703420e1",
+  "mode": "observe",
+  "complete": false,
+  "routes": [],
+  "issues": [],
+  "tunnels": [],
+  "connectors": [],
+  "credentials": [],
+  "zones": [],
+  "actions": [],
+  "conflicts": [],
+  "lost": [],
+  "problems": [
+    "no Cloudflare credential; add one with pco credential add"
+  ],
+  "writerVerdict": "ok",
+  "waiting": [],
+  "unapproved": [],
+  "segments": [],
+  "gateTagged": 0,
+  "rogueConnectors": []
+}
