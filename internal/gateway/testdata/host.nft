@@ -12,7 +12,7 @@ table inet pco_host {
 	chain input {
 		type filter hook input priority filter - 10; policy accept;
 		iifname "pconet" counter name "from_pconet" drop
-		iifname "pcotr0" ct state new counter name "from_transit" drop
+		iifname "pcotr0" ct state invalid,new counter name "from_transit" drop
 	}
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;

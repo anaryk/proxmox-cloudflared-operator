@@ -38,6 +38,12 @@ func TestUpOnAFreshNodeMakesTheNamespaceTheTransitLinkAndBothTables(t *testing.T
 	}
 	require.Less(t, index(t, c, "sysctl ns net.ipv4.ip_forward"), index(t, c, "veth pcotr0"))
 	require.Less(t, index(t, c, "up ns transit0"), index(t, c, "route add host 198.18.0.0/16 via"))
+	// Both tables are there before the transit link, so that nothing passes
+	// it unfiltered, also after a flush of the ruleset.
+	o := h.sys.order
+	require.Less(t, index(t, o, "nft pco_host"), index(t, o, "veth pcotr0"))
+	require.Less(t, index(t, o, "nft pco_gw"), index(t, o, "veth pcotr0"))
+	require.Less(t, index(t, o, "route add host unreachable"), index(t, o, "nft pco_host"))
 	require.Len(t, h.nsNft.scripts, 1)
 	require.Equal(t, renderGateway(snatMap, elementsOf(nil, nil), nil), h.nsNft.scripts[0], "the table with empty maps")
 	require.Equal(t, []string{renderHost()}, h.hostNft.scripts)
@@ -271,6 +277,29 @@ func TestStickyEntriesOfManagedGuests(t *testing.T) {
 	require.Equal(t, []string{"fdb del tap101i1 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(), "a stopped guest's entry goes")
 }
 
+// A Sync reads the forwarding entries of the ports whose entries it keeps or
+// takes away, not those of every port of the managed bridge: it runs at every
+// cycle and on link events.
+func TestStickyEntriesAreReadOnlyOnThePortsTheyConcern(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	for _, p := range []string{"tap101i1", "tap102i1", "tap103i1"} {
+		h.sys.host.links[p] = &fakeLink{link: link{name: p, kind: "tun", up: true, carrier: true, master: ManagedBridge}}
+	}
+	guest := mac("06:50:43:4f:76:05")
+	h.sync(t, []Leg{legM}, nil, nil, []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap101i1"}})
+
+	h.sys.fdbReads = map[string]int{}
+	h.sync(t, []Leg{legM}, nil, nil, []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap101i1"}})
+	require.Equal(t, map[string]int{"tap101i1": 1, "vethpco3": 1}, h.sys.fdbReads)
+
+	h.reset()
+	h.sys.fdbReads = map[string]int{}
+	h.sync(t, []Leg{legM}, nil, nil, []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap102i1"}})
+	require.Equal(t, map[string]int{"tap101i1": 1, "tap102i1": 1, "vethpco3": 1}, h.sys.fdbReads, "the guest moved to another port")
+	require.Equal(t, []string{"sticky tap102i1 06:50:43:4f:76:05 vlan 0", "fdb del tap101i1 06:50:43:4f:76:05 vlan 0"}, h.sys.changes())
+}
+
 func TestLegsThatAreNotGivenAreRemoved(t *testing.T) {
 	h := newHarness(t).node()
 	h.up(t)
@@ -296,6 +325,35 @@ func TestALegWhoseBridgeEndLostItsPeerIsMadeAgain(t *testing.T) {
 	require.True(t, states[0].Up)
 	c := h.sys.changes()
 	require.Less(t, index(t, c, "del host vethpco1"), index(t, c, "veth vethpco1"))
+}
+
+// The backend does not take the engine's word for a service: one that would
+// put an address outside the prefix into the table, or DNAT to an address
+// outside its leg's network, is left out and reported on its leg.
+func TestABadServiceIsReportedOnItsLegAndLeftOut(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	bad := []Service{
+		{Leg: "vmbr1", Service: addr("198.19.0.1"), Addr: addr("10.50.0.11"), Ports: []uint16{80}},
+		{Leg: "vmbr1", Service: addr("198.18.0.2"), Addr: addr("10.50.0.12"), Ports: []uint16{80}},
+		{Leg: "vmbr1", Service: addr("198.18.1.7"), Addr: addr("10.60.0.5"), Ports: []uint16{80}},
+		{Leg: "vmbr1", Service: addr("198.18.1.8"), Addr: addr("10.50.0.250"), Ports: []uint16{80}},
+		{Leg: "vmbr1", Service: svcA.Service, Addr: addr("10.50.0.13"), Ports: []uint16{22}},
+	}
+	states := h.sync(t, []Leg{legA, legB}, append([]Service{svcA, svcB}, bad...), nil, nil)
+	require.Equal(t, "service address 198.19.0.1 is outside 198.18.0.0/16; "+
+		"service address 198.18.0.2 is one of the transit link; "+
+		"10.60.0.5 of service address 198.18.1.7 is outside 10.50.0.0/24, the network of the leg; "+
+		"10.50.0.250 of service address 198.18.1.8 is the address of the leg; "+
+		"service address 198.18.1.0 is given for 10.50.0.10 and for 10.50.0.13", states[0].Problem)
+	require.True(t, states[0].Up)
+	require.Empty(t, states[1].Problem)
+	require.Equal(t, sortedElements(elementsOf([]Leg{legA, legB}, []Service{svcA, svcB})), sortedElements(h.nsNft.tables[gwTable].elems))
+
+	inside := legA
+	inside.Prefix = prefix("198.18.5.1/24")
+	states = h.sync(t, []Leg{inside}, nil, nil, nil)
+	require.Equal(t, "198.18.5.1/24 overlaps the service prefix 198.18.0.0/16", states[0].Problem)
 }
 
 func TestABadLegIsReportedAndLeftOut(t *testing.T) {
@@ -340,6 +398,24 @@ func TestVerifyFindsWhatChanged(t *testing.T) {
 		{"IPv6 on the managed bridge", func(h *harness) { h.sys.host.sysctls["net.ipv6.conf.pconet.disable_ipv6"] = "0" },
 			"net.ipv6.conf.pconet.disable_ipv6 is 0 in the host, want 1"},
 		{"the namespace", func(h *harness) { h.sys.ns = nil }, "the namespace pco is not pinned"},
+		{"a route more in a leg's table", func(h *harness) {
+			h.sys.ns.routes = append(h.sys.ns.routes, route{table: 101, dst: prefix("10.99.0.0/24"), dev: "leg1", src: addr("10.50.0.250")})
+		}, "the route 10.99.0.0/24 dev leg1 src 10.50.0.250 table 101 is not pco's"},
+		{"a second rule on a leg's mark", func(h *harness) {
+			h.sys.ns.rules = append(h.sys.ns.rules, rule{pref: 900, mark: 1, table: mainTable})
+		}, "the rule 900: fwmark 1 lookup 254 is not pco's"},
+		{"another rule at a leg's preference", func(h *harness) {
+			h.sys.ns.rules = append(h.sys.ns.rules, rule{pref: 1002, mark: 7, table: 107})
+		}, "the rule 1002: fwmark 7 lookup 107 is not pco's"},
+		{"a sysctl of a leg", func(h *harness) { h.sys.ns.sysctls["net.ipv4.conf.leg1.rp_filter"] = "1" },
+			"net.ipv4.conf.leg1.rp_filter is 1 in the namespace pco, want 0"},
+		{"IPv6 on the bridge end of a leg", func(h *harness) { h.sys.host.sysctls["net.ipv6.conf.vethpco2.disable_ipv6"] = "0" },
+			"net.ipv6.conf.vethpco2.disable_ipv6 is 0 in the host, want 1"},
+		{"IPv6 on the transit link", func(h *harness) { h.sys.ns.sysctls["net.ipv6.conf.transit0.disable_ipv6"] = "0" },
+			"net.ipv6.conf.transit0.disable_ipv6 is 0 in the namespace pco, want 1"},
+		{"a leg of no network", func(h *harness) {
+			h.sys.host.links["vethpco9"] = &fakeLink{link: link{name: "vethpco9", kind: "veth", up: true}}
+		}, "vethpco9 is the leg of no network"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t).node()
@@ -375,7 +451,11 @@ func TestDownRemovesEverythingUpAndSyncMade(t *testing.T) {
 	h.up(t)
 	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, master: ManagedBridge}}
 	h.sync(t, testLegs, testServices, nil, []Sticky{{MAC: mac("06:50:43:4f:76:05"), Bridge: ManagedBridge, Port: "tap101i1"}})
+	// An entry no Sync of this process made, as one from before a restart.
+	h.sys.host.links["tap102i1"] = &fakeLink{link: link{name: "tap102i1", kind: "tun", up: true, master: ManagedBridge},
+		fdb: []fdbEntry{{mac: mac("06:50:43:4f:76:06"), static: true, sticky: true}}}
 	require.NoError(t, h.b.Down(t.Context()))
+	require.Empty(t, h.sys.host.links["tap102i1"].fdb)
 	for name := range h.sys.host.links {
 		require.False(t, strings.HasPrefix(name, "vethpco") || name == "pcotr0", name)
 	}
@@ -383,6 +463,16 @@ func TestDownRemovesEverythingUpAndSyncMade(t *testing.T) {
 	require.Nil(t, h.sys.ns)
 	require.Empty(t, h.sys.host.links["tap101i1"].fdb)
 	require.NotContains(t, h.hostNft.tables, hostTable)
+}
+
+// An empty file where the pin would be, left by a pin that failed, is no
+// namespace, and Down takes it away all the same.
+func TestDownRemovesWhatAFailedPinLeft(t *testing.T) {
+	h := newHarness(t).node()
+	h.sys.leftoverPin = true
+	require.NoError(t, h.b.Down(t.Context()))
+	require.Contains(t, h.sys.changes(), "remove pin")
+	require.False(t, h.sys.leftoverPin)
 }
 
 func TestProbeThroughATemporaryPortRemovesIt(t *testing.T) {

@@ -29,6 +29,7 @@ func (b *hostBackend) sync(ctx context.Context, legs []Leg, services []Service, 
 	}
 	states := make([]LegState, 0, len(legs))
 	valid := validLegs(legs)
+	_, refused := validServices(valid, services)
 	for _, l := range legs {
 		if problem := legProblem(l, legs); problem != "" {
 			states = append(states, LegState{ID: l.ID, Iface: l.Iface(), Problem: problem})
@@ -37,6 +38,9 @@ func (b *hostBackend) sync(ctx context.Context, legs []Leg, services []Service, 
 		st, err := b.leg(ctx, l)
 		if err != nil {
 			return nil, fmt.Errorf("leg %s of network %s: %w", l.Iface(), l.ID, err)
+		}
+		if p := refused[l.ID]; len(p) > 0 {
+			st.Problem = strings.Join(slices.DeleteFunc(append([]string{st.Problem}, p...), func(s string) bool { return s == "" }), "; ")
 		}
 		states = append(states, st)
 	}
@@ -58,7 +62,7 @@ func (b *hostBackend) sync(ctx context.Context, legs []Leg, services []Service, 
 		}
 		b.pins = slices.Clone(pins)
 	}
-	if err := b.syncSticky(sticky); err != nil {
+	if err := b.syncSticky(sticky, false); err != nil {
 		return nil, err
 	}
 	b.sticky = slices.Clone(sticky)
@@ -73,6 +77,8 @@ func legProblem(l Leg, all []Leg) string {
 		return fmt.Sprintf("mark %d is outside 1-%d", l.Mark, MaxMark)
 	case !l.Prefix.IsValid() || !l.Prefix.Addr().Is4() || l.Prefix.Bits() > 30:
 		return fmt.Sprintf("%s is no IPv4 address with a prefix of at most /30", l.Prefix)
+	case l.Prefix.Overlaps(ServicePrefix):
+		return fmt.Sprintf("%s overlaps the service prefix %s", l.Prefix, ServicePrefix)
 	case len(l.MAC) != 6 || l.MAC[0]&1 != 0:
 		return fmt.Sprintf("%s is no unicast MAC", l.MAC)
 	case l.Bridge == "" || len(l.Bridge) > 15 || strings.ContainsAny(l.Bridge, "/ \t\n\""):
@@ -348,15 +354,26 @@ func (b *hostBackend) claimants(ctx context.Context, iface string, addr netip.Ad
 // for everything else, so that a packet with the leg's mark leaves through
 // the leg or not at all.
 func (b *hostBackend) legRoutes(l Leg, raised bool) error {
+	if err := b.ensureRoutes(tableBase+l.Mark, legTable(l, raised)); err != nil {
+		return err
+	}
+	return b.ensureRule(legRule(l))
+}
+
+// legTable returns the routes of a leg's table: unreachable for everything,
+// and the guest network through the leg once the leg holds its address.
+func legTable(l Leg, raised bool) []route {
 	table := tableBase + l.Mark
 	want := []route{{table: table, unreachable: true}}
 	if raised {
 		want = append(want, route{table: table, dst: l.Prefix.Masked(), dev: l.Iface(), src: l.Prefix.Addr()})
 	}
-	if err := b.ensureRoutes(table, want); err != nil {
-		return err
-	}
-	return b.ensureRule(rule{pref: ruleBase + l.Mark, mark: l.Mark, table: table})
+	return want
+}
+
+// legRule is the rule that sends what carries the leg's mark to its table.
+func legRule(l Leg) rule {
+	return rule{pref: ruleBase + l.Mark, mark: l.Mark, table: tableBase + l.Mark}
 }
 
 // ensureRoutes makes the routes of a table of the namespace those wanted.
@@ -548,14 +565,13 @@ func managedMAC(mac net.HardwareAddr) bool {
 
 // syncSticky keeps a static sticky entry of each managed guest's MAC on its
 // port, where the port exists; an entry whose port is absent is remembered,
-// and the next Sync after the port appears adds it. Sticky entries of managed
-// MACs that are not given are removed from the ports of their bridges.
-func (b *hostBackend) syncSticky(sticky []Sticky) error {
-	bridges := []string{ManagedBridge}
+// and the next Sync after the port appears adds it. An entry applied before
+// and not given now is removed from its port: only those ports are read, as
+// a Sync runs at every cycle and on link events. With every, as Down has it,
+// the sticky entries of managed MACs that are not given are removed from
+// every port of their bridges, those no Sync of this process made among them.
+func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 	for _, s := range sticky {
-		if !slices.Contains(bridges, s.Bridge) {
-			bridges = append(bridges, s.Bridge)
-		}
 		if s.Port == "" || len(s.MAC) != 6 {
 			continue
 		}
@@ -568,30 +584,75 @@ func (b *hostBackend) syncSticky(sticky []Sticky) error {
 			return err
 		}
 	}
-	all, err := b.sys.links(onHost)
+	ports, err := b.stalePorts(sticky, every)
 	if err != nil {
-		return fmt.Errorf("listing the links: %w", err)
+		return err
 	}
-	for _, l := range all {
-		if !slices.Contains(bridges, l.master) {
-			continue
-		}
-		have, err := b.sys.fdb(l.name)
+	for _, port := range ports {
+		have, err := b.sys.fdb(port)
 		if err != nil {
-			return fmt.Errorf("reading the forwarding entries of %s: %w", l.name, err)
+			return fmt.Errorf("reading the forwarding entries of %s: %w", port, err)
 		}
 		for _, e := range have {
 			if !e.static || !e.sticky || !managedMAC(e.mac) || slices.ContainsFunc(sticky, func(s Sticky) bool {
-				return s.Port == l.name && stickyOf(e, s.MAC, s.VLAN)
+				return s.Port == port && stickyOf(e, s.MAC, s.VLAN)
 			}) {
 				continue
 			}
-			if err := b.sys.delFDB(l.name, e); err != nil {
-				return fmt.Errorf("removing the sticky entry of %s on %s: %w", e.mac, l.name, err)
+			if err := b.sys.delFDB(port, e); err != nil {
+				return fmt.Errorf("removing the sticky entry of %s on %s: %w", e.mac, port, err)
 			}
 		}
 	}
 	return nil
+}
+
+// stalePorts returns the ports, sorted, that may hold a sticky entry of a
+// managed MAC that is not given: those of the entries applied before that are
+// not given now, or with every, each port of the managed bridge and of the
+// bridges of the entries.
+func (b *hostBackend) stalePorts(sticky []Sticky, every bool) ([]string, error) {
+	var ports []string
+	add := func(port string) {
+		if port != "" && !slices.Contains(ports, port) {
+			ports = append(ports, port)
+		}
+	}
+	if !every {
+		for _, old := range b.sticky {
+			if !slices.ContainsFunc(sticky, func(s Sticky) bool {
+				return s.Port == old.Port && macEqual(s.MAC, old.MAC) && s.VLAN == old.VLAN
+			}) {
+				add(old.Port)
+			}
+		}
+	} else {
+		bridges := []string{ManagedBridge}
+		for _, s := range slices.Concat(b.sticky, sticky) {
+			if !slices.Contains(bridges, s.Bridge) {
+				bridges = append(bridges, s.Bridge)
+			}
+		}
+		all, err := b.sys.links(onHost)
+		if err != nil {
+			return nil, fmt.Errorf("listing the links: %w", err)
+		}
+		for _, l := range all {
+			if slices.Contains(bridges, l.master) {
+				add(l.name)
+			}
+		}
+	}
+	slices.Sort(ports)
+	present := ports[:0]
+	for _, port := range ports {
+		if _, ok, err := b.sys.link(onHost, port); err != nil {
+			return nil, fmt.Errorf("reading %s: %w", port, err)
+		} else if ok {
+			present = append(present, port)
+		}
+	}
+	return present, nil
 }
 
 // Detach removes the leg of a network and its services.

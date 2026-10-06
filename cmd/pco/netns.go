@@ -25,8 +25,10 @@ type netnsEnv struct {
 	local   string // the local state root, where the cache of the gateway is kept
 	euid    func() int
 	now     func() time.Time
-	// connectors says how many connectors run.
+	// connectors says how many connectors run, daemon whether pco.service
+	// does.
 	connectors func(ctx context.Context) (int, error)
+	daemon     func(ctx context.Context) (bool, error)
 }
 
 func defaultNetnsEnv() netnsEnv {
@@ -38,6 +40,7 @@ func defaultNetnsEnv() netnsEnv {
 		euid:       os.Geteuid,
 		now:        time.Now,
 		connectors: runningConnectors,
+		daemon:     daemonRuns,
 	}
 }
 
@@ -102,11 +105,18 @@ func (a *app) netnsUpCmd(e netnsEnv) *cobra.Command {
 			if err := a.netnsCheck(cmd, e); err != nil {
 				return err
 			}
-			c, _, err := gateway.ReadCache(e.local)
-			if err != nil {
-				return err
-			}
 			b := e.backend(a.daemonLog(cmd.ErrOrStderr(), zerolog.InfoLevel))
+			c, _, cerr := gateway.ReadCache(e.local)
+			if cerr != nil {
+				// Without the cache the namespace, its tables and the fallback
+				// route come up all the same, so that no request to a service
+				// address leaves the node by its default route; no Sync, which
+				// would take away the legs that are up.
+				if err := b.Up(cmd.Context()); err != nil {
+					return fmt.Errorf("bringing up the gateway namespace: %w; and %w", err, cerr)
+				}
+				return fmt.Errorf("the gateway namespace is up without legs or service addresses until the daemon restores them: %w", cerr)
+			}
 			states, err := gateway.Restore(cmd.Context(), b, c, e.now())
 			if err != nil {
 				return fmt.Errorf("bringing up the gateway namespace: %w", err)
@@ -240,6 +250,7 @@ func renderNetns(s *screen, c gateway.Cache, changed *gateway.ChangedError) erro
 
 func (a *app) netnsSyncCmd(e netnsEnv) *cobra.Command {
 	var from string
+	var yes bool
 	cmd := &cobra.Command{
 		Use:   "sync --from <file>",
 		Short: "Make the legs, service addresses, pins and sticky entries those of a file",
@@ -249,7 +260,8 @@ func (a *app) netnsSyncCmd(e netnsEnv) *cobra.Command {
 			"gateway without the daemon; the daemon replaces all of it at its next cycle. The file has\n" +
 			"the form of the cache: legs (id, mark, bridge, vlan, prefix, mac, managed, uplink),\n" +
 			"services (leg, service, addr, ports), pins (leg, addr, mac) and sticky (mac, bridge, vlan,\n" +
-			"port).",
+			"port). While pco.service runs it refuses unless --yes: the daemon keeps the gateway as the\n" +
+			"store says, and the two would undo each other's changes.",
 		Example: "  # Two legs and their services from a file\n" +
 			"  pco netns sync --from legs.json\n\n" +
 			"  # Then see that the namespace holds them\n" +
@@ -259,6 +271,15 @@ func (a *app) netnsSyncCmd(e netnsEnv) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.netnsCheck(cmd, e); err != nil {
 				return err
+			}
+			if !yes {
+				runs, err := e.daemon(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if runs {
+					return errors.New("pco.service runs and keeps the gateway as the store says: stop it first, or pass --yes")
+				}
 			}
 			data, err := os.ReadFile(from)
 			if err != nil {
@@ -287,6 +308,7 @@ func (a *app) netnsSyncCmd(e netnsEnv) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&from, "from", "", "the JSON file with the legs, services, pins and sticky entries")
+	cmd.Flags().BoolVar(&yes, "yes", false, "sync while pco.service runs")
 	_ = cmd.MarkFlagRequired("from")
 	return cmd
 }
@@ -314,18 +336,21 @@ func (a *app) netnsDownCmd(e netnsEnv) *cobra.Command {
 			if err := a.netnsCheck(cmd, e); err != nil {
 				return err
 			}
-			c, _, err := gateway.ReadCache(e.local)
-			if err != nil {
-				return err
-			}
-			if len(c.Services) > 0 && !yes {
+			// A cache that cannot be read says nothing of the service
+			// addresses: the connectors are asked all the same.
+			c, _, cerr := gateway.ReadCache(e.local)
+			if (cerr != nil || len(c.Services) > 0) && !yes {
 				running, err := e.connectors(cmd.Context())
 				if err != nil {
 					return err
 				}
 				if running > 0 {
-					return fmt.Errorf("%d connectors run and may serve the %d service addresses of the gateway: "+
-						"stop them first, as pco uninstall does, or pass --yes", running, len(c.Services))
+					what := "the service addresses"
+					if cerr == nil {
+						what = fmt.Sprintf("the %d service addresses", len(c.Services))
+					}
+					return fmt.Errorf("%d connectors run and may serve %s of the gateway: "+
+						"stop them first, as pco uninstall does, or pass --yes", running, what)
 				}
 			}
 			if err := e.backend(a.daemonLog(cmd.ErrOrStderr(), zerolog.InfoLevel)).Down(cmd.Context()); err != nil {
@@ -340,6 +365,19 @@ func (a *app) netnsDownCmd(e netnsEnv) *cobra.Command {
 	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "remove the gateway, as pco uninstall does")
 	cmd.Flags().BoolVar(&yes, "yes", false, "remove it while connectors run")
 	return cmd
+}
+
+// daemonRuns reports whether pco.service runs.
+func daemonRuns(ctx context.Context) (bool, error) {
+	err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "pco.service").Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &exit):
+		return false, nil
+	}
+	return false, fmt.Errorf("asking whether pco.service runs: %w", err)
 }
 
 // runningConnectors counts the connector units that run.

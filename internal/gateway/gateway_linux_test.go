@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -639,6 +640,20 @@ func TestLinuxDownLeavesNothing(t *testing.T) {
 	for _, r := range routes {
 		require.NotEqual(t, ServicePrefix, r.dst, r.String())
 	}
+}
+
+// An empty file where the pin would be, as a pin that failed leaves, is no
+// namespace; Down takes it away.
+func TestLinuxDownRemovesWhatAFailedPinLeft(t *testing.T) {
+	l := newLabNet(t)
+	pin := filepath.Join(pinDir, l.gwName)
+	require.NoError(t, os.MkdirAll(pinDir, 0o755))
+	require.NoError(t, os.WriteFile(pin, nil, 0o444))
+	pinned, err := l.sys.pinned()
+	require.NoError(t, err)
+	require.False(t, pinned)
+	require.NoError(t, l.b.Down(t.Context()))
+	require.NoFileExists(t, pin)
 }
 
 func (l *labNet) macOf(t *testing.T, ns, dev string) string {

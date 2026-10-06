@@ -70,6 +70,7 @@ type netnsRig struct {
 	env     netnsEnv
 	gw      *fakeGateway
 	running int
+	daemon  bool
 }
 
 func newNetnsRig(t *testing.T) *netnsRig {
@@ -80,6 +81,7 @@ func newNetnsRig(t *testing.T) *netnsRig {
 		euid:       func() int { return 0 },
 		now:        func() time.Time { return t0 },
 		connectors: func(context.Context) (int, error) { return r.running, nil },
+		daemon:     func(context.Context) (bool, error) { return r.daemon, nil },
 	}
 	return r
 }
@@ -173,6 +175,40 @@ func TestNetnsUpWithoutACacheBringsTheBaseOnly(t *testing.T) {
 		"service addresses: 0, with 0 published ports\n", res.out)
 }
 
+// A cache that cannot be read never leaves the node without the namespace,
+// its tables and the unreachable route of the service prefix: Up runs without
+// legs or service addresses, which the daemon's next Sync restores, and the
+// unit fails so that the error is seen.
+func TestNetnsUpWithACacheItCannotReadBringsTheBaseUp(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		write func(t *testing.T, path string)
+		want  string
+	}{
+		{"a field this version does not know", func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte(`{"legs": [], "services": [], "routes": []}`), 0o600))
+		}, `json: unknown field "routes"`},
+		{"no JSON", func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("{"), 0o600))
+		}, "unexpected end of JSON input"},
+		{"no file", func(t *testing.T, path string) {
+			require.NoError(t, os.Mkdir(path, 0o700))
+		}, "is a directory"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newNetnsRig(t)
+			path := filepath.Join(r.env.local, gateway.CacheFile)
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			tt.write(t, path)
+			res := r.run("up")
+			require.Equal(t, []string{"up"}, r.gw.calls, "Up, and no Sync, which would remove the legs that are up")
+			require.ErrorContains(t, res.err, "the gateway namespace is up without legs or service addresses until the daemon restores them: ")
+			require.ErrorContains(t, res.err, path)
+			require.ErrorContains(t, res.err, tt.want)
+		})
+	}
+}
+
 func TestNetnsUpThatFailsFailsTheUnit(t *testing.T) {
 	r := newNetnsRig(t)
 	r.gw.upErr = errors.New("no namespace")
@@ -243,6 +279,36 @@ func TestNetnsStatus(t *testing.T) {
 
 // sync --from applies a file as the daemon would, and keeps it as the cache
 // that pco netns up restores.
+// While the daemon runs it owns the namespace: the two would undo each
+// other's changes.
+func TestNetnsSyncRefusesWhileTheDaemonRunsUnlessYes(t *testing.T) {
+	r := newNetnsRig(t)
+	r.daemon = true
+	file := filepath.Join(t.TempDir(), "legs.json")
+	require.NoError(t, os.WriteFile(file, []byte(`{"legs": [], "services": []}`), 0o644))
+	res := r.run("sync", "--from", file)
+	require.EqualError(t, res.err, "pco.service runs and keeps the gateway as the store says: stop it first, or pass --yes")
+	require.Empty(t, r.gw.calls)
+
+	require.NoError(t, r.run("sync", "--from", file, "--yes").err)
+	require.Equal(t, []string{"up", "sync"}, r.gw.calls)
+}
+
+// Down for an uninstall does not need the cache: with a cache it cannot read
+// it still refuses while connectors run.
+func TestNetnsDownWithACacheItCannotRead(t *testing.T) {
+	r := newNetnsRig(t)
+	path := filepath.Join(r.env.local, gateway.CacheFile)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("{"), 0o600))
+	r.running = 1
+	require.ErrorContains(t, r.run("down", "--uninstall").err, "1 connectors run and may serve the service addresses of the gateway")
+	require.Empty(t, r.gw.calls)
+	r.running = 0
+	require.NoError(t, r.run("down", "--uninstall").err)
+	require.Equal(t, []string{"down"}, r.gw.calls)
+}
+
 func TestNetnsSyncFromAFile(t *testing.T) {
 	r := newNetnsRig(t)
 	file := filepath.Join(t.TempDir(), "legs.json")

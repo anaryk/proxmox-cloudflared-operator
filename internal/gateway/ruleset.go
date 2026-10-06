@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -101,13 +102,65 @@ var gwCounters = []string{counterForward, counterInput, counterLegIn, counterTra
 // 80" for a map, "\"leg1\"" for a set.
 type elements map[string][]string
 
+// validServices returns the services that can be programmed on their legs,
+// and why each other one cannot, by the network id of its leg: the engine
+// never gives such a service, and the backend does not take its word for it.
+// A service on a leg that is not given is left out without a word.
+func validServices(legs []Leg, services []Service) ([]Service, map[string][]string) {
+	byID := map[string]Leg{}
+	for _, l := range legs {
+		byID[l.ID] = l
+	}
+	var valid []Service
+	refused := map[string][]string{}
+	first := map[netip.Addr]Service{}
+	for _, s := range services {
+		l, ok := byID[s.Leg]
+		if !ok {
+			continue
+		}
+		problem := serviceProblem(s, l)
+		if f, ok := first[s.Service]; ok && problem == "" && (f.Leg != s.Leg || f.Addr != s.Addr) {
+			problem = fmt.Sprintf("service address %s is given for %s and for %s", s.Service, f.Addr, s.Addr)
+		}
+		if problem != "" {
+			refused[s.Leg] = append(refused[s.Leg], problem)
+			continue
+		}
+		if _, ok := first[s.Service]; !ok {
+			first[s.Service] = s
+		}
+		valid = append(valid, s)
+	}
+	return valid, refused
+}
+
+// serviceProblem says why a service cannot be programmed on its leg: its
+// address must be one of the prefix above the transit link, its target one
+// of the leg's network other than the leg itself.
+func serviceProblem(s Service, l Leg) string {
+	switch {
+	case !s.Service.Is4() || !ServicePrefix.Contains(s.Service):
+		return fmt.Sprintf("service address %s is outside %s", s.Service, ServicePrefix)
+	case netip.PrefixFrom(TransitHost, transitBits).Masked().Contains(s.Service):
+		return fmt.Sprintf("service address %s is one of the transit link", s.Service)
+	case !s.Addr.Is4() || !l.Prefix.Masked().Contains(s.Addr):
+		return fmt.Sprintf("%s of service address %s is outside %s, the network of the leg", s.Addr, s.Service, l.Prefix.Masked())
+	case s.Addr == l.Prefix.Addr():
+		return fmt.Sprintf("%s of service address %s is the address of the leg", s.Addr, s.Service)
+	}
+	return ""
+}
+
 // elementsOf returns the elements the table holds for the legs and the
 // services: a leg's interface in legs, its zone, its address and block of
 // source ports, the pair of its interface and zone, and a managed one in
 // dhcp_legs; per service its zone and mark, and per port its DNAT and the
 // flow forward allows. A service on a leg that is not given has no elements:
-// nothing says which leg it would leave through.
+// nothing says which leg it would leave through; neither has one that
+// validServices refuses.
 func elementsOf(legs []Leg, services []Service) elements {
+	services, _ = validServices(legs, services)
 	e := elements{}
 	add := func(set, elem string) { e[set] = append(e[set], elem) }
 	marks := map[string]int{}

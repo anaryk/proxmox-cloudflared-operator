@@ -13,14 +13,14 @@ func TestTheHostTableGolden(t *testing.T) {
 	requireGolden(t, "host.nft", renderHost())
 }
 
-// The node takes nothing from the managed bridge and no new flow from the
-// transit link, forwards nothing a managed guest routes through it but what
+// The node takes nothing from the managed bridge and nothing from the
+// transit link but the replies to its own flows, forwards nothing a managed guest routes through it but what
 // it bridges between two of them, and forwards nothing into the transit link.
 func TestTheRulesOfTheHostTable(t *testing.T) {
 	script := renderHost()
 	require.Equal(t, []string{
 		`iifname "pconet" counter name "from_pconet" drop`,
-		`iifname "pcotr0" ct state new counter name "from_transit" drop`,
+		`iifname "pcotr0" ct state invalid,new counter name "from_transit" drop`,
 	}, chainRules(t, script, "input"))
 	require.Equal(t, []string{
 		`iifname "pconet" oifname != "pconet" counter name "routed_from_pconet" drop`,
@@ -43,7 +43,9 @@ func TestAListingOfTheHostTableWithoutARuleNamesIt(t *testing.T) {
 	}{
 		{"input from the managed bridge", `{"counter": "from_pconet"}, {"drop": null}`, `{"counter": "from_pconet"}, {"accept": null}`,
 			"chain input of table inet pco_host: rule 1 is not the one pco loads"},
-		{"new flows from the transit link", `{"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": "new"}}, `, ``,
+		{"new flows from the transit link", `{"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": ["invalid", "new"]}}, `, ``,
+			"chain input of table inet pco_host: rule 2 is not the one pco loads"},
+		{"what is of no flow from the transit link", `"right": ["invalid", "new"]`, `"right": "new"`,
 			"chain input of table inet pco_host: rule 2 is not the one pco loads"},
 		{"what is bridged between managed guests", `"op": "!=", "left": {"meta": {"key": "oifname"}}`, `"op": "==", "left": {"meta": {"key": "oifname"}}`,
 			"chain forward of table inet pco_host: rule 1 is not the one pco loads"},

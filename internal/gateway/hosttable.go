@@ -19,8 +19,9 @@ var hostCounters = []string{"from_pconet", "from_transit", "routed_from_pconet",
 // from_pconet keeps the node's services off the managed bridge: isolated
 // ports are kept from each other, not from the bridge device. from_transit
 // keeps the guests behind the legs from reaching the node's services through
-// the transit link while the namespace's table is missing; the replies to the
-// host's own flows are not new. routed_from_pconet keeps a managed guest from
+// the transit link while the namespace's table is missing, and from making it
+// answer segments of no flow towards an address they chose; the replies to the
+// host's own flows are neither new nor invalid. routed_from_pconet keeps a managed guest from
 // using the node as its router to the LAN and the Internet, which an ARP for
 // the node's LAN address and the node's forwarding would allow; frames bridged
 // between two managed guests reach the forward hook with the bridge as both
@@ -37,7 +38,7 @@ func renderHost() string {
 	fmt.Fprintf(&b, `	chain input {
 		type filter hook input priority filter - 10; policy accept;
 		iifname %[1]q counter name "from_pconet" drop
-		iifname %[2]q ct state new counter name "from_transit" drop
+		iifname %[2]q ct state invalid,new counter name "from_transit" drop
 	}
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;
@@ -53,7 +54,7 @@ func renderHost() string {
 const hostListedRules = `{
 "input": [
 [{"match":{"op":"==","left":{"meta":{"key":"iifname"}},"right":"pconet"}},{"counter":"from_pconet"},{"drop":null}],
-[{"match":{"op":"==","left":{"meta":{"key":"iifname"}},"right":"pcotr0"}},{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"new"}},{"counter":"from_transit"},{"drop":null}]
+[{"match":{"op":"==","left":{"meta":{"key":"iifname"}},"right":"pcotr0"}},{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":["invalid","new"]}},{"counter":"from_transit"},{"drop":null}]
 ],
 "forward": [
 [{"match":{"op":"==","left":{"meta":{"key":"iifname"}},"right":"pconet"}},{"match":{"op":"!=","left":{"meta":{"key":"oifname"}},"right":"pconet"}},{"counter":"routed_from_pconet"},{"drop":null}],

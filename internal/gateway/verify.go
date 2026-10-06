@@ -34,6 +34,7 @@ func (b *hostBackend) Verify(ctx context.Context) error {
 	for _, l := range b.legs {
 		v.leg(l)
 	}
+	v.strayLegs()
 	v.tables(ctx)
 	for _, s := range b.sticky {
 		v.sticky(s)
@@ -136,6 +137,34 @@ func (v *verifier) transit() {
 	v.up(inNS, nsTransit)
 	v.addr(onHost, hostTransit, netip.PrefixFrom(TransitHost, transitBits), false)
 	v.addr(inNS, nsTransit, netip.PrefixFrom(TransitNS, transitBits), false)
+	v.sysctls(onHost, [][2]string{{"net.ipv6.conf." + hostTransit + ".disable_ipv6", "1"}})
+	v.sysctls(inNS, ifaceSysctls(nsTransit))
+}
+
+// strayLegs names the pairs of marks no leg has.
+func (v *verifier) strayLegs() {
+	marks := map[int]bool{}
+	for _, l := range v.b.legs {
+		marks[l.Mark] = true
+	}
+	for _, e := range []struct {
+		s    side
+		mark func(string) (int, bool)
+	}{{onHost, markOfPort}, {inNS, markOfIface}} {
+		if v.err != nil {
+			return
+		}
+		links, err := v.b.sys.links(e.s)
+		if err != nil {
+			v.fail(fmt.Errorf("listing the links in %s: %w", e.s, err))
+			return
+		}
+		for _, l := range links {
+			if m, ok := e.mark(l.name); ok && !marks[m] {
+				v.differs("%s is the leg of no network", l.name)
+			}
+		}
+	}
 }
 
 // leg compares what Sync made of a leg: the pair, its bridge, VLAN and MTU,
@@ -177,14 +206,36 @@ func (v *verifier) leg(l Leg) {
 	}
 	v.vlans(port, filtering, l.VLAN)
 	v.fdb(port, l.MAC, fdbVLAN(filtering, l.VLAN))
-	if !rec.raised {
+	v.sysctls(onHost, [][2]string{{"net.ipv6.conf." + port + ".disable_ipv6", "1"}})
+	v.sysctls(inNS, ifaceSysctls(iface))
+	if rec.raised {
+		v.addr(inNS, iface, l.Prefix, true)
+	}
+	v.table(tableBase+l.Mark, legTable(l, rec.raised))
+	v.rule(legRule(l))
+}
+
+// table compares a leg's table whole: a route more is a difference as a
+// route less is.
+func (v *verifier) table(table int, want []route) {
+	if v.err != nil {
 		return
 	}
-	v.addr(inNS, iface, l.Prefix, true)
-	table := tableBase + l.Mark
-	v.route(inNS, route{table: table, unreachable: true})
-	v.route(inNS, route{table: table, dst: l.Prefix.Masked(), dev: iface, src: l.Prefix.Addr()})
-	v.rule(rule{pref: ruleBase + l.Mark, mark: l.Mark, table: table})
+	have, err := v.b.sys.routes(inNS, table)
+	if err != nil {
+		v.fail(fmt.Errorf("reading table %d in %s: %w", table, inNS, err))
+		return
+	}
+	for _, r := range want {
+		if !slices.Contains(have, r) {
+			v.differs("the route %s is missing in %s", r, inNS)
+		}
+	}
+	for _, r := range have {
+		if !slices.Contains(want, r) {
+			v.differs("the route %s is not pco's", r)
+		}
+	}
 }
 
 func (v *verifier) vlans(port string, filtering bool, vlan int) {
@@ -221,16 +272,24 @@ func (v *verifier) fdb(port string, mac []byte, vlan int) {
 	}
 }
 
+// rule compares the rules of a leg's mark: the leg's own is there, and no
+// other is at its preference or on its mark.
 func (v *verifier) rule(want rule) {
 	if v.err != nil {
 		return
 	}
 	have, err := v.b.sys.rules(inNS)
-	switch {
-	case err != nil:
+	if err != nil {
 		v.fail(fmt.Errorf("reading the rules: %w", err))
-	case !slices.Contains(have, want):
+		return
+	}
+	if !slices.Contains(have, want) {
 		v.differs("%s is missing", want)
+	}
+	for _, r := range have {
+		if r != want && (r.pref == want.pref || r.mark == want.mark) {
+			v.differs("%s is not pco's", r)
+		}
 	}
 }
 
@@ -318,13 +377,12 @@ func (b *hostBackend) Down(ctx context.Context) error {
 	if err := b.hostNft.Apply(ctx, fmt.Sprintf("add table inet %[1]s\ndelete table inet %[1]s\n", hostTable)); err != nil {
 		return fmt.Errorf("removing table inet %s: %w", hostTable, err)
 	}
-	if err := b.syncSticky(nil); err != nil {
+	if err := b.syncSticky(nil, true); err != nil {
 		return err
 	}
-	if pinned {
-		if err := b.sys.removeNamespace(); err != nil {
-			return fmt.Errorf("removing the namespace %s: %w", Namespace, err)
-		}
+	// Also without a namespace: an empty file a pin that failed left goes.
+	if err := b.sys.removeNamespace(); err != nil {
+		return fmt.Errorf("removing the namespace %s: %w", Namespace, err)
 	}
 	b.legs, b.services, b.pins, b.sticky = nil, nil, nil, nil
 	b.records = map[string]*legRecord{}

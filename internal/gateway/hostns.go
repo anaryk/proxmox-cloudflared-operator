@@ -83,17 +83,22 @@ func newHost(sys system, nsNft, hostNft Nft, log zerolog.Logger, now func() time
 func (b *hostBackend) Netns() netns.NsHandle { return b.sys.handle() }
 
 // Up brings up, in this order, the fallback route of the service prefix,
-// the namespace with its sysctls, the transit link, the route through it,
-// the namespace's table and the host's table, and the sysctl of the managed
-// bridge. It reads each before it changes it, and changes only what differs.
+// the host's table, the namespace with its sysctls and its table, the transit
+// link, the route through it, and the sysctl of the managed bridge. It reads each before it changes it, and changes only what differs.
 func (b *hostBackend) Up(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.up(ctx)
 }
 
+// Both tables are loaded before the transit link is made, so that nothing
+// passes it unfiltered, also after a flush of the ruleset; they name the
+// interfaces and load without them.
 func (b *hostBackend) up(ctx context.Context) error {
 	if err := b.ensureRoute(onHost, fallbackRoute()); err != nil {
+		return err
+	}
+	if err := b.ensureHostTable(ctx); err != nil {
 		return err
 	}
 	if err := b.namespace(true); err != nil {
@@ -105,16 +110,13 @@ func (b *hostBackend) up(ctx context.Context) error {
 	if err := b.ensureUp(inNS, "lo"); err != nil {
 		return err
 	}
+	if err := b.ensureTable(ctx, false); err != nil {
+		return err
+	}
 	if err := b.transit(); err != nil {
 		return err
 	}
 	if err := b.ensureRoute(onHost, transitRoute()); err != nil {
-		return err
-	}
-	if err := b.ensureTable(ctx, false); err != nil {
-		return err
-	}
-	if err := b.ensureHostTable(ctx); err != nil {
 		return err
 	}
 	return b.pconetSysctl()

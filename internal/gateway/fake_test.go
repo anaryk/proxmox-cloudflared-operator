@@ -80,10 +80,17 @@ type fakeSystem struct {
 	host, ns *fakeNet
 	canPin   bool
 	calls    []string
+	// order is every change in order, those of the fake nft among them.
+	order []string
 	// answers are the MACs that answer a probe for an address.
 	answers map[netip.Addr][]net.HardwareAddr
 	// fail makes the change whose line starts with a key fail.
 	fail map[string]error
+	// fdbReads counts the reads of the forwarding entries of each port.
+	fdbReads map[string]int
+	// leftoverPin is an empty file where the pin would be, left by a pin
+	// that failed: no namespace, and not pinned.
+	leftoverPin bool
 }
 
 func newFakeSystem() *fakeSystem {
@@ -115,6 +122,7 @@ func (f *fakeSystem) change(format string, args ...any) error {
 		}
 	}
 	f.calls = append(f.calls, line)
+	f.order = append(f.order, line)
 	return nil
 }
 
@@ -144,6 +152,13 @@ func (f *fakeSystem) openNamespace() error {
 }
 
 func (f *fakeSystem) removeNamespace() error {
+	if f.ns == nil {
+		if !f.leftoverPin {
+			return nil
+		}
+		f.leftoverPin = false
+		return f.change("remove pin")
+	}
 	if err := f.change("remove namespace"); err != nil {
 		return err
 	}
@@ -370,6 +385,9 @@ func (f *fakeSystem) fdb(port string) ([]fdbEntry, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s: no such link", port)
 	}
+	if f.fdbReads != nil {
+		f.fdbReads[port]++
+	}
 	return slices.Clone(l.fdb), nil
 }
 
@@ -520,6 +538,7 @@ func (f *fakeSystem) dial(_ context.Context, mark int, src netip.Addr, dst netip
 // testdata with the elements put in.
 type fakeNft struct {
 	t       *testing.T
+	order   *[]string // where its transactions go among the changes of the system
 	tables  map[string]*fakeTable
 	scripts []string
 	fail    error
@@ -594,6 +613,10 @@ func (n *fakeNft) Apply(_ context.Context, script string) error {
 	}
 	n.tables = next
 	n.scripts = append(n.scripts, script)
+	if n.order != nil {
+		first, _, _ := strings.Cut(strings.TrimPrefix(script, "add table inet "), "\n")
+		*n.order = append(*n.order, "nft "+first)
+	}
 	return nil
 }
 
@@ -764,6 +787,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	h := &harness{sys: newFakeSystem(), nsNft: newFakeNft(t), hostNft: newFakeNft(t), now: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)}
+	h.nsNft.order, h.hostNft.order = &h.sys.order, &h.sys.order
 	h.b = newHost(h.sys, h.nsNft, h.hostNft, zerolog.Nop(), func() time.Time { return h.now })
 	return h
 }
