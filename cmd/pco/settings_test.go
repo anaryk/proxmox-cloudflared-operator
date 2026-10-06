@@ -53,6 +53,17 @@ func TestSettingsShowGolden(t *testing.T) {
 	require.Empty(t, e.called())
 }
 
+// A limit of a key of a setting that is an object stands beside that
+// setting, with the key it is of.
+func TestSettingsShowNamesTheLimitsOfTheKeysOfASetting(t *testing.T) {
+	r, _ := daemonWithSettings(t)
+
+	res := r.run("", "settings", "show")
+
+	require.NoError(t, res.err)
+	require.Regexp(t, `(?m)^  managed +consent=per-guest, detachGrace=10m0s, subnet=10\.203\.118\.0/24 \(detachGrace: at least 1m0s\)$`, res.out)
+}
+
 func TestSettingsShowSaysWhatTheDaemonNoted(t *testing.T) {
 	e := &fakeEngine{state: healthyState(), settings: someSettings()}
 	e.settings.Notes = []string{"settings: pollInterval is 1s in /etc/pve/pco/meta/settings.json, below the minimum of 5s; 5s is used until it is raised there"}

@@ -70,7 +70,8 @@ func (a *app) settingsShowCmd() *cobra.Command {
 }
 
 // renderSettings writes every setting, in the order of store.Settings, with
-// its range and whether it is read at start, as the daemon says.
+// its range and whether it is read at start, as the daemon says. A setting
+// that is an object has the ranges of its keys, each named.
 func renderSettings(w io.Writer, v engine.SettingsView) error {
 	s := &screen{w: w}
 	s.printf("Settings at revision %d:\n", v.Rev)
@@ -81,6 +82,11 @@ func renderSettings(w io.Writer, v engine.SettingsView) error {
 		var notes []string
 		if l, ok := v.Limits[name]; ok {
 			notes = append(notes, limitText(l))
+		}
+		for _, limited := range slices.Sorted(maps.Keys(v.Limits)) {
+			if key, ok := strings.CutPrefix(limited, name+"."); ok {
+				notes = append(notes, key+": "+limitText(v.Limits[limited]))
+			}
 		}
 		if slices.Contains(v.ReadAtStart, name) {
 			notes = append(notes, "read at start")
