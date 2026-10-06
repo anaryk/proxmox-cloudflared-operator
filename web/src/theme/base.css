@@ -436,6 +436,23 @@ button.pill {
   white-space: normal;
 }
 
+/* A row of two lines is 18 px higher, as Table.tsx counts it (secondLine);
+ * each line of its cell is cut with an ellipsis of its own. */
+.table.table-lines-2 td {
+  height: calc(var(--row) + 18px);
+}
+
+.cell-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-line + .cell-line {
+  font-size: 12px;
+}
+
 /* tabs */
 
 .tabs {
@@ -1036,6 +1053,16 @@ bdi {
 
   .table .table-row td.lead::before {
     display: none;
+  }
+
+  /* the lead cell of a row of two lines takes two lines of the card */
+  .table.table-lines-2 .table-row td.lead {
+    height: 40px;
+  }
+
+  .table.table-lines-2 .table-row td.lead > .cell {
+    display: flex;
+    flex-direction: column;
   }
 
   .drawer {

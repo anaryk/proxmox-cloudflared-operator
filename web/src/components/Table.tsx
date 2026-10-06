@@ -33,6 +33,9 @@ export interface TableProps<T> {
   empty?: ReactNode
   // A class of its own for a row, such as one that marks an error.
   rowClass?: (row: T) => string | undefined
+  // Rows of two lines, for a lead cell with a second line under its value,
+  // such as a note. On a phone that cell takes two lines of the card.
+  lines?: 1 | 2
 }
 
 // Rows above and below those in view that are in the DOM as well.
@@ -47,6 +50,8 @@ const cards = '(max-width: 719px)'
 export const headHeight = 30
 export const cardLine = 20
 export const cardPadding = 17
+// What the second line of a row of two adds to its height on a desktop.
+export const secondLine = 18
 
 function followCards(changed: () => void): () => void {
   const query = window.matchMedia(cards)
@@ -73,7 +78,7 @@ function onControl(e: MouseEvent<HTMLTableRowElement>): boolean {
 // It is one stop of the Tab key; the arrow keys, Page Up, Page Down, Home and
 // End move between the rows, which keep the order they are shown in. Screen
 // readers are told the number of rows and where each one is.
-export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate, current, height = 560, empty, rowClass }: TableProps<T>) {
+export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate, current, height = 560, empty, rowClass, lines = 1 }: TableProps<T>) {
   const { density } = usePreferences()
   const asCards = useCards()
   const scroller = useRef<HTMLDivElement>(null)
@@ -99,7 +104,7 @@ export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate
     return () => observer.disconnect()
   }, [height])
 
-  const rowHeight = asCards ? columns.length * cardLine + cardPadding : rowHeights[density]
+  const rowHeight = asCards ? (columns.length + lines - 1) * cardLine + cardPadding : rowHeights[density] + (lines - 1) * secondLine
   const head = asCards ? 0 : headHeight
   const inView = Math.ceil(viewport / rowHeight)
   const top = Math.floor(scrollTop / rowHeight)
@@ -171,7 +176,7 @@ export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate
       style={{ maxHeight: height }}
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
     >
-      <table role="table" className="table" aria-label={label} aria-rowcount={sorted.length + 1}>
+      <table role="table" className={lines === 2 ? 'table table-lines-2' : 'table'} aria-label={label} aria-rowcount={sorted.length + 1}>
         <thead>
           <tr role="row" aria-rowindex={1}>
             {columns.map((c) => {

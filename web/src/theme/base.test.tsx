@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import { Banner } from '../components/Banner'
-import { cardLine, cardPadding, type Column, headHeight, Table } from '../components/Table'
+import { cardLine, cardPadding, type Column, headHeight, secondLine, Table } from '../components/Table'
 import { Tooltip } from '../components/Tooltip'
 import base from './base.css?raw'
 import { rowHeights } from './theme'
@@ -67,6 +67,14 @@ describe('a table on a desktop', () => {
     expect(style(cell).height).toBe(`${rowHeights.compact}px`)
   })
 
+  test('a row of two lines is as high as Table.tsx counts it, in both densities', () => {
+    render(<Table label="Routes" columns={columns} rows={rows} rowKey={(r) => r.hostname} lines={2} />)
+    const [cell] = screen.getAllByRole('cell')
+    expect(style(cell).height).toBe(`calc(${rowHeights.comfortable}px + ${secondLine}px)`)
+    document.documentElement.dataset.density = 'compact'
+    expect(style(cell).height).toBe(`calc(${rowHeights.compact}px + ${secondLine}px)`)
+  })
+
   test('a long value is cut with an ellipsis, not wrapped onto a second line', () => {
     const cell = style(table()[0])
     expect([cell.whiteSpace, cell.overflow, cell.textOverflow, cell.maxWidth]).toEqual(['nowrap', 'hidden', 'ellipsis', '0'])
@@ -94,6 +102,13 @@ describe('a table on a phone', () => {
   test('a long value ends in an ellipsis', () => {
     const value = style(table()[0]?.querySelector('.cell'))
     expect([value.minWidth, value.whiteSpace, value.overflow, value.textOverflow]).toEqual(['0', 'nowrap', 'hidden', 'ellipsis'])
+  })
+
+  test('the lead cell of a row of two lines takes two lines of the card', () => {
+    render(<Table label="Routes" columns={columns} rows={rows} rowKey={(r) => r.hostname} lines={2} />)
+    const [lead, other] = screen.getAllByRole('cell')
+    expect(style(lead).height).toBe(`${2 * cardLine}px`)
+    expect(style(other).height).toBe(`${cardLine}px`)
   })
 })
 

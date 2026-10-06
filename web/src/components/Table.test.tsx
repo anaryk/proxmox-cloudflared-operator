@@ -196,6 +196,19 @@ describe('Table', () => {
     expect(roles('td')).toEqual(['cell', 'cell'])
   })
 
+  test('rows of two lines: fewer of them in view, and the spacers count them so', () => {
+    render(<Table label="Routes" columns={columns} rows={routes} rowKey={(r) => r.hostname} height={680} lines={2} />)
+    // 680 px at 34 + 18 px a row: 14 rows in view, and 10 below
+    expect(bodyRows()).toHaveLength(24)
+    expect(screen.getByRole('table').classList.contains('table-lines-2')).toBe(true)
+    const scroller = document.querySelector('.table-scroll') as HTMLElement
+    scroller.scrollTop = 52 * 1000
+    fireEvent.scroll(scroller)
+    expect(indexes()[0]).toBe(990 + 2)
+    const [before] = [...document.querySelectorAll<HTMLElement>('.table-spacer td')]
+    expect(before?.style.height).toBe(`${990 * 52}px`)
+  })
+
   test('the width of a phone is listened for once, not at each render', () => {
     const listen = vi.spyOn(Object.getPrototypeOf(window.matchMedia('(max-width: 719px)')), 'addEventListener')
     show()
