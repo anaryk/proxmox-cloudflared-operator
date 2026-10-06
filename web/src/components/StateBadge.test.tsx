@@ -2,7 +2,7 @@ import { render } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'
 
 import { routeStateOrder } from '../gen/words.gen'
-import { LevelBadge, StateBadge, StatusBadge } from './StateBadge'
+import { LevelBadge, routeLook, StateBadge, StatusBadge } from './StateBadge'
 
 describe('StateBadge', () => {
   test.each(routeStateOrder)('%s: an icon and the word, never the colour alone', (state) => {
@@ -24,6 +24,17 @@ describe('StateBadge', () => {
   ])('%s is %s', (state, tone) => {
     const { container } = render(<StateBadge state={state} />)
     expect(container.querySelector('.status')?.classList.contains(tone)).toBe(true)
+  })
+
+  test('a state without its badge looks as in it', () => {
+    for (const state of routeStateOrder) {
+      const { container } = render(<StateBadge state={state} />)
+      const look = routeLook(state)
+      expect(container.querySelector('.status')?.classList.contains(`status-${look.tone}`)).toBe(true)
+      const own = render(<look.Icon />).container.querySelector('svg')
+      expect(own?.isEqualNode(container.querySelector('svg'))).toBe(true)
+    }
+    expect(routeLook('odd').tone).toBe('idle')
   })
 
   test('a state of a newer daemon is shown as it is, as untrusted text', () => {

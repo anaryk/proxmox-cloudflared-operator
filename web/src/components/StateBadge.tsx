@@ -18,7 +18,7 @@ import {
 } from './icons'
 import { Untrusted } from './Untrusted'
 
-interface Look {
+export interface Look {
   tone: Tone
   Icon: ComponentType<IconProps>
 }
@@ -48,6 +48,13 @@ const routeStates: Readonly<Record<string, Look>> = {
   // a refusal of the settings, not an error
   rejected: { tone: 'warn', Icon: RejectedIcon },
   frozen: { tone: 'idle', Icon: FrozenIcon },
+}
+
+// routeLook is the tone and icon of a route's state, for a place too small
+// for the badge; the word goes with it in its label. A state of a newer
+// daemon looks unknown.
+export function routeLook(state: string): Look {
+  return lookOf(routeStates, state) ?? { tone: 'idle', Icon: InfoIcon }
 }
 
 export function StateBadge({ state }: { state: string }) {
