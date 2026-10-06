@@ -874,6 +874,12 @@ bdi {
   white-space: nowrap;
 }
 
+/* Beside its term, a time breaks between its date, time and offset where a
+   small phone has no room for it on one line. */
+.details .time {
+  white-space: normal;
+}
+
 /* commands */
 
 .command-line {
