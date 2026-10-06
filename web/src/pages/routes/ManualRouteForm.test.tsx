@@ -113,6 +113,16 @@ describe('a new manual route', () => {
     expect(window.location.pathname).toBe('/routes/manual/app')
   })
 
+  test('a failed read of the guests is said at the picker, not taken for no guests', async () => {
+    stubFetch(({ url }) => (url === '/api/v1/guests' ? json({ error: 'the pco daemon does not answer on its socket', code: 'daemon_unreachable' }, 502) : json([])))
+    const { store } = await fakeStore({ state: populated })
+    await show(store, <ManualRoutePage />)
+    fireEvent.click(screen.getByRole('radio', { name: /a guest/ }))
+    const guest = screen.getByRole('combobox', { name: 'Guest' })
+    const hint = document.getElementById(guest.getAttribute('aria-describedby') ?? '')
+    expect(hint?.textContent).toBe('The guests could not be read: The pco daemon does not answer. Published routes keep working; nothing changes until it is back.')
+  })
+
   test('a hostname another owner holds: the form says the route competes for it', async () => {
     stubFetch(() => json([]))
     const { store } = await fakeStore({ state: populated })
@@ -189,6 +199,7 @@ describe('a stored manual route', () => {
       },
     ])
     expect(screen.getByRole('alert').textContent).toBe('refused: the manual route manual/status changed since it was read at revision 2; read it again')
+    expect(screen.getByText('Look again reads the route as it is now: the changes made here are dropped.')).toBeTruthy()
     // another admin saved revision 3 meanwhile
     current = { ...stored, rev: 3, target: { ...stored.target, port: 9100 } }
     fireEvent.click(screen.getByRole('button', { name: 'Look again' }))

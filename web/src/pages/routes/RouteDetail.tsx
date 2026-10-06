@@ -166,7 +166,7 @@ function Overview({ route, st, admin }: { route: RouteView; st: State; admin: bo
                 {tunnel?.id && (
                   <>
                     {' '}
-                    · <span className="mono">{tunnel.id.slice(0, 8)}</span>
+                    · <Untrusted className="mono" text={tunnel.id.slice(0, 8)} />
                   </>
                 )}
               </Link>
@@ -270,11 +270,14 @@ export function RouteDetail(props: { hostname: string; owner?: string; variant: 
   }
 
   const lost = route.state === 'conflict'
-  const holder = lost ? holderOf(st.routes, route.hostname) : undefined
+  // The route the daemon diagnoses: the one that holds the hostname, or the
+  // first that asks for it when every one of them lost it.
+  const holder = holderOf(st.routes, route.hostname)
+  const diagnosed = holder?.owner === route.owner
   const others = same.filter((r) => r.owner !== route.owner)
   const tabs = [
     { id: 'overview', label: 'Overview' },
-    ...(lost ? [] : [{ id: 'diagnosis', label: diagnosisTab }]),
+    ...(diagnosed ? [{ id: 'diagnosis', label: diagnosisTab }] : []),
     { id: 'timeline', label: 'Timeline' },
     { id: 'claim', label: 'Claim' },
   ]
@@ -304,13 +307,20 @@ export function RouteDetail(props: { hostname: string; owner?: string; variant: 
           .
         </p>
       )}
-      {lost && holder && holder.owner !== route.owner && (
+      {lost && holder && !diagnosed && (
         <NoteLine>
           This route lost its hostname to <Untrusted text={holder.owner} />. The daemon diagnoses the route that holds it:{' '}
           <Link to={routeLink(holder.hostname, holder.owner)}>
             the route of <Untrusted text={holder.owner} />
           </Link>
           .
+        </NoteLine>
+      )}
+      {lost && diagnosed && (
+        <NoteLine>
+          {admin
+            ? 'Every route that asks for this hostname lost it. The daemon diagnoses the first of them, this one.'
+            : 'No route you can see holds this hostname. The daemon diagnoses the route that holds it, and runs the diagnosis for you only when that route is one you can see.'}
         </NoteLine>
       )}
       <div className="detail-actions">

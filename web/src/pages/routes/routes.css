@@ -262,6 +262,10 @@
   color: var(--text2);
 }
 
+.diagnosis-when:empty {
+  margin: 0;
+}
+
 /* the history of a route */
 
 .timeline {

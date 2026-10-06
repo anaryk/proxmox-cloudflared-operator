@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { type AppStore, StoreProvider } from '../../api/store'
-import type { Event, RouteSeries } from '../../api/types.gen'
+import type { Event, RouteSeries, State } from '../../api/types.gen'
 import { ToastProvider } from '../../components/Toast'
 import claims from '../../fixtures/claims.json'
 import populated from '../../fixtures/populated.json'
@@ -74,6 +74,15 @@ describe('the overview of a route', () => {
     expect(tunnel.getAttribute('href')).toBe('/edge/tunnels/acc1')
     expect(detail('Candidates')?.textContent).toBe('10.0.0.11 static ok port')
     expect(within(detail('Owner') as HTMLElement).getByRole('link').getAttribute('href')).toBe('/guests/qemu/101')
+  })
+
+  test("the start of the tunnel's id is Cloudflare's text, shown as such", async () => {
+    stubFetch()
+    const st = populated as unknown as State
+    const { store } = await fakeStore({ state: { ...st, tunnels: st.tunnels.map((t) => ({ ...t, id: 'ab\u202ecdef0-0000' })) } })
+    show(store, 'www.example.com', 'qemu/101')
+    const tunnel = within(detail('Tunnel') as HTMLElement).getByRole('link')
+    expect(tunnel.textContent).toBe('account Main · ab⟨U+202E⟩cdef0')
   })
 
   test('a link opens exact names only', async () => {

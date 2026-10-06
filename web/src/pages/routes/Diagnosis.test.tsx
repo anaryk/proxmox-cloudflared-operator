@@ -7,7 +7,7 @@ import { ToastProvider } from '../../components/Toast'
 import golden from '../../fixtures/diagnose.json'
 import populated from '../../fixtures/populated.json'
 import { fakeStore, flush } from '../../test/store'
-import { Diagnosis, skippedWord } from './Diagnosis.tsx'
+import { Diagnosis, hiddenHolder, skippedWord } from './Diagnosis.tsx'
 import { diagnoses } from './diagnosis.ts'
 import { RouteDetail } from './RouteDetail'
 
@@ -87,7 +87,7 @@ describe('a diagnosis', () => {
     const { store } = await fakeStore({ state: populated })
     show(store)
     fireEvent.click(screen.getByRole('button', { name: 'Run diagnosis' }))
-    expect(screen.getByRole('status').textContent).toBe('Diagnosing')
+    expect(screen.getAllByRole('status').map((s) => s.textContent)).toContain('Diagnosing')
     expect(screen.getByText('0 s')).toBeTruthy()
     const button = screen.getByRole('button', { name: 'Run diagnosis' })
     expect(button.getAttribute('aria-disabled')).toBe('true')
@@ -97,6 +97,28 @@ describe('a diagnosis', () => {
       await flush()
     })
     expect(screen.getByRole('button', { name: 'Run diagnosis' }).getAttribute('aria-disabled')).toBeNull()
+  })
+
+  test('the result is said to a screen reader: its line is a status there before the result', async () => {
+    stubFetch(() => json(steps))
+    const { store } = await fakeStore({ state: populated })
+    show(store)
+    const line = document.querySelector('.diagnosis-when') as HTMLElement
+    expect(line.getAttribute('role')).toBe('status')
+    expect(line.textContent).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'Run diagnosis' }))
+    await screen.findByRole('list', { name: 'Steps of the diagnosis' })
+    expect(document.querySelector('.diagnosis-when')).toBe(line)
+    expect(line.textContent).toMatch(/^Run in this browser at /)
+  })
+
+  test('a reader whose holder is hidden is told so, not that the route is gone', async () => {
+    stubFetch(() => json({ error: 'not found: pco has no such guest or route', code: 'not_found' }, 404))
+    const { store } = await fakeStore({ state: populated, session: { role: 'reader' } })
+    show(store)
+    fireEvent.click(screen.getByRole('button', { name: 'Run diagnosis' }))
+    expect(await screen.findByText(hiddenHolder)).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   test('too many: the time to wait', async () => {
@@ -170,5 +192,44 @@ describe('the tab of the diagnosis', () => {
     )
     expect(tabs()).toEqual(['Overview', 'Timeline', 'Claim'])
     expect(screen.getByRole('link', { name: 'the route of qemu/101' }).getAttribute('href')).toBe('/routes/www.example.com?owner=qemu%2F101')
+  })
+
+  test('when every route of a hostname lost it, is on the first, which the daemon diagnoses', async () => {
+    const st = populated as unknown as State
+    const lost = { ...st, routes: st.routes.map((r) => ({ ...r, state: 'conflict', reason: 'hostname is held by qemu/103' })) }
+    const { store } = await fakeStore({ state: lost })
+    const { unmount } = render(
+      <StoreProvider store={store}>
+        <ToastProvider>
+          <RouteDetail hostname="www.example.com" owner="qemu/101" variant="drawer" />
+        </ToastProvider>
+      </StoreProvider>,
+    )
+    expect(tabs()).toEqual(['Overview', 'Diagnosis of the current holder', 'Timeline', 'Claim'])
+    expect(screen.getByText(/^Every route that asks for this hostname lost it/)).toBeTruthy()
+    unmount()
+    render(
+      <StoreProvider store={store}>
+        <ToastProvider>
+          <RouteDetail hostname="www.example.com" owner="qemu/102" variant="drawer" />
+        </ToastProvider>
+      </StoreProvider>,
+    )
+    expect(tabs()).toEqual(['Overview', 'Timeline', 'Claim'])
+    expect(screen.getByRole('link', { name: 'the route of qemu/101' })).toBeTruthy()
+  })
+
+  test('a reader who sees only a route that lost its hostname may try, and is told the holder may be hidden', async () => {
+    const st = populated as unknown as State
+    const { store } = await fakeStore({ state: { ...st, routes: st.routes.filter((r) => r.owner === 'qemu/102') }, session: { role: 'reader' } })
+    render(
+      <StoreProvider store={store}>
+        <ToastProvider>
+          <RouteDetail hostname="www.example.com" owner="qemu/102" variant="drawer" />
+        </ToastProvider>
+      </StoreProvider>,
+    )
+    expect(tabs()).toEqual(['Overview', 'Diagnosis of the current holder', 'Timeline', 'Claim'])
+    expect(screen.getByText(/^No route you can see holds this hostname/)).toBeTruthy()
   })
 })

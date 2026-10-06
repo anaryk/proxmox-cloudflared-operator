@@ -15,7 +15,7 @@ import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
 import { marked } from '../../text/chars'
 import { bodyOf, fieldOfPath, type ManualErrors, type ManualField, type ManualValues, needsNodeQuestion, normalHostname, serviceOf, validate, valuesOf } from './manual'
-import { ErrorText, NoteLine, PageHead, readerReason, RoutesNav, useAdmin } from './parts'
+import { ErrorText, errorMessage, NoteLine, PageHead, readerReason, RoutesNav, useAdmin } from './parts'
 import { manualPrefix, ownerName, routeLink } from './routes'
 
 // heldBy is the owner that holds a hostname now, when that is not the route
@@ -28,13 +28,14 @@ function useHeldBy(hostname: string, self: string | undefined): string | undefin
   return ownerName(holder.owner, holder.guest)
 }
 
-function useGuests(): GuestListView[] | undefined {
-  const [guests, setGuests] = useState<GuestListView[]>()
+// useGuests reads the guests for the picker, or why they could not be read.
+function useGuests(): GuestListView[] | ApiError | undefined {
+  const [guests, setGuests] = useState<GuestListView[] | ApiError>()
   useEffect(() => {
     let on = true
     api<GuestListView[]>('GET', '/api/v1/guests', undefined, { background: true }).then(
       (g) => on && setGuests(g ?? []),
-      () => on && setGuests([]),
+      (e: unknown) => on && setGuests(e instanceof ApiError ? e : new ApiError(0, { code: 'internal', error: String(e) })),
     )
     return () => {
       on = false
@@ -148,8 +149,14 @@ export function ManualRouteForm({ route, readOnly, onSaved, onDeleted, onLookAga
         No prefix is allowed yet: add one to manualCIDRs in the <Link to="/settings">settings</Link> first.
       </>
     )
-  const guestList = guests ?? []
+  const guestList = Array.isArray(guests) ? guests : []
   const listed = guestList.some((g) => g.ref === v.guest)
+  const guestHint =
+    guests === undefined ? (
+      'Loading the guests…'
+    ) : guests instanceof ApiError ? (
+      <Untrusted text={`The guests could not be read: ${errorMessage(guests)}`} />
+    ) : undefined
 
   const text = (k: 'id' | 'hostname' | 'addr' | 'port' | 'hostHeader' | 'sni' | 'via', label: ReactNode, hint?: ReactNode, mono = true) => (
     <Field label={label} hint={hint} error={errors[k]}>
@@ -190,7 +197,7 @@ export function ManualRouteForm({ route, readOnly, onSaved, onDeleted, onLookAga
       </fieldset>
       {v.kind === 'guest' ? (
         <>
-          <Field label="Guest" error={errors.guest} hint={guests === undefined ? 'Loading the guests…' : undefined}>
+          <Field label="Guest" error={errors.guest} hint={guestHint}>
             {(c) => (
               <select {...c} value={v.guest} disabled={readOnly} onChange={(e) => set('guest', e.target.value)}>
                 <option value="">Choose a guest</option>
@@ -236,6 +243,7 @@ export function ManualRouteForm({ route, readOnly, onSaved, onDeleted, onLookAga
         </>
       )}
       {failure !== undefined && <ErrorText error={failure} />}
+      {refused && !isNew && <p className="muted">Look again reads the route as it is now: the changes made here are dropped.</p>}
       {!readOnly && (
         <div className="form-actions">
           <Button type="submit" variant="primary" disabledReason={sending ? 'it is being sent' : undefined}>

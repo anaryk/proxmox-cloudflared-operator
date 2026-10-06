@@ -1,4 +1,4 @@
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
 import { useApp } from '../../api/store'
 import type { Step } from '../../api/types.gen'
 import { Badge } from '../../components/Badge'
@@ -8,9 +8,13 @@ import { Stepper, type Step as StepperStep } from '../../components/Stepper'
 import { Time } from '../../components/Time'
 import { Untrusted } from '../../components/Untrusted'
 import { changedSince, type DiagnosisStore, diagnoses, useDiagnoses } from './diagnosis.ts'
-import { ErrorText } from './parts'
+import { ErrorText, NoteLine, useAdmin } from './parts'
 
 export const skippedWord = 'skipped: an earlier step failed'
+
+// The web process answers a reader as if there were no route when the route
+// that holds the hostname is one the reader may not see.
+export const hiddenHolder = 'The route that holds this hostname is not one you can see, so it cannot be diagnosed for you.'
 
 // stepsOf are the steps of the daemon in the stepper's terms. A step after
 // the first failure is skipped: the daemon says so with skipped, not with a
@@ -36,6 +40,8 @@ export function Diagnosis({ hostname, store = diagnoses }: { hostname: string; s
   const kept = d.kept.get(hostname)
   const failed = d.failed.get(hostname)
   const running = d.running
+  const admin = useAdmin()
+  const hidden = !admin && failed instanceof ApiError && failed.code === 'not_found'
 
   const run = () => void store.run(hostname, digest ?? '', () => api<Step[]>('POST', '/api/v1/diagnose', { hostname }))
 
@@ -50,10 +56,11 @@ export function Diagnosis({ hostname, store = diagnoses }: { hostname: string; s
         </Button>
         {here && <Busy label="Diagnosing" since={running.since} />}
       </div>
-      {failed !== undefined && !here && <ErrorText error={failed} />}
-      {kept && (
-        <section className="diagnosis-result" aria-label="The last diagnosis">
-          <p className="diagnosis-when">
+      {failed !== undefined && !here && (hidden ? <NoteLine>{hiddenHolder}</NoteLine> : <ErrorText error={failed} />)}
+      {/* There before a result is, so that a screen reader says when one came. */}
+      <p className="diagnosis-when" role="status">
+        {kept && (
+          <>
             Run in this browser at <Time at={kept.at} nodeZone={nodeZone} />
             {changedSince(kept, digest) && (
               <>
@@ -61,7 +68,11 @@ export function Diagnosis({ hostname, store = diagnoses }: { hostname: string; s
                 <Badge tone="warn">the state changed since</Badge>
               </>
             )}
-          </p>
+          </>
+        )}
+      </p>
+      {kept && (
+        <section className="diagnosis-result" aria-label="The last diagnosis">
           <Stepper steps={stepsOf(kept.steps)} label="Steps of the diagnosis" />
         </section>
       )}
