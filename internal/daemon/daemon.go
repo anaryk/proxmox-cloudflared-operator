@@ -27,6 +27,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -110,6 +111,10 @@ type Deps struct {
 	// container, changes, which has the gateway checked; default: netlink.
 	Gateway      gateway.Backend
 	WatchGateway func(ctx context.Context, changed func()) error
+	// Namespace runs pco-netns.service, which the daemon starts for a probe,
+	// enables with the first network attached and disables when the last is
+	// detached; default: systemctl.
+	Namespace Netns
 	// The web interface: WebDir holds its certificate, WebEnv is the
 	// environment file of its unit, WebLoaded is where systemd puts what
 	// pco-web.service loaded, ClusterCA and ClusterCAKey are the cluster CA;
@@ -170,6 +175,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.WatchGateway == nil {
 		d.WatchGateway = watchLinksAndRoutes
+	}
+	if d.Namespace == nil {
+		d.Namespace = setup.NewNamespaceUnit(setup.NewHostRunner())
 	}
 	if d.RestartWeb == nil {
 		d.RestartWeb = tryRestartWeb
@@ -424,6 +432,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Access:     client,
 		OwnUser:    ownUser,
 		Gateway:    gw,
+		Networks:   nodeNetworks{proxmox: client, prober: deps.Prober, unit: deps.Namespace},
 
 		StartOnlyFields: wiredFields(),
 	})

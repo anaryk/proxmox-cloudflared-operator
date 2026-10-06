@@ -85,6 +85,15 @@ type Engine interface {
 	Guests() ([]engine.GuestListView, error)
 	Annotation(ref model.GuestRef) (engine.AnnotationView, error)
 	RequestRestart(ctx context.Context) error
+	// The networks reached through a leg: those attached, one of them with
+	// its service addresses, the bridges and VLANs that may be, the probe
+	// of an address on one, and the attach and the detach of a network.
+	Networks() ([]engine.NetworkView, error)
+	Network(id string) (engine.NetworkDetail, error)
+	CandidateNetworks(ctx context.Context) ([]engine.CandidateNetwork, error)
+	ProbeNetwork(ctx context.Context, r engine.ProbeRequest) (engine.ProbeResult, error)
+	Attach(ctx context.Context, r engine.AttachRequest) (engine.NetworkView, error)
+	Detach(ctx context.Context, id string, rev int64, confirm bool) error
 }
 
 // Server answers API requests for an engine.

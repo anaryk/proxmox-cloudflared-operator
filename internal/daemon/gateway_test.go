@@ -22,13 +22,14 @@ import (
 
 // fakeBackend is a gateway backend that records what it is asked, in order.
 type fakeBackend struct {
-	mu      sync.Mutex
-	calls   []string
-	verify  []error // answered in turn; the last one stays
-	upErr   error
-	syncErr error
-	down    map[string]bool // legs Sync reports not up
-	synced  []gateway.Cache // what every Sync was given
+	mu        sync.Mutex
+	calls     []string
+	verify    []error // answered in turn; the last one stays
+	upErr     error
+	syncErr   error
+	detachErr error
+	down      map[string]bool // legs Sync reports not up
+	synced    []gateway.Cache // what every Sync was given
 }
 
 func (f *fakeBackend) record(call string) {
@@ -75,9 +76,15 @@ func (f *fakeBackend) Probe(context.Context, string, int, netip.Addr) ([]net.Har
 	return nil, nil
 }
 
-func (f *fakeBackend) Detach(context.Context, string) error { return nil }
-func (f *fakeBackend) Down(context.Context) error           { return nil }
-func (f *fakeBackend) Netns() netns.NsHandle                { return netns.None() }
+func (f *fakeBackend) Detach(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("detach " + id)
+	return f.detachErr
+}
+
+func (f *fakeBackend) Down(context.Context) error { return nil }
+func (f *fakeBackend) Netns() netns.NsHandle      { return netns.None() }
 
 func (f *fakeBackend) Dial(context.Context, gateway.Leg, netip.AddrPort) (net.Conn, error) {
 	return nil, errors.New("no dial in the fake")
@@ -129,6 +136,39 @@ func TestTheGatewayKeepsWhatItWasLastGiven(t *testing.T) {
 	require.EqualError(t, err, "nft: busy")
 	require.Equal(t, []gateway.Leg{testLeg("vmbr1", 1)}, g.UpLegs(), "a sync that failed says nothing of the legs")
 	require.Equal(t, testCache.Legs[:1], g.wantedNow().Legs, "but is what is wanted now")
+}
+
+// A detached network is no longer wanted: the keeper does not bring its leg
+// back before the next cycle syncs the gateway without it, nor does a boot
+// before that cycle.
+func TestADetachedLegIsNoLongerWanted(t *testing.T) {
+	b := &fakeBackend{}
+	local := t.TempDir()
+	g := newGatewayPart(b, local, func() time.Time { return t0 }, zerolog.Nop())
+	pins := []gateway.Pin{{Leg: "vmbr1", Addr: netip.MustParseAddr("10.50.0.10"), MAC: net.HardwareAddr{0xbc, 0x24, 0x11, 0, 0, 1}}}
+	_, err := g.Sync(t.Context(), testCache.Legs, testCache.Services, pins, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, g.Detach(t.Context(), "vmbr1"))
+
+	require.Equal(t, []string{"sync", "detach vmbr1"}, b.asked())
+	want := g.wantedNow()
+	require.Equal(t, []gateway.Leg{testLeg("vmbr2", 2)}, want.Legs)
+	require.Empty(t, want.Services)
+	require.Empty(t, want.Pins)
+	require.Equal(t, []gateway.Leg{testLeg("vmbr2", 2)}, g.UpLegs())
+	cached, found, err := gateway.ReadCache(local)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, want.Legs, cached.Legs)
+	require.Empty(t, cached.Services)
+
+	require.NoError(t, g.restore(t.Context()))
+	require.Equal(t, []gateway.Leg{testLeg("vmbr2", 2)}, b.lastSync().Legs, "the keeper brings back what is wanted, without the leg")
+
+	b.detachErr = errors.New("the leg is busy")
+	require.EqualError(t, g.Detach(t.Context(), "vmbr2"), "the leg is busy")
+	require.Equal(t, []gateway.Leg{testLeg("vmbr2", 2)}, g.wantedNow().Legs, "a detach that failed changes nothing of what is wanted")
 }
 
 // At its start the daemon takes the cache pco netns up restored the gateway

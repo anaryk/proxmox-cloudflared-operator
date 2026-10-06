@@ -30,6 +30,7 @@ export const fieldHomes: Readonly<Record<string, string>> = {
   offer: 'not shown: a confirmation sends it back with what is on screen (Routes > Plan)',
   unapproved: 'Guests; the Guests counter; the banner of guests waiting for approval',
   segments: 'Networks',
+  networks: 'not shown yet: the attached networks come with the Attach screens of the Networks page; pco network list shows them',
   egress: 'top bar: the Egress pill; the egress banner with its command',
   admission: 'the empty states of Routes and the Overview; Guests',
   gateTagged: 'the empty states of Routes and the Overview',

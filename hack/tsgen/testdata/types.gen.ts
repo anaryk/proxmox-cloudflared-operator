@@ -268,6 +268,14 @@ export interface Issue {
   msg: string
 }
 
+// engine.LegView
+export interface LegView {
+  node: string
+  addr: string
+  up: boolean
+  problem?: string
+}
+
 // engine.Limit
 export interface Limit {
   min?: unknown
@@ -298,6 +306,27 @@ export interface ManualTarget {
   scheme: string
   addr?: string
   port: number
+}
+
+// engine.NetworkView
+export interface NetworkView {
+  id: string
+  kind: string
+  bridge: string
+  vlan?: number
+  prefix: string
+  legs: Record<string, string>
+  legMAC: string
+  mark: number
+  uplink?: boolean
+  overlapOK?: boolean
+  createdAt: string
+  legMACs?: Record<string, string>
+  scope?: string
+  rev?: number
+  legStates: LegView[]
+  targets: number
+  routes: number
 }
 
 // engine.PathView
@@ -474,6 +503,7 @@ export interface State {
   offer?: string
   unapproved: UnapprovedGuest[]
   segments: SegmentView[]
+  networks: NetworkView[]
   egress?: EgressView
   admission?: string
   gateTagged: number
@@ -673,6 +703,7 @@ export const stateFields: readonly string[] = [
   "offer",
   "unapproved",
   "segments",
+  "networks",
   "egress",
   "admission",
   "gateTagged",

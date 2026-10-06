@@ -15,6 +15,7 @@
   "waiting": [],
   "unapproved": [],
   "segments": [],
+  "networks": [],
   "gateTagged": 0,
   "rogueConnectors": []
 }

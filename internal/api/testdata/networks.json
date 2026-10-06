@@ -1,0 +1,25 @@
+[
+  {
+    "id": "vmbr1",
+    "kind": "attach",
+    "bridge": "vmbr1",
+    "prefix": "10.77.0.0/24",
+    "legs": {
+      "pve1": "10.77.0.250"
+    },
+    "legMAC": "02:50:43:4f:00:01",
+    "mark": 1,
+    "overlapOK": true,
+    "createdAt": "2026-03-04T05:06:07Z",
+    "rev": 2,
+    "legStates": [
+      {
+        "node": "pve1",
+        "addr": "10.77.0.250",
+        "up": true
+      }
+    ],
+    "targets": 1,
+    "routes": 1
+  }
+]

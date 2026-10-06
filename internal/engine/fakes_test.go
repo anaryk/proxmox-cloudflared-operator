@@ -735,8 +735,9 @@ type env struct {
 	incarnation string
 	epochDrawn  func() bool
 	// gateway is the gateway the engines a test makes next drive; nil gives
-	// them none.
-	gateway Gateway
+	// them none. networks is what their admin actions of the networks read.
+	gateway  Gateway
+	networks Networks
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -813,6 +814,7 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		Incarnation: e.incarnation,
 		EpochDrawn:  e.epochDrawn,
 		Gateway:     e.gateway,
+		Networks:    e.networks,
 	}
 	if e.acc != nil {
 		d.Access = e.acc

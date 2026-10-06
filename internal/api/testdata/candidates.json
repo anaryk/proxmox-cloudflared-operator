@@ -1,0 +1,43 @@
+[
+  {
+    "bridge": "vmbr0",
+    "vnet": false,
+    "vlanAware": false,
+    "uplink": true,
+    "direct": true,
+    "guests": [],
+    "prefixes": []
+  },
+  {
+    "bridge": "vmbr1",
+    "vnet": false,
+    "vlanAware": false,
+    "uplink": false,
+    "direct": false,
+    "attached": "vmbr1",
+    "guests": [
+      {
+        "guest": {
+          "kind": "qemu",
+          "vmid": 101,
+          "name": "web-1"
+        },
+        "addr": "10.77.0.11",
+        "nic": 0
+      }
+    ],
+    "prefixes": [
+      "10.77.0.0/24"
+    ]
+  },
+  {
+    "bridge": "pconet",
+    "vnet": true,
+    "vlanAware": false,
+    "uplink": false,
+    "direct": false,
+    "guests": [],
+    "prefixes": [],
+    "refused": "pconet is pco's managed network, which is not attached"
+  }
+]

@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -45,4 +46,29 @@ func (c unitControl) ListUnits(ctx context.Context, pattern string) ([]string, e
 	return connector.ListUnits(ctx, func(ctx context.Context, args ...string) (string, error) {
 		return c.run.Run(ctx, "systemctl", args...)
 	}, pattern)
+}
+
+// NamespaceUnit runs pco-netns.service for the daemon, which starts it for
+// the probe before the first network, enables it with the first network and
+// disables it when the last is detached. Start and Enable wait for the unit:
+// the namespace is up when they return. The unit has no stop action, so the
+// stop of Disable takes nothing down.
+type NamespaceUnit struct{ run Runner }
+
+// NewNamespaceUnit returns the unit of the gateway namespace, run through r.
+func NewNamespaceUnit(r Runner) NamespaceUnit { return NamespaceUnit{run: r} }
+
+func (u NamespaceUnit) Start(ctx context.Context) error { return u.systemctl(ctx, "start") }
+
+func (u NamespaceUnit) Enable(ctx context.Context) error { return u.systemctl(ctx, "enable", "--now") }
+
+func (u NamespaceUnit) Disable(ctx context.Context) error {
+	return u.systemctl(ctx, "disable", "--now")
+}
+
+func (u NamespaceUnit) systemctl(ctx context.Context, args ...string) error {
+	if _, err := u.run.Run(ctx, "systemctl", append(args, "--", netnsUnit)...); err != nil {
+		return fmt.Errorf("systemctl %s %s: %w", strings.Join(args, " "), netnsUnit, err)
+	}
+	return nil
 }

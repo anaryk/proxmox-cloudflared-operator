@@ -46,6 +46,9 @@ func (s State) digestView() State {
 	for i := range v.Segments {
 		v.Segments[i].AcknowledgedAt = time.Time{}
 	}
+	for i := range v.Networks {
+		v.Networks[i].CreatedAt = time.Time{}
+	}
 	for i := range v.RogueConnectors {
 		v.RogueConnectors[i].Since = time.Time{}
 	}

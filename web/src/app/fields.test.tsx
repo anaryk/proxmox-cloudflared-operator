@@ -16,7 +16,7 @@ test('every field of the state has a home on the page', () => {
 })
 
 test('a field the daemon adds has none until it is given one', () => {
-  expect(homeless([...stateFields, 'networks'])).toEqual(['networks'])
+  expect(homeless([...stateFields, 'managed'])).toEqual(['managed'])
 })
 
 test('no home is kept for a field the state no longer has', () => {

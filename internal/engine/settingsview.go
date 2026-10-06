@@ -97,6 +97,9 @@ func (e *Engine) SaveSettings(ctx context.Context, rev int, s store.Settings) (S
 		return SettingsView{}, nil, fieldError("observeOnly", "observeOnly: leaving observe-only mode is not a setting, "+
 			"so that what it changes is shown first; use apply (pco apply)")
 	}
+	if err := e.checkManagedSubnet(ctx, old, s); err != nil {
+		return SettingsView{}, nil, err
+	}
 	_, err = e.d.Store.SaveSettingsIf(rev, s)
 	var invalid *store.FieldError
 	switch {

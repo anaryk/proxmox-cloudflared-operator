@@ -1,5 +1,5 @@
 {
-  "digest": "0d2ca49e703420e1",
+  "digest": "8d3eae6e060d248a",
   "mode": "observe",
   "complete": false,
   "routes": [],
@@ -18,6 +18,7 @@
   "waiting": [],
   "unapproved": [],
   "segments": [],
+  "networks": [],
   "gateTagged": 0,
   "rogueConnectors": []
 }

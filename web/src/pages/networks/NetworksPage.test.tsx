@@ -7,7 +7,7 @@ import populated from '../../fixtures/populated.json'
 import { fakeStore, memoryStorage } from '../../test/store'
 import { NetworksPage } from './NetworksPage'
 
-const base = populated as State
+const base = populated as unknown as State
 const manual: RouteView = { hostname: 'status.example.com', owner: 'manual/status', state: 'active', level: 'manual', service: 'http://10.0.5.20:9000', zone: 'example.com' }
 
 // The populated state has a route of qemu/101 proven on vmbr0 with the tag 20,

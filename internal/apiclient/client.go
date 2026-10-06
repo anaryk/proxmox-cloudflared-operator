@@ -398,6 +398,77 @@ func (c *Client) Restart(ctx context.Context) error {
 	return c.call(ctx, c.long, http.MethodPost, "/v1/daemon/restart", nil, nil)
 }
 
+// Networks returns the networks pco reaches through a leg.
+func (c *Client) Networks(ctx context.Context) ([]engine.NetworkView, error) {
+	var nets []engine.NetworkView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/networks", nil, &nets)
+	return nets, err
+}
+
+// NetworksRaw is Networks as the daemon sent it.
+func (c *Client) NetworksRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, "/v1/networks")
+}
+
+// Network returns one network with its service addresses and the routes
+// served through it.
+func (c *Client) Network(ctx context.Context, id string) (engine.NetworkDetail, error) {
+	var n engine.NetworkDetail
+	err := c.call(ctx, c.short, http.MethodGet, networkPath(id), nil, &n)
+	return n, err
+}
+
+// NetworkRaw is Network as the daemon sent it.
+func (c *Client) NetworkRaw(ctx context.Context, id string) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, networkPath(id))
+}
+
+func networkPath(id string) string { return "/v1/networks/" + url.PathEscape(id) }
+
+// CandidateNetworks returns the bridges and VLANs of the node a network may
+// be attached to. The daemon lists the guests for it, which may take a while.
+func (c *Client) CandidateNetworks(ctx context.Context) ([]engine.CandidateNetwork, error) {
+	var out []engine.CandidateNetwork
+	err := c.call(ctx, c.long, http.MethodGet, "/v1/networks/candidates", nil, &out)
+	return out, err
+}
+
+// CandidateNetworksRaw is CandidateNetworks as the daemon sent it.
+func (c *Client) CandidateNetworksRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.long, "/v1/networks/candidates")
+}
+
+// ProbeNetwork asks who answers for an address on a bridge and VLAN. The
+// answer is as the daemon sent it beside its decoded form.
+func (c *Client) ProbeNetwork(ctx context.Context, r engine.ProbeRequest) (engine.ProbeResult, json.RawMessage, error) {
+	var raw json.RawMessage
+	if err := c.call(ctx, c.long, http.MethodPost, "/v1/networks/probe", r, &raw); err != nil {
+		return engine.ProbeResult{}, nil, err
+	}
+	var res engine.ProbeResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return engine.ProbeResult{}, nil, &daemonError{msg: "decoding the answer of the pco daemon: " + err.Error(), cause: err, noAnswer: true}
+	}
+	return res, raw, nil
+}
+
+// Attach attaches a network and returns it as attached.
+func (c *Client) Attach(ctx context.Context, r engine.AttachRequest) (engine.NetworkView, error) {
+	var v engine.NetworkView
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/networks", r, &v)
+	return v, err
+}
+
+// Detach detaches the network id, which was read at revision rev; confirm
+// says that the routes served through it were shown.
+func (c *Client) Detach(ctx context.Context, id string, rev int64, confirm bool) error {
+	q := url.Values{"rev": {strconv.FormatInt(rev, 10)}}
+	if confirm {
+		q.Set("confirm", "true")
+	}
+	return c.call(ctx, c.long, http.MethodDelete, networkPath(id)+"?"+q.Encode(), nil, nil)
+}
+
 // raw returns the answer to a GET as the daemon sent it.
 func (c *Client) raw(ctx context.Context, timeout time.Duration, path string) (json.RawMessage, error) {
 	var raw json.RawMessage

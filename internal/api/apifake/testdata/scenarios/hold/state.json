@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "e84ee993100511fd",
+  "digest": "7f058b4d77a5b927",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -817,6 +817,60 @@
       "vlan": 20,
       "acknowledged": false,
       "routes": 1
+    }
+  ],
+  "networks": [
+    {
+      "id": "vmbr2",
+      "kind": "attach",
+      "bridge": "vmbr2",
+      "prefix": "10.50.0.0/24",
+      "legs": {
+        "pve1": "10.50.0.250"
+      },
+      "legMAC": "02:50:43:4f:00:01",
+      "mark": 1,
+      "overlapOK": true,
+      "createdAt": "2026-09-29T12:00:00Z",
+      "scope": "node",
+      "rev": 3,
+      "legStates": [
+        {
+          "node": "pve1",
+          "addr": "10.50.0.250",
+          "up": true
+        }
+      ],
+      "targets": 1,
+      "routes": 1
+    },
+    {
+      "id": "vmbr3.20",
+      "kind": "attach",
+      "bridge": "vmbr3",
+      "vlan": 20,
+      "prefix": "192.0.2.0/24",
+      "legs": {
+        "pve1": "192.0.2.250"
+      },
+      "legMAC": "02:50:43:4f:00:02",
+      "mark": 2,
+      "uplink": true,
+      "createdAt": "2026-10-01T11:00:00Z",
+      "legMACs": {
+        "pve1": "02:50:43:4f:00:02"
+      },
+      "rev": 1,
+      "legStates": [
+        {
+          "node": "pve1",
+          "addr": "192.0.2.250",
+          "up": false,
+          "problem": "address in use by 52:54:00:12:34:56"
+        }
+      ],
+      "targets": 0,
+      "routes": 0
     }
   ],
   "egress": {

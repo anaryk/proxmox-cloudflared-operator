@@ -133,6 +133,9 @@ type Deps struct {
 	// Gateway is the backend of the networks reached through a leg of pco's
 	// own; nil where none runs, which serves no route on a leg.
 	Gateway Gateway
+	// Networks is what the admin actions of the networks read and run; nil
+	// where they cannot run.
+	Networks Networks
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -279,6 +282,10 @@ type Engine struct {
 	gwInUse     bool
 	legMu       sync.Mutex
 	legStates   []gateway.LegState
+	// freedMarks are the marks of the networks detached since the gateway
+	// was last synced, which no attach takes until it was: guarded by the
+	// cycle lock.
+	freedMarks map[int]bool
 
 	stateMu sync.RWMutex
 	state   State

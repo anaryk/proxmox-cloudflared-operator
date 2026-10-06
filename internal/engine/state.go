@@ -150,6 +150,9 @@ type State struct {
 	// Segments are the bridges and VLANs routes at observed were proven on,
 	// and those acknowledged, by bridge and VLAN.
 	Segments []SegmentView `json:"segments"`
+	// Networks are the networks pco reaches through a leg, by id, with the
+	// leg of this node and what is served through it.
+	Networks []NetworkView `json:"networks"`
 	// Egress is the egress filter as the daemon last found it; empty until
 	// it has looked.
 	Egress EgressView `json:"egress,omitzero"`
@@ -267,6 +270,7 @@ func (s State) clone() State {
 		u.Hostnames, u.Why, u.MACs, u.Addresses = slices.Clone(u.Hostnames), slices.Clone(u.Why), slices.Clone(u.MACs), slices.Clone(u.Addresses)
 	}
 	s.Segments = slices.Clone(s.Segments)
+	s.Networks = cloneNetworks(s.Networks)
 	s.RogueConnectors = slices.Clone(s.RogueConnectors)
 	if id := s.Identity; id != nil {
 		copied := *id
@@ -326,6 +330,7 @@ func (s State) normalized() State {
 		s.Unapproved[i].Why = nonNil(s.Unapproved[i].Why)
 	}
 	s.Segments = nonNil(s.Segments)
+	s.Networks = nonNil(s.Networks)
 	return s
 }
 

@@ -320,7 +320,8 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		backend = gateway.NewContainer(gateway.NewHostNft(), client, own, a.Node, self.Expect, log, gateway.WithNetTable(appnet.Script))
 	}
 	gw := newGatewayPart(backend, cfg.Paths.Local, deps.Now, log)
-	res := resolve.NewResolver(gateway.NewProber(appliance.NewProber(deps.Prober, self.Segments), gw.UpLegs, backend), resolve.Settings{
+	prober := appliance.NewProber(deps.Prober, self.Segments)
+	res := resolve.NewResolver(gateway.NewProber(prober, gw.UpLegs, backend), resolve.Settings{
 		LocalNode:         a.Node,
 		TrustStatic:       settings.TrustStatic,
 		TrustedCIDRs:      settings.TrustedCIDRs,
@@ -352,6 +353,7 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		Incarnation: state.incarnation,
 		EpochDrawn:  self.EpochDrawn,
 		Gateway:     gw,
+		Networks:    nodeNetworks{proxmox: client, prober: prober},
 
 		StartOnlyFields: wiredFields(),
 	})

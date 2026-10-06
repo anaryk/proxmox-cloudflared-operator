@@ -29,8 +29,8 @@ type stateCase struct {
 }
 
 // stateCases are the cases of FilterState, one per field that is filtered
-// or removed (stateFields). The networking milestone adds "networks" and
-// "managed".
+// or removed (stateFields). The managed network of the networking milestone
+// adds "managed".
 var stateCases = []stateCase{
 	{"routes", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
 		st.Routes = only(st.Routes, func(r engine.RouteView) bool { return ownerVisible(r.Owner, visible) })
@@ -71,6 +71,13 @@ var stateCases = []stateCase{
 		}
 		id.Copies, id.Tenants = guests(id.Copies), guests(id.Tenants)
 		st.Identity = &id
+	}},
+	{"networks", func(st *engine.State, _ auth.Visible, _ map[string]bool) {
+		nets := only(st.Networks, func(engine.NetworkView) bool { return true })
+		for i := range nets {
+			nets[i].LegMAC, nets[i].LegMACs = "", nil
+		}
+		st.Networks = nets
 	}},
 }
 

@@ -185,3 +185,23 @@ func (n *noStateEngine) Annotation(model.GuestRef) (engine.AnnotationView, error
 }
 
 func (n *noStateEngine) RequestRestart(context.Context) error { return n.refuse() }
+
+func (n *noStateEngine) Networks() ([]engine.NetworkView, error) { return nil, n.refuse() }
+
+func (n *noStateEngine) Network(string) (engine.NetworkDetail, error) {
+	return engine.NetworkDetail{}, n.refuse()
+}
+
+func (n *noStateEngine) CandidateNetworks(context.Context) ([]engine.CandidateNetwork, error) {
+	return nil, n.refuse()
+}
+
+func (n *noStateEngine) ProbeNetwork(context.Context, engine.ProbeRequest) (engine.ProbeResult, error) {
+	return engine.ProbeResult{}, n.refuse()
+}
+
+func (n *noStateEngine) Attach(context.Context, engine.AttachRequest) (engine.NetworkView, error) {
+	return engine.NetworkView{}, n.refuse()
+}
+
+func (n *noStateEngine) Detach(context.Context, string, int64, bool) error { return n.refuse() }

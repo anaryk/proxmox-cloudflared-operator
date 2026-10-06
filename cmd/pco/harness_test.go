@@ -85,6 +85,14 @@ type fakeEngine struct {
 	guests        []engine.GuestListView
 	configErr     error // what a write of the settings or of a manual route fails with
 
+	// The networks: those attached, by id with their service addresses and
+	// the routes served through them, the candidates, what a probe answers
+	// and what an attach or a detach fails with.
+	networks   []engine.NetworkDetail
+	candidates []engine.CandidateNetwork
+	probe      engine.ProbeResult
+	networkErr error
+
 	calls []string
 }
 
@@ -343,6 +351,74 @@ func (f *fakeEngine) RequestRestart(context.Context) error {
 }
 
 func (f *fakeEngine) PollInterval() time.Duration { return 10 * time.Second }
+
+func (f *fakeEngine) Networks() ([]engine.NetworkView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []engine.NetworkView{}
+	for _, n := range f.networks {
+		out = append(out, n.NetworkView)
+	}
+	return out, nil
+}
+
+func (f *fakeEngine) Network(id string) (engine.NetworkDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, n := range f.networks {
+		if n.ID == id {
+			return n, nil
+		}
+	}
+	return engine.NetworkDetail{}, fmt.Errorf("%w: network %s is not attached", engine.ErrNotFound, id)
+}
+
+func (f *fakeEngine) CandidateNetworks(context.Context) ([]engine.CandidateNetwork, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.candidates, nil
+}
+
+// ProbeNetwork answers with the probe of the test, for the bridge, the
+// prefix and the address asked for where the request names them.
+func (f *fakeEngine) ProbeNetwork(_ context.Context, r engine.ProbeRequest) (engine.ProbeResult, error) {
+	f.record(fmt.Sprintf("probe %s:%d prefix=%v address=%v", r.Bridge, r.VLAN, r.Prefix, r.Address))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	res := f.probe
+	res.Bridge, res.VLAN = r.Bridge, r.VLAN
+	if r.Prefix.IsValid() {
+		res.Prefix = r.Prefix
+	}
+	if r.Address.IsValid() {
+		res.Address = r.Address
+	}
+	return res, nil
+}
+
+func (f *fakeEngine) Attach(_ context.Context, r engine.AttachRequest) (engine.NetworkView, error) {
+	f.record(fmt.Sprintf("attach %s:%d prefix=%v address=%v confirmUplink=%t overlapOK=%t",
+		r.Bridge, r.VLAN, r.Prefix, r.Address, r.ConfirmUplink, r.OverlapOK))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkErr != nil {
+		return engine.NetworkView{}, f.networkErr
+	}
+	return engine.NetworkView{
+		Network: store.Network{
+			ID: store.SegmentID(r.Bridge, r.VLAN), Kind: store.NetworkAttach, Bridge: r.Bridge, VLAN: r.VLAN, Prefix: r.Prefix,
+			Legs: map[string]netip.Addr{"pve1": r.Address}, LegMAC: "02:50:43:4f:00:01", Mark: 1, OverlapOK: r.OverlapOK, CreatedAt: t0, Rev: 1,
+		},
+		Legs: []engine.LegView{{Node: "pve1", Addr: r.Address, Problem: "the gateway has not reported the leg yet"}},
+	}, nil
+}
+
+func (f *fakeEngine) Detach(_ context.Context, id string, rev int64, confirm bool) error {
+	f.record(fmt.Sprintf("detach %s rev=%d confirm=%t", id, rev, confirm))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.networkErr
+}
 
 func (f *fakeEngine) Traffic() engine.TrafficView { return engine.TrafficView{} }
 

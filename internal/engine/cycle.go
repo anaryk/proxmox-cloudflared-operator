@@ -160,6 +160,7 @@ func (c *cycleRun) run() State {
 	}
 	c.watchTunnels()
 	c.showRollouts()
+	c.showNetworks()
 	c.saveMemory()
 	c.noteRogueConnectors()
 	c.sayWaiting()

@@ -19,6 +19,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 var update = flag.Bool("update", false, "write the golden files of the tests")
@@ -145,6 +146,25 @@ func populatedState() State {
 		Segments: []SegmentView{
 			{Bridge: "vmbr1", Acknowledged: true, AcknowledgedAt: t0, Routes: 2},
 			{Bridge: "vmbr1", VLAN: 20, Routes: 1},
+		},
+		Networks: []NetworkView{
+			{
+				Network: store.Network{
+					ID: "vmbr2", Kind: store.NetworkAttach, Bridge: "vmbr2", Prefix: netip.MustParsePrefix("10.50.0.0/24"),
+					Legs: map[string]netip.Addr{"pve1": netip.MustParseAddr("10.50.0.250")}, LegMAC: "02:50:43:4f:00:01", Mark: 1,
+					OverlapOK: true, CreatedAt: t0.Add(-48 * time.Hour), Scope: store.ScopeNode, Rev: 3,
+				},
+				Legs:    []LegView{{Node: "pve1", Addr: netip.MustParseAddr("10.50.0.250"), Up: true}},
+				Targets: 1, Routes: 1,
+			},
+			{
+				Network: store.Network{
+					ID: "vmbr3.20", Kind: store.NetworkAttach, Bridge: "vmbr3", VLAN: 20, Prefix: netip.MustParsePrefix("192.0.2.0/24"),
+					Legs: map[string]netip.Addr{"pve1": netip.MustParseAddr("192.0.2.250")}, LegMAC: "02:50:43:4f:00:02", Mark: 2,
+					Uplink: true, CreatedAt: t0.Add(-time.Hour), LegMACs: map[string]string{"pve1": "02:50:43:4f:00:02"}, Rev: 1,
+				},
+				Legs: []LegView{{Node: "pve1", Addr: netip.MustParseAddr("192.0.2.250"), Problem: "address in use by 52:54:00:12:34:56"}},
+			},
 		},
 		Egress:     EgressView{State: EgressOff, Since: t0.Add(-time.Hour)},
 		Admission:  "approve",

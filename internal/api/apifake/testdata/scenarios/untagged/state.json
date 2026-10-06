@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "ce4ef1a6bcd23486",
+  "digest": "4817074bba642898",
   "mode": "enforce",
   "complete": true,
   "routes": [],
@@ -97,6 +97,7 @@
   "waiting": [],
   "unapproved": [],
   "segments": [],
+  "networks": [],
   "egress": {
     "state": "on"
   },

@@ -90,6 +90,10 @@ type fakeEngine struct {
 	manual     []engine.ManualRouteView
 	guests     []engine.GuestListView
 	annotation engine.AnnotationView
+
+	networks   []engine.NetworkView
+	candidates []engine.CandidateNetwork
+	probed     engine.ProbeResult
 }
 
 func (f *fakeEngine) record(ctx context.Context, call string) {

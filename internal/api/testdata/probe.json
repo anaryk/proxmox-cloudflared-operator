@@ -1,0 +1,10 @@
+{
+  "bridge": "vmbr0",
+  "prefix": "192.168.4.0/24",
+  "address": "192.168.4.249",
+  "free": true,
+  "answeredBy": [],
+  "uplink": true,
+  "warning": "the leg's MAC becomes visible on the LAN of vmbr0",
+  "overlap": "192.168.4.0/24 overlaps the node's route on vmbr9"
+}

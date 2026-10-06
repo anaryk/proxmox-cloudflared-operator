@@ -71,6 +71,7 @@ func (s *Server) routes() http.Handler {
 	v1.GET("/diagnose", s.getDiagnose)
 	v1.GET("/doctor", s.getDoctor)
 	s.configRoutes(v1)
+	s.networkRoutes(v1)
 	return s.logRequests(s.guard(s.stamp(r)))
 }
 

@@ -487,6 +487,8 @@ func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []store.S
 	services := c.wantedServices(legs, mappings)
 	pins := c.wantedPins(services)
 	if len(legs) == 0 && len(services) == 0 && !c.e.gwInUse {
+		// The gateway holds no leg a freed mark could move from.
+		c.e.freedMarks = nil
 		c.releaseUnused(mappings, services)
 		return
 	}
@@ -497,6 +499,8 @@ func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []store.S
 		return
 	}
 	c.e.gwInUse = len(legs) > 0 || len(services) > 0
+	c.e.freedMarks = nil
+	c.events = append(c.events, legEvents(c.e.LegStates(), states, c.now)...)
 	c.e.setLegStates(states)
 	for _, st := range states {
 		switch {

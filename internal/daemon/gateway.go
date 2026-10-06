@@ -191,10 +191,25 @@ func (g *gatewayPart) Probe(ctx context.Context, bridge string, vlan int, addr n
 	return g.b.Probe(ctx, bridge, vlan, addr)
 }
 
+// Detach removes a leg and its services, and takes them out of what is
+// wanted and of the cache: the keeper must not bring the leg back, nor a boot,
+// before the next cycle syncs the gateway without it.
 func (g *gatewayPart) Detach(ctx context.Context, id string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.b.Detach(ctx, id)
+	if err := g.b.Detach(ctx, id); err != nil {
+		return err
+	}
+	w := g.wanted
+	w.Legs = slices.DeleteFunc(slices.Clone(w.Legs), func(l gateway.Leg) bool { return l.ID == id })
+	w.Services = slices.DeleteFunc(slices.Clone(w.Services), func(s gateway.Service) bool { return s.Leg == id })
+	w.Pins = slices.DeleteFunc(slices.Clone(w.Pins), func(p gateway.Pin) bool { return p.Leg == id })
+	g.wanted = w
+	g.setUp(slices.DeleteFunc(g.UpLegs(), func(l gateway.Leg) bool { return l.ID == id }))
+	if err := gateway.WriteCache(g.local, w); err != nil {
+		g.log.Warn().Err(err).Str("network", id).Msg("the cache of the gateway still has the leg detached; the next cycle writes it")
+	}
+	return nil
 }
 
 // Dial needs no turn of its own: it opens a socket in the namespace.
