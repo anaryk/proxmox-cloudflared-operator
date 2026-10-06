@@ -106,7 +106,7 @@ function routable(addr: number): boolean {
   return first !== 0 && first < 224 && first !== 127 && !(first === 169 && second === 254)
 }
 
-function viaError(via: string): string | undefined {
+export function viaError(via: string): string | undefined {
   const nic = viaNIC.exec(via)
   if (nic && Number(nic[1]) <= maxNIC) return undefined
   const addr = parseIPv4(via)

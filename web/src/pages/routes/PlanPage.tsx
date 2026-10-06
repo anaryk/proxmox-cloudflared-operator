@@ -22,8 +22,8 @@ import { unset } from './routes'
 // as pco plan lists them.
 export const itemsShown = 20
 
-const applying = 'Publishing has started: the daemon changes Cloudflare from the next cycle.'
-const applyingAlways = 'Observe-only mode was off already: the daemon applies changes in every cycle.'
+export const applying = 'Publishing has started: the daemon changes Cloudflare from the next cycle.'
+export const applyingAlways ='Observe-only mode was off already: the daemon applies changes in every cycle.'
 
 // waitingId is the fragment that names an entry of what waits, so that a
 // link can point at it, /routes/plan#waiting-stale-zone-example.info, and the
