@@ -106,6 +106,23 @@ jobs:
           path: internal/web/ui/dist
           if-no-files-found: error
 
+  # The documentation site: the build, which fails on a link to a page that
+  # does not exist, the Markdown of the pages, every link of the built site
+  # down to its fragment, the images and their budget, and the licences of
+  # the packages of the site.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+          package-manager-cache: false
+      - run: make docs docs-lint
+      - run: node web/scripts/check-licences.mjs site/package-lock.json
+
   build-ui:
     needs: ui
     runs-on: ubuntu-latest

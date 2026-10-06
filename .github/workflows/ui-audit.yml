@@ -1,14 +1,16 @@
 name: ui-audit
 
-# The advisories of the packages the web interface ships at run time. Weekly and
-# when the lock file changes, and not a required check: an advisory published
-# today, or a registry that does not answer, must not block a pull request.
+# The advisories of the packages the web interface ships at run time, and of
+# those the documentation site is built and drawn with. Weekly and when a lock
+# file changes, and not a required check: an advisory published today, or a
+# registry that does not answer, must not block a pull request.
 on:
   schedule:
     - cron: "17 6 * * 1"
   push:
     paths:
       - web/package-lock.json
+      - site/package-lock.json
   workflow_dispatch:
 
 permissions:
@@ -17,6 +19,10 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [web, site]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -26,4 +32,4 @@ jobs:
           node-version-file: web/.nvmrc
           package-manager-cache: false
       - run: npm audit --omit=dev
-        working-directory: web
+        working-directory: ${{ matrix.dir }}
