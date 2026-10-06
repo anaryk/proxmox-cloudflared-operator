@@ -1,0 +1,7 @@
+{
+"nodename": "pve1",
+"version": 7,
+"cluster": { "name": "homelab", "version": 3, "nodes": 3, "quorate": 1 },
+"nodelist": {
+  "pve1": { "id": 1, "online": 1, "ip": "10.77.0.1"},
+  "pve2": { "id": 2, "onl

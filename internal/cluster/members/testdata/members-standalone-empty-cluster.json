@@ -1,0 +1,8 @@
+{
+"nodename": "node1",
+"version": 0,
+"cluster": { },
+"nodelist": {
+  "node1": { "id": 0, "online": 1, "ip": "192.168.4.209"}
+}
+}
