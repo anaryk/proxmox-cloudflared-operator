@@ -48,6 +48,13 @@ describe('the banners, most severe first', () => {
     expect(keys(appState({ state: st }))).toEqual(['egress', 'hold', 'waiting', 'approval'])
   })
 
+  test('the banner of the missing token is left off the setup page, which is where it points', () => {
+    const s = appState({ state: { ...st, credentials: [] } })
+    expect(keys(s)).toContain('credential')
+    expect(bannersOf(s, 0, 'setup').map((b) => b.key)).not.toContain('credential')
+    expect(bannersOf(s, 0, 'routes').map((b) => b.key)).toContain('credential')
+  })
+
   test('nothing for a state in order', () => {
     expect(keys(appState({ state: untagged as unknown as State }))).toEqual([])
   })

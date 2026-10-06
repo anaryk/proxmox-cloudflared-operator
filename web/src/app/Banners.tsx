@@ -10,6 +10,7 @@ import { durationText } from '../text/duration'
 import { egressLoadCommand, egressOnCommand, writerText } from '../text/words'
 import { useNow } from './clock'
 import { Link } from './Link'
+import { useView } from './router'
 
 export interface BannerSpec {
   key: string
@@ -28,8 +29,9 @@ const review = (to: string, label = 'Review') => (
 
 // bannersOf are the banners under the top bar, most severe first, each with
 // one action at most. The age of the data is measured on the browser's
-// monotonic clock, mono.
-export function bannersOf(s: AppState, mono: number = monoNow()): BannerSpec[] {
+// monotonic clock, mono. page is the name of the view shown: the banner that
+// points at the setup is not shown on the setup itself.
+export function bannersOf(s: AppState, mono: number = monoNow(), page?: string): BannerSpec[] {
   const zone = s.session?.nodeZone
   const at = (t: string) => <Time at={t} nodeZone={zone} />
   const st = s.state
@@ -184,7 +186,7 @@ export function bannersOf(s: AppState, mono: number = monoNow()): BannerSpec[] {
       action: review('/routes/plan', 'Review plan'),
     })
   }
-  if (st && st.credentials.length === 0) {
+  if (st && st.credentials.length === 0 && page !== 'setup') {
     out.push({ key: 'credential', tone: 'info', text: 'pco has no Cloudflare API token yet.', action: review('/setup', 'Open the setup') })
   }
   if (s.skew) {
@@ -206,7 +208,8 @@ export function Banners() {
   const app = useApp((s) => s)
   // again every second, for the age of the data
   useNow()
-  const banners = bannersOf(app)
+  const view = useView()
+  const banners = bannersOf(app, monoNow(), view.name)
   if (banners.length === 0) return null
   return (
     <div className="banners">
