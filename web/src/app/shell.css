@@ -588,10 +588,28 @@ main > .card {
   }
 }
 
-/* small phones: the problems pill shows its count, and its words are there
-   for a screen reader only */
+/* small phones: the top bar is tighter, the summary pill cuts its label short
+   rather than the bar overflowing, and the problems pill shows its count, its
+   words there for a screen reader only */
 
 @media (max-width: 479px) {
+  .topbar {
+    gap: 6px;
+    padding: 0 8px;
+  }
+
+  .pill-summary,
+  .pill-summary > .pill {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .pill-summary .pill-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .pill-problems .pill-words {
     position: absolute;
     width: 1px;
