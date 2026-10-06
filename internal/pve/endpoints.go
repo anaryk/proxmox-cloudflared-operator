@@ -253,6 +253,40 @@ func (c *Client) NodeNetwork(ctx context.Context, node string) ([]NodeIface, err
 	return out, nil
 }
 
+// ClusterOptions is the part of the options of the datacenter pco reads.
+type ClusterOptions struct {
+	// RegisteredTags are the tags only an admin may set on a guest, as
+	// stored, in their order; nil when there are none.
+	RegisteredTags []string
+}
+
+// ClusterOptions reads the options of the datacenter, which takes Sys.Audit
+// on /.
+func (c *Client) ClusterOptions(ctx context.Context) (ClusterOptions, error) {
+	var raw json.RawMessage
+	if err := c.get(ctx, "cluster/options", nil, &raw); err != nil {
+		return ClusterOptions{}, fmt.Errorf("fetching the cluster options: %w", err)
+	}
+	o, err := DecodeClusterOptions(raw)
+	if err != nil {
+		return ClusterOptions{}, fmt.Errorf("fetching the cluster options: %w", err)
+	}
+	return o, nil
+}
+
+// DecodeClusterOptions reads the options of the datacenter as
+// /cluster/options gives them, without the envelope of the API: what pvesh
+// prints.
+func DecodeClusterOptions(data []byte) (ClusterOptions, error) {
+	var w struct {
+		RegisteredTags string `json:"registered-tags"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return ClusterOptions{}, fmt.Errorf("decoding the cluster options: %w", err)
+	}
+	return ClusterOptions{RegisteredTags: SplitTags(w.RegisteredTags)}, nil
+}
+
 // guestEndpoint builds nodes/<node>/<kind>/<vmid>/<tail>.
 func guestEndpoint(node string, kind model.GuestKind, vmid int, tail string) (string, error) {
 	if kind != model.KindQEMU && kind != model.KindLXC {

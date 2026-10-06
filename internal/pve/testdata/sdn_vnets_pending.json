@@ -1,0 +1,34 @@
+{
+  "data": [
+    {
+      "vnet": "pcotv1",
+      "type": "vnet",
+      "zone": "pcotest",
+      "alias": "pcotest",
+      "digest": "d4064c1b5a9cacacc3688b888d178ad6c5f89fef"
+    },
+    {
+      "vnet": "pconet",
+      "type": "vnet",
+      "state": "new",
+      "pending": {
+        "zone": "pco",
+        "isolate-ports": 1
+      },
+      "digest": "d4064c1b5a9cacacc3688b888d178ad6c5f89fef"
+    },
+    {
+      "vnet": "blue",
+      "type": "vnet",
+      "zone": "pcotest",
+      "isolate-ports": 1,
+      "vlanaware": 1,
+      "state": "changed",
+      "pending": {
+        "isolate-ports": "deleted",
+        "alias": "tenants"
+      },
+      "digest": "d4064c1b5a9cacacc3688b888d178ad6c5f89fef"
+    }
+  ]
+}

@@ -111,17 +111,32 @@ func validKey(key string) bool {
 // put calls PUT <base>/api2/json/<endpoint> with the form as its body. The
 // answer's data, null for the calls pco makes, is not read.
 func (c *Client) put(ctx context.Context, endpoint string, form url.Values) error {
+	return c.send(ctx, http.MethodPut, endpoint, form, nil)
+}
+
+// send calls <base>/api2/json/<endpoint> with method and the parameters of
+// form: in the body, or in the query of a DELETE. It decodes the answer's data
+// into out, or with out nil only checks that the answer is JSON.
+func (c *Client) send(ctx context.Context, method, endpoint string, form url.Values, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	u := c.base.JoinPath(apiPath, endpoint)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), strings.NewReader(form.Encode()))
+	var body io.Reader
+	if method == http.MethodDelete {
+		u.RawQuery = form.Encode()
+	} else {
+		body = strings.NewReader(form.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", c.auth)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -133,20 +148,23 @@ func (c *Client) put(ctx context.Context, endpoint string, form url.Values) erro
 	c.noteVerify(nil)
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return fmt.Errorf("reading response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		if len(body) > maxBodyBytes {
-			body = nil
+		if len(answer) > maxBodyBytes {
+			answer = nil
 		}
-		return newAPIError(resp.StatusCode, body)
+		return newAPIError(resp.StatusCode, answer)
 	}
-	if len(body) > maxBodyBytes {
+	if len(answer) > maxBodyBytes {
 		return fmt.Errorf("response exceeds %d bytes", maxBodyBytes)
 	}
-	if !json.Valid(body) {
+	if out != nil {
+		return decodeData(answer, out)
+	}
+	if !json.Valid(answer) {
 		return errors.New("decoding response: not JSON")
 	}
 	return nil

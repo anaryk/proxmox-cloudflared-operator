@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "zone": "pcotest",
+      "type": "simple",
+      "ipam": "pve",
+      "digest": "6c1b1a3d0d0c1d6f0a5d2e4b8c7e9f0a1b2c3d4e"
+    },
+    {
+      "zone": "pco",
+      "type": "simple",
+      "state": "new",
+      "pending": {
+        "ipam": "pve"
+      },
+      "digest": "6c1b1a3d0d0c1d6f0a5d2e4b8c7e9f0a1b2c3d4e"
+    },
+    {
+      "zone": "tenants",
+      "type": "vlan",
+      "bridge": "vmbr1",
+      "state": "deleted",
+      "digest": "6c1b1a3d0d0c1d6f0a5d2e4b8c7e9f0a1b2c3d4e"
+    }
+  ]
+}
