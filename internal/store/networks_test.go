@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"testing"
@@ -100,8 +101,45 @@ func TestTheMarksAreThoseOfTheFifteenNetworksOfANode(t *testing.T) {
 	s, _ := openStore(t)
 	require.NoError(t, s.SaveNetwork(attachNetwork("vmbr1", 0, 1), 0))
 	require.NoError(t, s.SaveNetwork(attachNetwork("vmbr2", 0, 15), 0))
-	require.ErrorContains(t, s.SaveNetwork(attachNetwork("vmbr3", 0, 16), 0), "mark 16 is not 1 to 15")
+	err := s.SaveNetwork(attachNetwork("vmbr3", 0, 16), 0)
+	require.ErrorContains(t, err, "network vmbr3: mark 16 is not 1 to 15")
+	require.ErrorContains(t, err, "a block of 4096 source ports", "it says why")
 	require.ErrorContains(t, s.SaveNetwork(managedNetwork(16), 0), "mark 16 is not 1 to 15")
+	require.ErrorContains(t, s.SaveNetwork(attachNetwork("vmbr3", 0, 0), 0), "mark 0 is not 1 to 15")
+}
+
+// A 16th network is refused whatever mark it asks for, with the limit and the
+// reason for it: the 15 blocks of source ports.
+func TestTheSixteenthNetworkIsRefusedWithTheLimitAndWhy(t *testing.T) {
+	s, p := openStore(t)
+	for mark := 1; mark <= 15; mark++ {
+		require.NoError(t, s.SaveNetwork(attachNetwork(fmt.Sprintf("vmbr%d", mark), 0, mark), 0), "network %d", mark)
+	}
+	have, err := s.Networks()
+	require.NoError(t, err)
+	require.Len(t, have, 15)
+	before := stored(t, p.Cluster)
+
+	for name, n := range map[string]Network{
+		"a mark another network holds": attachNetwork("vmbr16", 0, 3),
+		"a mark past the blocks":       attachNetwork("vmbr16", 0, 16),
+		"the managed network":          managedNetwork(15),
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := s.SaveNetwork(n, 0)
+			require.ErrorContains(t, err, "at most 15 networks")
+			require.ErrorContains(t, err, "a block of 4096 source ports")
+			require.ErrorContains(t, err, "end at port 62463")
+			require.Equal(t, before, stored(t, p.Cluster), "nothing is written")
+		})
+	}
+
+	changed := have["vmbr7"]
+	changed.Uplink = true
+	require.NoError(t, s.SaveNetwork(changed, changed.Rev), "a network of the 15 is saved again")
+
+	require.NoError(t, s.DeleteNetwork("vmbr7", changed.Rev+1))
+	require.NoError(t, s.SaveNetwork(attachNetwork("vmbr16", 0, 7), 0), "a network that left makes room")
 }
 
 func TestSaveNetworkRefusesAMarkAnotherNetworkHolds(t *testing.T) {

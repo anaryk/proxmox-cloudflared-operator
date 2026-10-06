@@ -49,6 +49,16 @@ type Network struct {
 	Rev int64 `json:"rev,omitempty"`
 }
 
+// networkLimit says how many networks a node reaches and why: the SNAT through
+// each leg takes a block of source ports of its own, and the blocks have to
+// end below port 65536.
+func networkLimit() string {
+	_, last := gateway.PortBlock(gateway.MaxMark)
+	return fmt.Sprintf("pco reaches at most %d networks: the SNAT through each takes a block of %d source ports, "+
+		"and %d blocks end at port %d, where one more would pass 65535",
+		gateway.MaxMark, gateway.PortBlockSize, gateway.MaxMark, last)
+}
+
 // LegMACFor returns the MAC of the namespace end of the leg of a network of
 // kind with mark.
 func LegMACFor(kind string, mark int) string {
@@ -64,7 +74,9 @@ func (n Network) checked() (Network, error) {
 		return n, err
 	}
 	switch {
-	case n.Mark < 1 || n.Mark > gateway.MaxMark:
+	case n.Mark > gateway.MaxMark:
+		return n, fmt.Errorf("network %s: mark %d is not 1 to %d: %s", n.ID, n.Mark, gateway.MaxMark, networkLimit())
+	case n.Mark < 1:
 		return n, fmt.Errorf("network %s: mark %d is not 1 to %d", n.ID, n.Mark, gateway.MaxMark)
 	case n.CreatedAt.IsZero():
 		return n, fmt.Errorf("network %s has no time it was made at", n.ID)
@@ -171,8 +183,9 @@ func (s *Store) Networks() (map[string]Network, error) {
 
 // SaveNetwork stores a network read at revision rev, 0 for a new one, while
 // its file still has that revision; otherwise the error is ErrRevision and
-// nothing is written. A mark that another network holds is refused, and so
-// is a leg MAC that is not the one of the network's kind and mark.
+// nothing is written. A network beyond the most that have a block of source
+// ports is refused, so is a mark that another network holds, and so is a leg
+// MAC that is not the one of the network's kind and mark.
 func (s *Store) SaveNetwork(n Network, rev int64) error {
 	n, err := n.checked()
 	if err != nil {
@@ -183,6 +196,9 @@ func (s *Store) SaveNetwork(n Network, rev int64) error {
 	have, err := s.Networks()
 	if err != nil {
 		return err
+	}
+	if _, saved := have[n.ID]; !saved && len(have) >= gateway.MaxMark {
+		return fmt.Errorf("network %s: %s", n.ID, networkLimit())
 	}
 	for _, id := range slices.Sorted(maps.Keys(have)) {
 		if id != n.ID && have[id].Mark == n.Mark {
