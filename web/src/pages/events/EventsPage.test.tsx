@@ -9,7 +9,7 @@ import events from '../../fixtures/events.json'
 import hello from '../../fixtures/hello.json'
 import untagged from '../../fixtures/untagged.json'
 import { fakeStore, flush } from '../../test/store'
-import { EventsPage } from './EventsPage'
+import { cutText, EventsPage, everyText } from './EventsPage'
 import { localInput } from './filter'
 
 const evs = events as Event[]
@@ -165,6 +165,43 @@ describe('a gap', () => {
     expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/events?after=10&boot=${boot}&limit=503`)
   })
 
+  test('opened after the log was read, keeps its events when the filter changes', async () => {
+    navigate('/events?kind=route')
+    const gap: GapNotice = { boot, from: 11, to: 13, count: 3, level: 'warn' }
+    const inGap = [11, 12, 13].map((seq) => ({ ...(evs[0] as Event), seq, boot, kind: 'route', message: `in the gap ${seq}` }))
+    // the read of the log holds the gap's events; the gap's own read too
+    const fetch = answers(inGap, inGap)
+    const { store } = await mount()
+    act(() => store.notice({ kind: 'gap', data: gap }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load older events' }))
+    expect(await screen.findByText('in the gap 12')).toBeTruthy()
+    // the log brought every event of the gap: it offers to load nothing
+    expect(screen.queryByText(/events of one cycle/)).toBeNull()
+    act(() => navigate('/events?kind=route&kind=action'))
+    // what was read of the log is gone with the filter; the gap is back
+    fireEvent.click(await screen.findByText(/3 events of one cycle/))
+    expect(await screen.findByText('in the gap 12')).toBeTruthy()
+    expect(screen.getByText('in the gap 11')).toBeTruthy()
+    expect(screen.getByText('in the gap 13')).toBeTruthy()
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  test('opened, keeps its events when the filter changes after the log was read', async () => {
+    navigate('/events?kind=route')
+    const gap: GapNotice = { boot, from: 11, to: 13, count: 3, level: 'warn' }
+    const inGap = [11, 12, 13].map((seq) => ({ ...(evs[0] as Event), seq, boot, kind: 'route', message: `in the gap ${seq}` }))
+    answers(inGap.slice(0, 2), inGap)
+    const { store } = await mount()
+    act(() => store.notice({ kind: 'gap', data: gap }))
+    // the log has two of the three, so the gap still offers them
+    fireEvent.click(screen.getByRole('button', { name: 'Load older events' }))
+    expect(await screen.findByText('in the gap 12')).toBeTruthy()
+    fireEvent.click(screen.getByText(/3 events of one cycle/))
+    expect(await screen.findByText('in the gap 13')).toBeTruthy()
+    act(() => navigate('/events?kind=route&kind=action'))
+    for (const seq of [11, 12, 13]) expect(screen.getByText(`in the gap ${seq}`)).toBeTruthy()
+  })
+
   test('is not shown while a filter names a route', async () => {
     navigate('/events?route=www.example.com')
     const { store } = await mount()
@@ -194,10 +231,10 @@ describe('Load older events', () => {
     expect(url.searchParams.get('since')).toBe('2026-09-01T00:00:00Z')
     // the text is the page's to apply
     expect(url.searchParams.has('text')).toBe(false)
-    // fewer than asked for: that is all there is
+    // fewer than asked for: that is all there is in what the daemon reads
     const button = screen.getByRole('button', { name: 'Load older events' })
     expect(button.getAttribute('aria-disabled')).toBe('true')
-    expect(screen.getByText('That is every event the log has for these filters.')).toBeTruthy()
+    expect(screen.getByText(everyText)).toBeTruthy()
     fetch.mockClear()
     fireEvent.click(button)
     await flush()
@@ -214,7 +251,24 @@ describe('Load older events', () => {
       await flush()
       expect(new URL(fetch.mock.calls.at(-1)?.[0] ?? '', 'https://page.invalid').searchParams.get('limit')).toBe(String(limit))
     }
-    expect(screen.getByText(/The page reads 5000 events at most/)).toBeTruthy()
+    expect(screen.getByText(`${cutText} Narrow the filters to see them.`)).toBeTruthy()
+  })
+
+  test('a read as long as it asked for says that the list may go on beyond it', async () => {
+    answers(Array.from({ length: 1000 }, (_, i) => older(i + 1)))
+    await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Load older events' }))
+    expect(await screen.findByText('The list ends at the oldest of the 1000 newest events of these filters read so far.')).toBeTruthy()
+  })
+
+  test('a range in the past reads the newest events up to its end', async () => {
+    navigate('/events?until=2026-09-30T11:00:00Z')
+    const fetch = answers([older(5)])
+    await mount()
+    expect(screen.getByText('Load older events reads the newest events up to it from the log on the node.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Load older events' }))
+    expect(await screen.findByText('before the restart 5')).toBeTruthy()
+    expect(new URL(fetch.mock.calls[0]?.[0] ?? '', 'https://page.invalid').searchParams.get('until')).toBe('2026-09-30T11:00:00Z')
   })
 
   test('forgets what it read when the filters change', async () => {
@@ -257,6 +311,22 @@ describe('Live', () => {
     const { store } = await mount()
     act(() => store.notice({ kind: 'event', data: next }))
     expect(screen.getByText('a new event')).toBeTruthy()
+  })
+
+  test('off right after a restart, still shows what the process before wrote', async () => {
+    const fetch = answers([older(900), older(901)])
+    const { store } = await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Load older events' }))
+    await screen.findByText('before the restart 901')
+    // the daemon starts again: nothing of the new process yet, its seq is small
+    fetch.mockImplementation(async () => new Response('[]', { status: 200 }))
+    await act(async () => {
+      store.notice({ kind: 'hello', data: { ...hello, boot: 'fe00000000000001', seq: 2 } })
+      await flush()
+    })
+    fireEvent.click(screen.getByRole('switch', { name: 'Live' }))
+    expect(screen.getByText('before the restart 901')).toBeTruthy()
+    expect(screen.getByText('before the restart 900')).toBeTruthy()
   })
 
   test('off, holds the list as it was until it is on again', async () => {
@@ -304,6 +374,17 @@ describe('Export the list', () => {
     expect(exported.map((e) => e.seq)).toEqual([10, 3])
     expect(names[0]).toMatch(/^pco-events-pve1-\d{8}-\d{6}\.json$/)
     expect(screen.getByText(/Exported 2 events to pco-events-pve1-/)).toBeTruthy()
+  })
+
+  test('a range in the past is read up to its end, and a file the daemon cut says so', async () => {
+    navigate('/events?until=2026-09-30T11:00:00Z')
+    const fetch = answers(Array.from({ length: 5000 }, (_, i) => older(i + 1)))
+    capture()
+    await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Export the list' }))
+    expect(await screen.findByText(/^Exported 5000 events to pco-events-pve1-/)).toBeTruthy()
+    expect(screen.getByText(/^Exported 5000 events/).textContent).toContain(cutText)
+    expect(new URL(fetch.mock.calls[0]?.[0] ?? '', 'https://page.invalid').searchParams.get('until')).toBe('2026-09-30T11:00:00Z')
   })
 
   test('says so when the log cannot be read', async () => {

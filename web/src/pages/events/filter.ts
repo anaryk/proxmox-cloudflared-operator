@@ -9,12 +9,16 @@ const lists = ['level', 'kind', 'route', 'guest', 'account'] as const
 // The most events the daemon answers, and the page holds.
 export const maxEvents = 5000
 
+// The most values of one list the page takes from the address: a link with
+// thousands would make a request the daemon refuses.
+export const maxValues = 100
+
 // filterOf reads the filter from the query of the address; a parameter that
-// is empty is not set.
+// is empty is not set, nor is a time that is no time the daemon reads.
 export function filterOf(search: string): EventFilter {
   const q = new URLSearchParams(search)
   const list = (key: string) => {
-    const values = q.getAll(key).filter(Boolean)
+    const values = q.getAll(key).filter(Boolean).slice(0, maxValues)
     return values.length > 0 ? values : undefined
   }
   const one = (key: string) => q.get(key) || undefined
@@ -25,8 +29,8 @@ export function filterOf(search: string): EventFilter {
     guest: list('guest'),
     account: list('account'),
     text: one('text'),
-    since: one('since'),
-    until: one('until'),
+    since: rfc3339(one('since')),
+    until: rfc3339(one('until')),
   }
 }
 
@@ -46,20 +50,25 @@ export function isActive(f: EventFilter): boolean {
 }
 
 // rfc3339 is a time the way the daemon reads it, or nothing for what is not a
-// time.
+// time, or one of a year RFC 3339 cannot write.
 function rfc3339(at: string | undefined): string | undefined {
   const ms = Date.parse(at ?? '')
-  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString().replace('.000Z', 'Z')
+  if (Number.isNaN(ms)) return undefined
+  const d = new Date(ms)
+  if (d.getUTCFullYear() < 0 || d.getUTCFullYear() > 9999) return undefined
+  return d.toISOString().replace('.000Z', 'Z')
 }
 
 // eventsQuery is the query of GET /v1/events for the newest limit events of
-// the log that pass what the daemon can filter by. The text and the end of
-// the range are the page's own to apply.
+// the log that pass what the daemon can filter by, up to the end of the
+// range. The text is the page's own to apply.
 export function eventsQuery(f: EventFilter, limit: number): string {
   const q = new URLSearchParams({ history: '1', limit: String(limit) })
   for (const key of lists) for (const value of f[key] ?? []) q.append(key, value)
   const since = rfc3339(f.since)
   if (since) q.set('since', since)
+  const until = rfc3339(f.until)
+  if (until) q.set('until', until)
   return q.toString()
 }
 

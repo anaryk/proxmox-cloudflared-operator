@@ -9,6 +9,7 @@ import { Busy } from '../../components/Busy'
 import { Dialog } from '../../components/Dialog'
 import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
+import { download } from '../events/download'
 import { createRoute, deleteRoute, getRoutes, getSettings, putSettings, updateRoute } from './api'
 import { Changes, FirstAllowed } from './Changes'
 import { diffSettings, firstAllowed, planRoutes, routeText } from './diff'
@@ -32,17 +33,6 @@ export function exportName(node: string, at: Date): string {
 // approval is in either.
 export function exportText(view: SettingsView, routes: readonly ManualRouteView[]): string {
   return `${JSON.stringify({ rev: view.rev, settings: view.settings, manualRoutes: routes }, null, 2)}\n`
-}
-
-function download(name: string, text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = name
-  document.body.append(link)
-  link.click()
-  link.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 type Mode = 'merge' | 'replace'

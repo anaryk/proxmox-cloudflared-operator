@@ -32,6 +32,16 @@ describe('the filter in the address', () => {
     expect(filterOf('?level=&text=&since=&route=a.example.com&route=')).toEqual({ route: ['a.example.com'] })
   })
 
+  test('a time in the address that is no time sets no range, and shows as none', () => {
+    expect(filterOf('?since=soon&until=2026-10-01')).toEqual({ until: '2026-10-01T00:00:00Z' })
+    expect(isActive(filterOf('?since=soon'))).toBe(false)
+  })
+
+  test('a list takes 100 values of the address at most', () => {
+    const many = Array.from({ length: 5000 }, (_, i) => `route=r${i}.example.com`).join('&')
+    expect(filterOf(`?${many}`).route).toHaveLength(100)
+  })
+
   test('the text keeps its spaces', () => {
     expect(filterOf(`?${searchOf({ text: 'a ' })}`).text).toBe('a ')
   })
@@ -47,20 +57,25 @@ describe('the query of the daemon', () => {
     expect(q.getAll('level')).toEqual(['warn'])
     expect(q.getAll('route')).toEqual(['a.example.com', 'b.example.com'])
     expect(q.getAll('account')).toEqual(['acc1'])
-    // RFC 3339, which is what the daemon reads
+    // RFC 3339, which is what the daemon reads; the newest up to the end
     expect(q.get('since')).toBe('2026-09-01T00:00:00Z')
+    expect(q.get('until')).toBe('2026-10-01T12:00:00Z')
     expect(q.has('text')).toBe(false)
-    expect(q.has('until')).toBe(false)
   })
 
-  test('a start that is no time is left out, not sent to be refused', () => {
-    expect(new URLSearchParams(eventsQuery({ since: 'yesterday' }, 1000)).has('since')).toBe(false)
+  test('a time that is no time, or of a year RFC 3339 cannot write, is left out, not sent to be refused', () => {
+    for (const at of ['yesterday', '+010000-01-01T00:00:00Z', '-000001-01-01T00:00:00Z']) {
+      const q = new URLSearchParams(eventsQuery({ since: at, until: at }, 1000))
+      expect(q.has('since'), at).toBe(false)
+      expect(q.has('until'), at).toBe(false)
+    }
   })
 
   test('what was read is good for a filter that asks the daemon the same', () => {
-    expect(logKey({ level: ['error'], text: 'a' })).toBe(logKey({ level: ['error'], text: 'b', until: '2026-10-01T12:00:00Z' }))
+    expect(logKey({ level: ['error'], text: 'a' })).toBe(logKey({ level: ['error'], text: 'b' }))
     expect(logKey({ level: ['error'] })).not.toBe(logKey({ level: ['warn'] }))
     expect(logKey({ since: '2026-10-01T12:00:00Z' })).not.toBe(logKey({}))
+    expect(logKey({ until: '2026-10-01T12:00:00Z' })).not.toBe(logKey({}))
   })
 })
 

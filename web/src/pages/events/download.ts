@@ -9,6 +9,10 @@ export function exportName(node: string | undefined, now: Date): string {
   return `pco-events-${name ? `${name}-` : ''}${day}-${time}.json`
 }
 
+// How long the file stays to be had after the download began: some browsers
+// read it only once the user chose where to save it.
+const keptFor = 60_000
+
 // download hands the text to the browser as a file.
 export function download(name: string, text: string): void {
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
@@ -18,5 +22,5 @@ export function download(name: string, text: string): void {
   document.body.append(link)
   link.click()
   link.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
+  setTimeout(() => URL.revokeObjectURL(url), keptFor)
 }

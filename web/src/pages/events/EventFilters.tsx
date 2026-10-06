@@ -10,7 +10,7 @@ const levels = ['error', 'warn', 'info']
 
 // The kinds the daemon writes today. One it adds later is offered as soon as
 // an event of it is on the page.
-const knownKinds =['route', 'conflict', 'action', 'problem', 'claim', 'rollout', 'writer', 'admin', 'credential', 'hold', 'egress', 'connector', 'identity']
+const knownKinds = ['route', 'conflict', 'action', 'problem', 'claim', 'rollout', 'writer', 'admin', 'credential', 'hold', 'egress', 'connector', 'identity']
 
 function Checks({ options, selected, onChange }: { options: readonly string[]; selected: string[]; onChange: (to: string[]) => void }) {
   return (
@@ -85,7 +85,7 @@ export function EventFilters({ filter, kinds, onChange }: { filter: EventFilter;
         <Field label="From">
           {(control) => <input {...control} type="datetime-local" value={localInput(filter.since)} onChange={(e) => set({ since: fromLocalInput(e.target.value) })} />}
         </Field>
-        <Field label="To">
+        <Field label="To" hint={filter.until ? 'Load older events reads the newest events up to it from the log on the node.' : undefined}>
           {(control) => <input {...control} type="datetime-local" value={localInput(filter.until)} onChange={(e) => set({ until: fromLocalInput(e.target.value, true) })} />}
         </Field>
       </div>

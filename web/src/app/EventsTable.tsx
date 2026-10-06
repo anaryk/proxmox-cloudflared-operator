@@ -88,29 +88,47 @@ const seqOf = (r: Row) => (r.type === 'gap' ? r.g.to : r.e.seq)
 const bootOf = (r: Row) => (r.type === 'gap' ? r.g.boot : (r.e.boot ?? ''))
 
 // bootRanks orders the processes of the daemon that the events are of, the
-// newest last, by the latest time among their events: the seq counts from 1
-// again with each process, so it orders the events of one process only.
-function bootRanks(events: readonly Event[]): Map<string, number> {
+// newest last: the one the stream is of, now, and the others by the latest
+// time among their events. The seq counts from 1 again with each process, so
+// it orders the events of one process only.
+function bootRanks(events: readonly Event[], now?: string): Map<string, number> {
   const latest = new Map<string, number>()
   for (const e of events) {
     const boot = e.boot ?? ''
     latest.set(boot, Math.max(latest.get(boot) ?? 0, timeOf(e.at) ?? 0))
   }
-  const boots = [...latest.keys()].sort((a, b) => (latest.get(a) ?? 0) - (latest.get(b) ?? 0) || (a < b ? -1 : a > b ? 1 : 0))
+  const boots = [...latest.keys()]
+    .filter((boot) => boot !== now)
+    .sort((a, b) => (latest.get(a) ?? 0) - (latest.get(b) ?? 0) || (a < b ? -1 : a > b ? 1 : 0))
+  if (now !== undefined) boots.push(now)
   return new Map(boots.map((boot, rank) => [boot, rank]))
 }
 
+// A pause holds the list at the last event of the process the stream was of.
+export interface PausedAt {
+  boot?: string
+  seq: number
+}
+
 // rowsOf are the events and the gaps, newest first; a gap that was opened
-// is the events it stood for. The events of earlier processes of the daemon
-// come after those of the latest, and upTo, the last seq to show, is the
-// latest's.
-export function rowsOf(events: readonly Event[], gaps: readonly GapNotice[], loaded: ReadonlyMap<string, Loaded>, f: EventFilter, upTo?: number): Row[] {
+// is the events it stood for, and one whose events are all rows already is
+// left out. The events of earlier processes of the daemon come after those
+// of the one now, which is boot; paused at a seq of a process, the rows after
+// it are held back.
+export function rowsOf(
+  events: readonly Event[],
+  gaps: readonly GapNotice[],
+  loaded: ReadonlyMap<string, Loaded>,
+  f: EventFilter,
+  upTo?: PausedAt,
+  boot?: string,
+): Row[] {
   const rows: Row[] = []
   const known: Event[] = []
-  const seen = new Set<string>()
+  const kinds = new Map<string, string>()
   const add = (e: Event) => {
-    if (seen.has(eventKey(e))) return
-    seen.add(eventKey(e))
+    if (kinds.has(eventKey(e))) return
+    kinds.set(eventKey(e), e.kind)
     known.push(e)
     if (matches(e, f)) rows.push({ type: 'event', e })
   }
@@ -121,15 +139,28 @@ export function rowsOf(events: readonly Event[], gaps: readonly GapNotice[], loa
       for (const e of l.events) add(e)
       if (l.complete) continue
     }
+    if (!isPart(l) && covered(g, kinds)) continue
     if (gapMatches(f) && has(f.level, g.level)) rows.push({ type: 'gap', g, loaded: l })
   }
-  const ranks = bootRanks(known)
+  const ranks = bootRanks(known, boot)
   // a process none of whose events is known is the one the stream is of
   const rankOf = (r: Row) => ranks.get(bootOf(r)) ?? ranks.size
-  const latest = Math.max(ranks.size - 1, 0)
-  return rows
-    .filter((r) => upTo === undefined || rankOf(r) < latest || seqOf(r) <= upTo)
-    .sort((a, b) => rankOf(b) - rankOf(a) || seqOf(b) - seqOf(a))
+  // Paused, the rows of the process it paused in stop at its seq, and those
+  // of a later one wait; without its boot, it is the latest of those known.
+  const pausedIn = upTo && (upTo.boot === undefined ? Math.max(ranks.size - 1, 0) : (ranks.get(upTo.boot) ?? ranks.size))
+  const shows = (r: Row) => upTo === undefined || pausedIn === undefined || rankOf(r) < pausedIn || (rankOf(r) === pausedIn && seqOf(r) <= upTo.seq)
+  return rows.filter(shows).sort((a, b) => rankOf(b) - rankOf(a) || seqOf(b) - seqOf(a))
+}
+
+// covered says whether the events a gap stands for are all known, as when
+// the log was read: the gap would only offer to load them again.
+function covered(g: GapNotice, kinds: ReadonlyMap<string, string>): boolean {
+  let n = 0
+  for (let seq = g.from; seq <= g.to && n < g.count; seq++) {
+    const kind = kinds.get(`${g.boot}:${seq}`)
+    if (kind !== undefined && gapKinds.includes(kind)) n++
+  }
+  return n >= g.count
 }
 
 // hasError says whether a row is of level error, which colours the strip.
@@ -239,16 +270,18 @@ export function EventsTable({
   const gaps = useApp((s) => s.gaps)
   const nodeZone = useApp((s) => s.session?.nodeZone)
   const reader = useApp((s) => s.session?.role === 'reader')
+  const boot = useApp((s) => s.hello?.boot)
   const lastSeq = useApp((s) => Math.max(s.hello?.seq ?? 0, s.events.at(-1)?.seq ?? 0, s.gaps.at(-1)?.to ?? 0))
   const { density } = usePreferences()
   const [loaded, setLoaded] = useState<ReadonlyMap<string, Loaded>>(new Map())
   const [open, setOpen] = useState<Event>()
-  // Paused: the rows up to the last event there was when it paused.
-  const [pausedAt, setPausedAt] = useState<number | undefined>(live ? undefined : lastSeq)
-  if (!live && pausedAt === undefined) setPausedAt(lastSeq)
+  // Paused: the rows up to the last event there was when it paused, of the
+  // process the stream was of then.
+  const [pausedAt, setPausedAt] = useState<PausedAt | undefined>(live ? undefined : { boot, seq: lastSeq })
+  if (!live && pausedAt === undefined) setPausedAt({ boot, seq: lastSeq })
   if (live && pausedAt !== undefined) setPausedAt(undefined)
 
-  const shown = rowsOf(events, gaps, loaded, filter, live ? undefined : pausedAt)
+  const shown = rowsOf(events, gaps, loaded, filter, live ? undefined : pausedAt, boot)
 
   // load loads a gap: from what the daemon holds in memory, then, when that
   // does not reach back to the gap's first event, from its log as well. A
@@ -259,7 +292,9 @@ export function EventsTable({
     const now = loaded.get(key)
     if (now === 'loading' || (isPart(now) && now.complete)) return
     setLoaded((m) => new Map(m).set(key, 'loading'))
-    const known = new Set(events.map(eventKey))
+    // Only what the page holds whatever the filter: the events read from the
+    // log go when the filter changes, and the gap's must not go with them.
+    const known = new Set(held.map(eventKey))
     try {
       let got = isPart(now) ? undefined : await fetchGap(g, lastSeq, false)
       if (got?.first === undefined || got.first > g.from) got = await fetchGap(g, lastSeq, true)

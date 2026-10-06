@@ -32,7 +32,7 @@ describe('rowsOf', () => {
   })
 
   test('paused: nothing after the last event there was', () => {
-    expect(rowsOf(evs, [gap], new Map(), {}, 9).map((r) => (r.type === 'event' ? r.e.seq : 'gap'))).toEqual([9, 8, 7])
+    expect(rowsOf(evs, [gap], new Map(), {}, { seq: 9 }).map((r) => (r.type === 'event' ? r.e.seq : 'gap'))).toEqual([9, 8, 7])
   })
 
   test('an opened gap is its events; one loaded in part keeps its row', () => {
@@ -204,7 +204,7 @@ describe('events of an earlier process of the daemon', () => {
   })
 
   test('are not cut when the list is paused', () => {
-    expect(seqs(rowsOf([...before, ...evs], [], new Map(), {}, 8))).toEqual([8, 7, 901, 900])
+    expect(seqs(rowsOf([...before, ...evs], [], new Map(), {}, { seq: 8 }))).toEqual([8, 7, 901, 900])
   })
 
   test('an event the stream and the log both have is one row', () => {

@@ -20,6 +20,11 @@ import { eventsQuery, filterOf, isActive, logKey, maxEvents, searchOf } from './
 // Each read of the log asks for this many more of the newest events.
 const step = 1000
 
+// What the page says when a read is all the daemon has, and when it is cut
+// at its old end.
+export const everyText = 'That is every event of these filters in the part of the event log the daemon reads; older ones are in the journal on the node.'
+export const cutText = `The daemon answers ${maxEvents} events at most: the list ends at the oldest of the newest ${maxEvents}, and older ones are in the journal on the node.`
+
 // What a read of the event log brought, for the filter it was made with.
 interface Read {
   key: string
@@ -56,8 +61,11 @@ export function EventsPage() {
   // What was read for another filter is not what this one asks for.
   const older = read?.key === key ? read : undefined
   const kinds = useMemo(() => [...new Set([...held, ...(older?.events ?? [])].map((e) => e.kind))], [held, older])
+  // A read that brought fewer than it asked for is all the log has; one that
+  // brought as many may end before the old end of the range.
   const everything = older !== undefined && older.events.length < older.limit
   const atMost = older !== undefined && older.limit >= maxEvents
+  const cut = older !== undefined && !everything
 
   const change = (to: EventFilter) => {
     const query = searchOf(to)
@@ -83,11 +91,12 @@ export function EventsPage() {
   const exportList = async () => {
     setExporting(true)
     try {
-      const got = await api<Event[]>('GET', `/api/v1/events?${eventsQuery(filter, maxEvents)}`)
-      const list = (got ?? []).filter((e) => matches(e, filter))
+      const got = (await api<Event[]>('GET', `/api/v1/events?${eventsQuery(filter, maxEvents)}`)) ?? []
+      const list = got.filter((e) => matches(e, filter))
       const name = exportName(node, new Date())
       download(name, `${JSON.stringify(list, null, 2)}\n`)
-      toast(`Exported ${list.length === 1 ? '1 event' : `${list.length} events`} to ${name}.`, 'ok')
+      const n = list.length === 1 ? '1 event' : `${list.length} events`
+      toast(got.length >= maxEvents ? `Exported ${n} to ${name}. ${cutText}` : `Exported ${n} to ${name}.`, 'ok')
     } catch (e) {
       toast(<Untrusted text={`The events were not exported: ${explain(failureOf(e)).text}`} />, 'fail')
     } finally {
@@ -128,19 +137,18 @@ export function EventsPage() {
         ) : (
           <Button
             onClick={() => void loadOlder()}
-            disabledReason={
-              everything
-                ? 'That is every event the log has for these filters.'
-                : atMost
-                  ? `The page reads ${maxEvents} events at most. Narrow the filters, or read the journal on the node.`
-                  : undefined
-            }
+            disabledReason={everything ? everyText : atMost ? `${cutText} Narrow the filters to see them.` : undefined}
           >
             Load older events
           </Button>
         )}
         {failure && <Failure error={failure} />}
       </div>
+      {cut && !atMost && (
+        <p className="muted" role="status">
+          The list ends at the oldest of the {older.limit} newest events of these filters read so far.
+        </p>
+      )}
       <p className="muted">
         Times are in your browser&apos;s time zone. Load older events reads the event log on the node, {step} events more each time, up to {maxEvents}. Export reads it with
         these filters, {maxEvents} events at most.
