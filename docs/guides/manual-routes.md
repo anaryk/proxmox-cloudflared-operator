@@ -27,7 +27,8 @@ Its target is one of two kinds:
   the setting `manualCIDRs`, which is empty until you fill it, so that no route can point at
   an address you did not name.
 - **A guest.** Its address is proven as for a route in its Notes, at `port` or `observed`.
-  `manualCIDRs` does not apply.
+  `manualCIDRs` does not apply. The guest needs no gate tag: pco reads a guest a manual route
+  names in every cycle, as it reads a tagged one, and asks its guest agent for its addresses.
 
 ## Before you start
 
@@ -66,8 +67,9 @@ Its target is one of two kinds:
    pco: target.addr 192.0.2.10: not inside the manualCIDRs of the settings (10.0.5.0/24)
    ```
 
-3. For a route to a guest, name the guest instead of the address. `--via` chooses a card or an
-   address of it, as `via=` does in the Notes:
+3. For a route to a guest, name the guest instead of the address. Its address is found as for
+   a route in its Notes, from its configuration or its guest agent, without `--via`; `--via`
+   chooses a card or an address of it when it has several, as `via=` does in the Notes:
 
    ```sh
    pco route manual add wiki.example.com --guest qemu/101 --port 8443 --https --no-tls-verify --via net1

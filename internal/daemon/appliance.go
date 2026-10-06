@@ -265,7 +265,8 @@ type applianceParts struct {
 
 // buildAppliance makes the engine of the appliance: the Proxmox client dials
 // the endpoint of the install and verifies it under its server name, the
-// inventory reads the appliance and the members of its pool every cycle, the
+// inventory reads the appliance and the members of its pool every cycle, and
+// the guests of the manual routes as it reads tagged ones, the
 // prober puts the container's interfaces on the segments of their NICs and
 // has no forwarding table to look at, and the engine runs with the
 // self-identification, the quorum and the incarnation of the container.
@@ -306,6 +307,7 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 	inv := inventory.New(client, inventory.Options{
 		GateTags:   []string{settings.GateTag},
 		AlwaysRead: func(ref model.GuestRef, pool string) bool { return ref == own || pool == appliance.Pool },
+		Routed:     routedGuests(st, log),
 	}, deps.Now, log)
 	res := resolve.NewResolver(appliance.NewProber(deps.Prober, self.Segments), resolve.Settings{
 		LocalNode:         a.Node,

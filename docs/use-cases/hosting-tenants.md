@@ -118,13 +118,13 @@ tenant. Two choices follow:
   Notes are then never read, whatever they say. The company makes each route itself, as a
   manual route to the guest, which needs no tag:
 
-      pco route manual add acme.example.net --guest qemu/151 --port 8080 --via 10.0.20.51
+      pco route manual add acme.example.net --guest qemu/151 --port 8080
 
   The route is the company's own, so the policy does not apply to it, and the rules at
-  `observed` do: the segment, the MAC and the approval of the guest. A machine without the
-  tag is not watched: pco rereads its configuration every five minutes and does not ask its
-  guest agent for addresses, so the route names the address with `--via 10.0.20.51`, or the
-  machine has a static address in its Proxmox configuration.
+  `observed` do: the segment, the MAC and the approval of the guest. pco reads a machine a
+  manual route names in every cycle, as it reads a tagged one, and asks its guest agent for
+  its addresses, so the route finds the address without `--via`; `--via 10.0.20.51` chooses
+  one when the machine has several.
 
 Each name should be one level below the zone, as `acme.example.net` is: the universal
 certificate of Cloudflare covers one level only, and a deeper name gets the warning

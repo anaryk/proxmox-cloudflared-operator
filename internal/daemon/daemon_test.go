@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,12 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
@@ -58,6 +61,59 @@ func TestTheDaemonRunsACycleOverItsSocket(t *testing.T) {
 		require.Equal(t, "PVEAPIToken="+pveTokenID+"="+pveSecret, auth, "the token of the store is the one sent to Proxmox")
 	}
 	require.NotEmpty(t, w.pve.authorizations())
+}
+
+// web-1 without the gate tag and without a static address: a manual route to
+// it goes to the address its guest agent reports, which the inventory asks
+// for as it does for a tagged guest.
+func TestAManualRouteToAnUntaggedGuestTakesTheAddressOfItsAgent(t *testing.T) {
+	w := newWorld(t)
+	w.pve.answer("/api2/json/cluster/resources", []map[string]any{{
+		"type": "qemu", "vmid": 101, "name": "web-1", "node": testNode, "status": "running", "template": 0,
+	}})
+	w.pve.answer("/api2/json/nodes/pve1/qemu/101/config", map[string]any{
+		"name":    "web-1",
+		"net0":    "virtio=" + guestMAC + ",bridge=vmbr0",
+		"smbios1": "uuid=80e8ef19-34bf-4cb3-b314-96870ca14d1e",
+		"agent":   "1",
+		"digest":  "0b9e3c6f1a2d4e5f60718293a4b5c6d7e8f90a1b",
+	})
+	w.pve.answer("/api2/json/nodes/pve1/qemu/101/agent/network-get-interfaces", map[string]any{"result": []map[string]any{{
+		"name": "ens18", "hardware-address": guestMAC,
+		"ip-addresses": []map[string]any{{"ip-address": guestAddress, "ip-address-type": "ipv4", "prefix": 24}},
+	}}})
+	ref := model.GuestRef{Kind: model.KindQEMU, VMID: 101}
+	require.NoError(t, w.store.SaveManualRoute(model.Route{
+		Hostname: "wiki.example.com", Source: model.SourceManual, ManualID: "wiki", Guest: &ref,
+		Target: model.Target{Scheme: model.SchemeHTTP, Port: 8080},
+	}))
+	d := w.start()
+
+	require.NoError(t, d.client.Sync(t.Context()))
+	st := d.await(func(st engine.State) bool { return len(st.Routes) == 1 && st.Routes[0].State == planner.StateActive })
+
+	require.True(t, st.Complete)
+	require.Zero(t, st.GateTagged)
+	require.Equal(t, "manual/wiki", st.Routes[0].Owner)
+	require.Equal(t, "http://"+guestAddress+":8080", st.Routes[0].Service)
+}
+
+func TestTheInventoryIsToldTheGuestsOfTheManualRoutesOnly(t *testing.T) {
+	w := newWorld(t)
+	routed := routedGuests(w.store, zerolog.Nop())
+	require.Empty(t, routed())
+
+	ref := model.GuestRef{Kind: model.KindLXC, VMID: 120}
+	require.NoError(t, w.store.SaveManualRoute(model.Route{
+		Hostname: "app.example.com", Source: model.SourceManual, ManualID: "app", Guest: &ref,
+		Target: model.Target{Scheme: model.SchemeHTTP, Port: 3000},
+	}))
+	require.NoError(t, w.store.SaveManualRoute(model.Route{
+		Hostname: "status.example.com", Source: model.SourceManual, ManualID: "status",
+		Target: model.Target{Scheme: model.SchemeHTTP, Addr: netip.MustParseAddr("10.0.5.20"), Port: 9000},
+	}))
+
+	require.Equal(t, []model.GuestRef{ref}, routed(), "asked again, and a route to an address names no guest")
 }
 
 func TestApplyThroughTheSocketPublishesTheRoute(t *testing.T) {

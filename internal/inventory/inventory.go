@@ -115,6 +115,12 @@ type Options struct {
 	// watched or not: the appliance itself and the members of its pool, whose
 	// NICs the self-identification compares every cycle. nil reads none.
 	AlwaysRead func(ref model.GuestRef, pool string) bool
+	// Routed names the guests the manual routes send traffic to. They are
+	// read as guests with a gate tag are, their config on every refresh and
+	// the addresses their agent reports, so that a route to a guest without
+	// the tag finds its address too. It is asked once a refresh; nil names
+	// none.
+	Routed func() []model.GuestRef
 }
 
 // Inventory polls Proxmox and keeps what it learned between refreshes, so
@@ -177,6 +183,7 @@ type run struct {
 	now      time.Time
 	complete bool
 	problems []string
+	routed   map[model.GuestRef]bool // the guests Routed names
 }
 
 // fail records a reason why the snapshot cannot be trusted to be complete.
@@ -221,6 +228,7 @@ func (i *Inventory) Refresh(ctx context.Context) Snapshot {
 	if listed {
 		offline = offlineNames(nodes)
 	}
+	r.routed = i.routed()
 	guests, cache := i.refreshGuests(ctx, r, r.uniqueRows(rows), offline)
 	if err := ctx.Err(); err != nil {
 		return i.previous(r, cancelled(err))
@@ -343,12 +351,25 @@ func (i *Inventory) refreshGuests(ctx context.Context, r *run, rows []pve.Resour
 	return guests, cache
 }
 
-// isWatched reports whether the guest carries a gate tag. Tags are compared
-// exactly.
-func (i *Inventory) isWatched(row pve.Resource, cfg pve.GuestConfig) bool {
-	return slices.ContainsFunc(guestTags(row, cfg.Values), func(tag string) bool {
+// isWatched reports whether the guest carries a gate tag, or a manual route
+// names it. Tags are compared exactly.
+func (i *Inventory) isWatched(r *run, row pve.Resource, cfg pve.GuestConfig) bool {
+	return r.routed[refOf(row)] || slices.ContainsFunc(guestTags(row, cfg.Values), func(tag string) bool {
 		return slices.Contains(i.opts.GateTags, tag)
 	})
+}
+
+// routed returns the guests Routed names, as a set.
+func (i *Inventory) routed() map[model.GuestRef]bool {
+	if i.opts.Routed == nil {
+		return nil
+	}
+	refs := i.opts.Routed()
+	set := make(map[model.GuestRef]bool, len(refs))
+	for _, ref := range refs {
+		set[ref] = true
+	}
+	return set
 }
 
 func (i *Inventory) alwaysRead(row pve.Resource) bool {
@@ -375,7 +396,7 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 			continue
 		}
 		old, cached := i.cache[refOf(row)]
-		if !cached || i.isWatched(row, old.cfg) || i.alwaysRead(row) || r.now.Sub(old.cfgAt) >= i.opts.FullSweepEvery {
+		if !cached || i.isWatched(r, row, old.cfg) || i.alwaysRead(row) || r.now.Sub(old.cfgAt) >= i.opts.FullSweepEvery {
 			due = append(due, j)
 		}
 	}
@@ -409,7 +430,7 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 		if applyStatus(&guest, row, &entry) {
 			unread++
 		}
-		ts = append(ts, tracked{row: row, watched: i.isWatched(row, entry.cfg), offline: isOffline, entry: entry, guest: guest})
+		ts = append(ts, tracked{row: row, watched: i.isWatched(r, row, entry.cfg), offline: isOffline, entry: entry, guest: guest})
 	}
 	for _, node := range slices.Sorted(maps.Keys(held)) {
 		r.note("node %s is offline; using cached data for its guests", node)
@@ -433,7 +454,7 @@ func (i *Inventory) configEntry(r *run, row pve.Resource, res configResult, offl
 	case offline:
 		// A guest that is not cached cannot be told apart from one that is
 		// gone. Only a watched one has routes that must not be dropped.
-		if !cached && i.isWatched(row, pve.GuestConfig{}) {
+		if !cached && i.isWatched(r, row, pve.GuestConfig{}) {
 			r.fail("guest %s: node %s is offline and the guest is not cached", label(row), row.Node)
 		}
 	case !res.attempted:

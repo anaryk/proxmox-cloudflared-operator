@@ -23,6 +23,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -335,6 +336,26 @@ func StoreReady(st *store.Store) func() error {
 	}
 }
 
+// routedGuests names the guests of the manual routes for the inventory, which
+// reads them as it reads a guest with the gate tag. Routes it cannot read name
+// none: the cycle holds on the same error when it reads them.
+func routedGuests(st *store.Store, log zerolog.Logger) func() []model.GuestRef {
+	return func() []model.GuestRef {
+		routes, err := st.ManualRoutes()
+		if err != nil {
+			log.Debug().Err(err).Msg("the manual routes could not be read for the inventory")
+			return nil
+		}
+		var refs []model.GuestRef
+		for _, r := range routes {
+			if r.Guest != nil {
+				refs = append(refs, *r.Guest)
+			}
+		}
+		return refs
+	}
+}
+
 // build makes the engine out of the parts, and returns the Proxmox client it
 // reads through, the egress filter it feeds and the connector manager it
 // keeps the connectors with too. The Proxmox token goes into the client and
@@ -351,7 +372,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		return nil, nil, nil, nil, fmt.Errorf("building the Proxmox client: %w", err)
 	}
 	log := cfg.Log
-	inv := inventory.New(client, inventory.Options{GateTags: []string{settings.GateTag}}, deps.Now, log)
+	inv := inventory.New(client, inventory.Options{GateTags: []string{settings.GateTag}, Routed: routedGuests(st, log)}, deps.Now, log)
 	res := resolve.NewResolver(deps.Prober, resolve.Settings{
 		LocalNode:    cfg.Node,
 		TrustStatic:  settings.TrustStatic,

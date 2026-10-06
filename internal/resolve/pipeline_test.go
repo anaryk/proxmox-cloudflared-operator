@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"net/netip"
 	"slices"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ type pipelineSource struct {
 	rows      []pve.Resource
 	configs   map[model.GuestRef]map[string]string
 	configErr map[model.GuestRef]error
+	agents    map[int][]pve.GuestIface // what the agent of a QEMU guest reports, by VMID
 	nodes     []pve.ClusterNode
 }
 
@@ -38,6 +40,7 @@ func newPipelineSource() *pipelineSource {
 	return &pipelineSource{
 		configs:   map[model.GuestRef]map[string]string{},
 		configErr: map[model.GuestRef]error{},
+		agents:    map[int][]pve.GuestIface{},
 		nodes: []pve.ClusterNode{
 			{Name: "pve1", Addr: ip("10.20.0.2"), Online: true, Local: true},
 			{Name: "pve2", Addr: ip("10.20.0.3"), Online: true},
@@ -80,8 +83,8 @@ func (s *pipelineSource) GuestConfig(_ context.Context, _ string, ref model.Gues
 	return pve.GuestConfig{Values: maps.Clone(s.configs[ref])}, nil
 }
 
-func (s *pipelineSource) AgentInterfaces(context.Context, string, int) ([]pve.GuestIface, error) {
-	return nil, nil
+func (s *pipelineSource) AgentInterfaces(_ context.Context, _ string, vmid int) ([]pve.GuestIface, error) {
+	return slices.Clone(s.agents[vmid]), nil
 }
 
 func (s *pipelineSource) LXCInterfaces(context.Context, string, int) ([]pve.GuestIface, error) {
@@ -104,20 +107,36 @@ type pipeline struct {
 	clock    *clock
 	inv      *inventory.Inventory
 	resolver *Resolver
+	manual   []model.Route
 	bindings map[string]*Binding // by hostname
 	claims   map[string]planner.Claim
 }
 
 func newPipeline(src *pipelineSource, prober *fakeProber) *pipeline {
 	clk := &clock{t: t0}
-	return &pipeline{
+	p := &pipeline{
 		src:      src,
 		prober:   prober,
 		clock:    clk,
-		inv:      inventory.New(src, inventory.Options{}, clk.now, zerolog.Nop()),
 		resolver: NewResolver(prober, Settings{LocalNode: "pve1"}, clk.now),
 		bindings: map[string]*Binding{},
 	}
+	p.inv = p.newInventory()
+	return p
+}
+
+// newInventory reads the guests the manual routes name as the daemon has
+// it do.
+func (p *pipeline) newInventory() *inventory.Inventory {
+	return inventory.New(p.src, inventory.Options{Routed: func() []model.GuestRef {
+		var refs []model.GuestRef
+		for _, rt := range p.manual {
+			if rt.Guest != nil {
+				refs = append(refs, *rt.Guest)
+			}
+		}
+		return refs
+	}}, p.clock.now, zerolog.Nop())
 }
 
 // cycle is what one run of the pipeline produced.
@@ -184,14 +203,14 @@ func (p *pipeline) advance(d time.Duration) { p.clock.t = p.clock.t.Add(d) }
 // restart starts the inventory and the resolver afresh, as a restarted
 // operator does; only the stored bindings and claims survive.
 func (p *pipeline) restart() {
-	p.inv = inventory.New(p.src, inventory.Options{}, p.clock.now, zerolog.Nop())
+	p.inv = p.newInventory()
 	p.resolver = NewResolver(p.prober, Settings{LocalNode: "pve1"}, p.clock.now)
 }
 
 func (p *pipeline) run(t *testing.T) cycle {
 	t.Helper()
 	snap := p.inv.Refresh(t.Context())
-	col := planner.Collect(snap.Guests, nil, planner.Settings{})
+	col := planner.Collect(snap.Guests, p.manual, planner.Settings{})
 	deny, err := NewDenylist(snap.NodeAddrs(), nil)
 	require.NoError(t, err)
 
@@ -405,6 +424,40 @@ func TestPipelineFailedConfigFetchKeepsTheBinding(t *testing.T) {
 	b := p.bindings["web.example.com"]
 	require.Equal(t, webMAC, b.MAC)
 	require.Equal(t, p.clock.t, b.VerifiedAt, "the cached guest is still checked on the wire")
+}
+
+// A manual route to a guest without the gate tag and without a static
+// address goes to the address the guest's agent reports, as a route in the
+// Notes of a tagged guest does: it needs no via.
+func TestPipelineManualRouteToAnUntaggedGuestTakesTheAddressOfItsAgent(t *testing.T) {
+	const wikiMAC = "bc:24:11:00:04:01"
+	ref := model.GuestRef{Kind: model.KindQEMU, VMID: 104}
+	src := newPipelineSource()
+	src.rows = append(src.rows, pve.Resource{Kind: ref.Kind, VMID: ref.VMID, Name: "wiki-1", Node: "pve1", Status: "running"})
+	src.configs[ref] = map[string]string{
+		"name":    "wiki-1",
+		"net0":    "virtio=BC:24:11:00:04:01,bridge=vmbr0",
+		"smbios1": "uuid=5c4b3a29-1807-4f6e-9d5c-4b3a2918070f",
+	}
+	src.agents[ref.VMID] = []pve.GuestIface{{Name: "ens18", MAC: wikiMAC, Addrs: []netip.Addr{ip("10.20.0.44")}}}
+	prober := newFakeProber()
+	prober.ifaces = []HostIface{{Name: "vmbr0", Addrs: prefixes("10.20.0.2/24")}}
+	prober.arp[arpKey("vmbr0", "10.20.0.44")] = []string{wikiMAC}
+	prober.fdb[fdbKey("vmbr0", 0, wikiMAC)] = []string{"tap104i0"}
+	p := newPipeline(src, prober)
+	p.manual = []model.Route{{
+		Hostname: "wiki.example.com", Source: model.SourceManual, ManualID: "wiki", Guest: &ref,
+		Target: model.Target{Scheme: model.SchemeHTTP, Port: 8080},
+	}}
+
+	c := p.run(t)
+
+	require.True(t, c.snap.Complete)
+	c.requireActive(t, "wiki.example.com", "10.20.0.44:8080")
+	b := p.bindings["wiki.example.com"]
+	require.Equal(t, "manual/wiki", b.Owner)
+	require.Equal(t, wikiMAC, b.MAC)
+	require.Equal(t, "tap104i0", b.Port)
 }
 
 func TestPipelineReusedVMIDDoesNotInheritTheBinding(t *testing.T) {

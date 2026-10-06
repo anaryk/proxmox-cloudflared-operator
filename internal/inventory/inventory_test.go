@@ -159,6 +159,114 @@ func TestRefreshAlwaysReadsTheOwnGuest(t *testing.T) {
 	require.Equal(t, 2, src.count("config "+refDB.String()), "nothing is asked of an offline node")
 }
 
+// addWiki adds wiki-1, qemu/104: running, without the gate tag, with an
+// agent that reports its address.
+func addWiki(src *fakeSource) model.GuestRef {
+	src.addGuest(
+		pve.Resource{Kind: model.KindQEMU, VMID: 104, Name: "wiki-1", Node: "pve1", Status: "running", Tags: []string{"docs"}},
+		map[string]string{
+			"name":    "wiki-1",
+			"net0":    "virtio=BC:24:11:00:AA:04,bridge=vmbr0",
+			"smbios1": "uuid=2b7c9e41-6d3a-4f85-a1c0-9e8d7f6a5b4c",
+		},
+		[]pve.GuestIface{iface("ens18", "bc:24:11:00:aa:04", "10.20.0.17")},
+	)
+	return model.GuestRef{Kind: model.KindQEMU, VMID: 104}
+}
+
+func routing(refs ...model.GuestRef) func() []model.GuestRef {
+	return func() []model.GuestRef { return slices.Clone(refs) }
+}
+
+func TestRefreshReadsARoutedGuestAsATaggedOne(t *testing.T) {
+	src := newFake()
+	ref := addWiki(src)
+	inv, clk := newInventory(src, Options{Routed: routing(ref)})
+
+	first := inv.Refresh(t.Context())
+	clk.advance(10 * time.Second)
+	snap := inv.Refresh(t.Context())
+
+	require.True(t, snap.Complete)
+	require.Empty(t, snap.Problems)
+	require.Equal(t, 2, src.count("config "+ref.String()), "its config is read every refresh")
+	require.Equal(t, 1, src.count("iface "+ref.String()), "its agent's answer is kept as a tagged guest's is")
+	want := []model.ReportedAddr{{Iface: "ens18", MAC: "bc:24:11:00:aa:04", Addr: ip("10.20.0.17")}}
+	require.Equal(t, want, guestOf(t, first, ref).Reported)
+	require.Equal(t, want, guestOf(t, snap, ref).Reported)
+	require.Equal(t, []string{"docs"}, guestOf(t, snap, ref).Tags)
+}
+
+func TestRefreshAsksWhichGuestsAreRoutedEveryRefresh(t *testing.T) {
+	src := newFake()
+	ref := addWiki(src)
+	asked := 0
+	routed := []model.GuestRef{ref}
+	inv, clk := newInventory(src, Options{Routed: func() []model.GuestRef {
+		asked++
+		return routed
+	}})
+	inv.Refresh(t.Context())
+
+	routed = nil
+	clk.advance(10 * time.Second)
+	snap := inv.Refresh(t.Context())
+
+	require.Equal(t, 2, asked)
+	require.Equal(t, 1, src.count("config "+ref.String()), "a guest no route names is read as any untagged one")
+	require.Empty(t, guestOf(t, snap, ref).Reported)
+
+	routed = []model.GuestRef{ref}
+	clk.advance(10 * time.Second)
+	snap = inv.Refresh(t.Context())
+
+	require.Equal(t, 2, src.count("config "+ref.String()), "a guest a new route names is read at once")
+	require.Equal(t, 2, src.count("iface "+ref.String()))
+	require.NotEmpty(t, guestOf(t, snap, ref).Reported)
+}
+
+// Without a route that names a guest, the inventory makes the calls it made
+// before there were routed guests, and builds the same guests.
+func TestRefreshReadsNoMoreGuestsWithoutARoutedOne(t *testing.T) {
+	for name, routed := range map[string]func() []model.GuestRef{
+		"nothing":                   routing(),
+		"a guest that is not there": routing(model.GuestRef{Kind: model.KindQEMU, VMID: 999}),
+		"a guest with the tag":      routing(refWeb),
+	} {
+		t.Run(name, func(t *testing.T) {
+			before, now := newFake(), newFake()
+			addWiki(before)
+			addWiki(now)
+			old, oldClock := newInventory(before, Options{})
+			inv, clk := newInventory(now, Options{Routed: routed})
+
+			for range 4 {
+				want, got := old.Refresh(t.Context()), inv.Refresh(t.Context())
+				require.Equal(t, want, got)
+				oldClock.advance(2 * time.Minute)
+				clk.advance(2 * time.Minute)
+			}
+
+			require.Equal(t, before.calls, now.calls)
+		})
+	}
+}
+
+// A routed guest has a route that must not be dropped, as a tagged one has:
+// on an offline node, a guest that was never cached leaves the snapshot
+// incomplete.
+func TestRefreshOfARoutedGuestOnAnOfflineNodeIsIncompleteUntilCached(t *testing.T) {
+	src := newFake()
+	src.setOnline("pve2", false)
+	inv, _ := newInventory(src, Options{Routed: routing(refDB)})
+
+	snap := inv.Refresh(t.Context())
+
+	require.False(t, snap.Complete)
+	require.Contains(t, snap.Problems, "guest lxc/200 (db-1): node pve2 is offline and the guest is not cached")
+	require.Zero(t, src.count("config "+refDB.String()))
+}
+
 func TestRefreshGuestBecomingWatchedIsFetchedAtOnce(t *testing.T) {
 	src := newFake()
 	inv, clk := newInventory(src, Options{})

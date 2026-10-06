@@ -119,9 +119,9 @@ not mounted.
 The inventory is pco's view of Proxmox: the guests with their tags, Notes, network cards and
 addresses, and the nodes with their addresses and interfaces. It reads them through the
 Proxmox API on `https://127.0.0.1:8006` with the token `pco@pve!pco`, whose role can only
-read. A cycle lists the guests and reads the configuration of every guest with the gate tag;
-the others are read again every five minutes, and the addresses a guest reports are kept for a
-minute.
+read. A cycle lists the guests and reads the configuration of every guest with the gate tag or
+named by a manual route; the others are read again every five minutes, and the addresses a guest
+reports are kept for a minute.
 
 What the inventory reads is complete or it is not. A list of guests, a configuration or a node
 that could not be read makes it incomplete, and the cycle then holds: a guest missing from an

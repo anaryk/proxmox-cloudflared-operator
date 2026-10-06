@@ -81,9 +81,9 @@ The daemon runs a cycle every `pollInterval` (10 seconds by default), and at onc
 ask: `pco sync`, `pco apply`, `pco adopt`, or when a credential is added. In each cycle it:
 
 1. Reads the settings, the install, the node registry and the writer identity.
-2. Asks Proxmox for every guest and reads the configuration of the tagged ones. Guests that
-   are not tagged are read again only every five minutes. The addresses a guest reports are
-   cached for a minute.
+2. Asks Proxmox for every guest and reads the configuration of the tagged ones and of those a
+   manual route names. The others are read again only every five minutes. The addresses a
+   guest reports are cached for a minute.
 3. Reads the routes out of the Notes of the tagged guests and applies the hostname policy
    and, in approve mode, the approvals.
 4. Settles the claims: which guest holds each hostname.
