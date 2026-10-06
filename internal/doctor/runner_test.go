@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
 // logBuffer keeps what a runner logs, for reading while it runs.
@@ -237,4 +238,57 @@ func TestACallerThatLeavesDoesNotCutTheDoctorRunShort(t *testing.T) {
 
 	require.NoError(t, env.cut)
 	require.False(t, Failed(r.Doctor(t.Context())))
+}
+
+// A caller that names the holder it saw gets the chain of that holder or a
+// refusal, from the same state: never the chain of a route that took the
+// hostname over in between, nor one kept from before.
+func TestADiagnosisOfTheHolderTheCallerSaw(t *testing.T) {
+	o := newOrigin(t, false, nil)
+	var (
+		mu sync.Mutex
+		st = servedBy(t, o.Server, "http")
+	)
+	state := func() engine.State {
+		mu.Lock()
+		defer mu.Unlock()
+		return st
+	}
+	clock := &testClock{t: now}
+	r := NewRunner(state, healthyEnv(), nil, clock.now, zerolog.Nop())
+
+	steps, err := r.Diagnose(WithHolder(t.Context(), "qemu/101"), www)
+	require.NoError(t, err)
+	require.Equal(t, "qemu/101 (web-1) holds it; state active", steps[0].Detail)
+
+	// qemu/102 holds it now: once the chain of qemu/101 is no longer kept, a
+	// caller who saw qemu/101 is refused. While it is kept, such a caller
+	// gets that chain, which is of the route it named.
+	mu.Lock()
+	st.Routes[0].Owner, st.Routes[0].Guest = "qemu/102", &engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, Name: "web-2"}
+	mu.Unlock()
+	steps, err = r.Diagnose(WithHolder(t.Context(), "qemu/101"), www)
+	require.NoError(t, err)
+	require.Equal(t, "qemu/101 (web-1) holds it; state active", steps[0].Detail)
+	clock.advance(keepFor)
+	_, err = r.Diagnose(WithHolder(t.Context(), "qemu/101"), www)
+	require.ErrorIs(t, err, ErrHolderChanged)
+	require.EqualError(t, err, "the holder changed: www.example.com is no longer held by qemu/101")
+
+	// One who saw qemu/102 gets its chain, not the one kept of qemu/101.
+	steps, err = r.Diagnose(WithHolder(t.Context(), "qemu/102"), www)
+	require.NoError(t, err)
+	require.Equal(t, "qemu/102 (web-2) holds it; state active", steps[0].Detail)
+
+	// Without a holder named, whoever holds it now.
+	steps, err = r.Diagnose(t.Context(), www)
+	require.NoError(t, err)
+	require.Equal(t, "qemu/102 (web-2) holds it; state active", steps[0].Detail)
+	require.Len(t, o.requests(), 3)
+
+	holder, ok := ExpectedHolder(WithHolder(t.Context(), "qemu/102"))
+	require.True(t, ok)
+	require.Equal(t, "qemu/102", holder)
+	_, ok = ExpectedHolder(t.Context())
+	require.False(t, ok)
 }

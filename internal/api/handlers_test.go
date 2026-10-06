@@ -1227,6 +1227,36 @@ func TestDiagnose(t *testing.T) {
 	}
 }
 
+// The web process names the holder it let a reader diagnose: the engine
+// is told, and a holder that changed meanwhile is a refusal of its own.
+func TestDiagnoseOfTheHolderTheCallerSaw(t *testing.T) {
+	f := &fakeEngine{steps: []doctor.Step{{Name: "route", Level: doctor.LevelOK, Detail: "qemu/101 holds it"}}}
+	rec := do(newServer(f), http.MethodGet, "/v1/diagnose?hostname=www.example.com&owner=qemu/101", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	holder, ok := doctor.ExpectedHolder(f.ctx)
+	require.True(t, ok)
+	require.Equal(t, "qemu/101", holder)
+
+	rec = do(newServer(f), http.MethodGet, "/v1/diagnose?hostname=www.example.com", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	_, ok = doctor.ExpectedHolder(f.ctx)
+	require.False(t, ok, "no holder named, none expected")
+
+	f = &fakeEngine{err: fmt.Errorf("%w: www.example.com is no longer held by qemu/101", doctor.ErrHolderChanged)}
+	rec = do(newServer(f), http.MethodGet, "/v1/diagnose?hostname=www.example.com&owner=qemu/101", "")
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, "holder_changed", errorCode(t, rec))
+	require.Equal(t, "the holder changed: www.example.com is no longer held by qemu/101", errorMessage(t, rec))
+
+	for _, query := range []string{"&owner=", "&owner=qemu/101&owner=qemu/102"} {
+		f := &fakeEngine{}
+		rec := do(newServer(f), http.MethodGet, "/v1/diagnose?hostname=www.example.com"+query, "")
+		require.Equal(t, http.StatusBadRequest, rec.Code, query)
+		require.Equal(t, "invalid", errorCode(t, rec))
+		require.Empty(t, f.called())
+	}
+}
+
 func TestDoctor(t *testing.T) {
 	findings := []doctor.Finding{
 		{Check: "mode", Level: doctor.LevelWarn, Detail: "observe-only: nothing is changed at Cloudflare", Fix: "pco apply"},

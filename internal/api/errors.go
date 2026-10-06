@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -28,6 +29,7 @@ const (
 	codeUnsupportedMediaType = "unsupported_media_type"
 	codeTooLarge             = "too_large"
 	codeInternal             = "internal"
+	codeHolderChanged        = "holder_changed"
 )
 
 const redacted = "[redacted]"
@@ -90,6 +92,8 @@ func answer(err error) answered {
 		return answered{status: http.StatusBadRequest, code: codeInvalid, msg: err.Error()}
 	case errors.Is(err, engine.ErrNotFound):
 		return answered{status: http.StatusNotFound, code: codeNotFound, msg: err.Error()}
+	case errors.Is(err, doctor.ErrHolderChanged):
+		return answered{status: http.StatusConflict, code: codeHolderChanged, msg: err.Error()}
 	case errors.Is(err, engine.ErrRefused):
 		return answered{status: http.StatusConflict, code: codeRefused, msg: err.Error()}
 	case errors.Is(err, engine.ErrBusy):

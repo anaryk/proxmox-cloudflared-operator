@@ -66,26 +66,58 @@ func (f *flight[T]) fresh(now time.Time) bool {
 	return f != nil && (!f.finished || !f.failed && now.Sub(f.at) < keepFor && !now.Before(f.at))
 }
 
-// Diagnose walks the chain of the route of a hostname.
+// ErrHolderChanged is a diagnosis refused because the route that holds the
+// hostname is not the one the caller named any more.
+var ErrHolderChanged = errors.New("the holder changed")
+
+type holderKey struct{}
+
+// WithHolder names the owner of the route the caller expects to hold the
+// hostname it diagnoses: the web interface lets a reader diagnose only the
+// route of a guest the reader sees, and the daemon must not walk another's
+// that took the hostname over in between.
+func WithHolder(ctx context.Context, owner string) context.Context {
+	return context.WithValue(ctx, holderKey{}, owner)
+}
+
+// ExpectedHolder is the owner WithHolder named, if any.
+func ExpectedHolder(ctx context.Context) (string, bool) {
+	owner, ok := ctx.Value(holderKey{}).(string)
+	return owner, ok
+}
+
+// Diagnose walks the chain of the route of a hostname. With a holder named
+// (WithHolder), it walks the route of that owner or refuses with
+// ErrHolderChanged, deciding on the state it walks, and shares the run only
+// with callers that named the same.
 func (r *Runner) Diagnose(ctx context.Context, name string) ([]Step, error) {
 	host, err := hostname.Normalize(name)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", engine.ErrInvalid, err)
 	}
+	owner, named := ExpectedHolder(ctx)
+	key := host
+	if named {
+		key = host + " " + owner
+	}
 	r.mu.Lock()
-	f := r.diagnoses[host]
+	f := r.diagnoses[key]
 	lead := !f.fresh(r.now())
 	if lead {
 		maps.DeleteFunc(r.diagnoses, func(_ string, old *flight[[]Step]) bool { return !old.fresh(r.now()) })
 		f = &flight[[]Step]{done: make(chan struct{})}
-		r.diagnoses[host] = f
+		r.diagnoses[key] = f
 	}
 	r.mu.Unlock()
 	if lead {
 		// The run is the daemon's own once it starts: a caller that leaves
 		// does not cut it short for the others.
 		fly(r, f, "the diagnosis of "+host, func() ([]Step, error) {
-			return DiagnoseRoute(context.WithoutCancel(ctx), r.state(), host, r.httpc)
+			st := r.state()
+			if rt, found := HolderOf(st, host); named && found && rt.Owner != owner {
+				return nil, fmt.Errorf("%w: %s is no longer held by %s", ErrHolderChanged, host, owner)
+			}
+			return DiagnoseRoute(context.WithoutCancel(ctx), st, host, r.httpc)
 		})
 	}
 	return await(ctx, f)

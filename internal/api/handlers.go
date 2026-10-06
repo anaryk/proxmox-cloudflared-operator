@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 )
 
@@ -25,6 +26,7 @@ var (
 	errBadLimit   = &httpError{http.StatusBadRequest, codeInvalid, fmt.Sprintf("limit must be a whole number from 1 to %d", engine.MaxEventLimit), false}
 	errBadHistory = &httpError{http.StatusBadRequest, codeInvalid, "history must be 1 or 0", false}
 	errNoHostname = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/diagnose?hostname=<name>", false}
+	errBadHolder  = &httpError{http.StatusBadRequest, codeInvalid, "owner names one route, the holder the caller expects: &owner=qemu/101", false}
 	errNoRouteOf  = &httpError{http.StatusBadRequest, codeInvalid, "name one hostname: /v1/traffic/route?hostname=<name>", false}
 	errRootOnly   = &httpError{http.StatusForbidden, codeForbidden, "only root may rotate the secret of a tunnel", false}
 )
@@ -459,14 +461,25 @@ func (s *Server) postRevokeSegment(c *gin.Context) {
 }
 
 // getDiagnose walks the chain of the route of one hostname. The daemon asks
-// the target the state shows for it, and nothing the request names.
+// the target the state shows for it, and nothing the request names. With
+// owner, it walks the route of that owner only, and refuses when another
+// holds the hostname by then: the web interface decides whether a reader may
+// read a chain by its holder.
 func (s *Server) getDiagnose(c *gin.Context) {
 	hosts := c.QueryArray("hostname")
 	if len(hosts) != 1 || hosts[0] == "" {
 		s.fail(c, errNoHostname)
 		return
 	}
-	steps, err := s.engine.Diagnose(c.Request.Context(), hosts[0])
+	ctx := c.Request.Context()
+	if owners, ok := c.GetQueryArray("owner"); ok {
+		if len(owners) != 1 || owners[0] == "" {
+			s.fail(c, errBadHolder)
+			return
+		}
+		ctx = doctor.WithHolder(ctx, owners[0])
+	}
+	steps, err := s.engine.Diagnose(ctx, hosts[0])
 	if err != nil {
 		s.fail(c, err)
 		return
