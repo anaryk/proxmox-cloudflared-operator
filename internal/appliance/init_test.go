@@ -979,7 +979,31 @@ func TestRecoverRefusesWhatItCannotRecover(t *testing.T) {
 		_, err := appliance.Recover(context.Background(), e.st, e.recoverDeps())
 
 		require.ErrorContains(t, err, "internal server error")
+		require.ErrorContains(t, err, "recovery needs every stored credential to answer, as one that does not could hide "+
+			"a higher generation: try again, or remove it with pco credential remove "+e.credentials()[0].ID+" if its token is gone")
 		require.Equal(t, 3, e.writer().Generation, "no generation is guessed")
+	})
+	t.Run("a credential that cannot be used", func(t *testing.T) {
+		e, _ := rolledBack(t)
+		deps := e.recoverDeps()
+		deps.NewClient = func(store.Credential) (cfapi.API, error) { return nil, errors.New("unknown token") }
+
+		_, err := appliance.Recover(context.Background(), e.st, deps)
+
+		require.ErrorContains(t, err, "credential "+e.credentials()[0].ID+" cannot be used: unknown token")
+		require.ErrorContains(t, err, "pco credential remove "+e.credentials()[0].ID)
+	})
+	t.Run("an install the credentials do not see", func(t *testing.T) {
+		e := newInitEnv(t)
+		require.NoError(t, e.init(e.bootstrap("install")))
+		inst := e.install()
+
+		_, err := appliance.Recover(context.Background(), e.st, e.recoverDeps())
+
+		require.EqualError(t, err, "the stored credentials see no tunnel of install "+inst.ID+", the install of this volume, "+
+			"so the generation its writer used is unknown: add a credential that sees the account of its tunnel "+
+			"(pco credential add), then run pco appliance recover again")
+		require.NotContains(t, err.Error(), "check the id", "the id came from the volume")
 	})
 	t.Run("a store that does not write durably", func(t *testing.T) {
 		e, _ := rolledBack(t)

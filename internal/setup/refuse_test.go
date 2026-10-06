@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -108,6 +109,11 @@ func TestRecoverDoesNotGuess(t *testing.T) {
 		err := e.setup(Options{Yes: true, Recover: true, InstallID: testInstall, CloudflareToken: cfToken, Node: testNode})
 
 		require.ErrorContains(t, err, "sees no tunnel of install "+testInstall)
+		require.ErrorContains(t, err, "check the id, or recover with a token that sees the account of its tunnel",
+			"the id was typed here")
+		var none *planner.NoTunnelsError
+		require.ErrorAs(t, err, &none)
+		require.Equal(t, testInstall, none.InstallID)
 		_, found, err := e.st.Writer()
 		require.NoError(t, err)
 		require.False(t, found, "no generation 1 is taken for granted")

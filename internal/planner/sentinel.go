@@ -49,6 +49,15 @@ func (w Writer) Validate() error {
 // TunnelName is the name of the tunnel an install owns.
 func TunnelName(installID string) string { return installPrefix + installID }
 
+// NoTunnelsError says that a Cloudflare token sees no tunnel of an install, so
+// the generation its writer used cannot be read from a sentinel. The caller
+// knows where the id came from, and so what to tell the admin to do.
+type NoTunnelsError struct{ InstallID string }
+
+func (e *NoTunnelsError) Error() string {
+	return fmt.Sprintf("the token sees no tunnel of install %s, so the generation its writer used is unknown", e.InstallID)
+}
+
 // DNSMarker is what an install writes into the comment of its DNS records.
 func DNSMarker(installID string) string { return "pco:" + installID }
 

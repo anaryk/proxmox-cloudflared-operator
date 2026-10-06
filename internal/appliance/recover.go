@@ -67,6 +67,12 @@ func Recover(ctx context.Context, st *store.Store, deps RecoverDeps) (planner.Wr
 		return planner.Writer{}, err
 	}
 	if _, _, err := deps.RecoverInstall(ctx, api, st, inst.ID, deps.Now, deps.Rand, inst); err != nil {
+		var none *planner.NoTunnelsError
+		if errors.As(err, &none) {
+			return planner.Writer{}, fmt.Errorf("the stored credentials see no tunnel of install %s, the install of this volume, "+
+				"so the generation its writer used is unknown: add a credential that sees the account of its tunnel "+
+				"(pco credential add), then run pco appliance recover again", none.InstallID)
+		}
 		return planner.Writer{}, err
 	}
 	if err := withIncarnation(st, incarnation); err != nil {
@@ -96,18 +102,18 @@ func seeTogether(ctx context.Context, creds []store.Credential, newClient func(s
 	for _, c := range creds {
 		api, err := newClient(c)
 		if err != nil {
-			return nil, fmt.Errorf("credential %s cannot be used: %w", c.ID, err)
+			return nil, fmt.Errorf("credential %s cannot be used: %w%s", c.ID, err, wayOut(c))
 		}
 		if t.API == nil {
 			t.API = api
 		}
 		accounts, err := api.Accounts(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("listing the accounts credential %s sees: %w", c.ID, err)
+			return nil, fmt.Errorf("listing the accounts credential %s sees: %w%s", c.ID, err, wayOut(c))
 		}
 		zones, err := api.Zones(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("listing the zones credential %s sees: %w", c.ID, err)
+			return nil, fmt.Errorf("listing the zones credential %s sees: %w%s", c.ID, err, wayOut(c))
 		}
 		for _, a := range accounts {
 			if t.by[a.ID] == nil {
@@ -125,6 +131,13 @@ func seeTogether(ctx context.Context, creds []store.Credential, newClient func(s
 		}
 	}
 	return t, nil
+}
+
+// wayOut is what follows the refusal of a credential that cannot answer:
+// the way out.
+func wayOut(c store.Credential) string {
+	return "; recovery needs every stored credential to answer, as one that does not could hide a higher generation: " +
+		"try again, or remove it with pco credential remove " + c.ID + " if its token is gone"
 }
 
 func (t *together) Accounts(context.Context) ([]cfapi.Account, error) {

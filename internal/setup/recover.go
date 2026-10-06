@@ -170,8 +170,8 @@ func installOf(name string) (string, bool) {
 func chooseInstall(found map[string][]placedTunnel, id string) (string, error) {
 	if id != "" {
 		if len(found[id]) == 0 {
-			return "", fmt.Errorf("the token sees no tunnel of install %s, so the generation its writer used is unknown: "+
-				"check the id, or recover with a token that sees the account of its tunnel", id)
+			return "", fmt.Errorf("%w: check the id, or recover with a token that sees the account of its tunnel",
+				&planner.NoTunnelsError{InstallID: id})
 		}
 		return id, nil
 	}
