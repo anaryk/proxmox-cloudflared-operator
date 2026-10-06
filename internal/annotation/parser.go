@@ -35,6 +35,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -241,13 +242,17 @@ func (p *parser) parseSegment(toks []token) {
 // marker glued to a fence in rejected text counts.
 func (p *parser) reserve(toks []token) {
 	for _, t := range toks {
-		for _, part := range strings.FieldsFunc(t.text, func(r rune) bool { return r == '`' }) {
+		text, col := t.text, t.at.Col
+		for text != "" {
+			part, rest, _ := strings.Cut(text, "`")
 			if h, err := hostname.Normalize(part); err == nil {
 				p.seen[h] = struct{}{}
 			}
 			if isMarker(part) {
-				p.optOut(t.at)
+				p.optOut(Position{Line: t.at.Line, Col: col})
 			}
+			col += utf8.RuneCountInString(part) + 1 // and the backtick after it
+			text = rest
 		}
 	}
 }

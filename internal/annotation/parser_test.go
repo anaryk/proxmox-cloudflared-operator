@@ -1429,6 +1429,14 @@ func TestParseManagedOffPositions(t *testing.T) {
 		require.Equal(t, Position{Line: 3, Col: 3}, got.ManagedOffAt)
 	})
 
+	t.Run("glued to a fence in a rejected block", func(t *testing.T) {
+		got := Parse("````cf-tunnel\n```" + marker + "```\n````")
+		require.Equal(t, Position{Line: 2, Col: 4}, got.ManagedOffAt)
+
+		got = Parse("````cf-tunnel\nšé.example.com```" + marker + "```\n````")
+		require.Equal(t, Position{Line: 2, Col: 18}, got.ManagedOffAt, "after a part, in characters")
+	})
+
 	t.Run("columns count characters", func(t *testing.T) {
 		const before = "Účetní šéf ```cf-tunnel "
 		got := Parse(before + marker + "```")
