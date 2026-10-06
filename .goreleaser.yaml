@@ -17,6 +17,11 @@ before:
     # The keys pco upgrade checks a release with: those of scripts/install.sh
     # for a release, the test key for a snapshot.
     - packaging/release-key-file.sh {{ if .IsSnapshot }}--snapshot{{ else }}scripts/install.sh{{ end }} build/release-key.gpg
+    # The man pages and the completion scripts, written from the help of the
+    # commands. The pages are dated by the commit, so that building a tag
+    # twice gives the same package.
+    - env TZ=UTC SOURCE_DATE_EPOCH={{ .CommitTimestamp }} go run -tags nomsgpack ./cmd/pco docs man build/man
+    - go run -tags nomsgpack ./cmd/pco docs completion build/completion
 
 builds:
   - id: pco
@@ -115,6 +120,24 @@ nfpms:
           mode: 0644
       - src: packaging/cloudflared-versions.json
         dst: /usr/share/pco/cloudflared-versions.json
+        file_info:
+          mode: 0644
+      # A man page for each command, and the completion scripts, which the
+      # hooks above write.
+      - src: build/man/*.1.gz
+        dst: /usr/share/man/man1
+        file_info:
+          mode: 0644
+      - src: build/completion/pco.bash
+        dst: /usr/share/bash-completion/completions/pco
+        file_info:
+          mode: 0644
+      - src: build/completion/pco.zsh
+        dst: /usr/share/zsh/vendor-completions/_pco
+        file_info:
+          mode: 0644
+      - src: build/completion/pco.fish
+        dst: /usr/share/fish/vendor_completions.d/pco.fish
         file_info:
           mode: 0644
       - src: README.md

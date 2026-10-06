@@ -5,6 +5,15 @@ zsh, fish or powershell. The script asks pco itself for the completions, so it s
 when pco is upgraded; bash needs the package bash-completion. It changes nothing, and
 anyone may run it.
 
+The package installs the scripts of bash, zsh and fish where these shells look for them,
+so that a shell started after the install completes pco without this command:
+
+```text
+/usr/share/bash-completion/completions/pco
+/usr/share/zsh/vendor-completions/_pco
+/usr/share/fish/vendor_completions.d/pco.fish
+```
+
 ## Usage
 
 ```text

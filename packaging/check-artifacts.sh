@@ -6,7 +6,8 @@
 # is the tag without the v, a pre-release suffix kept as it is. Each package must
 # also say, in its control file, that it is pco, of that version and of the
 # architecture in its name; dpkg writes a pre-release as 0.1.0~rc.1 there. And
-# it must list the systemd units of pco, which the appliance template enables.
+# it must list the systemd units of pco, which the appliance template enables,
+# the man page of pco and the completion scripts of bash, zsh and fish.
 #
 # Usage: packaging/check-artifacts.sh [--signed] [--version VERSION] [--require-dpkg-deb] [--require-ui]
 #            [--require-template] [dist-dir]
@@ -298,6 +299,8 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 	tilde='~'
 	deb_version=${version/-/$tilde}
 	units='pco.service pco-cloudflared@.service pco-egress.service pco-net.service pco-web.service'
+	# Written by the hooks of goreleaser from the help of the commands.
+	docs='/usr/share/man/man1/pco.1.gz /usr/share/bash-completion/completions/pco /usr/share/zsh/vendor-completions/_pco /usr/share/fish/vendor_completions.d/pco.fish'
 	for arch in amd64 arm64; do
 		deb=$dist/pco_${version}_$arch.deb
 		[[ -f $deb ]] || continue
@@ -323,6 +326,11 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 		for unit in $units; do
 			if ! grep -Eq "[[:space:]]\./usr/lib/systemd/system/${unit//./\\.}\$" <<<"$listing"; then
 				fail "${deb##*/} does not carry /usr/lib/systemd/system/$unit"
+			fi
+		done
+		for file in $docs; do
+			if ! grep -Eq "[[:space:]]\.${file//./\\.}\$" <<<"$listing"; then
+				fail "${deb##*/} does not carry $file"
 			fi
 		done
 	done

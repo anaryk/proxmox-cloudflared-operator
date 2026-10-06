@@ -73,19 +73,24 @@ program() {
 	printf '%s\n' "$out"
 }
 
-# The units every package carries, but the one LEAVE_OUT names.
-UNITS='pco.service pco-cloudflared@.service pco-egress.service pco-net.service pco-web.service'
+# The files every package carries, but the one LEAVE_OUT names: the units, the
+# man page of pco and the completion scripts.
+FILES='usr/lib/systemd/system/pco.service usr/lib/systemd/system/pco-cloudflared@.service
+usr/lib/systemd/system/pco-egress.service usr/lib/systemd/system/pco-net.service
+usr/lib/systemd/system/pco-web.service usr/share/man/man1/pco.1.gz
+usr/share/bash-completion/completions/pco usr/share/zsh/vendor-completions/_pco
+usr/share/fish/vendor_completions.d/pco.fish'
 LEAVE_OUT=
 # The keyring every package carries as ./usr/share/pco/release-key.gpg; none
 # when empty.
 KEYRING=
 
 # deb <dir> <arch> [program]: a package of pco with the program as
-# ./usr/bin/pco, or without that file when none is given, and the units.
+# ./usr/bin/pco, or without that file when none is given, and the files.
 deb() {
-	local tree=$ROOT/tree-$2 unit
+	local tree=$ROOT/tree-$2 file
 	rm -rf "$tree"
-	mkdir -p "$tree/DEBIAN" "$tree/usr/bin" "$tree/usr/lib/systemd/system"
+	mkdir -p "$tree/DEBIAN" "$tree/usr/bin"
 	printf 'Package: pco\nVersion: %s\nArchitecture: %s\nMaintainer: Test <test@example.invalid>\nDescription: test\n' \
 		"$VERSION" "$2" >"$tree/DEBIAN/control"
 	if [[ -n ${3:-} ]]; then
@@ -95,9 +100,10 @@ deb() {
 		mkdir -p "$tree/usr/share/pco"
 		cp "$KEYRING" "$tree/usr/share/pco/release-key.gpg"
 	fi
-	for unit in $UNITS; do
-		if [[ $unit != "$LEAVE_OUT" ]]; then
-			printf '[Unit]\n' >"$tree/usr/lib/systemd/system/$unit"
+	for file in $FILES; do
+		if [[ $file != "$LEAVE_OUT" ]]; then
+			mkdir -p "$tree/${file%/*}"
+			printf 'test\n' >"$tree/$file"
 		fi
 	done
 	dpkg-deb --root-owner-group --build "$tree" "$1/pco_${VERSION}_$2.deb" >/dev/null
@@ -156,7 +162,7 @@ deb_cases() {
 	assert "pass" rc_is 0
 
 	CASE='packages without pco-net.service'
-	LEAVE_OUT=pco-net.service
+	LEAVE_OUT=usr/lib/systemd/system/pco-net.service
 	dist "$ROOT/nounit" "$with"
 	LEAVE_OUT=
 	run --require-dpkg-deb "$ROOT/nounit"
@@ -164,6 +170,24 @@ deb_cases() {
 	assert "naming the unit in the amd64 package" contains "$ERR" "$AMD64 does not carry /usr/lib/systemd/system/pco-net.service"
 	assert "and in the arm64 one" contains "$ERR" "$ARM64 does not carry /usr/lib/systemd/system/pco-net.service"
 	assert "and no other unit" lacks "$ERR" "pco-egress.service"
+
+	CASE='packages without the man page of pco'
+	LEAVE_OUT=usr/share/man/man1/pco.1.gz
+	dist "$ROOT/noman" "$with"
+	LEAVE_OUT=
+	run --require-dpkg-deb "$ROOT/noman"
+	assert "fail" rc_is 1
+	assert "naming the page" contains "$ERR" "$AMD64 does not carry /usr/share/man/man1/pco.1.gz"
+	assert "and nothing else" lacks "$ERR" "completions"
+
+	CASE='packages without the completion of zsh'
+	LEAVE_OUT=usr/share/zsh/vendor-completions/_pco
+	dist "$ROOT/nozsh" "$with"
+	LEAVE_OUT=
+	run --require-dpkg-deb "$ROOT/nozsh"
+	assert "fail" rc_is 1
+	assert "naming the script" contains "$ERR" "$ARM64 does not carry /usr/share/zsh/vendor-completions/_pco"
+	assert "and not those of bash and fish" lacks "$ERR" "bash-completion"
 
 	CASE='packages built without the webui tag'
 	dist "$ROOT/without" "$without"

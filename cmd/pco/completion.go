@@ -20,7 +20,12 @@ func (a *app) completionCmd() *cobra.Command {
 		Long: "Print the script that completes the commands, flags and arguments of pco in a shell: bash,\n" +
 			"zsh, fish or powershell. The script asks pco itself for the completions, so it stays right\n" +
 			"when pco is upgraded; bash needs the package bash-completion. It changes nothing, and\n" +
-			"anyone may run it.",
+			"anyone may run it.\n\n" +
+			"The package installs the scripts of bash, zsh and fish where these shells look for them,\n" +
+			"so that a shell started after the install completes pco without this command:\n" +
+			"  /usr/share/bash-completion/completions/pco\n" +
+			"  /usr/share/zsh/vendor-completions/_pco\n" +
+			"  /usr/share/fish/vendor_completions.d/pco.fish",
 		Example: "  # Complete pco in the bash you are in\n" +
 			"  source <(pco completion bash)\n\n" +
 			"  # In the zsh you are in, once compinit has run\n" +
