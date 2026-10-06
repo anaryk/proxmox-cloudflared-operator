@@ -61,6 +61,12 @@ test('a refused token shows what it can do and why, is not stored, and is gone f
   expect(tokenField().value).toBe('')
 })
 
+test('the token field asks browsers not to offer to save a password', async () => {
+  await open({})
+  expect(tokenField().type).toBe('password')
+  expect(tokenField().getAttribute('autocomplete')).toBe('new-password')
+})
+
 test('a token of another shape is not sent', async () => {
   const { sent } = await open({})
   fill('edge', 'user@pam!pco=0123')

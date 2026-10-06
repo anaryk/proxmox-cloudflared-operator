@@ -93,7 +93,7 @@ export function AddCredential({ onAdded }: { onAdded(view: CredentialView): void
               <input
                 {...control}
                 type={shown ? 'text' : 'password'}
-                autoComplete="off"
+                autoComplete="new-password"
                 spellCheck={false}
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
