@@ -55,10 +55,12 @@ pattern that does not normalise are refused with the name of the setting. Run as
 command asks the daemon on its socket.
 
 The web interface has the same settings on its Settings page, in sections, with the range and
-the default beside each one and a review of what changes before it saves. Only an admin can
-save; a reader can read the page and export the settings as a file. The last column of the
-tables below names the section of that page where each setting is. The page also imports a
-file, and restarts the daemon when a setting needs it.
+the default beside each one and a review of what changes before it saves, at the revision the
+page read them at, as `pco settings apply` does. Only an admin can save; a reader can read the
+page and export the settings as a file. The last column of the tables below names the section
+of that page where each setting is. The page also exports the settings with the manual routes as
+one file and imports such a file, and after a save of a setting read at start it offers to
+restart the daemon. [Web interface](web-ui.md#settings) has the page.
 
 A settings file can also be edited in place on the node. It is the object in `data`; leave
 the rest of the envelope as it is (see [Files](files.md)), and run `python3 -m json.tool`
@@ -194,7 +196,9 @@ as `1m0s`.
   than one credential, none of which served it alone before, is left as it is until it is
   pinned. A pin to a credential that does not see the zone leaves the zone as it is. The id is
   that of a stored credential (`pco credential list`). Zone names are lower-cased, and two keys
-  that name one zone are refused. See [Cloudflare token](cloudflare-token.md).
+  that name one zone are refused. See [Cloudflare token](cloudflare-token.md). On the web page,
+  the Zones section has the pins as lines of a zone and a credential id, and Pin on the page of
+  the zones sets the pin of one zone.
 - `cloudflareBudget`: how many requests in 5 minutes pco spends of each credential, of the
   1200 that Cloudflare allows a user. What is left is for the dashboard and other tools.
   Credentials of one Cloudflare user share the 1200, so give two such credentials budgets that
@@ -270,6 +274,7 @@ it, through the environment of its unit, and by the commands of its certificate:
 | The address it listens on | `PCO_WEB_LISTEN` in `/etc/default/pco-web`, written by `pco setup --web-listen <address>` | After `systemctl restart pco-web` |
 | More host names it answers to | `PCO_WEB_HOSTS` | After `systemctl restart pco-web` |
 | Strict-Transport-Security | `PCO_WEB_HSTS` | After `systemctl restart pco-web` |
+| Whether `root@pam` may sign in with a password, in the appliance | `PCO_WEB_ALLOW_ROOT` | After `systemctl restart pco-web` |
 | The certificate: `ca`, `own` or `pveproxy` | `pco setup --web-cert`, and `pco web cert import` and `renew` | See [Files](files.md) |
 
 The variables are in the table of [Operations](operations.md#environment-variables).

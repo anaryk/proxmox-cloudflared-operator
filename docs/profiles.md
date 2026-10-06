@@ -57,7 +57,9 @@ flowchart TB
 | Upgrades | apt, with the package | `pco upgrade`, inside the container; Debian's security updates by themselves |
 | Control-plane failover | planned for clusters: a lease on the cluster filesystem, automatic | planned: a Proxmox HA resource, or restore and promote |
 | Data-path availability | one connector on the one node; a connector for each node is planned for clusters | the same |
-| Sign-in to the web interface | the ticket of the Proxmox web interface, or a Proxmox API token | a Proxmox VE user and password, checked at the node's API, or a Proxmox API token |
+| Sign-in to the web interface | the ticket of the Proxmox web interface, or a Proxmox API token | a Proxmox VE user and password, with its TOTP or recovery code, checked at the node's API, or a Proxmox API token; `root@pam` only with `PCO_WEB_ALLOW_ROOT=1` |
+| Where the web interface listens | the node's address in the cluster status, port 8643, or what `pco setup --web-listen` gives | the address of `net0`, port 8643, and nowhere else |
+| The certificate of the web interface | by default a key of its own and a certificate of the cluster CA for 90 days, which the daemon renews; or yours; or pveproxy's | a key of its own and a self-signed certificate of 397 days, which the daemon renews; or yours |
 
 The rows that say planned are direction, not behaviour: nothing in this release does them. In
 this release pco runs on one node, or as one appliance for a cluster, has a command line and a

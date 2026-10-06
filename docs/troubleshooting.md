@@ -642,6 +642,93 @@ The `snapshots` check warns about every snapshot of the appliance but one named
 carries the secrets. While a backup runs in snapshot mode it also sees the temporary snapshot
 `vzdump` makes. Delete what you no longer need with `pct delsnapshot` on the node.
 
+## The web interface
+
+`systemctl status pco-web` and `journalctl -u pco-web` come first: the journal has every refused
+sign-in with its reason, the user and the client's address. [Web interface](web-ui.md) says how
+it works, and [Operations](operations.md#the-web-interface) how it is set up.
+
+### The page does not load
+
+- **No answer at all**, or the connection times out: `systemctl status pco-web` says whether it
+  runs, and `ss -ltnp | grep 8643` on which address. It listens where `PCO_WEB_LISTEN` in
+  `/etc/default/pco-web` says, by default the node's address in the cluster status: a browser
+  that reaches the node by another address finds nothing there. With the firewall of Proxmox VE
+  on, add the rule for port 8643 that `pco setup` printed; see
+  [Operations](operations.md#the-firewall).
+- **The browser warns about the certificate**: it does not trust the cluster CA of Proxmox VE,
+  which signs pco's certificate by default, as it signs that of port 8006. Import
+  `/etc/pve/pve-root-ca.pem` into the browser, or compare the fingerprint the browser shows with
+  the one `pco web cert` prints on the node. A certificate of your own that has expired, or that
+  is not made for the name in the address bar, warns as well: `pco web cert` says until when and
+  for which names. In the appliance the certificate is self-signed: compare its fingerprint.
+- **`pco does not answer to the name in the address bar`**: pco answers to the short and the
+  fully qualified name of the node, the address it listens on, and `PCO_WEB_HOSTS`. Open it under
+  one of them, or add the name to `PCO_WEB_HOSTS` and `systemctl restart pco-web`.
+
+### Cannot sign in
+
+| The page says | Why, and what to do |
+|---|---|
+| `this browser has no Proxmox VE session for this name; sign in to Proxmox VE at the same address first` | The browser holds the ticket of Proxmox VE for the name you opened Proxmox VE under, and sends it to that name only. Open pco under the same name, `https://node1.example.com:8643/` beside `https://node1.example.com:8006/`, or an address beside an address, and sign in to Proxmox VE there first. Or sign in with an API token. |
+| `Proxmox VE did not accept the session of this browser; sign in to Proxmox VE again` | The ticket expired: it lives two hours, and the Proxmox VE interface renews it only while it is open. Sign in to Proxmox VE again in the same browser, then to pco. |
+| `This user has no Sys.Audit on /: pco cannot show it anything.` | The user, or the token, holds neither `Sys.Audit` nor `Sys.Modify` on `/`. Give it `PVEAuditor` or a role with both on `/`; the sign-in page has the `pveum` lines, and [Web interface](web-ui.md#who-may-do-what) too. A token with privilege separation needs the grant for itself. |
+| `pco cannot record changes under this user name: ...` | The user name has a character pco cannot name as the author of a change. Sign in as another user, or with an API token. |
+| `Proxmox VE on this node does not answer, or presents another certificate than the node's` | pveproxy is down (`systemctl status pveproxy`), or it serves another certificate than when `pco-web` started, as for up to a minute after its certificate was renewed: the daemon then points `pco-web` at the new one and restarts it. Try again after a minute. If it stays, `pco doctor` and `journalctl -u pco` say why. |
+| `too many sign-ins from this address; try again in <n> s` | Ten sign-ins a minute from one address. Wait. |
+| `Proxmox VE did not accept the token` | The token is wrong, expired or revoked, or of the form `user@realm!tokenid=secret` but not one Proxmox VE knows. |
+
+In the appliance:
+
+| The page says | Why, and what to do |
+|---|---|
+| `Proxmox VE did not accept the user and password` | A wrong user, realm or password. Proxmox VE answers it late, after about three seconds. |
+| `too many failed sign-ins of this account; try again in <n> s, or sign in with an API token` | Five failures of this account locked it at pco, for one minute and up to 15. Anyone who tries the user name can cause it; the journal of `pco-web` names the account and the addresses. Sign in with an API token, or wait. A restart of `pco-web` forgets the lock. |
+| `Sign in with a user that has Sys.Modify on /, or with an API token` | `root@pam` may not sign in with a password. Use an account of its own for pco, or a token; `PCO_WEB_ALLOW_ROOT=1` in `/etc/default/pco-web` of the appliance allows it. |
+| `This account's second factor is a security key, which works only on Proxmox VE's own page. ...` | WebAuthn is bound to the address of Proxmox VE's own page. Use a TOTP or a recovery code, or an API token. |
+| `Proxmox VE did not accept the code` | A wrong code; three end the step, and the password is asked again. Proxmox VE answers the same once it locked the user's second factor: on Proxmox VE 9.2 after eight wrong TOTP codes in a row, until a recovery code is used or root runs `pveum user tfa unlock <user>`, and after 100 failed attempts every factor for an hour. |
+| `Start again with the password: the step of the second factor is over` | The step of the code lasts two minutes. |
+
+### A browser that holds HSTS
+
+With `PCO_WEB_HSTS=1` a browser that visited pco uses HTTPS for every port of the node's name for a
+year: a service of the node on plain HTTP stops answering in it. Take `PCO_WEB_HSTS` out of
+`/etc/default/pco-web` and `systemctl restart pco-web` first, or the next visit sets it again.
+Then make the browser forget it: in Chrome `chrome://net-internals/#hsts`, and in Edge
+`edge://net-internals/#hsts`, Delete domain security policies for the name; in Firefox, Forget
+About This Site in the history; in Safari, remove the site's data under Settings, Privacy, Manage
+Website Data.
+
+### Stale, and the banners of the page
+
+| The page says | Why, and what to do |
+|---|---|
+| Stale, `The data is from <time>, <age> ago: no cycle of the daemon has finished since.` | No cycle finished in three times the poll interval, or the last cycle's length when that is longer. `pco status` says when the last cycle ran and `journalctl -u pco` what it is doing; `pco doctor` warns in its `cycle` check at the same point. The figures stay at their last values until a cycle comes. |
+| Stale, `... the stream of pco web is reconnecting.` | The page lost its stream for more than 15 seconds: `pco-web` restarted, or the network between the browser and the node is gone. It tries again by itself. |
+| `The pco daemon does not answer (since <time>). Published routes keep working; nothing changes until it is back.` | pco web cannot reach the daemon on its socket. `systemctl status pco`; the connectors serve on without it. |
+| `pco's web process may not use the daemon's socket; the troubleshooting guide says why.` | The daemon does not answer the user `pco-web`: it started before the package that brings `pco-web.service` was installed, or the unit file is not at `/usr/lib/systemd/system/pco-web.service`. `systemctl restart pco`. |
+| `This page cannot reach pco's web process (since <time>). Check that pco-web.service runs on the node.` | The browser cannot reach `pco web`. `systemctl status pco-web`; it restarts by itself 2 seconds after it stops. |
+| `Too many pco tabs are open in this browser session; this page tries again in <n> s.` | A session holds three streams at once. Close other tabs of pco, or wait: the page tries again. |
+| `pco was updated; reload to use it.` | pco was upgraded since the page was loaded, and the page is of the version before. Reload. |
+
+### The map shows no traffic
+
+The trunk, the line between the edge and the connector, moves with the connector's own counters.
+When it does not move, the connector passes no requests, or pco cannot read its counters: the
+connector does not run or is not ready (`pco status`, `CONNECTOR`), another process holds its
+metrics port (`metrics port <port> is held by another process` in the problems), or three reads in
+a row failed and the figures are stale, greyed with `no data since <time>`. A whole map that is
+greyed and still is a stale page: see above.
+
+The port lines, from the connector to a guest, move with the counters of the egress filter. When
+none moves and the legend says `Port lines show state only:` with a reason, the filter has no
+counters to give: `the egress filter is off: pco has no per-guest counters` (`pco egress on`),
+`the egress filter is not loaded` or `the egress filter is not the one pco loads` (`pco egress
+show`; see [the filter](#a-connector-cannot-reach-its-target)), or `the counters could not be
+read`, with what went wrong in its tooltip. A port line that barely moves while the trunk is busy is
+no fault: it counts the connections the connector opens, and cloudflared keeps them open and
+reuses them, so a busy guest may get a new one rarely.
+
 ## Other problems you may see
 
 | Problem | What to do |

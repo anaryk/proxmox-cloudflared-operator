@@ -18,6 +18,15 @@ The package installs five systemd units, in `/usr/lib/systemd/system`.
 | `pco-web.service` | The web interface, `pco web`. It runs as the user `pco-web`, starts after `network-online.target`, `pve-cluster.service` and `pco.service`, restarts after 2 seconds when it stops, and reads its address from `/etc/default/pco-web`. `pco setup` enables it, unless it is given `--no-web`. An upgrade of the package restarts it if it ran. |
 | `pco-net.service` | For the appliance only; nothing starts it on a host. It runs `pco net load`, a hidden command that puts the dummy device, the route and the table that keep the appliance's service prefix to itself in place, before the network and before `pco.service` and the connectors, which require it in the appliance. Do not restart it to load them again, as `pco.service` and every connector restart with it: `pco net load` does that. |
 
+Who each runs as, and the sandbox of its unit:
+
+| Unit | Runs as | Sandbox |
+|---|---|---|
+| `pco.service` | root | `ProtectHome`, `PrivateTmp`, `ProtectKernelModules`, `ProtectControlGroups`, `LockPersonality`, `ProtectProc=invisible`, and no core dump, as its memory holds the tokens. No more: it needs systemd, nftables, raw sockets, `/var/lib/pco` and `/etc/pve`. |
+| `pco-egress.service`, `pco-net.service` | root | None: each loads its tables and exits. |
+| `pco-cloudflared@<tunnel id>.service` | `pco-connector` | No capabilities, `NoNewPrivileges`, a read-only system, no home, devices or other users' processes, the system calls of `@system-service`; [Security](security.md#what-runs-with-which-rights) has the list. |
+| `pco-web.service` | `pco-web` | No capabilities, `NoNewPrivileges`, a read-only system but `/run/pco`, no home or devices, the system calls of `@system-service` without `@privileged` and `@resources`, IPv4, IPv6 and unix sockets only; [Security](security.md#the-process-and-what-it-can-reach) has the list. |
+
 The connectors keep running when the daemon stops, restarts or is upgraded. pco is never in
 the data path: a request goes from Cloudflare's edge to a connector and from there to the
 guest, and none of it passes through the daemon. If the daemon is down, published routes
@@ -333,12 +342,14 @@ fields:
 | Field | Content |
 |---|---|
 | `at`, `finishedAt` | When the last cycle began and ended. |
+| `node`, `digest` | The node the daemon is registered as, and a name of what the state holds that leaves out every time in it: two cycles over the same world have the same digest. |
 | `mode` | `observe` or `enforce`. |
 | `complete` | Whether the inventory of Proxmox was complete. |
 | `profile` | `host` or `appliance`. |
 | `identity`, `epochDrawnAt` | In the appliance: what the last self-identification found (`vmid`, `node`, `ok`, `why`, `copy`, `copies`, `tenants`, `exposed`, `checkedAt`), and when this process drew a new writer epoch after a start of the container. |
 | `segments` | The segments routes at `observed` were proven on, and those acknowledged. |
-| `routes` | One object for each route: `hostname`, `owner`, `state`, `level`, `reason`, `service`, `zone`, `warnings`, `guest`, `candidates`. |
+| `routes` | One object for each route: `hostname`, `owner`, `state`, `level`, `reason`, `service`, `zone`, `warnings`, `guest`, `candidates`, and where they are known `accountId`, the planned ingress `rule`, and the `path` its address was proven on: `node`, `bridge`, `vlan`, `port`, `mac`, `verifiedAt`, the time of the proof last stored, and `since`. |
+| `zones` | The zones as the last cycle used them: `name`, `id`, `status`, `accountId`, `state` (`served`, `frozen`, `left out` or `not served`), the `credentials` that list it, the one it is `servedBy`, the one it is `pinned` to, those whose listing lost it (`stale`) or that may not read its DNS (`excluded`), and `frozenWhy`. |
 | `issues` | Problems in the Notes and the settings: `guest`, `line`, `col`, `msg`. |
 | `tunnels`, `connectors` | The tunnels and the state of their connectors. `unchecked` on a tunnel says the last cycle did not look at Cloudflare, and `leftAsIs` that the tunnel is left as it is for a reason of its own, which `held` gives, as a frozen account. A connector has the `connectorId` its `/ready` gives, and `tokenRefused` or `metricsPortHeld` when its journal says Cloudflare refuses its token or another process holds its metrics port. |
 | `rogueConnectors` | The connectors Cloudflare lists on a tunnel of the install that pco does not run: `tunnel`, `tunnelId`, `accountId`, `id`, `originIp`, `version`, `since`. |
@@ -365,6 +376,25 @@ The settings are one file, `/etc/pve/pco/meta/settings.json`, which `pco setting
 `pco settings apply` read and save, as the web interface does. [Settings](settings.md) lists
 every one, with its default, its range, when a change takes effect, and what the daemon says
 about a file it cannot use.
+
+Both save the settings at the revision they were read at, so that two admins, or an admin and
+a script, never write over each other's change without seeing it: a save of settings that
+changed in between is refused, and they are read again. Every save is an event of the kind
+`admin` with the settings that changed and who saved them.
+
+## Manual routes
+
+A manual route publishes a hostname that no Notes name, to a guest or to an address inside the
+setting `manualCIDRs`. Root makes and removes them on the node, and an admin in the web
+interface, which also changes one in place:
+
+    pco route manual add status.example.com --address 10.0.5.20 --port 9000
+    pco route manual list
+    pco route manual remove <id>
+
+Each is a file of `/etc/pve/pco/routes/`, which the daemon reads in every cycle, and owns its
+hostname as `manual/<id>`. [Publish a route by hand](guides/manual-routes.md) has the steps,
+and [Identity](identity.md) what a manual route proves.
 
 ## Environment variables
 
@@ -412,6 +442,95 @@ These variables are not pco's, and it reads them too:
 | `CREDENTIALS_DIRECTORY` | `pco web` | Where systemd puts the credentials of the unit, `tls.crt`, `tls.key` and `pveproxy.crt`. It is set by systemd and not by hand; `--cert`, `--key` and `--pin` name the files instead. |
 | `TZ` | `pco web` | The time zone the page shows the node's times in. Without it, the zone `/etc/localtime` links to. |
 | `METRICS_ADDR`, `EDGE_IP_VERSION` | The connector unit | Written by pco into `/var/lib/pco/tunnels/<tunnel id>.env`: the loopback address the connector serves its metrics on, and the IP version it reaches the edge with, `auto`. The unit passes them to `cloudflared`. |
+
+## The web interface
+
+`pco-web.service` runs `pco web`, the [web interface](web-ui.md), as the user `pco-web`. `pco
+setup` sets it up unless it is given `--no-web`: it writes `/etc/default/pco-web`, makes the
+certificate in `/etc/pco/web/`, enables and starts the unit, and prints the address and the
+fingerprint of the certificate. `pco setup --repair` puts them back as they should be.
+
+### Its address and names
+
+`/etc/default/pco-web` is the environment of the unit:
+
+    PCO_WEB_LISTEN=192.0.2.10:8643
+    PCO_WEB_HOSTS=pco.example.com
+    PCO_WEB_HSTS=0
+
+Setup writes `PCO_WEB_LISTEN`, by default the address the cluster status gives for the node and
+port 8643, or what `--web-listen` gives, and keeps every other line you wrote. pco web answers to
+the short name and the fully qualified name of the node, the address it listens on, and the names
+of `PCO_WEB_HOSTS`, each on port 8643 and on the port it listens on; a name under port 443
+without the port too. A browser that uses another name is refused, which also stops DNS
+rebinding. The rows of [the environment variables](#environment-variables) say what each takes.
+After a change, `systemctl restart pco-web`. With the certificate of the cluster CA, the daemon
+sees within a minute that the certificate lacks a new name or address, makes a new one and
+restarts `pco-web` again.
+
+`PCO_WEB_HSTS=1` adds `Strict-Transport-Security: max-age=31536000` to every answer. Think
+before you set it: a browser holds it for the host name, not for the port, and for a year uses
+HTTPS for every service of that name, so a service of the node on plain HTTP on another port stops
+working in that browser. pveproxy does not send it either. [Troubleshooting](troubleshooting.md#a-browser-that-holds-hsts)
+says how a browser forgets it.
+
+The appliance listens on the address of its card `net0` and nowhere else; `PCO_WEB_LISTEN` may
+name another port of it. See [Appliance](appliance.md#the-web-interface).
+
+### The firewall
+
+When the firewall of Proxmox VE is on, browsers need TCP port 8643 to the node, which setup says
+with the rule it would add:
+
+    pvesh create /nodes/node1/firewall/rules --type in --action ACCEPT --proto tcp --dport 8643 --enable 1
+
+Add `--source` with the network of your admins, so that nobody else reaches the sign-in page.
+
+### Its certificate
+
+    pco web cert
+
+prints the mode, the names the certificate is for, until when it is valid, and its SHA-256
+fingerprint, which a browser shows to compare. The three modes, which `pco setup --web-cert`
+chooses, are in [Security](security.md#the-certificate):
+
+- `ca`: the daemon makes a new key and certificate 30 days before the end, and at once when the
+  certificate lacks a name or address the node has now, writes them, and restarts `pco-web`, with
+  an event of the kind `web`. `pco web cert renew` does it now.
+- `own`: `pco web cert import <crt> <key>` checks your pair and puts it in place, and restarts
+  `pco-web`. pco does not renew it; `pco doctor` warns in its check `web certificate` 30 days
+  before it ends. `pco setup --repair --web-cert ca` goes back to a certificate pco renews.
+- `pveproxy`: links to the pair pveproxy serves; the daemon follows them when pveproxy's changes,
+  as after a renewal of its ACME certificate, and restarts `pco-web`.
+
+pco web checks every sign-in with pveproxy on the node, and only when pveproxy presents the
+certificate it served when `pco-web` started, which `/etc/pco/web/pveproxy.crt` links to. The
+daemon looks every minute at what pveproxy serves, and when that changed it points the link at the
+new certificate and restarts `pco-web`: until then, up to a minute, sign-ins fail with `Proxmox VE
+on this node does not answer, or presents another certificate than the node's`.
+
+### Its log
+
+    journalctl -u pco-web
+
+has every sign-in, sign-out and refused sign-in, with the user, the method and the client's
+address, every request that failed, and every call the daemon refused, with its method, path and
+status. Never a ticket, a token, a password, a query or a body. More comes with a drop-in from
+`systemctl edit pco-web`:
+
+    [Service]
+    ExecStart=
+    ExecStart=/usr/bin/pco web --log-level debug
+
+What an admin does through the page is an event of the daemon too, of the kind `admin`, with the
+actor, as `alice@pve (ticket)`: `pco events` shows it beside what root did on the command line,
+`root (cli)`.
+
+### Without it
+
+`pco setup --no-web` leaves it out, and `systemctl disable --now pco-web` stops it on a node that
+has it. The daemon answers the user `pco-web` on its socket only while
+`/usr/lib/systemd/system/pco-web.service` exists, and decides that when it starts.
 
 ## Upgrades
 

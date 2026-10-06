@@ -72,6 +72,32 @@ token would see the same zones.
 `pco setup` accepts a token as well, while the daemon is stopped; see
 [Quickstart](quickstart.md).
 
+### From the web interface
+
+Step 1 of the first-run setup of the [web interface](web-ui.md#first-run-setup) has two buttons
+that open the form of the dashboard with the permissions chosen, in a new tab: Create a user token
+and Create an account token. For a node named `node1` they open
+
+    https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=pco%20on%20node1
+
+    https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%5B%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%5D&name=pco%20on%20node1
+
+The first is a user token over every account and zone, to narrow in the form; the second an
+account token, for which the dashboard asks the account. `permissionGroupKeys` is the list of the
+permissions as Cloudflare's links for token templates name them, here
+`[{"key":"dns","type":"edit"},{"key":"zone","type":"read"}]`:
+
+| Permission in the dashboard | Key in the link |
+|---|---|
+| Zone > DNS > Edit | `dns`, `edit` |
+| Zone > Zone > Read | `zone`, `read` |
+| Account > Cloudflare Tunnel > Edit | none: Cloudflare documents no key for it, and a key it does not know is dropped from the form without a word. Add the row yourself in the form. |
+
+Nothing is made until you press Create Token. A form that opens without a permission, as when
+Cloudflare changes its keys, takes the row by hand as above. Paste the token into the page: the
+check that follows names any permission that is missing, and Check write access proves the rest,
+as `pco credential check --deep` does.
+
 ## Reading the check
 
 `credential add` and `credential check <id>` print a list like this one, and the daemon keeps

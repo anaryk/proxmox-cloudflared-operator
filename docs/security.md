@@ -75,7 +75,8 @@ How far each holds, and at which identity level, is the rest of this page; the
 |---|---|---|
 | The daemon, `pco.service` | root | Read Proxmox through its API token, open a raw socket to ask ARP, read the bridge forwarding table through netlink and watch it and the neighbour table for changes, load the egress table with `nft`, run `systemctl` for the connectors and write their files, call the Cloudflare API with the stored tokens. It listens on a unix socket and nowhere else. |
 | The connectors, `pco-cloudflared@<tunnel id>.service` | the system user `pco-connector`, with no capabilities | Open outbound connections, which the egress filter confines (below). |
-| The `pco` command | whoever runs it | `setup`, `uninstall` and `pco egress` work on the node directly and need root. The others ask the daemon through its socket, which also lets only root in. |
+| The web interface, `pco-web.service` | the system user `pco-web`, with no capabilities | Serve HTTPS on its address, ask the node's API whether a user may sign in, and call the daemon on its socket for the users signed in; see [the web interface](#the-web-interface). |
+| The `pco` command | whoever runs it | `setup`, `uninstall` and `pco egress` work on the node directly and need root. The others ask the daemon through its socket, which lets in only root and `pco-web`. |
 
 This is the host profile. In the appliance the same parts run in its container, as root of an
 unprivileged container and not of the node; [the appliance](#the-appliance) says what changes.
@@ -623,8 +624,10 @@ when.
 | The secret of the Proxmox API token `pco@pve!pco` | `/etc/pve/priv/pco/meta/pve-token.json` | Read by the daemon when it starts. |
 | Cloudflare API tokens | `/etc/pve/priv/pco/credentials/<id>.json` | One file for each credential. |
 | Tunnel run tokens of the connectors | `/var/lib/pco/tunnels/<tunnel id>.token` | Mode 0600 in a directory of mode 0700. Passed to cloudflared as a systemd credential. |
+| The key of the web interface's certificate | `/etc/pco/web/tls.key` | Mode 0600 in a directory of mode 0700, root only. Passed to `pco web` as a systemd credential. In the mode `pveproxy` a link to the key of `pveproxy`. |
+| Sessions of the web interface, and the Proxmox tokens and tickets they hold | the memory of `pco web` | Never written to disk; a restart of `pco-web` ends them all. |
 
-In the appliance all three are on its state volume, below `/var/lib/pco`; see
+In the appliance the first three are on its state volume, below `/var/lib/pco`; see
 [the appliance](#the-state-volume-and-its-copies).
 
 `/var/lib/pco` is mode 0700. `/etc/pve` is the cluster filesystem, and Proxmox keeps
@@ -668,13 +671,176 @@ that a socket path cannot be pointed at a directory such as `/tmp` whose mode an
 daemon would then change.
 
 Everything a request can do is what the CLI shows: read the state, ask for a cycle, apply,
-adopt, add and check and remove credentials, resolve claims, approve guests, rotate the
-secret of a tunnel, diagnose, run the doctor. Rotating a secret restarts every connector of
-the tunnel, so the daemon answers that request for root only, and not for `pco-web`. A
-request cannot read a token or switch the egress filter off. It changes the targets of the
-filter only as a cycle does, by changing what is published: whoever may use the socket may
-publish what the guests ask for, add a credential of another account, and confirm deletes,
-so treat `pco-web` as an admin of pco.
+adopt, add and check and remove credentials, resolve claims, approve guests, acknowledge
+segments, save the settings, make and remove manual routes, rotate the secret of a tunnel,
+diagnose, run the doctor, and restart the daemon; [API](api.md) lists every route. Rotating a
+secret restarts every connector of the tunnel, so the daemon answers that request for root
+only, and not for `pco-web`. A request cannot read a token or switch the egress filter off. It
+changes the targets of the filter only as a cycle does, by changing what is published: whoever
+may use the socket may publish what the guests ask for, add a credential of another account,
+and confirm deletes, so treat `pco-web` as an admin of pco.
+
+## The web interface
+
+`pco web` serves the web interface over HTTPS and passes the calls of the page on to the
+daemon's socket. It adds a way into pco that the command line does not have, from a browser,
+for every user of Proxmox VE with `Sys.Audit` on `/`. This section says what it can reach, what
+it holds, and what keeps a browser from doing more than its user may.
+
+### The process and what it can reach
+
+`pco-web.service` runs `pco web` as the system user `pco-web`. Its unit has no capabilities
+(`CapabilityBoundingSet=` empty), `NoNewPrivileges`, `ProtectSystem=strict` with `/run/pco`
+the one path it may write, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, the kernel-protection
+options, `ProtectClock`, `ProtectHostname`, `RestrictNamespaces`, `RestrictRealtime`,
+`RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `ProtectProc=invisible` with
+`ProcSubset=pid`, and `UMask=0077`. Its system calls are limited to `@system-service` without
+`@privileged` and `@resources`, native ones only, and a call outside them fails with `EPERM`. Its
+sockets are limited to IPv4, IPv6 and unix sockets, so it cannot even list the network cards of
+the node.
+
+It reaches three things: the browsers on its address, the daemon's socket, and the API of
+Proxmox VE, which on a node is pveproxy on `127.0.0.1:8006` and in the appliance the node's API
+as the appliance's daemon reaches it. It cannot read `/etc/pve`: the certificate, its key and
+the certificate pveproxy serves reach it through `LoadCredential` of its unit, which systemd
+hands it in a directory of its own. It writes nothing to disk: sessions live in its memory.
+
+Since the daemon answers `pco-web` as an admin, a process that took over `pco-web` can do on the
+socket what an admin can do in the page, and no more: it cannot rotate the secret of a tunnel,
+read a Cloudflare token, or switch the egress filter off. It also sees the tickets and tokens of
+the users who sign in while it is taken over, and in the appliance their passwords.
+
+### The certificate
+
+The web interface has a key of its own, chosen by `pco setup --web-cert`:
+
+| Mode | Key and certificate | Trusted by |
+|---|---|---|
+| `ca`, the default | A key made for it, and a certificate for the node's names and addresses signed by the cluster CA of Proxmox VE, for 90 days. The daemon makes a new pair 30 days before the end, and at once when another CA signed it or it lacks a name or address the node has now, the listen address and `PCO_WEB_HOSTS` among them. | browsers that trust the cluster CA, as they must for port 8006 without a certificate of a public CA |
+| `own` | Yours, from `--web-cert-file` and `--web-key-file` or `pco web cert import`, checked and copied in. pco does not renew it; `pco doctor` warns 30 days before it ends. | whoever trusts its issuer |
+| `pveproxy` | Links to the pair pveproxy serves, which the daemon follows when it changes. | whoever trusts port 8006, ACME certificates included |
+
+The certificate of mode `ca` lives 90 days because the CA of Proxmox VE has no revocation: a
+stolen certificate is good until it ends, and a short life is the only bound on it. It is made
+for `serverAuth` alone and cannot sign another certificate, so a chain through it fails. Only
+root reads the key of the cluster CA: `pco setup` and the daemon make the certificate, never
+`pco web`. `pco web cert renew` makes a new key and certificate at once, as after a suspected
+leak.
+
+Whatever the mode, the key is good for the node's names, and a browser that trusts it takes it on
+any port of those names. Whoever controls `pco-web` could pose as the node on another port, or on
+port 8006 while pveproxy is down, and collect the passwords and codes of Proxmox VE that users
+type into a page made to look like its sign-in. With the mode `ca` that lasts as long as the
+certificate, and `pco-web` never holds the key of the CA. With the mode `pveproxy` the key is
+pveproxy's own, trusted by every browser that trusts the node, and is in `pco-web`'s hands: setup
+says so when it is chosen. Choose it only when you accept that.
+
+The appliance has a key of its own and a self-signed certificate of 397 days, which its daemon
+makes at the first start and again 30 days before the end; a browser trusts it by the
+fingerprint. [Appliance](appliance.md#the-web-interface) has the rest.
+
+### Signing in
+
+A user signs in with what Proxmox VE knows of them, and pco web asks Proxmox VE every time, never
+a store of its own: on a node with the ticket of the Proxmox VE interface, in the appliance with
+the user's password, and anywhere with an API token. [Web interface](web-ui.md#signing-in) has
+the way of each. pco web asks pveproxy only when it presents, byte for byte, the certificate
+pveproxy serves, as the daemon does, since another process could listen on port 8006 while
+pveproxy is down and collect the tickets; in the appliance it verifies the node's API as the
+appliance's daemon does. `Sys.Modify` on `/` makes an admin and `Sys.Audit` a reader, and every
+request asks again within 30 seconds for a ticket and a minute for a token, so taking a privilege
+away takes effect within that time.
+
+A session is bound to its user and to the way it signed in. With a ticket, each request is
+checked with the ticket that request carries, and the answer is kept for 30 seconds under the
+SHA-256 of the ticket, never the ticket itself; a renewed ticket of the same user goes on, a
+ticket of another user or none ends the session. A token, and in the appliance the ticket the
+password obtained, are kept in the memory of `pco web` for the session.
+
+Every sign-in makes a new session id, so an id planted in a browser beforehand is worth nothing.
+The session cookie, `__Host-pco-session`, is `Secure`, `HttpOnly` and `SameSite=Strict`, has no
+`Domain` and dies with the browser. A session idles out after 30 minutes and ends after 12
+hours, 8 for a token; a user holds five at most. Sign-ins, sign-outs and refusals go to the
+journal of `pco-web` with the user, the method and the client's address, never a ticket, a token
+or a password.
+
+The ticket of the Proxmox VE interface is a cookie that its page sets from script, so it is not
+`HttpOnly`: a script that runs in any page of the node's host name, on any port, can read it.
+A flaw that let script run in pco's pages would hand out the tickets of the cluster's users, so
+what protects them is pco's own page: a Content-Security-Policy that lets it load its own files
+only and run no inline script or style, `require-trusted-types-for 'script'`, and every text that
+comes from a guest, from Cloudflare or from the daemon shown as text, never as HTML, with control
+and bidirectional characters made visible.
+
+### Requests
+
+The page talks to `/api/...` only, and every answer carries `Content-Security-Policy`,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+`Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`, a
+`Permissions-Policy` that turns off the camera, the microphone, the location, USB, payments and
+reading the clipboard, and `X-Frame-Options: DENY`. No answer is cached but the page's own files,
+and no answer has a header of CORS.
+
+`SameSite` does not keep apart the sites of one host name or of one registrable domain, so a
+request that changes something must carry, besides the cookie: `Content-Type:
+application/json`, which a form of another site cannot send; an `Origin` of `https://` and the
+host of the request; `Sec-Fetch-Site: same-origin` when the browser sends it; and `Pco-Csrf`,
+the token the session got at sign-in, compared in constant time. The host must be one of the
+names pco web answers to, which also stops DNS rebinding. Diagnosis and the doctor, which probe
+guests, the node and Cloudflare, are `POST` at pco web for the same reason.
+
+pco web passes on the calls of one table, each with the role it needs, its largest body and its
+timeout, and nothing else; [API](api.md#through-the-web-interface) has the table and the way of
+a call. It makes a new request to the socket with the body and none of the browser's headers but
+`Content-Type` and `If-None-Match`, and names the user in `Pco-Actor`, so that the events say
+who did what. The rotation of a tunnel's secret is not in the table.
+
+Nothing stands in front of `pco web`: there is no reverse proxy in this design, and the client
+is the address of the connection. `X-Forwarded-For` and its like are what the client wrote, and
+are read neither for the limits nor for the log. Ten sign-ins a minute are allowed from one
+address, or one `/64` of IPv6; a diagnosis runs one at a time for each user, six a minute, the
+doctor twice a minute, and a session holds three streams, 200 in all.
+
+`Strict-Transport-Security` is off unless `PCO_WEB_HSTS=1`: it holds for a host name and not for a
+port, so one visit would make a browser use HTTPS for every service of the node's name for a
+year; see [Operations](operations.md#the-web-interface).
+
+### What a reader sees, and its limit
+
+A reader sees the guests it holds `VM.Audit` on and what belongs to the cluster as a whole, and
+pco web filters every answer of the daemon to that before it leaves; the filter decides each field
+of the state by name, and a field the daemon adds is refused by a test until it has a decision.
+It does not filter free text: the problems of a cycle, the reason a cycle held, the message of an
+event, the reason of a route and the steps of a diagnosis may name a guest the reader does not
+see. [Web interface](web-ui.md#what-a-reader-sees) lists what a reader gets.
+
+### The password sign-in of the appliance
+
+The appliance cannot use the ticket of the Proxmox VE interface: the browser keeps it for the
+node's name, not the appliance's address. So users type their password of Proxmox VE into the
+appliance's page, and `pco web` hands it to the node's API in one call and drops it when the call
+returns. That is one identity, with the realm's own second factor and limits, and no account
+store in pco, at a price: an appliance whose `pco web` was taken over could read the passwords and
+codes of the users who sign in while it is. What stands against that, and against guessing:
+
+- The sandbox of the unit, the appliance's own key, and the password living for one call.
+- `root@pam`, the account most worth guessing, may not sign in with a password unless
+  `PCO_WEB_ALLOW_ROOT=1`.
+- The page listens on the address of `net0` only and refuses to start on any other: the other
+  cards lead into the networks of guests, which could otherwise reach it and try the passwords
+  of the cluster through it. `pco doctor` checks it in `web listen`.
+- A lock of pco's own: five failures of an account lock it at pco for a minute, doubling to 15
+  minutes. It is per account, so anyone who knows a user name can lock that user out of pco for
+  up to 15 minutes, not out of Proxmox VE; the API token goes past it. A restart of `pco-web`
+  forgets it.
+- Proxmox VE's own limits: on Proxmox VE 9.2 a wrong password is answered after about three
+  seconds and never locks the user; eight wrong TOTP codes in a row lock the user's TOTP until a
+  recovery code is used or `pveum user tfa unlock` runs; after 100 failed second-factor attempts
+  every factor is locked for an hour. [Web interface](web-ui.md#in-the-appliance) has the details.
+- The API token, for whoever would rather not type a password into the appliance.
+
+The realms of the node are listed on the sign-in page of the appliance to anyone who reaches it,
+as the sign-in page of Proxmox VE lists them.
 
 ## The appliance
 

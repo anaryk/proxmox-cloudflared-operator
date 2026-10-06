@@ -1,7 +1,7 @@
 # Uninstall
 
-`pco uninstall` takes pco off a node: the daemon, the connectors, the egress filter, what
-`pco setup` created in Proxmox, and the store. It does that in an order that keeps what the
+`pco uninstall` takes pco off a node: the daemon, the connectors, the egress filter, the web
+interface, what `pco setup` created in Proxmox, and the store. It does that in an order that keeps what the
 next part needs, and it removes only what pco made. Run it as root on the node, before you
 remove the package. An appliance is removed with `pco appliance uninstall` instead; see
 [the appliance](#the-appliance).
@@ -65,7 +65,15 @@ A script that removes everything looks like this:
    that a credential check left behind.
 5. **The egress filter.** It stops and disables `pco-egress.service` and deletes the
    nftables table `inet pco_egress`.
-6. **What setup created in Proxmox**, as far as the manifest lists it:
+6. **The web interface.** It stops and disables `pco-web.service`, which ends every session of
+   it, and removes what setup made for it, as far as the manifest lists it:
+   `/etc/default/pco-web`, which goes whole with the lines you added to it, and in
+   `/etc/pco/web/` the certificate `tls.crt`, its key `tls.key` and the link `pveproxy.crt`, or
+   in the mode `pveproxy` the links to pveproxy's pair, never the pair itself. A certificate
+   and key of your own that setup copied in go too, as copies. The directories `/etc/pco/web`
+   and `/etc/pco` go when setup made them and nothing else is left in them; one that holds a file
+   setup did not make is kept, and the command says so.
+7. **What setup created in Proxmox**, as far as the manifest lists it:
    - the grant of the role `PCO` on `/` to `pco@pve`;
    - the token `pco@pve!pco`;
    - the user `pco@pve`;
@@ -74,11 +82,11 @@ A script that removes everything looks like this:
      another user, group or token, the role stays and the command says why;
    - the registered tags that setup added, `cf-tunnel` and `cf-tunnel-managed`. Tags that
      were registered before stay in their order.
-7. **`cloudflared`** (with `--remove-cloudflared` or yes to the question, and only if
+8. **`cloudflared`** (with `--remove-cloudflared` or yes to the question, and only if
    setup installed it): the package, its apt source `/etc/apt/sources.list.d/cloudflared.sources`
    if it is still as setup wrote it, and the key `/usr/share/keyrings/cloudflare-main.gpg`,
    which stays when another apt source names it.
-8. **The store.** The node is removed from the registry, and then `/etc/pve/pco`,
+9. **The store.** The node is removed from the registry, and then `/etc/pve/pco`,
    `/etc/pve/priv/pco` and `/var/lib/pco` go, with everything in them: the credentials, the
    connector tokens, the manifest, the event log, and the snapshots of adopted records.
 
@@ -100,8 +108,10 @@ and you finish with `pco uninstall --purge-cloudflare` once Cloudflare answers, 
 - DNS records without the marker of this install, tunnels of other names, and the objects of
   another install.
 - `cloudflared`, when setup did not install it or `--remove-cloudflared` was not given.
-- The package itself, the `pco-connector` user that the package's `sysusers.d` file makes,
-  and `nftables`.
+- The package itself, the users `pco-connector` and `pco-web` that the package's `sysusers.d`
+  file makes, and `nftables`.
+- The cluster CA of Proxmox VE, which signed the certificate of the web interface, and anything
+  you imported into a browser.
 - Records that `pco adopt` replaced. A purge deletes pco's record, and the record it replaced
   does not come back. The snapshot of the old record is in `/etc/pve/pco/adopted.jsonl`,
   which the uninstall removes with the store: copy the file first if you may want it.
@@ -112,15 +122,17 @@ After `pco uninstall`, remove the package:
 
     apt purge pco
 
-Do it in this order. A plain `apt remove pco` stops and disables the daemon and leaves the
-connectors running, so that removing the package does not take the tunnels down; the package
+Do it in this order. A plain `apt remove pco` stops and disables the daemon and the web
+interface and leaves the connectors running, so that removing the package does not take the tunnels down; the package
 says so when it does, because only `pco uninstall` removes them and it needs `pco` to be
 installed. `apt purge` removes `/var/lib/pco`, which holds the connector tokens and the
 manifest. If you purge first, you have lost the means to see what setup created, and the
 connectors are still running without anything to manage them.
 
 A plain `apt remove` keeps `/var/lib/pco`, so that `pco setup` can bring the installation back
-after a reinstall. It never touches `/etc/pve`.
+after a reinstall. It never touches `/etc/pve`. Neither does `apt purge` remove
+`/etc/default/pco-web` or `/etc/pco/web/`, with the key of the web interface's certificate:
+`pco uninstall` does, so run it first; after a purge without it, remove them by hand.
 
 ## After a lost store
 

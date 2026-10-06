@@ -95,14 +95,15 @@ checkout of the repository instead:
     make snapshot
     apt install ./dist/pco_*_amd64.deb
 
-`make snapshot` needs Go 1.26 and network access, and builds the packages without signing
-them. A node does not usually have Go, so build on another machine and copy the file
+`make snapshot` needs Go 1.26, Node 22.23.3 and npm 10.9.9, which build the web interface,
+and network access, and builds the packages without signing them. A node does not usually have Go, so build on another machine and copy the file
 for the architecture of the node to it, `amd64` or `arm64`, with `scp`.
 
-The package installs `/usr/bin/pco`, three systemd units, a `sysusers.d` file for
-the system user `pco-connector`, and depends on `nftables`. It does not enable or
-start anything. Setup enables the daemon, the daemon starts the connectors, and the
-connectors start the unit that loads the egress filter before them.
+The package installs `/usr/bin/pco`, its systemd units, a `sysusers.d` file for
+the system users `pco-connector` and `pco-web`, and depends on `nftables`. It does not
+enable or start anything. Setup enables the daemon and the web interface, the daemon
+starts the connectors, and the connectors start the unit that loads the egress filter
+before them.
 
 ## Set up the node
 
@@ -129,6 +130,10 @@ run that stopped and changes nothing on a node that is set up. In order, it:
   asks; `--skip-cloudflared` declines);
 - asks for a Cloudflare token, checks it and stores it, as the credential `setup`, if it
   can do what pco needs;
+- sets up the [web interface](web-ui.md), unless it is given `--no-web`: it writes
+  `/etc/default/pco-web` with the node's address and port 8643, makes a key and a
+  certificate signed by the cluster CA in `/etc/pco/web/`, and enables and starts
+  `pco-web.service`;
 - registers the node, enables and starts `pco-egress.service`, which loads the egress
   filter at every boot, and enables and starts `pco.service`.
 
@@ -145,6 +150,12 @@ id will differ):
     note: clones and restores of a guest keep its tags, so the clone of a published guest asks to be published too
     cloudflared: installed from https://pkg.cloudflare.com/cloudflared
     credentials: skipped; add one later with pco credential add --label <label>
+    web interface: wrote /etc/default/pco-web, listening on 192.0.2.10:8643
+    web certificate: made a key of its own and a certificate for node1, node1.example.com, 192.0.2.10, signed by the cluster CA, valid for 90 days
+    pco-web.service: enabled and running
+    web interface: https://node1.example.com:8643/
+    web certificate: SHA-256 fingerprint AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89
+    web certificate: browsers trust it once the cluster CA, /etc/pve/pve-root-ca.pem, is imported, as for port 8006
     node registry: registered node1
     pco-egress.service: enabled and running
     pco.service: enabled and running
@@ -320,6 +331,30 @@ with what to do about it:
 
 If something is wrong, [Troubleshooting](troubleshooting.md) starts from the
 output of these commands.
+
+## Or in the web interface
+
+Everything after `pco setup` can be done in the web interface instead, which setup started on
+port 8643 and whose address it printed. Open it under the same name you open Proxmox VE under,
+`https://node1.example.com:8643/` beside `https://node1.example.com:8006/`, in a browser that is
+signed in to Proxmox VE: it signs you in with that session. A user with `Sys.Modify` on `/` is an
+admin there; [Web interface](web-ui.md#signing-in) has the `pveum` lines for others, and what to
+do when the browser warns about the certificate.
+
+While no Cloudflare token is stored, it opens on the first-run setup, whose steps are the
+sections above:
+
+| Step | Does what this page does with |
+|---|---|
+| 1, API token | [Add a Cloudflare token](#add-a-cloudflare-token): its buttons open the form of the Cloudflare dashboard with the permissions chosen, and the token you paste is checked, and its write access proved, as `pco credential add` and `check --deep` do. |
+| 2, Zones | `pco credential check`: the zones the token lists, and those it leaves out. |
+| 3, Reaching guests | the first point of [Before you start](#before-you-start). |
+| 4, First route | [Tag a guest and write its routes](#tag-a-guest-and-write-its-routes): it writes the block for the Notes, which you paste into the guest and give it the tag, as above; pco never writes tags or Notes itself. |
+| 5, Start publishing | [See what pco would do](#see-what-pco-would-do) and [Publish](#publish): the plan, and the button that does what `pco apply` does. |
+
+Then the overview shows the route on its way from Cloudflare to the guest, and the route's page,
+under Routes, runs `pco diagnose` on its Diagnosis tab. [Web interface](web-ui.md) describes
+every page.
 
 ## Or as an appliance
 
