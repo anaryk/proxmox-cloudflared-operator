@@ -25,7 +25,13 @@ container from it. Every release carries one for amd64 and one for arm64.
 - `pco-net.service`, `pco-egress.service`, `pco.service`,
   `pco-first-boot.service` and `unattended-upgrades.service` are enabled,
   `nftables.service` is masked (it would flush the tables of pco), the root
-  password is locked and `/etc/machine-id` is empty.
+  password is locked and `/etc/machine-id` is empty. So are the units an
+  unprivileged container cannot run, as in the Debian template of Proxmox VE:
+  `systemd-networkd-wait-online.service` (ifupdown brings up the network; the
+  presets of systemd enable it at the first start, and it would wait two
+  minutes for links networkd does not manage),
+  `sys-kernel-config.mount`, `sys-kernel-debug.mount` and
+  `systemd-modules-load.service`.
 
 Nothing of the build stays: the snapshot sources, the apt option that let apt
 read their old Release files, the resolver and the logs of the host are taken
@@ -117,7 +123,9 @@ must come up running, or degraded by nothing but `pco.service`,
 file name, the egress table loaded, `pco net show` must say what
 `pco-net.service` found, the drop-ins must be in force, the profile
 `appliance`, pco and cloudflared held, root
-locked, `pco-connector` there, `nftables.service` masked, apt must read the
+locked, `pco-connector` there, `nftables.service` and the units an
+unprivileged container cannot run masked (`systemd-nspawn` runs them, so the
+masks are what stands for a start in Proxmox VE), apt must read the
 two live archives and nothing of the snapshot, and `unattended-upgrade
 --dry-run -v` must allow the origins labelled `Debian-Security` and no other.
 With `--with-network` it boots once more with the network of the host, and the

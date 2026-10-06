@@ -182,6 +182,17 @@ find "$1/var/log" -type f -exec truncate --size=0 {} +'
 tmp=${TMPDIR:-/tmp}
 tmp=${tmp%/}
 work=$tmp/pco-appliance-build.dry
+# nftables.service is masked because its ruleset would flush the tables of
+# pco. The other units masked are those an unprivileged container cannot run,
+# which the Debian template of Proxmox VE masks or leaves disabled as well.
+# systemd-networkd-wait-online.service waits two minutes for links networkd
+# does not manage, as ifupdown brings up the network, and network-online.target
+# and pco-first-boot.service wait with it; it is enabled nowhere in the
+# template, but the presets of systemd enable it at the first start, with
+# networkd, and only a mask keeps it off. The container may not mount
+# /sys/kernel/config and /sys/kernel/debug, and systemd-modules-load.service
+# needs libkmod, which the template does not have, to load modules the
+# container may not load anyway; the three are static wants of sysinit.target.
 # shellcheck disable=SC2016
 hooks() {
 	printf '%s\n' \
@@ -190,7 +201,7 @@ hooks() {
 		"upload $work/cloudflared.deb /tmp/cloudflared.deb" \
 		'chroot "$1" dpkg --install /tmp/pco.deb /tmp/cloudflared.deb' \
 		'chroot "$1" systemctl enable pco-net.service pco-egress.service pco.service pco-first-boot.service unattended-upgrades.service' \
-		'chroot "$1" systemctl mask nftables.service' \
+		'chroot "$1" systemctl mask nftables.service systemd-networkd-wait-online.service sys-kernel-config.mount sys-kernel-debug.mount systemd-modules-load.service' \
 		'chroot "$1" apt-mark hold pco cloudflared' \
 		'chroot "$1" passwd --lock root' \
 		': >"$1/etc/machine-id"'

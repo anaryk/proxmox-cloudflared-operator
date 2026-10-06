@@ -219,7 +219,13 @@ if [[ $network == 0 ]]; then
 	check "pco and cloudflared are held" is "$(inside apt-mark showhold | LC_ALL=C sort | paste -s -d ' ' -)" "cloudflared pco"
 	check "the password of root is locked" is "$(inside passwd --status root | awk '{ print $2 }')" L
 	check "the user pco-connector exists" user_exists pco-connector
-	check "nftables.service is masked" is "$(inside systemctl is-enabled nftables.service || true)" masked
+	# nftables.service would flush the tables of pco. The others fail, or hold
+	# the start up for two minutes, in an unprivileged container of Proxmox VE,
+	# which systemd-nspawn does not show: their masks are what this can check.
+	for unit in nftables.service systemd-networkd-wait-online.service sys-kernel-config.mount sys-kernel-debug.mount \
+		systemd-modules-load.service; do
+		check "$unit is masked" is "$(inside systemctl is-enabled "$unit" || true)" masked
+	done
 	# shellcheck disable=SC2016
 	check "apt reads deb.debian.org and security.debian.org and nothing else" \
 		is "$(inside apt-get indextargets --no-release-info --format '$(SITE)' | LC_ALL=C sort -u | paste -s -d ' ' -)" \
