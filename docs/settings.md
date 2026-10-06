@@ -239,7 +239,11 @@ The settings of pco's managed network are the keys of one object, `managed`:
   another card of that guest has `firewall=1`, which the firewall then filters too. A host
   ignores it.
 
-A key the file leaves out has its default, and so has one that is empty or zero.
+A key the file leaves out has its default, and so has the whole object when the file leaves
+it out. A key that is there is taken as written: one that is empty or zero, as
+`"detachGrace": "0s"`, is refused with its path, `managed.detachGrace`, and never read as
+the default. This holds for the file on the node, `pco settings apply`, the API and the web
+page alike.
 
 ## Egress filter
 
@@ -304,7 +308,8 @@ mistake it is:
 | `reading the settings: <file>: invalid: json: unknown field "denyhost"` | A key the daemon does not know, usually a misspelt one. Settings are read strictly, so that a misspelt `denyhost` cannot silently drop a list that was meant to deny. |
 | `reading the settings: <file>: field "observeOnly" cannot be read as bool` | A value of the wrong type. |
 | `reading the settings: <file>: invalid: time: invalid duration "ten"` | A duration that Go cannot read. |
-| `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` or `manualCIDRs` that is not IPv4, a pattern or zone pin that does not normalise, a `managed` key out of its range. The problem names the field. |
+| `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` or `manualCIDRs` that is not IPv4, a pattern or zone pin that does not normalise. The problem names the field. |
+| `reading the settings: <file>: invalid: managed.<key> ...` | A key of `managed` that is empty, zero or out of its range, as `managed.detachGrace 0s: at least 1m0s`. It is checked as the file is read, where a key written zero can still be told from one left out. |
 | `reading the settings: <file> has schema version 2, this build reads 1: ...` | The file was written by a newer version, which an older build never rewrites. |
 
 A value below its minimum is no such mistake. A file that says `pollInterval` below 5

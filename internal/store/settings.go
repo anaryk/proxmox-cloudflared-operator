@@ -1,7 +1,8 @@
 package store
 
 import (
-	"cmp"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -190,6 +191,51 @@ type ManagedSettings struct {
 	AcceptFirewallImpact bool `json:"acceptFirewallImpact,omitempty"`
 }
 
+// UnmarshalJSON reads the settings of the managed network strictly, whatever
+// the decoder that calls it. Only a key that is not there takes its default;
+// one that is there is taken as written and checked here, where it can still
+// be told from one left out, so that an empty or zero value is refused with a
+// *FieldError and never read as the default. A null is the block left out.
+func (m *ManagedSettings) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	var in struct {
+		Consent              *string       `json:"consent"`
+		Subnet               *netip.Prefix `json:"subnet"`
+		DetachGrace          *Duration     `json:"detachGrace"`
+		AcceptFirewallImpact *bool         `json:"acceptFirewallImpact"`
+	}
+	if err := decode(data, &in, true); err != nil {
+		// The decoder that called this one names no field of its own here.
+		var typ *json.UnmarshalTypeError
+		if errors.As(err, &typ) && typ.Field != "" {
+			named := *typ
+			named.Field = "managed." + typ.Field
+			return &named
+		}
+		return err
+	}
+	out := DefaultSettings().Managed
+	if in.Consent != nil {
+		out.Consent = *in.Consent
+	}
+	if in.Subnet != nil {
+		out.Subnet = *in.Subnet
+	}
+	if in.DetachGrace != nil {
+		out.DetachGrace = *in.DetachGrace
+	}
+	if in.AcceptFirewallImpact != nil {
+		out.AcceptFirewallImpact = *in.AcceptFirewallImpact
+	}
+	if err := out.check(); err != nil {
+		return err
+	}
+	*m = out
+	return nil
+}
+
 // DefaultSettings returns the settings of a fresh install, which only
 // observes until the admin applies.
 func DefaultSettings() Settings {
@@ -294,30 +340,35 @@ func (s Settings) normalized() (Settings, error) {
 	return s, nil
 }
 
-// normalized returns m with every field it leaves out, or that is zero, at
-// its default, or a *FieldError naming the first field that is invalid.
-// Whether the subnet may change, and whether it overlaps a route of a node,
-// an address of a guest or an attached network, is the engine's to check:
-// the store sees none of them.
+// normalized returns m as it is, or the defaults for settings that leave the
+// managed network out, which in code are the zero value; a field that is
+// empty or zero in settings that have the block is refused. The error is a
+// *FieldError naming the first field that is invalid. Whether the subnet may
+// change, and whether it overlaps a route of a node, an address of a guest or
+// an attached network, is the engine's to check: the store sees none of them.
 func (m ManagedSettings) normalized() (ManagedSettings, error) {
-	d := DefaultSettings().Managed
-	m.Consent = cmp.Or(m.Consent, d.Consent)
-	if m.Subnet == (netip.Prefix{}) {
-		m.Subnet = d.Subnet
+	if m == (ManagedSettings{}) {
+		return DefaultSettings().Managed, nil
 	}
-	if m.DetachGrace == 0 {
-		m.DetachGrace = d.DetachGrace
-	}
-	if m.Consent != ConsentPerGuest && m.Consent != ConsentAuto {
-		return ManagedSettings{}, invalid("managed.consent", "managed.consent %q: want %q or %q", m.Consent, ConsentPerGuest, ConsentAuto)
-	}
-	if err := checkManagedSubnet(m.Subnet); err != nil {
+	if err := m.check(); err != nil {
 		return ManagedSettings{}, err
 	}
-	if grace := time.Duration(m.DetachGrace); grace < minDetachGrace {
-		return ManagedSettings{}, invalid("managed.detachGrace", "managed.detachGrace %s: at least %s", grace, minDetachGrace)
-	}
 	return m, nil
+}
+
+// check refuses the first field of m that is not valid, an empty or zero one
+// included.
+func (m ManagedSettings) check() error {
+	if m.Consent != ConsentPerGuest && m.Consent != ConsentAuto {
+		return invalid("managed.consent", "managed.consent %q: want %q or %q", m.Consent, ConsentPerGuest, ConsentAuto)
+	}
+	if err := checkManagedSubnet(m.Subnet); err != nil {
+		return err
+	}
+	if grace := time.Duration(m.DetachGrace); grace < minDetachGrace {
+		return invalid("managed.detachGrace", "managed.detachGrace %s: at least %s", grace, minDetachGrace)
+	}
+	return nil
 }
 
 // checkManagedSubnet refuses a managed subnet that is no IPv4 prefix of a /16
@@ -327,6 +378,8 @@ func checkManagedSubnet(p netip.Prefix) error {
 	const field = "managed.subnet"
 	service := appnet.ServicePrefix
 	switch {
+	case p == (netip.Prefix{}):
+		return invalid(field, "%s is empty: want an IPv4 prefix such as %s", field, DefaultSettings().Managed.Subnet)
 	case !p.IsValid() || !p.Addr().Is4():
 		return invalid(field, "%s %s: want an IPv4 prefix", field, p)
 	case p.Bits() < minSubnetBits || p.Bits() > maxSubnetBits:

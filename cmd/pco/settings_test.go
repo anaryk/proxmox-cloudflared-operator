@@ -105,6 +105,32 @@ func TestSettingsApplySendsTheRevisionTheyWereReadAt(t *testing.T) {
 	require.Contains(t, res.out, `"rev": 8`)
 }
 
+// A key of the managed network written zero reaches the daemon as it was
+// written, which refuses it by its path; one the file leaves out has its
+// default.
+func TestSettingsApplySendsTheManagedNetworkAsWritten(t *testing.T) {
+	managed := func(block string) func(string) string {
+		return func(s string) string {
+			start := strings.Index(s, `"managed": {`)
+			end := start + strings.Index(s[start:], "}")
+			return s[:start] + `"managed": {` + block + s[end:]
+		}
+	}
+	r, e := daemonWithSettings(t)
+
+	res := r.run("", "settings", "apply", settingsFile(t, r, managed(`"detachGrace": "0s"`)))
+
+	require.Error(t, res.err)
+	require.Contains(t, res.err.Error(), "managed.detachGrace 0s: at least 1m0s")
+	require.Empty(t, e.called())
+
+	res = r.run("", "settings", "apply", settingsFile(t, r, managed(`"detachGrace": "2m"`)))
+
+	require.NoError(t, res.err)
+	require.Equal(t, store.Duration(2*time.Minute), e.saved.Managed.DetachGrace)
+	require.Equal(t, store.DefaultSettings().Managed.Subnet, e.saved.Managed.Subnet, "what the file leaves out has its default")
+}
+
 func TestSettingsApplyThatNeedsNoRestart(t *testing.T) {
 	r, _ := daemonWithSettings(t)
 	path := settingsFile(t, r, func(s string) string { return s })

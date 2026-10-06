@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -35,6 +36,12 @@ func decode(c *gin.Context, dst any, optional bool) error {
 		}
 		return errEmptyBody
 	case err != nil:
+		// A value that a type refuses as it is read, which only there can
+		// tell a key written zero from one left out, is a field of the request.
+		var field *store.FieldError
+		if errors.As(err, &field) {
+			return &engine.FieldError{Field: field.Field, Err: field.Err}
+		}
 		return bodyError(err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {

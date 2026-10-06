@@ -67,6 +67,8 @@ func TestASaveOfTheSettingsIsRefusedAsTheEngineSays(t *testing.T) {
 		{"no revision", `{` + valid + `}`, nil, http.StatusBadRequest, "invalid", "rev"},
 		{"no settings", `{"rev":7}`, nil, http.StatusBadRequest, "invalid", "settings"},
 		{"a key the settings do not have", `{"rev":7,"settings":{"denyhost":["a.example.com"]}}`, nil, http.StatusBadRequest, "invalid", ""},
+		{"a managed setting written zero", `{"rev":7,"settings":{"gateTag":"cf-tunnel","managed":{"detachGrace":"0s"}}}`, nil,
+			http.StatusBadRequest, "invalid", "managed.detachGrace"},
 		{"a stale revision", `{"rev":6,` + valid + `}`, fmt.Errorf("%w: the settings changed since they were read at revision 6", engine.ErrRefused),
 			http.StatusConflict, "refused", ""},
 		{"a setting out of its range", `{"rev":7,` + valid + `}`, &engine.FieldError{Field: "denyHosts[2]", Err: errors.New(`denyHosts[2] "a..b": not a pattern`)},

@@ -566,7 +566,9 @@ func TestTheManagedNetworkSettingsAcceptTheirBounds(t *testing.T) {
 
 // A field of the managed network that settings leave out, as those of a
 // client that does not know it yet, is its default.
-func TestTheManagedNetworkSettingsLeftOutAreTheDefaults(t *testing.T) {
+// Settings that leave the managed network out, as those of a client that does
+// not know it yet, have its defaults.
+func TestTheManagedNetworkLeftOutHasItsDefaults(t *testing.T) {
 	s, _ := openStore(t)
 	in := customSettings()
 	in.Managed = ManagedSettings{}
@@ -574,12 +576,85 @@ func TestTheManagedNetworkSettingsLeftOutAreTheDefaults(t *testing.T) {
 	got, err := s.Settings()
 	require.NoError(t, err)
 	require.Equal(t, DefaultSettings().Managed, got.Managed)
+}
 
-	in.Managed = ManagedSettings{Consent: ConsentAuto}
-	require.NoError(t, s.SaveSettings(in))
-	got, err = s.Settings()
-	require.NoError(t, err)
-	require.Equal(t, ManagedSettings{Consent: ConsentAuto, Subnet: netip.MustParsePrefix("10.203.118.0/24"), DetachGrace: Duration(10 * time.Minute)}, got.Managed)
+// What a client sends is decoded as the API decodes it, into settings of
+// nothing: a key that is there is taken as written, also when it is empty or
+// zero, which is refused; a key that is not there takes its default.
+func TestTheManagedNetworkSettingsSentAreTakenAsWritten(t *testing.T) {
+	const rest = `"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m0s","admission":"tag","observeOnly":true,` +
+		`"identityMinimum":"port","maxHostnamesPerGuest":32,"reverifyInterval":"1m0s","cloudflareBudget":1000`
+	sent := func(t *testing.T, managed string) Settings {
+		t.Helper()
+		var v Settings
+		require.NoError(t, json.Unmarshal([]byte(`{`+rest+managed+`}`), &v))
+		return v
+	}
+	defaults := DefaultSettings().Managed
+
+	for name, tc := range map[string]struct {
+		managed string
+		want    ManagedSettings
+	}{
+		"no block":    {"", defaults},
+		"a null":      {`,"managed":null`, defaults},
+		"no key":      {`,"managed":{}`, defaults},
+		"one key":     {`,"managed":{"consent":"auto"}`, ManagedSettings{Consent: ConsentAuto, Subnet: defaults.Subnet, DetachGrace: defaults.DetachGrace}},
+		"another key": {`,"managed":{"detachGrace":"2m"}`, ManagedSettings{Consent: ConsentPerGuest, Subnet: defaults.Subnet, DetachGrace: Duration(2 * time.Minute)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := openStore(t)
+			require.NoError(t, s.SaveSettings(sent(t, tc.managed)))
+			got, err := s.Settings()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got.Managed)
+		})
+	}
+
+	for name, tc := range map[string]struct{ managed, field, msg string }{
+		"a zero detach grace":  {`,"managed":{"detachGrace":"0s"}`, "managed.detachGrace", "managed.detachGrace 0s: at least 1m0s"},
+		"an empty subnet":      {`,"managed":{"subnet":""}`, "managed.subnet", "managed.subnet is empty: want an IPv4 prefix"},
+		"an empty consent":     {`,"managed":{"consent":""}`, "managed.consent", `managed.consent "": want "per-guest" or "auto"`},
+		"every key empty":      {`,"managed":{"consent":"","subnet":"","detachGrace":"0s","acceptFirewallImpact":false}`, "managed.consent", "managed.consent"},
+		"a value out of range": {`,"managed":{"detachGrace":"30s"}`, "managed.detachGrace", "managed.detachGrace 30s: at least 1m0s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var v Settings
+			err := json.Unmarshal([]byte(`{`+rest+tc.managed+`}`), &v)
+			var fe *FieldError
+			require.ErrorAs(t, err, &fe)
+			require.Equal(t, tc.field, fe.Field)
+			require.ErrorContains(t, err, tc.msg)
+		})
+	}
+}
+
+// Settings made in code have no keys to leave out: a managed network that is
+// given at all is checked as given.
+func TestAManagedNetworkGivenInCodeIsCheckedAsGiven(t *testing.T) {
+	s, p := openStore(t)
+	in := customSettings()
+	in.Managed = ManagedSettings{Consent: ConsentAuto, Subnet: netip.MustParsePrefix("10.50.0.0/20")}
+	err := s.SaveSettings(in)
+	var fe *FieldError
+	require.ErrorAs(t, err, &fe)
+	require.Equal(t, "managed.detachGrace", fe.Field)
+	require.Empty(t, stored(t, p.Cluster))
+}
+
+func TestAManagedNetworkSettingOfTheWrongTypeIsNamedByItsPath(t *testing.T) {
+	var v Settings
+	err := json.Unmarshal([]byte(`{"managed":{"detachGrace":10}}`), &v)
+	var typ *json.UnmarshalTypeError
+	require.ErrorAs(t, err, &typ)
+	require.Equal(t, "managed.detachGrace", typ.Field)
+
+	err = json.Unmarshal([]byte(`{"managed":{"detachGrace":"ten"}}`), &v)
+	var de *DurationError
+	require.ErrorAs(t, err, &de, "a text that is no duration says so, as at the top")
+
+	err = json.Unmarshal([]byte(`{"managed":{"consent":"auto","servicePrefix":"198.18.0.0/16"}}`), &v)
+	require.ErrorContains(t, err, `unknown field "servicePrefix"`, "strict also where the caller's decoder is not")
 }
 
 func TestStoredSettingsWithoutTheManagedNetworkLoadWithItsDefaults(t *testing.T) {
@@ -599,7 +674,27 @@ func TestStoredSettingsWithoutTheManagedNetworkLoadWithItsDefaults(t *testing.T)
 
 	writeFile(t, path, envelopeJSON("settings", `{"gateTag":"cf-tunnel","managed":{"consent":"never"}}`))
 	_, err = s.Settings()
-	require.ErrorContains(t, err, "stored settings are invalid: managed.consent")
+	require.ErrorContains(t, err, `managed.consent "never": want "per-guest" or "auto"`)
+}
+
+// A zero written in the file is no key left out: the daemon would take it for
+// ten minutes while the admin meant to detach at once.
+func TestAStoredManagedSettingWrittenEmptyOrZeroIsRefused(t *testing.T) {
+	for name, tc := range map[string]struct{ managed, msg string }{
+		"a zero detach grace": {`{"detachGrace":"0s"}`, "invalid: managed.detachGrace 0s: at least 1m0s"},
+		"an empty subnet":     {`{"subnet":""}`, "invalid: managed.subnet is empty"},
+		"an empty consent":    {`{"consent":""}`, `invalid: managed.consent "": want`},
+		"a wrong type":        {`{"detachGrace":600}`, `field "managed.detachGrace" cannot be read`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, p := openStore(t)
+			writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"),
+				envelopeJSON("settings", `{"gateTag":"cf-tunnel","managed":`+tc.managed+`}`))
+			got, err := s.Settings()
+			require.ErrorContains(t, err, tc.msg)
+			require.Equal(t, Settings{}, got)
+		})
+	}
 }
 
 // No version was ever released with a setting for the service prefix, which

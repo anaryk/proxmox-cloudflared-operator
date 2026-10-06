@@ -27,6 +27,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/testutil"
 )
 
@@ -389,6 +390,48 @@ func unapproved(st engine.State) []string {
 		out = append(out, u.String())
 	}
 	return out
+}
+
+// Settings sent without the managed network have its defaults; a key of it
+// written empty or zero is refused with its path, never taken for the default.
+func TestTheManagedNetworkSentIsTakenAsWritten(t *testing.T) {
+	e, _ := load(t, "populated")
+	d := serve(t, e)
+	ctx := context.Background()
+	view, err := d.Settings(ctx)
+	require.NoError(t, err)
+	raw, err := json.Marshal(view.Settings)
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &fields))
+	sent := func(managed string) string {
+		delete(fields, "managed")
+		if managed != "" {
+			fields["managed"] = json.RawMessage(managed)
+		}
+		b, err := json.Marshal(fields)
+		require.NoError(t, err)
+		return string(b)
+	}
+
+	for _, managed := range []string{`{"detachGrace":"0s"}`, `{"subnet":""}`, `{"consent":""}`} {
+		res := d.call(t, http.MethodPut, "/v1/settings", fmt.Sprintf(`{"rev": %d, "settings": %s}`, view.Rev, sent(managed)))
+		require.Equal(t, http.StatusBadRequest, res.status, managed)
+		require.Contains(t, string(res.body), `"field":"managed.`, managed)
+	}
+
+	res := d.call(t, http.MethodPut, "/v1/settings", fmt.Sprintf(`{"rev": %d, "settings": %s}`, view.Rev, sent(`{"consent":"auto"}`)))
+	require.Equal(t, http.StatusOK, res.status, string(res.body))
+	var answer api.SavedSettings
+	require.NoError(t, json.Unmarshal(res.body, &answer))
+	want := store.DefaultSettings().Managed
+	want.Consent = store.ConsentAuto
+	require.Equal(t, want, answer.Settings.Managed)
+
+	res = d.call(t, http.MethodPut, "/v1/settings", fmt.Sprintf(`{"rev": %d, "settings": %s}`, answer.Rev, sent("")))
+	require.Equal(t, http.StatusOK, res.status, string(res.body))
+	require.NoError(t, json.Unmarshal(res.body, &answer))
+	require.Equal(t, store.DefaultSettings().Managed, answer.Settings.Managed)
 }
 
 func TestSettingsAndManualRoutesAreWrittenAtTheirRevision(t *testing.T) {

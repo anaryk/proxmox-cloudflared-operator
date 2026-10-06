@@ -103,6 +103,9 @@ describe('reading a file', () => {
     const got = parseImportFile(file({ settings: { ...stored, managed } }))
     expect(got.issues).toEqual([])
     expect(got.file?.settings.managed).toEqual(managed)
+
+    const zero = parseImportFile(file({ settings: { ...stored, managed: { detachGrace: '0s' } } }))
+    expect(zero.file?.settings.managed, 'a key written zero stays for the daemon to refuse, and none is filled in').toEqual({ detachGrace: '0s' })
   })
 
   test('a list that is null is none', () => {

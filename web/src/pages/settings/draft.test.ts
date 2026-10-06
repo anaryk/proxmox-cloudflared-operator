@@ -73,6 +73,11 @@ test('numbers are whole numbers or not numbers', () => {
   expect(n('ten')).toBeNaN()
 })
 
+test('the managed network goes back as it was read, a key written zero too, for the daemon to judge', () => {
+  const base: Settings = { ...stored, managed: { consent: 'auto', detachGrace: '0s' } }
+  expect(settingsOf(draftOf(base), base).managed).toEqual({ consent: 'auto', detachGrace: '0s' })
+})
+
 test('a field the page does not know is kept from the settings it was read in', () => {
   const base = { ...full, somethingNew: 3 } as unknown as Settings
   expect((settingsOf(draftOf(base), base) as unknown as Record<string, unknown>).somethingNew).toBe(3)

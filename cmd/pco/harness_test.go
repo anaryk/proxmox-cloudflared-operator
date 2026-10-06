@@ -79,7 +79,8 @@ type fakeEngine struct {
 	mode                              string // the admission mode an approval answers with; "approve" when empty
 
 	settings      engine.SettingsView
-	restartNeeded []string // what a save of the settings answers needs a restart
+	saved         store.Settings // what the last save of the settings was sent
+	restartNeeded []string       // what a save of the settings answers needs a restart
 	manual        []engine.ManualRouteView
 	guests        []engine.GuestListView
 	configErr     error // what a write of the settings or of a manual route fails with
@@ -285,6 +286,7 @@ func (f *fakeEngine) SaveSettings(_ context.Context, rev int, s store.Settings) 
 	f.record(fmt.Sprintf("save settings rev=%d gateTag=%s cloudflareBudget=%d", rev, s.GateTag, s.CloudflareBudget))
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.saved = s
 	if f.configErr != nil {
 		return engine.SettingsView{}, nil, f.configErr
 	}
