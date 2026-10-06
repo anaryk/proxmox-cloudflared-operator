@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "6a12ad68f96bfd87",
+  "digest": "9d52149a5a86b007",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -782,7 +782,7 @@
     "state": "on"
   },
   "admission": "approve",
-  "gateTagged": 2,
+  "gateTagged": 14,
   "rogueConnectors": [
     {
       "tunnel": "pco-abc123",

@@ -12,7 +12,6 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/annotation"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -23,7 +22,7 @@ func (e *Engine) SettingsView() (engine.SettingsView, error) {
 	if err := e.begin(context.Background(), "SettingsView", noArgs); err != nil {
 		return engine.SettingsView{}, err
 	}
-	s, rev, notes, err := e.store.LoadSettingsRev()
+	s, rev, notes, err := e.stored().LoadSettingsRev()
 	if err != nil {
 		return engine.SettingsView{}, err
 	}
@@ -139,13 +138,13 @@ func (e *Engine) ManualRoutes() ([]engine.ManualRouteView, error) {
 	if err := e.begin(context.Background(), "ManualRoutes", noArgs); err != nil {
 		return nil, err
 	}
-	routes, err := e.store.ManualRoutesRev()
+	routes, err := e.stored().ManualRoutesRev()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]engine.ManualRouteView, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, manualView(r.Route, r.Rev))
+		out = append(out, engine.ManualView(r.Route, r.Rev))
 	}
 	slices.SortFunc(out, func(a, b engine.ManualRouteView) int { return strings.Compare(a.ID, b.ID) })
 	return out, nil
@@ -183,11 +182,11 @@ func (e *Engine) UpdateManualRoute(ctx context.Context, id string, rev int, v en
 }
 
 func (e *Engine) writeManual(ctx context.Context, v engine.ManualRouteView, rev int, done string) (engine.ManualRouteView, error) {
-	s, err := e.store.Settings()
+	s, err := e.stored().Settings()
 	if err != nil {
 		return engine.ManualRouteView{}, err
 	}
-	r, err := manualRoute(v, s)
+	r, err := checkManual(v, s)
 	if err != nil {
 		return engine.ManualRouteView{}, err
 	}
@@ -210,7 +209,7 @@ func (e *Engine) writeManual(ctx context.Context, v engine.ManualRouteView, rev 
 		return engine.ManualRouteView{}, err
 	}
 	e.manualEvent(ctx, r, done)
-	return manualView(r, now), nil
+	return engine.ManualView(r, now), nil
 }
 
 // DeleteManualRoute removes the manual route id, read at revision rev.
@@ -268,95 +267,15 @@ func (e *Engine) manualEvent(ctx context.Context, r model.Route, done string) {
 	})
 }
 
-// manualRoute checks a manual route as the daemon does and returns it as the
-// store keeps it. Where an address may point is checked against the
-// manualCIDRs of s; a fake has no node addresses to check it against.
-func manualRoute(v engine.ManualRouteView, s store.Settings) (model.Route, error) {
-	field := func(name, format string, args ...any) error {
-		return &engine.FieldError{Field: name, Err: fmt.Errorf(format, args...)}
-	}
-	if !validID(v.ID) {
-		return model.Route{}, field("id", "id %q: want 1 to 32 of a-z, 0-9 and -", v.ID)
-	}
-	host, err := hostname.Normalize(v.Hostname)
+// checkManual checks a manual route with the daemon's checks and returns it
+// as the store keeps it. A fake has no node addresses: where an address may
+// point is bound by the manualCIDRs of s alone.
+func checkManual(v engine.ManualRouteView, s store.Settings) (model.Route, error) {
+	r, err := engine.CheckManualRoute(v)
 	if err != nil {
-		return model.Route{}, &engine.FieldError{Field: "hostname", Err: err}
+		return model.Route{}, err
 	}
-	r := model.Route{Hostname: host, Source: model.SourceManual, ManualID: v.ID,
-		Target: model.Target{Scheme: model.Scheme(v.Target.Scheme), Port: v.Target.Port}}
-	switch r.Target.Scheme {
-	case model.SchemeHTTP, model.SchemeHTTPS:
-	default:
-		return model.Route{}, field("target.scheme", "target.scheme %q: want http or https", v.Target.Scheme)
-	}
-	if v.Target.Port == 0 {
-		return model.Route{}, field("target.port", "target.port: want a port from 1 to 65535")
-	}
-	switch v.Target.Kind {
-	case engine.TargetGuest:
-		ref, err := model.ParseGuestRef(v.Target.Guest)
-		if err != nil {
-			return model.Route{}, &engine.FieldError{Field: "target.guest", Err: err}
-		}
-		if v.Target.Addr.IsValid() {
-			return model.Route{}, field("target.addr", "target.addr: a route to a guest goes to the address proven for it, and takes none")
-		}
-		if v.Options.AllowNode {
-			return model.Route{}, field("options.allowNode", "allowNode: only a route to an address may point at a node")
-		}
-		r.Guest = &ref
-	case engine.TargetAddress:
-		if v.Target.Guest != "" {
-			return model.Route{}, field("target.guest", "target.guest: a route to an address names no guest")
-		}
-		if !v.Target.Addr.Is4() {
-			return model.Route{}, field("target.addr", "target.addr %v: want an IPv4 address", v.Target.Addr)
-		}
-		if !slices.ContainsFunc(s.ManualCIDRs, func(p netip.Prefix) bool { return p.Contains(v.Target.Addr) }) {
-			return model.Route{}, field("target.addr", "target.addr %s: not inside the manualCIDRs of the settings (%s)",
-				v.Target.Addr, prefixesText(s.ManualCIDRs))
-		}
-		r.Target.Addr = v.Target.Addr
-	default:
-		return model.Route{}, field("target.kind", "target.kind %q: want guest or address", v.Target.Kind)
-	}
-	if r.Options, err = annotation.CheckOptions(r.Target, v.Options); err != nil {
-		var oe *annotation.OptionError
-		if errors.As(err, &oe) {
-			return model.Route{}, field("options."+oe.Option, "options.%s", oe)
-		}
-		return model.Route{}, fmt.Errorf("%w: %w", engine.ErrInvalid, err)
-	}
-	return r, nil
-}
-
-func validID(id string) bool {
-	if id == "" || len(id) > 32 {
-		return false
-	}
-	return !strings.ContainsFunc(id, func(c rune) bool { return (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' })
-}
-
-func prefixesText(ps []netip.Prefix) string {
-	if len(ps) == 0 {
-		return "none"
-	}
-	out := make([]string, len(ps))
-	for i, p := range ps {
-		out[i] = p.String()
-	}
-	return strings.Join(out, ", ")
-}
-
-func manualView(r model.Route, rev int) engine.ManualRouteView {
-	v := engine.ManualRouteView{
-		ID: r.ManualID, Rev: rev, Hostname: r.Hostname, Options: r.Options,
-		Target: engine.ManualTarget{Kind: engine.TargetAddress, Scheme: string(r.Target.Scheme), Addr: r.Target.Addr, Port: r.Target.Port},
-	}
-	if r.Guest != nil {
-		v.Target.Kind, v.Target.Guest = engine.TargetGuest, r.Guest.String()
-	}
-	return v
+	return r, engine.CheckManualAddr(r, s, func() ([]netip.Addr, error) { return nil, nil })
 }
 
 // Guests returns the guest list of the scenario.

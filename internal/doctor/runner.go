@@ -86,6 +86,17 @@ func ExpectedHolder(ctx context.Context) (string, bool) {
 	return owner, ok
 }
 
+// HolderChanged is the refusal of a diagnosis of host, which must be in
+// normal form, when ctx names a holder (WithHolder) and another route holds
+// the hostname in st; nil otherwise.
+func HolderChanged(ctx context.Context, st engine.State, host string) error {
+	owner, named := ExpectedHolder(ctx)
+	if rt, found := HolderOf(st, host); named && found && rt.Owner != owner {
+		return fmt.Errorf("%w: %s is no longer held by %s", ErrHolderChanged, host, owner)
+	}
+	return nil
+}
+
 // Diagnose walks the chain of the route of a hostname. With a holder named
 // (WithHolder), it walks the route of that owner or refuses with
 // ErrHolderChanged, deciding on the state it walks, and shares the run only
@@ -114,8 +125,8 @@ func (r *Runner) Diagnose(ctx context.Context, name string) ([]Step, error) {
 		// does not cut it short for the others.
 		fly(r, f, "the diagnosis of "+host, func() ([]Step, error) {
 			st := r.state()
-			if rt, found := HolderOf(st, host); named && found && rt.Owner != owner {
-				return nil, fmt.Errorf("%w: %s is no longer held by %s", ErrHolderChanged, host, owner)
+			if err := HolderChanged(ctx, st, host); err != nil {
+				return nil, err
 			}
 			return DiagnoseRoute(context.WithoutCancel(ctx), st, host, r.httpc)
 		})

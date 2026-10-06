@@ -18,7 +18,9 @@ import (
 )
 
 // Apply leaves observe-only mode and, with confirmDeletes, accepts what the
-// state shows waiting when offer names it.
+// state shows waiting when offer names it: the offer ends, and with it the
+// problem lines that asked for the confirmation, as the daemon withdraws
+// them.
 func (e *Engine) Apply(ctx context.Context, confirmDeletes bool, offer string) (engine.ApplyResult, error) {
 	args := struct {
 		ConfirmDeletes bool   `json:"confirmDeletes"`
@@ -55,6 +57,7 @@ func (e *Engine) Apply(ctx context.Context, confirmDeletes bool, offer string) (
 			e.adminEvent(ctx, "", "the last state showed nothing that waits for a confirmation")
 		}
 		e.state.Waiting, e.state.Offer = []engine.Waiting{}, ""
+		e.state.Problems = slices.DeleteFunc(slices.Clone(e.state.Problems), engine.AsksForConfirmation)
 	}
 	e.changed()
 	return res, nil
@@ -104,7 +107,7 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (engine.Tunne
 	}{account}); err != nil {
 		return engine.TunnelRotation{}, err
 	}
-	s, err := e.store.Settings()
+	s, err := e.stored().Settings()
 	if err != nil {
 		return engine.TunnelRotation{}, err
 	}
@@ -123,14 +126,20 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (engine.Tunne
 	return engine.TunnelRotation{Tunnel: v.Name, TunnelID: v.ID, Account: v.AccountID}, nil
 }
 
-// AddCredential stores every token, under a new id, with the report of the
-// scenario.
+// AddCredential checks a token as finding the report of the scenario, and
+// stores it under a new id when the daemon would: a report that is not
+// usable, or of a check Cloudflare did not answer, refuses it, and the
+// refusal carries the view of the credential as checked.
 func (e *Engine) AddCredential(ctx context.Context, label, token string) (engine.CredentialView, error) {
-	if err := e.begin(ctx, "AddCredential", struct {
+	e.record(ctx, "AddCredential", struct {
 		Label       string `json:"label"`
 		TokenLength int    `json:"tokenLength"`
-	}{label, len(token)}); err != nil {
-		return engine.CredentialView{}, err
+	}{label, len(token)})
+	if r := e.refused("AddCredential"); r.err != nil {
+		if r.credential != nil {
+			return *r.credential, r.err
+		}
+		return engine.CredentialView{}, r.err
 	}
 	label, token = strings.TrimSpace(label), strings.TrimSpace(token)
 	switch {
@@ -141,16 +150,19 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (engine
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	id := ""
-	for n := len(e.state.Credentials) + 1; id == ""; n++ {
-		candidate := fmt.Sprintf("cred%d", n)
-		if !slices.ContainsFunc(e.state.Credentials, func(c engine.CredentialView) bool { return c.ID == candidate }) {
-			id = candidate
-		}
-	}
 	report := e.report
 	report.CheckedAt = e.now()
-	v := engine.CredentialView{ID: id, Label: label, Kind: "scoped", Checked: true, Report: report}
+	v := engine.CredentialView{Label: label, Kind: "scoped", Checked: true, Report: report}
+	if err := engine.Unusable(report); err != nil {
+		return v, err
+	}
+	for n := len(e.state.Credentials) + 1; v.ID == ""; n++ {
+		id := fmt.Sprintf("cred%d", n)
+		if !slices.ContainsFunc(e.state.Credentials, func(c engine.CredentialView) bool { return c.ID == id }) {
+			v.ID = id
+		}
+	}
+	id := v.ID
 	creds := append(slices.Clone(e.state.Credentials), v)
 	slices.SortFunc(creds, func(a, b engine.CredentialView) int { return strings.Compare(a.ID, b.ID) })
 	e.state.Credentials = creds
@@ -289,7 +301,7 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string, macs 
 	if _, err := model.ParseGuestRef(owner); err != nil {
 		return engine.Approval{}, fmt.Errorf("%w: only a guest is approved, named as qemu/101 or lxc/200: %w", engine.ErrInvalid, err)
 	}
-	s, err := e.store.Settings()
+	s, err := e.stored().Settings()
 	if err != nil {
 		return engine.Approval{}, err
 	}
@@ -317,6 +329,10 @@ func (e *Engine) ApproveGuest(ctx context.Context, owner, identity string, macs 
 	e.approvals = append(e.approvals, view)
 	slices.SortFunc(e.approvals, func(x, y engine.ApprovalView) int { return model.CompareOwners(x.Owner, y.Owner) })
 	e.state.Unapproved = slices.DeleteFunc(slices.Clone(e.state.Unapproved), func(u engine.UnapprovedGuest) bool { return u.String() == owner })
+	if held := e.held[owner]; len(held) > 0 {
+		e.state.Routes = sortRoutes(append(slices.Clone(e.state.Routes), held...))
+		delete(e.held, owner)
+	}
 	e.setApproval(owner, engine.ApprovalApproved)
 	e.adminEvent(ctx, owner, fmt.Sprintf("%s is approved in identity %s", engine.OwnerName(owner, guest), current))
 	e.changed()
@@ -348,35 +364,67 @@ func (e *Engine) setApproval(owner, approval string) {
 	}
 }
 
-// RevokeGuest removes the approval of a guest.
+// RevokeGuest removes the approval of a guest. In admission mode approve the
+// guest waits for an approval again, as the daemon's next cycle shows it:
+// its routes are taken out, and it waits with their hostnames; an approval
+// puts them back.
 func (e *Engine) RevokeGuest(ctx context.Context, owner string) error {
 	if err := e.begin(ctx, "RevokeGuest", struct {
 		Owner string `json:"owner"`
 	}{owner}); err != nil {
 		return err
 	}
-	if _, err := model.ParseGuestRef(owner); err != nil {
+	ref, err := model.ParseGuestRef(owner)
+	if err != nil {
 		return fmt.Errorf("%w: only a guest is approved, named as qemu/101 or lxc/200: %w", engine.ErrInvalid, err)
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	s, err := e.store.Settings()
 	if err != nil {
 		return err
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	i := slices.IndexFunc(e.approvals, func(v engine.ApprovalView) bool { return v.Owner == owner })
 	if i < 0 {
 		return fmt.Errorf("%w: %s has no approval", engine.ErrNotFound, owner)
 	}
-	guest := e.approvals[i].Guest
+	revoked := e.approvals[i]
 	e.approvals = slices.Delete(slices.Clone(e.approvals), i, i+1)
 	approval := engine.ApprovalNotNeeded
 	if s.Admission == store.AdmissionApprove {
 		approval = engine.ApprovalWaiting
+		e.waitForApproval(ref, revoked)
 	}
 	e.setApproval(owner, approval)
-	e.adminEvent(ctx, owner, fmt.Sprintf("the approval of %s is revoked", engine.OwnerName(owner, guest)))
+	e.adminEvent(ctx, owner, fmt.Sprintf("the approval of %s is revoked", engine.OwnerName(owner, revoked.Guest)))
+	e.changed()
 	return nil
+}
+
+// waitForApproval takes the routes of a guest whose approval was revoked out
+// of the state and shows it waiting for an approval with their hostnames.
+// The caller holds mu.
+func (e *Engine) waitForApproval(ref model.GuestRef, revoked engine.ApprovalView) {
+	owner := ref.String()
+	var hosts []string
+	e.state.Routes = slices.DeleteFunc(slices.Clone(e.state.Routes), func(r engine.RouteView) bool {
+		if r.Owner != owner {
+			return false
+		}
+		e.held[owner] = append(e.held[owner], r)
+		hosts = append(hosts, r.Hostname)
+		return true
+	})
+	u := engine.UnapprovedGuest{
+		GuestView: engine.GuestView{GuestRef: ref}, Identity: cmp.Or(revoked.Current, revoked.Identity),
+		Hostnames: nonNil(slices.Compact(slices.Sorted(slices.Values(hosts)))), Why: []string{"admission mode approve"},
+	}
+	if revoked.Guest != nil {
+		u.Name = revoked.Guest.Name
+	}
+	unapproved := append(slices.DeleteFunc(slices.Clone(e.state.Unapproved), func(w engine.UnapprovedGuest) bool { return w.GuestRef == ref }), u)
+	slices.SortFunc(unapproved, func(a, b engine.UnapprovedGuest) int { return model.CompareOwners(a.String(), b.String()) })
+	e.state.Unapproved = unapproved
 }
 
 // Segments returns the segments of the state.
@@ -479,5 +527,3 @@ func (e *Engine) RequestRestart(ctx context.Context) error {
 func (e *Engine) adminEvent(ctx context.Context, subject, msg string) {
 	e.emit(engine.Event{Level: "info", Kind: "admin", Subject: subject, Message: msg, Actor: engine.ActorOf(ctx)})
 }
-
-// changed names the state anew after it changed, and tells the streams when

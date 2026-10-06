@@ -49,11 +49,8 @@ func (e *Engine) AddCredential(ctx context.Context, label, token string) (Creden
 		return CredentialView{}, fmt.Errorf("checking the token: %w", err)
 	}
 	view := CredentialView{Label: label, Kind: credentialKind, Checked: true, Report: shownReport(report)}
-	switch {
-	case report.Unanswered():
-		return view, fmt.Errorf("%w: the token could not be checked: %s", ErrInvalid, failedChecks(report))
-	case !report.Usable:
-		return view, fmt.Errorf("%w: the token cannot be used: %s", ErrInvalid, failedChecks(report))
+	if err := Unusable(report); err != nil {
+		return view, err
 	}
 
 	if err := e.acquireAdmin(ctx); err != nil {
@@ -347,6 +344,19 @@ func randomHex(n int) func() string {
 		_, _ = rand.Read(b)
 		return hex.EncodeToString(b)
 	}
+}
+
+// Unusable is why a token whose check found report is not stored, an
+// ErrInvalid: Cloudflare did not answer the check, or the token cannot be
+// used. It is nil for a token that can be.
+func Unusable(report credentials.Report) error {
+	switch {
+	case report.Unanswered():
+		return fmt.Errorf("%w: the token could not be checked: %s", ErrInvalid, failedChecks(report))
+	case !report.Usable:
+		return fmt.Errorf("%w: the token cannot be used: %s", ErrInvalid, failedChecks(report))
+	}
+	return nil
 }
 
 // failedChecks says what a report found wrong.

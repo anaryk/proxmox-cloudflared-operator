@@ -1,3 +1,4 @@
 {
-  "about": "two connectors pco does not run on a tunnel, one whose token Cloudflare refuses, one whose metrics port is held"
+  "about": "two connectors pco does not run on a tunnel, one whose token Cloudflare refuses, one whose metrics port is held",
+  "now": "2026-10-01T12:00:02Z"
 }

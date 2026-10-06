@@ -5,13 +5,18 @@
 //
 // A scenario is a directory of JSON files, each in the type the API answers
 // with; the scenarios of the package are made from the goldens of the engine
-// and the API (see scenarios_test.go). What an admin action changes is kept
-// and shown, as far as the scenario has it: an approval takes the guest off
-// the list of those that wait, a confirmation ends the offer. Nothing is
-// planned, resolved or reconciled.
+// and the API (see scenarios_test.go). Its times move with the clock of the
+// engine. What an admin action changes is kept and shown, as far as the
+// scenario has it: an approval takes the guest off the list of those that
+// wait, a confirmation ends the offer and withdraws the problem lines that
+// asked for it. Nothing is planned, resolved or reconciled. Where the daemon's
+// own code can say what the daemon does, the engine uses it: the digest, the
+// batches, queues and replays of the stream, the routes of a traffic notice,
+// the checks of a manual route and of a token.
 //
 // The engine records every call, and Control serves what a test needs to
-// steer it: another state, events, traffic, refusals and the streams.
+// steer it: another state, events, traffic, refusals, the streams and a
+// reset.
 package apifake
 
 import (
@@ -31,6 +36,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -46,6 +52,9 @@ const (
 	// maxAnnotation is how many characters of the route block of a guest an
 	// annotation has at most.
 	maxAnnotation = 8192
+	// unknownActor is the actor of a call the API named none for: off Linux
+	// the API cannot read who the peer is.
+	unknownActor = "unknown"
 )
 
 // Why a traffic view has no routes, as the daemon says it.
@@ -60,11 +69,12 @@ const (
 // safe for concurrent use. A list it holds is replaced when it changes, never
 // changed in place, so that a state or a list it handed out stays as it was.
 type Engine struct {
-	now   func() time.Time
-	dir   string       // of the store, removed by Close
-	store *store.Store // the settings and the manual routes, with revisions
+	now    func() time.Time
+	source func() (files, error) // reads the scenario anew, for a reset
+	dir    string                // of the store, removed by Close
 
 	mu           sync.Mutex
+	store        *store.Store // the settings and the manual routes, with revisions
 	state        engine.State
 	cycle        time.Duration // how long a cycle takes, as the scenario's did
 	boot         string
@@ -78,19 +88,20 @@ type Engine struct {
 	claims       []engine.ClaimView
 	approvals    []engine.ApprovalView
 	report       credentials.Report
+	held         map[string][]engine.RouteView // the routes of a guest whose approval was revoked, by owner
 	readAtStart  []string
 	settingNotes []string
 	started      store.Settings // what a change of a setting read at start is compared with
-	refusals     map[string]error
+	refusals     map[string]refusal
 	calls        []Call
 	subs         map[*subscriber]bool
 	resumed      chan struct{} // closed when the streams resume; nil while they run
 }
 
-// Call is a call of the engine: the method, its arguments as JSON and, for a
-// request the API was told the actor of, who asked. Boot, RunsAs and
-// PollInterval, which the API asks to describe the daemon in its answers, are
-// not recorded; a token is recorded by its length.
+// Call is a call of the engine: the method, its arguments as JSON and who
+// asked, as the API named the actor, or "unknown" where it named none. Boot,
+// RunsAs and PollInterval, which the API asks to describe the daemon in its
+// answers, are not recorded; a token is recorded by its length.
 type Call struct {
 	Method string          `json:"method"`
 	Args   json.RawMessage `json:"args"`
@@ -98,26 +109,44 @@ type Call struct {
 	Actor  string          `json:"actor,omitempty"`
 }
 
+// refusal is the failure a control asked the next call of a method to have:
+// the error and, for AddCredential, the view of the credential its answer
+// carries.
+type refusal struct {
+	err        error
+	credential *engine.CredentialView
+}
+
 // Load reads the scenario of a directory. now is the clock of the engine; nil
-// is the system's. Close removes what the engine keeps on disk.
+// is the system's. The times of the scenario move with it: the scenario's
+// moment, its "now" or else the end of the last cycle of its state, is now.
+// Close removes what the engine keeps on disk.
 func Load(dir string, now func() time.Time) (*Engine, error) {
-	f, err := readFiles(os.DirFS(dir))
-	if err != nil {
-		return nil, fmt.Errorf("scenario %s: %w", dir, err)
-	}
-	return newEngine(f, now)
+	return newEngine(func() (files, error) {
+		f, err := readFiles(os.DirFS(dir))
+		if err != nil {
+			return files{}, fmt.Errorf("scenario %s: %w", dir, err)
+		}
+		return f, nil
+	}, now)
 }
 
 // Scenario loads a scenario of the package by its name.
 func Scenario(name string, now func() time.Time) (*Engine, error) {
-	f, err := builtinFiles(name)
-	if err != nil {
-		return nil, fmt.Errorf("scenario %s: %w", name, err)
-	}
-	return newEngine(f, now)
+	return newEngine(func() (files, error) {
+		f, err := builtinFiles(name)
+		if err != nil {
+			return files{}, fmt.Errorf("scenario %s: %w", name, err)
+		}
+		return f, nil
+	}, now)
 }
 
-func newEngine(f files, now func() time.Time) (*Engine, error) {
+func newEngine(source func() (files, error), now func() time.Time) (*Engine, error) {
+	f, err := source()
+	if err != nil {
+		return nil, err
+	}
 	if now == nil {
 		now = time.Now
 	}
@@ -127,8 +156,8 @@ func newEngine(f files, now func() time.Time) (*Engine, error) {
 	}
 	e := &Engine{
 		// The times of the state are UTC, as the goldens have them.
-		now: func() time.Time { return now().UTC() },
-		dir: dir, refusals: map[string]error{}, subs: map[*subscriber]bool{}, moving: map[string]bool{},
+		now:    func() time.Time { return now().UTC() },
+		source: source, dir: dir, boot: newBoot(), subs: map[*subscriber]bool{},
 	}
 	if err := e.open(f); err != nil {
 		_ = os.RemoveAll(dir)
@@ -137,10 +166,44 @@ func newEngine(f files, now func() time.Time) (*Engine, error) {
 	return e, nil
 }
 
-// open takes the scenario in. The last cycle of its state finished just now:
-// the times of the cycle, of the events and of the traffic move with it.
+// open takes the scenario in, its times moved to now, and numbers its events
+// on in the boot. The caller holds mu, or has the engine to itself.
 func (e *Engine) open(f files) error {
+	now := e.now()
+	if err := f.shift(now); err != nil {
+		return err
+	}
+	if err := e.openStore(f); err != nil {
+		return err
+	}
+	e.state = f.State
+	sortState(&e.state)
+	e.cycle = 0
+	if !e.state.At.IsZero() && e.state.FinishedAt.After(e.state.At) {
+		e.cycle = e.state.FinishedAt.Sub(e.state.At)
+	}
+	e.state.Digest = engine.DigestOf(e.state)
+	for _, ev := range f.Events {
+		e.seq++
+		ev.Seq, ev.Boot = e.seq, e.boot
+		e.events = append(e.events, ev)
+	}
+	e.openTraffic(f.Traffic, now)
+	e.guests, e.notes, e.claims, e.approvals = nonNil(f.Guests), f.Notes, nonNil(f.Claims), nonNil(f.Approvals)
+	e.report = e.reportOf(f.Report)
+	e.held, e.refusals, e.moving = map[string][]engine.RouteView{}, map[string]refusal{}, map[string]bool{}
+	return nil
+}
+
+// openStore makes the store of the scenario's settings and manual routes
+// anew.
+func (e *Engine) openStore(f files) error {
 	paths := store.Paths{Cluster: filepath.Join(e.dir, "cluster"), Private: filepath.Join(e.dir, "private"), Local: filepath.Join(e.dir, "local")}
+	for _, p := range []string{paths.Cluster, paths.Private, paths.Local} {
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
 	for _, p := range []string{paths.Cluster, paths.Private} {
 		if err := os.Mkdir(p, 0o700); err != nil {
 			return err
@@ -152,6 +215,7 @@ func (e *Engine) open(f files) error {
 	}
 	e.store = st
 	settings := store.DefaultSettings()
+	e.readAtStart, e.settingNotes = nil, nil
 	if v := f.Settings; v != nil {
 		settings, e.readAtStart, e.settingNotes = v.Settings, slices.Sorted(slices.Values(v.ReadAtStart)), v.Notes
 	}
@@ -162,7 +226,7 @@ func (e *Engine) open(f files) error {
 		return err
 	}
 	for _, v := range f.Manual {
-		r, err := manualRoute(v, e.started)
+		r, err := checkManual(v, e.started)
 		if err == nil {
 			_, err = st.SaveManualRouteIf(0, r)
 		}
@@ -170,34 +234,11 @@ func (e *Engine) open(f files) error {
 			return fmt.Errorf("%s: %s: %w", fileManual, v.ID, err)
 		}
 	}
-
-	now := e.now()
-	var shift time.Duration
-	e.state = f.State
-	sortState(&e.state)
-	if !e.state.At.IsZero() {
-		shift = now.Sub(e.state.FinishedAt)
-		e.cycle = e.state.FinishedAt.Sub(e.state.At)
-		e.state.At, e.state.FinishedAt = e.state.At.Add(shift), now
-	}
-	e.state.Digest = digestOf(e.state)
-	e.boot = newBoot()
-	for _, ev := range f.Events {
-		if !ev.At.IsZero() {
-			ev.At = ev.At.Add(shift)
-		}
-		e.seq++
-		ev.Seq, ev.Boot = e.seq, e.boot
-		e.events = append(e.events, ev)
-	}
-	e.openTraffic(f.Traffic, now)
-	e.guests, e.notes, e.claims, e.approvals = nonNil(f.Guests), f.Notes, nonNil(f.Claims), nonNil(f.Approvals)
-	e.report = e.reportOf(f.Report)
 	return nil
 }
 
-// openTraffic takes the traffic of the scenario, or makes it from the state,
-// with its newest sample now.
+// openTraffic takes the traffic of the scenario, or makes it from the state.
+// Every route with a figure has had it for a while.
 func (e *Engine) openTraffic(tv *engine.TrafficView, now time.Time) {
 	if tv == nil {
 		tv = &engine.TrafficView{Tunnels: []engine.TunnelTraffic{}}
@@ -215,12 +256,6 @@ func (e *Engine) openTraffic(tv *engine.TrafficView, now time.Time) {
 	e.traffic.At, e.traffic.Interval = now, engine.TrafficInterval.String()
 	e.traffic.Routes = nonNil(e.traffic.Routes)
 	e.traffic.RoutesTotal = len(e.traffic.Routes)
-	for i := range e.traffic.Tunnels {
-		s := e.traffic.Tunnels[i].Samples
-		for j := range s {
-			s[j].At = now.Add(-time.Duration(len(s)-1-j) * engine.TrafficInterval)
-		}
-	}
 	e.series = map[string][]engine.RouteSample{}
 	for _, r := range e.traffic.Routes {
 		s := make([]engine.RouteSample, routeHistory)
@@ -246,6 +281,29 @@ func (e *Engine) reportOf(r *credentials.Report) credentials.Report {
 		Token: cfapi.TokenStatus{ID: "token", Status: "active"}, Accounts: []cfapi.Account{}, Zones: []cfapi.Zone{},
 		Checks: []credentials.Check{}, Excluded: []credentials.Exclusion{}, Leftovers: []string{}, Usable: true,
 	}
+}
+
+// Reset puts the engine back to the scenario as it was loaded, read anew with
+// its times moved to now: the state, the settings and the manual routes, the
+// guests, the claims, the approvals, the traffic. The calls and the refusals
+// are forgotten and the streams resume. The boot stays: the events of the
+// scenario are numbered on after those of the boot so far, which no client
+// sees again, and every stream is told of the state.
+func (e *Engine) Reset() error {
+	f, err := e.source()
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = slices.DeleteFunc(e.events, func(ev engine.Event) bool { return ev.Boot == e.boot })
+	if err := e.open(f); err != nil {
+		return err
+	}
+	e.calls = nil
+	e.resume()
+	e.deliver(stateNotice(e.state))
+	return nil
 }
 
 // Close removes what the engine keeps on disk.
@@ -286,25 +344,29 @@ func (e *Engine) record(ctx context.Context, method string, args any) {
 	if err != nil {
 		data = []byte("null")
 	}
+	actor := engine.ActorOf(ctx)
+	if actor == "" {
+		actor = unknownActor
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.calls = append(e.calls, Call{Method: method, Args: data, At: e.now(), Actor: engine.ActorOf(ctx)})
+	e.calls = append(e.calls, Call{Method: method, Args: data, At: e.now(), Actor: actor})
 }
 
 // refused is the failure a control asked the next call of method to have,
-// which it uses up, or nil.
-func (e *Engine) refused(method string) error {
+// which it uses up; its err is nil when there is none.
+func (e *Engine) refused(method string) refusal {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	err := e.refusals[method]
+	r := e.refusals[method]
 	delete(e.refusals, method)
-	return err
+	return r
 }
 
 // begin records a call and returns the failure asked for it, if any.
 func (e *Engine) begin(ctx context.Context, method string, args any) error {
 	e.record(ctx, method, args)
-	return e.refused(method)
+	return e.refused(method).err
 }
 
 // noArgs are the arguments of a call that has none.
@@ -334,11 +396,19 @@ func (e *Engine) RunsAs() (profile, node string) {
 
 // PollInterval is the poll interval of the settings.
 func (e *Engine) PollInterval() time.Duration {
-	s, err := e.store.Settings()
+	s, err := e.stored().Settings()
 	if err != nil {
 		return time.Duration(store.DefaultSettings().PollInterval)
 	}
 	return time.Duration(s.PollInterval)
+}
+
+// stored is the store of the settings and the manual routes, which a reset
+// replaces. The caller does not hold mu.
+func (e *Engine) stored() *store.Store {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.store
 }
 
 // QueryEvents answers from the events of the scenario and those added since,
@@ -394,20 +464,28 @@ func (e *Engine) Trigger() {
 }
 
 // Diagnose walks the chain of a route as the daemon does, with the state of
-// the scenario, but asks no target: a route whose target the daemon would ask
-// gets the answer 200 OK.
+// the scenario, and refuses as it does when the caller named another holder;
+// but it asks no target: a route whose target the daemon would ask gets the
+// answer 200 OK.
 func (e *Engine) Diagnose(ctx context.Context, host string) ([]doctor.Step, error) {
+	holder, _ := doctor.ExpectedHolder(ctx)
 	if err := e.begin(ctx, "Diagnose", struct {
 		Hostname string `json:"hostname"`
-	}{host}); err != nil {
+		Owner    string `json:"owner,omitempty"`
+	}{host, holder}); err != nil {
 		return nil, err
 	}
 	e.mu.Lock()
 	st := e.state
 	e.mu.Unlock()
+	if name, err := hostname.Normalize(host); err == nil {
+		if err := doctor.HolderChanged(ctx, st, name); err != nil {
+			return nil, err
+		}
+	}
 	// The request to the target is the one thing that needs the context: a
 	// context that ended makes none.
-	ended, cancel := context.WithCancel(context.Background())
+	ended, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	cancel()
 	steps, err := doctor.DiagnoseRoute(ended, st, host, nil)
 	if err != nil {
@@ -437,14 +515,24 @@ func (e *Engine) Traffic() engine.TrafficView {
 	return e.trafficView()
 }
 
-// trafficView is a copy of the traffic that shares nothing that changes. The
-// caller holds mu.
+// trafficView is a copy of the traffic that shares nothing that changes; a
+// view with a reason why the routes have no figures has no routes. The caller
+// holds mu.
 func (e *Engine) trafficView() engine.TrafficView {
 	v := e.traffic
 	v.Tunnels = slices.Clone(v.Tunnels)
-	v.Routes = slices.Clone(v.Routes)
+	v.Routes = e.routeFigures()
 	v.RoutesTotal = len(v.Routes)
 	return v
+}
+
+// routeFigures are the routes with a figure now: none while the traffic says
+// why there are none. The caller holds mu.
+func (e *Engine) routeFigures() []engine.RouteTraffic {
+	if e.traffic.RoutesWhy != "" {
+		return []engine.RouteTraffic{}
+	}
+	return slices.Clone(e.traffic.Routes)
 }
 
 // RouteSeries returns the samples of the route of a hostname.
@@ -456,17 +544,19 @@ func (e *Engine) RouteSeries(host string) (engine.RouteSeries, error) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	i := slices.IndexFunc(e.traffic.Routes, func(r engine.RouteTraffic) bool { return r.Hostname == host })
+	routes := e.routeFigures()
+	i := slices.IndexFunc(routes, func(r engine.RouteTraffic) bool { return r.Hostname == host })
 	if i < 0 {
 		return engine.RouteSeries{}, fmt.Errorf("%w: %s has no target", engine.ErrNotFound, host)
 	}
-	r := e.traffic.Routes[i]
+	r := routes[i]
 	return engine.RouteSeries{Hostname: host, Target: r.Target, Shared: r.Shared, Samples: nonNil(slices.Clone(e.series[host]))}, nil
 }
 
+// changed names the state anew after it changed, and tells the streams when
 // its digest did. The caller holds mu.
 func (e *Engine) changed() {
-	d := digestOf(e.state)
+	d := engine.DigestOf(e.state)
 	if d == e.state.Digest {
 		return
 	}

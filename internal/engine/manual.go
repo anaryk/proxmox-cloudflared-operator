@@ -53,13 +53,14 @@ func (e *Engine) ManualRoutes() ([]ManualRouteView, error) {
 	}
 	out := make([]ManualRouteView, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, manualView(r.Route, r.Rev))
+		out = append(out, ManualView(r.Route, r.Rev))
 	}
 	slices.SortFunc(out, func(a, b ManualRouteView) int { return strings.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
-func manualView(r model.Route, rev int) ManualRouteView {
+// ManualView is the view of a stored manual route at revision rev.
+func ManualView(r model.Route, rev int) ManualRouteView {
 	v := ManualRouteView{
 		ID: r.ManualID, Rev: rev, Hostname: r.Hostname, Options: r.Options,
 		Target: ManualTarget{Kind: TargetAddress, Scheme: string(r.Target.Scheme), Addr: r.Target.Addr, Port: r.Target.Port},
@@ -95,7 +96,7 @@ func (e *Engine) UpdateManualRoute(ctx context.Context, id string, rev int, v Ma
 
 // writeManual checks v and writes it at revision rev, 0 for a new route.
 func (e *Engine) writeManual(ctx context.Context, v ManualRouteView, rev int, done string) (ManualRouteView, error) {
-	r, err := manualRoute(v)
+	r, err := CheckManualRoute(v)
 	if err != nil {
 		return ManualRouteView{}, err
 	}
@@ -127,7 +128,7 @@ func (e *Engine) writeManual(ctx context.Context, v ManualRouteView, rev int, do
 	}
 	e.manualEvent(ctx, r, done)
 	e.Trigger()
-	return manualView(r, now), nil
+	return ManualView(r, now), nil
 }
 
 // DeleteManualRoute removes the manual route id, which was read at revision
@@ -195,9 +196,10 @@ func targetText(r model.Route) string {
 	return fmt.Sprintf("%s://%s:%d", r.Target.Scheme, host, r.Target.Port)
 }
 
-// manualRoute checks what a view says of a route by itself and returns the
-// route it describes, with its hostname and options in normal form.
-func manualRoute(v ManualRouteView) (model.Route, error) {
+// CheckManualRoute checks what a view says of a route by itself and returns
+// the route it describes, with its hostname and options in normal form.
+// Where an address may point is CheckManualAddr's.
+func CheckManualRoute(v ManualRouteView) (model.Route, error) {
 	if !manualID.MatchString(v.ID) {
 		return model.Route{}, fieldError("id", "id %q: want 1 to 32 of a-z, 0-9 and -", v.ID)
 	}
@@ -255,19 +257,28 @@ func manualTarget(t ManualTarget) (model.Target, *model.GuestRef, error) {
 	return out, nil, fieldError("target.kind", "target.kind %q: want guest or address", t.Kind)
 }
 
-// checkManualAddr checks the address of a route to one against manualCIDRs of
-// the settings and, unless the route has allowNode, against the addresses of
-// the nodes. allowNode does not lift manualCIDRs: the address of a node is
-// allowed only where its prefix is listed there. The caller holds the cycle
-// lock.
+// checkManualAddr checks the address of a route to one as CheckManualAddr
+// does, with the settings stored and the addresses of the nodes the cycles
+// have seen. The caller holds the cycle lock.
 func (e *Engine) checkManualAddr(r model.Route) error {
-	addr := r.Target.Addr
-	if !addr.IsValid() {
+	if !r.Target.Addr.IsValid() {
 		return nil
 	}
 	s, err := e.d.Store.Settings()
 	if err != nil {
 		return fmt.Errorf("reading the settings: %w", err)
+	}
+	return CheckManualAddr(r, s, e.knownNodeAddrs)
+}
+
+// CheckManualAddr checks the address of a route to one against manualCIDRs
+// of s and, unless the route has allowNode, against the addresses of the
+// nodes, which nodes reads only then. allowNode does not lift manualCIDRs:
+// the address of a node is allowed only where its prefix is listed there.
+func CheckManualAddr(r model.Route, s store.Settings, nodes func() ([]netip.Addr, error)) error {
+	addr := r.Target.Addr
+	if !addr.IsValid() {
+		return nil
 	}
 	if !slices.ContainsFunc(s.ManualCIDRs, func(p netip.Prefix) bool { return p.Contains(addr) }) {
 		return fieldError("target.addr", "target.addr %s: not inside the manualCIDRs of the settings (%s)",
@@ -276,11 +287,11 @@ func (e *Engine) checkManualAddr(r model.Route) error {
 	if r.Options.AllowNode {
 		return nil
 	}
-	nodes, err := e.knownNodeAddrs()
+	known, err := nodes()
 	if err != nil {
 		return err
 	}
-	if slices.Contains(nodes, addr) {
+	if slices.Contains(known, addr) {
 		return fieldError("target.addr", "target.addr %s: an address of a node; a route to a service of the node needs allowNode", addr)
 	}
 	return nil

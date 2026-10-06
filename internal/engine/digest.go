@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-// digestOf names what a state holds: the first 16 hex digits of the SHA-256
+// DigestOf names what a state holds: the first 16 hex digits of the SHA-256
 // of the JSON of its digest view. Two idle cycles over the same world have the
 // same one, so that a client that holds the state does not fetch it again.
-func digestOf(st State) string {
+func DigestOf(st State) string {
 	data, err := json.Marshal(st.digestView())
 	if err != nil {
 		return ""
@@ -65,7 +65,7 @@ func (s State) stateNotice() StateNotice {
 // redigest names the state served again after it changed between two
 // cycles, and tells the stream when it did. The caller holds stateMu.
 func (e *Engine) redigest() {
-	d := digestOf(e.state)
+	d := DigestOf(e.state)
 	if d == e.state.Digest {
 		return
 	}

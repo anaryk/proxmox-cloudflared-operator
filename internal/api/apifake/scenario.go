@@ -3,13 +3,12 @@ package apifake
 import (
 	"bytes"
 	"cmp"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -51,6 +50,9 @@ type files struct {
 	// and Like a scenario of the package whose files it shares.
 	Generate string `json:"generate,omitempty"`
 	Like     string `json:"like,omitempty"`
+	// Now is the time the scenario is as of: its times move with the clock
+	// from there. Without it the end of the last cycle of the state is.
+	Now time.Time `json:"now,omitzero"`
 
 	State     engine.State             `json:"-"`
 	Events    []engine.Event           `json:"-"`
@@ -190,24 +192,100 @@ func readOptional[T any](dir fs.FS, name string, p **T) error {
 	return nil
 }
 
-// digestOf names what a state holds, as the daemon's digest does: two states
-// that differ only in the times of their cycle have the same one.
-func digestOf(st engine.State) string {
-	st.Digest, st.At, st.FinishedAt = "", time.Time{}, time.Time{}
-	data, err := json.Marshal(st)
-	if err != nil {
-		return ""
+// moment is the time a scenario is as of: its now, or else the end of the
+// last cycle of its state; zero for a scenario without a time.
+func (f files) moment() time.Time {
+	if !f.Now.IsZero() {
+		return f.Now
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:8])
+	return f.State.FinishedAt
+}
+
+// shift moves every time of the scenario, and every time a text of it names
+// in full, by as much as makes its moment now, in whole seconds, as the texts
+// name them. A clock time a text names, as "checking again at 12:10", stays.
+func (f *files) shift(now time.Time) error {
+	at := f.moment()
+	if at.IsZero() {
+		return nil
+	}
+	d := now.Sub(at).Truncate(time.Second)
+	var err error
+	if f.State, err = shifted(f.State, d); err != nil {
+		return err
+	}
+	if f.Events, err = shifted(f.Events, d); err != nil {
+		return err
+	}
+	if f.Traffic, err = shifted(f.Traffic, d); err != nil {
+		return err
+	}
+	if f.Claims, err = shifted(f.Claims, d); err != nil {
+		return err
+	}
+	if f.Approvals, err = shifted(f.Approvals, d); err != nil {
+		return err
+	}
+	if f.Report, err = shifted(f.Report, d); err != nil {
+		return err
+	}
+	f.Now = at.Add(d)
+	return nil
+}
+
+// timeInText is a time as a text names it.
+var timeInText = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
+
+// shifted is v with every time in it moved by d: every value of its JSON that
+// is a time, and every time a text of it names.
+func shifted[T any](v T, d time.Duration) (T, error) {
+	var out T
+	data, err := json.Marshal(v)
+	if err != nil {
+		return out, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return out, err
+	}
+	if data, err = json.Marshal(shiftValue(doc, d)); err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(data, &out)
+	return out, err
+}
+
+func shiftValue(v any, d time.Duration) any {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, x := range v {
+			v[k] = shiftValue(x, d)
+		}
+	case []any:
+		for i, x := range v {
+			v[i] = shiftValue(x, d)
+		}
+	case string:
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil && timeInText.MatchString(v) {
+			return t.Add(d).UTC().Format(time.RFC3339Nano)
+		}
+		return timeInText.ReplaceAllStringFunc(v, func(s string) string {
+			t, err := time.Parse(time.RFC3339Nano, s)
+			if err != nil {
+				return s
+			}
+			return t.Add(d).UTC().Format(time.RFC3339)
+		})
+	}
+	return v
 }
 
 // sortState puts the lists of a state in the order the daemon gives them,
 // and makes every list that is missing an empty one.
 func sortState(st *engine.State) {
-	slices.SortStableFunc(st.Routes, func(a, b engine.RouteView) int {
-		return cmp.Or(strings.Compare(a.Hostname, b.Hostname), model.CompareOwners(a.Owner, b.Owner))
-	})
+	sortRoutes(st.Routes)
 	slices.SortStableFunc(st.Tunnels, func(a, b engine.TunnelView) int {
 		return cmp.Or(strings.Compare(a.AccountID, b.AccountID), strings.Compare(a.ID, b.ID))
 	})
@@ -228,4 +306,13 @@ func nonNil[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+// sortRoutes puts routes in the order of a state, by hostname and then by
+// owner, and returns them.
+func sortRoutes(routes []engine.RouteView) []engine.RouteView {
+	slices.SortStableFunc(routes, func(a, b engine.RouteView) int {
+		return cmp.Or(strings.Compare(a.Hostname, b.Hostname), model.CompareOwners(a.Owner, b.Owner))
+	})
+	return routes
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
 // The kinds of what waits for a confirmation.
@@ -20,6 +21,17 @@ const (
 	WaitingZone     = "stale-zone"      // a zone that left the listing of its credential, or whose DNS it can no longer read
 	WaitingTunnel   = "unseen-tunnel"   // a tunnel no credential sees
 )
+
+// confirmDeletes is how a problem line asks for a confirmation.
+const confirmDeletes = "pco apply --confirm-deletes"
+
+// AsksForConfirmation reports whether a problem line is one that asks for the
+// confirmation of what waits, which a confirmation withdraws with the offer:
+// the line of the mass delete guard, and those that name
+// pco apply --confirm-deletes.
+func AsksForConfirmation(line string) bool {
+	return strings.HasPrefix(line, reconcile.HeldByGuard) || strings.Contains(line, confirmDeletes)
+}
 
 // Waiting is one thing a confirmation would accept.
 type Waiting struct {

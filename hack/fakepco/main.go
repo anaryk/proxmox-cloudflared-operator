@@ -6,8 +6,10 @@
 //	curl -X POST 127.0.0.1:7071/streams/pause
 //
 // The scenario is one of the package's, which -list names, or a directory of
-// one. A cycle runs a poll interval of the settings after the last one ended
-// and the traffic is sampled every 5 s, as at the daemon. The controls, which
+// one. Its times move with the clock, which -now starts at another time than
+// the real one, for screenshots and tests that show times. A cycle runs a
+// poll interval of the settings after the last one ended and the traffic is
+// sampled every 5 s, as at the daemon. The controls, which
 // change what is served without any check, listen on loopback only; the
 // documentation of apifake.Engine.Control lists them. Nothing is kept past the
 // end of the process.
@@ -47,6 +49,7 @@ func run() error {
 	scenario := flag.String("scenario", "populated", "a scenario of the package, or a directory of one")
 	ver := flag.String("version", version.Version, "the version the daemon reports")
 	list := flag.Bool("list", false, "list the scenarios of the package and exit")
+	nowFlag := flag.String("now", "", "the time to start the clock at, in RFC 3339; the real time without it")
 	flag.Parse()
 	if *list {
 		for _, name := range apifake.Scenarios() {
@@ -65,7 +68,11 @@ func run() error {
 		return err
 	}
 
-	engine, err := load(*scenario)
+	clock, err := clockFrom(*nowFlag)
+	if err != nil {
+		return err
+	}
+	engine, err := load(*scenario, clock)
 	if err != nil {
 		return err
 	}
@@ -75,7 +82,9 @@ func run() error {
 	uid := uint32(os.Getuid())
 	srv := api.New(engine, *ver, []uint32{uid}, log)
 	if uid != 0 {
-		// pco web runs as the same user here, and names the actor.
+		// pco web runs as the same user here, and names the actor where the
+		// API reads the peer, on Linux; elsewhere calls are of an unknown
+		// actor. As root every actor is root (cli).
 		srv.SetWebUID(uid)
 	}
 	ln, err := net.Listen("tcp", *control)
@@ -122,9 +131,23 @@ func loopback(addr string) error {
 
 // load loads a scenario of the package by its name, or that of a directory,
 // which is named with a path: ./mine.
-func load(scenario string) (*apifake.Engine, error) {
+func load(scenario string, clock func() time.Time) (*apifake.Engine, error) {
 	if strings.ContainsRune(scenario, os.PathSeparator) {
-		return apifake.Load(scenario, nil)
+		return apifake.Load(scenario, clock)
 	}
-	return apifake.Scenario(scenario, nil)
+	return apifake.Scenario(scenario, clock)
+}
+
+// clockFrom is a clock that starts at the time of -now and runs on from
+// there; nil, the real one, without it.
+func clockFrom(at string) (func() time.Time, error) {
+	if at == "" {
+		return nil, nil
+	}
+	start, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return nil, fmt.Errorf("-now %q: want a time in RFC 3339, such as 2026-10-06T09:30:00Z", at)
+	}
+	began := time.Now()
+	return func() time.Time { return start.Add(time.Since(began)) }, nil
 }

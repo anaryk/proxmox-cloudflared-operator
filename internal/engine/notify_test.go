@@ -123,23 +123,23 @@ func kindsOf(events []Event) map[uint64]string {
 
 func TestTheDigestNamesWhatAStateHoldsAndNotWhenItWasMade(t *testing.T) {
 	st := populatedState().normalized()
-	d := digestOf(st)
+	d := DigestOf(st)
 
 	require.Regexp(t, `^[0-9a-f]{16}$`, d)
-	require.Equal(t, d, digestOf(populatedState().normalized()), "equal states")
+	require.Equal(t, d, DigestOf(populatedState().normalized()), "equal states")
 
 	later := st.clone()
 	later.At, later.FinishedAt, later.Digest = st.At.Add(time.Hour), st.FinishedAt.Add(time.Hour), "0123456789abcdef"
-	require.Equal(t, d, digestOf(later), "only the times of the cycle and the digest differ")
+	require.Equal(t, d, DigestOf(later), "only the times of the cycle and the digest differ")
 
 	changed := st.clone()
 	changed.Routes[0].State = planner.StateUnreachable
-	require.NotEqual(t, d, digestOf(changed), "a route changed")
+	require.NotEqual(t, d, DigestOf(changed), "a route changed")
 }
 
 func TestTheDigestLeavesOutEveryTime(t *testing.T) {
 	st := populatedState().normalized()
-	d := digestOf(st)
+	d := DigestOf(st)
 
 	later := st.clone()
 	later.Routes[0].Path.VerifiedAt = st.Routes[0].Path.VerifiedAt.Add(time.Hour)
@@ -155,23 +155,23 @@ func TestTheDigestLeavesOutEveryTime(t *testing.T) {
 	later.Segments[0].AcknowledgedAt = st.Segments[0].AcknowledgedAt.Add(time.Hour)
 	later.Egress.Since = st.Egress.Since.Add(time.Hour)
 	later.RogueConnectors[0].Since = st.RogueConnectors[0].Since.Add(time.Hour)
-	require.Equal(t, d, digestOf(later), "only the times differ")
+	require.Equal(t, d, DigestOf(later), "only the times differ")
 	require.Equal(t, t0, st.Routes[0].Path.VerifiedAt, "the state itself keeps its times")
 
 	changed := st.clone()
 	changed.Routes[0].Path.Bridge = "vmbr9"
-	require.NotEqual(t, d, digestOf(changed), "a path changed")
+	require.NotEqual(t, d, DigestOf(changed), "a path changed")
 }
 
 // TestNoTimeOfTheStateReachesTheDigest fills a state with one of everything
 // and every time in it, so that a time a later change adds is left out too.
 func TestNoTimeOfTheStateReachesTheDigest(t *testing.T) {
 	st := filledState(t0)
-	d := digestOf(st)
+	d := DigestOf(st)
 
-	require.Equal(t, d, digestOf(filledState(t0.Add(time.Hour))), "only the times differ")
+	require.Equal(t, d, DigestOf(filledState(t0.Add(time.Hour))), "only the times differ")
 	st.Routes[0].Hostname = "y"
-	require.NotEqual(t, d, digestOf(st), "a route changed")
+	require.NotEqual(t, d, DigestOf(st), "a route changed")
 }
 
 // filledState is a state with one element in every list, a value behind
@@ -249,7 +249,7 @@ func TestEveryPublishSendsTheStateWithTheTimesOfItsCycle(t *testing.T) {
 	third := e.eng.State()
 
 	require.Equal(t, testNode, first.Node)
-	require.Equal(t, digestOf(first), first.Digest)
+	require.Equal(t, DigestOf(first), first.Digest)
 	require.Equal(t, first.Digest, second.Digest, "an idle cycle over the same world")
 	require.NotEqual(t, second.Digest, third.Digest, "a route changed")
 	var states []StateNotice
@@ -293,7 +293,7 @@ func TestAnEgressCheckThatChangesTheStateSendsIt(t *testing.T) {
 
 	now := e.eng.State()
 	require.NotEqual(t, before, now.Digest)
-	require.Equal(t, digestOf(now), now.Digest)
+	require.Equal(t, DigestOf(now), now.Digest)
 	var states []string
 	for _, n := range until(t, e.eng, ch) {
 		if n.Kind == NoticeState {
@@ -319,7 +319,7 @@ func TestAConfirmationThatWithdrawsTheOfferSendsTheState(t *testing.T) {
 	now := e.eng.State()
 	require.Empty(t, now.Offer)
 	require.NotEqual(t, before, now.Digest)
-	require.Equal(t, digestOf(now), now.Digest)
+	require.Equal(t, DigestOf(now), now.Digest)
 	got := until(t, e.eng, ch)
 	require.Contains(t, shown(got), "state "+now.Digest)
 }

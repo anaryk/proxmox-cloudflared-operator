@@ -293,27 +293,34 @@ func (ft *flowTraffic) all() []RouteTraffic {
 	return out
 }
 
-// notice is what a traffic notice carries of the routes, at most noticeRoutes
-// of them: first those whose rate was not zero at the last notice and is now,
-// which are told once, so that the cap does not cut them, then those with the
-// highest rate now; how many routes have a figure; and why none has.
+// notice is what a traffic notice carries of the routes, as NoticeRoutes
+// picks them; how many routes have a figure; and why none has.
 func (ft *flowTraffic) notice() (routes []RouteTraffic, total int, why string) {
 	all := ft.all()
+	routes, ft.moving = NoticeRoutes(all, ft.moving)
+	return routes, len(all), ft.why
+}
+
+// NoticeRoutes are the routes of all a traffic notice carries, at most 100 of
+// them: first those whose rate was not zero at the last notice, moving, and
+// is zero now, which are told once, so that the cap does not cut them, then
+// those with the highest rate now. It returns the routes moving now, for the
+// next notice.
+func NoticeRoutes(all []RouteTraffic, moving map[string]bool) (routes []RouteTraffic, now map[string]bool) {
 	var busy, stopped []RouteTraffic
-	moving := make(map[string]bool)
+	now = make(map[string]bool)
 	for _, r := range all {
 		switch {
 		case r.FlowsPerSec > 0:
 			busy = append(busy, r)
-			moving[r.Hostname] = true
-		case ft.moving[r.Hostname]:
+			now[r.Hostname] = true
+		case moving[r.Hostname]:
 			stopped = append(stopped, r)
 		}
 	}
-	ft.moving = moving
 	slices.SortStableFunc(busy, func(a, b RouteTraffic) int { return cmp.Compare(b.FlowsPerSec, a.FlowsPerSec) })
 	routes = slices.Concat(stopped, busy)
-	return routes[:min(len(routes), noticeRoutes)], len(all), ft.why
+	return routes[:min(len(routes), noticeRoutes)], now
 }
 
 // RouteSeries returns what the counters gave of the target of a route, a

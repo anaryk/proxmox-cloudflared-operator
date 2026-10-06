@@ -115,7 +115,7 @@ func (e *Engine) Subscribe(ctx context.Context, boot string, after uint64) (<-ch
 			case boot != "" && boot != e.boot:
 				s.push(queuedOf(Notice{Kind: NoticeReset, Reason: resetBootChanged})...)
 			case boot == e.boot && after > 0:
-				s.push(queuedOf(replay(ring, after)...)...)
+				s.push(queuedOf(Replay(ring, after)...)...)
 			}
 		})
 	})
@@ -127,11 +127,11 @@ func (e *Engine) Subscribe(ctx context.Context, boot string, after uint64) (<-ch
 	return out, hello, nil
 }
 
-// replay is what a subscriber that saw the events up to after is sent of the
+// Replay is what a subscriber that saw the events up to after is sent of the
 // ring: the events after it as one batch, behind a gap for those the ring no
 // longer holds. The levels of those are not known any more; the gap says
 // warn, so that a client looks.
-func replay(ring []Event, after uint64) []Notice {
+func Replay(ring []Event, after uint64) []Notice {
 	i := slices.IndexFunc(ring, func(ev Event) bool { return ev.Seq > after })
 	if i < 0 {
 		return nil
@@ -142,7 +142,7 @@ func replay(ring []Event, after uint64) []Notice {
 			Boot: ring[i].Boot, From: after + 1, To: first - 1, Count: int(first - 1 - after), Level: levelWarn,
 		}})
 	}
-	return append(out, batchNotices(slices.Clone(ring[i:]))...)
+	return append(out, BatchNotices(slices.Clone(ring[i:]))...)
 }
 
 // highVolume says whether the events of a kind come by the thousand in one
@@ -156,11 +156,11 @@ func highVolume(kind string) bool {
 	return false
 }
 
-// batchNotices are the notices of one batch of events: each event on its
+// BatchNotices are the notices of one batch of events: each event on its
 // own, but for the events of the high-volume kinds beyond the first 32, which
 // are one gap. The gap comes where its last event would, so that the ids of
 // the stream only grow.
-func batchNotices(batch []Event) []Notice {
+func BatchNotices(batch []Event) []Notice {
 	var gap *GapNotice
 	high := 0
 	for _, ev := range batch {
@@ -257,7 +257,7 @@ func (n *notifier) state(sn StateNotice) {
 }
 
 // events tells the subscribers of a batch of events, numbered.
-func (n *notifier) events(batch []Event) { n.send(batchNotices(batch)...) }
+func (n *notifier) events(batch []Event) { n.send(BatchNotices(batch)...) }
 
 func (n *notifier) send(notices ...Notice) {
 	n.mu.Lock()
@@ -292,6 +292,22 @@ type subscriber struct {
 }
 
 func newSubscriber() *subscriber { return &subscriber{wake: make(chan struct{}, 1)} }
+
+// Queue is what waits for one stream, kept as the daemon keeps it for a
+// subscriber: from 256 notices or 1 MiB on it collapses, and with 4096
+// notices or 4 MiB waiting even so it hands on a reset and ends. Another
+// server of the stream uses it to keep its subscribers as the daemon does.
+type Queue struct{ s *subscriber }
+
+// NewQueue returns an empty queue.
+func NewQueue() *Queue { return &Queue{newSubscriber()} }
+
+// Push queues notices, which must not be changed after.
+func (q *Queue) Push(notices ...Notice) { q.s.push(queuedOf(notices...)...) }
+
+// Run hands the notices to out, oldest first, until ctx ends or the reset of
+// a queue told to start over was handed on; then out is closed.
+func (q *Queue) Run(ctx context.Context, out chan<- Notice) { q.s.run(ctx, out, func() {}) }
 
 type queued struct {
 	notice Notice

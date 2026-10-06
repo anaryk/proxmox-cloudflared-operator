@@ -301,7 +301,7 @@ func New(d Deps) (*Engine, error) {
 	first := emptyState()
 	first.Problems, first.Node = slices.Clone(d.Problems), d.Node
 	first = first.normalized()
-	first.Digest = digestOf(first)
+	first.Digest = DigestOf(first)
 	e := &Engine{
 		d:         d,
 		boot:      randomHex(8)(),
@@ -484,7 +484,7 @@ func (e *Engine) publish(st State, events []Event, l listing, served map[string]
 	st.Egress = e.notes.view
 	e.noteMu.Unlock()
 	st.Node = e.d.Node
-	st.Digest = digestOf(st)
+	st.Digest = DigestOf(st)
 	prev := e.state
 	e.state, e.listed = st, l
 	if served != nil {

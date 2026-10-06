@@ -183,7 +183,7 @@ func TestEveryScenarioLoadsAndEndsItsLastCycleNow(t *testing.T) {
 	for _, name := range Scenarios() {
 		e, _ := load(t, name)
 		st := e.State()
-		require.Equal(t, digestOf(st), st.Digest, name)
+		require.Equal(t, engine.DigestOf(st), st.Digest, name)
 		if !st.At.IsZero() {
 			require.Equal(t, t0, st.FinishedAt, name)
 		}
@@ -556,13 +556,13 @@ func TestTheStreamFollowsTheControls(t *testing.T) {
 
 	status, _ = d.steer(t, http.MethodPost, "/streams/pause", "")
 	require.Equal(t, http.StatusNoContent, status)
-	e.Cycle()
+	e.tick()
 	e.Sample()
 	d.steer(t, http.MethodPost, "/event", `[{"level": "warn", "kind": "problem", "message": "two"}]`)
 	nothing(t, notices)
 	d.steer(t, http.MethodPost, "/streams/resume", "")
 	n = next(t, notices)
-	require.Equal(t, "two", n.Event.Message, "what happened meanwhile comes after the pause, and no cycle did")
+	require.Equal(t, "two", n.Event.Message, "what happened meanwhile comes after the pause, and no cycle of Run did")
 	last := n.Event.Seq
 
 	d.steer(t, http.MethodPost, "/streams/drop", "")
@@ -640,21 +640,29 @@ func TestTheSeventeenthStreamIsRefused(t *testing.T) {
 	require.Eventually(t, func() bool { return d.subscribers(t) == 0 }, 5*time.Second, 10*time.Millisecond)
 }
 
-func TestNoCycleBeforeTheFirst(t *testing.T) {
-	e, _ := load(t, "first-run")
+func TestTheFirstCycleIsTheOneAskedFor(t *testing.T) {
+	e, c := load(t, "first-run")
 	d := serve(t, e)
 	notices, hello, err := d.Stream(context.Background(), "", 0)
 	require.NoError(t, err)
 	require.Zero(t, hello.Seq)
-	e.Cycle()
+	e.tick()
 	nothing(t, notices)
-	require.True(t, e.State().At.IsZero())
+	require.True(t, e.State().At.IsZero(), "Run does not make the first cycle")
+
+	c.add(time.Minute)
+	status, _ := d.steer(t, http.MethodPost, "/cycle", "")
+	require.Equal(t, http.StatusNoContent, status)
+	n := next(t, notices)
+	require.Equal(t, engine.NoticeState, n.Kind)
+	require.Equal(t, t0.Add(time.Minute), n.State.FinishedAt)
+	require.Equal(t, t0.Add(time.Minute), e.State().At, "the first cycle is the one asked for")
 
 	cred, err := d.AddCredential(context.Background(), "main", strings.Repeat("k", 40))
 	require.NoError(t, err)
 	require.Equal(t, "cred1", cred.ID)
 	require.True(t, cred.Report.Usable, "the credential gets the report of the scenario")
-	require.Equal(t, t0, cred.Report.CheckedAt)
+	require.Equal(t, t0.Add(time.Minute), cred.Report.CheckedAt)
 }
 
 func TestSamplesKeepFifteenMinutes(t *testing.T) {
@@ -677,7 +685,7 @@ func TestSamplesKeepFifteenMinutes(t *testing.T) {
 	require.Equal(t, whyOff, tv.RoutesWhy)
 	_, err = e.RouteSeries("www.example.com")
 	require.ErrorIs(t, err, engine.ErrNotFound)
-	require.Error(t, e.ChangeTraffic(TrafficChange{Tunnels: []engine.TunnelNotice{{TunnelID: "nope"}}}))
+	require.Error(t, e.ChangeTraffic(TrafficChange{Tunnels: []TunnelFigures{{TunnelID: "nope"}}}))
 }
 
 func TestTheStateFollowsTheSettings(t *testing.T) {

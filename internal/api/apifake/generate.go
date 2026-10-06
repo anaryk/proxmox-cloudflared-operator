@@ -307,7 +307,19 @@ func (m *maker) finish() {
 		m.f.Traffic.Routes = routeTraffic(st.Routes)
 		m.f.Traffic.RoutesTotal = len(m.f.Traffic.Routes)
 	}
-	st.Digest = digestOf(*st)
+	st.GateTagged = tagged(m.f.Guests)
+	st.Digest = engine.DigestOf(*st)
+}
+
+// tagged is how many of the guests carry the gate tag.
+func tagged(guests []engine.GuestListView) int {
+	n := 0
+	for _, g := range guests {
+		if g.Tagged {
+			n++
+		}
+	}
+	return n
 }
 
 // routeTraffic gives every route with a target a figure of its own, the same

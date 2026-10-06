@@ -41,7 +41,7 @@ const (
 // daemon's own, written out where they are not exported.
 func madeScenarios(t *testing.T) map[string]files {
 	populated := populatedScenario(t)
-	return map[string]files{
+	made := map[string]files{
 		"populated":    populated,
 		"empty":        emptyScenario(t),
 		"first-run":    firstRunScenario(t),
@@ -51,13 +51,19 @@ func madeScenarios(t *testing.T) map[string]files {
 		"rogue":        rogueScenario(t, populated),
 		"untagged":     untaggedScenario(t, populated, 0),
 		"tagged-empty": untaggedScenario(t, populated, 3),
-		"reader": {About: "populated, for a reader: the web interface filters it by the guests the reader may audit",
-			Like: "populated"},
-		"large": {About: "1000 routes over 6 zones, 40 of them not active, 2000 guests, a figure of traffic for every route served",
-			Generate: "large"},
-		"outage": {About: "1000 routes, 600 of them unreachable for one of three reasons", Generate: "outage"},
-		"wide":   {About: "50 zones in 30 accounts, so 30 tunnels, and 300 routes", Generate: "wide"},
 	}
+	// Every scenario is as of the end of the golden's cycle, those without a
+	// cycle too: their times, as the check of a token's, move from there.
+	for name, f := range made {
+		f.Now = populated.State.FinishedAt
+		made[name] = f
+	}
+	made["reader"] = files{About: "populated, for a reader: the web interface filters it by the guests the reader may audit", Like: "populated"}
+	made["large"] = files{About: "1000 routes over 6 zones, 40 of them not active, 2000 guests, a figure of traffic for every route served",
+		Generate: "large"}
+	made["outage"] = files{About: "1000 routes, 600 of them unreachable for one of three reasons", Generate: "outage"}
+	made["wide"] = files{About: "50 zones in 30 accounts, so 30 tunnels, and 300 routes", Generate: "wide"}
+	return made
 }
 
 func golden[T any](t *testing.T, dir, name string) T {
@@ -125,7 +131,7 @@ func populatedScenario(t *testing.T) files {
 			"no Cloudflare zone for this hostname in any credential"),
 	)
 	sortState(&st)
-	st.Digest = digestOf(st)
+	st.Digest = engine.DigestOf(st)
 
 	traffic := &engine.TrafficView{Interval: engine.TrafficInterval.String(), Tunnels: []engine.TunnelTraffic{}}
 	for _, c := range st.Connectors {
@@ -150,6 +156,8 @@ func populatedScenario(t *testing.T) files {
 	settings.Settings.ManualCIDRs = []netip.Prefix{netip.MustParsePrefix("10.0.5.0/24")}
 
 	guests, guestNotes := guestsOf(t, st, golden[[]engine.GuestListView](t, apiGoldens, "guests.json"))
+	st.GateTagged = tagged(guests)
+	st.Digest = engine.DigestOf(st)
 	return files{
 		About:     "the populated state of the engine, with the examples of the mockup: a route in every state, traffic, a manual route",
 		State:     st,
@@ -283,7 +291,7 @@ func holdScenario(populated files) files {
 		}
 	}
 	sortState(st)
-	st.Digest = digestOf(*st)
+	st.Digest = engine.DigestOf(*st)
 	f.Events = append(f.Events, engine.Event{At: st.At, Level: "warn", Kind: "hold", Message: "the cycle holds: " + st.Hold})
 	return f
 }
@@ -337,7 +345,7 @@ func frozenScenario(populated files) files {
 		st.Routes = append(st.Routes, r)
 	}
 	sortState(st)
-	st.Digest = digestOf(*st)
+	st.Digest = engine.DigestOf(*st)
 	f.Traffic.Routes = routeTraffic(st.Routes)
 	f.Traffic.RoutesTotal = len(f.Traffic.Routes)
 	for _, p := range st.Problems {
@@ -354,7 +362,7 @@ func egressOffScenario(populated files) files {
 	f := populated.copied()
 	f.About = "populated with the egress filter switched off: no figures of the routes, and why"
 	f.State.Egress = engine.EgressView{State: engine.EgressOff, Since: f.State.At.Add(-time.Hour)}
-	f.State.Digest = digestOf(f.State)
+	f.State.Digest = engine.DigestOf(f.State)
 	f.Traffic.Routes, f.Traffic.RoutesTotal, f.Traffic.RoutesWhy = []engine.RouteTraffic{}, 0, whyOff
 	f.Events = append(f.Events, engine.Event{At: f.State.Egress.Since, Level: "warn", Kind: "egress",
 		Message: "the egress filter is switched off by the admin; the connectors may reach any address"})
@@ -412,7 +420,7 @@ func rogueScenario(t *testing.T, populated files) files {
 		st.Connectors = append(st.Connectors, c)
 	}
 	sortState(st)
-	st.Digest = digestOf(*st)
+	st.Digest = engine.DigestOf(*st)
 	return f
 }
 
@@ -434,7 +442,7 @@ func firstRunScenario(t *testing.T) files {
 	f := emptyScenario(t)
 	f.About = "set up, without a credential and before the first cycle, observe-only: where the first-run wizard begins"
 	f.State.Problems = []string{"no Cloudflare credential; add one with pco credential add"}
-	f.State.Digest = digestOf(f.State)
+	f.State.Digest = engine.DigestOf(f.State)
 	report := golden[engine.State](t, engineGoldens, "state_populated.json").Credentials[0].Report
 	f.Report = &report
 	return f
@@ -455,7 +463,7 @@ func untaggedScenario(t *testing.T, populated files, tagged int) files {
 		st.Admission = store.AdmissionApprove
 		about = fmt.Sprintf("an install in admission mode approve whose %d tagged guests name no hostname: no route", tagged)
 	}
-	st.Digest = digestOf(st)
+	st.Digest = engine.DigestOf(st)
 	settings := clone(*populated.Settings)
 	settings.Settings.Admission = st.Admission
 	var guests []engine.GuestListView
