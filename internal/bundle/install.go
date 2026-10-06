@@ -253,6 +253,18 @@ func read(c Contents) (r restoration, err error) {
 	return r, nil
 }
 
+// NoInstall returns ErrInstalled, naming the install, when the store holds
+// one: a restore goes into a store that has none.
+func NoInstall(st *store.Store) error {
+	switch inst, found, err := st.Install(); {
+	case err != nil:
+		return fmt.Errorf("reading the install: %w", err)
+	case found:
+		return fmt.Errorf("%w: it holds install %s", ErrInstalled, inst.ID)
+	}
+	return nil
+}
+
 // Restore writes the install of a bundle into a store that holds none, whose
 // roots are made. The settings are stored in observe-only mode, whatever they
 // were: the restored install publishes nothing until an admin says so. The
@@ -264,11 +276,8 @@ func Restore(st *store.Store, c Contents) error {
 	if err != nil {
 		return err
 	}
-	switch inst, found, err := st.Install(); {
-	case err != nil:
-		return fmt.Errorf("reading the install: %w", err)
-	case found:
-		return fmt.Errorf("%w: it holds install %s", ErrInstalled, inst.ID)
+	if err := NoInstall(st); err != nil {
+		return err
 	}
 	if r.ca != nil {
 		if err := st.SaveCA(*r.ca, nil, time.Time{}); err != nil {
