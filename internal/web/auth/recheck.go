@@ -6,6 +6,14 @@ import (
 	"net/http"
 )
 
+// Live says whether the session id is there and not over, without asking
+// Proxmox VE and without being activity: what a stream asks before every
+// write, since an idle or old session may not be sent more.
+func (a *Auth) Live(id string) bool {
+	s, ok := a.sessions.get(id)
+	return ok && s.live(a.cfg.Now())
+}
+
 // Recheck says whether the session id still holds, and its role now, as a
 // request of the session would find them: the ticket r carries through the
 // cache of 30 s, or the token once a minute. RoleNone is a session that is

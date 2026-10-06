@@ -1,11 +1,13 @@
 package auth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strconv"
 	"time"
@@ -33,6 +35,24 @@ func (a *Auth) Visible(c *gin.Context) (Visible, string, error) {
 	if s == nil {
 		return nil, "", errors.New("the request has no session")
 	}
+	return a.visibleFor(c.Request.Context(), c.Request, s)
+}
+
+// VisibleOf is Visible for a stream, which asks on its own: the session id
+// as the store holds it now, not as a request copied it, so that the set
+// another request of the session read within the minute is the stream's too.
+// r carries the ticket. A session that is gone or over is an error.
+func (a *Auth) VisibleOf(ctx context.Context, r *http.Request, id string) (Visible, string, error) {
+	s, ok := a.sessions.get(id)
+	if !ok || !s.live(a.cfg.Now()) {
+		return nil, "", errNoSession
+	}
+	return a.visibleFor(ctx, r, &s)
+}
+
+// visibleFor reads the set of s from the session, or from Proxmox VE when it
+// is a minute old, and keeps it in s and in the store.
+func (a *Auth) visibleFor(ctx context.Context, r *http.Request, s *Session) (Visible, string, error) {
 	if s.Principal.Role >= RoleAdmin {
 		return All, "", nil
 	}
@@ -42,9 +62,9 @@ func (a *Auth) Visible(c *gin.Context) (Visible, string, error) {
 	}
 	cred := Credential{Token: s.token}
 	if s.Principal.Method == MethodTicket {
-		cred = Credential{Ticket: cookieValue(c.Request, ticketCookieName)}
+		cred = Credential{Ticket: cookieValue(r, ticketCookieName)}
 	}
-	vmids, err := a.pve.VisibleVMIDs(c.Request.Context(), cred)
+	vmids, err := a.pve.VisibleVMIDs(ctx, cred)
 	if err != nil {
 		return nil, "", fmt.Errorf("listing the guests %s may see: %w", s.Principal.User, err)
 	}

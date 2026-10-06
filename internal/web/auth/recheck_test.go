@@ -2,12 +2,15 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
 // recheck asks about the session of b as a stream of it would.
@@ -178,4 +181,99 @@ func TestOnEndTellsOfEverySessionThatEnds(t *testing.T) {
 	h.clock.Add(31 * time.Second)
 	b.do(http.MethodGet, "/api/v1/state", "")
 	require.Equal(t, []string{fourth}, endedNow(), "refused by Proxmox VE")
+}
+
+func TestOnEndTellsOfASessionThatIsEvicted(t *testing.T) {
+	h := newHarness(t)
+	var ended []string
+	h.auth.OnEnd(func(id string) { ended = append(ended, id) })
+	var oldest string
+	for i := range perUser + 1 {
+		b := h.browser(aliceTicket)
+		b.signIn()
+		if i == 0 {
+			oldest = b.session
+		}
+		if i < perUser {
+			require.Empty(t, ended, "five sessions of a user are kept")
+		}
+		h.clock.Add(time.Second)
+	}
+	require.Equal(t, []string{oldest}, ended, "the sixth sign-in of a user ends its oldest")
+}
+
+func TestLiveSaysWhetherTheSessionIsOverWithoutBeingActivity(t *testing.T) {
+	h := newHarness(t)
+	b := h.browser(aliceTicket)
+	before := b.signIn()
+	require.True(t, h.auth.Live(b.session))
+	h.clock.Add(29 * time.Minute)
+	require.True(t, h.auth.Live(b.session))
+	s, ok := h.auth.sessions.get(b.session)
+	require.True(t, ok)
+	require.Equal(t, before.IdleExpiresAt, s.idleExpiresAt().UTC(), "asking is no activity")
+	h.clock.Add(time.Minute)
+	require.False(t, h.auth.Live(b.session), "idle for half an hour")
+
+	b = h.browser(aliceTicket)
+	b.signIn()
+	require.Equal(t, http.StatusNoContent, b.do(http.MethodDelete, "/api/session", "").Code)
+	require.False(t, h.auth.Live(b.session), "signed out")
+	require.False(t, h.auth.Live("no such session"))
+}
+
+// The set a stream's session sees is the one the store holds, so that a read
+// by any request of the session counts for the stream too, and a read by the
+// stream for the requests.
+func TestVisibleOfIsTheSetTheStoreHolds(t *testing.T) {
+	h := newHarness(t)
+	b := h.browser(bobTicket)
+	b.signIn()
+	stream := func() (Visible, string, error) {
+		return h.auth.VisibleOf(context.Background(), b.request(http.MethodGet, StreamPath, ""), b.session)
+	}
+	b.do(http.MethodGet, "/api/v1/visible", "")
+	require.Equal(t, 1, h.fake.Calls("cluster/resources"))
+	h.clock.Add(time.Minute)
+	rec := b.do(http.MethodGet, "/api/v1/visible", "")
+	require.Equal(t, 2, h.fake.Calls("cluster/resources"))
+	var got struct {
+		Hash string `json:"hash"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+
+	h.clock.Add(30 * time.Second)
+	visible, hash, err := stream()
+	require.NoError(t, err)
+	require.Equal(t, 2, h.fake.Calls("cluster/resources"), "what a request read 30 s ago is not read again")
+	require.Equal(t, got.Hash, hash)
+	require.True(t, visible(model.GuestRef{Kind: model.KindQEMU, VMID: 102}))
+	require.False(t, visible(model.GuestRef{Kind: model.KindQEMU, VMID: 101}))
+
+	h.clock.Add(31 * time.Second)
+	_, _, err = stream()
+	require.NoError(t, err)
+	require.Equal(t, 3, h.fake.Calls("cluster/resources"), "a minute old, it is read again")
+	b.do(http.MethodGet, "/api/v1/visible", "")
+	require.Equal(t, 3, h.fake.Calls("cluster/resources"), "and the requests have it")
+
+	h.pve.setDown(true)
+	h.clock.Add(time.Minute)
+	_, _, err = stream()
+	require.ErrorIs(t, err, ErrUnreachable)
+}
+
+func TestVisibleOfAnAdminAndOfASessionThatIsOver(t *testing.T) {
+	h := newHarness(t)
+	b := h.browser(aliceTicket)
+	b.signIn()
+	visible, hash, err := h.auth.VisibleOf(context.Background(), b.request(http.MethodGet, StreamPath, ""), b.session)
+	require.NoError(t, err)
+	require.Empty(t, hash)
+	require.True(t, visible(model.GuestRef{Kind: model.KindLXC, VMID: 999}))
+	require.Zero(t, h.fake.Calls("cluster/resources"))
+
+	require.Equal(t, http.StatusNoContent, b.do(http.MethodDelete, "/api/session", "").Code)
+	_, _, err = h.auth.VisibleOf(context.Background(), b.request(http.MethodGet, StreamPath, ""), b.session)
+	require.Error(t, err)
 }
