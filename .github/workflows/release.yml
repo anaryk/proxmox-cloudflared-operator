@@ -235,6 +235,27 @@ jobs:
       # the goreleaser it downloads.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      # Nothing of the tag runs while the private key is on the runner, so the
+      # before hooks of goreleaser run here, before the import, and goreleaser
+      # skips them below. They are the commands of .goreleaser.yaml as
+      # goreleaser fills them for a release, with the time of the commit it
+      # gives them; packaging/release-workflow_test.sh compares the two.
+      - run: test -f internal/web/ui/dist/index.html
+      - run: packaging/release-key-file.sh scripts/install.sh build/release-key.gpg
+      - run: env TZ=UTC SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" go run -tags nomsgpack ./cmd/pco docs man build/man
+      - run: go run -tags nomsgpack ./cmd/pco docs completion build/completion
+
+      # The installers of this commit trust the keys in scripts/install.sh. A
+      # release signed with another key would be refused by every one of them.
+      # There are two keys in it while one is replaced by the other. They are
+      # read before the import, for the same reason.
+      - name: Read the keys of install.sh
+        run: |
+          if ! packaging/release-key.sh scripts/install.sh "$RUNNER_TEMP/release.gpg" >"$RUNNER_TEMP/release-keys"; then
+            echo "::error::scripts/install.sh at this tag carries no usable release key, see the line above."
+            exit 1
+          fi
+
       - name: Import the release key
         env:
           PCO_RELEASE_GPG_KEY: ${{ secrets.PCO_RELEASE_GPG_KEY }}
@@ -256,26 +277,21 @@ jobs:
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
           echo "PCO_RELEASE_KEY_FPR=$fpr" >> "$GITHUB_ENV"
 
-      # The installers of this commit trust the keys in scripts/install.sh. A
-      # release signed with another key would be refused by every one of them.
-      # There are two keys in it while one is replaced by the other.
+      # The key of the secret must be one of those the step before the import
+      # read out of the installer.
       - name: Check the key against install.sh
         run: |
-          if ! embedded=$(packaging/release-key.sh scripts/install.sh "$RUNNER_TEMP/release.gpg"); then
-            echo "::error::scripts/install.sh at this tag carries no usable release key, see the line above."
-            exit 1
-          fi
-          if ! printf '%s\n' "$embedded" | grep -Fxq "$PCO_RELEASE_KEY_FPR"; then
-            echo "::error::The secret signs with $PCO_RELEASE_KEY_FPR, which is none of the release keys in scripts/install.sh (${embedded//$'\n'/ }). Nothing was built."
+          if ! grep -Fxq "$PCO_RELEASE_KEY_FPR" "$RUNNER_TEMP/release-keys"; then
+            echo "::error::The secret signs with $PCO_RELEASE_KEY_FPR, which is none of the release keys of the installer ($(paste -sd ' ' "$RUNNER_TEMP/release-keys")). Nothing was built."
             exit 1
           fi
 
       # It builds the packages again, from the same tag, lists the templates
-      # in checksums.txt and leaves a draft.
+      # in checksums.txt and leaves a draft. Its before hooks ran above.
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: v2.18.2
-          args: release --clean
+          args: release --clean --skip=before
         env:
           GITHUB_TOKEN: ${{ github.token }}
           # Not left to goreleaser: a second tag on the same commit must not
@@ -305,7 +321,7 @@ jobs:
 
       - name: Remove the public keyring
         if: always()
-        run: rm -f "$RUNNER_TEMP/release.gpg"
+        run: rm -f "$RUNNER_TEMP/release.gpg" "$RUNNER_TEMP/release-keys"
 
       # A draft that failed a check must not be published by hand later. The
       # tag stays: a release tag is never moved or deleted.

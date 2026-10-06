@@ -189,8 +189,14 @@ it installs, never runs where the release key is:
 - The job `sign` needs `ui` and `build` and downloads `ui-dist` right after
   the checkout, and the templates right after that, before the signature
   tools are installed and before the key is imported. Nothing of npm runs in
-  it, and no template is built there; goreleaser's `before` hook only checks
-  that `internal/web/ui/dist/index.html` is there.
+  it, and no template is built there. Nothing of the tag runs while the key is
+  on the runner: goreleaser's `before` hooks (the check that
+  `internal/web/ui/dist/index.html` is there, the keyring `pco upgrade` checks
+  with, the man pages and the completion scripts) run as steps of their own
+  before the import, with the time of the commit goreleaser would give them,
+  and its goreleaser skips them (`--skip=before`). The keys of
+  `scripts/install.sh` are read before the import too. The job `build` holds
+  no key, and its goreleaser runs the hooks itself; both build the same bytes.
 - `packaging/check-artifacts.sh --require-ui` reads `usr/bin/pco` out of each
   package and fails unless `go version -m` lists `-tags=nomsgpack,webui`.
   Without the tag the binary serves a page that says it has no web interface.
@@ -201,7 +207,10 @@ it installs, never runs where the release key is:
 release workflow loses this order, when `ui` or `build` gets a secret or more
 than read access, when a job but `sign` runs in an environment, when `sign`
 no longer deletes the draft of a failed run, or deletes it before the key is
-gone, or when any job but `publish` publishes. It also runs the step of
+gone, when any job but `publish` publishes, when a `before` hook of
+`.goreleaser.yaml` does not run as a step of `sign` before the import, when the
+goreleaser of `sign` runs the hooks, or when a step between the import and the
+removal of the key runs a program of the repository. It also runs the step of
 `build` that reads the tag against annotated and lightweight tags, with and
 without a line `Snapshot:`. The workflow `ui-audit` runs
 `npm audit --omit=dev` every week and when `web/package-lock.json` changes; it

@@ -10,9 +10,14 @@
 # and the templates right after, tests the interface with Go before anything
 # else is installed and before the key is imported, runs nothing of npm,
 # builds no template, and deletes its draft when it fails, after the key is
-# gone, and never the tag. Only the job publish publishes the release. The
-# checks run on small workflows with each rule broken first, so that they
-# cannot pass by reading nothing.
+# gone, and never the tag. Nothing of the tag runs while the key is on the
+# runner: the before hooks of .goreleaser.yaml, read out of it so that a new
+# one cannot be missed, run as steps of their own before the key is
+# imported, as goreleaser fills them for a release; its goreleaser skips
+# them, while the one of the job build keeps them; and between the import
+# and the removal of the key no step runs a program of the repository. Only
+# the job publish publishes the release. The checks run on small workflows
+# with each rule broken first, so that they cannot pass by reading nothing.
 #
 # The step that reads the tag also runs, out of the workflow of the
 # repository, against tags a release may be pushed with: annotated or not,
@@ -22,6 +27,7 @@
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORKFLOW=$HERE/../.github/workflows/release.yml
+GORELEASER=$HERE/../.goreleaser.yaml
 
 CHECKS=0
 FAILS=0
@@ -96,6 +102,32 @@ code() {
 	grep -v '^ *#' <<<"$1"
 }
 
+# hooks <goreleaser config>: its before hooks, one a line, as they are written.
+hooks() {
+	awk '
+		/^before:$/ { before = 1; next }
+		before && /^[^ #]/ { exit }
+		before && /^  hooks:$/ { inside = 1; next }
+		inside && /^    - / { print substr($0, 7) }
+	' "$1"
+}
+
+# rendered <hook>: the command the job sign runs for a hook, with the templates
+# filled as goreleaser fills them for a release; it fails on a template it does
+# not know, which the job could not fill either. goreleaser's CommitTimestamp
+# is the time of the commit in seconds, which git gives as %ct.
+# shellcheck disable=SC2016
+rendered() {
+	local cmd=$1 snapshot='{{ if .IsSnapshot }}--snapshot{{ else }}scripts/install.sh{{ end }}'
+	local stamp='{{ .CommitTimestamp }}' commit='"$(git log -1 --format=%ct)"'
+	cmd=${cmd//"$snapshot"/scripts/install.sh}
+	cmd=${cmd//"$stamp"/$commit}
+	if [[ $cmd == *'{{'* ]]; then
+		return 1
+	fi
+	printf '%s\n' "$cmd"
+}
+
 # needs <job> <name>: whether the job needs the other one.
 needs() {
 	grep -Eq "^    needs: \[?([a-z-]+, )*$2(, [a-z-]+)*\]?$" <<<"$1"
@@ -112,10 +144,11 @@ unprivileged() {
 	fi
 }
 
-# check <workflow>: prints each rule the workflow breaks, one line each.
+# check <workflow> <goreleaser config>: prints each rule the workflow breaks,
+# one line each.
 check() {
 	local ui build sign publish name uses cmd other n=0 checkout=0 download=0 templates=0 tested=0 tools=0 key=0 forget=0 deletes=0
-	local tagread=0 built=0
+	local tagread=0 built=0 release=0 hook want at
 	ui=$(job "$1" ui)
 	build=$(job "$1" build)
 	sign=$(job "$1" sign)
@@ -157,6 +190,10 @@ check() {
 			fi
 			if step "$build" "$n" | grep -q 'packaging/appliance/build.sh' && [[ $built == 0 ]]; then
 				built=$n
+			fi
+			# This job holds no key: goreleaser runs its hooks itself.
+			if [[ $uses == goreleaser/goreleaser-action ]] && step "$build" "$n" | grep -Eq -- '--skip=([a-z]+,)*before'; then
+				echo "the job build skips the before hooks of goreleaser"
 			fi
 		done < <(steps "$build")
 		if ((tagread == 0 || checkout == 0 || tagread < checkout || (built != 0 && tagread > built))); then
@@ -244,6 +281,9 @@ check() {
 		if [[ $name == "Remove the private key" ]]; then
 			forget=$n
 		fi
+		if [[ $uses == goreleaser/goreleaser-action && $release == 0 ]]; then
+			release=$n
+		fi
 		if code "$(step "$sign" "$n")" | grep -q 'gh release delete'; then
 			deletes=$n
 		fi
@@ -253,6 +293,37 @@ check() {
 		echo "the job sign lacks the checkout, \"Install the signature tools\", \"Import the release key\" or \"Remove the private key\""
 		return
 	fi
+
+	# Nothing of the tag runs while the key is on the runner.
+	if [[ $release == 0 ]]; then
+		echo "the job sign runs no goreleaser"
+	elif ! step "$sign" "$release" | grep -Eq -- '^          args: .*--skip=([a-z]+,)*before(,[a-z]+)*( |$)'; then
+		echo "the goreleaser of the job sign runs the before hooks, while the key is on the runner"
+	fi
+	while IFS= read -r hook; do
+		if ! want=$(rendered "$hook"); then
+			echo "the before hook \"$hook\" has a template the job sign cannot fill"
+			continue
+		fi
+		at=0
+		n=0
+		while IFS='|' read -r name uses cmd; do
+			n=$((n + 1))
+			if [[ $cmd == "$want" && $at == 0 ]]; then
+				at=$n
+			fi
+		done < <(steps "$sign")
+		if ((at == 0)); then
+			echo "the job sign does not run the before hook: $want"
+		elif ((at > key)); then
+			echo "the job sign runs the before hook after the key is imported: $want"
+		fi
+	done < <(hooks "$2")
+	for ((n = key + 1; n < forget; n++)); do
+		if code "$(step "$sign" "$n")" | grep -Eq '(^|[^A-Za-z0-9_.-])(\./|packaging/|scripts/|hack/|cmd/|internal/)|go (run|test|build|generate)|make '; then
+			echo "the job sign runs a program of the repository while the key is on the runner"
+		fi
+	done
 	if [[ $deletes == 0 ]]; then
 		echo "the job sign leaves the draft of a failed run"
 	else
@@ -289,11 +360,14 @@ check() {
 	fi
 }
 
-# expect <pass|fail> <case> <file> [a line the problems must contain]
+# expect <pass|fail> <case> <file> [a line the problems must contain]: the
+# workflow checked against the goreleaser config CONFIG names, the one of the
+# repository unless set.
+CONFIG=
 expect() {
 	local problems rc
 	CHECKS=$((CHECKS + 1))
-	problems=$(check "$3")
+	problems=$(check "$3" "${CONFIG:-$GORELEASER}")
 	rc=$?
 	if [[ $rc != 0 ]]; then
 		FAILS=$((FAILS + 1))
@@ -324,8 +398,15 @@ sign_step() {
 	test) printf '      - run: go test -tags nomsgpack,webui ./internal/web/ui/\n' ;;
 	untagged) printf '      - run: go test -tags nomsgpack ./internal/web/ui/\n' ;;
 	tools) printf '      - name: Install the signature tools\n        run: "true"\n' ;;
+	hooks)
+		while IFS= read -r hook; do
+			printf '      - run: %s\n' "$(rendered "$hook")"
+		done < <(hooks "$GORELEASER")
+		;;
+	program) printf '      - name: Check the key against install.sh\n        run: packaging/release-key.sh scripts/install.sh "$RUNNER_TEMP/release.gpg"\n' ;;
 	key) printf '      - name: Import the release key\n        run: "true"\n' ;;
-	goreleaser) printf '      - uses: goreleaser/goreleaser-action@0123 # v7\n' ;;
+	goreleaser) printf '      - uses: goreleaser/goreleaser-action@0123 # v7\n        with:\n          args: release --clean --skip=before\n' ;;
+	goreleaser_hooks) printf '      - uses: goreleaser/goreleaser-action@0123 # v7\n        with:\n          args: release --clean\n' ;;
 	forget) printf '      - name: Remove the private key\n        if: always()\n        run: rm -rf "$RUNNER_TEMP/gnupg"\n' ;;
 	files) printf '      - name: Check the release files\n        run: "true"\n' ;;
 	delete) printf '      - name: Delete the draft\n        if: failure()\n        run: |\n          gh release delete "$TAG" --yes\n' ;;
@@ -348,6 +429,8 @@ build_step() {
 	templates) printf '      - name: Build the templates\n        env:\n          SNAPSHOT: ${{ steps.tag.outputs.snapshot }}\n        run: packaging/appliance/build.sh --arch amd64 --version 0.1.0 --deb x.deb\n' ;;
 	input) printf '      - name: Build the templates\n        env:\n          SNAPSHOT: ${{ inputs.snapshot }}\n        run: packaging/appliance/build.sh --arch amd64 --version 0.1.0 --deb x.deb\n' ;;
 	upload) printf '      - uses: actions/upload-artifact@0123 # v7\n        with:\n          name: appliance\n          path: build/appliance\n' ;;
+	goreleaser) printf '      - uses: goreleaser/goreleaser-action@0123 # v7\n        with:\n          args: release --clean --skip=publish,sign,announce\n' ;;
+	goreleaser_skip) printf '      - uses: goreleaser/goreleaser-action@0123 # v7\n        with:\n          args: release --clean --skip=publish,sign,before,announce\n' ;;
 	esac
 }
 
@@ -360,8 +443,8 @@ RELEASE_ENV='    environment: release'
 SIGN_HEAD="    needs: [ui, build]
 $RELEASE_ENV"
 PUBLISH_HEAD='    needs: sign'
-STEPS='tag checkout download templates go test tools key goreleaser forget files delete'
-BUILD_STEPS='tag checkout read templates upload'
+STEPS='tag checkout download templates go test tools hooks key goreleaser forget files delete'
+BUILD_STEPS='tag checkout read goreleaser templates upload'
 
 # workflow <file> <ui head> <sign head> <sign steps> [build head] [publish head] [build steps]
 workflow() {
@@ -512,6 +595,45 @@ expect fail 'a second approval before publishing' "$f" "the job publish runs in 
 
 workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" '    needs: build'
 expect fail 'publish before the signature' "$f" "the job publish does not need sign"
+
+CHECKS=$((CHECKS + 1))
+if [[ $(hooks "$GORELEASER" | grep -c .) -lt 2 ]]; then
+	FAILS=$((FAILS + 1))
+	printf 'FAIL [the before hooks] fewer than two read out of %s\n' "$GORELEASER"
+fi
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools key goreleaser forget files delete'
+expect fail 'no before hook in the job sign' "$f" "the job sign does not run the before hook: go run -tags nomsgpack ./cmd/pco docs completion build/completion"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools key hooks goreleaser forget files delete'
+expect fail 'the before hooks after the key' "$f" "the job sign runs the before hook after the key is imported: test -f internal/web/ui/dist/index.html"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools hooks key goreleaser_hooks forget files delete'
+expect fail 'goreleaser runs its hooks in the job sign' "$f" "the goreleaser of the job sign runs the before hooks"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools hooks key forget files delete'
+expect fail 'no goreleaser in the job sign' "$f" "the job sign runs no goreleaser"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools hooks key program goreleaser forget files delete'
+expect fail 'a script of the repository while the key is there' "$f" "runs a program of the repository while the key is on the runner"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" "$PUBLISH_HEAD" 'tag checkout read goreleaser_skip templates upload'
+expect fail 'the job build skips the hooks' "$f" "the job build skips the before hooks of goreleaser"
+
+# A hook added to .goreleaser.yaml is found missing in the job sign.
+CONFIG=$ROOT/goreleaser.yaml
+{
+	printf 'before:\n  hooks:\n'
+	hooks "$GORELEASER" | sed 's/^/    - /'
+	printf '    - make man\n'
+	printf 'builds:\n  - id: pco\n'
+} >"$CONFIG"
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a new before hook' "$f" "the job sign does not run the before hook: make man"
+# shellcheck disable=SC2016
+printf 'before:\n  hooks:\n    - go run ./cmd/pco docs man {{ .Version }}\n' >"$CONFIG"
+expect fail 'a hook with a template the job cannot fill' "$f" 'the before hook "go run ./cmd/pco docs man {{ .Version }}" has a template the job sign cannot fill'
+CONFIG=
 
 expect pass 'the release workflow of the repository' "$WORKFLOW"
 

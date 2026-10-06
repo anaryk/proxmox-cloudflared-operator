@@ -9,8 +9,11 @@ git:
   prerelease_suffix: "-"
 
 # The interface is built before goreleaser runs, by make ui or by the ui job of
-# the workflows, never here: in a release this runs after the key import, and
-# nothing of npm may run on a runner that holds the key.
+# the workflows, never here: nothing of npm may run on a runner that holds the
+# key. The job sign of a release runs these hooks as steps of its own before
+# it imports the key, and its goreleaser skips them: nothing of the tag runs
+# while the key is there. packaging/release-workflow_test.sh reads the hooks
+# here and fails when a step for one is missing.
 before:
   hooks:
     - test -f internal/web/ui/dist/index.html
