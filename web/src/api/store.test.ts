@@ -147,6 +147,16 @@ describe('hello', () => {
     expect(s.get().state).toBe(before)
   })
 
+  // A tab that opens asks the leader of the tabs for what it kept, and the
+  // leader replays the hello with its age, to every tab: no stream began.
+  test('a hello another tab asked for is not a stream that begins again', async () => {
+    const s = await opened()
+    calls = []
+    s.notice({ kind: 'hello', data: hello }, '', 1500)
+    await flush()
+    expect(calls).toEqual([])
+  })
+
   test('a new boot drops everything and fetches again', async () => {
     const s = await opened()
     calls = []

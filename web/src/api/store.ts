@@ -529,8 +529,9 @@ export class AppStore {
   }
 
   // notice takes a notice of the stream; age is how long ago another tab
-  // received it, for one it passes on later.
-  notice(n: Notice, id = '', age = 0): void {
+  // received it, for one it passes on later, and is not given for one that
+  // is live.
+  notice(n: Notice, id = '', age?: number): void {
     if (id) this.#lastId = id
     switch (n.kind) {
       case 'hello': {
@@ -547,14 +548,15 @@ export class AppStore {
         // A stream that begins again follows the end of another, and one of a
         // reader ends when the guests it sees change, which the digest of
         // the daemon does not tell: the conditional read does, with an ETag
-        // for each set of guests.
-        const again = known !== undefined && known.boot === h.boot
+        // for each set of guests. The hello the leader of the tabs replays
+        // for a tab that opens has an age, and is no stream that began.
+        const again = known !== undefined && known.boot === h.boot && age === undefined
         if (again || (h.digest && h.digest !== this.#s.state?.digest)) void this.fetchState(true)
         break
       }
       case 'state':
         this.#receivedFor = n.data.finishedAt
-        this.#set({ times: n.data, receivedAt: this.#mono() - age })
+        this.#set({ times: n.data, receivedAt: this.#mono() - (age ?? 0) })
         if (n.data.digest !== this.#s.state?.digest) void this.fetchState(true)
         break
       case 'event':
