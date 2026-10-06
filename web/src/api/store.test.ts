@@ -493,6 +493,33 @@ describe('sign-in and sign-out', () => {
     expect(shared.resumed).toBe(1)
   })
 
+  test('in the appliance: a password, then the code, and nothing of them kept', async () => {
+    const appliance = { code: 'unauthenticated', methods: ['password', 'token'], ticket: false, realms: ['pam', 'pve'] }
+    replies.set('GET /api/session', () => new ApiError(401, appliance))
+    replies.set('POST /api/session/password', () => new ApiError(401, { code: 'second_factor', error: 'Proxmox VE asks for the second factor', kinds: ['totp'] }))
+    replies.set('POST /api/session/second-factor', ok({ ...session, method: 'password', profile: 'appliance' }))
+    const s = store()
+    await s.loadSession()
+    expect(s.get()).toMatchObject({ auth: 'signed-out', unauthenticated: appliance })
+
+    await expect(s.signInPassword('alice', 'pve', 'pw-Zebra-7731')).rejects.toMatchObject({ code: 'second_factor' })
+    await s.signInSecondFactor('424242')
+
+    expect(calls.slice(1).map((c) => [c.method, c.path, c.body, c.opts?.timeoutMs])).toEqual([
+      ['POST', '/api/session/password', { user: 'alice', realm: 'pve', password: 'pw-Zebra-7731' }, 20_000],
+      ['POST', '/api/session/second-factor', { code: '424242' }, 20_000],
+    ])
+    expect(s.get().auth).toBe('signed-in')
+    expect(JSON.stringify(s.get())).not.toContain('pw-Zebra-7731')
+
+    // signed out, the page learns the realms again
+    replies.set('DELETE /api/session', () => ({ status: 204, body: undefined }))
+    await s.signOut()
+    expect(s.get().unauthenticated?.methods).toEqual(['password', 'token'])
+    await flush()
+    expect(s.get().unauthenticated).toEqual(appliance)
+  })
+
   test("this browser's last doctor run is kept", () => {
     const s = store()
     s.setDoctorLast({ fail: 2, at: '2026-10-01T12:00:00Z' })

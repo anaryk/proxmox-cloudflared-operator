@@ -70,6 +70,9 @@ const reconnectingStale = 15_000
 const defaultPoll = 10_000
 
 const signedOutKey = 'pco.signedOut'
+// The web process gives a sign-in with a password 10 s at Proxmox VE and 5 s
+// for the privileges.
+const passwordTimeout = 20_000
 const doctorKey = 'pco.doctor'
 
 const zeroTime = (at?: string) => !at || at.startsWith('0001-01-01T00:00:00')
@@ -380,6 +383,18 @@ export class AppStore {
     await this.#signIn(() => this.#request<Session>('POST', '/api/session/token', { token }))
   }
 
+  // The appliance's sign-in: the user and password of Proxmox VE, then the
+  // code of the second factor when Proxmox VE asks for one. Nothing of them
+  // is kept here. Proxmox VE answers a wrong password late, and the web
+  // process asks it twice, so the page waits longer than for a token.
+  async signInPassword(user: string, realm: string, password: string): Promise<void> {
+    await this.#signIn(() => this.#request<Session>('POST', '/api/session/password', { user, realm, password }, { timeoutMs: passwordTimeout }))
+  }
+
+  async signInSecondFactor(code: string): Promise<void> {
+    await this.#signIn(() => this.#request<Session>('POST', '/api/session/second-factor', { code }, { timeoutMs: passwordTimeout }))
+  }
+
   async #signIn(call: () => Promise<Answer<Session>>): Promise<void> {
     try {
       const a = await call()
@@ -411,6 +426,7 @@ export class AppStore {
 
   async signOut(): Promise<void> {
     writeItem(this.#storages.session, signedOutKey, '1')
+    const appliance = this.#s.session?.profile === 'appliance'
     try {
       await this.#request('DELETE', '/api/session')
     } catch {
@@ -418,7 +434,20 @@ export class AppStore {
     }
     this.#shared?.close()
     this.#shared = undefined
-    this.#set({ session: undefined, auth: 'signed-out', signInNeeded: false, unauthenticated: { code: 'unauthenticated', methods: ['ticket', 'token'], ticket: true } })
+    const unauthenticated: Unauthenticated = appliance
+      ? { code: 'unauthenticated', methods: ['password', 'token'], ticket: false }
+      : { code: 'unauthenticated', methods: ['ticket', 'token'], ticket: true }
+    this.#set({ session: undefined, auth: 'signed-out', signInNeeded: false, unauthenticated })
+    // The realms of the appliance's sign-in come with the answer without a session.
+    if (appliance) void this.#learnRealms()
+  }
+
+  async #learnRealms(): Promise<void> {
+    try {
+      await this.#request<Session>('GET', '/api/session', undefined, { background: true })
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401 && isUnauthenticated(e.body) && this.#s.auth === 'signed-out') this.#set({ unauthenticated: e.body })
+    }
   }
 
   signedOutHere(): boolean {
