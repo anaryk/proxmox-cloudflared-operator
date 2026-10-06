@@ -5,6 +5,7 @@
 import { createContext, createElement, type ReactNode, useContext, useRef, useSyncExternalStore } from 'react'
 
 import { parseDuration } from '../text/duration'
+import { routeKey } from '../text/routes'
 import { ApiError, type Answer, type ClientHooks, type Method, request as defaultRequest, type RequestOptions, setClientHooks } from './client'
 import { channelName, type Locks, shareStream, type Shared } from './leader'
 import { type Link, type Notice, openStream, resetTraffic } from './stream'
@@ -129,8 +130,6 @@ function json(o: object): string {
   }
   return j
 }
-
-const routeKey = (r: { hostname: string; owner: string }) => `${r.hostname}\u0000${r.owner}`
 
 export function shareRoutes(before: readonly RouteView[] | undefined, after: RouteView[]): RouteView[] {
   if (!before || before.length === 0) return after

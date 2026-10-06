@@ -4,7 +4,8 @@
 // active; a very large one shows counts and its problems. A focus shows one
 // chain or one neighbourhood whole.
 
-import { noPath, routeKey } from './model'
+import { routeKey } from '../text/routes'
+import { noPath } from './model'
 import type { FlowEdge, FlowNode, FlowRow, Model } from './types'
 
 export type Level = 'full' | 'folded' | 'collapsed'
@@ -40,7 +41,7 @@ export const expandAll = '*'
 export const moreId = (zone: string) => `more:${zone}`
 
 const isRoute = (r: FlowRow) => r.kind === undefined || r.kind === 'route' || r.kind === 'unapproved'
-const keyOf = (r: FlowRow) => routeKey(r.hostname, r.owner)
+const keyOf = (r: FlowRow) => routeKey(r)
 const isProblem = (r: FlowRow) => r.kind === 'unapproved' || (isRoute(r) && r.state !== 'active')
 
 const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)

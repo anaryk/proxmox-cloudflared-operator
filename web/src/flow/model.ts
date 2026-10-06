@@ -4,13 +4,11 @@
 // collapse.ts folds them to fit.
 
 import type { ConnectorStatus, RouteTraffic, RouteView, State, TrafficView, TunnelTraffic, TunnelView, ZoneView } from '../api/types.gen'
+import { compareOwners, routeKey } from '../text/routes'
 import { connectorText, verifiedText } from '../text/words'
 import type { Band, FlowEdge, FlowNode, FlowPort, FlowRow, Model } from './types'
 
 export type { Band, FlowEdge, FlowNode, FlowPort, FlowRow, Model } from './types'
-
-// routeKey names a route: a hostname has one route per owner.
-export const routeKey = (hostname: string, owner: string): string => `${hostname} ${owner}`
 
 export const rowId = (key: string): string => `route:${key}`
 
@@ -29,19 +27,6 @@ const unset = (at?: string) => !at || at.startsWith('0001-01-01T00:00:00')
 // firstCycleDone says whether the daemon has finished a cycle: before one,
 // the map and the tiles wait for it rather than show no routes.
 export const firstCycleDone = (st: Pick<State, 'at'>): boolean => !unset(st.at)
-
-// compareOwners orders owners as model.CompareOwners does: qemu, then lxc,
-// each by VMID, then manual routes by id.
-export function compareOwners(a: string, b: string): number {
-  const key = (o: string): [number, number] => {
-    const m = /^(qemu|lxc)\/(\d+)$/.exec(o)
-    if (m) return [m[1] === 'qemu' ? 0 : 1, Number(m[2])]
-    return [o.startsWith('manual/') ? 2 : 3, 0]
-  }
-  const [ra, va] = key(a)
-  const [rb, vb] = key(b)
-  return ra - rb || va - vb || (a < b ? -1 : a > b ? 1 : 0)
-}
 
 const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
@@ -137,7 +122,7 @@ class Index {
     for (const t of tv?.tunnels ?? []) this.traffic.set(t.tunnelId, t)
     if (tv && !tv.routesWhy) {
       for (const f of tv.routes) {
-        this.figures.set(routeKey(f.hostname, f.owner), f)
+        this.figures.set(routeKey(f), f)
         if (!this.byTarget.has(f.target)) this.byTarget.set(f.target, f)
       }
     }
@@ -182,7 +167,7 @@ class Index {
   // figureOf is the connections opened to the route's target per second,
   // when the egress filter counts them.
   figureOf(r: RouteView, t: Target | undefined): RouteTraffic | undefined {
-    return this.figures.get(routeKey(r.hostname, r.owner)) ?? (t ? this.byTarget.get(t.target) : undefined)
+    return this.figures.get(routeKey(r)) ?? (t ? this.byTarget.get(t.target) : undefined)
   }
 
   latest(tunnelId: string | undefined): { rps: number; errors: number; concurrent: number; stale: boolean } | undefined {
@@ -200,7 +185,7 @@ class Index {
   }
 
   rowOf(r: RouteView): FlowRow {
-    const key = routeKey(r.hostname, r.owner)
+    const key = routeKey(r)
     const tags: string[] = []
     if (r.state === 'held') tags.push('503')
     if (this.records.has(r.hostname)) tags.push('DNS')
@@ -347,7 +332,7 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
 
   const routes = [...st.routes].sort((a, b) => byName(a.hostname, b.hostname) || compareOwners(a.owner, b.owner))
   for (const r of routes) {
-    const key = routeKey(r.hostname, r.owner)
+    const key = routeKey(r)
     const card = cardFor(r.state === 'no-zone' ? undefined : ix.zoneOf(r.hostname, r.zone))
     card.rows?.push(ix.rowOf(r))
     ;(card.routes ??= []).push(key)
@@ -410,7 +395,7 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
   for (const g of st.unapproved) {
     const owner = `${g.kind}/${g.vmid}`
     for (const hostname of g.hostnames) {
-      const key = routeKey(hostname, owner)
+      const key = routeKey({ hostname, owner })
       const card = cardFor(ix.zoneOf(hostname))
       const row: FlowRow = { id: rowId(key), kind: 'unapproved', hostname, owner, state: 'unapproved', tags: ['waits for approval'] }
       if (g.name) row.guest = g.name
@@ -489,7 +474,7 @@ function zoneStep(ix: Index, r: { hostname: string; zone?: string; state: string
 
 function routeChain(ix: Index, r: RouteView): Chain {
   const row = ix.rowOf(r)
-  const chain: Chain = { key: routeKey(r.hostname, r.owner), hostname: r.hostname, owner: r.owner, state: r.state, tags: row.tags, steps: [zoneStep(ix, r)] }
+  const chain: Chain = { key: routeKey(r), hostname: r.hostname, owner: r.owner, state: r.state, tags: row.tags, steps: [zoneStep(ix, r)] }
   if (row.guest) chain.guest = row.guest
   if (r.reason) chain.reason = r.reason
   const steps = chain.steps
@@ -547,7 +532,7 @@ export function buildChains(st: State, traffic: TrafficView | undefined): Chain[
     const owner = `${g.kind}/${g.vmid}`
     for (const hostname of g.hostnames) {
       const chain: Chain = {
-        key: routeKey(hostname, owner),
+        key: routeKey({ hostname, owner }),
         hostname,
         owner,
         state: 'unapproved',

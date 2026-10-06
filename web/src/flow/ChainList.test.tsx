@@ -2,8 +2,8 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, test } from 'vitest'
 
 import type { State, TrafficView } from '../api/types.gen'
+import { routeKey } from '../text/routes'
 import { ChainList } from './ChainList'
-import { routeKey } from './model'
 import chains from './testdata/chains.json'
 import { scaled } from './testdata/scale'
 import traffic from './testdata/traffic.json'
@@ -93,7 +93,13 @@ describe('the chain list', () => {
   })
 
   test('only the routes asked for, the problems first when asked', () => {
-    const only = new Set([routeKey('www.example.com', 'qemu/101'), routeKey('www.example.com', 'qemu/102'), routeKey('app.example.com', 'qemu/101')])
+    const only = new Set(
+      [
+        ['www.example.com', 'qemu/101'],
+        ['www.example.com', 'qemu/102'],
+        ['app.example.com', 'qemu/101'],
+      ].map(([hostname = '', owner = '']) => routeKey({ hostname, owner })),
+    )
     render(<ChainList state={st} traffic={tv} only={only} problemsFirst />)
     expect(rows().map((li) => `${li.querySelector('.chain-host')?.textContent} ${li.querySelector('.status-word')?.textContent}`)).toEqual([
       'www.example.com conflict',

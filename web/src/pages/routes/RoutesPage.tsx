@@ -17,11 +17,12 @@ import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
 import { routeStateOrder } from '../../gen/words.gen'
 import { marked } from '../../text/chars'
+import { routeKey } from '../../text/routes'
 import { ManualRoutePage } from './ManualRouteForm'
 import { errorMessage, NoteLine, PageHead, readerReason, RoutesNav, useAdmin } from './parts'
 import { PlanPage } from './PlanPage'
 import { RouteDetail } from './RouteDetail'
-import { compareRoutes, holderOf, matchesRoute, noFilter, type RouteFilter, routeKey, routeLink, stateCounts, unset } from './routes'
+import { compareRoutes, holderOf, matchesRoute, noFilter, type RouteFilter, routeLink, stateCounts, unset } from './routes'
 import { RouteTable } from './RouteTable'
 
 // A phone shows the detail of a route as a page of its own, a desktop beside

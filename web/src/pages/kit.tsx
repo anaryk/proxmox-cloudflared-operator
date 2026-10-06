@@ -138,13 +138,18 @@ export function credentialLabel(st: Pick<State, 'credentials'> | undefined, id: 
 }
 
 // waitingId is the id of the element of the Plan that shows one entry of
-// what waits; the confirmation of the daemon's offer happens there.
-export const waitingId = (kind: string, subject: string) => `waiting-${kind}-${subject}`
+// what waits, /routes/plan#waiting-stale-zone-example.info; the confirmation
+// of the daemon's offer happens there. Anything but letters, digits, dots and
+// dashes is folded to a dash, so the id needs no escaping in an address.
+export function waitingId(w: { kind: string; subject: string }): string {
+  const part = (s: string) => s.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')
+  return ['waiting', part(w.kind), part(w.subject)].filter(Boolean).join('-')
+}
 
 // planEntry is the link to the Plan with one entry of what waits picked out:
 // the shell gives the element the fragment names the focus.
 export function planEntry(kind: string, subject: string): string {
-  return `/routes/plan#${encodeURIComponent(waitingId(kind, subject))}`
+  return `/routes/plan#${waitingId({ kind, subject })}`
 }
 
 // Go writes a time it never set as the zero time, or leaves it out.

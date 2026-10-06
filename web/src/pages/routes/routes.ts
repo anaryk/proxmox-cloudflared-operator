@@ -2,6 +2,7 @@
 // the CLI, the filters, the holder of a hostname, the path and the links.
 
 import type { PathView, RouteView } from '../../api/types.gen'
+import { compareOwners } from '../../text/routes'
 import { compareRouteStates } from '../../text/words'
 
 export const manualPrefix = 'manual/'
@@ -10,30 +11,10 @@ export const isManual = (owner: string) => owner.startsWith(manualPrefix)
 
 const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
-// The rank and VMID model.ParseGuestRef reads from an owner: a VMID in its
-// canonical form, from 1 to 2^31 - 1.
-function ownerKey(owner: string): [number, number] {
-  const m = /^(qemu|lxc)\/([0-9]+)$/.exec(owner)
-  const vmid = m ? Number(m[2]) : 0
-  if (m && String(vmid) === m[2] && vmid >= 1 && vmid < 2 ** 31) return [m[1] === 'qemu' ? 0 : 1, vmid]
-  if (isManual(owner)) return [2, 0]
-  return [3, 0]
-}
-
-// compareOwners is model.CompareOwners: virtual machines, then containers, by
-// VMID, then the manual routes, then anything else, each by name.
-export function compareOwners(a: string, b: string): number {
-  const [rankA, vmidA] = ownerKey(a)
-  const [rankB, vmidB] = ownerKey(b)
-  return rankA - rankB || vmidA - vmidB || compareText(a, b)
-}
-
 // compareRoutes is the order of pco routes: hostname, then owner.
 export function compareRoutes(a: RouteView, b: RouteView): number {
   return compareText(a.hostname, b.hostname) || compareOwners(a.owner, b.owner)
 }
-
-export const routeKey = (r: { hostname: string; owner: string }) => `${r.hostname}\u0000${r.owner}`
 
 export interface RouteFilter {
   states: readonly string[] // none: every state

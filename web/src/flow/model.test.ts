@@ -5,7 +5,8 @@ import first from '../fixtures/first-run.json'
 import populated from '../fixtures/populated.json'
 import rogueFixture from '../fixtures/rogue.json'
 import trafficFixture from '../fixtures/traffic.json'
-import { buildChains, buildModel, compareOwners, type FlowEdge, type FlowNode, pathOf, routeKey, targetOf, trunksOf } from './model'
+import { routeKey } from '../text/routes'
+import { buildChains, buildModel, type FlowEdge, type FlowNode, pathOf, targetOf, trunksOf } from './model'
 import chains from './testdata/chains.json'
 import traffic from './testdata/traffic.json'
 
@@ -97,13 +98,13 @@ describe('the model of a state with a route of every kind', () => {
     expect(edge('path:vmbr0>guest:qemu/103|10.0.0.13:9000').style).toBe('unreachable')
     // a withdrawn route has no address that passed: its edge ends at the card
     expect(edge('path:vmbr1.20>guest:qemu/104#withdrawn')).toMatchObject({ style: 'withdrawn', label: '503' })
-    const frozen = carrying(routeKey('www.example.info', 'qemu/106'))
+    const frozen = carrying(routeKey({ hostname: 'www.example.info', owner: 'qemu/106' }))
     expect(frozen.map((e) => e.id)).toEqual(['path:vmbr0>guest:qemu/106#plain', 'zone:example.info>edge:acc3'])
     expect(frozen.every((e) => e.muted)).toBe(true)
   })
 
   test('held: a 503 tag, its rule in the tunnel and nothing past the connector', () => {
-    const key = routeKey('held.example.com', 'lxc/200')
+    const key = routeKey({ hostname: 'held.example.com', owner: 'lxc/200' })
     expect(rowOf('zone:example.com', 'held.example.com', 'lxc/200')?.tags).toEqual(['503'])
     expect(carrying(key).map((e) => e.style)).toEqual(['trunk', 'hairline'])
   })
@@ -115,7 +116,7 @@ describe('the model of a state with a route of every kind', () => {
       ['no-zone', 'shop.example.net', 'qemu/107'],
     ] as const) {
       expect(rowOf(zone, hostname, owner)).toBeTruthy()
-      expect(carrying(routeKey(hostname, owner))).toEqual([])
+      expect(carrying(routeKey({ hostname, owner }))).toEqual([])
     }
     expect(rowOf('zone:example.com', 'example.com', 'qemu/105')).toMatchObject({ state: 'rejected', reason: expect.stringContaining('add "example.com" to allowHosts') })
     expect(rowOf('zone:example.com', 'www.example.com', 'qemu/102')).toMatchObject({ state: 'conflict', holder: 'qemu/101 web-1' })
@@ -127,7 +128,7 @@ describe('the model of a state with a route of every kind', () => {
       { id: 'route:dns.example.com lxc/202', kind: 'unapproved', hostname: 'dns.example.com', owner: 'lxc/202', guest: 'dns-1', state: 'unapproved', reason: 'delegated: alice@pve holds VM.Config.Network; address 10.0.0.1 is the gateway of node pve1', tags: ['waits for approval'] },
       { id: 'route:new.example.com lxc/201', kind: 'unapproved', hostname: 'new.example.com', owner: 'lxc/201', guest: 'new-1', state: 'unapproved', reason: 'admission mode approve', tags: ['waits for approval'] },
     ])
-    expect(carrying(routeKey('new.example.com', 'lxc/201'))).toEqual([])
+    expect(carrying(routeKey({ hostname: 'new.example.com', owner: 'lxc/201' }))).toEqual([])
   })
 
   test('a name a record of someone else holds carries the DNS tag', () => {
@@ -148,7 +149,6 @@ describe('the model of a state with a route of every kind', () => {
       'www.example.com qemu/101',
       'www.example.com qemu/102',
     ])
-    expect(['manual/a', 'lxc/7', 'qemu/100', 'qemu/20'].sort(compareOwners)).toEqual(['qemu/20', 'qemu/100', 'lxc/7', 'manual/a'])
   })
 })
 

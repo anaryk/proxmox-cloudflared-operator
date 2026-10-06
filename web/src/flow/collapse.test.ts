@@ -2,7 +2,8 @@ import { describe, expect, test } from 'vitest'
 
 import type { State, TrafficView } from '../api/types.gen'
 import { budget, collapse, expandAll, focusRoutes, type Level, levelOf, mapViewQuery, moreId, readMapView, routesOf } from './collapse'
-import { buildModel, type Model, routeKey } from './model'
+import { routeKey } from '../text/routes'
+import { buildModel, type Model } from './model'
 import chains from './testdata/chains.json'
 import { large, outage, scaled, trafficFor, wide } from './testdata/scale'
 import traffic from './testdata/traffic.json'
@@ -183,7 +184,7 @@ describe('collapsed', () => {
     expect(rowsOf(opened, 'zone:example.com').find((r) => r.id === group.id)).toEqual(group)
     const routes = routesOf(opened, group.id)
     expect(routes).toHaveLength(67)
-    expect(new Set(routes.map((k) => st.routes.find((r) => routeKey(r.hostname, r.owner) === k)?.reason))).toEqual(new Set(['target is not answering']))
+    expect(new Set(routes.map((k) => st.routes.find((r) => routeKey(r) === k)?.reason))).toEqual(new Set(['target is not answering']))
     expect(routesOf(opened, 'zone:example.com')).toHaveLength(334)
     expect(routesOf(opened, 'nothing')).toEqual([])
   })
@@ -226,10 +227,10 @@ describe('focus', () => {
   })
 
   test('a hostname, a zone, a tunnel and words', () => {
-    expect([...focusRoutes(model, 'hostname:app-0007.zone-3.example')]).toEqual([routeKey('app-0007.zone-3.example', 'qemu/1007')])
+    expect([...focusRoutes(model, 'hostname:app-0007.zone-3.example')]).toEqual([routeKey({ hostname: 'app-0007.zone-3.example', owner: 'qemu/1007' })])
     expect(focusRoutes(model, 'zone:example.com').size).toBe(250)
     expect(focusRoutes(model, 'tunnel:acc1').size).toBe(1000)
-    expect([...focusRoutes(model, 'APP-0999')]).toEqual([routeKey('app-0999.zone-3.example', 'qemu/1999')])
+    expect([...focusRoutes(model, 'APP-0999')]).toEqual([routeKey({ hostname: 'app-0999.zone-3.example', owner: 'qemu/1999' })])
     expect(focusRoutes(model, 'nothing like it').size).toBe(0)
   })
 

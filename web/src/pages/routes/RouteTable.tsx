@@ -6,9 +6,10 @@ import { Badge } from '../../components/Badge'
 import { StateBadge } from '../../components/StateBadge'
 import { type Column, Table } from '../../components/Table'
 import { Untrusted } from '../../components/Untrusted'
+import { compareOwners, routeKey } from '../../text/routes'
 import { compareRouteStates, routeNote } from '../../text/words'
 import { Owner } from './parts'
-import { allowHostLink, compareOwners, compareRoutes, isManual, isWildcard, routeKey } from './routes'
+import { allowHostLink, compareRoutes, isManual, isWildcard } from './routes'
 
 const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 

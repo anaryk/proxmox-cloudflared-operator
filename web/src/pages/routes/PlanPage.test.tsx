@@ -8,7 +8,8 @@ import { navigate } from '../../app/router'
 import { ToastProvider } from '../../components/Toast'
 import populated from '../../fixtures/populated.json'
 import { fakeStore } from '../../test/store'
-import { budgetLine, counts, PlanPage, PlanSections, waitingId } from './PlanPage'
+import { planEntry, waitingId } from '../kit'
+import { budgetLine, counts, PlanPage, PlanSections } from './PlanPage'
 
 const golden = populated as unknown as State
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
@@ -89,6 +90,16 @@ describe('the plan', () => {
     const entry = document.getElementById('waiting-stale-zone-example.info')
     expect(entry?.classList.contains('highlighted')).toBe(true)
     expect(entry?.textContent).toBe(zone.detail)
+  })
+
+  test("another page's link names the entry the Plan draws, whatever the subject", async () => {
+    const odd: Waiting = { ...(golden.waiting[1] as Waiting), subject: 'Example_Shop.info' }
+    const link = planEntry(odd.kind, odd.subject)
+    expect(link).toBe('/routes/plan#waiting-stale-zone-example-shop.info')
+    navigate(link, true)
+    const { store } = await fakeStore({ state: { ...golden, waiting: [odd] } })
+    show(store, <PlanSections />)
+    expect(document.getElementById(waitingId(odd))?.classList.contains('highlighted')).toBe(true)
   })
 
   test('Review and confirm opens the confirmation; a reader is told why not', async () => {

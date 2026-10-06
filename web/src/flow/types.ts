@@ -7,9 +7,9 @@ import type { JSX } from 'react'
 
 export type Band = 'hostnames' | 'edge' | 'connector' | 'path' | 'targets'
 
-// A route is named by its key, routeKey(hostname, owner) of model.ts. Nodes,
-// rows, access points and edges list the routes whose chain passes through
-// them: hovering one highlights those chains, and a focus keeps them.
+// A route is named by its key, routeKey of text/routes.ts. Nodes, rows,
+// access points and edges list the routes whose chain passes through them:
+// hovering one highlights those chains, and a focus keeps them.
 
 // FlowRow is a line of a zone card: a route, a hostname of a guest that
 // waits for approval, the routes a folded card leaves out ("+ 186 active")

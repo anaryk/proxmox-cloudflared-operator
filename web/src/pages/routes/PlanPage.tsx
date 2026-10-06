@@ -2,7 +2,7 @@ import { type JSX, type ReactNode, useEffect, useState } from 'react'
 
 import { api } from '../../api/client'
 import { useApp } from '../../api/store'
-import type { Action, ApplyResult, State, Waiting } from '../../api/types.gen'
+import type { Action, ApplyResult, State } from '../../api/types.gen'
 import { useLocation } from '../../app/router'
 import { Badge } from '../../components/Badge'
 import { Banner } from '../../components/Banner'
@@ -13,6 +13,7 @@ import { type Column, Table } from '../../components/Table'
 import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
 import { budgetWait, unaffected } from '../../text/words'
+import { waitingId } from '../kit'
 import { AdoptDialog } from './AdoptDialog'
 import { ConfirmDialog, UnaffectedList } from './ConfirmDialog'
 import { ErrorText, PageHead, readerReason, RoutesNav, useAdmin } from './parts'
@@ -24,14 +25,6 @@ export const itemsShown = 20
 
 export const applying = 'Publishing has started: the daemon changes Cloudflare from the next cycle.'
 export const applyingAlways ='Observe-only mode was off already: the daemon applies changes in every cycle.'
-
-// waitingId is the fragment that names an entry of what waits, so that a
-// link can point at it, /routes/plan#waiting-stale-zone-example.info, and the
-// page focus it.
-export function waitingId(w: Pick<Waiting, 'kind' | 'subject'>): string {
-  const part = (s: string) => s.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')
-  return ['waiting', part(w.kind), part(w.subject)].filter(Boolean).join('-')
-}
 
 // budgetLine is the problem line of the Cloudflare budget stop, if the
 // problems hold one.
