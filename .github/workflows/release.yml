@@ -134,7 +134,7 @@ jobs:
       - name: Install the tools of the template
         run: |
           sudo apt-get update
-          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap debian-archive-keyring arch-test qemu-user-static
+          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap arch-test qemu-user-static
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       # The cloudflared packages stay beside the templates (--cache), for the

@@ -32,6 +32,10 @@
 #
 # The newest version that cloudflared-versions.json allows is the cloudflared
 # the template carries; its package is checked against the sha256 listed there.
+# apt checks the archives of the snapshot against Debian's keyring alone: the
+# debian-archive-keyring package that pin.conf names, downloaded from the
+# snapshot there and checked against the sha256 there, whatever keys the host
+# trusts.
 # mmdebstrap runs in unshare mode: as root, or as a user with a range in
 # /etc/subuid and /etc/subgid where the kernel lets users make user namespaces.
 # The build itself needs Linux; README.md says how to run it elsewhere.
@@ -100,20 +104,28 @@ sha256() {
 	printf '%s\n' "${sum%% *}"
 }
 
-# pin <file>: the value of the SNAPSHOT line, without running the file.
+# pin <name>: the value of the line <name>= of pin.conf, without running it.
 pin() {
 	local line value=
 	while IFS= read -r line || [[ -n $line ]]; do
 		case $line in
-		SNAPSHOT=*) value=${line#SNAPSHOT=} ;;
+		"$1"=*) value=${line#"$1"=} ;;
 		esac
-	done <"$1"
+	done <"$HERE/pin.conf"
 	printf '%s\n' "$value"
 }
 
-if [[ -z $snapshot ]]; then
-	snapshot=$(pin "$HERE/pin.conf")
-fi
+pinned=$(pin SNAPSHOT)
+keyring_version=$(pin KEYRING_VERSION)
+keyring_sha256=$(pin KEYRING_SHA256)
+[[ $pinned =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "$HERE/pin.conf names no snapshot"
+[[ $keyring_version =~ ^[0-9A-Za-z][0-9A-Za-z.+~]*$ ]] || die "$HERE/pin.conf names no version of debian-archive-keyring"
+[[ $keyring_sha256 =~ ^[0-9a-f]{64}$ ]] || die "$HERE/pin.conf has no sha256 of debian-archive-keyring"
+# From the snapshot of pin.conf, which its sha256 was taken from, also when
+# the template is built from another one.
+keyring_url=https://snapshot.debian.org/archive/debian/$pinned/pool/main/d/debian-archive-keyring/debian-archive-keyring_${keyring_version}_all.deb
+
+snapshot=${snapshot:-$pinned}
 if ! [[ $snapshot =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]]; then
 	die "the snapshot is a timestamp YYYYMMDDTHHMMSSZ, not '$snapshot'"
 fi
@@ -187,7 +199,8 @@ hooks() {
 mmdebstrap_cmd() {
 	local hook
 	cmd=(mmdebstrap --mode=unshare --variant=minbase --format=tar "--architectures=$arch"
-		"--include=$include" '--aptopt=Acquire::Check-Valid-Until "false"')
+		"--include=$include" "--keyring=$work/debian-archive-keyring.pgp"
+		'--aptopt=Acquire::Check-Valid-Until "false"')
 	while IFS= read -r hook; do
 		cmd+=("--customize-hook=$hook")
 	done < <(hooks)
@@ -199,6 +212,7 @@ mmdebstrap_cmd() {
 if [[ $dry == 1 ]]; then
 	mmdebstrap_cmd
 	printf 'cloudflared %s for %s from %s, sha256 %s\n' "$cf_version" "$arch" "$cf_url" "$cf_sha256"
+	printf 'debian-archive-keyring %s from %s, sha256 %s\n' "$keyring_version" "$keyring_url" "$keyring_sha256"
 	printf 'SOURCE_DATE_EPOCH=%s' "$epoch"
 	printf ' %q' "${cmd[@]}"
 	printf '\n'
@@ -248,6 +262,25 @@ if [[ $(field "$cf_deb" Package) != cloudflared || $(field "$cf_deb" Version) !=
 	die "$cf_url is not cloudflared $cf_version for $arch"
 fi
 cp "$cf_deb" "$work/cloudflared.deb"
+
+say "downloading debian-archive-keyring $keyring_version"
+keyring_deb=$work/debian-archive-keyring.deb
+curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+	--output "$keyring_deb" "$keyring_url" || die "cannot download $keyring_url"
+got=$(sha256 "$keyring_deb")
+[[ $got == "$keyring_sha256" ]] || die "$keyring_url has the sha256 $got, $HERE/pin.conf pins $keyring_sha256"
+if [[ $(field "$keyring_deb" Package) != debian-archive-keyring || $(field "$keyring_deb" Version) != "$keyring_version" ]]; then
+	die "$keyring_url is not debian-archive-keyring $keyring_version"
+fi
+dpkg-deb --fsys-tarfile "$keyring_deb" |
+	tar --extract --to-stdout ./usr/share/keyrings/debian-archive-keyring.pgp >"$work/debian-archive-keyring.pgp" ||
+	die "$keyring_url holds no usr/share/keyrings/debian-archive-keyring.pgp"
+[[ -s $work/debian-archive-keyring.pgp ]] || die "the keyring in $keyring_url is empty"
+# apt reads it as root of the user namespace of mmdebstrap, a subordinate id
+# and not the user that runs the build: that root may read the keyring and
+# pass through the work directory, but not list it.
+chmod 644 "$work/debian-archive-keyring.pgp"
+chmod 711 "$work"
 
 # The overlay as root's, with the mtime of the snapshot and modes that do not
 # depend on the umask of the checkout.

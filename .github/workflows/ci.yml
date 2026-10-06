@@ -197,7 +197,7 @@ jobs:
       - name: Install the tools of the template
         run: |
           sudo apt-get update
-          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap debian-archive-keyring
+          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build the template twice
         run: |

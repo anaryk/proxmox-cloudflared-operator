@@ -96,7 +96,7 @@ jobs:
         if: steps.release.outputs.templates == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap debian-archive-keyring arch-test qemu-user-static
+          sudo apt-get install -y mmdebstrap zstd systemd-container uidmap arch-test qemu-user-static
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Build the templates

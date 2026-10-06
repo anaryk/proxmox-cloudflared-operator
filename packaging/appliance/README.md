@@ -40,8 +40,9 @@ mode, which needs Linux, `mmdebstrap`, `zstd`, `jq`, `curl` and `dpkg`, and
 either root or a user with a range in `/etc/subuid` and `/etc/subgid` (the
 `uidmap` package) on a kernel that lets users make user namespaces; Ubuntu
 24.04 forbids that until `sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
-On Ubuntu `debian-archive-keyring` is needed as well. The architecture the host
-is not needs `qemu-user-static` and binfmt. Elsewhere, run it as root in a
+Debian's keyring comes with the build rather than from the host (see the
+snapshot below), so the host may be Ubuntu as well as Debian. The architecture
+the host is not needs `qemu-user-static` and binfmt. Elsewhere, run it as root in a
 Debian container, after `make snapshot` on the host:
 
     docker run --rm --privileged -v "$PWD:/src" -w /src debian:trixie sh -c \
@@ -85,6 +86,18 @@ a line `Snapshot: YYYYMMDDTHHMMSSZ` of the tag's message or from its input
 templates of the latest release from the current snapshot every month and,
 when their packages changed, opens an issue that asks for the tag of a patch
 release with that snapshot (see `../RELEASING.md`).
+
+apt checks the signatures of the snapshot against Debian's keyring and nothing
+the host trusts. `KEYRING_VERSION` and `KEYRING_SHA256` in `pin.conf` name the
+`debian-archive-keyring` package of trixie; `build.sh` downloads it from the
+snapshot of `pin.conf`, also when it builds from another one, refuses it unless
+it has that sha256, and hands its `debian-archive-keyring.pgp` to mmdebstrap
+with `--keyring`. Moving `SNAPSHOT` to a time when trixie has another version
+of the package means moving these two as well, to the version and the SHA256
+that `dists/trixie/main/binary-all/Packages.xz` of the snapshot lists; the
+signature of its `InRelease` covers that file. A snapshot signed by a key the
+pinned keyring does not have fails to build until they move. `pin_test.sh`,
+which `make test-scripts` runs, checks what `build.sh` takes from `pin.conf`.
 
 ## Testing it
 

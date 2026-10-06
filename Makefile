@@ -46,6 +46,7 @@ test-scripts:
 	bash packaging/check-artifacts_test.sh
 	bash packaging/release-workflow_test.sh
 	bash packaging/cloudflared-versions_test.sh
+	bash packaging/appliance/pin_test.sh
 	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh packaging/appliance/*.sh
 
 # The frontend in web/, with Node and npm at the versions of web/.nvmrc and
