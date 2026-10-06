@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,6 +56,7 @@ type ApplianceProxmox interface {
 	DatacenterFirewall(ctx context.Context) (pve.FirewallOptions, error)
 	NodeFirewall(ctx context.Context, node string) (pve.FirewallOptions, error)
 	NodeNetwork(ctx context.Context, node string) ([]pve.NodeIface, error)
+	VNets(ctx context.Context) ([]pve.VNet, error)
 	LastVerifyError() error
 }
 
@@ -93,6 +96,12 @@ type ApplianceHost struct {
 	// /etc/resolv.conf and the resolver of Go.
 	Resolve    func() ([]netip.Addr, error)
 	LookupHost func(ctx context.Context, name string) ([]string, error)
+	// Reading is called, with what is read, at the start of every read of the
+	// container's own system; a test blocks in it as a stalled storage does.
+	Reading func(what string)
+
+	mu      sync.Mutex
+	stalled map[string]int // by what is read: the reads given up on that have not returned
 }
 
 var _ ApplianceEnv = (*ApplianceHost)(nil)
@@ -109,6 +118,65 @@ func (h *ApplianceHost) within(ctx context.Context) (context.Context, context.Ca
 }
 
 func (h *ApplianceHost) path(p string) string { return filepath.Join(h.Root, p) }
+
+// local runs a read of the container's own system within the deadline of the
+// host. A read that stalls, as one of a storage that does not answer does, ends
+// the question with an error and is left to finish on its own; while it still
+// runs, a read of the same thing fails at once, so that the doctors that follow
+// do not pile up reads that wait on the same storage. The context of read ends
+// when local is done with it.
+func (h *ApplianceHost) local(what string, read func(ctx context.Context) error) error {
+	h.mu.Lock()
+	if h.stalled[what] > 0 {
+		h.mu.Unlock()
+		return fmt.Errorf("no answer: an earlier read of it has not returned yet: %w", context.DeadlineExceeded)
+	}
+	h.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// ended and gaveUp are guarded by h.mu: a read that ends as the deadline
+	// passes is answered, and one that does not is counted until it ends.
+	var ended, gaveUp bool
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			h.mu.Lock()
+			ended = true
+			if gaveUp {
+				h.stalled[what]--
+			}
+			h.mu.Unlock()
+		}()
+		defer func() {
+			if p := recover(); p != nil {
+				done <- fmt.Errorf("%v", p)
+			}
+		}()
+		if h.Reading != nil {
+			h.Reading(what)
+		}
+		done <- read(ctx)
+	}()
+	timer := time.NewTimer(h.timeout())
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ended {
+		return <-done
+	}
+	gaveUp = true
+	if h.stalled == nil {
+		h.stalled = map[string]int{}
+	}
+	h.stalled[what]++
+	return fmt.Errorf("no answer within %s: %w", h.timeout(), context.DeadlineExceeded)
+}
 
 func (h *ApplianceHost) stateDir() string {
 	if h.StateDir != "" {
@@ -189,7 +257,7 @@ func (h *ApplianceHost) VolumeMounted() error {
 	if check == nil {
 		check = appliance.VolumeMounted
 	}
-	return check(h.stateDir(), store.VolumeMarker)
+	return h.local("the volume", func(context.Context) error { return check(h.stateDir(), store.VolumeMarker) })
 }
 
 func (h *ApplianceHost) VerifyError() error { return h.Proxmox.LastVerifyError() }
@@ -211,7 +279,16 @@ func (h *ApplianceHost) ProbeAsConnector(ctx context.Context, addr string) error
 	if h.Probe != nil {
 		return h.Probe(ctx, addr)
 	}
-	return probeAsConnector(ctx, "", addr)
+	var exe string
+	var cred *syscall.Credential
+	err := h.local("the user "+egress.ConnectorUser, func(context.Context) (err error) {
+		exe, cred, err = probeTarget("")
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return runProbe(ctx, exe, addr, cred, probeTimeout)
 }
 
 // CloudflareDate asks the Cloudflare API for something anyone may read and
@@ -322,13 +399,20 @@ func (h *ApplianceHost) NodeNetwork(ctx context.Context) ([]pve.NodeIface, error
 // DiskUse is what is used of the filesystem that holds path, and its size, as
 // df counts them: what root may not use is no part of the size.
 func (h *ApplianceHost) DiskUse(path string) (used, total uint64, err error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(h.path(path), &st); err != nil {
+	err = h.local("the use of "+path, func(context.Context) error {
+		var st syscall.Statfs_t
+		if err := syscall.Statfs(h.path(path), &st); err != nil {
+			return err
+		}
+		size := uint64(st.Bsize)
+		used = (st.Blocks - st.Bfree) * size
+		total = used + st.Bavail*size
+		return nil
+	})
+	if err != nil {
 		return 0, 0, err
 	}
-	size := uint64(st.Bsize)
-	used = (st.Blocks - st.Bfree) * size
-	return used, used + st.Bavail*size, nil
+	return used, total, nil
 }
 
 // journalDirs are where the journal is kept: on disk, or in memory until the
@@ -338,34 +422,67 @@ var journalDirs = []string{"/var/log/journal", "/run/log/journal"}
 // JournalUse is the size of the files of the journal.
 func (h *ApplianceHost) JournalUse(ctx context.Context) (uint64, error) {
 	var total uint64
-	for _, dir := range journalDirs {
-		err := filepath.WalkDir(h.path(dir), func(_ string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if d.Type().IsRegular() {
-				info, err := d.Info()
+	err := h.local("the journal", func(reading context.Context) error {
+		for _, dir := range journalDirs {
+			err := filepath.WalkDir(h.path(dir), func(_ string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
-				total += uint64(info.Size())
+				if err := cmp.Or(ctx.Err(), reading.Err()); err != nil {
+					return err
+				}
+				if d.Type().IsRegular() {
+					info, err := d.Info()
+					if err != nil {
+						return err
+					}
+					total += uint64(info.Size())
+				}
+				return nil
+			})
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
 			}
-			return nil
-		})
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return 0, err
 		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 	return total, nil
 }
 
-// MemoryPressure reads the share of the last ten seconds in which some task
-// waited for memory.
-func (h *ApplianceHost) MemoryPressure() (float64, error) {
-	f, err := os.Open(h.path("/proc/pressure/memory"))
+// cgroupDir is where the container sees its own cgroup, whose root is the
+// cgroup the container is in.
+const cgroupDir = "/sys/fs/cgroup"
+
+// MemoryPressure reads the pressure of the container's own cgroup and what it
+// uses of its limit, and where the cgroup does not report pressure, that of
+// the node, which the container shares.
+func (h *ApplianceHost) MemoryPressure() (MemoryState, error) {
+	var m MemoryState
+	err := h.local("memory", func(context.Context) error {
+		own, ownErr := h.readPressure(cgroupDir + "/memory.pressure")
+		if ownErr == nil {
+			m = MemoryState{Some10: own, Own: true}
+			m.Used, _ = h.readNumber(cgroupDir + "/memory.current")
+			m.Limit, _ = h.readNumber(cgroupDir + "/memory.max")
+			return nil
+		}
+		node, err := h.readPressure("/proc/pressure/memory")
+		if err != nil {
+			return err
+		}
+		m = MemoryState{Some10: node}
+		return nil
+	})
+	return m, err
+}
+
+// readPressure reads the average of ten seconds of the tasks that wait for
+// memory from a file of pressure.
+func (h *ApplianceHost) readPressure(path string) (float64, error) {
+	f, err := os.Open(h.path(path))
 	if err != nil {
 		return 0, err
 	}
@@ -376,7 +493,21 @@ func (h *ApplianceHost) MemoryPressure() (float64, error) {
 			return some, nil
 		}
 	}
-	return 0, errors.New("/proc/pressure/memory has no line of some tasks")
+	return 0, fmt.Errorf("%s has no line of some tasks", path)
+}
+
+// readNumber reads a file that holds a number of bytes; max, which a cgroup
+// without a limit says, and what cannot be read are 0.
+func (h *ApplianceHost) readNumber(path string) (uint64, error) {
+	b, err := os.ReadFile(h.path(path))
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
 }
 
 // pressureOf reads avg10 of a line "some avg10=0.00 avg60=0.00 avg300=0.00 total=0".
@@ -395,6 +526,16 @@ func pressureOf(line string) (float64, bool) {
 }
 
 func (h *ApplianceHost) Versions(ctx context.Context) (pco, cloudflared, debian string, err error) {
+	debian = "unknown"
+	err = h.local("the version of Debian", func(context.Context) error {
+		if b, err := os.ReadFile(h.path("/etc/debian_version")); err == nil {
+			debian = strings.TrimSpace(string(b))
+		}
+		return nil
+	})
+	if err != nil {
+		return "", "", "", err
+	}
 	line, err := h.cloudflaredLine(ctx)
 	if err != nil {
 		return "", "", "", err
@@ -402,10 +543,6 @@ func (h *ApplianceHost) Versions(ctx context.Context) (pco, cloudflared, debian 
 	cloudflared = line
 	if m := cloudflaredVersion.FindString(line); m != "" {
 		cloudflared = m
-	}
-	debian = "unknown"
-	if b, err := os.ReadFile(h.path("/etc/debian_version")); err == nil {
-		debian = strings.TrimSpace(string(b))
 	}
 	return version.Version, cloudflared, debian, nil
 }
@@ -422,14 +559,25 @@ func (h *ApplianceHost) Manifest() (upgrade.Manifest, error) {
 	if path == "" {
 		path = h.path(upgrade.ShippedManifest)
 	}
-	return upgrade.LoadManifest(path)
+	var m upgrade.Manifest
+	err := h.local("the list of vetted cloudflared versions", func(context.Context) (err error) {
+		m, err = upgrade.LoadManifest(path)
+		return err
+	})
+	return m, err
 }
 
 func (h *ApplianceHost) Resolvers() ([]netip.Addr, error) {
-	if h.Resolve != nil {
-		return h.Resolve()
+	read := h.Resolve
+	if read == nil {
+		read = egress.SystemResolvers
 	}
-	return egress.SystemResolvers()
+	var servers []netip.Addr
+	err := h.local("the name servers", func(context.Context) (err error) {
+		servers, err = read()
+		return err
+	})
+	return servers, err
 }
 
 func (h *ApplianceHost) Lookup(ctx context.Context, name string) error {
@@ -449,15 +597,34 @@ func (h *ApplianceHost) Lookup(ctx context.Context, name string) error {
 	return nil
 }
 
-func (h *ApplianceHost) EtcPVE() bool {
-	_, err := os.Stat(h.path("/etc/pve"))
-	return err == nil
+func (h *ApplianceHost) EtcPVE() (bool, error) {
+	var there bool
+	err := h.local("/etc/pve", func(context.Context) error {
+		_, err := os.Stat(h.path("/etc/pve"))
+		there = err == nil
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	})
+	return there, err
 }
 
 func (h *ApplianceHost) RmemMax() (int, error) {
-	b, err := os.ReadFile(h.path("/proc/sys/net/core/rmem_max"))
-	if err != nil {
-		return 0, err
-	}
-	return strconv.Atoi(strings.TrimSpace(string(b)))
+	var n int
+	err := h.local("net.core.rmem_max", func(context.Context) error {
+		b, err := os.ReadFile(h.path("/proc/sys/net/core/rmem_max"))
+		if err != nil {
+			return err
+		}
+		n, err = strconv.Atoi(strings.TrimSpace(string(b)))
+		return err
+	})
+	return n, err
+}
+
+func (h *ApplianceHost) VNets(ctx context.Context) ([]pve.VNet, error) {
+	ctx, cancel := h.within(ctx)
+	defer cancel()
+	return h.Proxmox.VNets(ctx)
 }

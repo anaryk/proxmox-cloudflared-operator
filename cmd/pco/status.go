@@ -84,14 +84,10 @@ func (a *app) noVolumeLine(err error) string {
 	if !apiclient.NotRunning(err) {
 		return ""
 	}
-	if profile, perr := store.DetectProfile(a.profileFile); perr != nil || profile != store.ProfileAppliance {
+	if !a.onAppliance() {
 		return ""
 	}
-	mounted := a.daemon.Appliance.Volume
-	if mounted == nil {
-		mounted = appliance.VolumeMounted
-	}
-	switch err := mounted(store.ApplianceLocal, store.VolumeMarker); {
+	switch err := a.volumeCheck()(store.ApplianceLocal, store.VolumeMarker); {
 	case err == nil:
 		return ""
 	case errors.Is(err, fs.ErrPermission):

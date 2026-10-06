@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,6 +111,11 @@ func (f *fakePVE) NodeNetwork(ctx context.Context, node string) ([]pve.NodeIface
 	return []pve.NodeIface{{Name: "vmbr0"}}, nil
 }
 
+func (f *fakePVE) VNets(ctx context.Context) ([]pve.VNet, error) {
+	f.note(ctx, "vnets")
+	return []pve.VNet{{Name: "vnet1", Zone: "zone1"}}, nil
+}
+
 func (f *fakePVE) LastVerifyError() error { return f.verify }
 
 var testInstall = Self{VMID: testVMID, Node: "pve1", Address: apiAddr, ServerName: "pve1", User: "pco@pve", Token: pcoToken}
@@ -147,10 +153,13 @@ func TestTheApplianceHostAsksProxmoxAboutItsOwnContainer(t *testing.T) {
 	ifaces, err := h.NodeNetwork(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "vmbr0", ifaces[0].Name)
+	vnets, err := h.VNets(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []pve.VNet{{Name: "vnet1", Zone: "zone1"}}, vnets)
 
 	require.Equal(t, []string{
 		"config pve1 lxc/9240", "pending pve1 lxc/9240", "snapshots pve1 lxc/9240", "replication", `permissions "" "/"`,
-		"datacenter firewall", "node firewall pve1", "network pve1",
+		"datacenter firewall", "node firewall pve1", "network pve1", "vnets",
 	}, px.asked)
 	require.Equal(t, testInstall, h.Self())
 }
@@ -168,6 +177,7 @@ func TestEveryQuestionToProxmoxHasADeadline(t *testing.T) {
 		"datacenter":  func() error { _, err := h.DatacenterFirewall(t.Context()); return err },
 		"node":        func() error { _, err := h.NodeFirewall(t.Context()); return err },
 		"network":     func() error { _, err := h.NodeNetwork(t.Context()); return err },
+		"vnets":       func() error { _, err := h.VNets(t.Context()); return err },
 	} {
 		px.deadline = time.Time{}
 		require.NoError(t, ask(), name)
@@ -255,22 +265,67 @@ func TestTheJournalIsTheSizeOfItsFiles(t *testing.T) {
 	require.EqualValues(t, 1524, used)
 }
 
-func TestMemoryPressureIsTheAverageOfTenSeconds(t *testing.T) {
-	h, _ := newHost(t)
-	path := filepath.Join(h.Root, "proc", "pressure", "memory")
+const (
+	someTwelve = "some avg10=12.34 avg60=1.00 avg300=0.10 total=123456\nfull avg10=99.00 avg60=0.00 avg300=0.00 total=0\n"
+	someOne    = "some avg10=1.50 avg60=1.00 avg300=0.10 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+)
 
-	_, err := h.MemoryPressure()
-	require.ErrorIs(t, err, fs.ErrNotExist)
-
+func writeUnder(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, rel)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	require.NoError(t, os.WriteFile(path, []byte("some avg10=12.34 avg60=1.00 avg300=0.10 total=123456\nfull avg10=99.00 avg60=0.00 avg300=0.00 total=0\n"), 0o644))
-	some, err := h.MemoryPressure()
-	require.NoError(t, err)
-	require.InDelta(t, 12.34, some, 0.001)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
 
-	require.NoError(t, os.WriteFile(path, []byte("garbage\n"), 0o644))
+// The pressure of the container is that of its own cgroup, and the node's only
+// where the cgroup does not say.
+func TestMemoryPressureIsThatOfTheContainerWhereItIsReported(t *testing.T) {
+	h, _ := newHost(t)
+	_, err := h.MemoryPressure()
+	require.ErrorIs(t, err, fs.ErrNotExist, "nothing reports it")
+
+	writeUnder(t, h.Root, "proc/pressure/memory", someTwelve)
+	m, err := h.MemoryPressure()
+	require.NoError(t, err)
+	require.Equal(t, MemoryState{Some10: 12.34}, m, "the node's, which is said not to be the container's")
+
+	writeUnder(t, h.Root, "sys/fs/cgroup/memory.pressure", someOne)
+	writeUnder(t, h.Root, "sys/fs/cgroup/memory.current", "125829120\n")
+	writeUnder(t, h.Root, "sys/fs/cgroup/memory.max", "536870912\n")
+	m, err = h.MemoryPressure()
+	require.NoError(t, err)
+	require.Equal(t, MemoryState{Some10: 1.5, Own: true, Used: 125829120, Limit: 536870912}, m, "the container's own")
+
+	writeUnder(t, h.Root, "sys/fs/cgroup/memory.max", "max\n")
+	m, err = h.MemoryPressure()
+	require.NoError(t, err)
+	require.Equal(t, MemoryState{Some10: 1.5, Own: true, Used: 125829120}, m, "no limit is a limit of none")
+}
+
+func TestMemoryPressureOfAContainerThatItsCgroupDoesNotGive(t *testing.T) {
+	h, _ := newHost(t)
+	writeUnder(t, h.Root, "sys/fs/cgroup/memory.pressure", "garbage\n")
+	writeUnder(t, h.Root, "proc/pressure/memory", someTwelve)
+
+	m, err := h.MemoryPressure()
+
+	require.NoError(t, err, "a cgroup whose pressure cannot be read leaves the node's")
+	require.Equal(t, MemoryState{Some10: 12.34}, m)
+
+	writeUnder(t, h.Root, "proc/pressure/memory", "garbage\n")
 	_, err = h.MemoryPressure()
 	require.ErrorContains(t, err, "has no line of some tasks")
+}
+
+func TestTheUseOfMemoryIsGivenWithoutThePressureOfTheCgroup(t *testing.T) {
+	h, _ := newHost(t)
+	writeUnder(t, h.Root, "proc/pressure/memory", someOne)
+	writeUnder(t, h.Root, "sys/fs/cgroup/memory.current", "1000\n")
+
+	m, err := h.MemoryPressure()
+
+	require.NoError(t, err)
+	require.Equal(t, MemoryState{Some10: 1.5}, m, "what is of the container alone is not shown beside the pressure of the node")
 }
 
 func TestPressureOfALine(t *testing.T) {
@@ -297,7 +352,9 @@ func TestTheSettingsOfTheNodeAreReadFromTheProcFiles(t *testing.T) {
 	}
 	_, err := h.RmemMax()
 	require.Error(t, err)
-	require.False(t, h.EtcPVE())
+	there, err := h.EtcPVE()
+	require.NoError(t, err)
+	require.False(t, there)
 
 	write("proc/sys/net/core/rmem_max", "4194304\n")
 	write("etc/pve/.version", "1")
@@ -305,11 +362,146 @@ func TestTheSettingsOfTheNodeAreReadFromTheProcFiles(t *testing.T) {
 	n, err := h.RmemMax()
 	require.NoError(t, err)
 	require.Equal(t, 4194304, n)
-	require.True(t, h.EtcPVE())
+	there, err = h.EtcPVE()
+	require.NoError(t, err)
+	require.True(t, there)
 
 	write("proc/sys/net/core/rmem_max", "many\n")
 	_, err = h.RmemMax()
 	require.Error(t, err)
+}
+
+// stalled makes the reads of an ApplianceHost block, as a read of storage that
+// does not answer does, until the test ends.
+func stalled(t *testing.T, h *ApplianceHost) (reads func() []string) {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var mu sync.Mutex
+	var asked []string
+	h.Reading = func(what string) {
+		mu.Lock()
+		asked = append(asked, what)
+		mu.Unlock()
+		<-release
+	}
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(asked)
+	}
+}
+
+// Every read of the container's own system is bounded: a stalled mount under
+// /var/lib/pco or at /etc/pve ends in an error, and does not hold the doctor.
+func TestEveryLocalReadHasADeadline(t *testing.T) {
+	for name, read := range map[string]func(h *ApplianceHost) error{
+		"the volume":   func(h *ApplianceHost) error { return h.VolumeMounted() },
+		"the disk":     func(h *ApplianceHost) error { _, _, err := h.DiskUse("/"); return err },
+		"etc/pve":      func(h *ApplianceHost) error { _, err := h.EtcPVE(); return err },
+		"the journal":  func(h *ApplianceHost) error { _, err := h.JournalUse(t.Context()); return err },
+		"memory":       func(h *ApplianceHost) error { _, err := h.MemoryPressure(); return err },
+		"rmem_max":     func(h *ApplianceHost) error { _, err := h.RmemMax(); return err },
+		"the versions": func(h *ApplianceHost) error { _, _, _, err := h.Versions(t.Context()); return err },
+		"the manifest": func(h *ApplianceHost) error { _, err := h.Manifest(); return err },
+		"the resolvers": func(h *ApplianceHost) error {
+			_, err := h.Resolvers()
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _ := newHost(t)
+			h.Host.Timeout = 50 * time.Millisecond
+			h.Host.Binary = fakeBinary(t, "echo cloudflared version 2026.9.3")
+			h.Resolve = func() ([]netip.Addr, error) { return nil, nil }
+			reads := stalled(t, h)
+			done := make(chan error, 1)
+
+			go func() { done <- read(h) }()
+
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.ErrorContains(t, err, "no answer within 50ms")
+			case <-time.After(10 * time.Second):
+				t.Fatal("the read is not bounded: a stalled storage holds it for good")
+			}
+			require.NotEmpty(t, reads())
+		})
+	}
+}
+
+func TestAStalledReadIsNotStartedAgainWhileItRuns(t *testing.T) {
+	h, _ := newHost(t)
+	h.Host.Timeout = 20 * time.Millisecond
+	reads := stalled(t, h)
+
+	_, _, err := h.DiskUse("/")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	start := time.Now()
+	_, _, err = h.DiskUse("/")
+
+	require.ErrorContains(t, err, "an earlier read of it has not returned yet")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 15*time.Millisecond, "it fails at once, and does not wait the deadline again")
+	require.Len(t, reads(), 1, "one read waits on the storage, not one for every doctor run")
+}
+
+// Only a read that was given up on holds the next one off: two doctors that
+// read the same thing at once, both well within the deadline, both get it.
+func TestTwoReadsOfOneThingAtOnceDoNotHoldEachOtherOff(t *testing.T) {
+	h, _ := newHost(t)
+	h.Host.Timeout = 10 * time.Second
+	var inside atomic.Int32
+	read := func(ctx context.Context) error {
+		inside.Add(1)
+		for inside.Load() < 2 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return nil
+	}
+	errs := make(chan error, 2)
+
+	for range 2 {
+		go func() { errs <- h.local("the use of /", read) }()
+	}
+
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+}
+
+func TestAReadThatReturnsLateIsReadAgain(t *testing.T) {
+	h, _ := newHost(t)
+	h.Host.Timeout = 20 * time.Millisecond
+	release := make(chan struct{})
+	var first atomic.Bool
+	h.Reading = func(string) {
+		if first.CompareAndSwap(false, true) {
+			<-release
+		}
+	}
+	require.NoError(t, os.MkdirAll(filepath.Join(h.Root, "etc", "pve"), 0o755))
+
+	_, err := h.EtcPVE()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	close(release)
+
+	require.Eventually(t, func() bool {
+		there, err := h.EtcPVE()
+		return err == nil && there
+	}, 5*time.Second, 5*time.Millisecond, "once the stalled read is over, the next one is made")
+}
+
+func TestAReadThatPanicsIsAnError(t *testing.T) {
+	h, _ := newHost(t)
+	h.Reading = func(string) { panic("boom") }
+
+	_, err := h.EtcPVE()
+
+	require.ErrorContains(t, err, "boom")
 }
 
 func TestTheVersionsAreThoseOfPcoCloudflaredAndDebian(t *testing.T) {
@@ -656,7 +848,9 @@ func TestTheProbeNeedsTheConnectorUser(t *testing.T) {
 		t.Skip("this machine has " + egress.ConnectorUser)
 	}
 
-	err := probeAsConnector(t.Context(), "", "10.0.0.1:80")
+	h, _ := newHost(t)
+
+	err := h.ProbeAsConnector(t.Context(), "10.0.0.1:80")
 
 	require.ErrorIs(t, err, egress.ErrNoConnectorUser)
 }
@@ -684,6 +878,31 @@ func TestAProbeThatDoesNotEnd(t *testing.T) {
 
 	require.Error(t, err)
 	require.Less(t, time.Since(start), 10*time.Second)
+}
+
+// A package upgrade replaces the binary of the daemon, and Linux then names
+// its path with " (deleted)": the probe runs the pco that is at the path now.
+func TestThePcoAProbeRuns(t *testing.T) {
+	there := func(paths ...string) func(string) bool {
+		return func(path string) bool { return slices.Contains(paths, path) }
+	}
+	for _, tt := range []struct {
+		name   string
+		exe    string
+		err    error
+		exists func(string) bool
+		want   string
+	}{
+		{"the running one", "/usr/bin/pco", nil, there(), "/usr/bin/pco"},
+		{"one that was replaced", "/usr/bin/pco (deleted)", nil, there("/usr/bin/pco"), "/usr/bin/pco"},
+		{"one that was replaced elsewhere", "/opt/pco/bin/pco (deleted)", nil, there("/opt/pco/bin/pco"), "/opt/pco/bin/pco"},
+		{"one that was replaced by nothing", "/opt/pco/bin/pco (deleted)", nil, there(), defaultPco},
+		{"one that is not told", "", errors.New("readlink /proc/self/exe: no such file"), there(), defaultPco},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, probeExecutable(tt.exe, tt.err, tt.exists))
+		})
+	}
 }
 
 func TestTheApplianceHostIsTheEnvOfAnAppliance(t *testing.T) {

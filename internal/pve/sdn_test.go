@@ -24,6 +24,43 @@ func TestSubnets(t *testing.T) {
 	require.Len(t, rec.requests(), 2)
 }
 
+func TestVNetsHaveTheirZone(t *testing.T) {
+	c, rec := newTestClient(t, map[string]reply{"/cluster/sdn/vnets": okReply(t, "sdn_vnets.json")})
+
+	got, err := c.VNets(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, []VNet{{Name: "pcotv1", Zone: "pcotest"}}, got)
+	require.Len(t, rec.requests(), 1, "the subnets are not asked")
+}
+
+func TestVNetsRejectBadAnswers(t *testing.T) {
+	for _, tt := range []struct{ name, vnets string }{
+		{"a vnet without a name", `[{"zone":"z"}]`},
+		{"a vnet name leaving its segment", `[{"vnet":"../zones","zone":"z"}]`},
+		{"a vnet without a zone", `[{"vnet":"a"}]`},
+		{"a zone leaving its segment", `[{"vnet":"a","zone":"a/b"}]`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, map[string]reply{"/cluster/sdn/vnets": {http.StatusOK, `{"data":` + tt.vnets + `}`}})
+
+			got, err := c.VNets(context.Background())
+
+			require.Error(t, err)
+			require.Nil(t, got)
+		})
+	}
+}
+
+func TestVNetsWithoutVnets(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{"/cluster/sdn/vnets": {http.StatusOK, `{"data":[]}`}})
+
+	got, err := c.VNets(context.Background())
+
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
 func TestSubnetsForms(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
 		"/cluster/sdn/vnets": {http.StatusOK, `{"data":[{"vnet":"a","zone":"z"},{"vnet":"b","zone":"z"}]}`},

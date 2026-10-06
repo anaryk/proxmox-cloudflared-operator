@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
@@ -28,18 +29,50 @@ type doctorEnv struct {
 	node doctor.LocalEnv
 }
 
-func defaultDoctorEnv() doctorEnv {
+// defaultDoctorEnv is the machine as it is: a Proxmox node, or the container of
+// an appliance, which the profile marker says when the doctor looks.
+func (a *app) defaultDoctorEnv() doctorEnv {
 	return doctorEnv{
 		euid: os.Geteuid,
 		node: localNode{
-			HostEnv: &doctor.HostEnv{Systemd: connector.NewSystemctl(), Clock: time.Now, StoreCheck: nodeStoreReady},
+			HostEnv: &doctor.HostEnv{Systemd: connector.NewSystemctl(), Clock: time.Now, StoreCheck: a.storeReady},
 			egress:  defaultEgressEnv(),
+			app:     a,
 		},
 	}
 }
 
-// nodeStoreReady says whether the store of the node is set up.
-func nodeStoreReady() error { return storeReadyAt(store.DefaultPaths()) }
+// onAppliance says whether this machine is the container of an appliance; a
+// marker that cannot be read is no appliance here, as for pco status.
+func (a *app) onAppliance() bool {
+	profile, err := store.DetectProfile(a.profileFile)
+	return err == nil && profile == store.ProfileAppliance
+}
+
+// volumeCheck is the check of the state volume of an appliance.
+func (a *app) volumeCheck() func(path, marker string) error {
+	if a.daemon.Appliance.Volume != nil {
+		return a.daemon.Appliance.Volume
+	}
+	return appliance.VolumeMounted
+}
+
+// storeReady says whether the store of this machine is set up: that of the
+// node, or in an appliance the volume with its marker, as the daemon checks it
+// at its start, and the store on it.
+func (a *app) storeReady() error {
+	if !a.onAppliance() {
+		return storeReadyAt(store.DefaultPaths())
+	}
+	if err := a.volumeCheck()(store.ApplianceLocal, store.VolumeMarker); err != nil {
+		return err
+	}
+	paths, err := store.PathsFor(store.ProfileAppliance)
+	if err != nil {
+		return err
+	}
+	return storeReadyAt(paths)
+}
 
 // storeReadyAt says whether the store at p is mounted and set up. It only
 // looks: the doctor changes nothing on the node, so the store is not made
@@ -56,6 +89,16 @@ func storeReadyAt(p store.Paths) error {
 type localNode struct {
 	*doctor.HostEnv
 	egress egressEnv
+	app    *app
+}
+
+// RepairFix is what puts the store of an appliance back, and empty on a host,
+// whose store is the cluster filesystem.
+func (n localNode) RepairFix() string {
+	if !n.app.onAppliance() {
+		return ""
+	}
+	return doctor.RepairFix(n.app.daemon.Appliance.System.VMIDHint(store.ApplianceLocal))
 }
 
 // Egress finds the egress filter as pco egress show does: switched off, its
@@ -86,7 +129,7 @@ func (n localNode) Egress(ctx context.Context) (engine.EgressView, error) {
 	return engine.EgressView{State: engine.EgressOn}, nil
 }
 
-func (a *app) doctorCmd() *cobra.Command { return a.doctorCmdWith(defaultDoctorEnv()) }
+func (a *app) doctorCmd() *cobra.Command { return a.doctorCmdWith(a.defaultDoctorEnv()) }
 
 func (a *app) doctorCmdWith(d doctorEnv) *cobra.Command {
 	return &cobra.Command{

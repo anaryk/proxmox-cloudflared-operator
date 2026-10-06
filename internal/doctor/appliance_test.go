@@ -17,6 +17,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -71,8 +72,10 @@ type fakeApp struct {
 	diskErr    error
 	journal    uint64
 	journalErr error
-	pressure   float64
+	memory     MemoryState
 	pressErr   error
+	vnets      []pve.VNet
+	vnetsErr   error
 	pco, cloud string
 	debian     string
 	versionErr error
@@ -82,6 +85,7 @@ type fakeApp struct {
 	resolveErr error
 	lookupErr  error
 	etcPVE     bool
+	etcPVEErr  error
 	rmem       int
 	rmemErr    error
 
@@ -120,7 +124,7 @@ func healthyApp() *fakeApp {
 		},
 		disk:      map[string][2]uint64{"/": {1 << 30, 4 << 30}, "/var/lib/pco": {100 << 20, 2 << 30}},
 		journal:   8 << 20,
-		pressure:  0.4,
+		memory:    MemoryState{Some10: 0.4, Own: true, Used: 120 << 20, Limit: 512 << 20},
 		pco:       "1.0.0",
 		cloud:     "2026.9.3",
 		debian:    "13.1",
@@ -219,7 +223,8 @@ func (f *fakeApp) DiskUse(path string) (used, total uint64, err error) {
 }
 
 func (f *fakeApp) JournalUse(context.Context) (uint64, error) { return f.journal, f.journalErr }
-func (f *fakeApp) MemoryPressure() (float64, error)           { return f.pressure, f.pressErr }
+func (f *fakeApp) MemoryPressure() (MemoryState, error)       { return f.memory, f.pressErr }
+func (f *fakeApp) VNets(context.Context) ([]pve.VNet, error)  { return f.vnets, f.vnetsErr }
 
 func (f *fakeApp) Versions(context.Context) (pco, cloudflared, debian string, err error) {
 	return f.pco, f.cloud, f.debian, f.versionErr
@@ -228,7 +233,7 @@ func (f *fakeApp) Versions(context.Context) (pco, cloudflared, debian string, er
 func (f *fakeApp) Manifest() (upgrade.Manifest, error)  { return f.manifest, f.manifestEr }
 func (f *fakeApp) Resolvers() ([]netip.Addr, error)     { return f.resolvers, f.resolveErr }
 func (f *fakeApp) Lookup(context.Context, string) error { return f.lookupErr }
-func (f *fakeApp) EtcPVE() bool                         { return f.etcPVE }
+func (f *fakeApp) EtcPVE() (bool, error)                { return f.etcPVE, f.etcPVEErr }
 func (f *fakeApp) RmemMax() (int, error)                { return f.rmem, f.rmemErr }
 
 // applianceEnv is a host that has an appliance's part.
@@ -326,7 +331,7 @@ func TestAHealthyApplianceSaysWhatItFound(t *testing.T) {
 		"unattended-upgrades": "unattended-upgrades is enabled and installs the security updates of Debian",
 		"disk":                "/ is 25% full (1.0 GiB of 4.0 GiB); /var/lib/pco is 4% full (100.0 MiB of 2.0 GiB)",
 		"journal":             "the journal takes 8.0 MiB",
-		"memory":              "memory pressure is 0.4%",
+		"memory":              "memory pressure of the container is 0.4%, with 120.0 MiB of 512.0 MiB in use",
 		"versions":            "pco 1.0.0, cloudflared 2026.9.3, Debian 13.1",
 		"net":                 "the service prefix is kept in place, and nothing was sent to it without a mapping",
 		"etc-pve":             "/etc/pve is not in the container",
@@ -561,11 +566,22 @@ func TestWhatTheDoctorFindsInAnAppliance(t *testing.T) {
 			a.perms = map[string][]string{"/": strings.Fields(pcoPrivs8)}
 		}, Finding{Check: "token", Level: LevelOK,
 			Detail: "the token holds exactly the privileges of role PCO on Proxmox VE 8: Pool.Audit, SDN.Audit, Sys.Audit, VM.Audit, VM.Monitor"}},
-		{"a token that holds more", "token", nil, func(a *fakeApp, _ *fakeEnv) {
+		{"a token that holds more through a line on /", "token", nil, func(a *fakeApp, _ *fakeEnv) {
+			a.perms = map[string][]string{"/": append(strings.Fields(pcoPrivs9), "VM.Console")}
+			a.data = applianceAccess(
+				pve.ACLEntry{Path: "/", Type: "token", UGID: pcoToken, RoleID: "PVEVMUser", Propagate: true},
+				pve.ACLEntry{Path: "/", Type: "user", UGID: "pco@pve", RoleID: "PVEVMUser", Propagate: true},
+				pve.ACLEntry{Path: "/vms/100", Type: "user", UGID: "pco@pve", RoleID: "PCOManaged", Propagate: true},
+			)
+		}, Finding{Check: "token", Level: LevelWarn,
+			Detail: "the token holds VM.Console besides the privileges of role PCO on Proxmox VE 9",
+			Fix:    "on the node: pveum acl delete / --roles PVEVMUser --users pco@pve; pveum acl delete / --roles PVEVMUser --tokens pco@pve!vm9240"}},
+		{"a token that holds more by no line of its own", "token", nil, func(a *fakeApp, _ *fakeEnv) {
 			a.perms = map[string][]string{"/": append(strings.Fields(pcoPrivs9), "VM.Console")}
 		}, Finding{Check: "token", Level: LevelWarn,
 			Detail: "the token holds VM.Console besides the privileges of role PCO on Proxmox VE 9",
-			Fix:    "take what role PCO does not give from the token and from pco@pve on /"}},
+			Fix: "on the node: pveum acl list shows what pco@pve and its token hold on /; delete what role PCO does not give with " +
+				"pveum acl delete / --roles <role> --users pco@pve, and the same with --tokens pco@pve!vm9240"}},
 		{"a token that holds less", "token", nil, func(a *fakeApp, _ *fakeEnv) { a.perms = map[string][]string{"/": {"Sys.Audit", "VM.Audit"}} },
 			Finding{Check: "token", Level: LevelFail,
 				Detail: "the token lacks Pool.Audit, SDN.Audit and VM.GuestAgent.Audit of role PCO on Proxmox VE 9",
@@ -637,12 +653,35 @@ func TestWhatTheDoctorFindsInAnAppliance(t *testing.T) {
 			a.data = applianceAccess(granted("/sdn/zones/localnetwork/vmbr1/30", "PVESDNUser"))
 		}, Finding{Check: "segment access", Level: LevelOK,
 			Detail: "no principal other than an admin and pco's own may use /sdn/zones/localnetwork/vmbr1/20, the segment of net0"}},
-		{"a segment whose vnet has a zone of its own", "segment access", nil, func(a *fakeApp, _ *fakeEnv) {
+		{"a grant on the zone of a vnet", "segment access", nil, func(a *fakeApp, _ *fakeEnv) {
 			a.config["net0"] = "name=eth0,bridge=vnet1,hwaddr=BC:24:11:00:92:40,ip=dhcp,type=veth"
+			a.vnets = []pve.VNet{{Name: "vnet1", Zone: "zone1"}, {Name: "vnet2", Zone: "zone2"}}
+			a.data = applianceAccess(granted("/sdn/zones/zone1", "PVESDNUser"))
+		}, Finding{Check: "segment access", Level: LevelWarn,
+			Detail: "pcotest@pve holds SDN.Use on /sdn/zones/zone1/vnet1, the segment of net0 of the appliance: a guest put on it with the MAC of the appliance cuts off its inbound traffic",
+			Fix:    "put the appliance on a segment only admins may use, or take SDN.Use on /sdn/zones/zone1/vnet1 from the principals named"}},
+		{"a grant on the vnet in its zone", "segment access", nil, func(a *fakeApp, _ *fakeEnv) {
+			a.config["net0"] = "name=eth0,bridge=vnet1,hwaddr=BC:24:11:00:92:40,ip=dhcp,type=veth"
+			a.vnets = []pve.VNet{{Name: "vnet1", Zone: "zone1"}}
 			a.data = applianceAccess(granted("/sdn/zones/zone1/vnet1", "PVESDNUser"))
 		}, Finding{Check: "segment access", Level: LevelWarn,
 			Detail: "pcotest@pve holds SDN.Use on /sdn/zones/zone1/vnet1, the segment of net0 of the appliance: a guest put on it with the MAC of the appliance cuts off its inbound traffic",
 			Fix:    "put the appliance on a segment only admins may use, or take SDN.Use on /sdn/zones/zone1/vnet1 from the principals named"}},
+		{"a grant on another zone than the one of the vnet", "segment access", nil, func(a *fakeApp, _ *fakeEnv) {
+			a.config["net0"] = "name=eth0,bridge=vnet1,hwaddr=BC:24:11:00:92:40,ip=dhcp,type=veth"
+			a.vnets = []pve.VNet{{Name: "vnet1", Zone: "zone1"}, {Name: "vnet2", Zone: "zone2"}}
+			a.data = applianceAccess(granted("/sdn/zones/zone2", "PVESDNUser"), granted("/sdn/zones/localnetwork", "PVESDNUser"))
+		}, Finding{Check: "segment access", Level: LevelOK,
+			Detail: "no principal other than an admin and pco's own may use /sdn/zones/zone1/vnet1, the segment of net0"}},
+		{"a vnet with a VLAN", "segment access", nil, func(a *fakeApp, _ *fakeEnv) {
+			a.config["net0"] = "name=eth0,bridge=vnet1,hwaddr=BC:24:11:00:92:40,ip=dhcp,tag=30,type=veth"
+			a.vnets = []pve.VNet{{Name: "vnet1", Zone: "zone1"}}
+			a.data = applianceAccess(granted("/sdn/zones/zone1/vnet1/30", "PVESDNUser"))
+		}, Finding{Check: "segment access", Level: LevelWarn,
+			Detail: "pcotest@pve holds SDN.Use on /sdn/zones/zone1/vnet1/30, the segment of net0 of the appliance: a guest put on it with the MAC of the appliance cuts off its inbound traffic",
+			Fix:    "put the appliance on a segment only admins may use, or take SDN.Use on /sdn/zones/zone1/vnet1/30 from the principals named"}},
+		{"vnets that cannot be read", "segment access", nil, func(a *fakeApp, _ *fakeEnv) { a.vnetsErr = errors.New("403") },
+			Finding{Check: "segment access", Level: LevelWarn, Detail: "the zone of the segment of the appliance could not be read: 403", Fix: fixAPI}},
 		{"a segment of a configuration without net0", "segment access", nil, func(a *fakeApp, _ *fakeEnv) { delete(a.config, "net0") },
 			Finding{Check: "segment access", Level: LevelWarn, Detail: "the configuration of the container has no net0: the segment of the appliance is not known",
 				Fix: repair}},
@@ -675,19 +714,37 @@ func TestWhatTheDoctorFindsInAnAppliance(t *testing.T) {
 		{"an API the connector reaches", "egress probe", nil, func(a *fakeApp, _ *fakeEnv) { a.probes[apiAddr] = nil },
 			Finding{Check: "egress probe", Level: LevelFail,
 				Detail: "as pco-connector, 10.92.0.1:8006 connects: the egress filter does not confine the connectors",
-				Fix:    fixTable}},
+				Fix:    fixLocalTable}},
 		{"an API the connector does not get an answer from", "egress probe", nil, func(a *fakeApp, _ *fakeEnv) {
 			a.probes[apiAddr] = errors.New("dial tcp 10.92.0.1:8006: i/o timeout")
 		}, Finding{Check: "egress probe", Level: LevelFail,
 			Detail: "as pco-connector, 10.92.0.1:8006 is not refused, as the egress filter refuses it, but fails otherwise: dial tcp 10.92.0.1:8006: i/o timeout",
-			Fix:    fixTable}},
+			Fix:    fixLocalTable}},
 		{"both probes wrong", "egress probe", nil, func(a *fakeApp, _ *fakeEnv) {
 			a.probes["region1.v2.argotunnel.com:7844"] = ErrRefused
 			a.probes[apiAddr] = nil
 		}, Finding{Check: "egress probe", Level: LevelFail,
 			Detail: "as pco-connector, region1.v2.argotunnel.com:7844 does not connect: connection refused; the connectors cannot reach Cloudflare; " +
 				"as pco-connector, 10.92.0.1:8006 connects: the egress filter does not confine the connectors",
-			Fix: "the appliance needs a way out to Cloudflare on port 7844, TCP and UDP; pco egress show shows the table; " + fixTable}},
+			Fix: "the appliance needs a way out to Cloudflare on port 7844, TCP and UDP; pco egress show shows the table; " + fixLocalTable}},
+		{"a refusal while the API is down", "egress probe", nil, func(_ *fakeApp, env *fakeEnv) { env.pveErr = errors.New("connection refused") },
+			Finding{Check: "egress probe", Level: LevelWarn,
+				Detail: "as pco-connector, 10.92.0.1:8006 is refused, but the API does not answer for pco either: connection refused; " +
+					"the refusal says nothing of the egress filter",
+				Fix: fixAPI}},
+		{"a refusal while the API is down and an edge that is not reached", "egress probe", nil, func(a *fakeApp, env *fakeEnv) {
+			env.pveErr = errors.New("connection refused")
+			a.probes["region1.v2.argotunnel.com:7844"] = errors.New("dial tcp: i/o timeout")
+		}, Finding{Check: "egress probe", Level: LevelFail,
+			Detail: "as pco-connector, region1.v2.argotunnel.com:7844 does not connect: dial tcp: i/o timeout; the connectors cannot reach Cloudflare; " +
+				"as pco-connector, 10.92.0.1:8006 is refused, but the API does not answer for pco either: connection refused; the refusal says nothing of the egress filter",
+			Fix: fixEdge + "; " + fixAPI}},
+		{"no connector user", "egress probe", nil, func(a *fakeApp, _ *fakeEnv) {
+			err := fmt.Errorf("pco-connector: %w", egress.ErrNoConnectorUser)
+			a.probes["region1.v2.argotunnel.com:7844"], a.probes[apiAddr] = err, err
+		}, Finding{Check: "egress probe", Level: LevelFail,
+			Detail: "the user pco-connector does not exist: no connector starts, and the egress filter cannot be tried",
+			Fix:    "install the package again or run systemd-sysusers"}},
 		// cloudflare api and clock
 		{"api.cloudflare.com that does not answer", "cloudflare api", nil, func(a *fakeApp, _ *fakeEnv) { a.cfErr = errors.New("i/o timeout") },
 			Finding{Check: "cloudflare api", Level: LevelWarn, Detail: "api.cloudflare.com does not answer for pco: i/o timeout",
@@ -762,12 +819,21 @@ func TestWhatTheDoctorFindsInAnAppliance(t *testing.T) {
 		{"a journal that cannot be read", "journal", nil, func(a *fakeApp, _ *fakeEnv) { a.journalErr = errors.New("permission denied") },
 			Finding{Check: "journal", Level: LevelWarn, Detail: "the size of the journal could not be read: permission denied", Fix: "journalctl --disk-usage"}},
 		// memory
-		{"memory pressure of 10", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.pressure = 10 },
-			Finding{Check: "memory", Level: LevelOK, Detail: "memory pressure is 10.0%"}},
-		{"memory pressure above 10", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.pressure = 10.1 },
+		{"memory pressure of 10", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.memory.Some10 = 10 },
+			Finding{Check: "memory", Level: LevelOK, Detail: "memory pressure of the container is 10.0%, with 120.0 MiB of 512.0 MiB in use"}},
+		{"memory pressure above 10", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.memory.Some10 = 10.1 },
 			Finding{Check: "memory", Level: LevelWarn,
-				Detail: "memory pressure is 10.1%: tasks of the appliance waited for memory for that share of the last 10 seconds",
+				Detail: "memory pressure of the container is 10.1%: tasks of the appliance waited for memory for that share of the last 10 seconds",
 				Fix:    "on the node: pct set 9240 --memory 1024"}},
+		{"memory pressure of the container without a limit", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.memory.Limit = 0 },
+			Finding{Check: "memory", Level: LevelOK, Detail: "memory pressure of the container is 0.4%, with 120.0 MiB in use"}},
+		{"memory pressure of the node alone", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.memory = MemoryState{Some10: 0.4} },
+			Finding{Check: "memory", Level: LevelOK, Detail: "memory pressure of the node is 0.4%; the container's own is not reported"}},
+		{"memory pressure of the node above 10", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.memory = MemoryState{Some10: 12} },
+			Finding{Check: "memory", Level: LevelWarn,
+				Detail: "memory pressure of the node is 12.0%, and the container's own is not reported: the node is short of memory, which the appliance shares; " +
+					"more memory for the container would not change that",
+				Fix: "on the node: cat /proc/pressure/memory, and free -m for who uses it"}},
 		{"pressure the kernel does not report", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.pressErr = fs.ErrNotExist },
 			Finding{Check: "memory", Level: LevelOK, Detail: "the kernel reports no memory pressure to this container"}},
 		{"pressure that cannot be read", "memory", nil, func(a *fakeApp, _ *fakeEnv) { a.pressErr = errors.New("bad format") },
@@ -816,6 +882,13 @@ func TestWhatTheDoctorFindsInAnAppliance(t *testing.T) {
 				Detail: "/etc/pve exists in the container: a bind mount of the cluster filesystem is in the container; remove it",
 				Fix: "remove the mount point whose mp is /etc/pve (pct config 9240 on the node shows it, pct set 9240 --delete mpN removes it): " +
 					"with the node's www-data group mapped in, it lets the container read the TLS keys of the node"}},
+		{"a /etc/pve that does not answer", "etc-pve", nil, func(a *fakeApp, _ *fakeEnv) {
+			a.etcPVEErr = fmt.Errorf("no answer within 5s: %w", context.DeadlineExceeded)
+		}, Finding{Check: "etc-pve", Level: LevelFail,
+			Detail: "/etc/pve did not answer: no answer within 5s: context deadline exceeded; something is mounted there that stalls, " +
+				"a bind mount of the cluster filesystem in the container perhaps",
+			Fix: "remove the mount point whose mp is /etc/pve (pct config 9240 on the node shows it, pct set 9240 --delete mpN removes it): " +
+				"with the node's www-data group mapped in, it lets the container read the TLS keys of the node"}},
 		{"a bind mount of /etc/pve in mp1", "etc-pve", nil, func(a *fakeApp, _ *fakeEnv) {
 			a.etcPVE = true
 			a.config["mp1"] = "/etc/pve,mp=/etc/pve"
@@ -1118,6 +1191,53 @@ func TestABehindWriterWithoutAnIdentityKeepsAPlaceholder(t *testing.T) {
 	f := only(Run(t.Context(), st, healthyEnv()), "writer")
 
 	require.Equal(t, "pct exec <vmid> -- pco appliance recover", f.Fix)
+}
+
+func TestABehindWriterTakesTheVMIDFromTheAppliance(t *testing.T) {
+	st := healthyApplianceState()
+	st.WriterVerdict, st.Identity = engine.VerdictBehind, nil
+
+	f := only(Run(t.Context(), st, healthyApplianceEnv()), "writer")
+
+	require.Equal(t, "pct exec 9240 -- pco appliance recover", f.Fix, "the install knows it, whatever the identity found")
+}
+
+// hangingApp has a check whose read never ends.
+type hangingApp struct {
+	*fakeApp
+	release chan struct{}
+}
+
+func (a hangingApp) Holds(ctx context.Context) ([]string, error) {
+	<-a.release
+	return a.fakeApp.Holds(ctx)
+}
+
+type hangingEnv struct {
+	*fakeEnv
+	app hangingApp
+}
+
+func (e *hangingEnv) Appliance() ApplianceEnv { return e.app }
+
+func TestACheckThatDoesNotEndIsAFailureAndTheOthersAnswer(t *testing.T) {
+	old := checksBound
+	checksBound = 100 * time.Millisecond
+	t.Cleanup(func() { checksBound = old })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	env := &hangingEnv{fakeEnv: healthyEnv(), app: hangingApp{fakeApp: healthyApp(), release: release}}
+
+	start := time.Now()
+	findings := Run(t.Context(), healthyApplianceState(), env)
+
+	require.Less(t, time.Since(start), 10*time.Second, "the doctor does not wait for what does not end")
+	require.Equal(t, Finding{Check: "holds", Level: LevelFail,
+		Detail: "no answer within 100ms: something it reads may be stalled",
+		Fix:    "look for a mount or a storage of the container that does not answer: pct config 9240 on the node lists them"}, only(findings, "holds"))
+	require.Equal(t, LevelOK, only(findings, "features").Level)
+	require.Equal(t, LevelOK, only(findings, "token").Level)
+	require.True(t, slices.IsSortedFunc(findings, compareChecks))
 }
 
 func TestTheStoreOfAnApplianceNamesTheRepair(t *testing.T) {

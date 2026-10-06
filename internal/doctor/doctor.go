@@ -111,7 +111,7 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 			out = append(out, warn(check, "not known until the first cycle", "wait for the first cycle"))
 		}
 	} else {
-		out = append(out, checkMode(st), checkInventory(st), checkWriter(st), checkProblems(st), checkConflicts(st), checkLost(st), checkWaiting(st),
+		out = append(out, checkMode(st), checkInventory(st), checkWriter(st, app), checkProblems(st), checkConflicts(st), checkLost(st), checkWaiting(st),
 			checkRogue(st), checkAdmission(st), checkRejected(st))
 		out = append(out, checkCredentials(st, env.Now())...)
 		out = append(out, checkApprovals(st)...)
@@ -273,8 +273,9 @@ func checkInventory(st engine.State) Finding {
 
 // checkWriter fails when the writer of the tunnel configuration is not this
 // daemon. What puts it right differs by profile: an appliance recovers its
-// own state, and a host is recovered from the node.
-func checkWriter(st engine.State) Finding {
+// own state, and a host is recovered from the node. app is the part of the
+// appliance, which knows its VMID.
+func checkWriter(st engine.State, app ApplianceEnv) Finding {
 	recover, stale, foreign := "pco setup --recover", "on the node that should write", "if no other node runs pco with this install, "+
 		"replace the Cloudflare token, run pco tunnel rotate and pco setup --recover on this node, then pco apply; otherwise stop the other installation"
 	if st.Profile == store.ProfileAppliance {
@@ -287,7 +288,10 @@ func checkWriter(st engine.State) Finding {
 		return fail("writer", "a newer generation of this install writes the tunnel configuration", "run "+recover+" "+stale)
 	case engine.VerdictBehind:
 		vmid := "<vmid>"
-		if st.Identity != nil && st.Identity.VMID > 0 {
+		switch {
+		case app != nil:
+			vmid = strconv.Itoa(app.Self().VMID)
+		case st.Identity != nil && st.Identity.VMID > 0:
 			vmid = strconv.Itoa(st.Identity.VMID)
 		}
 		return fail("writer", "the state of this appliance is older than its last write at Cloudflare (rollback or restore)",

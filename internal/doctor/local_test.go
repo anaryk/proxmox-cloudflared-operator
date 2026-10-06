@@ -3,11 +3,14 @@ package doctor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -172,4 +175,52 @@ func TestTheDoctorWithoutTheDaemonHasAFindingForEveryCheckItMakes(t *testing.T) 
 	}
 
 	require.Equal(t, []string{"cloudflared", "daemon", "egress", "store", "unit pco-egress.service", "unit pco.service"}, checks)
+}
+
+// applianceNode is a node that is an appliance's container: what puts its
+// store back is its own command.
+type applianceNode struct {
+	*localEnv
+	repair string
+}
+
+func (n applianceNode) RepairFix() string { return n.repair }
+
+func TestTheDoctorWithoutTheDaemonInAnApplianceNamesItsRepair(t *testing.T) {
+	const repair = "run pco appliance repair --vmid 9240 on the node"
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"a volume without its marker", fmt.Errorf("/var/lib/pco %w", appliance.ErrNoMarker)},
+		{"a volume that is no mount", fmt.Errorf("/var/lib/pco %w", appliance.ErrNotMountPoint)},
+		{"a store that is not set up", errors.New("pco is not set up on this node; run pco setup")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			node := healthyNode()
+			node.storeErr = tt.err
+
+			findings := RunLocal(t.Context(), applianceNode{localEnv: node, repair: repair})
+
+			i := slices.IndexFunc(findings, func(f Finding) bool { return f.Check == "store" })
+			require.GreaterOrEqual(t, i, 0)
+			require.Equal(t, Finding{Check: "store", Level: LevelFail, Detail: tt.err.Error(), Fix: repair}, findings[i],
+				"the container has no pve-cluster to look at")
+		})
+	}
+}
+
+func TestTheDoctorWithoutTheDaemonOfAHostKeepsItsFixes(t *testing.T) {
+	node := healthyNode()
+	node.storeErr = store.ErrNotMounted
+
+	findings := RunLocal(t.Context(), node)
+
+	i := slices.IndexFunc(findings, func(f Finding) bool { return f.Check == "store" })
+	require.Equal(t, "systemctl status pve-cluster", findings[i].Fix)
+}
+
+func TestTheRepairFixNamesTheVMIDItIsGiven(t *testing.T) {
+	require.Equal(t, "run pco appliance repair --vmid 9240 on the node", RepairFix("9240"))
+	require.Equal(t, "run pco appliance repair --vmid <vmid> on the node", RepairFix("<vmid>"))
 }

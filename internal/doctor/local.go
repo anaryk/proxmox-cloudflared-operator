@@ -31,6 +31,13 @@ type LocalEnv interface {
 	Egress(ctx context.Context) (engine.EgressView, error)
 }
 
+// repairing is a LocalEnv of the container of an appliance, which says what
+// puts its store back: the command of the appliance, where a host looks at the
+// cluster filesystem.
+type repairing interface {
+	RepairFix() string
+}
+
 // unitState is what is known of whether a unit runs.
 type unitState int
 
@@ -45,11 +52,15 @@ const (
 // It says that the rest was not made. Every check has a finding, sorted by
 // check.
 func RunLocal(ctx context.Context, env LocalEnv) []Finding {
+	repair := ""
+	if r, ok := env.(repairing); ok {
+		repair = r.RepairFix()
+	}
 	daemon, daemonState := checkUnit(ctx, env, daemonUnit, "no command is answered and no cycle runs")
 	table, _ := checkUnit(ctx, env, egressUnit, "the connectors, which require it, do not start")
 	out := []Finding{
 		daemon, table, checkSilentDaemon(daemonState),
-		checkCloudflared(ctx, env), checkStore(ctx, env, ""), checkLocalEgress(ctx, env),
+		checkCloudflared(ctx, env), checkStore(ctx, env, repair), checkLocalEgress(ctx, env),
 	}
 	slices.SortStableFunc(out, compareChecks)
 	return out

@@ -31,21 +31,38 @@ const (
 	ProbeFailed    = "failed: "
 )
 
-// probeAsConnector connects to addr as the user the connectors run as, by
-// running pco egress probe with the credentials of that user: the egress
-// filter matches the user of the socket, so a connection of root says nothing
-// of it. exe is the pco to run; empty is this one.
-func probeAsConnector(ctx context.Context, exe, addr string) error {
+// probeTarget is what a probe as the user the connectors run as needs: the pco
+// to run, and the credentials of that user. The egress filter matches the user
+// of the socket, so a connection of root says nothing of it, and pco egress
+// probe is run with the credentials of that user. exe is the pco to run; empty
+// is this one.
+func probeTarget(exe string) (string, *syscall.Credential, error) {
 	uid, gid, err := connectorIDs()
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	if exe == "" {
-		if exe, err = os.Executable(); err != nil {
-			exe = defaultPco
-		}
+		exe, err = os.Executable()
+		exe = probeExecutable(exe, err, func(path string) bool { _, err := os.Stat(path); return err == nil })
 	}
-	return runProbe(ctx, exe, addr, &syscall.Credential{Uid: uid, Gid: gid}, probeTimeout)
+	return exe, &syscall.Credential{Uid: uid, Gid: gid}, nil
+}
+
+// probeExecutable is the pco a probe runs: the running one, by the path the
+// system gives it. After an upgrade of the package replaced the binary, Linux
+// gives that path with " (deleted)" after it, and the pco that is there now is
+// at the path without it; when none is, the one the package installs.
+func probeExecutable(exe string, err error, exists func(string) bool) string {
+	if err != nil {
+		return defaultPco
+	}
+	if path, replaced := strings.CutSuffix(exe, " (deleted)"); replaced {
+		if exists(path) {
+			return path
+		}
+		return defaultPco
+	}
+	return exe
 }
 
 // runProbe runs pco egress probe of exe for addr, with cred when there is one,

@@ -13,8 +13,35 @@ type Subnet struct {
 	Gateway netip.Addr // zero when the subnet has none
 }
 
+// VNet is an SDN vnet and the zone it is in, which the path of its access
+// control starts with: /sdn/zones/<zone>/<vnet>.
+type VNet struct {
+	Name string
+	Zone string
+}
+
 type vnetWire struct {
 	Vnet string `json:"vnet"`
+	Zone string `json:"zone"`
+}
+
+// VNets lists the SDN vnets as configured, applied or not, with their zones.
+func (c *Client) VNets(ctx context.Context) ([]VNet, error) {
+	var rows []vnetWire
+	if err := c.get(ctx, "cluster/sdn/vnets", nil, &rows); err != nil {
+		return nil, fmt.Errorf("fetching sdn vnets: %w", err)
+	}
+	var out []VNet
+	for _, row := range rows {
+		if !validSegment(row.Vnet) {
+			return nil, fmt.Errorf("fetching sdn vnets: invalid vnet name %q", row.Vnet)
+		}
+		if !validSegment(row.Zone) {
+			return nil, fmt.Errorf("fetching sdn vnets: vnet %s has the invalid zone %q", row.Vnet, row.Zone)
+		}
+		out = append(out, VNet{Name: row.Vnet, Zone: row.Zone})
+	}
+	return out, nil
 }
 
 type subnetWire struct {

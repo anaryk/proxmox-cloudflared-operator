@@ -18,6 +18,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
@@ -83,10 +84,13 @@ type ApplianceEnv interface {
 	NodeNetwork(ctx context.Context) ([]pve.NodeIface, error)
 	DiskUse(path string) (used, total uint64, err error)
 	JournalUse(ctx context.Context) (uint64, error)
-	// MemoryPressure is the share of the last 10 seconds, in percent, in
-	// which some task waited for memory; an error that is fs.ErrNotExist when
-	// the kernel does not say.
-	MemoryPressure() (some10 float64, err error)
+	// VNets are the SDN vnets with their zones, which the access control
+	// names a vnet by.
+	VNets(ctx context.Context) ([]pve.VNet, error)
+	// MemoryPressure is what the kernel says of memory pressure, and of the
+	// container's own use; an error that is fs.ErrNotExist when it says
+	// nothing of pressure.
+	MemoryPressure() (MemoryState, error)
 	// Versions are those of pco, of cloudflared and of Debian.
 	Versions(ctx context.Context) (pco, cloudflared, debian string, err error)
 	// Manifest is the list of vetted cloudflared versions the package of pco
@@ -96,10 +100,23 @@ type ApplianceEnv interface {
 	// name.
 	Resolvers() ([]netip.Addr, error)
 	Lookup(ctx context.Context, name string) error
-	// EtcPVE says whether /etc/pve exists in the container.
-	EtcPVE() bool
+	// EtcPVE says whether /etc/pve exists in the container; it is an error
+	// when that is not answered, as a mount that stalls does not.
+	EtcPVE() (bool, error)
 	// RmemMax is net.core.rmem_max.
 	RmemMax() (int, error)
+}
+
+// MemoryState is memory pressure as the kernel reports it. Some10 is the share
+// of the last 10 seconds, in percent, in which some task waited for memory:
+// the container's own when Own, else the node's, which the container shares.
+// Used and Limit are the use of the container's memory and its limit, 0 when
+// there is none or the cgroup does not say.
+type MemoryState struct {
+	Some10 float64
+	Own    bool
+	Used   uint64
+	Limit  uint64
 }
 
 // applianceHost is an Env that has the part of an appliance.
@@ -121,8 +138,12 @@ func applianceOf(st engine.State, env Env) ApplianceEnv {
 
 // repairFix is what puts the volume or the state of the appliance back, on
 // the node.
-func repairFix(vmid int) string {
-	return fmt.Sprintf("run pco appliance repair --vmid %d on the node", vmid)
+func repairFix(vmid int) string { return RepairFix(strconv.Itoa(vmid)) }
+
+// RepairFix is repairFix for a VMID that is told as text, "<vmid>" when it is
+// not known.
+func RepairFix(vmid string) string {
+	return "run pco appliance repair --vmid " + vmid + " on the node"
 }
 
 const (
@@ -166,31 +187,34 @@ type applianceRun struct {
 	pending func() (map[string]string, error)
 	data    func() (access.Data, error)
 	date    func() (time.Time, error)
+	release func() (string, error)
 	major   func() (int, error)
 }
 
 func newApplianceRun(ctx context.Context, st engine.State, env Env, app ApplianceEnv) *applianceRun {
-	return &applianceRun{
+	r := &applianceRun{
 		ctx: ctx, st: st, env: env, app: app, self: app.Self(), now: env.Now(),
 		config:  sync.OnceValues(func() (pve.GuestConfig, error) { return app.OwnConfig(ctx) }),
 		pending: sync.OnceValues(func() (map[string]string, error) { return app.OwnPending(ctx) }),
 		data:    sync.OnceValues(func() (access.Data, error) { return app.AccessData(ctx) }),
 		date:    sync.OnceValues(func() (time.Time, error) { return app.CloudflareDate(ctx) }),
-		major: sync.OnceValues(func() (int, error) {
-			release, err := env.PVEVersion(ctx)
-			if err != nil {
-				return 0, err
-			}
-			major, _, parsed := majorMinor(release)
-			if !parsed {
-				return 0, fmt.Errorf("cannot tell the release from %q", release)
-			}
-			return major, nil
-		}),
 	}
+	r.release = sync.OnceValues(func() (string, error) { return env.PVEVersion(ctx) })
+	r.major = func() (int, error) {
+		release, err := r.release()
+		if err != nil {
+			return 0, err
+		}
+		major, _, parsed := majorMinor(release)
+		if !parsed {
+			return 0, fmt.Errorf("cannot tell the release from %q", release)
+		}
+		return major, nil
+	}
+	return r
 }
 
-// applianceChecks are the checks of the appliance, each with the name of its
+// applianceRuns are the checks of the appliance, each with the name of its
 // findings: a fixed key.
 var applianceRuns = []struct {
 	name string
@@ -228,26 +252,73 @@ func one(check func(*applianceRun) Finding) func(*applianceRun) []Finding {
 	return func(r *applianceRun) []Finding { return []Finding{check(r)} }
 }
 
+// checksBound is how long the checks of the appliance may take in all. A read
+// that never returns, as one of a storage that stalls, ends in a failure of the
+// check that made it, and does not hold the doctor.
+var checksBound = 30 * time.Second
+
+const fixStalled = "look for a mount or a storage of the container that does not answer: pct config <vmid> on the node lists them"
+
 // findings runs the checks of the appliance at once, so that a node that
 // answers slowly costs the time of its slowest question and not the sum of
 // them. A check that panics is a failure of its own, and cannot take the daemon
-// down.
+// down; one that has not ended within checksBound is a failure, and is left to
+// end on its own.
 func (r *applianceRun) findings() []Finding {
-	results := make([][]Finding, len(applianceRuns))
-	fns := make([]func(), len(applianceRuns))
-	for i, c := range applianceRuns {
-		fns[i] = func() { results[i] = c.run(r) }
+	type result struct {
+		findings []Finding
+		stopped  error
 	}
-	stopped := together(fns...)
+	done := make([]chan result, len(applianceRuns))
+	for i, c := range applianceRuns {
+		done[i] = make(chan result, 1)
+		go func() {
+			var res result
+			defer func() {
+				if p := recover(); p != nil {
+					res.stopped = fmt.Errorf("%v", p)
+				}
+				done[i] <- res
+			}()
+			res.findings = c.run(r)
+		}()
+	}
+	timer := time.NewTimer(checksBound)
+	defer timer.Stop()
+	late := false
 	var out []Finding
 	for i, c := range applianceRuns {
-		if stopped[i] != nil {
-			out = append(out, fail(c.name, "the check stopped on an internal error: "+stopped[i].Error(), "journalctl -u pco may say more; report it"))
-			continue
+		var res result
+		got := false
+		if !late {
+			select {
+			case res, got = <-done[i]:
+			case <-timer.C:
+				late = true
+			}
 		}
-		out = append(out, results[i]...)
+		if late {
+			select {
+			case res, got = <-done[i]:
+			default:
+			}
+		}
+		switch {
+		case !got:
+			out = append(out, fail(c.name, fmt.Sprintf("no answer within %s: something it reads may be stalled", checksBound), r.stalledFix()))
+		case res.stopped != nil:
+			out = append(out, fail(c.name, "the check stopped on an internal error: "+res.stopped.Error(), "journalctl -u pco may say more; report it"))
+		default:
+			out = append(out, res.findings...)
+		}
 	}
 	return out
+}
+
+// stalledFix is what to do about a check that did not end, with the VMID of
+// the appliance.
+func (r *applianceRun) stalledFix() string {
+	return strings.ReplaceAll(fixStalled, "<vmid>", strconv.Itoa(r.self.VMID))
 }
 
 // together runs the functions at once and waits for all of them. A function
@@ -617,10 +688,33 @@ func (r *applianceRun) checkToken() Finding {
 			"pveum acl modify / --users %s --roles PCO; pveum acl modify / --tokens %s --roles PCO",
 			fixOnNode, strings.Join(want, ","), r.self.User, r.self.Token))
 	case len(extra) > 0:
-		return warn(check, fmt.Sprintf("the token holds %s besides the privileges of %s", list(extra), release),
-			fmt.Sprintf("take what role PCO does not give from the token and from %s on /", r.self.User))
+		return warn(check, fmt.Sprintf("the token holds %s besides the privileges of %s", list(extra), release), r.dropExtra())
 	}
 	return ok(check, fmt.Sprintf("the token holds exactly the privileges of %s: %s", release, strings.Join(want, ", ")))
+}
+
+// dropExtra is what takes from pco's user and token what role PCO does not give
+// on /: the lines of the access control that say it, where the doctor can read
+// them, and else how to find them.
+func (r *applianceRun) dropExtra() string {
+	if d, err := r.data(); err == nil {
+		var cmds []string
+		for _, e := range d.ACL {
+			if e.Path == "/" && e.Type == "user" && e.UGID == r.self.User && e.RoleID != setup.RoleID {
+				cmds = append(cmds, fmt.Sprintf("pveum acl delete / --roles %s --users %s", e.RoleID, e.UGID))
+			}
+		}
+		for _, e := range d.ACL {
+			if e.Path == "/" && e.Type == "token" && e.UGID == r.self.Token && e.RoleID != setup.RoleID {
+				cmds = append(cmds, fmt.Sprintf("pveum acl delete / --roles %s --tokens %s", e.RoleID, e.UGID))
+			}
+		}
+		if len(cmds) > 0 {
+			return fixOnNode + strings.Join(cmds, "; ")
+		}
+	}
+	return fmt.Sprintf("%spveum acl list shows what %s and its token hold on /; delete what role PCO does not give with "+
+		"pveum acl delete / --roles <role> --users %s, and the same with --tokens %s", fixOnNode, r.self.User, r.self.User, r.self.Token)
 }
 
 // checkAccess fails while a principal other than an admin and pco's own can
@@ -702,53 +796,36 @@ func (r *applianceRun) checkSegmentAccess() Finding {
 	if vlan := specOption(net0, "tag"); vlan != "" {
 		suffix += "/" + vlan
 	}
-	// A plain bridge is in the zone localnetwork; a vnet is in the zone an
-	// entry of the access control names it in.
-	zones := []string{"localnetwork"}
-	for _, e := range d.ACL {
-		if zone, found := zoneOfVNet(e.Path, bridge); found && !slices.Contains(zones, zone) {
-			zones = append(zones, zone)
-		}
+	// A plain Linux bridge is in the zone localnetwork; a vnet is in its own.
+	vnets, err := r.app.VNets(r.ctx)
+	if err != nil {
+		return unread(check, "the zone of the segment of the appliance", err)
 	}
+	zone := "localnetwork"
+	if i := slices.IndexFunc(vnets, func(v pve.VNet) bool { return v.Name == bridge }); i >= 0 {
+		zone = vnets[i].Zone
+	}
+	path := "/sdn/zones/" + zone + suffix
 	admins := access.Admins(d)
-	var details, paths, held []string
-	for _, zone := range zones {
-		path := "/sdn/zones/" + zone + suffix
-		var names []string
-		for _, p := range access.Effective(d, path, []string{"SDN.Use"}) {
-			if !slices.Contains(admins, p.ID) && !r.self.own(p.ID) {
-				names = append(names, p.ID)
-			}
-		}
-		paths = append(paths, path)
-		if len(names) > 0 {
-			held = append(held, path)
-			details = append(details, fmt.Sprintf("%s %s SDN.Use on %s, the segment of net0 of the appliance: "+
-				"a guest put on it with the MAC of the appliance cuts off its inbound traffic", strings.Join(names, ", "), verb(len(names), "holds", "hold"), path))
+	var names []string
+	for _, p := range access.Effective(d, path, []string{"SDN.Use"}) {
+		if !slices.Contains(admins, p.ID) && !r.self.own(p.ID) {
+			names = append(names, p.ID)
 		}
 	}
-	if len(details) == 0 {
-		return ok(check, fmt.Sprintf("no principal other than an admin and pco's own may use %s, the segment of net0", strings.Join(paths, " or ")))
+	if len(names) == 0 {
+		return ok(check, fmt.Sprintf("no principal other than an admin and pco's own may use %s, the segment of net0", path))
 	}
-	return warn(check, strings.Join(details, "; "),
-		fmt.Sprintf("put the appliance on a segment only admins may use, or take SDN.Use on %s from the principals named", strings.Join(held, " and ")))
-}
-
-// zoneOfVNet is the zone of a path of the access control that names vnet in
-// it: /sdn/zones/<zone>/<vnet> and what is below.
-func zoneOfVNet(path, vnet string) (string, bool) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) >= 4 && parts[0] == "sdn" && parts[1] == "zones" && parts[3] == vnet {
-		return parts[2], true
-	}
-	return "", false
+	return warn(check, fmt.Sprintf("%s %s SDN.Use on %s, the segment of net0 of the appliance: "+
+		"a guest put on it with the MAC of the appliance cuts off its inbound traffic", strings.Join(names, ", "), verb(len(names), "holds", "hold"), path),
+		fmt.Sprintf("put the appliance on a segment only admins may use, or take SDN.Use on %s from the principals named", path))
 }
 
 // checkAPI says whether the endpoint of Proxmox answers under the server name
 // its certificate is verified under.
 func (r *applianceRun) checkAPI() Finding {
 	const check = "api"
-	_, err := r.env.PVEVersion(r.ctx)
+	_, err := r.release()
 	s := r.self
 	switch verr := r.app.VerifyError(); {
 	case verr != nil:
@@ -802,21 +879,39 @@ func (r *applianceRun) checkEgressProbe() Finding {
 	if stopped[1] != nil {
 		apiErr = fmt.Errorf("the probe stopped on an internal error: %w", stopped[1])
 	}
+	if errors.Is(edgeErr, egress.ErrNoConnectorUser) || errors.Is(apiErr, egress.ErrNoConnectorUser) {
+		return fail(check, "the user "+egress.ConnectorUser+" does not exist: no connector starts, and the egress filter cannot be tried",
+			"install the package again or run systemd-sysusers")
+	}
 	var details, fixes []string
+	level := LevelOK
 	if edgeErr != nil {
+		level = LevelFail
 		details = append(details, fmt.Sprintf("as pco-connector, %s does not connect: %v; the connectors cannot reach Cloudflare", edge, edgeErr))
 		fixes = append(fixes, fixEdge)
 	}
 	switch {
 	case apiErr == nil:
+		level = LevelFail
 		details = append(details, fmt.Sprintf("as pco-connector, %s connects: the egress filter does not confine the connectors", api))
-		fixes = append(fixes, fixTable)
+		fixes = append(fixes, fixLocalTable)
 	case !errors.Is(apiErr, ErrRefused):
+		level = LevelFail
 		details = append(details, fmt.Sprintf("as pco-connector, %s is not refused, as the egress filter refuses it, but fails otherwise: %v", api, apiErr))
-		fixes = append(fixes, fixTable)
+		fixes = append(fixes, fixLocalTable)
+	default:
+		// The node answers a connection to a port nothing listens on with the
+		// same refusal, so a refusal proves the filter only while the API
+		// answers to pco itself.
+		if _, err := r.release(); err != nil {
+			level = worse(level, LevelWarn)
+			details = append(details, fmt.Sprintf("as pco-connector, %s is refused, but the API does not answer for pco either: %v; "+
+				"the refusal says nothing of the egress filter", api, err))
+			fixes = append(fixes, fixAPI)
+		}
 	}
 	if len(details) > 0 {
-		return fail(check, strings.Join(details, "; "), strings.Join(fixes, "; "))
+		return Finding{Check: check, Level: level, Detail: strings.Join(details, "; "), Fix: strings.Join(fixes, "; ")}
 	}
 	return ok(check, fmt.Sprintf("as pco-connector, %s connects and %s is refused", edge, api))
 }
@@ -961,23 +1056,36 @@ func (r *applianceRun) checkJournal() Finding {
 
 func (r *applianceRun) checkMemory() Finding {
 	const check = "memory"
-	some, err := r.app.MemoryPressure()
+	m, err := r.app.MemoryPressure()
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return ok(check, "the kernel reports no memory pressure to this container")
 	case err != nil:
 		return warn(check, "memory pressure could not be read: "+err.Error(), "cat /proc/pressure/memory")
-	case some > pressureWarn:
+	case m.Own && m.Some10 > pressureWarn:
 		more := "<megabytes>"
 		if cfg, err := r.config(); err == nil {
 			if mb, err := strconv.Atoi(cfg.Values["memory"]); err == nil && mb > 0 {
 				more = strconv.Itoa(2 * mb)
 			}
 		}
-		return warn(check, fmt.Sprintf("memory pressure is %.1f%%: tasks of the appliance waited for memory for that share of the last 10 seconds", some),
+		return warn(check, fmt.Sprintf("memory pressure of the container is %.1f%%: tasks of the appliance waited for memory for that share of the last 10 seconds", m.Some10),
 			fmt.Sprintf("%spct set %d --memory %s", fixOnNode, r.self.VMID, more))
+	case !m.Own && m.Some10 > pressureWarn:
+		return warn(check, fmt.Sprintf("memory pressure of the node is %.1f%%, and the container's own is not reported: the node is short of memory, "+
+			"which the appliance shares; more memory for the container would not change that", m.Some10),
+			fixOnNode+"cat /proc/pressure/memory, and free -m for who uses it")
+	case !m.Own:
+		return ok(check, fmt.Sprintf("memory pressure of the node is %.1f%%; the container's own is not reported", m.Some10))
 	}
-	return ok(check, fmt.Sprintf("memory pressure is %.1f%%", some))
+	use := ""
+	switch {
+	case m.Limit > 0:
+		use = fmt.Sprintf(", with %s of %s in use", iec(m.Used), iec(m.Limit))
+	case m.Used > 0:
+		use = fmt.Sprintf(", with %s in use", iec(m.Used))
+	}
+	return ok(check, fmt.Sprintf("memory pressure of the container is %.1f%%%s", m.Some10, use))
 }
 
 // checkVersions says what runs, and warns of what is old, denied or stale: a
@@ -1042,23 +1150,34 @@ func (r *applianceRun) checkNet() Finding {
 
 // checkEtcPVE fails when the container has /etc/pve: a bind mount of the
 // cluster filesystem, which with the node's www-data group mapped in reads the
-// TLS keys of the node.
+// TLS keys of the node. A /etc/pve that does not answer is a mount that stalls,
+// which is as much one.
 func (r *applianceRun) checkEtcPVE() Finding {
 	const check = "etc-pve"
-	if !r.app.EtcPVE() {
+	there, err := r.app.EtcPVE()
+	switch {
+	case err != nil:
+		return fail(check, fmt.Sprintf("/etc/pve did not answer: %v; something is mounted there that stalls, "+
+			"a bind mount of the cluster filesystem in the container perhaps", err), r.etcPVEFix())
+	case !there:
 		return ok(check, "/etc/pve is not in the container")
 	}
-	const detail = "/etc/pve exists in the container: a bind mount of the cluster filesystem is in the container; remove it"
+	return fail(check, "/etc/pve exists in the container: a bind mount of the cluster filesystem is in the container; remove it", r.etcPVEFix())
+}
+
+// etcPVEFix is how to remove the bind mount of /etc/pve, by the name of the
+// mount point when the configuration shows it.
+func (r *applianceRun) etcPVEFix() string {
 	if cfg, err := r.config(); err == nil {
 		for _, key := range slices.Sorted(maps.Keys(cfg.Values)) {
 			if mountPoint.MatchString(key) && specOption(cfg.Values[key], "mp") == "/etc/pve" {
-				return fail(check, detail, fmt.Sprintf("%spct set %d --delete %s; with the node's www-data group mapped in, "+
-					"a bind mount of /etc/pve lets the container read the TLS keys of the node", fixOnNode, r.self.VMID, key))
+				return fmt.Sprintf("%spct set %d --delete %s; with the node's www-data group mapped in, "+
+					"a bind mount of /etc/pve lets the container read the TLS keys of the node", fixOnNode, r.self.VMID, key)
 			}
 		}
 	}
-	return fail(check, detail, fmt.Sprintf("remove the mount point whose mp is /etc/pve (pct config %d on the node shows it, pct set %d --delete mpN removes it): "+
-		"with the node's www-data group mapped in, it lets the container read the TLS keys of the node", r.self.VMID, r.self.VMID))
+	return fmt.Sprintf("remove the mount point whose mp is /etc/pve (pct config %d on the node shows it, pct set %d --delete mpN removes it): "+
+		"with the node's www-data group mapped in, it lets the container read the TLS keys of the node", r.self.VMID, r.self.VMID)
 }
 
 // checkQUIC reports the receive buffer of the node that cloudflared wants for

@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
@@ -286,6 +287,107 @@ func TestDoctorWithoutTheDaemonPrintsTheFindingsAsJSON(t *testing.T) {
 	want, err := json.Marshal(doctor.RunLocal(t.Context(), stopped()))
 	require.NoError(t, err)
 	require.Equal(t, indented(t, string(want)), res.out)
+}
+
+// storeFinding runs pco doctor as root with the daemon down, on the machine the
+// app describes, and returns the finding of the store.
+func storeFinding(t *testing.T, a *app) doctor.Finding {
+	t.Helper()
+	a.json = true
+	d := a.defaultDoctorEnv()
+	d.euid = func() int { return 0 }
+	cmd := a.doctorCmdWith(d)
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetIn(unreadable{t})
+	cmd.SetArgs([]string{})
+	_ = cmd.ExecuteContext(t.Context())
+	var findings []doctor.Finding
+	require.NoError(t, json.Unmarshal(out.Bytes(), &findings), out.String())
+	for _, f := range findings {
+		if f.Check == "store" {
+			return f
+		}
+	}
+	t.Fatalf("no finding of the store in %s", out.String())
+	return doctor.Finding{}
+}
+
+// onMachine is the app on a machine whose profile marker is at path, with no
+// daemon running.
+func onMachine(t *testing.T, profileFile string) *app {
+	t.Helper()
+	e := testEnv()
+	e.profileFile = profileFile
+	return &app{env: e, socket: noDaemon(t)}
+}
+
+// writeProfile writes the profile marker of a machine and returns its path.
+func writeProfile(t *testing.T, profile string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "profile")
+	require.NoError(t, os.WriteFile(path, []byte(profile+"\n"), 0o644))
+	return path
+}
+
+// In an appliance whose daemon does not run, the doctor looks at the volume of
+// the container, as the daemon does at its start, and not at a cluster
+// filesystem the container does not have.
+func TestDoctorWithoutTheDaemonInAnApplianceChecksItsVolume(t *testing.T) {
+	proc := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(proc, "self"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(proc, "self", "mountinfo"),
+		[]byte("675 674 0:80 / "+store.ApplianceLocal+" rw,relatime shared:502 - zfs pcotestpool/subvol-9240-disk-1 rw\n"), 0o644))
+	a := onMachine(t, writeProfile(t, "appliance"))
+	var asked []string
+	a.daemon.Appliance.Volume = func(path, marker string) error {
+		asked = append(asked, path+" "+marker)
+		return fmt.Errorf("%s %w", path, appliance.ErrNoMarker)
+	}
+	a.daemon.Appliance.System = appliance.System{Proc: proc}
+
+	f := storeFinding(t, a)
+
+	require.Equal(t, []string{store.ApplianceLocal + " .volume"}, asked)
+	require.Equal(t, doctor.Finding{Check: "store", Level: doctor.LevelFail, Detail: store.ApplianceLocal + " has no pco volume marker",
+		Fix: "run pco appliance repair --vmid 9240 on the node"}, f)
+}
+
+func TestDoctorWithoutTheDaemonInAnApplianceWhoseVMIDIsNotKnown(t *testing.T) {
+	a := onMachine(t, writeProfile(t, "appliance"))
+	a.daemon.Appliance.Volume = func(path, _ string) error { return fmt.Errorf("%s %w", path, appliance.ErrNotMountPoint) }
+	a.daemon.Appliance.System = appliance.System{Proc: t.TempDir()}
+
+	f := storeFinding(t, a)
+
+	require.Equal(t, store.ApplianceLocal+" "+appliance.ErrNotMountPoint.Error(), f.Detail)
+	require.Equal(t, "run pco appliance repair --vmid <vmid> on the node", f.Fix)
+}
+
+func TestDoctorWithoutTheDaemonInAnApplianceWithItsVolumeChecksTheStoreOnIt(t *testing.T) {
+	a := onMachine(t, writeProfile(t, "appliance"))
+	a.daemon.Appliance.Volume = func(string, string) error { return nil }
+	a.daemon.Appliance.System = appliance.System{Proc: t.TempDir()}
+
+	f := storeFinding(t, a)
+
+	// There is no appliance on the machine of the test, so no store: what it
+	// says is of the appliance, which has no cluster filesystem to look at.
+	require.Equal(t, doctor.LevelFail, f.Level)
+	require.NotContains(t, f.Fix, "pve-cluster")
+	require.Contains(t, f.Fix, "pco appliance repair")
+}
+
+func TestDoctorWithoutTheDaemonOnAHostKeepsTheHostsStore(t *testing.T) {
+	a := onMachine(t, filepath.Join(t.TempDir(), "no-profile"))
+	a.daemon.Appliance.Volume = func(string, string) error { return errors.New("not asked on a host") }
+
+	f := storeFinding(t, a)
+
+	require.NotContains(t, f.Fix, "appliance")
+	require.NotContains(t, f.Detail, "volume marker")
 }
 
 func TestDoctorWithoutTheDaemonAsAnotherUserCannotAsk(t *testing.T) {
