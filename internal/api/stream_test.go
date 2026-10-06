@@ -147,6 +147,8 @@ func TestTheWireFormatOfTheStream(t *testing.T) {
 	require.Equal(t, "event: hello\n"+
 		`data: {"boot":"9f2c4e1a0b7d3c55","version":"1.2.3","seq":812,"digest":"5e0c1f7a92b4d3e8","pollInterval":"10s"}`+"\n\n",
 		hello, "before any notice")
+	// The ping's ticker may be made just after hello is written.
+	require.Eventually(t, func() bool { return len(tick.asked()) > 0 }, 5*time.Second, time.Millisecond)
 	require.Equal(t, []time.Duration{15 * time.Second}, tick.asked())
 
 	text := hello
