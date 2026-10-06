@@ -19,9 +19,10 @@ type Writer struct {
 	InstallID  string `json:"installId"`
 	Generation int    `json:"generation"`
 	Nonce      string `json:"nonce"`
-	// Incarnation is the start of the appliance container that drew the
-	// writer, "<boot id>/<start of PID 1>". It stays in leader.json and never
-	// reaches the sentinel. A host leaves it empty.
+	// Incarnation is what drew the writer: the start of the appliance
+	// container, "<boot id>/<start of PID 1>", or the boot of the host node
+	// that took the lease, "<node>/<boot id>"; empty for one setup drew. It
+	// stays in leader.json and never reaches the sentinel.
 	Incarnation string `json:"incarnation,omitempty"`
 }
 
