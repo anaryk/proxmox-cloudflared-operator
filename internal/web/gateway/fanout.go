@@ -47,9 +47,18 @@ const (
 	// maxGapEvents is the most events of a gap the gateway reads, the most
 	// a query of the daemon answers with.
 	maxGapEvents = engine.MaxEventLimit
-	// inboxSize is how far the reads of the gateway may fall behind the
-	// subscription before it waits for them.
+	// inboxSize is how far the worker may fall behind the subscription before
+	// what does not fit is dropped.
 	inboxSize = 1024
+	// foldedRetry is how often the subscription looks for room for the gap
+	// of what did not fit, when no notice comes.
+	foldedRetry = 250 * time.Millisecond
+	// readersWindow is how long a read that only readers' streams need may
+	// take, and readersPause how long such a read is not tried again after it
+	// failed: a daemon that hangs on it holds up the worker, and so the admins'
+	// streams, no longer than that.
+	readersWindow = 2 * time.Second
+	readersPause  = 10 * time.Second
 	// figuresEvery is how many traffic notices the figures of every route
 	// answer for at most: they are read again with the next.
 	figuresEvery = 12
@@ -69,7 +78,8 @@ var backoff = []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 
 // took, so that the ring has no hole the daemon could fill, and tells the
 // browsers whenever the subscription goes down or comes up. What the
 // browsers need read from the daemon is read by a worker, so that the
-// subscription goes on taking notices meanwhile.
+// subscription goes on taking notices meanwhile, and never waits for it: see
+// offer.
 func (g *Gateway) Run(ctx context.Context) {
 	g.hub.started(g.now())
 	done := make(chan struct{})
@@ -93,16 +103,8 @@ func (g *Gateway) Run(ctx context.Context) {
 			if !g.hand(ctx, upstreamItem{hello: &hello}) {
 				return
 			}
-			for n := range notices {
-				switch {
-				case n.Kind == engine.NoticeEvent && n.Event != nil:
-					after = max(after, n.Event.Seq)
-				case n.Kind == engine.NoticeGap && n.Gap != nil:
-					after = max(after, n.Gap.To)
-				}
-				if !g.hand(ctx, upstreamItem{notice: &n}) {
-					return
-				}
+			if !g.follow(ctx, notices, &after) {
+				return
 			}
 		}
 		if ctx.Err() != nil {
@@ -124,21 +126,106 @@ func (g *Gateway) Run(ctx context.Context) {
 	}
 }
 
+// follow offers the notices of a subscription to the worker until it ends,
+// and says false when ctx ended first. after is the last event it took.
+func (g *Gateway) follow(ctx context.Context, notices <-chan engine.Notice, after *uint64) bool {
+	var (
+		folded *engine.GapNotice
+		retry  <-chan time.Time
+	)
+	for {
+		select {
+		case n, ok := <-notices:
+			if !ok {
+				// What did not fit goes before the loss of the subscription,
+				// or the hello of the next.
+				return folded == nil || g.hand(ctx, foldedItem(folded))
+			}
+			switch {
+			case n.Kind == engine.NoticeEvent && n.Event != nil:
+				*after = max(*after, n.Event.Seq)
+			case n.Kind == engine.NoticeGap && n.Gap != nil:
+				*after = max(*after, n.Gap.To)
+			}
+			g.offer(upstreamItem{notice: &n}, &folded)
+		case <-retry:
+			g.flush(&folded)
+		case <-ctx.Done():
+			return false
+		}
+		retry = nil
+		if folded != nil {
+			retry = time.After(foldedRetry)
+		}
+	}
+}
+
 // upstreamItem is what the subscription hands the worker, in its order: the
 // hello of a new subscription, a notice, or the loss of the subscription.
 type upstreamItem struct {
 	hello  *engine.Hello
 	notice *engine.Notice
 	lost   time.Time
+	unread bool // a gap whose events are not to be read
 }
 
-// hand passes an item to the worker; it waits only while the worker is
-// inboxSize items behind.
+// foldedItem is the gap that stands for what did not fit.
+func foldedItem(gap *engine.GapNotice) upstreamItem {
+	return upstreamItem{notice: &engine.Notice{Kind: engine.NoticeGap, Gap: gap}, unread: true}
+}
+
+// hand passes an item to the worker, waiting while it is inboxSize items
+// behind. Only the hello and the loss of a subscription wait: nothing is taken
+// from the daemon then.
 func (g *Gateway) hand(ctx context.Context, it upstreamItem) bool {
 	select {
 	case g.inbox <- it:
 		return true
 	case <-ctx.Done():
+		return false
+	}
+}
+
+// offer hands a notice to the worker without waiting for it. When the worker
+// is inboxSize items behind, what does not fit is dropped: an event or a gap
+// is folded into one gap of all that did not fit, which goes first when there
+// is room again and whose events nobody reads, so that a reader is told of it
+// over its whole range at warn; a state or traffic notice is not kept, the
+// next one stands for it.
+func (g *Gateway) offer(it upstreamItem, folded **engine.GapNotice) {
+	g.flush(folded)
+	if *folded == nil && g.send(it) {
+		return
+	}
+	n := it.notice
+	switch {
+	case n.Kind == engine.NoticeEvent && n.Event != nil:
+		g.fold(folded, gapOf(*n.Event))
+	case n.Kind == engine.NoticeGap && n.Gap != nil:
+		g.fold(folded, *n.Gap)
+	}
+}
+
+// flush hands the gap of what did not fit to the worker, when it has room.
+func (g *Gateway) flush(folded **engine.GapNotice) {
+	if *folded != nil && g.send(foldedItem(*folded)) {
+		*folded = nil
+	}
+}
+
+func (g *Gateway) fold(folded **engine.GapNotice, gap engine.GapNotice) {
+	if *folded == nil {
+		g.log.Warn().Msg("the streams of the browsers are far behind the daemon's: events are handed on as a gap")
+	}
+	*folded = joined(*folded, gap)
+}
+
+// send hands an item to the worker when it has room.
+func (g *Gateway) send(it upstreamItem) bool {
+	select {
+	case g.inbox <- it:
+		return true
+	default:
 		return false
 	}
 }
@@ -153,7 +240,7 @@ func (g *Gateway) work(ctx context.Context) {
 			case it.hello != nil:
 				g.connected(ctx, *it.hello)
 			case it.notice != nil:
-				g.receive(ctx, *it.notice)
+				g.receive(ctx, *it.notice, it.unread)
 			default:
 				g.hub.down(it.lost)
 			}
@@ -175,8 +262,13 @@ func (g *Gateway) connected(ctx context.Context, hello engine.Hello) {
 // receive hands a notice of the daemon on. What the readers need to have it
 // filtered is read first: the state when its digest changed, the events of
 // a gap, the figures of every route for a notice that carries only some.
-// While no reader's stream is open, nothing but the state is read.
-func (g *Gateway) receive(ctx context.Context, n engine.Notice) {
+// While no reader's stream is open, nothing but the state is read, and a gap
+// that is unread is not read.
+//
+// A reset of the daemon says that the gateway fell behind or that the daemon
+// started again: the subscription ends or begins with another boot, and the
+// browsers are told then.
+func (g *Gateway) receive(ctx context.Context, n engine.Notice, unread bool) {
 	switch {
 	case n.Kind == engine.NoticeState && n.State != nil:
 		if g.hub.digestChanged(n.State.Digest) && g.hub.streaming() {
@@ -187,7 +279,7 @@ func (g *Gateway) receive(ctx context.Context, n engine.Notice) {
 		g.hub.event(item{event: n.Event})
 	case n.Kind == engine.NoticeGap && n.Gap != nil:
 		it := item{gap: n.Gap}
-		if g.hub.readers() {
+		if g.hub.readers() && !unread {
 			it.in, it.known = g.gapEvents(ctx, *n.Gap)
 		}
 		g.hub.event(it)
@@ -198,9 +290,6 @@ func (g *Gateway) receive(ctx context.Context, n engine.Notice) {
 		}
 		g.hub.notice(n, all)
 	}
-	// A reset of the daemon says that the gateway fell behind or that the
-	// daemon started again: the subscription ends or begins with another
-	// boot, and the browsers are told then.
 }
 
 func (g *Gateway) refreshState(ctx context.Context) {
@@ -214,15 +303,57 @@ func (g *Gateway) refreshState(ctx context.Context) {
 func (g *Gateway) gapEvents(ctx context.Context, gap engine.GapNotice) (in []engine.Event, known bool) {
 	limit := min(gap.To-gap.From+1, maxGapEvents)
 	q := url.Values{"boot": {gap.Boot}, "after": {strconv.FormatUint(gap.From-1, 10)}, "limit": {strconv.FormatUint(limit, 10)}}
-	data, err := g.get(ctx, "", "/v1/events", q)
+	data, err := g.readForReaders(ctx, "/v1/events", q)
 	if err == nil {
 		err = json.Unmarshal(data, &in)
 	}
 	if err != nil {
-		g.log.Warn().Err(err).Msg("reading the events of a gap; readers are told of the whole range")
+		if !errors.Is(err, errPaused) {
+			g.log.Warn().Err(err).Msg("reading the events of a gap; readers are told of the whole range")
+		}
 		return nil, false
 	}
 	return in, true
+}
+
+var errPaused = errors.New("not tried: the last read of it failed a moment ago")
+
+// readForReaders reads path for the streams of readers, which those of admins
+// do not need: it gets readersWindow, and one that fails keeps the next read
+// of that path from being tried for readersPause, so that a daemon that hangs
+// on it holds up the worker for one window in a pause.
+func (g *Gateway) readForReaders(ctx context.Context, path string, q url.Values) ([]byte, error) {
+	if g.pauses.active(path, g.now()) {
+		return nil, errPaused
+	}
+	ctx, cancel := context.WithTimeout(ctx, g.readerWindow)
+	defer cancel()
+	data, err := g.get(ctx, "", path, q)
+	if err != nil {
+		g.pauses.start(path, g.now().Add(readersPause))
+	}
+	return data, err
+}
+
+// pauses are the reads that are not tried until a time.
+type pauses struct {
+	mu    sync.Mutex
+	until map[string]time.Time
+}
+
+func (p *pauses) active(path string, now time.Time) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return now.Before(p.until[path])
+}
+
+func (p *pauses) start(path string, until time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.until == nil {
+		p.until = map[string]time.Time{}
+	}
+	p.until[path] = until
 }
 
 // item is an event of the daemon or a gap, as the ring keeps it.
@@ -430,13 +561,15 @@ func (h *hub) figures(ctx context.Context, n *engine.TrafficNotice) []engine.Rou
 		return all
 	}
 	h.mu.Unlock()
-	data, err := h.g.get(ctx, "", "/v1/traffic", nil)
+	data, err := h.g.readForReaders(ctx, "/v1/traffic", nil)
 	var tv engine.TrafficView
 	if err == nil {
 		err = json.Unmarshal(data, &tv)
 	}
 	if err != nil {
-		h.g.log.Warn().Err(err).Msg("reading the figures of the routes for the readers' streams")
+		if !errors.Is(err, errPaused) {
+			h.g.log.Warn().Err(err).Msg("reading the figures of the routes for the readers' streams")
+		}
 		return nil
 	}
 	routes := make(map[string]bool, len(tv.Routes))

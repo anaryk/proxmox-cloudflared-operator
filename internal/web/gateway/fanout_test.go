@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -864,6 +865,179 @@ func TestASlowReadDoesNotHoldTheSubscription(t *testing.T) {
 	require.Equal(t, "gap", got[0].event)
 	for i, m := range got[1:] {
 		require.Equal(t, fmt.Sprintf("%s:%d", bootA, 14+i), m.id)
+	}
+}
+
+// holdDaemon makes the daemon wait with its answer to route, which is body,
+// until release is called or the test ends.
+func (s *testServer) holdDaemon(route string, body any) (release func()) {
+	hold := make(chan struct{})
+	s.daemon.on(route, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-hold:
+		case <-r.Context().Done():
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(body)
+	})
+	var once sync.Once
+	release = func() { once.Do(func() { close(hold) }) }
+	s.t.Cleanup(release)
+	return release
+}
+
+// The figures of every route are read for readers only, and a daemon that
+// hangs on them holds up no admin's stream for longer than the window of
+// such a read; a read that failed is not tried again for a while.
+func TestAHungReadOfTheFiguresDoesNotHoldUpAnAdminsStream(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	s.holdDaemon("GET /v1/traffic", engine.TrafficView{})
+	s.gw.readerWindow = 100 * time.Millisecond
+	conn := s.connect()
+	srv := s.streamServer()
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(srv, reader)
+	alice := s.streamOf(srv, admin)
+	partial := func(host string) string {
+		return sse("", "traffic", engine.TrafficNotice{At: t0, Tunnels: []engine.TunnelNotice{}, RoutesTotal: 3,
+			Routes: []engine.RouteTraffic{{Hostname: host, Owner: "qemu/101", Target: "10.0.0.11:8080", FlowsPerSec: 1}}})
+	}
+
+	started := time.Now()
+	conn.send <- partial("www.example.com")
+	conn.send <- eventMessage(routeEvent(13, "info", "qemu/101"))
+	require.Equal(t, "traffic", alice.next().event)
+	require.Equal(t, bootA+":13", alice.next().id)
+	require.Less(t, time.Since(started), 3*time.Second, "not the 10 s of a read")
+	require.Equal(t, "traffic", bob.next().event, "a reader gets the notice without the figures")
+	require.Equal(t, bootA+":13", bob.next().id)
+	require.Equal(t, 1, s.daemon.count("GET /v1/traffic"))
+
+	// Not read again at once, but after a while.
+	conn.send <- partial("web.example.com")
+	conn.send <- eventMessage(routeEvent(14, "info", "qemu/101"))
+	require.Equal(t, "traffic", alice.next().event)
+	require.Equal(t, bootA+":14", alice.next().id)
+	require.Equal(t, 1, s.daemon.count("GET /v1/traffic"))
+	s.clock.advance(11 * time.Second)
+	conn.send <- partial("shop.example.com")
+	conn.send <- eventMessage(routeEvent(15, "info", "qemu/101"))
+	require.Equal(t, "traffic", alice.next().event)
+	require.Equal(t, bootA+":15", alice.next().id)
+	require.Equal(t, 2, s.daemon.count("GET /v1/traffic"))
+}
+
+func TestAFailedReadOfAGapIsNotTriedAgainAtOnce(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	s.daemon.answer("GET /v1/events", http.StatusServiceUnavailable, wire.Error{Error: "the engine is starting", Code: codeUnavailable})
+	conn := s.connect()
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(s.streamServer(), reader)
+	gap := func(from, to uint64) {
+		conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: from, To: to, Count: int(to - from + 1), Level: "info"})
+	}
+
+	gap(13, 14)
+	require.Equal(t, bootA+":14", bob.next().id)
+	gap(15, 16)
+	m := bob.next()
+	require.Equal(t, bootA+":16", m.id)
+	require.JSONEq(t, `{"boot":"`+bootA+`","from":15,"to":16,"count":2,"level":"warn"}`, m.data, "told as of events nobody read")
+	require.Equal(t, 1, s.daemon.count("GET /v1/events"))
+	s.clock.advance(11 * time.Second)
+	gap(17, 18)
+	require.Equal(t, bootA+":18", bob.next().id)
+	require.Equal(t, 2, s.daemon.count("GET /v1/events"))
+}
+
+// When the worker is as far behind as the inbox holds, the subscription does
+// not wait for it: an event or a gap that finds no room is folded into one gap
+// of all that did not fit, which the worker gets first when it has room; a
+// state or traffic notice is dropped, the next one stands for it.
+func TestAFullInboxNeverHoldsTheSubscription(t *testing.T) {
+	s := newTestServer(t)
+	s.gw.inbox = make(chan upstreamItem, 2)
+	notice := func(n engine.Notice) upstreamItem { return upstreamItem{notice: &n} }
+	event := func(seq uint64, level string) upstreamItem {
+		return notice(engine.Notice{Kind: engine.NoticeEvent, Event: &engine.Event{Seq: seq, Boot: bootA, Level: level, Kind: "route"}})
+	}
+	var folded *engine.GapNotice
+	s.gw.offer(event(1, "info"), &folded)
+	s.gw.offer(event(2, "info"), &folded)
+	require.Nil(t, folded)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.gw.offer(event(3, "info"), &folded)
+		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeGap, Gap: &engine.GapNotice{Boot: bootA, From: 4, To: 5, Count: 2, Level: "error"}}), &folded)
+		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeState, State: &engine.StateNotice{Digest: "d2"}}), &folded)
+		s.gw.offer(notice(engine.Notice{Kind: engine.NoticeTraffic, Traffic: &engine.TrafficNotice{}}), &folded)
+		s.gw.offer(event(6, "warn"), &folded)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the subscription waits for the worker")
+	}
+	require.Equal(t, &engine.GapNotice{Boot: bootA, From: 3, To: 6, Count: 4, Level: "error"}, folded)
+	require.Len(t, s.gw.inbox, 2)
+
+	// The worker takes what it had; the next notice finds room, behind the
+	// gap that stands for what came before it.
+	require.Equal(t, uint64(1), (<-s.gw.inbox).notice.Event.Seq)
+	require.Equal(t, uint64(2), (<-s.gw.inbox).notice.Event.Seq)
+	s.gw.offer(event(7, "info"), &folded)
+	require.Nil(t, folded)
+	first, second := <-s.gw.inbox, <-s.gw.inbox
+	require.True(t, first.unread, "nobody read the events of the gap")
+	require.Equal(t, engine.GapNotice{Boot: bootA, From: 3, To: 6, Count: 4, Level: "error"}, *first.notice.Gap)
+	require.Equal(t, uint64(7), second.notice.Event.Seq)
+}
+
+// A worker that is stuck on a read loses the browsers no event: what the
+// subscription takes meanwhile reaches them in order, as events or as the
+// gap they were folded into, which a reader is told of as of events nobody
+// read.
+func TestAStuckWorkerLosesNoEvent(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	release := s.holdDaemon("GET /v1/events", []engine.Event{routeEvent(13, "info", "qemu/101")})
+	s.gw.readerWindow = time.Minute
+	s.gw.inbox = make(chan upstreamItem, 4)
+	conn := s.connect()
+	s.pve.sees(reader, 101)
+	bob := s.streamOf(s.streamServer(), reader)
+	alice := s.streamOf(s.streamServer(), admin)
+	conn.send <- gapMessage(engine.GapNotice{Boot: bootA, From: 13, To: 13, Count: 1, Level: "info"})
+	for seq := uint64(14); seq <= 30; seq++ {
+		conn.send <- eventMessage(routeEvent(seq, "info", "qemu/101"))
+	}
+	eventually(t, "the inbox to fill", func() bool { return len(s.gw.inbox) == cap(s.gw.inbox) })
+	release()
+	for _, sr := range []*streamReader{alice, bob} {
+		covered := uint64(12)
+		for covered < 30 {
+			m := sr.next()
+			var from, to uint64
+			if m.event == "gap" {
+				var g engine.GapNotice
+				require.NoError(t, json.Unmarshal([]byte(m.data), &g))
+				from, to = g.From, g.To
+			} else {
+				_, seq, _ := strings.Cut(m.id, ":")
+				n, err := strconv.ParseUint(seq, 10, 64)
+				require.NoError(t, err)
+				from, to = n, n
+			}
+			require.Equal(t, covered+1, from, "no hole and no repeat before %s", m.id)
+			covered = to
+		}
 	}
 }
 
