@@ -3,7 +3,8 @@
 This page says how pco is built: its parts and where they run, what one cycle of the daemon
 does, the path of a request, how pco makes sure that one process alone writes to Cloudflare,
 where its state lives, and what it never touches. It describes the host profile, the one in
-this release; [Profiles](profiles.md) sets it beside the appliance.
+this release; [Profiles](profiles.md) sets it beside the appliance. The words in the sense pco
+gives them are in the [Glossary](glossary.md).
 
 ## The parts
 
