@@ -62,6 +62,10 @@ func wantedTags(gate string) []string {
 // ErrAborted is the error of an uninstall the operator did not confirm.
 var ErrAborted = errors.New("aborted: nothing was changed")
 
+// errAppliance is the answer of setup and uninstall inside an appliance, whose
+// store the installer on the node makes and takes away.
+var errAppliance = errors.New("this is an appliance: the installer on the node sets it up and removes it (pco appliance install|uninstall)")
+
 // Options are the answers to the questions of setup that were given in
 // advance.
 type Options struct {
@@ -140,6 +144,8 @@ type host struct {
 	hostname func() (string, error)
 	// checkToken makes one read of the Proxmox API with a token.
 	checkToken func(ctx context.Context, tok store.PVEToken) error
+	// profile reads the profile of the machine.
+	profile func() (string, error)
 
 	// The web interface: the directory of its certificate, the environment
 	// file of its unit, the cluster CA and the directory of the certificates
@@ -162,6 +168,7 @@ func nodeHost() host {
 		euid:       os.Geteuid,
 		hostname:   os.Hostname,
 		checkToken: checkPVEToken,
+		profile:    func() (string, error) { return store.DetectProfile(store.ProfileFile) },
 
 		webDir:       webcert.Dir,
 		webEnv:       webcert.EnvFile,
@@ -221,6 +228,9 @@ type step struct {
 // stops the run with its name in the error; running again goes on from what
 // is there.
 func (s *Setup) Run(ctx context.Context, o Options) error {
+	if err := s.refuseAppliance(); err != nil {
+		return err
+	}
 	if err := o.check(); err != nil {
 		return err
 	}
@@ -242,6 +252,19 @@ func (s *Setup) Run(ctx context.Context, o Options) error {
 			r.afterFailure(ctx)
 			return fmt.Errorf("setup step %s: %w", st.name, err)
 		}
+	}
+	return nil
+}
+
+// refuseAppliance refuses to work on an appliance. A profile that cannot be
+// read is no host either.
+func (s *Setup) refuseAppliance() error {
+	profile, err := s.host.profile()
+	switch {
+	case err != nil:
+		return err
+	case profile == store.ProfileAppliance:
+		return errAppliance
 	}
 	return nil
 }

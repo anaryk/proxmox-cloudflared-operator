@@ -67,6 +67,9 @@ type uninstall struct {
 // what the manifest lists is removed from Proxmox and of the web interface. A part that fails is reported and the others
 // go on, but the store is then kept, so that a second run finishes the rest.
 func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
+	if err := s.refuseAppliance(); err != nil {
+		return err
+	}
 	if err := o.check(); err != nil {
 		return err
 	}

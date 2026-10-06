@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -20,10 +22,7 @@ type placedTunnel struct {
 }
 
 // recover adopts the install whose tunnels the Cloudflare token sees, after
-// its store was lost: its id becomes the id of this install, and the writer
-// takes a generation above every one found in its tunnels, so that the
-// daemon is not taken for a stale or a foreign writer. The install observes
-// until pco apply. Whatever it cannot know it refuses rather than guess.
+// its store was lost, as RecoverInstall does.
 func (r *run) recover(ctx context.Context) error {
 	if err := r.stopForRecovery(ctx); err != nil {
 		return err
@@ -35,19 +34,38 @@ func (r *run) recover(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("the Cloudflare token cannot be used: %w", err)
 	}
+	inst, generation, err := RecoverInstall(ctx, api, r.st, r.o.InstallID, r.now, r.rand, store.Install{Profile: store.ProfileHost})
+	if err != nil {
+		return err
+	}
+	r.install = inst
+	r.ask.Info("store: recovered install %s with writer generation %d; it only observes until pco apply", inst.ID, generation)
+	return nil
+}
+
+// RecoverInstall adopts the install whose tunnels api sees: installID, or the
+// one install it sees when installID is empty. Its id becomes the id of the
+// store's install, and the writer takes a generation above every one in the
+// sentinels of its tunnels and above the stored one, so that the daemon is
+// taken for neither a stale nor a foreign writer. The settings become
+// observe-only, and inst, with the id and the time the install was created,
+// is stored last. It returns the install stored and the generation of the
+// writer. Whatever it cannot know it refuses rather than guess, and it never
+// replaces an install of another id.
+func RecoverInstall(ctx context.Context, api cfapi.API, st *store.Store, installID string, now func() time.Time, rand io.Reader, inst store.Install) (store.Install, int, error) {
 	found, err := findInstalls(ctx, api)
 	if err != nil {
-		return err
+		return store.Install{}, 0, err
 	}
-	id, err := r.chooseInstall(found)
+	id, err := chooseInstall(found, installID)
 	if err != nil {
-		return err
+		return store.Install{}, 0, err
 	}
-	generation, err := highestGeneration(ctx, api, id, found[id])
+	highest, err := highestGeneration(ctx, api, id, found[id])
 	if err != nil {
-		return err
+		return store.Install{}, 0, err
 	}
-	return r.adopt(id, generation)
+	return adopt(st, id, highest, now, rand, inst)
 }
 
 // stopForRecovery stops pco.service, if it runs, so that the store is not
@@ -149,8 +167,8 @@ func installOf(name string) (string, bool) {
 	return rest, validInstallID(rest) && planner.TunnelName(rest) == name
 }
 
-func (r *run) chooseInstall(found map[string][]placedTunnel) (string, error) {
-	if id := r.o.InstallID; id != "" {
+func chooseInstall(found map[string][]placedTunnel, id string) (string, error) {
+	if id != "" {
 		if len(found[id]) == 0 {
 			return "", fmt.Errorf("the token sees no tunnel of install %s, so the generation its writer used is unknown: "+
 				"check the id, or recover with a token that sees the account of its tunnel", id)
@@ -189,38 +207,37 @@ func highestGeneration(ctx context.Context, api cfapi.API, id string, tunnels []
 	return highest, nil
 }
 
-// adopt makes id the install of the store, with a writer of a generation
-// above the highest one in use, and observe-only settings.
-func (r *run) adopt(id string, highest int) error {
-	inst, found, err := r.st.Install()
+// adopt makes id the install of the store, as inst, with a writer of a
+// generation above the highest one in use, and observe-only settings.
+func adopt(st *store.Store, id string, highest int, now func() time.Time, rand io.Reader, inst store.Install) (store.Install, int, error) {
+	stored, found, err := st.Install()
 	if err != nil {
-		return fmt.Errorf("reading the install: %w", err)
+		return store.Install{}, 0, fmt.Errorf("reading the install: %w", err)
 	}
-	if found && inst.ID != id {
-		return fmt.Errorf("the store holds install %s, not %s, and recovery never replaces an install: "+
-			"remove it with pco uninstall first, or recover install %s with --install-id %s", inst.ID, id, inst.ID, inst.ID)
+	if found && stored.ID != id {
+		return store.Install{}, 0, fmt.Errorf("the store holds install %s, not %s, and recovery never replaces an install: "+
+			"remove it with pco uninstall first, or recover install %s with --install-id %s", stored.ID, id, stored.ID, stored.ID)
 	}
-	created := r.now()
-	if found && inst.ID == id {
-		created = inst.CreatedAt
+	created := now()
+	if found {
+		created = stored.CreatedAt
 	}
-	w, wfound, err := r.st.Writer()
+	w, wfound, err := st.Writer()
 	if err != nil {
-		return fmt.Errorf("reading the writer identity: %w", err)
+		return store.Install{}, 0, fmt.Errorf("reading the writer identity: %w", err)
 	}
 	if wfound && w.InstallID == id && w.Generation > highest {
 		highest = w.Generation
 	}
-	if err := r.observeOnly(); err != nil {
-		return err
+	if err := observeOnly(st); err != nil {
+		return store.Install{}, 0, err
 	}
-	if err := r.saveWriter(id, highest+1); err != nil {
-		return err
+	if err := saveWriter(st, rand, id, highest+1); err != nil {
+		return store.Install{}, 0, err
 	}
-	r.install = store.Install{ID: id, CreatedAt: created, Profile: store.ProfileHost}
-	if err := r.st.SaveInstall(r.install); err != nil {
-		return fmt.Errorf("storing the install: %w", err)
+	inst.ID, inst.CreatedAt = id, created
+	if err := st.SaveInstall(inst); err != nil {
+		return store.Install{}, 0, fmt.Errorf("storing the install: %w", err)
 	}
-	r.ask.Info("store: recovered install %s with writer generation %d; it only observes until pco apply", id, highest+1)
-	return nil
+	return inst, highest + 1, nil
 }

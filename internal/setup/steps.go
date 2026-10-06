@@ -92,7 +92,7 @@ func (r *run) prepareStore(ctx context.Context) error {
 		// Generation 1 is fenced: a writer above it is never taken for this
 		// one. If the install wrote to Cloudflare before, its daemon stops
 		// writing until a recovery takes a generation above the one in use.
-		if err := r.saveWriter(inst.ID, 1); err != nil {
+		if err := saveWriter(r.st, r.rand, inst.ID, 1); err != nil {
 			return err
 		}
 		r.ask.Warn("store: install %s had no writer identity; wrote one of generation 1. If this install wrote to "+
@@ -110,10 +110,10 @@ func (r *run) createInstall() error {
 	if err != nil {
 		return err
 	}
-	if err := r.observeOnly(); err != nil {
+	if err := observeOnly(r.st); err != nil {
 		return err
 	}
-	if err := r.saveWriter(id, 1); err != nil {
+	if err := saveWriter(r.st, r.rand, id, 1); err != nil {
 		return err
 	}
 	// The install is stored last: a store that has one is set up.
@@ -127,24 +127,26 @@ func (r *run) createInstall() error {
 
 // observeOnly stores the settings, the ones there or the defaults, in
 // observe-only mode.
-func (r *run) observeOnly() error {
-	settings, err := r.st.Settings()
+func observeOnly(st *store.Store) error {
+	settings, err := st.Settings()
 	if err != nil {
 		return fmt.Errorf("reading the settings: %w", err)
 	}
 	settings.ObserveOnly = true
-	if err := r.st.SaveSettings(settings); err != nil {
+	if err := st.SaveSettings(settings); err != nil {
 		return fmt.Errorf("storing the settings: %w", err)
 	}
 	return nil
 }
 
-func (r *run) saveWriter(installID string, generation int) error {
-	nonce, err := r.newNonce()
+// saveWriter stores a writer of the install at the generation, with a nonce
+// drawn from rand.
+func saveWriter(st *store.Store, rand io.Reader, installID string, generation int) error {
+	nonce, err := newNonce(rand)
 	if err != nil {
 		return err
 	}
-	if err := r.st.SaveWriter(planner.Writer{InstallID: installID, Generation: generation, Nonce: nonce}); err != nil {
+	if err := st.SaveWriter(planner.Writer{InstallID: installID, Generation: generation, Nonce: nonce}); err != nil {
 		return fmt.Errorf("storing the writer identity: %w", err)
 	}
 	return nil
@@ -273,12 +275,12 @@ const nonceAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 // newNonce returns 8 random lower-case letters and digits. A byte at or above
 // the largest multiple of the alphabet's size is drawn again, so that every
 // character is as likely.
-func (s *Setup) newNonce() (string, error) {
+func newNonce(rand io.Reader) (string, error) {
 	const size, limit = len(nonceAlphabet), 256 - 256%len(nonceAlphabet)
 	nonce := make([]byte, 0, 8)
 	b := make([]byte, 1)
 	for len(nonce) < cap(nonce) {
-		if _, err := io.ReadFull(s.rand, b); err != nil {
+		if _, err := io.ReadFull(rand, b); err != nil {
 			return "", fmt.Errorf("reading random bytes: %w", err)
 		}
 		if int(b[0]) < limit {

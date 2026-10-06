@@ -819,7 +819,7 @@ func TestInstallIDsAndNonces(t *testing.T) {
 		id, err := e.s.newInstallID()
 		require.NoError(t, err)
 		require.Regexp(t, regexp.MustCompile(`^[0-9a-f]{12}$`), id)
-		nonce, err := e.s.newNonce()
+		nonce, err := newNonce(e.s.rand)
 		require.NoError(t, err)
 		require.Regexp(t, regexp.MustCompile(`^[a-z0-9]{8}$`), nonce)
 		require.NoError(t, planner.Writer{InstallID: id, Generation: 1, Nonce: nonce}.Validate())

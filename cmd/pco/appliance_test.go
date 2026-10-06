@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -105,6 +108,92 @@ func TestTheApplianceGroupShowsItsHelp(t *testing.T) {
 
 	require.NoError(t, res.err)
 	require.Contains(t, res.out, "Commands of the pco appliance")
+}
+
+func TestInitAndRecoverRunInsideTheApplianceOnly(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+
+	res := r.run("", "appliance", "init", "--bootstrap", "/var/lib/pco/bootstrap.json")
+	require.EqualError(t, res.err, "pco appliance init runs inside the appliance; on a host, pco setup sets pco up")
+
+	res = r.run("", "appliance", "recover")
+	require.EqualError(t, res.err, "pco appliance recover runs inside the appliance; on a host, "+
+		"pco setup --recover adopts an install after its store was lost")
+
+	r.env.profileFile = filepath.Join(t.TempDir(), "profile")
+	require.NoError(t, os.WriteFile(r.env.profileFile, []byte("router\n"), 0o600))
+	res = r.run("", "appliance", "recover")
+	require.ErrorContains(t, res.err, `says "router"`, "a marker that says something else is no host")
+}
+
+func TestInitTakesItsBootstrapByFlag(t *testing.T) {
+	r := newRunner(t, "/nonexistent/pco/pco.sock")
+
+	res := r.run("", "appliance", "init")
+	require.EqualError(t, res.err, `required flag(s) "bootstrap" not set`)
+
+	res = r.run("", "appliance", "init", "--bootstrap", "/var/lib/pco/bootstrap.json", "extra")
+	require.ErrorContains(t, res.err, `unknown command "extra"`)
+
+	res = r.run("", "appliance", "recover", "extra")
+	require.ErrorContains(t, res.err, `unknown command "extra"`)
+
+	for _, args := range [][]string{
+		{"--json", "appliance", "init", "--bootstrap", "/var/lib/pco/bootstrap.json"},
+		{"--json", "appliance", "recover"},
+	} {
+		res = r.run("", args...)
+		require.ErrorContains(t, res.err, "--json has no meaning", args)
+	}
+}
+
+func TestInitAndRecoverNeedRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root")
+	}
+	r := inAppliance(t, nil)
+
+	res := r.run("", "appliance", "init", "--bootstrap", "/var/lib/pco/bootstrap.json")
+	require.EqualError(t, res.err, "pco appliance init changes the store of the appliance: run it as root")
+
+	res = r.run("", "appliance", "recover")
+	require.EqualError(t, res.err, "pco appliance recover changes the store of the appliance: run it as root")
+}
+
+func TestInitInModeInstallLeavesARunningDaemonAlone(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "daemon.lock")
+	f, err := os.OpenFile(lock, os.O_RDWR|os.O_CREATE, 0o600)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB))
+	var ran []string
+	d := appliance.Daemon{Lock: lock, Systemctl: func(_ context.Context, args ...string) (string, error) {
+		ran = append(ran, strings.Join(args, " "))
+		if args[0] == "is-active" {
+			return "active\n", nil
+		}
+		require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_UN))
+		return "", nil
+	}}
+
+	_, err = readyForInit(t.Context(), d, appliance.ModeInstall)
+	require.EqualError(t, err, "a pco daemon runs (it holds "+lock+"), and an init in mode install starts it itself: stop pco.service first")
+	require.Empty(t, ran, "nothing is stopped")
+
+	for _, mode := range []string{appliance.ModeRepair, appliance.ModeRecover} {
+		require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB))
+		ran = nil
+
+		stopped, err := readyForInit(t.Context(), d, mode)
+
+		require.NoError(t, err, mode)
+		require.True(t, stopped, mode)
+		require.Equal(t, []string{"is-active pco.service", "stop pco.service"}, ran, mode)
+	}
+
+	stopped, err := readyForInit(t.Context(), d, appliance.ModeInstall)
+	require.NoError(t, err, "no daemon runs")
+	require.False(t, stopped)
 }
 
 func TestStatusShowsTheIdentityOfTheAppliance(t *testing.T) {

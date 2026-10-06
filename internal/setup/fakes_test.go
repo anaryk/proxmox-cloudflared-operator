@@ -233,6 +233,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		euid:       func() int { return 0 },
 		hostname:   func() (string, error) { return testNode + ".example.com", nil },
 		checkToken: func(context.Context, store.PVEToken) error { return nil },
+		profile:    func() (string, error) { return store.ProfileHost, nil },
 
 		webDir:       filepath.Join(base, "pco", "web"),
 		webEnv:       filepath.Join(base, "default", "pco-web"),
