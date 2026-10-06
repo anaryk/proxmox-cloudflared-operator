@@ -93,6 +93,10 @@ func TestOptionsOfARouteWrittenElsewhereFollowTheNotes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, model.RouteOptions{SNI: "app.example.com", Via: "net1", HostHeader: "app:8443", NoTLSVerify: true, AllowNode: true}, got)
 
+	got, err = CheckOptions(plain, model.RouteOptions{Via: "Managed"})
+	require.NoError(t, err)
+	require.Equal(t, model.RouteOptions{Via: "managed"}, got)
+
 	for _, tt := range []struct {
 		name   string
 		target model.Target
@@ -106,6 +110,7 @@ func TestOptionsOfARouteWrittenElsewhereFollowTheNotes(t *testing.T) {
 		{"via a nic that cannot be", plain, model.RouteOptions{Via: "net32"}, "via"},
 		{"via a loopback address", plain, model.RouteOptions{Via: "127.0.0.1"}, "via"},
 		{"via with an address target", addr, model.RouteOptions{Via: "net0"}, "via"},
+		{"via the managed network with an address target", addr, model.RouteOptions{Via: "managed"}, "via"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := CheckOptions(tt.target, tt.opts)

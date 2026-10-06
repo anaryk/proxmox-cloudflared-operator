@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -1068,6 +1069,36 @@ func TestParse(t *testing.T) {
 			errs:  []string{"invalid value for via="},
 		},
 		{
+			name:  "via the managed network",
+			input: block("a.example.com -> :80 via=managed"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{Via: "managed"})},
+		},
+		{
+			name:  "via the managed network in another case",
+			input: block("a.example.com -> :80 VIA=Managed"),
+			found: true,
+			want:  []Entry{e(hosts("a.example.com"), http(80), model.RouteOptions{Via: "managed"})},
+		},
+		{
+			name:  "via the managed network with an address",
+			input: block("a.example.com -> 10.0.0.5:80 via=managed"),
+			found: true,
+			errs:  []string{"via= cannot be combined with an address in the target"},
+		},
+		{
+			name:  "via a word that only starts like managed",
+			input: block("a.example.com -> :80 via=managedx"),
+			found: true,
+			errs:  []string{"invalid value for via="},
+		},
+		{
+			name:  "via a part of managed",
+			input: block("a.example.com -> :80 via=manage"),
+			found: true,
+			errs:  []string{"invalid value for via="},
+		},
+		{
 			name:  "host-header empty",
 			input: block("a.example.com -> :80 host-header="),
 			found: true,
@@ -1264,6 +1295,155 @@ func TestParseMentioned(t *testing.T) {
 			require.Equal(t, tt.want, Parse(tt.input).Mentioned)
 		})
 	}
+}
+
+const marker = "cf-tunnel-managed=off"
+
+func TestParseManagedOff(t *testing.T) {
+	const (
+		afterTarget = "cf-tunnel-managed=off must stand on its own, not after a target"
+		onlyOff     = "cf-tunnel-managed= takes only off"
+		twice       = "cf-tunnel-managed=off given twice"
+	)
+	tests := []struct {
+		name  string
+		input string
+		off   bool
+		want  []string // the hostnames of the entries kept
+		errs  []string
+	}{
+		{name: "no marker", input: block("a.example.com -> :80"), want: hosts("a.example.com")},
+		{name: "alone in a block", input: block(marker), off: true},
+		{
+			name:  "beside entries",
+			input: block("a.example.com -> :80", marker, "b.example.com -> :81"),
+			off:   true,
+			want:  hosts("a.example.com", "b.example.com"),
+		},
+		{name: "before an entry on its line", input: block(marker + " a.example.com -> :80"), off: true, want: hosts("a.example.com")},
+		{name: "indented like the entries", input: block("  a.example.com -> :80", "  "+marker), off: true, want: hosts("a.example.com")},
+		{name: "the key in another case", input: block("CF-Tunnel-Managed=off"), off: true},
+		{name: "the value in another case", input: block("cf-tunnel-managed=OFF"), off: true},
+		{name: "the whole of a cf-tunnel: line", input: "notes\ncf-tunnel: " + marker + "\nmore", off: true},
+		{name: "beside an entry on a cf-tunnel: line", input: "cf-tunnel: " + marker + ", a.example.com -> :80", off: true, want: hosts("a.example.com")},
+		{
+			name:  "after a target",
+			input: block("a.example.com -> :80 "+marker, "b.example.com -> :81"),
+			off:   true,
+			want:  hosts("b.example.com"),
+			errs:  []string{afterTarget},
+		},
+		{name: "after an option", input: block("a.example.com -> https://:443 no-tls-verify " + marker), off: true, errs: []string{afterTarget}},
+		{name: "after the target of a cf-tunnel: line", input: "cf-tunnel: a.example.com -> :80 " + marker, off: true, errs: []string{afterTarget}},
+		{name: "on a continuation line", input: block("a.example.com -> :80", "  "+marker), off: true, errs: []string{afterTarget}},
+		{
+			name:  "after a target, with an entry behind it",
+			input: block("a.example.com -> :80 " + marker + " b.example.com -> :81"),
+			off:   true,
+			errs:  []string{afterTarget},
+		},
+		{name: "indented under a cf-tunnel: line", input: "cf-tunnel: a.example.com -> :80\n  " + marker, off: true, errs: []string{msgShorthandContinue}},
+		{name: "another value", input: block("cf-tunnel-managed=on", "a.example.com -> :80"), off: true, want: hosts("a.example.com"), errs: []string{onlyOff}},
+		{name: "no value", input: block("cf-tunnel-managed="), off: true, errs: []string{onlyOff}},
+		{name: "the key alone", input: block("cf-tunnel-managed"), off: true, errs: []string{onlyOff}},
+		{name: "twice", input: block(marker, marker), off: true, errs: []string{twice}},
+		{name: "twice, in a block and on a cf-tunnel: line", input: block(marker) + "\ncf-tunnel: " + marker, off: true, errs: []string{twice}},
+		{name: "a misspelt value after the marker", input: block(marker, "cf-tunnel-managed=of"), off: true, errs: []string{onlyOff}},
+		{
+			name:  "in a block rejected for a nested fence",
+			input: "````cf-tunnel\na.example.com -> :80\n" + marker + "\n```x```\n````",
+			off:   true,
+			errs:  []string{msgNestedFence},
+		},
+		{name: "glued to a nested fence", input: "````cf-tunnel\n```" + marker + "```\n````", off: true, errs: []string{msgNestedFence}},
+		{name: "in a block whose closing fence is hidden", input: "```cf-tunnel\n" + marker + " # old ```", off: true, errs: []string{msgHiddenClose}},
+		{name: "on a cf-tunnel: line with a fence", input: "cf-tunnel: " + marker + " ```", off: true, errs: []string{msgShorthandFence}},
+		{
+			name:  "in the text skipped after a syntax error",
+			input: block("a_b.example.com -> :80 " + marker),
+			off:   true,
+			errs:  []string{`invalid hostname "a_b.example.com": label "a_b" contains '_'`},
+		},
+		{
+			name:  "on a line skipped after a syntax error",
+			input: block("a.example.com -> :abc", "  "+marker),
+			off:   true,
+			errs:  []string{`invalid target ":abc": expected [http|https://][ipv4]:port`},
+		},
+		{name: "among the hostnames", input: block("a.example.com " + marker + " -> :80"), off: true, errs: []string{"expected '->' after hostnames"}},
+		{
+			name:  "where the target belongs",
+			input: block("a.example.com -> " + marker),
+			off:   true,
+			errs:  []string{`invalid target "cf-tunnel-managed=off": expected [http|https://][ipv4]:port`},
+		},
+		{name: "in a comment", input: block("# "+marker, "a.example.com -> :80 # "+marker), want: hosts("a.example.com")},
+		{name: "outside the route text", input: marker + "\n" + block("a.example.com -> :80"), want: hosts("a.example.com")},
+		{name: "in another block", input: "```text\n" + marker + "\n```"},
+		{name: "a hostname that starts like the key", input: block("cf-tunnel-managed.example.com -> :80"), want: hosts("cf-tunnel-managed.example.com")},
+		{
+			name:  "a longer key",
+			input: block("cf-tunnel-managed-x=off"),
+			errs:  []string{`invalid hostname "cf-tunnel-managed-x=off": needs at least two labels`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Parse(tt.input)
+			require.Equal(t, tt.off, got.ManagedOff)
+			var kept []string
+			for _, en := range got.Entries {
+				kept = append(kept, en.Hosts...)
+			}
+			require.Equal(t, tt.want, kept)
+			require.Equal(t, tt.errs, messages(got.Errors))
+			if !tt.off {
+				require.Zero(t, got.ManagedOffAt)
+			}
+		})
+	}
+}
+
+func TestParseManagedOffPositions(t *testing.T) {
+	t.Run("the first marker stands", func(t *testing.T) {
+		got := Parse("notes\n\n```cf-tunnel\na.example.com -> :80\n" + marker + "\n  " + marker + "\n```")
+		require.True(t, got.ManagedOff)
+		require.Equal(t, Position{Line: 5, Col: 1}, got.ManagedOffAt)
+		require.Equal(t, []Error{{Line: 6, Col: 3, Msg: "cf-tunnel-managed=off given twice"}}, got.Errors)
+	})
+
+	t.Run("after a target", func(t *testing.T) {
+		got := Parse("cf-tunnel: a.example.com -> :80 cf-tunnel-managed=on")
+		require.Equal(t, Position{Line: 1, Col: 33}, got.ManagedOffAt)
+		require.Equal(t, []Error{{Line: 1, Col: 33, Msg: "cf-tunnel-managed=off must stand on its own, not after a target"}}, got.Errors)
+	})
+
+	t.Run("another value", func(t *testing.T) {
+		got := Parse("notes\n\tcf-tunnel: cf-tunnel-managed=yes")
+		require.Equal(t, Position{Line: 2, Col: 13}, got.ManagedOffAt)
+		require.Equal(t, []Error{{Line: 2, Col: 13, Msg: "cf-tunnel-managed= takes only off"}}, got.Errors)
+	})
+
+	t.Run("in a rejected block", func(t *testing.T) {
+		got := Parse("````cf-tunnel\na.example.com -> :80\n  " + marker + "\n```x```\n````")
+		require.Equal(t, Position{Line: 3, Col: 3}, got.ManagedOffAt)
+	})
+
+	t.Run("columns count characters", func(t *testing.T) {
+		const before = "Účetní šéf ```cf-tunnel "
+		got := Parse(before + marker + "```")
+		require.Equal(t, Position{Line: 1, Col: utf8.RuneCountInString(before) + 1}, got.ManagedOffAt)
+	})
+}
+
+// The marker holds '=', so it is no hostname: a hostname of the route text,
+// or of the Notes, it never is.
+func TestTheMarkerNamesNoHostname(t *testing.T) {
+	notes := block("CF-Tunnel-Managed=off", "a.example.com -> :80 cf-tunnel-managed=on") + "\ncf-tunnel-managed=off\ncf-tunnel: cf-tunnel-managed"
+	got := Parse(notes)
+	require.True(t, got.ManagedOff)
+	require.Equal(t, hosts("a.example.com"), got.Mentioned)
+	require.Equal(t, hosts("a.example.com"), Hostnames(notes))
 }
 
 func TestParseRejectsNonRoutableAddresses(t *testing.T) {
@@ -1774,6 +1954,9 @@ func FuzzParse(f *testing.F) {
 		block("a.example.com -> b.example.com", "b.example.com -> 224.0.0.1:80", "d.example.com -> :80 via=255.255.255.255"),
 		block("a.example.com -> 0.1.2.3:80", "b.example.com -> :80 via=240.0.0.1", "c.example.com -> 1.0.0.0:80"),
 		"  cf-tunnel: a.example.com -> https://:443\n\tno-tls-verify=yes\ncf-tunnel:\ncf-tunnel: # x",
+		block(marker, "a.example.com -> :80 via=managed", "CF-Tunnel-Managed=on b.example.com -> :81 "+marker),
+		"cf-tunnel: " + marker + " a.example.com -> :80\ncf-tunnel: b.example.com -> :81\n  cf-tunnel-managed",
+		"````cf-tunnel\n```" + marker + "```\n````\n# " + marker,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -1819,7 +2002,9 @@ func FuzzParse(f *testing.F) {
 			if en.Target.Addr.IsValid() {
 				requireRoutable(t, en.Target.Addr)
 			}
-			if v := en.Options.Via; strings.HasPrefix(v, "net") {
+			if v := en.Options.Via; v == "managed" {
+				require.False(t, en.Target.Addr.IsValid(), "via=managed beside an address")
+			} else if strings.HasPrefix(v, "net") {
 				n, err := strconv.Atoi(v[3:])
 				require.NoError(t, err)
 				require.LessOrEqual(t, n, 31)
@@ -1861,6 +2046,14 @@ func FuzzParse(f *testing.F) {
 			require.Empty(t, res.Entries)
 			require.Empty(t, res.Errors)
 			require.Empty(t, res.Mentioned)
+			require.False(t, res.ManagedOff)
+		}
+		if res.ManagedOff {
+			require.GreaterOrEqual(t, res.ManagedOffAt.Line, 1)
+			require.GreaterOrEqual(t, res.ManagedOffAt.Col, 1)
+			require.Contains(t, strings.ToLower(description), "cf-tunnel-managed", "a marker that was never written")
+		} else {
+			require.Zero(t, res.ManagedOffAt)
 		}
 		if res.Found {
 			require.Contains(t, strings.ToLower(description), "cf-tunnel")

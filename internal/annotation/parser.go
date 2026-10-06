@@ -20,6 +20,12 @@
 // the text skipped after an error or in a block or line rejected whole; each
 // later mention is an error and drops the entry it is in. Result.Mentioned
 // lists all of them.
+//
+// Where an entry may start, the route text may instead say
+// cf-tunnel-managed=off: the guest refuses a card on the managed network.
+// Refusing must never fail by a mistake, so the marker counts wherever the key
+// is read, in any case and with any value, also in text that is skipped after
+// an error or rejected whole; a value other than off is an error all the same.
 package annotation
 
 import (
@@ -45,6 +51,16 @@ const (
 	msgHiddenClose       = "the closing fence is hidden by a comment; put the comment on its own line"
 	msgMixedIndent       = "inconsistent indentation: mix of tabs and spaces"
 	msgNotRoutable       = "address is not routable to a guest"
+	msgMarkerValue       = "cf-tunnel-managed= takes only off"
+	msgMarkerTwice       = "cf-tunnel-managed=off given twice"
+	msgMarkerAfterTarget = "cf-tunnel-managed=off must stand on its own, not after a target"
+
+	markerKey = "cf-tunnel-managed"
+	markerOff = "off"
+
+	// viaManaged is the value of via= that names the card pco gave the guest
+	// on its managed network.
+	viaManaged = "managed"
 
 	maxNIC = 31 // the highest netN a guest can have
 )
@@ -94,11 +110,17 @@ func (e Error) Error() string {
 // Mentioned is every hostname read anywhere in the route text, normalised and
 // sorted: those of the entries and those of everything that was dropped. It
 // tells a hostname whose entry is broken from one that was removed.
+//
+// ManagedOff is set when the route text carries the marker
+// cf-tunnel-managed=off, or the key with any other value, anywhere it is read;
+// ManagedOffAt is where it was read first.
 type Result struct {
-	Found     bool // a cf-tunnel block or shorthand line exists
-	Entries   []Entry
-	Errors    []Error
-	Mentioned []string
+	Found        bool // a cf-tunnel block or shorthand line exists
+	Entries      []Entry
+	Errors       []Error
+	Mentioned    []string
+	ManagedOff   bool
+	ManagedOffAt Position
 }
 
 // Parse extracts and parses the route text of a guest description.
@@ -136,33 +158,39 @@ func (p *parser) parseSpan(src string, sp span, lines lineIndex) {
 	kept := len(p.res.Entries)
 	p.parseSegment(toks)
 	if sp.shorthand {
-		// The entry is dropped, but its hostnames stay claimed.
-		if t, ok := shorthandContinuation(src, sp, lines); ok {
+		// The entry is dropped, but its hostnames stay claimed, and a marker
+		// on that line counts as well.
+		if rest, ok := shorthandContinuation(src, sp, lines); ok {
 			p.res.Entries = p.res.Entries[:kept]
-			p.res.Errors = append(p.res.Errors, errorAt(t.at, msgShorthandContinue))
+			p.res.Errors = append(p.res.Errors, errorAt(rest[0].at, msgShorthandContinue))
+			for _, t := range rest {
+				if isMarker(t.text) {
+					p.optOut(t.at)
+				}
+			}
 		}
 	}
 }
 
-// shorthandContinuation finds the first token of the line right after a
+// shorthandContinuation returns the tokens of the line right after a
 // shorthand line when that line looks like the rest of the entry: it is
-// indented more, or in a way that cannot be compared, and starts with "->" or
-// with something that is or resembles an option. A shorthand line never
-// continues, so the entry is not published without it.
-func shorthandContinuation(src string, sp span, lines lineIndex) (token, bool) {
+// indented more, or in a way that cannot be compared, and starts with "->",
+// with something that is or resembles an option, or with the marker. A
+// shorthand line never continues, so the entry is not published without it.
+func shorthandContinuation(src string, sp span, lines lineIndex) ([]token, bool) {
 	next := sp.to + 1
 	if next >= len(src) {
-		return token{}, false
+		return nil, false
 	}
 	toks := lex(src, span{from: next, to: lineEnd(src, next)}, lines)
 	if len(toks) == 0 {
-		return token{}, false
+		return nil, false
 	}
 	indent, t := lines.indent(lines.position(sp.from).Line), toks[0]
 	if !continues(indent, t.indent) && !inconsistent(indent, t.indent) {
-		return token{}, false
+		return nil, false
 	}
-	return t, looksLikeOption(t.text)
+	return toks, looksLikeOption(t.text) || isMarker(t.text)
 }
 
 // looksLikeOption reports whether a token is "->" or an option, or starts like
@@ -188,6 +216,11 @@ func looksLikeOption(s string) bool {
 func (p *parser) parseSegment(toks []token) {
 	c := &cursor{toks: toks}
 	for !c.done() {
+		if t, _ := c.peek(); isMarker(t.text) {
+			c.pos++
+			p.readMarker(t)
+			continue
+		}
 		d, failed := parseEntry(c)
 		dup := p.claim(d)
 		if failed != nil {
@@ -203,15 +236,46 @@ func (p *parser) parseSegment(toks []token) {
 	}
 }
 
-// reserve claims every hostname in toks without reporting it. Backticks split
-// a token here, so that a hostname glued to a fence in rejected text counts.
+// reserve claims every hostname in toks without reporting it, and counts a
+// marker among them. Backticks split a token here, so that a hostname or a
+// marker glued to a fence in rejected text counts.
 func (p *parser) reserve(toks []token) {
 	for _, t := range toks {
 		for _, part := range strings.FieldsFunc(t.text, func(r rune) bool { return r == '`' }) {
 			if h, err := hostname.Normalize(part); err == nil {
 				p.seen[h] = struct{}{}
 			}
+			if isMarker(part) {
+				p.optOut(t.at)
+			}
 		}
+	}
+}
+
+// isMarker reports whether a word is the key cf-tunnel-managed, in any case,
+// alone or with a value.
+func isMarker(word string) bool {
+	key, _, _ := strings.Cut(word, "=")
+	return equalFoldASCII(key, markerKey)
+}
+
+// readMarker reads a marker that stands where an entry may start. A value
+// other than off is an error, and so is a second marker; either counts.
+func (p *parser) readMarker(t token) {
+	_, value, _ := strings.Cut(t.text, "=")
+	switch {
+	case !equalFoldASCII(value, markerOff):
+		p.res.Errors = append(p.res.Errors, errorAt(t.at, msgMarkerValue))
+	case p.res.ManagedOff:
+		p.res.Errors = append(p.res.Errors, errorAt(t.at, msgMarkerTwice))
+	}
+	p.optOut(t.at)
+}
+
+// optOut records a marker read at at; the first one stands.
+func (p *parser) optOut(at Position) {
+	if !p.res.ManagedOff {
+		p.res.ManagedOff, p.res.ManagedOffAt = true, at
 	}
 }
 
@@ -320,6 +384,10 @@ func inconsistent(a, b string) bool {
 // readHosts reads up to and including the arrow and returns the arrow token.
 func (d *draft) readHosts(c *cursor) (token, *failure) {
 	for {
+		if t, state := d.peek(c); state == inEntry && isMarker(t.text) {
+			// Left unread, so it is skipped with the rest of the entry and counts.
+			return token{}, fail(t.at, "expected '->' after hostnames")
+		}
 		t, state := d.take(c)
 		switch state {
 		case endsEntry:
@@ -447,6 +515,10 @@ func (d *draft) readOptions(c *cursor) *failure {
 		case mixedIndent:
 			return fail(t.at, msgMixedIndent)
 		}
+		if isMarker(t.text) {
+			// Left unread: it is skipped with the rest of the entry, and counts.
+			return fail(t.at, msgMarkerAfterTarget)
+		}
 		name, value, isOption := splitOption(t.text)
 		if !isOption {
 			if _, err := hostname.Normalize(t.text); err == nil && t.at.Line == d.line0 {
@@ -516,9 +588,13 @@ func (d *draft) apply(t token, name, value string) *failure {
 	return nil
 }
 
-// parseVia accepts a NIC name ("net0" to "net31", without leading zeros) or
-// an IPv4 address a guest can have, and returns it in canonical form.
+// parseVia accepts a NIC name ("net0" to "net31", without leading zeros),
+// "managed" for the card pco gave the guest on its managed network, or an
+// IPv4 address a guest can have, and returns it in canonical form.
 func parseVia(v string) (string, bool) {
+	if equalFoldASCII(v, viaManaged) {
+		return viaManaged, true
+	}
 	if len(v) > len("net") && equalFoldASCII(v[:3], "net") {
 		if _, ok := decimal(v[3:], maxNIC); !ok {
 			return "", false

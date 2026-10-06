@@ -103,14 +103,15 @@ The details of the two forms:
 
 ## The grammar
 
-    block   = entry*
+    block   = ( entry | marker )*
     entry   = host { [","] host } "->" target { option }
     host    = a DNS name, optionally starting with "*."
     target  = [ ("http" | "https") "://" ] [ ipv4 ] ":" port [ "/" ]
     option  = "no-tls-verify"
             | "host-header=" value
             | "sni=" hostname
-            | "via=" ( "net" N | ipv4 )
+            | "via=" ( "net" N | ipv4 | "managed" )
+    marker  = "cf-tunnel-managed=off"
 
 Spaces, tabs, line breaks and commas separate the words of an entry. The arrow `->`
 must be a word of its own: `app.example.com->:80` is an error.
@@ -164,6 +165,7 @@ Options follow the target. Each can be given once.
 | `sni=<hostname>` | The name to ask for in the TLS handshake. Only valid with `https`; a wildcard is not accepted. |
 | `via=net<N>` | Use the addresses of that network card of the guest, `net0` to `net31`, written without leading zeros. |
 | `via=<ipv4>` | Use this address of the guest. Cannot be combined with an address in the target. |
+| `via=managed` | Use the card pco gave the guest on its managed network, and ask for one. Cannot be combined with an address in the target. |
 
 By default the Host header of the visitor's request is passed through unchanged. For
 an `https` target the tunnel asks for the TLS name of the public hostname, unless
@@ -173,6 +175,16 @@ in the Host header of the request.
 `via=` matters only for a guest with more than one network card or address: it
 narrows the candidates that pco considers. [Identity](identity.md) lists the order
 in which they are tried.
+
+### Refusing the managed network
+
+`cf-tunnel-managed=off`, a word of its own where an entry may start, in a block or on a
+`cf-tunnel:` line, says that the guest takes no card on pco's managed network, whatever
+its tags and the consent setting say. It is no route and names no hostname. A refusal
+must not fail by a typo, so it counts wherever the key `cf-tunnel-managed` is read in the
+route text: in any case, with any value, and also in an entry or a block that is dropped
+for an error. A value other than `off` is an error all the same. In a comment it does not
+count.
 
 ### Comments
 
@@ -326,8 +338,11 @@ see [Security](security.md).
 | `unknown option "tls-verify"` | The word after the target is not an option, and does not start a new entry: on a continuation line, or because it is not a hostname. Options written wrongly end up here too, and so does an arrow stuck to a hostname after the target (`:81 a.example.com->:80`). |
 | `option "no-tls-verify" given twice` | An option repeated. |
 | `no-tls-verify only applies to https targets`, `sni= only applies to https targets` | The option needs `https://`. |
-| `invalid value for host-header=`, `... sni=`, `... via=` | The value has characters that are not allowed, is empty, or is not a hostname, a NIC name or an address. |
+| `invalid value for host-header=`, `... sni=`, `... via=` | The value has characters that are not allowed, is empty, or is not a hostname, a NIC name, `managed` or an address. |
 | `via= cannot be combined with an address in the target` | An address is already named. |
+| `cf-tunnel-managed= takes only off` | The marker has another value, or none. It counts as `off` all the same. |
+| `cf-tunnel-managed=off given twice` | The marker appears earlier in the same Notes. |
+| `cf-tunnel-managed=off must stand on its own, not after a target` | The marker stands where an option of an entry belongs. The entry is dropped, and the marker counts. |
 | `hostname "x" is listed twice` | The name appears earlier in the same Notes, in any entry, valid or not. |
 | `inconsistent indentation: mix of tabs and spaces` | A line is indented with a tab where the entry is indented with spaces, or the other way round. |
 | `code fences are not allowed inside a cf-tunnel block` | The block holds a shorter run of backticks, which only quoted or nested markup has. The whole block is dropped. |
