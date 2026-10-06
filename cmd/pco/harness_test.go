@@ -407,7 +407,7 @@ func (f *fakeEngine) Attach(_ context.Context, r engine.AttachRequest) (engine.N
 	return engine.NetworkView{
 		Network: store.Network{
 			ID: store.SegmentID(r.Bridge, r.VLAN), Kind: store.NetworkAttach, Bridge: r.Bridge, VLAN: r.VLAN, Prefix: r.Prefix,
-			Legs: map[string]netip.Addr{"pve1": r.Address}, LegMAC: "02:50:43:4f:00:01", Mark: 1, OverlapOK: r.OverlapOK, CreatedAt: t0, Rev: 1,
+			Legs: map[string]netip.Addr{"pve1": r.Address}, LegMAC: "02:50:43:4f:00:01", LegMACs: map[string]string{"pve1": "02:50:43:4f:00:01"}, Mark: 1, OverlapOK: r.OverlapOK, CreatedAt: t0, Rev: 1,
 		},
 		Legs: []engine.LegView{{Node: "pve1", Addr: r.Address, Problem: "the gateway has not reported the leg yet"}},
 	}, nil

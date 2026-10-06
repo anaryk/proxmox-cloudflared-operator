@@ -58,6 +58,13 @@ pco help route manual add
   - [pco guest approve](pco-guest-approve.md): Approve a guest in the identity it has now
   - [pco guest list](pco-guest-list.md): List the approved guests, the guests that wait for approval and the tagged guests
   - [pco guest revoke](pco-guest-revoke.md): Remove the approval of a guest
+- [pco network](pco-network.md): Attach pco to the networks of guests the node has no address in
+  - [pco network attach](pco-network-attach.md): Attach a network: a leg of pco's own into a bridge or VLAN
+  - [pco network candidates](pco-network-candidates.md): List the bridges and VLANs of the node a network may be attached to
+  - [pco network detach](pco-network-detach.md): Detach a network: remove its leg and its service addresses
+  - [pco network list](pco-network-list.md): List the networks attached, with their legs and the routes served through them
+  - [pco network probe](pco-network-probe.md): Ask who answers for an address on a bridge or VLAN
+  - [pco network show](pco-network-show.md): Show a network with its leg, its service addresses and the routes served through it
 - [pco plan](pco-plan.md): Show what the daemon would change and what stands in its way
 - [pco route](pco-route.md): Make and remove the routes an admin writes by hand
   - [pco route manual](pco-route-manual.md): Manual routes: hostnames published to a guest or an address without its Notes
@@ -117,6 +124,6 @@ pco help route manual add
 
 ```text
 -h, --help            help for pco
-    --json            print the answer of the daemon as JSON (status, routes, plan, events, claims list, guest list, diagnose, doctor, credential list, add and check, settings show and apply, route manual list and add): printed as the daemon sent it, re-indented, with control and bidirectional characters escaped; version prints the build and the schema version of the store
+    --json            print the answer of the daemon as JSON (status, routes, plan, events, claims list, guest list, diagnose, doctor, credential list, add and check, settings show and apply, route manual list and add, network list, candidates, probe and show): printed as the daemon sent it, re-indented, with control and bidirectional characters escaped; version prints the build and the schema version of the store
     --socket string   unix socket of the daemon; its directory must be named pco and sit in a directory only the daemon's user can write (default "/run/pco/pco.sock")
 ```

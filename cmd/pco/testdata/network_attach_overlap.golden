@@ -1,0 +1,4 @@
+192.168.4.249 on pcot1, in 192.168.4.0/24, is free: nothing answered the probe.
+Overlap: 192.168.4.0/24 overlaps the node's route on vmbr0.
+--- error
+192.168.4.0/24 overlaps the node's route on vmbr0; pass --overlap-ok if the guests there are meant to be reached through the leg

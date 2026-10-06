@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -144,7 +145,18 @@ func hostileEngine() *fakeEngine {
 			{Check: "check" + hostileText, Level: doctor.LevelFail, Detail: "detail " + hostileText, Fix: "fix " + hostileText},
 			{Check: "odd", Level: doctor.Level("odd" + hostileText), Detail: "a level of another version"},
 		},
+		networks:   hostileNetworks(),
+		candidates: []engine.CandidateNetwork{{Bridge: "br" + hostileText, Refused: "refused " + hostileText}},
 	}
+}
+
+func hostileNetworks() []engine.NetworkDetail {
+	n := someNetworks()[0]
+	n.ID, n.Kind, n.Bridge = "vmbr1"+hostileText, "attach"+hostileText, "br"+hostileText
+	n.Legs = []engine.LegView{{Node: "pve" + hostileText, Addr: netip.MustParseAddr("10.77.0.250"), Problem: "down " + hostileText}}
+	n.LegMACs = map[string]string{"pve" + hostileText: "02:50:43:4f:00:01"}
+	n.Served = []string{"www" + hostileText}
+	return []engine.NetworkDetail{n}
 }
 
 func hostileSettings() engine.SettingsView {
@@ -264,6 +276,9 @@ func TestHostileAdminCommandsGolden(t *testing.T) {
 		{"settings_show_hostile.golden", "", []string{"settings", "show"}},
 		{"route_manual_list_hostile.golden", "", []string{"route", "manual", "list"}},
 		{"segment_list_hostile.golden", "", []string{"segment", "list"}},
+		{"network_list_hostile.golden", "", []string{"network", "list"}},
+		{"network_candidates_hostile.golden", "", []string{"network", "candidates"}},
+		{"network_show_hostile.golden", "", []string{"network", "show", "vmbr1" + hostileText}},
 		{"diagnose_hostile.golden", "", []string{"diagnose", "www.example.com"}},
 		{"doctor_hostile.golden", "", []string{"doctor"}},
 	} {

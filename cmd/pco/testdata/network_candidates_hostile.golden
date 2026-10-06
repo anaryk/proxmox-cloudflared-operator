@@ -1,0 +1,3 @@
+SEGMENT                         KIND    UPLINK  GUESTS  PREFIX  STATE
+br?[2J?]0;pwned? ? ?31m ?evil?  bridge  no      0       -       refused: refused ?[2J?]0;pwned? ? ?31m ?evil?
+--- stderr

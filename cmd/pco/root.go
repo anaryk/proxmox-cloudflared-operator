@@ -49,7 +49,7 @@ var commandGroups = []struct {
 	commands  []string
 }{
 	{"start", "Getting started:", []string{"setup", "credential", "apply", "status"}},
-	{"routes", "Routes and guests:", []string{"routes", "plan", "route", "guest", "claims", "adopt", "segment", "diagnose"}},
+	{"routes", "Routes and guests:", []string{"routes", "plan", "route", "guest", "claims", "adopt", "segment", "network", "diagnose"}},
 	{"operate", "Operating:", []string{"sync", "events", "doctor", "settings", "egress", "net", "netns", "tunnel", "web", "daemon", "upgrade", "export", "import"}},
 	{"lifecycle", "Lifecycle:", []string{"uninstall", "appliance", "version", "completion"}},
 }
@@ -143,7 +143,8 @@ func newRootCmdWith(e env) *cobra.Command {
 		"unix socket of the daemon; its directory must be named pco and sit in a directory only the daemon's user can write")
 	flags.BoolVar(&a.json, "json", false,
 		"print the answer of the daemon as JSON (status, routes, plan, events, claims list, guest list, diagnose, "+
-			"doctor, credential list, add and check, settings show and apply, route manual list and add): printed as "+
+			"doctor, credential list, add and check, settings show and apply, route manual list and add, "+
+			"network list, candidates, probe and show): printed as "+
 			"the daemon sent it, re-indented, with control and bidirectional characters escaped; "+
 			"version prints the build and the schema version of the store")
 
@@ -164,6 +165,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.settingsCmd(),
 		a.routeCmd(),
 		a.segmentCmd(),
+		a.networkCmd(),
 		a.diagnoseCmd(),
 		a.doctorCmd(),
 		a.setupCmd(),

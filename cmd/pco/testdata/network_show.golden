@@ -1,0 +1,26 @@
+Network vmbr1 (attach)
+  bridge:    vmbr1
+  vlan:      -
+  prefix:    10.77.0.0/24
+  leg:       10.77.0.250 on pve1, leg1 with MAC 02:50:43:4f:00:01: up
+  mark:      1
+  uplink:    no
+  attached:  2026-10-01T13:00:00+02:00
+  revision:  2
+Service addresses:
+  198.18.1.0  -> 10.77.0.11  since 2026-10-01T13:30:00+02:00
+Routes served through it:
+  www.example.com
+---
+Network vmbr2.20 (attach)
+  bridge:      vmbr2
+  vlan:        20
+  prefix:      192.168.4.0/24
+  leg:         192.168.4.249 on pve1, leg2 with MAC 02:50:43:4f:00:02: address in use by 52:54:00:12:34:56
+  mark:        2
+  uplink:      yes
+  overlap-ok:  yes: attached over a route of the node
+  attached:    2026-10-01T13:59:00+02:00
+  revision:    1
+No service address: no target behind it is published.
+No route is served through it.

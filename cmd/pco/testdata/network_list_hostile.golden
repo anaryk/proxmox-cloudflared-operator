@@ -1,0 +1,3 @@
+ID                                 KIND                                BRIDGE                          VLAN  PREFIX        LEG          STATE                              ROUTES
+vmbr1?[2J?]0;pwned? ? ?31m ?evil?  attach?[2J?]0;pwned? ? ?31m ?evil?  br?[2J?]0;pwned? ? ?31m ?evil?  -     10.77.0.0/24  10.77.0.250  down ?[2J?]0;pwned? ? ?31m ?evil?  1
+--- stderr

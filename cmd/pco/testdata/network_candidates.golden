@@ -1,0 +1,7 @@
+SEGMENT   KIND                UPLINK  GUESTS  PREFIX        STATE
+lab       vnet                yes     0       -             can be attached
+pconet    vnet                no      0       -             refused: pconet is pco's managed network, which is not attached
+pcot1     bridge              no      1       10.50.0.0/24  can be attached
+vmbr0     bridge              yes     0       -             direct: the node has an address here
+vmbr1     bridge              no      1       10.77.0.0/24  attached as vmbr1
+vmbr2:20  bridge, VLAN-aware  yes     0       -             can be attached

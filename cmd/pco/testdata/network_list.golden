@@ -1,0 +1,3 @@
+ID        KIND    BRIDGE  VLAN  PREFIX          LEG            STATE                                ROUTES
+vmbr1     attach  vmbr1   -     10.77.0.0/24    10.77.0.250    up                                   1
+vmbr2.20  attach  vmbr2   20    192.168.4.0/24  192.168.4.249  address in use by 52:54:00:12:34:56  0

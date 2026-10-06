@@ -1,0 +1,15 @@
+Network vmbr1?[2J?]0;pwned? ? ?31m ?evil? (attach?[2J?]0;pwned? ? ?31m ?evil?)
+  bridge:    br?[2J?]0;pwned? ? ?31m ?evil?
+  vlan:      -
+  prefix:    10.77.0.0/24
+  leg:       10.77.0.250 on pve?[2J?]0;pwned? ? ?31m ?evil?, leg1 with MAC 02:50:43:4f:00:01: down ?[2J?]0;pwned? ? ?31m ?evil?
+  leg:       10.77.0.250 on pve1
+  mark:      1
+  uplink:    no
+  attached:  2026-10-01T13:00:00+02:00
+  revision:  2
+Service addresses:
+  198.18.1.0  -> 10.77.0.11  since 2026-10-01T13:30:00+02:00
+Routes served through it:
+  www?[2J?]0;pwned? ? ?31m ?evil?
+--- stderr
