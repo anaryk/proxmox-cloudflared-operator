@@ -47,7 +47,25 @@ type HostIface struct {
 	Addrs   []netip.Prefix
 	Master  string  // bridge this interface is enslaved to, if any
 	Segment Segment // zero when the interface is on no bridge segment
+	// Table is the bridge and VLAN whose forwarding table holds this
+	// interface's frames: the bridge itself for a bridge, (bridge, tag) for
+	// vmbrX.Y on a bridge that filters VLANs, (vmbrXvY, 0) for the bridge
+	// Proxmox makes, and for a leg the bridge it is enslaved to. Zero when
+	// there is none.
+	Table FDBRef
+	// Via is the network id when the interface is a leg of pco; empty otherwise.
+	Via string
 }
+
+// FDBRef names a forwarding table: a bridge, and the VLAN of its entries (0
+// for untagged).
+type FDBRef struct {
+	Bridge string
+	VLAN   int
+}
+
+// IsZero reports whether r names no table.
+func (r FDBRef) IsZero() bool { return r == FDBRef{} }
 
 // ErrTooManyClaimants is wrapped by an ARP error when so many stations claim
 // the address that the answer was cut short. That is an identity failure, not
@@ -63,21 +81,26 @@ var ErrNoRoute = errors.New("no route to the address")
 var ErrRouteDiffers = errors.New("route depends on the source address")
 
 // Prober is the host-side view the resolver needs. Its methods may be called
-// concurrently.
+// concurrently. The iface of Route and Dial is the interface the identity of
+// the address is checked on, empty when it is checked on none, as for a
+// trusted address behind a router or a route without a guest.
 type Prober interface {
 	Interfaces(ctx context.Context) ([]HostIface, error)
-	// Route returns the interface the kernel sends traffic for addr out of,
-	// and whether it goes to addr directly rather than through a gateway. A
-	// route that changes with the source address the kernel picks fails with
-	// ErrRouteDiffers; policy routing on anything else, such as the user of a
-	// socket or a firewall mark, is not supported.
-	Route(ctx context.Context, addr netip.Addr) (iface string, onLink bool, err error)
+	// Route returns the interface traffic for addr leaves through when sent
+	// the way the check on iface would send it: for a leg, from inside the
+	// namespace with the leg's mark; otherwise as the host sends it. onLink
+	// says that it goes to addr directly rather than through a gateway. A
+	// route of the host that changes with the source address the kernel
+	// picks fails with ErrRouteDiffers; policy routing on anything else, such
+	// as the user of a socket or a firewall mark, is not supported there.
+	Route(ctx context.Context, iface string, addr netip.Addr) (out string, onLink bool, err error)
 	// ARP asks for addr on iface and returns every MAC that answered in the window.
 	ARP(ctx context.Context, iface string, addr netip.Addr) ([]string, error)
 	// FDBPorts returns every port of bridge on which mac is learned for vlan
 	// (0 = untagged).
 	FDBPorts(ctx context.Context, bridge string, vlan int, mac string) ([]string, error)
-	Dial(ctx context.Context, target netip.AddrPort) error
+	// Dial connects to target the way the check on iface would.
+	Dial(ctx context.Context, iface string, target netip.AddrPort) error
 }
 
 // Settings tunes the resolver.
@@ -267,7 +290,7 @@ func (r *Resolver) resolveAddress(ctx context.Context, route model.Route, snap i
 	}
 	o := r.checkAddress(ctx, addr, allowNode, snap, deny, share)
 	if o.ok() {
-		o = r.dial(ctx, share, addr, route.Target.Port)
+		o = r.dial(ctx, share, "", addr, route.Target.Port)
 	}
 	cr := []CandidateResult{{Addr: addr, Source: FromVia, OK: o.ok(), Reason: o.reason}}
 	switch o.verdict {
@@ -453,7 +476,7 @@ func (a *attempt) ceiling() Level {
 // the guest's ceiling otherwise. It needs the host's interfaces, which have
 // been read once a candidate passed.
 func (a *attempt) ceilingOf(c Candidate) Level {
-	if arpInterface(a.ifaces, c) == "" {
+	if arpInterface(a.ifaces, c).Name == "" {
 		return LevelObserved
 	}
 	return a.ceiling()

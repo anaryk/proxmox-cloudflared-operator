@@ -46,16 +46,22 @@ type Binding struct {
 	// Segment is the bridge and VLAN the proof made at VerifiedAt asked ARP
 	// on; zero for an address proven on the trusted path, through a gateway.
 	Segment Segment `json:"segment,omitzero"`
+	// Via is the network whose leg of the gateway the proof made at
+	// VerifiedAt was made through, which then serves the route; empty for an
+	// address the node reaches directly.
+	Via string `json:"via,omitempty"`
 }
 
 // proof is what proved the identity of a candidate: its level, where the
 // forwarding table placed the MAC of its NIC and every MAC that answered, the
-// segment it was asked on, and when it was made.
+// segment it was asked on, the network whose leg it was asked through, and
+// when it was made.
 type proof struct {
 	level        Level
 	bridge, port string
 	ports        map[string]string
 	segment      Segment
+	via          string
 	at           time.Time
 }
 
@@ -80,6 +86,7 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 		Port:       p.port,
 		Ports:      maps.Clone(p.ports),
 		Segment:    p.segment,
+		Via:        p.via,
 	}
 }
 
@@ -87,7 +94,7 @@ func newBinding(route model.Route, c Candidate, now time.Time, p proof) *Binding
 func (b *Binding) proven(p proof) *Binding {
 	c := b.clone()
 	c.VerifiedAt, c.Withdrawn, c.Level, c.Bridge, c.Port = p.at, false, p.level, p.bridge, p.port
-	c.Ports, c.Segment = maps.Clone(p.ports), p.segment
+	c.Ports, c.Segment, c.Via = maps.Clone(p.ports), p.segment, p.via
 	return c
 }
 
@@ -204,7 +211,9 @@ func (b *Binding) target(reason string) planner.ResolvedTarget {
 // boundCandidate returns the candidate that carries b: its address on the
 // NIC that has its MAC now, with the source that reports it there, if any.
 // It returns false when b no longer applies: no NIC of the guest has its
-// MAC, or the route names another address or another NIC.
+// MAC, or the route names another address or another NIC, or the managed
+// network while that NIC is not on it. The proof b carries, and the leg it
+// was made through with it, stays with b.
 func (b *Binding) boundCandidate(route model.Route, guest model.Guest, cands []Candidate) (Candidate, bool) {
 	if named, ok := namedAddr(route); ok && named != b.Addr {
 		return Candidate{}, false
@@ -215,6 +224,9 @@ func (b *Binding) boundCandidate(route model.Route, guest model.Guest, cands []C
 		return Candidate{}, false
 	}
 	if index, ok := parseNICName(route.Options.Via); ok && index != nics[i].Index {
+		return Candidate{}, false
+	}
+	if route.Options.Via == viaManaged && nics[i].Bridge != managedBridge {
 		return Candidate{}, false
 	}
 	c := Candidate{Addr: b.Addr, NIC: copyNIC(nics[i]), Source: FromBinding}

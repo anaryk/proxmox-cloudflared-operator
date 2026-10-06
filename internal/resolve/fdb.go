@@ -10,11 +10,15 @@ import (
 )
 
 // fdbOf returns the bridge and VLAN whose forwarding table holds the frames
-// that reach iface from nic: the VLAN's own bridge has them untagged, a
-// VLAN-aware bridge under the tag.
-func fdbOf(iface string, nic model.NIC) (bridge string, vlan int) {
-	if nic.VLAN != 0 && iface == vlanBridge(nic) {
-		return iface, 0
+// that reach ifc from nic: the table of the interface when it names one, as
+// for a leg, the bridge it is enslaved to. Otherwise the VLAN's own bridge has
+// them untagged, a VLAN-aware bridge under the tag.
+func fdbOf(ifc HostIface, nic model.NIC) (bridge string, vlan int) {
+	switch {
+	case !ifc.Table.IsZero():
+		return ifc.Table.Bridge, ifc.Table.VLAN
+	case nic.VLAN != 0 && ifc.Name == vlanBridge(nic):
+		return ifc.Name, 0
 	}
 	return nic.Bridge, nic.VLAN
 }
@@ -24,8 +28,8 @@ func fdbOf(iface string, nic model.NIC) (bridge string, vlan int) {
 // placed it on. A MAC that proves nothing either way does not end the check:
 // what the table says about the others can still show that the identity does
 // not hold.
-func (a *attempt) forwarding(ctx context.Context, iface string, nic model.NIC, macs []string, own map[string][]int) (map[string]string, outcome) {
-	bridge, vlan := fdbOf(iface, nic)
+func (a *attempt) forwarding(ctx context.Context, ifc HostIface, nic model.NIC, macs []string, own map[string][]int) (map[string]string, outcome) {
+	bridge, vlan := fdbOf(ifc, nic)
 	placed := make(map[string]string, len(macs))
 	var unsure undecided
 	for _, mac := range macs {
@@ -80,8 +84,8 @@ func (a *attempt) mayRunElsewhere() bool {
 // notOnLocalPorts checks, for a guest that runs on another node, that the
 // bridge has learned none of the MACs that answered for it on the port of a
 // guest of this node, which would be a local guest answering in its name.
-func (a *attempt) notOnLocalPorts(ctx context.Context, iface string, nic model.NIC, macs []string) outcome {
-	bridge, vlan := fdbOf(iface, nic)
+func (a *attempt) notOnLocalPorts(ctx context.Context, ifc HostIface, nic model.NIC, macs []string) outcome {
+	bridge, vlan := fdbOf(ifc, nic)
 	var unsure undecided
 	for _, mac := range macs {
 		ports, o := a.fdbPorts(ctx, bridge, vlan, mac)

@@ -118,7 +118,8 @@ pco diagnose www.example.com
 ```
 
 The word in brackets at the end of `identity` says where the address came from: `reported` by
-the guest agent, `static` from the Proxmox configuration, or `via` from the route.
+the guest agent, `static` from the Proxmox configuration, `via` from the route, or `managed`
+when pco leased it on its managed network.
 
 When pco learns no address at all, the route waits and says so:
 

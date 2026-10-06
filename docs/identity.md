@@ -256,16 +256,21 @@ on the node it ran on. Give the nodes static addresses, or run a repair after on
 A route's target says which addresses are candidates.
 
 - An address in the target (`-> http://10.0.0.50:5000`) or `via=<ipv4>`: that address
-  and no other. It is placed on the card of the guest that lists it as a static address
-  or that the guest agent reports it on, and when neither does, tried on every card that
-  has a bridge, in the order of the cards. The checks above decide.
-- `via=net<N>`: the addresses of that card, the static ones from the Proxmox
-  configuration first and then the ones the guest reports.
-- Neither: the static addresses of every card, in the order of the cards, then the
-  reported addresses of every card in the same order. Static means `ipconfig<N>` of a
-  virtual machine (cloud-init) or `ip=` of a container. Reported means what the guest
-  agent says for a virtual machine and what Proxmox reads from a running container. A
-  reported address counts only for the card whose MAC the agent gives it with.
+  and no other. It is placed on the card pco leased it to on its managed network, else on
+  the card of the guest that lists it as a static address or that the guest agent reports
+  it on, and when none does, tried on every card that has a bridge, in the order of the
+  cards. The checks above decide.
+- `via=net<N>`: the addresses of that card, the one pco leased it on its managed network
+  first, then the static ones from the Proxmox configuration and then the ones the guest
+  reports.
+- `via=managed`: the addresses of the guest's card on pco's managed network (`pconet`) in
+  the same order. A guest without such a card has no candidate.
+- Neither: the addresses pco leased the cards on its managed network, then the static
+  addresses of every card, in the order of the cards, then the reported addresses of every
+  card in the same order. Static means `ipconfig<N>` of a virtual machine (cloud-init) or
+  `ip=` of a container. Reported means what the guest agent says for a virtual machine and
+  what Proxmox reads from a running container. A reported address counts only for the card
+  whose MAC the agent gives it with.
 
 IPv6 addresses are not candidates, and neither are addresses that are unspecified or
 multicast. At most 16 candidates are tried for one route in a call.

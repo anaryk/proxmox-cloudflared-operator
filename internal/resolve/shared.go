@@ -23,7 +23,7 @@ type Shared struct {
 
 	ifaces memo[struct{}, hostView]
 	wire   memo[wireKey, wireAnswer]
-	dials  memo[netip.AddrPort, outcome]
+	dials  memo[dialKey, outcome]
 
 	macsOnce sync.Once
 	macs     macIndex
@@ -54,6 +54,12 @@ type wireKey struct {
 	nic   int
 	mac   string
 	addr  netip.Addr
+}
+
+// dialKey is a port dialled the way the check on an interface dials it.
+type dialKey struct {
+	iface  string
+	target netip.AddrPort
 }
 
 // wireAnswer is what the wire showed of a candidate: what proves its

@@ -233,7 +233,7 @@ candidate.
 | `ARP on vmbr0: ...`, `forwarding table of vmbr0: ...`, `route to <address>: ...`, `listing host interfaces: ...` | The host could not be asked, which proves nothing either way. The error that follows says why; the daemon needs to run as root. |
 | `address of this node`, `address of a cluster node`, `loopback address`, `link-local address`, ... | The address is never published. The target is the node, or something that cannot be a guest. |
 | `identity level observed is below the required port` | The route is held back by `identityMinimum`; see [Identity](identity.md). |
-| `guest has no net1`, `address <address> is not a usable IPv4 address`, `guest has no network interface` | The route's `via=` or address names something the guest does not have. |
+| `guest has no net1`, `guest has no network card on pconet`, `address <address> is not a usable IPv4 address`, `guest has no network interface` | The route's `via=` or address names something the guest does not have. |
 
 Before you give the node an address in a guest's network, think about who is in it. The
 web interface and API of the node (`pveproxy`, port 8006), `spiceproxy` and `sshd` listen on

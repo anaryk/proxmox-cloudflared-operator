@@ -16,9 +16,18 @@ import (
 type CandidateSource string
 
 const (
-	FromVia    CandidateSource = "via"      // named by the route, as via=<ip> or as its target
-	FromStatic CandidateSource = "static"   // configured on the guest NIC
-	FromAgent  CandidateSource = "reported" // reported by the guest agent
+	FromVia     CandidateSource = "via"      // named by the route, as via=<ip> or as its target
+	FromManaged CandidateSource = "managed"  // leased by pco on its managed network
+	FromStatic  CandidateSource = "static"   // configured on the guest NIC
+	FromAgent   CandidateSource = "reported" // reported by the guest agent
+)
+
+const (
+	// viaManaged is the value of via= that names the card pco gave the guest
+	// on its managed network.
+	viaManaged = "managed"
+	// managedBridge is the bridge of pco's managed network.
+	managedBridge = "pconet"
 )
 
 // Candidate is an address to try for a route.
@@ -46,6 +55,8 @@ func Candidates(route model.Route, guest model.Guest) ([]Candidate, error) {
 		return named(explicit, guest)
 	case via == "":
 		return discover(guest), nil
+	case via == viaManaged:
+		return onManaged(guest)
 	}
 
 	if index, ok := parseNICName(via); ok {
@@ -99,12 +110,21 @@ func (l *candidateList) add(addr netip.Addr, nic model.NIC, source CandidateSour
 	l.out = append(l.out, Candidate{Addr: addr, NIC: copyNIC(nic), Source: source})
 }
 
-// addNIC adds the static addresses of nic, then the reported ones.
+// addNIC adds the address pco leased nic, then its static addresses, then
+// the reported ones.
 func (l *candidateList) addNIC(nic model.NIC, reported []model.ReportedAddr) {
+	l.addLeased(nic)
 	for _, a := range nic.Static {
 		l.add(a, nic, FromStatic)
 	}
 	l.addReported(nic, reported)
+}
+
+// addLeased adds the address pco leased nic on its managed network, if any.
+func (l *candidateList) addLeased(nic model.NIC) {
+	if nic.Leased.IsValid() {
+		l.add(nic.Leased, nic, FromManaged)
+	}
 }
 
 func (l *candidateList) addReported(nic model.NIC, reported []model.ReportedAddr) {
@@ -134,12 +154,16 @@ func sortedNICs(guest model.Guest) []model.NIC {
 	return nics
 }
 
-// discover lists the static addresses of every NIC, then the reported ones.
-// Reported addresses whose MAC matches no NIC belong to something running
-// inside the guest and are left out.
+// discover lists the addresses pco leased the NICs, then the static
+// addresses of every NIC, then the reported ones. Reported addresses whose
+// MAC matches no NIC belong to something running inside the guest and are
+// left out.
 func discover(guest model.Guest) []Candidate {
 	nics := sortedNICs(guest)
 	var l candidateList
+	for _, nic := range nics {
+		l.addLeased(nic)
+	}
 	for _, nic := range nics {
 		for _, a := range nic.Static {
 			l.add(a, nic, FromStatic)
@@ -162,11 +186,29 @@ func onNIC(index int, guest model.Guest) ([]Candidate, error) {
 	return l.out, nil
 }
 
+// onManaged lists the addresses of the NICs on the managed network, for
+// via=managed.
+func onManaged(guest model.Guest) ([]Candidate, error) {
+	var l candidateList
+	found := false
+	for _, nic := range sortedNICs(guest) {
+		if nic.Bridge == managedBridge {
+			found = true
+			l.addNIC(nic, guest.Reported)
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("guest has no network card on %s", managedBridge)
+	}
+	return l.out, nil
+}
+
 // named returns the candidates for an address the route names itself: the
-// address on the NIC that lists it as a static address, else on the NIC whose
-// MAC the agent reports it with. An address neither source places is tried on
-// every NIC that has a bridge, in index order, rather than guessed onto one;
-// the identity check on the wire decides which, if any, holds.
+// address on the NIC pco leased it, else on the NIC that lists it as a static
+// address, else on the NIC whose MAC the agent reports it with. An address
+// none of them places is tried on every NIC that has a bridge, in index
+// order, rather than guessed onto one; the identity check on the wire decides
+// which, if any, holds.
 func named(addr netip.Addr, guest model.Guest) ([]Candidate, error) {
 	if !usable(addr) {
 		return nil, fmt.Errorf("address %s is not a usable IPv4 address", addr)
@@ -197,10 +239,15 @@ func copyNIC(nic model.NIC) model.NIC {
 	return nic
 }
 
-// nicFor finds the NIC the guest's configuration or agent places an address
-// on: the first that lists it as a static address, else the first whose MAC
-// the agent reports it with.
+// nicFor finds the NIC pco, the guest's configuration or its agent places an
+// address on: the first pco leased it, else the first that lists it as a
+// static address, else the first whose MAC the agent reports it with.
 func nicFor(addr netip.Addr, nics []model.NIC, reported []model.ReportedAddr) (model.NIC, bool) {
+	for _, nic := range nics {
+		if nic.Leased == addr {
+			return nic, true
+		}
+	}
 	for _, nic := range nics {
 		if slices.Contains(nic.Static, addr) {
 			return nic, true

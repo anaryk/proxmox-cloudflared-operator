@@ -18,10 +18,10 @@ func TestHostProberUnsupported(t *testing.T) {
 	require.ErrorIs(t, err, errors.ErrUnsupported)
 	_, err = p.ARP(t.Context(), "vmbr0", addr)
 	require.ErrorIs(t, err, errors.ErrUnsupported)
-	_, _, err = p.Route(t.Context(), addr)
+	_, _, err = p.Route(t.Context(), "vmbr0", addr)
 	require.ErrorIs(t, err, errors.ErrUnsupported)
 	_, err = p.FDBPorts(t.Context(), "vmbr0", 0, "bc:24:11:00:00:01")
 	require.ErrorIs(t, err, errors.ErrUnsupported)
-	err = p.Dial(t.Context(), netip.AddrPortFrom(addr, 80))
+	err = p.Dial(t.Context(), "vmbr0", netip.AddrPortFrom(addr, 80))
 	require.ErrorIs(t, err, errors.ErrUnsupported)
 }

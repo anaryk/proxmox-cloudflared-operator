@@ -285,7 +285,7 @@ type noProber struct{}
 
 func (noProber) Interfaces(context.Context) ([]resolve.HostIface, error) { return nil, errNoHost }
 
-func (noProber) Route(context.Context, netip.Addr) (string, bool, error) {
+func (noProber) Route(context.Context, string, netip.Addr) (string, bool, error) {
 	return "", false, errNoHost
 }
 
@@ -295,7 +295,7 @@ func (noProber) FDBPorts(context.Context, string, int, string) ([]string, error)
 	return nil, errNoHost
 }
 
-func (noProber) Dial(context.Context, netip.AddrPort) error { return errNoHost }
+func (noProber) Dial(context.Context, string, netip.AddrPort) error { return errNoHost }
 
 // A signal ends the daemon with a clean stop. The signals are sent to the
 // process of the test, which is safe once the daemon has said it is ready: it

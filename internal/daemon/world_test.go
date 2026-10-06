@@ -169,7 +169,7 @@ func (scriptedProber) Interfaces(context.Context) ([]resolve.HostIface, error) {
 	return []resolve.HostIface{{Name: "vmbr0", Addrs: []netip.Prefix{netip.MustParsePrefix("10.20.0.2/24")}}}, nil
 }
 
-func (scriptedProber) Route(_ context.Context, addr netip.Addr) (string, bool, error) {
+func (scriptedProber) Route(_ context.Context, _ string, addr netip.Addr) (string, bool, error) {
 	return "vmbr0", addr.String() == guestAddress, nil
 }
 
@@ -187,7 +187,7 @@ func (scriptedProber) FDBPorts(_ context.Context, _ string, _ int, mac string) (
 	return nil, nil
 }
 
-func (scriptedProber) Dial(context.Context, netip.AddrPort) error { return nil }
+func (scriptedProber) Dial(context.Context, string, netip.AddrPort) error { return nil }
 
 // fakeSystemd keeps the units a connector manager enabled, and the units
 // restarted.

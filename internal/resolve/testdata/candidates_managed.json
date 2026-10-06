@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "addr": "10.203.118.5",
+      "source": "managed",
+      "ok": true,
+      "level": "port"
+    },
+    {
+      "addr": "10.20.0.10",
+      "source": "static",
+      "ok": false,
+      "reason": "not tried"
+    }
+  ],
+  "binding": {
+    "owner": "qemu/101",
+    "hostname": "web.example.com",
+    "guest": "qemu/101",
+    "addr": "10.203.118.5",
+    "mac": "bc:24:11:00:00:02",
+    "verifiedAt": "2026-03-01T12:00:00Z",
+    "level": "port",
+    "since": "2026-03-01T12:00:00Z",
+    "bridge": "pconet",
+    "port": "tap101i1",
+    "ports": {
+      "bc:24:11:00:00:02": "tap101i1"
+    },
+    "segment": {
+      "bridge": "pconet"
+    },
+    "via": "pconet"
+  }
+}

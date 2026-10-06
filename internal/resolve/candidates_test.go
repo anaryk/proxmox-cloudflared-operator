@@ -83,6 +83,71 @@ func TestCandidatesStaticBeforeReported(t *testing.T) {
 	})
 }
 
+// The address pco leased a card on its managed network comes first: pco
+// gave it, and the guest's configuration can only repeat it.
+func TestCandidatesLeasedFirst(t *testing.T) {
+	g := guestWith(
+		[]model.NIC{
+			{Index: 0, MAC: mac0, Bridge: "vmbr0", Static: ips("10.20.0.10")},
+			{Index: 1, MAC: mac1, Bridge: "pconet", Static: ips("10.203.118.5"), Leased: ip("10.203.118.5")},
+		},
+		rep(mac1, "10.203.118.5"), rep(mac0, "10.20.0.11"),
+	)
+
+	got, err := Candidates(routeFor(netip.Addr{}, ""), g)
+
+	require.NoError(t, err)
+	requireCandidates(t, g, got, []want{
+		{"10.203.118.5", 1, FromManaged},
+		{"10.20.0.10", 0, FromStatic},
+		{"10.20.0.11", 0, FromAgent},
+	})
+
+	got, err = Candidates(routeFor(netip.Addr{}, "net1"), g)
+	require.NoError(t, err)
+	requireCandidates(t, g, got, []want{{"10.203.118.5", 1, FromManaged}})
+}
+
+func TestCandidatesViaManaged(t *testing.T) {
+	g := guestWith(
+		[]model.NIC{
+			{Index: 0, MAC: mac0, Bridge: "vmbr0", Static: ips("10.20.0.10")},
+			{Index: 2, MAC: mac1, Bridge: "pconet", Leased: ip("10.203.118.5")},
+		},
+		rep(mac1, "10.203.118.5"), rep(mac1, "10.203.118.77"), rep(mac0, "10.20.0.11"),
+	)
+
+	got, err := Candidates(routeFor(netip.Addr{}, "managed"), g)
+
+	require.NoError(t, err)
+	requireCandidates(t, g, got, []want{
+		{"10.203.118.5", 2, FromManaged},
+		{"10.203.118.77", 2, FromAgent},
+	})
+}
+
+func TestCandidatesViaManagedNeedsACardOnTheManagedNetwork(t *testing.T) {
+	g := guestWith([]model.NIC{{Index: 0, MAC: mac0, Bridge: "vmbr0", Static: ips("10.20.0.10")}})
+
+	_, err := Candidates(routeFor(netip.Addr{}, "managed"), g)
+
+	require.EqualError(t, err, "guest has no network card on pconet")
+}
+
+// An address the route names is on the card pco leased it to, even when
+// neither the configuration nor the agent says so.
+func TestCandidatesNamedLeasedAddress(t *testing.T) {
+	g := guestWith([]model.NIC{
+		{Index: 0, MAC: mac0, Bridge: "vmbr0"},
+		{Index: 1, MAC: mac1, Bridge: "pconet", Leased: ip("10.203.118.5")},
+	})
+
+	got, err := Candidates(routeFor(netip.Addr{}, "10.203.118.5"), g)
+
+	require.NoError(t, err)
+	requireCandidates(t, g, got, []want{{"10.203.118.5", 1, FromVia}})
+}
+
 func TestCandidatesNICIndexOrderNotSliceOrder(t *testing.T) {
 	g := guestWith(
 		[]model.NIC{

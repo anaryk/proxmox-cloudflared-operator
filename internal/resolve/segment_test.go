@@ -45,6 +45,34 @@ func TestTheSegmentOfAHostInterface(t *testing.T) {
 	}
 }
 
+// The forwarding table that holds the frames of a host interface: a bridge's
+// own, untagged also for the bridge Proxmox makes for a VLAN, and the VLAN of
+// a VLAN interface on a bridge that filters VLANs.
+func TestTheForwardingTableOfAHostInterface(t *testing.T) {
+	filtering := map[string]bool{"vmbr0": true, "vmbr1": false}
+	tests := []struct {
+		name string
+		link linkInfo
+		want FDBRef
+	}{
+		{name: "a bridge", link: linkInfo{name: "vmbr1", bridge: true}, want: FDBRef{Bridge: "vmbr1"}},
+		{name: "a bridge that filters VLANs", link: linkInfo{name: "vmbr0", bridge: true}, want: FDBRef{Bridge: "vmbr0"}},
+		{name: "the bridge Proxmox makes for a VLAN", link: linkInfo{name: "vmbr1v20", bridge: true}, want: FDBRef{Bridge: "vmbr1v20"}},
+		{name: "a VLAN interface on a bridge that filters VLANs", link: linkInfo{name: "vmbr0.20", vlanParent: "vmbr0", vlanID: 20}, want: FDBRef{Bridge: "vmbr0", VLAN: 20}},
+		{name: "a VLAN interface on a bridge that does not", link: linkInfo{name: "vmbr1.20", vlanParent: "vmbr1", vlanID: 20}},
+		{name: "a VLAN interface out of range", link: linkInfo{name: "vmbr0.5000", vlanParent: "vmbr0", vlanID: 5000}},
+		{name: "a VLAN interface on a port", link: linkInfo{name: "eno1.20", vlanParent: "eno1", vlanID: 20}},
+		{name: "a port of a bridge", link: linkInfo{name: "eno1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tableOf(tt.link, filtering))
+		})
+	}
+	require.True(t, FDBRef{}.IsZero())
+	require.False(t, FDBRef{Bridge: "vmbr1"}.IsZero())
+}
+
 func TestASegmentIsNamedWithItsVLAN(t *testing.T) {
 	require.Equal(t, "vmbr1", Segment{Bridge: "vmbr1"}.String())
 	require.Equal(t, "vmbr1 VLAN 20", Segment{Bridge: "vmbr1", VLAN: 20}.String())

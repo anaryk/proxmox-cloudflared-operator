@@ -76,10 +76,12 @@ func (p *hostProber) Interfaces(context.Context) ([]HostIface, error) {
 	}
 	names := make(map[int]string, len(links))
 	bridges := map[string]bool{}
+	filtering := map[string]bool{} // by bridge: whether it filters VLANs
 	for _, l := range links {
 		names[l.Attrs().Index] = l.Attrs().Name
-		if _, ok := l.(*netlink.Bridge); ok {
+		if br, ok := l.(*netlink.Bridge); ok {
 			bridges[l.Attrs().Name] = true
+			filtering[l.Attrs().Name] = br.VlanFiltering != nil && *br.VlanFiltering
 		}
 	}
 	out := make([]HostIface, 0, len(links))
@@ -92,7 +94,10 @@ func (p *hostProber) Interfaces(context.Context) ([]HostIface, error) {
 		case *netlink.Vlan:
 			info.vlanParent, info.vlanID = names[at.ParentIndex], v.VlanId
 		}
-		out = append(out, HostIface{Name: at.Name, Addrs: prefixes[at.Index], Master: names[at.MasterIndex], Segment: segmentOf(info, bridges)})
+		out = append(out, HostIface{
+			Name: at.Name, Addrs: prefixes[at.Index], Master: names[at.MasterIndex],
+			Segment: segmentOf(info, bridges), Table: tableOf(info, filtering),
+		})
 	}
 	return out, nil
 }
@@ -284,8 +289,9 @@ func broadcastMAC() net.HardwareAddr {
 // on-link or both through a gateway; otherwise a rule on the source address
 // sends the host's own traffic elsewhere, and Route fails with
 // ErrRouteDiffers. Policy routing on anything else, such as the user of a
-// socket or a firewall mark, is not looked at.
-func (p *hostProber) Route(ctx context.Context, addr netip.Addr) (string, bool, error) {
+// socket or a firewall mark, is not looked at. Every check on an interface of
+// the host sends as the host does, so the interface is not looked at either.
+func (p *hostProber) Route(ctx context.Context, _ string, addr netip.Addr) (string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return "", false, err
 	}
@@ -429,7 +435,9 @@ func retryDump[T any](list func() ([]T, error)) ([]T, error) {
 	}
 }
 
-func (p *hostProber) Dial(ctx context.Context, target netip.AddrPort) error {
+// Dial connects from the host, as every check on an interface of the host
+// does.
+func (p *hostProber) Dial(ctx context.Context, _ string, target netip.AddrPort) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

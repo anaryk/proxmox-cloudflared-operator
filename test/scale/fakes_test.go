@@ -170,7 +170,7 @@ func (p *prober) Interfaces(context.Context) ([]resolve.HostIface, error) {
 	return []resolve.HostIface{{Name: "vmbr0", Addrs: []netip.Prefix{netip.MustParsePrefix("10.0.0.2/8")}}}, nil
 }
 
-func (p *prober) Route(context.Context, netip.Addr) (string, bool, error) {
+func (p *prober) Route(context.Context, string, netip.Addr) (string, bool, error) {
 	p.calls.Add(1)
 	return "vmbr0", true, nil
 }
@@ -198,7 +198,7 @@ func (p *prober) FDBPorts(_ context.Context, _ string, _ int, mac string) ([]str
 	return []string{p.port[mac]}, nil
 }
 
-func (p *prober) Dial(context.Context, netip.AddrPort) error {
+func (p *prober) Dial(context.Context, string, netip.AddrPort) error {
 	p.calls.Add(1)
 	return nil
 }

@@ -58,6 +58,21 @@ func segmentOf(l linkInfo, bridges map[string]bool) Segment {
 	return Segment{}
 }
 
+// tableOf returns the forwarding table that holds the frames of a host
+// interface, given the bridges of the host and whether each filters VLANs: a
+// bridge's own, untagged, which is also that of the bridge Proxmox makes for
+// a VLAN, and for a VLAN interface on a bridge that filters VLANs that VLAN
+// of the bridge. Any other interface has none.
+func tableOf(l linkInfo, filtering map[string]bool) FDBRef {
+	switch {
+	case l.bridge:
+		return FDBRef{Bridge: l.name}
+	case filtering[l.vlanParent] && l.vlanID > 0 && l.vlanID <= maxVLAN:
+		return FDBRef{Bridge: l.vlanParent, VLAN: l.vlanID}
+	}
+	return FDBRef{}
+}
+
 // vlanBridgeOf reads a name of the form <bridge>v<vlan>, as Proxmox names the
 // bridge it makes for a VLAN, where <bridge> is a bridge of the host.
 func vlanBridgeOf(name string, bridges map[string]bool) (string, int, bool) {

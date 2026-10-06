@@ -7,13 +7,13 @@ import (
 	"slices"
 )
 
-// followsRoute checks that the host's own traffic for addr leaves through
-// iface, where the identity is checked, and goes to addr directly. Otherwise
-// a guest could prove the address on its bridge while the host sends what is
-// published for it to whoever holds the address elsewhere, such as in a more
-// specific network on another bridge.
+// followsRoute checks that the traffic for addr, sent the way the check on
+// iface sends it, leaves through iface, where the identity is checked, and
+// goes to addr directly. Otherwise a guest could prove the address on its
+// bridge while the host sends what is published for it to whoever holds the
+// address elsewhere, such as in a more specific network on another bridge.
 func (a *attempt) followsRoute(ctx context.Context, iface string, addr netip.Addr) outcome {
-	out, onLink, o := a.kernelRoute(ctx, addr)
+	out, onLink, o := a.kernelRoute(ctx, iface, addr)
 	switch {
 	case !o.ok():
 		return o
@@ -31,7 +31,7 @@ func (a *attempt) followsRoute(ctx context.Context, iface string, addr netip.Add
 // address the kernel reaches on-link is in a network the identity check can
 // look at, and its configuration alone does not vouch for it.
 func (a *attempt) throughGateway(ctx context.Context, c Candidate) outcome {
-	out, onLink, o := a.kernelRoute(ctx, c.Addr)
+	out, onLink, o := a.kernelRoute(ctx, "", c.Addr)
 	switch {
 	case !o.ok():
 		return o
@@ -43,15 +43,16 @@ func (a *attempt) throughGateway(ctx context.Context, c Candidate) outcome {
 	return outcome{}
 }
 
-// kernelRoute asks for the kernel's route to addr. Having none, or one that
+// kernelRoute asks for the kernel's route to addr, the way the check on
+// iface sends; for no iface, the way the host does. Having none, or one that
 // changes with the source address, is a failure of identity, since the
-// host's traffic could not be followed; a route that could not be looked up
-// proves nothing either way.
-func (a *attempt) kernelRoute(ctx context.Context, addr netip.Addr) (iface string, onLink bool, o outcome) {
+// traffic could not be followed; a route that could not be looked up proves
+// nothing either way.
+func (a *attempt) kernelRoute(ctx context.Context, iface string, addr netip.Addr) (out string, onLink bool, o outcome) {
 	if ctx.Err() != nil {
 		return "", false, stopped()
 	}
-	iface, onLink, err := a.r.prober.Route(ctx, addr)
+	out, onLink, err := a.r.prober.Route(ctx, iface, addr)
 	switch {
 	case ctx.Err() != nil:
 	case errors.Is(err, ErrNoRoute):
@@ -62,5 +63,5 @@ func (a *attempt) kernelRoute(ctx context.Context, addr netip.Addr) (iface strin
 	if o := answered(ctx, err, "route to %s: %v", addr); !o.ok() {
 		return "", false, o
 	}
-	return iface, onLink, outcome{}
+	return out, onLink, outcome{}
 }

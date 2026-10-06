@@ -74,21 +74,22 @@ func (a *attempt) verify(ctx context.Context, c Candidate, bound bool) (proof, o
 	if o := a.claimMAC(c.NIC.MAC, a.checksFDB()); !o.ok() {
 		return proof{}, o
 	}
+	ifc := arpInterface(ifaces, c)
 	// A proof made on the wire in this cycle, by another route of the same
 	// address, is fresher than the one the binding carries.
-	reused := bound && a.reusable() && !a.share.wire.has(a.wireKeyOf(c))
+	reused := bound && a.reusable(ifc) && !a.share.wire.has(a.wireKeyOf(c))
 	var p proof
 	if reused {
 		p, o = a.carried(c)
 	} else {
-		p, o = a.identify(ctx, ifaces, c)
+		p, o = a.identify(ctx, ifc, c)
 	}
 	if !o.ok() {
 		return proof{}, o
 	}
-	dialled := a.r.dial(ctx, a.share, c.Addr, a.route.Target.Port)
+	dialled := a.r.dial(ctx, a.share, ifc.Name, c.Addr, a.route.Target.Port)
 	if reused && dialled.verdict == unreachable {
-		if p, o = a.identify(ctx, ifaces, c); !o.ok() {
+		if p, o = a.identify(ctx, ifc, c); !o.ok() {
 			return proof{}, o
 		}
 	}
@@ -101,13 +102,17 @@ func (a *attempt) verify(ctx context.Context, c Candidate, bound bool) (proof, o
 // stand, as the watch of the network looks for a MAC that moves in the
 // forwarding table of that bridge and nowhere else; one that is withdrawn or
 // failing, or of a guest whose MACs this node's forwarding table cannot place
-// now, is proven again.
-func (a *attempt) reusable() bool {
+// now, is proven again. So is one made another way than the check would
+// take now, on ifc: through the leg of another network, through a leg where
+// the node has an address of its own by now, or the other way round.
+func (a *attempt) reusable(ifc HostIface) bool {
 	b := a.prev
 	switch {
 	case a.share == nil, b.Withdrawn, b.FailingSince != nil:
 		return false
 	case b.Level != LevelPort || b.Bridge == "", !a.checksFDB(), a.mayRunElsewhere():
+		return false
+	case b.Via != ifc.Via:
 		return false
 	}
 	if _, doubted := a.doubt(b); doubted {
@@ -126,14 +131,15 @@ func (a *attempt) carried(c Candidate) (proof, outcome) {
 			return proof{}, o
 		}
 	}
-	return proof{level: b.Proven(), bridge: b.Bridge, port: b.Port, ports: b.Ports, segment: b.Segment, at: b.VerifiedAt}, outcome{}
+	return proof{level: b.Proven(), bridge: b.Bridge, port: b.Port, ports: b.Ports, segment: b.Segment, via: b.Via, at: b.VerifiedAt}, outcome{}
 }
 
 // identify checks that only this guest answers for c.Addr on its own network,
-// and returns the level that proves it, with the bridge and the port the
-// forwarding table placed the NIC's MAC on at level port.
-func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate) (proof, outcome) {
-	w := a.onTheWire(ctx, ifaces, c)
+// asked on ifc, the interface of the node there, and returns the level that
+// proves it, with the bridge and the port the forwarding table placed the
+// NIC's MAC on at level port.
+func (a *attempt) identify(ctx context.Context, ifc HostIface, c Candidate) (proof, outcome) {
+	w := a.onTheWire(ctx, ifc, c)
 	if !w.o.ok() {
 		return proof{}, w.o
 	}
@@ -147,12 +153,12 @@ func (a *attempt) identify(ctx context.Context, ifaces []HostIface, c Candidate)
 
 // onTheWire checks c on the wire, or takes what a call that shares this one's
 // cycle found for the same address of the same NIC.
-func (a *attempt) onTheWire(ctx context.Context, ifaces []HostIface, c Candidate) wireAnswer {
+func (a *attempt) onTheWire(ctx context.Context, ifc HostIface, c Candidate) wireAnswer {
 	if a.share == nil {
-		return a.wireCheck(ctx, ifaces, c)
+		return a.wireCheck(ctx, ifc, c)
 	}
 	w, ok := a.share.wire.get(ctx, a.wireKeyOf(c), func() (wireAnswer, bool) {
-		w := a.wireCheck(ctx, ifaces, c)
+		w := a.wireCheck(ctx, ifc, c)
 		return w, w.o.verdict != cancelled
 	})
 	if !ok {
@@ -167,25 +173,25 @@ func (a *attempt) wireKeyOf(c Candidate) wireKey {
 }
 
 // wireCheck runs the checks of identify that ask the host.
-func (a *attempt) wireCheck(ctx context.Context, ifaces []HostIface, c Candidate) wireAnswer {
+func (a *attempt) wireCheck(ctx context.Context, ifc HostIface, c Candidate) wireAnswer {
 	p := proof{level: LevelObserved, at: a.now}
-	switch iface := arpInterface(ifaces, c); {
-	case iface == "" && a.trusted(c):
+	switch {
+	case ifc.Name == "" && a.trusted(c):
 		if o := a.throughGateway(ctx, c); !o.ok() {
 			return wireAnswer{o: o}
 		}
 		return wireAnswer{proof: p}
-	case iface == "":
+	case ifc.Name == "":
 		return wireAnswer{o: lost("node has no address on %s in the guest's network", strings.Join(ifaceNames(c.NIC), " or "))}
 	default:
-		macs, placed, o := a.onWire(ctx, iface, c)
+		macs, placed, o := a.onWire(ctx, ifc, c)
 		if !o.ok() {
 			return wireAnswer{o: o}
 		}
-		p.segment = SegmentOf(c.NIC)
+		p.segment, p.via = SegmentOf(c.NIC), ifc.Via
 		p.level = wireLevel(macs, placed)
 		if p.level == LevelPort {
-			p.bridge, _ = fdbOf(iface, c.NIC)
+			p.bridge, _ = fdbOf(ifc, c.NIC)
 			p.port, p.ports = placed[normalMAC(c.NIC.MAC)], placed
 		}
 		return wireAnswer{proof: p, macs: macs, placed: placed}
@@ -208,16 +214,16 @@ func wireLevel(macs []string, placed map[string]string) Level {
 	return LevelPort
 }
 
-// onWire checks c.Addr on iface: the host's traffic for it leaves there, only
-// this guest answers ARP for it, and the bridge has learned the MACs that
-// answered where they belong. It returns those MACs and, by MAC, the guest's
-// own port the forwarding table placed it on.
-func (a *attempt) onWire(ctx context.Context, iface string, c Candidate) ([]string, map[string]string, outcome) {
-	if o := a.followsRoute(ctx, iface, c.Addr); !o.ok() {
+// onWire checks c.Addr on ifc: the traffic for it leaves there, only this
+// guest answers ARP for it, and the bridge has learned the MACs that answered
+// where they belong. It returns those MACs and, by MAC, the guest's own port
+// the forwarding table placed it on.
+func (a *attempt) onWire(ctx context.Context, ifc HostIface, c Candidate) ([]string, map[string]string, outcome) {
+	if o := a.followsRoute(ctx, ifc.Name, c.Addr); !o.ok() {
 		return nil, nil, o
 	}
 	own := a.ownMACs(c.NIC)
-	macs, o := a.answeredBy(ctx, iface, c.Addr, own)
+	macs, o := a.answeredBy(ctx, ifc.Name, c.Addr, own)
 	if !o.ok() {
 		return nil, nil, o
 	}
@@ -225,9 +231,9 @@ func (a *attempt) onWire(ctx context.Context, iface string, c Candidate) ([]stri
 	case a.r.settings.NoForwardingTable:
 		return macs, nil, outcome{}
 	case !a.checksFDB():
-		return macs, nil, a.notOnLocalPorts(ctx, iface, c.NIC, macs)
+		return macs, nil, a.notOnLocalPorts(ctx, ifc, c.NIC, macs)
 	}
-	placed, o := a.forwarding(ctx, iface, c.NIC, macs, own)
+	placed, o := a.forwarding(ctx, ifc, c.NIC, macs, own)
 	return macs, placed, o
 }
 
@@ -348,34 +354,37 @@ func (a *attempt) macIndex() macIndex {
 	return a.macs
 }
 
-// arpInterface returns the host interface on the NIC's bridge and VLAN that
-// has an address in the candidate's network, or "" when there is none. That is
-// an interface on the NIC's segment, of those the one Proxmox names for it
-// first; an interface on no known segment is taken by its name alone, as one
-// of those Proxmox names.
-func arpInterface(ifaces []HostIface, c Candidate) string {
+// arpInterface returns the interface of the node on the NIC's bridge and VLAN
+// that has an address in the candidate's network, or one without a name when
+// there is none. That is an interface on the NIC's segment, of those the one
+// Proxmox names for it first; an interface on no known segment is taken by
+// its name alone, as one of those Proxmox names. A leg of the gateway is an
+// interface on its segment like any other.
+func arpInterface(ifaces []HostIface, c Candidate) HostIface {
 	onLink := func(p netip.Prefix) bool { return p.Contains(c.Addr) }
 	want, names := SegmentOf(c.NIC), ifaceNames(c.NIC)
-	var on []string
+	var on []HostIface
 	for _, ifc := range ifaces {
 		if ifc.Segment == want && slices.ContainsFunc(ifc.Addrs, onLink) {
-			on = append(on, ifc.Name)
+			on = append(on, ifc)
 		}
 	}
 	if len(on) > 0 {
-		if i := slices.IndexFunc(names, func(name string) bool { return slices.Contains(on, name) }); i >= 0 {
-			return names[i]
+		for _, name := range names {
+			if i := slices.IndexFunc(on, func(ifc HostIface) bool { return ifc.Name == name }); i >= 0 {
+				return on[i]
+			}
 		}
 		return on[0]
 	}
 	for _, name := range names {
 		for _, ifc := range ifaces {
 			if ifc.Segment.IsZero() && ifc.Name == name && slices.ContainsFunc(ifc.Addrs, onLink) {
-				return name
+				return ifc
 			}
 		}
 	}
-	return ""
+	return HostIface{}
 }
 
 // ifaceNames lists the host interfaces that sit in the NIC's network: the
@@ -443,14 +452,16 @@ func (a *attempt) answeredBy(ctx context.Context, iface string, addr netip.Addr,
 	return macs, outcome{}
 }
 
-// dial connects to the port, or takes the answer of a call that shares share
-// and dialled it.
-func (r *Resolver) dial(ctx context.Context, share *Shared, addr netip.Addr, port uint16) outcome {
+// dial connects to the port the way the check on iface would, or takes the
+// answer of a call that shares share and dialled it that way. Two legs into
+// networks with the same prefix reach two guests at one address, so the
+// answer of one interface is not that of another.
+func (r *Resolver) dial(ctx context.Context, share *Shared, iface string, addr netip.Addr, port uint16) outcome {
 	if share == nil {
-		return r.dialOnce(ctx, addr, port)
+		return r.dialOnce(ctx, iface, addr, port)
 	}
-	o, ok := share.dials.get(ctx, netip.AddrPortFrom(addr, port), func() (outcome, bool) {
-		o := r.dialOnce(ctx, addr, port)
+	o, ok := share.dials.get(ctx, dialKey{iface: iface, target: netip.AddrPortFrom(addr, port)}, func() (outcome, bool) {
+		o := r.dialOnce(ctx, iface, addr, port)
 		return o, o.verdict != cancelled
 	})
 	if !ok {
@@ -459,11 +470,11 @@ func (r *Resolver) dial(ctx context.Context, share *Shared, addr netip.Addr, por
 	return o
 }
 
-func (r *Resolver) dialOnce(ctx context.Context, addr netip.Addr, port uint16) outcome {
+func (r *Resolver) dialOnce(ctx context.Context, iface string, addr netip.Addr, port uint16) outcome {
 	if ctx.Err() != nil {
 		return stopped()
 	}
-	err := r.prober.Dial(ctx, netip.AddrPortFrom(addr, port))
+	err := r.prober.Dial(ctx, iface, netip.AddrPortFrom(addr, port))
 	switch {
 	case ctx.Err() != nil:
 		return stopped()

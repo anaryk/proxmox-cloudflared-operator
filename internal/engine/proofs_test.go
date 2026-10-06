@@ -29,7 +29,7 @@ func (p *wireProber) Interfaces(context.Context) ([]resolve.HostIface, error) {
 	return []resolve.HostIface{{Name: "vmbr0", Addrs: []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")}}}, nil
 }
 
-func (p *wireProber) Route(context.Context, netip.Addr) (string, bool, error) {
+func (p *wireProber) Route(context.Context, string, netip.Addr) (string, bool, error) {
 	return "vmbr0", true, nil
 }
 
@@ -44,7 +44,7 @@ func (p *wireProber) FDBPorts(context.Context, string, int, string) ([]string, e
 	return []string{"tap101i0"}, nil
 }
 
-func (p *wireProber) Dial(context.Context, netip.AddrPort) error {
+func (p *wireProber) Dial(context.Context, string, netip.AddrPort) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.dialErr

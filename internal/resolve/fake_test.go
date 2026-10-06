@@ -3,8 +3,11 @@ package resolve
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -48,6 +51,13 @@ type fakeRoute struct {
 	err    error
 }
 
+// hint is the interface a route lookup or a dial was asked for.
+type hint struct {
+	op    string // route, dial
+	iface string
+	addr  netip.Addr
+}
+
 // fakeProber answers from a script and records every call. The script must
 // not change while a call runs; recording is safe for concurrent calls.
 type fakeProber struct {
@@ -56,18 +66,23 @@ type fakeProber struct {
 	// routes overrides the route to an address. Without an entry, an address
 	// in the network of an interface is on-link there (the most specific
 	// network wins), and any other leaves through gateway, or has no route
-	// when gateway is empty.
-	routes  map[string]fakeRoute
-	gateway string
-	arp     map[string][]string // arpKey -> answering MACs
-	arpErr  map[string]error    // arpKey
-	fdb     map[string][]string // fdbKey -> ports the MAC is learned on
-	fdbErr  error               // every forwarding-table lookup
-	fdbErrs map[string]error    // fdbKey
-	dialErr map[netip.Addr]error
+	// when gateway is empty. A leg is no route of the host: asked for one,
+	// the route is on-link through the leg when its network holds the
+	// address, unless legRoutes (arpKey) says otherwise, and none otherwise.
+	routes    map[string]fakeRoute
+	legRoutes map[string]fakeRoute
+	gateway   string
+	arp       map[string][]string // arpKey -> answering MACs
+	arpErr    map[string]error    // arpKey
+	fdb       map[string][]string // fdbKey -> ports the MAC is learned on
+	fdbErr    error               // every forwarding-table lookup
+	fdbErrs   map[string]error    // fdbKey
+	dialErr   map[netip.Addr]error
+	dialOn    map[string]error // arpKey: a dial asked for that interface
 
 	mu    sync.Mutex
 	calls []probeCall
+	hints []hint
 
 	// cancelOn names the op whose call cancels the caller's context with
 	// cancel and fails the way a cancelled call fails, or answers as usual
@@ -81,12 +96,14 @@ type fakeProber struct {
 
 func newFakeProber() *fakeProber {
 	return &fakeProber{
-		routes:  map[string]fakeRoute{},
-		arp:     map[string][]string{},
-		arpErr:  map[string]error{},
-		fdb:     map[string][]string{},
-		fdbErrs: map[string]error{},
-		dialErr: map[netip.Addr]error{},
+		routes:    map[string]fakeRoute{},
+		legRoutes: map[string]fakeRoute{},
+		arp:       map[string][]string{},
+		arpErr:    map[string]error{},
+		fdb:       map[string][]string{},
+		fdbErrs:   map[string]error{},
+		dialErr:   map[netip.Addr]error{},
+		dialOn:    map[string]error{},
 	}
 }
 
@@ -117,24 +134,43 @@ func (f *fakeProber) Interfaces(context.Context) ([]HostIface, error) {
 	return f.ifaces, f.ifacesErr
 }
 
-func (f *fakeProber) Route(_ context.Context, addr netip.Addr) (string, bool, error) {
+func (f *fakeProber) recordHint(op, iface string, addr netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hints = append(f.hints, hint{op: op, iface: iface, addr: addr})
+}
+
+func (f *fakeProber) Route(_ context.Context, iface string, addr netip.Addr) (string, bool, error) {
 	if err := f.record(probeCall{op: "route", addr: addr}); err != nil {
 		return "", false, err
+	}
+	f.recordHint("route", iface, addr)
+	if i := slices.IndexFunc(f.ifaces, func(ifc HostIface) bool { return ifc.Name == iface && ifc.Via != "" }); i >= 0 {
+		if r, ok := f.legRoutes[arpKey(iface, addr.String())]; ok {
+			return r.iface, r.onLink, r.err
+		}
+		if slices.ContainsFunc(f.ifaces[i].Addrs, func(p netip.Prefix) bool { return p.Contains(addr) }) {
+			return iface, true, nil
+		}
+		return "", false, fmt.Errorf("route to %s through %s: %w", addr, iface, ErrNoRoute)
 	}
 	if r, ok := f.routes[addr.String()]; ok {
 		return r.iface, r.onLink, r.err
 	}
-	iface, bits := "", -1
+	out, bits := "", -1
 	for _, ifc := range f.ifaces {
+		if ifc.Via != "" {
+			continue
+		}
 		for _, p := range ifc.Addrs {
 			if p.Contains(addr) && p.Bits() > bits {
-				iface, bits = ifc.Name, p.Bits()
+				out, bits = ifc.Name, p.Bits()
 			}
 		}
 	}
 	switch {
-	case iface != "":
-		return iface, true, nil
+	case out != "":
+		return out, true, nil
 	case f.gateway != "":
 		return f.gateway, false, nil
 	}
@@ -162,8 +198,12 @@ func (f *fakeProber) FDBPorts(_ context.Context, bridge string, vlan int, mac st
 	return slices.Clone(f.fdb[fdbKey(bridge, vlan, mac)]), nil
 }
 
-func (f *fakeProber) Dial(_ context.Context, target netip.AddrPort) error {
+func (f *fakeProber) Dial(_ context.Context, iface string, target netip.AddrPort) error {
 	if err := f.record(probeCall{op: "dial", addr: target.Addr(), port: target.Port()}); err != nil {
+		return err
+	}
+	f.recordHint("dial", iface, target.Addr())
+	if err, ok := f.dialOn[arpKey(iface, target.Addr().String())]; ok {
 		return err
 	}
 	return f.dialErr[target.Addr()]
@@ -187,6 +227,22 @@ func (f *fakeProber) ops(op string) []probeCall {
 		}
 	}
 	return out
+}
+
+var update = flag.Bool("update", false, "write the golden files of the tests")
+
+// requireGolden compares got with a file of testdata; run the tests with
+// -update to write them.
+func requireGolden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	if *update {
+		require.NoError(t, os.MkdirAll("testdata", 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(got), 0o644))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, string(want), got, "the output changed; run the test with -update when that is intended")
 }
 
 type clock struct{ t time.Time }

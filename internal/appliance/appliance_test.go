@@ -503,6 +503,38 @@ func TestTheProberPutsTheInterfacesOnTheirSegments(t *testing.T) {
 	}, got)
 }
 
+// hintedProber records the interface each route lookup and dial is asked
+// for.
+type hintedProber struct {
+	hostProber
+	asked []string
+}
+
+func (p *hintedProber) Route(_ context.Context, iface string, _ netip.Addr) (string, bool, error) {
+	p.asked = append(p.asked, "route "+iface)
+	return iface, true, nil
+}
+
+func (p *hintedProber) Dial(_ context.Context, iface string, _ netip.AddrPort) error {
+	p.asked = append(p.asked, "dial "+iface)
+	return nil
+}
+
+// The interface a check asks on reaches the container's prober, which looks
+// a route up and dials through a leg of its own that way.
+func TestTheProberPassesTheInterfaceOfACheckOn(t *testing.T) {
+	inner := &hintedProber{}
+	p := NewProber(inner, func() map[string]resolve.Segment { return nil })
+
+	out, onLink, err := p.Route(t.Context(), "leg1", netip.MustParseAddr("10.50.0.10"))
+	require.NoError(t, err)
+	require.Equal(t, "leg1", out)
+	require.True(t, onLink)
+	require.NoError(t, p.Dial(t.Context(), "leg1", netip.MustParseAddrPort("10.50.0.10:80")))
+
+	require.Equal(t, []string{"route leg1", "dial leg1"}, inner.asked)
+}
+
 func TestTheGatewaysAreThoseOfTheDefaultRoutes(t *testing.T) {
 	f := newFakeSystem(t)
 	f.proc("net/route", "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"+

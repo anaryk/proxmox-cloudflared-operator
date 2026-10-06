@@ -26,7 +26,7 @@ func (unsupportedProber) ARP(context.Context, string, netip.Addr) ([]string, err
 	return nil, unsupported("ARP")
 }
 
-func (unsupportedProber) Route(context.Context, netip.Addr) (string, bool, error) {
+func (unsupportedProber) Route(context.Context, string, netip.Addr) (string, bool, error) {
 	return "", false, unsupported("Route")
 }
 
@@ -34,7 +34,7 @@ func (unsupportedProber) FDBPorts(context.Context, string, int, string) ([]strin
 	return nil, unsupported("FDBPorts")
 }
 
-func (unsupportedProber) Dial(context.Context, netip.AddrPort) error {
+func (unsupportedProber) Dial(context.Context, string, netip.AddrPort) error {
 	return unsupported("Dial")
 }
 

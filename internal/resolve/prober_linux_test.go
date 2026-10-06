@@ -26,6 +26,7 @@ import (
 const (
 	labBridge  = "pcotest0"
 	labBridge2 = "pcotest1" // only for the overlapping-prefix case
+	labBridge3 = "pcotest2" // only for the bridge that filters VLANs
 	labPort1   = "tap901i0"
 	labPort2   = "tap902i0"
 )
@@ -191,7 +192,7 @@ func TestLinuxRouteInANamespace(t *testing.T) {
 			)
 			onThrowawayThread(func() {
 				if err = netns.Set(ns); err == nil {
-					iface, onLink, err = p.Route(t.Context(), netip.MustParseAddr(tc.addr))
+					iface, onLink, err = p.Route(t.Context(), "pco0", netip.MustParseAddr(tc.addr))
 				}
 			})
 			if tc.err != nil {
@@ -502,6 +503,7 @@ func TestLinuxProberOnBridge(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, ifaces, HostIface{
 			Name: labBridge, Addrs: []netip.Prefix{netip.MustParsePrefix("10.99.0.1/24")}, Segment: Segment{Bridge: labBridge},
+			Table: FDBRef{Bridge: labBridge},
 		})
 		require.Contains(t, ifaces, HostIface{Name: labPort1, Master: labBridge}, "a port of the bridge is on no segment")
 	})
@@ -515,13 +517,29 @@ func TestLinuxProberOnBridge(t *testing.T) {
 		ifaces, err := p.Interfaces(t.Context())
 
 		require.NoError(t, err)
-		segments := map[string]Segment{}
+		segments, tables := map[string]Segment{}, map[string]FDBRef{}
 		for _, ifc := range ifaces {
-			segments[ifc.Name] = ifc.Segment
+			segments[ifc.Name], tables[ifc.Name] = ifc.Segment, ifc.Table
 		}
 		require.Equal(t, Segment{Bridge: labBridge, VLAN: 20}, segments[labBridge+".20"])
 		require.Equal(t, Segment{Bridge: labBridge, VLAN: 30}, segments[labBridge+"v30"])
 		require.Equal(t, Segment{Bridge: labBridge}, segments[labBridge])
+		require.Equal(t, FDBRef{Bridge: labBridge + "v30"}, tables[labBridge+"v30"])
+		require.True(t, tables[labBridge+".20"].IsZero(), "the bridge does not filter VLANs, so no table holds the frames of its VLAN interface")
+		require.Equal(t, FDBRef{Bridge: labBridge}, tables[labBridge])
+	})
+
+	t.Run("the table of a VLAN interface on a bridge that filters VLANs", func(t *testing.T) {
+		aware, on := labBridge3, true
+		br := addLabLink(t, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: aware}, VlanFiltering: &on})
+		addLabLink(t, &netlink.Vlan{LinkAttrs: netlink.LinkAttrs{Name: aware + ".40", ParentIndex: br.Attrs().Index}, VlanId: 40})
+
+		ifaces, err := p.Interfaces(t.Context())
+
+		require.NoError(t, err)
+		i := slices.IndexFunc(ifaces, func(ifc HostIface) bool { return ifc.Name == aware+".40" })
+		require.GreaterOrEqual(t, i, 0)
+		require.Equal(t, FDBRef{Bridge: aware, VLAN: 40}, ifaces[i].Table)
 	})
 
 	t.Run("arp answered by one guest", func(t *testing.T) {
@@ -609,7 +627,7 @@ func TestLinuxProberOnBridge(t *testing.T) {
 	})
 
 	t.Run("route to a guest on the bridge", func(t *testing.T) {
-		iface, direct, err := p.Route(t.Context(), guest)
+		iface, direct, err := p.Route(t.Context(), labBridge, guest)
 		require.NoError(t, err)
 		require.Equal(t, labBridge, iface)
 		require.True(t, direct)
@@ -618,14 +636,14 @@ func TestLinuxProberOnBridge(t *testing.T) {
 	t.Run("route through a gateway", func(t *testing.T) {
 		lab.addRoute(t, "10.98.0.0/24", second)
 
-		iface, direct, err := p.Route(t.Context(), netip.MustParseAddr("10.98.0.5"))
+		iface, direct, err := p.Route(t.Context(), labBridge, netip.MustParseAddr("10.98.0.5"))
 		require.NoError(t, err)
 		require.Equal(t, labBridge, iface)
 		require.False(t, direct)
 	})
 
 	t.Run("route to an address that is not IPv4", func(t *testing.T) {
-		_, _, err := p.Route(t.Context(), netip.MustParseAddr("fd00::1"))
+		_, _, err := p.Route(t.Context(), labBridge, netip.MustParseAddr("fd00::1"))
 		require.ErrorContains(t, err, "is not an IPv4 address")
 	})
 
@@ -641,7 +659,7 @@ func TestLinuxProberOnBridge(t *testing.T) {
 		macs, err := p.ARP(t.Context(), labBridge, moved)
 		require.NoError(t, err)
 		require.Equal(t, []string{lab.guestMAC[0]}, macs, "the guest proves the address on its bridge")
-		iface, direct, err := p.Route(t.Context(), moved)
+		iface, direct, err := p.Route(t.Context(), labBridge, moved)
 		require.NoError(t, err)
 		require.Equal(t, labBridge2, iface)
 		require.True(t, direct)
@@ -678,8 +696,8 @@ func TestLinuxProberOnBridge(t *testing.T) {
 	t.Run("dial", func(t *testing.T) {
 		ln := listenIn(t, lab.ns[0], "10.99.0.11:0")
 		port := uint16(ln.Addr().(*net.TCPAddr).Port)
-		require.NoError(t, p.Dial(t.Context(), netip.AddrPortFrom(guest, port)))
-		require.Error(t, p.Dial(t.Context(), netip.AddrPortFrom(guest, 1)))
+		require.NoError(t, p.Dial(t.Context(), labBridge, netip.AddrPortFrom(guest, port)))
+		require.Error(t, p.Dial(t.Context(), labBridge, netip.AddrPortFrom(guest, 1)))
 	})
 
 	t.Run("arp does not see the host's own frames", func(t *testing.T) {
@@ -753,7 +771,7 @@ func newBridgeLab(t *testing.T) *bridgeLab {
 	if os.Geteuid() != 0 {
 		skipLab(t, "needs root to build a bridge and network namespaces")
 	}
-	for _, name := range []string{labBridge, labBridge2} {
+	for _, name := range []string{labBridge, labBridge2, labBridge3} {
 		if _, err := netlink.LinkByName(name); err == nil {
 			skipLab(t, "%s already exists, probably left by an earlier run that was killed; remove it with: ip link del %s", name, name)
 		}
