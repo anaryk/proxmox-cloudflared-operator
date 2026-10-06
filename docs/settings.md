@@ -234,7 +234,11 @@ The settings of pco's managed network are the keys of one object, `managed`:
   network address, as `10.203.118.0/24` and not `10.203.118.1/24`. It may not overlap the
   service prefix `198.18.0.0/16`, whose addresses the connectors dial, nor a range that never
   reaches a guest or is set aside: `0.0.0.0/8`, loopback, link-local, multicast, `240.0.0.0/4`,
-  `192.0.0.0/24`, the documentation ranges and `198.18.0.0/15`.
+  `192.0.0.0/24`, the documentation ranges and `198.18.0.0/15`. The daemon changes it only while
+  the managed network and its leases do not exist, and refuses a subnet that overlaps a route
+  of a node, an address of a guest, static or reported, or the prefix of an attached network,
+  naming what it overlaps (`pco settings apply` and the API say so with the field
+  `managed.subnet`).
 - `detachGrace`: how long a card stays on a guest after its consent is gone, before pco
   removes it. Taking a card off changes the guest's hardware, so it waits at least a minute;
   consent that comes back within the time keeps the card.
