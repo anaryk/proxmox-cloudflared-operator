@@ -35,20 +35,20 @@ flowchart TB
 pco runs in one of two [profiles](profiles.md):
 
 - **Host**: the daemon and the connectors run on the Proxmox VE node, as systemd units.
-- **Appliance**: they run in an unprivileged container, and nothing is installed on the node; it comes in the next release.
+- **Appliance**: they run in an unprivileged container that `pco appliance install` makes, and nothing is installed on the node.
 
 ## What pco needs
 
 To run pco on a node, which is the host profile, you need:
 
-- Proxmox VE 8.4 or later, which is on Debian 12, or Proxmox VE 9.x, which is on Debian 13,
-  on amd64 or arm64. `pco setup` refuses any other version.
+- Proxmox VE 8.4 or a later 8.x, which is on Debian 12, or Proxmox VE 9.x, which is on
+  Debian 13, on amd64 or arm64. `pco setup` refuses any other version.
 - Root on the node, to install the package and run `pco setup`.
 - `cloudflared`, which runs the tunnels. `pco setup` installs it from Cloudflare's package
   repository when it is missing, and asks first; the package of pco only recommends it.
-- A Cloudflare account with a domain whose zone is active, and an API token that can edit
-  tunnels and DNS records in that zone; [Cloudflare token](cloudflare-token.md) says which
-  permissions.
+- A Cloudflare account with a domain whose zone is active, and an API token with Cloudflare
+  Tunnel Edit on the account and Zone Read and DNS Edit on the zone;
+  [Cloudflare token](cloudflare-token.md) says how to make it.
 - Outbound access from the node: port 7844, TCP and UDP, to Cloudflare's edge for the
   connectors, and port 443 for the API.
 - Guests with an IPv4 address that pco can learn, on a bridge where the node has an IPv4

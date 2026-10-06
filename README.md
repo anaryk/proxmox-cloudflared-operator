@@ -30,12 +30,10 @@ down, so are its hostnames.
 
 - Publishes the hostnames that the Notes of tagged virtual machines and containers list,
   over HTTP or HTTPS to a port of the guest.
-- Proves that an address belongs to the guest before it publishes it, with ARP and the
-  forwarding table of the bridge, and goes on watching: an address whose MAC moves is cut
-  off at once.
-- Runs one `cloudflared` for each tunnel as a confined unit, under an nftables filter that
-  lets it reach Cloudflare, the resolvers of the node and the verified addresses, and
-  nothing else.
+- Proves that an address belongs to the guest with ARP and the forwarding table of the
+  bridge, and goes on watching: an address whose MAC moves is cut off at once.
+- Confines each connector with an nftables filter to Cloudflare, the resolvers of the node
+  and the verified addresses.
 - Writes the tunnel configuration and a proxied CNAME for each hostname, changes only the
   records that carry its marker, and removes a record once its hostname has been unwanted
   for a grace period.
@@ -58,13 +56,14 @@ with diagrams.
 
 To run pco on a node, the host profile:
 
-- Proxmox VE 8.4 or later, which is on Debian 12, or Proxmox VE 9.x, which is on Debian 13,
-  on amd64 or arm64. `pco setup` refuses any other version.
+- Proxmox VE 8.4 or a later 8.x, which is on Debian 12, or Proxmox VE 9.x, which is on
+  Debian 13, on amd64 or arm64. `pco setup` refuses any other version.
 - Root on the node, to install the package and run `pco setup`.
 - `cloudflared`, which runs the tunnels. `pco setup` installs it from Cloudflare's package
   repository when it is missing, and asks first; the package of pco only recommends it.
-- A Cloudflare account with a domain whose zone is active, and an API token that can edit
-  tunnels and DNS records in that zone (see [Cloudflare token](docs/cloudflare-token.md)).
+- A Cloudflare account with a domain whose zone is active, and an API token with Cloudflare
+  Tunnel Edit on the account and Zone Read and DNS Edit on the zone (see
+  [Cloudflare token](docs/cloudflare-token.md)).
 - Outbound access from the node: port 7844, TCP and UDP, to Cloudflare's edge for the
   connectors, and port 443 for the API.
 - Guests with an IPv4 address that pco can learn, on a bridge where the node has an IPv4
@@ -128,7 +127,7 @@ only observes until `pco apply`.
 
 ## Documentation
 
-The pages are published, with search, at
+The pages will be published, with search, at
 <https://anaryk.github.io/proxmox-cloudflared-operator/>, and the package carries them in
 `/usr/share/doc/pco/docs`.
 
