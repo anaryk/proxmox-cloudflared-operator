@@ -108,6 +108,7 @@ type nodeIfaceWire struct {
 	CIDR        string   `json:"cidr"`
 	Gateway     string   `json:"gateway"`
 	BridgePorts string   `json:"bridge_ports"`
+	VLANAware   flexBool `json:"bridge_vlan_aware"`
 }
 
 // parseVersion reads major and minor from the release ("9.1"), or from the

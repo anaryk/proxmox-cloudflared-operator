@@ -151,13 +151,40 @@ func (r route) String() string {
 	return b.String()
 }
 
-// rule is an IPv4 policy rule on a mark.
+// rule is an IPv4 policy rule: on a mark, to a table; or from a source
+// address and, when one is given, to a destination, to a table or
+// unreachable. A rule that matches on anything else has the mark -1.
 type rule struct {
 	pref, mark, table int
+	src               netip.Addr
+	dst               netip.Prefix
+	unreachable       bool
 }
 
 func (r rule) String() string {
-	return fmt.Sprintf("the rule %d: fwmark %d lookup %d", r.pref, r.mark, r.table)
+	if !r.src.IsValid() && !r.dst.IsValid() && !r.unreachable {
+		return fmt.Sprintf("the rule %d: fwmark %d lookup %d", r.pref, r.mark, r.table)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "the rule %d:", r.pref)
+	if r.mark != 0 {
+		fmt.Fprintf(&b, " fwmark %d", r.mark)
+	}
+	if r.src.IsValid() {
+		fmt.Fprintf(&b, " from %s", r.src)
+	}
+	if r.dst.IsValid() {
+		fmt.Fprintf(&b, " to %s", r.dst)
+	}
+	switch {
+	case r.unreachable:
+		b.WriteString(" unreachable")
+	case r.table == mainTable:
+		b.WriteString(" lookup main")
+	default:
+		fmt.Fprintf(&b, " lookup %d", r.table)
+	}
+	return b.String()
 }
 
 type fdbEntry struct {

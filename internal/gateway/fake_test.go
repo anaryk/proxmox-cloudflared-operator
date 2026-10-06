@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -546,6 +547,9 @@ type fakeNft struct {
 	tables  map[string]*fakeTable
 	scripts []string
 	fail    error
+	// gwListing is the listing in testdata that table pco_gw lists as; the
+	// host's when empty.
+	gwListing string
 }
 
 type fakeTable struct {
@@ -630,9 +634,11 @@ func (n *fakeNft) parseTable(name string, lines []string) (*fakeTable, int) {
 	tb := &fakeTable{elems: map[string][]string{}}
 	switch name {
 	case gwTable:
-		tb.base = baseListing(n.t, "listing-1.1.3.json")
+		tb.base = baseListing(n.t, cmp.Or(n.gwListing, "listing-1.1.3.json"))
 	case hostTable:
 		tb.base = baseListing(n.t, "host-1.1.3.json")
+	case netTable:
+		// Only whether it is there is read.
 	default:
 		n.t.Fatalf("the fake has no listing of table %s", name)
 	}

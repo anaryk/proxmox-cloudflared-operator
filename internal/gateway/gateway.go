@@ -152,8 +152,8 @@ type Backend interface {
 	// them; only pco uninstall calls it.
 	Down(ctx context.Context) error
 	// Netns returns the handle of the namespace the legs live in, for the
-	// prober, the DHCP server and the neighbour watch; netns.None() in the
-	// container backend.
+	// prober, the DHCP server and the neighbour watch; in the container
+	// backend the appliance's own, which the process is in.
 	Netns() netns.NsHandle
 	// Dial opens a TCP connection to addr through the leg: from its address,
 	// with its mark.

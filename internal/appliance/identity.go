@@ -188,6 +188,16 @@ type carrier struct {
 // firstDiff is kept by the caller from one check to the next: when the
 // difference of the MACs was first seen, zero while there is none.
 func (id Identity) Check(snap inventory.Snapshot, f Facts, uptimes map[model.GuestRef]time.Duration, now time.Time, firstDiff *time.Time) Verdict {
+	return id.check(snap, f, uptimes, now, firstDiff, nil)
+}
+
+// check is Check with the MACs of the cards the appliance announced that it
+// adds to itself or takes away: neither their links nor their configuration
+// makes a difference between the two. They are carried by other guests all
+// the same.
+func (id Identity) check(snap inventory.Snapshot, f Facts, uptimes map[model.GuestRef]time.Duration, now time.Time,
+	firstDiff *time.Time, announced []string,
+) Verdict {
 	self := id.Ref()
 	if f.Mount.VMID != 0 && f.Mount.VMID != id.VMID {
 		return Verdict{Copy: true, Why: fmt.Sprintf("the volume at /var/lib/pco is %s, a volume of VMID %d and not of %s: this container is a copy",
@@ -218,7 +228,7 @@ func (id Identity) Check(snap inventory.Snapshot, f Facts, uptimes map[model.Gue
 			v.Tenants = append(v.Tenants, c.ref)
 		}
 	}
-	if !slices.Equal(links, config) {
+	if !slices.Equal(without(links, announced), without(config, announced)) {
 		if firstDiff.IsZero() {
 			*firstDiff = now
 		}
@@ -302,6 +312,11 @@ func nicMACs(g model.Guest) []string {
 		}
 	}
 	return slices.Compact(slices.Sorted(slices.Values(out)))
+}
+
+// without returns macs less those of drop.
+func without(macs, drop []string) []string {
+	return slices.DeleteFunc(slices.Clone(macs), func(m string) bool { return slices.Contains(drop, m) })
 }
 
 func refsOf(cs []carrier) []model.GuestRef {

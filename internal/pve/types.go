@@ -64,4 +64,7 @@ type NodeIface struct {
 	// Gateway is the IPv4 gateway configured on the interface; zero when
 	// there is none, as with an address from DHCP.
 	Gateway netip.Addr
+	// VLANAware says that a bridge filters VLANs, so that a tag on one of its
+	// ports puts the port in that VLAN of the bridge itself.
+	VLANAware bool
 }

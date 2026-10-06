@@ -232,11 +232,15 @@ const (
 // the window, and returns who claims the address: whoever answers, announces
 // it, or probes for it at the same time.
 func (s *linuxSystem) arpProbe(ctx context.Context, dev string, addr netip.Addr, window time.Duration) ([]net.HardwareAddr, error) {
-	ns, err := s.nsOf(inNS)
+	return s.arpProbeOn(ctx, inNS, dev, addr, window)
+}
+
+func (s *linuxSystem) arpProbeOn(ctx context.Context, sd side, dev string, addr netip.Addr, window time.Duration) ([]net.HardwareAddr, error) {
+	ns, err := s.nsOf(sd)
 	if err != nil {
 		return nil, err
 	}
-	l, ok, err := s.link(inNS, dev)
+	l, ok, err := s.link(sd, dev)
 	switch {
 	case err != nil:
 		return nil, err

@@ -17,15 +17,16 @@ import (
 
 const (
 	// Device takes the service prefix; Table holds the rule that rejects it.
-	Device = "pco0"
+	Device = gateway.DummyDevice
 	Table  = "inet pco_net"
 
 	// The preferences of the two policy rules. A packet from ServiceSource
 	// to the prefix is looked up in main, which routes it to pco0; any other
 	// packet from that source goes nowhere. The unreachable rule alone would
-	// stop every request to the prefix.
-	PrefToPrefix    = 1890
-	PrefUnreachable = 1900
+	// stop every request to the prefix. The gateway relies on both, and puts
+	// back what is missing of them.
+	PrefToPrefix    = gateway.PrefToPrefix
+	PrefUnreachable = gateway.PrefSourceGuard
 )
 
 // ServicePrefix is the gateway's; ServiceSource is the address the host side

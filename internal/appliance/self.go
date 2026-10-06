@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"sync"
 	"time"
 
@@ -43,6 +44,9 @@ type Self struct {
 
 	mu        sync.Mutex
 	firstDiff time.Time
+	// announced are the MACs of the cards this appliance said it adds to
+	// itself or takes away, with when it said so.
+	announced map[string]time.Time
 	decided   bool // the epoch of this start is decided
 	drawn     bool // and was drawn anew
 	segments  map[string]resolve.Segment
@@ -66,7 +70,8 @@ func (s *Self) Check(ctx context.Context, snap inventory.Snapshot) Verdict {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	v := s.ID.Check(snap, f, uptimes, s.Now(), &s.firstDiff)
+	now := s.Now()
+	v := s.ID.check(snap, f, uptimes, now, &s.firstDiff, s.announcedAt(now))
 	if snap.Complete {
 		s.segments = s.ID.Segments(snap, f.Links)
 	}
@@ -94,6 +99,37 @@ func (s *Self) Check(ctx context.Context, snap inventory.Snapshot) Verdict {
 		s.Log.Info().Int("generation", w.Generation).Bool("kept", kept).Msg("self-identification passed; the writer epoch is decided")
 	}
 	return v
+}
+
+// Expect announces a network card that this appliance is about to add to
+// itself or take away: for a minute from now, the difference that card makes
+// between the links of the container and its configuration in Proxmox is
+// none, so that a card of its own is never taken for a sign of a copy.
+func (s *Self) Expect(mac net.HardwareAddr) {
+	norm, err := model.NormalizeMAC(mac.String())
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.announced == nil {
+		s.announced = map[string]time.Time{}
+	}
+	s.announced[norm] = s.Now()
+}
+
+// announcedAt returns the MACs announced within the minute before now, and
+// forgets the others.
+func (s *Self) announcedAt(now time.Time) []string {
+	var out []string
+	for m, at := range s.announced {
+		if now.Sub(at) < macTolerance {
+			out = append(out, m)
+		} else {
+			delete(s.announced, m)
+		}
+	}
+	return out
 }
 
 // SetFlag writes the identity flag, or removes it.

@@ -12,10 +12,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 )
 
 // netLink is the network of a container: what Load puts in place is there
@@ -85,6 +88,7 @@ type netRig struct {
 	env netEnv
 	nl  *netLink
 	nft *netTableNft
+	gw  *fakeGateway
 }
 
 // newNetRig runs pco net as root in an appliance whose network has nothing
@@ -96,9 +100,22 @@ func newNetRig(t *testing.T) *netRig {
 	require.NoError(t, os.WriteFile(profile, []byte("appliance\n"), 0o644))
 	e := testEnv()
 	e.profileFile = profile
-	r := &netRig{t: t, app: &app{env: e}, nl: &netLink{have: map[string]bool{}}, nft: &netTableNft{listing: string(listing)}}
-	r.env = netEnv{nl: r.nl, nft: r.nft, euid: func() int { return 0 }}
+	r := &netRig{t: t, app: &app{env: e}, nl: &netLink{have: map[string]bool{}}, nft: &netTableNft{listing: string(listing)}, gw: &fakeGateway{}}
+	r.env = netEnv{
+		nl: r.nl, nft: r.nft, euid: func() int { return 0 },
+		gateway: func(zerolog.Logger) gateway.Backend { return r.gw },
+		local:   t.TempDir(),
+		now:     func() time.Time { return t0 },
+	}
 	return r
+}
+
+// cache is the gateway's cache of an appliance with two legs.
+func (r *netRig) cache(pinsAt time.Time) gateway.Cache {
+	r.t.Helper()
+	c := gateway.Cache{Legs: []gateway.Leg{netnsLegA, netnsLegB}, Services: netnsServices, Pins: netnsPins, PinsAt: pinsAt}
+	require.NoError(r.t, gateway.WriteCache(r.env.local, c))
+	return c
 }
 
 func (r *netRig) loaded() *netRig {
@@ -219,11 +236,73 @@ func TestNetLoadPutsEverythingInPlace(t *testing.T) {
 func TestNetLoadFailsWhenAStepFails(t *testing.T) {
 	r := newNetRig(t)
 	r.nl.ensureErr = errors.New("operation not permitted")
+	r.cache(t0)
 
 	res := r.run("load")
 
 	require.EqualError(t, res.err, "adding the dummy device pco0: operation not permitted")
 	require.Equal(t, 1, exitCode(res.err, io.Discard))
+	require.Empty(t, r.gw.calls, "no leg is restored without the base")
+}
+
+// An appliance with no network attached has no cache of the gateway: the
+// base alone is loaded.
+func TestNetLoadWithoutACacheLoadsTheBaseAlone(t *testing.T) {
+	r := newNetRig(t).loaded()
+
+	res := r.run("load")
+
+	require.NoError(t, res.err)
+	require.Equal(t, "Everything pco-net.service keeps in place is there.\n", res.out)
+	require.Empty(t, r.gw.calls)
+}
+
+// After the base, the legs of the cache come back before the connectors
+// start: their cards configured, the table with the DNAT of their service
+// addresses loaded, the pins while they are fresh.
+func TestNetLoadRestoresTheLegsOfTheCache(t *testing.T) {
+	r := newNetRig(t).loaded()
+	c := r.cache(t0.Add(-time.Minute))
+	r.gw.states = []gateway.LegState{{ID: "vmbr1", Up: true, Iface: "leg1"}, {ID: "vmbr0.20", Iface: "leg2", Problem: "no network card of the appliance has the MAC 02:50:43:4f:00:02"}}
+
+	res := r.run("load")
+
+	require.NoError(t, res.err)
+	require.Equal(t, []string{"up", "sync"}, r.gw.calls)
+	require.Equal(t, c.Legs, r.gw.legs)
+	require.Equal(t, c.Services, r.gw.services)
+	require.Equal(t, c.Pins, r.gw.pins)
+	require.Equal(t, "Everything pco-net.service keeps in place is there.\n"+
+		"leg leg1 up 10.50.0.250/24 on vmbr1\n"+
+		"leg leg2 down on vmbr0 VLAN 20: no network card of the appliance has the MAC 02:50:43:4f:00:02\n"+
+		"service addresses: 2, with 3 published ports\n"+
+		"pinned neighbours: 1\n", res.out)
+}
+
+// Nothing of the legs fails the unit: pco and the connectors require it, and
+// pco restores the legs once it runs.
+func TestNetLoadDoesNotFailForTheLegs(t *testing.T) {
+	t.Run("a cache that cannot be read", func(t *testing.T) {
+		r := newNetRig(t).loaded()
+		require.NoError(t, os.MkdirAll(filepath.Join(r.env.local, "netns"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(r.env.local, gateway.CacheFile), []byte("{"), 0o600))
+
+		res := r.run("load")
+
+		require.NoError(t, res.err)
+		require.Equal(t, []string{"up"}, r.gw.calls, "the gateway comes up without legs")
+		require.Contains(t, res.out, "The gateway is up without legs until pco restores them: reading ")
+	})
+	t.Run("a restore that fails", func(t *testing.T) {
+		r := newNetRig(t).loaded()
+		r.cache(t0)
+		r.gw.upErr = errors.New("netlink: operation not permitted")
+
+		res := r.run("load")
+
+		require.NoError(t, res.err)
+		require.Contains(t, res.out, "The legs could not be restored; pco restores them once it runs: netlink: operation not permitted\n")
+	})
 }
 
 func TestNetShowSaysAllIsInPlace(t *testing.T) {

@@ -3,6 +3,7 @@ package appliance
 import (
 	"context"
 	"errors"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -239,4 +240,57 @@ func TestBeforeTheFirstCycleOnlyAMountOfAnotherVMIDDecides(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A network card the appliance adds to itself, or takes away, is announced
+// before the call: for a minute from then, the difference it makes between
+// the links and the configuration is none, in either order of the two, and
+// nothing is pending. Past the minute it is a difference like any other.
+func TestACardTheApplianceAnnouncesMakesNoDifferenceForAMinute(t *testing.T) {
+	leg := "02:50:43:4f:00:01"
+	for _, tt := range []struct {
+		name          string
+		config, links []string
+	}{
+		{name: "added, no link yet", config: []string{macA, leg}, links: []string{macA}},
+		{name: "added, the configuration not read since", config: []string{macA}, links: []string{macA, leg}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newSelf(t)
+			now := t0
+			f.self.Now = func() time.Time { return now }
+			f.self.Expect(mac(t, leg))
+			f.facts = facts(byMount, time.Hour, tt.links...)
+			own := snap(lxc(ownVMID, Pool, tt.config...))
+
+			now = t0.Add(59 * time.Second)
+			require.Equal(t, Verdict{OK: true}, f.self.Check(t.Context(), own))
+
+			now = t0.Add(61 * time.Second)
+			require.Equal(t, Verdict{OK: true, Pending: true}, f.self.Check(t.Context(), own), "a difference like any other")
+		})
+	}
+}
+
+// An announced MAC hides nothing else: another card that appeared is pending
+// as before, and a guest that carries the announced MAC is a carrier of it.
+func TestAnAnnouncedCardHidesNoOtherDifference(t *testing.T) {
+	leg := "02:50:43:4f:00:01"
+	f := newSelf(t)
+	f.self.Expect(mac(t, leg))
+	f.facts = facts(byMount, time.Hour, macA, leg, macB)
+	require.Equal(t, Verdict{OK: true, Pending: true}, f.self.Check(t.Context(), snap(lxc(ownVMID, Pool, macA, leg))))
+
+	f = newSelf(t)
+	f.self.Expect(mac(t, leg))
+	f.facts = facts(byMount, time.Hour, macA, leg)
+	v := f.self.Check(t.Context(), snap(lxc(ownVMID, Pool, macA, leg), lxc(9295, "", leg)))
+	require.Equal(t, []model.GuestRef{{Kind: model.KindLXC, VMID: 9295}}, v.Tenants)
+}
+
+func mac(t *testing.T, s string) net.HardwareAddr {
+	t.Helper()
+	m, err := net.ParseMAC(s)
+	require.NoError(t, err)
+	return m
 }

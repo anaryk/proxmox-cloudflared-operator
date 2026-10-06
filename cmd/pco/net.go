@@ -5,11 +5,15 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -19,10 +23,23 @@ type netEnv struct {
 	nl   appnet.Netlink
 	nft  egress.Nft
 	euid func() int
+	// gateway is the backend of the legs as the boot runs it, which adds and
+	// removes no card; local is where its cache is kept, and now the time
+	// the pins of the cache are fresh at.
+	gateway func(log zerolog.Logger) gateway.Backend
+	local   string
+	now     func() time.Time
 }
 
 func defaultNetEnv() netEnv {
-	return netEnv{nl: appnet.NewNetlink(), nft: appnet.NewNft(), euid: os.Geteuid}
+	return netEnv{
+		nl: appnet.NewNetlink(), nft: appnet.NewNft(), euid: os.Geteuid,
+		gateway: func(log zerolog.Logger) gateway.Backend {
+			return gateway.NewContainer(gateway.NewHostNft(), nil, model.GuestRef{}, "", nil, log, gateway.WithNetTable(appnet.Script))
+		},
+		local: store.ApplianceLocal,
+		now:   time.Now,
+	}
 }
 
 func (a *app) netCmd() *cobra.Command { return a.netCmdWith(defaultNetEnv()) }
@@ -78,7 +95,13 @@ func (a *app) netLoadCmd(e netEnv) *cobra.Command {
 			strconv.Itoa(appnet.PrefUnreachable) + " and " + strconv.Itoa(appnet.PrefToPrefix) + ",\n" +
 			"and the table " + appnet.Table + ". What is there already stays, the table with its counter. It stops\n" +
 			"at the first step that fails and exits with 1: run by pco-net.service at boot, that fails the\n" +
-			"unit, and pco and the connectors do not start.",
+			"unit, and pco and the connectors do not start.\n\n" +
+			"Then it brings back the legs of the networks attached to the appliance, from the cache pco\n" +
+			"keeps of them: the cards' addresses, tables and policy rules, and the table of the gateway with\n" +
+			"the service addresses, so that the connectors reach the targets behind the legs as soon as\n" +
+			"they start. It adds and removes no card. It prints a line for each leg, and one for the\n" +
+			"service addresses; with no network attached it prints nothing more. A leg it cannot bring\n" +
+			"back fails nothing: pco brings the legs back once it runs.",
 		Example: "  # Put back what is missing while pco runs\n" +
 			"  pco net load\n" +
 			"  # Then see that everything is in place\n" +
@@ -102,12 +125,51 @@ func (a *app) netLoadCmd(e netEnv) *cobra.Command {
 			case err == nil:
 				s.println("Everything pco-net.service keeps in place is there.")
 			}
+			if err == nil {
+				restoreLegs(cmd.Context(), s, e, a.daemonLog(cmd.ErrOrStderr(), zerolog.InfoLevel))
+			}
 			if werr := s.done(); werr != nil {
 				return werr
 			}
 			return err
 		},
 	}
+}
+
+// restoreLegs brings the legs of the gateway back from its cache, after the
+// base and before the connectors start. Without a cache no network is
+// attached, and nothing more is done. Nothing of it fails the unit, which pco
+// requires: pco restores the legs once it runs, and until then a request to
+// a service address that has no DNAT goes nowhere but into the table of the
+// service prefix.
+func restoreLegs(ctx context.Context, s *screen, e netEnv, log zerolog.Logger) {
+	c, ok, err := gateway.ReadCache(e.local)
+	if !ok && err == nil {
+		return
+	}
+	b := e.gateway(log)
+	if err != nil {
+		if uerr := b.Up(ctx); uerr != nil {
+			s.printf("The gateway could not be brought up; pco brings it up once it runs: %v\n", uerr)
+			return
+		}
+		s.printf("The gateway is up without legs until pco restores them: %v\n", err)
+		return
+	}
+	states, err := gateway.Restore(ctx, b, c, e.now())
+	if err != nil {
+		s.printf("The legs could not be restored; pco restores them once it runs: %v\n", err)
+		return
+	}
+	for _, p := range gateway.Problems(b) {
+		s.println(p)
+	}
+	if len(c.Legs) == 0 {
+		s.println("No network is attached.")
+		return
+	}
+	printLegs(s, c.Legs, states)
+	printServices(s, c.Services, c.Fresh(e.now()), len(c.Pins))
 }
 
 // loadNet is what pco-net.service runs at every boot, step by step, before

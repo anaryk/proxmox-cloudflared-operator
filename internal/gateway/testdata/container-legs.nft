@@ -1,0 +1,111 @@
+add table inet pco_gw
+delete table inet pco_gw
+table inet pco_gw {
+	map svc_zone {
+		typeof ip daddr : ct zone
+		elements = {
+			198.18.1.0 : 1,
+			198.18.1.1 : 2,
+			198.18.1.2 : 3
+		}
+	}
+	map svc_mark {
+		typeof ip daddr : meta mark
+		elements = {
+			198.18.1.0 : 1,
+			198.18.1.1 : 2,
+			198.18.1.2 : 3
+		}
+	}
+	map leg_zone {
+		typeof iifname : ct zone
+		elements = {
+			"leg1" : 1,
+			"leg2" : 2,
+			"leg3" : 3
+		}
+	}
+	map svc_dnat {
+		type ipv4_addr . inet_service : ipv4_addr . inet_service
+		elements = {
+			198.18.1.0 . 80 : 10.50.0.10 . 80,
+			198.18.1.0 . 443 : 10.50.0.10 . 443,
+			198.18.1.1 . 80 : 10.50.0.10 . 80,
+			198.18.1.2 . 8080 : 10.203.118.5 . 8080
+		}
+	}
+	map leg_snat {
+		type ifname : interval ipv4_addr . inet_service
+		flags interval
+		elements = {
+			"leg1" : 10.50.0.250 . 1024-2047,
+			"leg2" : 10.50.0.250 . 2048-3071,
+			"leg3" : 10.203.118.1 . 3072-4095
+		}
+	}
+	set legs {
+		typeof iifname
+		elements = {
+			"leg1",
+			"leg2",
+			"leg3"
+		}
+	}
+	set dhcp_legs {
+		typeof iifname
+		elements = {
+			"leg3"
+		}
+	}
+	set leg_ok {
+		typeof oifname . ct zone
+		elements = {
+			"leg1" . 1,
+			"leg2" . 2,
+			"leg3" . 3
+		}
+	}
+	counter dropped_local {
+	}
+	counter dropped_oif {
+	}
+	counter dropped_leg_in {
+	}
+	chain out_raw {
+		type filter hook output priority raw; policy accept;
+		ip daddr 198.18.0.0/16 ct zone set ip daddr map @svc_zone
+		ip daddr 198.18.0.0/16 meta mark set ip daddr map @svc_mark
+		oifname @legs ct zone set oifname map @leg_zone
+	}
+	chain out_nat {
+		type nat hook output priority dstnat; policy accept;
+		ip daddr 198.18.0.0/16 meta l4proto tcp dnat ip to ip daddr . tcp dport map @svc_dnat
+	}
+	chain out_guard {
+		type filter hook output priority filter; policy accept;
+		ct status dnat fib daddr type local counter name "dropped_local" drop
+	}
+	chain post_filter {
+		type filter hook postrouting priority filter; policy accept;
+		ct status dnat oifname . ct zone != @leg_ok counter name "dropped_oif" drop
+	}
+	chain post_nat {
+		type nat hook postrouting priority srcnat; policy accept;
+		meta l4proto tcp oifname @legs snat ip to oifname map @leg_snat
+	}
+	chain pre_raw {
+		type filter hook prerouting priority raw; policy accept;
+		iifname @legs ct zone set iifname map @leg_zone
+	}
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iif "lo" accept
+		ct state established,related accept
+		iifname @legs ct state invalid drop
+		iifname @dhcp_legs udp dport 67 udp sport 68 accept
+		iifname @legs counter name "dropped_leg_in" drop
+	}
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}

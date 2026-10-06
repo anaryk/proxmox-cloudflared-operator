@@ -224,10 +224,11 @@ func (c *Client) NodeNetwork(ctx context.Context, node string) ([]NodeIface, err
 	out := make([]NodeIface, 0, len(rows))
 	for _, row := range rows {
 		iface := NodeIface{
-			Name:   row.Name,
-			Type:   row.Type,
-			Active: bool(row.Active),
-			Ports:  fields(row.BridgePorts),
+			Name:      row.Name,
+			Type:      row.Type,
+			Active:    bool(row.Active),
+			Ports:     fields(row.BridgePorts),
+			VLANAware: bool(row.VLANAware),
 		}
 		if row.CIDR != "" {
 			prefix, isV4, err := parsePrefix(row.CIDR)

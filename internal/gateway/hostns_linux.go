@@ -416,7 +416,17 @@ func (s *linuxSystem) addRule(sd side, r rule) error {
 	nr.Family = unix.AF_INET
 	nr.Priority = r.pref
 	nr.Mark = uint32(r.mark)
-	nr.Table = r.table
+	if r.src.IsValid() {
+		nr.Src = ipNet(netip.PrefixFrom(r.src, r.src.BitLen()))
+	}
+	if r.dst.IsValid() {
+		nr.Dst = ipNet(r.dst)
+	}
+	if r.unreachable {
+		nr.Type = unix.RTN_UNREACHABLE
+	} else {
+		nr.Table = r.table
+	}
 	return h.RuleAdd(nr)
 }
 

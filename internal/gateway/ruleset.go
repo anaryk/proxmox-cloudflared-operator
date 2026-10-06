@@ -241,17 +241,7 @@ func sortedServices(services []Service) []Service {
 func renderGateway(form snatForm, e elements, legs []Leg) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "add table inet %[1]s\ndelete table inet %[1]s\ntable inet %[1]s {\n", gwTable)
-	for _, d := range declarationsOf(form) {
-		kind := "set"
-		if d.isMap {
-			kind = "map"
-		}
-		fmt.Fprintf(&b, "\t%s %s {\n\t\t%s\n", kind, d.name, d.decl)
-		if elems := e[d.name]; len(elems) > 0 {
-			fmt.Fprintf(&b, "\t\telements = {\n\t\t\t%s\n\t\t}\n", strings.Join(elems, ",\n\t\t\t"))
-		}
-		b.WriteString("\t}\n")
-	}
+	writeDeclarations(&b, declarationsOf(form), e)
 	for _, c := range gwCounters {
 		fmt.Fprintf(&b, "\tcounter %s {\n\t}\n", c)
 	}
@@ -269,6 +259,22 @@ func renderGateway(form snatForm, e elements, legs []Leg) string {
 	b.WriteString(withTransit(gwFilterChains))
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// writeDeclarations writes the sets and maps of a table, each with its
+// elements in e.
+func writeDeclarations(b *strings.Builder, decls []declaration, e elements) {
+	for _, d := range decls {
+		kind := "set"
+		if d.isMap {
+			kind = "map"
+		}
+		fmt.Fprintf(b, "\t%s %s {\n\t\t%s\n", kind, d.name, d.decl)
+		if elems := e[d.name]; len(elems) > 0 {
+			fmt.Fprintf(b, "\t\telements = {\n\t\t\t%s\n\t\t}\n", strings.Join(elems, ",\n\t\t\t"))
+		}
+		b.WriteString("\t}\n")
+	}
 }
 
 // gwChains are the chains before the SNAT.

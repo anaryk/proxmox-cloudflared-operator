@@ -1,7 +1,9 @@
 // Package pve is a small client for the Proxmox VE API calls the operator
 // needs. It reads guests, their configuration, their addresses, the network
-// layout of the nodes and the access control of the cluster; it never
-// changes anything.
+// layout of the nodes and the access control of the cluster. The one thing it
+// changes is a guest's configuration, under the digest it was read with: the
+// appliance adds and removes its own network cards with it, as far as its
+// token's grants let it.
 package pve
 
 import (

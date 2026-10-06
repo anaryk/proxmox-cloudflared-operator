@@ -81,6 +81,21 @@ func TestNodeNetworkGateway(t *testing.T) {
 	require.ErrorContains(t, err, "vmbr0")
 }
 
+func TestNodeNetworkSaysWhichBridgeFiltersVLANs(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{"/nodes/pve1/network": {http.StatusOK, `{"data":[
+		{"iface":"vmbr0","type":"bridge","active":1,"bridge_vlan_aware":1},
+		{"iface":"vmbr1","type":"bridge","active":1},
+		{"iface":"vmbr2","type":"bridge","active":1,"bridge_vlan_aware":"0"}
+	]}`}})
+	got, err := c.NodeNetwork(context.Background(), "pve1")
+	require.NoError(t, err)
+	require.Equal(t, []NodeIface{
+		{Name: "vmbr0", Type: "bridge", Active: true, VLANAware: true},
+		{Name: "vmbr1", Type: "bridge", Active: true},
+		{Name: "vmbr2", Type: "bridge", Active: true},
+	}, got)
+}
+
 func TestNodeNetworkOnDHCP(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{"/nodes/pco-test-2/network": okReply(t, "node_network_dhcp.json")})
 	got, err := c.NodeNetwork(context.Background(), "pco-test-2")
