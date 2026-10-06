@@ -2,6 +2,7 @@ import { type ChangeEvent, type ReactNode, useRef, useState } from 'react'
 
 import { ApiError } from '../../api/client'
 import { explain } from '../../api/errors'
+import { useApp } from '../../api/store'
 import type { ManualRouteView, SettingsView } from '../../api/types.gen'
 import { Button } from '../../components/Button'
 import { Busy } from '../../components/Busy'
@@ -9,9 +10,9 @@ import { Dialog } from '../../components/Dialog'
 import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
 import { createRoute, deleteRoute, getRoutes, getSettings, putSettings, updateRoute } from './api'
-import { Changes } from './Changes'
-import { diffSettings, planRoutes, routeText } from './diff'
-import { type ImportFile, type ImportIssue, checkImport } from './manual'
+import { Changes, FirstAllowed } from './Changes'
+import { diffSettings, firstAllowed, planRoutes, routeText } from './diff'
+import { type ImportFile, type ImportIssue, checkImport, nodeChecked } from './manual'
 import { importSteps, type Outcome, runSteps } from './importRun'
 
 // The largest file the web process takes for a save of the settings.
@@ -116,6 +117,8 @@ function RouteList({ title, items }: { title: string; items: ReactNode[] }) {
 export interface ExportImportProps {
   node: string
   canWrite: boolean
+  // The form above holds changes that are not saved, which an import drops.
+  unsaved?: boolean
   // The settings and routes changed: what to show again, and the settings
   // that take effect only after a restart.
   onImported: (restartNeeded: string[]) => void
@@ -125,8 +128,9 @@ export interface ExportImportProps {
 // ExportImport downloads the settings and the manual routes as one file, and
 // reads such a file back: all of it is checked first, nothing is written
 // until the diff is confirmed, and the writes stop at the first refusal.
-export function ExportImport({ node, canWrite, onImported, now = () => new Date() }: ExportImportProps) {
+export function ExportImport({ node, canWrite, unsaved, onImported, now = () => new Date() }: ExportImportProps) {
   const toast = useToast()
+  const published = useApp((s) => s.state?.routes)
   const picker = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState<'export' | 'read' | 'import'>()
   const [shown, setShown] = useState<Shown>()
@@ -203,6 +207,8 @@ export function ExportImport({ node, canWrite, onImported, now = () => new Date(
     const changes = diffSettings(view.settings, file.settings)
     const plan = planRoutes(routes, file.routes ?? [], mode)
     const nothing = changes.length === 0 && plan.add.length + plan.update.length + plan.remove.length === 0
+    const stopped = firstAllowed(view.settings, file.settings, published ?? [])
+    const atNodes = nodeChecked([...plan.add, ...plan.update.map((u) => u.after)])
     review = (
       <Dialog
         open
@@ -220,8 +226,12 @@ export function ExportImport({ node, canWrite, onImported, now = () => new Date(
         }
       >
         <p>The file passed every check. Nothing has been written yet.</p>
+        {unsaved && !nothing && (
+          <p className="settings-optin">The form above has changes that are not saved. The import does not keep them: afterwards the form shows what is saved.</p>
+        )}
         <h3>Settings</h3>
         {changes.length > 0 ? <Changes changes={changes} label="Changes to the settings" /> : <p className="muted">The settings of the file are the saved ones.</p>}
+        {stopped && <FirstAllowed stopped={stopped} />}
         {file.routes ? (
           <>
             <h3>Manual routes</h3>
@@ -249,6 +259,13 @@ export function ExportImport({ node, canWrite, onImported, now = () => new Date(
             />
             <RouteList title="Deleted" items={plan.remove.map((r) => <Untrusted key={r.id} text={`${r.id}: ${routeText(r)}`} />)} />
             {plan.same.length > 0 && <p className="muted">{plan.same.length === 1 ? '1 route is the same as saved.' : `${plan.same.length} routes are the same as saved.`}</p>}
+            {atNodes.length > 0 && (
+              <p className="muted">
+                One check is the daemon&apos;s alone, made as each route is saved: an address of a node of the cluster needs allowNode, and the page does not know
+                those addresses. Should it refuse one of these, the import stops there and says what was saved:{' '}
+                <Untrusted text={atNodes.map((r) => `${r.id} (${r.target.addr ?? ''})`).join(', ')} />.
+              </p>
+            )}
           </>
         ) : (
           <p className="muted">The file has no manual routes; those saved stay as they are.</p>

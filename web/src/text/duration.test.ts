@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 
-import { durationText, parseDuration } from './duration'
+import { durationText, longestDuration, parseDuration } from './duration'
 
 test.each([
   ['10s', 10_000],
@@ -28,4 +28,12 @@ test.each([
   [7_500_000, '2 h 5 min'],
 ])('durationText(%d)', (ms, text) => {
   expect(durationText(ms)).toBe(text)
+})
+
+test('as time.ParseDuration: a signed zero, and nothing longer than Go holds', () => {
+  expect(parseDuration('+0')).toBe(0)
+  expect(parseDuration('-0')).toBe(0)
+  expect(parseDuration(longestDuration)).toBeCloseTo(9_223_372_036_854.775, 0)
+  expect(parseDuration('2562048h')).toBeUndefined()
+  expect(parseDuration('99999999h')).toBeUndefined()
 })

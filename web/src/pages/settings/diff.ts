@@ -1,8 +1,8 @@
 // What a save or an import changes, in words: settings against the settings
 // stored, manual routes against the manual routes stored.
 
-import type { ManualRouteView, ManualTarget, Settings } from '../../api/types.gen'
-import { settingFields } from './validate'
+import type { ManualRouteView, ManualTarget, RouteView, Settings } from '../../api/types.gen'
+import { normalizePattern, settingFields } from './validate'
 
 export interface Change {
   field: string
@@ -120,6 +120,33 @@ export function planRoutes(current: readonly ManualRouteView[], incoming: readon
     plan.remove = current.filter((r) => !kept.has(r.id))
   }
   return plan
+}
+
+// The states of a route whose hostname is published now: it has a rule in a
+// tunnel, and its record.
+const published = new Set(['active', 'unreachable', 'withdrawn', 'held', 'frozen'])
+
+// matchesPattern is hostname.MatchPattern: "*" matches every name, "*.x" the
+// names below x and itself, any other pattern the name it is.
+export function matchesPattern(pattern: string, host: string): boolean {
+  if (pattern === host || pattern === '*') return true
+  if (!pattern.startsWith('*.')) return false
+  const below = pattern.slice(1)
+  return host.length > below.length && host.endsWith(below)
+}
+
+export type PublishedRoute = Pick<RouteView, 'hostname' | 'owner' | 'state'>
+
+// firstAllowed says what a save does that gives allowHosts its first entry.
+// Until then every hostname a guest names may be published but the apex of a
+// zone and a wildcard; from then on only those a pattern matches. It is the
+// routes of guests published now that no pattern of after matches, which
+// stop, or undefined when the save gives the list no first entry. Manual
+// routes are root's own, and the list has no say in them.
+export function firstAllowed(before: Settings, after: Settings, routes: readonly PublishedRoute[]): PublishedRoute[] | undefined {
+  if ((before.allowHosts ?? []).length > 0 || (after.allowHosts ?? []).length === 0) return undefined
+  const patterns = (after.allowHosts ?? []).flatMap((p) => normalizePattern(p).value ?? [])
+  return routes.filter((r) => !r.owner.startsWith('manual/') && published.has(r.state) && !patterns.some((p) => matchesPattern(p, r.hostname)))
 }
 
 // optInWords says what a pattern in allowHosts lets through, for the

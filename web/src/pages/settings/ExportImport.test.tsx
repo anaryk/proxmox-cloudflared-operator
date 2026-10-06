@@ -5,8 +5,8 @@ import type { ManualRouteView, Settings, SettingsView } from '../../api/types.ge
 import { ToastProvider } from '../../components/Toast'
 import manualFixture from '../../fixtures/manual-routes.json'
 import settingsFixture from '../../fixtures/settings.json'
+import { fakeDaemon, type Handler } from '../../test/fakeDaemon'
 import { ExportImport, exportName, exportText } from './ExportImport'
-import { fakeDaemon, type Handler } from './fakeDaemon'
 
 const stored: Settings = { ...(settingsFixture.settings as unknown as Settings), manualCIDRs: ['10.0.5.0/24'] }
 const view: SettingsView = { ...(settingsFixture as unknown as SettingsView), settings: stored }
@@ -28,6 +28,7 @@ afterEach(() => {
 
 interface Mount {
   canWrite?: boolean
+  unsaved?: boolean
   view?: SettingsView
   routes?: ManualRouteView[]
   handlers?: Record<string, Handler>
@@ -46,7 +47,7 @@ function mount(o: Mount = {}) {
   const imported = vi.fn()
   render(
     <ToastProvider>
-      <ExportImport node="pve1" canWrite={o.canWrite ?? true} onImported={imported} now={() => new Date(2026, 9, 6, 14, 30)} />
+      <ExportImport node="pve1" canWrite={o.canWrite ?? true} unsaved={o.unsaved} onImported={imported} now={() => new Date(2026, 9, 6, 14, 30)} />
     </ToastProvider>,
   )
   return { daemon, imported }
@@ -161,7 +162,9 @@ describe('a file that is wrong writes nothing', () => {
     choose(fileOf(wanted({ observeOnly: false })))
     const dialog = await screen.findByRole('dialog', { name: 'This file cannot be imported' })
     expect(within(dialog).getByText('settings.observeOnly')).toBeTruthy()
-    expect(within(dialog).getByText(/use apply/)).toBeTruthy()
+    expect(within(dialog).getByText(/use apply/).textContent).toContain(
+      'To import this file, set observeOnly to true in it and start publishing afterwards, or start publishing first (pco apply, or Start publishing on the Plan) and import it then',
+    )
   })
 
   test('text that is no JSON, and a file too large', async () => {
@@ -190,10 +193,30 @@ describe('the diff of a file that is right', () => {
     expect(within(dialog).getByText('status: target http://10.0.5.20:9000 → http://10.0.5.20:9001')).toBeTruthy()
     expect(within(dialog).queryByRole('heading', { name: /Deleted/ })).toBeNull()
 
+    // the daemon alone knows the addresses of the nodes
+    expect(within(dialog).getByText(/^One check is the daemon/).textContent).toBe(
+      "One check is the daemon's alone, made as each route is saved: an address of a node of the cluster needs allowNode, and the page does not know those addresses. Should it refuse one of these, the import stops there and says what was saved: status (10.0.5.20).",
+    )
+    expect(within(dialog).queryByText(/form above has changes/)).toBeNull()
+
     fireEvent.click(within(dialog).getByRole('radio', { name: 'Replace' }))
     expect(within(dialog).getByRole('heading', { name: 'Deleted (1)' })).toBeTruthy()
     expect(within(dialog).getByText('old: old.example.com → http://10.0.5.20:9000')).toBeTruthy()
     expect(daemon.writes()).toEqual([])
+  })
+
+  test('edits of the form that are not saved: the import says it does not keep them', async () => {
+    mount({ unsaved: true })
+    choose(fileOf(wanted({ pollInterval: '30s' }, null)))
+    const dialog = await screen.findByRole('dialog', { name: 'Import this file?' })
+    expect(within(dialog).getByText('The form above has changes that are not saved. The import does not keep them: afterwards the form shows what is saved.')).toBeTruthy()
+  })
+
+  test('a first entry of allowHosts says what it does, as a save of the form does', async () => {
+    mount()
+    choose(fileOf(wanted({ allowHosts: ['*.example.com'] }, null)))
+    const dialog = await screen.findByRole('dialog', { name: 'Import this file?' })
+    expect(within(dialog).getByText(/^allowHosts has no entry now/)).toBeTruthy()
   })
 
   test('routes that are as saved are counted, not listed', async () => {

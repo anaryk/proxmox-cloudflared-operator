@@ -4,6 +4,7 @@ import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useId, use
 
 import { ApiError } from '../../api/client'
 import { explain } from '../../api/errors'
+import { useApp } from '../../api/store'
 import type { Limit, SettingsView } from '../../api/types.gen'
 import { Link } from '../../app/Link'
 import { Badge } from '../../components/Badge'
@@ -14,8 +15,8 @@ import { FailIcon } from '../../components/icons'
 import { useToast } from '../../components/Toast'
 import { Untrusted } from '../../components/Untrusted'
 import { getSettings, putSettings, type SavedSettings } from './api'
-import { Changes } from './Changes'
-import { diffSettings, optInWords } from './diff'
+import { Changes, FirstAllowed } from './Changes'
+import { diffSettings, firstAllowed, optInWords } from './diff'
 import { addAllowHost, type Draft, draftIssues, draftOf, mergeDraft, settingsOf } from './draft'
 import { type FieldIssue, validateSettings } from './validate'
 
@@ -80,6 +81,12 @@ function rangeText(l: Limit | undefined): string {
   return ''
 }
 
+// What the two choices do with a setting both sides changed.
+const bothWords = (n: number) => {
+  const it = n === 1 ? 'it' : 'them'
+  return `Keeping your edits keeps your value of ${it}; using the saved settings drops ${it}.`
+}
+
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
     <section className="card settings-section" aria-labelledby={id}>
@@ -123,13 +130,16 @@ export interface SettingsFormProps {
   canWrite: boolean
   allow?: AllowRequest
   onSaved: (saved: SavedSettings) => void
+  // Told whether the form holds changes that are not saved.
+  onDirty?: (dirty: boolean) => void
 }
 
 // SettingsForm is every setting, in sections, with the words of the
 // documentation. The page checks what it can as it is typed; the daemon
 // checks every save, and its answer wins.
-export function SettingsForm({ view, canWrite, allow, onSaved }: SettingsFormProps) {
+export function SettingsForm({ view, canWrite, allow, onSaved, onDirty }: SettingsFormProps) {
   const toast = useToast()
+  const routes = useApp((s) => s.state?.routes)
   const [base, setBase] = useState(view)
   const allowKey = allow ? `${allow.owner}\n${allow.pattern}` : ''
   const [draft, setDraft] = useState(() => (allow ? addAllowHost(draftOf(view.settings), allow.pattern) : draftOf(view.settings)))
@@ -156,6 +166,11 @@ export function SettingsForm({ view, canWrite, allow, onSaved }: SettingsFormPro
   useEffect(() => {
     if (allowKey) allowField.current?.focus()
   }, [allowKey])
+
+  const dirty = changes.length > 0
+  useEffect(() => {
+    onDirty?.(dirty)
+  }, [dirty, onDirty])
 
   useEffect(() => {
     if (focusFirst > 0) form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
@@ -268,7 +283,10 @@ export function SettingsForm({ view, canWrite, allow, onSaved }: SettingsFormPro
   }
 
   const optIns = allow && changes.find((c) => c.field === 'allowHosts')?.added?.includes(allow.pattern) ? [allow] : []
+  const stopped = firstAllowed(base.settings, settings, routes ?? [])
   const pending = changes.map((c) => c.field).filter((f) => readAtStart.includes(f))
+  const theirs = conflict ? diffSettings(base.settings, conflict.fresh.settings) : []
+  const both = new Set(theirs.map((c) => c.field).filter((f) => changes.some((c) => c.field === f)))
   const leaving = settings.observeOnly && !base.settings.observeOnly
   const general = server && !controlNames.has(controlOf(server.field)) ? server : undefined
   const id = useId()
@@ -329,7 +347,7 @@ export function SettingsForm({ view, canWrite, allow, onSaved }: SettingsFormPro
                 'allowHosts',
                 <>
                   Patterns of the hostnames that may be published, one a line. With none, every hostname may be published but the apex of a zone and a wildcard,
-                  which a guest publishes only when a pattern names it. {patterns}
+                  which a guest publishes only when a pattern names it; with one, only the hostnames a pattern matches. {patterns}
                 </>,
               )}
               error={wrong('allowHosts')}
@@ -516,6 +534,7 @@ export function SettingsForm({ view, canWrite, allow, onSaved }: SettingsFormPro
             <Untrusted text={`${o.pattern} is asked for by ${o.owner}. ${optInWords(o.pattern, o.owner)}`} />
           </p>
         ))}
+        {stopped && <FirstAllowed stopped={stopped} />}
         {pending.length > 0 && (
           <p className="muted">
             {pending.join(', ')} {pending.length === 1 ? 'is' : 'are'} read only when pco starts: {pending.length === 1 ? 'it takes' : 'they take'} effect after
@@ -527,7 +546,7 @@ export function SettingsForm({ view, canWrite, allow, onSaved }: SettingsFormPro
 
       <Dialog
         open={conflict !== undefined}
-        onClose={keepMine}
+        onClose={() => setConflict(undefined)}
         title="The settings changed while you edited"
         footer={
           <>
@@ -544,9 +563,14 @@ export function SettingsForm({ view, canWrite, allow, onSaved }: SettingsFormPro
               <Untrusted text={conflict.message} />
             </p>
             <h3>Saved by someone else, at revision {conflict.fresh.rev}</h3>
-            <Changes changes={diffSettings(base.settings, conflict.fresh.settings)} label="Saved since the page was opened" />
+            <Changes changes={theirs} label="Saved since the page was opened" both={both} />
             <h3>Your edits</h3>
-            <Changes changes={changes} label="Your edits" />
+            <Changes changes={changes} label="Your edits" both={both} />
+            {both.size > 0 && (
+              <p>
+                Changed on both sides: <span className="mono">{[...both].join(', ')}</span>. {bothWords(both.size)}
+              </p>
+            )}
             <p className="muted">Keeping your edits puts them on the saved settings: a setting you did not touch is the saved one.</p>
           </>
         )}

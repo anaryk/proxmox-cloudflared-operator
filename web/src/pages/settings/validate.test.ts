@@ -143,6 +143,15 @@ describe('the ranges are the limits of the answer', () => {
     expect(field('cloudflareBudget', 1000, narrower)[0]?.message).toBe('cloudflareBudget 1000: from 500 to 600')
   })
 
+  test('past the limits of the answer, those of the daemon: a Go int and a Go duration', () => {
+    const issues = validateSettings({ ...good, maxHostnamesPerGuest: Number('9999999999999999999999'), grace: '99999999h' }, limits)
+    expect(issues).toEqual([
+      { field: 'grace', message: 'grace "99999999h": write a duration as 10s or 1m30s, of at most 2562047h47m16.854775807s' },
+      { field: 'maxHostnamesPerGuest', message: 'maxHostnamesPerGuest: want a whole number of at most 9223372036854775807' },
+    ])
+    expect(validateSettings({ ...good, maxHostnamesPerGuest: 2 ** 62, grace: '2562047h' }, limits)).toEqual([])
+  })
+
   test('a limit the answer does not give is not checked by the page', () => {
     expect(validateSettings({ ...good, cloudflareBudget: 5000, pollInterval: '1ms' }, {})).toEqual([])
   })

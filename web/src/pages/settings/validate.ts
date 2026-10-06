@@ -4,7 +4,7 @@
 // constants of this file but the limits it reports.
 
 import type { Limit, Settings } from '../../api/types.gen'
-import { parseDuration } from '../../text/duration'
+import { longestDuration, parseDuration } from '../../text/duration'
 import { goQuote, goQuoteRune } from '../../text/quote'
 
 export interface FieldIssue {
@@ -143,7 +143,7 @@ const durationOf = (v: unknown) => (typeof v === 'string' ? parseDuration(v) : u
 
 function checkDuration(field: 'pollInterval' | 'grace' | 'reverifyInterval', text: string, limits: Limits): string | undefined {
   const ms = parseDuration(text)
-  if (ms === undefined) return `${field} ${JSON.stringify(text)}: write a duration as 10s or 1m30s`
+  if (ms === undefined) return `${field} ${JSON.stringify(text)}: write a duration as 10s or 1m30s, of at most ${longestDuration}`
   const { min, max } = limits[field] ?? {}
   const lowest = durationOf(min)
   if (lowest !== undefined && ms < lowest) return `${field} ${text}: at least ${String(min)}`
@@ -152,8 +152,12 @@ function checkDuration(field: 'pollInterval' | 'grace' | 'reverifyInterval', tex
   return undefined
 }
 
+// The largest whole number the daemon reads into a setting, a Go int.
+const largestCount = '9223372036854775807'
+
 function checkCount(field: 'maxHostnamesPerGuest' | 'cloudflareBudget', n: number, limits: Limits): string | undefined {
   if (!Number.isInteger(n)) return `${field}: want a whole number`
+  if (Math.abs(n) >= 2 ** 63) return `${field}: want a whole number of at most ${largestCount}`
   const { min, max } = limits[field] ?? {}
   const low = typeof min === 'number' ? min : undefined
   const high = typeof max === 'number' ? max : undefined

@@ -222,6 +222,30 @@ describe('what the daemon would refuse in a route, checked before anything is se
   })
 })
 
+describe('each option is checked on its own, so that no import stops half done', () => {
+  const https = (options: ManualRouteView['options']): ManualRouteView => ({
+    id: 'web',
+    rev: 1,
+    hostname: 'web.example.com',
+    target: { kind: 'guest', guest: 'qemu/101', scheme: 'https', port: 8443 },
+    options,
+  })
+
+  test.each([
+    [{ sni: 'x.example.com', via: 'net99' }, ['options.via']],
+    [{ hostHeader: 'a b', sni: '*.example.com' }, ['options.hostHeader', 'options.sni']],
+    [{ noTLSVerify: true, hostHeader: 'ok.example.com:8443', sni: 'bad_name', via: '127.0.0.1' }, ['options.sni', 'options.via']],
+  ])('%j', (options, fields) => {
+    expect(validateRoute(https(options), ['10.0.5.0/24']).map((i) => i.field)).toEqual(fields)
+  })
+
+  test('as the daemon quotes them', () => {
+    expect(validateRoute(https({ via: 'net99' }), undefined).map((i) => i.message)).toEqual([
+      'options.via: "net99" is neither a NIC from net0 to net31 nor an IPv4 address a guest can have',
+    ])
+  })
+})
+
 describe('everything is checked before anything is written', () => {
   test('a file that is as it should be has no issue', () => {
     const got = check(file())

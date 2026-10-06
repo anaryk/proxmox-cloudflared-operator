@@ -3,6 +3,7 @@
 // settings, and each manual route by the rules of engine.manualRoute.
 
 import type { ManualRouteView, ManualTarget, RouteOptions, Settings } from '../../api/types.gen'
+import { goQuote } from '../../text/quote'
 import { type FieldIssue, type Limits, containsAddr, normalizeHostname, parseIPv4, parsePrefix, settingFields, validateSettings } from './validate'
 
 export interface ImportIssue {
@@ -233,19 +234,23 @@ export function validateRoute(r: ManualRouteView, manualCIDRs: readonly string[]
     add('target.kind', `target.kind ${JSON.stringify(t.kind)}: want guest or address`)
   }
   const targetOk = out.length === before
+  // Each option is checked whatever another one is: a file that passes is
+  // one the daemon takes whole.
   const o = r.options
   if (o.allowNode && t.kind === 'guest') add('options.allowNode', 'options.allowNode: only a route to an address may point at a node')
   if (o.noTLSVerify && !https) add('options.noTLSVerify', 'options.noTLSVerify: only applies to https targets')
-  else if (o.hostHeader && !hostHeaderPattern.test(o.hostHeader)) {
-    add('options.hostHeader', `options.hostHeader: ${JSON.stringify(o.hostHeader)} is not a host name with an optional port`)
-  } else if (o.sni) {
+  if (o.hostHeader && !hostHeaderPattern.test(o.hostHeader)) {
+    add('options.hostHeader', `options.hostHeader: ${goQuote(o.hostHeader)} is not a host name with an optional port`)
+  }
+  if (o.sni) {
     const sni = normalizeHostname(o.sni)
     if (!https) add('options.sni', 'options.sni: only applies to https targets')
-    else if (sni.error !== undefined || sni.value.startsWith('*.')) add('options.sni', `options.sni: ${JSON.stringify(o.sni)} is not a host name`)
-  } else if (o.via) {
+    else if (sni.error !== undefined || sni.value.startsWith('*.')) add('options.sni', `options.sni: ${goQuote(o.sni)} is not a host name`)
+  }
+  if (o.via) {
     if (t.kind === 'address') add('options.via', 'options.via: cannot be combined with an address in the target')
     else if (normalizeVia(o.via) === undefined) {
-      add('options.via', `options.via: ${JSON.stringify(o.via)} is neither a NIC from net0 to net31 nor an IPv4 address a guest can have`)
+      add('options.via', `options.via: ${goQuote(o.via)} is neither a NIC from net0 to net31 nor an IPv4 address a guest can have`)
     }
   }
   if (targetOk && manualCIDRs !== undefined && t.kind === 'address' && t.addr) {
@@ -275,6 +280,18 @@ export function normalizeRoute(r: ManualRouteView): ManualRouteView {
   return { id: r.id, rev: r.rev, hostname: normalizeHostname(r.hostname).value ?? r.hostname, target, options }
 }
 
+// What to do with a file of an install that publishes, for one that only
+// observes.
+export const leaveObserveOnly =
+  'To import this file, set observeOnly to true in it and start publishing afterwards, or start publishing first (pco apply, or Start publishing on the Plan) and import it then'
+
+// nodeChecked are the routes of a plan to an address without allowNode: the
+// daemon refuses one whose address is a node's as it saves it, which the page
+// cannot know before.
+export function nodeChecked(routes: readonly ManualRouteView[]): ManualRouteView[] {
+  return routes.filter((r) => r.target.kind === 'address' && !r.options.allowNode)
+}
+
 // checkImport reads a file and checks all of it, as the daemon would on the
 // saves that follow: the settings by the rules of the store, with what is
 // stored to know that observe-only is not left, and every route by the rules
@@ -287,7 +304,10 @@ export function checkImport(text: string, ctx: { current: Settings; limits: Limi
   if (!file) return parsed
   const issues: ImportIssue[] = []
   const found = validateSettings(file.settings, ctx.limits, ctx.current)
-  for (const i of found) issues.push({ where: `settings.${i.field}`, message: i.message })
+  for (const i of found) {
+    const message = i.field === 'observeOnly' ? `${i.message}. ${leaveObserveOnly}` : i.message
+    issues.push({ where: `settings.${i.field}`, message })
+  }
   const cidrs = found.some((i) => i.field.startsWith('manualCIDRs')) ? undefined : (file.settings.manualCIDRs ?? [])
   const routes: ManualRouteView[] = []
   const firstOf = new Map<string, number>()

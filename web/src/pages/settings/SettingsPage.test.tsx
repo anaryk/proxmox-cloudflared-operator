@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { ApiError } from '../../api/client'
@@ -9,8 +9,8 @@ import { ToastProvider } from '../../components/Toast'
 import manualRoutes from '../../fixtures/manual-routes.json'
 import populated from '../../fixtures/populated.json'
 import settingsFixture from '../../fixtures/settings.json'
-import { fakeStore } from '../../test/store'
-import { fakeDaemon, type Handler, type Sent } from './fakeDaemon'
+import { fakeDaemon, type Handler, type Sent } from '../../test/fakeDaemon'
+import { fakeStore, flush } from '../../test/store'
 import { allowLink, SettingsPage } from './SettingsPage'
 
 const view = settingsFixture as unknown as SettingsView
@@ -321,6 +321,13 @@ describe('a save', () => {
     const mine = within(dialog).getByRole('table', { name: 'Your edits' })
     expect(within(mine).getByText('grace')).toBeTruthy()
     expect(within(mine).getByText('cloudflareBudget')).toBeTruthy()
+    // both changed the budget: its rows say so, in both tables, and the others do not
+    const marked = (table: HTMLElement) => within(table).queryAllByText('changed on both sides').map((b) => b.closest('th')?.firstChild?.textContent)
+    expect(marked(others)).toEqual(['cloudflareBudget'])
+    expect(marked(mine)).toEqual(['cloudflareBudget'])
+    expect(within(dialog).getByText(/^Changed on both sides:/).textContent).toBe(
+      'Changed on both sides: cloudflareBudget. Keeping your edits keeps your value of it; using the saved settings drops it.',
+    )
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep my edits' }))
     // a setting I did not touch is theirs, one I edited is mine
@@ -334,6 +341,30 @@ describe('a save', () => {
     const second = daemon.calls.filter((c) => c.method === 'PUT')[1]?.body as { rev: number; settings: Settings }
     expect(second.rev).toBe(8)
     expect(second.settings).toMatchObject({ pollInterval: '30s', grace: '2m', cloudflareBudget: 500 })
+  })
+
+  test('someone saved in between: Escape closes the question without choosing either', async () => {
+    let now: SettingsView = view
+    const theirs: SettingsView = { ...view, rev: 8, settings: { ...view.settings, pollInterval: '30s' } }
+    await mount({
+      handlers: {
+        'GET /api/v1/settings': () => ({ body: now }),
+        'PUT /api/v1/settings': () => {
+          now = theirs
+          return { status: 409, body: { code: 'refused', error: 'refused: the settings changed' } }
+        },
+      },
+    })
+    type('Grace', '2m')
+    save()
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Save settings' }))
+    const dialog = await screen.findByRole('dialog', { name: 'The settings changed while you edited' })
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    fireEvent(dialog, new Event('close'))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'The settings changed while you edited' })).toBeNull())
+    // the form is as it was: my edit, on the settings it was opened on
+    expect((screen.getByLabelText('Grace') as HTMLInputElement).value).toBe('2m')
+    expect((screen.getByLabelText('Poll interval') as HTMLInputElement).value).toBe('10s')
   })
 
   test('someone saved in between: the saved settings can be taken instead', async () => {
@@ -499,6 +530,64 @@ describe('a link from a route that waits for allowHosts', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save settings' }))
     await screen.findByText('The settings are saved; they are at revision 8.')
     expect(put(daemon)?.settings.allowHosts).toEqual(['example.com'])
+  })
+
+  test('the first entry of allowHosts says that only what it matches is published from then on, and what stops', async () => {
+    await mount({ url: '/settings?addAllowHost=example.com&owner=qemu%2F102', state: rejected })
+    expect(describedBy(screen.getByLabelText('Allowed hostnames'))).toContain('with one, only the hostnames a pattern matches')
+    save()
+    const dialog = await screen.findByRole('dialog', { name: 'Save these changes?' })
+    expect(within(dialog).getByText(/^allowHosts has no entry now/).textContent).toBe(
+      'allowHosts has no entry now, so every hostname a guest names may be published but the apex of a zone and a wildcard. With this entry only the hostnames a pattern of the list matches are published, from the next cycle.',
+    )
+    // www.example.com is active for qemu/101; qemu/102 lost it and publishes nothing
+    expect(within(dialog).getByText(/no pattern of the list/).textContent).toBe(
+      '1 route published now matches no pattern of the list and stops being published; their records and rules go once the grace has passed:',
+    )
+    expect(within(dialog).getByText(/no pattern of the list/).nextElementSibling?.textContent).toBe('www.example.com (qemu/101)')
+  })
+
+  test('a list that had entries gets no such word, nor a hand-typed list that matches every route', async () => {
+    await mount({ view: { ...view, settings: { ...view.settings, allowHosts: ['*.shop.cz'] } } })
+    type('Allowed hostnames', '*.shop.cz\nwww.example.com')
+    save()
+    expect(within(await screen.findByRole('dialog')).queryByText(/^allowHosts has no entry now/)).toBeNull()
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    type('Allowed hostnames', '')
+    type('Allowed hostnames', '*.example.com')
+    save()
+    expect(within(await screen.findByRole('dialog')).queryByText(/^allowHosts has no entry now/)).toBeNull()
+  })
+
+  test('after the save the link is spent: the route it named is no longer rejected, and nothing says it names none', async () => {
+    let current: unknown = rejected
+    navigate('/settings?addAllowHost=example.com&owner=qemu%2F102')
+    fakeDaemon({
+      'GET /api/v1/settings': () => ({ body: view }),
+      'GET /api/v1/routes/manual': () => ({ body: manualRoutes }),
+      'PUT /api/v1/settings': saved(),
+    })
+    const { store } = await fakeStore({ state: rejected, answers: { 'GET /api/v1/state': () => ({ status: 200, body: current, etag: 'after-save' }) } })
+    render(
+      <StoreProvider store={store}>
+        <ToastProvider>
+          <SettingsPage />
+        </ToastProvider>
+      </StoreProvider>,
+    )
+    await screen.findByRole('form', { name: 'Settings' })
+    save()
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Save settings' }))
+    await screen.findByText('The settings are saved; they are at revision 8.')
+    expect(window.location.search).toBe('')
+    // the next cycle publishes the apex
+    current = { ...rejected, digest: 'after-save', routes: rejected.routes.map((r) => (r.state === 'rejected' ? { ...r, state: 'active', reason: undefined } : r)) }
+    await act(async () => {
+      store.notice({ kind: 'state', data: { at: '2026-10-01T12:00:10Z', finishedAt: '2026-10-01T12:00:12Z', digest: 'after-save' } })
+      await flush()
+    })
+    expect(store.get().state?.digest).toBe('after-save')
+    expect(screen.queryByText(/This link names no rejected route/)).toBeNull()
   })
 
   test('a wildcard grants the names that have no record of their own', async () => {

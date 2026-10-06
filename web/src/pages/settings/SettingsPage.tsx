@@ -4,7 +4,7 @@ import { ApiError } from '../../api/client'
 import { explain } from '../../api/errors'
 import { useApp } from '../../api/store'
 import type { RouteView, SettingsView } from '../../api/types.gen'
-import { useLocation } from '../../app/router'
+import { navigate, useLocation } from '../../app/router'
 import { Banner } from '../../components/Banner'
 import { Button } from '../../components/Button'
 import { Dialog } from '../../components/Dialog'
@@ -93,6 +93,7 @@ export function SettingsPage() {
   const [view, setView] = useState<SettingsView>()
   const [failed, setFailed] = useState<ApiError>()
   const [restart, setRestart] = useState<string[]>([])
+  const [dirty, setDirty] = useState(false)
   const canWrite = role === 'admin'
 
   // Asking again is a new round.
@@ -120,8 +121,17 @@ export function SettingsPage() {
 
   const imported = (needed: string[]) => {
     setRestart(needed)
+    setDirty(false)
     setView(undefined)
     setRound((r) => r + 1)
+  }
+
+  // A save is the end of a link from a route: the route the link named is
+  // no longer rejected once the state shows the save, and the link would
+  // then say it names none.
+  const saved = (needed: string[]) => {
+    setRestart(needed)
+    if (link.kind !== 'none') navigate('/settings', true)
   }
 
   let body
@@ -157,7 +167,7 @@ export function SettingsPage() {
             you press Save.
           </Banner>
         )}
-        <SettingsForm view={view} canWrite={canWrite} allow={allow} onSaved={(saved) => setRestart(saved.restartNeeded)} />
+        <SettingsForm view={view} canWrite={canWrite} allow={allow} onSaved={(s) => saved(s.restartNeeded)} onDirty={setDirty} />
       </>
     )
   }
@@ -167,7 +177,7 @@ export function SettingsPage() {
       <SettingsIssues issues={issues ?? []} notes={view?.notes} />
       {restart.length > 0 && <RestartNotice fields={restart} onDone={() => setRestart([])} />}
       {body}
-      <ExportImport node={node} canWrite={canWrite} onImported={imported} />
+      <ExportImport node={node} canWrite={canWrite} unsaved={dirty} onImported={imported} />
     </>
   )
 }

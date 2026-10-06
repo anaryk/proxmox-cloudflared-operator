@@ -12,16 +12,22 @@ const units: Readonly<Record<string, number>> = {
   h: 3_600_000,
 }
 
+// The longest duration Go holds, 2^63 - 1 nanoseconds, as it writes it.
+export const longestDuration = '2562047h47m16.854775807s'
+const longestMs = 9_223_372_036_854.775
+
 // parseDuration is a Go duration in milliseconds, or undefined for text that
-// is not one.
+// is not one, as time.ParseDuration reads it: a sign, then 0 or numbers with
+// their units, at most the longest duration Go holds.
 export function parseDuration(text: string): number | undefined {
   const m = /^([-+]?)((?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h))+$/.exec(text)
-  if (text === '0') return 0
+  if (/^[-+]?0$/.test(text)) return 0
   if (!m) return undefined
   let total = 0
   for (const [, value, unit] of text.matchAll(/(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)/g)) {
     total += Number(value) * (units[unit ?? ''] ?? 0)
   }
+  if (total > longestMs) return undefined
   return m[1] === '-' ? -total : total
 }
 

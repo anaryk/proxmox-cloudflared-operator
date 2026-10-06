@@ -1,6 +1,6 @@
-// A stand-in for the daemon behind fetch, for the tests of this page: each
-// route of it answers a call by "METHOD /path", and every call is kept in
-// order.
+// A stand-in for the daemon behind fetch, for the tests of a page that reads
+// the daemon itself: each route of it answers a call by "METHOD /path", and
+// every call is kept in order.
 
 import { vi } from 'vitest'
 
