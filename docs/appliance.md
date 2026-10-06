@@ -557,8 +557,9 @@ What it does depends on the state volume:
   the API again, and has `pco appliance init` repair the store with the token, the MACs, the
   endpoint and the node's addresses as they are now.
 - **Without state, with `--recover`:** it gives the container a state volume if it has none,
-  marks it, and has `init` adopt the install the Cloudflare token sees (`--install-id` when it
-  sees several), with the manifest rebuilt from the marks in Proxmox.
+  marks it, puts the container into pool `pco` unless it is in another pool, registers the gate
+  tags, and has `init` adopt the install the Cloudflare token sees (`--install-id` when it sees
+  several), with the manifest rebuilt from the marks in Proxmox.
 
 The cases, and the command for each:
 

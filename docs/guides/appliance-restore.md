@@ -19,8 +19,10 @@ the container back, and a repair brings back its install, from what Cloudflare a
 
 ## Steps
 
-1. Restore the backup into pool `pco`, to a new VMID or over the appliance. Over it, take its
-   protection off first, as Proxmox refuses to restore over a protected container:
+1. Restore the backup, to a new VMID or over the appliance. The repair puts the container into
+   pool `pco`; `--pool pco` puts it there at once, so that the access control of the pool, with
+   any `NoAccess` line the installer added there, applies from the start. Over the appliance,
+   take its protection off first, as Proxmox refuses to restore over a protected container:
 
        pct restore 121 /var/lib/vz/dump/vzdump-lxc-120-2026_10_06-02_00_01.tar.zst --storage local-zfs --pool pco
 
@@ -37,7 +39,8 @@ the container back, and a repair brings back its install, from what Cloudflare a
        curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --repair --vmid 121 --recover --cf-token-file /root/cf-token
 
    It starts the container, marks a container restored to a new VMID as itself, marks the new
-   volume, makes the Proxmox token anew, and has the appliance adopt the install whose tunnel the
+   volume, puts the container into pool `pco` unless it is in another pool, makes the Proxmox
+   token anew, registers the gate tags, and has the appliance adopt the install whose tunnel the
    token sees. With several installs in reach it lists them, and `--install-id` chooses. It stops
    the container again at the end if it was stopped.
 

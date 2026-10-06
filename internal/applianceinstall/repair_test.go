@@ -153,6 +153,8 @@ func TestRepairRecoversARestoreToAnotherVMID(t *testing.T) {
 	require.Equal(t, 0, e.node.count("pct set 101 --mp0"), "it has a volume")
 	require.Equal(t, []string{"101 /var/lib/pco/.volume 0600", "101 /var/lib/pco/pve-ca.pem 0644", "101 /var/lib/pco/bootstrap.json 0600"}, e.node.pushes)
 	require.Equal(t, []string{"vm100", "vm101"}, e.node.tokenNames("pco@pve"), "the token of the appliance it was made from stays")
+	require.Zero(t, e.node.count("pveum pool modify"), "restored into pool pco")
+	require.Zero(t, e.node.count("pvesh set /cluster/options"), "the tags are registered")
 	b := e.bootstrap(0)
 	require.Equal(t, "recover", b["mode"])
 	require.EqualValues(t, 101, b["vmid"])
@@ -187,6 +189,94 @@ func TestRepairGivesARestoreWithoutItsVolumeOneAgain(t *testing.T) {
 	require.Contains(t, e.node.cts[102].cfg["mp0"], "mp=/var/lib/pco,backup=0")
 	require.Equal(t, "recover", e.bootstrap(0)["mode"])
 	require.Equal(t, "0123456789ab", e.bootstrap(0)["installId"])
+}
+
+// outOfPool takes the container out of its pool, as a restore without
+// --pool leaves it.
+func (e *testEnv) outOfPool(vmid int) {
+	e.t.Helper()
+	for _, p := range e.node.pools {
+		p.Members = slices.DeleteFunc(p.Members, func(m int) bool { return m == vmid })
+	}
+}
+
+// A restore is in no pool unless it was restored into one, and the cluster it
+// is restored to may not have the gate tags registered: the repair puts the
+// container into pool pco and registers the tags, as the install did.
+func TestARecoverPutsTheRestoreIntoPoolPcoAndRegistersTheTags(t *testing.T) {
+	e := installed(t)
+	e.restored(101, true)
+	e.lose()
+	e.outOfPool(101)
+	e.node.tags = []string{"admin-only"}
+
+	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}), e.ask.text())
+
+	require.Equal(t, []int{101}, e.node.pools["pco"].Members)
+	require.Equal(t, 1, e.node.count("pveum pool modify pco --vms 101"))
+	require.Contains(t, e.ask.text(), "info: container lxc/101: put into pool pco")
+	require.Equal(t, []string{"admin-only", "cf-tunnel", "cf-tunnel-managed"}, e.node.tags)
+	m := e.bootstrap(0)["manifest"].(map[string]any)
+	require.Equal(t, []any{"cf-tunnel", "cf-tunnel-managed"}, m["registeredTags"], "the tags it registered are the appliance's to take back")
+	require.Equal(t, true, e.bootstrapAppliance()["createdPool"])
+}
+
+// Pool pco went with what was left of the appliance: the repair makes it
+// again, with the comment uninstall knows it by.
+func TestARecoverMakesPoolPcoAgain(t *testing.T) {
+	e := installed(t)
+	e.restored(101, true)
+	e.lose()
+	delete(e.node.pools, "pco")
+
+	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}), e.ask.text())
+
+	require.Equal(t, &fakePool{Comment: "pco appliances", Members: []int{101}}, e.node.pools["pco"])
+	require.Equal(t, true, e.bootstrapAppliance()["createdPool"])
+}
+
+// A repair that failed after it put the container into the pool and
+// registered the tags finds both as it left them when it runs again.
+func TestARecoverRunAgainChangesNeitherThePoolNorTheTags(t *testing.T) {
+	e := installed(t)
+	e.restored(101, true)
+	e.lose()
+	e.outOfPool(101)
+	e.node.tags = []string{"admin-only"}
+	e.node.on("pct exec 101 --keep-env 0 -- pco appliance init", func(context.Context, []string) (string, error) {
+		return "", exitError{1, "init: Cloudflare did not answer"}
+	})
+
+	err := e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken})
+	require.ErrorContains(t, err, "run pco appliance repair --vmid 101 again once that is put right")
+	require.Equal(t, []int{101}, e.node.pools["pco"].Members)
+
+	e.node.ran = nil
+	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}), e.ask.text())
+
+	require.Zero(t, e.node.count("pveum pool modify"))
+	require.Zero(t, e.node.count("pveum pool add"))
+	require.Zero(t, e.node.count("pvesh set /cluster/options"))
+	require.Equal(t, []int{101}, e.node.pools["pco"].Members)
+	require.Equal(t, []string{"admin-only", "cf-tunnel", "cf-tunnel-managed"}, e.node.tags)
+}
+
+// A restore into a pool of the admin's stays there, as the admin chose it:
+// the repair says so, and how to move it.
+func TestARecoverLeavesARestoreInAnotherPool(t *testing.T) {
+	e := installed(t)
+	e.restored(101, true)
+	e.lose()
+	e.outOfPool(101)
+	e.node.pools["prod"] = &fakePool{Comment: "production", Members: []int{101}}
+
+	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}), e.ask.text())
+
+	require.Equal(t, []int{101}, e.node.pools["prod"].Members)
+	require.Empty(t, e.node.pools["pco"].Members)
+	require.Zero(t, e.node.count("pveum pool modify"))
+	require.Contains(t, e.ask.text(), "warn: lxc/101 is in pool prod, not in pool pco, and the repair leaves it there: "+
+		"pveum pool modify pco --vms 101 --allow-move 1 moves it")
 }
 
 func TestRepairRefuses(t *testing.T) {

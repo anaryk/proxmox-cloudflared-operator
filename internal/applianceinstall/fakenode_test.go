@@ -608,6 +608,20 @@ func (f *fakeNode) pveum(args []string) (string, error) {
 		}
 		f.pools[args[2]] = &fakePool{Comment: flag(args, "--comment")}
 		return "", nil
+	case args[0] == "pool" && args[1] == "modify":
+		p := f.pools[args[2]]
+		if p == nil {
+			return "", fmt.Errorf("pool '%s' does not exist", args[2])
+		}
+		id, err := strconv.Atoi(flag(args, "--vms"))
+		if err != nil || (f.cts[id] == nil && !f.vms[id]) {
+			return "", fmt.Errorf("no such guest '%s'", flag(args, "--vms"))
+		}
+		if other := f.poolOf(id); other != "" {
+			return "", fmt.Errorf("VM %d belongs already to pool '%s'", id, other)
+		}
+		p.Members = append(p.Members, id)
+		return "", nil
 	case args[0] == "pool" && args[1] == "delete":
 		p := f.pools[args[2]]
 		if p == nil {

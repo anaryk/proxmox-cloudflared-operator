@@ -18,9 +18,10 @@ import (
 // again, and a bootstrap of mode repair carries the token, the MACs, the
 // endpoint and the node's addresses as they are now. Without state (a restore
 // to a new VMID, over the appliance, or a lost volume, and only with
-// Recover), the volume is given back, marked, and a bootstrap of mode recover
-// adopts the install the Cloudflare token sees, with a manifest rebuilt from
-// the marks in Proxmox.
+// Recover), the volume is given back, marked, the container put into pool pco
+// and the tags registered, as the install had them, and a bootstrap of mode
+// recover adopts the install the Cloudflare token sees, with a manifest
+// rebuilt from the marks in Proxmox.
 //
 // A repair takes nothing back when it fails: every step looks at what is
 // there, and running it again finishes it.
@@ -315,10 +316,48 @@ func (r *run) recoverState(ctx context.Context, cfg ctConfig) error {
 		return err
 	}
 	r.j.Manifest = m
+	if err := r.ensurePool(ctx); err != nil {
+		return err
+	}
+	if err := r.joinPool(ctx); err != nil {
+		return err
+	}
 	if err := r.ensureProxmox(ctx); err != nil {
 		return err
 	}
+	if err := r.ensureTags(ctx); err != nil {
+		return err
+	}
 	return r.withWeb(ctx, func() error { return r.pushBootstrap(ctx, appliance.ModeRecover, false) })
+}
+
+// joinPool puts the container into pool pco, where the install made it: a
+// restore is in the pool it was restored into, or in none. One in a pool of
+// the admin's stays there.
+func (r *run) joinPool(ctx context.Context) error {
+	vmid := r.j.VMID
+	guests, err := clusterGuests(ctx, r.r)
+	if err != nil {
+		return err
+	}
+	var pool string
+	if i := slices.IndexFunc(guests, func(g clusterGuest) bool { return g.Type == "lxc" && int(g.VMID) == vmid }); i >= 0 {
+		pool = guests[i].Pool
+	}
+	switch pool {
+	case poolID:
+		return nil
+	case "":
+	default:
+		r.ask.Warn("lxc/%d is in pool %s, not in pool %s, and the repair leaves it there: pveum pool modify %s --vms %d --allow-move 1 moves it",
+			vmid, pool, poolID, poolID, vmid)
+		return nil
+	}
+	if _, err := r.r.Run(ctx, "pveum", "pool", "modify", poolID, "--vms", strconv.Itoa(vmid)); err != nil {
+		return fmt.Errorf("putting lxc/%d into pool %s: %w", vmid, poolID, err)
+	}
+	r.ask.Info("container lxc/%d: put into pool %s", vmid, poolID)
+	return nil
 }
 
 // recoveryToken makes sure there is a Cloudflare token to find the install

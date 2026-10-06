@@ -208,9 +208,10 @@ const repairLong = "Put the appliance right on this node after a restore, after 
 	"  node's addresses as they are now;\n" +
 	"  without state, only with --recover (a restore to another VMID, a restore over the\n" +
 	"  appliance, a lost volume): the container gets a state volume again if it has none, the\n" +
-	"  volume is marked, and pco appliance init adopts the install the Cloudflare token sees\n" +
-	"  (--install-id when it sees several), with the manifest rebuilt from what pco made in\n" +
-	"  Proxmox.\n\n" +
+	"  volume is marked, the container goes into pool pco unless it is in another pool, the\n" +
+	"  gate tags are registered, and pco appliance init adopts the install the Cloudflare token\n" +
+	"  sees (--install-id when it sees several), with the manifest rebuilt from what pco made\n" +
+	"  in Proxmox.\n\n" +
 	"A copy of the appliance beside the one it was made from, a clone or a restore while the\n" +
 	"original is still there, is refused: it would write the install of the original with its\n" +
 	"credentials. Remove the copy, or install an appliance anew.\n\n" +

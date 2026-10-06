@@ -11,9 +11,10 @@ appliance init repairs the store with the token, the MACs, the endpoint and the
 node's addresses as they are now;
 without state, only with --recover (a restore to another VMID, a restore over the
 appliance, a lost volume): the container gets a state volume again if it has none, the
-volume is marked, and pco appliance init adopts the install the Cloudflare token sees
-(--install-id when it sees several), with the manifest rebuilt from what pco made in
-Proxmox.
+volume is marked, the container goes into pool pco unless it is in another pool, the
+gate tags are registered, and pco appliance init adopts the install the Cloudflare token
+sees (--install-id when it sees several), with the manifest rebuilt from what pco made
+in Proxmox.
 ```
 
 A copy of the appliance beside the one it was made from, a clone or a restore while the
