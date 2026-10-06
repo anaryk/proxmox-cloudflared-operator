@@ -43,6 +43,7 @@ func TestSetupOptionsFromFlags(t *testing.T) {
 		{"repair", setupFlags{repair: true}, setup.Options{Repair: true}},
 		{"recover", setupFlags{recover: true, installID: "0123456789ab"}, setup.Options{Recover: true, InstallID: "0123456789ab"}},
 		{"new install", setupFlags{newInstall: true}, setup.Options{NewInstall: true}},
+		{"managed", setupFlags{managed: true, confirmSDNApply: true}, setup.Options{Managed: true, ConfirmSDNApply: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			a, cmd, _, _ := commandWith(unreadable{t}, false)

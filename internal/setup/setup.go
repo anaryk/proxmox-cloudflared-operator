@@ -94,10 +94,19 @@ type Options struct {
 	WebKeyFile  string
 	WebListen   string
 	NoWeb       bool
+
+	// Managed makes the managed network: the SDN zone pco and vnet pconet,
+	// applied under the lock of the SDN configuration, and the network in the
+	// store. ConfirmSDNApply applies the changes of others that are pending
+	// along with pco's.
+	Managed         bool
+	ConfirmSDNApply bool
 }
 
 func (o Options) check() error {
 	switch {
+	case o.ConfirmSDNApply && !o.Managed:
+		return errors.New("--confirm-sdn-apply goes with --managed")
 	case o.Repair && o.Recover:
 		return errors.New("--repair and --recover do not go together")
 	case o.Repair && o.CloudflareToken != "":
@@ -292,32 +301,38 @@ func (r *run) afterFailure(ctx context.Context) {
 }
 
 func (r *run) steps() []step {
+	var managed []step
+	if r.o.Managed {
+		managed = []step{{"managed", r.ensureManaged}}
+	}
 	if r.o.Repair {
-		return []step{
+		return slices.Concat([]step{
 			{"preflight", r.preflight},
 			{"store", r.requireInstall},
 			{"role", r.ensureRole},
 			{"user", r.ensureUser},
 			{"token", r.ensureToken},
 			{"tags", r.ensureTags},
+		}, managed, []step{
 			{"web", r.ensureWeb},
 			{"registry", r.register},
 			{"service", r.startService},
-		}
+		})
 	}
-	return []step{
+	return slices.Concat([]step{
 		{"preflight", r.preflight},
 		{"store", r.prepareStore},
 		{"role", r.ensureRole},
 		{"user", r.ensureUser},
 		{"token", r.ensureToken},
 		{"tags", r.ensureTags},
+	}, managed, []step{
 		{"cloudflared", r.ensureCloudflared},
 		{"credential", r.addCredential},
 		{"web", r.ensureWeb},
 		{"registry", r.register},
 		{"service", r.startService},
-	}
+	})
 }
 
 // choose returns the answer given in advance, the default with Yes, or what

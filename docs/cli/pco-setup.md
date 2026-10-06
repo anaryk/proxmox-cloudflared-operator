@@ -33,6 +33,11 @@ pveproxy  the certificate and key pveproxy serves: the web interface then holds
 
 `--repair` keeps the mode chosen before unless `--web-cert` says otherwise.
 
+`--managed` adds the managed network after the tags, as pco network managed enable makes it:
+the SDN zone pco and vnet pconet with isolated ports, made and applied under the lock of the
+SDN configuration, which reloads the network on every node; changes of others that are
+pending refuse it unless `--confirm-sdn-apply` applies them along.
+
 ## Usage
 
 ```text
@@ -45,8 +50,8 @@ pco setup [flags]
 # Set up the node, asking for what is missing
 pco setup
 
-# Without a question, with the Cloudflare token of a file
-pco setup --yes --cf-token-file /root/cf-token
+# Without a question, with the Cloudflare token of a file and the managed network
+pco setup --yes --cf-token-file /root/cf-token --managed
 
 # Put the role, the user, the token and the tags back after a restore of the node
 pco setup --repair
@@ -63,8 +68,10 @@ pco setup --repair --web-cert own --web-cert-file /root/pco.example.com.crt --we
 ```text
     --cf-token-file string   read the Cloudflare API token from this file
     --cf-token-stdin         read the Cloudflare API token from standard input, which must not be a terminal
+    --confirm-sdn-apply      with --managed: apply the changes of others that are pending in the SDN along with pco's
 -h, --help                   help for setup
     --install-id string      with --recover: the install to adopt, when the token sees several
+    --managed                make the managed network: the SDN zone pco and vnet pconet, applied under the SDN lock
     --new-install            start a new install on a node that runs connectors of another install: the connectors of the other install keep running and are never pruned by the new one; pco status reports them
     --no-registered-tags     do not register the gate tags, which lets whoever may edit a guest set them
     --no-web                 do not set up the web interface

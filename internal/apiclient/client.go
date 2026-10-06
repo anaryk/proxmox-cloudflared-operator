@@ -469,6 +469,12 @@ func (c *Client) Detach(ctx context.Context, id string, rev int64, confirm bool)
 	return c.call(ctx, c.long, http.MethodDelete, networkPath(id)+"?"+q.Encode(), nil, nil)
 }
 
+// EnableManaged asks the daemon of an appliance to take up the managed
+// network, once the node made its vnet and granted it.
+func (c *Client) EnableManaged(ctx context.Context) error {
+	return c.call(ctx, c.long, http.MethodPost, "/v1/managed/enable", nil, nil)
+}
+
 // raw returns the answer to a GET as the daemon sent it.
 func (c *Client) raw(ctx context.Context, timeout time.Duration, path string) (json.RawMessage, error) {
 	var raw json.RawMessage

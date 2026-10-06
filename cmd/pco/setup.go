@@ -26,6 +26,8 @@ type setupFlags struct {
 
 	webCert, webCertFile, webKeyFile, webListen string
 	noWeb                                       bool
+
+	managed, confirmSDNApply bool
 }
 
 func (a *app) setupCmd() *cobra.Command {
@@ -56,11 +58,15 @@ func (a *app) setupCmd() *cobra.Command {
 			"  own       the certificate and key of --web-cert-file and --web-key-file, copied in\n" +
 			"  pveproxy  the certificate and key pveproxy serves: the web interface then holds\n" +
 			"            pveproxy's own key\n" +
-			"--repair keeps the mode chosen before unless --web-cert says otherwise.",
+			"--repair keeps the mode chosen before unless --web-cert says otherwise.\n\n" +
+			"--managed adds the managed network after the tags, as pco network managed enable makes it:\n" +
+			"the SDN zone pco and vnet pconet with isolated ports, made and applied under the lock of the\n" +
+			"SDN configuration, which reloads the network on every node; changes of others that are\n" +
+			"pending refuse it unless --confirm-sdn-apply applies them along.",
 		Example: "  # Set up the node, asking for what is missing\n" +
 			"  pco setup\n\n" +
-			"  # Without a question, with the Cloudflare token of a file\n" +
-			"  pco setup --yes --cf-token-file /root/cf-token\n\n" +
+			"  # Without a question, with the Cloudflare token of a file and the managed network\n" +
+			"  pco setup --yes --cf-token-file /root/cf-token --managed\n\n" +
 			"  # Put the role, the user, the token and the tags back after a restore of the node\n" +
 			"  pco setup --repair\n\n" +
 			"  # Adopt the install the token sees, after the store was lost\n" +
@@ -112,6 +118,8 @@ func (a *app) setupCmd() *cobra.Command {
 	flags.StringVar(&f.webListen, "web-listen", "", "the address the web interface listens on, with or without a port "+
 		"(default: the node's address in the cluster status, port 8643)")
 	flags.BoolVar(&f.noWeb, "no-web", false, "do not set up the web interface")
+	flags.BoolVar(&f.managed, "managed", false, "make the managed network: the SDN zone pco and vnet pconet, applied under the SDN lock")
+	flags.BoolVar(&f.confirmSDNApply, "confirm-sdn-apply", false, "with --managed: apply the changes of others that are pending in the SDN along with pco's")
 	cmd.MarkFlagsMutuallyExclusive("cf-token-file", "cf-token-stdin")
 	cmd.MarkFlagsMutuallyExclusive("repair", "recover")
 	cmd.MarkFlagsMutuallyExclusive("new-install", "repair")
@@ -123,6 +131,7 @@ func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, err
 	o := setup.Options{
 		Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall, Verbose: f.verbose,
 		WebCert: f.webCert, WebCertFile: f.webCertFile, WebKeyFile: f.webKeyFile, WebListen: f.webListen, NoWeb: f.noWeb,
+		Managed: f.managed, ConfirmSDNApply: f.confirmSDNApply,
 	}
 	no := false
 	if f.noTags {

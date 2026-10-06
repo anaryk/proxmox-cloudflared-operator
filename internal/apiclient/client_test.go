@@ -147,6 +147,11 @@ func TestRequests(t *testing.T) {
 			want: seen{Method: "POST", Path: "/v1/sync", ContentType: "application/json"},
 		},
 		{
+			name: "enable the managed network", reply: `{}`, status: 200,
+			call: func(c *Client) error { return c.EnableManaged(t.Context()) },
+			want: seen{Method: "POST", Path: "/v1/managed/enable", ContentType: "application/json"},
+		},
+		{
 			name: "apply", reply: `{"leftObserveOnly":true,"accepted":[]}`, status: 200,
 			call: func(c *Client) error {
 				res, err := c.Apply(t.Context(), false, "")
