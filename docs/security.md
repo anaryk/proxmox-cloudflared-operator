@@ -394,8 +394,8 @@ that matches decides:
    the daemon reads the `/ready` endpoint of a connector on 127.0.0.1.
 3. An address on the block list of this node is rejected on every port.
 4. Two rules count a new TCP connection to a target and decide nothing: a connection in the
-   new state to an address and port in the `flows4` or `flows6` set is counted in the element
-   of that set, and the packet goes on to the next rule.
+   new state opened to an address and port in the `flows4` or `flows6` set is counted in the
+   element of that set, and the packet goes on to the next rule.
 5. The resolvers of the node are accepted: the `nameserver` lines of `/etc/resolv.conf`, TCP
    and UDP port 53.
 6. The targets of manual routes with `allowNode` are accepted: a TCP connection to an
@@ -416,6 +416,14 @@ that matches decides:
 11. Everything else is rejected and counted. TCP is answered with a reset and the rest with
     ICMP administratively prohibited, not dropped, so that a connection to a withdrawn target
     fails at once instead of waiting for a timeout.
+
+The block list, the counting sets and the targets are matched by the address the
+connection was opened to, before any address translation. A guest that pco reaches through
+a leg of its own is in the targets set by its service address, which the gateway translates
+to the guest's own address; a connector that dials the guest's own address is refused. A
+connection that nothing translates is matched by its own address. The rules on the
+addresses of the node match the address a packet goes to, so a service address translated
+to an address of the node is refused all the same.
 
 A connector can therefore reach Cloudflare's edge, the resolvers, and the verified targets,
 and cannot reach the management ports of the node or any other host. A rule written at

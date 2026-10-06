@@ -35,7 +35,7 @@ func TestTheAddressesOfTheNodeAreRejectedBeforeTheTargets(t *testing.T) {
 
 	local := ruleIndex(t, rules, `fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset`)
 	require.Equal(t, local+1, ruleIndex(t, rules, `fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited`))
-	for _, after := range []string{"ip daddr . tcp dport @targets4 accept", "ip6 daddr . tcp dport @targets6 accept"} {
+	for _, after := range []string{"meta l4proto tcp ct original ip daddr . ct original proto-dst @targets4 accept", "meta l4proto tcp ct original ip6 daddr . ct original proto-dst @targets6 accept"} {
 		require.Greater(t, ruleIndex(t, rules, after), local, after)
 	}
 	for _, before := range []string{
@@ -44,7 +44,7 @@ func TestTheAddressesOfTheNodeAreRejectedBeforeTheTargets(t *testing.T) {
 	} {
 		require.Less(t, ruleIndex(t, rules, before), local, before)
 	}
-	for _, blocked := range []string{"ip daddr @blocked4 meta l4proto tcp reject with tcp reset", "ip6 daddr @blocked6 reject with icmpx admin-prohibited"} {
+	for _, blocked := range []string{"ct original ip daddr @blocked4 meta l4proto tcp reject with tcp reset", "ct original ip6 daddr @blocked6 reject with icmpx admin-prohibited"} {
 		require.Less(t, ruleIndex(t, rules, blocked), ruleIndex(t, rules, "ip daddr . tcp dport @allownode4 accept"), "a block is absolute")
 	}
 }

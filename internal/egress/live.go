@@ -16,8 +16,9 @@ import (
 // The rules of the two chains as nft -j lists them, in order: what a listing
 // is compared with. The first takes the uid of the connector user. The script
 // in script.go says the same in the language of nft; the tests hold the two
-// against listings that nft 1.0.6 and 1.1.3 printed. nft lists the counting
-// rules without their match on TCP, which the match on the TCP port implies.
+// against listings that nft 1.0.6 and 1.1.3 printed. nft lists a rule that
+// matches a TCP port without its match on TCP, which the port implies; the
+// port of conntrack's original tuple implies none, and the match stays.
 const (
 	wantOutputRules = `[
 [{"match":{"op":"==","left":{"meta":{"key":"skuid"}},"right":%d}},{"jump":{"target":"connector"}}]
@@ -25,20 +26,20 @@ const (
 	wantConnectorRules = `[
 [{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"invalid"}},{"drop":null}],
 [{"match":{"op":"==","left":{"ct":{"key":"direction"}},"right":"reply"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"local"}},{"accept":null}],
-[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@blocked4"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"reject":{"type":"tcp reset"}}],
-[{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@blocked4"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
-[{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@blocked6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"reject":{"type":"tcp reset"}}],
-[{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@blocked6"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
-[{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"new"}},{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@flows4"}}],
-[{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"new"}},{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@flows6"}}],
+[{"match":{"op":"==","left":{"ct":{"key":"ip daddr","dir":"original"}},"right":"@blocked4"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"reject":{"type":"tcp reset"}}],
+[{"match":{"op":"==","left":{"ct":{"key":"ip daddr","dir":"original"}},"right":"@blocked4"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
+[{"match":{"op":"==","left":{"ct":{"key":"ip6 daddr","dir":"original"}},"right":"@blocked6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"reject":{"type":"tcp reset"}}],
+[{"match":{"op":"==","left":{"ct":{"key":"ip6 daddr","dir":"original"}},"right":"@blocked6"}},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
+[{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"new"}},{"match":{"op":"==","left":{"concat":[{"ct":{"key":"ip daddr","dir":"original"}},{"ct":{"key":"proto-dst","dir":"original"}}]},"right":"@flows4"}}],
+[{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"match":{"op":"in","left":{"ct":{"key":"state"}},"right":"new"}},{"match":{"op":"==","left":{"concat":[{"ct":{"key":"ip6 daddr","dir":"original"}},{"ct":{"key":"proto-dst","dir":"original"}}]},"right":"@flows6"}}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"@resolvers4"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":"@resolvers6"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":53}},{"accept":null}],
 [{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@allownode4"}},{"accept":null}],
 [{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@allownode6"}},{"accept":null}],
 [{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"local"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"counter":"rejected_local"},{"reject":{"type":"tcp reset"}}],
 [{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"local"}},{"counter":"rejected_local"},{"reject":{"type":"icmpx","expr":"admin-prohibited"}}],
-[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets4"}},{"accept":null}],
-[{"match":{"op":"==","left":{"concat":[{"payload":{"protocol":"ip6","field":"daddr"}},{"payload":{"protocol":"tcp","field":"dport"}}]},"right":"@targets6"}},{"accept":null}],
+[{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"match":{"op":"==","left":{"concat":[{"ct":{"key":"ip daddr","dir":"original"}},{"ct":{"key":"proto-dst","dir":"original"}}]},"right":"@targets4"}},{"accept":null}],
+[{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":6}},{"match":{"op":"==","left":{"concat":[{"ct":{"key":"ip6 daddr","dir":"original"}},{"ct":{"key":"proto-dst","dir":"original"}}]},"right":"@targets6"}},{"accept":null}],
 [{"match":{"op":"!=","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":[{"prefix":{"addr":"0.0.0.0","len":8}},{"prefix":{"addr":"10.0.0.0","len":8}},{"prefix":{"addr":"100.64.0.0","len":10}},{"prefix":{"addr":"127.0.0.0","len":8}},{"prefix":{"addr":"169.254.0.0","len":16}},{"prefix":{"addr":"172.16.0.0","len":12}},{"prefix":{"addr":"192.0.0.0","len":24}},{"prefix":{"addr":"192.0.2.0","len":24}},{"prefix":{"addr":"192.168.0.0","len":16}},{"prefix":{"addr":"198.18.0.0","len":15}},{"prefix":{"addr":"198.51.100.0","len":24}},{"prefix":{"addr":"203.0.113.0","len":24}},{"prefix":{"addr":"224.0.0.0","len":3}}]}}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"unicast"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
 [{"match":{"op":"!=","left":{"payload":{"protocol":"ip6","field":"daddr"}},"right":{"set":["::1",{"prefix":{"addr":"64:ff9b::","len":96}},{"prefix":{"addr":"64:ff9b:1::","len":48}},{"prefix":{"addr":"2001::","len":32}},{"prefix":{"addr":"2002::","len":16}},{"prefix":{"addr":"fc00::","len":7}},{"prefix":{"addr":"fe80::","len":10}},{"prefix":{"addr":"ff00::","len":8}}]}}},{"match":{"op":"==","left":{"fib":{"result":"type","flags":["daddr"]}},"right":"unicast"}},{"match":{"op":"==","left":{"meta":{"key":"l4proto"}},"right":{"set":[6,17]}}},{"match":{"op":"==","left":{"payload":{"protocol":"th","field":"dport"}},"right":7844}},{"accept":null}],
 [{"match":{"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":{"set":["1.0.0.1","1.1.1.1"]}}},{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":853}},{"accept":null}],

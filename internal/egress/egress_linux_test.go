@@ -289,6 +289,46 @@ func TestLinuxEgressFilter(t *testing.T) {
 	}
 }
 
+// A target is matched by the address the connection was opened to. Behind a
+// DNAT, as the gateway's from a service address to a guest, the connector
+// reaches the guest through the service address in the set, is refused at the
+// guest's own address, which is in no set, and its connections count in the
+// element of the service address; a set that holds the guest's own address
+// lets nothing through the service address.
+func TestLinuxATargetIsMatchedByItsAddressBeforeNAT(t *testing.T) {
+	const service = "198.18.1.1"
+	lab := newEgressLab(t)
+	nft := NewNft()
+	f := New(nft, labUID, func() ([]netip.Addr, error) { return []netip.Addr{addr(resolverIP)}, nil }, NewOverrides(t.TempDir()))
+	lab.inNode(t, func() error {
+		if _, err := Load(t.Context(), nft, labUID, []netip.Addr{addr(resolverIP)}, nil); err != nil {
+			return err
+		}
+		return nft.Apply(t.Context(), fmt.Sprintf("table ip pcotest_nat {\n\tchain output {\n"+
+			"\t\ttype nat hook output priority -100; policy accept;\n"+
+			"\t\tip daddr %s tcp dport %d dnat to %s\n\t}\n}\n", service, targetPort, guestIP))
+	})
+	node := linkHandle(t, lab.node)
+	eg0, err := node.LinkByName("eg0")
+	require.NoError(t, err)
+	require.NoError(t, node.RouteAdd(&netlink.Route{LinkIndex: eg0.Attrs().Index, Dst: mustPrefix(t, "198.18.0.0/16"), Scope: netlink.SCOPE_LINK}))
+	connector := lab.probe(t, labUID)
+	set := func(tg Target) { lab.inNode(t, func() error { return f.Set(t.Context(), []Target{tg}) }) }
+
+	set(Target{Addr: addr(service), Port: targetPort})
+	connector.reaches(t, hostPort(service, targetPort))
+	connector.reaches(t, hostPort(service, targetPort))
+	connector.refused(t, hostPort(guestIP, targetPort))
+	var flows []TargetFlows
+	lab.inNode(t, func() (err error) { flows, err = f.Counters(t.Context()); return err })
+	require.Len(t, flows, 1)
+	require.Equal(t, uint64(2), flows[0].Flows, "the connections count in the element of the service address")
+
+	set(Target{Addr: addr(guestIP), Port: targetPort})
+	connector.refused(t, hostPort(service, targetPort))
+	connector.reaches(t, hostPort(guestIP, targetPort))
+}
+
 func hostPort(host string, port int) string { return net.JoinHostPort(host, strconv.Itoa(port)) }
 
 // requireLab skips the test, or fails it when PCO_REQUIRE_LINUX_TESTS=1 says

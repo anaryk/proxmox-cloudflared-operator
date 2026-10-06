@@ -36,11 +36,11 @@ const (
 
 	// priority puts the chain after conntrack (-200), whose state the rules
 	// read, and after the destination NAT of the output hook (-100), so that
-	// the address checked is the one the packet goes to; and before the
-	// filter chains at 0, among them those of the Proxmox firewall. An accept
-	// in another base chain does not end the walk through the hook, so none
-	// of them can let a connector's packet past this chain; running first
-	// only makes the reject the answer the connector sees.
+	// a packet's own address is the one it goes to; and before the filter
+	// chains at 0, among them those of the Proxmox firewall. An accept in
+	// another base chain does not end the walk through the hook, so none of
+	// them can let a connector's packet past this chain; running first only
+	// makes the reject the answer the connector sees.
 	priority = -10
 
 	// The rules after the declaration of the sets. A connector's packet is
@@ -62,6 +62,20 @@ const (
 	// multicast. A rejected TCP connection is reset, which fails a connect at
 	// once; ICMP alone makes an IPv6 connect wait for a retransmission.
 	//
+	// A target, a block and a count are matched by the address the
+	// connection was opened to, before any NAT: conntrack's original tuple.
+	// A target behind a leg of the gateway is in the set as its service
+	// address, which the gateway NATs to the target's real address, and is
+	// reached through that address alone; its real address is in no set, so
+	// a connector that dials it straight is refused. For a connection without
+	// NAT the original tuple is the packet's own, so a target reached without
+	// a leg is matched by its own address. The addresses of the node are
+	// matched on the packet's own address, after NAT, so that a service
+	// address NATed to an address of the node is refused all the same. Each
+	// match is one lookup in one named set per family, never an inline set
+	// nor one split across sets, so that counters on the elements of a set
+	// count every connection the match decides.
+	//
 	// The rules on the counting sets decide nothing: they count a new
 	// connection to a target in the element of its address and port. Every
 	// packet of a connection reaches the accepts of the targets, so a counter
@@ -73,20 +87,20 @@ const (
 	chain connector {
 		ct state invalid drop
 		ct direction reply meta l4proto tcp fib daddr type local accept
-		ip daddr @blocked4 meta l4proto tcp reject with tcp reset
-		ip daddr @blocked4 reject with icmpx admin-prohibited
-		ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset
-		ip6 daddr @blocked6 reject with icmpx admin-prohibited
-		meta l4proto tcp ct state new ip daddr . tcp dport @flows4
-		meta l4proto tcp ct state new ip6 daddr . tcp dport @flows6
+		ct original ip daddr @blocked4 meta l4proto tcp reject with tcp reset
+		ct original ip daddr @blocked4 reject with icmpx admin-prohibited
+		ct original ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset
+		ct original ip6 daddr @blocked6 reject with icmpx admin-prohibited
+		meta l4proto tcp ct state new ct original ip daddr . ct original proto-dst @flows4
+		meta l4proto tcp ct state new ct original ip6 daddr . ct original proto-dst @flows6
 		ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept
 		ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept
 		ip daddr . tcp dport @allownode4 accept
 		ip6 daddr . tcp dport @allownode6 accept
 		fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset
 		fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited
-		ip daddr . tcp dport @targets4 accept
-		ip6 daddr . tcp dport @targets6 accept
+		meta l4proto tcp ct original ip daddr . ct original proto-dst @targets4 accept
+		meta l4proto tcp ct original ip6 daddr . ct original proto-dst @targets6 accept
 		ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 198.18.0.0/15, 0.0.0.0/8, 192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/3 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept
 		ip6 daddr != { fc00::/7, fe80::/10, ::1, 64:ff9b::/96, 64:ff9b:1::/48, 2002::/16, 2001::/32, ff00::/8 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept
 		ip daddr { 1.1.1.1, 1.0.0.1 } tcp dport 853 accept

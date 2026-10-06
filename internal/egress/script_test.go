@@ -162,6 +162,39 @@ func TestTheEdgeRuleExcludesTheServicePrefix(t *testing.T) {
 	}), "the edge rule excludes %v, which does not hold %s", excluded, gateway.ServicePrefix)
 }
 
+// A target, a block and a count are matched by the address the connection was
+// opened to, before NAT: a service address that the gateway NATs to a guest
+// lets the connector reach the guest through it, and through nothing else.
+// The addresses of the node are matched after NAT. Each lookup is one named
+// set per family.
+func TestTargetsBlocksAndCountsAreMatchedBeforeNAT(t *testing.T) {
+	rules := rulesOf(t, Base(testUID, nil, nil))
+	for _, want := range []string{
+		"meta l4proto tcp ct original ip daddr . ct original proto-dst @targets4 accept",
+		"meta l4proto tcp ct original ip6 daddr . ct original proto-dst @targets6 accept",
+		"meta l4proto tcp ct state new ct original ip daddr . ct original proto-dst @flows4",
+		"meta l4proto tcp ct state new ct original ip6 daddr . ct original proto-dst @flows6",
+		"ct original ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
+		"ct original ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
+	} {
+		require.Contains(t, rules, want)
+	}
+	lookups := map[string]int{}
+	for _, r := range rules {
+		for _, set := range []string{setTargets4, setTargets6, setFlows4, setFlows6, setBlocked4, setBlocked6} {
+			if strings.Contains(r, "@"+set) {
+				lookups[set]++
+				require.Contains(t, r, "ct original", r)
+				require.NotContains(t, r, "{", "never an inline set: %s", r)
+			}
+		}
+		if strings.Contains(r, "fib daddr type local") {
+			require.NotContains(t, r, "ct original", "the node's addresses are those the packet goes to: %s", r)
+		}
+	}
+	require.Equal(t, map[string]int{setTargets4: 1, setTargets6: 1, setFlows4: 1, setFlows6: 1, setBlocked4: 2, setBlocked6: 2}, lookups)
+}
+
 func TestABlockedAddressIsRejectedForEveryPortRightAfterTheReplyRule(t *testing.T) {
 	script := Base(testUID, []netip.Addr{addr("10.0.0.9"), addr("192.168.1.1")}, []netip.Addr{addr("fd00::9"), addr("10.0.0.9")})
 
@@ -170,10 +203,10 @@ func TestABlockedAddressIsRejectedForEveryPortRightAfterTheReplyRule(t *testing.
 	require.Equal(t, []string{"192.168.1.1"}, elementsOf(t, script, setResolvers4), "and out of the other sets")
 	rules := rulesOf(t, script)
 	require.Equal(t, []string{
-		"ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
-		"ip daddr @blocked4 reject with icmpx admin-prohibited",
-		"ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
-		"ip6 daddr @blocked6 reject with icmpx admin-prohibited",
+		"ct original ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
+		"ct original ip daddr @blocked4 reject with icmpx admin-prohibited",
+		"ct original ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
+		"ct original ip6 daddr @blocked6 reject with icmpx admin-prohibited",
 	}, rules[2:6], "before any rule that accepts, the edge and DNS over TLS among them")
 }
 
@@ -187,10 +220,10 @@ func TestEveryRejectAnswersTCPWithAReset(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{
-		"ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
-		"ip daddr @blocked4 reject with icmpx admin-prohibited",
-		"ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
-		"ip6 daddr @blocked6 reject with icmpx admin-prohibited",
+		"ct original ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
+		"ct original ip daddr @blocked4 reject with icmpx admin-prohibited",
+		"ct original ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
+		"ct original ip6 daddr @blocked6 reject with icmpx admin-prohibited",
 		`fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset`,
 		`fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited`,
 		`meta l4proto tcp counter name "rejected" reject with tcp reset`,
@@ -240,8 +273,8 @@ func TestTheCountingRulesComeRightAfterTheBlockedRulesAndDecideNothing(t *testin
 	rules := rulesOf(t, Base(testUID, nil, nil))
 
 	counting := []string{
-		"meta l4proto tcp ct state new ip daddr . tcp dport @flows4",
-		"meta l4proto tcp ct state new ip6 daddr . tcp dport @flows6",
+		"meta l4proto tcp ct state new ct original ip daddr . ct original proto-dst @flows4",
+		"meta l4proto tcp ct state new ct original ip6 daddr . ct original proto-dst @flows6",
 	}
 	require.Equal(t, counting, rules[6:8])
 	require.Equal(t, verdictRules, slices.Concat(rules[:6], rules[8:]))
@@ -256,18 +289,18 @@ func TestTheCountingRulesComeRightAfterTheBlockedRulesAndDecideNothing(t *testin
 var verdictRules = []string{
 	"ct state invalid drop",
 	"ct direction reply meta l4proto tcp fib daddr type local accept",
-	"ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
-	"ip daddr @blocked4 reject with icmpx admin-prohibited",
-	"ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
-	"ip6 daddr @blocked6 reject with icmpx admin-prohibited",
+	"ct original ip daddr @blocked4 meta l4proto tcp reject with tcp reset",
+	"ct original ip daddr @blocked4 reject with icmpx admin-prohibited",
+	"ct original ip6 daddr @blocked6 meta l4proto tcp reject with tcp reset",
+	"ct original ip6 daddr @blocked6 reject with icmpx admin-prohibited",
 	"ip daddr @resolvers4 meta l4proto { tcp, udp } th dport 53 accept",
 	"ip6 daddr @resolvers6 meta l4proto { tcp, udp } th dport 53 accept",
 	"ip daddr . tcp dport @allownode4 accept",
 	"ip6 daddr . tcp dport @allownode6 accept",
 	`fib daddr type local meta l4proto tcp counter name "rejected_local" reject with tcp reset`,
 	`fib daddr type local counter name "rejected_local" reject with icmpx admin-prohibited`,
-	"ip daddr . tcp dport @targets4 accept",
-	"ip6 daddr . tcp dport @targets6 accept",
+	"meta l4proto tcp ct original ip daddr . ct original proto-dst @targets4 accept",
+	"meta l4proto tcp ct original ip6 daddr . ct original proto-dst @targets6 accept",
 	"ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 198.18.0.0/15, 0.0.0.0/8, 192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/3 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept",
 	"ip6 daddr != { fc00::/7, fe80::/10, ::1, 64:ff9b::/96, 64:ff9b:1::/48, 2002::/16, 2001::/32, ff00::/8 } fib daddr type unicast meta l4proto { tcp, udp } th dport 7844 accept",
 	"ip daddr { 1.1.1.1, 1.0.0.1 } tcp dport 853 accept",

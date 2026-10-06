@@ -703,7 +703,7 @@ func TestVerifyDoesNotTakeOtherWordsForAChange(t *testing.T) {
 		{"protocols by number, as without /etc/protocols", func(t *testing.T, l listing) listing {
 			return l.edit(t, func(l listing) listing {
 				l4proto := map[string]any{"meta": map[string]any{"key": "l4proto"}}
-				require.Equal(t, 5, replaceAll(l, map[string]any{"op": "==", "left": l4proto, "right": "tcp"},
+				require.Equal(t, 9, replaceAll(l, map[string]any{"op": "==", "left": l4proto, "right": "tcp"},
 					map[string]any{"op": "==", "left": l4proto, "right": 6}))
 				require.Equal(t, 4, replaceAll(l, map[string]any{"set": []any{"tcp", "udp"}}, map[string]any{"set": []any{6, 17}}))
 				return l
