@@ -228,9 +228,10 @@ if [[ $network == 0 ]]; then
 	check "/etc/apt/apt.conf.d/99mmdebstrap is gone" inside test ! -e /etc/apt/apt.conf.d/99mmdebstrap
 	# security_only: unattended-upgrade allows the origins labelled
 	# Debian-Security and no other. It prints them joined by ", ", and each
-	# holds commas of its own.
+	# holds commas of its own. sed reads to the end: a pipe it closes early
+	# makes Python exit with 120, as it cannot flush what is left.
 	origins=$(inside unattended-upgrade --dry-run -v 2>&1 |
-		sed -n '/Allowed origins are: /{s/^.*Allowed origins are: //;p;q;}' | awk -F', ' '{ for (i = 1; i <= NF; i++) print $i }') || true
+		sed -n 's/^.*Allowed origins are: //p' | awk -F', ' '{ for (i = 1; i <= NF; i++) print $i }') || true
 	security_only() {
 		local origin count=0
 		while IFS= read -r origin; do
