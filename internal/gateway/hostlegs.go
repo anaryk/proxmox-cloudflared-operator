@@ -223,8 +223,9 @@ func (b *hostBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 // that did not make the pair, as pco netns sync is, has no memory of it.
 // What the leg learned in the old network, the neighbours of its addresses,
 // is the MACs of guests that are not in the bridge now, and where subnets
-// are identical it would be used for the address of a guest there. A pair
-// that lost its bridge is not moved: it was put back into the same network.
+// are identical it would be used for the address of a guest there. A bridge
+// end that lost its bridge, as an ifreload leaves it, says nothing of its
+// bridge or its VLANs, but its address still says which prefix it served.
 // The VLAN is the one ensurePort would give the port: the tag, or for the
 // untagged network the bridge's default, which is not always 1.
 func (b *hostBackend) legMoved(l Leg, port string, end bridgeEnd) (bool, error) {
@@ -235,13 +236,13 @@ func (b *hostBackend) legMoved(l Leg, port string, end bridgeEnd) (bool, error) 
 	}
 	if _, peer, err := b.sys.link(inNS, iface); err != nil {
 		return false, fmt.Errorf("reading %s in %s: %w", iface, inNS, err)
-	} else if !ok || !peer || have.master == "" {
+	} else if !ok || !peer {
 		return false, nil
 	}
-	if have.master != end.master {
+	if have.master != "" && have.master != end.master {
 		return true, nil
 	}
-	if end.vid > 0 {
+	if have.master == end.master && end.vid > 0 {
 		vlans, err := b.sys.portVLANs(port)
 		if err != nil {
 			return false, fmt.Errorf("reading the VLANs of %s: %w", port, err)

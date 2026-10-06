@@ -433,6 +433,19 @@ func TestAMarkThatMovesToAnotherNetworkKeepsNoNeighbours(t *testing.T) {
 		require.Empty(t, h.sys.changes())
 	})
 
+	t.Run("a bridge end that lost its bridge and whose prefix changed is a move", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.up(t)
+		h.sync(t, []Leg{legA}, nil, nil, nil)
+		h.sys.ns.learned["leg1"] = []neighbour{stale}
+		h.sys.host.links["vethpco1"].master = ""
+		to := moved(legA, func(l *Leg) { l.Prefix = prefix("10.60.0.250/24") })
+		h.reset()
+		h.sync(t, []Leg{to}, nil, nil, nil)
+		require.Contains(t, h.sys.changes(), "del host vethpco1")
+		require.Empty(t, h.sys.ns.learned["leg1"])
+	})
+
 	t.Run("a bridge end that lost its bridge is put back, and the neighbours stay", func(t *testing.T) {
 		h := newHarness(t).node()
 		h.up(t)
