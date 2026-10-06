@@ -219,6 +219,51 @@ func TestResumeFinishesARunKilledInsidePctCreate(t *testing.T) {
 	require.Empty(t, entries(t, e.journals))
 }
 
+// The kill of the installer does not stop the pct create it started: it goes
+// on extracting under the lock. The resume waits for its task to end before it
+// unlocks the container and starts it.
+func TestResumeWaitsForAPctCreateThatIsStillRunning(t *testing.T) {
+	e := newEnv(t)
+	e.lockedCreate(func(context.Context) {})
+	e.node.killAt = "pct create 100"
+	require.PanicsWithValue(t, errKilled, func() { _ = e.in.Install(t.Context(), e.options()) })
+	path := e.journal()
+	e.node.creating[100] = 3
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true}), e.ask.text())
+
+	const list = "pvesh get /nodes/pve1/tasks --vmid 100 --source active --typefilter vzcreate --output-format json"
+	require.Equal(t, 4, e.node.count(list), "listed until it is gone")
+	last := -1
+	for i, l := range e.node.ran {
+		if l == list {
+			last = i
+		}
+	}
+	require.Less(t, last, indexOf(t, e.node.ran, "pct unlock 100"))
+	require.Empty(t, e.node.cts[100].cfg["lock"])
+	require.Empty(t, entries(t, e.journals))
+}
+
+// A create that does not end in the time the resume waits is refused: the
+// message says what to do, and the run is left to be resumed again.
+func TestResumeRefusesToUnlockWhileAPctCreateRuns(t *testing.T) {
+	e := newEnv(t)
+	e.lockedCreate(func(context.Context) {})
+	e.node.killAt = "pct create 100"
+	require.PanicsWithValue(t, errKilled, func() { _ = e.in.Install(t.Context(), e.options()) })
+	path := e.journal()
+	e.node.creating[100] = 1 << 20
+
+	err := e.in.Install(t.Context(), Options{Resume: path, Yes: true})
+
+	require.ErrorContains(t, err, "a pct create of lxc/100 is still running: wait for it to end, or stop its task, and resume the run again")
+	require.Equal(t, 0, e.node.count("pct unlock"))
+	require.Equal(t, 0, e.node.count("pct destroy"))
+	require.Equal(t, "create", e.node.cts[100].cfg["lock"])
+	require.FileExists(t, path)
+}
+
 // Ctrl-C reaches pct create too, which can leave the container locked: the
 // run that takes itself back unlocks the container its mark proves its own.
 func TestATakenBackRunUnlocksTheContainerItMade(t *testing.T) {

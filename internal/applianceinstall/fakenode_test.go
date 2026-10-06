@@ -127,6 +127,7 @@ type fakeNode struct {
 	cts       map[int]*fakeCT
 	vms       map[int]bool
 	elsewhere map[int]string // containers on other nodes of the cluster, by node
+	creating  map[int]int    // how often a pct create of the VMID is still listed as running
 	users     []*fakeUser
 	groups    []fakeGroup
 	roles     map[string][]string
@@ -166,6 +167,7 @@ func newFakeNode(t *testing.T) *fakeNode {
 		cts:       map[int]*fakeCT{},
 		vms:       map[int]bool{},
 		elsewhere: map[int]string{},
+		creating:  map[int]int{},
 		users:     []*fakeUser{{ID: "root@pam", Enabled: true}},
 		roles: map[string][]string{
 			"Administrator": {"Sys.Modify", "Sys.Audit", "VM.Audit", "VM.Console", "VM.Config.Network", "Permissions.Modify", "Pool.Allocate"},
@@ -402,6 +404,14 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 			return `{"status":"running"}`, nil
 		}
 		return asJSON(map[string]string{"status": "stopped", "exitstatus": status}), nil
+	case verb == "get" && path == "/nodes/"+f.name+"/tasks":
+		id, _ := strconv.Atoi(flag(args, "--vmid"))
+		if f.creating[id] > 0 {
+			f.creating[id]--
+			upid := fmt.Sprintf("UPID:%s:00001234:00000000:00000000:vzcreate:%d:root@pam:", f.name, id)
+			return asJSON([]map[string]any{{"upid": upid, "type": "vzcreate", "id": strconv.Itoa(id), "node": f.name}}), nil
+		}
+		return "[]", nil
 	case verb == "get" && strings.HasPrefix(path, "/nodes/"+f.name+"/lxc/") && strings.HasSuffix(path, "/config"):
 		id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/nodes/"+f.name+"/lxc/"), "/config"))
 		ct := f.cts[id]

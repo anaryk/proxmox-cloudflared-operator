@@ -396,18 +396,48 @@ func (r *run) takeBackContainer(ctx context.Context, vmid int) error {
 	return r.destroyContainer(ctx, vmid, running)
 }
 
+// createPolls bounds, at five minutes, the wait for a pct create that still
+// runs.
+const createPolls = 150
+
 // unlockCreate clears the lock a pct create cut short left on the container
 // the run made, as its description proves: Proxmox changes, starts and
-// destroys no locked container.
+// destroys no locked container. The kill of the installer does not stop the
+// pct create it started, which goes on extracting under the lock, so the lock
+// is cleared once no such task runs.
 func (r *run) unlockCreate(ctx context.Context, vmid int, cfg ctConfig) error {
 	if cfg["lock"] != "create" {
 		return nil
+	}
+	if err := r.createEnded(ctx, vmid); err != nil {
+		return err
 	}
 	if _, err := r.r.Run(ctx, "pct", "unlock", strconv.Itoa(vmid)); err != nil {
 		return fmt.Errorf("unlocking lxc/%d, which a pct create that was cut short left locked: %w", vmid, err)
 	}
 	r.ask.Warn("lxc/%d was left locked by a pct create that was cut short: unlocked", vmid)
 	return nil
+}
+
+// createEnded waits until no pct create task of the container runs.
+func (r *run) createEnded(ctx context.Context, vmid int) error {
+	type task struct {
+		Type string `json:"type"`
+	}
+	for range createPolls {
+		var tasks []task
+		if err := pvesh(ctx, r.r, &tasks, fmt.Sprintf("/nodes/%s/tasks", r.node),
+			"--vmid", strconv.Itoa(vmid), "--source", "active", "--typefilter", "vzcreate"); err != nil {
+			return fmt.Errorf("listing the tasks of lxc/%d: %w", vmid, err)
+		}
+		if !slices.ContainsFunc(tasks, func(t task) bool { return t.Type == "vzcreate" }) {
+			return nil
+		}
+		if err := r.h.sleep(ctx, taskPoll); err != nil {
+			return fmt.Errorf("waiting for the pct create of lxc/%d: %w", vmid, err)
+		}
+	}
+	return fmt.Errorf("a pct create of lxc/%d is still running: wait for it to end, or stop its task, and resume the run again", vmid)
 }
 
 // takeBackUser removes the user the run made, or the grant it made to a user
