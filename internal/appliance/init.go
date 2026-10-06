@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -31,6 +33,7 @@ const (
 	Unit = "pco.service"
 
 	manifestName    = "manifest.json"
+	pendingName     = "init.pending" // names the install an init in mode install began, until the init is through
 	credentialLabel = "setup"
 	credentialKind  = "scoped"
 	// checkTimeout bounds the two checks of a Cloudflare token, as setup's.
@@ -72,7 +75,9 @@ type InitDeps struct {
 // the node addresses, the manifest, a read of Proxmox with the token, the
 // Cloudflare credential and a restart of pco.service. A step that fails stops
 // Init with its name in the error and leaves what was written, which the next
-// init of the same mode completes.
+// init of the same mode completes. In mode install that holds past the install
+// step too, as the install is marked begun until the last step: an init finds
+// the install it began and completes it, and refuses one that is finished.
 func Init(ctx context.Context, st *store.Store, b Bootstrap, deps InitDeps) error {
 	r := &initRun{st: st, b: b, d: deps, local: st.Paths().Local}
 	if r.d.Info == nil {
@@ -95,6 +100,7 @@ type initRun struct {
 
 	install store.Install // the stored one, then the one this init stores
 	found   bool          // the store held an install before this init
+	resumed bool          // it is the install an earlier init in mode install began
 	api     cfapi.API     // of the Cloudflare token, once made
 }
 
@@ -118,6 +124,7 @@ func (r *initRun) steps() []initStep {
 		{"proxmox", r.checkToken},
 		{"credential", r.addCredential},
 		{"service", r.restart},
+		{"finish", r.finish},
 	}
 }
 
@@ -216,8 +223,16 @@ func (r *initRun) prepareStore(context.Context) error {
 	}
 	switch {
 	case r.b.Mode == ModeInstall && found:
-		return fmt.Errorf("the volume holds install %s already, and mode install never replaces one: "+
-			"pco appliance repair --vmid %d on the node keeps it", inst.ID, r.b.VMID)
+		began, err := r.pendingInstall()
+		if err != nil {
+			return err
+		}
+		if began != inst.ID {
+			return fmt.Errorf("the volume holds install %s already, and mode install never replaces one: "+
+				"pco appliance repair --vmid %d on the node keeps it", inst.ID, r.b.VMID)
+		}
+		r.resumed = true
+		r.d.Info("install %s was begun by an init that did not finish, and this one completes it", inst.ID)
 	case r.b.Mode == ModeRepair && !found:
 		return fmt.Errorf("the volume holds no install to repair: pco appliance repair --vmid %d --recover on the node adopts one", r.b.VMID)
 	case r.b.Mode != ModeInstall && found && r.b.InstallID != "" && inst.ID != r.b.InstallID:
@@ -256,10 +271,10 @@ func (r *initRun) saveSettings(context.Context) error {
 
 // saveWriter writes the writer: generation 1 of a new install, or one above
 // the sentinels of the adopted one, with the incarnation of this start. A
-// repair keeps the writer as it is: the daemon draws a new epoch when it
-// belongs to an earlier start.
+// repair, and an install that an earlier init began, keep the writer as it is:
+// the daemon draws a new epoch when it belongs to an earlier start.
 func (r *initRun) saveWriter(ctx context.Context) error {
-	if r.b.Mode == ModeRepair {
+	if r.b.Mode == ModeRepair || r.resumed {
 		w, found, err := r.st.Writer()
 		switch {
 		case err != nil:
@@ -286,6 +301,9 @@ func (r *initRun) saveWriter(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := r.markPending(id); err != nil {
+		return err
+	}
 	if err := r.st.SaveWriter(planner.Writer{InstallID: id, Generation: 1, Nonce: nonce, Incarnation: incarnation}); err != nil {
 		return fmt.Errorf("storing the writer identity: %w", err)
 	}
@@ -308,6 +326,40 @@ func (r *initRun) recoverWriter(ctx context.Context, incarnation string) error {
 	}
 	r.install = inst
 	r.d.Info("store: recovered install %s with writer generation %d", inst.ID, generation)
+	return nil
+}
+
+// markPending records the install this init begins, before any object of it
+// is stored, so that an init that stops past that point can be told from one
+// that finished: the next init in mode install completes the first and
+// refuses the second.
+func (r *initRun) markPending(id string) error {
+	err := atomicfile.Write(filepath.Join(r.local, pendingName), []byte(id+"\n"), atomicfile.Options{Mode: 0o600})
+	if err != nil {
+		return fmt.Errorf("marking install %s as begun: %w", id, err)
+	}
+	return nil
+}
+
+// pendingInstall returns the id of the install an init began and did not
+// finish, empty when none is marked.
+func (r *initRun) pendingInstall() (string, error) {
+	data, err := os.ReadFile(filepath.Join(r.local, pendingName))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("reading %s: %w", pendingName, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// finish is the last step: the install is complete, in whichever mode it was
+// completed, and is no longer marked as begun.
+func (r *initRun) finish(context.Context) error {
+	if err := os.Remove(filepath.Join(r.local, pendingName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("removing %s: %w", pendingName, err)
+	}
 	return nil
 }
 

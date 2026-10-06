@@ -225,8 +225,12 @@ func TestABootstrapFileThatIsNotRootsAloneIsRefused(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
-// units is the systemd of the container: it notes what it was asked.
-type units struct{ log *[]string }
+// units is the systemd of the container: it notes what it was asked, and
+// restarts with the error restart points to, if any.
+type units struct {
+	log     *[]string
+	restart *error
+}
 
 func (u units) EnableNow(_ context.Context, unit string) error {
 	*u.log = append(*u.log, "enable --now "+unit)
@@ -240,6 +244,9 @@ func (u units) DisableNow(_ context.Context, unit string) error {
 
 func (u units) Restart(_ context.Context, unit string) error {
 	*u.log = append(*u.log, "restart "+unit)
+	if u.restart != nil {
+		return *u.restart
+	}
 	return nil
 }
 
@@ -250,17 +257,18 @@ func (units) ListUnits(context.Context, string) ([]string, error) { return nil, 
 // with an empty store, a fake Cloudflare that knows cfToken and the facts of
 // the container the bootstrap was made for.
 type initEnv struct {
-	t        *testing.T
-	local    string
-	path     string // of the bootstrap
-	st       *store.Store
-	cf       *cffake.Fake
-	clients  map[string]*cffake.Fake // by token
-	links    []appliance.NamedLink
-	source   appliance.Source
-	tokenErr error
-	lines    []string // what init said
-	order    []string // what init asked of the world besides the store
+	t          *testing.T
+	local      string
+	path       string // of the bootstrap
+	st         *store.Store
+	cf         *cffake.Fake
+	clients    map[string]*cffake.Fake // by token
+	links      []appliance.NamedLink
+	source     appliance.Source
+	tokenErr   error
+	restartErr error
+	lines      []string // what init said
+	order      []string // what init asked of the world besides the store
 
 	// beforeInit is set by a test that reads the links before Init does, as the
 	// command does, while the bootstrap is still there.
@@ -304,7 +312,7 @@ func (e *initEnv) deps() appliance.InitDeps {
 			return e.tokenErr
 		},
 		NewClient: e.newClient,
-		Systemd:   units{log: &e.order},
+		Systemd:   units{log: &e.order, restart: &e.restartErr},
 		Now:       func() time.Time { return t0 },
 		Rand:      mathrand.NewChaCha8([32]byte{1}),
 		Incarnation: func() (string, error) {
@@ -643,6 +651,92 @@ func TestModeInstallNeverReplacesAnInstall(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pveSecret, tok.Secret.Reveal())
 	require.Empty(t, e.order)
+}
+
+// pending is the file that says an install is begun and not finished.
+const pending = "init.pending"
+
+func TestAnInstallThatStoppedPastItsInstallStepIsCompletedByTheNextInit(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		fail  func(*initEnv)
+		fixed func(*initEnv)
+		step  string
+	}{
+		{"the check of Proxmox",
+			func(e *initEnv) { e.tokenErr = errors.New("no route to host") },
+			func(e *initEnv) { e.tokenErr = nil }, "init step proxmox"},
+		{"the restart",
+			func(e *initEnv) { e.restartErr = errors.New("unit failed") },
+			func(e *initEnv) { e.restartErr = nil }, "init step service"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newInitEnv(t)
+			tt.fail(e)
+			require.ErrorContains(t, e.init(e.bootstrap("install")), tt.step)
+			inst, w := e.install(), e.writer()
+			require.FileExists(t, filepath.Join(e.local, pending))
+			tt.fixed(e)
+			e.order, e.lines = nil, nil
+
+			require.NoError(t, e.init(e.bootstrap("install", func(f map[string]any) {
+				f["pveToken"] = map[string]string{"tokenId": tokenID, "secret": "pve-secret-2"}
+			})))
+
+			require.Equal(t, inst, e.install(), "the install the first init began, not a second one")
+			require.Equal(t, w, e.writer())
+			tok, _, err := e.st.PVEToken()
+			require.NoError(t, err)
+			require.Equal(t, "pve-secret-2", tok.Secret.Reveal(), "what the bootstrap carries is stored")
+			require.Len(t, e.credentials(), 1)
+			require.Equal(t, "restart pco.service", e.order[len(e.order)-1])
+			e.said("install " + inst.ID + " was begun by an init that did not finish, and this one completes it")
+			require.NoFileExists(t, filepath.Join(e.local, pending), "a finished install is marked no more")
+
+			err = e.init(e.bootstrap("install"))
+			require.ErrorContains(t, err, "the volume holds install "+inst.ID+" already, and mode install never replaces one")
+			require.Equal(t, inst, e.install())
+		})
+	}
+}
+
+func TestAnInstallThatStoppedBeforeItsInstallStepIsBegunAnew(t *testing.T) {
+	e := newInitEnv(t)
+	require.NoError(t, e.st.Init())
+	require.NoError(t, e.st.SaveWriter(planner.Writer{InstallID: "ba9876543210", Generation: 1, Nonce: "aaaa1111", Incarnation: incarnation}))
+	require.NoError(t, os.WriteFile(filepath.Join(e.local, pending), []byte("ba9876543210\n"), 0o600))
+
+	require.NoError(t, e.init(e.bootstrap("install")))
+
+	require.NotEqual(t, "ba9876543210", e.install().ID, "a writer without an install is nobody's")
+	require.Equal(t, e.install().ID, e.writer().InstallID)
+	require.NoFileExists(t, filepath.Join(e.local, pending))
+}
+
+func TestAnotherInstallsMarkDoesNotResumeAFinishedInstall(t *testing.T) {
+	e := newInitEnv(t)
+	require.NoError(t, e.init(e.bootstrap("install")))
+	inst := e.install()
+	require.NoError(t, os.WriteFile(filepath.Join(e.local, pending), []byte("ba9876543210\n"), 0o600))
+
+	err := e.init(e.bootstrap("install"))
+
+	require.ErrorContains(t, err, "mode install never replaces one")
+	require.Equal(t, inst, e.install())
+}
+
+func TestARepairCompletesAnInstallThatDidNotFinish(t *testing.T) {
+	e := newInitEnv(t)
+	e.tokenErr = errors.New("no route to host")
+	require.Error(t, e.init(e.bootstrap("install")))
+	inst := e.install()
+	e.tokenErr = nil
+
+	require.NoError(t, e.init(e.bootstrap("repair", func(f map[string]any) { f["installId"] = inst.ID })))
+
+	require.NoFileExists(t, filepath.Join(e.local, pending))
+	require.Len(t, e.credentials(), 1)
+	require.ErrorContains(t, e.init(e.bootstrap("install")), "mode install never replaces one")
 }
 
 func TestRepairKeepsTheInstallAndTheWriter(t *testing.T) {
