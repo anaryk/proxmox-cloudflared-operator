@@ -528,6 +528,61 @@ func TestARestoreKeepsTheLinesAboveItInItsDescription(t *testing.T) {
 		e.node.cts[101].cfg["description"])
 }
 
+// The lines above the container keep principals away from the secrets on its
+// volume: while the container is there they stay, and the run that finds it
+// gone takes them back.
+func TestUninstallKeepsTheNoAccessLinesWhileTheContainerIsThere(t *testing.T) {
+	e := deniedTwice(t)
+	e.node.on("pct destroy 100", func(context.Context, []string) (string, error) { return "", errors.New("busy") })
+
+	err := e.in.Uninstall(t.Context(), 100, uninstallOptions())
+
+	require.ErrorContains(t, err, "destroying lxc/100: busy")
+	require.NotNil(t, e.node.cts[100])
+	require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.Equal(t, 0, e.node.count("pveum acl delete / --users ops@pve"))
+	require.Contains(t, e.ask.text(), "NoAccess for ops@pve on /, which keeps ops@pve away from the secrets of lxc/100: kept while it is there")
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.Nil(t, e.node.cts[100])
+	require.False(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.True(t, e.node.has("/", "user", "ops@pve", "PermAdmin"), "the admin's grant stays")
+}
+
+// A run that cannot take its container back keeps the lines above it, in the
+// journal, for the resume that finds the container gone.
+func TestAFailureKeepsTheNoAccessLinesWhileTheContainerIsThere(t *testing.T) {
+	e := newEnv(t)
+	e.node.roles["PermAdmin"] = []string{"Permissions.Modify", "Sys.Audit"}
+	e.node.users = append(e.node.users, &fakeUser{ID: "ops@pve", Enabled: true})
+	e.node.grant("/", "user", "ops@pve", "PermAdmin")
+	e.node.on("pct start 100", func(context.Context, []string) (string, error) { return "", errors.New("it broke") })
+	e.node.on("pct destroy 100", func(context.Context, []string) (string, error) { return "", errors.New("busy") })
+	o := e.options()
+	o.DenyAccess = true
+	// The template goes in the first pass, and is not freed a second time.
+	o.KeepTemplate = false
+
+	err := e.in.Install(t.Context(), o)
+
+	require.ErrorContains(t, err, "it broke; taking back what the run made failed")
+	require.ErrorContains(t, err, "destroying lxc/100: busy")
+	require.Empty(t, e.node.volumes)
+	require.NotNil(t, e.node.cts[100])
+	require.True(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	path := e.journal()
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true}), e.ask.text())
+
+	require.False(t, e.node.has("/", "user", "ops@pve", "NoAccess"))
+	require.True(t, e.node.has("/", "user", "ops@pve", "PermAdmin"))
+	require.Empty(t, e.node.cts)
+	require.Empty(t, e.node.pools)
+	require.Nil(t, e.node.roles["PCO"])
+	require.Empty(t, entries(t, e.journals))
+}
+
 // A run taken back takes back its NoAccess lines too.
 func TestAFailureTakesBackTheNoAccessLines(t *testing.T) {
 	e := newEnv(t)

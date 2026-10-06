@@ -298,8 +298,11 @@ func (r *run) rollback(ctx context.Context) error {
 		}
 	}
 	vmid, m := r.j.VMID, r.j.Manifest
+	gone := true
 	if r.j.Container != "" {
-		note(r.takeBackContainer(ctx, vmid))
+		err := r.takeBackContainer(ctx, vmid)
+		note(err)
+		gone = err == nil
 	}
 	us, err := users(ctx, r.r)
 	if err != nil {
@@ -324,7 +327,15 @@ func (r *run) rollback(ctx context.Context) error {
 	}
 	if a := m.Appliance; a != nil {
 		for _, n := range a.NoAccess {
-			if line := noAccessLine(n); slices.Contains(acl, line) {
+			line := noAccessLine(n)
+			switch {
+			case !slices.Contains(acl, line):
+			case !gone:
+				// They keep principals away from the secrets on its volume: the
+				// resume that finds it gone takes them back.
+				r.ask.Warn("NoAccess for %s on %s, which keeps %s away from the secrets of lxc/%d: kept while it is there",
+					n.Principal, n.Path, n.Principal, vmid)
+			default:
 				note(r.deleteLine(ctx, line))
 			}
 		}
@@ -332,11 +343,16 @@ func (r *run) rollback(ctx context.Context) error {
 	if len(m.RegisteredTags) > 0 {
 		note(r.removeTags(ctx, m.RegisteredTags))
 	}
-	note(r.takeBackUser(ctx, m, toks, acl))
+	note(r.takeBackUser(ctx, m, us, toks, acl))
 	if m.CreatedRole {
-		if acl, err := aclLines(ctx, r.r); err != nil {
-			note(err)
-		} else if !slices.ContainsFunc(acl, func(l aclLine) bool { return l.Role == setup.RoleID }) {
+		rs, rerr := roles(ctx, r.r)
+		acl, aerr := aclLines(ctx, r.r)
+		switch _, there := findRole(rs, setup.RoleID); {
+		case rerr != nil:
+			note(rerr)
+		case aerr != nil:
+			note(aerr)
+		case there && !slices.ContainsFunc(acl, func(l aclLine) bool { return l.Role == setup.RoleID }):
 			note(r.removeObject(ctx, "role "+setup.RoleID, "pveum", "role", "delete", setup.RoleID))
 		}
 	}
@@ -348,7 +364,13 @@ func (r *run) rollback(ctx context.Context) error {
 		}
 	}
 	if a := m.Appliance; a != nil && a.Template != "" && !r.o.KeepTemplate {
-		note(r.removeObject(ctx, "template "+a.Template, "pvesm", "free", a.Template))
+		storage, _, _ := strings.Cut(a.Template, ":")
+		switch have, err := templates(ctx, r.r, r.node, storage); {
+		case err != nil:
+			note(err)
+		case slices.Contains(have, a.Template):
+			note(r.removeObject(ctx, "template "+a.Template, "pvesm", "free", a.Template))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -390,13 +412,14 @@ func (r *run) unlockCreate(ctx context.Context, vmid int, cfg ctConfig) error {
 
 // takeBackUser removes the user the run made, or the grant it made to a user
 // that was there, unless another token of the user needs it.
-func (r *run) takeBackUser(ctx context.Context, m setup.Manifest, toks []tokenEntry, acl []aclLine) error {
+func (r *run) takeBackUser(ctx context.Context, m setup.Manifest, us []userEntry, toks []tokenEntry, acl []aclLine) error {
 	grant := aclLine{Path: "/", Type: "user", UGID: setup.UserID, Role: setup.RoleID}
 	other := slices.ContainsFunc(acl, func(l aclLine) bool { return l.Type == "user" && l.UGID == setup.UserID && l != grant })
+	there := slices.ContainsFunc(us, func(u userEntry) bool { return u.ID == setup.UserID })
 	switch {
 	case len(toks) > 0:
 		return nil
-	case m.CreatedUser && !other:
+	case m.CreatedUser && !other && there:
 		return r.removeObject(ctx, "user "+setup.UserID, "pveum", "user", "delete", setup.UserID)
 	case m.GrantedACL && slices.Contains(acl, grant):
 		return r.deleteLine(ctx, grant)

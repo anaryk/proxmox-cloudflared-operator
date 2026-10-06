@@ -541,8 +541,11 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 			r.ask.Warn("%v", err)
 		}
 	}
+	gone := true
 	if p.container {
-		fail(r.destroyContainer(ctx, vmid, s.running))
+		err := r.destroyContainer(ctx, vmid, s.running)
+		fail(err)
+		gone = err == nil
 	}
 	if p.token {
 		if err := r.removeToken(ctx, vmid); err != nil {
@@ -556,6 +559,12 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 		fail(r.deleteLine(ctx, l))
 	}
 	for _, l := range p.noAccess {
+		if !gone {
+			// They keep principals away from the secrets on its volume.
+			r.ask.Warn("NoAccess for %s on %s, which keeps %s away from the secrets of lxc/%d: kept while it is there",
+				l.UGID, l.Path, l.UGID, vmid)
+			continue
+		}
 		fail(r.deleteLine(ctx, l))
 	}
 	if p.user {
