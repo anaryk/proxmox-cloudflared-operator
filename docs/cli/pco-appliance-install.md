@@ -21,9 +21,10 @@ The template is downloaded through Proxmox and checked against `--checksums`, th
 checksums.txt of the release, unless `--template` names it. Every object made is noted in
 a journal under `/root/.pco-appliance-install` first: a step that fails, and SIGINT, SIGTERM
 or SIGHUP, take back what the run made, and a run that was killed is finished with
-`--resume` `<journal>`. The Cloudflare token, from `--cf-token-file`, is optional and can be
-added inside later. It runs as root on the node and exits 0 once the appliance is
-installed, 1 otherwise.
+`--resume` `<journal>`, which takes the `--checksums`, `--release-base` and `--template` given
+with it over those of the run. The Cloudflare token, from `--cf-token-file`, is optional
+and can be added inside later. It runs as root on the node and exits 0 once the
+appliance is installed, 1 otherwise.
 
 ## Usage
 

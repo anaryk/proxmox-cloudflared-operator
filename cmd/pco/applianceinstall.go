@@ -53,9 +53,10 @@ const installLong = "Install the pco appliance on this Proxmox VE node: an unpri
 	"checksums.txt of the release, unless --template names it. Every object made is noted in\n" +
 	"a journal under /root/.pco-appliance-install first: a step that fails, and SIGINT, SIGTERM\n" +
 	"or SIGHUP, take back what the run made, and a run that was killed is finished with\n" +
-	"--resume <journal>. The Cloudflare token, from --cf-token-file, is optional and can be\n" +
-	"added inside later. It runs as root on the node and exits 0 once the appliance is\n" +
-	"installed, 1 otherwise."
+	"--resume <journal>, which takes the --checksums, --release-base and --template given\n" +
+	"with it over those of the run. The Cloudflare token, from --cf-token-file, is optional\n" +
+	"and can be added inside later. It runs as root on the node and exits 0 once the\n" +
+	"appliance is installed, 1 otherwise."
 
 const installExample = `  # Install with the defaults: the next free VMID, DHCP on vmbr0
   pco appliance install --storage local-zfs --checksums checksums.txt

@@ -1,6 +1,7 @@
 package applianceinstall
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -442,6 +443,15 @@ func (i *Installer) resume(ctx context.Context, o Options) error {
 	}
 	opts := j.Options
 	opts.Yes, opts.CloudflareToken, opts.CloudflareAPI = o.Yes, o.CloudflareToken, o.CloudflareAPI
+	// Where the template comes from and what it is checked against are what the
+	// call says, not what the journal kept: the checksums.txt it names may be in
+	// a directory that is gone.
+	opts.ChecksumsFile = cmp.Or(o.ChecksumsFile, opts.ChecksumsFile)
+	opts.ReleaseBase = cmp.Or(o.ReleaseBase, opts.ReleaseBase)
+	opts.Template = cmp.Or(o.Template, opts.Template)
+	if err := i.checkResumeInputs(j, o, opts); err != nil {
+		return err
+	}
 	r := i.newRun(opts, kindInstall)
 	r.j, r.node, r.resumed = j, j.Node, true
 	r.j.Options = opts
@@ -449,6 +459,28 @@ func (i *Installer) resume(ctx context.Context, o Options) error {
 	steps := r.installSteps()
 	steps[0] = step{stepPreflight, r.node0}
 	return r.steps(ctx, steps)
+}
+
+// checkResumeInputs refuses before anything is run what would only fail the
+// template step, which takes the whole run back: a template that is not given
+// by its absolute path, and a checksums.txt that cannot be read while the
+// template step is still to do. The run stays as it is, to be resumed again
+// with what the message asks for.
+func (i *Installer) checkResumeInputs(j *journal, given, opts Options) error {
+	if given.Template != "" && !filepath.IsAbs(given.Template) {
+		return fmt.Errorf("--template %s: give the file by its absolute path", given.Template)
+	}
+	if j.done(stepTemplate) || opts.ChecksumsFile == "" {
+		return nil
+	}
+	if _, err := i.h.readFile(opts.ChecksumsFile); err != nil {
+		if given.ChecksumsFile != "" {
+			return fmt.Errorf("reading --checksums: %w", err)
+		}
+		return fmt.Errorf("the run of %s has not fetched its template yet, and the checksums.txt it names cannot be read (%w): "+
+			"pass the checksums.txt of the release with --checksums", given.Resume, err)
+	}
+	return nil
 }
 
 // fail takes back what the run made and returns why it failed. A run that

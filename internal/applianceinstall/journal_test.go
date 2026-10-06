@@ -319,6 +319,138 @@ func TestResumeTakesBackARunItCannotFinish(t *testing.T) {
 	e.takenBack()
 }
 
+// killedAtTheDownload leaves the journal of a run killed while the template
+// was being fetched, before the step was done.
+func (e *testEnv) killedAtTheDownload(o Options) string {
+	e.t.Helper()
+	e.node.on("pvesh create /nodes/pve1/storage/local/download-url", func(context.Context, []string) (string, error) {
+		panic(errKilled)
+	})
+	require.PanicsWithValue(e.t, errKilled, func() { _ = e.in.Install(e.t.Context(), o) })
+	return e.journal()
+}
+
+// move puts a file where the old path no longer leads to it, as the removal of
+// install.sh's temporary directory does.
+func move(t *testing.T, from string) string {
+	t.Helper()
+	to := filepath.Join(t.TempDir(), filepath.Base(from))
+	require.NoError(t, os.WriteFile(to, []byte(mustRead(t, from)), 0o644))
+	require.NoError(t, os.Remove(from))
+	return to
+}
+
+// The journal names the checksums.txt of the run that was killed, which the
+// script that started it removed with its temporary directory: the resume is
+// given the one it has now, and finishes the run instead of taking it back.
+func TestResumeTakesTheChecksumsItIsGiven(t *testing.T) {
+	e := newEnv(t)
+	path := e.killedAtTheDownload(e.options())
+	moved := move(t, e.checksums)
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true, ChecksumsFile: moved}), e.ask.text())
+
+	require.Equal(t, 1, e.node.count("pct create"))
+	require.Equal(t, 2, e.node.count("pvesh create"), "the download that was cut short, and the one of the resume")
+	require.Equal(t, "1", e.node.cts[100].cfg["protection"])
+	require.Empty(t, entries(t, e.journals))
+}
+
+func TestResumeChecksTheTemplateAgainstTheChecksumsItIsGiven(t *testing.T) {
+	e := newEnv(t)
+	path := e.killedAtTheDownload(e.options())
+	other := filepath.Join(t.TempDir(), "checksums.txt")
+	require.NoError(t, os.WriteFile(other, []byte(strings.Repeat("1", 64)+"  pco-appliance_1.2.3_amd64.tar.zst\n"), 0o644))
+
+	err := e.in.Install(t.Context(), Options{Resume: path, Yes: true, ChecksumsFile: other})
+
+	require.ErrorContains(t, err, "expected '"+strings.Repeat("1", 64)+"'")
+}
+
+func TestResumeTakesTheReleaseBaseItIsGiven(t *testing.T) {
+	e := newEnv(t)
+	o := e.options()
+	o.ReleaseBase = "https://mirror.example.test/gone"
+	path := e.killedAtTheDownload(o)
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true, ReleaseBase: ReleaseBase(testVersion)}), e.ask.text())
+
+	require.Contains(t, strings.Join(e.node.ran, "\n"), "--url "+ReleaseBase(testVersion)+"/pco-appliance_1.2.3_amd64.tar.zst")
+	require.Equal(t, 1, e.node.count("pct create"))
+	require.Empty(t, entries(t, e.journals))
+}
+
+func TestResumeTakesTheTemplateItIsGiven(t *testing.T) {
+	e := newEnv(t)
+	path := e.killedAtTheDownload(e.options())
+	file := filepath.Join(t.TempDir(), "pco-appliance_1.2.3_amd64.tar.zst")
+	require.NoError(t, os.WriteFile(file, e.node.urls[ReleaseBase(testVersion)+"/pco-appliance_1.2.3_amd64.tar.zst"], 0o644))
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true, Template: file}), e.ask.text())
+
+	require.Equal(t, 1, e.node.count("pvesh create"), "only the download that was cut short")
+	require.Contains(t, e.node.ran[slicesIndexPrefix(e.node.ran, "pct create")], "pct create 100 "+file+" ")
+	require.Empty(t, entries(t, e.journals))
+}
+
+// Without a template step done, a run needs the checksums.txt that names the
+// template. When the file the journal names is gone and none is given, the
+// resume says what to pass and leaves the run as it is, to be resumed again.
+func TestResumeRefusesWhenTheChecksumsAreGoneAndNoneIsGiven(t *testing.T) {
+	e := newEnv(t)
+	path := e.killedAtTheDownload(e.options())
+	moved := move(t, e.checksums)
+	ran := len(e.node.ran)
+
+	err := e.in.Install(t.Context(), Options{Resume: path, Yes: true})
+
+	require.ErrorContains(t, err, "pass the checksums.txt of the release with --checksums")
+	require.ErrorContains(t, err, e.checksums)
+	require.NotContains(t, err.Error(), "taken back")
+	require.FileExists(t, path)
+	require.Empty(t, e.node.ran[ran:], "nothing was run")
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true, ChecksumsFile: moved}), e.ask.text())
+	require.Empty(t, entries(t, e.journals))
+}
+
+func TestResumeRefusesAChecksumsFileItCannotRead(t *testing.T) {
+	e := newEnv(t)
+	path := e.killedAtTheDownload(e.options())
+	missing := filepath.Join(t.TempDir(), "checksums.txt")
+
+	err := e.in.Install(t.Context(), Options{Resume: path, Yes: true, ChecksumsFile: missing})
+
+	require.ErrorContains(t, err, "--checksums")
+	require.ErrorContains(t, err, missing)
+	require.FileExists(t, path)
+}
+
+func TestResumeRefusesATemplateThatIsNotAbsolute(t *testing.T) {
+	e := newEnv(t)
+	path := e.killedAtTheDownload(e.options())
+
+	err := e.in.Install(t.Context(), Options{Resume: path, Yes: true, Template: "pco-appliance_1.2.3_amd64.tar.zst"})
+
+	require.ErrorContains(t, err, "--template pco-appliance_1.2.3_amd64.tar.zst: give the file by its absolute path")
+	require.FileExists(t, path)
+}
+
+// Once the template step is done the checksums.txt is not read again, so its
+// being gone is no reason to refuse.
+func TestResumeAfterTheTemplateNeedsNoChecksums(t *testing.T) {
+	e := newEnv(t)
+	e.node.killAt = "pct start 100"
+	require.PanicsWithValue(t, errKilled, func() { _ = e.in.Install(t.Context(), e.options()) })
+	path := e.journal()
+	move(t, e.checksums)
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true}), e.ask.text())
+
+	require.Equal(t, 1, e.node.count("pct create"))
+	require.Empty(t, entries(t, e.journals))
+}
+
 // The journal is written before every create, and never holds a secret.
 func TestTheJournalHoldsNoSecret(t *testing.T) {
 	e := newEnv(t)
