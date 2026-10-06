@@ -1,15 +1,24 @@
-// The page of the flow map's performance test. It builds a
-// graph at the map's render budget, draws it with the renderer the query
-// names (?renderer=baseline, or ?renderer=map for src/flow/FlowMap.tsx),
-// moves its dots with one loop, and measures what perf.spec.ts asks for
-// through window.perf.
+// The page of the flow map's performance test. It builds the scene the
+// query names (?scene=budget, the default, a graph at the map's render
+// budget, or ?scene=large, outage or wide, the states of the fake daemon's
+// scenarios through the map's own model, folding and layout), draws it with
+// the renderer the query names (?renderer=baseline, or ?renderer=map for
+// src/flow/FlowMap.tsx), moves its dots with the map's own loop, and
+// measures what perf.spec.ts asks for through window.perf.
 
 import '../../src/theme/tokens.css'
 
 import { createElement as h, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import type { Box, FlowEdge, FlowMap, FlowNode, FlowRow, Layout, Model, Motion, MotionEdge, Point } from '../../src/flow/types'
+import type { State, TrafficView } from '../../src/api/types.gen'
+import { collapse, type Level } from '../../src/flow/collapse'
+import { layout as layOut } from '../../src/flow/layout'
+import { buildModel } from '../../src/flow/model'
+import { createMotion, dotCap } from '../../src/flow/motion'
+import { keepSame } from '../../src/flow/panel'
+import { large, outage, trafficFor, wide } from '../../src/flow/testdata/scale'
+import type { Box, FlowEdge, FlowMap, FlowNode, FlowRow, Layout, Model, Motion, Point } from '../../src/flow/types'
 
 // The render budget: 150 cards (46 zones, 12 tunnels with a connector each,
 // 20 paths, 60 targets) and 400 edges; at most 400 dots at once.
@@ -19,9 +28,7 @@ const paths = 20
 const targets = 60
 const cards = 150
 const lines = 400
-const cap = 400
 const changed = 20 // routes one state change changes
-const crossing = 1.6 // seconds a dot takes along its edge
 
 // The bands of the layout, in layout units: [x, width].
 const bands = {
@@ -41,8 +48,8 @@ const tunnelHeight = 96
 const pathHeight = 52
 
 // The trunk of the first tunnel and every port edge whose route number is
-// below 5 modulo 12 carry dots: the trunk and 100 port edges. Through
-// dotsPerSecond their rates give 1.6 to 14 dots a second.
+// below 5 modulo 12 carry dots: the trunk and 100 port edges. Through the
+// loop's dotsPerSecond their rates give 1.6 to 14 dots a second.
 const movingPorts = 100
 const trunkRate = 1000
 const rates = [0.05, 0.5, 1, 2, 4, 7, 12, 20, 40, 80, 150, 300, 700, 2000]
@@ -211,119 +218,87 @@ export function change(model: Model, routes: readonly Where[], step: number): Mo
   return { nodes, edges }
 }
 
-export function dotsPerSecond(rate: number): number {
-  return rate <= 0 ? 0 : Math.min(14, Math.max(1.5, 1.5 + 4 * Math.log10(1 + rate)))
+// A View is what a renderer is given: a model and where layout put it.
+interface View {
+  model: Model
+  layout: Layout
 }
 
-interface Dot {
-  edge: MotionEdge
-  t: number
-  offset: number // across the edge, for the lanes of the trunk
-  el: SVGCircleElement
+// A Scene is a first view and the views after the state notices that follow
+// it, each of which changes 20 routes.
+interface Scene {
+  first: View
+  next(): View
+  // What the model, the folding and the layout took for each notice, ms.
+  pipeline: number[]
 }
 
-// createMotion is the one animation loop every renderer of the page shares:
-// at most cap dots, the trunk served first and then the port edges by rate,
-// each dot crossing its edge in 1.6 s.
-export function createMotion(cap: number): Motion & { dots(): number; layer(): SVGGElement | null } {
-  let layer: SVGGElement | null = null
-  let edges: MotionEdge[] = []
-  let visible: ReadonlySet<string> | undefined
-  let paused = false
-  let last: number | undefined
-  let lane = 0
-  const owed = new Map<string, number>()
-  let live: Dot[] = []
-  let spare: SVGCircleElement[] = []
-
-  const rank = (e: MotionEdge) => (e.edge.style === 'trunk' ? Infinity : (e.edge.rate ?? 0))
-  const retire = (dot: Dot) => {
-    dot.el.setAttribute('visibility', 'hidden')
-    spare.push(dot.el)
-  }
-  const spawn = (edge: MotionEdge, target: SVGGElement) => {
-    let el = spare.pop()
-    if (!el) {
-      el = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
-      el.setAttribute('r', '3')
-      target.append(el)
-    }
-    el.removeAttribute('visibility')
-    const lanes = edge.edge.lanes ?? 1
-    const offset = lanes > 1 ? ((lane++ % lanes) - (lanes - 1) / 2) * 3 : 0
-    live.push({ edge, t: 0, offset, el })
-  }
-  const place = (dot: Dot) => {
-    const p = dot.edge.at(dot.t)
-    let { x, y } = p
-    if (dot.offset !== 0) {
-      const a = dot.edge.at(Math.max(0, dot.t - 0.01))
-      const b = dot.edge.at(Math.min(1, dot.t + 0.01))
-      const length = Math.hypot(b.x - a.x, b.y - a.y) || 1
-      x += (-(b.y - a.y) / length) * dot.offset
-      y += ((b.x - a.x) / length) * dot.offset
-    }
-    dot.el.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)})`)
-  }
-
-  const frame = (now: number) => {
-    const dt = last === undefined ? 0 : Math.min(0.1, (now - last) / 1000)
-    last = now
-    if (layer && !paused) {
-      for (const edge of edges) {
-        if (visible && !visible.has(edge.edge.id)) continue
-        let due = (owed.get(edge.edge.id) ?? 0) + dt * dotsPerSecond(edge.edge.rate ?? 0)
-        for (; due >= 1; due--) if (live.length < cap) spawn(edge, layer)
-        owed.set(edge.edge.id, due)
-      }
-      live = live.filter((dot) => {
-        dot.t += dt / crossing
-        if (dot.t >= 1) {
-          retire(dot)
-          return false
-        }
-        place(dot)
-        return true
-      })
-    }
-    requestAnimationFrame(frame)
-  }
-  requestAnimationFrame(frame)
-
+function budgetScene(): Scene {
+  const g = graph()
+  let model = g.model
+  let step = 0
   return {
-    attach(next) {
-      if (next === layer) return
-      layer = next
-      live = []
-      spare = []
+    first: { model, layout: g.layout },
+    next() {
+      model = change(model, g.routes, step++)
+      return { model, layout: g.layout }
     },
-    setEdges(next) {
-      edges = [...next].sort((a, b) => rank(b) - rank(a))
-      const byId = new Map(edges.map((e) => [e.edge.id, e]))
-      live = live.filter((dot) => {
-        const edge = byId.get(dot.edge.edge.id)
-        if (edge) dot.edge = edge
-        else retire(dot)
-        return edge !== undefined
-      })
-    },
-    setVisible(ids) {
-      visible = ids
-      live = live.filter((dot) => {
-        if (!ids.has(dot.edge.edge.id)) retire(dot)
-        return ids.has(dot.edge.edge.id)
-      })
-    },
-    pause() {
-      paused = true
-    },
-    resume() {
-      paused = false
-    },
-    dots: () => live.length,
-    layer: () => layer,
+    pipeline: [],
   }
 }
+
+const scenarios: Record<string, (() => State) | undefined> = { large, outage, wide }
+
+// The states a notice moves a route through.
+const cycle = ['active', 'unreachable', 'withdrawn']
+
+// stateScene is a scenario of the fake daemon as the Overview draws it: the
+// model of its state, folded to the budget with the level held from the
+// view before, and laid out from the view before. A notice moves 20 of its
+// routes with a target on to their next state.
+function stateScene(name: string): Scene {
+  const make = must(scenarios[name], `scene ${name}`)
+  let st = make()
+  const traffic: TrafficView = trafficFor(st)
+  const served = st.routes.flatMap((r, i) => (r.service ? [{ i, service: r.service }] : []))
+  let level: Level | undefined
+  let view: View | undefined
+  const draw = (): View => {
+    const shaped = collapse(buildModel(st, traffic), { expanded: new Set(), previousLevel: level })
+    level = shaped.level
+    const model = keepSame(view?.model, shaped.model)
+    view = { model, layout: layOut(model, view?.layout) }
+    return view
+  }
+  const first = draw()
+  const pipeline: number[] = []
+  let step = 0
+  return {
+    first,
+    next() {
+      const routes = st.routes.slice()
+      for (let j = 0; j < changed; j++) {
+        const { i, service } = must(served[((step * changed + j) * 7919) % served.length], 'a route with a target')
+        const r = must(routes[i], `route ${i}`)
+        const state = must(cycle[(cycle.indexOf(r.state) + 1) % cycle.length], 'state')
+        const answers = state !== 'withdrawn'
+        const reason = state === 'unreachable' ? 'target is not answering' : state === 'withdrawn' ? 'identity check failed' : undefined
+        routes[i] = { ...r, state, reason, service: answers ? service : undefined, rule: r.rule && { ...r.rule, service: answers ? service : 'http_status:503' } }
+      }
+      step++
+      st = { ...st, routes }
+      const t0 = performance.now()
+      const v = draw()
+      pipeline.push(performance.now() - t0)
+      return v
+    },
+    pipeline,
+  }
+}
+
+// The notices a run may take, made before it starts, so that a run measures
+// the drawing and not the making.
+const planned = 60
 
 function store<T>(value: T) {
   const listeners = new Set<() => void>()
@@ -377,6 +352,11 @@ export interface Perf {
   error?: string
   stateToPaint(count: number, warmup: number): Promise<number[]>
   frames(ms: number): Promise<FrameRun>
+  // What the model, the folding and the layout took for each notice of a
+  // scenario of the fake daemon, ms; none for the budget's graph.
+  pipeline: number[]
+  cards: number
+  edges: number
 }
 
 declare global {
@@ -392,27 +372,46 @@ const renderers: Record<string, (() => Promise<{ default: FlowMap }>) | undefine
 }
 
 async function start(perf: Perf): Promise<void> {
-  const name = new URLSearchParams(location.search).get('renderer') ?? 'baseline'
+  const query = new URLSearchParams(location.search)
+  const name = query.get('renderer') ?? 'baseline'
   const load = renderers[name]
   if (!load) throw new Error(`no renderer ${name} on this page`)
   const { default: Renderer } = await load()
 
-  const g = graph()
-  const model = store(g.model)
-  const motion = createMotion(cap)
+  const sceneName = query.get('scene') ?? 'budget'
+  const scene = sceneName === 'budget' ? budgetScene() : stateScene(sceneName)
+  const views = [scene.first]
+  for (let i = 0; i < planned; i++) views.push(scene.next())
+  perf.pipeline = scene.pipeline
+  perf.cards = scene.first.model.nodes.length
+  perf.edges = scene.first.model.edges.length
+  const shown = store<View>(scene.first)
+
+  // The map's own loop; the page keeps the group it draws into, to tell its
+  // dots from the map's changes.
+  const loop = createMotion({ cap: dotCap })
+  let layer: SVGGElement | null = null
+  const motion: Motion = {
+    ...loop,
+    attach(g) {
+      layer = g
+      loop.attach(g)
+    },
+  }
+
   const container = must(document.getElementById('map') ?? undefined, 'element #map')
   // The map fits the width, as it does on the Overview; it is given the
-  // height of the whole graph, so every card, edge and dot is in its view.
-  const scale = innerWidth / g.layout.width
+  // height of the tallest view, so every card, edge and dot is in its view.
+  const scale = innerWidth / scene.first.layout.width
   container.style.width = `${innerWidth}px`
-  container.style.height = `${Math.ceil(g.layout.height * scale)}px`
+  container.style.height = `${Math.ceil(Math.max(...views.map((v) => v.layout.height)) * scale)}px`
 
   const ignore = () => undefined
   function Root() {
-    const current = useSyncExternalStore(model.subscribe, model.get)
+    const current = useSyncExternalStore(shown.subscribe, shown.get)
     return h(Renderer, {
-      model: current,
-      layout: g.layout,
+      model: current.model,
+      layout: current.layout,
       motion,
       onSelect: ignore,
       onFocus: ignore,
@@ -426,8 +425,7 @@ async function start(perf: Perf): Promise<void> {
   // A change of the map is a mutation of its elements that is not a dot.
   let changedAt = -Infinity
   new MutationObserver((records) => {
-    const dots = motion.layer()
-    if (records.some((r) => !dots?.contains(r.target))) changedAt = performance.now()
+    if (records.some((r) => !layer?.contains(r.target))) changedAt = performance.now()
   }).observe(container, { subtree: true, childList: true, attributes: true, characterData: true })
 
   // stateToPaint applies one change and returns the time until the first
@@ -441,7 +439,7 @@ async function start(perf: Perf): Promise<void> {
     await sleep(step % 17)
     changedAt = -Infinity
     const start = performance.now()
-    model.set(change(model.get(), g.routes, step++))
+    shown.set(must(views[1 + step++], `notice ${step}: no more than ${planned} are made`))
     const frames: Frame[] = []
     for (let quiet = 0; quiet < 3; ) {
       const f = await nextFrame()
@@ -457,7 +455,7 @@ async function start(perf: Perf): Promise<void> {
   // The renderer is ready when it has attached the dots' layer and
   // registered its moving edges.
   const since = performance.now()
-  while (motion.dots() === 0) {
+  while (loop.dots() === 0) {
     if (performance.now() - since > 10_000) throw new Error(`${name} drew no dots: no layer attached or no moving edge registered`)
     await nextFrame()
   }
@@ -486,7 +484,7 @@ async function start(perf: Perf): Promise<void> {
       if (previous !== undefined) intervals.push(f.stamp - previous)
       previous = f.stamp
       work.push(f.painted - f.began)
-      dots += motion.dots()
+      dots += loop.dots()
     }
     watch.disconnect()
     return { intervals, work, longTasks, dots: dots / work.length }
@@ -496,6 +494,9 @@ async function start(perf: Perf): Promise<void> {
 
 const perf: Perf = {
   ready: false,
+  pipeline: [],
+  cards: 0,
+  edges: 0,
   stateToPaint: () => Promise.reject(new Error('the page is not ready')),
   frames: () => Promise.reject(new Error('the page is not ready')),
 }

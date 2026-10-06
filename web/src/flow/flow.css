@@ -1,0 +1,604 @@
+/* The flow map: cards in five columns, the lines between them, the dots on
+   the lines, and the legend under them. Sizes are in layout units, which the
+   view scales; the heights match those of layout.ts. */
+
+.fm-panel {
+  container-type: inline-size;
+}
+
+.fm-box {
+  position: relative;
+  min-height: 160px;
+  background: var(--bg);
+}
+
+.fm-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: clip;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.fm-view {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+.fm-lines,
+.fm-dots {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.fm-cards {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+/* cards */
+
+.fm-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.fm-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 29px;
+  padding: 0 8px;
+  border-radius: 3px 3px 0 0;
+  background: var(--raised);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.fm-zone .fm-head {
+  margin-bottom: 6px;
+}
+
+/* The guests of a path folded into one card say how many and where, on
+   two lines if need be. */
+.fm-group .fm-head {
+  height: auto;
+  min-height: 29px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  box-sizing: border-box;
+  white-space: normal;
+}
+
+.fm-group .fm-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.fm-path .fm-head {
+  font-size: 12px;
+}
+
+.fm-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-meta {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+
+.fm-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.fm-icon svg.i {
+  width: 14px;
+  height: 14px;
+  vertical-align: 0;
+}
+
+.fm-body {
+  padding: 3px 9px 0;
+}
+
+.fm-card > .fm-body {
+  max-height: calc(100% - 33px);
+  overflow: hidden;
+}
+
+.fm-text {
+  overflow: hidden;
+  color: var(--text2);
+  font-size: 11px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fm-sub {
+  padding: 3px 9px 0;
+  color: var(--muted);
+}
+
+.fm-row,
+.fm-counts {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.fm-row {
+  font: 11.5px var(--mono);
+}
+
+.fm-row:hover,
+.fm-head:hover {
+  background: var(--accent-weak);
+}
+
+.fm-host {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-row[data-kind="more"] .fm-host,
+.fm-row[data-kind="group"] .fm-host {
+  font-family: var(--font);
+}
+
+.fm-owner {
+  flex: none;
+  max-width: 120px;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font: 11px var(--font);
+  text-overflow: ellipsis;
+}
+
+.fm-row .badge,
+.fm-head .badge,
+.fm-port .badge {
+  font-family: var(--font);
+  font-size: 10.5px;
+  line-height: 15px;
+}
+
+.fm-counts {
+  gap: 8px;
+  overflow: hidden;
+  color: var(--text2);
+  font-size: 11px;
+}
+
+.fm-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fm-port {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 18px;
+  margin: 0 6px 4px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--raised);
+  font: 11.5px var(--mono);
+  white-space: nowrap;
+}
+
+.fm-target .fm-head {
+  margin-bottom: 0;
+}
+
+.fm-port[data-state="unreachable"] {
+  border-color: var(--fail);
+  background: var(--fail-weak);
+}
+
+.fm-port[data-state="withdrawn"] {
+  border-color: var(--warn);
+  background: var(--warn-weak);
+}
+
+.fm-port-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fm-shared {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.fm-rate {
+  margin-left: auto;
+  color: var(--traffic-text);
+  font: 700 11px var(--font);
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-rate + .badge,
+.fm-shared + .fm-rate {
+  margin-left: 0;
+}
+
+.fm-shared + .badge,
+.fm-port-label + .badge {
+  margin-left: auto;
+}
+
+.fm-shared + .badge {
+  margin-left: 0;
+}
+
+.fm-rogue,
+.fm-refused {
+  border-color: var(--fail);
+}
+
+.fm-rogue .fm-head {
+  background: var(--fail-weak);
+  color: var(--fail);
+}
+
+.fm-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.fm-frame [data-item]:focus {
+  outline: none;
+}
+
+.fm-frame [data-item]:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.fm-frame .fm-head[data-item]:focus-visible,
+.fm-frame .fm-row[data-item]:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The chain under the pointer or the focus stands out; the rest steps
+   back. */
+.fm-dim {
+  opacity: 0.25;
+}
+
+/* A part whose state changed rings once. */
+.fm-ring {
+  position: absolute;
+  inset: -3px;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  animation: fm-ring 600ms ease-out 1;
+}
+
+@keyframes fm-ring {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+/* lines */
+
+.fm-edge .fm-line {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 1.5;
+}
+
+.fm-edge-hairline .fm-line {
+  stroke-width: 1;
+}
+
+.fm-edge-unreachable .fm-line,
+.fm-edge-rogue .fm-line {
+  stroke: var(--fail);
+}
+
+.fm-edge-withdrawn .fm-line {
+  stroke: var(--warn);
+  stroke-width: 2;
+}
+
+.fm-pipe {
+  fill: none;
+  stroke: var(--edge);
+  stroke-opacity: 0.16;
+  stroke-width: 12;
+}
+
+.fm-lane {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 0.75;
+}
+
+.fm-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 10;
+}
+
+.fm-pick {
+  cursor: pointer;
+}
+
+.fm-pick .fm-hit,
+.fm-pick .fm-pipe {
+  pointer-events: stroke;
+}
+
+.fm-arrow {
+  fill: var(--edge);
+}
+
+.fm-cross {
+  fill: none;
+  stroke: var(--fail);
+  stroke-width: 1.6;
+}
+
+.fm-503 {
+  fill: var(--warn);
+  font: 700 10px var(--font);
+}
+
+.fm-muted .fm-line,
+.fm-muted .fm-lane,
+.fm-muted .fm-cross {
+  stroke: var(--idle);
+  stroke-opacity: 0.6;
+}
+
+.fm-muted .fm-arrow,
+.fm-muted .fm-503 {
+  fill: var(--idle);
+}
+
+.fm-edge-label,
+.fm-since {
+  fill: var(--muted);
+  font: 11px var(--font);
+}
+
+.fm-edge-label {
+  font-size: 10px;
+}
+
+.fm-figure {
+  fill: var(--traffic-text);
+  font: 700 12px var(--font);
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-errors {
+  fill: var(--fail);
+  font-size: 11px;
+}
+
+.fm-muted .fm-figure,
+.fm-stale .fm-figure {
+  fill: var(--muted);
+}
+
+.fm-chevrons path {
+  fill: none;
+  stroke: var(--traffic);
+  stroke-width: 1.6;
+}
+
+.fm-stale .fm-chevrons path {
+  stroke: var(--idle);
+}
+
+.fm-dots .dot {
+  fill: var(--traffic);
+}
+
+.fm-dots .dot-error {
+  fill: var(--fail);
+}
+
+/* the tooltip of the map */
+
+.fm-tip {
+  position: absolute;
+  z-index: 5;
+  width: max-content;
+  max-width: 320px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: auto;
+  user-select: text;
+}
+
+.fm-tip-line {
+  display: block;
+  margin-top: 4px;
+}
+
+.fm-tip-code {
+  display: block;
+  margin-top: 4px;
+  font: 12px var(--mono);
+  overflow-wrap: anywhere;
+}
+
+/* the legend */
+
+.fm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text2);
+  font-size: 12px;
+  list-style: none;
+}
+
+.fm-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fm-key {
+  width: 28px;
+  height: 10px;
+  flex: none;
+}
+
+.fm-key path {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 1.5;
+}
+
+.fm-key .fm-key-unreachable,
+.fm-key .fm-key-rogue {
+  stroke: var(--fail);
+}
+
+.fm-key .fm-key-withdrawn {
+  stroke: var(--warn);
+  stroke-width: 2;
+}
+
+.fm-key .fm-key-muted {
+  stroke: var(--idle);
+  stroke-opacity: 0.6;
+}
+
+.fm-key .dot {
+  fill: var(--traffic);
+}
+
+.fm-key .dot-error {
+  fill: var(--fail);
+}
+
+.fm-why {
+  width: 24px;
+  height: 24px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fm-ring {
+    animation: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .fm-card,
+  .fm-port {
+    border-color: var(--control-border);
+  }
+
+  .fm-edge .fm-line {
+    stroke-width: 2.5;
+  }
+
+  .fm-dim {
+    opacity: 0.4;
+  }
+}
+
+/* In forced colours the line styles keep their dashes, and with them their
+   meaning. */
+@media (forced-colors: active) {
+  .fm-card,
+  .fm-port {
+    border-color: CanvasText;
+  }
+
+  .fm-edge .fm-line,
+  .fm-lane,
+  .fm-cross,
+  .fm-key path,
+  .fm-chevrons path {
+    stroke: CanvasText;
+  }
+
+  .fm-pipe {
+    stroke: GrayText;
+  }
+
+  .fm-arrow,
+  .fm-503,
+  .fm-figure,
+  .fm-edge-label,
+  .fm-since {
+    fill: CanvasText;
+  }
+
+  .fm-dots .dot,
+  .fm-dots .dot-error,
+  .fm-key .dot,
+  .fm-key .dot-error {
+    fill: Highlight;
+  }
+
+  .fm-ring {
+    border-color: Highlight;
+  }
+}

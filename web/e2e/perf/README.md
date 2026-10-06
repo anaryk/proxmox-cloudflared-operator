@@ -1,9 +1,8 @@
 # Flow map performance
 
-`perf.spec.ts` measures the flow map of the Overview against a baseline drawn
-with nothing but React and the DOM, both in the same run, and holds the map to
-the budgets below. Until `src/flow/FlowMap.tsx` exists, only the
-baseline runs and the map's test is skipped.
+`perf.spec.ts` measures the flow map of the Overview (`src/flow/FlowMap.tsx`)
+against a baseline drawn with nothing but React and the DOM, both in the same
+run and on the same scenes, and holds the map to the budgets below.
 
 ## Running it
 
@@ -19,25 +18,36 @@ The test builds the page (`vite.config.ts` here, into
 line of output gives one renderer's figures; the samples are attached to the
 test's results in `test-results/playwright/`. To look at the page, serve it with
 `node_modules/.bin/vite preview --config e2e/perf/vite.config.ts` and open
-`/?renderer=baseline` or `/?renderer=map`.
+`/?scene=large&renderer=baseline` or `/?scene=large&renderer=map`.
 
 Shared runners are noisy, and a single run says little: compare runs, not a
 run against a number from another machine.
 
-## The scene
+## The scenes
 
-`harness.ts` builds the map at its render budget: 150 cards
-(46 zone cards with 240 hostname rows, 12 edge nodes, 12 connectors, 20 paths,
-60 target cards with 240 access points) and 400 edges. The trunk of the first
-tunnel has four lanes, and it and 100 port edges carry dots, from 1.6 to 14 a
-second through `dotsPerSecond`, which turns the rate of an edge into dots. One
-loop moves every dot, at most 400 at once. The window is 1440 by 900; the map
-fits its width and is given the height of the whole graph, so every card, edge
-and dot is in its view while the window shows the top of it.
+`budget` is a graph at the map's render budget, built by `harness.ts`: 150
+cards (46 zone cards with 240 hostname rows, 12 edge nodes, 12 connectors,
+20 paths, 60 target cards with 240 access points) and 400 edges. The trunk of
+the first tunnel has four lanes, and it and 100 port edges carry dots, from
+1.6 to 14 a second. A state change moves 20 routes on to their next state:
+their rows, their access points and their port edges change, every other
+object of the model stays the same.
 
-A state change moves 20 routes on to their next state: their rows, their
-access points and their port edges change, every other object of the model
-stays the same.
+`large` (1000 routes over 6 zones), `outage` (1000 routes, 600 unreachable)
+and `wide` (50 zones in 30 accounts, so 30 tunnels) are the fake daemon's
+scenarios, from `src/flow/testdata/scale.ts`, drawn as the Overview draws
+them: the model of the state, folded to the budget with the level held from
+the view before (`collapse.ts`), the objects that did not change kept
+(`panel.ts`) and laid out from the view before (`layout.ts`). A state change
+moves 20 routes with a target on to their next state, active, unreachable,
+withdrawn, and the page makes the model, the folding and the layout anew.
+Those are made before a run starts, so that the run measures the drawing;
+their time is printed beside it.
+
+Every scene moves its dots with the map's own loop (`src/flow/motion.ts`), at
+most 400 at once. The window is 1440 by 900; the map fits its width and is
+given the height of the tallest view, so every card, edge and dot is in its
+view while the window shows the top of it.
 
 ## What is measured
 
@@ -69,6 +79,6 @@ nothing.
 ## A renderer on this page
 
 The page mounts `src/flow/FlowMap.tsx` (its default export, a `FlowMap` of
-`src/flow/types.ts`) as it mounts the baseline. The map has to attach the
-group its dots are drawn into and register its moving edges with the motion
-it is given; the page waits for the first dot before it measures.
+`src/flow/types.ts`) as it mounts the baseline. A renderer attaches the group
+its dots are drawn into and registers its edges with the motion it is given;
+the page waits for the first dot before it measures.

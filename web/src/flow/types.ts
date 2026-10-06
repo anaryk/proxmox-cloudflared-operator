@@ -1,5 +1,7 @@
 import type { JSX } from 'react'
 
+import type { CommandWords } from '../text/words'
+
 // What every renderer of the flow map is given and what it gives back. The
 // map of the Overview (src/flow/FlowMap.tsx, its default export) and the
 // renderers of the performance harness in e2e/perf are all a FlowMap. The
@@ -116,6 +118,23 @@ export interface Motion {
   resume(): void
 }
 
+// What the map shows beside the model, read from the state and the traffic.
+export interface MapExtras {
+  // The command that gives a tunnel a new secret, by the node of a
+  // connector pco does not run or of one whose token Cloudflare refuses.
+  commands?: ReadonlyMap<string, CommandWords>
+  // By the id of a trunk: the requests in flight, and when its last sample
+  // was read, as a time of day.
+  concurrent?: ReadonlyMap<string, number>
+  since?: ReadonlyMap<string, string>
+}
+
+// A change of the view the toolbar asks for; a new n asks again.
+export interface ZoomAsk {
+  to: 'fit' | 'in' | 'out'
+  n: number
+}
+
 export interface FlowMapProps {
   model: Model // after collapse()
   layout: Layout // positions from layout()
@@ -126,7 +145,11 @@ export interface FlowMapProps {
   onFocus(id: string): void
   onExpand(id: string): void // a folded group or "+ N active" row opened
   onViewport(v: { x: number; y: number; zoom: number }): void // culling and the URL query
-  reducedMotion: boolean
+  reducedMotion: boolean // the dots stand still: chevrons and the figures show them
+  extras?: MapExtras
+  stale?: boolean // the page has no new data: the figures are greyed
+  changed?: { ids: ReadonlySet<string>; n: number } // what changed state with the last notice rings once
+  zoom?: ZoomAsk
 }
 
 export type FlowMap = (props: FlowMapProps) => JSX.Element

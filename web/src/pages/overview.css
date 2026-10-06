@@ -109,6 +109,37 @@
   margin: 0;
 }
 
+.flow-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.flow-zoom .iconbtn {
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+}
+
+/* The link past the map shows when it has the focus. */
+.flow-skip {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.flow-skip:focus {
+  position: static;
+  display: inline-block;
+  width: auto;
+  height: auto;
+  margin: 8px 14px;
+  clip-path: none;
+}
+
 @media (max-width: 959px) {
   .tiles {
     grid-template-columns: repeat(2, minmax(0, 1fr));

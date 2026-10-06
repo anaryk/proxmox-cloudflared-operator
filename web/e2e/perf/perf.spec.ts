@@ -1,13 +1,10 @@
-import { existsSync } from 'node:fs'
-
 import type { Page, TestInfo } from '@playwright/test'
 
 import type { FrameRun } from './harness'
 import { expect, test } from './serve'
 
-// The flow map against the baseline, both measured in this run, within the
-// budgets README.md lists. The baseline always runs; the map once
-// src/flow/FlowMap.tsx exists. README.md says how to run it.
+// The flow map against the baseline, both measured in this run on each
+// scene, within the budgets README.md lists. README.md says how to run it.
 
 const changes = 40 // the p95 over 20 is nearly the maximum
 const warmup = 5
@@ -19,7 +16,9 @@ const paintFactor = 1.5
 const paintNoise = 30
 const frameSlack = 4
 
-const mapExists = () => existsSync(new URL('../../src/flow/FlowMap.tsx', import.meta.url))
+// The graph at the render budget, and the fake daemon's scenarios of many
+// routes as the Overview folds them.
+const scenes = ['budget', 'large', 'outage', 'wide']
 
 function p95(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
@@ -36,9 +35,9 @@ interface Result {
   dots: number
 }
 
-async function measure(page: Page, renderer: string, info: TestInfo): Promise<Result> {
-  await page.goto(`/?renderer=${renderer}`)
-  await page.waitForFunction(() => window.perf?.ready === true || window.perf?.error !== undefined)
+async function measure(page: Page, scene: string, renderer: string, info: TestInfo): Promise<Result> {
+  await page.goto(`/?scene=${scene}&renderer=${renderer}`)
+  await page.waitForFunction(() => window.perf?.ready === true || window.perf?.error !== undefined, undefined, { timeout: 60_000 })
   expect(await page.evaluate(() => window.perf?.error), `the page of ${renderer}`).toBeUndefined()
 
   const paints = await page.evaluate(([count, before]) => {
@@ -49,6 +48,7 @@ async function measure(page: Page, renderer: string, info: TestInfo): Promise<Re
     if (!window.perf) throw new Error('no harness on the page')
     return window.perf.frames(ms)
   }, run)
+  const scale = await page.evaluate(() => ({ pipeline: window.perf?.pipeline ?? [], cards: window.perf?.cards ?? 0, edges: window.perf?.edges ?? 0 }))
 
   expect(paints).toHaveLength(changes)
   expect(frames.dots, 'dots on the map').toBeGreaterThan(0)
@@ -61,26 +61,21 @@ async function measure(page: Page, renderer: string, info: TestInfo): Promise<Re
     frames: frames.intervals.length,
     dots: Math.round(frames.dots),
   }
-  await info.attach(renderer, { body: JSON.stringify({ ...result, paints, frames }), contentType: 'application/json' })
+  await info.attach(`${scene} ${renderer}`, { body: JSON.stringify({ ...result, paints, frames, pipeline: scale.pipeline }), contentType: 'application/json' })
+  const pipeline = scale.pipeline.length > 0 ? `, model and layout p95 ${p95(scale.pipeline).toFixed(1)} ms` : ''
   console.log(
-    `${renderer.padEnd(9)} state-to-paint p95 ${result.paint.toFixed(1)} ms, frame p95 ${result.frame.toFixed(1)} ms` +
+    `${scene.padEnd(7)} ${renderer.padEnd(9)} ${scale.cards} cards, ${scale.edges} edges: state-to-paint p95 ${result.paint.toFixed(1)} ms${pipeline}, frame p95 ${result.frame.toFixed(1)} ms` +
       ` (work ${result.work.toFixed(1)} ms) over ${result.frames} frames, ${result.longTasks} long tasks, ${result.dots} dots`,
   )
   return result
 }
 
-test('baseline', async ({ page }, info) => {
-  await measure(page, 'baseline', info)
-})
-
-test.describe('map', () => {
-  test.skip(!mapExists(), 'no map component yet')
-
-  test('stays within the budgets of the baseline', async ({ page }, info) => {
-    const base = await measure(page, 'baseline', info)
-    const map = await measure(page, 'map', info)
+for (const scene of scenes) {
+  test(`${scene}: the map stays within the budgets of the baseline`, async ({ page }, info) => {
+    const base = await measure(page, scene, 'baseline', info)
+    const map = await measure(page, scene, 'map', info)
     expect.soft(map.paint, 'state-to-paint p95, ms').toBeLessThanOrEqual(paintFactor * base.paint + paintNoise)
     expect.soft(map.frame, 'frame p95, ms').toBeLessThanOrEqual(base.frame + frameSlack)
     expect.soft(map.longTasks, 'long tasks').toBeLessThanOrEqual(base.longTasks)
   })
-})
+}
