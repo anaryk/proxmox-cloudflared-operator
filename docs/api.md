@@ -303,17 +303,21 @@ route without a target.
 
 `POST /v1/sync` asks for a cycle now and answers `202` at once.
 
-`POST /v1/apply` leaves observe-only mode, and with `confirmDeletes` accepts what waits for a
-confirmation:
+`POST /v1/apply` is `pco apply`. Every call that is not refused leaves observe-only mode, when the
+daemon is in it, and asks for a cycle: from then on the daemon changes Cloudflare. There is no body
+that keeps observe-only mode; do not call it to look, `GET /v1/state` does that. The body says
+whether the call also accepts what waits for a confirmation:
 
 ```json
 { "confirmDeletes": true, "offer": "9298960fb3d77f2d" }
 ```
 
-The body may be left out to leave observe-only mode alone. `offer` is the `offer` of the state
-that showed what waits, which the daemon compares with its own: what waits is accepted only when
-it is still what was shown, and refused otherwise with `what waits for a confirmation changed since
-it was shown; look again and repeat`. The answer says what was accepted:
+With no body, `{}` or `"confirmDeletes": false`, the call leaves observe-only mode and confirms
+nothing. With `"confirmDeletes": true` it accepts what waits as well, but only with `offer`, the
+`offer` of the state that showed what waits, which the daemon compares with its own: when what
+waits is not what was shown, the call is refused with `what waits for a confirmation changed since
+it was shown; look again and repeat`, and changes nothing, observe-only mode included. The answer
+says whether the call left observe-only mode and what it accepted:
 
 ```json
 {
@@ -476,13 +480,34 @@ Both probe the node, the guests and Cloudflare: do not run them in a loop.
 `GET /v1/settings` answers the settings with their revision, the settings the daemon reads only at
 its start, their ranges, and notes on settings it uses otherwise than stored;
 [Settings](settings.md#changing-the-settings) shows one. `PUT /v1/settings` saves them at the
-revision they were read at:
+revision they were read at, and takes the whole `settings` object, not the keys that change: a
+key left out is saved as empty or zero, not as its default, and is refused where zero is out of
+range. So read them first:
+
+    curl --unix-socket /run/pco/pco.sock http://pco/v1/settings
+
+and send back `rev` as it came and every key of `settings`, with what you change changed, here
+`grace`:
 
 ```json
-{ "rev": 7, "settings": { "gateTag": "cf-tunnel", "pollInterval": "10s", "grace": "1m0s", "admission": "tag", "observeOnly": false } }
+{
+  "rev": 7,
+  "settings": {
+    "gateTag": "cf-tunnel",
+    "pollInterval": "10s",
+    "grace": "2m0s",
+    "admission": "tag",
+    "observeOnly": false,
+    "identityMinimum": "port",
+    "maxHostnamesPerGuest": 32,
+    "reverifyInterval": "1m0s",
+    "cloudflareBudget": 1000,
+    "managed": { "consent": "per-guest", "subnet": "10.203.118.0/24", "detachGrace": "10m0s" }
+  }
+}
 ```
 
-It answers the settings as saved, with their new revision, and `restartNeeded`, the settings that
+`pco settings show --json` and `pco settings apply <file>` do the same. It answers the settings as saved, with their new revision, and `restartNeeded`, the settings that
 take effect only once the daemon is restarted. Settings stored at another revision are refused
 with `refused`; a setting the store does not accept with `invalid` and its `field`; and leaving
 observe-only mode with `invalid` on `observeOnly`, since `POST /v1/apply` does that.
@@ -500,8 +525,8 @@ observe-only mode with `invalid` on `observeOnly`, since `POST /v1/apply` does t
 ```
 
 `target.kind` is `address`, with `addr`, or `guest`, with `guest` as `qemu/101` and no `addr`.
-`options` are those of the Notes: `hostHeader`, `sni`, `noTLSVerify`, `via`, and `allowNode` for
-an address. `GET /v1/routes/manual` answers every manual route. `POST /v1/routes/manual` makes one,
+`options` are `hostHeader`, `sni`, `noTLSVerify` and `via`, as in the Notes, and `allowNode`,
+which only a manual route to an address has: it lets it point at a service of a node. `GET /v1/routes/manual` answers every manual route. `POST /v1/routes/manual` makes one,
 without `rev`, and answers `201`; without an `id`, of 1 to 32 of `a-z 0-9 -`, the daemon gives it
 one, and an id that is taken is refused. `PUT /v1/routes/manual/:id` replaces one, with the `rev`
 it was read at in the body. `DELETE /v1/routes/manual/:id?rev=<rev>` removes one. A route that
@@ -554,7 +579,8 @@ stream pco web holds, handed out to every browser filtered for its session.
 
 | Call | Socket | Role | Body, timeout |
 |---|---|---|---|
-| `GET /api/v1/state`, `/stream`, `/events`, `/traffic`, `/traffic/route` | the same under `/v1` | reader | none; 10 s |
+| `GET /api/v1/state`, `/events`, `/traffic`, `/traffic/route` | the same under `/v1` | reader | none; 10 s |
+| `GET /api/v1/stream` | served from the one stream pco web holds of `GET /v1/stream` | reader | none; open until it ends |
 | `GET /api/v1/credentials`, `/claims`, `/approvals`, `/guests`, `/guests/:kind/:vmid/annotation`, `/settings`, `/routes/manual`, `/version` | the same | reader | none; 10 s |
 | `POST /api/v1/diagnose {"hostname"}` | `GET /v1/diagnose?hostname=` | reader | 64 KiB; 30 s; one at a time for each user, six a minute |
 | `POST /api/v1/doctor {}` | `GET /v1/doctor` | reader | 64 KiB; 60 s; two a minute for each user |
@@ -597,5 +623,8 @@ pco web answers errors in the shape of the daemon's, with codes of its own besid
 code), `proxmox_unreachable` (503), `daemon_unreachable` (502, nothing answers on the socket),
 `rate_limited` (429, with `retryAfter` in seconds), `second_factor` and `second_factor_key` (401, in
 the appliance: a code is due, or the second factor is a security key, which cannot work there),
-and `forbidden` with `missing`, the privilege the user lacks. A call the daemon did not answer in
+and `forbidden` (403): with `missing`, the privilege the user lacks, and without it a request
+refused for its host name, its `Origin`, its `Sec-Fetch-Site` or a missing or wrong `Pco-Csrf`;
+`unsupported_media_type` (415) answers a call that changes something without `Content-Type:
+application/json`, before anything else is checked. A call the daemon did not answer in
 time is answered `503 unavailable`: the outcome is not known, so look before you try again.
