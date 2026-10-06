@@ -229,9 +229,12 @@ export function TopBar({ navOpen, onNav, onAbout }: { navOpen: boolean; onNav: (
           </ul>
         </span>
         {problems > 0 && (
-          <Link to="/#problems" className="pill pill-warn problems">
+          <Link to="/#problems" className="pill pill-warn pill-problems">
             <WarnIcon />
-            <b className="pill-value">{problems === 1 ? '1 problem' : `${problems} problems`}</b>
+            <b className="pill-value">
+              {problems}
+              <span className="pill-words"> {problems === 1 ? 'problem' : 'problems'}</span>
+            </b>
           </Link>
         )}
       </div>
