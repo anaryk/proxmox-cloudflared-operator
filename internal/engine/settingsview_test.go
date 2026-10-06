@@ -181,7 +181,7 @@ func TestTheLimitsOfTheSettings(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, `{"pollInterval":{"min":"5s"},"grace":{"min":"30s"},
 		"reverifyInterval":{"min":"10s","max":"5m0s"},"maxHostnamesPerGuest":{"min":1},
-		"cloudflareBudget":{"min":100,"max":1150}}`, string(data))
+		"cloudflareBudget":{"min":100,"max":1150},"managed.detachGrace":{"min":"1m0s"}}`, string(data))
 }
 
 func TestSettingsRaisedToTheirMinimumAreNoted(t *testing.T) {

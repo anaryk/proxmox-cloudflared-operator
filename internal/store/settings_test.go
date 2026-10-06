@@ -29,6 +29,11 @@ func TestDefaultSettings(t *testing.T) {
 	require.Equal(t, 32, d.MaxHostnamesPerGuest)
 	require.Equal(t, Duration(time.Minute), d.ReverifyInterval)
 	require.Equal(t, 1000, d.CloudflareBudget)
+	require.Equal(t, ManagedSettings{
+		Consent:     "per-guest",
+		Subnet:      netip.MustParsePrefix("10.203.118.0/24"),
+		DetachGrace: Duration(10 * time.Minute),
+	}, d.Managed)
 }
 
 func TestSettingsDefaultsWhenMissing(t *testing.T) {
@@ -57,6 +62,12 @@ func customSettings() Settings {
 		MaxHostnamesPerGuest: 100,
 		ReverifyInterval:     Duration(2 * time.Minute),
 		CloudflareBudget:     800,
+		Managed: ManagedSettings{
+			Consent:              "auto",
+			Subnet:               netip.MustParsePrefix("10.50.0.0/20"),
+			DetachGrace:          Duration(30 * time.Minute),
+			AcceptFirewallImpact: true,
+		},
 	}
 }
 
@@ -80,6 +91,9 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.Equal(t, "observed", wire["identityMinimum"])
 	require.Equal(t, "2m0s", wire["reverifyInterval"])
 	require.InDelta(t, 800, wire["cloudflareBudget"], 0)
+	require.Equal(t, map[string]any{
+		"consent": "auto", "subnet": "10.50.0.0/20", "detachGrace": "30m0s", "acceptFirewallImpact": true,
+	}, wire["managed"])
 }
 
 func TestSettingsAcceptEveryIdentityMinimum(t *testing.T) {
@@ -482,4 +496,125 @@ func TestSettingsStillReadWhatSaveSettingsWrites(t *testing.T) {
 	got, err := s.Settings()
 	require.NoError(t, err)
 	require.Equal(t, customSettings(), got)
+}
+
+func TestTheManagedNetworkSettingsRefuseWhatDoesNotFit(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		msg   string
+		edit  func(*ManagedSettings)
+	}{
+		{"an unknown consent", "managed.consent", `managed.consent "always": want "per-guest" or "auto"`, func(m *ManagedSettings) { m.Consent = "always" }},
+		{"a consent in upper case", "managed.consent", `"Auto"`, func(m *ManagedSettings) { m.Consent = "Auto" }},
+		{"an IPv6 subnet", "managed.subnet", "want an IPv4 prefix", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("fd00::/64") }},
+		{"a mapped subnet", "managed.subnet", "want an IPv4 prefix", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("::ffff:10.50.0.0/120") }},
+		{"a subnet longer than a /28", "managed.subnet", "10.50.0.0/29: want a length from /16 to /28", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("10.50.0.0/29") }},
+		{"a subnet shorter than a /16", "managed.subnet", "10.0.0.0/15: want a length from /16 to /28", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("10.0.0.0/15") }},
+		{"a subnet written with a host address", "managed.subnet", "10.50.0.5/24: want the address of the network, 10.50.0.0/24", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("10.50.0.5/24") }},
+		{"a subnet in the service prefix", "managed.subnet", "198.18.4.0/24: overlaps the service prefix 198.18.0.0/16", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("198.18.4.0/24") }},
+		{"the service prefix itself", "managed.subnet", "overlaps the service prefix", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("198.18.0.0/16") }},
+		{"a subnet beside the service prefix in the benchmark range", "managed.subnet", "198.19.0.0/24: overlaps 198.18.0.0/15 (benchmarking)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("198.19.0.0/24") }},
+		{"a documentation subnet", "managed.subnet", "(documentation)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("192.0.2.0/24") }},
+		{"another documentation subnet", "managed.subnet", "(documentation)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("198.51.100.0/24") }},
+		{"a third documentation subnet", "managed.subnet", "(documentation)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("203.0.113.0/28") }},
+		{"a subnet around a documentation range", "managed.subnet", "overlaps 203.0.113.0/24", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("203.0.0.0/16") }},
+		{"a loopback subnet", "managed.subnet", "(loopback)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("127.0.0.0/24") }},
+		{"a link-local subnet", "managed.subnet", "(link-local)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("169.254.0.0/16") }},
+		{"a multicast subnet", "managed.subnet", "(multicast)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("224.0.0.0/24") }},
+		{"a reserved subnet", "managed.subnet", "(reserved)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("240.0.0.0/24") }},
+		{"a subnet of this network", "managed.subnet", "(this network)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("0.0.0.0/16") }},
+		{"a subnet of protocol assignments", "managed.subnet", "(protocol assignments)", func(m *ManagedSettings) { m.Subnet = netip.MustParsePrefix("192.0.0.0/24") }},
+		{"a detach grace below a minute", "managed.detachGrace", "managed.detachGrace 59s: at least 1m0s", func(m *ManagedSettings) { m.DetachGrace = Duration(59 * time.Second) }},
+		{"a negative detach grace", "managed.detachGrace", "managed.detachGrace -10m0s: at least 1m0s", func(m *ManagedSettings) { m.DetachGrace = Duration(-10 * time.Minute) }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, p := openStore(t)
+			bad := customSettings()
+			tc.edit(&bad.Managed)
+
+			err := s.SaveSettings(bad)
+			var fe *FieldError
+			require.ErrorAs(t, err, &fe)
+			require.Equal(t, tc.field, fe.Field)
+			require.ErrorContains(t, err, tc.msg)
+			require.Empty(t, stored(t, p.Cluster), "nothing is written")
+		})
+	}
+}
+
+func TestTheManagedNetworkSettingsAcceptTheirBounds(t *testing.T) {
+	for _, m := range []ManagedSettings{
+		{Consent: ConsentPerGuest, Subnet: netip.MustParsePrefix("10.50.0.0/16"), DetachGrace: Duration(time.Minute)},
+		{Consent: ConsentAuto, Subnet: netip.MustParsePrefix("10.50.0.16/28"), DetachGrace: Duration(24 * time.Hour)},
+		{Consent: ConsentAuto, Subnet: netip.MustParsePrefix("100.64.0.0/24"), DetachGrace: Duration(time.Hour)},
+		{Consent: ConsentAuto, Subnet: netip.MustParsePrefix("198.17.0.0/16"), DetachGrace: Duration(time.Hour)},
+		{Consent: ConsentAuto, Subnet: netip.MustParsePrefix("198.20.0.0/16"), DetachGrace: Duration(time.Hour)},
+	} {
+		t.Run(m.Subnet.String(), func(t *testing.T) {
+			s, _ := openStore(t)
+			in := customSettings()
+			in.Managed = m
+			require.NoError(t, s.SaveSettings(in))
+			got, err := s.Settings()
+			require.NoError(t, err)
+			require.Equal(t, m, got.Managed)
+		})
+	}
+}
+
+// A field of the managed network that settings leave out, as those of a
+// client that does not know it yet, is its default.
+func TestTheManagedNetworkSettingsLeftOutAreTheDefaults(t *testing.T) {
+	s, _ := openStore(t)
+	in := customSettings()
+	in.Managed = ManagedSettings{}
+	require.NoError(t, s.SaveSettings(in))
+	got, err := s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, DefaultSettings().Managed, got.Managed)
+
+	in.Managed = ManagedSettings{Consent: ConsentAuto}
+	require.NoError(t, s.SaveSettings(in))
+	got, err = s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, ManagedSettings{Consent: ConsentAuto, Subnet: netip.MustParsePrefix("10.203.118.0/24"), DetachGrace: Duration(10 * time.Minute)}, got.Managed)
+}
+
+func TestStoredSettingsWithoutTheManagedNetworkLoadWithItsDefaults(t *testing.T) {
+	s, p := openStore(t)
+	path := filepath.Join(p.Cluster, "meta", "settings.json")
+	writeFile(t, path, envelopeJSON("settings", `{"gateTag":"cf-tunnel","pollInterval":"10s","grace":"1m","admission":"tag","observeOnly":true}`))
+	got, err := s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, DefaultSettings().Managed, got.Managed)
+
+	writeFile(t, path, envelopeJSON("settings", `{"gateTag":"cf-tunnel","managed":{"consent":"auto","acceptFirewallImpact":true}}`))
+	got, err = s.Settings()
+	require.NoError(t, err)
+	require.Equal(t, ManagedSettings{
+		Consent: ConsentAuto, Subnet: netip.MustParsePrefix("10.203.118.0/24"), DetachGrace: Duration(10 * time.Minute), AcceptFirewallImpact: true,
+	}, got.Managed)
+
+	writeFile(t, path, envelopeJSON("settings", `{"gateTag":"cf-tunnel","managed":{"consent":"never"}}`))
+	_, err = s.Settings()
+	require.ErrorContains(t, err, "stored settings are invalid: managed.consent")
+}
+
+// No version was ever released with a setting for the service prefix, which
+// is fixed; a file that has one is refused as any unknown key is.
+func TestAServicePrefixInTheSettingsIsAnUnknownKey(t *testing.T) {
+	for name, data := range map[string]string{
+		"at the top":             `{"gateTag":"cf-tunnel","servicePrefix":"198.18.0.0/16"}`,
+		"in the managed network": `{"gateTag":"cf-tunnel","managed":{"consent":"auto","servicePrefix":"198.18.0.0/16"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, p := openStore(t)
+			writeFile(t, filepath.Join(p.Cluster, "meta", "settings.json"), envelopeJSON("settings", data))
+			got, err := s.Settings()
+			require.ErrorContains(t, err, `unknown field "servicePrefix"`)
+			require.Equal(t, Settings{}, got)
+		})
+	}
 }

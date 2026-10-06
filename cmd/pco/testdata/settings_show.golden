@@ -14,3 +14,4 @@ Settings at revision 7:
   maxHostnamesPerGuest  32 (at least 1)
   reverifyInterval      2m0s (10s to 5m0s)
   cloudflareBudget      1000 (100 to 1150; read at start)
+  managed               consent=per-guest, detachGrace=10m0s, subnet=10.203.118.0/24

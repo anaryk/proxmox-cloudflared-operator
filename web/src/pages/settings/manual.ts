@@ -27,7 +27,7 @@ const isObject = (v: unknown): v is Obj => typeof v === 'object' && v !== null &
 // --json prints besides the settings, which is not read.
 const fileKeys = ['rev', 'settings', 'manualRoutes', 'readAtStart', 'limits', 'notes', 'restartNeeded']
 
-const kinds: Record<keyof Settings, 'text' | 'flag' | 'count' | 'list' | 'pins'> = {
+const kinds: Record<keyof Settings, 'text' | 'flag' | 'count' | 'list' | 'pins' | 'managed'> = {
   gateTag: 'text',
   allowHosts: 'list',
   denyHosts: 'list',
@@ -43,6 +43,15 @@ const kinds: Record<keyof Settings, 'text' | 'flag' | 'count' | 'list' | 'pins'>
   maxHostnamesPerGuest: 'count',
   reverifyInterval: 'text',
   cloudflareBudget: 'count',
+  managed: 'managed',
+}
+
+// The keys of the settings of the managed network; the daemon checks their values.
+const managedKeys: Readonly<Record<string, 'string' | 'boolean'>> = {
+  consent: 'string',
+  subnet: 'string',
+  detachGrace: 'string',
+  acceptFirewallImpact: 'boolean',
 }
 
 const wants = {
@@ -51,6 +60,7 @@ const wants = {
   count: 'want a whole number',
   list: 'want a list of text',
   pins: 'want an object of text',
+  managed: 'want an object of consent, subnet, detachGrace and acceptFirewallImpact',
 }
 
 const isKind = {
@@ -59,6 +69,7 @@ const isKind = {
   count: (v: unknown) => typeof v === 'number' && Number.isInteger(v),
   list: (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string'),
   pins: (v: unknown) => isObject(v) && Object.values(v).every((x) => typeof x === 'string'),
+  managed: (v: unknown) => isObject(v) && Object.entries(v).every(([k, x]) => Object.hasOwn(managedKeys, k) && typeof x === managedKeys[k]),
 }
 
 function readSettings(raw: unknown, issues: ImportIssue[]): Settings | undefined {

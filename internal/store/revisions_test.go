@@ -108,6 +108,7 @@ func TestTheLimitsAreThoseTheSettingsAreCheckedAgainst(t *testing.T) {
 		"reverifyInterval":     {Min: Duration(10 * time.Second), Max: Duration(5 * time.Minute)},
 		"maxHostnamesPerGuest": {Min: 1},
 		"cloudflareBudget":     {Min: 100, Max: 1150},
+		"managed.detachGrace":  {Min: Duration(time.Minute)},
 	}, limits)
 
 	s, _ := openStore(t)
@@ -115,6 +116,7 @@ func TestTheLimitsAreThoseTheSettingsAreCheckedAgainst(t *testing.T) {
 	at.PollInterval, at.Grace = limits["pollInterval"].Min.(Duration), limits["grace"].Min.(Duration)
 	at.ReverifyInterval, at.MaxHostnamesPerGuest = limits["reverifyInterval"].Max.(Duration), limits["maxHostnamesPerGuest"].Min.(int)
 	at.CloudflareBudget = limits["cloudflareBudget"].Max.(int)
+	at.Managed.DetachGrace = limits["managed.detachGrace"].Min.(Duration)
 	require.NoError(t, s.SaveSettings(at), "every bound itself is accepted")
 }
 

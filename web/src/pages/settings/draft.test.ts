@@ -14,6 +14,7 @@ const full: Settings = {
   trustedCIDRs: ['10.0.20.0/24'],
   manualCIDRs: ['10.0.5.0/24', '10.0.6.0/24'],
   zonePins: { 'example.com': 'a1b2c3d4', 'shop.cz': 'e5f6' },
+  managed: { consent: 'auto', subnet: '10.50.0.0/20', detachGrace: '30m0s', acceptFirewallImpact: true },
 }
 
 test('the draft holds what the form edits as text', () => {
@@ -35,7 +36,7 @@ test('what the form makes of a draft is the settings it began with', () => {
 })
 
 test('empty lists and a false trustStatic are left out, as the daemon leaves them out', () => {
-  const s = settingsOf({ ...draftOf(stored), allowHosts: '\n  \n', trustedCIDRs: '', zonePins: ' ' })
+  const s = settingsOf({ ...draftOf(stored), allowHosts: '\n  \n', trustedCIDRs: '', zonePins: ' ' }, stored)
   expect(Object.keys(s).sort()).toEqual(Object.keys(stored).sort())
 })
 

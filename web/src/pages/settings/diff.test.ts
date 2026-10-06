@@ -31,6 +31,7 @@ describe('the settings', () => {
 
   test('the changes come in the order of the settings, whatever order the fields were written in', () => {
     const after: Settings = {
+      managed: stored.managed,
       cloudflareBudget: 500,
       identityMinimum: 'observed',
       observeOnly: true,
@@ -52,6 +53,19 @@ describe('the settings', () => {
       { field: 'allowHosts', before: '*.example.com, shop.cz', after: 'shop.cz, example.com', added: ['example.com'], removed: ['*.example.com'] },
       { field: 'denyHosts', before: 'none', after: 'x.example.com', added: ['x.example.com'], removed: [] },
     ])
+  })
+
+  test('the settings of the managed network are shown key by key', () => {
+    const before = { ...stored, managed: { consent: 'per-guest', subnet: '10.203.118.0/24', detachGrace: '10m0s' } }
+    const after = { ...stored, managed: { consent: 'auto', subnet: '10.203.118.0/24', detachGrace: '10m0s' } }
+    expect(diffSettings(before, after)).toEqual([
+      {
+        field: 'managed',
+        before: 'consent=per-guest, detachGrace=10m0s, subnet=10.203.118.0/24',
+        after: 'consent=auto, detachGrace=10m0s, subnet=10.203.118.0/24',
+      },
+    ])
+    expect(diffSettings(before, { ...before, managed: { ...before.managed } })).toEqual([])
   })
 
   test('the order of a list is no change', () => {

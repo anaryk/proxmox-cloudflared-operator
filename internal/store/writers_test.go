@@ -164,6 +164,26 @@ func TestOpenSweepsOnlyOldTempFiles(t *testing.T) {
 	}
 }
 
+func TestOpenSweepsTheDirectoriesOfTheNetworks(t *testing.T) {
+	p := testPaths(t)
+	old := t0.Add(-time.Hour)
+	var files []string
+	for _, kind := range []string{"networks", "svcaddrs", "ipam", "consents", "attachments"} {
+		files = append(files, filepath.Join(p.Cluster, kind, ".a.json.1.tmp"))
+	}
+	files = append(files, filepath.Join(p.Local, "netns", ".state.json.1.tmp"))
+	for _, f := range files {
+		writeFile(t, f, "x")
+		require.NoError(t, os.Chtimes(f, old, old))
+	}
+
+	_, err := open(p, func() time.Time { return t0 })
+	require.NoError(t, err)
+	for _, f := range files {
+		requireMissing(t, f)
+	}
+}
+
 func TestOpenNeverTouchesTheTunnelDirectory(t *testing.T) {
 	p := testPaths(t)
 	tunnels := filepath.Join(p.Local, "tunnels")

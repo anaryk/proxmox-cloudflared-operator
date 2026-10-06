@@ -40,6 +40,11 @@ function shown(s: Settings, name: keyof Settings): Shown {
     case 'trustStatic':
     case 'observeOnly':
       return { text: String(s[name] === true) }
+    case 'managed': {
+      // As pco settings show writes it: key=value, by key.
+      const keys = Object.entries(s.managed ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      return { text: keys.length > 0 ? keys.map(([k, v]) => `${k}=${String(v)}`).join(', ') : none }
+    }
   }
   return { text: String(s[name]) }
 }

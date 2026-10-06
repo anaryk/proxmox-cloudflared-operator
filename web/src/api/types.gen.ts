@@ -265,6 +265,14 @@ export interface Limit {
   max?: unknown
 }
 
+// store.ManagedSettings
+export interface ManagedSettings {
+  consent: string
+  subnet?: string
+  detachGrace?: string
+  acceptFirewallImpact?: boolean
+}
+
 // engine.ManualRouteView
 export interface ManualRouteView {
   id: string
@@ -415,6 +423,7 @@ export interface Settings {
   maxHostnamesPerGuest: number
   reverifyInterval: string
   cloudflareBudget: number
+  managed?: ManagedSettings
 }
 
 // engine.SettingsView

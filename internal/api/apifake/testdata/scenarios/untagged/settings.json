@@ -12,7 +12,12 @@
     "identityMinimum": "port",
     "maxHostnamesPerGuest": 32,
     "reverifyInterval": "1m0s",
-    "cloudflareBudget": 1000
+    "cloudflareBudget": 1000,
+    "managed": {
+      "consent": "per-guest",
+      "subnet": "10.203.118.0/24",
+      "detachGrace": "10m0s"
+    }
   },
   "readAtStart": [
     "cloudflareBudget",
@@ -27,6 +32,9 @@
     },
     "grace": {
       "min": "30s"
+    },
+    "managed.detachGrace": {
+      "min": "1m0s"
     },
     "maxHostnamesPerGuest": {
       "min": 1

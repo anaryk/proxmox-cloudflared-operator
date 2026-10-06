@@ -30,12 +30,14 @@ the daemon sent, and that is the file `pco settings apply` takes:
     "identityMinimum": "port",
     "maxHostnamesPerGuest": 32,
     "reverifyInterval": "1m0s",
-    "cloudflareBudget": 1000
+    "cloudflareBudget": 1000,
+    "managed": { "consent": "per-guest", "subnet": "10.203.118.0/24", "detachGrace": "10m0s" }
   },
   "readAtStart": ["cloudflareBudget", "gateTag", "trustStatic", "trustedCIDRs"],
   "limits": {
     "cloudflareBudget": { "min": 100, "max": 1150 },
     "grace": { "min": "30s" },
+    "managed.detachGrace": { "min": "1m0s" },
     "maxHostnamesPerGuest": { "min": 1 },
     "pollInterval": { "min": "5s" },
     "reverifyInterval": { "min": "10s", "max": "5m0s" }
@@ -199,6 +201,46 @@ as `1m0s`.
   add up to no more. See [Operations](operations.md#what-cloudflares-rate-limit-costs). The
   web page labels it Cloudflare budget.
 
+## Managed network
+
+The settings of pco's managed network are the keys of one object, `managed`:
+
+```json
+"managed": {
+  "consent": "per-guest",
+  "subnet": "10.203.118.0/24",
+  "detachGrace": "10m0s"
+}
+```
+
+| Setting | Type, default | Accepts | Takes effect | Web UI |
+|---|---|---|---|---|
+| `managed`: `consent` | string, `per-guest` | `per-guest`, `auto` | Next cycle | None; edit the file |
+| `managed`: `subnet` | IPv4 prefix, `10.203.118.0/24` | a `/16` to a `/28` | Next cycle | None; edit the file |
+| `managed`: `detachGrace` | duration, `10m0s` | at least `1m0s` | Next cycle | None; edit the file |
+| `managed`: `acceptFirewallImpact` | boolean, `false` | `true`, `false` | Next cycle | None; edit the file |
+
+- `consent`: which guests get a card on the managed network. `per-guest` gives one to a
+  guest that carries the tag `cf-tunnel-managed` or that an admin approved. `auto` also gives
+  one, without either, to a guest the gate tag admits whose routes need the network. A guest
+  whose Notes say `cf-tunnel-managed=off` gets none in either mode; see
+  [Annotations](annotations.md#refusing-the-managed-network).
+- `subnet`: the addresses of the managed network. pco's own leg has the first, the guests the
+  others up to the last before the broadcast address. A `/16` to a `/28`, written as its
+  network address, as `10.203.118.0/24` and not `10.203.118.1/24`. It may not overlap the
+  service prefix `198.18.0.0/16`, whose addresses the connectors dial, nor a range that never
+  reaches a guest or is set aside: `0.0.0.0/8`, loopback, link-local, multicast, `240.0.0.0/4`,
+  `192.0.0.0/24`, the documentation ranges and `198.18.0.0/15`.
+- `detachGrace`: how long a card stays on a guest after its consent is gone, before pco
+  removes it. Taking a card off changes the guest's hardware, so it waits at least a minute;
+  consent that comes back within the time keeps the card.
+- `acceptFirewallImpact`: in the appliance, the admin's confirmation, for every guest at once,
+  that pco may turn on the firewall of a guest given its card by the tag or by `auto` while
+  another card of that guest has `firewall=1`, which the firewall then filters too. A host
+  ignores it.
+
+A key the file leaves out has its default, and so has one that is empty or zero.
+
 ## Egress filter
 
 The egress filter has no setting in the file. Its two switches are decisions of the admin of
@@ -262,7 +304,7 @@ mistake it is:
 | `reading the settings: <file>: invalid: json: unknown field "denyhost"` | A key the daemon does not know, usually a misspelt one. Settings are read strictly, so that a misspelt `denyhost` cannot silently drop a list that was meant to deny. |
 | `reading the settings: <file>: field "observeOnly" cannot be read as bool` | A value of the wrong type. |
 | `reading the settings: <file>: invalid: time: invalid duration "ten"` | A duration that Go cannot read. |
-| `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` or `manualCIDRs` that is not IPv4, a pattern or zone pin that does not normalise. The problem names the field. |
+| `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` or `manualCIDRs` that is not IPv4, a pattern or zone pin that does not normalise, a `managed` key out of its range. The problem names the field. |
 | `reading the settings: <file> has schema version 2, this build reads 1: ...` | The file was written by a newer version, which an older build never rewrites. |
 
 A value below its minimum is no such mistake. A file that says `pollInterval` below 5

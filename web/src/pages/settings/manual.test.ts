@@ -13,6 +13,8 @@ const routes = manualFixture as unknown as ManualRouteView[]
 
 const omit = (o: object, ...keys: string[]) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)))
 
+const managedWant = 'want an object of consent, subnet, detachGrace and acceptFirewallImpact'
+
 const file = (over: Record<string, unknown> = {}) => JSON.stringify({ rev: 7, settings: stored, manualRoutes: routes, ...over })
 const check = (text: string, current: Settings = stored) => checkImport(text, { current, limits })
 
@@ -87,9 +89,20 @@ describe('reading a file', () => {
     ['allowHosts', ['a.example.com', 3], 'want a list of text'],
     ['zonePins', ['a'], 'want an object of text'],
     ['zonePins', { 'a.example': 1 }, 'want an object of text'],
+    ['managed', 'auto', managedWant],
+    ['managed', { consent: 1 }, managedWant],
+    ['managed', { consent: 'auto', acceptFirewallImpact: 'yes' }, managedWant],
+    ['managed', { consent: 'auto', servicePrefix: '198.18.0.0/16' }, managedWant],
   ])('%s of %j: %s', (name, value, message) => {
     const got = parseImportFile(file({ settings: { ...stored, [name]: value } }))
     expect(got.issues).toEqual([{ where: `settings.${name}`, message }])
+  })
+
+  test('the settings of the managed network are read as they are', () => {
+    const managed = { consent: 'auto', subnet: '10.50.0.0/20', detachGrace: '30m0s', acceptFirewallImpact: true }
+    const got = parseImportFile(file({ settings: { ...stored, managed } }))
+    expect(got.issues).toEqual([])
+    expect(got.file?.settings.managed).toEqual(managed)
   })
 
   test('a list that is null is none', () => {

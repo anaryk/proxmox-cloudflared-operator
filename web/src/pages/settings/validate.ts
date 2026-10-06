@@ -33,6 +33,7 @@ export const settingFields: readonly { name: keyof Settings; optional: boolean }
   { name: 'maxHostnamesPerGuest', optional: false },
   { name: 'reverifyInterval', optional: false },
   { name: 'cloudflareBudget', optional: false },
+  { name: 'managed', optional: true },
 ]
 
 export type Limits = Readonly<Record<string, Limit>>

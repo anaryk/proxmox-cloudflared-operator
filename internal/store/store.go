@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
@@ -40,12 +41,21 @@ const (
 	kindCredentials = "credentials"
 	kindBindings    = "bindings"
 	kindSegments    = "segments"
+	kindNetworks    = "networks"
+	kindSvcAddrs    = "svcaddrs"
+	kindIPAM        = "ipam"
+	kindConsents    = "consents"
+	kindAttachments = "attachments"
+	kindNetns       = "netns"
 
 	idInstall    = "install"
 	idSettings   = "settings"
 	idLeader     = "leader"
 	idTombstones = "tombstones"
 	idPVEToken   = "pve-token"
+	idSvcPool    = "svcpool"
+	idNetState   = "state"
+	idPins       = "pins"
 )
 
 // Store groups the typed accessors over the three roots. It is safe for
@@ -56,6 +66,9 @@ type Store struct {
 	private Dir
 	local   Dir
 	proofs  *proofTimes
+	// netMu makes a check across networks, or across the pool and its
+	// mappings, and the write that follows one step.
+	netMu sync.Mutex
 }
 
 // Open makes the local root, if it is missing, and removes the temporary files
@@ -79,7 +92,8 @@ func open(p Paths, now func() time.Time) (*Store, error) {
 	// What lies under a mount point that is not mounted is not ours to touch.
 	// A refusal to remove a leftover from a read-only root is no failure.
 	if guard == nil || guard() == nil {
-		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals, kindSegments)...)
+		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals, kindSegments,
+			kindNetworks, kindSvcAddrs, kindIPAM, kindConsents, kindAttachments)...)
 		_ = removeStaleTemps(cutoff, tempDirs(p.Private, kindCredentials, kindMeta)...)
 	}
 	return build(p, guard), nil
@@ -147,7 +161,7 @@ func prepareLocal(root string, cutoff time.Time) error {
 	if err := ensureDir(root); err != nil {
 		return fmt.Errorf("creating %s: %w", root, err)
 	}
-	if err := removeStaleTemps(cutoff, tempDirs(root, kindBindings)...); err != nil {
+	if err := removeStaleTemps(cutoff, tempDirs(root, kindBindings, kindNetns)...); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(root, ".probe-*"+tempExt)

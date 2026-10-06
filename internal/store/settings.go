@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -19,7 +21,15 @@ import (
 const (
 	AdmissionTag     = "tag"     // a guest with the gate tag is published
 	AdmissionApprove = "approve" // a guest is published once an admin approved its identity
+)
 
+// The consent modes of ManagedSettings.Consent.
+const (
+	ConsentPerGuest = "per-guest" // a guest with the consent tag, or one an admin approved, gets a card
+	ConsentAuto     = "auto"      // so does a guest the gate tag admits that needs the managed network
+)
+
+const (
 	maxTagLen = 64
 
 	// minPollInterval and minGrace are the least the settings may say. A
@@ -40,7 +50,33 @@ const (
 	// least 50 of them to the dashboard and other tools.
 	minCloudflareBudget = 100
 	maxCloudflareBudget = 1150
+
+	// minDetachGrace is the least time a card of the managed network stays
+	// after its consent went: taking it off changes the guest's hardware.
+	minDetachGrace = time.Minute
+	// A managed subnet is a /16 at most, as the MAC of a managed card holds
+	// the last two octets of its address, and a /28 at least.
+	minSubnetBits = 16
+	maxSubnetBits = 28
 )
+
+// reservedRanges are what a managed subnet may not overlap: the ranges that
+// never reach a guest, and those set aside for documentation and tests.
+var reservedRanges = []struct {
+	prefix netip.Prefix
+	what   string
+}{
+	{netip.MustParsePrefix("0.0.0.0/8"), "this network"},
+	{netip.MustParsePrefix("127.0.0.0/8"), "loopback"},
+	{netip.MustParsePrefix("169.254.0.0/16"), "link-local"},
+	{netip.MustParsePrefix("192.0.0.0/24"), "protocol assignments"},
+	{netip.MustParsePrefix("192.0.2.0/24"), "documentation"},
+	{netip.MustParsePrefix("198.18.0.0/15"), "benchmarking"},
+	{netip.MustParsePrefix("198.51.100.0/24"), "documentation"},
+	{netip.MustParsePrefix("203.0.113.0/24"), "documentation"},
+	{netip.MustParsePrefix("224.0.0.0/4"), "multicast"},
+	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
+}
 
 // FieldError is a setting that is not valid. Field is its path in the JSON of
 // the settings, such as "pollInterval" or "denyHosts[2]".
@@ -74,6 +110,7 @@ func Limits() map[string]Limit {
 		"reverifyInterval":     {Min: Duration(minReverifyInterval), Max: Duration(maxReverifyInterval)},
 		"maxHostnamesPerGuest": {Min: minHostnamesPerGuest},
 		"cloudflareBudget":     {Min: minCloudflareBudget, Max: maxCloudflareBudget},
+		"managed.detachGrace":  {Min: Duration(minDetachGrace)},
 	}
 }
 
@@ -136,6 +173,21 @@ type Settings struct {
 	// CloudflareBudget is how many requests in 5 minutes the clients of one
 	// credential spend at most.
 	CloudflareBudget int `json:"cloudflareBudget"`
+	// Managed are the settings of pco's managed network. The service prefix
+	// has none: it is fixed.
+	Managed ManagedSettings `json:"managed,omitzero"`
+}
+
+// ManagedSettings are the settings of pco's managed network.
+type ManagedSettings struct {
+	Consent     string       `json:"consent"`               // per-guest or auto
+	Subnet      netip.Prefix `json:"subnet,omitzero"`       // default 10.203.118.0/24
+	DetachGrace Duration     `json:"detachGrace,omitempty"` // default 10m, at least 1m
+	// AcceptFirewallImpact is the admin's standing confirmation that pco may
+	// turn on the guest firewall of a guest consented by the tag or
+	// automatically whose other card has firewall=1, which the firewall then
+	// filters too. The appliance reads it; a host ignores it.
+	AcceptFirewallImpact bool `json:"acceptFirewallImpact,omitempty"`
 }
 
 // DefaultSettings returns the settings of a fresh install, which only
@@ -151,6 +203,11 @@ func DefaultSettings() Settings {
 		MaxHostnamesPerGuest: model.DefaultMaxHostnamesPerGuest,
 		ReverifyInterval:     Duration(time.Minute),
 		CloudflareBudget:     cfapi.DefaultBudget,
+		Managed: ManagedSettings{
+			Consent:     ConsentPerGuest,
+			Subnet:      netip.MustParsePrefix("10.203.118.0/24"),
+			DetachGrace: Duration(10 * time.Minute),
+		},
 	}
 }
 
@@ -231,7 +288,60 @@ func (s Settings) normalized() (Settings, error) {
 	if s.ZonePins, err = normalizePins(s.ZonePins); err != nil {
 		return Settings{}, err
 	}
+	if s.Managed, err = s.Managed.normalized(); err != nil {
+		return Settings{}, err
+	}
 	return s, nil
+}
+
+// normalized returns m with every field it leaves out, or that is zero, at
+// its default, or a *FieldError naming the first field that is invalid.
+// Whether the subnet may change, and whether it overlaps a route of a node,
+// an address of a guest or an attached network, is the engine's to check:
+// the store sees none of them.
+func (m ManagedSettings) normalized() (ManagedSettings, error) {
+	d := DefaultSettings().Managed
+	m.Consent = cmp.Or(m.Consent, d.Consent)
+	if m.Subnet == (netip.Prefix{}) {
+		m.Subnet = d.Subnet
+	}
+	if m.DetachGrace == 0 {
+		m.DetachGrace = d.DetachGrace
+	}
+	if m.Consent != ConsentPerGuest && m.Consent != ConsentAuto {
+		return ManagedSettings{}, invalid("managed.consent", "managed.consent %q: want %q or %q", m.Consent, ConsentPerGuest, ConsentAuto)
+	}
+	if err := checkManagedSubnet(m.Subnet); err != nil {
+		return ManagedSettings{}, err
+	}
+	if grace := time.Duration(m.DetachGrace); grace < minDetachGrace {
+		return ManagedSettings{}, invalid("managed.detachGrace", "managed.detachGrace %s: at least %s", grace, minDetachGrace)
+	}
+	return m, nil
+}
+
+// checkManagedSubnet refuses a managed subnet that is no IPv4 prefix of a /16
+// to a /28 written as its network address, and one that overlaps the service
+// prefix or a reserved range.
+func checkManagedSubnet(p netip.Prefix) error {
+	const field = "managed.subnet"
+	service := appnet.ServicePrefix
+	switch {
+	case !p.IsValid() || !p.Addr().Is4():
+		return invalid(field, "%s %s: want an IPv4 prefix", field, p)
+	case p.Bits() < minSubnetBits || p.Bits() > maxSubnetBits:
+		return invalid(field, "%s %s: want a length from /%d to /%d", field, p, minSubnetBits, maxSubnetBits)
+	case p != p.Masked():
+		return invalid(field, "%s %s: want the address of the network, %s", field, p, p.Masked())
+	case p.Overlaps(service):
+		return invalid(field, "%s %s: overlaps the service prefix %s", field, p, service)
+	}
+	for _, r := range reservedRanges {
+		if p.Overlaps(r.prefix) {
+			return invalid(field, "%s %s: overlaps %s (%s)", field, p, r.prefix, r.what)
+		}
+	}
+	return nil
 }
 
 // ValidateTag checks a gate tag as the settings take it: a tag Proxmox

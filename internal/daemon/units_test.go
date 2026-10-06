@@ -163,6 +163,8 @@ func change(t *testing.T, v reflect.Value) {
 		m := reflect.MakeMap(v.Type())
 		m.SetMapIndex(reflect.ValueOf("x"), reflect.ValueOf("y"))
 		v.Set(m)
+	case reflect.Struct:
+		change(t, v.Field(0))
 	default:
 		t.Fatalf("no change for a field of kind %s", v.Kind())
 	}

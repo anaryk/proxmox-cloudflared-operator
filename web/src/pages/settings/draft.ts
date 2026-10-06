@@ -61,7 +61,8 @@ function pins(text: string): [string, string][] {
   return out
 }
 
-// The settings the daemon leaves out when they are empty: the form sets them again.
+// The settings the daemon leaves out when they are empty: the form sets again
+// those it edits.
 const optional = new Set<string>(settingFields.filter((f) => f.optional).map((f) => f.name))
 
 const normalized = (list: string[], normalize: (s: string) => { value?: string }) => list.map((p) => normalize(p).value ?? p)
@@ -77,7 +78,7 @@ export function settingsOf(d: Draft, base?: Settings): Settings {
   const manualCIDRs = entries(d.manualCIDRs)
   const zonePins = Object.fromEntries(pins(d.zonePins).map(([zone, id]) => [normalizeHostname(zone).value ?? zone, id]))
   return {
-    ...Object.fromEntries(Object.entries(base ?? {}).filter(([name]) => !optional.has(name))),
+    ...Object.fromEntries(Object.entries(base ?? {}).filter(([name]) => !(optional.has(name) && name in d))),
     gateTag: d.gateTag,
     pollInterval: d.pollInterval.trim(),
     grace: d.grace.trim(),
