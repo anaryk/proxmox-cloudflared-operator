@@ -29,6 +29,12 @@ test('a sign-out holds until the page signs in again', () => {
   expect(m.answer('GET', '/api/v1/state', {}).status).toBe(200)
 })
 
+test('the doctor answers with its findings, though it is a POST', () => {
+  const a = new Mock().answer('POST', '/api/v1/doctor', {})
+  expect(a.status).toBe(200)
+  expect((a.body as { check: string; level: string }[]).map((f) => f.level)).toContain('fail')
+})
+
 test('writes change nothing; an unknown read is not found', () => {
   const m = new Mock()
   expect(m.answer('POST', '/api/v1/apply', {})).toMatchObject({ status: 503, body: { code: 'unavailable' } })

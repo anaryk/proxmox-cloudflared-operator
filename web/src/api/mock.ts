@@ -83,6 +83,8 @@ export class Mock {
         return { status: 204 }
     }
     if (this.signedOut && pathname.startsWith('/api/v1/')) return { status: 401, body: fixture('unauthenticated') }
+    // the doctor is a POST that changes nothing
+    if (method === 'POST' && pathname === '/api/v1/doctor') return { status: 200, body: fixture('doctor') }
     if (method !== 'GET') {
       return { status: 503, body: { error: 'the development server changes nothing: try again on a node', code: 'unavailable' } }
     }

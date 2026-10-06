@@ -58,6 +58,38 @@ function rogue(populated) {
   }
 }
 
+// doctorFindings is what GET /v1/doctor answers an admin for the populated
+// state, in the words internal/doctor writes: a failure with a command to
+// run, warnings whose fix is a command, advice in words and a placeholder,
+// and checks that passed.
+function doctorFindings() {
+  return [
+    { check: 'mode', level: 'ok', detail: 'enforce: changes are applied' },
+    { check: 'cycle', level: 'ok', detail: 'the last cycle ran 8s ago' },
+    { check: 'problems', level: 'fail', detail: '1 problem: a problem', fix: 'pco status' },
+    {
+      check: 'egress',
+      level: 'fail',
+      detail: 'the egress filter is switched off since 2026-10-01T11:00:00Z: the connectors are not confined',
+      fix: 'pco egress on',
+    },
+    { check: 'connector pco-abc123', level: 'fail', detail: 'not connected to Cloudflare', fix: 'journalctl -u pco-cloudflared@pco-abc123' },
+    { check: 'credential cred1', level: 'warn', detail: 'not checked yet', fix: 'pco credential check cred1' },
+    { check: 'approval lxc/201', level: 'warn', detail: 'new-1 (lxc/201) waits for approval', fix: 'pco guest approve lxc/201' },
+    { check: 'approval lxc/202', level: 'warn', detail: 'dns-1 (lxc/202) waits for approval', fix: 'pco guest approve lxc/202' },
+    {
+      check: 'waiting',
+      level: 'warn',
+      detail: '4 things wait for a confirmation: mass delete guard: 7 of 9 records are being removed',
+      fix: 'pco apply --confirm-deletes',
+    },
+    { check: 'conflicts', level: 'warn', detail: '1 record of someone else stands in the way: api.example.com', fix: 'pco adopt <name>' },
+    { check: 'writer', level: 'ok', detail: 'this daemon writes the tunnel configuration' },
+    { check: 'cloudflared', level: 'ok', detail: 'cloudflared 2026.9.3' },
+    { check: 'proxmox', level: 'ok', detail: 'Proxmox VE 9.0' },
+  ]
+}
+
 // traffic is the answer of GET /v1/traffic for a state: 15 minutes of samples
 // for each tunnel that has a connector, and a figure for each active route.
 export function trafficOf(state, at = state.at) {
@@ -148,6 +180,9 @@ export function fixtures() {
     claims: read('internal/engine/testdata/claims.json'),
     approvals: read('internal/engine/testdata/approvals.json'),
     'apply-result': read('internal/engine/testdata/apply_result.json'),
+    // doctor.Finding for an admin, wire.DoctorCounts for a reader
+    doctor: doctorFindings(),
+    'doctor-counts': read('internal/web/wire/testdata/doctor_counts.json'),
     // pco web's own
     session: read('internal/web/wire/testdata/session.json'),
     unauthenticated: read('internal/web/wire/testdata/unauthenticated.json'),
