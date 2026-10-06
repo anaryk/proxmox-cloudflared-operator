@@ -15,6 +15,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/present"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/upgrade"
 )
 
 func (a *app) daemonCmd() *cobra.Command {
@@ -78,6 +79,12 @@ func (a *app) daemonCmd() *cobra.Command {
 				log.Warn().Msg(line)
 				cfg.Problems = append(cfg.Problems, line)
 				deps.CloudflareURL = override
+			}
+			// The daemon upgrades nothing; a drop-in that sets these marks a
+			// machine set up for tests, and every state says so.
+			if upgrade.Overridden(a.getenv) {
+				log.Warn().Msg(upgrade.OverrideLine)
+				cfg.Problems = append(cfg.Problems, upgrade.OverrideLine)
 			}
 			ctx, stop := signalContext(cmd.Context(), osSignals{}, os.Interrupt, syscall.SIGTERM)
 			defer stop()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +56,8 @@ type env struct {
 	// daemon is what pco daemon is run with: the parts of the daemon that a
 	// test replaces.
 	daemon daemon.Deps
+	// upgrade is what pco upgrade works with.
+	upgrade upgradeEnv
 }
 
 func defaultEnv() env {
@@ -76,6 +79,7 @@ func defaultEnv() env {
 		},
 		getenv:      os.Getenv,
 		profileFile: store.ProfileFile,
+		upgrade:     defaultUpgradeEnv(),
 	}
 }
 
@@ -103,7 +107,8 @@ func newRootCmdWith(e env) *cobra.Command {
 	flags.BoolVar(&a.json, "json", false,
 		"print the answer of the daemon as JSON (status, routes, plan, events, claims list, guest list, diagnose, "+
 			"doctor, credential list, add and check, settings show and apply, route manual list and add): printed as "+
-			"the daemon sent it, re-indented, with control and bidirectional characters escaped")
+			"the daemon sent it, re-indented, with control and bidirectional characters escaped; "+
+			"version prints the build and the schema version of the store")
 
 	root.AddCommand(
 		a.versionCmd(),
@@ -130,6 +135,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.netCmd(),
 		a.webCmd(),
 		a.applianceCmd(),
+		a.upgradeCmd(),
 	)
 	return root
 }
@@ -138,15 +144,36 @@ func (a *app) versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the build version",
+		Long: "Print the build version. With --json it is a JSON object that also names the schema\n" +
+			"version of the store this build reads and writes, which pco upgrade --rollback asks the\n" +
+			"pco it would go back to.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := a.noJSON(cmd); err != nil {
-				return err
+			if a.json {
+				return printVersionJSON(cmd.OutOrStdout())
 			}
 			s := &screen{w: cmd.OutOrStdout()}
 			s.printf("pco %s (%s, %s)\n", version.Version, version.Commit, version.Date)
 			return s.done()
 		},
 	}
+}
+
+// versionJSON is what pco version --json prints.
+type versionJSON struct {
+	Version       string `json:"version"`
+	Commit        string `json:"commit"`
+	Date          string `json:"date"`
+	SchemaVersion int    `json:"schemaVersion"` // of the store
+}
+
+func printVersionJSON(w io.Writer) error {
+	raw, err := json.Marshal(versionJSON{
+		Version: version.Version, Commit: version.Commit, Date: version.Date, SchemaVersion: store.SchemaVersion(),
+	})
+	if err != nil {
+		return err
+	}
+	return printJSON(w, raw)
 }
 
 // noJSON is the check of a command that has no answer of the daemon to print:

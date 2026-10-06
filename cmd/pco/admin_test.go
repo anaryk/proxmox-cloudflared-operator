@@ -409,7 +409,6 @@ func TestJSONMeansNothingToACommandWithoutAnAnswerToPrint(t *testing.T) {
 		{[]string{"segment", "acknowledge", "vmbr1", "--yes"}, "pco segment acknowledge"},
 		{[]string{"segment", "revoke", "vmbr1", "--yes"}, "pco segment revoke"},
 		{[]string{"daemon"}, "pco daemon"},
-		{[]string{"version"}, "pco version"},
 	} {
 		t.Run(tt.path, func(t *testing.T) {
 			r, e := daemonWith(t, planState())

@@ -1,0 +1,6 @@
+dpkg-query --show --showformat=${db:Status-Abbrev}${Version} pco
+dpkg-deb -x $WORK/previous/pco_1.2.3_amd64.deb $WORK/.extract-*
+$WORK/.extract-*/usr/bin/pco version --json
+$WORK/.extract-*/usr/bin/pco version
+apt-get install -y --allow-change-held-packages --allow-downgrades $WORK/previous/pco_1.2.3_amd64.deb
+apt-mark hold pco cloudflared

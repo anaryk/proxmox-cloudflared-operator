@@ -45,6 +45,7 @@ test-scripts:
 	bash scripts/install_test.sh
 	bash scripts/check-refs_test.sh
 	bash packaging/release-key_test.sh
+	bash packaging/release-key-file_test.sh
 	bash packaging/is-latest_test.sh
 	bash packaging/check-artifacts_test.sh
 	bash packaging/release-workflow_test.sh

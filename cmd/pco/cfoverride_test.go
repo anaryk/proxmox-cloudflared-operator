@@ -139,10 +139,41 @@ func (m meAsWeb) LookupGroup(name string) (*user.Group, error) {
 }
 
 // A daemon whose Cloudflare is overridden says so at its start and in every
-// state, and talks to the override. Proxmox is a server of the test that
-// refuses every request; the rest of the host is faked as in the test of the
-// signals.
+// state, and talks to the override.
 func TestTheDaemonWarnsOfTheOverrideAndCarriesItAsAProblem(t *testing.T) {
+	d := startOverriddenDaemon(t, nil)
+	line := "the Cloudflare API is overridden to " + d.override + " (PCO_CLOUDFLARE_API_URL); this is for tests only"
+
+	require.Contains(t, d.errOut.String(), `"level":"warn"`)
+	require.Contains(t, d.errOut.String(), line)
+	require.Eventually(t, func() bool {
+		st, err := d.client.Status(t.Context())
+		return err == nil && !st.FinishedAt.IsZero() && containsLine(st, line)
+	}, 10*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		for _, c := range d.fake.Calls() {
+			if c == "VerifyToken" {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 10*time.Millisecond, "the daemon checks the token of the credential at the override")
+}
+
+// overriddenDaemon is a daemon of a test that runs until the test ends.
+type overriddenDaemon struct {
+	override string // the Cloudflare API it talks to
+	fake     *cffake.Fake
+	errOut   *testutil.SyncBuffer
+	client   *apiclient.Client
+}
+
+// startOverriddenDaemon starts a daemon whose Cloudflare is a fake through
+// PCO_CLOUDFLARE_API_URL, with more variables in its environment, and waits
+// until it is ready. Proxmox is a server of the test that refuses every
+// request; the rest of the host is faked as in the test of the signals.
+func startOverriddenDaemon(t *testing.T, vars map[string]string) overriddenDaemon {
+	t.Helper()
 	proxmox := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"message":"no ticket"}`, http.StatusUnauthorized)
 	}))
@@ -151,7 +182,6 @@ func TestTheDaemonWarnsOfTheOverrideAndCarriesItAsAProblem(t *testing.T) {
 	cf := httptest.NewServer(cffake.Handler(fake))
 	t.Cleanup(cf.Close)
 	override := cf.URL + "/client/v4"
-	line := "the Cloudflare API is overridden to " + override + " (PCO_CLOUDFLARE_API_URL); this is for tests only"
 
 	base := testutil.ShortDir(t)
 	paths, err := daemon.StorePaths(store.ProfileHost, filepath.Join(base, "cluster"), filepath.Join(base, "private"), filepath.Join(base, "local"))
@@ -167,11 +197,16 @@ func TestTheDaemonWarnsOfTheOverrideAndCarriesItAsAProblem(t *testing.T) {
 
 	notify := &readyNotifier{ready: make(chan struct{})}
 	r := newRunner(t, filepath.Join(base, "run", "pco", "pco.sock"))
-	r.env = withOverride(r.env, override)
+	r.env.getenv = func(name string) string {
+		if name == "PCO_CLOUDFLARE_API_URL" {
+			return override
+		}
+		return vars[name]
+	}
 	r.env.daemon = daemon.Deps{Notifier: notify, Accounts: meAsWeb{me}, Systemd: noSystemd{}, Prober: noProber{}}
 	cmd := newRootCmdWith(r.env)
-	var errOut testutil.SyncBuffer
-	cmd.SetErr(&errOut)
+	errOut := &testutil.SyncBuffer{}
+	cmd.SetErr(errOut)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetArgs([]string{
 		"--socket", r.socket, "daemon",
@@ -191,22 +226,7 @@ func TestTheDaemonWarnsOfTheOverrideAndCarriesItAsAProblem(t *testing.T) {
 	case err := <-done:
 		t.Fatalf("the daemon ended before it was ready: %v\n%s", err, errOut.String())
 	}
-
-	require.Contains(t, errOut.String(), `"level":"warn"`)
-	require.Contains(t, errOut.String(), line)
-	client := apiclient.New(r.socket)
-	require.Eventually(t, func() bool {
-		st, err := client.Status(ctx)
-		return err == nil && !st.FinishedAt.IsZero() && containsLine(st, line)
-	}, 10*time.Second, 10*time.Millisecond)
-	require.Eventually(t, func() bool {
-		for _, c := range fake.Calls() {
-			if c == "VerifyToken" {
-				return true
-			}
-		}
-		return false
-	}, 10*time.Second, 10*time.Millisecond, "the daemon checks the token of the credential at the override")
+	return overriddenDaemon{override: override, fake: fake, errOut: errOut, client: apiclient.New(r.socket)}
 }
 
 func containsLine(st engine.State, line string) bool {
