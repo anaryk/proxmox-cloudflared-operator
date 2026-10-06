@@ -11,8 +11,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -376,7 +376,7 @@ func (m ManagedSettings) check() error {
 // prefix or a reserved range.
 func checkManagedSubnet(p netip.Prefix) error {
 	const field = "managed.subnet"
-	service := appnet.ServicePrefix
+	service := gateway.ServicePrefix
 	switch {
 	case p == (netip.Prefix{}):
 		return invalid(field, "%s is empty: want an IPv4 prefix such as %s", field, DefaultSettings().Managed.Subnet)

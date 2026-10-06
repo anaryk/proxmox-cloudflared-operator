@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
@@ -120,7 +119,7 @@ func (n Network) checkID() error {
 // network address, or that overlaps the service prefix, whose addresses the
 // connectors dial.
 func (n Network) checkPrefix() error {
-	p, service := n.Prefix, appnet.ServicePrefix
+	p, service := n.Prefix, gateway.ServicePrefix
 	switch {
 	case !p.IsValid() || !p.Addr().Is4():
 		return fmt.Errorf("network %s: prefix %s: want an IPv4 prefix", n.ID, p)

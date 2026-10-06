@@ -9,7 +9,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 )
 
 // ErrPoolExhausted is the error of an allocation once every address of the
@@ -43,7 +43,7 @@ func serviceAddrID(network string, addr netip.Addr) string { return network + "-
 // poolBounds returns the first address of the pool, the address right after
 // its last, and its size: the service prefix above its transit block.
 func poolBounds() (first, end netip.Addr, size int) {
-	p := appnet.ServicePrefix
+	p := gateway.ServicePrefix
 	base := addrUint(p.Masked().Addr())
 	span := uint32(1) << (32 - p.Bits())
 	return uintAddr(base + transitBlock), uintAddr(base + span), int(span - transitBlock)
