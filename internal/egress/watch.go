@@ -43,6 +43,8 @@ type entry struct {
 	mac    net.HardwareAddr
 	bridge string // of a forwarding table entry: the bridge, and the port that learned the MAC
 	port   string
+	vlan   int  // of a forwarding table entry: the VLAN it is in, 0 on a bridge that has none
+	gone   bool // of a forwarding table entry: the bridge dropped it
 }
 
 // moved returns, sorted, the bound addresses e shows moved: the neighbour
