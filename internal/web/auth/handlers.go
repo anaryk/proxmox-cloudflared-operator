@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -46,6 +47,9 @@ type Auth struct {
 	tickets     *ticketChecks
 	tokenChecks flight[string, Role] // by session id
 	limit       *limiter
+
+	endsMu sync.Mutex
+	ends   []func(id string)
 }
 
 // New returns the sessions of the web process, checked with p.
@@ -331,7 +335,9 @@ func (a *Auth) signInRefused(c *gin.Context, p Principal, why string, status int
 	refuse(c, status, body)
 }
 
+// signedOut logs a session that ended, and tells whoever asked to know.
 func (a *Auth) signedOut(c *gin.Context, s Session, result string) {
 	a.cfg.Log.Info().Str("user", s.Principal.User).Str("method", s.Principal.Method).
 		Str("client", client(c.Request)).Str("result", result).Msg("sign-out")
+	a.ended(s.ID)
 }
