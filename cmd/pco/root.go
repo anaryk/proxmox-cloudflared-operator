@@ -13,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/applianceinstall"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/daemon"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/version"
@@ -82,6 +83,9 @@ type env struct {
 	daemon daemon.Deps
 	// upgrade is what pco upgrade works with.
 	upgrade upgradeEnv
+	// grantNetwork is what pco appliance grant-network and network allow do
+	// once the flags are read; nil is the installer's.
+	grantNetwork func(ctx context.Context, in *applianceinstall.Installer, o applianceinstall.NetworkOptions) error
 }
 
 func defaultEnv() env {

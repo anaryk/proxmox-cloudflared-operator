@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,17 +89,48 @@ func TestApplianceNodeCommandsRefuseInsideTheAppliance(t *testing.T) {
 		{"appliance", "uninstall", "--vmid", "120", "--yes"},
 		{"appliance", "grant-network", "--vmid", "120", "--bridge", "vmbr1", "--yes"},
 		{"appliance", "revoke-network", "--vmid", "120", "--bridge", "vmbr1", "--yes"},
+		{"appliance", "network", "allow", "vmbr1", "--vmid", "120", "--yes"},
+		{"appliance", "managed", "enable", "--vmid", "120", "--yes"},
 	} {
-		t.Run(args[1], func(t *testing.T) {
+		name := strings.Join(slices.DeleteFunc(slices.Clone(args[1:]), func(a string) bool { return strings.HasPrefix(a, "-") || a == "120" || a == "vmbr1" }), " ")
+		t.Run(name, func(t *testing.T) {
 			r := newRunner(t, filepath.Join(t.TempDir(), "pco", "pco.sock"))
 			r.env.profileFile = filepath.Join(t.TempDir(), "profile")
 			require.NoError(t, os.WriteFile(r.env.profileFile, []byte("appliance\n"), 0o600))
 
 			res := r.runReader(unreadable{t}, args...)
 
-			require.EqualError(t, res.err, "pco appliance "+args[1]+" runs on the Proxmox VE node, not inside the appliance")
+			require.EqualError(t, res.err, "pco appliance "+name+" runs on the Proxmox VE node, not inside the appliance")
 		})
 	}
+}
+
+// network allow is grant-network with the bridge and the VLAN in one
+// argument: both reach the same function with the same options.
+func TestNetworkAllowIsGrantNetwork(t *testing.T) {
+	var calls []applianceinstall.NetworkOptions
+	r := newRunner(t, filepath.Join(t.TempDir(), "pco", "pco.sock"))
+	r.env.grantNetwork = func(_ context.Context, in *applianceinstall.Installer, o applianceinstall.NetworkOptions) error {
+		require.NotNil(t, in)
+		calls = append(calls, o)
+		return nil
+	}
+
+	require.NoError(t, r.runReader(unreadable{t}, "appliance", "grant-network", "--vmid", "120", "--bridge", "vmbr1", "--vlan", "20", "--yes").err)
+	require.Len(t, calls, 1)
+	require.NoError(t, r.runReader(unreadable{t}, "appliance", "network", "allow", "vmbr1:20", "--vmid", "120", "--yes").err)
+	require.Len(t, calls, 2)
+	require.Equal(t, calls[0], calls[1])
+	require.Equal(t, applianceinstall.NetworkOptions{VMID: 120, Bridge: "vmbr1", VLAN: 20, Yes: true}, calls[1])
+
+	require.NoError(t, r.runReader(unreadable{t}, "appliance", "network", "allow", "vmbr2", "--vmid", "120", "--yes").err)
+	require.Equal(t, applianceinstall.NetworkOptions{VMID: 120, Bridge: "vmbr2", Yes: true}, calls[2])
+
+	for _, arg := range []string{"vmbr1:abc", "vmbr1:0", "vmbr1:4095", ":20", "vmbr1:"} {
+		res := r.runReader(unreadable{t}, "appliance", "network", "allow", arg, "--vmid", "120", "--yes")
+		require.EqualError(t, res.err, fmt.Sprintf("%q: want <bridge> or <bridge>:<vlan>, the VLAN a number from 1 to 4094", arg))
+	}
+	require.Len(t, calls, 3, "a refused argument reaches nothing")
 }
 
 func TestApplianceCommandsOfTheInstallerRefuseOnTheHost(t *testing.T) {
@@ -126,7 +160,7 @@ func TestApplianceInstallerCommandsAreDocumented(t *testing.T) {
 	for _, c := range appliance.Commands() {
 		byName[c.Name()] = c
 	}
-	for _, name := range []string{"install", "repair", "uninstall", "grant-network", "revoke-network"} {
+	for _, name := range []string{"install", "repair", "uninstall", "grant-network", "revoke-network", "network", "managed"} {
 		c := byName[name]
 		require.NotNil(t, c, name)
 		require.False(t, c.Hidden, name)

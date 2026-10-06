@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,6 +23,8 @@ func (a *app) applianceNodeCmds() []*cobra.Command {
 		a.applianceUninstallCmd(),
 		a.applianceGrantCmd(),
 		a.applianceRevokeCmd(),
+		a.applianceNetworkCmd(),
+		a.applianceManagedCmd(),
 		a.appliancePurgeCmd(),
 		a.applianceManifestCmd(),
 	}
@@ -358,15 +361,157 @@ func (a *app) applianceGrantCmd() *cobra.Command {
 		Long:    grantLong,
 		Example: grantExample,
 		Args:    cobra.NoArgs,
+		RunE:    func(cmd *cobra.Command, _ []string) error { return a.grantNetwork(cmd, o) },
+	}
+	networkFlags(cmd, &o)
+	return cmd
+}
+
+// grantNetwork is pco appliance grant-network, which network allow runs as
+// well.
+func (a *app) grantNetwork(cmd *cobra.Command, o applianceinstall.NetworkOptions) error {
+	in, err := a.networkInstaller(cmd, o.Yes)
+	if err != nil {
+		return err
+	}
+	if a.env.grantNetwork != nil {
+		return a.env.grantNetwork(cmd.Context(), in, o)
+	}
+	return in.GrantNetworkCommand(cmd.Context(), o)
+}
+
+// applianceNetworkCmd is pco appliance network, the short forms of the
+// network grants.
+func (a *app) applianceNetworkCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "network",
+		Short: "Grant the appliance a bridge or vnet, in short",
+		Long: "Grant the appliance a bridge or vnet, in short: pco appliance network allow is\n" +
+			"pco appliance grant-network with the bridge and the VLAN in one argument.",
+		Example: "  # Let the appliance attach a card to VLAN 20 of vmbr1\n" +
+			"  pco appliance network allow vmbr1:20 --vmid 120\n\n" +
+			"  # The whole of the plain bridge vmbr2, without a question\n" +
+			"  pco appliance network allow vmbr2 --vmid 120 --yes",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			return cmd.Help()
+		},
+	}
+	cmd.AddCommand(a.applianceNetworkAllowCmd())
+	return cmd
+}
+
+func (a *app) applianceNetworkAllowCmd() *cobra.Command {
+	var o applianceinstall.NetworkOptions
+	cmd := &cobra.Command{
+		Use:   "allow <bridge>[:<vlan>]",
+		Short: "Grant the appliance a bridge or vnet, or one VLAN of it",
+		Long: "The same as pco appliance grant-network --bridge <bridge> [--vlan <vlan>]: it grants the\n" +
+			"appliance the bridge or vnet, or the VLAN after the colon, with the lines, the question and\n" +
+			"the record in the manifest of grant-network. It runs as root on the node and exits 0 once\n" +
+			"the grant holds, 1 otherwise.",
+		Example: "  # The plain bridge vmbr1\n" +
+			"  pco appliance network allow vmbr1 --vmid 120\n\n" +
+			"  # VLAN 20 of the VLAN-aware bridge vmbr2, without a question\n" +
+			"  pco appliance network allow vmbr2:20 --vmid 120 --yes",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bridge, vlan, err := parseBridgeVLAN(args[0])
+			if err != nil {
+				return err
+			}
+			o.Bridge, o.VLAN = bridge, vlan
+			return a.grantNetwork(cmd, o)
+		},
+	}
+	flags := cmd.Flags()
+	flags.IntVar(&o.VMID, "vmid", 0, "the VMID of the appliance")
+	flags.BoolVarP(&o.Yes, "yes", "y", false, "do not ask (needed without a terminal)")
+	_ = cmd.MarkFlagRequired("vmid")
+	return cmd
+}
+
+// parseBridgeVLAN reads <bridge> or <bridge>:<vlan>.
+func parseBridgeVLAN(s string) (string, int, error) {
+	bridge, tag, tagged := strings.Cut(s, ":")
+	if !tagged {
+		return bridge, 0, nil
+	}
+	vlan, err := strconv.Atoi(tag)
+	if err != nil || bridge == "" || vlan < 1 || vlan > 4094 {
+		return "", 0, fmt.Errorf("%q: want <bridge> or <bridge>:<vlan>, the VLAN a number from 1 to 4094", s)
+	}
+	return bridge, vlan, nil
+}
+
+const managedEnableLong = "Make the managed network of an appliance on this node: pco's own SDN vnet pconet in the\n" +
+	"zone pco of type simple, without a subnet and without isolated ports, as the appliance's own\n" +
+	"card is a port of it and the guest firewall isolates the guests. First it reads the node's\n" +
+	"firewall: it refuses the nftables backend (nftables: 1 in the node's firewall options), a\n" +
+	"datacenter firewall that is off, and pve-firewall not running, each before anything is made.\n" +
+	"Then it takes the lock of the SDN configuration, refuses changes of others that are pending\n" +
+	"unless --confirm-sdn-apply applies them along, makes the zone and the vnet where they are\n" +
+	"missing, each noted in the appliance's manifest first, and asks before the apply, which\n" +
+	"reloads the network on every node. Last it grants the appliance the vnet as grant-network\n" +
+	"does: role PCOManaged on the appliance and role PCOSDN on /sdn/zones/pco/pconet, for user\n" +
+	"pco@pve and the appliance's token, and asks; --yes answers both questions.\n\n" +
+	"--pool <name> grants role PCOManaged on /pool/<name> as well: the appliance's token may then\n" +
+	"change the network cards and the firewall of every guest in that pool, so that automatic\n" +
+	"consent attaches them without a pveum line per guest. It is never granted on /.\n\n" +
+	"The appliance must run, as its manifest notes what is made. Inside it, pco network managed\n" +
+	"enable then takes the network into the store. It runs as root on the node and exits 0 once\n" +
+	"the vnet is there and granted, 1 otherwise."
+
+const managedEnableExample = `  # Make the managed network of the appliance in container 120
+  pco appliance managed enable --vmid 120
+
+  # Without a question, and grant the cards of the guests in pool web too
+  pco appliance managed enable --vmid 120 --pool web --yes`
+
+// applianceManagedCmd is pco appliance managed, run on the node.
+func (a *app) applianceManagedCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "managed",
+		Short: "Make the managed network of the appliance",
+		Long: "Make the managed network of the appliance from the node: the SDN vnet pconet and the grants\n" +
+			"the appliance needs to put cards on it. pco appliance managed enable does it.",
+		Example: "  # Make the managed network of the appliance in container 120\n" +
+			"  pco appliance managed enable --vmid 120\n\n" +
+			"  # Then, inside the appliance, take it into the store\n" +
+			"  pct exec 120 -- pco network managed enable",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			return cmd.Help()
+		},
+	}
+	var o applianceinstall.ManagedOptions
+	enable := &cobra.Command{
+		Use:     "enable",
+		Short:   "Make the SDN vnet of the managed network and grant it to the appliance",
+		Long:    managedEnableLong,
+		Example: managedEnableExample,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			in, err := a.networkInstaller(cmd, o.Yes)
 			if err != nil {
 				return err
 			}
-			return in.GrantNetworkCommand(cmd.Context(), o)
+			return in.ManagedEnableCommand(cmd.Context(), o)
 		},
 	}
-	networkFlags(cmd, &o)
+	flags := enable.Flags()
+	flags.IntVar(&o.VMID, "vmid", 0, "the VMID of the appliance")
+	flags.StringVar(&o.Pool, "pool", "", "grant the appliance the network cards and the firewall of every guest in this pool as well")
+	flags.BoolVar(&o.ConfirmSDNApply, "confirm-sdn-apply", false, "apply the changes of others that are pending in the SDN along with pco's")
+	flags.BoolVarP(&o.Yes, "yes", "y", false, "apply and grant without asking (needed without a terminal)")
+	_ = enable.MarkFlagRequired("vmid")
+	cmd.AddCommand(enable)
 	return cmd
 }
 

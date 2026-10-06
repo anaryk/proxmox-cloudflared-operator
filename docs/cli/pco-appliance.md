@@ -2,8 +2,8 @@
 
 Commands of the pco appliance, the container that runs pco and its connectors on a
 Proxmox VE node in place of the host install. Of its commands, install, repair, uninstall,
-grant-network and revoke-network run as root on the node, and init and recover as root
-inside the appliance.
+grant-network, revoke-network, network allow and managed enable run as root on the node,
+and init and recover as root inside the appliance.
 
 ## Usage
 
@@ -27,6 +27,8 @@ pco appliance recover
 - [pco appliance grant-network](pco-appliance-grant-network.md): Grant the appliance a bridge or vnet to attach cards to
 - [pco appliance init](pco-appliance-init.md): Make the store of this appliance from the bootstrap the installer pushed
 - [pco appliance install](pco-appliance-install.md): Install the pco appliance on this node
+- [pco appliance managed](pco-appliance-managed.md): Make the managed network of the appliance
+- [pco appliance network](pco-appliance-network.md): Grant the appliance a bridge or vnet, in short
 - [pco appliance recover](pco-appliance-recover.md): Draw a writer epoch above the last write at Cloudflare, after a rollback or a restore
 - [pco appliance repair](pco-appliance-repair.md): Repair the appliance after a restore or a changed certificate
 - [pco appliance revoke-network](pco-appliance-revoke-network.md): Take back the grant of a bridge or vnet from the appliance

@@ -112,6 +112,10 @@ pco help route manual add
   - [pco appliance grant-network](pco-appliance-grant-network.md): Grant the appliance a bridge or vnet to attach cards to
   - [pco appliance init](pco-appliance-init.md): Make the store of this appliance from the bootstrap the installer pushed
   - [pco appliance install](pco-appliance-install.md): Install the pco appliance on this node
+  - [pco appliance managed](pco-appliance-managed.md): Make the managed network of the appliance
+    - [pco appliance managed enable](pco-appliance-managed-enable.md): Make the SDN vnet of the managed network and grant it to the appliance
+  - [pco appliance network](pco-appliance-network.md): Grant the appliance a bridge or vnet, in short
+    - [pco appliance network allow](pco-appliance-network-allow.md): Grant the appliance a bridge or vnet, or one VLAN of it
   - [pco appliance recover](pco-appliance-recover.md): Draw a writer epoch above the last write at Cloudflare, after a rollback or a restore
   - [pco appliance repair](pco-appliance-repair.md): Repair the appliance after a restore or a changed certificate
   - [pco appliance revoke-network](pco-appliance-revoke-network.md): Take back the grant of a bridge or vnet from the appliance

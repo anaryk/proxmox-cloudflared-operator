@@ -141,6 +141,13 @@ type fakeNode struct {
 	tasks     map[string]string // upid -> exit status
 	polls     map[string]int
 
+	// The guest firewall of the node: its options, as /nodes/<node>/firewall/
+	// options gives them, and the state of pve-firewall.service.
+	nodeFirewall map[string]any
+	fwService    string
+	// sdn is the SDN of the cluster, with what is pending and its lock.
+	sdn fakeSDN
+
 	pcoVersion string // of the template's pco
 	secrets    int
 	leaked     []string // token secrets a user delete left behind
@@ -186,8 +193,138 @@ func newFakeNode(t *testing.T) *fakeNode {
 		tasks:      map[string]string{},
 		polls:      map[string]int{},
 		pcoVersion: testVersion,
+
+		nodeFirewall: map[string]any{},
+		fwService:    "active",
+		sdn:          fakeSDN{zones: map[string]*sdnObject{}, vnets: map[string]*sdnObject{}},
 	}
 	return f
+}
+
+// fakeSDN is the SDN configuration of the cluster as Proxmox VE 9 keeps it:
+// objects with the state of a change not applied yet, and a lock whose token
+// every change made while it is taken must carry.
+type fakeSDN struct {
+	zones, vnets map[string]*sdnObject
+	lock         string // the token of the lock; empty while there is none
+	locks        int
+	noLock       bool // Proxmox VE 8, which has no lock
+	applies      int
+}
+
+type sdnObject struct {
+	typ, zone string
+	isolate   bool
+	state     string // new, deleted, or empty when applied
+}
+
+func (s *fakeSDN) locked(args []string) error {
+	if token := flag(args, "--lock-token"); token != s.lock {
+		return fmt.Errorf("invalid lock token %q", token)
+	}
+	return nil
+}
+
+func (s *fakeSDN) rows(objects map[string]*sdnObject, id string) string {
+	var out []map[string]any
+	for _, name := range slices.Sorted(maps.Keys(objects)) {
+		o := objects[name]
+		row := map[string]any{id: name, "type": o.typ}
+		values := row
+		if o.state != "" {
+			row["state"] = o.state
+		}
+		if o.state == "new" {
+			values = map[string]any{}
+			row["pending"] = values
+		}
+		if id == "vnet" {
+			row["type"] = "vnet"
+			values["zone"] = o.zone
+			if o.isolate {
+				values["isolate-ports"] = 1
+			}
+		}
+		out = append(out, row)
+	}
+	if out == nil {
+		return "[]"
+	}
+	return asJSON(out)
+}
+
+func (f *fakeNode) sdnCommand(verb, path string, args []string) (string, error) {
+	s := &f.sdn
+	switch {
+	case verb == "create" && path == "/cluster/sdn/lock":
+		switch {
+		case s.noLock:
+			return "", fmt.Errorf("No 'create' handler defined for '%s'", path)
+		case s.lock != "":
+			return "", errors.New("the SDN configuration is locked")
+		}
+		s.locks++
+		s.lock = fmt.Sprintf("lock-%d", s.locks)
+		return asJSON(s.lock) + "\n", nil
+	case verb == "delete" && path == "/cluster/sdn/lock":
+		if s.lock == "" || flag(args, "--lock-token") != s.lock {
+			return "", errors.New("no such lock")
+		}
+		s.lock = ""
+		return "", nil
+	case verb == "get" && path == "/cluster/sdn/zones":
+		return s.rows(s.zones, "zone"), nil
+	case verb == "get" && path == "/cluster/sdn/vnets" && flag(args, "--pending") == "1":
+		return s.rows(s.vnets, "vnet"), nil
+	case verb == "get" && strings.HasPrefix(path, "/cluster/sdn/vnets/") && strings.HasSuffix(path, "/subnets"):
+		return "[]", nil
+	case verb == "create" && path == "/cluster/sdn/zones":
+		if err := s.locked(args); err != nil {
+			return "", err
+		}
+		s.zones[flag(args, "--zone")] = &sdnObject{typ: flag(args, "--type"), state: "new"}
+		return "", nil
+	case verb == "create" && path == "/cluster/sdn/vnets":
+		if err := s.locked(args); err != nil {
+			return "", err
+		}
+		s.vnets[flag(args, "--vnet")] = &sdnObject{typ: "vnet", zone: flag(args, "--zone"), isolate: flag(args, "--isolate-ports") == "1", state: "new"}
+		return "", nil
+	case verb == "delete" && (strings.HasPrefix(path, "/cluster/sdn/zones/") || strings.HasPrefix(path, "/cluster/sdn/vnets/")):
+		if err := s.locked(args); err != nil {
+			return "", err
+		}
+		objects, name := s.zones, strings.TrimPrefix(path, "/cluster/sdn/zones/")
+		if strings.HasPrefix(path, "/cluster/sdn/vnets/") {
+			objects, name = s.vnets, strings.TrimPrefix(path, "/cluster/sdn/vnets/")
+		}
+		switch o := objects[name]; {
+		case o == nil:
+			return "", fmt.Errorf("sdn object '%s' does not exist", name)
+		case o.state == "new":
+			delete(objects, name)
+		default:
+			o.state = "deleted"
+		}
+		return "", nil
+	case verb == "set" && path == "/cluster/sdn":
+		if err := s.locked(args); err != nil {
+			return "", err
+		}
+		for _, objects := range []map[string]*sdnObject{s.zones, s.vnets} {
+			for name, o := range objects {
+				if o.state == "deleted" {
+					delete(objects, name)
+				}
+				o.state = ""
+			}
+		}
+		s.applies++
+		s.lock = ""
+		return "", nil
+	}
+	f.t.Errorf("unexpected pvesh %s %s %v", verb, path, args)
+	return "", errors.New("unexpected command")
 }
 
 // on makes the next command that starts with prefix answer with fn.
@@ -241,6 +378,13 @@ func (f *fakeNode) dispatch(ctx context.Context, line, name string, args []strin
 		}
 	case "pvesm":
 		return f.pvesm(args)
+	case "systemctl":
+		if line == "systemctl is-active pve-firewall" {
+			if f.fwService != "active" {
+				return f.fwService + "\n", exitError{3, ""}
+			}
+			return "active\n", nil
+		}
 	}
 	f.t.Errorf("unexpected command %q", line)
 	return "", errors.New("unexpected command")
@@ -276,7 +420,14 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 		return "", errors.New("pvesh: no path")
 	}
 	verb, path := args[0], args[1]
+	// The vnets without what is pending are those of grant-network.
+	plainVnets := verb == "get" && path == "/cluster/sdn/vnets" && flag(args, "--pending") == ""
+	if strings.HasPrefix(path, "/cluster/sdn/") && !plainVnets || path == "/cluster/sdn" {
+		return f.sdnCommand(verb, path, args)
+	}
 	switch {
+	case verb == "get" && path == "/nodes/"+f.name+"/firewall/options":
+		return asJSON(f.nodeFirewall), nil
 	case verb == "get" && path == "/cluster/status":
 		if f.cluster != nil {
 			return asJSON(f.cluster), nil
@@ -939,6 +1090,8 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 		f.purges = append(f.purges, fmt.Sprintf("%d %s", id, env))
 		f.cfObjects = nil
 		return "Cloudflare: deleted what the install had\n", nil
+	case strings.HasPrefix(line, "pco appliance manifest sdn "):
+		return f.manifestSDN(ct, cmd[4:])
 	case strings.HasPrefix(line, "pco appliance manifest "):
 		return f.manifestCmd(ct, cmd[3:])
 	}
@@ -1000,15 +1153,52 @@ func (f *fakeNode) manifestCmd(ct *fakeCT, args []string) (string, error) {
 			g.CreatedRoles = append(g.CreatedRoles, args[i+1])
 		}
 	}
-	switch args[0] {
+	switch i := slices.IndexFunc(m.Appliance.Grants, g.Same); args[0] {
 	case "add":
-		m.Appliance.Grants = append(m.Appliance.Grants, g)
+		// As setup.AddNetworkGrant does: the roles go to the grant there.
+		if i < 0 {
+			m.Appliance.Grants = append(m.Appliance.Grants, g)
+		} else {
+			m.Appliance.Grants[i].CreatedRoles = append(m.Appliance.Grants[i].CreatedRoles, g.CreatedRoles...)
+		}
 	case "remove":
 		m.Appliance.Grants = slices.DeleteFunc(m.Appliance.Grants, g.Same)
 	}
 	data, _ := json.Marshal(m)
 	ct.files[manifestFile] = fakeFile{data: data, perms: "0600"}
 	return "", nil
+}
+
+// manifestSDN notes the SDN objects of the managed network in the manifest
+// of the appliance, as pco appliance manifest sdn does.
+func (f *fakeNode) manifestSDN(ct *fakeCT, args []string) (string, error) {
+	var m setup.Manifest
+	if err := json.Unmarshal(ct.files[manifestFile].data, &m); err != nil || m.Appliance == nil {
+		return "", errors.New("not the manifest of an appliance")
+	}
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--created-zone="):
+			m.CreatedZone = strings.HasSuffix(a, "=true")
+		case strings.HasPrefix(a, "--created-vnet="):
+			m.CreatedVnet = strings.HasSuffix(a, "=true")
+		default:
+			f.t.Errorf("pco appliance manifest sdn: unexpected %q", a)
+		}
+	}
+	data, _ := json.Marshal(m)
+	ct.files[manifestFile] = fakeFile{data: data, perms: "0600"}
+	return "", nil
+}
+
+// manifest is the manifest in the container of the appliance vmid.
+func (f *fakeNode) manifest(vmid int) setup.Manifest {
+	f.t.Helper()
+	var m setup.Manifest
+	if err := json.Unmarshal(f.cts[vmid].files[manifestFile].data, &m); err != nil {
+		f.t.Fatal(err)
+	}
+	return m
 }
 
 // addToken gives a user a token, as an admin would.
