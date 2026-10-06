@@ -7,7 +7,7 @@ that runs pco does.
 
 ## The situation
 
-A company runs a cluster of three nodes, `pve1` to `pve3`, with shared storage. Teams run
+A company runs a cluster of three nodes, `node1` to `node3`, with shared storage. Teams run
 their applications in guests. IT administers the cluster and holds `Sys.Modify` on `/`; the
 teams hold `VM.Config.Options` on their own guests, which lets them edit the Notes, and some
 of them may clone guests. A customer portal, an API and a documentation site should be
@@ -23,9 +23,9 @@ Two facts about pco decide the rest.
 
 ## The setup
 
-pco and its connector are on `pve1`. The guests published from `pve1` are proven at `port`.
-A guest on `pve2` is listed and its Notes are read, but this node cannot see where the bridge
-of `pve2` sends the guest's frames, so it is proven at `observed` at most, and is held back at
+pco and its connector are on `node1`. The guests published from `node1` are proven at `port`.
+A guest on `node2` is listed and its Notes are read, but this node cannot see where the bridge
+of `node2` sends the guest's frames, so it is proven at `observed` at most, and is held back at
 the default minimum. The store is on the cluster filesystem and is the same on every node:
 
 ~~~mermaid
@@ -33,16 +33,16 @@ flowchart TB
     visitor["Visitor"] --> edge["Cloudflare edge"]
     edge -->|"through the tunnel the connector opened"| connector
     subgraph cluster["Proxmox VE cluster"]
-        subgraph pve1["pve1: pco runs here, host profile"]
+        subgraph node1["node1: pco runs here, host profile"]
             connector["cloudflared connector"] --> filter["Egress filter"]
             daemon["pco daemon"]
             portal["qemu/131: portal"]
             api["lxc/132: API"]
         end
-        subgraph pve2["pve2"]
+        subgraph node2["node2"]
             reports["qemu/141: reports, proven at observed"]
         end
-        subgraph pve3["pve3"]
+        subgraph node3["node3"]
             other["Guests that are not published"]
         end
         store[("Store on the cluster filesystem, replicated to every node")]
@@ -57,7 +57,7 @@ flowchart TB
 
 ### Profile
 
-The host profile, on `pve1`. The published guests live on the node that runs pco, where the
+The host profile, on `node1`. The published guests live on the node that runs pco, where the
 host profile can prove their addresses at `port`. A company that would rather keep a
 daemon off its hypervisors can run the appliance instead; every guest is then proven at
 `observed`, which [Hosting tenants](hosting-tenants.md) describes, with what that asks of the
@@ -153,7 +153,7 @@ Admins of pco are the users that hold `Sys.Modify` on `/`, readers the users tha
 role with `Sys.Audit`, such as PVEAuditor, and nothing more: a reader can read the state of
 the install and cannot change anything.
 
-The interface listens on the address of `pve1` on port 8643. Restrict that port with the
+The interface listens on the address of `node1` on port 8643. Restrict that port with the
 Proxmox firewall to the admin network, as you would port 8006. If staff reach it under a
 name of their own, put the name in `PCO_WEB_HOSTS` in `/etc/default/pco-web` and restart
 `pco-web`, and give it a certificate that the company's own CA signed:
@@ -203,11 +203,11 @@ runs on:
 
     Tagged guests:
       GUEST             NODE  RUNNING  IDENTITY  APPROVAL  ROUTES  ISSUES
-      qemu/101 (web-1)  pve1  yes      uuid:101  approved  2       0
-      qemu/102 (db-1)   pve1  no       uuid:102  changed   0       1
-      qemu/103 (new-1)  pve2  yes      uuid:103  waiting   0       0
+      qemu/101 (web-1)  node1  yes      uuid:101  approved  2       0
+      qemu/102 (db-1)   node1  no       uuid:102  changed   0       1
+      qemu/103 (new-1)  node2  yes      uuid:103  waiting   0       0
 
-With the portal on `pve1` and a report server on `pve2`, `pco routes` shows what the default
+With the portal on `node1` and a report server on `node2`, `pco routes` shows what the default
 minimum does to the second:
 
     HOSTNAME             STATE        LEVEL     SERVICE                OWNER     ZONE         NOTE
@@ -216,15 +216,15 @@ minimum does to the second:
 
 ## What to watch
 
-- **The node.** If `pve1` is down, everything published is down. Write down how pco is moved
+- **The node.** If `node1` is down, everything published is down. Write down how pco is moved
   to another node before the day it is needed, and test it on a node that is not in use. The
   state that cannot be made again is in `/etc/pve/pco` and `/etc/pve/priv/pco`, which every
-  node has, and in the manifest in `/var/lib/pco` of `pve1`
+  node has, and in the manifest in `/var/lib/pco` of `node1`
   ([Files](../files.md#what-to-back-up)).
 - **Quorum.** Without quorum the cluster filesystem is read-only. Published routes keep
   serving. An approval or a change of the settings fails, and a cycle that has a claim to
   save holds until it can ([Architecture](../architecture.md#one-writer)).
-- **Reboots of `pve1`.** A Proxmox upgrade that reboots the node is an outage of all
+- **Reboots of `node1`.** A Proxmox upgrade that reboots the node is an outage of all
   hostnames: after the boot they answer 502 until the daemon's first cycle has verified the
   routes. Migrating the guests away first does not avoid it: they are held back while they are
   on another node.

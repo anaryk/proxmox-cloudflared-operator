@@ -58,7 +58,7 @@ the container back, and a repair brings back its install, from what Cloudflare a
     pct exec 121 -- pco status
     pct exec 121 -- pco doctor
 
-`pco status` shows `Identity: ok (lxc/121 on pve1)` and the tunnel of the install, verified once
+`pco status` shows `Identity: ok (lxc/121 on node1)` and the tunnel of the install, verified once
 applied. `pco doctor` fails its `protection` check while the container is not protected, and its
 `volume` check while `mp0` is not kept out of backups.
 

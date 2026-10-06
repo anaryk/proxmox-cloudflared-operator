@@ -64,12 +64,12 @@ says how to check the release key the script carries before it runs.
 `pco appliance install` looks at the node, decides everything, and only then makes anything. A
 run on a node of its own, with the defaults and a yes to the one question:
 
-    preflight: Proxmox VE 9.2.21 on amd64, node pve1
-    preflight: pve1 is a node of its own, in no cluster
+    preflight: Proxmox VE 9.2.21 on amd64, node node1
+    preflight: node1 is a node of its own, in no cluster
     preflight: the container goes on storage local-zfs, the template on local
     preflight: the appliance will be lxc/120
     preflight: the datacenter firewall is off; the appliance reaches the API on port 8006 of the node
-    preflight: the API at 192.0.2.10:8006 verifies as pve1 against the cluster CA
+    preflight: the API at 192.0.2.10:8006 verifies as node1 against the cluster CA
     preflight: no principal but the admins can reach into lxc/120
     template: downloaded local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst, checksum verified
     pool pco: created
@@ -85,16 +85,16 @@ run on a node of its own, with the defaults and a yes to the one question:
       lxc/120: identity: /var/lib/pco is a volume of lxc/120 (rpool/data/subvol-120-disk-1)
       lxc/120: settings: identity minimum observed, gate tag cf-tunnel; the install only observes until pco apply
       lxc/120: store: created install 7f3a9c0d41b2, writer generation 1
-      lxc/120: install: 7f3a9c0d41b2, lxc/120 on pve1
+      lxc/120: install: 7f3a9c0d41b2, lxc/120 on node1
       lxc/120: proxmox token: pco@pve!vm120 stored
-      lxc/120: proxmox: the token reads the API at 192.0.2.10:8006, verified as pve1
+      lxc/120: proxmox: the token reads the API at 192.0.2.10:8006, verified as node1
       lxc/120: credentials: the bootstrap holds no Cloudflare token; add one with pco credential add
       lxc/120: pco.service: restarted
     web interface: started, certificate SHA-256 AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89
     container lxc/120: protected
-    pco appliance lxc/120 is installed on pve1, in pool pco
+    pco appliance lxc/120 is installed on node1, in pool pco
       token: pco@pve!vm120
-      Proxmox API: 192.0.2.10:8006, verified as pve1 against the cluster CA
+      Proxmox API: 192.0.2.10:8006, verified as node1 against the cluster CA
       web interface: https://192.0.2.150:8643/, its certificate's SHA-256 fingerprint, which the browser shows at the first visit:
         AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89
     next:
@@ -286,7 +286,7 @@ installer then verifies it under a DNS name it carries, against the system roots
 When the certificate changes later, as when the cluster CA is made anew, ACME is turned on or a
 custom certificate is put in, the appliance holds every write with the line
 
-    the certificate of 192.0.2.10:8006 no longer verifies under pve1 (the cluster CA or the pveproxy certificate changed?): run pco appliance repair --vmid 120 on the node
+    the certificate of 192.0.2.10:8006 no longer verifies under node1 (the cluster CA or the pveproxy certificate changed?): run pco appliance repair --vmid 120 on the node
 
 and `pco appliance repair --vmid 120` on the node probes the certificate again and pushes the new
 CA and server name (`--api-ca` for a private CA).
@@ -350,7 +350,7 @@ self-identification found.
 
     Mode:        enforce
     Profile:     appliance
-    Identity:    ok (lxc/120 on pve1)
+    Identity:    ok (lxc/120 on node1)
 
 ## The web interface
 
@@ -626,7 +626,7 @@ volume of its VMID, and its links must carry the MACs of its configuration. Unti
 it draws no epoch and starts no connector: the connectors start only once the daemon has written
 `/run/pco-appliance/identity-ok` in this boot. A copy finds itself out and serves nothing:
 
-    Identity:    copy: connectors stopped (not lxc/120 on pve1: the volume at /var/lib/pco is rpool/data/subvol-125-disk-1, a volume of VMID 125 and not of lxc/120: this container is a copy)
+    Identity:    copy: connectors stopped (not lxc/120 on node1: the volume at /var/lib/pco is rpool/data/subvol-125-disk-1, a volume of VMID 125 and not of lxc/120: this container is a copy)
 
 It removes the flag, empties its egress filter, stops and disables its connectors, draws no
 epoch and writes nothing at Cloudflare. The appliance itself, when another running guest carries

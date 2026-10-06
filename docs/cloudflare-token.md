@@ -45,7 +45,7 @@ issue.
    API tokens.
 2. Select Create Token, then Create Custom Token (the last choice on the page of
    templates).
-3. Give it a name that says where it is used, for example `pco on pve1`.
+3. Give it a name that says where it is used, for example `pco on node1`.
 4. Under Permissions add three rows:
    - Account, Cloudflare Tunnel, Edit
    - Zone, DNS, Edit

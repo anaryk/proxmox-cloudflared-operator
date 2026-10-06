@@ -6,7 +6,7 @@ the setup ends with.
 
 ## The situation
 
-A node called `pve1` stands in a closet, on the home network 10.0.0.0/24. It runs a dozen
+A node called `node1` stands in a closet, on the home network 10.0.0.0/24. It runs a dozen
 containers and a few virtual machines, and the owner is the only person with an account in
 Proxmox. The domain `example.com` has its DNS at Cloudflare. A dashboard, a photo library
 and a NAS should be reachable from outside. The router forwards no ports, and the owner does
@@ -27,7 +27,7 @@ a virtual machine and, for the NAS, to an address that is no guest's:
 flowchart TB
     visitor["Visitor"] --> edge["Cloudflare edge"]
     subgraph lan["Home network, 10.0.0.0/24"]
-        subgraph node["Proxmox VE node pve1, host profile"]
+        subgraph node["Proxmox VE node node1, host profile"]
             connector["cloudflared connector"] --> filter["Egress filter"]
             daemon["pco daemon"]
             dash["lxc/110: dashboard, :3000"]

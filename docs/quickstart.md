@@ -144,7 +144,7 @@ id will differ):
     note: clones and restores of a guest keep its tags, so the clone of a published guest asks to be published too
     cloudflared: installed from https://pkg.cloudflare.com/cloudflared
     credentials: skipped; add one later with pco credential add --label <label>
-    node registry: registered pve1
+    node registry: registered node1
     pco-egress.service: enabled and running
     pco.service: enabled and running
     next: tag a guest with cf-tunnel and write its routes into its notes, then run pco plan to see what would change and pco apply to make it so

@@ -93,7 +93,7 @@ The sections the two point at:
   run yet.
 - **Profile** is `host` or `appliance`.
 - **Identity**, in the appliance only, is what the last self-identification found:
-  `ok (lxc/120 on pve1)`, or why not; see [the appliance](#the-appliance).
+  `ok (lxc/120 on node1)`, or why not; see [the appliance](#the-appliance).
 - **Inventory** is `incomplete` when Proxmox could not be read in full. The cycle holds, and
   the problems say what was not readable.
 - **Writer** is `ok`, or `stale`, `foreign` or `unknown`, and in the appliance `behind`; see
@@ -510,7 +510,7 @@ The cases that come up, from what the appliance says:
 
 ### It serves nothing: a principal can reach into it
 
-    Identity:    serving nothing: ops@pve can reach into lxc/120 on pve1
+    Identity:    serving nothing: ops@pve can reach into lxc/120 on node1
 
 with the problem line
 
@@ -584,7 +584,7 @@ is the container it was installed as. `Identity:` then says `not proven` with th
 
 On a clone, or a restore beside the original:
 
-    Identity:    copy: connectors stopped (not lxc/120 on pve1: the volume at /var/lib/pco is rpool/data/subvol-125-disk-1, a volume of VMID 125 and not of lxc/120: this container is a copy)
+    Identity:    copy: connectors stopped (not lxc/120 on node1: the volume at /var/lib/pco is rpool/data/subvol-125-disk-1, a volume of VMID 125 and not of lxc/120: this container is a copy)
 
 The copy serves nothing and writes nothing, as it should; `Proxmox lists no lxc/120: this container is not the one installed`
 says the same when the appliance it was made from is gone from Proxmox altogether. Remove the

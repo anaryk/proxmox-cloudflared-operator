@@ -73,7 +73,7 @@ what it costs against the host profile.
     pct exec 120 -- pco status
     pct exec 120 -- pco doctor
 
-`pco status` shows `Profile: appliance` and `Identity: ok (lxc/120 on pve1)`, and once applied
+`pco status` shows `Profile: appliance` and `Identity: ok (lxc/120 on node1)`, and once applied
 the tunnel with its connector ready. `pco doctor` runs the checks of the appliance besides the
 usual ones; every line should be `✓`. Open `https://192.0.2.120:8643/`, compare the fingerprint
 the browser shows with the one the installer printed, and sign in with a Proxmox VE user that
