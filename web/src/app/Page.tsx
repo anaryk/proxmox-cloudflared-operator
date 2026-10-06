@@ -24,6 +24,8 @@ const DoctorPage = lazy(() => loadPart(() => import('../pages/doctor/DoctorPage'
 const EventsPage = lazy(() => loadPart(() => import('../pages/events/EventsPage')).then((m) => ({ default: m.EventsPage })))
 const NetworksPage = lazy(() => loadPart(() => import('../pages/networks/NetworksPage')).then((m) => ({ default: m.NetworksPage })))
 
+// Later holds a page loaded when first shown. Each page has its own, by its
+// key: a page that did not load is not taken for the next one.
 function Later({ children }: { children: ReactNode }) {
   return (
     <Part what="This page">
@@ -101,19 +103,19 @@ export function Page({ view }: { view: View }) {
       return <SetupPage />
     case 'networks':
       return (
-        <Later>
+        <Later key="networks">
           <NetworksPage />
         </Later>
       )
     case 'events':
       return (
-        <Later>
+        <Later key="events">
           <EventsPage />
         </Later>
       )
     case 'doctor':
       return (
-        <Later>
+        <Later key="doctor">
           <DoctorPage />
         </Later>
       )
@@ -130,7 +132,7 @@ export function Page({ view }: { view: View }) {
               </Link>
             }
           />
-          <Later>
+          <Later key="settings">
             <SettingsPage />
           </Later>
         </>

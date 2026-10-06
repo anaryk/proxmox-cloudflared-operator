@@ -46,3 +46,18 @@ test('a part that loads is drawn as it is', async () => {
   )
   expect(await screen.findByText('the part')).toBeTruthy()
 })
+
+test('a part whose code fails as it draws says so, not that pco was updated', () => {
+  const Broken = () => {
+    throw new Error('a bug of the part')
+  }
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  render(
+    <Part what="The map">
+      <Broken />
+    </Part>,
+  )
+  expect(screen.getByText('The map could not be drawn')).toBeTruthy()
+  expect(screen.queryByText(/pco was updated/)).toBeNull()
+  logged.mockRestore()
+})
