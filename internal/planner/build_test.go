@@ -1074,6 +1074,7 @@ func TestPlannerTypesJSONShape(t *testing.T) {
 				Issues:        []Issue{{Msg: "bad"}},
 				Held:          []HeldName{{Hostname: "b.shop.cz", Owner: "qemu/1"}},
 				PolicyInvalid: true,
+				OptOut:        []model.GuestRef{{Kind: model.KindLXC, VMID: 5}},
 			},
 			want: `{
 				"routes": [{
@@ -1082,7 +1083,8 @@ func TestPlannerTypesJSONShape(t *testing.T) {
 				}],
 				"issues": [{"msg": "bad"}],
 				"held": [{"hostname": "b.shop.cz", "owner": "qemu/1"}],
-				"policyInvalid": true
+				"policyInvalid": true,
+				"optOut": [{"kind": "lxc", "vmid": 5}]
 			}`,
 		},
 		{
@@ -1164,7 +1166,7 @@ func TestEmptyResultsMarshalAsEmptyLists(t *testing.T) {
 		{
 			name:  "collected",
 			value: Collect(nil, nil, Settings{}),
-			want:  `{"routes": [], "issues": [], "held": [], "policyInvalid": false}`,
+			want:  `{"routes": [], "issues": [], "held": [], "policyInvalid": false, "optOut": []}`,
 		},
 		{
 			name:  "claim result",

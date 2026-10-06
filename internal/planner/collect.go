@@ -54,6 +54,9 @@ type Collected struct {
 	Issues        []Issue       `json:"issues"`        // sorted by guest, then position; settings issues last
 	Held          []HeldName    `json:"held"`          // sorted by hostname, then owner
 	PolicyInvalid bool          `json:"policyInvalid"` // an allow or deny pattern does not normalise
+	// OptOut are the tagged guests whose Notes refuse the managed network
+	// with cf-tunnel-managed=off, sorted.
+	OptOut []model.GuestRef `json:"optOut"`
 }
 
 // Collect turns guest annotations and manual routes into candidate routes.
@@ -79,6 +82,7 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 		Issues:        append([]Issue{}, issues...),
 		Held:          []HeldName{},
 		PolicyInvalid: pol.invalid,
+		OptOut:        []model.GuestRef{},
 	}
 	limit := s.MaxHostnamesPerGuest
 	if limit <= 0 {
@@ -105,6 +109,7 @@ func Collect(guests []model.Guest, manual []model.Route, s Settings) Collected {
 			model.CompareOwners(a.Owner, b.Owner),
 		)
 	})
+	slices.SortFunc(out.OptOut, func(a, b model.GuestRef) int { return model.CompareOwners(a.String(), b.String()) })
 	return out
 }
 
@@ -125,6 +130,9 @@ func (c *Collected) addGuest(g model.Guest, gate string, pol policy, limit int) 
 	res := annotation.Parse(g.Description)
 	if len(res.Entries) == 0 && len(res.Errors) == 0 {
 		c.addIssue(g.Ref, 0, 0, fmt.Sprintf("tagged %s but no routes found in Notes", gate))
+	}
+	if res.ManagedOff {
+		c.OptOut = append(c.OptOut, g.Ref)
 	}
 	var routes []model.Route
 	named := make(map[string]bool)

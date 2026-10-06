@@ -588,6 +588,35 @@ func TestCollectTaggedWithoutRoutes(t *testing.T) {
 	})
 }
 
+func TestCollectListsTheGuestsThatRefuseTheManagedNetwork(t *testing.T) {
+	refuses := tagged(model.KindLXC, 5, block("cf-tunnel-managed=off", "a.example.com -> :80"))
+	misspelt := tagged(model.KindQEMU, 20, "cf-tunnel: cf-tunnel-managed=no")
+	rejected := tagged(model.KindQEMU, 3, "````cf-tunnel\nb.example.com -> :81\ncf-tunnel-managed=off\n```x```\n````")
+	accepts := tagged(model.KindQEMU, 7, block("c.example.com -> :82"))
+	untagged := tagged(model.KindQEMU, 8, block("cf-tunnel-managed=off", "d.example.com -> :83"))
+	untagged.Tags = []string{"prod"}
+	template := tagged(model.KindQEMU, 9, block("cf-tunnel-managed=off", "e.example.com -> :84"))
+	template.Template = true
+	guests := []model.Guest{refuses, misspelt, rejected, accepts, untagged, template}
+
+	got := Collect(guests, nil, Settings{})
+
+	require.Equal(t, []model.GuestRef{rejected.Ref, misspelt.Ref, refuses.Ref}, got.OptOut)
+	require.Equal(t, []string{"a.example.com lxc/5", "c.example.com qemu/7"}, routeKeys(got.Routes),
+		"the marker takes no route away")
+
+	rng := rand.New(rand.NewPCG(3, 4))
+	for range 10 {
+		g := slices.Clone(guests)
+		rng.Shuffle(len(g), func(i, j int) { g[i], g[j] = g[j], g[i] })
+		require.Equal(t, got, Collect(g, nil, Settings{}))
+	}
+
+	none := Collect([]model.Guest{accepts}, nil, Settings{})
+	require.NotNil(t, none.OptOut)
+	require.Empty(t, none.OptOut)
+}
+
 func TestCollectManualRoutesSkipPolicy(t *testing.T) {
 	manual := []model.Route{{
 		Hostname: "secret.example.com",
