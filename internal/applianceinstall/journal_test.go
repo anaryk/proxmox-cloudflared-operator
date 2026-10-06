@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -179,6 +180,91 @@ func TestResumeAfterInitRepairsTheInstall(t *testing.T) {
 	require.Equal(t, "1", e.node.cts[100].cfg["protection"])
 	require.Equal(t, []string{"vm100"}, e.node.tokenNames("pco@pve"))
 	require.Empty(t, entries(t, e.journals))
+}
+
+// lockedCreate makes pct create of lxc/100 make the container and leave it
+// locked, as one cut short does, with the run's description in its
+// configuration.
+func (e *testEnv) lockedCreate(then func(ctx context.Context)) {
+	e.node.on("pct create 100 ", func(ctx context.Context, args []string) (string, error) {
+		out, err := e.node.create(100, args)
+		require.NoError(e.t, err)
+		e.node.cts[100].cfg["lock"] = "create"
+		then(ctx)
+		return out, errors.New("interrupted")
+	})
+}
+
+// A run killed inside pct create, after the configuration was written: the
+// container carries the run's mark, and --resume, on another day, goes on
+// with it once it is unlocked.
+func TestResumeFinishesARunKilledInsidePctCreate(t *testing.T) {
+	e := newEnv(t)
+	e.lockedCreate(func(context.Context) {})
+	e.node.killAt = "pct create 100"
+	require.PanicsWithValue(t, errKilled, func() { _ = e.in.Install(t.Context(), e.options()) })
+	path := e.journal()
+	e.in.now = func() time.Time { return t0.Add(48 * time.Hour) }
+
+	require.NoError(t, e.in.Install(t.Context(), Options{Resume: path, Yes: true}), e.ask.text())
+
+	require.Equal(t, 1, e.node.count("pct create"))
+	require.Less(t, indexOf(t, e.node.ran, "pct unlock 100"), indexOf(t, e.node.ran, "pct start 100"))
+	require.Contains(t, e.ask.text(), "lxc/100 was left locked by a pct create that was cut short: unlocked")
+	ct := e.node.cts[100]
+	require.Empty(t, ct.cfg["lock"])
+	require.Equal(t, "pco appliance vm100, installed 2026-10-01 by pco appliance install\n", ct.cfg["description"])
+	require.Equal(t, "1", ct.cfg["protection"])
+	require.Len(t, e.node.inits, 1)
+	require.Empty(t, entries(t, e.journals))
+}
+
+// Ctrl-C reaches pct create too, which can leave the container locked: the
+// run that takes itself back unlocks the container its mark proves its own.
+func TestATakenBackRunUnlocksTheContainerItMade(t *testing.T) {
+	e := newEnv(t)
+	e.lockedCreate(func(ctx context.Context) {
+		e.sigs.ch <- syscall.SIGINT
+		<-ctx.Done()
+	})
+
+	err := e.in.Install(t.Context(), e.options())
+
+	require.ErrorContains(t, err, "interrupted by interrupt during step container; what the run made is taken back")
+	require.Less(t, indexOf(t, e.node.ran, "pct unlock 100"), indexOf(t, e.node.ran, "pct destroy 100 --purge 1"))
+	e.takenBack()
+}
+
+// A run killed outright leaves its directory under /run, the bootstrap with
+// the secrets in it maybe: the next run of any kind removes it, as the lock
+// says no other run is live.
+func TestAStaleBootstrapIsRemovedByTheNextRun(t *testing.T) {
+	for name, run := range map[string]func(e *testEnv) error{
+		"install":   func(e *testEnv) error { return e.in.Install(e.t.Context(), e.options()) },
+		"repair":    func(e *testEnv) error { return e.in.Repair(e.t.Context(), 100, Options{Yes: true}) },
+		"uninstall": func(e *testEnv) error { return e.in.Uninstall(e.t.Context(), 100, uninstallOptions()) },
+		"grant-network": func(e *testEnv) error {
+			return e.in.GrantNetworkCommand(e.t.Context(), NetworkOptions{VMID: 100, Bridge: "vmbr1", Yes: true})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			if name != "install" {
+				e = installed(t)
+			}
+			stale := filepath.Join(e.runDir, "pco-appliance-install-20260930T235959-beef")
+			require.NoError(t, os.Mkdir(stale, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(stale, "bootstrap.json"), []byte(`{"pveToken":{"secret":"left"}}`), 0o600))
+			other := filepath.Join(e.runDir, "pco")
+			require.NoError(t, os.Mkdir(other, 0o755))
+
+			require.NoError(t, run(e), e.ask.text())
+
+			require.NoDirExists(t, stale)
+			require.DirExists(t, other)
+			require.Contains(t, e.ask.text(), "removed "+stale+", which a run that was cut short left")
+		})
+	}
 }
 
 // A run that could not take everything back keeps its journal; resuming it

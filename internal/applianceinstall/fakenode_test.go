@@ -684,7 +684,13 @@ func (f *fakeNode) pct(args []string) (string, error) {
 	if ct == nil {
 		return "", missing
 	}
+	if lock := ct.cfg["lock"]; lock != "" && slices.Contains([]string{"start", "set", "destroy"}, args[0]) {
+		return "", fmt.Errorf("CT is locked (%s)", lock)
+	}
 	switch args[0] {
+	case "unlock":
+		delete(ct.cfg, "lock")
+		return "", nil
 	case "status":
 		if ct.running {
 			return "status: running\n", nil

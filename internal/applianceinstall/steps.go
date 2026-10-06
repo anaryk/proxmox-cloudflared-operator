@@ -80,8 +80,14 @@ func (r *run) mp0() string {
 }
 
 // createContainer makes the container. When the cluster offered the VMID and
-// another took it in the meantime, the next one is taken.
+// another took it in the meantime, the next one is taken. A resumed run goes
+// on with the container a run killed inside pct create made.
 func (r *run) createContainer(ctx context.Context) error {
+	if r.resumed && r.j.Container != "" {
+		if made, err := r.madeBefore(ctx); err != nil || made {
+			return err
+		}
+	}
 	for try := 1; ; try++ {
 		vmid, desc := r.j.VMID, description(r.j.VMID, r.now())
 		if err := r.record(func(j *journal) {
@@ -110,6 +116,28 @@ func (r *run) createContainer(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+// madeBefore reports whether the run that was cut short made the container
+// before it was killed: its description is the one the journal holds. A lock
+// the create left is cleared; the boot and the version check of step start
+// judge the rest.
+func (r *run) madeBefore(ctx context.Context) (bool, error) {
+	vmid := r.j.VMID
+	cfg, err := readCTConfig(ctx, r.r, r.node, vmid)
+	switch {
+	case err != nil && notThere(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("reading the configuration of lxc/%d: %w", vmid, err)
+	case strings.TrimSpace(cfg["description"]) != r.j.Container:
+		return false, nil
+	}
+	if err := r.unlockCreate(ctx, vmid, cfg); err != nil {
+		return false, err
+	}
+	r.ask.Info("container lxc/%d: made by the run before it was cut short", vmid)
+	return true, nil
 }
 
 // nextVMID takes the next free VMID instead of one that was taken, and asks

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -172,9 +173,35 @@ func readJournal(path string) (*journal, error) {
 }
 
 // lock takes the lock of the installer, which a second installer finds taken
-// and is refused by. The lock file goes with the lock, so that the journal
-// directory is empty after a run that succeeded.
+// and is refused by, and sweeps what runs killed outright left under /run.
+// The lock file goes with the lock, so that the journal directory is empty
+// after a run that succeeded.
 func (i *Installer) lock() (unlock func(), err error) {
+	unlock, err = i.takeLock()
+	if err != nil {
+		return nil, err
+	}
+	i.sweep()
+	return unlock, nil
+}
+
+// sweep removes the directories of runs under /run, the bootstrap with its
+// secrets in one maybe: with the lock taken, none is a live run's.
+func (i *Installer) sweep() {
+	dirs, err := filepath.Glob(filepath.Join(i.h.runDir, "pco-appliance-install-*"))
+	if err != nil {
+		return
+	}
+	for _, dir := range dirs {
+		if err := os.RemoveAll(dir); err != nil {
+			i.ask.Warn("removing %s, which a run that was cut short left: %v", dir, err)
+			continue
+		}
+		i.ask.Warn("removed %s, which a run that was cut short left", dir)
+	}
+}
+
+func (i *Installer) takeLock() (unlock func(), err error) {
 	if err := os.MkdirAll(i.dir, 0o700); err != nil {
 		return nil, fmt.Errorf("making %s: %w", i.dir, err)
 	}
@@ -336,11 +363,28 @@ func (r *run) takeBackContainer(ctx context.Context, vmid int) error {
 		r.ask.Warn("lxc/%d is not the container this run made: it is left as it is", vmid)
 		return nil
 	}
+	if err := r.unlockCreate(ctx, vmid, cfg); err != nil {
+		return err
+	}
 	running, err := ctRunning(ctx, r.r, vmid)
 	if err != nil {
 		return err
 	}
 	return r.destroyContainer(ctx, vmid, running)
+}
+
+// unlockCreate clears the lock a pct create cut short left on the container
+// the run made, as its description proves: Proxmox changes, starts and
+// destroys no locked container.
+func (r *run) unlockCreate(ctx context.Context, vmid int, cfg ctConfig) error {
+	if cfg["lock"] != "create" {
+		return nil
+	}
+	if _, err := r.r.Run(ctx, "pct", "unlock", strconv.Itoa(vmid)); err != nil {
+		return fmt.Errorf("unlocking lxc/%d, which a pct create that was cut short left locked: %w", vmid, err)
+	}
+	r.ask.Warn("lxc/%d was left locked by a pct create that was cut short: unlocked", vmid)
+	return nil
 }
 
 // takeBackUser removes the user the run made, or the grant it made to a user
