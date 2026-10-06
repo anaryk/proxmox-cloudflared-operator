@@ -110,6 +110,7 @@ echo "cloudflared version 2026.9.0"`)
 	})
 	t.Run("an answer that does not end", func(t *testing.T) {
 		env, _, _ := hostEnv(t)
+		env.Timeout = 30 * time.Second
 		env.Binary = fakeBinary(t, `i=0
 while [ $i -lt 100 ]; do printf '%0100d' 0; i=$((i+1)); done
 echo`)
