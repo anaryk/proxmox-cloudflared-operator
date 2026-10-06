@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -293,6 +294,63 @@ func TestReadWriterHoldsOnALeaderJSONOfAnotherStart(t *testing.T) {
 	require.Equal(t, problemEarlierStart, st.Hold)
 	require.Equal(t, VerdictUnknown, st.WriterVerdict)
 	require.Equal(t, incA, a.writer().Incarnation)
+}
+
+// An appliance without a credential holds every cycle on it, after it read
+// leader.json: once the start drew its epoch the writer is ok, not the
+// unknown of the cycle that drew it, for as long as the credential is missing.
+func TestTheWriterIsReadBeforeTheCycleHoldsForACredential(t *testing.T) {
+	a := newApplianceEnv(t, incB) // leader.json of the start incA: this start draws an epoch
+	require.NoError(t, a.store.DeleteCredential(testCred))
+
+	st := a.cycle()
+	require.Equal(t, problemEarlierStart, st.Hold)
+	require.Equal(t, VerdictUnknown, st.WriterVerdict, "the cycle that drew the epoch read leader.json before it")
+
+	for range 3 {
+		a.clock.advance(10 * time.Second)
+		st = a.cycle()
+		require.Equal(t, problemNoCredential, st.Hold)
+		require.Equal(t, VerdictOK, st.WriterVerdict)
+	}
+	var verdicts []string
+	for _, ev := range a.eng.Events(time.Time{}) {
+		if ev.Kind == kindWriter && strings.HasPrefix(ev.Message, "writer verdict") {
+			verdicts = append(verdicts, ev.Message)
+		}
+	}
+	require.Equal(t, []string{"writer verdict is unknown", "writer verdict is ok"}, verdicts)
+}
+
+// A verdict that Cloudflare gave stays until Cloudflare is asked again: a
+// cycle that reads leader.json in order lifts only an unknown one.
+func TestReadingTheWriterLiftsOnlyAnUnknownVerdict(t *testing.T) {
+	a := newApplianceEnv(t, incB)
+	remote := planner.Writer{InstallID: testInstall, Generation: 7, Nonce: "n7"}
+	a.cf.SeedTunnel(testAccount, tunnelName, append([]planner.IngressRule{hostRule("www.example.com")},
+		planner.IngressRule{Hostname: planner.SentinelHostname(remote), Service: "http_status:404"}, planner.IngressRule{Service: "http_status:404"}))
+	a.enforce()
+	a.cycle() // draws the epoch
+	require.Equal(t, VerdictBehind, a.cycle().WriterVerdict)
+	require.NoError(t, a.store.DeleteCredential(testCred))
+
+	a.clock.advance(10 * time.Second)
+	st := a.cycle()
+
+	require.Equal(t, problemNoCredential, st.Hold)
+	require.Equal(t, VerdictBehind, st.WriterVerdict, "Cloudflare said so, and was not asked again")
+}
+
+// leader.json missing in an appliance is put right by its own command, which
+// needs a credential, and not by pco setup.
+func TestAnApplianceWithoutLeaderJSONIsToldToRecover(t *testing.T) {
+	a := newApplianceEnv(t, incA)
+	require.NoError(t, os.Remove(filepath.Join(a.paths.Cluster, "meta", "leader.json")))
+
+	st := a.cycle()
+
+	require.Equal(t, problemNoWriterAppliance, st.Hold)
+	require.Equal(t, VerdictUnknown, st.WriterVerdict)
 }
 
 func TestTheRecoverHintIsTheProfiles(t *testing.T) {

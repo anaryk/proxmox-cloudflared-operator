@@ -24,14 +24,17 @@ const (
 	resolveTimeout     = 15 * time.Second
 	resolveConcurrency = 32
 
-	problemNotSetUp       = "pco is not set up on this node; run pco setup"
-	problemNotMounted     = "cluster filesystem is not mounted"
-	problemNoWriter       = "no writer identity; run pco setup"
-	problemNotRegistered  = "node %s is not registered; run pco setup"
-	problemPolicyInvalid  = "settings contain an invalid allow or deny pattern; nothing is changed until it is fixed"
-	problemIncomplete     = "the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are"
-	problemNoCredential   = "no Cloudflare credential; add one with pco credential add"
-	problemStoppedResolve = "the cycle ended while addresses were resolved (%v); nothing is changed"
+	problemNotSetUp   = "pco is not set up on this node; run pco setup"
+	problemNotMounted = "cluster filesystem is not mounted"
+	problemNoWriter   = "no writer identity; run pco setup"
+	// problemNoWriterAppliance is the line of an appliance, whose recovery
+	// asks Cloudflare.
+	problemNoWriterAppliance = "no writer identity; pco appliance recover draws one, with a Cloudflare credential stored"
+	problemNotRegistered     = "node %s is not registered; run pco setup"
+	problemPolicyInvalid     = "settings contain an invalid allow or deny pattern; nothing is changed until it is fixed"
+	problemIncomplete        = "the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are"
+	problemNoCredential      = "no Cloudflare credential; add one with pco credential add"
+	problemStoppedResolve    = "the cycle ended while addresses were resolved (%v); nothing is changed"
 )
 
 // cycleRun is the state of one cycle. It runs under the cycle lock.
@@ -281,7 +284,10 @@ func (c *cycleRun) registered() bool {
 // the inventory and the routes are still worked out for display. In the
 // appliance it must be of this start of the container too: one of an earlier
 // start may be the record of a copy, and a new epoch is drawn only once the
-// container proved to be the one installed.
+// container proved to be the one installed. A verdict of unknown, which only
+// says that leader.json could not be used, goes with the first cycle that
+// uses it, also when that cycle then holds for another reason, as for a
+// missing credential; the verdicts of Cloudflare stay until it is asked again.
 func (c *cycleRun) readWriter() {
 	c.e.us = planner.Writer{}
 	w, found, err := c.e.d.Store.Writer()
@@ -289,6 +295,8 @@ func (c *cycleRun) readWriter() {
 	switch {
 	case err != nil:
 		why = c.storeProblem("reading the writer identity", err)
+	case !found && c.appliance():
+		why = c.problem(problemNoWriterAppliance)
 	case !found:
 		why = c.problem(problemNoWriter)
 	case w.Validate() != nil:
@@ -299,6 +307,9 @@ func (c *cycleRun) readWriter() {
 		why = c.problem(problemEarlierStart)
 	default:
 		c.e.us, c.writerRead = w, true
+		if c.st.WriterVerdict == VerdictUnknown {
+			c.st.WriterVerdict = VerdictOK
+		}
 		return
 	}
 	c.hold(why)

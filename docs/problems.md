@@ -64,7 +64,7 @@ foreign or unknown](troubleshooting.md#the-writer-is-stale-foreign-or-unknown).
 
 | Line | Meaning and cause | What to do |
 |---|---|---|
-| `no writer identity; run pco setup` | `leader.json` is missing. The cycle holds. | `pco setup`. |
+| `no writer identity; run pco setup`, in the appliance `no writer identity; pco appliance recover draws one, with a Cloudflare credential stored` | `leader.json` is missing. The cycle holds. | `pco setup`. In the appliance `pco appliance recover`, after `pco credential add` when no credential is stored. |
 | `the writer identity in leader.json is not valid: <error>` | The file has no valid identity. The cycle holds. | `pco setup --recover`. |
 | `leader.json names install <id>, but this is install <id>; run <command>` | The store was set up anew and `leader.json` is of another install. The command is `pco setup --recover`, or `pco appliance recover` in the appliance. The cycle holds. | The command. |
 | `the writer identity cannot be read <when> (<error>); the rest is left as it is`, `leader.json names another writer <when>; the rest is left as it is` | `<when>` is `after the tunnel run` or `after the DNS run`: the identity could not be read, or another one is stored, by the time the run ended. The cycle holds. | If another daemon of this install writes, stop it; otherwise `pco setup --recover`. |
@@ -309,7 +309,7 @@ in the appliance, and the rows for `store`, `writer` and `nftables` say how they
 | `nftables` | `nftables.service` is enabled (warns): when it starts or restarts, its ruleset flushes the egress table. In the appliance the unit is expected to be masked: enabled fails, because its ruleset flushes both tables of pco; any state but masked or not installed warns; so does an answer that systemd does not give. | `systemctl disable nftables.service`, or keep its rules from flushing the whole ruleset. In the appliance: `systemctl mask nftables.service`. |
 | `mode` | Observe-only mode (warns). | `pco apply`. |
 | `inventory` | The inventory is incomplete (fails). | `pco status` lists the problems. |
-| `writer` | The verdict is `stale`, `foreign` or `unknown` (fails); in the appliance also `behind`, the state older than the last write at Cloudflare. | See [Writer verdicts](#writer-verdicts). The command differs by profile: `pco setup --recover` on a host, `pco appliance recover` in the appliance, and `pct exec <vmid> -- pco appliance recover` from the node for `behind`. |
+| `writer` | The verdict is `stale`, `foreign` or `unknown` (fails); in the appliance also `behind`, the state older than the last write at Cloudflare. | See [Writer verdicts](#writer-verdicts). The command differs by profile: `pco setup --recover` on a host, `pco appliance recover` in the appliance, and `pct exec <vmid> -- pco appliance recover` from the node for `behind`. For `unknown` in the appliance, `pco status` lists the problem that says why and what to do, and without a credential the fix is `pco credential add --label <label>`. |
 | `problems` | The last cycle found a problem (fails), with the first one. | `pco status`. |
 | `conflicts` | A record of someone else stands in the way (warns). | `pco adopt <name>`. |
 | `lost markers` | A record that points at the tunnel lost the marker of this install (warns). | `pco adopt <name>`. |
@@ -452,5 +452,5 @@ An action of `pco plan` has a held reason when it is not made in this cycle. The
 | `ok` | This daemon writes the tunnel configuration. | Nothing. |
 | `stale` | A newer generation of this install writes it. | `pco setup --recover` on the node that should write. |
 | `foreign` | A writer that `leader.json` does not know wrote it: another installation with this install's id, or a sentinel written with a stolen token. | See [Security](security.md); otherwise stop the other installation. |
-| `unknown` | `leader.json` could not be read or used. | `pco setup`, or `pco setup --recover`. |
+| `unknown` | `leader.json` could not be read or used. Once a cycle reads it in order again, the verdict is `ok` until Cloudflare says otherwise, also while the cycle holds for another reason, as for a missing credential. | `pco setup`, or `pco setup --recover`. In the appliance, the problem line names the command; after a start of the container the verdict is `unknown` for the one cycle that draws the new epoch. |
 | `behind` | The state of the appliance is older than the last write at Cloudflare. | `pco appliance recover`. |

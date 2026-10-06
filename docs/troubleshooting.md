@@ -463,11 +463,14 @@ writes only while the configuration carries its own mark or an older one.
   node, then `pco apply`. Otherwise stop the other one.
 - **unknown**: `leader.json could not be used`. The file is missing or invalid; `pco setup`
   writes one for a store that has none, and `pco setup --recover` takes a generation above the
-  one in use.
+  one in use. In the appliance, `pco status` lists the problem that says why: after a start of
+  the container it is `leader.json belongs to an earlier start of this container`, for the one
+  cycle that draws the new epoch, and nothing is to be done. Without a Cloudflare credential,
+  `pco credential add` comes first, as `pco appliance recover` needs one.
 - **behind**, in the appliance only: its state is older than its last write at Cloudflare, after
   a rollback or a restore. `pco appliance recover` in the appliance; see
   [the state is older than Cloudflare](#the-state-is-older-than-cloudflare). In the appliance
-  the commands of the other verdicts are `pco appliance recover` too, where a host has
+  the commands of `stale` and `foreign` are `pco appliance recover` too, where a host has
   `pco setup --recover`.
 
 While the writer is not in order, the daemon changes nothing at Cloudflare.

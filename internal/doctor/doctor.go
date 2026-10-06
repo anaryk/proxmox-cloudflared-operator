@@ -75,6 +75,8 @@ const (
 	fixTable    = "pco status says why; pco egress show shows the table"
 	fixNewToken = "add a new token with pco credential add, then remove this one"
 
+	fixNoCredential = "pco credential add --label <label>"
+
 	// notChecked is what a tunnel the last cycle did not check is, when the
 	// state does not say why.
 	notChecked = "not checked in the last cycle"
@@ -273,15 +275,23 @@ func checkInventory(st engine.State) Finding {
 
 // checkWriter fails when the writer of the tunnel configuration is not this
 // daemon. What puts it right differs by profile: an appliance recovers its
-// own state, and a host is recovered from the node. app is the part of the
-// appliance, which knows its VMID.
+// own state, and a host is recovered from the node. In an appliance,
+// leader.json that could not be used is put right as the problem line of the
+// cycle says, as after a start of the container nothing does, and a recovery
+// needs a credential first. app is the part of the appliance, which knows its
+// VMID.
 func checkWriter(st engine.State, app ApplianceEnv) Finding {
 	recover, stale, foreign := "pco setup --recover", "on the node that should write", "if no other node runs pco with this install, "+
 		"replace the Cloudflare token, run pco tunnel rotate and pco setup --recover on this node, then pco apply; otherwise stop the other installation"
+	unknown := recover
 	if st.Profile == store.ProfileAppliance {
 		recover, stale = "pco appliance recover", "in the appliance that should write"
 		foreign = "if no other installation runs with this install id, replace the Cloudflare token, run pco tunnel rotate " +
 			"and pco appliance recover in the appliance, then pco apply; otherwise stop the other installation"
+		unknown = fixProblems
+		if len(st.Credentials) == 0 {
+			unknown = fixNoCredential
+		}
 	}
 	switch st.WriterVerdict {
 	case engine.VerdictStale:
@@ -300,14 +310,14 @@ func checkWriter(st engine.State, app ApplianceEnv) Finding {
 		return fail("writer", "a writer of this install that leader.json does not know wrote the tunnel configuration: "+
 			"another installation with this install's id, or a sentinel written with a stolen Cloudflare token", foreign)
 	case engine.VerdictUnknown:
-		return fail("writer", "leader.json could not be used", recover)
+		return fail("writer", "leader.json could not be used", unknown)
 	}
 	return ok("writer", "this daemon writes the tunnel configuration")
 }
 
 func checkCredentials(st engine.State, now time.Time) []Finding {
 	if len(st.Credentials) == 0 {
-		return []Finding{fail("credentials", "no Cloudflare credential", "pco credential add --label <label>")}
+		return []Finding{fail("credentials", "no Cloudflare credential", fixNoCredential)}
 	}
 	out := make([]Finding, 0, len(st.Credentials))
 	for _, c := range st.Credentials {

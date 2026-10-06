@@ -1144,8 +1144,10 @@ func TestTheWriterOfAnApplianceFixesWithItsOwnCommands(t *testing.T) {
 		{"stale on a host", store.ProfileHost, engine.VerdictStale,
 			Finding{Check: "writer", Level: LevelFail, Detail: "a newer generation of this install writes the tunnel configuration",
 				Fix: "run pco setup --recover on the node that should write"}},
+		// Which command puts leader.json right in an appliance is the problem
+		// line's to say: after a start of the container, nothing does.
 		{"unknown in an appliance", store.ProfileAppliance, engine.VerdictUnknown,
-			Finding{Check: "writer", Level: LevelFail, Detail: "leader.json could not be used", Fix: "pco appliance recover"}},
+			Finding{Check: "writer", Level: LevelFail, Detail: "leader.json could not be used", Fix: "pco status lists the problems that say why"}},
 		{"unknown on a host", store.ProfileHost, engine.VerdictUnknown,
 			Finding{Check: "writer", Level: LevelFail, Detail: "leader.json could not be used", Fix: "pco setup --recover"}},
 		{"behind in an appliance", store.ProfileAppliance, engine.VerdictBehind,
@@ -1171,6 +1173,28 @@ func TestTheWriterOfAnApplianceFixesWithItsOwnCommands(t *testing.T) {
 
 			require.Equal(t, tt.expect, only(Run(t.Context(), st, healthyEnv()), "writer"))
 		})
+	}
+}
+
+// An appliance without a credential, as after a start of its container, is
+// told to add one: recover needs one, and only a state behind Cloudflare asks
+// for it.
+func TestAnApplianceWithoutACredentialIsToldToAddOne(t *testing.T) {
+	for _, verdict := range []string{engine.VerdictOK, engine.VerdictUnknown} {
+		st := healthyApplianceState()
+		st.Credentials, st.Tunnels, st.Connectors = nil, nil, nil
+		st.WriterVerdict, st.Hold = verdict, "no Cloudflare credential; add one with pco credential add"
+
+		findings := Run(t.Context(), st, healthyApplianceEnv())
+
+		require.Equal(t, Finding{Check: "credentials", Level: LevelFail, Detail: "no Cloudflare credential", Fix: "pco credential add --label <label>"},
+			only(findings, "credentials"))
+		if verdict == engine.VerdictUnknown {
+			require.Equal(t, "pco credential add --label <label>", only(findings, "writer").Fix)
+		}
+		for _, f := range findings {
+			require.NotContains(t, f.Fix, "recover", "%s: %s", f.Check, f.Detail)
+		}
 	}
 }
 
