@@ -78,7 +78,15 @@ Its target is one of two kinds:
    the owner.
 
 4. For a service of the node itself, add `--allow-node`. The prefix of the node's address has
-   to be in `manualCIDRs` as well, and the route is refused without the option:
+   to be in `manualCIDRs` as well. With the node at `10.0.0.2`, add its network:
+
+   ```sh
+   pco settings show --json > /root/pco-settings.json
+   jq '.settings.manualCIDRs += ["10.0.0.0/24"]' /root/pco-settings.json > /root/pco-settings.new.json
+   pco settings apply /root/pco-settings.new.json
+   ```
+
+   The route is refused without the option:
 
    ```text
    pco: target.addr 10.0.0.2: an address of a node; a route to a service of the node needs allowNode
