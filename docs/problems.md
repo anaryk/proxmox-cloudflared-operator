@@ -95,7 +95,7 @@ with its name in parentheses where it has one.
 | `node <node> is offline; using cached data for its guests` | The data of its guests is the last read. Not a hold. | Bring the node back. |
 | `status of <n> guests is unknown; using last known state` | Proxmox gave no status for those guests. Not a hold. | Usually passes. |
 | `reported addresses unavailable: the API token lacks the guest-agent privilege (VM.GuestAgent.Audit, VM.Monitor before PVE 9)` | pco cannot ask the guests for the addresses they report. A VM whose address comes from the guest agent has none. Not a hold. | `pco setup --repair` gives the role the privilege. |
-| `guest <guest>: interfaces not refreshed: <error>` | The agent of a guest, or a container, did not answer. Not a hold. | See whether the agent runs in the guest. |
+| `guest <guest>: interfaces not refreshed: <error>` | Proxmox answered the question for the interfaces of a guest with an error nobody expects. An agent that does not run in the guest, a guest that does not answer in time and a refusal of the privilege have no line of their own: the first two leave the guest without addresses, quietly, and the third is the line about the guest-agent privilege above. Not a hold. | Read `<error>`: it is what Proxmox said. |
 | `Proxmox lists no guest at all, but <n> guests hold a hostname (<guests>); nothing is changed: check the privileges of the Proxmox API token, or run pco apply --confirm-deletes if they were removed on purpose` | The vanish guard: a complete listing is empty while guests hold hostnames. The cycle holds. | `pco setup --repair`, and `pco doctor`; `pco apply --confirm-deletes` if they were removed on purpose. |
 | `<n> of <m> guests that hold a hostname are no longer listed by Proxmox (<guests>); nothing is changed until they are listed again, or run pco apply --confirm-deletes if they were removed on purpose` | The vanish guard: more than 5 of the guests that hold a hostname, and more than 30 per cent of them, are gone from the listing at once. This is what a token that lost its privileges looks like. The cycle holds. | As above. |
 
@@ -255,7 +255,7 @@ in the appliance, and the rows for `store`, `writer` and `nftables` say how they
 |---|---|---|
 | `cycle` | Warns when no cycle has run yet, or the last one ended more than three poll intervals ago (three times its own duration, if it took longer than a poll interval); fails after six. | `journalctl -u pco` says what holds the cycles up. |
 | `cloudflared` | It does not run (fails), did not answer in time or has no version that can be read (warns), or is more than ten months old (warns; the age counts from the first day of the month in its version). | Install or update `cloudflared` from the package repository of Cloudflare. |
-| `outbound` | TCP to `region1.v2.argotunnel.com:7844` cannot be made. A warning when every connector is connected all the same, over QUIC perhaps; else a failure. | Allow outbound TCP and UDP to port 7844. |
+| `outbound` | TCP to `region1.v2.argotunnel.com:7844` cannot be made. A warning when every connector is connected all the same, over QUIC perhaps, and the last cycle did not hold (a cycle that held has not looked at the connectors); else a failure. | Allow outbound TCP and UDP to port 7844. |
 | `proxmox` | The Proxmox API does not answer with the token of pco (fails), the version cannot be told (warns), or it is older than 8.4 (fails). | Check the token with `pco setup --repair`; upgrade Proxmox VE. |
 | `store` | The store is not mounted (fails) or not set up (fails). In the appliance it is the volume with its marker and the store on it, also when the daemon does not run, as root. | `systemctl status pve-cluster`; `pco setup`. In the appliance: `pco appliance repair --vmid <vmid>` on the node. |
 | `node lock` | This daemon does not hold the lock of the node (fails). | `systemctl restart pco`, so that no second daemon can start. |
@@ -275,7 +275,7 @@ in the appliance, and the rows for `store`, `writer` and `nftables` say how they
 | `credential <id>` | A token is not checked yet, could not be checked, cannot be used or has expired (fails for the last two), or expires in less than 30 days (warns). | `pco credential check <id>`, or add a new token and remove this one. |
 | `approval`, `approval <owner>` | A guest waits for approval (warns, one finding for each). | `pco guest approve <owner>`. |
 | `tunnel <name> in account <id>` | A tunnel is not checked, left as it is, unknown, does not exist yet or is not verified (warns). | `pco status` lists the problems; `pco plan`. |
-| `connector <name> in account <id>` | The unit does not run or is not connected (fails), or it runs and whether it is connected was not checked (warns). | `systemctl status` and `journalctl -u` of the unit. |
+| `connector <name> in account <id>` | The unit does not run, the last cycle found no connector for the tunnel, or the connector is not connected to Cloudflare (fails); systemd did not say whether the unit runs, or it runs and whether it is connected was not checked in the last cycle (warns). | `systemctl status` and `journalctl -u` of the unit. |
 | `web certificate` | Only where setup made the web interface: the certificate cannot be read, does not match its key or has expired (fails); it ends in less than 30 days (warns, in the modes `ca` and `own`). | `pco web cert renew`, or `pco web cert import <crt> <key>` for a certificate of your own, or `pco setup --repair` for the mode `pveproxy`. |
 | `unit <unit>`, `daemon` | Only while the daemon does not answer, as root: the unit `pco.service` or `pco-egress.service` does not run (fails) or does not start at boot (warns); `daemon` warns that the checks that need the daemon were not made. | `systemctl enable --now <unit>`, and `journalctl -u <unit>`. |
 | `doctor` | The run of the checks stopped on a defect (fails). | `journalctl -u pco` shows where it stopped. |
@@ -290,8 +290,11 @@ answer in 5 seconds, as one of a storage that stalls does not, is an error `no a
 in the same way, and a check that has not ended after 30 seconds fails with `no answer within
 30s: something it reads may be stalled`, with the fix to look for a mount or a storage of the
 container that does not answer (`pct config <vmid>` on the node lists them); the other checks
-are answered all the same. `<vmid>` is the number of the container, and a fix that says `on
-the node` is run on the Proxmox node and not in the appliance.
+are answered all the same. A check that stops on an internal error, as by a panic, is a failure
+named like the check, `the check stopped on an internal error: <error>`, with the fix
+`journalctl -u pco may say more; report it`; it takes no other check down. `<vmid>` is the
+number of the container, and a fix that says `on the node` is run on the Proxmox node and not
+in the appliance.
 
 | Check | Fails or warns when | Fix |
 |---|---|---|

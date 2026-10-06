@@ -45,39 +45,39 @@ mounted.
 
 ### `/etc/pve/pco`
 
-| Path | Holds | Written by | Back up |
-|---|---|---|---|
-| `meta/install.json` | The install id (12 hexadecimal characters), when it was made, and the profile, `host`. | `pco setup` | Yes; `pco setup --recover` takes the id from Cloudflare when it is lost. |
-| `meta/settings.json` | The settings; see [Settings](settings.md). | `pco setup`, `pco apply`, `pco settings apply`, the web interface; by hand | Yes: nothing makes your values again. |
-| `meta/leader.json` | The writer identity: install id, generation and a nonce. The tunnel configuration carries it, and it is how pco tells its own writes from those of a stale or a foreign writer. | `pco setup`, `pco setup --recover` | No; a recovery draws a generation above every one in use. |
-| `meta/tombstones.json` | DNS records waiting out their grace period. | The daemon | No. |
-| `nodes/<node>.json` | The node that runs pco, and its version. | `pco setup` | No; `pco setup` registers the node again. |
-| `claims/<hostname>.json` | Who holds a hostname, since when, and who waits. A wildcard is stored as `_wildcard.<name>.json`. | The daemon, `pco claims resolve` | No; the daemon settles claims again from the Notes, and the guest that holds a hostname may then be another. |
-| `approvals/<owner>.json` | An approved guest and its identity. A guest `qemu/101` is stored as `qemu_101.json`. | `pco guest approve`, the web interface | Yes: an approval is a decision of an admin. |
-| `routes/<id>.json` | Manual routes, which the daemon reads in every cycle. A manual route names an address and not a guest, so its level is `manual`. | `pco route manual add` and `remove`, the web interface | Yes. |
-| `segments/<bridge>.json`, `segments/<bridge>.<vlan>.json` | A bridge and VLAN on which routes at `observed` may be served, once an admin acknowledged it. | `pco segment acknowledge` and `revoke` | Yes. |
-| `adopted.jsonl` | One line for each DNS record that `pco adopt` replaced, as it was; at most 256 KiB, oldest lines first out. | The daemon, for `pco adopt` | Yes: it is the only copy of those records. |
+| Path | Holds | Written by | Owner and mode | Back up |
+| --- | --- | --- | --- | --- |
+| `meta/install.json` | The install id (12 hexadecimal characters), when it was made, and the profile, `host`. | `pco setup` | as the cluster filesystem sets | Yes; `pco setup --recover` takes the id from Cloudflare when it is lost. |
+| `meta/settings.json` | The settings; see [Settings](settings.md). | `pco setup`, `pco apply`, `pco settings apply`, the web interface; by hand | as the cluster filesystem sets | Yes: nothing makes your values again. |
+| `meta/leader.json` | The writer identity: install id, generation and a nonce. The tunnel configuration carries it, and it is how pco tells its own writes from those of a stale or a foreign writer. | `pco setup`, `pco setup --recover` | as the cluster filesystem sets | No; a recovery draws a generation above every one in use. |
+| `meta/tombstones.json` | DNS records waiting out their grace period. | The daemon | as the cluster filesystem sets | No. |
+| `nodes/<node>.json` | The node that runs pco, and its version. | `pco setup` | as the cluster filesystem sets | No; `pco setup` registers the node again. |
+| `claims/<hostname>.json` | Who holds a hostname, since when, and who waits. A wildcard is stored as `_wildcard.<name>.json`. | The daemon, `pco claims resolve` | as the cluster filesystem sets | No; the daemon settles claims again from the Notes, and the guest that holds a hostname may then be another. |
+| `approvals/<owner>.json` | An approved guest and its identity. A guest `qemu/101` is stored as `qemu_101.json`. | `pco guest approve`, the web interface | as the cluster filesystem sets | Yes: an approval is a decision of an admin. |
+| `routes/<id>.json` | Manual routes, which the daemon reads in every cycle. A manual route names an address and not a guest, so its level is `manual`. | `pco route manual add` and `remove`, the web interface | as the cluster filesystem sets | Yes. |
+| `segments/<bridge>.json`, `segments/<bridge>.<vlan>.json` | A bridge and VLAN on which routes at `observed` may be served, once an admin acknowledged it. | `pco segment acknowledge` and `revoke` | as the cluster filesystem sets | Yes. |
+| `adopted.jsonl` | One line for each DNS record that `pco adopt` replaced, as it was; at most 256 KiB, oldest lines first out. | The daemon, for `pco adopt` | as the cluster filesystem sets | Yes: it is the only copy of those records. |
 
 ### `/etc/pve/priv/pco`
 
-| Path | Holds | Written by | Back up |
-|---|---|---|---|
-| `meta/pve-token.json` | The secret of the Proxmox API token of pco. | `pco setup` | Only with the care a secret needs; `pco setup --repair` makes the token again. |
-| `credentials/<id>.json` | One Cloudflare credential: its label, kind and token, in the clear. | `pco credential add`, `pco setup`, the web interface | Only with the care a secret needs; a token can be made again at Cloudflare. |
+| Path | Holds | Written by | Owner and mode | Back up |
+| --- | --- | --- | --- | --- |
+| `meta/pve-token.json` | The secret of the Proxmox API token of pco. | `pco setup` | root only, as below `/etc/pve/priv` | Only with the care a secret needs; `pco setup --repair` makes the token again. |
+| `credentials/<id>.json` | One Cloudflare credential: its label, kind and token, in the clear. | `pco credential add`, `pco setup`, the web interface | root only, as below `/etc/pve/priv` | Only with the care a secret needs; a token can be made again at Cloudflare. |
 
 ### `/var/lib/pco`
 
-| Path | Holds | Written by | Back up |
-|---|---|---|---|
-| `manifest.json` | What `pco setup` created, in Proxmox and on the node, in this run and the ones before. `pco uninstall` removes what it lists, and nothing else. | `pco setup` | Yes, if `pco uninstall` is to know what setup made. |
-| `bindings/<hostname>.json` | The address verified for each hostname, with the MAC, the level and, at `port`, where the forwarding table placed the MAC. A file is written when its binding changes, and for the time of the last proof alone only once that moved on by more than 75 seconds: after a restart a proof counts as up to that much older than it is. | The daemon | No; the addresses are verified again. |
-| `meta/engine-memory.json` | What the daemon must still know after a restart: the zones it serves and every zone whose records it ever listed, the tunnels it saw, the guests you confirmed gone, the last check of each credential, and the targets of the egress filter with the tunnel configurations that confirmed them. | The daemon | No. Removing it forgets the connectors kept for tunnels no credential sees, the zones that left their listing and the guests confirmed gone. |
-| `meta/node-addrs.json` | The addresses of the nodes, for the denylist. | The daemon | No. |
-| `meta/soft-deny.json` | The gateways and DNS resolvers of the nodes, and in the appliance of the appliance, each with when it was last seen. A guest whose address is one of them waits for an approval. An address that is not seen for 30 days ages out. | The daemon | No. |
-| `events.log`, `events.log.1` | The event log, one JSON object a line; rotated at 5 MiB, one earlier file is kept. | The daemon | If you want the history. |
-| `tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector, in a directory of mode `0700`; the token and the configuration are `0600`, the env file `0644`. The `.env` file names the install the connector belongs to. A hidden file `.<tunnel id>.pending`, `0600`, says that the files of a tunnel changed and its unit has not been started or restarted since. | The daemon | No; the daemon reads the token of a tunnel again from Cloudflare. |
-| `egress-blocked.json`, `egress-off.json` | The block list and the off switch of the egress filter, `0600`. The off switch is a file that is there while the filter is off. | `pco egress block`, `unblock`, `off` and `on` | If you keep addresses blocked on purpose. |
-| `daemon.lock` | The lock of the node: the daemon holds it for as long as it runs. The file stays where it is, since removing it would let two daemons lock two different files. | The daemon | No. |
+| Path | Holds | Written by | Owner and mode | Back up |
+| --- | --- | --- | --- | --- |
+| `manifest.json` | What `pco setup` created, in Proxmox and on the node, in this run and the ones before. `pco uninstall` removes what it lists, and nothing else. | `pco setup` | root, `0600` | Yes, if `pco uninstall` is to know what setup made. |
+| `bindings/<hostname>.json` | The address verified for each hostname, with the MAC, the level and, at `port`, where the forwarding table placed the MAC. A file is written when its binding changes, and for the time of the last proof alone only once that moved on by more than 75 seconds: after a restart a proof counts as up to that much older than it is. | The daemon | root, `0600` | No; the addresses are verified again. |
+| `meta/engine-memory.json` | What the daemon must still know after a restart: the zones it serves and every zone whose records it ever listed, the tunnels it saw, the guests you confirmed gone, the last check of each credential, and the targets of the egress filter with the tunnel configurations that confirmed them. | The daemon | root, `0600` | No. Removing it forgets the connectors kept for tunnels no credential sees, the zones that left their listing and the guests confirmed gone. |
+| `meta/node-addrs.json` | The addresses of the nodes, for the denylist. | The daemon | root, `0600` | No. |
+| `meta/soft-deny.json` | The gateways and DNS resolvers of the nodes, and in the appliance of the appliance, each with when it was last seen. A guest whose address is one of them waits for an approval. An address that is not seen for 30 days ages out. | The daemon | root, `0600` | No. |
+| `events.log`, `events.log.1` | The event log, one JSON object a line; rotated at 5 MiB, one earlier file is kept. | The daemon | root, `0600` | If you want the history. |
+| `tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector, in a directory of mode `0700`; the token and the configuration are `0600`, the env file `0644`. The `.env` file names the install the connector belongs to. A hidden file `.<tunnel id>.pending`, `0600`, says that the files of a tunnel changed and its unit has not been started or restarted since. | The daemon | root; the directory `0700`, `.token` and `.yml` `0600`, `.env` `0644` | No; the daemon reads the token of a tunnel again from Cloudflare. |
+| `egress-blocked.json`, `egress-off.json` | The block list and the off switch of the egress filter, `0600`. The off switch is a file that is there while the filter is off. | `pco egress block`, `unblock`, `off` and `on` | root, `0600` | If you keep addresses blocked on purpose. |
+| `daemon.lock` | The lock of the node: the daemon holds it for as long as it runs. The file stays where it is, since removing it would let two daemons lock two different files. | The daemon | root, `0600` | No. |
 
 The files of `meta/` and `bindings/` are objects of the same envelope.
 
@@ -98,13 +98,13 @@ daemon runs as and not be writable by group or others; a socket elsewhere is cho
 
 The package installs these files in `/usr/lib/systemd/system`, all mode `0644`:
 
-| Unit | What it is |
-|---|---|
-| `pco.service` | The daemon. |
-| `pco-egress.service` | Loads the egress filter, `pco egress load`. |
-| `pco-cloudflared@.service` | The template of the connector of one tunnel. |
-| `pco-web.service` | The web interface, `pco web`. |
-| `pco-net.service` | Loads the service-prefix route and filter of the appliance, `pco net load`. Nothing starts it on a host. |
+| Unit | What it is | Owner and mode |
+|---|---|---|
+| `pco.service` | The daemon. | root, `0644` |
+| `pco-egress.service` | Loads the egress filter, `pco egress load`. | root, `0644` |
+| `pco-cloudflared@.service` | The template of the connector of one tunnel. | root, `0644` |
+| `pco-web.service` | The web interface, `pco web`. | root, `0644` |
+| `pco-net.service` | Loads the service-prefix route and filter of the appliance, `pco net load`. Nothing starts it on a host. | root, `0644` |
 
 Their commands, and what each does at a reboot, are in [Operations](operations.md#the-daemon-and-its-units).
 

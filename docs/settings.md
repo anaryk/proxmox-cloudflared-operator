@@ -111,7 +111,9 @@ file, which is 1: a file written by a newer schema is refused and never rewritte
   letters, digits and `_ - + .`, not starting with `-`, `+` or `.`, at most 64 characters.
   After you change it, run `pco setup` (or `pco setup --repair`) on the node, which registers
   the new tag in Proxmox beside `cf-tunnel` and `cf-tunnel-managed`; see
-  [Security](security.md).
+  [Security](security.md). In the appliance, `pco appliance init` stores the gate tag the
+  installer was given in the settings of a new install; the settings of an existing install
+  are kept, and init says when the tag it was given is another.
 - `admission`: `tag` publishes a guest that carries the gate tag. `approve` also needs the
   approval of an admin (`pco guest approve`). Use `approve` when anyone but the admins holds
   `VM.Clone` on a tagged guest or template: Proxmox copies the tag to the clone.
@@ -150,7 +152,7 @@ as `1m0s`.
 
 | Setting | Type, default | Accepts | Takes effect | Web UI |
 |---|---|---|---|---|
-| `identityMinimum` | string, `port` | `port`, `filtered`, `observed` | Next cycle | Identity |
+| `identityMinimum` | string, `port` on a host, `observed` in the appliance | `port`, `filtered`, `observed` | Next cycle | Identity |
 | `reverifyInterval` | duration, `1m0s` | `10s` to `5m0s` | Next cycle | Timing |
 | `trustStatic` | boolean, `false` | `true`, `false` | At start | Identity |
 | `trustedCIDRs` | IPv4 prefixes, none | IPv4 prefixes | At start | Identity |
@@ -158,8 +160,12 @@ as `1m0s`.
 - `identityMinimum`: the lowest identity level at which the address of a guest is served; a
   route below it is held back and answers 503. `port` is the strictest. Guests of other nodes
   and trusted static addresses reach `observed` only. On a host `filtered` asks for `port`: it
-  is the level of the appliance's managed network. See [Identity](identity.md). The web page
-  labels it Lowest identity level served.
+  is the level of the appliance's managed network. See [Identity](identity.md). The default is
+  `port` on a host. `pco appliance init` stores `observed` in the settings of a new appliance,
+  because a container cannot read the forwarding table of the bridge: `port` is beyond it, and
+  its best level on an ordinary network is `observed`. Raising the setting there holds back
+  every route the container cannot prove at the level asked, which on an ordinary network is
+  all of them. The web page labels it Lowest identity level served.
 - `reverifyInterval`: how long a proof of identity that the watch of the network vouches for
   stands before the address is checked on the wire again. A shorter time costs more ARP
   exchanges; see [Operations](operations.md#how-often-an-address-is-checked-on-the-wire). The
