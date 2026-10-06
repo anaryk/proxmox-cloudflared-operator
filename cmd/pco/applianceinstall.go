@@ -2,8 +2,11 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -27,6 +30,7 @@ func (a *app) applianceNodeCmds() []*cobra.Command {
 		a.applianceManagedCmd(),
 		a.appliancePurgeCmd(),
 		a.applianceManifestCmd(),
+		a.applianceAttachmentsCmd(),
 	}
 }
 
@@ -277,6 +281,11 @@ const uninstallLong = "Remove the appliance and what the installer made for it f
 	"with something at Cloudflare needs one of the two, as the credentials that reach it go\n" +
 	"with the container. A copy of the appliance beside its original leaves Cloudflare alone,\n" +
 	"as what it reaches there is the original's.\n\n" +
+	"The SDN zone pco and vnet pconet that pco appliance managed enable made go last, under the\n" +
+	"lock of the SDN configuration, as the manifest names them. While a guest has a card on\n" +
+	"pconet it refuses before anything goes, as the manifest goes with the container;\n" +
+	"--detach-managed has the running appliance list the cards it attached and removes them\n" +
+	"first, with what it changed of the guests' firewalls.\n\n" +
 	"A part that fails is reported and the rest goes on; running it again finishes it. It\n" +
 	"runs as root on the node that has the container; on another node of the cluster it\n" +
 	"refuses and names that node, and only a container no node has counts as gone, whose\n" +
@@ -332,6 +341,7 @@ func (a *app) applianceUninstallCmd() *cobra.Command {
 	flags.BoolVar(&o.PurgeCloudflare, "purge-cloudflare", false, "delete the DNS records and the tunnel of the install at Cloudflare, through the appliance")
 	flags.BoolVar(&o.KeepCloudflare, "keep-cloudflare", false, "leave the DNS records and the tunnel of the install at Cloudflare as they are")
 	flags.BoolVar(&o.KeepTemplate, "keep-template", true, "keep the template the installer downloaded for the appliance; another template of pco always stays")
+	flags.BoolVar(&o.DetachManaged, "detach-managed", false, "remove the cards the appliance attached on the managed network first, so that its zone and vnet can go")
 	cmd.MarkFlagsMutuallyExclusive("purge-cloudflare", "keep-cloudflare")
 	_ = cmd.MarkFlagRequired("vmid")
 	return cmd
@@ -607,6 +617,48 @@ func (a *app) appliancePurgeCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "only name what would be deleted, one object a line")
 	return cmd
+}
+
+// applianceAttachmentsCmd is what pco appliance uninstall --detach-managed
+// runs inside the appliance to learn the cards it attached.
+func (a *app) applianceAttachmentsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "attachments",
+		Short:  "List the cards the appliance attached on the managed network (run by uninstall)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			if err := a.insideAppliance(cmd, "pco uninstall --detach-managed reads the store itself"); err != nil {
+				return err
+			}
+			paths, err := a.applianceVolume()
+			if err != nil {
+				return err
+			}
+			st, err := store.Open(paths)
+			if err != nil {
+				return fmt.Errorf("opening the store: %w", err)
+			}
+			have, err := st.Attachments()
+			if err != nil {
+				return fmt.Errorf("reading the attachments: %w", err)
+			}
+			list := make([]store.Attachment, 0, len(have))
+			for _, owner := range slices.Sorted(maps.Keys(have)) {
+				list = append(list, have[owner])
+			}
+			b, err := json.Marshal(list)
+			if err != nil {
+				return err
+			}
+			s := &screen{w: cmd.OutOrStdout()}
+			s.printf("%s\n", b)
+			return s.done()
+		},
+	}
 }
 
 // applianceManifestCmd changes the manifest of the appliance for pco

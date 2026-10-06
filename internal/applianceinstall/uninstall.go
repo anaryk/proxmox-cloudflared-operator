@@ -2,13 +2,16 @@ package applianceinstall
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // survey is what uninstall finds of an appliance before it asks anything:
@@ -33,6 +36,12 @@ type survey struct {
 	hostInstall     bool
 	cloudflare      []string // what the install has at Cloudflare, as its purge lists it
 	cloudflareErr   error
+	// cards are the cards of other guests on the managed vnet, read when
+	// the manifest says pco appliance managed enable made it.
+	cards []setup.Card
+	// attachments are the cards the appliance attached, as it lists them,
+	// for --detach-managed.
+	attachments []store.Attachment
 }
 
 // plan is what uninstall removes, and why it keeps what it keeps.
@@ -49,6 +58,9 @@ type plan struct {
 	template   string // the installer's, which goes unless KeepTemplate
 	kept       []string
 	notes      []string
+	// managed names the SDN objects of the managed network that go last,
+	// as the manifest notes them; empty when none does.
+	managed string
 }
 
 // Uninstall removes the appliance vmid and what the installer made for it,
@@ -78,6 +90,9 @@ func (i *Installer) Uninstall(ctx context.Context, vmid int, o UninstallOptions)
 	defer unlock()
 	s, err := r.survey(ctx, vmid, o)
 	if err != nil {
+		return err
+	}
+	if err := refuseManagedCards(s, o); err != nil {
 		return err
 	}
 	p := r.plan(vmid, s)
@@ -178,7 +193,106 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 	if s.running && !o.KeepCloudflare && s.originalNode == "" {
 		s.cloudflare, s.cloudflareErr = r.listCloudflare(ctx, vmid)
 	}
+	if err := r.surveyManaged(ctx, vmid, o, &s); err != nil {
+		return s, err
+	}
 	return s, nil
+}
+
+// madeManaged reports whether the manifest says pco appliance managed enable
+// made the zone or the vnet of the managed network, and names them.
+func madeManaged(m *setup.Manifest) (string, bool) {
+	if m == nil || !m.CreatedZone && !m.CreatedVnet {
+		return "", false
+	}
+	var objects []string
+	if m.CreatedVnet {
+		objects = append(objects, "vnet "+setup.ManagedVnet)
+	}
+	if m.CreatedZone {
+		objects = append(objects, "zone "+setup.ManagedZone)
+	}
+	return "the SDN " + strings.Join(objects, " and "), true
+}
+
+// surveyManaged reads the cards of the other guests on the managed vnet the
+// appliance's node made, and for --detach-managed the cards the appliance
+// attached, which only the running appliance can list.
+func (r *run) surveyManaged(ctx context.Context, vmid int, o UninstallOptions, s *survey) error {
+	if _, ok := madeManaged(s.manifest); ok {
+		cards, err := setup.CardsOn(ctx, r.r, setup.ManagedVnet)
+		if err != nil {
+			return fmt.Errorf("%w; nothing was removed", err)
+		}
+		self := "lxc/" + strconv.Itoa(vmid)
+		s.cards = slices.DeleteFunc(cards, func(c setup.Card) bool { return c.Owner == self })
+	}
+	switch {
+	case !o.DetachManaged || !s.exists:
+	case !s.running:
+		return fmt.Errorf("--detach-managed reads the cards lxc/%d attached from it, and it is stopped: start it with pct start %d; "+
+			"nothing was removed", vmid, vmid)
+	default:
+		var err error
+		if s.attachments, err = r.attachments(ctx, vmid); err != nil {
+			return fmt.Errorf("reading the cards lxc/%d attached: %w; nothing was removed", vmid, err)
+		}
+	}
+	return nil
+}
+
+// attachments asks the appliance for the cards it attached. What it answers
+// is the appliance's word: a card is only taken off a guest whose
+// configuration has it at that index on the managed vnet with pco's MAC of
+// its address.
+func (r *run) attachments(ctx context.Context, vmid int) ([]store.Attachment, error) {
+	out, err := r.pco(ctx, vmid, "appliance", "attachments")
+	if err != nil {
+		return nil, err
+	}
+	var listed []store.Attachment
+	if err := json.Unmarshal([]byte(out), &listed); err != nil {
+		return nil, fmt.Errorf("pco appliance attachments printed what is not the JSON expected: %w", err)
+	}
+	var kept []store.Attachment
+	for _, a := range listed {
+		_, err := model.ParseGuestRef(a.Owner)
+		mac, merr := model.NormalizeMAC(a.MAC)
+		switch {
+		case err != nil, merr != nil, !a.Addr.Is4(), mac != store.ManagedMAC(a.Addr), a.NIC < 0 || a.NIC > 31:
+			r.ask.Warn("lxc/%d lists a card it attached that is no managed card (%s net%d %s); ignored", vmid, a.Owner, a.NIC, a.MAC)
+			continue
+		}
+		a.MAC = mac
+		kept = append(kept, a)
+	}
+	return kept, nil
+}
+
+// refuseManagedCards refuses the uninstall while a guest has a card on the
+// managed vnet that stays: the manifest that says the vnet is pco's goes
+// with the container, and a run after it could no longer tell.
+func refuseManagedCards(s survey, o UninstallOptions) error {
+	if len(s.cards) == 0 {
+		return nil
+	}
+	if !o.DetachManaged {
+		return fmt.Errorf("the SDN zone %s is kept: guests %s still have a card on %s; detach them first or pass --detach-managed; "+
+			"nothing was removed", setup.ManagedZone, strings.Join(setup.Owners(s.cards), ", "), setup.ManagedVnet)
+	}
+	var others []setup.Card
+	for _, c := range s.cards {
+		if !slices.ContainsFunc(s.attachments, func(a store.Attachment) bool {
+			return a.Owner == c.Owner && a.NIC == c.NIC && a.MAC == c.MAC
+		}) {
+			others = append(others, c)
+		}
+	}
+	if len(others) > 0 {
+		return fmt.Errorf("the SDN zone %s is kept: guests %s still have a card on %s, which pco did not attach: remove it; "+
+			"nothing was removed", setup.ManagedZone, strings.Join(setup.Owners(others), ", "), setup.ManagedVnet)
+	}
+	return nil
 }
 
 func (r *run) hostInstalled() bool {
@@ -326,6 +440,7 @@ func (r *run) plan(vmid int, s survey) plan {
 			p.tags = added
 		}
 	}
+	p.managed, _ = madeManaged(s.manifest)
 	// The template is the installer's when the manifest names it: it names
 	// one only when the installer downloaded it.
 	if s.manifest != nil && s.manifest.Appliance != nil && slices.Contains(s.templates, s.manifest.Appliance.Template) {
@@ -440,6 +555,13 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 	} else {
 		r.ask.Info("  (no container lxc/%d on this node)", vmid)
 	}
+	if len(s.attachments) > 0 {
+		var owners []string
+		for _, a := range s.attachments {
+			owners = append(owners, a.Owner)
+		}
+		r.ask.Info("  the managed cards lxc/%d attached to %s, removed first", vmid, strings.Join(owners, ", "))
+	}
 	if p.token {
 		r.ask.Info("  Proxmox token %s", tokenID(vmid))
 	}
@@ -470,6 +592,9 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 		r.ask.Info("  (the template %s stays; --keep-template=false removes it)", p.template)
 	default:
 		r.ask.Info("  the template %s", p.template)
+	}
+	if p.managed != "" {
+		r.ask.Info("  %s, which an SDN apply removes from every node", p.managed)
 	}
 	for _, k := range p.kept {
 		r.ask.Info("  (kept: %s)", k)
@@ -554,6 +679,12 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 			r.ask.Warn("%v", err)
 		}
 	}
+	if len(s.attachments) > 0 {
+		d := setup.Detacher{Run: r.r, Ask: r.ask, Sleep: r.h.sleep}
+		if _, err := d.Detach(ctx, s.attachments); err != nil {
+			fail(err)
+		}
+	}
 	gone := true
 	if p.container {
 		err := r.destroyContainer(ctx, vmid, s.running)
@@ -598,11 +729,38 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 	if p.template != "" && !r.o.KeepTemplate {
 		fail(r.removeObject(ctx, "template "+p.template, "pvesm", "free", p.template))
 	}
+	if p.managed != "" {
+		r.removeManagedNetwork(ctx, s.manifest)
+	}
 	if len(failed) > 0 {
 		return fmt.Errorf("the uninstall did not finish: %s; run it again to finish the rest", strings.Join(failed, "; "))
 	}
 	r.ask.Info("the appliance lxc/%d is removed from this node", vmid)
 	return nil
+}
+
+// removeManagedNetwork removes the vnet and the zone of the managed network
+// that the manifest notes, last, under the lock, once no guest has a card on
+// the vnet. The manifest went with the container, so what stays is the
+// admin's to remove, and the commands are named.
+func (r *run) removeManagedNetwork(ctx context.Context, m *setup.Manifest) {
+	byHand := fmt.Sprintf("pvesh delete /cluster/sdn/vnets/%s, pvesh delete /cluster/sdn/zones/%s, then pvesh set /cluster/sdn",
+		setup.ManagedVnet, setup.ManagedZone)
+	cards, err := setup.CardsOn(ctx, r.r, setup.ManagedVnet)
+	switch {
+	case err != nil:
+		r.ask.Warn("the SDN zone %s is kept, as the cards on %s cannot be read (%v); once no guest has one: %s",
+			setup.ManagedZone, setup.ManagedVnet, err, byHand)
+		return
+	case len(cards) > 0:
+		r.ask.Warn("the SDN zone %s is kept: guests %s still have a card on %s, which a VM without network hotplug drops when it "+
+			"restarts; then: %s", setup.ManagedZone, strings.Join(setup.Owners(cards), ", "), setup.ManagedVnet, byHand)
+		return
+	}
+	sdn := setup.SDN{Run: r.r, Ask: r.ask, Ours: *m}
+	if err := sdn.Remove(ctx); err != nil {
+		r.ask.Warn("%v; the SDN zone %s is kept: %s", err, setup.ManagedZone, byHand)
+	}
 }
 
 func (r *run) removeObject(ctx context.Context, what, name string, args ...string) error {

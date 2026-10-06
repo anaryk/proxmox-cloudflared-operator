@@ -209,6 +209,9 @@ type UninstallOptions struct {
 	Yes, PurgeCloudflare, KeepCloudflare bool
 	KeepTemplate                         bool // the command line gives it true
 	CloudflareAPI                        string
+	// DetachManaged removes the cards the appliance attached on the managed
+	// network first, so that its zone and vnet can go.
+	DetachManaged bool
 }
 
 // Installer installs, repairs and removes appliances on this node.

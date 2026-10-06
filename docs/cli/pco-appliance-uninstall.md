@@ -14,6 +14,12 @@ with something at Cloudflare needs one of the two, as the credentials that reach
 with the container. A copy of the appliance beside its original leaves Cloudflare alone,
 as what it reaches there is the original's.
 
+The SDN zone pco and vnet pconet that pco appliance managed enable made go last, under the
+lock of the SDN configuration, as the manifest names them. While a guest has a card on
+pconet it refuses before anything goes, as the manifest goes with the container;
+`--detach-managed` has the running appliance list the cards it attached and removes them
+first, with what it changed of the guests' firewalls.
+
 A part that fails is reported and the rest goes on; running it again finishes it. It
 runs as root on the node that has the container; on another node of the cluster it
 refuses and names that node, and only a container no node has counts as gone, whose
@@ -41,6 +47,7 @@ pco appliance uninstall --vmid 120 --yes --keep-cloudflare --keep-template=false
 ## Flags
 
 ```text
+    --detach-managed     remove the cards the appliance attached on the managed network first, so that its zone and vnet can go
 -h, --help               help for uninstall
     --keep-cloudflare    leave the DNS records and the tunnel of the install at Cloudflare as they are
     --keep-template      keep the template the installer downloaded for the appliance; another template of pco always stays (default true)

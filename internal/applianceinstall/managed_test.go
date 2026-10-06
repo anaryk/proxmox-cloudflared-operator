@@ -184,6 +184,110 @@ func TestManagedEnableNeedsTheApplianceRunning(t *testing.T) {
 	require.Empty(t, e.node.sdn.zones)
 }
 
+// guestOnPconet is a container of an admin's with a card on pconet; pco's
+// card when mac is the managed MAC of 10.203.118.5.
+func (e *testEnv) guestOnPconet(vmid int, mac string) {
+	e.node.cts[vmid] = &fakeCT{running: true, files: map[string]fakeFile{}, cfg: map[string]string{
+		"hostname": "web", "net0": "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:01:05,ip=dhcp",
+		"net1": "name=eth1,bridge=pconet,hwaddr=" + mac + ",ip=10.203.118.5/24,firewall=1",
+	}}
+}
+
+const pcoCard = "06:50:43:4F:76:05"
+
+// The appliance's own card goes with its container; the zone and the vnet go
+// last, under the lock, once no guest has a card on pconet.
+func TestUninstallRemovesTheManagedNetworkOfTheAppliance(t *testing.T) {
+	e := managedNode(t)
+	e.node.pools["web"] = &fakePool{}
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Pool: "web", Yes: true}))
+	e.node.cts[100].cfg["net1"] = "name=leg1,bridge=pconet,hwaddr=02:50:43:4F:FF:01,firewall=0"
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.Empty(t, e.node.sdn.zones)
+	require.Empty(t, e.node.sdn.vnets)
+	require.Equal(t, 2, e.node.sdn.applies)
+	require.Empty(t, e.node.sdn.lock)
+	require.Empty(t, e.node.pcoLines(), "the grants of the vnet and of the pool")
+	require.Nil(t, e.node.roles["PCOManaged"])
+	require.Nil(t, e.node.roles["PCOSDN"])
+	require.Contains(t, e.ask.text(), "the SDN vnet pconet and zone pco, which an SDN apply removes from every node")
+	destroyed := slices.Index(e.node.ran, "pct destroy 100 --purge 1")
+	require.Greater(t, slices.Index(e.node.ran, "pvesh delete /cluster/sdn/vnets/pconet --lock-token lock-2"), destroyed, "the zone goes last")
+}
+
+// The manifest that says the zone is pco's goes with the container, so a
+// guest's card on pconet refuses the uninstall before anything goes: a run
+// after it could no longer tell the zone is pco's.
+func TestUninstallRefusedWhileAGuestHasACardOnTheManagedNetwork(t *testing.T) {
+	e := managedNode(t)
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+	e.guestOnPconet(105, pcoCard)
+
+	err := e.in.Uninstall(t.Context(), 100, uninstallOptions())
+
+	require.EqualError(t, err, "the SDN zone pco is kept: guests lxc/105 still have a card on pconet; detach them first or pass "+
+		"--detach-managed; nothing was removed")
+	require.NotEmpty(t, e.node.sdn.zones)
+	require.NotNil(t, e.node.cts[100])
+
+	// A card pco did not attach stays with --detach-managed as well.
+	o := uninstallOptions()
+	o.DetachManaged = true
+	err = e.in.Uninstall(t.Context(), 100, o)
+	require.EqualError(t, err, "the SDN zone pco is kept: guests lxc/105 still have a card on pconet, which pco did not attach: "+
+		"remove it; nothing was removed")
+}
+
+// --detach-managed reads the attachments from the appliance before it goes,
+// removes the cards with the firewall pco turned on, and then the zone.
+func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
+	e := managedNode(t)
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+	e.guestOnPconet(105, pcoCard)
+	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true, rules: []string{"net0", "net1", "net1"}, ipsets: []string{"ipfilter-net1"}}
+	e.node.attachments = []map[string]any{{"owner": "lxc/105", "identity": "x", "nic": 1, "mac": "06:50:43:4f:76:05",
+		"addr": "10.203.118.5", "consent": "tag", "since": "2026-10-01T12:00:00Z", "firewall": map[string]any{"enabled": false, "rules": 1}}}
+	o := uninstallOptions()
+	o.DetachManaged = true
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, o), e.ask.text())
+
+	require.NotContains(t, e.node.cts[105].cfg, "net1")
+	require.Equal(t, &fakeGuestFirewall{rules: []string{"net0"}, ipsets: []string{}}, e.node.guestFirewalls[105], "the firewall as it was")
+	require.Empty(t, e.node.sdn.zones)
+	require.Less(t, slices.Index(e.node.ran, "pvesh set /nodes/pve1/lxc/105/config --delete net1"), slices.Index(e.node.ran, "pct destroy 100 --purge 1"))
+	require.Contains(t, e.ask.text(), "the managed cards lxc/100 attached to lxc/105, removed first")
+}
+
+// What a stopped appliance attached cannot be read; the uninstall refuses
+// before anything goes.
+func TestUninstallDetachNeedsTheApplianceRunning(t *testing.T) {
+	e := managedNode(t)
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+	e.node.cts[100].running = false
+	o := uninstallOptions()
+	o.DetachManaged = true
+
+	err := e.in.Uninstall(t.Context(), 100, o)
+
+	require.EqualError(t, err, "--detach-managed reads the cards lxc/100 attached from it, and it is stopped: start it with pct start 100; nothing was removed")
+	require.NotNil(t, e.node.cts[100])
+}
+
+// An appliance whose manifest does not name the zone leaves it.
+func TestUninstallLeavesAZoneTheApplianceDidNotMake(t *testing.T) {
+	e := managedNode(t)
+	e.node.sdn.zones["pco"] = &sdnObject{typ: "simple"}
+	e.node.sdn.vnets["pconet"] = &sdnObject{typ: "vnet", zone: "pco"}
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.NotEmpty(t, e.node.sdn.zones)
+	require.Equal(t, 0, e.node.count("pvesh create /cluster/sdn/lock"))
+}
+
 // On Proxmox VE 8 the step goes without the lock.
 func TestManagedEnableWithoutTheLock(t *testing.T) {
 	e := managedNode(t)

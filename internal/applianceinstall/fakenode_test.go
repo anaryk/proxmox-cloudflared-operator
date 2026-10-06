@@ -147,6 +147,11 @@ type fakeNode struct {
 	fwService    string
 	// sdn is the SDN of the cluster, with what is pending and its lock.
 	sdn fakeSDN
+	// attachments are what the store of the appliance holds of the cards
+	// it attached, as pco appliance attachments prints them.
+	attachments []map[string]any
+	// guestFirewalls are the firewalls of guests other than appliances.
+	guestFirewalls map[int]*fakeGuestFirewall
 
 	pcoVersion string // of the template's pco
 	secrets    int
@@ -194,11 +199,60 @@ func newFakeNode(t *testing.T) *fakeNode {
 		polls:      map[string]int{},
 		pcoVersion: testVersion,
 
-		nodeFirewall: map[string]any{},
-		fwService:    "active",
-		sdn:          fakeSDN{zones: map[string]*sdnObject{}, vnets: map[string]*sdnObject{}},
+		nodeFirewall:   map[string]any{},
+		fwService:      "active",
+		sdn:            fakeSDN{zones: map[string]*sdnObject{}, vnets: map[string]*sdnObject{}},
+		guestFirewalls: map[int]*fakeGuestFirewall{},
 	}
 	return f
+}
+
+// fakeGuestFirewall is the firewall of a guest: on or off, its rules by
+// interface in their order, and its ipsets.
+type fakeGuestFirewall struct {
+	enabled bool
+	rules   []string // the iface of each rule
+	ipsets  []string
+}
+
+// guestFirewall answers the calls of the firewall of a container.
+func (f *fakeNode) guestFirewall(verb, rest string, args []string) (string, error) {
+	id, tail, _ := strings.Cut(rest, "/firewall/")
+	vmid, _ := strconv.Atoi(id)
+	fw := f.guestFirewalls[vmid]
+	if fw == nil {
+		fw = &fakeGuestFirewall{}
+		f.guestFirewalls[vmid] = fw
+	}
+	switch {
+	case verb == "get" && tail == "rules":
+		var out []map[string]any
+		for pos, iface := range fw.rules {
+			out = append(out, map[string]any{"pos": pos, "type": "in", "action": "ACCEPT", "iface": iface})
+		}
+		return asJSON(out), nil
+	case verb == "delete" && strings.HasPrefix(tail, "rules/"):
+		pos, err := strconv.Atoi(strings.TrimPrefix(tail, "rules/"))
+		if err != nil || pos >= len(fw.rules) {
+			return "", fmt.Errorf("no rule at %s", tail)
+		}
+		fw.rules = slices.Delete(fw.rules, pos, pos+1)
+		return "", nil
+	case verb == "get" && tail == "ipset":
+		var out []map[string]any
+		for _, name := range fw.ipsets {
+			out = append(out, map[string]any{"name": name})
+		}
+		return asJSON(out), nil
+	case verb == "delete" && strings.HasPrefix(tail, "ipset/"):
+		fw.ipsets = slices.DeleteFunc(fw.ipsets, func(n string) bool { return n == strings.TrimPrefix(tail, "ipset/") })
+		return "", nil
+	case verb == "set" && tail == "options":
+		fw.enabled = flag(args, "--enable") == "1"
+		return "", nil
+	}
+	f.t.Errorf("unexpected pvesh %s %s %v", verb, rest, args)
+	return "", errors.New("unexpected command")
 }
 
 // fakeSDN is the SDN configuration of the cluster as Proxmox VE 9 keeps it:
@@ -425,9 +479,22 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 	if strings.HasPrefix(path, "/cluster/sdn/") && !plainVnets || path == "/cluster/sdn" {
 		return f.sdnCommand(verb, path, args)
 	}
+	if rest, ok := strings.CutPrefix(path, "/nodes/"+f.name+"/lxc/"); ok && strings.Contains(rest, "/firewall/") {
+		return f.guestFirewall(verb, rest, args)
+	}
 	switch {
 	case verb == "get" && path == "/nodes/"+f.name+"/firewall/options":
 		return asJSON(f.nodeFirewall), nil
+	case verb == "set" && strings.HasPrefix(path, "/nodes/"+f.name+"/lxc/") && strings.HasSuffix(path, "/config"):
+		id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/nodes/"+f.name+"/lxc/"), "/config"))
+		ct := f.cts[id]
+		if ct == nil {
+			return "", fmt.Errorf("Configuration file 'nodes/%s/lxc/%d.conf' does not exist", f.name, id)
+		}
+		for key := range strings.SplitSeq(flag(args, "--delete"), ",") {
+			delete(ct.cfg, key)
+		}
+		return "", nil
 	case verb == "get" && path == "/cluster/status":
 		if f.cluster != nil {
 			return asJSON(f.cluster), nil
@@ -1086,6 +1153,11 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 		return "", nil
 	case line == "pco appliance purge --list":
 		return strings.Join(f.cfObjects, "\n"), nil
+	case line == "pco appliance attachments":
+		if f.attachments == nil {
+			return "[]\n", nil
+		}
+		return asJSON(f.attachments) + "\n", nil
 	case line == "pco appliance purge":
 		f.purges = append(f.purges, fmt.Sprintf("%d %s", id, env))
 		f.cfObjects = nil
