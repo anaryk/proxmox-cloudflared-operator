@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -306,6 +307,11 @@ const (
 type fakePVE struct {
 	mu    sync.Mutex
 	users map[string]*pveUser
+	hold  chan struct{} // while set, every call waits for it to close
+	// outages are what the next calls do: one that is true fails.
+	outages []bool
+	// listed is how many times the guests of a user were asked for.
+	listed int
 }
 
 type pveUser struct {
@@ -321,35 +327,58 @@ func newFakePVE() *fakePVE {
 	}}
 }
 
-func (f *fakePVE) user(c auth.Credential) (*pveUser, error) {
-	parts := strings.SplitN(c.Ticket, ":", 3)
-	if len(parts) < 3 {
-		return nil, auth.ErrRefused
+// user is who a credential names: a ticket PVE:<user>:..., or a token
+// <user>!<id>=<secret>, which has what its user has.
+func (f *fakePVE) user(ctx context.Context, c auth.Credential) (*pveUser, error) {
+	f.mu.Lock()
+	down, hold := false, f.hold
+	if len(f.outages) > 0 {
+		down, f.outages = f.outages[0], f.outages[1:]
+	}
+	f.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if down {
+		return nil, auth.ErrUnreachable
+	}
+	name := ""
+	if c.Token != "" {
+		name, _, _ = strings.Cut(c.Token, "!")
+	} else if parts := strings.SplitN(c.Ticket, ":", 3); len(parts) == 3 {
+		name = parts[1]
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	u, ok := f.users[parts[1]]
+	u, ok := f.users[name]
 	if !ok {
 		return nil, auth.ErrRefused
 	}
 	return u, nil
 }
 
-func (f *fakePVE) Privileges(_ context.Context, c auth.Credential, _ string) (map[string]bool, error) {
-	u, err := f.user(c)
-	if err != nil {
-		return nil, err
-	}
-	return u.privs, nil
-}
-
-func (f *fakePVE) VisibleVMIDs(_ context.Context, c auth.Credential) ([]int, error) {
-	u, err := f.user(c)
+func (f *fakePVE) Privileges(ctx context.Context, c auth.Credential, _ string) (map[string]bool, error) {
+	u, err := f.user(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return maps.Clone(u.privs), nil
+}
+
+func (f *fakePVE) VisibleVMIDs(ctx context.Context, c auth.Credential) ([]int, error) {
+	u, err := f.user(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listed++
 	if u.privs["Sys.Modify"] {
 		return nil, errors.New("an admin's guests are never asked for")
 	}
@@ -371,6 +400,29 @@ func (f *fakePVE) grant(user string, privs ...string) {
 	for _, p := range privs {
 		f.users[user].privs[p] = true
 	}
+}
+
+// outagesOf makes the next calls fail or not, one answer for each.
+func (f *fakePVE) outagesOf(calls ...bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outages = calls
+}
+
+// hangPVE makes every call wait, until the test ends.
+func (s *testServer) hangPVE() {
+	hold := make(chan struct{})
+	s.pve.mu.Lock()
+	s.pve.hold = hold
+	s.pve.mu.Unlock()
+	s.t.Cleanup(func() { close(hold) })
+}
+
+// listings is how many times the guests of a user were asked for.
+func (f *fakePVE) listings() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listed
 }
 
 // ticks makes the streams' ticker one the test drives: a stream checks its
@@ -474,6 +526,21 @@ func (s *testServer) signIn(user string) *browser {
 	return b
 }
 
+// signInToken signs user in with an API token, which has what the user has.
+func (s *testServer) signInToken(user string) *browser {
+	s.t.Helper()
+	b := &browser{s: s}
+	rec := b.send(b.request(http.MethodPost, "/api/session/token", `{"token":"`+user+`!pco=0b5c3e7e-1d2f-4a6b-9c8d-7e6f5a4b3c2d"}`))
+	require.Equal(s.t, http.StatusOK, rec.Code, rec.Body.String())
+	var answer struct {
+		CSRF string `json:"csrf"`
+	}
+	require.NoError(s.t, json.Unmarshal(rec.Body.Bytes(), &answer))
+	b.csrf = answer.CSRF
+	require.NotEmpty(s.t, b.session)
+	return b
+}
+
 // request is what the page sends: a mutating request with its JSON, Origin
 // and token.
 func (b *browser) request(method, path, body string) *http.Request {
@@ -487,7 +554,9 @@ func (b *browser) request(method, path, body string) *http.Request {
 			r.Header.Set("Pco-Csrf", b.csrf)
 		}
 	}
-	r.AddCookie(&http.Cookie{Name: "PVEAuthCookie", Value: b.ticket})
+	if b.ticket != "" {
+		r.AddCookie(&http.Cookie{Name: "PVEAuthCookie", Value: b.ticket})
+	}
 	if b.session != "" {
 		r.AddCookie(&http.Cookie{Name: "__Host-pco-session", Value: b.session})
 	}

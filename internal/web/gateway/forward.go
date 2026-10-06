@@ -68,10 +68,11 @@ type Gateway struct {
 	inbox chan upstreamItem
 
 	// Tests set these.
-	now       func() time.Time
-	sleep     func(ctx context.Context, d time.Duration) bool
-	ticker    func(every time.Duration) (<-chan time.Time, func())
-	timeoutOf func(Rule) time.Duration
+	now         func() time.Time
+	sleep       func(ctx context.Context, d time.Duration) bool
+	ticker      func(every time.Duration) (<-chan time.Time, func())
+	checkWindow time.Duration
+	timeoutOf   func(Rule) time.Duration
 }
 
 // New returns the gateway to the daemon that listens on socket, for the
@@ -103,11 +104,12 @@ func New(socket string, a *auth.Auth, log zerolog.Logger) *Gateway {
 			limitDiagnose: newUserLimit("diagnoses", diagnosesPerMinute, 1, time.Minute),
 			limitDoctor:   newUserLimit("doctor runs", doctorsPerMinute, 0, time.Minute),
 		},
-		inbox:     make(chan upstreamItem, inboxSize),
-		now:       time.Now,
-		sleep:     sleep,
-		ticker:    startTicker,
-		timeoutOf: func(r Rule) time.Duration { return r.Timeout },
+		inbox:       make(chan upstreamItem, inboxSize),
+		now:         time.Now,
+		sleep:       sleep,
+		ticker:      startTicker,
+		checkWindow: checkWindow,
+		timeoutOf:   func(r Rule) time.Duration { return r.Timeout },
 	}
 	g.hub = newHub(g)
 	// A stream ends with its session at once; the ping also finds a session

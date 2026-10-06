@@ -26,6 +26,13 @@ const (
 	// browser that comes back.
 	ringEvents = 1000
 	pingEvery  = 15 * time.Second
+	// checkWindow is how long the check of a stream's session, which comes
+	// with a ping, may take; one that takes longer has no answer.
+	checkWindow = 10 * time.Second
+	// unansweredLimit is how many checks in a row may have no answer before
+	// the stream ends: the first keeps it, as Proxmox VE out of reach keeps
+	// a session.
+	unansweredLimit = 2
 	// writeWindow is how long one write to a browser may take; one that
 	// stalls longer ends its stream.
 	writeWindow = 30 * time.Second
@@ -572,6 +579,8 @@ type stream struct {
 	key     string  // of what it gets: "" for admins, the visible set for a reader
 	boot    string  // of the notices it was sent
 	q       *queue
+	// unanswered counts the checks in a row that had no answer.
+	unanswered int
 }
 
 // stream answers GET /api/v1/stream: the hello, whether the daemon is
@@ -613,9 +622,17 @@ func (g *Gateway) stream(c *gin.Context, _ Rule, r *Reader) {
 	}
 	ping, stop := g.ticker(pingEvery)
 	defer stop()
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+	var (
+		checking chan standing    // the check that runs, if one does
+		late     <-chan time.Time // when it has taken too long
+	)
 	for {
 		items, closed := s.q.take()
+		if len(items) > 0 && !g.auth.Live(s.session) {
+			return
+		}
 		for _, q := range items {
 			if out.send(q.msg) != nil {
 				return
@@ -624,10 +641,26 @@ func (g *Gateway) stream(c *gin.Context, _ Rule, r *Reader) {
 		if closed {
 			return
 		}
+		// A tick waits for the check that runs, which is over within a tick.
+		ticks := ping
+		if checking != nil {
+			ticks = nil
+		}
 		select {
 		case <-s.q.wake:
-		case <-ping:
-			if !g.holds(c, s) || out.send([]byte(": ping\n\n")) != nil {
+		case <-ticks:
+			if !g.auth.Live(s.session) || out.send([]byte(": ping\n\n")) != nil {
+				return
+			}
+			checking, late = g.check(ctx, c.Request, s), time.After(g.checkWindow)
+		case v := <-checking:
+			checking, late = nil, nil
+			if g.ends(s, v) {
+				return
+			}
+		case <-late:
+			checking, late = nil, nil
+			if g.ends(s, standing{}) {
 				return
 			}
 		case <-ctx.Done():
@@ -636,30 +669,77 @@ func (g *Gateway) stream(c *gin.Context, _ Rule, r *Reader) {
 	}
 }
 
-// holds says whether the session of a stream still holds as it did when
-// the stream opened: it is there, its role is the same, and so is the set of
-// guests a reader sees. A stream whose session does not hold ends, and the
-// page opens another, which is checked as any request is and resumes from
-// the ring with what the session may see now. Proxmox VE out of reach keeps
-// the stream, as it keeps the session.
-func (g *Gateway) holds(c *gin.Context, s *stream) bool {
-	role, err := g.auth.Recheck(c.Request.Context(), c.Request, s.session)
-	if err != nil {
-		g.log.Warn().Err(err).Msg("checking the session of a stream")
-		return true
+// standing is what a check of a stream's session found.
+type standing struct {
+	answered bool // Proxmox VE answered
+	holds    bool // and the session is as it was
+}
+
+// check runs standing beside the stream, so that a Proxmox VE that is slow
+// holds up no write.
+func (g *Gateway) check(ctx context.Context, r *http.Request, s *stream) chan standing {
+	done := make(chan standing, 1)
+	go func() { done <- g.standing(ctx, r, s) }()
+	return done
+}
+
+// ends says whether a stream ends on the result of its check: one whose
+// session does not hold, or whose checks had no answer unansweredLimit times
+// in a row.
+func (g *Gateway) ends(s *stream, v standing) bool {
+	if v.answered {
+		s.unanswered = 0
+		return !v.holds
 	}
-	if role != s.role {
+	if s.unanswered++; s.unanswered < unansweredLimit {
 		return false
 	}
-	if s.reader == nil {
-		return true
+	g.log.Warn().Msg("ending a stream: its session cannot be checked")
+	return true
+}
+
+// standing asks whether the session of a stream still holds as it did when
+// the stream opened: it is there, its role is the same, and so is the set of
+// guests a reader sees, as the session holds it now, whichever request read
+// it. A stream whose session does not hold ends, and the page opens another,
+// which is checked as any request is and resumes from the ring with what the
+// session may see now. Proxmox VE out of reach, or too slow, is no answer:
+// see ends.
+//
+// What is sent to a stream after a change, at most:
+//   - a session that ends (sign-out, a new sign-in of the browser, eviction,
+//     a request that Proxmox VE refused): nothing, its stream ends at once;
+//   - one that idles out or reaches the end of its life: nothing, since no
+//     write goes to a session that is over, and the stream ends at the next
+//     tick, within 15 s;
+//   - a role taken away: for a ticket the answer of Proxmox VE is kept 30 s,
+//     so up to 30 s, the tick of 15 s and the check of 10 s: under a minute;
+//     for a token, which is asked once a minute, a minute and a half;
+//   - guests taken away: the session holds its set for a minute and any
+//     request may read it again, so also up to a minute and a half.
+//
+// Until then the events, gaps and traffic of what was taken away go out. The
+// stream asks with the ticket of the request that opened it: a ticket that
+// Proxmox VE stops accepting ends the stream, and the page's next request
+// carries the renewed one.
+func (g *Gateway) standing(ctx context.Context, r *http.Request, s *stream) standing {
+	role, err := g.auth.Recheck(ctx, r, s.session)
+	if err != nil {
+		g.log.Warn().Err(err).Msg("checking the session of a stream")
+		return standing{}
 	}
-	_, hash, err := g.auth.Visible(c)
+	if role != s.role {
+		return standing{answered: true}
+	}
+	if s.reader == nil {
+		return standing{answered: true, holds: true}
+	}
+	_, hash, err := g.auth.VisibleOf(ctx, r, s.session)
 	if err != nil {
 		g.log.Warn().Err(err).Msg("listing the guests of a reader's stream")
-		return true
+		return standing{}
 	}
-	return hash == s.reader.Hash
+	return standing{answered: true, holds: hash == s.reader.Hash}
 }
 
 var errBadResume = errors.New("Last-Event-ID must be <boot>:<seq>, as the id of an event of the stream has it")

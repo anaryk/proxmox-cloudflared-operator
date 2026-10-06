@@ -520,6 +520,17 @@ func (s *testServer) streamOf(srv *httptest.Server, user string) *streamReader {
 	return sr
 }
 
+// pulse sends a tick, and fails when the stream is not there to take it: one
+// that is still checking takes the next tick after its answer.
+func pulse(t *testing.T, tick chan<- time.Time) {
+	t.Helper()
+	select {
+	case tick <- t0:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream did not take the tick")
+	}
+}
+
 // requireEnds checks that the stream ends, now or after the tick it is
 // sent.
 func requireEnds(t *testing.T, sr *streamReader) {
@@ -567,15 +578,149 @@ func TestAStreamEndsWhenItsReaderSeesLess(t *testing.T) {
 	again.quiet()
 }
 
+// A role is looked at again with the tick, and the answer of Proxmox VE for
+// the ticket holds for 30 s: until then the stream is the admin's, after it
+// not. The page's next stream is the reader's.
 func TestAStreamEndsWhenTheRoleChanges(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	conn := s.connect()
+	srv := s.streamServer()
+	b := s.signIn(admin)
+	sr := b.openStream(srv, "")
+	sr.take(2)
+	conn.send <- eventMessage(routeEvent(13, "info", "qemu/101"))
+	conn.send <- eventMessage(routeEvent(14, "warn", "qemu/102"))
+	sr.take(2)
+
+	s.pve.grant(admin, "Sys.Audit")
+	s.pve.sees(admin, 101)
+	s.clock.advance(20 * time.Second)
+	pulse(t, tick)
+	require.Equal(t, "comment", sr.next().event)
+	s.clock.advance(11 * time.Second)
+	pulse(t, tick)
+	require.Equal(t, "comment", sr.next().event)
+	requireEnds(t, sr)
+
+	again := b.openStream(srv, bootA+":12")
+	got := again.take(3)
+	require.Equal(t, bootA+":13", got[2].id, "a reader is sent what a reader may see")
+	again.quiet()
+}
+
+// A token has no ticket to cache: its role is asked for once a minute.
+func TestAStreamOfATokenEndsWhenItsRoleOrItsGuestsChange(t *testing.T) {
 	s := newTestServer(t)
 	tick := s.ticks()
 	s.connect()
 	srv := s.streamServer()
-	sr := s.streamOf(srv, admin)
+
+	b := s.signInToken(admin)
+	sr := b.openStream(srv, "")
+	sr.take(2)
 	s.pve.grant(admin, "Sys.Audit")
+	s.clock.advance(30 * time.Second)
+	pulse(t, tick)
+	require.Equal(t, "comment", sr.next().event)
 	s.clock.advance(31 * time.Second)
-	tick <- t0
+	pulse(t, tick)
+	requireEnds(t, sr)
+
+	s.pve.sees(reader, 101, 102)
+	b = s.signInToken(reader)
+	sr = b.openStream(srv, "")
+	sr.take(2)
+	s.pve.sees(reader, 101)
+	s.clock.advance(61 * time.Second)
+	pulse(t, tick)
+	requireEnds(t, sr)
+}
+
+// The guests a stream's session sees are those in the store, whichever
+// request of the session read them last: the stream does not ask again for
+// what a request asked for a moment ago.
+func TestAStreamTakesTheSetAnyRequestOfItsSessionRead(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.daemon.serveState(populated(t))
+	s.connect()
+	srv := s.streamServer()
+	s.pve.sees(reader, 101, 102)
+	b := s.signIn(reader)
+	sr := b.openStream(srv, "")
+	sr.take(2)
+	require.Equal(t, 1, s.pve.listings())
+
+	// A minute on, a request reads the set: 102 is gone.
+	s.pve.sees(reader, 101)
+	s.clock.advance(61 * time.Second)
+	require.Equal(t, http.StatusOK, b.do(http.MethodGet, "/api/v1/state", "").Code)
+	require.Equal(t, 2, s.pve.listings())
+
+	// By the tick Proxmox VE says 102 again; the stream has not asked.
+	s.pve.sees(reader, 101, 102)
+	s.clock.advance(10 * time.Second)
+	pulse(t, tick)
+	requireEnds(t, sr)
+	require.Equal(t, 2, s.pve.listings())
+}
+
+// Proxmox VE out of reach keeps a stream for one tick, as it keeps the
+// session; a second check in a row with no answer ends it, and an answer in
+// between starts the count again.
+func TestAStreamEndsAfterTwoChecksInARowWithoutAnAnswer(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.connect()
+	sr := s.streamOf(s.streamServer(), admin)
+	// out of reach, back, out of reach twice
+	s.pve.outagesOf(true, false, true, true)
+	for range 3 {
+		s.clock.advance(31 * time.Second)
+		pulse(t, tick)
+		require.Equal(t, "comment", sr.next().event)
+	}
+	s.clock.advance(31 * time.Second)
+	pulse(t, tick)
+	require.Equal(t, "comment", sr.next().event)
+	requireEnds(t, sr)
+}
+
+// A check that does not answer in time is no answer either, and the writes of
+// the stream do not wait for it.
+func TestASlowCheckDoesNotHoldUpTheStream(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	s.gw.checkWindow = time.Minute
+	conn := s.connect()
+	s.pve.sees(reader, 101)
+	sr := s.streamOf(s.streamServer(), reader)
+	s.hangPVE()
+	s.clock.advance(31 * time.Second)
+	pulse(t, tick)
+	require.Equal(t, "comment", sr.next().event)
+	conn.send <- eventMessage(routeEvent(13, "info", "qemu/101"))
+	require.Equal(t, bootA+":13", sr.next().id, "an event goes out while Proxmox VE is asked")
+	require.True(t, sr.open())
+}
+
+func TestACheckThatTakesTooLongKeepsTheStreamForOneTick(t *testing.T) {
+	s := newTestServer(t)
+	tick := s.ticks()
+	s.gw.checkWindow = 50 * time.Millisecond
+	s.connect()
+	sr := s.streamOf(s.streamServer(), admin)
+	s.hangPVE()
+	s.clock.advance(31 * time.Second)
+	pulse(t, tick)
+	require.Equal(t, "comment", sr.next().event)
+	pulse(t, tick)
+	require.Equal(t, "comment", sr.next().event)
 	requireEnds(t, sr)
 }
 
@@ -605,6 +750,22 @@ func TestAStreamEndsWithItsSession(t *testing.T) {
 	s.clock.advance(31 * time.Minute)
 	tick <- t0
 	requireEnds(t, sr)
+}
+
+// A session that is over is sent nothing more, even before the next tick.
+func TestNothingIsSentToASessionThatIsOver(t *testing.T) {
+	s := newTestServer(t)
+	s.ticks()
+	conn := s.connect()
+	sr := s.streamOf(s.streamServer(), admin)
+	s.clock.advance(31 * time.Minute)
+	conn.send <- eventMessage(routeEvent(13, "info", "qemu/101"))
+	requireEnds(t, sr)
+	select {
+	case m := <-sr.messages:
+		t.Fatalf("an idle session was sent %q", m.event)
+	default:
+	}
 }
 
 // No events of a gap are read while no reader would be told of them.
