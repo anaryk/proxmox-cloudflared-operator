@@ -49,7 +49,7 @@ func RunLocal(ctx context.Context, env LocalEnv) []Finding {
 	table, _ := checkUnit(ctx, env, egressUnit, "the connectors, which require it, do not start")
 	out := []Finding{
 		daemon, table, checkSilentDaemon(daemonState),
-		checkCloudflared(ctx, env), checkStore(ctx, env), checkLocalEgress(ctx, env),
+		checkCloudflared(ctx, env), checkStore(ctx, env, ""), checkLocalEgress(ctx, env),
 	}
 	slices.SortStableFunc(out, compareChecks)
 	return out

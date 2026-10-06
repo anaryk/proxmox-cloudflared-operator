@@ -1,15 +1,21 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -22,6 +28,8 @@ type egressEnv struct {
 	euid      func() int
 	uid       func() (uint32, error) // of the connector user
 	resolvers func() ([]netip.Addr, error)
+	// dial connects for pco egress probe; nil is a net.Dialer.
+	dial func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 func defaultEgressEnv() egressEnv {
@@ -57,6 +65,7 @@ func (a *app) egressCmdWith(e egressEnv) *cobra.Command {
 		a.egressLoadCmd(e), a.egressShowCmd(e),
 		a.egressBlockCmd(e), a.egressUnblockCmd(e),
 		a.egressOffCmd(e), a.egressOnCmd(e),
+		a.egressProbeCmd(e),
 	)
 	return cmd
 }
@@ -487,4 +496,62 @@ func (a *app) egressOnCmd(e egressEnv) *cobra.Command {
 			return a.resolversFailed(s, loaded, found, resolverErr)
 		},
 	}
+}
+
+// probeDial is how long pco egress probe waits for a connection.
+const probeDial = 5 * time.Second
+
+// egressProbeCmd is what the doctor of the appliance runs as the user of the
+// connectors, to see what the egress filter does to that user.
+func (a *app) egressProbeCmd(e egressEnv) *cobra.Command {
+	return &cobra.Command{
+		Use:   "probe <address:port>",
+		Short: "Connect over TCP as the user running it, and say how it went",
+		Long: "Connect to an address and a port over TCP, as the user that runs it, and print one line:\n" +
+			doctor.ProbeConnected + ", " + doctor.ProbeRefused + ", or " + strings.TrimSpace(doctor.ProbeFailed) + " and the reason. The exit status is 0 for a connection\n" +
+			"and 1 otherwise. pco doctor runs it as " + egress.ConnectorUser + ", which the egress filter confines, in the\n" +
+			"appliance: a connection as root would say nothing of the filter. It needs no root.",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := a.noJSON(cmd); err != nil {
+				return err
+			}
+			if err := checkAddrPort(args[0]); err != nil {
+				return err
+			}
+			dial := e.dial
+			if dial == nil {
+				var d net.Dialer
+				dial = d.DialContext
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), probeDial)
+			defer cancel()
+			conn, err := dial(ctx, "tcp", args[0])
+			s := &screen{w: cmd.OutOrStdout()}
+			switch {
+			case err == nil:
+				_ = conn.Close()
+				s.println(doctor.ProbeConnected)
+				return s.done()
+			case errors.Is(err, syscall.ECONNREFUSED):
+				s.println(doctor.ProbeRefused)
+			default:
+				s.println(doctor.ProbeFailed + strings.Join(strings.Fields(err.Error()), " "))
+			}
+			if err := s.done(); err != nil {
+				return err
+			}
+			return errReported
+		},
+	}
+}
+
+// checkAddrPort refuses what is not a host and a port from 1 to 65535.
+func checkAddrPort(arg string) error {
+	host, port, err := net.SplitHostPort(arg)
+	if n, perr := strconv.Atoi(port); err != nil || host == "" || perr != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%q: want an address and a port, as 10.0.0.1:8006", arg)
+	}
+	return nil
 }

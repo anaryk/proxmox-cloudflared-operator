@@ -124,6 +124,10 @@ func (e *Engine) refreshAccess(ctx context.Context) {
 	a.factsErr = factsErr
 }
 
+// ReadAccess reads the access control of Proxmox as the engine does: the four
+// lists, after checking that pco's token may see all of them.
+func ReadAccess(ctx context.Context, src Access) (access.Data, error) { return readAccess(ctx, src) }
+
 // readAccess reads the four lists of the access control, and checks that pco's
 // token may see all of them.
 func readAccess(ctx context.Context, src Access) (access.Data, error) {

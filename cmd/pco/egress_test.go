@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -127,7 +129,7 @@ func TestEgressIsACommandOfPco(t *testing.T) {
 		}
 	}
 	require.ElementsMatch(t, []string{"show", "block", "unblock", "off", "on"}, visible)
-	require.Equal(t, []string{"load"}, hidden, "the boot unit runs load")
+	require.ElementsMatch(t, []string{"load", "probe"}, hidden, "the boot unit runs load, and the doctor of the appliance runs probe")
 }
 
 func TestEgressHelpSaysHowToLoadTheTableAgain(t *testing.T) {
@@ -565,4 +567,102 @@ func TestEgressShowWithAnOffSwitchThatCannotBeRead(t *testing.T) {
 
 	require.ErrorIs(t, res.err, errReported)
 	require.Contains(t, res.out, "The egress filter is switched off since an unknown time")
+}
+
+func TestEgressProbeIsHidden(t *testing.T) {
+	r := newEgressRig(t)
+
+	cmd, _, err := r.app.egressCmdWith(r.env).Find([]string{"probe"})
+
+	require.NoError(t, err)
+	require.Equal(t, "probe", cmd.Name())
+	require.True(t, cmd.Hidden, "the doctor runs it; it is not for the admin")
+}
+
+func TestEgressProbeSaysThatItConnected(t *testing.T) {
+	r := newEgressRig(t)
+	r.env.euid = func() int { return 999 }
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	res := r.run("probe", ln.Addr().String())
+
+	require.NoError(t, res.err)
+	require.Equal(t, "connected\n", res.out, "it needs no root: the user of the connectors is not root")
+	require.Empty(t, r.nft.applied())
+}
+
+func TestEgressProbeSaysThatItWasRefused(t *testing.T) {
+	r := newEgressRig(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	res := r.run("probe", addr)
+
+	require.ErrorIs(t, res.err, errReported, "an exit status of 1")
+	require.Equal(t, "refused\n", res.out)
+}
+
+func TestEgressProbeSaysHowElseItFailed(t *testing.T) {
+	r := newEgressRig(t)
+	r.env.dial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	}
+
+	res := r.run("probe", "10.92.0.1:8006")
+
+	require.ErrorIs(t, res.err, errReported)
+	require.Equal(t, "failed: dial tcp: i/o timeout\n", res.out)
+}
+
+func TestEgressProbeDialsWithinADeadline(t *testing.T) {
+	r := newEgressRig(t)
+	var deadline time.Time
+	r.env.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		deadline, _ = ctx.Deadline()
+		require.Equal(t, "tcp", network)
+		require.Equal(t, "region1.v2.argotunnel.com:7844", addr)
+		return nil, syscall.ECONNREFUSED
+	}
+
+	res := r.run("probe", "region1.v2.argotunnel.com:7844")
+
+	require.ErrorIs(t, res.err, errReported)
+	require.Equal(t, "refused\n", res.out)
+	require.False(t, deadline.IsZero())
+	require.LessOrEqual(t, time.Until(deadline), 5*time.Second)
+}
+
+func TestEgressProbeTakesAnAddressWithAPort(t *testing.T) {
+	r := newEgressRig(t)
+	r.env.dial = func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("not dialed") }
+	for _, arg := range []string{"10.0.0.1", "10.0.0.1:", ":80", "10.0.0.1:http", "10.0.0.1:0", "10.0.0.1:65536", ""} {
+		res := r.run("probe", arg)
+
+		require.ErrorContains(t, res.err, "want an address and a port", arg)
+		require.NotErrorIs(t, res.err, errReported, arg)
+		require.Empty(t, res.out, arg)
+	}
+	require.ErrorContains(t, r.run("probe").err, "accepts 1 arg(s)")
+}
+
+func TestEgressProbePrintsNoJSON(t *testing.T) {
+	r := newEgressRig(t)
+	r.app.json = true
+
+	res := r.run("probe", "10.0.0.1:80")
+
+	require.ErrorContains(t, res.err, "--json has no meaning")
+}
+
+func TestEgressProbePutsAFailureOnOneLine(t *testing.T) {
+	r := newEgressRig(t)
+	r.env.dial = func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("first\nsecond") }
+
+	res := r.run("probe", "10.0.0.1:80")
+
+	require.Equal(t, "failed: first second\n", res.out)
 }

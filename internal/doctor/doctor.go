@@ -96,10 +96,15 @@ var stateChecks = []string{
 // Run checks the installation: the state the engine published and what env
 // tells of the host. Every check has a finding, sorted by check.
 func Run(ctx context.Context, st engine.State, env Env) []Finding {
+	app := applianceOf(st, env)
+	repair := ""
+	if app != nil {
+		repair = repairFix(app.Self().VMID)
+	}
 	out := []Finding{
 		checkCycle(st, env), checkCloudflared(ctx, env), checkOutbound(ctx, st, env),
-		checkProxmox(ctx, env), checkStore(ctx, env), checkLock(ctx, env),
-		checkEgress(st.Egress, fixTable), checkNftables(ctx, env),
+		checkProxmox(ctx, env), checkStore(ctx, env, repair), checkLock(ctx, env),
+		checkEgress(st.Egress, fixTable), checkNftables(ctx, env, app),
 	}
 	if st.At.IsZero() {
 		for _, check := range stateChecks {
@@ -114,6 +119,9 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 	out = append(out, checkTunnels(ctx, st, env)...)
 	if w, enabled := env.WebCert(ctx); enabled {
 		out = append(out, checkWebCert(w, env.Now()))
+	}
+	if app != nil {
+		out = append(out, newApplianceRun(ctx, st, env, app).findings()...)
 	}
 	slices.SortStableFunc(out, compareChecks)
 	return out
@@ -260,17 +268,32 @@ func checkInventory(st engine.State) Finding {
 	return ok("inventory", "every guest is listed")
 }
 
+// checkWriter fails when the writer of the tunnel configuration is not this
+// daemon. What puts it right differs by profile: an appliance recovers its
+// own state, and a host is recovered from the node.
 func checkWriter(st engine.State) Finding {
+	recover, stale, foreign := "pco setup --recover", "on the node that should write", "if no other node runs pco with this install, "+
+		"replace the Cloudflare token, run pco tunnel rotate and pco setup --recover on this node, then pco apply; otherwise stop the other installation"
+	if st.Profile == store.ProfileAppliance {
+		recover, stale = "pco appliance recover", "in the appliance that should write"
+		foreign = "if no other installation runs with this install id, replace the Cloudflare token, run pco tunnel rotate " +
+			"and pco appliance recover in the appliance, then pco apply; otherwise stop the other installation"
+	}
 	switch st.WriterVerdict {
 	case engine.VerdictStale:
-		return fail("writer", "a newer generation of this install writes the tunnel configuration", "run pco setup --recover on the node that should write")
+		return fail("writer", "a newer generation of this install writes the tunnel configuration", "run "+recover+" "+stale)
+	case engine.VerdictBehind:
+		vmid := "<vmid>"
+		if st.Identity != nil && st.Identity.VMID > 0 {
+			vmid = strconv.Itoa(st.Identity.VMID)
+		}
+		return fail("writer", "the state of this appliance is older than its last write at Cloudflare (rollback or restore)",
+			"pct exec "+vmid+" -- pco appliance recover")
 	case engine.VerdictForeign:
 		return fail("writer", "a writer of this install that leader.json does not know wrote the tunnel configuration: "+
-			"another installation with this install's id, or a sentinel written with a stolen Cloudflare token",
-			"if no other node runs pco with this install, replace the Cloudflare token, run pco tunnel rotate "+
-				"and pco setup --recover on this node, then pco apply; otherwise stop the other installation")
+			"another installation with this install's id, or a sentinel written with a stolen Cloudflare token", foreign)
 	case engine.VerdictUnknown:
-		return fail("writer", "leader.json could not be used", "pco setup --recover")
+		return fail("writer", "leader.json could not be used", recover)
 	}
 	return ok("writer", "this daemon writes the tunnel configuration")
 }
@@ -361,14 +384,25 @@ func checkCloudflared(ctx context.Context, env facts) Finding {
 	if m == nil {
 		return warn("cloudflared", fmt.Sprintf("cannot tell the version from %q", out), "update cloudflared")
 	}
-	year, _ := strconv.Atoi(m[1])
-	month, _ := strconv.Atoi(m[2])
 	version := m[1] + "." + m[2] + "." + m[3]
-	released := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
-	if env.Now().After(released.AddDate(0, 10, 0)) {
+	if cloudflaredOld(version, env.Now()) {
 		return warn("cloudflared", fmt.Sprintf("cloudflared %s is more than ten months old", version), "update cloudflared")
 	}
 	return ok("cloudflared", "cloudflared "+version)
+}
+
+// cloudflaredOld says whether a version of cloudflared, which its name dates
+// to the month it was released in, is more than ten months old at now. A name
+// that does not read as a version is not old.
+func cloudflaredOld(version string, now time.Time) bool {
+	m := cloudflaredVersion.FindStringSubmatch(version)
+	if m == nil {
+		return false
+	}
+	year, _ := strconv.Atoi(m[1])
+	month, _ := strconv.Atoi(m[2])
+	released := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	return now.After(released.AddDate(0, 10, 0))
 }
 
 // checkTunnels has a finding for every tunnel the state shows and for the
@@ -538,8 +572,12 @@ const nftablesUnit = "nftables.service"
 
 // checkNftables points out an nftables.service that starts at boot: when it
 // starts or restarts, the egress table goes with the ruleset until the daemon
-// loads it again.
-func checkNftables(ctx context.Context, env Env) Finding {
+// loads it again. In the appliance the unit is to be masked, and that is what
+// the check looks for.
+func checkNftables(ctx context.Context, env Env, app ApplianceEnv) Finding {
+	if app != nil {
+		return checkNftablesMasked(ctx, app)
+	}
 	enabled, err := env.UnitEnabled(ctx, nftablesUnit)
 	switch {
 	case err != nil:
@@ -552,11 +590,15 @@ func checkNftables(ctx context.Context, env Env) Finding {
 	return ok("nftables", nftablesUnit+" is not enabled")
 }
 
-func checkStore(ctx context.Context, env facts) Finding {
+// checkStore says whether the store is there. repair is what puts the store of
+// an appliance back, empty for a host.
+func checkStore(ctx context.Context, env facts, repair string) Finding {
 	err := env.Store(ctx)
 	switch {
 	case err == nil:
 		return ok("store", "the store is mounted and set up")
+	case repair != "":
+		return fail("store", err.Error(), repair)
 	case errors.Is(err, store.ErrNotMounted):
 		return fail("store", err.Error(), "systemctl status pve-cluster")
 	}

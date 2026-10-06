@@ -48,9 +48,14 @@ type HostEnv struct {
 	// Enabled asks systemd whether a unit starts at boot; nil runs
 	// systemctl is-enabled.
 	Enabled func(ctx context.Context, unit string) (bool, error)
+	// FileState asks systemd for the unit file state of a unit, the word
+	// systemctl is-enabled prints; nil runs systemctl is-enabled.
+	FileState func(ctx context.Context, unit string) (string, error)
 	// Web reads the certificate of the web interface, and says whether setup
 	// set the web interface up; nil is a node without it.
 	Web func(ctx context.Context) (WebCert, bool)
+	// App is the part of an appliance; nil on a host.
+	App ApplianceEnv
 }
 
 func (h *HostEnv) timeout() time.Duration {
@@ -61,6 +66,9 @@ func (h *HostEnv) timeout() time.Duration {
 }
 
 var _ Env = (*HostEnv)(nil)
+
+// Appliance is the part of the appliance, nil on a host.
+func (h *HostEnv) Appliance() ApplianceEnv { return h.App }
 
 // CloudflaredVersion runs cloudflared --version, without a shell, and returns
 // the first line it prints. A cloudflared that does not answer within the
@@ -108,27 +116,54 @@ func (h *HostEnv) UnitEnabled(ctx context.Context, unit string) (bool, error) {
 	return systemctlEnabled(ctx, unit)
 }
 
+// UnitFileState asks systemd for the unit file state of a unit: enabled,
+// disabled, masked, static, and so on.
+func (h *HostEnv) UnitFileState(ctx context.Context, unit string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, h.timeout())
+	defer cancel()
+	if h.FileState != nil {
+		return h.FileState(ctx, unit)
+	}
+	return systemctlState(ctx, unit)
+}
+
+// notFound is the unit file state of a unit there is none of.
+const notFound = "not-found"
+
 // systemctlEnabled runs systemctl is-enabled. A unit that does not exist is
 // not enabled; what systemctl prints on another failure is the error.
 func systemctlEnabled(ctx context.Context, unit string) (bool, error) {
+	state, err := systemctlState(ctx, unit)
+	return state == "enabled" || state == "enabled-runtime", err
+}
+
+// systemctlState runs systemctl is-enabled and returns the word it prints, or
+// notFound for a unit that does not exist; what it prints on another failure
+// is the error.
+func systemctlState(ctx context.Context, unit string) (string, error) {
 	var stdout, stderr capped
 	stdout.max, stderr.max = maxVersionOutput, maxVersionOutput
 	cmd := exec.CommandContext(ctx, systemctlPath, "is-enabled", "--", unit)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
-	state, _, _ := strings.Cut(strings.TrimSpace(stdout.String()), "\n")
+	return unitFileState(stdout.String(), stderr.String(), err)
+}
+
+// unitFileState reads what systemctl is-enabled answered.
+func unitFileState(stdout, stderr string, err error) (string, error) {
+	state, _, _ := strings.Cut(strings.TrimSpace(stdout), "\n")
 	switch {
 	case state != "":
-		return state == "enabled" || state == "enabled-runtime", nil
-	case strings.Contains(stderr.String(), "No such file or directory"):
-		return false, nil
+		return state, nil
+	case strings.Contains(stderr, "No such file or directory"):
+		return notFound, nil
 	case err != nil:
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			return false, fmt.Errorf("%w: %s", err, detail)
+		if detail := strings.TrimSpace(stderr); detail != "" {
+			return "", fmt.Errorf("%w: %s", err, detail)
 		}
-		return false, err
+		return "", err
 	}
-	return false, errors.New("systemctl is-enabled printed nothing")
+	return "", errors.New("systemctl is-enabled printed nothing")
 }
 
 // CanDial connects to addr and hangs up.

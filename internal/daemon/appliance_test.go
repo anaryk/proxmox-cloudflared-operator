@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -386,4 +391,157 @@ func TestAnErrorOfTheVolumeOtherThanItsAbsenceIsSaidAsSuch(t *testing.T) {
 
 	require.EqualError(t, err, "cannot read "+a.paths.Local+": input/output error")
 	require.True(t, slices.Equal(a.notify.sent(), nil))
+}
+
+// doctorOfTheAppliance is what a test of the doctor of the appliance gives the
+// daemon: what it asks of the container's own system answered from a directory
+// and from functions, and a Cloudflare API with a date.
+type doctorOfTheAppliance struct {
+	a      *applianceWorld
+	mu     sync.Mutex
+	probed []string
+	cf     *httptest.Server
+}
+
+func newDoctorOfTheAppliance(t *testing.T, a *applianceWorld) *doctorOfTheAppliance {
+	t.Helper()
+	d := &doctorOfTheAppliance{a: a}
+	d.cf = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(d.cf.Close)
+	a.deps.CloudflareURL = d.cf.URL
+	a.deps.Dial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("no network in this test")
+	}
+	a.deps.Cloudflared = filepath.Join(a.dir, "cloudflared")
+	require.NoError(t, os.WriteFile(a.deps.Cloudflared, []byte("#!/bin/sh\necho 'cloudflared version 2026.9.3 (built 2026-09-20-1200 UTC)'\n"), 0o700))
+	a.deps.HostTimeout = time.Minute
+	a.deps.UnitFileState = func(_ context.Context, unit string) (string, error) {
+		if unit == "nftables.service" {
+			return "masked", nil
+		}
+		return "enabled", nil
+	}
+	a.deps.Appliance.Doctor = func(h *doctor.ApplianceHost) {
+		h.Root = a.dir
+		h.Probe = func(_ context.Context, addr string) error {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			d.probed = append(d.probed, addr)
+			if strings.HasSuffix(addr, ":7844") {
+				return nil
+			}
+			return doctor.ErrRefused
+		}
+		h.Run = func(_ context.Context, name string, _ ...string) (string, error) {
+			if strings.HasSuffix(name, "apt-mark") {
+				return "cloudflared\npco\n", nil
+			}
+			return "APT::Periodic::Unattended-Upgrade \"1\";\n", nil
+		}
+		h.Resolve = func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("10.20.0.1")}, nil }
+		h.LookupHost = func(context.Context, string) ([]string, error) { return []string{"198.41.192.7"}, nil }
+	}
+	a.pve.answer("/api2/json/nodes/pve1/lxc/9250/config", map[string]any{
+		"hostname": "pco", "features": "nesting=1", "protection": 1, "memory": 512,
+		"mp0":    "local-zfs:subvol-9250-disk-1,backup=0,mp=/var/lib/pco,size=2G",
+		"net0":   "name=eth0,bridge=vmbr1,hwaddr=" + strings.ToUpper(applianceMAC) + ",ip=dhcp,type=veth",
+		"digest": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+	})
+	a.pve.answer("/api2/json/nodes/pve1/lxc/9250/pending", []map[string]any{
+		{"key": "features", "value": "nesting=1"}, {"key": "protection", "value": 1},
+	})
+	a.pve.answer("/api2/json/nodes/pve1/lxc/9250/snapshot", []map[string]any{{"name": "current"}})
+	a.pve.answer("/api2/json/cluster/replication", []map[string]any{})
+	a.pve.answer("/api2/json/access/permissions", map[string]any{
+		"/":              map[string]int{"Pool.Audit": 1, "SDN.Audit": 1, "Sys.Audit": 1, "VM.Audit": 1, "VM.GuestAgent.Audit": 1},
+		"/access":        map[string]int{"Sys.Audit": 1},
+		"/access/groups": map[string]int{"Sys.Audit": 1},
+	})
+	a.pve.answer("/api2/json/cluster/firewall/options", map[string]any{"enable": 1})
+	a.pve.answer("/api2/json/nodes/pve1/firewall/options", map[string]any{"enable": 1})
+	return d
+}
+
+var applianceDoctorChecks = []string{
+	"access", "api", "clock", "cloudflare api", "cmode", "disk", "dns", "egress probe", "etc-pve", "features", "firewall", "holds", "identity",
+	"journal", "memory", "net", "network grants", "nftables", "protection", "quic buffer", "segment access", "snapshots", "token",
+	"unattended-upgrades", "versions", "volume",
+}
+
+func TestTheDoctorOfTheApplianceChecksWhatItDependsOn(t *testing.T) {
+	a := newApplianceWorld(t)
+	probe := newDoctorOfTheAppliance(t, a)
+	d := a.start()
+	d.await(func(st engine.State) bool { return st.Identity != nil && st.Identity.OK })
+
+	findings, err := d.client.Doctor(t.Context())
+
+	require.NoError(t, err)
+	byCheck := map[string]doctor.Finding{}
+	for _, f := range findings {
+		byCheck[f.Check] = f
+	}
+	for _, check := range applianceDoctorChecks {
+		require.Contains(t, byCheck, check)
+	}
+	// What each reads comes from a part of the daemon.
+	require.Equal(t, doctor.Finding{Check: "nftables", Level: doctor.LevelOK, Detail: "nftables.service is masked"}, byCheck["nftables"],
+		"the file state of the unit is asked, not whether it is enabled")
+	for _, check := range []string{"features", "protection", "cmode", "volume", "snapshots", "token", "holds", "unattended-upgrades", "api", "firewall", "dns", "cloudflare api"} {
+		require.Equal(t, doctor.LevelOK, byCheck[check].Level, "%s: %s (%s)", check, byCheck[check].Detail, byCheck[check].Fix)
+	}
+	require.Equal(t, doctor.LevelOK, byCheck["identity"].Level)
+	require.Contains(t, byCheck["identity"].Detail, "this container is lxc/9250 on pve1")
+	require.Equal(t, doctor.LevelOK, byCheck["store"].Level, byCheck["store"].Detail)
+	require.Equal(t, doctor.LevelOK, byCheck["egress probe"].Level, byCheck["egress probe"].Detail)
+	probe.mu.Lock()
+	require.ElementsMatch(t, []string{"region1.v2.argotunnel.com:7844", strings.TrimPrefix(a.pve.srv.URL, "https://")}, probe.probed,
+		"the edge, and the endpoint of the API of the install")
+	probe.mu.Unlock()
+	require.Contains(t, byCheck["clock"].Detail, "of Cloudflare's", "the date of the Cloudflare API the daemon was given")
+	require.Equal(t, "the container has no snapshot, and no replication job copies it", byCheck["snapshots"].Detail)
+}
+
+func TestTheStoreCheckOfAnApplianceReadsTheVolumeMarker(t *testing.T) {
+	a := newApplianceWorld(t)
+	newDoctorOfTheAppliance(t, a)
+	var gone atomic.Bool
+	a.deps.Appliance.Volume = func(path, _ string) error {
+		if gone.Load() {
+			return fmt.Errorf("%s %w", path, appliance.ErrNoMarker)
+		}
+		return nil
+	}
+	d := a.start()
+	d.await(func(st engine.State) bool { return st.Identity != nil && st.Identity.OK })
+	gone.Store(true)
+
+	findings, err := d.client.Doctor(t.Context())
+
+	require.NoError(t, err)
+	i := slices.IndexFunc(findings, func(f doctor.Finding) bool { return f.Check == "store" })
+	require.GreaterOrEqual(t, i, 0)
+	require.Equal(t, doctor.Finding{Check: "store", Level: doctor.LevelFail,
+		Detail: a.paths.Local + " has no pco volume marker", Fix: "run pco appliance repair --vmid 9250 on the node"}, findings[i])
+	j := slices.IndexFunc(findings, func(f doctor.Finding) bool { return f.Check == "volume" })
+	require.Equal(t, doctor.LevelFail, findings[j].Level)
+}
+
+func TestTheDoctorOfAHostHasNoCheckOfTheAppliance(t *testing.T) {
+	w := newWorld(t)
+	w.deps.HostTimeout = time.Minute
+	d := w.start()
+	d.await(func(st engine.State) bool { return st.At.After(time.Time{}) })
+
+	findings, err := d.client.Doctor(t.Context())
+
+	require.NoError(t, err)
+	for _, f := range findings {
+		if f.Check != "nftables" {
+			require.NotContains(t, applianceDoctorChecks, f.Check, "a host runs none of the checks of the appliance, bar the nftables one both have")
+		}
+	}
 }

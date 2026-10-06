@@ -54,6 +54,10 @@ func (v PVEVersion) privileges() []string {
 	return append(v.earlierPrivileges(), "Pool.Audit")
 }
 
+// RolePrivileges is what role PCO grants on a Proxmox VE release of major
+// version major.
+func RolePrivileges(major int) []string { return PVEVersion{major: major}.privileges() }
+
 // earlierPrivileges is what setup gave the role before it read pools.
 func (v PVEVersion) earlierPrivileges() []string {
 	if v.major == 8 {

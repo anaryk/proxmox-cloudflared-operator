@@ -95,8 +95,12 @@ func (a *app) doctorCmdWith(d doctorEnv) *cobra.Command {
 		Long: "Check what pco needs: the mode, the last cycle, the inventory, the credentials,\n" +
 			"cloudflared, the tunnels and their connectors, the way out to Cloudflare, the writer, the\n" +
 			"records in the way, Proxmox, the store and the lock of the node, what waits for a\n" +
-			"confirmation and the guests that wait for approval. Each finding comes with what to do\n" +
-			"about it, and the exit status is 1 when a check fails.\n\n" +
+			"confirmation and the guests that wait for approval. In the appliance it also checks what\n" +
+			"the appliance depends on: its container and its volume, its identity, the token and the\n" +
+			"access control around it, the way out and the egress filter as the user of the connectors,\n" +
+			"DNS and the clock, the held packages and the versions, and the disk, the journal and the\n" +
+			"memory. Each finding comes with what to do about it, and the exit status is 1 when a check\n" +
+			"fails.\n\n" +
 			"When the daemon is not running, root still gets the checks that need no daemon: the units\n" +
 			"of pco, the store, cloudflared and the egress table. The rest is said not to have been made,\n" +
 			"and the exit status is 1 when one of these fails, as it is when pco.service does not run.\n\n" + jsonHelp,

@@ -51,6 +51,9 @@ type ApplianceDeps struct {
 	// netlink and /usr/sbin/nft.
 	Netlink appnet.Netlink
 	NetNft  egress.Nft
+	// Doctor changes the part of the doctor that reads the container's own
+	// system, which a test points at a directory and at functions.
+	Doctor func(*doctor.ApplianceHost)
 }
 
 func (a ApplianceDeps) withDefaults() ApplianceDeps {
@@ -148,13 +151,15 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 		Proxmox:    client,
 		Interval:   eng.PollInterval,
 		Clock:      deps.Now,
-		StoreCheck: StoreReady(st),
+		StoreCheck: applianceStore(app, local, st),
 		LockCheck:  lock.check,
 		Binary:     deps.Cloudflared,
 		Dial:       deps.Dial,
 		Timeout:    deps.HostTimeout,
 		Enabled:    deps.UnitEnabled,
+		FileState:  deps.UnitFileState,
 	}
+	env.App = applianceDoctor(env, parts, state, local, app, deps)
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{
 		table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log,
@@ -171,6 +176,44 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep, traffic.run)
+}
+
+// applianceStore is the check of the store the doctor makes in the appliance:
+// the volume with its marker first, as the daemon checks it at its start, then
+// the store on it.
+func applianceStore(app ApplianceDeps, local string, st *store.Store) func() error {
+	ready := StoreReady(st)
+	return func() error {
+		if err := app.Volume(local, store.VolumeMarker); err != nil {
+			return err
+		}
+		return ready()
+	}
+}
+
+// applianceDoctor is the part of the doctor that only an appliance has: it
+// asks Proxmox as the daemon does, and the container's own system.
+func applianceDoctor(env *doctor.HostEnv, parts applianceParts, state applianceState, local string, app ApplianceDeps, deps Deps) *doctor.ApplianceHost {
+	a := state.install.Appliance
+	user, _, _ := strings.Cut(state.token.TokenID, "!")
+	h := &doctor.ApplianceHost{
+		Host:    env,
+		Proxmox: parts.client,
+		Install: doctor.Self{
+			VMID: a.VMID, Node: a.Node, Address: a.Endpoints[0].Address, ServerName: a.Endpoints[0].ServerName,
+			User: user, Token: state.token.TokenID,
+		},
+		StateDir:      local,
+		Volume:        app.Volume,
+		Netlink:       app.Netlink,
+		NetNft:        app.NetNft,
+		CloudflareURL: deps.CloudflareURL,
+		Resolve:       deps.Resolvers,
+	}
+	if app.Doctor != nil {
+		app.Doctor(h)
+	}
+	return h
 }
 
 // stopCopy is what a copy does before its first cycle: the identity flag is

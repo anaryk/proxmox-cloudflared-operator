@@ -81,6 +81,9 @@ type Deps struct {
 	// whether a unit starts at boot; default: systemctl is-enabled.
 	HostTimeout time.Duration
 	UnitEnabled func(ctx context.Context, unit string) (bool, error)
+	// UnitFileState is how the doctor of the appliance asks for the state of
+	// a unit's file, as systemctl is-enabled prints it; default: systemctl.
+	UnitFileState func(ctx context.Context, unit string) (string, error)
 	// PVECertDir is where the certificates of this node are, which the
 	// Proxmox API on a loopback URL must present; default /etc/pve/local.
 	PVECertDir string
@@ -258,6 +261,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		Dial:       deps.Dial,
 		Timeout:    deps.HostTimeout,
 		Enabled:    deps.UnitEnabled,
+		FileState:  deps.UnitFileState,
 	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log}

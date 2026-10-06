@@ -114,6 +114,28 @@ func TestDoctorGolden(t *testing.T) {
 	requireGolden(t, "doctor.golden", res.out)
 }
 
+// The checks of an appliance come in the shape of every other: a line, and
+// what to do under it.
+func TestDoctorGoldenOfAnAppliance(t *testing.T) {
+	e := &fakeEngine{state: healthyState(), findings: []doctor.Finding{
+		{Check: "cmode", Level: doctor.LevelFail, Fix: "on the node: pct set 9240 --revert cmode",
+			Detail: "the console mode is tty now, but the pending configuration has shell: the next start of the container makes its console a root shell without a password, and any one VM.Config privilege sets it"},
+		{Check: "epoch", Level: doctor.LevelOK, Detail: "a new epoch was drawn at 2026-10-01T11:59:00Z after a container start; the state is the volume's"},
+		{Check: "nftables", Level: doctor.LevelOK, Detail: "nftables.service is masked"},
+		{Check: "quic buffer", Level: doctor.LevelWarn, Detail: "net.core.rmem_max is 4194304, below the 7500000 bytes cloudflared asks for its QUIC connections",
+			Fix: "if you want it, on the node: echo net.core.rmem_max=7500000 >> /etc/sysctl.d/90-pco.conf, then sysctl --system"},
+		{Check: "segment access", Level: doctor.LevelWarn, Detail: "pcotest@pve holds SDN.Use on /sdn/zones/localnetwork/vmbr1, the segment of net0 of the appliance",
+			Fix: "put the appliance on a segment only admins may use, or take SDN.Use on /sdn/zones/localnetwork/vmbr1 from the principals named"},
+	}}
+	r := newRunner(t, serveFake(t, e))
+
+	res := r.run("", "doctor")
+
+	require.ErrorIs(t, res.err, errReported, "a failed check is an exit status of 1")
+	require.Empty(t, res.errOut)
+	requireGolden(t, "doctor_appliance.golden", res.out)
+}
+
 func TestADoctorWithWarningsOnlyExitsWithZero(t *testing.T) {
 	e := &fakeEngine{state: healthyState(), findings: someFindings()[1:]}
 	r := newRunner(t, serveFake(t, e))
