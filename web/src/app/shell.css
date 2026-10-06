@@ -3,6 +3,14 @@
  * navigation of 212 px in its groups, the banners and the events strip.
  */
 
+/* What takes the focus is scrolled clear of the top bar and the events
+   strip, which stay over the page. */
+
+html {
+  scroll-padding-top: calc(var(--topbar) + 8px);
+  scroll-padding-bottom: 48px;
+}
+
 /* the top bar */
 
 .topbar {
@@ -575,6 +583,10 @@ main > .card {
 
   main {
     padding: 12px 16px 20px;
+  }
+
+  html {
+    scroll-padding-bottom: 0;
   }
 
   .strip {
