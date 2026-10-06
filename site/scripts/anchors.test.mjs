@@ -77,3 +77,19 @@ test('ids and links as HTML escapes and percent-encodes them', () => {
     "index.html links to #it's, and index.html has no heading or element with the id it's",
   ])
 })
+
+test('a name counts only on an anchor, not on a meta tag or a form field', () => {
+  const { problems } = check(
+    site({
+      'index.html':
+        '<meta name="viewport" content="width=device-width"><input name="q">' +
+        '<a href="#viewport">a</a><a href="#q">b</a><a href="#old">c</a><a href="#new">d</a>' +
+        '<a name="old">x</a><a class="mark" name="new">y</a><a id="top"></a>',
+    }),
+    root,
+  )
+  assert.deepEqual(problems, [
+    'index.html links to #viewport, and index.html has no heading or element with the id viewport',
+    'index.html links to #q, and index.html has no heading or element with the id q',
+  ])
+})

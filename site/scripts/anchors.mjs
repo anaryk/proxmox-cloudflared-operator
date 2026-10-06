@@ -52,7 +52,9 @@ export function check(dist, root = base) {
   for (const page of pages) {
     const text = readFileSync(page, 'utf8')
     html.set(page, text)
-    ids.set(page, new Set([...text.matchAll(/\s(?:id|name)="([^"]*)"/g)].map((m) => unescape(m[1]))))
+    // A browser finds an id on any element and a name on an anchor only.
+    const found = [...text.matchAll(/\sid="([^"]*)"/g), ...text.matchAll(/<a\s(?:[^>]*\s)?name="([^"]*)"/g)]
+    ids.set(page, new Set(found.map((m) => unescape(m[1]))))
   }
 
   // A link the navigation draws twice, for wide and narrow screens, is
