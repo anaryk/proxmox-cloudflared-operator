@@ -109,7 +109,9 @@ check() {
 
 is() { [[ $1 == "$2" ]]; }
 starts() { [[ $1 == "$2"* ]]; }
-has() { [[ $1 == *"$2"* ]]; }
+# has_line <text> <line>: one of the lines of the text is the line, the last one
+# too, which a command substitution has taken the newline of.
+has_line() { grep -Fxq -- "$2" <<<"$1"; }
 absent() { [[ ! -e $1 && ! -L $1 ]]; }
 empty_file() { [[ -f $1 && ! -L $1 && ! -s $1 ]]; }
 empty_dir() { [[ -d $1 && ! -L $1 && -z $(find "$1" -mindepth 1 -print -quit) ]]; }
@@ -210,9 +212,9 @@ if [[ $network == 0 ]]; then
 	}
 	check "pco net show agrees with pco-net.service, which ended with ${net_result:-nothing}; pco net show exited with $net_status" net_agrees
 	connector_unit=$(inside systemctl cat pco-cloudflared@x.service || true)
-	check "a connector starts only behind pco-net.service" has "$connector_unit" $'\nRequires=pco-net.service\n'
-	check "and only once the daemon wrote the identity flag" has "$connector_unit" $'\nConditionPathExists=/run/pco-appliance/identity-ok\n'
-	check "pco stays failed without its volume" has "$(inside systemctl cat pco.service || true)" $'\nRestartPreventExitStatus=78\n'
+	check "a connector starts only behind pco-net.service" has_line "$connector_unit" Requires=pco-net.service
+	check "and only once the daemon wrote the identity flag" has_line "$connector_unit" ConditionPathExists=/run/pco-appliance/identity-ok
+	check "pco stays failed without its volume" has_line "$(inside systemctl cat pco.service || true)" RestartPreventExitStatus=78
 	check "/etc/pco/profile says appliance" is "$(inside cat /etc/pco/profile)" appliance
 	check "pco and cloudflared are held" is "$(inside apt-mark showhold | LC_ALL=C sort | paste -s -d ' ' -)" "cloudflared pco"
 	check "the password of root is locked" is "$(inside passwd --status root | awk '{ print $2 }')" L
