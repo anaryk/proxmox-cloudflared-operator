@@ -160,8 +160,9 @@ as `1m0s`.
 - `identityMinimum`: the lowest identity level at which the address of a guest is served; a
   route below it is held back and answers 503. `port` is the strictest. Guests of other nodes
   and trusted static addresses reach `observed` only. On a host `filtered` asks for `port`: it
-  is the level of the appliance's managed network. See [Identity](identity.md). The default is
-  `port` on a host. `pco appliance init` stores `observed` in the settings of a new appliance,
+  is the level of the appliance's managed network. See
+  [Identity](identity.md#the-appliance-and-observed). The default is `port` on a host.
+  `pco appliance init` stores `observed` in the settings of a new appliance,
   because a container cannot read the forwarding table of the bridge: `port` is beyond it, and
   its best level on an ordinary network is `observed`. Raising the setting there holds back
   every route the container cannot prove at the level asked, which on an ordinary network is

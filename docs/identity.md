@@ -137,7 +137,9 @@ node, and any trusted static address, gets the lower proof. If the guests that n
 `observed` are few, the better answer is often to run pco on the node where they live.
 
 `filtered` is accepted as a value, because it is the name of a level the installation
-may have in another profile. On this profile it is treated as `port`.
+may have in another profile. On the host it is treated as `port`; in the appliance it holds
+every route back, as nothing proves it there yet (see
+[the appliance](#the-appliance-and-observed)).
 
 ## Routes that wait for an admin
 
@@ -168,9 +170,85 @@ At any level:
   node, or a resolver of a node, is served only once an approval of the guest names it. Such an
   address stays on the list for 30 days after pco last saw it in that role.
 
-`pco guest approve <guest>` shows what the approval records before it asks: the MACs and the
-addresses. It releases these routes in either admission mode; [Security](security.md#approval-mode)
-says what else an approval does.
+`pco guest approve <guest>` shows why the guest waits and what the approval records, the MACs
+and the addresses, and records it. It releases these routes in either admission mode;
+[Security](security.md#approval-mode) says what else an approval does.
+
+## The appliance and `observed`
+
+The [appliance](appliance.md) runs in a container, which has no forwarding table of the bridge
+to read, so step 5 above is not there: an address it verifies through its own card is proven at
+`observed` at best, whichever node the guest runs on. Its `identityMinimum` is `observed` from the
+install, and every route it serves is served under the rules of the section above. Each of them
+is there because, at `observed`, ARP is all that is proven, and whoever may set the MAC of a
+guest's card may aim a route at another device on the segment.
+
+The order in which a route proven at `observed` meets them, and what releases each; each box
+begins with the answer that leads to it:
+
+```mermaid
+flowchart TB
+    proven["Address proven at observed: only the guest's MACs answer ARP for it"] --> seg("Segment of the card acknowledged?")
+    seg --> s1["No: waits, pco segment acknowledge vmbr0"]
+    seg --> mac("Yes. MAC the one pinned to the claim, none pinned yet, or one the approval holds?")
+    mac --> s2["No: waits as MAC changed, pco guest approve"]
+    mac --> deleg("Yes. Can anyone but the admins set the guest's network, or is that unknown, and the approval holds no MAC of it?")
+    deleg --> s3["Yes: waits as a delegated guest, pco guest approve"]
+    deleg --> soft("No. A gateway or resolver of a node or of the appliance that no approval names?")
+    soft --> s4["Yes: waits as a soft-denied address, pco guest approve --allow-address"]
+    soft --> served["No: served at observed"]
+```
+
+- **Segments and their acknowledgement.** The appliance maps each of its cards to the bridge and
+  VLAN of its configuration in Proxmox. A segment is acknowledged once, by an admin, and a new
+  one starts unacknowledged. Acknowledge a segment when you would trust every device on it with
+  what its MAC can claim: a device that copies a guest's MAC passes ARP as the guest does.
+  `pco segment list` shows the segments and their routes, `pco segment revoke` takes an
+  acknowledgement back. A bridge whose name has a dot cannot be acknowledged, and its routes
+  wait.
+- **The MAC pin.** The first time an address of a route is verified, the MAC it answered from is
+  pinned to the hostname's claim, and stays with the claim across a stop of the guest and a
+  withdrawal. The claim goes, and the pin with it, only when the hostname is released after the
+  grace period.
+- **Renumbering under the pin.** A guest that gets another address, as from DHCP, is served at
+  the new one in the next cycle without an admin, as long as the pinned MAC alone answers for
+  it. A new MAC is what needs an admin: the route waits with
+  `MAC changed from <old> to <new>; approve the guest to accept it`, and the approval records the
+  new MAC.
+- **Delegated guests.** pco reads the access control of Proxmox every minute and works out, as
+  Proxmox does, who holds `VM.Config.Network` on each guest: the one privilege that chooses a
+  card's MAC. When anyone but the admins and pco's own user and tokens holds it, through a user,
+  a group, a token or a pool, the guest's routes at `observed` wait for an approval, which
+  records the MACs it answered from. A clone and a restore are guests of their own and fall
+  under the same rule.
+- **Access control that cannot be read.** Until the first read after a start, and while the last
+  read that worked is more than five minutes old, every guest counts as delegated.
+- **Soft deny and `--allow-address`.** The gateways and the resolvers of the nodes and of the
+  appliance itself are soft-denied: a guest that is the router or the resolver of a network is a
+  common thing to publish, and also the address a route aimed elsewhere would reach for. A route
+  to one waits at any level until an approval of its guest names the address:
+  `pco guest approve lxc/120 --allow-address 192.0.2.1`. The addresses of nodes and of the
+  appliance stay denied without exception. A soft-denied address not seen in that role for 30
+  days leaves the list.
+
+`pco routes` shows the reason of each route that waits, `pco guest list` the guests that wait
+with why, and a problem line of `pco status` counts the routes held by these rules:
+
+    2 routes are held by the observed rules: segment not acknowledged 2; pco routes says why each is held
+
+**Why `filtered` holds every route.** `filtered` is the level of a managed network, in which pco
+attaches a card of its own to each guest and pins it to its address with the Proxmox firewall.
+That network comes in a later release, and nothing proves `filtered` before it. An appliance
+whose `identityMinimum` is `filtered` therefore serves no guest: each route shows
+`identity level observed is below the required filtered` in `pco routes`, and the problem line
+counts them and names `observed`. Leave it at `observed`.
+
+**The appliance's own addresses.** The denylist of the appliance holds, besides the addresses of
+every node, the addresses of the appliance itself and the gateways of SDN subnets. The addresses
+of a node come from the API, which lists those a node is configured with; an address a node
+holds only at run time, as one from DHCP, is known only when the installer or a repair saw it
+on the node it ran on. Give the nodes static addresses, or run a repair after one changed; see
+[Appliance](appliance.md#restore-and-repair).
 
 ## Candidates and their order
 

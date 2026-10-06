@@ -89,21 +89,26 @@ the checksum file and the checksum of the package, installs it, and starts the s
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash
 
-On a terminal the script first asks whether to install on the node (the host profile,
-which Enter keeps) or as an appliance, a container with nothing installed on the node;
-`--appliance` answers that beforehand (see [Profiles](docs/profiles.md)):
+That installs the host profile, pco on the node itself, which is the default. On a
+terminal the script first asks, and Enter keeps it.
 
-    curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash -s -- --appliance
+The other choice is the appliance: pco and its connectors in an unprivileged container,
+with nothing installed on the node. Choose it explicitly with `--appliance`; the other
+arguments go to the installer of the appliance, which needs the storage when the node has
+more than one for containers:
 
-The release key the script carries has the fingerprint
-`3D326CB52862A2E91C9919EFA98A1ED57B31F91B`, and before it installs anything it says
-which key the signature was made with.
+    curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash -s -- --appliance --storage local-zfs
 
-Read the script first, and run it as root on the node. The manual way is to download
-`pco_<version>_<arch>.deb` and `checksums.txt` from the releases page, check them, and
-install the package with `apt install ./pco_<version>_<arch>.deb`. Before the first
-release, `make snapshot` builds the packages from a checkout; it needs Go and network
-access, so build on another machine and copy the `.deb` to the node. Then run `pco setup`.
+[Appliance](docs/appliance.md) says what it creates, what it asks and what it proves less
+than the host profile, and [Profiles](docs/profiles.md) sets the two side by side.
+
+Run it as root on the node. The release key the script carries has the fingerprint
+`3D326CB52862A2E91C9919EFA98A1ED57B31F91B`, and it prints which key the signature was
+made with. [SECURITY.md](SECURITY.md#verifying-a-release) says how to check that key
+before the script runs, and how to verify a release by hand and install the package with
+`apt install ./pco_<version>_<arch>.deb`. Before the first release, `make snapshot`
+builds the packages from a checkout; it needs Go and network access, so build on another
+machine and copy the `.deb` to the node. Then run `pco setup`.
 [Quickstart](docs/quickstart.md) walks through all of it.
 
 ## A minimal example
@@ -146,6 +151,8 @@ The pages will be published, with search, at
 - [Operations](docs/operations.md): the daemon, the store, the cycle, exit codes and
   upgrades.
 - [Profiles](docs/profiles.md): host and appliance side by side.
+- [Appliance](docs/appliance.md): pco in a container of its own, its install, its rules,
+  upgrades and recovery.
 - [Troubleshooting](docs/troubleshooting.md): reading `pco status`, `pco doctor` and
   `pco diagnose`, and the problems that come up.
 - [Uninstall](docs/uninstall.md): taking pco off a node, and recovering after a lost

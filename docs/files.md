@@ -185,11 +185,12 @@ of the cluster filesystem. The differences in the paths:
 | `/var/lib/pco/pve-ca.pem` | The CA the appliance verifies the Proxmox API with. |
 | `/var/lib/pco/manifest.json` | What the installer made on the node for this appliance, which the installer reads back as untrusted input. |
 | `/var/lib/pco/upgrades/` | Where `pco upgrade` works, with the package of the version before an upgrade kept in `previous/`. |
-| `/run/pco-appliance/identity-ok` | A file on a tmpfs that the daemon writes when it has proved in this boot that the container is the appliance and not a copy of it, and removes on a copy. The connectors start only while it is there. |
+| `/run/pco-appliance/identity-ok` | A file on a tmpfs that the daemon writes when it has proved in this boot that the container is the appliance and not a copy of it, and removes on a copy and while a principal other than an admin can reach into it. The connectors start only while it is there. |
 | `/etc/pco/net0` | The IPv4 address of net0, the appliance's management card, which `pco-web` listens on and nowhere else. `pco appliance install` writes it, `pco appliance repair` when it is missing, and the daemon writes the card's address when it changes, as a new lease of DHCP does, and restarts `pco-web`. |
 | `/etc/default/pco-web` | The environment of `pco-web`. The installer writes it without `PCO_WEB_LISTEN`, so that `pco-web` listens on net0's address, port 8643; `PCO_WEB_LISTEN` may name another port of that address and nothing else. `PCO_WEB_ALLOW_ROOT=1` lets `root@pam` sign in with a password. |
-| `/etc/pco/web/tls.crt`, `tls.key`, `mode` | A key of the appliance's own and a self-signed certificate of 397 days, which the daemon makes at its first start and again 30 days before it ends, or a pair you imported (`mode` says `own`), which it leaves alone. A new address of net0 keeps the certificate, and with it the fingerprint the browser trusts. |
+| `/etc/pco/web/tls.crt`, `tls.key`, `mode` | A key of the appliance's own and a self-signed certificate of 397 days, which the daemon makes at its first start and again 30 days before it ends, or a pair you imported (`mode` says `own`), which it leaves alone. A new address of net0 keeps the certificate, and with it the fingerprint the browser trusts. They are on the root filesystem, so a backup holds the key. |
 | `/etc/pco/web/pve-api.json` | The Proxmox API as the daemon reaches it: its address, the name its certificate is verified under and the CA, which `pco-web` signs users in at. The daemon writes it; nothing in it is secret. |
+| `/var/lib/misc/pco-first-upgrade` | Written once `pco-first-boot.service` has installed the security updates of Debian; without it, the unit runs again at the next start. |
 
 On the node, `pco appliance install` keeps a journal of each run in
 `/root/.pco-appliance-install/<run>.json` (`0600`) and the lock of the installer in the same
@@ -213,3 +214,10 @@ Cloudflare.
 If the whole store is lost, `pco setup --recover` takes the install and its writer
 generation from the tunnels the Cloudflare token sees, and starts observe-only, with the
 settings that are there or else the defaults.
+
+In the appliance all of it is on the state volume, which backups leave out because it holds
+the secrets. A restore of the appliance gets its install back from Cloudflare through
+`pco appliance repair --recover`, with the default settings of an appliance and no approvals,
+acknowledged segments or manual routes. Keep those elsewhere: `pco settings show --json` gives
+the settings in the form `pco settings apply` takes back. See
+[Appliance](appliance.md#snapshots-backups-and-their-limits).

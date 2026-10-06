@@ -77,6 +77,9 @@ How far each holds, and at which identity level, is the rest of this page; the
 | The connectors, `pco-cloudflared@<tunnel id>.service` | the system user `pco-connector`, with no capabilities | Open outbound connections, which the egress filter confines (below). |
 | The `pco` command | whoever runs it | `setup`, `uninstall` and `pco egress` work on the node directly and need root. The others ask the daemon through its socket, which also lets only root in. |
 
+This is the host profile. In the appliance the same parts run in its container, as root of an
+unprivileged container and not of the node; [the appliance](#the-appliance) says what changes.
+
 The daemon is a root-equivalent part of the node. It runs as root, has the Cloudflare
 tokens, manages systemd units, and answers a socket. Anyone who can make it do things has
 the node. Its unit applies a few protections (`ProtectHome`, `PrivateTmp`,
@@ -214,23 +217,28 @@ row but the first assumes a guest that carries the tag: a user cannot tag their 
 when the tag is registered, unless they may clone one that has it (the last row).
 
 `port` is what a guest on this node gets. `observed` is what a guest on another node of the
-cluster gets, and what an address behind a router gets when you trust it, and only if
-`identityMinimum` is lowered to `observed`. `filtered` is reserved for another profile and
-no host guest has it.
+cluster gets, what an address behind a router gets when you trust it, and what every guest of
+the [appliance](appliance.md) gets; on a host only if `identityMinimum` is lowered to
+`observed`. `filtered` is reserved for the managed network, which no release has yet.
+
+A route at `observed` is served under the rules of [Identity](identity.md#routes-that-wait-for-an-admin):
+on an acknowledged segment only, with the MAC pinned to its claim, and only after an approval
+when anyone but the admins may change the guest's network. The `observed` column says what the
+level stops with those rules.
 
 | Attacker | `observed` | `port` |
 |---|---|---|
-| A device on the uplink, outside Proxmox | Stops a device that answers for a guest's address with its own MAC. Once the route is served, a stranger's MAC that the kernel learns for the address is noticed as well (see below). Does not stop a device that copies the guest's MAC too: ARP cannot tell the copy from the guest, and for a guest on another node this node cannot see where the table sends its frames. | Stops both. The bridge must have learned the guest's MAC on the guest's own port and on no other, and a MAC the table has on the uplink fails. A device that starts using the guest's MAC after the check makes the bridge learn it on the uplink: the daemon is told at once, takes the address out of the egress filter within tens of milliseconds, verifies the route again at once, and withdraws it at Cloudflare if that fails. Limit: the tens of milliseconds between the table changing and the filter following. |
-| Root in another guest of this node | Stops a guest that answers with its own MAC, and a card configured with a MAC that a running guest has. Frames forged with the MAC of a guest of another node put that MAC on the port of the attacker's guest, which `observed` notices when it checks. | Stops forged frames as well. They move the entry to the attacker's port, so the address leaves the filter within tens of milliseconds, the verification fails, and the victim's route is withdrawn (503). It is not taken over: that is a denial of service for the victim, not a hijack. Limit: the same. |
-| A Proxmox user with `VM.Config.Network` on another guest | Does not stop it. The user can give their guest the MAC of any device on the segment that is not a running guest and, since the Notes are theirs, aim a route at that device. Only a MAC that a running guest has is refused. | Mostly stops it. To pass, the table has to have the device's MAC on the user's own port, which it has only after the user's guest sent a frame with that MAC and before the device sent its next one. That next frame moves the entry back to the uplink, which the daemon sees at once, and the address leaves the filter within tens of milliseconds. A user who keeps transmitting can get the check to pass again, and what the device can then be asked for is limited to the moment after each of its frames. It is not a complete defence. |
-| A Proxmox user with `VM.Config.Network` on the published guest | Does not stop it. The user can give a card of the published guest the MAC of a device on the segment and set the card's static address to the device's address. The static addresses of a guest are tried before those its agent reports, so the route then points at the device, and nobody has to edit the Notes. | Mostly stops it, with the same race and the same watch as in the row above. |
+| A device on the uplink, outside Proxmox | Stops a device that answers for a guest's address with its own MAC. Once the route is served, a stranger's MAC that the kernel learns for the address is noticed as well (see below). Does not stop a device that copies the guest's MAC too: ARP cannot tell the copy from the guest, and for a guest on another node this node cannot see where the table sends its frames. That is what an admin accepts when acknowledging a segment. | Stops both. The bridge must have learned the guest's MAC on the guest's own port and on no other, and a MAC the table has on the uplink fails. A device that starts using the guest's MAC after the check makes the bridge learn it on the uplink: the daemon is told at once, takes the address out of the egress filter within tens of milliseconds, verifies the route again at once, and withdraws it at Cloudflare if that fails. Limit: the tens of milliseconds between the table changing and the filter following. |
+| Root in another guest of this node | Stops a guest that answers with its own MAC, and a card configured with a MAC that a running guest has. On a host, frames forged with the MAC of a guest of another node put that MAC on the port of the attacker's guest, which `observed` notices when it checks. The appliance reads no forwarding table and does not notice that: a guest that forges the MAC of a published guest is the device of the row above. | Stops forged frames as well. They move the entry to the attacker's port, so the address leaves the filter within tens of milliseconds, the verification fails, and the victim's route is withdrawn (503). It is not taken over: that is a denial of service for the victim, not a hijack. Limit: the same. |
+| A Proxmox user with `VM.Config.Network` on another guest | Stops it until an admin approves. The user can give their guest the MAC of a device on the segment that is not a running guest, and aim a route at that device from its Notes. But the guest is delegated, so its routes wait for an approval, which shows and records the MACs they answer from; a MAC changed after the approval waits for a new one. An admin who approves a guest that answers with the MAC of another device lets the route through. | Mostly stops it. To pass, the table has to have the device's MAC on the user's own port, which it has only after the user's guest sent a frame with that MAC and before the device sent its next one. That next frame moves the entry back to the uplink, which the daemon sees at once, and the address leaves the filter within tens of milliseconds. A user who keeps transmitting can get the check to pass again, and what the device can then be asked for is limited to the moment after each of its frames. It is not a complete defence. |
+| A Proxmox user with `VM.Config.Network` on the published guest | Stops it. The user could give a card of the published guest the MAC of a device and its static address, which is tried before the reported ones. The grant makes the guest delegated, so its routes wait for an approval from the next read of the access control, within a minute; and the new MAC is not the one pinned to the claim, so the route waits for an approval in any case. An address changed while the MAC stays is answered by the device's own MAC, which fails ARP. | Mostly stops it, with the same race and the same watch as in the row above. |
 | A Proxmox user with `VM.Clone` on a tagged guest and `VM.Allocate` | Does not stop it. The clone carries the tag, and its address is the clone's own, so it passes. Its Notes publish what the user writes there, within the hostname policy, and nothing that another guest holds. | Does not stop it either, for the same reason. Admission mode `approve` does: the clone has an identity of its own and waits for an admin. |
 
-What this table shows is that `port` is meant to stand on its own and `observed` is not.
-At `observed`, whoever can set the MAC of a guest's card and write its Notes can reach any
-device on the segment. If you lower `identityMinimum`, give `VM.Config.Network` and Notes
-access on tagged guests only to people you would trust with the whole segment, keep the tag
-registered, and consider `admission: approve`.
+What this table shows is that `port` stands on its own and `observed` leans on the admin: on the
+segments acknowledged, on the approvals given, and on who holds `VM.Config.Network`. If you
+serve routes at `observed`, give `VM.Config.Network` and Notes access on tagged guests only to
+people you would trust with the whole segment, keep the tag registered, read what an approval
+records before you give it, and consider `admission: approve`.
 
 ### Trusted static addresses
 
@@ -613,6 +621,9 @@ when.
 | Cloudflare API tokens | `/etc/pve/priv/pco/credentials/<id>.json` | One file for each credential. |
 | Tunnel run tokens of the connectors | `/var/lib/pco/tunnels/<tunnel id>.token` | Mode 0600 in a directory of mode 0700. Passed to cloudflared as a systemd credential. |
 
+In the appliance all three are on its state volume, below `/var/lib/pco`; see
+[the appliance](#the-state-volume-and-its-copies).
+
 `/var/lib/pco` is mode 0700. `/etc/pve` is the cluster filesystem, and Proxmox keeps
 `/etc/pve/priv` readable by root alone. On a cluster it is replicated to every node, so
 every node holds these files. Anything that backs up `/etc/pve` or `/var/lib/pco` copies
@@ -661,6 +672,112 @@ request cannot read a token or switch the egress filter off. It changes the targ
 filter only as a cycle does, by changing what is published: whoever may use the socket may
 publish what the guests ask for, add a credential of another account, and confirm deletes,
 so treat `pco-web` as an admin of pco.
+
+## The appliance
+
+The [appliance](appliance.md) runs the daemon and the connectors in an unprivileged container,
+and the rules above hold inside it as on a node: the egress filter confines the connectors, the
+daemon writes only as the one writer, and the identity checks run on the container's card.
+What differs is where the rights and the secrets are.
+
+### Its rights in Proxmox
+
+The appliance has one Proxmox token, `pco@pve!vm<vmid>`, privilege-separated, with role `PCO` on
+`/` for the token and for its user: `VM.Audit`, `Sys.Audit`, `SDN.Audit`,
+`VM.GuestAgent.Audit` (`VM.Monitor` on Proxmox VE 8.4) and `Pool.Audit`, the read-only role of
+the host profile. A privilege-separated token holds only what its user holds as well, so every
+grant goes to both. The token lacks `Sys.Modify`, `VM.Allocate`, `Permissions.Modify` and every
+`VM.Config.*`, `VM.Snapshot*` and `VM.PowerMgmt`: it cannot change a guest, an ACL, or the
+appliance itself, nor take a snapshot of it, which is why `pco upgrade` asks you for one. The
+one way it gains a right is `pco appliance grant-network`, run by root on the node, which grants
+`VM.Config.Network` on the appliance and `SDN.Use` on one network, for the cards a later release
+attaches. Nothing is granted on a whole zone, and nothing beyond the read-only role on `/`.
+
+The appliance reaches the API through its card, at an address of the node, and verifies its
+certificate under the name the installer chose, against the cluster CA it pushed or the system
+roots. It never takes a certificate on trust. When the certificate stops verifying, it holds its
+writes until `pco appliance repair` probes it again; see
+[Appliance](appliance.md#the-api-endpoint-and-its-certificate).
+
+The container itself is unprivileged, with `nesting=1` and no other feature. Its root has no
+password and no SSH server runs in it. It has no `/etc/pve`: never bind-mount the cluster
+filesystem into it, and never map the node's `www-data` group into it. A bind mount shows the
+container the names of the nodes and guests even where it reads no file, and with `www-data`
+mapped it reads `pve-www.key` and the node's `pve-ssl.key`, the key of its certificate.
+`pco doctor` fails its `etc-pve` check when `/etc/pve` is there.
+
+### Who can reach into it
+
+Whoever can reach into the appliance can read its secrets, so it refuses to serve while anyone
+but the admins can. The privileges that count, on the appliance or on a path above it, are
+`VM.Console`, any `VM.Config.*`, `VM.PowerMgmt`, `VM.Clone`, `VM.Backup`, `VM.Snapshot*`,
+`VM.Migrate`, `VM.Allocate`, `Pool.Allocate` on `/pool/pco`, and `Permissions.Modify`, with
+which a principal grants itself any of them. The installer refuses while another principal
+holds one, and adds a `NoAccess` line for it only when you say yes at its question, whose
+default is no, or pass `--deny-access`; `--yes` never does. The daemon makes the same
+computation every minute, and while such a principal exists it serves nothing: it removes the
+flag its connectors start behind, empties the egress filter, stops the connectors and holds
+every write, with a line for each principal and the command that keeps it out. It never changes
+an ACL itself. [Appliance](appliance.md#who-may-reach-the-appliance) says how `NoAccess` and the
+pool of the appliance interact.
+
+The console is why `VM.Config.*` and `VM.PowerMgmt` are on the list. With `VM.Console` alone the
+console of the appliance is a login on a tty whose root has no password; but any one of
+`VM.Config.Disk`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Network` or `VM.Config.Options`
+can set the console mode to `shell`, which the next start of the container turns into a root
+shell without a password, with the tokens in reach. `pco doctor` fails its `cmode` check on
+such a mode, in the running configuration and in the pending one.
+
+### The state volume and its copies
+
+The secrets of the appliance, the Proxmox token, the Cloudflare tokens and the run tokens of its
+tunnels, are on its state volume `mp0` at `/var/lib/pco`. They reach it in one file, pushed with
+`pct push` and removed as soon as it is read, and never through the configuration of the
+container or its environment, which `VM.Audit` reads. The volume has `backup=0`, so backups
+leave it out; a backup holds the root filesystem, with the key of the web interface's
+certificate and none of the tokens. The daemon refuses to start when `/var/lib/pco` is not a
+volume of its own carrying the marker of pco, so that it never writes secrets onto the root
+filesystem.
+
+Everything else that copies the container copies the volume, with every secret on it:
+
+| Copy | Carries the secrets | Who can read them |
+|---|---|---|
+| A snapshot (`pct snapshot`) | Yes | Whoever can clone from it (`VM.Clone`), root on the node, and whoever reads the storage. `VM.Snapshot` makes one, and rolls the state back to it. |
+| A clone | Yes, with a connector for each tunnel enabled | Whoever made it and whoever can reach into the clone. |
+| Storage replication to another node | Yes | Root on that node, and whoever reads its storage. |
+| A backup (`vzdump`) | No: `mp0` is left out | Whoever reads the backup gets the key of the web interface. |
+
+`pco doctor` warns about every snapshot but one taken before an upgrade, less than 7 days old,
+and about a replication job. Keep these privileges, and access to the storages and backup
+targets of the appliance, to people you would give its tokens.
+
+A copy never serves and never writes. The appliance proves at every start that it is the
+container it was installed as, from facts a copy cannot share, before it draws a writer epoch;
+until then no connector starts, and a container that finds itself a copy stops and disables its
+connectors, empties its egress filter and writes nothing at Cloudflare. See
+[Appliance](appliance.md#copies).
+
+### A guest with the appliance's MAC
+
+A guest configured with a MAC of the appliance, on the appliance's segment, takes its traffic
+away: the bridge sends the frames for that MAC to whichever of the two spoke last. The requests
+the appliance makes keep mostly working, but what comes to it unasked is lost: inbound
+connections, and the data Cloudflare pushes over the connectors' open connections. Proxmox
+accepts such a MAC without a word, and the MAC filter of its firewall does not help. Putting a
+guest on a segment takes `SDN.Use` on it, so keep `SDN.Use` on the segment of the appliance's
+`net0` to the admins: `pco doctor` warns in its `segment access` check when anyone else holds
+it. The appliance names such a guest outside its pool, rejects its routes, and goes on writing;
+the data path is what it cannot protect.
+
+### The appliance against the five attackers
+
+Every route of the appliance is at `observed`, under the rules of the table above. The
+appliance reads no forwarding table, so the row of root in another guest is the row of the
+device on the uplink: a guest that forges a published guest's MAC passes ARP as that guest. The
+rows of `VM.Config.Network` hold as the table says, which is why the appliance holds a delegated
+guest until an approval, and why it refuses to serve while anyone but the admins can reach into
+the appliance itself, where `VM.Config.Network` would be enough to read its tokens.
 
 ## What Cloudflare sees
 

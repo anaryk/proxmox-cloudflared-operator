@@ -2,7 +2,8 @@
 
 This page is the reference for running pco: the daemon and its units, what the daemon does
 in each cycle and when it holds back, what a reboot does, how to read its output from a
-script, the environment variables, and upgrades. The settings are in [Settings](settings.md),
+script, the environment variables, upgrades, and what differs in
+[the appliance](#the-appliance). The settings are in [Settings](settings.md),
 every path in [Files](files.md), and every problem line in [Problems](problems.md).
 
 ## The daemon and its units
@@ -334,7 +335,9 @@ fields:
 | `at`, `finishedAt` | When the last cycle began and ended. |
 | `mode` | `observe` or `enforce`. |
 | `complete` | Whether the inventory of Proxmox was complete. |
-| `profile` | `host`. |
+| `profile` | `host` or `appliance`. |
+| `identity`, `epochDrawnAt` | In the appliance: what the last self-identification found (`vmid`, `node`, `ok`, `why`, `copy`, `copies`, `tenants`, `exposed`, `checkedAt`), and when this process drew a new writer epoch after a start of the container. |
+| `segments` | The segments routes at `observed` were proven on, and those acknowledged. |
 | `routes` | One object for each route: `hostname`, `owner`, `state`, `level`, `reason`, `service`, `zone`, `warnings`, `guest`, `candidates`. |
 | `issues` | Problems in the Notes and the settings: `guest`, `line`, `col`, `msg`. |
 | `tunnels`, `connectors` | The tunnels and the state of their connectors. `unchecked` on a tunnel says the last cycle did not look at Cloudflare, and `leftAsIs` that the tunnel is left as it is for a reason of its own, which `held` gives, as a frozen account. A connector has the `connectorId` its `/ready` gives, and `tokenRefused` or `metricsPortHeld` when its journal says Cloudflare refuses its token or another process holds its metrics port. |
@@ -344,7 +347,7 @@ fields:
 | `actions`, `conflicts`, `lost` | The pending actions, the records of someone else in the way, and the names that lost the marker. |
 | `problems` | What the daemon found wrong, as text. |
 | `waiting`, `offer` | What waits for a confirmation. |
-| `unapproved` | In approve mode, the guests that wait. |
+| `unapproved` | The guests that wait for an approval: in approve mode, and in either mode for what holds a route at `observed` or on a soft-denied address. |
 | `hold`, `writerVerdict` | Why the last cycle did not check Cloudflare, and what it found of the writer. |
 | `egress` | The egress filter as the daemon last found it: `state` is `on`, `off`, `not loaded` or `changed`, and `since` says when the admin switched it off. Absent until the daemon has looked. |
 
@@ -412,6 +415,9 @@ These variables are not pco's, and it reads them too:
 
 ## Upgrades
 
+This is the host profile; the appliance upgrades with `pco upgrade`, as
+[Upgrades in the appliance](#upgrades-in-the-appliance) says.
+
 To upgrade, install the new package, with the installer or with `apt install` of the new
 `.deb`; see [Quickstart](quickstart.md). On an upgrade the package reloads systemd and
 restarts `pco.service` if it was running. The connectors are not touched, because
@@ -456,6 +462,83 @@ pco runs on one node. `pco setup` refuses on a second node of a cluster
 daemon holds when the node registry names another node. On a cluster, install it on the node
 whose guests you want to publish. The guests of the other nodes are listed by Proxmox and
 their routes are read, but they can only be proven at `observed`; see [Identity](identity.md).
+The appliance is one for a cluster too; see [the appliance on a cluster](#the-appliance-on-a-cluster).
+
+## The appliance
+
+What this page says holds in the [appliance](appliance.md) too, inside its container. This
+section is what differs. Run the commands in the appliance, or from the node with
+`pct exec <vmid> --` in front.
+
+### Its units
+
+The appliance runs the units of the package, enabled by its template, and drop-ins in
+`/etc/systemd/system` that bind them to the appliance:
+
+| Unit | In the appliance |
+|---|---|
+| `pco-net.service` | Runs `pco net load` before the network and before the other units of pco, after `systemd-sysctl.service`: it puts in place the dummy device `pco0`, the route of the service prefix `198.18.0.0/16` to it and the table `inet pco_net`, which rejects anything sent to the prefix that has no mapping. The daemon keeps them in place, as it does the egress table. |
+| `pco-egress.service` | As on a host. |
+| `pco.service` | Requires `pco-net.service` and starts after it. It exits with status 78 when `/var/lib/pco` is not a volume of its own with the marker of pco, and `RestartPreventExitStatus=78` keeps it failed instead of starting again every 5 seconds. `OOMScoreAdjust=500` makes the kernel end it before a connector under memory pressure: in the container's user namespace a connector cannot lower its own score. |
+| `pco-cloudflared@<tunnel id>.service` | Requires `pco-net.service` as well, and starts only while `/run/pco-appliance/identity-ok` exists: the identity flag, on a tmpfs, which the daemon writes once it has proven in this boot that the container is the appliance, and removes on a copy and while a principal other than an admin can reach into it. A start without the flag is skipped, not failed, and the daemon starts the connectors at its next cycle. |
+| `pco-web.service` | Starts after `pco.service`, which makes its certificate, and signs users in at the node's API as the daemon reaches it. |
+| `pco-first-boot.service` | Installs the security updates of Debian published since the template was built, at every start until it has once succeeded. |
+| `unattended-upgrades.service` | Installs the security updates of Debian every day, and nothing else. |
+
+`nftables.service` is masked in the appliance: its configuration flushes the whole ruleset, and
+with it both tables of pco. `pco doctor` fails its `nftables` check when the unit is enabled,
+and warns in any other state but masked.
+
+After a start of the container no connector runs until the daemon's cycles have proven the
+container and read the access control of Proxmox, and no connector reaches a guest before the
+egress filter has its targets. A published hostname answers 1033 while no connector is
+connected, then 502, for those first cycles.
+
+### Its state
+
+The store has the same files as on a host, under three roots on the state volume, `mp0`
+mounted at `/var/lib/pco`: `cluster/` for what a host keeps in `/etc/pve/pco`, `private/` for
+`/etc/pve/priv/pco`, and `/var/lib/pco` itself for the state of the node. Every write is flushed
+to disk, the directory too, before the daemon goes on. The installer puts the marker
+`/var/lib/pco/.volume` on the volume, and the daemon refuses to start without it, so that a
+restore that brought an empty volume, or none, makes it stop and say so instead of writing
+secrets onto the root filesystem. [Files](files.md#the-appliance) lists the paths.
+
+### Upgrades in the appliance
+
+pco and `cloudflared` are held, and `pco upgrade` upgrades them in place; apt does not.
+[Appliance](appliance.md#upgrades) has the details, and
+[the upgrade guide](guides/appliance-upgrade.md) the steps. Before an upgrade take a snapshot of
+the container on the node, named `pco-pre-upgrade-<YYYYMMDD>`, which `pco doctor` accepts for 7
+days; after a rollback to it, `pco appliance recover` follows when the daemon says that its state
+is older than its last write at Cloudflare. Debian's security updates install themselves, as
+the units above say; the templates of the monthly releases carry them for new installs.
+
+### Backups
+
+Back the appliance up with `vzdump` in snapshot mode, on a storage that can snapshot. The state
+volume is left out, and a restore is followed by `pco appliance repair --recover`; see
+[Appliance](appliance.md#snapshots-backups-and-their-limits), which has what each mode costs
+the connectors: in two runs, gaps of at most 0.38 seconds in snapshot mode, about 3 seconds in
+suspend mode, and the whole backup, about 29 seconds, in stop mode.
+
+### The appliance on a cluster
+
+One appliance serves a cluster. It runs on one node and reaches the guests on its segments,
+whichever node they run on, all at `observed`. The installer says which cluster the node is a
+member of, and warns when it finds another appliance. As a host does, the appliance writes
+nothing while its cluster has no quorum: it reads `/cluster/status` in every cycle and holds
+while the cluster is not quorate, with the problem line
+`the cluster is not quorate; nothing is written`. A node that is in no cluster counts as
+quorate. When the node of the appliance is down, so is every hostname it serves: moving it to
+another node is a later release.
+
+The appliance never publishes an address of a node. It learns them from `/cluster/status` and
+from the addresses each node is configured with in `/nodes/<node>/network`, and keeps every one
+it has seen. An address a node holds only at run time, as one from DHCP on a bridge or one added
+with `ip addr`, is in neither: the installer and `pco appliance repair` add the global IPv4
+addresses of the node they run on. Give the nodes static addresses, or run a repair on a node
+after its address changed.
 
 ## For packagers
 

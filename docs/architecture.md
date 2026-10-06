@@ -2,9 +2,9 @@
 
 This page says how pco is built: its parts and where they run, what one cycle of the daemon
 does, the path of a request, how pco makes sure that one process alone writes to Cloudflare,
-where its state lives, and what it never touches. It describes the host profile, the one in
-this release; [Profiles](profiles.md) sets it beside the appliance. The words in the sense pco
-gives them are in the [Glossary](glossary.md).
+where its state lives, and what it never touches. It describes the host profile, and
+[the appliance](#the-appliance) where it differs; [Profiles](profiles.md) sets the two side by
+side. The words in the sense pco gives them are in the [Glossary](glossary.md).
 
 ## The parts
 
@@ -199,6 +199,84 @@ admin. Sessions live in the memory of the process only. Every call of the page g
 table of the calls it may make, each with the role it needs, to the socket of the daemon, and
 nothing outside the table is passed on.
 
+## The appliance
+
+The [appliance](appliance.md) is the same binary with the same parts, in an unprivileged
+container on the node: the daemon, the connectors, the egress filter, the socket API and the web
+process all run inside it, and nothing of pco runs on the node. What changes is where the parts
+reach and what they rest on. The parts of the appliance, and who asks or writes to whom; an
+arrow points from the part that asks or writes to the part it asks or writes to:
+
+```mermaid
+flowchart TB
+    browser["Browser of an admin or a reader"]
+    cfapi["Cloudflare API"]
+    edge["Cloudflare edge"]
+    subgraph node["Proxmox VE node"]
+        pveapi["Proxmox API: pveproxy, port 8006"]
+        bridge["Bridge of net0"]
+        guests["Guests on that bridge"]
+        subgraph ct["Container lxc/vmid: unprivileged, nesting=1, pool pco"]
+            netunit["pco-net.service: dummy device, service-prefix route and table"]
+            web["pco-web.service: on net0's address only"]
+            cli["pco command, as root, or pct exec from the node"]
+            subgraph daemon["pco.service: pco daemon"]
+                api["Socket API"]
+                engine["Engine: the cycle"]
+                ident["Self-identification"]
+            end
+            flag["/run/pco-appliance/identity-ok"]
+            units["Connectors: pco-cloudflared@ units"]
+            filter["Egress filter: nftables in the container"]
+            store[("Store on mp0 at /var/lib/pco, with its marker")]
+        end
+    end
+    browser -->|"HTTPS, port 8643"| web
+    web -->|"sign-in, password or token"| pveapi
+    web -->|"/run/pco/pco.sock"| api
+    cli -->|"/run/pco/pco.sock"| api
+    api --> engine
+    engine --> store
+    engine -->|"token pco@pve!vmid, through net0"| pveapi
+    ident -->|"its own config and pool pco, every cycle"| pveapi
+    ident -->|"writes on a pass, removes on a copy"| flag
+    flag -->|"condition of every start"| units
+    engine -->|"API token"| cfapi
+    engine -->|"ARP, TCP, through net0"| bridge
+    engine -->|"nft"| filter
+    netunit -->|"required by"| units
+    units -->|"outbound, port 7844"| edge
+    units -->|"every connection"| filter
+    filter -->|"verified targets only"| bridge
+    bridge --- guests
+```
+
+- **Proxmox** is read through the API only, at an address of the node and through the
+  container's card, with the token `pco@pve!vm<vmid>`. The appliance verifies the API's
+  certificate under a name the installer chose. Nothing in the container can read `/etc/pve`.
+- **The resolver** runs as on a host, from the container's network namespace. It has no
+  forwarding table of the bridge to read, so every address it proves is at `observed`, and the
+  rules of that level apply to every route; see
+  [Identity](identity.md#the-appliance-and-observed). The segment of each card is the bridge and
+  VLAN of the container's own configuration.
+- **The store** has the files of a host, under `/var/lib/pco` on the state volume `mp0`, which
+  backups leave out. The daemon refuses to start without the volume's marker. Writes are flushed
+  to disk with their directory. `/etc/pco/profile` says `appliance`, which every command reads.
+- **Self-identification** proves, at every start and in every cycle, that the container is the
+  one installed: the volume mounted at `/var/lib/pco` is a volume of its VMID, and its links
+  carry the MACs of its configuration. It also computes, every minute, whether anyone but the
+  admins can reach into the container. On a pass it writes the identity flag, which the
+  connectors start behind; on a copy, or while a principal can reach in, it removes the flag,
+  empties the egress filter and stops the connectors.
+- **`pco-net.service`** puts a dummy device, the route of the service prefix `198.18.0.0/16` and
+  a table that rejects anything sent to the prefix without a mapping in place before the network
+  comes up. The connectors require it.
+- **The writer** is bound to the start of the container: the daemon draws a new epoch, the
+  generation one up and a new nonce, at each start, once self-identification passed, and only
+  then; see [One writer](#one-writer).
+- **Upgrades** are `pco upgrade`, inside the container, from the signed release; apt leaves pco
+  and `cloudflared` alone. Debian's security updates install themselves.
+
 ## The reconcile cycle
 
 A cycle, every `pollInterval` or at once after an admin action, reads, decides and then writes,
@@ -323,14 +401,14 @@ changes nothing at Cloudflare until the claims can be saved, a DNS record whose 
 recorded is not deleted, and an admin action that writes to the store, such as an approval, fails.
 A cycle with nothing to save goes on as before.
 
-The appliance profile, which comes in a later release, also binds the writer identity to the
-start of its container. Once the appliance has proven that it is the container it was installed
-as, from facts a copy cannot share, it draws a new epoch at each start of the container: the
-generation one up and a new nonce. A copy of the container, such as a clone, serves nothing: it
-stops its connectors, empties its egress filter and changes nothing at Cloudflare. An appliance
-rolled back or restored to an earlier state, which finds a sentinel of its install that it does
-not know before it has written anything, has the verdict `behind` and writes nothing until
-`pco appliance recover`.
+In the appliance profile the writer identity is also bound to the start of its container. Once
+the appliance has proven that it is the container it was installed as, from facts a copy cannot
+share, it draws a new epoch at each start of the container: the generation one up and a new
+nonce. A copy of the container, such as a clone, serves nothing: it stops its connectors, empties
+its egress filter and changes nothing at Cloudflare. A snapshot rolled back, or a state restored,
+after the container started again carries an older generation than the one at Cloudflare; the
+appliance then says `behind` and writes nothing until `pco appliance recover` draws an epoch
+above it. See [Appliance](appliance.md#snapshots-backups-and-their-limits).
 
 ## pco on a cluster
 
@@ -344,6 +422,10 @@ they are proven at `observed` at best, and are served only once `identityMinimum
 The connectors run on the one node too. When that node is down, every published hostname is down
 with it. Moving pco to another node when its node fails is planned for a later release; nothing
 does it today.
+
+The appliance is one for a cluster as well: it runs on one node, reaches the guests of every
+node that are on its segments, all at `observed`, and holds its writes while the cluster has no
+quorum. See [Operations](operations.md#the-appliance-on-a-cluster).
 
 ## Where the state lives
 

@@ -47,13 +47,18 @@ the checksum of the package, installs it with apt and starts `pco setup`:
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash
 
-Read a script before you pipe it into a shell: `scripts/install.sh` is short, and
-it is the one thing in this chain that you have to trust. Arguments after `bash -s --`
-go to `pco setup`, but for `--appliance`, `--profile` and `--uninstall`, which the script
-keeps for itself (see [Profiles](profiles.md)); so `bash -s -- --yes` takes every default.
-On a terminal the script first asks whether to install on the node or as an appliance, and
-`--yes`, `--appliance`, `--profile` or `PCO_PROFILE=host` answer that beforehand. `PCO_VERSION=1.2.3`
-installs a given release instead of the latest. The installer needs `curl`,
+The script is the one thing in this chain that you have to trust, as it carries the key
+that everything else is checked against. To check that key before the script runs, take
+the script from the tag of the release and compare the key it carries, as
+[SECURITY.md](https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/SECURITY.md#with-the-installer)
+shows.
+
+Arguments after `bash -s --` go to `pco setup`, but for `--appliance`, `--profile` and
+`--uninstall`, which the script keeps for itself (see [Profiles](profiles.md)); so
+`bash -s -- --yes` takes every default. On a terminal the script first asks whether to
+install on the node or as an appliance, and `--yes`, `--appliance`, `--profile` or
+`PCO_PROFILE=host` answer that beforehand. `PCO_VERSION=1.2.3` installs a given release
+instead of the latest. The installer needs `curl`,
 `sha256sum`, `base64`, `mktemp`, `apt-get` and either `gpgv` or `sqv`; a Proxmox VE node has
 them, or `apt-get install gpgv` adds the one that is missing.
 
@@ -78,19 +83,10 @@ the tag of the release, as that version of the script carries the key that signe
 Nothing is downloaded then, `PCO_PROFILE=host` keeps the script from asking which profile
 you want, and `PCO_SKIP_SETUP=1` stops it before `pco setup`.
 
-To check by hand, compare the checksum first,
-
-    sha256sum --check --ignore-missing checksums.txt
-
-and then the signature against the key of that script.
-`packaging/release-key.sh scripts/install.sh release.gpg` writes its keyring and prints
-the fingerprints; one of them should be `3D326CB52862A2E91C9919EFA98A1ED57B31F91B`, and
-while one release key replaces another, a second one may stand beside it. Do not trust the exit status of a bare
-`gpgv --keyring ./release.gpg checksums.txt.sig checksums.txt`: `gpgv` exits 0 for a
-signature by a key that is revoked or has expired, and says so only in its status lines.
-`gpgv --status-fd 1` prints them; look for a `GOODSIG` line and for none of `REVKEYSIG`,
-`EXPKEYSIG` and `EXPSIG`. `sqv` refuses such a key by itself. When both checks are done,
-`apt install ./pco_<version>_<arch>.deb` installs the package.
+To check the signature and the checksum by hand instead, and install the package with
+`apt install ./pco_<version>_<arch>.deb`, follow
+[SECURITY.md](https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/SECURITY.md#by-hand)
+step by step.
 
 Before the first release there is nothing to download. Build the packages from a
 checkout of the repository instead:
@@ -322,6 +318,48 @@ with what to do about it:
 
 If something is wrong, [Troubleshooting](troubleshooting.md) starts from the
 output of these commands.
+
+## Or as an appliance
+
+The steps above install the host profile, which is what the installer does unless told
+otherwise. To have nothing of pco on the node, choose the appliance: pco and its
+connectors in an unprivileged container. It proves less about a guest than the host
+profile can; [Appliance](appliance.md) says what, and what else differs.
+
+    curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | bash -s -- --appliance --storage local-zfs
+
+The script checks the release as above, and runs the installer of the appliance from a
+temporary directory instead of installing a package. The installer looks at the node
+first and says what it found, then asks whether to register the gate tags, and, only when
+it finds them, whether to go on beside another install of pco and whether to keep other
+principals out of the container with `NoAccess` lines. It then makes the container, the
+user, the token and the pool, starts the container, and ends with what to do next. The
+flags of [Appliance](appliance.md#questions-and-flags) answer in advance: the VMID, the
+bridge, the VLAN, the address, the Cloudflare token file.
+
+Inside the appliance, `pco` works as on a node; from the node, put `pct exec <vmid> --`
+in front. With the appliance in container 120, add the token:
+
+    pct exec 120 -- pco credential add --label main
+
+Tag a guest and write its routes [as above](#tag-a-guest-and-write-its-routes); the guest
+must be on the appliance's bridge and VLAN. The appliance proves addresses at the level
+`observed`, and serves them only on a segment you acknowledged, so acknowledge the bridge
+once `pco routes` shows the routes waiting for it:
+
+    pct exec 120 -- pco routes
+    pct exec 120 -- pco segment acknowledge vmbr0
+
+A route can also wait for an approval of its guest, as when someone other than the admins
+may change the guest's network cards; `pco guest list` says why, and
+`pct exec 120 -- pco guest approve <owner>` approves it. Then look, and publish:
+
+    pct exec 120 -- pco plan
+    pct exec 120 -- pco apply
+
+`pct exec 120 -- pco status` and `pct exec 120 -- pco doctor` check it, as above. The
+installer printed the address and the certificate fingerprint of the appliance's web
+interface; [Appliance](appliance.md#the-web-interface) says how to sign in.
 
 ## Where to go next
 

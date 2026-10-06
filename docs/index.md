@@ -35,7 +35,8 @@ flowchart TB
 pco runs in one of two [profiles](profiles.md):
 
 - **Host**: the daemon and the connectors run on the Proxmox VE node, as systemd units.
-- **Appliance**: they run in an unprivileged container that `pco appliance install` makes, and nothing is installed on the node.
+- **Appliance**: they run in an unprivileged container that `pco appliance install` makes, and
+  nothing is installed on the node; see [Appliance](appliance.md).
 
 ## What pco needs
 

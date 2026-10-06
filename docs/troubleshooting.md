@@ -91,9 +91,12 @@ The sections the two point at:
 
 - **Mode** is `observe-only` until `pco apply`, then `enforce`. `unknown` means no cycle has
   run yet.
+- **Profile** is `host` or `appliance`.
+- **Identity**, in the appliance only, is what the last self-identification found:
+  `ok (lxc/120 on pve1)`, or why not; see [the appliance](#the-appliance).
 - **Inventory** is `incomplete` when Proxmox could not be read in full. The cycle holds, and
   the problems say what was not readable.
-- **Writer** is `ok`, or `stale`, `foreign` or `unknown`; see
+- **Writer** is `ok`, or `stale`, `foreign` or `unknown`, and in the appliance `behind`; see
   [the writer](#the-writer-is-stale-foreign-or-unknown).
 - **Egress** is the filter that confines the connectors, as the daemon last found it:
   - `on` is as it should be.
@@ -107,8 +110,10 @@ The sections the two point at:
     minute at most.
 - **Routes** counts the routes by state: `active`, `unreachable`, `withdrawn`, `conflict`,
   `no-zone`, `held`, `rejected`, `frozen`. It says `none` when there are no routes.
-- **Approval** appears only when guests wait for approval in approve mode, as
-  `2 guests wait (pco guest list)`.
+- **Segments** appears only when routes at `observed` wait for a segment to be acknowledged,
+  as `1 not acknowledged (pco segment list)`.
+- **Approval** appears only when guests wait for an approval, in approve mode or for a route
+  at `observed`, as `2 guests wait (pco guest list)`.
 - **Tunnels** lists the tunnels of the install, with the first eight characters of the id.
   `VERIFIED` is `yes` when the configuration at Cloudflare was read back and equals the plan,
   `no` when a write was held or failed, `held` when the tunnel is left as it is on purpose
@@ -458,6 +463,11 @@ writes only while the configuration carries its own mark or an older one.
 - **unknown**: `leader.json could not be used`. The file is missing or invalid; `pco setup`
   writes one for a store that has none, and `pco setup --recover` takes a generation above the
   one in use.
+- **behind**, in the appliance only: its state is older than its last write at Cloudflare, after
+  a rollback or a restore. `pco appliance recover` in the appliance; see
+  [the state is older than Cloudflare](#the-state-is-older-than-cloudflare). In the appliance
+  the commands of the other verdicts are `pco appliance recover` too, where a host has
+  `pco setup --recover`.
 
 While the writer is not in order, the daemon changes nothing at Cloudflare.
 
@@ -479,6 +489,158 @@ token that failed for another reason, `grant ...` for instance, is a failure as 
 2026-10-13T14:00:00+02:00 (in 12 days)`. Rotate it before then, as
 [Cloudflare token](cloudflare-token.md) describes. When it has expired, pco can change nothing at
 Cloudflare through it, but the connectors keep serving what was published.
+
+## The appliance
+
+In the [appliance](appliance.md) the commands run inside the container; from the node, put
+`pct exec <vmid> --` in front, as `pct exec 120 -- pco status`. Its `pco status` has an
+`Identity:` line, and its `pco doctor` a set of checks of its own, which
+[Problems](problems.md#checks-of-the-appliance) lists. A few of them, failing:
+
+    ✗ access     alice@pve holds VM.Console, VM.PowerMgmt on the appliance lxc/120; alice@pve!shared holds VM.Console, VM.PowerMgmt on the appliance lxc/120; the connectors are stopped while a principal other than an admin can reach into it
+                 fix: pveum acl modify /vms/120 --users alice@pve --roles NoAccess (alice@pve!shared is not privilege-separated: it holds the roles of alice@pve, so the command names the user)
+    ✗ cmode      the console mode is tty now, but the pending configuration has shell: the next start of the container makes its console a root shell without a password, and any one VM.Config privilege sets it
+                 fix: on the node: pct set 120 --revert cmode
+    ! snapshots  1 snapshot of the container holds a copy of the volume of its state, with the Cloudflare credentials and the keys: before-test
+                 fix: on the node: pct delsnapshot 120 before-test
+
+    2 failures, 1 warning.
+
+The cases that come up, from what the appliance says:
+
+### It serves nothing: a principal can reach into it
+
+    Identity:    serving nothing: ops@pve can reach into lxc/120 on pve1
+
+with the problem line
+
+    ops@pve holds VM.Console, VM.PowerMgmt on the appliance lxc/120; pco serves nothing while it does: pveum acl modify /vms/120 --users ops@pve --roles NoAccess
+
+A principal other than an admin holds a privilege with which it could read the appliance's
+secrets, so the appliance stopped its connectors, emptied its egress filter and holds every
+write. Run the command the line gives, on the node, or take back the grant that gives the
+privilege; the connectors start again within a minute of the next read of the access control.
+A narrower role on `/vms/120` does not take away what a grant on `/` gives through the pool of
+the appliance; `NoAccess` does. For a token without privilege separation the line names its
+user, as the token holds the user's roles. See
+[who may reach the appliance](appliance.md#who-may-reach-the-appliance).
+
+After a start, the connectors wait for the first read of the access control, with the line
+`the access control of Proxmox has not been read since pco started; the connectors start once it shows that no principal can reach into the appliance`.
+That passes by itself. When the access control cannot be read at all, `pco doctor` fails its
+`access` check: the token lacks role `PCO` on `/`, which `pveum acl list` shows, and
+`pco appliance repair` gives back.
+
+### `pco status` cannot ask the daemon: the state volume
+
+    pco: /var/lib/pco has no pco volume marker (restore, or a volume that is not pco's?): run pco appliance repair --vmid 120 on the node
+
+or `/var/lib/pco is not a mount point of its own (a restore without the volume?)`. The daemon
+found no state volume of pco and exited, and stays failed so as not to start again every 5
+seconds; `systemctl status pco` shows status 78. A restore brings a new, empty volume, or none.
+Run `pco appliance repair --vmid 120 --recover --cf-token-file <file>` on the node, as
+[Restore and repair](appliance.md#restore-and-repair) says.
+
+With the marker and no store on the volume, the daemon runs and writes nothing, and the problem
+is `pco has no state on its volume (restore?): run pco appliance repair --vmid 120 on the node`:
+a repair or an install that did not finish. The same repair finishes it.
+
+### The state is older than Cloudflare
+
+    the state of this appliance is older than its last write at Cloudflare (rollback or restore); run pco appliance recover
+
+with `Writer: behind`. The volume was rolled back to a snapshot, or restored with its state, and
+the container started at least once since then: the writer generation at Cloudflare is newer
+than the one on the volume. Nothing is written until `pct exec 120 -- pco appliance recover`
+draws a newer one; then `pco plan` and `pco apply`. It needs a stored credential that sees the
+tunnels (`pco credential add` first, when the one you had is gone with the rollback).
+Approvals, acknowledged segments and credentials made after the snapshot are gone; see
+[Appliance](appliance.md#snapshots-backups-and-their-limits).
+
+`leader.json belongs to an earlier start of this container; a new epoch is drawn once self-identification passes`
+is the line of every start, until the container has proven itself. When it stays, the
+identity does not pass: see the next section.
+
+### The identity is not proven
+
+The appliance holds its writes, and starts no connector after a start, until it proves that it
+is the container it was installed as. `Identity:` then says `not proven` with the reason:
+
+- `the links of this container carry <MACs>, but lxc/120 in Proxmox has <MACs> for more than 60 s; writes are held until they match`:
+  a card was added or removed in Proxmox, or its MAC changed, and the container does not show
+  it. Put the configuration right, or restart the container; `pco appliance repair --vmid 120`
+  records the MACs as they are now.
+- `the certificate of <address> no longer verifies under <name> (the cluster CA or the pveproxy certificate changed?): run pco appliance repair --vmid <n> on the node`:
+  see [the API and its certificate](appliance.md#the-api-endpoint-and-its-certificate).
+- `the inventory is incomplete; self-identification waits for a complete one`,
+  `the uptimes of the guests could not be read; self-identification waits for them`,
+  `the facts of this container could not be read: <error>`: the check cannot be made yet. The
+  uptimes come from `pvestatd` on the node, so a `pvestatd` that does not run keeps the
+  appliance waiting where its volume does not prove it by itself.
+- `lxc/125 in pool pco carries a MAC of lxc/120: a copy of the appliance runs; writes are held until it is gone`:
+  see the next section.
+
+### A copy of the appliance
+
+On a clone, or a restore beside the original:
+
+    Identity:    copy: connectors stopped (not lxc/120 on pve1: the volume at /var/lib/pco is rpool/data/subvol-125-disk-1, a volume of VMID 125 and not of lxc/120: this container is a copy)
+
+The copy serves nothing and writes nothing, as it should; `Proxmox lists no lxc/120: this container is not the one installed`
+says the same when the appliance it was made from is gone from Proxmox altogether. Remove the
+copy with `install.sh --appliance --uninstall --vmid 125 --keep-cloudflare` (see
+[commands on the node](appliance.md#commands-on-the-node)). If it is meant to replace an
+appliance that is gone from the cluster, `pco appliance repair --vmid 125` on the node makes it
+that appliance, and `pco appliance recover` follows when it then says that its state is older
+than its last write at Cloudflare; see [Copies](appliance.md#copies).
+
+### A guest with the appliance's MAC
+
+A guest outside the pool `pco` configured with a MAC of the appliance gets the issue
+`configured with the MAC <mac> of the appliance lxc/120`, and its routes are rejected. The
+appliance goes on writing, but on its segment that guest takes away the traffic sent to the
+appliance: hostnames answer slowly or not at all. Change the MAC of that guest, and keep
+`SDN.Use` on the appliance's segment to the admins, which `pco doctor` checks in
+`segment access`.
+
+### Routes held by the observed rules
+
+    2 routes are held by the observed rules: segment not acknowledged 2; pco routes says why each is held
+
+Every route of the appliance is at `observed`, and waits for an admin where
+[Identity](identity.md#the-appliance-and-observed) says. `pco routes` gives the reason and what
+to run:
+
+| Cause in the line | Reason in `pco routes` | What to do |
+|---|---|---|
+| `segment not acknowledged` | `segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0` | Acknowledge the segment, once you trust its devices. |
+| `MAC changed` | `MAC changed from <old> to <new>; approve the guest to accept it` | Find out why the MAC changed; `pco guest approve <owner>` if it is the guest's own. |
+| `delegated guest` | `delegated: <principals> holds VM.Config.Network; pco guest approve <owner>` | Approve the guest, after reading the MACs the approval records, or take the privilege away. |
+| `access control unreadable` | `the access control could not be read` and the approval | Check that the token holds role `PCO` on `/`; it passes with the next read that works. |
+| `soft-denied address` | `address <ip> is the <role>; pco guest approve <owner>` | If the guest is the gateway or resolver it seems to be: `pco guest approve <owner> --allow-address <ip>`. |
+
+### The cluster is not quorate
+
+    the cluster is not quorate; nothing is written
+
+or `the quorum of the cluster could not be read (<error>); nothing is written`. The appliance
+writes nothing while its cluster has no quorum, and serves what it served. Restore the quorum;
+the next cycle goes on.
+
+### An old list of cloudflared versions
+
+`pco doctor` warns in `versions` that
+`the list of vetted cloudflared versions is from <date>; a newer pco release ships a newer one`
+when the list the appliance has is more than 90 days old, and fails when it denies the
+installed `cloudflared`. `pco upgrade --check` says what a newer release offers, and
+`pco upgrade` installs it; see [Appliance](appliance.md#upgrades).
+
+### Snapshots in `pco doctor`
+
+The `snapshots` check warns about every snapshot of the appliance but one named
+`pco-pre-upgrade-<YYYYMMDD>` that is less than 7 days old, and about a replication job, as each
+carries the secrets. While a backup runs in snapshot mode it also sees the temporary snapshot
+`vzdump` makes. Delete what you no longer need with `pct delsnapshot` on the node.
 
 ## Other problems you may see
 

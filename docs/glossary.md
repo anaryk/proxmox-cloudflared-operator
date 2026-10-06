@@ -27,7 +27,8 @@ the denylist otherwise refuses. See [Security](security.md#manual-routes).
 `allowHosts` pattern names it. See [Annotations](annotations.md#hostnames).
 
 **Appliance**: The profile in which pco and its connectors run in an unprivileged container,
-with nothing installed on the node. It comes in a later release. See [Profiles](profiles.md).
+with nothing installed on the node; `install.sh --appliance` installs it. See
+[Appliance](appliance.md).
 
 **Approval**: What `pco guest approve` records of a guest: its identity, and the MACs and
 addresses it was shown with. It admits the guest in admission mode `approve`, and releases its
@@ -257,8 +258,8 @@ stopped. It answers 503 and keeps its record. See
 
 **Writer**: The one process that may write the tunnel configurations and the DNS records of an
 install, named by `/etc/pve/pco/meta/leader.json`. Its verdict, in `pco status`, is `ok`,
-`stale`, `foreign` or `unknown`, and in the appliance also `behind`. See
-[Architecture](architecture.md#one-writer).
+`stale`, `foreign` or `unknown`, and in the appliance `behind`, when its state is older than
+its last write at Cloudflare. See [Architecture](architecture.md#one-writer).
 
 ## Z
 

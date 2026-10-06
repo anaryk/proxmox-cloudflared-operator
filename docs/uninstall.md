@@ -3,7 +3,8 @@
 `pco uninstall` takes pco off a node: the daemon, the connectors, the egress filter, what
 `pco setup` created in Proxmox, and the store. It does that in an order that keeps what the
 next part needs, and it removes only what pco made. Run it as root on the node, before you
-remove the package.
+remove the package. An appliance is removed with `pco appliance uninstall` instead; see
+[the appliance](#the-appliance).
 
 ## The command
 
@@ -184,3 +185,99 @@ finds them and reuses them. A token whose secret is not stored on the node is ma
 since Proxmox shows a secret only once. The manifest is in `/var/lib/pco`: if that is gone
 too, a later `pco uninstall` does not know that setup made these objects and leaves them in
 Proxmox, and you remove them by hand with `pveum`.
+
+## The appliance
+
+`pco appliance uninstall --vmid <vmid>` removes an [appliance](appliance.md) and what its
+installer made for it. Nothing of pco is installed on the node, so `install.sh` runs it, from a
+temporary directory, after it has checked the release; use the release the appliance runs:
+
+    curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --uninstall --vmid 120
+
+The arguments after `--uninstall` go to `pco appliance uninstall`. It runs on the node that has
+the container, and refuses on another node of the cluster, naming the right one.
+
+### What it finds, and how
+
+It removes only what carries the mark of the installer, and decides from the marks rather than
+from what the appliance says: the description of the container
+(`pco appliance vm<vmid>, installed <date> by pco appliance install`, with a line
+`NoAccess for <principal> on <path>` for each `NoAccess` line the installer added), the comment
+of the token (`pco appliance vm<vmid>`), the comment of the pool (`pco appliances`), the comment
+of the user (`pco operator`), and for the roles, which have no comment, their names with exactly
+the privileges pco gives them. It pulls the manifest `/var/lib/pco/manifest.json` out of a
+running appliance for what carries no mark, the registered tags and the template, reads it as
+untrusted input and checks every object it names against Proxmox; it does without the manifest
+when it cannot have it. A `NoAccess` line goes only when the description of the container names
+it, as the appliance could name any line in its manifest; one above the container that nothing
+names is kept and listed, with the `pveum acl delete` command that takes it back. A container whose description lacks the mark is refused:
+`lxc/<vmid> is not a pco appliance (its description lacks the mark of the installer): nothing was removed`.
+
+It lists what goes and what stays, and why, and asks once:
+
+    pco appliance uninstall removes from this node:
+      container lxc/120 (running), with its state volume and the secrets on it
+      Proxmox token pco@pve!vm120
+      Proxmox user pco@pve
+      Proxmox role PCO
+      Proxmox pool pco
+      the registered tags cf-tunnel, cf-tunnel-managed
+      (the template local:vztmpl/pco-appliance_1.2.3_amd64.tar.zst stays; --keep-template=false removes it)
+      (what the install has at Cloudflare stays, and nothing on this node can remove it later)
+    Remove the appliance lxc/120 and the objects above? [y/N] y
+    container lxc/120: destroyed
+    token pco@pve!vm120: removed
+    user pco@pve: removed
+    role PCO: removed
+    pool pco: removed
+    registered tags: removed cf-tunnel, cf-tunnel-managed
+    the appliance lxc/120 is removed from this node
+
+That run was given `--keep-cloudflare`.
+
+### The order
+
+1. **Cloudflare**, with `--purge-cloudflare` or yes to its question: the DNS records and the
+   tunnel of the install are deleted through the running appliance, which holds the
+   credentials. It needs the container running; a purge that fails removes nothing else.
+2. **The container**, with its state volume and every secret on it: its protection is taken
+   off, it is stopped and destroyed.
+3. **The token**, before its user, as a user that goes leaves the secrets of its tokens behind.
+4. **The network grants** of `pco appliance grant-network`, and the **`NoAccess` lines** the
+   installer added, while they are as it made them. When the container could not be destroyed,
+   its `NoAccess` lines stay, as they keep principals away from the secrets on its volume.
+5. **The user `pco@pve` and the role `PCO`**, and the roles of the network grants, when nothing
+   else uses them.
+6. **The pool `pco`**, when it is empty.
+7. **The registered tags** the installer added.
+8. **The template** the installer downloaded, with `--keep-template=false` only. A template of
+   pco that the manifest does not name as the installer's always stays.
+
+A part that fails is reported and the rest goes on; running the uninstall again finishes it.
+
+### What it keeps
+
+- The user `pco@pve` and the role `PCO` while another token of the user uses them: a host
+  install of pco (`pco@pve!pco`) or another appliance (`pco@pve!vm<vmid>`).
+- The registered tags while a host install of pco on the node, or another appliance, uses them.
+- The pool while it holds anything else.
+- A `NoAccess` line above the container while another appliance is there, which it keeps the
+  principal out of as well.
+- An object that carries no mark, or whose mark is not this appliance's: the uninstall names it
+  and why it stays.
+
+### Cloudflare
+
+The credentials that reach the install at Cloudflare are in the container, and go with it. So
+the uninstall asks what becomes of the tunnel and the records, as `pco uninstall` does:
+`--purge-cloudflare` deletes them, `--keep-cloudflare` leaves them. With `--yes`, an install
+that has something at Cloudflare needs one of the two. A stopped container cannot be asked:
+start it for a purge, or keep. What is left at Cloudflare is the tunnel `pco-<install id>` and
+the DNS records whose comment begins with `pco:<install id>`, to delete in the dashboard.
+
+A copy of the appliance beside its original, a clone or a restore while the original is still
+there, is removed as a container, and what it reaches at Cloudflare, which is the original's,
+always stays: `--purge-cloudflare` is refused for it.
+
+A container that no node of the cluster has any more counts as gone, and the uninstall removes
+what is left of it: the token, the grants, and the rest as above.

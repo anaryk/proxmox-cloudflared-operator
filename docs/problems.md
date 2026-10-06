@@ -201,6 +201,8 @@ identity flag goes, the egress filter is emptied and the connectors are stopped.
 
 | Line | Meaning and cause | What to do |
 |---|---|---|
+| `/var/lib/pco has no pco volume marker (restore, or a volume that is not pco's?): run pco appliance repair --vmid <vmid> on the node`, `/var/lib/pco is not a mount point of its own (a restore without the volume?): run pco appliance repair --vmid <vmid> on the node` | The daemon found no state volume of pco, as after a restore, and exited with status 78 before it opened anything; the unit stays failed. `pco status` says this line, as there is no daemon to ask. | `pco appliance repair --vmid <vmid> --recover` on the node; see [Appliance](appliance.md#restore-and-repair). |
+| `pco has no state on its volume (restore?): run pco appliance repair --vmid <vmid> on the node` | The volume has the marker and no store: a repair or an install did not finish. The daemon writes nothing and refuses every action. | The repair the line names. |
 | `the install of this appliance records no appliance; nothing is changed` | The install record has no appliance block. The cycle holds. | `pco appliance recover`. |
 | `the volume at /var/lib/pco is <volume>, a volume of VMID <n> and not of <guest>: this container is a copy; the connectors are stopped and the egress filter is empty` | The state volume belongs to another container: this one is a copy. | Do not run the copy. Remove it, or recover it on purpose. |
 | `Proxmox lists no <guest>: this container is not the one installed; the connectors are stopped and the egress filter is empty` | No container of the VMID it was installed as exists. | The same. |
@@ -218,6 +220,10 @@ identity flag goes, the egress filter is emptied and the connectors are stopped.
 | `the quorum of the cluster could not be read (<error>); nothing is written` | The same, when the status could not be read. | Look at the error. |
 | `the state of this appliance is older than its last write at Cloudflare (rollback or restore); run pco appliance recover` | The volume was rolled back or restored, so the writer behind it is older than the one at Cloudflare. The cycle holds. | `pco appliance recover`. |
 | `leader.json belongs to an earlier start of this container; a new epoch is drawn once self-identification passes` | The container started again; the writer gets a new epoch after the identity is proven. The cycle holds meanwhile. | Nothing. |
+
+A guest outside the pool `pco` that is configured with a MAC of the appliance is not a problem
+line but an issue of that guest, `configured with the MAC <mac> of the appliance lxc/<vmid>`,
+and its routes are rejected; see [Troubleshooting](troubleshooting.md#a-guest-with-the-appliances-mac).
 
 ## Event kinds
 
