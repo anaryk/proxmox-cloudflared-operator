@@ -157,6 +157,42 @@ func TestAnIndexBelongsToOneNode(t *testing.T) {
 	require.NoError(t, s.SaveNode(noIndex), "an entry gets its index at admission, not before")
 }
 
+// A drain outlives the node's absence: a node drained by an admin or for
+// Proxmox's maintenance comes back drained.
+func TestADrainIsKeptWithTheNode(t *testing.T) {
+	s, p := openStore(t)
+	n := clusterNode("pve-a", 2)
+	n.Drained = &NodeDrain{Reason: DrainMaintenance, Since: t0.Add(time.Hour)}
+	require.NoError(t, s.SaveNode(n))
+
+	got, err := s.Nodes()
+	require.NoError(t, err)
+	require.Equal(t, []NodeEntry{n}, got)
+	var wire map[string]any
+	require.NoError(t, json.Unmarshal(readRaw(t, filepath.Join(p.Cluster, "nodes", "pve-a.json")).Data, &wire))
+	require.Equal(t, map[string]any{"reason": "maintenance", "since": "2026-10-01T13:00:00Z"}, wire["drained"])
+	var previous struct {
+		Name    string    `json:"name"`
+		Version string    `json:"version"`
+		Since   time.Time `json:"since"`
+	}
+	require.NoError(t, json.Unmarshal(readRaw(t, filepath.Join(p.Cluster, "nodes", "pve-a.json")).Data, &previous),
+		"the previous release reads the entry")
+
+	n.Drained = &NodeDrain{Reason: DrainAdmin, Since: t0}
+	require.NoError(t, s.SaveNode(n))
+	for name, bad := range map[string]*NodeDrain{
+		"another reason": {Reason: "tired", Since: t0},
+		"no reason":      {Since: t0},
+		"no time":        {Reason: DrainAdmin},
+	} {
+		n.Drained = bad
+		require.ErrorContains(t, s.SaveNode(n), "drain", name)
+	}
+	n.Drained = nil
+	require.NoError(t, s.SaveNode(n), "undrained")
+}
+
 func TestANodeStateIsOneOfTheStates(t *testing.T) {
 	s, _ := openStore(t)
 	for _, state := range []string{"", NodeJoining, NodeActive, NodeDraining, NodeUnknown, NodeDown, NodeContested, NodeRemoved} {

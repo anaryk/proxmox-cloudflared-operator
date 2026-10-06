@@ -90,6 +90,21 @@ type NodeEntry struct {
 	// ContestedUses are the uses of the node's join token that made it
 	// contested.
 	ContestedUses []JoinUse `json:"contestedUses,omitempty"`
+	// Drained is the intent to drain the node, which outlives its absence:
+	// a node drained comes back drained. Unset is not drained.
+	Drained *NodeDrain `json:"drained,omitempty"`
+}
+
+// The reasons of NodeDrain.
+const (
+	DrainAdmin       = "admin"       // an admin drained the node
+	DrainMaintenance = "maintenance" // Proxmox has the node in maintenance
+)
+
+// NodeDrain is why a node is drained, and since when.
+type NodeDrain struct {
+	Reason string    `json:"reason"`
+	Since  time.Time `json:"since"`
 }
 
 // ProtocolRange is a range of versions of the agent protocol, both ends in.
@@ -129,6 +144,10 @@ func (n NodeEntry) check() error {
 		return fmt.Errorf("node %s: protocol %d to %d is no range", n.Name, n.Protocol.Min, n.Protocol.Max)
 	case !slices.Contains(nodeStates, n.State):
 		return fmt.Errorf("node %s: state %q is not one of %s", n.Name, n.State, strings.Join(nodeStates[1:], ", "))
+	case n.Drained != nil && n.Drained.Reason != DrainAdmin && n.Drained.Reason != DrainMaintenance:
+		return fmt.Errorf("node %s: drain reason %q: want %q or %q", n.Name, n.Drained.Reason, DrainAdmin, DrainMaintenance)
+	case n.Drained != nil && n.Drained.Since.IsZero():
+		return fmt.Errorf("node %s: the drain has no time it began", n.Name)
 	}
 	return nil
 }
