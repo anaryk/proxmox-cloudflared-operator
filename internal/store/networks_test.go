@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -254,4 +255,100 @@ func TestANetworkStoredUnderAnotherIDIsAnError(t *testing.T) {
 	writeFile(t, filepath.Join(p.Cluster, "networks", "vmbr2.json"), envelopeJSON("vmbr2", string(raw.Data)))
 	_, err := s.Networks()
 	require.ErrorContains(t, err, `holds the network "vmbr1", which is stored as "vmbr2"`)
+}
+
+// The previous release decodes a network leniently and wrote none of the
+// fields of the cluster: a network of its own reads as cluster-wide, with
+// the one leg MAC of its mark.
+func TestANetworkWithoutTheFieldsOfTheClusterReadsAsBefore(t *testing.T) {
+	s, p := openStore(t)
+	writeFile(t, filepath.Join(p.Cluster, "networks", "vmbr1.json"), envelopeJSON("vmbr1",
+		`{"id":"vmbr1","kind":"attach","bridge":"vmbr1","prefix":"10.20.0.0/24","legs":{"pve1":"10.20.0.250"},`+
+			`"legMAC":"02:50:43:4f:00:01","mark":1,"createdAt":"2026-10-01T12:00:00Z"}`))
+
+	got, err := s.Networks()
+
+	require.NoError(t, err)
+	n := got["vmbr1"]
+	require.Nil(t, n.LegMACs)
+	require.Empty(t, n.Scope)
+	require.Equal(t, ScopeCluster, n.ScopeName())
+	require.Equal(t, map[string]netip.Addr{"pve1": netip.MustParseAddr("10.20.0.250")}, n.Legs)
+	require.Equal(t, "02:50:43:4f:00:01", n.LegMACOn("pve1"), "a node without its own MAC uses the network's")
+
+	n.Scope = ScopeNode
+	n.Rev = 0
+	require.Equal(t, ScopeNode, n.ScopeName())
+	require.NoError(t, s.SaveNetwork(n, 1))
+	var previous struct {
+		Legs   map[string]netip.Addr `json:"legs"`
+		LegMAC string                `json:"legMAC"`
+	}
+	require.NoError(t, json.Unmarshal(readRaw(t, filepath.Join(p.Cluster, "networks", "vmbr1.json")).Data, &previous))
+	require.Equal(t, n.Legs, previous.Legs, "the legs stay where the previous release reads them")
+}
+
+func TestALegMACPerNodeCarriesTheIndexOfTheNode(t *testing.T) {
+	require.Equal(t, "02:50:43:4f:03:05", NodeLegMAC(3, 5))
+	require.Equal(t, "02:50:43:4f:00:05", NodeLegMAC(0, 5), "the first node keeps the MAC its legs had")
+
+	s, _ := openStore(t)
+	n := attachNetwork("vmbr1", 0, 5)
+	n.Scope = ScopeCluster
+	n.Legs = map[string]netip.Addr{"pve-a": netip.MustParseAddr("10.20.0.250"), "pve-b": netip.MustParseAddr("10.20.0.251")}
+	n.LegMACs = map[string]string{"pve-a": "02:50:43:4f:00:05", "pve-b": "02:50:43:4F:03:05"}
+	indexes := map[string]int{"pve-a": 0, "pve-b": 3}
+	require.NoError(t, s.SaveNetworkIndexed(n, 0, indexes))
+
+	got, err := s.Networks()
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"pve-a": "02:50:43:4f:00:05", "pve-b": "02:50:43:4f:03:05"}, got["vmbr1"].LegMACs, "in normal form")
+	require.Equal(t, "02:50:43:4f:03:05", got["vmbr1"].LegMACOn("pve-b"))
+	require.Equal(t, ScopeCluster, got["vmbr1"].Scope)
+
+	edit := func(f func(*Network)) Network {
+		m := n
+		m.ID, m.Bridge, m.Mark, m.LegMAC = "vmbr2", "vmbr2", 6, LegMACFor(NetworkAttach, 6)
+		m.LegMACs = map[string]string{"pve-a": "02:50:43:4f:00:06", "pve-b": "02:50:43:4f:03:06"}
+		f(&m)
+		return m
+	}
+	for name, tc := range map[string]struct {
+		n    Network
+		want string
+	}{
+		"another node's index": {edit(func(m *Network) { m.LegMACs["pve-b"] = "02:50:43:4f:04:06" }), "02:50:43:4f:03:06"},
+		"another mark":         {edit(func(m *Network) { m.LegMACs["pve-b"] = "02:50:43:4f:03:05" }), "leg MAC"},
+		"the managed leg's": {edit(func(m *Network) {
+			m.Legs = map[string]netip.Addr{"pve-c": netip.MustParseAddr("10.20.0.252")}
+			m.LegMACs = map[string]string{"pve-c": "02:50:43:4f:ff:06"}
+		}), "255"},
+		"a node with no leg": {edit(func(m *Network) { m.LegMACs["pve-c"] = "02:50:43:4f:05:06" }), "pve-c"},
+		"no MAC":             {edit(func(m *Network) { m.LegMACs["pve-b"] = "zz" }), "pve-b"},
+		"another scope":      {edit(func(m *Network) { m.Scope = "datacenter" }), `"datacenter"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, s.SaveNetworkIndexed(tc.n, 0, indexes), tc.want)
+		})
+	}
+
+	unknown := edit(func(m *Network) {
+		m.Legs = map[string]netip.Addr{"pve-a": netip.MustParseAddr("10.20.0.250"), "pve-c": netip.MustParseAddr("10.20.0.252")}
+		m.LegMACs = map[string]string{"pve-c": "02:50:43:4f:07:06"}
+	})
+	require.NoError(t, s.SaveNetworkIndexed(unknown, 0, indexes), "a node the registry gave no index to yet is checked by the form alone")
+	require.ErrorContains(t, s.SaveNetwork(edit(func(m *Network) {
+		m.ID, m.Bridge = "vmbr3", "vmbr3"
+		m.Mark = 7
+		m.LegMAC = LegMACFor(NetworkAttach, 7)
+	}), 0),
+		"leg MAC", "without the indexes the mark is still checked")
+
+	managed := managedNetwork(9)
+	managed.Scope = ScopeNode
+	managed.Legs["pve-b"] = netip.MustParseAddr("10.203.118.1")
+	managed.LegMACs = map[string]string{"pve-b": "02:50:43:4f:03:09"}
+	require.ErrorContains(t, s.SaveNetworkIndexed(managed, 0, indexes), "02:50:43:4f:ff:01", "the managed leg has one MAC on every node")
+	managed.LegMACs = map[string]string{"pve-b": "02:50:43:4f:ff:01"}
+	require.NoError(t, s.SaveNetworkIndexed(managed, 0, indexes))
 }

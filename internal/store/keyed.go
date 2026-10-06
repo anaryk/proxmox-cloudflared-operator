@@ -28,7 +28,7 @@ func eachObject[T any](d Dir, kind string, fn func(path, id string, v T) error) 
 
 // eachRevision is eachObject that also passes the revision of each file.
 func eachRevision[T any](d Dir, kind string, fn func(path, id string, rev int64, v T) error) error {
-	names, err := d.List(kind)
+	names, err := d.listObjects(kind)
 	if err != nil {
 		return err
 	}

@@ -249,6 +249,46 @@ it out. A key that is there is taken as written: one that is empty or zero, as
 the default. This holds for the file on the node, `pco settings apply`, the API and the web
 page alike.
 
+## Cluster
+
+The settings of a cluster of nodes are the keys of one object, `cluster`:
+
+```json
+"cluster": {
+  "agentNetwork": "10.99.0.0/24",
+  "replicas": ["pve1", "pve2"],
+  "followMaintenance": true,
+  "rotateOnForget": true,
+  "admissionMaxMoves": 10
+}
+```
+
+| Setting | Type, default | Accepts | Takes effect | Web UI |
+|---|---|---|---|---|
+| `cluster`: `agentNetwork` | prefix, none | an IPv4 or IPv6 prefix, as `10.99.0.0/24` | At start of each node's daemon | None; edit the file |
+| `cluster`: `replicas` | node names, none | at most 25 names of nodes, each once | Next cycle | None; edit the file |
+| `cluster`: `followMaintenance` | boolean, `true` | `true`, `false` | Next cycle | None; edit the file |
+| `cluster`: `rotateOnForget` | boolean, `true` | `true`, `false` | When a node is forgotten | None; edit the file |
+| `cluster`: `admissionMaxMoves` | integer, `10` | `1` to `1000` | Next cycle | None; edit the file |
+
+- `agentNetwork`: the network of the address each node's agent listens on and the controller
+  dials, written as its network address. Left out, it is the address the node's name
+  resolves to.
+- `replicas`: the nodes that run the connectors of the shared tunnel. Left out, or empty, it is
+  every active node; a cluster of more than 25 nodes needs the list.
+- `followMaintenance`: whether a node that Proxmox puts in maintenance is drained, and taken
+  back when it leaves maintenance.
+- `rotateOnForget`: whether forgetting a node rotates the secret of the shared tunnel, which
+  the forgotten node's connector held.
+- `admissionMaxMoves`: how many routes may move to admit a node for routing. A node whose
+  admission would move more stays joining until an admin admits it.
+
+A key the file leaves out has its default, and is taken as written when it is there, as in
+`managed`: `"admissionMaxMoves": 0` and `"agentNetwork": ""` are refused with their path. An
+earlier release reads the settings strictly and refuses a file that has the object, so the
+object is left out of the file while every key has its default: settings saved without a
+cluster setting are a file that release reads. `pco settings show` shows `-` for it then.
+
 ## Egress filter
 
 The egress filter has no setting in the file. Its two switches are decisions of the admin of
@@ -315,6 +355,7 @@ mistake it is:
 | `reading the settings: <file>: invalid: time: invalid duration "ten"` | A duration that Go cannot read. |
 | `reading the settings: stored settings are invalid: <field> ...` | A value that is not allowed: a gate tag that is no Proxmox tag, an `admission` or `identityMinimum` that is not one of its words, a prefix in `trustedCIDRs` or `manualCIDRs` that is not IPv4, a pattern or zone pin that does not normalise. The problem names the field. |
 | `reading the settings: <file>: invalid: managed.<key> ...` | A key of `managed` that is empty, zero or out of its range, as `managed.detachGrace 0s: at least 1m0s`. It is checked as the file is read, where a key written zero can still be told from one left out. |
+| `reading the settings: <file>: invalid: cluster.<key> ...` | A key of `cluster` that is empty, zero or out of its range, as `cluster.admissionMaxMoves 0: from 1 to 1000`, the same way. |
 | `reading the settings: <file> has schema version 2, this build reads 1: ...` | The file was written by a newer version, which an older build never rewrites. |
 
 A value below its minimum is no such mistake. A file that says `pollInterval` below 5

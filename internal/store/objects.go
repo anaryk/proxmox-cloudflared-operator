@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"path/filepath"
@@ -22,6 +23,22 @@ type Install struct {
 	Profile string `json:"profile,omitempty"`
 	// Appliance is set for ProfileAppliance and for no other profile.
 	Appliance *ApplianceInstall `json:"appliance,omitempty"`
+	// Cluster is the Proxmox cluster the store was made in, on a host. An
+	// install made before it was recorded has none.
+	Cluster *ClusterIdentity `json:"cluster,omitempty"`
+}
+
+// ClusterIdentity is the Proxmox cluster a store belongs to: a store restored
+// into another cluster, or a node image copied elsewhere, writes nothing
+// before an admin says so.
+type ClusterIdentity struct {
+	// CASHA256 is the SHA-256 of /etc/pve/pve-root-ca.pem, in lower-case
+	// hex: made once per cluster or standalone node and never rotated, it
+	// is the identity.
+	CASHA256 string `json:"caSHA256"`
+	// Name is the cluster's name, for messages only. A store made on a
+	// standalone node has none until it starts inside a cluster.
+	Name string `json:"name,omitempty"`
 }
 
 // ProfileName returns the profile of the install, never an empty one.
@@ -32,11 +49,74 @@ func (i Install) ProfileName() string {
 	return i.Profile
 }
 
-// NodeEntry is a node that runs pco.
+// NodeEntry is a node that runs pco. It is a frozen object, as leader.json
+// is: every field after the first three was added for a cluster, is left out
+// while it is empty, and is read by the previous release as a key it does
+// not know.
 type NodeEntry struct {
 	Name    string    `json:"name"`
 	Version string    `json:"version"`
 	Since   time.Time `json:"since"`
+
+	// Index is the node's number for its leg MACs, 0 to 254, the same for a
+	// name for as long as the install lives; 255 is the managed leg's. The
+	// controller gives it at routing admission; an entry has none before.
+	Index *int `json:"index,omitempty"`
+	// Kind is the kind of the node's agent: "host" or "appliance", or
+	// "controller" for the controller container of an appliance.
+	Kind string `json:"kind,omitempty"`
+	// VMID is the container of an appliance agent.
+	VMID int `json:"vmid,omitempty"`
+	// AgentAddress is where the node's agent listens and is dialled from, on
+	// a host.
+	AgentAddress netip.Addr `json:"agentAddress,omitzero"`
+	// Protocol is the range of versions of the agent protocol the node
+	// speaks, and Schema the store schema its build reads.
+	Protocol ProtocolRange `json:"protocol,omitzero"`
+	Schema   int           `json:"schema,omitempty"`
+	// CertSerial and CertSHA256 name the agent's client certificate.
+	CertSerial string `json:"certSerial,omitempty"`
+	CertSHA256 string `json:"certSHA256,omitempty"`
+	// State is the node's state, as of StateSince: joining, active,
+	// draining, unknown, down, contested or removed.
+	State      string    `json:"state,omitempty"`
+	StateSince time.Time `json:"stateSince,omitzero"`
+	// ControllerEligible says whether the node may hold the lease; unset is
+	// not yet decided.
+	ControllerEligible *bool `json:"controllerEligible,omitempty"`
+	// ContestedUses are the uses of the node's join token that made it
+	// contested.
+	ContestedUses []JoinUse `json:"contestedUses,omitempty"`
+}
+
+// ProtocolRange is a range of versions of the agent protocol, both ends in.
+type ProtocolRange struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
+}
+
+const (
+	// maxNodeIndex is the highest index of a node: the next is the managed
+	// leg's.
+	maxNodeIndex = 254
+
+	// stateRemoved is the state of a node that was forgotten.
+	stateRemoved = "removed"
+)
+
+// check refuses an entry with no name, or with a field out of its range.
+func (n NodeEntry) check() error {
+	switch {
+	case n.Name == "":
+		return errors.New("node name is empty")
+	case n.Index != nil && (*n.Index < 0 || *n.Index > maxNodeIndex):
+		return fmt.Errorf("node %s: index %d is not 0 to %d", n.Name, *n.Index, maxNodeIndex)
+	case n.VMID < 0:
+		return fmt.Errorf("node %s: VMID %d is negative", n.Name, n.VMID)
+	case n.Protocol.Min < 0 || n.Protocol.Min > n.Protocol.Max:
+		return fmt.Errorf("node %s: protocol %d to %d is no range", n.Name, n.Protocol.Min, n.Protocol.Max)
+	}
+	return nil
 }
 
 // Credential is a Cloudflare API token the daemon may use. Its token is a

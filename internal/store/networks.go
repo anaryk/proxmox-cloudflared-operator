@@ -23,11 +23,18 @@ const (
 	// network.
 	managedVnet = "pconet"
 
-	// The MAC of the namespace end of a leg. An attach leg carries its mark
-	// in the last byte; the managed leg has one MAC, so that its guests see
-	// the same gateway on every node.
-	attachLegMAC  = "02:50:43:4f:00:%02x"
+	// The MAC of the namespace end of a leg. An attach leg carries the index
+	// of its node in the fifth byte and its mark in the last; the managed leg
+	// has one MAC, so that its guests see the same gateway on every node.
+	nodeLegMAC    = "02:50:43:4f:%02x:%02x"
+	nodeLegPrefix = "02:50:43:4f:"
 	managedLegMAC = "02:50:43:4f:ff:01"
+)
+
+// The scopes of Network.
+const (
+	ScopeCluster = "cluster" // one segment on every node with a leg: an uplinked bridge, a VXLAN or EVPN vnet
+	ScopeNode    = "node"    // a segment of each node: an isolated bridge, a vnet of a Simple zone
 )
 
 // Network is a network pco reaches through a leg. ID is "<bridge>",
@@ -44,6 +51,13 @@ type Network struct {
 	Uplink    bool                  `json:"uplink,omitempty"`    // bridge with a physical uplink, confirmed
 	OverlapOK bool                  `json:"overlapOK,omitempty"` // attached over a node route with --overlap-ok
 	CreatedAt time.Time             `json:"createdAt"`
+	// LegMACs are the MACs of the legs by node, where a node's differs from
+	// LegMAC: on an uplinked bridge every node's leg is seen on one LAN. They
+	// sit beside Legs, which the previous release reads as it was.
+	LegMACs map[string]string `json:"legMACs,omitempty"`
+	// Scope is ScopeCluster or ScopeNode; a network stored before scopes
+	// has none, which is ScopeCluster.
+	Scope string `json:"scope,omitempty"`
 	// Rev is the revision of the network's file, for compare-and-swap. The
 	// envelope holds it, not the network.
 	Rev int64 `json:"rev,omitempty"`
@@ -59,17 +73,42 @@ func networkLimit() string {
 		gateway.MaxMark, gateway.PortBlockSize, gateway.MaxMark, last)
 }
 
+// ScopeName returns the scope of the network, never an empty one.
+func (n Network) ScopeName() string {
+	if n.Scope == "" {
+		return ScopeCluster
+	}
+	return n.Scope
+}
+
+// LegMACOn returns the MAC of the leg of the network on a node: its own, or
+// the network's.
+func (n Network) LegMACOn(node string) string {
+	if mac, ok := n.LegMACs[node]; ok {
+		return mac
+	}
+	return n.LegMAC
+}
+
 // LegMACFor returns the MAC of the namespace end of the leg of a network of
-// kind with mark.
+// kind with mark, on the node of index 0.
 func LegMACFor(kind string, mark int) string {
 	if kind == NetworkManaged {
 		return managedLegMAC
 	}
-	return fmt.Sprintf(attachLegMAC, mark)
+	return NodeLegMAC(0, mark)
 }
 
-// checked returns n with its leg MAC in normal form, or refuses it.
-func (n Network) checked() (Network, error) {
+// NodeLegMAC returns the MAC of the namespace end of the leg of an attached
+// network with mark on the node of index. The node registered before a
+// cluster has index 0, so its legs keep the MACs they had.
+func NodeLegMAC(index, mark int) string { return fmt.Sprintf(nodeLegMAC, index, mark) }
+
+// checked returns n with its leg MACs in normal form, or refuses it. The leg
+// MAC of a node is checked against the index the registry gave the node, in
+// indexes, and that of a node without one against the form of a node's leg
+// MAC alone.
+func (n Network) checked(indexes map[string]int) (Network, error) {
 	if err := n.checkID(); err != nil {
 		return n, err
 	}
@@ -95,7 +134,71 @@ func (n Network) checked() (Network, error) {
 		return n, fmt.Errorf("network %s: the leg MAC is %s, not %s", n.ID, want, mac)
 	}
 	n.LegMAC = mac
+	switch n.Scope {
+	case "", ScopeCluster, ScopeNode:
+	default:
+		return n, fmt.Errorf("network %s: scope %q: want %q or %q", n.ID, n.Scope, ScopeCluster, ScopeNode)
+	}
+	macs, err := n.checkLegMACs(indexes)
+	if err != nil {
+		return n, err
+	}
+	n.LegMACs = macs
 	return n, nil
+}
+
+// checkLegMACs returns the leg MACs of the nodes in normal form, or refuses
+// one of a node without a leg, or one that is not the MAC of the node's leg.
+func (n Network) checkLegMACs(indexes map[string]int) (map[string]string, error) {
+	if len(n.LegMACs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(n.LegMACs))
+	for _, node := range slices.Sorted(maps.Keys(n.LegMACs)) {
+		if _, ok := n.Legs[node]; !ok {
+			return nil, fmt.Errorf("network %s: a leg MAC of node %s, which has no leg", n.ID, node)
+		}
+		mac, err := model.NormalizeMAC(n.LegMACs[node])
+		if err != nil {
+			return nil, fmt.Errorf("network %s: leg MAC of node %s: %w", n.ID, node, err)
+		}
+		switch index, known := indexes[node]; {
+		case n.Kind == NetworkManaged:
+			if mac != managedLegMAC {
+				return nil, fmt.Errorf("network %s: the leg MAC of node %s is %s, not %s", n.ID, node, managedLegMAC, mac)
+			}
+		case known:
+			if want := NodeLegMAC(index, n.Mark); mac != want {
+				return nil, fmt.Errorf("network %s: the leg MAC of node %s is %s, not %s", n.ID, node, want, mac)
+			}
+		default:
+			if err := checkNodeLegMAC(mac, n.Mark); err != nil {
+				return nil, fmt.Errorf("network %s: the leg MAC of node %s: %w", n.ID, node, err)
+			}
+		}
+		out[node] = mac
+	}
+	return out, nil
+}
+
+// checkNodeLegMAC checks a leg MAC in normal form by its form: pco's prefix,
+// the index of a node and the mark.
+func checkNodeLegMAC(mac string, mark int) error {
+	rest, ok := strings.CutPrefix(mac, nodeLegPrefix)
+	if !ok {
+		return fmt.Errorf("%s does not start with %s", mac, nodeLegPrefix)
+	}
+	var index, got int
+	if _, err := fmt.Sscanf(rest, "%02x:%02x", &index, &got); err != nil {
+		return fmt.Errorf("%s is no leg MAC", mac)
+	}
+	switch {
+	case index > maxNodeIndex:
+		return fmt.Errorf("%s: index %d is not one of a node, 0 to %d", mac, index, maxNodeIndex)
+	case got != mark:
+		return fmt.Errorf("%s: the leg MAC carries mark %d, not %d", mac, got, mark)
+	}
+	return nil
 }
 
 // checkID checks the kind, the bridge and the VLAN of a network against its
@@ -187,7 +290,13 @@ func (s *Store) Networks() (map[string]Network, error) {
 // ports is refused, so is a mark that another network holds, and so is a leg
 // MAC that is not the one of the network's kind and mark.
 func (s *Store) SaveNetwork(n Network, rev int64) error {
-	n, err := n.checked()
+	return s.SaveNetworkIndexed(n, rev, nil)
+}
+
+// SaveNetworkIndexed is SaveNetwork that checks the leg MAC of each node
+// against the index the registry gave the node, in indexes by node name.
+func (s *Store) SaveNetworkIndexed(n Network, rev int64, indexes map[string]int) error {
+	n, err := n.checked(indexes)
 	if err != nil {
 		return err
 	}

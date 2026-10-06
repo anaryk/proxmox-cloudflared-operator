@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
@@ -48,6 +49,18 @@ const (
 	kindAttachments = "attachments"
 	kindNetns       = "netns"
 
+	// The kinds of a cluster. Each is one the previous release does not
+	// list, as it stops on a file of a kind it reads that it cannot take.
+	kindPlacements     = "placements"
+	kindMoves          = "moves"
+	kindNodeSegments   = "nodesegments"
+	kindNodeSvcAddrs   = "nodesvcaddrs"
+	kindSecurityEvents = "security-events"
+	kindCA             = "ca"
+	kindEnrol          = "enrol"
+	kindJoinTokens     = "jointokens"
+	kindAgent          = "agent"
+
 	idInstall    = "install"
 	idSettings   = "settings"
 	idLeader     = "leader"
@@ -56,6 +69,8 @@ const (
 	idSvcPool    = "svcpool"
 	idNetState   = "state"
 	idPins       = "pins"
+	idCARotation = "ca-rotation"
+	idUpgrade    = "upgrade"
 )
 
 // Store groups the typed accessors over the three roots. It is safe for
@@ -66,9 +81,14 @@ type Store struct {
 	private Dir
 	local   Dir
 	proofs  *proofTimes
+	tenure  *tenure
+	node    atomic.Pointer[string]
 	// netMu makes a check across networks, or across the pool and its
 	// mappings, and the write that follows one step.
 	netMu sync.Mutex
+	// keyMu makes the check that an id is not another object's, and the
+	// write that follows, one step.
+	keyMu sync.Mutex
 }
 
 // Open makes the local root, if it is missing, and removes the temporary files
@@ -93,8 +113,9 @@ func open(p Paths, now func() time.Time) (*Store, error) {
 	// A refusal to remove a leftover from a read-only root is no failure.
 	if guard == nil || guard() == nil {
 		_ = removeStaleTemps(cutoff, tempDirs(p.Cluster, kindMeta, kindNodes, kindClaims, kindRoutes, kindApprovals, kindSegments,
-			kindNetworks, kindSvcAddrs, kindIPAM, kindConsents, kindAttachments)...)
-		_ = removeStaleTemps(cutoff, tempDirs(p.Private, kindCredentials, kindMeta)...)
+			kindNetworks, kindSvcAddrs, kindIPAM, kindConsents, kindAttachments,
+			kindPlacements, kindMoves, kindNodeSegments, kindNodeSvcAddrs, kindSecurityEvents)...)
+		_ = removeStaleTemps(cutoff, tempDirs(p.Private, kindCredentials, kindMeta, kindCA, kindEnrol, kindJoinTokens)...)
 	}
 	return build(p, guard), nil
 }
@@ -131,9 +152,11 @@ func checkPaths(p Paths) error {
 }
 
 // build is the store over the roots of p, whose cluster and private roots are
-// guarded by guard.
+// guarded by guard. A tenure watches those two, which a restore of the store
+// takes back; the local root is the node's own.
 func build(p Paths, guard func() error) *Store {
-	cluster, private := newDir(p.Cluster, guard), newDir(p.Private, guard)
+	t := &tenure{}
+	cluster, private := newDir(p.Cluster, guard, t), newDir(p.Private, guard, t)
 	cluster.durable, private.durable = p.Durable, p.Durable
 	return &Store{
 		paths:   p,
@@ -141,6 +164,7 @@ func build(p Paths, guard func() error) *Store {
 		private: private,
 		local:   NewDir(p.Local),
 		proofs:  &proofTimes{},
+		tenure:  t,
 	}
 }
 
@@ -161,7 +185,7 @@ func prepareLocal(root string, cutoff time.Time) error {
 	if err := ensureDir(root); err != nil {
 		return fmt.Errorf("creating %s: %w", root, err)
 	}
-	if err := removeStaleTemps(cutoff, tempDirs(root, kindBindings, kindNetns)...); err != nil {
+	if err := removeStaleTemps(cutoff, tempDirs(root, kindBindings, kindNetns, kindAgent)...); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(root, ".probe-*"+tempExt)
@@ -200,6 +224,9 @@ func (s *Store) SaveInstall(i Install) error {
 		return err
 	}
 	i.Appliance = a
+	if c := i.Cluster; c != nil && !isSHA256(c.CASHA256) {
+		return fmt.Errorf("install cluster caSHA256 %q: want 64 lower-case hex digits", c.CASHA256)
+	}
 	return s.cluster.put(kindMeta, idInstall, i, true)
 }
 
@@ -281,12 +308,33 @@ func (s *Store) Writer() (planner.Writer, bool, error) {
 	return getOne[planner.Writer](s.cluster, kindMeta, idLeader)
 }
 
-// SaveWriter stores the writer that may change Cloudflare.
+// SaveWriter stores the writer that may change Cloudflare. What leader.json
+// holds beyond the writer stays while the writer is the one stored: the same
+// epoch has the same holder. The writer of another epoch keeps only the
+// fingerprint of the CA, which is the install's and no holder's.
 func (s *Store) SaveWriter(w planner.Writer) error {
 	if err := w.Validate(); err != nil {
 		return err
 	}
-	return s.cluster.put(kindMeta, idLeader, w, true)
+	// A record that cannot be read is replaced, as before there were fields
+	// to keep: that is how a recovery repairs it.
+	stored, _, found, err := s.Leader()
+	next := LeaderRecord{Writer: w}
+	switch {
+	case err != nil:
+	case found && sameEpoch(stored.Writer, w):
+		next = stored
+		next.Writer = w
+	case found:
+		next.CASHA256 = stored.CASHA256
+	}
+	return s.cluster.put(kindMeta, idLeader, next, true)
+}
+
+// sameEpoch reports whether two writers are of one epoch, whatever their
+// incarnations.
+func sameEpoch(a, b planner.Writer) bool {
+	return a.InstallID == b.InstallID && a.Generation == b.Generation && a.Nonce == b.Nonce
 }
 
 // Nodes returns the nodes that run pco, by name.
@@ -295,8 +343,8 @@ func (s *Store) Nodes() ([]NodeEntry, error) { return loadList[NodeEntry](s.clus
 // SaveNode stores a node entry under its name. The name of another node that
 // maps to the same file, as one that differs by case does, is refused.
 func (s *Store) SaveNode(n NodeEntry) error {
-	if n.Name == "" {
-		return errors.New("node name is empty")
+	if err := n.check(); err != nil {
+		return err
 	}
 	return s.cluster.put(kindNodes, n.Name, n, true)
 }

@@ -80,20 +80,41 @@ type SeenTunnel struct {
 	CredentialID string `json:"credentialId"`
 }
 
+// engineMemory is the engine memory: on the node-local root, and on the
+// cluster root without the egress set, which is the node's own.
+var engineMemory = copied[EngineMemory]{
+	localID: idEngineMemory, clusterID: idEngineMemory, what: "engine memory",
+	shared: func(m EngineMemory) EngineMemory {
+		m.Egress = nil
+		return m
+	},
+}
+
 // EngineMemory returns what the engine remembered, and an empty memory when
-// none was saved. It is kept on the node-local root.
+// none was saved. See LoadEngineMemory.
 func (s *Store) EngineMemory() (EngineMemory, error) {
-	m, _, err := getOne[EngineMemory](s.local, kindMeta, idEngineMemory)
+	m, _, err := s.LoadEngineMemory()
+	return m, err
+}
+
+// LoadEngineMemory is EngineMemory with notes. The memory is kept on the
+// node-local root and, once SetNode named the node, on the cluster root too,
+// where a controller on another node finds it; the egress set always comes
+// from this node. A note says that the copy on the cluster root was behind
+// what an earlier release wrote on this node, and was made again from that.
+func (s *Store) LoadEngineMemory() (EngineMemory, []string, error) {
+	old, m, notes, err := engineMemory.read(s)
 	if err != nil {
-		return EngineMemory{}, err
+		return EngineMemory{}, nil, err
 	}
-	return m.sorted(), nil
+	m.Egress = old.Egress
+	return m.sorted(), notes, nil
 }
 
 // SaveEngineMemory stores what the engine remembers, unless it is what is
-// stored already.
+// stored already: on this node first, then on the cluster root.
 func (s *Store) SaveEngineMemory(m EngineMemory) error {
-	return s.local.put(kindMeta, idEngineMemory, m.sorted(), true)
+	return engineMemory.write(s, m.sorted())
 }
 
 // sorted returns a copy of m with its lists in a fixed order, so that the

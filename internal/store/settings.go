@@ -177,6 +177,9 @@ type Settings struct {
 	// Managed are the settings of pco's managed network. The service prefix
 	// has none: it is fixed.
 	Managed ManagedSettings `json:"managed,omitzero"`
+	// Cluster are the settings of a cluster of nodes, left out of the file
+	// while they have their defaults.
+	Cluster ClusterSettings `json:"cluster,omitzero"`
 }
 
 // ManagedSettings are the settings of pco's managed network.
@@ -254,6 +257,7 @@ func DefaultSettings() Settings {
 			Subnet:      netip.MustParsePrefix("10.203.118.0/24"),
 			DetachGrace: Duration(10 * time.Minute),
 		},
+		Cluster: defaultClusterSettings(),
 	}
 }
 
@@ -335,6 +339,9 @@ func (s Settings) normalized() (Settings, error) {
 		return Settings{}, err
 	}
 	if s.Managed, err = s.Managed.normalized(); err != nil {
+		return Settings{}, err
+	}
+	if s.Cluster, err = s.Cluster.normalized(); err != nil {
 		return Settings{}, err
 	}
 	return s, nil

@@ -68,6 +68,7 @@ func customSettings() Settings {
 			DetachGrace:          Duration(30 * time.Minute),
 			AcceptFirewallImpact: true,
 		},
+		Cluster: defaultCluster(),
 	}
 }
 

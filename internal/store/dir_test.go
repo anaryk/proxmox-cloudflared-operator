@@ -496,7 +496,7 @@ func (s *syncs) take() []string {
 }
 
 func durableDir(root string, rec *syncs) Dir {
-	d := newDir(root, nil)
+	d := NewDir(root)
 	d.durable, d.flush = true, rec.flush
 	return d
 }

@@ -27,14 +27,27 @@ type SoftDeny struct {
 	Entries []SoftEntry `json:"entries"`
 }
 
+// softDeny is the soft deny list: on the node-local root, and as it is on
+// the cluster root.
+var softDeny = copied[SoftDeny]{localID: idSoftDeny, clusterID: "softdeny", what: "soft deny list", shared: same[SoftDeny]}
+
 // SoftDeny returns the soft deny list, sorted by address, and an empty one when
-// none was saved.
+// none was saved. See LoadSoftDeny.
 func (s *Store) SoftDeny() (SoftDeny, error) {
-	var v SoftDeny
-	if _, err := s.local.Get(kindMeta, idSoftDeny, &v); err != nil {
-		return SoftDeny{}, err
+	v, _, err := s.LoadSoftDeny()
+	return v, err
+}
+
+// LoadSoftDeny is SoftDeny with notes. The list is kept on the node-local
+// root and, once SetNode named the node, on the cluster root, where a
+// controller on another node finds it. A note says that the copy there was
+// made again, as LoadEngineMemory does.
+func (s *Store) LoadSoftDeny() (SoftDeny, []string, error) {
+	_, v, notes, err := softDeny.read(s)
+	if err != nil {
+		return SoftDeny{}, nil, err
 	}
-	return SoftDeny{Entries: compactSoft(v.Entries)}, nil
+	return SoftDeny{Entries: compactSoft(v.Entries)}, notes, nil
 }
 
 // SaveSoftDeny stores the soft deny list sorted by address, with one entry per
@@ -50,7 +63,7 @@ func (s *Store) SaveSoftDeny(v SoftDeny) error {
 			return fmt.Errorf("soft deny entry %s has no reason", e.Addr)
 		}
 	}
-	return s.local.put(kindMeta, idSoftDeny, SoftDeny{Entries: compactSoft(v.Entries)}, true)
+	return softDeny.write(s, SoftDeny{Entries: compactSoft(v.Entries)})
 }
 
 func compactSoft(entries []SoftEntry) []SoftEntry {

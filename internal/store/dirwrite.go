@@ -24,27 +24,38 @@ type object struct {
 type write struct {
 	kind, id  string
 	dir, path string
+	rev       int64
 	out       []byte
 }
 
 // put is Put, which with onlyIfChanged leaves the file alone when it already
 // holds v: every write of the cluster root is replicated to every node.
 func (d Dir) put(kind, id string, v any, onlyIfChanged bool) error {
+	_, err := d.putRev(kind, id, v, onlyIfChanged)
+	return err
+}
+
+// putRev is put that returns the revision the file has after, which is the
+// one it had when nothing was written.
+func (d Dir) putRev(kind, id string, v any, onlyIfChanged bool) (int64, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("encoding %s %q: %w", kind, id, err)
+		return 0, fmt.Errorf("encoding %s %q: %w", kind, id, err)
 	}
 	if err := d.check(); err != nil {
-		return err
+		return 0, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	w, err := d.prepare(kind, object{id: id, data: data}, onlyIfChanged)
+	w, rev, err := d.prepare(kind, object{id: id, data: data}, onlyIfChanged)
 	if err != nil || w == nil {
-		return err
+		return rev, err
 	}
-	return d.commit(w)
+	if err := d.commit(w); err != nil {
+		return 0, err
+	}
+	return w.rev, nil
 }
 
 // putIf is put for a value that was read at revision rev, 0 when there was
@@ -67,14 +78,14 @@ func (d Dir) putIf(kind, id string, v any, rev int64) (int64, error) {
 	if err != nil {
 		return have, err
 	}
-	w, err := d.prepare(kind, object{id: id, data: data}, true)
+	w, _, err := d.prepare(kind, object{id: id, data: data}, true)
 	if err != nil || w == nil {
 		return have, err
 	}
 	if err := d.commit(w); err != nil {
 		return 0, err
 	}
-	return have + 1, nil
+	return w.rev, nil
 }
 
 // deleteIf removes the object of kind and id when its file has revision rev.
@@ -100,7 +111,7 @@ func (d Dir) deleteIf(kind, id string, rev int64) error {
 // for no file, and returns the revision it has and whether it is there. The
 // caller holds the lock.
 func (d Dir) revisionIs(kind, id, path string, rev int64) (have int64, found bool, err error) {
-	old, found, err := readEnvelope(path)
+	old, found, err := d.read(path)
 	switch {
 	case err != nil:
 		return 0, false, fmt.Errorf("%s %q: %w", kind, id, err)
@@ -136,7 +147,7 @@ func (d Dir) replace(kind string, objs []object) error {
 			return err
 		}
 		wanted[filepath.Base(path)] = struct{}{}
-		w, err := d.prepare(kind, o, true)
+		w, _, err := d.prepare(kind, o, true)
 		if err != nil {
 			return err
 		}
@@ -178,32 +189,41 @@ func (d Dir) staleFiles(kind, dir string, wanted map[string]struct{}) ([]string,
 }
 
 // prepare works out the write of an object, or nil when there is nothing to
-// write. The caller holds the lock.
-func (d Dir) prepare(kind string, o object, onlyIfChanged bool) (*write, error) {
+// write, and the revision the file has now. The caller holds the lock.
+func (d Dir) prepare(kind string, o object, onlyIfChanged bool) (*write, int64, error) {
 	dir, path, err := d.file(kind, o.id)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	old, found, err := readEnvelope(path)
+	old, found, err := d.read(path)
 	switch {
 	case errors.Is(err, errNewerSchema):
-		return nil, fmt.Errorf("storing %s %q: %w", kind, o.id, err)
+		return nil, 0, fmt.Errorf("storing %s %q: %w", kind, o.id, err)
 	case err != nil:
 		old = envelope{} // not readable: the revision starts again
 	case found && old.ID != "" && old.ID != o.id:
-		return nil, fmt.Errorf("storing %s %q: %s already holds the object of %q", kind, o.id, path, old.ID)
+		return nil, 0, fmt.Errorf("storing %s %q: %s already holds the object of %q", kind, o.id, path, old.ID)
 	case found && onlyIfChanged && old.ID == o.id && (sameData(old.Data, o.data) || o.keep != nil && o.keep(old.Data)):
-		return nil, nil
+		return nil, old.Rev, nil
 	}
-	out, err := json.MarshalIndent(envelope{SchemaVersion: schemaVersion, Rev: old.Rev + 1, ID: o.id, Data: o.data}, "", "  ")
+	out, err := encodeFile(path, old.Rev+1, o.id, o.data)
 	if err != nil {
-		return nil, fmt.Errorf("encoding %s %q: %w", kind, o.id, err)
+		return nil, 0, fmt.Errorf("encoding %s %q: %w", kind, o.id, err)
 	}
-	out = append(out, '\n')
 	if len(out) > maxFileSize {
-		return nil, fmt.Errorf("storing %s %q: %d bytes are over the %d byte limit of a file", kind, o.id, len(out), maxFileSize)
+		return nil, 0, fmt.Errorf("storing %s %q: %d bytes are over the %d byte limit of a file", kind, o.id, len(out), maxFileSize)
 	}
-	return &write{kind: kind, id: o.id, dir: dir, path: path, out: out}, nil
+	return &write{kind: kind, id: o.id, dir: dir, path: path, rev: old.Rev + 1, out: out}, old.Rev, nil
+}
+
+// encodeFile is what the file at path holds for data, the object of id at
+// revision rev.
+func encodeFile(path string, rev int64, id string, data []byte) ([]byte, error) {
+	out, err := json.MarshalIndent(envelope{SchemaVersion: schemaAt(path), Rev: rev, ID: id, Data: data}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
 }
 
 // commit writes a file that prepare worked out. The caller holds the lock.
@@ -214,6 +234,7 @@ func (d Dir) commit(w *write) error {
 	if err := writeFileAtomic(w.path, w.out, d.synced); err != nil {
 		return fmt.Errorf("storing %s %q: %w", w.kind, w.id, err)
 	}
+	d.tenure.wrote(d.root, w.kind, w.id, w.path, w.rev)
 	return nil
 }
 

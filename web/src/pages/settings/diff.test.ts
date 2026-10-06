@@ -68,6 +68,11 @@ describe('the settings', () => {
     expect(diffSettings(before, { ...before, managed: { ...before.managed } })).toEqual([])
   })
 
+  test('the settings of a cluster are shown key by key, and none is the defaults', () => {
+    const after = { ...stored, cluster: { replicas: ['pve1', 'pve2'], admissionMaxMoves: 20 } }
+    expect(diffSettings(stored, after)).toEqual([{ field: 'cluster', before: 'none', after: 'admissionMaxMoves=20, replicas=pve1,pve2' }])
+  })
+
   test('the order of a list is no change', () => {
     const before = { ...stored, trustedCIDRs: ['10.0.1.0/24', '10.0.2.0/24'] }
     expect(diffSettings(before, { ...before, trustedCIDRs: ['10.0.2.0/24', '10.0.1.0/24'] })).toEqual([])

@@ -135,24 +135,33 @@ func (s *Store) AllocateServiceAddr(network string, addr netip.Addr, now time.Ti
 		}
 		return m, nil
 	}
-	next, err := s.poolNext()
+	service, err := s.takeFromPool()
 	if err != nil {
 		return ServiceAddr{}, err
 	}
-	first, end, _ := poolBounds()
-	if next == end {
-		return ServiceAddr{}, fmt.Errorf("%w: every address from %s to %s was given out once", ErrPoolExhausted, first, end.Prev())
-	}
-	// The pool moves first: a write that fails in between loses an address,
-	// and never gives one out twice.
-	if err := s.cluster.put(kindMeta, idSvcPool, servicePool{Next: next.Next()}, true); err != nil {
-		return ServiceAddr{}, err
-	}
-	m = ServiceAddr{Network: network, Addr: addr, Service: next, AllocatedAt: now}
+	m = ServiceAddr{Network: network, Addr: addr, Service: service, AllocatedAt: now}
 	if err := s.cluster.put(kindSvcAddrs, id, m, true); err != nil {
 		return ServiceAddr{}, err
 	}
 	return m, nil
+}
+
+// takeFromPool gives out the next address of the pool. The pool moves before
+// the mapping is written: a write that fails in between loses an address, and
+// never gives one out twice. The caller holds netMu.
+func (s *Store) takeFromPool() (netip.Addr, error) {
+	next, err := s.poolNext()
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	first, end, _ := poolBounds()
+	if next == end {
+		return netip.Addr{}, fmt.Errorf("%w: every address from %s to %s was given out once", ErrPoolExhausted, first, end.Prev())
+	}
+	if err := s.cluster.put(kindMeta, idSvcPool, servicePool{Next: next.Next()}, true); err != nil {
+		return netip.Addr{}, err
+	}
+	return next, nil
 }
 
 // ReleaseServiceAddr deletes the mapping; the pool does not move back. A
@@ -180,8 +189,9 @@ func (s *Store) ServicePool() (next netip.Addr, used, size int, err error) {
 
 // poolNext is the address the next allocation gets. Without a pool file it
 // is the first of the pool or, when mappings exist, as after the file was
-// lost, the one after the highest of them. A file whose next is outside the
-// pool is an error: an allocation from it might give an address twice.
+// lost, the one after the highest of them, of both kinds. A file whose next
+// is outside the pool is an error: an allocation from it might give an
+// address twice.
 func (s *Store) poolNext() (netip.Addr, error) {
 	first, end, _ := poolBounds()
 	var p servicePool
@@ -195,14 +205,19 @@ func (s *Store) poolNext() (netip.Addr, error) {
 		return p.Next, nil
 	}
 	next := first
-	err = eachObject(s.cluster, kindSvcAddrs, func(path, _ string, m ServiceAddr) error {
-		if err := checkMapping(path, m); err != nil {
+	after := func(path string, service netip.Addr) error {
+		if err := checkMapping(path, ServiceAddr{Service: service}); err != nil {
 			return err
 		}
-		if !m.Service.Less(next) {
-			next = m.Service.Next()
+		if !service.Less(next) {
+			next = service.Next()
 		}
 		return nil
-	})
+	}
+	err = eachObject(s.cluster, kindSvcAddrs, func(path, _ string, m ServiceAddr) error { return after(path, m.Service) })
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	err = eachObject(s.cluster, kindNodeSvcAddrs, func(path, _ string, m NodeServiceAddr) error { return after(path, m.Service) })
 	return next, err
 }

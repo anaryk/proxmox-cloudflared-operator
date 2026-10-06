@@ -13,13 +13,12 @@ import (
 	"sync"
 )
 
-const (
-	// schemaVersion is the version of the envelope around every object. It is
-	// the only version this build reads and writes.
-	schemaVersion = 1
+// schemaVersion is the version of the envelope around every object but the
+// frozen ones. It is the only version this build reads and writes. It is a
+// variable only so that a test can raise it, as a later release will.
+var schemaVersion = 1
 
-	objectExt = ".json"
-)
+const objectExt = ".json"
 
 // ErrNoRoot is the error of an operation on a root directory that does not
 // exist, while the cluster filesystem is mounted: the store was never set up
@@ -64,13 +63,17 @@ type Dir struct {
 	// so it is off there. flush is the sync, which a test replaces.
 	durable bool
 	flush   func(dir string) error
+
+	// tenure is the record of what this store wrote in the current tenure,
+	// shared by the roots of one Store; nil keeps none.
+	tenure *tenure
 }
 
 // NewDir returns the store rooted at root.
-func NewDir(root string) Dir { return newDir(root, nil) }
+func NewDir(root string) Dir { return newDir(root, nil, nil) }
 
-func newDir(root string, guard func() error) Dir {
-	return Dir{root: root, mu: new(sync.Mutex), guard: guard, flush: syncDir}
+func newDir(root string, guard func() error, t *tenure) Dir {
+	return Dir{root: root, mu: new(sync.Mutex), guard: guard, flush: syncDir, tenure: t}
 }
 
 // synced makes the entries of dir durable, when the Dir is.
@@ -179,16 +182,37 @@ func (d Dir) getRev(kind, id string, v any, strict bool) (rev int64, found bool,
 // readFile reads the file at path, in a kind directory of the root. A file that
 // is not there is not found, unless the root is gone too.
 func (d Dir) readFile(path string) (env envelope, found bool, err error) {
+	if d.tenure.active() {
+		// A write renames its file and then records it: a read in between
+		// would take the revision before for a step back.
+		d.mu.Lock()
+		defer d.mu.Unlock()
+	}
 	env, found, err = readEnvelope(path)
 	switch {
 	case err != nil:
 		return envelope{}, false, err
 	case !found:
-		return envelope{}, false, d.requireRoot()
+		if err := d.requireRoot(); err != nil {
+			return envelope{}, false, err
+		}
+		d.tenure.saw(path, envelope{}, false)
+		return envelope{}, false, nil
 	case env.ID == "":
 		return envelope{}, false, fmt.Errorf("%s has no id", path)
 	}
+	d.tenure.saw(path, env, true)
 	return env, true, nil
+}
+
+// read is readEnvelope for a caller that holds the lock, compared with what
+// the tenure wrote.
+func (d Dir) read(path string) (env envelope, found bool, err error) {
+	env, found, err = readEnvelope(path)
+	if err == nil {
+		d.tenure.saw(path, env, found)
+	}
+	return env, found, err
 }
 
 // readEnvelope reads the file at path. A file that does not exist is not an
@@ -205,12 +229,14 @@ func readEnvelope(path string) (env envelope, found bool, err error) {
 	if err := json.Unmarshal(b, &env); err != nil {
 		return envelope{}, false, fmt.Errorf("%s: %s", path, jsonProblem(err))
 	}
-	switch {
-	case env.SchemaVersion > schemaVersion:
+	switch want := schemaAt(path); {
+	case env.SchemaVersion > want:
 		return envelope{}, false, fmt.Errorf("%s has schema version %d, this build reads %d: %w",
-			path, env.SchemaVersion, schemaVersion, errNewerSchema)
-	case env.SchemaVersion != schemaVersion:
+			path, env.SchemaVersion, want, errNewerSchema)
+	case env.SchemaVersion == 0:
 		return envelope{}, false, fmt.Errorf("%s has no schema version", path)
+	case env.SchemaVersion != want:
+		return envelope{}, false, fmt.Errorf("%s has schema version %d, this build reads %d", path, env.SchemaVersion, want)
 	case len(env.Data) == 0 || string(bytes.TrimSpace(env.Data)) == "null":
 		return envelope{}, false, fmt.Errorf("%s has no data", path)
 	}
@@ -286,7 +312,7 @@ func (d Dir) Delete(kind, id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	env, found, err := readEnvelope(path)
+	env, found, err := d.read(path)
 	switch {
 	case errors.Is(err, errNewerSchema):
 		return fmt.Errorf("deleting %s %q: %w", kind, id, err)
@@ -296,14 +322,38 @@ func (d Dir) Delete(kind, id string) error {
 	return d.removeFile(path)
 }
 
+// listObjects is List that, while a tenure runs, also notes an object the
+// tenure wrote and did not delete that the listing misses.
+func (d Dir) listObjects(kind string) ([]string, error) {
+	if !d.tenure.active() {
+		return d.List(kind)
+	}
+	dir, err := d.kindDir(kind)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	names, err := d.List(kind)
+	if err == nil {
+		d.tenure.listed(dir, names)
+	}
+	return names, err
+}
+
 // removeFile removes a file. One that is not there is no error, unless the
 // root is gone too. The caller holds the lock.
 func (d Dir) removeFile(path string) error {
 	err := os.Remove(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return d.requireRoot()
+		if err := d.requireRoot(); err != nil {
+			return err
+		}
+		d.tenure.deleted(path)
+		return nil
 	}
 	if err == nil {
+		d.tenure.deleted(path)
 		err = d.synced(filepath.Dir(path))
 	}
 	if err != nil {

@@ -27,7 +27,7 @@ const isObject = (v: unknown): v is Obj => typeof v === 'object' && v !== null &
 // --json prints besides the settings, which is not read.
 const fileKeys = ['rev', 'settings', 'manualRoutes', 'readAtStart', 'limits', 'notes', 'restartNeeded']
 
-const kinds: Record<keyof Settings, 'text' | 'flag' | 'count' | 'list' | 'pins' | 'managed'> = {
+const kinds: Record<keyof Settings, 'text' | 'flag' | 'count' | 'list' | 'pins' | 'managed' | 'cluster'> = {
   gateTag: 'text',
   allowHosts: 'list',
   denyHosts: 'list',
@@ -44,6 +44,7 @@ const kinds: Record<keyof Settings, 'text' | 'flag' | 'count' | 'list' | 'pins' 
   reverifyInterval: 'text',
   cloudflareBudget: 'count',
   managed: 'managed',
+  cluster: 'cluster',
 }
 
 // The keys of the settings of the managed network; the daemon checks their values.
@@ -54,6 +55,20 @@ const managedKeys: Readonly<Record<string, 'string' | 'boolean'>> = {
   acceptFirewallImpact: 'boolean',
 }
 
+const isText = (v: unknown) => typeof v === 'string'
+const isFlag = (v: unknown) => typeof v === 'boolean'
+const isCount = (v: unknown) => typeof v === 'number' && Number.isInteger(v)
+const isList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string')
+
+// The keys of the settings of a cluster; the daemon checks their values.
+const clusterKeys: Readonly<Record<string, (v: unknown) => boolean>> = {
+  agentNetwork: isText,
+  replicas: isList,
+  followMaintenance: isFlag,
+  rotateOnForget: isFlag,
+  admissionMaxMoves: isCount,
+}
+
 const wants = {
   text: 'want text',
   flag: 'want true or false',
@@ -61,15 +76,17 @@ const wants = {
   list: 'want a list of text',
   pins: 'want an object of text',
   managed: 'want an object of consent, subnet, detachGrace and acceptFirewallImpact',
+  cluster: 'want an object of agentNetwork, replicas, followMaintenance, rotateOnForget and admissionMaxMoves',
 }
 
 const isKind = {
-  text: (v: unknown) => typeof v === 'string',
-  flag: (v: unknown) => typeof v === 'boolean',
-  count: (v: unknown) => typeof v === 'number' && Number.isInteger(v),
-  list: (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string'),
+  text: isText,
+  flag: isFlag,
+  count: isCount,
+  list: isList,
   pins: (v: unknown) => isObject(v) && Object.values(v).every((x) => typeof x === 'string'),
   managed: (v: unknown) => isObject(v) && Object.entries(v).every(([k, x]) => Object.hasOwn(managedKeys, k) && typeof x === managedKeys[k]),
+  cluster: (v: unknown) => isObject(v) && Object.entries(v).every(([k, x]) => Object.hasOwn(clusterKeys, k) && clusterKeys[k]?.(x) === true),
 }
 
 function readSettings(raw: unknown, issues: ImportIssue[]): Settings | undefined {

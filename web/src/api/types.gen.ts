@@ -94,6 +94,15 @@ export interface ClaimantView {
   since: string
 }
 
+// store.ClusterSettings
+export interface ClusterSettings {
+  agentNetwork?: string
+  replicas?: string[]
+  followMaintenance?: boolean
+  rotateOnForget?: boolean
+  admissionMaxMoves?: number
+}
+
 // reconcile.Conflict
 export interface Conflict {
   zone: string
@@ -428,6 +437,7 @@ export interface Settings {
   reverifyInterval: string
   cloudflareBudget: number
   managed?: ManagedSettings
+  cluster?: ClusterSettings
 }
 
 // engine.SettingsView

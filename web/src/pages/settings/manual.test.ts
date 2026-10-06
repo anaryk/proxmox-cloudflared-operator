@@ -14,6 +14,7 @@ const routes = manualFixture as unknown as ManualRouteView[]
 const omit = (o: object, ...keys: string[]) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)))
 
 const managedWant = 'want an object of consent, subnet, detachGrace and acceptFirewallImpact'
+const clusterWant = 'want an object of agentNetwork, replicas, followMaintenance, rotateOnForget and admissionMaxMoves'
 
 const file = (over: Record<string, unknown> = {}) => JSON.stringify({ rev: 7, settings: stored, manualRoutes: routes, ...over })
 const check = (text: string, current: Settings = stored) => checkImport(text, { current, limits })
@@ -93,6 +94,11 @@ describe('reading a file', () => {
     ['managed', { consent: 1 }, managedWant],
     ['managed', { consent: 'auto', acceptFirewallImpact: 'yes' }, managedWant],
     ['managed', { consent: 'auto', servicePrefix: '198.18.0.0/16' }, managedWant],
+    ['cluster', [], clusterWant],
+    ['cluster', { replicas: 'pve1' }, clusterWant],
+    ['cluster', { admissionMaxMoves: 1.5 }, clusterWant],
+    ['cluster', { followMaintenance: 'no' }, clusterWant],
+    ['cluster', { replica: ['pve1'] }, clusterWant],
   ])('%s of %j: %s', (name, value, message) => {
     const got = parseImportFile(file({ settings: { ...stored, [name]: value } }))
     expect(got.issues).toEqual([{ where: `settings.${name}`, message }])
@@ -106,6 +112,16 @@ describe('reading a file', () => {
 
     const zero = parseImportFile(file({ settings: { ...stored, managed: { detachGrace: '0s' } } }))
     expect(zero.file?.settings.managed, 'a key written zero stays for the daemon to refuse, and none is filled in').toEqual({ detachGrace: '0s' })
+  })
+
+  test('the settings of a cluster are read as they are', () => {
+    const cluster = { agentNetwork: '10.99.0.0/24', replicas: ['pve1', 'pve2'], followMaintenance: false, rotateOnForget: true, admissionMaxMoves: 20 }
+    const got = parseImportFile(file({ settings: { ...stored, cluster } }))
+    expect(got.issues).toEqual([])
+    expect(got.file?.settings.cluster).toEqual(cluster)
+
+    const zero = parseImportFile(file({ settings: { ...stored, cluster: { admissionMaxMoves: 0 } } }))
+    expect(zero.file?.settings.cluster, 'a key written zero stays for the daemon to refuse').toEqual({ admissionMaxMoves: 0 })
   })
 
   test('a list that is null is none', () => {

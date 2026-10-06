@@ -23,8 +23,9 @@ func SchemaVersion() int { return schemaVersion }
 // p was written with, and its file; 0 and "" when there is none. An object is
 // a .json file one directory below a root, as the store writes it; hidden and
 // temporary files are not, and neither is a file whose envelope cannot be
-// read, which no build can read either. A directory that cannot be listed is
-// an error: what it holds is not known.
+// read, which no build can read either. The frozen objects, whose version
+// never changes, say nothing about the schema of the store and are left out.
+// A directory that cannot be listed is an error: what it holds is not known.
 func NewestSchema(p Paths) (version int, path string, err error) {
 	for _, root := range []string{p.Cluster, p.Private, p.Local} {
 		kinds, err := os.ReadDir(root)
@@ -56,9 +57,11 @@ func newestIn(dir string) (version int, path string, err error) {
 	if err != nil {
 		return 0, "", fmt.Errorf("listing %s: %w", dir, err)
 	}
+	kind := filepath.Base(dir)
 	for _, e := range entries {
 		name := e.Name()
-		if !e.Type().IsRegular() || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, objectExt) {
+		stem, isObject := strings.CutSuffix(name, objectExt)
+		if !e.Type().IsRegular() || strings.HasPrefix(name, ".") || !isObject || frozen(kind, stem) {
 			continue
 		}
 		file := filepath.Join(dir, name)

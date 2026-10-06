@@ -51,7 +51,9 @@ func isBridgeChar(r rune) bool {
 }
 
 // Segments returns the acknowledged segments by id. They live on the cluster
-// root.
+// root. These are the acknowledgements of the previous release, one for every
+// node: in a cluster a segment is acknowledged per node (NodeSegment), and
+// until the upgrade is finished one of these counts on every node.
 func (s *Store) Segments() (map[string]Segment, error) {
 	out := make(map[string]Segment)
 	err := eachObject(s.cluster, kindSegments, func(path, id string, seg Segment) error {

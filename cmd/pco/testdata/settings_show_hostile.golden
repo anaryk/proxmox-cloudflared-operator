@@ -15,6 +15,7 @@ Settings at revision 1:
   reverifyInterval      1m0s
   cloudflareBudget      1000
   managed               consent=per-guest, detachGrace=10m0s, subnet=10.203.118.0/24
+  cluster               -
 
 note ?[2J?]0;pwned? ? ?31m ?evil?
 --- stderr
