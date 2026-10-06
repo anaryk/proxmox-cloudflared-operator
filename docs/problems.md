@@ -191,6 +191,8 @@ an issue says so; issues are not problem lines (see [Annotations](annotations.md
 | `the service-prefix route or table was changed outside pco and was loaded again` | The appliance's route or table of the service prefix was changed, and the daemon put it back. | Find what changed it. |
 | `the service-prefix route or table was changed outside pco and could not be loaded again: <error>` | The same, and it could not be put back. This holds no tunnel run: the egress table still confines the connectors. | `pco net show`, then `pco net load`. |
 | `checking the service-prefix route and table: <error>` | They could not be read. | `pco net show`. |
+| `<file>: <address> is not a service address` | A file in `/etc/pve/pco/svcaddrs`, which maps an address behind a leg to the address the connectors dial for it, names one outside the pool of the service prefix, `198.18.1.0` to `198.18.255.255`, as after an edit by hand. The connectors would be sent to that address, so no service address is read or given out until the file is fixed, and nothing behind a leg is reached meanwhile. | Delete the file, or put back the copy from before the edit; the address behind the leg then gets a new service address. |
+| `the pool of service addresses says next is <address>, outside 198.18.1.0 to 198.19.0.0` | `/etc/pve/pco/meta/svcpool.json`, the next service address to give out, is outside the pool, as after an edit by hand. No service address is given out until it is fixed: one might be given out twice. | Put back the copy from before the edit. Without the file, pco starts after the highest service address in use, which is safe only as long as no other was given out after it and released. |
 
 ## The appliance
 
