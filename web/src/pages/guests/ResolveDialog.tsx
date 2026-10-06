@@ -30,16 +30,17 @@ export function moveText(c: ClaimView, owner: string, st: Pick<State, 'unapprove
 
 // ResolveDialog hands the claim on a hostname to one of those that claim
 // it: a radio list of the holder and the claimants, and what that does.
+// Nobody is picked when it opens, so that Enter hands nothing over.
 export function ResolveDialog({ claim, onClose, onDone }: { claim?: ClaimView; onClose: () => void; onDone: () => void }) {
   const toast = useToast()
   const st = useApp((s) => s.state)
-  const [picked, setPicked] = useState(claim?.waiting[0]?.owner)
+  const [picked, setPicked] = useState<string>()
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<ApiError>()
   const [shown, setShown] = useState(claim)
   if (shown !== claim) {
     setShown(claim)
-    setPicked(claim?.waiting[0]?.owner)
+    setPicked(undefined)
     setError(undefined)
   }
 

@@ -40,10 +40,13 @@ test('hand to: a radio list of the holder and the claimants, the consequence, an
   const dialog = document.querySelector<HTMLElement>('dialog[open]')
   if (!dialog) throw new Error('no dialog')
   const radios = within(dialog).getAllByRole('radio') as HTMLInputElement[]
+  // nobody is picked: the admin chooses, and until then nothing is handed over
   expect(radios.map((r) => [r.value, r.checked])).toEqual([
     ['qemu/101', false],
-    ['qemu/102', true],
+    ['qemu/102', false],
   ])
+  expect(within(dialog).getByRole('button', { name: 'Hand it over' }).hasAttribute('disabled')).toBe(true)
+  fireEvent.click(within(dialog).getByRole('radio', { name: /qemu\/102/ }))
   expect(dialog.textContent).toContain(
     'Resolving hands www.example.com to qemu/102 (web-2); qemu/101 (web-1) waits for it from then on, in the place in line its claim gives it.',
   )

@@ -22,37 +22,39 @@ export function AnnotationView({ view }: { view: Annotation }) {
   const elsewhere = view.issues.filter((is) => !is.line || is.line < view.startLine || is.line > last)
   return (
     <>
-      <pre className="annotation" aria-label={`The route text of the Notes of ${view.ref}, from line ${view.startLine}`}>
-        {lines.map((text, at) => {
-          const n = view.startLine + at
-          return (
-            <Fragment key={n}>
-              <span className="annotation-line">
-                <span className="annotation-no">{n}</span>
-                <Untrusted text={text} />
-              </span>
-              {'\n'}
-              {view.issues
-                .filter((is) => is.line === n)
-                .map((is, k) => (
-                  <Fragment key={k}>
-                    <span className="annotation-caret" aria-hidden="true">
-                      <span className="annotation-no" />
-                      {caret(is.col)}
-                    </span>
-                    {'\n'}
-                    <span className="annotation-msg">
-                      <span className="annotation-no" />
-                      <span className="sr-only">{position(is)}: </span>
-                      <Untrusted text={is.msg} />
-                    </span>
-                    {'\n'}
-                  </Fragment>
-                ))}
-            </Fragment>
-          )
-        })}
-      </pre>
+      <section aria-label={`The route text of the Notes of ${view.ref}, from line ${view.startLine}`}>
+        <pre className="annotation">
+          {lines.map((text, at) => {
+            const n = view.startLine + at
+            return (
+              <Fragment key={n}>
+                <span className="annotation-line">
+                  <span className="annotation-no">{n}</span>
+                  <Untrusted text={text} />
+                </span>
+                {'\n'}
+                {view.issues
+                  .filter((is) => is.line === n)
+                  .map((is, k) => (
+                    <Fragment key={k}>
+                      <span className="annotation-caret" aria-hidden="true">
+                        <span className="annotation-no" />
+                        {caret(is.col)}
+                      </span>
+                      {'\n'}
+                      <span className="annotation-msg">
+                        <span className="annotation-no" />
+                        <span className="sr-only">{position(is)}: </span>
+                        <Untrusted text={is.msg} />
+                      </span>
+                      {'\n'}
+                    </Fragment>
+                  ))}
+              </Fragment>
+            )
+          })}
+        </pre>
+      </section>
       {elsewhere.length > 0 && (
         <ul className="plain-list">
           {elsewhere.map((is, k) => (

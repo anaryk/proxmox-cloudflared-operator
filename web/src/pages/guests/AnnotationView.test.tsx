@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { expect, test } from 'vitest'
 
 import type { AnnotationView as Annotation } from '../../api/types.gen'
@@ -25,6 +25,13 @@ test('the block with the lines of the Notes, and the issue under its line and co
   expect(caretRow?.lastChild?.textContent).toBe('    ^')
   expect('app.example.com -> :3000'[caret(5).length - 1]).toBe('e')
   expect(caretRow?.nextElementSibling?.className).toBe('annotation-msg')
+})
+
+test('the block is a region named for what it is; the pre carries no name of its own', () => {
+  const { container } = render(<AnnotationView view={view} />)
+  const region = screen.getByRole('region', { name: `The route text of the Notes of ${view.ref}, from line 4` })
+  expect(region.querySelector('pre')).toBe(container.querySelector('pre'))
+  expect(container.querySelector('pre')?.hasAttribute('aria-label')).toBe(false)
 })
 
 test('the caret of a column', () => {
