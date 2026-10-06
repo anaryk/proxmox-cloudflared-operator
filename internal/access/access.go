@@ -36,6 +36,11 @@ type Data struct {
 type Principal struct {
 	ID    string // user@realm or user@realm!token
 	Privs []string
+	// At, from Refused only, are the paths where NoAccess for the principal
+	// takes Privs away, the most general first: each path it holds them on,
+	// unless NoAccess on one above it, at or below the entry that grants them
+	// there, takes them away already.
+	At []string
 }
 
 // Roles returns the roles principal holds on path as PVE::AccessControl::roles
@@ -104,8 +109,18 @@ func Refused(d Data, vmid int, pool string, ownUser string) []Principal {
 	}
 
 	var held []Principal
+	// grants maps each principal and each path it holds a privilege on to
+	// the node of the ACL that grants it there.
+	grants := map[string]map[string]string{}
 	check := func(path string, match func(priv string) bool) {
-		held = merge(held, v.effective(path, match))
+		found := v.effective(path, match)
+		for _, p := range found {
+			if grants[p.ID] == nil {
+				grants[p.ID] = map[string]string{}
+			}
+			_, grants[p.ID][path] = v.walk(p.ID, path)
+		}
+		held = merge(held, found)
 	}
 	vm := vmPath(vmid)
 	above := []string{"/", "/vms"}
@@ -122,7 +137,40 @@ func Refused(d Data, vmid int, pool string, ownUser string) []Principal {
 	for _, path := range above {
 		check(path, is("Permissions.Modify"))
 	}
-	return v.others(held, ownUser)
+	out := v.others(held, ownUser)
+	for i := range out {
+		out[i].At = noAccessAt(grants[out[i].ID])
+	}
+	return out
+}
+
+// noAccessAt returns where NoAccess for a principal takes away what it holds
+// on the paths of grants, each mapped to the node of the ACL that grants it
+// there. NoAccess on a path reaches the paths below it that are granted
+// nothing lower down, so a path is left out when one above it is in already
+// and that one is at or below its grant. A guest granted nothing on its own
+// path holds what its pool gives, which NoAccess on any path above the guest
+// takes away as well.
+func noAccessAt(grants map[string]string) []string {
+	paths := slices.SortedFunc(maps.Keys(grants), func(a, b string) int {
+		return cmp.Or(cmp.Compare(len(nodePaths(a)), len(nodePaths(b))), strings.Compare(a, b))
+	})
+	var out []string
+	for _, path := range paths {
+		covered := slices.ContainsFunc(out, func(at string) bool {
+			return below(path, at) && below(at, grants[path])
+		})
+		if !covered {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// below says whether path is node or a path under it; every path is under the
+// empty node.
+func below(path, node string) bool {
+	return node == "" || node == "/" || path == node || strings.HasPrefix(path, node+"/")
 }
 
 // reachesIn reports whether a privilege on the guest is one of those Refused
@@ -249,18 +297,25 @@ func (v *view) token(principal string) (user string, privsep, isToken, known boo
 }
 
 func (v *view) roles(principal, path string) map[string]bool {
+	roles, _ := v.walk(principal, path)
+	return roles
+}
+
+// walk is roles, and the node whose entries gave them: the last on the way
+// from "/" down to path with an entry that applies to the principal, or ""
+// when none does.
+func (v *view) walk(principal, path string) (roles map[string]bool, at string) {
 	if principal == rootUser {
-		return map[string]bool{administrator: true}
+		return map[string]bool{administrator: true}, "/"
 	}
 	user, privsep, isToken, known := v.token(principal)
 	switch {
 	case isToken && !known:
-		return nil
+		return nil, ""
 	case isToken && !privsep:
-		return v.roles(user, path)
+		return v.walk(user, path)
 	}
 
-	var roles map[string]bool
 	nodes := nodePaths(path)
 	for i, p := range nodes {
 		n := v.acl[p]
@@ -269,11 +324,11 @@ func (v *view) roles(principal, path string) map[string]bool {
 		}
 		final := i == len(nodes)-1
 		if r := applying(final, n.tokens[principal]); r != nil {
-			roles = r
+			roles, at = r, p
 			continue
 		}
 		if r := applying(final, n.users[principal]); r != nil {
-			roles = r
+			roles, at = r, p
 			continue
 		}
 		var fromGroups []map[string]bool
@@ -283,13 +338,13 @@ func (v *view) roles(principal, path string) map[string]bool {
 			}
 		}
 		if r := applying(final, fromGroups...); r != nil {
-			roles = r
+			roles, at = r, p
 		}
 	}
 	if roles[noAccess] {
-		return map[string]bool{noAccess: true}
+		return map[string]bool{noAccess: true}, at
 	}
-	return roles
+	return roles, at
 }
 
 // applying returns the roles of the entries that apply at a node: all of them

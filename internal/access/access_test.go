@@ -1,6 +1,7 @@
 package access
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -239,47 +240,86 @@ func TestRefused(t *testing.T) {
 		want []Principal
 	}{
 		{"PVEVMUser on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "PVEVMUser")},
-			[]Principal{{ID: "bob@pve", Privs: vmUserReach}}},
+			[]Principal{{ID: "bob@pve", Privs: vmUserReach, At: []string{applPath}}}},
 		{"PVEAuditor on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "PVEAuditor")}, nil},
 		{"PVETemplateUser on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "PVETemplateUser")},
-			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Clone"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Clone"}, At: []string{applPath}}}},
 		{"a role that only migrates", []pve.ACLEntry{user(applPath, "bob@pve", "Migrate")},
-			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Migrate"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"VM.Migrate"}, At: []string{applPath}}}},
+		{"PVEVMUser on all guests", []pve.ACLEntry{user("/vms", "bob@pve", "PVEVMUser")},
+			[]Principal{{ID: "bob@pve", Privs: vmUserReach, At: []string{applPath}}}},
 		{"PVEVMUser on the pool", []pve.ACLEntry{group("/pool/pco", "devs", "PVEVMUser")},
-			[]Principal{{ID: "bob@pve", Privs: vmUserReach}}},
+			[]Principal{{ID: "bob@pve", Privs: vmUserReach, At: []string{applPath}}}},
 		{"Pool.Allocate on the pool", []pve.ACLEntry{user("/pool/pco", "bob@pve", "PVEPoolAdmin")},
-			[]Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}, At: []string{"/pool/pco"}}}},
 		{"both", []pve.ACLEntry{user("/pool", "bob@pve", "PVEPoolAdmin"), user("/vms", "bob@pve", "PVEVMAdmin")},
-			[]Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate", "VM.Allocate", "VM.Config.Network", "VM.Console", "VM.Snapshot"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate", "VM.Allocate", "VM.Config.Network", "VM.Console", "VM.Snapshot"},
+				At: []string{"/pool/pco", applPath}}}},
 		{"another guest", []pve.ACLEntry{user(webPath, "bob@pve", "PVEVMAdmin")}, nil},
 		{"a token through its user", []pve.ACLEntry{user(applPath, "alice@pve", "PVEVMUser"), token(applPath, "alice@pve!sep", "PVEAuditor")},
 			[]Principal{
-				{ID: "alice@pve", Privs: vmUserReach},
-				{ID: "alice@pve!shared", Privs: vmUserReach},
+				{ID: "alice@pve", Privs: vmUserReach, At: []string{applPath}},
+				{ID: "alice@pve!shared", Privs: vmUserReach, At: []string{applPath}},
 			}},
 		{"an admin", []pve.ACLEntry{user("/", "bob@pve", "Administrator")}, nil},
 		{"pco itself", []pve.ACLEntry{user(applPath, "pco@pve", "PVEVMAdmin"), token(applPath, "pco@pve!vm120", "PVEVMAdmin")}, nil},
 		// Permissions.Modify on a path lets its holder grant itself any role
 		// there; on / and on /vms or /pool it may then propagate one down.
+		// NoAccess where it is granted takes it away on every path below that
+		// is granted nothing of its own.
 		{"Permissions.Modify on / alone", []pve.ACLEntry{once(user("/", "bob@pve", "Delegate"))},
-			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/"}}}},
+		{"Permissions.Modify on / and below", []pve.ACLEntry{user("/", "bob@pve", "Delegate")},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/"}}}},
+		{"Permissions.Modify on / through a group", []pve.ACLEntry{group("/", "devs", "Delegate")},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/"}}}},
 		{"Permissions.Modify on /vms alone", []pve.ACLEntry{once(user("/vms", "bob@pve", "Delegate"))},
-			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/vms"}}}},
+		{"Permissions.Modify on /vms and below", []pve.ACLEntry{user("/vms", "bob@pve", "Delegate")},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/vms"}}}},
 		{"Permissions.Modify on the appliance", []pve.ACLEntry{user(applPath, "bob@pve", "Delegate")},
-			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{applPath}}}},
 		{"Permissions.Modify on /pool alone", []pve.ACLEntry{once(user("/pool", "bob@pve", "Delegate"))},
-			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+			[]Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/pool"}}}},
 		{"Permissions.Modify on the pool, NoAccess on the appliance", []pve.ACLEntry{
 			user(applPath, "bob@pve", "NoAccess"), user("/pool/pco", "bob@pve", "Delegate"),
-		}, []Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}}},
+		}, []Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/pool/pco"}}}},
 		{"Permissions.Modify beside a console", []pve.ACLEntry{user("/", "bob@pve", "Delegate"), user(applPath, "bob@pve", "PVEVMUser")},
-			[]Principal{{ID: "bob@pve", Privs: append([]string{"Permissions.Modify"}, vmUserReach...)}}},
+			[]Principal{{ID: "bob@pve", Privs: append([]string{"Permissions.Modify"}, vmUserReach...), At: []string{"/", applPath}}}},
+		{"Permissions.Modify on /vms beside a console", []pve.ACLEntry{user("/vms", "bob@pve", "Delegate"), user(applPath, "bob@pve", "PVEVMUser")},
+			[]Principal{{ID: "bob@pve", Privs: append([]string{"Permissions.Modify"}, vmUserReach...), At: []string{"/vms", applPath}}}},
 		{"Permissions.Modify on another guest", []pve.ACLEntry{user(webPath, "bob@pve", "Delegate")}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, Refused(data(tt.acl...), 120, "pco", "pco@pve"))
+			d := data(tt.acl...)
+			require.Equal(t, tt.want, Refused(d, 120, "pco", "pco@pve"))
+
+			for _, p := range tt.want {
+				d.ACL = append(d.ACL, takenAway(d, p)...)
+			}
+			require.Empty(t, Refused(d, 120, "pco", "pco@pve"), "NoAccess where At says takes it all away")
 		})
 	}
+}
+
+// takenAway is what pveum acl modify <path> --roles NoAccess adds for a
+// principal at each of its At: for a token without privilege separation,
+// for its user.
+func takenAway(d Data, p Principal) []pve.ACLEntry {
+	who, kind := p.ID, "user"
+	if user, name, isToken := strings.Cut(p.ID, "!"); isToken {
+		who = user
+		for _, u := range d.Users {
+			if u.ID == user && u.Tokens[name] {
+				who, kind = p.ID, "token"
+			}
+		}
+	}
+	var out []pve.ACLEntry
+	for _, path := range p.At {
+		out = append(out, pve.ACLEntry{Path: path, Type: kind, UGID: who, RoleID: "NoAccess", Propagate: true})
+	}
+	return out
 }
 
 func TestRefusedTakesTheGuestAsAMemberOfThePool(t *testing.T) {
@@ -287,13 +327,13 @@ func TestRefusedTakesTheGuestAsAMemberOfThePool(t *testing.T) {
 	d.Users = append(d.Users, pve.User{ID: "carol@pve", Enabled: true})
 	d.Pools = nil
 	require.Equal(t, []Principal{
-		{ID: "bob@pve", Privs: vmUserReach},
-		{ID: "carol@pve", Privs: []string{"Pool.Allocate"}},
+		{ID: "bob@pve", Privs: vmUserReach, At: []string{applPath}},
+		{ID: "carol@pve", Privs: []string{"Pool.Allocate"}, At: []string{"/pool/pco"}},
 	}, Refused(d, 120, "pco", "pco@pve"), "before the appliance is in its pool")
 	require.Empty(t, Refused(d, 120, "", "pco@pve"))
 
 	d.ACL = append(d.ACL, user(applPath, "bob@pve", "Migrate"))
-	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"VM.Migrate"}}}, Refused(d, 120, "", "pco@pve"), "in no pool at all")
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"VM.Migrate"}, At: []string{applPath}}}, Refused(d, 120, "", "pco@pve"), "in no pool at all")
 }
 
 // The daemon asks with pool pco, but an admin may have moved the appliance
@@ -305,20 +345,20 @@ func TestRefusedChecksBothPoolsOfAMovedGuest(t *testing.T) {
 		return d
 	}
 	require.Equal(t, []Principal{
-		{ID: "alice@pve", Privs: vmUserReach},
-		{ID: "alice@pve!shared", Privs: vmUserReach},
+		{ID: "alice@pve", Privs: vmUserReach, At: []string{applPath}},
+		{ID: "alice@pve!shared", Privs: vmUserReach, At: []string{applPath}},
 	}, Refused(moved(group("/pool/infra", "ops", "PVEVMUser")), 120, "pco", "pco@pve"), "the pool it is in")
-	require.Equal(t, []Principal{{ID: "bob@pve", Privs: vmUserReach}},
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: vmUserReach, At: []string{applPath}}},
 		Refused(moved(user("/pool/pco", "bob@pve", "PVEVMUser")), 120, "pco", "pco@pve"), "the pool it is to be in")
-	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}}},
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}, At: []string{"/pool/infra"}}},
 		Refused(moved(user("/pool/infra", "bob@pve", "PVEPoolAdmin")), 120, "pco", "pco@pve"))
-	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}}},
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Permissions.Modify"}, At: []string{"/pool/infra"}}},
 		Refused(moved(user(applPath, "bob@pve", "NoAccess"), user("/pool/infra", "bob@pve", "Delegate")), 120, "pco", "pco@pve"))
-	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"VM.Clone", "VM.Migrate"}}},
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"VM.Clone", "VM.Migrate"}, At: []string{applPath}}},
 		Refused(moved(user("/pool/infra", "bob@pve", "PVETemplateUser"), user("/pool/pco", "bob@pve", "Migrate")), 120, "pco", "pco@pve"),
 		"what either pool gives adds up")
 
-	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}}},
+	require.Equal(t, []Principal{{ID: "bob@pve", Privs: []string{"Pool.Allocate"}, At: []string{"/pool/infra"}}},
 		Refused(moved(user("/pool/infra", "bob@pve", "PVEPoolAdmin")), 120, "", "pco@pve"), "without a pool to take it in")
 	require.Empty(t, Refused(moved(user("/pool/other", "bob@pve", "PVEVMAdmin")), 120, "pco", "pco@pve"))
 }

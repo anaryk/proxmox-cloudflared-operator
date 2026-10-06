@@ -537,6 +537,30 @@ func TestPoolAllocateIsAnsweredOnThePool(t *testing.T) {
 		"pveum acl modify /pool/pco --users dave@pve --roles NoAccess")
 }
 
+// Permissions.Modify granted above the appliance is taken away where it is
+// granted: NoAccess on the appliance would leave it, and with it the means to
+// grant any role again.
+func TestPermissionsModifyIsAnsweredWhereItIsGranted(t *testing.T) {
+	a := newApplianceEnv(t, incA)
+	a.acc.grant("erin@pve", "/", "Delegate", "Permissions.Modify")
+	a.acc.grant("frank@pve", "/vms", "Delegate", "Permissions.Modify")
+	a.acc.grant("frank@pve", "/vms/9250", "PVEVMUser", "VM.Audit", "VM.Console")
+	a.acc.grant("gina@pve", "/pool/pco", "Delegate", "Permissions.Modify")
+
+	st := a.cycle()
+
+	for _, line := range []string{
+		"erin@pve holds Permissions.Modify on the appliance lxc/9250; pco serves nothing while it does: " +
+			"pveum acl modify / --users erin@pve --roles NoAccess",
+		"frank@pve holds Permissions.Modify, VM.Console on the appliance lxc/9250; pco serves nothing while it does: " +
+			"pveum acl modify /vms --users frank@pve --roles NoAccess and pveum acl modify /vms/9250 --users frank@pve --roles NoAccess",
+		"gina@pve holds Permissions.Modify on the appliance lxc/9250; pco serves nothing while it does: " +
+			"pveum acl modify /pool/pco --users gina@pve --roles NoAccess and pveum acl modify /vms/9250 --users gina@pve --roles NoAccess",
+	} {
+		require.Contains(t, st.Problems, line)
+	}
+}
+
 func TestAccessThatCannotBeReadLeavesTheConnectorsAlone(t *testing.T) {
 	a := newApplianceEnv(t, incA)
 	a.acc.grant("alice@pve", "/vms/9250", "PVEVMUser", "VM.Console")

@@ -114,8 +114,9 @@ func exposure(acc accessView, vmid int, ownUser string) []access.Principal {
 	return access.Refused(acc.data, vmid, appliance.Pool, ownUser)
 }
 
-// exposedLine says what a principal holds on the appliance and the command
-// that takes it away: on the appliance, and on its pool for Pool.Allocate. A
+// exposedLine says what a principal holds on the appliance and the commands
+// that take it away, at the paths Refused names: on the appliance, on its pool
+// for Pool.Allocate, and where Permissions.Modify is granted above them. A
 // privilege-separated token is answered with --tokens; a token without
 // privilege separation holds the roles of its user, so its user is.
 func exposedLine(p access.Principal, d access.Data, vmid int) string {
@@ -127,15 +128,8 @@ func exposedLine(p access.Principal, d access.Data, vmid int) string {
 			who, why = user, fmt.Sprintf("%s is not privilege-separated: it holds the roles of %s; ", p.ID, user)
 		}
 	}
-	var paths []string
-	if slices.ContainsFunc(p.Privs, func(priv string) bool { return priv != "Pool.Allocate" }) {
-		paths = append(paths, fmt.Sprintf("/vms/%d", vmid))
-	}
-	if slices.Contains(p.Privs, "Pool.Allocate") {
-		paths = append(paths, "/pool/"+appliance.Pool)
-	}
-	cmds := make([]string, len(paths))
-	for i, path := range paths {
+	cmds := make([]string, len(p.At))
+	for i, path := range p.At {
 		cmds[i] = fmt.Sprintf("pveum acl modify %s %s %s --roles NoAccess", path, flag, who)
 	}
 	return fmt.Sprintf("%s holds %s on the appliance lxc/%d; pco serves nothing while it does: %s%s",
