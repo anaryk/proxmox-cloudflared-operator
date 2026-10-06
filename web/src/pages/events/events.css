@@ -1,0 +1,90 @@
+/* the filters of the Events page */
+
+.filters {
+  padding: 12px 14px 4px;
+}
+
+.filters-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 28px;
+  margin-bottom: 8px;
+}
+
+.filter-group {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.filter-group legend,
+.filter-kinds summary {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.filter-group legend {
+  float: left;
+  margin-right: 14px;
+  line-height: 24px;
+}
+
+.filter-kinds summary {
+  cursor: pointer;
+}
+
+.filter-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.filter-kinds .filter-checks {
+  margin-top: 6px;
+}
+
+.filter-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.filters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0 14px;
+}
+
+.filters-grid .field {
+  margin-bottom: 10px;
+}
+
+.filters-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  cursor: pointer;
+}
+
+.events-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 10px;
+}
+
+.events-more p {
+  margin: 0;
+}

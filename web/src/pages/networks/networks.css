@@ -1,0 +1,33 @@
+/* the sections of the Networks page */
+
+.networks {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.networks .card-body > p:first-child {
+  margin-top: 0;
+}
+
+.levels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.network-detail h3 {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.network-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}

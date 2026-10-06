@@ -1,0 +1,56 @@
+/* the findings of the doctor */
+
+.doctor-summary {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finding {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.finding:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.finding:last-child {
+  padding-bottom: 0;
+}
+
+.finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.finding-detail {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.finding-fix {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.finding-fix > b {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text2);
+  font-size: 12.5px;
+}
+
+p.finding-fix > b {
+  display: inline;
+  margin-bottom: 0;
+}

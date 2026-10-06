@@ -1,6 +1,10 @@
 import { render, screen } from '@testing-library/react'
 import { expect, test } from 'vitest'
 
+import { StoreProvider } from '../api/store'
+import { ToastProvider } from '../components/Toast'
+import untagged from '../fixtures/untagged.json'
+import { fakeStore } from '../test/store'
 import { Page } from './Page'
 import { match } from './router'
 
@@ -18,4 +22,21 @@ test('a zone and an account too', () => {
   unmount()
   render(<Page view={match('/edge/tunnels/acc%E2%80%AE1')} />)
   expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Tunnel in account acc⟨U+202E⟩1')
+})
+
+test.each([
+  ['/events', 'Events'],
+  ['/doctor', 'Doctor'],
+  ['/networks', 'Networks'],
+])('%s is the page of %s', async (path, title) => {
+  const { store } = await fakeStore({ state: untagged })
+  render(
+    <StoreProvider store={store}>
+      <ToastProvider>
+        <Page view={match(path)} />
+      </ToastProvider>
+    </StoreProvider>,
+  )
+  expect(screen.getByRole('heading', { level: 1, name: title })).toBeTruthy()
+  expect(screen.queryByText(/not part of this build yet/)).toBeNull()
 })

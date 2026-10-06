@@ -1,18 +1,18 @@
-import { useState } from 'react'
+import type { ReactNode } from 'react'
 
 import { useApp } from '../api/store'
-import { Button } from '../components/Button'
 import { Skeleton } from '../components/Skeleton'
 import { StateBadge } from '../components/StateBadge'
 import { Untrusted } from '../components/Untrusted'
+import { DoctorPage } from '../pages/doctor/DoctorPage'
+import { EventsPage } from '../pages/events/EventsPage'
+import { NetworksPage } from '../pages/networks/NetworksPage'
 import { compareRouteStates } from '../text/words'
-import { type EventFilter, EventsTable } from './EventsTable'
 import { Head } from './Head'
 import { Link } from './Link'
 import { NoRoutes } from './NoRoutes'
 import { Problems } from './Problems'
 import type { View } from './router'
-import { useLocation } from './router'
 
 // Routes says how many routes there are in each state, or why there are none.
 function RouteCounts() {
@@ -51,50 +51,15 @@ function Overview() {
   )
 }
 
-const listOf = (q: URLSearchParams, key: string) => {
-  const v = q.getAll(key).filter(Boolean)
-  return v.length > 0 ? v : undefined
-}
-
-function Events() {
-  const loc = useLocation()
-  const [live, setLive] = useState(true)
-  const q = new URL(loc, 'https://page.invalid').searchParams
-  const filter: EventFilter = {
-    route: listOf(q, 'route'),
-    guest: listOf(q, 'guest'),
-    account: listOf(q, 'account'),
-    kind: listOf(q, 'kind'),
-    level: listOf(q, 'level'),
-    text: q.get('text') ?? undefined,
-  }
-  return (
-    <>
-      <Head
-        title="Events"
-        description="The daemon keeps the last thousand events in memory; the journal on the node has them all."
-        actions={
-          <Button aria-pressed={!live} onClick={() => setLive(!live)}>
-            {live ? 'Pause' : 'Go live'}
-          </Button>
-        }
-      />
-      <EventsTable filter={filter} live={live} />
-    </>
-  )
-}
-
 const titles: Readonly<Record<string, [string, string]>> = {
   routes: ['Routes', 'Every hostname the guests and the manual routes ask for, and what pco made of it.'],
   plan: ['Plan', 'What the cycles would change at Cloudflare, and what waits for a confirmation.'],
   'manual-new': ['New manual route', 'A hostname for an address that no guest annotation names.'],
   guests: ['Guests', 'The guests that carry the tag, their approvals and the issues in their Notes.'],
   claims: ['Claims', 'Who holds each hostname, and who waits for it.'],
-  networks: ['Networks', 'The bridges and VLANs the routes were proven on.'],
   credentials: ['Credentials', 'The Cloudflare API tokens pco uses.'],
   zones: ['Zones', 'The zones the credentials list, and which credential serves each.'],
   tunnels: ['Tunnels', 'The tunnel of the install in each account, and its connectors.'],
-  doctor: ['Doctor', 'The checks of pco doctor, run when you ask.'],
   settings: ['Settings', 'The settings of the daemon.'],
   setup: ['First-run setup', 'A token, the zones, and the first route.'],
 }
@@ -148,8 +113,12 @@ export function Page({ view }: { view: View }) {
   switch (view.name) {
     case 'overview':
       return <Overview />
+    case 'networks':
+      return <NetworksPage />
     case 'events':
-      return <Events />
+      return <EventsPage />
+    case 'doctor':
+      return <DoctorPage />
     case 'not-found':
       return (
         <>
