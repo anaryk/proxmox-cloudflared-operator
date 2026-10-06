@@ -349,9 +349,11 @@ func TestUninstallOfAContainerThatIsGone(t *testing.T) {
 // lists it.
 func (e *testEnv) migrated(vmid int, node string) {
 	e.t.Helper()
-	require.NotNil(e.t, e.node.cts[vmid])
+	ct := e.node.cts[vmid]
+	require.NotNil(e.t, ct)
 	delete(e.node.cts, vmid)
 	e.node.elsewhere[vmid] = node
+	e.node.otherCTs[vmid] = ct
 }
 
 // Only a container that is in no node's list is gone: on another node, the

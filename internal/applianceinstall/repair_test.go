@@ -2,6 +2,7 @@ package applianceinstall
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -254,6 +255,70 @@ func TestRepairRefusesACopyBesideItsOriginal(t *testing.T) {
 			require.False(t, e.node.cts[121].running)
 		})
 	}
+}
+
+// takenBy puts a guest of an admin on the VMID the original had: it is no
+// original of a restore, whatever its VMID says.
+func (e *testEnv) takenBy(vmid int) {
+	e.t.Helper()
+	e.node.cts[vmid] = &fakeCT{cfg: map[string]string{"description": "the file server of the admin\n"}, files: map[string]fakeFile{}}
+}
+
+// A restore is told from a copy by the original it names, not by its VMID: an
+// unrelated guest that took the VMID of a lost original is not the original.
+func TestARestoreIsNoCopyWhenAnotherGuestHasTheVMIDOfItsOriginal(t *testing.T) {
+	e := installed(t)
+	e.restored(101, true)
+	e.lose()
+	e.takenBy(100)
+
+	require.NoError(t, e.in.Repair(t.Context(), 101, Options{Yes: true, Recover: true, CloudflareToken: cfToken}), e.ask.text())
+
+	require.Contains(t, e.ask.text(), "container lxc/101: made from lxc/100, and marked as itself now")
+	require.NotContains(t, e.ask.text(), "is a copy of")
+	require.Equal(t, "the file server of the admin\n", e.node.cts[100].cfg["description"], "the admin's guest is left alone")
+
+	e = installed(t)
+	e.restored(101, true)
+	e.lose()
+	e.takenBy(100)
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 101, uninstallOptions()), e.ask.text())
+
+	require.Contains(t, e.ask.text(), "(it was made from lxc/100, which its description names)")
+	require.NotContains(t, e.ask.text(), "is a copy of")
+	require.Nil(t, e.node.cts[101])
+	require.NotNil(t, e.node.cts[100])
+}
+
+// What cannot be looked at is not taken for an unrelated guest: the refusal
+// stands while the configuration of the original cannot be read.
+func TestACopyIsRefusedWhileItsOriginalCannotBeLookedAt(t *testing.T) {
+	e := installed(t)
+	e.cloned()
+	e.node.on("pvesh get /nodes/pve1/lxc/100/config", func(context.Context, []string) (string, error) {
+		return "", errors.New("timeout")
+	})
+	desc := e.node.cts[121].cfg["description"]
+
+	err := e.in.Repair(t.Context(), 121, Options{Yes: true})
+
+	require.ErrorContains(t, err, "reading the configuration of lxc/100 on pve1, to tell whether it is the original: ")
+	require.ErrorContains(t, err, "timeout")
+	require.Equal(t, desc, e.node.cts[121].cfg["description"])
+	require.Equal(t, 0, e.node.count("pveum user token"))
+
+	e = installed(t)
+	e.cloned()
+	e.node.on("pvesh get /nodes/pve1/lxc/100/config", func(context.Context, []string) (string, error) {
+		return "", errors.New("timeout")
+	})
+
+	err = e.in.Uninstall(t.Context(), 121, uninstallOptions())
+
+	require.ErrorContains(t, err, "reading the configuration of lxc/100 on pve1, to tell whether it is the original")
+	require.NotNil(t, e.node.cts[121])
+	require.Equal(t, 0, e.node.count("pct destroy"))
 }
 
 // A bootstrap init turned away is kept by init for the init its message asks

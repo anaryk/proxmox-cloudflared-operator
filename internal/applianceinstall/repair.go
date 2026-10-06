@@ -156,6 +156,26 @@ func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
 	return nil
 }
 
+// originalOf finds the container lxc/from that a copy was made from, in the
+// cluster: the guest of that VMID counts only when it is a container with the
+// description the installer writes for itself, as another guest may have taken
+// the VMID of an original that is gone. When its configuration cannot be read
+// it cannot be told, which is an error and no answer.
+func (r *run) originalOf(ctx context.Context, from int) (node string, found bool, err error) {
+	node, ok, err := containerNode(ctx, r.r, from)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	cfg, err := readCTConfig(ctx, r.r, node, from)
+	if err != nil {
+		return "", false, fmt.Errorf("reading the configuration of lxc/%d on %s, to tell whether it is the original: %w", from, node, err)
+	}
+	if vmid, _, ok := parseDescription(cfg["description"]); !ok || vmid != from {
+		return "", false, nil
+	}
+	return node, true, nil
+}
+
 // notACopy refuses to repair the container while lxc/from, which it is a copy
 // of, is in the cluster: both would write the one install, the copy with the
 // credentials of the original.
@@ -164,7 +184,7 @@ func (r *run) notACopy(ctx context.Context, from int) error {
 	if from == 0 || from == vmid {
 		return nil
 	}
-	node, ok, err := containerNode(ctx, r.r, from)
+	node, ok, err := r.originalOf(ctx, from)
 	if err != nil || !ok {
 		return err
 	}

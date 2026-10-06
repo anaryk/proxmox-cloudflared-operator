@@ -126,8 +126,9 @@ type fakeNode struct {
 
 	cts       map[int]*fakeCT
 	vms       map[int]bool
-	elsewhere map[int]string // containers on other nodes of the cluster, by node
-	creating  map[int]int    // how often a pct create of the VMID is still listed as running
+	elsewhere map[int]string  // containers on other nodes of the cluster, by node
+	otherCTs  map[int]*fakeCT // the containers of elsewhere, whose configuration any node of the cluster can read
+	creating  map[int]int     // how often a pct create of the VMID is still listed as running
 	users     []*fakeUser
 	groups    []fakeGroup
 	roles     map[string][]string
@@ -167,6 +168,7 @@ func newFakeNode(t *testing.T) *fakeNode {
 		cts:       map[int]*fakeCT{},
 		vms:       map[int]bool{},
 		elsewhere: map[int]string{},
+		otherCTs:  map[int]*fakeCT{},
 		creating:  map[int]int{},
 		users:     []*fakeUser{{ID: "root@pam", Enabled: true}},
 		roles: map[string][]string{
@@ -419,6 +421,15 @@ func (f *fakeNode) pvesh(args []string) (string, error) {
 			return "", fmt.Errorf("Configuration file 'nodes/%s/lxc/%d.conf' does not exist", f.name, id)
 		}
 		return asJSON(ct.cfg), nil
+	}
+	// The configuration of a container of another node, which the API of any
+	// node of the cluster gives.
+	if node, rest, ok := strings.Cut(strings.TrimPrefix(path, "/nodes/"), "/lxc/"); verb == "get" && ok && node != f.name && strings.HasSuffix(rest, "/config") {
+		id, _ := strconv.Atoi(strings.TrimSuffix(rest, "/config"))
+		if ct := f.otherCTs[id]; ct != nil && f.elsewhere[id] == node {
+			return asJSON(ct.cfg), nil
+		}
+		return "", fmt.Errorf("Configuration file 'nodes/%s/lxc/%d.conf' does not exist", node, id)
 	}
 	f.t.Errorf("unexpected pvesh %v", args)
 	return "", errors.New("unexpected command")

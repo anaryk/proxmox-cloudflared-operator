@@ -126,7 +126,7 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 			return s, err
 		}
 		if s.described != vmid {
-			if s.originalNode, _, err = containerNode(ctx, r.r, s.described); err != nil {
+			if s.originalNode, _, err = r.originalOf(ctx, s.described); err != nil {
 				return s, err
 			}
 		}
