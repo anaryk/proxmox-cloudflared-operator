@@ -1,0 +1,7 @@
+qm
+set
+101
+--net2
+virtio=06:50:43:4f:76:07,bridge=pconet,firewall=0
+--digest
+0123456789abcdef0123456789abcdef01234567

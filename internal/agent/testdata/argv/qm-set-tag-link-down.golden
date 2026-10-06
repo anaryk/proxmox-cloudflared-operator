@@ -1,0 +1,7 @@
+qm
+set
+101
+--net1
+virtio=06:50:43:4f:76:05,bridge=vmbr1,tag=20,firewall=1,link_down=1
+--digest
+0123456789abcdef0123456789abcdef01234567

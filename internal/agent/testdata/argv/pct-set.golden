@@ -1,0 +1,7 @@
+pct
+set
+200
+--net1
+name=eth1,bridge=pconet,hwaddr=06:50:43:4f:76:06,ip=10.203.118.6/24,firewall=0
+--digest
+0123456789abcdef0123456789abcdef01234567
