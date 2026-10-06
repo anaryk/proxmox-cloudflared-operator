@@ -1,5 +1,5 @@
 // The error answers of the daemon and of the web process, and what the page
-// does with each code (spec-ui 7.3).
+// does with each code.
 
 export interface ErrorFields {
   error?: string

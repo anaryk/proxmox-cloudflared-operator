@@ -7,7 +7,7 @@ import { Untrusted } from './Untrusted'
 
 // CopyCommand offers a command for a root shell on the node, or says why
 // there is none. It takes only what words.ts composes: a constant, or a
-// command whose every value passed commandArg (spec-ui 9.6), so nothing a
+// command whose every value passed commandArg, so nothing a
 // guest or Cloudflare wrote can reach the shell by way of the page. Anything
 // else, cast past the compiler, is refused here.
 export function CopyCommand({ cmd, root }: { cmd: CommandWords; root?: boolean }) {

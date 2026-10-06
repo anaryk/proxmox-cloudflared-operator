@@ -5,7 +5,7 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
-const sink = 'Text from guests and from Cloudflare must never reach an HTML sink (spec-ui 9.6): render it as text.'
+const sink = 'Text from guests and from Cloudflare must never reach an HTML sink: render it as text.'
 const code = 'The Content-Security-Policy refuses to run strings as code.'
 
 export default defineConfig([

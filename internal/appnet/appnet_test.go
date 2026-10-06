@@ -159,8 +159,8 @@ func complete(t *testing.T) (*fakeNetlink, *fakeNft) {
 	return nl, nft
 }
 
-// The two values are plan 3's gateway.ServicePrefix and gateway.TransitHost,
-// which replace them; until then nothing may make them differ.
+// The two values are the ones the gateway of the managed network takes over
+// later; until then nothing may make them differ.
 func TestTheServicePrefixAndItsSourceAreTheGatewaysValues(t *testing.T) {
 	require.Equal(t, "198.18.0.0/16", ServicePrefix.String())
 	require.Equal(t, "198.18.0.1", ServiceSource.String())

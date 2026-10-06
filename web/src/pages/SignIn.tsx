@@ -24,7 +24,7 @@ function refusal(e: ApiError): string {
   return explain(e).text
 }
 
-// SignInCard is the sign-in of the host profile (spec-ui 4.1): the session of
+// SignInCard is the sign-in of the host profile: the session of
 // Proxmox VE in this browser, or a pasted API token. It is the page at
 // /signin and the dialog that opens over a page whose session ended.
 export function SignInCard({ onSignedIn }: { onSignedIn?: () => void }) {

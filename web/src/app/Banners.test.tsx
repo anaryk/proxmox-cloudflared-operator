@@ -22,7 +22,7 @@ afterEach(() => {
 
 const keys = (s: Parameters<typeof bannersOf>[0]) => bannersOf(s, now).map((b) => b.key)
 
-describe('the order of spec-ui 3.1, most severe first', () => {
+describe('the banners, most severe first', () => {
   test('every banner at once', () => {
     const state: State = {
       ...st,

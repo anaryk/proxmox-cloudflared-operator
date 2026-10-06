@@ -19,8 +19,7 @@ const ToastContext = createContext<Show | null>(null)
 const shownFor = 6000
 
 // ToastProvider shows the results of actions in the corner of the page. They
-// are announced as they come: failures at once, the others politely
-// (spec-ui 10).
+// are announced as they come: failures at once, the others politely.
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<Item[]>([])
   const next = useRef(0)

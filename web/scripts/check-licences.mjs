@@ -1,7 +1,7 @@
 // Fails when a package the interface ships at run time has a licence outside
-// the list of spec-ui 9.9. It reads package-lock.json and needs nothing
-// installed: every package npm does not mark as for development only counts.
-// The build holds what it bundles to the same list (vite.config.ts).
+// the list in allowed. It reads package-lock.json and needs nothing installed:
+// every package npm does not mark as for development only counts. The build
+// holds what it bundles to the same list (vite.config.ts).
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

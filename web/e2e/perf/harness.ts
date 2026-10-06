@@ -1,4 +1,4 @@
-// The page of the flow map's performance test (spec-ui 12.2). It builds a
+// The page of the flow map's performance test. It builds a
 // graph at the map's render budget, draws it with the renderer the query
 // names (?renderer=baseline, or ?renderer=map for src/flow/FlowMap.tsx),
 // moves its dots with one loop, and measures what perf.spec.ts asks for
@@ -11,8 +11,8 @@ import { createRoot } from 'react-dom/client'
 
 import type { Box, FlowEdge, FlowMap, FlowNode, FlowRow, Layout, Model, Motion, MotionEdge, Point } from '../../src/flow/types'
 
-// The render budget of spec-ui 5.4: 150 cards (46 zones, 12 tunnels with a
-// connector each, 20 paths, 60 targets) and 400 edges; the dot cap of 5.3.
+// The render budget: 150 cards (46 zones, 12 tunnels with a connector each,
+// 20 paths, 60 targets) and 400 edges; at most 400 dots at once.
 const zones = 46
 const tunnels = 12
 const paths = 20
@@ -23,7 +23,7 @@ const cap = 400
 const changed = 20 // routes one state change changes
 const crossing = 1.6 // seconds a dot takes along its edge
 
-// The bands as task 11b lays them out, in layout units: [x, width].
+// The bands of the layout, in layout units: [x, width].
 const bands = {
   hostnames: [8, 300],
   edge: [350, 172],

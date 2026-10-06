@@ -228,9 +228,9 @@ func TestAnIncompleteInventoryHoldsAsOnTheHostOrSaysTheCertificate(t *testing.T)
 	require.Equal(t, line, st.Identity.Why)
 }
 
-// The clone sequence of report 3: a clone started with the appliance's
-// state on a volume of its own never writes and never draws an epoch, and
-// the original, started again, draws one before its first write.
+// A clone started with the appliance's state on a volume of its own never
+// writes and never draws an epoch, and the original, started again, draws one
+// before its first write.
 func TestTheCloneSequence(t *testing.T) {
 	a := newApplianceEnv(t, incB)
 	stored := planner.Writer{InstallID: testInstall, Generation: 5, Nonce: "n5", Incarnation: incA}
@@ -317,8 +317,8 @@ func TestAForeignConnectorIsAdoptedByTheProfilesRecovery(t *testing.T) {
 		"; pco appliance recover adopts that install, pco uninstall on this node removes it")
 }
 
-// G2: a rollback or a restore whose state another appliance wrote past
-// leaves a sentinel of this install that leader.json does not know.
+// A rollback or a restore whose state another appliance wrote past leaves a
+// sentinel of this install that leader.json does not know.
 func TestAStateBehindCloudflareIsSaidAsSuch(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -512,7 +512,7 @@ func TestAPrincipalThatCanReachIntoTheApplianceStopsItUntilItCannot(t *testing.T
 		Message: "no principal can reach into the appliance any more"})
 }
 
-// G3: a token without privilege separation holds the roles of its user, so
+// A token without privilege separation holds the roles of its user, so
 // NoAccess on the token would change nothing.
 func TestATokenWithoutPrivilegeSeparationIsAnsweredOnItsUser(t *testing.T) {
 	a := newApplianceEnv(t, incA)
@@ -632,9 +632,9 @@ func TestAMovedAddressVerifiedAgainLeavesTheSetOfACopyEmpty(t *testing.T) {
 	require.Equal(t, []string{"egress remove 10.0.0.11"}, log.all())
 }
 
-// Recommended 1 and failure mode 5: a NIC configured without a link, for
-// more than the minute, holds writes and cuts nothing when the mount proves
-// the container; without that proof it is a copy.
+// A NIC configured without a link, for more than the minute, holds writes and
+// cuts nothing when the mount proves the container; without that proof it is a
+// copy.
 func TestANICWithoutALinkHoldsWritesUnlessNothingButTheUptimeProves(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -704,8 +704,8 @@ func TestACopyWhoseConnectorsDidNotStopRestartsNone(t *testing.T) {
 	require.Len(t, a.conn.ensures(), ensures)
 }
 
-// C2: the deep check of a credential makes a probe tunnel at Cloudflare,
-// which a copy must not.
+// The deep check of a credential makes a probe tunnel at Cloudflare, which a
+// copy must not.
 func TestADeepCheckIsRefusedWhileTheApplianceServesNothing(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

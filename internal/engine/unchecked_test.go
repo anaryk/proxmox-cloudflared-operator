@@ -15,7 +15,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
-// The reviewed sequence: www is served by qemu/101 on :8080, the writer
+// The sequence: www is served by qemu/101 on :8080, the writer
 // identity becomes unusable, the admin resolves to qemu/102 and a cycle runs.
 // Cloudflare still has :8080; the state must not show the tunnel as verified.
 func TestATunnelACycleDidNotCheckIsShownAsHeld(t *testing.T) {

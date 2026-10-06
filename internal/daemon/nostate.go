@@ -18,7 +18,7 @@ import (
 )
 
 // noStateEngine answers the API of an appliance whose volume holds no state
-// yet, or none it can use (ruling 19): its state is the profile, the line that
+// yet, or none it can use: its state is the profile, the line that
 // says what to do and when the volume was last looked at, and every action is
 // refused with that line. It changes nothing anywhere.
 type noStateEngine struct {

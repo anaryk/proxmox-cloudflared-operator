@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import { match, navigate, sectionOf } from './router'
 
-describe('every path of spec-ui 3.2', () => {
+describe('every path of the page', () => {
   test.each([
     ['/', '', { name: 'overview' }],
     ['/', '?focus=guest:qemu/101', { name: 'overview' }],

@@ -224,7 +224,7 @@ func TestRouteRemovedRuleGoesAtOnceRecordAfterTheGrace(t *testing.T) {
 	require.Empty(t, claims)
 }
 
-// D2: the planner gives a route whose target was rejected no record, and its
+// The planner gives a route whose target was rejected no record, and its
 // record is retired rather than kept for the claim.
 func TestTheRecordOfARejectedTargetIsRetired(t *testing.T) {
 	e := newEnv(t)

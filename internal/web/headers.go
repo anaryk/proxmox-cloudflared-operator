@@ -3,7 +3,7 @@ package web
 import "github.com/gin-gonic/gin"
 
 // contentSecurityPolicy lets the page load only its own files, run no inline
-// script or style, and turn no string into HTML (spec-ui 9.2).
+// script or style, and turn no string into HTML.
 const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
 	"font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; " +
 	"frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"

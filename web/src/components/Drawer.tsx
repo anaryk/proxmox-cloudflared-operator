@@ -12,8 +12,7 @@ export interface DrawerProps {
 
 // Drawer shows the details of what was picked beside the page, which stays
 // usable: it is not modal. Opening it moves focus to its heading; Esc in it
-// closes it, and focus goes back to the row or node that opened it
-// (spec-ui 10).
+// closes it, and focus goes back to the row or node that opened it.
 export function Drawer({ open, onClose, title, children }: DrawerProps) {
   const ref = useRef<HTMLElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)

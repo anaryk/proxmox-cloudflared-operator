@@ -5,7 +5,7 @@ import { nextStep } from '../text/words'
 
 // Problems is the card of the Overview that pco status ends with: every
 // problem line as the daemon wrote it, in its order, and the next step when
-// there is one (spec-ui 4.3). Before the first cycle the lines are the
+// there is one. Before the first cycle the lines are the
 // standing problems the daemon started with.
 export function Problems({ state }: { state: State }) {
   if (state.problems.length === 0) return null

@@ -21,7 +21,7 @@ import (
 // guests, checks them against the snapshot of the cycle, keeps the identity
 // flag and, on the first verdict of the process that passes, decides the
 // writer epoch of this start. A copy never gets that far, so it draws nothing,
-// not even on its own volume (ruling 23).
+// not even on its own volume.
 type Self struct {
 	ID          Identity
 	InstallID   string

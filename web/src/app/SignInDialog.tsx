@@ -4,7 +4,7 @@ import { SignInCard } from '../pages/SignIn'
 
 // SignInDialog opens over the page when a call finds the session gone: the
 // page keeps what it shows, and what the user did last is not sent again
-// after the sign-in (spec-ui 7.3).
+// after the sign-in.
 export function SignInDialog() {
   const store = useStore()
   const needed = useApp((s) => s.signInNeeded)

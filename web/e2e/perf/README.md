@@ -2,7 +2,7 @@
 
 `perf.spec.ts` measures the flow map of the Overview against a baseline drawn
 with nothing but React and the DOM, both in the same run, and holds the map to
-the budgets of spec-ui 12.2. Until `src/flow/FlowMap.tsx` exists, only the
+the budgets below. Until `src/flow/FlowMap.tsx` exists, only the
 baseline runs and the map's test is skipped.
 
 ## Running it
@@ -26,14 +26,14 @@ run against a number from another machine.
 
 ## The scene
 
-`harness.ts` builds the map at its render budget (spec-ui 5.4): 150 cards
+`harness.ts` builds the map at its render budget: 150 cards
 (46 zone cards with 240 hostname rows, 12 edge nodes, 12 connectors, 20 paths,
 60 target cards with 240 access points) and 400 edges. The trunk of the first
 tunnel has four lanes, and it and 100 port edges carry dots, from 1.6 to 14 a
-second through the mapping of spec-ui 5.3. One loop moves every dot, at most
-400 at once. The window is 1440 by 900; the map fits its width and is given
-the height of the whole graph, so every card, edge and dot is in its view
-while the window shows the top of it.
+second through `dotsPerSecond`, which turns the rate of an edge into dots. One
+loop moves every dot, at most 400 at once. The window is 1440 by 900; the map
+fits its width and is given the height of the whole graph, so every card, edge
+and dot is in its view while the window shows the top of it.
 
 A state change moves 20 routes on to their next state: their rows, their
 access points and their port edges change, every other object of the model

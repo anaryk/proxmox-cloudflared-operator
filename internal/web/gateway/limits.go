@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-// The limits of the global constraints (spec-ui 9.8): a diagnosis probes a
-// guest and the doctor the host and Cloudflare; streams hold memory.
+// What one session may ask of the daemon, and what all of them may: a
+// diagnosis probes a guest and the doctor the host and Cloudflare; streams
+// hold memory.
 const (
 	diagnosesPerMinute = 6
 	doctorsPerMinute   = 2

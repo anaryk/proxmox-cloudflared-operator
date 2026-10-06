@@ -1,6 +1,6 @@
 // What the page knows: the session, the daemon's state and traffic, the
 // latest events and how live all of it is. The stream says what changed; the
-// state itself is fetched only when its digest changes (spec-ui 7.2, 13.3).
+// state itself is fetched only when its digest changes.
 
 import { createContext, createElement, type ReactNode, useContext, useRef, useSyncExternalStore } from 'react'
 
@@ -58,9 +58,9 @@ export const maxEvents = 500
 const maxGaps = 100
 const maxSamples = 180
 // The state is fetched whole at least this often: its digest leaves out
-// every time, and so the times of the proofs in it (spec-ui 13.2).
+// every time, and so the times of the proofs in it.
 export const fullFetchEvery = 5 * 60_000
-// Reconnecting longer than this is stale (spec-ui 7.2).
+// Reconnecting longer than this is stale.
 const reconnectingStale = 15_000
 const defaultPoll = 10_000
 
@@ -69,7 +69,7 @@ const doctorKey = 'pco.doctor'
 
 const zeroTime = (at?: string) => !at || at.startsWith('0001-01-01T00:00:00')
 
-// staleAfterMs is 3 × max(pollInterval, finishedAt - at), spec-ui 7.2: the
+// staleAfterMs is 3 × max(pollInterval, finishedAt - at): the
 // base of the doctor's cycle check, so the page and pco doctor agree.
 export function staleAfterMs(s: AppState): number {
   const poll = parseDuration(s.hello?.pollInterval ?? '') ?? defaultPoll
@@ -307,7 +307,7 @@ export class AppStore {
     if (this.#s.auth === 'signed-in' && this.#s.state && this.#now() - this.#lastFull >= fullFetchEvery) void this.fetchState(false)
   }
 
-  // Sessions (spec-ui 4.1, 8.2)
+  // Sessions
 
   async loadSession(): Promise<void> {
     try {

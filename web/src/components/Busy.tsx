@@ -6,7 +6,7 @@ export function elapsedText(ms: number): string {
 }
 
 // Busy says that something runs, and for how long: the daemon reports no
-// progress, so there is no percentage and no bar that fills (spec-ui 4.2).
+// progress, so there is no percentage and no bar that fills.
 // since is when it began, in milliseconds of Date.now(), for an indicator
 // that is shown again after a reload of its part of the page.
 export function Busy({ label, since }: { label: string; since?: number }) {

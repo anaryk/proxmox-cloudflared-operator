@@ -1,6 +1,6 @@
 // The one way the page calls pco web: JSON in and out, the session's CSRF
 // token on every call that changes something, and a limit a little longer
-// than the gateway's for that call (spec-ui 7.3, 9.3).
+// than the gateway's for that call.
 
 import { ApiError, codeNetwork, codeTimeout, type ErrorFields } from './errors'
 
@@ -39,7 +39,7 @@ export function setClientHooks(h: Partial<ClientHooks>): void {
   hooks = { ...quiet, ...h }
 }
 
-// The gateway's timeouts (P5): reads 10 s, writes 60 s, apply and the
+// The gateway's timeouts: reads 10 s, writes 60 s, apply and the
 // credential calls 75 s, diagnosis 30 s, doctor 60 s. The page waits 5 s
 // longer, so that the gateway's answer comes first.
 const slack = 5_000
@@ -57,7 +57,7 @@ export function timeoutFor(method: Method, path: string): number {
 
 export interface CallOptions {
   // A call the page makes by itself, not the user: it does not keep the
-  // session from idling out (spec-ui 8.2).
+  // session from idling out.
   background?: boolean
   timeoutMs?: number
 }

@@ -39,9 +39,9 @@ function ratio(a: string, b: string): number {
 const text = 4.5
 const graphic = 3
 
-// The pairs of spec-ui 11.2: the colour, what it sits on, the least ratio,
-// and the ratio the spec states for light and dark, at the precision it
-// states it.
+// The pairs of colours the page draws: the colour, what it sits on, the least
+// ratio, and the ratio expected for light and dark, at the precision it is
+// written in.
 const pairs: [string, string, number, string, string][] = [
   ['--control-border', '--surface', graphic, '3.50', '4.00'],
   ['--control-border', '--raised', graphic, '3.33', '3.60'],

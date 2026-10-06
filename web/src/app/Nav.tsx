@@ -21,7 +21,7 @@ import { credentialState } from '../text/words'
 import { Link } from './Link'
 import { type Section, sectionOf, useView } from './router'
 
-// What needs a person, by item of the navigation (spec-ui 3.1). All of it is
+// What needs a person, by item of the navigation. All of it is
 // read from the state: the page never fetches the claims or runs the doctor
 // for a counter.
 export interface Counters {

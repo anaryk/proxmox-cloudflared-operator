@@ -116,7 +116,7 @@ describe("the timeouts are the gateway's and 5 s", () => {
   })
 })
 
-describe('the codes of spec-ui 7.3', () => {
+describe('the error codes of the daemon and of the web process', () => {
   const at = new Date('2026-10-05T10:01:05Z')
   test.each([
     [400, { error: 'gateTag: not a tag', code: 'invalid', field: 'gateTag' }, 'gateTag: not a tag', undefined],

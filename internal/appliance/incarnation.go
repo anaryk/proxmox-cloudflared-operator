@@ -14,9 +14,9 @@ import (
 // Incarnation identifies one boot of this container: the container's boot id
 // (/proc/sys/kernel/random/boot_id, fresh at every container start) and field
 // 22 of /proc/1/stat, PID 1's start in clock ticks since the node booted,
-// joined as "<boot id>/<ticks>" and never converted to wall-clock time (ruling
-// 25). Lab 80 showed both change on reboot, stop and start, rollback, clone and
-// restore, and neither on a daemon restart or a freeze.
+// joined as "<boot id>/<ticks>" and never converted to wall-clock time. Both
+// change on reboot, stop and start, rollback, clone and restore, and neither
+// on a daemon restart or a freeze.
 func Incarnation() (string, error) { return System{}.Incarnation() }
 
 // Incarnation is the package's Incarnation on s. Either part unreadable is an
@@ -83,7 +83,7 @@ func startTicks(stat string) (string, error) {
 // EpochAtStart decides the writer epoch of this start: kept when the stored
 // incarnation equals the current one and the install matches; otherwise a
 // new nonce and generation+1, saved durably before it is returned. Only ever
-// called after a passed self-identification of this process (ruling 23).
+// called after a passed self-identification of this process.
 //
 // A leader.json that is missing, not valid or of another install is no epoch
 // to bump: that is for pco appliance recover, and an error here.

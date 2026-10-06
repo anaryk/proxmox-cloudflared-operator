@@ -25,9 +25,8 @@ const (
 	// Pool is the pool of Proxmox the appliance is installed in.
 	Pool = "pco"
 
-	// IdentityFlag is the tmpfs file the connectors' start condition reads
-	// (ruling 23): written on an OK verdict, removed on Copy, absent after
-	// boot.
+	// IdentityFlag is the tmpfs file the connectors' start condition reads:
+	// written on an OK verdict, removed on Copy, absent after boot.
 	IdentityFlag = "/run/pco-appliance/identity-ok"
 
 	// macTolerance is how long a NIC that appeared or vanished is
@@ -155,7 +154,7 @@ type Facts struct {
 type Verdict struct {
 	OK      bool
 	Why     string           // when !OK
-	Copy    bool             // positive evidence of being a copy: stop serving (ruling 23)
+	Copy    bool             // positive evidence of being a copy: stop serving
 	Copies  []model.GuestRef // running guests that carry one of our MACs while we are not proven, or in pool pco while we are
 	Tenants []model.GuestRef // once proven: running guests outside the pool with one of our MACs; their routes are rejected
 	Pending bool             // a NIC appeared or vanished within the last 60 s
@@ -172,17 +171,17 @@ type carrier struct {
 // cannot share (the mount source names a volume of the VMID; a source that
 // names another VMID is Copy at once; a source of no known form leaves it to
 // the uptime, within 10 s of the VMID's uptime in uptimes, except while another
-// running guest carries one of our MACs, when the uptime proves nothing (G1);
+// running guest carries one of our MACs, when the uptime proves nothing;
 // neither proving it while uptimes was read is Copy), and that the links carry
 // exactly the MACs of the VMID's NICs in snap (a difference is Pending for 60 s
 // from the first fresh config that showed it; then Copy when the mount does not
-// prove the VMID, and not OK without Copy when it does: recommended 1, Q2). A
-// complete snapshot that does
-// not list the VMID is Copy. While another running guest carries one of our
-// MACs and the VMID is not proven, the verdict is not OK whatever its pool.
+// prove the VMID, and not OK without Copy when it does, as a NIC added in
+// Proxmox that the guest has not seen yet is no copy). A complete snapshot that
+// does not list the VMID is Copy. While another running guest carries one of
+// our MACs and the VMID is not proven, the verdict is not OK whatever its pool.
 // Once proven, a running guest in pool pco with one of our MACs is a copy of
-// us: the verdict is not OK (writes held, spec section 2) without Copy (we keep
-// serving), and Copies names it; one outside the pool is a tenant.
+// us: the verdict is not OK (writes are held) without Copy (we keep serving),
+// and Copies names it; one outside the pool is a tenant.
 // An incomplete snapshot is not OK without Copy, and so are missing uptimes
 // when the mount does not prove the VMID: only the fallback needs them.
 //

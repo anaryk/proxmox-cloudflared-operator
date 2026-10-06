@@ -10,7 +10,7 @@ export interface ControlProps {
 }
 
 // Field is a labelled control with its hint and its error, both tied to it
-// with aria-describedby (spec-ui 10). children draws the control with the
+// with aria-describedby. children draws the control with the
 // props it is given.
 export function Field({
   label,

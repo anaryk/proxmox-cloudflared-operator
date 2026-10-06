@@ -35,7 +35,7 @@ var (
 )
 
 // MountSource reads the mount at path from /proc/self/mountinfo and names the
-// VMID of its volume by the forms of ruling 8: a ZFS dataset
+// VMID of its volume by these forms: a ZFS dataset
 // ".../subvol-<vmid>-disk-N"; a device-mapper name "<vg>-vm--<vmid>--disk--N"
 // (a /dev/dm-N source resolved through /sys/block/dm-N/dm/name); a Ceph RBD
 // device /dev/rbdN whose /sys/devices/rbd/N/name is "vm-<vmid>-disk-N"; a loop

@@ -48,7 +48,7 @@ func noDNSIn(t *testing.T, calls []string, zoneID string) {
 	}
 }
 
-// Reproduced (a): a listing that succeeds without the zone.
+// Reproduced: a listing that succeeds without the zone.
 func TestAZoneThatLeavesItsListingFreezesItsAccount(t *testing.T) {
 	e, view, tun := servingThrough(t)
 	writes := e.writes()
@@ -142,7 +142,8 @@ func TestAnAccountWithoutAZoneKeepsItsTunnel(t *testing.T) {
 	requireUntouched(t, e, writes, tun)
 }
 
-// Reproduced (b).
+// Reproduced: a pin to a credential that does not see the zone leaves the
+// account as it is until the pin is fixed.
 func TestAPinToACredentialThatDoesNotSeeTheZoneFreezesItsAccount(t *testing.T) {
 	e, _, tun := servingThrough(t)
 	writes := e.writes()
@@ -160,7 +161,8 @@ func TestAPinToACredentialThatDoesNotSeeTheZoneFreezesItsAccount(t *testing.T) {
 	requireUntouched(t, e, writes, tun)
 }
 
-// Reproduced (c).
+// Reproduced: a removed credential, with the tunnel of its account still
+// there, keeps the connector of that tunnel.
 func TestARemovedCredentialLeavesTheConnectorsOfItsTunnels(t *testing.T) {
 	e := newEnv(t)
 	other := cffake.New()
@@ -232,7 +234,8 @@ func TestNoPruneUnlessEveryAccountAndTunnelAnswered(t *testing.T) {
 	})
 }
 
-// Reproduced (d), and A6.
+// Reproduced: two credentials list the same zone; the one that served it
+// keeps serving.
 func TestASecondCredentialForAServedZone(t *testing.T) {
 	e, _, tun := servingThrough(t)
 	writes := e.writes()
@@ -315,7 +318,7 @@ func TestNoPruneOnAnAccountListingOlderThanTenMinutes(t *testing.T) {
 		"at 2026-10-01T11:49:00Z, more than 10m0s ago")
 }
 
-// D1: the accounts are listed with the zones, so that a cycle with nothing to
+// The accounts are listed with the zones, so that a cycle with nothing to
 // do asks Cloudflare for the tunnel, its configuration and the records only.
 func TestAnIdleCycleAsksCloudflareThreeTimes(t *testing.T) {
 	e := newEnv(t)
@@ -338,7 +341,7 @@ func TestAnIdleCycleAsksCloudflareThreeTimes(t *testing.T) {
 	require.Len(t, e.conn.prunes(), 3, "the accounts listed with the zones are fresh enough to prune")
 }
 
-// D3: a stopped connector of a frozen account is started again, with the
+// A stopped connector of a frozen account is started again, with the
 // token it has on disk.
 func TestTheConnectorOfAFrozenAccountKeepsRunning(t *testing.T) {
 	e, _, tun := servingThrough(t)
@@ -365,7 +368,7 @@ func TestAFrozenConnectorWithoutATokenOnDiskIsNotStarted(t *testing.T) {
 	require.NotContains(t, e.callsSince(calls), "TunnelToken "+testAccount+" "+tun.ID, "nothing is asked of a frozen tunnel")
 }
 
-// D4: the way out of keeping the connector of a tunnel no credential sees.
+// The way out of keeping the connector of a tunnel no credential sees.
 func TestAConfirmationLetsGoOfATunnelNoCredentialSees(t *testing.T) {
 	e := newEnv(t)
 	other := cffake.New()

@@ -26,7 +26,7 @@ interface Look {
 const lookOf = (table: Readonly<Record<string, Look>>, key: string): Look | undefined => (Object.hasOwn(table, key) ? table[key] : undefined)
 
 // StatusBadge is a status in its colour, with its icon and a word: never
-// the colour alone (spec-ui 10).
+// the colour alone.
 export function StatusBadge({ tone, icon, children }: { tone: Tone; icon?: ReactNode; children: ReactNode }) {
   return (
     <span className={`status status-${tone}`}>

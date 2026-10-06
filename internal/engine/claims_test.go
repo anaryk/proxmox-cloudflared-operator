@@ -289,9 +289,9 @@ func TestAResolveLooksWithoutHoldingTheCycles(t *testing.T) {
 	require.Equal(t, "qemu/102", wwwClaim(t, e).Owner)
 }
 
-// The reviewed sequence: 101 holds, its clone 103 waits since t0, 102 since
-// t0+10s. 102 drops its route, and before a cycle notices, the admin resolves
-// to 102: nothing moves, and 101 goes on serving.
+// 101 holds, its clone 103 waits since t0, 102 since t0+10s. 102 drops its
+// route, and before a cycle notices, the admin resolves to 102: nothing moves,
+// and 101 goes on serving.
 func TestAResolveToAnOwnerThatJustDroppedItsRouteMovesNothing(t *testing.T) {
 	e, clone := threeClaimants(t)
 	e.inv.set(snapshot(webOne, untagged(webTwo), clone))

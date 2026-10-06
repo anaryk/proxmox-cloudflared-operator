@@ -29,7 +29,7 @@ func forgeSentinel(t *testing.T, e *env, id string, generation int) {
 	require.NoError(t, err)
 }
 
-// The H1 attacker holds a token that can write the tunnel's configuration: a
+// An attacker who holds a token that can write the tunnel's configuration: a
 // sentinel of a newer generation makes the writer foreign, and the cycle holds
 // before the connectors. The connectors are still held against the node's.
 func TestAForgedSentinelHidesNoConnectorThatIsNotOurs(t *testing.T) {

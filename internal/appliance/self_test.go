@@ -107,7 +107,7 @@ func TestAVerdictThatIsNotOKDrawsNothing(t *testing.T) {
 	require.Equal(t, 5, f.writer(t).Generation)
 }
 
-// C1: a lab node whose pvestatd had died answered no uptimes.
+// A node whose pvestatd had died answered no uptimes.
 func TestUptimesThatCannotBeReadDoNotMatterToAMountThatProvesIt(t *testing.T) {
 	f := newSelf(t)
 	f.self.Uptimes = func(context.Context) (map[model.GuestRef]time.Duration, error) {
@@ -180,7 +180,7 @@ func TestFactsThatCannotBeReadAreNotOK(t *testing.T) {
 	require.Equal(t, Verdict{Why: "the facts of this container could not be read: no /proc"}, v)
 }
 
-// Failure mode 3: the certificate of the API stopped verifying.
+// The certificate of the API stopped verifying.
 func TestACertificateThatNoLongerVerifiesIsWhy(t *testing.T) {
 	f := newSelf(t)
 	f.verifyErr = errors.New("x509: certificate signed by unknown authority")

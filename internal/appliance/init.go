@@ -435,7 +435,7 @@ func (r *initRun) registerNode(context.Context) error {
 
 // saveNodeAddrs adds the addresses the installer read on the node to the
 // saved ones, which are never forgotten: an address the node holds only at
-// run time is in no answer of the API (ruling 26).
+// run time is in no answer of the API.
 func (r *initRun) saveNodeAddrs(context.Context) error {
 	saved, err := r.st.NodeAddrs()
 	if err != nil {

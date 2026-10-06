@@ -1,4 +1,4 @@
-// The stream of pco web (spec-ui 7.2, 13.3), read with fetch so that its
+// The stream of pco web, read with fetch so that its
 // status is seen: a 401 opens the sign-in dialog, a 429 says why, and the
 // back-off is the page's own.
 

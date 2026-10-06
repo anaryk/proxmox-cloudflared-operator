@@ -20,9 +20,8 @@ function Notes() {
   )
 }
 
-// NoRoutes is what the Overview and the Routes page show without a route
-// (spec-ui 7.1). No routes is two states, told apart by how many guests carry
-// the gate tag; before the first cycle it is neither.
+// NoRoutes is what the Overview and the Routes page show without a route. No routes is two states, told apart by how many guests
+// carry the gate tag; before the first cycle it is neither.
 export function NoRoutes({ state, gateTag }: { state: State; gateTag?: string }) {
   const tag = <span className="mono">{gateTag ? <Untrusted text={gateTag} /> : 'of the settings'}</span>
   if (zeroTime(state.at)) {

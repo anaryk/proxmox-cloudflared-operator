@@ -11,8 +11,8 @@ import (
 )
 
 // ExitNoVolume is the status pco daemon exits with when VolumeMounted fails;
-// the appliance's pco.service drop-in names it in RestartPreventExitStatus=
-// (ruling 19, gate 2 recommended 2).
+// the appliance's pco.service drop-in names it in RestartPreventExitStatus=, so
+// that a missing volume leaves the daemon failed and not restarted over and over.
 const ExitNoVolume = 78
 
 // The ways VolumeMounted fails besides a path that cannot be read.

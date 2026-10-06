@@ -1,5 +1,5 @@
 // Skeleton holds the place of what is loading, so the page is never blank
-// before the first answer (spec-ui 7.1).
+// before the first answer.
 export function Skeleton({ lines = 3, label = 'Loading' }: { lines?: number; label?: string }) {
   return (
     <div className="skeleton" role="status">

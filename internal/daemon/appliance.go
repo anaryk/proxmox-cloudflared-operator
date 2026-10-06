@@ -77,7 +77,7 @@ func (a ApplianceDeps) withDefaults() ApplianceDeps {
 
 // NoVolumeError is the failure of an appliance whose state volume is not
 // there: the daemon exits with appliance.ExitNoVolume, which its unit does not
-// restart on (ruling 19).
+// restart on.
 type NoVolumeError struct{ Line string }
 
 func (e NoVolumeError) Error() string { return e.Line }
@@ -91,8 +91,8 @@ func (NoVolumeError) ExitCode() int { return appliance.ExitNoVolume }
 // and the endpoint of the Proxmox API, so that the configuration is checked
 // only once it is read. While the volume holds no state, the socket answers
 // through a stub that refuses everything and the volume is looked at again
-// every 30 s (ruling 19). Before the first cycle only a mount that names
-// another VMID is acted on: the container is a copy (ruling 23). The rest is
+// every 30 s. Before the first cycle only a mount that names
+// another VMID is acted on: the container is a copy. The rest is
 // the first cycle's, whose snapshot self-identification needs.
 func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	deps = deps.withDefaults()

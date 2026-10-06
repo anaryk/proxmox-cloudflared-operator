@@ -20,7 +20,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/auth"
 )
 
-// The timeouts of the calls (P5). apply and the credential calls wait past
+// The timeouts of the calls. apply and the credential calls wait past
 // the daemon's own write timeout of 70 s, so that its answer comes first.
 const (
 	readTimeout     = 10 * time.Second
@@ -74,10 +74,9 @@ type Rule struct {
 // eventParams are the parameters of GET /v1/events.
 var eventParams = []string{"since", "after", "boot", "route", "guest", "tunnel", "account", "kind", "level", "limit", "history"}
 
-// Table is every call the page may make, the rows of spec-ui 9.3. The
-// networking milestone adds its own here, one entry each with its test;
-// until then /networks and /managed answer 404 like anything else that is
-// not here.
+// Table is every call the page may make. The networking milestone adds its
+// own here, one entry each with its test; until then /networks and /managed
+// answer 404 like anything else that is not here.
 var Table = []Rule{
 	{Method: http.MethodGet, Path: "/state", Min: auth.RoleReader, Timeout: readTimeout, serve: (*Gateway).state},
 	{Method: http.MethodGet, Path: "/stream", Min: auth.RoleReader, serve: (*Gateway).stream},

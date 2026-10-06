@@ -1,5 +1,5 @@
-// History routing over the paths of spec-ui 3.2. pco web answers index.html
-// for exactly these paths, so each view has an address to share.
+// History routing over the paths of View. pco web answers index.html for
+// exactly these paths, so each view has an address to share.
 
 import { useSyncExternalStore } from 'react'
 

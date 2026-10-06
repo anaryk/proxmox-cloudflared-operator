@@ -64,11 +64,11 @@ func TestTheMountSourceNamesTheVMIDOfItsVolume(t *testing.T) {
 		raw, volume   string
 		vmid          int
 	}{
-		{name: "zfs, lab A7(e)", fixture: "zfs", raw: "pcotestpool/subvol-9201-disk-1 /", volume: "pcotestpool/subvol-9201-disk-1", vmid: 9201},
+		{name: "zfs", fixture: "zfs", raw: "pcotestpool/subvol-9201-disk-1 /", volume: "pcotestpool/subvol-9201-disk-1", vmid: 9201},
 		{name: "zfs from a unit", fixture: "zfs-in-unit", raw: "pcotestpool/subvol-9201-disk-1 /", volume: "pcotestpool/subvol-9201-disk-1", vmid: 9201},
-		{name: "zfs of a clone, lab 40", fixture: "zfs-clone", raw: "pcotestpool/subvol-9210-disk-1 /", volume: "pcotestpool/subvol-9210-disk-1", vmid: 9210},
+		{name: "zfs of a clone", fixture: "zfs-clone", raw: "pcotestpool/subvol-9210-disk-1 /", volume: "pcotestpool/subvol-9210-disk-1", vmid: 9210},
 		{
-			name: "a loop device on a directory storage, lab A7(e)", fixture: "loop",
+			name: "a loop device on a directory storage", fixture: "loop",
 			sys: func(f *fakeSystem) {
 				f.sysfs("block/loop1/loop/backing_file", "/var/lib/vz/images/9202/vm-9202-disk-1.raw\n")
 			},
@@ -375,7 +375,7 @@ func TestCheckProvesTheVMIDByAFactACopyCannotShare(t *testing.T) {
 			want: Verdict{}, why: "the inventory is incomplete"},
 		{name: "a complete snapshot without the VMID", snap: snap(lxc(9295, Pool, macA)), facts: facts(byMount, hour, macA), uptimes: upFor(hour),
 			want: Verdict{Copy: true, Copies: nil}, why: "Proxmox lists no lxc/9250"},
-		{name: "G1: an unknown form within the uptime while another guest carries our MAC", snap: snap(lxc(ownVMID, Pool, macA), lxc(9295, "", macA)),
+		{name: "an unknown form within the uptime while another guest carries our MAC", snap: snap(lxc(ownVMID, Pool, macA), lxc(9295, "", macA)),
 			facts: facts(unknown, hour, macA), uptimes: upFor(hour),
 			want: Verdict{Copy: true, Copies: []model.GuestRef{{Kind: model.KindLXC, VMID: 9295}}}, why: "lxc/9295 carries the MAC bc:24:11:00:92:50 of this container"},
 		{name: "an unproven duplicate MAC in the pool", snap: snap(lxc(ownVMID, Pool, macA), lxc(9295, Pool, macA)),
@@ -427,7 +427,7 @@ func TestAMACMismatchIsPendingForAMinuteThenDecidedByTheMount(t *testing.T) {
 	}{
 		{name: "within the minute, proven by the mount", mount: byMount, after: 59 * time.Second, want: Verdict{OK: true, Pending: true}},
 		{name: "within the minute, proven by the uptime", mount: unknown, after: 59 * time.Second, want: Verdict{OK: true, Pending: true}},
-		{name: "failure mode 5: past the minute, proven by the mount", mount: byMount, after: 61 * time.Second, want: Verdict{},
+		{name: "past the minute, proven by the mount", mount: byMount, after: 61 * time.Second, want: Verdict{},
 			reason: "the links of this container carry bc:24:11:00:92:50, but lxc/9250 in Proxmox has bc:24:11:00:92:50, bc:24:11:00:92:51 for more than 60 s; writes are held"},
 		{name: "past the minute, proven by the uptime only", mount: unknown, after: 61 * time.Second, want: Verdict{Copy: true},
 			reason: "for more than 60 s, and nothing but the uptime proves this container is lxc/9250"},

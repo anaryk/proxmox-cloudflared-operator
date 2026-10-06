@@ -69,10 +69,10 @@ function onControl(e: MouseEvent<HTMLTableRowElement>): boolean {
   return target !== null && target !== e.currentTarget
 }
 
-// Table shows many rows, but has only those in view in the DOM, with a margin
-// (spec-ui 10). It is one stop of the Tab key; the arrow keys, Page Up, Page
-// Down, Home and End move between the rows, which keep the order they are
-// shown in. Screen readers are told the number of rows and where each one is.
+// Table shows many rows, but has only those in view in the DOM, with a margin.
+// It is one stop of the Tab key; the arrow keys, Page Up, Page Down, Home and
+// End move between the rows, which keep the order they are shown in. Screen
+// readers are told the number of rows and where each one is.
 export function Table<T>({ label, columns, rows, rowKey, defaultSort, onActivate, current, height = 560, empty, rowClass }: TableProps<T>) {
   const { density } = usePreferences()
   const asCards = useCards()

@@ -1,4 +1,4 @@
-// One stream per browser (spec-ui 7.2): the tabs elect one with the Web Locks
+// One stream per browser: the tabs elect one with the Web Locks
 // API, and that tab passes every notice to the others over a
 // BroadcastChannel. When it closes, the lock goes to the next tab, which
 // opens the stream. pco web allows 3 streams per session, and a user with

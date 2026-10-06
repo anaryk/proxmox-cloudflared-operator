@@ -27,7 +27,7 @@ const review = (to: string, label = 'Review') => (
 )
 
 // bannersOf are the banners under the top bar, most severe first, each with
-// one action at most (spec-ui 3.1, 7.2).
+// one action at most.
 export function bannersOf(s: AppState, now: number): BannerSpec[] {
   const zone = s.session?.nodeZone
   const at = (t: string) => <Time at={t} nodeZone={zone} />

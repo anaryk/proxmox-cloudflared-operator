@@ -212,7 +212,8 @@ func (c *cycleRun) noteEpoch() {
 	c.events = append(c.events, Event{At: c.now, Level: levelWarn, Kind: kindWriter, Subject: "leader.json", Message: msg})
 }
 
-// quorate holds the cycle while the cluster is not quorate (ruling 24).
+// quorate holds the cycle while the cluster is not quorate: without quorum
+// pmxcfs is read-only, so nothing could be saved.
 func (c *cycleRun) quorate() bool {
 	if c.e.d.Quorate == nil {
 		return true

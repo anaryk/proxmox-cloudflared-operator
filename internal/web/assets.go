@@ -79,7 +79,7 @@ func readAsset(fsys fs.FS, name, cache string) (asset, error) {
 }
 
 // mount adds the routes of the build: the files, and index.html for every
-// page of the interface (spec-ui 3.2).
+// page of the interface.
 func (a *assets) mount(r gin.IRouter) {
 	get := func(p string, h gin.HandlerFunc) {
 		r.GET(p, h)

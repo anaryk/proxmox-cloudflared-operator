@@ -65,7 +65,7 @@ type Identity interface {
 	Check(ctx context.Context, snap inventory.Snapshot) appliance.Verdict
 	// SetFlag writes the flag the connectors start behind, or removes it:
 	// the engine removes it as well while a principal can reach into the
-	// appliance (ruling 27).
+	// appliance.
 	SetFlag(serve bool) error
 }
 
@@ -116,17 +116,17 @@ type Deps struct {
 	OwnSoft func() (gateways, resolvers []netip.Addr, err error)
 
 	Identity Identity
-	// Quorate reads the cluster's quorum (ruling 24); nil on the host.
+	// Quorate reads the cluster's quorum; nil on the host.
 	Quorate func(ctx context.Context) (bool, error)
 	// Incarnation is this container's incarnation; empty on the host. The
-	// engine uses no leader.json of another incarnation (ruling 23).
+	// engine uses no leader.json of another incarnation.
 	Incarnation string
 	// EpochDrawn reports whether this process drew a new epoch (EpochAtStart
 	// did not keep the stored one); nil on the host. Until the first write
 	// of this process is verified at Cloudflare, a foreign or stale verdict
-	// on a sentinel of this install id is VerdictBehind (G2); after it, a
+	// on a sentinel of this install id is VerdictBehind; after it, a
 	// foreign verdict (a second installation with the same install id)
-	// stays foreign (gate 3, suggestion 1).
+	// stays foreign.
 	EpochDrawn func() bool
 }
 

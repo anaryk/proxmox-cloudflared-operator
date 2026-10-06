@@ -586,8 +586,8 @@ func TestThePurgeSaysNothingOfAZoneTheInstallNeverServed(t *testing.T) {
 	e.requireShown(unreadableZone("example.net"))
 }
 
-// As on the lab's node: a token scoped to example.com lists seven more zones
-// of the account, and the memory the daemon leaves names example.com alone.
+// A token scoped to example.com lists seven more zones of the account, and the
+// memory the daemon leaves names example.com alone.
 func TestThePurgeSaysNothingOfTheZonesAScopedTokenNeverRead(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(setupsUser)

@@ -11,7 +11,7 @@ import { Shell } from './Shell'
 
 // loadPart loads a part of the page that is a chunk of its own. One that does
 // not load was built for another version of pco, which has replaced this
-// one: the page asks to be reloaded (spec-ui 3.1).
+// one: the page asks to be reloaded.
 export function loadPart<T>(load: () => Promise<T>, store: AppStore = appStore): Promise<T> {
   return load().catch((e: unknown) => {
     store.markSkew()

@@ -29,7 +29,7 @@ function writeCollapsed(on: boolean): void {
   }
 }
 
-// Shell is every page of a signed-in user (spec-ui 3.1): the top bar, the
+// Shell is every page of a signed-in user: the top bar, the
 // navigation, the banners over the content and the events strip under it.
 export function Shell({ view }: { view: View }) {
   const [navOpen, setNavOpen] = useState(false)

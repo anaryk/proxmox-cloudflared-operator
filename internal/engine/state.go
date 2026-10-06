@@ -28,7 +28,7 @@ const (
 	VerdictForeign = "foreign"
 	VerdictUnknown = "unknown"
 	// VerdictBehind is the writer verdict of an appliance whose state is
-	// older than its last write at Cloudflare (ruling 15).
+	// older than its last write at Cloudflare.
 	VerdictBehind = "behind"
 
 	// RouteFrozen is the state of a route whose account is frozen: what its
@@ -166,7 +166,7 @@ type State struct {
 	// nil on the host.
 	Identity *IdentityView `json:"identity,omitempty"`
 	// EpochDrawnAt is when this process drew a new epoch after a container
-	// start; zero when it kept the stored one (ruling 15, failure mode 1).
+	// start; zero when it kept the stored one.
 	EpochDrawnAt time.Time `json:"epochDrawnAt,omitzero"`
 }
 
@@ -182,7 +182,7 @@ type IdentityView struct {
 	Copies  []string `json:"copies,omitempty"`
 	Tenants []string `json:"tenants,omitempty"`
 	// Exposed are the non-admin principals holding a refused privilege on the
-	// appliance (ruling 27); while there are any, the connectors are stopped.
+	// appliance; while there are any, the connectors are stopped.
 	Exposed   []string  `json:"exposed,omitempty"`
 	CheckedAt time.Time `json:"checkedAt,omitzero"`
 }

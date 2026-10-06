@@ -21,7 +21,7 @@ export interface PillSpec {
 
 const zeroTime = (at?: string) => !at || at.startsWith('0001-01-01T00:00:00')
 
-// pillsOf are the five statuses of the top bar (spec-ui 3.1).
+// pillsOf are the five statuses of the top bar.
 export function pillsOf(s: AppState, now: number): PillSpec[] {
   const st = s.state
   const ran = st !== undefined && !zeroTime(st.at)
@@ -184,7 +184,7 @@ function UserMenu({ onAbout }: { onAbout: () => void }) {
 }
 
 // TopBar is the bar that never scrolls away: the mark, the node, the five
-// statuses and the problems, and the user's menu (spec-ui 3.1).
+// statuses and the problems, and the user's menu.
 export function TopBar({ navOpen, onNav, onAbout }: { navOpen: boolean; onNav: () => void; onAbout: () => void }) {
   const app = useApp((s) => s)
   const now = useNow()

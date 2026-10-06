@@ -20,7 +20,7 @@ export interface EventFilter {
   text?: string
 }
 
-// The kinds the stream coalesces into a gap (spec-ui 13.3).
+// The kinds the stream coalesces into a gap.
 const gapKinds = ['route', 'action', 'claim']
 
 const has = (want: string[] | undefined, value: string | undefined) => !want || want.length === 0 || (value !== undefined && want.includes(value))
@@ -132,7 +132,7 @@ function EventDetail({ e, nodeZone, onClose }: { e: Event; nodeZone?: string; on
 }
 
 // EventsTable is the one table of events: the strip, the Overview, the
-// Events page, a route's timeline and a guest's detail (spec-ui 4.10). It
+// Events page, a route's timeline and a guest's detail. It
 // has the events the page holds, the newest first; live off holds the rows
 // as they were. A row opens its detail, a gap loads the events it stands for.
 export function EventsTable({ filter, live, rows }: { filter: EventFilter; live: boolean; rows?: number }): JSX.Element {

@@ -1,6 +1,6 @@
 // Measures the interface make ui built into internal/web/ui/dist as the web
 // process serves it, each text file gzipped at level 9, and fails over the
-// budgets of spec-ui 12.4. The gzip happens in memory, only to measure: what
+// budgets below. The gzip happens in memory, only to measure: what
 // is embedded stays uncompressed. Sizes are in kB of 1000 bytes, as Vite
 // prints them.
 

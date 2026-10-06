@@ -22,7 +22,7 @@ func filteredBy(name string) decision { return decision{action: filter, by: name
 func removedBy(name string) decision  { return decision{action: remove, by: name} }
 
 // stateFields is the decision for every field of engine.State, by its JSON
-// name (spec-ui 9.7). A field the daemon adds has none until it is given
+// name. A field the daemon adds has none until it is given
 // one here, and the test of this table fails meanwhile: nothing new reaches
 // a reader unseen. The networking milestone adds "networks" and "managed",
 // filtered by cases of their own.

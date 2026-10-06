@@ -83,8 +83,8 @@ export function TimeLines({ at, nodeZone }: { at: string; nodeZone?: string }) {
 }
 
 // Time shows an instant in the browser's time zone with its offset, and its
-// date when that is not today; the tooltip gives the node's time and UTC
-// (spec-ui 3.1). nodeZone is the session's.
+// date when that is not today; the tooltip gives the node's time and UTC.
+// nodeZone is the session's.
 export function Time({ at, nodeZone }: { at: string; nodeZone?: string }) {
   const when = new Date(at)
   if (unset(at) || Number.isNaN(when.getTime())) return <span className="time">-</span>

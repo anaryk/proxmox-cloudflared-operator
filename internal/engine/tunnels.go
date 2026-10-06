@@ -67,7 +67,7 @@ func (c *cycleRun) reconcileTunnels() bool {
 // behind says whether the run stopped on a sentinel of this install that an
 // appliance which drew its epoch at this start, and has not written since,
 // does not know: after a rollback or a restore, its state is older than its
-// last write at Cloudflare (ruling 15, G2).
+// last write at Cloudflare.
 func (c *cycleRun) behind(res reconcile.TunnelResult) bool {
 	switch res.Verdict {
 	case reconcile.WriterForeign, reconcile.WriterStale:

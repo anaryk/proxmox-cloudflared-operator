@@ -7,7 +7,7 @@ import { durationText } from '../text/duration'
 import { useNow } from './clock'
 
 // Input in the page counts as activity, as a call the user makes does: the
-// page tells the web process at most once a minute (spec-ui 8.2), so that
+// page tells the web process at most once a minute, so that
 // someone reading a long list is not signed out.
 export const touchEvery = 60_000
 const inputs = ['keydown', 'pointerdown', 'wheel'] as const

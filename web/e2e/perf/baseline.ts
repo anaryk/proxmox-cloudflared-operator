@@ -1,4 +1,4 @@
-// The baseline of the performance test (spec-ui 12.2): the map drawn with
+// The baseline of the performance test: the map drawn with
 // React and the DOM alone, the cards as absolutely positioned elements, the
 // edges in one SVG, the dots moved by the page's loop. A renderer is measured
 // against it in the same run, so what it costs beyond this is its own.

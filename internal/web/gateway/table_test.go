@@ -148,9 +148,9 @@ func TestEveryRuleHasARow(t *testing.T) {
 	}
 }
 
-// The table is exactly the rows of spec-ui 9.3, with the role each needs and
-// the timeout of its kind.
-func TestTheTableIsTheSpec(t *testing.T) {
+// The table holds exactly the calls the page makes, with the role each needs
+// and the timeout of its kind.
+func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 	readers := []string{
 		"GET /state", "GET /stream", "GET /events", "GET /traffic", "GET /traffic/route",
 		"GET /credentials", "GET /claims", "GET /approvals", "GET /guests", "GET /guests/:kind/:vmid/annotation",

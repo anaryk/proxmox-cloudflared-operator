@@ -160,7 +160,7 @@ func TestAMemoryThatCannotBeReadHoldsCloudflare(t *testing.T) {
 	require.Equal(t, []string{"api.example.com", "www.example.com"}, e.recordNames())
 }
 
-// A1: a tunnel in an account the credential sees, though none of its zones
+// A tunnel in an account the credential sees, though none of its zones
 // is there, keeps the credential.
 func TestRemovingACredentialWithATunnelInAnAccountWithoutZonesIsRefused(t *testing.T) {
 	e := newEnv(t)

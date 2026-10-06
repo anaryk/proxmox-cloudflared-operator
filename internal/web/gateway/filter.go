@@ -74,9 +74,8 @@ var stateCases = []stateCase{
 	}},
 }
 
-// FilterState is the state a reader who sees visible gets (spec-ui 9.7):
-// every case of stateCases applied to a copy. The state given is left as it
-// is.
+// FilterState is the state a reader who sees visible gets: every case of
+// stateCases applied to a copy. The state given is left as it is.
 func FilterState(st engine.State, visible auth.Visible) engine.State {
 	hosts := visibleHosts(st, visible)
 	for _, c := range stateCases {
@@ -145,7 +144,7 @@ func FilterEvents(evs []engine.Event, visible auth.Visible, hosts map[string]boo
 
 // FilterTraffic keeps the routes whose owner the reader sees, counts in
 // Shared only the others of them on the same target, and sets RoutesTotal
-// to how many of them have a figure (gate 3), so that a reader cannot count
+// to how many of them have a figure, so that a reader cannot count
 // hidden routes. The tunnels and why there are no figures stay.
 func FilterTraffic(tv engine.TrafficView, visible auth.Visible) engine.TrafficView {
 	tv.Routes = visibleFigures(tv.Routes, visible)

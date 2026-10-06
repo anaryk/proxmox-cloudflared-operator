@@ -1,8 +1,8 @@
 // A reader of server-sent events over fetch. EventSource hides the status of
-// the answer and reconnects on its own terms; the stream needs both
-// (spec-ui 7.2), so it parses the text itself, as the HTML standard says:
-// lines end in CRLF, LF or CR, data lines join with LF, a blank line ends a
-// message, a line that begins with a colon is a comment.
+// the answer and reconnects on its own terms; the stream needs both, so it
+// parses the text itself, as the HTML standard says: lines end in CRLF, LF or
+// CR, data lines join with LF, a blank line ends a message, a line that begins
+// with a colon is a comment.
 
 export interface SseMessage {
   event: string // "message" when the server named none

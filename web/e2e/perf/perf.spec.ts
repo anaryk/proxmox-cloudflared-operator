@@ -5,7 +5,7 @@ import { expect, type Page, test, type TestInfo } from '@playwright/test'
 import type { FrameRun } from './harness'
 
 // The flow map against the baseline, both measured in this run, within the
-// budgets of spec-ui 12.2. The baseline always runs; the map once
+// budgets README.md lists. The baseline always runs; the map once
 // src/flow/FlowMap.tsx exists. README.md says how to run it.
 
 const changes = 40 // the p95 over 20 is nearly the maximum

@@ -217,7 +217,7 @@ func TestAnAdoptionWaitsOutAListingThatFailed(t *testing.T) {
 	require.Empty(t, e.eng.adopt)
 }
 
-// C2: the engine's own reason, not the reconciler's: a verified tunnel is
+// The engine's own reason, not the reconciler's: a verified tunnel is
 // asked for before an adoption is passed on at all.
 func TestAnAdoptionWaitsForAVerifiedTunnel(t *testing.T) {
 	e, _ := conflicted(t)
@@ -233,7 +233,7 @@ func TestAnAdoptionWaitsForAVerifiedTunnel(t *testing.T) {
 	require.Equal(t, 1, eventsContaining(e, "adoption of www.example.com waits: its tunnel is not verified or its connector is not ready"))
 }
 
-// B2: a confirmation that could not be saved, as the tombstones could not
+// A confirmation that could not be saved, as the tombstones could not
 // be, or that the guard still needs, stays pending.
 func TestAConfirmationTheRunCouldNotKeepStaysPending(t *testing.T) {
 	for name, held := range map[string]string{
@@ -271,7 +271,7 @@ func TestAConfirmationTheRunCouldNotKeepStaysPending(t *testing.T) {
 	})
 }
 
-// E1: a DNS run that did not look leaves the conflicts as they were.
+// A DNS run that did not look leaves the conflicts as they were.
 func TestConflictsStayWhileDNSDoesNotLook(t *testing.T) {
 	e, _ := conflicted(t)
 	path := filepath.Join(e.paths.Cluster, "meta", "tombstones.json")

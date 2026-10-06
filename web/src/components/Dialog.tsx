@@ -19,7 +19,7 @@ function giveBack(opener: RefObject<HTMLElement | null>): void {
 
 // Dialog is the browser's own modal dialog: showModal() keeps focus in it
 // and makes the page behind inert. Esc closes it, and focus goes back to
-// what opened it (spec-ui 10).
+// what opened it.
 export function Dialog({ open, onClose, title, children, footer }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null)
   const opener = useRef<HTMLElement | null>(null)

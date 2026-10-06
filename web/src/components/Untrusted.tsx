@@ -2,14 +2,13 @@ import { marked, type Segment, segments } from '../text/chars'
 import { toUnicode } from '../text/punycode'
 import { Badge } from './Badge'
 
-// Untrusted shows text that comes from guests, from the DNS records of
-// others or from Cloudflare, and the daemon's messages that quote them
-// (spec-ui 9.6). It is text and nothing else; a character that controls the
-// terminal, turns the direction of the line or shows as nothing is shown as
-// its code point, and the text is isolated from the line around it. A
-// hostname reads left to right, and one in Punycode shows its Unicode form
-// after the ASCII one, marked, so that a name made to look like another
-// shows as what it is.
+// Untrusted shows text that comes from guests, from the DNS records of others
+// or from Cloudflare, and the daemon's messages that quote them. It is text and
+// nothing else; a character that controls the terminal, turns the direction of
+// the line or shows as nothing is shown as its code point, and the text is
+// isolated from the line around it. A hostname reads left to right, and one in
+// Punycode shows its Unicode form after the ASCII one, marked, so that a name
+// made to look like another shows as what it is.
 export interface UntrustedProps {
   text: string
   hostname?: boolean

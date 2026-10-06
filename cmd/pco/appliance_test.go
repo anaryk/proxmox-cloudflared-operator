@@ -36,7 +36,7 @@ func inAppliance(t *testing.T, volume error) *runner {
 	return r
 }
 
-// Failure mode 2: a restore left the volume without its marker, and the
+// A restore left the volume without its marker, and the
 // daemon does not run; status says what the daemon would.
 func TestStatusInAnApplianceWithoutItsVolumeSaysWhatToDo(t *testing.T) {
 	for _, tt := range []struct {
