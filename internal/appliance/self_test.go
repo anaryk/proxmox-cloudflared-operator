@@ -120,6 +120,36 @@ func TestUptimesThatCannotBeReadDoNotMatterToAMountThatProvesIt(t *testing.T) {
 	require.True(t, f.self.EpochDrawn())
 }
 
+// A clone of a volume pco knows no form of, started within 10 s of the
+// original, passes the uptime; only its NICs differ, and for a minute that is
+// pending. It must not draw an epoch meanwhile.
+func TestNoEpochIsDrawnWhileANICIsPendingAndOnlyTheUptimeProves(t *testing.T) {
+	f := newSelf(t)
+	own := snap(lxc(ownVMID, Pool, macA))
+	f.facts = facts(unknown, time.Hour, macB)
+
+	v := f.self.Check(t.Context(), own)
+
+	require.Equal(t, Verdict{OK: true, Pending: true}, v)
+	require.False(t, f.self.EpochDrawn())
+	require.Equal(t, 5, f.writer(t).Generation)
+
+	f.facts = facts(unknown, time.Hour, macA)
+	require.Equal(t, Verdict{OK: true}, f.self.Check(t.Context(), own))
+	require.True(t, f.self.EpochDrawn(), "drawn once the NICs match")
+	require.Equal(t, 6, f.writer(t).Generation)
+}
+
+func TestAPendingNICDoesNotDelayTheEpochOfAMountThatProvesIt(t *testing.T) {
+	f := newSelf(t)
+	f.facts = facts(byMount, time.Hour, macB)
+
+	v := f.self.Check(t.Context(), snap(lxc(ownVMID, Pool, macA)))
+
+	require.Equal(t, Verdict{OK: true, Pending: true}, v)
+	require.True(t, f.self.EpochDrawn())
+}
+
 func TestTheIncarnationOfTheStartThatWroteLeaderJSONKeepsTheEpoch(t *testing.T) {
 	f := newSelf(t)
 	f.self.Incarnation = incA

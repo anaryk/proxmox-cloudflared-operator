@@ -51,7 +51,9 @@ type Self struct {
 // Check is the verdict on this container for snap. A copy loses the identity
 // flag at once; a verdict that is not OK while the certificate of the API does
 // not verify says so; the first verdict that passes decides the epoch, and a
-// failure to save it makes the verdict not OK until a later one saves it.
+// failure to save it makes the verdict not OK until a later one saves it. A
+// verdict with a NIC pending decides nothing while only the uptime proves the
+// container.
 func (s *Self) Check(ctx context.Context, snap inventory.Snapshot) Verdict {
 	f, err := s.Facts()
 	if err != nil {
@@ -78,7 +80,12 @@ func (s *Self) Check(ctx context.Context, snap inventory.Snapshot) Verdict {
 			v.Why = fmt.Sprintf("the certificate of %s no longer verifies under %s (the cluster CA or the pveproxy certificate changed?): "+
 				"run pco appliance repair --vmid %d on the node", s.Endpoint.Address, s.Endpoint.ServerName, s.ID.VMID)
 		}
-	case !s.decided:
+	case s.decided:
+	case v.Pending && f.Mount.VMID != s.ID.VMID:
+		// A clone started within the slack of the uptime passes it too, and
+		// its NICs tell it apart only once they are past their minute.
+		s.Log.Info().Msg("a NIC of this container is pending and only the uptime proves it; the writer epoch waits")
+	default:
 		w, kept, err := EpochAtStart(s.Store, s.InstallID, s.Incarnation, s.Rand)
 		if err != nil {
 			return Verdict{Why: fmt.Sprintf("this container is %s, but its writer epoch could not be decided: %v", s.ID.Ref(), err)}
