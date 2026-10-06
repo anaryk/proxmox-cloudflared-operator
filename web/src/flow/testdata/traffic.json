@@ -1,0 +1,140 @@
+{
+  "at": "2026-10-01T12:00:05Z",
+  "interval": "5s",
+  "tunnels": [
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "node": "pve1",
+      "cloudflared": "2026.9.3",
+      "configVersion": 3,
+      "haConnections": 4,
+      "edges": [
+        {
+          "connection": 0,
+          "location": "fra08"
+        },
+        {
+          "connection": 1,
+          "location": "prg01"
+        }
+      ],
+      "rttMs": [
+        11.2,
+        18.9
+      ],
+      "stale": false,
+      "samples": [
+        {
+          "at": "2026-10-01T11:59:40Z",
+          "rps": 34.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:45Z",
+          "rps": 35.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:50Z",
+          "rps": 36.5,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:55Z",
+          "rps": 37.3,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T12:00:00Z",
+          "rps": 38,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T12:00:05Z",
+          "rps": 38.6,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        }
+      ]
+    },
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000004",
+      "node": "pve1",
+      "cloudflared": "2026.9.3",
+      "configVersion": 2,
+      "haConnections": 2,
+      "edges": [
+        {
+          "connection": 0,
+          "location": "vie02"
+        },
+        {
+          "connection": 1,
+          "location": "vie02"
+        }
+      ],
+      "rttMs": [
+        9.6
+      ],
+      "stale": true,
+      "samples": [
+        {
+          "at": "2026-10-01T11:59:40Z",
+          "rps": 4,
+          "errorsPerSec": 0,
+          "concurrent": 1
+        },
+        {
+          "at": "2026-10-01T11:59:45Z",
+          "rps": 4,
+          "errorsPerSec": 0,
+          "concurrent": 1
+        },
+        {
+          "at": "2026-10-01T11:59:50Z",
+          "rps": 4,
+          "errorsPerSec": 0,
+          "concurrent": 1
+        }
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "hostname": "app.example.com",
+      "owner": "qemu/101",
+      "target": "10.0.0.11:8080",
+      "flowsPerSec": 2.4,
+      "shared": 1,
+      "stale": false
+    },
+    {
+      "hostname": "intranet.example.com",
+      "owner": "manual/m1",
+      "target": "10.0.9.5:80",
+      "flowsPerSec": 0.6,
+      "stale": false
+    },
+    {
+      "hostname": "lab.example.dev",
+      "owner": "qemu/108",
+      "target": "10.0.2.8:8080",
+      "flowsPerSec": 1.2,
+      "stale": true
+    },
+    {
+      "hostname": "www.example.com",
+      "owner": "qemu/101",
+      "target": "10.0.0.11:8080",
+      "flowsPerSec": 2.4,
+      "shared": 1,
+      "stale": false
+    }
+  ],
+  "routesTotal": 4
+}

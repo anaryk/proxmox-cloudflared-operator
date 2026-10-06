@@ -4,6 +4,7 @@ import { useApp } from '../api/store'
 import { Skeleton } from '../components/Skeleton'
 import { StateBadge } from '../components/StateBadge'
 import { Untrusted } from '../components/Untrusted'
+import { Overview } from '../pages/Overview'
 import { DoctorPage } from '../pages/doctor/DoctorPage'
 import { CredentialDetail } from '../pages/edge/CredentialDetail'
 import { Credentials } from '../pages/edge/Credentials'
@@ -20,7 +21,6 @@ import { compareRouteStates } from '../text/words'
 import { Head } from './Head'
 import { Link } from './Link'
 import { NoRoutes } from './NoRoutes'
-import { Problems } from './Problems'
 import type { View } from './router'
 
 // Routes says how many routes there are in each state, or why there are none.
@@ -39,24 +39,6 @@ function RouteCounts() {
         </li>
       ))}
     </ul>
-  )
-}
-
-function Overview() {
-  const st = useApp((s) => s.state)
-  return (
-    <>
-      <Head title="Overview" description="What pco publishes, and what needs you." />
-      {st && <Problems state={st} />}
-      <section className="card" aria-labelledby="overview-routes">
-        <div className="card-head">
-          <h2 id="overview-routes">Routes</h2>
-        </div>
-        <div className="card-body">
-          <RouteCounts />
-        </div>
-      </section>
-    </>
   )
 }
 

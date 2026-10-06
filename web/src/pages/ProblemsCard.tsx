@@ -3,11 +3,11 @@ import { WarnIcon } from '../components/icons'
 import { Untrusted } from '../components/Untrusted'
 import { nextStep } from '../text/words'
 
-// Problems is the card of the Overview that pco status ends with: every
+// ProblemsCard is the card of the Overview that pco status ends with: every
 // problem line as the daemon wrote it, in its order, and the next step when
-// there is one. Before the first cycle the lines are the
-// standing problems the daemon started with.
-export function Problems({ state }: { state: State }) {
+// there is one. Before the first cycle the lines are the standing problems
+// the daemon started with. The problems pill of the top bar leads here.
+export function ProblemsCard({ state }: { state: State }) {
   if (state.problems.length === 0) return null
   const next = nextStep(state)
   return (

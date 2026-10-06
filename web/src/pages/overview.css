@@ -1,0 +1,139 @@
+/* The Overview: a row of figures, the problems, the flow and the live
+   events. */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.tile {
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.tile-title {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.tile-big {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.tile-big small {
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.tile-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text2);
+  font-size: 12.5px;
+}
+
+.tile-sub li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tile .chart {
+  margin-top: 6px;
+}
+
+.flow-bands {
+  font-size: 12.5px;
+}
+
+.flow-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-left: auto;
+}
+
+.flow-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.flow-search input {
+  width: 220px;
+  min-height: 28px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+.flow-search input:focus {
+  outline: none;
+}
+
+.flow-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.flow-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  font-size: 13px;
+}
+
+.flow > .empty,
+.flow > .chain-list {
+  margin: 0;
+}
+
+@media (max-width: 959px) {
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 719px) {
+  .tiles {
+    gap: 8px;
+  }
+
+  .tile {
+    padding: 10px;
+  }
+
+  .tile-big {
+    font-size: 20px;
+  }
+
+  .flow-search input {
+    width: 100%;
+  }
+
+  .flow-tools,
+  .flow-search {
+    flex: 1 1 100%;
+  }
+}

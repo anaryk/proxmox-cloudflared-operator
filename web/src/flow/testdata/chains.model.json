@@ -1,0 +1,693 @@
+{
+  "nodes": [
+    {
+      "id": "no-zone",
+      "band": "hostnames",
+      "kind": "zone",
+      "label": "No zone",
+      "rows": [
+        {
+          "id": "route:shop.example.net qemu/107",
+          "kind": "route",
+          "hostname": "shop.example.net",
+          "owner": "qemu/107",
+          "state": "no-zone",
+          "tags": [],
+          "guest": "shop-2",
+          "reason": "zone example.net is served through no credential"
+        }
+      ],
+      "routes": [
+        "shop.example.net qemu/107"
+      ]
+    },
+    {
+      "id": "zone:example.com",
+      "band": "hostnames",
+      "kind": "zone",
+      "label": "example.com",
+      "ref": "example.com",
+      "rows": [
+        {
+          "id": "route:api.example.com qemu/103",
+          "kind": "route",
+          "hostname": "api.example.com",
+          "owner": "qemu/103",
+          "state": "unreachable",
+          "tags": [
+            "DNS"
+          ],
+          "guest": "api-1",
+          "reason": "target is not answering"
+        },
+        {
+          "id": "route:app.example.com qemu/101",
+          "kind": "route",
+          "hostname": "app.example.com",
+          "owner": "qemu/101",
+          "state": "active",
+          "tags": [],
+          "guest": "web-1"
+        },
+        {
+          "id": "route:dns.example.com lxc/202",
+          "kind": "unapproved",
+          "hostname": "dns.example.com",
+          "owner": "lxc/202",
+          "state": "unapproved",
+          "tags": [
+            "waits for approval"
+          ],
+          "guest": "dns-1",
+          "reason": "delegated: alice@pve holds VM.Config.Network; address 10.0.0.1 is the gateway of node pve1"
+        },
+        {
+          "id": "route:example.com qemu/105",
+          "kind": "route",
+          "hostname": "example.com",
+          "owner": "qemu/105",
+          "state": "rejected",
+          "tags": [],
+          "guest": "www-apex",
+          "reason": "the apex of zone example.com is published only when allowHosts names it: add \"example.com\" to allowHosts"
+        },
+        {
+          "id": "route:held.example.com lxc/200",
+          "kind": "route",
+          "hostname": "held.example.com",
+          "owner": "lxc/200",
+          "state": "held",
+          "tags": [
+            "503"
+          ],
+          "reason": "named in the Notes of lxc/200 but not routed; claim kept"
+        },
+        {
+          "id": "route:intranet.example.com manual/m1",
+          "kind": "route",
+          "hostname": "intranet.example.com",
+          "owner": "manual/m1",
+          "state": "active",
+          "tags": []
+        },
+        {
+          "id": "route:new.example.com lxc/201",
+          "kind": "unapproved",
+          "hostname": "new.example.com",
+          "owner": "lxc/201",
+          "state": "unapproved",
+          "tags": [
+            "waits for approval"
+          ],
+          "guest": "new-1",
+          "reason": "admission mode approve"
+        },
+        {
+          "id": "route:old.example.com qemu/104",
+          "kind": "route",
+          "hostname": "old.example.com",
+          "owner": "qemu/104",
+          "state": "withdrawn",
+          "tags": [],
+          "guest": "db-1",
+          "reason": "identity check failed"
+        },
+        {
+          "id": "route:www.example.com qemu/101",
+          "kind": "route",
+          "hostname": "www.example.com",
+          "owner": "qemu/101",
+          "state": "active",
+          "tags": [],
+          "guest": "web-1"
+        },
+        {
+          "id": "route:www.example.com qemu/102",
+          "kind": "route",
+          "hostname": "www.example.com",
+          "owner": "qemu/102",
+          "state": "conflict",
+          "tags": [],
+          "guest": "web-2",
+          "reason": "hostname is held by qemu/101",
+          "holder": "qemu/101 web-1"
+        }
+      ],
+      "state": "served",
+      "lines": [
+        "Main"
+      ],
+      "routes": [
+        "api.example.com qemu/103",
+        "app.example.com qemu/101",
+        "example.com qemu/105",
+        "held.example.com lxc/200",
+        "intranet.example.com manual/m1",
+        "old.example.com qemu/104",
+        "www.example.com qemu/101",
+        "www.example.com qemu/102",
+        "new.example.com lxc/201",
+        "dns.example.com lxc/202"
+      ]
+    },
+    {
+      "id": "zone:example.dev",
+      "band": "hostnames",
+      "kind": "zone",
+      "label": "example.dev",
+      "ref": "example.dev",
+      "rows": [
+        {
+          "id": "route:lab.example.dev qemu/108",
+          "kind": "route",
+          "hostname": "lab.example.dev",
+          "owner": "qemu/108",
+          "state": "active",
+          "tags": [],
+          "guest": "lab-1"
+        }
+      ],
+      "state": "served",
+      "lines": [
+        "Lab"
+      ],
+      "routes": [
+        "lab.example.dev qemu/108"
+      ]
+    },
+    {
+      "id": "zone:example.info",
+      "band": "hostnames",
+      "kind": "zone",
+      "label": "example.info",
+      "ref": "example.info",
+      "rows": [
+        {
+          "id": "route:www.example.info qemu/106",
+          "kind": "route",
+          "hostname": "www.example.info",
+          "owner": "qemu/106",
+          "state": "frozen",
+          "tags": [],
+          "guest": "shop-1",
+          "reason": "account frozen: zone example.info is no longer listed by credential cred1"
+        }
+      ],
+      "state": "frozen",
+      "lines": [
+        "acc3"
+      ],
+      "routes": [
+        "www.example.info qemu/106"
+      ]
+    },
+    {
+      "id": "edge:acc1",
+      "band": "edge",
+      "kind": "edge",
+      "label": "Main · 00000000",
+      "state": "yes",
+      "ref": "acc1",
+      "lines": [
+        "4 connections",
+        "fra08 · prg01",
+        "RTT 11–19 ms"
+      ],
+      "routes": [
+        "api.example.com qemu/103",
+        "app.example.com qemu/101",
+        "held.example.com lxc/200",
+        "intranet.example.com manual/m1",
+        "old.example.com qemu/104",
+        "www.example.com qemu/101"
+      ]
+    },
+    {
+      "id": "edge:acc2",
+      "band": "edge",
+      "kind": "edge",
+      "label": "acc2",
+      "state": "unknown",
+      "ref": "acc2"
+    },
+    {
+      "id": "edge:acc3",
+      "band": "edge",
+      "kind": "edge",
+      "label": "acc3 · 00000000",
+      "state": "held",
+      "ref": "acc3",
+      "lines": [
+        "account frozen: zone example.info is no longer listed by credential cred1"
+      ],
+      "routes": [
+        "www.example.info qemu/106"
+      ]
+    },
+    {
+      "id": "edge:acc4",
+      "band": "edge",
+      "kind": "edge",
+      "label": "Lab · 00000000",
+      "state": "unchecked",
+      "ref": "acc4",
+      "lines": [
+        "2 connections",
+        "vie02 ×2",
+        "RTT 10 ms",
+        "not checked in the last cycle: no writer identity; run pco setup"
+      ],
+      "routes": [
+        "lab.example.dev qemu/108"
+      ]
+    },
+    {
+      "id": "connector:acc1",
+      "band": "connector",
+      "kind": "connector",
+      "label": "pve1",
+      "state": "active, ready, 4 connections",
+      "ref": "acc1",
+      "lines": [
+        "Main · 00000000",
+        "config v3 · rolled out",
+        "cloudflared 2026.9.3"
+      ],
+      "routes": [
+        "api.example.com qemu/103",
+        "app.example.com qemu/101",
+        "held.example.com lxc/200",
+        "intranet.example.com manual/m1",
+        "old.example.com qemu/104",
+        "www.example.com qemu/101"
+      ]
+    },
+    {
+      "id": "connector:acc4",
+      "band": "connector",
+      "kind": "connector",
+      "label": "pve1",
+      "state": "active, ready, 2 connections",
+      "ref": "acc4",
+      "lines": [
+        "Lab · 00000000",
+        "config v2 · rolled out",
+        "cloudflared 2026.9.3"
+      ],
+      "tags": [
+        "unchecked"
+      ],
+      "routes": [
+        "lab.example.dev qemu/108"
+      ]
+    },
+    {
+      "id": "rogue:0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
+      "band": "connector",
+      "kind": "rogue",
+      "label": "not run by pco: 198.51.100.7",
+      "state": "rogue",
+      "ref": "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
+      "lines": [
+        "cloudflared 2026.8.0",
+        "Main · 00000000"
+      ]
+    },
+    {
+      "id": "path:none",
+      "band": "path",
+      "kind": "path",
+      "label": "no bridge proven",
+      "ref": "path:none",
+      "routes": [
+        "intranet.example.com manual/m1"
+      ]
+    },
+    {
+      "id": "path:vmbr0",
+      "band": "path",
+      "kind": "path",
+      "label": "vmbr0 · direct",
+      "ref": "path:vmbr0",
+      "routes": [
+        "api.example.com qemu/103",
+        "www.example.info qemu/106"
+      ]
+    },
+    {
+      "id": "path:vmbr0.20",
+      "band": "path",
+      "kind": "path",
+      "label": "vmbr0 · VLAN 20 · direct",
+      "ref": "path:vmbr0.20",
+      "routes": [
+        "app.example.com qemu/101",
+        "www.example.com qemu/101"
+      ]
+    },
+    {
+      "id": "path:vmbr1",
+      "band": "path",
+      "kind": "path",
+      "label": "vmbr1 · direct",
+      "ref": "path:vmbr1",
+      "routes": [
+        "lab.example.dev qemu/108"
+      ]
+    },
+    {
+      "id": "path:vmbr1.20",
+      "band": "path",
+      "kind": "path",
+      "label": "vmbr1 · VLAN 20 · direct",
+      "ref": "path:vmbr1.20",
+      "routes": [
+        "old.example.com qemu/104"
+      ]
+    },
+    {
+      "id": "address:10.0.9.5",
+      "band": "targets",
+      "kind": "target",
+      "label": "10.0.9.5",
+      "ref": "10.0.9.5",
+      "lines": [
+        "manual/m1"
+      ],
+      "ports": [
+        {
+          "id": "address:10.0.9.5|10.0.9.5:80",
+          "label": ":80 http",
+          "state": "active",
+          "target": "10.0.9.5:80",
+          "level": "manual",
+          "rate": 0.6,
+          "routes": [
+            "intranet.example.com manual/m1"
+          ]
+        }
+      ],
+      "routes": [
+        "intranet.example.com manual/m1"
+      ]
+    },
+    {
+      "id": "guest:qemu/101",
+      "band": "targets",
+      "kind": "target",
+      "label": "web-1",
+      "ref": "qemu/101",
+      "lines": [
+        "qemu/101"
+      ],
+      "ports": [
+        {
+          "id": "guest:qemu/101|10.0.0.11:8080",
+          "label": ":8080 http",
+          "state": "active",
+          "target": "10.0.0.11:8080",
+          "level": "port",
+          "rate": 2.4,
+          "routes": [
+            "app.example.com qemu/101",
+            "www.example.com qemu/101"
+          ]
+        }
+      ],
+      "routes": [
+        "app.example.com qemu/101",
+        "www.example.com qemu/101"
+      ]
+    },
+    {
+      "id": "guest:qemu/103",
+      "band": "targets",
+      "kind": "target",
+      "label": "api-1",
+      "ref": "qemu/103",
+      "lines": [
+        "qemu/103"
+      ],
+      "ports": [
+        {
+          "id": "guest:qemu/103|10.0.0.13:9000",
+          "label": ":9000 http",
+          "state": "unreachable",
+          "target": "10.0.0.13:9000",
+          "level": "port",
+          "routes": [
+            "api.example.com qemu/103"
+          ]
+        }
+      ],
+      "routes": [
+        "api.example.com qemu/103"
+      ]
+    },
+    {
+      "id": "guest:qemu/104",
+      "band": "targets",
+      "kind": "target",
+      "label": "db-1",
+      "ref": "qemu/104",
+      "lines": [
+        "qemu/104"
+      ],
+      "routes": [
+        "old.example.com qemu/104"
+      ]
+    },
+    {
+      "id": "guest:qemu/106",
+      "band": "targets",
+      "kind": "target",
+      "label": "shop-1",
+      "ref": "qemu/106",
+      "lines": [
+        "qemu/106"
+      ],
+      "routes": [
+        "www.example.info qemu/106"
+      ]
+    },
+    {
+      "id": "guest:qemu/108",
+      "band": "targets",
+      "kind": "target",
+      "label": "lab-1",
+      "ref": "qemu/108",
+      "lines": [
+        "qemu/108"
+      ],
+      "ports": [
+        {
+          "id": "guest:qemu/108|10.0.2.8:8080",
+          "label": ":8080 http",
+          "state": "active",
+          "target": "10.0.2.8:8080",
+          "level": "filtered",
+          "rate": 1.2,
+          "stale": true,
+          "routes": [
+            "lab.example.dev qemu/108"
+          ]
+        }
+      ],
+      "routes": [
+        "lab.example.dev qemu/108"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "connector:acc1>path:none",
+      "from": "connector:acc1",
+      "to": "path:none",
+      "style": "plain",
+      "routes": [
+        "intranet.example.com manual/m1"
+      ],
+      "rate": 0.6
+    },
+    {
+      "id": "connector:acc1>path:vmbr0",
+      "from": "connector:acc1",
+      "to": "path:vmbr0",
+      "style": "plain",
+      "routes": [
+        "api.example.com qemu/103"
+      ]
+    },
+    {
+      "id": "connector:acc1>path:vmbr0.20",
+      "from": "connector:acc1",
+      "to": "path:vmbr0.20",
+      "style": "plain",
+      "routes": [
+        "app.example.com qemu/101",
+        "www.example.com qemu/101"
+      ],
+      "rate": 2.4
+    },
+    {
+      "id": "connector:acc1>path:vmbr1.20",
+      "from": "connector:acc1",
+      "to": "path:vmbr1.20",
+      "style": "plain",
+      "routes": [
+        "old.example.com qemu/104"
+      ]
+    },
+    {
+      "id": "connector:acc4>path:vmbr1",
+      "from": "connector:acc4",
+      "to": "path:vmbr1",
+      "style": "plain",
+      "routes": [
+        "lab.example.dev qemu/108"
+      ],
+      "muted": true,
+      "rate": 1.2,
+      "stale": true
+    },
+    {
+      "id": "edge:acc1>connector:acc1",
+      "from": "edge:acc1",
+      "to": "connector:acc1",
+      "style": "trunk",
+      "lanes": 4,
+      "rate": 38.6,
+      "errors": 0.1,
+      "routes": [
+        "api.example.com qemu/103",
+        "app.example.com qemu/101",
+        "held.example.com lxc/200",
+        "intranet.example.com manual/m1",
+        "old.example.com qemu/104",
+        "www.example.com qemu/101"
+      ]
+    },
+    {
+      "id": "edge:acc1>rogue:0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
+      "from": "edge:acc1",
+      "to": "rogue:0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
+      "style": "rogue"
+    },
+    {
+      "id": "edge:acc4>connector:acc4",
+      "from": "edge:acc4",
+      "to": "connector:acc4",
+      "style": "trunk",
+      "lanes": 2,
+      "rate": 4,
+      "errors": 0,
+      "stale": true,
+      "muted": true,
+      "routes": [
+        "lab.example.dev qemu/108"
+      ]
+    },
+    {
+      "id": "path:none>address:10.0.9.5|10.0.9.5:80",
+      "from": "path:none",
+      "to": "address:10.0.9.5",
+      "port": "address:10.0.9.5|10.0.9.5:80",
+      "style": "plain",
+      "routes": [
+        "intranet.example.com manual/m1"
+      ],
+      "rate": 0.6
+    },
+    {
+      "id": "path:vmbr0.20>guest:qemu/101|10.0.0.11:8080",
+      "from": "path:vmbr0.20",
+      "to": "guest:qemu/101",
+      "port": "guest:qemu/101|10.0.0.11:8080",
+      "style": "plain",
+      "routes": [
+        "app.example.com qemu/101",
+        "www.example.com qemu/101"
+      ],
+      "rate": 2.4
+    },
+    {
+      "id": "path:vmbr0>guest:qemu/103|10.0.0.13:9000",
+      "from": "path:vmbr0",
+      "to": "guest:qemu/103",
+      "port": "guest:qemu/103|10.0.0.13:9000",
+      "style": "unreachable",
+      "routes": [
+        "api.example.com qemu/103"
+      ]
+    },
+    {
+      "id": "path:vmbr0>guest:qemu/106#plain",
+      "from": "path:vmbr0",
+      "to": "guest:qemu/106",
+      "style": "plain",
+      "routes": [
+        "www.example.info qemu/106"
+      ],
+      "muted": true
+    },
+    {
+      "id": "path:vmbr1.20>guest:qemu/104#withdrawn",
+      "from": "path:vmbr1.20",
+      "to": "guest:qemu/104",
+      "style": "withdrawn",
+      "label": "503",
+      "routes": [
+        "old.example.com qemu/104"
+      ]
+    },
+    {
+      "id": "path:vmbr1>guest:qemu/108|10.0.2.8:8080",
+      "from": "path:vmbr1",
+      "to": "guest:qemu/108",
+      "port": "guest:qemu/108|10.0.2.8:8080",
+      "style": "plain",
+      "routes": [
+        "lab.example.dev qemu/108"
+      ],
+      "muted": true,
+      "rate": 1.2,
+      "stale": true
+    },
+    {
+      "id": "zone:example.com>edge:acc1",
+      "from": "zone:example.com",
+      "to": "edge:acc1",
+      "style": "hairline",
+      "routes": [
+        "api.example.com qemu/103",
+        "app.example.com qemu/101",
+        "held.example.com lxc/200",
+        "intranet.example.com manual/m1",
+        "old.example.com qemu/104",
+        "www.example.com qemu/101"
+      ],
+      "label": "6 rules"
+    },
+    {
+      "id": "zone:example.dev>edge:acc4",
+      "from": "zone:example.dev",
+      "to": "edge:acc4",
+      "style": "hairline",
+      "routes": [
+        "lab.example.dev qemu/108"
+      ],
+      "label": "1 rule"
+    },
+    {
+      "id": "zone:example.info>edge:acc3",
+      "from": "zone:example.info",
+      "to": "edge:acc3",
+      "style": "hairline",
+      "routes": [
+        "www.example.info qemu/106"
+      ],
+      "label": "1 rule",
+      "muted": true
+    }
+  ]
+}

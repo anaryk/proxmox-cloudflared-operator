@@ -1,0 +1,112 @@
+/* The chain list: a row per hostname, opened to its chain. A row that is
+   not open is 40 px high (chainRow in ChainList.tsx). */
+
+.trunk-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 0;
+  padding: 8px 14px;
+  list-style: none;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.trunk-name {
+  font-weight: 600;
+}
+
+.traffic-figure {
+  color: var(--traffic-text);
+}
+
+.chains-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chains {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chain {
+  border-top: 1px solid var(--border);
+}
+
+.chains > .chain:first-child {
+  border-top: 0;
+}
+
+.chain-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 39px;
+  padding: 0 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chain:first-child .chain-head {
+  height: 40px;
+}
+
+.chain-head:hover {
+  background: var(--raised);
+}
+
+.chain-head .status {
+  flex: none;
+  min-width: 140px;
+}
+
+.chain-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chain-owner {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chain-body {
+  padding: 4px 14px 12px 30px;
+}
+
+.chain-figure {
+  margin: 4px 0 0;
+  color: var(--traffic-text);
+  font-size: 12.5px;
+}
+
+.chains-empty {
+  margin: 0;
+  padding: 14px;
+}
+
+@media (max-width: 719px) {
+  .chain-head .status {
+    min-width: 0;
+  }
+
+  .chain-owner {
+    display: none;
+  }
+}

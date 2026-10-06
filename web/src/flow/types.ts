@@ -7,11 +7,25 @@ import type { JSX } from 'react'
 
 export type Band = 'hostnames' | 'edge' | 'connector' | 'path' | 'targets'
 
+// A route is named by its key, routeKey(hostname, owner) of model.ts. Nodes,
+// rows, access points and edges list the routes whose chain passes through
+// them: hovering one highlights those chains, and a focus keeps them.
+
+// FlowRow is a line of a zone card: a route, a hostname of a guest that
+// waits for approval, the routes a folded card leaves out ("+ 186 active")
+// or a group of routes that are not active.
 export interface FlowRow {
+  id?: string // 'route:<key>', or the key of the folded or grouped row
+  kind?: 'route' | 'unapproved' | 'more' | 'group' // a route when not set
   hostname: string
   owner: string
+  guest?: string // the guest's name
   state: string
+  reason?: string
+  holder?: string // a route in conflict: the owner holding its hostname
   tags: string[] // '503', 'DNS', 'waits for approval'
+  label?: string // a folded or grouped row: '+ 186 active', '214 unreachable: no answer on port 8080'
+  routes?: string[] // a folded or grouped row: the routes it stands for
 }
 
 // FlowPort is an access point of a target card: one published port.
@@ -19,6 +33,11 @@ export interface FlowPort {
   id: string
   label: string // ':8080 http'
   state: string
+  target?: string // '10.0.0.11:8080', what the egress filter counts
+  level?: string
+  rate?: number // connections opened per second, one figure however many routes share the port
+  stale?: boolean
+  routes?: string[]
 }
 
 export interface FlowNode {
@@ -29,6 +48,11 @@ export interface FlowNode {
   state?: string
   rows?: FlowRow[]
   ports?: FlowPort[]
+  ref?: string // what the node stands for: a zone name, an account id, a guest, an address, a connector id
+  lines?: string[] // the card's further lines, in order
+  tags?: string[] // 'unchecked'
+  counts?: Record<string, number> // a collapsed zone card: its routes by state
+  routes?: string[]
 }
 
 export interface FlowEdge {
@@ -39,6 +63,11 @@ export interface FlowEdge {
   lanes?: number
   rate?: number // requests per second on the trunk, connections opened per second on a port edge
   label?: string
+  errors?: number // proxy errors per second, on the trunk
+  port?: string // the access point of the target card the edge ends at
+  muted?: boolean // greyed: what it carries is not known now (a frozen account, a tunnel not checked)
+  stale?: boolean // its figure is not current: it keeps no dots
+  routes?: string[]
 }
 
 export interface Model {
