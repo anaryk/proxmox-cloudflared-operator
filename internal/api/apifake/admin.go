@@ -109,7 +109,7 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (engine.Tunne
 		return engine.TunnelRotation{}, err
 	}
 	if s.ObserveOnly {
-		return engine.TunnelRotation{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it", engine.ErrRefused)
+		return engine.TunnelRotation{}, fmt.Errorf("%w: %s", engine.ErrRefused, engine.ObserveOnlyRefusal)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

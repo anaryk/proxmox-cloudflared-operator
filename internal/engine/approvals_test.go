@@ -89,7 +89,7 @@ func TestAnApprovalIsOfOneIdentity(t *testing.T) {
 		st := e.cycle()
 
 		require.Equal(t, planner.StateHeld, route(st, "www.example.com").State)
-		require.Contains(t, st.Issues, planner.Issue{Guest: refWeb, Msg: issueWaitingApproval})
+		require.Contains(t, st.Issues, planner.Issue{Guest: refWeb, Msg: IssueWaitingApproval})
 		require.Equal(t, []UnapprovedGuest{{
 			GuestView: GuestView{GuestRef: refWeb, Name: "web-1"}, Identity: "uuid:999", Hostnames: []string{"www.example.com"}, Why: admissionWhy,
 		}}, st.Unapproved)

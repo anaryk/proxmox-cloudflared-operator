@@ -13,10 +13,12 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
-const (
-	issueWaitingApproval = "waiting for approval"
-	whyAdmission         = "admission mode approve"
-)
+// IssueWaitingApproval is the issue added for every guest that waits for
+// approval. It is no fault of the guest's Notes, so the lists of issues of
+// the Notes leave it out.
+const IssueWaitingApproval = "waiting for approval"
+
+const whyAdmission = "admission mode approve"
 
 // collect turns the guests and the manual routes into candidate routes and
 // drops those of guests that wait for approval, which the state lists with
@@ -167,7 +169,7 @@ func admit(col planner.Collected, snap inventory.Snapshot, approvals map[string]
 	for _, ref := range slices.SortedFunc(maps.Keys(waiting), func(a, b model.GuestRef) int {
 		return model.CompareOwners(a.String(), b.String())
 	}) {
-		issues = append(issues, planner.Issue{Guest: ref, Msg: issueWaitingApproval})
+		issues = append(issues, planner.Issue{Guest: ref, Msg: IssueWaitingApproval})
 		out = append(out, waitingGuest{ref: ref, hostnames: slices.Compact(slices.Sorted(slices.Values(waiting[ref])))})
 	}
 	slices.SortStableFunc(issues, planner.CompareIssues)

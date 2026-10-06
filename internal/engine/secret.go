@@ -14,6 +14,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
+// ObserveOnlyRefusal is why a rotation is refused in observe-only mode. The
+// web interface shows it beside the command that rotates a secret.
+const ObserveOnlyRefusal = "pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it"
+
 // TunnelRotation is what a rotation of the secret of a tunnel did.
 type TunnelRotation struct {
 	Tunnel   string `json:"tunnel"`
@@ -156,7 +160,7 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 		return TunnelRotation{}, fmt.Errorf("reading the settings: %w", err)
 	}
 	if s.ObserveOnly {
-		return TunnelRotation{}, fmt.Errorf("%w: pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it", ErrRefused)
+		return TunnelRotation{}, fmt.Errorf("%w: %s", ErrRefused, ObserveOnlyRefusal)
 	}
 	inst, found, err := e.d.Store.Install()
 	switch {

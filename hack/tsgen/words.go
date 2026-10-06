@@ -84,6 +84,12 @@ func wordsModule() string {
 	fmt.Fprintf(&b, "export const rateLimitWait = %s\n", quote(reconcile.RateLimitWait))
 	list(&b, "waitingReads", []string{reconcile.ZoneListingRead, reconcile.TunnelRead})
 
+	section(&b, "Why the daemon refuses to rotate the secret of a tunnel in observe-only mode, said beside the command that would.")
+	fmt.Fprintf(&b, "export const observeOnlyRefusal = %s\n", quote(engine.ObserveOnlyRefusal))
+
+	section(&b, "The issue the engine adds for every guest that waits for approval, which is no fault of its Notes.")
+	fmt.Fprintf(&b, "export const waitingApprovalIssue = %s\n", quote(engine.IssueWaitingApproval))
+
 	for _, c := range printableClasses() {
 		section(&b, "Printable replaces "+c.doc+": sorted ranges of code points, both ends included.")
 		fmt.Fprintf(&b, "export const %s: readonly (readonly [number, number])[] = [\n", c.name)

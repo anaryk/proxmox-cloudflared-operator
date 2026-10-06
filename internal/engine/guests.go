@@ -92,7 +92,7 @@ func approvalOf(mode string, tagged bool, a store.Approval, approved bool, ident
 // guest that waits for approval has: it is no fault of its Notes.
 func guestIssues(issues []planner.Issue) []planner.Issue {
 	return slices.DeleteFunc(slices.Clone(issues), func(is planner.Issue) bool {
-		return is.Guest == (model.GuestRef{}) || is.Msg == issueWaitingApproval
+		return is.Guest == (model.GuestRef{}) || is.Msg == IssueWaitingApproval
 	})
 }
 

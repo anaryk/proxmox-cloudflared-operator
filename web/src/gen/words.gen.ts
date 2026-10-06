@@ -66,6 +66,14 @@ export const waitingReads: readonly string[] = [
   "the tunnel of account ",
 ]
 
+// Why the daemon refuses to rotate the secret of a tunnel in observe-only mode,
+// said beside the command that would.
+export const observeOnlyRefusal = "pco is in observe-only mode and changes nothing at Cloudflare; run pco apply to end it"
+
+// The issue the engine adds for every guest that waits for approval, which is
+// no fault of its Notes.
+export const waitingApprovalIssue = "waiting for approval"
+
 // Printable replaces the controls of C0 and C1, with DEL (unicode.Cc): sorted
 // ranges of code points, both ends included.
 export const controlRanges: readonly (readonly [number, number])[] = [
