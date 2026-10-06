@@ -1,8 +1,5 @@
 import type { ReactNode } from 'react'
 
-import { useApp } from '../api/store'
-import { Skeleton } from '../components/Skeleton'
-import { StateBadge } from '../components/StateBadge'
 import { Untrusted } from '../components/Untrusted'
 import { Overview } from '../pages/Overview'
 import { DoctorPage } from '../pages/doctor/DoctorPage'
@@ -16,36 +13,13 @@ import { EventsPage } from '../pages/events/EventsPage'
 import { GuestDetail } from '../pages/guests/GuestDetail'
 import { GuestsPage } from '../pages/guests/GuestsPage'
 import { NetworksPage } from '../pages/networks/NetworksPage'
+import { RoutesSection } from '../pages/routes/RoutesPage'
 import { SettingsPage } from '../pages/settings/SettingsPage'
-import { compareRouteStates } from '../text/words'
 import { Head } from './Head'
 import { Link } from './Link'
-import { NoRoutes } from './NoRoutes'
 import type { View } from './router'
 
-// Routes says how many routes there are in each state, or why there are none.
-function RouteCounts() {
-  const st = useApp((s) => s.state)
-  const gateTag = useApp((s) => s.settings?.settings.gateTag)
-  if (!st) return <Skeleton lines={3} label="Loading the state" />
-  if (st.routes.length === 0) return <NoRoutes state={st} gateTag={gateTag} />
-  const counts = new Map<string, number>()
-  for (const r of st.routes) counts.set(r.state, (counts.get(r.state) ?? 0) + 1)
-  return (
-    <ul className="route-counts">
-      {[...counts.keys()].sort(compareRouteStates).map((state) => (
-        <li key={state}>
-          <StateBadge state={state} /> <b className="num">{counts.get(state)}</b>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
 const titles: Readonly<Record<string, [string, string]>> = {
-  routes: ['Routes', 'Every hostname the guests and the manual routes ask for, and what pco made of it.'],
-  plan: ['Plan', 'What the cycles would change at Cloudflare, and what waits for a confirmation.'],
-  'manual-new': ['New manual route', 'A hostname for an address that no guest annotation names.'],
   guests: ['Guests', 'The guests that carry the tag, their approvals and the issues in their Notes.'],
   claims: ['Claims', 'Who holds each hostname, and who waits for it.'],
   credentials: ['Credentials', 'The Cloudflare API tokens pco uses.'],
@@ -59,24 +33,6 @@ const titles: Readonly<Record<string, [string, string]>> = {
 // text, as a shared link can carry anything: it is shown as untrusted.
 function titleOf(v: View): [ReactNode, ReactNode] {
   switch (v.name) {
-    case 'route':
-      return [
-        <Untrusted key="t" text={v.hostname} hostname />,
-        v.owner ? (
-          <>
-            The route of <Untrusted text={v.owner} />.
-          </>
-        ) : (
-          'The routes of this hostname.'
-        ),
-      ]
-    case 'manual':
-      return [
-        <>
-          Manual route <Untrusted text={v.id} />
-        </>,
-        '',
-      ]
     case 'guest':
       return [`${v.kind}/${v.vmid}`, '']
     case 'credential':
@@ -102,8 +58,6 @@ function titleOf(v: View): [ReactNode, ReactNode] {
 // Body is what a view shows under its head.
 function Body({ view }: { view: View }) {
   switch (view.name) {
-    case 'routes':
-      return <RouteCounts />
     case 'guests':
       return <GuestsPage />
     case 'claims':
@@ -146,6 +100,12 @@ export function Page({ view }: { view: View }) {
         </>
       )
     }
+    case 'routes':
+    case 'route':
+    case 'plan':
+    case 'manual-new':
+    case 'manual':
+      return <RoutesSection view={view} />
     case 'not-found':
       return (
         <>

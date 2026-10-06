@@ -1,0 +1,447 @@
+/*
+ * The routes, their plan and their detail, on the tokens of tokens.css and
+ * the components of base.css.
+ */
+
+/* the switch between the routes and the plan */
+
+.subnav {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.subnav-link {
+  min-height: 34px;
+  margin-bottom: -1px;
+  padding: 7px 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--text2);
+  font-size: 13.5px;
+  text-decoration: none;
+}
+
+.subnav-link[aria-current="page"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* a line that says something about what follows */
+
+.note-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 10px;
+  color: var(--text2);
+}
+
+.note-line > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.note-warn > svg {
+  color: var(--warn);
+}
+
+/* what went wrong, beside what it was about */
+
+.error-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 0;
+  color: var(--fail);
+}
+
+.error-line > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* filters */
+
+.route-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.filter-chip:hover {
+  background: var(--raised);
+}
+
+/* muted text is under 4.5:1 on the weak tint: it takes the secondary colour */
+.filter-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  --muted: var(--text2);
+}
+
+.filter-count {
+  color: var(--text2);
+  font-weight: 600;
+}
+
+.filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.filter-zone,
+.filter-search input {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.filter-search {
+  display: inline-flex;
+  flex: 1 1 260px;
+  align-items: center;
+  gap: 6px;
+  max-width: 420px;
+  color: var(--text2);
+}
+
+.filter-search input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* the table: a note under each hostname */
+
+.route-note {
+  color: var(--muted);
+}
+
+.cell-line.route-note {
+  display: flex;
+  gap: 8px;
+}
+
+.route-note > bdi {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-note > .note-action {
+  flex: none;
+}
+
+.owner .mono {
+  color: var(--text2);
+}
+
+@media (min-width: 720px) {
+  .col-state {
+    width: 130px;
+  }
+
+  .col-owner {
+    width: 22%;
+  }
+
+  .col-level {
+    width: 90px;
+  }
+
+  .col-zone {
+    width: 14%;
+  }
+
+  .col-action {
+    width: 190px;
+  }
+}
+
+.table-row.row-destructive {
+  box-shadow: inset 3px 0 0 var(--fail);
+}
+
+/* the detail of a route */
+
+.detail-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.detail-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0 0 8px;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.detail-actions:empty {
+  display: none;
+}
+
+.route-detail .tabpanel {
+  padding-top: 12px;
+}
+
+.details-inner {
+  gap: 2px 10px;
+}
+
+.plain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plain-list > li + li {
+  margin-top: 4px;
+}
+
+.route-section {
+  margin-top: 16px;
+}
+
+.route-section h3 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+}
+
+.route-traffic p {
+  margin: 6px 0 0;
+}
+
+.diagnosis-run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 8px 0 12px;
+}
+
+.diagnosis-when {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 8px;
+  color: var(--text2);
+}
+
+/* the history of a route */
+
+.timeline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-entry {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-error {
+  padding-right: 8px;
+  padding-left: 8px;
+  background: var(--fail-weak);
+  --muted: var(--text2);
+}
+
+.timeline-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: 12.5px;
+}
+
+.timeline-actor {
+  color: var(--text2);
+}
+
+.timeline-message {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* the plan */
+
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.plan > p {
+  margin: 0;
+}
+
+.plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.plan-actions {
+  margin-left: auto;
+}
+
+.plan-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.waiting-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.waiting-list > li + li {
+  margin-top: 8px;
+}
+
+.waiting-entry.highlighted {
+  margin-left: -8px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: var(--warn-weak);
+  --muted: var(--text2);
+}
+
+.waiting-items {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--text2);
+}
+
+.confirm-state .waiting-list {
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.offer {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.unaffected {
+  margin-top: 10px;
+}
+
+.unaffected > p {
+  margin: 0 0 4px;
+}
+
+.plan-names .btn {
+  margin-left: 6px;
+}
+
+.diff-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diff-list > li + li {
+  margin-top: 4px;
+}
+
+.diff-removed bdi {
+  text-decoration: line-through;
+}
+
+.confirm-state .banner {
+  margin-bottom: 10px;
+}
+
+.confirm-state .field {
+  margin-top: 12px;
+}
+
+/* forms */
+
+.manual-form {
+  max-width: 620px;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+
+.choices-column {
+  flex-direction: column;
+}
+
+.choices legend {
+  margin-bottom: 4px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.choice,
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.check {
+  margin: 0 0 12px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 12px;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
