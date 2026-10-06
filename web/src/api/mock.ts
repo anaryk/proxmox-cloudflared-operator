@@ -3,7 +3,8 @@
 // VITE_MOCK_STATE=<fixture> (populated, empty, first-run, untagged,
 // tagged-empty, rogue, frozen, rogue-scenario, scenario-populated, large) for
 // another state. Nothing changes: a write is refused as a daemon that is busy
-// would refuse it. It is used by vite.config.ts only and is never part of the
+// would refuse it; the doctor and a diagnosis, which only read, get the ones
+// of the fixtures. It is used by vite.config.ts only and is never part of the
 // build.
 
 import { readFileSync } from 'node:fs'
@@ -24,8 +25,9 @@ interface MockState {
 }
 
 interface MockTraffic {
+  at: string
   tunnels: { tunnelId: string; haConnections: number }[]
-  routes: object[]
+  routes: { hostname: string; target: string; flowsPerSec: number }[]
   routesTotal: number
 }
 
@@ -86,6 +88,8 @@ export class Mock {
     if (this.signedOut && pathname.startsWith('/api/v1/')) return { status: 401, body: fixture('unauthenticated') }
     // the doctor is a POST that changes nothing
     if (method === 'POST' && pathname === '/api/v1/doctor') return { status: 200, body: fixture('doctor') }
+    // A diagnosis only reads: every hostname gets the one of the fixture.
+    if (method === 'POST' && pathname === '/api/v1/diagnose') return { status: 200, body: fixture('diagnose') }
     if (method !== 'GET') {
       return { status: 503, body: { error: 'the development server changes nothing: try again on a node', code: 'unavailable' } }
     }
@@ -101,6 +105,8 @@ export class Mock {
       }
       case '/api/v1/traffic':
         return { status: 200, body: this.traffic }
+      case '/api/v1/traffic/route':
+        return this.routeSeries(searchParams.get('hostname') ?? '')
       case '/api/v1/credentials':
         return { status: 200, body: this.state.credentials }
     }
@@ -116,6 +122,20 @@ export class Mock {
     if (name) return { status: 200, body: fixture(name) }
     if (/^\/api\/v1\/guests\/(qemu|lxc)\/\d+\/annotation$/.test(pathname)) return { status: 200, body: fixture('annotation') }
     return notFound(`the development server has no answer for ${pathname}`)
+  }
+
+  // routeSeries is the answer of /v1/traffic/route: 15 minutes of the
+  // figure of a route's target, or not_found for a route without one.
+  routeSeries(hostname: string): MockAnswer {
+    const r = this.traffic.routes.find((x) => x.hostname === hostname)
+    if (!r) return notFound(`no target counts for ${hostname}`)
+    const end = Date.parse(this.traffic.at)
+    const samples = Array.from({ length: 180 }, (_, i) => ({
+      at: new Date(end - (179 - i) * 5000).toISOString().replace('.000Z', 'Z'),
+      flowsPerSec: Math.round(r.flowsPerSec * (1 + 0.4 * Math.sin(i / 7)) * 10) / 10,
+    }))
+    const shared = this.traffic.routes.filter((x) => x.target === r.target).length - 1
+    return { status: 200, body: { hostname, target: r.target, shared, samples } }
   }
 
   // stream writes the notices of a stream until the request ends: a state
