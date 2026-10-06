@@ -39,20 +39,68 @@ func Watch(ctx context.Context, bound func() map[netip.Addr]Pin, onMove func(net
 	return watchIn(ctx, netns.None(), bound, onMove)
 }
 
+// ObserveForwarding starts from a full dump of the forwarding tables, every
+// bridge's, then follows their changes, until ctx ends, and reports what they
+// show of the expected MACs: Learned for one on its own guest's port wherever
+// the snapshot says the guest runs, Moved for one that left it, Conflict for
+// one on a port of another guest.
+//
+// It reads the notifications Watch reads, on a subscription of its own, and
+// like Watch subscribes again, with a dump, after the subscription fails. A
+// MAC an impostor took while no observer ran is reported the moment one runs
+// again, for as long as the bridge keeps the entry.
+//
+// expected is asked at every entry, and report is called from the one
+// goroutine that reads the notifications: neither may wait for anything slow,
+// or the notifications queue up until the kernel drops some. It returns nil
+// when ctx ends, and an error when it cannot subscribe at all.
+func ObserveForwarding(ctx context.Context, expected func() map[string]Expected, report func(Observation)) error {
+	return observeIn(ctx, netns.None(), expected, report)
+}
+
 // watchIn watches the tables of the network namespace ns.
 func watchIn(ctx context.Context, ns netns.NsHandle, bound func() map[netip.Addr]Pin, onMove func(netip.Addr)) error {
+	return follow(ctx, ns, "watching the network", func(h *netlink.Handle) error {
+		return readTables(ctx, ns, h, func(u netlink.NeighUpdate, name func(index int) string) {
+			e, ok := entryOf(u, name)
+			if !ok {
+				return
+			}
+			for _, addr := range e.moved(bound()) {
+				onMove(addr)
+			}
+		})
+	})
+}
+
+// observeIn observes the forwarding tables of the network namespace ns.
+func observeIn(ctx context.Context, ns netns.NsHandle, expected func() map[string]Expected, report func(Observation)) error {
+	o := newObserver(expected, report, time.Now)
+	return follow(ctx, ns, "watching the forwarding tables", func(h *netlink.Handle) error {
+		return readTables(ctx, ns, h, func(u netlink.NeighUpdate, name func(index int) string) {
+			if e, ok := forwardingOf(u, name); ok {
+				o.see(e)
+			}
+		})
+	})
+}
+
+// follow runs once, which reads one subscription, and again after each time
+// the subscription failed, until ctx ends. A first subscription that cannot
+// be made is an error that starts with what.
+func follow(ctx context.Context, ns netns.NsHandle, what string, once func(h *netlink.Handle) error) error {
 	h, err := netlink.NewHandleAt(ns)
 	if err != nil {
-		return fmt.Errorf("watching the network: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	defer h.Close()
 	for first := true; ; first = false {
-		err := watchOnce(ctx, ns, h, bound, onMove)
+		err := once(h)
 		switch {
 		case ctx.Err() != nil:
 			return nil
 		case first && !errors.Is(err, errUnsubscribed):
-			return fmt.Errorf("watching the network: %w", err)
+			return fmt.Errorf("%s: %w", what, err)
 		}
 		t := time.NewTimer(resubscribeAfter)
 		select {
@@ -64,17 +112,26 @@ func watchIn(ctx context.Context, ns netns.NsHandle, bound func() map[netip.Addr
 	}
 }
 
-// watchOnce reads one subscription, which begins with what both tables hold,
-// until ctx ends or the subscription does.
-func watchOnce(ctx context.Context, ns netns.NsHandle, h *netlink.Handle, bound func() map[netip.Addr]Pin, onMove func(netip.Addr)) error {
-	updates := make(chan netlink.NeighUpdate, watchQueue)
-	done := make(chan struct{})
-	err := netlink.NeighSubscribeWithOptions(updates, done, netlink.NeighSubscribeOptions{
+// subscription is how every watch subscribes to the notifications of the
+// neighbour tables of ns: asking for what they hold first, the neighbour
+// tables and then the forwarding tables of every bridge, before the changes
+// that follow. A watch that did not would see nothing of what moved while it
+// was not running.
+func subscription(ns netns.NsHandle) netlink.NeighSubscribeOptions {
+	return netlink.NeighSubscribeOptions{
 		Namespace:         &ns,
 		ListExisting:      true,
 		ReceiveBufferSize: watchBuffer,
-	})
-	if err != nil {
+	}
+}
+
+// readTables reads one subscription, which begins with what the tables hold,
+// and calls each with every update, with a way to name the devices it
+// mentions, until ctx ends or the subscription does.
+func readTables(ctx context.Context, ns netns.NsHandle, h *netlink.Handle, each func(u netlink.NeighUpdate, name func(index int) string)) error {
+	updates := make(chan netlink.NeighUpdate, watchQueue)
+	done := make(chan struct{})
+	if err := netlink.NeighSubscribeWithOptions(updates, done, subscription(ns)); err != nil {
 		close(done)
 		return err
 	}
@@ -105,13 +162,7 @@ func watchOnce(ctx context.Context, ns netns.NsHandle, h *netlink.Handle, bound 
 			if !ok {
 				return errUnsubscribed
 			}
-			e, ok := entryOf(u, name)
-			if !ok {
-				continue
-			}
-			for _, addr := range e.moved(bound()) {
-				onMove(addr)
-			}
+			each(u, name)
 		}
 	}
 }
@@ -132,10 +183,24 @@ func entryOf(u netlink.NeighUpdate, name func(index int) string) (entry, bool) {
 		}
 		return entry{addr: addr.Unmap(), dev: name(u.LinkIndex), mac: u.HardwareAddr}, true
 	case unix.AF_BRIDGE:
-		if u.MasterIndex == 0 {
-			return entry{}, false
-		}
-		return entry{mac: u.HardwareAddr, bridge: name(u.MasterIndex), port: name(u.LinkIndex)}, true
+		return forwardingOf(u, name)
 	}
 	return entry{}, false
+}
+
+// forwardingOf reads an update of a bridge's forwarding table: a MAC the
+// bridge learned on a port, or dropped. It says which bridge, port and VLAN
+// as far as their names are known. An entry of a device that is no bridge's
+// port, as a VXLAN device's own, has no master and is none of it.
+func forwardingOf(u netlink.NeighUpdate, name func(index int) string) (entry, bool) {
+	if u.Family != unix.AF_BRIDGE || len(u.HardwareAddr) == 0 || u.MasterIndex == 0 {
+		return entry{}, false
+	}
+	if u.Type != unix.RTM_NEWNEIGH && u.Type != unix.RTM_DELNEIGH {
+		return entry{}, false
+	}
+	return entry{
+		mac: u.HardwareAddr, bridge: name(u.MasterIndex), port: name(u.LinkIndex),
+		vlan: u.Vlan, gone: u.Type == unix.RTM_DELNEIGH,
+	}, true
 }

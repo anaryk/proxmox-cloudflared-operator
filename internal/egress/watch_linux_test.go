@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 )
 
 // The watch test builds three network namespaces of its own: a node with a
@@ -31,29 +34,43 @@ type watchLab struct {
 	node, guest, other netns.NsHandle
 	h                  *netlink.Handle // of the node
 	moves              chan netip.Addr
+	ports              map[string]netns.NsHandle // the machine on each port of the bridge
+	barriers           int
 }
 
 func newWatchLab(t *testing.T) *watchLab {
 	t.Helper()
+	lab := newBridgeLab(t, watchBridge, "wport0", "wport1")
+	lab.guest, lab.other = lab.ports["wport0"], lab.ports["wport1"]
+	lab.moves = make(chan netip.Addr, 64)
+	lab.machine(t, lab.guest, watchMAC)
+	return lab
+}
+
+// newBridgeLab builds a node with a bridge and a machine on each of the ports
+// it names, in namespaces of their own.
+func newBridgeLab(t *testing.T, bridge string, ports ...string) *watchLab {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		requireLab(t, "needs root to create network namespaces")
 	}
-	lab := &watchLab{node: newNamespace(t), guest: newNamespace(t), other: newNamespace(t), moves: make(chan netip.Addr, 64)}
+	lab := &watchLab{node: newNamespace(t), ports: map[string]netns.NsHandle{}}
 	lab.h = linkHandle(t, lab.node)
-	require.NoError(t, lab.h.LinkAdd(&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: watchBridge}}))
-	setUp(t, lab.h, watchBridge, watchNode+"/24")
-	for port, ns := range map[string]netns.NsHandle{"wport0": lab.guest, "wport1": lab.other} {
+	require.NoError(t, lab.h.LinkAdd(&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: bridge}}))
+	setUp(t, lab.h, bridge, watchNode+"/24")
+	for _, port := range ports {
+		ns := newNamespace(t)
+		lab.ports[port] = ns
 		require.NoError(t, lab.h.LinkAdd(&netlink.Veth{
 			LinkAttrs: netlink.LinkAttrs{Name: port}, PeerName: "eth0", PeerNamespace: netlink.NsFd(ns),
 		}))
 		link, err := lab.h.LinkByName(port)
 		require.NoError(t, err)
-		br, err := lab.h.LinkByName(watchBridge)
+		br, err := lab.h.LinkByName(bridge)
 		require.NoError(t, err)
 		require.NoError(t, lab.h.LinkSetMaster(link, br))
 		require.NoError(t, lab.h.LinkSetUp(link))
 	}
-	lab.machine(t, lab.guest, watchMAC)
 	return lab
 }
 
@@ -258,5 +275,249 @@ func TestAnEntrySaysItsDevice(t *testing.T) {
 			require.Equal(t, tc.ok, ok)
 			require.Equal(t, tc.want, got)
 		})
+	}
+}
+
+// The observer's lab is a node whose bridge has the ports of three guests and
+// an uplink, with a machine on each.
+const (
+	observeBridge = "obr0"
+	observeWeb    = "bc:24:11:79:01:01"
+	observeDB     = "bc:24:11:79:01:02"
+	observeUnseen = "bc:24:11:79:01:03"
+	observeOther  = "bc:24:11:79:01:ff"
+)
+
+// observeExpecting is what the observer expects of the lab: the first two
+// guests' MACs, and the MACs barrier uses.
+func observeExpecting() map[string]Expected {
+	expected := map[string]Expected{
+		observeWeb: {MAC: observeWeb, Guest: web, NIC: 0},
+		observeDB:  {MAC: observeDB, Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, NIC: 0},
+	}
+	for n := range 10 {
+		hw := fmt.Sprintf("bc:24:11:79:02:%02x", n)
+		expected[hw] = Expected{MAC: hw, Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 104}, NIC: n}
+	}
+	return expected
+}
+
+func newObserveLab(t *testing.T) *watchLab {
+	t.Helper()
+	lab := newBridgeLab(t, observeBridge, "tap101i0", "tap102i0", "tap109i0", "up0")
+	for _, ns := range lab.ports {
+		silenceIPv6(t, ns)
+	}
+	lab.machine(t, lab.ports["tap101i0"], observeWeb)
+	lab.machine(t, lab.ports["tap102i0"], observeDB)
+	lab.machine(t, lab.ports["tap109i0"], observeOther)
+	lab.machine(t, lab.ports["up0"], observeOther)
+	return lab
+}
+
+// silenceIPv6 stops the machine in ns from speaking IPv6. Its duplicate
+// address detection and announcements are frames from its MAC that the test
+// did not send, and they move a MAC from port to port when two machines have
+// it.
+func silenceIPv6(t *testing.T, ns netns.NsHandle) {
+	t.Helper()
+	var err error
+	onThrowawayThread(func() {
+		if err = netns.Set(ns); err == nil {
+			err = os.WriteFile("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", []byte("1"), 0o644)
+		}
+	})
+	require.NoError(t, err)
+}
+
+// observe starts observing the node, until the test ends.
+func (l *watchLab) observe(t *testing.T, expected map[string]Expected) <-chan Observation {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	seen := make(chan Observation, 256)
+	done := make(chan error, 1)
+	go func() {
+		done <- observeIn(ctx, l.node, func() map[string]Expected { return expected }, func(o Observation) { seen <- o })
+	}()
+	t.Cleanup(func() {
+		cancel()
+		require.NoError(t, <-done)
+	})
+	return seen
+}
+
+// next waits for the next observation of kind about hw, and passes by what
+// else the bridge shows meanwhile.
+func next(t *testing.T, seen <-chan Observation, kind ObservationKind, hw string) Observation {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case o := <-seen:
+			if o.Kind == kind && o.MAC == hw {
+				return o
+			}
+			t.Logf("passing by %s of %s on %s", o.Kind, o.MAC, o.Port)
+		case <-timeout:
+			t.Fatalf("no %s of %s within 5s", kind, hw)
+		}
+	}
+}
+
+// barrier makes the bridge show a MAC of its own that the observer expects on
+// a port of another guest's, and waits for the observation of it. The
+// observer reads the notifications in the order they came, so whatever the
+// bridge showed before has been observed by then; barrier returns it.
+func (l *watchLab) barrier(t *testing.T, seen <-chan Observation) []Observation {
+	t.Helper()
+	l.barriers++
+	hw := fmt.Sprintf("bc:24:11:79:02:%02x", l.barriers)
+	l.machine(t, l.ports["tap109i0"], hw)
+	l.speak(t, l.ports["tap109i0"])
+	var before []Observation
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case o := <-seen:
+			if o.MAC == hw {
+				return before
+			}
+			before = append(before, o)
+		case <-timeout:
+			t.Fatalf("the barrier %s was not observed within 5s", hw)
+		}
+	}
+}
+
+// What a watch learned of the tables before it started is in the dump, and a
+// watch that does not ask for it sees nothing of what moved while it was not
+// running.
+func TestEveryWatchStartsFromTheDump(t *testing.T) {
+	require.True(t, subscription(netns.None()).ListExisting)
+}
+
+// A subscription that failed after it began is made again, and with it the
+// dump.
+func TestAFailedSubscriptionIsMadeAgain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	starts := 0
+
+	err := follow(ctx, netns.None(), "watching", func(*netlink.Handle) error {
+		starts++
+		if starts == 2 {
+			cancel()
+			return nil
+		}
+		return errUnsubscribed
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, starts)
+}
+
+func TestASubscriptionThatCannotBeMadeIsAnError(t *testing.T) {
+	err := follow(context.Background(), netns.None(), "watching the forwarding tables", func(*netlink.Handle) error {
+		return unix.EPERM
+	})
+
+	require.ErrorIs(t, err, unix.EPERM)
+	require.ErrorContains(t, err, "watching the forwarding tables")
+}
+
+// A MAC that is where it is when the observer starts is reported from the
+// dump, the one on its own port as learned and the one that an impostor has
+// taken as a conflict, which is how an agent that was down finds out.
+func TestLinuxObserveBeginsWithTheDump(t *testing.T) {
+	lab := newObserveLab(t)
+	lab.speak(t, lab.ports["tap101i0"])
+	lab.learned(t, observeWeb, "tap101i0")
+	lab.machine(t, lab.ports["tap102i0"], observeUnseen)
+	lab.speak(t, lab.ports["tap102i0"])
+	lab.learned(t, observeUnseen, "tap102i0")
+	expected := map[string]Expected{
+		observeWeb:    {MAC: observeWeb, Guest: web, NIC: 0},
+		observeUnseen: {MAC: observeUnseen, Guest: model.GuestRef{Kind: model.KindQEMU, VMID: 103}, NIC: 0},
+	}
+
+	seen := lab.observe(t, expected)
+
+	learned := next(t, seen, Learned, observeWeb)
+	require.Equal(t, observeBridge, learned.Bridge)
+	require.Equal(t, "tap101i0", learned.Port)
+	require.NotZero(t, learned.At)
+	conflict := next(t, seen, Conflict, observeUnseen)
+	require.Equal(t, "tap102i0", conflict.Port)
+	require.Equal(t, &model.GuestRef{Kind: model.KindQEMU, VMID: 102}, conflict.Owner)
+}
+
+func TestLinuxObserveFollowsAMACFromPortToPort(t *testing.T) {
+	lab := newObserveLab(t)
+	onWeb, onOther, onUplink := lab.ports["tap101i0"], lab.ports["tap102i0"], lab.ports["up0"]
+	lab.speak(t, onWeb)
+	lab.learned(t, observeWeb, "tap101i0")
+	seen := lab.observe(t, observeExpecting())
+	next(t, seen, Learned, observeWeb)
+
+	t.Run("a machine on the uplink takes the MAC", func(t *testing.T) {
+		lab.machine(t, onUplink, observeWeb)
+		lab.speak(t, onUplink)
+
+		moved := next(t, seen, Moved, observeWeb)
+		require.Equal(t, "up0", moved.Port)
+		require.Equal(t, "tap101i0", moved.From)
+	})
+
+	t.Run("the guest speaks again", func(t *testing.T) {
+		lab.speak(t, onWeb)
+
+		learned := next(t, seen, Learned, observeWeb)
+		require.Equal(t, "tap101i0", learned.Port)
+	})
+
+	t.Run("a machine on the port of another guest takes it", func(t *testing.T) {
+		lab.machine(t, onOther, observeWeb)
+		lab.speak(t, onOther)
+
+		conflict := next(t, seen, Conflict, observeWeb)
+		require.Equal(t, "tap102i0", conflict.Port)
+		require.Equal(t, "tap101i0", conflict.From)
+		require.Equal(t, &model.GuestRef{Kind: model.KindQEMU, VMID: 102}, conflict.Owner)
+	})
+}
+
+func TestLinuxObserveReportsNothingOfAMACItDoesNotExpect(t *testing.T) {
+	lab := newObserveLab(t)
+	seen := lab.observe(t, observeExpecting())
+	for _, port := range []string{"tap101i0", "tap102i0", "up0"} {
+		lab.machine(t, lab.ports[port], observeUnseen)
+		lab.speak(t, lab.ports[port])
+		lab.learned(t, observeUnseen, port)
+	}
+
+	for _, o := range lab.barrier(t, seen) {
+		require.NotEqual(t, observeUnseen, o.MAC, "%+v", o)
+	}
+}
+
+// A guest that stops loses its port, and the bridge its entries: the MAC that
+// turns up on the uplink afterwards, as the guest starts on another node, is
+// no move.
+func TestLinuxObserveForgetsAGuestThatStopped(t *testing.T) {
+	lab := newObserveLab(t)
+	lab.speak(t, lab.ports["tap101i0"])
+	lab.learned(t, observeWeb, "tap101i0")
+	seen := lab.observe(t, observeExpecting())
+	next(t, seen, Learned, observeWeb)
+
+	port, err := lab.h.LinkByName("tap101i0")
+	require.NoError(t, err)
+	require.NoError(t, lab.h.LinkDel(port))
+	lab.machine(t, lab.ports["up0"], observeWeb)
+	lab.speak(t, lab.ports["up0"])
+	lab.learned(t, observeWeb, "up0")
+
+	for _, o := range lab.barrier(t, seen) {
+		require.NotEqual(t, observeWeb, o.MAC, "%+v", o)
 	}
 }

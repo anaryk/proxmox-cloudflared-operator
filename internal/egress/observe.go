@@ -24,7 +24,8 @@ const (
 	// Learned: the MAC is on its own guest's port, which is what an
 	// attestation rests on.
 	Learned ObservationKind = "learned"
-	// Moved: the MAC left its own guest's port for one that is no guest's.
+	// Moved: the MAC left its own guest's port for one that is no other
+	// guest's, the uplink's for one.
 	Moved ObservationKind = "moved"
 	// Conflict: the MAC is on a port of another guest.
 	Conflict ObservationKind = "conflict"
