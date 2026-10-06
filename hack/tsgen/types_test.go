@@ -13,16 +13,18 @@ import (
 type inner struct {
 	Name  string `json:"name"`
 	Shade string `json:"shade"`
-	Depth int    `json:"depth"`
+	Depth int    `json:"Depth"`
+	Width int
 }
 
 type other struct {
-	Depth int `json:"depth"`
+	Depth int
+	Width int
 }
 
 type outer struct {
 	inner
-	other                     //nolint:govet // two embedded structs with a field of one name are the case under test
+	other
 	Shade   string            `json:"shade,omitempty"`
 	At      time.Time         `json:"at,omitempty"`
 	Seen    time.Time         `json:"seen,omitzero"`
@@ -45,6 +47,7 @@ func TestFieldsAreWhatEncodingJSONWrites(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []field{
 		{name: "name", ts: "string"},
+		{name: "Depth", ts: "number"},
 		{name: "shade", ts: "string", optional: true},
 		{name: "at", ts: "string"},
 		{name: "seen", ts: "string", optional: true},
@@ -57,7 +60,7 @@ func TestFieldsAreWhatEncodingJSONWrites(t *testing.T) {
 		{name: "raw", ts: "unknown"},
 		{name: "any", ts: "unknown"},
 		{name: "Plain", ts: "boolean"},
-	}, got, "depth is dropped: two embedded structs have it at the same depth")
+	}, got, "Width is dropped: two embedded structs have it at the same depth and neither is tagged; the tagged Depth wins")
 
 	// Marshal writes the same names, so the expectations above are those of
 	// encoding/json.
