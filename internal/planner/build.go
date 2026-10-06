@@ -2,6 +2,7 @@ package planner
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -30,6 +31,7 @@ const (
 	reasonWithdrawn    = "identity check failed"
 	reasonRejected     = "address must never be served"
 	reasonOtherOwner   = "address was verified for another owner"
+	reasonNoService    = "service address not allocated"
 )
 
 // Zone is a Cloudflare zone and the credential that can see it. A zone with
@@ -53,6 +55,11 @@ type Zone struct {
 //
 // Level is the identity level the address was proven at, for the route status
 // to show; it does not change what is served.
+//
+// Leg says that the address was proven through a leg of the gateway: the
+// node does not reach it, and a connector may dial Via only, the service
+// address the gateway forwards to it. A target on a leg without one is not
+// served.
 type ResolvedTarget struct {
 	Addr      netip.Addr `json:"addr,omitzero"`       // last verified address; zero if never verified
 	Reachable bool       `json:"reachable,omitempty"` // currently passing identity and probe
@@ -61,6 +68,18 @@ type ResolvedTarget struct {
 	Reason    string     `json:"reason,omitempty"`
 	Owner     string     `json:"owner,omitempty"`
 	Level     string     `json:"level,omitempty"`
+	Leg       bool       `json:"leg,omitempty"`
+	Via       netip.Addr `json:"via,omitzero"`
+}
+
+// Dialed is the address a connector dials for the target: the service
+// address of a target on a leg, which has no other, and the address of any
+// other. It is false for a target on a leg without a service address.
+func (t ResolvedTarget) Dialed() (netip.Addr, bool) {
+	if !t.Leg {
+		return t.Addr, t.Addr.IsValid()
+	}
+	return t.Via, t.Via.IsValid()
 }
 
 // IngressRule is one entry of a tunnel's ingress configuration.
@@ -228,7 +247,11 @@ func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 		st.State, st.Reason = StateWithdrawn, cmp.Or(target.Reason, reasonWithdrawn)
 		b.addRecord(zone, rt.Hostname)
 	default:
-		rule := newRule(rt, target.Addr)
+		rule, err := newRule(rt, target)
+		if err != nil {
+			st.State, st.Reason = StateUnreachable, cmp.Or(target.Reason, err.Error())
+			break
+		}
 		b.addRule(zone.AccountID, rule)
 		b.live[zone.AccountID] = true
 		b.addRecord(zone, rt.Hostname)
@@ -339,15 +362,22 @@ func (b *builder) tunnels() []TunnelPlan {
 	return out
 }
 
-// newRule builds the ingress rule that sends hostname traffic to addr.
-func newRule(rt model.Route, addr netip.Addr) IngressRule {
+// newRule builds the ingress rule that sends hostname traffic to the address
+// a connector dials for target. A target on a leg without a service address
+// has none, and gets no rule: its real address is not one the connector may
+// dial.
+func newRule(rt model.Route, target ResolvedTarget) (IngressRule, error) {
+	addr, ok := target.Dialed()
+	if !ok {
+		return IngressRule{}, errors.New(reasonNoService)
+	}
 	rule := IngressRule{
 		Hostname:       rt.Hostname,
 		Service:        fmt.Sprintf("%s://%s", rt.Target.Scheme, netip.AddrPortFrom(addr, rt.Target.Port)),
 		HTTPHostHeader: rt.Options.HostHeader,
 	}
 	if rt.Target.Scheme != model.SchemeHTTPS {
-		return rule
+		return rule, nil
 	}
 	rule.NoTLSVerify = rt.Options.NoTLSVerify
 	switch {
@@ -360,7 +390,7 @@ func newRule(rt model.Route, addr netip.Addr) IngressRule {
 	default:
 		rule.OriginServerName = rt.Hostname
 	}
-	return rule
+	return rule, nil
 }
 
 // overlapWarnings returns, per winner, the warnings about another owner's

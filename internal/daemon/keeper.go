@@ -65,10 +65,18 @@ type keeper struct {
 	// net is nil on the host.
 	net     netTable
 	noteNet func(engine.NetCheck)
+	// gw is the gateway of the networks reached through a leg, nil where
+	// none runs; watchNet calls back whenever a link or a route of the node
+	// changes, and idle runs a function while no cycle runs.
+	gw       *gatewayPart
+	noteGw   func(engine.GatewayCheck)
+	watchNet func(ctx context.Context, changed func()) error
+	idle     func(ctx context.Context, fn func()) error
 
-	state       string    // as the last check that could tell found it
-	lastReload  time.Time // when the table was last loaded again
-	lastNetLoad time.Time // when the service prefix was last loaded again
+	state         string    // as the last check that could tell found it
+	lastReload    time.Time // when the table was last loaded again
+	lastNetLoad   time.Time // when the service prefix was last loaded again
+	lastGwRestore time.Time // when the gateway was last brought back
 }
 
 // check checks the egress table once, and what pco-net.service loads in the
@@ -80,6 +88,9 @@ func (k *keeper) check(ctx context.Context) time.Duration {
 		if w := k.checkNet(ctx); w > 0 && (wait == 0 || w < wait) {
 			wait = w
 		}
+	}
+	if w := k.checkGateway(ctx); w > 0 && (wait == 0 || w < wait) {
+		wait = w
 	}
 	return wait
 }
@@ -176,23 +187,28 @@ func (k *keeper) report(c engine.EgressCheck) {
 	k.note(c)
 }
 
-// keep runs the keeper until ctx ends: a check every interval, and one after
-// every burst of notifications that the ruleset changed. Before the first
-// check it only reads the switch, so that a filter switched off shows as such
-// from the start.
+// keep runs the keeper until ctx ends: a check every interval, one after
+// every burst of notifications that the ruleset changed, and a check of the
+// gateway alone after every burst of changes of the links and routes of the
+// node. Before the first check it only reads the switch, so that a filter
+// switched off shows as such from the start.
 func (k *keeper) keep(ctx context.Context, watch func(context.Context, func()) error, every time.Duration, sleep func(context.Context, time.Duration) error) {
 	changed := make(chan struct{}, 1)
 	watched := make(chan struct{})
 	go func() {
 		defer close(watched)
-		watchRuleset(ctx, watch, func() {
-			select {
-			case changed <- struct{}{}:
-			default:
-			}
-		}, sleep, k.log)
+		watchRuleset(ctx, watch, signal(changed), sleep, k.log)
 	}()
 	defer func() { <-watched }()
+	links := make(chan struct{}, 1)
+	if k.gw != nil && k.watchNet != nil {
+		linked := make(chan struct{})
+		go func() {
+			defer close(linked)
+			watchLinks(ctx, k.watchNet, signal(links), sleep, k.log)
+		}()
+		defer func() { <-linked }()
+	}
 
 	if since, off, err := k.off(); err == nil && off {
 		k.report(engine.EgressCheck{View: engine.EgressView{State: engine.EgressOff, Since: since}})
@@ -201,23 +217,67 @@ func (k *keeper) keep(ctx context.Context, watch func(context.Context, func()) e
 	defer tick.Stop()
 	var soon <-chan time.Time
 	for {
+		check := k.check
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
 		case <-soon:
 		case <-changed:
-			if sleep(ctx, settleFor) != nil {
+			if !settled(ctx, changed, sleep) {
 				return
 			}
-			select {
-			case <-changed:
-			default:
+		case <-links:
+			if !settled(ctx, links, sleep) {
+				return
 			}
+			check = k.checkGateway
 		}
 		soon = nil
-		if wait := k.check(ctx); wait > 0 {
+		if wait := check(ctx); wait > 0 {
 			soon = time.After(wait)
+		}
+	}
+}
+
+// signal is a callback that marks ch, once until it is read.
+func signal(ch chan struct{}) func() {
+	return func() {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// settled lets a burst of notifications on ch pass, and reports whether ctx
+// let it.
+func settled(ctx context.Context, ch chan struct{}, sleep func(context.Context, time.Duration) error) bool {
+	if sleep(ctx, settleFor) != nil {
+		return false
+	}
+	select {
+	case <-ch:
+	default:
+	}
+	return true
+}
+
+// watchLinks runs the watch of the links and routes until ctx ends. A watch
+// that fails is started again after a while; until then the gateway is
+// checked on the timer only.
+func watchLinks(ctx context.Context, watch func(context.Context, func()) error, changed func(),
+	sleep func(context.Context, time.Duration) error, log zerolog.Logger,
+) {
+	for {
+		err := watch(ctx, changed)
+		if ctx.Err() != nil {
+			return
+		}
+		log.Warn().Err(err).Dur("again", watchAgainAfter).Msg("watching the links and routes of the node failed; " +
+			"until it runs again, the gateway is checked on the timer only")
+		if sleep(ctx, watchAgainAfter) != nil {
+			return
 		}
 	}
 }

@@ -1,7 +1,8 @@
-HOSTNAME          STATE        LEVEL     SERVICE                OWNER     ZONE         NOTE
-api.example.com   unreachable  observed  -                      lxc/200   example.com  identity level observed is below the required port
-new.example.com   held         -         -                      qemu/106  example.com  claimed by qemu/105
-old.example.com   withdrawn    -         http://10.0.0.15:80    qemu/105  example.com  guest is not running
-shop.example.net  no-zone      -         -                      qemu/104  -            no zone for example.net
-www.example.com   active       port      http://10.0.0.11:8080  qemu/101  example.com  the guest answers slowly
-www.example.com   conflict     -         -                      qemu/102  -            hostname is held by qemu/101
+HOSTNAME          STATE        LEVEL     SERVICE                 VIA           OWNER     ZONE         NOTE
+api.example.com   unreachable  observed  -                       -             lxc/200   example.com  identity level observed is below the required port
+db.example.com    active       port      http://198.18.1.0:5432  attach:vmbr1  qemu/107  example.com  -
+new.example.com   held         -         -                       -             qemu/106  example.com  claimed by qemu/105
+old.example.com   withdrawn    -         http://10.0.0.15:80     -             qemu/105  example.com  guest is not running
+shop.example.net  no-zone      -         -                       -             qemu/104  -            no zone for example.net
+www.example.com   active       port      http://10.0.0.11:8080   direct        qemu/101  example.com  the guest answers slowly
+www.example.com   conflict     -         -                       -             qemu/102  -            hostname is held by qemu/101

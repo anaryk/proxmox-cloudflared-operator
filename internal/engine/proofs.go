@@ -112,15 +112,21 @@ func (v *vouching) see(snap inventory.Snapshot, now time.Time) {
 // since, it watched the address with the MAC of b from before then and has
 // not reported it moved since, the guest has run on the same node with the
 // same configuration from before then, and the proof is not due, see due.
-// Whatever happened at the very time of the proof counts as after it.
+// Whatever happened at the very time of the proof counts as after it. The
+// address watched is the one the egress set holds: the service address of a
+// target on a leg, of which each network has its own for one real address,
+// and which one never published under one does not have.
 func (v *vouching) vouches(b resolve.Binding, now time.Time, every time.Duration) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	at := b.VerifiedAt
-	pin, pinned := v.pinned[b.Addr]
+	key := setAddr(b)
+	pin, pinned := v.pinned[key]
 	g, seen := v.guests[b.Guest]
-	fired, moved := v.fired[b.Addr]
+	fired, moved := v.fired[key]
 	switch {
+	case !key.IsValid():
+		return false
 	case v.watching.IsZero() || !v.watching.Before(at):
 		return false
 	case !pinned || !pin.since.Before(at) || !sameHardware(pin.mac, b.MAC):

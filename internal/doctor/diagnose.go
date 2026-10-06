@@ -19,7 +19,7 @@ import (
 
 // Step is one link of a route's chain.
 type Step struct {
-	Name   string `json:"name"` // "route", "zone", "dns", "ingress", "connector", "identity", "tcp", "http"
+	Name   string `json:"name"` // "route", "zone", "dns", "ingress", "connector", "identity", "path", "tcp", "http"
 	Level  Level  `json:"level"`
 	Detail string `json:"detail"`
 	// Skipped says that an earlier step failed; Level stays "warn" and
@@ -29,16 +29,18 @@ type Step struct {
 
 // DiagnoseRoute walks the chain of the route that holds a hostname in st:
 // the route and its state, its zone, its DNS record, its ingress rule in the
-// tunnel's verified configuration, the connector, the identity and the port
-// of its target, and last an HTTP(S) request to that target as the tunnel
-// would make it. The first step that fails leaves the steps after it skipped.
+// tunnel's verified configuration, the connector, the identity of its target,
+// the path to it, directly or through the leg of a network of the gateway,
+// the port, and last an HTTP(S) request to that target as the tunnel would
+// make it. The first step that fails leaves the steps after it skipped.
 //
 // The request goes to nothing but the address and port of the route's rule,
-// and only when the state shows that address verified for the route's owner
-// and its port answering; the Host header, the name TLS asks for and the
-// verification are those of the rule. It follows no redirect, ends after
-// diagnoseTimeout and reads at most maxBodyRead bytes, none of which are
-// returned: only the status, a hint and the class of a TLS failure are.
+// which for a target behind a leg is its service address, and only when the
+// state shows the target verified for the route's owner and its port
+// answering; the Host header, the name TLS asks for and the verification are
+// those of the rule. It follows no redirect, ends after diagnoseTimeout and
+// reads at most maxBodyRead bytes, none of which are returned: only the
+// status, a hint and the class of a TLS failure are.
 //
 // httpc only lends the certificate authorities it trusts; nil trusts those of
 // the system. An unknown hostname is engine.ErrNotFound.
@@ -60,7 +62,7 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 		check func() Step
 	}{
 		{"route", d.route}, {"zone", d.zone}, {"dns", d.dns}, {"ingress", d.ingress},
-		{"connector", d.connector}, {"identity", d.identity}, {"tcp", d.tcp},
+		{"connector", d.connector}, {"identity", d.identity}, {"path", d.path}, {"tcp", d.tcp},
 		{"http", func() Step { return d.http(ctx, httpc) }},
 	}
 	steps := make([]Step, 0, len(links))
@@ -243,10 +245,45 @@ func (d *diagnosis) identity() Step {
 	if d.unchecked() != "" {
 		verified, step = "verified in an earlier cycle", warned
 	}
-	if c, ok := d.candidate(ap.Addr()); ok {
-		return step(fmt.Sprintf("%s is the address of %s, %s%s (%s)", ap.Addr(), d.rt.Owner, verified, level, c.Source))
+	addr := d.behind(ap.Addr())
+	if c, ok := d.candidate(addr); ok {
+		return step(fmt.Sprintf("%s is the address of %s, %s%s (%s)", addr, d.rt.Owner, verified, level, c.Source))
 	}
-	return step(fmt.Sprintf("%s is the address %s for %s%s", ap.Addr(), verified, d.rt.Owner, level))
+	return step(fmt.Sprintf("%s is the address %s for %s%s", addr, verified, d.rt.Owner, level))
+}
+
+// behind is the address of the target the connector reaches at dialed: the
+// guest's own address behind the leg when dialed is the service address of
+// the route's path, and dialed otherwise.
+func (d *diagnosis) behind(dialed netip.Addr) netip.Addr {
+	if p := d.rt.Path; p != nil && p.Service.IsValid() && p.Service == dialed && p.Addr.IsValid() {
+		return p.Addr
+	}
+	return dialed
+}
+
+// gatewayFailed is the start of the problem line of a cycle whose gateway
+// could not be programmed.
+const gatewayFailed = "programming the gateway: "
+
+// path says how the node reaches the target: directly, or through the leg of
+// a network of the gateway, which forwards the service address the connector
+// dials to the guest's own address.
+func (d *diagnosis) path() Step {
+	p := d.rt.Path
+	if p == nil || p.Via == "" || p.Via == engine.ViaDirect {
+		return passed("direct")
+	}
+	via := strings.Replace(p.Via, ":", " ", 1)
+	switch {
+	case !p.Service.IsValid():
+		return failed(via + ": no service address")
+	case p.Leg != engine.LegUp:
+		return failed(fmt.Sprintf("%s: the leg is not up: %s", via, cmp.Or(p.Leg, "the gateway has not said how it is")))
+	case slices.ContainsFunc(d.st.Problems, func(l string) bool { return strings.HasPrefix(l, gatewayFailed) }):
+		return failed(via + ": the gateway could not be programmed; pco status says why")
+	}
+	return passed(fmt.Sprintf("%s: leg up, service %s -> %s programmed", via, p.Service, p.Addr))
 }
 
 // tried lists the candidates resolution tried, and how each fared.
@@ -288,8 +325,11 @@ func (d *diagnosis) tcp() Step {
 	if err != nil {
 		return failed(fmt.Sprintf("the target %s is no address and port", d.rt.Service))
 	}
-	c, ok := d.candidate(ap.Addr())
+	addr := d.behind(ap.Addr())
+	c, ok := d.candidate(addr)
 	switch {
+	case ok && c.OK && addr != ap.Addr():
+		return passed(fmt.Sprintf("%s answers (%s through the leg)", ap, netip.AddrPortFrom(addr, ap.Port())))
 	case ok && c.OK:
 		return passed(ap.String() + " answers")
 	case ok:

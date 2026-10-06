@@ -384,6 +384,8 @@ func (c *cycleRun) routeViews() []RouteView {
 			st.State, st.Reason, st.Service = RouteFrozen, "account frozen: "+why, ""
 		} else if why := c.leftOutFor(st); why != "" {
 			st.Reason = why
+		} else if why := c.legKept[st.Hostname]; why != "" && winner[st.Hostname] == st.Owner {
+			st.Reason = why
 		}
 		v := RouteView{RouteStatus: st}
 		if p, ok := rules[st.Hostname]; ok && st.State != planner.StateConflict {
@@ -402,7 +404,7 @@ func (c *cycleRun) routeViews() []RouteView {
 		}
 		if res, ok := c.results[st.Hostname]; ok && winner[st.Hostname] == st.Owner {
 			v.Candidates = slices.Clone(res.Candidates)
-			v.Path = pathOf(c.e.d.Node, st.Owner, res.Binding, c.snap)
+			v.Path = pathOf(c.e.d.Node, st.Owner, res.Binding, c.snap, c.e.legState)
 		}
 		out = append(out, v)
 	}

@@ -53,10 +53,13 @@ type EgressView struct {
 // target it cannot reach.
 const heldEgress = "the egress filter could not be set"
 
-// blockLost takes out of the egress filter, at once, every address whose
-// binding lost its proof in this cycle, and keeps them for the set: what the
-// rest of the cycle takes may be long, and the address may now be someone
-// else's. Only the addresses the last set holds can be in the table.
+// blockLost takes out of the egress filter, at once, every target whose
+// binding lost its proof in this cycle, and keeps their addresses for the
+// set: what the rest of the cycle takes may be long, and the address may now
+// be someone else's. A target is taken out by the address the set holds for
+// it, the service address of one on a leg, never by the real address, which
+// a target the node reaches directly may have too. Only the addresses the
+// last set holds can be in the table.
 func (c *cycleRun) blockLost() {
 	c.lost = map[netip.Addr]bool{}
 	for _, rt := range c.claims.Winners {
@@ -65,8 +68,8 @@ func (c *cycleRun) blockLost() {
 		if !ok || !bound {
 			continue
 		}
-		if addr, lost := resolve.LostProof(rt, &prev, res); lost {
-			c.lost[addr] = true
+		if _, lost := resolve.LostProof(rt, &prev, res); lost && setAddr(prev).IsValid() {
+			c.lost[setAddr(prev)] = true
 		}
 	}
 	for _, addr := range slices.SortedFunc(maps.Keys(c.lost), netip.Addr.Compare) {
@@ -94,6 +97,25 @@ func (c *cycleRun) feedEgress() {
 	if c.storeHold {
 		return
 	}
+	c.e.egress = c.egressSet()
+	c.e.keepServed(c.servedTargets())
+	c.e.egMu.Lock()
+	err := c.e.d.Egress.Set(c.ctx, c.e.unsuspected())
+	c.e.egMu.Unlock()
+	switch {
+	case err == nil, errors.Is(err, egress.ErrOff):
+	default:
+		c.egressHeld = heldEgress
+		c.problem("setting the egress filter: %v; no tunnel configuration is written until it is set", err)
+	}
+}
+
+// egressSet is the set of targets of this cycle, as feedEgress gives it and
+// the gateway is given the service addresses of: the targets verified for the
+// winners and those of the last set a configuration verified at Cloudflare
+// still sends a connector to, less the withdrawn and those whose proof was
+// lost, each once.
+func (c *cycleRun) egressSet() []egress.Target {
 	set := c.verifiedTargets()
 	sent := c.e.sentTargets()
 	withdrawn := c.withdrawnAddrs()
@@ -111,25 +133,16 @@ func (c *cycleRun) feedEgress() {
 	// A target of allowNode sorts first among its equals, and is the one kept:
 	// one of an earlier process comes back from the memory without the mark.
 	slices.SortFunc(set, egress.CompareAllowNodeFirst)
-	set = slices.CompactFunc(set, func(a, b egress.Target) bool { return egress.CompareEndpoints(a, b) == 0 })
-	c.e.egress = set
-	c.e.keepServed(c.servedTargets())
-	c.e.egMu.Lock()
-	err := c.e.d.Egress.Set(c.ctx, c.e.unsuspected())
-	c.e.egMu.Unlock()
-	switch {
-	case err == nil, errors.Is(err, egress.ErrOff):
-	default:
-		c.egressHeld = heldEgress
-		c.problem("setting the egress filter: %v; no tunnel configuration is written until it is set", err)
-	}
+	return slices.CompactFunc(set, func(a, b egress.Target) bool { return egress.CompareEndpoints(a, b) == 0 })
 }
 
 // verifiedTargets are the targets this cycle verified for the winners: an
 // address resolution proved for the owner that serves the hostname, at the
-// route's port. A target the identity minimum holds back has no address any
-// more. The target of a manual route with allowNode is marked so: it may be an
-// address of the node, which the filter refuses for any other.
+// route's port, as the connector dials it: the service address of a target
+// on a leg, which is none until it has one, and the address of any other. A
+// target the identity minimum holds back has no address any more. The target
+// of a manual route with allowNode is marked so: it may be an address of the
+// node, which the filter refuses for any other.
 func (c *cycleRun) verifiedTargets() []egress.Target {
 	var out []egress.Target
 	for _, rt := range c.claims.Winners {
@@ -144,26 +157,31 @@ func (c *cycleRun) verifiedTargets() []egress.Target {
 func (c *cycleRun) verifiedTarget(rt model.Route) (egress.Target, bool) {
 	res, ok := c.results[rt.Hostname]
 	t := res.Target
+	dialed, served := t.Dialed()
 	switch {
-	case !ok, !t.Addr.IsValid(), t.Withdrawn, t.Rejected, t.Owner != "" && t.Owner != rt.Owner(), rt.Target.Port == 0:
+	case !ok, !t.Addr.IsValid(), !served, t.Withdrawn, t.Rejected, t.Owner != "" && t.Owner != rt.Owner(), rt.Target.Port == 0:
 		return egress.Target{}, false
 	}
-	return egress.Target{Addr: t.Addr, Port: rt.Target.Port, AllowNode: rt.Source == model.SourceManual && rt.Options.AllowNode}, true
+	return egress.Target{Addr: dialed, Port: rt.Target.Port, AllowNode: rt.Source == model.SourceManual && rt.Options.AllowNode}, true
 }
 
-// withdrawnAddrs are the addresses of the winners whose binding is withdrawn
-// after this cycle's resolution, and of every stored binding that was
-// withdrawn when the cycle began, which covers a route gone since.
+// withdrawnAddrs are the addresses the set holds for the winners whose
+// binding is withdrawn after this cycle's resolution, and for every stored
+// binding that was withdrawn when the cycle began, which covers a route gone
+// since: the service address of one on a leg, the address of any other.
 func (c *cycleRun) withdrawnAddrs() map[netip.Addr]bool {
 	out := map[netip.Addr]bool{}
-	for _, b := range c.bindings {
-		if b.Withdrawn {
-			out[b.Addr] = true
+	add := func(b resolve.Binding) {
+		if addr := setAddr(b); b.Withdrawn && addr.IsValid() {
+			out[addr] = true
 		}
 	}
+	for _, b := range c.bindings {
+		add(b)
+	}
 	for _, rt := range c.claims.Winners {
-		if b := c.results[rt.Hostname].Binding; b != nil && b.Withdrawn {
-			out[b.Addr] = true
+		if b := c.results[rt.Hostname].Binding; b != nil {
+			add(*b)
 		}
 	}
 	return out

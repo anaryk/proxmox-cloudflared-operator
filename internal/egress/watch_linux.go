@@ -116,9 +116,10 @@ func watchOnce(ctx context.Context, ns netns.NsHandle, h *netlink.Handle, bound 
 	}
 }
 
-// entryOf reads an update that says where a MAC is now: an IPv4 neighbour,
-// or an entry a bridge learned on one of its ports. A port whose name cannot
-// be found counts as another port.
+// entryOf reads an update that says where a MAC is now: an IPv4 neighbour on
+// a device, or an entry a bridge learned on one of its ports. A port whose
+// name cannot be found counts as another port, and a device whose name cannot
+// be found as no leg.
 func entryOf(u netlink.NeighUpdate, name func(index int) string) (entry, bool) {
 	if u.Type != unix.RTM_NEWNEIGH || len(u.HardwareAddr) == 0 {
 		return entry{}, false
@@ -129,7 +130,7 @@ func entryOf(u netlink.NeighUpdate, name func(index int) string) (entry, bool) {
 		if !ok {
 			return entry{}, false
 		}
-		return entry{addr: addr.Unmap(), mac: u.HardwareAddr}, true
+		return entry{addr: addr.Unmap(), dev: name(u.LinkIndex), mac: u.HardwareAddr}, true
 	case unix.AF_BRIDGE:
 		if u.MasterIndex == 0 {
 			return entry{}, false

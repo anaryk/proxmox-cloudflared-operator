@@ -194,6 +194,37 @@ an issue says so; issues are not problem lines (see [Annotations](annotations.md
 | `<file>: <address> is not a service address` | A file in `/etc/pve/pco/svcaddrs`, which maps an address behind a leg to the address the connectors dial for it, names one outside the pool of the service prefix, `198.18.1.0` to `198.18.255.255`, as after an edit by hand. The connectors would be sent to that address, so no service address is read or given out until the file is fixed, and nothing behind a leg is reached meanwhile. | Delete the file, or put back the copy from before the edit; the address behind the leg then gets a new service address. |
 | `the pool of service addresses says next is <address>, outside 198.18.1.0 to 198.19.0.0` | `/etc/pve/pco/meta/svcpool.json`, the next service address to give out, is outside the pool, as after an edit by hand. No service address is given out until it is fixed: one might be given out twice. | Put back the copy from before the edit. Without the file, pco starts after the highest service address in use, which is safe only as long as no other was given out after it and released. |
 
+## The gateway and service addresses
+
+A guest that pco reaches through a leg of its own, in an attached network or the managed one,
+is published under a service address: the connectors dial that address, and the gateway
+forwards it to the guest. The gateway is the network namespace `pco` on the host.
+
+| Line | Meaning and cause | What to do |
+|---|---|---|
+| `hostname <hostname> is not served through network <network>: service address not allocated: <reason>` | The guest was proven through the leg, but has no service address yet, and none is made while the reason stands; the hostname answers 503 meanwhile. A new service address is made only when this process is known to be the writer (the reasons are below). Its real address is never sent to a connector. | Usually nothing: the next cycle makes it. A reason that stays says what to fix. |
+| `hostname <hostname> keeps its last verified rule: the service address of <address> on network <network> is not allocated: <reason>` | The guest moved to another address while no service address can be made; the tunnel keeps sending its hostname to the service address it had. | As above. |
+| `programming the gateway: <error>; no tunnel configuration is written until it is programmed` | The legs, the service addresses or the neighbours could not be put in the gateway. No tunnel configuration is written: a rule must not send a connector to a service address the gateway does not forward. | `pco netns status`; the journal says why. `systemctl restart pco-netns` brings the namespace back. |
+| `network <network>: the leg is not up: <why>` | The leg of the network could not be raised, as when its bridge is absent or another machine holds its address. Guests behind it are not reached through it. | Fix what it says; `pco netns status`. |
+| `network <network>: the leg is up, but <what>` | The leg is up, with something the gateway left out, as a service address it refused. | `pco netns status`. |
+| `saving the cache of the gateway: <error>; a boot before it is saved brings the gateway back as it was before` | What the gateway serves could not be written below `/var/lib/pco/netns`, which `pco netns up` restores at boot before the guests start. | Free space or permissions of `/var/lib/pco`. |
+| `releasing the service address <service> of <address> on network <network>: <error>; the next cycle releases it` | A service address no route uses any more could not be deleted from `/etc/pve/pco/svcaddrs`. | `pco doctor` has the check `store`. |
+| `the gateway namespace was changed outside pco and was brought back` | Something changed the namespace `pco`, its legs, routes or table; the daemon put them back. The line carries what differed. | Find what changes it. |
+| `the gateway namespace was changed outside pco and could not be brought back: <error>` | The same, and it could not be put back; a namespace that is gone stays gone until `pco-netns` runs again, which the daemon cannot do from its sandbox. | `systemctl restart pco-netns`; it brings the namespace back and stops nothing. |
+| `checking the gateway namespace: <error>` | The namespace could not be read. | `pco netns status`. |
+
+The reasons a new service address waits for: `no cycle has run since the start` (after every
+start of the daemon, for one cycle: service addresses that exist are used at once), `the
+previous cycle did not get to the tunnel run`, `the previous cycle found a <verdict> writer`
+and `the previous cycle could not tell the writer` (see [the writer](#the-writer)), `the writer
+identity could not be read this cycle`, `leader.json changed since the cycle began`,
+`leader.json could not be read again: <error>`; in the appliance also `the self-identification
+of the appliance did not pass this cycle`, `the cluster is not quorate`, `the quorum of the
+cluster could not be read: <error>`, `this process drew a new epoch and none of its writes is
+verified at Cloudflare yet` and `the previous cycle found this appliance behind its last write
+at Cloudflare`. Where no gateway runs, the reason is `no gateway runs on this node`. A pool that
+ran out gives the line of its error: `every service address was given out: ...`.
+
 ## The appliance
 
 These lines come from a daemon in the appliance, where the container proves in each cycle
@@ -250,6 +281,7 @@ since it started; the journal has all of them.
 | `identity` | `error`, `warn`, `info` | The appliance found itself a copy or no longer does, guests carry a MAC of the appliance, or principals can reach into it. The subject is the container. | See [the appliance](#the-appliance). |
 | `web` | `info`, `warn` | What the daemon did for the web interface: `web certificate renewed: <why>, fingerprint <fingerprint>`, when it made a new key and certificate of the cluster CA because the old one ends within 30 days, another CA signed it, it lacks a name or address the node has now, or `tls.crt` is a link; in the appliance `web certificate made for <names>, fingerprint <fingerprint>` at its first start and the same renewal 30 days before its self-signed certificate ends. The subject is `web certificate`. In the appliance, with the subject `web listen` and the level `warn`: `net0's address changed from <old> to <new>: pco-web listens on <new>:8643 now`. | Nothing; after a new address of net0, open the web interface at the new address. Its certificate, and the fingerprint, stay. |
 | `net` | `warn`, `error` | What `pco-net.service` keeps in the appliance was changed and loaded again, or could not be. The subject is `service prefix`. | `pco net show`. |
+| `network` | `info`, `warn`, `error` | A service address was made for a guest behind a leg (`service address <service> allocated for <address> on network <network>`) or released once no tunnel sends a connector to it; the subject is the network. Or the gateway namespace was changed outside pco and brought back, or could not be; the subject is `pco`. | See [the gateway and service addresses](#the-gateway-and-service-addresses). |
 
 ## Doctor checks
 
@@ -390,6 +422,7 @@ An action of `pco plan` has a held reason when it is not made in this cycle. The
 | `snapshot not stored` | An adoption could not first store the record it replaces. |
 | `writer changed`, `writer unreadable` | The run stopped as the writer changed or could not be read. |
 | `no inventory confirmation`, `inventory confirmation failed` | Right before it deletes, the daemon asks Proxmox whether a guest still publishes the name. The first says the run had no way to ask, the second that asking failed. |
+| `the gateway could not be programmed; no tunnel configuration is written until it is` | See [the gateway and service addresses](#the-gateway-and-service-addresses). |
 
 ## What waits for a confirmation
 

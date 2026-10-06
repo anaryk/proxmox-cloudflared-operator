@@ -54,6 +54,17 @@
     "issues": 0
   },
   {
+    "ref": "qemu/107",
+    "name": "zabbix",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:107",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
     "ref": "qemu/110",
     "name": "gitea",
     "node": "pve1",

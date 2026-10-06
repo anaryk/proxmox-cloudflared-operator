@@ -141,6 +141,8 @@ type fakeResolver struct {
 	segment     resolve.Segment       // where every binding was proven
 	macs        map[string]string     // hostname -> the MAC its address answers from; testMAC when not set
 	addrs       map[string]netip.Addr // hostname -> its guest's address; guestAddr when not set
+	vias        map[string]string     // hostname -> the network whose leg proves its address; none when not set
+	hosts       []string              // the hostname of every call, in order
 	calls       int
 	deny        resolve.Denylist // of the last call
 	denied      []netip.Addr     // the node addresses the last denylist refused
@@ -151,6 +153,7 @@ type fakeResolver struct {
 func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level, _ *resolve.Shared) resolve.Result {
 	f.mu.Lock()
 	f.calls++
+	f.hosts = append(f.hosts, route.Hostname)
 	f.required = append(f.required, required)
 	if d, ok := ctx.Deadline(); ok {
 		f.deadlines = append(f.deadlines, d)
@@ -182,6 +185,7 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	if !set {
 		mac = testMAC
 	}
+	via := f.vias[route.Hostname]
 	segment := f.segment
 	f.mu.Unlock()
 	if hook != nil {
@@ -214,7 +218,7 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ invento
 	if route.Guest != nil {
 		res.Binding = &resolve.Binding{
 			Owner: route.Owner(), Hostname: route.Hostname, Guest: route.Guest.String(),
-			Addr: addr, MAC: mac, VerifiedAt: f.now(), Level: level, Segment: segment,
+			Addr: addr, MAC: mac, VerifiedAt: f.now(), Level: level, Segment: segment, Via: via,
 		}
 		if f.placed != nil {
 			b := res.Binding
@@ -730,6 +734,9 @@ type env struct {
 	quorate     func(context.Context) (bool, error)
 	incarnation string
 	epochDrawn  func() bool
+	// gateway is the gateway the engines a test makes next drive; nil gives
+	// them none.
+	gateway Gateway
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -757,7 +764,7 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 	e.res = &fakeResolver{
 		now: e.clock.now, unreachable: map[string]string{}, rejected: map[string]string{},
 		stopped: map[string]string{}, levels: map[string]resolve.Level{},
-		macs: map[string]string{}, addrs: map[string]netip.Addr{},
+		macs: map[string]string{}, addrs: map[string]netip.Addr{}, vias: map[string]string{},
 	}
 	e.acc = newFakeAccess()
 	if paths != nil {
@@ -805,6 +812,7 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		Quorate:     e.quorate,
 		Incarnation: e.incarnation,
 		EpochDrawn:  e.epochDrawn,
+		Gateway:     e.gateway,
 	}
 	if e.acc != nil {
 		d.Access = e.acc

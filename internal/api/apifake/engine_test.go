@@ -288,13 +288,13 @@ func TestDiagnosisWalksTheRouteAndAsksNoTarget(t *testing.T) {
 
 	steps, err := d.Diagnose(ctx, "www.example.com")
 	require.NoError(t, err)
-	require.Len(t, steps, 8)
-	require.Equal(t, doctor.Step{Name: "http", Level: doctor.LevelOK, Detail: "the origin answered 200 OK"}, steps[7])
+	require.Len(t, steps, 9)
+	require.Equal(t, doctor.Step{Name: "http", Level: doctor.LevelOK, Detail: "the origin answered 200 OK"}, steps[8])
 
 	steps, err = d.Diagnose(ctx, "monitor.example.com")
 	require.NoError(t, err)
 	require.Equal(t, doctor.LevelFail, steps[5].Level, "the identity of an unreachable target fails")
-	require.True(t, steps[7].Skipped)
+	require.True(t, steps[8].Skipped)
 
 	_, err = d.Diagnose(ctx, "nobody.example.com")
 	require.ErrorIs(t, err, engine.ErrNotFound)

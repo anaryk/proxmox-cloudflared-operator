@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 
@@ -19,8 +20,9 @@ func (c *cycleRun) mode() reconcile.Mode {
 // reports whether the cycle may go on: a stale or foreign writer stops it. A
 // frozen account is left out: its tunnel is not touched. While the egress
 // filter could not be set, or its table could not be loaded again after it
-// was changed outside pco, the run writes nothing and only finds out what the
-// tunnels hold.
+// was changed outside pco, or the gateway could not be programmed, the run
+// writes nothing and only finds out what the tunnels hold. What it found of
+// the writer is the verdict the gate of the next cycle reads.
 func (c *cycleRun) reconcileTunnels() bool {
 	plans := slices.DeleteFunc(slices.Clone(c.plan.Tunnels), func(p planner.TunnelPlan) bool { return c.zones.frozen[p.AccountID] })
 	if c.egressHeld == "" && c.e.egressFault() != "" {
@@ -28,11 +30,12 @@ func (c *cycleRun) reconcileTunnels() bool {
 	}
 	var res reconcile.TunnelResult
 	c.e.tunnels.SetRecoverHint(c.recoverHint())
-	if c.egressHeld != "" {
-		res = c.e.tunnels.RunHeld(c.ctx, plans, c.zones.known, c.egressHeld)
+	if held := cmp.Or(c.egressHeld, c.gatewayHeld); held != "" {
+		res = c.e.tunnels.RunHeld(c.ctx, plans, c.zones.known, held)
 	} else {
 		res = c.e.tunnels.Run(c.ctx, plans, c.zones.known, c.mode())
 	}
+	defer func() { c.gateVerdict = c.st.WriterVerdict }()
 	behind := c.behind(res)
 	c.noteFirstWrite(res)
 	c.noteVerified(res.Tunnels)

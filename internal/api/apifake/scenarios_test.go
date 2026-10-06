@@ -181,7 +181,7 @@ func served(www engine.RouteView, host string, ref model.GuestRef, name, service
 	r.Guest = &engine.GuestView{GuestRef: ref, Name: name}
 	r.Candidates = []resolve.CandidateResult{{Addr: addr, Source: resolve.FromStatic, OK: true, Level: string(resolve.LevelPort)}}
 	r.Rule = &planner.IngressRule{Hostname: host, Service: service}
-	r.Path.Bridge, r.Path.VLAN, r.Path.Port = "vmbr0", 0, port
+	r.Path.Bridge, r.Path.VLAN, r.Path.Port, r.Path.Addr = "vmbr0", 0, port, addr
 	r.Path.MAC = fmt.Sprintf("bc:24:11:00:%02x:%02x", ref.VMID/256, ref.VMID%256)
 	return r
 }

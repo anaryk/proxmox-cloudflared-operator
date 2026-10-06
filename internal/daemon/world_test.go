@@ -437,6 +437,7 @@ type world struct {
 	rules  *fakeRuleset
 	notify *fakeNotifier
 	logs   *testutil.SyncBuffer
+	gw     *fakeBackend
 	// cycles counts the reads of the clock, which every cycle starts with: it
 	// says whether a cycle has begun.
 	cycles atomic.Int64
@@ -459,6 +460,7 @@ func newWorld(t *testing.T) *world {
 		rules:  &fakeRuleset{},
 		notify: newFakeNotifier(),
 		logs:   &testutil.SyncBuffer{},
+		gw:     &fakeBackend{},
 	}
 	require.NoError(t, os.WriteFile(w.mount, nil, 0o600))
 	w.paths = store.Paths{
@@ -505,6 +507,8 @@ func newWorld(t *testing.T) *world {
 		WatchNetwork: w.watch.watch,
 		WatchRuleset: w.rules.watch,
 		UnitEnabled:  func(context.Context, string) (bool, error) { return false, nil },
+		Gateway:      w.gw,
+		WatchGateway: func(ctx context.Context, _ func()) error { <-ctx.Done(); return ctx.Err() },
 	}
 	return w
 }

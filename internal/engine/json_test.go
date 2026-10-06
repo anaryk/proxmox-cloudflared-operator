@@ -46,7 +46,7 @@ func populatedState() State {
 				Rule:       &planner.IngressRule{Hostname: "www.example.com", Service: "http://10.0.0.11:8080", HTTPHostHeader: "intranet"},
 				Path: &PathView{
 					Node: "pve1", Bridge: "vmbr0", VLAN: 20, Port: "tap101i0", MAC: "bc:24:11:5e:7a:01",
-					VerifiedAt: t0, Since: t0.Add(-28 * time.Hour),
+					VerifiedAt: t0, Since: t0.Add(-28 * time.Hour), Addr: netip.MustParseAddr("10.0.0.11"), Via: ViaDirect,
 				},
 			},
 			{
@@ -54,6 +54,20 @@ func populatedState() State {
 					Hostname: "www.example.com", Owner: "qemu/102", State: planner.StateConflict, Reason: "hostname is held by qemu/101",
 				},
 				Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 102}, Name: "web-2"},
+			},
+			{
+				RouteStatus: planner.RouteStatus{
+					Hostname: "zabbix.example.com", Owner: "qemu/107", State: planner.StateActive, Level: "port",
+					Service: "http://198.18.1.5:8080", Zone: "example.com",
+				},
+				Guest:      &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 107}, Name: "zabbix"},
+				Candidates: []resolve.CandidateResult{{Addr: netip.MustParseAddr("10.50.0.10"), Source: resolve.FromAgent, OK: true, Level: "port"}},
+				Account:    "acc1",
+				Rule:       &planner.IngressRule{Hostname: "zabbix.example.com", Service: "http://198.18.1.5:8080"},
+				Path: &PathView{
+					Node: "pve1", Bridge: "vmbr2", Port: "tap107i0", MAC: "bc:24:11:5e:7a:07", VerifiedAt: t0, Since: t0.Add(-3 * time.Hour),
+					Addr: netip.MustParseAddr("10.50.0.10"), Via: "attach:vmbr2", Service: netip.MustParseAddr("198.18.1.5"), Leg: LegUp,
+				},
 			},
 		},
 		Issues: []planner.Issue{

@@ -58,7 +58,8 @@ type target struct {
 
 // target is the verified target of the route: the address and port of its
 // rule, when the route is active, its rule serves what the route says and a
-// candidate of that address passed. Anything else has none.
+// candidate of that address passed, or of the guest's address behind it for
+// a service address of a leg. Anything else has none.
 func (d *diagnosis) target() (target, bool) {
 	r := d.rt.Rule
 	if r == nil || d.rt.State != planner.StateActive || r.Service != d.rt.Service {
@@ -68,7 +69,9 @@ func (d *diagnosis) target() (target, bool) {
 	if err != nil {
 		return target{}, false
 	}
-	if c, ok := d.candidate(ap.Addr()); !ok || !c.OK {
+	// The service address of a target behind a leg is asked; the address
+	// behind it is the one that was verified.
+	if c, ok := d.candidate(d.behind(ap.Addr())); !ok || !c.OK {
 		return target{}, false
 	}
 	t := target{scheme: scheme, addr: ap, host: cmp.Or(r.HTTPHostHeader, requestHost(d.host)), verify: !r.NoTLSVerify}

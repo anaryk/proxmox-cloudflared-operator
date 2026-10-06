@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,6 +181,16 @@ func TestStatusIsStableOverLocalTime(t *testing.T) {
 func TestRoutesGolden(t *testing.T) {
 	st := healthyState()
 	st.Routes = mixedRoutes()
+	for i := range st.Routes {
+		if st.Routes[i].Owner == "qemu/101" {
+			st.Routes[i].Path = &engine.PathView{Node: "pve1", Addr: netip.MustParseAddr("10.0.0.11"), Via: engine.ViaDirect}
+		}
+	}
+	db := atLevel(routeView("db.example.com", "qemu/107", planner.StateActive, "http://198.18.1.0:5432", "example.com", ""), "port")
+	db.Path = &engine.PathView{
+		Node: "pve1", Addr: netip.MustParseAddr("10.50.0.10"), Via: "attach:vmbr1", Service: netip.MustParseAddr("198.18.1.0"), Leg: engine.LegUp,
+	}
+	st.Routes = append(st.Routes, db)
 	r, _ := daemonWith(t, st)
 
 	res := r.run("", "routes")

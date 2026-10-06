@@ -11,6 +11,7 @@
   "qemu/103": "Build server of the team.\nAsk ops before a change.\n\n```cf-tunnel\napp.example.com -\u003e :3000\n```\n",
   "qemu/105": "```cf-tunnel\nmonitor.example.com -\u003e :8080\n```\n",
   "qemu/106": "```cf-tunnel\ndb-admin.example.com -\u003e :8080\n```\n",
+  "qemu/107": "```cf-tunnel\nzabbix.example.com -\u003e http://:8080\n```\n",
   "qemu/110": "```cf-tunnel\ngit.example.com -\u003e https://:3000\n```\n",
   "qemu/130": "```cf-tunnel\nmedia.example.io -\u003e :8080\n```\n"
 }

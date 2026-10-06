@@ -22,8 +22,11 @@ func (a *app) routesCmd() *cobra.Command {
 		Use:   "routes",
 		Short: "List the routes and how each fares",
 		Long: "List the routes sorted by hostname. The level is how strongly the address of the target\n" +
-			"was proven to be the guest's: port, observed, or manual for a route to an address. The note\n" +
-			"is the reason a route is not served, or its first warning.\n\n" +
+			"was proven to be the guest's: port, observed, or manual for a route to an address. Via is how\n" +
+			"the node reaches the guest: direct, attach:<network> through the leg of an attached network,\n" +
+			"or managed through the leg of the managed one; the service of a route through a leg is its\n" +
+			"service address, which the gateway forwards to the guest. The note is the reason a route is\n" +
+			"not served, or its first warning.\n\n" +
 			"With --json the whole state of the daemon is printed as the daemon sent it, re-indented,\n" +
 			"with control and bidirectional characters escaped, and --state cannot be used.\n\n" + askHelp,
 		Example: "  # Every route, sorted by hostname\n" +
@@ -100,10 +103,19 @@ func renderRoutes(w io.Writer, st engine.State, state planner.RouteState) error 
 		return cmp.Or(cmp.Compare(x.Hostname, y.Hostname), model.CompareOwners(x.Owner, y.Owner))
 	})
 	t := s.table()
-	t.row("HOSTNAME", "STATE", "LEVEL", "SERVICE", "OWNER", "ZONE", "NOTE")
+	t.row("HOSTNAME", "STATE", "LEVEL", "SERVICE", "VIA", "OWNER", "ZONE", "NOTE")
 	for _, r := range shown {
-		t.row(r.Hostname, string(r.State), dash(r.Level), dash(r.Service), dash(r.Owner), dash(r.Zone), dash(present.RouteNote(r)))
+		t.row(r.Hostname, string(r.State), dash(r.Level), dash(r.Service), dash(viaOf(r)), dash(r.Owner), dash(r.Zone), dash(present.RouteNote(r)))
 	}
 	t.flush()
 	return s.done()
+}
+
+// viaOf is how the node reaches the guest of a route, when the route has a
+// path.
+func viaOf(r engine.RouteView) string {
+	if r.Path == nil {
+		return ""
+	}
+	return r.Path.Via
 }

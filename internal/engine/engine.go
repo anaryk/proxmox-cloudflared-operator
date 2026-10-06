@@ -25,6 +25,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -128,6 +129,10 @@ type Deps struct {
 	// foreign verdict (a second installation with the same install id)
 	// stays foreign.
 	EpochDrawn func() bool
+
+	// Gateway is the backend of the networks reached through a leg of pco's
+	// own; nil where none runs, which serves no route on a leg.
+	Gateway Gateway
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -263,6 +268,17 @@ type Engine struct {
 	stopped    bool
 	firstWrite bool
 	epochAt    time.Time
+
+	// lastVerdict is what the tunnel run of the last cycle found of the
+	// writer, which the gate of an expanding write reads: empty before the
+	// first cycle of this process, verdictNoRun after a cycle that did not get
+	// to the run. gwInUse says that the gateway was last synced with a leg or
+	// a service address. Both are guarded by the cycle lock; legStates, what
+	// the last sync said of the legs, by legMu.
+	lastVerdict string
+	gwInUse     bool
+	legMu       sync.Mutex
+	legStates   []gateway.LegState
 
 	stateMu sync.RWMutex
 	state   State

@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "cde7a032c51db23d",
+  "digest": "3f02f4e8245dad91",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -50,7 +50,9 @@
         "port": "tap101i0",
         "mac": "bc:24:11:5e:7a:01",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.11",
+        "via": "direct"
       }
     },
     {
@@ -83,7 +85,9 @@
         "port": "tap106i0",
         "mac": "bc:24:11:00:00:6a",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.14",
+        "via": "direct"
       }
     },
     {
@@ -118,7 +122,9 @@
         "port": "tap110i0",
         "mac": "bc:24:11:00:00:6e",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.30",
+        "via": "direct"
       }
     },
     {
@@ -152,7 +158,9 @@
         "port": "veth205i0",
         "mac": "bc:24:11:00:00:cd",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.20",
+        "via": "direct"
       }
     },
     {
@@ -196,7 +204,9 @@
         "port": "tap105i0",
         "mac": "bc:24:11:00:00:69",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.15",
+        "via": "direct"
       }
     },
     {
@@ -230,7 +240,9 @@
         "port": "veth221i0",
         "mac": "bc:24:11:00:00:dd",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.20.51",
+        "via": "direct"
       }
     },
     {
@@ -293,7 +305,9 @@
         "port": "veth210i0",
         "mac": "bc:24:11:00:00:d2",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.40",
+        "via": "direct"
       }
     },
     {
@@ -327,7 +341,9 @@
         "port": "veth230i0",
         "mac": "bc:24:11:00:00:e6",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.60",
+        "via": "direct"
       }
     },
     {
@@ -377,7 +393,9 @@
         "port": "tap101i0",
         "mac": "bc:24:11:5e:7a:01",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.11",
+        "via": "direct"
       }
     },
     {
@@ -422,7 +440,47 @@
         "port": "veth210i0",
         "mac": "bc:24:11:00:00:d2",
         "verifiedAt": "2026-10-01T12:00:00Z",
-        "since": "2026-09-30T08:00:00Z"
+        "since": "2026-09-30T08:00:00Z",
+        "addr": "10.0.0.40",
+        "via": "direct"
+      }
+    },
+    {
+      "hostname": "zabbix.example.com",
+      "owner": "qemu/107",
+      "state": "active",
+      "level": "port",
+      "service": "http://198.18.1.5:8080",
+      "zone": "example.com",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 107,
+        "name": "zabbix"
+      },
+      "candidates": [
+        {
+          "addr": "10.50.0.10",
+          "source": "reported",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "acc1",
+      "rule": {
+        "hostname": "zabbix.example.com",
+        "service": "http://198.18.1.5:8080"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr2",
+        "port": "tap107i0",
+        "mac": "bc:24:11:5e:7a:07",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-10-01T09:00:00Z",
+        "addr": "10.50.0.10",
+        "via": "attach:vmbr2",
+        "service": "198.18.1.5",
+        "leg": "up"
       }
     }
   ],
@@ -760,7 +818,7 @@
     "state": "on"
   },
   "admission": "approve",
-  "gateTagged": 14,
+  "gateTagged": 15,
   "rogueConnectors": [
     {
       "tunnel": "pco-abc123",

@@ -180,8 +180,9 @@ after it say `skipped`.
 | `ingress` | Whether the tunnel's configuration has a rule for it and was verified. A rule that answers 503 fails here unless the target is the cause, in which case the next steps say more. |
 | `connector` | Whether a connector runs for the tunnel and is connected to Cloudflare. |
 | `identity` | Which address was verified for the route, at which level, and from which source. When there is none, every candidate that was tried and why it failed. |
+| `path` | How the node reaches the address: `direct`, or through the leg of a network, as `attach vmbr1: leg up, service 198.18.1.5 -> 10.50.0.10 programmed`, where the connector dials the service address and the gateway forwards it to the guest. A leg that is not up, or a gateway that could not be programmed, fails here. |
 | `tcp` | Whether the port answers. |
-| `http` | The answer of a request that the daemon makes to the origin with the Host header and TLS settings of the route. |
+| `http` | The answer of a request that the daemon makes to the origin with the Host header and TLS settings of the route; for a guest behind a leg, to its service address, as the connector asks it. |
 
 The `http` step comes from the daemon, as root, and not from the connector. It tells you what the
 origin answers, and does not tell you what the connector can reach. That is the difference

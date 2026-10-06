@@ -252,6 +252,35 @@ func TestAManualRouteIsDialledAsTheHostSendsIt(t *testing.T) {
 	require.Equal(t, []hint{{op: "dial", addr: ip("10.20.0.50")}}, s.prober.hints)
 }
 
+// The service address a target was published under stays with its binding
+// when the binding is withdrawn, so that the egress set's entry for it can be
+// taken out.
+func TestAWithdrawnBindingKeepsItsServiceAddress(t *testing.T) {
+	s := legScenario(t)
+	s.prober.arp[arpKey("leg1", "10.50.0.10")] = []string{mac1}
+	prev := carrying()
+	prev.Addr, prev.Bridge, prev.Segment, prev.Via = ip("10.50.0.10"), "vmbr1", Segment{Bridge: "vmbr1"}, "vmbr1"
+	prev.Service = ip("198.18.1.5")
+
+	res := s.resolve(t, webRoute(), prev)
+
+	require.True(t, res.Binding.Withdrawn, res.Target.Reason)
+	require.Equal(t, ip("198.18.1.5"), res.Binding.Service)
+}
+
+func TestABindingKeepsItsServiceAddressInJSON(t *testing.T) {
+	b, err := json.Marshal(Binding{Via: "vmbr1", Service: ip("198.18.1.5")})
+	require.NoError(t, err)
+	require.Contains(t, string(b), `"service":"198.18.1.5"`)
+	var back Binding
+	require.NoError(t, json.Unmarshal(b, &back))
+	require.Equal(t, ip("198.18.1.5"), back.Service)
+
+	b, err = json.Marshal(Binding{})
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "service")
+}
+
 func TestABindingKeepsItsLegInJSON(t *testing.T) {
 	b, err := json.Marshal(Binding{Via: "vmbr1.20"})
 	require.NoError(t, err)

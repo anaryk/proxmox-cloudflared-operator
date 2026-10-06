@@ -105,7 +105,7 @@ func TestADiagnosisThatPanicsEndsForEveryone(t *testing.T) {
 
 	steps, err := r.Diagnose(t.Context(), www)
 	require.NoError(t, err, "the next caller runs it anew")
-	require.Equal(t, Step{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"}, steps[7])
+	require.Equal(t, Step{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"}, steps[8])
 	require.Equal(t, 2, p.count())
 }
 
@@ -200,7 +200,7 @@ func TestACallerThatLeavesDoesNotCutTheDiagnosisShort(t *testing.T) {
 
 	steps, err := r.Diagnose(t.Context(), www)
 	require.NoError(t, err)
-	require.Equal(t, Step{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"}, steps[7])
+	require.Equal(t, Step{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"}, steps[8])
 	require.Len(t, o.requests(), 1, "the run that was kept")
 }
 

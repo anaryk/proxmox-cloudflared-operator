@@ -31,7 +31,7 @@ func TestThePathOfTheWinner(t *testing.T) {
 
 	st := e.cycle()
 
-	require.Equal(t, &PathView{Node: testNode, Bridge: "vmbr0", VLAN: 20, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0},
+	require.Equal(t, &PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, Bridge: "vmbr0", VLAN: 20, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0},
 		route(st, "www.example.com").Path)
 }
 
@@ -41,7 +41,7 @@ func TestAProofThatPlacedTheMACNowhereHasAPathWithoutABridge(t *testing.T) {
 
 	st := e.cycle()
 
-	require.Equal(t, &PathView{Node: testNode, VLAN: 20, MAC: testMAC, VerifiedAt: t0}, route(st, "www.example.com").Path)
+	require.Equal(t, &PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, VLAN: 20, MAC: testMAC, VerifiedAt: t0}, route(st, "www.example.com").Path)
 }
 
 func TestOnlyABoundWinnerHasAPath(t *testing.T) {
@@ -88,7 +88,7 @@ func TestAManualRouteThatNamesAGuestHasAPath(t *testing.T) {
 
 	web := route(st, "web.example.com")
 	require.Equal(t, "manual/web", web.Owner)
-	require.Equal(t, &PathView{Node: testNode, Bridge: "vmbr1", VLAN: 30, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0}, web.Path)
+	require.Equal(t, &PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, Bridge: "vmbr1", VLAN: 30, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0}, web.Path)
 }
 
 // A binding withdrawn when its guest stopped keeps where and when its last
@@ -98,7 +98,7 @@ func TestAWithdrawnBindingKeepsThePathOfItsLastProof(t *testing.T) {
 	e.inv.set(snapshot(tagged()))
 	e.res.place("vmbr0", map[string]string{testMAC: "tap101i1"})
 	proven := route(e.cycle(), "www.example.com").Path
-	require.Equal(t, &PathView{Node: testNode, Bridge: "vmbr0", VLAN: 20, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0}, proven)
+	require.Equal(t, &PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, Bridge: "vmbr0", VLAN: 20, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0}, proven)
 
 	e.res.stop("www.example.com", "the guest is stopped")
 	e.clock.advance(20 * time.Second)
@@ -128,20 +128,46 @@ func TestThePathOfABinding(t *testing.T) {
 		want  *PathView
 	}{
 		{"a tagged NIC", "qemu/101", snap,
-			&PathView{Node: testNode, Bridge: "vmbr0", VLAN: 20, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
+			&PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, Bridge: "vmbr0", VLAN: 20, Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
 		{"an untagged NIC", "qemu/101", inventory.Snapshot{Guests: []model.Guest{untaggedNIC}},
-			&PathView{Node: testNode, Bridge: "vmbr0", Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
+			&PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, Bridge: "vmbr0", Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
 		{"no NIC with the MAC", "qemu/101", inventory.Snapshot{Guests: []model.Guest{otherMAC}},
-			&PathView{Node: testNode, Bridge: "vmbr0", Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
+			&PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, Bridge: "vmbr0", Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
 		{"a guest the snapshot does not have", "qemu/101", inventory.Snapshot{},
-			&PathView{Node: testNode, Bridge: "vmbr0", Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
+			&PathView{Node: testNode, Addr: guestAddr, Via: ViaDirect, Bridge: "vmbr0", Port: "tap101i1", MAC: testMAC, VerifiedAt: t0, Since: since}},
 		{"a binding of another owner", "qemu/102", snap, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, pathOf(testNode, tt.owner, &b, tt.snap))
+			require.Equal(t, tt.want, pathOf(testNode, tt.owner, &b, tt.snap, noLeg))
 		})
 	}
-	require.Nil(t, pathOf(testNode, "qemu/101", nil, snap), "no binding")
+	require.Nil(t, pathOf(testNode, "qemu/101", nil, snap, noLeg), "no binding")
+}
+
+func noLeg(string) string { return "" }
+
+// A binding proven through a leg says which, the service address the
+// connector dials, and how the leg is.
+func TestThePathOfABindingOnALeg(t *testing.T) {
+	legs := map[string]string{"vmbr1": LegUp, "pconet": "bridge pconet is absent"}
+	state := func(network string) string { return legs[network] }
+	b := resolve.Binding{
+		Owner: "qemu/101", Guest: "qemu/101", Addr: netip.MustParseAddr("10.50.0.10"), MAC: testMAC,
+		VerifiedAt: t0, Bridge: "vmbr1", Port: "tap101i0", Via: "vmbr1", Service: netip.MustParseAddr("198.18.1.5"),
+	}
+
+	require.Equal(t, &PathView{
+		Node: testNode, Bridge: "vmbr1", Port: "tap101i0", MAC: testMAC, VerifiedAt: t0,
+		Addr: netip.MustParseAddr("10.50.0.10"), Via: "attach:vmbr1", Service: netip.MustParseAddr("198.18.1.5"), Leg: LegUp,
+	}, pathOf(testNode, "qemu/101", &b, inventory.Snapshot{}, state))
+
+	b.Via, b.Bridge = "pconet", "pconet"
+	p := pathOf(testNode, "qemu/101", &b, inventory.Snapshot{}, state)
+	require.Equal(t, ViaManaged, p.Via)
+	require.Equal(t, "bridge pconet is absent", p.Leg)
+
+	b.Via = "vmbr2"
+	require.Empty(t, pathOf(testNode, "qemu/101", &b, inventory.Snapshot{}, state).Leg, "the gateway has not said")
 }
 
 func TestACloneOfTheStateOwnsItsPaths(t *testing.T) {

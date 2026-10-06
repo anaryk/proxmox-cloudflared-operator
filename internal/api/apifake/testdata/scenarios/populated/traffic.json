@@ -167,7 +167,14 @@
       "flowsPerSec": 0.5,
       "shared": 1,
       "stale": false
+    },
+    {
+      "hostname": "zabbix.example.com",
+      "owner": "qemu/107",
+      "target": "198.18.1.5:8080",
+      "flowsPerSec": 4.2,
+      "stale": false
     }
   ],
-  "routesTotal": 8
+  "routesTotal": 9
 }

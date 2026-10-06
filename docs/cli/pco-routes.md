@@ -1,8 +1,11 @@
 # pco routes
 
 List the routes sorted by hostname. The level is how strongly the address of the target
-was proven to be the guest's: port, observed, or manual for a route to an address. The note
-is the reason a route is not served, or its first warning.
+was proven to be the guest's: port, observed, or manual for a route to an address. Via is how
+the node reaches the guest: direct, `attach:<network>` through the leg of an attached network,
+or managed through the leg of the managed one; the service of a route through a leg is its
+service address, which the gateway forwards to the guest. The note is the reason a route is
+not served, or its first warning.
 
 With `--json` the whole state of the daemon is printed as the daemon sent it, re-indented,
 with control and bidirectional characters escaped, and `--state` cannot be used.

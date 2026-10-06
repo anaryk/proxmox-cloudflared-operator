@@ -225,6 +225,7 @@ func (m *maker) active(n int, zone engine.ZoneView) engine.RouteView {
 	if n%4 == 3 {
 		r.Path.Bridge, r.Path.VLAN = "vmbr1", 20
 	}
+	r.Path.Addr = addr
 	r.Path.Port, r.Path.MAC = fmt.Sprintf("tap%di0", vmid), fmt.Sprintf("bc:24:11:%02x:%02x:%02x", byte(vmid>>16), byte(vmid>>8), byte(vmid))
 	return r
 }

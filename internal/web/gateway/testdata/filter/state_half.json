@@ -20,7 +20,7 @@
       ],
       "accountId": "acc1",
       "rule": {"hostname": "www.example.com", "service": "http://10.0.0.11:8080", "httpHostHeader": "intranet"},
-      "path": {"node": "pve1", "bridge": "vmbr0", "vlan": 20, "port": "tap101i0", "mac": "bc:24:11:5e:7a:01", "verifiedAt": "2026-10-01T12:00:00Z", "since": "2026-09-30T08:00:00Z"}
+      "path": {"node": "pve1", "bridge": "vmbr0", "vlan": 20, "port": "tap101i0", "mac": "bc:24:11:5e:7a:01", "verifiedAt": "2026-10-01T12:00:00Z", "since": "2026-09-30T08:00:00Z", "addr": "10.0.0.11", "via": "direct"}
     }
   ],
   "issues": [

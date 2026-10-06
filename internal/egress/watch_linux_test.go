@@ -225,3 +225,38 @@ func TestLinuxWatchSeesWhatMovedBeforeItStarted(t *testing.T) {
 
 	require.Equal(t, addr(watchGuest), lab.moved(t))
 }
+
+// Every entry says where it is: a neighbour the device it is on, which a pin
+// on a leg is matched by, and a learned MAC its bridge and port.
+func TestAnEntrySaysItsDevice(t *testing.T) {
+	names := map[int]string{3: "vmbr0", 7: "leg1", 8: "tap101i0"}
+	name := func(index int) string { return names[index] }
+	hw := mac(t, "bc:24:11:00:00:01")
+	neigh := func(index int, ip string) netlink.Neigh {
+		return netlink.Neigh{Family: unix.AF_INET, LinkIndex: index, IP: net.ParseIP(ip), HardwareAddr: hw}
+	}
+	tests := []struct {
+		name   string
+		update netlink.NeighUpdate
+		want   entry
+		ok     bool
+	}{
+		{name: "a neighbour on a bridge", update: netlink.NeighUpdate{Type: unix.RTM_NEWNEIGH, Neigh: neigh(3, "10.20.0.10")},
+			want: entry{addr: addr("10.20.0.10"), dev: "vmbr0", mac: hw}, ok: true},
+		{name: "a neighbour on a leg", update: netlink.NeighUpdate{Type: unix.RTM_NEWNEIGH, Neigh: neigh(7, "10.50.0.10")},
+			want: entry{addr: addr("10.50.0.10"), dev: "leg1", mac: hw}, ok: true},
+		{name: "a neighbour on a device whose name is not known", update: netlink.NeighUpdate{Type: unix.RTM_NEWNEIGH, Neigh: neigh(9, "10.50.0.10")},
+			want: entry{addr: addr("10.50.0.10"), mac: hw}, ok: true},
+		{name: "a MAC a bridge learned", update: netlink.NeighUpdate{Type: unix.RTM_NEWNEIGH, Neigh: netlink.Neigh{
+			Family: unix.AF_BRIDGE, MasterIndex: 3, LinkIndex: 8, HardwareAddr: hw,
+		}}, want: entry{bridge: "vmbr0", port: "tap101i0", mac: hw}, ok: true},
+		{name: "a neighbour that went", update: netlink.NeighUpdate{Type: unix.RTM_DELNEIGH, Neigh: neigh(3, "10.20.0.10")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := entryOf(tc.update, name)
+			require.Equal(t, tc.ok, ok)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}

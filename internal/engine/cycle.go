@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -101,6 +102,18 @@ type cycleRun struct {
 	lost       map[netip.Addr]bool
 	egressHeld string
 
+	// writerRead says that readWriter read a writer identity this process
+	// may use, and gateVerdict is what the tunnel run found of the writer,
+	// for the gate of the next cycle. gatewayHeld says why the tunnel run
+	// writes nothing: the gateway could not be programmed. legKept says, by
+	// hostname, why a target on a leg keeps the rule last verified for it,
+	// and legIfaces is, by network, the interface of its leg.
+	writerRead  bool
+	gateVerdict string
+	gatewayHeld string
+	legKept     map[string]string
+	legIfaces   map[string]string
+
 	// waitWhy says why the admin's requests wait, when the DNS step was
 	// reached; confirmWhy why a confirmation the DNS run could not keep
 	// waits, and adoptWaits why each adoption waits. adopted holds the names
@@ -150,6 +163,7 @@ func (c *cycleRun) run() State {
 	c.st.Waiting = c.offer.waiting(c.st.Routes)
 	c.st.Offer = offerOf(c.st.Waiting)
 	c.st.FinishedAt = c.e.d.Now()
+	c.e.lastVerdict = cmp.Or(c.gateVerdict, verdictNoRun)
 	return c.st.normalized()
 }
 
@@ -284,7 +298,7 @@ func (c *cycleRun) readWriter() {
 	case c.e.d.Incarnation != "" && w.Incarnation != c.e.d.Incarnation:
 		why = c.problem(problemEarlierStart)
 	default:
-		c.e.us = w
+		c.e.us, c.writerRead = w, true
 		return
 	}
 	c.hold(why)

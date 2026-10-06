@@ -300,6 +300,10 @@ export interface PathView {
   mac?: string
   verifiedAt: string
   since?: string
+  addr?: string
+  via?: string
+  service?: string
+  leg?: string
 }
 
 // credentials.Report

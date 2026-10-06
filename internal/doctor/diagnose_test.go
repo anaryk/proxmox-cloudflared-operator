@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,7 @@ const (
 	tunnelID = "0a1b2c3d-0000-4000-8000-000000000001"
 )
 
-var stepNames = []string{"route", "zone", "dns", "ingress", "connector", "identity", "tcp", "http"}
+var stepNames = []string{"route", "zone", "dns", "ingress", "connector", "identity", "path", "tcp", "http"}
 
 var update = flag.Bool("update", false, "write the golden files of the tests")
 
@@ -164,6 +165,7 @@ func TestARouteThatWorksPassesEveryStep(t *testing.T) {
 		{Name: "ingress", Level: LevelOK, Detail: "tunnel pco-abc123 sends it to " + service + " (configuration version 3)"},
 		{Name: "connector", Level: LevelOK, Detail: "active, ready, 4 connections"},
 		{Name: "identity", Level: LevelOK, Detail: "127.0.0.1 is the address of qemu/101, verified at identity level port (static)"},
+		{Name: "path", Level: LevelOK, Detail: "direct"},
 		{Name: "tcp", Level: LevelOK, Detail: strings.TrimPrefix(service, "http://") + " answers"},
 		{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"},
 	}, steps)
@@ -264,6 +266,73 @@ func TestEachStepFailsInTurn(t *testing.T) {
 	}
 }
 
+// throughLeg is st with its route proven at 10.50.0.10 through the leg of the
+// attached network vmbr1, and published under the service address the rule
+// names, which is the origin's address here.
+func throughLeg(t *testing.T, st engine.State, leg string) engine.State {
+	t.Helper()
+	r := &st.Routes[0]
+	_, ap, err := parseService(r.Service)
+	require.NoError(t, err)
+	r.Candidates = []resolve.CandidateResult{{Addr: netip.MustParseAddr("10.50.0.10"), Source: resolve.FromStatic, OK: true}}
+	r.Path = &engine.PathView{
+		Node: "pve1", Bridge: "vmbr1", Port: "tap101i0", MAC: "bc:24:11:00:00:01", VerifiedAt: st.At,
+		Addr: netip.MustParseAddr("10.50.0.10"), Via: "attach:vmbr1", Service: ap.Addr(), Leg: leg,
+	}
+	return st
+}
+
+// A route through a leg is checked at its real address, and asked, as the
+// connector asks it, at its service address.
+func TestARouteThroughALegIsAskedAtItsServiceAddress(t *testing.T) {
+	o := newOrigin(t, false, nil)
+	st := throughLeg(t, servedBy(t, o.Server, "http"), engine.LegUp)
+	ap := addrOf(t, o.Server)
+
+	steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+
+	require.NoError(t, err)
+	require.Equal(t, []Step{
+		{Name: "identity", Level: LevelOK, Detail: "10.50.0.10 is the address of qemu/101, verified at identity level port (static)"},
+		{Name: "path", Level: LevelOK, Detail: "attach vmbr1: leg up, service " + ap.Addr().String() + " -> 10.50.0.10 programmed"},
+		{Name: "tcp", Level: LevelOK, Detail: fmt.Sprintf("%s answers (10.50.0.10:%d through the leg)", ap, ap.Port())},
+		{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"},
+	}, steps[5:])
+	require.Equal(t, []string{www}, o.requests(), "the service address was asked")
+}
+
+func TestThePathStepFailsWhereTheLegDoes(t *testing.T) {
+	for _, tt := range []struct {
+		name, detail string
+		change       func(st *engine.State)
+	}{
+		{"a leg that is not up", "attach vmbr1: the leg is not up: bridge vmbr1 is absent", func(st *engine.State) {
+			st.Routes[0].Path.Leg = "bridge vmbr1 is absent"
+		}},
+		{"a leg the gateway said nothing of", "attach vmbr1: the leg is not up: the gateway has not said how it is", func(st *engine.State) {
+			st.Routes[0].Path.Leg = ""
+		}},
+		{"a gateway that could not be programmed", "attach vmbr1: the gateway could not be programmed; pco status says why", func(st *engine.State) {
+			st.Problems = []string{"programming the gateway: nft: busy; no tunnel configuration is written until it is programmed"}
+		}},
+		{"no service address", "attach vmbr1: no service address", func(st *engine.State) {
+			st.Routes[0].Path.Service = netip.Addr{}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newOrigin(t, false, nil)
+			st := throughLeg(t, servedBy(t, o.Server, "http"), engine.LegUp)
+			tt.change(&st)
+
+			steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+
+			require.NoError(t, err)
+			requireFailsAt(t, steps, "path", tt.detail)
+			require.Empty(t, o.requests())
+		})
+	}
+}
+
 // The identity step names the level the address was proven at, when the
 // state has one.
 func TestTheIdentityStepNamesTheLevel(t *testing.T) {
@@ -348,7 +417,7 @@ func TestWhatTheOriginAnswers(t *testing.T) {
 			steps, err := DiagnoseRoute(t.Context(), servedBy(t, o.Server, "http"), www, o.Client())
 
 			require.NoError(t, err)
-			require.Equal(t, Step{Name: "http", Level: tt.level, Detail: tt.detail}, steps[7])
+			require.Equal(t, Step{Name: "http", Level: tt.level, Detail: tt.detail}, steps[8])
 			require.Len(t, o.requests(), 1)
 		})
 	}
@@ -379,7 +448,7 @@ func TestARouteThatSaysHTTPToAnOriginThatSpeaksTLS(t *testing.T) {
 		steps, err := DiagnoseRoute(t.Context(), servedBy(t, o.Server, "http"), www, o.Client())
 
 		require.NoError(t, err)
-		require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "origin speaks TLS: use https:// in the route"}, steps[7])
+		require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "origin speaks TLS: use https:// in the route"}, steps[8])
 	})
 	t.Run("a server that answers with a TLS alert", func(t *testing.T) {
 		srv := alerting(t)
@@ -387,7 +456,7 @@ func TestARouteThatSaysHTTPToAnOriginThatSpeaksTLS(t *testing.T) {
 		steps, err := DiagnoseRoute(t.Context(), servedBy(t, srv, "http"), www, nil)
 
 		require.NoError(t, err)
-		require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "origin speaks TLS: use https:// in the route"}, steps[7])
+		require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "origin speaks TLS: use https:// in the route"}, steps[8])
 	})
 }
 
@@ -423,7 +492,8 @@ func TestLinksALastCycleDidNotCheckAreNotOk(t *testing.T) {
 			}
 			require.Equal(t, LevelWarn, steps[5].Level, "the identity is what an earlier cycle found")
 			require.Contains(t, steps[5].Detail, "verified in an earlier cycle")
-			for _, i := range []int{6, 7} {
+			require.Equal(t, Step{Name: "path", Level: LevelOK, Detail: "direct"}, steps[6])
+			for _, i := range []int{7, 8} {
 				require.Equal(t, Step{Name: stepNames[i], Level: LevelWarn, Detail: "not asked: the target is from an earlier cycle"}, steps[i])
 			}
 			require.Empty(t, o.requests(), "the origin was not asked")
@@ -444,7 +514,7 @@ func TestTheHolderIsDiagnosedWhicheverRouteComesFirst(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "qemu/101 (web-1) holds it; state active", steps[0].Detail)
-	require.Equal(t, LevelOK, steps[7].Level)
+	require.Equal(t, LevelOK, steps[8].Level)
 	holder, found := HolderOf(st, www)
 	require.True(t, found)
 	require.Equal(t, "qemu/101", holder.Owner)
@@ -485,7 +555,7 @@ func TestTheNameTLSAsksForFollowsTheHostSent(t *testing.T) {
 	steps, err := DiagnoseRoute(t.Context(), st, "*.example.com", o.Client())
 
 	require.NoError(t, err)
-	require.Equal(t, LevelOK, steps[7].Level, steps[7].Detail)
+	require.Equal(t, LevelOK, steps[8].Level, steps[8].Detail)
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	require.Equal(t, []string{"intranet.example.com"}, o.snis)
@@ -546,7 +616,7 @@ func TestTLSIsVerifiedAsTheRouteSays(t *testing.T) {
 			steps, err := DiagnoseRoute(t.Context(), st, www, client)
 
 			require.NoError(t, err)
-			require.Equal(t, Step{Name: "http", Level: tt.level, Detail: tt.detail}, steps[7])
+			require.Equal(t, Step{Name: "http", Level: tt.level, Detail: tt.detail}, steps[8])
 			if tt.level == LevelOK {
 				o.mu.Lock()
 				require.Equal(t, []string{tt.sni}, o.snis, "the name the tunnel would ask for")
@@ -564,7 +634,7 @@ func TestARouteThatSaysHTTPSToAnOriginThatSpeaksPlainHTTP(t *testing.T) {
 	steps, err := DiagnoseRoute(t.Context(), st, www, nil)
 
 	require.NoError(t, err)
-	require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "origin speaks plain HTTP: use http:// in the route"}, steps[7])
+	require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "origin speaks plain HTTP: use http:// in the route"}, steps[8])
 }
 
 func TestTheHostHeaderIsTheOneTheTunnelSends(t *testing.T) {
@@ -600,7 +670,7 @@ func TestARedirectIsNotFollowed(t *testing.T) {
 	steps, err := DiagnoseRoute(t.Context(), servedBy(t, o.Server, "http"), www, decoy.Client())
 
 	require.NoError(t, err)
-	require.Equal(t, Step{Name: "http", Level: LevelOK, Detail: "the origin answered 302 Found; the redirect is not followed"}, steps[7])
+	require.Equal(t, Step{Name: "http", Level: LevelOK, Detail: "the origin answered 302 Found; the redirect is not followed"}, steps[8])
 	require.Empty(t, decoy.requests())
 }
 
@@ -632,7 +702,7 @@ func TestNothingButAVerifiedTargetIsAsked(t *testing.T) {
 		steps, err := DiagnoseRoute(t.Context(), st, www, nil)
 
 		require.NoError(t, err)
-		require.Equal(t, LevelFail, steps[7].Level)
+		require.Equal(t, LevelFail, steps[8].Level)
 		require.Empty(t, target.requests())
 		require.Empty(t, decoy.requests())
 	})
@@ -644,7 +714,7 @@ func TestNothingButAVerifiedTargetIsAsked(t *testing.T) {
 		steps, err := DiagnoseRoute(t.Context(), st, www, nil)
 
 		require.NoError(t, err)
-		require.Equal(t, LevelFail, steps[6].Level)
+		require.Equal(t, LevelFail, steps[7].Level)
 		require.Empty(t, target.requests())
 	})
 	t.Run("a route that lost its hostname", func(t *testing.T) {
@@ -676,7 +746,7 @@ func TestAnOriginThatIsGone(t *testing.T) {
 	steps, err := DiagnoseRoute(t.Context(), st, www, nil)
 
 	require.NoError(t, err)
-	require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "connection refused"}, steps[7])
+	require.Equal(t, Step{Name: "http", Level: LevelFail, Detail: "connection refused"}, steps[8])
 }
 
 // The client the diagnosis asks with: no proxy, no redirect, a deadline, and

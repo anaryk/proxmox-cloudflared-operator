@@ -22,6 +22,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -102,6 +103,12 @@ type Deps struct {
 	WatchNetwork func(ctx context.Context, bound func() map[netip.Addr]egress.Pin, onMove func(netip.Addr)) error
 	WatchRuleset func(ctx context.Context, changed func()) error
 	EgressEvery  time.Duration
+	// Gateway is the backend of the networks reached through a leg on the
+	// host; default: the namespace pco. WatchGateway calls changed whenever
+	// a link or a route of the node changes, which has the gateway checked;
+	// default: netlink.
+	Gateway      gateway.Backend
+	WatchGateway func(ctx context.Context, changed func()) error
 	// The web interface: WebDir holds its certificate, WebEnv is the
 	// environment file of its unit, WebLoaded is where systemd puts what
 	// pco-web.service loaded, ClusterCA and ClusterCAKey are the cluster CA;
@@ -159,6 +166,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.EgressEvery <= 0 {
 		d.EgressEvery = checkEvery
+	}
+	if d.WatchGateway == nil {
+		d.WatchGateway = watchLinksAndRoutes
 	}
 	if d.RestartWeb == nil {
 		d.RestartWeb = tryRestartWeb
@@ -247,7 +257,12 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	// systemd starts it again.
 	ctx, restart := context.WithCancel(ctx)
 	defer restart()
-	eng, client, filter, conns, err := build(cfg, deps, st, token, settings, restart)
+	if deps.Gateway == nil {
+		deps.Gateway = gateway.NewHost(gateway.NewNamespaceNft(gateway.Namespace), gateway.NewHostNft(), log)
+	}
+	gw := newGatewayPart(deps.Gateway, cfg.Paths.Local, deps.Now, log)
+	gw.start(ctx)
+	eng, client, filter, conns, err := build(cfg, deps, st, token, settings, restart, gw)
 	if err != nil {
 		return err
 	}
@@ -265,7 +280,10 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		FileState:  deps.UnitFileState,
 	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
-	k := &keeper{table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log}
+	k := &keeper{
+		table: filter, off: filter.ov.Off, note: eng.NoteEgress, now: deps.Now, log: log,
+		gw: gw, noteGw: eng.NoteGateway, watchNet: deps.WatchGateway, idle: eng.Idle,
+	}
 	keep := func(ctx context.Context) { k.keep(ctx, deps.WatchRuleset, deps.EgressEvery, deps.Sleep) }
 	traffic := &sampler{
 		statuses: eng.ConnectorStatuses, scrape: conns.Metrics, record: eng.RecordTraffic, targets: eng.SampleTargets,
@@ -359,8 +377,10 @@ func routedGuests(st *store.Store, log zerolog.Logger) func() []model.GuestRef {
 // build makes the engine out of the parts, and returns the Proxmox client it
 // reads through, the egress filter it feeds and the connector manager it
 // keeps the connectors with too. The Proxmox token goes into the client and
-// nowhere else. restart stops the daemon for systemd to start it again.
-func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings, restart func()) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
+// nowhere else. restart stops the daemon for systemd to start it again. The
+// resolver probes through the legs of gw that are up, and the engine syncs
+// gw.
+func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, settings store.Settings, restart func(), gw *gatewayPart) (*engine.Engine, *pve.Client, *egressFilter, *connector.Manager, error) {
 	client, err := pve.New(pve.Config{
 		BaseURL:     cfg.PVEURL,
 		TokenID:     token.TokenID,
@@ -373,7 +393,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	}
 	log := cfg.Log
 	inv := inventory.New(client, inventory.Options{GateTags: []string{settings.GateTag}, Routed: routedGuests(st, log)}, deps.Now, log)
-	res := resolve.NewResolver(deps.Prober, resolve.Settings{
+	res := resolve.NewResolver(gateway.NewProber(deps.Prober, gw.UpLegs, deps.Gateway), resolve.Settings{
 		LocalNode:    cfg.Node,
 		TrustStatic:  settings.TrustStatic,
 		TrustedCIDRs: settings.TrustedCIDRs,
@@ -402,6 +422,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Problems:   cfg.Problems,
 		Access:     client,
 		OwnUser:    ownUser,
+		Gateway:    gw,
 
 		StartOnlyFields: wiredFields(),
 	})

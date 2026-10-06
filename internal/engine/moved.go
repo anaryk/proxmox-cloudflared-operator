@@ -46,30 +46,37 @@ type moveCheck struct {
 }
 
 // watch keeps, from the results of the cycle, the routes whose address it
-// served on a binding, and their pins for the watch of the network.
+// served on a binding, and their pins for the watch of the network, each by
+// the address the egress set holds for it: a target on a leg by its service
+// address, with the leg its guest answers on and the guest's own address
+// there, so that two networks with one subnet never share a pin.
 func (c *cycleRun) watch() {
 	w := watched{snap: c.snap, deny: c.deny, required: c.requiredLevel(), routes: map[netip.Addr][]watchedRoute{}}
 	pins := map[netip.Addr]egress.Pin{}
 	for _, rt := range c.claims.Winners {
 		res, ok := c.results[rt.Hostname]
 		t := res.Target
+		key, served := t.Dialed()
 		switch {
-		case !ok, rt.Guest == nil, res.Binding == nil, !t.Addr.IsValid(), t.Withdrawn, t.Rejected:
+		case !ok, rt.Guest == nil, res.Binding == nil, !served, t.Withdrawn, t.Rejected:
 			continue
 		}
 		hw, err := net.ParseMAC(res.Binding.MAC)
 		if err != nil {
 			continue
 		}
-		w.routes[t.Addr] = append(w.routes[t.Addr], watchedRoute{route: rt, binding: *res.Binding})
-		p, pinned := pins[t.Addr]
+		w.routes[key] = append(w.routes[key], watchedRoute{route: rt, binding: *res.Binding})
+		p, pinned := pins[key]
 		if !pinned {
 			p = egress.Pin{MAC: hw, Bridge: res.Binding.Bridge, Port: res.Binding.Port}
+			if t.Leg {
+				p.Dev, p.Real = c.legIfaces[res.Binding.Via], t.Addr
+			}
 		}
 		if g, ok := c.snap.Guest(*rt.Guest); ok {
 			p.Own = ownMACs(p, g, res.Binding.Ports)
 		}
-		pins[t.Addr] = p
+		pins[key] = p
 	}
 	c.e.watched = w
 	c.e.egMu.Lock()
@@ -100,7 +107,9 @@ func ownMACs(p egress.Pin, g model.Guest, placed map[string]string) []egress.Own
 }
 
 // Bound returns the pins of the addresses the last cycle served on a binding,
-// for the watch of the network. The map is not changed afterwards.
+// for the watch of the network, by the address the egress set holds for each:
+// the service address of a target on a leg. The map is not changed
+// afterwards.
 func (e *Engine) Bound() map[netip.Addr]egress.Pin {
 	e.egMu.Lock()
 	defer e.egMu.Unlock()
@@ -111,7 +120,9 @@ func (e *Engine) Bound() map[netip.Addr]egress.Pin {
 // and has its routes verified again as soon as the cycle lock lets it, at
 // most once every reverifyEvery: once that passes, the address comes back;
 // when it fails, the address stays out and a cycle is asked for, which
-// withdraws its routes. Moved does not wait for the verification.
+// withdraws its routes. The address is one Bound gave: for a target on a leg
+// its service address, so that only the routes on it are verified again and
+// only it is taken out. Moved does not wait for the verification.
 func (e *Engine) Moved(ctx context.Context, addr netip.Addr) {
 	e.vouch.moved(addr, e.d.Now())
 	e.egMu.Lock()
@@ -229,7 +240,8 @@ func (e *Engine) reverify(ctx context.Context, addr netip.Addr) {
 }
 
 // verifyMoved resolves the routes served on addr again and reports whether
-// each of them is served there again at the level required. A route that is
+// each of them is served there again at the level required: at the address
+// its binding has, through the leg it was proven through. A route that is
 // not keeps the binding resolution gave it, so that the next cycle starts
 // from what was found. The caller holds the cycle lock.
 func (e *Engine) verifyMoved(ctx context.Context, addr netip.Addr) (why string, passed bool) {
@@ -246,12 +258,16 @@ func (e *Engine) verifyMoved(ctx context.Context, addr netip.Addr) (why string, 
 		if ctx.Err() != nil {
 			return "the daemon stops", false
 		}
-		t := res.Target
-		if t.Addr == addr && !t.Withdrawn && !t.Rejected && res.Binding != nil && res.Level.AtLeast(w.required) {
-			routes[i].binding = *res.Binding
+		t, b := res.Target, res.Binding
+		if b != nil && b.Via == wr.binding.Via && b.Addr == wr.binding.Addr {
+			// The same target is published where it was.
+			b.Service = wr.binding.Service
+		}
+		if t.Addr == wr.binding.Addr && !t.Withdrawn && !t.Rejected && b != nil && b.Via == wr.binding.Via && res.Level.AtLeast(w.required) {
+			routes[i].binding = *b
 			continue
 		}
-		e.keepBinding(wr.route.Hostname, res.Binding)
+		e.keepBinding(wr.route.Hostname, b)
 		why = t.Reason
 		if why == "" {
 			why = fmt.Sprintf("identity level %s is below the required %s", cmp.Or(string(res.Level), "none"), w.required)

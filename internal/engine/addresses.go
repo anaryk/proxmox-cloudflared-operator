@@ -33,9 +33,10 @@ func (c *cycleRun) learnNodeAddrs() bool {
 
 // resolveTargets resolves the address of every winner, with the binding of
 // its hostname, takes the addresses that lost their proof out of the egress
-// filter, holds back what is proven below the identity minimum and saves the
-// bindings. A cycle whose context ends in the middle plans and changes
-// nothing.
+// filter, holds back what is proven below the identity minimum, gives the
+// targets on a leg their service addresses and programs the gateway, and
+// saves the bindings. A cycle whose context ends in the middle plans and
+// changes nothing.
 func (c *cycleRun) resolveTargets() bool {
 	c.results = c.resolveAll(c.bindings, c.deny)
 	if err := c.ctx.Err(); err != nil {
@@ -45,6 +46,7 @@ func (c *cycleRun) resolveTargets() bool {
 	c.blockLost()
 	c.holdBelowMinimum()
 	c.holdObserved()
+	c.gateway()
 	c.watch()
 
 	next := make(map[string]resolve.Binding, len(c.results))

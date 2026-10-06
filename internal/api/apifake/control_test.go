@@ -146,10 +146,12 @@ func TestATrafficChangeKeepsWhatItLeavesOut(t *testing.T) {
 	require.Equal(t, routes, e.Traffic().Routes, "the figures come back")
 
 	require.NoError(t, e.ChangeTraffic(TrafficChange{Routes: []RouteFigures{{Hostname: "www.example.com", Stale: ptr(true)}}}))
-	www := e.Traffic().Routes[len(routes)-2]
+	i := slices.IndexFunc(routes, func(r engine.RouteTraffic) bool { return r.Hostname == "www.example.com" })
+	require.GreaterOrEqual(t, i, 0)
+	www := e.Traffic().Routes[i]
 	require.Equal(t, "www.example.com", www.Hostname)
 	require.True(t, www.Stale)
-	require.Equal(t, routes[len(routes)-2].FlowsPerSec, www.FlowsPerSec)
+	require.Equal(t, routes[i].FlowsPerSec, www.FlowsPerSec)
 }
 
 func ptr[T any](v T) *T { return &v }
