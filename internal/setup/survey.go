@@ -34,6 +34,13 @@ type survey struct {
 	cloudflareErr    error
 	stores           []string // the roots of the store that are there
 	registered       bool     // the node registry names this node
+	// cards are the cards of the guests of the cluster on the managed vnet,
+	// read when setup made the vnet or its zone.
+	cards    []Card
+	cardsErr error
+	// attachments are the cards pco attached, read for --detach-managed.
+	attachments    []store.Attachment
+	attachmentsErr error
 }
 
 func (u *uninstall) survey(ctx context.Context) {
@@ -50,6 +57,12 @@ func (u *uninstall) survey(ctx context.Context) {
 	if u.manifest.inProxmox() {
 		f.proxmox, f.proxmoxErr = u.readProxmox(ctx)
 	}
+	if u.manifest.CreatedZone || u.manifest.CreatedVnet {
+		f.cards, f.cardsErr = CardsOn(ctx, u.run, ManagedVnet)
+	}
+	if u.o.DetachManaged {
+		f.attachments, f.attachmentsErr = u.attachments()
+	}
 	if u.looksAtCloudflare() {
 		f.listed = true
 		f.cloudflare, f.cloudflareErr = u.listCloudflare(ctx)
@@ -63,6 +76,23 @@ func (u *uninstall) survey(ctx context.Context) {
 	if nodes, err := u.st.Nodes(); err == nil {
 		f.registered = slices.ContainsFunc(nodes, func(n store.NodeEntry) bool { return n.Name == u.node })
 	}
+}
+
+// attachments are the cards pco attached on the managed network, by owner;
+// a store without a root has none.
+func (u *uninstall) attachments() ([]store.Attachment, error) {
+	have, err := u.st.Attachments()
+	if errors.Is(err, store.ErrNoRoot) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Attachment, 0, len(have))
+	for _, owner := range slices.Sorted(maps.Keys(have)) {
+		out = append(out, have[owner])
+	}
+	return out, nil
 }
 
 // looksAtCloudflare reports whether Cloudflare is to be listed: for a purge,
@@ -145,6 +175,7 @@ func (u *uninstall) describe() {
 	}
 	u.describeWeb()
 	u.describeProxmox()
+	u.describeManaged()
 	if len(f.stores) > 0 {
 		u.ask.Info("  the store: %s", strings.Join(f.stores, ", "))
 		if len(u.creds) > 0 {
@@ -186,6 +217,44 @@ func (u *uninstall) describeProxmox() {
 	}
 	if tags := without(m.RegisteredTags, without(m.RegisteredTags, s.tags)); len(tags) > 0 {
 		u.ask.Info("  the registered tags %s", strings.Join(tags, ", "))
+	}
+}
+
+// describeManaged lists the managed cards that go first and the objects of
+// the managed network setup made, which go last when no card is left on the
+// vnet.
+func (u *uninstall) describeManaged() {
+	f, m := u.found, u.manifest
+	switch {
+	case !u.o.DetachManaged:
+	case f.attachmentsErr != nil:
+		u.ask.Info("  the managed cards pco attached, which cannot be read: %v", f.attachmentsErr)
+	case len(f.attachments) > 0:
+		var owners []string
+		for _, a := range f.attachments {
+			owners = append(owners, a.Owner)
+		}
+		u.ask.Info("  the managed cards pco attached to %s, removed first", strings.Join(owners, ", "))
+	}
+	var objects []string
+	if m.CreatedVnet {
+		objects = append(objects, "vnet "+ManagedVnet)
+	}
+	if m.CreatedZone {
+		objects = append(objects, "zone "+ManagedZone)
+	}
+	if len(objects) == 0 {
+		return
+	}
+	what := "the SDN " + strings.Join(objects, " and ")
+	switch {
+	case f.cardsErr != nil:
+		u.ask.Info("  %s, once the cards on %s can be read: %v", what, ManagedVnet, f.cardsErr)
+	case len(f.cards) > 0 && !u.o.DetachManaged:
+		u.ask.Info("  (%s are kept while guests %s have a card on %s; --detach-managed removes pco's cards first)",
+			what, strings.Join(Owners(f.cards), ", "), ManagedVnet)
+	default:
+		u.ask.Info("  %s, which an SDN apply removes from every node", what)
 	}
 }
 

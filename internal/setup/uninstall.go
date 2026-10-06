@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -27,6 +28,9 @@ type UninstallOptions struct {
 	PurgeCloudflare   bool // delete the records and tunnels of the install at Cloudflare
 	KeepCloudflare    bool // leave Cloudflare as it is, without looking at it
 	RemoveCloudflared bool // remove the cloudflared package and source setup installed
+	// DetachManaged removes pco's cards on the managed network from the
+	// guests first, so that the zone and the vnet can go.
+	DetachManaged bool
 }
 
 func (o UninstallOptions) check() error {
@@ -109,6 +113,9 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if err := u.stopDaemon(ctx); err != nil {
 		return err
 	}
+	if o.DetachManaged {
+		u.detachManaged(ctx)
+	}
 	if purge {
 		u.deleteRecords(ctx)
 	}
@@ -123,6 +130,7 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if removeCloudflared {
 		u.removeCloudflared(ctx)
 	}
+	u.removeManagedNetwork(ctx)
 	if len(u.failed) > 0 {
 		u.ask.Warn("the store is kept, with the credentials and the manifest, so that pco uninstall can finish the rest")
 		return fmt.Errorf("uninstall did not finish: %s; run pco uninstall again to finish the rest", strings.Join(u.failed, "; "))
@@ -315,6 +323,65 @@ func (u *uninstall) removeEgress(ctx context.Context) {
 		return
 	}
 	u.ask.Info("egress filter: removed table inet %s", egressTable)
+}
+
+// detachManaged removes the cards pco attached on the managed network, right
+// after the daemon stopped and can attach none again.
+func (u *uninstall) detachManaged(ctx context.Context) {
+	f := u.found
+	if f.attachmentsErr != nil {
+		u.fail("reading the attachments of the managed network: %v; no card is removed", f.attachmentsErr)
+		return
+	}
+	d := Detacher{Run: u.run, Ask: u.ask, Sleep: u.host.sleep}
+	if _, err := d.Detach(ctx, f.attachments); err != nil {
+		u.fail("%v", err)
+	}
+}
+
+// removeManagedNetwork removes the vnet and the zone of the managed network
+// setup made, last and only once no guest of the cluster has a card on the
+// vnet: the apply takes the bridge away from under such a card.
+func (u *uninstall) removeManagedNetwork(ctx context.Context) {
+	m := u.manifest
+	if !m.CreatedZone && !m.CreatedVnet {
+		return
+	}
+	cards, err := CardsOn(ctx, u.run, ManagedVnet)
+	if err != nil {
+		u.fail("the SDN zone %s is kept: %v", ManagedZone, err)
+		return
+	}
+	if len(cards) > 0 {
+		u.fail("%s", u.keptFor(cards))
+		return
+	}
+	s := SDN{Run: u.run, Ask: u.ask, Ours: m}
+	if err := s.Remove(ctx); err != nil {
+		u.fail("%v", err)
+	}
+}
+
+// keptFor says why the zone stays while cards are on the vnet, and what to do.
+func (u *uninstall) keptFor(cards []Card) string {
+	if !u.o.DetachManaged {
+		return fmt.Sprintf("the SDN zone %s is kept: guests %s still have a card on %s; detach them first or pass --detach-managed",
+			ManagedZone, strings.Join(Owners(cards), ", "), ManagedVnet)
+	}
+	var others []Card
+	for _, c := range cards {
+		if !slices.ContainsFunc(u.found.attachments, func(a store.Attachment) bool {
+			return a.Owner == c.Owner && a.NIC == c.NIC && a.MAC == c.MAC
+		}) {
+			others = append(others, c)
+		}
+	}
+	if len(others) > 0 {
+		return fmt.Sprintf("the SDN zone %s is kept: guests %s still have a card on %s, which pco did not attach: remove it, "+
+			"then run pco uninstall again", ManagedZone, strings.Join(Owners(others), ", "), ManagedVnet)
+	}
+	return fmt.Sprintf("the SDN zone %s is kept: guests %s still have a card on %s; a VM without network hotplug drops it "+
+		"when it restarts, then run pco uninstall again", ManagedZone, strings.Join(Owners(cards), ", "), ManagedVnet)
 }
 
 // removeStore removes the node from the registry and the three roots of the

@@ -161,6 +161,9 @@ type host struct {
 	checkToken func(ctx context.Context, tok store.PVEToken) error
 	// profile reads the profile of the machine.
 	profile func() (string, error)
+	// sleep waits, as between two looks at the guests whose managed cards
+	// were removed.
+	sleep func(ctx context.Context, d time.Duration) error
 
 	// The web interface: the directory of its certificate, the environment
 	// file of its unit, the cluster CA and the directory of the certificates
@@ -185,6 +188,16 @@ func nodeHost() host {
 		hostname:   os.Hostname,
 		checkToken: checkPVEToken,
 		profile:    func() (string, error) { return store.DetectProfile(store.ProfileFile) },
+		sleep: func(ctx context.Context, d time.Duration) error {
+			t := time.NewTimer(d)
+			defer t.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+				return nil
+			}
+		},
 
 		webDir:       webcert.Dir,
 		webEnv:       webcert.EnvFile,

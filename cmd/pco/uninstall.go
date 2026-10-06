@@ -20,13 +20,18 @@ func (a *app) uninstallCmd() *cobra.Command {
 			"cloudflared package setup installed is asked as well, or done with --remove-cloudflared;\n" +
 			"with --yes it stays without that flag. A part that fails is\n" +
 			"reported and the rest goes on; the store is then kept, and running pco uninstall again\n" +
-			"finishes the rest. It runs as root on the node.",
+			"finishes the rest. It runs as root on the node.\n\n" +
+			"The SDN zone pco and vnet pconet of the managed network go last, under the lock of the SDN\n" +
+			"configuration, and only once no guest of the cluster has a card on pconet: the apply takes\n" +
+			"the bridge away from every node. --detach-managed removes the cards pco attached right after\n" +
+			"the daemon stopped and waits, bounded, for the configurations to drop them; a VM without\n" +
+			"network hotplug drops its card when it restarts.",
 		Example: "  # Remove pco, asking about everything\n" +
 			"  pco uninstall\n\n" +
 			"  # Without a question, deleting the DNS records and the tunnel and removing cloudflared\n" +
 			"  pco uninstall --yes --purge-cloudflare --remove-cloudflared\n\n" +
-			"  # Without a question, leaving Cloudflare as it is\n" +
-			"  pco uninstall --yes --keep-cloudflare",
+			"  # Without a question, leaving Cloudflare as it is and taking pco's cards off the guests\n" +
+			"  pco uninstall --yes --keep-cloudflare --detach-managed",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -51,6 +56,7 @@ func (a *app) uninstallCmd() *cobra.Command {
 	flags.BoolVar(&o.KeepCloudflare, "keep-cloudflare", false,
 		"leave the DNS records and the tunnel of the install at Cloudflare as they are, without looking at them")
 	flags.BoolVar(&o.RemoveCloudflared, "remove-cloudflared", false, "remove the cloudflared package and its apt source, when setup installed them")
+	flags.BoolVar(&o.DetachManaged, "detach-managed", false, "remove the cards pco attached on the managed network first, so that its zone and vnet can go")
 	cmd.MarkFlagsMutuallyExclusive("purge-cloudflare", "keep-cloudflare")
 	return cmd
 }

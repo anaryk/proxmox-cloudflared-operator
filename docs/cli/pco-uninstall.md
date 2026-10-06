@@ -11,6 +11,12 @@ with `--yes` it stays without that flag. A part that fails is
 reported and the rest goes on; the store is then kept, and running pco uninstall again
 finishes the rest. It runs as root on the node.
 
+The SDN zone pco and vnet pconet of the managed network go last, under the lock of the SDN
+configuration, and only once no guest of the cluster has a card on pconet: the apply takes
+the bridge away from every node. `--detach-managed` removes the cards pco attached right after
+the daemon stopped and waits, bounded, for the configurations to drop them; a VM without
+network hotplug drops its card when it restarts.
+
 ## Usage
 
 ```text
@@ -26,13 +32,14 @@ pco uninstall
 # Without a question, deleting the DNS records and the tunnel and removing cloudflared
 pco uninstall --yes --purge-cloudflare --remove-cloudflared
 
-# Without a question, leaving Cloudflare as it is
-pco uninstall --yes --keep-cloudflare
+# Without a question, leaving Cloudflare as it is and taking pco's cards off the guests
+pco uninstall --yes --keep-cloudflare --detach-managed
 ```
 
 ## Flags
 
 ```text
+    --detach-managed       remove the cards pco attached on the managed network first, so that its zone and vnet can go
 -h, --help                 help for uninstall
     --keep-cloudflare      leave the DNS records and the tunnel of the install at Cloudflare as they are, without looking at them
     --purge-cloudflare     delete the DNS records and the tunnel of the install at Cloudflare
