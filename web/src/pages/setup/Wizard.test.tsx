@@ -67,15 +67,18 @@ function Routed() {
   return <Page view={useView()} />
 }
 
-const step = (name: RegExp | string) => screen.getByRole('button', { name })
-const opened = () => screen.getAllByRole('button', { expanded: true }).map((b) => b.textContent)
-const region = (name: RegExp | string) => screen.getByRole('region', { name })
+// The number of a step is read out before its name, and shown before it.
+const shown = (el: Element) => (el.textContent ?? '').replace(/^Step \d: /, '')
+const step = (title: string) => screen.getByRole('button', { name: new RegExp(`^Step \\d: ${title}`) })
+const opened = () => screen.getAllByRole('button', { expanded: true }).map(shown)
+const stepRegion = (title: string) => screen.getByRole('region', { name: new RegExp(`^Step \\d: ${title}`) })
+const region = (name: string) => screen.getByRole('region', { name })
 
 describe('the steps', () => {
   test('a fresh install opens the token step, and lists the others closed', async () => {
     await open(fresh)
     expect(screen.getByRole('heading', { level: 1, name: 'First-run setup' })).toBeTruthy()
-    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
+    expect(screen.getAllByRole('heading', { level: 2 }).map(shown)).toEqual([
       '1API tokento do',
       '2Zonesnot yet',
       '3Reaching guestsoptional',
@@ -85,21 +88,38 @@ describe('the steps', () => {
     expect(opened()).toEqual(['1API tokento do'])
   })
 
+  test('the number of a step is read out with its name, and a step controls a body that is there', async () => {
+    await open(fresh)
+    const heads = screen.getAllByRole('heading', { level: 2 }).map((h) => h.querySelector('button') as HTMLElement)
+    expect(heads.map((b) => b.getAttribute('aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false'])
+    expect(heads.map((b) => b.getAttribute('aria-controls') !== null)).toEqual([true, false, false, false, false])
+    expect(document.getElementById(heads[0]?.getAttribute('aria-controls') ?? '')).not.toBeNull()
+    expect(heads[0]?.getAttribute('aria-controls')).toBe(stepRegion('API token').id)
+    expect(screen.getByRole('button', { name: /^Step 4: First route/ })).toBeTruthy()
+  })
+
+  test('a daemon before its first cycle says that the marks are of a state without one', async () => {
+    const { deliver } = await open(fresh)
+    expect(screen.getByText(/Waiting for the first cycle of the daemon/)).toBeTruthy()
+    await deliver({ ...fresh, at: '2026-10-01T12:00:00Z', finishedAt: '2026-10-01T12:00:02Z' })
+    expect(screen.queryByText(/Waiting for the first cycle of the daemon/)).toBeNull()
+  })
+
   test('a step can be opened and closed by the admin, and stays as chosen', async () => {
     const { deliver } = await open(fresh)
-    fireEvent.click(step(/^Reaching guests/))
+    fireEvent.click(step('Reaching guests'))
     expect(opened()).toEqual(['3Reaching guestsoptional'])
     await deliver({ ...fresh, problems: [] })
     expect(opened()).toEqual(['3Reaching guestsoptional'])
-    fireEvent.click(step(/^Reaching guests/))
+    fireEvent.click(step('Reaching guests'))
     expect(screen.queryAllByRole('button', { expanded: true })).toHaveLength(0)
   })
 
   test('the install check is step 0 and comes first while the node is not set up', async () => {
     await open({ ...fresh, problems: ['pco is not set up on this node; run pco setup'] })
-    expect(screen.getAllByRole('heading', { level: 2 })[0]?.textContent).toBe('0Install checkneeds attention')
+    expect(shown(screen.getAllByRole('heading', { level: 2 })[0] as HTMLElement)).toBe('0Install checkneeds attention')
     expect(opened()).toEqual(['0Install checkneeds attention'])
-    expect(within(region(/^Install check/)).getByText('pco setup').tagName).toBe('CODE')
+    expect(within(stepRegion('Install check')).getByText('pco setup').tagName).toBe('CODE')
     expect(screen.getByText(/Run it as root on the node\./)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
     expect(screen.getByText('pco is not set up on this node; run pco setup')).toBeTruthy()
@@ -109,7 +129,7 @@ describe('the steps', () => {
     const { deliver } = await open({ ...fresh, writerVerdict: 'unknown' })
     expect(opened()).toEqual(['0Install checkneeds attention'])
     await deliver({ ...fresh, writerVerdict: 'ok' })
-    expect(screen.queryByText(/^0Install check/)).toBeNull()
+    expect(screen.queryByText(/Install check/)).toBeNull()
     expect(opened()).toEqual(['1API tokento do'])
   })
 })
@@ -118,13 +138,22 @@ describe('step 1, the token', () => {
   test('says what the token needs and opens both forms of Cloudflare with the name of the node', async () => {
     const node = 'pve 1&x=é/#'
     await open(fresh, <SetupPage />, { node })
-    const rows = within(region(/^API token/)).getAllByRole('listitem')
+    const rows = within(stepRegion('API token')).getAllByRole('listitem')
     expect(rows.map((li) => li.querySelector('b')?.textContent)).toEqual(['Account > Cloudflare Tunnel > Edit', 'Zone > DNS > Edit', 'Zone > Zone > Read'])
+    expect(rows[0]?.textContent).toContain('add this one yourself in the form')
+    expect(rows[1]?.textContent).not.toContain('yourself')
+    expect(rows[2]?.textContent).not.toContain('yourself')
+    expect(within(stepRegion('API token')).getByText(/with Zone > DNS > Edit, Zone > Zone > Read and the name chosen; Account > Cloudflare Tunnel > Edit you add there yourself/)).toBeTruthy()
+    expect(within(stepRegion('API token')).getByText(/The check after you paste the token names anything that is missing\./)).toBeTruthy()
     const user = screen.getByRole('link', { name: 'Create a user token' })
     const account = screen.getByRole('link', { name: 'Create an account token' })
     expect(user.getAttribute('href')).toBe(userTokenUrl(node))
     expect(account.getAttribute('href')).toBe(accountTokenUrl(node))
     expect(user.getAttribute('href')).toContain('name=pco%20on%20pve%201%26x%3D%C3%A9%2F%23')
+    for (const a of [user, account]) {
+      const keys = JSON.parse(new URL(a.getAttribute('href') ?? '').searchParams.get('permissionGroupKeys') ?? '') as { key: string }[]
+      expect(keys.map((k) => k.key)).toEqual(['dns', 'zone'])
+    }
     for (const a of [user, account]) {
       expect(a.getAttribute('target')).toBe('_blank')
       expect(a.getAttribute('rel')).toBe('noopener noreferrer')
@@ -133,11 +162,11 @@ describe('step 1, the token', () => {
 
   async function add(answers: Parameters<typeof stubApi>[0]) {
     const sent = stubApi(answers)
-    const shown = await open(fresh)
+    const page = await open(fresh)
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'edge' } })
     fireEvent.change(screen.getByLabelText('Cloudflare API token'), { target: { value: token } })
     fireEvent.click(screen.getByRole('button', { name: 'Check and add' }))
-    return { sent, ...shown }
+    return { sent, ...page }
   }
 
   test('a token that cannot be used is not stored: the checklist says what to grant, and the step stays open', async () => {
@@ -209,7 +238,7 @@ describe('step 1, the token', () => {
 
   test('a stored token that can be used offers the deep check when it never wrote', async () => {
     await open(withToken({}, shallow))
-    fireEvent.click(step(/^API token/))
+    fireEvent.click(step('API token'))
     const stored = screen.getByRole('region', { name: 'Credential edge' })
     expect(within(stored).getByText('Write access was not tried.')).toBeTruthy()
     expect(within(stored).getByRole('button', { name: 'Check write access' })).toBeTruthy()
@@ -218,15 +247,55 @@ describe('step 1, the token', () => {
   })
 })
 
+describe('step 1, a token that is not usable', () => {
+  test('whose check Cloudflare did not answer is only checked again, never told to grant', async () => {
+    const unanswered: CredentialView = {
+      ...good,
+      report: good.report && {
+        ...good.report,
+        usable: false,
+        checks: [{ capability: 'dns.read', scope: 'example.com', scopeId: 'zone1', ok: false, unanswered: true }],
+      },
+    }
+    await open(withToken({}, unanswered))
+    const stored = screen.getByRole('region', { name: 'Credential main' })
+    expect(within(stored).getByText('unknown')).toBeTruthy()
+    expect(within(stored).getByText(/Cloudflare did not answer, or the token was never checked/)).toBeTruthy()
+    expect(within(stored).queryByText(/Grant what the list asks for/)).toBeNull()
+    expect(within(stored).getByRole('button', { name: 'Check again' })).toBeTruthy()
+    expect(opened()).toEqual(['1API tokento do'])
+  })
+
+  test('that was refused says what to grant', async () => {
+    const bad: CredentialView = { ...good, report: good.report && { ...good.report, usable: false } }
+    await open(withToken({}, bad))
+    expect(within(screen.getByRole('region', { name: 'Credential main' })).getByText(/Grant what the list asks for/)).toBeTruthy()
+  })
+
+  test('the zones step does not send an admin back to the token in the moments before the state holds it', async () => {
+    stubApi({ 'POST /api/v1/credentials': { status: 201, body: shallow } })
+    const { deliver } = await open(fresh)
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'edge' } })
+    fireEvent.change(screen.getByLabelText('Cloudflare API token'), { target: { value: token } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check and add' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue to the zones' }))
+    const zones = stepRegion('Zones')
+    expect(within(zones).getByText('Waiting for the first cycle with the token')).toBeTruthy()
+    expect(within(zones).queryByRole('button', { name: 'Add a token first' })).toBeNull()
+    await deliver(withToken({ zones: full.zones }, shallow))
+    expect(screen.getByRole('table', { name: 'Zones' })).toBeTruthy()
+  })
+})
+
 describe('step 2, the zones', () => {
   const waiting = withToken({ mode: 'observe' }, { ...good, report: good.report && { ...good.report, checkedAt: '2026-10-01T12:00:05Z' } })
 
   test('wait for the first cycle after the token was added, then list the zones and what the token leaves out', async () => {
     const { deliver } = await open(waiting)
-    fireEvent.click(step(/^Zones/))
-    expect(within(region(/^Zones/)).getByText('Waiting for the first cycle with the token')).toBeTruthy()
-    expect(within(region(/^Zones/)).getByText('example.org left out: no DNS read')).toBeTruthy()
-    expect(within(region(/^Zones/)).getByText('grant Zone > DNS > Edit on example.org')).toBeTruthy()
+    fireEvent.click(step('Zones'))
+    expect(within(stepRegion('Zones')).getByText('Waiting for the first cycle with the token')).toBeTruthy()
+    expect(within(stepRegion('Zones')).getByText('example.org left out: no DNS read')).toBeTruthy()
+    expect(within(stepRegion('Zones')).getByText('grant Zone > DNS > Edit on example.org')).toBeTruthy()
     await deliver({ ...waiting, zones: full.zones })
     const table = screen.getByRole('table', { name: 'Zones' })
     const rows = within(table).getAllByRole('row').slice(1)
@@ -238,29 +307,29 @@ describe('step 2, the zones', () => {
   test('say so when a cycle after the check found no zone', async () => {
     await open(withToken({}, { ...good, report: good.report && { ...good.report, checkedAt: '2026-10-01T11:00:00Z' } }))
     expect(opened()).toEqual(['2Zonesneeds attention'])
-    expect(within(region(/^Zones/)).getByText(/found no zone/)).toBeTruthy()
+    expect(within(stepRegion('Zones')).getByText(/found no zone/)).toBeTruthy()
   })
 
   test('without a usable token, the step points at the token', async () => {
     await open(fresh)
-    fireEvent.click(step(/^Zones/))
-    fireEvent.click(within(region(/^Zones/)).getByRole('button', { name: 'Add a token first' }))
+    fireEvent.click(step('Zones'))
+    fireEvent.click(within(stepRegion('Zones')).getByRole('button', { name: 'Add a token first' }))
     expect(opened()).toEqual(['1API tokento do'])
   })
 
   test('a zone that two credentials list and nobody pinned needs a pin', async () => {
     const two = { ...(full.zones[0] as ZoneView), pinned: undefined }
     await open(withToken({ zones: [two] }))
-    fireEvent.click(step(/^Zones/))
-    expect(within(region(/^Zones/)).getByText('needs a pin')).toBeTruthy()
+    fireEvent.click(step('Zones'))
+    expect(within(stepRegion('Zones')).getByText('needs a pin')).toBeTruthy()
   })
 })
 
 describe('step 3, reaching guests', () => {
   test('lists the bridges where routes were proven and sends the choice of the level to the settings', async () => {
     await open(withToken({ routes: full.routes, zones: full.zones }, good), <SetupPage />)
-    fireEvent.click(step(/^Reaching guests/))
-    const body = region(/^Reaching guests/)
+    fireEvent.click(step('Reaching guests'))
+    const body = stepRegion('Reaching guests')
     const [bridge] = within(within(body).getByRole('list')).getAllByRole('listitem')
     expect(bridge?.textContent).toBe('vmbr0 VLAN 20: 1 route')
     expect(within(body).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/settings')
@@ -292,6 +361,12 @@ describe('step 4, the first route', () => {
     })
     expect(write).toHaveBeenCalledWith('```cf-tunnel\napp.example.com -> :3000\n```')
     expect(screen.getByText('Copied.')).toBeTruthy()
+  })
+
+  test('a name that ends in the zone already is not put in front of it twice', async () => {
+    const { guest } = await build()
+    fireEvent.change(guest.getByLabelText('Name'), { target: { value: 'App.Example.com' } })
+    expect(screen.getByLabelText('The block for the Notes').textContent).toBe('```cf-tunnel\napp.example.com -> :3000\n```')
   })
 
   test('the options show in the block; https adds its own', async () => {
@@ -351,32 +426,32 @@ describe('step 5, start publishing', () => {
   test('is closed without a usable credential and without a route, says which is missing, and links the step that adds it', async () => {
     const sent = stubApi({})
     await open(fresh)
-    fireEvent.click(step(/^Start publishing/))
-    const body = region(/^Start publishing/)
+    fireEvent.click(step('Start publishing'))
+    const body = stepRegion('Start publishing')
     expect(within(body).getByText('a Cloudflare API token that can be used:')).toBeTruthy()
     expect(within(body).getByText('a route:')).toBeTruthy()
     expect(within(body).queryByRole('button', { name: 'Start publishing' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Pending actions' })).toBeNull()
     fireEvent.click(within(body).getByRole('button', { name: 'Step 4' }))
     expect(opened()).toEqual(['4First routeto do'])
-    fireEvent.click(step(/^Start publishing/))
-    fireEvent.click(within(region(/^Start publishing/)).getByRole('button', { name: 'Step 1' }))
+    fireEvent.click(step('Start publishing'))
+    fireEvent.click(within(stepRegion('Start publishing')).getByRole('button', { name: 'Step 1' }))
     expect(opened()).toEqual(['1API tokento do'])
     expect(writes(sent)).toEqual([])
   })
 
   test('is closed with a route and no usable token, naming the token only', async () => {
     await open({ ...fresh, routes: full.routes })
-    fireEvent.click(step(/^Start publishing/))
-    const body = region(/^Start publishing/)
+    fireEvent.click(step('Start publishing'))
+    const body = stepRegion('Start publishing')
     expect(within(body).getByText('a Cloudflare API token that can be used:')).toBeTruthy()
     expect(within(body).queryByText('a route:')).toBeNull()
   })
 
   test('is closed with a usable token and no route, naming the route only', async () => {
     await open(withToken({ zones: full.zones, routes: [] }))
-    fireEvent.click(step(/^Start publishing/))
-    const body = region(/^Start publishing/)
+    fireEvent.click(step('Start publishing'))
+    const body = stepRegion('Start publishing')
     expect(within(body).getByText('a route:')).toBeTruthy()
     expect(within(body).queryByText('a Cloudflare API token that can be used:')).toBeNull()
   })
@@ -387,7 +462,7 @@ describe('step 5, start publishing', () => {
     const sent = stubApi({ 'POST /api/v1/apply': { status: 200, body: { leftObserveOnly: true, accepted: [] } } })
     await open(observing)
     expect(opened()).toEqual(['5Start publishingto do'])
-    const body = region(/^Start publishing/)
+    const body = stepRegion('Start publishing')
     expect(within(within(body).getByRole('table', { name: 'Pending actions' })).getByText('delete-record')).toBeTruthy()
     expect(within(body).getByRole('heading', { level: 3, name: 'Pending actions' })).toBeTruthy()
     fireEvent.click(within(body).getByRole('button', { name: 'Start publishing' }))
@@ -420,11 +495,56 @@ describe('step 5, start publishing', () => {
 })
 
 describe('the first page', () => {
-  test('is the setup, at its own address, while there is no credential', async () => {
+  const cycled = (st: State): State => ({ ...st, at: '2026-10-01T12:00:00Z', finishedAt: '2026-10-01T12:00:02Z' })
+
+  test('is the setup, at its own address, once a cycle has finished and there is no credential', async () => {
     navigate('/', true)
-    await open(fresh, <Start />)
+    await open(cycled(fresh), <Start />)
     expect(window.location.pathname).toBe('/setup')
     expect(screen.getByRole('heading', { level: 1, name: 'First-run setup' })).toBeTruthy()
+  })
+
+  test('is the Overview before the first cycle, and goes to the setup when one finishes without a credential', async () => {
+    navigate('/', true)
+    const { deliver } = await open(fresh, <Routed />)
+    expect(window.location.pathname).toBe('/')
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
+    await deliver(cycled(fresh))
+    expect(window.location.pathname).toBe('/setup')
+  })
+
+  test('learns that a cycle finished from its notice, which does not change the digest of a state', async () => {
+    navigate('/', true)
+    const { store } = await open(fresh, <Routed />)
+    expect(window.location.pathname).toBe('/')
+    await act(async () => {
+      store.notice({ kind: 'state', data: { at: '2026-10-01T12:00:00Z', finishedAt: '2026-10-01T12:00:02Z', digest: fresh.digest ?? '' } })
+      await flush()
+    })
+    expect(window.location.pathname).toBe('/setup')
+    expect(screen.queryByText(/Waiting for the first cycle of the daemon/)).toBeNull()
+  })
+
+  test('is the Overview for an install with credentials whose daemon has not finished a cycle since it started', async () => {
+    navigate('/', true)
+    const restarted: State = { ...fresh, credentials: full.credentials, problems: ['waiting for the first cycle'] }
+    const { deliver } = await open(restarted, <Routed />)
+    expect(window.location.pathname).toBe('/')
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
+    await deliver({ ...restarted, ...cycled(restarted) })
+    expect(window.location.pathname).toBe('/')
+  })
+
+  test.each([
+    ['before its first cycle', fresh],
+    ['after one', cycled(fresh)],
+  ])('is the setup for a daemon that is not set up, %s, with or without a credential', async (_, base) => {
+    for (const credentials of [[], full.credentials]) {
+      cleanup()
+      navigate('/', true)
+      await open({ ...base, credentials, problems: ['pco is not set up on this node; run pco setup'] }, <Start />)
+      expect(window.location.pathname).toBe('/setup')
+    }
   })
 
   test('is the Overview once there is a credential', async () => {
@@ -436,7 +556,7 @@ describe('the first page', () => {
 
   test('stays the setup while the steps are done, and does not throw the admin out when the credential arrives', async () => {
     navigate('/', true)
-    const { deliver } = await open(fresh, <Routed />)
+    const { deliver } = await open(cycled(fresh), <Routed />)
     expect(window.location.pathname).toBe('/setup')
     await deliver(withToken({ zones: full.zones }))
     expect(window.location.pathname).toBe('/setup')
@@ -455,7 +575,7 @@ describe('the first page', () => {
   test('the Overview is shown while the setup is skipped, and the setup says so and can be asked for again', async () => {
     setDismissed(true)
     navigate('/', true)
-    await open(fresh, <Start />)
+    await open(cycled(fresh), <Start />)
     expect(window.location.pathname).toBe('/')
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
     cleanup()
@@ -480,8 +600,8 @@ describe('a reader', () => {
   test('is told that an admin has to finish the setup, sees how far it is, and cannot take a step', async () => {
     await open(fresh, <SetupPage />, { role: 'reader' })
     expect(screen.getByText('An admin has to finish the setup')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^1API token/ })).toBeNull()
-    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toContain('1API tokento do')
+    expect(screen.queryByRole('button', { name: /^Step 1: API token/ })).toBeNull()
+    expect(screen.getAllByRole('heading', { level: 2 }).map(shown)).toContain('1API tokento do')
     expect(screen.queryByLabelText('Cloudflare API token')).toBeNull()
   })
 })

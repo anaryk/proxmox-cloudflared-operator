@@ -4,36 +4,32 @@
 // daemon, a guest or Cloudflare sent.
 
 export interface Permission {
-  // the key and type of Cloudflare's permissionGroupKeys
-  key: string
-  type: 'read' | 'edit'
   // the row as the dashboard's form shows it, and what pco does with it
   row: string
   why: string
+  // the key and type of Cloudflare's permissionGroupKeys, for a row that
+  // Cloudflare documents a key for
+  link?: { key: string; type: 'read' | 'edit' }
 }
 
 // Keys from https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/
-// as read on 2026-10-06. The page lists dns and zone. It lists no key for
-// Cloudflare Tunnel: argotunnel is that product's name in Cloudflare's own
-// URLs and is not yet confirmed against the form.
+// as read on 2026-10-06. The page lists dns and zone and no key for
+// Cloudflare Tunnel, so that row is left to the admin: a key that is guessed
+// is dropped silently by the form when it is wrong.
 export const permissions: readonly Permission[] = [
   {
-    key: 'argotunnel',
-    type: 'edit',
     row: 'Account > Cloudflare Tunnel > Edit',
     why: 'to create the tunnel, write its configuration and read the token a connector runs with',
   },
   {
-    key: 'dns',
-    type: 'edit',
     row: 'Zone > DNS > Edit',
     why: 'to create, change and delete the CNAME record of each hostname',
+    link: { key: 'dns', type: 'edit' },
   },
   {
-    key: 'zone',
-    type: 'read',
     row: 'Zone > Zone > Read',
     why: 'to list the zones',
+    link: { key: 'zone', type: 'read' },
   },
 ]
 
@@ -43,7 +39,7 @@ const encode = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `
 // A session that names no node leaves the name at the product's.
 export const tokenName = (node: string) => (node ? `pco on ${node}` : 'pco')
 
-const keys = () => encode(JSON.stringify(permissions.map(({ key, type }) => ({ key, type }))))
+const keys = () => encode(JSON.stringify(permissions.flatMap((p) => (p.link ? [p.link] : []))))
 
 // userTokenUrl opens the form for a token that belongs to the person signed
 // in to the dashboard, over all accounts and zones to be narrowed there.

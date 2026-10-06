@@ -3,7 +3,7 @@ import './setup.css'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useApp } from '../../api/store'
-import type { State } from '../../api/types.gen'
+import type { CredentialView, State } from '../../api/types.gen'
 import { Head } from '../../app/Head'
 import { navigate } from '../../app/router'
 import { Badge } from '../../components/Badge'
@@ -14,12 +14,13 @@ import { Skeleton } from '../../components/Skeleton'
 import type { Tone } from '../../components/icons'
 import { Overview } from '../Overview'
 import { useAdmin } from '../routes/parts'
+import { unset } from '../routes/routes'
 import { setDismissed, useSetupDismissed } from './dismissed'
 import { StepInstall } from './StepInstall'
 import { StepPublish } from './StepPublish'
 import { StepReach } from './StepReach'
 import { StepRoute } from './StepRoute'
-import { type Mark, type Progress, progressOf, type StepId, type StepInfo } from './steps'
+import { cycleAtOf, type Mark, needsInstall, type Progress, progressOf, type StepId, type StepInfo } from './steps'
 import { StepToken } from './StepToken'
 import { StepZones } from './StepZones'
 
@@ -36,12 +37,26 @@ const markWords: Readonly<Record<Mark, [Tone, string]>> = {
 // only when it is needed.
 const numbers: Readonly<Record<StepId, number>> = { install: 0, token: 1, zones: 2, reach: 3, route: 4, publish: 5 }
 
-function Body({ id, st, p, go }: { id: StepId; st: State; p: Progress; go: (id: StepId) => void }) {
+// StepNumber is the number in its circle. The texts of the steps refer to
+// "step 1", so a screen reader is told the number before the name too, in
+// words, and not the circle.
+function StepNumber({ id }: { id: StepId }) {
+  return (
+    <>
+      <span className="sr-only">Step {numbers[id]}: </span>
+      <span className="wizard-num" aria-hidden="true">
+        {numbers[id]}
+      </span>
+    </>
+  )
+}
+
+function Body({ id, st, p, go, onAdded }: { id: StepId; st: State; p: Progress; go: (id: StepId) => void; onAdded: (v: CredentialView) => void }) {
   switch (id) {
     case 'install':
       return <StepInstall st={st} />
     case 'token':
-      return <StepToken st={st} p={p} go={go} />
+      return <StepToken st={st} p={p} go={go} onAdded={onAdded} />
     case 'zones':
       return <StepZones st={st} p={p} go={go} />
     case 'reach':
@@ -83,7 +98,7 @@ function StepBody({ id, onTouch, children }: { id: StepId; onTouch: (id: StepId)
 
 // Steps lists the steps and opens one: the first that waits for the admin,
 // until the admin opens another or starts working in the open one.
-function Steps({ st, p }: { st: State; p: Progress }) {
+function Steps({ st, p, onAdded }: { st: State; p: Progress; onAdded: (v: CredentialView) => void }) {
   // undefined follows the first step to take; null is all closed
   const [chosen, setChosen] = useState<StepId | null>()
   const [focus, setFocus] = useState<StepId>()
@@ -109,22 +124,20 @@ function Steps({ st, p }: { st: State; p: Progress }) {
                 type="button"
                 id={`step-${s.id}-head`}
                 aria-expanded={isOpen}
-                aria-controls={`step-${s.id}`}
+                aria-controls={isOpen ? `step-${s.id}` : undefined}
                 onClick={() => {
                   setChosen(isOpen ? null : s.id)
                   setFocus(undefined)
                 }}
               >
-                <span className="wizard-num" aria-hidden="true">
-                  {numbers[s.id]}
-                </span>
+                <StepNumber id={s.id} />
                 <span className="wizard-title">{s.title}</span>
                 <MarkBadge mark={s.mark} />
               </button>
             </h2>
             {isOpen && (
               <StepBody id={s.id} onTouch={touch}>
-                <Body id={s.id} st={st} p={p} go={go} />
+                <Body id={s.id} st={st} p={p} go={go} onAdded={onAdded} />
               </StepBody>
             )}
           </li>
@@ -145,9 +158,7 @@ function ForReaders({ p }: { p: Progress }) {
         {p.steps.map((s) => (
           <li key={s.id} className={`wizard-step wizard-${s.mark}`}>
             <h2 className="wizard-head">
-              <span className="wizard-num" aria-hidden="true">
-                {numbers[s.id]}
-              </span>
+              <StepNumber id={s.id} />
               <span className="wizard-title">{s.title}</span>
               <MarkBadge mark={s.mark} />
             </h2>
@@ -161,10 +172,17 @@ function ForReaders({ p }: { p: Progress }) {
 // SetupPage is /setup, and the first page while there is no credential: the
 // steps from a fresh install to the first published hostname.
 export function SetupPage(): ReactNode {
-  const st = useApp((s) => s.state)
+  const state = useApp((s) => s.state)
+  // the last cycle, as the notices of the stream say it: the state is read
+  // again only when its digest changes, and the digest leaves the times out
+  const noticed = useApp((s) => s.times?.at)
+  const cycleAt = cycleAtOf(state, noticed)
+  const st = state && cycleAt !== state.at ? { ...state, at: cycleAt } : state
   const admin = useAdmin()
   const dismissed = useSetupDismissed()
   const noCredential = st !== undefined && st.credentials.length === 0
+  // the token the admin added, until the state holds it
+  const [pending, setPending] = useState<CredentialView>()
 
   const skip = (
     <Button
@@ -186,10 +204,13 @@ export function SetupPage(): ReactNode {
       </>
     )
   }
-  const p = progressOf(st)
+  const p = progressOf(st, pending)
   return (
     <>
       {head}
+      {unset(st.at) && !p.installNeeded && (
+        <p className="muted">Waiting for the first cycle of the daemon: the marks below are read from a state that has none yet.</p>
+      )}
       {noCredential && dismissed && (
         <Banner
           tone="info"
@@ -203,20 +224,27 @@ export function SetupPage(): ReactNode {
           setup first.
         </Banner>
       )}
-      {admin ? <Steps st={st} p={p} /> : <ForReaders p={p} />}
+      {admin ? <Steps st={st} p={p} onAdded={setPending} /> : <ForReaders p={p} />}
     </>
   )
 }
 
-// Start is the first page. While there is no credential, and the setup was
-// not skipped in this browser, it takes the admin to the setup, which stays
-// where it is as the steps are done; the Overview otherwise.
+// Start is the first page. It takes the admin to the setup, which stays where
+// it is as the steps are done, when a cycle has finished and found no
+// credential, or when the daemon says it is not set up; not when the setup
+// was skipped in this browser. A daemon that has not finished a cycle since it
+// started has no credentials in its state, which says nothing of an install
+// that works: that gets the Overview.
 export function Start(): ReactNode {
-  const noCredential = useApp((s) => s.state !== undefined && s.state.credentials.length === 0)
+  const due = useApp((s) => {
+    const st = s.state
+    if (!st) return false
+    return needsInstall(st) || (!unset(cycleAtOf(st, s.times?.at)) && st.credentials.length === 0)
+  })
   const dismissed = useSetupDismissed()
-  const due = noCredential && !dismissed
+  const toSetup = due && !dismissed
   useEffect(() => {
-    if (due) navigate('/setup', true)
-  }, [due])
-  return due ? <SetupPage /> : <Overview />
+    if (toSetup) navigate('/setup', true)
+  }, [toSetup])
+  return toSetup ? <SetupPage /> : <Overview />
 }

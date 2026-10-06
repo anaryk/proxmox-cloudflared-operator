@@ -23,10 +23,12 @@ export const emptyBlock: BlockValues = { hostname: '', scheme: 'http', port: '',
 
 export type BlockErrors = Partial<Record<keyof BlockValues, string>>
 
-// hostOf puts a name in front of a zone; a name left empty is no hostname.
+// hostOf puts a name in front of a zone; a name left empty is no hostname, and
+// one that ends in the zone already is the hostname.
 export function hostOf(label: string, zone: string): string {
   const name = label.trim().replace(/\.+$/, '')
-  return name === '' ? '' : `${name}.${zone}`
+  if (name === '') return ''
+  return name.toLowerCase().endsWith(`.${zone.toLowerCase()}`) ? name : `${name}.${zone}`
 }
 
 export function blockErrors(v: BlockValues): BlockErrors {

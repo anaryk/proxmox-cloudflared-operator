@@ -3,7 +3,7 @@ import { describe, expect, test } from 'vitest'
 import type { CredentialView, State } from '../../api/types.gen'
 import firstRun from '../../fixtures/first-run.json'
 import populated from '../../fixtures/populated.json'
-import { needsInstall, progressOf, type StepId } from './steps'
+import { cycleAtOf, needsInstall, progressOf, type StepId } from './steps'
 
 const fresh = firstRun as unknown as State
 const full = populated as unknown as State
@@ -34,6 +34,20 @@ describe('without a credential', () => {
   test('there is no install step while the daemon runs', () => {
     expect(progressOf(fresh).installNeeded).toBe(false)
     expect(progressOf(fresh).steps.map((s) => s.id)).not.toContain('install')
+  })
+})
+
+describe('the cycle the page knows of', () => {
+  const zero = '0001-01-01T00:00:00Z'
+
+  test('is the later of the state and the last notice, and none while neither says', () => {
+    expect(cycleAtOf({ at: undefined }, undefined)).toBeUndefined()
+    expect(cycleAtOf({ at: zero }, zero)).toBe(zero)
+    expect(cycleAtOf({ at: undefined }, at)).toBe(at)
+    expect(cycleAtOf({ at }, undefined)).toBe(at)
+    expect(cycleAtOf({ at: zero }, at)).toBe(at)
+    expect(cycleAtOf({ at }, '2026-10-01T12:05:00Z')).toBe('2026-10-01T12:05:00Z')
+    expect(cycleAtOf({ at: '2026-10-01T12:10:00Z' }, at)).toBe('2026-10-01T12:10:00Z')
   })
 })
 
@@ -76,6 +90,7 @@ describe('a token that cannot be used', () => {
       report: bad.report && { ...bad.report, checks: [{ capability: 'dns.read', scope: 'example.com', scopeId: 'zone1', ok: false, unanswered: true }] },
     }
     expect(progressOf(withToken(unanswered)).token).toBe('unknown')
+    expect(marks(withToken(unanswered)).token).toBe('todo')
   })
 
   test('that was never checked is unknown', () => {
@@ -111,6 +126,25 @@ describe('a token that can be used', () => {
     const st = withToken(good, { zones: full.zones })
     expect(progressOf(st).zones).toBe('listed')
     expect(marks(st).zones).toBe('done')
+  })
+})
+
+describe('a token that was just added and is not in the state yet', () => {
+  const added: CredentialView = { ...good, id: 'c9d0e1f2', report: good.report && { ...good.report, deep: false, checkedAt: '2026-10-01T12:00:05Z' } }
+
+  test('counts as the token, and the zones wait for the cycle that sees it', () => {
+    const st: State = { ...fresh, at, finishedAt: at, problems: [] }
+    const p = progressOf(st, added)
+    expect(p.token).toBe('usable')
+    expect(p.writeUntried).toBe(true)
+    expect(p.zones).toBe('waiting')
+    expect(p.missing).toEqual(['route'])
+    expect(progressOf(st).zones).toBe('blocked')
+  })
+
+  test('is not counted twice once the state holds it', () => {
+    const st = withToken(added)
+    expect(progressOf(st, added)).toEqual(progressOf(st))
   })
 })
 

@@ -59,8 +59,12 @@ describe('what the parser would drop is no block', () => {
   })
 })
 
-test('a name goes in front of a zone', () => {
+test('a name goes in front of a zone, unless it ends in the zone already', () => {
   expect(hostOf('app', 'example.com')).toBe('app.example.com')
+  expect(hostOf('app.example.com', 'example.com')).toBe('app.example.com')
+  expect(hostOf(' App.Example.COM. ', 'example.com')).toBe('App.Example.COM')
+  expect(hostOf('myexample.com', 'example.com')).toBe('myexample.com.example.com')
+  expect(hostOf('a.b', 'example.com')).toBe('a.b.example.com')
   expect(hostOf(' app. ', 'example.com')).toBe('app.example.com')
   expect(hostOf('', 'example.com')).toBe('')
 })

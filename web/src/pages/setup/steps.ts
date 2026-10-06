@@ -50,6 +50,15 @@ export interface StepProps {
 // on the node can solve.
 const setupLine = 'pco setup'
 
+// cycleAtOf is when the last cycle the page knows of began. The state is read
+// again only when its digest changes, and the digest leaves the times out, so
+// the notices of the stream, which carry them, can be later than the state.
+export function cycleAtOf(state: Pick<State, 'at'> | undefined, noticed: string | undefined): string | undefined {
+  if (unset(noticed)) return state?.at
+  if (unset(state?.at)) return noticed
+  return Date.parse(noticed ?? '') > Date.parse(state?.at ?? '') ? noticed : state?.at
+}
+
 export const needsInstall = (st: Pick<State, 'problems' | 'writerVerdict'>): boolean =>
   st.problems.some((p) => p.includes(setupLine)) || st.writerVerdict === 'unknown'
 
@@ -85,10 +94,14 @@ const titles: Readonly<Record<StepId, string>> = {
 
 const zoneMarks: Readonly<Record<ZonesState, Mark>> = { blocked: 'blocked', waiting: 'wait', empty: 'problem', listed: 'done' }
 
-export function progressOf(st: State): Progress {
+// progressOf reads where the setup stands. pending is a credential the admin
+// has just added: the daemon's state holds it only after the cycle that the
+// add asks for, and until then it counts.
+export function progressOf(st: State, pending?: CredentialView): Progress {
   const installNeeded = needsInstall(st)
-  const token = tokenOf(st.credentials)
-  const usable = st.credentials.filter((c) => credentialState(c) === 'usable')
+  const credentials = pending && !st.credentials.some((c) => c.id === pending.id) ? [...st.credentials, pending] : st.credentials
+  const token = tokenOf(credentials)
+  const usable = credentials.filter((c) => credentialState(c) === 'usable')
   const writeUntried = usable.some((c) => c.report !== undefined && !c.report.deep)
   const zones = zonesOf(st, usable)
   const routes = st.routes.length
@@ -99,7 +112,8 @@ export function progressOf(st: State): Progress {
 
   const marks: Record<StepId, Mark> = {
     install: 'problem',
-    token: token === 'usable' ? 'done' : token === 'none' ? 'todo' : 'problem',
+    // a token Cloudflare did not answer for is checked again, not fixed
+    token: token === 'usable' ? 'done' : token === 'none' || token === 'unknown' ? 'todo' : 'problem',
     zones: zoneMarks[zones],
     reach: 'optional',
     route: routes > 0 ? 'done' : 'todo',

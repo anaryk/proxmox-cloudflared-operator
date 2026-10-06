@@ -66,7 +66,11 @@ function StoredToken({ view }: { view: CredentialView }) {
       )}
       {!usable && (
         <div className="deep-offer">
-          <p>Grant what the list asks for in Cloudflare, then check again: the token stays the same.</p>
+          {credentialState(shown) === 'unknown' ? (
+            <p>Cloudflare did not answer, or the token was never checked: nothing says a permission is missing. Check again.</p>
+          ) : (
+            <p>Grant what the list asks for in Cloudflare, then check again: the token stays the same.</p>
+          )}
           <Button disabled={busy !== undefined} disabledReason={refusal} onClick={() => void check(false)}>
             Check again
           </Button>
@@ -82,7 +86,7 @@ function StoredToken({ view }: { view: CredentialView }) {
 
 // StepToken says what the token needs, opens Cloudflare's form with that
 // chosen, and takes the token the admin made there.
-export function StepToken({ st, p, go }: StepProps) {
+export function StepToken({ st, p, go, onAdded }: StepProps & { onAdded: (v: CredentialView) => void }) {
   const node = useApp((s) => s.session?.node ?? '')
   const version = useApp((s) => s.session?.version)
   // The token added on this page keeps its own checklist, which would double
@@ -101,12 +105,14 @@ export function StepToken({ st, p, go }: StepProps) {
         {permissions.map((x) => (
           <li key={x.row}>
             <b>{x.row}</b>, {x.why}
+            {!x.link && ' (add this one yourself in the form)'}
           </li>
         ))}
       </ul>
       <p>
-        Under Account Resources include the account that holds your zones, and under Zone Resources the zones you publish in. These buttons open Cloudflare&apos;s form in
-        a new tab with the three rows and the name chosen; nothing is made until you press Create Token there.
+        Under Account Resources include the account that holds your zones, and under Zone Resources the zones you publish in. These buttons open Cloudflare&apos;s form in a new
+        tab with Zone &gt; DNS &gt; Edit, Zone &gt; Zone &gt; Read and the name chosen; Account &gt; Cloudflare Tunnel &gt; Edit you add there yourself. Nothing is made until you
+        press Create Token. The check after you paste the token names anything that is missing.
       </p>
       <div className="token-links">
         <a className="btn btn-primary" href={userTokenUrl(node)} target="_blank" rel="noopener noreferrer">
@@ -132,6 +138,7 @@ export function StepToken({ st, p, go }: StepProps) {
             onAdded={(v) => {
               setAdded(v.id)
               setMore(false)
+              onAdded(v)
             }}
           />
         </>
