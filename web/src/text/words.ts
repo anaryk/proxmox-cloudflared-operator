@@ -244,6 +244,33 @@ export function rotateCommand(tunnels: readonly TunnelView[], account: string): 
   return { command: command(`pco tunnel rotate --account ${arg.value}`) }
 }
 
+// The words of a command the doctor quotes: its subcommand and at most one
+// more, such as "guest approve", and the flags after them.
+const commandWord = /^[a-z][a-z-]{0,23}$/
+const commandFlag = /^--[a-z][a-z-]{0,31}$/
+const fixValueKinds = ['account id', 'owner', 'hostname']
+
+// fixCommand reads the fix of a finding of the doctor as a command for a root
+// shell. The fix is the daemon's text, which may quote what a guest or
+// Cloudflare wrote, so it is a command only when it is all one: "pco", one or
+// two words, then flags and values of a known form, each separated from the
+// next by one space and nothing else in it. Any other fix is advice in words,
+// and no command.
+export function fixCommand(fix: string): CommandWords {
+  const [pco, ...args] = fix.split(' ')
+  if (pco !== 'pco') return { refused: 'the fix is not a pco command' }
+  let at = 0
+  while (at < 2 && commandWord.test(args[at] ?? '')) at++
+  if (at === 0) return { refused: 'the fix names no subcommand of pco' }
+  for (const arg of args.slice(at)) {
+    if (commandFlag.test(arg)) continue
+    if (!fixValueKinds.some((kind) => commandArg(kind, arg).refused === '')) {
+      return { refused: 'an argument of the fix is neither a flag nor a value of a known form' }
+    }
+  }
+  return { command: command(fix) }
+}
+
 // The line reconcile.Waiting writes for what waits for Cloudflare's rate limit.
 function waitingLine(changes: number, reads: readonly string[]): string {
   const parts = [...reads]

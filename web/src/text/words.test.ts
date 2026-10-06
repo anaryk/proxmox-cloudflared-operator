@@ -11,6 +11,7 @@ import {
   connectorText,
   credentialState,
   egressText,
+  fixCommand,
   identityNow,
   inventoryText,
   isCommand,
@@ -126,6 +127,57 @@ describe('rotateCommand', () => {
 
   test('a tunnel whose existence is not known is no target', () => {
     expect(rotateCommand([{ ...tunnel, unknown: true }], tunnel.accountId).refused).toMatch(/^not found: /)
+  })
+})
+
+describe('fixCommand', () => {
+  const account = '0123456789abcdef0123456789abcdef'
+
+  test.each([
+    'pco guest approve qemu/101',
+    'pco guest revoke lxc/200',
+    `pco tunnel rotate --account ${account}`,
+    'pco setup --recover',
+    'pco egress on',
+    'pco apply',
+    'pco diagnose www.example.com',
+  ])('%s is a command', (fix) => {
+    const got = fixCommand(fix)
+    expect(isCommand(got.command)).toBe(true)
+    expect(got.command?.text).toBe(fix)
+  })
+
+  test.each([
+    ['advice that is no pco command', 'journalctl -u pco says why it does not come'],
+    ['advice that begins with a command', 'wait for the first cycle; journalctl -u pco says why it does not come'],
+    ['a command and prose', 'pco status lists the problems that say why'],
+    ['two commands in a sentence', 'pco status says why; pco egress show shows the table'],
+    ['a second command after the value', 'pco guest approve qemu/1; reboot'],
+    ['a second command after a flag', 'pco guest approve qemu/1 && reboot'],
+    ['a line break', 'pco guest approve qemu/1\nreboot'],
+    ['a substitution', 'pco guest approve $(reboot)'],
+    ['a backtick', 'pco guest approve `reboot`'],
+    ['a placeholder', 'pco credential add --label <label>'],
+    ['a flag with its value attached', `pco tunnel rotate --account=${account}`],
+    ['a value of no known form', 'pco credential check a1b2c3d4'],
+    ['an owner of a manual route', 'pco guest approve manual/shop'],
+    ['a value that is an option', 'pco guest approve -qemu/101'],
+    ['a flag that ends the options', 'pco guest approve -- qemu/101'],
+    ['a short flag', 'pco guest approve -f qemu/101'],
+    ['three words before the arguments', 'pco route manual add shop.example.com'],
+    ['a word after a value', 'pco guest approve qemu/101 now'],
+    ['no subcommand', 'pco'],
+    ['a flag in place of the subcommand', 'pco --version'],
+    ['a space too many', 'pco  guest approve qemu/101'],
+    ['a space at the end', 'pco guest approve qemu/101 '],
+    ['a space at the start', ' pco guest approve qemu/101'],
+    ['a tab', 'pco\tguest approve qemu/101'],
+    ['a prefix', 'sudo pco guest approve qemu/101'],
+    ['nothing', ''],
+  ])('%s is text: %s', (_name, fix) => {
+    const got = fixCommand(fix)
+    expect(got.command).toBeUndefined()
+    expect(got.refused).not.toBe('')
   })
 })
 
