@@ -24,3 +24,20 @@ func TestEverySettingHasARow(t *testing.T) {
 			"docs/settings.md has no row for the setting %q: add one to the table of its group", name)
 	}
 }
+
+// The other direction: a row of a group of settings whose setting is gone.
+func TestNoRowOfASettingTheCodeLost(t *testing.T) {
+	have := make(map[string]bool)
+	typ := reflect.TypeFor[store.Settings]()
+	for i := range typ.NumField() {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		have[name] = true
+	}
+	text := page(t, "settings.md")
+	for _, group := range []string{"Publishing", "Timing", "Identity", "Cloudflare"} {
+		for _, row := range spans(section(t, text, group)) {
+			require.True(t, have[row],
+				"docs/settings.md has a row %q under %q, and store.Settings has no such setting: take the row out", row, group)
+		}
+	}
+}

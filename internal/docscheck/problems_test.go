@@ -19,12 +19,21 @@ import (
 // for review to find, and for a row of its own.
 func problems(t *testing.T) string { return page(t, "problems.md") }
 
-// has says that one of the code spans of the first cells of a section is the
-// word, or begins with it and a space or a colon, as "credential <id>" does
-// the check "credential".
-func has(spans []string, word string) bool {
+// hasCheck says that one of the code spans of the first cells of a section is
+// the check, whole, or the check and then a placeholder: "credential <id>" is
+// the row of the check "credential", and "egress probe" is not that of
+// "egress".
+func hasCheck(spans []string, check string) bool {
 	return slices.ContainsFunc(spans, func(s string) bool {
-		return s == word || strings.HasPrefix(s, word+" ") || strings.HasPrefix(s, word+":")
+		return s == check || strings.HasPrefix(s, check+" <")
+	})
+}
+
+// hasReason says that a span is the held reason, whole, or the reason and a
+// colon and what the line adds to it, as "grace period: <time> left" does.
+func hasReason(spans []string, reason string) bool {
+	return slices.ContainsFunc(spans, func(s string) bool {
+		return s == reason || strings.HasPrefix(s, reason+":")
 	})
 }
 
@@ -43,7 +52,7 @@ func TestEveryDoctorCheckHasARow(t *testing.T) {
 	names := checkNames(t)
 	require.NotEmpty(t, names)
 	for _, name := range names {
-		require.True(t, has(rows, name),
+		require.True(t, hasCheck(rows, name),
 			"docs/problems.md has no row for the doctor check %q: add one to the table under \"Doctor checks\"", name)
 	}
 }
@@ -87,12 +96,15 @@ func TestEveryRouteStateHasARow(t *testing.T) {
 	}
 }
 
+// The reasons a change is held are the exported Held constants of reconcile
+// and the lowercase ones, which hold the words a plan shows.
 func TestEveryHeldReasonHasARow(t *testing.T) {
 	rows := spans(section(t, problems(t), "Why a change is held"))
 	reasons := stringConsts(t, "internal/reconcile", "Held", "")
-	require.NotEmpty(t, reasons)
+	maps.Copy(reasons, stringConsts(t, "internal/reconcile", "held", ""))
+	require.GreaterOrEqual(t, len(reasons), 14)
 	for _, reason := range slices.Sorted(maps.Values(reasons)) {
-		require.True(t, has(rows, reason),
+		require.True(t, hasReason(rows, reason),
 			"docs/problems.md has no row for the held reason %q: add one to the table under \"Why a change is held\"", reason)
 	}
 }
@@ -257,4 +269,29 @@ func leading(e ast.Expr, local map[string]string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// The other direction, for the words whose rows are one for one: a row of a
+// word that the code no longer has is taken out of the page.
+func TestNoRowOfAWordTheCodeLost(t *testing.T) {
+	text := problems(t)
+	for _, c := range []struct {
+		section string
+		words   map[string]string
+	}{
+		{"Event kinds", stringConsts(t, "internal/engine", "kind", "")},
+		{"What waits for a confirmation", stringConsts(t, "internal/engine", "Waiting", "")},
+		{"Writer verdicts", stringConsts(t, "internal/engine", "Verdict", "")},
+	} {
+		known := slices.Collect(maps.Values(c.words))
+		for _, row := range spans(section(t, text, c.section)) {
+			require.Contains(t, known, row,
+				"docs/problems.md has a row %q under %q, and the code has no such word: take the row out", row, c.section)
+		}
+	}
+	checks := checkNames(t)
+	for _, row := range spans(section(t, text, "Doctor checks")) {
+		require.True(t, slices.ContainsFunc(checks, func(check string) bool { return hasCheck([]string{row}, check) }),
+			"docs/problems.md has a row %q under \"Doctor checks\", and no doctor check has that name: take the row out", row)
+	}
 }
