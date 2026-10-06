@@ -338,10 +338,13 @@ jobs:
           fi
 
   # The draft is published only here, once the job sign, which the maintainer
-  # approved, passed its checks; nothing else publishes a release.
+  # approved, passed its checks; nothing else publishes a release. The jobs
+  # site and pages run for the latest release only, on what this job found.
   publish:
     needs: sign
     runs-on: ubuntu-latest
+    outputs:
+      latest: ${{ steps.latest.outputs.latest }}
     permissions:
       contents: write
     defaults:
@@ -356,14 +359,70 @@ jobs:
 
       # Only the highest final version is the latest release: a fix for an older
       # line, tagged after a newer version, must not become what the installer picks.
+      - name: Check whether this is the latest release
+        id: latest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if packaging/is-latest.sh "$TAG"; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          LATEST: ${{ steps.latest.outputs.latest }}
         run: |
           flags=(--draft=false --latest=false)
-          if packaging/is-latest.sh "$TAG"; then
+          if [[ $LATEST == true ]]; then
             flags=(--draft=false --latest)
           fi
           gh release edit "$TAG" "${flags[@]}"
+
+  # The documentation site of the latest release, built from its tag once the
+  # release is out. npm runs here, as in docs: with no secret, in no
+  # environment, and with nothing but read access. A release candidate and a
+  # fix for an older line leave the site as it is.
+  site:
+    needs: publish
+    if: needs.publish.outputs.latest == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: web/.nvmrc
+          package-manager-cache: false
+      - run: make docs docs-lint docs-test
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/.vitepress/dist
+
+  # The only job in the environment github-pages, and the only one with the
+  # permissions to deploy. It runs nothing of the repository: the pages are
+  # what the job site built. The group pages is shared with the workflow docs,
+  # so that two deploys never run together.
+  pages:
+    needs: [publish, site]
+    if: needs.publish.outputs.latest == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

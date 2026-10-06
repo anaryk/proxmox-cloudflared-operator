@@ -16,12 +16,21 @@
 # imported, as goreleaser fills them for a release; its goreleaser skips
 # them, while the one of the job build keeps them; and between the import
 # and the removal of the key no step runs a program of the repository. Only
-# the job publish publishes the release. The checks run on small workflows
-# with each rule broken first, so that they cannot pass by reading nothing.
+# the job publish publishes the release, and it tells whether the release is
+# the latest. The documentation site of the latest release is built by the
+# job site, which needs publish and runs only for the latest release: it holds
+# no secret and may only read the repository, since npm runs in it. The job
+# pages deploys what site built, runs only for the latest release too, and is
+# the only job besides sign in an environment, github-pages, with no
+# permission but pages and id-token and no step but the deployment. The checks
+# run on small workflows with each rule broken first, so that they cannot pass
+# by reading nothing.
 #
 # The step that reads the tag also runs, out of the workflow of the
 # repository, against tags a release may be pushed with: annotated or not,
-# with a line "Snapshot: <timestamp>" in the message or without.
+# with a line "Snapshot: <timestamp>" in the message or without. The step that
+# tells whether the release is the latest runs against the tags of a
+# repository with a newer release, a candidate and an older line.
 #
 # Run it with: bash packaging/release-workflow_test.sh
 
@@ -144,6 +153,120 @@ unprivileged() {
 	fi
 }
 
+# environment <job>: the name of the environment the job runs in, written as
+# environment: name or with a name: under it.
+environment() {
+	awk '
+		/^    environment: ./ { sub(/^    environment: /, ""); print; exit }
+		/^    environment:$/ { inside = 1; next }
+		inside && /^      name: / { sub(/^      name: /, ""); print; exit }
+		inside && !/^      / { exit }
+	' <<<"$1"
+}
+
+# latest_only <job>: whether the job runs only when the job publish found the
+# release to be the latest.
+latest_only() {
+	local want="needs[.]publish[.]outputs[.]latest == 'true'"
+	grep -Eq "^    if: ([$][{][{] *)?$want( *[}][}])?\$" <<<"$1"
+}
+
+# check_site <workflow>: prints each rule the jobs that publish the
+# documentation site break, one line each.
+check_site() {
+	local site pages publish id name uses cmd n=0 decided=0 flagged=0 deploys=0 other=0 built=0 uploaded=0
+	site=$(job "$1" site)
+	pages=$(job "$1" pages)
+	publish=$(job "$1" publish)
+
+	# The decision of the job publish, the one that marks the release as the
+	# latest, is what the other two jobs wait for.
+	if [[ -n $publish ]]; then
+		id=$(block "$publish" outputs | sed -n 's/^      latest: \${{ *steps\.\([a-z-]*\)\.outputs\.latest *}}$/\1/p')
+		if [[ -z $id ]]; then
+			echo "the job publish has no output latest taken from one of its steps"
+		else
+			while IFS='|' read -r name uses cmd; do
+				n=$((n + 1))
+				if step "$publish" "$n" | grep -Eq "^( {8}|      - )id: $id\$" &&
+					code "$(step "$publish" "$n")" | grep -q 'packaging/is-latest\.sh'; then
+					decided=$n
+				fi
+				if code "$(step "$publish" "$n")" | grep -Eq 'gh release edit' &&
+					step "$publish" "$n" | grep -Eq "steps\\.$id\\.outputs\\.latest"; then
+					flagged=$n
+				fi
+			done < <(steps "$publish")
+			if ((decided == 0)); then
+				echo "the output latest of the job publish is not decided by packaging/is-latest.sh"
+			fi
+			if ((flagged == 0)); then
+				echo "the job publish does not mark the release as the latest by the step $id"
+			fi
+		fi
+	fi
+
+	if [[ -z $site ]]; then
+		echo "there is no job site"
+	else
+		unprivileged "$site" site
+		if ! needs "$site" publish; then
+			echo "the job site does not need publish"
+		fi
+		if ! latest_only "$site"; then
+			echo "the job site does not run only for the latest release"
+		fi
+		while IFS='|' read -r name uses cmd; do
+			if [[ $cmd == "make docs docs-lint docs-test" ]]; then
+				built=1
+			fi
+			if [[ $uses == actions/upload-pages-artifact ]]; then
+				uploaded=1
+			fi
+		done < <(steps "$site")
+		if ((built == 0)); then
+			echo "the job site does not run make docs docs-lint docs-test"
+		fi
+		if ((uploaded == 0)); then
+			echo "the job site does not upload the pages"
+		fi
+	fi
+
+	if [[ -z $pages ]]; then
+		echo "there is no job pages"
+		return
+	fi
+	if ! needs "$pages" site; then
+		echo "the job pages does not need site"
+	fi
+	if ! needs "$pages" publish; then
+		echo "the job pages does not need publish"
+	fi
+	if ! latest_only "$pages"; then
+		echo "the job pages does not run only for the latest release"
+	fi
+	if [[ $(environment "$pages") != github-pages ]]; then
+		echo "the job pages does not run in the environment github-pages"
+	fi
+	if [[ $(block "$pages" permissions | sort) != "      id-token: write
+      pages: write" ]]; then
+		echo "the job pages has permissions other than pages: write and id-token: write"
+	fi
+	if grep -q 'secrets\.' <<<"$pages"; then
+		echo "the job pages uses a secret"
+	fi
+	while IFS='|' read -r name uses cmd; do
+		if [[ $uses == actions/deploy-pages ]]; then
+			deploys=1
+		else
+			other=1
+		fi
+	done < <(steps "$pages")
+	if ((deploys == 0 || other == 1)); then
+		echo "the job pages runs a step other than actions/deploy-pages"
+	fi
+}
+
 # check <workflow> <goreleaser config>: prints each rule the workflow breaks,
 # one line each.
 check() {
@@ -207,9 +330,11 @@ check() {
 		fi
 	fi
 
-	# One approval per release: the one of the environment of the key.
+	# One approval per release: the one of the environment of the key. The job
+	# pages deploys to the environment of the site, which holds no key and
+	# waits for no one; check_site looks at it.
 	for other in $(job_names "$1"); do
-		[[ $other != sign ]] || continue
+		[[ $other != sign && $other != pages ]] || continue
 		if grep -Eq '^    environment:' <<<"$(job "$1" "$other")"; then
 			echo "the job $other runs in an environment"
 		fi
@@ -231,6 +356,8 @@ check() {
 			echo "the job $other publishes the release"
 		fi
 	done
+
+	check_site "$1"
 
 	if [[ -z $sign ]]; then
 		echo "there is no job sign"
@@ -434,6 +561,35 @@ build_step() {
 	esac
 }
 
+# publish_step <key>: one step of the job publish of a made-up workflow.
+# shellcheck disable=SC2016
+publish_step() {
+	case $1 in
+	latest) printf '      - name: Check whether this is the latest release\n        id: latest\n        run: packaging/is-latest.sh "$TAG"\n' ;;
+	undecided) printf '      - name: Check whether this is the latest release\n        id: latest\n        run: "true"\n' ;;
+	publish) printf '      - name: Publish the release\n        env:\n          LATEST: ${{ steps.latest.outputs.latest }}\n        run: gh release edit v0.1.0 --draft=false\n' ;;
+	blind) printf '      - name: Publish the release\n        run: gh release edit v0.1.0 --draft=false\n' ;;
+	esac
+}
+
+# site_step <key>: one step of the job site of a made-up workflow.
+site_step() {
+	case $1 in
+	checkout) printf '      - uses: actions/checkout@0123 # v4\n' ;;
+	node) printf '      - uses: actions/setup-node@0123 # v7\n        with:\n          node-version-file: web/.nvmrc\n' ;;
+	make) printf '      - run: make docs docs-lint docs-test\n' ;;
+	upload) printf '      - uses: actions/upload-pages-artifact@0123 # v5\n        with:\n          path: site/.vitepress/dist\n' ;;
+	esac
+}
+
+# pages_step <key>: one step of the job pages of a made-up workflow.
+pages_step() {
+	case $1 in
+	deploy) printf '      - id: deploy\n        uses: actions/deploy-pages@0123 # v5\n' ;;
+	checkout) printf '      - uses: actions/checkout@0123 # v4\n' ;;
+	esac
+}
+
 UI_HEAD='    permissions:
       contents: read'
 BUILD_HEAD='    needs: ui
@@ -442,11 +598,34 @@ BUILD_HEAD='    needs: ui
 RELEASE_ENV='    environment: release'
 SIGN_HEAD="    needs: [ui, build]
 $RELEASE_ENV"
-PUBLISH_HEAD='    needs: sign'
+# shellcheck disable=SC2016
+PUBLISH_OUTPUT='    outputs:
+      latest: ${{ steps.latest.outputs.latest }}'
+PUBLISH_HEAD="    needs: sign
+$PUBLISH_OUTPUT"
+LATEST_ONLY="    if: needs.publish.outputs.latest == 'true'"
+SITE_HEAD="    needs: publish
+$LATEST_ONLY
+    permissions:
+      contents: read"
+# shellcheck disable=SC2016
+PAGES_ENV='    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}'
+PAGES_HEAD="    needs: [publish, site]
+$LATEST_ONLY
+    permissions:
+      pages: write
+      id-token: write
+$PAGES_ENV"
 STEPS='tag checkout download templates go test tools hooks key goreleaser forget files delete'
 BUILD_STEPS='tag checkout read goreleaser templates upload'
 
 # workflow <file> <ui head> <sign head> <sign steps> [build head] [publish head] [build steps]
+#
+# The jobs after sign are as they should be, unless the call sets SITE or
+# PAGES to the head of the job, PUBLISH_STEPS, SITE_STEPS or PAGES_STEPS to
+# the keys of its steps, or NO_SITE or NO_PAGES to drop it.
 workflow() {
 	local s
 	{
@@ -465,7 +644,21 @@ workflow() {
 			sign_step "$s"
 		done
 		printf '\n  publish:\n    runs-on: ubuntu-latest\n%s\n    steps:\n' "${6-$PUBLISH_HEAD}"
-		printf '      - run: gh release edit v0.1.0 --draft=false\n'
+		for s in ${PUBLISH_STEPS-latest publish}; do
+			publish_step "$s"
+		done
+		if [[ -z ${NO_SITE:-} ]]; then
+			printf '\n  site:\n    runs-on: ubuntu-latest\n%s\n    steps:\n' "${SITE-$SITE_HEAD}"
+			for s in ${SITE_STEPS-checkout node make upload}; do
+				site_step "$s"
+			done
+		fi
+		if [[ -z ${NO_PAGES:-} ]]; then
+			printf '\n  pages:\n    runs-on: ubuntu-latest\n%s\n    steps:\n' "${PAGES-$PAGES_HEAD}"
+			for s in ${PAGES_STEPS-deploy}; do
+				pages_step "$s"
+			done
+		fi
 	} >"$1"
 }
 
@@ -589,12 +782,188 @@ expect fail 'the step that reads the tag without its id' "$f" "the step Read the
 workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" "$PUBLISH_HEAD" 'tag checkout read input upload'
 expect fail 'the templates from the input only' "$f" "the job build builds the templates from another snapshot than the one it read"
 
-workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" '    needs: sign
-    environment: publish'
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" "$PUBLISH_HEAD
+    environment: publish"
 expect fail 'a second approval before publishing' "$f" "the job publish runs in an environment"
 
-workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" '    needs: build'
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" "    needs: build
+$PUBLISH_OUTPUT"
 expect fail 'publish before the signature' "$f" "the job publish does not need sign"
+
+# The documentation site of the latest release: the job publish says whether
+# the release is the latest, site builds it with no more than read access and
+# pages deploys it, each only for the latest release.
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" "$PUBLISH_HEAD
+    environment: github-pages"
+expect fail 'publish in the environment of the site' "$f" "the job publish runs in an environment"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD
+    environment: github-pages"
+expect fail 'the build job in the environment of the site' "$f" "the job build runs in an environment"
+
+PAGES='    needs: [publish, site]
+'"$LATEST_ONLY"'
+    permissions:
+      pages: write
+      id-token: write
+    environment: github-pages' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect pass 'the environment of the site on one line' "$f"
+
+SITE="$SITE_HEAD
+    environment: github-pages" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job in the environment of the site' "$f" "the job site runs in an environment"
+
+SITE="$SITE_HEAD
+    environment: release" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job in the environment of the release' "$f" "the job site runs in an environment"
+
+SITE="$SITE_HEAD
+    env:
+      KEY: \${{ secrets.PCO_RELEASE_GPG_KEY }}" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a secret in the site job' "$f" "the job site uses a secret"
+
+SITE="    needs: publish
+$LATEST_ONLY
+    permissions:
+      contents: write" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job may write' "$f" "the job site has permissions other than contents: read"
+
+SITE="    needs: publish
+$LATEST_ONLY
+    permissions:
+      contents: read
+      pages: write" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job may write the pages' "$f" "the job site has permissions other than contents: read"
+
+SITE="    needs: publish
+$LATEST_ONLY" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job without permissions of its own' "$f" "the job site has permissions other than contents: read"
+
+SITE='    needs: publish
+    permissions:
+      contents: read' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job for every release' "$f" "the job site does not run only for the latest release"
+
+SITE="    needs: publish
+    if: needs.publish.outputs.latest != 'true'
+    permissions:
+      contents: read" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job for a release that is not the latest' "$f" "the job site does not run only for the latest release"
+
+SITE="    needs: sign
+$LATEST_ONLY
+    permissions:
+      contents: read" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the site job that does not wait for publish' "$f" "the job site does not need publish"
+
+SITE_STEPS='checkout node upload' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a site that is not built' "$f" "the job site does not run make docs docs-lint docs-test"
+
+SITE_STEPS='checkout node make' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a site that is not uploaded' "$f" "the job site does not upload the pages"
+
+NO_SITE=1 workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'no site job' "$f" "there is no job site"
+
+NO_PAGES=1 workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'no pages job' "$f" "there is no job pages"
+
+PAGES="    needs: [publish, site]
+$LATEST_ONLY
+    permissions:
+      pages: write
+      id-token: write" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages outside the environment of the site' "$f" "the job pages does not run in the environment github-pages"
+
+PAGES="    needs: [publish, site]
+$LATEST_ONLY
+    permissions:
+      pages: write
+      id-token: write
+    environment: release" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages in the environment of the release' "$f" "the job pages does not run in the environment github-pages"
+
+PAGES="    needs: [publish, site]
+$LATEST_ONLY
+    permissions:
+      pages: write
+      id-token: write
+    environment: github-pages-preview" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages in an environment that only starts like the one of the site' "$f" "the job pages does not run in the environment github-pages"
+
+PAGES="    needs: [publish, site]
+$LATEST_ONLY
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+$PAGES_ENV" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages that may write the repository' "$f" "the job pages has permissions other than pages: write and id-token: write"
+
+PAGES="    needs: [publish, site]
+$LATEST_ONLY
+    permissions:
+      pages: write
+$PAGES_ENV" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages without the token to prove itself' "$f" "the job pages has permissions other than pages: write and id-token: write"
+
+PAGES="    needs: [publish, site]
+$LATEST_ONLY
+    permissions:
+      id-token: write
+$PAGES_ENV" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages that may not write the pages' "$f" "the job pages has permissions other than pages: write and id-token: write"
+
+PAGES="    needs: [publish, site]
+$LATEST_ONLY
+$PAGES_ENV" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages with the permissions of the workflow' "$f" "the job pages has permissions other than pages: write and id-token: write"
+
+PAGES="$PAGES_HEAD
+    env:
+      KEY: \${{ secrets.PCO_RELEASE_GPG_KEY }}" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a secret in the pages job' "$f" "the job pages uses a secret"
+
+PAGES="    needs: [publish, site]
+    permissions:
+      pages: write
+      id-token: write
+$PAGES_ENV" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages for every release' "$f" "the job pages does not run only for the latest release"
+
+PAGES="    needs: publish
+$LATEST_ONLY
+    permissions:
+      pages: write
+      id-token: write
+$PAGES_ENV" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages that does not wait for the site' "$f" "the job pages does not need site"
+
+PAGES="    needs: site
+$LATEST_ONLY
+    permissions:
+      pages: write
+      id-token: write
+$PAGES_ENV" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages that does not wait for publish' "$f" "the job pages does not need publish"
+
+PAGES_STEPS='checkout deploy' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages that runs a step of the repository' "$f" "the job pages runs a step other than actions/deploy-pages"
+
+PAGES_STEPS='checkout' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'pages that deploys nothing' "$f" "the job pages runs a step other than actions/deploy-pages"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" '    needs: sign'
+expect fail 'publish that gives no output' "$f" "the job publish has no output latest taken from one of its steps"
+
+PUBLISH_STEPS='undecided publish' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'an output that is not decided by is-latest.sh' "$f" "the output latest of the job publish is not decided by packaging/is-latest.sh"
+
+PUBLISH_STEPS='publish' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'an output taken from a step that is not there' "$f" "the output latest of the job publish is not decided by packaging/is-latest.sh"
+
+PUBLISH_STEPS='latest blind' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a release marked by another decision than the one the site waits for' "$f" "the job publish does not mark the release as the latest by the step latest"
 
 CHECKS=$((CHECKS + 1))
 if [[ $(hooks "$GORELEASER" | grep -c .) -lt 2 ]]; then
@@ -736,6 +1105,57 @@ CASE='an input that is not a snapshot'
 read_tag v0.1.0 latest
 assert "fails" rc_is 1
 assert "naming it" contains "$LOG" "'latest'"
+
+# The step of the job publish that tells whether the release is the latest,
+# run as the runner runs it, in a repository with a release, a candidate and
+# a fix for an older line. What it writes is what site and pages wait for.
+LATEST=$ROOT/latest.sh
+script "$(job "$WORKFLOW" publish)" "Check whether this is the latest release" >"$LATEST"
+REPO=$ROOT/releases
+git init -q "$REPO"
+mkdir "$REPO/packaging"
+cp "$HERE/is-latest.sh" "$REPO/packaging/is-latest.sh"
+gitc commit -q --allow-empty -m one
+for tag in v1.0.0 v1.0.1 v1.1.0 v1.2.0-rc.1; do
+	gitc tag "$tag"
+done
+
+# is_latest <tag>: leaves RC, OUT and LOG as read_tag does.
+is_latest() {
+	: >"$ROOT/output"
+	RC=0
+	(cd "$REPO" && TAG=$1 GITHUB_OUTPUT=$ROOT/output \
+		bash --noprofile --norc -eo pipefail "$LATEST") >"$ROOT/log" 2>&1 || RC=$?
+	OUT=$(<"$ROOT/output")
+	LOG=$(<"$ROOT/log")
+}
+
+CASE='the step that tells whether the release is the latest'
+assert "is in the job publish" test -s "$LATEST"
+
+CASE='the highest final version'
+is_latest v1.1.0
+assert "passes" rc_is 0
+assert "is the latest" is "$OUT" "latest=true"
+
+CASE='a fix for an older line'
+is_latest v1.0.1
+assert "passes" rc_is 0
+assert "is not the latest" is "$OUT" "latest=false"
+
+CASE='a release candidate of a newer version'
+is_latest v1.2.0-rc.1
+assert "passes" rc_is 0
+assert "is not the latest" is "$OUT" "latest=false"
+
+CASE='a newer version than the one before'
+gitc tag v1.2.0
+is_latest v1.2.0
+assert "passes" rc_is 0
+assert "is the latest" is "$OUT" "latest=true"
+is_latest v1.1.0
+assert "passes for the one before" rc_is 0
+assert "which is not the latest any more" is "$OUT" "latest=false"
 
 printf '%d checks, %d failed\n' "$CHECKS" "$FAILS"
 if [[ $FAILS != 0 ]]; then
