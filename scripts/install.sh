@@ -478,13 +478,18 @@ check_profile_variables() {
 		fi
 		return 0
 	fi
-	if [[ -n ${PCO_RESUME:-} ]]; then
-		if [[ $UNINSTALL == 1 ]]; then
+	if [[ $UNINSTALL == 1 ]]; then
+		if [[ -n ${PCO_RESUME:-} ]]; then
 			die "PCO_RESUME finishes an install, it does not go with --uninstall"
 		fi
+		if [[ -n ${PCO_TEMPLATE:-} ]]; then
+			die "PCO_TEMPLATE is for an install, it does not go with --uninstall"
+		fi
+	fi
+	if [[ -n ${PCO_RESUME:-} ]]; then
 		check_resume_file "$PCO_RESUME"
 	fi
-	if [[ -n ${PCO_TEMPLATE:-} && $UNINSTALL != 1 ]]; then
+	if [[ -n ${PCO_TEMPLATE:-} ]]; then
 		check_template_file "$PCO_TEMPLATE"
 	fi
 	if [[ ${PCO_SKIP_SETUP:-} != 1 ]]; then
@@ -743,6 +748,11 @@ run_installer() {
 		die "no terminal to ask the installer's questions on: run it from a terminal, or add --yes"
 		;;
 	esac
+	# Bash's status for a file it cannot run, such as one on a noexec mount; the
+	# installer itself exits with 0, 1 or 2.
+	if [[ $status == 126 ]]; then
+		printf 'install.sh: could not run pco from /tmp (exit status 126), as happens when /tmp is mounted noexec; the script keeps its files in /tmp whatever TMPDIR says, so run it again with /tmp mounted exec: mount -o remount,exec /tmp\n' >&2
+	fi
 	if [[ $status != 0 ]]; then
 		exit "$status"
 	fi

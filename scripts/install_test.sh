@@ -129,6 +129,9 @@ dpkg-deb)
 	if [ ! -f "$STUB_CASE/cfg/dpkg-deb-no-pco" ]; then
 		mkdir -p "$last/usr/bin"
 		cp "$0" "$last/usr/bin/pco"
+		# Executable by its mode, but not by what it holds: what running a file
+		# from a noexec mount gives is the same exit status.
+		if [ -f "$STUB_CASE/cfg/dpkg-deb-noexec" ]; then printf '\000\000\000\000' >"$last/usr/bin/pco"; fi
 	fi
 	;;
 gpgv)
@@ -1875,6 +1878,22 @@ case_appliance_install() {
 	assert_calls pco 0
 	assert_tmp_gone
 
+	new_case "a pco that cannot be run, as from a /tmp mounted noexec, is explained"
+	set_cfg dpkg-deb-noexec 1
+	run_install --appliance --yes
+	assert_rc 126
+	assert_stderr_has "install.sh: could not run pco from /tmp (exit status 126), as happens when /tmp is mounted noexec"
+	assert_stderr_has "whatever TMPDIR says"
+	assert_stderr_has "mount -o remount,exec /tmp"
+	assert_tmp_gone
+
+	new_case "an uninstaller that cannot be run is explained too"
+	set_cfg dpkg-deb-noexec 1
+	run_install --appliance --uninstall --vmid 120 --yes
+	assert_rc 126
+	assert_stderr_has "could not run pco from /tmp (exit status 126)"
+	assert_tmp_gone
+
 	new_case "the placeholder key refuses the appliance too"
 	SCRIPT_UNDER_TEST=$PLACEHOLDER_SCRIPT
 	run_install --appliance --yes
@@ -2022,12 +2041,12 @@ case_appliance_template() {
 	assert_rc 0
 	assert_log_lacks "--template"
 
-	new_case "--uninstall has no use for PCO_TEMPLATE and does not check it"
+	new_case "PCO_TEMPLATE does not go with --uninstall"
 	use_template
 	run_install --appliance --uninstall --yes --vmid 120
-	assert_rc 0
-	assert_calls sha256sum 1
-	assert_log_lacks "--template"
+	assert_fail "PCO_TEMPLATE is for an install, it does not go with --uninstall"
+	assert_calls curl 0
+	assert_nothing_unpacked
 }
 
 case_appliance_failure() {
