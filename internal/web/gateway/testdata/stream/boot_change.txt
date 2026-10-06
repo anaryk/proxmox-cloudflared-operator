@@ -1,0 +1,23 @@
+event: hello
+data: {"boot":"9f2c4e1a0b7d3c55","version":"v1.3.0","seq":12,"digest":"5e0c1f7a92b4d3e8","pollInterval":"10s"}
+
+event: upstream
+data: {"up":true,"since":"2026-10-01T12:00:00Z"}
+
+id: 9f2c4e1a0b7d3c55:13
+event: event
+data: {"seq":13,"boot":"9f2c4e1a0b7d3c55","at":"2026-10-01T12:00:00Z","level":"warn","kind":"problem","subject":"","message":"a problem"}
+
+event: upstream
+data: {"up":false,"since":"2026-10-01T12:01:30Z"}
+
+event: upstream
+data: {"up":true,"since":"2026-10-01T12:01:31Z"}
+
+event: reset
+data: {"reason":"boot changed"}
+
+id: 1b2c3d4e5f607182:1
+event: event
+data: {"seq":1,"boot":"1b2c3d4e5f607182","at":"2026-10-01T12:00:00Z","level":"info","kind":"writer","subject":"","message":"this node writes"}
+

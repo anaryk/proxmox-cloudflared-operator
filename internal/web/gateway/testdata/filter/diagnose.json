@@ -1,0 +1,6 @@
+[
+  {"name": "route", "level": "ok", "detail": "qemu/101 (web-1) holds it; state active"},
+  {"name": "zone", "level": "ok", "detail": "zone example.com is active"},
+  {"name": "dns", "level": "fail", "detail": "no record points at the tunnel"},
+  {"name": "ingress", "level": "warn", "detail": "skipped", "skipped": true}
+]

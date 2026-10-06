@@ -1,0 +1,29 @@
+{
+  "node": "pve1",
+  "digest": "aa00bb11cc22dd33",
+  "mode": "enforce",
+  "complete": true,
+  "routes": [
+    {"hostname": "api.example.com", "owner": "manual/api", "state": "active"},
+    {"hostname": "status.example.com", "owner": "manual/status", "state": "active"}
+  ],
+  "issues": [],
+  "tunnels": null,
+  "connectors": null,
+  "credentials": null,
+  "zones": null,
+  "actions": [
+    {"kind": "create-record", "credentialId": "cred1", "target": "status.example.com", "detail": "in zone example.com", "destructive": false, "applied": true}
+  ],
+  "conflicts": [
+    {"zone": "example.com", "name": "api.example.com", "type": "A", "content": "192.0.2.10"}
+  ],
+  "lost": ["status.example.com"],
+  "problems": null,
+  "writerVerdict": "",
+  "waiting": [],
+  "unapproved": [],
+  "segments": null,
+  "gateTagged": 0,
+  "rogueConnectors": null
+}

@@ -1,0 +1,5 @@
+{
+  "conflicts": [
+    {"zone": "example.com", "name": "api.example.com", "type": "A", "content": "192.0.2.10"}
+  ]
+}

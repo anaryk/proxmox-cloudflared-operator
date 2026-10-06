@@ -1,0 +1,23 @@
+[
+  {
+    "hostname": "api.example.com",
+    "holder": "manual/api",
+    "since": "2026-10-01T12:00:00Z",
+    "state": "serving",
+    "waiting": []
+  },
+  {
+    "hostname": "www.example.com",
+    "holder": "qemu/101",
+    "guest": {"kind": "qemu", "vmid": 101, "name": "web-1"},
+    "since": "2026-10-01T12:00:00Z",
+    "state": "conflict",
+    "waiting": [
+      {
+        "owner": "lxc/201",
+        "guest": {"kind": "lxc", "vmid": 201, "name": "new-1"},
+        "since": "2026-10-01T12:00:00Z"
+      }
+    ]
+  }
+]

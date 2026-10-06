@@ -1,0 +1,8 @@
+{
+  "hostname": "www.example.com",
+  "target": "10.0.0.11:8080",
+  "shared": 1,
+  "samples": [
+    {"at": "2026-10-01T12:00:00Z", "flowsPerSec": 2.4}
+  ]
+}

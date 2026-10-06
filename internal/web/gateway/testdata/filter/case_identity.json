@@ -1,0 +1,12 @@
+{
+  "identity": {
+    "vmid": 9250,
+    "node": "pve1",
+    "ok": false,
+    "why": "lxc/9295 in pool pco carries a MAC of lxc/9250: a copy of the appliance runs",
+    "copy": false,
+    "tenants": ["qemu/140"],
+    "exposed": ["alice@pve"],
+    "checkedAt": "2026-10-01T12:00:00Z"
+  }
+}

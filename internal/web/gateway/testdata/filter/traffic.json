@@ -1,0 +1,22 @@
+{
+  "at": "2026-10-01T12:00:00Z",
+  "interval": "5s",
+  "tunnels": [
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "node": "pve1",
+      "configVersion": 0,
+      "haConnections": 0,
+      "edges": null,
+      "rttMs": null,
+      "stale": false,
+      "samples": []
+    }
+  ],
+  "routes": [
+    {"hostname": "status.example.com", "owner": "manual/status", "target": "10.0.5.20:9000", "flowsPerSec": 0.5, "stale": false},
+    {"hostname": "web.example.com", "owner": "qemu/101", "target": "10.0.0.11:8080", "flowsPerSec": 1, "shared": 1, "stale": false},
+    {"hostname": "www.example.com", "owner": "qemu/101", "target": "10.0.0.11:8080", "flowsPerSec": 1, "shared": 1, "stale": false}
+  ],
+  "routesTotal": 3
+}

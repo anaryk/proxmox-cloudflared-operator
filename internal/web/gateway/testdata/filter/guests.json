@@ -1,0 +1,4 @@
+[
+  {"ref": "qemu/101", "name": "web-1", "node": "pve1", "running": true, "tagged": true, "approval": "approved", "routes": 2, "issues": 0},
+  {"ref": "lxc/201", "name": "new-1", "node": "pve1", "running": false, "tagged": true, "approval": "waiting", "routes": 1, "issues": 0}
+]

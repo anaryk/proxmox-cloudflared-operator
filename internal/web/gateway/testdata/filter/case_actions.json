@@ -1,0 +1,6 @@
+{
+  "actions": [
+    {"kind": "put-config", "credentialId": "cred1", "accountId": "acc1", "target": "pco-abc123", "detail": "in account acc1: 3 rules replace version 2", "destructive": false, "applied": true},
+    {"kind": "create-record", "credentialId": "cred1", "target": "www.example.com", "detail": "in zone example.com", "destructive": false, "applied": true}
+  ]
+}

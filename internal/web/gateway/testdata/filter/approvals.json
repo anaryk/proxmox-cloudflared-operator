@@ -1,0 +1,9 @@
+[
+  {
+    "owner": "qemu/101",
+    "guest": {"kind": "qemu", "vmid": 101, "name": "web-1"},
+    "identity": "uuid:101",
+    "current": "uuid:101",
+    "matches": true
+  }
+]

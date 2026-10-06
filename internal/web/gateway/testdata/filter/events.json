@@ -1,0 +1,7 @@
+[
+  {"seq": 4, "boot": "9f2c4e1a0b7d3c55", "at": "2026-10-01T12:00:00Z", "level": "info", "kind": "route", "subject": "www.example.com", "message": "qemu/101: active", "route": "www.example.com", "guest": "qemu/101"},
+  {"seq": 7, "boot": "9f2c4e1a0b7d3c55", "at": "2026-10-01T12:00:00Z", "level": "info", "kind": "action", "subject": "www.example.com", "message": "create-record in zone example.com", "route": "www.example.com"},
+  {"seq": 9, "boot": "9f2c4e1a0b7d3c55", "at": "2026-10-01T12:00:00Z", "level": "info", "kind": "admin", "subject": "lxc/201", "message": "lxc/201 (new-1) is approved in identity uuid:201", "actor": "alice@pve (ticket)"},
+  {"seq": 10, "boot": "9f2c4e1a0b7d3c55", "at": "2026-10-01T12:00:00Z", "level": "warn", "kind": "problem", "subject": "", "message": "a problem"},
+  {"seq": 11, "boot": "9f2c4e1a0b7d3c55", "at": "2026-10-01T12:00:00Z", "level": "info", "kind": "rollout", "subject": "pco-abc123", "message": "version 3 runs on 1 connector", "tunnel": "pco-abc123", "account": "acc1"}
+]

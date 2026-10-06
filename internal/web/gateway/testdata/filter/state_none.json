@@ -1,0 +1,129 @@
+{
+  "at": "2026-10-01T12:00:00Z",
+  "finishedAt": "2026-10-01T12:00:02Z",
+  "node": "pve1",
+  "digest": "5e0c1f7a92b4d3e8",
+  "mode": "enforce",
+  "complete": true,
+  "routes": [],
+  "issues": [
+    {"msg": "an issue of the settings"}
+  ],
+  "tunnels": [
+    {
+      "accountId": "acc1",
+      "credentialId": "cred1",
+      "name": "pco-abc123",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "version": 3,
+      "exists": true,
+      "verified": true,
+      "unknown": false,
+      "unchecked": false,
+      "rollout": {"version": 3, "connectors": 1, "confirmedAt": "2026-10-01T12:00:01Z"}
+    },
+    {"accountId": "acc2", "credentialId": "cred1", "name": "pco-abc123", "version": 0, "exists": false, "verified": false, "unknown": true, "unchecked": false},
+    {"accountId": "acc3", "credentialId": "cred1", "name": "pco-abc123", "id": "00000000-0000-4000-8000-000000000003", "version": 0, "exists": true, "verified": false, "unknown": false, "held": "account frozen: zone example.info is no longer listed by credential cred1", "unchecked": false},
+    {"accountId": "acc4", "credentialId": "cred2", "name": "pco-abc123", "id": "00000000-0000-4000-8000-000000000004", "version": 2, "exists": true, "verified": false, "unknown": false, "held": "not checked in the last cycle: no writer identity; run pco setup", "unchecked": true}
+  ],
+  "connectors": [
+    {"tunnelId": "00000000-0000-4000-8000-000000000001", "active": true, "ready": true, "connections": 4, "connectorId": "6b1f0e4c-29a4-4c43-9d2c-0f3a8c1b7d11", "metricsAddr": "127.0.0.1:20300", "install": "abc123"}
+  ],
+  "credentials": [
+    {
+      "id": "cred1",
+      "label": "main",
+      "kind": "scoped",
+      "checked": true,
+      "report": {
+        "token": {"id": "token-1", "status": "active", "expiresOn": "2027-01-01T00:00:00Z"},
+        "accounts": [
+          {"id": "acc1", "name": "Main"}
+        ],
+        "zones": [
+          {"id": "zone1", "name": "example.com", "status": "active", "accountId": "acc1"},
+          {"id": "zone2", "name": "example.org", "status": "active", "accountId": "acc1"}
+        ],
+        "checks": [
+          {"capability": "token", "ok": true},
+          {"capability": "dns.read", "scope": "example.com", "scopeId": "zone1", "ok": false, "detail": "grant Zone \u003e DNS \u003e Read on example.com"}
+        ],
+        "excluded": [
+          {"zone": "example.org", "zoneId": "zone2", "reason": "no DNS read", "detail": "grant Zone \u003e DNS \u003e Edit on example.org"}
+        ],
+        "deep": true,
+        "usable": true,
+        "leftovers": ["_pco-probe-x.example.com"],
+        "checkedAt": "2026-10-01T12:00:00Z"
+      }
+    },
+    {"id": "cred2", "label": "spare", "kind": "scoped", "checked": false}
+  ],
+  "zones": [
+    {
+      "name": "example.com",
+      "id": "zone1",
+      "status": "active",
+      "accountId": "acc1",
+      "state": "served",
+      "credentials": ["cred1", "cred2"],
+      "servedBy": "cred1",
+      "pinned": "cred1",
+      "stale": [],
+      "excluded": []
+    },
+    {
+      "name": "example.info",
+      "id": "zone3",
+      "status": "active",
+      "accountId": "acc3",
+      "state": "frozen",
+      "credentials": ["cred1"],
+      "stale": ["cred1"],
+      "excluded": [],
+      "frozenWhy": "zone example.info is no longer listed by credential cred1"
+    },
+    {
+      "name": "example.net",
+      "id": "zone4",
+      "status": "active",
+      "accountId": "acc2",
+      "state": "not served",
+      "credentials": ["cred1", "cred2"],
+      "pinned": "cred2",
+      "stale": [],
+      "excluded": ["cred2"]
+    },
+    {
+      "name": "example.org",
+      "id": "zone2",
+      "status": "active",
+      "accountId": "acc1",
+      "state": "left out",
+      "credentials": ["cred1"],
+      "stale": [],
+      "excluded": ["cred1"]
+    }
+  ],
+  "actions": [
+    {"kind": "put-config", "credentialId": "cred1", "accountId": "acc1", "target": "pco-abc123", "detail": "in account acc1: 3 rules replace version 2", "destructive": false, "applied": true}
+  ],
+  "conflicts": [],
+  "lost": [],
+  "problems": ["a problem"],
+  "writerVerdict": "ok",
+  "hold": "no writer identity; run pco setup",
+  "profile": "host",
+  "waiting": [],
+  "unapproved": [],
+  "segments": [
+    {"bridge": "vmbr1", "acknowledged": true, "acknowledgedAt": "2026-10-01T12:00:00Z", "routes": 2},
+    {"bridge": "vmbr1", "vlan": 20, "acknowledged": false, "routes": 1}
+  ],
+  "egress": {"state": "off", "since": "2026-10-01T11:00:00Z"},
+  "admission": "approve",
+  "gateTagged": 2,
+  "rogueConnectors": [
+    {"tunnel": "pco-abc123", "tunnelId": "00000000-0000-4000-8000-000000000001", "accountId": "acc1", "id": "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807", "originIp": "198.51.100.7", "version": "2026.8.0", "since": "2026-10-01T11:59:00Z"}
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "node": "pve1",
+  "digest": "5150ab0cd0e0f001",
+  "mode": "enforce",
+  "complete": true,
+  "routes": [
+    {
+      "hostname": "www.example.com",
+      "owner": "qemu/101",
+      "state": "active",
+      "guest": {"kind": "qemu", "vmid": 101, "name": "vm-101"}
+    }
+  ],
+  "issues": [],
+  "tunnels": null,
+  "connectors": null,
+  "credentials": null,
+  "zones": null,
+  "actions": [],
+  "conflicts": [],
+  "lost": [],
+  "problems": null,
+  "writerVerdict": "",
+  "waiting": [],
+  "unapproved": [],
+  "segments": null,
+  "gateTagged": 0,
+  "rogueConnectors": null
+}
