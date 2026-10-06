@@ -1,0 +1,806 @@
+{
+  "at": "2026-10-01T12:00:00Z",
+  "finishedAt": "2026-10-01T12:00:02Z",
+  "node": "pve1",
+  "digest": "6a12ad68f96bfd87",
+  "mode": "enforce",
+  "complete": true,
+  "routes": [
+    {
+      "hostname": "*.store.example.com",
+      "owner": "lxc/210",
+      "state": "rejected",
+      "reason": "a wildcard is published only when an allowHosts pattern names it: add \"*.store.example.com\" to allowHosts",
+      "zone": "example.com",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 210,
+        "name": "store"
+      }
+    },
+    {
+      "hostname": "app.example.com",
+      "owner": "qemu/101",
+      "state": "active",
+      "level": "port",
+      "service": "http://10.0.0.11:3000",
+      "zone": "example.com",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 101,
+        "name": "web-1"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.11",
+          "source": "static",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "app.example.com",
+        "service": "http://10.0.0.11:3000"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "vlan": 20,
+        "port": "tap101i0",
+        "mac": "bc:24:11:5e:7a:01",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "db-admin.example.com",
+      "owner": "qemu/106",
+      "state": "withdrawn",
+      "reason": "identity check failed",
+      "zone": "example.com",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 106,
+        "name": "db-admin"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.14",
+          "source": "static",
+          "ok": false,
+          "reason": "identity check failed"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "db-admin.example.com",
+        "service": "http_status:503"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "tap106i0",
+        "mac": "bc:24:11:00:00:6a",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "git.example.com",
+      "owner": "qemu/110",
+      "state": "active",
+      "level": "port",
+      "service": "https://10.0.0.30:3000",
+      "zone": "example.com",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 110,
+        "name": "gitea"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.30",
+          "source": "reported",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "git.example.com",
+        "service": "https://10.0.0.30:3000",
+        "originServerName": "git.example.com"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "tap110i0",
+        "mac": "bc:24:11:00:00:6e",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "grafana.example.com",
+      "owner": "lxc/205",
+      "state": "active",
+      "level": "port",
+      "service": "http://10.0.0.20:3000",
+      "zone": "example.com",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 205,
+        "name": "grafana"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.20",
+          "source": "static",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "grafana.example.com",
+        "service": "http://10.0.0.20:3000"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "veth205i0",
+        "mac": "bc:24:11:00:00:cd",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "media.example.io",
+      "owner": "qemu/130",
+      "state": "no-zone",
+      "reason": "no Cloudflare zone for this hostname in any credential",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 130,
+        "name": "jellyfin"
+      }
+    },
+    {
+      "hostname": "monitor.example.com",
+      "owner": "qemu/105",
+      "state": "unreachable",
+      "reason": "target is not answering",
+      "zone": "example.com",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 105,
+        "name": "monitor"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.15",
+          "source": "static",
+          "ok": false,
+          "reason": "target is not answering"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "monitor.example.com",
+        "service": "http_status:503"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "tap105i0",
+        "mac": "bc:24:11:00:00:69",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "notes.example.info",
+      "owner": "lxc/221",
+      "state": "frozen",
+      "level": "port",
+      "reason": "account frozen: zone example.info is no longer listed by credential cred1",
+      "zone": "example.info",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 221,
+        "name": "notes"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.20.51",
+          "source": "static",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "b111e10396903a33c8edf38dbcd9eb8f",
+      "rule": {
+        "hostname": "notes.example.info",
+        "service": "http://10.0.20.51:8080"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "veth221i0",
+        "mac": "bc:24:11:00:00:dd",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "old.example.com",
+      "owner": "qemu/101",
+      "state": "held",
+      "reason": "no longer claimed by qemu/101 since 2026-10-01T12:01:00Z; released after the grace period",
+      "zone": "example.com",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 101,
+        "name": "web-1"
+      },
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "old.example.com",
+        "service": "http_status:503"
+      }
+    },
+    {
+      "hostname": "status.example.com",
+      "owner": "manual/status",
+      "state": "active",
+      "service": "http://10.0.5.20:9000",
+      "zone": "example.com",
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "status.example.com",
+        "service": "http://10.0.5.20:9000"
+      }
+    },
+    {
+      "hostname": "store.example.com",
+      "owner": "lxc/210",
+      "state": "active",
+      "level": "port",
+      "service": "http://10.0.0.40:80",
+      "zone": "example.com",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 210,
+        "name": "store"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.40",
+          "source": "static",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "store.example.com",
+        "service": "http://10.0.0.40:80"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "veth210i0",
+        "mac": "bc:24:11:00:00:d2",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "vpn.example.com",
+      "owner": "lxc/230",
+      "state": "active",
+      "level": "port",
+      "service": "http://10.0.0.60:51821",
+      "zone": "example.com",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 230,
+        "name": "wg-ui"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.60",
+          "source": "static",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "vpn.example.com",
+        "service": "http://10.0.0.60:51821"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "veth230i0",
+        "mac": "bc:24:11:00:00:e6",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "wiki.example.org",
+      "owner": "lxc/220",
+      "state": "no-zone",
+      "reason": "credential main can list example.org but not read its DNS: grant Zone \u003e DNS \u003e Edit to serve it; pco credential check cred1 picks the grant up at once",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 220,
+        "name": "wiki"
+      }
+    },
+    {
+      "hostname": "www.example.com",
+      "owner": "qemu/101",
+      "state": "active",
+      "level": "port",
+      "service": "http://10.0.0.11:8080",
+      "zone": "example.com",
+      "warnings": [
+        "a warning"
+      ],
+      "guest": {
+        "kind": "qemu",
+        "vmid": 101,
+        "name": "web-1"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.11",
+          "source": "static",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "www.example.com",
+        "service": "http://10.0.0.11:8080",
+        "httpHostHeader": "intranet"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "vlan": 20,
+        "port": "tap101i0",
+        "mac": "bc:24:11:5e:7a:01",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    },
+    {
+      "hostname": "www.example.com",
+      "owner": "qemu/102",
+      "state": "conflict",
+      "reason": "hostname is held by qemu/101",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 102,
+        "name": "web-2"
+      }
+    },
+    {
+      "hostname": "www.store.example.com",
+      "owner": "lxc/210",
+      "state": "active",
+      "level": "port",
+      "service": "http://10.0.0.40:80",
+      "zone": "example.com",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 210,
+        "name": "store"
+      },
+      "candidates": [
+        {
+          "addr": "10.0.0.40",
+          "source": "static",
+          "ok": true,
+          "level": "port"
+        }
+      ],
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "rule": {
+        "hostname": "www.store.example.com",
+        "service": "http://10.0.0.40:80"
+      },
+      "path": {
+        "node": "pve1",
+        "bridge": "vmbr0",
+        "port": "veth210i0",
+        "mac": "bc:24:11:00:00:d2",
+        "verifiedAt": "2026-10-01T12:00:00Z",
+        "since": "2026-09-30T08:00:00Z"
+      }
+    }
+  ],
+  "issues": [
+    {
+      "guest": {
+        "kind": "qemu",
+        "vmid": 103
+      },
+      "line": 2,
+      "col": 5,
+      "msg": "a broken entry"
+    },
+    {
+      "msg": "an issue of the settings"
+    }
+  ],
+  "tunnels": [
+    {
+      "accountId": "515f906d4177206527f022185221970a",
+      "credentialId": "cred1",
+      "name": "pco-abc123",
+      "version": 0,
+      "exists": false,
+      "verified": false,
+      "unknown": true,
+      "unchecked": false
+    },
+    {
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "credentialId": "cred1",
+      "name": "pco-abc123",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "version": 3,
+      "exists": true,
+      "verified": true,
+      "unknown": false,
+      "unchecked": false,
+      "rollout": {
+        "version": 3,
+        "connectors": 1,
+        "confirmedAt": "2026-10-01T12:00:01Z"
+      }
+    },
+    {
+      "accountId": "b111e10396903a33c8edf38dbcd9eb8f",
+      "credentialId": "cred1",
+      "name": "pco-abc123",
+      "id": "00000000-0000-4000-8000-000000000003",
+      "version": 0,
+      "exists": true,
+      "verified": false,
+      "unknown": false,
+      "held": "account frozen: zone example.info is no longer listed by credential cred1",
+      "unchecked": false
+    },
+    {
+      "accountId": "b27979bd0d751fe5ef7139c3f73cbd9e",
+      "credentialId": "cred2",
+      "name": "pco-abc123",
+      "id": "00000000-0000-4000-8000-000000000004",
+      "version": 2,
+      "exists": true,
+      "verified": true,
+      "unknown": false,
+      "unchecked": false
+    }
+  ],
+  "connectors": [
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "active": true,
+      "ready": true,
+      "connections": 4,
+      "connectorId": "6b1f0e4c-29a4-4c43-9d2c-0f3a8c1b7d11",
+      "metricsAddr": "127.0.0.1:20300",
+      "install": "abc123"
+    },
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000003",
+      "active": true,
+      "ready": false,
+      "connections": 0,
+      "metricsAddr": "127.0.0.1:20303",
+      "install": "abc123",
+      "tokenRefused": true
+    },
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000004",
+      "active": true,
+      "ready": false,
+      "connections": 0,
+      "metricsAddr": "127.0.0.1:20304",
+      "install": "abc123",
+      "metricsPortHeld": true
+    }
+  ],
+  "credentials": [
+    {
+      "id": "cred1",
+      "label": "main",
+      "kind": "scoped",
+      "checked": true,
+      "report": {
+        "token": {
+          "id": "token-1",
+          "status": "active",
+          "expiresOn": "2027-01-01T00:00:00Z"
+        },
+        "accounts": [
+          {
+            "id": "6ab3311bfe7c52d93098e661558a14c2",
+            "name": "Main"
+          }
+        ],
+        "zones": [
+          {
+            "id": "zone1",
+            "name": "example.com",
+            "status": "active",
+            "accountId": "6ab3311bfe7c52d93098e661558a14c2"
+          },
+          {
+            "id": "zone2",
+            "name": "example.org",
+            "status": "active",
+            "accountId": "6ab3311bfe7c52d93098e661558a14c2"
+          }
+        ],
+        "checks": [
+          {
+            "capability": "token",
+            "ok": true
+          },
+          {
+            "capability": "dns.read",
+            "scope": "example.com",
+            "scopeId": "zone1",
+            "ok": false,
+            "detail": "grant Zone \u003e DNS \u003e Read on example.com"
+          }
+        ],
+        "excluded": [
+          {
+            "zone": "example.org",
+            "zoneId": "zone2",
+            "reason": "no DNS read",
+            "detail": "grant Zone \u003e DNS \u003e Edit on example.org"
+          }
+        ],
+        "deep": true,
+        "usable": true,
+        "leftovers": [
+          "_pco-probe-x.example.com"
+        ],
+        "checkedAt": "2026-10-01T12:00:00Z"
+      }
+    },
+    {
+      "id": "cred2",
+      "label": "spare",
+      "kind": "scoped",
+      "checked": false
+    }
+  ],
+  "zones": [
+    {
+      "name": "example.com",
+      "id": "zone1",
+      "status": "active",
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "state": "served",
+      "credentials": [
+        "cred1",
+        "cred2"
+      ],
+      "servedBy": "cred1",
+      "pinned": "cred1",
+      "stale": [],
+      "excluded": []
+    },
+    {
+      "name": "example.info",
+      "id": "zone3",
+      "status": "active",
+      "accountId": "b111e10396903a33c8edf38dbcd9eb8f",
+      "state": "frozen",
+      "credentials": [
+        "cred1"
+      ],
+      "stale": [
+        "cred1"
+      ],
+      "excluded": [],
+      "frozenWhy": "zone example.info is no longer listed by credential cred1"
+    },
+    {
+      "name": "example.net",
+      "id": "zone4",
+      "status": "active",
+      "accountId": "515f906d4177206527f022185221970a",
+      "state": "not served",
+      "credentials": [
+        "cred1",
+        "cred2"
+      ],
+      "pinned": "cred2",
+      "stale": [],
+      "excluded": [
+        "cred2"
+      ]
+    },
+    {
+      "name": "example.org",
+      "id": "zone2",
+      "status": "active",
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "state": "left out",
+      "credentials": [
+        "cred1"
+      ],
+      "stale": [],
+      "excluded": [
+        "cred1"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "kind": "put-config",
+      "credentialId": "cred1",
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "target": "pco-abc123",
+      "detail": "in account 6ab3311bfe7c52d93098e661558a14c2: 3 rules replace version 2",
+      "destructive": false,
+      "applied": true
+    },
+    {
+      "kind": "create-record",
+      "credentialId": "cred1",
+      "target": "www.example.com",
+      "detail": "in zone example.com",
+      "destructive": false,
+      "applied": true
+    },
+    {
+      "kind": "delete-record",
+      "credentialId": "cred1",
+      "target": "old.example.com",
+      "detail": "in zone example.com",
+      "destructive": true,
+      "applied": false,
+      "held": "grace period: 1m0s left"
+    }
+  ],
+  "conflicts": [
+    {
+      "zone": "example.com",
+      "name": "api.example.com",
+      "type": "A",
+      "content": "192.0.2.10"
+    }
+  ],
+  "lost": [
+    "lost.example.com"
+  ],
+  "problems": [
+    "a problem",
+    "tunnel pco-abc123 in account 6ab3311bfe7c52d93098e661558a14c2 is served by connector 0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807 from 198.51.100.7 (cloudflared 2026.8.0), which pco does not run on this node: it takes a share of the requests to every hostname of the tunnel; unless you run it, rotate the tunnel secret with pco tunnel rotate --account 6ab3311bfe7c52d93098e661558a14c2",
+    "tunnel pco-abc123 in account 6ab3311bfe7c52d93098e661558a14c2 is served by connector 4f8a2c19-7e3d-4b6a-9c05-1d2e3f405162 from 203.0.113.24 (cloudflared 2025.11.1), which pco does not run on this node: it takes a share of the requests to every hostname of the tunnel; unless you run it, rotate the tunnel secret with pco tunnel rotate --account 6ab3311bfe7c52d93098e661558a14c2",
+    "tunnel pco-abc123 in account b111e10396903a33c8edf38dbcd9eb8f: Cloudflare refuses the token its connector runs with; pco reads the token again when that starts and every five minutes, and pco tunnel rotate gives the tunnel a new secret",
+    "tunnel pco-abc123 in account b27979bd0d751fe5ef7139c3f73cbd9e: metrics port 20304 is held by another process, which keeps its connector from starting; the connector gets another port in the first cycle that keeps it running"
+  ],
+  "writerVerdict": "ok",
+  "profile": "host",
+  "waiting": [
+    {
+      "kind": "dns-removals",
+      "subject": "",
+      "detail": "mass delete guard: 7 of 9 records are being removed (1 in zones that could not be listed); confirm to proceed",
+      "items": [
+        "a.example.com",
+        "b.example.com"
+      ]
+    },
+    {
+      "kind": "stale-zone",
+      "subject": "example.info",
+      "detail": "zone example.info is no longer listed by credential cred1; a confirmation takes it as gone, and its hostnames are taken off the tunnel",
+      "items": []
+    },
+    {
+      "kind": "unseen-tunnel",
+      "subject": "pco-abc123",
+      "detail": "tunnel pco-abc123 (00000000-0000-4000-8000-000000000002) in account 515f906d4177206527f022185221970a is not visible through any credential; a confirmation takes it as gone and removes its connector",
+      "items": []
+    },
+    {
+      "kind": "vanished-guests",
+      "subject": "",
+      "detail": "2 guests that hold a hostname are no longer listed by Proxmox; a confirmation takes them as removed, and their hostnames are released after the grace period",
+      "items": [
+        "qemu/104 db-1",
+        "lxc/200"
+      ]
+    }
+  ],
+  "offer": "9298960fb3d77f2d",
+  "unapproved": [
+    {
+      "kind": "lxc",
+      "vmid": 201,
+      "name": "new-1",
+      "identity": "uuid:201",
+      "hostnames": [
+        "new.example.com"
+      ],
+      "why": [
+        "admission mode approve"
+      ]
+    },
+    {
+      "kind": "lxc",
+      "vmid": 202,
+      "name": "dns-1",
+      "identity": "uuid:202",
+      "hostnames": [
+        "dns.example.com"
+      ],
+      "why": [
+        "delegated: alice@pve holds VM.Config.Network",
+        "address 10.0.0.1 is the gateway of node pve1"
+      ],
+      "macs": [
+        "bc:24:11:00:02:02"
+      ],
+      "addresses": [
+        "10.0.0.1"
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "bridge": "vmbr1",
+      "acknowledged": true,
+      "acknowledgedAt": "2026-10-01T12:00:00Z",
+      "routes": 2
+    },
+    {
+      "bridge": "vmbr1",
+      "vlan": 20,
+      "acknowledged": false,
+      "routes": 1
+    }
+  ],
+  "egress": {
+    "state": "on"
+  },
+  "admission": "approve",
+  "gateTagged": 2,
+  "rogueConnectors": [
+    {
+      "tunnel": "pco-abc123",
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "id": "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
+      "originIp": "198.51.100.7",
+      "version": "2026.8.0",
+      "since": "2026-10-01T11:59:00Z"
+    },
+    {
+      "tunnel": "pco-abc123",
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "accountId": "6ab3311bfe7c52d93098e661558a14c2",
+      "id": "4f8a2c19-7e3d-4b6a-9c05-1d2e3f405162",
+      "originIp": "203.0.113.24",
+      "version": "2025.11.1",
+      "since": "2026-10-01T08:59:00Z"
+    }
+  ]
+}

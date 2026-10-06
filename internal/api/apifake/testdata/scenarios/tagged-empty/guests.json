@@ -1,0 +1,57 @@
+[
+  {
+    "ref": "qemu/101",
+    "name": "vm-101",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:101",
+    "approval": "waiting",
+    "routes": 0,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/102",
+    "name": "vm-102",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:102",
+    "approval": "waiting",
+    "routes": 0,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/103",
+    "name": "vm-103",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:103",
+    "approval": "waiting",
+    "routes": 0,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/104",
+    "name": "vm-104",
+    "node": "pve1",
+    "running": true,
+    "tagged": false,
+    "identity": "uuid:104",
+    "approval": "not-needed",
+    "routes": 0,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/105",
+    "name": "vm-105",
+    "node": "pve1",
+    "running": false,
+    "tagged": false,
+    "identity": "uuid:105",
+    "approval": "not-needed",
+    "routes": 0,
+    "issues": 0
+  }
+]

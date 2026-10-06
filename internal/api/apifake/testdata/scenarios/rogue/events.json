@@ -1,0 +1,122 @@
+[
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:54:00Z",
+    "level": "info",
+    "kind": "rollout",
+    "subject": "pco-abc123",
+    "message": "configuration version 3 runs on 1 connector in account 6ab3311bfe7c52d93098e661558a14c2",
+    "tunnel": "pco-abc123",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:55:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "monitor.example.com",
+    "message": "qemu/105: unreachable (target is not answering)",
+    "route": "monitor.example.com",
+    "guest": "qemu/105",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:56:00Z",
+    "level": "warn",
+    "kind": "conflict",
+    "subject": "api.example.com",
+    "message": "A 192.0.2.10 in zone example.com is not ours; the hostname is not published",
+    "route": "api.example.com"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:57:00Z",
+    "level": "info",
+    "kind": "admin",
+    "subject": "qemu/110",
+    "message": "qemu/110 (gitea) is approved in identity uuid:110",
+    "actor": "alice@pve (ticket)"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:58:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "db-admin.example.com",
+    "message": "qemu/106: withdrawn (identity check failed)",
+    "route": "db-admin.example.com",
+    "guest": "qemu/106",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:59:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "*.store.example.com",
+    "message": "lxc/210: rejected (a wildcard is published only when an allowHosts pattern names it: add \"*.store.example.com\" to allowHosts)",
+    "route": "*.store.example.com",
+    "guest": "lxc/210"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "www.example.com",
+    "message": "qemu/101: unreachable",
+    "route": "www.example.com",
+    "guest": "qemu/101",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "rollout",
+    "subject": "pco-abc123",
+    "message": "configuration version 3 runs on 2 connectors in account 6ab3311bfe7c52d93098e661558a14c2",
+    "tunnel": "pco-abc123",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "action",
+    "subject": "pco-abc123",
+    "message": "put-config in account 6ab3311bfe7c52d93098e661558a14c2: 3 rules replace version 2",
+    "tunnel": "pco-abc123",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "admin",
+    "subject": "www.example.com",
+    "message": "adoption requested for the next run",
+    "actor": "alice@pve (ticket)"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "error",
+    "kind": "connector",
+    "subject": "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807",
+    "message": "connector 0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807 from 198.51.100.7 (cloudflared 2026.8.0) serves tunnel pco-abc123 in account 6ab3311bfe7c52d93098e661558a14c2 and is not one pco runs on this node",
+    "tunnel": "pco-abc123",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "error",
+    "kind": "connector",
+    "subject": "4f8a2c19-7e3d-4b6a-9c05-1d2e3f405162",
+    "message": "connector 4f8a2c19-7e3d-4b6a-9c05-1d2e3f405162 from 203.0.113.24 (cloudflared 2025.11.1) serves tunnel pco-abc123 in account 6ab3311bfe7c52d93098e661558a14c2 and is not one pco runs on this node",
+    "tunnel": "pco-abc123",
+    "account": "6ab3311bfe7c52d93098e661558a14c2"
+  }
+]

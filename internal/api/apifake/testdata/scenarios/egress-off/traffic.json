@@ -1,0 +1,115 @@
+{
+  "at": "0001-01-01T00:00:00Z",
+  "interval": "5s",
+  "tunnels": [
+    {
+      "tunnelId": "00000000-0000-4000-8000-000000000001",
+      "node": "pve1",
+      "cloudflared": "2026.8.0",
+      "configVersion": 3,
+      "haConnections": 4,
+      "edges": [
+        {
+          "connection": 0,
+          "location": "fra08"
+        },
+        {
+          "connection": 1,
+          "location": "fra08"
+        },
+        {
+          "connection": 2,
+          "location": "prg01"
+        },
+        {
+          "connection": 3,
+          "location": "prg01"
+        }
+      ],
+      "rttMs": [
+        11.8,
+        12.4,
+        17.9,
+        18.3
+      ],
+      "stale": false,
+      "samples": [
+        {
+          "at": "2026-10-01T11:59:07Z",
+          "rps": 36.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:12Z",
+          "rps": 37.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:17Z",
+          "rps": 38.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:22Z",
+          "rps": 39.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:27Z",
+          "rps": 36.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:32Z",
+          "rps": 37.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:37Z",
+          "rps": 38.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:42Z",
+          "rps": 39.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:47Z",
+          "rps": 36.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:52Z",
+          "rps": 37.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T11:59:57Z",
+          "rps": 38.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        },
+        {
+          "at": "2026-10-01T12:00:02Z",
+          "rps": 39.7,
+          "errorsPerSec": 0.1,
+          "concurrent": 3
+        }
+      ]
+    }
+  ],
+  "routes": [],
+  "routesTotal": 0,
+  "routesWhy": "the egress filter is off: pco has no per-guest counters"
+}

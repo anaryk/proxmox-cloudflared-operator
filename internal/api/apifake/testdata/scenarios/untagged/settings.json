@@ -1,0 +1,43 @@
+{
+  "rev": 7,
+  "settings": {
+    "gateTag": "cf-tunnel",
+    "pollInterval": "10s",
+    "grace": "1m0s",
+    "manualCIDRs": [
+      "10.0.5.0/24"
+    ],
+    "admission": "tag",
+    "observeOnly": false,
+    "identityMinimum": "port",
+    "maxHostnamesPerGuest": 32,
+    "reverifyInterval": "1m0s",
+    "cloudflareBudget": 1000
+  },
+  "readAtStart": [
+    "cloudflareBudget",
+    "gateTag",
+    "trustStatic",
+    "trustedCIDRs"
+  ],
+  "limits": {
+    "cloudflareBudget": {
+      "min": 100,
+      "max": 1150
+    },
+    "grace": {
+      "min": "30s"
+    },
+    "maxHostnamesPerGuest": {
+      "min": 1
+    },
+    "pollInterval": {
+      "min": "5s"
+    },
+    "reverifyInterval": {
+      "min": "10s",
+      "max": "5m0s"
+    }
+  },
+  "notes": []
+}

@@ -1,0 +1,110 @@
+[
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:54:00Z",
+    "level": "info",
+    "kind": "rollout",
+    "subject": "pco-abc123",
+    "message": "configuration version 3 runs on 1 connector in account acc1",
+    "tunnel": "pco-abc123",
+    "account": "acc1"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:55:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "monitor.example.com",
+    "message": "qemu/105: unreachable (target is not answering)",
+    "route": "monitor.example.com",
+    "guest": "qemu/105",
+    "account": "acc1"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:56:00Z",
+    "level": "warn",
+    "kind": "conflict",
+    "subject": "api.example.com",
+    "message": "A 192.0.2.10 in zone example.com is not ours; the hostname is not published",
+    "route": "api.example.com"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:57:00Z",
+    "level": "info",
+    "kind": "admin",
+    "subject": "qemu/110",
+    "message": "qemu/110 (gitea) is approved in identity uuid:110",
+    "actor": "alice@pve (ticket)"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:58:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "db-admin.example.com",
+    "message": "qemu/106: withdrawn (identity check failed)",
+    "route": "db-admin.example.com",
+    "guest": "qemu/106",
+    "account": "acc1"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:59:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "*.store.example.com",
+    "message": "lxc/210: rejected (a wildcard is published only when an allowHosts pattern names it: add \"*.store.example.com\" to allowHosts)",
+    "route": "*.store.example.com",
+    "guest": "lxc/210"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "warn",
+    "kind": "route",
+    "subject": "www.example.com",
+    "message": "qemu/101: unreachable",
+    "route": "www.example.com",
+    "guest": "qemu/101",
+    "account": "acc1"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "rollout",
+    "subject": "pco-abc123",
+    "message": "configuration version 3 runs on 2 connectors in account acc1",
+    "tunnel": "pco-abc123",
+    "account": "acc1"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "action",
+    "subject": "pco-abc123",
+    "message": "put-config in account acc1: 3 rules replace version 2",
+    "tunnel": "pco-abc123",
+    "account": "acc1"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T12:00:00Z",
+    "level": "info",
+    "kind": "admin",
+    "subject": "www.example.com",
+    "message": "adoption requested for the next run",
+    "actor": "alice@pve (ticket)"
+  },
+  {
+    "seq": 0,
+    "at": "2026-10-01T11:00:00Z",
+    "level": "warn",
+    "kind": "egress",
+    "subject": "",
+    "message": "the egress filter is switched off by the admin; the connectors may reach any address"
+  }
+]

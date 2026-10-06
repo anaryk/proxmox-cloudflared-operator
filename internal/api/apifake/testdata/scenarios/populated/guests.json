@@ -1,0 +1,164 @@
+[
+  {
+    "ref": "qemu/101",
+    "name": "web-1",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:4c4c4544-0042-3510-8051-b4c04f4e3432",
+    "approval": "approved",
+    "routes": 3,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/102",
+    "name": "web-2",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:102",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/103",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:103",
+    "approval": "approved",
+    "routes": 0,
+    "issues": 1
+  },
+  {
+    "ref": "qemu/105",
+    "name": "monitor",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:105",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/106",
+    "name": "db-admin",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:106",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/110",
+    "name": "gitea",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:110",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "qemu/130",
+    "name": "jellyfin",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:130",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/200",
+    "node": "pve1",
+    "running": false,
+    "tagged": false,
+    "approval": "not-needed",
+    "routes": 0,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/201",
+    "name": "new-1",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:201",
+    "approval": "waiting",
+    "routes": 0,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/202",
+    "name": "dns-1",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:202",
+    "approval": "waiting",
+    "routes": 0,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/205",
+    "name": "grafana",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:205",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/210",
+    "name": "store",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:210",
+    "approval": "approved",
+    "routes": 3,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/220",
+    "name": "wiki",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:220",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/221",
+    "name": "notes",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:221",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  },
+  {
+    "ref": "lxc/230",
+    "name": "wg-ui",
+    "node": "pve1",
+    "running": true,
+    "tagged": true,
+    "identity": "uuid:230",
+    "approval": "approved",
+    "routes": 1,
+    "issues": 0
+  }
+]

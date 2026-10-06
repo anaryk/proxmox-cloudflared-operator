@@ -1,0 +1,106 @@
+{
+  "at": "2026-10-01T12:00:00Z",
+  "finishedAt": "2026-10-01T12:00:02Z",
+  "node": "pve1",
+  "digest": "efaa86a741ba9daf",
+  "mode": "enforce",
+  "complete": true,
+  "routes": [],
+  "issues": [],
+  "tunnels": [],
+  "connectors": [],
+  "credentials": [
+    {
+      "id": "cred1",
+      "label": "main",
+      "kind": "scoped",
+      "checked": true,
+      "report": {
+        "token": {
+          "id": "token-1",
+          "status": "active",
+          "expiresOn": "2027-01-01T00:00:00Z"
+        },
+        "accounts": [
+          {
+            "id": "acc1",
+            "name": "Main"
+          }
+        ],
+        "zones": [
+          {
+            "id": "zone1",
+            "name": "example.com",
+            "status": "active",
+            "accountId": "acc1"
+          },
+          {
+            "id": "zone2",
+            "name": "example.org",
+            "status": "active",
+            "accountId": "acc1"
+          }
+        ],
+        "checks": [
+          {
+            "capability": "token",
+            "ok": true
+          },
+          {
+            "capability": "dns.read",
+            "scope": "example.com",
+            "scopeId": "zone1",
+            "ok": false,
+            "detail": "grant Zone \u003e DNS \u003e Read on example.com"
+          }
+        ],
+        "excluded": [
+          {
+            "zone": "example.org",
+            "zoneId": "zone2",
+            "reason": "no DNS read",
+            "detail": "grant Zone \u003e DNS \u003e Edit on example.org"
+          }
+        ],
+        "deep": true,
+        "usable": true,
+        "leftovers": [
+          "_pco-probe-x.example.com"
+        ],
+        "checkedAt": "2026-10-01T12:00:00Z"
+      }
+    }
+  ],
+  "zones": [
+    {
+      "name": "example.com",
+      "id": "zone1",
+      "status": "active",
+      "accountId": "acc1",
+      "state": "served",
+      "credentials": [
+        "cred1",
+        "cred2"
+      ],
+      "servedBy": "cred1",
+      "pinned": "cred1",
+      "stale": [],
+      "excluded": []
+    }
+  ],
+  "actions": [],
+  "conflicts": [],
+  "lost": [],
+  "problems": [],
+  "writerVerdict": "ok",
+  "profile": "host",
+  "waiting": [],
+  "unapproved": [],
+  "segments": [],
+  "egress": {
+    "state": "on"
+  },
+  "admission": "approve",
+  "gateTagged": 3,
+  "rogueConnectors": []
+}

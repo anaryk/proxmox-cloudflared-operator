@@ -1,0 +1,16 @@
+{
+  "lxc/201": "```cf-tunnel\nnew.example.com -\u003e :8080\n```\n",
+  "lxc/202": "```cf-tunnel\ndns.example.com -\u003e :8080\n```\n",
+  "lxc/205": "```cf-tunnel\ngrafana.example.com -\u003e http://:3000\n```\n",
+  "lxc/210": "```cf-tunnel\n*.store.example.com -\u003e :8080\nstore.example.com -\u003e http://:80\nwww.store.example.com -\u003e http://:80\n```\n",
+  "lxc/220": "```cf-tunnel\nwiki.example.org -\u003e :8080\n```\n",
+  "lxc/221": "```cf-tunnel\nnotes.example.info -\u003e http://:8080\n```\n",
+  "lxc/230": "```cf-tunnel\nvpn.example.com -\u003e http://:51821\n```\n",
+  "qemu/101": "```cf-tunnel\napp.example.com -\u003e http://:3000\nold.example.com -\u003e :8080\nwww.example.com -\u003e http://:8080\n```\n",
+  "qemu/102": "```cf-tunnel\nwww.example.com -\u003e :8080\n```\n",
+  "qemu/103": "Build server of the team.\nAsk ops before a change.\n\n```cf-tunnel\napp.example.com -\u003e :3000\n```\n",
+  "qemu/105": "```cf-tunnel\nmonitor.example.com -\u003e :8080\n```\n",
+  "qemu/106": "```cf-tunnel\ndb-admin.example.com -\u003e :8080\n```\n",
+  "qemu/110": "```cf-tunnel\ngit.example.com -\u003e https://:3000\n```\n",
+  "qemu/130": "```cf-tunnel\nmedia.example.io -\u003e :8080\n```\n"
+}
