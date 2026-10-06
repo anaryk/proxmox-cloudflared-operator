@@ -105,10 +105,11 @@ test('a map whose code does not load says so, and the page asks for a reload', a
   test.skip(phone({ viewport }), 'below 720 px the Overview shows the chain list instead of the map')
   // As after an update of pco: the chunk this page was built with is gone.
   // The browser says so, and React logs what the part caught, which
-  // Firefox gives as an object.
+  // Firefox gives without its message.
   watch.allow(/^console error on \S+: Failed to load resource: the server responded with a status of 404\b/)
   watch.allow(/^console error on \S+: .*(dynamically imported module|Importing a module script failed)/i)
-  watch.allow(/^console error on \S+: JSHandle@object$/)
+  watch.allow(/^console error on \S+: NotLoaded: a part of the page did not load\b/)
+  watch.allow(/^console error on \S+: (Error|JSHandle@object)$/)
   await page.route(/\/assets\/FlowMap-[^/]+\.js$/, (r) => r.continue({ url: new URL('/assets/FlowMap-gone.js', r.request().url()).href }))
   await signIn(page, pco)
   await expect(page.getByRole('region', { name: 'Flow' })).toContainText('The map did not load')

@@ -53,10 +53,13 @@ export default defineConfig({
     ...suite('chromium', devices['Desktop Chrome'], 'dark'),
     ...suite('firefox', devices['Desktop Firefox']),
     ...suite('webkit', devices['Desktop Safari']),
+    // A shared runner can stall one run of 10 s; a map that is slow fails
+    // every try, and a pass on a later one is reported as flaky.
     {
       name: 'perf',
       testDir: 'e2e/perf',
       workers: 1,
+      retries: process.env.CI ? 2 : 0,
       timeout: 180_000,
       use: { ...devices['Desktop Chrome'], viewport: sizes.desktop },
     },

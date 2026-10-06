@@ -173,28 +173,63 @@ test.describe('the keyboard and the flow map', () => {
   })
 })
 
-test('what takes the focus is not hidden under the top bar or the events strip', async ({ page, pco, browserName }) => {
-  // Safari moves the focus to links only with the Option key held.
-  const tab = browserName === 'webkit' ? 'Alt+Tab' : 'Tab'
-  await page.setViewportSize({ width: 1280, height: 600 })
+// Every control is a target of at least 24 by 24 px, as the accessibility
+// of the interface asks: not only where nothing else is near.
+test('the controls of the pages are targets of at least 24 by 24 px', async ({ page, pco }) => {
   await signIn(page, pco, '/guests')
-  await page.locator('body').focus()
-  const hidden: string[] = []
-  // Forwards down the page, which the strip covers at its foot, and back up
-  // it, which the top bar covers at its head.
-  for (const key of [tab, `Shift+${tab}`]) {
-    for (let i = 0; i < 50; i++) {
-      await page.keyboard.press(key)
-      const where = await page.evaluate(() => {
-        const el = document.activeElement
-        if (!el || el === document.body || el.closest('.topbar, .strip, .nav, .skiplink, dialog')) return undefined
+  const small: string[] = []
+  for (const path of ['/guests', '/guests/qemu/101', '/guests/claims', '/routes', '/routes/manual/status', '/routes/plan', '/edge/credentials', '/edge/zones', '/edge/tunnels', '/events', '/settings']) {
+    await page.goto(path)
+    await expect(page.getByRole('heading', { level: 1 }), path).toBeVisible()
+    await expect(page.getByRole('main').locator('.skeleton'), path).toHaveCount(0)
+    const found = await page.evaluate(() => {
+      const targets = document.querySelectorAll<HTMLElement>(
+        'main button, main select, main input[type="checkbox"], main input[type="radio"], main .table td a, main summary',
+      )
+      const out: string[] = []
+      for (const el of targets) {
         const r = el.getBoundingClientRect()
-        const bar = document.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 0
-        const strip = document.querySelector('.strip')?.getBoundingClientRect().top ?? window.innerHeight
-        return r.top < bar - 1 || r.bottom > strip + 1 ? `${el.tagName.toLowerCase()} "${el.textContent?.slice(0, 30) ?? ''}" at ${r.top.toFixed(0)}-${r.bottom.toFixed(0)}` : undefined
-      })
-      if (where) hidden.push(`${key}: ${where}`)
-    }
+        if (r.width === 0 && r.height === 0) continue
+        if (r.width < 23.5 || r.height < 23.5) out.push(`${el.tagName.toLowerCase()} "${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)}" ${r.width.toFixed(1)}x${r.height.toFixed(1)}`)
+      }
+      return out
+    })
+    small.push(...found.map((f) => `${path}: ${f}`))
   }
-  expect(hidden, 'focused controls under the top bar or the strip').toEqual([])
+  expect(small, 'controls smaller than 24 by 24 px').toEqual([])
 })
+
+for (const strip of ['closed', 'open']) {
+  test(`what takes the focus is not hidden under the top bar or the events strip, ${strip}`, async ({ page, pco, browserName }) => {
+    // Safari moves the focus to links only with the Option key held.
+    const tab = browserName === 'webkit' ? 'Alt+Tab' : 'Tab'
+    await page.setViewportSize({ width: 1280, height: 600 })
+    await signIn(page, pco, '/guests')
+    if (strip === 'open') {
+      await page.locator('.strip > summary').click()
+      await expect(page.getByRole('link', { name: 'All events' })).toBeVisible()
+    }
+    await page.locator('body').focus()
+    const hidden: string[] = []
+    // Forwards down the page, which the strip covers at its foot, and back up
+    // it, which the top bar covers at its head.
+    for (const [key, stops] of [
+      [tab, 120],
+      [`Shift+${tab}`, 60],
+    ] as const) {
+      for (let i = 0; i < stops; i++) {
+        await page.keyboard.press(key)
+        const where = await page.evaluate(() => {
+          const el = document.activeElement
+          if (!el || el === document.body || el.closest('.topbar, .strip, .nav, .skiplink, dialog')) return undefined
+          const r = el.getBoundingClientRect()
+          const bar = document.querySelector('.topbar')?.getBoundingClientRect().bottom ?? 0
+          const foot = document.querySelector('.strip')?.getBoundingClientRect().top ?? window.innerHeight
+          return r.top < bar - 1 || r.bottom > foot + 1 ? `${el.tagName.toLowerCase()} "${el.textContent?.slice(0, 30) ?? ''}" at ${r.top.toFixed(0)}-${r.bottom.toFixed(0)}` : undefined
+        })
+        if (where) hidden.push(`${key}: ${where}`)
+      }
+    }
+    expect(hidden, 'focused controls under the top bar or the strip').toEqual([])
+  })
+}

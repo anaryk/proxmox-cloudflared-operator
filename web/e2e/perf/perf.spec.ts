@@ -1,3 +1,5 @@
+import { appendFileSync } from 'node:fs'
+
 import type { Page, TestInfo } from '@playwright/test'
 
 import type { FrameRun } from './harness'
@@ -73,10 +75,23 @@ async function measure(page: Page, scene: string, renderer: string, info: TestIn
   return result
 }
 
+// record puts the figures of a scene into the summary of the CI job, every
+// try of it, so that the runner's figures are kept beside its verdict.
+function record(scene: string, attempt: number, results: readonly Result[]): void {
+  const summary = process.env.GITHUB_STEP_SUMMARY
+  if (!summary) return
+  const rows = results.map(
+    (r) => `| ${scene} | ${attempt + 1} | ${r.renderer} | ${r.paint.toFixed(1)} | ${r.frame.toFixed(1)} | ${r.work.toFixed(1)} | ${r.longTasks} | ${r.frames} | ${r.dots} |`,
+  )
+  const head = '| scene | try | renderer | state-to-paint p95, ms | frame p95, ms | work p95, ms | long tasks | frames | dots |\n|---|---|---|---|---|---|---|---|---|'
+  appendFileSync(summary, `\n${head}\n${rows.join('\n')}\n`)
+}
+
 for (const scene of scenes) {
   test(`${scene}: the map stays within the budgets of the baseline`, async ({ page }, info) => {
     const base = await measure(page, scene, 'baseline', info)
     const map = await measure(page, scene, 'map', info)
+    record(scene, info.retry, [base, map])
     expect.soft(map.paint, 'state-to-paint p95, ms').toBeLessThanOrEqual(paintFactor * base.paint + paintNoise)
     expect.soft(map.frame, 'frame p95, ms').toBeLessThanOrEqual(base.frame + frameSlack)
     expect.soft(map.longTasks, 'long tasks').toBeLessThanOrEqual(base.longTasks + longTaskNoise)

@@ -184,6 +184,7 @@ jobs:
         continue-on-error: true
       - run: make ui-e2e E2E='--project=webkit-* --output=test-results/webkit'
         continue-on-error: true
+      # Each try's figures go to the summary of the job.
       - run: make ui-e2e E2E='--project=perf --output=test-results/perf'
       # The traces and logs of the tests that failed.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

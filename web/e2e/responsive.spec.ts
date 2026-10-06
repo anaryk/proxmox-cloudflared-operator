@@ -109,3 +109,37 @@ test('the top bar fits 320 px with many problems, and whatever its worst pill sa
   await expect(page.getByRole('group', { name: 'Status of pco' })).toContainText('no answer')
   await topBarFits(page, 'with the daemon gone')
 })
+
+// From 960 px the five pills show where the bar holds them beside the node
+// and the user, and the summary pill where it does not: nothing overlaps.
+test('the top bar holds its pills from 960 px up, or gives the summary', async ({ page, pco, fake }) => {
+  await page.setViewportSize({ width: 1440, height: 800 })
+  await signIn(page, pco, '/routes')
+  const st = populated()
+  st.problems = Array.from({ length: 12 }, (_, i) => `problem ${i + 1} of the test`)
+  st.complete = false
+  st.mode = 'observe'
+  await fake.post('/state', st)
+  await expect(page.getByRole('link', { name: '12 problems' })).toBeVisible()
+  await expect(page.locator('.pill-wide').first(), 'the five pills at 1440 px').toBeVisible()
+
+  for (const width of [960, 1000, 1050, 1100, 1150, 1200, 1300]) {
+    await page.setViewportSize({ width, height: 800 })
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const pills = document.querySelector('.pills')
+            const problems = document.querySelector('.pill-problems')?.getBoundingClientRect()
+            const menu = document.querySelector('.menu')?.getBoundingClientRect()
+            return {
+              sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+              pillsOver: (pills?.scrollWidth ?? 0) - (pills?.clientWidth ?? 0),
+              overlap: problems && menu ? Math.max(0, problems.right - menu.left) : 0,
+            }
+          }),
+        { message: `the top bar at ${width} px` },
+      )
+      .toEqual({ sideways: 0, pillsOver: 0, overlap: 0 })
+  }
+})

@@ -381,9 +381,11 @@ export const test = base.extend<Options & Fixtures & { harness: Harness }>({
   baseURL: async ({ harness }, provide) => provide(harness.pco.url),
   watch: async ({ browserName }, provide) => {
     const watch = new Watch()
-    // WebKit reports as an error, now and then and under load, that it left
-    // a change of size for the observers of the next frame: no error of the
-    // page, and nothing it can keep WebKit from saying.
+    // On a page with the flow map WebKit reports as an error that it left a
+    // change of size for the observers of the next frame: as the map is first
+    // drawn its frame is measured and sized again in one frame. Under load it
+    // comes on every page with the map, alone on about one run in twenty;
+    // Chromium never says it. The notice itself is no error of the page.
     if (browserName === 'webkit') watch.allow(/^uncaught error on \S+: ResizeObserver loop completed with undelivered notifications\.$/)
     await provide(watch)
   },

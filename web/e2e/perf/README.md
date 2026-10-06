@@ -75,8 +75,10 @@ view while the window shows the top of it.
 The 30 ms is the tolerance for a shared runner's noise, not a margin to spend.
 So is the one long task: a shared runner stalls a page now and then whatever
 it draws, and a map that stalls does so more than once in 10 s. The CI runner
-is the reference, where the ui-e2e job runs this test on every push; a
-laptop's figures are reported and decide nothing.
+is the reference, where the ui-e2e job runs this test on every push, with
+two more tries of a scene that fails (a map that is slow fails all three),
+and writes the figures of every try into the job's summary; a laptop's
+figures are reported and decide nothing.
 
 ## A renderer on this page
 

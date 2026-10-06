@@ -61,13 +61,20 @@ test('the events of a large batch come as one row that loads them', async ({ pag
   await expect(events(page).getByText('qemu/101: active (batch 39)')).toBeVisible()
 })
 
-test('Load older events reads the log on the node', async ({ page, pco }) => {
+test('Load older events brings the events of the log on the node, of earlier boots too', async ({ page, pco, fake }) => {
   await signIn(page, pco, '/events')
-  await expect(rows(page).first()).toBeVisible()
+  const older = rows(page).filter({ hasText: 'qemu/105: unreachable (target is not answering)' })
+  await expect(older).toHaveCount(1)
+  // A restart of the daemon: the page holds the events of the new boot only.
+  await fake.post('/boot')
+  await expect(older).toHaveCount(0)
+
   const read = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/v1/events' && new URL(r.url()).searchParams.get('history') === '1')
   await page.getByRole('button', { name: 'Load older events' }).click()
-  const request = await read
-  expect(request.method()).toBe('GET')
+  expect((await read).method()).toBe('GET')
+  await expect(older).toHaveCount(1)
+  await expect(page.getByText('That is every event of these filters in the part of the event log the daemon reads')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Load older events' })).toBeDisabled()
 })
 
 test('the filtered list is exported as JSON', async ({ page, pco }) => {
