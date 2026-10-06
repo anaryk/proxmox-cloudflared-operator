@@ -16,6 +16,10 @@ export type Notice =
   | { kind: 'reset'; data: { reason: string } }
   | { kind: 'upstream'; data: Upstream }
 
+// The reason of a reset that says only that a traffic notice was lost, which
+// the page answers by reading the figures of the routes again.
+export const resetTraffic = 'traffic lost'
+
 const kinds: ReadonlySet<string> = new Set(['hello', 'state', 'event', 'gap', 'traffic', 'reset', 'upstream'])
 
 // The state of the connection, with since when for those that last.

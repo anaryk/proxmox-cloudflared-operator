@@ -9,7 +9,7 @@ import unauthenticated from '../fixtures/unauthenticated.json'
 import { type Answer, ApiError, type Method, type RequestOptions } from './client'
 import { AppStore, dataAge, fullFetchEvery, mergeTraffic, shareRoutes, staleAfterMs, type Storages } from './store'
 import type { Shared } from './leader'
-import type { Link, Notice } from './stream'
+import { type Link, type Notice, resetTraffic } from './stream'
 import type { Event, State, TrafficView } from './types.gen'
 
 interface Call {
@@ -243,6 +243,22 @@ describe('events, gaps, traffic, reset', () => {
     await flush()
     expect(s.get().state?.digest).toBe(populated.digest)
     expect(calls.find((c) => c.path === '/api/v1/state')?.opts?.ifNoneMatch).toBeUndefined()
+  })
+
+  // The web process lost a traffic notice, perhaps the one that told of a route
+  // that stopped, which no later notice tells again.
+  test('a reset for a lost traffic notice reads the traffic again, and drops nothing else', async () => {
+    const s = await opened()
+    expect(s.get().traffic?.routes).toHaveLength(1)
+    const { state: held, events: heldEvents } = s.get()
+    calls = []
+    replies.set('GET /api/v1/traffic', ok({ ...traffic, routes: [], routesTotal: 0 }))
+    s.notice({ kind: 'reset', data: { reason: resetTraffic } })
+    await flush()
+    expect(paths()).toEqual(['GET /api/v1/traffic'])
+    expect(s.get().traffic?.routes).toEqual([])
+    expect(s.get().state).toBe(held)
+    expect(s.get().events).toBe(heldEvents)
   })
 
   test('traffic notices add a sample to tunnels that have a rate', () => {

@@ -7,7 +7,7 @@ import { createContext, createElement, type ReactNode, useContext, useRef, useSy
 import { parseDuration } from '../text/duration'
 import { ApiError, type Answer, type ClientHooks, type Method, request as defaultRequest, type RequestOptions, setClientHooks } from './client'
 import { channelName, type Locks, shareStream, type Shared } from './leader'
-import { type Link, type Notice, openStream } from './stream'
+import { type Link, type Notice, openStream, resetTraffic } from './stream'
 import type {
   Event,
   GapNotice,
@@ -571,7 +571,10 @@ export class AppStore {
         this.#set({ traffic: mergeTraffic(this.#s.traffic, n.data) })
         break
       case 'reset':
-        this.#drop({})
+        // A traffic notice was lost, one that may have told of a route that
+        // stopped: the figures are read again, and nothing else is dropped.
+        if (n.data.reason === resetTraffic) void this.#loadTraffic()
+        else this.#drop({})
         break
       case 'upstream': {
         const wasDown = !this.#s.upstream.up
