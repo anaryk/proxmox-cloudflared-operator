@@ -36,7 +36,14 @@ func (a *app) daemonCmd() *cobra.Command {
 			"cluster filesystem. Moving only some of them would mix it with the tokens, the connectors\n" +
 			"and the lock of the node.\n\n" +
 			"In a terminal the log is written as lines to read, with control characters replaced;\n" +
-			"otherwise, as for the journal, as JSON lines.",
+			"otherwise, as for the journal, as JSON lines.\n\n" +
+			"pco.service runs it as root, and a second daemon on the same node refuses to start. In the\n" +
+			"appliance it exits with 78 when its state volume is not mounted with its marker, and the\n" +
+			"unit does not start it again then.",
+		Example: "  # As pco.service runs it\n" +
+			"  pco daemon\n\n" +
+			"  # With more in the log, in a drop-in of pco.service (systemctl edit pco)\n" +
+			"  pco daemon --log-level debug",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -49,6 +56,9 @@ func (a *app) daemonCmd() *cobra.Command {
 			// Its default is the host name, which in the container is pco.
 			if profile == store.ProfileAppliance && cmd.Flags().Changed("node") {
 				return errors.New("--node is not taken in the appliance: it runs as the node its install records")
+			}
+			if !cmd.Flags().Changed("node") {
+				node = defaultNode()
 			}
 			paths, err := daemon.StorePaths(profile, clusterDir, privateDir, local)
 			if err != nil {
@@ -95,7 +105,9 @@ func (a *app) daemonCmd() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&pveURL, "pve-url", daemon.DefaultPVEURL, "base URL of the Proxmox API")
 	flags.StringVar(&pveCA, "pve-ca-file", "", "CA bundle to verify the Proxmox API with; not needed for a loopback URL")
-	flags.StringVar(&node, "node", defaultNode(), "name of this node in Proxmox; not taken in the appliance")
+	// The default is said, not shown: it is the host name of the machine the
+	// help is read on, and the reference is written on another.
+	flags.StringVar(&node, "node", "", "name of this node in Proxmox (default: the host name up to its first dot); not taken in the appliance")
 	flags.StringVar(&logLevel, "log-level", "info", "log level: trace, debug, info, warn or error")
 	flags.StringVar(&clusterDir, "cluster-dir", "", "directory of the state the cluster shares; only with the two others (default "+defaults.Cluster+")")
 	flags.StringVar(&privateDir, "private-dir", "", "directory of the secrets the cluster shares; only with the two others (default "+defaults.Private+")")

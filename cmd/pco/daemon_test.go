@@ -40,12 +40,15 @@ func TestTheDaemonCommandFlags(t *testing.T) {
 		"private-dir": "",
 		"local-dir":   "",
 		"profile":     "",
+		"node":        "",
 	} {
 		f := flags.Lookup(name)
 		require.NotNil(t, f, name)
 		require.Equal(t, want, f.DefValue, name)
 	}
-	require.Equal(t, defaultNode(), flags.Lookup("node").DefValue)
+	// The host name is the default, but not shown as one: the help would
+	// name the machine it is read on.
+	require.Contains(t, flags.Lookup("node").Usage, "(default: the host name up to its first dot)")
 
 	root := newRootCmd()
 	require.Equal(t, "/run/pco/pco.sock", root.PersistentFlags().Lookup("socket").DefValue)

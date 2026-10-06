@@ -37,6 +37,23 @@ const exitHelp = `Exit status:
   2  it could not ask the daemon: the daemon is not running, its socket refused the
      connection, no answer came in time, or the answer could not be read`
 
+// askHelp is what the help of a command that asks the daemon says of who may
+// run it and of the exit status 2.
+const askHelp = "It asks the daemon through its socket, which answers only root and pco-web, the user of the\n" +
+	"web interface; the exit status is 2 when the daemon could not be asked."
+
+// commandGroups are the groups of pco --help, in the order they are shown,
+// with the commands of each.
+var commandGroups = []struct {
+	id, title string
+	commands  []string
+}{
+	{"start", "Getting started:", []string{"setup", "credential", "apply", "status"}},
+	{"routes", "Routes and guests:", []string{"routes", "plan", "route", "guest", "claims", "adopt", "segment", "diagnose"}},
+	{"operate", "Operating:", []string{"sync", "events", "doctor", "settings", "egress", "net", "tunnel", "web", "daemon", "upgrade"}},
+	{"lifecycle", "Lifecycle:", []string{"uninstall", "appliance", "version", "completion"}},
+}
+
 // env is what the commands take from the machine they run on. The zero parts
 // are filled by defaultEnv; tests replace them.
 type env struct {
@@ -101,9 +118,17 @@ func newRootCmd() *cobra.Command { return newRootCmdWith(defaultEnv()) }
 func newRootCmdWith(e env) *cobra.Command {
 	a := &app{env: e}
 	root := &cobra.Command{
-		Use:           "pco",
-		Short:         "Cloudflare Tunnel operator for Proxmox VE",
-		Long:          "Cloudflare Tunnel operator for Proxmox VE.\n\n" + exitHelp,
+		Use:   "pco",
+		Short: "Cloudflare Tunnel operator for Proxmox VE",
+		Long: "Cloudflare Tunnel operator for Proxmox VE. pco publishes the hostnames that tagged guests\n" +
+			"list in their Notes through Cloudflare Tunnels: it keeps the DNS records, the tunnels and a\n" +
+			"cloudflared connector for each tunnel in line with the Notes. pco daemon does that work.\n" +
+			"Most other commands ask it through its socket, which answers root; the others work on the\n" +
+			"machine directly, and the help of each says who may run it.\n\n" + exitHelp,
+		Example: "  # What pco found and did on this node\n" +
+			"  pco status\n\n" +
+			"  # The help of a command\n" +
+			"  pco help route manual add",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -142,7 +167,18 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.webCmd(),
 		a.applianceCmd(),
 		a.upgradeCmd(),
+		a.completionCmd(),
 	)
+	groupOf := map[string]string{}
+	for _, g := range commandGroups {
+		root.AddGroup(&cobra.Group{ID: g.id, Title: g.title})
+		for _, name := range g.commands {
+			groupOf[name] = g.id
+		}
+	}
+	for _, c := range root.Commands() {
+		c.GroupID = groupOf[c.Name()]
+	}
 	return root
 }
 
@@ -152,7 +188,11 @@ func (a *app) versionCmd() *cobra.Command {
 		Short: "Print the build version",
 		Long: "Print the build version. With --json it is a JSON object that also names the schema\n" +
 			"version of the store this build reads and writes, which pco upgrade --rollback asks the\n" +
-			"pco it would go back to.",
+			"pco it would go back to. It does not ask the daemon, and anyone may run it.",
+		Example: "  # The version, the commit and the date of this build\n" +
+			"  pco version\n\n" +
+			"  # As JSON, with the schema version of the store\n" +
+			"  pco version --json",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.json {
 				return printVersionJSON(cmd.OutOrStdout())

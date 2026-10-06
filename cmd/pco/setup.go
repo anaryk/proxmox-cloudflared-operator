@@ -57,6 +57,16 @@ func (a *app) setupCmd() *cobra.Command {
 			"  pveproxy  the certificate and key pveproxy serves: the web interface then holds\n" +
 			"            pveproxy's own key\n" +
 			"--repair keeps the mode chosen before unless --web-cert says otherwise.",
+		Example: "  # Set up the node, asking for what is missing\n" +
+			"  pco setup\n\n" +
+			"  # Without a question, with the Cloudflare token of a file\n" +
+			"  pco setup --yes --cf-token-file /root/cf-token\n\n" +
+			"  # Put the role, the user, the token and the tags back after a restore of the node\n" +
+			"  pco setup --repair\n\n" +
+			"  # Adopt the install the token sees, after the store was lost\n" +
+			"  pco setup --recover --cf-token-file /root/cf-token\n\n" +
+			"  # The web interface with a certificate and key of your own\n" +
+			"  pco setup --repair --web-cert own --web-cert-file /root/pco.example.com.crt --web-key-file /root/pco.example.com.key",
 		// A token typed where a flag value belongs is an argument: the error
 		// must not repeat it.
 		Args: func(cmd *cobra.Command, args []string) error {

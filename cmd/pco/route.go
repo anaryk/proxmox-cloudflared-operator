@@ -19,10 +19,27 @@ func (a *app) routeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "route",
 		Short: "Make and remove the routes an admin writes by hand",
+		Long: "The routes an admin writes by hand rather than in the Notes of a guest. There is one kind\n" +
+			"of them, the manual routes of pco route manual.",
+		Example: "  # The manual routes\n" +
+			"  pco route manual list\n\n" +
+			"  # Publish status.example.com to port 9000 of 10.0.5.20\n" +
+			"  pco route manual add status.example.com --address 10.0.5.20 --port 9000",
 	}
 	manual := &cobra.Command{
 		Use:   "manual",
 		Short: "Manual routes: hostnames published to a guest or an address without its Notes",
+		Long: "A manual route publishes a hostname to a guest, whose address is proven as for a route in\n" +
+			"its Notes, or to an IPv4 address inside the manualCIDRs of the settings, which is not\n" +
+			"proven: its level is manual. It owns its hostname as manual/<id> and competes in the claims\n" +
+			"like any guest. The routes are kept in /etc/pve/pco/routes, and the daemon reads them in\n" +
+			"every cycle.",
+		Example: "  # The manual routes\n" +
+			"  pco route manual list\n\n" +
+			"  # Publish status.example.com to port 9000 of 10.0.5.20\n" +
+			"  pco route manual add status.example.com --address 10.0.5.20 --port 9000\n\n" +
+			"  # Remove the route status\n" +
+			"  pco route manual remove status",
 	}
 	manual.AddCommand(a.manualListCmd(), a.manualAddCmd(), a.manualRemoveCmd())
 	cmd.AddCommand(manual)
@@ -34,7 +51,11 @@ func (a *app) manualListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List the manual routes",
 		Long: "List the manual routes by id, each with the revision it is at. A manual route owns its\n" +
-			"hostname as manual/<id> and competes in the claims like any guest.\n\n" + jsonHelp,
+			"hostname as manual/<id> and competes in the claims like any guest.\n\n" + jsonHelp + "\n\n" + askHelp,
+		Example: "  # The manual routes\n" +
+			"  pco route manual list\n\n" +
+			"  # As JSON, for a script\n" +
+			"  pco route manual list --json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -144,7 +165,13 @@ func (a *app) manualAddCmd() *cobra.Command {
 			"filter lets the connectors reach; the network of the node has to be in manualCIDRs too,\n" +
 			"and a route to a guest never may. Without --id the daemon gives the route an id of\n" +
 			"eight hex digits. It is published from the next cycle.\n\n" +
-			"With --json the route as made is printed as JSON.",
+			"With --json the route as made is printed as JSON.\n\n" + askHelp,
+		Example: "  # Publish status.example.com to port 9000 of 10.0.5.20\n" +
+			"  pco route manual add status.example.com --address 10.0.5.20 --port 9000\n\n" +
+			"  # wiki.example.com to the HTTPS service on port 8443 of qemu/101, on its card net1\n" +
+			"  pco route manual add wiki.example.com --guest qemu/101 --port 8443 --https --no-tls-verify --via net1\n\n" +
+			"  # With an id of your own, and the Host header the service expects\n" +
+			"  pco route manual add api.example.com --address 10.0.5.21 --port 8080 --id api --host-header api.internal.example.com",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := f.route(args[0])
@@ -194,7 +221,11 @@ func (a *app) manualRemoveCmd() *cobra.Command {
 		Long: "Remove a manual route: its hostname is no longer published from the next cycle, unless\n" +
 			"another owner claims it. The route is shown first, and the question needs a terminal; a\n" +
 			"script passes --yes. The route is removed at the revision shown, and not when someone\n" +
-			"changed it since.",
+			"changed it since.\n\n" + askHelp,
+		Example: "  # Remove the manual route status\n" +
+			"  pco route manual remove status\n\n" +
+			"  # The same from a script, without the question\n" +
+			"  pco route manual remove status --yes",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {

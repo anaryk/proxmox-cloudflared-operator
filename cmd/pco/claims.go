@@ -20,6 +20,14 @@ func (a *app) claimsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "claims",
 		Short: "Show who holds each public hostname, and hand one to another owner",
+		Long: "A public hostname belongs to one owner at a time, a guest or a manual route: the one that\n" +
+			"claimed it first holds it, and the others that name it wait in line. The daemon keeps the\n" +
+			"claims in /etc/pve/pco/claims and settles them in every cycle. These commands show them,\n" +
+			"and hand a hostname to another owner that claims it.",
+		Example: "  # Who holds each hostname, and who waits for it\n" +
+			"  pco claims list\n\n" +
+			"  # Hand www.example.com to qemu/102, which claims it too\n" +
+			"  pco claims resolve www.example.com qemu/102",
 	}
 	cmd.AddCommand(a.claimsListCmd(), a.claimsResolveCmd())
 	return cmd
@@ -33,7 +41,11 @@ func (a *app) claimsListCmd() *cobra.Command {
 			"that settled the claims found it, a claim is serving when its holder publishes the\n" +
 			"hostname, conflict when others want it too, held when nobody serves it, and pending when\n" +
 			"another owner served it, as after a resolve. It is unknown until a cycle of the daemon\n" +
-			"has settled the claims.\n\n" + jsonHelp,
+			"has settled the claims.\n\n" + jsonHelp + "\n\n" + askHelp,
+		Example: "  # Who holds each hostname, and who waits for it\n" +
+			"  pco claims list\n\n" +
+			"  # As JSON, for a script\n" +
+			"  pco claims list --json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -85,7 +97,11 @@ func (a *app) claimsResolveCmd() *cobra.Command {
 			"as qemu/102, or a manual route, as manual/<id>. The public hostname goes to that owner,\n" +
 			"and the holder waits for it as every other claimant does. Who holds it and who would are\n" +
 			"shown first, and the question needs a terminal; a script passes --yes. The daemon refuses\n" +
-			"an owner that does not claim the hostname.",
+			"an owner that does not claim the hostname.\n\n" + askHelp,
+		Example: "  # Hand www.example.com to qemu/102, which claims it too\n" +
+			"  pco claims resolve www.example.com qemu/102\n\n" +
+			"  # Hand api.example.com to the manual route api, from a script\n" +
+			"  pco claims resolve api.example.com manual/api --yes",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {

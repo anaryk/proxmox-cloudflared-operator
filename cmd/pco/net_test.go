@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -144,7 +145,8 @@ func TestNetHelpSaysWhatToRun(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		t.Run(sub.Name(), func(t *testing.T) {
 			require.NotEmpty(t, sub.Long)
-			lines := strings.Split(strings.TrimRight(sub.Example, "\n"), "\n")
+			lines := slices.DeleteFunc(strings.Split(strings.TrimRight(sub.Example, "\n"), "\n"),
+				func(line string) bool { return line == "" })
 			require.Zero(t, len(lines)%2, "a comment, then its command:\n%s", sub.Example)
 			require.GreaterOrEqual(t, len(lines)/2, 2)
 			require.LessOrEqual(t, len(lines)/2, 5)

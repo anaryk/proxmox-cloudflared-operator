@@ -19,6 +19,10 @@ func (a *app) segmentCmd() *cobra.Command {
 		Long: "A route proven at the observed level is served only on a segment, a bridge and a VLAN, an\n" +
 			"admin acknowledged: on a new one nothing is served until then. A segment is named as\n" +
 			"vmbr1 for the untagged part of a bridge and as vmbr1:20 for VLAN 20 of it.",
+		Example: "  # The segments routes at observed were proven on\n" +
+			"  pco segment list\n\n" +
+			"  # Serve the routes at observed on VLAN 20 of vmbr1\n" +
+			"  pco segment acknowledge vmbr1:20",
 	}
 	cmd.AddCommand(a.segmentListCmd(), a.segmentAcknowledgeCmd(), a.segmentRevokeCmd())
 	return cmd
@@ -29,7 +33,11 @@ func (a *app) segmentListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List the segments routes at observed were proven on, and those acknowledged",
 		Long: "List the segments the last cycle proved routes at observed on, with how many, and those\n" +
-			"acknowledged, with since when.\n\n" + jsonHelp,
+			"acknowledged, with since when.\n\n" + jsonHelp + "\n\n" + askHelp,
+		Example: "  # The segments routes at observed were proven on\n" +
+			"  pco segment list\n\n" +
+			"  # As JSON, for a script\n" +
+			"  pco segment list --json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -71,7 +79,11 @@ func (a *app) segmentAcknowledgeCmd() *cobra.Command {
 		Short: "Serve the routes at observed on a segment",
 		Long: "Acknowledge a segment: from the next cycle the routes at observed proven on it are served,\n" +
 			"unless they wait for an approval of their guest. The routes it releases are shown first,\n" +
-			"and the question needs a terminal; a script passes --yes.",
+			"and the question needs a terminal; a script passes --yes.\n\n" + askHelp,
+		Example: "  # Serve the routes at observed on the untagged part of vmbr1\n" +
+			"  pco segment acknowledge vmbr1\n\n" +
+			"  # On VLAN 20 of vmbr1, from a script\n" +
+			"  pco segment acknowledge vmbr1:20 --yes",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -141,7 +153,11 @@ func (a *app) segmentRevokeCmd() *cobra.Command {
 		Short: "Take the acknowledgement of a segment back",
 		Long: "Take the acknowledgement of a segment back: from the next cycle the routes at observed on\n" +
 			"it are held until it is acknowledged again. The acknowledgement is shown first, and the\n" +
-			"question needs a terminal; a script passes --yes.",
+			"question needs a terminal; a script passes --yes.\n\n" + askHelp,
+		Example: "  # Hold the routes at observed on VLAN 20 of vmbr1 again\n" +
+			"  pco segment revoke vmbr1:20\n\n" +
+			"  # The same from a script, without the question\n" +
+			"  pco segment revoke vmbr1:20 --yes",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {

@@ -19,7 +19,13 @@ func (a *app) eventsCmd() *cobra.Command {
 			"what was applied at Cloudflare, holds that began or ended, problems that appeared and what\n" +
 			"admins did. The daemon keeps the last thousand since it started; the journal has them all\n" +
 			"(journalctl -u pco). --since takes a duration such as 10m, or a time in RFC 3339 format.\n\n" +
-			jsonHelp,
+			jsonHelp + "\n\n" + askHelp,
+		Example: "  # Every event the daemon keeps\n" +
+			"  pco events\n\n" +
+			"  # Those of the last ten minutes\n" +
+			"  pco events --since 10m\n\n" +
+			"  # Those after noon UTC on 1 October 2026, as JSON\n" +
+			"  pco events --since 2026-10-01T12:00:00Z --json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			from, err := a.parseSince(since)

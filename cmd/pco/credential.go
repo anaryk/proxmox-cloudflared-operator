@@ -26,6 +26,14 @@ func (a *app) credentialCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "credential",
 		Short: "Manage the Cloudflare tokens of the daemon",
+		Long: "The Cloudflare API tokens the daemon works with, each stored as a credential with an id\n" +
+			"and a label in /etc/pve/priv/pco/credentials, which only root can read. A token is checked\n" +
+			"before it is stored, and the daemon never hands it out again. pco has no command that\n" +
+			"replaces a token: add the new one, then remove the old credential.",
+		Example: "  # Add a token, which is asked for without being shown\n" +
+			"  pco credential add --label main\n\n" +
+			"  # The credentials and the state of each\n" +
+			"  pco credential list",
 	}
 	cmd.AddCommand(a.credentialListCmd(), a.credentialAddCmd(), a.credentialCheckCmd(), a.credentialRemoveCmd())
 	return cmd
@@ -35,7 +43,16 @@ func (a *app) credentialListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the stored credentials",
-		Args:  cobra.NoArgs,
+		Long: "List the stored credentials: the id, the label, the kind and the state of each, usable,\n" +
+			"problem, or unknown while no check has answered, with a note that says what its last\n" +
+			"check found wrong, which zones it leaves out, and when its token has expired or expires\n" +
+			"within 30 days.\n\n" +
+			jsonHelp + "\n\n" + askHelp,
+		Example: "  # The credentials and the state of each\n" +
+			"  pco credential list\n\n" +
+			"  # As JSON, for a script\n" +
+			"  pco credential list --json",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			if a.json {
@@ -76,7 +93,16 @@ func (a *app) credentialAddCmd() *cobra.Command {
 		Short: "Check a Cloudflare API token and store it",
 		Long: "Check what a Cloudflare API token can do and store it when the check passes. The\n" +
 			"token is read from the file, or from standard input; on a terminal it is asked for\n" +
-			"without being shown. It is never taken from an argument, which others could read.",
+			"without being shown. It is never taken from an argument, which others could read. A\n" +
+			"token the check refuses is not stored, and what it can do is shown. The daemon runs a\n" +
+			"cycle once it is stored. With --json the credential and its check are printed as JSON.\n\n" +
+			askHelp,
+		Example: "  # Ask for the token without showing it\n" +
+			"  pco credential add --label main\n\n" +
+			"  # Read it from a file only root can read\n" +
+			"  pco credential add --label main --token-file /root/cf-token\n\n" +
+			"  # Read it from standard input\n" +
+			"  pco credential add --label spare < /root/cf-token-spare",
 		// A token typed where a flag value belongs is an argument: the error
 		// must not repeat it.
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -183,7 +209,12 @@ func (a *app) credentialCheckCmd() *cobra.Command {
 		Short: "Check what the token of a credential can do",
 		Long: "Check what the token of a stored credential can do. A deep check proves the write\n" +
 			"permissions by creating and deleting a test DNS record and a test tunnel; it asks\n" +
-			"first, which needs a terminal, and a script passes --yes.",
+			"first, which needs a terminal, and a script passes --yes. pco credential list shows the ids.\n" +
+			"With --json the credential and its check are printed as JSON.\n\n" + askHelp,
+		Example: "  # What the token of credential a1b2c3d4 can read\n" +
+			"  pco credential check a1b2c3d4\n\n" +
+			"  # Prove that it can write, with a test record and a test tunnel\n" +
+			"  pco credential check a1b2c3d4 --deep",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -212,7 +243,16 @@ func (a *app) credentialRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove <id>",
 		Short: "Remove a credential, when nothing is left that it manages",
-		Args:  cobra.ExactArgs(1),
+		Long: "Remove a stored credential. The daemon refuses while the token can still reach something\n" +
+			"of this install, a DNS record of it in a zone the token sees or its tunnel in an account the\n" +
+			"token sees, and names it: revoke the token at Cloudflare first. A token Cloudflare no longer\n" +
+			"accepts reaches nothing, so its credential is removed, and the event says that what it\n" +
+			"managed could not be checked.\n\n" + askHelp,
+		Example: "  # Remove the credential a1b2c3d4 once its token is revoked\n" +
+			"  pco credential remove a1b2c3d4\n\n" +
+			"  # Find the id by the label first\n" +
+			"  pco credential list",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
 				return err

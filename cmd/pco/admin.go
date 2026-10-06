@@ -32,7 +32,14 @@ func (a *app) syncCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync",
 		Short: "Ask the daemon for a reconcile cycle now",
-		Args:  cobra.NoArgs,
+		Long: "Ask the daemon for a reconcile cycle now, rather than after pollInterval. It returns once the\n" +
+			"daemon has the request, not when the cycle is done; requests made while a cycle waits to\n" +
+			"start are one cycle. pco status shows what the cycle found.\n\n" + askHelp,
+		Example: "  # Run a cycle now, after a change to the Notes of a guest\n" +
+			"  pco sync\n\n" +
+			"  # And see what it found once it is done\n" +
+			"  pco status",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
 				return err
@@ -57,7 +64,13 @@ func (a *app) applyCmd() *cobra.Command {
 			"the DNS removals the mass delete guard holds back, guests that Proxmox no longer lists,\n" +
 			"zones that left their listing and tunnels no credential sees. Confirmed, the daemon\n" +
 			"accepts exactly what was listed, and refuses when that changed in the meantime: look\n" +
-			"again and repeat. The question needs a terminal; a script passes --yes.",
+			"again and repeat. The question needs a terminal; a script passes --yes.\n\n" + askHelp,
+		Example: "  # Leave observe-only mode\n" +
+			"  pco apply\n\n" +
+			"  # See what waits for a confirmation, and accept it\n" +
+			"  pco apply --confirm-deletes\n\n" +
+			"  # The same from a script, without the question\n" +
+			"  pco apply --confirm-deletes --yes",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -152,7 +165,11 @@ func (a *app) adoptCmd() *cobra.Command {
 		Long: "Replace the record of someone else that holds a hostname pco publishes, or take back\n" +
 			"a record of this install that lost its marker. The conflict is shown first, and the\n" +
 			"question needs a terminal; a script passes --yes. The replacement waits for a run in\n" +
-			"which the tunnel is verified and its connector ready.",
+			"which the tunnel is verified and its connector ready.\n\n" + askHelp,
+		Example: "  # Replace the record of someone else that holds shop.example.com\n" +
+			"  pco adopt shop.example.com\n\n" +
+			"  # The same from a script, without the question\n" +
+			"  pco adopt shop.example.com --yes",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {

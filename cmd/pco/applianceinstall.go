@@ -243,6 +243,7 @@ func (a *app) applianceRepairCmd() *cobra.Command {
 		},
 	}
 	a.commonInstallFlags(cmd, &f)
+	cmd.Flags().Lookup("vmid").Usage = "the VMID of the appliance"
 	cmd.Flags().BoolVar(&f.o.Recover, "recover", false, "the volume holds no state: adopt the install the Cloudflare token sees")
 	cmd.Flags().StringVar(&f.o.InstallID, "install-id", "", "with --recover: the install to adopt, when the token sees several")
 	_ = cmd.MarkFlagRequired("vmid")

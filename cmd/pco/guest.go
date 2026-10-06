@@ -18,6 +18,17 @@ func (a *app) guestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "guest",
 		Short: "Approve guests for publishing, for admission mode approve",
+		Long: "With the setting admission at approve, the routes of a tagged guest are published only once\n" +
+			"an admin approved the guest, in the identity it has then: for a virtual machine its SMBIOS\n" +
+			"UUID, or else its creation time, or else a hash of the MAC of its first card; for a\n" +
+			"container a hash of the MAC of its first card. A clone, or a guest made again with a new\n" +
+			"identity, needs an approval of its own. In either mode an approval also releases the routes\n" +
+			"of the guest that wait at the observed level, or on a soft-denied address. The approvals\n" +
+			"are kept in /etc/pve/pco/approvals.",
+		Example: "  # The approved guests, and those that wait\n" +
+			"  pco guest list\n\n" +
+			"  # Approve qemu/101 in the identity it has now\n" +
+			"  pco guest approve qemu/101",
 	}
 	cmd.AddCommand(a.guestListCmd(), a.guestApproveCmd(), a.guestRevokeCmd())
 	return cmd
@@ -30,7 +41,11 @@ func (a *app) guestListCmd() *cobra.Command {
 		Long: "List the approved guests, each with the identity it was approved in and whether it still\n" +
 			"has it, the guests whose routes wait for an approval, and the guests with the gate tag as\n" +
 			"the last cycle listed them, with how many routes and issues each has.\n\n" + jsonHelp + " It\n" +
-			"holds the approvals; pco status --json has the guests that wait.",
+			"holds the approvals; pco status --json has the guests that wait.\n\n" + askHelp,
+		Example: "  # The approved guests, those that wait, and the tagged guests\n" +
+			"  pco guest list\n\n" +
+			"  # The approvals as JSON\n" +
+			"  pco guest list --json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -128,7 +143,11 @@ func (a *app) guestApproveCmd() *cobra.Command {
 			"the level. The daemon refuses the approval when the guest changed since it was shown, and\n" +
 			"a guest the last cycle did not see. --allow-address allows an address the guest was not\n" +
 			"shown at. An approval admits a guest while the admission mode is approve, and releases\n" +
-			"what waits at observed, or on a soft-denied address, in either mode.",
+			"what waits at observed, or on a soft-denied address, in either mode.\n\n" + askHelp,
+		Example: "  # Approve qemu/101 in the identity it has now\n" +
+			"  pco guest approve qemu/101\n\n" +
+			"  # And let lxc/120 be published at the soft-denied address 192.0.2.1 too\n" +
+			"  pco guest approve lxc/120 --allow-address 192.0.2.1",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -227,7 +246,11 @@ func (a *app) guestRevokeCmd() *cobra.Command {
 		Short: "Remove the approval of a guest",
 		Long: "Remove the approval of a guest. While the admission mode is approve, its routes are no\n" +
 			"longer published and its hostnames are held for it. The approval is shown first, and the\n" +
-			"question needs a terminal; a script passes --yes.",
+			"question needs a terminal; a script passes --yes.\n\n" + askHelp,
+		Example: "  # Remove the approval of qemu/101\n" +
+			"  pco guest revoke qemu/101\n\n" +
+			"  # The same from a script, without the question\n" +
+			"  pco guest revoke qemu/101 --yes",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.noJSON(cmd); err != nil {

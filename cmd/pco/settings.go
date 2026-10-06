@@ -25,6 +25,15 @@ func (a *app) settingsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "settings",
 		Short: "Show the settings and save them",
+		Long: "The settings of the install, such as pollInterval, admission and manualCIDRs, kept in\n" +
+			"/etc/pve/pco/meta/settings.json with a revision that every save raises. The daemon reads\n" +
+			"them in every cycle, and a few only when it starts.",
+		Example: "  # The settings and their revision\n" +
+			"  pco settings show\n\n" +
+			"  # Save them to a file, to edit the settings in it\n" +
+			"  pco settings show --json > /root/pco-settings.json\n\n" +
+			"  # Save the settings of the edited file\n" +
+			"  pco settings apply /root/pco-settings.json",
 	}
 	cmd.AddCommand(a.settingsShowCmd(), a.settingsApplyCmd())
 	return cmd
@@ -36,7 +45,11 @@ func (a *app) settingsShowCmd() *cobra.Command {
 		Short: "Show the settings with their revision",
 		Long: "Show the settings, the revision they are at and, for each one that has them, the range the\n" +
 			"daemon accepts and whether it is read only when the daemon starts.\n\n" + jsonHelp + " That is\n" +
-			"the file pco settings apply takes: save it, edit the settings in it, and apply it.",
+			"the file pco settings apply takes: save it, edit the settings in it, and apply it.\n\n" + askHelp,
+		Example: "  # The settings and their revision\n" +
+			"  pco settings show\n\n" +
+			"  # Save them to a file, to edit the settings in it\n" +
+			"  pco settings show --json > /root/pco-settings.json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -144,7 +157,11 @@ func (a *app) settingsApplyCmd() *cobra.Command {
 			"with its name. Leaving observe-only mode is no setting: that is pco apply. The settings read\n" +
 			"only at start take effect once pco is restarted (systemctl restart pco).\n\n" +
 			"With --json the answer of the daemon is printed as it sent it, re-indented, with control and\n" +
-			"bidirectional characters escaped.",
+			"bidirectional characters escaped.\n\n" + askHelp,
+		Example: "  # Save the settings of the edited file\n" +
+			"  pco settings apply /root/pco-settings.json\n\n" +
+			"  # Then restart pco if it says that a setting is read only at start\n" +
+			"  systemctl restart pco",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rev, settings, err := readSettingsFile(args[0])

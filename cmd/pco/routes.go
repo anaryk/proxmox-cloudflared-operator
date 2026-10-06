@@ -25,7 +25,11 @@ func (a *app) routesCmd() *cobra.Command {
 			"was proven to be the guest's: port, observed, or manual for a route to an address. The note\n" +
 			"is the reason a route is not served, or its first warning.\n\n" +
 			"With --json the whole state of the daemon is printed as the daemon sent it, re-indented,\n" +
-			"with control and bidirectional characters escaped, and --state cannot be used.",
+			"with control and bidirectional characters escaped, and --state cannot be used.\n\n" + askHelp,
+		Example: "  # Every route, sorted by hostname\n" +
+			"  pco routes\n\n" +
+			"  # Only the routes that are held\n" +
+			"  pco routes --state held",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			want, err := parseRouteState(state)

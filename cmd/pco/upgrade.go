@@ -97,12 +97,16 @@ inside the appliance; a host upgrades pco and cloudflared with apt.`
 
 const upgradeExample = `  # Say what is installed and what the latest release offers; exit status 1 when there is an upgrade
   pco upgrade --check
+
   # Upgrade pco and then cloudflared without the question, as a script does
   pco upgrade --yes
+
   # Install the release 1.4.0 of pco, and leave cloudflared as it is
   pco upgrade pco --version 1.4.0
+
   # Install cloudflared 2026.9.3, if the manifest allows it
   pco upgrade cloudflared --version 2026.9.3
+
   # Go back to the cloudflared the last upgrade replaced
   pco upgrade cloudflared --rollback`
 

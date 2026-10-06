@@ -36,9 +36,13 @@ func (a *app) statusCmd() *cobra.Command {
 		Long: "Show the mode of the daemon, whether the inventory is complete, the egress filter, the\n" +
 			"routes by state, the tunnels with their connectors, the credentials, the issues found in\n" +
 			"guest notes and the problems. The exit status is 1 when there are problems or the egress\n" +
-			"filter does not confine the connectors, and 2 when the daemon could not be asked.\n\n" +
+			"filter does not confine the connectors.\n\n" +
 			"With --json the state of the daemon is printed as the daemon sent it, re-indented, with\n" +
-			"control and bidirectional characters escaped.",
+			"control and bidirectional characters escaped.\n\n" + askHelp,
+		Example: "  # What the daemon found and did\n" +
+			"  pco status\n\n" +
+			"  # The problems alone, from the state as JSON\n" +
+			"  pco status --json | jq -r '.problems[]'",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			raw, err := a.rawState(cmd.Context())

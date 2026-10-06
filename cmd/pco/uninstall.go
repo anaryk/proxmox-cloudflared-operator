@@ -21,6 +21,12 @@ func (a *app) uninstallCmd() *cobra.Command {
 			"with --yes it stays without that flag. A part that fails is\n" +
 			"reported and the rest goes on; the store is then kept, and running pco uninstall again\n" +
 			"finishes the rest. It runs as root on the node.",
+		Example: "  # Remove pco, asking about everything\n" +
+			"  pco uninstall\n\n" +
+			"  # Without a question, deleting the DNS records and the tunnel and removing cloudflared\n" +
+			"  pco uninstall --yes --purge-cloudflare --remove-cloudflared\n\n" +
+			"  # Without a question, leaving Cloudflare as it is\n" +
+			"  pco uninstall --yes --keep-cloudflare",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {

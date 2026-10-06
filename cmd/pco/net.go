@@ -41,6 +41,10 @@ func (a *app) netCmdWith(e netEnv) *cobra.Command {
 			"not start, and pco net load starts neither. Once pco net show names nothing a load cannot\n" +
 			"put back, systemctl start pco.service starts pco-net.service again and then pco, which\n" +
 			"starts the connectors once it has proved the container is the appliance.",
+		Example: "  # In the appliance: is the service prefix kept in it?\n" +
+			"  pco net show\n\n" +
+			"  # After a boot at which pco-net.service failed, once show names nothing a load cannot put back\n" +
+			"  systemctl start pco.service",
 	}
 	cmd.AddCommand(a.netLoadCmd(e), a.netShowCmd(e))
 	return cmd
@@ -119,11 +123,11 @@ func (a *app) netShowCmd(e netEnv) *cobra.Command {
 		Long: "Show each thing pco-net.service keeps in place and whether it is, and how many packets the\n" +
 			"table " + appnet.Table + " rejected since it was loaded: each was sent to the service prefix\n" +
 			"and would otherwise have looked for it beyond the appliance. It changes nothing, and exits\n" +
-			"with 1 when anything is missing or not as pco loads it.",
+			"with 1 when anything is missing or not as pco loads it. It runs as root in the appliance.",
 		Example: "  # In the appliance\n" +
-			"  pco net show\n" +
-			"  # On the node, for the appliance in container 9250\n" +
-			"  pct exec 9250 -- pco net show",
+			"  pco net show\n\n" +
+			"  # On the node, for the appliance in container 120\n" +
+			"  pct exec 120 -- pco net show",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.netCheck(cmd, e); err != nil {

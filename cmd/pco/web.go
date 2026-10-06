@@ -65,7 +65,14 @@ func (a *app) webCmd() *cobra.Command {
 			"API as the appliance's daemon reaches it (--pve-api, default pve-api.json in\n" +
 			"$CREDENTIALS_DIRECTORY, which the daemon writes). It listens on net0's address only, as\n" +
 			"pco appliance install wrote it into " + webcert.Net0File + ", and refuses to start on any\n" +
-			"other. root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.",
+			"other. root@pam may not sign in with a password unless PCO_WEB_ALLOW_ROOT=1.\n\n" +
+			"pco-web.service runs it as the user pco-web, whom the daemon answers on its socket while\n" +
+			"the unit is installed; by hand, run it as root.",
+		Example: "  # By hand beside pco-web.service: on another port, with the files the unit reads\n" +
+			"  pco web --listen 127.0.0.1:8644 --cert /etc/pco/web/tls.crt --key /etc/pco/web/tls.key --pin /etc/pco/web/pveproxy.crt\n\n" +
+			"  # On an address of the node, also reached as pco.example.com, with more in the log\n" +
+			"  pco web --listen 192.0.2.10:8644 --hosts pco.example.com --log-level debug " +
+			"--cert /etc/pco/web/tls.crt --key /etc/pco/web/tls.key --pin /etc/pco/web/pveproxy.crt",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {

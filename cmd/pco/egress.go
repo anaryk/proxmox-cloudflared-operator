@@ -60,6 +60,10 @@ func (a *app) egressCmdWith(e egressEnv) *cobra.Command {
 			"pco egress load loads the table again when it is gone or not as it should be, and keeps the\n" +
 			"sets of an intact one. Never restart pco-egress.service for that: every connector restarts\n" +
 			"with it.",
+		Example: "  # Whether the filter is on, and what it holds\n" +
+			"  pco egress show\n\n" +
+			"  # Keep the connectors from 10.0.0.12, whatever the daemon verified\n" +
+			"  pco egress block 10.0.0.12",
 	}
 	cmd.AddCommand(
 		a.egressLoadCmd(e), a.egressShowCmd(e),
@@ -181,7 +185,16 @@ func (a *app) egressShowCmd(e egressEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show",
 		Short: "Show whether the egress filter is on, what its sets hold and what it rejected",
-		Args:  cobra.NoArgs,
+		Long: "Show whether the egress filter is on and its table loaded as pco loads it, the targets and\n" +
+			"the resolvers its sets hold, how many packets it rejected since the table was last loaded\n" +
+			"in full, to the addresses of this node and to anything else, and the block list of this\n" +
+			"node. It changes nothing. The exit status is 1 when the filter is off, its table is not\n" +
+			"loaded or not as pco loads it, or the connector user does not exist. It runs as root.",
+		Example: "  # Whether the filter is on, and what it holds\n" +
+			"  pco egress show\n\n" +
+			"  # From a script: is the filter on and as pco loads it?\n" +
+			"  pco egress show > /dev/null && echo confined",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.egressCheck(cmd, e); err != nil {
 				return err
@@ -328,7 +341,12 @@ func (a *app) egressBlockCmd(e egressEnv) *cobra.Command {
 		Use:   "block <address>",
 		Short: "Keep the connectors from an address, whatever the daemon verified",
 		Long: "Add an address to the block list of this node and take it out of the egress table at once.\n" +
-			"The list is subtracted from every set the daemon loads, until pco egress unblock.",
+			"The list is subtracted from every set the daemon loads, until pco egress unblock. It is\n" +
+			"kept in /var/lib/pco/egress-blocked.json, for this node only. It runs as root.",
+		Example: "  # Keep the connectors from 10.0.0.12\n" +
+			"  pco egress block 10.0.0.12\n\n" +
+			"  # And see that the table rejects it\n" +
+			"  pco egress show",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.egressCheck(cmd, e); err != nil {
@@ -379,7 +397,14 @@ func (a *app) egressUnblockCmd(e egressEnv) *cobra.Command {
 	return &cobra.Command{
 		Use:   "unblock <address>",
 		Short: "Take an address off the block list of this node",
-		Args:  cobra.ExactArgs(1),
+		Long: "Take an address off the block list of this node, and out of the blocked set of the egress\n" +
+			"table. The daemon puts it back into the table at its next cycle if it is still a verified\n" +
+			"target. It runs as root.",
+		Example: "  # Let the connectors reach 10.0.0.12 again, if the daemon verifies it\n" +
+			"  pco egress unblock 10.0.0.12\n\n" +
+			"  # The block list that is left\n" +
+			"  pco egress show",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.egressCheck(cmd, e); err != nil {
 				return err
@@ -420,7 +445,13 @@ func (a *app) egressOffCmd(e egressEnv) *cobra.Command {
 		Use:   "off",
 		Short: "Switch the egress filter off, when it is itself the fault",
 		Long: "Remove the egress table and keep the daemon and the boot unit from loading it again,\n" +
-			"until pco egress on. The connectors are not confined meanwhile.",
+			"until pco egress on. The connectors are not confined meanwhile; pco status warns of it on\n" +
+			"every run. The switch is kept in /var/lib/pco/egress-off.json, for this node only. It runs\n" +
+			"as root.",
+		Example: "  # Switch the filter off while you look for the fault\n" +
+			"  pco egress off\n\n" +
+			"  # And on again once it is found\n" +
+			"  pco egress on",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.egressCheck(cmd, e); err != nil {
@@ -457,7 +488,12 @@ func (a *app) egressOnCmd(e egressEnv) *cobra.Command {
 		Short: "Switch the egress filter back on",
 		Long: "Let the daemon and the boot unit load the egress table again, and load it, with the\n" +
 			"resolvers of the node and no targets, unless it is loaded as it should be: the daemon adds\n" +
-			"the verified targets at its next cycle.",
+			"the verified targets at its next cycle. The exit status is 1 when the resolvers of the node\n" +
+			"could not be read. It runs as root.",
+		Example: "  # Switch the filter back on\n" +
+			"  pco egress on\n\n" +
+			"  # And see what it holds after the next cycle\n" +
+			"  pco egress show",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.egressCheck(cmd, e); err != nil {

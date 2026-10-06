@@ -12,7 +12,13 @@ func (a *app) tunnelCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tunnel",
 		Short: "Act on the tunnels of the install",
-		Args:  cobra.NoArgs,
+		Long: "Act on the tunnels of the install at Cloudflare, one for each account that holds a zone\n" +
+			"with routes. The daemon makes and keeps them; pco status lists them with their connectors.",
+		Example: "  # Give the tunnel of the install a new secret\n" +
+			"  pco tunnel rotate\n\n" +
+			"  # The tunnels and their connectors\n" +
+			"  pco status",
+		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(a.tunnelRotateCmd())
 	return cmd
@@ -29,7 +35,13 @@ func (a *app) tunnelRotateCmd() *cobra.Command {
 			"connector elsewhere, started with a token that was read with a stolen API token, loses its\n" +
 			"session and cannot connect again. Do it when pco status names a connector that you do not\n" +
 			"run. It refuses while pco is in observe-only mode, which changes nothing at Cloudflare; pco apply\n" +
-			"ends that mode. Only root may, and the question needs a terminal; a script passes --yes.",
+			"ends that mode. Only root may, and the question needs a terminal; a script passes --yes.\n\n" +
+			"It asks the daemon through its socket, which answers this request for root alone; the exit\n" +
+			"status is 2 when the daemon could not be asked.",
+		Example: "  # Rotate the secret of the tunnel of the install\n" +
+			"  pco tunnel rotate\n\n" +
+			"  # Of its tunnel in one account, when it has tunnels in several\n" +
+			"  pco tunnel rotate --account 0123456789abcdef0123456789abcdef",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {

@@ -103,7 +103,15 @@ func (a *app) doctorCmdWith(d doctorEnv) *cobra.Command {
 			"fails.\n\n" +
 			"When the daemon is not running, root still gets the checks that need no daemon: the units\n" +
 			"of pco, the store, cloudflared and the egress table. The rest is said not to have been made,\n" +
-			"and the exit status is 1 when one of these fails, as it is when pco.service does not run.\n\n" + jsonHelp,
+			"and the exit status is 1 when one of these fails, as it is when pco.service does not run.\n" +
+			"It changes nothing.\n\n" + jsonHelp + "\n\n" +
+			"It asks the daemon through its socket, which answers only root and pco-web, the user of the\n" +
+			"web interface. The exit status is 2 when the daemon could not be asked, unless root got the\n" +
+			"checks that need no daemon instead.",
+		Example: "  # Check the installation\n" +
+			"  pco doctor\n\n" +
+			"  # The findings as JSON, for a script or a monitor\n" +
+			"  pco doctor --json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()

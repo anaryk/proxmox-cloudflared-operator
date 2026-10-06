@@ -23,7 +23,13 @@ func (a *app) applianceCmd() *cobra.Command {
 		Use:   "appliance",
 		Short: "Commands of the pco appliance",
 		Long: "Commands of the pco appliance, the container that runs pco and its connectors on a\n" +
-			"Proxmox VE node in place of the host install.",
+			"Proxmox VE node in place of the host install. Of its commands, install, repair, uninstall,\n" +
+			"grant-network and revoke-network run as root on the node, and init and recover as root\n" +
+			"inside the appliance.",
+		Example: "  # On the node: install the appliance\n" +
+			"  pco appliance install --storage local-zfs --checksums checksums.txt\n\n" +
+			"  # Inside the appliance, after a rollback to a snapshot\n" +
+			"  pco appliance recover",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -49,6 +55,10 @@ func (a *app) applianceInitCmd() *cobra.Command {
 			"the daemon must not run, and a bootstrap turned away for that stays for the next run; in\n" +
 			"modes repair and recover pco.service is stopped first. Every mode restarts pco.service at\n" +
 			"the end. A step that fails is named, and an init of the same mode finishes what it left.",
+		Example: "  # Inside the appliance, as the installer runs it\n" +
+			"  pco appliance init --bootstrap /var/lib/pco/bootstrap.json\n\n" +
+			"  # From the node, for the appliance in container 120\n" +
+			"  pct exec 120 -- pco appliance init --bootstrap /var/lib/pco/bootstrap.json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {
@@ -75,6 +85,10 @@ func (a *app) applianceRecoverCmd() *cobra.Command {
 			"so one must be stored (pco credential add). pco.service is stopped while it runs and\n" +
 			"started after; the install only observes until pco apply. It runs as root inside the\n" +
 			"appliance; on a host, pco setup --recover adopts an install after its store was lost.",
+		Example: "  # Inside the appliance, after a rollback to the snapshot taken before an upgrade\n" +
+			"  pco appliance recover\n\n" +
+			"  # From the node, for the appliance in container 120\n" +
+			"  pct exec 120 -- pco appliance recover",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.noJSON(cmd); err != nil {

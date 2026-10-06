@@ -20,7 +20,11 @@ func (a *app) diagnoseCmd() *cobra.Command {
 		Long: "Walk what a request for a hostname goes through: its route, its zone, its DNS record, the\n" +
 			"rule of the tunnel, the connector, the identity and the port of its target, and last a\n" +
 			"request the daemon makes to that target as the tunnel would. A step that fails skips the\n" +
-			"steps after it and makes the exit status 1.\n\n" + jsonHelp,
+			"steps after it and makes the exit status 1. It changes nothing.\n\n" + jsonHelp + "\n\n" + askHelp,
+		Example: "  # Why app.example.com does not answer as it should\n" +
+			"  pco diagnose app.example.com\n\n" +
+			"  # The steps as JSON, for a script\n" +
+			"  pco diagnose app.example.com --json",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

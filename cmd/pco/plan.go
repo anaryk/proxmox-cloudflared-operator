@@ -15,9 +15,14 @@ func (a *app) planCmd() *cobra.Command {
 		Short: "Show what the daemon would change and what stands in its way",
 		Long: "Show the actions of the last cycle that were not applied and why they are held,\n" +
 			"what waits for a confirmation, the records of someone else that stand in the way of\n" +
-			"a hostname, and the names that point at the tunnel but lost the marker of this install.\n\n" +
+			"a hostname, and the names that point at the tunnel but lost the marker of this install.\n" +
+			"It changes nothing.\n\n" +
 			"With --json the whole state of the daemon is printed as the daemon sent it, re-indented,\n" +
-			"with control and bidirectional characters escaped.",
+			"with control and bidirectional characters escaped.\n\n" + askHelp,
+		Example: "  # What the daemon would change, and what holds it back\n" +
+			"  pco plan\n\n" +
+			"  # The whole state as JSON, for a script\n" +
+			"  pco plan --json",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.json {

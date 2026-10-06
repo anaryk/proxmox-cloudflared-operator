@@ -39,6 +39,10 @@ func (a *app) webCertCmd() *cobra.Command {
 			"In the appliance the key is its own and the certificate self-signed for 397 days, made by\n" +
 			"the daemon at its first start and again 30 days before it expires: a browser trusts it by\n" +
 			"the fingerprint this command prints.",
+		Example: "  # The certificate the web interface serves, and its fingerprint\n" +
+			"  pco web cert\n\n" +
+			"  # A new key and certificate of the cluster CA now\n" +
+			"  pco web cert renew",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.webCertRoot(cmd); err != nil {
@@ -78,6 +82,10 @@ func (a *app) webCertRenewCmd() *cobra.Command {
 			"restart pco-web.service so that it serves them, as after a suspected leak of its key.\n" +
 			"Only a certificate of mode ca is renewed. In the appliance it makes a new key and\n" +
 			"self-signed certificate, also in place of one of your own. It runs as root.",
+		Example: "  # A new key and certificate of the cluster CA now\n" +
+			"  pco web cert renew\n\n" +
+			"  # And the fingerprint to compare in the browser\n" +
+			"  pco web cert",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := a.webCertRoot(cmd); err != nil {
@@ -112,6 +120,10 @@ func (a *app) webCertImportCmd() *cobra.Command {
 			"the certificate's, the certificate valid now and for one of the node's names or addresses\n" +
 			"(the appliance's, in the appliance). pco does not renew it; pco doctor warns 30 days before\n" +
 			"it expires. It runs as root.",
+		Example: "  # Serve the certificate and key of pco.example.com\n" +
+			"  pco web cert import /root/pco.example.com.crt /root/pco.example.com.key\n\n" +
+			"  # Back to a certificate of the cluster CA, renewed by pco\n" +
+			"  pco setup --repair --web-cert ca",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.webCertRoot(cmd); err != nil {
