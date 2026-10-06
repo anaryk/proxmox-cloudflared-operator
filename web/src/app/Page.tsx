@@ -7,6 +7,7 @@ import { Untrusted } from '../components/Untrusted'
 import { DoctorPage } from '../pages/doctor/DoctorPage'
 import { EventsPage } from '../pages/events/EventsPage'
 import { NetworksPage } from '../pages/networks/NetworksPage'
+import { SettingsPage } from '../pages/settings/SettingsPage'
 import { compareRouteStates } from '../text/words'
 import { Head } from './Head'
 import { Link } from './Link'
@@ -119,6 +120,15 @@ export function Page({ view }: { view: View }) {
       return <EventsPage />
     case 'doctor':
       return <DoctorPage />
+    case 'settings': {
+      const [title, description] = titleOf(view)
+      return (
+        <>
+          <Head title={title} description={description} />
+          <SettingsPage />
+        </>
+      )
+    }
     case 'not-found':
       return (
         <>

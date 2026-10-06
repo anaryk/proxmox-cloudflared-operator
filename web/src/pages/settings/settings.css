@@ -1,0 +1,153 @@
+/* the settings page */
+
+.settings-form {
+  display: block;
+}
+
+.settings-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-section {
+  margin-bottom: 14px;
+}
+
+.settings-section h3,
+.dialog-body h3 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0 16px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.settings-actions .field-error {
+  flex-basis: 100%;
+}
+
+.field .line {
+  display: block;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field .check input {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+}
+
+.radios {
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+
+.radios legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.radio {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 8px;
+  margin-bottom: 6px;
+}
+
+.radio input {
+  margin-top: 3px;
+}
+
+.radio .field-hint {
+  grid-column: 2;
+}
+
+.settings-optin {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-weak);
+}
+
+/* what a save or an import changes */
+
+.changes {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.changes th,
+.changes td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.changes thead th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.changes tbody th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.changes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.changes ins,
+.changes del {
+  padding: 0 3px;
+  border-radius: 2px;
+  text-decoration: none;
+}
+
+.changes ins {
+  background: var(--ok-weak);
+  color: var(--ok);
+}
+
+.changes del {
+  background: var(--fail-weak);
+  color: var(--fail);
+}
+
+.changes-list ins::before {
+  content: "+ ";
+}
+
+.changes-list del::before {
+  content: "\2212  ";
+}
