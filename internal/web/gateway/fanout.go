@@ -40,8 +40,11 @@ const (
 	// out one by one; the rest go out as one gap, as the daemon sends them.
 	singleEvents = 32
 	// A browser with this many notices, or bytes of them, waiting is full,
-	// and what waits collapses; one that has as many even so is told to start
-	// over, and its stream ends. 200 streams hold 200 MiB at most.
+	// and what waits collapses, as the daemon's queues do at these numbers;
+	// one that has as many even so is told to start over, and its stream
+	// ends. The daemon lets a queue grow to 4096 notices or 4 MiB before it
+	// does that, the gateway holds one stream to 256 and 1 MiB, so 200
+	// streams hold 200 MiB at most.
 	queueNotices = 256
 	queueBytes   = 1 << 20
 	// maxGapEvents is the most events of a gap the gateway reads, the most
@@ -1030,7 +1033,9 @@ func batched(qs []queued) []queued {
 // collapses, as the daemon's does: the events of the high-volume kinds and
 // the gaps become one gap with their highest level, of the state, traffic
 // and upstream notices only the newest stays, and every other event stays.
-// One that is past them even so is told to start over, and its stream ends.
+// One that is past them even so is told to start over, and its stream ends:
+// stricter than the daemon, which allows 4096 notices or 4 MiB, so that a
+// browser with 257 low-volume events waiting is cut here and starts over.
 type queue struct {
 	mu     sync.Mutex
 	items  []queued
