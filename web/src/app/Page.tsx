@@ -5,7 +5,15 @@ import { Skeleton } from '../components/Skeleton'
 import { StateBadge } from '../components/StateBadge'
 import { Untrusted } from '../components/Untrusted'
 import { DoctorPage } from '../pages/doctor/DoctorPage'
+import { CredentialDetail } from '../pages/edge/CredentialDetail'
+import { Credentials } from '../pages/edge/Credentials'
+import { TunnelDetail } from '../pages/edge/TunnelDetail'
+import { Tunnels } from '../pages/edge/Tunnels'
+import { ZoneDetail } from '../pages/edge/ZoneDetail'
+import { Zones } from '../pages/edge/Zones'
 import { EventsPage } from '../pages/events/EventsPage'
+import { GuestDetail } from '../pages/guests/GuestDetail'
+import { GuestsPage } from '../pages/guests/GuestsPage'
 import { NetworksPage } from '../pages/networks/NetworksPage'
 import { SettingsPage } from '../pages/settings/SettingsPage'
 import { compareRouteStates } from '../text/words'
@@ -109,6 +117,33 @@ function titleOf(v: View): [ReactNode, ReactNode] {
   return titles[v.name] ?? ['', '']
 }
 
+// Body is what a view shows under its head.
+function Body({ view }: { view: View }) {
+  switch (view.name) {
+    case 'routes':
+      return <RouteCounts />
+    case 'guests':
+      return <GuestsPage />
+    case 'claims':
+      return <GuestsPage claims />
+    case 'guest':
+      return <GuestDetail guest={`${view.kind}/${view.vmid}`} variant="page" />
+    case 'credentials':
+      return <Credentials />
+    case 'credential':
+      return <CredentialDetail id={view.id} />
+    case 'zones':
+      return <Zones />
+    case 'zone':
+      return <ZoneDetail zone={view.zone} variant="page" />
+    case 'tunnels':
+      return <Tunnels />
+    case 'tunnel':
+      return <TunnelDetail accountId={view.account} variant="page" />
+  }
+  return <p className="muted">This page is not part of this build yet.</p>
+}
+
 // Page is the content of a view.
 export function Page({ view }: { view: View }) {
   switch (view.name) {
@@ -143,8 +178,7 @@ export function Page({ view }: { view: View }) {
   return (
     <>
       <Head title={title} description={description} />
-      {view.name === 'routes' && <RouteCounts />}
-      {view.name !== 'routes' && <p className="muted">This page is not part of this build yet.</p>}
+      <Body view={view} />
     </>
   )
 }

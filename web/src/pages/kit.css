@@ -1,0 +1,233 @@
+/* The pages of guests and of the edge. */
+
+.subnav {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.subnav a {
+  padding: 6px 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--text2);
+  text-decoration: none;
+}
+
+.subnav a[aria-current="page"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.detail > .card,
+.detail > section {
+  margin-bottom: 14px;
+}
+
+.detail .card-body > .details + *,
+.detail .card-body > p + * {
+  margin-top: 10px;
+}
+
+.failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.failure .form-error {
+  margin: 0;
+}
+
+.plain-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.plain-list li + li {
+  margin-top: 4px;
+}
+
+.plain-list p {
+  margin: 0 0 4px;
+}
+
+.radio-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.radio-list legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+
+.radio-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.callout {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-weak);
+}
+
+.callout p {
+  margin: 0 0 4px;
+}
+
+.warn-text {
+  color: var(--warn);
+}
+
+.deep-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.deep-offer p {
+  margin: 0;
+}
+
+/* the route text of a guest's Notes */
+
+.annotation {
+  margin: 0;
+  padding: 8px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--raised);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.annotation-no {
+  display: inline-block;
+  width: 5ch;
+  margin-right: 1.5ch;
+  padding-right: 1ch;
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+}
+
+.annotation-caret,
+.annotation-msg {
+  color: var(--fail);
+  font-weight: 600;
+}
+
+/* the checklist of a token */
+
+.checklist .details {
+  margin-bottom: 10px;
+}
+
+.check-group {
+  margin-top: 10px;
+}
+
+.check-zone {
+  margin-left: 18px;
+}
+
+.check-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.checks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check {
+  padding: 2px 0;
+}
+
+.check-mark {
+  display: inline-block;
+  width: 1.5em;
+  font-weight: 700;
+}
+
+.check-passed .check-mark {
+  color: var(--ok);
+}
+
+.check-failed .check-mark {
+  color: var(--fail);
+}
+
+.check-unanswered .check-mark,
+.check-left-out .check-mark {
+  color: var(--warn);
+}
+
+.check-word {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.check-detail {
+  display: block;
+  margin-left: 1.5em;
+  color: var(--text2);
+  font-size: 12.5px;
+}
+
+.check-usable {
+  margin: 10px 0 0;
+}
+
+/* connectors pco does not run */
+
+.rogue {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--fail);
+  border-radius: var(--radius);
+  background: var(--fail-weak);
+}
+
+.rogue-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  color: var(--fail);
+  font-size: 13.5px;
+}
+
+.rogue p {
+  margin: 6px 0;
+}
+
+.rogue-count {
+  color: var(--fail);
+}
