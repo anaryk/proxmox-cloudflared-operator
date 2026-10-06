@@ -1,0 +1,119 @@
+{
+  "protocol": {
+    "min": 1,
+    "max": 1
+  },
+  "build": "0.9.0",
+  "node": "node2",
+  "kind": "appliance",
+  "vmid": 9005,
+  "agentStartedAt": "2026-10-05T11:00:00Z",
+  "watchRunningSince": "2026-10-05T11:10:00Z",
+  "epochSeen": {
+    "installId": "k3x9q2",
+    "generation": 7,
+    "nonce": "a1b2c3d4"
+  },
+  "seqApplied": 42,
+  "targets": [
+    {
+      "key": "app.example.com",
+      "addr": "10.0.0.21",
+      "level": "port",
+      "attested": true,
+      "ok": true,
+      "reason": "the forwarding table of node1 names the port of the guest",
+      "verifiedAt": "2026-10-05T11:59:55Z",
+      "inEgressSet": true,
+      "result": {
+        "addr": "10.0.0.21",
+        "level": "port"
+      }
+    }
+  ],
+  "attestations": [
+    {
+      "node": "node1",
+      "guest": {
+        "kind": "qemu",
+        "vmid": 101
+      },
+      "nic": 1,
+      "mac": "bc:24:11:aa:bb:01",
+      "bridge": "vmbr0",
+      "vlan": 20,
+      "port": "tap101i1",
+      "since": "2026-10-05T11:00:00Z"
+    }
+  ],
+  "observations": [
+    {
+      "kind": "conflict",
+      "mac": "bc:24:11:aa:bb:01",
+      "bridge": "vmbr0",
+      "vlan": 20,
+      "from": "tap101i1",
+      "port": "veth202i0",
+      "owner": {
+        "kind": "lxc",
+        "vmid": 202
+      },
+      "at": "2026-10-05T11:59:00Z"
+    }
+  ],
+  "connectors": [
+    {
+      "tunnelId": "5f1c2c9e-8b1a-4d3e-9f6a-2b7c8d9e0f1a",
+      "active": true,
+      "ready": true,
+      "connections": 4,
+      "connectorId": "e1f2",
+      "metricsAddr": "127.0.0.1:20241",
+      "install": "k3x9q2",
+      "tokenRefused": true,
+      "metricsPortHeld": true
+    }
+  ],
+  "egress": "on",
+  "localBlocks": [
+    "10.0.0.99"
+  ],
+  "serviceAddrs": [
+    "10.203.118.21"
+  ],
+  "addrs": [
+    "192.168.4.12",
+    "10.10.0.2"
+  ],
+  "clock": "2026-10-05T12:00:00Z",
+  "events": [
+    {
+      "at": "2026-10-05T11:59:00Z",
+      "kind": "route",
+      "message": "app.example.com is served"
+    }
+  ],
+  "eventCursor": 1200,
+  "resend": 240,
+  "actions": [
+    {
+      "id": "a1",
+      "ok": true,
+      "data": {
+        "argv": [
+          "qm",
+          "set",
+          "101"
+        ]
+      }
+    },
+    {
+      "id": "a2",
+      "ok": false,
+      "error": "the guest is not on this node"
+    }
+  ],
+  "problems": [
+    "the forwarding-table watch is not running"
+  ]
+}

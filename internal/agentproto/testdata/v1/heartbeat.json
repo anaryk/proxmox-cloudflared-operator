@@ -1,0 +1,25 @@
+{
+  "epoch": {
+    "installId": "k3x9q2",
+    "generation": 7,
+    "nonce": "a1b2c3d4"
+  },
+  "leaseValid": true,
+  "leaseValidFor": 55000000000,
+  "seq": 42,
+  "nodes": {
+    "node1": {
+      "statusAge": 2000000000,
+      "watchRunning": true
+    },
+    "node2": {
+      "statusAge": 31000000000,
+      "watchRunning": false
+    }
+  },
+  "readyReplicas": {
+    "5f1c2c9e-8b1a-4d3e-9f6a-2b7c8d9e0f1a": 2,
+    "c0ffee00-1234-4abc-8def-0123456789ab": 1
+  },
+  "eventAck": 1200
+}

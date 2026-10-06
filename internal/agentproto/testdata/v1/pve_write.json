@@ -1,0 +1,14 @@
+{
+  "guest": {
+    "kind": "qemu",
+    "vmid": 101
+  },
+  "nic": 1,
+  "bridge": "vmbr1",
+  "tag": 20,
+  "mac": "06:50:43:4f:00:15",
+  "firewall": true,
+  "linkDown": true,
+  "remove": true,
+  "digest": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"
+}

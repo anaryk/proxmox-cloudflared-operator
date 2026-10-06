@@ -1,0 +1,25 @@
+{
+  "node": "node2",
+  "kind": "host",
+  "controller": "node1",
+  "silentFor": 3000000000,
+  "epoch": {
+    "installId": "k3x9q2",
+    "generation": 7,
+    "nonce": "a1b2c3d4"
+  },
+  "seq": 42,
+  "seqAge": 4000000000,
+  "connectors": 2,
+  "egressTargets": 3,
+  "stoodDown": "this node was removed from install k3x9q2 at 2026-10-05 11:00",
+  "certFingerprint": "3b4c1d2e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00",
+  "certExpires": "2027-01-03T12:00:00Z",
+  "readyReplicas": {
+    "5f1c2c9e-8b1a-4d3e-9f6a-2b7c8d9e0f1a": 2
+  },
+  "heartbeatAge": 1000000000,
+  "problems": [
+    "the controller is silent"
+  ]
+}

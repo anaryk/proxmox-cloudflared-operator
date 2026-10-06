@@ -1,0 +1,178 @@
+{
+  "protocol": 1,
+  "epoch": {
+    "installId": "k3x9q2",
+    "generation": 7,
+    "nonce": "a1b2c3d4"
+  },
+  "seq": 42,
+  "node": "node2",
+  "state": "active",
+  "settings": {
+    "pollInterval": 30000000000,
+    "identityMinimum": "filtered",
+    "trustStatic": true,
+    "trustedCIDRs": [
+      "10.0.0.0/24"
+    ],
+    "reverifyInterval": 600000000000
+  },
+  "nodes": [
+    {
+      "name": "node2",
+      "addr": "192.168.4.12",
+      "online": true,
+      "local": true,
+      "addrs": [
+        "192.168.4.12",
+        "10.10.0.2"
+      ]
+    },
+    {
+      "name": "node1",
+      "addr": "192.168.4.11",
+      "online": true,
+      "addrs": [
+        "192.168.4.11",
+        "10.10.0.1"
+      ]
+    }
+  ],
+  "deny": {
+    "denied": [
+      "192.168.4.11",
+      "10.10.0.1",
+      "192.168.4.12",
+      "10.10.0.2"
+    ],
+    "soft": {
+      "10.0.0.40": "a guest of another install had it"
+    }
+  },
+  "tunnels": [
+    {
+      "accountId": "0123456789abcdef0123456789abcdef",
+      "tunnelId": "5f1c2c9e-8b1a-4d3e-9f6a-2b7c8d9e0f1a",
+      "name": "pco-k3x9q2",
+      "kind": "shared",
+      "run": true,
+      "token": "[redacted]",
+      "verified": [
+        "10.0.0.21:443",
+        "10.0.0.22:8080"
+      ]
+    },
+    {
+      "accountId": "0123456789abcdef0123456789abcdef",
+      "tunnelId": "c0ffee00-1234-4abc-8def-0123456789ab",
+      "name": "pco-k3x9q2-node2",
+      "kind": "pinned",
+      "run": true,
+      "token": "[redacted]",
+      "verified": null
+    }
+  ],
+  "targets": [
+    {
+      "key": "app.example.com",
+      "tunnels": [
+        "5f1c2c9e-8b1a-4d3e-9f6a-2b7c8d9e0f1a"
+      ],
+      "route": {
+        "hostname": "app.example.com",
+        "target": {
+          "scheme": "https",
+          "port": 443
+        },
+        "options": {
+          "noTLSVerify": true,
+          "sni": "app.internal"
+        },
+        "source": "annotation",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 101
+        }
+      },
+      "guest": {
+        "ref": {
+          "kind": "qemu",
+          "vmid": 101
+        },
+        "name": "app",
+        "node": "node1",
+        "running": true,
+        "identity": "a3f1",
+        "nics": [
+          {
+            "index": 1,
+            "mac": "bc:24:11:aa:bb:01",
+            "bridge": "vmbr0",
+            "vlan": 20
+          }
+        ]
+      },
+      "addr": "10.0.0.21",
+      "service": "10.203.118.21",
+      "port": 443,
+      "hostingNode": "node1",
+      "macs": [
+        "bc:24:11:aa:bb:01"
+      ],
+      "required": "port",
+      "resolve": true,
+      "attestation": {
+        "node": "node1",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 101
+        },
+        "nic": 1,
+        "mac": "bc:24:11:aa:bb:01",
+        "bridge": "vmbr0",
+        "vlan": 20,
+        "port": "tap101i1",
+        "since": "2026-10-05T11:00:00Z"
+      },
+      "attestedFresh": true,
+      "covered": true,
+      "allowNode": true
+    }
+  ],
+  "networks": [
+    {
+      "bridge": "vmbr1",
+      "id": "lan",
+      "kind": "leg"
+    }
+  ],
+  "blocks": [
+    {
+      "addr": "10.0.0.66",
+      "reason": "conflict",
+      "until": "2026-10-05T12:10:00Z"
+    },
+    {
+      "addr": "10.0.0.67",
+      "reason": "admin"
+    }
+  ],
+  "actions": [
+    {
+      "id": "a1",
+      "kind": "pveWrite",
+      "args": {
+        "digest": "9f86d081",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 101
+        },
+        "linkDown": true,
+        "nic": 1
+      }
+    }
+  ],
+  "endpoints": [
+    "192.168.4.11:8644"
+  ]
+}
