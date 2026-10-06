@@ -11,7 +11,7 @@ import { Empty } from '../components/Empty'
 import { SearchIcon } from '../components/icons'
 import { Skeleton } from '../components/Skeleton'
 import { ChainList } from '../flow/ChainList'
-import { focusRoutes, mapLevel, mapViewQuery, type MapView, readMapView } from '../flow/collapse'
+import { focusRoutes, type Level, mapLevel, mapViewQuery, type MapView, readMapView } from '../flow/collapse'
 import { buildModel, firstCycleDone } from '../flow/model'
 import { ProblemsCard } from './ProblemsCard'
 import { StatTiles } from './StatTiles'
@@ -70,6 +70,11 @@ export function Overview() {
 
   const model = useMemo(() => (st ? buildModel(st, traffic) : undefined), [st, traffic])
   const only = useMemo(() => (model && view.focus ? focusRoutes(model, view.focus) : undefined), [model, view.focus])
+  // The level of the map is held from one state to the next, so that near a
+  // limit "Problems first" does not change its default every cycle.
+  const [level, setLevel] = useState<Level>()
+  const now = model ? mapLevel(model, level) : undefined
+  if (now !== undefined && now !== level) setLevel(now)
 
   const setView = (next: MapView) => navigate(`${url.pathname}${mapViewQuery(url.search, next)}${url.hash}`, true)
 
@@ -82,7 +87,7 @@ export function Overview() {
     )
   }
 
-  const problems = view.problems ?? mapLevel(model) === 'collapsed'
+  const problems = view.problems ?? now === 'collapsed'
   const hostnames = st.routes.length + st.unapproved.reduce((n, g) => n + g.hostnames.length, 0)
   let region
   if (!firstCycleDone(st)) region = <Empty title="Waiting for the first cycle" />

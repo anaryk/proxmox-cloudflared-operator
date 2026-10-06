@@ -7,6 +7,7 @@ import populated from '../fixtures/populated.json'
 import trafficFixture from '../fixtures/traffic.json'
 import { navigate } from '../app/router'
 import chains from '../flow/testdata/chains.json'
+import { scaled } from '../flow/testdata/scale'
 import traffic from '../flow/testdata/traffic.json'
 import { fakeStore, flush } from '../test/store'
 import { eventsOf, Overview } from './Overview'
@@ -69,6 +70,28 @@ describe('the Overview', () => {
     })
     expect(new URLSearchParams(window.location.search).get('problems')).toBe('1')
     expect(hosts().slice(0, 2)).toEqual(['api.example.com', 'dns.example.com'])
+    store.stop()
+  })
+
+  test('near the limit of a collapsed map, problems first keeps its default from one state to the next', async () => {
+    navigate('/')
+    let current = { ...scaled({ routes: 201 }), digest: 'a1' }
+    const { store } = await fakeStore({ state: current, answers: { 'GET /api/v1/state': () => ({ status: 200, body: current, etag: current.digest }) } })
+    render(
+      <StoreProvider store={store}>
+        <Overview />
+      </StoreProvider>,
+    )
+    const box = () => screen.getByRole('checkbox', { name: 'Problems first' }) as HTMLInputElement
+    expect(box().checked).toBe(true)
+    // 195 routes would be folded for a map seen for the first time
+    current = { ...scaled({ routes: 195 }), digest: 'a2' }
+    await act(async () => {
+      store.notice({ kind: 'state', data: { at: '2026-10-01T12:00:10Z', finishedAt: '2026-10-01T12:00:12Z', digest: 'a2' } })
+      await flush()
+    })
+    expect(store.get().state?.routes).toHaveLength(195)
+    expect(box().checked).toBe(true)
     store.stop()
   })
 

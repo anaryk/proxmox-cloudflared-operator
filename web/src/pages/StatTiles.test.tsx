@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
-import type { State, TrafficView } from '../api/types.gen'
+import type { State, TrafficView, TunnelTraffic } from '../api/types.gen'
 import first from '../fixtures/first-run.json'
 import populated from '../fixtures/populated.json'
 import trafficFixture from '../fixtures/traffic.json'
@@ -57,6 +57,15 @@ test('the connectors: ready, connections, where they land, and those pco does no
   expect(text('Connectors')).toContain('4 connections')
   expect(text('Connectors')).toContain('fra08 · prg01')
   expect(tile('Connectors').getByRole('link', { name: '1 connector not run by pco' }).getAttribute('href')).toBe('/edge/tunnels')
+})
+
+test("an edge location is Cloudflare's text, shown as such", () => {
+  const tv = trafficFixture as unknown as TrafficView
+  const odd = { ...tv, tunnels: tv.tunnels.map((t) => ({ ...t, edges: [{ ...(t.edges[0] as TunnelTraffic['edges'][number]), location: 'fra\u202e08' }] })) }
+  render(<StatTiles state={populated as unknown as State} traffic={odd} />)
+  const where = screen.getByRole('region', { name: 'Connectors' }).querySelector('.tile-sub .mono') as HTMLElement
+  expect(where.textContent).toBe('fra\u27e8U+202E\u27e908')
+  expect(where.querySelector('bdi')).toBeTruthy()
 })
 
 test('what needs a person, each where it is dealt with', () => {

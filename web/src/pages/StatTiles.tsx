@@ -1,10 +1,11 @@
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 
 import type { State, TrafficView } from '../api/types.gen'
 import { Link } from '../app/Link'
 import { StateBadge } from '../components/StateBadge'
 import { Time } from '../components/Time'
 import { type Sample, TrafficChart } from '../components/TrafficChart'
+import { Untrusted } from '../components/Untrusted'
 import { firstCycleDone } from '../flow/model'
 import { compareRouteStates } from '../text/words'
 
@@ -141,8 +142,13 @@ function ConnectorsTile({ state, traffic }: { state: State; traffic?: TrafficVie
           <li className="mono">
             {[...at]
               .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-              .map(([loc, n]) => (n > 1 ? `${loc} ×${n}` : loc))
-              .join(' · ')}
+              .map(([loc, n], i) => (
+                <Fragment key={loc}>
+                  {i > 0 && ' · '}
+                  <Untrusted text={loc} />
+                  {n > 1 && ` ×${n}`}
+                </Fragment>
+              ))}
           </li>
         )}
         {rogue > 0 && (
