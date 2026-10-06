@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -101,6 +103,15 @@ func newApplianceWorld(t *testing.T) *applianceWorld {
 	return a
 }
 
+// bounded is a context that ends after a few seconds: a daemon that should
+// have ended at once and serves instead fails the test by what it returns.
+func bounded(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func (a *applianceWorld) write(path, content string) {
 	a.t.Helper()
 	require.NoError(a.t, os.MkdirAll(filepath.Dir(path), 0o755))
@@ -135,7 +146,7 @@ func TestWithoutItsVolumeTheApplianceEndsBeforeTheLock(t *testing.T) {
 	a := newApplianceWorld(t)
 	a.deps.Appliance.Volume = func(path, _ string) error { return fmt.Errorf("%s %w", path, appliance.ErrNoMarker) }
 
-	err := Run(t.Context(), a.cfg, a.deps)
+	err := Run(bounded(t), a.cfg, a.deps)
 
 	var none NoVolumeError
 	require.ErrorAs(t, err, &none)
@@ -199,10 +210,10 @@ func TestACopyIsStoppedBeforeTheFirstCycle(t *testing.T) {
 	require.NotEmpty(t, a.sysd.units())
 	require.NoError(t, appliance.WriteFlag(a.flag))
 	a.mountVolumeOf(9295)
-	var units []string
+	var units, scripts []string
 	var asked int
 	a.notify.onReady = func() {
-		units, asked = a.sysd.units(), len(a.pve.authorizations())
+		units, asked, scripts = a.sysd.units(), len(a.pve.authorizations()), a.nft.applied()
 	}
 
 	d := a.start()
@@ -210,10 +221,14 @@ func TestACopyIsStoppedBeforeTheFirstCycle(t *testing.T) {
 	require.Empty(t, units, "stopped before the API answered")
 	require.Zero(t, asked, "and before any cycle")
 	require.NoFileExists(t, a.flag)
-	require.NotEmpty(t, a.nft.applied(), "the egress filter was given no target")
+	require.Len(t, scripts, 1)
+	require.Equal(t, egress.Base(testConnectorUID, []netip.Addr{netip.MustParseAddr("10.20.0.1")}, nil), scripts[0],
+		"the egress filter was given no target")
 	st := d.await(func(st engine.State) bool { return st.Identity != nil })
 	require.True(t, st.Identity.Copy)
 	require.Equal(t, incarnationOf(t, a.store), incarnation, "no epoch drawn")
+	require.Equal(t, 1, strings.Count(a.logs.String(), `"message":"stopped connector"`),
+		"the first cycle does not stop the connectors again")
 }
 
 func TestBeforeTheFirstCycleNothingButTheMountIsDecided(t *testing.T) {
@@ -243,7 +258,7 @@ func TestAnErrorOfTheVolumeOtherThanItsAbsenceIsSaidAsSuch(t *testing.T) {
 	a := newApplianceWorld(t)
 	a.deps.Appliance.Volume = func(string, string) error { return errors.New("input/output error") }
 
-	err := Run(t.Context(), a.cfg, a.deps)
+	err := Run(bounded(t), a.cfg, a.deps)
 
 	require.EqualError(t, err, "cannot read "+a.paths.Local+": input/output error")
 	require.True(t, slices.Equal(a.notify.sent(), nil))

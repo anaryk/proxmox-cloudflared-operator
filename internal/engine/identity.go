@@ -116,6 +116,15 @@ func (c *cycleRun) stopServing() {
 	c.e.stopped = true
 }
 
+// StoppedServing tells the engine of an appliance that its connectors were
+// stopped and its egress filter emptied before the first cycle, as the daemon
+// does for a copy: the cycle that finds the copy does not do it again. It is
+// called before the engine runs a cycle.
+func (e *Engine) StoppedServing() {
+	e.notServing.Store(true)
+	e.stopped = true
+}
+
 // exposure returns the principals other than admins and pco's own that can
 // reach into the appliance, as the access control last read says: only a
 // principal that is known fails the appliance closed, and one known stays so

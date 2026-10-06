@@ -127,8 +127,8 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
-	if why, isCopy := parts.self.CopyBeforeCycle(); isCopy {
-		stopCopy(ctx, why, parts.filter, parts.conns, state.install.ID, log)
+	if why, isCopy := parts.self.CopyBeforeCycle(); isCopy && stopCopy(ctx, why, parts.filter, parts.conns, state.install.ID, log) {
+		parts.eng.StoppedServing()
 	}
 	eng, client, filter := parts.eng, parts.client, parts.filter
 	env := &doctor.HostEnv{
@@ -160,15 +160,20 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 
 // stopCopy is what a copy does before its first cycle: the identity flag is
 // gone already; the egress filter is emptied and the connectors of the
-// install are stopped.
-func stopCopy(ctx context.Context, why string, filter engine.Egress, conns engine.Connectors, installID string, log zerolog.Logger) {
+// install are stopped. It reports whether both went through; the first cycle
+// does again what did not.
+func stopCopy(ctx context.Context, why string, filter engine.Egress, conns engine.Connectors, installID string, log zerolog.Logger) bool {
 	log.Error().Str("why", why).Msg("this container is a copy of the appliance; the connectors are stopped and the egress filter is empty")
+	done := true
 	if err := filter.Set(ctx, nil); err != nil && !errors.Is(err, egress.ErrOff) {
 		log.Error().Err(err).Msg("emptying the egress filter of a copy failed")
+		done = false
 	}
 	if err := conns.StopAll(ctx, installID); err != nil {
 		log.Error().Err(err).Msg("stopping the connectors of a copy failed")
+		done = false
 	}
+	return done
 }
 
 // applianceParts is what the appliance's daemon is built of.
