@@ -85,9 +85,10 @@ what that changes; a file that has `"observeOnly": false` where the stored setti
 
 A new setting is optional and has a safe default, so a file written before it keeps working,
 and a field the file leaves out has its default. Settings are read strictly: a build that
-does not know a field refuses a file that has it. A downgrade after a newer version added a
-setting needs that field removed by hand. The same holds for the schema version of every
-file, which is 1: a file written by a newer schema is refused and never rewritten.
+does not know a field refuses a file that has it, so an older build refuses the settings a
+newer one saved. The same holds for the schema version of every file, which is 1: a file
+written by a newer schema is refused and never rewritten. Downgrades are not supported (see
+[Operations](operations.md#upgrades)).
 
 ## Publishing
 

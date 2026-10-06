@@ -1,7 +1,7 @@
 # Upgrade and go back
 
 This guide upgrades pco and `cloudflared` on a node, keeps `cloudflared` to the versions you
-choose, and says what going back to an earlier version does. pco and `cloudflared` are two
+choose, and says what going back to an earlier version means. pco and `cloudflared` are two
 packages and are upgraded apart.
 
 ## When you need it
@@ -9,7 +9,7 @@ packages and are upgraded apart.
 - A new release of pco is out.
 - A new `cloudflared` is out, or `pco doctor` warns that the one on the node is more than ten
   months old.
-- An upgrade misbehaves, and you want the version before it back.
+- An upgrade misbehaves, and you want to know how to go back.
 
 ## What an upgrade touches
 
@@ -28,7 +28,8 @@ it started with until it restarts.
 - Read the release notes of the new version for a change you have to act on first. A release
   can, for instance, publish a kind of hostname only once a setting names it; the notes say
   which setting to add before the upgrade.
-- Save what an admin decided, as [Back up and recover](backup-and-recovery.md#back-up) says.
+- Save what an admin decided, as [Back up and recover](backup-and-recovery.md#back-up) says, and
+  have a backup of the node itself from before the upgrade if you may want the old version back.
 
 ## Upgrade pco
 
@@ -130,42 +131,19 @@ On a node nothing enforces the list; it tells you what to choose.
 **cloudflared.** Install the earlier version the same way as a chosen one above, never one the
 list denies, hold it, and restart the connectors one at a time.
 
-**pco.** pco does not support a downgrade: an earlier build is not tested against what a later
-one wrote, and the host has no rollback of its own (the appliance has `pco upgrade --rollback`).
-What an earlier build does with the store is fixed, though: it refuses a file of a newer schema
-version and never rewrites it, and it refuses a settings file with a setting it does not know.
-Its daemon then holds, with `reading the settings: ...` among the problems, and changes
-nothing; the connectors keep serving what was published.
+**pco.** pco does not support a downgrade, and this guide gives no steps for one. An earlier
+build is not tested against what a later one wrote, and the host has no rollback of its own (the
+appliance has one, which [Upgrade the appliance](appliance-upgrade.md) describes). What an
+earlier build does with the store is fixed, though: it refuses a file of a newer schema version
+and never rewrites it, and it refuses a settings file with a setting it does not know. Its
+daemon then holds, with `reading the settings: ...` among the problems, and changes nothing; the
+connectors keep serving what was published.
 
-If you go back all the same:
-
-1. Compare the schema version of the store each build reads. If they differ, do not go back:
-
-   ```sh
-   pco version --json
-   ```
-
-   ```text
-   {
-     "version": "1.3.0",
-     "commit": "3e4f5a6",
-     "date": "2026-10-01T12:00:00Z",
-     "schemaVersion": 1
-   }
-   ```
-
-2. Install the earlier package over the later one, after checking it as for an install:
-
-   ```sh
-   apt install --allow-downgrades ./pco_1.2.3_amd64.deb
-   pco setup
-   ```
-
-3. If the later version added a setting that the settings file now has, the earlier daemon
-   holds with `reading the settings: <file>: invalid: json: unknown field "<name>"`. Remove the
-   field from `/etc/pve/pco/meta/settings.json`, from the object in `data`, with an editor;
-   the settings file is the one state file you may edit by hand
-   ([Settings](../settings.md#compatibility)).
+If an upgrade leaves pco in a state you cannot work with, the way back is a backup of the node
+from before it: a restored node has the earlier package and its store as they were.
+[After a restore of the node](backup-and-recovery.md#after-a-restore-of-the-node) says what to do
+next. The archive of [Back up and recover](backup-and-recovery.md#back-up) holds what an admin
+decided and the secrets, not the package.
 
 ## Check
 
@@ -180,7 +158,7 @@ ready`; the `cloudflared` check of `pco doctor` names the version that runs.
 
 ## Undo
 
-An upgrade of pco is undone by going back, above. A hold is lifted with
+An upgrade of pco is not undone by a downgrade; see above. A hold is lifted with
 `apt-mark unhold cloudflared`, after which `apt upgrade` keeps `cloudflared` current again.
 
 ## Read on
