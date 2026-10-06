@@ -5,6 +5,7 @@ import { lazy, type MouseEvent, Suspense, useMemo, useRef, useState, useSyncExte
 import { useApp } from '../api/store'
 import { type EventFilter, EventsTable } from '../app/EventsTable'
 import { NoRoutes } from '../app/NoRoutes'
+import { loadPart, Part } from '../app/part'
 import { navigate, useLocation } from '../app/router'
 import { Button, IconButton } from '../components/Button'
 import { Empty } from '../components/Empty'
@@ -20,7 +21,7 @@ import { ProblemsCard } from './ProblemsCard'
 import { StatTiles } from './StatTiles'
 
 // The map is drawn by code of its own, loaded when it is first shown.
-const FlowPanel = lazy(() => import('../flow/FlowMap').then((m) => ({ default: m.FlowPanel })))
+const FlowPanel = lazy(() => loadPart(() => import('../flow/FlowMap')).then((m) => ({ default: m.FlowPanel })))
 
 // The kinds of focus that name one thing, as the map and the address bar
 // write them; anything else in the search box is words to look for.
@@ -146,9 +147,11 @@ export function Overview() {
         <a className="flow-skip" href="#flow-end" onClick={skip}>
           {mapWords.skip}
         </a>
-        <Suspense fallback={<Skeleton lines={6} label={mapWords.loading} />}>
-          <FlowPanel model={shaped ?? model} selected={selected} onSelect={setSelected} onExpand={expand} paused={paused} zoom={zoom} />
-        </Suspense>
+        <Part what="The map">
+          <Suspense fallback={<Skeleton lines={6} label={mapWords.loading} />}>
+            <FlowPanel model={shaped ?? model} selected={selected} onSelect={setSelected} onExpand={expand} paused={paused} zoom={zoom} />
+          </Suspense>
+        </Part>
         <span id="flow-end" ref={after} tabIndex={-1} className="sr-only">
           {mapWords.end}
         </span>
