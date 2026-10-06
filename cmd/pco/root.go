@@ -42,8 +42,8 @@ const exitHelp = `Exit status:
 const askHelp = "It asks the daemon through its socket, which answers only root and pco-web, the user of the\n" +
 	"web interface; the exit status is 2 when the daemon could not be asked."
 
-// commandGroups are the groups of pco --help, in the order they are shown,
-// with the commands of each.
+// commandGroups are the groups of pco --help and of the command reference, in
+// the order they are shown, with the commands of each.
 var commandGroups = []struct {
 	id, title string
 	commands  []string
@@ -129,8 +129,9 @@ func newRootCmdWith(e env) *cobra.Command {
 			"  pco status\n\n" +
 			"  # The help of a command\n" +
 			"  pco help route manual add",
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		SilenceUsage:      true,
+		SilenceErrors:     true,
+		DisableAutoGenTag: true,
 	}
 	flags := root.PersistentFlags()
 	flags.StringVar(&a.socket, "socket", daemon.DefaultSocket,
@@ -168,6 +169,7 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.applianceCmd(),
 		a.upgradeCmd(),
 		a.completionCmd(),
+		a.docsCmd(),
 	)
 	groupOf := map[string]string{}
 	for _, g := range commandGroups {

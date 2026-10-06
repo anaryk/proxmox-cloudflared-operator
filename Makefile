@@ -18,7 +18,7 @@ comma := ,
 UI ?= 0
 TAGS := nomsgpack$(if $(filter 1,$(UI)),$(comma)webui)
 
-.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types docs docs-serve docs-lint docs-test
+.PHONY: build test lint fmt test-scripts snapshot package template e2e-binaries scale ui ui-dist ui-test ui-budget ui-e2e ui-words ui-types docs docs-serve docs-lint docs-test docs-cli
 
 build: $(if $(filter 1,$(UI)),ui-dist)
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco ./cmd/pco
@@ -120,6 +120,11 @@ docs-lint: docs
 
 docs-test: site/node_modules
 	cd site && npm test
+
+# The command reference in docs/cli, a page for each command written from its
+# help, and committed. A test of cmd/pco fails when it differs from the help.
+docs-cli:
+	go run -tags nomsgpack ./cmd/pco docs markdown docs/cli
 
 # Builds the interface and the .deb files without a tag and without publishing
 # or signing anything, and the appliance template where mmdebstrap is
