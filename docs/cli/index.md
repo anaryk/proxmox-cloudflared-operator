@@ -81,6 +81,8 @@ pco help route manual add
   - [pco egress show](pco-egress-show.md): Show whether the egress filter is on, what its sets hold and what it rejected
   - [pco egress unblock](pco-egress-unblock.md): Take an address off the block list of this node
 - [pco events](pco-events.md): List what changed, as the daemon keeps it
+- [pco export](pco-export.md): Write the install to an encrypted bundle, the backup to keep
+- [pco import](pco-import.md): Restore the install of an encrypted bundle on this node
 - [pco net](pco-net.md): Show how the appliance keeps the service prefix to itself
   - [pco net show](pco-net-show.md): Show the device, route, rules and table that keep the service prefix in the appliance
 - [pco netns](pco-netns.md): Show the gateway namespace the attached networks are reached through

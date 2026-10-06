@@ -1,0 +1,10 @@
+Restored the install from <bundle>.
+install                 0123456789ab
+manual routes           1
+approvals               1
+acknowledged segments   0
+nodes                   1
+CA and its key          yes
+Cloudflare credentials  1
+pco only observes until pco apply.
+Next: run pco setup if this node has none, then run pco promote.

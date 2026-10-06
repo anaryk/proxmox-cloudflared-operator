@@ -676,6 +676,7 @@ installed anew, not made from a copy.
 - No Attach and no managed network: the appliance reaches the guests on the segments of its
   cards, and `filtered`, the level of the managed network, proves nothing yet. An
   `identityMinimum` of `filtered` therefore holds every route back.
-- No `pco export` or `pco import`: a lost state volume comes back through
+- `pco export` writes the install to an encrypted bundle inside the appliance, but `pco import`
+  restores the install of a host only. A lost state volume comes back through
   `pco appliance repair --recover`, which adopts the install from Cloudflare, and the settings,
   approvals, acknowledged segments and manual routes are made again by hand.

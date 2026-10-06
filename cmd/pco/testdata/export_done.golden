@@ -1,0 +1,9 @@
+Wrote <bundle>.
+install                 0123456789ab
+manual routes           1
+approvals               1
+acknowledged segments   0
+nodes                   1
+CA and its key          yes
+Cloudflare credentials  none
+The Cloudflare credentials are not in it: --credentials adds them.

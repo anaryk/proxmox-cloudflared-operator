@@ -50,7 +50,7 @@ var commandGroups = []struct {
 }{
 	{"start", "Getting started:", []string{"setup", "credential", "apply", "status"}},
 	{"routes", "Routes and guests:", []string{"routes", "plan", "route", "guest", "claims", "adopt", "segment", "diagnose"}},
-	{"operate", "Operating:", []string{"sync", "events", "doctor", "settings", "egress", "net", "netns", "tunnel", "web", "daemon", "upgrade"}},
+	{"operate", "Operating:", []string{"sync", "events", "doctor", "settings", "egress", "net", "netns", "tunnel", "web", "daemon", "upgrade", "export", "import"}},
 	{"lifecycle", "Lifecycle:", []string{"uninstall", "appliance", "version", "completion"}},
 }
 
@@ -174,6 +174,8 @@ func newRootCmdWith(e env) *cobra.Command {
 		a.webCmd(),
 		a.applianceCmd(),
 		a.upgradeCmd(),
+		a.exportCmd(),
+		a.importCmd(),
 		a.completionCmd(),
 		a.docsCmd(),
 	)
