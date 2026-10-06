@@ -118,6 +118,35 @@ describe('hello', () => {
     expect(s.get().skew).toBe(true)
   })
 
+  // The stream of a reader ends when the guests it sees change, and the
+  // page opens another. The digest of the daemon is the same then; the state
+  // the reader gets is not.
+  test('a stream that begins again reads the state, for the guests of a reader may have changed', async () => {
+    const s = await opened()
+    expect(s.get().state?.routes.length).toBeGreaterThan(1)
+    calls = []
+    const fewer = { ...state, routes: state.routes.slice(0, 1) }
+    replies.set('GET /api/v1/state', (c) =>
+      c.opts?.ifNoneMatch === state.digest ? { status: 200, body: fewer, etag: 'set-2' } : new ApiError(500, { code: 'internal', error: 'not asked with the ETag held' }),
+    )
+    s.notice({ kind: 'hello', data: hello })
+    await flush()
+    expect(paths()).toEqual(['GET /api/v1/state'])
+    expect(calls[0]?.opts?.ifNoneMatch).toBe(state.digest)
+    expect(s.get().state?.routes).toHaveLength(1)
+  })
+
+  test('a stream that begins again over the same state costs a 304', async () => {
+    const s = await opened()
+    const before = s.get().state
+    calls = []
+    replies.set('GET /api/v1/state', () => ({ status: 304, body: undefined }))
+    s.notice({ kind: 'hello', data: hello })
+    await flush()
+    expect(paths()).toEqual(['GET /api/v1/state'])
+    expect(s.get().state).toBe(before)
+  })
+
   test('a new boot drops everything and fetches again', async () => {
     const s = await opened()
     calls = []

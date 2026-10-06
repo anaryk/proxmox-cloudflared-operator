@@ -544,7 +544,12 @@ export class AppStore {
           this.#set({ hello: h, loadedVersion, skew })
           if (!known) this.#loadAll()
         }
-        if (h.digest && h.digest !== this.#s.state?.digest) void this.fetchState(true)
+        // A stream that begins again follows the end of another, and one of a
+        // reader ends when the guests it sees change, which the digest of
+        // the daemon does not tell: the conditional read does, with an ETag
+        // for each set of guests.
+        const again = known !== undefined && known.boot === h.boot
+        if (again || (h.digest && h.digest !== this.#s.state?.digest)) void this.fetchState(true)
         break
       }
       case 'state':
