@@ -1,7 +1,6 @@
 package members
 
 import (
-	"bytes"
 	"io/fs"
 	"net/netip"
 	"os"
@@ -119,7 +118,9 @@ func TestReadCorosyncNamesTheFileItRefused(t *testing.T) {
 	require.ErrorContains(t, err, "corosync-bad-truncated.conf")
 }
 
-const nodes = `
+// A file with one node, and the totem section every corosync.conf ends with.
+const (
+	nodelist = `
 nodelist {
 	node {
 		name: a
@@ -127,6 +128,13 @@ nodelist {
 	}
 }
 `
+	totem = `
+totem {
+  version: 2
+}
+`
+	nodes = nodelist + totem
+)
 
 func TestParseCorosync(t *testing.T) {
 	tests := []struct {
@@ -136,12 +144,12 @@ func TestParseCorosync(t *testing.T) {
 		{
 			name: "comments, tabs, blank lines and carriage returns",
 			in: "# a comment\r\nnodelist {\r\n\r\n\tnode {\r\n\t\t# name: z\r\n\t\tname:   a  \r\n" +
-				"\t\tring0_addr:\t10.0.0.1\r\n\t}\r\n}\r\n",
+				"\t\tring0_addr:\t10.0.0.1\r\n\t}\r\n}\r\ntotem {\r\n}\r\n",
 			want: Corosync{Nodes: []string{"a"}, Links: map[string][]netip.Addr{"a": {addr("10.0.0.1")}}},
 		},
 		{
 			name: "a number sign inside a value is part of it",
-			in:   nodes + "totem {\n  cluster_name: lab#1\n}\n",
+			in:   nodes + "logging {\n  to_file: lab#1\n}\n",
 			want: Corosync{Nodes: []string{"a"}, Links: map[string][]netip.Addr{"a": {addr("10.0.0.1")}}},
 		},
 		{
@@ -153,7 +161,7 @@ func TestParseCorosync(t *testing.T) {
     ring2_addr: 10.0.2.1
     ring0_addr: 10.0.0.1
   }
-}`,
+}` + totem,
 			want: Corosync{Nodes: []string{"a"}, Links: map[string][]netip.Addr{
 				"a": {addr("10.0.0.1"), addr("10.0.2.1"), addr("10.0.10.1")},
 			}},
@@ -170,7 +178,7 @@ func TestParseCorosync(t *testing.T) {
     name: b
     ring0_addr: b.example.com
   }
-}`,
+}` + totem,
 			want: Corosync{Nodes: []string{"a", "b"}, Links: map[string][]netip.Addr{"a": {addr("10.0.1.1")}}},
 		},
 		{
@@ -185,7 +193,7 @@ func TestParseCorosync(t *testing.T) {
   node {
     name: b
   }
-}`,
+}` + totem,
 			want: Corosync{Nodes: []string{"a", "b", "c"}, Links: map[string][]netip.Addr{}},
 		},
 		{
@@ -234,15 +242,17 @@ func TestParseCorosyncRefuses(t *testing.T) {
 	}{
 		{"empty", ""},
 		{"comments only", "# nothing\n"},
-		{"no node", "totem {\n  version: 2\n}\n"},
+		{"no node", totem},
+		{"no totem section", nodelist},
+		{"a totem section of another section", nodelist + "quorum {\n  totem {\n  }\n}\n"},
 		{"a section left open", "nodelist {\n  node {\n    name: a\n  }\n"},
 		{"a section opened at the end", nodes + "quorum {\n"},
 		{"a brace that closes nothing", nodes + "}\n"},
 		{"a line that is no key and no section", nodes + "quorum\n"},
 		{"a section without a name", nodes + "{\n}\n"},
 		{"a key without a name", nodes + ": 1\n"},
-		{"a node without a name", "nodelist {\n  node {\n    ring0_addr: 10.0.0.1\n  }\n}\n"},
-		{"a node with an empty name", "nodelist {\n  node {\n    name:\n  }\n}\n"},
+		{"a node without a name", "nodelist {\n  node {\n    ring0_addr: 10.0.0.1\n  }\n}\n" + totem},
+		{"a node with an empty name", "nodelist {\n  node {\n    name:\n  }\n}\n" + totem},
 		{"expected votes that are no number", nodes + "quorum {\n  expected_votes: many\n}\n"},
 		{"expected votes below zero", nodes + "quorum {\n  expected_votes: -1\n}\n"},
 		{"two_node that is no number", nodes + "quorum {\n  two_node: maybe\n}\n"},
@@ -260,15 +270,13 @@ func TestParseCorosyncRefuses(t *testing.T) {
 func TestACorosyncFileCutMidWriteIsAnErrorAndNotAClusterWithoutADevice(t *testing.T) {
 	whole, err := os.ReadFile(fixture(t, "corosync-qdevice.conf"))
 	require.NoError(t, err)
-	// A cut right after the closing brace of a section is a smaller file and
-	// nothing says it was cut; pmxcfs replaces the file as a whole, so such a
-	// file is never seen. Every other cut is inside a section or a line.
-	for cut := 1; cut <= len(whole); cut++ {
-		b := whole[:cut]
-		if bytes.HasSuffix(bytes.TrimRight(b, "\r\n"), []byte("\n}")) {
-			continue
-		}
-		_, err := parseCorosync(b)
+	// The file ends with its totem section, so a cut between two sections, which
+	// no brace gives away, still lacks it. The cut that leaves out only the final
+	// newline is the whole file.
+	for cut := 1; cut < len(whole)-1; cut++ {
+		_, err := parseCorosync(whole[:cut])
 		require.Error(t, err, "a file cut at %d of %d bytes", cut, len(whole))
 	}
+	_, err = parseCorosync(whole[:len(whole)-1])
+	require.NoError(t, err)
 }

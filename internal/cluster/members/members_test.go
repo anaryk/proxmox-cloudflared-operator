@@ -112,6 +112,9 @@ func TestEveryFixtureIsReadOrRefusedAsItsNameSays(t *testing.T) {
 			if m.Standalone {
 				require.True(t, m.Quorate, "a standalone node is quorate")
 				require.Empty(t, m.Cluster)
+			} else {
+				require.True(t, slices.ContainsFunc(m.Nodes, func(n Member) bool { return n.Name == m.Self }),
+					"a node of a cluster is in its list")
 			}
 			require.True(t, slices.IsSortedFunc(m.Nodes, func(a, b Member) int {
 				return strings.Compare(a.Name, b.Name)
@@ -132,6 +135,18 @@ func TestAFileCutMidWriteIsAnErrorAndNotAQuorumLoss(t *testing.T) {
 	}
 }
 
+// inCluster is the file of node pve1 with the cluster object and the nodes a
+// case puts into it.
+func inCluster(cluster, nodes string) string {
+	return `{"nodename": "pve1", "cluster": ` + cluster + `, "nodelist": {` + nodes + `}}`
+}
+
+const (
+	selfOnline  = `"pve1": {"id": 1, "online": 1, "ip": "10.0.0.1"}`
+	otherOnline = `"pve2": {"id": 2, "online": 1, "ip": "10.0.0.2"}`
+	quorateOne  = `{"name": "c", "quorate": 1}`
+)
+
 func TestParseRefuses(t *testing.T) {
 	tests := []struct {
 		name, in string
@@ -143,17 +158,30 @@ func TestParseRefuses(t *testing.T) {
 		{"no node name", `{"version": 1}`},
 		{"empty node name", `{"nodename": "", "version": 1}`},
 		{"trailing data", `{"nodename": "pve1", "version": 1}}`},
-		{"cluster without quorate", `{"nodename": "pve1", "cluster": {"name": "c", "nodes": 2}}`},
-		{"cluster of other fields only", `{"nodename": "pve1", "cluster": {"nodes": 2}}`},
-		{"cluster name as a number", `{"nodename": "pve1", "cluster": {"name": 7, "quorate": 1}}`},
-		{"cluster as text", `{"nodename": "pve1", "cluster": "yes"}`},
-		{"quorate as text", `{"nodename": "pve1", "cluster": {"name": "c", "quorate": "yes"}}`},
-		{"node without online", `{"nodename": "pve1", "cluster": {"name": "c", "quorate": 1},
-			"nodelist": {"pve1": {"id": 1, "ip": "10.0.0.1"}}}`},
-		{"node without a name", `{"nodename": "pve1", "cluster": {"name": "c", "quorate": 1},
-			"nodelist": {"": {"id": 1, "online": 1}}}`},
-		{"id as text", `{"nodename": "pve1", "cluster": {"name": "c", "quorate": 1},
-			"nodelist": {"pve1": {"id": "one", "online": 1}}}`},
+		{"cluster without quorate", inCluster(`{"name": "c", "nodes": 2}`, selfOnline)},
+		{"cluster of other fields only", inCluster(`{"nodes": 2}`, selfOnline)},
+		{"cluster name as a number", inCluster(`{"name": 7, "quorate": 1}`, selfOnline)},
+		{"cluster as text", inCluster(`"yes"`, selfOnline)},
+		{"quorate as text", inCluster(`{"name": "c", "quorate": "yes"}`, selfOnline)},
+		{"quorate as null", inCluster(`{"name": "c", "quorate": null}`, selfOnline)},
+		{"quorate above one", inCluster(`{"name": "c", "quorate": 2}`, selfOnline)},
+		{"quorate below zero", inCluster(`{"name": "c", "quorate": -1}`, selfOnline)},
+		{"node without online", inCluster(quorateOne, `"pve1": {"id": 1, "ip": "10.0.0.1"}`)},
+		{"node with online as null", inCluster(quorateOne, `"pve1": {"id": 1, "online": null}`)},
+		{"node with online above one", inCluster(quorateOne, `"pve1": {"id": 1, "online": 2}`)},
+		{"node without a name", inCluster(quorateOne, selfOnline+`, "": {"id": 4, "online": 1}`)},
+		{"id as text", inCluster(quorateOne, `"pve1": {"id": "one", "online": 1}`)},
+		{"an address that is none", inCluster(quorateOne, `"pve1": {"id": 1, "online": 1, "ip": "not an address"}`)},
+		{"an address with a port", inCluster(quorateOne, `"pve1": {"id": 1, "online": 1, "ip": "10.0.0.1:8006"}`)},
+		{"a cluster without a node list", `{"nodename": "pve1", "cluster": ` + quorateOne + `}`},
+		{"a cluster with an empty node list", inCluster(quorateOne, ``)},
+		{"a cluster whose list lacks this node", inCluster(quorateOne, otherOnline)},
+		{"no cluster, other nodes listed",
+			`{"nodename": "pve1", "nodelist": {` + selfOnline + `, ` + otherOnline + `}}`},
+		{"an empty cluster, other nodes listed",
+			`{"nodename": "pve1", "cluster": {}, "nodelist": {` + selfOnline + `, "pve2": {"id": 2, "online": 0}}}`},
+		{"a null cluster, only other nodes listed",
+			`{"nodename": "pve1", "cluster": null, "nodelist": {` + otherOnline + `}}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -169,25 +197,88 @@ func TestParseDoesNotInventWhatTheFileLeavesOut(t *testing.T) {
 		"nodelist": {
 			"pve1": {"id": 1, "online": 1, "ip": "10.0.0.1", "more": true},
 			"pve2": {"id": 2, "online": 0},
-			"pve3": {"id": 3, "online": 1, "ip": "not an address"}
+			"pve3": {"online": 1, "ip": ""}
 		}}`
 	m, err := Parse([]byte(in), t0)
 	require.NoError(t, err)
 	require.Equal(t, []Member{
 		{Name: "pve1", ID: 1, Online: true, IP: addr("10.0.0.1")},
 		{Name: "pve2", ID: 2, Online: false},
-		{Name: "pve3", ID: 3, Online: true},
+		{Name: "pve3", ID: 0, Online: true},
 	}, m.Nodes)
 	require.False(t, m.Nodes[1].IP.IsValid())
 	require.False(t, m.Nodes[2].IP.IsValid())
 }
 
 func TestAClusterWithoutANameIsStillACluster(t *testing.T) {
-	m, err := Parse([]byte(`{"nodename": "pve1", "cluster": {"quorate": 0}}`), t0)
+	m, err := Parse([]byte(inCluster(`{"quorate": 0}`, selfOnline)), t0)
 	require.NoError(t, err)
 	require.False(t, m.Standalone)
 	require.False(t, m.Quorate)
 	require.Empty(t, m.Cluster)
+}
+
+func TestANodeThatListsOnlyItselfWithoutAClusterIsStandalone(t *testing.T) {
+	for name, in := range map[string]string{
+		"no list":      `{"nodename": "pve1"}`,
+		"a null":       `{"nodename": "pve1", "cluster": null}`,
+		"an empty one": `{"nodename": "pve1", "cluster": {}, "nodelist": {` + selfOnline + `}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := Parse([]byte(in), t0)
+			require.NoError(t, err)
+			require.True(t, m.Standalone)
+			require.True(t, m.Quorate)
+		})
+	}
+}
+
+// writeBeside puts the fixture where a members file is, in a directory of its
+// own, so that a corosync.conf can be put beside it.
+func writeBeside(t *testing.T, name string) (dir, path string) {
+	t.Helper()
+	b, err := os.ReadFile(fixture(t, name))
+	require.NoError(t, err)
+	dir = t.TempDir()
+	path = filepath.Join(dir, ".members")
+	require.NoError(t, os.WriteFile(path, b, 0o600))
+	return dir, path
+}
+
+func writeCorosyncBeside(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "corosync.conf"), []byte("totem {\n}\n"), 0o600))
+}
+
+// pmxcfs prints no cluster before corosync has told it about one, and every
+// member has a corosync.conf: that file is what tells a node that was never in
+// a cluster from one that has not heard from its cluster yet.
+func TestAFileWithoutAClusterIsStandaloneOnlyWhileThereIsNoCorosyncConfig(t *testing.T) {
+	for _, file := range []string{"members-standalone.json", "members-standalone-empty-cluster.json"} {
+		t.Run(file, func(t *testing.T) {
+			dir, p := writeBeside(t, file)
+			m, err := Read(p, t0)
+			require.NoError(t, err)
+			require.True(t, m.Standalone)
+
+			writeCorosyncBeside(t, dir)
+			m, err = Read(p, t0)
+			require.ErrorContains(t, err, "corosync.conf")
+			require.Equal(t, Members{}, m)
+		})
+	}
+}
+
+func TestAFileWithAClusterDoesNotDependOnACorosyncConfig(t *testing.T) {
+	dir, p := writeBeside(t, "members-quorate.json")
+	m, err := Read(p, t0)
+	require.NoError(t, err)
+	require.False(t, m.Standalone)
+
+	writeCorosyncBeside(t, dir)
+	m, err = Read(p, t0)
+	require.NoError(t, err)
+	require.False(t, m.Standalone)
 }
 
 func TestReadOfAMissingFileIsAnErrorTheCallerCanTell(t *testing.T) {
@@ -272,6 +363,24 @@ func TestQuorumKeepsTheLastGoodReadWhenTheNextFails(t *testing.T) {
 	_, err = q.Read()
 	require.ErrorIs(t, err, fs.ErrNotExist)
 	last, at = q.Last()
+	require.Equal(t, good, last)
+	require.Equal(t, t0, at)
+}
+
+func TestQuorumKeepsTheStandaloneReadWhenACorosyncConfigAppears(t *testing.T) {
+	c := &clock{t: t0}
+	dir, p := writeBeside(t, "members-standalone.json")
+	q := NewQuorum(p, c.now)
+	good, err := q.Read()
+	require.NoError(t, err)
+	require.True(t, good.Standalone)
+
+	c.advance(2 * time.Second)
+	writeCorosyncBeside(t, dir)
+	_, err = q.Read()
+	require.Error(t, err)
+
+	last, at := q.Last()
 	require.Equal(t, good, last)
 	require.Equal(t, t0, at)
 }

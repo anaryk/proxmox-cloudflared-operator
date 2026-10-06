@@ -29,7 +29,8 @@ type Corosync struct {
 
 // ReadCorosync parses the file at path, normally CorosyncFile. A standalone
 // node has none, and the error then is one for which errors.Is(err,
-// fs.ErrNotExist) holds.
+// fs.ErrNotExist) holds. A file without a node list or without a totem
+// section is refused as one that was cut.
 func ReadCorosync(path string) (Corosync, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -120,6 +121,12 @@ func parseCorosync(b []byte) (Corosync, error) {
 	}
 	if len(c.Nodes) == 0 {
 		return Corosync{}, errors.New("the file lists no node")
+	}
+	// Every corosync.conf of Proxmox ends with its totem section. A file that
+	// stops between two sections shows no unclosed brace, and would read as a
+	// cluster without a quorum section, and so without a quorum device.
+	if len(root.sections("totem")) == 0 {
+		return Corosync{}, errors.New("the file has no totem section, so it may be cut short")
 	}
 	slices.Sort(c.Nodes)
 	for _, q := range root.sections("quorum") {
