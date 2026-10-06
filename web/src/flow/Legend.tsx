@@ -46,7 +46,7 @@ export function Legend({ why, paused, reduced, stale }: LegendProps) {
           {legendWords.noCounters} <Untrusted text={counters.short} />
           {counters.detail && (
             <Tooltip content={<Untrusted text={counters.detail} />}>
-              <button type="button" className="iconbtn fm-why" aria-label="What went wrong">
+              <button type="button" className="iconbtn fm-why" aria-label={legendWords.whatWentWrong}>
                 <InfoIcon />
               </button>
             </Tooltip>

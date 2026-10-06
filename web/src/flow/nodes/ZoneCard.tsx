@@ -4,7 +4,7 @@ import { Badge } from '../../components/Badge'
 import { GlobeIcon, ListIcon, WaitIcon } from '../../components/icons'
 import { type Look, routeLook } from '../../components/StateBadge'
 import { Untrusted } from '../../components/Untrusted'
-import { nodeLabel, rowLabel } from '../../text/flow'
+import { cardWords, nodeLabel, rowLabel } from '../../text/flow'
 import { rowItemId } from '../keys'
 import type { FlowRow } from '../types'
 import { cardClass, type CardProps, focusable, litOf, Mark, place, Ring, ringOf, sameCard } from './parts'
@@ -19,7 +19,7 @@ function lookOf(r: FlowRow): Look {
 }
 
 function Tag({ tag }: { tag: string }) {
-  if (tag === 'waits for approval') return <Badge tone="info">approval</Badge>
+  if (tag === 'waits for approval') return <Badge tone="info">{cardWords.approval}</Badge>
   return <Badge tone={tag === 'DNS' ? 'fail' : 'idle'}>{tag}</Badge>
 }
 
@@ -48,7 +48,7 @@ function Row({ row, tab, dim, ring, port }: RowProps) {
         <span className="fm-owner">
           {row.holder ? (
             <>
-              held by <Untrusted text={row.holder} max={16} />
+              {cardWords.heldBy} <Untrusted text={row.holder} max={16} />
             </>
           ) : (
             <Untrusted text={row.guest ?? row.owner} max={16} />

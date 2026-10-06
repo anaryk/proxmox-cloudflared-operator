@@ -17,7 +17,7 @@
   width: 100%;
   height: 100%;
   overflow: clip;
-  touch-action: none;
+  touch-action: pan-y;
   cursor: grab;
   user-select: none;
 }
@@ -55,7 +55,7 @@
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.3;
   cursor: pointer;
 }
@@ -110,7 +110,7 @@
   margin-left: auto;
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   text-overflow: ellipsis;
 }
@@ -138,7 +138,7 @@
 .fm-text {
   overflow: hidden;
   color: var(--text2);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -161,7 +161,7 @@
 }
 
 .fm-row {
-  font: 11.5px var(--mono);
+  font: 12.5px var(--mono);
 }
 
 .fm-row:hover,
@@ -187,7 +187,7 @@
   margin-left: auto;
   overflow: hidden;
   color: var(--muted);
-  font: 11px var(--font);
+  font: 12px var(--font);
   text-overflow: ellipsis;
 }
 
@@ -195,7 +195,7 @@
 .fm-head .badge,
 .fm-port .badge {
   font-family: var(--font);
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 15px;
 }
 
@@ -203,7 +203,7 @@
   gap: 8px;
   overflow: hidden;
   color: var(--text2);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .fm-count {
@@ -224,7 +224,7 @@
   border: 1px solid var(--border);
   border-radius: 3px;
   background: var(--raised);
-  font: 11.5px var(--mono);
+  font: 12px var(--mono);
   white-space: nowrap;
 }
 
@@ -251,13 +251,13 @@
 .fm-shared {
   margin-left: auto;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .fm-rate {
   margin-left: auto;
   color: var(--traffic-text);
-  font: 700 11px var(--font);
+  font: 700 12px var(--font);
   font-variant-numeric: tabular-nums;
 }
 
@@ -394,7 +394,7 @@
 
 .fm-503 {
   fill: var(--warn);
-  font: 700 10px var(--font);
+  font: 700 12px var(--font);
 }
 
 .fm-muted .fm-line,
@@ -412,11 +412,11 @@
 .fm-edge-label,
 .fm-since {
   fill: var(--muted);
-  font: 11px var(--font);
+  font: 12px var(--font);
 }
 
 .fm-edge-label {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .fm-figure {
@@ -427,7 +427,7 @@
 
 .fm-errors {
   fill: var(--fail);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .fm-muted .fm-figure,
@@ -480,6 +480,42 @@
   margin-top: 4px;
   font: 12px var(--mono);
   overflow-wrap: anywhere;
+}
+
+/* The mini map, in the corner: the cards in small and what the map shows
+   now. */
+
+.fm-mini {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 4;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.fm-mini-node {
+  fill: var(--raised);
+  stroke: var(--control-border);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.fm-mini-rogue {
+  fill: var(--fail-weak);
+  stroke: var(--fail);
+}
+
+.fm-mini-view {
+  fill: var(--accent);
+  fill-opacity: 0.1;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
 }
 
 /* the legend */
@@ -600,5 +636,15 @@
 
   .fm-ring {
     border-color: Highlight;
+  }
+
+  .fm-mini-node {
+    fill: Canvas;
+    stroke: CanvasText;
+  }
+
+  .fm-mini-view {
+    fill: none;
+    stroke: Highlight;
   }
 }

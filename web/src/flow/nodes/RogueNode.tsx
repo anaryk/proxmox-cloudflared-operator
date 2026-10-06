@@ -2,10 +2,10 @@ import { memo } from 'react'
 
 import { RogueIcon } from '../../components/icons'
 import { Untrusted } from '../../components/Untrusted'
-import { nodeLabel } from '../../text/flow'
+import { cardWords, nodeLabel } from '../../text/flow'
 import { cardClass, type CardProps, focusable, Lines, litOf, Mark, place, sameCard } from './parts'
 
-const notRun = 'not run by pco'
+const notRun = cardWords.notRun
 
 // RogueNode is a connector Cloudflare lists on a tunnel that pco does not
 // run, in red, beside the connector pco runs: where it connects from and

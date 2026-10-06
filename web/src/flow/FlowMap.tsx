@@ -2,11 +2,11 @@ import './flow.css'
 
 import { select } from 'd3-selection'
 import { type D3ZoomEvent, zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom'
-import { type ComponentType, type JSX, type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentType, type JSX, type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { useApp } from '../api/store'
 import { Untrusted } from '../components/Untrusted'
-import { edgeTip, mapWords, noDataSince, trunkFigure } from '../text/flow'
+import { edgeTip, mapWords, noDataSince, type PathFigure, pathFigure, portNote, rotateWords, trunkFigure } from '../text/flow'
 import type { CommandWords } from '../text/words'
 import { pointAt } from './edges/path'
 import { StateEdge } from './edges/StateEdge'
@@ -15,6 +15,7 @@ import { Trunk } from './edges/Trunk'
 import { buildNav, type Nav, rowItemId, rowRoutes, step } from './keys'
 import { layout as layOut } from './layout'
 import { Legend } from './Legend'
+import { MiniMap } from './MiniMap'
 import { createMotion, dotCap } from './motion'
 import { ConnectorNode } from './nodes/ConnectorNode'
 import { EdgeNode } from './nodes/EdgeNode'
@@ -34,6 +35,36 @@ import type { Box, FlowEdge, FlowMapProps, FlowNode, Layout, MapExtras, Model, M
 const maxZoom = 4
 const zoomStep = 1.4
 const margin = 24
+
+// The map's type is at least 12 px; the fit shrinks it to 11 px and no
+// further: a narrower frame scrolls sideways instead.
+export const minFit = 11 / 12
+
+// The mini map shows on a wide screen once the map has more cards than a
+// screen holds at a glance.
+const miniCards = 40
+const wideQuery = '(min-width: 1200px)'
+
+function followWide(changed: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => undefined
+  const query = window.matchMedia(wideQuery)
+  query.addEventListener('change', changed)
+  return () => query.removeEventListener('change', changed)
+}
+
+const wideNow = () => typeof window.matchMedia === 'function' && window.matchMedia(wideQuery).matches
+
+// gestureFilter says which events pan and zoom the map: a drag of the
+// primary button, the wheel with Ctrl (a pinch of a touchpad), and two
+// fingers. One finger is the page's, which scrolls (the frame allows pan-y),
+// and the tooltip and the mini map keep their own presses.
+export function gestureFilter(e: Event): boolean {
+  if (e.target instanceof Element && e.target.closest('.fm-tip, .fm-mini')) return false
+  if (e.type === 'wheel') return !!(e as WheelEvent).ctrlKey
+  if (e.type.startsWith('touch')) return ((e as TouchEvent).touches?.length ?? 0) >= 2
+  const m = e as MouseEvent
+  return !m.ctrlKey && !m.button
+}
 
 function cardOf(n: FlowNode): ComponentType<CardProps> {
   switch (n.kind) {
@@ -101,7 +132,7 @@ function Command({ cmd }: { cmd: CommandWords }) {
   if (cmd.command) return <code className="fm-tip-code">{cmd.command.text}</code>
   return (
     <span className="fm-tip-line">
-      No command: <Untrusted text={cmd.refused} />
+      {rotateWords.none} <Untrusted text={cmd.refused} />
     </span>
   )
 }
@@ -180,7 +211,7 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
 
   const width = size.width || layout.width
   const height = size.height || layout.height
-  const fitScale = width / layout.width
+  const fitScale = Math.max(width / layout.width, minFit)
 
   // Dots only on the lines in view.
   const cull = useCallback(() => {
@@ -199,24 +230,37 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
     motion.setVisible(ids)
   }, [layout, width, height, motion])
 
+  // The rectangle of the mini map follows what the map shows.
+  const miniView = useRef<SVGRectElement>(null)
+  const viewport = useCallback(
+    (t: ZoomTransform) => {
+      const rect = miniView.current
+      if (!rect) return
+      rect.setAttribute('x', String(-t.x / t.k))
+      rect.setAttribute('y', String(-t.y / t.k))
+      rect.setAttribute('width', String(width / t.k))
+      rect.setAttribute('height', String(height / t.k))
+    },
+    [width, height],
+  )
+
   const onViewport = props.onViewport
   const apply = useCallback(
     (t: ZoomTransform) => {
       transform.current = t
       if (view.current) view.current.style.transform = `translate(${t.x}px, ${t.y}px) scale(${t.k})`
       cull()
+      viewport(t)
       onViewport({ x: t.x, y: t.y, zoom: t.k })
     },
-    [cull, onViewport],
+    [cull, viewport, onViewport],
   )
 
   // Pan and zoom: dragging pans, a pinch or the wheel with Ctrl zooms, the
   // wheel alone scrolls the map until it ends and then the page.
   useLayoutEffect(() => {
     if (!frame) return
-    const z = zoom<HTMLDivElement, unknown>()
-      .filter((e: Event) => (e.type === 'wheel' ? (e as WheelEvent).ctrlKey : !(e as MouseEvent).ctrlKey && !(e as MouseEvent).button))
-      .clickDistance(4)
+    const z = zoom<HTMLDivElement, unknown>().filter(gestureFilter).clickDistance(4)
     behaviour.current = z
     const sel = select(frame)
     sel.call(z).on('dblclick.zoom', null)
@@ -278,8 +322,9 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
     asked.current = ask
     const z = behaviour.current
     if (!z || !frame) return
-    if (ask.to === 'fit') fit()
-    else z.scaleBy(select(frame), ask.to === 'in' ? zoomStep : 1 / zoomStep)
+    if (ask.to === 'fit') return fit()
+    fitted.current = false
+    z.scaleBy(select(frame), ask.to === 'in' ? zoomStep : 1 / zoomStep)
   }, [ask, fit, frame])
 
   // The lines the dots run on, and those of them in view.
@@ -318,14 +363,43 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
     [frame, width, height],
   )
 
+  const wide = useSyncExternalStore(followWide, wideNow)
+  const mini = wide && model.nodes.length > miniCards
+  useEffect(() => {
+    if (mini) viewport(transform.current)
+  }, [mini, viewport])
+  const pick = useCallback(
+    (x: number, y: number) => {
+      const z = behaviour.current
+      if (z && frame) z.translateTo(select(frame), x, y)
+    },
+    [frame],
+  )
+
+  // What the lines from the connectors into each path carry.
+  const carried = useMemo(() => {
+    const into = new Map<string, FlowEdge[]>()
+    for (const e of model.edges) {
+      if (e.rate === undefined || byId.get(e.to)?.kind !== 'path') continue
+      into.set(e.to, [...(into.get(e.to) ?? []), e])
+    }
+    const out = new Map<string, PathFigure>()
+    for (const [id, edges] of into) {
+      const fresh = edges.filter((e) => !e.stale)
+      const sum = (list: FlowEdge[]) => list.reduce((n, e) => n + (e.rate ?? 0), 0)
+      out.set(id, fresh.length > 0 ? { rate: sum(fresh) } : { rate: sum(edges), stale: true })
+    }
+    return out
+  }, [model, byId])
+
   const tipAt = useCallback(
     (id: string): Tip | undefined => {
       const item = nav.byId.get(id)
       if (!item) return undefined
       const t = transform.current
-      const below = t.y + (item.box.y + item.box.height) * t.k + 4
+      const below = t.y + (item.box.y + item.box.height) * t.k
       const x = Math.max(0, t.x + item.box.x * t.k)
-      return below + tipRoom > height ? { id, x, y: t.y + item.box.y * t.k - 4, above: true } : { id, x, y: below }
+      return below + tipRoom > height ? { id, x, y: t.y + item.box.y * t.k, above: true } : { id, x, y: below }
     },
     [nav, height],
   )
@@ -346,6 +420,13 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
       return el instanceof HTMLElement && frame.contains(el) ? el.dataset.item : undefined
     }
     let stepping = false
+    // The tooltip stays a moment after the pointer leaves what it tells of,
+    // so that the pointer can go into it.
+    let leaving: ReturnType<typeof setTimeout> | undefined
+    const stay = () => {
+      clearTimeout(leaving)
+      leaving = undefined
+    }
     const activate = (id: string) => {
       const { nav, props } = latest.current
       const item = nav.byId.get(id)
@@ -353,23 +434,30 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
       else props.onSelect(id)
     }
     const over = (e: PointerEvent) => {
-      if (inTip(e.target)) return
+      if (inTip(e.target)) return stay()
       const item = itemOf(e.target)
       const edge = item ? null : edgeOf(e.target)
       const id = item?.dataset.item ?? edge?.dataset.edge
-      setPointer(id)
       if (!id) {
-        const k = keyedNow()
-        setTip(k ? latest.current.tipAt(k) : undefined)
+        if (leaving !== undefined) return
+        leaving = setTimeout(() => {
+          leaving = undefined
+          setPointer(undefined)
+          const k = keyedNow()
+          setTip(k ? latest.current.tipAt(k) : undefined)
+        }, 150)
         return
       }
+      stay()
+      setPointer(id)
       const box = frame.getBoundingClientRect()
-      const x = e.clientX - box.left + 12
+      const x = e.clientX - box.left + 4
       const y = e.clientY - box.top
-      const above = y + 12 + tipRoom > box.height
-      setTip((was) => (was?.id === id ? was : item ? latest.current.tipAt(id) : { id, x, y: above ? y - 12 : y + 12, above }))
+      const above = y + 4 + tipRoom > box.height
+      setTip((was) => (was?.id === id ? was : item ? latest.current.tipAt(id) : { id, x, y: above ? y - 4 : y + 4, above }))
     }
     const leave = () => {
+      stay()
       setPointer(undefined)
       const k = keyedNow()
       setTip(k ? latest.current.tipAt(k) : undefined)
@@ -428,6 +516,7 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
     frame.addEventListener('focusout', focusOut)
     frame.addEventListener('keydown', key)
     return () => {
+      stay()
       frame.removeEventListener('pointerover', over)
       frame.removeEventListener('pointerleave', leave)
       frame.removeEventListener('click', click)
@@ -437,7 +526,7 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
     }
   }, [frame])
 
-  const tipContent = tip ? tipOf(tip.id, model, byId, nav, extras) : undefined
+  const tipContent = tip ? tipOf(tip.id, model, byId, nav, extras, carried) : undefined
 
   // The item with the focus is described by its tooltip, when it has one.
   const described = keyed !== undefined && tip?.id === keyed && tipContent !== undefined
@@ -490,6 +579,8 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
                 ports={portsOf.get(node.id)}
                 refused={node.kind === 'connector' && extras?.commands?.has(node.id)}
                 still={node.kind === 'target' ? reducedMotion : undefined}
+                rate={carried.get(node.id)?.rate}
+                rateStale={carried.get(node.id)?.stale}
               />
             )
           })}
@@ -498,10 +589,12 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
           <g ref={layer} />
         </svg>
       </div>
+      {mini && <MiniMap model={model} layout={layout} view={miniView} onPick={pick} />}
       {tip && tipContent && (
         <div
           id={tipId}
           role="tooltip"
+          tabIndex={-1}
           className="fm-tip"
           style={{ left: Math.min(tip.x, Math.max(0, width - 320)), top: tip.y, transform: tip.above ? 'translateY(-100%)' : undefined }}
         >
@@ -514,7 +607,7 @@ export default function FlowMap(props: FlowMapProps): JSX.Element {
 
 // tipOf is what the tooltip of a card, a line of a card or a line between
 // them says beyond the name; nothing when there is nothing more.
-function tipOf(id: string, model: Model, byId: ReadonlyMap<string, FlowNode>, nav: Nav, extras: MapExtras | undefined): ReactNode {
+function tipOf(id: string, model: Model, byId: ReadonlyMap<string, FlowNode>, nav: Nav, extras: MapExtras | undefined, carried: ReadonlyMap<string, PathFigure>): ReactNode {
   const item = nav.byId.get(id)
   if (item?.row) {
     const r = item.row
@@ -533,16 +626,13 @@ function tipOf(id: string, model: Model, byId: ReadonlyMap<string, FlowNode>, na
     return r.reason ? <Untrusted text={r.reason} /> : undefined
   }
   if (item) {
+    const figure = carried.get(item.node.id)
+    if (figure) return `${pathFigure(figure)}: ${portNote}`
     const cmd = extras?.commands?.get(item.node.id)
     if (!cmd) return undefined
-    const rogue = item.node.kind === 'rogue'
     return (
       <>
-        <span>
-          {rogue
-            ? 'pco does not run this connector: whoever does holds the tunnel’s token. If it is not yours, give the tunnel a new secret, as root on the node:'
-            : 'Cloudflare refuses the token of this connector. Give the tunnel a new secret, as root on the node:'}
-        </span>
+        <span>{item.node.kind === 'rogue' ? rotateWords.rogue : rotateWords.refused}</span>
         <Command cmd={cmd} />
       </>
     )
@@ -645,7 +735,7 @@ export function FlowPanel({ model, selected, onSelect, onExpand, paused, zoom: a
   const ratio = now.layout.height / now.layout.width
   return (
     <div className="fm-panel">
-      <div className="fm-box" style={{ height: `min(calc(100cqw * ${ratio.toFixed(4)}), max(360px, 75vh))` }}>
+      <div className="fm-box" style={{ height: `min(calc(max(100cqw, ${Math.round(now.layout.width * minFit)}px) * ${ratio.toFixed(4)}), max(360px, 75vh))` }}>
         <FlowMap
           model={now.model}
           layout={now.layout}

@@ -13,6 +13,7 @@ import { TunnelDetail, tunnelLabel, tunnelPath } from '../pages/edge/TunnelDetai
 import { ZoneDetail } from '../pages/edge/ZoneDetail'
 import { RouteDetail } from '../pages/routes/RouteDetail'
 import { RouteTraffic } from '../pages/routes/RouteTraffic'
+import { drawerWords as words } from '../text/flow'
 import { rotateCommand } from '../text/words'
 import { ChainList } from './ChainList'
 import type { FlowEdge, FlowNode, FlowRow, Model } from './types'
@@ -34,7 +35,7 @@ function routeOf(st: State, key: string) {
 
 function rowShown(st: State, traffic: TrafficView | undefined, r: FlowRow): Shown {
   if (r.kind === 'group' || r.kind === 'more') {
-    return { title: <Untrusted text={r.label ?? ''} />, body: routesOf(st, traffic, r.routes ?? [], 'Their routes') }
+    return { title: <Untrusted text={r.label ?? ''} />, body: routesOf(st, traffic, r.routes ?? [], words.theirRoutes) }
   }
   if (r.kind === 'unapproved') return { title: <Untrusted text={r.hostname} hostname />, body: <GuestDetail key={r.owner} guest={r.owner} variant="drawer" /> }
   return { title: <Untrusted text={r.hostname} hostname />, body: <RouteDetail key={keyOf(r)} hostname={r.hostname} owner={r.owner} variant="drawer" /> }
@@ -43,31 +44,27 @@ function rowShown(st: State, traffic: TrafficView | undefined, r: FlowRow): Show
 function Rogue({ st, id }: { st: State; id: string }) {
   const nodeZone = useApp((s) => s.session?.nodeZone)
   const r = st.rogueConnectors.find((x) => x.id === id)
-  if (!r) return <p className="muted">Cloudflare lists this connector no longer.</p>
+  if (!r) return <p className="muted">{words.gone}</p>
   const t = st.tunnels.find((x) => x.accountId === r.accountId)
   return (
     <div className="detail detail-drawer">
       <dl className="details">
-        <dt>Connector id</dt>
+        <dt>{words.connectorId}</dt>
         <dd className="mono">
           <Untrusted text={r.id} />
         </dd>
-        <dt>Connects from</dt>
-        <dd className="mono">{r.originIp ? <Untrusted text={r.originIp} /> : 'an unknown address'}</dd>
-        <dt>cloudflared</dt>
-        <dd>{r.version ? <Untrusted text={r.version} /> : 'of an unknown version'}</dd>
-        <dt>Tunnel</dt>
+        <dt>{words.from}</dt>
+        <dd className="mono">{r.originIp ? <Untrusted text={r.originIp} /> : words.unknownAddress}</dd>
+        <dt>{words.cloudflared}</dt>
+        <dd>{r.version ? <Untrusted text={r.version} /> : words.unknownVersion}</dd>
+        <dt>{words.tunnel}</dt>
         <dd>{t ? <Link to={tunnelPath(t.accountId)}>{<Untrusted text={tunnelLabel(st, t)} />}</Link> : <Untrusted text={r.tunnel} />}</dd>
-        <dt>First seen</dt>
+        <dt>{words.firstSeen}</dt>
         <dd>
           <Time at={r.since} nodeZone={nodeZone} />
         </dd>
       </dl>
-      <p>
-        Cloudflare lists this connector on the tunnel, and pco does not run it on this node: whoever runs it holds the tunnel&apos;s token and gets a
-        share of the requests to every hostname of the tunnel. If it is not yours, give the tunnel a new secret; that cuts every connector but
-        pco&apos;s.
-      </p>
+      <p>{words.rogue}</p>
       <CopyCommand cmd={rotateCommand(st.tunnels, r.accountId)} root />
     </div>
   )
@@ -78,7 +75,7 @@ function nodeShown(st: State, traffic: TrafficView | undefined, n: FlowNode): Sh
   switch (n.kind) {
     case 'zone':
       if (n.ref) return { title: <Untrusted text={n.ref} hostname />, body: <ZoneDetail key={n.ref} zone={n.ref} variant="drawer" /> }
-      return { title: label, body: routesOf(st, traffic, n.routes ?? [], 'Hostnames in no zone') }
+      return { title: label, body: routesOf(st, traffic, n.routes ?? [], words.noZone) }
     case 'edge':
     case 'connector':
       return { title: label, body: <TunnelDetail key={n.ref} accountId={n.ref ?? ''} variant="drawer" /> }
@@ -89,10 +86,10 @@ function nodeShown(st: State, traffic: TrafficView | undefined, n: FlowNode): Sh
       const [only] = n.routes ?? []
       const r = only !== undefined && n.routes?.length === 1 ? routeOf(st, only) : undefined
       if (r) return { title: <Untrusted text={r.hostname} hostname />, body: <RouteDetail key={only} hostname={r.hostname} owner={r.owner} variant="drawer" /> }
-      return { title: label, body: routesOf(st, traffic, n.routes ?? [], 'Its routes') }
+      return { title: label, body: routesOf(st, traffic, n.routes ?? [], words.itsRoutes) }
     }
   }
-  return { title: label, body: routesOf(st, traffic, n.routes ?? [], 'Their routes') }
+  return { title: label, body: routesOf(st, traffic, n.routes ?? [], words.theirRoutes) }
 }
 
 function Trunk({ st, traffic, edge }: { st: State; traffic?: TrafficView; edge: FlowEdge }) {
@@ -104,7 +101,7 @@ function Trunk({ st, traffic, edge }: { st: State; traffic?: TrafficView; edge: 
     <div className="detail detail-drawer">
       {tt && traffic ? (
         <TrafficChart
-          label="Requests and errors"
+          label={words.chart}
           end={traffic.at}
           stale={tt.stale}
           series={[
@@ -113,13 +110,13 @@ function Trunk({ st, traffic, edge }: { st: State; traffic?: TrafficView; edge: 
           ]}
         />
       ) : (
-        <p className="muted">The connector has given no figures yet.</p>
+        <p className="muted">{words.noFigures}</p>
       )}
-      {last && <p className="num">{last.concurrent} requests in flight at the last sample.</p>}
-      <p className="muted">From the connector&apos;s own counters: every request of the tunnel, whichever hostname it was for.</p>
+      {last && <p className="num">{words.inFlight(last.concurrent)}</p>}
+      <p className="muted">{words.counters}</p>
       {t && (
         <p>
-          <Link to={tunnelPath(t.accountId)}>The tunnel</Link>
+          <Link to={tunnelPath(t.accountId)}>{words.theTunnel}</Link>
         </p>
       )}
     </div>
@@ -129,14 +126,14 @@ function Trunk({ st, traffic, edge }: { st: State; traffic?: TrafficView; edge: 
 function edgeShown(st: State, traffic: TrafficView | undefined, model: Model, e: FlowEdge): Shown | undefined {
   if (e.style === 'trunk') {
     const t = st.tunnels.find((x) => `edge:${x.accountId}` === e.from)
-    return { title: t ? <Untrusted text={tunnelLabel(st, t)} /> : 'Trunk', body: <Trunk st={st} traffic={traffic} edge={e} /> }
+    return { title: t ? <Untrusted text={tunnelLabel(st, t)} /> : words.trunk, body: <Trunk st={st} traffic={traffic} edge={e} /> }
   }
   const to = model.nodes.find((n) => n.id === e.to)
   if (to?.band !== 'targets') return undefined
   const port = to.ports?.find((p) => p.id === e.port)
   const r = (e.routes ?? []).map((k) => routeOf(st, k)).find((x) => x !== undefined)
   const title = port?.target ? <Untrusted text={port.target} /> : <Untrusted text={to.label} />
-  if (!r) return { title, body: <p className="muted">No route of the last cycle ends here.</p> }
+  if (!r) return { title, body: <p className="muted">{words.noRoute}</p> }
   return { title, body: <RouteTraffic route={r} /> }
 }
 

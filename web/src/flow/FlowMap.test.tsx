@@ -1,10 +1,11 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
-import { describe, expect, test, vi } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { State, TrafficView } from '../api/types.gen'
 import { collapse } from './collapse'
-import FlowMap from './FlowMap'
+import flowCss from './flow.css?raw'
+import FlowMap, { gestureFilter } from './FlowMap'
 import { layout } from './layout'
 import { buildModel } from './model'
 import { createMotion, dotCap, type MotionLoop } from './motion'
@@ -172,7 +173,17 @@ describe('the flow map', () => {
     expect(item('zone:example.com').getAttribute('aria-label')).toBe('Zone example.com, served, account Main, 10 hostnames')
     expect(item('connector:acc4').getAttribute('aria-label')).toContain('not checked in the last cycle')
     expect(item(rogue).getAttribute('aria-label')).toBe('Connector not run by pco: 198.51.100.7, cloudflared 2026.8.0, Main · 00000000')
-    expect(item('guest:qemu/101').getAttribute('aria-label')).toBe('Guest web-1 qemu/101, ports :8080 http active, 2.4 new connections per second')
+    expect(item('guest:qemu/101').getAttribute('aria-label')).toBe('Guest web-1 qemu/101, ports :8080 http active, 2.4 new connections per second, shared by 2 routes')
+  })
+
+  test('what the lines past the connector carry is in the names, for the keyboard', () => {
+    show()
+    expect(item('path:vmbr0.20').getAttribute('aria-label')).toBe('Path vmbr0 · VLAN 20 · direct, 2.4 new connections per second to the targets behind it')
+    expect(item('path:vmbr1').getAttribute('aria-label')).toBe('Path vmbr1 · direct, 1.2 new connections per second to the targets behind it, no new samples')
+    expect(item('path:vmbr0').getAttribute('aria-label')).toBe('Path vmbr0 · direct')
+    act(() => item('path:vmbr0.20').focus())
+    expect(screen.getByRole('tooltip').textContent).toBe('2.4 new connections per second to the targets behind it: new connections from the connector, not requests')
+    expect(item('path:vmbr0.20').getAttribute('aria-describedby')).toBe(screen.getByRole('tooltip').id)
   })
 
   test('what a guest or Cloudflare wrote is isolated, its controls shown', () => {
@@ -300,6 +311,30 @@ describe('the flow map', () => {
     expect(screen.getByRole('tooltip').textContent).toBe('Traffic between the edge and the connector: 38.6 req/s · 0.1 errors/s')
   })
 
+  test('the tooltip opens right under its item, stays while the pointer is in it and when pressed, and goes after the pointer leaves', async () => {
+    const { frame } = show(golden, { extras: extrasOf(st, tv, golden) })
+    const box = layout(golden).nodes.get(rogue)
+    fireEvent.pointerOver(item(rogue))
+    const tip = screen.getByRole('tooltip')
+    expect(tip.style.top).toBe(`${(box?.y ?? 0) + (box?.height ?? 0)}px`)
+    fireEvent.pointerOver(tip)
+    expect(screen.queryByRole('tooltip')).not.toBeNull()
+    act(() => item(rogue).focus())
+    act(() => tip.focus())
+    expect(screen.queryByRole('tooltip')).not.toBeNull()
+    expect(flowCss).toMatch(/\.fm-tip \{[^}]*user-select: text;/)
+    act(() => item(rogue).focus())
+    fireEvent.pointerOver(frame)
+    expect(screen.queryByRole('tooltip')).not.toBeNull()
+    act(() => (document.activeElement as HTMLElement).blur())
+    fireEvent.pointerOver(item(rogue))
+    fireEvent.pointerOver(frame)
+    // a moment to reach it
+    expect(screen.queryByRole('tooltip')).not.toBeNull()
+    await act(() => new Promise((r) => setTimeout(r, 300)))
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
   test.each([
     ['large', large()],
     ['outage', outage()],
@@ -309,5 +344,128 @@ describe('the flow map', () => {
     expect(document.querySelectorAll('.fm-card').length).toBeLessThanOrEqual(150)
     expect(document.querySelectorAll('[data-edge]').length).toBeLessThanOrEqual(400)
     expect(document.querySelectorAll('.fm-card').length).toBeGreaterThan(5)
+  })
+})
+
+// A frame the test sizes: the ResizeObserver it is given is called by hand.
+function sized() {
+  let fire: () => void = () => undefined
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      constructor(cb: () => void) {
+        fire = cb
+      }
+      observe() {}
+      disconnect() {}
+    },
+  )
+  return (frame: HTMLElement, width: number, height = 600) => {
+    Object.defineProperty(frame, 'clientWidth', { configurable: true, get: () => width })
+    Object.defineProperty(frame, 'clientHeight', { configurable: true, get: () => height })
+    act(() => fire())
+  }
+}
+
+const scaleOf = () => Number(/scale\(([\d.]+)\)/.exec((document.querySelector('.fm-view') as HTMLElement).style.transform)?.[1])
+
+function wideScreen(wide: boolean) {
+  vi.spyOn(window, 'matchMedia').mockImplementation(
+    (q: string) => ({ matches: q === '(min-width: 1200px)' ? wide : false, media: q, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList,
+  )
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+describe('touch, zoom and fit', () => {
+  test('one finger scrolls the page; two fingers, the mouse and Ctrl with the wheel move the map', () => {
+    expect(flowCss).toMatch(/\.fm-frame \{[^}]*touch-action: pan-y;/)
+    const ev = (type: string, props: object) => Object.assign(new Event(type), props)
+    expect(gestureFilter(ev('touchstart', { touches: { length: 1 } }))).toBe(false)
+    expect(gestureFilter(ev('touchstart', { touches: { length: 2 } }))).toBe(true)
+    expect(gestureFilter(ev('wheel', { deltaY: 10, ctrlKey: false }))).toBe(false)
+    expect(gestureFilter(ev('wheel', { deltaY: 10, ctrlKey: true }))).toBe(true)
+    expect(gestureFilter(ev('mousedown', { button: 0, ctrlKey: false }))).toBe(true)
+    expect(gestureFilter(ev('mousedown', { button: 2, ctrlKey: false }))).toBe(false)
+    expect(gestureFilter(ev('mousedown', { button: 0, ctrlKey: true }))).toBe(false)
+    // in the tooltip and on the mini map the map does not pan
+    for (const kind of ['fm-tip', 'fm-mini']) {
+      const outer = document.createElement('div')
+      outer.className = kind
+      const inner = document.createElement('span')
+      outer.append(inner)
+      const down = ev('mousedown', { button: 0, ctrlKey: false })
+      Object.defineProperty(down, 'target', { value: inner })
+      expect(gestureFilter(down)).toBe(false)
+    }
+  })
+
+  test('fit takes the width, never so small that the type goes under 11 px; the zoom buttons keep their zoom when the width changes', () => {
+    const size = sized()
+    const { frame, rerender } = show()
+    size(frame, 1186)
+    expect(scaleOf()).toBeCloseTo(1186 / 1244, 4)
+    size(frame, 900)
+    expect(scaleOf()).toBeCloseTo(11 / 12, 4)
+    rerender({ zoom: { to: 'in', n: 1 } })
+    const zoomed = scaleOf()
+    expect(zoomed).toBeCloseTo((11 / 12) * 1.4, 4)
+    size(frame, 1186)
+    expect(scaleOf()).toBeCloseTo(zoomed, 4)
+    rerender({ zoom: { to: 'fit', n: 2 } })
+    expect(scaleOf()).toBeCloseTo(1186 / 1244, 4)
+  })
+
+  test('the map type is at least 12 px, so that the fit keeps it at 11', () => {
+    const sizes = [...flowCss.matchAll(/font(?:-size)?:[^;]*?(\d+(?:\.\d+)?)px/g)].map((m) => Number(m[1]))
+    const map = flowCss.slice(0, flowCss.indexOf('/* the tooltip of the map */'))
+    const inMap = [...map.matchAll(/font(?:-size)?:[^;]*?(\d+(?:\.\d+)?)px/g)].map((m) => Number(m[1]))
+    expect(sizes.length).toBeGreaterThan(0)
+    expect(Math.min(...inMap)).toBeGreaterThanOrEqual(12)
+  })
+})
+
+describe('the mini map', () => {
+  const many = () => viewOf(wide(), trafficFor(wide()))
+
+  test('above 40 cards on a wide screen: every card, the view, and nothing for the keyboard or a screen reader', () => {
+    wideScreen(true)
+    const model = many()
+    expect(model.nodes.length).toBeGreaterThan(40)
+    const { rerender } = show(model)
+    const mini = document.querySelector('.fm-mini')
+    expect(mini?.getAttribute('aria-hidden')).toBe('true')
+    expect(mini?.querySelectorAll('.fm-mini-node')).toHaveLength(model.nodes.length)
+    expect(mini?.querySelector('[tabindex]')).toBeNull()
+    const view = mini?.querySelector('.fm-mini-view')
+    const before = Number(view?.getAttribute('width'))
+    expect(before).toBeGreaterThan(0)
+    rerender({ zoom: { to: 'in', n: 1 } })
+    expect(Number(view?.getAttribute('width'))).toBeCloseTo(before / 1.4, 3)
+  })
+
+  test('a press on it brings that part of the map into view', () => {
+    wideScreen(true)
+    const { rerender } = show(many())
+    rerender({ zoom: { to: 'in', n: 1 } })
+    rerender({ zoom: { to: 'in', n: 2 } })
+    const before = (document.querySelector('.fm-view') as HTMLElement).style.transform
+    const mini = document.querySelector('.fm-mini') as Element
+    fireEvent.pointerDown(mini, { clientX: 150, clientY: 150, button: 0, pointerId: 1 })
+    fireEvent.pointerUp(mini, { pointerId: 1 })
+    expect((document.querySelector('.fm-view') as HTMLElement).style.transform).not.toBe(before)
+  })
+
+  test('none at 40 cards or fewer, or on a narrow screen', () => {
+    wideScreen(true)
+    show()
+    expect(document.querySelector('.fm-mini')).toBeNull()
+    cleanup()
+    wideScreen(false)
+    show(many())
+    expect(document.querySelector('.fm-mini')).toBeNull()
   })
 })

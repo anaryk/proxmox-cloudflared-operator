@@ -5,6 +5,7 @@
 
 import type { ConnectorStatus, RouteTraffic, RouteView, State, TrafficView, TunnelTraffic, TunnelView, ZoneView } from '../api/types.gen'
 import { compareOwners, routeKey } from '../text/routes'
+import { cardWords } from '../text/flow'
 import { connectorText, verifiedText } from '../text/words'
 import type { Band, FlowEdge, FlowNode, FlowPort, FlowRow, Model } from './types'
 
@@ -303,7 +304,7 @@ export function buildModel(st: State, traffic: TrafficView | undefined): Model {
     const t = ix.tunnels.get(r.accountId)
     const lines = [r.version ? `cloudflared ${r.version}` : 'version not known']
     if (t) lines.push(ix.tunnelLabel(t))
-    nodes.set(id, { id, band: 'connector', kind: 'rogue', label: r.originIp ? `not run by pco: ${r.originIp}` : 'not run by pco', state: 'rogue', ref: r.id, lines })
+    nodes.set(id, { id, band: 'connector', kind: 'rogue', label: r.originIp ? `${cardWords.notRun}: ${r.originIp}` : cardWords.notRun, state: 'rogue', ref: r.id, lines })
     const edgeId = tunnelNodeId(r.accountId)
     if (nodes.has(edgeId)) link({ id: `${edgeId}>${id}`, from: edgeId, to: id, style: 'rogue' })
   }

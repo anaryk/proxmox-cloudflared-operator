@@ -24,6 +24,10 @@ export interface CardProps {
   refused?: boolean
   // The dots stand still: an access point says its figure.
   still?: boolean
+  // A path: the connections the lines into it carry, and whether their
+  // figures are old.
+  rate?: number
+  rateStale?: boolean
 }
 
 export const sameBox = (a: Box, b: Box): boolean => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
@@ -38,7 +42,9 @@ export function sameCard(a: CardProps, b: CardProps): boolean {
     a.selected === b.selected &&
     a.ports === b.ports &&
     a.refused === b.refused &&
-    a.still === b.still
+    a.still === b.still &&
+    a.rate === b.rate &&
+    a.rateStale === b.rateStale
   )
 }
 

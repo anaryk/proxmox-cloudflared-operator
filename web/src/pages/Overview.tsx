@@ -150,7 +150,7 @@ export function Overview() {
           <FlowPanel model={shaped ?? model} selected={selected} onSelect={setSelected} onExpand={expand} paused={paused} zoom={zoom} />
         </Suspense>
         <span id="flow-end" ref={after} tabIndex={-1} className="sr-only">
-          End of the map
+          {mapWords.end}
         </span>
       </>
     )

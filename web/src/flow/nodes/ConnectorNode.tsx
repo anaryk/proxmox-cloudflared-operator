@@ -3,7 +3,7 @@ import { memo } from 'react'
 import { Badge } from '../../components/Badge'
 import { RogueIcon, TunnelIcon } from '../../components/icons'
 import { Untrusted } from '../../components/Untrusted'
-import { nodeLabel } from '../../text/flow'
+import { cardWords, nodeLabel } from '../../text/flow'
 import { cardClass, type CardProps, connectorTone, focusable, Lines, litOf, Mark, place, Ring, ringOf, sameCard } from './parts'
 
 // ConnectorNode is the connector pco runs for a tunnel on this node: the
@@ -24,7 +24,7 @@ export const ConnectorNode = memo(function ConnectorNode({ node, box, tab, lit, 
         </span>
         {refused && (
           <Mark tone="fail">
-            <RogueIcon label="Cloudflare refuses its token" />
+            <RogueIcon label={cardWords.refused} />
           </Mark>
         )}
         {node.tags?.map((t) => (

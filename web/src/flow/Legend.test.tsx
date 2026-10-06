@@ -16,7 +16,7 @@ describe('the legend', () => {
       'Unreachable',
       'Withdrawn (503, DNS kept)',
       'Connector pco does not run',
-      'Greyed: not checked, frozen or no new data',
+      'Greyed: not checked, frozen or no new data; a greyed line still moves while its own counter is read',
       'Only lines with a measured figure move: dot density follows the rate, errors are red diamonds. Hostname lines never move.',
     ])
     const dashes = [...legend().querySelectorAll('path')].map((p) => p.getAttribute('stroke-dasharray'))

@@ -21,6 +21,48 @@ export const mapWords = {
   foldAgain: 'Fold again',
   loading: 'Drawing the map',
   bands: 'hostname → edge → connector → path → target',
+  end: 'End of the map',
+} as const
+
+// What the cards say beside what the model gives them.
+export const cardWords = {
+  notRun: 'not run by pco',
+  refused: 'Cloudflare refuses its token',
+  approval: 'approval',
+  heldBy: 'held by',
+  verified: 'verified:',
+} as const
+
+// The tooltip of a connector whose tunnel wants a new secret, before the
+// command that gives it one.
+export const rotateWords = {
+  rogue: 'pco does not run this connector: whoever does holds the tunnel’s token. If it is not yours, give the tunnel a new secret, as root on the node:',
+  refused: 'Cloudflare refuses the token of this connector. Give the tunnel a new secret, as root on the node:',
+  none: 'No command:',
+} as const
+
+// The drawer of the map, where it says more than the pages' own details.
+export const drawerWords = {
+  theirRoutes: 'Their routes',
+  itsRoutes: 'Its routes',
+  noZone: 'Hostnames in no zone',
+  gone: 'Cloudflare lists this connector no longer.',
+  connectorId: 'Connector id',
+  from: 'Connects from',
+  unknownAddress: 'an unknown address',
+  cloudflared: 'cloudflared',
+  unknownVersion: 'of an unknown version',
+  tunnel: 'Tunnel',
+  firstSeen: 'First seen',
+  rogue:
+    'Cloudflare lists this connector on the tunnel, and pco does not run it on this node: whoever runs it holds the tunnel’s token and gets a share of the requests to every hostname of the tunnel. If it is not yours, give the tunnel a new secret; that cuts every connector but pco’s.',
+  trunk: 'Trunk',
+  chart: 'Requests and errors',
+  noFigures: 'The connector has given no figures yet.',
+  inFlight: (n: number) => `${n} requests in flight at the last sample.`,
+  counters: 'From the connector’s own counters: every request of the tunnel, whichever hostname it was for.',
+  theTunnel: 'The tunnel',
+  noRoute: 'No route of the last cycle ends here.',
 } as const
 
 // The legend row: the dots and where their figures come from, the line
@@ -33,12 +75,13 @@ export const legendWords = {
   unreachable: 'Unreachable',
   withdrawn: 'Withdrawn (503, DNS kept)',
   rogue: 'Connector pco does not run',
-  muted: 'Greyed: not checked, frozen or no new data',
+  muted: 'Greyed: not checked, frozen or no new data; a greyed line still moves while its own counter is read',
   moves: 'Only lines with a measured figure move: dot density follows the rate, errors are red diamonds. Hostname lines never move.',
   still: 'Motion is paused: chevrons and the figure stand for the dots.',
   reduced: 'Reduced motion: chevrons and the figure stand for the dots.',
   stale: 'No new data: the figures are the last ones read, and nothing moves.',
   noCounters: 'Port lines show state only:',
+  whatWentWrong: 'What went wrong',
 } as const
 
 // The reasons the daemon gives for having no figures per target are the
@@ -67,6 +110,17 @@ export const connectionsShort = (rate: number): string => `${figure(rate)} conn/
 export const portNote = 'new connections from the connector, not requests'
 
 export const sharedNote = (n: number): string => `shared by ${n} routes`
+
+// PathFigure is what the lines from the connectors into a path carry: the
+// connections to every target behind it.
+export interface PathFigure {
+  rate: number
+  stale?: boolean
+}
+
+export function pathFigure(f: PathFigure): string {
+  return `${connectionsFigure(f.rate)} to the targets behind it${f.stale ? ', no new samples' : ''}`
+}
 
 export const noDataSince = 'no data since'
 
@@ -130,12 +184,13 @@ function hostnames(n: number): string {
 
 function portText(p: FlowPort): string {
   const figure = p.rate === undefined ? '' : `, ${connectionsFigure(p.rate)}${p.stale ? ', no new samples' : ''}`
-  return `${marked(p.label)} ${marked(p.state)}${figure}`
+  const shared = (p.routes?.length ?? 0) > 1 ? `, ${sharedNote(p.routes?.length ?? 0)}` : ''
+  return `${marked(p.label)} ${marked(p.state)}${figure}${shared}`
 }
 
 // nodeLabel names a card or the head of a zone card by what it is, its
 // state and its lines.
-export function nodeLabel(n: FlowNode): string {
+export function nodeLabel(n: FlowNode, carried?: PathFigure): string {
   const lines = (n.lines ?? []).map(marked)
   switch (n.kind) {
     case 'zone': {
@@ -154,7 +209,7 @@ export function nodeLabel(n: FlowNode): string {
     case 'rogue':
       return `Connector ${marked(n.label)}${lines.length > 0 ? `, ${lines.join(', ')}` : ''}`
     case 'path':
-      return `Path ${marked(n.label)}`
+      return carried ? `Path ${marked(n.label)}, ${pathFigure(carried)}` : `Path ${marked(n.label)}`
     case 'target': {
       const ports = (n.ports ?? []).map(portText)
       const what = n.id.startsWith('address:') ? `Address ${marked(n.label)} of ${lines[0] ?? ''}` : `Guest ${marked(n.label)} ${lines[0] ?? ''}`

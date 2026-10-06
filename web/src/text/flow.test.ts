@@ -26,14 +26,16 @@ describe('the names of the map', () => {
   test('the cards', () => {
     const node = (n: Partial<FlowNode>): FlowNode => ({ id: 'x', band: 'path', kind: 'path', label: 'vmbr0 · direct', ...n })
     expect(nodeLabel(node({}))).toBe('Path vmbr0 · direct')
+    expect(nodeLabel(node({}), { rate: 2.44 })).toBe('Path vmbr0 · direct, 2.4 new connections per second to the targets behind it')
+    expect(nodeLabel(node({}), { rate: 1, stale: true })).toBe('Path vmbr0 · direct, 1.0 new connections per second to the targets behind it, no new samples')
     expect(nodeLabel(node({ id: 'no-zone', band: 'hostnames', kind: 'zone', label: 'No zone', rows: [row({}), row({ owner: 'qemu/102' })] }))).toBe('Hostnames in no zone, 2 hostnames')
     expect(nodeLabel(node({ band: 'hostnames', kind: 'zone', label: 'example.com', ref: 'example.com', state: 'served', lines: ['Main'], counts: { active: 600, unreachable: 3 } }))).toBe(
       'Zone example.com, served, account Main, 600 active, 3 unreachable',
     )
     expect(nodeLabel(node({ band: 'edge', kind: 'edge', label: 'Main · 3f2a91c0', state: 'yes', lines: ['4 connections'] }))).toBe('Edge of tunnel Main · 3f2a91c0, verified: yes, 4 connections')
     expect(nodeLabel(node({ band: 'targets', kind: 'group', label: '38 guests on vmbr0', state: 'active' }))).toBe('38 guests on vmbr0, active, opens them')
-    expect(nodeLabel(node({ id: 'address:10.0.9.5', band: 'targets', kind: 'target', label: '10.0.9.5', lines: ['manual/m1'], ports: [{ id: 'p', label: ':80 http', state: 'active', rate: 0.6, stale: true }] }))).toBe(
-      'Address 10.0.9.5 of manual/m1, ports :80 http active, 0.6 new connections per second, no new samples',
+    expect(nodeLabel(node({ id: 'address:10.0.9.5', band: 'targets', kind: 'target', label: '10.0.9.5', lines: ['manual/m1'], ports: [{ id: 'p', label: ':80 http', state: 'active', rate: 0.6, stale: true, routes: ['a m', 'b m'] }] }))).toBe(
+      'Address 10.0.9.5 of manual/m1, ports :80 http active, 0.6 new connections per second, no new samples, shared by 2 routes',
     )
   })
 
