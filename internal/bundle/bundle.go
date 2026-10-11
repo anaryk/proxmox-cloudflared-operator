@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"time"
 	"unicode/utf8"
 
@@ -91,7 +92,11 @@ type CAFiles = store.CAFiles
 type Contents struct {
 	InstallID string
 	// InstalledAt is when the install was made, which a restore keeps.
-	InstalledAt  time.Time
+	InstalledAt time.Time
+	// Cluster is the Proxmox cluster the install was made in, as the store
+	// records it: restored in another, the daemon writes nothing until pco
+	// promote makes that cluster its writer.
+	Cluster      json.RawMessage
 	Settings     json.RawMessage
 	ManualRoutes []json.RawMessage
 	Approvals    []json.RawMessage
@@ -101,14 +106,39 @@ type Contents struct {
 	NodeSegments []json.RawMessage
 	Nodes        []json.RawMessage
 	CA           *CAFiles
+	// PreviousCA is the CA a rotation replaced, on which the agents are still
+	// accepted for a while after CARotatedAt; nil outside a rotation. A
+	// bundle made during one restores a controller that still accepts them.
+	PreviousCA  *CAFiles
+	CARotatedAt time.Time
+	// CARotation is the progress of the rotation of every secret a forgotten
+	// node held, when one is under way or was made.
+	CARotation json.RawMessage
 	// Credentials are the Cloudflare credentials, with their tokens, and are
 	// there only when the export asked for them.
 	Credentials []json.RawMessage
 	// Leader is leader.json, which the promote that follows a restore draws
 	// its epoch above.
 	Leader json.RawMessage
-	MadeAt time.Time
-	Build  string
+	// Networks are the networks pco reaches, ServiceAddrs and
+	// NodeServiceAddrs the service addresses of their targets, and
+	// ServicePoolNext the address the next allocation gets.
+	Networks         []json.RawMessage
+	ServiceAddrs     []json.RawMessage
+	NodeServiceAddrs []json.RawMessage
+	ServicePoolNext  netip.Addr
+	// Leases, Consents and Attachments are those of the managed network.
+	Leases      []json.RawMessage
+	Consents    []json.RawMessage
+	Attachments []json.RawMessage
+	// Claims, Tombstones, Placements and Moves are what the controller
+	// decided and remembers between runs.
+	Claims     []json.RawMessage
+	Tombstones json.RawMessage
+	Placements []json.RawMessage
+	Moves      []json.RawMessage
+	MadeAt     time.Time
+	Build      string
 }
 
 // summary is what a Contents prints as: what it holds, never the content.
@@ -147,49 +177,78 @@ func (c Contents) MarshalJSON() ([]byte, error) { return json.Marshal(c.summary(
 
 // document is the text of a bundle.
 type document struct {
-	InstallID    string            `json:"installId"`
-	InstalledAt  time.Time         `json:"installedAt,omitzero"`
-	Settings     json.RawMessage   `json:"settings,omitempty"`
-	ManualRoutes []json.RawMessage `json:"manualRoutes,omitempty"`
-	Approvals    []json.RawMessage `json:"approvals,omitempty"`
-	Segments     []json.RawMessage `json:"segments,omitempty"`
-	NodeSegments []json.RawMessage `json:"nodeSegments,omitempty"`
-	Nodes        []json.RawMessage `json:"nodes,omitempty"`
-	CA           *caDocument       `json:"ca,omitempty"`
-	Credentials  []json.RawMessage `json:"credentials,omitempty"`
-	Leader       json.RawMessage   `json:"leader,omitempty"`
-	MadeAt       time.Time         `json:"madeAt"`
-	Build        string            `json:"build,omitempty"`
+	InstallID        string            `json:"installId"`
+	InstalledAt      time.Time         `json:"installedAt,omitzero"`
+	Cluster          json.RawMessage   `json:"cluster,omitempty"`
+	Settings         json.RawMessage   `json:"settings,omitempty"`
+	ManualRoutes     []json.RawMessage `json:"manualRoutes,omitempty"`
+	Approvals        []json.RawMessage `json:"approvals,omitempty"`
+	Segments         []json.RawMessage `json:"segments,omitempty"`
+	NodeSegments     []json.RawMessage `json:"nodeSegments,omitempty"`
+	Nodes            []json.RawMessage `json:"nodes,omitempty"`
+	CA               *caDocument       `json:"ca,omitempty"`
+	PreviousCA       *caDocument       `json:"previousCA,omitempty"`
+	CARotatedAt      time.Time         `json:"caRotatedAt,omitzero"`
+	CARotation       json.RawMessage   `json:"caRotation,omitempty"`
+	Credentials      []json.RawMessage `json:"credentials,omitempty"`
+	Leader           json.RawMessage   `json:"leader,omitempty"`
+	Networks         []json.RawMessage `json:"networks,omitempty"`
+	ServiceAddrs     []json.RawMessage `json:"serviceAddrs,omitempty"`
+	NodeServiceAddrs []json.RawMessage `json:"nodeServiceAddrs,omitempty"`
+	ServicePoolNext  netip.Addr        `json:"servicePoolNext,omitzero"`
+	Leases           []json.RawMessage `json:"leases,omitempty"`
+	Consents         []json.RawMessage `json:"consents,omitempty"`
+	Attachments      []json.RawMessage `json:"attachments,omitempty"`
+	Claims           []json.RawMessage `json:"claims,omitempty"`
+	Tombstones       json.RawMessage   `json:"tombstones,omitempty"`
+	Placements       []json.RawMessage `json:"placements,omitempty"`
+	Moves            []json.RawMessage `json:"moves,omitempty"`
+	MadeAt           time.Time         `json:"madeAt"`
+	Build            string            `json:"build,omitempty"`
 }
 
-// caDocument is the only place where the key of the CA is a plain string.
+// caDocument is the only place where the key of a CA is a plain string.
 type caDocument struct {
 	CertPEM string `json:"certPEM"`
 	KeyPEM  string `json:"keyPEM"`
 }
 
+func caOut(ca *CAFiles) *caDocument {
+	if ca == nil {
+		return nil
+	}
+	return &caDocument{CertPEM: ca.CertPEM, KeyPEM: ca.KeyPEM.Reveal()}
+}
+
+func caIn(d *caDocument) *CAFiles {
+	if d == nil {
+		return nil
+	}
+	return &CAFiles{CertPEM: d.CertPEM, KeyPEM: store.NewSecret(d.KeyPEM)}
+}
+
 func (c Contents) document() document {
-	d := document{
-		InstallID: c.InstallID, InstalledAt: c.InstalledAt, Settings: c.Settings, ManualRoutes: c.ManualRoutes,
-		Approvals: c.Approvals, Segments: c.Segments, NodeSegments: c.NodeSegments, Nodes: c.Nodes,
-		Credentials: c.Credentials, Leader: c.Leader, MadeAt: c.MadeAt, Build: c.Build,
+	return document{
+		InstallID: c.InstallID, InstalledAt: c.InstalledAt, Cluster: c.Cluster, Settings: c.Settings,
+		ManualRoutes: c.ManualRoutes, Approvals: c.Approvals, Segments: c.Segments, NodeSegments: c.NodeSegments,
+		Nodes: c.Nodes, CA: caOut(c.CA), PreviousCA: caOut(c.PreviousCA), CARotatedAt: c.CARotatedAt,
+		CARotation: c.CARotation, Credentials: c.Credentials, Leader: c.Leader, Networks: c.Networks,
+		ServiceAddrs: c.ServiceAddrs, NodeServiceAddrs: c.NodeServiceAddrs, ServicePoolNext: c.ServicePoolNext,
+		Leases: c.Leases, Consents: c.Consents, Attachments: c.Attachments, Claims: c.Claims,
+		Tombstones: c.Tombstones, Placements: c.Placements, Moves: c.Moves, MadeAt: c.MadeAt, Build: c.Build,
 	}
-	if c.CA != nil {
-		d.CA = &caDocument{CertPEM: c.CA.CertPEM, KeyPEM: c.CA.KeyPEM.Reveal()}
-	}
-	return d
 }
 
 func (d document) contents() Contents {
-	c := Contents{
-		InstallID: d.InstallID, InstalledAt: d.InstalledAt, Settings: d.Settings, ManualRoutes: d.ManualRoutes,
-		Approvals: d.Approvals, Segments: d.Segments, NodeSegments: d.NodeSegments, Nodes: d.Nodes,
-		Credentials: d.Credentials, Leader: d.Leader, MadeAt: d.MadeAt, Build: d.Build,
+	return Contents{
+		InstallID: d.InstallID, InstalledAt: d.InstalledAt, Cluster: d.Cluster, Settings: d.Settings,
+		ManualRoutes: d.ManualRoutes, Approvals: d.Approvals, Segments: d.Segments, NodeSegments: d.NodeSegments,
+		Nodes: d.Nodes, CA: caIn(d.CA), PreviousCA: caIn(d.PreviousCA), CARotatedAt: d.CARotatedAt,
+		CARotation: d.CARotation, Credentials: d.Credentials, Leader: d.Leader, Networks: d.Networks,
+		ServiceAddrs: d.ServiceAddrs, NodeServiceAddrs: d.NodeServiceAddrs, ServicePoolNext: d.ServicePoolNext,
+		Leases: d.Leases, Consents: d.Consents, Attachments: d.Attachments, Claims: d.Claims,
+		Tombstones: d.Tombstones, Placements: d.Placements, Moves: d.Moves, MadeAt: d.MadeAt, Build: d.Build,
 	}
-	if d.CA != nil {
-		c.CA = &CAFiles{CertPEM: d.CA.CertPEM, KeyPEM: store.NewSecret(d.CA.KeyPEM)}
-	}
-	return c
 }
 
 // CheckPassphrase refuses a passphrase of fewer than MinPassphrase characters.

@@ -15,6 +15,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -89,14 +90,76 @@ func installed(t *testing.T) *store.Store {
 		Writer: planner.Writer{InstallID: installID, Generation: 7, Nonce: "n0nce", Incarnation: "pve1/boot"},
 		Node:   "pve1", AcquiredAt: t0.Add(-24 * time.Hour), CASHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}))
+	require.NoError(t, st.SaveNetwork(store.Network{
+		ID: "vmbr0", Kind: store.NetworkAttach, Bridge: "vmbr0", Prefix: netip.MustParsePrefix("192.0.2.0/24"),
+		Legs: map[string]netip.Addr{"pve1": netip.MustParseAddr("192.0.2.254")}, LegMAC: store.LegMACFor(store.NetworkAttach, 1),
+		Mark: 1, Uplink: true, CreatedAt: t0.Add(-40 * time.Hour),
+	}, 0))
+	_, err = st.AllocateServiceAddr("vmbr0", netip.MustParseAddr("192.0.2.20"), t0.Add(-39*time.Hour))
+	require.NoError(t, err)
+	_, err = st.AllocateNodeServiceAddr("vmbr1.20", "pve2", netip.MustParseAddr("10.20.0.5"), t0.Add(-38*time.Hour))
+	require.NoError(t, err)
+	managed := netip.MustParseAddr("10.203.118.10")
+	require.NoError(t, st.SaveLease(store.Lease{
+		MAC: store.ManagedMAC(managed), Addr: managed, Owner: "qemu/101", Identity: "qemu/101 on pve1", NIC: 1, Since: t0.Add(-30 * time.Hour),
+	}, 0))
+	require.NoError(t, st.SaveConsent(store.Consent{Owner: "qemu/101", Identity: "qemu/101 on pve1", At: t0.Add(-31 * time.Hour), Actor: "cli"}))
+	require.NoError(t, st.SaveAttachment(store.Attachment{
+		Owner: "qemu/101", Identity: "qemu/101 on pve1", NIC: 1, MAC: store.ManagedMAC(managed), Addr: managed, Consent: "approval", Since: t0.Add(-30 * time.Hour),
+	}))
+	require.NoError(t, st.SaveClaims(map[string]planner.Claim{
+		"grafana.example.com": {Hostname: "grafana.example.com", Owner: "manual/grafana", Since: t0.Add(-20 * time.Hour)},
+	}))
+	require.NoError(t, st.Tombstones().Save(t.Context(), map[string]reconcile.Tombstone{
+		"zone1/old.example.com": {Since: t0.Add(-10 * time.Hour), Seen: t0.Add(-time.Hour), Generation: 6, Nonce: "n0nce"},
+	}))
+	require.NoError(t, st.SavePlacements(map[string]store.Placement{
+		"grafana.example.com": {Hostname: "grafana.example.com", Tunnel: "tun-1", Kind: store.PlacementShared, Since: t0.Add(-20 * time.Hour)},
+	}))
+	require.NoError(t, st.SaveMove(store.Move{Owner: "qemu/101", From: "tun-1", To: "tun-2", Step: store.MoveRulesAdded, At: t0.Add(-time.Hour)}))
+	require.NoError(t, st.SaveCARotation(store.CARotation{Node: "pve3", StartedAt: t0.Add(-2 * time.Hour), Actor: "cli", Done: []string{"credentials"}}))
 	return st
+}
+
+// rotated replaces the CA of the store with a new one, as a rotation does,
+// keeping the old one as the previous CA.
+func rotated(t *testing.T, st *store.Store) (current, previous store.CAFiles) {
+	t.Helper()
+	previous, _, _, err := st.CA()
+	require.NoError(t, err)
+	ca, err := pki.NewCA(installID, t0, rand.Reader)
+	require.NoError(t, err)
+	certPEM, keyPEM, err := ca.PEM()
+	require.NoError(t, err)
+	current = store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}
+	require.NoError(t, st.SaveCA(current, &previous, t0.Add(-time.Hour)))
+	return current, previous
 }
 
 func collect(t *testing.T, st *store.Store, credentials bool) Contents {
 	t.Helper()
-	c, err := Collect(st, credentials, t0, "0.2.0")
+	c, err := Collect(t.Context(), st, credentials, t0, "0.2.0")
 	require.NoError(t, err)
 	return c
+}
+
+// same compares what two stores hold of one kind.
+func same[T any](t *testing.T, what string, from, to *store.Store, read func(*store.Store) (T, error)) {
+	t.Helper()
+	want, err := read(from)
+	require.NoError(t, err)
+	got, err := read(to)
+	require.NoError(t, err)
+	require.Equal(t, want, got, what)
+}
+
+func tombstonesOf(t *testing.T) func(*store.Store) (map[string]reconcile.Tombstone, error) {
+	return func(s *store.Store) (map[string]reconcile.Tombstone, error) { return s.Tombstones().Load(t.Context()) }
+}
+
+func poolOf(s *store.Store) (netip.Addr, error) {
+	next, _, _, err := s.ServicePool()
+	return next, err
 }
 
 // carried seals the contents and opens them again, as a file does.
@@ -164,13 +227,31 @@ func TestWhatWasExportedIsRestoredAsItWas(t *testing.T) {
 	from := installed(t)
 	to := openStore(t)
 
-	require.NoError(t, Restore(to, carried(t, collect(t, from, true))))
+	require.NoError(t, Restore(t.Context(), to, carried(t, collect(t, from, true))))
 
 	inst, found, err := to.Install()
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, store.Install{ID: installID, CreatedAt: t0.Add(-72 * time.Hour), Profile: store.ProfileHost}, inst,
-		"the cluster it was made in is not carried: a store in another cluster writes nothing before an admin says so")
+	require.Equal(t, store.Install{
+		ID: installID, CreatedAt: t0.Add(-72 * time.Hour), Profile: store.ProfileHost,
+		Cluster: &store.ClusterIdentity{CASHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "lab"},
+	}, inst, "with the cluster it was made in: a store in another cluster writes nothing before an admin says so")
+	same(t, "networks", from, to, (*store.Store).Networks)
+	same(t, "service addresses", from, to, (*store.Store).ServiceAddrs)
+	same(t, "service addresses of nodes", from, to, (*store.Store).NodeServiceAddrs)
+	same(t, "the pool of service addresses", from, to, poolOf)
+	same(t, "leases", from, to, (*store.Store).Leases)
+	same(t, "consents", from, to, (*store.Store).Consents)
+	same(t, "attachments", from, to, (*store.Store).Attachments)
+	same(t, "claims", from, to, (*store.Store).Claims)
+	same(t, "tombstones", from, to, tombstonesOf(t))
+	same(t, "placements", from, to, (*store.Store).Placements)
+	same(t, "moves", from, to, (*store.Store).Moves)
+	same(t, "the progress of the rotation", from, to, func(s *store.Store) (store.CARotation, error) {
+		r, found, err := s.CARotation()
+		require.True(t, found)
+		return r, err
+	})
 
 	wantSettings, err := from.Settings()
 	require.NoError(t, err)
@@ -241,7 +322,7 @@ func TestWithoutTheCredentialsNoneIsRestored(t *testing.T) {
 	from := installed(t)
 	to := openStore(t)
 
-	require.NoError(t, Restore(to, carried(t, collect(t, from, false))))
+	require.NoError(t, Restore(t.Context(), to, carried(t, collect(t, from, false))))
 
 	creds, err := to.Credentials()
 	require.NoError(t, err)
@@ -254,7 +335,7 @@ func TestAnInstallWithoutACAOrALeaderIsRestoredWithoutThem(t *testing.T) {
 	to := openStore(t)
 
 	c := carried(t, collect(t, from, false))
-	require.NoError(t, Restore(to, c))
+	require.NoError(t, Restore(t.Context(), to, c))
 
 	require.Nil(t, c.CA)
 	require.Empty(t, c.Leader)
@@ -275,7 +356,7 @@ func TestRestoreSetsObserveOnlyWhateverTheBundleSays(t *testing.T) {
 	require.False(t, settings.ObserveOnly)
 	to := openStore(t)
 
-	require.NoError(t, Restore(to, carried(t, collect(t, from, false))))
+	require.NoError(t, Restore(t.Context(), to, carried(t, collect(t, from, false))))
 
 	got, err := to.Settings()
 	require.NoError(t, err)
@@ -287,7 +368,7 @@ func TestAStoreThatHoldsAnInstallIsNotRestoredInto(t *testing.T) {
 	to := openStore(t)
 	require.NoError(t, to.SaveInstall(store.Install{ID: "ba9876543210", CreatedAt: t0, Profile: store.ProfileHost}))
 
-	err := Restore(to, c)
+	err := Restore(t.Context(), to, c)
 
 	require.ErrorIs(t, err, ErrInstalled)
 	require.ErrorContains(t, err, "ba9876543210")
@@ -304,13 +385,13 @@ func TestAStoreThatHoldsAnInstallIsNotRestoredInto(t *testing.T) {
 func TestTheSameBundleIsNotRestoredTwice(t *testing.T) {
 	c := carried(t, collect(t, installed(t), false))
 	to := openStore(t)
-	require.NoError(t, Restore(to, c))
+	require.NoError(t, Restore(t.Context(), to, c))
 
-	require.ErrorIs(t, Restore(to, c), ErrInstalled)
+	require.ErrorIs(t, Restore(t.Context(), to, c), ErrInstalled)
 }
 
 func TestCollectOfAStoreWithoutAnInstallSaysSo(t *testing.T) {
-	_, err := Collect(openStore(t), false, t0, "0.2.0")
+	_, err := Collect(t.Context(), openStore(t), false, t0, "0.2.0")
 
 	require.ErrorIs(t, err, ErrNoInstall)
 }
@@ -337,6 +418,19 @@ func TestARestoreThatCannotReadTheBundleWritesNothing(t *testing.T) {
 			c.Credentials = []json.RawMessage{json.RawMessage(`{"id":"main","label":"m","kind":"scoped","addedAt":"2026-10-01T12:00:00Z"}`)}
 		},
 		"a credential that is no object": func(c *Contents) { c.Credentials = []json.RawMessage{json.RawMessage(`"cf-token-in-a-string"`)} },
+		"a route with a field inside its target no build knows": func(c *Contents) {
+			c.ManualRoutes = append(c.ManualRoutes, json.RawMessage(`{"hostname":"x.example.com","manualId":"x","target":{"surprise":1}}`))
+		},
+		"a previous CA without the time of the rotation": func(c *Contents) { c.PreviousCA = c.CA },
+		"a previous CA without a key": func(c *Contents) {
+			c.PreviousCA, c.CARotatedAt = &CAFiles{CertPEM: c.CA.CertPEM}, t0
+		},
+		"a cluster without a fingerprint": func(c *Contents) { c.Cluster = json.RawMessage(`{"name":"lab"}`) },
+		"a claim without a hostname":      func(c *Contents) { c.Claims = []json.RawMessage{json.RawMessage(`{"owner":"qemu/101"}`)} },
+		"tombstones of another shape": func(c *Contents) {
+			c.Tombstones = json.RawMessage(`{"zone/a":{"generation":1,"surprise":true}}`)
+		},
+		"a network that is no object": func(c *Contents) { c.Networks = []json.RawMessage{json.RawMessage(`"vmbr0"`)} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := good
@@ -344,7 +438,7 @@ func TestARestoreThatCannotReadTheBundleWritesNothing(t *testing.T) {
 			damage(&c)
 			to := openStore(t)
 
-			err := Restore(to, c)
+			err := Restore(t.Context(), to, c)
 
 			require.Error(t, err)
 			require.NotErrorIs(t, err, ErrInstalled)
@@ -360,7 +454,7 @@ func TestARestoreThatTheStoreRefusesLeavesNoInstall(t *testing.T) {
 	c.ManualRoutes = append(slices.Clone(good.ManualRoutes), json.RawMessage(`{"hostname":"not a host","manualId":"y"}`))
 	to := openStore(t)
 
-	err := Restore(to, c)
+	err := Restore(t.Context(), to, c)
 
 	require.ErrorContains(t, err, "manual routes")
 	_, found, ierr := to.Install()
@@ -390,9 +484,9 @@ func TestARestoreThatStoppedHalfWayIsRunAgain(t *testing.T) {
 	broken := good
 	broken.ManualRoutes = append(slices.Clone(good.ManualRoutes), json.RawMessage(`{"hostname":"not a host","manualId":"y"}`))
 	to := openStore(t)
-	require.Error(t, Restore(to, broken))
+	require.Error(t, Restore(t.Context(), to, broken))
 
-	require.NoError(t, Restore(to, good))
+	require.NoError(t, Restore(t.Context(), to, good))
 
 	_, found, err := to.Install()
 	require.NoError(t, err)
@@ -404,7 +498,7 @@ func TestAnInstallWithoutTheTimeItWasMadeIsDatedByTheBundle(t *testing.T) {
 	c.InstalledAt = time.Time{}
 	to := openStore(t)
 
-	require.NoError(t, Restore(to, c))
+	require.NoError(t, Restore(t.Context(), to, c))
 
 	inst, _, err := to.Install()
 	require.NoError(t, err)
@@ -417,11 +511,93 @@ func TestARestoredInstallIsAHostInstall(t *testing.T) {
 	c := carried(t, collect(t, installed(t), false))
 	to := openStore(t)
 
-	require.NoError(t, Restore(to, c))
+	require.NoError(t, Restore(t.Context(), to, c))
 
 	inst, _, err := to.Install()
 	require.NoError(t, err)
 	require.Equal(t, store.ProfileHost, inst.ProfileName())
 	require.Nil(t, inst.Appliance)
+}
+
+func TestABundleMadeDuringARotationRestoresBothCAs(t *testing.T) {
+	// The agents still on the old CA are accepted by the restored controller
+	// for the rest of the window, as they would have been by the lost one.
+	from := installed(t)
+	current, previous := rotated(t, from)
+	to := openStore(t)
+
+	c := carried(t, collect(t, from, false))
+	require.NoError(t, Restore(t.Context(), to, c))
+
+	require.Equal(t, current.CertPEM, c.CA.CertPEM)
+	require.Equal(t, previous.CertPEM, c.PreviousCA.CertPEM)
+	gotCurrent, gotPrevious, rotatedAt, err := to.CA()
+	require.NoError(t, err)
+	require.Equal(t, current.CertPEM, gotCurrent.CertPEM)
+	require.Equal(t, current.KeyPEM.Reveal(), gotCurrent.KeyPEM.Reveal())
+	require.NotNil(t, gotPrevious)
+	require.Equal(t, previous.CertPEM, gotPrevious.CertPEM)
+	require.Equal(t, previous.KeyPEM.Reveal(), gotPrevious.KeyPEM.Reveal())
+	require.Equal(t, t0.Add(-time.Hour), rotatedAt)
+}
+
+func TestSameCATellsARotationThatRanDuringTheExport(t *testing.T) {
+	st := installed(t)
+	c := collect(t, st, false)
+	ok, err := SameCA(st, c)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	rotated(t, st)
+
+	ok, err = SameCA(st, c)
+	require.NoError(t, err)
+	require.False(t, ok, "the current CA changed")
+	during := collect(t, st, false)
+	ok, err = SameCA(st, during)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, st.SaveCA(*during.CA, nil, during.CARotatedAt))
+	ok, err = SameCA(st, during)
+	require.NoError(t, err)
+	require.False(t, ok, "the previous CA was dropped")
+
+	none := openStore(t)
+	require.NoError(t, none.SaveInstall(store.Install{ID: installID, CreatedAt: t0, Profile: store.ProfileHost}))
+	ok, err = SameCA(none, collect(t, none, false))
+	require.NoError(t, err)
+	require.True(t, ok, "no CA, then and now")
+}
+
+func TestABundleOfAnEarlierShapeIsRestored(t *testing.T) {
+	// A bundle written before the controller's objects were carried holds
+	// only the install's decisions, and still restores.
+	from := installed(t)
+	ca, _, _, err := from.CA()
+	require.NoError(t, err)
+	caJSON, err := json.Marshal(map[string]string{"certPEM": ca.CertPEM, "keyPEM": ca.KeyPEM.Reveal()})
+	require.NoError(t, err)
+	text := `{"installId":"` + installID + `","installedAt":"2026-10-03T12:00:00Z","settings":{"gateTag":"published","observeOnly":false},
+		"manualRoutes":[{"hostname":"grafana.example.com","manualId":"grafana","source":"manual","target":{"scheme":"http","addr":"192.0.2.10","port":3000}}],
+		"nodes":[{"name":"pve1","version":"0.2.0","since":"2026-10-03T12:00:00Z"}],"ca":` + string(caJSON) + `,
+		"leader":{"installId":"` + installID + `","generation":7,"nonce":"n0nce","node":"pve1"},"madeAt":"2026-10-06T12:00:00Z","build":"0.2.0"}`
+	c, err := Open(sealText(t, []byte(text)), []byte(passphrase))
+	require.NoError(t, err)
+	to := openStore(t)
+
+	require.NoError(t, Restore(t.Context(), to, c))
+
+	inst, found, err := to.Install()
+	require.NoError(t, err)
+	require.True(t, found)
 	require.Nil(t, inst.Cluster)
+	routes, err := to.ManualRoutes()
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+	networks, err := to.Networks()
+	require.NoError(t, err)
+	require.Empty(t, networks)
+	_, previous, _, err := to.CA()
+	require.NoError(t, err)
+	require.Nil(t, previous)
 }

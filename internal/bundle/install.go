@@ -1,14 +1,18 @@
 package bundle
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -34,12 +38,16 @@ type credentialDocument struct {
 	AddedAt time.Time `json:"addedAt"`
 }
 
-// Collect reads the install out of the store: its identity, settings, manual
-// routes, approvals, acknowledged segments, the registry of nodes, the CA with
-// its key and leader.json. The Cloudflare credentials, with their tokens, are
-// read only when credentials says so. Run tokens, bindings and the caches are
-// left out: the daemon builds them again.
-func Collect(st *store.Store, credentials bool, now time.Time, build string) (Contents, error) {
+// Collect reads the install out of the store: its identity and the cluster
+// it was made in, the settings, manual routes, approvals and acknowledged
+// segments, the registry of nodes, the CA with its key, and the previous CA
+// while a rotation runs, leader.json, and every other object the controller
+// writes: the networks and service addresses, the leases, consents and
+// attachments of the managed network, the claims, tombstones, placements and
+// moves, and the progress of a rotation. The Cloudflare credentials, with
+// their tokens, are read only when credentials says so. Run tokens, bindings
+// and the caches are left out: the daemon builds them again.
+func Collect(ctx context.Context, st *store.Store, credentials bool, now time.Time, build string) (Contents, error) {
 	inst, found, err := st.Install()
 	switch {
 	case err != nil:
@@ -48,62 +56,15 @@ func Collect(st *store.Store, credentials bool, now time.Time, build string) (Co
 		return Contents{}, ErrNoInstall
 	}
 	c := Contents{InstallID: inst.ID, InstalledAt: inst.CreatedAt, MadeAt: now.UTC(), Build: build}
-
-	settings, err := st.Settings()
-	if err != nil {
-		return Contents{}, fmt.Errorf("reading the settings: %w", err)
+	if inst.Cluster != nil {
+		if c.Cluster, err = json.Marshal(inst.Cluster); err != nil {
+			return Contents{}, err
+		}
 	}
-	if c.Settings, err = json.Marshal(settings); err != nil {
-		return Contents{}, err
-	}
-	routes, err := st.ManualRoutes()
-	if err != nil {
-		return Contents{}, fmt.Errorf("reading the manual routes: %w", err)
-	}
-	if c.ManualRoutes, err = encodeAll(routes); err != nil {
-		return Contents{}, err
-	}
-	approvals, err := st.Approvals()
-	if err != nil {
-		return Contents{}, fmt.Errorf("reading the approvals: %w", err)
-	}
-	if c.Approvals, err = encodeAll(inOrder(approvals)); err != nil {
-		return Contents{}, err
-	}
-	segments, err := st.Segments()
-	if err != nil {
-		return Contents{}, fmt.Errorf("reading the acknowledged segments: %w", err)
-	}
-	if c.Segments, err = encodeAll(inOrder(segments)); err != nil {
-		return Contents{}, err
-	}
-	nodeSegments, err := st.NodeSegments()
-	if err != nil {
-		return Contents{}, fmt.Errorf("reading the segments acknowledged on nodes: %w", err)
-	}
-	if c.NodeSegments, err = encodeAll(inOrder(nodeSegments)); err != nil {
-		return Contents{}, err
-	}
-	nodes, err := st.Nodes()
-	if err != nil {
-		return Contents{}, fmt.Errorf("reading the registry of nodes: %w", err)
-	}
-	if c.Nodes, err = encodeAll(nodes); err != nil {
-		return Contents{}, err
-	}
-	switch current, _, _, err := st.CA(); {
-	case errors.Is(err, store.ErrNoCA):
-	case err != nil:
-		return Contents{}, fmt.Errorf("reading the CA: %w", err)
-	default:
-		c.CA = &current
-	}
-	leader, _, found, err := st.Leader()
-	if err != nil {
-		return Contents{}, fmt.Errorf("reading leader.json: %w", err)
-	}
-	if found {
-		if c.Leader, err = json.Marshal(leader); err != nil {
+	for _, part := range []func(context.Context, *store.Store, *Contents) error{
+		collectDecisions, collectPKI, collectNetworks, collectManaged, collectEngine,
+	} {
+		if err := part(ctx, st, &c); err != nil {
 			return Contents{}, err
 		}
 	}
@@ -113,6 +74,121 @@ func Collect(st *store.Store, credentials bool, now time.Time, build string) (Co
 		}
 	}
 	return c, nil
+}
+
+func collectDecisions(_ context.Context, st *store.Store, c *Contents) (err error) {
+	settings, err := st.Settings()
+	if err != nil {
+		return fmt.Errorf("reading the settings: %w", err)
+	}
+	if c.Settings, err = json.Marshal(settings); err != nil {
+		return err
+	}
+	if c.ManualRoutes, err = listOf("manual routes", st.ManualRoutes); err != nil {
+		return err
+	}
+	if c.Approvals, err = mapOf("approvals", st.Approvals); err != nil {
+		return err
+	}
+	if c.Segments, err = mapOf("acknowledged segments", st.Segments); err != nil {
+		return err
+	}
+	if c.NodeSegments, err = mapOf("segments acknowledged on nodes", st.NodeSegments); err != nil {
+		return err
+	}
+	c.Nodes, err = listOf("registry of nodes", st.Nodes)
+	return err
+}
+
+func collectPKI(_ context.Context, st *store.Store, c *Contents) error {
+	switch current, previous, rotatedAt, err := st.CA(); {
+	case errors.Is(err, store.ErrNoCA):
+	case err != nil:
+		return fmt.Errorf("reading the CA: %w", err)
+	default:
+		c.CA, c.PreviousCA, c.CARotatedAt = &current, previous, rotatedAt
+	}
+	leader, _, found, err := st.Leader()
+	if err != nil {
+		return fmt.Errorf("reading leader.json: %w", err)
+	}
+	if found {
+		if c.Leader, err = json.Marshal(leader); err != nil {
+			return err
+		}
+	}
+	rotation, found, err := st.CARotation()
+	if err != nil {
+		return fmt.Errorf("reading the progress of the rotation: %w", err)
+	}
+	if found {
+		if c.CARotation, err = json.Marshal(rotation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectNetworks(_ context.Context, st *store.Store, c *Contents) (err error) {
+	if c.Networks, err = mapOf("networks", func() (map[string]store.Network, error) {
+		nets, err := st.Networks()
+		for id, n := range nets {
+			// The revision is the file's, not the network's.
+			n.Rev = 0
+			nets[id] = n
+		}
+		return nets, err
+	}); err != nil {
+		return err
+	}
+	if c.ServiceAddrs, err = listOf("service addresses", st.ServiceAddrs); err != nil {
+		return err
+	}
+	if c.NodeServiceAddrs, err = listOf("service addresses of nodes", st.NodeServiceAddrs); err != nil {
+		return err
+	}
+	if c.ServicePoolNext, _, _, err = st.ServicePool(); err != nil {
+		return fmt.Errorf("reading the pool of service addresses: %w", err)
+	}
+	return nil
+}
+
+func collectManaged(_ context.Context, st *store.Store, c *Contents) (err error) {
+	if c.Leases, err = mapOf("leases", func() (map[string]store.Lease, error) {
+		leases, err := st.Leases()
+		for mac, l := range leases {
+			l.Rev = 0
+			leases[mac] = l
+		}
+		return leases, err
+	}); err != nil {
+		return err
+	}
+	if c.Consents, err = mapOf("consents", st.Consents); err != nil {
+		return err
+	}
+	c.Attachments, err = mapOf("attachments", st.Attachments)
+	return err
+}
+
+func collectEngine(ctx context.Context, st *store.Store, c *Contents) (err error) {
+	if c.Claims, err = mapOf("claims", st.Claims); err != nil {
+		return err
+	}
+	tombstones, err := st.Tombstones().Load(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the tombstones: %w", err)
+	}
+	if len(tombstones) > 0 {
+		if c.Tombstones, err = json.Marshal(tombstones); err != nil {
+			return err
+		}
+	}
+	if c.Placements, err = mapOf("placements", st.Placements); err != nil {
+		return err
+	}
+	c.Moves, err = mapOf("moves", st.Moves)
+	return err
 }
 
 func collectCredentials(st *store.Store) ([]json.RawMessage, error) {
@@ -125,6 +201,27 @@ func collectCredentials(st *store.Store) ([]json.RawMessage, error) {
 		docs[i] = credentialDocument{ID: cred.ID, Label: cred.Label, Kind: cred.Kind, Token: cred.Token.Reveal(), AddedAt: cred.AddedAt}
 	}
 	return encodeAll(docs)
+}
+
+// listOf reads the objects of one kind and encodes each.
+func listOf[T any](what string, read func() ([]T, error)) ([]json.RawMessage, error) {
+	objects, err := read()
+	if err != nil {
+		return nil, fmt.Errorf("reading the %s: %w", what, err)
+	}
+	return encodeAll(objects)
+}
+
+// mapOf is listOf for objects by key, in the order of the keys, so that two
+// bundles of one store hold their objects in one order.
+func mapOf[T any](what string, read func() (map[string]T, error)) ([]json.RawMessage, error) {
+	return listOf(what, func() ([]T, error) {
+		m, err := read()
+		if err != nil {
+			return nil, err
+		}
+		return inOrder(m), nil
+	})
 }
 
 // encodeAll encodes each of the objects, left nil when there are none.
@@ -140,8 +237,6 @@ func encodeAll[T any](objects []T) ([]json.RawMessage, error) {
 	return out, nil
 }
 
-// inOrder returns the values of a map in the order of its keys, so that two
-// bundles of one store hold their objects in one order.
 func inOrder[T any](m map[string]T) []T {
 	out := make([]T, 0, len(m))
 	for _, k := range slices.Sorted(maps.Keys(m)) {
@@ -152,16 +247,30 @@ func inOrder[T any](m map[string]T) []T {
 
 // restoration is what a bundle holds, read as the store's types.
 type restoration struct {
-	created      time.Time
-	settings     store.Settings
-	routes       []model.Route
-	approvals    []store.Approval
-	segments     []store.Segment
-	nodeSegments []store.NodeSegment
-	nodes        []store.NodeEntry
-	ca           *store.CAFiles
-	credentials  []store.Credential
-	leader       *store.LeaderRecord
+	created          time.Time
+	cluster          *store.ClusterIdentity
+	settings         store.Settings
+	routes           []model.Route
+	approvals        []store.Approval
+	segments         []store.Segment
+	nodeSegments     []store.NodeSegment
+	nodes            []store.NodeEntry
+	ca, previousCA   *store.CAFiles
+	caRotatedAt      time.Time
+	caRotation       *store.CARotation
+	credentials      []store.Credential
+	leader           *store.LeaderRecord
+	networks         []store.Network
+	serviceAddrs     []store.ServiceAddr
+	nodeServiceAddrs []store.NodeServiceAddr
+	poolNext         netip.Addr
+	leases           []store.Lease
+	consents         []store.Consent
+	attachments      []store.Attachment
+	claims           map[string]planner.Claim
+	tombstones       map[string]reconcile.Tombstone
+	placements       map[string]store.Placement
+	moves            []store.Move
 }
 
 // decodeStrict reads one object of the bundle, refusing what the type has no
@@ -180,6 +289,24 @@ func decodeEach[T any](what string, raws []json.RawMessage) ([]T, error) {
 	return out, nil
 }
 
+// decodeKeyed is decodeEach for objects the store keeps by a key each
+// names itself, which none may leave out.
+func decodeKeyed[T any](what, field string, raws []json.RawMessage, key func(T) string) (map[string]T, error) {
+	items, err := decodeEach[T](what, raws)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]T, len(items))
+	for i, item := range items {
+		k := key(item)
+		if k == "" {
+			return nil, fmt.Errorf("%s %d of the bundle has no %s", what, i+1, field)
+		}
+		out[k] = item
+	}
+	return out, nil
+}
+
 // read turns the contents into the store's objects, which writes nothing, so
 // that a bundle that cannot be read is found out before the store is touched.
 func read(c Contents) (r restoration, err error) {
@@ -187,59 +314,140 @@ func read(c Contents) (r restoration, err error) {
 	if r.created.IsZero() {
 		r.created = c.MadeAt
 	}
+	if len(c.Cluster) > 0 {
+		var cluster store.ClusterIdentity
+		if err := decodeStrict(c.Cluster, &cluster); err != nil {
+			return r, fmt.Errorf("the cluster of the bundle: %w", err)
+		}
+		if cluster.CASHA256 == "" {
+			return r, errors.New("the cluster of the bundle has no fingerprint")
+		}
+		r.cluster = &cluster
+	}
+	for _, part := range []func(Contents, *restoration) error{readDecisions, readPKI, readCredentials, readNetworks, readEngine} {
+		if err := part(c, &r); err != nil {
+			return r, err
+		}
+	}
+	return r, nil
+}
+
+func readDecisions(c Contents, r *restoration) (err error) {
 	r.settings = store.DefaultSettings()
 	if len(c.Settings) > 0 {
 		if err := decodeStrict(c.Settings, &r.settings); err != nil {
-			return r, fmt.Errorf("the settings of the bundle: %w", err)
+			return fmt.Errorf("the settings of the bundle: %w", err)
 		}
 	}
 	if r.routes, err = decodeEach[model.Route]("manual route", c.ManualRoutes); err != nil {
-		return r, err
+		return err
 	}
 	if r.approvals, err = decodeEach[store.Approval]("approval", c.Approvals); err != nil {
-		return r, err
+		return err
 	}
 	if r.segments, err = decodeEach[store.Segment]("segment", c.Segments); err != nil {
-		return r, err
+		return err
 	}
 	if r.nodeSegments, err = decodeEach[store.NodeSegment]("node segment", c.NodeSegments); err != nil {
-		return r, err
+		return err
 	}
-	if r.nodes, err = decodeEach[store.NodeEntry]("node", c.Nodes); err != nil {
-		return r, err
-	}
+	r.nodes, err = decodeEach[store.NodeEntry]("node", c.Nodes)
+	return err
+}
+
+func readPKI(c Contents, r *restoration) error {
 	if c.CA != nil {
 		if c.CA.CertPEM == "" || c.CA.KeyPEM.Reveal() == "" {
-			return r, errors.New("the CA of the bundle has no certificate or no key")
+			return errors.New("the CA of the bundle has no certificate or no key")
 		}
 		r.ca = c.CA
 	}
-	docs, err := decodeEach[credentialDocument]("credential", c.Credentials)
-	if err != nil {
-		// What failed could be a token: say which credential, not what is in it.
-		return r, errors.New("a credential of the bundle cannot be read")
-	}
-	for i, d := range docs {
-		switch d.Token {
-		case "", redactedToken:
-			return r, fmt.Errorf("credential %d of the bundle, %q, holds no token: it was exported without it", i+1, d.ID)
+	if c.PreviousCA != nil {
+		switch {
+		case r.ca == nil:
+			return errors.New("the bundle holds the previous CA of a rotation and no current one")
+		case c.PreviousCA.CertPEM == "" || c.PreviousCA.KeyPEM.Reveal() == "":
+			return errors.New("the previous CA of the bundle has no certificate or no key")
+		case c.CARotatedAt.IsZero():
+			return errors.New("the bundle holds the previous CA of a rotation without the time it was rotated at")
 		}
-		r.credentials = append(r.credentials, store.Credential{ID: d.ID, Label: d.Label, Kind: d.Kind, Token: store.NewSecret(d.Token), AddedAt: d.AddedAt})
+		r.previousCA = c.PreviousCA
+	}
+	r.caRotatedAt = c.CARotatedAt
+	if len(c.CARotation) > 0 {
+		var rotation store.CARotation
+		if err := decodeStrict(c.CARotation, &rotation); err != nil {
+			return fmt.Errorf("the progress of the rotation of the bundle: %w", err)
+		}
+		r.caRotation = &rotation
 	}
 	if len(c.Leader) > 0 {
 		var leader store.LeaderRecord
 		if err := decodeStrict(c.Leader, &leader); err != nil {
-			return r, fmt.Errorf("leader.json of the bundle: %w", err)
+			return fmt.Errorf("leader.json of the bundle: %w", err)
 		}
 		if err := leader.Validate(); err != nil {
-			return r, fmt.Errorf("leader.json of the bundle: %w", err)
+			return fmt.Errorf("leader.json of the bundle: %w", err)
 		}
 		if leader.InstallID != c.InstallID {
-			return r, fmt.Errorf("leader.json of the bundle names install %s, and the bundle is of install %s", leader.InstallID, c.InstallID)
+			return fmt.Errorf("leader.json of the bundle names install %s, and the bundle is of install %s", leader.InstallID, c.InstallID)
 		}
 		r.leader = &leader
 	}
-	return r, nil
+	return nil
+}
+
+func readCredentials(c Contents, r *restoration) error {
+	docs, err := decodeEach[credentialDocument]("credential", c.Credentials)
+	if err != nil {
+		// What failed could be a token: say which credential, not what is in it.
+		return errors.New("a credential of the bundle cannot be read")
+	}
+	for i, d := range docs {
+		switch d.Token {
+		case "", redactedToken:
+			return fmt.Errorf("credential %d of the bundle, %q, holds no token: it was exported without it", i+1, d.ID)
+		}
+		r.credentials = append(r.credentials, store.Credential{ID: d.ID, Label: d.Label, Kind: d.Kind, Token: store.NewSecret(d.Token), AddedAt: d.AddedAt})
+	}
+	return nil
+}
+
+func readNetworks(c Contents, r *restoration) (err error) {
+	if r.networks, err = decodeEach[store.Network]("network", c.Networks); err != nil {
+		return err
+	}
+	if r.serviceAddrs, err = decodeEach[store.ServiceAddr]("service address", c.ServiceAddrs); err != nil {
+		return err
+	}
+	if r.nodeServiceAddrs, err = decodeEach[store.NodeServiceAddr]("service address of a node", c.NodeServiceAddrs); err != nil {
+		return err
+	}
+	r.poolNext = c.ServicePoolNext
+	if r.leases, err = decodeEach[store.Lease]("lease", c.Leases); err != nil {
+		return err
+	}
+	if r.consents, err = decodeEach[store.Consent]("consent", c.Consents); err != nil {
+		return err
+	}
+	r.attachments, err = decodeEach[store.Attachment]("attachment", c.Attachments)
+	return err
+}
+
+func readEngine(c Contents, r *restoration) (err error) {
+	if r.claims, err = decodeKeyed("claim", "hostname", c.Claims, func(cl planner.Claim) string { return cl.Hostname }); err != nil {
+		return err
+	}
+	if len(c.Tombstones) > 0 {
+		if err := decodeStrict(c.Tombstones, &r.tombstones); err != nil {
+			return fmt.Errorf("the tombstones of the bundle: %w", err)
+		}
+	}
+	if r.placements, err = decodeKeyed("placement", "hostname", c.Placements, func(p store.Placement) string { return p.Hostname }); err != nil {
+		return err
+	}
+	r.moves, err = decodeEach[store.Move]("move", c.Moves)
+	return err
 }
 
 // NoInstall returns ErrInstalled, naming the install, when the store holds
@@ -254,13 +462,32 @@ func NoInstall(st *store.Store) error {
 	return nil
 }
 
+// SameCA reports whether the CA of the store, the previous one and the time
+// of the rotation are still what the bundle holds: an export that ran while
+// a rotation moved them is run again.
+func SameCA(st *store.Store, c Contents) (bool, error) {
+	current, previous, rotatedAt, err := st.CA()
+	switch {
+	case errors.Is(err, store.ErrNoCA):
+		return c.CA == nil, nil
+	case err != nil:
+		return false, fmt.Errorf("reading the CA: %w", err)
+	case c.CA == nil || !sameFiles(*c.CA, current) || !c.CARotatedAt.Equal(rotatedAt):
+		return false, nil
+	case (c.PreviousCA == nil) != (previous == nil):
+		return false, nil
+	}
+	return previous == nil || sameFiles(*c.PreviousCA, *previous), nil
+}
+
+func sameFiles(a, b store.CAFiles) bool { return a.CertPEM == b.CertPEM && a.KeyPEM.Equal(b.KeyPEM) }
+
 // Restore writes the install of a bundle into a store that holds none, whose
 // roots are made. The settings are stored in observe-only mode, whatever they
 // were: the restored install publishes nothing until an admin says so. The
-// cluster the install was made in is not carried over, and the install is
-// written last, so that a restore that stops half way leaves a store that
-// holds none, and is run again.
-func Restore(st *store.Store, c Contents) error {
+// install is written last, with the cluster it was made in, so that a restore
+// that stops half way leaves a store that holds none, and is run again.
+func Restore(ctx context.Context, st *store.Store, c Contents) error {
 	r, err := read(c)
 	if err != nil {
 		return err
@@ -268,43 +495,11 @@ func Restore(st *store.Store, c Contents) error {
 	if err := NoInstall(st); err != nil {
 		return err
 	}
-	if r.ca != nil {
-		if err := st.SaveCA(*r.ca, nil, time.Time{}); err != nil {
-			return fmt.Errorf("restoring the CA: %w", err)
-		}
-	}
-	for _, cred := range r.credentials {
-		if err := st.SaveCredential(cred); err != nil {
-			return fmt.Errorf("restoring credential %s: %w", cred.ID, err)
-		}
-	}
-	r.settings.ObserveOnly = true
-	if err := st.SaveSettings(r.settings); err != nil {
-		return fmt.Errorf("restoring the settings: %w", err)
-	}
-	for _, n := range r.nodes {
-		if err := st.SaveNode(n); err != nil {
-			return fmt.Errorf("restoring the registry of nodes: %w", err)
-		}
-	}
-	for _, s := range r.segments {
-		if err := st.SaveSegment(s); err != nil {
-			return fmt.Errorf("restoring the acknowledged segments: %w", err)
-		}
-	}
-	for _, s := range r.nodeSegments {
-		if err := st.SaveNodeSegment(s); err != nil {
-			return fmt.Errorf("restoring the segments acknowledged on nodes: %w", err)
-		}
-	}
-	for _, a := range r.approvals {
-		if err := st.SaveApproval(a); err != nil {
-			return fmt.Errorf("restoring the approvals: %w", err)
-		}
-	}
-	for _, route := range r.routes {
-		if err := st.SaveManualRoute(route); err != nil {
-			return fmt.Errorf("restoring the manual routes: %w", err)
+	for _, step := range []func(context.Context, *store.Store, restoration) error{
+		restorePKI, restoreDecisions, restoreNetworks, restoreEngine,
+	} {
+		if err := step(ctx, st, r); err != nil {
+			return err
 		}
 	}
 	if r.leader != nil {
@@ -312,8 +507,98 @@ func Restore(st *store.Store, c Contents) error {
 			return fmt.Errorf("restoring leader.json: %w", err)
 		}
 	}
-	if err := st.SaveInstall(store.Install{ID: c.InstallID, CreatedAt: r.created, Profile: store.ProfileHost}); err != nil {
+	if err := st.SaveInstall(store.Install{ID: c.InstallID, CreatedAt: r.created, Profile: store.ProfileHost, Cluster: r.cluster}); err != nil {
 		return fmt.Errorf("restoring the install: %w", err)
+	}
+	return nil
+}
+
+func restorePKI(_ context.Context, st *store.Store, r restoration) error {
+	if r.ca != nil {
+		if err := st.SaveCA(*r.ca, r.previousCA, r.caRotatedAt); err != nil {
+			return fmt.Errorf("restoring the CA: %w", err)
+		}
+	}
+	if r.caRotation != nil {
+		if err := st.SaveCARotation(*r.caRotation); err != nil {
+			return fmt.Errorf("restoring the progress of the rotation: %w", err)
+		}
+	}
+	return saveEach("credentials", r.credentials, st.SaveCredential)
+}
+
+func restoreDecisions(_ context.Context, st *store.Store, r restoration) error {
+	r.settings.ObserveOnly = true
+	if err := st.SaveSettings(r.settings); err != nil {
+		return fmt.Errorf("restoring the settings: %w", err)
+	}
+	if err := saveEach("registry of nodes", r.nodes, st.SaveNode); err != nil {
+		return err
+	}
+	if err := saveEach("acknowledged segments", r.segments, st.SaveSegment); err != nil {
+		return err
+	}
+	if err := saveEach("segments acknowledged on nodes", r.nodeSegments, st.SaveNodeSegment); err != nil {
+		return err
+	}
+	if err := saveEach("approvals", r.approvals, st.SaveApproval); err != nil {
+		return err
+	}
+	return saveEach("manual routes", r.routes, st.SaveManualRoute)
+}
+
+// restoreNetworks writes the networks, the service addresses and then the
+// pool, which is checked against them, and what the managed network holds,
+// whose leases are checked against the settings.
+func restoreNetworks(_ context.Context, st *store.Store, r restoration) error {
+	if err := saveEach("networks", r.networks, func(n store.Network) error { return st.SaveNetwork(n, 0) }); err != nil {
+		return err
+	}
+	if err := saveEach("service addresses", r.serviceAddrs, st.SaveServiceAddr); err != nil {
+		return err
+	}
+	if err := saveEach("service addresses of nodes", r.nodeServiceAddrs, st.SaveNodeServiceAddr); err != nil {
+		return err
+	}
+	if r.poolNext.IsValid() {
+		if err := st.SaveServicePool(r.poolNext); err != nil {
+			return fmt.Errorf("restoring the pool of service addresses: %w", err)
+		}
+	}
+	if err := saveEach("leases", r.leases, func(l store.Lease) error { return st.SaveLease(l, 0) }); err != nil {
+		return err
+	}
+	if err := saveEach("consents", r.consents, st.SaveConsent); err != nil {
+		return err
+	}
+	return saveEach("attachments", r.attachments, st.SaveAttachment)
+}
+
+func restoreEngine(ctx context.Context, st *store.Store, r restoration) error {
+	if len(r.claims) > 0 {
+		if err := st.SaveClaims(r.claims); err != nil {
+			return fmt.Errorf("restoring the claims: %w", err)
+		}
+	}
+	if len(r.tombstones) > 0 {
+		if err := st.Tombstones().Save(ctx, r.tombstones); err != nil {
+			return fmt.Errorf("restoring the tombstones: %w", err)
+		}
+	}
+	if len(r.placements) > 0 {
+		if err := st.SavePlacements(r.placements); err != nil {
+			return fmt.Errorf("restoring the placements: %w", err)
+		}
+	}
+	return saveEach("moves", r.moves, st.SaveMove)
+}
+
+// saveEach writes the objects of one kind, naming the kind in the error.
+func saveEach[T any](what string, objects []T, save func(T) error) error {
+	for _, o := range objects {
+		if err := save(o); err != nil {
+			return fmt.Errorf("restoring the %s: %w", what, err)
+		}
 	}
 	return nil
 }

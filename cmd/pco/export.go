@@ -83,7 +83,7 @@ func (a *app) export(cmd *cobra.Command, e bundleEnv, target string, credentials
 		}
 		return fmt.Errorf("opening the store: %w", err)
 	}
-	c, err := bundle.Collect(st, credentials, a.now(), a.version)
+	c, err := bundle.Collect(cmd.Context(), st, credentials, a.now(), a.version)
 	switch {
 	case errors.Is(err, bundle.ErrNoInstall), errors.Is(err, store.ErrNoRoot):
 		return errNothingToExport

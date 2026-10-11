@@ -77,6 +77,7 @@ func TestAStrictDecodeRefusesAKeyAtAnyDepth(t *testing.T) {
 			var v strictOuter
 			err := unmarshalStrict([]byte(tc.text), &v)
 			require.EqualError(t, err, tc.want)
+			require.Zero(t, v.hidden, "nothing is decoded")
 		})
 	}
 }

@@ -102,7 +102,7 @@ func (a *app) importBundle(cmd *cobra.Command, e bundleEnv, file, passphraseFile
 	if err := st.Init(); err != nil {
 		return fmt.Errorf("making the roots of the store: %w", err)
 	}
-	if err := bundle.Restore(st, c); err != nil {
+	if err := bundle.Restore(cmd.Context(), st, c); err != nil {
 		return err
 	}
 	s := &screen{w: cmd.OutOrStdout()}

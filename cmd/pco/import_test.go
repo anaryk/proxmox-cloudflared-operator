@@ -32,7 +32,7 @@ func bundleOf(t *testing.T, credentials bool) string {
 	}
 	made.once.Do(func() {
 		from := newBundleWorld(t).withInstall()
-		c, err := bundle.Collect(from.st, credentials, t0, cliVersion)
+		c, err := bundle.Collect(t.Context(), from.st, credentials, t0, cliVersion)
 		require.NoError(t, err)
 		made.raw, err = bundle.Seal(c, []byte(bundlePassphrase), from.env.rand)
 		require.NoError(t, err)

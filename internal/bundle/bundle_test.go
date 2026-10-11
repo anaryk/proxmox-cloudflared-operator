@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -39,10 +40,28 @@ func full() Contents {
 			CertPEM: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
 			KeyPEM:  store.NewSecret("-----BEGIN PRIVATE KEY-----\nBBBB\n-----END PRIVATE KEY-----\n"),
 		},
-		Credentials: []json.RawMessage{json.RawMessage(`{"id":"main","token":"cf-secret-token"}`)},
-		Leader:      json.RawMessage(`{"installId":"0123456789ab","generation":4,"nonce":"abcd"}`),
-		MadeAt:      t0,
-		Build:       "0.2.0",
+		PreviousCA: &CAFiles{
+			CertPEM: "-----BEGIN CERTIFICATE-----\nCCCC\n-----END CERTIFICATE-----\n",
+			KeyPEM:  store.NewSecret("-----BEGIN PRIVATE KEY-----\nDDDD\n-----END PRIVATE KEY-----\n"),
+		},
+		CARotatedAt:      t0.Add(-time.Hour),
+		CARotation:       json.RawMessage(`{"node":"pve3","startedAt":"2026-10-06T10:00:00Z","done":["credentials"]}`),
+		Cluster:          json.RawMessage(`{"caSHA256":"aaaa","name":"lab"}`),
+		Credentials:      []json.RawMessage{json.RawMessage(`{"id":"main","token":"cf-secret-token"}`)},
+		Leader:           json.RawMessage(`{"installId":"0123456789ab","generation":4,"nonce":"abcd"}`),
+		Networks:         []json.RawMessage{json.RawMessage(`{"id":"vmbr0","mark":1}`)},
+		ServiceAddrs:     []json.RawMessage{json.RawMessage(`{"network":"vmbr0","addr":"192.0.2.20","service":"198.18.1.0"}`)},
+		NodeServiceAddrs: []json.RawMessage{json.RawMessage(`{"network":"vmbr9","node":"pve2","addr":"10.30.0.5","service":"198.18.1.1"}`)},
+		ServicePoolNext:  netip.MustParseAddr("198.18.1.2"),
+		Leases:           []json.RawMessage{json.RawMessage(`{"mac":"06:50:43:4f:76:0a","addr":"10.203.118.10"}`)},
+		Consents:         []json.RawMessage{json.RawMessage(`{"owner":"qemu/101"}`)},
+		Attachments:      []json.RawMessage{json.RawMessage(`{"owner":"qemu/101","nic":1}`)},
+		Claims:           []json.RawMessage{json.RawMessage(`{"hostname":"a.example.com","owner":"qemu/101"}`)},
+		Tombstones:       json.RawMessage(`{"zone/old.example.com":{"generation":3,"nonce":"abcd"}}`),
+		Placements:       []json.RawMessage{json.RawMessage(`{"hostname":"a.example.com","tunnel":"t1","kind":"shared"}`)},
+		Moves:            []json.RawMessage{json.RawMessage(`{"owner":"qemu/101","from":"t1","to":"t2","step":"rules-added"}`)},
+		MadeAt:           t0,
+		Build:            "0.2.0",
 	}
 }
 
@@ -53,15 +72,38 @@ func requireSameContents(t *testing.T, want, got Contents) {
 	require.True(t, want.MadeAt.Equal(got.MadeAt))
 	require.Equal(t, want.Build, got.Build)
 	require.Equal(t, want.CA, got.CA)
-	require.JSONEq(t, string(want.Settings), string(got.Settings))
-	require.JSONEq(t, string(want.Leader), string(got.Leader))
+	require.Equal(t, want.PreviousCA, got.PreviousCA)
+	require.True(t, want.CARotatedAt.Equal(got.CARotatedAt))
+	require.Equal(t, want.ServicePoolNext, got.ServicePoolNext)
+	for name, pair := range map[string][2]json.RawMessage{
+		"settings":    {want.Settings, got.Settings},
+		"leader":      {want.Leader, got.Leader},
+		"cluster":     {want.Cluster, got.Cluster},
+		"CA rotation": {want.CARotation, got.CARotation},
+		"tombstones":  {want.Tombstones, got.Tombstones},
+	} {
+		if len(pair[0]) == 0 {
+			require.Empty(t, pair[1], name)
+			continue
+		}
+		require.JSONEq(t, string(pair[0]), string(pair[1]), name)
+	}
 	for name, pair := range map[string][2][]json.RawMessage{
-		"manual routes": {want.ManualRoutes, got.ManualRoutes},
-		"approvals":     {want.Approvals, got.Approvals},
-		"segments":      {want.Segments, got.Segments},
-		"node segments": {want.NodeSegments, got.NodeSegments},
-		"nodes":         {want.Nodes, got.Nodes},
-		"credentials":   {want.Credentials, got.Credentials},
+		"manual routes":          {want.ManualRoutes, got.ManualRoutes},
+		"approvals":              {want.Approvals, got.Approvals},
+		"segments":               {want.Segments, got.Segments},
+		"node segments":          {want.NodeSegments, got.NodeSegments},
+		"nodes":                  {want.Nodes, got.Nodes},
+		"credentials":            {want.Credentials, got.Credentials},
+		"networks":               {want.Networks, got.Networks},
+		"service addresses":      {want.ServiceAddrs, got.ServiceAddrs},
+		"node service addresses": {want.NodeServiceAddrs, got.NodeServiceAddrs},
+		"leases":                 {want.Leases, got.Leases},
+		"consents":               {want.Consents, got.Consents},
+		"attachments":            {want.Attachments, got.Attachments},
+		"claims":                 {want.Claims, got.Claims},
+		"placements":             {want.Placements, got.Placements},
+		"moves":                  {want.Moves, got.Moves},
 	} {
 		require.Len(t, pair[1], len(pair[0]), name)
 		for i := range pair[0] {
