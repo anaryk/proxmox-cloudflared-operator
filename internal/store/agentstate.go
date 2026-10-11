@@ -152,10 +152,9 @@ func (s *Store) AgentActions() (map[string]ActionDone, error) {
 }
 
 // SaveAgentActions stores the actions the agent ran, unless they are what is
-// stored already: the newest MaxAgentActions of them, by the time they ran.
+// stored already: those NewestAgentActions keeps.
 func (s *Store) SaveAgentActions(done map[string]ActionDone) error {
-	ids := slices.Sorted(maps.Keys(done))
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(done)) {
 		switch a := done[id]; {
 		case id == "":
 			return errors.New("agent action has no id")
@@ -163,10 +162,18 @@ func (s *Store) SaveAgentActions(done map[string]ActionDone) error {
 			return fmt.Errorf("agent action %s has no kind", id)
 		}
 	}
-	kept := make(map[string]ActionDone, min(len(done), MaxAgentActions))
+	return s.agent().put(kindAgent, idAgentActions, NewestAgentActions(done), true)
+}
+
+// NewestAgentActions is what SaveAgentActions keeps of done: the newest
+// MaxAgentActions by the time they ran, the lower id first among those that
+// ran at the same time.
+func NewestAgentActions(done map[string]ActionDone) map[string]ActionDone {
+	ids := slices.Sorted(maps.Keys(done))
 	slices.SortStableFunc(ids, func(a, b string) int { return done[b].At.Compare(done[a].At) })
+	kept := make(map[string]ActionDone, min(len(done), MaxAgentActions))
 	for _, id := range ids[:min(len(ids), MaxAgentActions)] {
 		kept[id] = done[id]
 	}
-	return s.agent().put(kindAgent, idAgentActions, kept, true)
+	return kept
 }

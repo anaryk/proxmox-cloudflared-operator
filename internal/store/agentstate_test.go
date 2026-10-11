@@ -140,6 +140,7 @@ func TestTheAgentsActionsKeepTheNewestThousand(t *testing.T) {
 	require.NotContains(t, got, "a0004", "the oldest go")
 	require.Contains(t, got, "a0005")
 	require.Contains(t, got, fmt.Sprintf("a%04d", MaxAgentActions+4))
+	require.Equal(t, NewestAgentActions(done), got, "what is kept is what the agent may remember")
 }
 
 // The local root is the node's own disk: a snapshot of a large install is
