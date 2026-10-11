@@ -845,3 +845,42 @@ func TestRefreshConcurrentCalls(t *testing.T) {
 	require.Len(t, again.Guests, 4)
 	require.Equal(t, "web-1", guestOf(t, again, refWeb).Name, "no snapshot handed out shares memory with the next one")
 }
+
+func TestRefreshReadsAGuestWithACardOnTheManagedNetworkEveryTime(t *testing.T) {
+	src := newFake()
+	src.configs[refDB] = pve.GuestConfig{Values: map[string]string{
+		"hostname": "db-1",
+		"net0":     "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:BB:01,ip=10.20.0.30/24",
+		"net1":     "name=eth1,bridge=pconet,hwaddr=06:50:43:4f:76:05,ip=10.203.118.5/24",
+	}, Digest: "d1g3st"}
+	inv, clk := newInventory(src, Options{})
+	inv.Refresh(t.Context())
+	clk.advance(10 * time.Second)
+
+	snap := inv.Refresh(t.Context())
+
+	require.True(t, snap.Complete)
+	require.Equal(t, 2, src.count("config "+refDB.String()), "a card on the managed network makes the guest watched")
+	require.Equal(t, []model.ReportedAddr{{Iface: "eth0", MAC: "bc:24:11:00:bb:01", Addr: ip("10.20.0.30")}}, guestOf(t, snap, refDB).Reported,
+		"and its addresses are reported like those of a tagged guest")
+}
+
+func TestForceRefreshReadsEveryGuestOfTheNodeOnce(t *testing.T) {
+	src := newFake()
+	inv, clk := newInventory(src, Options{})
+	inv.Refresh(t.Context())
+	clk.advance(10 * time.Second)
+
+	inv.ForceRefresh("pve2")
+	inv.Refresh(t.Context())
+	require.Equal(t, 2, src.count("config "+refDB.String()), "the unwatched guest of pve2 is read again")
+
+	clk.advance(10 * time.Second)
+	inv.Refresh(t.Context())
+	require.Equal(t, 2, src.count("config "+refDB.String()), "once")
+
+	inv.ForceRefresh("pve1")
+	clk.advance(10 * time.Second)
+	inv.Refresh(t.Context())
+	require.Equal(t, 2, src.count("config "+refDB.String()), "another node leaves it alone")
+}

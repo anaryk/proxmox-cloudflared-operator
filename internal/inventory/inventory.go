@@ -29,6 +29,11 @@ const (
 	defaultReportedTTL    = time.Minute
 	defaultConcurrency    = 4
 	defaultCallTimeout    = 5 * time.Second
+
+	// managedBridge is the vnet of pco's managed network: a guest with a
+	// card on it is read every refresh, tagged or not, as the cards pco
+	// puts there and the copies of them are what it has to see at once.
+	managedBridge = "pconet"
 )
 
 // Source is the part of the Proxmox API the inventory reads. *pve.Client
@@ -139,6 +144,11 @@ type Inventory struct {
 	cache  map[model.GuestRef]cacheEntry
 	last   Snapshot
 	goodAt time.Time // of the last complete refresh
+
+	// forced are the nodes whose every guest the next refresh reads again,
+	// asked for between refreshes; guarded by forceMu.
+	forceMu sync.Mutex
+	forced  map[string]bool
 }
 
 // cacheEntry is what is remembered about one guest between refreshes.
@@ -175,7 +185,27 @@ func New(src Source, opts Options, now func() time.Time, log zerolog.Logger) *In
 		log:         log,
 		callTimeout: defaultCallTimeout,
 		cache:       map[model.GuestRef]cacheEntry{},
+		forced:      map[string]bool{},
 	}
+}
+
+// ForceRefresh has the next refresh read the configuration of every guest
+// of node again, watched or not: the source-MAC watch asks for it when a
+// frame of a MAC nobody is known to have is seen on the managed network.
+func (i *Inventory) ForceRefresh(node string) {
+	i.forceMu.Lock()
+	defer i.forceMu.Unlock()
+	i.forced[node] = true
+}
+
+// takeForced returns the nodes a refresh was asked to read again, and
+// forgets them.
+func (i *Inventory) takeForced() map[string]bool {
+	i.forceMu.Lock()
+	defer i.forceMu.Unlock()
+	out := i.forced
+	i.forced = map[string]bool{}
+	return out
 }
 
 // run collects the outcome of one refresh.
@@ -184,6 +214,7 @@ type run struct {
 	complete bool
 	problems []string
 	routed   map[model.GuestRef]bool // the guests Routed names
+	forced   map[string]bool         // the nodes ForceRefresh named
 }
 
 // fail records a reason why the snapshot cannot be trusted to be complete.
@@ -228,7 +259,7 @@ func (i *Inventory) Refresh(ctx context.Context) Snapshot {
 	if listed {
 		offline = offlineNames(nodes)
 	}
-	r.routed = i.routed()
+	r.routed, r.forced = i.routed(), i.takeForced()
 	guests, cache := i.refreshGuests(ctx, r, r.uniqueRows(rows), offline)
 	if err := ctx.Err(); err != nil {
 		return i.previous(r, cancelled(err))
@@ -351,12 +382,29 @@ func (i *Inventory) refreshGuests(ctx context.Context, r *run, rows []pve.Resour
 	return guests, cache
 }
 
-// isWatched reports whether the guest carries a gate tag, or a manual route
-// names it. Tags are compared exactly.
+// isWatched reports whether the guest carries a gate tag, a manual route
+// names it, or its configuration has a card on the managed network. Tags
+// are compared exactly.
 func (i *Inventory) isWatched(r *run, row pve.Resource, cfg pve.GuestConfig) bool {
-	return r.routed[refOf(row)] || slices.ContainsFunc(guestTags(row, cfg.Values), func(tag string) bool {
+	return r.routed[refOf(row)] || onManagedNetwork(cfg.Values) || slices.ContainsFunc(guestTags(row, cfg.Values), func(tag string) bool {
 		return slices.Contains(i.opts.GateTags, tag)
 	})
+}
+
+// onManagedNetwork reports whether a configuration has a card on the
+// managed network.
+func onManagedNetwork(values map[string]string) bool {
+	for key, value := range values {
+		if _, ok := pve.NICIndex(key); !ok {
+			continue
+		}
+		for part := range strings.SplitSeq(value, ",") {
+			if part == "bridge="+managedBridge {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // routed returns the guests Routed names, as a set.
@@ -396,7 +444,7 @@ func (i *Inventory) refreshConfigs(ctx context.Context, r *run, rows []pve.Resou
 			continue
 		}
 		old, cached := i.cache[refOf(row)]
-		if !cached || i.isWatched(r, row, old.cfg) || i.alwaysRead(row) || r.now.Sub(old.cfgAt) >= i.opts.FullSweepEvery {
+		if !cached || r.forced[row.Node] || i.isWatched(r, row, old.cfg) || i.alwaysRead(row) || r.now.Sub(old.cfgAt) >= i.opts.FullSweepEvery {
 			due = append(due, j)
 		}
 	}
