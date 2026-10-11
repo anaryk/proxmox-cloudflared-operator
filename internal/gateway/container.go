@@ -655,7 +655,7 @@ func (b *containerBackend) attach(ctx context.Context, l Leg) string {
 		case err != nil:
 			return fmt.Sprintf("whether bridge %s is VLAN-aware cannot be read: %v", l.Bridge, err)
 		case !aware:
-			return fmt.Sprintf("bridge %s is not VLAN-aware; the appliance attaches to VLAN %d of a VLAN-aware bridge only", l.Bridge, l.VLAN)
+			return fmt.Sprintf("bridge %s is not VLAN-aware; the appliance attaches to VLAN %d of a VLAN-aware bridge or vnet only", l.Bridge, l.VLAN)
 		}
 	}
 	for attempt := 0; ; attempt++ {
@@ -1350,48 +1350,4 @@ func Problems(b Backend) []string {
 		return r.problemLines()
 	}
 	return nil
-}
-
-// ProxmoxNICs is the NICWriter of a Proxmox API client.
-func ProxmoxNICs(c *pve.Client) NICWriter { return proxmoxNICs{c: c} }
-
-type proxmoxNICs struct{ c *pve.Client }
-
-func (p proxmoxNICs) NICs(ctx context.Context, node string, ref model.GuestRef) (map[int]string, string, error) {
-	cfg, err := p.c.GuestConfig(ctx, node, ref)
-	if err != nil {
-		return nil, "", err
-	}
-	nics := map[int]string{}
-	for key, value := range cfg.Values {
-		rest, ok := strings.CutPrefix(key, "net")
-		if !ok {
-			continue
-		}
-		if i, err := strconv.Atoi(rest); err == nil && strconv.Itoa(i) == rest {
-			nics[i] = value
-		}
-	}
-	return nics, cfg.Digest, nil
-}
-
-func (p proxmoxNICs) VLANAware(ctx context.Context, node, bridge string) (bool, error) {
-	ifaces, err := p.c.NodeNetwork(ctx, node)
-	if err != nil {
-		return false, err
-	}
-	for _, i := range ifaces {
-		if i.Name == bridge {
-			return i.VLANAware, nil
-		}
-	}
-	return false, fmt.Errorf("node %s has no bridge %s", node, bridge)
-}
-
-func (p proxmoxNICs) AddNIC(ctx context.Context, node string, ref model.GuestRef, index int, spec, digest string) error {
-	return p.c.SetGuestConfig(ctx, node, ref, map[string]string{"net" + strconv.Itoa(index): spec}, digest)
-}
-
-func (p proxmoxNICs) RemoveNIC(ctx context.Context, node string, ref model.GuestRef, index int, digest string) error {
-	return p.c.DeleteGuestConfigKeys(ctx, node, ref, []string{"net" + strconv.Itoa(index)}, digest)
 }

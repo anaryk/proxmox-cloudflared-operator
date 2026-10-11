@@ -673,7 +673,7 @@ func TestWhatTheApplianceRefusesToAttach(t *testing.T) {
 		{"a bridge Proxmox makes for a VLAN", Leg{ID: "vmbr0v20", Mark: 4, Bridge: "vmbr0v20", Prefix: prefix("10.60.0.250/24"), MAC: mac("02:50:43:4f:00:04")}, nil,
 			"bridge vmbr0v20 is one Proxmox makes for a VLAN; attach the network on its bridge with the tag"},
 		{"a tag on a bridge that is not VLAN-aware", Leg{ID: "vmbr1.30", Mark: 4, Bridge: "vmbr1", VLAN: 30, Prefix: prefix("10.60.0.250/24"), MAC: mac("02:50:43:4f:00:04")}, nil,
-			"bridge vmbr1 is not VLAN-aware; the appliance attaches to VLAN 30 of a VLAN-aware bridge only"},
+			"bridge vmbr1 is not VLAN-aware; the appliance attaches to VLAN 30 of a VLAN-aware bridge or vnet only"},
 		{"no free slot", legA, full, "no free NIC slot (net1..net9)"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

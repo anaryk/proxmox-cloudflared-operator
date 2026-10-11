@@ -52,6 +52,20 @@ func TestVNetsRejectBadAnswers(t *testing.T) {
 	}
 }
 
+// A vnet in a zone of the type VLAN can filter VLANs itself, so that a tag on
+// a card on it puts the card in that VLAN of the vnet.
+func TestVNetsSayWhichFiltersVLANs(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{"/cluster/sdn/vnets": {http.StatusOK, `{"data":[
+		{"vnet":"a","zone":"z","vlanaware":1},
+		{"vnet":"b","zone":"z"}
+	]}`}})
+
+	got, err := c.VNets(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, []VNet{{Name: "a", Zone: "z", VLANAware: true}, {Name: "b", Zone: "z"}}, got)
+}
+
 func TestVNetsWithoutVnets(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{"/cluster/sdn/vnets": {http.StatusOK, `{"data":[]}`}})
 

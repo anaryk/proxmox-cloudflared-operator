@@ -23,11 +23,15 @@ type Subnet struct {
 type VNet struct {
 	Name string
 	Zone string
+	// VLANAware says that the vnet filters VLANs, so that a tag on a card on
+	// it puts the card in that VLAN of the vnet.
+	VLANAware bool
 }
 
 type vnetWire struct {
-	Vnet string `json:"vnet"`
-	Zone string `json:"zone"`
+	Vnet      string   `json:"vnet"`
+	Zone      string   `json:"zone"`
+	VLANAware flexBool `json:"vlanaware"`
 }
 
 // VNets lists the SDN vnets as configured, applied or not, with their zones.
@@ -44,7 +48,7 @@ func (c *Client) VNets(ctx context.Context) ([]VNet, error) {
 		if !validSegment(row.Zone) {
 			return nil, fmt.Errorf("fetching sdn vnets: vnet %s has the invalid zone %q", row.Vnet, row.Zone)
 		}
-		out = append(out, VNet{Name: row.Vnet, Zone: row.Zone})
+		out = append(out, VNet{Name: row.Vnet, Zone: row.Zone, VLANAware: bool(row.VLANAware)})
 	}
 	return out, nil
 }

@@ -44,20 +44,32 @@ func TestNICsSaysWhatCouldNotBeRead(t *testing.T) {
 	require.ErrorContains(t, err, "pending config of lxc/9201")
 }
 
-func TestVLANAwareReadsTheBridgeOfTheNode(t *testing.T) {
-	c, _ := newTestClient(t, map[string]reply{"/nodes/pve1/network": {http.StatusOK, `{"data":[
-		{"iface":"vmbr0","type":"bridge","active":1,"bridge_vlan_aware":1},
-		{"iface":"vmbr1","type":"bridge","active":1}
-	]}`}})
+// A bridge is read from the node's network; an SDN vnet, which the node does
+// not list there, from the vnets of the cluster, and only then.
+func TestVLANAwareReadsTheBridgeOfTheNodeOrTheVnetOfTheCluster(t *testing.T) {
+	c, rec := newTestClient(t, map[string]reply{
+		"/nodes/pve1/network": {http.StatusOK, `{"data":[
+			{"iface":"vmbr0","type":"bridge","active":1,"bridge_vlan_aware":1},
+			{"iface":"vmbr1","type":"bridge","active":1}
+		]}`},
+		"/cluster/sdn/vnets": {http.StatusOK, `{"data":[
+			{"vnet":"tenants","zone":"vz","vlanaware":1},
+			{"vnet":"plain","zone":"sz"}
+		]}`},
+	})
 
-	aware, err := c.VLANAware(context.Background(), "pve1", "vmbr0")
+	for bridge, want := range map[string]bool{"vmbr0": true, "vmbr1": false, "tenants": true, "plain": false} {
+		aware, err := c.VLANAware(context.Background(), "pve1", bridge)
+		require.NoError(t, err, bridge)
+		require.Equal(t, want, aware, bridge)
+	}
+	_, err := c.VLANAware(context.Background(), "pve1", "vmbr7")
+	require.EqualError(t, err, "bridge vmbr7 is no bridge of node pve1, nor a vnet of the cluster")
+
+	seen := len(rec.requests())
+	_, err = c.VLANAware(context.Background(), "pve1", "vmbr0")
 	require.NoError(t, err)
-	require.True(t, aware)
-	aware, err = c.VLANAware(context.Background(), "pve1", "vmbr1")
-	require.NoError(t, err)
-	require.False(t, aware)
-	_, err = c.VLANAware(context.Background(), "pve1", "vmbr7")
-	require.EqualError(t, err, "bridge vmbr7 is no bridge of node pve1")
+	require.Len(t, rec.requests(), seen+1, "the vnets are read only for a name the node does not list")
 }
 
 func TestAddAndRemoveANICUnderTheDigest(t *testing.T) {

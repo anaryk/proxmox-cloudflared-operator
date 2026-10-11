@@ -43,8 +43,10 @@ func nicIndex(key string) (int, bool) {
 	return index, err == nil && index >= 0 && strconv.Itoa(index) == digits
 }
 
-// VLANAware reports whether a bridge of the node filters VLANs; a bridge the
-// node does not have is an error.
+// VLANAware reports whether a bridge of the node filters VLANs. An SDN vnet
+// is a bridge of the node too, but one the node's network does not list, so
+// a name that is not among its bridges is looked for among the vnets of the
+// cluster; one that is neither is an error.
 func (c *Client) VLANAware(ctx context.Context, node, bridge string) (bool, error) {
 	ifaces, err := c.NodeNetwork(ctx, node)
 	if err != nil {
@@ -55,7 +57,16 @@ func (c *Client) VLANAware(ctx context.Context, node, bridge string) (bool, erro
 			return ifc.VLANAware, nil
 		}
 	}
-	return false, fmt.Errorf("bridge %s is no bridge of node %s", bridge, node)
+	vnets, err := c.VNets(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, v := range vnets {
+		if v.Name == bridge {
+			return v.VLANAware, nil
+		}
+	}
+	return false, fmt.Errorf("bridge %s is no bridge of node %s, nor a vnet of the cluster", bridge, node)
 }
 
 // AddNIC sets net<index> of a guest's configuration to spec, under the
