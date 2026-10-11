@@ -91,3 +91,15 @@ func TestAStaleDigestOfANICWriteIsSaidAsSuch(t *testing.T) {
 	err := c.AddNIC(t.Context(), "pve1", appliance, 2, "name=leg2,bridge=vmbr2", "d1")
 	require.ErrorIs(t, err, ErrStaleDigest)
 }
+
+func TestNICIndexReadsNetKeysOnly(t *testing.T) {
+	for key, want := range map[string]int{"net0": 0, "net7": 7, "net31": 31} {
+		got, ok := NICIndex(key)
+		require.True(t, ok, key)
+		require.Equal(t, want, got, key)
+	}
+	for _, key := range []string{"net", "net01", "net-1", "netmask", "ipconfig0", "network", "0"} {
+		_, ok := NICIndex(key)
+		require.False(t, ok, key)
+	}
+}

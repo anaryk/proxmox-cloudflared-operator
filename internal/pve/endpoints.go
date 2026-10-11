@@ -70,12 +70,24 @@ func (c *Client) guestRows(ctx context.Context) ([]resourceWire, error) {
 // runs with, not the pending view the endpoint answers with by default, in
 // which a NIC whose removal waits for the next start is already gone.
 func (c *Client) GuestConfig(ctx context.Context, node string, ref model.GuestRef) (GuestConfig, error) {
+	return c.guestConfig(ctx, node, ref, url.Values{"current": {"1"}})
+}
+
+// NextConfig returns the configuration a guest runs with after its next
+// start, the pending view of the endpoint: a key's pending value where it
+// has one, without the keys whose deletion waits, under the same digest as
+// GuestConfig. A write that must see a card whose addition waits reads this.
+func (c *Client) NextConfig(ctx context.Context, node string, ref model.GuestRef) (GuestConfig, error) {
+	return c.guestConfig(ctx, node, ref, nil)
+}
+
+func (c *Client) guestConfig(ctx context.Context, node string, ref model.GuestRef, query url.Values) (GuestConfig, error) {
 	endpoint, err := guestEndpoint(node, ref.Kind, ref.VMID, "config")
 	if err != nil {
 		return GuestConfig{}, err
 	}
 	var raw map[string]json.RawMessage
-	if err := c.get(ctx, endpoint, url.Values{"current": {"1"}}, &raw); err != nil {
+	if err := c.get(ctx, endpoint, query, &raw); err != nil {
 		return GuestConfig{}, fmt.Errorf("fetching config of %s: %w", ref, err)
 	}
 	cfg := GuestConfig{Values: make(map[string]string, len(raw))}

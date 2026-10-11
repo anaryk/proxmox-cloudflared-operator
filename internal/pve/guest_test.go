@@ -140,3 +140,30 @@ func TestUptimes(t *testing.T) {
 	require.Equal(t, map[model.GuestRef]time.Duration{{Kind: model.KindLXC, VMID: 1}: 30 * time.Second}, got,
 		"a guest whose uptime is not reported is left out")
 }
+
+// The configuration of the next start comes from the config endpoint
+// without current=1: a pending value replaces the one that runs, a pending
+// deletion is gone, and the digest is the one a write needs.
+func TestNextConfigReadsTheValuesOfTheNextStart(t *testing.T) {
+	c, rec := newTestClient(t, map[string]reply{
+		"/nodes/pco-test-2/lxc/9201/config": {http.StatusOK, `{"data":{
+			"hostname":"pco","cmode":"console","memory":768,
+			"net0":"name=eth0,bridge=vmbr1,gw=10.92.0.1,hwaddr=BC:24:11:92:00:10,ip=10.92.0.10/24,type=veth",
+			"net3":"name=leg2,bridge=vmbr2,hwaddr=02:50:43:4F:00:02,firewall=0,type=veth",
+			"digest":"256cbbe2f7cd3a686dc9ab8854c9a7f61057830b"}}`},
+	})
+	got, err := c.NextConfig(context.Background(), "pco-test-2", appliance)
+	require.NoError(t, err)
+	require.Equal(t, "/api2/json/nodes/pco-test-2/lxc/9201/config", rec.requests()[0].uri)
+	require.Equal(t, "256cbbe2f7cd3a686dc9ab8854c9a7f61057830b", got.Digest)
+	require.Equal(t, map[string]string{
+		"hostname": "pco",
+		"cmode":    "console",
+		"memory":   "768",
+		"net0":     "name=eth0,bridge=vmbr1,gw=10.92.0.1,hwaddr=BC:24:11:92:00:10,ip=10.92.0.10/24,type=veth",
+		"net3":     "name=leg2,bridge=vmbr2,hwaddr=02:50:43:4F:00:02,firewall=0,type=veth",
+	}, got.Values)
+
+	_, err = c.NextConfig(context.Background(), "pco-test-2", model.GuestRef{Kind: model.KindLXC, VMID: 9202})
+	require.Error(t, err)
+}

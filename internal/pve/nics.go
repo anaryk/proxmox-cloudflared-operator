@@ -25,7 +25,7 @@ func (c *Client) NICs(ctx context.Context, node string, ref model.GuestRef) (map
 	out := map[int]string{}
 	for _, values := range []map[string]string{pending, cfg.Values} {
 		for key, value := range values {
-			if index, ok := nicIndex(key); ok {
+			if index, ok := NICIndex(key); ok {
 				out[index] = value
 			}
 		}
@@ -33,8 +33,9 @@ func (c *Client) NICs(ctx context.Context, node string, ref model.GuestRef) (map
 	return out, cfg.Digest, nil
 }
 
-// nicIndex reads the N of a key net<N>.
-func nicIndex(key string) (int, bool) {
+// NICIndex reads the N of a configuration key net<N>; false for any other
+// key, netmask or net01 among them.
+func NICIndex(key string) (int, bool) {
 	digits, ok := strings.CutPrefix(key, "net")
 	if !ok || digits == "" {
 		return 0, false
