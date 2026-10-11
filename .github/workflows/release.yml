@@ -358,17 +358,27 @@ jobs:
           persist-credentials: false
 
       # Only the highest final version is the latest release: a fix for an older
-      # line, tagged after a newer version, must not become what the installer picks.
+      # line, tagged after a newer version, must not become what the installer
+      # picks. is-latest.sh answers with its exit status, 0 or 1; anything else
+      # is no answer, and the release is not published on a guess.
       - name: Check whether this is the latest release
         id: latest
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          if packaging/is-latest.sh "$TAG"; then
-            echo "latest=true" >> "$GITHUB_OUTPUT"
-          else
+          rc=0
+          packaging/is-latest.sh "$TAG" || rc=$?
+          case $rc in
+          0) echo "latest=true" >> "$GITHUB_OUTPUT" ;;
+          1)
+            echo "::notice::$TAG is not the latest release: it is published without the latest flag, and the site stays as it is."
             echo "latest=false" >> "$GITHUB_OUTPUT"
-          fi
+            ;;
+          *)
+            echo "::error::packaging/is-latest.sh could not tell whether $TAG is the latest release (exit status $rc). Nothing was published; run the job again."
+            exit 1
+            ;;
+          esac
 
       - name: Publish the release
         env:
@@ -394,6 +404,8 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The tag the run was started for, and no other ref: the site says what
+      # the release does.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false

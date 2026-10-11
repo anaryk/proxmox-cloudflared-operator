@@ -5,6 +5,10 @@
 # release as the latest only then: a fix released for an older line after a
 # newer version exists must not become what the installer picks.
 #
+# Exit status 1 means not the latest; 2 means no answer, when the tags could
+# not be read, so that a caller never takes a broken repository for an older
+# line.
+#
 # Usage: packaging/is-latest.sh <tag>
 
 set -euo pipefail
@@ -19,6 +23,9 @@ if ! [[ $tag =~ $final ]]; then
 	exit 1
 fi
 
-# sed and not head: head closing the pipe early would fail the pipeline.
-highest=$(git tag --list 'v*' --sort=-v:refname | grep -E "$final" | sed -n 1p || true)
+if ! tags=$(git tag --list 'v*' --sort=-v:refname); then
+	exit 2
+fi
+# No final version among the tags is an answer: this one is not the latest.
+highest=$(grep -E "$final" <<<"$tags" | sed -n 1p || true)
 [[ $highest == "$tag" ]]

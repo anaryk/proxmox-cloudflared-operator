@@ -15,22 +15,28 @@
 # one cannot be missed, run as steps of their own before the key is
 # imported, as goreleaser fills them for a release; its goreleaser skips
 # them, while the one of the job build keeps them; and between the import
-# and the removal of the key no step runs a program of the repository. Only
-# the job publish publishes the release, and it tells whether the release is
-# the latest. The documentation site of the latest release is built by the
-# job site, which needs publish and runs only for the latest release: it holds
-# no secret and may only read the repository, since npm runs in it. The job
-# pages deploys what site built, runs only for the latest release too, and is
-# the only job besides sign in an environment, github-pages, with no
-# permission but pages and id-token and no step but the deployment. The checks
-# run on small workflows with each rule broken first, so that they cannot pass
-# by reading nothing.
+# and the removal of the key no step runs a program of the repository, be it
+# by its path or through an interpreter. Only the job publish publishes the
+# release, and it tells whether the release is the latest, in one step whose
+# answer the publishing step marks the release by and nothing else does. The
+# documentation site of the latest release is built by the job site, which
+# needs publish and runs only for the latest release: it holds no secret, may
+# only read the repository, since npm runs in it, and checks out the tag the
+# run was started for, with no credentials, never another ref. The job pages
+# deploys what site built, runs only for the latest release too, and is the
+# only job besides sign in an environment, github-pages, with no permission
+# but pages and id-token and no step but the deployment. The checks run on
+# small workflows with each rule broken first, so that they cannot pass by
+# reading nothing, and on a copy of the workflow of the repository with the
+# checkout of site pointed at main.
 #
 # The step that reads the tag also runs, out of the workflow of the
 # repository, against tags a release may be pushed with: annotated or not,
 # with a line "Snapshot: <timestamp>" in the message or without. The step that
 # tells whether the release is the latest runs against the tags of a
-# repository with a newer release, a candidate and an older line.
+# repository with a newer release, a candidate and an older line, and where
+# the tags cannot be read, which must fail it rather than answer. The step
+# that publishes runs with a stub gh, to see the flags follow that answer.
 #
 # Run it with: bash packaging/release-workflow_test.sh
 
@@ -142,13 +148,19 @@ needs() {
 	grep -Eq "^    needs: \[?([a-z-]+, )*$2(, [a-z-]+)*\]?$" <<<"$1"
 }
 
+# uses_secret <job>: whether the job reads the secrets in any way an
+# expression can: secrets.X, secrets['X'], toJSON(secrets), or inherits them.
+uses_secret() {
+	code "$1" | grep -Eq '(^|[^A-Za-z0-9_-])secrets([^A-Za-z0-9_-]|$)'
+}
+
 # unprivileged <job> <name>: prints what makes a job that must hold no secret
 # more than that.
 unprivileged() {
 	if [[ $(block "$1" permissions) != "      contents: read" ]]; then
 		echo "the job $2 has permissions other than contents: read of its own"
 	fi
-	if grep -q 'secrets\.' <<<"$1"; then
+	if uses_secret "$1"; then
 		echo "the job $2 uses a secret"
 	fi
 }
@@ -172,15 +184,19 @@ latest_only() {
 }
 
 # check_site <workflow>: prints each rule the jobs that publish the
-# documentation site break, one line each.
+# documentation site break, one line each. What looks like an expansion in
+# it is for the runner.
+# shellcheck disable=SC2016
 check_site() {
-	local site pages publish id name uses cmd n=0 decided=0 flagged=0 deploys=0 other=0 built=0 uploaded=0
+	local site pages publish id name uses cmd n=0 decided=0 flagged=0 marks=0 deploys=0 other=0 built=0 uploaded=0 checkouts=0
 	site=$(job "$1" site)
 	pages=$(job "$1" pages)
 	publish=$(job "$1" publish)
 
 	# The decision of the job publish, the one that marks the release as the
-	# latest, is what the other two jobs wait for.
+	# latest, is what the other two jobs wait for. One step decides, and the
+	# step that publishes takes its answer and nothing else: not a decision
+	# of its own, and not a flag that is always there.
 	if [[ -n $publish ]]; then
 		id=$(block "$publish" outputs | sed -n 's/^      latest: \${{ *steps\.\([a-z-]*\)\.outputs\.latest *}}$/\1/p')
 		if [[ -z $id ]]; then
@@ -191,16 +207,21 @@ check_site() {
 				if step "$publish" "$n" | grep -Eq "^( {8}|      - )id: $id\$" &&
 					code "$(step "$publish" "$n")" | grep -q 'packaging/is-latest\.sh'; then
 					decided=$n
+				elif code "$(step "$publish" "$n")" | grep -q 'packaging/is-latest\.sh'; then
+					echo "the job publish runs packaging/is-latest.sh outside the step $id"
 				fi
-				if code "$(step "$publish" "$n")" | grep -Eq 'gh release edit' &&
-					step "$publish" "$n" | grep -Eq "steps\\.$id\\.outputs\\.latest"; then
-					flagged=$n
+				if code "$(step "$publish" "$n")" | grep -Eq 'gh release edit'; then
+					marks=$((marks + 1))
+					if step "$publish" "$n" | grep -Eq "^          LATEST: [$][{][{] *steps\\.$id\\.outputs\\.latest *[}][}]\$" &&
+						code "$(step "$publish" "$n")" | grep -Fq '[[ $LATEST == true ]]'; then
+						flagged=$n
+					fi
 				fi
 			done < <(steps "$publish")
 			if ((decided == 0)); then
 				echo "the output latest of the job publish is not decided by packaging/is-latest.sh"
 			fi
-			if ((flagged == 0)); then
+			if ((flagged == 0 || marks != 1)); then
 				echo "the job publish does not mark the release as the latest by the step $id"
 			fi
 		fi
@@ -216,7 +237,20 @@ check_site() {
 		if ! latest_only "$site"; then
 			echo "the job site does not run only for the latest release"
 		fi
+		n=0
 		while IFS='|' read -r name uses cmd; do
+			n=$((n + 1))
+			# The site is the one of the tag the run was started for: a checkout
+			# of any other ref builds, and runs npm on, what was never tagged.
+			if [[ $uses == actions/checkout ]]; then
+				checkouts=$((checkouts + 1))
+				if step "$site" "$n" | grep -Eq '^          ref:'; then
+					echo "the job site checks out another ref than the tag"
+				fi
+				if ! step "$site" "$n" | grep -Eq '^          persist-credentials: false$'; then
+					echo "the job site keeps the credentials of its checkout"
+				fi
+			fi
 			if [[ $cmd == "make docs docs-lint docs-test" ]]; then
 				built=1
 			fi
@@ -224,6 +258,9 @@ check_site() {
 				uploaded=1
 			fi
 		done < <(steps "$site")
+		if ((checkouts == 0)); then
+			echo "the job site does not check out the tag"
+		fi
 		if ((built == 0)); then
 			echo "the job site does not run make docs docs-lint docs-test"
 		fi
@@ -252,7 +289,7 @@ check_site() {
       pages: write" ]]; then
 		echo "the job pages has permissions other than pages: write and id-token: write"
 	fi
-	if grep -q 'secrets\.' <<<"$pages"; then
+	if uses_secret "$pages"; then
 		echo "the job pages uses a secret"
 	fi
 	while IFS='|' read -r name uses cmd; do
@@ -271,7 +308,7 @@ check_site() {
 # one line each.
 check() {
 	local ui build sign publish name uses cmd other n=0 checkout=0 download=0 templates=0 tested=0 tools=0 key=0 forget=0 deletes=0
-	local tagread=0 built=0 release=0 hook want at
+	local tagread=0 built=0 release=0 hook want at paths interpreted
 	ui=$(job "$1" ui)
 	build=$(job "$1" build)
 	sign=$(job "$1" sign)
@@ -346,7 +383,7 @@ check() {
 		if ! needs "$publish" sign; then
 			echo "the job publish does not need sign"
 		fi
-		if grep -q 'secrets\.' <<<"$publish"; then
+		if uses_secret "$publish"; then
 			echo "the job publish uses a secret"
 		fi
 	fi
@@ -446,8 +483,14 @@ check() {
 			echo "the job sign runs the before hook after the key is imported: $want"
 		fi
 	done < <(hooks "$2")
+	# A program of the repository is run by its path, by go or make, or by an
+	# interpreter given a path of the checkout: relative, or under the
+	# workspace. An interpreter with an option, or an absolute path elsewhere,
+	# runs nothing of the tag.
+	paths='(^|[^A-Za-z0-9_.-])(\./|packaging/|scripts/|hack/|cmd/|internal/|web/|site/|docs/|build/)|[$][{]?GITHUB_WORKSPACE'
+	interpreted=$'(^|[^A-Za-z0-9_./-])(node|python3?|bash|sh|perl|ruby) +["\']?[^-/ $"\']'
 	for ((n = key + 1; n < forget; n++)); do
-		if code "$(step "$sign" "$n")" | grep -Eq '(^|[^A-Za-z0-9_.-])(\./|packaging/|scripts/|hack/|cmd/|internal/)|go (run|test|build|generate)|make '; then
+		if code "$(step "$sign" "$n")" | grep -Eq "$paths|go (run|test|build|generate)|make |$interpreted"; then
 			echo "the job sign runs a program of the repository while the key is on the runner"
 		fi
 	done
@@ -542,6 +585,9 @@ sign_step() {
 	npm) printf '      - run: cd web && npm ci --ignore-scripts\n' ;;
 	mmdebstrap) printf '      - run: packaging/appliance/build.sh --arch amd64 --version 0.1.0 --deb x.deb\n' ;;
 	publishes) printf '      - run: gh release edit v0.1.0 --draft=false\n' ;;
+	node) printf '      - run: node web/scripts/x.js\n' ;;
+	python) printf '      - run: python3 x.py\n' ;;
+	workspace) printf '      - run: bash "$GITHUB_WORKSPACE/x.sh"\n' ;;
 	esac
 }
 
@@ -567,15 +613,23 @@ publish_step() {
 	case $1 in
 	latest) printf '      - name: Check whether this is the latest release\n        id: latest\n        run: packaging/is-latest.sh "$TAG"\n' ;;
 	undecided) printf '      - name: Check whether this is the latest release\n        id: latest\n        run: "true"\n' ;;
-	publish) printf '      - name: Publish the release\n        env:\n          LATEST: ${{ steps.latest.outputs.latest }}\n        run: gh release edit v0.1.0 --draft=false\n' ;;
+	publish) printf '      - name: Publish the release\n        env:\n          LATEST: ${{ steps.latest.outputs.latest }}\n        run: |\n          if [[ $LATEST == true ]]; then\n            gh release edit v0.1.0 --draft=false --latest\n          fi\n' ;;
 	blind) printf '      - name: Publish the release\n        run: gh release edit v0.1.0 --draft=false\n' ;;
+	always) printf '      - name: Publish the release\n        env:\n          LATEST: ${{ steps.latest.outputs.latest }}\n        run: gh release edit v0.1.0 --draft=false --latest\n' ;;
+	elsewhere) printf '      - name: Publish the release\n        env:\n          LATEST: ${{ github.ref_name }}\n        run: |\n          if [[ $LATEST == true ]]; then\n            gh release edit v0.1.0 --draft=false --latest\n          fi\n' ;;
+	again) printf '      - name: Publish the release\n        env:\n          LATEST: ${{ steps.latest.outputs.latest }}\n        run: |\n          if [[ $LATEST == true ]] && packaging/is-latest.sh v0.1.0; then\n            gh release edit v0.1.0 --draft=false --latest\n          fi\n' ;;
+	twice) printf '      - name: Mark the release\n        run: gh release edit v0.1.0 --latest\n' ;;
 	esac
 }
 
 # site_step <key>: one step of the job site of a made-up workflow.
+# shellcheck disable=SC2016
 site_step() {
 	case $1 in
-	checkout) printf '      - uses: actions/checkout@0123 # v4\n' ;;
+	checkout) printf '      - uses: actions/checkout@0123 # v4\n        with:\n          persist-credentials: false\n' ;;
+	checkout_main) printf '      - uses: actions/checkout@0123 # v4\n        with:\n          ref: main\n          persist-credentials: false\n' ;;
+	checkout_default) printf '      - uses: actions/checkout@0123 # v4\n        with:\n          persist-credentials: false\n          ref: ${{ github.event.repository.default_branch }}\n' ;;
+	checkout_token) printf '      - uses: actions/checkout@0123 # v4\n' ;;
 	node) printf '      - uses: actions/setup-node@0123 # v7\n        with:\n          node-version-file: web/.nvmrc\n' ;;
 	make) printf '      - run: make docs docs-lint docs-test\n' ;;
 	upload) printf '      - uses: actions/upload-pages-artifact@0123 # v5\n        with:\n          path: site/.vitepress/dist\n' ;;
@@ -822,6 +876,31 @@ SITE="$SITE_HEAD
       KEY: \${{ secrets.PCO_RELEASE_GPG_KEY }}" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
 expect fail 'a secret in the site job' "$f" "the job site uses a secret"
 
+SITE="$SITE_HEAD
+    env:
+      ALL: \${{ toJSON(secrets) }}" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'every secret in the site job' "$f" "the job site uses a secret"
+
+SITE="$SITE_HEAD
+    env:
+      KEY: \${{ secrets['PCO_RELEASE_GPG_KEY'] }}" workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a secret in the site job, indexed' "$f" "the job site uses a secret"
+
+SITE_STEPS='checkout_main node make upload' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a site built from main' "$f" "the job site checks out another ref than the tag"
+
+SITE_STEPS='checkout_default node make upload' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a site built from the default branch' "$f" "the job site checks out another ref than the tag"
+
+SITE_STEPS='checkout node checkout_main make upload' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a site built from main after the tag' "$f" "the job site checks out another ref than the tag"
+
+SITE_STEPS='checkout_token node make upload' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a site with the token of its checkout' "$f" "the job site keeps the credentials of its checkout"
+
+SITE_STEPS='node make upload' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a site without a checkout' "$f" "the job site does not check out the tag"
+
 SITE="    needs: publish
 $LATEST_ONLY
     permissions:
@@ -965,6 +1044,26 @@ expect fail 'an output taken from a step that is not there' "$f" "the output lat
 PUBLISH_STEPS='latest blind' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
 expect fail 'a release marked by another decision than the one the site waits for' "$f" "the job publish does not mark the release as the latest by the step latest"
 
+PUBLISH_STEPS='latest always' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'every release marked as the latest' "$f" "the job publish does not mark the release as the latest by the step latest"
+
+PUBLISH_STEPS='latest elsewhere' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'a release marked by something else under the name of the answer' "$f" "the job publish does not mark the release as the latest by the step latest"
+
+PUBLISH_STEPS='latest again' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the latest decided a second time where the release is marked' "$f" "the job publish runs packaging/is-latest.sh outside the step latest"
+
+PUBLISH_STEPS='latest publish twice' workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS"
+expect fail 'the release marked in a second step' "$f" "the job publish does not mark the release as the latest by the step latest"
+
+# The workflow of the repository with the checkout of site pointed at main.
+awk '
+	/^  site:$/ { site = 1 }
+	site && /^        with:$/ && !done { print; print "          ref: main"; done = 1; next }
+	{ print }
+' "$WORKFLOW" >"$f"
+expect fail 'the workflow of the repository with the site built from main' "$f" "the job site checks out another ref than the tag"
+
 CHECKS=$((CHECKS + 1))
 if [[ $(hooks "$GORELEASER" | grep -c .) -lt 2 ]]; then
 	FAILS=$((FAILS + 1))
@@ -985,6 +1084,15 @@ expect fail 'no goreleaser in the job sign' "$f" "the job sign runs no gorelease
 
 workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools hooks key program goreleaser forget files delete'
 expect fail 'a script of the repository while the key is there' "$f" "runs a program of the repository while the key is on the runner"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools hooks key node goreleaser forget files delete'
+expect fail 'node on a file of the repository while the key is there' "$f" "runs a program of the repository while the key is on the runner"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools hooks key python goreleaser forget files delete'
+expect fail 'python on a file of the checkout while the key is there' "$f" "runs a program of the repository while the key is on the runner"
+
+workflow "$f" "$UI_HEAD" "$SIGN_HEAD" 'tag checkout download templates go test tools hooks key workspace goreleaser forget files delete'
+expect fail 'bash on a file under the workspace while the key is there' "$f" "runs a program of the repository while the key is on the runner"
 
 workflow "$f" "$UI_HEAD" "$SIGN_HEAD" "$STEPS" "$BUILD_HEAD" "$PUBLISH_HEAD" 'tag checkout read goreleaser_skip templates upload'
 expect fail 'the job build skips the hooks' "$f" "the job build skips the before hooks of goreleaser"
@@ -1120,11 +1228,11 @@ for tag in v1.0.0 v1.0.1 v1.1.0 v1.2.0-rc.1; do
 	gitc tag "$tag"
 done
 
-# is_latest <tag>: leaves RC, OUT and LOG as read_tag does.
+# is_latest <tag> [VAR=value...]: leaves RC, OUT and LOG as read_tag does.
 is_latest() {
 	: >"$ROOT/output"
 	RC=0
-	(cd "$REPO" && TAG=$1 GITHUB_OUTPUT=$ROOT/output \
+	(cd "$REPO" && env "${@:2}" TAG="$1" GITHUB_OUTPUT="$ROOT/output" \
 		bash --noprofile --norc -eo pipefail "$LATEST") >"$ROOT/log" 2>&1 || RC=$?
 	OUT=$(<"$ROOT/output")
 	LOG=$(<"$ROOT/log")
@@ -1156,6 +1264,70 @@ assert "is the latest" is "$OUT" "latest=true"
 is_latest v1.1.0
 assert "passes for the one before" rc_is 0
 assert "which is not the latest any more" is "$OUT" "latest=false"
+
+# No answer is not "not the latest": the step fails, before anything is
+# published, rather than leave the installer on the release before.
+CASE='the tags cannot be read'
+is_latest v1.2.0 GIT_DIR="$ROOT/nowhere"
+assert "fails" rc_is 1
+assert "and says so" contains "$LOG" "could not tell"
+assert "and gives nothing on" is "$OUT" ""
+
+CASE='a check that gives no answer'
+mkdir -p "$ROOT/undecided/packaging"
+printf '#!/usr/bin/env bash\nexit 3\n' >"$ROOT/undecided/packaging/is-latest.sh"
+chmod +x "$ROOT/undecided/packaging/is-latest.sh"
+REPO=$ROOT/undecided is_latest v1.2.0
+assert "fails" rc_is 1
+assert "and gives nothing on" is "$OUT" ""
+
+# The step of the job publish that publishes, run as the runner runs it with
+# a gh that only writes down what it was asked. It marks the release by the
+# answer of the step before, and by nothing else: here the tags of the
+# repository say otherwise.
+PUBLISH=$ROOT/publish.sh
+script "$(job "$WORKFLOW" publish)" "Publish the release" >"$PUBLISH"
+mkdir "$ROOT/bin"
+cat >"$ROOT/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$GH_LOG"
+EOF
+chmod +x "$ROOT/bin/gh"
+
+# publish_release <tag> <latest>: leaves RC, LOG, and OUT, the calls of gh.
+publish_release() {
+	: >"$ROOT/gh.log"
+	RC=0
+	(cd "$REPO" && PATH=$ROOT/bin:$PATH GH_LOG=$ROOT/gh.log GH_TOKEN=token GH_REPO=o/r TAG=$1 LATEST=$2 \
+		bash --noprofile --norc -eo pipefail "$PUBLISH") >"$ROOT/log" 2>&1 || RC=$?
+	OUT=$(<"$ROOT/gh.log")
+	LOG=$(<"$ROOT/log")
+}
+
+marked() { grep -Eq -- '(^| )--latest( |$)' <<<"$1"; }
+not_marked() { ! marked "$1"; }
+
+CASE='the step that publishes'
+assert "is in the job publish" test -s "$PUBLISH"
+
+CASE='the release the step before found to be the latest'
+publish_release v1.0.1 true
+assert "passes" rc_is 0
+assert "with one call of gh" is "$(grep -c . <<<"$OUT")" 1
+assert "that publishes the release" contains "$OUT" "release edit v1.0.1 --draft=false"
+assert "and marks it as the latest" marked "$OUT"
+
+CASE='the release the step before found not to be the latest'
+publish_release v1.2.0 false
+assert "passes" rc_is 0
+assert "with one call of gh" is "$(grep -c . <<<"$OUT")" 1
+assert "that publishes the release" contains "$OUT" "release edit v1.2.0 --draft=false"
+assert "without the latest flag" contains "$OUT" "--latest=false"
+assert "and does not mark it as the latest" not_marked "$OUT"
+
+CASE='no answer from the step before'
+publish_release v1.2.0 ""
+assert "does not mark the release as the latest" not_marked "$OUT"
 
 printf '%d checks, %d failed\n' "$CHECKS" "$FAILS"
 if [[ $FAILS != 0 ]]; then

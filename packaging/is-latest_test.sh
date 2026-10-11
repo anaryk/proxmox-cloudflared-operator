@@ -80,6 +80,24 @@ if [[ $rc != 2 ]]; then
 	printf 'FAIL [%s] no argument should be exit status 2, rc %s\n' "$CASE" "$rc"
 fi
 
+# A repository whose tags cannot be read gives no answer, which is neither
+# "the latest" nor "not the latest".
+CASE='the tags cannot be read'
+CHECKS=$((CHECKS + 1))
+rc=0
+(cd "$ROOT" && GIT_DIR=$ROOT/nowhere bash "$SUT" v1.0.0) >/dev/null 2>&1 || rc=$?
+if [[ $rc != 2 ]]; then
+	FAILS=$((FAILS + 1))
+	printf 'FAIL [%s] the latest release should be exit status 2, rc %s\n' "$CASE" "$rc"
+fi
+CHECKS=$((CHECKS + 1))
+rc=0
+(cd "$ROOT" && GIT_DIR=$ROOT/nowhere bash "$SUT" v0.9.1) >/dev/null 2>&1 || rc=$?
+if [[ $rc != 2 ]]; then
+	FAILS=$((FAILS + 1))
+	printf 'FAIL [%s] an older line should be exit status 2, rc %s\n' "$CASE" "$rc"
+fi
+
 printf '%d checks, %d failed\n' "$CHECKS" "$FAILS"
 if [[ $FAILS != 0 ]]; then
 	exit 1
