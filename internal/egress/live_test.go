@@ -48,6 +48,21 @@ func TestReadLiveSaysWhatIsNotAsItShouldBe(t *testing.T) {
 	require.NotEmpty(t, live.Differences, "a table for another user")
 }
 
+func TestTheFilterReadsTheLiveTableAsItIs(t *testing.T) {
+	f, n, _, _ := newTestFilter(t)
+	n.setLive(realListing(t, "1.1.3").with(t, targets("10.0.0.5:80"), nil).bytes(t))
+
+	live, err := f.Live(t.Context())
+
+	require.NoError(t, err)
+	require.Equal(t, targets("10.0.0.5:80"), live.Targets)
+	require.Empty(t, n.applied(), "nothing is applied for a read")
+
+	n.listErr = ErrNotLoaded
+	_, err = f.Live(t.Context())
+	require.ErrorIs(t, err, ErrNotLoaded)
+}
+
 func TestReadLiveOfAMissingTable(t *testing.T) {
 	n := &fakeNft{listErr: ErrNotLoaded}
 

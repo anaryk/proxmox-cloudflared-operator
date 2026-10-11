@@ -252,6 +252,16 @@ func (f *Filter) FlowCounts(ctx context.Context) (generation string, counts map[
 	return strconv.FormatUint(table, 10), counts, nil
 }
 
+// Live reads the table loaded on the node, whatever the filter applied: a
+// daemon that starts learns from it whether the table is the one it filled
+// before or one loaded empty at boot. It returns ErrNotLoaded for no table.
+func (f *Filter) Live(ctx context.Context) (Live, error) {
+	f.mu.Lock()
+	uid := f.uid
+	f.mu.Unlock()
+	return ReadLive(ctx, f.nft, uid)
+}
+
 // Rebind makes the filter confine the processes of another uid, as after
 // the connector user was made anew, and reports whether the uid changed. The
 // live table confines the old one until the next Set or Reapply.
