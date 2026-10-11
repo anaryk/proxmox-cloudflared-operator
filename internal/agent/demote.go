@@ -26,7 +26,8 @@ func newDemotion() demotion {
 // demoteSilence, none of the tunnel's targets it had verified verified for
 // demoteFailing, and the last heartbeat counted another replica of the tunnel
 // ready. Losing some of the targets never stops it. It starts again as soon
-// as one of them verifies.
+// as one of them verifies, or a controller answers again: what to serve is
+// then the controller's to say.
 func (p *pass) demoted(t agentproto.Tunnel) bool {
 	a := p.a
 	d := &a.demote
@@ -44,12 +45,16 @@ func (p *pass) demoted(t agentproto.Tunnel) bool {
 		d.lastOK[t.TunnelID] = p.now
 	}
 	if d.stopped[t.TunnelID] {
-		if !now {
+		heard := a.silentFor(p.now) < demoteSilence
+		if !now && !heard {
 			return true
 		}
 		delete(d.stopped, t.TunnelID)
-		a.eventOf(Event{At: p.now, Level: levelInfo, Kind: kindConnector, Subject: t.TunnelID, Tunnel: t.Name,
-			Message: fmt.Sprintf("a target of tunnel %s verifies again; its connector starts", t.Name)})
+		why := fmt.Sprintf("a target of tunnel %s verifies again; its connector starts", t.Name)
+		if !now {
+			why = fmt.Sprintf("a controller answers again; the connector of tunnel %s starts", t.Name)
+		}
+		a.eventOf(Event{At: p.now, Level: levelInfo, Kind: kindConnector, Subject: t.TunnelID, Tunnel: t.Name, Message: why})
 		return false
 	}
 	switch {

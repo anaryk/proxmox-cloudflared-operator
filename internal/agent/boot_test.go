@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 )
 
 // booted is an agent that served www.example.com through the shared tunnel
@@ -45,6 +47,67 @@ func TestAtBootPinnedConnectorsStartAtOnceAndTheSharedOneWaits(t *testing.T) {
 	got, _ = e.egr.last()
 	require.Equal(t, egressTargets("10.0.0.11:8080"), got, "what verifies enters; what the verified configuration names alone does not")
 	require.NotContains(t, e.conn.changes(), "Ensure "+sharedID+" "+sharedToken, "the gate holds for 120 s")
+}
+
+// A daemon that starts over a filter that holds targets was restarted, not
+// the node: what the filter holds goes on being served.
+func TestARestartOfTheDaemonKeepsTheSetTheFilterHolds(t *testing.T) {
+	e, _ := booted(t)
+	e.res.observe("www.example.com")
+	e.egr.loaded(egressTargets("10.0.0.11:8080"), nil)
+
+	require.NoError(t, e.agent.Boot(t.Context()))
+
+	got, _ := e.egr.last()
+	require.Equal(t, egressTargets("10.0.0.11:8080"), got, "a target held below its minimum that the verified configuration names leaves after its rule, as in any pass")
+	require.Empty(t, e.egr.removes())
+
+	t.Run("a table that cannot be read is taken to hold the set", func(t *testing.T) {
+		e, _ := booted(t)
+		e.res.observe("www.example.com")
+		e.egr.loaded(nil, errBoom)
+
+		require.NoError(t, e.agent.Boot(t.Context()))
+
+		got, _ := e.egr.last()
+		require.Equal(t, egressTargets("10.0.0.11:8080"), got)
+	})
+
+	t.Run("a table that is not loaded holds nothing", func(t *testing.T) {
+		e, _ := booted(t)
+		e.res.observe("www.example.com")
+		e.egr.loaded(nil, egress.ErrNotLoaded)
+
+		require.NoError(t, e.agent.Boot(t.Context()))
+
+		got, _ := e.egr.last()
+		require.Empty(t, got)
+	})
+}
+
+// An action the controller sent in a pass that was cut before it ran is run
+// at boot from the kept state, and once only.
+func TestBootRunsTheKeptActionsNotRunYet(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	e.res.onResolve = func(string) { cancel() }
+	s := withAction(e.snapshot("www.example.com -> :8080"), "a1", agentproto.ActionPVEWrite, writeArgs)
+	_, err := e.agent.Apply(ctx, s)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, e.runs.all(), "the pass was cut before its actions")
+	e.res.onResolve = nil
+
+	e.agent = e.newAgent()
+	require.NoError(t, e.agent.Boot(t.Context()))
+
+	require.Len(t, e.runs.all(), 1)
+	require.Equal(t, []agentproto.ActionResult{{ID: "a1", OK: true}}, e.agent.Status(t.Context()).Actions)
+
+	e.agent = e.newAgent()
+	require.NoError(t, e.agent.Boot(t.Context()))
+	_, err = e.agent.Reverify(t.Context())
+	require.NoError(t, err)
+	require.Len(t, e.runs.all(), 1, "not again")
 }
 
 func TestAControllerThatMarksTheNodeActiveStartsTheSharedConnectorAtOnce(t *testing.T) {

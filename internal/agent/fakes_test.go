@@ -362,13 +362,29 @@ func (f *fakeConnectors) isRunning(id string) bool {
 }
 
 // fakeEgress records what the agent gives the egress filter, and writes every
-// call to the log too, when it has one.
+// call to the log too, when it has one. Its live table holds what a test put
+// there, nothing by default, as at a node boot.
 type fakeEgress struct {
 	mu      sync.Mutex
 	sets    [][]egress.Target
 	removed []netip.Addr
 	setErr  error
+	live    []egress.Target
+	liveErr error
 	log     *callLog
+}
+
+func (f *fakeEgress) Live(context.Context) (egress.Live, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return egress.Live{Targets: slices.Clone(f.live)}, f.liveErr
+}
+
+// loaded makes the live table hold targets, as after a restart of the daemon.
+func (f *fakeEgress) loaded(targets []egress.Target, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.live, f.liveErr = targets, err
 }
 
 func (f *fakeEgress) Set(_ context.Context, targets []egress.Target) error {
@@ -500,6 +516,7 @@ type env struct {
 	runs    *runner
 	events  *events
 	kind    pki.Kind
+	install string
 	changed int
 
 	agent *Agent
@@ -517,11 +534,12 @@ func newEnv(t *testing.T) *env {
 			Private: filepath.Join(base, "private"),
 			Local:   filepath.Join(base, "local"),
 		},
-		conn:   newFakeConnectors(),
-		egr:    &fakeEgress{},
-		runs:   &runner{},
-		events: &events{},
-		kind:   pki.KindHost,
+		conn:    newFakeConnectors(),
+		egr:     &fakeEgress{},
+		runs:    &runner{},
+		events:  &events{},
+		kind:    pki.KindHost,
+		install: testInstall,
 	}
 	e.res = newFakeResolver(e.clock.now)
 	s, err := store.Open(e.paths)
@@ -536,7 +554,7 @@ func (e *env) deps() Deps {
 	d := Deps{
 		Node:       testNode,
 		Kind:       e.kind,
-		InstallID:  testInstall,
+		InstallID:  e.install,
 		Store:      e.store,
 		Resolver:   e.res,
 		Connectors: e.conn,

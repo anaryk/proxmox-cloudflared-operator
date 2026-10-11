@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,6 +119,61 @@ func TestTheDesiredStateAndTheEpochAreKeptAcrossARestart(t *testing.T) {
 	lower.Epoch.Generation = 1
 	_, err = e.agent.Apply(t.Context(), lower)
 	require.ErrorIs(t, err, agentproto.ErrLowerEpoch)
+}
+
+// A node removed from one install and enrolled in another starts afresh: the
+// epoch and the desired state of the install before are forgotten.
+func TestANodeEnrolledInAnotherInstallForgetsTheEpochOfTheOneBefore(t *testing.T) {
+	e := newEnv(t)
+	s := e.snapshot("www.example.com -> :8080")
+	s.Epoch.Generation = 7
+	e.apply(s)
+
+	e.install = "def456"
+	e.agent = e.newAgent()
+
+	_, found, err := e.store.AgentEpoch()
+	require.NoError(t, err)
+	require.False(t, found)
+	_, found, err = e.store.AgentSnapshot()
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Empty(t, e.agent.View().Seq)
+
+	e.seq = 0
+	s = e.snapshot("www.example.com -> :8080")
+	s.Epoch = agentproto.Epoch{InstallID: "def456", Generation: 1, Nonce: "m1"}
+	st := e.apply(s)
+	require.Equal(t, s.Epoch, st.EpochSeen)
+	require.EqualValues(t, 1, st.SeqApplied)
+	require.NotContains(t, strings.Join(st.Problems, "\n"), "epoch")
+}
+
+// The epoch is kept before the snapshot; when the snapshot then cannot be,
+// the status says that the one before, of the epoch before, is what runs.
+func TestWhenTheEpochMovedButTheStateWasNotKeptTheStatusSaysWhatRuns(t *testing.T) {
+	e := newEnv(t)
+	e.seq = 3
+	e.apply(e.snapshot("www.example.com -> :8080"))
+	require.NoError(t, os.Remove(filepath.Join(e.paths.Local, "agent", "desired.json")))
+	require.NoError(t, os.Mkdir(filepath.Join(e.paths.Local, "agent", "desired.json"), 0o700))
+
+	e.seq = 0
+	s := e.snapshot("www.example.com -> :8080", "api.example.com -> :9090")
+	s.Epoch = agentproto.Epoch{InstallID: testInstall, Generation: 2, Nonce: "n2"}
+	st, err := e.agent.Apply(t.Context(), s)
+
+	require.ErrorContains(t, err, "saving the desired state")
+	require.Equal(t, 2, st.EpochSeen.Generation)
+	require.Zero(t, st.SeqApplied)
+	require.Len(t, st.Problems, 1)
+	require.Contains(t, st.Problems[0], "could not be kept, so it was not applied")
+	require.Contains(t, st.Problems[0], "the one of epoch 1 seq 4 it kept before is what runs")
+	require.Len(t, st.Targets, 1, "the pass of the state before stands")
+
+	_, err = e.agent.Reverify(t.Context())
+	require.NoError(t, err)
+	require.Len(t, e.agent.Status(t.Context()).Targets, 1, "and is what is verified again")
 }
 
 func TestANewEpochStartsItsSeqAgain(t *testing.T) {

@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 )
 
 // bootGate holds the shared connectors of a node that booted until it may
@@ -26,10 +28,14 @@ var (
 	gateTarget = fmt.Sprintf("the shared connector waits: no controller answered within %s of boot, and no shared target verifies", bootWait)
 )
 
-// Boot applies, on a node that just booted, the desired state the agent kept:
-// the egress filter starts empty and a target enters it once it verifies, the
-// connectors of pinned tunnels start at once, and the shared ones wait at the
-// boot gate. The gateway came back from its cache before, with the unit that
+// Boot applies, as the daemon starts, the desired state the agent kept: the
+// connectors of pinned tunnels start at once, the shared ones wait at the
+// boot gate, and the actions kept that were not run yet run, each once. On
+// a node that booted the egress filter is empty: the set the agent kept is
+// dropped, and a target enters the filter once it verifies. When the filter
+// holds targets the daemon alone was restarted: the set is kept, and what it
+// holds goes on being served. A filter whose table cannot be read keeps it
+// too. The gateway came back from its cache before, with the unit that
 // restores it. A connector that runs, as a shared unit still enabled at boot
 // on a node alone, is not stopped.
 func (a *Agent) Boot(ctx context.Context) error {
@@ -38,12 +44,19 @@ func (a *Agent) Boot(ctx context.Context) error {
 	}
 	defer a.release()
 	a.boot = bootGate{held: true, at: a.d.Now()}
-	a.set = nil
+	live, err := a.d.Egress.Live(ctx)
+	switch {
+	case err == nil && len(live.Targets) == 0, errors.Is(err, egress.ErrNotLoaded):
+		a.set = nil
+	case err != nil:
+		a.d.Log.Warn().Err(err).Msg("the egress table could not be read at start; the set kept is taken to be what it holds")
+	}
 	if a.desired == nil || a.stood != "" {
 		a.republish()
 		return nil
 	}
 	p := a.newPass(ctx, *a.desired)
+	p.runActions = true
 	p.run()
 	return p.err
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const problemPartly = "the desired state was applied only in part: resolution ended (%v); the egress set and the connectors are left as they are"
@@ -36,7 +38,13 @@ func (a *Agent) Apply(ctx context.Context, s agentproto.Snapshot) (agentproto.St
 		return a.Status(ctx), fmt.Errorf("refusing the desired state: %w", err)
 	}
 	if err := a.persist(s); err != nil {
-		a.refused = "a desired state could not be kept, so it was not applied: " + err.Error()
+		// An epoch the store refuses was moved under the agent: that is a
+		// refusal, which the next snapshot of the epoch it follows clears.
+		if errors.Is(err, store.ErrEpochBack) {
+			a.refused = "refused a desired state: " + err.Error()
+		} else {
+			a.refused = "a desired state could not be kept, so it was not applied: " + err.Error()
+		}
 		a.republish()
 		return a.Status(ctx), err
 	}
@@ -46,7 +54,7 @@ func (a *Agent) Apply(ctx context.Context, s agentproto.Snapshot) (agentproto.St
 		a.boot.answered = true
 	}
 	p := a.newPass(ctx, s)
-	p.fresh = true
+	p.runActions = true
 	p.run()
 	return a.Status(ctx), p.err
 }
@@ -93,11 +101,14 @@ func (a *Agent) Reverify(ctx context.Context) (agentproto.Status, error) {
 
 // pass is one application of a desired state.
 type pass struct {
-	a     *Agent
-	ctx   context.Context
-	s     agentproto.Snapshot
-	now   time.Time
-	fresh bool // the controller sent s for this pass
+	a   *Agent
+	ctx context.Context
+	s   agentproto.Snapshot
+	now time.Time
+	// runActions says that the actions of s not run yet are run: the
+	// controller sent s for this pass, or the agent kept it when it last
+	// stopped and the node boots.
+	runActions bool
 
 	inv      inventory.Snapshot
 	deny     resolve.Denylist
@@ -111,6 +122,7 @@ type pass struct {
 	served      map[string]resolve.Result
 	held        map[string]string // why a target is held back, by key
 	lost        map[netip.Addr]bool
+	moved       map[string]bool     // the hostnames whose guest this pass found elsewhere than their stored binding
 	blocked     map[netip.Addr]bool // the blocks in force, of the whole install
 	verified    map[string]bool     // the target keys that verified
 	conns       []connector.Status
@@ -125,7 +137,7 @@ func (a *Agent) newPass(ctx context.Context, s agentproto.Snapshot) *pass {
 	return &pass{
 		a: a, ctx: ctx, s: s, now: a.d.Now(),
 		results: map[string]resolve.Result{}, served: map[string]resolve.Result{}, held: map[string]string{},
-		lost: map[netip.Addr]bool{}, blocked: map[netip.Addr]bool{}, verified: map[string]bool{},
+		lost: map[netip.Addr]bool{}, moved: map[string]bool{}, blocked: map[netip.Addr]bool{}, verified: map[string]bool{},
 	}
 }
 
@@ -148,6 +160,7 @@ func (p *pass) run() {
 		return
 	}
 	p.blockLost()
+	p.freezeMoved()
 	p.holdBelowMinimum()
 	p.markLegs()
 	p.judge()
@@ -157,7 +170,7 @@ func (p *pass) run() {
 	p.saveBindings()
 	p.feedEgress(set)
 	p.connectors()
-	if p.fresh {
+	if p.runActions {
 		p.actions()
 	}
 	p.done = true

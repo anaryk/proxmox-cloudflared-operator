@@ -17,15 +17,25 @@ const problemUnreadable = "the desired state kept on this node cannot be read (%
 // load reads what the agent kept on disk: the epoch it follows, the desired
 // state it last accepted and the seq of that under the epoch, the actions it
 // ran and the egress set it last gave. A node set up anew for another install
-// starts from nothing.
+// forgets the epoch and the desired state of the one before, and starts from
+// nothing.
 func (a *Agent) load() error {
 	a.remembered = agentproto.Epoch{InstallID: a.d.InstallID}
 	e, found, err := a.d.Store.AgentEpoch()
 	if err != nil {
 		return fmt.Errorf("agent: reading the epoch it follows: %w", err)
 	}
-	if found && e.InstallID == a.d.InstallID {
+	switch {
+	case found && e.InstallID == a.d.InstallID:
 		a.remembered = agentproto.Epoch(e)
+	case found:
+		if err := a.d.Store.DeleteAgentEpoch(); err != nil {
+			return fmt.Errorf("agent: forgetting the epoch of install %s: %w", e.InstallID, err)
+		}
+		if err := a.d.Store.DeleteAgentSnapshot(); err != nil {
+			return fmt.Errorf("agent: forgetting the desired state of install %s: %w", e.InstallID, err)
+		}
+		a.d.Log.Info().Str("install", e.InstallID).Msg("this node was enrolled in another install before; its epoch and desired state are forgotten")
 	}
 
 	raw, found, err := a.d.Store.AgentSnapshot()
@@ -74,6 +84,7 @@ func (a *Agent) load() error {
 // persist keeps s as the desired state the agent follows, durably, before it
 // is applied: the epoch first, then the snapshot, written as the controller
 // sent it, tokens included, and only when it is not what is kept already.
+// The error says when the epoch moved and the snapshot was not kept.
 func (a *Agent) persist(s agentproto.Snapshot) error {
 	if _, same := s.Epoch.Order(a.remembered); !same {
 		if err := a.d.Store.SaveAgentEpoch(store.Epoch(s.Epoch)); err != nil {
@@ -87,7 +98,13 @@ func (a *Agent) persist(s agentproto.Snapshot) error {
 	}
 	if !bytes.Equal(buf.Bytes(), a.desiredRaw) {
 		if err := a.d.Store.SaveAgentSnapshot(buf.Bytes()); err != nil {
-			return fmt.Errorf("saving the desired state: %w", err)
+			err = fmt.Errorf("saving the desired state: %w", err)
+			if d := a.desired; d != nil {
+				if _, same := d.Epoch.Order(s.Epoch); !same {
+					err = fmt.Errorf("%w; the one of epoch %d seq %d it kept before is what runs", err, d.Epoch.Generation, d.Seq)
+				}
+			}
+			return err
 		}
 	}
 	if a.desired == nil || a.applied != s.Seq {
@@ -121,8 +138,10 @@ func (a *Agent) forgetDesired(keep bool) error {
 	return nil
 }
 
-// saveDone keeps the actions the agent ran, when they changed.
+// saveDone keeps the actions the agent ran, when they changed, and remembers
+// what the store keeps of them.
 func (a *Agent) saveDone(next map[string]store.ActionDone) error {
+	next = store.NewestAgentActions(next)
 	if maps.Equal(next, a.done) {
 		return nil
 	}

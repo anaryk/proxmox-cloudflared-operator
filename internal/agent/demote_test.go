@@ -53,6 +53,30 @@ func TestASilentControllerAndNoSharedTargetVerifyingFor60sStopsTheSharedConnecto
 	require.Contains(t, e.events.messages(), "a target of tunnel pco-abc123 verifies again; its connector starts")
 }
 
+// Once a controller answers again, what to serve is its to say: a connector
+// the agent stopped starts again, though no target verifies yet.
+func TestAControllerThatAnswersAgainStartsAStoppedConnector(t *testing.T) {
+	e := serving(t, "www.example.com -> :8080")
+	e.res.stop("www.example.com", "guest is not running")
+	e.reverifyAfter(demoteSilence)
+	require.Contains(t, e.conn.changes(), "Stop "+sharedID)
+	e.conn.reset()
+
+	e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch1, ReadyReplicas: map[string]int{sharedID: 2}})
+	e.reverifyAfter(time.Second)
+
+	require.Equal(t, []string{"Ensure " + sharedID + " " + sharedToken}, e.conn.changes())
+	require.Contains(t, e.events.messages(), "a controller answers again; the connector of tunnel pco-abc123 starts")
+
+	for range 10 {
+		e.agent.Heartbeat(agentproto.Heartbeat{Epoch: epoch1, ReadyReplicas: map[string]int{sharedID: 2}})
+		e.reverifyAfter(30 * time.Second)
+	}
+	require.NotContains(t, e.conn.changes(), "Stop "+sharedID, "it runs while the controller answers")
+	e.reverifyAfter(demoteSilence)
+	require.Contains(t, e.conn.changes(), "Stop "+sharedID, "and is stopped again once the controller is silent again")
+}
+
 func TestPartialLossNeverStopsIt(t *testing.T) {
 	e := serving(t, "www.example.com -> :8080", "api.example.com -> :9090")
 	e.res.stop("api.example.com", "guest is not running")

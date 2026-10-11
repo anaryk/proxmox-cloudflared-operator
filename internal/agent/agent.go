@@ -83,6 +83,9 @@ type Connectors interface {
 type Egress interface {
 	Set(ctx context.Context, targets []egress.Target) error
 	Remove(ctx context.Context, addr netip.Addr) error
+	// Live reads the table loaded on the node as it is, or returns
+	// egress.ErrNotLoaded.
+	Live(ctx context.Context) (egress.Live, error)
 	FlowCounts(ctx context.Context) (generation string, counts map[netip.AddrPort]uint64, err error)
 }
 

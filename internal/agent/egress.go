@@ -3,6 +3,7 @@ package agent
 import (
 	"cmp"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"net/netip"
@@ -65,6 +66,47 @@ func (p *pass) blockLost() {
 		}
 	}
 	p.removeHeld(p.lost)
+}
+
+// legAddr is an address on the network of a leg.
+type legAddr struct {
+	via  string
+	addr netip.Addr
+}
+
+// freezeMoved takes out of the egress filter, at once, the service address
+// of every target on a leg whose guest this pass found at another address or
+// on another network, and keeps it out of the set: it forwards to the
+// address the guest left, where anyone may answer now, until the controller
+// gives the target a service address where it is. One that another target of
+// this pass is still served behind stays.
+func (p *pass) freezeMoved() {
+	standing := map[legAddr]bool{}
+	for _, t := range p.s.Targets {
+		if res, ok := p.results[t.Key]; ok && res.Binding != nil && res.Binding.Via != "" && serves(t, res) {
+			standing[legAddr{res.Binding.Via, res.Binding.Addr}] = true
+		}
+	}
+	frozen := map[netip.Addr]bool{}
+	for _, t := range p.s.Targets {
+		res, ok := p.results[t.Key]
+		prev, bound := p.bindings[t.Route.Hostname]
+		if !ok || !bound || res.Binding == nil || prev.Via == "" {
+			continue
+		}
+		was := legAddr{prev.Via, prev.Addr}
+		if (legAddr{res.Binding.Via, res.Binding.Addr}) == was {
+			continue
+		}
+		p.moved[t.Route.Hostname] = true
+		if standing[was] || !prev.Service.IsValid() || p.lost[prev.Service] {
+			continue
+		}
+		frozen[prev.Service], p.lost[prev.Service] = true, true
+		p.a.event(levelWarn, kindEgress, prev.Service.String(),
+			fmt.Sprintf("%s left %s on network %s; its service address %s forwards nothing until the controller moves it", t.Route.Hostname, prev.Addr, prev.Via, prev.Service))
+	}
+	p.removeHeld(frozen)
 }
 
 // egressSet is the set of this pass: every target this node verified that
@@ -236,11 +278,12 @@ type behindService struct {
 }
 
 // serviceMap is, by service address, what each forwards to: as this pass
-// served it, or as a stored binding was published.
+// served it, or as a stored binding was published, unless this pass found
+// its guest elsewhere.
 func (p *pass) serviceMap() map[netip.Addr]behindService {
 	out := map[netip.Addr]behindService{}
-	for _, b := range p.bindings {
-		if b.Via != "" && b.Service.IsValid() {
+	for host, b := range p.bindings {
+		if b.Via != "" && b.Service.IsValid() && !p.moved[host] {
 			out[b.Service] = behindService{b.Via, b.Addr}
 		}
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -101,18 +102,35 @@ func TestAnActionOfAKindThisAgentDoesNotCarryOutIsAnsweredSo(t *testing.T) {
 	require.Equal(t, []agentproto.ActionResult{{ID: "a1", Error: "this agent does not carry out teleport actions"}}, st.Actions)
 }
 
-// Actions come from the controller: a pass of the agent's own, on the state
-// it cached, runs none.
-func TestOnlyTheControllersSnapshotRunsActions(t *testing.T) {
+// Actions come from the controller: a pass of the agent's own on the state
+// it kept runs none, unless the node boots with actions not run yet.
+func TestAReverifyRunsNoAction(t *testing.T) {
 	e := newEnv(t)
-	s := withAction(e.snapshot("www.example.com -> :8080"), "a1", agentproto.ActionPVEWrite, writeArgs)
-	e.apply(s)
-	require.NoError(t, e.store.SaveAgentActions(map[string]store.ActionDone{}))
-	e.agent = e.newAgent()
+	ctx, cancel := context.WithCancel(t.Context())
+	e.res.onResolve = func(string) { cancel() }
+	_, err := e.agent.Apply(ctx, withAction(e.snapshot("www.example.com -> :8080"), "a1", agentproto.ActionPVEWrite, writeArgs))
+	require.ErrorIs(t, err, context.Canceled)
+	e.res.onResolve = nil
 
-	require.NoError(t, e.agent.Boot(t.Context()))
-	_, err := e.agent.Reverify(t.Context())
+	_, err = e.agent.Reverify(t.Context())
 	require.NoError(t, err)
 
-	require.Len(t, e.runs.all(), 1)
+	require.Empty(t, e.runs.all())
+}
+
+// The store keeps the newest thousand actions; so does the agent, or it
+// would say that what the store forgot still ran.
+func TestTheAgentRemembersTheActionsTheStoreKeeps(t *testing.T) {
+	e := newEnv(t)
+	s := e.snapshot()
+	for i := range store.MaxAgentActions + 5 {
+		s = withAction(s, fmt.Sprintf("a%04d", i), "doctor", `{}`)
+	}
+
+	e.apply(s)
+
+	done, err := e.store.AgentActions()
+	require.NoError(t, err)
+	require.Len(t, done, store.MaxAgentActions)
+	require.Equal(t, done, e.agent.done)
 }

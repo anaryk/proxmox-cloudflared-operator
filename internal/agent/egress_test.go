@@ -334,6 +334,75 @@ func TestATargetOnALegIsInTheSetByItsServiceAddress(t *testing.T) {
 	require.Empty(t, got, "a service address given for another address is not this one's")
 }
 
+// A service address forwards to one address on a leg. When the guest of its
+// target moves to another, it would forward to an address anyone may answer
+// at now: it leaves the filter at once, the set and the gateway, though the
+// configuration verified at Cloudflare still names it, until the controller
+// moves it.
+func TestTheServiceAddressOfATargetThatLeftItsAddressForwardsNothing(t *testing.T) {
+	e := newEnv(t)
+	e.gw = &fakeGateway{}
+	e.agent = e.newAgent()
+	e.res.onLeg("www.example.com", "lan")
+	legs, err := json.Marshal(gateway.Cache{Legs: []gateway.Leg{{
+		ID: "lan", Mark: 3, Bridge: "vmbr1", Prefix: netip.MustParsePrefix("10.0.0.250/24"),
+		MAC: mustMAC("02:50:43:4f:00:03"),
+	}}})
+	require.NoError(t, err)
+	service := netip.MustParseAddr("10.203.118.5")
+	s := verified(e.snapshot("www.example.com -> :8080"), "10.203.118.5:8080")
+	s.Networks = legs
+	s.Targets[0].Addr, s.Targets[0].Service = guestAddr, service
+	e.apply(s)
+	got, _ := e.egr.last()
+	require.Equal(t, egressTargets("10.203.118.5:8080"), got)
+
+	e.res.moveTo("www.example.com", netip.MustParseAddr("10.0.0.12"))
+	st := e.apply(s)
+
+	require.Equal(t, []netip.Addr{service}, e.egr.removes(), "out of the filter at once")
+	got, _ = e.egr.last()
+	require.Empty(t, got, "and out of the set, though the verified configuration names it")
+	sync, ok := e.gw.last()
+	require.True(t, ok)
+	require.Empty(t, sync.services, "the gateway forwards nothing to the address left")
+	require.False(t, report(st, "www.example.com").InEgressSet)
+	require.Contains(t, e.events.messages(), "www.example.com left 10.0.0.11 on network lan; its service address 10.203.118.5 forwards nothing until the controller moves it")
+
+	t.Run("it stays while another target is still served at the address", func(t *testing.T) {
+		e := newEnv(t)
+		e.res.onLeg("www.example.com", "lan")
+		e.res.onLeg("api.example.com", "lan")
+		s := verified(e.snapshot("www.example.com -> :8080", "api.example.com -> :9090"), "10.203.118.5:8080", "10.203.118.5:9090")
+		for i := range s.Targets {
+			s.Targets[i].Addr, s.Targets[i].Service = guestAddr, service
+		}
+		e.apply(s)
+
+		e.res.moveTo("www.example.com", netip.MustParseAddr("10.0.0.12"))
+		e.apply(s)
+
+		require.Empty(t, e.egr.removes())
+		got, _ := e.egr.last()
+		require.Equal(t, egressTargets("10.203.118.5:8080", "10.203.118.5:9090"), got, "api is served there still, and www keeps its rule")
+	})
+
+	t.Run("the same address on another network is another address", func(t *testing.T) {
+		e := newEnv(t)
+		e.res.onLeg("www.example.com", "lan")
+		s := verified(e.snapshot("www.example.com -> :8080"), "10.203.118.5:8080")
+		s.Targets[0].Addr, s.Targets[0].Service = guestAddr, service
+		e.apply(s)
+
+		e.res.onLeg("www.example.com", "dmz")
+		e.apply(s)
+
+		require.Equal(t, []netip.Addr{service}, e.egr.removes())
+		got, _ := e.egr.last()
+		require.Empty(t, got)
+	})
+}
+
 func TestTheGatewayIsGivenTheLegsAndWhatTheSetHoldsBehindThem(t *testing.T) {
 	e := newEnv(t)
 	e.gw = &fakeGateway{}
