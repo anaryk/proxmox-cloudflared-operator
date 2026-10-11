@@ -71,6 +71,9 @@ type legRecord struct {
 	dadAt   time.Time
 	// unprobed: the address was added without DAD, for want of a carrier.
 	unprobed bool
+	// misnamed is the name the appliance's card came up with, when it was
+	// not the leg's.
+	misnamed string
 }
 
 func newHost(sys system, nsNft, hostNft Nft, log zerolog.Logger, now func() time.Time) *hostBackend {

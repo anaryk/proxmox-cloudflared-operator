@@ -420,7 +420,7 @@ func (b *containerBackend) sync(ctx context.Context, legs []Leg, services []Serv
 			return nil, fmt.Errorf("leg %s of network %s: %w", l.Iface(), l.ID, err)
 		}
 		if p := refused[l.ID]; len(p) > 0 {
-			st.Problem = strings.Join(slices.DeleteFunc(append([]string{st.Problem}, p...), func(s string) bool { return s == "" }), "; ")
+			st.Problem = joinProblems(append([]string{st.Problem}, p...)...)
 		}
 		states = append(states, st)
 	}
@@ -522,7 +522,7 @@ func (b *containerBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 		}
 	}
 	iface := l.Iface()
-	if problem, err := b.name(card, iface); err != nil || problem != "" {
+	if problem, err := b.name(card, iface, rec); err != nil || problem != "" {
 		st.Problem = problem
 		return st, err
 	}
@@ -541,6 +541,10 @@ func (b *containerBackend) leg(ctx context.Context, l Leg) (LegState, error) {
 		return st, err
 	}
 	rec.raised, st.Problem, st.DADAt = raised, problem, rec.dadAt
+	if rec.misnamed != "" {
+		st.Problem = joinProblems(fmt.Sprintf("the network card with the MAC %s comes up as %s; name it %s in the appliance's configuration",
+			l.MAC, rec.misnamed, iface), st.Problem)
+	}
 	if err := b.ensureRoutes(tableBase+l.Mark, legTable(l, raised)); err != nil {
 		return st, err
 	}
@@ -588,8 +592,10 @@ func (b *containerBackend) waitForCard(ctx context.Context, mac net.HardwareAddr
 
 // name gives the card the name of its leg. Proxmox names a card it adds
 // after the name in its configuration, which is that of the leg; a card an
-// admin added with the MAC of a leg may have another.
-func (b *containerBackend) name(card link, iface string) (string, error) {
+// admin added with the MAC of a leg may have another, which Proxmox gives it
+// again at every start of the appliance: the leg's record keeps it, and the
+// leg says to put its name in the configuration for as long as it does.
+func (b *containerBackend) name(card link, iface string, rec *legRecord) (string, error) {
 	if card.name == iface {
 		return "", nil
 	}
@@ -608,8 +614,13 @@ func (b *containerBackend) name(card link, iface string) (string, error) {
 	if err := b.sys.rename(card.name, iface); err != nil {
 		return "", fmt.Errorf("renaming %s to %s: %w", card.name, iface, err)
 	}
-	b.log.Info().Str("card", card.name).Str("leg", iface).Msg("named a network card of the appliance after its leg")
+	rec.misnamed = card.name
 	return "", nil
+}
+
+// joinProblems joins the problems of a leg that are not empty.
+func joinProblems(problems ...string) string {
+	return strings.Join(slices.DeleteFunc(problems, func(s string) bool { return s == "" }), "; ")
 }
 
 func (b *containerBackend) ensureUp(name string) error {

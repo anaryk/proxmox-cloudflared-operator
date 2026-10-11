@@ -613,7 +613,9 @@ func TestACardThatIsThereIsConfiguredWithoutTheAPI(t *testing.T) {
 }
 
 // A card an admin added with pco's MAC under another name is named after its
-// leg.
+// leg, and the leg says, for as long as the process runs, that the
+// configuration should name it so: Proxmox brings it back under its own name
+// at every start of the appliance.
 func TestACardWithTheMACOfALegIsNamedAfterIt(t *testing.T) {
 	h := newCTHarness(t)
 	h.sys.card("eth1", legA.MAC)
@@ -621,9 +623,19 @@ func TestACardWithTheMACOfALegIsNamedAfterIt(t *testing.T) {
 	h.up(t)
 	states := h.sync(t, []Leg{legA}, nil)
 	require.True(t, states[0].Up, states[0].Problem)
+	const misnamed = "the network card with the MAC 02:50:43:4f:00:01 comes up as eth1; name it leg1 in the appliance's configuration"
+	require.Equal(t, misnamed, states[0].Problem)
 	require.Less(t, index(t, h.sys.changes(), "down eth1"), index(t, h.sys.changes(), "rename eth1 leg1"))
 	require.Contains(t, h.sys.n.links, "leg1")
 	require.NotContains(t, h.sys.n.links, "eth1")
+	h.reset()
+	states = h.sync(t, []Leg{legA}, nil)
+	require.Equal(t, misnamed, states[0].Problem, "the line stands")
+	require.Empty(t, h.sys.changes(), "renamed once")
+	states = h.sync(t, nil, nil)
+	require.Empty(t, states)
+	states = h.sync(t, []Leg{legA}, nil)
+	require.Empty(t, states[0].Problem, "a leg given anew starts from what it finds")
 
 	h = newCTHarness(t)
 	h.sys.card("eth1", legA.MAC)
