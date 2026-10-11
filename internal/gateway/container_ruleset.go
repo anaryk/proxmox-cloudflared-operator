@@ -47,11 +47,15 @@ func renderContainer(e elements) string {
 // path (-100), before the service prefix's own table (filter - 20) and the
 // egress filter (filter - 10): the first sees the target's address and lets
 // it pass, the second matches the service address by conntrack's original
-// tuple. A service address no DNAT maps keeps its address, which the
-// service prefix's table rejects. The appliance's own packets to a leg, as
-// the DHCP server's answers, get the leg's zone on the way out; what comes in
-// on a leg gets it on the way in, without which a reply to a DNATed flow would
-// land in zone 0 and a guest could inject into the appliance's own flows.
+// tuple. The NAT chain's priority is written as the number dstnat stands
+// for: nft 1.0.6 takes the name in prerouting only, and the kernel runs the
+// NAT chains of a hook from its one NAT hook at -100 whatever priority they
+// say, so the chain is the same either way. A service address no DNAT maps
+// keeps its address, which the service prefix's table rejects. The
+// appliance's own packets to a leg, as the DHCP server's answers, get the
+// leg's zone on the way out; what comes in on a leg gets it on the way in,
+// without which a reply to a DNATed flow would land in zone 0 and a guest
+// could inject into the appliance's own flows.
 // A DNATed flow to an address of the appliance itself is dropped where the
 // output path sees the target's address. The oif guard sits in postrouting:
 // in the output hook a DNATed packet still names the device the service
@@ -65,7 +69,7 @@ const ctChains = `	chain out_raw {
 		oifname @legs ct zone set oifname map @leg_zone
 	}
 	chain out_nat {
-		type nat hook output priority dstnat; policy accept;
+		type nat hook output priority -100; policy accept;
 		ip daddr @SERVICE_PREFIX@ meta l4proto tcp dnat ip to ip daddr . tcp dport map @svc_dnat
 	}
 	chain out_guard {

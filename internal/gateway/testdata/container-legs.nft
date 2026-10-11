@@ -78,7 +78,7 @@ table inet pco_gw {
 		oifname @legs ct zone set oifname map @leg_zone
 	}
 	chain out_nat {
-		type nat hook output priority dstnat; policy accept;
+		type nat hook output priority -100; policy accept;
 		ip daddr 198.18.0.0/16 meta l4proto tcp dnat ip to ip daddr . tcp dport map @svc_dnat
 	}
 	chain out_guard {

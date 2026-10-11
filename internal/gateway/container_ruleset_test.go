@@ -26,7 +26,7 @@ func TestTheHooksOfTheAppliancesTable(t *testing.T) {
 	script := renderContainer(nil)
 	for chain, hook := range map[string]string{
 		"out_raw":     "type filter hook output priority raw; policy accept;",
-		"out_nat":     "type nat hook output priority dstnat; policy accept;",
+		"out_nat":     "type nat hook output priority -100; policy accept;",
 		"out_guard":   "type filter hook output priority filter; policy accept;",
 		"post_filter": "type filter hook postrouting priority filter; policy accept;",
 		"post_nat":    "type nat hook postrouting priority srcnat; policy accept;",
@@ -80,17 +80,23 @@ func TestEachLegOfTheApplianceSNATsFromItsOwnBlock(t *testing.T) {
 	require.Contains(t, renderContainer(e), "\t\ttype ifname : interval ipv4_addr . inet_service\n\t\tflags interval\n")
 }
 
+// The table as nft 1.0.6 and 1.1.3 list it once they loaded it is the table:
+// both take the NAT chain of the output path at -100.
 func TestTheListingsOfTheAppliancesTableAreTheTable(t *testing.T) {
-	l := readListing(t, "container-listing-legs-1.1.3.json")
-	require.Empty(t, ctDifferences(l))
-	require.Equal(t, sortedElements(ctElementsOf(testLegs, testServices)), listedElements(l))
+	for _, v := range []string{"1.0.6", "1.1.3"} {
+		t.Run(v, func(t *testing.T) {
+			l := readListing(t, "container-listing-legs-"+v+".json")
+			require.Empty(t, ctDifferences(l))
+			require.Equal(t, sortedElements(ctElementsOf(testLegs, testServices)), listedElements(l))
 
-	base := readListing(t, "container-listing-1.1.3.json")
-	require.Empty(t, ctDifferences(base))
-	require.Empty(t, listedElements(base))
+			base := readListing(t, "container-listing-"+v+".json")
+			require.Empty(t, ctDifferences(base))
+			require.Empty(t, listedElements(base))
 
-	require.NotEmpty(t, ctDifferences(readListing(t, "listing-1.1.3.json")), "the host's table is not the appliance's")
-	require.NotEmpty(t, gwDifferences(base, snatMap, nil), "nor the other way")
+			require.NotEmpty(t, ctDifferences(readListing(t, "listing-"+v+".json")), "the host's table is not the appliance's")
+			require.NotEmpty(t, gwDifferences(base, snatMap, nil), "nor the other way")
+		})
+	}
 }
 
 // A listing without one guard, or with a hook, set or counter changed, is a

@@ -166,7 +166,9 @@ func TestLinuxTheThreeTablesOfTheApplianceInOrder(t *testing.T) {
 	})
 
 	t.Run("the control: before the DNAT, the service prefix's table rejects every request to a leg", func(t *testing.T) {
-		before := strings.Replace(appnet.Script(), "priority filter - 20;", "priority dstnat - 10;", 1)
+		// dstnat - 10, written as the number: nft 1.0.6 takes the name in
+		// prerouting only.
+		before := strings.Replace(appnet.Script(), "priority filter - 20;", "priority -110;", 1)
 		require.NotEqual(t, appnet.Script(), before)
 		orderIn(t, app.h, func() error { return netNft.Apply(t.Context(), before) })
 		l0 := leaked()
