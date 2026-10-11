@@ -259,8 +259,10 @@ func (e *Engine) verifyMoved(ctx context.Context, addr netip.Addr) (why string, 
 			return "the daemon stops", false
 		}
 		t, b := res.Target, res.Binding
-		if b != nil && b.Via == wr.binding.Via && b.Addr == wr.binding.Addr {
-			// The same target is published where it was.
+		if b != nil && b.Via != "" && !b.Service.IsValid() {
+			// The route is still published under the service address its
+			// binding names: the next cycle finds it there again, or has
+			// the service address follow it where it moved.
 			b.Service = wr.binding.Service
 		}
 		if t.Addr == wr.binding.Addr && !t.Withdrawn && !t.Rejected && b != nil && b.Via == wr.binding.Via && res.Level.AtLeast(w.required) {
