@@ -87,7 +87,7 @@ func (g *gatewayPart) start(ctx context.Context) {
 		return
 	}
 	if !g.mayChange() {
-		g.log.Warn().Str("found", err.Error()).Msg("the gateway is not as its cache says; the first cycle that may change it syncs it")
+		g.log.Warn().Str("found", err.Error()).Msg("the gateway is not as its cache says; the first cycle that may change it brings it back")
 		g.setUp(slices.Clone(c.Legs))
 		return
 	}
@@ -217,6 +217,43 @@ func (g *gatewayPart) Dial(ctx context.Context, leg gateway.Leg, addr netip.Addr
 	return g.b.Dial(ctx, leg, addr)
 }
 
+// Check checks the gateway and brings it back to what was last wanted of
+// it when it differs, for the cycle, which has the proof the start and the
+// keeper wait for in the appliance. A gateway nothing was wanted of is left
+// to the cycle's Sync.
+func (g *gatewayPart) Check(ctx context.Context) engine.GatewayCheck {
+	if !g.active() {
+		return engine.GatewayCheck{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, startVerifyTimeout)
+	defer cancel()
+	err := g.Verify(ctx)
+	switch {
+	case err == nil:
+		return engine.GatewayCheck{}
+	case !errors.Is(err, gateway.ErrChanged):
+		g.log.Warn().Err(err).Msg("checking the gateway namespace failed")
+		return engine.GatewayCheck{Failed: err.Error()}
+	}
+	return g.bringBack(ctx, err)
+}
+
+// bringBack brings the gateway back to what was last wanted of it after a
+// check found it changed, and says what the check found.
+func (g *gatewayPart) bringBack(ctx context.Context, found error) engine.GatewayCheck {
+	what := found.Error()
+	var changed *gateway.ChangedError
+	if errors.As(found, &changed) {
+		what = changed.Error()
+	}
+	if err := g.restore(ctx); err != nil {
+		g.log.Error().Err(err).Str("found", what).Msg("the gateway namespace was changed outside pco and could not be brought back")
+		return engine.GatewayCheck{NotKept: err.Error()}
+	}
+	g.log.Warn().Str("found", what).Msg("the gateway namespace was changed outside pco and was brought back")
+	return engine.GatewayCheck{Restored: what}
+}
+
 var _ engine.Gateway = (*gatewayPart)(nil)
 
 // checkGateway checks the gateway, once something was wanted of it, and
@@ -243,26 +280,15 @@ func (k *keeper) checkGateway(ctx context.Context) time.Duration {
 		return wait
 	}
 	k.lastGwRestore = k.now()
-	var rerr error
+	var found engine.GatewayCheck
 	allowed := true
 	if ierr := k.idle(ctx, func() {
 		if allowed = k.gw.mayChange(); allowed {
-			rerr = k.gw.restore(ctx)
+			found = k.gw.bringBack(ctx, err)
 		}
 	}); ierr != nil || !allowed {
 		return 0
 	}
-	what := err.Error()
-	var changed *gateway.ChangedError
-	if errors.As(err, &changed) {
-		what = changed.Error()
-	}
-	if rerr != nil {
-		k.log.Error().Err(rerr).Str("found", what).Msg("the gateway namespace was changed outside pco and could not be brought back")
-		k.noteGw(engine.GatewayCheck{NotKept: rerr.Error()})
-		return 0
-	}
-	k.log.Warn().Str("found", what).Msg("the gateway namespace was changed outside pco and was brought back")
-	k.noteGw(engine.GatewayCheck{Restored: what})
+	k.noteGw(found)
 	return 0
 }

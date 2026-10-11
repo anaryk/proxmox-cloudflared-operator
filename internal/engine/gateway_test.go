@@ -48,6 +48,7 @@ type fakeGateway struct {
 	syncs []gatewaySync
 	err   error
 	down  map[string]string // the legs Sync reports not up, by network, with why
+	check func() GatewayCheck
 }
 
 type gatewaySync struct {
@@ -85,6 +86,22 @@ func (f *fakeGateway) Probe(context.Context, string, int, netip.Addr) ([]net.Har
 
 func (f *fakeGateway) Dial(context.Context, gateway.Leg, netip.AddrPort) (net.Conn, error) {
 	return nil, errors.New("no dial in the fake")
+}
+
+func (f *fakeGateway) Check(context.Context) GatewayCheck {
+	f.mu.Lock()
+	check := f.check
+	f.mu.Unlock()
+	if check == nil {
+		return GatewayCheck{}
+	}
+	return check()
+}
+
+func (f *fakeGateway) onCheck(check func() GatewayCheck) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.check = check
 }
 
 func (f *fakeGateway) fail(err error) {
@@ -706,6 +723,65 @@ func TestAClosedGateHoldsANewServiceAddressInTheAppliance(t *testing.T) {
 	})
 }
 
+// The cycle brings the gateway back once the self-identification of the
+// appliance passed, before anything is resolved through it: the start
+// withholds that, since a copy would add the original's cards to itself, and
+// the container that rebooted has its cards bare until then.
+func TestTheCycleBringsTheGatewayBackOnceTheApplianceProvedItself(t *testing.T) {
+	a := newApplianceLegEnv(t)
+	var resolvedAtCheck []int
+	a.gw.onCheck(func() GatewayCheck {
+		resolvedAtCheck = append(resolvedAtCheck, len(a.res.resolved()))
+		return GatewayCheck{Restored: "leg1 is down"}
+	})
+
+	st := a.warm()
+
+	require.True(t, st.Identity.OK, st.Identity.Why)
+	require.Equal(t, []int{0}, resolvedAtCheck, "once, before the resolution")
+	require.Contains(t, st.Problems, problemGatewayRestored+" (leg1 is down)")
+
+	a.ident.fail(appliance.WhyIncomplete)
+	a.cycle()
+	require.Equal(t, []int{0}, resolvedAtCheck, "not while the self-identification did not pass")
+
+	a.ident.fail("this container is not lxc/9250")
+	a.cycle()
+	require.Equal(t, []int{0}, resolvedAtCheck)
+
+	a.ident.fail("")
+	a.cycle()
+	require.Len(t, resolvedAtCheck, 2, "and again once it passes")
+}
+
+// The host's cycle checks the gateway too; what could not be brought back
+// stands as one problem line for as long as that lasts.
+func TestTheCycleSaysWhenTheGatewayCouldNotBeBroughtBack(t *testing.T) {
+	e := newLegEnv(t)
+	e.gw.onCheck(func() GatewayCheck { return GatewayCheck{NotKept: "the gateway namespace is not pinned"} })
+	line := fmt.Sprintf(problemGatewayNotKept, "the gateway namespace is not pinned")
+
+	st := e.warm()
+	require.Equal(t, 1, count(st.Problems, line), st.Problems)
+
+	st = e.next()
+	require.Equal(t, 1, count(st.Problems, line), st.Problems)
+
+	e.gw.onCheck(nil)
+	st = e.next()
+	require.NotContains(t, st.Problems, line)
+}
+
+func count(lines []string, line string) int {
+	n := 0
+	for _, l := range lines {
+		if l == line {
+			n++
+		}
+	}
+	return n
+}
+
 // Outside a cycle the gateway of an appliance is changed only while the
 // appliance proved itself and serves: a copy never adds a card of the
 // original to itself.
@@ -1008,6 +1084,37 @@ func TestAMovedLegTargetThatFailsStaysOut(t *testing.T) {
 	require.Equal(t, svc0, bindings[legHost].Service, "the next cycle takes it out by the address the set holds")
 }
 
+// The watch sees web-1's MAC move, and the verification that follows finds
+// web-1 at another address: its binding keeps the service address it was
+// published under, so that the next cycle has the service address follow it
+// there, without a write at Cloudflare.
+func TestAMoveTheWatchFindsIsFollowedByTheServiceAddress(t *testing.T) {
+	e := newLegEnv(t)
+	e.warm()
+	e.next()
+	writes := len(e.writes())
+	tm := &timers{}
+	tm.install(e.eng)
+	e.res.moveTo(legHost, netip.MustParseAddr("10.50.0.11"))
+
+	e.eng.Moved(t.Context(), svc0)
+	e.eng.moving.Wait()
+
+	require.NotContains(t, e.eng.Bound(), svc0, "out until the next cycle")
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.Equal(t, netip.MustParseAddr("10.50.0.11"), bindings[legHost].Addr)
+	require.Equal(t, svc0, bindings[legHost].Service)
+
+	st := e.next()
+
+	require.Equal(t, planner.StateActive, route(st, legHost).State)
+	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.11": svc0}, e.mappings())
+	require.Equal(t, []gateway.Service{{Leg: "vmbr1", Service: svc0, Addr: netip.MustParseAddr("10.50.0.11"), Ports: []uint16{8080}}},
+		e.gw.last(t).services)
+	require.Len(t, e.writes(), writes, "nothing was written at Cloudflare")
+}
+
 // A proof the watch vouches for is keyed by the address the set holds: two
 // guests at one real address on two legs are vouched for apart, and one never
 // published through its leg is not watched at all.
@@ -1056,6 +1163,8 @@ func TestWithoutAGatewayARouteOnALegIsNotServed(t *testing.T) {
 	}
 }
 
+// What the keeper found between cycles is said by the next cycle, whose own
+// check of the gateway finds the same.
 func TestTheGatewayKeeperIsHeard(t *testing.T) {
 	e := newLegEnv(t)
 
@@ -1069,6 +1178,7 @@ func TestTheGatewayKeeperIsHeard(t *testing.T) {
 	require.NotContains(t, e.next().Problems, "the gateway namespace was changed outside pco and was brought back (leg1 is down)", "said once")
 
 	gone := "the gateway namespace is not pinned; systemctl restart pco-netns"
+	e.gw.onCheck(func() GatewayCheck { return GatewayCheck{NotKept: gone} })
 	e.eng.NoteGateway(GatewayCheck{NotKept: gone})
 	e.eng.NoteGateway(GatewayCheck{NotKept: gone})
 	for range 2 {
@@ -1082,6 +1192,7 @@ func TestTheGatewayKeeperIsHeard(t *testing.T) {
 	}
 	require.Equal(t, 1, notKept, "an event when it starts")
 
+	e.gw.onCheck(nil)
 	e.eng.NoteGateway(GatewayCheck{})
 	require.NotContains(t, e.next().Problems, "the gateway namespace was changed outside pco and could not be brought back: "+gone)
 

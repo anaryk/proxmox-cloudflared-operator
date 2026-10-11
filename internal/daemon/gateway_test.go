@@ -337,6 +337,56 @@ func TestAGatewayNotAllowedToChangeIsLeftToTheCycle(t *testing.T) {
 		require.Equal(t, []string{"verify"}, r.b.asked())
 		require.Empty(t, r.notes)
 	})
+	t.Run("and the cycle brings it back", func(t *testing.T) {
+		local := t.TempDir()
+		require.NoError(t, gateway.WriteCache(local, testCache))
+		b := &fakeBackend{verify: []error{errNamespaceChanged}, down: map[string]bool{"vmbr2": true}}
+		g := newGatewayPart(b, local, func() time.Time { return t0 }, zerolog.Nop())
+		g.allowed = func() bool { return false }
+		g.start(t.Context())
+
+		require.Equal(t, engine.GatewayCheck{Restored: "leg1 is down"}, g.Check(t.Context()))
+
+		require.Equal(t, []string{"verify", "verify", "up", "sync"}, b.asked())
+		require.Equal(t, testCache.Services, b.lastSync().Services, "with what the cache says")
+		require.Equal(t, []gateway.Leg{testLeg("vmbr1", 1)}, g.UpLegs(), "and the legs are as the sync found them")
+	})
+}
+
+func TestTheCycleChecksTheGateway(t *testing.T) {
+	tests := []struct {
+		name   string
+		verify error
+		upErr  error
+		found  engine.GatewayCheck
+		calls  []string
+	}{
+		{name: "in place", calls: []string{"verify"}},
+		{name: "changed and brought back", verify: errNamespaceChanged,
+			found: engine.GatewayCheck{Restored: "leg1 is down"}, calls: []string{"verify", "up", "sync"}},
+		{name: "gone", verify: &gateway.ChangedError{Differences: []string{"the namespace pco is not pinned"}}, upErr: gateway.ErrNotPinned,
+			found: engine.GatewayCheck{NotKept: "the gateway namespace is not pinned; systemctl restart pco-netns"}, calls: []string{"verify", "up"}},
+		{name: "not read", verify: errors.New("listing the table: nft: signal: killed"),
+			found: engine.GatewayCheck{Failed: "listing the table: nft: signal: killed"}, calls: []string{"verify"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newGatewayRig(t, tc.verify)
+			r.b.upErr = tc.upErr
+
+			require.Equal(t, tc.found, r.g.Check(t.Context()))
+
+			require.Equal(t, tc.calls, r.b.asked())
+		})
+	}
+	t.Run("nothing wanted", func(t *testing.T) {
+		b := &fakeBackend{verify: []error{errNamespaceChanged}}
+		g := newGatewayPart(b, t.TempDir(), func() time.Time { return t0 }, zerolog.Nop())
+
+		require.Equal(t, engine.GatewayCheck{}, g.Check(t.Context()))
+
+		require.Empty(t, b.asked(), "the cycle's sync makes it")
+	})
 }
 
 func TestTheKeeperBringsTheGatewayBackAtMostOnceEveryFiveSeconds(t *testing.T) {
@@ -405,6 +455,7 @@ func TestTheApplianceDrivesTheGatewayOfItsNetworks(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}
+	a.gw.verify = []error{errNamespaceChanged}
 	d := a.start()
 	verifies := func() int {
 		n := 0
@@ -417,6 +468,11 @@ func TestTheApplianceDrivesTheGatewayOfItsNetworks(t *testing.T) {
 	}
 
 	d.await(func(st engine.State) bool { return st.Identity != nil && st.Identity.OK })
+	d.await(func(st engine.State) bool {
+		return slices.Contains(st.Problems, "the gateway namespace was changed outside pco and was brought back (leg1 is down)")
+	})
+	require.Equal(t, []string{"verify", "verify", "up", "sync"}, a.gw.asked()[:4],
+		"the start left it as it was, since nothing said yet that this is not a copy; the first cycle brought it back")
 	require.NoError(t, d.client.Sync(t.Context()))
 	d.await(func(st engine.State) bool { return len(st.Routes) == 1 })
 

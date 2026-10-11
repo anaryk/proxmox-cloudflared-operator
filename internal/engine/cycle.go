@@ -342,7 +342,11 @@ func (c *cycleRun) refresh() bool {
 	c.st.Complete = c.snap.Complete
 	c.st.Problems = append(c.st.Problems, c.snap.Problems...)
 	// A copy learns nothing from the snapshot, not even into its own store.
-	if !c.identify() || !c.quorate() || !c.learnNodeAddrs() {
+	if !c.identify() {
+		return false
+	}
+	c.checkGateway()
+	if !c.quorate() || !c.learnNodeAddrs() {
 		return false
 	}
 	if !c.snap.Complete {

@@ -29,6 +29,10 @@ type Gateway interface {
 	// Dial connects through the leg, from its address and with its mark: the
 	// way a connector's request to a service address leaves the namespace.
 	Dial(ctx context.Context, leg gateway.Leg, addr netip.AddrPort) (net.Conn, error)
+	// Check checks the gateway and brings it back to what was last wanted of
+	// it when it differs. The cycle calls it once it knows the gateway may be
+	// changed, before anything probes through it.
+	Check(ctx context.Context) GatewayCheck
 }
 
 // heldGateway is why a cycle whose gateway could not be programmed does not
@@ -727,6 +731,37 @@ func (e *Engine) NoteGateway(c GatewayCheck) {
 	}
 	e.noteMu.Unlock()
 	e.events.add(events...)
+}
+
+// checkGateway brings the gateway back to what was last wanted of it when it
+// is not so, before anything probes through it. The appliance's start and
+// its keeper withhold that until its self-identification passed, so that a
+// copy never adds the original's cards to itself; the check of this cycle is
+// that proof. What the check found goes into this cycle's state, in place of
+// the fault that stood when the cycle began.
+func (c *cycleRun) checkGateway() {
+	if c.e.d.Gateway == nil || (c.st.Identity != nil && !c.st.Identity.OK) {
+		return
+	}
+	c.e.noteMu.Lock()
+	stood := c.e.notes.gwFault
+	c.e.noteMu.Unlock()
+	found := c.e.d.Gateway.Check(c.ctx)
+	c.e.NoteGateway(found)
+	c.e.noteMu.Lock()
+	lines := c.e.notes.lines
+	c.e.notes.lines = nil
+	c.e.noteMu.Unlock()
+	c.st.Problems = append(c.st.Problems, lines...)
+	if found.Failed != "" {
+		return
+	}
+	if stood != "" {
+		c.st.Problems = slices.DeleteFunc(c.st.Problems, func(l string) bool { return l == fmt.Sprintf(problemGatewayNotKept, stood) })
+	}
+	if found.NotKept != "" {
+		c.problem(problemGatewayNotKept, found.NotKept)
+	}
 }
 
 // GatewayAllowed reports whether the gateway may be changed outside a cycle:
