@@ -234,6 +234,51 @@ func (s *Store) ServicePool() (next netip.Addr, used, size int, err error) {
 	return next, int(addrUint(next) - addrUint(first)), size, nil
 }
 
+// SaveServiceAddr stores a mapping as it was, as a restore does: the pool
+// does not move. A service address outside the pool is refused.
+func (s *Store) SaveServiceAddr(m ServiceAddr) error {
+	if err := checkServiceKey(m.Network, m.Addr); err != nil {
+		return err
+	}
+	id := serviceAddrID(m.Network, m.Addr)
+	if err := checkMapping("service address "+id, m); err != nil {
+		return err
+	}
+	s.netMu.Lock()
+	defer s.netMu.Unlock()
+	return s.cluster.put(kindSvcAddrs, id, m, true)
+}
+
+// SaveServicePool sets the address the next allocation gets, as a restore
+// does once the mappings are written. One outside the pool, one that is not
+// above every service address a mapping of either kind holds, and one below
+// the next stored are refused: an allocation from it could give an address
+// twice.
+func (s *Store) SaveServicePool(next netip.Addr) error {
+	first, end, _ := poolBounds()
+	if !next.Is4() || next.Less(first) || end.Less(next) {
+		return fmt.Errorf("the pool of service addresses: next %v is outside %s to %s", next, first, end)
+	}
+	s.netMu.Lock()
+	defer s.netMu.Unlock()
+	var p servicePool
+	found, err := s.cluster.Get(kindMeta, idSvcPool, &p)
+	if err != nil {
+		return err
+	}
+	if found && next.Less(p.Next) {
+		return fmt.Errorf("the pool of service addresses moves only forward: next is %v, and %v is below it", p.Next, next)
+	}
+	after, err := s.afterMappings()
+	if err != nil {
+		return err
+	}
+	if next.Less(after) {
+		return fmt.Errorf("the pool of service addresses: next %v is not above every service address given out, the highest being %v", next, after.Prev())
+	}
+	return s.cluster.put(kindMeta, idSvcPool, servicePool{Next: next}, true)
+}
+
 // poolNext is the address the next allocation gets. Without a pool file it
 // is the first of the pool or, when mappings exist, as after the file was
 // lost, the one after the highest of them, of both kinds. A file whose next
@@ -251,6 +296,13 @@ func (s *Store) poolNext() (netip.Addr, error) {
 	case found:
 		return p.Next, nil
 	}
+	return s.afterMappings()
+}
+
+// afterMappings is the address after the highest service address a mapping
+// of either kind holds, or the first of the pool when there is none.
+func (s *Store) afterMappings() (netip.Addr, error) {
+	first, _, _ := poolBounds()
 	next := first
 	after := func(path string, service netip.Addr) error {
 		if err := checkMapping(path, ServiceAddr{Service: service}); err != nil {
@@ -261,7 +313,7 @@ func (s *Store) poolNext() (netip.Addr, error) {
 		}
 		return nil
 	}
-	err = eachObject(s.cluster, kindSvcAddrs, func(path, _ string, m ServiceAddr) error { return after(path, m.Service) })
+	err := eachObject(s.cluster, kindSvcAddrs, func(path, _ string, m ServiceAddr) error { return after(path, m.Service) })
 	if err != nil {
 		return netip.Addr{}, err
 	}

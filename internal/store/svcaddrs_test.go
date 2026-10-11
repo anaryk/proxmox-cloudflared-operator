@@ -204,7 +204,48 @@ func TestAllocateServiceAddrRefusesWhatNamesNoMapping(t *testing.T) {
 			_, err := s.AllocateServiceAddr(tc.network, tc.addr, t0)
 			require.Error(t, err)
 			require.Error(t, s.ReleaseServiceAddr(tc.network, tc.addr))
+			require.Error(t, s.SaveServiceAddr(ServiceAddr{Network: tc.network, Addr: tc.addr, Service: addr("198.18.1.0"), AllocatedAt: t0}))
 			require.Empty(t, stored(t, p.Cluster))
 		})
 	}
+}
+
+func TestAServiceAddrIsSavedAsItWasWithoutMovingThePool(t *testing.T) {
+	s, p := openStore(t)
+	m := ServiceAddr{Network: "vmbr1.20", Addr: addr("10.20.0.5"), Service: addr("198.18.1.7"), AllocatedAt: t0}
+
+	require.NoError(t, s.SaveServiceAddr(m))
+
+	got, err := s.ServiceAddrs()
+	require.NoError(t, err)
+	require.Equal(t, []ServiceAddr{m}, got)
+	require.Equal(t, []string{"svcaddrs/vmbr1.20-10.20.0.5.json"}, stored(t, p.Cluster), "the pool is not touched")
+	requirePool(t, s, "198.18.1.8", 8)
+}
+
+func TestAServiceAddrOutsideThePoolIsNotSaved(t *testing.T) {
+	s, p := openStore(t)
+
+	err := s.SaveServiceAddr(ServiceAddr{Network: "vmbr1", Addr: addr("10.20.0.5"), Service: addr("10.20.0.5"), AllocatedAt: t0})
+
+	require.ErrorContains(t, err, "is not a service address")
+	require.Empty(t, stored(t, p.Cluster))
+}
+
+func TestThePoolIsSavedAboveEveryMappingAndNeverMovesBack(t *testing.T) {
+	s, p := openStore(t)
+	require.NoError(t, s.SaveServiceAddr(ServiceAddr{Network: "vmbr1", Addr: addr("10.20.0.5"), Service: addr("198.18.1.4"), AllocatedAt: t0}))
+	require.NoError(t, s.SaveNodeServiceAddr(NodeServiceAddr{Network: "vmbr9", Node: "pve-a", Addr: addr("10.30.0.5"), Service: addr("198.18.1.6"), AllocatedAt: t0}))
+
+	require.ErrorContains(t, s.SaveServicePool(addr("198.18.1.6")), "not above every service address", "a mapping holds it")
+	require.NoError(t, s.SaveServicePool(addr("198.18.1.9")))
+	requirePool(t, s, "198.18.1.9", 9)
+	require.ErrorContains(t, s.SaveServicePool(addr("198.18.1.8")), "moves only forward")
+	require.NoError(t, s.SaveServicePool(addr("198.18.1.9")), "the same again is no move back")
+	for _, next := range []string{"10.0.0.1", "198.18.0.200", "198.19.0.1", "::1"} {
+		require.ErrorContains(t, s.SaveServicePool(addr(next)), "outside", next)
+	}
+	requirePool(t, s, "198.18.1.9", 9)
+	require.Equal(t, addr("198.18.1.9"), allocate(t, s, "vmbr1", "10.20.0.6").Service)
+	require.Contains(t, stored(t, p.Cluster), "meta/svcpool.json")
 }

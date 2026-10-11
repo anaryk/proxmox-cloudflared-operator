@@ -102,6 +102,21 @@ func (s *Store) AllocateNodeServiceAddr(network, node string, addr netip.Addr, n
 	return m, nil
 }
 
+// SaveNodeServiceAddr stores a mapping as it was, as a restore does: the pool
+// does not move. A service address outside the pool is refused.
+func (s *Store) SaveNodeServiceAddr(m NodeServiceAddr) error {
+	if err := checkNodeServiceKey(m.Network, m.Node, m.Addr); err != nil {
+		return err
+	}
+	id := nodeServiceAddrID(m.Network, m.Node, m.Addr)
+	if err := checkMapping("service address "+id, ServiceAddr{Service: m.Service}); err != nil {
+		return err
+	}
+	s.netMu.Lock()
+	defer s.netMu.Unlock()
+	return s.cluster.put(kindNodeSvcAddrs, id, m, true)
+}
+
 // ReleaseNodeServiceAddr deletes the mapping; the pool does not move back. A
 // mapping that is not there is no error.
 func (s *Store) ReleaseNodeServiceAddr(network, node string, addr netip.Addr) error {

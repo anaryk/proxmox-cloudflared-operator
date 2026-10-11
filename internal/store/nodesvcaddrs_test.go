@@ -86,7 +86,25 @@ func TestAllocateNodeServiceAddrRefusesWhatNamesNoMapping(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := s.AllocateNodeServiceAddr(tt.network, tt.node, addr(tt.real), t0)
 			require.ErrorContains(t, err, tt.want)
+			err = s.SaveNodeServiceAddr(NodeServiceAddr{Network: tt.network, Node: tt.node, Addr: addr(tt.real), Service: addr("198.18.1.0"), AllocatedAt: t0})
+			require.ErrorContains(t, err, tt.want)
 		})
 	}
 	require.Empty(t, stored(t, p.Cluster))
+}
+
+func TestANodeServiceAddrIsSavedAsItWasWithoutMovingThePool(t *testing.T) {
+	s, p := openStore(t)
+	m := NodeServiceAddr{Network: "vmbr9", Node: "pve-a", Addr: addr("10.30.0.5"), Service: addr("198.18.1.3"), AllocatedAt: t0}
+
+	require.NoError(t, s.SaveNodeServiceAddr(m))
+
+	got, err := s.NodeServiceAddrs()
+	require.NoError(t, err)
+	require.Equal(t, []NodeServiceAddr{m}, got)
+	require.Equal(t, []string{"nodesvcaddrs/vmbr9-pve-a-10.30.0.5.json"}, stored(t, p.Cluster), "the pool is not touched")
+	requirePool(t, s, "198.18.1.4", 4)
+
+	err = s.SaveNodeServiceAddr(NodeServiceAddr{Network: "vmbr9", Node: "pve-a", Addr: addr("10.30.0.6"), Service: addr("10.30.0.6"), AllocatedAt: t0})
+	require.ErrorContains(t, err, "is not a service address")
 }
