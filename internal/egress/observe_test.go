@@ -247,6 +247,36 @@ func TestTheBridgeAndTheVLANTellEntriesApart(t *testing.T) {
 	require.Equal(t, []ObservationKind{Moved}, kinds(ob.learn(t, forwarding(t, "vmbr0", 30, webMAC, "eno1"))))
 }
 
+// The bridge sends nothing while an entry stays as it is, so what it showed
+// is reported once, and once more when the entry goes: a guest that stops
+// takes its port and the entries on it, and an entry that is not refreshed
+// ages out the same way.
+func TestWhatTheTableShowedEndsWhenTheEntryGoes(t *testing.T) {
+	tests := []struct {
+		port string
+		kind ObservationKind
+	}{
+		{port: "tap101i0", kind: Learned},
+		{port: "tap102i0", kind: Conflict},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			ob := observe(t)
+			on := forwarding(t, "vmbr0", 30, webMAC, tc.port)
+			require.Equal(t, []ObservationKind{tc.kind}, kinds(ob.learn(t, on)))
+			ob.clock = ob.clock.Add(5 * time.Minute)
+
+			got := ob.learn(t, gone(on))
+
+			require.Equal(t, []Observation{{
+				Kind: Gone, MAC: webMAC, Bridge: "vmbr0", VLAN: 30, Port: tc.port,
+				At: ob.clock,
+			}}, got)
+			require.Empty(t, ob.learn(t, gone(on)), "an entry goes once")
+		})
+	}
+}
+
 // A guest that stops has its entries deleted with its port; the MAC that
 // turns up on the uplink after it started on another node is not a move.
 func TestAnEntryThatWentTakesWhatWasKnownOfItsPort(t *testing.T) {
@@ -254,15 +284,53 @@ func TestAnEntryThatWentTakesWhatWasKnownOfItsPort(t *testing.T) {
 	own := forwarding(t, "vmbr0", 0, webMAC, "tap101i0")
 	ob.learn(t, own)
 
-	require.Empty(t, ob.learn(t, gone(own)), "a deletion reports nothing")
+	require.Equal(t, []ObservationKind{Gone}, kinds(ob.learn(t, gone(own))))
 	require.Empty(t, ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "eno1")))
+}
+
+// The port that went with the entry may have gone before it could be named;
+// the observer knows which one it was.
+func TestAnEntryThatWentIsNamedByThePortItWasOn(t *testing.T) {
+	ob := observe(t)
+	ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "tap101i0"))
+
+	got := ob.learn(t, gone(forwarding(t, "vmbr0", 0, webMAC, "")))
+
+	require.Len(t, got, 1)
+	require.Equal(t, Gone, got[0].Kind)
+	require.Equal(t, "tap101i0", got[0].Port)
+}
+
+func TestADeletionOfAnEntryNothingWasReportedOfSaysNothing(t *testing.T) {
+	ob := observe(t)
+	uplink := forwarding(t, "vmbr0", 0, webMAC, "eno1")
+
+	require.Empty(t, ob.learn(t, uplink, gone(uplink)), "on a node that does not run the guest")
+	require.Equal(t, []ObservationKind{Learned, Moved}, kinds(ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "tap101i0"), uplink)))
+	require.Empty(t, ob.learn(t, gone(uplink)), "after a move")
+	require.Empty(t, ob.learn(t, gone(forwarding(t, "vmbr0", 0, nobodies, "tap101i0"))), "of a MAC not expected")
+}
+
+// The clone that had the MAC is quiet and the guest, elsewhere, speaks: the
+// bridge moves the entry to the uplink, and the conflict it showed is over.
+func TestAConflictWhoseMACLeavesForTheUplinkIsOver(t *testing.T) {
+	ob := observe(t)
+	ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "tap102i0"))
+	ob.clock = ob.clock.Add(time.Minute)
+
+	got := ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "eno1"))
+
+	require.Equal(t, []Observation{{
+		Kind: Gone, MAC: webMAC, Bridge: "vmbr0", Port: "tap102i0", At: ob.clock,
+	}}, got)
+	require.Empty(t, ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "eno1")), "and stays over")
 }
 
 func TestADeletionOfAnotherMACsEntryChangesNothing(t *testing.T) {
 	ob := observe(t)
 	ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "tap101i0"))
 
-	ob.learn(t, gone(forwarding(t, "vmbr0", 0, dbMAC, "veth102i0")))
+	require.Empty(t, ob.learn(t, gone(forwarding(t, "vmbr0", 0, dbMAC, "veth102i0"))))
 
 	require.Equal(t, []ObservationKind{Moved}, kinds(ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "eno1"))))
 }

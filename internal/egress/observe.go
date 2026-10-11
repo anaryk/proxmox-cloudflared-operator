@@ -29,16 +29,23 @@ const (
 	Moved ObservationKind = "moved"
 	// Conflict: the MAC is on a port of another guest.
 	Conflict ObservationKind = "conflict"
+	// Gone: the MAC is no longer on the port the last Learned or Conflict
+	// of it named, and on none the observer reports: the bridge dropped
+	// the entry, or learned the MAC of a conflict on a port that is no
+	// guest's. What the earlier observation said no longer holds.
+	Gone ObservationKind = "gone"
 )
 
 // Observation is one thing a bridge's forwarding table showed of an expected
-// MAC.
+// MAC. A Learned and a Conflict hold until the next observation of the same
+// MAC in the same VLAN of the same bridge.
 type Observation struct {
 	Kind   ObservationKind
 	MAC    string
 	Bridge string
 	VLAN   int // 0 on a bridge without VLANs
-	Port   string
+	// Port is the port the MAC is on, and for Gone the one it was on.
+	Port string
 	// From is the port of the guest the MAC was on before, for a move and for
 	// a conflict that follows one. It is empty when the observer never saw the
 	// MAC on its own port.
@@ -51,14 +58,15 @@ type Observation struct {
 }
 
 // observer reads the entries of the forwarding tables, and reports what they
-// show of the expected MACs. It remembers where each MAC was last on its own
-// guest's port, which is all that tells a MAC that left it from one that never
-// was there, as on every node but the one that runs the guest.
+// show of the expected MACs. It holds the last Learned or Conflict of each
+// entry, which tells a MAC that left its own port from one that never was
+// there, as on every node but the one that runs the guest, and which port an
+// entry was on when the bridge drops it.
 type observer struct {
 	expected func() map[string]Expected
 	report   func(Observation)
 	now      func() time.Time
-	last     map[fdbKey]string
+	held     map[fdbKey]sighting
 }
 
 // fdbKey is an entry of a forwarding table: a MAC in a VLAN of a bridge.
@@ -68,14 +76,33 @@ type fdbKey struct {
 	mac    string
 }
 
-func newObserver(expected func() map[string]Expected, report func(Observation), now func() time.Time) *observer {
-	return &observer{expected: expected, report: report, now: now, last: map[fdbKey]string{}}
+// sighting is the Learned or Conflict of an entry that still holds: the port
+// it put the MAC on and which of the two it was.
+type sighting struct {
+	port string
+	kind ObservationKind
 }
 
-// see takes in one entry of a forwarding table. An entry of anything else,
-// one whose bridge has no name, and one the bridge dropped report nothing; a
-// dropped one forgets where its MAC was, since a guest that stopped on this
-// node takes its port with it and is no move when it starts on another.
+// own is the port the MAC was last on as its guest's own, if it still is.
+func (s sighting) own() string {
+	if s.kind == Learned {
+		return s.port
+	}
+	return ""
+}
+
+func newObserver(expected func() map[string]Expected, report func(Observation), now func() time.Time) *observer {
+	return &observer{expected: expected, report: report, now: now, held: map[fdbKey]sighting{}}
+}
+
+// see takes in one entry of a forwarding table. An entry of anything else
+// and one whose bridge has no name report nothing. One the bridge dropped
+// ends what was held of its MAC with Gone: the kernel says the same of an
+// entry that aged out and of one that went with its port, so a guest that
+// is quiet for the ageing time is gone until it speaks again, and one that
+// stopped on this node is no move when its MAC shows on the uplink once it
+// runs on another. A MAC that reappears on the uplink after it aged out is
+// the pin watch's to catch.
 func (o *observer) see(e entry) {
 	if e.bridge == "" || len(e.mac) == 0 {
 		return
@@ -83,35 +110,48 @@ func (o *observer) see(e entry) {
 	key := fdbKey{bridge: e.bridge, vlan: e.vlan, mac: e.mac.String()}
 	expected := o.expected()
 	want, ok := expected[key.mac]
-	if !ok || e.gone {
-		delete(o.last, key)
-		return
+	switch {
+	case !ok:
+		delete(o.held, key)
+	case e.gone:
+		o.ends(key)
+	default:
+		o.sees(key, want, e.port, expected)
 	}
-	o.sees(key, want, e.port, expected)
 }
 
 func (o *observer) sees(key fdbKey, want Expected, port string, expected map[string]Expected) {
 	obs := Observation{MAC: key.mac, Bridge: key.bridge, VLAN: key.vlan, Port: port}
+	held := o.held[key]
 	on, isGuest := parseGuestPort(port)
 	switch {
 	case isGuest && on.vmid == want.Guest.VMID && on.nic == want.NIC:
-		o.last[key] = port
 		obs.Kind = Learned
+		o.held[key] = sighting{port: port, kind: Learned}
 	case isGuest && on.vmid != want.Guest.VMID:
-		obs.Kind, obs.From = Conflict, o.last[key]
+		obs.Kind, obs.From = Conflict, held.own()
 		owner := on.owner(expected)
 		obs.Owner = &owner
-		delete(o.last, key)
+		o.held[key] = sighting{port: port, kind: Conflict}
+	case held.kind == Learned:
+		obs.Kind, obs.From = Moved, held.port
+		delete(o.held, key)
 	default:
-		from, was := o.last[key]
-		if !was {
-			return
-		}
-		obs.Kind, obs.From = Moved, from
-		delete(o.last, key)
+		o.ends(key)
+		return
 	}
 	obs.At = o.now()
 	o.report(obs)
+}
+
+// ends reports Gone of what is held of key, if anything is, and forgets it.
+func (o *observer) ends(key fdbKey) {
+	held, ok := o.held[key]
+	if !ok {
+		return
+	}
+	delete(o.held, key)
+	o.report(Observation{Kind: Gone, MAC: key.mac, Bridge: key.bridge, VLAN: key.vlan, Port: held.port, At: o.now()})
 }
 
 // guestPort is what the name of a bridge port says of the guest it belongs to.

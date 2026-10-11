@@ -43,7 +43,8 @@ func Watch(ctx context.Context, bound func() map[netip.Addr]Pin, onMove func(net
 // bridge's, then follows their changes, until ctx ends, and reports what they
 // show of the expected MACs: Learned for one on its own guest's port wherever
 // the snapshot says the guest runs, Moved for one that left it, Conflict for
-// one on a port of another guest.
+// one on a port of another guest, and Gone when the port the last Learned or
+// Conflict named no longer has it.
 //
 // It reads the notifications Watch reads, on a subscription of its own, and
 // like Watch subscribes again, with a dump, after the subscription fails. A
@@ -60,7 +61,7 @@ func ObserveForwarding(ctx context.Context, expected func() map[string]Expected,
 
 // watchIn watches the tables of the network namespace ns.
 func watchIn(ctx context.Context, ns netns.NsHandle, bound func() map[netip.Addr]Pin, onMove func(netip.Addr)) error {
-	return follow(ctx, ns, "watching the network", func(h *netlink.Handle) error {
+	return follow(ctx, ns, "watching the network", resubscribeAfter, func(h *netlink.Handle) error {
 		return readTables(ctx, ns, h, func(u netlink.NeighUpdate, name func(index int) string) {
 			e, ok := entryOf(u, name)
 			if !ok {
@@ -76,7 +77,7 @@ func watchIn(ctx context.Context, ns netns.NsHandle, bound func() map[netip.Addr
 // observeIn observes the forwarding tables of the network namespace ns.
 func observeIn(ctx context.Context, ns netns.NsHandle, expected func() map[string]Expected, report func(Observation)) error {
 	o := newObserver(expected, report, time.Now)
-	return follow(ctx, ns, "watching the forwarding tables", func(h *netlink.Handle) error {
+	return follow(ctx, ns, "watching the forwarding tables", resubscribeAfter, func(h *netlink.Handle) error {
 		return readTables(ctx, ns, h, func(u netlink.NeighUpdate, name func(index int) string) {
 			if e, ok := forwardingOf(u, name); ok {
 				o.see(e)
@@ -86,9 +87,9 @@ func observeIn(ctx context.Context, ns netns.NsHandle, expected func() map[strin
 }
 
 // follow runs once, which reads one subscription, and again after each time
-// the subscription failed, until ctx ends. A first subscription that cannot
-// be made is an error that starts with what.
-func follow(ctx context.Context, ns netns.NsHandle, what string, once func(h *netlink.Handle) error) error {
+// the subscription failed, after waiting for again, until ctx ends. A first
+// subscription that cannot be made is an error that starts with what.
+func follow(ctx context.Context, ns netns.NsHandle, what string, again time.Duration, once func(h *netlink.Handle) error) error {
 	h, err := netlink.NewHandleAt(ns)
 	if err != nil {
 		return fmt.Errorf("%s: %w", what, err)
@@ -102,7 +103,7 @@ func follow(ctx context.Context, ns netns.NsHandle, what string, once func(h *ne
 		case first && !errors.Is(err, errUnsubscribed):
 			return fmt.Errorf("%s: %w", what, err)
 		}
-		t := time.NewTimer(resubscribeAfter)
+		t := time.NewTimer(again)
 		select {
 		case <-ctx.Done():
 			t.Stop()

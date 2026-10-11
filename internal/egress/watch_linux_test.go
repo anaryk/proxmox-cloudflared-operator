@@ -403,7 +403,7 @@ func TestAFailedSubscriptionIsMadeAgain(t *testing.T) {
 	defer cancel()
 	starts := 0
 
-	err := follow(ctx, netns.None(), "watching", func(*netlink.Handle) error {
+	err := follow(ctx, netns.None(), "watching", 0, func(*netlink.Handle) error {
 		starts++
 		if starts == 2 {
 			cancel()
@@ -417,7 +417,7 @@ func TestAFailedSubscriptionIsMadeAgain(t *testing.T) {
 }
 
 func TestASubscriptionThatCannotBeMadeIsAnError(t *testing.T) {
-	err := follow(context.Background(), netns.None(), "watching the forwarding tables", func(*netlink.Handle) error {
+	err := follow(context.Background(), netns.None(), "watching the forwarding tables", 0, func(*netlink.Handle) error {
 		return unix.EPERM
 	})
 
@@ -500,10 +500,10 @@ func TestLinuxObserveReportsNothingOfAMACItDoesNotExpect(t *testing.T) {
 	}
 }
 
-// A guest that stops loses its port, and the bridge its entries: the MAC that
-// turns up on the uplink afterwards, as the guest starts on another node, is
-// no move.
-func TestLinuxObserveForgetsAGuestThatStopped(t *testing.T) {
+// A guest that stops loses its port, and the bridge its entries, which ends
+// what was learned of it: the MAC that turns up on the uplink afterwards, as
+// the guest starts on another node, is no move.
+func TestLinuxObserveSeesAGuestThatStoppedGo(t *testing.T) {
 	lab := newObserveLab(t)
 	lab.speak(t, lab.ports["tap101i0"])
 	lab.learned(t, observeWeb, "tap101i0")
@@ -513,6 +513,12 @@ func TestLinuxObserveForgetsAGuestThatStopped(t *testing.T) {
 	port, err := lab.h.LinkByName("tap101i0")
 	require.NoError(t, err)
 	require.NoError(t, lab.h.LinkDel(port))
+
+	gone := next(t, seen, Gone, observeWeb)
+	require.Equal(t, observeBridge, gone.Bridge)
+	require.Equal(t, "tap101i0", gone.Port)
+	require.NotZero(t, gone.At)
+
 	lab.machine(t, lab.ports["up0"], observeWeb)
 	lab.speak(t, lab.ports["up0"])
 	lab.learned(t, observeWeb, "up0")
