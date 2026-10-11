@@ -34,10 +34,12 @@ var (
 // a node that booted the egress filter is empty: the set the agent kept is
 // dropped, and a target enters the filter once it verifies. When the filter
 // holds targets the daemon alone was restarted: the set is kept, and what it
-// holds goes on being served. A filter whose table cannot be read keeps it
-// too. The gateway came back from its cache before, with the unit that
-// restores it. A connector that runs, as a shared unit still enabled at boot
-// on a node alone, is not stopped.
+// holds goes on being served. A table that cannot be read is taken to hold
+// nothing. With no desired state that can be read the agent can verify
+// nothing: the filter is emptied, and the connectors reach nothing until
+// the controller sends one. The gateway came back from its cache before,
+// with the unit that restores it. A connector that runs, as a shared unit
+// still enabled at boot on a node alone, is not stopped.
 func (a *Agent) Boot(ctx context.Context) error {
 	if err := a.acquire(ctx); err != nil {
 		return err
@@ -45,13 +47,17 @@ func (a *Agent) Boot(ctx context.Context) error {
 	defer a.release()
 	a.boot = bootGate{held: true, at: a.d.Now()}
 	live, err := a.d.Egress.Live(ctx)
-	switch {
-	case err == nil && len(live.Targets) == 0, errors.Is(err, egress.ErrNotLoaded):
+	if err != nil || len(live.Targets) == 0 {
 		a.set = nil
-	case err != nil:
-		a.d.Log.Warn().Err(err).Msg("the egress table could not be read at start; the set kept is taken to be what it holds")
+	}
+	if err != nil && !errors.Is(err, egress.ErrNotLoaded) {
+		a.d.Log.Warn().Err(err).Msg("the egress table could not be read at start; the set kept is dropped, and a target enters the filter as it verifies")
 	}
 	if a.desired == nil || a.stood != "" {
+		a.emptyFilter(ctx)
+		if a.unreadable != "" {
+			a.event(levelWarn, kindEgress, a.d.Node, "the desired state kept on this node cannot be read; the connectors reach nothing until the controller sends one")
+		}
 		a.republish()
 		return nil
 	}
@@ -59,6 +65,21 @@ func (a *Agent) Boot(ctx context.Context) error {
 	p.runActions = true
 	p.run()
 	return p.err
+}
+
+// emptyFilter gives the egress filter nothing and keeps that. The caller
+// holds the agent's lock.
+func (a *Agent) emptyFilter(ctx context.Context) {
+	a.set = nil
+	a.egMu.Lock()
+	err := a.d.Egress.Set(ctx, nil)
+	a.egMu.Unlock()
+	if err != nil && !errors.Is(err, egress.ErrOff) {
+		a.d.Log.Warn().Err(err).Msg("emptying the egress filter failed; the next pass sets it")
+	}
+	if err := a.saveSet(); err != nil {
+		a.d.Log.Warn().Err(err).Msg("saving the egress set failed; the next pass saves it")
+	}
 }
 
 // gate reports whether the boot gate holds the shared connectors in this

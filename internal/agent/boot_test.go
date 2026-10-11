@@ -62,7 +62,7 @@ func TestARestartOfTheDaemonKeepsTheSetTheFilterHolds(t *testing.T) {
 	require.Equal(t, egressTargets("10.0.0.11:8080"), got, "a target held below its minimum that the verified configuration names leaves after its rule, as in any pass")
 	require.Empty(t, e.egr.removes())
 
-	t.Run("a table that cannot be read is taken to hold the set", func(t *testing.T) {
+	t.Run("a table that cannot be read is taken to hold nothing", func(t *testing.T) {
 		e, _ := booted(t)
 		e.res.observe("www.example.com")
 		e.egr.loaded(nil, errBoom)
@@ -70,7 +70,7 @@ func TestARestartOfTheDaemonKeepsTheSetTheFilterHolds(t *testing.T) {
 		require.NoError(t, e.agent.Boot(t.Context()))
 
 		got, _ := e.egr.last()
-		require.Equal(t, egressTargets("10.0.0.11:8080"), got)
+		require.Empty(t, got)
 	})
 
 	t.Run("a table that is not loaded holds nothing", func(t *testing.T) {

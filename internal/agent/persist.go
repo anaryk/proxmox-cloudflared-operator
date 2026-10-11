@@ -17,8 +17,7 @@ const problemUnreadable = "the desired state kept on this node cannot be read (%
 // load reads what the agent kept on disk: the epoch it follows, the desired
 // state it last accepted and the seq of that under the epoch, the actions it
 // ran and the egress set it last gave. A node set up anew for another install
-// forgets the epoch and the desired state of the one before, and starts from
-// nothing.
+// forgets all of the one before, and starts from nothing.
 func (a *Agent) load() error {
 	a.remembered = agentproto.Epoch{InstallID: a.d.InstallID}
 	e, found, err := a.d.Store.AgentEpoch()
@@ -29,13 +28,9 @@ func (a *Agent) load() error {
 	case found && e.InstallID == a.d.InstallID:
 		a.remembered = agentproto.Epoch(e)
 	case found:
-		if err := a.d.Store.DeleteAgentEpoch(); err != nil {
-			return fmt.Errorf("agent: forgetting the epoch of install %s: %w", e.InstallID, err)
+		if err := a.forgetInstall(e.InstallID); err != nil {
+			return err
 		}
-		if err := a.d.Store.DeleteAgentSnapshot(); err != nil {
-			return fmt.Errorf("agent: forgetting the desired state of install %s: %w", e.InstallID, err)
-		}
-		a.d.Log.Info().Str("install", e.InstallID).Msg("this node was enrolled in another install before; its epoch and desired state are forgotten")
 	}
 
 	raw, found, err := a.d.Store.AgentSnapshot()
@@ -53,8 +48,17 @@ func (a *Agent) load() error {
 				return err
 			}
 			a.desired, a.desiredRaw, a.seqAt = &s, buf.Bytes(), a.started
-			if _, same := s.Epoch.Order(a.remembered); same {
+			switch c, same := s.Epoch.Order(a.remembered); {
+			case same:
 				a.applied = s.Seq
+			case c > 0:
+				// The epoch is written before the desired state, so one
+				// below it was lost or edited: the desired state's is what
+				// is followed, and nothing below it is taken.
+				if err := a.d.Store.SaveAgentEpoch(store.Epoch(s.Epoch)); err != nil {
+					return fmt.Errorf("agent: keeping the epoch of the desired state: %w", err)
+				}
+				a.remembered, a.applied = s.Epoch, s.Seq
 			}
 		}
 	}
@@ -78,6 +82,24 @@ func (a *Agent) load() error {
 		set = m.Egress
 	}
 	a.set = fromAddrPorts(set)
+	return nil
+}
+
+// forgetInstall drops what the agent kept of install id, which this node
+// was enrolled in before: the epoch, the desired state, the egress set and
+// the actions. What it verified for that install says nothing for this one.
+func (a *Agent) forgetInstall(id string) error {
+	for what, forget := range map[string]func() error{
+		"epoch":         a.d.Store.DeleteAgentEpoch,
+		"desired state": a.d.Store.DeleteAgentSnapshot,
+		"egress set":    func() error { return a.d.Store.SaveAgentEgress(nil) },
+		"actions":       func() error { return a.d.Store.SaveAgentActions(map[string]store.ActionDone{}) },
+	} {
+		if err := forget(); err != nil {
+			return fmt.Errorf("agent: forgetting the %s of install %s: %w", what, id, err)
+		}
+	}
+	a.d.Log.Info().Str("install", id).Msg("this node was enrolled in another install before; what it kept of it is forgotten")
 	return nil
 }
 

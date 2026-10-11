@@ -121,13 +121,15 @@ func TestTheDesiredStateAndTheEpochAreKeptAcrossARestart(t *testing.T) {
 	require.ErrorIs(t, err, agentproto.ErrLowerEpoch)
 }
 
-// A node removed from one install and enrolled in another starts afresh: the
-// epoch and the desired state of the install before are forgotten.
-func TestANodeEnrolledInAnotherInstallForgetsTheEpochOfTheOneBefore(t *testing.T) {
+// A node removed from one install and enrolled in another starts afresh:
+// the epoch, the desired state, the egress set and the actions of the
+// install before are forgotten.
+func TestANodeEnrolledInAnotherInstallForgetsTheOneBefore(t *testing.T) {
 	e := newEnv(t)
-	s := e.snapshot("www.example.com -> :8080")
+	s := withAction(verified(e.snapshot("www.example.com -> :8080"), "10.0.0.11:8080"), "a1", agentproto.ActionPVEWrite, writeArgs)
 	s.Epoch.Generation = 7
 	e.apply(s)
+	require.Len(t, e.agent.EgressSet(), 1)
 
 	e.install = "def456"
 	e.agent = e.newAgent()
@@ -139,14 +141,49 @@ func TestANodeEnrolledInAnotherInstallForgetsTheEpochOfTheOneBefore(t *testing.T
 	require.NoError(t, err)
 	require.False(t, found)
 	require.Empty(t, e.agent.View().Seq)
+	require.Empty(t, e.agent.EgressSet(), "what it verified for the install before says nothing for this one")
+	done, err := e.store.AgentActions()
+	require.NoError(t, err)
+	require.Empty(t, done)
 
 	e.seq = 0
-	s = e.snapshot("www.example.com -> :8080")
+	s = withAction(e.snapshot("www.example.com -> :8080"), "a1", agentproto.ActionPVEWrite, writeArgs)
 	s.Epoch = agentproto.Epoch{InstallID: "def456", Generation: 1, Nonce: "m1"}
 	st := e.apply(s)
 	require.Equal(t, s.Epoch, st.EpochSeen)
 	require.EqualValues(t, 1, st.SeqApplied)
 	require.NotContains(t, strings.Join(st.Problems, "\n"), "epoch")
+	require.Len(t, e.runs.all(), 2, "an action of the new install with an id the one before used runs")
+}
+
+// The epoch is written before the desired state: an epoch file below the
+// desired state's epoch was lost or edited, and must not let an older
+// desired state in.
+func TestAnEpochBelowTheKeptDesiredStateIsRaisedToIt(t *testing.T) {
+	e := newEnv(t)
+	e.seq = 3
+	s := e.snapshot("www.example.com -> :8080")
+	s.Epoch.Generation = 5
+	e.apply(s)
+	require.NoError(t, e.store.DeleteAgentEpoch())
+
+	e.agent = e.newAgent()
+
+	v := e.agent.View()
+	require.Equal(t, 5, v.Epoch.Generation)
+	require.EqualValues(t, 4, v.Seq)
+	got, found, err := e.store.AgentEpoch()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, store.Epoch(s.Epoch), got, "and kept again")
+	older := e.snapshot("www.example.com -> :8080")
+	older.Epoch.Generation = 4
+	_, err = e.agent.Apply(t.Context(), older)
+	require.ErrorIs(t, err, agentproto.ErrLowerEpoch)
+	back := e.snapshot("www.example.com -> :8080")
+	back.Epoch.Generation, back.Seq = 5, 2
+	_, err = e.agent.Apply(t.Context(), back)
+	require.ErrorIs(t, err, agentproto.ErrSeqBack)
 }
 
 // The epoch is kept before the snapshot; when the snapshot then cannot be,
@@ -226,6 +263,11 @@ func TestADamagedDesiredStateIsSaidAndTheAgentWaitsForTheController(t *testing.T
 	require.Contains(t, st.Problems[0], "damaged or edited by hand")
 	require.Empty(t, e.agent.View().StoodDown, "it waits for the controller and does not stand down")
 	require.Empty(t, e.conn.changes(), "nothing is started from it")
+	got, ok := e.egr.last()
+	require.True(t, ok)
+	require.Empty(t, got, "and the connectors reach nothing on a state that cannot be verified")
+	require.Empty(t, e.agent.EgressSet())
+	require.Contains(t, e.events.messages(), "the desired state kept on this node cannot be read; the connectors reach nothing until the controller sends one")
 
 	e.apply(e.snapshot("www.example.com -> :8080"))
 	require.Empty(t, e.agent.Status(t.Context()).Problems, "the next snapshot replaces it")
