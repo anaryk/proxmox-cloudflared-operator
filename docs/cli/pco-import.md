@@ -2,10 +2,12 @@
 
 Restore the install of a bundle that pco export wrote, on a node where pco has none: its
 identity, settings, manual routes, approvals, acknowledged segments, the registry of nodes,
-the CA with its key, leader.json and the Cloudflare credentials the bundle carries. It runs
-as root, with the daemon stopped, and works on the store directly. A store that holds an
-install is refused and left as it is, and so is a bundle that does not open or read: a
-restore that stops half way stores no install, and is run again.
+the CA with its key and the previous CA of a rotation, leader.json, the networks, service
+addresses, leases, consents, attachments, claims, tombstones, placements and moves, and the
+Cloudflare credentials the bundle carries. It runs as root, with the daemon stopped, and
+works on the store directly. A store that holds an install is refused and left as it is,
+and so is a bundle that does not open or read: a restore that stops half way stores no
+install, and is run again.
 
 The passphrase is read from the one line of `--passphrase-file`, or asked for on a terminal
 without being shown; it is never taken from an argument. A wrong passphrase and a file that
@@ -13,8 +15,9 @@ was changed cannot be told apart.
 
 The install is stored in observe-only mode whatever it was: it publishes nothing until pco
 apply. leader.json comes back as it was, so the controller writes nothing until pco promote
-draws an epoch above the one of the install that was lost. The cluster the install was made
-in is not carried over, and the nodes of a lost cluster are admitted again after the promote.
+draws an epoch above the one of the install that was lost. The install remembers the cluster
+it was made in: restored in another, the daemon writes nothing until pco promote makes that
+cluster its writer, and the nodes of the lost cluster are admitted again after it.
 
 Run it before pco setup on the node that is to run the controller, which keeps the install it
 finds, and then run pco promote. It restores the install of a host: the install of an

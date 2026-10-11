@@ -257,7 +257,10 @@ func TestTheHelpOfImportSaysWhereItRunsAndWhatComesNext(t *testing.T) {
 
 	require.NotEmpty(t, cmd.Example)
 	long := strings.Join(strings.Fields(cmd.Long), " ")
-	for _, want := range []string{"pco promote", "observe-only", "holds an install", "as root", "pco setup", "--passphrase-file"} {
+	for _, want := range []string{
+		"pco promote", "observe-only", "holds an install", "as root", "pco setup", "--passphrase-file",
+		"remembers the cluster", "previous CA", "networks", "tombstones",
+	} {
 		require.Contains(t, long, want)
 	}
 }

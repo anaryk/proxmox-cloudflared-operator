@@ -5,5 +5,6 @@ approvals               1
 acknowledged segments   0
 nodes                   1
 CA and its key          yes
+controller objects      none
 Cloudflare credentials  none
 The Cloudflare credentials are not in it: --credentials adds them.

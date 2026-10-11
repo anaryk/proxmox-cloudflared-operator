@@ -1,11 +1,19 @@
 # pco export
 
-Write the install to an encrypted bundle: its identity, settings, manual routes, approvals,
-acknowledged segments, the registry of nodes, the CA with its key and leader.json, and with
-`--credentials` the Cloudflare tokens too. pco import restores the install from it on another
-node or in another cluster, which is what a restore after a lost cluster or controller, and
-the conversion of a node, need. Run tokens, bindings and the caches are left out: the daemon
-builds them again.
+Write the install to an encrypted bundle: its identity and the cluster it was made in, the
+settings, manual routes, approvals and acknowledged segments, the registry of nodes, the CA
+with its key, and the previous CA while a rotation runs, leader.json, and every other object
+the controller writes: the networks and service addresses, the leases, consents and
+attachments of the managed network, the claims, tombstones, placements and moves. With
+`--credentials` the Cloudflare tokens are in it too. pco import restores the install from it on
+another node or in another cluster, which is what a restore after a lost cluster or
+controller, and the conversion of a node, need. Run tokens, bindings and the caches are left
+out: the daemon builds them again.
+
+It runs as root on the node and reads the store directly, while the daemon runs: nothing has to
+be stopped. What it reads is the store at one moment; when the CA changed before the file was
+written, as it does during a rotation, it refuses and is run again. On a host the store is
+shared by the nodes of a cluster, and any node can export it.
 
 The bundle is encrypted with AES-256-GCM under a key that Argon2id derives from a passphrase
 of at least 16 characters, which makes a file that is attacked offline expensive. The
@@ -18,9 +26,6 @@ With its passphrase the bundle can impersonate the controller to every agent of 
 as it holds the key of the CA that signs their certificates, and with `--credentials` it holds
 the Cloudflare tokens: keep the passphrase apart from the file. The file is written for root
 only, and an existing file is never replaced.
-
-It runs as root on the node and reads the store directly, so it needs no daemon. On a host
-the store is shared by the nodes of a cluster, and any node can export it.
 
 ## Usage
 

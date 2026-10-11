@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -345,6 +346,83 @@ func TestExportDoesNotReplaceAFile(t *testing.T) {
 	require.Equal(t, "an earlier backup", string(raw))
 }
 
+// whileAsking runs do while the passphrase is being typed, after the checks
+// that come before the prompt.
+func (w *bundleWorld) whileAsking(do func()) {
+	ask := w.app.readPassword
+	w.app.readPassword = func(fd int) ([]byte, error) {
+		do()
+		return ask(fd)
+	}
+}
+
+func TestExportDoesNotReplaceAFileThatAppearedWhileItRan(t *testing.T) {
+	w := newBundleWorld(t).withInstall()
+	w.terminal(bundlePassphrase, bundlePassphrase)
+	out := w.file("pco.bundle")
+	w.whileAsking(func() { require.NoError(t, os.WriteFile(out, []byte("an earlier backup"), 0o600)) })
+
+	res := w.export(out)
+
+	require.ErrorContains(t, res.err, "already exists")
+	raw, err := os.ReadFile(out)
+	require.NoError(t, err)
+	require.Equal(t, "an earlier backup", string(raw))
+	entries, err := os.ReadDir(w.dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.False(t, strings.HasSuffix(e.Name(), ".tmp"), "no temporary file is left: %s", e.Name())
+	}
+}
+
+func TestExportRefusesWhenTheCAChangedWhileItRan(t *testing.T) {
+	w := newBundleWorld(t).withInstall()
+	w.terminal(bundlePassphrase, bundlePassphrase)
+	out := w.file("pco.bundle")
+	w.whileAsking(func() {
+		old, _, _, err := w.st.CA()
+		require.NoError(t, err)
+		ca, err := pki.NewCA(bundleInstall, t0, rand.Reader)
+		require.NoError(t, err)
+		certPEM, keyPEM, err := ca.PEM()
+		require.NoError(t, err)
+		require.NoError(t, w.st.SaveCA(store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}, &old, t0))
+	})
+
+	res := w.export(out)
+
+	require.ErrorContains(t, res.err, "the CA of the install changed")
+	require.ErrorContains(t, res.err, "run pco export again")
+	require.NoFileExists(t, out)
+
+	w.terminal(bundlePassphrase, bundlePassphrase)
+	again := w.export(out)
+	require.NoError(t, again.err, "the export after the rotation carries both CAs")
+	c := opened(t, out, bundlePassphrase)
+	require.NotNil(t, c.PreviousCA)
+	require.Contains(t, again.out, "with the previous CA of a rotation")
+}
+
+func TestExportReadsThePassphraseFromAPipeWithoutAWarning(t *testing.T) {
+	w := newBundleWorld(t).withInstall()
+	fifo := w.file("fifo")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o666))
+	go func() {
+		f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err == nil {
+			_, _ = f.WriteString(bundlePassphrase + "\n")
+			_ = f.Close()
+		}
+	}()
+	out := w.file("pco.bundle")
+
+	res := w.export("--passphrase-file", fifo, out)
+
+	require.NoError(t, res.err)
+	require.Empty(t, res.errOut, "a pipe has no mode to warn of")
+	opened(t, out, bundlePassphrase)
+}
+
 func TestExportToADirectoryThatIsNotThereFailsBeforeAskingForAPassphrase(t *testing.T) {
 	w := newBundleWorld(t).withInstall()
 	asked := w.terminal()
@@ -394,7 +472,8 @@ func TestTheHelpOfExportSaysWhatTheBundleHolds(t *testing.T) {
 	require.NotEmpty(t, cmd.Example)
 	for _, want := range []string{
 		"AES-256-GCM", "Argon2id", "16 characters", "--passphrase-file", "--credentials",
-		"key of the CA", "impersonate", "never taken from an argument",
+		"key of the CA", "impersonate", "never taken from an argument", "while the daemon runs",
+		"previous CA", "networks", "service addresses", "claims", "tombstones", "run again",
 	} {
 		require.Contains(t, strings.Join(strings.Fields(cmd.Long), " "), want)
 	}

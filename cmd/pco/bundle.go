@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -113,7 +115,8 @@ func readPassphraseFile(cmd *cobra.Command, path string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	if info, err := f.Stat(); err == nil && info.Mode().Perm()&0o077 != 0 {
+	// A pipe or a device has no mode of its own to speak of.
+	if info, err := f.Stat(); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
 		s := &screen{w: cmd.ErrOrStderr()}
 		s.printf("warning: %s can be read by others; restrict it with chmod 600\n", path)
 	}
@@ -143,9 +146,53 @@ func printBundle(s *screen, c bundle.Contents) {
 	t.row("approvals", fmt.Sprint(len(c.Approvals)))
 	t.row("acknowledged segments", fmt.Sprint(len(c.Segments)+len(c.NodeSegments)))
 	t.row("nodes", fmt.Sprint(len(c.Nodes)))
-	t.row("CA and its key", yesNo(c.CA != nil))
+	t.row("CA and its key", caHeld(c))
+	t.row("controller objects", controllerObjects(c))
 	t.row("Cloudflare credentials", credentialsHeld(c))
 	t.flush()
+}
+
+func caHeld(c bundle.Contents) string {
+	switch {
+	case c.CA == nil:
+		return "no"
+	case c.PreviousCA != nil:
+		return "yes, with the previous CA of a rotation"
+	}
+	return "yes"
+}
+
+// controllerObjects counts what the controller wrote besides the decisions
+// of the admin, leaving out what the bundle has none of.
+func controllerObjects(c bundle.Contents) string {
+	var tombstones map[string]json.RawMessage
+	_ = json.Unmarshal(c.Tombstones, &tombstones)
+	var parts []string
+	for _, p := range []struct {
+		n                int
+		singular, plural string
+	}{
+		{len(c.Networks), "network", "networks"},
+		{len(c.ServiceAddrs) + len(c.NodeServiceAddrs), "service address", "service addresses"},
+		{len(c.Leases), "lease", "leases"},
+		{len(c.Consents), "consent", "consents"},
+		{len(c.Attachments), "attachment", "attachments"},
+		{len(c.Claims), "claim", "claims"},
+		{len(tombstones), "tombstone", "tombstones"},
+		{len(c.Placements), "placement", "placements"},
+		{len(c.Moves), "move", "moves"},
+	} {
+		switch {
+		case p.n == 1:
+			parts = append(parts, "1 "+p.singular)
+		case p.n > 1:
+			parts = append(parts, fmt.Sprintf("%d %s", p.n, p.plural))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func credentialsHeld(c bundle.Contents) string {
@@ -153,11 +200,4 @@ func credentialsHeld(c bundle.Contents) string {
 		return "none"
 	}
 	return fmt.Sprint(len(c.Credentials))
-}
-
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
 }

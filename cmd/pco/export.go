@@ -22,12 +22,19 @@ func (a *app) exportCmdWith(e bundleEnv) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export [--credentials] [--passphrase-file <path>] <file>",
 		Short: "Write the install to an encrypted bundle, the backup to keep",
-		Long: "Write the install to an encrypted bundle: its identity, settings, manual routes, approvals,\n" +
-			"acknowledged segments, the registry of nodes, the CA with its key and leader.json, and with\n" +
-			"--credentials the Cloudflare tokens too. pco import restores the install from it on another\n" +
-			"node or in another cluster, which is what a restore after a lost cluster or controller, and\n" +
-			"the conversion of a node, need. Run tokens, bindings and the caches are left out: the daemon\n" +
-			"builds them again.\n\n" +
+		Long: "Write the install to an encrypted bundle: its identity and the cluster it was made in, the\n" +
+			"settings, manual routes, approvals and acknowledged segments, the registry of nodes, the CA\n" +
+			"with its key, and the previous CA while a rotation runs, leader.json, and every other object\n" +
+			"the controller writes: the networks and service addresses, the leases, consents and\n" +
+			"attachments of the managed network, the claims, tombstones, placements and moves. With\n" +
+			"--credentials the Cloudflare tokens are in it too. pco import restores the install from it on\n" +
+			"another node or in another cluster, which is what a restore after a lost cluster or\n" +
+			"controller, and the conversion of a node, need. Run tokens, bindings and the caches are left\n" +
+			"out: the daemon builds them again.\n\n" +
+			"It runs as root on the node and reads the store directly, while the daemon runs: nothing has to\n" +
+			"be stopped. What it reads is the store at one moment; when the CA changed before the file was\n" +
+			"written, as it does during a rotation, it refuses and is run again. On a host the store is\n" +
+			"shared by the nodes of a cluster, and any node can export it.\n\n" +
 			"The bundle is encrypted with AES-256-GCM under a key that Argon2id derives from a passphrase\n" +
 			"of at least 16 characters, which makes a file that is attacked offline expensive. The\n" +
 			"passphrase is read from the one line of --passphrase-file, which may be /dev/stdin for a\n" +
@@ -37,9 +44,7 @@ func (a *app) exportCmdWith(e bundleEnv) *cobra.Command {
 			"With its passphrase the bundle can impersonate the controller to every agent of the install,\n" +
 			"as it holds the key of the CA that signs their certificates, and with --credentials it holds\n" +
 			"the Cloudflare tokens: keep the passphrase apart from the file. The file is written for root\n" +
-			"only, and an existing file is never replaced.\n\n" +
-			"It runs as root on the node and reads the store directly, so it needs no daemon. On a host\n" +
-			"the store is shared by the nodes of a cluster, and any node can export it.",
+			"only, and an existing file is never replaced.",
 		Example: "  # Back up the install; the passphrase is asked for twice\n" +
 			"  pco export /root/pco.bundle\n\n" +
 			"  # With the Cloudflare tokens, the passphrase read from a file\n" +
@@ -62,10 +67,16 @@ func (a *app) exportCmdWith(e bundleEnv) *cobra.Command {
 
 var errNothingToExport = errors.New("there is no install to export: pco is not set up on this node")
 
+func errExists(target string) error {
+	return fmt.Errorf("%s already exists: pco export never replaces a file, remove it or name another", target)
+}
+
 func (a *app) export(cmd *cobra.Command, e bundleEnv, target string, credentials bool, passphraseFile string) error {
+	// Refused before anything is asked; the write refuses again what appeared
+	// in the meantime.
 	switch _, err := os.Lstat(target); {
 	case err == nil:
-		return fmt.Errorf("%s already exists: pco export never replaces a file, remove it or name another", target)
+		return errExists(target)
 	case !errors.Is(err, fs.ErrNotExist):
 		return err
 	}
@@ -98,12 +109,20 @@ func (a *app) export(cmd *cobra.Command, e bundleEnv, target string, credentials
 		return err
 	}
 	defer clear(pass)
+	// The daemon runs meanwhile, and a rotation that moved the CA since it
+	// was read would leave a bundle of a CA the agents are about to leave.
+	switch same, err := bundle.SameCA(st, c); {
+	case err != nil:
+		return err
+	case !same:
+		return errors.New("the CA of the install changed while pco export ran, as it does during a rotation: run pco export again")
+	}
 	raw, err := bundle.Seal(c, pass, e.rand)
 	if err != nil {
 		return err
 	}
-	if err := atomicfile.Write(target, raw, atomicfile.Options{Mode: 0o600}); err != nil {
-		return fmt.Errorf("writing the bundle: %w", err)
+	if err := writeNew(target, raw); err != nil {
+		return err
 	}
 	s := &screen{w: cmd.OutOrStdout()}
 	s.printf("Wrote %s.\n", target)
@@ -115,4 +134,32 @@ func (a *app) export(cmd *cobra.Command, e bundleEnv, target string, credentials
 		s.printf("\nPassphrase: %s\nIt is shown only now. Keep it apart from the file.\n", string(pass))
 	}
 	return s.done()
+}
+
+// writeNew writes raw to target, for root only, and never over a file: the
+// text goes to a temporary file beside it, which is then linked to the name,
+// and the link fails when something took the name in the meantime. The
+// temporary name is removed either way.
+func writeNew(target string, raw []byte) (err error) {
+	f, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".*"+atomicfile.TempExt)
+	if err != nil {
+		return fmt.Errorf("writing the bundle: %w", err)
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err = f.Write(raw); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("writing the bundle: %w", err)
+	}
+	switch err := os.Link(f.Name(), target); {
+	case errors.Is(err, fs.ErrExist):
+		return errExists(target)
+	case err != nil:
+		return fmt.Errorf("writing the bundle: %w", err)
+	}
+	return nil
 }
