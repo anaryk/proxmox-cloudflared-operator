@@ -145,6 +145,32 @@ func TestAnAddressThatFailsAfterItsMACMovedStaysOut(t *testing.T) {
 	require.Equal(t, egressTargets("10.0.0.11:8080"), got, "a pass that verifies it lets it back")
 }
 
+// A target on a leg found at another address after its MAC moved stays out,
+// and its binding keeps the service address it is published under: the
+// controller then has the service address follow it, instead of taking the
+// route for a new one.
+func TestATargetOnALegFoundElsewhereAfterItsMACMovedKeepsItsServiceAddress(t *testing.T) {
+	e := newEnv(t)
+	e.res.onLeg("www.example.com", "lan")
+	service := netip.MustParseAddr("10.203.118.5")
+	s := verified(e.snapshot("www.example.com -> :8080"), "10.203.118.5:8080")
+	s.Targets[0].Addr, s.Targets[0].Service = guestAddr, service
+	e.apply(s)
+	(&timers{}).install(e.agent)
+	moved := netip.MustParseAddr("10.0.0.12")
+	e.res.moveTo("www.example.com", moved)
+
+	e.agent.Moved(t.Context(), service)
+	e.agent.Wait()
+
+	require.Equal(t, []netip.Addr{service}, e.egr.removes())
+	require.Empty(t, e.agent.EgressSet())
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.Equal(t, moved, bindings["www.example.com"].Addr)
+	require.Equal(t, service, bindings["www.example.com"].Service, "published under it still")
+}
+
 func TestAnAddressProvenBelowItsMinimumAfterItsMACMovedStaysOut(t *testing.T) {
 	e, _ := watching(t)
 	e.res.observe("www.example.com")

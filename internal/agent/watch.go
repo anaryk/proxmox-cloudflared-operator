@@ -261,8 +261,10 @@ func (a *Agent) verifyMoved(ctx context.Context, addr netip.Addr) (why string, p
 			return "the agent stops", false
 		}
 		t, b := res.Target, res.Binding
-		if b != nil && b.Via == wt.binding.Via && b.Addr == wt.binding.Addr {
-			// The same target is published where it was.
+		if b != nil && b.Via != "" && !b.Service.IsValid() {
+			// The route is still published under the service address its
+			// binding names: the next pass finds it there again, or the
+			// controller has the service address follow it where it moved.
 			b.Service = wt.binding.Service
 		}
 		if t.Addr == wt.binding.Addr && !t.Withdrawn && !t.Rejected && b != nil && b.Via == wt.binding.Via && res.Level.AtLeast(required) {
