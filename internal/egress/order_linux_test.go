@@ -60,12 +60,11 @@ func TestLinuxTheThreeTablesOfTheApplianceInOrder(t *testing.T) {
 	}
 	id := fmt.Sprintf("%d-%d", os.Getpid()%100000, orderSeq.Add(1))
 	app, lan, guest := orderNamespace(t, "pcotest-oapp-"+id), orderNamespace(t, "pcotest-olan-"+id), orderNamespace(t, "pcotest-og-"+id)
-	check := exec.Command("/usr/sbin/ip", "netns", "exec", app.name, "/usr/sbin/nft", "-c", "-f", "-")
-	check.Stdin = strings.NewReader("table inet pcotest {\n\tchain o {\n\t\ttype nat hook output priority dstnat;\n\t}\n}\n")
+	check := exec.Command("/usr/sbin/ip", "netns", "exec", app.name, "/usr/sbin/nft", "-f", "-")
+	check.Stdin = strings.NewReader("table inet pcotest_fib {\n\tchain o {\n\t\ttype filter hook output priority filter;\n" +
+		"\t\tfib daddr type local accept\n\t}\n}\ndelete table inet pcotest_fib\n")
 	if out, err := check.CombinedOutput(); err != nil {
-		// nft 1.0.6, Debian 12's, knows dstnat in prerouting only; the
-		// appliance is built on Debian 13.
-		t.Skipf("this nft takes no NAT chain at dstnat in the output hook, as the appliance's does: %s", out)
+		orderRequireLab(t, "the kernel has no fib expression for inet tables (nft_fib_inet), which the appliance's tables use: %s", out)
 	}
 	ip := func(args ...string) {
 		t.Helper()

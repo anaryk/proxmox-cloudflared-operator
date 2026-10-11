@@ -84,12 +84,11 @@ func newCTLab(t *testing.T) *ctLab {
 	id := fmt.Sprintf("%d-%d", os.Getpid()%100000, labCount.Add(1))
 	l := &ctLab{t: t, id: id, appName: "pcotest-app-" + id, hostName: "pcotest-node-" + id, lanName: "pcotest-lan-" + id}
 	l.app, l.host, l.lan = l.namespace(l.appName), l.namespace(l.hostName), l.namespace(l.lanName)
-	check := exec.Command(ipPath, "netns", "exec", l.appName, nftPath, "-c", "-f", "-")
-	check.Stdin = strings.NewReader("table inet pcotest {\n\tchain o {\n\t\ttype nat hook output priority dstnat;\n\t}\n}\n")
+	check := exec.Command(ipPath, "netns", "exec", l.appName, nftPath, "-f", "-")
+	check.Stdin = strings.NewReader("table inet pcotest_fib {\n\tchain o {\n\t\ttype filter hook output priority filter;\n" +
+		"\t\tfib daddr type local accept\n\t}\n}\ndelete table inet pcotest_fib\n")
 	if out, err := check.CombinedOutput(); err != nil {
-		// nft 1.0.6, Debian 12's, knows dstnat in prerouting only; the
-		// appliance is built on Debian 13.
-		t.Skipf("this nft takes no NAT chain at dstnat in the output hook, as the appliance's does: %s", out)
+		requireLab(t, "the kernel has no fib expression for inet tables (nft_fib_inet), which the appliance's tables use: %s", out)
 	}
 	l.ip("-n", l.appName, "link", "add", "net0", "type", "veth", "peer", "name", "eth0", "netns", l.lanName)
 	l.ip("-n", l.appName, "addr", "add", ctNet0Addr+"/24", "dev", "net0")
