@@ -234,8 +234,10 @@ type fakeNICs struct {
 	stale int
 	// noLink keeps a card that is added from appearing in the container.
 	noLink bool
-	fail   error
-	calls  []string
+	// noDigest reads the configuration without its digest.
+	noDigest bool
+	fail     error
+	calls    []string
 }
 
 func newFakeNICs(ct *fakeCT) *fakeNICs {
@@ -255,6 +257,9 @@ func (a *fakeNICs) digestText() string { return "d" + strconv.Itoa(a.digest) }
 
 func (a *fakeNICs) NICs(_ context.Context, node string, ref model.GuestRef) (map[int]string, string, error) {
 	a.call("read %s %s", node, ref)
+	if a.noDigest {
+		return maps.Clone(a.nics), "", nil
+	}
 	return maps.Clone(a.nics), a.digestText(), nil
 }
 
@@ -571,6 +576,28 @@ func TestALegIsInTheTableBeforeItsAddressAlsoWhenTheTableWasGone(t *testing.T) {
 	require.Len(t, h.nft.scripts, 1)
 	require.Equal(t, renderContainer(ctElementsOf([]Leg{legA}, []Service{svcA})), h.nft.scripts[0])
 	require.Less(t, index(t, h.sys.order, "nft pco_gw"), index(t, h.sys.order, "addr add leg1 "))
+}
+
+// A configuration read without its digest is never written: the write would
+// be unconditional.
+func TestNoCardIsAddedOrRemovedWithoutADigest(t *testing.T) {
+	h := newCTHarness(t)
+	h.api.noDigest = true
+	h.up(t)
+	states := h.sync(t, []Leg{legA}, nil)
+	require.False(t, states[0].Up)
+	require.Equal(t, "the configuration of lxc/9250 was read without a digest; no card is added without one", states[0].Problem)
+	require.Equal(t, []string{"read pve1 lxc/9250"}, h.api.calls)
+	require.Empty(t, h.announced)
+
+	h = newCTHarness(t)
+	h.up(t)
+	h.sync(t, []Leg{legA}, nil)
+	h.api.noDigest = true
+	h.api.calls = nil
+	require.EqualError(t, h.b.Detach(t.Context(), legA.ID),
+		"the configuration of lxc/9250 was read without a digest; no card is removed without one")
+	require.Equal(t, []string{"read pve1 lxc/9250"}, h.api.calls)
 }
 
 // A card that is there with the MAC of a leg is configured without a call to

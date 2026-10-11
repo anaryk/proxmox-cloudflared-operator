@@ -655,6 +655,10 @@ func (b *containerBackend) attach(ctx context.Context, l Leg) string {
 		if _, ok := nicWithMAC(nics, l.MAC); ok {
 			return ""
 		}
+		if digest == "" {
+			// Without one the write would be made whatever changed meanwhile.
+			return fmt.Sprintf("the configuration of %s was read without a digest; no card is added without one", b.self)
+		}
 		index := freeSlot(nics)
 		if index == 0 {
 			return fmt.Sprintf("no free NIC slot (net1..net%d)", nicSlots)
@@ -910,6 +914,9 @@ func (b *containerBackend) removeNIC(ctx context.Context, mac net.HardwareAddr) 
 		index, ok := nicWithMAC(nics, mac)
 		if !ok {
 			return nil
+		}
+		if digest == "" {
+			return fmt.Errorf("the configuration of %s was read without a digest; no card is removed without one", b.self)
 		}
 		if b.announce != nil {
 			b.announce(mac)
