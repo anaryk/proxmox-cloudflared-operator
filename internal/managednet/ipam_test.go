@@ -187,10 +187,15 @@ func TestReleaseOnlyAfterTheCardIsGone(t *testing.T) {
 	a.RemovedAt = &removed
 	err = ipam.Release(a, &g)
 	require.ErrorIs(t, err, managednet.ErrCardPresent)
-	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: its configuration lists net1")
+	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: its configuration lists net1 with the MAC "+l.MAC)
 
 	unreadable := onManaged(guest(101), 1, "")
 	require.ErrorIs(t, ipam.Release(a, &unreadable), managednet.ErrCardPresent, "a card at the index whose MAC could not be read may be the one")
+
+	moved := onManaged(guest(101), 3, l.MAC)
+	err = ipam.Release(a, &moved)
+	require.ErrorIs(t, err, managednet.ErrCardPresent, "the MAC at another index still answers for the address")
+	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: its configuration lists net3 with the MAC "+l.MAC)
 
 	leases, err := s.Leases()
 	require.NoError(t, err)
