@@ -63,6 +63,8 @@ pco help route manual add
   - [pco network candidates](pco-network-candidates.md): List the bridges and VLANs of the node a network may be attached to
   - [pco network detach](pco-network-detach.md): Detach a network: remove its leg and its service addresses
   - [pco network list](pco-network-list.md): List the networks attached, with their legs and the routes served through them
+  - [pco network managed](pco-network-managed.md): Make pco's managed network, the SDN vnet pconet
+    - [pco network managed enable](pco-network-managed-enable.md): Make the managed network
   - [pco network probe](pco-network-probe.md): Ask who answers for an address on a bridge or VLAN
   - [pco network show](pco-network-show.md): Show a network with its leg, its service addresses and the routes served through it
 - [pco plan](pco-plan.md): Show what the daemon would change and what stands in its way

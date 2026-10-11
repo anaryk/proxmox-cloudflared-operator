@@ -35,7 +35,7 @@ func (a *app) networkCmd() *cobra.Command {
 			"  pco network list",
 	}
 	cmd.AddCommand(a.networkListCmd(), a.networkCandidatesCmd(), a.networkProbeCmd(), a.networkAttachCmd(),
-		a.networkDetachCmd(), a.networkShowCmd())
+		a.networkDetachCmd(), a.networkShowCmd(), newNetworkManagedCmd(a))
 	return cmd
 }
 
