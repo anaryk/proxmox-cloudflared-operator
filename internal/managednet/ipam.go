@@ -66,7 +66,7 @@ func (p *IPAM) Allocate(owner, identity string, nic int) (store.Lease, error) {
 		addr, ok := LowestFree(p.subnet, leases)
 		if !ok {
 			return store.Lease{}, fmt.Errorf("%w: %s holds %d leases, from %s to %s",
-				ErrExhausted, p.subnet, Available(p.subnet, nil), first(p.subnet), last(p.subnet))
+				ErrExhausted, p.subnet, len(held(p.subnet, leases)), first(p.subnet), last(p.subnet))
 		}
 		l := store.Lease{MAC: store.ManagedMAC(addr), Addr: addr, Owner: owner, Identity: identity, NIC: nic, Since: p.now()}
 		err = p.leases.SaveLease(l, 0)
@@ -91,11 +91,13 @@ func (p *IPAM) Allocate(owner, identity string, nic int) (store.Lease, error) {
 
 // Release deletes the lease of an attachment's card once the card is gone:
 // its removal was asked for (RemovedAt), and the configuration of the guest g
-// lists neither a card with its MAC nor a card on the managed network at its
-// index. g is nil for a guest that is gone. Before that the address stays
-// leased, as the guest may still use it: a QEMU guest without network hotplug
-// keeps the card until it restarts. A lease that is gone already is released;
-// one that another guest holds under that MAC is kept, and so is an error.
+// no longer lists it at its index: a card on the managed network there with
+// its MAC, or with a MAC that could not be read. A card the admin put at
+// that index, on any bridge, is the admin's own and does not keep the lease.
+// g is nil for a guest that is gone. Before that the address stays leased,
+// as the guest may still use it: a QEMU guest without network hotplug keeps
+// the card until it restarts. A lease that is gone already is released; one
+// that another guest holds under that MAC is kept, and so is an error.
 func (p *IPAM) Release(a store.Attachment, g *model.Guest) error {
 	if g != nil && g.Ref.String() != a.Owner {
 		return fmt.Errorf("releasing the lease of %s against the configuration of %s", a.Owner, g.Ref)
@@ -104,10 +106,8 @@ func (p *IPAM) Release(a store.Attachment, g *model.Guest) error {
 		return fmt.Errorf("releasing the lease of %s: %w: its removal was not asked for yet", a.Owner, ErrCardPresent)
 	}
 	if g != nil {
-		for _, nic := range g.NICs {
-			if strings.EqualFold(nic.MAC, a.MAC) || nic.Index == a.NIC && nic.Bridge == gateway.ManagedBridge {
-				return fmt.Errorf("releasing the lease of %s: %w: its configuration lists net%d", a.Owner, ErrCardPresent, nic.Index)
-			}
+		if nic, ok := g.NIC(a.NIC); ok && nic.Bridge == gateway.ManagedBridge && (nic.MAC == "" || strings.EqualFold(nic.MAC, a.MAC)) {
+			return fmt.Errorf("releasing the lease of %s: %w: its configuration lists net%d", a.Owner, ErrCardPresent, nic.Index)
 		}
 	}
 	leases, err := p.leases.Leases()

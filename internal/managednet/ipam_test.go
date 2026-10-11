@@ -189,24 +189,29 @@ func TestReleaseOnlyAfterTheCardIsGone(t *testing.T) {
 	require.ErrorIs(t, err, managednet.ErrCardPresent)
 	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: its configuration lists net1")
 
-	moved := onManaged(guest(101), 3, l.MAC)
-	require.ErrorIs(t, ipam.Release(a, &moved), managednet.ErrCardPresent, "the card is there under another index")
-
-	foreign := onManaged(guest(101), 1, cloneMAC)
-	require.ErrorIs(t, ipam.Release(a, &foreign), managednet.ErrCardPresent, "a card on the managed network holds the index")
+	unreadable := onManaged(guest(101), 1, "")
+	require.ErrorIs(t, ipam.Release(a, &unreadable), managednet.ErrCardPresent, "a card at the index whose MAC could not be read may be the one")
 
 	leases, err := s.Leases()
 	require.NoError(t, err)
 	require.Contains(t, leases, l.MAC, "nothing was released")
 
-	reused := guest(101)
-	reused.NICs = append(reused.NICs, model.NIC{Index: 1, MAC: "bc:24:11:00:00:09", Bridge: "vmbr1"})
-	require.NoError(t, ipam.Release(a, &reused), "the admin's own card took the index")
-	leases, err = s.Leases()
-	require.NoError(t, err)
-	require.NotContains(t, leases, l.MAC)
-
-	require.NoError(t, ipam.Release(a, &reused), "a released lease is released")
+	// The admin's own card at the index, on any bridge, is not the one that
+	// went: the lease is released, and released again without complaint.
+	elsewhere := guest(101)
+	elsewhere.NICs = append(elsewhere.NICs, model.NIC{Index: 1, MAC: "bc:24:11:00:00:09", Bridge: "vmbr1"})
+	for name, gone := range map[string]model.Guest{
+		"the admin's own card on the managed network took the index": onManaged(guest(101), 1, cloneMAC),
+		"the admin's own card on another bridge took the index":      elsewhere,
+		"the index is free": guest(101),
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.NoError(t, ipam.Release(a, &gone))
+			leases, err := s.Leases()
+			require.NoError(t, err)
+			require.NotContains(t, leases, l.MAC)
+		})
+	}
 }
 
 func TestReleaseOfAGuestThatIsGone(t *testing.T) {

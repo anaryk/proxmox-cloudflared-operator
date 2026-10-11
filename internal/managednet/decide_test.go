@@ -2,6 +2,7 @@ package managednet_test
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -74,7 +75,8 @@ func auto(in *managednet.DecideInput) {
 }
 
 // attached gives the guest owner its card net1 on the managed network, made
-// under consent, with its lease.
+// under consent, with its lease; the card is put on the guest unless it has
+// a net1 already.
 func attached(in *managednet.DecideInput, owner, consent string) {
 	addr := netip.MustParseAddr("10.203.118.5")
 	mac := store.ManagedMAC(addr)
@@ -83,6 +85,20 @@ func attached(in *managednet.DecideInput, owner, consent string) {
 		Consent: consent, Since: now.Add(-time.Hour),
 	}
 	in.Leases[mac] = store.Lease{MAC: mac, Addr: addr, Owner: owner, Identity: "mac:bc:24:11:00:00:01", NIC: 1, Since: now.Add(-time.Hour)}
+	for i, g := range in.Guests {
+		if _, taken := g.NIC(1); g.Ref.String() == owner && !taken {
+			in.Guests[i] = onManaged(g, 1, mac)
+		}
+	}
+}
+
+// cardless takes the card net1 off lxc/101.
+func cardless(in *managednet.DecideInput) {
+	for i, g := range in.Guests {
+		if g.Ref.String() == web {
+			in.Guests[i].NICs = slices.DeleteFunc(slices.Clone(g.NICs), func(n model.NIC) bool { return n.Index == 1 })
+		}
+	}
 }
 
 // grace makes the grace of the attachment of lxc/101 run, ending at end.
@@ -386,6 +402,75 @@ func TestDecideAttached(t *testing.T) {
 			action: managednet.ActionKeep, consent: managednet.ByTag,
 		},
 		{
+			name:  "the card gone from the guest goes back at its index",
+			guest: guest(101, managednet.Tag),
+			setup: func(in *managednet.DecideInput) {
+				attached(in, web, managednet.ByTag)
+				cardless(in)
+			},
+			action: managednet.ActionAttach, consent: managednet.ByTag,
+		},
+		{
+			name:  "another MAC at the index of the card is replaced by the guest's own",
+			guest: onManaged(guest(101), 1, cloneMAC),
+			setup: func(in *managednet.DecideInput) {
+				attached(in, web, managednet.ByTag)
+				in.Consents[web] = store.Consent{Owner: web, Identity: "mac:bc:24:11:00:00:01", At: now}
+			},
+			action: managednet.ActionAttach, consent: managednet.ByApproval,
+		},
+		{
+			name: "the card on another bridge at the index goes back",
+			guest: func() model.Guest {
+				g := guest(101, managednet.Tag)
+				g.NICs = append(g.NICs, model.NIC{Index: 1, MAC: "bc:24:11:00:00:09", Bridge: "vmbr1"})
+				return g
+			}(),
+			setup:  func(in *managednet.DecideInput) { attached(in, web, managednet.ByTag) },
+			action: managednet.ActionAttach, consent: managednet.ByTag,
+		},
+		{
+			name:  "the card gone while the grace runs goes back once consent is back",
+			guest: guest(101, managednet.Tag),
+			setup: func(in *managednet.DecideInput) {
+				attached(in, web, managednet.ByTag)
+				cardless(in)
+				grace(in, now.Add(3*time.Minute), "the guest has neither the tag cf-tunnel-managed nor an approval")
+			},
+			action: managednet.ActionAttach, consent: managednet.ByTag,
+		},
+		{
+			name:  "the card gone from a guest whose consent is gone is not put back",
+			guest: guest(101),
+			setup: func(in *managednet.DecideInput) {
+				attached(in, web, managednet.ByTag)
+				cardless(in)
+			},
+			action: managednet.ActionDetach,
+			why:    "the guest has neither the tag cf-tunnel-managed nor an approval", detachAt: &end,
+		},
+		{
+			name:  "the card gone while registered-tags cannot be read is not put back",
+			guest: guest(101, managednet.Tag),
+			setup: func(in *managednet.DecideInput) {
+				attached(in, web, managednet.ByTag)
+				cardless(in)
+				in.Registered = nil
+			},
+			action: managednet.ActionKeep, consent: managednet.ByTag,
+		},
+		{
+			name:  "the card gone from an automatic attachment is not put back while the gate tag is not registered",
+			guest: guest(101),
+			setup: func(in *managednet.DecideInput) {
+				auto(in)
+				attached(in, web, managednet.ByAuto)
+				cardless(in)
+				in.Registered = []string{}
+			},
+			action: managednet.ActionKeep, consent: managednet.ByAuto,
+		},
+		{
 			name:   "the tag removed starts the grace",
 			guest:  guest(101),
 			setup:  func(in *managednet.DecideInput) { attached(in, web, managednet.ByTag) },
@@ -579,6 +664,38 @@ func TestDecideAttached(t *testing.T) {
 			require.Equal(t, in.Attachments[web].MAC, d.Lease.MAC)
 		})
 	}
+}
+
+// An attached guest whose card is gone gets it back where it was, and a
+// foreign card at that index is replaced by it in one change: the decision
+// carries the lease the attachment holds. A foreign card at another index is
+// no candidate for that, and gets its link set down.
+func TestDecideHealsAnAttachmentWhoseCardIsGone(t *testing.T) {
+	in := input(guest(101, managednet.Tag))
+	attached(&in, web, managednet.ByTag)
+	cardless(&in)
+	in.Guests[0] = onManaged(in.Guests[0], 2, "bc:24:11:aa:bb:02")
+	in.Foreign = managednet.Classify(in.Guests, in.Attachments, model.GuestRef{}, legMAC)
+	require.Len(t, in.Foreign, 1)
+
+	ds := managednet.Decide(in)
+	require.Len(t, ds, 2)
+	require.Equal(t, managednet.ActionAttach, ds[0].Action)
+	require.Equal(t, 1, ds[0].NIC, "the card goes back at the index of the attachment")
+	require.Equal(t, in.Attachments[web].MAC, ds[0].Lease.MAC, "with the lease the attachment has")
+	require.Nil(t, ds[0].DetachAt)
+	require.Equal(t, managednet.ActionLinkDown, ds[1].Action)
+	require.Equal(t, 2, ds[1].NIC)
+
+	in.Guests[0] = onManaged(guest(101, managednet.Tag), 1, cloneMAC)
+	in.Foreign = managednet.Classify(in.Guests, in.Attachments, model.GuestRef{}, legMAC)
+	ds = managednet.Decide(in)
+	require.Len(t, ds, 1)
+	require.Equal(t, managednet.ActionReplace, ds[0].Action, "the copy at the index is replaced, with no second attach")
+	require.Equal(t, 1, ds[0].NIC)
+	require.Equal(t, cloneMAC, ds[0].MAC)
+	require.Equal(t, managednet.ByTag, ds[0].Consent)
+	require.Equal(t, in.Attachments[web].MAC, ds[0].Lease.MAC, "the replacement takes the lease the attachment has")
 }
 
 func TestDecideStartsTheGraceOfAGuestThatIsGone(t *testing.T) {

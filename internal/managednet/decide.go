@@ -115,6 +115,11 @@ func (d *decider) guest(g model.Guest) Decision {
 	by, v, why := d.consent(g, attached)
 	if attached {
 		switch {
+		case v == consented && !hasCard(g, att):
+			// The card is gone, or another one took its index: it goes back
+			// with the lease the attachment has.
+			dec.Action, dec.Consent = ActionAttach, by
+			return dec
 		case v == consented:
 			dec.Action, dec.Consent = ActionKeep, by
 			return dec
@@ -182,6 +187,13 @@ func (d *decider) consent(g model.Guest, attached bool) (by string, v verdict, w
 }
 
 func (d *decider) registered(tag string) bool { return slices.Contains(d.in.Registered, tag) }
+
+// hasCard reports whether the guest carries the attachment's card: one at
+// its index, on the managed network, with its MAC.
+func hasCard(g model.Guest, att store.Attachment) bool {
+	nic, ok := g.NIC(att.NIC)
+	return ok && nic.Bridge == gateway.ManagedBridge && strings.EqualFold(nic.MAC, att.MAC)
+}
 
 // attach decides for a consented guest without a card: it waits while pco
 // may not write it, and in the appliance while turning its firewall on would
@@ -255,8 +267,10 @@ func (d *decider) lease(att store.Attachment) *store.Lease {
 
 // foreign decides for the foreign cards. The lowest foreign card of a guest
 // that the cycle would give a card is replaced by that card, and the guest's
-// own attach is dropped from guests; any other foreign card gets its link
-// set down where pco may write the guest, and is reported where it may not.
+// own attach is dropped from guests; for a guest whose card goes back at the
+// index of its attachment, only a foreign card at that index is. Any other
+// foreign card gets its link set down where pco may write the guest, and is
+// reported where it may not.
 func (d *decider) foreign(guests []Decision) []Decision {
 	attach := map[string]*Decision{}
 	for i := range guests {
@@ -279,9 +293,11 @@ func (d *decider) foreign(guests []Decision) []Decision {
 		if strings.EqualFold(f.MAC, legMAC) {
 			why = fmt.Sprintf("a card on %s with the MAC of pco's leg (%s)", gateway.ManagedBridge, legMAC)
 		}
+		_, attached := d.in.Attachments[f.Owner]
 		switch g := attach[f.Owner]; {
-		case g != nil:
+		case g != nil && (!attached || f.NIC == g.NIC):
 			dec.Action, dec.Consent, dec.Why = ActionReplace, g.Consent, why+"; pco replaces it with the guest's own"
+			dec.Lease = g.Lease
 			g.Action = ""
 			delete(attach, f.Owner)
 		case d.in.Writable[f.Owner]:

@@ -51,14 +51,18 @@ const (
 // Decision is what a cycle decides for one tagged guest, for one attachment
 // whose guest is no longer tagged, or for one foreign card.
 type Decision struct {
-	Owner   string
-	Action  string
-	Consent string // ByTag, ByApproval, ByAuto, or ""
+	Owner  string
+	Action string
+	// Consent is what consents this cycle: ByTag, ByApproval, ByAuto, or
+	// empty. It is not what the attachment was made under, and on a keep it
+	// never overwrites store.Attachment.Consent, which records that.
+	Consent string
 	// Why is the reason the state shows: for a wait, a detach, a foreign
 	// card, and for none.
 	Why string
 	// NIC is the index of the guest's card, for an attachment and for a
-	// foreign card.
+	// foreign card. For an attach it is set only when an attachment exists
+	// whose card is gone from the guest: the card goes back at that index.
 	NIC int
 	MAC string // the foreign card's, for the foreign actions
 	// Lease is the lease of the attachment's card, when there is one.
