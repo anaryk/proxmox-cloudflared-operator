@@ -470,6 +470,66 @@ func TestARestartAfterAReturnIsTheSameEventAsTheReturn(t *testing.T) {
 	l.requireFlapping()
 }
 
+func TestAQuickRebootIsOneLossNotTwo(t *testing.T) {
+	l := newLab(t, "pve1", "pve2")
+	l.wait(5 * time.Minute)
+	l.goOffline("pve2")
+	l.wait(20 * time.Second)
+
+	l.comeOnline("pve2")
+	l.requireCovered()
+	l.wait(cycle)
+	l.start("pve2")
+	l.requireCovered()
+	l.requireFlapping()
+	l.wait(5 * time.Minute)
+	l.requireCovered()
+}
+
+func TestARestartAfterAStoppedWatchKeepsTheGrace(t *testing.T) {
+	l := newLab(t, "pve1", "pve2")
+	l.wait(time.Hour)
+	l.watchStops("pve2")
+	l.wait(30 * time.Second)
+	l.watchStarts("pve2")
+	l.wait(time.Minute)
+	l.requireCovered()
+
+	l.startWithoutWatch("pve2")
+	l.requireCovered()
+	l.wait(59 * time.Second)
+	l.requireCovered()
+	l.wait(time.Second)
+	l.requireNotCovered("pve2")
+}
+
+func TestARestartAfterAStaleStatusKeepsTheGrace(t *testing.T) {
+	l := newLab(t, "pve1", "pve2")
+	l.wait(time.Hour)
+	l.fall("pve2")
+	l.wait(45 * time.Second)
+	delete(l.mute, "pve2")
+	l.wait(2 * time.Minute)
+	l.requireCovered()
+
+	l.startWithoutWatch("pve2")
+	l.requireCovered()
+}
+
+func TestARestartAfterARestartThatWasNotForgivenGetsNoGrace(t *testing.T) {
+	l := newLab(t, "pve1", "pve2")
+	l.wait(time.Hour)
+	l.start("pve2")
+	l.wait(3 * time.Minute)
+	l.start("pve2")
+	l.wait(3 * time.Minute)
+	l.requireCovered()
+
+	l.wait(5 * time.Minute)
+	l.startWithoutWatch("pve2")
+	l.requireNotCovered("pve2")
+}
+
 func TestAStatusOlderThanThirtySecondsIsNoCoverage(t *testing.T) {
 	l := newLab(t, "pve1", "pve2")
 	l.wait(5 * time.Minute)

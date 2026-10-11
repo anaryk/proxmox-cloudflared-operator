@@ -20,7 +20,7 @@ draining  -        -        draining unknown  down     draining draining active 
 unknown   -        -        joining  unknown  down     unknown  -        -        removed  contested joining
 down      -        -        down     down     down     unknown  -        -        removed  contested down
 contested -        -        -        contested contested contested -       -        removed  contested -
-removed   joining  -        -        removed  removed  removed  -        -        removed  -         -
+removed   joining  -        -        removed  removed  removed  -        -        removed  contested -
 `
 
 func readGrid(t *testing.T) (events []Event, rows map[agentproto.NodeState]map[Event]string) {
@@ -155,5 +155,17 @@ func TestWhatThePathsOfTheDocumentationDo(t *testing.T) {
 	})
 	t.Run("a token used in a way that does not match contests a node that has no entry yet", func(t *testing.T) {
 		require.Equal(t, agentproto.Contested, walk(t, NoEntry, EventContest))
+	})
+	t.Run("a forgotten node's new token misused contests it", func(t *testing.T) {
+		require.Equal(t, agentproto.Contested, walk(t, agentproto.Active, EventForget, EventContest))
+		require.Equal(t, agentproto.Joining, walk(t, agentproto.Active, EventForget, EventContest, EventForget, EventJoined))
+	})
+	t.Run("what the agent of a contested or removed node says is no transition", func(t *testing.T) {
+		for _, state := range []agentproto.NodeState{agentproto.Contested, agentproto.Removed} {
+			for _, ev := range []Event{EventHeard, EventReturned} {
+				_, err := Next(state, ev)
+				require.ErrorIs(t, err, ErrNoTransition, "%s %s", state, ev)
+			}
+		}
 	})
 }

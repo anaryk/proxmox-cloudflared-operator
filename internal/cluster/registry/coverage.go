@@ -48,19 +48,22 @@ func (f NodeFacts) fresh(now time.Time) bool {
 // a watch that runs. A watch that breaks is a loss: its agent restarts, or the
 // watch does, the node returns after being offline, its agent disappears, its
 // watch stops or its status goes stale. A loss is forgiven once, for 60 seconds,
-// when it is a restart or a return and no other loss came in the ten minutes
-// before: the node stays covered meanwhile, whether its watch runs again or
-// not, since a watch starts from a full dump of the tables and sees what
-// happened while it was away. Any other loss uncovers the node at once, and
-// when its watch runs again within ten minutes of a loss that was not forgiven,
-// the node is covered only after the watch has run for 60 seconds without a
-// break. So an agent that restarts every 50 seconds is covered after its first
-// restart only.
+// when it is a restart or a return and no other restart or return came in the
+// ten minutes before: the node stays covered meanwhile, whether its watch runs
+// again or not, since a watch starts from a full dump of the tables and sees
+// what happened while it was away. Any other loss uncovers the node at once,
+// and when its watch runs again within ten minutes of a loss that was not
+// forgiven, the node is covered only after the watch has run for 60 seconds
+// without a break. So an agent that restarts every 50 seconds is covered after
+// its first restart only. A node that reboots within the 30 seconds its last
+// status stays fresh is one return, not a return and a restart: the status
+// held while it was offline is not taken as its report after it.
 //
-// Offline nodes do not count. Call Observe for every node, every cycle, before
-// asking: the answers are worked out from what was observed and the time asked.
-// A node that leaves the registry is observed once more as offline. It is safe
-// for concurrent use.
+// Offline nodes do not count. Call Observe every cycle, before asking, for every
+// node Proxmox lists, whether an agent is registered for it or not (one without
+// uncovers the install), and as offline for every registered node Proxmox does
+// not list, or that leaves the registry: the answers are worked out from what
+// was observed and the time asked. It is safe for concurrent use.
 type Coverage struct {
 	mu    sync.Mutex
 	nodes map[string]*track
@@ -82,8 +85,12 @@ type track struct {
 	graceUntil time.Time
 	// breaks are the losses of the last FlapWindow, oldest first; last is the
 	// latest, and whether it was forgiven.
-	breaks []time.Time
+	breaks []loss
 	last   loss
+	// heldOffline is the receipt time of the status the controller held while
+	// the node was offline. After the return that status is from before it
+	// left, however fresh it still is.
+	heldOffline time.Time
 }
 
 type run struct {
@@ -93,8 +100,11 @@ type run struct {
 	proof        bool
 }
 
+// loss is one break of a node's watch: when, whether it was a restart or a
+// return, and whether that was forgiven.
 type loss struct {
 	at       time.Time
+	restart  bool
 	forgiven bool
 }
 
@@ -116,14 +126,14 @@ func (t *track) observe(f NodeFacts, now time.Time) {
 	t.seen, t.facts = true, f
 	if !f.Online {
 		// Not counted. Its return is the loss, so nothing is kept of what ran.
-		t.run, t.graceUntil = run{}, time.Time{}
+		t.run, t.graceUntil, t.heldOffline = run{}, time.Time{}, f.StatusAt
 		return
 	}
 	if returned {
 		t.lose(now, true)
 	}
 
-	reporting := f.HasAgent && f.fresh(now)
+	reporting := f.HasAgent && f.fresh(now) && !f.StatusAt.Equal(t.heldOffline)
 	watching := reporting && !f.WatchRunningSince.IsZero()
 	same := watching && f.AgentStartedAt.Equal(t.run.agent) && f.WatchRunningSince.Equal(t.run.watch)
 	if t.run.ok && !same {
@@ -147,13 +157,14 @@ func (t *track) observe(f NodeFacts, now time.Time) {
 	}
 }
 
-// lose records a loss at at. A loss that can be forgiven is, unless another one
-// happened less than FlapWindow before.
-func (t *track) lose(at time.Time, forgivable bool) {
-	t.breaks = slices.DeleteFunc(t.breaks, func(b time.Time) bool { return at.Sub(b) >= FlapWindow })
-	recent := len(t.breaks) > 0
-	t.breaks = append(t.breaks, at)
-	t.last = loss{at: at, forgiven: forgivable && !recent}
+// lose records a loss at at, restart saying whether it is a restart or a
+// return. One of those is forgiven unless another restart or return happened
+// less than FlapWindow before, forgiven or not.
+func (t *track) lose(at time.Time, restart bool) {
+	t.breaks = slices.DeleteFunc(t.breaks, func(b loss) bool { return at.Sub(b.at) >= FlapWindow })
+	recent := slices.ContainsFunc(t.breaks, func(b loss) bool { return b.restart })
+	t.last = loss{at: at, restart: restart, forgiven: restart && !recent}
+	t.breaks = append(t.breaks, t.last)
 	t.graceUntil = time.Time{}
 	if t.last.forgiven {
 		t.graceUntil = at.Add(CoverageGrace)
@@ -220,7 +231,7 @@ func (c *Coverage) Flapping(now time.Time) []string {
 	for name, t := range c.nodes {
 		n := 0
 		for _, b := range t.breaks {
-			if now.Sub(b) < FlapWindow {
+			if now.Sub(b.at) < FlapWindow {
 				n++
 			}
 		}

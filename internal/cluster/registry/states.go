@@ -47,7 +47,9 @@ const (
 )
 
 // ErrNoTransition is what Next wraps when an event is not one that can happen
-// to a node in its state.
+// to a node in its state. For a command it is a refusal to show the admin; for
+// an observation it is nothing to do, since the controller only ever hears a
+// node it refuses, a contested or removed one, in the cycle the refusal began.
 var ErrNoTransition = errors.New("not a transition of the node registry")
 
 // transitions is every state a node can be in and what each event makes of it.
@@ -122,6 +124,7 @@ var transitions = map[agentproto.NodeState]map[Event]agentproto.NodeState{
 		EventOffline: agentproto.Removed,
 		EventOnline:  agentproto.Removed,
 		EventForget:  agentproto.Removed,
+		EventContest: agentproto.Contested,
 	},
 }
 
@@ -135,7 +138,13 @@ var transitions = map[agentproto.NodeState]map[Event]agentproto.NodeState{
 // while the cluster lists its node as offline does not end it. A drain does
 // not survive a node's absence either; the controller asks for it again when
 // it still wants it. Contested and Removed are left by an admin only: forget
-// ends the first, enrolling the node again the second.
+// ends the first, enrolling the node again the second. A join token misused
+// for the name of a removed node contests it, as it would a name without an
+// entry, so that a replacement whose token was taken shows up as such.
+//
+// What the agent of a contested or removed node says, heard or returned, is no
+// transition: the controller refuses such a node, and a status that still
+// arrives in the cycle of the refusal is ignored, not an error of the cycle.
 //
 // An event that leaves a node where it already is, as seeing the same thing
 // every cycle does, and a command repeated after a crash, are transitions to
