@@ -277,14 +277,9 @@ func Open(b []byte, passphrase []byte) (Contents, error) {
 		return Contents{}, ErrWrongPassphrase
 	}
 	defer clear(text)
-	dec := json.NewDecoder(bytes.NewReader(text))
-	dec.DisallowUnknownFields()
 	var d document
-	if err := dec.Decode(&d); err != nil {
+	if err := unmarshalStrict(text, &d); err != nil {
 		return Contents{}, fmt.Errorf("reading the bundle: %w", err)
-	}
-	if dec.More() {
-		return Contents{}, errors.New("reading the bundle: text after its end")
 	}
 	if d.InstallID == "" {
 		return Contents{}, errors.New("the bundle holds no install")
@@ -295,10 +290,11 @@ func Open(b []byte, passphrase []byte) (Contents, error) {
 // checkHeader refuses a format or parameters this build does not read. h is
 // the header after the magic.
 func checkHeader(h []byte) error {
-	if h[0] != formatVersion {
-		return fmt.Errorf("%w: it is of format %d, and this build reads format %d; a newer pco made it", ErrUnsupported, h[0], formatVersion)
-	}
 	switch {
+	case h[0] > formatVersion:
+		return fmt.Errorf("%w: it is of format %d, and this build reads format %d; a newer pco made it", ErrUnsupported, h[0], formatVersion)
+	case h[0] != formatVersion:
+		return fmt.Errorf("%w: it is not a bundle of a known format (format %d)", ErrUnsupported, h[0])
 	case h[1] != kdfArgon2id:
 		return fmt.Errorf("%w: it derives its key by method %d, and this build knows method %d, Argon2id", ErrUnsupported, h[1], kdfArgon2id)
 	case binary.BigEndian.Uint32(h[2:]) != argonTime, binary.BigEndian.Uint32(h[6:]) != argonMemory, h[10] != argonThreads:

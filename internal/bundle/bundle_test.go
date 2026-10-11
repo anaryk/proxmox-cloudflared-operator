@@ -256,6 +256,17 @@ func TestABundleOfAnotherFormatSaysWhoCanReadIt(t *testing.T) {
 	require.ErrorContains(t, err, "newer")
 }
 
+func TestABundleOfAFormatNoPcoWroteIsOfNoKnownFormat(t *testing.T) {
+	b := seal(t, full())
+	b[len(magic)] = 0
+
+	_, err := Open(b, []byte(passphrase))
+
+	require.ErrorIs(t, err, ErrUnsupported)
+	require.ErrorContains(t, err, "not a bundle of a known format")
+	require.NotContains(t, err.Error(), "newer")
+}
+
 func TestTwoBundlesOfOneInstallShareNeitherSaltNorText(t *testing.T) {
 	a, b := seal(t, full()), seal(t, full())
 

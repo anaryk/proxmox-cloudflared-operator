@@ -1,7 +1,6 @@
 package bundle
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,17 +166,7 @@ type restoration struct {
 
 // decodeStrict reads one object of the bundle, refusing what the type has no
 // field for: it would be left out of the restore.
-func decodeStrict(raw json.RawMessage, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return err
-	}
-	if dec.More() {
-		return errors.New("text after the end of the object")
-	}
-	return nil
-}
+func decodeStrict(raw json.RawMessage, v any) error { return unmarshalStrict(raw, v) }
 
 func decodeEach[T any](what string, raws []json.RawMessage) ([]T, error) {
 	var out []T
