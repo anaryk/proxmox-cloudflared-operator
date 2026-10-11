@@ -244,7 +244,7 @@ func nicValue(kind model.GuestKind, values map[string]string, key string, spec N
 func freeName(values map[string]string, key string) string {
 	taken := map[string]bool{}
 	for k, v := range values {
-		if k != key && isNICKey(k) {
+		if _, ok := pve.NICIndex(k); ok && k != key {
 			taken[field(v, "name")] = true
 		}
 	}
@@ -258,20 +258,11 @@ func freeName(values map[string]string, key string) string {
 // cardWithMAC returns the key of the card with the MAC.
 func cardWithMAC(values map[string]string, kind model.GuestKind, mac string) (string, bool) {
 	for k, v := range values {
-		if isNICKey(k) && strings.EqualFold(macOf(v, kind), mac) {
+		if _, ok := pve.NICIndex(k); ok && strings.EqualFold(macOf(v, kind), mac) {
 			return k, true
 		}
 	}
 	return "", false
-}
-
-func isNICKey(key string) bool {
-	rest, ok := strings.CutPrefix(key, "net")
-	if !ok {
-		return false
-	}
-	i, err := strconv.Atoi(rest)
-	return err == nil && strconv.Itoa(i) == rest && i >= 0 && i <= maxNICIndex
 }
 
 // macOf returns the MAC of a card: hwaddr= on a container; on a VM

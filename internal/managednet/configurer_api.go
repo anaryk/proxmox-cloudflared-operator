@@ -23,8 +23,7 @@ const (
 // GuestAPI is the part of the Proxmox API client the appliance's configurer
 // reads and changes guests with; *pve.Client is one.
 type GuestAPI interface {
-	GuestConfig(ctx context.Context, node string, ref model.GuestRef) (pve.GuestConfig, error)
-	PendingConfig(ctx context.Context, node string, ref model.GuestRef) (map[string]string, error)
+	NextConfig(ctx context.Context, node string, ref model.GuestRef) (pve.GuestConfig, error)
 	SetGuestConfig(ctx context.Context, node string, ref model.GuestRef, values map[string]string, digest string) error
 	DeleteGuestConfigKeys(ctx context.Context, node string, ref model.GuestRef, keys []string, digest string) error
 	PendingChanges(ctx context.Context, node string, vmid int) ([]string, error)
@@ -96,19 +95,14 @@ func (c *APIConfigurer) CanWrite(ctx context.Context, g model.Guest) (bool, stri
 // apiConfig is a guest's configuration as the token reads and writes it.
 type apiConfig struct{ api GuestAPI }
 
-// read takes the digest first and the values after: values newer than the
-// digest make the write fail on the digest and be made again, never a write
-// over a change it did not see.
+// read is one read of the configuration with its pending values, and the
+// digest of that same read, which the write is made under.
 func (c apiConfig) read(ctx context.Context, g model.Guest) (map[string]string, string, error) {
-	cfg, err := c.api.GuestConfig(ctx, g.Node, g.Ref)
+	cfg, err := c.api.NextConfig(ctx, g.Node, g.Ref)
 	if err != nil {
 		return nil, "", err
 	}
-	values, err := c.api.PendingConfig(ctx, g.Node, g.Ref)
-	if err != nil {
-		return nil, "", err
-	}
-	return values, cfg.Digest, nil
+	return cfg.Values, cfg.Digest, nil
 }
 
 func (c apiConfig) set(ctx context.Context, g model.Guest, key, value, digest string) error {

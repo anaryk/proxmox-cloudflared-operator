@@ -125,9 +125,10 @@ func (c hostConfig) write(ctx context.Context, g model.Guest, args ...string) er
 	return err
 }
 
-// pending reads qm pending, which prints a key whose new value waits for a
-// restart as "new <key>: <value>" and one whose deletion waits as
-// "del <key>: <value>".
+// pending reads qm pending, which has no JSON output: one line per key, as
+// "<state> <key>: <value>", where the state is cur for a value the VM runs
+// with, new for one that waits for a restart and del for a deletion that
+// waits. Only the state and the key are read.
 func (c hostConfig) pending(ctx context.Context, g model.Guest) ([]string, error) {
 	out, err := c.run.Run(ctx, "qm", "pending", strconv.Itoa(g.Ref.VMID))
 	if err != nil {

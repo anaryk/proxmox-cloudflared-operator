@@ -31,32 +31,20 @@ type write struct {
 
 // fakeAPI answers the configuration reads in turn and records the writes.
 type fakeAPI struct {
-	configs []pve.GuestConfig
-	read    map[string]string // the values of the configuration read last
-	future  map[string]string // the pending view, when it differs from what was read
+	configs []pve.GuestConfig // the pending views, in turn
 	errs    []error           // the answers to the writes, in turn; nil when they run out
 	writes  []write
 	pending []string
 	asked   int // how often the pending list was read
 }
 
-func (f *fakeAPI) GuestConfig(_ context.Context, _ string, ref model.GuestRef) (pve.GuestConfig, error) {
+func (f *fakeAPI) NextConfig(_ context.Context, _ string, ref model.GuestRef) (pve.GuestConfig, error) {
 	if len(f.configs) == 0 {
 		return pve.GuestConfig{}, fmt.Errorf("fetching config of %s: no more answers", ref)
 	}
 	c := f.configs[0]
 	f.configs = f.configs[1:]
-	f.read = c.Values
 	return c, nil
-}
-
-// PendingConfig answers the values of the configuration read last, unless
-// the test gave the guest a change pending.
-func (f *fakeAPI) PendingConfig(context.Context, string, model.GuestRef) (map[string]string, error) {
-	if f.future != nil {
-		return f.future, nil
-	}
-	return f.read, nil
 }
 
 func (f *fakeAPI) answer() error {
@@ -162,25 +150,20 @@ func TestAPIRemoveNIC(t *testing.T) {
 	require.Equal(t, []write{{node: thisNode, ref: vm.Ref, delete: []string{"net1"}, digest: "d1"}}, api.writes)
 }
 
-// A card whose addition waits for the restart of a VM is not in the
-// configuration the VM runs with, and would come up at its next start: it is
-// removed from the pending changes all the same.
-func TestAPIRemoveNICWhoseAdditionWaits(t *testing.T) {
-	api := &fakeAPI{
-		configs: []pve.GuestConfig{guestConfig("d1", map[string]string{"net0": "virtio=BC:24:11:00:00:02,bridge=vmbr0"})},
-		future:  map[string]string{"net0": "virtio=BC:24:11:00:00:02,bridge=vmbr0", "net1": "virtio=06:50:43:4f:76:06,bridge=pconet"},
-	}
+// The configurer reads the pending view, in which a card whose addition
+// waits for the restart of a VM is there although the VM does not run with
+// it yet: it is removed from the pending changes like any other. A card whose
+// deletion waits is gone from that view, and nothing more is asked of
+// Proxmox.
+func TestAPIRemoveNICReadsThePendingView(t *testing.T) {
+	api := &fakeAPI{configs: []pve.GuestConfig{guestConfig("d1", map[string]string{
+		"net0": "virtio=BC:24:11:00:00:02,bridge=vmbr0", "net1": "virtio=06:50:43:4f:76:06,bridge=pconet",
+	})}}
 	require.NoError(t, managednet.NewAPIConfigurer(api, noAccess, applianceToken).RemoveNIC(t.Context(), vm, 1))
 	require.Equal(t, []write{{node: thisNode, ref: vm.Ref, delete: []string{"net1"}, digest: "d1"}}, api.writes)
-}
+	require.Empty(t, api.configs, "one read of the configuration")
 
-// A card whose deletion waits is gone from the pending view: nothing more is
-// asked of Proxmox.
-func TestAPIRemoveNICWhoseDeletionWaits(t *testing.T) {
-	api := &fakeAPI{
-		configs: []pve.GuestConfig{guestConfig("d1", map[string]string{"net0": "virtio=BC:24:11:00:00:02,bridge=vmbr0", "net1": "virtio=06:50:43:4f:76:06,bridge=pconet"})},
-		future:  map[string]string{"net0": "virtio=BC:24:11:00:00:02,bridge=vmbr0"},
-	}
+	api = &fakeAPI{configs: []pve.GuestConfig{guestConfig("d1", map[string]string{"net0": "virtio=BC:24:11:00:00:02,bridge=vmbr0"})}}
 	require.NoError(t, managednet.NewAPIConfigurer(api, noAccess, applianceToken).RemoveNIC(t.Context(), vm, 1))
 	require.Empty(t, api.writes)
 }
