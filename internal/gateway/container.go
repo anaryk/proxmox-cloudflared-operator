@@ -363,10 +363,16 @@ func (b *containerBackend) ensureTable(ctx context.Context, elements bool) error
 		}
 		return nil
 	}
-	if err := b.nft.Apply(ctx, renderContainer(want)); err != nil {
+	return b.loadTable(ctx, b.legs, b.services)
+}
+
+// loadTable loads the gateway's table with the elements of the legs and
+// services, in one transaction, in place of whatever was there.
+func (b *containerBackend) loadTable(ctx context.Context, legs []Leg, services []Service) error {
+	if err := b.nft.Apply(ctx, renderContainer(ctElementsOf(legs, services))); err != nil {
 		return fmt.Errorf("loading table inet %s: %w", gwTable, err)
 	}
-	b.log.Info().Str("table", gwTable).Int("legs", len(b.legs)).Int("services", len(b.services)).
+	b.log.Info().Str("table", gwTable).Int("legs", len(legs)).Int("services", len(services)).
 		Msg("loaded the table of the gateway in the appliance")
 	return nil
 }
@@ -401,6 +407,9 @@ func (b *containerBackend) sync(ctx context.Context, legs []Leg, services []Serv
 	states := make([]LegState, 0, len(legs))
 	valid := validLegs(legs)
 	_, refused := validServices(valid, services)
+	if err := b.addLegElements(ctx, valid, services); err != nil {
+		return nil, err
+	}
 	for _, l := range legs {
 		if problem := legProblem(l, legs); problem != "" {
 			states = append(states, LegState{ID: l.ID, Iface: l.Iface(), Problem: problem})
@@ -435,6 +444,50 @@ func (b *containerBackend) sync(ctx context.Context, legs []Leg, services []Serv
 	}
 	b.sticky = slices.Clone(sticky)
 	return states, nil
+}
+
+// addLegElements puts the legs into the sets of the table before any of them
+// raises its address: the input chain accepts what comes in on net0, so a
+// packet a guest sends to a leg's address must be the leg's from the first
+// one, in the leg's zone and dropped there. What changed of a leg is changed
+// with it; what is no longer wanted leaves after the legs, with the rest of
+// the elements. A table that is missing, or not as pco loads it, is loaded
+// with everything wanted, in one transaction.
+func (b *containerBackend) addLegElements(ctx context.Context, legs []Leg, services []Service) error {
+	l, err := b.listTable(ctx)
+	if err != nil {
+		return err
+	}
+	if l == nil || len(ctDifferences(l)) > 0 {
+		return b.loadTable(ctx, legs, services)
+	}
+	have := listedElements(l)
+	script := elementScript(have, withElements(have, sortedElements(ctElementsOf(legs, nil))))
+	if script == "" {
+		return nil
+	}
+	if err := b.nft.Apply(ctx, script); err != nil {
+		return fmt.Errorf("adding the legs to table inet %s: %w", gwTable, err)
+	}
+	return nil
+}
+
+// withElements returns have with the elements of add, an element of add in
+// place of one of have with its key.
+func withElements(have, add elements) elements {
+	out := make(elements, len(have))
+	for name, elems := range have {
+		out[name] = slices.Clone(elems)
+	}
+	for name, elems := range add {
+		for _, el := range elems {
+			k := elementKey(el)
+			out[name] = slices.DeleteFunc(out[name], func(o string) bool { return elementKey(o) == k })
+			out[name] = append(out[name], el)
+		}
+		slices.Sort(out[name])
+	}
+	return out
 }
 
 // leg sets up one leg: its card, found by the MAC or added, named leg<mark>,

@@ -527,6 +527,52 @@ func TestTheTableHoldsEachLegsBlockOfPorts(t *testing.T) {
 	require.NoError(t, h.b.Verify(t.Context()))
 }
 
+// A new leg is in the sets of the table before it raises its address: what
+// a guest sends to the address is the leg's from the first packet, in its
+// zone and dropped by the input chain. What is no longer wanted leaves the
+// table after the legs, with the rest of the elements.
+func TestALegIsInTheTableBeforeItsAddressIsRaised(t *testing.T) {
+	h := newCTHarness(t)
+	h.up(t)
+	h.sync(t, []Leg{legA, legM}, []Service{svcA, svcM})
+	order := h.sys.order
+	added := index(t, order, "nft add element inet pco_gw ")
+	require.Less(t, added, index(t, order, "addr add leg1 10.50.0.250/24 noprefixroute"))
+	require.Less(t, added, index(t, order, "addr add leg3 10.203.118.1/24 noprefixroute"))
+	first := h.nft.scripts[0]
+	for _, want := range []string{
+		`add element inet pco_gw legs { "leg1", "leg3" }`,
+		`add element inet pco_gw leg_zone { "leg1" : 1, "leg3" : 3 }`,
+		`add element inet pco_gw leg_ok { "leg1" . 1, "leg3" . 3 }`,
+		`add element inet pco_gw dhcp_legs { "leg3" }`,
+		`add element inet pco_gw leg_snat { ` + snatElement(legA) + `, ` + snatElement(legM) + ` }`,
+	} {
+		require.Contains(t, first, want+"\n")
+	}
+	require.NotContains(t, first, "svc_dnat", "the services follow the legs")
+
+	h.reset()
+	h.sync(t, []Leg{legA, legB}, []Service{svcA, svcB})
+	require.Len(t, h.nft.scripts, 2)
+	require.NotContains(t, h.nft.scripts[0], "delete element", "nothing leaves before the legs are set up")
+	require.Contains(t, h.nft.scripts[0], `add element inet pco_gw legs { "leg2" }`)
+	require.Less(t, index(t, h.sys.order, "nft add element inet pco_gw "), index(t, h.sys.order, "addr add leg2 "))
+	require.Contains(t, h.nft.scripts[1], `delete element inet pco_gw legs { "leg3" }`)
+	require.Equal(t, sortedElements(ctElementsOf([]Leg{legA, legB}, []Service{svcA, svcB})), sortedElements(h.nft.tables[gwTable].elems))
+}
+
+// Without the table, as when it was taken away since Up, the legs are loaded
+// with it before any address, the whole of what is wanted in one transaction.
+func TestALegIsInTheTableBeforeItsAddressAlsoWhenTheTableWasGone(t *testing.T) {
+	h := newCTHarness(t)
+	h.up(t)
+	delete(h.nft.tables, gwTable)
+	h.sync(t, []Leg{legA}, []Service{svcA})
+	require.Len(t, h.nft.scripts, 1)
+	require.Equal(t, renderContainer(ctElementsOf([]Leg{legA}, []Service{svcA})), h.nft.scripts[0])
+	require.Less(t, index(t, h.sys.order, "nft pco_gw"), index(t, h.sys.order, "addr add leg1 "))
+}
+
 // A card that is there with the MAC of a leg is configured without a call to
 // the API: after a restart, at boot, or one an admin added by hand.
 func TestACardThatIsThereIsConfiguredWithoutTheAPI(t *testing.T) {
