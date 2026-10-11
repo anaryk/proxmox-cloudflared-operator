@@ -232,6 +232,35 @@ func TestAServiceAddrOutsideThePoolIsNotSaved(t *testing.T) {
 	require.Empty(t, stored(t, p.Cluster))
 }
 
+func TestAServiceAddrAnotherMappingHoldsIsNotSaved(t *testing.T) {
+	s, p := openStore(t)
+	first := allocate(t, s, "vmbr1", "10.20.0.5")
+	require.Equal(t, addr("198.18.1.0"), first.Service)
+	onNode, err := s.AllocateNodeServiceAddr("vmbr9", "pve-a", addr("10.30.0.5"), t0)
+	require.NoError(t, err)
+	require.Equal(t, addr("198.18.1.1"), onNode.Service)
+
+	err = s.SaveServiceAddr(ServiceAddr{Network: "vmbr2", Addr: addr("10.20.0.5"), Service: addr("198.18.1.0"), AllocatedAt: t0})
+	require.ErrorContains(t, err, "is the service address of svcaddrs/vmbr1-10.20.0.5 already")
+	err = s.SaveServiceAddr(ServiceAddr{Network: "vmbr2", Addr: addr("10.20.0.5"), Service: addr("198.18.1.1"), AllocatedAt: t0})
+	require.ErrorContains(t, err, "is the service address of nodesvcaddrs/vmbr9-pve-a-10.30.0.5 already")
+	err = s.SaveNodeServiceAddr(NodeServiceAddr{Network: "vmbr9", Node: "pve-b", Addr: addr("10.30.0.5"), Service: addr("198.18.1.0"), AllocatedAt: t0})
+	require.ErrorContains(t, err, "is the service address of svcaddrs/vmbr1-10.20.0.5 already")
+	require.NoError(t, s.SaveServiceAddr(first), "the same mapping again is not another")
+	require.NoError(t, s.SaveNodeServiceAddr(onNode))
+
+	err = s.SaveServiceAddr(ServiceAddr{Network: "vmbr2", Addr: addr("10.20.0.5"), Service: addr("198.18.1.2"), AllocatedAt: t0})
+	require.ErrorContains(t, err, "is not below 198.18.1.2, the next the pool gives out")
+	err = s.SaveNodeServiceAddr(NodeServiceAddr{Network: "vmbr9", Node: "pve-b", Addr: addr("10.30.0.5"), Service: addr("198.18.1.9"), AllocatedAt: t0})
+	require.ErrorContains(t, err, "is not below 198.18.1.2")
+	require.NoError(t, os.Remove(filepath.Join(p.Cluster, "meta", "svcpool.json")))
+	require.NoError(t, s.SaveServiceAddr(ServiceAddr{Network: "vmbr2", Addr: addr("10.20.0.5"), Service: addr("198.18.1.9"), AllocatedAt: t0}),
+		"without a pool file the mappings alone say what is taken")
+	got, err := s.ServiceAddrs()
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+}
+
 func TestThePoolIsSavedAboveEveryMappingAndNeverMovesBack(t *testing.T) {
 	s, p := openStore(t)
 	require.NoError(t, s.SaveServiceAddr(ServiceAddr{Network: "vmbr1", Addr: addr("10.20.0.5"), Service: addr("198.18.1.4"), AllocatedAt: t0}))

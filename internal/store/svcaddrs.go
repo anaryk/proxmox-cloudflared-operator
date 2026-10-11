@@ -235,7 +235,9 @@ func (s *Store) ServicePool() (next netip.Addr, used, size int, err error) {
 }
 
 // SaveServiceAddr stores a mapping as it was, as a restore does: the pool
-// does not move. A service address outside the pool is refused.
+// does not move. A service address outside the pool is refused, and so is
+// one that another mapping of either kind holds, or one at or above the next
+// of a stored pool, which an allocation would give out again.
 func (s *Store) SaveServiceAddr(m ServiceAddr) error {
 	if err := checkServiceKey(m.Network, m.Addr); err != nil {
 		return err
@@ -246,7 +248,35 @@ func (s *Store) SaveServiceAddr(m ServiceAddr) error {
 	}
 	s.netMu.Lock()
 	defer s.netMu.Unlock()
+	if err := s.serviceFree(kindSvcAddrs, id, m.Service); err != nil {
+		return err
+	}
 	return s.cluster.put(kindSvcAddrs, id, m, true)
+}
+
+// serviceFree refuses a service address that a mapping other than (kind, id)
+// holds, of either kind, and one that is not below the next of a stored
+// pool. The caller holds netMu.
+func (s *Store) serviceFree(kind, id string, service netip.Addr) error {
+	var p servicePool
+	found, err := s.cluster.Get(kindMeta, idSvcPool, &p)
+	if err != nil {
+		return err
+	}
+	if found && !service.Less(p.Next) {
+		return fmt.Errorf("service address %s: %v is not below %v, the next the pool gives out", id, service, p.Next)
+	}
+	held := func(otherKind, otherID string, other netip.Addr) error {
+		if other == service && (otherKind != kind || otherID != id) {
+			return fmt.Errorf("service address %s: %v is the service address of %s/%s already", id, service, otherKind, otherID)
+		}
+		return nil
+	}
+	err = eachObject(s.cluster, kindSvcAddrs, func(_, otherID string, o ServiceAddr) error { return held(kindSvcAddrs, otherID, o.Service) })
+	if err != nil {
+		return err
+	}
+	return eachObject(s.cluster, kindNodeSvcAddrs, func(_, otherID string, o NodeServiceAddr) error { return held(kindNodeSvcAddrs, otherID, o.Service) })
 }
 
 // SaveServicePool sets the address the next allocation gets, as a restore

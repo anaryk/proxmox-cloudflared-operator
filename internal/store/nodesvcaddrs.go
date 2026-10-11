@@ -103,7 +103,7 @@ func (s *Store) AllocateNodeServiceAddr(network, node string, addr netip.Addr, n
 }
 
 // SaveNodeServiceAddr stores a mapping as it was, as a restore does: the pool
-// does not move. A service address outside the pool is refused.
+// does not move. What SaveServiceAddr refuses, it refuses too.
 func (s *Store) SaveNodeServiceAddr(m NodeServiceAddr) error {
 	if err := checkNodeServiceKey(m.Network, m.Node, m.Addr); err != nil {
 		return err
@@ -114,6 +114,9 @@ func (s *Store) SaveNodeServiceAddr(m NodeServiceAddr) error {
 	}
 	s.netMu.Lock()
 	defer s.netMu.Unlock()
+	if err := s.serviceFree(kindNodeSvcAddrs, id, m.Service); err != nil {
+		return err
+	}
 	return s.cluster.put(kindNodeSvcAddrs, id, m, true)
 }
 
