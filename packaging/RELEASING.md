@@ -79,12 +79,15 @@ approval, the monthly ones included.
    no release that failed a check can be published by hand; the tag stays.
 5. The job `publish` publishes the draft. Only the highest final version is
    marked as the latest release, so a pre-release, or a fix for an older
-   line, is not what the installer picks.
+   line, is not what the installer picks. When the tags cannot be read, the
+   job fails before it publishes anything, rather than guess; run it again.
 6. For the latest release only, the jobs `site` and `pages` deploy the
    documentation site built from the tag (see below).
 
 A tag is never moved or deleted. If a run fails for a reason outside the
-repository, run the failed jobs again. Otherwise release the next version.
+repository, run the failed jobs again ("Re-run failed jobs" on the run): a
+job after `sign` runs again with what the jobs before it left, and asks for
+no second approval. Otherwise release the next version.
 
 The templates are built from the Debian snapshot that a line
 `Snapshot: YYYYMMDDTHHMMSSZ` of the tag's message names, or from the one in
@@ -214,18 +217,23 @@ when `sign` no longer deletes the draft of a failed run, or deletes it before
 the key is gone, when any job but `publish` publishes, when a `before` hook of
 `.goreleaser.yaml` does not run as a step of `sign` before the import, when the
 goreleaser of `sign` runs the hooks, or when a step between the import and the
-removal of the key runs a program of the repository. For the site it fails
-when `site` gets a secret or more than read access, when `pages` runs in any
-environment but `github-pages`, has a permission but `pages` and `id-token`, or
-runs a step but the deployment, when `site` or `pages` runs for a release that
-is not the latest, and when the latest is not what `publish` decided with
-`is-latest.sh` and marks the release by. It also runs the step of `build` that
-reads the tag against annotated and lightweight tags, with and without a line
-`Snapshot:`, and the step of `publish` that decides on the latest against a
-release, a candidate and a fix for an older line. The workflow `ui-audit` runs
-`npm audit --omit=dev` every week and when `web/package-lock.json` changes; it
-is not a required check, so an advisory or a registry that does not answer
-blocks no pull request.
+removal of the key runs a program of the repository, by its path or through
+an interpreter. For the site it fails when `site` gets a secret (in any form
+an expression can read one) or more than read access, when its checkout names
+a ref, so that the site would not be the one of the tag, or keeps its
+credentials, when `pages` runs in any environment but `github-pages`, has a
+permission but `pages` and `id-token`, or runs a step but the deployment, when
+`site` or `pages` runs for a release that is not the latest, and when the
+latest is not what `publish` decided with `is-latest.sh` in one step and marks
+the release by in the next, with nothing else deciding. It also runs the step
+of `build` that reads the tag against annotated and lightweight tags, with and
+without a line `Snapshot:`, the step of `publish` that decides on the latest
+against a release, a candidate, a fix for an older line and a repository whose
+tags cannot be read, which must fail it rather than answer, and the step that
+publishes with a stub `gh`, to see the flags follow that answer. The workflow
+`ui-audit` runs `npm audit --omit=dev` every week and when
+`web/package-lock.json` changes; it is not a required check, so an advisory or
+a registry that does not answer blocks no pull request.
 
 ## Node and npm
 
@@ -258,9 +266,12 @@ at <https://anaryk.github.io/proxmox-cloudflared-operator/>, by two workflows:
   `pages` deploys it in the environment `github-pages`. `pages` is the only job
   of the workflow, besides `sign`, that runs in an environment, and it has the
   permissions `pages` and `id-token` and nothing else. A release candidate and
-  a fix for an older line deploy nothing. If the site fails its checks, the
-  release stays published and the run fails: correct the pages, and deploy
-  them by hand as below.
+  a fix for an older line deploy nothing. When `site` or `pages` fails, the
+  release stays published and the run fails. For a cause outside the
+  repository (the registry, Pages itself), "Re-run failed jobs" runs the two
+  again with the answer `publish` gave, and asks for no second approval of
+  `sign`. When the site failed its checks, correct the pages on `main` and
+  deploy them by hand with `docs`, below: the tag is never moved.
 
 - The workflow `docs` deploys the site of any ref by hand
   (`workflow_dispatch`): the first deploy, and a correction between two
