@@ -26,8 +26,7 @@ func removedBy(name string) decision  { return decision{action: remove, by: name
 // configuration of the cluster, which it holds Sys.Audit on, and nothing an
 // admin alone acts on. A field the daemon adds has none until it is given
 // one here, and the test of this table fails meanwhile: nothing new reaches
-// a reader unseen. The managed network of the networking milestone adds
-// "managed", filtered by a case of its own.
+// a reader unseen.
 var stateFields = map[string]decision{
 	"at":          kept,
 	"finishedAt":  kept,
@@ -68,6 +67,10 @@ var stateFields = map[string]decision{
 	// of what it serves: cluster configuration, no guest. The MACs the legs
 	// show on their LANs are for an admin.
 	"networks": filteredBy("networks"),
+	// The managed network names guests: their cards, those that wait and
+	// the foreign cards, each by guest; the MACs, identities and pveum lines
+	// are an admin's.
+	"managed": filteredBy("managed"),
 }
 
 // routeFields are the fields of a route of the state: a reader gets a route

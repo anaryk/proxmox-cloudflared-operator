@@ -94,6 +94,13 @@ type Engine interface {
 	ProbeNetwork(ctx context.Context, r engine.ProbeRequest) (engine.ProbeResult, error)
 	Attach(ctx context.Context, r engine.AttachRequest) (engine.NetworkView, error)
 	Detach(ctx context.Context, id string, rev int64, served []string) error
+	// The managed network: its view, the consent of a guest and its
+	// revocation, and the switch that stores the network once its vnet
+	// exists.
+	Managed() (engine.ManagedView, error)
+	ApproveManaged(ctx context.Context, owner, identity string, acceptFirewallImpact bool) (store.Consent, error)
+	RevokeManaged(ctx context.Context, owner string) error
+	EnableManaged(ctx context.Context) error
 }
 
 // Server answers API requests for an engine.

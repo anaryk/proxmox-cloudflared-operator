@@ -39,6 +39,7 @@ var caseRows = map[string]caseRow{
 	"unapproved": {state: populated, visible: sees(201), fields: []string{"unapproved"}},
 	"identity":   {state: withIdentity, visible: sees(140), fields: []string{"identity"}},
 	"networks":   {state: populated, visible: sees(101), fields: []string{"networks"}},
+	"managed":    {state: populated, visible: sees(201, 204, 205), fields: []string{"managed"}},
 }
 
 // manualOnly is a state of manual routes only, with a conflict and a lost

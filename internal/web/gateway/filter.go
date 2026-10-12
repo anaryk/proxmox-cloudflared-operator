@@ -29,8 +29,7 @@ type stateCase struct {
 }
 
 // stateCases are the cases of FilterState, one per field that is filtered
-// or removed (stateFields). The managed network of the networking milestone
-// adds "managed".
+// or removed (stateFields).
 var stateCases = []stateCase{
 	{"routes", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
 		st.Routes = only(st.Routes, func(r engine.RouteView) bool { return ownerVisible(r.Owner, visible) })
@@ -73,12 +72,59 @@ var stateCases = []stateCase{
 		st.Identity = &id
 	}},
 	{"networks", func(st *engine.State, _ auth.Visible, _ map[string]bool) {
-		nets := only(st.Networks, func(engine.NetworkView) bool { return true })
-		for i := range nets {
-			nets[i].LegMAC, nets[i].LegMACs = "", nil
-		}
-		st.Networks = nets
+		st.Networks = withoutLegMACs(st.Networks)
 	}},
+	{"managed", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
+		st.Managed = managedFor(st.Managed, visible)
+	}},
+}
+
+// withoutLegMACs is a copy of the networks without the MACs of the legs,
+// which an admin sees on the LANs of the bridges.
+func withoutLegMACs(nets []engine.NetworkView) []engine.NetworkView {
+	out := only(nets, func(engine.NetworkView) bool { return true })
+	for i := range out {
+		out[i].LegMAC, out[i].LegMACs = "", nil
+	}
+	return out
+}
+
+// managedFor is the managed network as a reader sees it: the cards, the
+// waiting guests and the foreign cards of the guests it may audit, without
+// the MACs, the identities and the pveum lines, which are an admin's.
+func managedFor(m engine.ManagedView, visible auth.Visible) engine.ManagedView {
+	m.Attachments = only(m.Attachments, func(a engine.AttachmentView) bool { return ownerVisible(a.Owner, visible) && !manual(a.Owner) })
+	for i := range m.Attachments {
+		m.Attachments[i].MAC, m.Attachments[i].Identity, m.Attachments[i].GrantCmd = "", "", ""
+	}
+	m.Waiting = only(m.Waiting, func(w engine.ManagedWaiting) bool { return visible(w.GuestRef) })
+	for i := range m.Waiting {
+		m.Waiting[i].Identity = ""
+		if why, _, ok := strings.Cut(m.Waiting[i].Why, ": pveum "); ok {
+			m.Waiting[i].Why = why
+		}
+	}
+	m.Foreign = only(m.Foreign, func(f engine.ForeignView) bool { return visible(f.GuestRef) })
+	for i := range m.Foreign {
+		m.Foreign[i].MAC = ""
+	}
+	m.PoolGrant = ""
+	return m
+}
+
+func filterNetworks(raw []byte, _ *Reader) ([]byte, error) {
+	return recode(raw, func(nets []engine.NetworkView) (any, error) { return withoutLegMACs(nets), nil })
+}
+
+func filterNetwork(raw []byte, _ *Reader) ([]byte, error) {
+	return recode(raw, func(n engine.NetworkDetail) (any, error) {
+		n.LegMAC, n.LegMACs = "", nil
+		return n, nil
+	})
+}
+
+func filterManaged(raw []byte, r *Reader) ([]byte, error) {
+	return recode(raw, func(m engine.ManagedView) (any, error) { return managedFor(m, r.Visible), nil })
 }
 
 // FilterState is the state a reader who sees visible gets: every case of

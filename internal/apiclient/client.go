@@ -20,6 +20,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const (
@@ -470,10 +471,44 @@ func (c *Client) Detach(ctx context.Context, id string, rev int64, served []stri
 	return c.call(ctx, c.long, http.MethodDelete, networkPath(id)+"?"+q.Encode(), nil, nil)
 }
 
-// EnableManaged asks the daemon of an appliance to take up the managed
-// network, once the node made its vnet and granted it.
+// EnableManaged asks the daemon to store the managed network, once its vnet
+// exists: on a host made by pco network managed enable as root, in the
+// appliance by pco appliance managed enable on the node.
 func (c *Client) EnableManaged(ctx context.Context) error {
 	return c.call(ctx, c.long, http.MethodPost, "/v1/managed/enable", nil, nil)
+}
+
+// Managed returns the managed network as the last cycle found it.
+func (c *Client) Managed(ctx context.Context) (engine.ManagedView, error) {
+	var v engine.ManagedView
+	err := c.call(ctx, c.short, http.MethodGet, "/v1/managed", nil, &v)
+	return v, err
+}
+
+// ManagedRaw is Managed as the daemon sent it.
+func (c *Client) ManagedRaw(ctx context.Context) (json.RawMessage, error) {
+	return c.raw(ctx, c.short, "/v1/managed")
+}
+
+// ApproveManaged consents to a card on the managed network for a guest, in
+// the identity the daemon sees it in now; identity, when it is not empty,
+// is the one the admin was shown. acceptFirewallImpact confirms for this
+// guest that the appliance may turn its firewall on although another of its
+// cards has firewall=1.
+func (c *Client) ApproveManaged(ctx context.Context, owner, identity string, acceptFirewallImpact bool) (store.Consent, error) {
+	body := struct {
+		Owner                string `json:"owner"`
+		Identity             string `json:"identity,omitempty"`
+		AcceptFirewallImpact bool   `json:"acceptFirewallImpact,omitempty"`
+	}{owner, identity, acceptFirewallImpact}
+	var consent store.Consent
+	err := c.call(ctx, c.long, http.MethodPost, "/v1/managed/approve", body, &consent)
+	return consent, err
+}
+
+// RevokeManaged removes the consent of a guest for the managed network.
+func (c *Client) RevokeManaged(ctx context.Context, owner string) error {
+	return c.call(ctx, c.long, http.MethodPost, "/v1/managed/revoke", ownerBody{owner}, nil)
 }
 
 // raw returns the answer to a GET as the daemon sent it.

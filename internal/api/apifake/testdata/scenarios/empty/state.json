@@ -16,6 +16,22 @@
   "unapproved": [],
   "segments": [],
   "networks": [],
+  "managed": {
+    "enabled": false,
+    "consent": "",
+    "autoAllowed": false,
+    "tagHonoured": false,
+    "attachments": [],
+    "waiting": [],
+    "foreign": [],
+    "free": 0,
+    "vnet": {
+      "ok": false,
+      "zoneType": "",
+      "isolatePorts": false,
+      "subnets": 0
+    }
+  },
   "gateTagged": 0,
   "rogueConnectors": []
 }

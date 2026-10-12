@@ -57,6 +57,25 @@ export interface ApprovalView {
   addresses?: string[]
 }
 
+// engine.AttachmentView
+export interface AttachmentView {
+  owner: string
+  identity: string
+  nic: number
+  mac: string
+  addr: string
+  consent: string
+  since: string
+  firewall?: FirewallBefore
+  detachAt?: string
+  detachWhy?: string
+  removedAt?: string
+  guest?: GuestView
+  state: string
+  detail?: string
+  grantCmd?: string
+}
+
 // resolve.CandidateResult
 export interface CandidateResult {
   addr: string
@@ -133,6 +152,13 @@ export interface CredentialView {
   report?: Report
 }
 
+// engine.DHCPView
+export interface DHCPView {
+  bound: boolean
+  since?: string
+  unknown: number
+}
+
 // wire.DoctorCounts
 export interface DoctorCounts {
   ok: number
@@ -185,12 +211,37 @@ export interface Exclusion {
   detail: string
 }
 
+// engine.FilteredView
+export interface FilteredView {
+  holds: boolean
+  backend: string
+  offered: boolean
+  why?: string[]
+}
+
 // doctor.Finding
 export interface Finding {
   check: string
   level: string
   detail: string
   fix?: string
+}
+
+// store.FirewallBefore
+export interface FirewallBefore {
+  enabled: boolean
+  rules: number
+}
+
+// engine.ForeignView
+export interface ForeignView {
+  kind: string
+  vmid: number
+  name?: string
+  nic: number
+  mac: string
+  action: string
+  why: string
 }
 
 // engine.GapNotice
@@ -288,6 +339,35 @@ export interface ManagedSettings {
   subnet?: string
   detachGrace?: string
   acceptFirewallImpact?: boolean
+}
+
+// engine.ManagedView
+export interface ManagedView {
+  enabled: boolean
+  consent: string
+  autoAllowed: boolean
+  autoStopped?: string
+  tagHonoured: boolean
+  subnet?: string
+  leg?: LegView
+  attachments: AttachmentView[]
+  waiting: ManagedWaiting[]
+  foreign: ForeignView[]
+  free: number
+  vnet: VnetView
+  poolGrant?: string
+  refused?: string
+  filtered?: FilteredView
+  dhcp?: DHCPView
+}
+
+// engine.ManagedWaiting
+export interface ManagedWaiting {
+  kind: string
+  vmid: number
+  name?: string
+  identity: string
+  why: string
 }
 
 // engine.ManualRouteView
@@ -504,6 +584,7 @@ export interface State {
   unapproved: UnapprovedGuest[]
   segments: SegmentView[]
   networks: NetworkView[]
+  managed: ManagedView
   egress?: EgressView
   admission?: string
   gateTagged: number
@@ -636,6 +717,15 @@ export interface Version {
   pollInterval: string
 }
 
+// engine.VnetView
+export interface VnetView {
+  ok: boolean
+  zoneType: string
+  isolatePorts: boolean
+  subnets: number
+  why?: string[]
+}
+
 // engine.Waiting
 export interface Waiting {
   kind: string
@@ -704,6 +794,7 @@ export const stateFields: readonly string[] = [
   "unapproved",
   "segments",
   "networks",
+  "managed",
   "egress",
   "admission",
   "gateTagged",

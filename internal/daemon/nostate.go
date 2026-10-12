@@ -205,3 +205,15 @@ func (n *noStateEngine) Attach(context.Context, engine.AttachRequest) (engine.Ne
 }
 
 func (n *noStateEngine) Detach(context.Context, string, int64, []string) error { return n.refuse() }
+
+func (n *noStateEngine) Managed() (engine.ManagedView, error) {
+	return engine.ManagedView{}, n.refuse()
+}
+
+func (n *noStateEngine) ApproveManaged(context.Context, string, string, bool) (store.Consent, error) {
+	return store.Consent{}, n.refuse()
+}
+
+func (n *noStateEngine) RevokeManaged(context.Context, string) error { return n.refuse() }
+
+func (n *noStateEngine) EnableManaged(context.Context) error { return n.refuse() }

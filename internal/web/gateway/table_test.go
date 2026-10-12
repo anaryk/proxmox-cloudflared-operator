@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/auth"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/web/wire"
 )
@@ -70,7 +72,57 @@ var tableRows = map[string]tableRow{
 	"PUT /routes/manual/:id":             {path: "/routes/manual/status", body: `{"rev":2,"hostname":"status.example.com"}`},
 	"DELETE /credentials/:id":            {path: "/credentials/cred2"},
 	"DELETE /routes/manual/:id":          {path: "/routes/manual/status", query: "?rev=2&force=1", upQuery: "rev=2"},
+	"GET /networks":                      {answer: networksAnswer, golden: "networks.json"},
+	"GET /networks/candidates":           {},
+	"GET /networks/:id":                  {path: "/networks/vmbr2", answer: networkAnswer, golden: "network.json"},
+	"POST /networks/probe":               {body: `{"bridge":"vmbr1","address":"10.77.0.250"}`},
+	"POST /networks":                     {body: `{"bridge":"vmbr1","prefix":"10.77.0.0/24","address":"10.77.0.250"}`},
+	"DELETE /networks/:id":               {path: "/networks/vmbr1", query: "?rev=2&confirm=true&force=1", upQuery: "confirm=true&rev=2"},
+	"GET /managed":                       {answer: managedAnswer, golden: "managed.json"},
+	"POST /managed/approve":              {body: `{"owner":"lxc/204","identity":"mac:204","acceptFirewallImpact":true}`},
+	"POST /managed/revoke":               {body: `{"owner":"lxc/201"}`},
+	"POST /managed/enable":               {body: `{}`},
 }
+
+var (
+	networksAnswer = []engine.NetworkView{{
+		Network: store.Network{
+			ID: "vmbr2", Kind: store.NetworkAttach, Bridge: "vmbr2", Prefix: netip.MustParsePrefix("10.50.0.0/24"),
+			Legs: map[string]netip.Addr{"pve1": netip.MustParseAddr("10.50.0.250")}, LegMAC: "02:50:43:4f:00:01",
+			LegMACs: map[string]string{"pve1": "02:50:43:4f:00:01"}, Mark: 1, CreatedAt: t0, Scope: store.ScopeNode, Rev: 3,
+		},
+		Legs: []engine.LegView{{Node: "pve1", Addr: netip.MustParseAddr("10.50.0.250"), Up: true}}, Targets: 1, Routes: 1,
+	}}
+	networkAnswer = engine.NetworkDetail{
+		NetworkView: networksAnswer[0],
+		Services:    []store.ServiceAddr{{Network: "vmbr2", Addr: netip.MustParseAddr("10.50.0.10"), Service: netip.MustParseAddr("198.18.1.5"), AllocatedAt: t0}},
+		Served:      []string{"zabbix.example.com"},
+	}
+	managedAnswer = engine.ManagedView{
+		Enabled: true, Consent: "per-guest", AutoAllowed: true, TagHonoured: true, Subnet: netip.MustParsePrefix("10.203.118.0/24"),
+		Leg: &engine.LegView{Node: "pve1", Addr: netip.MustParseAddr("10.203.118.1"), Up: true},
+		Attachments: []engine.AttachmentView{
+			{
+				Attachment: store.Attachment{Owner: "lxc/201", Identity: "mac:201", NIC: 1, MAC: "06:50:43:4f:76:02", Addr: netip.MustParseAddr("10.203.118.2"), Consent: "tag", Since: t0},
+				Guest:      guestView(model.KindLXC, 201, "new-1"), State: engine.AttachmentAttached,
+			},
+			{
+				Attachment: store.Attachment{Owner: "lxc/203", Identity: "mac:203", NIC: 1, MAC: "06:50:43:4f:76:06", Addr: netip.MustParseAddr("10.203.118.6"), Consent: "tag", Since: t0},
+				Guest:      guestView(model.KindLXC, 203, "moved-3"), State: engine.AttachmentNeedsGrant,
+				GrantCmd: "pveum acl modify /vms/203 --users pco@pve --tokens 'pco@pve!vm9250' --roles PCOManaged",
+			},
+		},
+		Waiting: []engine.ManagedWaiting{
+			{GuestView: *guestView(model.KindLXC, 204, "gui-4"), Identity: "mac:204", Why: "needs-grant: pveum acl modify /vms/204 --users pco@pve --roles PCOManaged"},
+			{GuestView: *guestView(model.KindQEMU, 109, "other-9"), Identity: "uuid:109", Why: "guest is on node pve2, not pve1"},
+		},
+		Foreign: []engine.ForeignView{
+			{GuestView: *guestView(model.KindLXC, 205, "new-1-clone"), NIC: 1, MAC: "06:50:43:4f:76:02", Action: engine.ForeignLinkDown, Why: "a copy"},
+			{GuestView: *guestView(model.KindLXC, 201, "new-1"), NIC: 2, MAC: "06:50:43:4f:76:09", Action: engine.ForeignReported, Why: "another copy"},
+		},
+		Free: 250, Vnet: engine.VnetView{OK: true, ZoneType: "simple", IsolatePorts: true}, PoolGrant: "web",
+	}
+)
 
 var (
 	eventsAnswer = []engine.Event{
@@ -158,8 +210,12 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 		"GET /state", "GET /stream", "GET /events", "GET /traffic", "GET /traffic/route",
 		"GET /credentials", "GET /claims", "GET /approvals", "GET /guests", "GET /guests/:kind/:vmid/annotation",
 		"GET /settings", "GET /routes/manual", "GET /version", "POST /diagnose", "POST /doctor",
+		"GET /networks", "GET /networks/:id", "GET /managed",
 	}
 	long := map[string]bool{"POST /apply": true, "POST /credentials": true, "POST /credentials/:id/check": true}
+	// The candidates list the guests of the node afresh, which takes as long
+	// as a write.
+	slow := map[string]bool{"GET /networks/candidates": true}
 	for _, r := range Table {
 		key := ruleKey(r)
 		reads := false
@@ -182,6 +238,8 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 			require.Equal(t, http.MethodGet, r.Upstream)
 		case long[key]:
 			require.Equal(t, 75*time.Second, r.Timeout, key)
+		case slow[key]:
+			require.Equal(t, 60*time.Second, r.Timeout, key)
 		case r.Method == http.MethodGet:
 			require.Equal(t, 10*time.Second, r.Timeout, key)
 		default:
@@ -196,7 +254,7 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 			require.Zero(t, r.Body, key)
 		}
 	}
-	require.Len(t, Table, len(readers)+14)
+	require.Len(t, Table, len(readers)+21)
 }
 
 func TestReadersAreRefusedEveryAdminRule(t *testing.T) {
@@ -276,9 +334,9 @@ func TestReadersGetTheFilteredAnswers(t *testing.T) {
 	}
 }
 
-// Nothing outside the table reaches the socket: the root-only rotation, the
-// networking milestone's routes before they exist, routes the daemon has and
-// the page has no use for, and anything else under /api.
+// Nothing outside the table reaches the socket: the root-only rotation,
+// routes the daemon has and the page has no use for, and anything else
+// under /api.
 func TestWhatIsNotInTheTableReachesNoSocket(t *testing.T) {
 	s := newTestServer(t)
 	b := s.signIn(admin)
@@ -288,12 +346,6 @@ func TestWhatIsNotInTheTableReachesNoSocket(t *testing.T) {
 		code         string
 	}{
 		{http.MethodPost, "/api/v1/tunnels/rotate", http.StatusNotFound, "no_route"},
-		{http.MethodGet, "/api/v1/networks", http.StatusNotFound, "no_route"},
-		{http.MethodGet, "/api/v1/networks/candidates", http.StatusNotFound, "no_route"},
-		{http.MethodPost, "/api/v1/networks/probe", http.StatusNotFound, "no_route"},
-		{http.MethodDelete, "/api/v1/networks/net1", http.StatusNotFound, "no_route"},
-		{http.MethodGet, "/api/v1/managed", http.StatusNotFound, "no_route"},
-		{http.MethodPost, "/api/v1/managed/approve", http.StatusNotFound, "no_route"},
 		{http.MethodGet, "/api/v1/segments", http.StatusNotFound, "no_route"},
 		{http.MethodGet, "/api/v1/nothing", http.StatusNotFound, "no_route"},
 		{http.MethodGet, "/api/elsewhere", http.StatusNotFound, "no_route"},

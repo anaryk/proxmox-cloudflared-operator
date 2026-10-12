@@ -77,9 +77,7 @@ var eventParams = []string{"since", "until", "after", "boot", "route", "guest", 
 
 // Table is every call the page may make, and nothing else reaches the
 // socket: not the rotation of a tunnel's secret, which only root may ask
-// for, nor anything the page has no use for. The networking milestone adds
-// its own here, one entry each with its test; until then /networks and
-// /managed answer 404 like anything else that is not here.
+// for, nor anything the page has no use for.
 var Table = []Rule{
 	{Method: http.MethodGet, Path: "/state", Min: auth.RoleReader, Timeout: readTimeout, serve: (*Gateway).state},
 	{Method: http.MethodGet, Path: "/stream", Min: auth.RoleReader, serve: (*Gateway).stream},
@@ -119,6 +117,22 @@ var Table = []Rule{
 	{Method: http.MethodPut, Path: "/routes/manual/:id", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodDelete, Path: "/credentials/:id", Min: auth.RoleAdmin, Timeout: writeTimeout},
 	{Method: http.MethodDelete, Path: "/routes/manual/:id", Params: []string{"rev"}, Min: auth.RoleAdmin, Timeout: writeTimeout},
+	// The networks reached through a leg are cluster configuration, which
+	// a reader sees without the MACs of the legs; what may be attached lists
+	// the addresses of every guest, which is an admin's to see, and the
+	// daemon lists the guests for it.
+	{Method: http.MethodGet, Path: "/networks", Min: auth.RoleReader, Timeout: readTimeout, Filter: filterNetworks},
+	{Method: http.MethodGet, Path: "/networks/candidates", Min: auth.RoleAdmin, Timeout: writeTimeout},
+	{Method: http.MethodGet, Path: "/networks/:id", Min: auth.RoleReader, Timeout: readTimeout, Filter: filterNetwork},
+	{Method: http.MethodPost, Path: "/networks/probe", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
+	{Method: http.MethodPost, Path: "/networks", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
+	{Method: http.MethodDelete, Path: "/networks/:id", Params: []string{"rev", "confirm"}, Min: auth.RoleAdmin, Timeout: writeTimeout},
+	// The managed network: a reader sees the cards of the guests it may
+	// audit, without their MACs and identities.
+	{Method: http.MethodGet, Path: "/managed", Min: auth.RoleReader, Timeout: readTimeout, Filter: filterManaged},
+	{Method: http.MethodPost, Path: "/managed/approve", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
+	{Method: http.MethodPost, Path: "/managed/revoke", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
+	{Method: http.MethodPost, Path: "/managed/enable", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 }
 
 var errNotTheCall = errors.New("the request is not the JSON this call takes")

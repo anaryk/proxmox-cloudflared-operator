@@ -89,6 +89,7 @@ type fakeEngine struct {
 	restart    []string // what a save of the settings needs a restart for
 	manual     []engine.ManualRouteView
 	guests     []engine.GuestListView
+	managed    engine.ManagedView
 	annotation engine.AnnotationView
 
 	networks   []engine.NetworkView

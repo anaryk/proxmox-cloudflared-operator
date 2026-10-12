@@ -143,6 +143,16 @@ has the rest.
 | `PUT /v1/routes/manual/:id` | the route | none | admin |
 | `DELETE /v1/routes/manual/:id` | 200 | `pco route manual remove` | admin |
 | `POST /v1/daemon/restart` | 202 | none; `systemctl restart pco` | admin |
+| `GET /v1/networks` | the networks reached through a leg | `pco network list` | reader, filtered |
+| `GET /v1/networks/candidates` | the bridges and VLANs a network may be attached to | `pco network candidates` | admin |
+| `POST /v1/networks/probe` | who answers for an address | `pco network probe` | admin |
+| `POST /v1/networks` | the network, 201 | `pco network attach` | admin |
+| `GET /v1/networks/:id` | one network with its service addresses | `pco network show` | reader, filtered |
+| `DELETE /v1/networks/:id` | 200 | `pco network detach` | admin |
+| `GET /v1/managed` | the managed network: its cards, what waits and why | `pco managed status` | reader, filtered |
+| `POST /v1/managed/approve` | the consent | `pco managed approve` | admin |
+| `POST /v1/managed/revoke` | 200 | `pco managed revoke` | admin |
+| `POST /v1/managed/enable` | 200 | `pco network managed enable` | admin |
 
 A route that changes something and has nothing to say answers `{}`.
 
@@ -588,6 +598,14 @@ stream pco web holds, handed out to every browser filtered for its session.
 | `POST /api/v1/apply`, `/credentials`, `/credentials/:id/check` | the same | admin | 64 KiB; 75 s |
 | `PUT /api/v1/settings` | the same | admin | 1 MiB; 60 s |
 | `PUT /api/v1/routes/manual/:id` | the same | admin | 64 KiB; 60 s |
+| `GET /api/v1/networks`, `/networks/:id`, `/managed` | the same | reader | none; 10 s |
+| `GET /api/v1/networks/candidates` | the same; the daemon lists the guests for it | admin | none; 60 s |
+| `POST /api/v1/networks`, `/networks/probe`, `/managed/approve`, `/managed/revoke`, `/managed/enable` | the same | admin | 64 KiB; 60 s |
+| `DELETE /api/v1/networks/:id` | the same, with `rev` and `confirm` | admin | none; 60 s |
+
+A reader gets the networks without the MACs of the legs, and of the managed network the cards,
+the waiting guests and the foreign cards of the guests it may audit, without their MACs, their
+identities and the `pveum` lines.
 | `DELETE /api/v1/credentials/:id`, `/routes/manual/:id` | the same | admin | none; 60 s |
 
 Diagnosis and doctor are reads on the socket and `POST` at pco web, so that the checks of a request

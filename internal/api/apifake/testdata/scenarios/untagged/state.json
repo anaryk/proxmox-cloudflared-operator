@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "4817074bba642898",
+  "digest": "f8766a00a14ff406",
   "mode": "enforce",
   "complete": true,
   "routes": [],
@@ -98,6 +98,22 @@
   "unapproved": [],
   "segments": [],
   "networks": [],
+  "managed": {
+    "enabled": false,
+    "consent": "",
+    "autoAllowed": false,
+    "tagHonoured": false,
+    "attachments": [],
+    "waiting": [],
+    "foreign": [],
+    "free": 0,
+    "vnet": {
+      "ok": false,
+      "zoneType": "",
+      "isolatePorts": false,
+      "subnets": 0
+    }
+  },
   "egress": {
     "state": "on"
   },

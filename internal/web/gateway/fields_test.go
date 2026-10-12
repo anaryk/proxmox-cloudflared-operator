@@ -76,14 +76,14 @@ func TestEveryFieldHasADecision(t *testing.T) {
 	}
 }
 
-// A field the daemon adds is found: here State.Managed of the managed
-// network, on a copy of the state.
+// A field the daemon adds is found: here one made up, on a copy of the
+// state.
 func TestAFieldWithoutADecisionFails(t *testing.T) {
-	type withManaged struct {
+	type withMore struct {
 		engine.State
-		Managed any `json:"managed,omitempty"`
+		Later any `json:"later,omitempty"`
 	}
-	require.Equal(t, []string{"managed"}, undecided(reflect.TypeFor[withManaged](), stateFields))
+	require.Equal(t, []string{"later"}, undecided(reflect.TypeFor[withMore](), stateFields))
 }
 
 // Every decision that filters or removes names its case, and every case is

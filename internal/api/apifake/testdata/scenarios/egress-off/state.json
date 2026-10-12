@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "c079ac80b490a105",
+  "digest": "a30597053ec2926c",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -868,6 +868,151 @@
       "routes": 0
     }
   ],
+  "managed": {
+    "enabled": true,
+    "consent": "auto",
+    "autoAllowed": true,
+    "tagHonoured": true,
+    "subnet": "10.203.118.0/24",
+    "leg": {
+      "node": "pve1",
+      "addr": "10.203.118.1",
+      "up": true
+    },
+    "attachments": [
+      {
+        "owner": "qemu/105",
+        "identity": "uuid:105",
+        "nic": 2,
+        "mac": "06:50:43:4f:76:03",
+        "addr": "10.203.118.3",
+        "consent": "auto",
+        "since": "2026-10-01T11:00:00Z",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 105,
+          "name": "batch-5"
+        },
+        "state": "pending-reboot",
+        "detail": "waits for the restart of the guest"
+      },
+      {
+        "owner": "qemu/106",
+        "identity": "uuid:106",
+        "nic": 1,
+        "mac": "06:50:43:4f:76:04",
+        "addr": "10.203.118.4",
+        "consent": "approval",
+        "since": "2026-10-01T09:00:00Z",
+        "detachAt": "2026-10-01T12:10:00Z",
+        "detachWhy": "cf-tunnel-managed=off",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 106,
+          "name": "old-6"
+        },
+        "state": "detaching",
+        "detail": "goes at 2026-10-01T12:10:00Z: cf-tunnel-managed=off"
+      },
+      {
+        "owner": "qemu/108",
+        "identity": "uuid:108",
+        "nic": 1,
+        "mac": "06:50:43:4f:76:05",
+        "addr": "10.203.118.5",
+        "consent": "tag",
+        "since": "2026-10-01T08:00:00Z",
+        "detachWhy": "the guest is gone, or no longer carries the tag cf-tunnel",
+        "removedAt": "2026-10-01T11:59:00Z",
+        "guest": {
+          "kind": "qemu",
+          "vmid": 108
+        },
+        "state": "detach-pending",
+        "detail": "the guest is gone, or no longer carries the tag cf-tunnel; the card is removed once the configuration no longer lists it"
+      },
+      {
+        "owner": "lxc/201",
+        "identity": "mac:201",
+        "nic": 1,
+        "mac": "06:50:43:4f:76:02",
+        "addr": "10.203.118.2",
+        "consent": "tag",
+        "since": "2026-10-01T10:00:00Z",
+        "firewall": {
+          "enabled": false,
+          "rules": 0
+        },
+        "guest": {
+          "kind": "lxc",
+          "vmid": 201,
+          "name": "new-1"
+        },
+        "state": "attached"
+      },
+      {
+        "owner": "lxc/203",
+        "identity": "mac:203",
+        "nic": 1,
+        "mac": "06:50:43:4f:76:06",
+        "addr": "10.203.118.6",
+        "consent": "tag",
+        "since": "2026-10-01T07:00:00Z",
+        "guest": {
+          "kind": "lxc",
+          "vmid": 203,
+          "name": "moved-3"
+        },
+        "state": "needs-grant",
+        "grantCmd": "pveum acl modify /vms/203 --users pco@pve --tokens 'pco@pve!vm9250' --roles PCOManaged"
+      }
+    ],
+    "waiting": [
+      {
+        "kind": "qemu",
+        "vmid": 109,
+        "name": "other-9",
+        "identity": "uuid:109",
+        "why": "guest is on node pve2, not pve1"
+      },
+      {
+        "kind": "lxc",
+        "vmid": 204,
+        "name": "gui-4",
+        "identity": "mac:204",
+        "why": "needs-firewall-confirmation: turning on the firewall of lxc/204 (gui-4) also filters net0 (firewall=1); run pco managed approve lxc/204 --accept-firewall-impact, or set managed.acceptFirewallImpact for every guest"
+      }
+    ],
+    "foreign": [
+      {
+        "kind": "lxc",
+        "vmid": 205,
+        "name": "new-1-clone",
+        "nic": 1,
+        "mac": "06:50:43:4f:76:02",
+        "action": "link-down",
+        "why": "a card on pconet that pco did not attach, as a clone or a restore copies one; pco sets its link down"
+      }
+    ],
+    "free": 247,
+    "vnet": {
+      "ok": true,
+      "zoneType": "simple",
+      "isolatePorts": false,
+      "subnets": 0
+    },
+    "poolGrant": "web",
+    "filtered": {
+      "holds": true,
+      "backend": "pve-firewall",
+      "offered": true
+    },
+    "dhcp": {
+      "bound": true,
+      "since": "2026-10-01T06:00:00Z",
+      "unknown": 1
+    }
+  },
   "egress": {
     "state": "off",
     "since": "2026-10-01T11:00:00Z"

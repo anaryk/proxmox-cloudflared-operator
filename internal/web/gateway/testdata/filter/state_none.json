@@ -158,6 +158,21 @@
       "routes": 0
     }
   ],
+  "managed": {
+    "enabled": true,
+    "consent": "auto",
+    "autoAllowed": true,
+    "tagHonoured": true,
+    "subnet": "10.203.118.0/24",
+    "leg": {"node": "pve1", "addr": "10.203.118.1", "up": true},
+    "attachments": [],
+    "waiting": [],
+    "foreign": [],
+    "free": 247,
+    "vnet": {"ok": true, "zoneType": "simple", "isolatePorts": false, "subnets": 0},
+    "filtered": {"holds": true, "backend": "pve-firewall", "offered": true},
+    "dhcp": {"bound": true, "since": "2026-10-01T06:00:00Z", "unknown": 1}
+  },
   "egress": {"state": "off", "since": "2026-10-01T11:00:00Z"},
   "admission": "approve",
   "gateTagged": 2,

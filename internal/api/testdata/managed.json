@@ -1,0 +1,46 @@
+{
+  "enabled": true,
+  "consent": "per-guest",
+  "autoAllowed": true,
+  "tagHonoured": true,
+  "subnet": "10.203.118.0/24",
+  "leg": {
+    "node": "pve1",
+    "addr": "10.203.118.1",
+    "up": true
+  },
+  "attachments": [
+    {
+      "owner": "lxc/201",
+      "identity": "mac:201",
+      "nic": 1,
+      "mac": "06:50:43:4f:76:02",
+      "addr": "10.203.118.2",
+      "consent": "tag",
+      "since": "2026-03-04T05:06:07Z",
+      "guest": {
+        "kind": "lxc",
+        "vmid": 201,
+        "name": "new-1"
+      },
+      "state": "attached"
+    }
+  ],
+  "waiting": [
+    {
+      "kind": "qemu",
+      "vmid": 101,
+      "name": "web-1",
+      "identity": "uuid:101",
+      "why": "no cycle has run since the start"
+    }
+  ],
+  "foreign": [],
+  "free": 252,
+  "vnet": {
+    "ok": true,
+    "zoneType": "simple",
+    "isolatePorts": true,
+    "subnets": 0
+  }
+}

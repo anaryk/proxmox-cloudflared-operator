@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "consent": "per-guest",
+  "autoAllowed": true,
+  "tagHonoured": true,
+  "subnet": "10.203.118.0/24",
+  "leg": {"node": "pve1", "addr": "10.203.118.1", "up": true},
+  "attachments": [
+    {
+      "owner": "lxc/201",
+      "identity": "",
+      "nic": 1,
+      "mac": "",
+      "addr": "10.203.118.2",
+      "consent": "tag",
+      "since": "2026-10-01T12:00:00Z",
+      "guest": {"kind": "lxc", "vmid": 201, "name": "new-1"},
+      "state": "attached"
+    }
+  ],
+  "waiting": [],
+  "foreign": [
+    {"kind": "lxc", "vmid": 201, "name": "new-1", "nic": 2, "mac": "", "action": "reported", "why": "another copy"}
+  ],
+  "free": 250,
+  "vnet": {"ok": true, "zoneType": "simple", "isolatePorts": true, "subnets": 0}
+}

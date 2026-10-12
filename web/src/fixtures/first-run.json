@@ -1,5 +1,5 @@
 {
-  "digest": "8d3eae6e060d248a",
+  "digest": "0237f300c3ed4d2b",
   "mode": "observe",
   "complete": false,
   "routes": [],
@@ -19,6 +19,22 @@
   "unapproved": [],
   "segments": [],
   "networks": [],
+  "managed": {
+    "enabled": false,
+    "consent": "",
+    "autoAllowed": false,
+    "tagHonoured": false,
+    "attachments": [],
+    "waiting": [],
+    "foreign": [],
+    "free": 0,
+    "vnet": {
+      "ok": false,
+      "zoneType": "",
+      "isolatePorts": false,
+      "subnets": 0
+    }
+  },
   "gateTagged": 0,
   "rogueConnectors": []
 }
