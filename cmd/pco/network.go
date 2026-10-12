@@ -517,3 +517,10 @@ func (a *app) printNetwork(s *screen, n engine.NetworkDetail) {
 		s.printf("  %s\n", host)
 	}
 }
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
