@@ -23,8 +23,9 @@ pco runs on one node of a cluster: setup on a further node, whose store the clus
 filesystem shares, refuses. A new install records the identity of the cluster and makes the
 install's CA, with the node's own key and certificates.
 
-Setup offers the datacenter firewall rule that admits the agent channel of the controller,
-TCP port 8644, from the nodes: IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset
+Once pco runs on more than one node, setup offers the datacenter firewall rule that admits
+the agent channel of the controller, TCP port 8644, from the nodes; a node alone needs none,
+and is not asked. The rule is IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset
 pco-nodes holding every node's agent address, kept current as nodes join and leave. `--yes` takes
 it and `--no-firewall-rule` leaves it out; nothing else of the firewall is touched.
 

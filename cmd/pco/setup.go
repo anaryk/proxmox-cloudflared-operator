@@ -55,8 +55,9 @@ func (a *app) setupCmd() *cobra.Command {
 			"pco runs on one node of a cluster: setup on a further node, whose store the cluster\n" +
 			"filesystem shares, refuses. A new install records the identity of the cluster and makes the\n" +
 			"install's CA, with the node's own key and certificates.\n\n" +
-			"Setup offers the datacenter firewall rule that admits the agent channel of the controller,\n" +
-			"TCP port 8644, from the nodes: IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset\n" +
+			"Once pco runs on more than one node, setup offers the datacenter firewall rule that admits\n" +
+			"the agent channel of the controller, TCP port 8644, from the nodes; a node alone needs none,\n" +
+			"and is not asked. The rule is IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset\n" +
 			"pco-nodes holding every node's agent address, kept current as nodes join and leave. --yes takes\n" +
 			"it and --no-firewall-rule leaves it out; nothing else of the firewall is touched.\n\n" +
 			"The web interface, pco-web.service, listens on the node's address in the cluster status,\n" +

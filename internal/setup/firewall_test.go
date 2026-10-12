@@ -113,7 +113,7 @@ func TestTheFirewallRuleIsMadeWithTheFirstNode(t *testing.T) {
 	e.script(preflightNew("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(),
 		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), firewallMade(), cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
 
-	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()}))
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
 	e.done()
 
 	m := e.manifest()
@@ -130,7 +130,7 @@ func TestTheFirewallRuleIsOfferedAndMayBeDeclined(t *testing.T) {
 	e.ask.answers = []answer{{about: "8644", yes: false}}
 	e.script(freshInstall()...)
 
-	require.NoError(t, e.s.Run(t.Context(), Options{CloudflareToken: cfToken, Node: testNode, RegisterTags: yes(), InstallCloudflared: yes()}))
+	require.NoError(t, e.s.Run(t.Context(), Options{CloudflareToken: cfToken, ClusterPreview: true, Node: testNode, RegisterTags: yes(), InstallCloudflared: yes()}))
 	e.done()
 
 	m := e.manifest()
@@ -148,7 +148,7 @@ func TestTheFirewallRuleIsTakenWithYes(t *testing.T) {
 	e.script(preflightNew("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(),
 		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), firewallMade(), cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
 
-	require.NoError(t, e.s.Run(t.Context(), Options{Yes: true, CloudflareToken: cfToken, Node: testNode}))
+	require.NoError(t, e.s.Run(t.Context(), Options{Yes: true, CloudflareToken: cfToken, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	require.True(t, e.manifest().CreatedFirewallRule)
@@ -167,7 +167,7 @@ func TestAnIPSetMadeMeanwhileByAnotherNodeIsNotThisNodes(t *testing.T) {
 			{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment))},
 		}, cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
 
-	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()}))
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
 	e.done()
 
 	m := e.manifest()
@@ -192,7 +192,7 @@ func TestASecondCopyOfTheRuleIsRemovedKeepingTheTopmost(t *testing.T) {
 			{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment), strings.Replace(otherRule, `"pos":0`, `"pos":1`, 1))},
 		}, cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
 
-	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()}))
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
 	e.done()
 
 	e.requireShown("removed a second copy of the datacenter rule")
@@ -277,7 +277,7 @@ func TestAnIPSetMadeByHandIsUsedAndKept(t *testing.T) {
 			{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment))},
 		}, cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
 
-	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()}))
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
 	e.done()
 
 	m := e.manifest()
@@ -299,7 +299,7 @@ func TestAFailedRuleIsNotedAndTheNoteTakenBackWhenNothingIsThere(t *testing.T) {
 			{line: rulesList, out: "[]"},
 		})
 
-	err := e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()})
+	err := e.setup(Options{Yes: true, CloudflareToken: cfToken, ClusterPreview: true, Node: testNode, FirewallRule: yes()})
 
 	require.ErrorContains(t, err, "setup step firewall: adding the datacenter rule")
 	m := e.manifest()
@@ -386,6 +386,29 @@ func TestARuleOfASecurityGroupKeepsTheIPSet(t *testing.T) {
 	e.done()
 
 	e.requireShown("the ipset pco-nodes is kept with its entries: the rule at position 0 of the security group ssh refers to it")
+}
+
+func TestANodeAloneIsNotOfferedTheFirewallRule(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		options Options
+	}{
+		{"with yes", Options{Yes: true, CloudflareToken: cfToken, Node: testNode}},
+		{"asked", Options{CloudflareToken: cfToken, Node: testNode, RegisterTags: yes(), InstallCloudflared: yes()}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.installUnit(serviceUnit)
+			e.script(freshInstall()...)
+
+			require.NoError(t, e.s.Run(t.Context(), tt.options))
+			e.done()
+
+			require.False(t, e.manifest().inFirewall())
+			require.NotContains(t, e.ask.text(), "8644", "nothing is asked or said of the rule")
+			require.NotContains(t, strings.Join(e.run.ran, "\n"), "firewall")
+		})
+	}
 }
 
 func TestAnIPSetWithEntriesOfOthersIsKept(t *testing.T) {
