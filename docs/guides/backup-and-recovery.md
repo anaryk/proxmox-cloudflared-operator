@@ -32,6 +32,22 @@ cannot make again is what an admin decided, and the secrets.
 [Files](../files.md) lists every path, with whether to back it up. The install id itself needs no
 backup: `pco setup --recover` takes it from the tunnels at Cloudflare.
 
+### The bundle
+
+[`pco export`](../cli/pco-export.md) writes all of this, and everything else the controller keeps
+in the store, into one encrypted file: the install with the cluster it was made in, the settings,
+approvals, manual routes and acknowledged segments, the registry of nodes, the CA with its key
+(and the previous CA while a rotation runs), `leader.json`, the networks and service addresses,
+the leases, consents and attachments of the managed network, the claims, tombstones, placements
+and moves, and with `--credentials` the Cloudflare tokens. [`pco import`](../cli/pco-import.md)
+restores it on a node where pco is not set up, in observe-only mode.
+
+Two things are not in it. The run tokens, bindings and caches, which the daemon reads or builds
+again, and the engine memory, what the controller learns between its runs: it is learnt again in
+the observe-only window after a restore, before anything is removed. A bundle written by an
+earlier release carries no pool of service addresses either; the restored pool then starts above
+the addresses in use, and an address that had been released may be given out again.
+
 ## Before you start
 
 - You are root on the node, and have `jq` (`apt install jq`).
