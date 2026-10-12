@@ -110,14 +110,15 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	if _, ok := f.nets[gateway.ManagedBridge]; ok {
 		return nil
 	}
-	if e.d.Vnet != nil {
-		vnet, err := e.d.Vnet(ctx)
-		if err != nil {
-			return fmt.Errorf("reading the vnet %s: %w", gateway.ManagedBridge, err)
-		}
-		if why := vnetWhy(vnet, f.appliance); len(why) > 0 {
-			return fmt.Errorf("%w: the vnet %s is not as pco makes it: %s; %s", ErrRefused, gateway.ManagedBridge, strings.Join(why, "; "), makeVnetHint(f.appliance))
-		}
+	if e.d.Vnet == nil {
+		return fmt.Errorf("%w: this daemon cannot read the vnet %s, so the managed network is not stored", ErrRefused, gateway.ManagedBridge)
+	}
+	vnet, err := e.d.Vnet(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the vnet %s: %w", gateway.ManagedBridge, err)
+	}
+	if why := vnetWhy(vnet, f.appliance); len(why) > 0 {
+		return fmt.Errorf("%w: the vnet %s is not as pco makes it: %s; %s", ErrRefused, gateway.ManagedBridge, strings.Join(why, "; "), makeVnetHint(f.appliance))
 	}
 	subnet := f.settings.Managed.Subnet
 	if err := subnetOverlaps(subnet, f.nets, f.snap); err != nil {

@@ -279,6 +279,18 @@ func TestEnableManagedIsRefusedWithoutTheVnetAsMade(t *testing.T) {
 	require.Empty(t, stored)
 }
 
+func TestEnableManagedIsRefusedWhereTheVnetCannotBeRead(t *testing.T) {
+	e := newNetEnv(t)
+
+	err := e.eng.EnableManaged(t.Context())
+
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, "this daemon cannot read the vnet pconet")
+	nets, err := e.store.Networks()
+	require.NoError(t, err)
+	require.NotContains(t, nets, gateway.ManagedBridge)
+}
+
 func TestEnableManagedChecksTheSubnetAndTakesAFreeMark(t *testing.T) {
 	e := newNetEnv(t)
 	facts := &managedFacts{vnet: ManagedVnet{Exists: true, ZoneType: "simple", IsolatePorts: true}}
@@ -301,7 +313,7 @@ func TestEnableManagedChecksTheSubnetAndTakesAFreeMark(t *testing.T) {
 		nets, err := e.store.Networks()
 		require.NoError(t, err)
 		require.Equal(t, 1, nets["vmbr1"].Mark)
-		require.NoError(t, e.eng.Detach(t.Context(), "vmbr1", nets["vmbr1"].Rev, false))
+		require.NoError(t, e.eng.Detach(t.Context(), "vmbr1", nets["vmbr1"].Rev, nil))
 
 		require.NoError(t, e.eng.EnableManaged(t.Context()))
 		nets, err = e.store.Networks()
