@@ -16,6 +16,9 @@ const (
 	ipsetEntries = "pvesh get /cluster/firewall/ipset/pco-nodes --output-format json"
 	rulesList    = "pvesh get /cluster/firewall/rules --output-format json"
 	groupsList   = "pvesh get /cluster/firewall/groups --output-format json"
+	nodesList    = "pvesh get /nodes --output-format json"
+	hostRules    = "pvesh get /nodes/" + testNode + "/firewall/rules --output-format json"
+	oneNode      = `[{"node":"` + testNode + `","status":"online"}]`
 	ruleCreate   = "pvesh create /cluster/firewall/rules --type in --action ACCEPT --proto tcp --dport 8644 --source +pco-nodes --enable 1 --comment " + ruleComment
 
 	// ownEntryDelete removes this node's address from the ipset, with the
@@ -320,7 +323,7 @@ func rulesRemoved(before string, pos int, after string) []call {
 // to it.
 func ipsetRemoved() []call {
 	return []call{
-		{line: groupsList, out: "[]"},
+		{line: groupsList, out: "[]"}, {line: nodesList, out: oneNode}, {line: hostRules, out: "[]"},
 		{line: ipsetEntries, out: entriesJSON(testNode + "=" + testAddr)},
 		{line: ownEntryDelete},
 		{line: ipsetEntries, out: "[]"},
@@ -362,7 +365,7 @@ func TestARuleThatIsNotPcosIsKeptAndKeepsTheIPSet(t *testing.T) {
 	e.installed(Manifest{FirewallRule: true, CreatedIPSet: true, CreatedFirewallRule: true})
 	theirs := rules(ruleJSON(0, 1, "by hand"))
 	e.script(connectorsSeen(), egressSeen(), firewallRead(entriesJSON(testNode+"="+testAddr), theirs),
-		serviceStopped(), connectorsPruned(), egressDeleted(), []call{{line: rulesList, out: theirs}, {line: groupsList, out: "[]"}})
+		serviceStopped(), connectorsPruned(), egressDeleted(), []call{{line: rulesList, out: theirs}, {line: groupsList, out: "[]"}, {line: nodesList, out: oneNode}, {line: hostRules, out: "[]"}})
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 	e.done()
@@ -380,12 +383,51 @@ func TestARuleOfASecurityGroupKeepsTheIPSet(t *testing.T) {
 			{line: groupsList, out: `[{"group":"ssh","comment":"","digest":"d4"}]`},
 			{line: "pvesh get /cluster/firewall/groups/ssh --output-format json",
 				out: `[{"pos":0,"type":"in","action":"ACCEPT","proto":"tcp","dport":"22","source":"+dc/pco-nodes","enable":1,"digest":"d4"}]`},
+			{line: nodesList, out: oneNode}, {line: hostRules, out: "[]"},
 		}, userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 	e.done()
 
 	e.requireShown("the ipset pco-nodes is kept with its entries: the rule at position 0 of the security group ssh refers to it")
+}
+
+func TestAHostRuleOfAnyNodeKeepsTheIPSet(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(withFirewall)
+	before := rules(ruleJSON(0, 1, ruleComment))
+	e.script(connectorsSeen(), egressSeen(), userRead(), firewallRead(entriesJSON(testNode+"="+testAddr), before),
+		serviceStopped(), connectorsPruned(), egressDeleted(), rulesRemoved(before, 0, "[]"), []call{
+			{line: groupsList, out: "[]"},
+			{line: nodesList, out: `[{"node":"pve1","status":"online"},{"node":"pve2","status":"online"}]`},
+			{line: hostRules, out: "[]"},
+			{line: "pvesh get /nodes/pve2/firewall/rules --output-format json",
+				out: `[{"pos":3,"type":"out","action":"ACCEPT","proto":"tcp","dport":"8644","dest":"+pco-nodes","enable":1,"digest":"d5"}]`},
+		}, userRemoved())
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
+	e.done()
+
+	e.requireShown("the ipset pco-nodes is kept with its entries: the host rule at position 3 of node pve2 refers to it")
+}
+
+func TestANodeWhoseHostRulesCannotBeReadKeepsTheIPSet(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(withFirewall)
+	before := rules(ruleJSON(0, 1, ruleComment))
+	e.script(connectorsSeen(), egressSeen(), userRead(), firewallRead(entriesJSON(testNode+"="+testAddr), before),
+		serviceStopped(), connectorsPruned(), egressDeleted(), rulesRemoved(before, 0, "[]"), []call{
+			{line: groupsList, out: "[]"},
+			{line: nodesList, out: `[{"node":"pve1","status":"online"},{"node":"pve2","status":"offline"}]`},
+			{line: hostRules, out: "[]"},
+			{line: "pvesh get /nodes/pve2/firewall/rules --output-format json", err: exitErr(255, "no route to host")},
+		}, userRemoved())
+
+	err := e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true})
+
+	require.ErrorContains(t, err, "the ipset pco-nodes is kept: listing the host firewall rules of node pve2")
+	e.requireStoreKept()
+	e.done()
 }
 
 func TestANodeAloneIsNotOfferedTheFirewallRule(t *testing.T) {
@@ -418,7 +460,7 @@ func TestAnIPSetWithEntriesOfOthersIsKept(t *testing.T) {
 	before := rules(ruleJSON(0, 1, ruleComment))
 	e.script(connectorsSeen(), egressSeen(), userRead(), firewallRead(entriesJSON(testNode+"="+testAddr, other), before),
 		serviceStopped(), connectorsPruned(), egressDeleted(), rulesRemoved(before, 0, "[]"), []call{
-			{line: groupsList, out: "[]"},
+			{line: groupsList, out: "[]"}, {line: nodesList, out: oneNode}, {line: hostRules, out: "[]"},
 			{line: ipsetEntries, out: entriesJSON(testNode+"="+testAddr, other)},
 			{line: ownEntryDelete},
 			{line: ipsetEntries, out: entriesJSON(other)},

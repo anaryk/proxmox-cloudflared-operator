@@ -510,6 +510,35 @@ func (u *uninstall) referencesToNodes(ctx context.Context, rules []fwRule) ([]st
 			}
 		}
 	}
+	hostRefs, err := u.hostReferences(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(refs, hostRefs...), nil
+}
+
+// hostReferences names the rules of every node's host firewall that refer
+// to the ipset. A node that cannot be asked, as one that is offline, keeps
+// the ipset: its rules are not known.
+func (u *uninstall) hostReferences(ctx context.Context) ([]string, error) {
+	var nodes []struct {
+		Node string `json:"node"`
+	}
+	if err := query(ctx, u.run, &nodes, "pvesh", "get", "/nodes", "--output-format", "json"); err != nil {
+		return nil, fmt.Errorf("listing the nodes: %w", err)
+	}
+	var refs []string
+	for _, n := range nodes {
+		var rules []fwRule
+		if err := query(ctx, u.run, &rules, "pvesh", "get", "/nodes/"+n.Node+"/firewall/rules", "--output-format", "json"); err != nil {
+			return nil, fmt.Errorf("listing the host firewall rules of node %s: %w", n.Node, err)
+		}
+		for _, r := range rules {
+			if r.refersToNodes() {
+				refs = append(refs, fmt.Sprintf("the host rule at position %d of node %s", r.Pos, n.Node))
+			}
+		}
+	}
 	return refs, nil
 }
 
