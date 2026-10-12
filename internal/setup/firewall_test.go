@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // The reads and writes of the datacenter firewall, as pvesh runs them.
@@ -17,20 +15,26 @@ const (
 	ipsetDelete  = "pvesh delete /cluster/firewall/ipset/pco-nodes"
 	ipsetEntries = "pvesh get /cluster/firewall/ipset/pco-nodes --output-format json"
 	rulesList    = "pvesh get /cluster/firewall/rules --output-format json"
+	groupsList   = "pvesh get /cluster/firewall/groups --output-format json"
 	ruleCreate   = "pvesh create /cluster/firewall/rules --type in --action ACCEPT --proto tcp --dport 8644 --source +pco-nodes --enable 1 --comment " + ruleComment
+
+	// ownEntryDelete removes this node's address from the ipset, with the
+	// digest of the listing.
+	ownEntryDelete = "pvesh delete /cluster/firewall/ipset/pco-nodes/" + testAddr + " --digest d2"
 )
 
 func entryAdd(node, addr string) string {
 	return "pvesh create /cluster/firewall/ipset/pco-nodes --cidr " + addr + " --comment " + entryComment(node)
 }
 
-// ownEntryDelete removes this node's address from the ipset.
-const ownEntryDelete = "pvesh delete /cluster/firewall/ipset/pco-nodes/" + testAddr
+func ruleDelete(pos int) string {
+	return fmt.Sprintf("pvesh delete /cluster/firewall/rules/%d --digest d3", pos)
+}
 
 // ipsetJSON is the list of ipsets with pco-nodes, under comment, or without it.
 func ipsetJSON(comment string) string {
 	if comment == "" {
-		return `[{"name":"management","comment":"admins","digest":"d0"}]`
+		return `[{"name":"management","comment":"admins","digest":"d1"}]`
 	}
 	return `[{"name":"management","comment":"admins","digest":"d1"},{"name":"pco-nodes","comment":"` + comment + `","digest":"d1"}]`
 }
@@ -55,18 +59,21 @@ func ruleJSON(pos, enable int, comment string) string {
 		pos, enable, comment)
 }
 
+func rules(items ...string) string { return "[" + strings.Join(items, ",") + "]" }
+
 const otherRule = `{"pos":0,"type":"in","action":"ACCEPT","proto":"tcp","dport":"8006","source":"+management","enable":1,"comment":"web","digest":"d3"}`
 
 // firewallMade is the firewall step of the first node: the ipset, its entry
-// and the rule are made.
+// and the rule are made, and no copy of the rule was added beside it.
 func firewallMade() []call {
 	return []call{
 		{line: ipsetList, out: ipsetJSON("")},
 		{line: ipsetCreate},
 		{line: ipsetEntries, out: "[]"},
 		{line: entryAdd(testNode, testAddr)},
-		{line: rulesList, out: "[" + otherRule + "]"},
+		{line: rulesList, out: rules(otherRule)},
 		{line: ruleCreate},
+		{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment), strings.Replace(otherRule, `"pos":0`, `"pos":1`, 1))},
 	}
 }
 
@@ -77,7 +84,7 @@ func firewallJoined() []call {
 		{line: ipsetList, out: ipsetJSON(ipsetComment)},
 		{line: ipsetEntries, out: entriesJSON(firstNode + "=" + firstAddr)},
 		{line: entryAdd(testNode, testAddr)},
-		{line: rulesList, out: "[" + otherRule + "," + ruleJSON(1, 1, ruleComment) + "]"},
+		{line: rulesList, out: rules(otherRule, ruleJSON(1, 1, ruleComment))},
 	}
 }
 
@@ -88,6 +95,11 @@ func firewallRead(entries, rules string) []call {
 		{line: ipsetEntries, out: entries},
 		{line: rulesList, out: rules},
 	}
+}
+
+// noFirewallSeen is a firewall without anything of pco.
+func noFirewallSeen() []call {
+	return []call{{line: ipsetList, out: ipsetJSON("")}, {line: rulesList, out: rules(otherRule)}}
 }
 
 func yes() *bool {
@@ -142,6 +154,50 @@ func TestTheFirewallRuleIsTakenWithYes(t *testing.T) {
 	require.True(t, e.manifest().CreatedFirewallRule)
 }
 
+func TestAnIPSetMadeMeanwhileByAnotherNodeIsNotThisNodes(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.script(preflightNew("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(),
+		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), []call{
+			{line: ipsetList, out: ipsetJSON("")},
+			{line: ipsetCreate, err: exitErr(255, "create ipset failed: ipset 'pco-nodes' already exists")},
+			{line: ipsetList, out: ipsetJSON(ipsetComment)},
+			{line: ipsetEntries, out: "[]"},
+			{line: entryAdd(testNode, testAddr)},
+			{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment))},
+		}, cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
+
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()}))
+	e.done()
+
+	m := e.manifest()
+	require.False(t, m.CreatedIPSet, "the ipset is the other node's")
+	require.True(t, m.FirewallRule)
+	e.requireShown("the ipset pco-nodes was made meanwhile, by a setup on another node")
+}
+
+func TestASecondCopyOfTheRuleIsRemovedKeepingTheTopmost(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.script(preflightNew("9.0.10"), roleCreated(privs9), userCreated(), tokenCreated(),
+		tagsAdded("", "cf-tunnel;cf-tunnel-managed"), []call{
+			{line: ipsetList, out: ipsetJSON(ipsetComment)},
+			{line: ipsetEntries, out: "[]"},
+			{line: entryAdd(testNode, testAddr)},
+			{line: rulesList, out: rules(otherRule)},
+			{line: ruleCreate},
+			// Another node added its copy at the same time.
+			{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment), ruleJSON(1, 1, ruleComment), strings.Replace(otherRule, `"pos":0`, `"pos":2`, 1))},
+			{line: ruleDelete(1)},
+			{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment), strings.Replace(otherRule, `"pos":0`, `"pos":1`, 1))},
+		}, cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
+
+	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()}))
+	e.done()
+
+	e.requireShown("removed a second copy of the datacenter rule")
+}
+
 func TestAJoinAddsItsAddressToTheIPSet(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)
@@ -158,6 +214,23 @@ func TestAJoinAddsItsAddressToTheIPSet(t *testing.T) {
 	e.requireShown("firewall: the datacenter rule IN ACCEPT -p tcp -dport 8644 -source +pco-nodes is there, nothing needed")
 }
 
+func TestAnAddressTheNodeNoLongerHasLeavesTheIPSet(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.joinable()
+	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), []call{
+		{line: ipsetList, out: ipsetJSON(ipsetComment)},
+		{line: ipsetEntries, out: entriesJSON(firstNode+"="+firstAddr, testNode+"=192.0.2.99")},
+		{line: "pvesh delete /cluster/firewall/ipset/pco-nodes/192.0.2.99 --digest d2"},
+		{line: ipsetEntries, out: entriesJSON(firstNode + "=" + firstAddr)},
+		{line: entryAdd(testNode, testAddr)},
+		{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment))},
+	}, cloudflaredKept(), serviceStarted())
+
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
+	e.done()
+}
+
 func TestAJoinAddsTheAddressesOfTheOtherNodesTheIPSetLacks(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)
@@ -167,7 +240,7 @@ func TestAJoinAddsTheAddressesOfTheOtherNodesTheIPSetLacks(t *testing.T) {
 		{line: ipsetEntries, out: "[]"},
 		{line: entryAdd(firstNode, firstAddr)},
 		{line: entryAdd(testNode, testAddr)},
-		{line: rulesList, out: "[" + ruleJSON(0, 1, ruleComment) + "]"},
+		{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment))},
 	}, cloudflaredKept(), serviceStarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
@@ -181,7 +254,7 @@ func TestADisabledRuleIsLeftAloneAndNamed(t *testing.T) {
 	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), []call{
 		{line: ipsetList, out: ipsetJSON(ipsetComment)},
 		{line: ipsetEntries, out: entriesJSON(firstNode+"="+firstAddr, testNode+"="+testAddr)},
-		{line: rulesList, out: "[" + ruleJSON(0, 0, "paused by the admin") + "]"},
+		{line: rulesList, out: rules(ruleJSON(0, 0, "paused by the admin"))},
 	}, cloudflaredKept(), serviceStarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
@@ -201,6 +274,7 @@ func TestAnIPSetMadeByHandIsUsedAndKept(t *testing.T) {
 			{line: entryAdd(testNode, testAddr)},
 			{line: rulesList, out: "[]"},
 			{line: ruleCreate},
+			{line: rulesList, out: rules(ruleJSON(0, 1, ruleComment))},
 		}, cloudflaredInstalled(), daemonIs("inactive"), serviceStarted())
 
 	require.NoError(t, e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode, FirewallRule: yes()}))
@@ -237,11 +311,19 @@ func TestAFailedRuleIsNotedAndTheNoteTakenBackWhenNothingIsThere(t *testing.T) {
 var withFirewall = Manifest{CreatedUser: true, CreatedToken: true, RegisteredTags: []string{"cf-tunnel", "cf-tunnel-managed"},
 	FirewallRule: true, CreatedIPSet: true, CreatedFirewallRule: true}
 
-// firewallRemoved is the removal of the rule and the ipset by the last node.
-func firewallRemoved(pos int) []call {
+// rulesRemoved removes pco's rule at pos from before, which leaves after.
+func rulesRemoved(before string, pos int, after string) []call {
+	return []call{{line: rulesList, out: before}, {line: ruleDelete(pos)}, {line: rulesList, out: after}}
+}
+
+// ipsetRemoved removes this node's entry and the ipset, once nothing refers
+// to it.
+func ipsetRemoved() []call {
 	return []call{
-		{line: fmt.Sprintf("pvesh delete /cluster/firewall/rules/%d --digest d3", pos)},
+		{line: groupsList, out: "[]"},
+		{line: ipsetEntries, out: entriesJSON(testNode + "=" + testAddr)},
 		{line: ownEntryDelete},
+		{line: ipsetEntries, out: "[]"},
 		{line: ipsetDelete},
 	}
 }
@@ -250,61 +332,74 @@ func TestTheLastUninstallRemovesTheRuleAndTheIPSet(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(withFirewall)
 	e.atCloudflare()
-	e.script(connectorsSeen(), egressSeen(), userRead(),
-		firewallRead(entriesJSON(testNode+"="+testAddr), "["+otherRule+","+ruleJSON(1, 1, ruleComment)+"]"),
-		serviceStopped(), connectorsPruned(), egressDeleted(), firewallRemoved(1), userRemoved())
+	before := rules(otherRule, ruleJSON(1, 1, ruleComment))
+	e.script(connectorsSeen(), egressSeen(), userRead(), firewallRead(entriesJSON(testNode+"="+testAddr), before),
+		serviceStopped(), connectorsPruned(), egressDeleted(), rulesRemoved(before, 1, rules(otherRule)), ipsetRemoved(), userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
 	e.done()
 
-	e.requireShown("the firewall rule of the agent channel, IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, and the ipset pco-nodes")
+	e.requireShown("the firewall rule of the agent channel, IN ACCEPT -p tcp -dport 8644 -source +pco-nodes")
+	e.requireShown("firewall: removed the ipset pco-nodes")
 	e.requireStoreGone()
 }
 
-func TestARuleTheManifestDoesNotClaimIsRemovedOnlyWithItsOwnWord(t *testing.T) {
-	member := Manifest{FirewallRule: true}
-	for _, tt := range []struct {
-		name    string
-		rules   string
-		removes []call
-		shown   string
-	}{
-		{
-			name:    "the rule says pco made it",
-			rules:   "[" + ruleJSON(0, 1, ruleComment) + "]",
-			removes: firewallRemoved(0),
-		},
-		{
-			name:    "the rule says nothing of pco",
-			rules:   "[" + ruleJSON(0, 1, "by hand") + "]",
-			removes: []call{{line: ownEntryDelete}, {line: ipsetDelete}},
-			shown:   "(the firewall rule of the agent channel is kept: pco did not make it)",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			e := newTestEnv(t)
-			e.installed(member)
-			e.script(connectorsSeen(), egressSeen(), firewallRead(entriesJSON(testNode+"="+testAddr), tt.rules),
-				serviceStopped(), connectorsPruned(), egressDeleted(), tt.removes)
+func TestTheLastUninstallRemovesEveryCopyOfTheRule(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(Manifest{FirewallRule: true})
+	two := rules(ruleJSON(0, 1, ruleComment), ruleJSON(1, 1, ruleComment))
+	e.script(connectorsSeen(), egressSeen(), firewallRead(entriesJSON(testNode+"="+testAddr), two),
+		serviceStopped(), connectorsPruned(), egressDeleted(),
+		[]call{{line: rulesList, out: two}, {line: ruleDelete(1)}}, rulesRemoved(rules(ruleJSON(0, 1, ruleComment)), 0, "[]"), ipsetRemoved())
 
-			require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
-			e.done()
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
+	e.done()
+}
 
-			if tt.shown != "" {
-				e.requireShown(tt.shown)
-			}
-		})
-	}
+func TestARuleThatIsNotPcosIsKeptAndKeepsTheIPSet(t *testing.T) {
+	e := newTestEnv(t)
+	// The manifest says pco made the rule, but the admin has made it theirs.
+	e.installed(Manifest{FirewallRule: true, CreatedIPSet: true, CreatedFirewallRule: true})
+	theirs := rules(ruleJSON(0, 1, "by hand"))
+	e.script(connectorsSeen(), egressSeen(), firewallRead(entriesJSON(testNode+"="+testAddr), theirs),
+		serviceStopped(), connectorsPruned(), egressDeleted(), []call{{line: rulesList, out: theirs}, {line: groupsList, out: "[]"}})
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
+	e.done()
+
+	e.requireShown("(the firewall rule of the agent channel is kept: pco did not make it)")
+	e.requireShown("firewall: the ipset pco-nodes is kept with its entries: the datacenter rule at position 0 refers to it")
+}
+
+func TestARuleOfASecurityGroupKeepsTheIPSet(t *testing.T) {
+	e := newTestEnv(t)
+	e.installed(withFirewall)
+	before := rules(ruleJSON(0, 1, ruleComment))
+	e.script(connectorsSeen(), egressSeen(), userRead(), firewallRead(entriesJSON(testNode+"="+testAddr), before),
+		serviceStopped(), connectorsPruned(), egressDeleted(), rulesRemoved(before, 0, "[]"), []call{
+			{line: groupsList, out: `[{"group":"ssh","comment":"","digest":"d4"}]`},
+			{line: "pvesh get /cluster/firewall/groups/ssh --output-format json",
+				out: `[{"pos":0,"type":"in","action":"ACCEPT","proto":"tcp","dport":"22","source":"+dc/pco-nodes","enable":1,"digest":"d4"}]`},
+		}, userRemoved())
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
+	e.done()
+
+	e.requireShown("the ipset pco-nodes is kept with its entries: the rule at position 0 of the security group ssh refers to it")
 }
 
 func TestAnIPSetWithEntriesOfOthersIsKept(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(withFirewall)
-	e.script(connectorsSeen(), egressSeen(), userRead(),
-		firewallRead(entriesJSON(testNode+"="+testAddr, `{"cidr":"192.0.2.0/24","comment":"the lab","digest":"d2"}`),
-			"["+ruleJSON(0, 1, ruleComment)+"]"),
-		serviceStopped(), connectorsPruned(), egressDeleted(),
-		[]call{{line: "pvesh delete /cluster/firewall/rules/0 --digest d3"}, {line: ownEntryDelete}}, userRemoved())
+	other := `{"cidr":"192.0.2.0/24","comment":"the lab","digest":"d2"}`
+	before := rules(ruleJSON(0, 1, ruleComment))
+	e.script(connectorsSeen(), egressSeen(), userRead(), firewallRead(entriesJSON(testNode+"="+testAddr, other), before),
+		serviceStopped(), connectorsPruned(), egressDeleted(), rulesRemoved(before, 0, "[]"), []call{
+			{line: groupsList, out: "[]"},
+			{line: ipsetEntries, out: entriesJSON(testNode+"="+testAddr, other)},
+			{line: ownEntryDelete},
+			{line: ipsetEntries, out: entriesJSON(other)},
+		}, userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 	e.done()
@@ -315,10 +410,10 @@ func TestAnIPSetWithEntriesOfOthersIsKept(t *testing.T) {
 func TestAFailedFirewallRemovalKeepsTheStore(t *testing.T) {
 	e := newTestEnv(t)
 	e.installed(withFirewall)
-	e.script(connectorsSeen(), egressSeen(), userRead(),
-		firewallRead(entriesJSON(testNode+"="+testAddr), "["+ruleJSON(0, 1, ruleComment)+"]"),
+	before := rules(ruleJSON(0, 1, ruleComment))
+	e.script(connectorsSeen(), egressSeen(), userRead(), firewallRead(entriesJSON(testNode+"="+testAddr), before),
 		serviceStopped(), connectorsPruned(), egressDeleted(),
-		[]call{{line: "pvesh delete /cluster/firewall/rules/0 --digest d3", err: exitErr(255, "digest mismatch")}}, userRemoved())
+		[]call{{line: rulesList, out: before}, {line: ruleDelete(0), err: exitErr(255, "digest mismatch")}}, userRemoved())
 
 	err := e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true})
 
@@ -349,5 +444,4 @@ func TestTheFirewallSurveyThatFailsKeepsTheRule(t *testing.T) {
 	require.ErrorContains(t, err, "the firewall rule of the agent channel and the ipset pco-nodes are kept")
 	e.requireStoreKept()
 	e.done()
-	_ = store.ErrNoRoot
 }

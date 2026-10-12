@@ -35,9 +35,10 @@ type survey struct {
 	stores           []string // the roots of the store that are there
 	registered       bool     // the node registry names this node
 	// firewall is what the datacenter firewall holds of pco, read when the
-	// manifest says setup put something there.
-	firewall    fwState
-	firewallErr error
+	// manifest says setup put something there or another node may have.
+	firewallRead bool
+	firewall     fwState
+	firewallErr  error
 	// holder says that leader.json names this node as the holder of the
 	// lease and its daemon runs, so the lease is handed off before it stops.
 	holder bool
@@ -64,7 +65,8 @@ func (u *uninstall) survey(ctx context.Context) {
 	if u.manifest.inProxmox() && u.last {
 		f.proxmox, f.proxmoxErr = u.readProxmox(ctx)
 	}
-	if u.manifest.inFirewall() {
+	if u.looksAtFirewall() {
+		f.firewallRead = true
 		f.firewall, f.firewallErr = readFirewall(ctx, u.run)
 	}
 	if !u.last && u.leaseHeldHere() {

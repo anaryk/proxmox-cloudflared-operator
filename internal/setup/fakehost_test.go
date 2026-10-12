@@ -345,6 +345,8 @@ func (h *fakeHost) firewallAPI(args []string) (string, error) {
 			return "", exitErr(255, "no such entry '"+parts[2]+"'")
 		}
 		return "", nil
+	case path == "groups" && verb == "get":
+		return "[]", nil
 	case path == "rules" && verb == "get":
 		var out []map[string]any
 		for i, r := range h.rules {

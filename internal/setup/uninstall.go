@@ -72,8 +72,11 @@ type uninstall struct {
 	// the others, and takes only what is its own.
 	others []string
 	last   bool
-	found  survey   // what is on the node, read before anything is asked
-	failed []string // what could not be done
+	// entries counts the entries of the registry, removed ones too: with
+	// more than one, another node may have put pco into the firewall.
+	entries int
+	found   survey   // what is on the node, read before anything is asked
+	failed  []string // what could not be done
 	// connectorsStay says that the connectors could not be removed.
 	connectorsStay bool
 }
@@ -110,6 +113,9 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if err := u.refuseWhatOnlyTheLastMayDo(); err != nil {
 		return err
 	}
+	if err := u.refuseToLeaveAlone(); err != nil {
+		return err
+	}
 	u.survey(ctx)
 	u.describe()
 	if !o.Yes {
@@ -127,9 +133,6 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	}
 	removeCloudflared, err := u.decideCloudflared()
 	if err != nil {
-		return err
-	}
-	if err := u.refuseToLeaveAlone(); err != nil {
 		return err
 	}
 	if err := u.handoff(ctx); err != nil {
@@ -213,6 +216,7 @@ func (s *Setup) newUninstall(o UninstallOptions) (*uninstall, error) {
 	}
 	slices.Sort(u.others)
 	u.last = len(u.others) == 0
+	u.entries = len(nodes)
 	return u, nil
 }
 

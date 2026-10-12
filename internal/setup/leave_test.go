@@ -48,7 +48,7 @@ func (e *testEnv) holder() {
 // or of the firewall is read, since the manifest of a joined node names
 // nothing it created there.
 func left() [][]call {
-	return [][]call{connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned()}
+	return [][]call{connectorsSeen(), noEgressSeen(), noFirewallSeen(), serviceStopped(), connectorsPruned()}
 }
 
 func (e *testEnv) requireLeft() {
@@ -95,7 +95,7 @@ func TestUninstallOfANodeThatIsNotTheLastKeepsWhatTheClusterShares(t *testing.T)
 	require.NoError(t, writeManifest(filepath.Join(e.paths.Local, manifestName), m))
 	e.script(connectorsSeen(), noEgressSeen(),
 		firewallRead(entriesJSON(firstNode+"="+firstAddr, testNode+"="+testAddr), "["+ruleJSON(0, 1, ruleComment)+"]"),
-		serviceStopped(), connectorsPruned(), []call{{line: ownEntryDelete}})
+		serviceStopped(), connectorsPruned(), []call{{line: ipsetEntries, out: entriesJSON(firstNode+"="+firstAddr, testNode+"="+testAddr)}, {line: ownEntryDelete}, {line: ipsetEntries, out: entriesJSON(firstNode + "=" + firstAddr)}})
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
 	e.done()
@@ -108,11 +108,30 @@ func TestUninstallOfANodeThatIsNotTheLastKeepsWhatTheClusterShares(t *testing.T)
 	e.requireShown("  this node's address " + testAddr + " in the ipset pco-nodes")
 }
 
+func TestALeavingNodeTakesOutTheEntryAnotherNodeAddedForIt(t *testing.T) {
+	e := newTestEnv(t)
+	e.joinedNode()
+	require.False(t, e.manifest().inFirewall(), "this node's setup put nothing into the firewall")
+	both := entriesJSON(firstNode+"="+firstAddr, testNode+"="+testAddr)
+	e.script(connectorsSeen(), noEgressSeen(), firewallRead(both, rules(ruleJSON(0, 1, ruleComment))),
+		serviceStopped(), connectorsPruned(), []call{
+			{line: ipsetEntries, out: both},
+			{line: ownEntryDelete},
+			{line: ipsetEntries, out: entriesJSON(firstNode + "=" + firstAddr)},
+		})
+
+	require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
+	e.done()
+
+	e.requireShown("firewall: removed " + testAddr + " from the ipset pco-nodes")
+	e.requireLeft()
+}
+
 func TestUninstallOfTheHolderHandsTheLeaseOffFirst(t *testing.T) {
 	e := newTestEnv(t)
 	e.joinedNode()
 	e.holder()
-	e.script(connectorsSeen(), noEgressSeen(), daemonIs("active"), serviceStopped(), connectorsPruned())
+	e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen(), daemonIs("active"), serviceStopped(), connectorsPruned())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
 	e.done()
@@ -130,7 +149,7 @@ func TestUninstallOfTheHolderWhoseDaemonCannotHandOffIsRefused(t *testing.T) {
 	e.joinedNode()
 	e.holder()
 	e.daemon.err = errors.New("the pco daemon at /run/pco/pco.sock does not know this request: is it a different version than this pco?")
-	e.script(connectorsSeen(), noEgressSeen(), daemonIs("active"))
+	e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen(), daemonIs("active"))
 
 	err := e.uninstall(UninstallOptions{Yes: true})
 
@@ -147,7 +166,7 @@ func TestForceRemovesTheHolderWithoutAHandOff(t *testing.T) {
 	e.joinedNode()
 	e.holder()
 	e.daemon.err = errors.New("no other node is eligible")
-	e.script(connectorsSeen(), noEgressSeen(), daemonIs("active"), serviceStopped(), connectorsPruned())
+	e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen(), daemonIs("active"), serviceStopped(), connectorsPruned())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, Force: true}))
 	e.done()
@@ -160,7 +179,7 @@ func TestAHolderWhoseDaemonIsStoppedHandsNothingOff(t *testing.T) {
 	e := newTestEnv(t)
 	e.joinedNode()
 	e.holder()
-	e.script(connectorsSeen(), noEgressSeen(), daemonIs("inactive"), serviceStopped(), connectorsPruned())
+	e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen(), daemonIs("inactive"), serviceStopped(), connectorsPruned())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true}))
 	e.done()
@@ -175,7 +194,6 @@ func TestTheOnlyActiveNodeIsNotRemovedWithoutForce(t *testing.T) {
 	first := e.node(firstNode)
 	first.State = string(agentproto.Joining)
 	require.NoError(t, e.st.SaveNode(first))
-	e.script(connectorsSeen(), noEgressSeen())
 
 	err := e.uninstall(UninstallOptions{Yes: true})
 
@@ -184,7 +202,7 @@ func TestTheOnlyActiveNodeIsNotRemovedWithoutForce(t *testing.T) {
 	require.Equal(t, string(agentproto.Active), e.node(testNode).State)
 	e.done()
 
-	e.script(connectorsSeen(), noEgressSeen(), serviceStopped(), connectorsPruned())
+	e.script(connectorsSeen(), noEgressSeen(), noFirewallSeen(), serviceStopped(), connectorsPruned())
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, Force: true}))
 	e.done()
 	require.Equal(t, string(agentproto.Removed), e.node(testNode).State)
@@ -230,7 +248,7 @@ func TestTheLastNodeBesideRemovedOnesUninstallsTheInstall(t *testing.T) {
 	e.installed(setupsUser)
 	e.atCloudflare()
 	require.NoError(t, e.st.SaveNode(store.NodeEntry{Name: "pve9", Since: t0, State: string(agentproto.Removed), StateSince: t0}))
-	e.script(connectorsSeen(), egressSeen(), userRead(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
+	e.script(connectorsSeen(), egressSeen(), userRead(), noFirewallSeen(), serviceStopped(), connectorsPruned(), egressDeleted(), userRemoved())
 
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, PurgeCloudflare: true}))
 	e.done()
