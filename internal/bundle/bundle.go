@@ -141,6 +141,15 @@ type Contents struct {
 	Build      string
 }
 
+// ClearCredentials overwrites the credentials, tokens and all, once the
+// bundle was sealed or restored; the counts stay. A best effort, as a clear
+// of memory is.
+func (c Contents) ClearCredentials() {
+	for _, raw := range c.Credentials {
+		clear(raw)
+	}
+}
+
 // summary is what a Contents prints as: what it holds, never the content.
 type summary struct {
 	InstallID   string    `json:"installId"`

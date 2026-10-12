@@ -22,6 +22,11 @@ var (
 	// ErrInstalled is the error of a restore into a store that holds an
 	// install already. It comes wrapped, naming the install.
 	ErrInstalled = errors.New("the store holds an install already")
+	// ErrOtherBundle is the error of a restore into a store that holds an
+	// object the bundle does not carry: what a restore of another bundle
+	// left when it stopped half way, which a restore never merges with. It
+	// comes wrapped, naming the kind and the object.
+	ErrOtherBundle = errors.New("the store holds objects the bundle does not carry")
 )
 
 // redactedToken is what a credential's token encodes to when something that
@@ -486,13 +491,18 @@ func sameFiles(a, b store.CAFiles) bool { return a.CertPEM == b.CertPEM && a.Key
 // roots are made. The settings are stored in observe-only mode, whatever they
 // were: the restored install publishes nothing until an admin says so. The
 // install is written last, with the cluster it was made in, so that a restore
-// that stops half way leaves a store that holds none, and is run again.
+// that stops half way leaves a store that holds none, and is run again with
+// the same bundle, over what the first run wrote. A store that holds an
+// object of another bundle is refused: two bundles are never merged.
 func Restore(ctx context.Context, st *store.Store, c Contents) error {
 	r, err := read(c)
 	if err != nil {
 		return err
 	}
 	if err := NoInstall(st); err != nil {
+		return err
+	}
+	if err := noLeftovers(st, r); err != nil {
 		return err
 	}
 	for _, step := range []func(context.Context, *store.Store, restoration) error{
@@ -547,11 +557,135 @@ func restoreDecisions(_ context.Context, st *store.Store, r restoration) error {
 	return saveEach("manual routes", r.routes, st.SaveManualRoute)
 }
 
+// noLeftovers refuses a store that holds an object of a kind the restore
+// writes which the bundle does not carry. What the bundle carries is written
+// over again, so that a restore that stopped half way is run again.
+func noLeftovers(st *store.Store, r restoration) error {
+	credentials, err := st.Credentials()
+	if err != nil {
+		return fmt.Errorf("reading the credentials: %w", err)
+	}
+	nodes, err := st.Nodes()
+	if err != nil {
+		return fmt.Errorf("reading the registry of nodes: %w", err)
+	}
+	routes, err := st.ManualRoutes()
+	if err != nil {
+		return fmt.Errorf("reading the manual routes: %w", err)
+	}
+	serviceAddrs, err := st.ServiceAddrs()
+	if err != nil {
+		return fmt.Errorf("reading the service addresses: %w", err)
+	}
+	nodeServiceAddrs, err := st.NodeServiceAddrs()
+	if err != nil {
+		return fmt.Errorf("reading the service addresses of nodes: %w", err)
+	}
+	for _, check := range []func() error{
+		func() error {
+			return leftover("credential", ids(credentials, func(c store.Credential) string { return c.ID }), ids(r.credentials, func(c store.Credential) string { return c.ID }))
+		},
+		func() error {
+			return leftover("node", ids(nodes, func(n store.NodeEntry) string { return n.Name }), ids(r.nodes, func(n store.NodeEntry) string { return n.Name }))
+		},
+		func() error {
+			return leftover("manual route", ids(routes, func(r model.Route) string { return r.ManualID }), ids(r.routes, func(r model.Route) string { return r.ManualID }))
+		},
+		func() error { return leftoverKeyed("segment", st.Segments, ids(r.segments, store.Segment.ID)) },
+		func() error {
+			return leftoverKeyed("node segment", st.NodeSegments, ids(r.nodeSegments, store.NodeSegment.ID))
+		},
+		func() error {
+			return leftoverKeyed("approval", st.Approvals, ids(r.approvals, func(a store.Approval) string { return a.Owner }))
+		},
+		func() error {
+			return leftoverKeyed("network", st.Networks, ids(r.networks, func(n store.Network) string { return n.ID }))
+		},
+		func() error {
+			return leftover("service address", ids(serviceAddrs, serviceAddrKey), ids(r.serviceAddrs, serviceAddrKey))
+		},
+		func() error {
+			return leftover("service address of a node", ids(nodeServiceAddrs, nodeServiceAddrKey), ids(r.nodeServiceAddrs, nodeServiceAddrKey))
+		},
+		func() error {
+			return leftoverKeyed("lease", st.Leases, ids(r.leases, func(l store.Lease) string { return l.MAC }))
+		},
+		func() error {
+			return leftoverKeyed("consent", st.Consents, ids(r.consents, func(c store.Consent) string { return c.Owner }))
+		},
+		func() error {
+			return leftoverKeyed("attachment", st.Attachments, ids(r.attachments, func(a store.Attachment) string { return a.Owner }))
+		},
+		func() error { return leftoverKeyed("claim", st.Claims, slices.Collect(maps.Keys(r.claims))) },
+		func() error {
+			return leftoverKeyed("placement", st.Placements, slices.Collect(maps.Keys(r.placements)))
+		},
+		func() error {
+			return leftoverKeyed("move", st.Moves, ids(r.moves, func(m store.Move) string { return m.Owner }))
+		},
+	} {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func serviceAddrKey(m store.ServiceAddr) string { return m.Network + " " + m.Addr.String() }
+
+func nodeServiceAddrKey(m store.NodeServiceAddr) string {
+	return m.Network + " " + m.Node + " " + m.Addr.String()
+}
+
+func ids[T any](objects []T, id func(T) string) []string {
+	out := make([]string, 0, len(objects))
+	for _, o := range objects {
+		out = append(out, id(o))
+	}
+	return out
+}
+
+// leftoverKeyed is leftover for a kind the store reads by key.
+func leftoverKeyed[T any](kind string, read func() (map[string]T, error), carried []string) error {
+	have, err := read()
+	if err != nil {
+		return fmt.Errorf("reading the %ss: %w", kind, err)
+	}
+	return leftover(kind, slices.Collect(maps.Keys(have)), carried)
+}
+
+// leftover refuses an object the store holds that the bundle does not carry.
+func leftover(kind string, have, carried []string) error {
+	known := make(map[string]bool, len(carried))
+	for _, id := range carried {
+		known[id] = true
+	}
+	for _, id := range slices.Sorted(slices.Values(have)) {
+		if !known[id] {
+			return fmt.Errorf("%w: %s %s; clear the store, or import the bundle it was restored from", ErrOtherBundle, kind, id)
+		}
+	}
+	return nil
+}
+
 // restoreNetworks writes the networks, the service addresses and then the
 // pool, which is checked against them, and what the managed network holds,
-// whose leases are checked against the settings.
+// whose leases are checked against the settings. A network or a lease a run
+// that stopped half way wrote is written over at the revision it has.
 func restoreNetworks(_ context.Context, st *store.Store, r restoration) error {
-	if err := saveEach("networks", r.networks, func(n store.Network) error { return st.SaveNetwork(n, 0) }); err != nil {
+	indexes := make(map[string]int)
+	for _, n := range r.nodes {
+		if n.Index != nil {
+			indexes[n.Name] = *n.Index
+		}
+	}
+	networks, err := st.Networks()
+	if err != nil {
+		return fmt.Errorf("reading the networks: %w", err)
+	}
+	if err := saveEach("networks", r.networks, func(n store.Network) error {
+		return st.SaveNetworkIndexed(n, networks[n.ID].Rev, indexes)
+	}); err != nil {
 		return err
 	}
 	if err := saveEach("service addresses", r.serviceAddrs, st.SaveServiceAddr); err != nil {
@@ -565,7 +699,11 @@ func restoreNetworks(_ context.Context, st *store.Store, r restoration) error {
 			return fmt.Errorf("restoring the pool of service addresses: %w", err)
 		}
 	}
-	if err := saveEach("leases", r.leases, func(l store.Lease) error { return st.SaveLease(l, 0) }); err != nil {
+	leases, err := st.Leases()
+	if err != nil {
+		return fmt.Errorf("reading the leases: %w", err)
+	}
+	if err := saveEach("leases", r.leases, func(l store.Lease) error { return st.SaveLease(l, leases[l.MAC].Rev) }); err != nil {
 		return err
 	}
 	if err := saveEach("consents", r.consents, st.SaveConsent); err != nil {

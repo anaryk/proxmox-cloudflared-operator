@@ -68,8 +68,8 @@ func installed(t *testing.T) *store.Store {
 	require.NoError(t, st.SaveNodeSegment(store.NodeSegment{
 		Node: "pve2", Segment: store.Segment{Bridge: "vmbr1", VLAN: 20, AcknowledgedAt: t0.Add(-2 * time.Hour), By: "cli"},
 	}))
-	index := 1
-	require.NoError(t, st.SaveNode(store.NodeEntry{Name: "pve1", Version: "0.2.0", Since: t0.Add(-72 * time.Hour)}))
+	first, index := 0, 1
+	require.NoError(t, st.SaveNode(store.NodeEntry{Name: "pve1", Version: "0.2.0", Since: t0.Add(-72 * time.Hour), Index: &first}))
 	require.NoError(t, st.SaveNode(store.NodeEntry{
 		Name: "pve2", Version: "0.2.0", Since: t0.Add(-48 * time.Hour), Index: &index, Kind: "host",
 		AgentAddress: netip.MustParseAddr("192.0.2.12"), Protocol: store.ProtocolRange{Min: 1, Max: 1},
@@ -90,11 +90,12 @@ func installed(t *testing.T) *store.Store {
 		Writer: planner.Writer{InstallID: installID, Generation: 7, Nonce: "n0nce", Incarnation: "pve1/boot"},
 		Node:   "pve1", AcquiredAt: t0.Add(-24 * time.Hour), CASHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}))
-	require.NoError(t, st.SaveNetwork(store.Network{
+	// Saved as the controller saves it, with the indexes of the registry.
+	require.NoError(t, st.SaveNetworkIndexed(store.Network{
 		ID: "vmbr0", Kind: store.NetworkAttach, Bridge: "vmbr0", Prefix: netip.MustParsePrefix("192.0.2.0/24"),
-		Legs: map[string]netip.Addr{"pve1": netip.MustParseAddr("192.0.2.254")}, LegMAC: store.LegMACFor(store.NetworkAttach, 1),
-		Mark: 1, Uplink: true, CreatedAt: t0.Add(-40 * time.Hour),
-	}, 0))
+		Legs:   map[string]netip.Addr{"pve1": netip.MustParseAddr("192.0.2.254"), "pve2": netip.MustParseAddr("192.0.2.253")},
+		LegMAC: store.LegMACFor(store.NetworkAttach, 1), Mark: 1, Uplink: true, CreatedAt: t0.Add(-40 * time.Hour),
+	}, 0, map[string]int{"pve1": first, "pve2": index}))
 	_, err = st.AllocateServiceAddr("vmbr0", netip.MustParseAddr("192.0.2.20"), t0.Add(-39*time.Hour))
 	require.NoError(t, err)
 	_, err = st.AllocateNodeServiceAddr("vmbr1.20", "pve2", netip.MustParseAddr("10.20.0.5"), t0.Add(-38*time.Hour))
@@ -491,6 +492,80 @@ func TestARestoreThatStoppedHalfWayIsRunAgain(t *testing.T) {
 	_, found, err := to.Install()
 	require.NoError(t, err)
 	require.True(t, found)
+}
+
+func TestARestoreThatStoppedAtItsLastStepIsRunAgainOverWhatItWrote(t *testing.T) {
+	// The moves are the last kind written before leader.json and the
+	// install: by then every network and lease is in the store, at a
+	// revision, and the run again writes over them.
+	from := installed(t)
+	good := carried(t, collect(t, from, true))
+	broken := good
+	broken.Moves = []json.RawMessage{json.RawMessage(`{"owner":"qemu/101","from":"tun-1","to":"tun-1","step":"rules-added","at":"2026-10-06T11:00:00Z"}`)}
+	to := openStore(t)
+	err := Restore(t.Context(), to, broken)
+	require.ErrorContains(t, err, "restoring the moves")
+	networks, err := to.Networks()
+	require.NoError(t, err)
+	require.Len(t, networks, 1, "the first run got as far as the moves")
+	_, found, err := to.Install()
+	require.NoError(t, err)
+	require.False(t, found)
+
+	require.NoError(t, Restore(t.Context(), to, good))
+
+	_, found, err = to.Install()
+	require.NoError(t, err)
+	require.True(t, found)
+	same(t, "networks", from, to, (*store.Store).Networks)
+	same(t, "leases", from, to, (*store.Store).Leases)
+	same(t, "service addresses", from, to, (*store.Store).ServiceAddrs)
+	same(t, "the pool of service addresses", from, to, poolOf)
+	same(t, "moves", from, to, (*store.Store).Moves)
+}
+
+func TestARestoreNeverMergesWithWhatAnotherBundleLeft(t *testing.T) {
+	good := carried(t, collect(t, installed(t), true))
+	for name, leave := range map[string]struct {
+		do   func(*store.Store)
+		want string
+	}{
+		"a node": {func(s *store.Store) {
+			require.NoError(t, s.SaveNode(store.NodeEntry{Name: "pve9", Version: "0.2.0", Since: t0}))
+		}, "node pve9"},
+		"a credential": {func(s *store.Store) {
+			require.NoError(t, s.SaveCredential(store.Credential{ID: "old", Label: "old", Kind: "scoped", Token: store.NewSecret("x"), AddedAt: t0}))
+		}, "credential old"},
+		"a network": {func(s *store.Store) {
+			require.NoError(t, s.SaveNetwork(store.Network{
+				ID: "vmbr7", Kind: store.NetworkAttach, Bridge: "vmbr7", Prefix: netip.MustParsePrefix("10.7.0.0/24"),
+				Legs: map[string]netip.Addr{"pve1": netip.MustParseAddr("10.7.0.254")}, LegMAC: store.LegMACFor(store.NetworkAttach, 2), Mark: 2, CreatedAt: t0,
+			}, 0))
+		}, "network vmbr7"},
+		"a service address": {func(s *store.Store) {
+			_, err := s.AllocateServiceAddr("vmbr7", netip.MustParseAddr("10.7.0.5"), t0)
+			require.NoError(t, err)
+		}, "service address vmbr7 10.7.0.5"},
+		"a claim": {func(s *store.Store) {
+			require.NoError(t, s.SaveClaims(map[string]planner.Claim{"old.example.com": {Hostname: "old.example.com", Owner: "qemu/9", Since: t0}}))
+		}, "claim old.example.com"},
+		"a move": {func(s *store.Store) {
+			require.NoError(t, s.SaveMove(store.Move{Owner: "qemu/9", From: "a", To: "b", Step: store.MoveRulesAdded, At: t0}))
+		}, "move qemu/9"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			to := openStore(t)
+			leave.do(to)
+			before := stored(t, to)
+
+			err := Restore(t.Context(), to, good)
+
+			require.ErrorIs(t, err, ErrOtherBundle)
+			require.ErrorContains(t, err, leave.want)
+			require.ErrorContains(t, err, "clear the store, or import the bundle it was restored from")
+			require.Equal(t, before, stored(t, to), "nothing was written")
+		})
+	}
 }
 
 func TestAnInstallWithoutTheTimeItWasMadeIsDatedByTheBundle(t *testing.T) {
