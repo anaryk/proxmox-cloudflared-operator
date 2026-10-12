@@ -204,8 +204,8 @@ func (ms mappings) list() []store.ServiceAddr {
 // then given the legs of this node, every service address the egress set of
 // this cycle holds with the ports it holds it at, and the neighbours proven
 // behind them, before anything is written at Cloudflare; a service address
-// neither in the set nor in a configuration verified at Cloudflare is
-// released after that.
+// neither in the set nor in a configuration verified at Cloudflare, and that
+// no route is bound to any more, is released after that.
 func (c *cycleRun) gateway() {
 	c.legKept, c.legIfaces, c.legNets, c.frozen = map[string]string{}, map[string]string{}, map[string]bool{}, map[netip.Addr]bool{}
 	legs := c.markLegTargets()
@@ -591,10 +591,13 @@ func (c *cycleRun) wantedPins(services []gateway.Service) []gateway.Pin {
 }
 
 // releaseUnused deletes every mapping of a network with a leg on this node
-// whose service address the gateway was not given and no configuration
-// verified at Cloudflare sends a connector to, and returns the others. A
-// released address is never given again; the mappings of another node's
-// networks are its own to release.
+// whose service address the gateway was not given, no configuration verified
+// at Cloudflare sends a connector to, and no route of this cycle is bound to
+// the address of, and returns the others. A withdrawn route is still bound to
+// its address: its proof may come back, as after a change of the guest's MAC,
+// and the tunnel then sends the connector where it did. A released address is
+// never given again; the mappings of another node's networks are its own to
+// release.
 func (c *cycleRun) releaseUnused(mappings []store.ServiceAddr, services []gateway.Service) []store.ServiceAddr {
 	inUse := map[netip.Addr]bool{}
 	for _, s := range services {
@@ -603,9 +606,10 @@ func (c *cycleRun) releaseUnused(mappings []store.ServiceAddr, services []gatewa
 	for t := range c.e.sentTargets() {
 		inUse[t.Addr] = true
 	}
+	bound := c.boundAddrs()
 	var kept []store.ServiceAddr
 	for _, m := range mappings {
-		if inUse[m.Service] || !c.legNets[m.Network] {
+		if inUse[m.Service] || bound[mappingKey{m.Network, m.Addr}] || !c.legNets[m.Network] {
 			kept = append(kept, m)
 			continue
 		}
@@ -618,6 +622,18 @@ func (c *cycleRun) releaseUnused(mappings []store.ServiceAddr, services []gatewa
 			Message: fmt.Sprintf("service address %s of %s on network %s released", m.Service, m.Addr, m.Network)})
 	}
 	return kept
+}
+
+// boundAddrs are the addresses on a network that the binding of a winner of
+// this cycle names, served or withdrawn.
+func (c *cycleRun) boundAddrs() map[mappingKey]bool {
+	out := map[mappingKey]bool{}
+	for _, rt := range c.claims.Winners {
+		if res, ok := c.results[rt.Hostname]; ok && res.Binding != nil && res.Binding.Via != "" {
+			out[mappingKey{res.Binding.Via, res.Binding.Addr}] = true
+		}
+	}
+	return out
 }
 
 // saveGatewayCache keeps on the node what the gateway was given: the cache

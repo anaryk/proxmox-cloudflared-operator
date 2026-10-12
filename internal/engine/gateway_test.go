@@ -447,6 +447,52 @@ func TestALostLegProofTakesItsServiceAddressOutAtOnce(t *testing.T) {
 	require.Equal(t, svc0, bindings[legHost].Service, "a withdrawn binding keeps the address it was published under")
 }
 
+// A route whose target is withdrawn keeps its service address for as long as
+// a route names the guest, however many cycles the rule is gone for: once
+// the proof is back, as after a change of the guest's MAC, the tunnel sends
+// the connector where it did, and no new address is made. The address goes
+// once no route names the guest.
+func TestAWithdrawnRouteKeepsItsServiceAddressWhileARouteNamesIt(t *testing.T) {
+	e := newLegEnv(t)
+	e.warm()
+	st := e.next()
+	require.Equal(t, "http://198.18.1.0:8080", route(st, legHost).Service)
+	mapped := map[string]netip.Addr{"vmbr1 10.50.0.10": svc0}
+	require.Equal(t, mapped, e.mappings())
+
+	e.res.stop(legHost, "10.50.0.10 answered by bc:24:11:ff:ff:01, which is not this guest")
+	for range 3 {
+		st = e.next()
+		require.Equal(t, planner.StateWithdrawn, route(st, legHost).State)
+		require.Empty(t, e.gw.last(t).services, "nothing forwards to the address while the route is withdrawn")
+		require.Equal(t, mapped, e.mappings(), "the service address is kept while a route names the guest")
+	}
+	written := len(e.writes())
+
+	e.res.start(legHost)
+	st = e.next()
+
+	require.Equal(t, planner.StateActive, route(st, legHost).State)
+	require.Equal(t, "http://198.18.1.0:8080", route(st, legHost).Service, "published under the address it had")
+	require.Equal(t, mapped, e.mappings())
+	require.Equal(t, []gateway.Service{{Leg: "vmbr1", Service: svc0, Addr: legAddr, Ports: []uint16{8080}}}, e.gw.last(t).services)
+	writes := e.writes()
+	require.Len(t, writes, written+1, "one write brings the rule back")
+	require.Contains(t, writes[written], "PutTunnelConfig")
+	e.next()
+	require.Len(t, e.writes(), written+1, "and nothing follows it")
+	for _, ev := range e.eng.Events(time.Time{}) {
+		require.NotContains(t, ev.Message, "released")
+	}
+
+	e.inv.set(snapshot(guest(101, "web-1")))
+	e.next()
+	st = e.next()
+	require.Empty(t, e.mappings(), "released once no route names the guest")
+	require.Contains(t, unnumbered(e.eng.Events(time.Time{})), Event{At: st.At, Level: levelInfo, Kind: kindNetwork, Subject: "vmbr1",
+		Message: "service address 198.18.1.0 of 10.50.0.10 on network vmbr1 released"})
+}
+
 // A target the minimum holds back is still published under its service
 // address until its rule is gone, and its binding keeps that address, which a
 // proof lost later takes it out of the set by.
