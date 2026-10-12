@@ -44,8 +44,9 @@ var stateFields = map[string]decision{
 	"conflicts":   filteredBy("conflicts"), // by hostname
 	"lost":        filteredBy("lost"),      // by hostname
 	// problems and hold are operational text, shown as they are: filtering
-	// free text is not reliable, and the documentation says so.
-	"problems":      kept,
+	// free text is not reliable, and the documentation says so. The lines
+	// of the managed network lose the MACs they name.
+	"problems":      filteredBy("problems"),
 	"writerVerdict": kept,
 	"hold":          kept,
 	"profile":       kept,

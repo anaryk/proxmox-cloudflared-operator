@@ -78,6 +78,20 @@ var stateCases = []stateCase{
 	{"managed", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
 		st.Managed = managedFor(st.Managed, visible)
 	}},
+	{"problems", func(st *engine.State, _ auth.Visible, _ map[string]bool) {
+		st.Problems = only(st.Problems, func(string) bool { return true })
+		for i, line := range st.Problems {
+			if managedLine(line) {
+				st.Problems[i] = redactMACs(line)
+			}
+		}
+	}},
+}
+
+// managedLine says that a problem line is one of the managed network's that
+// may name a MAC: of a foreign card, of the leg, or of a card in an error.
+func managedLine(line string) bool {
+	return strings.HasPrefix(line, "foreign card ") || strings.HasPrefix(line, "managed card of ")
 }
 
 // withoutLegMACs is a copy of the networks without the MACs of the legs,

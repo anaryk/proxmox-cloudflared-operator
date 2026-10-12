@@ -40,6 +40,19 @@ var caseRows = map[string]caseRow{
 	"identity":   {state: withIdentity, visible: sees(140), fields: []string{"identity"}},
 	"networks":   {state: populated, visible: sees(101), fields: []string{"networks"}},
 	"managed":    {state: populated, visible: sees(201, 204, 205), fields: []string{"managed"}},
+	"problems":   {state: withManagedProblems, visible: sees(), fields: []string{"problems"}},
+}
+
+// withManagedProblems is the populated state with the problem lines of the
+// managed network, which name MACs, beside one of the appliance that does.
+func withManagedProblems(t *testing.T) engine.State {
+	st := populated(t)
+	st.Problems = append(st.Problems,
+		"foreign card net1 (06:50:43:4f:76:02) of lxc/205 (new-1-clone): a card on pconet with the MAC of pco's leg (02:50:43:4f:ff:01); pco sets its link down",
+		"managed card of lxc/201 (new-1): adding net1 to lxc/201: the card 06:50:43:4f:76:02 is net3 already",
+		"lxc/9295 runs with the MAC bc:24:11:00:92:50 of the appliance lxc/9250",
+	)
+	return st
 }
 
 // manualOnly is a state of manual routes only, with a conflict and a lost

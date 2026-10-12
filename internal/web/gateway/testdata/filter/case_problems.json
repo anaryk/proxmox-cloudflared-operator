@@ -1,0 +1,3 @@
+{
+  "problems": ["a problem", "foreign card net1 (a MAC) of lxc/205 (new-1-clone): a card on pconet with the MAC of pco's leg (a MAC); pco sets its link down", "managed card of lxc/201 (new-1): adding net1 to lxc/201: the card a MAC is net3 already", "lxc/9295 runs with the MAC bc:24:11:00:92:50 of the appliance lxc/9250"]
+}
