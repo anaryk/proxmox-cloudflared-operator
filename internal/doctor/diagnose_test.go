@@ -221,13 +221,6 @@ func TestEachStepFailsInTurn(t *testing.T) {
 			"the configuration of tunnel pco-abc123 is not verified: the last write was held or failed (pco plan shows why)",
 			func(st *engine.State) { st.Tunnels[0].Verified = false }},
 		{"no rule", "ingress", "the plan has no rule for it", func(st *engine.State) { st.Routes[0].Rule = nil }},
-		{"no connector", "connector", "no connector runs for tunnel pco-abc123", func(st *engine.State) { st.Connectors = nil }},
-		{"a connector that is not running", "connector", "the connector of tunnel pco-abc123 is not running", func(st *engine.State) {
-			st.Connectors[0].Active, st.Connectors[0].Ready = false, false
-		}},
-		{"a connector that is not connected", "connector", "the connector of tunnel pco-abc123 is not connected to Cloudflare", func(st *engine.State) {
-			st.Connectors[0].Ready = false
-		}},
 		{"a withdrawn target", "identity", "identity check failed: the MAC answers on another port", func(st *engine.State) {
 			r := &st.Routes[0]
 			r.State, r.Reason, r.Service = planner.StateWithdrawn, "identity check failed: the MAC answers on another port", ""
@@ -264,6 +257,59 @@ func TestEachStepFailsInTurn(t *testing.T) {
 			require.Empty(t, o.requests(), "nothing asks the origin once a step failed")
 		})
 	}
+}
+
+// A connector that does not run, or is not connected, is a finding of its
+// own: the steps after it ask the target from the node, which needs no
+// connector, and still say whether the path, the port and the origin work.
+func TestAFailedConnectorSkipsNothing(t *testing.T) {
+	for _, tt := range []struct {
+		name, detail string
+		change       func(st *engine.State)
+	}{
+		{"no connector", "no connector runs for tunnel pco-abc123", func(st *engine.State) { st.Connectors = nil }},
+		{"a connector that is not running", "the connector of tunnel pco-abc123 is not running", func(st *engine.State) {
+			st.Connectors[0].Active, st.Connectors[0].Ready = false, false
+		}},
+		{"a connector that is not connected", "the connector of tunnel pco-abc123 is not connected to Cloudflare", func(st *engine.State) {
+			st.Connectors[0].Ready = false
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newOrigin(t, false, nil)
+			st := throughLeg(t, servedBy(t, o.Server, "http"), engine.LegUp)
+			tt.change(&st)
+			ap := addrOf(t, o.Server)
+
+			steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+
+			require.NoError(t, err)
+			require.Equal(t, stepNames, names(steps))
+			require.Equal(t, Step{Name: "connector", Level: LevelFail, Detail: tt.detail}, steps[4])
+			require.Equal(t, []Step{
+				{Name: "identity", Level: LevelOK, Detail: "10.50.0.10 is the address of qemu/101, verified at identity level port (static)"},
+				{Name: "path", Level: LevelOK, Detail: "attach vmbr1: leg up, service " + ap.Addr().String() + " -> 10.50.0.10 programmed"},
+				{Name: "tcp", Level: LevelOK, Detail: fmt.Sprintf("%s answers (10.50.0.10:%d through the leg)", ap, ap.Port())},
+				{Name: "http", Level: LevelOK, Detail: "the origin answered 200 OK"},
+			}, steps[5:])
+		})
+	}
+
+	t.Run("and a step that fails after it skips the rest", func(t *testing.T) {
+		o := newOrigin(t, false, nil)
+		st := throughLeg(t, servedBy(t, o.Server, "http"), "bridge vmbr1 is absent")
+		st.Connectors = nil
+
+		steps, err := DiagnoseRoute(t.Context(), st, www, o.Client())
+
+		require.NoError(t, err)
+		require.Equal(t, LevelFail, steps[4].Level)
+		require.Equal(t, Step{Name: "path", Level: LevelFail, Detail: "attach vmbr1: the leg is not up: bridge vmbr1 is absent"}, steps[6])
+		for _, s := range steps[7:] {
+			require.True(t, s.Skipped, s.Name)
+		}
+		require.Empty(t, o.requests())
+	})
 }
 
 // throughLeg is st with its route proven at 10.50.0.10 through the leg of the

@@ -170,7 +170,8 @@ checks are:
     pco diagnose app.example.com
 
 walks the chain from the route to the origin and stops at the first step that fails; the steps
-after it say `skipped`.
+after it say `skipped`. A connector that fails stops nothing: the daemon asks the target from
+the node without one, so the steps after it still say whether the path and the origin work.
 
 | Step | What it asks |
 |---|---|

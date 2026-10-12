@@ -32,7 +32,8 @@ type Step struct {
 // tunnel's verified configuration, the connector, the identity of its target,
 // the path to it, directly or through the leg of a network of the gateway,
 // the port, and last an HTTP(S) request to that target as the tunnel would
-// make it. The first step that fails leaves the steps after it skipped.
+// make it. The first step that fails leaves the steps after it skipped, but
+// for the connector's, whose failure is a finding of its own.
 //
 // The request goes to nothing but the address and port of the route's rule,
 // which for a target behind a leg is its service address, and only when the
@@ -57,13 +58,16 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 	if i := slices.IndexFunc(st.Tunnels, func(t engine.TunnelView) bool { return rt.Account != "" && t.AccountID == rt.Account }); i >= 0 {
 		d.tunnel = &st.Tunnels[i]
 	}
+	// A connector that fails skips nothing: the steps after it ask the
+	// target from the node, which needs no connector.
 	links := []struct {
 		name  string
 		check func() Step
+		alone bool
 	}{
-		{"route", d.route}, {"zone", d.zone}, {"dns", d.dns}, {"ingress", d.ingress},
-		{"connector", d.connector}, {"identity", d.identity}, {"path", d.path}, {"tcp", d.tcp},
-		{"http", func() Step { return d.http(ctx, httpc) }},
+		{"route", d.route, false}, {"zone", d.zone, false}, {"dns", d.dns, false}, {"ingress", d.ingress, false},
+		{"connector", d.connector, true}, {"identity", d.identity, false}, {"path", d.path, false}, {"tcp", d.tcp, false},
+		{"http", func() Step { return d.http(ctx, httpc) }, false},
 	}
 	steps := make([]Step, 0, len(links))
 	failed := false
@@ -74,7 +78,7 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 		}
 		s := l.check()
 		s.Name = l.name
-		failed = s.Level == LevelFail
+		failed = s.Level == LevelFail && !l.alone
 		steps = append(steps, s)
 	}
 	return steps, nil

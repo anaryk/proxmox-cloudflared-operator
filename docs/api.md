@@ -468,8 +468,9 @@ acknowledged; `POST /v1/segments/acknowledge` and `/v1/segments/revoke` take `{"
 ### Diagnosis and doctor
 
 `GET /v1/diagnose?hostname=<hostname>` walks the chain of the route that holds the hostname and
-answers its steps, `route`, `zone`, `dns`, `ingress`, `connector`, `identity`, `tcp` and `http`,
-each with a level and a detail. A step after the first failure is `skipped`:
+answers its steps, `route`, `zone`, `dns`, `ingress`, `connector`, `identity`, `path`, `tcp` and
+`http`, each with a level and a detail. A step after the first failure is `skipped`, but a failed
+`connector` skips nothing, as the daemon asks the target without one:
 
 ```json
 [
