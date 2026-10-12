@@ -6,10 +6,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/atomicfile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/bundle"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -30,7 +30,8 @@ func (a *app) exportCmdWith(e bundleEnv) *cobra.Command {
 			"--credentials the Cloudflare tokens are in it too. pco import restores the install from it on\n" +
 			"another node or in another cluster, which is what a restore after a lost cluster or\n" +
 			"controller, and the conversion of a node, need. Run tokens, bindings and the caches are left\n" +
-			"out: the daemon builds them again.\n\n" +
+			"out, and so is the engine memory, what the controller learns between its runs: the daemon\n" +
+			"builds them again, the memory in the observe-only window after a restore.\n\n" +
 			"It runs as root on the node and reads the store directly, while the daemon runs: nothing has to\n" +
 			"be stopped. What it reads is the store at one moment; when the CA changed before the file was\n" +
 			"written, as it does during a rotation, it refuses and is run again. On a host the store is\n" +
@@ -118,6 +119,7 @@ func (a *app) export(cmd *cobra.Command, e bundleEnv, target string, credentials
 		return errors.New("the CA of the install changed while pco export ran, as it does during a rotation: run pco export again")
 	}
 	raw, err := bundle.Seal(c, pass, e.rand)
+	c.ClearCredentials()
 	if err != nil {
 		return err
 	}
@@ -137,15 +139,18 @@ func (a *app) export(cmd *cobra.Command, e bundleEnv, target string, credentials
 }
 
 // writeNew writes raw to target, for root only, and never over a file: the
-// text goes to a temporary file beside it, which is then linked to the name,
-// and the link fails when something took the name in the meantime. The
-// temporary name is removed either way.
-func writeNew(target string, raw []byte) (err error) {
-	f, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".*"+atomicfile.TempExt)
-	if err != nil {
+// name is made with O_EXCL, which fails when something took it in the
+// meantime, a symlink included, and works on every filesystem a backup may
+// go to. A file whose write or flush failed is removed again, and the
+// directory is flushed so that the name is on disk with the content.
+func writeNew(target string, raw []byte) error {
+	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	switch {
+	case errors.Is(err, fs.ErrExist):
+		return errExists(target)
+	case err != nil:
 		return fmt.Errorf("writing the bundle: %w", err)
 	}
-	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err = f.Write(raw); err == nil {
 		err = f.Sync()
 	}
@@ -153,12 +158,15 @@ func writeNew(target string, raw []byte) (err error) {
 		err = closeErr
 	}
 	if err != nil {
+		_ = os.Remove(target)
 		return fmt.Errorf("writing the bundle: %w", err)
 	}
-	switch err := os.Link(f.Name(), target); {
-	case errors.Is(err, fs.ErrExist):
-		return errExists(target)
-	case err != nil:
+	dir, err := os.Open(filepath.Dir(target))
+	if err != nil {
+		return fmt.Errorf("writing the bundle: %w", err)
+	}
+	defer func() { _ = dir.Close() }()
+	if err := dir.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
 		return fmt.Errorf("writing the bundle: %w", err)
 	}
 	return nil

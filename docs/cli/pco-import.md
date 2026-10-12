@@ -14,7 +14,12 @@ without being shown; it is never taken from an argument. A wrong passphrase and 
 was changed cannot be told apart.
 
 The install is stored in observe-only mode whatever it was: it publishes nothing until pco
-apply. leader.json comes back as it was, so the controller writes nothing until pco promote
+apply. What the controller learns between its runs, the engine memory, is in no bundle: it is
+learnt again in the observe-only window, before anything is removed. A bundle of an earlier
+shape carries no pool of service addresses; the pool then starts above the addresses in use,
+and an address that had been released may be given out again.
+
+leader.json comes back as it was, so the controller writes nothing until pco promote
 draws an epoch above the one of the install that was lost. The install remembers the cluster
 it was made in: restored in another, the daemon writes nothing until pco promote makes that
 cluster its writer, and the nodes of the lost cluster are admitted again after it.

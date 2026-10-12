@@ -8,7 +8,8 @@ attachments of the managed network, the claims, tombstones, placements and moves
 `--credentials` the Cloudflare tokens are in it too. pco import restores the install from it on
 another node or in another cluster, which is what a restore after a lost cluster or
 controller, and the conversion of a node, need. Run tokens, bindings and the caches are left
-out: the daemon builds them again.
+out, and so is the engine memory, what the controller learns between its runs: the daemon
+builds them again, the memory in the observe-only window after a restore.
 
 It runs as root on the node and reads the store directly, while the daemon runs: nothing has to
 be stopped. What it reads is the store at one moment; when the CA changed before the file was

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -346,33 +347,60 @@ func TestExportDoesNotReplaceAFile(t *testing.T) {
 	require.Equal(t, "an earlier backup", string(raw))
 }
 
-// whileAsking runs do while the passphrase is being typed, after the checks
-// that come before the prompt.
+func TestExportDoesNotFollowASymlinkAtTheTarget(t *testing.T) {
+	w := newBundleWorld(t).withInstall()
+	out := w.file("pco.bundle")
+	elsewhere := w.file("elsewhere")
+	require.NoError(t, os.Symlink(elsewhere, out))
+
+	res := w.export("--passphrase-file", w.passphraseFile(bundlePassphrase), out)
+
+	require.ErrorContains(t, res.err, "already exists")
+	require.NoFileExists(t, elsewhere, "nothing was written where the link points")
+}
+
+// whileAsking runs do once, while the passphrase is being typed, after the
+// checks that come before the prompt.
 func (w *bundleWorld) whileAsking(do func()) {
 	ask := w.app.readPassword
+	var once sync.Once
 	w.app.readPassword = func(fd int) ([]byte, error) {
-		do()
+		once.Do(do)
 		return ask(fd)
 	}
 }
 
 func TestExportDoesNotReplaceAFileThatAppearedWhileItRan(t *testing.T) {
-	w := newBundleWorld(t).withInstall()
-	w.terminal(bundlePassphrase, bundlePassphrase)
-	out := w.file("pco.bundle")
-	w.whileAsking(func() { require.NoError(t, os.WriteFile(out, []byte("an earlier backup"), 0o600)) })
+	t.Run("a file", func(t *testing.T) {
+		w := newBundleWorld(t).withInstall()
+		w.terminal(bundlePassphrase, bundlePassphrase)
+		out := w.file("pco.bundle")
+		w.whileAsking(func() { require.NoError(t, os.WriteFile(out, []byte("an earlier backup"), 0o600)) })
 
-	res := w.export(out)
+		res := w.export(out)
 
-	require.ErrorContains(t, res.err, "already exists")
-	raw, err := os.ReadFile(out)
-	require.NoError(t, err)
-	require.Equal(t, "an earlier backup", string(raw))
-	entries, err := os.ReadDir(w.dir)
-	require.NoError(t, err)
-	for _, e := range entries {
-		require.False(t, strings.HasSuffix(e.Name(), ".tmp"), "no temporary file is left: %s", e.Name())
-	}
+		require.ErrorContains(t, res.err, "already exists")
+		raw, err := os.ReadFile(out)
+		require.NoError(t, err)
+		require.Equal(t, "an earlier backup", string(raw))
+		entries, err := os.ReadDir(w.dir)
+		require.NoError(t, err)
+		for _, e := range entries {
+			require.False(t, strings.HasPrefix(e.Name(), ".pco.bundle"), "no file is made beside the target: %s", e.Name())
+		}
+	})
+	t.Run("a symlink to a file that is not there", func(t *testing.T) {
+		w := newBundleWorld(t).withInstall()
+		w.terminal(bundlePassphrase, bundlePassphrase)
+		out := w.file("pco.bundle")
+		elsewhere := w.file("elsewhere")
+		w.whileAsking(func() { require.NoError(t, os.Symlink(elsewhere, out)) })
+
+		res := w.export(out)
+
+		require.ErrorContains(t, res.err, "already exists")
+		require.NoFileExists(t, elsewhere, "the link is not followed")
+	})
 }
 
 func TestExportRefusesWhenTheCAChangedWhileItRan(t *testing.T) {
