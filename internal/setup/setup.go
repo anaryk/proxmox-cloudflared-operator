@@ -23,8 +23,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/webcert"
@@ -98,9 +101,11 @@ type Options struct {
 	// Managed makes the managed network: the SDN zone pco and vnet pconet,
 	// applied under the lock of the SDN configuration, and the network in the
 	// store. ConfirmSDNApply applies the changes of others that are pending
-	// along with pco's.
+	// along with pco's. Daemon stores the network through the daemon when
+	// one runs, as ManagedOptions.Daemon does.
 	Managed         bool
 	ConfirmSDNApply bool
+	Daemon          func(ctx context.Context) (asked bool, err error)
 }
 
 func (o Options) check() error {
@@ -159,6 +164,9 @@ type host struct {
 	hostname func() (string, error)
 	// checkToken makes one read of the Proxmox API with a token.
 	checkToken func(ctx context.Context, tok store.PVEToken) error
+	// snapshot reads the nodes and the guests of the cluster with a token,
+	// as the daemon does, for the checks of the managed subnet.
+	snapshot func(ctx context.Context, tok store.PVEToken) (inventory.Snapshot, error)
 	// profile reads the profile of the machine.
 	profile func() (string, error)
 	// sleep waits, as between two looks at the guests whose managed cards
@@ -187,6 +195,7 @@ func nodeHost() host {
 		euid:       os.Geteuid,
 		hostname:   os.Hostname,
 		checkToken: checkPVEToken,
+		snapshot:   readSnapshot,
 		profile:    func() (string, error) { return store.DetectProfile(store.ProfileFile) },
 		sleep: func(ctx context.Context, d time.Duration) error {
 			t := time.NewTimer(d)
@@ -220,6 +229,16 @@ func checkPVEToken(ctx context.Context, tok store.PVEToken) error {
 	}
 	_, err = c.Version(ctx)
 	return err
+}
+
+// readSnapshot reads the cluster once through the API, as the daemon reads
+// it, with a token.
+func readSnapshot(ctx context.Context, tok store.PVEToken) (inventory.Snapshot, error) {
+	c, err := pve.New(pve.Config{BaseURL: pve.DefaultURL, TokenID: tok.TokenID, Secret: tok.Secret.Reveal()})
+	if err != nil {
+		return inventory.Snapshot{}, err
+	}
+	return inventory.New(c, inventory.Options{}, time.Now, zerolog.Nop()).Refresh(ctx), nil
 }
 
 // New returns a setup that runs commands through r, asks p, keeps its state in

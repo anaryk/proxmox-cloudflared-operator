@@ -4,9 +4,11 @@ Make the managed network. On a host it runs as root and does what pco setup `--m
 it takes the lock of the SDN configuration, refuses changes of others that are pending
 unless `--confirm-sdn-apply` applies them along, makes the zone pco and the vnet pconet with
 isolated ports where they are missing, asks before the apply, which reloads the network on
-every node (`--yes` answers that), and stores the network. When it is the first network of
-the node, it enables and starts pco-netns.service, which brings up the gateway namespace
-the daemon puts the leg in.
+every node (`--yes` answers that), and stores the network: through the daemon while it runs,
+itself otherwise. Before anything is made, managed.subnet is checked against the routes of
+the nodes, the addresses of the guests and the attached networks. When it is the first
+network of the node, it enables and starts pco-netns.service, which brings up the gateway
+namespace the daemon puts the leg in.
 
 In an appliance the node makes the vnet and grants it, with pco appliance managed enable
 as root on the node; this command then asks the daemon to store the network, and the

@@ -131,7 +131,7 @@ func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, err
 	o := setup.Options{
 		Yes: f.yes, Repair: f.repair, Recover: f.recover, InstallID: f.installID, NewInstall: f.newInstall, Verbose: f.verbose,
 		WebCert: f.webCert, WebCertFile: f.webCertFile, WebKeyFile: f.webKeyFile, WebListen: f.webListen, NoWeb: f.noWeb,
-		Managed: f.managed, ConfirmSDNApply: f.confirmSDNApply,
+		Managed: f.managed, ConfirmSDNApply: f.confirmSDNApply, Daemon: a.managedThroughDaemon,
 	}
 	no := false
 	if f.noTags {

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -43,9 +46,11 @@ func newNetworkManagedEnableCmd(a *app) *cobra.Command {
 			"it takes the lock of the SDN configuration, refuses changes of others that are pending\n" +
 			"unless --confirm-sdn-apply applies them along, makes the zone pco and the vnet pconet with\n" +
 			"isolated ports where they are missing, asks before the apply, which reloads the network on\n" +
-			"every node (--yes answers that), and stores the network. When it is the first network of\n" +
-			"the node, it enables and starts pco-netns.service, which brings up the gateway namespace\n" +
-			"the daemon puts the leg in.\n\n" +
+			"every node (--yes answers that), and stores the network: through the daemon while it runs,\n" +
+			"itself otherwise. Before anything is made, managed.subnet is checked against the routes of\n" +
+			"the nodes, the addresses of the guests and the attached networks. When it is the first\n" +
+			"network of the node, it enables and starts pco-netns.service, which brings up the gateway\n" +
+			"namespace the daemon puts the leg in.\n\n" +
 			"In an appliance the node makes the vnet and grants it, with pco appliance managed enable\n" +
 			"as root on the node; this command then asks the daemon to store the network, and the\n" +
 			"appliance adds its own card on pconet.\n\n" +
@@ -87,6 +92,7 @@ func newNetworkManagedEnableCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			o.Daemon = a.managedThroughDaemon
 			return s.EnableManaged(cmd.Context(), o)
 		},
 	}
@@ -94,4 +100,24 @@ func newNetworkManagedEnableCmd(a *app) *cobra.Command {
 	flags.BoolVarP(&o.Yes, "yes", "y", false, "apply the SDN configuration without asking (needed without a terminal)")
 	flags.BoolVar(&o.ConfirmSDNApply, "confirm-sdn-apply", false, "apply the changes of others that are pending in the SDN along with pco's")
 	return cmd
+}
+
+// managedThroughDaemon asks the daemon of the host to store the managed
+// network, once the SDN holds its vnet: a daemon that runs allocates the
+// mark among those it holds free. It reports false when none runs, and the
+// network is stored directly then. A daemon that does not know the request
+// is another version than this pco: it is not gone around.
+func (a *app) managedThroughDaemon(ctx context.Context) (bool, error) {
+	err := a.client().EnableManaged(ctx)
+	switch {
+	case err == nil:
+		return true, nil
+	case apiclient.NotRunning(err):
+		return false, nil
+	case errors.Is(err, apiclient.ErrUnknownRequest):
+		return true, fmt.Errorf("the pco daemon runs and does not know pco network managed enable, so it cannot store the network: "+
+			"update pco to the version of this command, or stop the daemon (systemctl stop pco) and run this again, which stores "+
+			"the network itself; %w", err)
+	}
+	return true, err
 }

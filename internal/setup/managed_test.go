@@ -2,14 +2,19 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -195,4 +200,84 @@ func TestEnableManagedRefusedByTheSDN(t *testing.T) {
 	require.ErrorContains(t, err, "zone tenants (new)")
 	e.done()
 	require.Empty(t, e.networks())
+}
+
+// While the daemon runs it stores the network itself, so that the mark is
+// one it holds free; the SDN is made first, as the daemon checks the vnet.
+func TestEnableManagedThroughTheDaemon(t *testing.T) {
+	e := installedHost(t)
+	e.script(managedMade())
+	var asked []string
+	o := ManagedOptions{Yes: true, Daemon: func(context.Context) (bool, error) {
+		asked = append(asked, strings.Join(e.run.ran, ";"))
+		return true, nil
+	}}
+
+	require.NoError(t, e.enableManaged(o))
+
+	e.done()
+	require.Len(t, asked, 1)
+	require.Contains(t, asked[0], "pvesh set /cluster/sdn", "the SDN is applied before the daemon is asked")
+	require.Empty(t, e.networks(), "the daemon stores the network, not the command")
+	e.requireShown("network pconet: stored by the daemon, which puts its leg on it in its next cycle")
+
+	// Without a daemon the command stores it, as before.
+	e.script([]call{sdnLocked()}, sdnRead(list(zonePco), list(vnetPco), [2]string{"pconet", "[]"}), []call{sdnUnlocked()}, netnsEnabled())
+	o.Daemon = func(context.Context) (bool, error) { return false, nil }
+	require.NoError(t, e.enableManaged(o))
+	e.done()
+	require.Equal(t, managedNetwork(1), withoutRev(e.networks()["pconet"]))
+
+	// What the daemon refuses stops the command, and nothing is stored.
+	e = installedHost(t)
+	e.script(managedMade())
+	o.Daemon = func(context.Context) (bool, error) {
+		return true, errors.New("the pco daemon runs and does not know this command")
+	}
+	require.EqualError(t, e.enableManaged(o), "the pco daemon runs and does not know this command")
+	e.done()
+	require.Empty(t, e.networks())
+}
+
+// The subnet of the settings is checked against the cluster before anything
+// is made, as a change of the setting is checked by the daemon.
+func TestEnableManagedChecksTheSubnetFirst(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		snap inventory.Snapshot
+		want string
+	}{
+		{"a route of a node", inventory.Snapshot{Complete: true, Nodes: []inventory.Node{{Name: "pve2", Ifaces: []pve.NodeIface{
+			{Name: "vmbr3", Addrs: []netip.Prefix{netip.MustParsePrefix("10.203.118.7/24")}}}}}},
+			"managed.subnet 10.203.118.0/24 overlaps the route 10.203.118.0/24 of node pve2 on vmbr3; choose another subnet (pco settings) before the managed network is made"},
+		{"an address of a guest", inventory.Snapshot{Complete: true, Guests: []model.Guest{{Ref: model.GuestRef{Kind: model.KindLXC, VMID: 105},
+			Name: "web", NICs: []model.NIC{{Static: []netip.Addr{netip.MustParseAddr("10.203.118.5")}}}}}},
+			"managed.subnet 10.203.118.0/24 holds 10.203.118.5, an address of lxc/105 (web); choose another subnet (pco settings) before the managed network is made"},
+		{"a cluster not read in full", inventory.Snapshot{Problems: []string{"node pve2 is offline"}},
+			"the cluster could not be read in full (node pve2 is offline), so managed.subnet cannot be checked against the routes of the nodes " +
+				"and the addresses of the guests; try again once it can"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := installedHost(t)
+			e.snapshot = &tt.snap
+
+			err := e.enableManaged(ManagedOptions{Yes: true})
+
+			require.EqualError(t, err, tt.want)
+			e.done()
+			require.Empty(t, e.run.ran, "nothing is made")
+			require.Empty(t, e.networks())
+		})
+	}
+
+	// An attached network's prefix counts too.
+	e := installedHost(t)
+	require.NoError(t, e.st.SaveNetwork(store.Network{
+		ID: "vmbr1", Kind: store.NetworkAttach, Bridge: "vmbr1", Prefix: netip.MustParsePrefix("10.203.0.0/16"),
+		Legs: map[string]netip.Addr{testNode: netip.MustParseAddr("10.203.0.250")}, LegMAC: store.LegMACFor(store.NetworkAttach, 1),
+		Mark: 1, CreatedAt: t0,
+	}, 0))
+	require.EqualError(t, e.enableManaged(ManagedOptions{Yes: true}),
+		"managed.subnet 10.203.118.0/24 overlaps 10.203.0.0/16, the prefix of network vmbr1; choose another subnet (pco settings) before the managed network is made")
+	e.done()
 }

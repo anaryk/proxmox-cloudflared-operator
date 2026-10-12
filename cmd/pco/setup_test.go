@@ -51,6 +51,8 @@ func TestSetupOptionsFromFlags(t *testing.T) {
 			o, err := a.setupOptions(cmd, tt.flags)
 
 			require.NoError(t, err)
+			require.NotNil(t, o.Daemon, "the managed network goes through the daemon while it runs")
+			o.Daemon = nil
 			require.Equal(t, tt.want, o)
 		})
 	}

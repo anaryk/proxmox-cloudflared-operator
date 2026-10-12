@@ -111,3 +111,30 @@ func TestNetworkManagedCommandsAreDocumented(t *testing.T) {
 	require.NotNil(t, enable.Flags().Lookup("confirm-sdn-apply"))
 	require.NotNil(t, enable.Flags().Lookup("yes"))
 }
+
+// On a host the daemon stores the network while it runs; without one the
+// command stores it itself, and a daemon of another version is not gone
+// around.
+func TestManagedThroughTheDaemon(t *testing.T) {
+	a := &app{env: testEnv(), socket: serveRaw(t, map[string]rawReply{"POST /v1/managed/enable": {status: http.StatusOK, body: `{}`}})}
+	asked, err := a.managedThroughDaemon(t.Context())
+	require.NoError(t, err)
+	require.True(t, asked)
+
+	a = &app{env: testEnv(), socket: "/nonexistent/pco/pco.sock"}
+	asked, err = a.managedThroughDaemon(t.Context())
+	require.NoError(t, err)
+	require.False(t, asked, "no daemon runs: the command stores the network")
+
+	a = &app{env: testEnv(), socket: serveRaw(t, map[string]rawReply{})}
+	asked, err = a.managedThroughDaemon(t.Context())
+	require.True(t, asked)
+	require.ErrorContains(t, err, "the pco daemon runs and does not know pco network managed enable, so it cannot store the network: "+
+		"update pco to the version of this command, or stop the daemon (systemctl stop pco) and run this again")
+
+	a = &app{env: testEnv(), socket: serveRaw(t, map[string]rawReply{"POST /v1/managed/enable": {status: http.StatusConflict,
+		body: `{"error":"the vnet pconet is not there","code":"refused"}`}})}
+	asked, err = a.managedThroughDaemon(t.Context())
+	require.True(t, asked)
+	require.EqualError(t, err, "the vnet pconet is not there")
+}

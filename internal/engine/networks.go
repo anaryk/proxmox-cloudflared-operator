@@ -1134,41 +1134,19 @@ func (e *Engine) checkManagedSubnet(ctx context.Context, old, s store.Settings) 
 		return fmt.Errorf("%w: the inventory is incomplete (%s), so %s cannot be checked against the routes of the nodes and the addresses "+
 			"of the guests; try again once it is complete", ErrRefused, strings.Join(snap.Problems, "; "), field)
 	}
-	for _, n := range snap.Nodes {
-		for _, ifc := range n.Ifaces {
-			for _, p := range ifc.Addrs {
-				if p.Masked().Overlaps(subnet) {
-					return fieldError(field, "%s %s overlaps the route %s of node %s on %s", field, subnet, p.Masked(), n.Name, ifc.Name)
-				}
-			}
-		}
-	}
-	for _, g := range snap.Guests {
-		for _, a := range guestAddrs(g) {
-			if subnet.Contains(a) {
-				return fieldError(field, "%s %s holds %s, an address of %s", field, subnet, a,
-					OwnerName(g.Ref.String(), &GuestView{GuestRef: g.Ref, Name: strings.TrimSpace(g.Name)}))
-			}
-		}
-	}
-	for _, id := range slices.Sorted(maps.Keys(nets)) {
-		if n := nets[id]; n.Kind == store.NetworkAttach && n.Prefix.Overlaps(subnet) {
-			return fieldError(field, "%s %s overlaps %s, the prefix of network %s", field, subnet, n.Prefix, id)
-		}
+	if msg := snap.ManagedSubnetConflict(subnet, AttachedPrefixes(nets)); msg != "" {
+		return fieldError(field, "%s %s %s", field, subnet, msg)
 	}
 	return nil
 }
 
-// guestAddrs are the addresses of a guest's cards, static and reported, in
-// order.
-func guestAddrs(g model.Guest) []netip.Addr {
-	var out []netip.Addr
-	for _, n := range g.NICs {
-		out = append(out, n.Static...)
+// AttachedPrefixes are the prefixes of the attached networks, by id.
+func AttachedPrefixes(nets map[string]store.Network) []inventory.AttachedPrefix {
+	var out []inventory.AttachedPrefix
+	for _, id := range slices.Sorted(maps.Keys(nets)) {
+		if n := nets[id]; n.Kind == store.NetworkAttach {
+			out = append(out, inventory.AttachedPrefix{ID: id, Prefix: n.Prefix})
+		}
 	}
-	for _, r := range g.Reported {
-		out = append(out, r.Addr)
-	}
-	slices.SortFunc(out, netip.Addr.Compare)
-	return slices.Compact(out)
+	return out
 }

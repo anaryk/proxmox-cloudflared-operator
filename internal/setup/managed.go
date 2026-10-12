@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -17,6 +18,11 @@ type ManagedOptions struct {
 	Yes             bool   // apply the SDN configuration without asking
 	ConfirmSDNApply bool   // apply the changes of others that are pending as well
 	Node            string // default: the host name
+	// Daemon asks the daemon to store the network, once the SDN holds its
+	// vnet: the daemon allocates the mark among those it holds free. asked
+	// is false when no daemon runs, and the network is stored directly then.
+	// nil never asks.
+	Daemon func(ctx context.Context) (asked bool, err error)
 }
 
 // EnableManaged makes the managed network of a host that is set up: what the
@@ -28,7 +34,7 @@ func (s *Setup) EnableManaged(ctx context.Context, o ManagedOptions) error {
 	if s.host.euid() != 0 {
 		return errors.New("pco network managed enable must run as root")
 	}
-	r := &run{Setup: s, o: Options{Yes: o.Yes, Managed: true, ConfirmSDNApply: o.ConfirmSDNApply, Node: o.Node}}
+	r := &run{Setup: s, o: Options{Yes: o.Yes, Managed: true, ConfirmSDNApply: o.ConfirmSDNApply, Node: o.Node, Daemon: o.Daemon}}
 	if r.o.Node == "" {
 		name, err := s.host.hostname()
 		if err != nil {
@@ -56,7 +62,11 @@ func (s *Setup) EnableManaged(ctx context.Context, o ManagedOptions) error {
 // ensureManaged is the step managed: the SDN zone and vnet of the managed
 // network with isolated ports, the network in the store, and the unit of the
 // gateway namespace when it is the first network of the node, as the daemon
-// cannot pin the namespace itself.
+// cannot pin the namespace itself. Before the network is first stored its
+// subnet is checked against the routes of the nodes, the addresses of the
+// guests and the attached networks, as a change of the setting is. A daemon
+// that runs stores the network itself, so that the mark it allocates is one
+// it holds free.
 func (r *run) ensureManaged(ctx context.Context) error {
 	have, err := r.st.Networks()
 	if err != nil {
@@ -67,6 +77,12 @@ func (r *run) ensureManaged(ctx context.Context) error {
 	if !stored && mark == 0 {
 		return fmt.Errorf("network %s: pco reaches at most %d networks, and the node has %d: detach one first",
 			ManagedVnet, gateway.MaxMark, len(have))
+	}
+	var subnet netip.Prefix
+	if !stored {
+		if subnet, err = r.checkManagedSubnet(ctx, have); err != nil {
+			return err
+		}
 	}
 	sdn := SDN{
 		Run: r.run, Ask: r.ask, Ours: r.manifest, Record: r.record,
@@ -79,13 +95,60 @@ func (r *run) ensureManaged(ctx context.Context) error {
 		r.ask.Info("network %s: in the store, nothing needed", ManagedVnet)
 		return nil
 	}
-	if err := r.saveManagedNetwork(mark); err != nil {
+	if r.o.Daemon != nil {
+		asked, err := r.o.Daemon(ctx)
+		if err != nil {
+			return err
+		}
+		if asked {
+			r.ask.Info("network %s: stored by the daemon, which puts its leg on it in its next cycle", ManagedVnet)
+			return nil
+		}
+	}
+	if err := r.saveManagedNetwork(subnet, mark); err != nil {
 		return err
 	}
 	if len(have) > 0 {
 		return nil
 	}
 	return r.enableNetns(ctx)
+}
+
+// checkManagedSubnet reads the settings' subnet of the managed network and
+// refuses one that overlaps a route of a node, an address of a guest or the
+// prefix of an attached network, as the daemon refuses a change of the
+// setting; the cluster is read through the API with the stored token.
+func (r *run) checkManagedSubnet(ctx context.Context, have map[string]store.Network) (netip.Prefix, error) {
+	settings, err := r.st.Settings()
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("reading the settings: %w", err)
+	}
+	subnet := settings.Managed.Subnet
+	tok, found, err := r.st.PVEToken()
+	switch {
+	case err != nil:
+		return netip.Prefix{}, fmt.Errorf("reading the stored Proxmox token: %w", err)
+	case !found:
+		return netip.Prefix{}, errors.New("no Proxmox token is stored, so managed.subnet cannot be checked against the cluster; run pco setup first")
+	}
+	snap, err := r.host.snapshot(ctx, tok)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("reading the cluster to check managed.subnet: %w", err)
+	}
+	if !snap.Complete {
+		return netip.Prefix{}, fmt.Errorf("the cluster could not be read in full (%s), so managed.subnet cannot be checked against the routes "+
+			"of the nodes and the addresses of the guests; try again once it can", strings.Join(snap.Problems, "; "))
+	}
+	var attached []inventory.AttachedPrefix
+	for _, n := range have {
+		if n.Kind == store.NetworkAttach {
+			attached = append(attached, inventory.AttachedPrefix{ID: n.ID, Prefix: n.Prefix})
+		}
+	}
+	if msg := snap.ManagedSubnetConflict(subnet, attached); msg != "" {
+		return netip.Prefix{}, fmt.Errorf("managed.subnet %s %s; choose another subnet (pco settings) before the managed network is made", subnet, msg)
+	}
+	return subnet, nil
 }
 
 // freeMark is the lowest mark no network holds, 0 when none is free.
@@ -104,12 +167,7 @@ func freeMark(have map[string]store.Network) int {
 
 // saveManagedNetwork stores the managed network of the settings' subnet, with
 // the leg of this node at its first address.
-func (r *run) saveManagedNetwork(mark int) error {
-	settings, err := r.st.Settings()
-	if err != nil {
-		return fmt.Errorf("reading the settings: %w", err)
-	}
-	subnet := settings.Managed.Subnet
+func (r *run) saveManagedNetwork(subnet netip.Prefix, mark int) error {
 	n := store.Network{
 		ID: ManagedVnet, Kind: store.NetworkManaged, Bridge: ManagedVnet, Prefix: subnet,
 		Legs:   map[string]netip.Addr{r.o.Node: subnet.Addr().Next()},

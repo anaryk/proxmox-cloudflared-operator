@@ -117,10 +117,12 @@ func TestSetupOptionsOfTheWebInterface(t *testing.T) {
 
 	o, err := a.setupOptions(cmd, setupFlags{webCert: "own", webCertFile: "a.crt", webKeyFile: "a.key", webListen: "192.0.2.10"})
 	require.NoError(t, err)
+	o.Daemon = nil
 	require.Equal(t, setup.Options{WebCert: "own", WebCertFile: "a.crt", WebKeyFile: "a.key", WebListen: "192.0.2.10"}, o)
 
 	o, err = a.setupOptions(cmd, setupFlags{noWeb: true})
 	require.NoError(t, err)
+	o.Daemon = nil
 	require.Equal(t, setup.Options{NoWeb: true}, o)
 }
 

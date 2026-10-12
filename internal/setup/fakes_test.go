@@ -16,6 +16,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -186,6 +187,9 @@ type testEnv struct {
 	events []string
 	errs   []string // every error a run returned
 	s      *Setup
+	// snapshot is what the cluster looks like through the API; nil for an
+	// empty one, read in full.
+	snapshot *inventory.Snapshot
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -234,8 +238,14 @@ func newTestEnv(t *testing.T) *testEnv {
 		euid:       func() int { return 0 },
 		hostname:   func() (string, error) { return testNode + ".example.com", nil },
 		checkToken: func(context.Context, store.PVEToken) error { return nil },
-		profile:    func() (string, error) { return store.ProfileHost, nil },
-		sleep:      func(context.Context, time.Duration) error { return nil },
+		snapshot: func(context.Context, store.PVEToken) (inventory.Snapshot, error) {
+			if e.snapshot != nil {
+				return *e.snapshot, nil
+			}
+			return inventory.Snapshot{Complete: true}, nil
+		},
+		profile: func() (string, error) { return store.ProfileHost, nil },
+		sleep:   func(context.Context, time.Duration) error { return nil },
 
 		webDir:       filepath.Join(base, "pco", "web"),
 		webEnv:       filepath.Join(base, "default", "pco-web"),
