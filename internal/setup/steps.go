@@ -173,23 +173,33 @@ const registerTries = 3
 // what else the controller decided left alone; a removed node joins again
 // under the index its name had, so its leg MACs stay.
 func (r *run) register(context.Context) error {
-	for range registerTries {
-		entry, rev, err := r.nextEntry()
-		if err != nil {
-			return err
-		}
-		if entry == nil {
-			break
-		}
-		if _, err := r.st.SaveNodeIf(*entry, rev); err != nil {
-			if errors.Is(err, store.ErrRevision) {
-				continue
-			}
-			return fmt.Errorf("registering node %s: %w", r.o.Node, err)
-		}
-		break
+	if err := r.writeEntry(); err != nil {
+		return err
 	}
 	return r.record(func(m *Manifest) { m.Node = r.o.Node })
+}
+
+// writeEntry writes the entry nextEntry makes at the revision it read, and
+// reads again when another writer came between.
+func (r *run) writeEntry() error {
+	for range registerTries {
+		entry, rev, err := r.nextEntry()
+		switch {
+		case err != nil:
+			return err
+		case entry == nil:
+			return nil
+		}
+		_, err = r.st.SaveNodeIf(*entry, rev)
+		switch {
+		case errors.Is(err, store.ErrRevision):
+			continue
+		case err != nil:
+			return fmt.Errorf("registering node %s: %w", r.o.Node, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("the entry of node %s kept changing while it was registered; run pco setup again", r.o.Node)
 }
 
 // nextEntry is the entry to write and the revision it was read at, or nil

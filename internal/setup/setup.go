@@ -113,6 +113,11 @@ type Options struct {
 	// FirewallRule answers whether to add the datacenter firewall rule that
 	// admits the agent channel from the nodes; nil asks (default yes).
 	FirewallRule *bool
+
+	// ClusterPreview lets a node join an install that other nodes run. The
+	// daemon cannot drive more than one node yet, so a join is refused
+	// without it.
+	ClusterPreview bool
 }
 
 func (o Options) check() error {

@@ -37,7 +37,8 @@ func (r *run) ensureCluster(ctx context.Context) error {
 }
 
 // readOthers reads which other nodes run the install: the registered ones
-// that were not removed.
+// that were not removed. While the daemon drives one node only, a node does
+// not join them unless ClusterPreview says to.
 func (r *run) readOthers() error {
 	nodes, err := r.st.Nodes()
 	if err != nil {
@@ -50,6 +51,9 @@ func (r *run) readOthers() error {
 		}
 	}
 	slices.Sort(r.others)
+	if len(r.others) > 0 && !r.o.ClusterPreview {
+		return fmt.Errorf("pco is already set up on node %s; cluster support arrives in a later release", r.others[0])
+	}
 	return nil
 }
 
@@ -95,33 +99,29 @@ func (r *run) ensureIdentity(m members.Members) error {
 }
 
 // chooseAgentAddress finds the one address the node's agent listens on and
-// is dialled at: the node's address in cluster.agentNetwork when that is set,
-// else the address pmxcfs lists for the node, which is the one its name
-// resolves to, else, on a node that corosync never listed, the address of
-// the cluster status.
+// is dialled at. With cluster.agentNetwork set it is the node's address in
+// that network: the one pmxcfs lists when it is in it, else the one address
+// of the node's interfaces in it; two or more are refused rather than one
+// guessed. Without the setting it is the address pmxcfs lists for the node,
+// which is the one its name resolves to, else, on a node that corosync never
+// listed, the address of the cluster status.
 func (r *run) chooseAgentAddress(ctx context.Context, m members.Members) error {
 	settings, err := r.st.Settings()
 	if err != nil {
 		return fmt.Errorf("reading the settings: %w", err)
 	}
-	if p := settings.Cluster.AgentNetwork; p.IsValid() {
-		addrs, err := r.host.addrs()
-		if err != nil {
-			return fmt.Errorf("reading the addresses of the node: %w", err)
-		}
-		i := slices.IndexFunc(addrs, p.Contains)
-		if i < 0 {
-			return fmt.Errorf("this node has no address in cluster.agentNetwork %s (it has %s): give it one, or change the setting",
-				p, joinAddrs(addrs))
-		}
-		r.agentAddress = addrs[i]
-		return nil
-	}
+	var listed netip.Addr
 	for _, n := range m.Nodes {
 		if n.Name == r.o.Node && n.IP.IsValid() {
-			r.agentAddress = n.IP
-			return nil
+			listed = n.IP
 		}
+	}
+	if p := settings.Cluster.AgentNetwork; p.IsValid() {
+		return r.agentAddressIn(p, listed)
+	}
+	if listed.IsValid() {
+		r.agentAddress = listed
+		return nil
 	}
 	addrs, err := r.nodeAddrs(ctx)
 	if err != nil {
@@ -132,6 +132,35 @@ func (r *run) chooseAgentAddress(ctx context.Context, m members.Members) error {
 	}
 	r.agentAddress = addrs[0]
 	return nil
+}
+
+// agentAddressIn chooses the node's address in the agent network p, the one
+// pmxcfs lists for it, listed, first.
+func (r *run) agentAddressIn(p netip.Prefix, listed netip.Addr) error {
+	if listed.IsValid() && p.Contains(listed) {
+		r.agentAddress = listed
+		return nil
+	}
+	addrs, err := r.host.addrs()
+	if err != nil {
+		return fmt.Errorf("reading the addresses of the node: %w", err)
+	}
+	var in []netip.Addr
+	for _, a := range addrs {
+		if p.Contains(a) && !slices.Contains(in, a) {
+			in = append(in, a)
+		}
+	}
+	switch len(in) {
+	case 0:
+		return fmt.Errorf("this node has no address in cluster.agentNetwork %s (it has %s): give it one, or change the setting",
+			p, joinAddrs(addrs))
+	case 1:
+		r.agentAddress = in[0]
+		return nil
+	}
+	return fmt.Errorf("this node has %d addresses in cluster.agentNetwork %s (%s), and the agent listens on one: "+
+		"leave one of them in it, or narrow the setting", len(in), p, joinAddrs(in))
 }
 
 func joinAddrs(addrs []netip.Addr) string {

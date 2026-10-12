@@ -35,49 +35,95 @@ const (
 // they made: the first node of an install that was set up before clusters
 // makes it when it first runs this release.
 func (r *run) ensureCA() (pki.CA, error) {
-	current, _, _, err := r.st.CA()
+	ca, found, err := r.storedCA()
 	switch {
-	case errors.Is(err, store.ErrNoCA):
 	case err != nil:
-		return pki.CA{}, fmt.Errorf("reading the CA: %w", err)
-	default:
-		ca, err := pki.ParseCA([]byte(current.CertPEM), []byte(current.KeyPEM.Reveal()))
-		if err != nil {
-			return pki.CA{}, fmt.Errorf("the CA of the install cannot be read: %w", err)
-		}
+		return pki.CA{}, err
+	case found:
 		return ca, nil
-	}
-	if len(r.others) > 0 {
+	case len(r.others) > 0:
 		who := "the node " + r.others[0] + " makes"
 		if len(r.others) > 1 {
 			who = "one of the nodes " + strings.Join(r.others, ", ") + " makes"
 		}
 		return pki.CA{}, fmt.Errorf("the install has no CA yet, which %s when it runs this release of pco: upgrade and start pco there first", who)
 	}
-	ca, err := pki.NewCA(r.install.ID, r.now(), r.rand)
+	return r.createCA()
+}
+
+// storedCA reads the current CA of the install; found is false when there
+// is none.
+func (r *run) storedCA() (pki.CA, bool, error) {
+	current, _, _, err := r.st.CA()
+	switch {
+	case errors.Is(err, store.ErrNoCA):
+		return pki.CA{}, false, nil
+	case err != nil:
+		return pki.CA{}, false, fmt.Errorf("reading the CA: %w", err)
+	}
+	ca, err := pki.ParseCA([]byte(current.CertPEM), []byte(current.KeyPEM.Reveal()))
+	if err != nil {
+		return pki.CA{}, false, fmt.Errorf("the CA of the install cannot be read: %w", err)
+	}
+	return ca, true, nil
+}
+
+// createCA makes the CA of the install, stored only while none is: a setup
+// on another node that stored one first wins, and this node issues under
+// that one. leader.json then names the CA that is stored, whichever made it.
+func (r *run) createCA() (pki.CA, error) {
+	made, err := pki.NewCA(r.install.ID, r.now(), r.rand)
 	if err != nil {
 		return pki.CA{}, fmt.Errorf("making the CA: %w", err)
 	}
-	certPEM, keyPEM, err := ca.PEM()
+	certPEM, keyPEM, err := made.PEM()
 	if err != nil {
 		return pki.CA{}, fmt.Errorf("encoding the CA: %w", err)
 	}
-	if err := r.st.SaveCA(store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))}, nil, time.Time{}); err != nil {
+	err = r.st.SaveCAIfAbsent(store.CAFiles{CertPEM: string(certPEM), KeyPEM: store.NewSecret(string(keyPEM))})
+	if err != nil && !errors.Is(err, store.ErrRevision) {
 		return pki.CA{}, fmt.Errorf("storing the CA: %w", err)
 	}
-	// Every agent of the install reads which CA is current from leader.json.
-	leader, rev, found, err := r.st.Leader()
-	if err != nil {
-		return pki.CA{}, fmt.Errorf("reading leader.json: %w", err)
+	ca, found, rerr := r.storedCA()
+	switch {
+	case rerr != nil:
+		return pki.CA{}, rerr
+	case !found:
+		return pki.CA{}, errors.New("the CA of the install was stored and is gone again")
+	case err != nil:
+		r.ask.Info("cluster CA: another node made it meanwhile (SHA-256 %s)", ca.SHA256())
+	default:
+		r.ask.Info("cluster CA: created (SHA-256 %s)", ca.SHA256())
 	}
-	if found {
-		leader.CASHA256 = ca.SHA256()
-		if _, err := r.st.SaveLeaderIf(leader, rev); err != nil {
-			return pki.CA{}, fmt.Errorf("naming the CA in leader.json: %w", err)
-		}
+	if err := r.nameCA(ca); err != nil {
+		return pki.CA{}, err
 	}
-	r.ask.Info("cluster CA: created (SHA-256 %s)", ca.SHA256())
 	return ca, nil
+}
+
+// nameCA writes the fingerprint of the stored CA into leader.json, which
+// every agent of the install reads to know which CA is current, at the
+// revision it read, reading again when another writer came between.
+func (r *run) nameCA(ca pki.CA) error {
+	for range registerTries {
+		leader, rev, found, err := r.st.Leader()
+		switch {
+		case err != nil:
+			return fmt.Errorf("reading leader.json: %w", err)
+		case !found, leader.CASHA256 == ca.SHA256():
+			return nil
+		}
+		leader.CASHA256 = ca.SHA256()
+		_, err = r.st.SaveLeaderIf(leader, rev)
+		switch {
+		case errors.Is(err, store.ErrRevision):
+			continue
+		case err != nil:
+			return fmt.Errorf("naming the CA in leader.json: %w", err)
+		}
+		return nil
+	}
+	return errors.New("leader.json kept changing while the CA was named in it")
 }
 
 // ensureCertificates keeps the node's client and server certificates while

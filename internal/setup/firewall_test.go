@@ -148,7 +148,7 @@ func TestAJoinAddsItsAddressToTheIPSet(t *testing.T) {
 	e.joinable()
 	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), firewallJoined(), cloudflaredKept(), serviceStarted())
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode, FirewallRule: yes()}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
 	e.done()
 
 	m := e.manifest()
@@ -170,7 +170,7 @@ func TestAJoinAddsTheAddressesOfTheOtherNodesTheIPSetLacks(t *testing.T) {
 		{line: rulesList, out: "[" + ruleJSON(0, 1, ruleComment) + "]"},
 	}, cloudflaredKept(), serviceStarted())
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode, FirewallRule: yes()}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
 	e.done()
 }
 
@@ -184,7 +184,7 @@ func TestADisabledRuleIsLeftAloneAndNamed(t *testing.T) {
 		{line: rulesList, out: "[" + ruleJSON(0, 0, "paused by the admin") + "]"},
 	}, cloudflaredKept(), serviceStarted())
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode, FirewallRule: yes()}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode, FirewallRule: yes()}))
 	e.done()
 
 	e.requireShown("warn: firewall: the datacenter rule IN ACCEPT -p tcp -dport 8644 -source +pco-nodes is there but disabled")

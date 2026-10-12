@@ -112,7 +112,7 @@ func TestSetupOnAFurtherNodeJoinsTheInstall(t *testing.T) {
 	ca := e.joinable()
 	e.script(joined()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	inst := e.install()
@@ -156,6 +156,77 @@ func TestSetupOnAFurtherNodeJoinsTheInstall(t *testing.T) {
 	e.requireNoSecret()
 }
 
+func TestAJoinIsRefusedWithoutTheClusterPreview(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		options Options
+	}{
+		{"setup", Options{Yes: true, Node: testNode}},
+		{"repair", Options{Yes: true, Repair: true, Node: testNode}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.joinable()
+			e.script(preflight("9.0.10"))
+
+			err := e.setup(tt.options)
+
+			require.EqualError(t, err, "setup step store: pco is already set up on node "+firstNode+"; cluster support arrives in a later release")
+			_, registered := e.nodes()[testNode]
+			require.False(t, registered)
+			_, found, err := e.st.Enrolment(testNode)
+			require.NoError(t, err)
+			require.False(t, found)
+			e.done()
+		})
+	}
+}
+
+func TestARemovedNodeDoesNotCountAsAnotherNodeOfTheInstall(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.installed(Manifest{})
+	require.NoError(t, e.st.SaveNode(store.NodeEntry{Name: "pve9", Since: t0, State: string(agentproto.Removed), StateSince: t0}))
+	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), cloudflaredKept(), serviceStarted())
+
+	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	e.done()
+}
+
+func TestTheAgentNetworkPrefersTheAddressPmxcfsLists(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.joinable()
+	e.addrs = append(e.addrs, netip.MustParseAddr("192.0.2.77"))
+	settings, err := e.st.Settings()
+	require.NoError(t, err)
+	settings.Cluster.AgentNetwork = netip.MustParsePrefix("192.0.2.0/24")
+	require.NoError(t, e.st.SaveSettings(settings))
+	e.script(joined()...)
+
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
+	e.done()
+
+	require.Equal(t, netip.MustParseAddr(testAddr), e.node(testNode).AgentAddress)
+}
+
+func TestTwoAddressesInTheAgentNetworkAreRefused(t *testing.T) {
+	e := newTestEnv(t)
+	e.joinable()
+	e.addrs = []netip.Addr{netip.MustParseAddr(testAddr), netip.MustParseAddr("10.99.0.10"), netip.MustParseAddr("10.99.0.11")}
+	settings, err := e.st.Settings()
+	require.NoError(t, err)
+	settings.Cluster.AgentNetwork = netip.MustParsePrefix("10.99.0.0/24")
+	require.NoError(t, e.st.SaveSettings(settings))
+	e.script(preflight("9.0.10"))
+
+	err = e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode})
+
+	require.EqualError(t, err, "setup step cluster: this node has 2 addresses in cluster.agentNetwork 10.99.0.0/24 "+
+		"(10.99.0.10, 10.99.0.11), and the agent listens on one: leave one of them in it, or narrow the setting")
+	e.done()
+}
+
 func TestTwoJoinsAtOnceLeaveTwoEntriesWithoutAnIndex(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)
@@ -169,8 +240,8 @@ func TestTwoJoinsAtOnceLeaveTwoEntriesWithoutAnIndex(t *testing.T) {
 	e.script(joined()...)
 	other.script(joined()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
-	require.NoError(t, other.setup(Options{Yes: true, Node: "pve3"}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
+	require.NoError(t, other.setup(Options{Yes: true, ClusterPreview: true, Node: "pve3"}))
 	e.done()
 	other.done()
 
@@ -189,7 +260,7 @@ func TestSetupAgainKeepsTheCertificateAndTheState(t *testing.T) {
 	e.installUnit(serviceUnit)
 	e.joinable()
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 	first := e.node(testNode)
 	// The controller admitted the node meanwhile.
@@ -199,7 +270,7 @@ func TestSetupAgainKeepsTheCertificateAndTheState(t *testing.T) {
 	key := e.read(e.agentFile(agentKeyFile))
 
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	require.Equal(t, first, e.node(testNode), "the entry is as the controller left it")
@@ -220,7 +291,7 @@ func TestSetupRefreshesTheEntryOfARegisteredNodeAndLeavesItsStateAlone(t *testin
 	}))
 	e.script(joined()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	n := e.node(testNode)
@@ -246,7 +317,7 @@ func TestARemovedNodeJoinsAgainUnderItsOldIndex(t *testing.T) {
 	}))
 	e.script(joined()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	n := e.node(testNode)
@@ -263,7 +334,7 @@ func TestAJoinNeedsTheCAOfTheInstall(t *testing.T) {
 	require.NoError(t, os.RemoveAll(filepath.Join(e.paths.Private, "ca")))
 	e.script(preflight("9.0.10"))
 
-	err := e.setup(Options{Yes: true, Node: testNode})
+	err := e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode})
 
 	require.EqualError(t, err, "setup step cluster: the install has no CA yet, which the node "+firstNode+
 		" makes when it runs this release of pco: upgrade and start pco there first")
@@ -306,6 +377,25 @@ func TestANewInstallGetsItsCAAndTheIdentityOfTheCluster(t *testing.T) {
 	e.requireNoSecret()
 }
 
+func TestACAStoredMeanwhileByAnotherNodeIsTheOneUsed(t *testing.T) {
+	e := newTestEnv(t)
+	require.NoError(t, e.st.Init())
+	require.NoError(t, e.st.SaveWriter(planner.Writer{InstallID: testInstall, Generation: 1, Nonce: "abcd1234"}))
+	// The other node stored its CA between this node's look and its create.
+	theirs := e.installCA()
+	r := &run{Setup: e.s, o: Options{Node: testNode}, install: store.Install{ID: testInstall}}
+
+	ca, err := r.createCA()
+
+	require.NoError(t, err)
+	require.Equal(t, theirs.SHA256(), ca.SHA256(), "this node issues under the CA stored first")
+	leader, _, found, err := e.st.Leader()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, theirs.SHA256(), leader.CASHA256, "leader.json names the stored CA")
+	e.requireShown("cluster CA: another node made it meanwhile")
+}
+
 func TestSetupFillsTheClusterNameOfAnInstallMadeAlone(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)
@@ -315,7 +405,7 @@ func TestSetupFillsTheClusterNameOfAnInstallMadeAlone(t *testing.T) {
 	require.NoError(t, e.st.SaveInstall(inst))
 	e.script(joined()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	require.Equal(t, "lab", e.install().Cluster.Name)
@@ -330,7 +420,7 @@ func TestSetupWarnsOfAStoreMadeInAnotherCluster(t *testing.T) {
 	require.NoError(t, e.st.SaveInstall(inst))
 	e.script(joined()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	require.Equal(t, "elsewhere", e.install().Cluster.Name, "the record is not rewritten")
@@ -343,7 +433,7 @@ func TestACertificateNearItsEndIsIssuedAgainWithANewKey(t *testing.T) {
 	e.installUnit(serviceUnit)
 	e.joinable()
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 	key, serial := e.read(e.agentFile(agentKeyFile)), e.node(testNode).CertSerial
 	later := t0.Add(pki.LeafValidity - pki.SelfRenewBefore + time.Hour)
@@ -351,7 +441,7 @@ func TestACertificateNearItsEndIsIssuedAgainWithANewKey(t *testing.T) {
 	e.cf.SetNow(e.s.now)
 
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	require.NotEqual(t, key, e.read(e.agentFile(agentKeyFile)))
@@ -366,13 +456,13 @@ func TestACertificateOfAnotherCAIsIssuedAgain(t *testing.T) {
 	e.installUnit(serviceUnit)
 	e.joinable()
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 	// The CA was rotated under the node.
 	e.installCA()
 
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	current, _, _, err := e.st.CA()
@@ -394,7 +484,7 @@ func TestTheAgentAddressComesFromTheAgentNetworkWhenSet(t *testing.T) {
 	require.NoError(t, e.st.SaveSettings(settings))
 	e.script(joined()...)
 
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	require.Equal(t, netip.MustParseAddr("10.99.0.10"), e.node(testNode).AgentAddress)
@@ -409,7 +499,7 @@ func TestANodeWithoutAnAddressInTheAgentNetworkIsRefused(t *testing.T) {
 	require.NoError(t, e.st.SaveSettings(settings))
 	e.script(preflight("9.0.10"))
 
-	err = e.setup(Options{Yes: true, Node: testNode})
+	err = e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode})
 
 	require.EqualError(t, err, "setup step cluster: this node has no address in cluster.agentNetwork 10.200.0.0/24 "+
 		"(it has 192.0.2.10, 10.99.0.10): give it one, or change the setting")
@@ -436,12 +526,12 @@ func TestRepairKeepsTheCertificatesAndTheEntry(t *testing.T) {
 	e.installUnit(serviceUnit)
 	e.joinable()
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 	before := e.node(testNode)
 
 	e.script(preflight("9.0.10"), roleKept(), userKept(), tokenKept(), tagsKept(), serviceStarted())
-	require.NoError(t, e.setup(Options{Yes: true, Repair: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, Repair: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 
 	require.Equal(t, before, e.node(testNode))

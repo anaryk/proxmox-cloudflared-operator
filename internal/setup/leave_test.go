@@ -24,7 +24,7 @@ func (e *testEnv) joinedNode() {
 	e.installUnit(serviceUnit)
 	e.joinable()
 	e.script(joined()...)
-	require.NoError(t, e.setup(Options{Yes: true, Node: testNode}))
+	require.NoError(t, e.setup(Options{Yes: true, ClusterPreview: true, Node: testNode}))
 	e.done()
 	n := e.node(testNode)
 	four := 4
