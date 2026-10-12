@@ -884,3 +884,25 @@ func TestForceRefreshReadsEveryGuestOfTheNodeOnce(t *testing.T) {
 	inv.Refresh(t.Context())
 	require.Equal(t, 2, src.count("config "+refDB.String()), "another node leaves it alone")
 }
+
+func TestAForcedRefreshOutlivesARefreshThatFailed(t *testing.T) {
+	src := newFake()
+	inv, clk := newInventory(src, Options{})
+	inv.Refresh(t.Context())
+	clk.advance(10 * time.Second)
+
+	inv.ForceRefresh("pve2")
+	src.resourcesErr = errors.New("503")
+	require.False(t, inv.Refresh(t.Context()).Complete)
+	src.resourcesErr = nil
+	// Cut short while the configurations are read: the forced read of the
+	// db guest of pve2 never happens.
+	ctx, cancel := context.WithCancel(t.Context())
+	src.configGate = func(context.Context) { cancel() }
+	require.False(t, inv.Refresh(ctx).Complete)
+	src.configGate = nil
+	reads := src.count("config " + refDB.String())
+
+	inv.Refresh(t.Context())
+	require.Equal(t, reads+1, src.count("config "+refDB.String()), "the forced read comes with the next refresh that runs")
+}

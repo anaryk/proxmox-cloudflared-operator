@@ -208,6 +208,16 @@ func (i *Inventory) takeForced() map[string]bool {
 	return out
 }
 
+// requeue asks the next refresh to read the nodes of forced again, those a
+// refresh that did not get through took.
+func (i *Inventory) requeue(forced map[string]bool) {
+	i.forceMu.Lock()
+	defer i.forceMu.Unlock()
+	for node := range forced {
+		i.forced[node] = true
+	}
+}
+
 // run collects the outcome of one refresh.
 type run struct {
 	now      time.Time
@@ -291,8 +301,10 @@ func cancelled(err error) string {
 }
 
 // previous returns a copy of the last good guests and nodes marked
-// incomplete. The caches stay as they were.
+// incomplete. The caches stay as they were, so what this refresh read is
+// lost, and the nodes it was asked to read again are asked of the next one.
 func (i *Inventory) previous(r *run, problem string) Snapshot {
+	i.requeue(r.forced)
 	return Snapshot{
 		Guests:   cloneGuests(i.last.Guests),
 		Nodes:    cloneNodes(i.last.Nodes),
