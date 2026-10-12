@@ -128,9 +128,13 @@ func TestStatusShowsTheManagedLine(t *testing.T) {
 			"Managed:     auto (stopped: registered-tags could not be read), 5 attached, 2 waiting, 1 foreign card\n"},
 		{"per-guest, nothing waits", func(v *engine.ManagedView) { v.Consent = "per-guest"; v.Waiting = nil; v.Foreign = nil },
 			"Managed:     per-guest, 5 attached\n"},
-		{"refused", func(v *engine.ManagedView) { v.Refused = "pve-firewall is stopped on node pve1; no guest rule is in force until it runs" },
+		{"refused", func(v *engine.ManagedView) {
+			v.Refused = "pve-firewall is stopped on node pve1; no guest rule is in force until it runs"
+		},
 			"Managed:     auto, 5 attached, 2 waiting, 1 foreign card, refused: pve-firewall is stopped on node pve1; no guest rule is in force until it runs\n"},
-		{"vnet changed", func(v *engine.ManagedView) { v.Vnet = engine.VnetView{Why: []string{"it has 1 subnet, and pco's leg is its only gateway"}} },
+		{"vnet changed", func(v *engine.ManagedView) {
+			v.Vnet = engine.VnetView{Why: []string{"it has 1 subnet, and pco's leg is its only gateway"}}
+		},
 			"Managed:     auto, 5 attached, 2 waiting, 1 foreign card, vnet changed: it has 1 subnet, and pco's leg is its only gateway\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -865,7 +865,7 @@ func (s *managedStep) foreign(d managednet.Decision) {
 	switch d.Action {
 	case managednet.ActionReplace:
 		view.Action = ForeignReplaced
-		s.replace(d, g, &view)
+		s.replace(d, g)
 	case managednet.ActionLinkDown:
 		view.Action = ForeignLinkDown
 		s.linkDown(d, g, &view)
@@ -878,7 +878,7 @@ func (s *managedStep) foreign(d managednet.Decision) {
 
 // replace gives the guest its own card at the index of the copy: a lease,
 // the attachment, then the one write that replaces the card.
-func (s *managedStep) replace(d managednet.Decision, g model.Guest, view *ForeignView) {
+func (s *managedStep) replace(d managednet.Decision, g model.Guest) {
 	c := s.c
 	owner := d.Owner
 	if s.hold != "" {

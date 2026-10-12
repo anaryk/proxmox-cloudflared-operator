@@ -50,12 +50,11 @@ func newManagedApplianceEnv(t *testing.T) *managedApplianceEnv {
 	return m
 }
 
-func (m *managedApplianceEnv) warm() State {
+func (m *managedApplianceEnv) warm() {
 	m.t.Helper()
 	st := m.cycle()
 	require.True(m.t, st.Identity.OK, st.Identity.Why)
 	m.clock.advance(20 * time.Second)
-	return st
 }
 
 func (m *managedApplianceEnv) next() State {
@@ -204,7 +203,7 @@ func TestTheApplianceRefusesWhileTheNodeCannotIsolateTheGuests(t *testing.T) {
 			m.warm()
 			m.next()
 			require.Len(t, m.cfg.changes(), 1)
-			attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
+			attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
 			m.inv.set(snapshot(attached, managedGuest(102, "web-2", "two.example.com -> :8080"), ownGuest(ownMAC)))
 			m.facts.set(tt.change)
 

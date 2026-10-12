@@ -246,8 +246,8 @@ func managedGuest(vmid int, name string, routes ...string) model.Guest {
 
 // withCard is g with a card on the managed network at index, with mac and,
 // for a container, the address.
-func withCard(g model.Guest, index int, mac string, addr string) model.Guest {
-	nic := model.NIC{Index: index, MAC: mac, Bridge: gateway.ManagedBridge}
+func withCard(g model.Guest, mac string, addr string) model.Guest {
+	nic := model.NIC{Index: 1, MAC: mac, Bridge: gateway.ManagedBridge}
 	if addr != "" {
 		nic.Static = []netip.Addr{netip.MustParseAddr(addr)}
 	}
@@ -351,7 +351,7 @@ func TestATaggedContainerGetsACardBeforeItsAddressIsResolved(t *testing.T) {
 	// The resolver of the same cycle saw the lease on the card.
 	require.Equal(t, netip.MustParseAddr("10.203.118.2"), m.res.leased("lxc/101"))
 
-	m.inv.set(snapshot(withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")))
+	m.inv.set(snapshot(withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")))
 	st = m.next()
 	require.Len(t, m.cfg.changes(), 1, "a guest with its card is kept")
 	require.Equal(t, AttachmentAttached, attachmentState(st, "lxc/101"))
@@ -423,7 +423,7 @@ func TestTheCardGoesAfterTheGraceAndTheLeaseOnceTheConfigurationDroppedIt(t *tes
 	m := newManagedEnv(t)
 	m.warm()
 	m.next()
-	attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
+	attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
 	m.inv.set(snapshot(unconsented(attached)))
 
 	st := m.next()
@@ -467,7 +467,7 @@ func TestConsentBackWithinTheGraceCancelsTheDetach(t *testing.T) {
 	m := newManagedEnv(t)
 	m.warm()
 	m.next()
-	attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
+	attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
 	m.inv.set(snapshot(unconsented(attached)))
 	m.next()
 	require.NotNil(t, m.attachments()["lxc/101"].DetachAt)
@@ -488,7 +488,7 @@ func TestAnApprovalConsentsInItsIdentityAndKeepsTheConsentOfTheAttachment(t *tes
 	m := newManagedEnv(t)
 	m.warm()
 	m.next()
-	attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
+	attached := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
 	m.inv.set(snapshot(unconsented(attached)))
 	m.next()
 	require.NotNil(t, m.attachments()["lxc/101"].DetachAt)
@@ -557,8 +557,8 @@ func TestTheGateTagLeavingTheRegisteredTagsStopsAutomaticAttachesOnly(t *testing
 	m.next()
 	require.Len(t, m.attachments(), 2)
 	m.inv.set(snapshot(
-		withCard(unconsented(managedGuest(101, "web-1", "www.example.com -> :8080")), 1, leaseMAC2, "10.203.118.2"),
-		withCard(unconsented(managedGuest(102, "web-2", "two.example.com -> :8080")), 1, leaseMAC3, "10.203.118.3"),
+		withCard(unconsented(managedGuest(101, "web-1", "www.example.com -> :8080")), leaseMAC2, "10.203.118.2"),
+		withCard(unconsented(managedGuest(102, "web-2", "two.example.com -> :8080")), leaseMAC3, "10.203.118.3"),
 		unconsented(managedGuest(103, "web-3", "three.example.com -> :8080")),
 	))
 
@@ -599,7 +599,7 @@ func TestTheOptOutMarkerStartsTheGrace(t *testing.T) {
 	m := newManagedEnv(t)
 	m.warm()
 	m.next()
-	g := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
+	g := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
 	g.Description = "```cf-tunnel\ncf-tunnel-managed=off\nwww.example.com -> :8080\n```"
 	m.inv.set(snapshot(g))
 
@@ -615,8 +615,8 @@ func TestACopiedCardOnATaggedCloneIsReplacedWithItsOwnLease(t *testing.T) {
 	m := newManagedEnv(t)
 	m.warm()
 	m.next()
-	original := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
-	clone := withCard(managedGuest(102, "web-1-clone", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
+	original := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
+	clone := withCard(managedGuest(102, "web-1-clone", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
 	m.inv.set(snapshot(original, clone))
 
 	st := m.next()
@@ -631,7 +631,7 @@ func TestACopiedCardOnATaggedCloneIsReplacedWithItsOwnLease(t *testing.T) {
 	require.Contains(t, m.managedEvents(), "foreign card net1 ("+leaseMAC2+") of lxc/102 (web-1-clone) was replaced by the guest's own card with "+leaseMAC3+" at 10.203.118.3")
 	require.Contains(t, st.Problems, "foreign card net1 ("+leaseMAC2+") of lxc/102 (web-1-clone): a card on pconet that pco did not attach, as a clone or a restore copies one; pco replaces it with the guest's own")
 
-	m.inv.set(snapshot(original, withCard(managedGuest(102, "web-1-clone", "www.example.com -> :8080"), 1, leaseMAC3, "10.203.118.3")))
+	m.inv.set(snapshot(original, withCard(managedGuest(102, "web-1-clone", "www.example.com -> :8080"), leaseMAC3, "10.203.118.3")))
 	st = m.next()
 	require.Len(t, m.cfg.changes(), 2)
 	require.Empty(t, st.Managed.Foreign)
@@ -642,8 +642,8 @@ func TestACopiedCardOnAnUntaggedGuestIsSetLinkDown(t *testing.T) {
 	m := newManagedEnv(t)
 	m.warm()
 	m.next()
-	original := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
-	clone := withCard(managedGuest(102, "web-1-clone"), 1, leaseMAC2, "10.203.118.2")
+	original := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
+	clone := withCard(managedGuest(102, "web-1-clone"), leaseMAC2, "10.203.118.2")
 	clone.Tags = nil
 	m.inv.set(snapshot(original, clone))
 
@@ -753,7 +753,7 @@ func TestAGuestThatMigratedKeepsItsCard(t *testing.T) {
 	m := newManagedEnv(t)
 	m.warm()
 	m.next()
-	g := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), 1, leaseMAC2, "10.203.118.2")
+	g := withCard(managedGuest(101, "web-1", "www.example.com -> :8080"), leaseMAC2, "10.203.118.2")
 	g.Node = "pve2"
 	m.inv.set(snapshot(g))
 

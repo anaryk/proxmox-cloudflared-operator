@@ -57,7 +57,7 @@ func (c *Client) ClusterFirewallOptions(ctx context.Context) (ClusterFirewallOpt
 	if err != nil {
 		return ClusterFirewallOptions{}, err
 	}
-	return ClusterFirewallOptions{Enabled: o.Enabled}, nil
+	return ClusterFirewallOptions(o), nil
 }
 
 // GuestFirewallOptions reads the firewall options of a guest on node.
@@ -70,7 +70,7 @@ func (c *Client) GuestFirewallOptions(ctx context.Context, node string, ref mode
 	if err != nil {
 		return GuestFirewallOptions{}, err
 	}
-	return GuestFirewallOptions{Enabled: o.Enabled}, nil
+	return GuestFirewallOptions(o), nil
 }
 
 // NodeServiceState reads the state of a service of a node as systemd

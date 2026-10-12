@@ -30,7 +30,7 @@ func TestAReaderSeesNoSecretOfTheManagedNetwork(t *testing.T) {
 	}
 	st.Managed.Waiting = append(st.Managed.Waiting, engine.ManagedWaiting{
 		GuestView: engine.GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 205}, Name: "new-1-clone"}, Identity: "mac:205",
-		Why:       "needs-grant: pveum acl modify /vms/205 --users pco@pve --tokens 'pco@pve!vm9250' --roles PCOManaged",
+		Why: "needs-grant: pveum acl modify /vms/205 --users pco@pve --tokens 'pco@pve!vm9250' --roles PCOManaged",
 	})
 
 	got := FilterState(st, sees(201, 205)).Managed
