@@ -213,11 +213,17 @@ func (s SDN) check(cfg pve.SDN, m managedObjects) error {
 	if m.vnet.Zone != ManagedZone {
 		return fmt.Errorf("SDN vnet %s is there in zone %s, not in zone %s", ManagedVnet, m.vnet.Zone, ManagedZone)
 	}
-	if m.vnet.IsolatePorts != s.IsolatePorts {
-		want := isolateValue(s.IsolatePorts)
+	switch want := isolateValue(s.IsolatePorts); {
+	case m.vnet.IsolatePorts != s.IsolatePorts:
 		return fmt.Errorf("SDN vnet %s has isolate-ports %s, and the managed network of this node needs %s: "+
 			"pvesh set /cluster/sdn/vnets/%s --isolate-ports %s, then pvesh set /cluster/sdn",
 			ManagedVnet, isolateValue(m.vnet.IsolatePorts), want, ManagedVnet, want)
+	case m.vnet.VLANAware:
+		return fmt.Errorf("SDN vnet %s is VLAN-aware, and the managed network carries no VLANs: "+
+			"pvesh set /cluster/sdn/vnets/%s --delete vlanaware, then pvesh set /cluster/sdn", ManagedVnet, ManagedVnet)
+	case m.vnet.Tag != 0:
+		return fmt.Errorf("SDN vnet %s has the tag %d, and the managed network is a plain vnet: "+
+			"pvesh set /cluster/sdn/vnets/%s --delete tag, then pvesh set /cluster/sdn", ManagedVnet, m.vnet.Tag, ManagedVnet)
 	}
 	for _, n := range cfg.Subnets {
 		if n.Vnet == ManagedVnet && n.State != pve.SDNDeleted {
@@ -270,6 +276,7 @@ func (s SDN) Ensure(ctx context.Context) error {
 	if m.vnet == nil {
 		if err := s.create(ctx, l, "vnet", func(m *Manifest, v bool) { m.CreatedVnet = v },
 			"/cluster/sdn/vnets", "--vnet", ManagedVnet, "--zone", ManagedZone, "--isolate-ports", isolateValue(s.IsolatePorts)); err != nil {
+			s.takeBack(ctx, l, madeZone, false)
 			return err
 		}
 		madeVnet = true
@@ -301,7 +308,20 @@ func (s SDN) Ensure(ctx context.Context) error {
 			return err
 		}
 	}
-	return s.apply(ctx, l)
+	if err := s.apply(ctx, l); err != nil {
+		// What is pending stays pco's, for a run again; the admin is told
+		// what waits and how to take it back by hand.
+		var back []string
+		if s.Ours.CreatedVnet || madeVnet {
+			back = append(back, "pvesh delete /cluster/sdn/vnets/"+ManagedVnet)
+		}
+		if s.Ours.CreatedZone || madeZone {
+			back = append(back, "pvesh delete /cluster/sdn/zones/"+ManagedZone)
+		}
+		return fmt.Errorf("%w; %s are pending still: pvesh set /cluster/sdn applies them once the cause is fixed, and %s take them back",
+			err, strings.Join(ours, ", "), strings.Join(back, ", then "))
+	}
+	return nil
 }
 
 // recheck reads what is pending again right before an apply without the

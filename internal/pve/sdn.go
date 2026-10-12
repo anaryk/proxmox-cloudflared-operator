@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -116,6 +117,7 @@ type SDNVnet struct {
 	Zone         string
 	IsolatePorts bool // its ports do not reach each other, only the bridge's uplink and the bridge itself
 	VLANAware    bool
+	Tag          int // the VLAN tag, or VXLAN id, of the vnet; 0 for none
 	State        string
 }
 
@@ -263,7 +265,8 @@ func DecodeSDNVnets(data []byte) ([]SDNVnet, error) {
 		if err != nil {
 			return nil, fmt.Errorf("sdn vnet %s: %w", name, err)
 		}
-		out = append(out, SDNVnet{Name: name, Zone: zone, IsolatePorts: row.flag("isolate-ports"), VLANAware: row.flag("vlanaware"), State: state})
+		tag, _ := strconv.Atoi(row.text("tag"))
+		out = append(out, SDNVnet{Name: name, Zone: zone, IsolatePorts: row.flag("isolate-ports"), VLANAware: row.flag("vlanaware"), Tag: tag, State: state})
 	}
 	return out, nil
 }

@@ -126,31 +126,49 @@ func TestSDNVnetOfTheAppliance(t *testing.T) {
 	e.done()
 }
 
-// A failure after the zone was made still releases the lock; the note of
-// the vnet that is not there is taken back, the zone's stays, and a run again
-// goes on from there.
-func TestSDNLockReleasedOnAFailureAfterTheZone(t *testing.T) {
+// A failure after the zone was made takes the zone back, so that nothing of
+// pco's waits for somebody else's apply, and releases the lock; a run again
+// starts over.
+func TestSDNTakesTheZoneBackOnAFailureAfterIt(t *testing.T) {
 	e := newSDNEnv(t)
 	failed := vnetCreated("1", true)
 	failed.err = exitErr(255, "create sdn vnet object failed: vnet ID 'pconet' already defined")
 	e.script([]call{sdnLocked()}, sdnRead(noZones, noVnets), []call{zoneCreated(true), failed},
-		sdnRead(list(zoneNew), noVnets), []call{sdnUnlocked()})
+		sdnRead(list(zoneNew), noVnets), []call{zoneRemoved(), sdnUnlocked()})
 
 	err := e.ensure(e.sdn())
 
 	require.ErrorContains(t, err, "creating SDN vnet pconet")
 	e.done()
-	require.True(t, e.m.CreatedZone)
+	require.False(t, e.m.CreatedZone, "the zone went with the run")
 	require.False(t, e.m.CreatedVnet, "the note of what is not there is taken back")
 	require.Equal(t, "run pvesh delete /cluster/sdn/lock --lock-token "+lockToken, e.events[len(e.events)-1])
 
-	// A run again finds the zone it made pending and makes the vnet.
-	e.script([]call{sdnLocked()}, sdnRead(list(zoneNew), noVnets),
-		[]call{vnetCreated("1", true), sdnApplied(true), sdnUnlocked()})
+	e.script([]call{sdnLocked()}, sdnRead(noZones, noVnets),
+		[]call{zoneCreated(true), vnetCreated("1", true), sdnApplied(true), sdnUnlocked()})
 	s := e.sdn()
 	s.Yes = true
 	require.NoError(t, e.ensure(s))
 	e.done()
+}
+
+// An apply that fails leaves what the run made pending, which is said, with
+// the commands that take it back.
+func TestSDNFailedApplySaysWhatIsPending(t *testing.T) {
+	e := newSDNEnv(t)
+	failed := sdnApplied(true)
+	failed.err = exitErr(255, "command 'ifreload -a' failed on node pve2")
+	e.script([]call{sdnLocked()}, sdnRead(noZones, noVnets), []call{zoneCreated(true), vnetCreated("1", true), failed, sdnUnlocked()})
+	s := e.sdn()
+	s.Yes = true
+
+	err := e.ensure(s)
+
+	require.EqualError(t, err, "applying the SDN configuration: exit status 255: command 'ifreload -a' failed on node pve2; "+
+		"zone pco (new), vnet pconet (new) are pending still: pvesh set /cluster/sdn applies them once the cause is fixed, and "+
+		"pvesh delete /cluster/sdn/vnets/pconet, then pvesh delete /cluster/sdn/zones/pco take them back")
+	e.done()
+	require.True(t, e.m.CreatedZone && e.m.CreatedVnet, "what is pending is pco's")
 }
 
 // A lock that cannot be released is the admin's to lift, and is named.
@@ -323,6 +341,12 @@ func TestSDNRefusesObjectsItCannotUse(t *testing.T) {
 				"pvesh set /cluster/sdn/vnets/pconet --isolate-ports 1, then pvesh set /cluster/sdn"},
 		{"a subnet on the vnet", list(zonePco), list(vnetPco), `[{"vnet":"pconet","cidr":"10.203.118.0/24","type":"subnet"}]`,
 			"SDN vnet pconet has the subnet 10.203.118.0/24: the managed network has none, pco's leg is its only gateway"},
+		{"a VLAN-aware vnet", list(zonePco), list(`{"vnet":"pconet","zone":"pco","type":"vnet","isolate-ports":1,"vlanaware":1}`), "[]",
+			"SDN vnet pconet is VLAN-aware, and the managed network carries no VLANs: " +
+				"pvesh set /cluster/sdn/vnets/pconet --delete vlanaware, then pvesh set /cluster/sdn"},
+		{"a tagged vnet", list(zonePco), list(`{"vnet":"pconet","zone":"pco","type":"vnet","isolate-ports":1,"tag":42}`), "[]",
+			"SDN vnet pconet has the tag 42, and the managed network is a plain vnet: " +
+				"pvesh set /cluster/sdn/vnets/pconet --delete tag, then pvesh set /cluster/sdn"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newSDNEnv(t)

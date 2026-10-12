@@ -254,7 +254,7 @@ func (u *uninstall) describeManaged() {
 		u.ask.Info("  (%s are kept while guests %s have a card on %s; --detach-managed removes pco's cards first)",
 			what, strings.Join(Owners(f.cards), ", "), ManagedVnet)
 	default:
-		u.ask.Info("  %s, which an SDN apply removes from every node", what)
+		u.ask.Info("  %s, which an SDN apply removes from every node, reloading the network of each", what)
 	}
 }
 

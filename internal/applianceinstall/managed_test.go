@@ -214,7 +214,7 @@ func TestUninstallRemovesTheManagedNetworkOfTheAppliance(t *testing.T) {
 	require.Empty(t, e.node.pcoLines(), "the grants of the vnet and of the pool")
 	require.Nil(t, e.node.roles["PCOManaged"])
 	require.Nil(t, e.node.roles["PCOSDN"])
-	require.Contains(t, e.ask.text(), "the SDN vnet pconet and zone pco, which an SDN apply removes from every node")
+	require.Contains(t, e.ask.text(), "the SDN vnet pconet and zone pco, which an SDN apply removes from every node, reloading the network of each")
 	destroyed := slices.Index(e.node.ran, "pct destroy 100 --purge 1")
 	require.Greater(t, slices.Index(e.node.ran, "pvesh delete /cluster/sdn/vnets/pconet --lock-token lock-2"), destroyed, "the zone goes last")
 }

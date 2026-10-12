@@ -72,7 +72,7 @@ func TestUninstallRemovesTheManagedNetworkLast(t *testing.T) {
 	require.NoError(t, e.uninstall(UninstallOptions{Yes: true, KeepCloudflare: true}))
 
 	e.done()
-	e.requireShown("the SDN vnet pconet and zone pco, which an SDN apply removes from every node")
+	e.requireShown("the SDN vnet pconet and zone pco, which an SDN apply removes from every node, reloading the network of each")
 	e.requireStoreGone()
 	require.Equal(t, "run pvesh delete /cluster/sdn/lock --lock-token "+lockToken, e.events[len(e.events)-1], "the managed network goes last")
 }

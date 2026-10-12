@@ -622,7 +622,7 @@ func (r *run) describe(vmid int, s survey, p plan, o UninstallOptions) {
 		r.ask.Info("  the template %s", p.template)
 	}
 	if p.managed != "" {
-		r.ask.Info("  %s, which an SDN apply removes from every node", p.managed)
+		r.ask.Info("  %s, which an SDN apply removes from every node, reloading the network of each", p.managed)
 	}
 	for _, k := range p.kept {
 		r.ask.Info("  (kept: %s)", k)
