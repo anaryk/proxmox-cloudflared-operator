@@ -67,6 +67,8 @@ func (f *inventoryFake) Refresh(context.Context) inventory.Snapshot {
 	return f.snap
 }
 
+func (f *inventoryFake) ForceRefresh(string) {}
+
 func (f *inventoryFake) set(s inventory.Snapshot) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
