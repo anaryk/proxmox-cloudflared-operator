@@ -31,6 +31,7 @@ export const fieldHomes: Readonly<Record<string, string>> = {
   unapproved: 'Guests; the Guests counter; the banner of guests waiting for approval',
   segments: 'Networks',
   networks: 'not shown yet: the attached networks come with the Attach screens of the Networks page; pco network list shows them',
+  managed: 'not shown yet: the managed network comes with the Managed screen of the Networks page; pco managed status shows it',
   egress: 'top bar: the Egress pill; the egress banner with its command',
   admission: 'the empty states of Routes and the Overview; Guests',
   gateTagged: 'the empty states of Routes and the Overview',
