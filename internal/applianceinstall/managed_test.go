@@ -215,7 +215,7 @@ func TestUninstallKeepsTheSDNObjectsTheNodeDoesNotRecord(t *testing.T) {
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
 	desc, _ = withSDNNotes(e.node.cts[100].cfg["description"], false, false)
 	e.node.cts[100].cfg["description"] = desc
-	e.guestOnPconet(105, pcoCard)
+	e.guestOnPconet()
 	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
 	require.NotEmpty(t, e.node.sdn.zones)
 	require.NotEmpty(t, e.node.sdn.vnets)
@@ -238,12 +238,13 @@ func TestManagedEnableNeedsTheApplianceRunning(t *testing.T) {
 	require.Empty(t, e.node.sdn.zones)
 }
 
-// guestOnPconet is a container of an admin's with a card on pconet; pco's
-// card when mac is the managed MAC of 10.203.118.5.
-func (e *testEnv) guestOnPconet(vmid int, mac string) {
+// guestOnPconet is lxc/105, a container of an admin's with pco's card on
+// pconet: the managed MAC of 10.203.118.5.
+func (e *testEnv) guestOnPconet() {
+	const vmid = 105
 	e.node.cts[vmid] = &fakeCT{running: true, files: map[string]fakeFile{}, cfg: map[string]string{
 		"hostname": "web", "net0": "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:01:05,ip=dhcp",
-		"net1": "name=eth1,bridge=pconet,hwaddr=" + mac + ",ip=10.203.118.5/24,firewall=1",
+		"net1": "name=eth1,bridge=pconet,hwaddr=" + pcoCard + ",ip=10.203.118.5/24,firewall=1",
 	}}
 }
 
@@ -277,7 +278,7 @@ func TestUninstallRemovesTheManagedNetworkOfTheAppliance(t *testing.T) {
 func TestUninstallRefusedWhileAGuestHasACardOnTheManagedNetwork(t *testing.T) {
 	e := managedNode(t)
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
-	e.guestOnPconet(105, pcoCard)
+	e.guestOnPconet()
 
 	err := e.in.Uninstall(t.Context(), 100, uninstallOptions())
 
@@ -310,7 +311,7 @@ func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 	e := managedNode(t)
 	e.node.pools["web"] = &fakePool{Members: []int{105}}
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Pool: "web", Yes: true}))
-	e.guestOnPconet(105, pcoCard)
+	e.guestOnPconet()
 	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true,
 		rules: []fakeRule{{"net0", ""}, pcoRule("net1"), {"net1", "backup agent"}, pcoRule("net1")}, ipsets: []string{"ipfilter-net1"}}
 	e.node.attachments = []map[string]any{attachmentOf("lxc/105", "10.203.118.5")}
@@ -354,7 +355,7 @@ func TestUninstallLeavesTheCardsTheApplianceMayNotChange(t *testing.T) {
 				e.node.grant("/pool/web", "token", "pco@pve!vm100", "PCOManaged")
 				e.node.grant("/pool/web", "user", "pco@pve", "PCOManaged")
 			}
-			e.guestOnPconet(105, pcoCard)
+			e.guestOnPconet()
 			e.node.attachments = []map[string]any{tt.attachment}
 			o := uninstallOptions()
 			o.DetachManaged = true
