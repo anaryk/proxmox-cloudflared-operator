@@ -196,7 +196,9 @@ func sentTargets(s agentproto.Snapshot) map[egress.Target]bool {
 // it. A filter the admin switched off is no failure.
 func (p *pass) feedEgress(set []egress.Target) {
 	a := p.a
+	a.egMu.Lock()
 	a.set = set
+	a.egMu.Unlock()
 	if err := a.saveSet(); err != nil {
 		p.problem("%v", err)
 	}

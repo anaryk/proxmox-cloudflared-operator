@@ -166,6 +166,31 @@ func TestAMovedAddressIsOutOfTheKeptSetUntilItIsVerified(t *testing.T) {
 	})
 }
 
+// The watch of the network reports moves beside the passes: the set they
+// share is read and written under one lock.
+func TestMovesBesideAPassRaceNothing(t *testing.T) {
+	e := newEnv(t)
+	e.apply(verified(e.snapshot("www.example.com -> :8080"), "10.0.0.11:8080"))
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() {
+			for range 20 {
+				e.agent.Moved(t.Context(), guestAddr)
+			}
+		})
+	}
+	for range 20 {
+		_, err := e.agent.Reverify(t.Context())
+		require.NoError(t, err)
+	}
+	wg.Wait()
+	e.agent.Wait()
+
+	require.NoError(t, e.agent.Boot(t.Context()))
+	got, _ := e.egr.last()
+	require.Equal(t, egressTargets("10.0.0.11:8080"), got)
+}
+
 func TestAnAddressThatFailsAfterItsMACMovedStaysOut(t *testing.T) {
 	e, _ := watching(t)
 	log := &callLog{}

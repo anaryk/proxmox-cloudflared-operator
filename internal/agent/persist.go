@@ -137,11 +137,15 @@ func (a *Agent) persist(s agentproto.Snapshot) error {
 }
 
 // forgetDesired deletes the desired state kept on disk, or, with keep, only
-// its run tokens.
+// its run tokens. What the agent remembers follows the disk: one that could
+// not be changed is remembered as it is.
 func (a *Agent) forgetDesired(keep bool) error {
 	if !keep || a.desired == nil {
+		if err := a.d.Store.DeleteAgentSnapshot(); err != nil {
+			return err
+		}
 		a.desired, a.desiredRaw = nil, nil
-		return a.d.Store.DeleteAgentSnapshot()
+		return nil
 	}
 	s := *a.desired
 	s.Tunnels = make([]agentproto.Tunnel, len(a.desired.Tunnels))

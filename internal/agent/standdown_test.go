@@ -2,6 +2,8 @@ package agent
 
 import (
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,4 +99,17 @@ func TestAStandDownThatFailsInPartGoesOnAndSaysWhat(t *testing.T) {
 	saved, _, err := e.store.AgentEgress()
 	require.NoError(t, err)
 	require.Equal(t, []netip.AddrPort{}, saved)
+
+	t.Run("a desired state that cannot be forgotten is remembered as it is", func(t *testing.T) {
+		e := newEnv(t)
+		e.apply(e.snapshot("www.example.com -> :8080"))
+		desired := filepath.Join(e.paths.Local, "agent", "desired.json")
+		require.NoError(t, os.Remove(desired))
+		require.NoError(t, os.MkdirAll(filepath.Join(desired, "held"), 0o700))
+
+		err := e.agent.StandDown(t.Context(), agentproto.Refusal{Code: agentproto.RefusalRemoved})
+
+		require.ErrorContains(t, err, "forgetting the desired state")
+		require.NotNil(t, e.agent.desired, "what is on disk is what is remembered")
+	})
 }

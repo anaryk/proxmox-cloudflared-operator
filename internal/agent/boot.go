@@ -48,7 +48,9 @@ func (a *Agent) Boot(ctx context.Context) error {
 	a.boot = bootGate{held: true, at: a.d.Now()}
 	live, err := a.d.Egress.Live(ctx)
 	if err != nil || len(live.Targets) == 0 {
+		a.egMu.Lock()
 		a.set = nil
+		a.egMu.Unlock()
 	}
 	if err != nil && !errors.Is(err, egress.ErrNotLoaded) {
 		a.d.Log.Warn().Err(err).Msg("the egress table could not be read at start; the set kept is dropped, and a target enters the filter as it verifies")
@@ -70,8 +72,8 @@ func (a *Agent) Boot(ctx context.Context) error {
 // emptyFilter gives the egress filter nothing and keeps that. The caller
 // holds the agent's lock.
 func (a *Agent) emptyFilter(ctx context.Context) {
-	a.set = nil
 	a.egMu.Lock()
+	a.set = nil
 	err := a.d.Egress.Set(ctx, nil)
 	a.egMu.Unlock()
 	if err != nil && !errors.Is(err, egress.ErrOff) {

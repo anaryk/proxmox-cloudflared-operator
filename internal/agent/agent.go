@@ -165,17 +165,20 @@ type Agent struct {
 	refused    string    // why the last snapshot was refused, until one is accepted
 	done       map[string]store.ActionDone
 	answers    map[string]agentproto.ActionResult // the answers of this process
-	set        []egress.Target                    // what the egress filter was last given
-	watched    watched
-	stood      string // why the agent stood down; empty while it serves
-	boot       bootGate
-	demote     demotion
-	bootOff    map[string]bool // shared tunnels whose boot enable is off since their connector last started
-	wasActive  map[string]bool // tunnels whose connector ran at the last pass
-	ownReady   map[string]bool // tunnels whose connector was ready at the last pass
-	gwInUse    bool            // the gateway was last given a leg or a service
-	rep        view            // what the last pass found, for Status and View
-	repMu      sync.Mutex      // guards rep
+	// set is what the egress filter was last given. It is written under
+	// the agent's lock and egMu both, and read under either: the watch of
+	// the network reads it beside a pass.
+	set       []egress.Target
+	watched   watched
+	stood     string // why the agent stood down; empty while it serves
+	boot      bootGate
+	demote    demotion
+	bootOff   map[string]bool // shared tunnels whose boot enable is off since their connector last started
+	wasActive map[string]bool // tunnels whose connector ran at the last pass
+	ownReady  map[string]bool // tunnels whose connector was ready at the last pass
+	gwInUse   bool            // the gateway was last given a leg or a service
+	rep       view            // what the last pass found, for Status and View
+	repMu     sync.Mutex      // guards rep
 
 	heardMu sync.Mutex
 	heardAt time.Time // the last snapshot or heartbeat of a controller
