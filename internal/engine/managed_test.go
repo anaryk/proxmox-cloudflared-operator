@@ -16,7 +16,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
@@ -853,11 +852,6 @@ func saveManaged(t *testing.T, e *env, change func(*store.Settings)) error {
 	change(&s)
 	_, _, err = e.eng.SaveSettings(t.Context(), view.Rev, s)
 	return err
-}
-
-// writerOfGeneration is a writer identity of another generation.
-func writerOfGeneration(generation int) planner.Writer {
-	return planner.Writer{InstallID: testInstall, Generation: generation, Nonce: fmt.Sprintf("n%d", generation)}
 }
 
 // eventSeq is the number of the first event with the message.
