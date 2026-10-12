@@ -437,8 +437,8 @@ above it. See [Appliance](appliance.md#snapshots-backups-and-their-limits).
 
 ## pco on a cluster
 
-pco serves from one node of a cluster. `pco setup` on a further node joins the install, with a
-certificate of the install's CA and an entry of the node registry as joining, but a daemon
+pco runs on one node of a cluster. `pco setup` on a second node refuses with
+`pco is already set up on node <name>; cluster support arrives in a later release`, and a daemon
 holds when the node registry names any node but its own. The guests of the other nodes are listed
 and their routes are read, but this node cannot see the forwarding tables of their bridges, so
 they are proven at `observed` at best, and are served only once `identityMinimum` is lowered to

@@ -88,6 +88,22 @@ func TestTheCARoundTripsOnThePrivateRoot(t *testing.T) {
 	require.Equal(t, []string{"ca/current.json"}, stored(t, p.Private))
 }
 
+func TestTheFirstCAIsStoredOnlyWhileThereIsNone(t *testing.T) {
+	s, _ := openStore(t)
+	first, second := testCA(t, 1), testCA(t, 2)
+
+	require.NoError(t, s.SaveCAIfAbsent(first))
+	err := s.SaveCAIfAbsent(second)
+
+	require.ErrorIs(t, err, ErrRevision)
+	got, previous, _, err := s.CA()
+	require.NoError(t, err)
+	require.Equal(t, first.CertPEM, got.CertPEM, "the CA stored first stays the install's")
+	require.True(t, first.KeyPEM.Equal(got.KeyPEM))
+	require.Nil(t, previous)
+	require.Error(t, s.SaveCAIfAbsent(CAFiles{CertPEM: "no certificate"}))
+}
+
 func TestSaveCARefusesWhatIsNoCA(t *testing.T) {
 	s, p := openStore(t)
 	good := testCA(t, 1)

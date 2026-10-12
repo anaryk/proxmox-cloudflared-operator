@@ -11,11 +11,10 @@ or may move between them.
 
 ## pco runs on one node
 
-In this release the daemon serves from one node of a cluster. Its state is on the cluster
-filesystem, `/etc/pve/pco`, and the node registry in it names the nodes. `pco setup` on a
-further node joins the install, with a certificate of the install's CA and an entry of the
-registry as joining, but a daemon whose registry names another node holds every cycle: nothing
-drives the other nodes yet.
+In this release pco runs on one node of a cluster. Its state is on the cluster filesystem,
+`/etc/pve/pco`, and the node registry in it names the node that runs pco. `pco setup` on a
+second node refuses, with `pco is already set up on node node1; cluster support arrives in a
+later release`, and a daemon whose registry names another node holds every cycle.
 
 The connectors run on that node too, and every request to a published hostname passes through
 one of them. The guests of the other nodes are reached from it, across the network the nodes

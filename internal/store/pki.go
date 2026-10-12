@@ -126,6 +126,18 @@ func (s *Store) SaveCA(current CAFiles, previous *CAFiles, rotatedAt time.Time) 
 	return nil
 }
 
+// SaveCAIfAbsent stores the first CA of an install, only while no CA is
+// stored: two nodes set up at once must not each make one and sign their
+// certificates under different keys. When one is stored the error is
+// ErrRevision, nothing is written, and the stored CA is the install's.
+func (s *Store) SaveCAIfAbsent(current CAFiles) error {
+	if err := current.check("the current"); err != nil {
+		return err
+	}
+	_, err := s.private.putIf(kindCA, idCurrent, caFile{CertPEM: current.CertPEM, KeyPEM: current.KeyPEM.Reveal()}, 0)
+	return err
+}
+
 // Enrolment is the client certificate a node's agent was given, on the
 // private root: the certificate a request must present is matched with it,
 // so a certificate minted with a stolen key of the CA is still refused.
