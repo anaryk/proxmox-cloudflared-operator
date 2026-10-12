@@ -166,6 +166,9 @@ func (a *app) renderStatus(w io.Writer, st engine.State) error {
 	statusLine(s, "Writer", present.WriterText(st.WriterVerdict))
 	statusLine(s, "Egress", present.EgressText(st.Egress))
 	statusLine(s, "Routes", routeCounts(st.Routes))
+	if line := managedSummary(st.Managed); line != "" {
+		statusLine(s, "Managed", line)
+	}
 	if n := unacknowledged(st.Segments); n > 0 {
 		statusLine(s, "Segments", fmt.Sprintf("%d not acknowledged (pco segment list)", n))
 	}

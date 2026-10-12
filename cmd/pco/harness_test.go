@@ -420,6 +420,38 @@ func (f *fakeEngine) Detach(_ context.Context, id string, rev int64, served []st
 	return f.networkErr
 }
 
+// Managed answers with the managed network of the state.
+func (f *fakeEngine) Managed() (engine.ManagedView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state.Managed, nil
+}
+
+func (f *fakeEngine) ApproveManaged(_ context.Context, owner, identity string, accept bool) (store.Consent, error) {
+	call := "approve managed " + owner
+	if identity != "" {
+		call += " identity=" + identity
+	}
+	if accept {
+		call += " accept-firewall-impact"
+	}
+	f.record(call)
+	if f.guestErr != nil {
+		return store.Consent{}, f.guestErr
+	}
+	return store.Consent{Owner: owner, Identity: "uuid:" + strings.TrimPrefix(strings.TrimPrefix(owner, "qemu/"), "lxc/"), At: t0, AcceptFirewallImpact: accept}, nil
+}
+
+func (f *fakeEngine) RevokeManaged(_ context.Context, owner string) error {
+	f.record("revoke managed " + owner)
+	return f.guestErr
+}
+
+func (f *fakeEngine) EnableManaged(context.Context) error {
+	f.record("enable managed")
+	return f.networkErr
+}
+
 func (f *fakeEngine) Traffic() engine.TrafficView { return engine.TrafficView{} }
 
 func (f *fakeEngine) RouteSeries(string) (engine.RouteSeries, error) {

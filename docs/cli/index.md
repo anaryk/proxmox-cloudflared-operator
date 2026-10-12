@@ -58,6 +58,10 @@ pco help route manual add
   - [pco guest approve](pco-guest-approve.md): Approve a guest in the identity it has now
   - [pco guest list](pco-guest-list.md): List the approved guests, the guests that wait for approval and the tagged guests
   - [pco guest revoke](pco-guest-revoke.md): Remove the approval of a guest
+- [pco managed](pco-managed.md): Consent to cards on the managed network, and see who has one
+  - [pco managed approve](pco-managed-approve.md): Consent to a card on the managed network for a guest
+  - [pco managed revoke](pco-managed-revoke.md): Take back the consent of a guest; its card goes after the grace
+  - [pco managed status](pco-managed-status.md): Show the managed network: its cards, the guests that wait and the foreign cards
 - [pco network](pco-network.md): Attach pco to the networks of guests the node has no address in
   - [pco network attach](pco-network-attach.md): Attach a network: a leg of pco's own into a bridge or VLAN
   - [pco network candidates](pco-network-candidates.md): List the bridges and VLANs of the node a network may be attached to

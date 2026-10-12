@@ -1,0 +1,23 @@
+Mode:        auto
+Tags:        cf-tunnel-managed is registered admin-only
+Vnet:        pconet as pco made it
+Subnet:      10.203.118.0/24, 247 addresses free
+Leg:         10.203.118.1, up
+Pool grant:  web
+Filtered:    holds (pve-firewall)
+Attached:
+  GUEST               NIC   ADDRESS       MAC                CONSENT   STATE           SINCE
+  lxc/201 (new-1)     net1  10.203.118.2  06:50:43:4f:76:02  tag       attached        2026-10-01T12:00:00+02:00
+  qemu/105 (batch-5)  net2  10.203.118.3  06:50:43:4f:76:03  auto      pending-reboot  2026-10-01T13:00:00+02:00
+  qemu/106 (old-6)    net1  10.203.118.4  06:50:43:4f:76:04  approval  detaching       2026-10-01T11:00:00+02:00
+  qemu/108            net1  10.203.118.5  06:50:43:4f:76:05  tag       detach-pending  2026-10-01T10:00:00+02:00
+  lxc/203 (moved-3)   net1  10.203.118.6  06:50:43:4f:76:06  tag       needs-grant     2026-10-01T09:00:00+02:00
+  qemu/105: waits for the restart of the guest
+  qemu/106: goes at 2026-10-01T12:10:00Z: cf-tunnel-managed=off
+  qemu/108: the guest is gone, or no longer carries the tag cf-tunnel; the card is removed once the configuration no longer lists it
+  lxc/203: pveum acl modify /vms/203 --users pco@pve --tokens 'pco@pve!vm9250' --roles PCOManaged
+Waiting:
+  lxc/204 (gui-4): needs-firewall-confirmation: turning on the firewall of lxc/204 (gui-4) also filters net0 (firewall=1); run pco managed approve lxc/204 --accept-firewall-impact, or set managed.acceptFirewallImpact for every guest
+  qemu/109 (other-9): guest is on node pve2, not pve1
+Foreign:
+  net1 (06:50:43:4f:76:02) of lxc/205 (new-1-clone), link-down: a card on pconet that pco did not attach, as a clone or a restore copies one; pco sets its link down
