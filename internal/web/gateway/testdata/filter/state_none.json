@@ -170,7 +170,6 @@
     "foreign": [],
     "free": 247,
     "vnet": {"ok": true, "zoneType": "simple", "isolatePorts": false, "subnets": 0},
-    "filtered": {"holds": true, "backend": "pve-firewall", "offered": true},
     "dhcp": {"bound": true, "since": "2026-10-01T06:00:00Z", "unknown": 1}
   },
   "egress": {"state": "off", "since": "2026-10-01T11:00:00Z"},

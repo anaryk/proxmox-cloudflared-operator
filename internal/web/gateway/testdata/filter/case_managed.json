@@ -15,20 +15,18 @@
         "addr": "10.203.118.2",
         "consent": "tag",
         "since": "2026-10-01T10:00:00Z",
-        "firewall": {"enabled": false, "rules": 0},
         "guest": {"kind": "lxc", "vmid": 201, "name": "new-1"},
         "state": "attached"
       }
     ],
     "waiting": [
-      {"kind": "lxc", "vmid": 204, "name": "gui-4", "identity": "", "why": "needs-firewall-confirmation: turning on the firewall of lxc/204 (gui-4) also filters net0 (firewall=1); run pco managed approve lxc/204 --accept-firewall-impact, or set managed.acceptFirewallImpact for every guest"}
+      {"kind": "lxc", "vmid": 204, "name": "gui-4", "identity": "", "why": "needs-firewall-confirmation"}
     ],
     "foreign": [
       {"kind": "lxc", "vmid": 205, "name": "new-1-clone", "nic": 1, "mac": "", "action": "link-down", "why": "a card on pconet that pco did not attach, as a clone or a restore copies one; pco sets its link down"}
     ],
     "free": 247,
     "vnet": {"ok": true, "zoneType": "simple", "isolatePorts": false, "subnets": 0},
-    "filtered": {"holds": true, "backend": "pve-firewall", "offered": true},
     "dhcp": {"bound": true, "since": "2026-10-01T06:00:00Z", "unknown": 1}
   }
 }

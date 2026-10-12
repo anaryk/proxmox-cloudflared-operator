@@ -397,7 +397,7 @@ func TestFilterEventsByGuestRouteAndSubject(t *testing.T) {
 	for _, ev := range got {
 		seqs = append(seqs, ev.Seq)
 	}
-	require.Equal(t, []uint64{4, 7, 9, 10, 11}, seqs)
+	require.Equal(t, []uint64{4, 7, 9, 10, 11, 12}, seqs)
 	require.NotNil(t, FilterEvents(nil, sees(), nil))
-	require.Len(t, eventsAnswer, 8, "the input is as it was")
+	require.Len(t, eventsAnswer, 10, "the input is as it was")
 }

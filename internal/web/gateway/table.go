@@ -118,12 +118,13 @@ var Table = []Rule{
 	{Method: http.MethodDelete, Path: "/credentials/:id", Min: auth.RoleAdmin, Timeout: writeTimeout},
 	{Method: http.MethodDelete, Path: "/routes/manual/:id", Params: []string{"rev"}, Min: auth.RoleAdmin, Timeout: writeTimeout},
 	// The networks reached through a leg are cluster configuration, which
-	// a reader sees without the MACs of the legs; what may be attached lists
-	// the addresses of every guest, which is an admin's to see, and the
-	// daemon lists the guests for it.
+	// a reader sees without the MACs of the legs. One network with its
+	// service addresses names the addresses of the guests behind them, and
+	// what may be attached the addresses of every guest: an admin's to see,
+	// and the daemon lists the guests for the latter.
 	{Method: http.MethodGet, Path: "/networks", Min: auth.RoleReader, Timeout: readTimeout, Filter: filterNetworks},
 	{Method: http.MethodGet, Path: "/networks/candidates", Min: auth.RoleAdmin, Timeout: writeTimeout},
-	{Method: http.MethodGet, Path: "/networks/:id", Min: auth.RoleReader, Timeout: readTimeout, Filter: filterNetwork},
+	{Method: http.MethodGet, Path: "/networks/:id", Min: auth.RoleAdmin, Timeout: readTimeout},
 	{Method: http.MethodPost, Path: "/networks/probe", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodPost, Path: "/networks", Min: auth.RoleAdmin, Body: maxBody, Timeout: writeTimeout},
 	{Method: http.MethodDelete, Path: "/networks/:id", Params: []string{"rev", "confirm"}, Min: auth.RoleAdmin, Timeout: writeTimeout},

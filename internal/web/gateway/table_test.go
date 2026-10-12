@@ -74,7 +74,7 @@ var tableRows = map[string]tableRow{
 	"DELETE /routes/manual/:id":          {path: "/routes/manual/status", query: "?rev=2&force=1", upQuery: "rev=2"},
 	"GET /networks":                      {answer: networksAnswer, golden: "networks.json"},
 	"GET /networks/candidates":           {},
-	"GET /networks/:id":                  {path: "/networks/vmbr2", answer: networkAnswer, golden: "network.json"},
+	"GET /networks/:id":                  {path: "/networks/vmbr2"},
 	"POST /networks/probe":               {body: `{"bridge":"vmbr1","address":"10.77.0.250"}`},
 	"POST /networks":                     {body: `{"bridge":"vmbr1","prefix":"10.77.0.0/24","address":"10.77.0.250"}`},
 	"DELETE /networks/:id":               {path: "/networks/vmbr1", query: "?rev=2&confirm=true&force=1", upQuery: "confirm=true&rev=2"},
@@ -93,11 +93,6 @@ var (
 		},
 		Legs: []engine.LegView{{Node: "pve1", Addr: netip.MustParseAddr("10.50.0.250"), Up: true}}, Targets: 1, Routes: 1,
 	}}
-	networkAnswer = engine.NetworkDetail{
-		NetworkView: networksAnswer[0],
-		Services:    []store.ServiceAddr{{Network: "vmbr2", Addr: netip.MustParseAddr("10.50.0.10"), Service: netip.MustParseAddr("198.18.1.5"), AllocatedAt: t0}},
-		Served:      []string{"zabbix.example.com"},
-	}
 	managedAnswer = engine.ManagedView{
 		Enabled: true, Consent: "per-guest", AutoAllowed: true, TagHonoured: true, Subnet: netip.MustParsePrefix("10.203.118.0/24"),
 		Leg: &engine.LegView{Node: "pve1", Addr: netip.MustParseAddr("10.203.118.1"), Up: true},
@@ -134,6 +129,10 @@ var (
 		{Seq: 9, Boot: bootA, At: t0, Level: "info", Kind: "admin", Subject: "lxc/201", Message: "lxc/201 (new-1) is approved in identity uuid:201", Actor: "alice@pve (ticket)"},
 		{Seq: 10, Boot: bootA, At: t0, Level: "warn", Kind: "problem", Subject: "", Message: "a problem"},
 		{Seq: 11, Boot: bootA, At: t0, Level: "info", Kind: "rollout", Subject: "pco-abc123", Message: "version 3 runs on 1 connector", Tunnel: "pco-abc123", Account: "acc1"},
+		{Seq: 12, Boot: bootA, At: t0, Level: "warn", Kind: "managed", Subject: "lxc/201", Guest: "lxc/201",
+			Message: "foreign card net2 (02:50:43:4f:ff:01) of lxc/201 (new-1) was set link down: a card on pconet with the MAC of pco's leg (02:50:43:4f:ff:01); pco sets its link down"},
+		{Seq: 13, Boot: bootA, At: t0, Level: "warn", Kind: "managed", Subject: "lxc/202", Guest: "lxc/202",
+			Message: "foreign card net1 (06:50:43:4f:76:02) of lxc/202 (dns-1) was set link down: a copy"},
 	}
 	trafficAnswer = engine.TrafficView{
 		At: t0, Interval: "5s", Tunnels: []engine.TunnelTraffic{{TunnelID: "00000000-0000-4000-8000-000000000001", Node: "pve1", Samples: []engine.TrafficSample{}}},
@@ -210,12 +209,14 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 		"GET /state", "GET /stream", "GET /events", "GET /traffic", "GET /traffic/route",
 		"GET /credentials", "GET /claims", "GET /approvals", "GET /guests", "GET /guests/:kind/:vmid/annotation",
 		"GET /settings", "GET /routes/manual", "GET /version", "POST /diagnose", "POST /doctor",
-		"GET /networks", "GET /networks/:id", "GET /managed",
+		"GET /networks", "GET /managed",
 	}
 	long := map[string]bool{"POST /apply": true, "POST /credentials": true, "POST /credentials/:id/check": true}
 	// The candidates list the guests of the node afresh, which takes as long
 	// as a write.
 	slow := map[string]bool{"GET /networks/candidates": true}
+	// One network with its service addresses is read, and an admin's.
+	adminReads := map[string]bool{"GET /networks/:id": true}
 	for _, r := range Table {
 		key := ruleKey(r)
 		reads := false
@@ -240,7 +241,7 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 			require.Equal(t, 75*time.Second, r.Timeout, key)
 		case slow[key]:
 			require.Equal(t, 60*time.Second, r.Timeout, key)
-		case r.Method == http.MethodGet:
+		case adminReads[key], r.Method == http.MethodGet:
 			require.Equal(t, 10*time.Second, r.Timeout, key)
 		default:
 			require.Equal(t, 60*time.Second, r.Timeout, key)
@@ -254,7 +255,7 @@ func TestTheTableHoldsExactlyTheCallsOfThePage(t *testing.T) {
 			require.Zero(t, r.Body, key)
 		}
 	}
-	require.Len(t, Table, len(readers)+21)
+	require.Len(t, Table, len(readers)+22)
 }
 
 func TestReadersAreRefusedEveryAdminRule(t *testing.T) {

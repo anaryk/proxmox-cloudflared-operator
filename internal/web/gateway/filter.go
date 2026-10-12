@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -89,38 +90,47 @@ func withoutLegMACs(nets []engine.NetworkView) []engine.NetworkView {
 	return out
 }
 
+// macPattern is a MAC address as the daemon writes one into free text.
+var macPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(:[0-9a-f]{2}){5}\b`)
+
+// redactMACs takes every MAC out of free text: the reason of a foreign card
+// names the MAC of the leg, and an error of the configurer may name one.
+func redactMACs(s string) string { return macPattern.ReplaceAllString(s, "a MAC") }
+
 // managedFor is the managed network as a reader sees it: the cards, the
 // waiting guests and the foreign cards of the guests it may audit, without
-// the MACs, the identities and the pveum lines, which are an admin's.
+// the MACs, the identities, the pveum lines, the firewall of the guests
+// before pco changed it and the appliance's isolation, which are an
+// admin's. A reason that carries a pveum line or the command of a
+// confirmation is cut to its name.
 func managedFor(m engine.ManagedView, visible auth.Visible) engine.ManagedView {
 	m.Attachments = only(m.Attachments, func(a engine.AttachmentView) bool { return ownerVisible(a.Owner, visible) && !manual(a.Owner) })
 	for i := range m.Attachments {
-		m.Attachments[i].MAC, m.Attachments[i].Identity, m.Attachments[i].GrantCmd = "", "", ""
+		a := &m.Attachments[i]
+		a.MAC, a.Identity, a.GrantCmd, a.Firewall = "", "", "", nil
+		a.Detail, a.DetachWhy = redactMACs(a.Detail), redactMACs(a.DetachWhy)
 	}
 	m.Waiting = only(m.Waiting, func(w engine.ManagedWaiting) bool { return visible(w.GuestRef) })
 	for i := range m.Waiting {
-		m.Waiting[i].Identity = ""
-		if why, _, ok := strings.Cut(m.Waiting[i].Why, ": pveum "); ok {
-			m.Waiting[i].Why = why
+		w := &m.Waiting[i]
+		w.Identity = ""
+		for _, name := range []string{"needs-grant", "needs-firewall-confirmation"} {
+			if strings.HasPrefix(w.Why, name+":") {
+				w.Why = name
+			}
 		}
+		w.Why = redactMACs(w.Why)
 	}
 	m.Foreign = only(m.Foreign, func(f engine.ForeignView) bool { return visible(f.GuestRef) })
 	for i := range m.Foreign {
-		m.Foreign[i].MAC = ""
+		m.Foreign[i].MAC, m.Foreign[i].Why = "", redactMACs(m.Foreign[i].Why)
 	}
-	m.PoolGrant = ""
+	m.PoolGrant, m.Filtered = "", nil
 	return m
 }
 
 func filterNetworks(raw []byte, _ *Reader) ([]byte, error) {
 	return recode(raw, func(nets []engine.NetworkView) (any, error) { return withoutLegMACs(nets), nil })
-}
-
-func filterNetwork(raw []byte, _ *Reader) ([]byte, error) {
-	return recode(raw, func(n engine.NetworkDetail) (any, error) {
-		n.LegMAC, n.LegMACs = "", nil
-		return n, nil
-	})
 }
 
 func filterManaged(raw []byte, r *Reader) ([]byte, error) {
@@ -190,9 +200,16 @@ func keepEvent(ev engine.Event, visible auth.Visible, hosts map[string]bool) boo
 	return true
 }
 
-// FilterEvents are the events a reader gets of evs, a new list.
+// FilterEvents are the events a reader gets of evs, a new list. An event of
+// the managed network loses the MACs its text names: a card's, or the leg's.
 func FilterEvents(evs []engine.Event, visible auth.Visible, hosts map[string]bool) []engine.Event {
-	return only(evs, func(ev engine.Event) bool { return keepEvent(ev, visible, hosts) })
+	out := only(evs, func(ev engine.Event) bool { return keepEvent(ev, visible, hosts) })
+	for i := range out {
+		if out[i].Kind == "managed" {
+			out[i].Message = redactMACs(out[i].Message)
+		}
+	}
+	return out
 }
 
 // FilterTraffic keeps the routes whose owner the reader sees, counts in

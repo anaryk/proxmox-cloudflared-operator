@@ -201,7 +201,6 @@
         "addr": "10.203.118.2",
         "consent": "tag",
         "since": "2026-10-01T10:00:00Z",
-        "firewall": {"enabled": false, "rules": 0},
         "guest": {"kind": "lxc", "vmid": 201, "name": "new-1"},
         "state": "attached"
       }
@@ -210,7 +209,6 @@
     "foreign": [],
     "free": 247,
     "vnet": {"ok": true, "zoneType": "simple", "isolatePorts": false, "subnets": 0},
-    "filtered": {"holds": true, "backend": "pve-firewall", "offered": true},
     "dhcp": {"bound": true, "since": "2026-10-01T06:00:00Z", "unknown": 1}
   },
   "egress": {"state": "off", "since": "2026-10-01T11:00:00Z"},
