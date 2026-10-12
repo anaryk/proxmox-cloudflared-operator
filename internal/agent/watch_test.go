@@ -116,6 +116,56 @@ func TestAnAddressWhoseMACMovedIsBlockedAtOnceAndComesBackOnceVerified(t *testin
 	require.Zero(t, e.changed, "nothing to withdraw")
 }
 
+// While an address whose MAC moved waits for its verification it is out of
+// the set kept on disk as well as of the filter: a daemon that restarts then
+// does not let it back in on what it knew before the move. The verification
+// waits for the agent's lock, which the test holds.
+func TestAMovedAddressIsOutOfTheKeptSetUntilItIsVerified(t *testing.T) {
+	e := newEnv(t)
+	s := e.snapshot("www.example.com -> :8080")
+	s.Targets = append(s.Targets, manualTarget("static.example.com", netip.MustParseAddrPort("10.0.0.30:443"), false))
+	e.apply(verified(s, "10.0.0.11:8080", "10.0.0.30:443"))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	e.agent.sem <- struct{}{}
+
+	e.agent.Moved(ctx, guestAddr)
+
+	kept, _, err := e.store.AgentEgress()
+	require.NoError(t, err)
+	require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.30:443")}, kept)
+	require.Equal(t, egressTargets("10.0.0.11:8080", "10.0.0.30:443"), e.agent.EgressSet(), "the agent itself still knows it, for when it verifies")
+
+	// The daemon restarts while the verification waits; the guest is then
+	// proven below its minimum, which the set rule alone would let stay.
+	old := e.agent
+	cancel()
+	old.Wait()
+	e.egr.loaded(egressTargets("10.0.0.30:443"), nil)
+	e.res.observe("www.example.com")
+	e.agent = e.newAgent()
+	require.NoError(t, e.agent.Boot(t.Context()))
+
+	got, _ := e.egr.last()
+	require.Equal(t, egressTargets("10.0.0.30:443"), got, "it comes back only once it verifies")
+
+	t.Run("and is kept again once verified", func(t *testing.T) {
+		e, _ := watching(t)
+		e.agent.sem <- struct{}{}
+		e.agent.Moved(t.Context(), guestAddr)
+		kept, _, err := e.store.AgentEgress()
+		require.NoError(t, err)
+		require.Empty(t, kept)
+
+		<-e.agent.sem
+		e.agent.Wait()
+
+		kept, _, err = e.store.AgentEgress()
+		require.NoError(t, err)
+		require.Equal(t, []netip.AddrPort{netip.MustParseAddrPort("10.0.0.11:8080")}, kept)
+	})
+}
+
 func TestAnAddressThatFailsAfterItsMACMovedStaysOut(t *testing.T) {
 	e, _ := watching(t)
 	log := &callLog{}

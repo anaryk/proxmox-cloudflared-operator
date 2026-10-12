@@ -174,9 +174,15 @@ func (a *Agent) saveDone(next map[string]store.ActionDone) error {
 	return nil
 }
 
-// saveSet keeps the egress set; the store writes only a change.
+// saveSet keeps the egress set as the filter was given it, less the
+// addresses whose MAC moved and that were not verified again yet: a daemon
+// that starts anew must not let one back in on what it knew before the move.
+// The store writes only a change. The caller does not hold egMu.
 func (a *Agent) saveSet() error {
-	if err := a.d.Store.SaveAgentEgress(toAddrPorts(a.set)); err != nil {
+	a.egMu.Lock()
+	set := a.unsuspected()
+	a.egMu.Unlock()
+	if err := a.d.Store.SaveAgentEgress(toAddrPorts(set)); err != nil {
 		return fmt.Errorf("saving the egress set: %w", err)
 	}
 	return nil

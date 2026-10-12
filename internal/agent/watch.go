@@ -144,6 +144,9 @@ func (a *Agent) Moved(ctx context.Context, addr netip.Addr) {
 	if first {
 		a.event(levelWarn, kindEgress, addr.String(),
 			fmt.Sprintf("the MAC of %s moved; the connectors do not reach it until it is verified again", addr))
+		if err := a.saveSet(); err != nil {
+			a.d.Log.Warn().Err(err).Msg("saving the egress set failed; the next pass saves it")
+		}
 	}
 	if start {
 		a.moving.Add(1)
@@ -231,10 +234,13 @@ func (a *Agent) reverify(ctx context.Context, addr netip.Addr) {
 		a.event(levelInfo, kindEgress, addr.String(),
 			fmt.Sprintf("%s was verified again after its MAC moved; the connectors reach it again", addr))
 	}
-	if !passed {
+	if !again {
+		// The address is back in the set kept, or out of it for good.
 		if err := a.saveSet(); err != nil {
 			a.d.Log.Warn().Err(err).Msg("saving the egress set failed; the next pass saves it")
 		}
+	}
+	if !passed {
 		a.republish()
 		a.changed()
 	}
