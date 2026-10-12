@@ -187,6 +187,8 @@ leg, and the namespace NATs it to the target through the leg; [pco netns](cli/pc
 shows and restores it. A leg whose mark passes to another network, to another bridge, to
 another VLAN or to the untagged network of its bridge, is made anew and loses the connection
 tracking entries of its zone, so that nothing it learned or opened in the old one is kept.
+A leg that raises its address announces it with three gratuitous ARP requests a second apart,
+so that guests that still hold the MAC of an earlier pair for it reach the new one at once.
 
 Each network has a mark, from 1 to 15, and the SNAT through its leg draws its source ports
 from a block of 4096 of its own: mark 1 has the ports 1024 to 5119, mark 2 has 5120 to 9215,

@@ -582,6 +582,40 @@ func TestLinuxAMarkThatMovesToAnotherBridgeReachesTheGuestThere(t *testing.T) {
 	require.NoError(t, l.b.Verify(t.Context()))
 }
 
+// An announcement is a request for the leg's own address from it.
+func TestLinuxAnAnnouncementIsAGratuitousRequest(t *testing.T) {
+	own := mac("02:50:43:4f:00:01")
+	f := arpAnnounceFrame(own, addr("10.50.0.250"))
+	require.Len(t, f, arpFrameLen)
+	require.Equal(t, mac("ff:ff:ff:ff:ff:ff"), net.HardwareAddr(f[0:6]))
+	require.Equal(t, []byte{0, arpRequest}, f[20:22])
+	require.Equal(t, own, net.HardwareAddr(f[22:28]))
+	require.Equal(t, []byte{10, 50, 0, 250}, f[28:32], "the sender's address")
+	require.Equal(t, []byte{10, 50, 0, 250}, f[38:42], "the target")
+}
+
+// A leg announces the address it raised: a guest that holds the MAC of an
+// earlier pair for it, as it does after a mark moved, learns the new one at
+// once rather than when its entry expires.
+func TestLinuxARaisedLegAnnouncesItsAddress(t *testing.T) {
+	l := newLabNet(t)
+	l.bridge("br1", false)
+	l.guest("a", "br1", 0, "10.50.0.10/24", "")
+	require.NoError(t, l.b.Up(t.Context()))
+	ns := "pcotest-a-" + l.id
+	l.ip("-n", ns, "neigh", "replace", "10.50.0.250", "lladdr", "02:50:43:4f:ff:ff", "dev", "eth0", "nud", "reachable")
+
+	leg := Leg{ID: "br1", Mark: 1, Bridge: "br1", Prefix: prefix("10.50.0.250/24"), MAC: mac("02:50:43:4f:00:01")}
+	states, err := l.b.Sync(t.Context(), []Leg{leg}, nil, nil, nil)
+	require.NoError(t, err)
+	require.True(t, states[0].Up, states[0].Problem)
+
+	out, err := exec.Command(ipPath, "-n", ns, "neigh", "show", "10.50.0.250", "dev", "eth0").CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "lladdr 02:50:43:4f:00:01", "the guest holds the MAC of the leg")
+	require.NotContains(t, string(out), "02:50:43:4f:ff:ff")
+}
+
 // zoneFlows counts the IPv4 conntrack entries of a zone of the gateway
 // namespace.
 func (l *labNet) zoneFlows(t *testing.T, zone int) int {

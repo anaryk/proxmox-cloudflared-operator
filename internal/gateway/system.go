@@ -270,6 +270,9 @@ type system interface {
 	// interface of the namespace and returns the MACs that claim it within
 	// the window.
 	arpProbe(ctx context.Context, dev string, addr netip.Addr, window time.Duration) ([]net.HardwareAddr, error)
+	// announce sends one gratuitous ARP request for addr, from the MAC of an
+	// interface of the namespace, through it.
+	announce(dev string, addr netip.Addr) error
 	// dial connects from a socket of the namespace, with the mark, from src.
 	dial(ctx context.Context, mark int, src netip.Addr, dst netip.AddrPort) (net.Conn, error)
 }

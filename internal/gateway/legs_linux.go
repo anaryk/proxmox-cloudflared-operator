@@ -322,6 +322,44 @@ func arpProbeFrame(own net.HardwareAddr, addr netip.Addr) []byte {
 	return append(f, tpa[:]...)
 }
 
+func (s *linuxSystem) announce(dev string, addr netip.Addr) error {
+	return s.announceOn(inNS, dev, addr)
+}
+
+// announceOn sends one gratuitous ARP request for addr from the MAC of dev:
+// a guest that has an entry for addr takes the MAC from it.
+func (s *linuxSystem) announceOn(sd side, dev string, addr netip.Addr) error {
+	ns, err := s.nsOf(sd)
+	if err != nil {
+		return err
+	}
+	l, ok, err := s.link(sd, dev)
+	switch {
+	case err != nil:
+		return err
+	case !ok:
+		return fmt.Errorf("%s is missing", dev)
+	}
+	f, err := Socket(ns, unix.AF_PACKET, unix.SOCK_RAW, HostToNet16(etherTypeARP), SocketOptions{Device: dev})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(arpAnnounceFrame(l.mac, addr)); err != nil {
+		return fmt.Errorf("announcing %s through %s: %w", addr, dev, err)
+	}
+	return nil
+}
+
+// arpAnnounceFrame is a gratuitous ARP request: the sender and the target
+// are both addr, the sender's MAC is own.
+func arpAnnounceFrame(own net.HardwareAddr, addr netip.Addr) []byte {
+	f := arpProbeFrame(own, addr)
+	spa := addr.As4()
+	copy(f[28:32], spa[:])
+	return f
+}
+
 // claimant returns the sender of an ARP frame that claims addr: a reply or
 // an announcement from it, or another host's probe for it.
 func claimant(f []byte, own net.HardwareAddr, addr netip.Addr) (net.HardwareAddr, bool) {

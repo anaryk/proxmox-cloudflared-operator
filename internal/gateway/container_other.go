@@ -50,6 +50,8 @@ func (noContainer) arpProbe(context.Context, string, netip.Addr, time.Duration) 
 	return nil, errNotLinux
 }
 
+func (noContainer) announce(string, netip.Addr) error { return errNotLinux }
+
 func (noContainer) dial(context.Context, int, netip.Addr, netip.AddrPort) (net.Conn, error) {
 	return nil, errNotLinux
 }

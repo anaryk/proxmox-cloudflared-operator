@@ -105,6 +105,10 @@ func (s containerLinux) arpProbe(ctx context.Context, dev string, addr netip.Add
 	return s.ls.arpProbeOn(ctx, onHost, dev, addr, window)
 }
 
+func (s containerLinux) announce(dev string, addr netip.Addr) error {
+	return s.ls.announceOn(onHost, dev, addr)
+}
+
 func (s containerLinux) dial(ctx context.Context, mark int, src netip.Addr, dst netip.AddrPort) (net.Conn, error) {
 	return dialIn(ctx, s.ls.hostNS, mark, src, dst)
 }

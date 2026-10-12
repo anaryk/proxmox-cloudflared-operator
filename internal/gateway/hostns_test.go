@@ -143,6 +143,76 @@ func TestALegIsMadeInOrder(t *testing.T) {
 	require.Equal(t, `"leg2" : 10.50.0.250 . 5120-9215`, h.nsNft.tables[gwTable].elems[mapLegSNAT][0])
 }
 
+// A leg announces the address it just raised, three times a second apart,
+// so that a guest that holds the MAC of an earlier pair for it reaches the
+// new one at once; one that holds its address already announces nothing,
+// nor does one whose address is in use.
+func TestARaisedAddressIsAnnounced(t *testing.T) {
+	announced := "arp announce leg1 10.50.0.250"
+	t.Run("after the address, in rounds", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.up(t)
+		h.sync(t, []Leg{legA, legB}, nil, nil, nil)
+		c := h.sys.calls
+		first := index(t, c, announced)
+		require.Greater(t, first, index(t, c, "addr add ns leg1 10.50.0.250/24"))
+		require.Greater(t, first, index(t, c, "addr add ns leg2 10.50.0.250/24"))
+		require.Equal(t, []string{
+			announced, "arp announce leg2 10.50.0.250", "sleep 1s",
+			announced, "arp announce leg2 10.50.0.250", "sleep 1s",
+			announced, "arp announce leg2 10.50.0.250",
+		}, c[first:first+8])
+
+		h.reset()
+		h.sync(t, []Leg{legA, legB}, nil, nil, nil)
+		require.NotContains(t, h.sys.calls, announced, "a leg that holds its address announces nothing")
+	})
+
+	t.Run("again by a pair made anew", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.sys.bridge("vmbr3", false, 1500, "eno3")
+		h.up(t)
+		h.sync(t, []Leg{legA}, nil, nil, nil)
+		h.reset()
+		to := legA
+		to.ID, to.Bridge = "vmbr3", "vmbr3"
+		h.sync(t, []Leg{to}, nil, nil, nil)
+		c := h.sys.calls
+		require.Less(t, index(t, c, "veth vethpco1"), index(t, c, announced))
+		require.Equal(t, 3, count(c, announced))
+	})
+
+	t.Run("not for an address in use", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.up(t)
+		uplink := legA
+		uplink.Uplink = true
+		h.sys.answers[addr("10.50.0.250")] = []net.HardwareAddr{mac("52:54:00:12:34:56")}
+		states := h.sync(t, []Leg{uplink}, nil, nil, nil)
+		require.False(t, states[0].Up)
+		require.NotContains(t, h.sys.calls, announced)
+	})
+
+	t.Run("an announcement that cannot be sent fails nothing", func(t *testing.T) {
+		h := newHarness(t).node()
+		h.up(t)
+		h.sys.fail["arp announce"] = errors.New("leg1 is not up")
+		states := h.sync(t, []Leg{legA}, nil, nil, nil)
+		require.True(t, states[0].Up, states[0].Problem)
+		require.Empty(t, states[0].Problem)
+	})
+}
+
+func count(calls []string, call string) int {
+	n := 0
+	for _, c := range calls {
+		if c == call {
+			n++
+		}
+	}
+	return n
+}
+
 func TestATagOnABridgeThatFiltersNoVLANsTakesItsVLANBridgeOnceThere(t *testing.T) {
 	h := newHarness(t).node()
 	h.up(t)

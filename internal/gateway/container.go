@@ -123,6 +123,7 @@ type containerSystem interface {
 	setNeighbour(dev string, n neighbour) error
 	delNeighbour(dev string, addr netip.Addr) error
 	arpProbe(ctx context.Context, dev string, addr netip.Addr, window time.Duration) ([]net.HardwareAddr, error)
+	announce(dev string, addr netip.Addr) error
 	dial(ctx context.Context, mark int, src netip.Addr, dst netip.AddrPort) (net.Conn, error)
 }
 
@@ -443,6 +444,7 @@ func (b *containerBackend) sync(ctx context.Context, legs []Leg, services []Serv
 		b.pins = slices.Clone(pins)
 	}
 	b.sticky = slices.Clone(sticky)
+	announceRaised(ctx, b.sys, valid, b.records, b.sleep, b.log)
 	return states, nil
 }
 
@@ -770,6 +772,7 @@ func (b *containerBackend) legAddress(ctx context.Context, l Leg, rec *legRecord
 		if err := b.sys.addAddr(iface, address{prefix: l.Prefix, noPrefixRoute: true}); err != nil {
 			return false, "", fmt.Errorf("adding %s to %s: %w", l.Prefix, iface, err)
 		}
+		rec.announce = true
 		b.log.Info().Str("leg", iface).Stringer("addr", l.Prefix).Str("network", l.ID).Msg("raised the address of a leg")
 	}
 	return true, "", nil

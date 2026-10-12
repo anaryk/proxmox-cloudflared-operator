@@ -51,6 +51,7 @@ type hostBackend struct {
 	hostNft Nft
 	log     zerolog.Logger
 	now     func() time.Time
+	sleep   func(ctx context.Context, d time.Duration) error
 	form    snatForm
 
 	mu sync.Mutex
@@ -74,11 +75,13 @@ type legRecord struct {
 	// misnamed is the name the appliance's card came up with, when it was
 	// not the leg's.
 	misnamed string
+	// announce: the address was raised and is not announced yet.
+	announce bool
 }
 
 func newHost(sys system, nsNft, hostNft Nft, log zerolog.Logger, now func() time.Time) *hostBackend {
 	return &hostBackend{
-		sys: sys, nsNft: nsNft, hostNft: hostNft, log: log, now: now, form: theSNATForm,
+		sys: sys, nsNft: nsNft, hostNft: hostNft, log: log, now: now, sleep: sleepCtx, form: theSNATForm,
 		records: map[string]*legRecord{},
 	}
 }

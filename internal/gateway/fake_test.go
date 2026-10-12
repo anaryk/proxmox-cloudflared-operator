@@ -135,10 +135,11 @@ func (f *fakeSystem) change(format string, args ...any) error {
 	return nil
 }
 
-// changes are the calls that changed something: all but probes and dials.
+// changes are the calls that changed something: all but probes, dials,
+// announcements and the sleeps between them.
 func (f *fakeSystem) changes() []string {
 	return slices.DeleteFunc(slices.Clone(f.calls), func(c string) bool {
-		return strings.HasPrefix(c, "probe ") || strings.HasPrefix(c, "dial ")
+		return strings.HasPrefix(c, "probe ") || strings.HasPrefix(c, "dial ") || strings.HasPrefix(c, "arp announce ") || strings.HasPrefix(c, "sleep ")
 	})
 }
 
@@ -544,6 +545,13 @@ func (f *fakeSystem) arpProbe(_ context.Context, dev string, a netip.Addr, windo
 	return slices.Clone(f.answers[a]), nil
 }
 
+func (f *fakeSystem) announce(dev string, a netip.Addr) error {
+	if l, ok := f.ns.links[dev]; !ok || !l.up {
+		return fmt.Errorf("%s is not up", dev)
+	}
+	return f.change("arp announce %s %s", dev, a)
+}
+
 func (f *fakeSystem) dial(_ context.Context, mark int, src netip.Addr, dst netip.AddrPort) (net.Conn, error) {
 	f.calls = append(f.calls, fmt.Sprintf("dial %d %s %s", mark, src, dst))
 	c, s := net.Pipe()
@@ -812,6 +820,10 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{sys: newFakeSystem(), nsNft: newFakeNft(t), hostNft: newFakeNft(t), now: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)}
 	h.nsNft.order, h.hostNft.order = &h.sys.order, &h.sys.order
 	h.b = newHost(h.sys, h.nsNft, h.hostNft, zerolog.Nop(), func() time.Time { return h.now })
+	h.b.sleep = func(_ context.Context, d time.Duration) error {
+		h.sys.calls = append(h.sys.calls, "sleep "+d.String())
+		return nil
+	}
 	return h
 }
 

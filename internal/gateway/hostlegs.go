@@ -66,6 +66,7 @@ func (b *hostBackend) sync(ctx context.Context, legs []Leg, services []Service, 
 		return nil, err
 	}
 	b.sticky = slices.Clone(sticky)
+	announceRaised(ctx, b.sys, valid, b.records, b.sleep, b.log)
 	return states, nil
 }
 
@@ -357,7 +358,8 @@ func stickyOf(e fdbEntry, mac net.HardwareAddr, vlan int) bool {
 }
 
 // legAddress gives the leg its address, noprefixroute, so that the leg adds
-// no route to the namespace's main table. On an uplink bridge DAD runs
+// no route to the namespace's main table; an address it did not hold is
+// announced at the end of the Sync. On an uplink bridge DAD runs
 // first: an answer keeps the address off; with no carrier on any other port
 // of the bridge it cannot run, the address is added, and the next Sync
 // probes again.
@@ -397,6 +399,7 @@ func (b *hostBackend) legAddress(ctx context.Context, l Leg, rec *legRecord, mas
 		return false, "", err
 	}
 	if !holds {
+		rec.announce = true
 		b.log.Info().Str("leg", iface).Stringer("addr", l.Prefix).Str("network", l.ID).Msg("raised the address of a leg")
 	}
 	return true, problem, nil

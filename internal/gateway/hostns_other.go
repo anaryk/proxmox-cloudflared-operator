@@ -66,6 +66,8 @@ func (unsupported) arpProbe(context.Context, string, netip.Addr, time.Duration) 
 	return nil, errNotLinux
 }
 
+func (unsupported) announce(string, netip.Addr) error { return errNotLinux }
+
 func (unsupported) dial(context.Context, int, netip.Addr, netip.AddrPort) (net.Conn, error) {
 	return nil, errNotLinux
 }

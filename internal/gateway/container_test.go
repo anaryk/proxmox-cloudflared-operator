@@ -219,8 +219,16 @@ func (f *fakeCT) dial(_ context.Context, mark int, src netip.Addr, dst netip.Add
 // changes are the calls that changed something: all but probes and dials.
 func (f *fakeCT) changes() []string {
 	return slices.DeleteFunc(slices.Clone(f.calls), func(c string) bool {
-		return strings.HasPrefix(c, "probe ") || strings.HasPrefix(c, "dial ")
+		return strings.HasPrefix(c, "probe ") || strings.HasPrefix(c, "dial ") || strings.HasPrefix(c, "arp announce ") || strings.HasPrefix(c, "sleep ")
 	})
+}
+
+func (f *fakeCT) announce(dev string, a netip.Addr) error {
+	if l, ok := f.n.links[dev]; !ok || !l.up {
+		return fmt.Errorf("%s is not up", dev)
+	}
+	f.change("arp announce %s %s", dev, a)
+	return nil
 }
 
 // fakeNICs is the Proxmox API of the appliance's own configuration. A card it
@@ -343,7 +351,10 @@ func newCTHarness(t *testing.T) *ctHarness {
 		h.announced = append(h.announced, m.String())
 		h.sys.order = append(h.sys.order, "announce "+m.String())
 	}, zerolog.Nop(), func() time.Time { return h.now })
-	h.b.sleep = func(context.Context, time.Duration) error { return nil }
+	h.b.sleep = func(_ context.Context, d time.Duration) error {
+		h.sys.calls = append(h.sys.calls, "sleep "+d.String())
+		return nil
+	}
 	return h
 }
 
@@ -518,6 +529,23 @@ func TestALegsCardIsSetUpInTheContainer(t *testing.T) {
 		require.Less(t, index(t, changes, fmt.Sprintf("rule add the rule %d: from 10.50.0.250 unreachable", 1900+l.Mark)),
 			index(t, changes, "addr add "+iface+" 10.50.0.250/24 noprefixroute"))
 	}
+}
+
+// A leg of the appliance announces the address it just raised, in rounds a
+// second apart, and not one it holds already.
+func TestARaisedAddressIsAnnouncedInTheContainer(t *testing.T) {
+	h := newCTHarness(t)
+	h.up(t)
+	h.sync(t, []Leg{legA}, nil)
+	c := h.sys.calls
+	announced := "arp announce leg1 10.50.0.250"
+	first := index(t, c, announced)
+	require.Greater(t, first, index(t, c, "addr add leg1 10.50.0.250/24 noprefixroute"))
+	require.Equal(t, []string{announced, "sleep 1s", announced, "sleep 1s", announced}, c[first:first+5])
+
+	h.reset()
+	h.sync(t, []Leg{legA}, nil)
+	require.NotContains(t, h.sys.calls, announced)
 }
 
 // The SNAT of each leg takes the leg's address and its own block of ports;
