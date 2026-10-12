@@ -60,17 +60,21 @@ func TestManagedEnableMakesTheVnetAndGrantsIt(t *testing.T) {
 	require.Equal(t, []setup.NetworkGrant{{Zone: "pco", VNet: "pconet", CreatedRoles: []string{"PCOManaged", "PCOSDN"}}}, m.Appliance.Grants)
 
 	sdn := e.node.ranSince("pvesh create /cluster/sdn/lock")
+	mark := "pco appliance vm100, installed 2026-10-01 by pco appliance install"
 	require.Equal(t, []string{
 		"pvesh create /cluster/sdn/lock --allow-pending 1 --output-format json",
 		"pvesh get /cluster/sdn/zones --pending 1 --output-format json",
 		"pvesh get /cluster/sdn/vnets --pending 1 --output-format json",
+		"pct set 100 --description " + mark + "\nmade the SDN zone pco",
 		"pct exec 100 --keep-env 0 -- pco appliance manifest sdn --created-zone=true",
 		"pvesh create /cluster/sdn/zones --zone pco --type simple --lock-token lock-1",
+		"pct set 100 --description " + mark + "\nmade the SDN zone pco\nmade the SDN vnet pconet",
 		"pct exec 100 --keep-env 0 -- pco appliance manifest sdn --created-vnet=true",
 		"pvesh create /cluster/sdn/vnets --vnet pconet --zone pco --isolate-ports 0 --lock-token lock-1",
 		"pvesh set /cluster/sdn --lock-token lock-1",
 		"pvesh delete /cluster/sdn/lock --lock-token lock-1",
-	}, sdn[:9])
+	}, sdn[:11], "each object is noted on the node and in the appliance before it is made")
+	require.Equal(t, mark+"\nmade the SDN zone pco\nmade the SDN vnet pconet", e.node.cts[100].cfg["description"])
 	require.Contains(t, sdn, "pveum acl modify /sdn/zones/pco/pconet --users pco@pve --tokens pco@pve!vm100 --roles PCOSDN")
 	require.Contains(t, e.ask.text(), "next: pct exec 100 -- pco network managed enable")
 	require.Empty(t, entries(t, e.journals), "no journal is left")
@@ -159,15 +163,63 @@ func TestManagedEnableTwice(t *testing.T) {
 	require.Contains(t, e.ask.text(), "SDN: zone pco and vnet pconet are there, nothing needed")
 }
 
+// What is made and granted is shown and asked about once, before anything
+// is made.
 func TestManagedEnableAsks(t *testing.T) {
 	e := managedNode(t)
-	e.ask.answers = []answer{{"Apply the SDN configuration? It reloads the network on every node.", true}, {"Grant these?", false}}
+	e.node.pools["web"] = &fakePool{}
+	e.ask.answers = []answer{{"Make the managed network for lxc/100 and grant these? The SDN apply reloads the network on every node.", false}}
 
-	err := e.managedEnable(ManagedOptions{VMID: 100})
+	err := e.managedEnable(ManagedOptions{VMID: 100, Pool: "web"})
 
 	require.ErrorIs(t, err, setup.ErrAborted)
-	require.Equal(t, 1, e.node.sdn.applies, "the vnet is there")
+	require.Equal(t, 0, e.node.sdn.applies, "nothing is applied")
+	require.Empty(t, e.node.sdn.zones, "nothing is made")
 	require.Empty(t, e.node.pcoLines(), "nothing is granted")
+	require.Equal(t, 0, e.node.count("pvesh create /cluster/sdn/lock"))
+	shown := e.ask.text()
+	for _, line := range []string{
+		"role PCOManaged (VM.Config.Network) on /vms/100",
+		"role PCOSDN (SDN.Use, SDN.Audit) on /sdn/zones/pco/pconet",
+		"pveum acl modify /pool/web --users pco@pve --tokens 'pco@pve!vm100' --roles PCOManaged",
+	} {
+		require.Contains(t, shown, line)
+	}
+
+	e.ask.answers = []answer{{"Make the managed network for lxc/100 and grant these?", true}}
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Pool: "web"}), e.ask.text())
+	require.Equal(t, 1, e.node.sdn.applies)
+	require.Len(t, e.node.pcoLines(), 6)
+}
+
+// The manifest inside the appliance is the appliance's word: the zone and
+// the vnet go only when the description of the container, which the node
+// keeps, names them as made for it too.
+func TestUninstallKeepsTheSDNObjectsTheNodeDoesNotRecord(t *testing.T) {
+	e := managedNode(t)
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+	desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], false, true)
+	require.True(t, ok)
+	e.node.cts[100].cfg["description"] = desc
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.NotEmpty(t, e.node.sdn.zones, "the zone stays")
+	require.Empty(t, e.node.sdn.vnets, "the vnet goes, which both name")
+	require.Contains(t, e.ask.text(), "(kept: the SDN zone pco, which the manifest of lxc/100 names as pco's and the description of its container does not)")
+	require.Contains(t, e.ask.text(), "the SDN vnet pconet, which an SDN apply removes from every node")
+
+	// With neither named on the node, a guest's card on pconet is not pco's
+	// business either: nothing refuses the uninstall for it.
+	e = managedNode(t)
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+	desc, _ = withSDNNotes(e.node.cts[100].cfg["description"], false, false)
+	e.node.cts[100].cfg["description"] = desc
+	e.guestOnPconet(105, pcoCard)
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+	require.NotEmpty(t, e.node.sdn.zones)
+	require.NotEmpty(t, e.node.sdn.vnets)
+	require.Equal(t, 1, e.node.sdn.applies, "no second apply")
 }
 
 // The appliance must run, as its manifest notes what the node makes.

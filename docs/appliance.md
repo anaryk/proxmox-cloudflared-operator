@@ -236,7 +236,7 @@ tells it from what an admin made:
 | `NoAccess` lines | Only those you confirmed, at the question or with `--deny-access`. | Recorded in the description of the container, which the appliance's token cannot change, and in the manifest. |
 
 Later, and only through `pco appliance grant-network`, the roles `PCOManaged`
-(`VM.Config.Network`) and `PCOSDN` (`SDN.Use`) with their lines; see
+(`VM.Config.Network`) and `PCOSDN` (`SDN.Use` and `SDN.Audit`) with their lines; see
 [network grants](#network-grants).
 
 Nothing else is created on the node, at install or later. The appliance keeps the list of what
@@ -471,7 +471,8 @@ as it made them, once the container is gone.
 ### Network grants
 
 A later release attaches cards of the appliance to the networks of guests. That needs
-`VM.Config.Network` on the appliance and `SDN.Use` on the network, and pco's token never holds
+`VM.Config.Network` on the appliance and `SDN.Use` on the network (with `SDN.Audit`, which reads
+whether the network is VLAN-aware), and pco's token never holds
 `Permissions.Modify`, so a command run as root on the node grants them (see
 [commands on the node](#commands-on-the-node)):
 
@@ -479,7 +480,7 @@ A later release attaches cards of the appliance to the networks of guests. That 
 
     pco appliance grant-network grants pco@pve and pco@pve!vm120:
       role PCOManaged (VM.Config.Network) on /vms/120
-      role PCOSDN (SDN.Use) on /sdn/zones/localnetwork/vmbr1
+      role PCOSDN (SDN.Use, SDN.Audit) on /sdn/zones/localnetwork/vmbr1
       pveum acl modify /vms/120 --users pco@pve --tokens 'pco@pve!vm120' --roles PCOManaged
       pveum acl modify /sdn/zones/localnetwork/vmbr1 --users pco@pve --tokens 'pco@pve!vm120' --roles PCOSDN
     Grant these? [y/N] y

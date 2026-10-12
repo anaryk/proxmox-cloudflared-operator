@@ -26,11 +26,13 @@ type ManagedOptions struct {
 // network of an appliance on the node, as root. The node's firewall must be
 // able to isolate it, as in the appliance the guest firewall does: the
 // datacenter firewall on, the iptables backend, pve-firewall running; each is
-// read before anything is made. Then the SDN zone pco and vnet pconet,
-// without isolated ports, as the appliance's own card is a port of the vnet,
-// each noted in the appliance's manifest before it is made, under the lock of
-// the SDN configuration; then the grant of the vnet to the appliance, as
-// grant-network makes it, and with Pool the grant of the cards of that pool.
+// read before anything is made. Then what it makes and grants is shown and
+// asked about, once: the SDN zone pco and vnet pconet, without isolated
+// ports, as the appliance's own card is a port of the vnet, each noted in the
+// container's description and the appliance's manifest before it is made,
+// under the lock of the SDN configuration; then the grant of the vnet to the
+// appliance, as grant-network makes it, and with Pool the grant of the cards
+// of that pool.
 func (i *Installer) ManagedEnableCommand(ctx context.Context, o ManagedOptions) error {
 	if o.VMID < 100 || o.VMID > 999999999 {
 		return fmt.Errorf("--vmid %d: want 100 to 999999999", o.VMID)
@@ -50,19 +52,30 @@ func (i *Installer) ManagedEnableCommand(ctx context.Context, o ManagedOptions) 
 		return err
 	}
 	defer unlock()
-	if err := r.applianceRuns(ctx, o.VMID); err != nil {
+	cfg, err := r.applianceRuns(ctx, o.VMID)
+	if err != nil {
 		return err
 	}
 	if err := r.checkFirewall(ctx); err != nil {
 		return err
+	}
+	r.showManaged(o)
+	if !o.Yes {
+		ok, err := r.ask.Confirm(fmt.Sprintf("Make the managed network for lxc/%d and grant these? The SDN apply reloads the network on every node.", o.VMID), false)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return setup.ErrAborted
+		}
 	}
 	var ours setup.Manifest
 	if m, _ := r.readManifest(ctx, o.VMID, false); m != nil {
 		ours = *m
 	}
 	sdn := setup.SDN{
-		Run: r.r, Ask: r.ask, Ours: ours, Record: r.noteSDN(ctx, o.VMID, ours),
-		IsolatePorts: false, Confirm: o.ConfirmSDNApply, Yes: o.Yes,
+		Run: r.r, Ask: r.ask, Ours: ours, Record: r.noteSDN(ctx, o.VMID, ours, cfg),
+		IsolatePorts: false, Confirm: o.ConfirmSDNApply, Yes: true,
 	}
 	if err := sdn.Ensure(ctx); err != nil {
 		return err
@@ -81,29 +94,30 @@ func (i *Installer) ManagedEnableCommand(ctx context.Context, o ManagedOptions) 
 }
 
 // applianceRuns refuses a container that is not an appliance of this node,
-// and one that does not run: its manifest notes what is made for it.
-func (r *run) applianceRuns(ctx context.Context, vmid int) error {
+// and one that does not run: its manifest notes what is made for it. It
+// returns the container's configuration.
+func (r *run) applianceRuns(ctx context.Context, vmid int) (ctConfig, error) {
 	cfg, err := readCTConfig(ctx, r.r, r.node, vmid)
 	switch {
 	case err != nil && !notThere(err):
-		return fmt.Errorf("reading the configuration of lxc/%d: %w", vmid, err)
+		return nil, fmt.Errorf("reading the configuration of lxc/%d: %w", vmid, err)
 	case err != nil:
 		if err := r.whereElse(ctx, vmid, "managed enable", "nothing was made"); err != nil {
-			return err
+			return nil, err
 		}
-		return fmt.Errorf("there is no container lxc/%d in the cluster", vmid)
+		return nil, fmt.Errorf("there is no container lxc/%d in the cluster", vmid)
 	}
-	if _, _, ok := parseDescription(cfg["description"]); !ok {
-		return fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was made", vmid)
+	if _, ok := parseDescription(cfg["description"]); !ok {
+		return nil, fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was made", vmid)
 	}
 	running, err := ctRunning(ctx, r.r, vmid)
 	switch {
 	case err != nil:
-		return err
+		return nil, err
 	case !running:
-		return fmt.Errorf("lxc/%d is stopped: start it with pct start %d, as its manifest notes what this makes", vmid, vmid)
+		return nil, fmt.Errorf("lxc/%d is stopped: start it with pct start %d, as its manifest notes what this makes", vmid, vmid)
 	}
-	return nil
+	return cfg, nil
 }
 
 // checkFirewall refuses a node whose guest firewall cannot isolate the
@@ -144,10 +158,12 @@ func (r *run) checkFirewall(ctx context.Context) error {
 	return nil
 }
 
-// noteSDN notes the zone and the vnet of the managed network in the
-// manifest of the appliance, through pco in it, from what the manifest held
-// when the run read it.
-func (r *run) noteSDN(ctx context.Context, vmid int, m setup.Manifest) func(change func(*setup.Manifest)) error {
+// noteSDN notes the zone and the vnet of the managed network before each is
+// made: in the description of the container, the node's own record, which
+// the appliance cannot change, and in the manifest of the appliance, through
+// pco in it, from what the manifest held when the run read it. Uninstall
+// removes an object only when both name it as pco's.
+func (r *run) noteSDN(ctx context.Context, vmid int, m setup.Manifest, cfg ctConfig) func(change func(*setup.Manifest)) error {
 	return func(change func(*setup.Manifest)) error {
 		before := m
 		change(&m)
@@ -161,11 +177,42 @@ func (r *run) noteSDN(ctx context.Context, vmid int, m setup.Manifest) func(chan
 		if len(args) == 4 {
 			return nil
 		}
+		desc, ok := withSDNNotes(cfg["description"], m.CreatedZone, m.CreatedVnet)
+		if !ok {
+			m = before
+			return fmt.Errorf("the description of lxc/%d is not the installer's any more; nothing was made", vmid)
+		}
+		if _, err := r.r.Run(ctx, "pct", "set", strconv.Itoa(vmid), "--description", desc); err != nil {
+			m = before
+			return fmt.Errorf("noting it in the description of lxc/%d: %w", vmid, err)
+		}
 		if _, err := r.exec(ctx, vmid, args...); err != nil {
+			if _, uerr := r.r.Run(ctx, "pct", "set", strconv.Itoa(vmid), "--description", cfg["description"]); uerr != nil {
+				r.ask.Warn("the description of lxc/%d keeps a note of what was not made: %v", vmid, uerr)
+			}
 			m = before
 			return fmt.Errorf("noting it in the manifest of lxc/%d: %w", vmid, err)
 		}
+		cfg["description"] = desc
 		return nil
+	}
+}
+
+// showManaged says what managed enable makes and grants, before it asks.
+func (r *run) showManaged(o ManagedOptions) {
+	vm, network := "/vms/"+strconv.Itoa(o.VMID), setup.NetworkGrant{Zone: setup.ManagedZone, VNet: setup.ManagedVnet}
+	id := tokenID(o.VMID)
+	r.ask.Info("pco appliance managed enable makes the SDN zone %s and the vnet %s where they are missing, applies the SDN "+
+		"configuration, and grants pco@pve and %s:", setup.ManagedZone, setup.ManagedVnet, id)
+	r.ask.Info("  role %s (VM.Config.Network) on %s", setup.RoleManaged, vm)
+	r.ask.Info("  role %s (SDN.Use, SDN.Audit) on %s", setup.RoleSDN, network.Path())
+	r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", vm, setup.UserID, id, setup.RoleManaged)
+	r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", network.Path(), setup.UserID, id, setup.RoleSDN)
+	if o.Pool != "" {
+		pool := setup.NetworkGrant{Pool: o.Pool}
+		r.ask.Info("  role %s (VM.Config.Network) on %s: the network cards and the firewall of every guest in pool %s",
+			setup.RoleManaged, pool.Path(), o.Pool)
+		r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", pool.Path(), setup.UserID, id, setup.RoleManaged)
 	}
 }
 
@@ -173,28 +220,7 @@ func (r *run) noteSDN(ctx context.Context, vmid int, m setup.Manifest) func(chan
 // cards of the pool, each noted in a journal first and in the manifest after,
 // as grant-network does.
 func (r *run) grantManaged(ctx context.Context, o ManagedOptions) error {
-	vm, network := "/vms/"+strconv.Itoa(o.VMID), setup.NetworkGrant{Zone: setup.ManagedZone, VNet: setup.ManagedVnet}
-	id := tokenID(o.VMID)
-	r.ask.Info("pco appliance managed enable grants pco@pve and %s:", id)
-	r.ask.Info("  role %s (VM.Config.Network) on %s", setup.RoleManaged, vm)
-	r.ask.Info("  role %s (SDN.Use) on %s", setup.RoleSDN, network.Path())
-	r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", vm, setup.UserID, id, setup.RoleManaged)
-	r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", network.Path(), setup.UserID, id, setup.RoleSDN)
-	pool := setup.NetworkGrant{Pool: o.Pool}
-	if o.Pool != "" {
-		r.ask.Info("  role %s (VM.Config.Network) on %s: the network cards and the firewall of every guest in pool %s",
-			setup.RoleManaged, pool.Path(), o.Pool)
-		r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", pool.Path(), setup.UserID, id, setup.RoleManaged)
-	}
-	if !o.Yes {
-		ok, err := r.ask.Confirm("Grant these?", false)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return setup.ErrAborted
-		}
-	}
+	network := setup.NetworkGrant{Zone: setup.ManagedZone, VNet: setup.ManagedVnet}
 	if err := r.grant(ctx, network, func() (setup.NetworkGrant, error) {
 		return GrantNetwork(ctx, r.r, o.VMID, network.Zone, network.VNet, 0)
 	}); err != nil {
@@ -203,6 +229,7 @@ func (r *run) grantManaged(ctx context.Context, o ManagedOptions) error {
 	if o.Pool == "" {
 		return nil
 	}
+	pool := setup.NetworkGrant{Pool: o.Pool}
 	return r.grant(ctx, pool, func() (setup.NetworkGrant, error) { return GrantPool(ctx, r.r, o.VMID, o.Pool) })
 }
 

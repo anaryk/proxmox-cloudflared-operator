@@ -134,7 +134,8 @@ func (r *run) repair(ctx context.Context) error {
 // which uninstall finds it.
 func (r *run) markContainer(ctx context.Context, cfg ctConfig) error {
 	vmid := r.j.VMID
-	from, lines, ok := parseDescription(cfg["description"])
+	d, ok := parseDescription(cfg["description"])
+	from, lines := d.vmid, d.lines
 	switch {
 	case !ok:
 		return refusal{fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was changed", vmid)}
@@ -171,7 +172,7 @@ func (r *run) originalOf(ctx context.Context, from int) (node string, found bool
 	if err != nil {
 		return "", false, fmt.Errorf("reading the configuration of lxc/%d on %s, to tell whether it is the original: %w", from, node, err)
 	}
-	if vmid, _, ok := parseDescription(cfg["description"]); !ok || vmid != from {
+	if d, ok := parseDescription(cfg["description"]); !ok || d.vmid != from {
 		return "", false, nil
 	}
 	return node, true, nil

@@ -40,14 +40,16 @@ func TestGrantNetworkOnTheManagedNetwork(t *testing.T) {
 		"/vms/100 user pco@pve PCOManaged",
 	}, e.node.pcoLines())
 	require.Equal(t, []string{"VM.Config.Network"}, e.node.roles["PCOManaged"])
-	require.Equal(t, []string{"SDN.Use"}, e.node.roles["PCOSDN"])
+	require.Equal(t, []string{"SDN.Use", "SDN.Audit"}, e.node.roles["PCOSDN"], "the appliance reads the vnet it may use")
 	require.Equal(t, []string{
+		"pveum acl list --output-format json",
 		"pveum role list --output-format json",
 		"pveum role add PCOManaged --privs VM.Config.Network",
-		"pveum role add PCOSDN --privs SDN.Use",
+		"pveum role add PCOSDN --privs SDN.Use,SDN.Audit",
 		"pveum acl modify /vms/100 --users pco@pve --tokens pco@pve!vm100 --roles PCOManaged",
 		"pveum acl modify /sdn/zones/pco/pconet --users pco@pve --tokens pco@pve!vm100 --roles PCOSDN",
 		"pvesh get /access/permissions --userid pco@pve!vm100 --path /vms/100 --output-format json",
+		"pvesh get /access/permissions --userid pco@pve!vm100 --path /sdn/zones/pco/pconet --output-format json",
 		"pvesh get /access/permissions --userid pco@pve!vm100 --path /sdn/zones/pco/pconet --output-format json",
 	}, e.node.ran)
 
@@ -166,6 +168,7 @@ func TestGrantPoolGrantsTheCardsOfThePoolsMembers(t *testing.T) {
 	}, e.node.pcoLines())
 	require.Equal(t, []string{
 		"pveum pool list --output-format json",
+		"pveum acl list --output-format json",
 		"pveum role list --output-format json",
 		"pveum role add PCOManaged --privs VM.Config.Network",
 		"pveum acl modify /pool/web --users pco@pve --tokens pco@pve!vm100 --roles PCOManaged",
@@ -177,6 +180,56 @@ func TestGrantPoolGrantsTheCardsOfThePoolsMembers(t *testing.T) {
 
 	require.Empty(t, e.node.pcoLines())
 	require.Nil(t, e.node.roles["PCOManaged"])
+}
+
+// A grant that fails takes back the lines it added and the roles it made,
+// and nothing that was there before it: the admin's line of pco@pve on the
+// pool and the role it names stay.
+func TestAGrantThatFailsTakesBackOnlyItsOwnLines(t *testing.T) {
+	e := installed(t)
+	e.node.pools["web"] = &fakePool{Members: []int{200}}
+	e.node.roles["PCOManaged"] = []string{"VM.Config.Network"}
+	e.node.grant("/pool/web", "user", "pco@pve", "PCOManaged")
+	// NoAccess for the token on the pool: the grant is made, and Proxmox says
+	// the token holds nothing there.
+	e.node.grant("/pool/web", "token", "pco@pve!vm100", "NoAccess")
+
+	_, err := GrantPool(t.Context(), e.node, 100, "web")
+
+	require.EqualError(t, err, "pco@pve!vm100 does not hold VM.Config.Network on /pool/web after the grant")
+	require.Equal(t, []string{"/pool/web token pco@pve!vm100 NoAccess", "/pool/web user pco@pve PCOManaged"}, e.node.pcoLines(),
+		"the admin's lines stay, the token's grant goes")
+	require.Equal(t, []string{"VM.Config.Network"}, e.node.roles["PCOManaged"], "a role this run did not make stays")
+	require.Equal(t, 1, e.node.count("pveum acl delete /pool/web --tokens pco@pve!vm100 --roles PCOManaged"))
+	require.Equal(t, 0, e.node.count("pveum acl delete /pool/web --users pco@pve --roles PCOManaged"))
+
+	e.node.acl = slices.DeleteFunc(e.node.acl, func(a fakeACL) bool { return a.Role == "NoAccess" && a.Path == "/pool/web" })
+	e.node.grant("/sdn/zones/pco/pconet", "token", "pco@pve!vm100", "NoAccess")
+	e.node.ran = nil
+
+	_, err = GrantNetwork(t.Context(), e.node, 100, "pco", "pconet", 0)
+
+	require.ErrorContains(t, err, "does not hold SDN.Use on /sdn/zones/pco/pconet after the grant")
+	require.Equal(t, []string{"/pool/web user pco@pve PCOManaged", "/sdn/zones/pco/pconet token pco@pve!vm100 NoAccess"}, e.node.pcoLines())
+	require.NotNil(t, e.node.roles["PCOManaged"])
+	require.Nil(t, e.node.roles["PCOSDN"], "the role this run made goes")
+}
+
+// The role of a network grant as a release before made it, with SDN.Use
+// alone, is brought up to date by the next grant.
+func TestGrantNetworkBringsAnEarlierRoleUpToDate(t *testing.T) {
+	e := installed(t)
+	e.node.roles["PCOSDN"] = []string{"SDN.Use"}
+
+	g, err := GrantNetwork(t.Context(), e.node, 100, "pco", "pconet", 0)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"PCOManaged"}, g.CreatedRoles)
+	require.Equal(t, []string{"SDN.Use", "SDN.Audit"}, e.node.roles["PCOSDN"])
+	require.Equal(t, 1, e.node.count("pveum role modify PCOSDN --privs SDN.Use,SDN.Audit"))
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+	require.Nil(t, e.node.roles["PCOSDN"], "the role is pco's in either shape")
 }
 
 func TestGrantPoolRefuses(t *testing.T) {

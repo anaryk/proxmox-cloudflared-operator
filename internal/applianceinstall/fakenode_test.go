@@ -759,7 +759,10 @@ func (f *fakeNode) pveum(args []string) (string, error) {
 		f.roles[args[2]] = strings.Split(flag(args, "--privs"), ",")
 		return "", nil
 	case args[0] == "role" && args[1] == "modify":
-		f.roles[args[2]] = append(f.roles[args[2]], strings.Split(flag(args, "--privs"), ",")...)
+		if f.roles[args[2]] == nil {
+			return "", fmt.Errorf("role '%s' does not exist", args[2])
+		}
+		f.roles[args[2]] = strings.Split(flag(args, "--privs"), ",")
 		return "", nil
 	case args[0] == "role" && args[1] == "delete":
 		if f.roles[args[2]] == nil {

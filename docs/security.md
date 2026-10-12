@@ -867,7 +867,7 @@ holds only what its user holds as well, so every grant goes to both. The token l
 `VM.PowerMgmt`: it cannot change a guest, an ACL, or the appliance itself, nor take a snapshot
 of it, which is why `pco upgrade` asks you for one. The one way it gains a right is `pco
 appliance grant-network`, run by root on the node, which grants `VM.Config.Network` on the
-appliance and `SDN.Use` on one network, for the cards a later release attaches. Nothing is granted on a whole zone, and nothing beyond the read-only role on `/`.
+appliance and `SDN.Use` with `SDN.Audit` on one network, for the cards a later release attaches. Nothing is granted on a whole zone, and nothing beyond the read-only role on `/`.
 
 The appliance reaches the API through its card, at an address of the node, and verifies its
 certificate under the name the installer chose, against the cluster CA it pushed or the system

@@ -509,13 +509,29 @@ func TestTheDescriptionOfTheContainerRecordsTheNoAccessLines(t *testing.T) {
 
 func TestParseDescription(t *testing.T) {
 	good := "pco appliance vm100, installed 2026-10-01 by pco appliance install"
-	vmid, lines, ok := parseDescription(good + "\nNoAccess for ops@pve on /\nNoAccess for ops@pve!ci on /vms/100\n")
+	d, ok := parseDescription(good + "\nNoAccess for ops@pve on /\nNoAccess for ops@pve!ci on /vms/100\n")
 	require.True(t, ok)
-	require.Equal(t, 100, vmid)
+	require.Equal(t, 100, d.vmid)
 	require.Equal(t, []setup.NoAccessLine{
 		{Principal: "ops@pve", Path: "/", Role: "NoAccess"},
 		{Principal: "ops@pve!ci", Path: "/vms/100", Role: "NoAccess"},
-	}, lines)
+	}, d.lines)
+	require.False(t, d.zone || d.vnet)
+
+	// The notes of the SDN objects made for the appliance go after the lines,
+	// and come off again.
+	noted, ok := withSDNNotes(good+"\nNoAccess for ops@pve on /\n", true, false)
+	require.True(t, ok)
+	require.Equal(t, good+"\nNoAccess for ops@pve on /\nmade the SDN zone pco", noted)
+	d, ok = parseDescription(noted + "\nmade the SDN vnet pconet\n")
+	require.True(t, ok)
+	require.True(t, d.zone && d.vnet)
+	require.Len(t, d.lines, 1)
+	plain, ok := withSDNNotes(noted, false, false)
+	require.True(t, ok)
+	require.Equal(t, good+"\nNoAccess for ops@pve on /", plain)
+	_, ok = withSDNNotes("my container", true, true)
+	require.False(t, ok)
 
 	for name, desc := range map[string]string{
 		"a note of the admin":    good + "\nbacked up on Fridays",
@@ -526,7 +542,7 @@ func TestParseDescription(t *testing.T) {
 		"no mark":                "NoAccess for ops@pve on /",
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, ok := parseDescription(desc)
+			_, ok := parseDescription(desc)
 			require.False(t, ok)
 		})
 	}

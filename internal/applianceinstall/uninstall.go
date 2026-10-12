@@ -23,6 +23,8 @@ type survey struct {
 	cfg             ctConfig
 	described       int                  // the VMID the description of the container names
 	noted           []setup.NoAccessLine // the NoAccess lines its description records
+	notedZone       bool                 // its description records that the SDN zone was made for it
+	notedVnet       bool                 // the same for the vnet
 	originalNode    string               // of lxc/described, when the container is a copy of it that is still there
 	manifest        *setup.Manifest
 	users           []userEntry
@@ -134,10 +136,11 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 	switch {
 	case err == nil:
 		s.exists = true
-		var ok bool
-		if s.described, s.noted, ok = parseDescription(s.cfg["description"]); !ok {
+		d, ok := parseDescription(s.cfg["description"])
+		if !ok {
 			return s, fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was removed", vmid)
 		}
+		s.described, s.noted, s.notedZone, s.notedVnet = d.vmid, d.lines, d.zone, d.vnet
 		if s.running, err = ctRunning(ctx, r.r, vmid); err != nil {
 			return s, err
 		}
@@ -200,6 +203,41 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 	return s, nil
 }
 
+// sdnManifest is the manifest of the appliance with the SDN objects it
+// names as pco's only where the description of the container, the node's own
+// record, names them as well: the manifest alone is the appliance's word.
+// nil without a manifest.
+func (s survey) sdnManifest() *setup.Manifest {
+	if s.manifest == nil {
+		return nil
+	}
+	m := *s.manifest
+	m.CreatedZone = m.CreatedZone && s.notedZone
+	m.CreatedVnet = m.CreatedVnet && s.notedVnet
+	return &m
+}
+
+// sdnDisagreements are the SDN objects the manifest and the description of
+// the container do not agree on, which stay.
+func (s survey) sdnDisagreements(vmid int) []string {
+	if s.manifest == nil {
+		return nil
+	}
+	var out []string
+	for _, o := range []struct {
+		name            string
+		manifest, noted bool
+	}{{"zone " + setup.ManagedZone, s.manifest.CreatedZone, s.notedZone}, {"vnet " + setup.ManagedVnet, s.manifest.CreatedVnet, s.notedVnet}} {
+		switch {
+		case o.manifest && !o.noted:
+			out = append(out, fmt.Sprintf("the SDN %s, which the manifest of lxc/%d names as pco's and the description of its container does not", o.name, vmid))
+		case o.noted && !o.manifest:
+			out = append(out, fmt.Sprintf("the SDN %s, which the description of lxc/%d names as pco's and its manifest does not", o.name, vmid))
+		}
+	}
+	return out
+}
+
 // madeManaged reports whether the manifest says pco appliance managed enable
 // made the zone or the vnet of the managed network, and names them.
 func madeManaged(m *setup.Manifest) (string, bool) {
@@ -220,7 +258,7 @@ func madeManaged(m *setup.Manifest) (string, bool) {
 // appliance's node made, and for --detach-managed the cards the appliance
 // attached, which only the running appliance can list.
 func (r *run) surveyManaged(ctx context.Context, vmid int, o UninstallOptions, s *survey) error {
-	if _, ok := madeManaged(s.manifest); ok {
+	if _, ok := madeManaged(s.sdnManifest()); ok {
 		cards, err := setup.CardsOn(ctx, r.r, setup.ManagedVnet)
 		if err != nil {
 			return fmt.Errorf("%w; nothing was removed", err)
@@ -468,7 +506,8 @@ func (r *run) plan(vmid int, s survey) plan {
 			p.tags = added
 		}
 	}
-	p.managed, _ = madeManaged(s.manifest)
+	p.managed, _ = madeManaged(s.sdnManifest())
+	p.kept = append(p.kept, s.sdnDisagreements(vmid)...)
 	// The template is the installer's when the manifest names it: it names
 	// one only when the installer downloaded it.
 	if s.manifest != nil && s.manifest.Appliance != nil && slices.Contains(s.templates, s.manifest.Appliance.Template) {
@@ -766,7 +805,7 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 		fail(r.removeObject(ctx, "template "+p.template, "pvesm", "free", p.template))
 	}
 	if p.managed != "" {
-		r.removeManagedNetwork(ctx, s.manifest)
+		r.removeManagedNetwork(ctx, s.sdnManifest())
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("the uninstall did not finish: %s; run it again to finish the rest", strings.Join(failed, "; "))

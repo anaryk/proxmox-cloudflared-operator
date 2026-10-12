@@ -3,6 +3,7 @@ package applianceinstall
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -57,35 +58,85 @@ var (
 	describedLine = regexp.MustCompile(`^NoAccess for (\S+) on (/\S*)$`)
 )
 
+// The lines of the description that record, on the node, that pco appliance
+// managed enable made the SDN zone and the vnet of the managed network for
+// the appliance. The manifest inside the container notes them too, and
+// uninstall removes them only when both say so: a compromised appliance
+// could name a zone of the admin's as pco's.
+const (
+	madeZoneLine = "made the SDN zone " + setup.ManagedZone
+	madeVnetLine = "made the SDN vnet " + setup.ManagedVnet
+)
+
+// described is what the description of a container of the installer's says.
+type described struct {
+	vmid  int // the VMID its mark names
+	lines []setup.NoAccessLine
+	// zone and vnet say that pco appliance managed enable made the SDN zone
+	// and the vnet of the managed network for the appliance.
+	zone, vnet bool
+}
+
 // parseDescription reads the description of a container, when it is the one
-// the installer writes: the VMID its mark names and the NoAccess lines it
-// records. A restore to another VMID keeps the description of the container it
-// was made from.
-func parseDescription(desc string) (vmid int, lines []setup.NoAccessLine, ok bool) {
+// the installer writes: the VMID its mark names, the NoAccess lines it
+// records and the SDN objects made for it. A restore to another VMID keeps
+// the description of the container it was made from.
+func parseDescription(desc string) (described, bool) {
+	var d described
 	first, rest, _ := strings.Cut(strings.TrimSpace(desc), "\n")
 	m := describedAs.FindStringSubmatch(strings.TrimSpace(first))
 	if m == nil {
-		return 0, nil, false
+		return described{}, false
 	}
 	vmid, err := strconv.Atoi(m[1])
 	if err != nil {
-		return 0, nil, false
+		return described{}, false
 	}
+	d.vmid = vmid
 	for line := range strings.Lines(rest) {
-		if line = strings.TrimSpace(line); line == "" {
+		switch line = strings.TrimSpace(line); line {
+		case "":
+			continue
+		case madeZoneLine:
+			d.zone = true
+			continue
+		case madeVnetLine:
+			d.vnet = true
 			continue
 		}
 		l := describedLine.FindStringSubmatch(line)
 		if l == nil {
-			return 0, nil, false
+			return described{}, false
 		}
 		n := setup.NoAccessLine{Principal: l[1], Path: l[2], Role: roleNoAccess}
 		if checkNoAccess(n, vmid) != nil {
-			return 0, nil, false
+			return described{}, false
 		}
-		lines = append(lines, n)
+		d.lines = append(d.lines, n)
 	}
-	return vmid, lines, true
+	return d, true
+}
+
+// withSDNNotes is the description desc, of the installer's, with the notes
+// of the SDN zone and the vnet set as zone and vnet say; its first line and
+// its NoAccess lines stay as they are.
+func withSDNNotes(desc string, zone, vnet bool) (string, bool) {
+	d, ok := parseDescription(desc)
+	if !ok {
+		return "", false
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(desc), "\n")
+	out := strings.TrimSpace(first)
+	for _, l := range d.lines {
+		out += fmt.Sprintf("\nNoAccess for %s on %s", l.Principal, l.Path)
+	}
+	if zone {
+		out += "\n" + madeZoneLine
+	}
+	if vnet {
+		out += "\n" + madeVnetLine
+	}
+	return out, true
 }
 
 func tokenName(vmid int) string { return "vm" + strconv.Itoa(vmid) }
@@ -128,15 +179,41 @@ func noAccessPaths(vmid int) []string {
 	return []string{"/", "/vms", "/pool", "/pool/" + poolID, "/vms/" + strconv.Itoa(vmid)}
 }
 
-// The privileges of the roles of a network grant, their only mark.
+// The privileges of the roles of a network grant, their only mark. The role
+// of the network reads the vnet as well (SDN.Audit), so that the appliance
+// can tell whether it is VLAN-aware.
 var grantRolePrivs = map[string]string{
 	setup.RoleManaged: "VM.Config.Network",
-	setup.RoleSDN:     "SDN.Use",
+	setup.RoleSDN:     "SDN.Use,SDN.Audit",
+}
+
+// earlierRolePrivs are the privileges a release before gave a grant role; a
+// grant brings such a role up to date.
+var earlierRolePrivs = map[string]string{
+	setup.RoleSDN: "SDN.Use",
 }
 
 // isGrantRole reports whether a role is one of a network grant with exactly
-// the privilege pco gives it.
+// the privileges pco gives it, now or in a release before.
 func isGrantRole(id string, privs []string) bool {
 	want, ok := grantRolePrivs[id]
-	return ok && len(privs) == 1 && privs[0] == want
+	if !ok {
+		return false
+	}
+	have := strings.Join(slices.Sorted(slices.Values(privs)), ",")
+	return have == sortedPrivs(want) || have == sortedPrivs(earlierRolePrivs[id])
+}
+
+// isEarlierGrantRole reports whether a role is one of a network grant as a
+// release before made it, to bring up to date.
+func isEarlierGrantRole(id string, privs []string) bool {
+	want, ok := earlierRolePrivs[id]
+	return ok && strings.Join(slices.Sorted(slices.Values(privs)), ",") == sortedPrivs(want)
+}
+
+func sortedPrivs(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.Join(slices.Sorted(slices.Values(strings.Split(s, ","))), ",")
 }

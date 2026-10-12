@@ -10,7 +10,8 @@ unless `--confirm-sdn-apply` applies them along, makes the zone and the vnet whe
 missing, each noted in the appliance's manifest first, and asks before the apply, which
 reloads the network on every node. Last it grants the appliance the vnet as grant-network
 does: role PCOManaged on the appliance and role PCOSDN on `/sdn/zones/pco/pconet`, for user
-pco@pve and the appliance's token, and asks; `--yes` answers both questions.
+pco@pve and the appliance's token. All of it is shown and asked about once, before anything is
+made; `--yes` answers that.
 
 `--pool` `<name>` grants role PCOManaged on `/pool/<name>` as well: the appliance's token may then
 change the network cards and the firewall of every guest in that pool, so that automatic

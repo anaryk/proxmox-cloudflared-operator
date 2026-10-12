@@ -16,58 +16,125 @@ const localNetwork = "localnetwork"
 
 // GrantNetwork grants pco@pve and the token of the appliance vmid what a card
 // of the appliance on a network needs: role PCOManaged
-// (VM.Config.Network) on /vms/<vmid> and role PCOSDN (SDN.Use) on
-// /sdn/zones/<zone>/<vnet>[/<vlan>], never on a whole zone. A
-// privilege-separated token holds only what its user holds as well, so both
-// get each line. The roles are made when missing, and the token's privileges
-// are asked of Proxmox afterwards. It returns the grant with the roles it
-// made; on a failure it takes back what it did.
+// (VM.Config.Network) on /vms/<vmid> and role PCOSDN (SDN.Use and
+// SDN.Audit, which reads the vnet) on /sdn/zones/<zone>/<vnet>[/<vlan>],
+// never on a whole zone. A privilege-separated token holds only what its user
+// holds as well, so both get each line. The roles are made when missing, and
+// the token's privileges are asked of Proxmox afterwards. It returns the
+// grant with the roles it made; on a failure it takes back what it did, and
+// nothing that was there before.
 func GrantNetwork(ctx context.Context, r setup.Runner, vmid int, zone, vnet string, vlan int) (setup.NetworkGrant, error) {
 	g := setup.NetworkGrant{Zone: zone, VNet: vnet, VLAN: vlan}
 	if err := g.Check(); err != nil {
 		return g, err
 	}
-	all, err := roles(ctx, r)
+	gr, err := newGranting(ctx, r, vmid)
 	if err != nil {
 		return g, err
 	}
 	for _, id := range []string{setup.RoleManaged, setup.RoleSDN} {
-		role, found := findRole(all, id)
-		switch {
-		case found && !isGrantRole(id, role.Privs):
-			return g, fmt.Errorf("role %s grants %s, not only %s: pco does not use it", id, strings.Join(role.Privs, ", "), grantRolePrivs[id])
-		case found:
-			continue
+		if err := gr.role(ctx, id, &g); err != nil {
+			return g, err
 		}
-		if _, err := r.Run(ctx, "pveum", "role", "add", id, "--privs", grantRolePrivs[id]); err != nil {
-			takeBackGrant(ctx, r, vmid, g)
-			return g, fmt.Errorf("creating role %s: %w", id, err)
-		}
-		g.CreatedRoles = append(g.CreatedRoles, id)
 	}
-	id := tokenID(vmid)
 	for _, line := range [][2]string{{"/vms/" + strconv.Itoa(vmid), setup.RoleManaged}, {g.Path(), setup.RoleSDN}} {
-		if _, err := r.Run(ctx, "pveum", "acl", "modify", line[0], "--users", setup.UserID, "--tokens", id, "--roles", line[1]); err != nil {
-			takeBackGrant(ctx, r, vmid, g)
-			return g, fmt.Errorf("granting role %s on %s: %w", line[1], line[0], err)
+		if err := gr.line(ctx, line[0], line[1], g); err != nil {
+			return g, err
 		}
 	}
-	for _, check := range [][2]string{{"/vms/" + strconv.Itoa(vmid), "VM.Config.Network"}, {g.Path(), "SDN.Use"}} {
-		held, err := permissions(ctx, r, id, check[0])
-		if err == nil && !slices.Contains(held, check[1]) {
-			err = fmt.Errorf("%s does not hold %s on %s after the grant", id, check[1], check[0])
-		}
-		if err != nil {
-			takeBackGrant(ctx, r, vmid, g)
+	for _, check := range [][2]string{{"/vms/" + strconv.Itoa(vmid), "VM.Config.Network"}, {g.Path(), "SDN.Use"}, {g.Path(), "SDN.Audit"}} {
+		if err := gr.holds(ctx, check[0], check[1], g); err != nil {
 			return g, err
 		}
 	}
 	return g, nil
 }
 
-// takeBackGrant removes what a grant that failed made, as far as it can.
-func takeBackGrant(ctx context.Context, r setup.Runner, vmid int, g setup.NetworkGrant) {
-	_ = RevokeNetwork(context.WithoutCancel(ctx), r, vmid, g.Zone, g.VNet, g.VLAN)
+// granting is one grant as it is made, with the access control list as it
+// was before: a grant that fails takes back the lines and the roles it added
+// and nothing that was there before it.
+type granting struct {
+	r      setup.Runner
+	id     string // the token of the appliance
+	before []aclLine
+	roles  []roleEntry
+	added  []aclLine
+}
+
+func newGranting(ctx context.Context, r setup.Runner, vmid int) (*granting, error) {
+	before, err := aclLines(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	all, err := roles(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return &granting{r: r, id: tokenID(vmid), before: before, roles: all}, nil
+}
+
+// role makes a role of a grant when it is missing, brings one of a release
+// before up to date, and refuses one that is not pco's.
+func (gr *granting) role(ctx context.Context, id string, g *setup.NetworkGrant) error {
+	role, found := findRole(gr.roles, id)
+	switch {
+	case found && isEarlierGrantRole(id, role.Privs):
+		if _, err := gr.r.Run(ctx, "pveum", "role", "modify", id, "--privs", grantRolePrivs[id]); err != nil {
+			gr.takeBack(ctx, *g)
+			return fmt.Errorf("giving role %s the privileges %s: %w", id, grantRolePrivs[id], err)
+		}
+		return nil
+	case found && !isGrantRole(id, role.Privs):
+		gr.takeBack(ctx, *g)
+		return fmt.Errorf("role %s grants %s, not only %s: pco does not use it", id, strings.Join(role.Privs, ", "), grantRolePrivs[id])
+	case found:
+		return nil
+	}
+	if _, err := gr.r.Run(ctx, "pveum", "role", "add", id, "--privs", grantRolePrivs[id]); err != nil {
+		gr.takeBack(ctx, *g)
+		return fmt.Errorf("creating role %s: %w", id, err)
+	}
+	g.CreatedRoles = append(g.CreatedRoles, id)
+	return nil
+}
+
+// line grants a role on a path to pco@pve and the token, and remembers the
+// lines that were not there before.
+func (gr *granting) line(ctx context.Context, path, role string, g setup.NetworkGrant) error {
+	if _, err := gr.r.Run(ctx, "pveum", "acl", "modify", path, "--users", setup.UserID, "--tokens", gr.id, "--roles", role); err != nil {
+		gr.takeBack(ctx, g)
+		return fmt.Errorf("granting role %s on %s: %w", role, path, err)
+	}
+	for _, l := range []aclLine{{Path: path, Type: "user", UGID: setup.UserID, Role: role}, {Path: path, Type: "token", UGID: gr.id, Role: role}} {
+		if !slices.Contains(gr.before, l) {
+			gr.added = append(gr.added, l)
+		}
+	}
+	return nil
+}
+
+// holds asks Proxmox whether the token holds a privilege on a path after the
+// grant: its answer is what counts.
+func (gr *granting) holds(ctx context.Context, path, priv string, g setup.NetworkGrant) error {
+	held, err := permissions(ctx, gr.r, gr.id, path)
+	if err == nil && !slices.Contains(held, priv) {
+		err = fmt.Errorf("%s does not hold %s on %s after the grant", gr.id, priv, path)
+	}
+	if err != nil {
+		gr.takeBack(ctx, g)
+	}
+	return err
+}
+
+// takeBack removes the lines this grant added and the roles it made.
+func (gr *granting) takeBack(ctx context.Context, g setup.NetworkGrant) {
+	ctx = context.WithoutCancel(ctx)
+	for _, l := range gr.added {
+		_, _ = gr.r.Run(ctx, "pveum", "acl", "delete", l.Path, "--"+l.Type+"s", l.UGID, "--roles", l.Role)
+	}
+	for _, id := range g.CreatedRoles {
+		_, _ = gr.r.Run(ctx, "pveum", "role", "delete", id)
+	}
 }
 
 // RevokeNetwork takes back the grant of a network: the lines of the token,
@@ -104,7 +171,7 @@ func (i *Installer) GrantNetworkCommand(ctx context.Context, o NetworkOptions) e
 	vm := "/vms/" + strconv.Itoa(o.VMID)
 	r.ask.Info("pco appliance grant-network grants pco@pve and %s:", tokenID(o.VMID))
 	r.ask.Info("  role %s (VM.Config.Network) on %s", setup.RoleManaged, vm)
-	r.ask.Info("  role %s (SDN.Use) on %s", setup.RoleSDN, g.Path())
+	r.ask.Info("  role %s (SDN.Use, SDN.Audit) on %s", setup.RoleSDN, g.Path())
 	r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", vm, setup.UserID, tokenID(o.VMID), setup.RoleManaged)
 	r.ask.Info("  pveum acl modify %s --users %s --tokens '%s' --roles %s", g.Path(), setup.UserID, tokenID(o.VMID), setup.RoleSDN)
 	if !o.Yes {
@@ -265,7 +332,7 @@ func (r *run) rollbackGrant(ctx context.Context) error {
 // pool, so that the managed network attaches its members without a grant per
 // guest. The role is made when missing, and the token's privilege is asked of
 // Proxmox afterwards. It returns the grant with the role it made; on a
-// failure it takes back what it did.
+// failure it takes back what it did, and nothing that was there before.
 func GrantPool(ctx context.Context, r setup.Runner, vmid int, pool string) (setup.NetworkGrant, error) {
 	g := setup.NetworkGrant{Pool: pool}
 	if pool == "" {
@@ -281,32 +348,17 @@ func GrantPool(ctx context.Context, r setup.Runner, vmid int, pool string) (setu
 	if !slices.ContainsFunc(ps, func(p poolEntry) bool { return p.ID == pool }) {
 		return g, fmt.Errorf("pool %s does not exist", pool)
 	}
-	all, err := roles(ctx, r)
+	gr, err := newGranting(ctx, r, vmid)
 	if err != nil {
 		return g, err
 	}
-	switch role, found := findRole(all, setup.RoleManaged); {
-	case found && !isGrantRole(setup.RoleManaged, role.Privs):
-		return g, fmt.Errorf("role %s grants %s, not only %s: pco does not use it", setup.RoleManaged,
-			strings.Join(role.Privs, ", "), grantRolePrivs[setup.RoleManaged])
-	case !found:
-		if _, err := r.Run(ctx, "pveum", "role", "add", setup.RoleManaged, "--privs", grantRolePrivs[setup.RoleManaged]); err != nil {
-			return g, fmt.Errorf("creating role %s: %w", setup.RoleManaged, err)
-		}
-		g.CreatedRoles = []string{setup.RoleManaged}
+	if err := gr.role(ctx, setup.RoleManaged, &g); err != nil {
+		return g, err
 	}
-	id := tokenID(vmid)
-	takeBack := func() { _ = RevokePool(context.WithoutCancel(ctx), r, vmid, pool) }
-	if _, err := r.Run(ctx, "pveum", "acl", "modify", g.Path(), "--users", setup.UserID, "--tokens", id, "--roles", setup.RoleManaged); err != nil {
-		takeBack()
-		return g, fmt.Errorf("granting role %s on %s: %w", setup.RoleManaged, g.Path(), err)
+	if err := gr.line(ctx, g.Path(), setup.RoleManaged, g); err != nil {
+		return g, err
 	}
-	held, err := permissions(ctx, r, id, g.Path())
-	if err == nil && !slices.Contains(held, "VM.Config.Network") {
-		err = fmt.Errorf("%s does not hold VM.Config.Network on %s after the grant", id, g.Path())
-	}
-	if err != nil {
-		takeBack()
+	if err := gr.holds(ctx, g.Path(), "VM.Config.Network", g); err != nil {
 		return g, err
 	}
 	return g, nil

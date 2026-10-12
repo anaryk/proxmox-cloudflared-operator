@@ -467,7 +467,8 @@ const managedEnableLong = "Make the managed network of an appliance on this node
 	"missing, each noted in the appliance's manifest first, and asks before the apply, which\n" +
 	"reloads the network on every node. Last it grants the appliance the vnet as grant-network\n" +
 	"does: role PCOManaged on the appliance and role PCOSDN on /sdn/zones/pco/pconet, for user\n" +
-	"pco@pve and the appliance's token, and asks; --yes answers both questions.\n\n" +
+	"pco@pve and the appliance's token. All of it is shown and asked about once, before anything is\n" +
+	"made; --yes answers that.\n\n" +
 	"--pool <name> grants role PCOManaged on /pool/<name> as well: the appliance's token may then\n" +
 	"change the network cards and the firewall of every guest in that pool, so that automatic\n" +
 	"consent attaches them without a pveum line per guest. It is never granted on /.\n\n" +
