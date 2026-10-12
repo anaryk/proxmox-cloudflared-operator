@@ -18,11 +18,30 @@ if [ -z "$2" ]; then
 	not_set_up=1
 fi
 
+# pco-netns.service brings up the gateway namespace of the host profile. The
+# appliance has none, as its legs are network cards of the container, and
+# there the unit, which the presets of systemd enable at the first start,
+# fails at every boot. The template masks it; this masks it in an appliance
+# made from an older one. A host is never touched.
+appliance=
+if [ "$(cat /etc/pco/profile 2>/dev/null || true)" = appliance ]; then
+	appliance=1
+	if [ "$(systemctl is-enabled pco-netns.service 2>/dev/null || true)" != masked ]; then
+		systemctl mask pco-netns.service || true
+	fi
+fi
+
 # Without a running systemd (a chroot, a container build) there is nothing to
 # reload or restart. A failing systemctl must not leave dpkg with a package
 # stuck half configured, so its errors are shown and not fatal.
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true
+	# A failure of the unit from before the mask leaves the appliance degraded
+	# until it is cleared. The failed one-shot runs nothing that a stop would
+	# end.
+	if [ -n "$appliance" ] && systemctl is-failed --quiet pco-netns.service 2>/dev/null; then
+		systemctl reset-failed pco-netns.service || true
+	fi
 	# Only an upgrade restarts the daemon and the web interface, and only those
 	# that were running; pco setup enables the web interface. The
 	# pco-cloudflared@ connectors are never touched: restarting them would drop

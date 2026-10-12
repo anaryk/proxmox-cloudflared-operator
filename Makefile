@@ -52,6 +52,7 @@ test-scripts:
 	bash packaging/cloudflared-versions_test.sh
 	bash packaging/appliance/pin_test.sh
 	bash packaging/appliance/overlay_test.sh
+	bash packaging/scripts/postinstall_test.sh
 	shellcheck scripts/*.sh packaging/*.sh packaging/scripts/*.sh packaging/appliance/*.sh
 	node --test site/scripts/*.test.mjs site/.vitepress/markdown/*.test.mjs
 
