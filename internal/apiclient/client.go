@@ -518,6 +518,18 @@ func (c *Client) raw(ctx context.Context, timeout time.Duration, path string) (j
 	return raw, err
 }
 
+// Handoff asks the controller on this node to hand the lease to another node,
+// the one named by to or, when to is empty, any eligible one. The daemon
+// stops writing after its running cycle and releases the lease, so the call
+// may take a while. A daemon of a release without clusters does not know the
+// request, and the error unwraps to ErrUnknownRequest.
+func (c *Client) Handoff(ctx context.Context, to string) error {
+	in := struct {
+		To string `json:"to,omitempty"`
+	}{To: to}
+	return c.call(ctx, c.long, http.MethodPost, "/v1/cluster/handoff", in, nil)
+}
+
 // Version returns the version of the running daemon.
 func (c *Client) Version(ctx context.Context) (string, error) {
 	var out struct {
