@@ -97,7 +97,7 @@ func TestNegotiate(t *testing.T) {
 	}
 }
 
-func TestARefusalOutOfRangeIsTheOnlyOneToWaitOut(t *testing.T) {
+func TestARefusalOutOfRangeOrOfTheSourceIsWaitedOut(t *testing.T) {
 	cases := map[string]bool{
 		RefusalRemoved:      true,
 		RefusalContested:    true,
@@ -105,6 +105,7 @@ func TestARefusalOutOfRangeIsTheOnlyOneToWaitOut(t *testing.T) {
 		RefusalOtherInstall: true,
 		"added-later":       true,
 		RefusalOutOfRange:   false,
+		RefusalOtherSource:  false,
 		"":                  false,
 	}
 	for code, want := range cases {

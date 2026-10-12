@@ -129,6 +129,7 @@ const (
 	RefusalNotEnrolled  = "not-enrolled"  // the registry does not know the certificate
 	RefusalOtherInstall = "other-install" // the certificate is of another install
 	RefusalOutOfRange   = "out-of-range"  // the two ends share no protocol version
+	RefusalOtherSource  = "other-source"  // the request came from an address that is not the node's
 )
 
 // Refusal is the controller's answer, inside a verified session, to an agent
@@ -139,9 +140,11 @@ type Refusal struct {
 }
 
 // Definitive reports whether the agent must stand down rather than wait for
-// the controller to come back. Every code says so but out-of-range: an agent
-// whose version the controller does not speak keeps serving what it was last
-// told until one of the two is upgraded.
+// the controller to come back. Every code says so but out-of-range and
+// other-source: an agent whose version the controller does not speak keeps
+// serving what it was last told until one of the two is upgraded, and one
+// whose address the controller does not know for its node yet keeps serving
+// until the registry catches up with it.
 func (r Refusal) Definitive() bool {
-	return r.Code != "" && r.Code != RefusalOutOfRange
+	return r.Code != "" && r.Code != RefusalOutOfRange && r.Code != RefusalOtherSource
 }
