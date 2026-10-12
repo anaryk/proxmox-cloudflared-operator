@@ -13,7 +13,7 @@ import (
 // *pve.Client is one.
 type managedSource interface {
 	ClusterOptions(ctx context.Context) (pve.ClusterOptions, error)
-	SDNPending(ctx context.Context) (pve.SDN, error)
+	vnetSource
 	NodeFirewallOptions(ctx context.Context, node string) (pve.NodeFirewallOptions, error)
 	ClusterFirewallOptions(ctx context.Context) (pve.ClusterFirewallOptions, error)
 	NodeServiceState(ctx context.Context, node, name string) (string, error)
@@ -44,28 +44,32 @@ func managedReaders(d *engine.Deps, src managedSource, node string) {
 	}
 }
 
-// managedVnet reads the vnet of the managed network as configured, with
-// what is pending: the type of its zone and its subnets.
-func managedVnet(ctx context.Context, src managedSource) (engine.ManagedVnet, error) {
-	sdn, err := src.SDNPending(ctx)
+// vnetSource reads one vnet of the SDN with its zone and its subnets;
+// *pve.Client is one.
+type vnetSource interface {
+	SDNVnet(ctx context.Context, vnet string) (pve.SDNVnetDetail, error)
+}
+
+// managedVnet reads the vnet of the managed network as configured, with what
+// is pending, in a fixed three calls: a vnet that is made and not applied yet
+// does not exist, nor one about to go, and a zone or a subnet about to go is
+// gone; a subnet not applied yet counts, as it is on its way.
+func managedVnet(ctx context.Context, src vnetSource) (engine.ManagedVnet, error) {
+	d, err := src.SDNVnet(ctx, gateway.ManagedBridge)
 	if err != nil {
 		return engine.ManagedVnet{}, err
 	}
-	var v engine.ManagedVnet
-	for _, vnet := range sdn.Vnets {
-		if vnet.Name != gateway.ManagedBridge || vnet.State == pve.SDNDeleted {
-			continue
-		}
-		v.Exists, v.IsolatePorts = true, vnet.IsolatePorts
-		for _, z := range sdn.Zones {
-			if z.Name == vnet.Zone && z.State != pve.SDNDeleted {
-				v.ZoneType = z.Type
-			}
-		}
-		for _, s := range sdn.Subnets {
-			if s.Vnet == vnet.Name && s.State != pve.SDNDeleted {
-				v.Subnets++
-			}
+	switch {
+	case !d.Found, d.Vnet.State == pve.SDNNew, d.Vnet.State == pve.SDNDeleted:
+		return engine.ManagedVnet{}, nil
+	}
+	v := engine.ManagedVnet{Exists: true, IsolatePorts: d.Vnet.IsolatePorts}
+	if d.Zone.Name == d.Vnet.Zone && d.Zone.State != pve.SDNDeleted {
+		v.ZoneType = d.Zone.Type
+	}
+	for _, s := range d.Subnets {
+		if s.Vnet == d.Vnet.Name && s.State != pve.SDNDeleted {
+			v.Subnets++
 		}
 	}
 	return v, nil
