@@ -153,6 +153,9 @@ type State struct {
 	// Networks are the networks pco reaches through a leg, by id, with the
 	// leg of this node and what is served through it.
 	Networks []NetworkView `json:"networks"`
+	// Managed is the managed network as the last cycle found it: whether
+	// it is enabled, the cards of the guests on it, what waits and why.
+	Managed ManagedView `json:"managed"`
 	// Egress is the egress filter as the daemon last found it; empty until
 	// it has looked.
 	Egress EgressView `json:"egress,omitzero"`
@@ -271,6 +274,7 @@ func (s State) clone() State {
 	}
 	s.Segments = slices.Clone(s.Segments)
 	s.Networks = cloneNetworks(s.Networks)
+	s.Managed = s.Managed.clone()
 	s.RogueConnectors = slices.Clone(s.RogueConnectors)
 	if id := s.Identity; id != nil {
 		copied := *id
@@ -331,6 +335,7 @@ func (s State) normalized() State {
 	}
 	s.Segments = nonNil(s.Segments)
 	s.Networks = nonNil(s.Networks)
+	s.Managed = s.Managed.normalized()
 	return s
 }
 

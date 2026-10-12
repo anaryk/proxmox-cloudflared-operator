@@ -57,6 +57,19 @@ func (s State) digestView() State {
 		v.Identity.CheckedAt = time.Time{}
 	}
 	v.EpochDrawnAt = time.Time{}
+	for i := range v.Managed.Attachments {
+		a := &v.Managed.Attachments[i]
+		a.Since = time.Time{}
+		if a.DetachAt != nil {
+			a.DetachAt = new(time.Time)
+		}
+		if a.RemovedAt != nil {
+			a.RemovedAt = new(time.Time)
+		}
+	}
+	if v.Managed.DHCP != nil {
+		v.Managed.DHCP.Since = time.Time{}
+	}
 	return v
 }
 

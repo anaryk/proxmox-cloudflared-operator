@@ -22,6 +22,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -76,6 +77,19 @@ type fakeInventory struct {
 	deadline    time.Time // of the last call
 	hasDeadline bool
 	onRefresh   func()
+	forced      []string // the nodes ForceRefresh named, in order
+}
+
+func (f *fakeInventory) ForceRefresh(node string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forced = append(f.forced, node)
+}
+
+func (f *fakeInventory) forcedNodes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.forced)
 }
 
 func (f *fakeInventory) Refresh(ctx context.Context) inventory.Snapshot {
@@ -148,10 +162,29 @@ type fakeResolver struct {
 	denied      []netip.Addr     // the node addresses the last denylist refused
 	deadlines   []time.Time
 	onResolve   func()
+	// leasedAddrs are, by owner, the addresses the snapshot of the last call
+	// said pco leased the cards of the guests.
+	leasedAddrs map[string]netip.Addr
 }
 
-func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, _ inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level, _ *resolve.Shared) resolve.Result {
+// leased is the address the last snapshot given to the resolver said pco
+// leased a card of owner; zero when none.
+func (f *fakeResolver) leased(owner string) netip.Addr {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.leasedAddrs[owner]
+}
+
+func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level, _ *resolve.Shared) resolve.Result {
+	f.mu.Lock()
+	f.leasedAddrs = map[string]netip.Addr{}
+	for _, g := range snap.Guests {
+		for _, nic := range g.NICs {
+			if nic.Leased.IsValid() {
+				f.leasedAddrs[g.Ref.String()] = nic.Leased
+			}
+		}
+	}
 	f.calls++
 	f.hosts = append(f.hosts, route.Hostname)
 	f.required = append(f.required, required)
@@ -738,6 +771,11 @@ type env struct {
 	// them none. networks is what their admin actions of the networks read.
 	gateway  Gateway
 	networks Networks
+	// guests is the configurer of the cards of guests, and managed fills
+	// what the step of the managed network reads of Proxmox; nil gives the
+	// engines neither.
+	guests  managednet.Configurer
+	managed func(d *Deps)
 }
 
 func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
@@ -815,9 +853,13 @@ func (e *env) newEngineWith(conns Connectors) *Engine {
 		EpochDrawn:  e.epochDrawn,
 		Gateway:     e.gateway,
 		Networks:    e.networks,
+		Guests:      e.guests,
 	}
 	if e.acc != nil {
 		d.Access = e.acc
+	}
+	if e.managed != nil {
+		e.managed(&d)
 	}
 	eng, err := New(d)
 	require.NoError(e.t, err)

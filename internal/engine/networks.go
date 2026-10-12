@@ -1129,7 +1129,15 @@ func (e *Engine) checkManagedSubnet(ctx context.Context, old, s store.Settings) 
 	}
 	look, cancel := e.timeout(ctx, lookTimeout)
 	defer cancel()
-	snap := e.d.Inventory.Refresh(look)
+	return subnetOverlaps(subnet, nets, e.d.Inventory.Refresh(look))
+}
+
+// subnetOverlaps refuses a managed subnet that overlaps a route of a node, an
+// address of a guest, static or reported, or the prefix of an attached
+// network, naming what it overlaps; a snapshot that is not complete cannot
+// tell, and is refused as well.
+func subnetOverlaps(subnet netip.Prefix, nets map[string]store.Network, snap inventory.Snapshot) error {
+	const field = "managed.subnet"
 	if !snap.Complete {
 		return fmt.Errorf("%w: the inventory is incomplete (%s), so %s cannot be checked against the routes of the nodes and the addresses "+
 			"of the guests; try again once it is complete", ErrRefused, strings.Join(snap.Problems, "; "), field)

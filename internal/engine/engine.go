@@ -27,8 +27,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -39,6 +41,8 @@ const defaultPollInterval = 10 * time.Second
 // Inventory is the part of *inventory.Inventory the engine uses.
 type Inventory interface {
 	Refresh(ctx context.Context) inventory.Snapshot
+	// ForceRefresh has the next refresh read every guest of node again.
+	ForceRefresh(node string)
 }
 
 // Resolver is the part of *resolve.Resolver the engine uses. It must be safe
@@ -136,6 +140,21 @@ type Deps struct {
 	// Networks is what the admin actions of the networks read and run; nil
 	// where they cannot run.
 	Networks Networks
+
+	// Guests changes the cards of guests for the managed network; nil
+	// where the daemon cannot, which refuses the managed network. The
+	// readers below are what its step reads of Proxmox each cycle: the
+	// registered tags of the datacenter, the vnet of the managed network,
+	// and in the appliance the firewall options of the node, of the
+	// datacenter and of a guest, and the state of a service of the node. A
+	// nil reader counts as one that cannot read.
+	Guests          managednet.Configurer
+	RegisteredTags  func(ctx context.Context) ([]string, error)
+	Vnet            func(ctx context.Context) (ManagedVnet, error)
+	NodeFirewall    func(ctx context.Context) (pve.NodeFirewallOptions, error)
+	ClusterFirewall func(ctx context.Context) (pve.ClusterFirewallOptions, error)
+	NodeService     func(ctx context.Context, name string) (string, error)
+	GuestFirewall   func(ctx context.Context, g model.Guest) (pve.GuestFirewallOptions, error)
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -286,6 +305,17 @@ type Engine struct {
 	// was last synced, which no attach takes until it was: guarded by the
 	// cycle lock.
 	freedMarks map[int]bool
+	// pendingCards are, by owner, the cards on the managed network whose
+	// addition waits for the guest's restart, and exhausted says that the
+	// managed subnet ran out of addresses, as the last cycle found them;
+	// both guarded by the cycle lock.
+	pendingCards map[string]bool
+	exhausted    bool
+	// unknownMACs are, by MAC, when the source-MAC watch last reported a
+	// frame of a MAC no lease knows on the managed network; guarded by
+	// macMu.
+	macMu       sync.Mutex
+	unknownMACs map[string]time.Time
 
 	stateMu sync.RWMutex
 	state   State
@@ -350,6 +380,9 @@ func New(d Deps) (*Engine, error) {
 		suspects:  make(map[netip.Addr]bool),
 		checks:    make(map[netip.Addr]*moveCheck),
 		state:     first,
+
+		pendingCards: make(map[string]bool),
+		unknownMACs:  make(map[string]time.Time),
 
 		refusedAgain: make(map[string]map[string]bool),
 		tried:        make(map[string]checkTry),

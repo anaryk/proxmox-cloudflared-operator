@@ -1,0 +1,194 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
+)
+
+// Managed returns the managed network as the last cycle found it.
+func (e *Engine) Managed() (ManagedView, error) { return e.State().Managed, nil }
+
+// ApproveManaged consents to a card on the managed network for a guest, in
+// the identity the last listing showed for it: a guest re-created under its
+// VMID, or a clone, needs a consent of its own. identity, when it is not
+// empty, is the identity the admin was shown. acceptFirewallImpact confirms
+// for this guest that the appliance may turn its firewall on although
+// another of its cards has firewall=1.
+func (e *Engine) ApproveManaged(ctx context.Context, owner, identity string, acceptFirewallImpact bool) (store.Consent, error) {
+	ref, err := guestOwner(owner)
+	if err != nil {
+		return store.Consent{}, err
+	}
+	if err := e.acquireAdmin(ctx); err != nil {
+		return store.Consent{}, err
+	}
+	defer e.release()
+
+	l := e.lastListing()
+	g, listed := l.guests[ref]
+	switch {
+	case !l.complete:
+		return store.Consent{}, fmt.Errorf("%w: the last cycle did not list every guest, so %s cannot be approved as it is now; "+
+			"approve what you can see once a cycle has listed them all", ErrRefused, owner)
+	case !listed:
+		return store.Consent{}, fmt.Errorf("%w: %s is not in the last listing of Proxmox; approve what you can see", ErrRefused, owner)
+	case g.identity == "":
+		return store.Consent{}, fmt.Errorf("%w: %s has no identity Proxmox reports, and a consent is of one", ErrRefused, owner)
+	case identity != "" && identity != g.identity:
+		return store.Consent{}, fmt.Errorf("%w: %s changed since it was shown: it was shown in identity %s and has identity %s now; "+
+			"look at it again", ErrRefused, owner, identity, g.identity)
+	}
+	c := store.Consent{Owner: owner, Identity: g.identity, At: e.d.Now(), Actor: ActorOf(ctx), AcceptFirewallImpact: acceptFirewallImpact}
+	if err := e.d.Store.SaveConsent(c); err != nil {
+		return store.Consent{}, fmt.Errorf("saving the consent: %w", err)
+	}
+	msg := fmt.Sprintf("%s is approved for the managed network in identity %s", OwnerName(owner, l.guestView(owner)), g.identity)
+	if acceptFirewallImpact {
+		msg += ", with the firewall-impact confirmation"
+	}
+	e.adminEvent(ctx, owner, msg)
+	e.Trigger()
+	return c, nil
+}
+
+// RevokeManaged removes the consent of a guest. A card it has goes after
+// the grace, unless the tag or automatic consent keeps it.
+func (e *Engine) RevokeManaged(ctx context.Context, owner string) error {
+	if _, err := guestOwner(owner); err != nil {
+		return err
+	}
+	if err := e.acquireAdmin(ctx); err != nil {
+		return err
+	}
+	defer e.release()
+
+	consents, err := e.d.Store.Consents()
+	if err != nil {
+		return fmt.Errorf("reading the consents: %w", err)
+	}
+	if _, ok := consents[owner]; !ok {
+		return fmt.Errorf("%w: %s has no consent for the managed network", ErrNotFound, owner)
+	}
+	if err := e.d.Store.DeleteConsent(owner); err != nil {
+		return fmt.Errorf("removing the consent: %w", err)
+	}
+	e.adminEvent(ctx, owner, fmt.Sprintf("the consent of %s for the managed network is revoked; a card it has goes after the grace",
+		OwnerName(owner, e.lastListing().guestView(owner))))
+	e.Trigger()
+	return nil
+}
+
+// EnableManaged stores the managed network once its vnet exists as pco
+// makes it: the subnet of the settings, the leg of this node at its first
+// address, the lowest mark free, which honours a mark freed since the
+// gateway was last synced, and the unit of the gateway namespace enabled
+// when it is the first network of the node. The subnet is checked against
+// the routes of the nodes, the addresses of the guests and the attached
+// networks first. A network that is stored already is left as it is.
+func (e *Engine) EnableManaged(ctx context.Context) error {
+	if err := e.networksHere(); err != nil {
+		return err
+	}
+	if err := e.acquireAdmin(ctx); err != nil {
+		return err
+	}
+	defer e.release()
+
+	f, err := e.networkFacts(ctx)
+	if err != nil {
+		return err
+	}
+	if _, ok := f.nets[gateway.ManagedBridge]; ok {
+		return nil
+	}
+	if e.d.Vnet != nil {
+		vnet, err := e.d.Vnet(ctx)
+		if err != nil {
+			return fmt.Errorf("reading the vnet %s: %w", gateway.ManagedBridge, err)
+		}
+		if why := vnetWhy(vnet, f.appliance); len(why) > 0 {
+			return fmt.Errorf("%w: the vnet %s is not as pco makes it: %s; %s", ErrRefused, gateway.ManagedBridge, strings.Join(why, "; "), makeVnetHint(f.appliance))
+		}
+	}
+	subnet := f.settings.Managed.Subnet
+	if err := subnetOverlaps(subnet, f.nets, f.snap); err != nil {
+		return err
+	}
+	mark, err := e.freeMark(f.nets)
+	if err != nil {
+		return err
+	}
+	first := len(f.nets) == 0
+	if first {
+		if err := e.d.Networks.EnableNamespace(ctx); err != nil {
+			return fmt.Errorf("enabling pco-netns.service for the first network: %w", err)
+		}
+	}
+	n := store.Network{
+		ID: gateway.ManagedBridge, Kind: store.NetworkManaged, Bridge: gateway.ManagedBridge, Prefix: subnet,
+		Legs:   map[string]netip.Addr{e.d.Node: subnet.Addr().Next()},
+		LegMAC: store.LegMACFor(store.NetworkManaged, mark), Mark: mark, Scope: store.ScopeNode, CreatedAt: e.d.Now(),
+	}
+	if err := e.d.Store.SaveNetwork(n, 0); err != nil {
+		if first {
+			e.disableNamespace(ctx)
+		}
+		if errors.Is(err, store.ErrRevision) {
+			return fmt.Errorf("%w: the managed network was enabled meanwhile", ErrRefused)
+		}
+		return fmt.Errorf("saving the network %s: %w", n.ID, err)
+	}
+	e.events.add(Event{At: e.d.Now(), Level: levelInfo, Kind: kindManaged, Subject: n.ID, Actor: ActorOf(ctx),
+		Message: fmt.Sprintf("the managed network is enabled: %s with the subnet %s, the leg %s on node %s, mark %d", n.ID, subnet, n.Legs[e.d.Node], e.d.Node, mark)})
+	e.Trigger()
+	return nil
+}
+
+// makeVnetHint names the command that makes the vnet for the profile.
+func makeVnetHint(appliance bool) string {
+	if appliance {
+		return "run pco appliance managed enable on the node"
+	}
+	return "run pco setup --managed, or pco network managed enable as root"
+}
+
+// UnknownMAC takes what the source-MAC watch of the managed network found: a
+// frame of a MAC no lease knows. It is recorded once per MAC and five
+// minutes, as an event; the guests of the node are read again, and in the
+// appliance the guests count as not isolated until a passing cycle.
+func (e *Engine) UnknownMAC(mac net.HardwareAddr, at time.Time) {
+	key := mac.String()
+	e.macMu.Lock()
+	last, seen := e.unknownMACs[key]
+	if seen && at.Sub(last) < unknownMACEvery {
+		e.macMu.Unlock()
+		return
+	}
+	e.unknownMACs[key] = at
+	e.macMu.Unlock()
+
+	e.d.Inventory.ForceRefresh(e.d.Node)
+	e.events.add(Event{At: at, Level: levelWarn, Kind: kindManaged, Subject: gateway.ManagedBridge,
+		Message: fmt.Sprintf("a frame from %s, a MAC no lease knows, was seen on the managed network; the guests of %s are read again", key, e.d.Node)})
+	if e.d.Identity == nil {
+		return
+	}
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if f := e.state.Managed.Filtered; f != nil && f.Holds {
+		copied := *f
+		copied.Holds = false
+		copied.Why = append(slices.Clone(f.Why), "a frame from "+key+", a MAC no lease knows, was seen on the managed network")
+		e.state.Managed.Filtered = &copied
+		e.redigest()
+	}
+}

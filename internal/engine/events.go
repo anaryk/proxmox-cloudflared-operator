@@ -44,6 +44,7 @@ const (
 	kindIdentity   = "identity"
 	kindNet        = "net"     // what pco-net.service loads in the appliance
 	kindNetwork    = "network" // the gateway of the networks reached through a leg, and their service addresses
+	kindManaged    = "managed" // the cards of guests on the managed network, and what holds them
 )
 
 // Event is something that changed, as the event log keeps it.

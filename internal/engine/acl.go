@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -122,6 +123,25 @@ func (e *Engine) refreshAccess(ctx context.Context) {
 		a.dns[node] = servers
 	}
 	a.factsErr = factsErr
+}
+
+// AccessData returns the access control as the engine last read it, without
+// the pools of the guests, for what judges a grant outside a cycle; an
+// error while nothing was read, or what was read is older than it is kept.
+func (e *Engine) AccessData() (access.Data, error) {
+	if e.d.Access == nil {
+		return access.Data{}, errors.New("this daemon does not read the access control of Proxmox")
+	}
+	a := &e.access
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch age := e.d.Now().Sub(a.readAt); {
+	case a.readAt.IsZero():
+		return access.Data{}, errors.New("the access control of Proxmox has not been read yet")
+	case age > accessKeptFor:
+		return access.Data{}, fmt.Errorf("the access control of Proxmox could not be read since %s: %s", a.readAt.UTC().Format(time.RFC3339), a.why)
+	}
+	return a.data, nil
 }
 
 // ReadAccess reads the access control of Proxmox as the engine does: the four

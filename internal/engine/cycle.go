@@ -328,7 +328,11 @@ func (c *cycleRun) readWriter() {
 // changes nothing on disk. The zones come before the claims: a route the
 // hostname policy refuses, as the apex of a zone, must not take a claim.
 func (c *cycleRun) inspect() bool {
-	if !c.refresh() || !c.collect() || !c.load() || !c.guardVanished() || !c.syncCredentials() {
+	if !c.refresh() || !c.collect() {
+		return false
+	}
+	c.managed()
+	if !c.load() || !c.guardVanished() || !c.syncCredentials() {
 		return false
 	}
 	c.settleClaims()

@@ -166,6 +166,7 @@ func populatedState() State {
 				Legs: []LegView{{Node: "pve1", Addr: netip.MustParseAddr("192.0.2.250"), Problem: "address in use by 52:54:00:12:34:56"}},
 			},
 		},
+		Managed:    populatedManaged(),
 		Egress:     EgressView{State: EgressOff, Since: t0.Add(-time.Hour)},
 		Admission:  "approve",
 		GateTagged: 2,
@@ -173,6 +174,68 @@ func populatedState() State {
 			Tunnel: "pco-abc123", TunnelID: "00000000-0000-4000-8000-000000000001", Account: "acc1",
 			ID: "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807", OriginIP: "198.51.100.7", Version: "2026.8.0", Since: t0.Add(-time.Minute),
 		}},
+	}
+}
+
+// populatedManaged holds the managed network of an appliance with an
+// attachment in each of its states, a guest that waits and a foreign card.
+func populatedManaged() ManagedView {
+	detachAt := t0.Add(10 * time.Minute)
+	removedAt := t0.Add(-time.Minute)
+	return ManagedView{
+		Enabled: true, Consent: "auto", AutoAllowed: true, TagHonoured: true, Subnet: netip.MustParsePrefix("10.203.118.0/24"),
+		Leg: &LegView{Node: "pve1", Addr: netip.MustParseAddr("10.203.118.1"), Up: true},
+		Attachments: []AttachmentView{
+			{
+				Attachment: store.Attachment{Owner: "lxc/201", Identity: "mac:201", NIC: 1, MAC: "06:50:43:4f:76:02", Addr: netip.MustParseAddr("10.203.118.2"),
+					Consent: "tag", Since: t0.Add(-2 * time.Hour), Firewall: &store.FirewallBefore{Enabled: false, Rules: 0}},
+				Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 201}, Name: "new-1"}, State: AttachmentAttached,
+			},
+			{
+				Attachment: store.Attachment{Owner: "qemu/105", Identity: "uuid:105", NIC: 2, MAC: "06:50:43:4f:76:03", Addr: netip.MustParseAddr("10.203.118.3"),
+					Consent: "auto", Since: t0.Add(-time.Hour)},
+				Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 105}, Name: "batch-5"}, State: AttachmentPendingReboot,
+				Detail: "waits for the restart of the guest",
+			},
+			{
+				Attachment: store.Attachment{Owner: "qemu/106", Identity: "uuid:106", NIC: 1, MAC: "06:50:43:4f:76:04", Addr: netip.MustParseAddr("10.203.118.4"),
+					Consent: "approval", Since: t0.Add(-3 * time.Hour), DetachAt: &detachAt, DetachWhy: "cf-tunnel-managed=off"},
+				Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 106}, Name: "old-6"}, State: AttachmentDetaching,
+				Detail: "goes at 2026-10-01T12:10:00Z: cf-tunnel-managed=off",
+			},
+			{
+				Attachment: store.Attachment{Owner: "qemu/108", Identity: "uuid:108", NIC: 1, MAC: "06:50:43:4f:76:05", Addr: netip.MustParseAddr("10.203.118.5"),
+					Consent: "tag", Since: t0.Add(-4 * time.Hour), DetachWhy: "the guest is gone, or no longer carries the tag cf-tunnel", RemovedAt: &removedAt},
+				Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 108}}, State: AttachmentDetachPending,
+				Detail: "the guest is gone, or no longer carries the tag cf-tunnel; the card is removed once the configuration no longer lists it",
+			},
+			{
+				Attachment: store.Attachment{Owner: "lxc/203", Identity: "mac:203", NIC: 1, MAC: "06:50:43:4f:76:06", Addr: netip.MustParseAddr("10.203.118.6"),
+					Consent: "tag", Since: t0.Add(-5 * time.Hour)},
+				Guest: &GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 203}, Name: "moved-3"}, State: AttachmentNeedsGrant,
+				GrantCmd: "pveum acl modify /vms/203 --users pco@pve --tokens 'pco@pve!vm9250' --roles PCOManaged",
+			},
+		},
+		Waiting: []ManagedWaiting{
+			{
+				GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 204}, Name: "gui-4"}, Identity: "mac:204",
+				Why: "needs-firewall-confirmation: turning on the firewall of lxc/204 (gui-4) also filters net0 (firewall=1); " +
+					"run pco managed approve lxc/204 --accept-firewall-impact, or set managed.acceptFirewallImpact for every guest",
+			},
+			{
+				GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindQEMU, VMID: 109}, Name: "other-9"}, Identity: "uuid:109",
+				Why: "guest is on node pve2, not pve1",
+			},
+		},
+		Foreign: []ForeignView{{
+			GuestView: GuestView{GuestRef: model.GuestRef{Kind: model.KindLXC, VMID: 205}, Name: "new-1-clone"}, NIC: 1, MAC: "06:50:43:4f:76:02",
+			Action: ForeignLinkDown, Why: "a card on pconet that pco did not attach, as a clone or a restore copies one; pco sets its link down",
+		}},
+		Free:      247,
+		Vnet:      VnetView{OK: true, ZoneType: "simple"},
+		PoolGrant: "web",
+		Filtered:  &FilteredView{Holds: true, Backend: "pve-firewall", Offered: true},
+		DHCP:      &DHCPView{Bound: true, Since: t0.Add(-6 * time.Hour), Unknown: 1},
 	}
 }
 

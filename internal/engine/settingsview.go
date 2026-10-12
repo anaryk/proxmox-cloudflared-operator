@@ -100,6 +100,9 @@ func (e *Engine) SaveSettings(ctx context.Context, rev int, s store.Settings) (S
 	if err := e.checkManagedSubnet(ctx, old, s); err != nil {
 		return SettingsView{}, nil, err
 	}
+	if err := e.checkManagedConsent(ctx, old, s); err != nil {
+		return SettingsView{}, nil, err
+	}
 	_, err = e.d.Store.SaveSettingsIf(rev, s)
 	var invalid *store.FieldError
 	switch {
@@ -119,8 +122,43 @@ func (e *Engine) SaveSettings(ctx context.Context, rev int, s store.Settings) (S
 		restart = nonNil(e.d.StartOnly(saved))
 	}
 	e.adminEvent(ctx, "", settingsSaved(old, saved, restart))
+	if old.Managed.AcceptFirewallImpact != saved.Managed.AcceptFirewallImpact {
+		state := "off"
+		if saved.Managed.AcceptFirewallImpact {
+			state = "on"
+		}
+		e.events.add(Event{At: e.d.Now(), Level: levelInfo, Kind: kindManaged, Subject: "managed.acceptFirewallImpact", Actor: ActorOf(ctx),
+			Message: fmt.Sprintf("the firewall-impact confirmation for consented guests was switched %s by %s", state, ActorOf(ctx))})
+	}
 	e.Trigger()
 	return e.settingsView(saved, now, notes), restart, nil
+}
+
+// checkManagedConsent refuses automatic consent while the gate tag is not
+// registered as admin-only: a tag anyone may set would then put guests on
+// the managed network. Switching to auto and changing the gate tag under
+// auto are checked; per-guest consent needs no registration.
+func (e *Engine) checkManagedConsent(ctx context.Context, old, s store.Settings) error {
+	if s.Managed.Consent != store.ConsentAuto || (old.Managed.Consent == store.ConsentAuto && s.GateTag == old.GateTag) {
+		return nil
+	}
+	field := "managed.consent"
+	if old.Managed.Consent == store.ConsentAuto {
+		field = "gateTag"
+	}
+	if e.d.RegisteredTags == nil {
+		return fieldError(field, "%s: this daemon cannot read registered-tags, so the gate tag %s cannot be checked; "+
+			"managed.consent auto needs it registered as admin-only", field, s.GateTag)
+	}
+	tags, err := e.d.RegisteredTags(ctx)
+	if err != nil {
+		return fieldError(field, "%s: registered-tags could not be read (%v); the gate tag %s must be registered as admin-only for managed.consent auto",
+			field, err, s.GateTag)
+	}
+	if !slices.Contains(tags, s.GateTag) {
+		return fieldError(field, "%s: the gate tag %s must be registered as admin-only first (pco setup --repair)", field, s.GateTag)
+	}
+	return nil
 }
 
 // staleSettings refuses settings read at revision rev; have is the revision
