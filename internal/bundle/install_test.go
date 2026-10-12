@@ -524,6 +524,26 @@ func TestARestoreThatStoppedAtItsLastStepIsRunAgainOverWhatItWrote(t *testing.T)
 	same(t, "moves", from, to, (*store.Store).Moves)
 }
 
+func TestANetworkWithALegOfANodeWithoutAnIndexIsRestoredAsItWas(t *testing.T) {
+	// A store from before the nodes had indexes: the node has none, and the
+	// network's leg has no MAC of its own, so it is saved as it was stored.
+	from := installed(t)
+	require.NoError(t, from.SaveNode(store.NodeEntry{Name: "pve3", Version: "0.1.0", Since: t0.Add(-100 * time.Hour)}))
+	require.NoError(t, from.SaveNetwork(store.Network{
+		ID: "vmbr5", Kind: store.NetworkAttach, Bridge: "vmbr5", Prefix: netip.MustParsePrefix("10.5.0.0/24"),
+		Legs: map[string]netip.Addr{"pve3": netip.MustParseAddr("10.5.0.254")}, LegMAC: store.LegMACFor(store.NetworkAttach, 2),
+		Mark: 2, CreatedAt: t0.Add(-90 * time.Hour),
+	}, 0))
+	networks, err := from.Networks()
+	require.NoError(t, err)
+	require.Empty(t, networks["vmbr5"].LegMACs, "the shape of such a store")
+	to := openStore(t)
+
+	require.NoError(t, Restore(t.Context(), to, carried(t, collect(t, from, false))))
+
+	same(t, "networks", from, to, (*store.Store).Networks)
+}
+
 func TestARestoreNeverMergesWithWhatAnotherBundleLeft(t *testing.T) {
 	good := carried(t, collect(t, installed(t), true))
 	for name, leave := range map[string]struct {

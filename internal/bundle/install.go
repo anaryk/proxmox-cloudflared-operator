@@ -684,7 +684,7 @@ func restoreNetworks(_ context.Context, st *store.Store, r restoration) error {
 		return fmt.Errorf("reading the networks: %w", err)
 	}
 	if err := saveEach("networks", r.networks, func(n store.Network) error {
-		return st.SaveNetworkIndexed(n, networks[n.ID].Rev, indexes)
+		return st.SaveNetworkIndexed(n, networks[n.ID].Rev, indexesFor(n, indexes))
 	}); err != nil {
 		return err
 	}
@@ -710,6 +710,21 @@ func restoreNetworks(_ context.Context, st *store.Store, r restoration) error {
 		return err
 	}
 	return saveEach("attachments", r.attachments, st.SaveAttachment)
+}
+
+// indexesFor returns the indexes a network is saved with: those of the
+// registry, unless a leg belongs to a node that has no index and no leg MAC
+// of its own, as in a store from before the nodes had indexes; such a
+// network is then saved as it was stored, without them.
+func indexesFor(n store.Network, indexes map[string]int) map[string]int {
+	for node := range n.Legs {
+		_, indexed := indexes[node]
+		_, given := n.LegMACs[node]
+		if !indexed && !given {
+			return nil
+		}
+	}
+	return indexes
 }
 
 func restoreEngine(ctx context.Context, st *store.Store, r restoration) error {
