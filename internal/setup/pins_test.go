@@ -257,7 +257,7 @@ func (goneOnDelete) DeleteTunnel(context.Context, string, string) error {
 
 func TestSetupWorksOnTheStoreItIsGiven(t *testing.T) {
 	e := newTestEnv(t)
-	s := New(e.run, e.ask, e.st, nil, func() time.Time { return t0 }, nil)
+	s := New(e.run, e.ask, e.st, nil, nil, func() time.Time { return t0 }, nil)
 
 	require.Equal(t, e.paths, s.paths())
 	require.Equal(t, filepath.Join(e.paths.Local, manifestName), s.manifestPath())

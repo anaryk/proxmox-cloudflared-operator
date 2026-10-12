@@ -157,7 +157,6 @@ func TestRepairDoesNotGuessTheGateTag(t *testing.T) {
 
 	err := e.setup(Options{Yes: true, Repair: true, Node: testNode})
 
-	require.ErrorContains(t, err, "step tags")
 	require.ErrorContains(t, err, "reading the settings")
 	require.Equal(t, []string{"a"}, h.tags, "no tag is registered on a guess")
 }

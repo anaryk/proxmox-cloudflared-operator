@@ -48,6 +48,13 @@ type Manifest struct {
 	// an appliance pco appliance managed enable did.
 	CreatedZone bool `json:"createdZone,omitempty"`
 	CreatedVnet bool `json:"createdVnet,omitempty"`
+	// FirewallRule is true when setup put this node's address into the ipset
+	// pco-nodes of the datacenter firewall, the source of the rule that admits
+	// the agent channel; CreatedIPSet and CreatedFirewallRule when it made the
+	// ipset and the rule.
+	FirewallRule        bool `json:"firewallRule,omitempty"`
+	CreatedIPSet        bool `json:"createdIPSet,omitempty"`
+	CreatedFirewallRule bool `json:"createdFirewallRule,omitempty"`
 	// Appliance is what pco appliance install made on the node besides the
 	// objects above; nil for a host. An appliance keeps its manifest on its
 	// state volume, and the installer reads it back as untrusted input.

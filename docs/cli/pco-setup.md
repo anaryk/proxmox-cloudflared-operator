@@ -19,6 +19,18 @@ install would never prune them: pco setup `--recover` adopts that install, and p
 `--keep-cloudflare` removes pco from the node so that setup can start over. `--new-install`
 starts a new install beside them regardless.
 
+On a node of a Proxmox VE cluster whose store, shared by the cluster filesystem, holds an
+install that other nodes run, setup joins it: the node gets its key and certificates from the
+install's CA, which the first node makes, and an entry of the node registry as joining, which
+the controller admits; nothing changes at Cloudflare. Every node runs the same release of pco
+before a further node joins. A new install records the identity of the cluster and makes the
+CA.
+
+Setup offers the datacenter firewall rule that admits the agent channel of the controller,
+TCP port 8644, from the nodes: IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset
+pco-nodes holding every node's agent address, kept current as nodes join and leave. `--yes` takes
+it and `--no-firewall-rule` leaves it out; nothing else of the firewall is touched.
+
 The web interface, pco-web.service, listens on the node's address in the cluster status,
 port 8643, or on `--web-listen`; `--no-web` leaves it out. Its certificate, by `--web-cert`:
 
@@ -53,13 +65,13 @@ pco setup
 # Without a question, with the Cloudflare token of a file and the managed network
 pco setup --yes --cf-token-file /root/cf-token --managed
 
-# Put the role, the user, the token and the tags back after a restore of the node
-pco setup --repair
-
 # Adopt the install the token sees, after the store was lost
 pco setup --recover --cf-token-file /root/cf-token
 
-# The web interface with a certificate and key of your own
+# Join the install of the cluster from a further node, without the firewall rule
+pco setup --yes --no-firewall-rule
+
+# Put what Proxmox holds back after a restore of the node, with a web certificate and key of your own
 pco setup --repair --web-cert own --web-cert-file /root/pco.example.com.crt --web-key-file /root/pco.example.com.key
 ```
 
@@ -73,6 +85,7 @@ pco setup --repair --web-cert own --web-cert-file /root/pco.example.com.crt --we
     --install-id string      with --recover: the install to adopt, when the token sees several
     --managed                make the managed network: the SDN zone pco and vnet pconet, applied under the SDN lock
     --new-install            start a new install on a node that runs connectors of another install: the connectors of the other install keep running and are never pruned by the new one; pco status reports them
+    --no-firewall-rule       do not add the datacenter firewall rule that admits the agent channel, TCP port 8644, from the nodes
     --no-registered-tags     do not register the gate tags, which lets whoever may edit a guest set them
     --no-web                 do not set up the web interface
     --recover                adopt the install whose tunnels the Cloudflare token sees, after the store was lost

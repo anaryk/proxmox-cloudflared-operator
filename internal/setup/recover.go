@@ -73,7 +73,7 @@ func RecoverInstall(ctx context.Context, api cfapi.API, st *store.Store, install
 // stopped, and refuses the recovery.
 func (r *run) stopForRecovery(ctx context.Context) error {
 	if r.unitInstalled(serviceUnit) {
-		active, err := r.serviceActive(ctx, serviceUnit)
+		active, err := r.serviceActive(ctx)
 		if err != nil {
 			return err
 		}

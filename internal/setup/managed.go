@@ -48,9 +48,6 @@ func (s *Setup) EnableManaged(ctx context.Context, o ManagedOptions) error {
 	case err != nil:
 		return fmt.Errorf("reading the install: %w", err)
 	}
-	if err := r.refuseOtherNode(); err != nil {
-		return err
-	}
 	m, _, err := readManifest(s.manifestPath())
 	if err != nil {
 		return fmt.Errorf("reading the manifest: %w", err)

@@ -2,6 +2,7 @@ package setup
 
 import (
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -67,7 +69,12 @@ func TestFreshInstallOnPVE9(t *testing.T) {
 
 	nodes, err := e.st.Nodes()
 	require.NoError(t, err)
-	require.Equal(t, []store.NodeEntry{{Name: testNode, Version: version.Version, Since: t0}}, nodes)
+	enrol := e.enrolment()
+	require.Equal(t, []store.NodeEntry{{
+		Name: testNode, Version: version.Version, Since: t0, Kind: "host", AgentAddress: netip.MustParseAddr(testAddr),
+		Protocol: store.ProtocolRange{Min: agentproto.ProtocolMin, Max: agentproto.ProtocolMax}, Schema: store.SchemaVersion(),
+		CertSerial: enrol.Serial, CertSHA256: enrol.SHA256,
+	}}, nodes)
 
 	require.Equal(t, Manifest{
 		Node:                 testNode,
@@ -576,18 +583,6 @@ func TestSetupWithoutTheUnitFile(t *testing.T) {
 	e.done()
 
 	e.requireShown("pco.service is not installed")
-}
-
-func TestSetupRefusesWhenAnotherNodeIsRegistered(t *testing.T) {
-	e := newTestEnv(t)
-	require.NoError(t, e.st.Init())
-	require.NoError(t, e.st.SaveNode(store.NodeEntry{Name: "pve2", Since: t0}))
-	e.script(preflightNew("9.0.10"))
-
-	err := e.setup(Options{Yes: true, Node: testNode})
-
-	require.EqualError(t, err, "setup step store: pco is already set up on node pve2; cluster support arrives in a later release")
-	e.done()
 }
 
 func TestSetupRefusesOptionsThatDoNotGoTogether(t *testing.T) {

@@ -44,6 +44,10 @@ type fakeHost struct {
 	secret      string // of the token pco@pve!pco, while there is one
 	addr        string // of the node in the cluster status; empty: 192.0.2.10
 	firewall    bool   // the firewall of the datacenter is on
+	// ipsets and rules are those of the datacenter firewall, the rules in
+	// their order.
+	ipsets map[string]*fakeIPSet
+	rules  []map[string]any
 
 	ran      []string
 	killedAt int              // the command, counted from 1, that the host dies at; 0: none
@@ -54,8 +58,19 @@ type fakeHost struct {
 	tokenAttrs map[string]any // more fields of its token in the token list
 }
 
-// newFakeHost is a node an admin has used: a role, a user, its grant and a
-// registered tag that are not setup's.
+// fakeIPSet is an ipset of the datacenter firewall with its entries.
+type fakeIPSet struct {
+	comment string
+	entries []map[string]any
+}
+
+// adminRule is a rule of the admin's in the datacenter firewall.
+func adminRule() map[string]any {
+	return map[string]any{"type": "in", "action": "ACCEPT", "proto": "tcp", "dport": "8006", "source": "+management", "enable": 1, "comment": "web"}
+}
+
+// newFakeHost is a node an admin has used: a role, a user, its grant, a
+// registered tag, an ipset and a firewall rule that are not setup's.
 func newFakeHost(t *testing.T) *fakeHost {
 	return &fakeHost{
 		t:       t,
@@ -66,6 +81,8 @@ func newFakeHost(t *testing.T) *fakeHost {
 		active:  map[string]bool{},
 		enabled: map[string]bool{},
 		refuse:  map[string]error{},
+		ipsets:  map[string]*fakeIPSet{"management": {comment: "admins", entries: []map[string]any{{"cidr": "192.0.2.1"}}}},
+		rules:   []map[string]any{adminRule()},
 	}
 }
 
@@ -79,6 +96,8 @@ func (h *fakeHost) requireUntouched() {
 	require.Equal(t, []pveACL{{Path: "/", Type: "user", UGID: "audit@pve", Role: "Auditors"}}, h.acl)
 	require.Empty(t, h.tokens)
 	require.Equal(t, []string{"a"}, h.tags)
+	require.Equal(t, map[string]*fakeIPSet{"management": {comment: "admins", entries: []map[string]any{{"cidr": "192.0.2.1"}}}}, h.ipsets)
+	require.Equal(t, []map[string]any{adminRule()}, h.rules)
 	require.False(t, h.cloudflared, "cloudflared is removed")
 	require.False(t, h.active[serviceUnit])
 	require.False(t, h.enabled[serviceUnit])
@@ -236,6 +255,8 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 	case name == "pvesh" && flag(args, "--registered-tags") != "":
 		h.tags = strings.Split(flag(args, "--registered-tags"), ";")
 		return "", nil
+	case name == "pvesh" && strings.HasPrefix(args[1], "/cluster/firewall/"):
+		return h.firewallAPI(args)
 
 	case cmd == cloudflaredBin+" --version":
 		if !h.cloudflared {
@@ -270,6 +291,97 @@ func (h *fakeHost) do(name string, args []string) (string, error) {
 	h.t.Errorf("the fake host does not know %q", cmd)
 	return "", errors.New("unknown command")
 }
+
+// firewallAPI answers for the datacenter firewall as pvesh does: a listing
+// carries the digest of the whole list in every item, a new rule goes to the
+// top, and a delete of a rule may insist on the digest.
+func (h *fakeHost) firewallAPI(args []string) (string, error) {
+	verb, path := args[0], strings.TrimPrefix(args[1], "/cluster/firewall/")
+	parts := strings.Split(path, "/")
+	switch {
+	case path == "ipset" && verb == "get":
+		var out []map[string]any
+		for _, name := range slices.Sorted(maps.Keys(h.ipsets)) {
+			out = append(out, map[string]any{"name": name, "comment": h.ipsets[name].comment, "digest": "ipsets"})
+		}
+		return asJSON(out), nil
+	case path == "ipset" && verb == "create":
+		name := flag(args, "--name")
+		if _, ok := h.ipsets[name]; ok {
+			return "", exitErr(255, "ipset '"+name+"' already exists")
+		}
+		h.ipsets[name] = &fakeIPSet{comment: flag(args, "--comment")}
+		return "", nil
+	case parts[0] == "ipset" && len(parts) == 2:
+		set, ok := h.ipsets[parts[1]]
+		switch {
+		case !ok:
+			return "", exitErr(255, "no such IPSet '"+parts[1]+"'")
+		case verb == "get":
+			var out []map[string]any
+			for _, e := range set.entries {
+				item := maps.Clone(e)
+				item["digest"] = "entries"
+				out = append(out, item)
+			}
+			return asJSON(out), nil
+		case verb == "create":
+			set.entries = append(set.entries, map[string]any{"cidr": flag(args, "--cidr"), "comment": flag(args, "--comment")})
+			return "", nil
+		case verb == "delete" && len(set.entries) > 0:
+			return "", exitErr(255, "IPSet '"+parts[1]+"' is not empty")
+		case verb == "delete":
+			delete(h.ipsets, parts[1])
+			return "", nil
+		}
+	case parts[0] == "ipset" && len(parts) == 3 && verb == "delete":
+		set, ok := h.ipsets[parts[1]]
+		if !ok {
+			return "", exitErr(255, "no such IPSet '"+parts[1]+"'")
+		}
+		before := len(set.entries)
+		set.entries = slices.DeleteFunc(set.entries, func(e map[string]any) bool { return e["cidr"] == parts[2] })
+		if len(set.entries) == before {
+			return "", exitErr(255, "no such entry '"+parts[2]+"'")
+		}
+		return "", nil
+	case path == "rules" && verb == "get":
+		var out []map[string]any
+		for i, r := range h.rules {
+			item := maps.Clone(r)
+			item["pos"], item["digest"] = i, h.rulesDigest()
+			out = append(out, item)
+		}
+		return asJSON(out), nil
+	case path == "rules" && verb == "create":
+		rule := map[string]any{"enable": 0}
+		for _, key := range []string{"type", "action", "proto", "dport", "source", "comment"} {
+			if v := flag(args, "--"+key); v != "" {
+				rule[key] = v
+			}
+		}
+		if flag(args, "--enable") == "1" {
+			rule["enable"] = 1
+		}
+		h.rules = append([]map[string]any{rule}, h.rules...)
+		return "", nil
+	case parts[0] == "rules" && len(parts) == 2 && verb == "delete":
+		pos, err := strconv.Atoi(parts[1])
+		if err != nil || pos < 0 || pos >= len(h.rules) {
+			return "", exitErr(255, "no rule at position "+parts[1])
+		}
+		if d := flag(args, "--digest"); d != "" && d != h.rulesDigest() {
+			return "", exitErr(255, "detected modified configuration - file changed by other user? Try again.")
+		}
+		h.rules = slices.Delete(h.rules, pos, pos+1)
+		return "", nil
+	}
+	h.t.Errorf("the fake host does not know pvesh %v", args)
+	return "", errors.New("unknown command")
+}
+
+// rulesDigest changes with every change of the rules.
+func (h *fakeHost) rulesDigest() string { return "rules-" + asJSON(h.rules) }
 
 func (h *fakeHost) systemctl(args []string) (string, error) {
 	unit := args[len(args)-1]

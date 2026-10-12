@@ -613,7 +613,7 @@ func (a *app) appliancePurgeCmd() *cobra.Command {
 			if override != "" && !list {
 				p.Warn("%s", overrideLine(override))
 			}
-			return setup.New(setup.NewHostRunner(), p, st, cloudflareClients(override), a.now, rand.Reader).Purge(cmd.Context(), list)
+			return setup.New(setup.NewHostRunner(), p, st, cloudflareClients(override), nil, a.now, rand.Reader).Purge(cmd.Context(), list)
 		},
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "only name what would be deleted, one object a line")

@@ -34,6 +34,13 @@ type survey struct {
 	cloudflareErr    error
 	stores           []string // the roots of the store that are there
 	registered       bool     // the node registry names this node
+	// firewall is what the datacenter firewall holds of pco, read when the
+	// manifest says setup put something there.
+	firewall    fwState
+	firewallErr error
+	// holder says that leader.json names this node as the holder of the
+	// lease and its daemon runs, so the lease is handed off before it stops.
+	holder bool
 	// cards are the cards of the guests of the cluster on the managed vnet,
 	// read when setup made the vnet or its zone.
 	cards    []Card
@@ -54,10 +61,16 @@ func (u *uninstall) survey(ctx context.Context) {
 	}
 	f.connectors, f.connectorsErr = u.listConnectors(ctx)
 	f.nft, f.table, f.nftErr = u.egressTableThere(ctx)
-	if u.manifest.inProxmox() {
+	if u.manifest.inProxmox() && u.last {
 		f.proxmox, f.proxmoxErr = u.readProxmox(ctx)
 	}
-	if u.manifest.CreatedZone || u.manifest.CreatedVnet {
+	if u.manifest.inFirewall() {
+		f.firewall, f.firewallErr = readFirewall(ctx, u.run)
+	}
+	if !u.last && u.leaseHeldHere() {
+		f.holder, _ = u.serviceActive(ctx)
+	}
+	if (u.manifest.CreatedZone || u.manifest.CreatedVnet) && u.last {
 		f.cards, f.cardsErr = CardsOn(ctx, u.run, ManagedVnet)
 	}
 	if u.o.DetachManaged {
@@ -97,9 +110,17 @@ func (u *uninstall) attachments() ([]store.Attachment, error) {
 
 // looksAtCloudflare reports whether Cloudflare is to be listed: for a purge,
 // and for the question whether to purge, which is asked without Yes. Yes with
-// an install and credentials comes with one of the two flags.
+// an install and credentials comes with one of the two flags. A node that
+// leaves an install other nodes keep running has nothing to delete there.
 func (u *uninstall) looksAtCloudflare() bool {
-	return u.installID != "" && len(u.creds) > 0 && !u.o.KeepCloudflare
+	return u.last && u.installID != "" && len(u.creds) > 0 && !u.o.KeepCloudflare
+}
+
+// leaseHeldHere reports whether leader.json names this node as the holder
+// of the lease that has not released it.
+func (u *uninstall) leaseHeldHere() bool {
+	leader, _, found, err := u.st.Leader()
+	return err == nil && found && leader.Node == u.node && leader.ReleasedAt.IsZero()
 }
 
 // listConnectors returns the tunnel ids of the connectors that have files or
@@ -174,6 +195,11 @@ func (u *uninstall) describe() {
 		u.ask.Info("  the egress filter: table inet %s", egressTable)
 	}
 	u.describeWeb()
+	u.describeFirewall()
+	if !u.last {
+		u.describeLeaving()
+		return
+	}
 	u.describeProxmox()
 	u.describeManaged()
 	if len(f.stores) > 0 {
@@ -186,6 +212,25 @@ func (u *uninstall) describe() {
 		}
 	}
 	u.describeCloudflare()
+}
+
+// describeLeaving says what a node that leaves an install other nodes keep
+// running takes with it, and what stays for them.
+func (u *uninstall) describeLeaving() {
+	f := u.found
+	if f.holder {
+		u.ask.Info("  the lease, handed off to another node first")
+	}
+	if slices.Contains(f.stores, u.paths().Local) {
+		u.ask.Info("  the local state of this node: %s", u.paths().Local)
+	}
+	if f.registered {
+		u.ask.Info("  node %s in the registry, set to removed; the install stays on %s", u.node, strings.Join(u.others, ", "))
+	}
+	if m := u.manifest; m.inProxmox() || m.CreatedZone || m.CreatedVnet || m.CreatedFirewallRule || m.CreatedIPSet {
+		u.ask.Info("  (the Proxmox user, token, tags, the SDN objects and the firewall rule stay: the nodes %s still use them)",
+			strings.Join(u.others, ", "))
+	}
 }
 
 // describeProxmox lists what Proxmox holds of what setup created.

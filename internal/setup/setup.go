@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +28,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/members"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -106,6 +109,10 @@ type Options struct {
 	Managed         bool
 	ConfirmSDNApply bool
 	Daemon          func(ctx context.Context) (asked bool, err error)
+
+	// FirewallRule answers whether to add the datacenter firewall rule that
+	// admits the agent channel from the nodes; nil asks (default yes).
+	FirewallRule *bool
 }
 
 func (o Options) check() error {
@@ -142,12 +149,20 @@ func (o Options) checkWeb() error {
 	return nil
 }
 
+// Daemon is the daemon of this node, as uninstall asks it to hand the lease
+// off before the node leaves the install: to any eligible node when to is
+// empty. An error says why that is not possible.
+type Daemon interface {
+	Handoff(ctx context.Context, to string) error
+}
+
 // Setup sets up and removes pco on the node it runs on.
 type Setup struct {
 	run       Runner
 	ask       Prompter
 	st        *store.Store
 	newClient func(token string) (cfapi.API, error)
+	daemon    Daemon
 	now       func() time.Time
 	rand      io.Reader
 	host      host
@@ -155,7 +170,13 @@ type Setup struct {
 
 // host is where setup finds the parts of the node it works on.
 type host struct {
-	pveDir   string   // the mount point of the cluster filesystem
+	pveDir string // the mount point of the cluster filesystem
+	// members lists the nodes of the cluster as pmxcfs sees them, and
+	// pveRootCA is the certificate whose fingerprint identifies the cluster.
+	members   string
+	pveRootCA string
+	// addrs are the addresses of the node, for cluster.agentNetwork.
+	addrs    func() ([]netip.Addr, error)
 	keyring  string   // the key of Cloudflare's apt repository
 	sources  string   // the apt source of cloudflared
 	unitDirs []string // where the units of the package may be installed
@@ -188,6 +209,9 @@ type host struct {
 func nodeHost() host {
 	return host{
 		pveDir:     "/etc/pve",
+		members:    members.MembersFile,
+		pveRootCA:  members.RootCAFile,
+		addrs:      interfaceAddrs,
 		keyring:    "/usr/share/keyrings/cloudflare-main.gpg",
 		sources:    "/etc/apt/sources.list.d/cloudflared.sources",
 		unitDirs:   []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"},
@@ -220,6 +244,23 @@ func nodeHost() host {
 	}
 }
 
+// interfaceAddrs lists the unicast addresses of the node's interfaces.
+func interfaceAddrs() ([]netip.Addr, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var out []netip.Addr
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok {
+				out = append(out, ip.Unmap())
+			}
+		}
+	}
+	return out, nil
+}
+
 // checkPVEToken reads the version of Proxmox VE with a token, through the API
 // the daemon reads the guests from.
 func checkPVEToken(ctx context.Context, tok store.PVEToken) error {
@@ -242,12 +283,13 @@ func readSnapshot(ctx context.Context, tok store.PVEToken) (inventory.Snapshot, 
 }
 
 // New returns a setup that runs commands through r, asks p, keeps its state in
-// st, checks Cloudflare tokens through the clients newClient makes and draws
-// the install id, the writer nonce and the names of probe objects from rand.
-// The manifest, the lock of the node and the connectors are found below the
-// roots of st, and uninstall removes those roots.
-func New(r Runner, p Prompter, st *store.Store, newClient func(token string) (cfapi.API, error), now func() time.Time, rand io.Reader) *Setup {
-	return &Setup{run: r, ask: p, st: st, newClient: newClient, now: now, rand: rand, host: nodeHost()}
+// st, checks Cloudflare tokens through the clients newClient makes, asks d
+// for the lease to be handed off and draws the install id, the writer nonce,
+// the keys and the names of probe objects from rand. The manifest, the lock
+// of the node and the connectors are found below the roots of st, and
+// uninstall removes those roots.
+func New(r Runner, p Prompter, st *store.Store, newClient func(token string) (cfapi.API, error), d Daemon, now func() time.Time, rand io.Reader) *Setup {
+	return &Setup{run: r, ask: p, st: st, newClient: newClient, daemon: d, now: now, rand: rand, host: nodeHost()}
 }
 
 // run is the state of one Run.
@@ -261,6 +303,14 @@ type run struct {
 	running     *bool  // whether the daemon runs, once that is known
 	newPVEToken bool   // the Proxmox token was made in this run
 	gate        string // the gate tag of the settings, once they are read
+	// others are the registered nodes besides this one that were not
+	// removed, by name: with any, the node joins their install. agentAddress
+	// is where the node's agent listens, and serial and fingerprint name its
+	// client certificate, once the cluster step issued or kept it.
+	others       []string
+	agentAddress netip.Addr
+	serial       string
+	fingerprint  string
 	// What a recovery did with the daemon: looked at it, and stopped it as
 	// it was running.
 	looked, stopped bool
@@ -341,10 +391,12 @@ func (r *run) steps() []step {
 		return slices.Concat([]step{
 			{"preflight", r.preflight},
 			{"store", r.requireInstall},
+			{"cluster", r.ensureCluster},
 			{"role", r.ensureRole},
 			{"user", r.ensureUser},
 			{"token", r.ensureToken},
 			{"tags", r.ensureTags},
+			{"firewall", r.ensureFirewall},
 		}, managed, []step{
 			{"web", r.ensureWeb},
 			{"registry", r.register},
@@ -354,10 +406,12 @@ func (r *run) steps() []step {
 	return slices.Concat([]step{
 		{"preflight", r.preflight},
 		{"store", r.prepareStore},
+		{"cluster", r.ensureCluster},
 		{"role", r.ensureRole},
 		{"user", r.ensureUser},
 		{"token", r.ensureToken},
 		{"tags", r.ensureTags},
+		{"firewall", r.ensureFirewall},
 	}, managed, []step{
 		{"cloudflared", r.ensureCloudflared},
 		{"credential", r.addCredential},
@@ -425,8 +479,10 @@ func (s *Setup) unitInstalled(unit string) bool {
 	return false
 }
 
-// serviceActive asks systemd whether a unit runs, or is starting or stopping.
-func (s *Setup) serviceActive(ctx context.Context, unit string) (bool, error) {
+// serviceActive asks systemd whether the daemon runs, or is starting or
+// stopping.
+func (s *Setup) serviceActive(ctx context.Context) (bool, error) {
+	unit := serviceUnit
 	out, err := s.run.Run(ctx, "systemctl", "is-active", unit)
 	state := strings.TrimSpace(out)
 	switch state {
@@ -447,7 +503,7 @@ func (r *run) daemonRunning(ctx context.Context) (bool, error) {
 	if r.running != nil {
 		return *r.running, nil
 	}
-	running, err := r.serviceActive(ctx, serviceUnit)
+	running, err := r.serviceActive(ctx)
 	if err == nil && !running {
 		running, err = r.daemonLocked()
 	}

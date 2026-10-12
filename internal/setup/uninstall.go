@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -31,6 +33,10 @@ type UninstallOptions struct {
 	// DetachManaged removes pco's cards on the managed network from the
 	// guests first, so that the zone and the vnet can go.
 	DetachManaged bool
+	// Force removes a node of a cluster that holds the lease and cannot hand
+	// it off, or whose connectors may be the only ones serving the shared
+	// tunnel.
+	Force bool
 }
 
 func (o UninstallOptions) check() error {
@@ -60,6 +66,12 @@ type uninstall struct {
 	// not known, as without a memory of the install, and every zone counts.
 	served map[string]bool
 	node   string
+	// others are the registered nodes besides this one that were not
+	// removed, and last says there are none: the install goes with this
+	// node. Otherwise the node leaves the install, which keeps running on
+	// the others, and takes only what is its own.
+	others []string
+	last   bool
 	found  survey   // what is on the node, read before anything is asked
 	failed []string // what could not be done
 	// connectorsStay says that the connectors could not be removed.
@@ -73,6 +85,11 @@ type uninstall struct {
 // filter, the web interface and what Proxmox holds, and the store last. Only
 // what the manifest lists is removed from Proxmox and of the web interface. A part that fails is reported and the others
 // go on, but the store is then kept, so that a second run finishes the rest.
+//
+// On a node of a cluster that other nodes keep the install running on, the
+// node hands the lease off when it holds it, stops and removes what runs on
+// it, sets its entry of the registry to removed and deletes its local state;
+// what the nodes share, at Cloudflare, in Proxmox and in the store, stays.
 func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if err := s.refuseAppliance(); err != nil {
 		return err
@@ -88,6 +105,9 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 		return err
 	}
 	if err := u.refuseToOrphan(); err != nil {
+		return err
+	}
+	if err := u.refuseWhatOnlyTheLastMayDo(); err != nil {
 		return err
 	}
 	u.survey(ctx)
@@ -109,6 +129,12 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := u.refuseToLeaveAlone(); err != nil {
+		return err
+	}
+	if err := u.handoff(ctx); err != nil {
+		return err
+	}
 
 	if err := u.stopDaemon(ctx); err != nil {
 		return err
@@ -126,14 +152,22 @@ func (s *Setup) Uninstall(ctx context.Context, o UninstallOptions) error {
 	u.removeGateway(ctx)
 	u.removeEgress(ctx)
 	u.removeWeb(ctx)
-	u.removeProxmox(ctx)
+	u.removeFirewall(ctx)
+	if u.last {
+		u.removeProxmox(ctx)
+	}
 	if removeCloudflared {
 		u.removeCloudflared(ctx)
 	}
-	u.removeManagedNetwork(ctx)
+	if u.last {
+		u.removeManagedNetwork(ctx)
+	}
 	if len(u.failed) > 0 {
 		u.ask.Warn("the store is kept, with the credentials and the manifest, so that pco uninstall can finish the rest")
 		return fmt.Errorf("uninstall did not finish: %s; run pco uninstall again to finish the rest", strings.Join(u.failed, "; "))
+	}
+	if !u.last {
+		return u.leaveStore()
 	}
 	return u.removeStore()
 }
@@ -168,15 +202,153 @@ func (s *Setup) newUninstall(o UninstallOptions) (*uninstall, error) {
 		}
 		u.node, _, _ = strings.Cut(name, ".")
 	}
+	nodes, err := s.st.Nodes()
+	if err != nil && !errors.Is(err, store.ErrNoRoot) {
+		return nil, fmt.Errorf("reading the node registry: %w", err)
+	}
+	for _, n := range nodes {
+		if n.Name != u.node && n.State != string(agentproto.Removed) {
+			u.others = append(u.others, n.Name)
+		}
+	}
+	slices.Sort(u.others)
+	u.last = len(u.others) == 0
 	return u, nil
+}
+
+// refuseWhatOnlyTheLastMayDo refuses, on a node that leaves an install other
+// nodes keep running, what reaches beyond the node: deleting at Cloudflare
+// and taking pco's cards off the guests.
+func (u *uninstall) refuseWhatOnlyTheLastMayDo() error {
+	if u.last {
+		return nil
+	}
+	still := strings.Join(u.others, ", ") + " still runs it"
+	if len(u.others) > 1 {
+		still = strings.Join(u.others, ", ") + " still run it"
+	}
+	switch {
+	case u.o.PurgeCloudflare:
+		return errors.New("--purge-cloudflare goes with the last node of the install: " + still)
+	case u.o.DetachManaged:
+		return errors.New("--detach-managed goes with the last node of the install: " + still)
+	}
+	return nil
+}
+
+// refuseToLeaveAlone refuses to remove the node while no other node is
+// active, since its connectors may then be the only ones serving the shared
+// tunnel; --force removes it regardless.
+func (u *uninstall) refuseToLeaveAlone() error {
+	if u.last || u.o.Force {
+		return nil
+	}
+	nodes, err := u.st.Nodes()
+	if err != nil {
+		return fmt.Errorf("reading the node registry: %w", err)
+	}
+	var states []string
+	for _, n := range nodes {
+		if n.Name == u.node || n.State == string(agentproto.Removed) {
+			continue
+		}
+		if n.State == string(agentproto.Active) {
+			return nil
+		}
+		states = append(states, n.Name+" is "+cmp.Or(n.State, "not yet admitted"))
+	}
+	return fmt.Errorf("no other node of the install is active (%s), so the connectors of this node may be the only ones serving "+
+		"the shared tunnel; nothing was removed. Admit or undrain another node first, or pass --force", strings.Join(states, ", "))
+}
+
+// handoff asks the daemon to hand the lease off while this node holds it:
+// another node then takes over at once rather than when the lease runs out.
+// Without --force a hand-off that is not possible stops the uninstall.
+func (u *uninstall) handoff(ctx context.Context) error {
+	if !u.found.holder {
+		return nil
+	}
+	var err error
+	if u.daemon == nil {
+		err = errors.New("no daemon to ask")
+	} else {
+		err = u.daemon.Handoff(ctx, "")
+	}
+	switch {
+	case err == nil:
+		u.ask.Info("lease: handed off")
+		return nil
+	case u.o.Force:
+		u.ask.Warn("lease: not handed off (%v); another node takes it once it runs out", err)
+		return nil
+	}
+	return fmt.Errorf("this node holds the lease and cannot hand it off (%v); nothing was removed. pco uninstall --force removes "+
+		"the node regardless, and another node takes the lease once it runs out", err)
+}
+
+// leaveStore takes the node out of the install the other nodes keep: its
+// entry becomes removed, under its index, so that its certificate is refused
+// and its name keeps its leg MACs; its enrolment goes, and so does its local
+// root, with the manifest. The shared roots stay.
+func (u *uninstall) leaveStore() error {
+	p := u.paths()
+	if p.MountCheck != "" {
+		if _, err := os.Stat(p.MountCheck); err != nil {
+			return fmt.Errorf("leaving the install: %w; run pco uninstall again once it is", store.ErrNotMounted)
+		}
+	}
+	if err := u.markRemoved(); err != nil {
+		return fmt.Errorf("%w; run pco uninstall again to finish the rest", err)
+	}
+	if err := u.st.DeleteEnrolment(u.node); err != nil {
+		return fmt.Errorf("removing the enrolment of node %s: %w; run pco uninstall again to finish the rest", u.node, err)
+	}
+	if err := os.RemoveAll(p.Local); err != nil {
+		return fmt.Errorf("removing %s: %w; run pco uninstall again to finish the rest", p.Local, err)
+	}
+	u.ask.Info("store: removed %s; %s and %s stay with the install", p.Local, p.Cluster, p.Private)
+	u.ask.Info("pco is removed from node %s; the install keeps running on %s. The package goes with apt-get purge pco",
+		u.node, strings.Join(u.others, ", "))
+	return nil
+}
+
+// markRemoved sets the node's entry to removed, at the revision it read, and
+// reads again when the controller wrote it in between.
+func (u *uninstall) markRemoved() error {
+	for range registerTries {
+		nodes, err := u.st.NodesRev()
+		if err != nil {
+			return fmt.Errorf("reading the node registry: %w", err)
+		}
+		i := slices.IndexFunc(nodes, func(n store.NodeRev) bool { return n.Node.Name == u.node })
+		if i < 0 {
+			return nil
+		}
+		entry := nodes[i].Node
+		if entry.State == string(agentproto.Removed) {
+			return nil
+		}
+		entry.State, entry.StateSince = string(agentproto.Removed), u.now()
+		_, err = u.st.SaveNodeIf(entry, nodes[i].Rev)
+		switch {
+		case errors.Is(err, store.ErrRevision):
+			continue
+		case err != nil:
+			return fmt.Errorf("setting node %s to removed: %w", u.node, err)
+		}
+		u.ask.Info("node registry: %s is removed", u.node)
+		return nil
+	}
+	return fmt.Errorf("the entry of node %s kept changing while it was set to removed", u.node)
 }
 
 // refuseToOrphan refuses --yes without a word on Cloudflare while the store
 // holds an install and the credentials that reach what it has there: the
 // uninstall would take the credentials and leave the records and tunnels with
-// nothing on this node to remove them.
+// nothing on this node to remove them. A node that leaves an install other
+// nodes keep running takes no credential with it.
 func (u *uninstall) refuseToOrphan() error {
-	if !u.o.Yes || u.o.PurgeCloudflare || u.o.KeepCloudflare || u.installID == "" || len(u.creds) == 0 {
+	if !u.last || !u.o.Yes || u.o.PurgeCloudflare || u.o.KeepCloudflare || u.installID == "" || len(u.creds) == 0 {
 		return nil
 	}
 	return fmt.Errorf("install %s may have DNS records and a tunnel at Cloudflare, and the uninstall removes the "+

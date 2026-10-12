@@ -7,8 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"slices"
 	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/version"
@@ -44,23 +48,9 @@ func (r *run) preflight(ctx context.Context) error {
 	}
 }
 
-// refuseOtherNode refuses a store whose node registry names another node:
-// until the cluster support, pco runs on one node.
-func (r *run) refuseOtherNode() error {
-	nodes, err := r.st.Nodes()
-	if err != nil {
-		return fmt.Errorf("reading the node registry: %w", err)
-	}
-	for _, n := range nodes {
-		if n.Name != r.o.Node {
-			return fmt.Errorf("pco is already set up on node %s; cluster support arrives in a later release", n.Name)
-		}
-	}
-	return nil
-}
-
 // prepareStore makes the store and the identity of the install, or keeps the
-// ones there.
+// ones there. A store that other nodes run the install from, which the
+// cluster filesystem shares, is the one this node joins.
 func (r *run) prepareStore(ctx context.Context) error {
 	if !r.o.Recover && !r.o.NewInstall {
 		if err := r.refuseBesideConnectors(ctx); err != nil {
@@ -70,7 +60,7 @@ func (r *run) prepareStore(ctx context.Context) error {
 	if err := r.st.Init(); err != nil {
 		return fmt.Errorf("creating the store: %w", err)
 	}
-	if err := r.refuseOtherNode(); err != nil {
+	if err := r.readOthers(); err != nil {
 		return err
 	}
 	if r.o.Recover {
@@ -99,6 +89,8 @@ func (r *run) prepareStore(ctx context.Context) error {
 			"Cloudflare before, run pco setup --recover to take a generation above the one in use", inst.ID)
 	case w.InstallID != inst.ID:
 		return fmt.Errorf("leader.json names install %s, but this is install %s; run pco setup --recover", w.InstallID, inst.ID)
+	case len(r.others) > 0:
+		r.ask.Info("store: install %s kept; joining the nodes %s", inst.ID, strings.Join(r.others, ", "))
 	default:
 		r.ask.Info("store: install %s kept, nothing needed", inst.ID)
 	}
@@ -162,7 +154,7 @@ func (r *run) requireInstall(context.Context) error {
 	case err != nil:
 		return fmt.Errorf("reading the install: %w", err)
 	}
-	if err := r.refuseOtherNode(); err != nil {
+	if err := r.readOthers(); err != nil {
 		return err
 	}
 	r.install = inst
@@ -170,31 +162,76 @@ func (r *run) requireInstall(context.Context) error {
 	return nil
 }
 
+// registerTries is how often register reads the entry again when another
+// writer changed it in between.
+const registerTries = 3
+
+// register writes the node's entry of the registry: a new node joining
+// others is joining, without an index, which the controller gives it; the
+// first node of an install gets its state at the first start of the daemon.
+// An entry that is there has its fields refreshed and its state, index and
+// what else the controller decided left alone; a removed node joins again
+// under the index its name had, so its leg MACs stay.
 func (r *run) register(context.Context) error {
-	if err := r.refuseOtherNode(); err != nil {
-		return err
-	}
-	nodes, err := r.st.Nodes()
-	if err != nil {
-		return fmt.Errorf("reading the node registry: %w", err)
-	}
-	entry := store.NodeEntry{Name: r.o.Node, Version: version.Version, Since: r.now()}
-	switch {
-	case len(nodes) == 0:
-		if err := r.st.SaveNode(entry); err != nil {
+	for range registerTries {
+		entry, rev, err := r.nextEntry()
+		if err != nil {
+			return err
+		}
+		if entry == nil {
+			break
+		}
+		if _, err := r.st.SaveNodeIf(*entry, rev); err != nil {
+			if errors.Is(err, store.ErrRevision) {
+				continue
+			}
 			return fmt.Errorf("registering node %s: %w", r.o.Node, err)
 		}
-		r.ask.Info("node registry: registered %s", r.o.Node)
-	case nodes[0].Version != version.Version:
-		entry.Since = nodes[0].Since
-		if err := r.st.SaveNode(entry); err != nil {
-			return fmt.Errorf("registering node %s: %w", r.o.Node, err)
-		}
-		r.ask.Info("node registry: %s now runs version %s", r.o.Node, version.Version)
-	default:
-		r.ask.Info("node registry: %s is registered, nothing needed", r.o.Node)
+		break
 	}
 	return r.record(func(m *Manifest) { m.Node = r.o.Node })
+}
+
+// nextEntry is the entry to write and the revision it was read at, or nil
+// when the stored one is current.
+func (r *run) nextEntry() (*store.NodeEntry, int64, error) {
+	nodes, err := r.st.NodesRev()
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading the node registry: %w", err)
+	}
+	entry := store.NodeEntry{
+		Name: r.o.Node, Version: version.Version, Since: r.now(), Kind: string(pki.KindHost), AgentAddress: r.agentAddress,
+		Protocol: store.ProtocolRange{Min: agentproto.ProtocolMin, Max: agentproto.ProtocolMax}, Schema: store.SchemaVersion(),
+		CertSerial: r.serial, CertSHA256: r.fingerprint,
+	}
+	i := slices.IndexFunc(nodes, func(n store.NodeRev) bool { return n.Node.Name == r.o.Node })
+	if i < 0 {
+		if len(r.others) > 0 {
+			entry.State, entry.StateSince = string(agentproto.Joining), r.now()
+			r.ask.Info("node registry: registered %s as joining; the controller admits it", r.o.Node)
+		} else {
+			r.ask.Info("node registry: registered %s", r.o.Node)
+		}
+		return &entry, 0, nil
+	}
+	have := nodes[i].Node
+	entry.Since, entry.Index, entry.State, entry.StateSince = have.Since, have.Index, have.State, have.StateSince
+	entry.ControllerEligible, entry.ContestedUses, entry.Drained = have.ControllerEligible, have.ContestedUses, have.Drained
+	switch {
+	case have.State == string(agentproto.Removed):
+		entry.State, entry.StateSince, entry.ContestedUses = string(agentproto.Joining), r.now(), nil
+		if have.Index != nil {
+			r.ask.Info("node registry: %s joins again as joining, under its old index %d", r.o.Node, *have.Index)
+		} else {
+			r.ask.Info("node registry: %s joins again as joining", r.o.Node)
+		}
+	case reflect.DeepEqual(entry, have):
+		r.ask.Info("node registry: %s is registered, nothing needed", r.o.Node)
+		return nil, 0, nil
+	default:
+		r.ask.Info("node registry: refreshed %s", r.o.Node)
+	}
+	return &entry, nodes[i].Rev, nil
 }
 
 func (r *run) startService(ctx context.Context) error {

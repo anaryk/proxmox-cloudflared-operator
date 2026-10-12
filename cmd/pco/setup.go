@@ -28,6 +28,7 @@ type setupFlags struct {
 	noWeb                                       bool
 
 	managed, confirmSDNApply bool
+	noFirewallRule           bool
 }
 
 func (a *app) setupCmd() *cobra.Command {
@@ -50,6 +51,16 @@ func (a *app) setupCmd() *cobra.Command {
 			"install would never prune them: pco setup --recover adopts that install, and pco uninstall\n" +
 			"--keep-cloudflare removes pco from the node so that setup can start over. --new-install\n" +
 			"starts a new install beside them regardless.\n\n" +
+			"On a node of a Proxmox VE cluster whose store, shared by the cluster filesystem, holds an\n" +
+			"install that other nodes run, setup joins it: the node gets its key and certificates from the\n" +
+			"install's CA, which the first node makes, and an entry of the node registry as joining, which\n" +
+			"the controller admits; nothing changes at Cloudflare. Every node runs the same release of pco\n" +
+			"before a further node joins. A new install records the identity of the cluster and makes the\n" +
+			"CA.\n\n" +
+			"Setup offers the datacenter firewall rule that admits the agent channel of the controller,\n" +
+			"TCP port 8644, from the nodes: IN ACCEPT -p tcp -dport 8644 -source +pco-nodes, with the ipset\n" +
+			"pco-nodes holding every node's agent address, kept current as nodes join and leave. --yes takes\n" +
+			"it and --no-firewall-rule leaves it out; nothing else of the firewall is touched.\n\n" +
 			"The web interface, pco-web.service, listens on the node's address in the cluster status,\n" +
 			"port 8643, or on --web-listen; --no-web leaves it out. Its certificate, by --web-cert:\n" +
 			"  ca        a key of its own and a certificate signed by the cluster CA for 90 days, which\n" +
@@ -67,11 +78,11 @@ func (a *app) setupCmd() *cobra.Command {
 			"  pco setup\n\n" +
 			"  # Without a question, with the Cloudflare token of a file and the managed network\n" +
 			"  pco setup --yes --cf-token-file /root/cf-token --managed\n\n" +
-			"  # Put the role, the user, the token and the tags back after a restore of the node\n" +
-			"  pco setup --repair\n\n" +
 			"  # Adopt the install the token sees, after the store was lost\n" +
 			"  pco setup --recover --cf-token-file /root/cf-token\n\n" +
-			"  # The web interface with a certificate and key of your own\n" +
+			"  # Join the install of the cluster from a further node, without the firewall rule\n" +
+			"  pco setup --yes --no-firewall-rule\n\n" +
+			"  # Put what Proxmox holds back after a restore of the node, with a web certificate and key of your own\n" +
 			"  pco setup --repair --web-cert own --web-cert-file /root/pco.example.com.crt --web-key-file /root/pco.example.com.key",
 		// A token typed where a flag value belongs is an argument: the error
 		// must not repeat it.
@@ -120,6 +131,7 @@ func (a *app) setupCmd() *cobra.Command {
 	flags.BoolVar(&f.noWeb, "no-web", false, "do not set up the web interface")
 	flags.BoolVar(&f.managed, "managed", false, "make the managed network: the SDN zone pco and vnet pconet, applied under the SDN lock")
 	flags.BoolVar(&f.confirmSDNApply, "confirm-sdn-apply", false, "with --managed: apply the changes of others that are pending in the SDN along with pco's")
+	flags.BoolVar(&f.noFirewallRule, "no-firewall-rule", false, "do not add the datacenter firewall rule that admits the agent channel, TCP port 8644, from the nodes")
 	cmd.MarkFlagsMutuallyExclusive("cf-token-file", "cf-token-stdin")
 	cmd.MarkFlagsMutuallyExclusive("repair", "recover")
 	cmd.MarkFlagsMutuallyExclusive("new-install", "repair")
@@ -139,6 +151,9 @@ func (a *app) setupOptions(cmd *cobra.Command, f setupFlags) (setup.Options, err
 	}
 	if f.skipCloudflared {
 		o.InstallCloudflared = &no
+	}
+	if f.noFirewallRule {
+		o.FirewallRule = &no
 	}
 	token, err := a.setupToken(cmd, f)
 	if err != nil {
@@ -213,7 +228,7 @@ func (a *app) nodeSetup(p setup.Prompter) (*setup.Setup, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening the store: %w", err)
 	}
-	return setup.New(setup.NewHostRunner(), p, st, cloudflareClients(override), a.now, rand.Reader), nil
+	return setup.New(setup.NewHostRunner(), p, st, cloudflareClients(override), a.client(), a.now, rand.Reader), nil
 }
 
 // cliPrompter is the operator at the terminal. What it prints is cleaned as

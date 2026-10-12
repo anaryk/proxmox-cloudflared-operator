@@ -2,13 +2,8 @@ package setup
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"math/big"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,29 +25,14 @@ func clusterStatus(addr string) string {
 		`{"type":"node","name":"pve2","ip":"192.0.2.20","local":0,"online":1,"nodeid":2}]`
 }
 
-// webNode gives the node the unit of the web interface, a cluster CA as
-// Proxmox VE makes one and the certificate pveproxy serves, pve-ssl.pem. It
+// webNode gives the node the unit of the web interface and the certificate
+// pveproxy serves, pve-ssl.pem, beside the cluster CA every node has. It
 // returns the CA.
 func (e *testEnv) webNode() *x509.Certificate {
 	e.t.Helper()
 	e.installUnit(webUnit)
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(e.t, err)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Proxmox Virtual Environment"},
-		NotBefore: t0.AddDate(-1, 0, 0), NotAfter: t0.AddDate(9, 0, 0),
-		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, BasicConstraintsValid: true, IsCA: true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
-	require.NoError(e.t, err)
-	ca, err := x509.ParseCertificate(der)
-	require.NoError(e.t, err)
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	require.NoError(e.t, err)
-	e.writeFile(e.s.host.clusterCA, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o640)
-	e.writeFile(e.s.host.clusterCAKey, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600)
 	e.pveproxyCert("pve-ssl")
-	return ca
+	return e.pveCA
 }
 
 // pveproxyCert writes a certificate and key for pveproxy as name.pem and
@@ -177,7 +157,7 @@ func TestSetupGivesTheWebInterfaceALeafOfTheClusterCA(t *testing.T) {
 	e.requireShown("info: web interface: https://pve1.example.com:8643/")
 	e.requireShown("info: web certificate: SHA-256 fingerprint " + webcert.Fingerprint(leaf))
 	e.requireShown("once the cluster CA, " + e.s.host.clusterCA + ", is imported, as for port 8006")
-	require.NotContains(t, e.ask.text(), "firewall")
+	require.NotContains(t, e.ask.text(), "allow TCP port 8643")
 	e.requireNoSecret()
 }
 

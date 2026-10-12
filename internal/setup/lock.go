@@ -45,7 +45,7 @@ func (s *Setup) runsByHand(ctx context.Context) (bool, error) {
 	if !s.unitInstalled(serviceUnit) {
 		return true, nil
 	}
-	active, err := s.serviceActive(ctx, serviceUnit)
+	active, err := s.serviceActive(ctx)
 	return !active, err
 }
 

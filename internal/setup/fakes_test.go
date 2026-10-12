@@ -2,9 +2,17 @@ package setup
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	mathrand "math/rand/v2"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -148,6 +156,20 @@ func (p *fakePrompter) Warn(format string, args ...any) {
 
 func (p *fakePrompter) text() string { return strings.Join(p.lines, "\n") }
 
+// fakeDaemon is the daemon of the node as uninstall asks it to hand the lease
+// off: it answers with err and remembers every call.
+type fakeDaemon struct {
+	err   error
+	calls []string // the node each hand-off was asked for, "" for any
+	seen  *[]string
+}
+
+func (d *fakeDaemon) Handoff(_ context.Context, to string) error {
+	d.calls = append(d.calls, to)
+	*d.seen = append(*d.seen, "handoff "+to)
+	return d.err
+}
+
 // recordingAPI logs the deletes at Cloudflare among the commands, so that a
 // test sees their order.
 type recordingAPI struct {
@@ -184,12 +206,18 @@ type testEnv struct {
 	ask    *fakePrompter
 	cf     *cffake.Fake
 	api    func(cfapi.API) cfapi.API // wraps the fake, when set
+	daemon *fakeDaemon
 	events []string
 	errs   []string // every error a run returned
 	s      *Setup
 	// snapshot is what the cluster looks like through the API; nil for an
 	// empty one, read in full.
 	snapshot *inventory.Snapshot
+	// pveCA is the cluster CA of Proxmox VE on the node, whose fingerprint
+	// identifies the cluster.
+	pveCA *x509.Certificate
+	// addrs are the addresses of the node, for cluster.agentNetwork.
+	addrs []netip.Addr
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -207,6 +235,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	e.run = &fakeRunner{t: t, events: &e.events}
 	e.ask = &fakePrompter{t: t}
+	e.daemon = &fakeDaemon{seen: &e.events}
+	e.addrs = []netip.Addr{netip.MustParseAddr(testAddr), netip.MustParseAddr("10.99.0.10")}
 	st, err := store.Open(e.paths)
 	require.NoError(t, err)
 	e.st = st
@@ -227,10 +257,13 @@ func newTestEnv(t *testing.T) *testEnv {
 		}
 		return api, nil
 	}
-	e.s = New(e.run, e.ask, st, newClient, func() time.Time { return t0 }, mathrand.NewChaCha8([32]byte{1}))
+	e.s = New(e.run, e.ask, st, newClient, e.daemon, func() time.Time { return t0 }, mathrand.NewChaCha8([32]byte{1}))
 	t.Cleanup(e.verify)
 	e.s.host = host{
 		pveDir:     "/etc/pve",
+		members:    filepath.Join(base, "pve", ".members"),
+		pveRootCA:  filepath.Join(base, "pve", "pve-root-ca.pem"),
+		addrs:      func() ([]netip.Addr, error) { return e.addrs, nil },
 		keyring:    filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
 		sources:    filepath.Join(base, "sources", "cloudflared.sources"),
 		unitDirs:   []string{filepath.Join(base, "units")},
@@ -254,7 +287,56 @@ func newTestEnv(t *testing.T) *testEnv {
 		nodeCertDir:  filepath.Join(base, "pve", "local"),
 		fqdn:         func(hostname string) string { return hostname },
 	}
+	e.pveCA = e.writePVECA()
+	e.standalone()
 	return e
+}
+
+// writePVECA gives the node a cluster CA as Proxmox VE makes one, with its
+// key, and returns the certificate.
+func (e *testEnv) writePVECA() *x509.Certificate {
+	e.t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(e.t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Proxmox Virtual Environment"},
+		NotBefore: t0.AddDate(-1, 0, 0), NotAfter: t0.AddDate(9, 0, 0),
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, BasicConstraintsValid: true, IsCA: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	require.NoError(e.t, err)
+	ca, err := x509.ParseCertificate(der)
+	require.NoError(e.t, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(e.t, err)
+	e.writeFile(e.s.host.clusterCA, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o640)
+	e.writeFile(e.s.host.clusterCAKey, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600)
+	return ca
+}
+
+// standalone makes the node one that stands alone, as pmxcfs lists it: no
+// cluster, and itself with its address.
+func (e *testEnv) standalone() {
+	e.t.Helper()
+	e.writeFile(e.s.host.members, []byte(`{"nodename":"`+testNode+`","version":0,`+
+		`"nodelist":{"`+testNode+`":{"id":0,"online":1,"ip":"`+testAddr+`"}}}`+"\n"), 0o644)
+}
+
+// clusterOf makes the node one of the cluster lab with the others, every one
+// online, this node at testAddr and the others at 192.0.2.2x.
+func (e *testEnv) clusterOf(others ...string) { e.clusterAs(testNode, testAddr, others...) }
+
+// clusterAs is clusterOf for a node of another name and address.
+func (e *testEnv) clusterAs(self, addr string, others ...string) {
+	e.t.Helper()
+	var list []string
+	for i, n := range others {
+		list = append(list, fmt.Sprintf(`"%s":{"id":%d,"online":1,"ip":"192.0.2.2%d"}`, n, i+2, i))
+	}
+	list = append(list, `"`+self+`":{"id":1,"online":1,"ip":"`+addr+`"}`)
+	e.writeFile(e.s.host.members, []byte(`{"nodename":"`+self+`","version":7,`+
+		`"cluster":{"name":"lab","version":3,"nodes":`+fmt.Sprint(len(others)+1)+`,"quorate":1},`+
+		`"nodelist":{`+strings.Join(list, ",")+`}}`+"\n"), 0o644)
 }
 
 // script sets what the host expects next, once it has had what it expected
@@ -301,7 +383,14 @@ func (e *testEnv) reopen() {
 	e.st, e.s.st = st, st
 }
 
+// setup runs a setup. The firewall rule of the agent channel is declined
+// unless the test says otherwise: the scripted host has no firewall, and the
+// tests of the rule answer for themselves.
 func (e *testEnv) setup(o Options) error {
+	if o.FirewallRule == nil {
+		no := false
+		o.FirewallRule = &no
+	}
 	err := e.s.Run(context.Background(), o)
 	if err != nil {
 		e.errs = append(e.errs, err.Error())
