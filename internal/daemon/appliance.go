@@ -13,6 +13,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
@@ -22,6 +23,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -331,7 +333,12 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 	filter := newEgressFilter(deps.Nft, cfg.Paths.Local, deps.ConnectorUID, deps.Resolvers)
 	start := wiredFrom(settings)
 	ownUser, _, _ := strings.Cut(state.token.TokenID, "!")
-	eng, err := engine.New(engine.Deps{
+	// The cards of the guests are changed through the API as the token,
+	// where the admin granted it; whether it did is judged by the access
+	// control as the engine last read it, which is the engine's once made.
+	var eng *engine.Engine
+	acl := func(context.Context) (access.Data, error) { return eng.AccessData() }
+	ed := engine.Deps{
 		Store:       st,
 		Inventory:   inv,
 		StartOnly:   func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
@@ -354,9 +361,12 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		EpochDrawn:  self.EpochDrawn,
 		Gateway:     gw,
 		Networks:    nodeNetworks{proxmox: client, prober: prober},
+		Guests:      managednet.NewAPIConfigurer(client, acl, state.token.TokenID),
 
 		StartOnlyFields: wiredFields(),
-	})
+	}
+	managedReaders(&ed, client, a.Node)
+	eng, err = engine.New(ed)
 	if err != nil {
 		return applianceParts{}, fmt.Errorf("building the engine: %w", err)
 	}

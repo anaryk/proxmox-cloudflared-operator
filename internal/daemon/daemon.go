@@ -24,6 +24,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -415,7 +416,7 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 	// whose tokens are not delegates, is the user of the token. The host has
 	// no gateway or resolver of its own to soft-deny beyond the node's.
 	ownUser, _, _ := strings.Cut(token.TokenID, "!")
-	eng, err := engine.New(engine.Deps{
+	ed := engine.Deps{
 		Store:      st,
 		Inventory:  inv,
 		StartOnly:  func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
@@ -433,9 +434,14 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		OwnUser:    ownUser,
 		Gateway:    gw,
 		Networks:   nodeNetworks{proxmox: client, prober: deps.Prober, unit: deps.Namespace},
+		// The host's daemon runs as root: the cards of the guests of this
+		// node are changed with qm and pct.
+		Guests: managednet.NewHostConfigurer(setup.NewHostRunner(), cfg.Node),
 
 		StartOnlyFields: wiredFields(),
-	})
+	}
+	managedReaders(&ed, client, cfg.Node)
+	eng, err := engine.New(ed)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("building the engine: %w", err)
 	}
