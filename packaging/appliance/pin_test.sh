@@ -59,6 +59,9 @@ cp "$HERE/pin.conf" "$ROOT/appliance/pin.conf"
 run
 assert "passes" rc_is 0
 assert "hands mmdebstrap the keyring it downloads" matches "$OUT" ' --keyring=[^ ]*/pco-appliance-build\.dry/debian-archive-keyring\.pgp '
+# The presets of systemd enable it at the first start, and in the appliance
+# pco netns up fails at every boot.
+assert "masks pco-netns.service" matches "$OUT" 'systemctl\\ mask\\ ([^ ]*\\ )*pco-netns\.service'
 
 CASE='the keyring'
 pin '# a comment' 'SNAPSHOT=20261004T000000Z' 'KEYRING_VERSION=2025.1' "KEYRING_SHA256=$SHA"

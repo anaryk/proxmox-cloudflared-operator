@@ -607,7 +607,9 @@ The appliance runs the units of the package, enabled by its template, and drop-i
 
 `nftables.service` is masked in the appliance: its configuration flushes the whole ruleset, and
 with it both tables of pco. `pco doctor` fails its `nftables` check when the unit is enabled,
-and warns in any other state but masked.
+and warns in any other state but masked. `pco-netns.service` is masked too: it brings up the
+gateway namespace of the host profile, and the appliance has none, as its legs are network
+cards of the container.
 
 After a start of the container no connector runs until the daemon's cycles have proven the
 container and read the access control of Proxmox, and no connector reaches a guest before the

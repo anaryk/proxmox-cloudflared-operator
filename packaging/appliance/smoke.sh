@@ -219,11 +219,14 @@ if [[ $network == 0 ]]; then
 	check "pco and cloudflared are held" is "$(inside apt-mark showhold | LC_ALL=C sort | paste -s -d ' ' -)" "cloudflared pco"
 	check "the password of root is locked" is "$(inside passwd --status root | awk '{ print $2 }')" L
 	check "the user pco-connector exists" user_exists pco-connector
-	# nftables.service would flush the tables of pco. The others fail, or hold
-	# the start up for two minutes, in an unprivileged container of Proxmox VE,
-	# which systemd-nspawn does not show: their masks are what this can check.
-	for unit in nftables.service systemd-networkd-wait-online.service sys-kernel-config.mount sys-kernel-debug.mount \
-		systemd-modules-load.service; do
+	# nftables.service would flush the tables of pco, and pco-netns.service,
+	# of the host profile, fails at every boot of the appliance. The others
+	# fail, or hold the start up for two minutes, in an unprivileged container
+	# of Proxmox VE, which systemd-nspawn does not show: their masks are what
+	# this can check.
+	check "pco-netns.service did not fail" is "$(inside systemctl is-failed pco-netns.service || true)" inactive
+	for unit in nftables.service pco-netns.service systemd-networkd-wait-online.service sys-kernel-config.mount \
+		sys-kernel-debug.mount systemd-modules-load.service; do
 		check "$unit is masked" is "$(inside systemctl is-enabled "$unit" || true)" masked
 	done
 	# shellcheck disable=SC2016

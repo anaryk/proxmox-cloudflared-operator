@@ -24,7 +24,10 @@ container from it. Every release carries one for amd64 and one for arm64.
   daemon wrote `/run/pco-appliance/identity-ok`; `overlay_test.sh` checks them.
 - `pco-net.service`, `pco-egress.service`, `pco.service`,
   `pco-first-boot.service` and `unattended-upgrades.service` are enabled,
-  `nftables.service` is masked (it would flush the tables of pco), the root
+  `nftables.service` is masked (it would flush the tables of pco), and so is
+  `pco-netns.service`, which brings up the gateway namespace of the host
+  profile and would fail at every boot of the appliance once the presets of
+  systemd enabled it at the first start; the root
   password is locked and `/etc/machine-id` is empty. So are the units an
   unprivileged container cannot run, as in the Debian template of Proxmox VE:
   `systemd-networkd-wait-online.service` (ifupdown brings up the network; the
@@ -123,7 +126,7 @@ must come up running, or degraded by nothing but `pco.service`,
 file name, the egress table loaded, `pco net show` must say what
 `pco-net.service` found, the drop-ins must be in force, the profile
 `appliance`, pco and cloudflared held, root
-locked, `pco-connector` there, `nftables.service` and the units an
+locked, `pco-connector` there, `nftables.service`, `pco-netns.service` and the units an
 unprivileged container cannot run masked (`systemd-nspawn` runs them, so the
 masks are what stands for a start in Proxmox VE), apt must read the
 two live archives and nothing of the snapshot, and `unattended-upgrade
