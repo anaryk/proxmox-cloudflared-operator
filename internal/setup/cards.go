@@ -210,8 +210,15 @@ func (d Detacher) Detach(ctx context.Context, attachments []store.Attachment) ([
 	return left, nil
 }
 
+// FirewallComment starts the comment of every firewall rule pco puts on a
+// guest's card, pco:<install id>; the detach removes rules with it and no
+// other.
+const FirewallComment = "pco:"
+
 // detach removes the card of one attachment and puts back the guest's
-// firewall; nil when the card is not there.
+// firewall; nil when the card is not there. The firewall is only touched for
+// a card this run found with pco's MAC and removed: a card that is gone was
+// removed by somebody else, and its index may be an admin's card by now.
 func (d Detacher) detach(ctx context.Context, node string, ref model.GuestRef, a store.Attachment) (*Card, error) {
 	cfg, err := guestConfig(ctx, d.Run, node, ref)
 	if err != nil {
@@ -221,31 +228,48 @@ func (d Detacher) detach(ctx context.Context, node string, ref model.GuestRef, a
 	i := slices.IndexFunc(cards, func(c Card) bool { return c.NIC == a.NIC })
 	switch {
 	case i < 0:
-		d.Ask.Info("managed card of %s: net%d is gone already", a.Owner, a.NIC)
+		d.goneCard(node, ref, a)
+		return nil, nil
 	case cards[i].MAC != a.MAC:
 		d.Ask.Warn("managed card of %s: net%d on %s has the MAC %s, not pco's %s; left as it is", a.Owner, a.NIC, ManagedVnet, cards[i].MAC, a.MAC)
 		return nil, nil
-	default:
-		if _, err := d.Run.Run(ctx, "pvesh", "set", guestPath(node, ref)+"/config", "--delete", "net"+strconv.Itoa(a.NIC)); err != nil {
-			return nil, fmt.Errorf("removing net%d of %s: %w", a.NIC, ref, err)
-		}
-		d.Ask.Info("managed card of %s: removed net%d", a.Owner, a.NIC)
 	}
+	if _, err := d.Run.Run(ctx, "pvesh", "set", guestPath(node, ref)+"/config", "--delete", "net"+strconv.Itoa(a.NIC)); err != nil {
+		return nil, fmt.Errorf("removing net%d of %s: %w", a.NIC, ref, err)
+	}
+	d.Ask.Info("managed card of %s: removed net%d", a.Owner, a.NIC)
 	if a.Firewall != nil {
 		if err := d.restoreFirewall(ctx, node, ref, a); err != nil {
 			return nil, err
 		}
 	}
-	if i < 0 {
-		return nil, nil
-	}
 	return &Card{Owner: a.Owner, Node: node, NIC: a.NIC, MAC: a.MAC}, nil
+}
+
+// goneCard says that the card of an attachment is not there any more, and
+// names the commands that put the guest's firewall back, which the run does
+// not run itself.
+func (d Detacher) goneCard(node string, ref model.GuestRef, a store.Attachment) {
+	if a.Firewall == nil {
+		d.Ask.Info("managed card of %s: net%d is gone already", a.Owner, a.NIC)
+		return
+	}
+	fw, iface := guestPath(node, ref)+"/firewall", "net"+strconv.Itoa(a.NIC)
+	d.Ask.Warn("managed card of %s: %s is gone already, so its firewall is left as it is; pco's rules on %s carry the comment "+
+		"%s<install id>, and these put the firewall back by hand:", a.Owner, iface, iface, FirewallComment)
+	d.Ask.Info("  pvesh get %s/rules --output-format json, then pvesh delete %s/rules/<pos> for each rule on %s with that comment, from the last",
+		fw, fw, iface)
+	d.Ask.Info("  pvesh delete %s/ipset/ipfilter-%s --force 1", fw, iface)
+	if !a.Firewall.Enabled {
+		d.Ask.Info("  pvesh set %s/options --enable 0", fw)
+	}
 }
 
 // firewallRule is a rule of a guest's firewall as pvesh lists it.
 type firewallRule struct {
-	Pos   pveInt `json:"pos"`
-	Iface string `json:"iface"`
+	Pos     pveInt `json:"pos"`
+	Iface   string `json:"iface"`
+	Comment string `json:"comment"`
 }
 
 // ipset is an ipset of a guest's firewall as pvesh lists it.
@@ -254,8 +278,9 @@ type ipset struct {
 }
 
 // restoreFirewall takes the guest's firewall back to what it was before pco
-// attached it: the rules on the card, which are pco's as the card was, the
-// card's ipset, and the firewall itself when pco turned it on.
+// attached it: pco's rules on the card, told by their comment, the card's
+// ipset, and the firewall itself when pco turned it on. A rule on the card
+// without the comment is an admin's and stays.
 func (d Detacher) restoreFirewall(ctx context.Context, node string, ref model.GuestRef, a store.Attachment) error {
 	fw := guestPath(node, ref) + "/firewall"
 	iface := "net" + strconv.Itoa(a.NIC)
@@ -266,7 +291,7 @@ func (d Detacher) restoreFirewall(ctx context.Context, node string, ref model.Gu
 	// From the last, as a rule removed moves those after it up.
 	slices.SortFunc(rules, func(x, y firewallRule) int { return int(y.Pos - x.Pos) })
 	for _, rule := range rules {
-		if rule.Iface != iface {
+		if rule.Iface != iface || !strings.HasPrefix(rule.Comment, FirewallComment) {
 			continue
 		}
 		if _, err := d.Run.Run(ctx, "pvesh", "delete", fmt.Sprintf("%s/rules/%d", fw, rule.Pos)); err != nil {

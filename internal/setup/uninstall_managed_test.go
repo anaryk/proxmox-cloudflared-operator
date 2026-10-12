@@ -157,8 +157,9 @@ func TestUninstallWaitsBoundedForTheCards(t *testing.T) {
 }
 
 // In the appliance pco turned on the guest's firewall and gave the card its
-// rules and its ipset: they go with the card, and a firewall that was off is
-// off again.
+// rules and its ipset: pco's rules go with the card, told by their comment,
+// an admin's rule on the same card stays, and a firewall that was off is off
+// again.
 func TestDetachPutsBackTheFirewall(t *testing.T) {
 	e := newTestEnv(t)
 	ct := ctOnPconet()
@@ -167,10 +168,13 @@ func TestDetachPutsBackTheFirewall(t *testing.T) {
 		resources(ct), configRead(ct),
 		{line: "pvesh set /nodes/pve1/lxc/105/config --delete net1"},
 		{line: "pvesh get " + fw + "/rules --output-format json",
-			out: `[{"pos":0,"type":"in","action":"ACCEPT","iface":"net0","dport":"22"},{"pos":1,"type":"in","action":"ACCEPT","iface":"net1","proto":"udp"},` +
-				`{"pos":2,"type":"in","action":"DROP","iface":"net1"},{"pos":3,"type":"out","action":"DROP","iface":"net1"}]`},
+			out: `[{"pos":0,"type":"in","action":"ACCEPT","iface":"net0","dport":"22"},` +
+				`{"pos":1,"type":"in","action":"ACCEPT","iface":"net1","proto":"udp","comment":"pco:0123456789ab"},` +
+				`{"pos":2,"type":"in","action":"ACCEPT","iface":"net1","dport":"8080","comment":"backup agent"},` +
+				`{"pos":3,"type":"in","action":"DROP","iface":"net1","comment":"pco:0123456789ab"},` +
+				`{"pos":4,"type":"out","action":"DROP","iface":"net1","comment":"pco:0123456789ab"}]`},
+		{line: "pvesh delete " + fw + "/rules/4"},
 		{line: "pvesh delete " + fw + "/rules/3"},
-		{line: "pvesh delete " + fw + "/rules/2"},
 		{line: "pvesh delete " + fw + "/rules/1"},
 		{line: "pvesh get " + fw + "/ipset --output-format json", out: `[{"name":"ipfilter-net1"},{"name":"trusted"}]`},
 		{line: "pvesh delete " + fw + "/ipset/ipfilter-net1 --force 1"},
@@ -185,6 +189,30 @@ func TestDetachPutsBackTheFirewall(t *testing.T) {
 	require.Empty(t, left)
 	e.done()
 	e.requireShown("managed card of lxc/105: the firewall is as it was before pco attached the card")
+}
+
+// A card that is gone already was removed by somebody else, and net1 may be
+// an admin's card by now: nothing of the guest's firewall is touched, and the
+// commands that would put it back are shown instead.
+func TestDetachRunsNothingForACardThatIsGone(t *testing.T) {
+	e := newTestEnv(t)
+	ct := ctOffPconet()
+	e.script([]call{resources(ct), configRead(ct)})
+	d := Detacher{Run: e.run, Ask: e.ask, Sleep: func(context.Context, time.Duration) error { return nil }}
+
+	left, err := d.Detach(context.Background(), []store.Attachment{attached("lxc/105", 1, "10.203.118.5", &store.FirewallBefore{Enabled: false, Rules: 1})})
+
+	require.NoError(t, err)
+	require.Empty(t, left)
+	e.done()
+	for _, line := range e.run.ran {
+		require.NotContains(t, line, "/firewall", "no firewall command runs for a card that is gone")
+	}
+	e.requireShown("warn: managed card of lxc/105: net1 is gone already, so its firewall is left as it is; pco's rules on net1 " +
+		"carry the comment pco:<install id>, and these put the firewall back by hand:")
+	e.requireShown("  pvesh get /nodes/pve1/lxc/105/firewall/rules --output-format json, then pvesh delete /nodes/pve1/lxc/105/firewall/rules/<pos> for each rule on net1 with that comment, from the last")
+	e.requireShown("  pvesh delete /nodes/pve1/lxc/105/firewall/ipset/ipfilter-net1 --force 1")
+	e.requireShown("  pvesh set /nodes/pve1/lxc/105/firewall/options --enable 0")
 }
 
 // A firewall that was on stays on.
