@@ -174,13 +174,20 @@ func (e *Engine) UnknownMAC(mac net.HardwareAddr, at time.Time) {
 		e.macMu.Unlock()
 		return
 	}
+	// What is older than the window says nothing any more; a watch that
+	// sees many MACs must not grow the map without end.
+	for other, when := range e.unknownMACs {
+		if at.Sub(when) >= unknownMACEvery {
+			delete(e.unknownMACs, other)
+		}
+	}
 	e.unknownMACs[key] = at
 	e.macMu.Unlock()
 
 	e.d.Inventory.ForceRefresh(e.d.Node)
 	e.events.add(Event{At: at, Level: levelWarn, Kind: kindManaged, Subject: gateway.ManagedBridge,
 		Message: fmt.Sprintf("a frame from %s, a MAC no lease knows, was seen on the managed network; the guests of %s are read again", key, e.d.Node)})
-	if e.d.Identity == nil {
+	if profile, _ := e.RunsAs(); profile != store.ProfileAppliance {
 		return
 	}
 	e.stateMu.Lock()

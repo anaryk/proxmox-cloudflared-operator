@@ -140,6 +140,22 @@ type managedFacts struct {
 	serviceErr error
 	guestFW    map[string]bool // by owner: the guest firewall is on
 	guestFWErr map[string]error
+	// fwReads counts the reads of a guest's firewall options, by owner, and
+	// vnetReads those of the vnet.
+	fwReads   map[string]int
+	vnetReads int
+}
+
+func (f *managedFacts) firewallReads(owner string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fwReads[owner]
+}
+
+func (f *managedFacts) vnetReadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.vnetReads
 }
 
 func (f *managedFacts) set(change func(f *managedFacts)) {
@@ -157,6 +173,7 @@ func (f *managedFacts) deps(d *Deps) {
 	d.Vnet = func(context.Context) (ManagedVnet, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.vnetReads++
 		return f.vnet, f.vnetErr
 	}
 	d.NodeFirewall = func(context.Context) (pve.NodeFirewallOptions, error) {
@@ -180,6 +197,10 @@ func (f *managedFacts) deps(d *Deps) {
 	d.GuestFirewall = func(_ context.Context, g model.Guest) (pve.GuestFirewallOptions, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.fwReads == nil {
+			f.fwReads = map[string]int{}
+		}
+		f.fwReads[g.Ref.String()]++
 		if err := f.guestFWErr[g.Ref.String()]; err != nil {
 			return pve.GuestFirewallOptions{}, err
 		}
@@ -378,6 +399,13 @@ func TestAVirtualMachineWithoutHotplugWaitsForItsRestart(t *testing.T) {
 	require.Equal(t, AttachmentPendingReboot, attachmentState(st, "qemu/102"))
 	require.Len(t, m.attachments(), 1)
 	require.Equal(t, 1, strings.Count(strings.Join(m.managedEvents(), "\n"), "waits for the restart"), "said once")
+
+	// The guest restarted: its configuration shows the card.
+	m.inv.set(snapshot(withCard(vm, leaseMAC2, "")))
+	st = m.next()
+	require.Len(t, m.cfg.changes(), 2, "a card that is there is kept")
+	require.Equal(t, AttachmentAttached, attachmentState(st, "qemu/102"), "the card is live since the restart")
+	require.Equal(t, netip.MustParseAddr("10.203.118.2"), m.res.leased("qemu/102"))
 }
 
 func TestTheNextFreeIndexIsTaken(t *testing.T) {
@@ -657,14 +685,16 @@ func TestACopiedCardOnAnUntaggedGuestIsSetLinkDown(t *testing.T) {
 	require.True(t, hasProblem(st, "foreign card net1 ("+leaseMAC2+") of lxc/102 (web-1-clone)"))
 
 	t.Run("a container that refuses link_down loses the card", func(t *testing.T) {
-		m.cfg.set(func(f *fakeConfigurer) { f.linkDownErr["lxc/102"] = errors.New("pct set: unknown option link_down") })
+		m.cfg.set(func(f *fakeConfigurer) {
+			f.linkDownErr["lxc/102"] = fmt.Errorf("%w: pct set: link_down: property is not defined in schema", managednet.ErrLinkDownRefused)
+		})
 		st := m.next()
 		changes := m.cfg.changes()
 		require.Equal(t, "link-down lxc/102 net1", changes[len(changes)-2])
 		require.Equal(t, "remove lxc/102 net1", changes[len(changes)-1])
 		require.Equal(t, "removed", st.Managed.Foreign[0].Action)
 		require.Contains(t, m.managedEvents(), "foreign card net1 ("+leaseMAC2+") of lxc/102 (web-1-clone) was removed, as the container refused link_down: "+
-			"pct set: unknown option link_down")
+			"Proxmox refuses link_down on this card: pct set: link_down: property is not defined in schema")
 	})
 
 	t.Run("a guest pco may not write is reported", func(t *testing.T) {
@@ -694,6 +724,7 @@ func TestAVnetThatIsNotAsCreatedHoldsTheAttaches(t *testing.T) {
 			m := newManagedEnv(t)
 			m.warm()
 			m.facts.set(func(f *managedFacts) { f.vnet = tt.vnet })
+			m.clock.advance(vnetEvery)
 
 			st := m.next()
 			m.next()
@@ -761,6 +792,7 @@ func TestAGuestThatMigratedKeepsItsCard(t *testing.T) {
 
 	require.Len(t, m.cfg.changes(), 1)
 	require.Equal(t, AttachmentMigrated, attachmentState(st, "lxc/101"))
+	require.Empty(t, st.Managed.Waiting, "an attached guest that migrated is shown as migrated, not as waiting")
 	require.Contains(t, m.managedEvents(), "lxc/101 (web-1) took its card on the managed network to node pve2")
 	require.Contains(t, m.leases(), leaseMAC2)
 }

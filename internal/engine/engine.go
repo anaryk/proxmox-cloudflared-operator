@@ -311,6 +311,13 @@ type Engine struct {
 	// both guarded by the cycle lock.
 	pendingCards map[string]bool
 	exhausted    bool
+	// attachedSaid are the owners whose card this process said is attached;
+	// vnetRead is what the step last read of the vnet, and impacts what it
+	// last read of the firewall of each guest it would attach, both kept
+	// for a while: guarded by the cycle lock.
+	attachedSaid map[string]bool
+	vnetRead     vnetRead
+	impacts      map[string]impactRead
 	// unknownMACs are, by MAC, when the source-MAC watch last reported a
 	// frame of a MAC no lease knows on the managed network; guarded by
 	// macMu.
@@ -383,6 +390,8 @@ func New(d Deps) (*Engine, error) {
 
 		pendingCards: make(map[string]bool),
 		unknownMACs:  make(map[string]time.Time),
+		attachedSaid: make(map[string]bool),
+		impacts:      make(map[string]impactRead),
 
 		refusedAgain: make(map[string]map[string]bool),
 		tried:        make(map[string]checkTry),

@@ -140,7 +140,31 @@ const (
 	firewallUnit   = "pve-firewall"
 	// unknownMACEvery is how often the same unknown MAC is reported.
 	unknownMACEvery = 5 * time.Minute
+	// vnetEvery is how long what was read of the vnet stands, and
+	// impactEvery how long what was read of a guest's firewall does while
+	// its configuration is the same.
+	vnetEvery   = time.Minute
+	impactEvery = time.Minute
+	// writeWaits starts the reason of what waits while the cycle may not
+	// write.
+	writeWaits = "waits until the cycle may write: "
 )
+
+// vnetRead is the vnet as the step last read it, and when.
+type vnetRead struct {
+	at   time.Time
+	view VnetView
+}
+
+// impactRead is what the step last read of the firewall of a guest: the
+// card turning it on would filter, or why it could not be read, for the
+// configuration of the digest.
+type impactRead struct {
+	at     time.Time
+	digest string
+	card   string
+	why    string
+}
 
 // The problem lines of the managed network.
 const (
@@ -215,6 +239,11 @@ type managedStep struct {
 	grant       map[string]string
 	// hold says why nothing attaches this cycle; empty when attaches run.
 	hold string
+	// writeHold says why the cycle may not write, which leaves every card
+	// as it is but for the link of a copy; empty when it may. heldDetach are
+	// the owners whose detach waits for it.
+	writeHold  string
+	heldDetach map[string]bool
 	// unverified says, by owner, why the card of an attachment could not
 	// be added or checked this cycle.
 	unverified map[string]string
@@ -228,7 +257,7 @@ type managedStep struct {
 // card added live is a candidate of the same cycle, and never on an
 // incomplete snapshot.
 func (c *cycleRun) managed() {
-	s := &managedStep{c: c, prev: c.st.Managed, unverified: map[string]string{}, migrated: map[string]bool{}}
+	s := &managedStep{c: c, prev: c.st.Managed, unverified: map[string]string{}, migrated: map[string]bool{}, heldDetach: map[string]bool{}}
 	c.st.Managed = s.run()
 }
 
@@ -267,11 +296,15 @@ func (s *managedStep) run() ManagedView {
 	if s.hold != "" {
 		c.problem("%s", s.hold)
 	}
+	if !c.writerRead || c.cfHold || c.storeHold {
+		s.writeHold = writeWaits + cmp.Or(c.holdWhy, gateNoWriter)
+	}
 	if !s.read() {
 		return s.v
 	}
 	s.ipam = managednet.NewIPAM(c.e.d.Store, n.Prefix, func() time.Time { return c.now })
-	in, extra := s.input()
+	in := s.input()
+	extra := s.impacts(&in)
 	decisions := managednet.Decide(in)
 	s.v.Waiting = append(s.v.Waiting, extra...)
 	for _, d := range decisions {
@@ -289,7 +322,9 @@ func (s *managedStep) run() ManagedView {
 		case managednet.ActionKeep:
 			s.keep(d)
 		case managednet.ActionWait:
-			s.wait(d.Owner, d.Why)
+			if !s.migratedNow(d.Owner) {
+				s.wait(d.Owner, d.Why)
+			}
 		}
 	}
 	s.noteAuto()
@@ -346,6 +381,17 @@ func (s *managedStep) checkVnet() VnetView {
 	if c.e.d.Vnet == nil {
 		return VnetView{OK: true, ZoneType: zoneTypeSimple, IsolatePorts: !c.appliance()}
 	}
+	if last := c.e.vnetRead; !last.at.IsZero() && c.now.Sub(last.at) >= 0 && c.now.Sub(last.at) < vnetEvery {
+		return last.view
+	}
+	view := s.readVnet()
+	c.e.vnetRead = vnetRead{at: c.now, view: view}
+	return view
+}
+
+// readVnet reads the vnet and says what differs from how pco made it.
+func (s *managedStep) readVnet() VnetView {
+	c := s.c
 	vnet, err := c.e.d.Vnet(c.ctx)
 	if err != nil {
 		return VnetView{Why: []string{"it could not be read: " + err.Error()}}
@@ -447,9 +493,9 @@ func (s *managedStep) legView() *LegView {
 }
 
 // input is what Decide reads, from the snapshot and what the cycle read
-// with it. Guests whose firewall options cannot be read are not given to
-// Decide: they wait with the reason.
-func (s *managedStep) input() (managednet.DecideInput, []ManagedWaiting) {
+// with it, without the firewall impact, which impacts adds for the guests
+// it matters for.
+func (s *managedStep) input() managednet.DecideInput {
 	c := s.c
 	appliance := c.appliance()
 	in := managednet.DecideInput{
@@ -467,7 +513,6 @@ func (s *managedStep) input() (managednet.DecideInput, []ManagedWaiting) {
 		in.ValidRoutes[rt.Owner()]++
 	}
 	reached := s.reaches(self)
-	var extra []ManagedWaiting
 	for _, g := range c.snap.Guests {
 		if g.Template || !g.HasTag(c.settings.GateTag) {
 			continue
@@ -479,18 +524,6 @@ func (s *managedStep) input() (managednet.DecideInput, []ManagedWaiting) {
 		}
 		if consent, ok := s.consents[owner]; ok && consent.Identity == g.Identity {
 			in.AcceptImpact[owner] = consent.AcceptFirewallImpact
-		}
-		if appliance {
-			if _, attached := s.attachments[owner]; !attached {
-				card, why := s.impact(g)
-				if why != "" {
-					extra = append(extra, ManagedWaiting{GuestView: *c.guestView(g.Ref), Identity: g.Identity, Why: why})
-					continue
-				}
-				if card != "" {
-					in.Impact[owner] = card
-				}
-			}
 		}
 		in.Guests = append(in.Guests, g)
 	}
@@ -514,7 +547,42 @@ func (s *managedStep) input() (managednet.DecideInput, []ManagedWaiting) {
 		}
 	}
 	s.writable, s.grant = in.Writable, in.Grant
-	return in, extra
+	return in
+}
+
+// impacts adds to in the firewall impact of the guests it matters for in
+// the appliance: those Decide would give a card now, attached or put in the
+// place of a copy. The firewall of no other guest is read. A guest whose
+// firewall could not be read is taken out of in and waits with the reason.
+func (s *managedStep) impacts(in *managednet.DecideInput) []ManagedWaiting {
+	c := s.c
+	if !in.Appliance {
+		return nil
+	}
+	ask := map[string]bool{}
+	for _, d := range managednet.Decide(*in) {
+		_, attached := in.Attachments[d.Owner]
+		if d.Action == managednet.ActionReplace || d.Action == managednet.ActionAttach && !attached {
+			ask[d.Owner] = true
+		}
+	}
+	var extra []ManagedWaiting
+	in.Guests = slices.DeleteFunc(in.Guests, func(g model.Guest) bool {
+		owner := g.Ref.String()
+		if !ask[owner] {
+			return false
+		}
+		card, why := s.impact(g)
+		if why != "" {
+			extra = append(extra, ManagedWaiting{GuestView: *c.guestView(g.Ref), Identity: g.Identity, Why: why})
+			return true
+		}
+		if card != "" {
+			in.Impact[owner] = card
+		}
+		return false
+	})
+	return extra
 }
 
 // canWrite asks the configurer whether pco may change the guest, and why
@@ -538,6 +606,17 @@ func (s *managedStep) impact(g model.Guest) (card, why string) {
 	if i < 0 {
 		return "", ""
 	}
+	owner, now := g.Ref.String(), s.c.now
+	if last, ok := s.c.e.impacts[owner]; ok && last.digest == g.Digest && now.Sub(last.at) >= 0 && now.Sub(last.at) < impactEvery {
+		return last.card, last.why
+	}
+	card, why = s.readImpact(g, i)
+	s.c.e.impacts[owner] = impactRead{at: now, digest: g.Digest, card: card, why: why}
+	return card, why
+}
+
+// readImpact reads the firewall of the guest whose card i has firewall=1.
+func (s *managedStep) readImpact(g model.Guest, i int) (card, why string) {
 	if s.c.e.d.GuestFirewall == nil {
 		return "", fmt.Sprintf("the firewall options of %s cannot be read by this daemon", g.Ref)
 	}
@@ -626,6 +705,20 @@ func needs(g model.Guest, reached map[resolve.Segment]bool, routes []model.Route
 	return true
 }
 
+// migratedNow says that owner has an attachment and is on another node now,
+// which its attachment shows: it does not wait as well.
+func (s *managedStep) migratedNow(owner string) bool {
+	if _, attached := s.attachments[owner]; !attached {
+		return false
+	}
+	ref, err := model.ParseGuestRef(owner)
+	if err != nil {
+		return false
+	}
+	g, ok := s.c.snap.Guest(ref)
+	return ok && g.Node != s.c.e.d.Node
+}
+
 // wait lists a guest that would be attached, with why it is not.
 func (s *managedStep) wait(owner, why string) {
 	ref, err := model.ParseGuestRef(owner)
@@ -661,35 +754,25 @@ func (s *managedStep) attach(d managednet.Decision) {
 	if !ok {
 		return
 	}
-	if s.hold != "" {
-		s.wait(owner, s.hold)
-		return
-	}
-	if open, why := c.gateOpen("managed card for " + owner); !open {
+	if why := s.blocked(owner); why != "" {
 		s.wait(owner, why)
 		return
 	}
 	att, healing := s.attachments[owner]
-	if !healing {
+	switch {
+	case !healing:
 		nic, free := managednet.FreeIndex(g)
 		if !free {
 			s.wait(owner, "the guest has a card at every index net0 to net31")
 			return
 		}
-		lease, err := s.ipam.Allocate(owner, g.Identity, nic)
-		if err != nil {
-			s.leaseFailed(owner, err)
+		var ok bool
+		if att, ok = s.newAttachment(g, nic, d.Consent); !ok {
 			return
 		}
-		att = store.Attachment{Owner: owner, Identity: g.Identity, NIC: nic, MAC: lease.MAC, Addr: lease.Addr, Consent: d.Consent, Since: c.now}
-		if err := c.e.d.Store.SaveAttachment(att); err != nil {
-			c.problem(problemManagedCard, s.name(owner), fmt.Sprintf("saving the attachment: %v", err))
-			s.wait(owner, "the attachment could not be saved: "+err.Error())
-			return
-		}
-		s.attachments[owner] = att
-		s.leases[lease.MAC] = lease
-	} else if att.DetachAt != nil || att.DetachWhy != "" {
+	case !s.keepLease(att):
+		return
+	case att.DetachAt != nil || att.DetachWhy != "":
 		att.DetachAt, att.DetachWhy = nil, ""
 		if err := c.e.d.Store.SaveAttachment(att); err != nil {
 			c.problem(problemManagedCard, s.name(owner), fmt.Sprintf("saving the attachment: %v", err))
@@ -703,7 +786,8 @@ func (s *managedStep) attach(d managednet.Decision) {
 		s.unverified[owner] = err.Error()
 		return
 	}
-	if !healing {
+	if !healing || !c.e.attachedSaid[owner] {
+		c.e.attachedSaid[owner] = true
 		s.event(levelInfo, owner, fmt.Sprintf("%s is attached to the managed network: net%d at %s, by %s", s.name(owner), att.NIC, att.Addr, att.Consent))
 	}
 	switch {
@@ -714,6 +798,66 @@ func (s *managedStep) attach(d managednet.Decision) {
 		c.e.pendingCards[owner] = true
 		s.event(levelInfo, owner, fmt.Sprintf("the card net%d of %s on the managed network waits for the restart of the guest", att.NIC, s.name(owner)))
 	}
+}
+
+// blocked says why no card is added for owner now: the cycle may not write,
+// the managed network is held, or the gate of an expanding write is closed;
+// empty when one may be.
+func (s *managedStep) blocked(owner string) string {
+	switch {
+	case s.writeHold != "":
+		return s.writeHold
+	case s.hold != "":
+		return s.hold
+	}
+	if open, why := s.c.gateOpen("managed card for " + owner); !open {
+		return why
+	}
+	return ""
+}
+
+// newAttachment leases an address for the card net<nic> of g and saves the
+// attachment of it; a lease whose attachment could not be saved is given
+// back, so that no address is held for a card that never comes.
+func (s *managedStep) newAttachment(g model.Guest, nic int, consent string) (store.Attachment, bool) {
+	c := s.c
+	owner := g.Ref.String()
+	lease, err := s.ipam.Allocate(owner, g.Identity, nic)
+	if err != nil {
+		s.leaseFailed(owner, err)
+		return store.Attachment{}, false
+	}
+	att := store.Attachment{Owner: owner, Identity: g.Identity, NIC: nic, MAC: lease.MAC, Addr: lease.Addr, Consent: consent, Since: c.now}
+	if err := c.e.d.Store.SaveAttachment(att); err != nil {
+		if derr := c.e.d.Store.DeleteLease(lease.MAC); derr != nil {
+			c.e.d.Log.Warn().Err(derr).Str("lease", lease.MAC).Msg("giving back the lease of an attachment that could not be saved failed")
+		}
+		c.problem(problemManagedCard, s.name(owner), fmt.Sprintf("saving the attachment: %v", err))
+		s.wait(owner, "the attachment could not be saved: "+err.Error())
+		return store.Attachment{}, false
+	}
+	s.attachments[owner] = att
+	s.leases[lease.MAC] = lease
+	return att, true
+}
+
+// keepLease makes sure the lease of an attachment whose card goes back is
+// there: one that was lost is saved again for the same card, and a card
+// whose lease cannot be saved again is not put back.
+func (s *managedStep) keepLease(att store.Attachment) bool {
+	c := s.c
+	if _, ok := s.leases[strings.ToLower(att.MAC)]; ok {
+		return true
+	}
+	l := store.Lease{MAC: att.MAC, Addr: att.Addr, Owner: att.Owner, Identity: att.Identity, NIC: att.NIC, Since: c.now}
+	if err := c.e.d.Store.SaveLease(l, 0); err != nil {
+		why := fmt.Sprintf("the lease of %s is gone and could not be saved again: %v", att.Addr, err)
+		c.problem(problemManagedCard, s.name(att.Owner), why)
+		s.unverified[att.Owner] = why
+		return false
+	}
+	s.leases[strings.ToLower(att.MAC)] = l
+	return true
 }
 
 // leaseFailed says that a guest got no lease: an exhausted subnet once as
@@ -756,7 +900,7 @@ func (s *managedStep) addCard(ref model.GuestRef, att store.Attachment) {
 // keep ends a grace that runs for an attachment whose consent is back.
 func (s *managedStep) keep(d managednet.Decision) {
 	att, ok := s.attachments[d.Owner]
-	if !ok || att.DetachAt == nil {
+	if !ok || att.DetachAt == nil || s.writeHold != "" {
 		return
 	}
 	att.DetachAt, att.DetachWhy = nil, ""
@@ -775,6 +919,10 @@ func (s *managedStep) detach(d managednet.Decision) {
 	c := s.c
 	att, ok := s.attachments[d.Owner]
 	if !ok || d.DetachAt == nil {
+		return
+	}
+	if s.writeHold != "" {
+		s.heldDetach[d.Owner] = true
 		return
 	}
 	ref, _ := model.ParseGuestRef(d.Owner)
@@ -861,7 +1009,9 @@ func (s *managedStep) foreign(d managednet.Decision) {
 	switch d.Action {
 	case managednet.ActionReplace:
 		view.Action = ForeignReplaced
-		s.replace(d, g)
+		if !s.replace(d, g) {
+			s.instead(d, g, &view)
+		}
 	case managednet.ActionLinkDown:
 		view.Action = ForeignLinkDown
 		s.linkDown(d, g, &view)
@@ -873,39 +1023,32 @@ func (s *managedStep) foreign(d managednet.Decision) {
 }
 
 // replace gives the guest its own card at the index of the copy: a lease,
-// the attachment, then the one write that replaces the card.
-func (s *managedStep) replace(d managednet.Decision, g model.Guest) {
+// the attachment, then the one write that replaces the card. It reports
+// whether the copy is gone or goes with the guest's restart; false leaves it
+// to instead.
+func (s *managedStep) replace(d managednet.Decision, g model.Guest) bool {
 	c := s.c
 	owner := d.Owner
-	if s.hold != "" {
-		s.wait(owner, s.hold)
-		return
-	}
-	if open, why := c.gateOpen("managed card for " + owner); !open {
+	if why := s.blocked(owner); why != "" {
 		s.wait(owner, why)
-		return
+		return false
 	}
 	att, ok := s.attachments[owner]
-	if !ok {
-		lease, err := s.ipam.Allocate(owner, g.Identity, d.NIC)
-		if err != nil {
-			s.leaseFailed(owner, err)
-			return
+	switch {
+	case !ok:
+		if att, ok = s.newAttachment(g, d.NIC, d.Consent); !ok {
+			return false
 		}
-		att = store.Attachment{Owner: owner, Identity: g.Identity, NIC: d.NIC, MAC: lease.MAC, Addr: lease.Addr, Consent: d.Consent, Since: c.now}
-		if err := c.e.d.Store.SaveAttachment(att); err != nil {
-			c.problem(problemManagedCard, s.name(owner), fmt.Sprintf("saving the attachment: %v", err))
-			return
-		}
-		s.attachments[owner] = att
-		s.leases[lease.MAC] = lease
+	case !s.keepLease(att):
+		return false
 	}
 	live, err := c.e.d.Guests.AddNIC(c.ctx, g, d.NIC, s.spec(g, att.MAC, att.Addr))
 	if err != nil {
 		c.problem(problemManagedCard, s.name(owner), err.Error())
 		s.unverified[owner] = err.Error()
-		return
+		return false
 	}
+	c.e.attachedSaid[owner] = true
 	s.event(levelWarn, owner, fmt.Sprintf("foreign card net%d (%s) of %s was replaced by the guest's own card with %s at %s", d.NIC, d.MAC, s.name(owner), att.MAC, att.Addr))
 	if live {
 		s.replaceCard(g.Ref, att)
@@ -913,6 +1056,20 @@ func (s *managedStep) replace(d managednet.Decision, g model.Guest) {
 		c.e.pendingCards[owner] = true
 		s.event(levelInfo, owner, fmt.Sprintf("the card net%d of %s on the managed network waits for the restart of the guest", att.NIC, s.name(owner)))
 	}
+	return true
+}
+
+// instead answers a copy whose replacement cannot run now: its link goes
+// down where pco may write the guest, and it is reported where it may not.
+// The replacement follows in a cycle that can make it.
+func (s *managedStep) instead(d managednet.Decision, g model.Guest, view *ForeignView) {
+	if !s.writable[d.Owner] {
+		view.Action = ForeignReported
+		s.foreignEvent(*view, fmt.Sprintf("foreign card net%d (%s) of %s: %s", d.NIC, d.MAC, s.name(d.Owner), d.Why))
+		return
+	}
+	view.Action = ForeignLinkDown
+	s.linkDown(d, g, view)
 }
 
 // replaceCard puts the guest's own card in the place of the copy on the
@@ -938,7 +1095,7 @@ func (s *managedStep) linkDown(d managednet.Decision, g model.Guest, view *Forei
 	case errors.Is(err, managednet.ErrPending):
 		view.Why += "; the change waits for the restart of the guest"
 		s.foreignEvent(*view, fmt.Sprintf("foreign card net%d (%s) of %s was set link down: %s", d.NIC, d.MAC, s.name(d.Owner), view.Why))
-	case err != nil && g.Ref.Kind == model.KindLXC:
+	case errors.Is(err, managednet.ErrLinkDownRefused) && g.Ref.Kind == model.KindLXC:
 		if rerr := c.e.d.Guests.RemoveNIC(c.ctx, g, d.NIC); rerr != nil {
 			c.problem(problemManagedCard, s.name(d.Owner), fmt.Sprintf("%v; removing the card instead: %v", err, rerr))
 			return
@@ -986,7 +1143,6 @@ func (s *managedStep) fill() {
 	c := s.c
 	for _, owner := range slices.SortedFunc(maps.Keys(s.attachments), model.CompareOwners) {
 		att := s.attachments[owner]
-		s.v.Attachments = append(s.v.Attachments, s.attachmentView(att))
 		ref, _ := model.ParseGuestRef(owner)
 		for i := range c.snap.Guests {
 			g := &c.snap.Guests[i]
@@ -996,9 +1152,13 @@ func (s *managedStep) fill() {
 			for j := range g.NICs {
 				if g.NICs[j].Index == att.NIC && strings.EqualFold(g.NICs[j].MAC, att.MAC) && att.RemovedAt == nil {
 					g.NICs[j].Leased = att.Addr
+					// The configuration the guest runs with has the card:
+					// it is live, also after a restart.
+					delete(c.e.pendingCards, owner)
 				}
 			}
 		}
+		s.v.Attachments = append(s.v.Attachments, s.attachmentView(att))
 	}
 	s.v.Free = managednet.Available(s.net.Prefix, s.leases)
 	if s.v.Free > 0 {
@@ -1013,6 +1173,8 @@ func (s *managedStep) attachmentView(att store.Attachment) AttachmentView {
 	v := AttachmentView{Attachment: att, Guest: c.guestView(ref), State: AttachmentAttached}
 	g, listed := c.snap.Guest(ref)
 	switch {
+	case s.heldDetach[att.Owner]:
+		v.State, v.Detail = AttachmentDetaching, s.writeHold
 	case att.RemovedAt != nil:
 		v.State, v.Detail = AttachmentDetachPending, att.DetachWhy+"; the card is removed once the configuration no longer lists it"
 	case att.DetachAt != nil:
