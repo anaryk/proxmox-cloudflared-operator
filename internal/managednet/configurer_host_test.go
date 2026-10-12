@@ -339,6 +339,25 @@ func TestHostSetLinkDown(t *testing.T) {
 		err := managednet.NewHostConfigurer(r, thisNode).SetLinkDown(t.Context(), container, 1)
 		require.EqualError(t, err, "setting the link of net1 of lxc/9320 down: the guest has no net1")
 	})
+	t.Run("a container that refuses the option", func(t *testing.T) {
+		set := "pct set 9320 --net1 name=eth1,bridge=pconet,hwaddr=BC:24:11:AA:BB:CC,link_down=1 --digest d1"
+		r := run(t,
+			step{cmd: ctConfig, out: config("d1", ctNet0, `"net1":"name=eth1,bridge=pconet,hwaddr=BC:24:11:AA:BB:CC"`)},
+			step{cmd: set, err: fmt.Errorf("%s: exit status 255: format error\nlink_down: property is not defined in schema and the schema does not allow additional properties", set)},
+		)
+		err := managednet.NewHostConfigurer(r, thisNode).SetLinkDown(t.Context(), container, 1)
+		require.ErrorIs(t, err, managednet.ErrLinkDownRefused)
+	})
+	t.Run("a write that fails otherwise", func(t *testing.T) {
+		set := "pct set 9320 --net1 name=eth1,bridge=pconet,hwaddr=BC:24:11:AA:BB:CC,link_down=1 --digest d1"
+		r := run(t,
+			step{cmd: ctConfig, out: config("d1", ctNet0, `"net1":"name=eth1,bridge=pconet,hwaddr=BC:24:11:AA:BB:CC"`)},
+			step{cmd: set, err: fmt.Errorf("%s: exit status 2: CT is locked (backup)", set)},
+		)
+		err := managednet.NewHostConfigurer(r, thisNode).SetLinkDown(t.Context(), container, 1)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, managednet.ErrLinkDownRefused, "only a refusal of the option is the sentinel")
+	})
 }
 
 func TestHostCanWrite(t *testing.T) {

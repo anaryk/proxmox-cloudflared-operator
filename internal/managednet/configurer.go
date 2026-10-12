@@ -56,6 +56,17 @@ type NICSpec struct {
 // takes it at its next start.
 var ErrPending = errors.New("the change waits for the guest's restart")
 
+// ErrLinkDownRefused is the error of a SetLinkDown whose write Proxmox
+// refused for the option link_down itself, as a container of a release
+// without it does; the caller may remove the card instead. Any other failure
+// of the write is not it.
+var ErrLinkDownRefused = errors.New("Proxmox refuses link_down on this card")
+
+// linkDownRefusal is how the schema of Proxmox refuses an option a card does
+// not have, for link_down: the command line the error repeats holds
+// "link_down=1", which is not it.
+const linkDownRefusal = "link_down: property is not defined in schema"
+
 // maxNICIndex is the highest netN a guest can have.
 const maxNICIndex = 31
 
@@ -159,7 +170,10 @@ func (c cards) linkDown(ctx context.Context, g model.Guest, index int) error {
 		}
 		return withLinkDown(cur), true, nil
 	})
-	if err != nil {
+	switch {
+	case err != nil && !errors.Is(err, pve.ErrStaleDigest) && strings.Contains(err.Error(), linkDownRefusal):
+		return fmt.Errorf("%w: %w", ErrLinkDownRefused, err)
+	case err != nil:
 		return err
 	}
 	live, err := c.live(ctx, g, key)

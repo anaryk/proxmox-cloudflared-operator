@@ -780,7 +780,7 @@ func (s *managedStep) detach(d managednet.Decision) {
 	ref, _ := model.ParseGuestRef(d.Owner)
 	g, listed := c.snap.Guest(ref)
 	if att.RemovedAt != nil {
-		s.release(att, g, listed)
+		s.release(att)
 		return
 	}
 	if att.DetachAt == nil || !att.DetachAt.Equal(*d.DetachAt) || att.DetachWhy != d.Why {
@@ -815,18 +815,14 @@ func (s *managedStep) detach(d managednet.Decision) {
 	delete(c.e.pendingCards, d.Owner)
 	s.event(levelInfo, d.Owner, fmt.Sprintf("the card net%d of %s was removed from the managed network; its lease stays until the configuration no longer lists the card",
 		att.NIC, s.name(d.Owner)))
-	s.release(att, g, listed)
+	s.release(att)
 }
 
 // release frees the lease of a removed card once the configuration no longer
 // lists it, and then forgets the attachment.
-func (s *managedStep) release(att store.Attachment, g model.Guest, listed bool) {
+func (s *managedStep) release(att store.Attachment) {
 	c := s.c
-	var cfg *model.Guest
-	if listed {
-		cfg = &g
-	}
-	err := s.ipam.Release(att, cfg)
+	err := s.ipam.Release(att, c.snap.Guests)
 	switch {
 	case errors.Is(err, managednet.ErrCardPresent):
 		return

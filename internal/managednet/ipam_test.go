@@ -179,23 +179,28 @@ func TestReleaseOnlyAfterTheCardIsGone(t *testing.T) {
 	a := store.Attachment{Owner: web, Identity: "mac:a", NIC: 1, MAC: l.MAC, Addr: l.Addr, Consent: managednet.ByTag, Since: now}
 	g := onManaged(guest(101), 1, l.MAC)
 
-	err = ipam.Release(a, &g)
+	err = ipam.Release(a, []model.Guest{g})
 	require.ErrorIs(t, err, managednet.ErrCardPresent)
 	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: its removal was not asked for yet")
 
 	removed := now
 	a.RemovedAt = &removed
-	err = ipam.Release(a, &g)
+	err = ipam.Release(a, []model.Guest{g})
 	require.ErrorIs(t, err, managednet.ErrCardPresent)
-	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: its configuration lists net1 with the MAC "+l.MAC)
+	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: lxc/101 lists net1 with the MAC "+l.MAC)
 
 	unreadable := onManaged(guest(101), 1, "")
-	require.ErrorIs(t, ipam.Release(a, &unreadable), managednet.ErrCardPresent, "a card at the index whose MAC could not be read may be the one")
+	require.ErrorIs(t, ipam.Release(a, []model.Guest{unreadable}), managednet.ErrCardPresent, "a card at the index whose MAC could not be read may be the one")
 
 	moved := onManaged(guest(101), 3, l.MAC)
-	err = ipam.Release(a, &moved)
+	err = ipam.Release(a, []model.Guest{moved})
 	require.ErrorIs(t, err, managednet.ErrCardPresent, "the MAC at another index still answers for the address")
-	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: its configuration lists net3 with the MAC "+l.MAC)
+	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: lxc/101 lists net3 with the MAC "+l.MAC)
+
+	clone := onManaged(guest(102), 2, l.MAC)
+	err = ipam.Release(a, []model.Guest{guest(101), clone})
+	require.ErrorIs(t, err, managednet.ErrCardPresent, "a clone that carries the MAC answers for the address as well")
+	require.EqualError(t, err, "releasing the lease of lxc/101: its card is still there: lxc/102 lists net2 with the MAC "+l.MAC)
 
 	leases, err := s.Leases()
 	require.NoError(t, err)
@@ -205,13 +210,14 @@ func TestReleaseOnlyAfterTheCardIsGone(t *testing.T) {
 	// went: the lease is released, and released again without complaint.
 	elsewhere := guest(101)
 	elsewhere.NICs = append(elsewhere.NICs, model.NIC{Index: 1, MAC: "bc:24:11:00:00:09", Bridge: "vmbr1"})
-	for name, gone := range map[string]model.Guest{
-		"the admin's own card on the managed network took the index": onManaged(guest(101), 1, cloneMAC),
-		"the admin's own card on another bridge took the index":      elsewhere,
-		"the index is free": guest(101),
+	for name, gone := range map[string][]model.Guest{
+		"the admin's own card on the managed network took the index": {onManaged(guest(101), 1, cloneMAC)},
+		"the admin's own card on another bridge took the index":      {elsewhere},
+		"the index is free":                    {guest(101)},
+		"another guest has another card there": {guest(101), onManaged(guest(102), 1, cloneMAC)},
 	} {
 		t.Run(name, func(t *testing.T) {
-			require.NoError(t, ipam.Release(a, &gone))
+			require.NoError(t, ipam.Release(a, gone))
 			leases, err := s.Leases()
 			require.NoError(t, err)
 			require.NotContains(t, leases, l.MAC)
@@ -226,7 +232,7 @@ func TestReleaseOfAGuestThatIsGone(t *testing.T) {
 	require.NoError(t, err)
 	removed := now
 	a := store.Attachment{Owner: web, Identity: "mac:a", NIC: 1, MAC: l.MAC, Addr: l.Addr, Consent: managednet.ByTag, Since: now, RemovedAt: &removed}
-	require.NoError(t, ipam.Release(a, nil))
+	require.NoError(t, ipam.Release(a, []model.Guest{guest(102)}))
 	leases, err := s.Leases()
 	require.NoError(t, err)
 	require.Empty(t, leases)
@@ -246,14 +252,6 @@ func TestReleaseLeavesTheLeaseOfAnotherGuest(t *testing.T) {
 	leases, err := s.Leases()
 	require.NoError(t, err)
 	require.Contains(t, leases, l.MAC)
-}
-
-func TestReleaseRefusesTheWrongGuest(t *testing.T) {
-	ipam := newIPAM(t, newStore(t, "10.203.118.0/24"), "10.203.118.0/24")
-	removed := now
-	a := store.Attachment{Owner: web, NIC: 1, MAC: "06:50:43:4f:76:02", RemovedAt: &removed}
-	other := guest(102)
-	require.EqualError(t, ipam.Release(a, &other), "releasing the lease of lxc/101 against the configuration of lxc/102")
 }
 
 // A guest migrated to another node keeps its lease: the lease is the MAC's,
