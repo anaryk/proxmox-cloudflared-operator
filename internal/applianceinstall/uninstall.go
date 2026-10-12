@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -241,26 +242,53 @@ func (r *run) surveyManaged(ctx context.Context, vmid int, o UninstallOptions, s
 	return nil
 }
 
+// AttachmentList is what pco appliance attachments prints: the cards the
+// appliance attached, and the managed subnet their addresses are in.
+type AttachmentList struct {
+	Subnet      netip.Prefix       `json:"subnet"`
+	Attachments []store.Attachment `json:"attachments"`
+}
+
 // attachments asks the appliance for the cards it attached. What it answers
 // is the appliance's word: a card is only taken off a guest whose
 // configuration has it at that index on the managed vnet with pco's MAC of
-// its address.
+// its address, whose address is in the managed subnet, and whose cards the
+// appliance's token may change, which Proxmox is asked (a grant on the guest
+// or on its pool). A compromised appliance names no other guest's card that
+// way.
 func (r *run) attachments(ctx context.Context, vmid int) ([]store.Attachment, error) {
 	out, err := r.pco(ctx, vmid, "appliance", "attachments")
 	if err != nil {
 		return nil, err
 	}
-	var listed []store.Attachment
+	var listed AttachmentList
 	if err := json.Unmarshal([]byte(out), &listed); err != nil {
 		return nil, fmt.Errorf("pco appliance attachments printed what is not the JSON expected: %w", err)
 	}
+	subnet := listed.Subnet
+	if !subnet.IsValid() || !subnet.Addr().Is4() || subnet.Bits() < 16 || subnet.Bits() > 28 || subnet != subnet.Masked() {
+		return nil, fmt.Errorf("pco appliance attachments printed %s as the managed subnet: want an IPv4 prefix of 16 to 28 bits", subnet)
+	}
+	id := tokenID(vmid)
 	var kept []store.Attachment
-	for _, a := range listed {
-		_, err := model.ParseGuestRef(a.Owner)
+	for _, a := range listed.Attachments {
+		ref, err := model.ParseGuestRef(a.Owner)
 		mac, merr := model.NormalizeMAC(a.MAC)
 		switch {
 		case err != nil, merr != nil, !a.Addr.Is4(), mac != store.ManagedMAC(a.Addr), a.NIC < 0 || a.NIC > 31:
 			r.ask.Warn("lxc/%d lists a card it attached that is no managed card (%s net%d %s); ignored", vmid, a.Owner, a.NIC, a.MAC)
+			continue
+		case !subnet.Contains(a.Addr):
+			r.ask.Warn("lxc/%d lists a card it attached to %s with %s, outside its managed subnet %s; ignored", vmid, a.Owner, a.Addr, subnet)
+			continue
+		}
+		guest := "/vms/" + strconv.Itoa(ref.VMID)
+		held, err := permissions(ctx, r.r, id, guest)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(held, "VM.Config.Network") {
+			r.ask.Warn("lxc/%d lists a card it attached to %s, and its token %s holds no VM.Config.Network on %s; ignored", vmid, a.Owner, id, guest)
 			continue
 		}
 		a.MAC = mac
@@ -679,15 +707,23 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 			r.ask.Warn("%v", err)
 		}
 	}
+	running := s.running
 	if len(s.attachments) > 0 {
-		d := setup.Detacher{Run: r.r, Ask: r.ask, Sleep: r.h.sleep}
-		if _, err := d.Detach(ctx, s.attachments); err != nil {
-			fail(err)
+		// The daemon in the appliance would put the cards back.
+		stopped, err := r.stopDaemonIn(ctx, vmid)
+		running = running && !stopped
+		if err != nil {
+			fail(fmt.Errorf("%w; the managed cards it attached are kept while it may attach them again", err))
+		} else {
+			d := setup.Detacher{Run: r.r, Ask: r.ask, Sleep: r.h.sleep}
+			if _, err := d.Detach(ctx, s.attachments); err != nil {
+				fail(err)
+			}
 		}
 	}
 	gone := true
 	if p.container {
-		err := r.destroyContainer(ctx, vmid, s.running)
+		err := r.destroyContainer(ctx, vmid, running)
 		fail(err)
 		gone = err == nil
 	}
@@ -761,6 +797,23 @@ func (r *run) removeManagedNetwork(ctx context.Context, m *setup.Manifest) {
 	if err := sdn.Remove(ctx); err != nil {
 		r.ask.Warn("%v; the SDN zone %s is kept: %s", err, setup.ManagedZone, byHand)
 	}
+}
+
+// stopDaemonIn stops pco in the appliance before its managed cards are
+// removed, as it would attach them again: its unit, or the container when
+// the unit will not stop. It reports whether the container was stopped.
+func (r *run) stopDaemonIn(ctx context.Context, vmid int) (bool, error) {
+	_, err := r.exec(ctx, vmid, "systemctl", "stop", "pco.service")
+	if err == nil {
+		r.ask.Info("lxc/%d: pco.service stopped", vmid)
+		return false, nil
+	}
+	r.ask.Warn("stopping pco.service in lxc/%d: %v; stopping the container instead", vmid, err)
+	if _, err := r.r.Run(ctx, "pct", "stop", strconv.Itoa(vmid)); err != nil {
+		return false, fmt.Errorf("stopping lxc/%d: %w", vmid, err)
+	}
+	r.ask.Info("container lxc/%d: stopped", vmid)
+	return true, nil
 }
 
 func (r *run) removeObject(ctx context.Context, what, name string, args ...string) error {

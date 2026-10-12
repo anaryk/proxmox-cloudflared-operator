@@ -646,9 +646,24 @@ func (a *app) applianceAttachmentsCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("reading the attachments: %w", err)
 			}
-			list := make([]store.Attachment, 0, len(have))
+			list := applianceinstall.AttachmentList{Attachments: make([]store.Attachment, 0, len(have))}
 			for _, owner := range slices.Sorted(maps.Keys(have)) {
-				list = append(list, have[owner])
+				list.Attachments = append(list.Attachments, have[owner])
+			}
+			// The subnet of the network as stored; the settings' before the
+			// network is.
+			nets, err := st.Networks()
+			if err != nil {
+				return fmt.Errorf("reading the networks: %w", err)
+			}
+			if n, ok := nets[setup.ManagedVnet]; ok {
+				list.Subnet = n.Prefix
+			} else {
+				settings, err := st.Settings()
+				if err != nil {
+					return fmt.Errorf("reading the settings: %w", err)
+				}
+				list.Subnet = settings.Managed.Subnet
 			}
 			b, err := json.Marshal(list)
 			if err != nil {

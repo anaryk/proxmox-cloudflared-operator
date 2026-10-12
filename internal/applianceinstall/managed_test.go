@@ -1,6 +1,7 @@
 package applianceinstall
 
 import (
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // managedNode is an installed appliance lxc/100 on a node whose guest
@@ -240,25 +242,79 @@ func TestUninstallRefusedWhileAGuestHasACardOnTheManagedNetwork(t *testing.T) {
 		"remove it; nothing was removed")
 }
 
+// attachmentOf is what the appliance lists for the card it attached to a
+// guest, with pco's firewall changes.
+func attachmentOf(owner string, addr string) map[string]any {
+	return map[string]any{"owner": owner, "identity": "x", "nic": 1, "mac": store.ManagedMAC(netip.MustParseAddr(addr)),
+		"addr": addr, "consent": "tag", "since": "2026-10-01T12:00:00Z", "firewall": map[string]any{"enabled": false, "rules": 1}}
+}
+
 // --detach-managed reads the attachments from the appliance before it goes,
-// removes the cards with the firewall pco turned on, and then the zone.
+// stops the daemon in it so that it attaches nothing again, removes the
+// cards with the firewall pco turned on, and then the zone. The card of a
+// guest the appliance's token may change goes; an admin's rule on the same
+// card stays.
 func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 	e := managedNode(t)
-	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+	e.node.pools["web"] = &fakePool{Members: []int{105}}
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Pool: "web", Yes: true}))
 	e.guestOnPconet(105, pcoCard)
-	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true, rules: []string{"net0", "net1", "net1"}, ipsets: []string{"ipfilter-net1"}}
-	e.node.attachments = []map[string]any{{"owner": "lxc/105", "identity": "x", "nic": 1, "mac": "06:50:43:4f:76:05",
-		"addr": "10.203.118.5", "consent": "tag", "since": "2026-10-01T12:00:00Z", "firewall": map[string]any{"enabled": false, "rules": 1}}}
+	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true,
+		rules: []fakeRule{{"net0", ""}, pcoRule("net1"), {"net1", "backup agent"}, pcoRule("net1")}, ipsets: []string{"ipfilter-net1"}}
+	e.node.attachments = []map[string]any{attachmentOf("lxc/105", "10.203.118.5")}
 	o := uninstallOptions()
 	o.DetachManaged = true
 
 	require.NoError(t, e.in.Uninstall(t.Context(), 100, o), e.ask.text())
 
 	require.NotContains(t, e.node.cts[105].cfg, "net1")
-	require.Equal(t, &fakeGuestFirewall{rules: []string{"net0"}, ipsets: []string{}}, e.node.guestFirewalls[105], "the firewall as it was")
+	require.Equal(t, &fakeGuestFirewall{rules: []fakeRule{{"net0", ""}, {"net1", "backup agent"}}, ipsets: []string{}}, e.node.guestFirewalls[105],
+		"the firewall as it was, but for the admin's rule")
 	require.Empty(t, e.node.sdn.zones)
-	require.Less(t, slices.Index(e.node.ran, "pvesh set /nodes/pve1/lxc/105/config --delete net1"), slices.Index(e.node.ran, "pct destroy 100 --purge 1"))
+	stopped := slices.Index(e.node.ran, "pct exec 100 --keep-env 0 -- systemctl stop pco.service")
+	removed := slices.Index(e.node.ran, "pvesh set /nodes/pve1/lxc/105/config --delete net1")
+	require.Greater(t, stopped, slices.Index(e.node.ran, "pct exec 100 --keep-env 0 -- pco appliance attachments"), "the daemon stops after the attachments are read")
+	require.Less(t, stopped, removed, "the daemon stops before a card goes")
+	require.Less(t, removed, slices.Index(e.node.ran, "pct destroy 100 --purge 1"))
 	require.Contains(t, e.ask.text(), "the managed cards lxc/100 attached to lxc/105, removed first")
+}
+
+// What the appliance lists is its word: a card of a guest its token may not
+// change (no VM.Config.Network on it, through the guest or its pool) and a
+// card whose address is outside the managed subnet are not its, and stay.
+func TestUninstallLeavesTheCardsTheApplianceMayNotChange(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		granted    bool
+		attachment map[string]any
+		warning    string
+	}{
+		{"a guest the token is not granted", false, attachmentOf("lxc/105", "10.203.118.5"),
+			"lxc/100 lists a card it attached to lxc/105, and its token pco@pve!vm100 holds no VM.Config.Network on /vms/105; ignored"},
+		{"an address outside the managed subnet", true, attachmentOf("lxc/105", "10.204.0.5"),
+			"lxc/100 lists a card it attached to lxc/105 with 10.204.0.5, outside its managed subnet 10.203.118.0/24; ignored"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := managedNode(t)
+			require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+			if tt.granted {
+				e.node.pools["web"] = &fakePool{Members: []int{105}}
+				e.node.grant("/pool/web", "token", "pco@pve!vm100", "PCOManaged")
+				e.node.grant("/pool/web", "user", "pco@pve", "PCOManaged")
+			}
+			e.guestOnPconet(105, pcoCard)
+			e.node.attachments = []map[string]any{tt.attachment}
+			o := uninstallOptions()
+			o.DetachManaged = true
+
+			err := e.in.Uninstall(t.Context(), 100, o)
+
+			require.ErrorContains(t, err, "guests lxc/105 still have a card on pconet, which pco did not attach")
+			require.Contains(t, e.ask.text(), "warn: "+tt.warning)
+			require.Contains(t, e.node.cts[105].cfg, "net1")
+			require.NotNil(t, e.node.cts[100])
+		})
+	}
 }
 
 // What a stopped appliance attached cannot be read; the uninstall refuses

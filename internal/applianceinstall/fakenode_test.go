@@ -1,6 +1,7 @@
 package applianceinstall
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -51,6 +52,8 @@ type fakeCT struct {
 	meta    bool     // /var/lib/pco/cluster/meta is there
 	lease   string   // the address DHCP gives eth0, as a CIDR; empty: none
 	web     bool     // pco-web.service is enabled
+	// daemonStopped says that pco.service in it was stopped.
+	daemonStopped bool
 }
 
 type fakeUser struct {
@@ -148,8 +151,10 @@ type fakeNode struct {
 	// sdn is the SDN of the cluster, with what is pending and its lock.
 	sdn fakeSDN
 	// attachments are what the store of the appliance holds of the cards
-	// it attached, as pco appliance attachments prints them.
-	attachments []map[string]any
+	// it attached, as pco appliance attachments prints them, in the managed
+	// subnet managedSubnet (10.203.118.0/24 when empty).
+	attachments   []map[string]any
+	managedSubnet string
 	// guestFirewalls are the firewalls of guests other than appliances.
 	guestFirewalls map[int]*fakeGuestFirewall
 
@@ -211,9 +216,16 @@ func newFakeNode(t *testing.T) *fakeNode {
 // interface in their order, and its ipsets.
 type fakeGuestFirewall struct {
 	enabled bool
-	rules   []string // the iface of each rule
+	rules   []fakeRule
 	ipsets  []string
 }
+
+// fakeRule is a rule of a guest's firewall: its card and its comment, by
+// which pco's rules are told (pco:<install id>).
+type fakeRule struct{ iface, comment string }
+
+// pcoRule is a rule pco put on a card.
+func pcoRule(iface string) fakeRule { return fakeRule{iface, "pco:0123456789ab"} }
 
 // guestFirewall answers the calls of the firewall of a container.
 func (f *fakeNode) guestFirewall(verb, rest string, args []string) (string, error) {
@@ -227,8 +239,8 @@ func (f *fakeNode) guestFirewall(verb, rest string, args []string) (string, erro
 	switch {
 	case verb == "get" && tail == "rules":
 		var out []map[string]any
-		for pos, iface := range fw.rules {
-			out = append(out, map[string]any{"pos": pos, "type": "in", "action": "ACCEPT", "iface": iface})
+		for pos, rule := range fw.rules {
+			out = append(out, map[string]any{"pos": pos, "type": "in", "action": "ACCEPT", "iface": rule.iface, "comment": rule.comment})
 		}
 		return asJSON(out), nil
 	case verb == "delete" && strings.HasPrefix(tail, "rules/"):
@@ -1154,10 +1166,14 @@ func (f *fakeNode) exec(ct *fakeCT, id int, cmd []string) (string, error) {
 	case line == "pco appliance purge --list":
 		return strings.Join(f.cfObjects, "\n"), nil
 	case line == "pco appliance attachments":
+		subnet := cmp.Or(f.managedSubnet, "10.203.118.0/24")
 		if f.attachments == nil {
-			return "[]\n", nil
+			return asJSON(map[string]any{"subnet": subnet, "attachments": []any{}}) + "\n", nil
 		}
-		return asJSON(f.attachments) + "\n", nil
+		return asJSON(map[string]any{"subnet": subnet, "attachments": f.attachments}) + "\n", nil
+	case line == "systemctl stop pco.service":
+		ct.daemonStopped = true
+		return "", nil
 	case line == "pco appliance purge":
 		f.purges = append(f.purges, fmt.Sprintf("%d %s", id, env))
 		f.cfObjects = nil
