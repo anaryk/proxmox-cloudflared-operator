@@ -70,8 +70,10 @@ type Controller interface {
 	Report(ctx context.Context, node string, st agentproto.Status) (agentproto.Heartbeat, error)
 	// Join enrols an appliance agent that used tok from src and returns its
 	// client certificate in PEM. The endpoint has checked the token's form,
-	// expiry and node; the controller records the use, judges a second one,
-	// and attests the facts. Any error is answered as a plain refusal.
+	// install, CA, expiry and node, that csr asks for the identity of that
+	// node and container, and recorded the use, which was the token's first;
+	// the controller attests the facts and issues. Any error is answered as a
+	// plain refusal, and so is a certificate for another key or identity.
 	Join(ctx context.Context, tok pki.JoinToken, csr []byte, src netip.Addr, facts JoinFacts) ([]byte, error)
 	// Renew issues node's next client certificate for csr, in PEM.
 	Renew(ctx context.Context, node string, csr []byte) ([]byte, error)
@@ -98,6 +100,8 @@ type Server struct {
 	now  func() time.Time
 
 	longPoll    time.Duration
+	joinCfg     *Joins
+	joinMu      sync.Mutex // one use of a join token at a time
 	joins       *rateLimiter
 	resend      *resendCounter
 	onListening func(netip.AddrPort)

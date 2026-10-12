@@ -238,6 +238,17 @@ type harness struct {
 // longPoll says otherwise; its events go to h.events.
 func newHarness(t *testing.T, longPoll ...time.Duration) *harness {
 	t.Helper()
+	return newHarnessWith(t, func(s *Server) {
+		if len(longPoll) > 0 {
+			s.longPoll = longPoll[0]
+		}
+	})
+}
+
+// newHarnessWith is newHarness with setup changing the server before it
+// starts.
+func newHarnessWith(t *testing.T, setup func(*Server)) *harness {
+	t.Helper()
 	h := &harness{t: t, clock: &clock{t: t0}, ctrl: newFakeController(), auth: newFakeAuth(), events: &eventSink{}}
 	var err error
 	h.ca, err = pki.NewCA(testInstall, t0, rand.Reader)
@@ -245,10 +256,8 @@ func newHarness(t *testing.T, longPoll ...time.Duration) *harness {
 	h.srv = New(h.ctrl, h.auth, h.serverCert(h.ca), h.pool, zerolog.Nop())
 	h.srv.now = h.clock.now
 	h.srv.longPoll = 50 * time.Millisecond
-	if len(longPoll) > 0 {
-		h.srv.longPoll = longPoll[0]
-	}
 	h.srv.OnEvent(h.events.add)
+	setup(h.srv)
 	h.start()
 	return h
 }
