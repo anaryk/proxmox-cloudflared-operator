@@ -93,7 +93,7 @@ type Engine interface {
 	CandidateNetworks(ctx context.Context) ([]engine.CandidateNetwork, error)
 	ProbeNetwork(ctx context.Context, r engine.ProbeRequest) (engine.ProbeResult, error)
 	Attach(ctx context.Context, r engine.AttachRequest) (engine.NetworkView, error)
-	Detach(ctx context.Context, id string, rev int64, confirm bool) error
+	Detach(ctx context.Context, id string, rev int64, served []string) error
 }
 
 // Server answers API requests for an engine.

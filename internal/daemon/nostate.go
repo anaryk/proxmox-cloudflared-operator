@@ -204,4 +204,4 @@ func (n *noStateEngine) Attach(context.Context, engine.AttachRequest) (engine.Ne
 	return engine.NetworkView{}, n.refuse()
 }
 
-func (n *noStateEngine) Detach(context.Context, string, int64, bool) error { return n.refuse() }
+func (n *noStateEngine) Detach(context.Context, string, int64, []string) error { return n.refuse() }

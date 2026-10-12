@@ -329,7 +329,7 @@ func TestNetworkDetachShowsTheRoutesAndAsks(t *testing.T) {
 			}
 			require.NoError(t, res.err)
 			require.Equal(t, shown+"Detached network vmbr1.\n", res.out)
-			require.Equal(t, []string{"detach vmbr1 rev=2 confirm=true"}, e.called(), "the routes were shown: the detach confirms them")
+			require.Equal(t, []string{"detach vmbr1 rev=2 served=[www.example.com]"}, e.called(), "the routes shown go with the detach")
 		})
 	}
 }
@@ -344,7 +344,7 @@ func TestNetworkDetachOfANetworkThatServesNothing(t *testing.T) {
 		"No route is served through it.\n"+
 		"Detaching it removes the leg and releases 0 service addresses; the routes through it are no longer served that way.\n"+
 		"Detached network vmbr2.20.\n", res.out)
-	require.Equal(t, []string{"detach vmbr2.20 rev=1 confirm=false"}, e.called())
+	require.Equal(t, []string{"detach vmbr2.20 rev=1 served=[]"}, e.called())
 
 	res = r.run("", "network", "detach", "vmbr7", "--yes")
 	require.ErrorIs(t, res.err, engine.ErrNotFound)

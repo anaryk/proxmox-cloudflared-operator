@@ -413,7 +413,7 @@ func (a *app) networkDetachCmd() *cobra.Command {
 			if !ok {
 				return errAborted
 			}
-			if err := a.client().Detach(ctx, n.ID, n.Rev, len(n.Served) > 0); err != nil {
+			if err := a.client().Detach(ctx, n.ID, n.Rev, n.Served); err != nil {
 				return a.explain(ctx, err)
 			}
 			s.printf("Detached network %s.\n", n.ID)

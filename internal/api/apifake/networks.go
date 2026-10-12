@@ -156,15 +156,15 @@ func (e *Engine) Attach(ctx context.Context, r engine.AttachRequest) (engine.Net
 }
 
 type detachArgs struct {
-	ID      string `json:"id"`
-	Rev     int64  `json:"rev"`
-	Confirm bool   `json:"confirm"`
+	ID     string   `json:"id"`
+	Rev    int64    `json:"rev"`
+	Served []string `json:"served"`
 }
 
 // Detach takes a network out of the state, at the revision it was read at;
-// one that routes of the state go through only with confirm.
-func (e *Engine) Detach(ctx context.Context, id string, rev int64, confirm bool) error {
-	if err := e.begin(ctx, "Detach", detachArgs{id, rev, confirm}); err != nil {
+// one that routes of the state go through only when they are named.
+func (e *Engine) Detach(ctx context.Context, id string, rev int64, served []string) error {
+	if err := e.begin(ctx, "Detach", detachArgs{id, rev, served}); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -177,10 +177,10 @@ func (e *Engine) Detach(ctx context.Context, id string, rev int64, confirm bool)
 		return fmt.Errorf("%w: network %s changed since it was read at revision %d and is at revision %d now; read it again",
 			engine.ErrRefused, id, rev, e.state.Networks[i].Rev)
 	}
-	served := e.servedThrough(id)
-	if len(served) > 0 && !confirm {
-		return fmt.Errorf("%w: network %s serves routes through its leg: %s; confirm to detach it all the same",
-			engine.ErrRefused, id, strings.Join(served, ", "))
+	now := e.servedThrough(id)
+	if len(now) > 0 && !slices.Equal(now, slices.Compact(slices.Sorted(slices.Values(served)))) {
+		return fmt.Errorf("%w: network %s serves routes through its leg: %s; name them to detach it all the same",
+			engine.ErrRefused, id, strings.Join(now, ", "))
 	}
 	e.state.Networks = slices.Delete(slices.Clone(e.state.Networks), i, i+1)
 	e.networkEvent(ctx, id, fmt.Sprintf("network %s is detached: its leg is removed", id))

@@ -989,7 +989,7 @@ func attachedMessage(n store.Network, addr netip.Addr, overlap string) string {
 // addresses and the network. While routes are served through it, it is
 // refused unless confirm says that the admin saw them. The last network has
 // pco-netns.service disabled, which takes nothing down.
-func (e *Engine) Detach(ctx context.Context, id string, rev int64, confirm bool) error {
+func (e *Engine) Detach(ctx context.Context, id string, rev int64, served []string) error {
 	if id == "" {
 		return fieldError("id", "name the network to detach, as vmbr1 or vmbr1.20")
 	}
@@ -1011,10 +1011,16 @@ func (e *Engine) Detach(ctx context.Context, id string, rev int64, confirm bool)
 	case n.Rev != rev:
 		return fmt.Errorf("%w: network %s changed since it was read at revision %d and is at revision %d now; read it again", ErrRefused, id, rev, n.Rev)
 	}
-	served := servedThrough(e.State().Routes, id)
-	if len(served) > 0 && !confirm {
-		return fmt.Errorf("%w: network %s serves %s through its leg: %s; detaching it stops serving them that way, confirm to detach it all the same",
+	named := slices.Compact(slices.Sorted(slices.Values(served)))
+	served = servedThrough(e.State().Routes, id)
+	switch {
+	case len(served) == 0:
+	case len(named) == 0:
+		return fmt.Errorf("%w: network %s serves %s through its leg: %s; detaching it stops serving them that way, name them to detach it all the same",
 			ErrRefused, id, plural(len(served), "route", "routes"), strings.Join(served, ", "))
+	case !slices.Equal(named, served):
+		return fmt.Errorf("%w: network %s serves %s through its leg: %s, not %s as the detach named; read it again and name the routes it serves now",
+			ErrRefused, id, plural(len(served), "route", "routes"), strings.Join(served, ", "), strings.Join(named, ", "))
 	}
 	if e.d.Gateway != nil {
 		if err := e.d.Gateway.Detach(ctx, id); err != nil && !errors.Is(err, gateway.ErrNotPinned) {

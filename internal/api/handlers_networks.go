@@ -14,11 +14,10 @@ import (
 var (
 	errNetworkRev = &engine.FieldError{Field: "rev", Err: errors.New("rev: give the revision the network was read at, " +
 		"as /v1/networks/<id>?rev=<n>")}
-	errNetworkConfirm = &engine.FieldError{Field: "confirm", Err: errors.New("confirm: true or false")}
-	errNoPrefix       = &engine.FieldError{Field: "prefix", Err: errors.New("prefix: give the prefix of the network, as 10.77.0.0/24")}
-	errNoAddress      = &engine.FieldError{Field: "address", Err: errors.New("address: give the address of the leg, as 10.77.0.250")}
-	errBadPrefix      = &engine.FieldError{Field: "prefix", Err: errors.New("prefix: want an IPv4 prefix such as 10.77.0.0/24")}
-	errBadAddress     = &engine.FieldError{Field: "address", Err: errors.New("address: want an IPv4 address such as 10.77.0.250")}
+	errNoPrefix   = &engine.FieldError{Field: "prefix", Err: errors.New("prefix: give the prefix of the network, as 10.77.0.0/24")}
+	errNoAddress  = &engine.FieldError{Field: "address", Err: errors.New("address: give the address of the leg, as 10.77.0.250")}
+	errBadPrefix  = &engine.FieldError{Field: "prefix", Err: errors.New("prefix: want an IPv4 prefix such as 10.77.0.0/24")}
+	errBadAddress = &engine.FieldError{Field: "address", Err: errors.New("address: want an IPv4 address such as 10.77.0.250")}
 )
 
 // networkRoutes adds the routes of the networks pco reaches through a leg of
@@ -154,8 +153,8 @@ func prefixAndAddress(prefixText, addrText string) (netip.Prefix, netip.Addr, er
 }
 
 // deleteNetwork detaches a network read at the revision the query names. A
-// network that serves routes is detached only with confirm=true, which says
-// that the admin saw them.
+// network that serves routes is detached only when the query names them
+// (served=<hostname>, repeated), which says that the admin saw them.
 func (s *Server) deleteNetwork(c *gin.Context) {
 	revs := c.QueryArray("rev")
 	if len(revs) != 1 {
@@ -167,19 +166,7 @@ func (s *Server) deleteNetwork(c *gin.Context) {
 		s.fail(c, errNetworkRev)
 		return
 	}
-	confirm := false
-	switch values := c.QueryArray("confirm"); {
-	case len(values) == 0:
-	case len(values) > 1:
-		s.fail(c, errNetworkConfirm)
-		return
-	case values[0] == "true":
-		confirm = true
-	case values[0] != "false":
-		s.fail(c, errNetworkConfirm)
-		return
-	}
-	if err := s.engine.Detach(c.Request.Context(), c.Param("id"), rev, confirm); err != nil {
+	if err := s.engine.Detach(c.Request.Context(), c.Param("id"), rev, c.QueryArray("served")); err != nil {
 		s.fail(c, err)
 		return
 	}

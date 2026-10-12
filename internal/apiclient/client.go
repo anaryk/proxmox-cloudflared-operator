@@ -459,12 +459,13 @@ func (c *Client) Attach(ctx context.Context, r engine.AttachRequest) (engine.Net
 	return v, err
 }
 
-// Detach detaches the network id, which was read at revision rev; confirm
-// says that the routes served through it were shown.
-func (c *Client) Detach(ctx context.Context, id string, rev int64, confirm bool) error {
+// Detach detaches the network id, which was read at revision rev; served
+// are the routes served through it as they were shown, which the daemon
+// compares with those it serves now.
+func (c *Client) Detach(ctx context.Context, id string, rev int64, served []string) error {
 	q := url.Values{"rev": {strconv.FormatInt(rev, 10)}}
-	if confirm {
-		q.Set("confirm", "true")
+	for _, host := range served {
+		q.Add("served", host)
 	}
 	return c.call(ctx, c.long, http.MethodDelete, networkPath(id)+"?"+q.Encode(), nil, nil)
 }

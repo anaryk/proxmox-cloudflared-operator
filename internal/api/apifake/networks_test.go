@@ -39,10 +39,11 @@ func TestTheNetworksOfTheScenarioAreAttachedAndDetached(t *testing.T) {
 	require.ErrorIs(t, err, engine.ErrRefused)
 	require.Len(t, e.State().Networks, 3)
 
-	require.ErrorIs(t, d.Detach(ctx, "vmbr2", 3, false), engine.ErrRefused, "a route goes through it")
-	require.ErrorIs(t, d.Detach(ctx, "vmbr2", 2, true), engine.ErrRefused, "a stale revision")
-	require.NoError(t, d.Detach(ctx, "vmbr2", 3, true))
-	require.NoError(t, d.Detach(ctx, "vmbr7", 1, false))
-	require.ErrorIs(t, d.Detach(ctx, "vmbr7", 1, false), engine.ErrNotFound)
+	require.ErrorIs(t, d.Detach(ctx, "vmbr2", 3, nil), engine.ErrRefused, "a route goes through it")
+	require.ErrorIs(t, d.Detach(ctx, "vmbr2", 3, []string{"old.example.com"}), engine.ErrRefused, "not the route it serves")
+	require.ErrorIs(t, d.Detach(ctx, "vmbr2", 2, []string{"zabbix.example.com"}), engine.ErrRefused, "a stale revision")
+	require.NoError(t, d.Detach(ctx, "vmbr2", 3, []string{"zabbix.example.com"}))
+	require.NoError(t, d.Detach(ctx, "vmbr7", 1, nil))
+	require.ErrorIs(t, d.Detach(ctx, "vmbr7", 1, nil), engine.ErrNotFound)
 	require.Len(t, e.State().Networks, 1)
 }

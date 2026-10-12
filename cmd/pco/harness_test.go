@@ -413,8 +413,8 @@ func (f *fakeEngine) Attach(_ context.Context, r engine.AttachRequest) (engine.N
 	}, nil
 }
 
-func (f *fakeEngine) Detach(_ context.Context, id string, rev int64, confirm bool) error {
-	f.record(fmt.Sprintf("detach %s rev=%d confirm=%t", id, rev, confirm))
+func (f *fakeEngine) Detach(_ context.Context, id string, rev int64, served []string) error {
+	f.record(fmt.Sprintf("detach %s rev=%d served=%v", id, rev, served))
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.networkErr

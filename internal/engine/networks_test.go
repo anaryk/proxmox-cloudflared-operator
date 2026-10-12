@@ -637,7 +637,7 @@ func TestAMarkFreedIsNotTakenBeforeTheGatewayIsSynced(t *testing.T) {
 
 	nets, err := e.store.Networks()
 	require.NoError(t, err)
-	require.NoError(t, e.eng.Detach(t.Context(), "pct3", nets["pct3"].Rev, false))
+	require.NoError(t, e.eng.Detach(t.Context(), "pct3", nets["pct3"].Rev, nil))
 
 	_, err = e.eng.Attach(t.Context(), attachVmbr1())
 	require.EqualError(t, err, "refused: the marks free now were freed by a detach the gateway has not been synced since; attach again after the next cycle")
@@ -700,15 +700,23 @@ func TestADetachWhileRoutesAreServedThroughItNeedsAConfirmation(t *testing.T) {
 	require.NoError(t, err)
 	rev := n["vmbr1"].Rev
 
-	err = e.eng.Detach(t.Context(), "vmbr1", rev, false)
+	err = e.eng.Detach(t.Context(), "vmbr1", rev, nil)
 
 	require.ErrorIs(t, err, ErrRefused)
 	require.EqualError(t, err, "refused: network vmbr1 serves 1 route through its leg: www.example.com; "+
-		"detaching it stops serving them that way, confirm to detach it all the same")
+		"detaching it stops serving them that way, name them to detach it all the same")
+	require.Empty(t, e.gw.detaches())
+
+	// The routes named are those the admin saw: others mean the routes
+	// changed since, and the detach is refused until they are read again.
+	err = e.eng.Detach(t.Context(), "vmbr1", rev, []string{"old.example.com"})
+	require.ErrorIs(t, err, ErrRefused)
+	require.EqualError(t, err, "refused: network vmbr1 serves 1 route through its leg: www.example.com, not old.example.com as the "+
+		"detach named; read it again and name the routes it serves now")
 	require.Empty(t, e.gw.detaches())
 
 	ctx := WithActor(t.Context(), "alice@pve (ticket)")
-	require.NoError(t, e.eng.Detach(ctx, "vmbr1", rev, true))
+	require.NoError(t, e.eng.Detach(ctx, "vmbr1", rev, []string{"www.example.com", "www.example.com"}))
 
 	require.Equal(t, []string{"vmbr1"}, e.gw.detaches())
 	nets, err := e.store.Networks()
@@ -732,7 +740,7 @@ func TestADetachOfANetworkThatServesNothing(t *testing.T) {
 	nets, err := e.store.Networks()
 	require.NoError(t, err)
 
-	require.NoError(t, e.eng.Detach(t.Context(), "pcot1", nets["pcot1"].Rev, false))
+	require.NoError(t, e.eng.Detach(t.Context(), "pcot1", nets["pcot1"].Rev, nil))
 
 	require.Equal(t, []string{"pcot1"}, e.gw.detaches())
 	require.Empty(t, e.nets.called(), "a network is left: the unit stays enabled")
@@ -745,15 +753,15 @@ func TestADetachIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	rev := nets["vmbr1"].Rev
 
-	err = e.eng.Detach(t.Context(), "vmbr1", rev+1, true)
+	err = e.eng.Detach(t.Context(), "vmbr1", rev+1, []string{"www.example.com"})
 	require.ErrorIs(t, err, ErrRefused)
 	require.EqualError(t, err, fmt.Sprintf("refused: network vmbr1 changed since it was read at revision %d and is at revision %d now; read it again", rev+1, rev))
 
-	err = e.eng.Detach(t.Context(), "vmbr7", 1, true)
+	err = e.eng.Detach(t.Context(), "vmbr7", 1, []string{"www.example.com"})
 	require.ErrorIs(t, err, ErrNotFound)
 	require.EqualError(t, err, "not found: network vmbr7 is not attached")
 
-	err = e.eng.Detach(t.Context(), "", 1, true)
+	err = e.eng.Detach(t.Context(), "", 1, nil)
 	require.ErrorIs(t, err, ErrInvalid)
 
 	require.Empty(t, e.gw.detaches())

@@ -69,8 +69,8 @@ func (f *fakeEngine) Attach(ctx context.Context, r engine.AttachRequest) (engine
 	return testNetwork(), nil
 }
 
-func (f *fakeEngine) Detach(ctx context.Context, id string, rev int64, confirm bool) error {
-	f.record(ctx, fmt.Sprintf("detach:%s:%d:%t", id, rev, confirm))
+func (f *fakeEngine) Detach(ctx context.Context, id string, rev int64, served []string) error {
+	f.record(ctx, fmt.Sprintf("detach:%s:%d:%v", id, rev, served))
 	return f.failure()
 }
 
@@ -167,15 +167,15 @@ func TestAnAttachAnswersWithTheNetwork(t *testing.T) {
 	require.Equal(t, []string{"attach:pcot1:0:192.168.4.0/24:192.168.4.249 uplink=true overlap=true"}, f.called())
 }
 
-func TestADetachNamesTheRevisionAndTheConfirmation(t *testing.T) {
+func TestADetachNamesTheRevisionAndTheRoutesServed(t *testing.T) {
 	f := &fakeEngine{}
 
-	rec := do(newServer(f), http.MethodDelete, "/v1/networks/vmbr1.20?rev=3&confirm=true", "")
+	rec := do(newServer(f), http.MethodDelete, "/v1/networks/vmbr1.20?rev=3&served=www.example.com&served=app.example.com", "")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	rec = do(newServer(f), http.MethodDelete, "/v1/networks/vmbr1?rev=4", "")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
-	require.Equal(t, []string{"detach:vmbr1.20:3:true", "detach:vmbr1:4:false"}, f.called())
+	require.Equal(t, []string{"detach:vmbr1.20:3:[www.example.com app.example.com]", "detach:vmbr1:4:[]"}, f.called())
 }
 
 func TestTheNetworkRequestsAreRefusedWithTheirField(t *testing.T) {
@@ -203,8 +203,6 @@ func TestTheNetworkRequestsAreRefusedWithTheirField(t *testing.T) {
 		{"a detach without a revision", http.MethodDelete, "/v1/networks/vmbr1", "", nil, http.StatusBadRequest, "invalid", "rev"},
 		{"a detach with a revision of no number", http.MethodDelete, "/v1/networks/vmbr1?rev=x", "", nil, http.StatusBadRequest, "invalid", "rev"},
 		{"a detach with two revisions", http.MethodDelete, "/v1/networks/vmbr1?rev=1&rev=2", "", nil, http.StatusBadRequest, "invalid", "rev"},
-		{"a detach with a confirmation of no truth value", http.MethodDelete, "/v1/networks/vmbr1?rev=1&confirm=yes", "", nil,
-			http.StatusBadRequest, "invalid", "confirm"},
 		{"a detach of routes not confirmed", http.MethodDelete, "/v1/networks/vmbr1?rev=1", "",
 			fmt.Errorf("%w: network vmbr1 serves 1 route through its leg: www.example.com", engine.ErrRefused), http.StatusConflict, "refused", ""},
 		{"a detach of a network that is not there", http.MethodDelete, "/v1/networks/vmbr7?rev=1", "",
@@ -253,12 +251,12 @@ func TestEveryNetworkMethodOfTheClientOverTheSocket(t *testing.T) {
 		Address: netip.MustParseAddr("10.77.0.250"), OverlapOK: true})
 	require.NoError(t, err)
 	require.Equal(t, testNetwork(), attached)
-	require.NoError(t, c.Detach(ctx, "vmbr1.20", 3, true))
-	require.NoError(t, c.Detach(ctx, "vmbr1", 4, false))
+	require.NoError(t, c.Detach(ctx, "vmbr1.20", 3, []string{"www.example.com", "app.example.com"}))
+	require.NoError(t, c.Detach(ctx, "vmbr1", 4, nil))
 
 	require.Equal(t, []string{
 		"networks", "network:vmbr1", "candidates", "probe:vmbr1:0:invalid Prefix:10.77.0.250",
-		"attach:vmbr1:20:10.77.0.0/24:10.77.0.250 uplink=false overlap=true", "detach:vmbr1.20:3:true", "detach:vmbr1:4:false",
+		"attach:vmbr1:20:10.77.0.0/24:10.77.0.250 uplink=false overlap=true", "detach:vmbr1.20:3:[www.example.com app.example.com]", "detach:vmbr1:4:[]",
 	}, f.called())
 
 	_, err = c.Network(ctx, "vmbr7")
