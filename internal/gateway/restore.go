@@ -66,10 +66,11 @@ type serviceJSON struct {
 }
 
 type stickyJSON struct {
-	MAC    string `json:"mac"`
-	Bridge string `json:"bridge"`
-	VLAN   int    `json:"vlan,omitempty"`
-	Port   string `json:"port,omitempty"`
+	MAC    string     `json:"mac"`
+	Bridge string     `json:"bridge"`
+	VLAN   int        `json:"vlan,omitempty"`
+	Port   string     `json:"port,omitempty"`
+	Addr   netip.Addr `json:"addr,omitzero"`
 }
 
 type pinJSON struct {
@@ -91,7 +92,7 @@ func (c Cache) MarshalJSON() ([]byte, error) {
 		w.Services = append(w.Services, serviceJSON(s))
 	}
 	for _, s := range c.Sticky {
-		w.Sticky = append(w.Sticky, stickyJSON{MAC: s.MAC.String(), Bridge: s.Bridge, VLAN: s.VLAN, Port: s.Port})
+		w.Sticky = append(w.Sticky, stickyJSON{MAC: s.MAC.String(), Bridge: s.Bridge, VLAN: s.VLAN, Port: s.Port, Addr: s.Addr})
 	}
 	for _, p := range c.Pins {
 		w.Pins = append(w.Pins, pinJSON{Leg: p.Leg, Addr: p.Addr, MAC: p.MAC.String()})
@@ -127,7 +128,7 @@ func (c *Cache) UnmarshalJSON(data []byte) error {
 		if err != nil {
 			return err
 		}
-		out.Sticky = append(out.Sticky, Sticky{MAC: mac, Bridge: s.Bridge, VLAN: s.VLAN, Port: s.Port})
+		out.Sticky = append(out.Sticky, Sticky{MAC: mac, Bridge: s.Bridge, VLAN: s.VLAN, Port: s.Port, Addr: s.Addr})
 	}
 	for _, p := range w.Pins {
 		mac, err := parseMAC("pin of "+p.Addr.String(), p.MAC)

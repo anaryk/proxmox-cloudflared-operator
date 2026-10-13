@@ -19,7 +19,7 @@ import (
 // as its source whatever eth0's MAC is.
 func sendFrom(t *testing.T, ns netns.NsHandle, src net.HardwareAddr) {
 	t.Helper()
-	sendFrame(t, ns, "eth0", broadcastARP(src))
+	sendFrame(t, ns, broadcastARP(src))
 }
 
 func broadcastARP(src net.HardwareAddr) []byte {
@@ -28,9 +28,10 @@ func broadcastARP(src net.HardwareAddr) []byte {
 	return f
 }
 
-func sendFrame(t *testing.T, ns netns.NsHandle, dev string, f []byte) {
+// sendFrame sends a frame from eth0 of a namespace.
+func sendFrame(t *testing.T, ns netns.NsHandle, f []byte) {
 	t.Helper()
-	s, err := Socket(ns, unix.AF_PACKET, unix.SOCK_RAW, HostToNet16(unix.ETH_P_ALL), SocketOptions{Device: dev})
+	s, err := Socket(ns, unix.AF_PACKET, unix.SOCK_RAW, HostToNet16(unix.ETH_P_ALL), SocketOptions{Device: "eth0"})
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 	_, err = s.Write(f)

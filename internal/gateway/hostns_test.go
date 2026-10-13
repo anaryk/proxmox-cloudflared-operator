@@ -335,12 +335,13 @@ func TestStickyEntriesOfManagedGuests(t *testing.T) {
 	sticky := []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap101i1"}}
 
 	h.sync(t, []Leg{legM}, nil, nil, sticky)
-	require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "tap101i1", "the port is absent: the entry waits")
+	require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "tap101i1", "the port is absent: the entry waits on the leg")
+	require.Contains(t, h.sys.changes(), "sticky vethpco3 06:50:43:4f:76:05 vlan 0")
 
 	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, carrier: true, master: ManagedBridge}}
 	h.reset()
 	h.sync(t, []Leg{legM}, nil, nil, sticky)
-	require.Equal(t, []string{"sticky tap101i1 06:50:43:4f:76:05 vlan 0"}, h.sys.changes())
+	require.Equal(t, []string{"sticky tap101i1 06:50:43:4f:76:05 vlan 0", "fdb del vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes())
 	require.NoError(t, h.b.Verify(t.Context()))
 
 	h.reset()
@@ -362,12 +363,12 @@ func TestStickyEntriesAreReadOnlyOnThePortsTheyConcern(t *testing.T) {
 
 	h.sys.fdbReads = map[string]int{}
 	h.sync(t, []Leg{legM}, nil, nil, []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap101i1"}})
-	require.Equal(t, map[string]int{"tap101i1": 1, "vethpco3": 1}, h.sys.fdbReads)
+	require.Equal(t, map[string]int{"tap101i1": 1, "vethpco3": 2}, h.sys.fdbReads, "the leg's port holds the parked entries")
 
 	h.reset()
 	h.sys.fdbReads = map[string]int{}
 	h.sync(t, []Leg{legM}, nil, nil, []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap102i1"}})
-	require.Equal(t, map[string]int{"tap101i1": 1, "tap102i1": 1, "vethpco3": 1}, h.sys.fdbReads, "the guest moved to another port")
+	require.Equal(t, map[string]int{"tap101i1": 1, "tap102i1": 1, "vethpco3": 2}, h.sys.fdbReads, "the guest moved to another port")
 	require.Equal(t, []string{"sticky tap102i1 06:50:43:4f:76:05 vlan 0", "fdb del tap101i1 06:50:43:4f:76:05 vlan 0"}, h.sys.changes())
 }
 

@@ -43,11 +43,12 @@ func digits(s string) bool {
 // stickyKeeper is a backend that keeps sticky entries on the ports of
 // guests.
 type stickyKeeper interface {
-	keepSticky(sticky []Sticky) error
+	keepSticky(ctx context.Context, sticky []Sticky) error
 }
 
-// ApplySticky makes the sticky entries those given, on the ports that exist,
-// and changes nothing else of the gateway: what the daemon runs when the
+// ApplySticky makes the sticky entries those given, on the ports that exist
+// and parked on the managed leg for the others, and the guard table hold the
+// cards they name, and changes nothing else of the gateway: what the daemon runs when the
 // port of a managed guest appears between two cycles, which Sync the rest.
 // The appliance's backend keeps none, as the bridge is the node's: for it
 // this is nothing.
@@ -56,17 +57,17 @@ func ApplySticky(ctx context.Context, b Backend, sticky []Sticky) error {
 		return err
 	}
 	if k, ok := b.(stickyKeeper); ok {
-		return k.keepSticky(sticky)
+		return k.keepSticky(ctx, sticky)
 	}
 	return nil
 }
 
-func (b *hostBackend) keepSticky(sticky []Sticky) error {
+func (b *hostBackend) keepSticky(ctx context.Context, sticky []Sticky) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.syncSticky(sticky, false); err != nil {
 		return err
 	}
 	b.sticky = slices.Clone(sticky)
-	return nil
+	return b.ensureGuard(ctx)
 }

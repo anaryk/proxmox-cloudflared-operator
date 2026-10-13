@@ -244,6 +244,9 @@ var (
 type gatewayLab struct {
 	*labNet
 	ga, gb, gm, gm2, glan netns.NsHandle
+	// sticky are the cards of the managed guests, which the guard lets
+	// send from their ports with their addresses.
+	sticky []Sticky
 }
 
 func newGatewayLab(t *testing.T) *gatewayLab {
@@ -260,6 +263,15 @@ func newGatewayLab(t *testing.T) *gatewayLab {
 	l.gm = l.guest("m", ManagedBridge, 0, "10.203.118.5/24", "10.203.118.254")
 	l.gm2 = l.guest("m2", ManagedBridge, 0, "10.203.118.6/24", "")
 	l.glan = l.guest("lan", "vmbr0", 0, "192.168.77.50/24", "192.168.77.1")
+	for _, g := range []struct {
+		ns   netns.NsHandle
+		port string
+		addr string
+	}{{l.gm, "gm", "10.203.118.5"}, {l.gm2, "gm2", "10.203.118.6"}} {
+		m, err := macIn(g.ns, "eth0")
+		require.NoError(t, err)
+		l.sticky = append(l.sticky, Sticky{MAC: m, Bridge: ManagedBridge, Port: g.port, Addr: addr(g.addr)})
+	}
 	// The node: an address on the managed bridge, as one an admin gave it,
 	// and on its LAN, forwarding as a router would.
 	l.ip("-n", l.hostName, "addr", "add", "10.203.118.254/24", "dev", ManagedBridge)
@@ -273,7 +285,7 @@ func newGatewayLab(t *testing.T) *gatewayLab {
 		echo(t, g.ns, "0.0.0.0:7")
 	}
 	require.NoError(t, l.b.Up(t.Context()))
-	states, err := l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, nil)
+	states, err := l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, l.sticky)
 	require.NoError(t, err)
 	for _, s := range states {
 		require.True(t, s.Up, "%s: %s", s.Iface, s.Problem)
@@ -360,7 +372,7 @@ func TestLinuxTheGuardsOfTheNamespace(t *testing.T) {
 		require.Error(t, err)
 		require.Greater(t, counter(t, l.nsNft, gwTable, counterOIF), before)
 		require.ErrorIs(t, l.b.Verify(t.Context()), ErrChanged)
-		_, err = l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, nil)
+		_, err = l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, l.sticky)
 		require.NoError(t, err)
 		require.NoError(t, l.b.Verify(t.Context()))
 		got, err := get(l.host, "198.18.1.1:80", nil, 2*time.Second)
@@ -372,7 +384,7 @@ func TestLinuxTheGuardsOfTheNamespace(t *testing.T) {
 		require.NoError(t, l.nsNft.Apply(t.Context(), `delete element inet pco_gw leg_zone { "leg1" }`+"\n"))
 		_, err := get(l.host, "198.18.1.1:80", nil, time.Second)
 		require.Error(t, err, "the reply lands in zone 0, where the flow is not")
-		_, err = l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, nil)
+		_, err = l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, l.sticky)
 		require.NoError(t, err)
 		_, err = get(l.host, "198.18.1.1:80", nil, 2*time.Second)
 		require.NoError(t, err)
@@ -499,14 +511,14 @@ func TestLinuxASecondUpUnderTrafficChangesNothing(t *testing.T) {
 	conns := openEchoes(t, l, 10)
 	before := dump(t, l)
 	require.NoError(t, l.b.Up(t.Context()))
-	_, err := l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, nil)
+	_, err := l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM}, linuxServices, nil, l.sticky)
 	require.NoError(t, err)
 	require.Equal(t, before, dump(t, l))
 	conns.check(t)
 
 	t.Run("a restore from the cache with stale pins changes nothing either", func(t *testing.T) {
 		fresh := newHost(l.sys, l.nsNft, l.hostNft, zerolog.Nop(), time.Now)
-		c := Cache{Legs: []Leg{linuxLegA, linuxLegB, linuxLegM}, Services: linuxServices}
+		c := Cache{Legs: []Leg{linuxLegA, linuxLegB, linuxLegM}, Services: linuxServices, Sticky: l.sticky}
 		_, err := Restore(t.Context(), fresh, c, time.Now())
 		require.NoError(t, err)
 		require.Equal(t, before, dump(t, l))
@@ -527,7 +539,7 @@ func TestLinuxALegAddedUnderTrafficInterruptsNoOther(t *testing.T) {
 	for i := range 10 {
 		services = append(services, Service{Leg: "br3", Service: addr(fmt.Sprintf("198.18.2.%d", i)), Addr: addr("10.60.0.10"), Ports: []uint16{80}})
 	}
-	_, err := l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM, legC}, services, nil, nil)
+	_, err := l.b.Sync(t.Context(), []Leg{linuxLegA, linuxLegB, linuxLegM, legC}, services, nil, l.sticky)
 	require.NoError(t, err)
 	got, err := get(l.host, "198.18.2.9:80", nil, time.Second)
 	require.NoError(t, err)

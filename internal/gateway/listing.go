@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -275,6 +276,10 @@ func valueOf(v any) (string, error) {
 	switch x := v.(type) {
 	case string:
 		if _, err := netip.ParseAddr(x); err == nil {
+			return x, nil
+		}
+		// A MAC, as nft lists one, is no interface name: those are shorter.
+		if m, err := net.ParseMAC(x); err == nil && len(m) == 6 && m.String() == x {
 			return x, nil
 		}
 		return quoted(x), nil

@@ -66,6 +66,9 @@ func (b *hostBackend) sync(ctx context.Context, legs []Leg, services []Service, 
 		return nil, err
 	}
 	b.sticky = slices.Clone(sticky)
+	if err := b.ensureGuard(ctx); err != nil {
+		return nil, err
+	}
 	announceRaised(ctx, b.sys, valid, b.records, b.sleep, b.log)
 	return states, nil
 }
@@ -658,13 +661,17 @@ func managedMAC(mac net.HardwareAddr) bool {
 }
 
 // syncSticky keeps a static sticky entry of each managed guest's MAC on its
-// port, where the port exists; an entry whose port is absent is remembered,
-// and the next Sync after the port appears adds it. An entry applied before
-// and not given now is removed from its port: only those ports are read, as
-// a Sync runs at every cycle and on link events. With every, as Down has it,
-// the sticky entries of managed MACs that are not given are removed from
-// every port of their bridges, those no Sync of this process made among them.
+// port, where the port exists, and parked on the bridge end of the managed
+// leg of its bridge where it does not: while a guest is stopped no other
+// port may take its MAC over, and the frames to it end in the namespace,
+// which drops them. The entry moves to the port when it appears. An entry
+// applied before and not given now is removed: only the ports of those and
+// the parking ports are read, as a Sync runs at every cycle and on link
+// events. With every, as Down has it, the sticky entries of managed MACs that
+// are not given are removed from every port of their bridges, those no Sync
+// of this process made among them.
 func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
+	var placed []Sticky
 	for _, s := range sticky {
 		if s.Port == "" || len(s.MAC) != 6 {
 			continue
@@ -672,11 +679,14 @@ func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 		if _, ok, err := b.sys.link(onHost, s.Port); err != nil {
 			return fmt.Errorf("reading %s: %w", s.Port, err)
 		} else if !ok {
-			continue
+			if s.Port = b.parkingPort(s.Bridge); s.Port == "" {
+				continue
+			}
 		}
 		if err := b.ensureFDB(s.Port, s.MAC, s.VLAN); err != nil {
 			return err
 		}
+		placed = append(placed, s)
 	}
 	ports, err := b.stalePorts(sticky, every)
 	if err != nil {
@@ -688,7 +698,7 @@ func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 			return fmt.Errorf("reading the forwarding entries of %s: %w", port, err)
 		}
 		for _, e := range have {
-			if !e.static || !e.sticky || !managedMAC(e.mac) || slices.ContainsFunc(sticky, func(s Sticky) bool {
+			if !e.static || !e.sticky || !managedMAC(e.mac) || slices.ContainsFunc(placed, func(s Sticky) bool {
 				return s.Port == port && stickyOf(e, s.MAC, s.VLAN)
 			}) {
 				continue
@@ -699,6 +709,17 @@ func (b *hostBackend) syncSticky(sticky []Sticky, every bool) error {
 		}
 	}
 	return nil
+}
+
+// parkingPort is the bridge end of the managed leg on a bridge, where the
+// entry of a guest whose port is absent waits; "" when there is none.
+func (b *hostBackend) parkingPort(bridge string) string {
+	for _, l := range b.legs {
+		if rec := b.records[l.ID]; l.Managed && l.Bridge == bridge && rec != nil && rec.created {
+			return bridgePort(l.Mark)
+		}
+	}
+	return ""
 }
 
 // stalePorts returns the ports, sorted, that may hold a sticky entry of a
@@ -713,6 +734,11 @@ func (b *hostBackend) stalePorts(sticky []Sticky, every bool) ([]string, error) 
 		}
 	}
 	if !every {
+		for _, l := range b.legs {
+			if l.Managed {
+				add(b.parkingPort(l.Bridge))
+			}
+		}
 		for _, old := range b.sticky {
 			if !slices.ContainsFunc(sticky, func(s Sticky) bool {
 				return s.Port == old.Port && macEqual(s.MAC, old.MAC) && s.VLAN == old.VLAN
@@ -767,7 +793,10 @@ func (b *hostBackend) Detach(ctx context.Context, id string) error {
 	b.services = slices.DeleteFunc(slices.Clone(b.services), func(s Service) bool { return s.Leg == id })
 	b.pins = slices.DeleteFunc(slices.Clone(b.pins), func(p Pin) bool { return p.Leg == id })
 	delete(b.records, id)
-	return b.ensureTable(ctx, true)
+	if err := b.ensureTable(ctx, true); err != nil {
+		return err
+	}
+	return b.ensureGuard(ctx)
 }
 
 // Probe probes for addr on the bridge and VLAN through the leg there, or

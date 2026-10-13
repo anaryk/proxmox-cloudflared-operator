@@ -39,6 +39,7 @@ func (b *hostBackend) Verify(ctx context.Context) error {
 	for _, s := range b.sticky {
 		v.sticky(s)
 	}
+	v.guard(ctx)
 	if _, ok := v.link(onHost, ManagedBridge, false); ok {
 		v.sysctls(onHost, [][2]string{{"net.ipv6.conf." + ManagedBridge + ".disable_ipv6", "1"}})
 	}
@@ -300,6 +301,8 @@ func (v *verifier) sticky(s Sticky) {
 	}
 	if _, ok := v.link(onHost, s.Port, false); ok {
 		v.fdb(s.Port, s.MAC, s.VLAN)
+	} else if park := v.b.parkingPort(s.Bridge); park != "" {
+		v.fdb(park, s.MAC, s.VLAN)
 	}
 }
 
@@ -380,6 +383,9 @@ func (b *hostBackend) Down(ctx context.Context) error {
 	}
 	if err := b.syncSticky(nil, true); err != nil {
 		return err
+	}
+	if err := b.hostNft.Apply(ctx, fmt.Sprintf("add table bridge %[1]s\ndelete table bridge %[1]s\n", guardTable)); err != nil {
+		return fmt.Errorf("removing table bridge %s: %w", guardTable, err)
 	}
 	// Also without a namespace: an empty file a pin that failed left goes.
 	if err := b.sys.removeNamespace(); err != nil {

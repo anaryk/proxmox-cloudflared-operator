@@ -1,0 +1,30 @@
+add table bridge pco_guard
+delete table bridge pco_guard
+table bridge pco_guard {
+	set cards {
+		type ifname . ether_addr . ipv4_addr
+		elements = {
+			"tap102i1" . 06:50:43:4f:76:03 . 10.203.118.3,
+			"veth101i1" . 06:50:43:4f:76:02 . 10.203.118.2
+		}
+	}
+	set card_macs {
+		type ifname . ether_addr
+		elements = {
+			"tap102i1" . 06:50:43:4f:76:03,
+			"veth101i1" . 06:50:43:4f:76:02
+		}
+	}
+	counter dropped_spoofed {
+	}
+	chain prerouting {
+		type filter hook prerouting priority -300; policy accept;
+		meta ibrname != "pconet" accept
+		iifname "vethpco*" accept
+		iifname . ether saddr . ip saddr @cards accept
+		ip saddr 0.0.0.0 udp sport 68 udp dport 67 iifname . ether saddr @card_macs accept
+		iifname . arp saddr ether . arp saddr ip @cards accept
+		arp saddr ip 0.0.0.0 iifname . arp saddr ether @card_macs accept
+		ether type { ip, arp } counter name "dropped_spoofed" drop
+	}
+}

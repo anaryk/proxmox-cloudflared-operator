@@ -61,9 +61,9 @@ func TestLinuxTheSourceWatchReportsAForeignCard(t *testing.T) {
 
 	sendFrom(t, guest, mac(lease))
 	sendFrom(t, guest, bridgeEndMAC(legMAC))
-	sendFrame(t, leg, "eth0", broadcastARP(mac("bc:24:11:00:00:02")))
+	sendFrame(t, leg, broadcastARP(mac("bc:24:11:00:00:02")))
 	unicast := frame(legMAC.String(), "bc:24:11:00:00:03", 0x0800)
-	sendFrame(t, guest, "eth0", unicast)
+	sendFrame(t, guest, unicast)
 
 	sent := time.Now()
 	sendFrom(t, guest, mac("bc:24:11:00:99:99"))

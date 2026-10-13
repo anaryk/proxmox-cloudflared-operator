@@ -107,6 +107,9 @@ func (b *hostBackend) up(ctx context.Context) error {
 	if err := b.ensureHostTable(ctx); err != nil {
 		return err
 	}
+	if err := b.ensureGuard(ctx); err != nil {
+		return err
+	}
 	if err := b.namespace(true); err != nil {
 		return err
 	}

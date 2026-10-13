@@ -90,9 +90,14 @@ type Sticky struct {
 	MAC    net.HardwareAddr
 	Bridge string // ManagedBridge
 	VLAN   int
-	// Port is tap<vmid>i<n>, fwpr<vmid>p<n> or veth<vmid>i<n>; "" while the
-	// guest is stopped, which leaves the entry out.
+	// Port is tap<vmid>i<n>, fwpr<vmid>p<n> or veth<vmid>i<n>; "" leaves the
+	// entry out. While the port is absent, as while the guest is stopped,
+	// the entry is parked on the bridge end of the managed leg, so that no
+	// other port takes the MAC over meanwhile.
 	Port string
+	// Addr is the card's address on the managed network, the only one the
+	// card may send from (the guard table); zero lets it send from none.
+	Addr netip.Addr
 }
 
 // LegState is what the backend reports about a leg.
@@ -164,7 +169,8 @@ type Backend interface {
 type Nft interface {
 	// Apply runs a script as nft -f -: one transaction.
 	Apply(ctx context.Context, script string) error
-	// List returns nft -j list table inet <table>, or ErrNotLoaded.
+	// List returns nft -j list table inet <table>, or ErrNotLoaded; a
+	// table of another family is named "<family> <table>".
 	List(ctx context.Context, table string) ([]byte, error)
 }
 

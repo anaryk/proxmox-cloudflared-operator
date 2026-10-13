@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,7 +65,8 @@ func TestAPortThatAppearsLaterGetsItsEntry(t *testing.T) {
 	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, carrier: true, master: ManagedBridge}}
 	h.reset()
 	require.NoError(t, ApplySticky(t.Context(), h.b, sticky))
-	require.Equal(t, []string{"sticky tap101i1 06:50:43:4f:76:05 vlan 0"}, h.sys.changes())
+	require.Equal(t, []string{"sticky tap101i1 06:50:43:4f:76:05 vlan 0", "fdb del vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(),
+		"moved from the leg, where it waited")
 	require.Empty(t, h.nsNft.scripts, "nothing of the namespace is touched")
 	require.Empty(t, h.hostNft.scripts)
 	require.NoError(t, h.b.Verify(t.Context()))
@@ -121,3 +123,52 @@ func TestApplyStickyIsNothingToABackendWithoutEntries(t *testing.T) {
 }
 
 type noSticky struct{ Backend }
+
+// While a guest's port is absent its entry is parked on the bridge end of
+// the managed leg, so that no other port takes the MAC over meanwhile: the
+// frames to it end in the namespace, which is not their destination. The
+// entry moves to the port when it appears, and goes with the lease.
+func TestAnEntryWaitsOnTheLegWhileItsPortIsAbsent(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	guest := mac("06:50:43:4f:76:05")
+	sticky := []Sticky{{MAC: guest, Bridge: ManagedBridge, Port: "tap101i1"}}
+	h.sync(t, []Leg{legM}, nil, nil, nil)
+	h.reset()
+
+	h.sync(t, []Leg{legM}, nil, nil, sticky)
+	require.Equal(t, []string{"sticky vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(), "parked on the leg")
+	require.NoError(t, h.b.Verify(t.Context()))
+
+	h.sys.host.links["vethpco3"].fdb = slices.DeleteFunc(h.sys.host.links["vethpco3"].fdb, func(e fdbEntry) bool { return macEqual(e.mac, guest) })
+	require.ErrorIs(t, h.b.Verify(t.Context()), ErrChanged, "a parked entry that went is a difference")
+	h.reset()
+	require.NoError(t, ApplySticky(t.Context(), h.b, sticky))
+	require.Equal(t, []string{"sticky vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes())
+
+	h.sys.host.links["tap101i1"] = &fakeLink{link: link{name: "tap101i1", kind: "tun", up: true, carrier: true, master: ManagedBridge}}
+	h.reset()
+	require.NoError(t, ApplySticky(t.Context(), h.b, sticky))
+	require.Equal(t, []string{"sticky tap101i1 06:50:43:4f:76:05 vlan 0", "fdb del vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(),
+		"moved to its port when it appears")
+	require.NoError(t, h.b.Verify(t.Context()))
+
+	delete(h.sys.host.links, "tap101i1")
+	h.reset()
+	require.NoError(t, ApplySticky(t.Context(), h.b, sticky))
+	require.Equal(t, []string{"sticky vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(), "parked again when the guest stops")
+
+	h.reset()
+	require.NoError(t, ApplySticky(t.Context(), h.b, nil))
+	require.Equal(t, []string{"fdb del vethpco3 06:50:43:4f:76:05 vlan 0"}, h.sys.changes(), "gone with the lease")
+	require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "02:50:43:4f:ff:01", "the leg's own entry stays")
+}
+
+// Without a managed leg there is nowhere to park: the entry waits for its
+// port.
+func TestAnEntryWithoutAManagedLegWaitsForItsPort(t *testing.T) {
+	h := newHarness(t).node()
+	h.up(t)
+	h.sync(t, []Leg{legA}, nil, nil, []Sticky{{MAC: mac("06:50:43:4f:76:05"), Bridge: ManagedBridge, Port: "tap101i1"}})
+	require.NotContains(t, strings.Join(h.sys.changes(), "\n"), "06:50:43:4f:76:05")
+}

@@ -619,18 +619,18 @@ func (n *fakeNft) Apply(_ context.Context, script string) error {
 		f := strings.Fields(line)
 		switch {
 		case line == "":
-		case strings.HasPrefix(line, "add table inet "):
-			if next[f[3]] == nil {
-				next[f[3]] = &fakeTable{elems: map[string][]string{}}
+		case strings.HasPrefix(line, "add table "):
+			if next[tableKey(f[2], f[3])] == nil {
+				next[tableKey(f[2], f[3])] = &fakeTable{elems: map[string][]string{}}
 			}
-		case strings.HasPrefix(line, "delete table inet "):
-			if next[f[3]] == nil {
-				return fmt.Errorf("delete table inet %s: No such file or directory", f[3])
+		case strings.HasPrefix(line, "delete table "):
+			if next[tableKey(f[2], f[3])] == nil {
+				return fmt.Errorf("delete table %s %s: No such file or directory", f[2], f[3])
 			}
-			delete(next, f[3])
-		case strings.HasPrefix(line, "table inet "):
-			tb, end := n.parseTable(f[2], lines[i+1:])
-			next[f[2]] = tb
+			delete(next, tableKey(f[2], f[3]))
+		case strings.HasPrefix(line, "table "):
+			tb, end := n.parseTable(tableKey(f[1], f[2]), lines[i+1:])
+			next[tableKey(f[1], f[2])] = tb
 			i += end + 1
 		case strings.HasPrefix(line, "add element inet ") || strings.HasPrefix(line, "delete element inet "):
 			if err := elementLine(next, line); err != nil {
@@ -649,6 +649,15 @@ func (n *fakeNft) Apply(_ context.Context, script string) error {
 	return nil
 }
 
+// tableKey is how the fake keeps a table, as List names it: by its name in
+// the inet family, by its family and name in another.
+func tableKey(family, name string) string {
+	if family == "inet" {
+		return name
+	}
+	return family + " " + name
+}
+
 // parseTable reads the block of a table up to its closing brace and returns
 // it with the base listing of its name, and the index of the closing line.
 func (n *fakeNft) parseTable(name string, lines []string) (*fakeTable, int) {
@@ -658,6 +667,8 @@ func (n *fakeNft) parseTable(name string, lines []string) (*fakeTable, int) {
 		tb.base = baseListing(n.t, cmp.Or(n.gwListing, "listing-1.1.3.json"))
 	case hostTable:
 		tb.base = baseListing(n.t, "host-1.1.3.json")
+	case guardFamilyName:
+		tb.base = baseListing(n.t, "guard-1.1.3.json")
 	case netTable:
 		// Only whether it is there is read.
 	default:

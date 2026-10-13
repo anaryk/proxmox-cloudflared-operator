@@ -41,10 +41,14 @@ func (n nftCmd) Apply(ctx context.Context, script string) error {
 }
 
 func (n nftCmd) List(ctx context.Context, table string) ([]byte, error) {
-	out, err := n.run(ctx, nil, "-j", "list", "table", "inet", table)
+	family, name, ok := strings.Cut(table, " ")
+	if !ok {
+		family, name = "inet", table
+	}
+	out, err := n.run(ctx, nil, "-j", "list", "table", family, name)
 	var ne *nftError
 	if errors.As(err, &ne) && ne.missing() {
-		return nil, fmt.Errorf("table inet %s: %w", table, ErrNotLoaded)
+		return nil, fmt.Errorf("table %s %s: %w", family, name, ErrNotLoaded)
 	}
 	return out, err
 }
