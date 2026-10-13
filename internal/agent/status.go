@@ -100,13 +100,13 @@ func (p *pass) reports() []agentproto.TargetReport {
 		r := agentproto.TargetReport{Key: t.Key}
 		res, resolved := p.results[t.Key]
 		switch {
-		case !t.Resolve:
+		case !t.Resolve && !resolved:
 			r.Addr, r.Reason = t.Addr, reasonNotResolved
 		case !resolved:
 			r.Reason = "not resolved"
 		default:
 			served := p.served[t.Key]
-			r.Addr, r.Level, r.OK = res.Target.Addr, string(res.Level), p.verified[t.Key]
+			r.Addr, r.Level, r.OK, r.Attested = res.Target.Addr, string(res.Level), p.verified[t.Key], p.attested[t.Key]
 			r.Reason = cmp.Or(p.held[t.Key], res.Target.Reason)
 			switch b := served.Binding; {
 			case b != nil:

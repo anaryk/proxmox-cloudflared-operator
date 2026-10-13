@@ -261,7 +261,7 @@ func (a *Agent) verifyMoved(ctx context.Context, addr netip.Addr) (why string, p
 		rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 		prev := wt.binding
 		required := resolve.Level(wt.target.Required)
-		res := a.d.Resolver.Resolve(rctx, wt.target.Route, w.inv, &prev, w.deny, required, nil)
+		res := a.prove(rctx, wt.target, w.inv, &prev, w.deny)
 		cancel()
 		if ctx.Err() != nil {
 			return "the agent stops", false

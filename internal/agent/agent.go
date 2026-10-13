@@ -57,6 +57,8 @@ const (
 // for concurrent use.
 type Resolver interface {
 	Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level, share *resolve.Shared) resolve.Result
+	// VerifyAddress proves an address another node chose for a route.
+	VerifyAddress(ctx context.Context, req resolve.VerifyRequest) resolve.VerifyResult
 }
 
 // Connectors is the part of *connector.Manager the agent uses.

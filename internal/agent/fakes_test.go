@@ -86,6 +86,7 @@ type fakeResolver struct {
 	snaps       []inventory.Snapshot
 	denies      []resolve.Denylist
 	deadlines   []time.Time
+	verifies    []resolve.VerifyRequest // every verification asked, in order
 	onResolve   func(host string)
 }
 
@@ -106,9 +107,6 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, snap inve
 	if d, ok := ctx.Deadline(); ok {
 		f.deadlines = append(f.deadlines, d)
 	}
-	reason, bad := f.unreachable[route.Hostname]
-	rejection, rejected := f.rejected[route.Hostname]
-	stop, stopped := f.stopped[route.Hostname]
 	level, set := f.levels[route.Hostname]
 	switch {
 	case set:
@@ -121,12 +119,60 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, snap inve
 	if !set {
 		addr = guestAddr
 	}
-	via := f.vias[route.Hostname]
+	if route.Target.Addr.IsValid() {
+		addr = route.Target.Addr
+	}
 	hook := f.onResolve
 	f.mu.Unlock()
 	if hook != nil {
 		hook(route.Hostname)
 	}
+	return f.answer(route, prev, deny, level, addr)
+}
+
+// VerifyAddress answers at the address asked for. A guest's address is proven
+// at port through the attestation when one is given with the time it was
+// heard and with coverage, at observed otherwise, unless a test set its
+// level; a route without a guest is manual. The stops, rejections and
+// silences of Resolve apply.
+func (f *fakeResolver) VerifyAddress(ctx context.Context, req resolve.VerifyRequest) resolve.VerifyResult {
+	f.mu.Lock()
+	f.verifies = append(f.verifies, req)
+	if d, ok := ctx.Deadline(); ok {
+		f.deadlines = append(f.deadlines, d)
+	}
+	level, set := f.levels[req.Route.Hostname]
+	f.mu.Unlock()
+	at := req.Attestation
+	attested := at != nil && req.Covered && !at.HeardAt.IsZero()
+	switch {
+	case set:
+	case req.Route.Guest == nil:
+		level = resolve.LevelManual
+	case attested:
+		level = resolve.LevelPort
+	default:
+		level = resolve.LevelObserved
+	}
+	res := f.answer(req.Route, req.Prev, req.Deny, level, req.Addr)
+	if res.Binding != nil && len(req.MACs) > 0 {
+		res.Binding.MAC = req.MACs[0]
+	}
+	attested = attested && res.Level == resolve.LevelPort
+	if attested && res.Binding != nil {
+		res.Binding.Port = "eno1"
+	}
+	return resolve.VerifyResult{Result: res, Attested: attested}
+}
+
+// answer is the result of a route at addr, proven at level.
+func (f *fakeResolver) answer(route model.Route, prev *resolve.Binding, deny resolve.Denylist, level resolve.Level, addr netip.Addr) resolve.Result {
+	f.mu.Lock()
+	reason, bad := f.unreachable[route.Hostname]
+	rejection, rejected := f.rejected[route.Hostname]
+	stop, stopped := f.stopped[route.Hostname]
+	via := f.vias[route.Hostname]
+	f.mu.Unlock()
 
 	switch {
 	case rejected:
@@ -140,9 +186,6 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, snap inve
 		b := *prev
 		b.Withdrawn = true
 		return resolve.Result{Target: planner.ResolvedTarget{Addr: b.Addr, Withdrawn: true, Reason: stop, Owner: route.Owner()}, Binding: &b}
-	}
-	if route.Target.Addr.IsValid() {
-		addr = route.Target.Addr
 	}
 	res := resolve.Result{
 		Target:     planner.ResolvedTarget{Addr: addr, Reachable: !bad, Reason: reason, Owner: route.Owner()},
@@ -161,6 +204,12 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, snap inve
 		res.SoftDenied, _ = deny.Soft(addr)
 	}
 	return res
+}
+
+func (f *fakeResolver) verifications() []resolve.VerifyRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.verifies)
 }
 
 func (f *fakeResolver) set(m map[string]string, host, v string) {

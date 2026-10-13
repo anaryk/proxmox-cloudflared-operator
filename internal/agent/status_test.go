@@ -35,8 +35,8 @@ func TestTheStatusSaysWhatTheAgentIsAt(t *testing.T) {
 	require.Equal(t, "on", st.Egress)
 	require.Len(t, st.Targets, 2)
 	remote := report(st, "remote.example.com")
-	require.False(t, remote.OK)
-	require.Equal(t, "this node does not resolve this target, and it verifies no address another node chose", remote.Reason)
+	require.True(t, remote.OK, "verified as the address another node chose")
+	require.Empty(t, remote.Reason)
 	require.Equal(t, netip.MustParseAddr("10.0.0.40"), remote.Addr)
 }
 
