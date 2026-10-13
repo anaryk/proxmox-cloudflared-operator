@@ -324,8 +324,8 @@ and `pco claims` for handing it over on purpose.
 To take a hostname down, remove it from the Notes altogether, or remove the tag.
 Leaving the name behind in a comment or in prose keeps the claim: pco takes any word
 of the Notes that is a valid hostname as a sign that the guest still asks for it. The
-name then answers 503, with the state `held` and the note that the guest names it
-without a route, until it is gone from the Notes. The same holds for an entry that is
+name then answers 503, with the state `held` and the note `named in the Notes of
+<owner> but not routed; claim kept`, until it is gone from the Notes. The same holds for an entry that is
 broken: a mistake never unpublishes a hostname by silently dropping it, it blocks it
 until the entry is fixed.
 
@@ -340,11 +340,13 @@ Every message about a word comes with the position of that word. The first line 
 Notes is line 1 and the first column is column 1; columns count characters, not
 bytes. `pco status` lists them under `Issues` as
 `qemu/101 line 2, column 5: message`, ten at most, and `pco status --json` has all
-of them in the field `issues`. Two messages are about the guest as a whole and have no
+of them in the field `issues`. Three messages are about the guest as a whole and have no
 position, and `pco status` lists them as `qemu/101: message`: `tagged cf-tunnel but no
-routes found in Notes` (the last row below), and `waiting for approval`, which says that
-admission mode `approve` holds the routes of the guest back until an admin approves it;
-see [Security](security.md).
+routes found in Notes` (the last row below); `waiting for approval`, which says that
+admission mode `approve` holds the routes of the guest back until an admin approves it
+(see [Security](security.md)); and `the Notes name 40 hostnames, more than
+maxHostnamesPerGuest allows (32); none of them is published until they name at most 32`,
+when the Notes name more hostnames than the setting allows.
 
 | Message | What went wrong |
 |---|---|

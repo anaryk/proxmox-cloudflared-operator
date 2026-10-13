@@ -189,8 +189,8 @@ hostnames they write there that nobody holds yet. A registered tag does not stop
 Proxmox copies the tags of the source. In admission mode `tag` it is published at the next
 cycle; in mode `approve` it waits, because a clone has an identity of its own. `pco doctor`
 warns in its `admission` check while the mode is `tag` and any guest carries the gate tag:
-pco does not read the ACLs yet, so it cannot tell whether anyone but the admins may clone
-them. Use `approve` when anyone but the admins holds `VM.Clone` on a tagged guest.
+the check does not look at who holds `VM.Clone` on them, so it cannot tell whether anyone
+but the admins may clone them. Use `approve` when anyone but the admins holds `VM.Clone` on a tagged guest.
 
 ### Approval mode
 

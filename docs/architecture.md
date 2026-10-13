@@ -354,12 +354,12 @@ flowchart LR
         direction TB
         r1["The settings, the install, the node registry and leader.json"] --> r2["The guests and the nodes, from Proxmox"]
         r2 --> r3["The routes: Notes of tagged guests, manual routes, hostname policy, admission"]
-        r3 --> r4["The zones of every credential"]
+        r3 --> rm["Put the consenting guests on the managed network, and act on foreign cards"]
+        rm --> r4["The zones of every credential"]
     end
     subgraph decide["2. Decide"]
         direction TB
-        d1["Settle the claims and save them"] --> dm["Put the consenting guests on the managed network, and act on foreign cards"]
-        dm --> d2["Verify the address of each route that holds its hostname"]
+        d1["Settle the claims and save them"] --> d2["Verify the address of each route that holds its hostname"]
         d2 --> dg["Map the targets behind a leg to service addresses and program the gateway"]
         dg --> d3["Plan the tunnels, their rules and the records"]
         d3 --> d4["Give the egress filter its targets"]

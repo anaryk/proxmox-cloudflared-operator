@@ -120,10 +120,12 @@ ask: [`pco sync`](cli/pco-sync.md), `pco apply`, `pco adopt`, or when a credenti
    guest reports are cached for a minute.
 3. Reads the routes out of the Notes of the tagged guests and applies the hostname policy
    and, in approve mode, the approvals.
-4. Settles the claims: which guest holds each hostname. With the managed network enabled,
-   decides for each guest whether it gets a card on it, keeps it or loses it after the grace,
-   acts on the cards no attachment explains, and adds and removes the cards, under the gate
-   of the writer below ([Networking](networking.md#managed)).
+4. With the managed network enabled, decides for each guest whether it gets a card on it,
+   keeps it or loses it after the grace, acts on the cards no attachment explains, and adds
+   and removes the cards, under the gate of the writer below
+   ([Networking](networking.md#managed)), so that a card added now is a candidate address in
+   this cycle. Then it reads the zones of every credential and settles the claims: which guest
+   holds each hostname.
 5. Verifies the address of each route that holds its hostname, up to 32 at a time, with
    15 seconds for each (see [Identity](identity.md)), and holds back what is below
    `identityMinimum`. Routes on the same address of a guest share one check. A proof the
