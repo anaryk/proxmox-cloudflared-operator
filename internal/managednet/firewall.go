@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
@@ -271,22 +272,38 @@ func (f *Firewall) set(ctx context.Context, g model.Guest, nic int) (*pve.IPSet,
 // rules that are on and not this install's it had, by which Restore tells
 // whether an admin has taken the firewall up since.
 func (f *Firewall) Before(read GuestFirewall) store.FirewallBefore {
-	b := store.FirewallBefore{Enabled: read.Options.Enabled, Rules: f.othersOn(read.Rules)}
+	b := store.FirewallBefore{Enabled: read.Options.Enabled, Rules: AdminRulesOn(read.Rules)}
 	if !b.Enabled {
 		b.PolicyIn, b.PolicyOut = read.Options.PolicyIn, read.Options.PolicyOut
 	}
 	return b
 }
 
-// othersOn counts the rules that are on and not this install's.
-func (f *Firewall) othersOn(rules []pve.FirewallRule) int {
+// AdminRulesOn counts the rules that are on and are no install's of pco's:
+// the admin's.
+func AdminRulesOn(rules []pve.FirewallRule) int {
 	n := 0
 	for _, r := range rules {
-		if r.Enable && r.Comment != f.comment {
+		if r.Enable && !strings.HasPrefix(r.Comment, FirewallCommentPrefix) {
 			n++
 		}
 	}
 	return n
+}
+
+// TakenUp says why a guest firewall that pco turned on, as before records,
+// is not pco's to turn off any more: an admin changed its policies from the
+// ACCEPT pco set, or added rules that are on. Empty while it still is pco's.
+// The detach of the appliance and the uninstall both decide by it; neither
+// turns a firewall off whose options or rules it could not read.
+func TakenUp(o pve.GuestFirewallOptions, rules []pve.FirewallRule, before store.FirewallBefore) string {
+	switch n := AdminRulesOn(rules); {
+	case o.PolicyIn != policyAccept || o.PolicyOut != policyAccept:
+		return "its policies were changed since pco turned it on"
+	case n > before.Rules:
+		return fmt.Sprintf("it has %d rules more than when pco turned it on", n-before.Rules)
+	}
+	return ""
 }
 
 // Apply writes what isolates the card: the card's ipset holding exactly the
@@ -398,11 +415,12 @@ var ErrRulesDiffer = errors.New("pco's rules on the card still differ from what 
 func (f *Firewall) applyRules(ctx context.Context, g model.Guest, card FirewallCard) error {
 	want := WantRules(card, f.comment)
 	iface := card.Iface()
-	rules, digest, err := f.api.GuestFirewallRules(ctx, g.Node, g.Ref)
+	rules, _, err := f.api.GuestFirewallRules(ctx, g.Node, g.Ref)
 	if err != nil {
 		return err
 	}
 	if rulesDrift(rules, want) != "" {
+		var digest string
 		if err := f.removeRules(ctx, g, iface, f.unreachable(iface), len(rules)); err != nil {
 			return err
 		}
@@ -544,11 +562,8 @@ func (f *Firewall) Restore(ctx context.Context, g model.Guest, nic int, before *
 	if rules, _, err = f.api.GuestFirewallRules(ctx, g.Node, g.Ref); err != nil {
 		return "", err
 	}
-	switch n := f.othersOn(rules); {
-	case o.PolicyIn != policyAccept || o.PolicyOut != policyAccept:
-		return "its policies were changed since pco turned it on", nil
-	case n > before.Rules:
-		return fmt.Sprintf("it has %d rules more than when pco turned it on", n-before.Rules), nil
+	if why := TakenUp(o, rules, *before); why != "" {
+		return why, nil
 	}
 	off := false
 	change := pve.GuestFirewallChange{Enable: &off, PolicyIn: before.PolicyIn, PolicyOut: before.PolicyOut}

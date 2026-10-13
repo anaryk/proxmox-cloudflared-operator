@@ -214,7 +214,8 @@ func TestDetachLeavesAFirewallAnAdminTookUp(t *testing.T) {
 		"a policy changed": {`{"enable":1,"policy_in":"DROP","policy_out":"ACCEPT","digest":"o1"}`, `[]`,
 			"its policies were changed since pco turned it on"},
 		"a rule added": {`{"enable":1,"policy_in":"ACCEPT","policy_out":"ACCEPT","digest":"o1"}`,
-			`[{"pos":0,"type":"in","action":"ACCEPT","iface":"net0","dport":"22","enable":1,"digest":"r1"}]`,
+			`[{"pos":0,"type":"in","action":"ACCEPT","iface":"net0","dport":"22","enable":1,"digest":"r1"},` +
+				`{"pos":1,"type":"in","action":"DROP","iface":"net2","enable":1,"comment":"pco:another","digest":"r1"}]`,
 			"it has 1 rules more than when pco turned it on"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -240,6 +241,31 @@ func TestDetachLeavesAFirewallAnAdminTookUp(t *testing.T) {
 				"; pco's rules and ipset on net1 are removed")
 		})
 	}
+}
+
+// Options that cannot be read leave the firewall on: the uninstall says so
+// and turns nothing off.
+func TestDetachLeavesAFirewallItCannotRead(t *testing.T) {
+	e := newTestEnv(t)
+	ct := ctOnPconet()
+	fw := "/nodes/pve1/lxc/105/firewall"
+	e.script([]call{
+		resources(ct), configRead(ct),
+		{line: "pvesh set /nodes/pve1/lxc/105/config --delete net1 --digest cfg1"},
+		{line: "pvesh get " + fw + "/rules --output-format json", out: `[]`},
+		{line: "pvesh get " + fw + "/ipset --output-format json", out: `[]`},
+		{line: "pvesh get " + fw + "/options --output-format json", out: `not json`},
+	})
+	d := Detacher{Run: e.run, Ask: e.ask, Sleep: func(context.Context, time.Duration) error { return nil }}
+
+	_, err := d.Detach(context.Background(), []store.Attachment{attached("lxc/105", 1, "10.203.118.5", &store.FirewallBefore{})})
+
+	require.Error(t, err)
+	e.done()
+	for _, line := range e.run.ran {
+		require.NotContains(t, line, "/options --enable 0")
+	}
+	e.requireShown("so it stays on")
 }
 
 // A card that is gone already was removed by somebody else, and net1 may be

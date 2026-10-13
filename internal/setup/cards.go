@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -331,32 +333,28 @@ type firewallOptions struct {
 }
 
 // turnOff turns a guest firewall that pco turned on off again, with the
-// policies it had, but only while what pco set is what it is: both policies
-// ACCEPT, and no more rules that are on and not pco's than it had. Otherwise
-// an admin has taken it up since, and kept says why it stays on.
+// policies it had, but only while it is still pco's to turn off, by the rule
+// the appliance's detach goes by (managednet.TakenUp). Otherwise an admin has
+// taken it up since, and kept says why it stays on. Options or rules that
+// cannot be read leave it on, with the error.
 func (d Detacher) turnOff(ctx context.Context, fw string, ref model.GuestRef, before *store.FirewallBefore) (kept string, err error) {
 	var o firewallOptions
 	if err := query(ctx, d.Run, &o, "pvesh", "get", fw+"/options", "--output-format", "json"); err != nil {
-		return "", fmt.Errorf("reading the firewall options of %s: %w", ref, err)
+		return "", fmt.Errorf("reading the firewall options of %s, so it stays on: %w", ref, err)
 	}
 	if o.Enable != 1 {
 		return "", nil
 	}
-	var rules []firewallRule
-	if err := query(ctx, d.Run, &rules, "pvesh", "get", fw+"/rules", "--output-format", "json"); err != nil {
-		return "", fmt.Errorf("reading the firewall rules of %s: %w", ref, err)
+	var listed []firewallRule
+	if err := query(ctx, d.Run, &listed, "pvesh", "get", fw+"/rules", "--output-format", "json"); err != nil {
+		return "", fmt.Errorf("reading the firewall rules of %s, so it stays on: %w", ref, err)
 	}
-	others := 0
-	for _, r := range rules {
-		if r.Enable == 1 && !strings.HasPrefix(r.Comment, FirewallComment) {
-			others++
-		}
+	rules := make([]pve.FirewallRule, 0, len(listed))
+	for _, r := range listed {
+		rules = append(rules, pve.FirewallRule{Iface: r.Iface, Comment: r.Comment, Enable: r.Enable == 1})
 	}
-	switch {
-	case o.PolicyIn != "ACCEPT" || o.PolicyOut != "ACCEPT":
-		return "its policies were changed since pco turned it on", nil
-	case others > before.Rules:
-		return fmt.Sprintf("it has %d rules more than when pco turned it on", others-before.Rules), nil
+	if why := managednet.TakenUp(pve.GuestFirewallOptions{Enabled: true, PolicyIn: o.PolicyIn, PolicyOut: o.PolicyOut}, rules, *before); why != "" {
+		return why, nil
 	}
 	args := []string{"set", fw + "/options", "--enable", "0"}
 	for _, p := range []struct{ key, value string }{{"policy_in", before.PolicyIn}, {"policy_out", before.PolicyOut}} {

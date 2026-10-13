@@ -292,7 +292,7 @@ func TestRestoreTakesAwayWhatPcoWroteAndNothingElse(t *testing.T) {
 	read, err := fw.Read(t.Context(), fwGuest, 1)
 	require.NoError(t, err)
 	before := fw.Before(read)
-	require.Equal(t, store.FirewallBefore{PolicyIn: "DROP", Rules: 2}, before)
+	require.Equal(t, store.FirewallBefore{PolicyIn: "DROP", Rules: 1}, before, "the admin's rule counts, no install of pco's does")
 	require.NoError(t, fw.Apply(t.Context(), fwGuest, fwCard))
 
 	kept, err := fw.Restore(t.Context(), fwGuest, 1, &before)
