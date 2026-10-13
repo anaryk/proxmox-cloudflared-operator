@@ -55,9 +55,9 @@ func TestTheGatewayKeepsAStickyEntryPerAttachedGuest(t *testing.T) {
 	m.next()
 
 	require.Equal(t, []gateway.Sticky{
-		{MAC: hardware(t, "06:50:43:4f:76:04"), Bridge: gateway.ManagedBridge, Port: "fwpr103p1"},
-		{MAC: hardware(t, "06:50:43:4f:76:03"), Bridge: gateway.ManagedBridge, Port: "tap102i1"},
-		{MAC: hardware(t, "06:50:43:4f:76:02"), Bridge: gateway.ManagedBridge, Port: "veth101i1"},
+		{MAC: hardware(t, "06:50:43:4f:76:04"), Bridge: gateway.ManagedBridge, Port: "fwpr103p1", Addr: netip.MustParseAddr("10.203.118.4")},
+		{MAC: hardware(t, "06:50:43:4f:76:03"), Bridge: gateway.ManagedBridge, Port: "tap102i1", Addr: netip.MustParseAddr("10.203.118.3")},
+		{MAC: hardware(t, "06:50:43:4f:76:02"), Bridge: gateway.ManagedBridge, Port: "veth101i1", Addr: netip.MustParseAddr("10.203.118.2")},
 	}, m.gw.last(t).sticky)
 }
 
@@ -112,7 +112,8 @@ func TestTheCacheOfTheGatewayHoldsTheStickyEntries(t *testing.T) {
 	c, found, err := gateway.ReadCache(m.paths.Local)
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, []gateway.Sticky{{MAC: hardware(t, "06:50:43:4f:76:02"), Bridge: gateway.ManagedBridge, Port: "veth101i1"}}, c.Sticky)
+	require.Equal(t, []gateway.Sticky{{MAC: hardware(t, "06:50:43:4f:76:02"), Bridge: gateway.ManagedBridge, Port: "veth101i1",
+		Addr: netip.MustParseAddr("10.203.118.2")}}, c.Sticky)
 	require.Contains(t, c.Pins, gateway.Pin{Leg: gateway.ManagedBridge, Addr: netip.MustParseAddr("10.203.118.2"), MAC: hardware(t, "06:50:43:4f:76:02")})
 }
 

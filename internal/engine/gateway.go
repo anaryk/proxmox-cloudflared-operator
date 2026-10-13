@@ -666,7 +666,8 @@ func leasePins(leases map[string]store.Lease) map[mappingKey]*gateway.Pin {
 
 // wantedSticky are the sticky entries of the cards attached to the managed
 // network, of the guests of this node: each MAC on the port its card takes
-// on the bridge, so that no other port can take the MAC over. A guest that
+// on the bridge, so that no other port can take the MAC over, with the
+// address the card may send from. A guest that
 // is stopped has no port; its entry is given all the same, and the gateway
 // adds it when the port appears. The appliance has none: the bridge is the
 // node's.
@@ -688,7 +689,7 @@ func (c *cycleRun) wantedSticky(atts map[string]store.Attachment) []gateway.Stic
 		firewall := slices.ContainsFunc(g.NICs, func(n model.NIC) bool {
 			return n.Index == a.NIC && n.Bridge == gateway.ManagedBridge && n.Firewall
 		})
-		out = append(out, gateway.Sticky{MAC: mac, Bridge: gateway.ManagedBridge,
+		out = append(out, gateway.Sticky{MAC: mac, Bridge: gateway.ManagedBridge, Addr: a.Addr,
 			Port: gateway.GuestPort(ref.Kind == model.KindLXC, ref.VMID, a.NIC, firewall)})
 	}
 	slices.SortFunc(out, func(a, b gateway.Sticky) int { return cmp.Compare(a.Port, b.Port) })
