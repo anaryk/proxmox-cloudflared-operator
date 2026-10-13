@@ -1,18 +1,22 @@
 package dhcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 var t0 = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
@@ -21,6 +25,7 @@ var t0 = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 type fakeLeases struct {
 	mu       sync.Mutex
 	addrs    map[string]netip.Addr
+	lookups  int
 	seen     []string
 	declined []string
 	released []string
@@ -37,6 +42,7 @@ func newFakeLeases(pairs ...string) *fakeLeases {
 func (l *fakeLeases) Lookup(mac net.HardwareAddr) (netip.Addr, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.lookups++
 	a, ok := l.addrs[mac.String()]
 	return a, ok
 }
@@ -151,13 +157,15 @@ type testServer struct {
 	leases *fakeLeases
 	now    time.Time
 	opens  int
+	logs   bytes.Buffer
 }
 
 func newTestServer(t *testing.T, leases *fakeLeases) *testServer {
 	t.Helper()
 	ts := &testServer{sock: newFakeSocket(), leases: leases, now: t0}
 	open := func(Config) (legSocket, replySender, error) { ts.opens++; return ts.sock, ts.sock, nil }
-	ts.Server = newServer(testConfig, leases, open, func() time.Time { return ts.now }, zerolog.New(zerolog.NewTestWriter(t)))
+	log := zerolog.New(zerolog.MultiLevelWriter(zerolog.NewTestWriter(t), &ts.logs))
+	ts.Server = newServer(testConfig, leases, open, func() time.Time { return ts.now }, log)
 	return ts
 }
 
@@ -350,17 +358,29 @@ func TestWhatHasNoLeaseGetsNothing(t *testing.T) {
 }
 
 // A guest that puts another lease's MAC in chaddr gets nothing: the frame
-// still carries its own.
+// still carries its own. It is counted, and logged with both MACs, once a
+// minute.
 func TestARequestWhoseEthernetSourceIsNotTheClientIsDropped(t *testing.T) {
 	leases := leased()
 	ts := newTestServer(t, leases)
 	forged := frame(mustMAC("06:50:43:4f:76:09"), zero, broadcast, clientMsg{typ: msgDiscover, xid: 1, chaddr: guestMAC}.payload())
 
-	ts.in(forged)
+	for range 3 {
+		ts.in(forged)
+	}
 
 	require.Empty(t, ts.sock.replies())
-	require.Equal(t, Stats{Spoofed: 1}, ts.Stats())
+	require.Equal(t, Stats{Spoofed: 3}, ts.Stats())
 	require.Empty(t, leases.seen)
+	require.Zero(t, leases.lookups, "dropped before the lease is looked up")
+	logs := ts.logs.String()
+	require.Equal(t, 1, strings.Count(logs, "forged"), "logged once a minute")
+	require.Contains(t, logs, `"source":"06:50:43:4f:76:09"`)
+	require.Contains(t, logs, `"client":"06:50:43:4f:76:05"`)
+
+	ts.now = t0.Add(time.Minute)
+	ts.in(forged)
+	require.Equal(t, 2, strings.Count(ts.logs.String(), "forged"))
 }
 
 func TestWhatIsNoRequestIsCounted(t *testing.T) {
@@ -396,12 +416,12 @@ func TestDiscoversAreLimitedPerGuestAndInAll(t *testing.T) {
 		require.Equal(t, uint64(10-othersPerMAC), ts.Stats().Limited)
 	})
 
-	t.Run("fifty a second in all", func(t *testing.T) {
+	t.Run("every guest with a lease is answered, however many ask at once", func(t *testing.T) {
 		leases := newFakeLeases()
 		var macs []net.HardwareAddr
-		for i := range 60 {
-			addr := netip.AddrFrom4([4]byte{10, 203, 118, byte(10 + i)})
-			mac := mustMAC(fmt.Sprintf("06:50:43:4f:76:%02x", 10+i))
+		for i := range 200 {
+			addr := netip.AddrFrom4([4]byte{10, 203, byte(118 + i/256), byte(10 + i%256)})
+			mac := mustMAC(store.ManagedMAC(addr))
 			leases.addrs[mac.String()] = addr
 			macs = append(macs, mac)
 		}
@@ -409,11 +429,37 @@ func TestDiscoversAreLimitedPerGuestAndInAll(t *testing.T) {
 		for _, mac := range macs {
 			ts.in(msgFrame(clientMsg{typ: msgDiscover, xid: 1, chaddr: mac}))
 		}
-		require.Len(t, ts.sock.replies(), totalPerSecond)
-		require.Equal(t, uint64(60-totalPerSecond), ts.Stats().Limited)
-		ts.now = t0.Add(1100 * time.Millisecond)
-		ts.in(msgFrame(clientMsg{typ: msgDiscover, xid: 1, chaddr: macs[59]}))
-		require.Len(t, ts.sock.replies(), totalPerSecond+1)
+		require.Len(t, ts.sock.replies(), 200)
+		require.Zero(t, ts.Stats().Limited)
+	})
+
+	t.Run("a MAC without a lease is limited before it is looked up", func(t *testing.T) {
+		leases := leased()
+		ts := newTestServer(t, leases)
+		stranger := mustMAC("52:54:00:12:34:56")
+		for range 5 {
+			ts.in(msgFrame(clientMsg{typ: msgDiscover, xid: 1, chaddr: stranger}))
+		}
+		require.Equal(t, Stats{Unknown: 1, Limited: 4}, ts.Stats())
+		require.Equal(t, 1, leases.lookups)
+	})
+
+	t.Run("no more than a few thousand clients a second are counted", func(t *testing.T) {
+		leases := leased()
+		ts := newTestServer(t, leases)
+		made := func(i int) net.HardwareAddr {
+			return net.HardwareAddr{0x52, 0x54, 0, byte(i >> 16), byte(i >> 8), byte(i)}
+		}
+		for i := range limitKeys + 1 {
+			ts.in(msgFrame(clientMsg{typ: msgDiscover, xid: 1, chaddr: made(i)}))
+		}
+		require.Equal(t, Stats{Unknown: limitKeys, Limited: 1}, ts.Stats(), "the last one is over the table")
+		require.Equal(t, limitKeys, leases.lookups)
+		ts.in(goldenFrames["discover.bin"])
+		require.Empty(t, ts.sock.replies(), "a guest with a lease is held off too while the table is full")
+		ts.now = t0.Add(time.Second)
+		ts.in(goldenFrames["discover.bin"])
+		require.Len(t, ts.sock.replies(), 1, "and answered the next second")
 	})
 
 	t.Run("a clock that goes back starts the counts again", func(t *testing.T) {

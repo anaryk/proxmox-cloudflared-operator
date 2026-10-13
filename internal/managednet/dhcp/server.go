@@ -108,17 +108,23 @@ type target struct {
 // a longer one is cut and fails the length checks.
 const frameBuf = 9216
 
-// The rate limits: per MAC and second, one DISCOVER and a few of anything
-// else (a REQUEST that was NAKed is followed by a DISCOVER and a REQUEST),
-// and 50 messages a second in all.
+// The rate limits, per client and second: one DISCOVER and a few of anything
+// else (a REQUEST that was NAKed is followed by a DISCOVER and a REQUEST).
+// They hold before the lease is looked up, so that a flood from a MAC with
+// no lease costs one lookup a second, and the limiter counts at most
+// limitKeys clients a second: past that, a flood of made-up MACs costs a
+// counter each and nothing else, and holds off new clients for that second,
+// which is what the guard at the leg's ingress is for. There is no limit in
+// all: every guest with a lease is answered, however many boot at once.
 const (
 	discoversPerMAC = 1
 	othersPerMAC    = 4
-	totalPerSecond  = 50
+	limitKeys       = 4096
 )
 
-// sendErrorEvery is how often a reply the socket refused is logged.
-const sendErrorEvery = time.Minute
+// logEvery is how often a line of the same kind is logged: a reply the
+// socket refused, a request with a forged client MAC.
+const logEvery = time.Minute
 
 // Server is the DHCP server of the managed leg.
 type Server struct {
@@ -130,10 +136,12 @@ type Server struct {
 
 	bound                                                atomic.Bool
 	answered, unknown, spoofed, limited, bad, sendFailed atomic.Uint64
-	// run is held by Run; lim and lastSendErr belong to the Run that holds it.
+	// run is held by Run; lim and the times a line was last logged belong
+	// to the Run that holds it.
 	run         sync.Mutex
 	lim         limiter
 	lastSendErr time.Time
+	lastForged  time.Time
 }
 
 // New returns a server that receives on a packet socket bound to the leg
@@ -199,8 +207,13 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 // handle answers one frame. The checks run in the order of their cost to
-// a guest that floods: what is not a request, what is forged and what has
-// no lease cost a counter each and nothing else.
+// a guest that floods: what is not a request, what is forged and what is
+// over its rate cost a counter each and nothing else, and only what is left
+// is looked up. The forgery caught here is the sloppy kind, another card's
+// MAC as the client behind the guest's own source: a guest that forges the
+// source too passes, and is for the guard at the leg's ingress, which lets
+// through only the MAC and address pairs of the leases, and for the MAC
+// filter of the guest firewall in the appliance.
 func (s *Server) handle(frame []byte, leg legSocket, send replySender) {
 	now := s.now()
 	req, err := parseFrame(frame)
@@ -210,15 +223,19 @@ func (s *Server) handle(frame []byte, leg legSocket, send replySender) {
 	}
 	if !bytes.Equal(req.src, req.chaddr) {
 		s.spoofed.Add(1)
+		if logAgain(&s.lastForged, now) {
+			s.log.Warn().Str("leg", s.cfg.Iface).Stringer("source", req.src).Stringer("client", req.chaddr).Str("type", req.typ.String()).
+				Msg("a DHCP request with a forged client MAC was dropped: the frame came from another card")
+		}
+		return
+	}
+	if !s.lim.allow(req.chaddr, req.typ, now) {
+		s.limited.Add(1)
 		return
 	}
 	addr, ok := s.lease(req.chaddr)
 	if !ok {
 		s.unknown.Add(1)
-		return
-	}
-	if !s.lim.allow(req.chaddr, req.typ, now) {
-		s.limited.Add(1)
 		return
 	}
 	s.leases.Seen(req.chaddr, now)
@@ -305,14 +322,24 @@ func (s *Server) send(leg legSocket, send replySender, r reply, to target) {
 	}
 	if err != nil {
 		s.sendFailed.Add(1)
-		if now := s.now(); now.Sub(s.lastSendErr) >= sendErrorEvery || now.Before(s.lastSendErr) {
-			s.lastSendErr = now
+		if logAgain(&s.lastSendErr, s.now()) {
 			s.log.Warn().Err(err).Str("leg", s.cfg.Iface).Stringer("to", to.addr).Str("reply", r.typ.String()).
 				Msg("the DHCP server could not send a reply")
 		}
 		return
 	}
 	s.answered.Add(1)
+}
+
+// logAgain says whether a line last logged at *last is due again at now,
+// logEvery later or after the clock went back, and takes now as its time
+// when it is.
+func logAgain(last *time.Time, now time.Time) bool {
+	if now.Sub(*last) < logEvery && !now.Before(*last) {
+		return false
+	}
+	*last = now
+	return true
 }
 
 // lastOf is the broadcast address of an IPv4 subnet.
@@ -323,34 +350,37 @@ func lastOf(p netip.Prefix) netip.Addr {
 	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
 }
 
-// limiter counts messages in windows of one second.
+// limiter counts the messages of each client in windows of one second.
 type limiter struct {
 	start time.Time
-	total int
-	byMAC map[limitKey]int
+	byMAC map[[6]byte]*clientCount
 }
 
-type limitKey struct {
-	mac      [6]byte
-	discover bool
-}
+type clientCount struct{ discovers, others int }
 
 // allow counts a message of a MAC at now and says whether it is within the
-// limits. The counts start again with every second, so they hold no more
-// keys than MACs with a lease sent something within it.
+// limits. The counts start again with every second, and hold at most
+// limitKeys clients within one: a client past that is not counted and not
+// allowed.
 func (l *limiter) allow(mac net.HardwareAddr, typ msgType, now time.Time) bool {
 	if l.byMAC == nil || now.Before(l.start) || now.Sub(l.start) >= time.Second {
-		l.start, l.total, l.byMAC = now, 0, map[limitKey]int{}
+		l.start, l.byMAC = now, map[[6]byte]*clientCount{}
 	}
-	key := limitKey{mac: [6]byte(mac), discover: typ == msgDiscover}
-	limit := othersPerMAC
-	if key.discover {
-		limit = discoversPerMAC
+	c, ok := l.byMAC[[6]byte(mac)]
+	if !ok {
+		if len(l.byMAC) >= limitKeys {
+			return false
+		}
+		c = &clientCount{}
+		l.byMAC[[6]byte(mac)] = c
 	}
-	if l.total >= totalPerSecond || l.byMAC[key] >= limit {
+	n, limit := &c.others, othersPerMAC
+	if typ == msgDiscover {
+		n, limit = &c.discovers, discoversPerMAC
+	}
+	if *n >= limit {
 		return false
 	}
-	l.total++
-	l.byMAC[key]++
+	*n++
 	return true
 }
