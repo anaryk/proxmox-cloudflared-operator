@@ -77,7 +77,7 @@ func TestTheGatewayPinsTheAddressOfEveryLease(t *testing.T) {
 	require.Equal(t, []gateway.Pin{
 		{Leg: gateway.ManagedBridge, Addr: netip.MustParseAddr("10.203.118.2"), MAC: hardware(t, "06:50:43:4f:76:02")},
 		{Leg: gateway.ManagedBridge, Addr: netip.MustParseAddr("10.203.118.3"), MAC: hardware(t, "06:50:43:4f:76:03")},
-	}, pins, "one pin per address, the lease's, though www.example.com is served at the first")
+	}, pins, "one pin per lease, whether a route is served there or not")
 }
 
 // A lease that is gone takes its entry and its pin along.
@@ -132,4 +132,27 @@ func TestTheApplianceKeepsNoStickyEntriesButPinsTheLeases(t *testing.T) {
 	last := gw.last(t)
 	require.Empty(t, last.sticky)
 	require.Contains(t, last.pins, gateway.Pin{Leg: gateway.ManagedBridge, Addr: netip.MustParseAddr("10.203.118.2"), MAC: hardware(t, leaseMAC2)})
+}
+
+// A route proven through the managed leg is pinned at the MAC its proof
+// found, which the lease's does not replace: a target is reached only at the
+// guest its identity was proven for. A lease no route is proven at is pinned
+// at its own.
+func TestAProvenBindingKeepsItsPinOverTheLease(t *testing.T) {
+	m := newManagedEnv(t)
+	ct := m.attached(lxcGuest(101, "web-1"), "10.203.118.2", false)
+	m.attached(unconsented(lxcGuest(102, "quiet")), "10.203.118.3", false)
+	m.inv.set(snapshot(ct))
+	m.res.goVia("www.example.com", gateway.ManagedBridge)
+	m.res.moveTo("www.example.com", netip.MustParseAddr("10.203.118.2"))
+	m.res.answerFrom("www.example.com", "bc:24:11:00:00:aa")
+
+	m.warm()
+	m.next()
+	m.next()
+
+	require.Equal(t, []gateway.Pin{
+		{Leg: gateway.ManagedBridge, Addr: netip.MustParseAddr("10.203.118.2"), MAC: hardware(t, "bc:24:11:00:00:aa")},
+		{Leg: gateway.ManagedBridge, Addr: netip.MustParseAddr("10.203.118.3"), MAC: hardware(t, "06:50:43:4f:76:03")},
+	}, m.gw.last(t).pins)
 }

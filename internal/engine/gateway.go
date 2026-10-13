@@ -475,6 +475,9 @@ func (c *cycleRun) serviceAddr(rt model.Route, ms mappings) {
 		return
 	}
 	key := mappingKey{b.Via, res.Target.Addr}
+	if m, ok := ms.byKey[key]; ok && c.heldForAnother(m.Service, b.Guest) {
+		c.abandon(m, ms)
+	}
 	if m, ok := ms.byKey[key]; ok {
 		if c.frozen[m.Service] {
 			c.withoutService(rt, fmt.Sprintf(gateFrozen, m.Service))
@@ -496,6 +499,27 @@ func (c *cycleRun) serviceAddr(rt model.Route, ms mappings) {
 		why = err.Error()
 	}
 	c.withoutService(rt, why)
+}
+
+// heldForAnother reports whether a service address is kept for a route of
+// another guest whose rule may still send a connector there: a route whose
+// binding is withdrawn in this cycle, or a stored binding no winner of this
+// cycle stands in for. A service address forwards only to the guest whose
+// identity was proven for the routes published under it; a guest proven at
+// the address another guest left gets one of its own, and the kept one is
+// released, so that a stale rule reaches nothing.
+func (c *cycleRun) heldForAnother(service netip.Addr, guest string) bool {
+	for host, b := range c.bindings {
+		if res, ok := c.results[host]; ok && res.Binding != nil {
+			if b = *res.Binding; !b.Withdrawn {
+				continue
+			}
+		}
+		if b.Via != "" && b.Service == service && b.Guest != guest {
+			return true
+		}
+	}
+	return false
 }
 
 // publishAt gives the target of a winner on a leg the service address it is
@@ -599,8 +623,10 @@ func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []store.ServiceAd
 }
 
 // wantedPins are the MACs proven for the real addresses the services forward
-// to, once each, and the MAC of every lease at its address: a lease's
-// address answers at its card's MAC only, whichever guest claims it.
+// to, once each, and the MAC of every other lease at its address, so that no
+// other card can answer for it. A proven MAC is never replaced by a lease's:
+// a service forwards to the guest whose identity was proven for its routes
+// only.
 func (c *cycleRun) wantedPins(services []gateway.Service, leases map[string]store.Lease) []gateway.Pin {
 	leased := leasePins(leases)
 	forwarded := map[mappingKey]bool{}
@@ -616,14 +642,16 @@ func (c *cycleRun) wantedPins(services []gateway.Service, leases map[string]stor
 		}
 		key := mappingKey{res.Binding.Via, res.Target.Addr}
 		mac, err := net.ParseMAC(res.Binding.MAC)
-		if err != nil || !forwarded[key] || seen[key] || leased[key] != nil {
+		if err != nil || !forwarded[key] || seen[key] {
 			continue
 		}
 		seen[key] = true
 		out = append(out, gateway.Pin{Leg: key.network, Addr: key.addr, MAC: mac})
 	}
-	for _, p := range leased {
-		out = append(out, *p)
+	for key, p := range leased {
+		if !seen[key] {
+			out = append(out, *p)
+		}
 	}
 	slices.SortFunc(out, func(a, b gateway.Pin) int { return cmp.Or(cmp.Compare(a.Leg, b.Leg), a.Addr.Compare(b.Addr)) })
 	return out
