@@ -209,9 +209,9 @@ runs on:
 With the portal on `node1` and a report server on `node2`, `pco routes` shows what the default
 minimum does to the second:
 
-    HOSTNAME             STATE        LEVEL     SERVICE                OWNER     ZONE         NOTE
-    portal.example.com   active       port      http://10.0.0.31:8080  qemu/131  example.com  -
-    reports.example.com  unreachable  observed  -                      qemu/141  example.com  identity level observed is below the required port
+    HOSTNAME             STATE        LEVEL     SERVICE                VIA     OWNER     ZONE         NOTE
+    portal.example.com   active       port      http://10.0.0.31:8080  direct  qemu/131  example.com  -
+    reports.example.com  unreachable  observed  -                      -       qemu/141  example.com  identity level observed is below the required port
 
 ## What to watch
 

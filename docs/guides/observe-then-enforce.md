@@ -90,8 +90,8 @@ flowchart TB
    ```
 
    ```text
-   HOSTNAME         STATE   LEVEL  SERVICE                OWNER    ZONE         NOTE
-   app.example.com  active  port   http://10.0.0.12:3000  lxc/120  example.com  -
+   HOSTNAME         STATE   LEVEL  SERVICE                VIA     OWNER    ZONE         NOTE
+   app.example.com  active  port   http://10.0.0.12:3000  direct  lxc/120  example.com  -
    ```
 
    Look for routes that are `unreachable` (no address proven, or the port does not answer),

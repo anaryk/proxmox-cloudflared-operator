@@ -91,10 +91,10 @@ and of a VM only when something tells it.
    ```
 
    ```text
-   HOSTNAME           STATE   LEVEL  SERVICE                OWNER     ZONE         NOTE
-   api.example.com    active  port   http://10.0.0.11:9000  qemu/101  example.com  -
-   files.example.com  active  port   http://10.0.1.11:8080  qemu/101  example.com  -
-   www.example.com    active  port   http://10.0.0.11:8080  qemu/101  example.com  -
+   HOSTNAME           STATE   LEVEL  SERVICE                VIA     OWNER     ZONE         NOTE
+   api.example.com    active  port   http://10.0.0.11:9000  direct  qemu/101  example.com  -
+   files.example.com  active  port   http://10.0.1.11:8080  direct  qemu/101  example.com  -
+   www.example.com    active  port   http://10.0.0.11:8080  direct  qemu/101  example.com  -
    ```
 
 5. On a new install, which only observes, `pco plan` shows what would be done, and
@@ -124,8 +124,8 @@ when pco leased it on its managed network.
 When pco learns no address at all, the route waits and says so:
 
 ```text
-HOSTNAME         STATE        LEVEL  SERVICE  OWNER     ZONE         NOTE
-www.example.com  unreachable  -      -        qemu/101  example.com  no candidate address
+HOSTNAME         STATE        LEVEL  SERVICE  VIA  OWNER     ZONE         NOTE
+www.example.com  unreachable  -      -        -    qemu/101  example.com  no candidate address
 ```
 
 and `pco diagnose` stops at `identity`:

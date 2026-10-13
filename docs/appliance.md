@@ -309,9 +309,9 @@ addresses at. Four things make it publish.
 3. **The segment.** A route proven at `observed` is served only on a segment an admin
    acknowledged. `pco status` says when one waits, and `pco routes` names it:
 
-       HOSTNAME          STATE        LEVEL     SERVICE  OWNER     ZONE         NOTE
-       app.example.com   unreachable  observed  -        lxc/131   example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
-       wiki.example.com  unreachable  observed  -        qemu/132  example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
+       HOSTNAME          STATE        LEVEL     SERVICE  VIA  OWNER     ZONE         NOTE
+       app.example.com   unreachable  observed  -        -    lxc/131   example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
+       wiki.example.com  unreachable  observed  -        -    qemu/132  example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
 
    Acknowledge it once you know that you would trust any device on it with what its MAC can
    claim:

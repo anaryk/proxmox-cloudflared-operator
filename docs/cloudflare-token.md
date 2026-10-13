@@ -125,13 +125,16 @@ the result of its own daily check of each stored token for `pco credential list`
 - `dns.read on <zone>` is a read of the records in that zone, and `tunnel.read on
   <account>` a lookup of the tunnel of this install in that account. Both are checked
   for every active zone, and for the account of every active zone.
-- A failed line says what to grant. This is the one for a token without the DNS
-  permission:
+- A zone whose records Cloudflare refuses to show the token is left out of the credential
+  rather than failed, and named below the checks with what to grant; when that is every zone
+  the token lists, the `dns.read` line fails too. This is a token without the DNS permission:
 
-      ✗ dns.read on example.com
-          grant Zone > DNS > Read on example.com
+      ✗ dns.read
+          token can read the DNS of no zone it lists; grant Zone > DNS > Edit on the zones to manage
+      - example.com left out: no DNS read
+          grant Zone > DNS > Edit on example.com
 
-  Any other failure is shown as the error that Cloudflare or the network gave. When
+  A failed line otherwise shows the error that Cloudflare or the network gave. When
   Cloudflare did not answer, with a network error, a server error or a rate limit, the
   line is marked `?` and starts with `Cloudflare did not answer`: that says nothing about
   the token, and `Usable` reads `not known, Cloudflare did not answer`.

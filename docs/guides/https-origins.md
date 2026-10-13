@@ -74,9 +74,9 @@ options below change what it checks.
    ```
 
    ```text
-   HOSTNAME           STATE   LEVEL  SERVICE                 OWNER     ZONE         NOTE
-   admin.example.com  active  port   https://10.0.0.13:443   qemu/103  example.com  -
-   vault.example.com  active  port   https://10.0.0.13:8443  qemu/103  example.com  -
+   HOSTNAME           STATE   LEVEL  SERVICE                 VIA     OWNER     ZONE         NOTE
+   admin.example.com  active  port   https://10.0.0.13:443   direct  qemu/103  example.com  -
+   vault.example.com  active  port   https://10.0.0.13:8443  direct  qemu/103  example.com  -
    ```
 
 ## Check

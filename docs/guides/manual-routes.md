@@ -119,9 +119,9 @@ pco routes
 ```
 
 ```text
-HOSTNAME            STATE   LEVEL   SERVICE                OWNER          ZONE         NOTE
-app.example.com     active  port    http://10.0.0.12:3000  lxc/120        example.com  -
-status.example.com  active  manual  http://10.0.5.20:9000  manual/status  example.com  -
+HOSTNAME            STATE   LEVEL   SERVICE                VIA     OWNER          ZONE         NOTE
+app.example.com     active  port    http://10.0.0.12:3000  direct  lxc/120        example.com  -
+status.example.com  active  manual  http://10.0.5.20:9000  -       manual/status  example.com  -
 ```
 
 ```sh

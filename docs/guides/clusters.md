@@ -67,9 +67,9 @@ planned for a later release; nothing does it today.
    ```
 
    ```text
-   HOSTNAME          STATE        LEVEL     SERVICE                OWNER     ZONE         NOTE
-   app.example.com   active       port      http://10.0.0.12:3000  lxc/120   example.com  -
-   wiki.example.com  unreachable  observed  -                      qemu/105  example.com  identity level observed is below the required port
+   HOSTNAME          STATE        LEVEL     SERVICE                VIA     OWNER     ZONE         NOTE
+   app.example.com   active       port      http://10.0.0.12:3000  direct  lxc/120   example.com  -
+   wiki.example.com  unreachable  observed  -                      -       qemu/105  example.com  identity level observed is below the required port
    ```
 
    `pco status` counts such routes in a problem line, `1 route is held back: its identity level
@@ -91,9 +91,9 @@ planned for a later release; nothing does it today.
    acknowledged. The route now says which:
 
    ```text
-   HOSTNAME          STATE        LEVEL     SERVICE                OWNER     ZONE         NOTE
-   app.example.com   active       port      http://10.0.0.12:3000  lxc/120   example.com  -
-   wiki.example.com  unreachable  observed  -                      qemu/105  example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
+   HOSTNAME          STATE        LEVEL     SERVICE                VIA     OWNER     ZONE         NOTE
+   app.example.com   active       port      http://10.0.0.12:3000  direct  lxc/120   example.com  -
+   wiki.example.com  unreachable  observed  -                      -       qemu/105  example.com  segment vmbr0 is not acknowledged; pco segment acknowledge vmbr0
    ```
 
    ```sh

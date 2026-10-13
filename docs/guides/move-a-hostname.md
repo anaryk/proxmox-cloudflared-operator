@@ -51,9 +51,9 @@ flowchart TB
    ```
 
    ```text
-   HOSTNAME         STATE     LEVEL  SERVICE                OWNER     ZONE         NOTE
-   www.example.com  active    port   http://10.0.0.11:8080  qemu/101  example.com  -
-   www.example.com  conflict  -      -                      qemu/102  -            hostname is held by qemu/101
+   HOSTNAME         STATE     LEVEL  SERVICE                VIA     OWNER     ZONE         NOTE
+   www.example.com  active    port   http://10.0.0.11:8080  direct  qemu/101  example.com  -
+   www.example.com  conflict  -      -                      -       qemu/102  -            hostname is held by qemu/101
    ```
 
    ```sh

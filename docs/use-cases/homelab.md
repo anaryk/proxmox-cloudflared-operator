@@ -149,10 +149,10 @@ Both guests carry the tag, as `pct set 110 --tags 'cf-tunnel'` and
 Until `pco apply`, nothing is published; `pco plan` shows what would be. Once it is applied,
 `pco routes` lists the three:
 
-    HOSTNAME            STATE   LEVEL   SERVICE                OWNER       ZONE         NOTE
-    dash.example.com    active  port    http://10.0.0.21:3000  lxc/110     example.com  -
-    nas.example.com     active  manual  http://10.0.0.50:5000  manual/nas  example.com  -
-    photos.example.com  active  port    http://10.0.0.22:3001  qemu/120    example.com  -
+    HOSTNAME            STATE   LEVEL   SERVICE                VIA     OWNER       ZONE         NOTE
+    dash.example.com    active  port    http://10.0.0.21:3000  direct  lxc/110     example.com  -
+    nas.example.com     active  manual  http://10.0.0.50:5000  -       manual/nas  example.com  -
+    photos.example.com  active  port    http://10.0.0.22:3001  direct  qemu/120    example.com  -
 
 The level of the NAS is `manual`: nothing proves that the address is the NAS's, and only the
 denylist and a connection to the port are checked.
@@ -164,11 +164,11 @@ denylist and a connection to the port are checked.
   get it: the first guest to claim a hostname keeps it. The original keeps serving, and the
   clone shows as a conflict:
 
-      HOSTNAME            STATE     LEVEL   SERVICE                OWNER       ZONE         NOTE
-      dash.example.com    active    port    http://10.0.0.21:3000  lxc/110     example.com  -
-      nas.example.com     active    manual  http://10.0.0.50:5000  manual/nas  example.com  -
-      photos.example.com  active    port    http://10.0.0.22:3001  qemu/120    example.com  -
-      photos.example.com  conflict  -       -                      qemu/121    -            hostname is held by qemu/120
+      HOSTNAME            STATE     LEVEL   SERVICE                VIA     OWNER       ZONE         NOTE
+      dash.example.com    active    port    http://10.0.0.21:3000  direct  lxc/110     example.com  -
+      nas.example.com     active    manual  http://10.0.0.50:5000  -       manual/nas  example.com  -
+      photos.example.com  active    port    http://10.0.0.22:3001  direct  qemu/120    example.com  -
+      photos.example.com  conflict  -       -                      -       qemu/121    -            hostname is held by qemu/120
 
   Change the Notes of the clone, or take the tag off it. `pco claims list` says who holds
   what.

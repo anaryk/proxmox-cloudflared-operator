@@ -81,8 +81,8 @@ container; [Publish a virtual machine](publish-a-vm.md) has what differs for a V
    ```
 
    ```text
-   HOSTNAME         STATE   LEVEL  SERVICE                OWNER    ZONE         NOTE
-   app.example.com  active  port   http://10.0.0.12:3000  lxc/120  example.com  -
+   HOSTNAME         STATE   LEVEL  SERVICE                VIA     OWNER    ZONE         NOTE
+   app.example.com  active  port   http://10.0.0.12:3000  direct  lxc/120  example.com  -
    ```
 
    `active` at level `port` means that pco found the address, proved that it is the
@@ -173,8 +173,8 @@ The hostname is then held for the grace period, a minute by default, and answers
 meanwhile, so that a short edit of the Notes loses nothing:
 
 ```text
-HOSTNAME         STATE  LEVEL  SERVICE  OWNER    ZONE         NOTE
-app.example.com  held   -      -        lxc/120  example.com  no longer claimed by lxc/120 since 2026-10-01T12:05:00Z; released after the grace period
+HOSTNAME         STATE  LEVEL  SERVICE  VIA  OWNER    ZONE         NOTE
+app.example.com  held   -      -        -    lxc/120  example.com  no longer claimed by lxc/120 since 2026-10-01T12:05:00Z; released after the grace period
 ```
 
 After it, the claim is released and the DNS record is deleted (`delete-record` in

@@ -203,9 +203,9 @@ Notes. The commands below run in the appliance (`pct enter 120` opens a shell in
 interface can approve and revoke guests and make manual routes, and a segment is acknowledged
 with the command only. At first the route is held at the segment:
 
-    HOSTNAME            STATE        LEVEL     SERVICE  OWNER     ZONE         NOTE
-    acme.example.net    unreachable  observed  -        qemu/151  example.net  segment vmbr1 VLAN 20 is not acknowledged; pco segment acknowledge vmbr1:20
-    globex.example.net  unreachable  observed  -        qemu/161  example.net  segment vmbr1 VLAN 30 is not acknowledged; pco segment acknowledge vmbr1:30
+    HOSTNAME            STATE        LEVEL     SERVICE  VIA  OWNER     ZONE         NOTE
+    acme.example.net    unreachable  observed  -        -    qemu/151  example.net  segment vmbr1 VLAN 20 is not acknowledged; pco segment acknowledge vmbr1:20
+    globex.example.net  unreachable  observed  -        -    qemu/161  example.net  segment vmbr1 VLAN 30 is not acknowledged; pco segment acknowledge vmbr1:30
 
 `pco segment list` has both segments, unacknowledged:
 
@@ -224,9 +224,9 @@ Acknowledging asks first, and says what it serves:
 Then the route waits for the approval of its guest, as its tenant holds `VM.Config.Network`
 on it:
 
-    HOSTNAME            STATE        LEVEL     SERVICE  OWNER     ZONE         NOTE
-    acme.example.net    unreachable  observed  -        qemu/151  example.net  delegated: acme-admin@pve holds VM.Config.Network; pco guest approve qemu/151
-    globex.example.net  unreachable  observed  -        qemu/161  example.net  segment vmbr1 VLAN 30 is not acknowledged; pco segment acknowledge vmbr1:30
+    HOSTNAME            STATE        LEVEL     SERVICE  VIA  OWNER     ZONE         NOTE
+    acme.example.net    unreachable  observed  -        -    qemu/151  example.net  delegated: acme-admin@pve holds VM.Config.Network; pco guest approve qemu/151
+    globex.example.net  unreachable  observed  -        -    qemu/161  example.net  segment vmbr1 VLAN 30 is not acknowledged; pco segment acknowledge vmbr1:30
 
 `pco guest approve qemu/151` shows what it records before it records it:
 
@@ -239,9 +239,9 @@ on it:
 
 When both tenants are through, `pco routes` shows them at the level they are proven at:
 
-    HOSTNAME            STATE   LEVEL     SERVICE                 OWNER     ZONE         NOTE
-    acme.example.net    active  observed  http://10.0.20.51:8080  qemu/151  example.net  -
-    globex.example.net  active  observed  http://10.0.30.61:8080  qemu/161  example.net  -
+    HOSTNAME            STATE   LEVEL     SERVICE                 VIA              OWNER     ZONE         NOTE
+    acme.example.net    active  observed  http://198.18.1.0:8080  attach:vmbr1.20  qemu/151  example.net  -
+    globex.example.net  active  observed  http://198.18.1.1:8080  attach:vmbr1.30  qemu/161  example.net  -
 
 To take a tenant off, take the tag off the machine and the name out of `allowHosts`,
 `pco guest revoke qemu/151`, `pco segment revoke vmbr1:20`, and the card out of the

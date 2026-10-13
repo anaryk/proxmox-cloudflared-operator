@@ -262,12 +262,15 @@ The daemon looks again every 10 seconds. To not wait, ask for a cycle:
 lists every route and how it fares. In observe-only mode `active` means that pco
 would serve the route, not that it does yet:
 
-    HOSTNAME         STATE   LEVEL  SERVICE                OWNER     ZONE         NOTE
-    app.example.com  active  port   http://10.0.0.11:3000  qemu/101  example.com  -
+    HOSTNAME         STATE   LEVEL  SERVICE                VIA     OWNER     ZONE         NOTE
+    app.example.com  active  port   http://10.0.0.11:3000  direct  qemu/101  example.com  -
 
 `SERVICE` is the address pco verified for the guest and the port from the Notes.
 `LEVEL` says how strongly the address was proven; [Identity](identity.md) explains
-`port` and `observed`. A route that is not `active` has the reason in `NOTE`.
+`port` and `observed`. `VIA` is how the node reaches the guest: `direct` on a bridge
+the node has an address on, or through a leg of pco's own, as
+[Networking](networking.md) describes. A route that is not `active` has the reason in
+`NOTE`.
 
     pco plan
 

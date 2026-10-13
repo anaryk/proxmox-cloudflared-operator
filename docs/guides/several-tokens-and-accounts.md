@@ -62,9 +62,15 @@ as it is until it is pinned.
    Added credential e5f6a7b8 (second).
    ```
 
-   A failed line names what to grant, as `grant Zone > DNS > Read on example.net`, and a zone
-   the token lists but may not read is left out of it, as `example.net left out: no DNS
-   read`. A token that a stored credential has already is refused.
+   A zone the token lists but may not read is left out, with what to grant under it:
+
+   ```text
+     - example.net left out: no DNS read
+         grant Zone > DNS > Edit on example.net
+   ```
+
+   A failed line carries the error Cloudflare gave, or what to grant. A token that a stored
+   credential has already is refused.
 
 2. Prove that it may write, with a test record and a test tunnel that are removed at once:
 

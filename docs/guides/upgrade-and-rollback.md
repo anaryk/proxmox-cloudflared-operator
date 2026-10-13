@@ -45,11 +45,11 @@ it started with until it restarts.
    Or download the files and let the installer check them, as
    [Quickstart](../quickstart.md#install) describes, and run `pco setup` yourself afterwards.
 
-2. `pco setup` changes nothing that is in order and notes the new version in the node
-   registry:
+2. `pco setup` changes nothing that is in order and writes the new version into the node's
+   entry of the node registry:
 
    ```text
-   node registry: node1 now runs version 1.3.0
+   node registry: refreshed node1
    ```
 
 3. Check the node:

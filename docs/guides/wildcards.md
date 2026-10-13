@@ -45,9 +45,9 @@ The apex of a zone, `example.com` itself, is admitted the same way.
    ```
 
    ```text
-   HOSTNAME            STATE     LEVEL  SERVICE              OWNER    ZONE         NOTE
-   *.shop.example.com  rejected  -      -                    lxc/130  example.com  a wildcard is published only when an allowHosts pattern names it: add "*.shop.example.com" to allowHosts
-   shop.example.com    active    port   http://10.0.0.30:80  lxc/130  example.com  -
+   HOSTNAME            STATE     LEVEL  SERVICE              VIA     OWNER    ZONE         NOTE
+   *.shop.example.com  rejected  -      -                    -       lxc/130  example.com  a wildcard is published only when an allowHosts pattern names it: add "*.shop.example.com" to allowHosts
+   shop.example.com    active    port   http://10.0.0.30:80  direct  lxc/130  example.com  -
    ```
 
    `pco status` carries it as a problem, and `pco doctor` warns in its `rejected routes`
@@ -93,10 +93,10 @@ to its own guest, and the routes of both carry a warning in `NOTE`, as a reminde
 mistake in one of them sends the name elsewhere:
 
 ```text
-HOSTNAME              STATE   LEVEL  SERVICE                OWNER     ZONE         NOTE
-*.shop.example.com    active  port   http://10.0.0.30:80    lxc/130   example.com  *.shop.example.com overlaps api.shop.example.com owned by qemu/101
-api.shop.example.com  active  port   http://10.0.0.11:9000  qemu/101  example.com  api.shop.example.com overlaps *.shop.example.com owned by lxc/130
-shop.example.com      active  port   http://10.0.0.30:80    lxc/130   example.com  -
+HOSTNAME              STATE   LEVEL  SERVICE                VIA     OWNER     ZONE         NOTE
+*.shop.example.com    active  port   http://10.0.0.30:80    direct  lxc/130   example.com  *.shop.example.com overlaps api.shop.example.com owned by qemu/101
+api.shop.example.com  active  port   http://10.0.0.11:9000  direct  qemu/101  example.com  api.shop.example.com overlaps *.shop.example.com owned by lxc/130
+shop.example.com      active  port   http://10.0.0.30:80    direct  lxc/130   example.com  -
 ```
 
 `NOTE` shows the first warning; `pco routes --json` has every one, as `warnings`, where the
