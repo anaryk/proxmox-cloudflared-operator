@@ -208,8 +208,12 @@ func (run *tunnelRun) targets(plans []planner.TunnelPlan, known map[string]strin
 	planned := make(map[tunnelRef]bool, len(plans))
 	plannedIn := make(map[string]bool, len(plans))
 	for _, p := range plans {
+		kind := p.Kind
+		if kind == planner.PlacementShared {
+			kind = ""
+		}
 		out = append(out, target{
-			account: p.AccountID, credential: p.CredentialID, name: p.Name, kind: p.Kind, node: p.Node, rules: p.Rules, planned: true,
+			account: p.AccountID, credential: p.CredentialID, name: p.Name, kind: kind, node: p.Node, rules: p.Rules, planned: true,
 		})
 		planned[tunnelRef{p.AccountID, p.Name}] = true
 		plannedIn[p.AccountID] = true
@@ -229,6 +233,9 @@ func (run *tunnelRun) targets(plans []planner.TunnelPlan, known map[string]strin
 		if shared == "" {
 			continue
 		}
+		// The listing may be up to a minute old: a tunnel it names may be
+		// gone, which the lookup then says, and one made since is seen by
+		// the next listing, or by its own plan.
 		for _, tun := range run.r.listed[account].tunnels {
 			if planned[tunnelRef{account, tun.Name}] {
 				continue
@@ -379,7 +386,7 @@ func (run *tunnelRun) planFault(t target) string {
 func (run *tunnelRun) nameFault(t target) string {
 	id := run.us.InstallID
 	switch t.kind {
-	case "":
+	case "", planner.PlacementShared:
 		if t.name != planner.TunnelName(id) {
 			return "the plan is not for the tunnel of this install, " + planner.TunnelName(id)
 		}
@@ -395,6 +402,38 @@ func (run *tunnelRun) nameFault(t target) string {
 		return fmt.Sprintf("the plan is not for a tunnel this install can have: placement kind %q is not known", t.kind)
 	}
 	return ""
+}
+
+// keepWhy says why a configuration is left as it is rather than written
+// over, if it is. A tunnel without a plan is emptied only when this install
+// wrote what it holds, and a tunnel pinned to a node is written over only
+// when pco wrote what it holds: rules without a sentinel are somebody
+// else's. The shared tunnel of this install is written over whatever it
+// holds, as that is how a lost store is recovered through it.
+func (run *tunnelRun) keepWhy(t target, remote []planner.IngressRule) string {
+	switch {
+	case !t.planned && !writtenBy(remote, run.us.InstallID):
+		return "the configuration holds no sentinel of this install"
+	case t.planned && t.pinned() && len(remote) > 0 && !writtenByPCO(remote):
+		return "the configuration holds no sentinel, so pco did not write it"
+	}
+	return ""
+}
+
+// writtenBy reports whether rules carry a sentinel of the install.
+func writtenBy(rules []planner.IngressRule, installID string) bool {
+	return slices.ContainsFunc(rules, func(rule planner.IngressRule) bool {
+		w, ok := planner.ParseSentinel(rule.Hostname)
+		return ok && w.InstallID == installID
+	})
+}
+
+// writtenByPCO reports whether rules carry a sentinel of any install.
+func writtenByPCO(rules []planner.IngressRule) bool {
+	return slices.ContainsFunc(rules, func(rule planner.IngressRule) bool {
+		_, ok := planner.ParseSentinel(rule.Hostname)
+		return ok
+	})
 }
 
 // waitRead notes that a read about an account waits for Cloudflare's rate
@@ -465,8 +504,19 @@ func (run *tunnelRun) converge(ctx context.Context, api cfapi.API, t target, st 
 		st.Verified = true
 		return true
 	}
+	if !t.planned && len(remote.Ingress) == 0 {
+		// A configuration without rules serves nothing, which is all a
+		// tunnel without a plan is to do.
+		st.Verified = true
+		return true
+	}
 
 	detail := putDetail(t, remote)
+	if why := run.keepWhy(t, remote.Ingress); why != "" {
+		run.act(t, PutConfig, detail, why)
+		run.problem(fmt.Sprintf("%s: %s; left as it is", t, why))
+		return true
+	}
 	// Every answer the run went on with named us as the stored writer.
 	if v, _ := judgeConfig(run.us, run.us, remote.Ingress); v != WriterProceed {
 		run.refuse(t, detail, remote.Ingress)
