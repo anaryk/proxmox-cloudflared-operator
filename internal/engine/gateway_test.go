@@ -578,7 +578,7 @@ func TestTheCachesAreWrittenAfterEverySync(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, nc.Networks, 2)
-	require.Equal(t, []store.ServiceAddr{{Network: "vmbr1", Addr: legAddr, Service: svc0, AllocatedAt: st.At}}, nc.ServiceAddrs)
+	require.Equal(t, []store.ServiceAddr{{Network: "vmbr1", Addr: legAddr, Service: svc0, AllocatedAt: st.At, ServiceOwner: store.ServiceOwner{Owner: "qemu/101", Guest: "qemu/101", Identity: "uuid:101"}}}, nc.ServiceAddrs)
 	pins, at, err := e.store.Pins()
 	require.NoError(t, err)
 	require.Equal(t, []store.Pin{{Network: "vmbr1", Addr: legAddr, MAC: testMAC}}, pins)
@@ -1021,7 +1021,8 @@ func TestARouteThatMovesTakesItsServiceAddressAlong(t *testing.T) {
 
 // A route that moves to an address with a service address of its own, or off
 // the legs, cannot take its service address along: the old one is released
-// at once, and the route gets the one of its new address.
+// at once. The one of its new address was made for another guest, proven
+// there too, and is not handed to it.
 func TestAServiceAddressNoRouteCanTakeAlongIsReleasedAtOnce(t *testing.T) {
 	e := newLegEnv(t)
 	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080"), guest(102, "db-1", "db.example.com -> :5432")))
@@ -1037,7 +1038,8 @@ func TestAServiceAddressNoRouteCanTakeAlongIsReleasedAtOnce(t *testing.T) {
 	st := e.next()
 
 	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.11": db}, e.mappings(), "released at once")
-	require.Equal(t, "http://"+netip.AddrPortFrom(db, 8080).String(), route(st, legHost).Service)
+	require.Equal(t, "service address not allocated: service address "+db.String()+" of this address was made for qemu/102, which is proven there too",
+		route(st, legHost).Reason, "never the one of another guest")
 	for _, svc := range e.gw.last(t).services {
 		require.NotEqual(t, web, svc.Service)
 	}
@@ -1056,7 +1058,7 @@ func TestTheServiceAddressesOfAnotherNodesNetworkAreLeftAlone(t *testing.T) {
 		ID: "vmbr9", Kind: store.NetworkAttach, Bridge: "vmbr9", Prefix: netip.MustParsePrefix("10.90.0.0/24"),
 		Legs: map[string]netip.Addr{"pve2": netip.MustParseAddr("10.90.0.250")}, LegMAC: store.LegMACFor(store.NetworkAttach, 9), Mark: 9, CreatedAt: t0,
 	}, 0))
-	other, err := e.store.AllocateServiceAddr("vmbr9", netip.MustParseAddr("10.90.0.10"), t0)
+	other, err := e.store.AllocateServiceAddr("vmbr9", netip.MustParseAddr("10.90.0.10"), store.ServiceOwner{Owner: "qemu/101", Guest: "qemu/101", Identity: "uuid:101"}, t0)
 	require.NoError(t, err)
 	e.res.goVia(legHost, "vmbr9")
 	e.res.moveTo(legHost, netip.MustParseAddr("10.90.0.11"))

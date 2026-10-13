@@ -230,8 +230,13 @@ verified at Cloudflare yet` and `the previous cycle found this appliance behind 
 at Cloudflare`. Where no gateway runs, the reason is `no gateway runs on this node`; for a
 network with no leg here, `network <network> has no leg on this node`; for the address a route
 just left while its service address waits to follow it, `service address <service> of this
-address waits for the route that left it`. A pool that ran out gives the line of its error:
-`every service address was given out: ...`. A route whose service address waits to follow it
+address waits for the route that left it`; for an address whose service address was made for
+another owner and could not be released (the line of the release says why), `service address
+<service> of this address was made for another owner and could not be released`; for an
+address where the guest its service address was made for is proven too, `service address
+<service> of this address was made for <owner>, which is proven there too` (one of the two
+proofs is wrong; neither guest is given the other's service address). A pool that ran out
+gives the line of its error: `every service address was given out: ...`. A route whose service address waits to follow it
 is `unreachable` with the reason `service address not moved: <reason>; the rule is kept and
 reaches nothing until it is`.
 

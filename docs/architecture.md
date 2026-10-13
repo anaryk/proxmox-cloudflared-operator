@@ -184,9 +184,15 @@ A network the node has no address in is reached through a leg of pco's own: a fo
 bridge and VLAN of that network, in the network namespace `pco`, which a veth pair links to
 the host. The connectors dial a service address of `198.18.0.0/16` for each target behind a
 leg, and the namespace NATs it to the target through the leg; [pco netns](cli/pco-netns.md)
-shows and restores it. A leg whose mark passes to another network, to another bridge, to
-another VLAN or to the untagged network of its bridge, is made anew and loses the connection
-tracking entries of its zone, so that nothing it learned or opened in the old one is kept.
+shows and restores it. A service address belongs to the route's owner and the guest it was
+made for, a guest that took a deleted guest's VMID being another one: when anyone else takes
+the address it forwards to, as after the first guest was deleted while a rule for it is still
+at Cloudflare, it is released, so that the old rule reaches nothing, and the newcomer gets a
+new one.
+
+A leg whose mark passes to another network, to another bridge, to another VLAN or to the
+untagged network of its bridge, is made anew and loses the connection tracking entries of its
+zone, so that nothing it learned or opened in the old one is kept.
 A leg that raises its address announces it with three gratuitous ARP requests a second apart,
 so that guests that still hold the MAC of an earlier pair for it reach the new one at once.
 

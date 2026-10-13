@@ -14,7 +14,7 @@ func addr(s string) netip.Addr { return netip.MustParseAddr(s) }
 
 func allocate(t *testing.T, s *Store, network, real string) ServiceAddr {
 	t.Helper()
-	m, err := s.AllocateServiceAddr(network, addr(real), t0)
+	m, err := s.AllocateServiceAddr(network, addr(real), testOwner, t0)
 	require.NoError(t, err)
 	return m
 }
@@ -33,15 +33,15 @@ func TestServiceAddrsAreAllocatedFromTheBottomOfThePool(t *testing.T) {
 	requirePool(t, s, "198.18.1.0", 0)
 	require.Empty(t, stored(t, p.Cluster), "a look at the pool writes nothing")
 
-	first, err := s.AllocateServiceAddr("vmbr1.20", addr("10.20.0.5"), t0)
+	first, err := s.AllocateServiceAddr("vmbr1.20", addr("10.20.0.5"), testOwner, t0)
 	require.NoError(t, err)
-	require.Equal(t, ServiceAddr{Network: "vmbr1.20", Addr: addr("10.20.0.5"), Service: addr("198.18.1.0"), AllocatedAt: t0}, first)
+	require.Equal(t, ServiceAddr{Network: "vmbr1.20", Addr: addr("10.20.0.5"), Service: addr("198.18.1.0"), AllocatedAt: t0, ServiceOwner: testOwner}, first)
 	second := allocate(t, s, "vmbr1.20", "10.20.0.6")
 	require.Equal(t, addr("198.18.1.1"), second.Service)
 	other := allocate(t, s, "vmbr2", "10.20.0.5")
 	require.Equal(t, addr("198.18.1.2"), other.Service, "the same address on another network is another target")
 
-	again, err := s.AllocateServiceAddr("vmbr1.20", addr("10.20.0.5"), t0.Add(time.Hour))
+	again, err := s.AllocateServiceAddr("vmbr1.20", addr("10.20.0.5"), testOwner, t0.Add(time.Hour))
 	require.NoError(t, err)
 	require.Equal(t, first, again, "a mapping that exists is returned as it is")
 	requirePool(t, s, "198.18.1.3", 3)
@@ -89,12 +89,12 @@ func TestTheServicePoolRunsOutAtTheEndOfThePrefix(t *testing.T) {
 	require.Equal(t, addr("198.18.255.255"), last.Service)
 	requirePool(t, s, "198.19.0.0", 65280)
 
-	_, err := s.AllocateServiceAddr("vmbr1", addr("10.20.0.7"), t0)
+	_, err := s.AllocateServiceAddr("vmbr1", addr("10.20.0.7"), testOwner, t0)
 	require.ErrorIs(t, err, ErrPoolExhausted)
 	requireMissing(t, filepath.Join(p.Cluster, "svcaddrs", "vmbr1-10.20.0.7.json"))
 	requirePool(t, s, "198.19.0.0", 65280)
 
-	again, err := s.AllocateServiceAddr("vmbr1", addr("10.20.0.6"), t0)
+	again, err := s.AllocateServiceAddr("vmbr1", addr("10.20.0.6"), testOwner, t0)
 	require.NoError(t, err, "a mapping that exists is found all the same")
 	require.Equal(t, last, again)
 }
@@ -117,7 +117,7 @@ func TestAPoolOutsideThePrefixIsAnError(t *testing.T) {
 			require.NoError(t, s.cluster.put(kindMeta, idSvcPool, servicePool{Next: addr(next)}, true))
 			_, _, _, err := s.ServicePool()
 			require.ErrorContains(t, err, "outside")
-			_, err = s.AllocateServiceAddr("vmbr1", addr("10.20.0.5"), t0)
+			_, err = s.AllocateServiceAddr("vmbr1", addr("10.20.0.5"), testOwner, t0)
 			require.ErrorContains(t, err, "outside")
 			require.Equal(t, []string{"meta/svcpool.json"}, stored(t, p.Cluster))
 		})
@@ -132,7 +132,7 @@ func TestAMappingOutsideThePoolIsAnError(t *testing.T) {
 
 	_, err := s.ServiceAddrs()
 	require.ErrorContains(t, err, "10.20.0.6 is not a service address")
-	_, err = s.AllocateServiceAddr("vmbr1", addr("10.20.0.6"), t0)
+	_, err = s.AllocateServiceAddr("vmbr1", addr("10.20.0.6"), testOwner, t0)
 	require.ErrorContains(t, err, "is not a service address")
 }
 
@@ -142,7 +142,7 @@ func TestAMappingStoredUnderAnotherIDIsAnError(t *testing.T) {
 		`{"network":"vmbr1","addr":"10.20.0.5","service":"198.18.1.0","allocatedAt":"2026-10-01T12:00:00Z"}`))
 	_, err := s.ServiceAddrs()
 	require.ErrorContains(t, err, `holds the service address of "vmbr1-10.20.0.5"`)
-	_, err = s.AllocateServiceAddr("vmbr1", addr("10.20.0.6"), t0)
+	_, err = s.AllocateServiceAddr("vmbr1", addr("10.20.0.6"), testOwner, t0)
 	require.Error(t, err)
 }
 
@@ -157,11 +157,11 @@ func TestAServiceAddrFollowsItsTargetToAnotherAddress(t *testing.T) {
 	moved, err := s.MoveServiceAddr("vmbr1", addr("10.20.0.5"), "vmbr1", addr("10.20.0.6"), t0.Add(time.Hour))
 
 	require.NoError(t, err)
-	require.Equal(t, ServiceAddr{Network: "vmbr1", Addr: addr("10.20.0.6"), Service: old.Service, AllocatedAt: t0.Add(time.Hour)}, moved)
+	require.Equal(t, ServiceAddr{Network: "vmbr1", Addr: addr("10.20.0.6"), Service: old.Service, AllocatedAt: t0.Add(time.Hour), ServiceOwner: testOwner}, moved)
 	requireMissing(t, filepath.Join(p.Cluster, "svcaddrs", "vmbr1-10.20.0.5.json"))
 	got, err := s.ServiceAddrs()
 	require.NoError(t, err)
-	require.Equal(t, []ServiceAddr{moved, {Network: "vmbr2", Addr: addr("10.20.0.9"), Service: addr("198.18.1.1"), AllocatedAt: t0}}, got)
+	require.Equal(t, []ServiceAddr{moved, {Network: "vmbr2", Addr: addr("10.20.0.9"), Service: addr("198.18.1.1"), AllocatedAt: t0, ServiceOwner: testOwner}}, got)
 	requirePool(t, s, "198.18.1.2", 2)
 
 	again := allocate(t, s, "vmbr1", "10.20.0.5")
@@ -201,7 +201,7 @@ func TestAllocateServiceAddrRefusesWhatNamesNoMapping(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, p := openStore(t)
-			_, err := s.AllocateServiceAddr(tc.network, tc.addr, t0)
+			_, err := s.AllocateServiceAddr(tc.network, tc.addr, testOwner, t0)
 			require.Error(t, err)
 			require.Error(t, s.ReleaseServiceAddr(tc.network, tc.addr))
 			require.Error(t, s.SaveServiceAddr(ServiceAddr{Network: tc.network, Addr: tc.addr, Service: addr("198.18.1.0"), AllocatedAt: t0}))
@@ -236,7 +236,7 @@ func TestAServiceAddrAnotherMappingHoldsIsNotSaved(t *testing.T) {
 	s, p := openStore(t)
 	first := allocate(t, s, "vmbr1", "10.20.0.5")
 	require.Equal(t, addr("198.18.1.0"), first.Service)
-	onNode, err := s.AllocateNodeServiceAddr("vmbr9", "pve-a", addr("10.30.0.5"), t0)
+	onNode, err := s.AllocateNodeServiceAddr("vmbr9", "pve-a", addr("10.30.0.5"), testOwner, t0)
 	require.NoError(t, err)
 	require.Equal(t, addr("198.18.1.1"), onNode.Service)
 

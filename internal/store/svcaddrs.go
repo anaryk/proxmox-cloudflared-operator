@@ -23,11 +23,13 @@ const transitBlock = 256
 // ServiceAddr maps a real address on a network to the one address the
 // connectors dial for it. A released mapping is deleted; the pool's next
 // pointer alone keeps the address from being given to another target.
+// It was made for its ServiceOwner.
 type ServiceAddr struct {
 	Network     string     `json:"network"`
 	Addr        netip.Addr `json:"addr"`
 	Service     netip.Addr `json:"service"`
 	AllocatedAt time.Time  `json:"allocatedAt"`
+	ServiceOwner
 }
 
 // servicePool is what meta/svcpool.json holds: the address the next
@@ -112,11 +114,16 @@ func (s *Store) ServiceAddrs() ([]ServiceAddr, error) {
 }
 
 // AllocateServiceAddr returns the mapping of (network, addr), making it from
-// the pool when there is none; the pool only moves forward, inside the
-// service prefix, and ErrPoolExhausted says it reached the end.
-func (s *Store) AllocateServiceAddr(network string, addr netip.Addr, now time.Time) (ServiceAddr, error) {
+// the pool for owner when there is none; the pool only moves forward, inside
+// the service prefix, and ErrPoolExhausted says it reached the end. A mapping
+// made for another owner is refused: the caller releases it first. One stored
+// before owners were kept is returned as it is, for the caller to judge.
+func (s *Store) AllocateServiceAddr(network string, addr netip.Addr, owner ServiceOwner, now time.Time) (ServiceAddr, error) {
 	if err := checkServiceKey(network, addr); err != nil {
 		return ServiceAddr{}, err
+	}
+	if !owner.Known() {
+		return ServiceAddr{}, fmt.Errorf("service address of %v on %s: the owner is empty", addr, network)
 	}
 	id := serviceAddrID(network, addr)
 	s.netMu.Lock()
@@ -129,6 +136,8 @@ func (s *Store) AllocateServiceAddr(network string, addr netip.Addr, now time.Ti
 		return ServiceAddr{}, err
 	case found && (m.Network != network || m.Addr != addr):
 		return ServiceAddr{}, fmt.Errorf("service address %s holds the mapping of %v on %s", id, m.Addr, m.Network)
+	case found && m.Known() && m.ServiceOwner != owner:
+		return ServiceAddr{}, fmt.Errorf("service address %v of %v on %s was made for %s, not for %s", m.Service, addr, network, m.Name(), owner.Name())
 	case found:
 		if err := checkMapping("service address "+id, m); err != nil {
 			return ServiceAddr{}, err
@@ -139,7 +148,7 @@ func (s *Store) AllocateServiceAddr(network string, addr netip.Addr, now time.Ti
 	if err != nil {
 		return ServiceAddr{}, err
 	}
-	m = ServiceAddr{Network: network, Addr: addr, Service: service, AllocatedAt: now}
+	m = ServiceAddr{Network: network, Addr: addr, Service: service, AllocatedAt: now, ServiceOwner: owner}
 	if err := s.cluster.put(kindSvcAddrs, id, m, true); err != nil {
 		return ServiceAddr{}, err
 	}
@@ -167,7 +176,7 @@ func (s *Store) takeFromPool() (netip.Addr, error) {
 // MoveServiceAddr gives the service address of (network, addr) to (toNetwork,
 // toAddr), which has none: the target published under it moved there, and the
 // connectors go on dialing the address they have, which reaches it where it
-// is now. The old mapping is deleted first, so that a write that fails in
+// is now. It keeps the owner and guest it was made for. The old mapping is deleted first, so that a write that fails in
 // between leaves the service address mapped to nothing, never to two
 // addresses; the pool does not move.
 func (s *Store) MoveServiceAddr(network string, addr netip.Addr, toNetwork string, toAddr netip.Addr, now time.Time) (ServiceAddr, error) {
@@ -204,7 +213,7 @@ func (s *Store) MoveServiceAddr(network string, addr netip.Addr, toNetwork strin
 	if err := s.cluster.Delete(kindSvcAddrs, from); err != nil {
 		return ServiceAddr{}, err
 	}
-	m = ServiceAddr{Network: toNetwork, Addr: toAddr, Service: m.Service, AllocatedAt: now}
+	m = ServiceAddr{Network: toNetwork, Addr: toAddr, Service: m.Service, AllocatedAt: now, ServiceOwner: m.ServiceOwner}
 	if err := s.cluster.put(kindSvcAddrs, to, m, true); err != nil {
 		return ServiceAddr{}, err
 	}

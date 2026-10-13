@@ -306,7 +306,7 @@ func (c *cycleRun) leavers(ms mappings) []*leaving {
 			continue
 		}
 		m, mapped := ms.byService[prev.Service]
-		if !mapped {
+		if !mapped || !c.madeFor(m, rt, res) {
 			continue
 		}
 		l := by[m.Service]
@@ -465,8 +465,11 @@ func serves(rt model.Route, res resolve.Result) bool {
 }
 
 // serviceAddr gives the target of a winner on a leg its service address: the
-// one its real address on the network has, or one made now, when the gate is
-// open. A target that is not served keeps what its binding was published
+// one its real address on the network has when it was made for the route's
+// owner, guest and the guest's identity, or is shared with it, or one made
+// now, when the gate is open. One made for anyone else is released first: a
+// rule Cloudflare still holds may send a connector to it, and must reach
+// nothing. A target that is not served keeps what its binding was published
 // under, for the egress set to take it out by; one on a network with no leg
 // on this node, or at an address whose service address forwards nothing
 // while it waits for the route that left it, gets none.
@@ -481,20 +484,25 @@ func (c *cycleRun) serviceAddr(rt model.Route, ms mappings) {
 		return
 	}
 	key := mappingKey{b.Via, res.Target.Addr}
-	if m, ok := ms.byKey[key]; ok && c.heldForAnother(m.Service, b.Guest) {
-		c.abandon(m, ms)
-	}
 	if m, ok := ms.byKey[key]; ok {
-		if c.frozen[m.Service] {
+		switch {
+		case c.frozen[m.Service]:
 			c.withoutService(rt, fmt.Sprintf(gateFrozen, m.Service))
 			return
+		case c.madeFor(m, rt, res) || c.sharedWith(m, rt, res):
+			c.publishAt(rt, m.Service)
+			return
+		case c.usedByItsOwner(m, ""):
+			c.withoutService(rt, fmt.Sprintf(gateTaken, m.Service, madeForText(m)))
+			return
+		case !c.disown(m, rt, ms):
+			c.withoutService(rt, fmt.Sprintf(gateNotReleased, m.Service))
+			return
 		}
-		c.publishAt(rt, m.Service)
-		return
 	}
 	open, why := c.gateOpen("service address for " + rt.Hostname)
 	if open {
-		m, err := c.e.d.Store.AllocateServiceAddr(key.network, key.addr, c.now)
+		m, err := c.e.d.Store.AllocateServiceAddr(key.network, key.addr, c.serviceOwner(rt, res), c.now)
 		if err == nil {
 			ms.add(m)
 			c.publishAt(rt, m.Service)
@@ -505,27 +513,6 @@ func (c *cycleRun) serviceAddr(rt model.Route, ms mappings) {
 		why = err.Error()
 	}
 	c.withoutService(rt, why)
-}
-
-// heldForAnother reports whether a service address is kept for a route of
-// another guest whose rule may still send a connector there: a route whose
-// binding is withdrawn in this cycle, or a stored binding no winner of this
-// cycle stands in for. A service address forwards only to the guest whose
-// identity was proven for the routes published under it; a guest proven at
-// the address another guest left gets one of its own, and the kept one is
-// released, so that a stale rule reaches nothing.
-func (c *cycleRun) heldForAnother(service netip.Addr, guest string) bool {
-	for host, b := range c.bindings {
-		if res, ok := c.results[host]; ok && res.Binding != nil {
-			if b = *res.Binding; !b.Withdrawn {
-				continue
-			}
-		}
-		if b.Via != "" && b.Service == service && b.Guest != guest {
-			return true
-		}
-	}
-	return false
 }
 
 // publishAt gives the target of a winner on a leg the service address it is

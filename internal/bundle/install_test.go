@@ -96,9 +96,9 @@ func installed(t *testing.T) *store.Store {
 		Legs:   map[string]netip.Addr{"pve1": netip.MustParseAddr("192.0.2.254"), "pve2": netip.MustParseAddr("192.0.2.253")},
 		LegMAC: store.LegMACFor(store.NetworkAttach, 1), Mark: 1, Uplink: true, CreatedAt: t0.Add(-40 * time.Hour),
 	}, 0, map[string]int{"pve1": first, "pve2": index}))
-	_, err = st.AllocateServiceAddr("vmbr0", netip.MustParseAddr("192.0.2.20"), t0.Add(-39*time.Hour))
+	_, err = st.AllocateServiceAddr("vmbr0", netip.MustParseAddr("192.0.2.20"), store.ServiceOwner{Owner: "qemu/101", Guest: "qemu/101", Identity: "uuid:101"}, t0.Add(-39*time.Hour))
 	require.NoError(t, err)
-	_, err = st.AllocateNodeServiceAddr("vmbr1.20", "pve2", netip.MustParseAddr("10.20.0.5"), t0.Add(-38*time.Hour))
+	_, err = st.AllocateNodeServiceAddr("vmbr1.20", "pve2", netip.MustParseAddr("10.20.0.5"), store.ServiceOwner{Owner: "qemu/101", Guest: "qemu/101", Identity: "uuid:101"}, t0.Add(-38*time.Hour))
 	require.NoError(t, err)
 	managed := netip.MustParseAddr("10.203.118.10")
 	require.NoError(t, st.SaveLease(store.Lease{
@@ -563,7 +563,7 @@ func TestARestoreNeverMergesWithWhatAnotherBundleLeft(t *testing.T) {
 			}, 0))
 		}, "network vmbr7"},
 		"a service address": {func(s *store.Store) {
-			_, err := s.AllocateServiceAddr("vmbr7", netip.MustParseAddr("10.7.0.5"), t0)
+			_, err := s.AllocateServiceAddr("vmbr7", netip.MustParseAddr("10.7.0.5"), store.ServiceOwner{Owner: "qemu/101", Guest: "qemu/101", Identity: "uuid:101"}, t0)
 			require.NoError(t, err)
 		}, "service address vmbr7 10.7.0.5"},
 		"a claim": {func(s *store.Store) {

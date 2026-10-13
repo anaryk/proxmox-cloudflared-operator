@@ -14,13 +14,15 @@ import (
 // that are one segment on every node, and of the managed network, are
 // ServiceAddrs. These live in a kind of their own, since the previous release
 // checks every file of svcaddrs against its two-part key. Both kinds take
-// their addresses from the one pool, which gives none twice.
+// their addresses from the one pool, which gives none twice. Each was made
+// for its ServiceOwner, as a ServiceAddr is.
 type NodeServiceAddr struct {
 	Network     string     `json:"network"`
 	Node        string     `json:"node"`
 	Addr        netip.Addr `json:"addr"`
 	Service     netip.Addr `json:"service"`
 	AllocatedAt time.Time  `json:"allocatedAt"`
+	ServiceOwner
 }
 
 // nodeServiceAddrID is the id the mapping of a real address on a network of
@@ -67,12 +69,16 @@ func (s *Store) NodeServiceAddrs() ([]NodeServiceAddr, error) {
 }
 
 // AllocateNodeServiceAddr returns the mapping of (network, node, addr),
-// making it from the pool of AllocateServiceAddr when there is none. A
-// mapping stored under its id that is of another network, node or address,
-// whose names make the same id, is refused.
-func (s *Store) AllocateNodeServiceAddr(network, node string, addr netip.Addr, now time.Time) (NodeServiceAddr, error) {
+// making it from the pool of AllocateServiceAddr for owner when there is
+// none. A mapping stored under its id that is of another network, node or
+// address, whose names make the same id, is refused, and so is one made for
+// another owner, as AllocateServiceAddr refuses it.
+func (s *Store) AllocateNodeServiceAddr(network, node string, addr netip.Addr, owner ServiceOwner, now time.Time) (NodeServiceAddr, error) {
 	if err := checkNodeServiceKey(network, node, addr); err != nil {
 		return NodeServiceAddr{}, err
+	}
+	if !owner.Known() {
+		return NodeServiceAddr{}, fmt.Errorf("service address of %v on %s of node %s: the owner is empty", addr, network, node)
 	}
 	id := nodeServiceAddrID(network, node, addr)
 	s.netMu.Lock()
@@ -85,6 +91,9 @@ func (s *Store) AllocateNodeServiceAddr(network, node string, addr netip.Addr, n
 		return NodeServiceAddr{}, err
 	case found && (m.Network != network || m.Node != node || m.Addr != addr):
 		return NodeServiceAddr{}, fmt.Errorf("service address %s holds the mapping of %v on %s of node %s", id, m.Addr, m.Network, m.Node)
+	case found && m.Known() && m.ServiceOwner != owner:
+		return NodeServiceAddr{}, fmt.Errorf("service address %v of %v on %s of node %s was made for %s, not for %s",
+			m.Service, addr, network, node, m.Name(), owner.Name())
 	case found:
 		if err := checkMapping("service address "+id, ServiceAddr{Service: m.Service}); err != nil {
 			return NodeServiceAddr{}, err
@@ -95,7 +104,7 @@ func (s *Store) AllocateNodeServiceAddr(network, node string, addr netip.Addr, n
 	if err != nil {
 		return NodeServiceAddr{}, err
 	}
-	m = NodeServiceAddr{Network: network, Node: node, Addr: addr, Service: service, AllocatedAt: now}
+	m = NodeServiceAddr{Network: network, Node: node, Addr: addr, Service: service, AllocatedAt: now, ServiceOwner: owner}
 	if err := s.cluster.put(kindNodeSvcAddrs, id, m, true); err != nil {
 		return NodeServiceAddr{}, err
 	}

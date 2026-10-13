@@ -66,6 +66,7 @@ type cycleRun struct {
 	settled   bool                      // the claims were settled and saved
 	listing   listing                   // what this cycle saw of the guests; empty unless it saw all of them
 	results   map[string]resolve.Result // of the winners, by hostname, with what the identity minimum holds back
+	guestIDs  map[string]string         // the identity of each guest of the snapshot, by reference; built on first use
 	credIDs   []string                  // of the stored credentials, sorted
 	zones     zoneSet
 	plan      planner.Plan
