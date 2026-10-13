@@ -1,0 +1,21 @@
+{
+  "data": [
+    {
+      "sid": "ct:9451",
+      "type": "ct",
+      "state": "started",
+      "max_restart": 1,
+      "max_relocate": 1,
+      "failback": 1,
+      "digest": "6b1b36cf8a7d5e0c2b9f4a3d1e8c7b6a5f4e3d2c"
+    },
+    {
+      "sid": "vm:101",
+      "type": "vm",
+      "state": "disabled",
+      "group": "prod",
+      "comment": "kept for a rebuild",
+      "digest": "6b1b36cf8a7d5e0c2b9f4a3d1e8c7b6a5f4e3d2c"
+    }
+  ]
+}

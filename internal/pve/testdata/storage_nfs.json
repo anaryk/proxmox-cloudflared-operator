@@ -1,0 +1,12 @@
+{
+  "data": {
+    "storage": "nfs1",
+    "type": "nfs",
+    "server": "10.254.77.13",
+    "export": "/srv/nfs/pco-lab",
+    "path": "/mnt/pve/nfs1",
+    "content": "rootdir,images",
+    "shared": 1,
+    "digest": "9a0c1e4b7d2f6a8c3e5b1d9f7a2c4e6b8d0f1a3c"
+  }
+}

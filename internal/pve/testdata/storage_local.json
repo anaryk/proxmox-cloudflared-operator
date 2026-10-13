@@ -1,0 +1,9 @@
+{
+  "data": {
+    "storage": "local",
+    "type": "dir",
+    "path": "/var/lib/vz",
+    "content": "snippets,backup,rootdir,vztmpl,iso,images",
+    "digest": "9a0c1e4b7d2f6a8c3e5b1d9f7a2c4e6b8d0f1a3c"
+  }
+}

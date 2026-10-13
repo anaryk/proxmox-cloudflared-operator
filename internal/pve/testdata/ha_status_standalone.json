@@ -1,0 +1,1 @@
+{"data":[{"id":"quorum","node":"pco-test-1","quorate":1,"status":"OK","type":"quorum"},{"armed-state":"standby","id":"fencing","node":"pco-test-1","status":"standby (CRM watchdog standby)","type":"fencing"}]}
