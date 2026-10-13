@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
@@ -50,24 +49,6 @@ func (n *flexInt) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// list is a list Proxmox prints as one string, separated by commas,
-// semicolons or spaces.
-type list []string
-
-func (l *list) UnmarshalJSON(data []byte) error {
-	var s string
-	if err := json.Unmarshal(data, &s); err != nil {
-		var parts []string
-		if err := json.Unmarshal(data, &parts); err != nil {
-			return errors.New("want a string or a list of strings")
-		}
-		*l = parts
-		return nil
-	}
-	*l = strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' || unicode.IsSpace(r) })
-	return nil
-}
-
 // query runs a command that prints JSON and reads it into v.
 func query(ctx context.Context, r setup.Runner, v any, name string, args ...string) error {
 	out, err := r.Run(ctx, name, args...)
@@ -96,7 +77,7 @@ func notThere(err error) bool {
 type storageEntry struct {
 	ID      string   `json:"storage"`
 	Type    string   `json:"type"`
-	Content list     `json:"content"`
+	Content pve.List `json:"content"`
 	Active  flexBool `json:"active"`
 	Enabled *flexBool
 }
@@ -399,8 +380,8 @@ func users(ctx context.Context, r setup.Runner) ([]userEntry, error) {
 }
 
 type roleEntry struct {
-	ID    string `json:"roleid"`
-	Privs list   `json:"privs"`
+	ID    string   `json:"roleid"`
+	Privs pve.List `json:"privs"`
 }
 
 func roles(ctx context.Context, r setup.Runner) ([]roleEntry, error) {
