@@ -288,6 +288,53 @@ func (r reply) marshal() []byte {
 	return b
 }
 
+// replyTTL is the time to live of a reply's frame; the client is on the
+// link.
+const replyTTL = 64
+
+// frame wraps the reply as a frame from the leg to a client's card: a
+// client without an address cannot be reached through the kernel's routes,
+// as it answers no ARP for the address it is about to get, so the server
+// writes the whole frame, and the client reads it off the wire, as every
+// client does before it has an address. The headers carry both checksums:
+// a client that checks them drops a frame without.
+func (r reply) frame(src, dst net.HardwareAddr, from, to netip.Addr) []byte {
+	payload := r.marshal()
+	b := make([]byte, etherHeader+ipv4MinHdr+udpHeader+len(payload))
+	copy(b[0:6], dst)
+	copy(b[6:12], src)
+	binary.BigEndian.PutUint16(b[12:14], etherTypeIP)
+	ip := b[etherHeader:]
+	ip[0] = 0x40 | ipv4MinHdr/4
+	binary.BigEndian.PutUint16(ip[2:4], uint16(len(ip)))
+	ip[8], ip[9] = replyTTL, protoUDP
+	put4(ip[12:16], from)
+	put4(ip[16:20], to)
+	binary.BigEndian.PutUint16(ip[10:12], checksum(ip[:ipv4MinHdr]))
+	udp := ip[ipv4MinHdr:]
+	binary.BigEndian.PutUint16(udp[0:2], serverPort)
+	binary.BigEndian.PutUint16(udp[2:4], clientPort)
+	binary.BigEndian.PutUint16(udp[4:6], uint16(len(udp)))
+	copy(udp[udpHeader:], payload)
+	sum := udpChecksum(from, to, udp)
+	if sum == 0 {
+		sum = 0xffff // 0 would say that there is none
+	}
+	binary.BigEndian.PutUint16(udp[6:8], sum)
+	return b
+}
+
+// udpChecksum is the checksum of a UDP datagram between two IPv4 addresses,
+// over the pseudo header and the datagram; over one that carries its own,
+// it is 0 when the datagram is intact.
+func udpChecksum(src, dst netip.Addr, udp []byte) uint16 {
+	pseudo := make([]byte, 0, 12+len(udp))
+	pseudo = append(pseudo, as4(src)...)
+	pseudo = append(pseudo, as4(dst)...)
+	pseudo = append(pseudo, 0, protoUDP, byte(len(udp)>>8), byte(len(udp)))
+	return checksum(append(pseudo, udp...))
+}
+
 func appendSeconds(b []byte, code byte, d time.Duration) []byte {
 	s := uint32(min(d/time.Second, 1<<32-2))
 	return binary.BigEndian.AppendUint32(append(b, code, 4), s)

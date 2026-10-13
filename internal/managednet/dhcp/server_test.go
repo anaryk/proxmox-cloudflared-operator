@@ -2,6 +2,7 @@ package dhcp
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -58,9 +59,12 @@ func (l *fakeLeases) Released(mac net.HardwareAddr, t time.Time) {
 	l.released = append(l.released, fmt.Sprintf("%s %s", mac, t.Format(time.RFC3339)))
 }
 
-// sent is a reply as the fake socket took it.
+// sent is a reply as the fake socket took it: msg is the DHCP message, to
+// where it went, and mac the card a frame was written to, nil for a datagram
+// the UDP socket sent.
 type sent struct {
 	to  netip.Addr
+	mac net.HardwareAddr
 	msg []byte
 }
 
@@ -71,6 +75,7 @@ type fakeSocket struct {
 	readErr chan error
 	mu      sync.Mutex
 	out     []sent
+	frames  [][]byte
 	sendErr error
 	closed  chan struct{}
 	once    sync.Once
@@ -101,6 +106,29 @@ func (f *fakeSocket) Send(payload []byte, to netip.Addr) error {
 	return nil
 }
 
+// WriteFrame takes a frame as a client's card would: it keeps the card, the
+// address and the message, and the frame itself for a test of its headers.
+func (f *fakeSocket) WriteFrame(b []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sendErr != nil {
+		return f.sendErr
+	}
+	f.frames = append(f.frames, append([]byte(nil), b...))
+	hdr := etherHeader + ipv4MinHdr + udpHeader
+	if len(b) < hdr {
+		return errors.New("a frame without headers")
+	}
+	f.out = append(f.out, sent{
+		to:  netip.AddrFrom4([4]byte(b[etherHeader+16 : etherHeader+20])),
+		mac: net.HardwareAddr(append([]byte(nil), b[0:6]...)),
+		msg: append([]byte(nil), b[hdr:]...),
+	})
+	return nil
+}
+
+func (f *fakeSocket) MAC() net.HardwareAddr { return legMAC }
+
 func (f *fakeSocket) Close() error {
 	f.once.Do(func() { close(f.closed) })
 	return nil
@@ -112,7 +140,10 @@ func (f *fakeSocket) replies() []sent {
 	return append([]sent(nil), f.out...)
 }
 
-var testConfig = Config{Iface: "leg3", Mark: 3, Server: legIP, Subnet: subnet}
+var (
+	testConfig = Config{Iface: "leg3", Mark: 3, Server: legIP, Subnet: subnet}
+	legMAC     = mustMAC("06:50:43:4f:76:01")
+)
 
 type testServer struct {
 	*Server
@@ -125,17 +156,19 @@ type testServer struct {
 func newTestServer(t *testing.T, leases *fakeLeases) *testServer {
 	t.Helper()
 	ts := &testServer{sock: newFakeSocket(), leases: leases, now: t0}
-	open := func(Config) (frameReader, replySender, error) { ts.opens++; return ts.sock, ts.sock, nil }
+	open := func(Config) (legSocket, replySender, error) { ts.opens++; return ts.sock, ts.sock, nil }
 	ts.Server = newServer(testConfig, leases, open, func() time.Time { return ts.now }, zerolog.New(zerolog.NewTestWriter(t)))
 	return ts
 }
 
 // in hands the server a frame as Run would.
-func (ts *testServer) in(frame []byte) { ts.handle(frame, ts.sock) }
+func (ts *testServer) in(frame []byte) { ts.handle(frame, ts.sock, ts.sock) }
 
-// reply is what a reply says, as a test compares it.
+// reply is what a reply says, as a test compares it: mac is the card a frame
+// went to, nil for a datagram the UDP socket sent.
 type replyView struct {
 	to     netip.Addr
+	mac    net.HardwareAddr
 	typ    msgType
 	xid    uint32
 	flags  uint16
@@ -147,7 +180,7 @@ func view(t *testing.T, s sent) replyView {
 	t.Helper()
 	b := s.msg
 	return replyView{
-		to: s.to, typ: msgType(options(t, b)[optMsgType][0]), xid: uint32(b[4])<<24 | uint32(b[5])<<16 | uint32(b[6])<<8 | uint32(b[7]),
+		to: s.to, mac: s.mac, typ: msgType(options(t, b)[optMsgType][0]), xid: uint32(b[4])<<24 | uint32(b[5])<<16 | uint32(b[6])<<8 | uint32(b[7]),
 		flags: uint16(b[10])<<8 | uint16(b[11]), ciaddr: netip.AddrFrom4([4]byte(b[12:16])), yiaddr: netip.AddrFrom4([4]byte(b[16:20])),
 	}
 }
@@ -178,18 +211,21 @@ func TestTheServerAnswersAGuestWithItsLease(t *testing.T) {
 		in   []byte
 		want []replyView
 	}{
-		{"a DISCOVER is offered the lease, to everyone", goldenFrames["discover.bin"],
-			[]replyView{{to: broadcast, typ: msgOffer, xid: 0x3903f326, ciaddr: zero, yiaddr: guestIP}}},
-		{"a REQUEST for the lease is acknowledged", goldenFrames["request.bin"],
-			[]replyView{{to: broadcast, typ: msgAck, xid: 0x3903f326, ciaddr: zero, yiaddr: guestIP}}},
-		{"the broadcast flag is kept", msgFrame(clientMsg{typ: msgDiscover, xid: 9, flags: flagBroadcast, chaddr: guestMAC}),
+		{"a DISCOVER is offered the lease, in a frame to the card", goldenFrames["discover.bin"],
+			[]replyView{{to: guestIP, mac: guestMAC, typ: msgOffer, xid: 0x3903f326, ciaddr: zero, yiaddr: guestIP}}},
+		{"a REQUEST for the lease is acknowledged, in a frame to the card", goldenFrames["request.bin"],
+			[]replyView{{to: guestIP, mac: guestMAC, typ: msgAck, xid: 0x3903f326, ciaddr: zero, yiaddr: guestIP}}},
+		{"a client that asks for broadcasts is offered the lease to everyone", msgFrame(clientMsg{typ: msgDiscover, xid: 9, flags: flagBroadcast, chaddr: guestMAC}),
 			[]replyView{{to: broadcast, typ: msgOffer, xid: 9, flags: flagBroadcast, ciaddr: zero, yiaddr: guestIP}}},
+		{"a client that asks for broadcasts is acknowledged to everyone", msgFrame(clientMsg{typ: msgRequest, xid: 13, flags: flagBroadcast, chaddr: guestMAC,
+			opts: append(opt4(optRequestedIP, guestIP), opt4(optServerID, legIP)...)}),
+			[]replyView{{to: broadcast, typ: msgAck, xid: 13, flags: flagBroadcast, ciaddr: zero, yiaddr: guestIP}}},
 		{"a REQUEST for another address is refused", msgFrame(clientMsg{typ: msgRequest, xid: 2, chaddr: guestMAC,
 			opts: append(opt4(optRequestedIP, netip.MustParseAddr("10.203.118.9")), opt4(optServerID, legIP)...)}),
 			[]replyView{{to: broadcast, typ: msgNak, xid: 2, ciaddr: zero, yiaddr: zero}}},
 		{"a REQUEST at a reboot for the lease is acknowledged", msgFrame(clientMsg{typ: msgRequest, xid: 3, chaddr: guestMAC,
 			opts: opt4(optRequestedIP, guestIP)}),
-			[]replyView{{to: broadcast, typ: msgAck, xid: 3, ciaddr: zero, yiaddr: guestIP}}},
+			[]replyView{{to: guestIP, mac: guestMAC, typ: msgAck, xid: 3, ciaddr: zero, yiaddr: guestIP}}},
 		{"a REQUEST at a reboot for another address is refused", msgFrame(clientMsg{typ: msgRequest, xid: 4, chaddr: guestMAC,
 			opts: opt4(optRequestedIP, netip.MustParseAddr("192.168.1.20"))}),
 			[]replyView{{to: broadcast, typ: msgNak, xid: 4, ciaddr: zero, yiaddr: zero}}},
@@ -204,9 +240,9 @@ func TestTheServerAnswersAGuestWithItsLease(t *testing.T) {
 		{"a RENEW of another address is refused, to everyone, never to that address", msgFrame(clientMsg{typ: msgRequest, xid: 7,
 			ciaddr: netip.MustParseAddr("10.203.118.9"), chaddr: guestMAC}),
 			[]replyView{{to: broadcast, typ: msgNak, xid: 7, ciaddr: zero, yiaddr: zero}}},
-		{"a DISCOVER naming another address in ciaddr is offered the lease to everyone", msgFrame(clientMsg{typ: msgDiscover, xid: 8,
+		{"a DISCOVER naming another address in ciaddr is offered the lease to the card, never to that address", msgFrame(clientMsg{typ: msgDiscover, xid: 8,
 			ciaddr: netip.MustParseAddr("10.203.118.9"), chaddr: guestMAC}),
-			[]replyView{{to: broadcast, typ: msgOffer, xid: 8, ciaddr: zero, yiaddr: guestIP}}},
+			[]replyView{{to: guestIP, mac: guestMAC, typ: msgOffer, xid: 8, ciaddr: zero, yiaddr: guestIP}}},
 		{"an INFORM is not answered", msgFrame(clientMsg{typ: msgInform, xid: 10, ciaddr: guestIP, chaddr: guestMAC}), nil},
 		{"a DECLINE is not answered", goldenFrames["decline.bin"], nil},
 		{"a RELEASE is not answered", msgFrame(clientMsg{typ: msgRelease, xid: 11, ciaddr: guestIP, chaddr: guestMAC}), nil},
@@ -220,6 +256,38 @@ func TestTheServerAnswersAGuestWithItsLease(t *testing.T) {
 			require.Equal(t, uint64(len(c.want)), ts.Stats().Answered)
 		})
 	}
+}
+
+// The frame of a reply to a client without an address goes from the leg to
+// the card, from the server's port to the client's, with the checksums the
+// client's own parser checks.
+func TestTheFrameOfAReplyCarriesTheLegAndTheCard(t *testing.T) {
+	ts := newTestServer(t, leased())
+	ts.in(goldenFrames["discover.bin"])
+	require.Len(t, ts.sock.frames, 1)
+	f := ts.sock.frames[0]
+
+	require.Equal(t, []byte(guestMAC), f[0:6])
+	require.Equal(t, []byte(legMAC), f[6:12])
+	require.Equal(t, uint16(etherTypeIP), binary.BigEndian.Uint16(f[12:14]))
+	ip := f[etherHeader:]
+	require.Equal(t, byte(0x45), ip[0])
+	require.Equal(t, uint16(ipv4MinHdr+udpHeader+minReply), binary.BigEndian.Uint16(ip[2:4]))
+	require.Zero(t, binary.BigEndian.Uint16(ip[6:8])&ipFragFields, "no fragment")
+	require.NotZero(t, ip[8], "a time to live")
+	require.Equal(t, byte(protoUDP), ip[9])
+	require.Zero(t, checksum(ip[:ipv4MinHdr]), "the IP header checksum holds")
+	require.Equal(t, as4(legIP), ip[12:16])
+	require.Equal(t, as4(guestIP), ip[16:20])
+	udp := ip[ipv4MinHdr:]
+	require.Equal(t, uint16(serverPort), binary.BigEndian.Uint16(udp[0:2]))
+	require.Equal(t, uint16(clientPort), binary.BigEndian.Uint16(udp[2:4]))
+	require.Equal(t, uint16(udpHeader+minReply), binary.BigEndian.Uint16(udp[4:6]))
+	require.Len(t, udp, udpHeader+minReply)
+	require.Zero(t, udpChecksum(legIP, guestIP, udp), "the UDP checksum holds")
+
+	_, err := parseFrame(f)
+	require.ErrorIs(t, err, errMalformed, "the server's own frames are no requests")
 }
 
 func TestEveryRequestOfALeaseIsSeenAtItsTime(t *testing.T) {
@@ -391,7 +459,7 @@ func TestRunEndsWhenTheLegGoes(t *testing.T) {
 }
 
 func TestRunFailsWhenTheSocketsCannotBeOpened(t *testing.T) {
-	s := newServer(testConfig, leased(), func(Config) (frameReader, replySender, error) {
+	s := newServer(testConfig, leased(), func(Config) (legSocket, replySender, error) {
 		return nil, nil, errors.New("no such device")
 	}, time.Now, zerolog.Nop())
 	require.ErrorContains(t, s.Run(t.Context()), "opening the sockets on leg3: no such device")

@@ -73,25 +73,36 @@ type Stats struct {
 	SendFailed uint64 `json:"sendFailed"` // replies the socket refused
 }
 
-// frameReader reads whole Ethernet frames off the leg; Close ends a read
-// that waits.
-type frameReader interface {
+// legSocket is the packet socket on the leg: whole Ethernet frames in, and
+// the frames of replies to a client without an address out. Close ends a
+// read that waits.
+type legSocket interface {
 	ReadFrame(b []byte) (int, error)
+	WriteFrame(b []byte) error
+	// MAC is the leg's, the source of the frames written.
+	MAC() net.HardwareAddr
 	Close() error
 }
 
 // replySender sends a reply to port 68 of an address, the limited broadcast
-// among them, from port 67 on the leg.
+// among them, from port 67 on the leg, through the kernel's routes.
 type replySender interface {
 	Send(payload []byte, to netip.Addr) error
 	Close() error
 }
 
 // opener opens the two sockets of a server.
-type opener func(cfg Config) (frameReader, replySender, error)
+type opener func(cfg Config) (legSocket, replySender, error)
 
-// limitedBroadcast is where a reply goes to a client without an address.
+// limitedBroadcast is where a reply goes to a client that asks for that.
 var limitedBroadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+
+// target is where a reply goes: through the routes to addr, or, with mac
+// set, as a frame to that card with addr as its destination.
+type target struct {
+	addr netip.Addr
+	mac  net.HardwareAddr
+}
 
 // frameBuf holds the largest frame the leg's MTU allows with room to spare;
 // a longer one is cut and fails the length checks.
@@ -160,11 +171,11 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.run.Lock()
 	defer s.run.Unlock()
-	recv, send, err := s.open(s.cfg)
+	leg, send, err := s.open(s.cfg)
 	if err != nil {
 		return fmt.Errorf("opening the sockets on %s: %w", s.cfg.Iface, err)
 	}
-	closeBoth := func() { _ = recv.Close(); _ = send.Close() }
+	closeBoth := func() { _ = leg.Close(); _ = send.Close() }
 	stop := context.AfterFunc(ctx, closeBoth)
 	defer func() {
 		if stop() {
@@ -176,21 +187,21 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log.Info().Str("leg", s.cfg.Iface).Stringer("address", s.cfg.Server).Msg("the DHCP server of the managed network listens")
 	buf := make([]byte, frameBuf)
 	for {
-		n, err := recv.ReadFrame(buf)
+		n, err := leg.ReadFrame(buf)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return fmt.Errorf("reading on %s: %w", s.cfg.Iface, err)
 		}
-		s.handle(buf[:n], send)
+		s.handle(buf[:n], leg, send)
 	}
 }
 
 // handle answers one frame. The checks run in the order of their cost to
 // a guest that floods: what is not a request, what is forged and what has
 // no lease cost a counter each and nothing else.
-func (s *Server) handle(frame []byte, send replySender) {
+func (s *Server) handle(frame []byte, leg legSocket, send replySender) {
 	now := s.now()
 	req, err := parseFrame(frame)
 	if err != nil {
@@ -213,9 +224,9 @@ func (s *Server) handle(frame []byte, send replySender) {
 	s.leases.Seen(req.chaddr, now)
 	switch req.typ {
 	case msgDiscover:
-		s.send(send, s.replyTo(req, msgOffer, addr), dest(req, addr))
+		s.send(leg, send, s.replyTo(req, msgOffer, addr), where(req, addr))
 	case msgRequest:
-		s.request(send, req, addr)
+		s.request(leg, send, req, addr)
 	case msgDecline:
 		s.leases.Declined(req.chaddr, now)
 	case msgRelease:
@@ -242,7 +253,7 @@ func (s *Server) lease(mac net.HardwareAddr) (netip.Addr, bool) {
 // request answers a REQUEST: an ACK when it asks for the lease, nothing when
 // the client chose another server, a NAK otherwise. A client that renews or
 // rebinds names its address in ciaddr and asks without option 50.
-func (s *Server) request(send replySender, req request, addr netip.Addr) {
+func (s *Server) request(leg legSocket, send replySender, req request, addr netip.Addr) {
 	if req.serverID.IsValid() && req.serverID != s.cfg.Server {
 		return
 	}
@@ -251,20 +262,27 @@ func (s *Server) request(send replySender, req request, addr netip.Addr) {
 		want = req.ciaddr
 	}
 	if want != addr {
-		s.send(send, s.replyTo(req, msgNak, netip.Addr{}), limitedBroadcast)
+		s.send(leg, send, s.replyTo(req, msgNak, netip.Addr{}), target{addr: limitedBroadcast})
 		return
 	}
-	s.send(send, s.replyTo(req, msgAck, addr), dest(req, addr))
+	s.send(leg, send, s.replyTo(req, msgAck, addr), where(req, addr))
 }
 
-// dest is where a reply goes: to the client's own address when it has it,
-// which is how a renewal is answered, and to everyone on the leg otherwise.
-// A ciaddr other than the lease is never sent to.
-func dest(req request, addr netip.Addr) netip.Addr {
-	if req.ciaddr == addr {
-		return addr
+// where is where an OFFER or an ACK goes, as RFC 2131 section 4.1 has it:
+// to the client's own address when it has it, which is how a renewal is
+// answered, through the routes; to everyone on the leg when the client asks
+// for that with the broadcast bit; and otherwise as a frame to the client's
+// card with the lease as its destination, which the client reads off the
+// wire before it has the address. A NAK goes to everyone, and a ciaddr
+// other than the lease is never sent to.
+func where(req request, addr netip.Addr) target {
+	switch {
+	case req.ciaddr == addr:
+		return target{addr: addr}
+	case req.flags&flagBroadcast != 0:
+		return target{addr: limitedBroadcast}
 	}
-	return limitedBroadcast
+	return target{addr: addr, mac: req.chaddr}
 }
 
 func (s *Server) replyTo(req request, typ msgType, addr netip.Addr) reply {
@@ -278,12 +296,18 @@ func (s *Server) replyTo(req request, typ msgType, addr netip.Addr) reply {
 	return r
 }
 
-func (s *Server) send(send replySender, r reply, to netip.Addr) {
-	if err := send.Send(r.marshal(), to); err != nil {
+func (s *Server) send(leg legSocket, send replySender, r reply, to target) {
+	var err error
+	if to.mac != nil {
+		err = leg.WriteFrame(r.frame(leg.MAC(), to.mac, s.cfg.Server, to.addr))
+	} else {
+		err = send.Send(r.marshal(), to.addr)
+	}
+	if err != nil {
 		s.sendFailed.Add(1)
 		if now := s.now(); now.Sub(s.lastSendErr) >= sendErrorEvery || now.Before(s.lastSendErr) {
 			s.lastSendErr = now
-			s.log.Warn().Err(err).Str("leg", s.cfg.Iface).Stringer("to", to).Str("reply", r.typ.String()).
+			s.log.Warn().Err(err).Str("leg", s.cfg.Iface).Stringer("to", to.addr).Str("reply", r.typ.String()).
 				Msg("the DHCP server could not send a reply")
 		}
 		return

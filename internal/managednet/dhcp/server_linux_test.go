@@ -4,12 +4,14 @@ package dhcp
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -120,7 +122,7 @@ func (l *dhcpLab) namespace(f func(netns.NsHandle) error) error { return f(l.b.N
 func (l *dhcpLab) serve(o socketOptions) *Server {
 	l.t.Helper()
 	cfg := Config{Iface: managedLeg.Iface(), Mark: managedLeg.Mark, Server: legIP, Subnet: subnet}
-	open := func(cfg Config) (frameReader, replySender, error) { return openSockets(l.namespace, cfg.Iface, o) }
+	open := func(cfg Config) (legSocket, replySender, error) { return openSockets(l.namespace, cfg.Iface, o) }
 	s := newServer(cfg, leased(), open, time.Now, zerolog.New(zerolog.NewTestWriter(l.t)))
 	ctx, cancel := context.WithCancel(l.t.Context())
 	done := make(chan error, 1)
@@ -193,6 +195,67 @@ func (c *client) receive(xid uint32, wait time.Duration) (replyView, netip.AddrP
 	}
 }
 
+// frameReply is a reply as the client's card took it off the wire: the
+// frame's MACs and addresses beside what the reply says.
+type frameReply struct {
+	replyView
+	dst, src net.HardwareAddr
+	from, to netip.AddrPort
+}
+
+// receiveFrame returns the next reply to xid the card reads off the wire,
+// as a client without an address does, with its checksums checked; false
+// when none came within the wait.
+func (c *client) receiveFrame(xid uint32, wait time.Duration) (frameReply, bool) {
+	c.t.Helper()
+	require.NoError(c.t, c.raw.SetReadDeadline(time.Now().Add(wait)))
+	buf := make([]byte, frameBuf)
+	hdr := etherHeader + ipv4MinHdr + udpHeader
+	for {
+		n, err := c.raw.Read(buf)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return frameReply{}, false
+		}
+		require.NoError(c.t, err)
+		f := buf[:n]
+		if n < hdr+minMessage || f[etherHeader] != 0x45 || f[etherHeader+9] != protoUDP {
+			continue
+		}
+		ip, udp := f[etherHeader:], f[etherHeader+ipv4MinHdr:]
+		if binary.BigEndian.Uint16(udp[0:2]) != serverPort || udp[udpHeader] != opReply {
+			continue
+		}
+		v := view(c.t, sent{msg: f[hdr:]})
+		if v.xid != xid {
+			continue
+		}
+		from := netip.AddrFrom4([4]byte(ip[12:16]))
+		to := netip.AddrFrom4([4]byte(ip[16:20]))
+		require.Zero(c.t, checksum(ip[:ipv4MinHdr]), "the IP header checksum")
+		require.Zero(c.t, udpChecksum(from, to, udp[:binary.BigEndian.Uint16(udp[4:6])]), "the UDP checksum")
+		return frameReply{
+			replyView: v, dst: slices.Clone(f[0:6]), src: slices.Clone(f[6:12]),
+			from: netip.AddrPortFrom(from, binary.BigEndian.Uint16(udp[0:2])), to: netip.AddrPortFrom(to, binary.BigEndian.Uint16(udp[2:4])),
+		}, true
+	}
+}
+
+// legMACOf reads the MAC of the managed leg inside the namespace.
+func (l *dhcpLab) legMACOf() net.HardwareAddr {
+	l.t.Helper()
+	var mac net.HardwareAddr
+	require.NoError(l.t, l.namespace(func(ns netns.NsHandle) error {
+		return gateway.Do(ns, func() error {
+			ifi, err := net.InterfaceByName(managedLeg.Iface())
+			if err == nil {
+				mac = ifi.HardwareAddr
+			}
+			return err
+		})
+	}))
+	return mac
+}
+
 var serverAddr = netip.AddrPortFrom(legIP, serverPort)
 
 func unmapped(ap netip.AddrPort) netip.AddrPort {
@@ -200,26 +263,42 @@ func unmapped(ap netip.AddrPort) netip.AddrPort {
 }
 
 // A guest's client gets its lease in the namespace as the product runs it:
-// the broadcast OFFER and ACK and, once the guest has the address, the
-// unicast ACK of a renewal, each from the leg's address and port 67. The
-// SNAT port block of the leg is TCP only and leaves them alone.
+// the OFFER and the ACK as frames to its card, which it reads off the wire
+// before it has an address; both to everyone when it asks for that with the
+// broadcast bit; and, once the guest has the address, the unicast ACK of a
+// renewal through the leg's table. Each comes from the leg's address and
+// port 67: the SNAT port block of the leg is TCP only and leaves them alone.
 func TestLinuxAGuestGetsAndRenewsItsLease(t *testing.T) {
 	l := newDHCPLab(t)
 	l.serve(socketOptions{mark: managedLeg.Mark, device: true})
 	c := l.client()
+	legMAC := l.legMACOf()
 
 	c.broadcast(clientMsg{typ: msgDiscover, xid: 1, chaddr: guestMAC})
-	offer, from, ok := c.receive(1, 3*time.Second)
-	require.True(t, ok, "an OFFER")
+	offer, ok := c.receiveFrame(1, 3*time.Second)
+	require.True(t, ok, "an OFFER in a frame to the card")
 	require.Equal(t, msgOffer, offer.typ)
 	require.Equal(t, guestIP, offer.yiaddr)
-	require.Equal(t, serverAddr, unmapped(from))
+	require.Equal(t, guestMAC, offer.dst)
+	require.Equal(t, legMAC, offer.src)
+	require.Equal(t, serverAddr, offer.from)
+	require.Equal(t, netip.AddrPortFrom(guestIP, clientPort), offer.to)
+	_, _, ok = c.receive(1, 500*time.Millisecond)
+	require.False(t, ok, "the frame is for the card, not for a socket of an address the guest has not got")
 
-	c.broadcast(clientMsg{typ: msgRequest, xid: 2, chaddr: guestMAC, opts: append(opt4(optRequestedIP, guestIP), opt4(optServerID, legIP)...)})
+	c.broadcast(clientMsg{typ: msgRequest, xid: 2, flags: flagBroadcast, chaddr: guestMAC,
+		opts: append(opt4(optRequestedIP, guestIP), opt4(optServerID, legIP)...)})
 	ack, from, ok := c.receive(2, 3*time.Second)
-	require.True(t, ok, "an ACK")
+	require.True(t, ok, "an ACK to everyone, as the client asked")
 	require.Equal(t, msgAck, ack.typ)
 	require.Equal(t, serverAddr, unmapped(from))
+
+	c.broadcast(clientMsg{typ: msgRequest, xid: 4, chaddr: guestMAC, opts: opt4(optRequestedIP, guestIP)})
+	reboot, ok := c.receiveFrame(4, 3*time.Second)
+	require.True(t, ok, "the ACK of a reboot in a frame to the card")
+	require.Equal(t, msgAck, reboot.typ)
+	require.Equal(t, guestMAC, reboot.dst)
+	require.Equal(t, serverAddr, reboot.from)
 
 	ipCmd(t, "-n", l.gName, "addr", "add", netip.PrefixFrom(guestIP, 24).String(), "dev", "eth0")
 	c.unicast(clientMsg{typ: msgRequest, xid: 3, ciaddr: guestIP, chaddr: guestMAC})
@@ -283,7 +362,8 @@ func TestLinuxTheSocketsCarryTheLegAndTheMark(t *testing.T) {
 		})
 	}))
 
-	raw, err := recv.(fileReader).f.SyscallConn()
+	require.Equal(t, l.legMACOf(), recv.(legConn).mac, "the leg's MAC is read off the packet socket")
+	raw, err := recv.(legConn).f.SyscallConn()
 	require.NoError(t, err)
 	require.NoError(t, raw.Control(func(fd uintptr) {
 		mark, err := unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK)

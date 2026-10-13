@@ -41,21 +41,21 @@ type socketOptions struct {
 
 // socketOpener opens the sockets inside the namespace ns holds.
 func socketOpener(ns Namespace) opener {
-	return func(cfg Config) (frameReader, replySender, error) {
+	return func(cfg Config) (legSocket, replySender, error) {
 		return openSockets(ns, cfg.Iface, socketOptions{mark: cfg.Mark, device: true})
 	}
 }
 
-func openSockets(ns Namespace, iface string, o socketOptions) (frameReader, replySender, error) {
-	var recv *os.File
+func openSockets(ns Namespace, iface string, o socketOptions) (legSocket, replySender, error) {
+	var leg legConn
 	var send net.PacketConn
 	err := ns(func(h netns.NsHandle) error {
 		var err error
-		if recv, err = openReceiver(h, iface, o.mark); err != nil {
+		if leg, err = openReceiver(h, iface, o.mark); err != nil {
 			return fmt.Errorf("the packet socket: %w", err)
 		}
 		if send, err = openSender(h, iface, o); err != nil {
-			_ = recv.Close()
+			_ = leg.Close()
 			return fmt.Errorf("the UDP socket on port %d: %w", serverPort, err)
 		}
 		return nil
@@ -65,32 +65,47 @@ func openSockets(ns Namespace, iface string, o socketOptions) (frameReader, repl
 	}
 	s := &udpSender{conn: send, done: make(chan struct{})}
 	go s.drain()
-	return fileReader{recv}, s, nil
+	return leg, s, nil
 }
 
 // openReceiver opens a packet socket for IPv4 bound to the leg, with the
-// filter, so that the Ethernet source of every request is read.
-func openReceiver(ns netns.NsHandle, iface string, mark int) (*os.File, error) {
+// filter, so that the Ethernet source of every request is read, and reads
+// the leg's MAC off it, the source of the frames written through it.
+func openReceiver(ns netns.NsHandle, iface string, mark int) (legConn, error) {
 	f, err := gateway.Socket(ns, unix.AF_PACKET, unix.SOCK_RAW, gateway.HostToNet16(unix.ETH_P_IP),
 		gateway.SocketOptions{Mark: mark, Device: iface})
 	if err != nil {
-		return nil, err
+		return legConn{}, err
 	}
 	rc, err := f.SyscallConn()
 	if err != nil {
 		_ = f.Close()
-		return nil, err
+		return legConn{}, err
 	}
 	var serr error
+	var mac net.HardwareAddr
 	err = rc.Control(func(fd uintptr) {
 		prog := unix.SockFprog{Len: uint16(len(requestFilter)), Filter: &requestFilter[0]}
-		serr = unix.SetsockoptSockFprog(int(fd), unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &prog)
+		if serr = unix.SetsockoptSockFprog(int(fd), unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &prog); serr != nil {
+			serr = fmt.Errorf("attaching the filter: %w", serr)
+			return
+		}
+		sa, err := unix.Getsockname(int(fd))
+		ll, ok := sa.(*unix.SockaddrLinklayer)
+		switch {
+		case err != nil:
+			serr = fmt.Errorf("reading the MAC of %s: %w", iface, err)
+		case !ok || int(ll.Halen) != hlenEthernet:
+			serr = fmt.Errorf("reading the MAC of %s: not an Ethernet device", iface)
+		default:
+			mac = net.HardwareAddr(append([]byte(nil), ll.Addr[:hlenEthernet]...))
+		}
 	})
 	if err = errors.Join(err, serr); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("attaching the filter: %w", err)
+		return legConn{}, err
 	}
-	return f, nil
+	return legConn{f: f, mac: mac}, nil
 }
 
 // openSender opens the UDP socket the replies leave from: port 67 on the
@@ -112,10 +127,20 @@ func openSender(ns netns.NsHandle, iface string, o socketOptions) (net.PacketCon
 	return net.FilePacketConn(f)
 }
 
-type fileReader struct{ f *os.File }
+// legConn is the packet socket on the leg with the leg's MAC.
+type legConn struct {
+	f   *os.File
+	mac net.HardwareAddr
+}
 
-func (r fileReader) ReadFrame(b []byte) (int, error) { return r.f.Read(b) }
-func (r fileReader) Close() error                    { return r.f.Close() }
+func (c legConn) ReadFrame(b []byte) (int, error) { return c.f.Read(b) }
+func (c legConn) MAC() net.HardwareAddr           { return c.mac }
+func (c legConn) Close() error                    { return c.f.Close() }
+
+func (c legConn) WriteFrame(b []byte) error {
+	_, err := c.f.Write(b)
+	return err
+}
 
 // udpSender sends the replies; what the socket receives, the same requests
 // the packet socket reads, is read and dropped so that it does not fill.
