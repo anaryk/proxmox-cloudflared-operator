@@ -70,6 +70,9 @@ type dhcpPart struct {
 	turn sync.Mutex
 	mu   sync.Mutex
 	cur  *dhcpRun
+	// ctx is the part's own, from start, which every server runs under:
+	// a check the start runs must not tie a server to the start's context.
+	ctx context.Context
 	// said is the last end of a server that was logged, so that a leg that
 	// stays away is logged once and not every check; before counts what
 	// the servers before cur saw.
@@ -169,6 +172,9 @@ func (p *dhcpPart) wanted() (dhcp.Config, bool, error) {
 // which waits for the server to stop.
 func (p *dhcpPart) start(ctx context.Context) func() {
 	ctx, cancel := context.WithCancel(ctx)
+	p.mu.Lock()
+	p.ctx = ctx
+	p.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -258,10 +264,13 @@ func (p *dhcpPart) startServer(ctx context.Context, cfg dhcp.Config, last *dhcpR
 	p.mu.Unlock()
 	go func() {
 		err := r.srv.Run(ctx)
-		if ctx.Err() == nil && err == nil {
+		if err == nil {
 			err = errors.New("it stopped")
 		}
 		r.err = err
+		// A run that ended by itself gives its context back to the part's,
+		// which would otherwise keep one for every restart.
+		cancel()
 		close(r.done)
 	}()
 	p.mu.Lock()
@@ -350,6 +359,17 @@ func (p *dhcpPart) bound() bool {
 	return p.cur != nil && p.cur.srv.Bound()
 }
 
+// serverCtx is the context a server is started under: the part's own, or
+// fallback before the part started.
+func (p *dhcpPart) serverCtx(fallback context.Context) context.Context {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ctx == nil {
+		return fallback
+	}
+	return p.ctx
+}
+
 // ended says whether the server ran and stopped.
 func (p *dhcpPart) ended() bool {
 	p.mu.Lock()
@@ -375,7 +395,7 @@ func (p *dhcpPart) awaitBound(ctx context.Context) {
 	deadline := p.after(p.wait)
 	for !p.bound() {
 		if p.ended() {
-			p.check(ctx)
+			p.check(p.serverCtx(ctx))
 			return
 		}
 		select {

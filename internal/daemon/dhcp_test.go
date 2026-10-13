@@ -33,6 +33,7 @@ type fakeDHCP struct {
 	// closeGate, when set, holds the return of a stopped Run, as the close
 	// of the sockets does, until the test closes it.
 	closeGate chan struct{}
+	ctx       atomic.Pointer[context.Context] // the context Run ran under
 }
 
 func newFakeDHCP(cfg dhcp.Config) *fakeDHCP {
@@ -40,6 +41,7 @@ func newFakeDHCP(cfg dhcp.Config) *fakeDHCP {
 }
 
 func (f *fakeDHCP) Run(ctx context.Context) error {
+	f.ctx.Store(&ctx)
 	close(f.running)
 	select {
 	case <-f.listen:
@@ -251,6 +253,7 @@ func TestAServerThatEndsRunsAgainAndSaysWhy(t *testing.T) {
 
 	d.p.check(t.Context())
 	require.Equal(t, 2, d.count(), "started again")
+	require.Error(t, (*d.server(0).ctx.Load()).Err(), "the context of the run that ended is given back")
 	v, err := d.notes.last()
 	require.Equal(t, &engine.DHCPView{Unknown: 2, Forged: 1}, v, "the counts of the server before carry")
 	require.EqualError(t, err, "reading on leg2: network is down", "until the new one listens")
@@ -425,11 +428,13 @@ func TestTheStartWaitsForTheServerAtMostItsWait(t *testing.T) {
 	t.Run("not for a server that ended", func(t *testing.T) {
 		d := newDHCPTest(t, managedNet(2, managedLegs))
 		d.p.after = func(time.Duration) <-chan time.Time { return nil } // never
+		d.p.ctx = t.Context()
 		d.p.check(t.Context())
 		d.end(t, 0, errors.New("opening the sockets on leg2: the gateway namespace is not open"))
+		startCtx, cancelStart := context.WithCancel(t.Context())
 		returned := make(chan struct{})
 		go func() {
-			d.p.awaitBound(t.Context())
+			d.p.awaitBound(startCtx)
 			close(returned)
 		}()
 		select {
@@ -440,6 +445,12 @@ func TestTheStartWaitsForTheServerAtMostItsWait(t *testing.T) {
 		require.Equal(t, 2, d.count(), "the check started it again")
 		_, err := d.notes.last()
 		require.EqualError(t, err, "opening the sockets on leg2: the gateway namespace is not open")
+
+		cancelStart()
+		<-d.server(1).running
+		require.NoError(t, (*d.server(1).ctx.Load()).Err(), "the server runs under the part's context, not the start's")
+		d.p.check(t.Context())
+		require.Equal(t, 2, d.count(), "and is kept")
 	})
 	t.Run("not at all without a managed leg", func(t *testing.T) {
 		d := newDHCPTest(t)
