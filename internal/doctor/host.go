@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const (
@@ -56,6 +58,22 @@ type HostEnv struct {
 	Web func(ctx context.Context) (WebCert, bool)
 	// App is the part of an appliance; nil on a host.
 	App ApplianceEnv
+
+	// Pool reads the pool of service addresses, PinsOf the pins of the
+	// gateway; nil where the store is not at hand, which makes either an
+	// error.
+	Pool   func() (used, size int, err error)
+	PinsOf func() ([]store.Pin, time.Time, error)
+	// Show asks systemd for a property of a loaded unit; nil runs systemctl
+	// show.
+	Show func(ctx context.Context, unit, property string) (string, error)
+	// Pinned checks the pin of the gateway namespace; nil looks at
+	// /run/netns/pco.
+	Pinned func() error
+	// Proc is where /proc is; empty is /proc.
+	Proc string
+	// HostNft lists the tables of the host; nil runs nft.
+	HostNft gateway.Nft
 }
 
 func (h *HostEnv) timeout() time.Duration {

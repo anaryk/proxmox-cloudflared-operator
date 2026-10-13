@@ -90,6 +90,8 @@ type fakeApp struct {
 	rmemErr    error
 	guests     NodeGuests
 	guestsErr  error
+	resources  []pve.Resource
+	resErr     error
 
 	mu     sync.Mutex
 	probed []string
@@ -243,6 +245,8 @@ func (f *fakeApp) EtcPVE() (bool, error)                { return f.etcPVE, f.etc
 func (f *fakeApp) RmemMax() (int, error)                { return f.rmem, f.rmemErr }
 
 func (f *fakeApp) NodeGuests(context.Context) (NodeGuests, error) { return f.guests, f.guestsErr }
+
+func (f *fakeApp) Guests(context.Context) ([]pve.Resource, error) { return f.resources, f.resErr }
 
 // applianceEnv is a host that has an appliance's part.
 type applianceEnv struct {

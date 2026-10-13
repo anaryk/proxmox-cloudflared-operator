@@ -124,6 +124,9 @@ type ApplianceEnv interface {
 	RmemMax() (int, error)
 	// NodeGuests reads the configurations of the guests of the node.
 	NodeGuests(ctx context.Context) (NodeGuests, error)
+	// Guests are the guests of the cluster as Proxmox lists them, with their
+	// pools.
+	Guests(ctx context.Context) ([]pve.Resource, error)
 }
 
 // MemoryState is memory pressure as the kernel reports it. Some10 is the share

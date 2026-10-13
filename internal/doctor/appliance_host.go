@@ -203,6 +203,13 @@ func (h *ApplianceHost) OwnConfig(ctx context.Context) (pve.GuestConfig, error) 
 // nodeGuestReaders is how many configurations NodeGuests reads at once.
 const nodeGuestReaders = 4
 
+// Guests lists the guests of the cluster.
+func (h *ApplianceHost) Guests(ctx context.Context) ([]pve.Resource, error) {
+	ctx, cancel := h.within(ctx)
+	defer cancel()
+	return h.Proxmox.Resources(ctx)
+}
+
 // NodeGuests lists the guests of the appliance's node and reads the
 // configurations of the first maxNodeGuests of them, but the appliance's,
 // nodeGuestReaders at a time and each within the deadline of the host.

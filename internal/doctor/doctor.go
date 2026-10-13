@@ -128,6 +128,7 @@ func Run(ctx context.Context, st engine.State, env Env) []Finding {
 	if app != nil {
 		out = append(out, newApplianceRun(ctx, st, env, app).findings()...)
 	}
+	out = append(out, checkNetworks(ctx, st, env, app)...)
 	slices.SortStableFunc(out, compareChecks)
 	return out
 }
