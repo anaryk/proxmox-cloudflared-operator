@@ -22,10 +22,11 @@ const (
 	heldObserve = "observe mode"
 )
 
-// TunnelReconciler brings the tunnel of each account in line with its plan.
-// It remembers when it last wrote the configuration of each tunnel, so one
-// instance should serve a process for its whole life. Calls to Run are
-// serialised.
+// TunnelReconciler brings the tunnels of each account, the shared one and
+// those pinned to a node, in line with their plans. It remembers when it
+// last wrote the configuration of each tunnel and what it last read of each
+// pinned one, so one instance should serve a process for its whole life.
+// Calls to Run are serialised.
 type TunnelReconciler struct {
 	clients Clients
 	writer  func() (us, stored planner.Writer, err error)
@@ -33,9 +34,11 @@ type TunnelReconciler struct {
 	log     zerolog.Logger
 
 	mu        sync.Mutex
-	lastPut   map[string]time.Time // by account id and tunnel id
-	lastSweep map[string]time.Time // of the probe tunnels, by account id
-	hint      string               // what a foreign verdict says to do; empty for the host's words
+	lastPut   map[string]time.Time    // by account id and tunnel id
+	lastSweep map[string]time.Time    // of the probe tunnels, by account id
+	pinned    map[string]pinnedMemory // the last read of each pinned tunnel, by account id and name
+	listed    map[string]pinnedListing
+	hint      string // what a foreign verdict says to do; empty for the host's words
 }
 
 // SetRecoverHint sets what the next runs say to do about a configuration
@@ -66,12 +69,14 @@ func NewTunnelReconciler(clients Clients, writer func() (us, stored planner.Writ
 		log:       log,
 		lastPut:   make(map[string]time.Time),
 		lastSweep: make(map[string]time.Time),
+		pinned:    make(map[string]pinnedMemory),
+		listed:    make(map[string]pinnedListing),
 	}
 }
 
 // TunnelResult is what a run found and did.
 type TunnelResult struct {
-	Tunnels  []TunnelState // one per planned or known account, by account id
+	Tunnels  []TunnelState // one per planned tunnel and per known tunnel without a plan, by account id and name
 	Actions  []Action      // in the order performed or planned
 	Problems []string
 	Verdict  WriterVerdict // WriterProceed unless another writer stopped the run
@@ -83,10 +88,13 @@ type TunnelResult struct {
 	Waiting Waiting
 }
 
-// Run brings tunnels in line with plans. Accounts listed in `known` (account
-// id -> credential id) without a plan get an empty rule set when their tunnel exists.
-// As such an account is emptied, known must hold only accounts for which the
-// caller has a complete, current plan.
+// Run brings tunnels in line with plans: the shared tunnel of an account
+// and the ones pinned to a node are each a tunnel of their own, created,
+// written and rate limited on its own. In accounts listed in `known`
+// (account id -> credential id) a tunnel of this install without a plan gets
+// an empty rule set when it exists: the shared tunnel, and the pinned ones
+// found by the listing of the account. As such a tunnel is emptied, known
+// must hold only accounts for which the caller has a complete, current plan.
 //
 // Run writes only as long as the writer callback names us as the writer
 // stored in leader.json, with the same generation and nonce; otherwise it
@@ -96,6 +104,13 @@ type TunnelResult struct {
 // the run at once. A failure on one tunnel is a problem, and the run goes on
 // with the next. In Observe mode Run only reads, and returns the actions it
 // would take as held.
+//
+// The shared tunnel is read every run. A pinned tunnel is read when a write
+// may be planned for it, that is when its plan changed since its
+// configuration was last verified, and otherwise once a minute for drift;
+// between the reads the run reports what it last saw of it. The pinned
+// tunnels of a known account are listed once a minute from the first run
+// that plans one there.
 //
 // A tunnel the run could not look up or create, or did not reach because it
 // stopped, is returned with Unknown set. Callers must never prune connectors
@@ -124,9 +139,12 @@ func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	run := &tunnelRun{r: r, mode: mode, held: held, hint: r.hint}
+	run := &tunnelRun{r: r, mode: mode, held: held, hint: r.hint, listedNow: make(map[string]bool)}
 	goOn := run.start()
-	for _, t := range targets(plans, known, run.us) {
+	if goOn {
+		run.listPinned(ctx, plans, known)
+	}
+	for _, t := range run.targets(plans, known) {
 		if goOn && ctx.Err() != nil {
 			run.problem(fmt.Sprintf("run stopped: %v", ctx.Err()))
 			goOn = false
@@ -135,8 +153,17 @@ func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, 
 			run.res.Tunnels = append(run.res.Tunnels, t.unknown())
 			continue
 		}
-		var st TunnelState
-		st, goOn = run.reconcile(ctx, t)
+		if !t.pinned() {
+			var st TunnelState
+			st, goOn = run.reconcile(ctx, t)
+			run.res.Tunnels = append(run.res.Tunnels, st)
+			continue
+		}
+		st, ok := run.lastSeen(t)
+		if !ok {
+			st, goOn = run.reconcile(ctx, t)
+			run.remember(t, st)
+		}
 		run.res.Tunnels = append(run.res.Tunnels, st)
 	}
 	if goOn && mode == Enforce {
@@ -145,42 +172,81 @@ func (r *TunnelReconciler) run(ctx context.Context, plans []planner.TunnelPlan, 
 	return run.res
 }
 
-// target is the tunnel of one account and the rules it should have.
+// target is one tunnel of an account and the rules it should have.
 type target struct {
 	account    string
 	credential string
 	name       string
+	kind       string // as the plan says it: empty for the shared tunnel
+	node       string
 	rules      []planner.IngressRule
-	planned    bool // false for an account without a plan: its tunnel is emptied, never created
+	planned    bool // false for a tunnel without a plan: it is emptied, never created
+	// tun is the tunnel as the listing of this run found it, when listed.
+	tun    cfapi.Tunnel
+	listed bool
 }
 
 func (t target) String() string { return t.name + " in account " + t.account }
 
+func (t target) pinned() bool { return t.kind == planner.PlacementPinned }
+
+// key names the tunnel among all accounts.
+func (t target) key() string { return t.account + "/" + t.name }
+
 // unknown is the state of a tunnel that the run knows nothing about.
 func (t target) unknown() TunnelState {
-	return TunnelState{AccountID: t.account, CredentialID: t.credential, Name: t.name, Unknown: true}
+	return TunnelState{AccountID: t.account, CredentialID: t.credential, Name: t.name, Kind: t.kind, Node: t.node, Unknown: true}
 }
 
-// targets lists the tunnels to look at, by account id: one per plan, and one
-// that serves nothing for each known account without a plan. Without a writer
-// identity the name of the latter is not known and left empty.
-func targets(plans []planner.TunnelPlan, known map[string]string, us planner.Writer) []target {
+// targets lists the tunnels to look at, by account id and name: one per
+// plan, and one that serves nothing for the shared tunnel of each known
+// account without a shared plan and for each pinned tunnel listed in a known
+// account without a plan. Without a writer identity the name of the shared
+// one is not known and left empty.
+func (run *tunnelRun) targets(plans []planner.TunnelPlan, known map[string]string) []target {
 	out := make([]target, 0, len(plans)+len(known))
-	planned := make(map[string]bool, len(plans))
+	planned := make(map[tunnelRef]bool, len(plans))
+	plannedIn := make(map[string]bool, len(plans))
 	for _, p := range plans {
-		out = append(out, target{account: p.AccountID, credential: p.CredentialID, name: p.Name, rules: p.Rules, planned: true})
-		planned[p.AccountID] = true
+		out = append(out, target{
+			account: p.AccountID, credential: p.CredentialID, name: p.Name, kind: p.Kind, node: p.Node, rules: p.Rules, planned: true,
+		})
+		planned[tunnelRef{p.AccountID, p.Name}] = true
+		plannedIn[p.AccountID] = true
 	}
-	var name string
-	if us.InstallID != "" {
-		name = planner.TunnelName(us.InstallID)
+	var shared string
+	if run.us.InstallID != "" {
+		shared = planner.TunnelName(run.us.InstallID)
 	}
 	for account, credential := range known {
-		if !planned[account] {
-			out = append(out, target{account: account, credential: credential, name: name, rules: emptyRules(us)})
+		hasShared := planned[tunnelRef{account, shared}]
+		if shared == "" {
+			hasShared = plannedIn[account]
+		}
+		if !hasShared {
+			out = append(out, target{account: account, credential: credential, name: shared, rules: emptyRules(run.us)})
+		}
+		if shared == "" {
+			continue
+		}
+		for _, tun := range run.r.listed[account].tunnels {
+			if planned[tunnelRef{account, tun.Name}] {
+				continue
+			}
+			node, _ := planner.PinnedTunnelNode(run.us.InstallID, tun.Name)
+			out = append(out, target{
+				account: account, credential: credential, name: tun.Name, kind: planner.PlacementPinned, node: node, rules: emptyRules(run.us),
+			})
 		}
 	}
-	slices.SortStableFunc(out, func(a, b target) int { return cmp.Compare(a.account, b.account) })
+	for i := range out {
+		if out[i].pinned() {
+			out[i].tun, out[i].listed = run.listedTunnel(out[i])
+		}
+	}
+	slices.SortStableFunc(out, func(a, b target) int {
+		return cmp.Or(cmp.Compare(a.account, b.account), cmp.Compare(a.name, b.name))
+	})
 	return out
 }
 
@@ -191,12 +257,13 @@ func emptyRules(us planner.Writer) []planner.IngressRule {
 
 // tunnelRun is the state of one Run.
 type tunnelRun struct {
-	r    *TunnelReconciler
-	mode Mode
-	held string         // why a write is held in Observe mode
-	hint string         // what a foreign verdict says to do, as SetRecoverHint set it
-	us   planner.Writer // set once start has validated it
-	res  TunnelResult
+	r         *TunnelReconciler
+	mode      Mode
+	held      string          // why a write is held in Observe mode
+	hint      string          // what a foreign verdict says to do, as SetRecoverHint set it
+	us        planner.Writer  // set once start has validated it
+	listedNow map[string]bool // accounts whose pinned tunnels this run listed
+	res       TunnelResult
 }
 
 // start reads the identity the run writes as and reports whether the run may
@@ -253,10 +320,14 @@ func (run *tunnelRun) reconcile(ctx context.Context, t target) (TunnelState, boo
 		return st, true
 	}
 
-	tun, found, err := api.FindTunnel(ctx, t.account, t.name)
+	// The listing of this run already found a pinned tunnel it holds.
+	tun, found, err := t.tun, t.listed, error(nil)
+	if !t.listed {
+		tun, found, err = api.FindTunnel(ctx, t.account, t.name)
+	}
 	switch {
 	case err != nil && cfapi.IsRateLimited(err):
-		run.res.Waiting.Reads = append(run.res.Waiting.Reads, TunnelRead+t.account)
+		run.waitRead(t.account)
 		return st, true
 	case err != nil:
 		run.problem(fmt.Sprintf("%s: finding the tunnel: %v", t, err))
@@ -286,19 +357,53 @@ func (run *tunnelRun) reconcile(ctx context.Context, t target) (TunnelState, boo
 }
 
 // planFault says why the plan of t may not be written, if it may not. The
-// sentinel written is what fences the other writers, so it must be this
-// writer's, in its place before the catch-all.
+// tunnel must be one of this install: the shared one, or the one pinned to
+// the node the plan names. The sentinel written is what fences the other
+// writers, so it must be this writer's, in its place before the catch-all.
 func (run *tunnelRun) planFault(t target) string {
+	if fault := run.nameFault(t); fault != "" {
+		return fault
+	}
 	n := len(t.rules)
 	switch {
-	case t.name != planner.TunnelName(run.us.InstallID):
-		return "the plan is not for the tunnel of this install, " + planner.TunnelName(run.us.InstallID)
 	case n < 2 || t.rules[n-1] != planner.CatchAllRule():
 		return "the planned rules do not end with the catch-all"
 	case t.rules[n-2] != planner.SentinelRule(run.us):
 		return "the planned rules lack the sentinel of this writer before the catch-all"
 	}
 	return ""
+}
+
+// nameFault says why the name of t is not one of a tunnel this install can
+// have, if it is not.
+func (run *tunnelRun) nameFault(t target) string {
+	id := run.us.InstallID
+	switch t.kind {
+	case "":
+		if t.name != planner.TunnelName(id) {
+			return "the plan is not for the tunnel of this install, " + planner.TunnelName(id)
+		}
+	case planner.PlacementPinned:
+		want, err := planner.PinnedTunnelName(id, t.node)
+		switch {
+		case err != nil:
+			return "the plan is not for a tunnel this install can have: " + err.Error()
+		case t.name != want:
+			return fmt.Sprintf("the plan is not for the tunnel of this install pinned to node %s, %s", t.node, want)
+		}
+	default:
+		return fmt.Sprintf("the plan is not for a tunnel this install can have: placement kind %q is not known", t.kind)
+	}
+	return ""
+}
+
+// waitRead notes that a read about an account waits for Cloudflare's rate
+// limit, once per account.
+func (run *tunnelRun) waitRead(account string) {
+	read := TunnelRead + account
+	if !slices.Contains(run.res.Waiting.Reads, read) {
+		run.res.Waiting.Reads = append(run.res.Waiting.Reads, read)
+	}
 }
 
 // create creates the tunnel of t. found reports whether there is a tunnel

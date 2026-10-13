@@ -30,8 +30,9 @@ const (
 type Action struct {
 	Kind       ActionKind `json:"kind"`
 	Credential string     `json:"credentialId"`
-	// AccountID is the account of the tunnel of a tunnel action: every
-	// tunnel of an install has the same name. Empty for a record action.
+	// AccountID is the account of the tunnel of a tunnel action: the shared
+	// tunnel of an install has the same name in every account. Empty for a
+	// record action.
 	AccountID   string `json:"accountId,omitempty"`
 	Target      string `json:"target"` // tunnel name or record name
 	Detail      string `json:"detail"`
@@ -40,7 +41,7 @@ type Action struct {
 	Held        string `json:"held,omitempty"` // why it was not applied (observe mode, guard, error)
 }
 
-// TunnelState is what a run knows about the tunnel of one account.
+// TunnelState is what a run knows about one tunnel of an account.
 type TunnelState struct {
 	AccountID    string `json:"accountId"`
 	CredentialID string `json:"credentialId"`

@@ -23,11 +23,13 @@ const probeTunnelAge = 10 * time.Minute
 // write stops it. An account swept less than probeTunnelAge ago is left for
 // a later run.
 func (run *tunnelRun) sweepProbeTunnels(ctx context.Context) {
+	swept := make(map[string]bool)
 	for _, st := range run.res.Tunnels {
 		api := run.r.clients[st.CredentialID]
-		if st.Unknown || api == nil || ctx.Err() != nil || !run.sweepDue(st.AccountID) {
+		if st.Unknown || api == nil || ctx.Err() != nil || swept[st.AccountID] || !run.sweepDue(st.AccountID) {
 			continue
 		}
+		swept[st.AccountID] = true
 		if !run.sweepAccount(ctx, api, st) {
 			return
 		}
