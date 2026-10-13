@@ -24,4 +24,6 @@ func TestHostProberUnsupported(t *testing.T) {
 	require.ErrorIs(t, err, errors.ErrUnsupported)
 	err = p.Dial(t.Context(), "vmbr0", netip.AddrPortFrom(addr, 80))
 	require.ErrorIs(t, err, errors.ErrUnsupported)
+	_, err = p.(PortClassifier).PortKinds(t.Context(), "vmbr0")
+	require.ErrorIs(t, err, errors.ErrUnsupported)
 }

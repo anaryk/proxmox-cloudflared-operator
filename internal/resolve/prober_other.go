@@ -38,6 +38,10 @@ func (unsupportedProber) Dial(context.Context, string, netip.AddrPort) error {
 	return unsupported("Dial")
 }
 
+func (unsupportedProber) PortKinds(context.Context, string) (map[string]PortKind, error) {
+	return nil, unsupported("PortKinds")
+}
+
 func unsupported(method string) error {
 	return fmt.Errorf("host prober %s: %w", method, errors.ErrUnsupported)
 }

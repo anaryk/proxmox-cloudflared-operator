@@ -162,3 +162,80 @@ func isGuestPort(name string) bool {
 func isDigits(s string) bool {
 	return s != "" && strings.Trim(s, "0123456789") == ""
 }
+
+// onUplink checks, for a guest of another node whose address another node
+// chose, where the bridge has learned each MAC that answered: on no port of a
+// local guest or of a leg, and on one port at most. It returns, by MAC, the
+// port the MAC is learned on only when every MAC is on an uplink and the node
+// that hosts the guest attests it on the guest's own port; otherwise nothing,
+// which leaves the proof at observed. A MAC that is not learned, or a port of
+// a kind this node does not know, proves nothing either way.
+func (a *attempt) onUplink(ctx context.Context, ifc HostIface, nic model.NIC, macs []string, own map[string][]int) (map[string]string, outcome) {
+	bridge, vlan := fdbOf(ifc, nic)
+	learned := make(map[string]string, len(macs))
+	var unsure undecided
+	for _, mac := range macs {
+		ports, o := a.fdbPorts(ctx, bridge, vlan, mac)
+		if o.ok() {
+			o = a.offTheNode(mac, ports, kindByName)
+		}
+		if !unsure.keep(o) {
+			return nil, o
+		}
+		if o.ok() && len(ports) == 1 {
+			learned[mac] = ports[0]
+		}
+	}
+	if !unsure.ok() {
+		return nil, unsure.outcome
+	}
+	if len(learned) < len(macs) || !a.cross.attests(a.r.settings, a.guest, macs, own) {
+		return nil, outcome{}
+	}
+	kinds := a.portKinds(ctx, bridge)
+	kind := func(port string) PortKind {
+		if k, ok := kinds[port]; ok {
+			return k
+		}
+		return kindByName(port)
+	}
+	for mac, port := range learned {
+		if o := a.offTheNode(mac, []string{port}, kind); !o.ok() {
+			return nil, o
+		}
+		if kind(port) != PortUplink {
+			return nil, outcome{}
+		}
+	}
+	return learned, outcome{}
+}
+
+// offTheNode fails when mac, learned on ports, is on the port of a local
+// guest or of a leg, or on several ports: the guest runs on another node, so
+// its frames come in through one uplink.
+func (a *attempt) offTheNode(mac string, ports []string, kind func(string) PortKind) outcome {
+	if i := slices.IndexFunc(ports, func(p string) bool { return kind(p) == PortGuest }); i >= 0 {
+		return lost("MAC %s is on local port %s but the guest runs on %s", mac, ports[i], a.guest.Node)
+	}
+	switch {
+	case len(ports) > 1:
+		return lost("MAC %s is on several ports: %s", mac, strings.Join(ports, ", "))
+	case len(ports) == 1 && kind(ports[0]) == PortLeg:
+		return lost("MAC %s is on port %s, a leg of pco, not on an uplink", mac, ports[0])
+	}
+	return outcome{}
+}
+
+// portKinds reads the kinds of the ports of bridge, or nothing when the
+// prober cannot tell them or the call ended.
+func (a *attempt) portKinds(ctx context.Context, bridge string) map[string]PortKind {
+	pc, ok := a.r.prober.(PortClassifier)
+	if !ok || ctx.Err() != nil {
+		return nil
+	}
+	kinds, err := pc.PortKinds(ctx, bridge)
+	if err != nil || ctx.Err() != nil {
+		return nil
+	}
+	return kinds
+}

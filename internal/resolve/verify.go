@@ -199,9 +199,10 @@ func (a *attempt) wireCheck(ctx context.Context, ifc HostIface, c Candidate) wir
 }
 
 // wireLevel is port when the forwarding table placed every MAC that answered
-// ARP on the guest's own port, and observed when it placed none, as for a
-// guest on another node, whose MACs are only checked to be on no local
-// guest's port.
+// ARP on the guest's own port, or for a guest on another node on the uplink
+// under the attestation of its node, and observed when it placed none, as for
+// a guest on another node otherwise, whose MACs are only checked to be on no
+// local guest's port.
 func wireLevel(macs []string, placed map[string]string) Level {
 	if len(macs) == 0 {
 		return LevelObserved
@@ -224,12 +225,18 @@ func (a *attempt) onWire(ctx context.Context, ifc HostIface, c Candidate) ([]str
 	}
 	own := a.ownMACs(c.NIC)
 	macs, o := a.answeredBy(ctx, ifc.Name, c.Addr, own)
+	if o.ok() {
+		o = a.cross.expected(c.Addr, macs)
+	}
 	if !o.ok() {
 		return nil, nil, o
 	}
 	switch {
 	case a.r.settings.NoForwardingTable, a.r.capped(ifc, LevelPort) != LevelPort:
 		return macs, nil, outcome{}
+	case !a.checksFDB() && a.cross != nil:
+		placed, o := a.onUplink(ctx, ifc, c.NIC, macs, own)
+		return macs, placed, o
 	case !a.checksFDB():
 		return macs, nil, a.notOnLocalPorts(ctx, ifc, c.NIC, macs)
 	}

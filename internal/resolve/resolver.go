@@ -136,6 +136,11 @@ type Settings struct {
 	// that names only Via for the proof a binding carries. Nil, or an empty
 	// answer, caps nothing.
 	Ceiling func(iface HostIface) Level
+	// Attested lets VerifyAddress prove a guest of another node at port
+	// through the attestation of the node that hosts it. Only a node that
+	// reads its own bridges may offer that: the appliance cannot, and a node
+	// that is no member of a cluster has no attestations to go by.
+	Attested bool
 }
 
 // CandidateResult is how one candidate fared. Level is the level its identity
@@ -231,7 +236,12 @@ func NewResolver(p Prober, s Settings, now func() time.Time) *Resolver {
 // checked, and a port that does not answer has the identity proven anew. A
 // nil share shares and reuses nothing.
 func (r *Resolver) Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *Binding, deny Denylist, required Level, share *Shared) Result {
-	res := r.resolve(ctx, route, snap, prev, deny, required, share)
+	return finished(route, deny, r.resolve(ctx, route, snap, prev, deny, required, share))
+}
+
+// finished gives a target with an address its owner, and says whether a
+// guest's address needs the admin's allowance.
+func finished(route model.Route, deny Denylist, res Result) Result {
 	if res.Target.Addr.IsValid() {
 		res.Target.Owner = route.Owner()
 		if route.Guest != nil {
@@ -355,6 +365,9 @@ type attempt struct {
 	required Level
 	share    *Shared  // nil: nothing is shared
 	macs     macIndex // made on first use when nothing is shared
+	// cross is set when the call verifies an address another node chose,
+	// which may prove a guest of another node through its attestation.
+	cross *crossCheck
 
 	list     []Candidate // in the order they are tried
 	bound    bool        // list[0] carries prev

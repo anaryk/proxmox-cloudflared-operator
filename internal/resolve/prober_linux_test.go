@@ -542,6 +542,20 @@ func TestLinuxProberOnBridge(t *testing.T) {
 		require.Equal(t, FDBRef{Bridge: aware, VLAN: 40}, ifaces[i].Table)
 	})
 
+	t.Run("port kinds", func(t *testing.T) {
+		br, err := netlink.LinkByName(labBridge)
+		require.NoError(t, err)
+		dummy := addLabLink(t, &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "pcotestd0", MasterIndex: br.Attrs().Index}})
+		addLabLink(t, &netlink.Vlan{LinkAttrs: netlink.LinkAttrs{Name: "pcotestd0.20", ParentIndex: dummy.Attrs().Index, MasterIndex: br.Attrs().Index}, VlanId: 20})
+
+		kinds, err := p.(PortClassifier).PortKinds(t.Context(), labBridge)
+
+		require.NoError(t, err)
+		require.Equal(t, map[string]PortKind{
+			labPort1: PortGuest, labPort2: PortGuest, "pcotestd0": PortUnknown, "pcotestd0.20": PortUplink,
+		}, kinds)
+	})
+
 	t.Run("arp answered by one guest", func(t *testing.T) {
 		macs, err := p.ARP(t.Context(), labBridge, guest)
 		require.NoError(t, err)
@@ -1079,4 +1093,29 @@ func mustIPNet(t *testing.T, s string) *net.IPNet {
 	require.NoError(t, err)
 	n.IP = ip
 	return n
+}
+
+func TestLinuxPortKinds(t *testing.T) {
+	attrs := func(name string, index, master int, mac string) netlink.LinkAttrs {
+		hw, _ := net.ParseMAC(mac)
+		return netlink.LinkAttrs{Name: name, Index: index, MasterIndex: master, HardwareAddr: hw}
+	}
+	links := []netlink.Link{
+		&netlink.Bridge{LinkAttrs: attrs("vmbr0", 1, 0, "")},
+		&netlink.Device{LinkAttrs: attrs("eno1", 2, 1, "")},
+		&netlink.Bond{LinkAttrs: attrs("bond0", 3, 1, "")},
+		&netlink.Vlan{LinkAttrs: attrs("eno2.20", 4, 1, "")},
+		&netlink.Vxlan{LinkAttrs: attrs("vxlan_labx", 5, 1, "")},
+		&netlink.Tuntap{LinkAttrs: attrs("tap101i0", 6, 1, "")},
+		&netlink.Veth{LinkAttrs: attrs("vethpco3", 7, 1, "")},
+		&netlink.Veth{LinkAttrs: attrs("port8", 8, 1, "fe:50:43:4f:00:08")},
+		&netlink.Dummy{LinkAttrs: attrs("dummy0", 9, 1, "")},
+		&netlink.Device{LinkAttrs: attrs("eno3", 10, 0, "")},
+		&netlink.Device{LinkAttrs: attrs("eno4", 11, 12, "")},
+	}
+
+	require.Equal(t, map[string]PortKind{
+		"eno1": PortUplink, "bond0": PortUplink, "eno2.20": PortUplink, "vxlan_labx": PortUplink,
+		"tap101i0": PortGuest, "vethpco3": PortLeg, "port8": PortLeg, "dummy0": PortUnknown,
+	}, portKinds(links, 1))
 }

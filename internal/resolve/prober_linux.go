@@ -412,6 +412,38 @@ func fdbVID(br *netlink.Bridge, vlan int) (int, error) {
 	return int(*br.VlanDefaultPVID), nil
 }
 
+// PortKinds classifies every port of bridge by its name, the type of its
+// link and its MAC.
+func (p *hostProber) PortKinds(ctx context.Context, bridge string) (map[string]PortKind, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	link, err := netlink.LinkByName(bridge)
+	if err != nil {
+		return nil, fmt.Errorf("looking up bridge: %w", err)
+	}
+	if _, ok := link.(*netlink.Bridge); !ok {
+		return nil, fmt.Errorf("%s is not a Linux bridge", bridge)
+	}
+	links, err := retryDump(netlink.LinkList)
+	if err != nil {
+		return nil, fmt.Errorf("listing links: %w", err)
+	}
+	return portKinds(links, link.Attrs().Index), nil
+}
+
+// portKinds classifies the links enslaved to the bridge with the index
+// bridge.
+func portKinds(links []netlink.Link, bridge int) map[string]PortKind {
+	kinds := map[string]PortKind{}
+	for _, l := range links {
+		if at := l.Attrs(); at.MasterIndex == bridge && at.Index != bridge {
+			kinds[at.Name] = ClassifyPort(at.Name, l.Type(), at.HardwareAddr.String())
+		}
+	}
+	return kinds
+}
+
 func linkNames(indexes []int) ([]string, error) {
 	names := make([]string, 0, len(indexes))
 	for _, i := range indexes {
