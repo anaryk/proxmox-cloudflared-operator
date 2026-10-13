@@ -635,6 +635,29 @@ func TestTheManagedCheckNamesEveryCondition(t *testing.T) {
 	}, findings)
 }
 
+// In the appliance a token that may not read the changes of the SDN is no
+// fault of the vnet: what pco made is checked all the same.
+func TestTheVnetCheckOfTheApplianceWithoutTheRightToReadPendingChanges(t *testing.T) {
+	m := managedState(store.ProfileAppliance).Managed
+	for _, tt := range []struct {
+		name   string
+		err    error
+		expect Finding
+	}{
+		{"forbidden", fmt.Errorf("fetching sdn zones: %w", &pve.APIError{Status: 403, Message: "Permission check failed (/sdn, SDN.Audit)"}),
+			ok("vnet", "zone pco of type simple, isolate-ports off, no subnet; the changes of the SDN that wait to be applied were not read: "+
+				"pco's token may not read them (fetching sdn zones: proxmox api: HTTP 403: Permission check failed (/sdn, SDN.Audit))")},
+		{"another error", errors.New("timeout"),
+			warn("vnet", "the changes of the SDN that wait to be applied could not be read: timeout", fixAPI)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			env := healthyNetEnv()
+			env.sdnErr = tt.err
+			require.Equal(t, tt.expect, checkVnet(t.Context(), m, env, true))
+		})
+	}
+}
+
 // A pool of no size was not read as it is.
 func TestAServicePoolOfNoSizeWasNotRead(t *testing.T) {
 	env := healthyNetEnv()

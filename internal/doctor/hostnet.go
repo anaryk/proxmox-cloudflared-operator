@@ -31,6 +31,10 @@ type sdnReader interface {
 	SDNPending(ctx context.Context) (pve.SDN, error)
 }
 
+// The daemon hands the doctor its *pve.Client, on a host and in the
+// appliance alike.
+var _ sdnReader = (*pve.Client)(nil)
+
 // NetnsPinned checks that the gateway namespace is pinned, within the
 // timeout.
 func (h *HostEnv) NetnsPinned(ctx context.Context) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -304,6 +305,9 @@ func checkVnet(ctx context.Context, m engine.ManagedView, net NetworkEnv, applia
 		return ok(check, detail)
 	}
 	sdn, err := net.SDNPending(ctx)
+	if appliance && isDenied(err) {
+		return ok(check, detail+"; the changes of the SDN that wait to be applied were not read: pco's token may not read them ("+err.Error()+")")
+	}
 	if err != nil {
 		fix := fixProxmox
 		if appliance {
@@ -316,6 +320,13 @@ func checkVnet(ctx context.Context, m engine.ManagedView, net NetworkEnv, applia
 			"; the next apply, on any node, applies them along", "apply them, or undo them, in Datacenter > SDN")
 	}
 	return ok(check, detail+"; no change of the SDN waits to be applied")
+}
+
+// isDenied reports whether Proxmox refused a privilege the token lacks, as
+// opposed to rejecting the token.
+func isDenied(err error) bool {
+	var apiErr *pve.APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden
 }
 
 // othersPending names the changes of the SDN that wait to be applied, but
