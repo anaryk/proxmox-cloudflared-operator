@@ -68,6 +68,9 @@ flowchart LR
 
 How far each holds, and at which identity level, is the rest of this page; the
 [table of the five attackers](#identity-levels-against-five-attackers) is the short form.
+On a cluster, the nodes trust each other as far as [Between the nodes of a
+cluster](#between-the-nodes-of-a-cluster) says: a compromised host node can act as any host
+node.
 
 ## What runs with which rights
 
@@ -954,6 +957,49 @@ device on the uplink: a guest that forges a published guest's MAC passes ARP as 
 rows of `VM.Config.Network` hold as the table says, which is why the appliance holds a delegated
 guest until an approval, and why it refuses to serve while anyone but the admins can reach into
 the appliance itself, where `VM.Config.Network` would be enough to read its tokens.
+
+## Between the nodes of a cluster
+
+On a cluster, one node's controller drives an agent on every node over HTTPS on tcp/8644,
+with mutual TLS under a CA of pco's own (never Proxmox's `pve-root-ca`).
+
+- The listener drops a connection from an address that is not a registered node's or agent's
+  before the TLS handshake starts. One address holds at most 16 connections open, and the
+  body of a request must arrive within 15 seconds.
+- Each request is checked against the registry. The client certificate is verified again
+  under the CAs of that moment, so a connection does not outlive its certificate's expiry, or
+  the ten minutes in which a CA rotation still accepts the previous CA. A host node's
+  certificate must also be the one in its enrolment file. An appliance agent's certificate
+  must be the one the registry holds.
+- An agent that is refused is told only the kind of refusal (removed, contested, not enrolled,
+  another install, another address, protocol versions). The detail goes to the controller's
+  log.
+
+### Join tokens
+
+An appliance agent joins with a token that `pco` prints once. It is bound to one node, the
+install and the CA, and expires after 15 minutes. pco keeps only the SHA-256 of its secret
+and compares it in constant time. A token is good for one join. Its use is recorded before
+the controller answers, so of two joins with one token only the first gets a certificate, and
+the second holds the node contested until an admin decides. **A join uses up its token even
+when it then fails**, for example when the container's facts do not match what Proxmox says.
+Make a new token to try again. One address may try at most ten joins a minute.
+
+### What the enrolment protects, and what it does not
+
+Every host node of a cluster can read the CA's key, which is in `/etc/pve/priv`, and can
+write the cluster filesystem, where the enrolment files live. A host node an attacker has
+taken over can therefore issue a certificate in any other host node's name and write that
+node's enrolment. **A compromised host node can impersonate any host node.** Root on one
+node of a Proxmox cluster is root on the cluster anyway, through the cluster filesystem and
+the API. The enrolment pin protects against something narrower: a certificate signed with the
+CA's key somewhere else, such as from a copy of a backup, is refused, because it is not the
+one the node's own enrolment holds. Against a rogue host node, the remedy is to forget it
+with `--compromised`, which rotates the CA.
+
+Appliance agents are on the other side of that line. They never hold the CA's key. An
+appliance agent pins the CA it got with its first certificate and the controller's server
+name, so it only follows a controller of its own install.
 
 ## What Cloudflare sees
 
