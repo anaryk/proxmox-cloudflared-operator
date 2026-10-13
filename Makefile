@@ -100,7 +100,9 @@ ui-types:
 # site/package.json. The build fails on a link to a page that does not exist;
 # docs-lint holds the pages to the rules of site/.markdownlint-cli2.jsonc,
 # refuses syntax that only the site reads, checks every link of the built site
-# down to its fragment, and the images of docs/images against their budget.
+# down to its fragment, the images of docs/images against their budget and
+# whether a page shows each, and that every page of docs/cli is linked from a
+# page outside it.
 # docs-test runs every test of the site, those of test-scripts among them and
 # those that need its packages.
 site/node_modules: site/package.json site/package-lock.json
@@ -118,6 +120,7 @@ docs-lint: docs
 	node site/scripts/site-syntax.mjs
 	node site/scripts/anchors.mjs
 	node site/scripts/image-budget.mjs
+	node site/scripts/cli-links.mjs
 
 docs-test: site/node_modules
 	cd site && npm test

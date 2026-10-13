@@ -14,7 +14,10 @@ From the repository root:
 - `make docs-serve` serves it with live reload.
 - `make docs-lint` holds the pages to the rules of `.markdownlint-cli2.jsonc`,
   refuses the syntax that only the site reads, checks every link of the built
-  site down to its fragment, and checks the images against their budget.
+  site down to its fragment, checks the images against their budget and that a
+  page shows each, and checks that every page of `docs/cli` is linked from a
+  page outside it (`scripts/cli-links.mjs` names the groups of commands that
+  need no link of their own).
 - `make docs-test` runs every test of the site; it is `npm test` in this
   directory. `make test-scripts` runs the ones that need no packages.
 - `make docs-screenshots` takes the screenshots of the web interface in
