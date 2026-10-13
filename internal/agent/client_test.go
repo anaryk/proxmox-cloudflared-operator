@@ -386,9 +386,12 @@ func TestTheClientAppliesTheDesiredStateAndReports(t *testing.T) {
 func TestAStatusRefusedAsTooLargeIsSaid(t *testing.T) {
 	ce, srv := oneController(t, pki.KindHost)
 	srv.ctrl.publish(ce.desired())
-	ce.c.statusEvery = 5 * time.Second // the status that goes through waits for the trigger below
+	ce.c.statusEvery = time.Hour // only the triggers below send a status
 	ce.run(t)
-	require.Eventually(t, func() bool { return ce.agent.Status(t.Context()).SeqApplied == 1 && len(srv.ctrl.reported()) > 0 }, waitFor, tick)
+	// The first status goes at once and the snapshot taken triggers one
+	// more; once both arrived, no status is due until the next trigger, so
+	// none goes while the events are added and none clears what is said.
+	require.Eventually(t, func() bool { return ce.agent.Status(t.Context()).SeqApplied == 1 && len(srv.ctrl.reported()) >= 2 }, waitFor, tick)
 	big := strings.Repeat("x", 16*1024)
 	for range 80 {
 		ce.log.Add(Event{At: time.Now(), Level: levelInfo, Kind: kindNode, Subject: testNode, Message: big})
