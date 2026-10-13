@@ -46,8 +46,48 @@ func (w Writer) Validate() error {
 	return nil
 }
 
-// TunnelName is the name of the tunnel an install owns.
+// TunnelName is the name of the shared tunnel of an install, the one every
+// replica runs.
 func TunnelName(installID string) string { return installPrefix + installID }
+
+// PinnedTunnelName is the name of the tunnel of an install pinned to a node,
+// "pco-<id>-<node>". The node is taken as Proxmox names it: lower-case
+// letters, digits and hyphens between them. Any other name, or one that
+// makes the tunnel name longer than a label of 63 characters, is refused.
+func PinnedTunnelName(installID, node string) (string, error) {
+	if !isLabel(node) {
+		return "", fmt.Errorf("node name %q: want lower-case letters, digits and hyphens, not at the ends", node)
+	}
+	name := PinnedTunnelPrefix(installID) + node
+	if len(name) > maxLabelLen {
+		return "", fmt.Errorf("tunnel name %q is longer than %d characters", name, maxLabelLen)
+	}
+	return name, nil
+}
+
+// PinnedTunnelPrefix is what the name of every tunnel of the install pinned
+// to a node begins with, "pco-<id>-".
+func PinnedTunnelPrefix(installID string) string { return TunnelName(installID) + "-" }
+
+// PinnedTunnelNode is the inverse of PinnedTunnelName: the node a tunnel of
+// the install is pinned to, by the tunnel's name. ok is false for any other
+// name, among them the shared tunnel, a probe tunnel, and a tunnel of an
+// install whose id merely begins with installID.
+func PinnedTunnelNode(installID, name string) (node string, ok bool) {
+	node, ok = strings.CutPrefix(name, PinnedTunnelPrefix(installID))
+	if !ok || len(name) > maxLabelLen || !isLabel(node) {
+		return "", false
+	}
+	return node, true
+}
+
+// isLabel reports whether s is a DNS label as a node is named: lower-case
+// letters, digits and hyphens, with a letter or digit at both ends.
+func isLabel(s string) bool {
+	return s != "" && s[0] != '-' && s[len(s)-1] != '-' && strings.IndexFunc(s, func(r rune) bool {
+		return r != '-' && (r < '0' || r > '9' && r < 'a' || r > 'z')
+	}) < 0
+}
 
 // NoTunnelsError says that a Cloudflare token sees no tunnel of an install, so
 // the generation its writer used cannot be read from a sentinel. The caller

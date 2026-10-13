@@ -92,8 +92,8 @@ type IngressRule struct {
 	HTTPHostHeader   string `json:"httpHostHeader,omitempty"`
 }
 
-// TunnelPlan is the desired ingress of the tunnel in one account. Rules end
-// with the sentinel and the catch-all.
+// TunnelPlan is the desired ingress of one tunnel of an account: the shared
+// one, or one pinned to a node. Rules end with the sentinel and the catch-all.
 type TunnelPlan struct {
 	AccountID    string `json:"accountId"`
 	CredentialID string `json:"credentialId"`
@@ -151,29 +151,34 @@ type BuildInput struct {
 	// Refused are the routes RefuseUnnamed and RefuseUnzoned took out: the
 	// plan shows them, with no rule and no record.
 	Refused []RouteStatus
+	// Placements say, by hostname, which tunnel of its account serves a
+	// route; a hostname absent here is served through the shared tunnel.
+	Placements map[string]PlacementInput
 }
 
 // Plan is the desired Cloudflare state.
 type Plan struct {
-	Tunnels []TunnelPlan  `json:"tunnels"` // sorted by account id
+	Tunnels []TunnelPlan  `json:"tunnels"` // sorted by account id, then name: the shared tunnel before the pinned ones
 	Records []RecordPlan  `json:"records"` // sorted by zone name, then name
 	Routes  []RouteStatus `json:"routes"`  // sorted by hostname, then owner
 }
 
 // Build turns the winning routes into the Cloudflare state that serves them:
-// per account one tunnel with its ingress rules, the DNS records, and a status
-// for every route including the ones that lost their hostname.
+// per account the shared tunnel and the tunnels pinned to nodes, each with
+// its ingress rules, the DNS records, and a status for every route including
+// the ones that lost their hostname.
 //
 // Only an address that resolution verified for the winner is served. A
 // claimed hostname that is not served, whether its winner cannot be served,
 // its holder is absent within the grace or the holder's entry is broken, gets
-// a rule that answers 503, so that no other owner's wildcard serves it
-// meanwhile. A claim without a winner also gets a status, held, that names the
-// holder and says why. Names in the .invalid domain, where the sentinels live,
-// never get a rule, a record or a held status.
+// a rule that answers 503 in every tunnel of its account, so that no other
+// owner's wildcard serves it meanwhile, wherever that wildcard is placed. A
+// claim without a winner also gets a status, held, that names the holder and
+// says why. Names in the .invalid domain, where the sentinels live, never get
+// a rule, a record or a held status.
 //
-// An account gets a tunnel only when it serves a rule or a record points at
-// it. A tunnel of nothing but 503 rules would be reached by no DNS record.
+// A tunnel is planned only when it serves a rule or a record points at it. A
+// tunnel of nothing but 503 rules would be reached by no DNS record.
 //
 // Ingress is first-match, so each tunnel lists exact hostnames before
 // wildcards. The output does not depend on the order of the input slices.
@@ -181,8 +186,9 @@ func Build(in BuildInput) Plan {
 	b := builder{
 		in:      in,
 		zones:   newZoneIndex(in.Zones),
-		rules:   make(map[string][]IngressRule),
-		live:    make(map[string]bool),
+		rules:   make(map[tunnelKey][]IngressRule),
+		blocks:  make(map[string][]IngressRule),
+		live:    make(map[tunnelKey]bool),
 		records: []RecordPlan{},
 		routes:  []RouteStatus{},
 	}
@@ -209,8 +215,9 @@ func Build(in BuildInput) Plan {
 type builder struct {
 	in      BuildInput
 	zones   zoneIndex
-	rules   map[string][]IngressRule // by account
-	live    map[string]bool          // accounts that serve a rule or have a record
+	rules   map[tunnelKey][]IngressRule // the rules that serve a hostname, by tunnel
+	blocks  map[string][]IngressRule    // the 503 rules, by account: every tunnel of the account carries them
+	live    map[tunnelKey]bool          // tunnels that serve a rule or have a record
 	records []RecordPlan
 	routes  []RouteStatus
 }
@@ -239,6 +246,7 @@ func (b *builder) addWinner(rt model.Route, warnings []string) {
 func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 	target := b.in.Targets[rt.Hostname]
 	st.Level = target.Level
+	tunnel, placeErr := b.tunnelOf(zone, rt.Hostname)
 	switch {
 	case target.Owner != "" && target.Owner != rt.Owner():
 		// Everything resolution knows is about another owner.
@@ -247,18 +255,20 @@ func (b *builder) serve(st *RouteStatus, rt model.Route, zone Zone) {
 		st.State, st.Reason = StateUnreachable, cmp.Or(target.Reason, reasonRejected)
 	case !target.Addr.IsValid():
 		st.State, st.Reason = StateUnreachable, cmp.Or(target.Reason, reasonNoAddr)
+	case placeErr != nil:
+		st.State, st.Reason = StateUnreachable, placeErr.Error()
 	case target.Withdrawn:
 		st.State, st.Reason = StateWithdrawn, cmp.Or(target.Reason, reasonWithdrawn)
-		b.addRecord(zone, rt.Hostname)
+		b.addRecord(zone, rt.Hostname, tunnel)
 	default:
 		rule, err := newRule(rt, target)
 		if err != nil {
 			st.State, st.Reason = StateUnreachable, cmp.Or(target.Reason, err.Error())
 			break
 		}
-		b.addRule(zone.AccountID, rule)
-		b.live[zone.AccountID] = true
-		b.addRecord(zone, rt.Hostname)
+		b.rules[tunnel] = append(b.rules[tunnel], rule)
+		b.live[tunnel] = true
+		b.addRecord(zone, rt.Hostname, tunnel)
 		st.Service = rule.Service
 		st.State = StateActive
 		if !target.Reachable {
@@ -307,24 +317,20 @@ func heldReason(c Claim) string {
 		c.Owner, c.MissingSince.UTC().Format(time.RFC3339))
 }
 
-// block plans a rule that answers 503 for host.
+// block plans a rule that answers 503 for host in every tunnel of the account.
 func (b *builder) block(account, host string) {
-	b.addRule(account, IngressRule{Hostname: host, Service: BlockedService})
+	b.blocks[account] = append(b.blocks[account], IngressRule{Hostname: host, Service: BlockedService})
 }
 
-func (b *builder) addRule(account string, rule IngressRule) {
-	b.rules[account] = append(b.rules[account], rule)
-}
-
-func (b *builder) addRecord(zone Zone, name string) {
-	b.live[zone.AccountID] = true // the record points at this account's tunnel
+func (b *builder) addRecord(zone Zone, name string, tunnel tunnelKey) {
+	b.live[tunnel] = true // the record points at this tunnel
 	b.records = append(b.records, RecordPlan{
 		ZoneID:       zone.ID,
 		ZoneName:     zone.Name,
 		AccountID:    zone.AccountID,
 		CredentialID: zone.CredentialID,
 		Name:         name,
-		TunnelName:   TunnelName(b.in.Writer.InstallID),
+		TunnelName:   tunnel.name,
 	})
 }
 
@@ -347,23 +353,6 @@ func (b *builder) addConflicts() {
 			Reason:   fmt.Sprintf("hostname is held by %s", holders[rt.Hostname]),
 		})
 	}
-}
-
-// tunnels returns one plan per account that serves a rule or has a record.
-func (b *builder) tunnels() []TunnelPlan {
-	out := []TunnelPlan{}
-	for _, id := range slices.Sorted(maps.Keys(b.live)) {
-		rules := b.rules[id]
-		slices.SortStableFunc(rules, func(x, y IngressRule) int { return hostname.Compare(x.Hostname, y.Hostname) })
-		rules = append(rules, SentinelRule(b.in.Writer), CatchAllRule())
-		out = append(out, TunnelPlan{
-			AccountID:    id,
-			CredentialID: b.zones.credential[id],
-			Name:         TunnelName(b.in.Writer.InstallID),
-			Rules:        rules,
-		})
-	}
-	return out
 }
 
 // newRule builds the ingress rule that sends hostname traffic to the address
