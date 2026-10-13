@@ -598,3 +598,46 @@ func TestNoStateNoNetworkChecks(t *testing.T) {
 	require.Equal(t, []Finding{ok("netns", "pco-netns.service is enabled and starts before pco; no network is attached")},
 		networkFindings(Run(t.Context(), st, env)))
 }
+
+// Every condition of the managed check that holds has a finding of its own,
+// so that one does not hide another.
+func TestTheManagedCheckNamesEveryCondition(t *testing.T) {
+	st := managedState(store.ProfileHost)
+	st.Managed.Refused = "pve-firewall is stopped on node pve1"
+	st.Managed.Leg.Up, st.Managed.Leg.Problem = false, "bridge pconet is absent"
+	st.Managed.TagHonoured = false
+	st.Managed.Free = 9
+
+	findings := slices.DeleteFunc(Run(t.Context(), st, healthyNetEnv()), func(f Finding) bool { return f.Check != "managed" })
+
+	require.Equal(t, []Finding{
+		fail("managed", "the managed network cannot run on this node: pve-firewall is stopped on node pve1; nothing is attached until it can, and attached guests keep their cards",
+			"put right what it names; pco managed status shows it"),
+		fail("managed", "the leg of the managed network is not up: bridge pconet is absent", "pco managed status"),
+		warn("managed", "the tag cf-tunnel-managed is not registered as admin-only, so it gives no guest consent; only approvals do",
+			"add cf-tunnel-managed to registered-tags in the options of the datacenter, or approve guests with pco managed approve"),
+		warn("managed", "9 addresses of 10.203.118.0/24 are free", "detach the guests that no longer need a card on the managed network"),
+	}, findings)
+}
+
+// A pool of no size was not read as it is.
+func TestAServicePoolOfNoSizeWasNotRead(t *testing.T) {
+	env := healthyNetEnv()
+	env.used, env.size = 0, 0
+
+	require.Equal(t, warn("service pool", "the pool of service addresses was not read: it has no address", fixProblems),
+		netFinding(t, "service pool", attachedState(), env))
+}
+
+// A namespace that is gone on a node whose unit still has a stop action is
+// put right by the new unit first: a restart of the old one tears it down
+// again.
+func TestTheNetnsFixOfANamespaceThatIsGoneUnderAnOldUnit(t *testing.T) {
+	env := healthyNetEnv()
+	env.pinnedErr = errors.New("/run/netns/pco does not exist")
+	env.props[netnsUnit+" ExecStop"] = "{ path=/usr/bin/pco ; argv[]=/usr/bin/pco netns down }"
+
+	require.Equal(t, fail("netns", "the gateway namespace pco is not pinned (/run/netns/pco does not exist): the legs and the service addresses are gone; "+
+		"the loaded pco-netns.service has an ExecStop line, which tears the gateway down on restart",
+		"reinstall the package, then systemctl daemon-reload and systemctl restart pco-netns"), netFinding(t, "netns", attachedState(), env))
+}

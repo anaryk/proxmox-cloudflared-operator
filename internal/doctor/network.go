@@ -48,6 +48,7 @@ const (
 	hostTable = "pco_host"
 
 	fixNetns   = "systemctl restart pco-netns"
+	fixOldUnit = "reinstall the package, then systemctl daemon-reload"
 	fixProxmox = "the proxmox check says why Proxmox does not answer"
 
 	// legsFull is how many networks short of gateway.MaxMark the networks
@@ -92,7 +93,8 @@ func checkNetworks(ctx context.Context, st engine.State, env Env, app ApplianceE
 	if !m.Enabled {
 		return out
 	}
-	out = append(out, checkManaged(m), checkVnet(ctx, m, net, appliance), checkDHCP(m))
+	out = append(out, checkManaged(m)...)
+	out = append(out, checkVnet(ctx, m, net, appliance), checkDHCP(m))
 	if !appliance && net != nil {
 		out = append(out, checkPconet(ctx, net))
 	}
@@ -119,24 +121,29 @@ func checkNetns(ctx context.Context, st engine.State, env Env, net NetworkEnv) (
 		return Finding{}, false
 	}
 	stop, stopErr := net.UnitProperty(ctx, netnsUnit, "ExecStop")
+	oldUnit := stopErr == nil && strings.TrimSpace(stop) != ""
+	gone := func(detail string) (Finding, bool) {
+		if oldUnit {
+			return fail(check, detail+"; the loaded "+netnsUnit+" has an ExecStop line, which tears the gateway down on restart", fixOldUnit+" and "+fixNetns), true
+		}
+		return fail(check, detail, fixNetns), true
+	}
 	var tableErr error
 	if networks {
 		if err := net.NetnsPinned(ctx); err != nil {
-			return fail(check, fmt.Sprintf("the gateway namespace pco is not pinned (%v): the legs and the service addresses are gone", err), fixNetns), true
+			return gone(fmt.Sprintf("the gateway namespace pco is not pinned (%v): the legs and the service addresses are gone", err))
 		}
 		if i := slices.IndexFunc(st.Problems, isGatewayFault); i >= 0 {
-			return fail(check, st.Problems[i], fixNetns), true
+			return gone(st.Problems[i])
 		}
 		tableErr = net.HostTable(ctx)
 		if errors.Is(tableErr, gateway.ErrNotLoaded) {
-			return fail(check, "the table inet pco_host is not loaded: the node's own services are not kept from the managed network and the transit link",
-				fixNetns), true
+			return gone("the table inet pco_host is not loaded: the node's own services are not kept from the managed network and the transit link")
 		}
 	}
 	switch {
-	case stopErr == nil && strings.TrimSpace(stop) != "":
-		return fail(check, "the loaded pco-netns.service has an ExecStop line: an old pco-netns.service tears the gateway down on restart",
-			"reinstall the package, then systemctl daemon-reload"), true
+	case oldUnit:
+		return fail(check, "the loaded pco-netns.service has an ExecStop line: an old pco-netns.service tears the gateway down on restart", fixOldUnit), true
 	case tableErr != nil:
 		return warn(check, "the table inet pco_host could not be read: "+tableErr.Error(), "nft list table inet pco_host"), true
 	case enabledErr != nil:
@@ -222,10 +229,13 @@ func checkMarks(st engine.State) Finding {
 func checkServicePool(ctx context.Context, net NetworkEnv) Finding {
 	const check = "service pool"
 	used, size, err := net.ServicePool(ctx)
-	if err != nil {
+	switch {
+	case err != nil:
 		return warn(check, "the pool of service addresses could not be read: "+err.Error(), fixProblems)
+	case size <= 0:
+		return warn(check, "the pool of service addresses was not read: it has no address", fixProblems)
 	}
-	detail := fmt.Sprintf("%d of %d service addresses given out (%d %%)", used, size, used*100/max(size, 1))
+	detail := fmt.Sprintf("%d of %d service addresses given out (%d %%)", used, size, used*100/size)
 	const (
 		full = "; when none is left, a new target behind a leg is held"
 		fix  = "a target behind a leg keeps its service address while its address stays; " +
@@ -241,31 +251,39 @@ func checkServicePool(ctx context.Context, net NetworkEnv) Finding {
 }
 
 // checkManaged says whether the managed network runs on this node, and what
-// keeps guests from getting a card.
-func checkManaged(m engine.ManagedView) Finding {
+// keeps guests from getting a card: a finding for every condition that holds,
+// so that one does not hide another.
+func checkManaged(m engine.ManagedView) []Finding {
 	const (
 		check   = "managed"
 		options = "registered-tags in the options of the datacenter"
 	)
-	switch {
-	case m.Refused != "":
-		return fail(check, "the managed network cannot run on this node: "+m.Refused+"; nothing is attached until it can, and attached guests keep their cards",
-			"put right what it names; pco managed status shows it")
-	case m.Leg != nil && !m.Leg.Up:
-		return fail(check, "the leg of the managed network is not up: "+m.Leg.Problem, "pco managed status")
-	case m.AutoStopped != "":
-		return warn(check, m.AutoStopped, "add the gate tag to "+options)
-	case m.Consent != store.ConsentAuto && !m.TagHonoured:
-		return warn(check, "the tag "+managednet.Tag+" is not registered as admin-only, so it gives no guest consent; only approvals do",
-			"add "+managednet.Tag+" to "+options+", or approve guests with pco managed approve")
-	case m.Free < fewFree:
-		return warn(check, fmt.Sprintf("%d addresses of %s are free", m.Free, m.Subnet), "detach the guests that no longer need a card on the managed network")
+	var out []Finding
+	if m.Refused != "" {
+		out = append(out, fail(check, "the managed network cannot run on this node: "+m.Refused+"; nothing is attached until it can, and attached guests keep their cards",
+			"put right what it names; pco managed status shows it"))
+	}
+	if m.Leg != nil && !m.Leg.Up {
+		out = append(out, fail(check, "the leg of the managed network is not up: "+m.Leg.Problem, "pco managed status"))
+	}
+	if m.AutoStopped != "" {
+		out = append(out, warn(check, m.AutoStopped, "add the gate tag to "+options))
+	}
+	if m.Consent != store.ConsentAuto && !m.TagHonoured {
+		out = append(out, warn(check, "the tag "+managednet.Tag+" is not registered as admin-only, so it gives no guest consent; only approvals do",
+			"add "+managednet.Tag+" to "+options+", or approve guests with pco managed approve"))
+	}
+	if m.Free < fewFree {
+		out = append(out, warn(check, fmt.Sprintf("%d addresses of %s are free", m.Free, m.Subnet), "detach the guests that no longer need a card on the managed network"))
+	}
+	if len(out) > 0 {
+		return out
 	}
 	consent := "consent " + m.Consent + ", the tag " + managednet.Tag + " is honoured"
 	if m.Consent == store.ConsentAuto {
 		consent = "consent auto, the gate tag is registered"
 	}
-	return ok(check, fmt.Sprintf("%s; %s attached; %d addresses of %s free", consent, count(len(m.Attachments), "guest", "guests"), m.Free, m.Subnet))
+	return []Finding{ok(check, fmt.Sprintf("%s; %s attached; %d addresses of %s free", consent, count(len(m.Attachments), "guest", "guests"), m.Free, m.Subnet))}
 }
 
 // checkVnet fails while the vnet is not as pco made it, and warns about
