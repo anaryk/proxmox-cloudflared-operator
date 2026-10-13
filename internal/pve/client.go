@@ -151,34 +151,47 @@ func isLoopback(host string) bool {
 // newHTTPClient builds the HTTP client for cfg; systemRoots reads the roots
 // of the system, x509.SystemCertPool outside tests.
 func newHTTPClient(base *url.URL, cfg Config, systemRoots func() (*x509.CertPool, error)) (*http.Client, error) {
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: cfg.ServerName}
-	// A CA file that is given is always read, so that a wrong path is
-	// reported even where it would not be used.
-	if cfg.CAFile != "" {
-		pool, err := loadCAPool(cfg.CAFile, systemRoots, cfg.Log)
-		if err != nil {
-			return nil, err
-		}
-		tlsCfg.RootCAs = pool
-	}
-	if isLoopback(base.Hostname()) {
-		// The certificate is pinned instead: it is self-signed, by the CA
-		// of the cluster, and checked in VerifyConnection.
-		tlsCfg.InsecureSkipVerify = true
-		tlsCfg.VerifyConnection = (&nodePin{dir: cfg.NodeCertDir}).verify
+	pool, err := caPool(cfg, systemRoots)
+	if err != nil {
+		return nil, err
 	}
 	return &http.Client{
-		// No proxy on purpose: the API is local or on the management network.
-		Transport: &http.Transport{
-			TLSClientConfig:     tlsCfg,
-			TLSHandshakeTimeout: defaultTimeout,
-			IdleConnTimeout:     90 * time.Second,
-		},
-		// The API never redirects; following one would carry the token
-		// to wherever it points.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport:     newTransport(base, cfg.ServerName, pool, cfg.NodeCertDir),
+		CheckRedirect: noRedirect,
 	}, nil
 }
+
+// caPool is the pool of cfg.CAFile, nil without one. A CA file that is
+// given is always read, so that a wrong path is reported even where it
+// would not be used.
+func caPool(cfg Config, systemRoots func() (*x509.CertPool, error)) (*x509.CertPool, error) {
+	if cfg.CAFile == "" {
+		return nil, nil
+	}
+	return loadCAPool(cfg.CAFile, systemRoots, cfg.Log)
+}
+
+// newTransport is the transport for one endpoint, whose certificate is
+// verified under serverName against pool, or, on a loopback address, pinned
+// instead: that certificate is self-signed, by the CA of the cluster, and
+// checked in VerifyConnection against the one this node serves.
+func newTransport(base *url.URL, serverName string, pool *x509.CertPool, nodeCertDir string) *http.Transport {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName, RootCAs: pool}
+	if isLoopback(base.Hostname()) {
+		tlsCfg.InsecureSkipVerify = true
+		tlsCfg.VerifyConnection = (&nodePin{dir: nodeCertDir}).verify
+	}
+	// No proxy on purpose: the API is local or on the management network.
+	return &http.Transport{
+		TLSClientConfig:     tlsCfg,
+		TLSHandshakeTimeout: defaultTimeout,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
+// noRedirect keeps the client from following one: the API never redirects,
+// and following one would carry the token to wherever it points.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // loadCAPool returns the system roots with the certificates of the file
 // added: the cluster CA for the certificate pveproxy has by default, the
