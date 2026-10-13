@@ -34,10 +34,10 @@ const (
 	// the entry, or learned the MAC of a conflict on a port that is no
 	// guest's. What the earlier observation said no longer holds.
 	Gone ObservationKind = "gone"
-	// Reset: the observer subscribed again and what follows is a dump of the
-	// tables as they are now. Nothing reported before it still holds: an
-	// entry that went while no subscription was read gave no Gone, and the
-	// dump does not say what it does not show. It carries only At.
+	// Reset: a subscription begins, with a dump of the tables as they are
+	// now, or one ended. Nothing reported before it still holds: an entry
+	// that went while no subscription was read gave no Gone, and the dump
+	// does not say what it does not show. It carries only At.
 	Reset ObservationKind = "reset"
 )
 
