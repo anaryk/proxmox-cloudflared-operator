@@ -30,16 +30,20 @@ import (
 )
 
 const (
-	bridge      = "vmbr1"
-	nodeAddr    = "10.77.0.1"
-	nodeCIDR    = nodeAddr + "/24"
-	firstVMID   = 9100
-	lastVMID    = 9199
-	gateTag     = "cf-tunnel"
-	dropInDir   = "/etc/systemd/system/pco.service.d"
-	dropInFile  = dropInDir + "/e2e.conf"
-	overrideOf  = "PCO_CLOUDFLARE_API_URL"
-	cloudflared = "/usr/bin/cloudflared"
+	bridge    = "vmbr1"
+	nodeAddr  = "10.77.0.1"
+	nodeCIDR  = nodeAddr + "/24"
+	firstVMID = 9100
+	lastVMID  = 9199
+	// The networking scenarios have a range of their own, the one the lab
+	// node reserves for the suite.
+	netFirstVMID = 9350
+	netLastVMID  = 9399
+	gateTag      = "cf-tunnel"
+	dropInDir    = "/etc/systemd/system/pco.service.d"
+	dropInFile   = dropInDir + "/e2e.conf"
+	overrideOf   = "PCO_CLOUDFLARE_API_URL"
+	cloudflared  = "/usr/bin/cloudflared"
 
 	// The token of the real API is read from the file tokenFileOf names,
 	// never from the environment or the command line; no command the suite
@@ -81,6 +85,22 @@ type suite struct {
 	began   time.Time
 	// bridgeDown says that the bridge was down before the run.
 	bridgeDown bool
+
+	// What the networking scenarios make and change on the node, each
+	// undone at the end: the runtime bridges, the kernel parameters with
+	// their values before, the firewall service when the suite started it,
+	// the registered tags before the suite added to them, the virtual
+	// machines, and the guests that may carry a card on pconet, which are
+	// destroyed before pco is uninstalled so that its zone can go.
+	bridges         map[string]bool
+	sysctls         map[string]string
+	firewallStarted bool
+	tagsBefore      []string
+	tagsRecorded    bool
+	vms             map[int]bool
+	pconetGuests    map[int]bool
+	// managed says that a scenario enabled the managed network.
+	managed bool
 }
 
 func envOr(name, def string) string {
@@ -96,23 +116,36 @@ func envOr(name, def string) string {
 // under markerDir for cleanup.sh until then.
 func newSuite(t *testing.T) *suite {
 	s := &suite{
-		pco:    envOr("PCO_E2E_PCO", "/usr/bin/pco"),
-		tmpl:   envOr("PCO_E2E_TEMPLATE", "local:vztmpl/alpine-3.24-default_20260714_amd64.tar.xz"),
-		disk:   envOr("PCO_E2E_STORAGE", "local-lvm"),
-		dir:    t.TempDir(),
-		guests: map[int]bool{},
-		began:  time.Now(),
+		pco:          envOr("PCO_E2E_PCO", "/usr/bin/pco"),
+		tmpl:         envOr("PCO_E2E_TEMPLATE", "local:vztmpl/alpine-3.24-default_20260714_amd64.tar.xz"),
+		disk:         envOr("PCO_E2E_STORAGE", "local-lvm"),
+		dir:          t.TempDir(),
+		guests:       map[int]bool{},
+		began:        time.Now(),
+		bridges:      map[string]bool{},
+		sysctls:      map[string]string{},
+		vms:          map[int]bool{},
+		pconetGuests: map[int]bool{},
 	}
 	s.preflight(t)
 	token := s.chooseCloud(t)
 	s.own(t)
 
 	// Cleanups run last first: the guests go after pco is uninstalled, so
-	// that their going away is nothing the daemon acts on.
+	// that their going away is nothing the daemon acts on; the bridges go
+	// after the guests and the legs. The guests with a card on pconet go
+	// before the uninstall, so that no card is left on the vnet and its zone
+	// can be removed; the registered tags are put back before it as well,
+	// since the uninstall takes away the tag setup registered.
+	t.Cleanup(func() { s.removeBridges(t) })
+	t.Cleanup(func() { s.restoreSysctls(t) })
+	t.Cleanup(func() { s.stopFirewallService(t) })
 	t.Cleanup(func() { s.removeAddress(t) })
 	t.Cleanup(func() { s.removeDropIn(t) })
 	t.Cleanup(func() { s.destroyGuests(t) })
 	t.Cleanup(func() { s.uninstall(t) })
+	t.Cleanup(func() { s.destroyPconetGuests(t) })
+	t.Cleanup(func() { s.restoreRegisteredTags(t) })
 	t.Cleanup(func() { s.diagnose(t) })
 
 	s.addAddress(t)
@@ -233,9 +266,15 @@ func (s *suite) uninstall(t *testing.T) {
 		if attempt > 1 {
 			time.Sleep(purgeRetry)
 		}
+		args := []string{"uninstall", "--yes", "--purge-cloudflare"}
+		if s.managed {
+			// The cards pco attached go first, so that the SDN zone and
+			// vnet of the managed network can go with the install.
+			args = append(args, "--detach-managed")
+		}
 		var out string
-		out, err = s.combined(s.pco, "uninstall", "--yes", "--purge-cloudflare")
-		t.Logf("pco uninstall --purge-cloudflare, attempt %d of %d:\n%s", attempt, purgeAttempts, out)
+		out, err = s.combined(s.pco, args...)
+		t.Logf("pco %s, attempt %d of %d:\n%s", strings.Join(args, " "), attempt, purgeAttempts, out)
 		if err == nil {
 			break
 		}

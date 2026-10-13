@@ -15,7 +15,8 @@ import (
 )
 
 // guest is an Alpine container on the bridge of the run that serves a line of
-// HTTP on each of its ports.
+// HTTP on each of its ports. The networking scenarios put theirs on a bridge
+// of their own, with an address there.
 type guest struct {
 	vmid  int
 	notes string
@@ -25,12 +26,32 @@ type guest struct {
 	manual bool
 	// start are more lines of the start script, run before the servers.
 	start []string
+	// bridge and addr place the guest on another bridge than the run's,
+	// with that address (as 10.50.0.10/24); vlan tags its port there.
+	bridge string
+	addr   string
+	vlan   int
+	// tags are the tags of the guest; the gate tag alone when empty.
+	tags string
 }
 
-// ip is the address of the guest: 10.77.0.<vmid - 9000>.
-func (g guest) ip() string { return fmt.Sprintf("10.77.0.%d", g.vmid-9000) }
+// ip is the address of the guest: 10.77.0.<vmid - 9000> on the bridge of the
+// run, or the one given.
+func (g guest) ip() string {
+	if g.addr != "" {
+		ip, _, _ := strings.Cut(g.addr, "/")
+		return ip
+	}
+	return fmt.Sprintf("10.77.0.%d", g.vmid-9000)
+}
 
 func (g guest) owner() string { return "lxc/" + strconv.Itoa(g.vmid) }
+
+// inRange says whether the id is one the suite may use: the range of the
+// run, or the range of the networking scenarios.
+func inRange(vmid int) bool {
+	return (vmid >= firstVMID && vmid <= lastVMID) || (vmid >= netFirstVMID && vmid <= netLastVMID)
+}
 
 func (g guest) servedPorts() []int {
 	if len(g.ports) == 0 {
@@ -44,10 +65,32 @@ func (g guest) body(port int) string { return fmt.Sprintf("e2e %d:%d", g.vmid, p
 
 func (g guest) net0() string {
 	ip := "ip=" + g.ip() + "/24"
-	if g.manual {
+	switch {
+	case g.manual:
 		ip = "ip=manual"
+	case g.addr != "":
+		ip = "ip=" + g.addr
 	}
-	return "name=eth0,bridge=" + bridge + "," + ip
+	spec := "name=eth0,bridge=" + g.bridgeOf() + "," + ip
+	if g.vlan != 0 {
+		spec += ",tag=" + strconv.Itoa(g.vlan)
+	}
+	return spec
+}
+
+// bridgeOf is the bridge of the guest's first card.
+func (g guest) bridgeOf() string {
+	if g.bridge != "" {
+		return g.bridge
+	}
+	return bridge
+}
+
+func (g guest) tagsOf() string {
+	if g.tags != "" {
+		return g.tags
+	}
+	return gateTag
 }
 
 // startScript runs at every start of the container, from /etc/local.d.
@@ -93,14 +136,14 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %%d\r\nCo
 // create makes the guest, tagged with its notes, and starts it.
 func (s *suite) create(t testing.TB, g guest) {
 	t.Helper()
-	require.True(t, g.vmid >= firstVMID && g.vmid <= lastVMID, "vmid %d", g.vmid)
+	require.True(t, inRange(g.vmid), "vmid %d", g.vmid)
 	s.guests[g.vmid] = true
 	id := strconv.Itoa(g.vmid)
 	s.must(t, "pct", "create", id, s.tmpl,
 		"--hostname", "e2e-"+id, "--ostype", "alpine", "--unprivileged", "1",
 		"--memory", "64", "--swap", "0", "--cores", "1",
 		"--rootfs", s.disk+":1", "--net0", g.net0(),
-		"--tags", gateTag, "--description", g.notes)
+		"--tags", g.tagsOf(), "--description", g.notes)
 	s.must(t, "pct", "start", id)
 	s.waitExec(t, g.vmid)
 
@@ -131,6 +174,20 @@ func (s *suite) push(t testing.TB, vmid int, path, content string) {
 func (s *suite) exec(t testing.TB, vmid int, command string) {
 	t.Helper()
 	s.must(t, "pct", "exec", strconv.Itoa(vmid), "--", "sh", "-c", command)
+}
+
+// try runs a shell command in a running guest and returns what it printed
+// and whether it exited 0.
+func (s *suite) try(vmid int, command string) (string, bool) {
+	out, err := s.run("pct", "exec", strconv.Itoa(vmid), "--", "sh", "-c", command)
+	return out, err == nil
+}
+
+// connects says whether a guest can open a TCP connection to an address and
+// port: busybox nc, with nothing to send, exits 0 once connected.
+func (s *suite) connects(vmid int, addr, port string) bool {
+	_, ok := s.try(vmid, "timeout 4 nc -w 2 "+addr+" "+port+" </dev/null >/dev/null 2>&1")
+	return ok
 }
 
 // waitExec waits until commands can run in a guest that was started.
@@ -200,6 +257,30 @@ func (s *suite) destroyGuest(vmid int) error {
 func (s *suite) destroyGuests(t *testing.T) {
 	for vmid := range s.guests {
 		if err := s.destroyGuest(vmid); err != nil {
+			t.Errorf("destroying guest %d: %v", vmid, err)
+		}
+	}
+	for vmid := range s.vms {
+		if err := s.destroyVM(vmid); err != nil {
+			t.Errorf("destroying VM %d: %v", vmid, err)
+		}
+	}
+}
+
+// destroyPconetGuests destroys the guests that may carry a card on pconet,
+// before pco is uninstalled: a card left on the vnet keeps its zone.
+func (s *suite) destroyPconetGuests(t *testing.T) {
+	for vmid := range s.pconetGuests {
+		var err error
+		switch {
+		case s.vms[vmid]:
+			err = s.destroyVM(vmid)
+			delete(s.vms, vmid)
+		case s.guests[vmid]:
+			err = s.destroyGuest(vmid)
+			delete(s.guests, vmid)
+		}
+		if err != nil {
 			t.Errorf("destroying guest %d: %v", vmid, err)
 		}
 	}

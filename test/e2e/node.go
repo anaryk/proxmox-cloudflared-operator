@@ -153,13 +153,14 @@ func (s *suite) refuseTakenIDs(t *testing.T) {
 		for line := range strings.Lines(s.must(t, list, "list")) {
 			f := strings.Fields(line)
 			id, err := strconv.Atoi(firstOf(f))
-			if err != nil || id < firstVMID || id > lastVMID {
+			if err != nil || !inRange(id) {
 				continue
 			}
-			if list == "pct" && slices.Contains(f, "e2e-"+f[0]) && exists(ownedFile) {
-				t.Fatalf("container %d of a run of the suite is left: %s", id, cleanupHint)
+			if slices.Contains(f, "e2e-"+f[0]) && exists(ownedFile) {
+				t.Fatalf("guest %d of a run of the suite is left: %s", id, cleanupHint)
 			}
-			t.Fatalf("guest %d exists; the suite needs the ids %d to %d free, and leaves that guest alone", id, firstVMID, lastVMID)
+			t.Fatalf("guest %d exists; the suite needs the ids %d to %d and %d to %d free, and leaves that guest alone",
+				id, firstVMID, lastVMID, netFirstVMID, netLastVMID)
 		}
 	}
 }
