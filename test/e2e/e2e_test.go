@@ -41,6 +41,17 @@ func TestEndToEnd(t *testing.T) {
 		{"S14 ruleset flushed", testRulesetFlushed},
 		{"S15 mac moved", testMACMoved},
 		{"S9 identity of others' addresses", testIdentity},
+		// The networking scenarios: guests the node is not on-link with,
+		// reached through legs of the gateway namespace, and the managed
+		// network. S17 leaves its network attached and S21 the managed
+		// network enabled, which S19, S20, S22 and S23 build on.
+		{"S17 attach an isolated bridge", testAttachIsolatedBridge},
+		{"S18 attach a vlan", testAttachVLAN},
+		{"S19 two networks with one subnet", testIdenticalSubnets},
+		{"S20 network reload under legs", testNetworkReload},
+		{"S21 managed network", testManagedNetwork},
+		{"S22 managed network isolation", testManagedIsolation},
+		{"S23 gateway restart and reinstall under traffic", testGatewayRestart},
 	} {
 		t.Run(sc.name, func(t *testing.T) { sc.run(t, s) })
 	}
@@ -459,13 +470,27 @@ func testMACMoved(t *testing.T, s *suite) {
 	host, target := s.host("s15"), g.ip()+":8080"
 	s.waitRoute(t, host, planner.StateActive)
 	s.waitTarget(t, target, true, time.Minute, time.Second)
+	s.requireMACMoveSeen(t, g, "02:e2:e0:00:91:80")
+	s.waitRoute(t, host, planner.StateActive)
+	s.waitTarget(t, target, true, time.Minute, time.Second)
+}
+
+// requireMACMoveSeen gives the guest's card another MAC with the link up,
+// and checks that its target leaves the egress set within 2 seconds of the
+// node seeing the new MAC, with the event and the route withdrawn; then the
+// MAC is put back. The guest is on the bridge of the run, where it reaches
+// the node's address.
+func (s *suite) requireMACMoveSeen(t *testing.T, g guest, moved string) {
+	t.Helper()
+	target := g.ip() + ":8080"
+	host, ok := routeHost(s.state(t), g.owner())
+	require.True(t, ok, "no route of %s", g.owner())
 	own := s.hwaddr(t, g.vmid)
 
-	// The MAC changes with the link up. Until the node's neighbour table has
-	// it the target stays in the set; the guest's ping carries it there, or
-	// pco's own verification, which asks the guest by ARP, does first. The 2
-	// seconds count from the moment the table has it.
-	const moved = "02:e2:e0:00:91:80"
+	// Until the node's neighbour table has the new MAC the target stays in
+	// the set; the guest's ping carries it there, or pco's own verification,
+	// which asks the guest by ARP, does first. The 2 seconds count from the
+	// moment the table has it.
 	seen := s.neighbourSeen(t, g.ip(), moved)
 	changed := time.Now()
 	s.setMAC(t, g.vmid, moved)
@@ -511,8 +536,15 @@ func testMACMoved(t *testing.T, s *suite) {
 	s.setMAC(t, g.vmid, own)
 	s.exec(t, g.vmid, "ping -c 1 -W 2 "+nodeAddr+" >/dev/null || true")
 	s.sync(t)
-	s.waitRoute(t, host, planner.StateActive)
-	s.waitTarget(t, target, true, time.Minute, time.Second)
+}
+
+// routeHost is the hostname of the one route of an owner.
+func routeHost(st engine.State, owner string) (string, bool) {
+	i := slices.IndexFunc(st.Routes, func(r engine.RouteView) bool { return r.Owner == owner })
+	if i < 0 {
+		return "", false
+	}
+	return st.Routes[i].Hostname, true
 }
 
 func testIdentity(t *testing.T, s *suite) {
