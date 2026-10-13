@@ -57,8 +57,9 @@ says what that proof rests on.
 
    The vnet is made without isolated ports: the appliance's own card is a port of it, and the
    guest firewall does the isolating. The grant is the one `pco appliance grant-network` makes
-   for any network, `VM.Config.Network` on the appliance for its own card and `SDN.Use` on
-   the vnet, for the user and the token both. The zone and the vnet are noted in the
+   for any network, the role `PCOManaged` (`VM.Config.Network`) on the appliance for its own
+   card and the role `PCOSDN` (`SDN.Use` and `SDN.Audit`) on the vnet, for the user and the
+   token both. The zone and the vnet are noted in the
    appliance's manifest and in the description of the container before they are made, so
    that `pco appliance uninstall` can tell them from an admin's.
 
@@ -123,9 +124,10 @@ says what that proof rests on.
    the ipset `ipfilter-net1` that holds exactly the card's address, and pco's rules on top,
    commented `pco:<install id>`: in from the leg, the DHCP replies and the published ports,
    nothing else; out, the card's own address to the leg and DHCP requests, nothing else. The
-   card is added with its link down, and comes up once its firewall has been in force for 15
-   seconds; `Filtered` says `does not hold` with `not yet enforced` meanwhile, and the
-   routes on `pconet` are at `observed` for that cycle.
+   card is added with its link down, and comes up once its firewall has been written for 15
+   seconds and reads back as written ([the enforcement window](../networking.md#the-appliance-the-guest-firewall));
+   `Filtered` says `does not hold` with `not yet enforced` meanwhile, and the routes on
+   `pconet` are at `observed` for that cycle.
 
 6. Publish the guest as any other. Its route is served at `filtered` while the isolation
    holds:

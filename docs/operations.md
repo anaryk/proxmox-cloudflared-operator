@@ -16,7 +16,7 @@ The package installs six systemd units, in `/usr/lib/systemd/system`.
 | `pco-egress.service` | Loads the egress filter by running `pco egress load`, a hidden command that puts the table in place with the resolvers of the node and no targets, and exits. It is a one-shot unit that stays active, and it is ordered before `pco.service`. Setup enables and starts it, so the table is loaded at every boot, also before a connector exists, and uninstall disables it. The connector units require it, so starting a connector starts it too. Do not restart it to load the table again: every connector restarts with it. `pco egress load` does that. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel, `cloudflared` with the files of the tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 | `pco-web.service` | The web interface, `pco web`. It runs as the user `pco-web`, starts after `network-online.target`, `pve-cluster.service` and `pco.service`, restarts after 2 seconds when it stops, and reads its address from `/etc/default/pco-web`. `pco setup` enables it, unless it is given `--no-web`. An upgrade of the package restarts it if it ran. |
-| `pco-netns.service` | Runs `pco netns up`, which brings back at boot the network namespace `pco` and the legs through which pco reaches a network the node has no address in, with their service addresses, the sticky entries and the guard of the managed network, from what the daemon last applied (`/var/lib/pco/netns/gateway.json`). It is a one-shot unit that stays active, ordered before `pco.service`, the connectors, `pve-guests.service` and `pve-ha-lrm.service`, so that a guest behind a leg is reached as soon as it starts. `pco network attach` and `pco network managed enable` enable and start it with the first network, and the last network detached disables it, which takes nothing down: the namespace stays until `pco uninstall`. It has no stop action: `systemctl restart pco-netns` brings up only what is missing and leaves the legs, the translations and the open connections as they are, so an upgrade of the package, which runs `pco netns up` again when the unit is enabled, or a restart by hand costs nothing. A namespace that is gone comes back by that restart alone: the daemon cannot make it from its sandbox. `pco netns status` compares everything and exits 1 on a difference; see [the command](cli/pco-netns.md) and [Networking](networking.md#the-namespace-on-the-host). |
+| `pco-netns.service` | Brings back at boot the network namespace `pco` and the legs through which pco reaches a network the node has no address in, from what the daemon last applied. It is a one-shot unit that stays active, ordered before `pco.service`, the connectors, `pve-guests.service` and `pve-ha-lrm.service`, and it has no stop action; [below](#the-gateway-unit) says what that means. |
 | `pco-net.service` | For the appliance only; nothing starts it on a host. It runs `pco net load`, a hidden command that puts the dummy device, the route and the table that keep the appliance's service prefix to itself in place, before the network and before `pco.service` and the connectors, which require it in the appliance. Do not restart it to load them again, as `pco.service` and every connector restart with it: `pco net load` does that. |
 
 Who each runs as, and the sandbox of its unit:
@@ -27,6 +27,24 @@ Who each runs as, and the sandbox of its unit:
 | `pco-egress.service`, `pco-netns.service`, `pco-net.service` | root | None: each puts its tables, namespace or routes in place and exits. |
 | `pco-cloudflared@<tunnel id>.service` | `pco-connector` | No capabilities, `NoNewPrivileges`, a read-only system, no home, devices or other users' processes, the system calls of `@system-service`; [Security](security.md#what-runs-with-which-rights) has the list. |
 | `pco-web.service` | `pco-web` | No capabilities, `NoNewPrivileges`, a read-only system but `/run/pco`, no home or devices, the system calls of `@system-service` without `@privileged` and `@resources`, IPv4, IPv6 and unix sockets only; [Security](security.md#the-process-and-what-it-can-reach) has the list. |
+
+### The gateway unit
+
+`pco-netns.service` exists for the networks pco reaches through a leg of its own
+([Networking](networking.md#the-namespace-on-the-host)). `pco network attach` and
+`pco network managed enable` enable and start it with the first network, and the last network
+detached disables it, which takes nothing down: the namespace stays until `pco uninstall`. At
+boot it brings the namespace back from the cache the daemon writes after every change,
+`/var/lib/pco/netns/gateway.json`: the legs, their service addresses, the sticky entries and
+the guard of the managed network, before `pve-guests.service` starts the guests, so that a
+guest behind a leg is reached as soon as it is up.
+
+The unit has no stop action, so `systemctl restart pco-netns` is safe at any time: it brings
+up only what is missing and leaves the legs, the translations and the open connections as
+they are. An upgrade of the package does the same when the unit is enabled, and a namespace
+that is gone comes back by that restart alone, as the daemon cannot make it from its sandbox.
+`pco netns status` compares the namespace with the cache and exits 1 on a difference; see
+[the command](cli/pco-netns.md).
 
 The connectors keep running when the daemon stops, restarts or is upgraded. pco is never in
 the data path: a request goes from Cloudflare's edge to a connector and from there to the
@@ -70,7 +88,7 @@ is served again, and where a visitor sees what.
 flowchart TD
     boot["Boot: systemd starts the enabled units"]
     boot --> egress["pco-egress.service runs pco egress load: the table lets the connectors reach the resolvers and the edge of Cloudflare, and no targets"]
-    boot --> netns["pco-netns.service, where a network is attached, runs pco netns up: the namespace, the legs and the service addresses as last applied, before pve-guests starts the guests"]
+    boot --> netns["pco-netns.service, where a network is attached, brings back the namespace, the legs and the service addresses as last applied, before pve-guests starts the guests"]
     egress --> conn["The connectors start; they require the egress unit"]
     egress --> daemon["pco.service starts, after pve-cluster, pveproxy and pco-netns"]
     netns --> daemon

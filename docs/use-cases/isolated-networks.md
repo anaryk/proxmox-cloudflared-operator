@@ -29,8 +29,8 @@ flowchart TB
         connector["cloudflared connector"] --> filter["Egress filter: service addresses only"]
         daemon["pco daemon"]
         subgraph ns["Network namespace pco"]
-            leg2["leg2 on vmbr2 VLAN 20, 10.20.0.250"]
-            leg1["leg1 on vmbr1, 10.77.0.250"]
+            leg1["leg1 on vmbr2 VLAN 20, 10.20.0.250"]
+            leg2["leg2 on vmbr1, 10.77.0.250"]
             leg3["leg3 on pconet, 10.203.118.1"]
         end
         subgraph team["vmbr2, VLAN 20: the team's network"]
@@ -46,8 +46,8 @@ flowchart TB
     end
     edge -->|"through the tunnel"| connector
     filter --> ns
-    leg2 --> app
-    leg1 --> preview
+    leg1 --> app
+    leg2 --> preview
     leg3 --> status
     leg3 --> wiki
     daemon -. "legs, service addresses, cards, leases" .-> ns

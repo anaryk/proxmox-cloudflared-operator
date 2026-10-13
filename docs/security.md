@@ -117,10 +117,12 @@ The Proxmox side is read-only. Setup makes the role `PCO`, the user `pco@pve` an
 token `pco@pve!pco`, and the role holds `VM.Audit`, `Sys.Audit`, `SDN.Audit`,
 `VM.GuestAgent.Audit` (`VM.Monitor` on Proxmox VE 8.4) and `Pool.Audit`, granted on `/`.
 pco reads the pool of each guest from `/cluster/resources`, which shows it only to a
-token with `Pool.Audit`. The daemon never changes a tag or a Notes field, and changes a
-guest in one way only: with the guest's consent it adds a card on the managed network, as
-root with `qm set` and `pct set`, and removes it again after the grace once the consent is
-gone ([Networking](networking.md#managed)); the token writes nothing. Otherwise only
+token with `Pool.Audit`, and the SDN zones and vnets from their listings, which `SDN.Audit`
+on `/` opens (a single zone is answered only to `SDN.Allocate`, which the role does not
+hold). The daemon never changes a tag or a Notes field, and changes a
+guest in one way only: with the guest's consent it adds a card on the managed network, on a
+host as root with `qm set` and `pct set`, and removes it again after the grace once the
+consent is gone ([Networking](networking.md#managed)); the token writes nothing. Otherwise only
 `pco setup`, `pco network managed enable` and `pco uninstall` change Proxmox, as root, and
 what they change is listed in the manifest: the SDN zone `pco` and vnet `pconet` among it.
 
@@ -299,10 +301,11 @@ networks with the same addresses never see each other's flows. A request from a 
 reaches the guest from the leg's address; the real address of the guest is never in the egress
 filter, and a tunnel rule written at Cloudflare that names it reaches nothing.
 
-A restart of `pco-netns.service` is safe: the unit has no stop action, and `pco netns up`
-brings back what is missing and leaves the legs, the translations and the open connections as
-they are. Nothing of the legs is in `/etc/network/interfaces`, and `ifreload -a` and an SDN
-apply leave them enslaved.
+A restart of `pco-netns.service`, `systemctl restart pco-netns`, is safe: the unit has no stop
+action, and the restart brings back what is missing and leaves the legs, the translations and
+the open connections as they are. Nothing of the legs is in `/etc/network/interfaces`; a port
+that a bridge lost, as an `ifreload -a` can leave it, is put back on its bridge by the daemon,
+which sees the change at once and keeps what the leg learned.
 
 ### The managed network against the five attackers
 
@@ -313,7 +316,7 @@ from the others and away from the node, differs by profile, and so does what it 
 | Attacker | Host: `port`, isolated ports and the guard | Appliance: `filtered`, the guest firewall |
 |---|---|---|
 | A device on the uplink, outside Proxmox | There is none: `pconet` is an SDN vnet of the cluster with no physical port. | The same. |
-| Root in another managed guest | Stopped at layer 2. The ports of the vnet are isolated, so it sees no frame of another guest; the guard table admits from its port only the MAC and address of its own card, so a frame forged with another's MAC or address is dropped and counted; and the sticky entry of each card's MAC on its guest's port keeps its traffic there whatever the attacker sends. ARP from one guest never reaches another. | Stopped at layer 3. Its card is pinned to its address by the ipset, and its rules let it send to the leg alone; the MAC filter of the guest firewall keeps it to its MAC. Limit: the ports are not isolated, so it sees the MACs of the other guests and their broadcasts, and its ARP reaches them; what it cannot do is send them anything, and the proof drops to `observed` when a frame from a MAC no lease knows is seen. |
+| Root in another managed guest | Stopped at layer 2. The ports of the vnet are isolated, so it sees no frame of another guest; the guard table admits from its port only the MAC and address of its own card, so a frame forged with another's MAC or address is dropped and counted; and the sticky entry of each card's MAC on its guest's port keeps its traffic there whatever the attacker sends. ARP from one guest never reaches another. | Stopped at layer 3 for IP, not for ARP. Its card is pinned to its address by the ipset, and its rules let it send IP to the leg alone; the MAC filter of the guest firewall keeps it to its MAC. Limit: the ports are not isolated, so its ARP reaches the other guests, and it can poison a neighbour's ARP entry for the leg with its own MAC. Nothing of pco's catches that: the watch reports MACs no lease knows, the canary asks the victim, the firewall reads see the configuration. It gains a denial of service and not a read: the neighbour's frames, with the neighbour's address, are dropped by the poisoner's own `IN DROP`, and the victim's route goes `unreachable` until the entry expires. The proof drops to `observed` when a frame from a MAC no lease knows is seen. |
 | A Proxmox user with `VM.Config.Network` on another guest | Stopped. A card the user puts on `pconet` is foreign: pco sets its link down where it may write the guest, reports it where it may not, and has the guests read again within a cycle of the card's first frame; the guard drops what it sends meanwhile, since no lease admits its MAC and address. | Stopped, and `filtered` is lost for the vnet at once when such a card speaks, until pco has acted on it; its routes are served at `observed` meanwhile. The user cannot give the card pco's rules. |
 | A Proxmox user with `VM.Config.Network` on the managed guest | Changing the card's MAC or address cuts the guest off: the guard admits the pair pco leased and nothing else, and the sticky entry stays with the leased MAC. Removing the card loses the guest its route until pco adds the card again. | The same through the ipset and the MAC filter; the firewall options and rules of the card are read every cycle and put right, and a rule above pco's is pushed down. A user who turns the guest firewall off takes `filtered` away, and pco does not turn it back on: the routes are served at `observed`. |
 | A Proxmox user with `VM.Clone` on a tagged guest and `VM.Allocate` | A clone copies the card, with a new MAC, and is foreign: a consenting clone gets a card of its own, any other has its link set down. The tag `cf-tunnel-managed` is inherited by a clone, so a clone is consenting in per-guest mode; only an approval, which is of an identity, is not inherited. Its hostnames stay in conflict with the original's. | The same. |
@@ -925,8 +928,9 @@ the card pco gave it:
   dropped_spoofed`). A guest that sends with another guest's MAC and address, from its own port,
   reaches nothing. The guard is there while the managed network has its leg on the node, and goes
   with it.
-- **A sticky forwarding entry** of each card's MAC on its guest's port (`bridge fdb show br
-  pconet`). Frames to the MAC go to that port only, whatever another port sends. While the port is
+- **A sticky forwarding entry** keeps each card's MAC on its guest's port, so that no other port
+  can take the frames meant for it (`bridge fdb show br pconet`). Frames to the MAC go to that
+  port only, whatever another port sends. While the port is
   absent, as while the guest is stopped, the entry waits on the bridge end of the managed leg
   (`vethpco<mark>`), where frames to the MAC end unanswered, and moves to the port as soon as it
   appears.

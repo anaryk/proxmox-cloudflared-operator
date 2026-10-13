@@ -205,9 +205,10 @@ zone, so that nothing it learned or opened in the old one is kept.
 A leg that raises its address announces it with three gratuitous ARP requests a second apart,
 so that guests that still hold the MAC of an earlier pair for it reach the new one at once.
 
-The gateway is one interface with two backends. On the host it is the namespace: `pco netns up`
-brings it back at boot from the cache the daemon writes after every change, before the guests
-start, and the daemon keeps it every 30 seconds and on every change the kernel reports. In the
+The gateway is one interface with two backends. On the host it is the namespace:
+`pco-netns.service` brings it back at boot from the cache the daemon writes after every
+change, before the guests start, and the daemon keeps it every 30 seconds and on every change
+the kernel reports. In the
 appliance a leg is a card of the container itself, added through the Proxmox API, and the
 translation runs in the container's own ruleset; `pco net load` restores the cards at boot.
 The resolver proves a guest behind a leg as any other, with the ARP asked from the leg and the

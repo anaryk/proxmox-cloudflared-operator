@@ -34,7 +34,7 @@ flowchart TB
 | Identity level, host | `port` | `port`, proven through the leg | `port`, proven through the leg |
 | Identity level, appliance | `observed` | `observed` | `filtered` while the isolation holds, else `observed` |
 | Isolation | The network's own | The network's own | Host: the vnet's isolated ports and pco's guard; appliance: the guest firewall on the card |
-| Set up with | nothing | `pco network attach`, or the wizard of the web interface | `pco setup --managed` or `pco network managed enable`; in the appliance `pco appliance managed enable` first |
+| Set up with | nothing | `pco network attach` | `pco setup --managed` or `pco network managed enable`; in the appliance `pco appliance managed enable` first |
 
 Prefer Direct where it is there. Attach where the guests are on a network of their own and
 should not be changed for pco: a VLAN of a team, a tenant network, an internal bridge. Managed
@@ -162,14 +162,11 @@ one cycle passes first (`service address not allocated: no cycle has run since t
 and the ones that exist are used at once. The routes through a leg hold meanwhile and answer
 503; [Problems](problems.md#the-gateway-and-service-addresses) lists the reasons.
 
-Two things to know about the translation. In the appliance, a request to a service address
-whose target left the egress set while its translation is still loaded, which can happen for
-one cycle after a guest lost its proof, waits about 3 seconds for a timeout instead of
-failing at once; it is blocked either way, and on a host the filter refuses it at once. And a target behind a leg takes about 68 new connections a second: the
-leg's block of 4096 source ports serves 4096 new connections a minute to one address and port,
-since the guest keeps each used port in TIME_WAIT for 60 seconds. A connector keeps its
-connections to a guest open and reuses them, so only a very busy target comes near that;
-[Architecture](architecture.md#the-network-gateway) has the arithmetic.
+One thing to know about the translation: a target behind a leg takes about 68 new connections
+a second. The leg's block of 4096 source ports serves 4096 new connections a minute to one
+address and port, since the guest keeps each used port in TIME_WAIT for 60 seconds. A
+connector keeps its connections to a guest open and reuses them, so only a very busy target
+comes near that; [Architecture](architecture.md#the-network-gateway) has the arithmetic.
 
 ## Attach
 
@@ -204,7 +201,7 @@ is the guide; this is what each step does.
 3. **The uplink warning.** A bridge with a physical uplink is a LAN with other stations on it.
    The leg's MAC and address become visible there, and the address has to be one reserved for
    pco: a DHCP server of that LAN must not give it out. `pco network attach` needs
-   `--confirm-uplink` for such a bridge, and the wizard asks.
+   `--confirm-uplink` for such a bridge.
 4. **A prefix that overlaps a route of the node.** A network whose prefix overlaps a route of
    the node on another interface, such as the management subnet, is refused:
 
@@ -288,10 +285,9 @@ itself anything. On the node, as root, through the installer script or the relea
     pco appliance managed enable --vmid 120
 
 reads the node's firewall first, since in the appliance the guest firewall is what isolates
-the managed network: it refuses the nftables backend (`nftables: 1` in the node's firewall
-options), a datacenter firewall that is off, and a `pve-firewall` that does not run, each
-before anything is made and each with the fix. Then it shows what it makes and grants, and
-asks once:
+the managed network, and refuses a node that cannot isolate the guests before anything is
+made, each refusal with its fix ([what the isolation needs of the node](#the-appliance-the-guest-firewall)).
+Then it shows what it makes and grants, and asks once:
 
     pco appliance managed enable makes the SDN zone pco and the vnet pconet where they are missing, applies the SDN configuration, and grants pco@pve and pco@pve!vm120:
       role PCOManaged (VM.Config.Network) on /vms/120
@@ -304,9 +300,10 @@ The vnet is made without isolated ports there, since the appliance's own card is
 and the guest firewall does the isolating. The zone and the vnet are noted in the appliance's
 manifest and in the description of the container before they are made, with a note the node
 keeps for itself, so that the uninstall removes them only when all three agree. The grant is
-what `pco appliance grant-network` makes for any network: `VM.Config.Network` on the
-appliance, so that it can add its own leg, and `SDN.Use` on `/sdn/zones/pco/pconet`, for the
-user `pco@pve` and the token, as a privilege-separated token holds only what its user holds.
+what `pco appliance grant-network` makes for any network: the role `PCOManaged`
+(`VM.Config.Network`) on the appliance, so that it can add its own leg, and the role `PCOSDN`
+(`SDN.Use` and `SDN.Audit`) on `/sdn/zones/pco/pconet`, for the user `pco@pve` and the token,
+as a privilege-separated token holds only what its user holds.
 Then, inside the appliance, `pco network managed enable` takes the network into the store, and
 the appliance adds its own card on `pconet` in its next cycle.
 
@@ -468,18 +465,22 @@ broadcast, multicast and ARP frames from a MAC no lease knows, and such a frame 
 of the node read again within a cycle, with the event `a frame from <mac>, a MAC no lease knows,
 ...`; in the appliance it also drops `filtered` for the vnet at once. A stopped guest with a
 foreign card is seen when it starts, as its port appears, or at the sweep. A card that sends
-nothing but unicast is not seen by the watch, and is left to the sweep. The watch passes at
-most one MAC a second to the daemon and 64 MACs get an event of their own; past that the frames
-are counted in a problem line, and every one still has the guests read again.
+nothing but unicast is not seen by the watch, and is left to the sweep. The watch passes each
+MAC on at most once a second and keeps 32 apart; past those it passes one MAC a second, so
+that the daemon acts at least once a second while any unknown card speaks. The daemon gives 64
+MACs an event of their own, once per MAC in five minutes; past that the frames are counted in
+a problem line, and every one still has the guests read again.
 
 ### DHCP for virtual machines
 
 A container has its address in its configuration. A virtual machine asks for it, and pco
 answers: a DHCP server of its own on the managed leg, inside the namespace on a host and in
 the container in the appliance, which answers only a MAC that has a lease, with that lease.
-The lease is 7 days, with the renewal at 3.5 days (`T1`) and the rebinding at about 6 days
-(`T2`), and the offer carries the subnet mask and nothing else: no router, no DNS, no domain,
-so the guest takes no default route from it and keeps the one of its own network. A request
+An offer and an acknowledgement carry the message type, the server identifier (the leg's
+address), the subnet mask, the lease time of 7 days, the renewal time at half of it (`T1`,
+3.5 days) and the rebinding time at seven eighths (`T2`, about 6 days), and nothing else: no
+router, no name server, no domain, so the guest takes no default route from it and keeps the
+one of its own network. A NAK carries the type and the server identifier only. A request
 whose Ethernet source is not the MAC it asks for is dropped and counted as forged; one from a
 MAC without a lease is counted as unknown; a guest sends at most one DISCOVER and four other
 messages a second, and a flood of made-up MACs costs a counter and a log line a minute. A
@@ -561,17 +562,19 @@ all of them. Three things of pco's keep each guest to the card it was given, wha
 - **The guard table** `bridge pco_guard` on the node. An IPv4 packet or an ARP frame that enters
   `pconet` from a guest's port passes only with the MAC and the address of the card pco gave
   that guest, on that port; a DHCP request and an ARP probe, which have no address yet, pass
-  with the card's MAC. Anything else is dropped and counted: `nft list counter bridge pco_guard
-  dropped_spoofed`. A guest that sends with another guest's MAC and address, from its own
-  port, reaches nothing. The table is there while the managed network has its leg on the node.
-- **A sticky forwarding entry** of each card's MAC on its guest's port: `bridge fdb show br
-  pconet | grep sticky`. Frames to that MAC go to that port only, whatever another port sends,
-  so a guest that copies another's MAC does not take its traffic. While the guest's port is
-  absent, as while it is stopped, the entry waits on the bridge end of the managed leg,
-  `vethpco<mark>`, where frames to the MAC end unanswered, and moves to the port as soon as it
-  appears, within milliseconds. A card whose firewall flag changes moves its port from
-  `tap<vmid>i<n>` to `fwpr<vmid>p<n>` or back, and the guest loses its network until the next
-  cycle moves the entry.
+  with the card's MAC. Any other IPv4 packet or ARP frame is dropped and counted: `nft list
+  counter bridge pco_guard dropped_spoofed`. A guest that sends with another guest's MAC and
+  address, from its own port, reaches nothing. Frames of other protocols pass the guard, and
+  the isolated ports keep them from reaching another guest. The table is there while the
+  managed network has its leg on the node.
+- **A sticky forwarding entry** keeps each card's MAC on its guest's port, so that no other port
+  can take the frames meant for it: `bridge fdb show br pconet | grep sticky`. Frames to that
+  MAC go to that port only, whatever another port sends, so a guest that copies another's MAC
+  does not take its traffic. While the guest's port is absent, as while it is stopped, the
+  entry waits on the bridge end of the managed leg, `vethpco<mark>`, where frames to the MAC
+  end unanswered, and moves to the port as soon as it appears, within milliseconds. A card
+  whose firewall flag changes moves its port from `tap<vmid>i<n>` to `fwpr<vmid>p<n>` or back,
+  and the guest loses its network until the next cycle moves the entry.
 - **The source-MAC watch** on the leg, which has the guests read again when a MAC no lease
   knows speaks, as described above.
 
@@ -588,8 +591,8 @@ from a leg but DHCP on the managed one, and the cards pco adds have `firewall=0`
 firewall is not what isolates here, and the managed network of a host runs on either firewall
 backend.
 
-What a managed guest on a host can do: reach pco's leg on the published ports and DHCP, and
-nothing else through that card. What it cannot do: reach another managed guest, the node, or
+A managed guest on a host can send DHCP to pco's leg and nothing else through that card;
+pco's leg reaches its published ports. It cannot reach another managed guest, the node, or
 anything beyond the leg. Its other cards are untouched.
 
 ### The appliance: the guest firewall
@@ -630,10 +633,10 @@ proven to isolate it. What that proof rests on:
   the canary with a firewall of its own passes.
 - **The enforcement window.** A card is added with its link down, and its link comes up only
   once its firewall has been written for 15 seconds, which is as long as `pve-firewall` may
-  take to compile its rules, and read back as written; `pco managed status` shows `not yet enforced` meanwhile.
-  A card whose rules pco just put right is not counted for the same time. So a new card, or a
-  repair, drops `filtered` for the whole vnet for about one cycle, and a restart of the daemon
-  in the appliance costs the same 15 seconds.
+  take to compile its rules, and reads back as written; `pco managed status` shows `not yet
+  enforced` meanwhile. A card whose rules pco just put right is not counted for the same
+  time. So a new card, or a repair, drops `filtered` for the whole vnet for about one cycle,
+  and a restart of the daemon in the appliance costs the same 15 seconds.
 - **An admin's rule above pco's is pushed down.** pco's rules must be the first that apply to
   the card. A rule an admin puts above them is left as it is, and pco's block goes on top of it
   again in the next cycle; the admin's rule decides nothing for that card. The rules of the
@@ -666,12 +669,19 @@ What the appliance's isolation needs of the node, and what happens when it goes 
   network cannot run on this node: <why>`, no new card, the existing cards kept and their
   routes at `observed`, and the checks `managed firewall` and `managed` fail.
 
-The limits of layer 3: ARP passes between managed guests in the appliance, since the ports are
-not isolated there, and a guest sees the MACs of the others; what it cannot do is send them
-anything the firewall does not accept, and the rules accept nothing but the leg. The guest
-firewall also keeps the node's `pconet` bridge device unreachable from a managed guest, which
-the appliance cannot do on the node itself: the `OUT` rules let a guest send to the leg and to
-DHCP only.
+The limits of layer 3, plainly. ARP passes between managed guests in the appliance, since the
+ports are not isolated there: a guest sees the MACs of the others, and it can answer ARP for
+the leg's address with its own MAC and poison a neighbour's entry for the leg, so that the
+neighbour sends its replies to the poisoner's port instead of the leg. The guest firewall
+filters IP packets, not what a neighbour believes of the leg, so nothing of pco's catches that:
+the source-MAC watch reports MACs no lease knows and the poisoner's is known, the canary asks
+the victim's own address, and the firewall reads see the configuration. What it comes to is a
+denial of service and not a read: the neighbour's frames carry the neighbour's address, which
+the poisoner's own `IN DROP` discards, so the poisoner reads nothing, and the victim's route
+goes `unreachable` with `target is not answering` until the entry expires. On a host the guard
+drops such a frame, since its sender pair is not the card's own. The guest firewall does keep
+the node's `pconet` bridge device unreachable from a managed guest, which the appliance cannot
+do on the node itself: the `OUT` rules let a guest send to the leg and to DHCP only.
 
 ## Limits
 
@@ -724,19 +734,19 @@ soonest:
    every foreign card, and every change of the isolation.
 8. **On a host**, as root: `pco netns status` (everything compared, exit 1 on a difference);
    `ip netns exec pco ip -br addr` for the legs; `ip netns exec pco nft list table inet pco_gw`
-   for the translations and the counters (`dropped_oif`, `dropped_leg_in` and
-   `dropped_transit` count what the guards dropped: a leg guest that probes the leg raises
-   the second, and the first and the third should stay at 0); `nft list table bridge
-   pco_guard` for the cards the
-   guard admits and `dropped_spoofed`; `bridge fdb show br pconet | grep sticky` for the entry
-   of each managed guest on its port; `ip -n pco neigh show dev leg1` for the pinned MACs;
-   `systemctl status pco-netns` and `journalctl -b -u pco-netns` for the boot, whose leg lines
-   come before `Starting pve-guests.service`.
+   for the translations and the counters: `dropped_oif`, `dropped_leg_in` and
+   `dropped_transit` count what the guards dropped, where a leg guest that probes the leg
+   raises the second, and the first and the third should stay at 0; `nft list table bridge
+   pco_guard` for the cards the guard admits and `dropped_spoofed`; `bridge fdb show br pconet
+   | grep sticky` for the entry of each managed guest on its port; `ip -n pco neigh show dev
+   leg1` for the pinned MACs; `systemctl status pco-netns` and `journalctl -b -u pco-netns`
+   for the boot, whose leg lines come before `Starting pve-guests.service`.
 9. **In the appliance**: `pco net show` for the prefix, `pct config <vmid>` on the node for the
    cards `net1` to `net9` of the container, `pct config <guest>` for a guest's card with
    `firewall=1`, `cat /etc/pve/firewall/<guest>.fw` for pco's rules on top and the ipset, and
-   `iptables-save -t filter | grep -A8 'tap<vmid>i<n>-IN'` on the node for the rules in force,
-   which the appliance cannot read itself.
+   on the node `iptables-save -t filter | grep -A8 'tap<vmid>i<n>-IN'` for a virtual machine or
+   `'veth<vmid>i<n>-IN'` for a container, the rules in force, which the appliance cannot read
+   itself.
 10. **From a guest**: the leg answers ARP for its address from the leg's MAC and gives a
     managed guest nothing else but DHCP, since the gateway accepts nothing from a leg; a
     managed guest reaches no other managed guest, not the node on any address, and nothing

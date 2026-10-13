@@ -342,7 +342,8 @@ interface to its network configuration and bring it up;
 [Networking](networking.md#dhcp-for-virtual-machines) has the lines for `ifupdown`,
 `systemd-networkd`, netplan, NetworkManager and cloud-init. Inside the guest, `ip link` shows
 the card by its MAC, `06:50:43:4f:...`; a card whose link is down in the appliance (`link_down=1`
-in its configuration) comes up by itself once its firewall has been in force for 15 seconds.
+in its configuration) comes up by itself once its firewall has been written for 15 seconds and
+reads back as written.
 On the node, `ip netns exec pco tcpdump -ni leg<N> -e udp port 67` shows the requests and the
 answers; a guest that asks and gets nothing has a MAC other than the lease's, as after a MAC
 changed by hand, and the check `dhcp` counts such requests. `the DHCP server is not listening
@@ -383,7 +384,8 @@ each means:
 - **`the firewall is not enforcing on net<N>`**: the canary from the leg, a SYN to a port no
   route publishes, was answered. The rules are configured but not in force on the node:
   `pve-firewall` restarted and has not compiled them, or the backend is not the iptables one.
-  `iptables-save -t filter | grep tap<vmid>i<n>-IN` on the node shows what is loaded.
+  `iptables-save -t filter | grep tap<vmid>i<n>-IN` on the node shows what is loaded for a
+  virtual machine's card, and `veth<vmid>i<n>-IN` for a container's.
 - **The backend, the datacenter firewall or `pve-firewall`**: `the managed network cannot run
   on this node: <why>`, with the fix in the line, on the node. No card is added while it
   lasts, and the cards that exist stay.

@@ -27,7 +27,7 @@ network is the better answer.
 - In the appliance, the container has the grant of the bridge: `pco appliance network allow
   vmbr1 --vmid 120` on the node, which is [grant-network](../cli/pco-appliance-network-allow.md)
   in short. A VLAN is attached on a VLAN-aware bridge only.
-- You work as root on the node, or as an admin of the web interface.
+- You work as root on the node.
 
 ## Steps
 
@@ -157,8 +157,8 @@ namespace with what the daemon applied and exits 1 when anything differs, and
 `10.77.0.250` answers ARP from `02:50:43:4f:00:01` and nothing else: the namespace accepts
 nothing from a leg.
 
-A reboot of the node brings the leg back before the guests start: `pco-netns.service` runs
-`pco netns up` from the cache the daemon writes after every change, ordered before
+A reboot of the node brings the leg back before the guests start: `pco-netns.service` brings
+the namespace back from the cache the daemon writes after every change, ordered before
 `pve-guests.service`. `systemctl restart pco-netns` is safe at any time; it brings back what is
 missing and stops nothing.
 

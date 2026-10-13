@@ -11,9 +11,8 @@ What changes the node itself stays on the command line, as root: `pco setup`, `p
 `pco egress`, `pco tunnel rotate`, `pco segment acknowledge` and `revoke`, `pco netns` and
 `pco web cert`. Where one of them is the fix, the page shows the command with a button that
 copies it. The networks pco attaches and its managed network ([Networking](networking.md)) are
-set up on the command line too, with `pco network` and `pco managed`: the page shows how a
-route is reached through them, and the wizard that attaches a network and the screen of the
-managed network come in a later release.
+set up on the command line too, with `pco network` and `pco managed`; the page shows how a
+route is reached through them.
 
 The screenshots on this page show an example install, as an admin sees it unless the text
 says otherwise: one served zone with a route in every state, a connector pco does not run, a
