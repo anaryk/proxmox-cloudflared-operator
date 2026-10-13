@@ -140,7 +140,7 @@ from each other, so that the card adds no way between the guest and anything but
 
    ```text
    HOSTNAME         STATE   LEVEL  SERVICE                 VIA      OWNER    ZONE         NOTE
-   new.example.com  active  port   http://198.18.1.1:3000  managed  lxc/201  example.com  -
+   new.example.com  active  port   http://198.18.1.0:3000  managed  lxc/201  example.com  -
    ```
 
    A route can say `via=managed` to use that card and no other of the guest's;
