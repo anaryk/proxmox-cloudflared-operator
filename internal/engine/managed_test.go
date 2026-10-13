@@ -364,6 +364,7 @@ func TestATaggedContainerGetsACardBeforeItsAddressIsResolved(t *testing.T) {
 	require.Empty(t, st.Managed.Waiting)
 	require.Equal(t, 252, st.Managed.Free)
 	require.Equal(t, "per-guest", st.Managed.Consent)
+	require.Empty(t, st.Managed.GateTag, "the gate tag consents for no guest")
 	require.True(t, st.Managed.TagHonoured)
 	require.True(t, st.Managed.AutoAllowed)
 	require.True(t, st.Managed.Vnet.OK)
@@ -575,6 +576,7 @@ func TestAutomaticConsentAttachesAGuestThatNeedsTheNetwork(t *testing.T) {
 	require.Equal(t, managednet.ByAuto, m.attachments()["lxc/101"].Consent)
 	require.Empty(t, st.Managed.Waiting, "a guest that does not need the network is not waiting")
 	require.Empty(t, st.Managed.AutoStopped)
+	require.Equal(t, "cf-tunnel", st.Managed.GateTag, "the gate tag consents for every guest it admits")
 }
 
 func TestTheGateTagLeavingTheRegisteredTagsStopsAutomaticAttachesOnly(t *testing.T) {

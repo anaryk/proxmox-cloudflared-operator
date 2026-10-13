@@ -566,16 +566,31 @@ func TestThePoolGrantCheckOfTheAppliance(t *testing.T) {
 		{Kind: model.KindQEMU, VMID: 101, Name: "db", Node: "pve2", Pool: "managed"},
 		{Kind: model.KindQEMU, VMID: 103, Node: "pve1", Pool: "managed"},
 		{Kind: model.KindQEMU, VMID: 104, Node: "pve1", Pool: "other"},
+		{Kind: model.KindQEMU, VMID: 105, Node: "pve1", Pool: "managed", Tags: []string{"cf-tunnel"}},
+		{Kind: model.KindQEMU, VMID: 106, Node: "pve1", Pool: "managed", Tags: []string{"cf-tunnel-managed"}},
 		{Kind: model.KindQEMU, VMID: 900, Node: "pve1", Pool: "managed", Template: true},
 		{Kind: model.KindLXC, VMID: testVMID, Node: "pve1", Pool: "managed"},
 	}
+	const note = "is in pool managed: pco's token can change its cards and its firewall; no consent for the managed network today"
+	poolGrant := func(findings []Finding) []Finding {
+		return slices.DeleteFunc(findings, func(f Finding) bool { return !strings.HasPrefix(f.Check, "pool grant") })
+	}
 
-	findings := Run(t.Context(), st, env)
+	require.Equal(t, []Finding{
+		ok("pool grant qemu/101", "qemu/101 (db) "+note),
+		ok("pool grant qemu/105", "qemu/105 "+note),
+	}, poolGrant(Run(t.Context(), st, env)), "the tag cf-tunnel-managed consents; the gate tag does not under per-guest consent")
 
-	require.Equal(t, []Finding{warn("pool grant qemu/101",
-		"qemu/101 (db) is in pool managed, whose guests' cards and firewall pco's token may change, and has no consent for the managed network",
-		"move it out of pool managed unless pco should change it")},
-		slices.DeleteFunc(findings, func(f Finding) bool { return !strings.HasPrefix(f.Check, "pool grant") }))
+	st.Managed.Consent, st.Managed.GateTag = store.ConsentAuto, "cf-tunnel"
+	require.Equal(t, []Finding{ok("pool grant qemu/101", "qemu/101 (db) "+note)}, poolGrant(Run(t.Context(), st, env)),
+		"the gate tag admits a guest under automatic consent, whether it needs the network yet or not")
+
+	st.Managed.Consent, st.Managed.GateTag, st.Managed.TagHonoured = store.ConsentPerGuest, "", false
+	require.Equal(t, []Finding{
+		ok("pool grant qemu/101", "qemu/101 (db) "+note),
+		ok("pool grant qemu/105", "qemu/105 "+note),
+		ok("pool grant qemu/106", "qemu/106 "+note),
+	}, poolGrant(Run(t.Context(), st, env)), "a tag that is not registered consents to nothing")
 
 	env.app.resErr = errors.New("500 Internal Server Error")
 	require.Equal(t, warn("pool grant", "the guests could not be read: 500 Internal Server Error", fixAPI),

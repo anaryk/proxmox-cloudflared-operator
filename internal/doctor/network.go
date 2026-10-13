@@ -485,9 +485,11 @@ func checkManagedFirewall(m engine.ManagedView) Finding {
 	return ok(check, "the datacenter firewall is on, and pve-firewall runs on the node on the iptables backend")
 }
 
-// checkPoolGrant warns about every guest of the pool whose cards pco's token
-// may change that has no consent for the managed network: the grant reaches
-// it all the same.
+// checkPoolGrant names every guest of the pool whose cards pco's token may
+// change that has no consent for the managed network: the grant reaches it
+// all the same, though pco changes no guest without consent. A guest that is
+// attached or waits, carries a registered tag cf-tunnel-managed, or that the
+// gate tag admits under consent auto has consent.
 func checkPoolGrant(ctx context.Context, m engine.ManagedView, app ApplianceEnv) []Finding {
 	const check = "pool grant"
 	guests, err := app.Guests(ctx)
@@ -501,17 +503,22 @@ func checkPoolGrant(ctx context.Context, m engine.ManagedView, app ApplianceEnv)
 	for _, w := range m.Waiting {
 		consented[w.String()] = true
 	}
+	hasConsent := func(g pve.Resource) bool {
+		ref := model.GuestRef{Kind: g.Kind, VMID: g.VMID}
+		return consented[ref.String()] ||
+			(m.TagHonoured && slices.Contains(g.Tags, managednet.Tag)) ||
+			(m.Consent == store.ConsentAuto && m.GateTag != "" && slices.Contains(g.Tags, m.GateTag))
+	}
 	self := app.Self().VMID
 	var out []Finding
 	for _, g := range guests {
-		ref := model.GuestRef{Kind: g.Kind, VMID: g.VMID}
-		if g.Pool != m.PoolGrant || g.Template || g.VMID == self || consented[ref.String()] {
+		if g.Pool != m.PoolGrant || g.Template || g.VMID == self || hasConsent(g) {
 			continue
 		}
+		ref := model.GuestRef{Kind: g.Kind, VMID: g.VMID}
 		who := engine.OwnerName(ref.String(), &engine.GuestView{GuestRef: ref, Name: g.Name})
-		out = append(out, warn(check+" "+ref.String(),
-			fmt.Sprintf("%s is in pool %s, whose guests' cards and firewall pco's token may change, and has no consent for the managed network", who, m.PoolGrant),
-			"move it out of pool "+m.PoolGrant+" unless pco should change it"))
+		out = append(out, ok(check+" "+ref.String(),
+			who+" is in pool "+m.PoolGrant+": pco's token can change its cards and its firewall; no consent for the managed network today"))
 	}
 	if len(out) == 0 {
 		return []Finding{ok(check, "every guest of pool "+m.PoolGrant+" has consent for the managed network")}

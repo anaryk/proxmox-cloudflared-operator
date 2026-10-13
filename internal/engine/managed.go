@@ -24,6 +24,10 @@ type ManagedView struct {
 	Enabled     bool   `json:"enabled"`     // the network pconet is stored
 	Consent     string `json:"consent"`     // per-guest or auto
 	AutoAllowed bool   `json:"autoAllowed"` // the gate tag is registered admin-only
+	// GateTag is, under consent auto, the tag that consents for every guest
+	// it admits, whether the guest needs the network yet or not; empty under
+	// per-guest consent.
+	GateTag string `json:"gateTag,omitempty"`
 	// AutoStopped says why automatic attaches are stopped; empty while they
 	// run, and under per-guest consent.
 	AutoStopped string           `json:"autoStopped,omitempty"`
@@ -265,6 +269,9 @@ func (s *managedStep) run() ManagedView {
 	c := s.c
 	settings := c.settings.Managed
 	s.v = ManagedView{Consent: settings.Consent, Subnet: settings.Subnet, Attachments: []AttachmentView{}, Waiting: []ManagedWaiting{}, Foreign: []ForeignView{}}
+	if settings.Consent == store.ConsentAuto {
+		s.v.GateTag = c.settings.GateTag
+	}
 	nets, err := c.e.d.Store.Networks()
 	if err != nil {
 		c.problem(problemManagedStore, "reading the networks", err)
