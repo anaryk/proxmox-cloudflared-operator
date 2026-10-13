@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"maps"
 	"net/netip"
 	"slices"
@@ -16,8 +18,27 @@ import (
 // with its guest and the guests that share a MAC with it; the nodes, the
 // denylist, the settings the agent works by; and the tunnels of the
 // configurations last verified at Cloudflare, each with the targets it sends
-// a connector to, which the node keeps as they are.
+// a connector to, which the node keeps as they are. It is what the cycle's
+// pass of the agent begins with.
 func (c *cycleRun) snapshot() agentproto.Snapshot {
+	s := c.desired()
+	s.Tunnels = c.withVerified(nil, true)
+	return s
+}
+
+// keptSnapshot is the snapshot the cycle's pass of the agent ends with,
+// after the tunnel run: the tunnels whose connectors the node keeps, with the
+// run token of those it runs and the targets of their configurations as last
+// verified; with prune they are every tunnel of the install whose connector
+// the node keeps.
+func (c *cycleRun) keptSnapshot(tunnels []agentproto.Tunnel, prune bool) agentproto.Snapshot {
+	s := c.desired()
+	s.Tunnels, s.Prune = c.withVerified(tunnels, false), prune
+	return s
+}
+
+// desired is the snapshot of the cycle without its tunnels.
+func (c *cycleRun) desired() agentproto.Snapshot {
 	s := agentproto.Snapshot{
 		Protocol: agentproto.ProtocolMax,
 		Node:     c.e.d.Node,
@@ -41,7 +62,6 @@ func (c *cycleRun) snapshot() agentproto.Snapshot {
 		s.Epoch = agentproto.Epoch{InstallID: c.install.ID}
 	}
 	s.Guests = c.snapshotGuests(s.Targets)
-	s.Tunnels = c.withVerified(nil)
 	return s
 }
 
@@ -137,10 +157,10 @@ func (c *cycleRun) snapshotGuests(targets []agentproto.Target) []model.Guest {
 }
 
 // withVerified gives each tunnel the targets of its account's configuration
-// last verified at Cloudflare, and adds, for every other account with one,
-// a tunnel the node keeps as it is: the egress set keeps what they send a
-// connector to until a configuration without it is verified.
-func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel) []agentproto.Tunnel {
+// last verified at Cloudflare, and with others adds, for every other account
+// with one, a tunnel the node keeps as it is: the egress set keeps what they
+// send a connector to until a configuration without it is verified.
+func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel, others bool) []agentproto.Tunnel {
 	out := make([]agentproto.Tunnel, 0, len(tunnels)+len(c.e.verified))
 	listed := map[string]bool{}
 	for _, t := range tunnels {
@@ -149,7 +169,7 @@ func (c *cycleRun) withVerified(tunnels []agentproto.Tunnel) []agentproto.Tunnel
 		out = append(out, t)
 	}
 	for _, account := range slices.Sorted(maps.Keys(c.e.verified)) {
-		if listed[account] {
+		if listed[account] || !others {
 			continue
 		}
 		out = append(out, agentproto.Tunnel{
@@ -169,4 +189,56 @@ func (e *Engine) seenIn(account string) string {
 		}
 	}
 	return ""
+}
+
+// seqs numbers the snapshots of each node within an epoch: the seq moves only
+// when the snapshot's content changes, so that an agent writes nothing for a
+// snapshot it has, and never two contents under one seq.
+type seqs struct {
+	byNode map[string]*seqOf
+}
+
+type seqOf struct {
+	epoch agentproto.Epoch
+	seq   uint64
+	sum   [sha256.Size]byte
+}
+
+// stamp gives s its seq. applied is what the node's agent applied last,
+// epoch and seq: after a start of the engine within one epoch, the seqs go on
+// above it.
+func (q *seqs) stamp(s *agentproto.Snapshot, applied agentproto.Epoch, appliedSeq uint64) {
+	if q.byNode == nil {
+		q.byNode = map[string]*seqOf{}
+	}
+	cur := q.byNode[s.Node]
+	if cur == nil || cur.epoch != s.Epoch {
+		cur = &seqOf{epoch: s.Epoch}
+		if applied == s.Epoch {
+			cur.seq = appliedSeq
+		}
+		q.byNode[s.Node] = cur
+	}
+	s.Seq = 0
+	var buf bytes.Buffer
+	sum := [sha256.Size]byte{}
+	if err := agentproto.EncodeSnapshot(&buf, *s); err == nil {
+		sum = sha256.Sum256(buf.Bytes())
+	}
+	// One that does not encode, which no snapshot does, gets a seq of its own.
+	if sum == ([sha256.Size]byte{}) || sum != cur.sum || cur.seq == 0 {
+		cur.sum = sum
+		cur.seq++
+	}
+	s.Seq = cur.seq
+}
+
+// snapshotTunnel is a tunnel as a snapshot names it: one the node runs a
+// connector of with token, or, without one, keeps as it is.
+func snapshotTunnel(account, id, name, token string) agentproto.Tunnel {
+	t := agentproto.Tunnel{AccountID: account, TunnelID: id, Name: name, Kind: agentproto.TunnelShared}
+	if token != "" {
+		t.Run, t.Token = true, agentproto.NewSecret(token)
+	}
+	return t
 }

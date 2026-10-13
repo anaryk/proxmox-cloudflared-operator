@@ -8,18 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
-// reconcileConnectors keeps a connector running for every tunnel the tunnel
-// run found, and in enforce mode removes the connectors of tunnels Cloudflare
-// shows gone. The tunnels the cycle leaves as they are, as those of frozen
-// accounts, are looked up and shown in both modes, and the status of every
-// connector is read, for the DNS run that follows; watchTunnels holds them
-// against what Cloudflare lists.
+// reconcileConnectors has the agent of this node keep a connector running for
+// every tunnel the tunnel run found, and in enforce mode remove the
+// connectors of tunnels Cloudflare shows gone. The tunnels the cycle leaves
+// as they are, as those of frozen accounts, are looked up and shown in both
+// modes, and the status of every connector is read, for the DNS run that
+// follows; watchTunnels holds them against what Cloudflare lists.
 func (c *cycleRun) reconcileConnectors() {
 	var existing []reconcile.TunnelState
 	for _, t := range c.tunnels {
@@ -29,16 +30,22 @@ func (c *cycleRun) reconcileConnectors() {
 	}
 	others, failed := c.lookUpOthers()
 	invisible := c.invisibleTunnels()
+	run, prune := map[string]string{}, false
 	if c.mode() == reconcile.Enforce {
 		for _, t := range existing {
-			c.ensure(t)
-		}
-		for _, t := range others {
-			if c.zones.frozen[t.AccountID] {
-				c.keepRunning(t)
+			if token, ok := c.ensure(t); ok {
+				run[t.ID] = token
 			}
 		}
-		c.prune(append(slices.Clone(existing), others...), invisible, failed)
+		for _, t := range others {
+			if !c.zones.frozen[t.AccountID] {
+				continue
+			}
+			if token, ok := c.keepRunning(t); ok {
+				run[t.ID] = token
+			}
+		}
+		prune = c.prune(append(slices.Clone(existing), others...), failed)
 	}
 	for _, t := range others {
 		held := "serves no zone pco sees"
@@ -52,24 +59,54 @@ func (c *cycleRun) reconcileConnectors() {
 	}
 	shown := slices.Concat(existing, others, invisible)
 	c.connected, c.existing, c.shown = true, existing, shown
-	c.readStatuses(shown)
-	c.noteForeignConnectors(shown)
+	c.keepConnectors(shown, run, prune, true)
 }
 
-// readStatuses reads the status of the connectors of the tunnels into the
-// state, and keeps what the last cycle read.
-func (c *cycleRun) readStatuses(shown []reconcile.TunnelState) {
+// keepConnectors has the agent of this node end the cycle's pass with the
+// tunnels shown: the connector of each in run started, or kept running, with
+// its token, any other left as it is, and with prune those of the install of
+// any other tunnel removed. With keep the agent keeps that desired state on
+// disk. The status of every connector is read: those of the tunnels into the
+// state, keeping what the last cycle read, and with foreign the others are
+// looked at too.
+func (c *cycleRun) keepConnectors(shown []reconcile.TunnelState, run map[string]string, prune, keep bool) {
+	if c.node == nil {
+		return
+	}
+	st := c.steps
+	if st == nil {
+		var err error
+		if st, err = c.begin(c.snapshot()); err != nil {
+			return
+		}
+	}
+	tunnels := make([]agentproto.Tunnel, 0, len(shown))
+	for _, t := range shown {
+		tunnels = append(tunnels, snapshotTunnel(t.AccountID, t.ID, t.Name, run[t.ID]))
+	}
+	s := c.keptSnapshot(tunnels, prune)
+	if keep {
+		v := c.node.View()
+		c.e.seqs.stamp(&s, v.Epoch, v.Seq)
+	}
+	conns, lines, err := st.Finish(s, keep)
+	for _, line := range lines {
+		c.problem("%s", line)
+	}
+	if err != nil {
+		c.hold(c.problem(problemAgentRefused, err))
+	}
 	c.before = c.st.Connectors
 	statuses := make([]connector.Status, 0, len(shown))
 	for _, t := range shown {
-		st, err := c.e.d.Connectors.Status(c.ctx, t.ID)
-		if err != nil {
-			c.problem("tunnel %s in account %s: reading the connector status: %v", t.Name, t.AccountID, err)
-			continue
+		if i := slices.IndexFunc(conns, func(s connector.Status) bool { return s.TunnelID == t.ID }); i >= 0 {
+			statuses = append(statuses, conns[i])
 		}
-		statuses = append(statuses, st)
 	}
 	c.st.Connectors = statuses
+	if keep {
+		c.noteForeignConnectors(shown, conns)
+	}
 }
 
 // watchTunnels reads the status of the connectors and holds the connectors
@@ -92,7 +129,7 @@ func (c *cycleRun) watchTunnels() {
 		if len(shown) == 0 {
 			return
 		}
-		c.readStatuses(shown)
+		c.keepConnectors(shown, nil, false, false)
 	}
 	statuses := c.st.Connectors
 	c.noteOwnIDs(statuses)
@@ -168,20 +205,15 @@ func (c *cycleRun) notePortsHeld(shown []reconcile.TunnelState, statuses []conne
 // noteForeignConnectors names the connectors on the node that are of another
 // install, or of none, as one left from before the store was lost and set up
 // anew: they may serve hostnames this install knows nothing of, so they are
-// never pruned, and the admin has to decide.
-func (c *cycleRun) noteForeignConnectors(shown []reconcile.TunnelState) {
-	ids, err := c.e.d.Connectors.List(c.ctx)
-	if err != nil {
-		c.problem("listing the connectors on this node: %v", err)
-	}
-	for _, id := range ids {
+// never pruned, and the admin has to decide. conns are the statuses of every
+// connector on the node.
+func (c *cycleRun) noteForeignConnectors(shown []reconcile.TunnelState, conns []connector.Status) {
+	for _, st := range conns {
+		id := st.TunnelID
 		if slices.ContainsFunc(shown, func(t reconcile.TunnelState) bool { return t.ID == id }) {
 			continue
 		}
-		st, err := c.e.d.Connectors.Status(c.ctx, id)
 		switch {
-		case err != nil:
-			c.problem("connector for tunnel %s: reading its status: %v", id, err)
 		case st.Install == "":
 			c.problem("connector for tunnel %s names no install; %s adopts the install it was made for, "+
 				"pco uninstall on this node removes it", id, c.recoverCommand())
@@ -243,20 +275,20 @@ func (c *cycleRun) lookUpOthers() (found []reconcile.TunnelState, failed []strin
 	return found, failed
 }
 
-// keepRunning starts the connector of a tunnel of a frozen account again,
-// when it is stopped, with the token it has on disk; nothing is asked of
-// Cloudflare about such a tunnel.
-func (c *cycleRun) keepRunning(t reconcile.TunnelState) {
-	token, found, err := c.e.d.Connectors.Token(t.ID)
+// keepRunning keeps the connector of a tunnel of a frozen account running,
+// with the token it has on disk, when it has one: nothing is asked of
+// Cloudflare about such a tunnel. It returns the token.
+func (c *cycleRun) keepRunning(t reconcile.TunnelState) (string, bool) {
+	token, found, err := c.node.Token(t.ID)
 	switch {
 	case err != nil:
 		c.problem("tunnel %s in account %s: reading the connector token: %v", t.Name, t.AccountID, err)
-	case found:
-		c.noteEnsured(t.ID)
-		if err := c.e.d.Connectors.Ensure(c.ctx, c.install.ID, t.ID, token); err != nil {
-			c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
-		}
+		return "", false
+	case !found:
+		return "", false
 	}
+	c.noteEnsured(t.ID)
+	return token, true
 }
 
 // invisibleTunnels returns the tunnels seen before in accounts that no
@@ -285,13 +317,13 @@ func (c *cycleRun) forgetTunnelsOf(account string) {
 	maps.DeleteFunc(c.e.seen, func(_ string, t seenTunnel) bool { return t.account == account })
 }
 
-// prune removes the connectors of the tunnels that are gone. The engine keeps
-// the connector of every tunnel it has no proof is gone, so it prunes only
-// when every account the credentials see was looked at and answered: no
-// tunnel is in an unknown state, the account listing of every credential
-// worked in this cycle and every lookup answered. A tunnel seen before in an
-// account that no credential sees any more is kept.
-func (c *cycleRun) prune(existing, invisible []reconcile.TunnelState, failed []string) {
+// prune says whether the connectors of the tunnels that are gone are removed.
+// The engine keeps the connector of every tunnel it has no proof is gone, so
+// it prunes only when every account the credentials see was looked at and
+// answered: no tunnel is in an unknown state, the account listing of every
+// credential worked in this cycle and every lookup answered. A tunnel seen
+// before in an account that no credential sees any more is kept.
+func (c *cycleRun) prune(existing []reconcile.TunnelState, failed []string) bool {
 	var why []string
 	for _, t := range c.tunnels {
 		switch {
@@ -317,41 +349,34 @@ func (c *cycleRun) prune(existing, invisible []reconcile.TunnelState, failed []s
 	}
 	why = append(why, failed...)
 
-	keep := make([]string, 0, len(existing))
 	for _, t := range existing {
-		keep = append(keep, t.ID)
 		c.e.seen[t.ID] = seenTunnel{account: t.AccountID, name: t.Name, credential: t.CredentialID}
-	}
-	for _, t := range invisible {
-		keep = append(keep, t.ID)
 	}
 	if len(why) > 0 {
 		c.problem("connectors are not pruned in this cycle: %s", strings.Join(why, "; "))
-		return
+		return false
 	}
-	keep = slices.Compact(slices.Sorted(slices.Values(keep)))
-	if err := c.e.d.Connectors.PruneInstall(c.ctx, c.install.ID, keep); err != nil {
-		c.problem("removing the connectors of other tunnels: %v", err)
-	}
+	return true
 }
 
-// ensure starts the connector of a tunnel with the token it has on disk, or
-// with the one Cloudflare hands out when it has none. The token is read again
-// whenever the accounts of the tunnel's credential are listed, every
-// zoneRefreshEvery, so that a secret rotated at Cloudflare reaches the
-// connector. The connector manager is the only one that writes the token.
-func (c *cycleRun) ensure(t reconcile.TunnelState) {
-	token, found, err := c.e.d.Connectors.Token(t.ID)
+// ensure returns the token the connector of a tunnel is kept running with:
+// the one it has on disk, or the one Cloudflare hands out when it has none.
+// The token is read again whenever the accounts of the tunnel's credential
+// are listed, every zoneRefreshEvery, so that a secret rotated at Cloudflare
+// reaches the connector. The connector manager is the only one that writes
+// the token.
+func (c *cycleRun) ensure(t reconcile.TunnelState) (string, bool) {
+	token, found, err := c.node.Token(t.ID)
 	if err != nil {
 		c.problem("tunnel %s in account %s: reading the connector token: %v", t.Name, t.AccountID, err)
-		return
+		return "", false
 	}
 	switch {
 	case !found:
 		fetched, err := c.fetchToken(t)
 		if err != nil {
 			c.problem("tunnel %s in account %s: fetching its token: %v", t.Name, t.AccountID, err)
-			return
+			return "", false
 		}
 		token = fetched
 	case c.accountsListed(t.CredentialID):
@@ -360,12 +385,15 @@ func (c *cycleRun) ensure(t reconcile.TunnelState) {
 			c.problem("tunnel %s in account %s: reading its token again: %s; its connector keeps the one it has", t.Name, t.AccountID, why)
 		}
 	}
-	c.ensureWith(t, token)
+	c.noteEnsured(t.ID)
+	return token, true
 }
 
+// ensureWith has the agent restart the connector of a tunnel at once with a
+// token read again.
 func (c *cycleRun) ensureWith(t reconcile.TunnelState, token string) {
 	c.noteEnsured(t.ID)
-	if err := c.e.d.Connectors.Ensure(c.ctx, c.install.ID, t.ID, token); err != nil {
+	if err := c.node.Restart(c.ctx, t.ID, token); err != nil {
 		c.problem("tunnel %s in account %s: starting its connector: %s", t.Name, t.AccountID, redact(err.Error(), token))
 	}
 }

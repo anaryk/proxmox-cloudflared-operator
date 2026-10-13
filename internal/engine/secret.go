@@ -111,7 +111,7 @@ func (c *cycleRun) followRefusals(existing []reconcile.TunnelState, before, now 
 		case !failed && refused(before, t.ID):
 			continue
 		}
-		stored, found, err := c.e.d.Connectors.Token(t.ID)
+		stored, found, err := c.node.Token(t.ID)
 		if err != nil || !found {
 			continue
 		}
@@ -203,7 +203,12 @@ func (e *Engine) RotateTunnel(ctx context.Context, account string) (TunnelRotati
 		return res, fmt.Errorf("the secret of %s was rotated, but its new token could not be read: %w; "+
 			"its connector on this node takes it up when Cloudflare refuses the old one", what, err)
 	}
-	if err := e.d.Connectors.Ensure(ctx, inst.ID, t.ID, token); err != nil {
+	a, err := e.fleet.agentOf(inst)
+	if err != nil {
+		return res, fmt.Errorf("the secret of %s was rotated, but the agent of this node does not run to restart its connector: %w; "+
+			"it takes the new token up when Cloudflare refuses the old one", what, err)
+	}
+	if err := a.Restart(ctx, t.ID, token); err != nil {
 		return res, fmt.Errorf("the secret of %s was rotated, but its connector on this node could not be restarted: %s", what, redact(err.Error(), token))
 	}
 	if cleanErr != nil {

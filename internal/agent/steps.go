@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"time"
@@ -33,6 +34,9 @@ type Steps struct {
 	// fed and finished say that the pass gave the filter its set and kept
 	// the connectors; ended that the lock was let go.
 	fed, finished, ended bool
+	// refused says why the agent would not follow the snapshot the pass
+	// began with.
+	refused error
 }
 
 // Resolution is what Steps.Resolve found.
@@ -48,15 +52,26 @@ type Resolution struct {
 }
 
 // Begin starts a pass of s for the engine of this process; it waits for the
-// agent's lock until ctx ends. s is neither checked nor kept: Finish keeps
-// the snapshot the pass ends with.
+// agent's lock until ctx ends. s is not kept: Finish keeps the snapshot the
+// pass ends with. A snapshot of an epoch the agent would refuse, as one below
+// the epoch it follows, is said by Refused: the engine that sent it is behind
+// and must change nothing. One without an epoch, of an engine without a
+// writer identity, is not refused: that engine writes nothing anyway.
 func (a *Agent) Begin(ctx context.Context, s agentproto.Snapshot) (*Steps, error) {
 	if err := a.acquire(ctx); err != nil {
 		return nil, err
 	}
 	a.hear()
-	return &Steps{a: a, p: a.newPass(ctx, s)}, nil
+	st := &Steps{a: a, p: a.newPass(ctx, s)}
+	if s.Epoch.Generation != 0 {
+		st.refused = s.Validate(a.d.Node, a.remembered, 0)
+	}
+	return st, nil
 }
+
+// Refused says why the agent would not follow the snapshot the pass began
+// with; nil when it would.
+func (st *Steps) Refused() error { return st.refused }
 
 // Resolve resolves every target of the snapshot this node resolves, with the
 // binding stored for its hostname, takes the addresses blocked and those whose
@@ -159,34 +174,37 @@ func (st *Steps) Feed() ([]egress.Target, error) {
 
 // Finish ends the pass with s, the snapshot as the engine has it after its
 // tunnel run. With keep, the agent keeps s on disk, as it keeps a snapshot it
-// applies, when s is one it may follow, and runs its actions. The connectors
-// follow the tunnels of s, and the status of every connector on the node is
-// read. It returns the statuses and what keeping the connectors found.
-func (st *Steps) Finish(s agentproto.Snapshot, keep bool) ([]connector.Status, []string) {
+// applies, and runs its actions; the connectors then follow the tunnels of s.
+// A snapshot the agent refuses, or cannot keep, changes no connector, as
+// Apply changes none: the error says why. The status of every connector on
+// the node is read either way. It returns the statuses and what keeping the
+// connectors found.
+func (st *Steps) Finish(s agentproto.Snapshot, keep bool) ([]connector.Status, []string, error) {
 	p := st.p
-	p.s = s
-	taken := false
+	p.s, st.finished = s, true
 	if keep {
-		taken = st.keep(s)
+		if err := st.keep(s); err != nil {
+			p.readStatuses()
+			return slices.Clone(p.conns), nil, err
+		}
 	}
 	from := len(p.problems)
 	p.connectors()
 	lines := slices.Clone(p.problems[from:])
-	if taken {
+	if keep {
 		p.actions()
 	}
-	st.finished = true
-	return slices.Clone(p.conns), lines
+	return slices.Clone(p.conns), lines, nil
 }
 
 // keep keeps s as the desired state the agent follows, when it may follow
-// it, and reports whether it does.
-func (st *Steps) keep(s agentproto.Snapshot) bool {
+// it, and says why it does not.
+func (st *Steps) keep(s agentproto.Snapshot) error {
 	a := st.a
 	if err := a.accept(s); err != nil {
 		a.refused = "refused a desired state: " + err.Error()
 		a.d.Log.Warn().Err(err).Msg("refused a desired state")
-		return false
+		return fmt.Errorf("refusing the desired state: %w", err)
 	}
 	if err := a.persist(s); err != nil {
 		if errors.Is(err, store.ErrEpochBack) {
@@ -194,10 +212,10 @@ func (st *Steps) keep(s agentproto.Snapshot) bool {
 		} else {
 			a.refused = "a desired state could not be kept: " + err.Error()
 		}
-		return false
+		return err
 	}
 	a.refused, a.stood = "", ""
-	return true
+	return nil
 }
 
 // End ends the pass: what it found is reported, and the agent's lock let go.

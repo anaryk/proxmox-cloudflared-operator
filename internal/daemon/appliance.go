@@ -358,7 +358,6 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		StartOnly:   func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Restart:     restart,
 		Fleet:       engine.NewLocalFleet(agent.Deps{Resolver: res, Connectors: conns, Egress: filter}),
-		Connectors:  conns,
 		NewClient:   deps.clients(settings.CloudflareBudget),
 		Node:        a.Node,
 		Now:         deps.Now,

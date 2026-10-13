@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -208,7 +210,8 @@ func TestFinishKeepsTheSnapshotAndTheConnectors(t *testing.T) {
 	_, err = st.Feed()
 	require.NoError(t, err)
 
-	conns, problems := st.Finish(s, true)
+	conns, problems, err := st.Finish(s, true)
+	require.NoError(t, err)
 	st.End()
 
 	require.Empty(t, problems)
@@ -224,7 +227,8 @@ func TestFinishKeepsTheSnapshotAndTheConnectors(t *testing.T) {
 	t.Run("the same snapshot again writes nothing", func(t *testing.T) {
 		before := modTimes(t, e.paths.Local)
 		st := e.begin(s)
-		st.Finish(s, true)
+		_, _, err := st.Finish(s, true)
+		require.NoError(t, err)
 		st.End()
 		require.Equal(t, before, modTimes(t, e.paths.Local))
 	})
@@ -236,7 +240,8 @@ func TestFinishWithoutKeepWritesNothing(t *testing.T) {
 	s.Tunnels[0].Run = false
 	st := e.begin(s)
 
-	conns, problems := st.Finish(s, false)
+	conns, problems, err := st.Finish(s, false)
+	require.NoError(t, err)
 	st.End()
 
 	require.Empty(t, problems)
@@ -255,10 +260,44 @@ func TestFinishKeepsNoSnapshotOfAnEpochBelowTheOneFollowed(t *testing.T) {
 	s.Epoch = agentproto.Epoch{InstallID: testInstall, Generation: 1, Nonce: "other"}
 
 	st := e.begin(s)
-	st.Finish(s, true)
+	require.ErrorIs(t, st.Refused(), agentproto.ErrOtherNonce, "said as the pass begins")
+	e.conn.reset()
+	_, _, err := st.Finish(s, true)
 	st.End()
 
+	require.ErrorIs(t, err, agentproto.ErrOtherNonce)
+	require.Empty(t, e.conn.changes(), "a refused snapshot changes no connector")
 	require.Contains(t, e.agent.View().Problems[0], "refused a desired state")
+}
+
+func TestAPassOfALowerEpochIsRefusedAsItBegins(t *testing.T) {
+	e := newEnv(t)
+	s := e.snapshot()
+	s.Epoch.Generation = 5
+	e.apply(s)
+
+	low := e.snapshot()
+	st := e.begin(low)
+	require.ErrorIs(t, st.Refused(), agentproto.ErrLowerEpoch)
+
+	none := e.snapshot()
+	none.Epoch = agentproto.Epoch{InstallID: testInstall}
+	st.End()
+	st = e.begin(none)
+	require.NoError(t, st.Refused(), "a controller without a writer identity writes nothing anyway")
+}
+
+func TestASnapshotThatCannotBeKeptChangesNoConnector(t *testing.T) {
+	e := newEnv(t)
+	s := e.snapshot()
+	require.NoError(t, os.MkdirAll(filepath.Join(e.paths.Local, "agent", "desired.json", "x"), 0o700))
+	st := e.begin(s)
+
+	_, _, err := st.Finish(s, true)
+	st.End()
+
+	require.Error(t, err)
+	require.Empty(t, e.conn.changes())
 }
 
 // A verification of an address whose MAC moved waits for the pass of steps,

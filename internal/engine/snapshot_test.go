@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"net/netip"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -131,4 +133,79 @@ func TestTheCycleResolvesEachWinnerOnceThroughTheAgent(t *testing.T) {
 	for _, r := range report.Targets {
 		require.Equal(t, r.Key == "www.example.com", r.InEgressSet, r.Key)
 	}
+}
+
+// kept is the desired state the agent of this node keeps on disk.
+func (e *env) kept() agentproto.Snapshot {
+	e.t.Helper()
+	raw, found, err := e.store.AgentSnapshot()
+	require.NoError(e.t, err)
+	require.True(e.t, found)
+	s, err := agentproto.DecodeSnapshot(bytes.NewReader(raw))
+	require.NoError(e.t, err)
+	return s
+}
+
+// After its tunnel run the cycle ends the pass with the tunnels and their run
+// tokens; the agent keeps that, and an idle cycle keeps its seq and writes
+// nothing.
+func TestTheAgentKeepsTheTunnelsWithTheirTokens(t *testing.T) {
+	e := published(t)
+
+	s := e.kept()
+	require.Equal(t, uint64(1), s.Seq)
+	require.Len(t, s.Tunnels, 1)
+	tun := s.Tunnels[0]
+	require.True(t, tun.Run)
+	require.Equal(t, cffake.RunToken(testAccount, tun.TunnelID), tun.Token.Reveal())
+	require.True(t, s.Prune)
+	require.Len(t, s.Targets, 1)
+	require.True(t, s.Targets[0].Resolve)
+
+	e.clock.advance(20 * time.Second)
+	before := e.files()
+	e.cycle()
+	require.Equal(t, uint64(1), e.kept().Seq, "nothing changed")
+	require.Equal(t, before, e.files(), "and nothing is written")
+
+	t.Run("a new target moves the seq once", func(t *testing.T) {
+		e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080", "api.example.com -> :9090")))
+		e.clock.advance(20 * time.Second)
+		e.cycle()
+		require.Equal(t, uint64(2), e.kept().Seq)
+		e.clock.advance(20 * time.Second)
+		e.cycle()
+		require.Equal(t, uint64(2), e.kept().Seq)
+	})
+}
+
+// The engine started anew goes on above the seq its agent applied.
+func TestTheSeqGoesOnAboveWhatTheAgentAppliedAfterARestart(t *testing.T) {
+	e := published(t)
+	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080", "api.example.com -> :9090")))
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+	require.Equal(t, uint64(2), e.kept().Seq)
+
+	e.eng = e.newEngine()
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.Empty(t, st.Problems)
+	require.Equal(t, uint64(3), e.kept().Seq)
+}
+
+// In observe mode the agent keeps the tunnels as they are: no token, no
+// prune.
+func TestInObserveModeTheAgentRunsNoConnector(t *testing.T) {
+	e := newEnv(t)
+	e.cycle()
+	e.clock.advance(20 * time.Second)
+	e.cycle()
+
+	for _, tun := range e.kept().Tunnels {
+		require.False(t, tun.Run)
+		require.Empty(t, tun.Token.Reveal())
+	}
+	require.False(t, e.kept().Prune)
 }

@@ -50,7 +50,7 @@ const heldEgress = "the egress filter could not be set"
 // failure. The traffic keeps, for each target of the set, the routes it
 // serves.
 func (c *cycleRun) feedEgress() {
-	if c.storeHold {
+	if c.storeHold || c.agentRefused {
 		return
 	}
 	set, err := c.steps.Feed()

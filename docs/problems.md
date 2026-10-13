@@ -45,6 +45,7 @@ here use visibly made-up ones.
 | `building the denylist: <error>` | The addresses pco never serves could not be put together. The cycle holds. | Report it with the journal; it is a defect. |
 | `the cycle ended <where> (<error>); the rest is left as it is` | The cycle was cut short, as by a stop of the daemon, at `before the tunnels`, `before the connectors` or `before DNS`. | Nothing: the next cycle does the rest. |
 | `the cycle ended while addresses were resolved (<error>); nothing is changed` | The same, while addresses were verified. | Nothing. |
+| `the agent of this node does not take the desired state of this cycle: <error>; nothing is changed at Cloudflare, and the egress set and the connectors are left as they are` | The agent that runs the connectors and the egress filter on this node refused what the cycle asked of it, or could not keep it on disk. It refuses the desired state of a controller older than the one it follows, as after the store was restored from an earlier copy: such a controller must change nothing. | When the error names a file of the node's own state, fix the disk or its permissions; when the store was restored from an earlier copy, bring it forward before anything is changed. The next cycle tries again. |
 
 ### Settings and overrides
 

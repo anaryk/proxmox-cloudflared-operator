@@ -31,7 +31,7 @@ func TestTokensNeverReachTheStateEventsOrLog(t *testing.T) {
 	e := newEnv(t)
 	var logged bytes.Buffer
 	eng, err := New(Deps{
-		Store: e.store, Inventory: e.inv, Connectors: e.conn, NewClient: e.newClient,
+		Store: e.store, Inventory: e.inv, NewClient: e.newClient,
 		Fleet: NewLocalFleet(agent.Deps{Resolver: e.res, Connectors: e.conn, Egress: e.egr}),
 		Node:  testNode, Now: e.clock.now, Log: zerolog.New(&logged).Level(zerolog.DebugLevel), LocalDir: e.paths.Local,
 	})

@@ -22,7 +22,6 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/credentials"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
@@ -42,20 +41,6 @@ type Inventory interface {
 	Refresh(ctx context.Context) inventory.Snapshot
 	// ForceRefresh has the next refresh read every guest of node again.
 	ForceRefresh(node string)
-}
-
-// Connectors is the part of *connector.Manager the engine uses.
-type Connectors interface {
-	Ensure(ctx context.Context, installID, tunnelID, token string) error
-	// PruneInstall removes the connectors of the install that are not in
-	// keep, and never one of another install or of none.
-	PruneInstall(ctx context.Context, installID string, keep []string) error
-	List(ctx context.Context) ([]string, error) // every connector on the node, of any install
-	Status(ctx context.Context, tunnelID string) (connector.Status, error)
-	Token(tunnelID string) (token string, found bool, err error) // the token the connector has on disk
-	// StopAll stops and disables every connector of the install and keeps
-	// their files, so that Ensure can start them again.
-	StopAll(ctx context.Context, installID string) error
 }
 
 // Identity is the self-identification of the appliance; nil on the host.
@@ -79,13 +64,12 @@ type Deps struct {
 	Inventory Inventory
 	// Fleet is the agents through which the engine does what it does on a
 	// node: the resolution of the targets, the egress filter, the watch of
-	// the network.
-	Fleet      *LocalFleet
-	Connectors Connectors
-	NewClient  ClientFactory
-	Node       string
-	Now        func() time.Time
-	Log        zerolog.Logger
+	// the network, the connectors.
+	Fleet     *LocalFleet
+	NewClient ClientFactory
+	Node      string
+	Now       func() time.Time
+	Log       zerolog.Logger
 
 	// LocalDir is the node-local state directory, /var/lib/pco: the events
 	// are appended to events.log in it. Empty keeps them in memory only.
@@ -230,8 +214,10 @@ type Engine struct {
 	// setAside says that the memory read was of another install, until a
 	// cycle says so.
 	setAside string
-	// fleet is the agent of this node.
+	// fleet is the agent of this node; seqs number the snapshots it is
+	// given.
 	fleet *LocalFleet
+	seqs  seqs
 	// egress is the set of targets the agent last gave the egress filter, and
 	// verified, by account, the targets of the tunnel configuration last
 	// verified at Cloudflare. Both are kept in the memory, the set for an
@@ -348,8 +334,6 @@ func New(d Deps) (*Engine, error) {
 		return nil, errors.New("engine: no inventory")
 	case d.Fleet == nil:
 		return nil, errors.New("engine: no fleet of agents")
-	case d.Connectors == nil:
-		return nil, errors.New("engine: no connector manager")
 	case d.NewClient == nil:
 		return nil, errors.New("engine: no Cloudflare client factory")
 	case d.Node == "":

@@ -113,7 +113,6 @@ func newBench(t *testing.T, guests, routes int, limiterOf func(*clock) *cfapi.Li
 			Connectors: conns,
 			Egress:     egressFake{},
 		}),
-		Connectors: conns,
 		NewClient: func(c store.Credential) (cfapi.API, error) {
 			return cfapi.New(cfapi.Options{
 				BaseURL:    srv.URL + "/client/v4",

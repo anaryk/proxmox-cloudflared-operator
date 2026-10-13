@@ -97,9 +97,19 @@ func (f *LocalFleet) Reports(ctx context.Context, _ time.Duration, _ map[string]
 // needed: by the first cycle, or by the daemon before it.
 func (f *LocalFleet) attach(e *Engine) error {
 	f.mu.Lock()
-	if f.attached {
+	switch {
+	case f.attached:
 		f.mu.Unlock()
 		return errors.New("the fleet is attached to another engine")
+	case f.deps.Resolver == nil:
+		f.mu.Unlock()
+		return errors.New("the agent has no resolver")
+	case f.deps.Connectors == nil:
+		f.mu.Unlock()
+		return errors.New("the agent has no connector manager")
+	case f.deps.Egress == nil:
+		f.mu.Unlock()
+		return errors.New("the agent has no egress filter")
 	}
 	f.attached = true
 	f.deps.Node, f.deps.Store, f.deps.Now, f.deps.Log = e.d.Node, e.d.Store, e.d.Now, e.d.Log

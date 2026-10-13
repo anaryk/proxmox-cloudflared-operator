@@ -38,6 +38,8 @@ const (
 	problemIncomplete        = "the inventory is incomplete; claims, bindings, tunnels, DNS and connectors are left as they are"
 	problemNoCredential      = "no Cloudflare credential; add one with pco credential add"
 	problemStoppedResolve    = "the cycle ended while addresses were resolved (%v); nothing is changed"
+	problemAgentRefused      = "the agent of this node does not take the desired state of this cycle: %v; " +
+		"nothing is changed at Cloudflare, and the egress set and the connectors are left as they are"
 )
 
 // cycleRun is the state of one cycle. It runs under the cycle lock.
@@ -149,6 +151,9 @@ type cycleRun struct {
 	node    *agent.Agent
 	steps   *agent.Steps
 	netLegs []gateway.Leg
+	// agentRefused says that the agent would not follow this cycle's
+	// desired state: the cycle feeds it nothing.
+	agentRefused bool
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -516,7 +521,7 @@ func (c *cycleRun) reconcile() {
 		return
 	}
 	c.reconcileConnectors()
-	if !c.goOn("before DNS") {
+	if c.cfHold || !c.goOn("before DNS") {
 		return
 	}
 	c.reconcileDNS()

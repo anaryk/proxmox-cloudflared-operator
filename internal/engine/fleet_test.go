@@ -63,7 +63,7 @@ func TestAFleetServesOneEngine(t *testing.T) {
 	e := newEnv(t)
 
 	_, err := New(Deps{
-		Store: e.store, Inventory: e.inv, Connectors: e.conn, NewClient: e.newClient, Node: testNode, Log: zerolog.Nop(),
+		Store: e.store, Inventory: e.inv, NewClient: e.newClient, Node: testNode, Log: zerolog.Nop(),
 		Fleet: e.eng.fleet,
 	})
 
@@ -101,4 +101,38 @@ func TestTheWatchStartedBeforeTheAgentIsKept(t *testing.T) {
 
 	require.NotNil(t, a)
 	require.True(t, f.watching)
+}
+
+// An agent that follows a later controller than this engine's writer, as
+// after a store was restored, takes nothing from it: the cycle holds every
+// write, gives the egress filter nothing new and starts no connector.
+func TestACycleTheAgentRefusesChangesNothing(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	later := publishable(1)
+	later.Epoch.Generation = testWriter.Generation + 1
+	require.NoError(t, e.eng.fleet.Publish(t.Context(), testNode, later))
+	sets := e.egr.setCount()
+
+	st := e.cycle()
+
+	require.True(t, hasProblem(st, "the agent of this node does not take the desired state of this cycle"), st.Problems)
+	require.NotEmpty(t, st.Hold)
+	require.Empty(t, e.writes(), "nothing is written at Cloudflare")
+	require.Equal(t, sets, e.egr.setCount(), "nothing is given to the egress filter")
+	require.Empty(t, e.conn.ensures(), "no connector is started")
+}
+
+// A desired state the agent cannot keep is one it does not follow: the
+// connectors are left as they are and DNS is not written.
+func TestADesiredStateTheAgentCannotKeepHoldsDNS(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	require.NoError(t, os.MkdirAll(filepath.Join(e.paths.Local, "agent", "desired.json", "x"), 0o700))
+
+	st := e.cycle()
+
+	require.True(t, hasProblem(st, "the agent of this node does not take the desired state of this cycle"), st.Problems)
+	require.Empty(t, e.records(), "no record is written")
+	require.Empty(t, e.conn.ensures())
 }

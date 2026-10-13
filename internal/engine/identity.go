@@ -116,7 +116,7 @@ func (c *cycleRun) stopServing() {
 		c.problem("emptying the egress filter: %v", err)
 		return
 	}
-	if err := c.e.d.Connectors.StopAll(c.ctx, c.install.ID); err != nil {
+	if err := c.node.StopConnectors(c.ctx); err != nil {
 		c.problem("stopping the connectors: %v", err)
 		return
 	}

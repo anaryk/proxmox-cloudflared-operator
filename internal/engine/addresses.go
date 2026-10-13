@@ -44,6 +44,12 @@ func (c *cycleRun) resolveTargets() bool {
 		c.hold(c.problem(problemStoppedResolve, err))
 		return false
 	}
+	if err := st.Refused(); err != nil {
+		// The agent follows a later controller than this one: this engine
+		// is behind, and changes nothing the agent would not take from it.
+		c.agentRefused = true
+		c.hold(c.problem(problemAgentRefused, err))
+	}
 	res, err := st.Resolve()
 	if cerr := c.ctx.Err(); cerr != nil {
 		c.hold(c.problem(problemStoppedResolve, cerr))

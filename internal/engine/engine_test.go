@@ -30,15 +30,17 @@ func TestNewRefusesMissingDependencies(t *testing.T) {
 	// A fleet serves one engine.
 	full := func() Deps {
 		return Deps{
-			Store: e.store, Inventory: e.inv, Connectors: e.conn, NewClient: e.newClient, Node: testNode, Log: zerolog.Nop(),
+			Store: e.store, Inventory: e.inv, NewClient: e.newClient, Node: testNode, Log: zerolog.Nop(),
 			Fleet: NewLocalFleet(agent.Deps{Node: testNode, Resolver: e.res, Connectors: e.conn, Egress: e.egr}),
 		}
 	}
 	for name, change := range map[string]func(*Deps){
 		"store":      func(d *Deps) { d.Store = nil },
 		"inventory":  func(d *Deps) { d.Inventory = nil },
+		"resolver":   func(d *Deps) { d.Fleet = NewLocalFleet(agent.Deps{Connectors: e.conn, Egress: e.egr}) },
+		"connectors": func(d *Deps) { d.Fleet = NewLocalFleet(agent.Deps{Resolver: e.res, Egress: e.egr}) },
+		"egress":     func(d *Deps) { d.Fleet = NewLocalFleet(agent.Deps{Resolver: e.res, Connectors: e.conn}) },
 		"fleet":      func(d *Deps) { d.Fleet = nil },
-		"connectors": func(d *Deps) { d.Connectors = nil },
 		"client":     func(d *Deps) { d.NewClient = nil },
 		"node":       func(d *Deps) { d.Node = "" },
 	} {
