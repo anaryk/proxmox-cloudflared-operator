@@ -55,8 +55,10 @@ down, so are its hostnames.
 - Installs on the node, or as an appliance, a container that holds pco and its connectors
   and leaves the node itself without them (see [Profiles](docs/profiles.md)).
 
+![The overview of the web interface: the routes by state, the edge traffic of the last 15 minutes, the connectors, what needs an admin, and the flow map from the hostnames to the guests](docs/images/ui-overview-light.png)
+
 [Architecture](docs/architecture.md) has the parts, the cycle and the path of a request,
-with diagrams.
+with diagrams, and [Web interface](docs/web-ui.md) every page of the interface.
 
 ## What it needs
 

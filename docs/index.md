@@ -78,12 +78,14 @@ The packages, their checksums and the signature of the checksum file are on the
   [Troubleshooting](troubleshooting.md) starts from the output of `pco status`,
   `pco doctor` and `pco diagnose`, and [Uninstall](uninstall.md) takes pco off a node.
 - **Reference**: [the commands](cli/index.md), [Settings](settings.md), [Files](files.md),
-  [Problems](problems.md), [the annotation grammar](annotations.md#the-grammar) and the
-  [Glossary](glossary.md).
+  [Problems](problems.md), [the annotation grammar](annotations.md#the-grammar), the
+  [Glossary](glossary.md), the [web interface](web-ui.md) page by page and the
+  [API](api.md) it talks to.
 - **Project**: the [releases page](https://github.com/anaryk/proxmox-cloudflared-operator/releases),
   the [security policy](https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/SECURITY.md),
-  which has the release key and how to verify a release, and the
-  [source](https://github.com/anaryk/proxmox-cloudflared-operator).
+  which has the release key and how to verify a release, the
+  [source](https://github.com/anaryk/proxmox-cloudflared-operator) and
+  [Development](development.md), which says how to build and contribute.
 
 pco is open source under the MIT licence, and is not affiliated with Proxmox Server
 Solutions GmbH or Cloudflare, Inc.
