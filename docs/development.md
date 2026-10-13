@@ -28,7 +28,7 @@ gin links a msgpack codec the API never uses.
 | `make snapshot` | The packages of every architecture into `dist/`, without a tag, a signature or a release, checked with `packaging/check-artifacts.sh --require-ui`; and the appliance template where `mmdebstrap` is installed. |
 | `make package` | `make snapshot`, and lists the `.deb` files it made. |
 | `make template` | The appliance template from the package in `dist/`, into `build/appliance`; Linux and `mmdebstrap` only, `TEMPLATE_ARCH=arm64` for the other architecture. |
-| `make e2e-binaries` | A `pco` for a Proxmox VE node, amd64, and the end-to-end suite as a binary. |
+| `make e2e-binaries` | A `pco` for a Proxmox VE node, amd64, the end-to-end suite as a binary, and the relay it uses. |
 | `make fmt` | Formats the Go code as `golangci-lint` wants it. |
 | `make docs-serve` | Serves the site with live reload while you write a page. |
 

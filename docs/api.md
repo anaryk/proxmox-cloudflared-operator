@@ -61,7 +61,8 @@ commands with `--json`, which print the daemon's answers as it sent them.
 - An admin action is recorded in an event of the kind `admin`, with its actor: `root (cli)` for
   root. For `pco-web`, the actor is what pco web names in the header `Pco-Actor`, such as
   `alice@pve (ticket)`: 1 to 128 of the letters, the digits and `. _ @ ! : ( ) -` and space. The
-  header is read from `pco-web` alone.
+  header is read from `pco-web` alone, and one that does not fit, or one sent twice, is refused
+  with `400 invalid` before the body is read.
 - A change waits for the cycle that runs, at most 35 seconds, and is answered `503
   unavailable` with `a cycle is running and took longer than 35s; try again` when it waited
   longer. The server lets an answer take 70 seconds; give a client at least that.

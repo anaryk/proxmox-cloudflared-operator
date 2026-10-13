@@ -209,7 +209,7 @@ as a colour:
 | Mode | `observe-only` or `enforcing`. |
 | Inventory | `complete` when the last cycle listed every guest. |
 | Writer | `ok`, or what the last cycle found of the writer of the tunnel configuration: `stale`, `foreign`, `unknown`, and in the appliance `behind`; [Problems](problems.md#writer-verdicts) says what each means. |
-| Egress | `on`, `off`, `not loaded` or `changed`: whether the egress filter confines the connectors. |
+| Egress | `on`, `off`, `not loaded` or `changed`, and `not checked yet` before the first check: whether the egress filter confines the connectors. |
 | Live | how long ago the last cycle's news reached the page. It turns into Reconnecting, Stale, Daemon: no answer or pco web: no answer; see below. |
 
 Beside them, the number of problems of the last cycle. A narrow window shows the worst of the
@@ -512,9 +512,9 @@ last check as a list of what passed and what did not.
 | Action | What it does | Who | Confirmation | Command line |
 |---|---|---|---|---|
 | Add credential, Check and add (`POST /api/v1/credentials`) | Checks the token with Cloudflare and stores it when it can do what pco needs. The token goes to the daemon once and is never shown again; the field is emptied whatever the answer. A refused token shows what it can and cannot do. | admin | none; the page checks the shape of the token first | `pco credential add --label <label>` |
-| Check (`POST /api/v1/credentials/:id/check`) | Checks what the token can read. | admin | none | `pco credential check <id>` |
-| Check write access (`POST /api/v1/credentials/:id/check`) | Proves the write permissions with a test DNS record and a test tunnel, which it deletes again. | admin | `A deep check creates and deletes a test DNS record and a test tunnel. Continue?`, and above 12 zones a warning that it may not finish within the minute the daemon waits | `pco credential check <id> --deep` |
-| Remove (`DELETE /api/v1/credentials/:id`) | Stops using the token and removes it. The daemon refuses while the credential still manages zones, tunnels or records, and says which. | admin | type the label of the credential | `pco credential remove <id>` |
+| Check, on the page of a credential (`POST /api/v1/credentials/:id/check`) | Checks what the token can read. | admin | none | `pco credential check <id>` |
+| Check write access, on the page of a credential (`POST /api/v1/credentials/:id/check`) | Proves the write permissions with a test DNS record and a test tunnel, which it deletes again. | admin | `A deep check creates and deletes a test DNS record and a test tunnel. Continue?`, and above 12 zones a warning that it may not finish within the minute the daemon waits | `pco credential check <id> --deep` |
+| Remove, on the page of a credential (`DELETE /api/v1/credentials/:id`) | Stops using the token and removes it. The daemon refuses while the credential still manages zones, tunnels or records, and says which. | admin | type the label of the credential | `pco credential remove <id>` |
 
 [Cloudflare token](cloudflare-token.md) says how to make a token and how to read its check.
 
@@ -555,7 +555,7 @@ connector of the tunnel, so the daemon takes it from root only.
 | Action | What it does | Who | Confirmation | Command line |
 |---|---|---|---|---|
 | Confirm in the plan | Opens the entry of the tunnel in the plan. | admin | the [confirmation](#confirming-what-waits) | `pco apply --confirm-deletes` |
-| Copy the command | Copies `pco tunnel rotate --account <account>`, to run on the node. | admin and reader | none | `pco tunnel rotate --account <account>` |
+| Copy, in the red block of a tunnel with a connector pco does not run | Copies `pco tunnel rotate --account <account>`, to run on the node. | admin and reader | none | `pco tunnel rotate --account <account>` |
 
 ## Events
 
@@ -616,7 +616,7 @@ lets you put your edits on the saved settings or take the saved ones.
 
 | Action | What it does | Who | Confirmation | Command line |
 |---|---|---|---|---|
-| Save (`PUT /api/v1/settings`) | Saves the settings. | admin | a dialog with every change, what the first entry of `allowHosts` stops and which settings take effect only after a restart | `pco settings apply <file>` |
+| Save settings (`PUT /api/v1/settings`) | Saves the settings. | admin | a dialog with every change, what the first entry of `allowHosts` stops and which settings take effect only after a restart | `pco settings apply <file>` |
 | Return to observe-only | Part of the next save: from then on pco changes nothing at Cloudflare until publishing starts again. Leaving observe-only is not a setting: Start publishing on the plan does it. | admin | the review of the save | `pco settings apply <file>` with `"observeOnly": true` |
 | Discard changes | Takes the form back to the saved settings. | admin | none | none |
 | Restart pco… (`POST /api/v1/daemon/restart`) | After a save of a setting read at start: the daemon finishes the running cycle and stops, and systemd starts it again. The connectors keep running, and so do the routes they serve. | admin | a dialog | `systemctl restart pco` on the node |
@@ -626,7 +626,8 @@ lets you put your edits on the saved settings or take the saved ones.
 ## First-run setup
 
 While no Cloudflare token is stored, the page opens on the setup after the first cycle, and
-Settings has it always. Skip for now goes to the overview, in this browser only. A reader sees
+Settings has it always. Skip for now goes to the overview, in this browser only; the setup then
+shows a banner with Show the setup first again. A reader sees
 how far the setup is and that an admin has to finish it.
 
 ![The setup of a node whose install did not finish: the install check gives the command for root on the node, and the steps that follow](images/ui-setup-install-light.png)

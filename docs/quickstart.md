@@ -367,8 +367,8 @@ sections above:
 | 5, Start publishing | [See what pco would do](#see-what-pco-would-do) and [Publish](#publish): the plan, and the button that does what `pco apply` does. |
 
 Then the overview shows the route on its way from Cloudflare to the guest, and the route's page,
-under Routes, runs `pco diagnose` on its Diagnosis tab. [Web interface](web-ui.md) describes
-every page.
+under Routes, runs `pco diagnose` on its tab Diagnosis of the current holder.
+[Web interface](web-ui.md) describes every page.
 
 ## Or as an appliance
 

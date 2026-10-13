@@ -186,6 +186,11 @@ network`, until the network is attached again or the guests are reached another 
 network detached disables `pco-netns.service`; the namespace itself stays, with nothing in it,
 until `pco uninstall` removes it.
 
+In the appliance the grant of the bridge stays after a detach. Take it back on the node with
+`install.sh --appliance --revoke-network --vmid 120 --bridge vmbr1`, the installer's way to
+run [pco appliance revoke-network](../cli/pco-appliance-revoke-network.md)
+([Commands on the node](../appliance.md#commands-on-the-node)).
+
 ## Read on
 
 - [Networking](../networking.md): the gateway, the legs and the service addresses, and what
