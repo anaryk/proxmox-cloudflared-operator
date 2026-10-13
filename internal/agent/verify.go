@@ -90,8 +90,9 @@ func (a *Agent) verify(ctx context.Context, t agentproto.Target, inv inventory.S
 // heardOf is what the last heartbeat said of node: how old its status was at
 // the controller, and when this node received the heartbeat. Zero when no
 // heartbeat names it, or the last one is of an epoch below the one the agent
-// follows: a stale controller vouches for nothing. The caller holds the
-// agent's lock.
+// follows: a stale controller vouches for nothing. It takes heardMu for the
+// heartbeat; the caller holds the agent's lock, under which the epoch the
+// agent follows is read.
 func (a *Agent) heardOf(node string) (time.Duration, time.Time) {
 	a.heardMu.Lock()
 	defer a.heardMu.Unlock()

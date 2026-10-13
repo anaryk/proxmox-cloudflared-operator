@@ -133,6 +133,16 @@ func TestARouteThatRequiresFilteredIsHeldBackWhileTheVnetIsNotIsolated(t *testin
 	require.Equal(t, "identity level observed is below the required filtered", r.Reason)
 	require.Contains(t, st.Problems, "filtered lost: a frame from bc:24:11:00:00:ff, a MAC no lease knows, was seen on the vnet; the routes on pconet are served at observed")
 
+	// The reader is asked for the frames since the last judgment; a MAC it
+	// still reports fails every judgment, not only the first.
+	t.Run("and held while the MAC is still unknown", func(t *testing.T) {
+		e.clock.advance(10 * time.Second)
+		st := e.apply(s)
+		require.Equal(t, []time.Time{{}, t0}, iso.asked())
+		require.False(t, report(st, "www.example.com").InEgressSet)
+		require.Contains(t, st.Problems, "filtered lost: a frame from bc:24:11:00:00:ff, a MAC no lease knows, was seen on the vnet; the routes on pconet are served at observed")
+	})
+
 	t.Run("and served once it is", func(t *testing.T) {
 		iso.set(isolated())
 		st := e.apply(s)

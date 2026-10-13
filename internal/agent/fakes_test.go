@@ -777,12 +777,27 @@ func (r *runner) all() [][]string {
 type events struct {
 	mu   sync.Mutex
 	list []Event
+	hold chan struct{}
 }
 
 func (l *events) add(ev Event) {
 	l.mu.Lock()
+	hold := l.hold
+	l.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
+	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.list = append(l.list, ev)
+}
+
+// holdUntil makes every event wait until ch is closed, so that a test can
+// hold the goroutine that emits one where it holds no lock of the agent.
+func (l *events) holdUntil(ch chan struct{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.hold = ch
 }
 
 func (l *events) messages() []string {
