@@ -176,9 +176,9 @@ func (s *Store) takeFromPool() (netip.Addr, error) {
 // MoveServiceAddr gives the service address of (network, addr) to (toNetwork,
 // toAddr), which has none: the target published under it moved there, and the
 // connectors go on dialing the address they have, which reaches it where it
-// is now. It keeps the owner and guest it was made for. The old mapping is deleted first, so that a write that fails in
-// between leaves the service address mapped to nothing, never to two
-// addresses; the pool does not move.
+// is now. It keeps the owner it was made for. The old mapping is deleted
+// first, so that a write that fails in between leaves the service address
+// mapped to nothing, never to two addresses; the pool does not move.
 func (s *Store) MoveServiceAddr(network string, addr netip.Addr, toNetwork string, toAddr netip.Addr, now time.Time) (ServiceAddr, error) {
 	if err := checkServiceKey(network, addr); err != nil {
 		return ServiceAddr{}, err
