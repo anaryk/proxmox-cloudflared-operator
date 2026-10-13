@@ -54,7 +54,9 @@ func TestLinuxTheHostTableLoads(t *testing.T) {
 // nftRuleset is the ruleset of the namespace the test runs in.
 func nftRuleset(t *testing.T) string {
 	t.Helper()
-	out, err := exec.Command(nftPath, "list", "ruleset").CombinedOutput()
+	// Stateless: the counters of rules the machine keeps for itself, such
+	// as the ones of a cloud runner, move on their own between two reads.
+	out, err := exec.Command(nftPath, "--stateless", "list", "ruleset").CombinedOutput()
 	require.NoError(t, err, string(out))
 	return strings.TrimSpace(string(out))
 }
