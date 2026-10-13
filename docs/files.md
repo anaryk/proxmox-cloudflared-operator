@@ -243,9 +243,9 @@ the manual routes, the acknowledged segments, the networks attached and the cons
 managed network, the snapshots in `adopted.jsonl`, the credentials and the manifest. On a host
 the settings, approvals, manual routes, segments and snapshots are in `/etc/pve/pco`, which a
 backup of the cluster filesystem has, and the credentials are in `/etc/pve/priv/pco`: a backup
-that holds them is a secret too. The manifest is in `/var/lib/pco`. Everything else is made again by the daemon: bindings are
-verified again, claims settled again from the Notes, tunnel tokens read again from
-Cloudflare.
+that holds them is a secret too. The manifest is in `/var/lib/pco`. Everything else is made
+again by the daemon: bindings are verified again, claims settled again from the Notes,
+tunnel tokens read again from Cloudflare.
 
 If the whole store is lost, `pco setup --recover` takes the install and its writer
 generation from the tunnels the Cloudflare token sees, and starts observe-only, with the
