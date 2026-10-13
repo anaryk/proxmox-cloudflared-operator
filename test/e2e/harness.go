@@ -177,7 +177,11 @@ func (s *suite) chooseCloud(t *testing.T) string {
 	case file == "" && zone == "":
 		c, err := newFakeCloud(s.fakeListen())
 		require.NoError(t, err)
-		t.Cleanup(c.srv.stop)
+		if s.app == nil {
+			// The appliance stops it itself, after its uninstall purged
+			// through it.
+			t.Cleanup(c.srv.stop)
+		}
 		s.cloud, s.fake, s.zone = c, c, fakeZone
 		s.env = []string{overrideOf + "=" + s.apiURL()}
 		t.Logf("against the fake Cloudflare at %s", c.url())

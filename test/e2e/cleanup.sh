@@ -113,6 +113,14 @@ json() {
 
 # The appliance profile: what the suite made of the appliance in Proxmox.
 if [ "$pco" = appliance ]; then
+	# Against the real API the credential goes with the container, so what
+	# the install has at Cloudflare is left there to delete by hand.
+	mode=$(sed -n 's/^mode=//p' "$state/appliance" 2>/dev/null | head -n 1)
+	ours=$(sed -n 's/^install=//p' "$state/appliance" 2>/dev/null | head -n 1)
+	if [ "$mode" = real ]; then
+		warn "the install ${ours:-(unknown)} of the appliance may have left its tunnel pco-${ours:-<install>} and DNS records" \
+			"commented pco:${ours:-<install>} at Cloudflare: delete them there by hand, then remove $state/appliance"
+	fi
 	range=$(sed -n 's/^range=//p' "$state/appliance" 2>/dev/null | head -n 1)
 	[ -n "$range" ] || range=${PCO_E2E_VMIDS:-9250-9299}
 	first=${range%-*}

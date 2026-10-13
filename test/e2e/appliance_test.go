@@ -413,10 +413,8 @@ func (s *suite) waitServing(t testing.TB) {
 	t.Helper()
 	s.waitState(t, "nobody exposed", 3*time.Minute, func(st engine.State) bool { return st.Identity != nil && len(st.Identity.Exposed) == 0 })
 	s.waitActiveWithin(t, s.host("s1"), 3*time.Minute)
-	require.Eventually(t, func() bool {
-		_, targets, _ := s.egress(t)
-		return s.flagged() && len(targets) > 0
-	}, 2*time.Minute, 2*time.Second, "the flag and the egress set did not come back")
+	require.Eventually(t, func() bool { return s.flagged() && len(s.targetsNow()) > 0 },
+		2*time.Minute, 2*time.Second, "the flag and the egress set did not come back")
 }
 
 func testDelegatedGuest(t *testing.T, s *suite) {
@@ -507,6 +505,9 @@ func testDelegatedGuest(t *testing.T, s *suite) {
 }
 
 func testSoftDeny(t *testing.T, s *suite) {
+	if s.app.real {
+		t.Skip("against the real API the appliance's gateway is its uplink's, which DHCP gives it")
+	}
 	g := s.g(49, guest{notes: "cf-tunnel: e2e-as6.ZONE -> :8080"})
 	require.Equal(t, s.lay.applianceGW, g.ip())
 	s.create(t, g)
@@ -670,16 +671,23 @@ func testApplianceDoctor(t *testing.T, s *suite) {
 	var notOK []string
 	for _, f := range findings {
 		t.Logf("%-28s %-4s %s", f.Check, f.Level, f.Detail)
-		if f.Level != doctor.LevelOK {
-			notOK = append(notOK, f.Check)
+		if f.Level == doctor.LevelOK {
+			continue
 		}
+		check := f.Check
+		if strings.HasPrefix(check, "connector ") {
+			// The check of a connector names its tunnel and account.
+			check = "connector"
+		}
+		notOK = append(notOK, check)
 	}
 	slices.Sort(notOK)
 	notOK = slices.Compact(notOK)
 	// Without an uplink the appliance reaches neither Cloudflare nor a name
-	// server nor a time server; the QUIC buffer is the node's default; the
-	// override of the API is a standing problem.
-	want := []string{"clock", "cloudflare api", "dns", "egress probe", "problems", "quic buffer"}
+	// server nor a time server, and a connector with the fake's token is
+	// never ready; the QUIC buffer is the node's default; the override of
+	// the API is a standing problem.
+	want := []string{"clock", "cloudflare api", "connector", "dns", "egress probe", "outbound", "problems", "quic buffer"}
 	if s.fake == nil {
 		want = []string{"quic buffer"}
 	}
@@ -954,13 +962,15 @@ func (s *suite) recoverAndApply(t testing.TB) int {
 // waitWritten waits until Cloudflare carries the generation of leader.json.
 func (s *suite) waitWritten(t testing.TB) int {
 	t.Helper()
-	var gen int
-	require.Eventually(t, func() bool {
-		w, _ := s.leader(t)
-		gen = w.Generation
-		return s.sentinel(t) == gen
-	}, 3*time.Minute, s.every(), "the generation of leader.json never reached Cloudflare")
-	return gen
+	for deadline := time.Now().Add(3 * time.Minute); ; time.Sleep(s.every()) {
+		gen := s.leaderNow()
+		if gen >= 0 && s.sentinel(t) == gen {
+			return gen
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the generation %d of leader.json never reached Cloudflare, which has %d", gen, s.sentinel(t))
+		}
+	}
 }
 
 func testRollback(t *testing.T, s *suite) {
@@ -1017,15 +1027,18 @@ func testRollback(t *testing.T, s *suite) {
 	rolled := time.Now()
 	s.must(t, "pct", "rollback", id, "pcotestnoboot", "--start", "1")
 	s.waitAppliance(t, a.vmid)
-	require.Eventually(t, func() bool {
+	for deadline := time.Now().Add(twoCycles + 2*time.Minute); ; time.Sleep(2 * time.Second) {
 		st, err := s.tryState()
-		if err != nil {
-			return false
+		if err == nil {
+			require.NotEqual(t, engine.VerdictBehind, st.WriterVerdict, "the rollback without a start was taken for one behind")
+			if gen := s.leaderNow(); st.WriterVerdict == engine.VerdictOK && st.At.After(rolled) && gen >= 0 && s.sentinel(t) == gen {
+				break
+			}
 		}
-		require.NotEqual(t, engine.VerdictBehind, st.WriterVerdict, "the rollback without a start was taken for one behind")
-		w, _ := s.leader(t)
-		return st.WriterVerdict == engine.VerdictOK && s.sentinel(t) == w.Generation && st.At.After(rolled)
-	}, twoCycles+2*time.Minute, 2*time.Second, "no write verified after the rollback")
+		if time.Now().After(deadline) {
+			t.Fatal("no write verified after the rollback")
+		}
+	}
 	s.waitEvent(t, rolled, "writer", "epoch drawn after a container start; the state is the volume's")
 	epoch, ok := findingOf(s.doctorFindings(t), "epoch")
 	require.True(t, ok, "doctor has no epoch note")

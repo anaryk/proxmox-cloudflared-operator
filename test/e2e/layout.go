@@ -88,7 +88,7 @@ func layoutFor(profile string) (layout, error) {
 	if raw := os.Getenv("PCO_E2E_APPLIANCE_VMID"); raw != "" {
 		id, err := strconv.Atoi(raw)
 		if err != nil || id < l.first || id > l.last || usedOffset(id-l.first) {
-			return layout{}, fmt.Errorf("PCO_E2E_APPLIANCE_VMID %q: want an id of %s at an offset no guest takes (0, 10 or 19)", raw, ids)
+			return layout{}, fmt.Errorf("PCO_E2E_APPLIANCE_VMID %q: want an id of %s at an offset no guest takes (0, 4, 9, 10 or 19)", raw, ids)
 		}
 		l.appliance = id
 	}
@@ -96,10 +96,10 @@ func layoutFor(profile string) (layout, error) {
 }
 
 // usedOffset says whether a scenario puts a guest at an offset of the range:
-// the host scenarios at 1 to 18, the appliance's at 20 to 29 and 45 to 49, its
-// networking scenarios at 30 to 44.
+// the host scenarios at 1 to 18 but 4, 9 and 10, the appliance's at 20 to 29
+// and 45 to 49, its networking scenarios at 30 to 44.
 func usedOffset(n int) bool {
-	return (n >= 1 && n <= 18) || (n >= 20 && n <= 49)
+	return (n >= 1 && n <= 18 && n != 4 && n != 9 && n != 10) || (n >= 20 && n <= 49)
 }
 
 func (l layout) isAppliance() bool { return l.profile == profileAppliance }

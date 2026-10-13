@@ -129,9 +129,15 @@ func (s *suite) newAppliance(t *testing.T) {
 	// Cleanups run last first: the copies and the appliance go before the
 	// guests, so that their going is nothing the daemon acts on; the bridges
 	// and the node's address after them.
+	t.Cleanup(func() {
+		if s.fake != nil {
+			s.fake.srv.stop()
+		}
+	})
 	t.Cleanup(func() { s.removeBridges(t) })
 	t.Cleanup(func() { s.restoreSysctls(t) })
 	t.Cleanup(func() { s.stopFirewallService(t) })
+	t.Cleanup(func() { s.restoreFirewall(t) })
 	t.Cleanup(func() { s.removeAddress(t) })
 	t.Cleanup(func() { s.removeArchives(t) })
 	t.Cleanup(func() { s.removePrincipals(t) })
@@ -139,7 +145,6 @@ func (s *suite) newAppliance(t *testing.T) {
 	t.Cleanup(func() { s.uninstallAppliance(t) })
 	t.Cleanup(func() { s.destroyPconetGuests(t) })
 	t.Cleanup(func() { s.restoreRegisteredTags(t) })
-	t.Cleanup(func() { s.restoreFirewall(t) })
 	t.Cleanup(func() { s.removeGrants(t) })
 	t.Cleanup(func() { s.diagnose(t) })
 
@@ -169,11 +174,16 @@ func (s *suite) appliancePreflight(t *testing.T) {
 			t.Skipf("the appliance profile needs %s: %v", bin, err)
 		}
 	}
-	if entries, err := os.ReadDir(markerDir); err == nil && len(entries) > 0 {
-		t.Fatalf("a run of the suite left %s: %s", filepath.Join(markerDir, entries[0].Name()), cleanupHint)
-	}
-	if _, found, err := installed(); err != nil || found {
+	_, found, err := installed()
+	if err != nil || found {
 		t.Fatalf("pco is set up on this node (or its store cannot be read: %v): the appliance profile needs a node without it", err)
+	}
+	// A host run leaves the record of its install, which is gone.
+	entries, _ := os.ReadDir(markerDir)
+	for _, e := range entries {
+		if e.Name() != filepath.Base(ownedFile) {
+			t.Fatalf("a run of the suite left %s: %s", filepath.Join(markerDir, e.Name()), cleanupHint)
+		}
 	}
 	if exists("/etc/pve/corosync.conf") {
 		t.Fatal("this node is in a cluster: the suite runs on a node of its own, where nothing it does reaches another")
@@ -197,6 +207,9 @@ func (s *suite) appliancePreflight(t *testing.T) {
 	s.refuseBridge(t)
 	if _, err := s.run("ip", "link", "show", "dev", segBridge); err == nil {
 		t.Fatalf("the bridge %s exists: the suite makes it for the run and removes it", segBridge)
+	}
+	if dumps := s.dumps(); len(dumps) > 0 {
+		t.Fatalf("%s is a backup of a guest of the range: the suite makes its own and removes them", dumps[0])
 	}
 	s.must(t, "pvesm", "status", "--storage", s.disk)
 	s.app.node = strings.TrimSpace(s.must(t, "hostname"))
@@ -342,7 +355,9 @@ func (s *suite) pushRelay(t testing.TB, vmid int, unit, listen, to string) {
 	t.Helper()
 	require.NotEmpty(t, s.app.relay, "the relay: build it with make e2e-binaries and put bin/e2e-relay beside the suite, or name it with PCO_E2E_RELAY")
 	id := strconv.Itoa(vmid)
-	s.must(t, "pct", "push", id, s.app.relay, relayPath, "--perms", "0755")
+	// Beside the one that may run already, then renamed over it.
+	s.must(t, "pct", "push", id, s.app.relay, relayPath+".new", "--perms", "0755")
+	s.must(t, "pct", "exec", id, "--keep-env", "0", "--", "mv", "-f", relayPath+".new", relayPath)
 	s.pushFile(t, vmid, "/etc/systemd/system/"+unit, fmt.Sprintf(`[Unit]
 Description=Relay of the end-to-end suite of pco, %s to %s
 After=network.target
@@ -846,4 +861,52 @@ func (s *suite) requireServesNothing(t testing.TB) {
 	require.False(t, s.flagged(), "%s is there", identityOK)
 	_, targets, _ := s.egress(t)
 	require.Empty(t, targets, "the egress set has targets")
+}
+
+// targetsNow lists the egress set without failing the test, for a condition
+// that is asked again.
+func (s *suite) targetsNow() []string {
+	out, err := s.pcoOut("egress", "show")
+	if err != nil {
+		return nil
+	}
+	var targets []string
+	in := false
+	for line := range strings.Lines(out) {
+		line = strings.TrimRight(line, "\n")
+		switch {
+		case line == "Targets:":
+			in = true
+		case in && strings.HasPrefix(line, "  "):
+			targets = append(targets, strings.TrimSpace(line))
+		default:
+			in = false
+		}
+	}
+	return targets
+}
+
+// leaderNow is the generation of leader.json in the container, -1 when it
+// cannot be read, for a condition that is asked again.
+func (s *suite) leaderNow() int {
+	root, err := os.MkdirTemp(s.dir, "leader-")
+	if err != nil {
+		return -1
+	}
+	local := filepath.Join(root, "cluster", "meta", "leader.json")
+	if os.MkdirAll(filepath.Dir(local), 0o700) != nil {
+		return -1
+	}
+	if _, err := s.run("pct", "pull", strconv.Itoa(s.at.vmid), stateRoot+"/cluster/meta/leader.json", local); err != nil {
+		return -1
+	}
+	st, err := store.Open(store.Paths{Cluster: filepath.Join(root, "cluster"), Private: filepath.Join(root, "private"), Local: root})
+	if err != nil {
+		return -1
+	}
+	r, _, found, err := st.Leader()
+	if err != nil || !found {
+		return -1
+	}
+	return r.Generation
 }

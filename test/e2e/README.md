@@ -214,7 +214,7 @@ the node, changed there, pushed back beside the one in the appliance and renamed
 - pco not set up on the node, and neither the user `pco@pve` nor the pool `pco`.
 - No guest with an id of `PCO_E2E_VMIDS` (default `9250-9299`, fifty ids). The appliance
   takes the first of them, or `PCO_E2E_APPLIANCE_VMID`: an id of the range at the offset
-  0, 10 or 19, which no scenario's guest takes.
+  0, 4, 9, 10 or 19, which no scenario's guest takes.
 - The bridge `vmbr1` with no port but those of guests and without `10.92.0.100`; no
   bridge `pcote1`, `pcot1`, `pcot2` or `pcoti`.
 - A storage that snapshots a running container, clones from a snapshot and makes
