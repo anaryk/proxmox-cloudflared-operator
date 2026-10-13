@@ -853,6 +853,33 @@ codes of the users who sign in while it is. What stands against that, and agains
 The realms of the node are listed on the sign-in page of the appliance to anyone who reaches it,
 as the sign-in page of Proxmox VE lists them.
 
+## A managed guest and its card, on the host
+
+On a node without the appliance, three things keep each guest on the managed bridge `pconet` to
+the card pco gave it:
+
+- **The guard table** `bridge pco_guard` on the node. An IPv4 packet or an ARP frame that enters
+  `pconet` from a guest's port passes only with the MAC and the address of the card pco gave that
+  guest, on that port; a DHCP request and an ARP probe, which have no address yet, pass with the
+  card's MAC. Anything else is dropped and counted (`nft list counter bridge pco_guard
+  dropped_spoofed`). A guest that sends with another guest's MAC and address, from its own port,
+  reaches nothing. The guard is there while the managed network has its leg on the node, and goes
+  with it.
+- **A sticky forwarding entry** of each card's MAC on its guest's port (`bridge fdb show br
+  pconet`). Frames to the MAC go to that port only, whatever another port sends. While the port is
+  absent, as while the guest is stopped, the entry waits on the bridge end of the managed leg
+  (`vethpco<mark>`), where frames to the MAC end unanswered, and moves to the port as soon as it
+  appears.
+- **The source-MAC watch** on the managed leg. A card no lease knows that sends a broadcast or an
+  ARP frame has the guests of the node read again within a cycle, and an event. It sees broadcast
+  and multicast frames and untagged ARP only: a card that sends nothing but unicast frames other
+  than ARP is not seen by it, nor a VLAN-tagged ARP frame unless it is a broadcast (the guard drops
+  what such a card sends). A card that copies a lease's MAC is the guard's to stop, not the
+  watch's, which takes the MAC for the lease's.
+
+The entries and the guard cover the guests of this node. A managed guest on another node of a
+cluster has neither on this node.
+
 ## The appliance
 
 The [appliance](appliance.md) runs the daemon and the connectors in an unprivileged container,
