@@ -405,6 +405,14 @@ func TestThePathStepNamesThePin(t *testing.T) {
 		{name: "the pins unreadable", via: "attach:vmbr1", pins: &pinsRead{err: errors.New("permission denied")}, level: LevelWarn,
 			detail: "attach vmbr1: leg up, service %s -> 10.50.0.10 programmed; the pins of the gateway could not be read: permission denied", through: true},
 		{name: "not read", via: "attach:vmbr1", level: LevelOK, detail: "attach vmbr1: leg up, service %s -> 10.50.0.10 programmed", through: true},
+		{name: "pinned, verified too long ago", via: "attach:vmbr1", pins: &pinsRead{pins: pinned, at: now.Add(-time.Hour), stale: true}, level: LevelWarn,
+			detail: "attach vmbr1: leg up, service %s -> 10.50.0.10 programmed, 10.50.0.10 pinned to bc:24:11:00:00:01 when last verified, " +
+				"at 2026-10-01T11:00:00Z, too long ago to say what the gateway holds now", through: true},
+		{name: "pinned to another MAC, verified too long ago", via: "attach:vmbr1",
+			pins: &pinsRead{pins: []store.Pin{{Network: "vmbr1", Addr: netip.MustParseAddr("10.50.0.10"), MAC: "bc:24:11:00:00:99"}},
+				at: now.Add(-time.Hour), stale: true},
+			level: LevelWarn, detail: "attach vmbr1: leg up, service %s -> 10.50.0.10 programmed, 10.50.0.10 pinned to bc:24:11:00:00:99 when last verified, " +
+				"at 2026-10-01T11:00:00Z, too long ago to say what the gateway holds now; the last proof found it at bc:24:11:00:00:01", through: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			o := newOrigin(t, false, nil)
@@ -451,6 +459,14 @@ func TestTheRunnerReadsThePins(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Contains(t, steps[6].Detail, "10.50.0.10 pinned to bc:24:11:00:00:01")
+	require.Equal(t, LevelOK, steps[6].Level)
+
+	later := NewRunner(func() engine.State { return st }, env, o.Client(), func() time.Time { return now.Add(store.PinsMaxAge) }, zerolog.Nop())
+	steps, err = later.Diagnose(t.Context(), www)
+
+	require.NoError(t, err)
+	require.Equal(t, LevelWarn, steps[6].Level, "pins as old as they stand no longer stand: %v", steps[6])
+	require.Contains(t, steps[6].Detail, "when last verified, at 2026-10-01T12:00:00Z")
 }
 
 // The identity step names the level the address was proven at, when the

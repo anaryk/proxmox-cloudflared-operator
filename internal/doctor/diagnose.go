@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
@@ -52,21 +53,24 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 }
 
 // pinsRead are the pins of the gateway as the diagnosis read them: what a
-// path through a leg is checked against.
+// path through a leg is checked against. Stale pins were verified at at,
+// too long ago to say what the gateway holds now.
 type pinsRead struct {
-	pins []store.Pin
-	err  error
+	pins  []store.Pin
+	at    time.Time
+	stale bool
+	err   error
 }
 
 // readPins reads the pins of the gateway where env can tell them; nil where
 // it cannot, which leaves them out of the diagnosis.
-func readPins(ctx context.Context, env Env) *pinsRead {
+func readPins(ctx context.Context, env Env, now time.Time) *pinsRead {
 	net, ok := env.(NetworkEnv)
 	if !ok {
 		return nil
 	}
-	pins, _, err := net.Pins(ctx)
-	return &pinsRead{pins: pins, err: err}
+	pins, at, err := net.Pins(ctx)
+	return &pinsRead{pins: pins, at: at, stale: !store.FreshPins(at, now), err: err}
 }
 
 // diagnoseRoute is DiagnoseRoute with the pins of the gateway, when read.
@@ -329,6 +333,13 @@ func (d *diagnosis) path() Step {
 	case i < 0:
 		return warned(fmt.Sprintf("%s, but no pin holds %s to %s: another guest that answers for the address may take its requests; the next cycle pins it",
 			done, p.Addr, p.MAC))
+	case d.pins.stale:
+		stale := fmt.Sprintf("%s, %s pinned to %s when last verified, at %s, too long ago to say what the gateway holds now",
+			done, p.Addr, d.pins.pins[i].MAC, d.pins.at.UTC().Format(time.RFC3339))
+		if !strings.EqualFold(d.pins.pins[i].MAC, p.MAC) {
+			stale += "; the last proof found it at " + p.MAC
+		}
+		return warned(stale)
 	case !strings.EqualFold(d.pins.pins[i].MAC, p.MAC):
 		return failed(fmt.Sprintf("%s: %s is pinned to %s, and the last proof found it at %s; the next cycle pins it again", via, p.Addr, d.pins.pins[i].MAC, p.MAC))
 	}

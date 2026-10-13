@@ -129,7 +129,7 @@ func (r *Runner) Diagnose(ctx context.Context, name string) ([]Step, error) {
 				return nil, err
 			}
 			ctx := context.WithoutCancel(ctx)
-			return diagnoseRoute(ctx, st, host, r.httpc, readPins(ctx, r.env))
+			return diagnoseRoute(ctx, st, host, r.httpc, readPins(ctx, r.env, r.now()))
 		})
 	}
 	return await(ctx, f)
