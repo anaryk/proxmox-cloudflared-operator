@@ -379,3 +379,81 @@ func TestThePortsWaitingAreTakenOnceEach(t *testing.T) {
 	require.Equal(t, []string{"veth103i1", "tap101i1", "veth102i1"}, drainPorts(joined, "veth103i1"))
 	require.Empty(t, joined)
 }
+
+// A port that went, as when its guest stops, has its entry parked on the
+// leg at the next check, so that no other port takes the MAC over.
+func TestAPortThatWentHasItsEntryParked(t *testing.T) {
+	r := newStickyRig(t, true)
+	r.setPort(false)
+	require.NoError(t, r.g.keepSticky(t.Context()))
+	require.Equal(t, 1, r.appliedCount())
+	require.NoError(t, r.g.keepSticky(t.Context()))
+	require.Equal(t, 1, r.appliedCount(), "once")
+}
+
+// A port the watch could not pass on, or a watch that failed, has the
+// entries given at the next check whatever the ports look like.
+func TestALostPortEventHasTheEntriesGivenAtTheNextCheck(t *testing.T) {
+	r := newStickyRig(t, true)
+	require.NoError(t, r.g.keepSticky(t.Context()))
+	require.Zero(t, r.appliedCount())
+
+	r.g.markDirty()
+	require.NoError(t, r.g.keepSticky(t.Context()))
+	require.Equal(t, 1, r.appliedCount())
+	require.NoError(t, r.g.keepSticky(t.Context()))
+	require.Equal(t, 1, r.appliedCount(), "clean again")
+
+	r.g.markDirty()
+	r.err = errors.New("netlink: no such device")
+	require.Error(t, r.g.keepSticky(t.Context()))
+	r.err = nil
+	require.NoError(t, r.g.keepSticky(t.Context()))
+	require.Equal(t, 2, r.appliedCount(), "dirty until it went through")
+}
+
+func TestAFullPortQueueMarksTheEntriesDirty(t *testing.T) {
+	r := newStickyRig(t, true)
+	block := make(chan struct{})
+	r.g.applySticky = func(context.Context, gateway.Backend, []gateway.Sticky) error {
+		<-block
+		return nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	called := make(chan struct{})
+	watch := func(ctx context.Context, _ netns.NsHandle, _ string, joined func(string)) error {
+		for range 10 * portJoinedQueue {
+			joined("veth101i1")
+		}
+		close(called)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	go r.g.watchPorts(ctx, watch, sleepContext)
+	<-called
+	r.g.dirtyMu.Lock()
+	dirty := r.g.dirty
+	r.g.dirtyMu.Unlock()
+	close(block)
+	require.True(t, dirty, "a port the queue had no room for")
+}
+
+// The leases are read again every 30 seconds besides on a miss: a lease that
+// went stops being known. They are read with no lock held.
+func TestTheSourceWatchForgetsALeaseThatWent(t *testing.T) {
+	r := newSourceRig(t)
+	r.leases["06:50:43:4f:76:02"] = store.Lease{MAC: "06:50:43:4f:76:02"}
+	read := r.s.leases
+	r.s.leases = func() (map[string]store.Lease, error) {
+		require.True(t, r.s.mu.TryLock(), "the store is read under the lock")
+		r.s.mu.Unlock()
+		return read()
+	}
+	require.True(t, r.s.isLease(hw("06:50:43:4f:76:02")))
+	delete(r.leases, "06:50:43:4f:76:02")
+	r.now = r.now.Add(10 * time.Second)
+	require.True(t, r.s.isLease(hw("06:50:43:4f:76:02")), "read again no sooner than 30 seconds")
+	r.now = r.now.Add(20 * time.Second)
+	require.False(t, r.s.isLease(hw("06:50:43:4f:76:02")))
+}

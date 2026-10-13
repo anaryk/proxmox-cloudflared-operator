@@ -51,6 +51,12 @@ type gatewayPart struct {
 	portExists  func(name string) bool
 	applySticky func(ctx context.Context, b gateway.Backend, sticky []gateway.Sticky) error
 	present     map[string]bool
+	// dirty says that a port event was lost, to a full queue or a watch
+	// that failed: the next check gives the entries whatever the ports look
+	// like. It has a lock of its own, which the reader of the links takes
+	// without waiting for a sync.
+	dirtyMu sync.Mutex
+	dirty   bool
 }
 
 func newGatewayPart(b gateway.Backend, local string, now func() time.Time, log zerolog.Logger) *gatewayPart {
@@ -190,9 +196,10 @@ func (g *gatewayPart) stickyPorts() map[string]bool {
 	return out
 }
 
-// keepSticky gives the wanted sticky entries to the ports of managed guests
-// that appeared since the entries were last given: joined, the ports the port
-// watch saw join the managed bridge, and any other the keeper's check finds
+// keepSticky gives the wanted sticky entries again when a port of a managed
+// guest appeared or went since they were last given, or a port event was
+// lost: joined, the ports the port watch saw join the managed bridge, and
+// any other change the keeper's check finds
 // there now. A guest that starts makes its port anew, without the entry its
 // card had; until it is given again, another guest may take the card's MAC
 // over. The rest of the gateway is left to the cycle.
@@ -206,21 +213,36 @@ func (g *gatewayPart) keepSticky(ctx context.Context, joined ...string) error {
 		return nil
 	}
 	now := g.stickyPorts()
-	appeared := false
+	changed := g.takeDirty() || len(now) != len(g.present)
 	for port := range now {
 		if !g.present[port] || slices.Contains(joined, port) {
-			appeared = true
+			changed = true
 		}
 	}
-	if !appeared {
-		g.present = now
+	if !changed {
 		return nil
 	}
 	if err := g.applySticky(ctx, g.b, g.wanted.Sticky); err != nil {
+		g.markDirty()
 		return err
 	}
 	g.present = now
 	return nil
+}
+
+// markDirty has the next check give the sticky entries.
+func (g *gatewayPart) markDirty() {
+	g.dirtyMu.Lock()
+	defer g.dirtyMu.Unlock()
+	g.dirty = true
+}
+
+func (g *gatewayPart) takeDirty() bool {
+	g.dirtyMu.Lock()
+	defer g.dirtyMu.Unlock()
+	d := g.dirty
+	g.dirty = false
+	return d
 }
 
 // portJoinedQueue is how many ports that joined the managed bridge wait for
@@ -258,11 +280,13 @@ func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Con
 			select {
 			case joined <- port:
 			default:
+				g.markDirty()
 			}
 		})
 		if ctx.Err() != nil {
 			return
 		}
+		g.markDirty()
 		g.log.Warn().Err(err).Dur("again", watchAgainAfter).Msg("watching the ports of the managed bridge failed; " +
 			"until it runs again, a guest's port gets its sticky entry at the keeper's check")
 		if sleep(ctx, watchAgainAfter) != nil {
@@ -454,6 +478,9 @@ const (
 	// speaks before the gateway is synced with its lease, and a guest that
 	// sends from ever new MACs reads the store no more often than this.
 	leasesReadEvery = time.Second
+	// leasesRefreshEvery is how long the leases as read are taken for known
+	// MACs.
+	leasesRefreshEvery = 30 * time.Second
 )
 
 // sourceWatch listens on the managed leg for frames of cards no lease knows,
@@ -586,25 +613,30 @@ func (s *sourceWatch) admit(key string, now time.Time) bool {
 	return true
 }
 
-// isLease says whether a MAC is a lease's. A MAC it does not know has the
-// leases read again, no more often than leasesReadEvery. While they were
-// never read, every MAC counts as known: what cannot be told is no finding.
+// isLease says whether a MAC is a lease's, as the leases were read last.
+// They are read again on a MAC the watch does not know, no more often than
+// leasesReadEvery, and at the latest leasesRefreshEvery after the last read,
+// so that a lease that went stops being known; never under the lock. While
+// they were never read, every MAC counts as known: what cannot be told is no
+// finding.
 func (s *sourceWatch) isLease(mac net.HardwareAddr) bool {
-	key := mac.String()
+	key, now := mac.String(), s.now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.known[key] {
-		return true
-	}
-	now := s.now()
-	if s.read && now.Sub(s.readAt) < leasesReadEvery {
-		return false
+	known := s.known[key]
+	since := now.Sub(s.readAt)
+	if s.read && ((known && since < leasesRefreshEvery) || (!known && since < leasesReadEvery)) {
+		s.mu.Unlock()
+		return known
 	}
 	s.readAt = now
+	s.mu.Unlock()
+
 	leases, err := s.leases()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err != nil {
 		s.log.Debug().Err(err).Msg("reading the leases for the watch of the managed network failed")
-		return !s.read
+		return known || !s.read
 	}
 	s.known = make(map[string]bool, len(leases))
 	for _, l := range leases {
