@@ -29,7 +29,7 @@ func TestHAResourcesEmpty(t *testing.T) {
 }
 
 func TestHAResourcesRejectsAServiceThatIsNoGuest(t *testing.T) {
-	for _, sid := range []string{"", "ct", "ct:", "ct:0", "ct:-1", "ct:abc", "vm:101:2", "node:pve1", "9451"} {
+	for _, sid := range []string{"", "ct", "ct:", "ct:0", "ct:-1", "ct:+5", "ct: 5", "ct:05", "ct:5a", "ct:abc", "vm:101:2", "node:pve1", "9451"} {
 		t.Run(sid, func(t *testing.T) {
 			c, _ := newTestClient(t, map[string]reply{
 				"/cluster/ha/resources": {http.StatusOK, `{"data":[{"sid":"ct:9451","state":"started"},{"sid":"` + sid + `","state":"started"}]}`},
@@ -49,21 +49,21 @@ func TestHAStatusReadsMaintenanceFromTheReportOfTheNode(t *testing.T) {
 		{
 			file: "ha_status_maintenance.json",
 			want: HAStatus{
-				Maintenance: map[string]bool{"pco-lab-1": false, "pco-lab-2": false, "pco-lab-3": true},
+				Maintenance: map[string]Maintenance{"pco-lab-1": MaintenanceOff, "pco-lab-2": MaintenanceOff, "pco-lab-3": MaintenanceOn},
 				Services:    map[string]HAService{"ct:9451": {Node: "pco-lab-1", State: "started"}},
 			},
 		},
 		{
 			file: "ha_status_idle.json",
 			want: HAStatus{
-				Maintenance: map[string]bool{"pco-lab-1": false, "pco-lab-2": false, "pco-lab-3": false},
+				Maintenance: map[string]Maintenance{"pco-lab-1": MaintenanceOff, "pco-lab-2": MaintenanceOff, "pco-lab-3": MaintenanceOff},
 				Services:    map[string]HAService{"ct:9451": {Node: "pco-lab-1", State: "started"}},
 			},
 		},
 		{
 			// A node without HA resources has no resource manager to report.
 			file: "ha_status_standalone.json",
-			want: HAStatus{Maintenance: map[string]bool{}, Services: map[string]HAService{}},
+			want: HAStatus{Maintenance: map[string]Maintenance{}, Services: map[string]HAService{}},
 		},
 	}
 	for _, tt := range tests {
@@ -78,31 +78,38 @@ func TestHAStatusReadsMaintenanceFromTheReportOfTheNode(t *testing.T) {
 }
 
 // The mode of a resource manager is only in the text of its report, before
-// the first comma: a state, or a mode followed by the word mode.
+// the first comma: a state, or a mode followed by the word mode. A report
+// that is stale or could not be read says nothing of the mode.
 func TestMaintenanceIsReadFromTheTextOfTheReport(t *testing.T) {
 	tests := []struct {
 		status string
-		want   bool
+		want   Maintenance
 	}{
-		{"pco-lab-3 (maintenance mode, watchdog standby, Tue Oct 13 22:51:35 2026)", true},
-		{"pco-lab-3 (maintenance mode)", true},
-		{"pco-lab-3 ( Maintenance Mode , watchdog standby)", true},
-		{"pco-lab-3 (active, watchdog active, Tue Oct 13 22:51:30 2026)", false},
-		{"pco-lab-3 (idle, watchdog standby, Tue Oct 13 22:52:05 2026)", false},
-		{"pco-lab-3 (wait_for_agent_lock, watchdog standby, Tue Oct 13 22:52:05 2026)", false},
-		{"pco-lab-3 (old timestamp - dead?, watchdog standby, Tue Oct 13 22:52:05 2026)", false},
-		{"pco-lab-3 (restart mode, watchdog active, Tue Oct 13 22:52:05 2026)", false},
-		{"pco-lab-3 (shutdown mode, watchdog active, Tue Oct 13 22:52:05 2026)", false},
-		{"pco-lab-3 (unknown)", false},
-		{"maintenance mode", false},
-		{"pco-lab-3", false},
-		{"", false},
+		{"pco-lab-3 (maintenance mode, watchdog standby, Tue Oct 13 22:51:35 2026)", MaintenanceOn},
+		{"pco-lab-3 (maintenance mode)", MaintenanceOn},
+		{"pco-lab-3 ( Maintenance Mode , watchdog standby)", MaintenanceOn},
+		{"pco-lab-3 (active, watchdog active, Tue Oct 13 22:51:30 2026)", MaintenanceOff},
+		{"pco-lab-3 (idle, watchdog standby, Tue Oct 13 22:52:05 2026)", MaintenanceOff},
+		{"pco-lab-3 (wait_for_agent_lock, watchdog standby, Tue Oct 13 22:52:05 2026)", MaintenanceOff},
+		{"pco-lab-3 (lost_agent_lock, watchdog active, Tue Oct 13 22:52:05 2026)", MaintenanceOff},
+		{"pco-lab-3 (restart mode, watchdog active, Tue Oct 13 22:52:05 2026)", MaintenanceOff},
+		{"pco-lab-3 (shutdown mode, watchdog active, Tue Oct 13 22:52:05 2026)", MaintenanceOff},
+		{"pco-lab-3 (old timestamp - dead?, watchdog standby, Tue Oct 13 22:52:05 2026)", MaintenanceUnknown},
+		{"pco-lab-3 (unable to read lrm status)", MaintenanceUnknown},
+		{"pco-lab-3 (unknown)", MaintenanceUnknown},
+		{"pco-lab-3 ()", MaintenanceUnknown},
+		{"maintenance mode", MaintenanceUnknown},
+		{"pco-lab-3", MaintenanceUnknown},
+		{"", MaintenanceUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.status, func(t *testing.T) {
-			require.Equal(t, tt.want, inMaintenance(tt.status))
+			require.Equal(t, tt.want, maintenanceOf(tt.status))
 		})
 	}
+	require.Equal(t, "unknown", MaintenanceUnknown.String())
+	require.Equal(t, "off", MaintenanceOff.String())
+	require.Equal(t, "on", MaintenanceOn.String())
 }
 
 func TestHAStatusTakesTheNodeAndTheServiceFromTheIDWhenTheFieldsAreMissing(t *testing.T) {
@@ -114,7 +121,7 @@ func TestHAStatusTakesTheNodeAndTheServiceFromTheIDWhenTheFieldsAreMissing(t *te
 	got, err := c.HAStatus(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, HAStatus{
-		Maintenance: map[string]bool{"pco-lab-3": true},
+		Maintenance: map[string]Maintenance{"pco-lab-3": MaintenanceOn},
 		Services:    map[string]HAService{"vm:101": {Node: "pco-lab-2", State: "started"}},
 	}, got)
 }
