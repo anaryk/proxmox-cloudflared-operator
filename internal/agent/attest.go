@@ -44,13 +44,17 @@ type ObserveFunc func(ctx context.Context, expected func() map[string]egress.Exp
 type observing struct {
 	mu       sync.Mutex
 	expected map[string]egress.Expected // by MAC
-	cards    map[string]model.NIC       // by MAC: the card of the published guest
-	kinds    map[int]model.GuestKind    // by VMID, of every guest the snapshot names
-	held     map[entryKey]heldEntry
-	moves    []agentproto.Observation // newest last
-	since    time.Time                // when the observer that runs started; zero while none does
-	run      int                      // numbers the runs of the observer, so a run that ended says nothing more
-	queue    chan observed
+	// cards are the published cards whose guest the snapshot says runs, or
+	// may run, by MAC: what is attested is judged against them when the
+	// status is made, so that a guest the snapshot says stopped is attested
+	// no more, whatever the table still holds of it.
+	cards map[string]model.NIC
+	kinds map[int]model.GuestKind // by VMID, of every guest the snapshot names
+	held  map[entryKey]heldEntry
+	moves []agentproto.Observation // newest last
+	since time.Time                // when the observer that runs started; zero while none does
+	run   int                      // numbers the runs of the observer, so a run that ended says nothing more
+	queue chan observed
 }
 
 // entryKey is an entry of a forwarding table: a MAC in a VLAN of a bridge.
@@ -66,13 +70,10 @@ type heldEntry struct {
 	port  string
 	from  string
 	since time.Time
-	// guest and nic are the published card the MAC is of, and attest says
-	// that the entry is on the card's own bridge: the one the attestation
-	// names, not a firewall bridge between the card and it.
-	guest  model.GuestRef
-	nic    int
-	attest bool
-	owner  *model.GuestRef // the guest whose port the MAC is on, for a conflict
+	// guest and nic are the published card the MAC is of.
+	guest model.GuestRef
+	nic   int
+	owner *model.GuestRef // the guest whose port the MAC is on, for a conflict
 }
 
 // observed is an observation with the run of the observer that made it.
@@ -115,7 +116,9 @@ func (p *pass) expect() {
 				continue
 			}
 			expected[mac] = egress.Expected{MAC: mac, Guest: t.Guest.Ref, NIC: n.Index}
-			cards[mac] = n
+			if t.Guest.Running || t.Guest.StatusUnknown {
+				cards[mac] = n
+			}
 		}
 	}
 	for _, g := range p.s.Guests {
@@ -238,7 +241,7 @@ func (a *Agent) observed(ctx context.Context, in observed) {
 		if !expected {
 			break
 		}
-		h := heldEntry{kind: egress.Learned, port: obs.Port, since: obs.At, guest: want.Guest, nic: want.NIC, attest: o.onCard(obs.MAC, obs.Bridge)}
+		h := heldEntry{kind: egress.Learned, port: obs.Port, since: obs.At, guest: want.Guest, nic: want.NIC}
 		if had && prev.kind == egress.Learned && prev.port == obs.Port {
 			h.since = prev.since
 		} else {
@@ -295,11 +298,11 @@ func (o *observing) keep(key entryKey, had bool, h heldEntry) {
 	o.held[key] = h
 }
 
-// onCard reports whether bridge is the one the card with mac is on: the
-// bridge the card names, or the one Proxmox makes for its VLAN on a bridge
-// that does not filter VLANs. A firewall bridge between the card and it is
-// neither, and the entry on it names the tap, not the port the attestation
-// must name.
+// onCard reports whether bridge is the one the card with mac is on, of a
+// guest the snapshot says runs: the bridge the card names, or the one
+// Proxmox makes for its VLAN on a bridge that does not filter VLANs. A
+// firewall bridge between the card and it is neither, and the entry on it
+// names the tap, not the port the attestation must name.
 func (o *observing) onCard(mac, bridge string) bool {
 	nic, ok := o.cards[mac]
 	return ok && (bridge == nic.Bridge || nic.VLAN != 0 && bridge == fmt.Sprintf("%sv%d", nic.Bridge, nic.VLAN))
@@ -346,9 +349,12 @@ func (a *Agent) blockMAC(ctx context.Context, mac string) {
 }
 
 // report is what the status carries of the forwarding tables: an
-// attestation for every published card learned on its own port of its own
-// bridge, every conflict that holds, and the moves of the last movesKeptFor,
-// at most movesKept of them all, the oldest left out.
+// attestation for every card of a running published guest learned on its
+// own port of its own bridge, every conflict that holds, and the moves of
+// the last movesKeptFor, at most movesKept of them all, the oldest left out.
+// What holds is the last word of the observer on each entry: a move, a
+// conflict or the entry's going ends an attestation at once, and so does the
+// end of the observer's run.
 func (o *observing) report(node string, now time.Time) ([]agentproto.Attestation, []agentproto.Observation) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -356,7 +362,7 @@ func (o *observing) report(node string, now time.Time) ([]agentproto.Attestation
 	var observations []agentproto.Observation
 	for key, h := range o.held {
 		switch {
-		case h.kind == egress.Learned && h.attest:
+		case h.kind == egress.Learned && o.onCard(key.mac, key.bridge):
 			attestations = append(attestations, agentproto.Attestation{
 				Node: node, Guest: h.guest, NIC: h.nic, MAC: key.mac, Bridge: key.bridge, VLAN: key.vlan, Port: h.port, Since: h.since,
 			})

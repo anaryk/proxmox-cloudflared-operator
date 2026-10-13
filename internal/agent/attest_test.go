@@ -250,9 +250,58 @@ func TestAMoveIsReportedForAWhileAndBlocksTheAddressAtOnce(t *testing.T) {
 	require.Equal(t, "egress remove 10.0.0.11", log.all()[0])
 	e.said(t, "guest qemu/101: its MAC bc:24:11:00:00:01 left its own port tap101i0 for eno1 on bridge vmbr0; the address is verified again before it is reached")
 
+	t.Run("learned on its own port again, it is attested from then", func(t *testing.T) {
+		f.see(learned(testMAC, "vmbr0", "tap101i0", t0.Add(2*time.Second)))
+		st := e.status(t, func(st agentproto.Status) bool { return len(st.Attestations) == 1 })
+		require.Equal(t, t0.Add(2*time.Second), st.Attestations[0].Since)
+	})
+
 	t.Run("and is forgotten after a while", func(t *testing.T) {
 		e.clock.advance(movesKeptFor + 2*time.Second)
 		require.Empty(t, e.agent.Status(t.Context()).Observations)
+	})
+}
+
+func TestAConflictOnTheGuestsOwnEntryEndsItsAttestation(t *testing.T) {
+	e := newEnv(t)
+	f := e.observing(t)
+	e.apply(e.snapshot("www.example.com -> :8080"))
+	f.see(learned(testMAC, "vmbr0", "tap101i0", t0))
+	e.status(t, func(st agentproto.Status) bool { return len(st.Attestations) == 1 })
+
+	f.see(egress.Observation{Kind: egress.Conflict, MAC: testMAC, Bridge: "vmbr0", Port: "tap102i0", From: "tap101i0", Owner: &model.GuestRef{Kind: model.KindQEMU, VMID: 102}, At: t0.Add(time.Second)})
+
+	st := e.status(t, func(st agentproto.Status) bool { return len(st.Observations) == 1 })
+	require.Empty(t, st.Attestations)
+
+	t.Run("learned on its own port again, it is attested from then", func(t *testing.T) {
+		f.see(learned(testMAC, "vmbr0", "tap101i0", t0.Add(time.Minute)))
+		st := e.status(t, func(st agentproto.Status) bool { return len(st.Attestations) == 1 })
+		require.Equal(t, t0.Add(time.Minute), st.Attestations[0].Since)
+		require.Empty(t, st.Observations, "the conflict is over")
+	})
+}
+
+// A port of a guest the snapshot says is stopped may still be in the table
+// for a moment, or the agent may hold a word of it the bridge has not taken
+// back yet: nothing is attested of it until the snapshot says it runs.
+func TestAGuestTheSnapshotSaysIsStoppedIsNotAttested(t *testing.T) {
+	e := newEnv(t)
+	f := e.observing(t)
+	s := e.snapshot("www.example.com -> :8080")
+	e.apply(s)
+	f.see(learned(testMAC, "vmbr0", "tap101i0", t0))
+	e.status(t, func(st agentproto.Status) bool { return len(st.Attestations) == 1 })
+
+	s.Targets[0].Guest.Running = false
+	st := e.apply(s)
+
+	require.Empty(t, st.Attestations)
+
+	t.Run("and attested again once it runs", func(t *testing.T) {
+		s.Targets[0].Guest.Running = true
+		st := e.apply(s)
+		require.Len(t, st.Attestations, 1)
 	})
 }
 
