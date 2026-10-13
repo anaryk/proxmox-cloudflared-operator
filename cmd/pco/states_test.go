@@ -97,7 +97,10 @@ func egressState(v engine.EgressView) engine.State {
 func observeState() engine.State {
 	st := healthyState()
 	st.Mode = "observe"
-	st.Tunnels, st.Connectors = nil, nil
+	// Observe mode looks the planned tunnel up and creates nothing: a new
+	// install shows it without an id, not verified, with no connector.
+	st.Tunnels = []engine.TunnelView{{TunnelState: reconcile.TunnelState{AccountID: "acc1", CredentialID: "cred1", Name: "pco-abc123"}}}
+	st.Connectors = nil
 	st.Credentials = []engine.CredentialView{usableCredential("cred1", "main", 365*24*time.Hour)}
 	st.Credentials[0].Checked = false
 	st.Credentials[0].Report = credentials.Report{}
