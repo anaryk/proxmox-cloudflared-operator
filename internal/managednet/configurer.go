@@ -60,7 +60,7 @@ var ErrPending = errors.New("the change waits for the guest's restart")
 // refused for the option link_down itself, as a container of a release
 // without it does; the caller may remove the card instead. Any other failure
 // of the write is not it.
-var ErrLinkDownRefused = errors.New("Proxmox refuses link_down on this card")
+var ErrLinkDownRefused = errors.New("link_down is refused on this card")
 
 // linkDownRefusal is how the schema of Proxmox refuses an option a card does
 // not have, for link_down: the command line the error repeats holds

@@ -694,7 +694,7 @@ func TestACopiedCardOnAnUntaggedGuestIsSetLinkDown(t *testing.T) {
 		require.Equal(t, "remove lxc/102 net1", changes[len(changes)-1])
 		require.Equal(t, "removed", st.Managed.Foreign[0].Action)
 		require.Contains(t, m.managedEvents(), "foreign card net1 ("+leaseMAC2+") of lxc/102 (web-1-clone) was removed, as the container refused link_down: "+
-			"Proxmox refuses link_down on this card: pct set: link_down: property is not defined in schema")
+			"link_down is refused on this card: pct set: link_down: property is not defined in schema")
 	})
 
 	t.Run("a guest pco may not write is reported", func(t *testing.T) {
