@@ -169,7 +169,10 @@ const levelWords: [string, string][] = [
     'observed',
     'only the guest answers ARP for its address, but no table placed it on a port (a guest on another node), or the address is a trusted static one that only the guest’s configuration vouches for.',
   ],
-  ['filtered', 'reserved for a network where the firewall pins every card of a guest to its address. Nothing proves it in this release.'],
+  [
+    'filtered',
+    'in the appliance, a guest on the managed network pconet: only the guest answers ARP for its address, asked from pco’s leg, and the Proxmox firewall of every card on the vnet is proven to pin it to its address and keep it from everything but the leg.',
+  ],
   ['manual', 'a route that names an address and no guest. The admin who wrote it vouches for it; nothing proves it.'],
 ]
 
