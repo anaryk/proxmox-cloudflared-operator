@@ -1,0 +1,8 @@
+{
+"nodename": "pco-lab-1",
+"version": 3,
+"cluster": { "name": "pco-lab", "version": 1, "nodes": 1, "quorate": 1 },
+"nodelist": {
+  "pco-lab-1": { "id": 1, "online": 1, "ip": "10.254.77.11"}
+  }
+}

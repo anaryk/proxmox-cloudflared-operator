@@ -1,6 +1,7 @@
 package members
 
 import (
+	"bytes"
 	"io/fs"
 	"net/netip"
 	"os"
@@ -20,24 +21,31 @@ func TestReadCorosyncFixtures(t *testing.T) {
 		want Corosync
 	}{
 		{
-			file: "corosync-three-nodes.conf",
+			file: "corosync-lab-one-node.conf",
 			want: Corosync{
-				Nodes: []string{"pve1", "pve2", "pve3"},
+				Nodes: []string{"pco-lab-1"},
+				Links: map[string][]netip.Addr{"pco-lab-1": {addr("10.254.77.11")}},
+			},
+		},
+		{
+			file: "corosync-lab-three-nodes.conf",
+			want: Corosync{
+				Nodes: []string{"pco-lab-1", "pco-lab-2", "pco-lab-3"},
 				Links: map[string][]netip.Addr{
-					"pve1": {addr("10.77.0.1")},
-					"pve2": {addr("10.77.0.2")},
-					"pve3": {addr("10.77.0.3")},
+					"pco-lab-1": {addr("10.254.77.11")},
+					"pco-lab-2": {addr("10.254.77.12")},
+					"pco-lab-3": {addr("10.254.77.13")},
 				},
 			},
 		},
 		{
-			file: "corosync-qdevice.conf",
+			file: "corosync-lab-qdevice.conf",
 			want: Corosync{
-				Nodes:        []string{"pve1", "pve2"},
+				Nodes:        []string{"pco-lab-1", "pco-lab-2"},
 				QuorumDevice: true,
 				Links: map[string][]netip.Addr{
-					"pve1": {addr("10.77.0.1")},
-					"pve2": {addr("10.77.0.2")},
+					"pco-lab-1": {addr("10.254.77.11")},
+					"pco-lab-2": {addr("10.254.77.12")},
 				},
 			},
 		},
@@ -268,15 +276,16 @@ func TestParseCorosyncRefuses(t *testing.T) {
 }
 
 func TestACorosyncFileCutMidWriteIsAnErrorAndNotAClusterWithoutADevice(t *testing.T) {
-	whole, err := os.ReadFile(fixture(t, "corosync-qdevice.conf"))
+	whole, err := os.ReadFile(fixture(t, "corosync-lab-qdevice.conf"))
 	require.NoError(t, err)
 	// The file ends with its totem section, so a cut between two sections, which
-	// no brace gives away, still lacks it. The cut that leaves out only the final
-	// newline is the whole file.
-	for cut := 1; cut < len(whole)-1; cut++ {
+	// no brace gives away, still lacks it. A cut that leaves out only what
+	// follows the last brace is the whole file.
+	end := bytes.LastIndexByte(whole, '}') + 1
+	for cut := 1; cut < end; cut++ {
 		_, err := parseCorosync(whole[:cut])
 		require.Error(t, err, "a file cut at %d of %d bytes", cut, len(whole))
 	}
-	_, err = parseCorosync(whole[:len(whole)-1])
+	_, err = parseCorosync(whole[:end])
 	require.NoError(t, err)
 }

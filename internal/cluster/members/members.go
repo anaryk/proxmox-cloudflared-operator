@@ -43,12 +43,12 @@ type Members struct {
 	// for messages; the identity of a cluster is its CA, see CAFingerprint.
 	Cluster string
 	// Standalone is a node that was never part of a cluster: the file has no
-	// cluster in it and lists no node but this one, and the node is quorate by
-	// itself.
+	// cluster in it and no list of nodes, and the node is quorate by itself.
 	Standalone bool
 	Quorate    bool
 	// Nodes are by name. A node of a cluster is among them; a standalone node
-	// has none, or only itself.
+	// is the one node of its list, with no id and no address, as the file
+	// names it and nothing else.
 	Nodes []Member
 	// ReadAt is the time the read began, so that the age of what was read is
 	// never understated.
@@ -89,21 +89,30 @@ func absent(path string) error {
 	return err
 }
 
+// clusterFile is the file as pmxcfs prints it: the name of the node and a
+// version always, the cluster and the list of its nodes together once
+// corosync has told pmxcfs about a cluster, and neither before. Both are kept
+// raw so that one that is there but empty, or null, which pmxcfs never
+// prints, is told from one that is absent.
 type clusterFile struct {
-	Nodename string                     `json:"nodename"`
-	Cluster  map[string]json.RawMessage `json:"cluster"`
-	Nodelist map[string]struct {
-		ID     int    `json:"id"`
-		Online *int   `json:"online"`
-		IP     string `json:"ip"`
-	} `json:"nodelist"`
+	Nodename string          `json:"nodename"`
+	Cluster  json.RawMessage `json:"cluster"`
+	Nodelist json.RawMessage `json:"nodelist"`
 }
 
-// Parse reads the content of the file. A cluster object with fields must say
-// whether the cluster is quorate, and the list of nodes must have this node in
-// it. No cluster object, or one without fields, is a node that stands alone,
-// provided it lists no other node; whether it has a corosync.conf is for Read
-// to see.
+type nodeEntry struct {
+	ID     int    `json:"id"`
+	Online *int   `json:"online"`
+	IP     string `json:"ip"`
+}
+
+// Parse reads the content of the file. A file with a cluster must say
+// whether the cluster is quorate and list this node among the nodes; a file
+// with neither a cluster nor a list is a node that stands alone, listed as
+// the one node of its own list, and whether a corosync.conf lies beside it
+// is for Read to see. Anything in between, a cluster without its list, a
+// list without its cluster, a cluster or a list that is empty or null, is
+// nothing pmxcfs prints and is an error.
 func Parse(b []byte, now time.Time) (Members, error) {
 	var f clusterFile
 	if err := json.Unmarshal(b, &f); err != nil {
@@ -112,22 +121,38 @@ func Parse(b []byte, now time.Time) (Members, error) {
 	if f.Nodename == "" {
 		return Members{}, errors.New("the file names no node")
 	}
-	m := Members{Self: f.Nodename, Standalone: len(f.Cluster) == 0, Quorate: true, ReadAt: now}
-	if !m.Standalone {
-		var err error
-		if m.Cluster, m.Quorate, err = clusterFacts(f.Cluster); err != nil {
-			return Members{}, err
-		}
-		if _, ok := f.Nodelist[f.Nodename]; !ok {
-			return Members{}, fmt.Errorf("the list of nodes of the cluster does not have %s in it", f.Nodename)
-		}
+	m := Members{Self: f.Nodename, Quorate: true, ReadAt: now}
+	switch {
+	case f.Cluster == nil && f.Nodelist == nil:
+		m.Standalone = true
+		m.Nodes = []Member{{Name: f.Nodename, Online: true}}
+		return m, nil
+	case f.Cluster == nil:
+		return Members{}, errors.New("the file lists nodes but no cluster")
+	case f.Nodelist == nil:
+		return Members{}, errors.New("the file has a cluster but no list of its nodes")
 	}
-	for name, n := range f.Nodelist {
+	cluster, err := object("the cluster", f.Cluster)
+	if err != nil {
+		return Members{}, err
+	}
+	if m.Cluster, m.Quorate, err = clusterFacts(cluster); err != nil {
+		return Members{}, err
+	}
+	list, err := object("the list of nodes", f.Nodelist)
+	if err != nil {
+		return Members{}, err
+	}
+	if _, ok := list[f.Nodename]; !ok {
+		return Members{}, fmt.Errorf("the list of nodes of the cluster does not have %s in it", f.Nodename)
+	}
+	for name, raw := range list {
 		if name == "" {
 			return Members{}, errors.New("a node of the list has no name")
 		}
-		if m.Standalone && name != f.Nodename {
-			return Members{}, fmt.Errorf("no cluster, but the list has node %s besides this one", name)
+		var n nodeEntry
+		if err := json.Unmarshal(raw, &n); err != nil {
+			return Members{}, fmt.Errorf("node %s: %w", name, err)
 		}
 		online, err := flag("online of node "+name, n.Online)
 		if err != nil {
@@ -142,6 +167,19 @@ func Parse(b []byte, now time.Time) (Members, error) {
 		m.Nodes = append(m.Nodes, Member{Name: name, ID: n.ID, Online: online, IP: ip})
 	}
 	slices.SortFunc(m.Nodes, func(a, b Member) int { return strings.Compare(a.Name, b.Name) })
+	return m, nil
+}
+
+// object is what a JSON object with at least one member decodes to; null,
+// an empty object or any other value is an error.
+func object(what string, raw json.RawMessage) (map[string]json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	if len(m) == 0 {
+		return nil, fmt.Errorf("%s is empty", what)
+	}
 	return m, nil
 }
 
