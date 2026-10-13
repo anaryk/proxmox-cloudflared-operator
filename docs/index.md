@@ -53,7 +53,8 @@ To run pco on a node, which is the host profile, you need:
 - Outbound access from the node: port 7844, TCP and UDP, to Cloudflare's edge for the
   connectors, and port 443 for the API.
 - Guests with an IPv4 address that pco can learn, on a bridge where the node has an IPv4
-  address too; [Quickstart](quickstart.md) has the whole list.
+  address too, or that pco reaches through a leg of its own or on its managed network
+  ([Networking](networking.md)); [Quickstart](quickstart.md) has the whole list.
 
 The packages, their checksums and the signature of the checksum file are on the
 [releases page](https://github.com/anaryk/proxmox-cloudflared-operator/releases).
@@ -64,13 +65,15 @@ The packages, their checksums and the signature of the checksum file are on the
   hostname, [Cloudflare token](cloudflare-token.md) says what the token needs, and the
   [FAQ](faq.md) answers the questions that come up first.
 - **How to**: the [how-to guides](guides/index.md) are one task each, from publishing a guest to
-  backups and the appliance, and the [use cases](use-cases/index.md) are six setups, each from
-  the situation to the settings it ends with.
+  the networks the node is not on, backups and the appliance, and the
+  [use cases](use-cases/index.md) are seven setups, each from the situation to the settings it
+  ends with.
 - **Concepts**: [Architecture](architecture.md) says how pco is built,
   [Annotations](annotations.md) is everything you can write in the Notes,
   [Identity](identity.md) how pco proves that a guest owns an address,
-  [Security](security.md) what that and the egress filter stop, and [Profiles](profiles.md)
-  sets the host and the appliance side by side.
+  [Security](security.md) what that and the egress filter stop, [Networking](networking.md)
+  how a guest the node is not on is reached, through a leg of pco's own or on its managed
+  network, and [Profiles](profiles.md) sets the host and the appliance side by side.
 - **Operations**: [Operations](operations.md) covers the daemon, the store and upgrades,
   [Troubleshooting](troubleshooting.md) starts from the output of `pco status`,
   `pco doctor` and `pco diagnose`, and [Uninstall](uninstall.md) takes pco off a node.

@@ -27,6 +27,17 @@ And these on the guests:
   Proxmox listen on every address of the node, so every guest in that network could
   then reach them. Restrict them first, with the Proxmox firewall or with `LISTEN_IP`
   and `ALLOW_FROM` in `/etc/default/pveproxy`.
+
+  There are two other ways to a guest the node is not on, which need no address of the
+  node there. Attaching the network puts a leg of pco's own into the guest's bridge or
+  VLAN, in a namespace that answers nothing of the node, and the guests there are
+  served through it without being touched: `pco network attach vmbr1 --address
+  10.77.0.250/24`, and [Attach a network](guides/attach-a-network.md) is the guide. The
+  managed network gives pco a network of its own, the SDN vnet `pconet`, and puts a
+  card on it on each guest that consents, with an address pco gives and an isolation pco
+  proves: `pco setup --managed` makes it with the rest, and
+  [Set up the managed network](guides/managed-network.md) takes it from there.
+  [Networking](networking.md) says when to choose which.
 - The guest has an IPv4 address that pco can learn. For a container nothing more is
   needed. For a virtual machine the QEMU guest agent must run in the guest and be
   enabled in its options, or the route must name the address (see
@@ -409,6 +420,8 @@ interface; [Appliance](appliance.md#the-web-interface) says how to sign in.
 - [Use cases](use-cases/index.md): six setups, from a homelab to a hosting company, and the
   decisions each one makes.
 - [Annotations](annotations.md): everything you can write in the Notes.
+- [Networking](networking.md): the guests the node is not on, through a leg of pco's
+  own or on the managed network.
 - [Identity](identity.md) and [Security](security.md): what pco proves before it
   publishes an address, and what it does not.
 - [Operations](operations.md): the daemon, the settings, upgrades.

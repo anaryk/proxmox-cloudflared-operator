@@ -544,6 +544,93 @@ it was read at in the body. `DELETE /v1/routes/manual/:id?rev=<rev>` removes one
 changed since it was read is refused with `refused`. An address must lie in the setting
 `manualCIDRs`.
 
+### Networks and the managed network
+
+`GET /v1/networks` answers the networks pco reaches through a leg of its own
+([Networking](networking.md)), each as the store keeps it with how the gateway last found its
+leg on this node and what it serves:
+
+```json
+[
+  {
+    "id": "vmbr1",
+    "kind": "attach",
+    "bridge": "vmbr1",
+    "prefix": "10.77.0.0/24",
+    "legs": { "node1": "10.77.0.250" },
+    "legMAC": "02:50:43:4f:00:01",
+    "mark": 1,
+    "createdAt": "2026-10-01T13:00:00Z",
+    "rev": 2,
+    "legStates": [{ "node": "node1", "addr": "10.77.0.250", "up": true }],
+    "targets": 1,
+    "routes": 1
+  }
+]
+```
+
+`kind` is `attach` or `managed`, whose `id` and `bridge` are `pconet`; a VLAN has `vlan`, a
+bridge with a physical port `uplink`, and a network attached over a route of the node
+`overlapOK`. A leg that is not up carries `problem`. `GET /v1/networks/:id` answers one network
+with `services`, each `{"network", "addr", "service", "allocatedAt", "owner", "guest",
+"identity"}`, the service address the connectors dial for the guest address behind the leg and
+whom it was made for, and `served`, the hostnames served through it.
+
+`GET /v1/networks/candidates` answers the bridges and VLANs a network may be attached to, each
+`{"bridge", "vlan", "vnet", "vlanAware", "uplink", "direct", "attached", "guests", "prefixes",
+"refused"}`: `direct` says the node has an address there, `attached` names the network when a
+leg exists, `guests` lists the addresses seen there by guest, `prefixes` the prefixes they
+suggest, most common first, and `refused` why this profile cannot attach it. `POST
+/v1/networks/probe {"bridge", "vlan", "prefix", "address"}` asks who answers for an address,
+`prefix` and `address` optional, and answers `{"bridge", "vlan", "prefix", "address", "free",
+"answeredBy", "uplink", "warning", "note", "overlap"}`. `POST /v1/networks` attaches:
+
+```json
+{ "bridge": "vmbr1", "vlan": 0, "prefix": "10.77.0.0/24", "address": "10.77.0.250", "confirmUplink": false, "overlapOK": false }
+```
+
+and answers the network with `201`; a bridge the node reaches directly, an uplink without
+`confirmUplink`, a prefix that overlaps a route of the node without `overlapOK`, an address in
+use, and the 16th network are refused with `refused` and the reason. `DELETE
+/v1/networks/:id?rev=<rev>&confirm=true` detaches, with the revision the network was read at;
+without `confirm` it is refused while routes are served through it, naming them.
+
+`GET /v1/managed` answers the managed network as the last cycle found it:
+
+```json
+{
+  "enabled": true,
+  "consent": "per-guest",
+  "autoAllowed": true,
+  "tagHonoured": true,
+  "subnet": "10.203.118.0/24",
+  "leg": { "node": "node1", "addr": "10.203.118.1", "up": true },
+  "attachments": [
+    { "owner": "lxc/201", "identity": "mac:...", "nic": 1, "mac": "06:50:43:4f:76:02", "addr": "10.203.118.2", "consent": "tag", "since": "2026-10-01T10:00:00Z", "guest": { "kind": "lxc", "vmid": 201, "name": "new-1" }, "state": "attached" }
+  ],
+  "waiting": [{ "kind": "qemu", "vmid": 109, "name": "other-9", "identity": "uuid:...", "why": "guest is on node pve2, not node1" }],
+  "foreign": [],
+  "free": 252,
+  "vnet": { "ok": true, "zoneType": "simple", "isolatePorts": true, "subnets": 0 }
+}
+```
+
+`state` is `attached`, `attached (unverified)`, `pending-reboot`, `awaiting-dhcp`,
+`needs-grant`, `detaching`, `detach-pending` or `migrated`, with `detail` and, for a grant, the
+`pveum` line as `grantCmd`; a detach under way has `detachAt` and `detachWhy`. `autoStopped`
+says why automatic attaches are stopped, `gateTag` names the gate tag under consent `auto`,
+`refused` why no card can be added, `poolGrant` the granted pool of the appliance, `filtered`
+`{"holds", "backend", "offered", "why"}` the appliance's isolation, and `dhcp` `{"bound",
+"since", "unknown", "forged"}` the DHCP server. A foreign card is `{"kind", "vmid", "name",
+"nic", "mac", "action", "why"}` with the action `replaced`, `link-down`, `removed` or
+`reported`.
+
+`POST /v1/managed/approve {"owner", "identity", "acceptFirewallImpact"}` consents to a card for
+a guest in the identity shown, as an approval does; the answer is the consent. `POST
+/v1/managed/revoke {"owner"}` takes it back; the card goes after the grace. `POST
+/v1/managed/enable {}` stores the managed network once its vnet exists as pco makes it, and
+answers `{}`; it is what `pco network managed enable` calls while the daemon runs.
+
 ### Restart
 
 `POST /v1/daemon/restart` answers `202`, and the daemon stops once the running cycle is done, for

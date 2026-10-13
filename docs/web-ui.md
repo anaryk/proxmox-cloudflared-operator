@@ -8,8 +8,12 @@ user signs in with what Proxmox VE already knows of them, and what they may do f
 their privileges there.
 
 What changes the node itself stays on the command line, as root: `pco setup`, `pco uninstall`,
-`pco egress`, `pco tunnel rotate`, `pco segment acknowledge` and `revoke`, and `pco web cert`.
-Where one of them is the fix, the page shows the command with a button that copies it.
+`pco egress`, `pco tunnel rotate`, `pco segment acknowledge` and `revoke`, `pco netns` and
+`pco web cert`. Where one of them is the fix, the page shows the command with a button that
+copies it. The networks pco attaches and its managed network ([Networking](networking.md)) are
+set up on the command line too, with `pco network` and `pco managed`: the page shows how a
+route is reached through them, and the wizard that attaches a network and the screen of the
+managed network come in a later release.
 
 The screenshots on this page show an example install, as an admin sees it unless the text
 says otherwise: one served zone with a route in every state, a connector pco does not run, a
@@ -266,7 +270,7 @@ The map draws every hostname's way from Cloudflare to its guest, in five columns
 | hostname | zone, with a line for each hostname | the state of each route and its owner; a route in conflict names the holder, a hostname a record of someone else holds has a `DNS` tag, a held route a `503` tag, a guest that waits for approval says so |
 | edge | tunnel, one in each account | whether its configuration is verified, its connections to the edge and their locations, the round trip |
 | connector | connector on this node | ready, connections, the configuration version rolled out, the version of cloudflared; a connector pco does not run as a red card of its own, with the command that gives the tunnel a new secret in its tooltip |
-| path | bridge and VLAN a route was proven on | the VLAN as the guest's card has it; routes proven on no bridge, such as manual routes to an address, share one card |
+| path | bridge and VLAN a route was proven on, or the network a route is reached through | the VLAN as the guest's card has it, and `direct`; a route reached through a leg of pco's own has the card of its network, `vmbr1 · attach` or `pconet · managed`; routes proven on no bridge, such as manual routes to an address, share one card |
 | target | guest, or address of a manual route | a line for each published port, with the identity level |
 
 Hovering or focusing a card shows its chain and dims the rest; a click, or Enter, opens its
@@ -326,7 +330,10 @@ around it.
 
 List view, and every window narrower than 720 pixels, shows the same content as a list: a line
 for each hostname with its state, which opens to its chain from the zone to the port, with the
-target's figure where there is one. It is the way to read the map with a screen reader.
+target's figure where there is one. It is the way to read the map with a screen reader. The
+Path step of a chain names the bridge and VLAN, and for a route through a leg says how the leg
+fares, in the words of the `path` step of `pco diagnose`: `vmbr1 · attach · leg up, service
+198.18.1.0 → 10.77.0.11`, or `the leg is not up: <why>`, which fails the step.
 
 | Action | What it does | Who | Confirmation | Command line |
 |---|---|---|---|---|
@@ -342,8 +349,9 @@ target's figure where there is one. It is the way to read the map with a screen 
 ![The routes: a chip for each state with its count, a filter by zone and by text, and a row for each hostname with its state, owner, service, level and zone](images/ui-routes-light.png)
 
 Every hostname the guests and the manual routes ask for, with its state, owner, service, identity
-level and zone, as `pco routes` lists them. The chips filter by state, the select by zone, and
-the search box matches the hostname, the owner, the guest's name and the service. A route that
+level and zone, as `pco routes` lists them; the service of a route reached through a leg is its
+service address, which the gateway forwards to the guest. The chips filter by state, the select
+by zone, and the search box matches the hostname, the owner, the guest's name and the service. A route that
 is not active says why under its hostname. Over the table a line says when these are the routes
 of an earlier cycle: before the first cycle, after a cycle that held, and when the inventory was
 incomplete.
@@ -355,7 +363,7 @@ A row opens the route in a drawer, or as a page of its own on a phone. Its addre
 
 | Tab | Shows |
 |---|---|
-| Overview | The state and why, warnings, the owner, zone, service and level, the ingress rule pco plans for it, the tunnel, the path the address was proven on with when the proof was last stored and since when the guest is bound there, every candidate address with where it came from and what its check found, and the connections opened to the target over the last 15 minutes. |
+| Overview | The state and why, warnings, the owner, zone, service and level, the ingress rule pco plans for it, the tunnel, the path the address was proven on with when the proof was last stored and since when the guest is bound there, for a route reached through a leg a Via line (`attach vmbr1: leg up, service 198.18.1.0 → 10.77.0.11`, or why the leg is not up), every candidate address with where it came from and what its check found, `managed` for an address pco leased on its managed network, and the connections opened to the target over the last 15 minutes. |
 | Diagnosis of the current holder | `pco diagnose` for the hostname, run when asked: the daemon walks the chain of the route that holds the hostname, from the claim to an answer of the guest, and stops at the first step that fails. The tab is there only on the route the daemon would diagnose. |
 | Timeline | The events of the route, from memory and from the event log on the node, newest first, with the admin who caused each. |
 | Claim | Who holds the hostname, since when, and who waits for it. |
@@ -477,11 +485,14 @@ claims. The claims are read when the page opens; Read again reads them anew.
 
 ![The networks: the bridges and VLANs the routes were proven on, with their routes, levels and guests, and the segments of routes at observed](images/ui-networks-light.png)
 
-Where the routes were proven: a row for each bridge and VLAN, with the number of routes, their
-identity levels and their guests, and a row for the routes proven on no bridge, such as manual
-routes to an address. A row opens its routes and guests. pco shows no subnet: it does not know
-the subnets of a network. The page says what each identity level proves and which level the
-setting `identityMinimum` serves.
+Where the routes were proven directly, as the node itself: a row for each bridge and VLAN, with
+the number of routes, their identity levels and their guests, and a row for the routes proven on
+no bridge, such as manual routes to an address. A row opens its routes and guests. pco shows no
+subnet: it does not know the subnets of a network. A route reached through the leg of a network
+is in no row; a line under the table counts them, and the flow map and the route's page say
+through which network. The networks pco attached and its managed network are not shown here
+yet: `pco network list` and `pco managed status` show them. The page says what each identity
+level proves and which level the setting `identityMinimum` serves.
 
 The segments of routes at `observed` are listed with whether an admin acknowledged them. They are
 acknowledged on the node, as root, with `pco segment acknowledge`: the page has no action.
@@ -679,6 +690,7 @@ whole. pco web filters what the daemon answers before it reaches the reader's br
 | A diagnosis | only of a hostname whose holder is a guest it sees, or a manual route; otherwise as if there were no route |
 | The doctor | the counts of its checks |
 | Zones, tunnels, connectors, connectors pco does not run, credentials, settings, segments, the egress filter, the admission mode | as an admin sees them; a credential never carries its token |
+| The networks and the managed network | the networks without the MACs of their legs; of the managed network the cards, the waiting guests and the foreign cards of guests it sees, without their MACs, identities and `pveum` lines, the pool grant and the appliance's isolation; a reason that carries a command is cut to its name, and the service addresses of a network, which name the guests behind them, not at all |
 
 The filter keeps out what names a guest in a field of its own. It cannot keep out what free text
 says, and pco does not try: the problems of the last cycle, the reason a cycle held and why the

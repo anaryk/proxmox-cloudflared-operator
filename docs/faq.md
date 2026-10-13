@@ -59,9 +59,29 @@ each tunnel, and loads the nftables table `inet pco_egress`. That table is pco's
 at the packets of the connectors only; other tables and the Proxmox firewall are not touched.
 
 Everything setup creates is listed in `/var/lib/pco/manifest.json`, and `pco uninstall`
-removes what it lists and nothing else. pco never changes a guest, its tags or its Notes.
+removes what it lists and nothing else. pco never changes a guest's tags or Notes, and
+changes a guest in one way only, with its consent: a network card on pco's managed network.
 [Files](files.md) lists every path, and
 [Architecture](architecture.md#what-pco-never-touches) what pco never touches.
+
+With a network the node is not on, there is more, and only when you ask for it. `pco network
+attach` puts a leg of pco's own into a bridge or VLAN: a network namespace `pco` on the node,
+a veth pair into the bridge, and `pco-netns.service` that brings them back at boot; nothing is
+written to `/etc/network/interfaces`. `pco setup --managed` or `pco network managed enable`
+makes the SDN zone `pco` and the vnet `pconet` of the managed network, applied to every node of
+the cluster, and the daemon then adds a card on that vnet to each guest that consents, as root
+with `qm set` and `pct set`, and runs a DHCP server for the virtual machines on it.
+[Networking](networking.md) has all of it, and the uninstall takes it back, the cards with
+`--detach-managed`.
+
+## Can pco reach a guest on a network the node is not on?
+
+Yes, in two ways. Attaching the network puts a leg of pco's own there, and the guests on it are
+reached through the leg, untouched. The managed network is a network of pco's own, which a
+guest that consents gets a card on, with an address pco gives and an isolation pco proves. Both
+work on a host and in the appliance; [Networking](networking.md#which-way-to-a-guest) says when
+to use which, and the guides [Attach a network](guides/attach-a-network.md) and
+[Set up the managed network](guides/managed-network.md) take one each.
 
 ## What happens when Cloudflare is down?
 
@@ -143,7 +163,8 @@ guest are never candidates. A route that names one is rejected:
     invalid target "[::1]:80": expected [http|https://][ipv4]:port
 
 So a guest with only an IPv6 address cannot be published. For any guest, the node also needs
-an IPv4 address on the bridge that the guest's network card is attached to, to reach it.
+an IPv4 address on the bridge that the guest's network card is attached to, to reach it, or a
+leg of pco's own there, which has an IPv4 address and no other ([Networking](networking.md)).
 
 Two other places have an address family. The connectors reach Cloudflare's edge over IPv4 or
 IPv6, as `cloudflared` chooses (`--edge-ip-version auto`), and the egress filter lets port

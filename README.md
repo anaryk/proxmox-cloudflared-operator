@@ -19,7 +19,8 @@ address of the node or of another machine by naming it in its Notes.
 
 pco is not a reverse proxy and is never in the data path: traffic goes from
 Cloudflare to the connector on the node to the guest, and does not pass through the
-daemon. It does not create or change guests, and never writes their tags or Notes.
+daemon. It does not create guests, never writes their tags or Notes, and changes a guest
+in one way only, with its consent: a network card on pco's managed network.
 It publishes HTTP and HTTPS to IPv4 origins and nothing else: no TCP or SSH
 tunnels, no WARP or private networks, and no Cloudflare Access policies. A
 published hostname is public, and what protects the application behind it is the
@@ -34,6 +35,11 @@ down, so are its hostnames.
   bridge, and goes on watching: an address whose MAC moves is cut off at once.
 - Confines each connector with an nftables filter to Cloudflare, the resolvers of the node
   and the verified addresses.
+- Reaches the guests the node is not on: a network the node has no address in is attached
+  with a leg of pco's own, in a namespace that answers nothing of the node, and the guests
+  there are served through it untouched; or the guests that consent get a card on pco's own
+  managed network, with an address pco gives, DHCP pco serves and an isolation pco proves
+  (see [Networking](docs/networking.md)).
 - Writes the tunnel configuration and a proxied CNAME for each hostname, changes only the
   records that carry its marker, and removes a record once its hostname has been unwanted
   for a grace period.
@@ -67,7 +73,8 @@ To run pco on a node, the host profile:
 - Outbound access from the node: port 7844, TCP and UDP, to Cloudflare's edge for the
   connectors, and port 443 for the API.
 - Guests with an IPv4 address that pco can learn, on a bridge where the node has an IPv4
-  address too (see the [Quickstart](docs/quickstart.md) for the whole list).
+  address too, or that pco reaches through a leg of its own (see the
+  [Quickstart](docs/quickstart.md) for the whole list).
 
 The appliance installs nothing on the node and carries its own `cloudflared`; see
 [Profiles](docs/profiles.md). The packages, their checksums and the signature of the
@@ -146,6 +153,8 @@ The pages are published, with search, at
 - [Architecture](docs/architecture.md): the parts, the cycle, the path of a request and
   the one writer.
 - [Identity](docs/identity.md): how pco proves that a guest owns an address.
+- [Networking](docs/networking.md): the three ways to a guest, the legs and the service
+  addresses, the managed network with its consent and its isolation, and what to check.
 - [Security](docs/security.md): the threat model, the identity levels against five
   attackers, the egress filter of the connectors, and where the secrets live.
 - [Operations](docs/operations.md): the daemon, the store, the cycle, exit codes and
