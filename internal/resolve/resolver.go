@@ -126,6 +126,16 @@ type Settings struct {
 	// as in the appliance, whose bridge tables are invisible: the ceiling of
 	// every proof is observed.
 	NoForwardingTable bool
+	// Ceiling is the highest level a proof made on an interface of the node
+	// may stand for, as the managed network in the appliance, where the
+	// engine raises a proof to filtered itself. A required level above it is
+	// asked of a candidate on that interface as the ceiling, and the
+	// forwarding-table step is not made where the ceiling is below port, so
+	// that a call neither probes nor looks further for what it cannot prove
+	// there. It is asked with the interface a proof is made on, and with one
+	// that names only Via for the proof a binding carries. Nil, or an empty
+	// answer, caps nothing.
+	Ceiling func(iface HostIface) Level
 }
 
 // CandidateResult is how one candidate fared. Level is the level its identity
@@ -389,7 +399,7 @@ func (a *attempt) resolve(ctx context.Context) Result {
 		switch {
 		case o.verdict == cancelled:
 			return a.cancelled()
-		case o.ok() && a.proofs[0].level.AtLeast(a.required) && a.prev.settling(a.now, a.r.settings.StickyFor):
+		case o.ok() && a.proofs[0].level.AtLeast(a.requiredOf(a.list[0])) && a.prev.settling(a.now, a.r.settings.StickyFor):
 			return a.served(0)
 		case o.ok():
 			best = 0
@@ -476,10 +486,28 @@ func (a *attempt) ceiling() Level {
 // the guest's ceiling otherwise. It needs the host's interfaces, which have
 // been read once a candidate passed.
 func (a *attempt) ceilingOf(c Candidate) Level {
-	if arpInterface(a.ifaces, c).Name == "" {
+	ifc := arpInterface(a.ifaces, c)
+	if ifc.Name == "" {
 		return LevelObserved
 	}
-	return a.ceiling()
+	return a.r.capped(ifc, a.ceiling())
+}
+
+// requiredOf is the level a candidate must be proven at to settle: the
+// required level, or the ceiling of its interface when that is lower.
+func (a *attempt) requiredOf(c Candidate) Level {
+	return a.r.capped(arpInterface(a.ifaces, c), a.required)
+}
+
+// capped is l, or the ceiling of iface when l is above it.
+func (r *Resolver) capped(iface HostIface, l Level) Level {
+	if r.settings.Ceiling == nil {
+		return l
+	}
+	if c := r.settings.Ceiling(iface); c != "" && l.rank() > c.rank() {
+		return c
+	}
+	return l
 }
 
 // served binds the route to the candidate at i; the bound candidate keeps
@@ -562,6 +590,9 @@ func (a *attempt) unproven(b *Binding, reason string) Result {
 	res := a.result(b.target(reason), b)
 	if res.Level != "" && (!a.checksFDB() || a.mayRunElsewhere()) {
 		res.Level = LevelObserved
+	}
+	if res.Level != "" {
+		res.Level = a.r.capped(HostIface{Via: b.Via}, res.Level)
 	}
 	return res
 }

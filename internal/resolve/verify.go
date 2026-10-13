@@ -189,7 +189,7 @@ func (a *attempt) wireCheck(ctx context.Context, ifc HostIface, c Candidate) wir
 			return wireAnswer{o: o}
 		}
 		p.segment, p.via = SegmentOf(c.NIC), ifc.Via
-		p.level = wireLevel(macs, placed)
+		p.level = a.r.capped(ifc, wireLevel(macs, placed))
 		if p.level == LevelPort {
 			p.bridge, _ = fdbOf(ifc, c.NIC)
 			p.port, p.ports = placed[normalMAC(c.NIC.MAC)], placed
@@ -228,7 +228,7 @@ func (a *attempt) onWire(ctx context.Context, ifc HostIface, c Candidate) ([]str
 		return nil, nil, o
 	}
 	switch {
-	case a.r.settings.NoForwardingTable:
+	case a.r.settings.NoForwardingTable, a.r.capped(ifc, LevelPort) != LevelPort:
 		return macs, nil, outcome{}
 	case !a.checksFDB():
 		return macs, nil, a.notOnLocalPorts(ctx, ifc, c.NIC, macs)

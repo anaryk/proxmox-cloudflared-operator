@@ -12,8 +12,9 @@ const (
 	// every one of them on the guest's own port.
 	LevelPort Level = "port"
 	// LevelFiltered is the level of a network that pins every guest NIC to
-	// its address. Nothing proves it yet; it exists for the minimum the
-	// settings ask for.
+	// its address: the managed network in the appliance, while the firewall
+	// of every card on it is proven to isolate it. The resolver never proves
+	// it: the engine raises a proof at observed on that network to it.
 	LevelFiltered Level = "filtered"
 	// LevelObserved: ARP for the address is answered only by the guest's MACs,
 	// but no forwarding table placed them on its port, as for a guest on
