@@ -388,8 +388,9 @@ func TestTwoNetworksWithOneAddressGetTwoServiceAddresses(t *testing.T) {
 
 // Two routes to one guest share its service address, with the ports of both;
 // a route that goes takes its port away only after the tunnel run verified
-// its rule gone, and the last one takes the service address away then. The
-// same guest published again gets a new one.
+// its rule gone. Once no route is left, the service address forwards nothing
+// at once, and is released after the tunnel run verified the last rule gone.
+// The same guest published again gets a new one.
 func TestAServiceAddressLeavesTheGatewayOnlyAfterItsRulesAreGone(t *testing.T) {
 	e := newLegEnv(t)
 	e.inv.set(snapshot(guest(101, "web-1", "www.example.com -> :8080", "api.example.com -> :9090")))
@@ -412,7 +413,7 @@ func TestAServiceAddressLeavesTheGatewayOnlyAfterItsRulesAreGone(t *testing.T) {
 
 	e.inv.set(snapshot(guest(101, "web-1")))
 	e.next()
-	require.Len(t, e.gw.last(t).services, 1)
+	require.Empty(t, e.gw.last(t).services, "no route it was made for is served: it forwards nothing")
 	require.Len(t, e.mappings(), 1, "kept while a verified configuration sends a connector there")
 
 	st := e.next()

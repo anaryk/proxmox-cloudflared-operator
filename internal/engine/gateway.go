@@ -484,21 +484,27 @@ func (c *cycleRun) serviceAddr(rt model.Route, ms mappings) {
 		return
 	}
 	key := mappingKey{b.Via, res.Target.Addr}
+	unknown := c.identityUnknown(rt, res)
 	if m, ok := ms.byKey[key]; ok {
 		switch {
 		case c.frozen[m.Service]:
 			c.withoutService(rt, fmt.Sprintf(gateFrozen, m.Service))
 			return
-		case c.madeFor(m, rt, res) || c.sharedWith(m, rt, res):
+		case c.keeps(m, rt, res):
 			c.publishAt(rt, m.Service)
 			return
 		case c.usedByItsOwner(m, ""):
 			c.withoutService(rt, fmt.Sprintf(gateTaken, m.Service, madeForText(m)))
 			return
+		case unknown:
 		case !c.disown(m, rt, ms):
 			c.withoutService(rt, fmt.Sprintf(gateNotReleased, m.Service))
 			return
 		}
+	}
+	if unknown {
+		c.withoutService(rt, fmt.Sprintf(gateUnknownIdentity, b.Guest))
+		return
 	}
 	open, why := c.gateOpen("service address for " + rt.Hostname)
 	if open {
@@ -595,7 +601,10 @@ func (c *cycleRun) wantedLegs(nets map[string]store.Network) []gateway.Leg {
 // wantedServices are the service addresses of the networks with a leg here
 // that the egress set of this cycle holds, each with the ports it holds it
 // at: those of the targets served now and those a configuration verified at
-// Cloudflare still sends a connector to, as the set takes them.
+// Cloudflare still sends a connector to, as the set takes them. One at whose
+// address no route it was made for is served in this cycle forwards nothing:
+// whoever is there now may be another guest, and a rule that still names it
+// must reach no one.
 func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []store.ServiceAddr) []gateway.Service {
 	ports := map[netip.Addr][]uint16{}
 	for _, t := range c.egressSet() {
@@ -604,7 +613,7 @@ func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []store.ServiceAd
 	var out []gateway.Service
 	for _, m := range mappings {
 		p, ok := ports[m.Service]
-		if !ok || !slices.ContainsFunc(legs, func(l gateway.Leg) bool { return l.ID == m.Network }) {
+		if !ok || !slices.ContainsFunc(legs, func(l gateway.Leg) bool { return l.ID == m.Network }) || !c.servedFor(m) {
 			continue
 		}
 		out = append(out, gateway.Service{Leg: m.Network, Service: m.Service, Addr: m.Addr, Ports: slices.Compact(slices.Sorted(slices.Values(p)))})

@@ -235,8 +235,10 @@ another owner and could not be released (the line of the release says why), `ser
 <service> of this address was made for another owner and could not be released`; for an
 address where the guest its service address was made for is proven too, `service address
 <service> of this address was made for <owner>, which is proven there too` (one of the two
-proofs is wrong; neither guest is given the other's service address). A pool that ran out
-gives the line of its error: `every service address was given out: ...`. A route whose service address waits to follow it
+proofs is wrong; neither guest is given the other's service address); for a guest missing
+from the inventory of this cycle, `the identity of guest <guest> is not known in this cycle`
+(a service address it already has is kept). A pool that ran out gives the line of its error:
+`every service address was given out: ...`. A route whose service address waits to follow it
 is `unreachable` with the reason `service address not moved: <reason>; the rule is kept and
 reaches nothing until it is`.
 

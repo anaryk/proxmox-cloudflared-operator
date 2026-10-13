@@ -188,7 +188,8 @@ shows and restores it. A service address belongs to the route's owner and the gu
 made for, a guest that took a deleted guest's VMID being another one: when anyone else takes
 the address it forwards to, as after the first guest was deleted while a rule for it is still
 at Cloudflare, it is released, so that the old rule reaches nothing, and the newcomer gets a
-new one.
+new one. A service address forwards nothing while no route it was made for is served at the
+address it forwards to, even while a rule at Cloudflare still names it.
 
 A leg whose mark passes to another network, to another bridge, to another VLAN or to the
 untagged network of its bridge, is made anew and loses the connection tracking entries of its

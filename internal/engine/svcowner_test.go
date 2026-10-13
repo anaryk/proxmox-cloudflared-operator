@@ -166,53 +166,79 @@ func TestAManualRouteToTheSameGuestSharesItsServiceAddress(t *testing.T) {
 	e.requireNeverForwarded(synced, svc0, legAddr)
 }
 
-// A mapping stored before owners were kept belongs to the routes whose
-// stored bindings were published under it: web-1 keeps it without a write,
-// and the next guest at its address does not get it.
-func TestAServiceAddressStoredWithoutAnOwner(t *testing.T) {
+// A mapping stored without an owner was made for no one: the route at its
+// address gets a new one, at the cost of one write of its rule, and the old
+// one forwards nothing.
+func TestAServiceAddressStoredWithoutAnOwnerIsMadeAnew(t *testing.T) {
 	e := newLegEnv(t)
 	e.warm()
 	e.next()
 	require.NoError(t, e.store.ReleaseServiceAddr("vmbr1", legAddr))
 	require.NoError(t, e.store.SaveServiceAddr(store.ServiceAddr{Network: "vmbr1", Addr: legAddr, Service: svc0, AllocatedAt: t0}))
 	writes := len(e.writes())
+	synced := e.gw.syncCount()
 
 	st := e.next()
+
+	require.Equal(t, "http://198.18.1.1:8080", route(st, legHost).Service)
+	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.10": svc1}, e.mappings())
+	e.requireNeverForwarded(synced, svc0, legAddr)
+	require.Len(t, e.writes(), writes+1, "one write of the rule")
+	require.Contains(t, unnumbered(e.eng.Events(time.Time{})), Event{At: st.At, Level: levelInfo, Kind: kindNetwork, Subject: "vmbr1", Route: legHost,
+		Message: "service address 198.18.1.0 of 10.50.0.10 on network vmbr1 released: it was made for a route of an earlier version, and qemu/101 is at the address now"})
 	e.next()
+	require.Len(t, e.writes(), writes+1, "and nothing after it")
+}
 
-	require.Equal(t, "http://198.18.1.0:8080", route(st, legHost).Service)
-	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.10": svc0}, e.mappings())
-	require.Len(t, e.writes(), writes, "nothing changes for its own route")
-	for _, ev := range e.eng.Events(time.Time{}) {
-		require.NotContains(t, ev.Message, "released")
-	}
-
+// web-1 drops its route while every write fails: its rule stays at
+// Cloudflare and with it the service address, but no route it was made for
+// is served at its address any more, so it forwards to nothing, whoever is
+// there now.
+func TestAServiceAddressNoRouteOfItsOwnerIsServedAtForwardsNothing(t *testing.T) {
+	e := newLegEnv(t)
+	e.warm()
+	e.next()
 	e.cf.FailNext("tunnel.write", 1000, errors.New("the account is frozen"))
-	e.inv.set(snapshot(guest(102, "x", "x.example.com -> :8080")))
-	e.res.goVia("x.example.com", "vmbr1")
-	e.res.moveTo("x.example.com", legAddr)
-	e.res.answerFrom("x.example.com", dbMAC)
+	e.inv.set(snapshot(guest(102, "x")))
 	synced := e.gw.syncCount()
 
 	e.next()
-	st = e.next()
+	e.next()
 
-	require.Equal(t, "http://198.18.1.1:8080", route(st, "x.example.com").Service)
-	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.10": svc1}, e.mappings())
+	require.Contains(t, e.rules(), hostRuleAt(legHost, "http://198.18.1.0:8080"), "the write failed: the old rule is still there")
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.NotContains(t, bindings, legHost)
+	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.10": svc0}, e.mappings(), "kept while the rule names it, so it is never given again")
 	e.requireNeverForwarded(synced, svc0, legAddr)
-	require.Contains(t, unnumbered(e.eng.Events(time.Time{})), Event{At: st.At.Add(-20 * time.Second), Level: levelInfo, Kind: kindNetwork,
-		Subject: "vmbr1", Route: "x.example.com",
-		Message: "service address 198.18.1.0 of 10.50.0.10 on network vmbr1 released: it was made for a route of an earlier version, and qemu/102 is at the address now"})
+	require.Empty(t, e.gw.last(t).services)
+}
 
-	t.Run("that no stored binding was published under", func(t *testing.T) {
-		e := newLegEnv(t)
-		require.NoError(t, e.store.SaveServiceAddr(store.ServiceAddr{Network: "vmbr1", Addr: legAddr, Service: svc0, AllocatedAt: t0}))
-		require.NoError(t, e.store.SaveServicePool(svc1))
-		e.warm()
+// A guest whose identity this cycle does not know is not proven to be the
+// one a service address was made for, nor another: its route keeps the one
+// its owner and guest have, nothing is released, and none is made for it.
+func TestAGuestOfUnknownIdentityNeitherLosesNorGetsAServiceAddress(t *testing.T) {
+	e := newLegEnv(t)
+	e.warm()
+	e.next()
+	writes := len(e.writes())
+	web := guest(101, "web-1", "www.example.com -> :8080")
+	web.Identity = ""
+	x := guest(102, "x", "x.example.com -> :8080")
+	x.Identity = ""
+	e.inv.set(snapshot(web, x))
+	e.res.goVia("x.example.com", "vmbr1")
+	e.res.moveTo("x.example.com", netip.MustParseAddr("10.50.0.11"))
+	e.res.answerFrom("x.example.com", dbMAC)
 
-		st := e.next()
+	st := e.next()
 
-		require.Equal(t, "http://198.18.1.1:8080", route(st, legHost).Service, "it is made anew")
-		require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.10": svc1}, e.mappings())
-	})
+	require.Equal(t, "http://198.18.1.0:8080", route(st, legHost).Service)
+	require.Equal(t, "service address not allocated: the identity of guest qemu/102 is not known in this cycle", route(st, "x.example.com").Reason)
+	require.Equal(t, map[string]netip.Addr{"vmbr1 10.50.0.10": svc0}, e.mappings())
+	require.Len(t, e.writes(), writes+1, "only the rule of x.example.com, which answers 503")
+	for _, ev := range e.eng.Events(time.Time{}) {
+		require.NotContains(t, ev.Message, "released")
+	}
+	require.Equal(t, []gateway.Service{{Leg: "vmbr1", Service: svc0, Addr: legAddr, Ports: []uint16{8080}}}, e.gw.last(t).services)
 }

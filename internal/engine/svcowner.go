@@ -17,6 +17,11 @@ const gateNotReleased = "service address %s of this address was made for another
 // wrong, and neither guest is handed the other's.
 const gateTaken = "service address %s of this address was made for %s, which is proven there too"
 
+// gateUnknownIdentity is why a target of a guest whose identity the snapshot
+// of this cycle does not hold gets no service address: whom it would be made
+// for is not known.
+const gateUnknownIdentity = "the identity of guest %s is not known in this cycle"
+
 // serviceOwner is whom a service address made now for rt, whose result res
 // has a binding, is made for: its owner, its guest and the identity the
 // guest has in this cycle's snapshot.
@@ -35,29 +40,32 @@ func (c *cycleRun) serviceOwner(rt model.Route, res resolve.Result) store.Servic
 	return o
 }
 
+// identityUnknown reports whether rt, whose result res has a binding, goes
+// to a guest whose identity this cycle's snapshot does not hold: it is
+// proven to be neither the guest a service address was made for nor another.
+func (c *cycleRun) identityUnknown(rt model.Route, res resolve.Result) bool {
+	o := c.serviceOwner(rt, res)
+	return o.Guest != "" && o.Identity == ""
+}
+
 // madeFor reports whether the service address m was made for rt, whose
 // result res has a binding: its owner, guest and the guest's identity are
-// those it was made for. A mapping stored before owners were kept was made
-// for the routes whose stored bindings were published under it, while those
-// name one guest; otherwise for none, and it is made anew.
+// those it was made for. A mapping stored without an owner was made for no
+// one.
 func (c *cycleRun) madeFor(m store.ServiceAddr, rt model.Route, res resolve.Result) bool {
-	if res.Binding == nil {
-		return false
+	return res.Binding != nil && m.Known() && m.ServiceOwner == c.serviceOwner(rt, res)
+}
+
+// keeps reports whether rt, whose result res has a binding, is published
+// under m: m was made for it, or is shared with it, or was made for its owner
+// and guest while the guest's identity is not known in this cycle, which
+// proves nothing either way.
+func (c *cycleRun) keeps(m store.ServiceAddr, rt model.Route, res resolve.Result) bool {
+	if c.madeFor(m, rt, res) || c.sharedWith(m, rt, res) {
+		return true
 	}
-	if m.Known() {
-		return m.ServiceOwner == c.serviceOwner(rt, res)
-	}
-	guest, owners := "", map[string]bool{}
-	for _, b := range c.bindings {
-		if b.Service != m.Service {
-			continue
-		}
-		if len(owners) > 0 && b.Guest != guest {
-			return false
-		}
-		guest, owners[b.Owner] = b.Guest, true
-	}
-	return owners[rt.Owner()] && res.Binding.Guest == guest
+	o := c.serviceOwner(rt, res)
+	return c.identityUnknown(rt, res) && m.Owner == o.Owner && m.Guest == o.Guest
 }
 
 // sharedWith reports whether rt, whose result res has a binding, may be
@@ -67,11 +75,11 @@ func (c *cycleRun) madeFor(m store.ServiceAddr, rt model.Route, res resolve.Resu
 // of either then reach only that guest. Once the routes m was made for are
 // gone, rt gets a service address of its own.
 func (c *cycleRun) sharedWith(m store.ServiceAddr, rt model.Route, res resolve.Result) bool {
-	if res.Binding == nil || res.Binding.Guest == "" {
+	if res.Binding == nil || res.Binding.Guest == "" || !m.Known() {
 		return false
 	}
 	o := c.serviceOwner(rt, res)
-	if m.Known() && (m.Guest != o.Guest || m.Identity != o.Identity) {
+	if m.Guest != o.Guest || m.Identity != o.Identity {
 		return false
 	}
 	return c.usedByItsOwner(m, o.Guest)
@@ -81,12 +89,27 @@ func (c *cycleRun) sharedWith(m store.ServiceAddr, rt model.Route, res resolve.R
 // guest is empty, to any, is served at the address m forwards to in this
 // cycle.
 func (c *cycleRun) usedByItsOwner(m store.ServiceAddr, guest string) bool {
+	return c.servedAt(m, func(rt model.Route, res resolve.Result) bool {
+		return (guest == "" || res.Binding.Guest == guest) && c.madeFor(m, rt, res)
+	})
+}
+
+// servedFor reports whether a route published under m in this cycle is
+// served at the address m forwards to: one m was made for, or one kept
+// under it while its guest's identity is not known.
+func (c *cycleRun) servedFor(m store.ServiceAddr) bool {
+	return c.servedAt(m, func(rt model.Route, res resolve.Result) bool { return c.keeps(m, rt, res) })
+}
+
+// servedAt reports whether a winner that match accepts is served through a
+// leg at the address m forwards to.
+func (c *cycleRun) servedAt(m store.ServiceAddr, match func(model.Route, resolve.Result) bool) bool {
 	for _, rt := range c.claims.Winners {
 		res, ok := c.results[rt.Hostname]
 		if !ok || res.Binding == nil || !res.Target.Leg || !serves(rt, res) {
 			continue
 		}
-		if (mappingKey{res.Binding.Via, res.Target.Addr}) == (mappingKey{m.Network, m.Addr}) && (guest == "" || res.Binding.Guest == guest) && c.madeFor(m, rt, res) {
+		if (mappingKey{res.Binding.Via, res.Target.Addr}) == (mappingKey{m.Network, m.Addr}) && match(rt, res) {
 			return true
 		}
 	}
