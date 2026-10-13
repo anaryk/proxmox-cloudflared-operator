@@ -50,9 +50,10 @@ flowchart TB
 | What is on the node | the package, the units, the `pco-connector` user, an nftables table | the container, and a role, a user, a token and a pool in Proxmox |
 | How it is installed | `install.sh`, by default, then `pco setup` | `install.sh --appliance`, which runs `pco appliance install` |
 | Proxmox access | an API token (read-only) and local root for `pco setup` | the API only, with a privilege-separated token of the same read-only role |
-| How guests are reached | as the node itself, through the node's own address on the guest's bridge | through the container's network card, on its bridge and VLAN |
-| Identity level | `port` for guests on the node, `observed` for others | `observed`; `filtered` with the managed network, planned |
-| Managed network isolation | planned: SDN isolated ports, at layer 2 | planned: the Proxmox firewall on the cards pco attaches, at layer 3 |
+| How guests are reached | as the node itself, through the node's own address on the guest's bridge; a network the node is not on through a leg of pco's own in the gateway namespace `pco` | through the container's network card, on its bridge and VLAN; a network it is not on through a card the appliance adds to itself as a leg |
+| Identity level | `port` for guests on the node, through a leg too; `observed` for others | `observed`; `filtered` on the managed network while its isolation holds |
+| Managed network isolation | SDN isolated ports, at layer 2, with pco's guard and sticky entries on the bridge; the node out of reach through its own table | the Proxmox guest firewall on the cards pco attaches, at layer 3; the iptables backend only |
+| Where the legs live | the network namespace `pco`, brought back at boot by `pco-netns.service` before the guests | the container's own cards `net1` to `net9`, restored at boot by `pco-net.service` |
 | Store | `/etc/pve/pco`, on the cluster filesystem | a volume of the container, kept out of backups |
 | Upgrades | apt, with the package | `pco upgrade`, inside the container; Debian's security updates by themselves |
 | Control-plane failover | planned for clusters: a lease on the cluster filesystem, automatic | planned: a Proxmox HA resource, or restore and promote |
@@ -63,7 +64,8 @@ flowchart TB
 
 The rows that say planned are direction, not behaviour: nothing in this release does them. In
 this release pco runs on one node, or as one appliance for a cluster, has a command line and a
-web interface, and does not attach network cards to guests or manage a network of its own.
+web interface, reaches the networks the node is not on through legs of its own, and manages a
+network of its own for the guests that consent ([Networking](networking.md)).
 [Architecture](architecture.md) describes the parts of each profile, and
 [Appliance](appliance.md) the appliance as a whole.
 
@@ -71,9 +73,11 @@ web interface, and does not attach network cards to guests or manage a network o
 
 Both profiles use the same annotation grammar, planner, inventory, Cloudflare client,
 reconcilers, connector units, engine, API and command line, and the same rules at each identity
-level. What differs is the prober (the host profile can read the forwarding table of the bridge,
-the appliance cannot), the network backend, the installer and the way an upgrade is done, boot
-ordering, the sign-in to the web interface and the store.
+level, and the same networking: the three ways to a guest, the service addresses, the consent
+and the leases of the managed network. What differs is the prober (the host profile can read
+the forwarding table of the bridge, the appliance cannot), the network backend (a namespace of
+the node, or the container's own cards), what isolates the managed network, the installer and
+the way an upgrade is done, boot ordering, the sign-in to the web interface and the store.
 
 ## Why there are two
 

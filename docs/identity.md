@@ -26,7 +26,11 @@ one at a time. A candidate is served only if all of the following hold.
    card is on, and the kernel sends traffic for the candidate out of that interface,
    to the address itself and not through a gateway. The route must not depend on the
    source address either. Otherwise a guest could prove an address on its own bridge
-   while the node sends the real traffic somewhere else.
+   while the node sends the real traffic somewhere else. A leg of pco's own in the
+   guest's network counts as such an interface: for a guest behind an attached network
+   or on the managed one, the address is looked up and ARP is asked from the leg, and the
+   connection is made through it, while the forwarding table of the bridge is read from
+   the node as for any guest ([Networking](networking.md)).
 3. **No other running guest has the MAC.** A MAC address that is configured on another
    guest that runs, or may run because Proxmox has not said whether it does, is
    refused. A stopped guest does not count. One guest keeps a MAC that another has too:
@@ -82,7 +86,7 @@ flowchart TB
 
 | Level | What was proven |
 |---|---|
-| `port` | Steps 1 to 5: only the guest answers ARP for the address, and the forwarding table of this node places each of its MACs on the guest's own port. |
+| `port` | Steps 1 to 5: only the guest answers ARP for the address, and the forwarding table of this node places each of its MACs on the guest's own port. A guest the node reaches through a leg, in an attached network or on the managed one, is proven at `port` the same way, with the ARP asked from the leg. |
 | `observed` | Less than `port`, in one of two ways. For a guest on another node of the cluster: only the guest answers ARP for the address, and none of its MACs is on the port of a guest of this node, which would be a local guest answering in its name; this node cannot see where the table sends the guest's own frames. For a trusted static address behind a router (see below): neither ARP nor the forwarding table is asked, and only the guest's Proxmox configuration vouches for the address, together with a kernel route to it through a gateway. |
 | `filtered` | The level of the managed network `pconet` in the appliance: a proof at `observed` through it, while the Proxmox firewall of every card on it is proven to pin the card to its address and keep it from everything but pco's leg; see [`filtered` in the appliance](#filtered-in-the-appliance). The host profile does not have it. |
 
@@ -178,7 +182,8 @@ and the addresses, and records it. It releases these routes in either admission 
 
 The [appliance](appliance.md) runs in a container, which has no forwarding table of the bridge
 to read, so step 5 above is not there: an address it verifies through its own card is proven at
-`observed` at best, whichever node the guest runs on. Its `identityMinimum` is `observed` from the
+`observed` at best, whichever node the guest runs on, and so is one it verifies through a leg,
+a card of its own in an attached network. Its `identityMinimum` is `observed` from the
 install, and every route it serves is served under the rules of the section above. Each of them
 is there because, at `observed`, ARP is all that is proven, and whoever may set the MAC of a
 guest's card may aim a route at another device on the segment.
@@ -248,10 +253,14 @@ In the appliance, pco isolates each card it puts on `pconet` with the guest's Pr
 address, and rules of its own, commented `pco:<install id>`, first on the card: from pco's leg
 the DHCP replies and the published ports, nothing else in; out, the card's own address to the
 leg and DHCP requests, nothing else. A card is added with its link down, and its link comes up
-once its firewall has been in force for a `pve-firewall` interval. Each cycle the routes on
-`pconet` are raised from `observed` to `filtered` while all of this holds for every card on the
-vnet; otherwise they are served at `observed` and the problem line `filtered lost: <why>` says
-why. What the proof rests on, and what it does not cover:
+once its firewall has been written for 15 seconds, as long as `pve-firewall` may take to
+compile its rules, and reads back as written. Each cycle the routes on `pconet` are raised from
+`observed` to `filtered` while all of this holds for every card on the vnet; otherwise they are
+served at `observed` and the problem line `filtered lost: <why>` says why. The level exists on
+the iptables backend of the Proxmox firewall only: with `nftables: 1` in the node's firewall
+options the managed network of the appliance is not offered at all, as the nftables preview
+installed no guest rules where it was tried. [Networking](networking.md#the-appliance-the-guest-firewall)
+has the rules and what drops the level. What the proof rests on, and what it does not cover:
 
 - **Configuration, service and a canary, not the kernel's rules.** The appliance reads the
   firewall through the Proxmox API, which shows what is configured, and the state of
@@ -422,5 +431,6 @@ MAC that moves, but that watch has limits:
 - If the watch cannot run, a move is seen at the next cycle only, and the daemon logs it;
   every cycle then checks every address on the wire.
 
-Only IPv4 origins are supported, and the guest and the node must be on a common layer 2
-network, except for the trusted static addresses above.
+Only IPv4 origins are supported, and the guest must share a layer 2 network with the node or
+with a leg of pco's own ([Networking](networking.md)), except for the trusted static addresses
+above.

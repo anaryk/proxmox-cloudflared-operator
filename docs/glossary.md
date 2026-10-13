@@ -35,6 +35,10 @@ addresses it was shown with. It admits the guest in admission mode `approve`, an
 routes that wait for an admin in either mode. See [Security](security.md#approval-mode) and
 [Identity](identity.md#routes-that-wait-for-an-admin).
 
+**Attach**: Reaching the guests of a bridge or VLAN the node is not on through a leg of pco's
+own put there, without touching the guests; `pco network attach` does it. See
+[Networking](networking.md#attach).
+
 ## B
 
 **Binding**: The address pco verified for a hostname, with the MAC, the identity level and the
@@ -57,6 +61,11 @@ it for as long as it asks for it, and for the grace period after. See
 **Connector**: A `cloudflared` process that runs one tunnel on the node, as the unit
 `pco-cloudflared@<tunnel id>.service` and the user `pco-connector`. See
 [Architecture](architecture.md#the-connectors).
+
+**Consent**: What lets pco put a card on the managed network on a guest: the registered tag
+`cf-tunnel-managed`, an approval given with `pco managed approve`, or the setting
+`managed.consent: auto` for a guest the gate tag admits that needs the network. See
+[Networking](networking.md#consent).
 
 **Copy**: In the appliance profile, a container that holds the store of an appliance but is not
 the container it was installed as, such as a clone of it. A copy serves nothing. See
@@ -92,6 +101,14 @@ generation one up and a new nonce. See [Architecture](architecture.md#one-writer
 
 ## F
 
+**`filtered`**: The identity level of a guest on the managed network of the appliance: a proof
+at `observed` through pco's leg, while the guest firewall of every card on the vnet is proven
+to isolate it. See [Identity](identity.md#filtered-in-the-appliance).
+
+**Foreign card**: A card on `pconet` that no attachment explains, as a clone or a restore copies
+one. A consenting guest gets it replaced by a card of its own; any other has its link set down,
+or is reported where pco may not change it. See [Networking](networking.md#clones-and-restores).
+
 **`frozen`**: The state of a route in an account that pco leaves as it is, because a zone of the
 account is in doubt. Nothing is changed at Cloudflare for that account. See
 [Troubleshooting](troubleshooting.md#a-route-is-held-withdrawn-or-in-conflict).
@@ -101,6 +118,11 @@ account is in doubt. Nothing is changed at Cloudflare for that account. See
 **Gate tag**: The Proxmox tag that makes pco read the Notes of a guest, `cf-tunnel` unless the
 setting `gateTag` names another. See [Annotations](annotations.md#where-routes-are-read) and
 [Security](security.md#the-gate-tag-and-what-it-proves).
+
+**Gateway**: What holds the legs and translates the service addresses to the guests behind
+them: on a host the network namespace `pco`, kept by `pco-netns.service` and the daemon; in
+the appliance the container's own cards and ruleset. See
+[Networking](networking.md#legs-and-the-gateway).
 
 **Generation**: The number in the writer identity. A recovery takes one above every generation
 it finds at Cloudflare, and a writer stops when it finds a newer one it does not know. See
@@ -136,7 +158,22 @@ in the name of its tunnels and the marker of its records. See
 **Issue**: A mistake in the Notes of a guest or in the settings, with its position. `pco status`
 lists them. See [Annotations](annotations.md#what-is-rejected-and-why).
 
+## L
+
+**Leg**: A network card of pco's own in a network the node has no address in, with an address
+of that network: `leg<N>` in the namespace `pco` of a host, a card `net<N>` of the appliance.
+A guest behind a leg is proven and reached through it. See
+[Networking](networking.md#legs-and-the-gateway).
+
 ## M
+
+**Managed network**: The SDN vnet `pconet` in the zone `pco`, a network of pco's own on which
+the guests that consent get a card with an address of `managed.subnet`, reached through pco's
+leg and isolated from everything else. See [Networking](networking.md#managed).
+
+**Mark**: The number from 1 to 15 of a network behind a leg, which names its leg, its
+connection tracking zone, its routing table and its block of source ports. Fifteen is the
+limit of networks in a cluster. See [Networking](networking.md#legs-and-the-gateway).
 
 **Manual route**: A route made by root with `pco route manual add` or by an admin in the web
 interface instead of in the Notes of a guest. It goes to a guest, whose address is proven as for
@@ -206,6 +243,15 @@ ARP at `observed` is served only on a segment an admin acknowledged. See
 
 **Sentinel**: The rule `g<generation>.<nonce>.pco-<install id>.invalid` in the configuration of
 every tunnel, which records which writer wrote it. See [Architecture](architecture.md#one-writer).
+
+**Service address**: An address of `198.18.0.0/16` that stands for one guest address behind one
+network: the connectors dial it, and the gateway translates it and sends the request out of
+the leg. It is made for one owner and guest, never given twice, and the egress filter holds it
+in place of the real address. See [Networking](networking.md#service-addresses).
+
+**Sticky entry**: A forwarding entry of the bridge `pconet` of a host that keeps the MAC of a
+managed guest's card on that guest's port, whatever another port sends, and waits on pco's leg
+while the guest is stopped. See [Security](security.md#a-managed-guest-and-its-card-on-the-host).
 
 **Served zone**: A zone pco publishes hostnames in, through the one credential that serves it.
 See [Cloudflare token](cloudflare-token.md#several-accounts-and-zone-pins).

@@ -264,6 +264,25 @@ nas.example.com   -> http://10.0.0.50:5000
 ```
 ````
 
+A guest with a card on the managed network beside its own, whose route should go through
+that card and no other; [Networking](networking.md#managed) says how a guest gets one:
+
+````text
+```cf-tunnel
+wiki.example.com -> :80 via=managed
+```
+````
+
+A guest whose owner wants no card of pco's on it, whatever the tags and the settings say. The
+line is no route and names nothing; the routes beside it are read as usual:
+
+````text
+```cf-tunnel
+cf-tunnel-managed=off
+app.example.com -> :3000
+```
+````
+
 ### Wildcards and their order
 
 A wildcard is published once an `allowHosts` pattern names it, as `*.example.com` in the

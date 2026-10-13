@@ -36,7 +36,9 @@ flowchart TB
         store[("Store")]
         units["Connectors: pco-cloudflared@ units"]
         filter["Egress filter: nftables"]
+        gateway["Network gateway: namespace pco with the legs"]
         guests["Guests on the bridges"]
+        away["Guests on networks the node is not on"]
     end
     browser -->|"HTTPS, port 8643"| web
     web -->|"sign-in"| pveapi
@@ -50,12 +52,16 @@ flowchart TB
     engine --> store
     inventory -->|"read-only token"| pveapi
     resolver -->|"ARP, forwarding table, TCP"| guests
+    resolver -->|"ARP and TCP from the leg"| gateway
     reconcilers -->|"API token"| cfapi
     engine -->|"systemctl and files"| units
     engine -->|"nft"| filter
+    engine -->|"legs, service addresses, pins"| gateway
     units -->|"outbound, port 7844"| edge
     units -->|"every connection"| filter
     filter -->|"verified targets only"| guests
+    filter -->|"service addresses"| gateway
+    gateway -->|"through the legs"| away
 ```
 
 | Part | What it does | Code |
@@ -69,6 +75,8 @@ flowchart TB
 | Reconcilers | Bring the tunnels and the DNS records at Cloudflare in line with the plan. | `internal/reconcile`, `internal/cfapi` |
 | Connectors | One `cloudflared` unit for each tunnel. | `internal/connector` |
 | Egress filter | Confines the connectors to the targets pco verified. | `internal/egress` |
+| Network gateway | The legs into the networks the node is not on, the service addresses the connectors dial for the guests behind them, and the namespace `pco` of the host or the cards of the appliance that hold them. | `internal/gateway` |
+| Managed network | The consent of a guest, the leases, the cards pco adds, the DHCP server and the isolation of the managed network `pconet`. | `internal/managednet` |
 | Socket API | JSON over `/run/pco/pco.sock`, for the command line and the web process. | `internal/api` |
 | Web process | Serves the web interface and passes its calls on to the socket. | `internal/web` |
 
@@ -196,6 +204,28 @@ untagged network of its bridge, is made anew and loses the connection tracking e
 zone, so that nothing it learned or opened in the old one is kept.
 A leg that raises its address announces it with three gratuitous ARP requests a second apart,
 so that guests that still hold the MAC of an earlier pair for it reach the new one at once.
+
+The gateway is one interface with two backends. On the host it is the namespace: `pco netns up`
+brings it back at boot from the cache the daemon writes after every change, before the guests
+start, and the daemon keeps it every 30 seconds and on every change the kernel reports. In the
+appliance a leg is a card of the container itself, added through the Proxmox API, and the
+translation runs in the container's own ruleset; `pco net load` restores the cards at boot.
+The resolver proves a guest behind a leg as any other, with the ARP asked from the leg and the
+forwarding table of the bridge read from the node, and the engine maps every winner reached
+through a leg to its service address and programs the gateway before anything is written at
+Cloudflare, so that a rule never names a service address the gateway does not forward.
+
+The managed network, the SDN vnet `pconet`, is a network behind a leg of its own, with the
+rest done by pco: the consent of each guest, from a tag, an approval or the setting
+`managed.consent: auto`; a lease of `managed.subnet` for each card, keyed by its MAC; the card
+itself, added as root with `qm` and `pct` on a host and through the API in the appliance,
+under the configuration's digest; a DHCP server on the leg for the virtual machines; and the
+isolation, which on a host is the vnet's isolated ports with a guard table and sticky entries
+on the bridge, and in the appliance the guest firewall of each card, proven every cycle as
+the level `filtered`. The cards, the leases and the service addresses are made only in a
+cycle in which the daemon knows it is the writer; what restricts, a link set down, a card
+removed after its grace, a service address released, waits for nothing.
+[Networking](networking.md) has all of it.
 
 Each network has a mark, from 1 to 15, and the SNAT through its leg draws its source ports
 from a block of 4096 of its own: mark 1 has the ports 1024 to 5119, mark 2 has 5120 to 9215,
@@ -327,8 +357,10 @@ flowchart LR
     end
     subgraph decide["2. Decide"]
         direction TB
-        d1["Settle the claims and save them"] --> d2["Verify the address of each route that holds its hostname"]
-        d2 --> d3["Plan the tunnels, their rules and the records"]
+        d1["Settle the claims and save them"] --> dm["Put the consenting guests on the managed network, and act on foreign cards"]
+        dm --> d2["Verify the address of each route that holds its hostname"]
+        d2 --> dg["Map the targets behind a leg to service addresses and program the gateway"]
+        dg --> d3["Plan the tunnels, their rules and the records"]
         d3 --> d4["Give the egress filter its targets"]
     end
     subgraph write["3. Write, unless the cycle holds"]
@@ -501,8 +533,10 @@ flowchart LR
   write, and the network configuration of the guests and the nodes. pco only reads it.
 - **The store** holds what pco decided and must not forget: the install and its writer, the
   settings, who holds each hostname, the approvals, the acknowledged segments, the manual routes,
-  and the tokens. On the node it keeps the verified address of each hostname, what the daemon
-  must still know after a restart, and the event log.
+  the networks attached with their service addresses, the consents, leases and cards of the
+  managed network, and the tokens. On the node it keeps the verified address of each hostname,
+  what the daemon must still know after a restart, the event log, and the cache the gateway
+  is brought back from at boot.
 - **Cloudflare** holds the result: the tunnel of each account with its configuration, and a
   record for each hostname. pco reads it to compare and to verify, and takes nothing there as a
   wish: a change made to its tunnel in the dashboard is overwritten in the next cycle. What
@@ -512,9 +546,15 @@ flowchart LR
 
 ## What pco never touches
 
-- A guest. The daemon never changes a guest, its tags or its Notes. Only `pco setup` and
-  `pco uninstall` change Proxmox, and only what their manifest lists: the role `PCO`, the user
-  `pco@pve` with its token and its grant, and the registered tags.
+- A guest, but for one card. The daemon never changes a guest's tags or Notes, and the one
+  change it makes to a guest is the card on the managed network, with the guest's consent and
+  taken away again after the grace once the consent is gone ([Networking](networking.md#managed)).
+  Otherwise only `pco setup`, `pco network managed enable` and `pco uninstall` change Proxmox,
+  and only what their manifest lists: the role `PCO`, the user `pco@pve` with its token and its
+  grant, the registered tags, and the SDN zone `pco` with its vnet `pconet`.
+- The networks of the node. A leg lives in a namespace of pco's own, nothing is written to
+  `/etc/network/interfaces`, and a bridge gets one more port, which an `ifreload` leaves
+  enslaved.
 - A DNS record that does not carry the marker of this install. It stays, and the route waits,
   until an admin runs `pco adopt` for the name.
 - A tunnel of another install, or one that is not pco's. pco deletes only tunnels of its own

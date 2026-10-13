@@ -76,7 +76,7 @@ node.
 
 | Part | Runs as | Can |
 |---|---|---|
-| The daemon, `pco.service` | root | Read Proxmox through its API token, open a raw socket to ask ARP, read the bridge forwarding table through netlink and watch it and the neighbour table for changes, load the egress table with `nft`, run `systemctl` for the connectors and write their files, call the Cloudflare API with the stored tokens. It listens on a unix socket and nowhere else. |
+| The daemon, `pco.service` | root | Read Proxmox through its API token, open a raw socket to ask ARP, read the bridge forwarding table through netlink and watch it and the neighbour table for changes, load the egress table with `nft`, run `systemctl` for the connectors and write their files, call the Cloudflare API with the stored tokens. With a network behind a leg: keep the namespace `pco`, its legs and tables, and the sticky entries and the guard on `pconet`; run a DHCP server on the managed leg; and run `qm set` and `pct set` to add, remove or set down the one card of a consenting guest on the managed network, under the configuration's digest. It listens on a unix socket and nowhere else. |
 | The connectors, `pco-cloudflared@<tunnel id>.service` | the system user `pco-connector`, with no capabilities | Open outbound connections, which the egress filter confines (below). |
 | The web interface, `pco-web.service` | the system user `pco-web`, with no capabilities | Serve HTTPS on its address, ask the node's API whether a user may sign in, and call the daemon on its socket for the users signed in; see [the web interface](#the-web-interface). |
 | The `pco` command | whoever runs it | `setup`, `uninstall` and `pco egress` work on the node directly and need root. The others ask the daemon through its socket, which lets in only root and `pco-web`. |
@@ -117,9 +117,12 @@ The Proxmox side is read-only. Setup makes the role `PCO`, the user `pco@pve` an
 token `pco@pve!pco`, and the role holds `VM.Audit`, `Sys.Audit`, `SDN.Audit`,
 `VM.GuestAgent.Audit` (`VM.Monitor` on Proxmox VE 8.4) and `Pool.Audit`, granted on `/`.
 pco reads the pool of each guest from `/cluster/resources`, which shows it only to a
-token with `Pool.Audit`. The daemon never changes a guest, a tag or a Notes field. Only
-`pco setup` and `pco uninstall` change Proxmox, as root, and what they change is listed
-in the manifest.
+token with `Pool.Audit`. The daemon never changes a tag or a Notes field, and changes a
+guest in one way only: with the guest's consent it adds a card on the managed network, as
+root with `qm set` and `pct set`, and removes it again after the grace once the consent is
+gone ([Networking](networking.md#managed)); the token writes nothing. Otherwise only
+`pco setup`, `pco network managed enable` and `pco uninstall` change Proxmox, as root, and
+what they change is listed in the manifest: the SDN zone `pco` and vnet `pconet` among it.
 
 The Cloudflare side is not read-only: the token can edit DNS records and tunnels in the
 zones and accounts you chose. Scope it narrowly; see
@@ -150,8 +153,11 @@ that guest at some point. It does not prove more:
 Setup registers `cf-tunnel` and `cf-tunnel-managed`, and the gate tag of the settings
 when that is another one. If you change `gateTag` afterwards, run `pco setup` again, or
 `pco setup --repair`, to register the new tag as well. Until you do, the new gate tag is
-one that anyone who may edit the options of a guest can set. Nothing reads
-`cf-tunnel-managed` in this release.
+one that anyone who may edit the options of a guest can set. `cf-tunnel-managed` is the
+consent of a guest to a card on the managed network, and it counts only while it is
+registered: a tag that anyone may set is no consent to a change of a guest's hardware, and
+`pco managed status` says so. [Networking](networking.md#consent) has what the consent lifts
+and what it does not.
 
 ### Clones and restores
 
@@ -223,7 +229,10 @@ when the tag is registered, unless they may clone one that has it (the last row)
 `port` is what a guest on this node gets. `observed` is what a guest on another node of the
 cluster gets, what an address behind a router gets when you trust it, and what every guest of
 the [appliance](appliance.md) gets; on a host only if `identityMinimum` is lowered to
-`observed`. `filtered` is reserved for the managed network, which no release has yet.
+`observed`. `filtered` is what a guest on the managed network of the appliance gets while its
+isolation holds; [the managed network against the five attackers](#the-managed-network-against-the-five-attackers)
+has it. A guest reached through a leg of an attached network gets `port` on a host and
+`observed` in the appliance, as any other.
 
 A route at `observed` is served under the rules of [Identity](identity.md#routes-that-wait-for-an-admin):
 on an acknowledged segment only, with the MAC pinned to its claim, and only after an approval
@@ -274,6 +283,57 @@ address proven as a route in the guest's Notes does, at `port` or `observed`, so
 `manualCIDRs` does not apply to it, and it never has `allowNode`. Keep `manualCIDRs` to the
 networks of the services you mean to publish, and treat the directory as part of root's
 configuration of the node.
+
+### Through a leg
+
+A leg of pco's own in a network the node is not on ([Networking](networking.md)) is one more
+station of that network, and what it exposes is bounded by the namespace it lives in. The
+leg's MAC and address are seen on the network, on a bridge with a physical uplink by every
+station of that LAN, which is why `pco network attach` asks for `--confirm-uplink` there and
+the address has to be one reserved for pco. The leg answers ARP for its address and nothing
+else: the namespace's input chain accepts nothing from a leg but DHCP on the managed one,
+its forward chain drops everything, and the host drops what comes in from the transit link
+unasked, so a station behind a leg reaches no service of the node, and not another network
+behind another leg. Each leg has its own connection tracking zone and routing table, so two
+networks with the same addresses never see each other's flows. A request from a connector
+reaches the guest from the leg's address; the real address of the guest is never in the egress
+filter, and a tunnel rule written at Cloudflare that names it reaches nothing.
+
+A restart of `pco-netns.service` is safe: the unit has no stop action, and `pco netns up`
+brings back what is missing and leaves the legs, the translations and the open connections as
+they are. Nothing of the legs is in `/etc/network/interfaces`, and `ifreload -a` and an SDN
+apply leave them enslaved.
+
+### The managed network against the five attackers
+
+A guest on the managed network is reached through pco's leg on `pconet`, with a card pco
+added, and the network exists for that alone. What keeps a managed guest to its card, apart
+from the others and away from the node, differs by profile, and so does what it stops:
+
+| Attacker | Host: `port`, isolated ports and the guard | Appliance: `filtered`, the guest firewall |
+|---|---|---|
+| A device on the uplink, outside Proxmox | There is none: `pconet` is an SDN vnet of the cluster with no physical port. | The same. |
+| Root in another managed guest | Stopped at layer 2. The ports of the vnet are isolated, so it sees no frame of another guest; the guard table admits from its port only the MAC and address of its own card, so a frame forged with another's MAC or address is dropped and counted; and the sticky entry of each card's MAC on its guest's port keeps its traffic there whatever the attacker sends. ARP from one guest never reaches another. | Stopped at layer 3. Its card is pinned to its address by the ipset, and its rules let it send to the leg alone; the MAC filter of the guest firewall keeps it to its MAC. Limit: the ports are not isolated, so it sees the MACs of the other guests and their broadcasts, and its ARP reaches them; what it cannot do is send them anything, and the proof drops to `observed` when a frame from a MAC no lease knows is seen. |
+| A Proxmox user with `VM.Config.Network` on another guest | Stopped. A card the user puts on `pconet` is foreign: pco sets its link down where it may write the guest, reports it where it may not, and has the guests read again within a cycle of the card's first frame; the guard drops what it sends meanwhile, since no lease admits its MAC and address. | Stopped, and `filtered` is lost for the vnet at once when such a card speaks, until pco has acted on it; its routes are served at `observed` meanwhile. The user cannot give the card pco's rules. |
+| A Proxmox user with `VM.Config.Network` on the managed guest | Changing the card's MAC or address cuts the guest off: the guard admits the pair pco leased and nothing else, and the sticky entry stays with the leased MAC. Removing the card loses the guest its route until pco adds the card again. | The same through the ipset and the MAC filter; the firewall options and rules of the card are read every cycle and put right, and a rule above pco's is pushed down. A user who turns the guest firewall off takes `filtered` away, and pco does not turn it back on: the routes are served at `observed`. |
+| A Proxmox user with `VM.Clone` on a tagged guest and `VM.Allocate` | A clone copies the card, with a new MAC, and is foreign: a consenting clone gets a card of its own, any other has its link set down. The tag `cf-tunnel-managed` is inherited by a clone, so a clone is consenting in per-guest mode; only an approval, which is of an identity, is not inherited. Its hostnames stay in conflict with the original's. | The same. |
+
+In both profiles the node is out of reach from the managed network: on a host IPv6 is off on
+the bridge `pconet`, the table `inet pco_host` drops what the bridge sends to the node and what
+the node would route from it to any other interface, and the namespace accepts nothing from the
+leg but DHCP; in the appliance the `OUT` rules of each card admit the leg and DHCP only, which
+keeps the node's `pconet` bridge device, which the appliance does not control, unreachable all
+the same. The DHCP server answers only a MAC that holds a lease, with that lease, and drops a
+request whose Ethernet source is not the MAC it asks for; a DECLINE or RELEASE is reported and
+changes no lease, as it is not checked against its sender.
+
+What consent does not change: the admission of the guest's routes, the hostname policy, the
+claims and the identity level are what they are for any guest. The marker
+`cf-tunnel-managed=off` in the route text of a guest's Notes refuses a card whatever the tags
+and the setting say, in any case and with any value, so that whoever edits the Notes can keep
+pco off their guest's hardware without a typo letting it through. In the appliance, the token
+changes only the guests it holds `VM.Config.Network` on: one `pveum` line for each, or a pool
+grant, whose reach [Its rights in Proxmox](#its-rights-in-proxmox) says.
 
 ### Between two cycles
 
@@ -878,7 +938,8 @@ the card pco gave it:
   watch's, which takes the MAC for the lease's.
 
 The entries and the guard cover the guests of this node. A managed guest on another node of a
-cluster has neither on this node.
+cluster has neither on this node. [Networking](networking.md#the-host-isolated-ports-and-the-guard)
+says what else keeps the node out of reach from `pconet`.
 
 ## The appliance
 
@@ -897,7 +958,13 @@ holds only what its user holds as well, so every grant goes to both. The token l
 `VM.PowerMgmt`: it cannot change a guest, an ACL, or the appliance itself, nor take a snapshot
 of it, which is why `pco upgrade` asks you for one. The one way it gains a right is `pco
 appliance grant-network`, run by root on the node, which grants `VM.Config.Network` on the
-appliance and `SDN.Use` with `SDN.Audit` on one network, for the cards a later release attaches. Nothing is granted on a whole zone, and nothing beyond the read-only role on `/`.
+appliance and `SDN.Use` with `SDN.Audit` on one network, for the card of a leg the appliance
+attaches there ([Networking](networking.md#the-cards-of-the-appliance)); `pco appliance managed
+enable` makes the same grant for the managed vnet `pconet`. Nothing is granted on a whole zone,
+and nothing beyond the read-only role on `/`. A guest's card on the managed network is a change
+of that guest, which the token may make only where it holds `VM.Config.Network`: on the guest
+itself, by the `pveum acl modify /vms/<vmid> ... --roles PCOManaged` line `pco managed status`
+prints for a guest that waits with `needs-grant`, or on a pool, below.
 
 `pco appliance managed enable --pool <pool>` grants role `PCOManaged` (`VM.Config.Network`) on
 `/pool/<pool>`, so that the appliance can attach the managed network to the guests of that pool
@@ -990,8 +1057,10 @@ the data path is what it cannot protect.
 
 ### The appliance against the five attackers
 
-Every route of the appliance is at `observed`, under the rules of the table above. The
-appliance reads no forwarding table, so the row of root in another guest is the row of the
+Every route of the appliance is at `observed`, under the rules of the table above, but for the
+routes on the managed network, which are at `filtered` while its isolation holds
+([the managed network against the five attackers](#the-managed-network-against-the-five-attackers)).
+The appliance reads no forwarding table, so the row of root in another guest is the row of the
 device on the uplink: a guest that forges a published guest's MAC passes ARP as that guest. The
 rows of `VM.Config.Network` hold as the table says, which is why the appliance holds a delegated
 guest until an approval, and why it refuses to serve while anyone but the admins can reach into
