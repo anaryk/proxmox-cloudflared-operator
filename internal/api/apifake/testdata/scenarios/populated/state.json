@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "a24300ba33bca4d8",
+  "digest": "5b8af0226f9cff6e",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -1010,7 +1010,8 @@
     "dhcp": {
       "bound": true,
       "since": "2026-10-01T06:00:00Z",
-      "unknown": 1
+      "unknown": 1,
+      "forged": 0
     }
   },
   "egress": {
