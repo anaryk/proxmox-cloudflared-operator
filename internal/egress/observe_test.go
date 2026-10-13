@@ -109,6 +109,24 @@ func TestAMACMovedToTheUplinkHasMoved(t *testing.T) {
 	}}, got)
 }
 
+// A subscription made again starts from a dump that shows the tables as they
+// are now; what was held before it says nothing of what went meanwhile. The
+// observer says so first, and forgets: a MAC the dump shows on the uplink
+// has not moved from a port it was last seen on before the gap, and one the
+// dump shows on its own port is learned anew.
+func TestASubscriptionMadeAgainResetsWhatWasHeld(t *testing.T) {
+	ob := observe(t)
+	ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "tap101i0"), forwarding(t, "vmbr0", 0, dbMAC, "tap101i0"))
+	ob.clock = ob.clock.Add(time.Minute)
+
+	ob.o.reset()
+
+	require.Equal(t, []Observation{{Kind: Reset, At: time.Date(2026, 10, 6, 12, 1, 0, 0, time.UTC)}}, ob.learn(t))
+	require.Empty(t, ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "eno1")), "no move from a port seen before the gap")
+	require.Equal(t, []ObservationKind{Learned}, kinds(ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "tap101i0"))))
+	require.Empty(t, ob.learn(t, gone(forwarding(t, "vmbr0", 0, dbMAC, "tap101i0"))), "nothing was held of the conflict")
+}
+
 func TestAMoveIsReportedOnce(t *testing.T) {
 	ob := observe(t)
 	ob.learn(t, forwarding(t, "vmbr0", 0, webMAC, "tap101i0"))

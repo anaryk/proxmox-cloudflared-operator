@@ -34,6 +34,11 @@ const (
 	// the entry, or learned the MAC of a conflict on a port that is no
 	// guest's. What the earlier observation said no longer holds.
 	Gone ObservationKind = "gone"
+	// Reset: the observer subscribed again and what follows is a dump of the
+	// tables as they are now. Nothing reported before it still holds: an
+	// entry that went while no subscription was read gave no Gone, and the
+	// dump does not say what it does not show. It carries only At.
+	Reset ObservationKind = "reset"
 )
 
 // Observation is one thing a bridge's forwarding table showed of an expected
@@ -142,6 +147,14 @@ func (o *observer) sees(key fdbKey, want Expected, port string, expected map[str
 	}
 	obs.At = o.now()
 	o.report(obs)
+}
+
+// reset says that a subscription begins, with a dump, and forgets what was
+// held: a MAC the dump shows on the uplink is no move from the port it was
+// on before the gap, since what happened meanwhile was not seen.
+func (o *observer) reset() {
+	clear(o.held)
+	o.report(Observation{Kind: Reset, At: o.now()})
 }
 
 // ends reports Gone of what is held of key, if anything is, and forgets it.

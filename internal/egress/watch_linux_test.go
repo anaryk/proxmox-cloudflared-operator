@@ -442,6 +442,8 @@ func TestLinuxObserveBeginsWithTheDump(t *testing.T) {
 
 	seen := lab.observe(t, expected)
 
+	first := next(t, seen, Reset, "")
+	require.NotZero(t, first.At, "the subscription begins with a reset, then the dump")
 	learned := next(t, seen, Learned, observeWeb)
 	require.Equal(t, observeBridge, learned.Bridge)
 	require.Equal(t, "tap101i0", learned.Port)

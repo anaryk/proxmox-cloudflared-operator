@@ -44,7 +44,8 @@ func Watch(ctx context.Context, bound func() map[netip.Addr]Pin, onMove func(net
 // show of the expected MACs: Learned for one on its own guest's port wherever
 // the snapshot says the guest runs, Moved for one that left it, Conflict for
 // one on a port of another guest, and Gone when the port the last Learned or
-// Conflict named no longer has it.
+// Conflict named no longer has it. Each subscription begins with Reset, the
+// dump after it: what was reported before a Reset holds no more.
 //
 // It reads the notifications Watch reads, on a subscription of its own, and
 // like Watch subscribes again, with a dump, after the subscription fails. A
@@ -78,6 +79,7 @@ func watchIn(ctx context.Context, ns netns.NsHandle, bound func() map[netip.Addr
 func observeIn(ctx context.Context, ns netns.NsHandle, expected func() map[string]Expected, report func(Observation)) error {
 	o := newObserver(expected, report, time.Now)
 	return follow(ctx, ns, "watching the forwarding tables", resubscribeAfter, func(h *netlink.Handle) error {
+		o.reset()
 		return readTables(ctx, ns, h, func(u netlink.NeighUpdate, name func(index int) string) {
 			if e, ok := forwardingOf(u, name); ok {
 				o.see(e)
