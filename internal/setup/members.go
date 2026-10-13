@@ -19,7 +19,9 @@ import (
 // certificates. It runs before anything in Proxmox is touched, so a node
 // that cannot join changes nothing there.
 func (r *run) ensureCluster(ctx context.Context) error {
-	m, err := members.Read(r.host.members, r.now())
+	m, err := members.ReadFiles(members.Files{
+		Members: r.host.members, Corosync: r.host.corosync, LocalCorosync: r.host.localCorosync,
+	}, r.now())
 	if err != nil {
 		return fmt.Errorf("reading who is in the cluster: %w", err)
 	}

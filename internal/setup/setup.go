@@ -176,10 +176,14 @@ type Setup struct {
 // host is where setup finds the parts of the node it works on.
 type host struct {
 	pveDir string // the mount point of the cluster filesystem
-	// members lists the nodes of the cluster as pmxcfs sees them, and
-	// pveRootCA is the certificate whose fingerprint identifies the cluster.
-	members   string
-	pveRootCA string
+	// members lists the nodes of the cluster as pmxcfs sees them, corosync
+	// and localCorosync are the cluster's corosync.conf and the node's own
+	// copy, which a node that stands alone has neither of, and pveRootCA is
+	// the certificate whose fingerprint identifies the cluster.
+	members       string
+	corosync      string
+	localCorosync string
+	pveRootCA     string
 	// addrs are the addresses of the node, for cluster.agentNetwork.
 	addrs    func() ([]netip.Addr, error)
 	keyring  string   // the key of Cloudflare's apt repository
@@ -213,19 +217,21 @@ type host struct {
 
 func nodeHost() host {
 	return host{
-		pveDir:     "/etc/pve",
-		members:    members.MembersFile,
-		pveRootCA:  members.RootCAFile,
-		addrs:      interfaceAddrs,
-		keyring:    "/usr/share/keyrings/cloudflare-main.gpg",
-		sources:    "/etc/apt/sources.list.d/cloudflared.sources",
-		unitDirs:   []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"},
-		netnsPin:   filepath.Join("/run/netns", gateway.Namespace),
-		euid:       os.Geteuid,
-		hostname:   os.Hostname,
-		checkToken: checkPVEToken,
-		snapshot:   readSnapshot,
-		profile:    func() (string, error) { return store.DetectProfile(store.ProfileFile) },
+		pveDir:        "/etc/pve",
+		members:       members.MembersFile,
+		corosync:      members.CorosyncFile,
+		localCorosync: members.CorosyncLocalFile,
+		pveRootCA:     members.RootCAFile,
+		addrs:         interfaceAddrs,
+		keyring:       "/usr/share/keyrings/cloudflare-main.gpg",
+		sources:       "/etc/apt/sources.list.d/cloudflared.sources",
+		unitDirs:      []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"},
+		netnsPin:      filepath.Join("/run/netns", gateway.Namespace),
+		euid:          os.Geteuid,
+		hostname:      os.Hostname,
+		checkToken:    checkPVEToken,
+		snapshot:      readSnapshot,
+		profile:       func() (string, error) { return store.DetectProfile(store.ProfileFile) },
 		sleep: func(ctx context.Context, d time.Duration) error {
 			t := time.NewTimer(d)
 			defer t.Stop()

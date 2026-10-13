@@ -521,6 +521,21 @@ func TestTheAgentAddressFallsBackToTheClusterStatus(t *testing.T) {
 	require.Equal(t, netip.MustParseAddr("192.0.2.11"), e.node(testNode).AgentAddress)
 }
 
+// A member whose corosync has not reported yet prints the file of a node
+// alone; its own copy of corosync.conf is what gives it away.
+func TestANodeWithACorosyncConfigOfItsOwnIsNotAlone(t *testing.T) {
+	e := newTestEnv(t)
+	e.installUnit(serviceUnit)
+	e.writeFile(e.s.host.localCorosync, []byte("totem {\n}\n"), 0o644)
+	e.script(preflight("9.0.10"), noConnectorsSeen())
+
+	err := e.setup(Options{Yes: true, CloudflareToken: cfToken, Node: testNode})
+
+	require.ErrorContains(t, err, "setup step cluster: reading who is in the cluster")
+	require.ErrorContains(t, err, e.s.host.localCorosync)
+	e.done()
+}
+
 func TestRepairKeepsTheCertificatesAndTheEntry(t *testing.T) {
 	e := newTestEnv(t)
 	e.installUnit(serviceUnit)

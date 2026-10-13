@@ -260,17 +260,19 @@ func newTestEnv(t *testing.T) *testEnv {
 	e.s = New(e.run, e.ask, st, newClient, e.daemon, func() time.Time { return t0 }, mathrand.NewChaCha8([32]byte{1}))
 	t.Cleanup(e.verify)
 	e.s.host = host{
-		pveDir:     "/etc/pve",
-		members:    filepath.Join(base, "pve", ".members"),
-		pveRootCA:  filepath.Join(base, "pve", "pve-root-ca.pem"),
-		addrs:      func() ([]netip.Addr, error) { return e.addrs, nil },
-		keyring:    filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
-		sources:    filepath.Join(base, "sources", "cloudflared.sources"),
-		unitDirs:   []string{filepath.Join(base, "units")},
-		netnsPin:   filepath.Join(base, "netns", "pco"),
-		euid:       func() int { return 0 },
-		hostname:   func() (string, error) { return testNode + ".example.com", nil },
-		checkToken: func(context.Context, store.PVEToken) error { return nil },
+		pveDir:        "/etc/pve",
+		members:       filepath.Join(base, "pve", ".members"),
+		corosync:      filepath.Join(base, "pve", "corosync.conf"),
+		localCorosync: filepath.Join(base, "corosync", "corosync.conf"),
+		pveRootCA:     filepath.Join(base, "pve", "pve-root-ca.pem"),
+		addrs:         func() ([]netip.Addr, error) { return e.addrs, nil },
+		keyring:       filepath.Join(base, "keyrings", "cloudflare-main.gpg"),
+		sources:       filepath.Join(base, "sources", "cloudflared.sources"),
+		unitDirs:      []string{filepath.Join(base, "units")},
+		netnsPin:      filepath.Join(base, "netns", "pco"),
+		euid:          func() int { return 0 },
+		hostname:      func() (string, error) { return testNode + ".example.com", nil },
+		checkToken:    func(context.Context, store.PVEToken) error { return nil },
 		snapshot: func(context.Context, store.PVEToken) (inventory.Snapshot, error) {
 			if e.snapshot != nil {
 				return *e.snapshot, nil

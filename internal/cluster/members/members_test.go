@@ -201,6 +201,16 @@ func TestParseRefuses(t *testing.T) {
 		{"a cluster without a node list", `{"nodename": "pve1", "cluster": ` + quorateOne + `}`},
 		{"a cluster with an empty node list", inCluster(quorateOne, ``)},
 		{"a cluster whose list lacks this node", inCluster(quorateOne, otherOnline)},
+		{"a node without an id", inCluster(quorateOne, selfOnline+`, "pve2": {"online": 1, "ip": "10.0.0.2"}`)},
+		{"a node with id zero", inCluster(quorateOne, selfOnline+`, "pve2": {"id": 0, "online": 0}`)},
+		{"a node with an id below zero", inCluster(quorateOne, `"pve1": {"id": -1, "online": 1, "ip": "10.0.0.1"}`)},
+		{"an id with a fraction", inCluster(quorateOne, `"pve1": {"id": 1.0, "online": 1, "ip": "10.0.0.1"}`)},
+		{"an id with an exponent", inCluster(quorateOne, `"pve1": {"id": 1e0, "online": 1, "ip": "10.0.0.1"}`)},
+		{"this node without an address", inCluster(quorateOne, `"pve1": {"id": 1, "online": 1}`)},
+		{"this node with an empty address", inCluster(quorateOne, `"pve1": {"id": 1, "online": 1, "ip": ""}`)},
+		{"a count of nodes that is not the list's", inCluster(`{"name": "c", "quorate": 1, "nodes": 3}`, selfOnline+`, `+otherOnline)},
+		{"a count of nodes below one", inCluster(`{"name": "c", "quorate": 1, "nodes": 0}`, selfOnline)},
+		{"a count of nodes as text", inCluster(`{"name": "c", "quorate": 1, "nodes": "two"}`, selfOnline)},
 		{"no cluster, other nodes listed",
 			`{"nodename": "pve1", "nodelist": {` + selfOnline + `, ` + otherOnline + `}}`},
 		{"no cluster, this node listed", `{"nodename": "pve1", "nodelist": {` + selfOnline + `}}`},
@@ -223,18 +233,20 @@ func TestParseRefuses(t *testing.T) {
 }
 
 func TestParseDoesNotInventWhatTheFileLeavesOut(t *testing.T) {
-	in := `{"nodename": "pve1", "cluster": {"name": "c", "quorate": 1}, "future": {"x": 1},
+	// Another node's address is what corosync last knew of it, and a node it
+	// never saw has none.
+	in := `{"nodename": "pve1", "cluster": {"name": "c", "quorate": 1, "nodes": 3}, "future": {"x": 1},
 		"nodelist": {
 			"pve1": {"id": 1, "online": 1, "ip": "10.0.0.1", "more": true},
 			"pve2": {"id": 2, "online": 0},
-			"pve3": {"online": 1, "ip": ""}
+			"pve3": {"id": 3, "online": 1, "ip": ""}
 		}}`
 	m, err := Parse([]byte(in), t0)
 	require.NoError(t, err)
 	require.Equal(t, []Member{
 		{Name: "pve1", ID: 1, Online: true, IP: addr("10.0.0.1")},
 		{Name: "pve2", ID: 2, Online: false},
-		{Name: "pve3", ID: 0, Online: true},
+		{Name: "pve3", ID: 3, Online: true},
 	}, m.Nodes)
 	require.False(t, m.Nodes[1].IP.IsValid())
 	require.False(t, m.Nodes[2].IP.IsValid())
@@ -299,6 +311,33 @@ func TestAFileWithoutAClusterIsStandaloneOnlyWhileThereIsNoCorosyncConfig(t *tes
 	m, err = Read(p, t0)
 	require.ErrorContains(t, err, "corosync.conf")
 	require.Equal(t, Members{}, m)
+}
+
+// The node's own copy of corosync.conf, which corosync starts from, is
+// there as well on every member, and is what is left when the cluster
+// filesystem has nothing to show yet.
+func TestAFileWithoutAClusterIsStandaloneOnlyWhileTheNodeHasNoCorosyncConfigOfItsOwn(t *testing.T) {
+	_, p := writeBeside(t, "members-lab-standalone.json")
+	local := filepath.Join(t.TempDir(), "corosync.conf")
+	files := Files{Members: p, Corosync: filepath.Join(filepath.Dir(p), "corosync.conf"), LocalCorosync: local}
+	m, err := ReadFiles(files, t0)
+	require.NoError(t, err)
+	require.True(t, m.Standalone)
+
+	require.NoError(t, os.WriteFile(local, []byte("totem {\n}\n"), 0o600))
+	m, err = ReadFiles(files, t0)
+	require.ErrorContains(t, err, local)
+	require.Equal(t, Members{}, m)
+
+	q := NewQuorumFiles(files, (&clock{t: t0}).now)
+	_, err = q.Read()
+	require.Error(t, err)
+}
+
+func TestDefaultFilesAreWhereProxmoxKeepsThem(t *testing.T) {
+	require.Equal(t, Files{
+		Members: "/etc/pve/.members", Corosync: "/etc/pve/corosync.conf", LocalCorosync: "/etc/corosync/corosync.conf",
+	}, DefaultFiles())
 }
 
 func TestAFileWithAClusterDoesNotDependOnACorosyncConfig(t *testing.T) {

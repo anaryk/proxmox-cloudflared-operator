@@ -23,8 +23,24 @@ import (
 const (
 	MembersFile  = "/etc/pve/.members"
 	CorosyncFile = "/etc/pve/corosync.conf"
-	RootCAFile   = "/etc/pve/pve-root-ca.pem"
+	// CorosyncLocalFile is the node's own copy of CorosyncFile, which
+	// corosync starts from; pmxcfs keeps the two the same.
+	CorosyncLocalFile = "/etc/corosync/corosync.conf"
+	RootCAFile        = "/etc/pve/pve-root-ca.pem"
 )
+
+// Files are the files a node is read from. A node that is one of a cluster
+// has both corosync files; one that stands alone has neither.
+type Files struct {
+	Members       string
+	Corosync      string
+	LocalCorosync string
+}
+
+// DefaultFiles are the files where Proxmox keeps them.
+func DefaultFiles() Files {
+	return Files{Members: MembersFile, Corosync: CorosyncFile, LocalCorosync: CorosyncLocalFile}
+}
 
 // Member is a node as pmxcfs lists it. IP is invalid when the file gives no
 // address for it; one that is given and is no address is an error.
@@ -55,24 +71,39 @@ type Members struct {
 	ReadAt time.Time
 }
 
-// Read parses the file at path, normally MembersFile. A file without a cluster
-// is a node that stands alone only while no corosync.conf lies beside it:
-// pmxcfs prints no cluster until corosync has told it about one, so a member
-// that has just started, or lost corosync, reads like that, and its file is an
-// error until the cluster is there.
+// Read is ReadFiles for the members file at path, normally MembersFile, with
+// the cluster's corosync.conf beside it and the node's own at
+// CorosyncLocalFile.
 func Read(path string, now time.Time) (Members, error) {
-	b, err := os.ReadFile(path)
+	return ReadFiles(Files{
+		Members:       path,
+		Corosync:      filepath.Join(filepath.Dir(path), filepath.Base(CorosyncFile)),
+		LocalCorosync: CorosyncLocalFile,
+	}, now)
+}
+
+// ReadFiles parses the members file. A file without a cluster is a node that
+// stands alone only while the node has no corosync.conf, neither the
+// cluster's nor its own copy: pmxcfs prints no cluster until corosync has
+// told it about one, so a member that has just started, or lost corosync,
+// reads like that, and its file is an error until the cluster is there.
+func ReadFiles(f Files, now time.Time) (Members, error) {
+	b, err := os.ReadFile(f.Members)
 	if err != nil {
 		return Members{}, err
 	}
 	m, err := Parse(b, now)
 	if err != nil {
-		return Members{}, fmt.Errorf("%s: %w", path, err)
+		return Members{}, fmt.Errorf("%s: %w", f.Members, err)
 	}
 	if m.Standalone {
-		beside := filepath.Join(filepath.Dir(path), filepath.Base(CorosyncFile))
-		if err := absent(beside); err != nil {
-			return Members{}, fmt.Errorf("%s has no cluster in it: %w", path, err)
+		for _, p := range []string{f.Corosync, f.LocalCorosync} {
+			if p == "" {
+				continue
+			}
+			if err := absent(p); err != nil {
+				return Members{}, fmt.Errorf("%s has no cluster in it: %w", f.Members, err)
+			}
 		}
 	}
 	return m, nil
@@ -101,18 +132,19 @@ type clusterFile struct {
 }
 
 type nodeEntry struct {
-	ID     int    `json:"id"`
+	ID     *int   `json:"id"`
 	Online *int   `json:"online"`
 	IP     string `json:"ip"`
 }
 
 // Parse reads the content of the file. A file with a cluster must say
-// whether the cluster is quorate and list this node among the nodes; a file
-// with neither a cluster nor a list is a node that stands alone, listed as
-// the one node of its own list, and whether a corosync.conf lies beside it
-// is for Read to see. Anything in between, a cluster without its list, a
-// list without its cluster, a cluster or a list that is empty or null, is
-// nothing pmxcfs prints and is an error.
+// whether the cluster is quorate, list this node among the nodes with its
+// address, give every node an id, and count as many nodes as it lists when
+// it counts them; a file with neither a cluster nor a list is a node that
+// stands alone, listed as the one node of its own list, and whether the
+// node has a corosync.conf is for ReadFiles to see. Anything in between, a
+// cluster without its list, a list without its cluster, a cluster or a list
+// that is empty or null, is nothing pmxcfs prints and is an error.
 func Parse(b []byte, now time.Time) (Members, error) {
 	var f clusterFile
 	if err := json.Unmarshal(b, &f); err != nil {
@@ -136,7 +168,8 @@ func Parse(b []byte, now time.Time) (Members, error) {
 	if err != nil {
 		return Members{}, err
 	}
-	if m.Cluster, m.Quorate, err = clusterFacts(cluster); err != nil {
+	var count int
+	if m.Cluster, m.Quorate, count, err = clusterFacts(cluster); err != nil {
 		return Members{}, err
 	}
 	list, err := object("the list of nodes", f.Nodelist)
@@ -146,6 +179,9 @@ func Parse(b []byte, now time.Time) (Members, error) {
 	if _, ok := list[f.Nodename]; !ok {
 		return Members{}, fmt.Errorf("the list of nodes of the cluster does not have %s in it", f.Nodename)
 	}
+	if count != 0 && count != len(list) {
+		return Members{}, fmt.Errorf("the cluster counts %d nodes, the list has %d", count, len(list))
+	}
 	for name, raw := range list {
 		if name == "" {
 			return Members{}, errors.New("a node of the list has no name")
@@ -153,6 +189,9 @@ func Parse(b []byte, now time.Time) (Members, error) {
 		var n nodeEntry
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return Members{}, fmt.Errorf("node %s: %w", name, err)
+		}
+		if n.ID == nil || *n.ID < 1 {
+			return Members{}, fmt.Errorf("node %s has no id above zero", name)
 		}
 		online, err := flag("online of node "+name, n.Online)
 		if err != nil {
@@ -164,7 +203,10 @@ func Parse(b []byte, now time.Time) (Members, error) {
 				return Members{}, fmt.Errorf("the address of node %s: %w", name, err)
 			}
 		}
-		m.Nodes = append(m.Nodes, Member{Name: name, ID: n.ID, Online: online, IP: ip})
+		if name == f.Nodename && !ip.IsValid() {
+			return Members{}, fmt.Errorf("the list gives no address of %s", name)
+		}
+		m.Nodes = append(m.Nodes, Member{Name: name, ID: *n.ID, Online: online, IP: ip})
 	}
 	slices.SortFunc(m.Nodes, func(a, b Member) int { return strings.Compare(a.Name, b.Name) })
 	return m, nil
@@ -183,22 +225,32 @@ func object(what string, raw json.RawMessage) (map[string]json.RawMessage, error
 	return m, nil
 }
 
-func clusterFacts(c map[string]json.RawMessage) (name string, quorate bool, err error) {
+// clusterFacts reads the cluster object: whether it is quorate, which it
+// must say, its name, and how many nodes it counts, 0 when it does not.
+func clusterFacts(c map[string]json.RawMessage) (name string, quorate bool, count int, err error) {
 	var q *int
 	if raw, ok := c["quorate"]; ok {
 		if err := json.Unmarshal(raw, &q); err != nil {
-			return "", false, fmt.Errorf("quorate: %w", err)
+			return "", false, 0, fmt.Errorf("quorate: %w", err)
 		}
 	}
 	if quorate, err = flag("quorate", q); err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 	if raw, ok := c["name"]; ok {
 		if err := json.Unmarshal(raw, &name); err != nil {
-			return "", false, fmt.Errorf("the name of the cluster: %w", err)
+			return "", false, 0, fmt.Errorf("the name of the cluster: %w", err)
 		}
 	}
-	return name, quorate, nil
+	if raw, ok := c["nodes"]; ok {
+		if err := json.Unmarshal(raw, &count); err != nil {
+			return "", false, 0, fmt.Errorf("the count of nodes: %w", err)
+		}
+		if count < 1 {
+			return "", false, 0, fmt.Errorf("the count of nodes is %d", count)
+		}
+	}
+	return name, quorate, count, nil
 }
 
 // flag is a 0 or a 1, as pmxcfs prints them. A missing value, null, or any
@@ -218,8 +270,8 @@ func flag(what string, v *int) (bool, error) {
 // Quorum keeps the last read of the members file for those who ask often and
 // must not wait for the file: the lease keeper and the engine.
 type Quorum struct {
-	path string
-	now  func() time.Time
+	files Files
+	now   func() time.Time
 
 	// reading serializes the reads so that the last one kept is the newest;
 	// mu guards what is kept and is never held across a read of the file.
@@ -228,10 +280,19 @@ type Quorum struct {
 	last    Members
 }
 
-// NewQuorum keeps the reads of the file at path, normally MembersFile, and
-// takes their times from now.
+// NewQuorum keeps the reads of the file at path, normally MembersFile, as
+// Read reads it, and takes their times from now.
 func NewQuorum(path string, now func() time.Time) *Quorum {
-	return &Quorum{path: path, now: now}
+	return NewQuorumFiles(Files{
+		Members:       path,
+		Corosync:      filepath.Join(filepath.Dir(path), filepath.Base(CorosyncFile)),
+		LocalCorosync: CorosyncLocalFile,
+	}, now)
+}
+
+// NewQuorumFiles is NewQuorum reading the files given.
+func NewQuorumFiles(f Files, now func() time.Time) *Quorum {
+	return &Quorum{files: f, now: now}
 }
 
 // Read reads the file and keeps what it read. A read that fails keeps the
@@ -242,7 +303,7 @@ func NewQuorum(path string, now func() time.Time) *Quorum {
 func (q *Quorum) Read() (Members, error) {
 	q.reading.Lock()
 	defer q.reading.Unlock()
-	m, err := Read(q.path, q.now())
+	m, err := ReadFiles(q.files, q.now())
 	if err != nil {
 		return Members{}, err
 	}
