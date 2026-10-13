@@ -63,7 +63,9 @@ those of `pco diagnose` among them, are not the connector's and pass the filter 
    Blocked on this node: none
    ```
 
-   Every target of an `active` route should be in `Targets`. Its exit status is 1 when the
+   Every target of an `active` route should be in `Targets`; for a guest reached through a leg
+   or on the managed network that is its service address, the one in the `SERVICE` column of
+   `pco routes`, such as `198.18.1.0`, and never its real address. Its exit status is 1 when the
    filter is off, not loaded, or not as pco loads it, so a script can ask
    `pco egress show > /dev/null`.
 
@@ -97,6 +99,9 @@ those of `pco diagnose` among them, are not the connector's and pass the filter 
    Blocked 10.0.0.12.
    Took 1 entry for it out of the egress table, which now rejects it on every port.
    ```
+
+   For a guest reached through a leg or on the managed network, block its service address,
+   as the filter holds no other.
 
    The block is kept in `/var/lib/pco/egress-blocked.json`, for this node only, and taken out
    of every set the daemon loads until you lift it. It changes nothing at Cloudflare: the

@@ -280,7 +280,8 @@ configuration: the command says so and reads the pending changes again right bef
 apply. A lock that a run cut short left is released with `pvesh delete /cluster/sdn/lock --force`.
 
 **In the appliance** it takes two steps, as the container may not make SDN objects or grant
-itself anything. On the node, as root, through the installer script or the release's `pco`:
+itself anything. On the node, as root, with the `pco` of the release
+([Commands on the node](appliance.md#commands-on-the-node)):
 
     pco appliance managed enable --vmid 120
 

@@ -254,12 +254,21 @@ each time they are needed. Use the release the appliance runs, which
 it removes when it returns, after the same checks of the release as for an install.
 `--uninstall`, `--repair`, `--grant-network` and `--revoke-network`, with `--appliance`, run
 `pco appliance uninstall`, `repair`, `grant-network` and `revoke-network`, and every other
-argument goes to that command; `pco appliance managed enable` and `pco appliance network
-allow` run the same way, from the package of the release unpacked on the node:
+argument goes to that command:
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --uninstall --vmid 120
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --repair --vmid 120
+
+`install.sh` has no flag for `pco appliance managed enable`; `--grant-network` does what
+`pco appliance network allow` does. Run `managed enable` with the `pco` of the same release,
+from its package unpacked by hand once its signature and checksum are checked as
+[SECURITY.md](https://github.com/anaryk/proxmox-cloudflared-operator/blob/main/SECURITY.md#by-hand)
+says, and remove the directory afterwards:
+
+    dpkg-deb -x pco_1.2.3_amd64.deb /root/pco-release
+    /root/pco-release/usr/bin/pco appliance managed enable --vmid 120
+    rm -r /root/pco-release
 
 With the host profile the script refuses them, as a host install runs its commands with the
 `pco` it has. A node without internet runs them from files you bring, `PCO_DEB`,

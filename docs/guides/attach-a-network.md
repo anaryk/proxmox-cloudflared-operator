@@ -24,9 +24,12 @@ network is the better answer.
   attached.
 - On a bridge with a physical port, a LAN with other stations on it, the leg's MAC and
   address are seen by them. Reserve the address with whoever runs that LAN.
-- In the appliance, the container has the grant of the bridge: `pco appliance network allow
-  vmbr1 --vmid 120` on the node, which is [grant-network](../cli/pco-appliance-network-allow.md)
-  in short. A VLAN is attached on a VLAN-aware bridge only.
+- In the appliance, the container has the grant of the bridge, made on the node with
+  `install.sh --appliance --grant-network --vmid 120 --bridge vmbr1`
+  ([Commands on the node](../appliance.md#commands-on-the-node)); with the `pco` of the
+  release, [`pco appliance network allow vmbr1 --vmid 120`](../cli/pco-appliance-network-allow.md)
+  is the same in short. Every `pco` command of the steps below then runs inside the container,
+  as `pct exec 120 -- pco ...`. A VLAN is attached on a VLAN-aware bridge only.
 - You work as root on the node.
 
 ## Steps

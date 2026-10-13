@@ -26,8 +26,8 @@ says what that proof rests on.
 - `managed.subnet` of the appliance's settings, `10.203.118.0/24` by default, is free, as for
   a host.
 - The SDN configuration has no changes of others waiting, or you mean to apply them along.
-- You work as root on the node for the first step, through the installer script or the
-  release's `pco`, and inside the container or with `pct exec 120 --` for the rest.
+- You work as root on the node for the first step, with the `pco` of the release unpacked
+  there ([Commands on the node](../appliance.md#commands-on-the-node)), and inside the container or with `pct exec 120 --` for the rest.
 
 ## Steps
 

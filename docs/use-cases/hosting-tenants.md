@@ -85,8 +85,9 @@ the tenant's machines and a gateway, and nothing else of the company's.
 
 The appliance needs a card of its own on each of these networks, a leg, which attaching the
 network adds to the container, with an address of the tenant's network that the tenant set
-aside for it. The grant comes first, on the node, one VLAN at a time and never the whole
-bridge; then the attach, inside the appliance. For the two networks of the diagram:
+aside for it. The grant comes first, on the node with the `pco` of the release
+([Commands on the node](../appliance.md#commands-on-the-node)), one VLAN at a time and never the
+whole bridge; then the attach, inside the appliance. For the two networks of the diagram:
 
     pco appliance network allow vmbr1:20 --vmid 120
     pco appliance network allow vmbr1:30 --vmid 120
