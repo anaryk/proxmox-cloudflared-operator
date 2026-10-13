@@ -70,7 +70,7 @@ func newCheckEnv(t *testing.T) *checkEnv {
 	require.NoError(t, list.Refresh(t.Context()))
 	e.c = &Checker{
 		InstallID: testInstall, Store: e.st, Allow: list, Now: e.clock.now, Record: e.events.add, Log: zerolog.Nop(),
-		ObserveOnly: func() bool { return e.observe },
+		ObserveOnly: func() (time.Time, bool) { return t0, e.observe },
 	}
 	return e
 }
@@ -304,40 +304,57 @@ func TestAnApplianceCertificateIsCheckedAgainstTheRegistryAlone(t *testing.T) {
 	})
 }
 
-func TestTheObserveOnlyWindowTakesACertificateTheRegistryDoesNotKnow(t *testing.T) {
+func TestTheObserveOnlyWindowTakesACertificateOfANodeWithoutOne(t *testing.T) {
 	e := newCheckEnv(t)
-	_, old := e.issue(e.ca, hostID(testNode))
-	e.enrol(store.NodeActive, old)
-	_, renewed := e.issue(e.ca, hostID(testNode))
+	e.enrol(store.NodeActive, nil)
+	_, cert := e.issue(e.ca, hostID(testNode))
 
-	_, r := e.c.Check(renewed, addr2)
-	require.NotNil(t, r, "outside the window a serial the registry does not know is refused")
+	_, r := e.c.Check(cert, addr2)
+	require.NotNil(t, r, "outside the window a node without an enrolment is refused")
 
 	e.observe = true
-	node, r := e.c.Check(renewed, addr2)
+	node, r := e.c.Check(cert, addr2)
 	require.Nil(t, r)
 	require.Equal(t, testNode, node)
 	en, _, err := e.st.Enrolment(testNode)
 	require.NoError(t, err)
-	require.Equal(t, pki.Fingerprint(renewed), en.SHA256, "the enrolment is brought to the certificate")
-	require.Equal(t, pki.Fingerprint(renewed), e.entry(testNode).CertSHA256)
+	require.Equal(t, pki.Fingerprint(cert), en.SHA256, "the enrolment is written")
+	require.Equal(t, pki.Fingerprint(cert), e.entry(testNode).CertSHA256)
 	require.Len(t, e.events.messages(), 1)
 	require.Contains(t, e.events.messages()[0], "observe-only")
 
-	_, r = e.c.Check(renewed, addr2)
+	_, r = e.c.Check(cert, addr2)
 	require.Nil(t, r)
 	require.Len(t, e.events.messages(), 1, "one event per node")
 
 	e.observe = false
-	_, r = e.c.Check(renewed, addr2)
+	_, r = e.c.Check(cert, addr2)
 	require.Nil(t, r, "recorded, so accepted after the window too")
-	_, r = e.c.Check(old, addr2)
-	require.NotNil(t, r, "the certificate before is not the enrolment's")
 
+	t.Run("a certificate other than the enrolment's is refused in the window", func(t *testing.T) {
+		e.observe = true
+		_, other := e.issue(e.ca, hostID(testNode))
+		_, r := e.c.Check(other, addr2)
+		require.NotNil(t, r)
+		require.Equal(t, agentproto.RefusalNotEnrolled, r.Code)
+		en, _, err := e.st.Enrolment(testNode)
+		require.NoError(t, err)
+		require.Equal(t, pki.Fingerprint(cert), en.SHA256, "the enrolment stays")
+	})
+	t.Run("the window ends after a day whatever the controller says", func(t *testing.T) {
+		e := newCheckEnv(t)
+		e.enrol(store.NodeActive, nil)
+		e.observe = true
+		e.clock.advance(ObserveWindow - time.Second)
+		_, late := e.issue(e.ca, hostID(testNode))
+		e.clock.advance(time.Second)
+		_, r := e.c.Check(late, addr2)
+		require.NotNil(t, r)
+	})
 	t.Run("not for a removed or contested node", func(t *testing.T) {
 		e.observe = true
 		for _, state := range []string{store.NodeRemoved, store.NodeContested} {
-			e.enrol(state, old)
+			e.enrol(state, nil)
 			_, newer := e.issue(e.ca, hostID(testNode))
 			_, r := e.c.Check(newer, addr2)
 			require.NotNil(t, r)
@@ -346,10 +363,8 @@ func TestTheObserveOnlyWindowTakesACertificateTheRegistryDoesNotKnow(t *testing.
 	})
 	t.Run("an appliance node", func(t *testing.T) {
 		_, cert := e.issue(e.ca, applianceID("pve3", 300))
-		require.NoError(t, e.st.SaveNode(store.NodeEntry{
-			Name: "pve3", Version: "dev", Since: t0, Kind: string(pki.KindAppliance), VMID: 300, State: store.NodeActive,
-			CertSerial: "01", CertSHA256: "00",
-		}))
+		entry := store.NodeEntry{Name: "pve3", Version: "dev", Since: t0, Kind: string(pki.KindAppliance), VMID: 300, State: store.NodeActive}
+		require.NoError(t, e.st.SaveNode(entry))
 		e.observe = false
 		_, r := e.c.Check(cert, addr3)
 		require.NotNil(t, r)
@@ -357,6 +372,10 @@ func TestTheObserveOnlyWindowTakesACertificateTheRegistryDoesNotKnow(t *testing.
 		_, r = e.c.Check(cert, addr3)
 		require.Nil(t, r)
 		require.Equal(t, pki.Fingerprint(cert), e.entry("pve3").CertSHA256)
+
+		_, other := e.issue(e.ca, applianceID("pve3", 300))
+		_, r = e.c.Check(other, addr3)
+		require.NotNil(t, r, "a registry that holds a certificate refuses another in the window")
 	})
 }
 

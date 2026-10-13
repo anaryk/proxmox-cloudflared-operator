@@ -21,6 +21,11 @@ import (
 // which reads leader.json every two seconds, to issue its own again.
 const RotationWindow = 10 * time.Minute
 
+// ObserveWindow bounds the observe-only window of the check, whatever the
+// controller says: a store left in observe-only mode for days must not keep
+// enrolling certificates nobody asked for.
+const ObserveWindow = 24 * time.Hour
+
 // The kind of the security events of the check.
 const eventKindEnrolment = "enrolment"
 
@@ -47,9 +52,11 @@ type Checker struct {
 	Now       func() time.Time
 	// ObserveOnly reports whether the controller is in its observe-only
 	// window, after a promotion, an import or a recovery and until the
-	// admin's apply: a certificate of a registered node the restored store
-	// does not know is then taken and recorded.
-	ObserveOnly func() bool
+	// admin's apply, and since when. Within ObserveWindow of since, the
+	// certificate of a registered node the restored store holds none for is
+	// taken and recorded; one that differs from the certificate it holds is
+	// refused, window or not.
+	ObserveOnly func() (since time.Time, on bool)
 	// Record receives the security events of the check. It may be nil.
 	Record func(store.SecurityEvent)
 	Log    zerolog.Logger
@@ -124,7 +131,7 @@ func (c *Checker) checkHost(id pki.Identity, cert *x509.Certificate, entry store
 				"the registry's certificate of node %s now follows its enrolment: serial %s, SHA-256 %s", id.Node, serial, sum))
 		}
 		return id.Node, nil
-	case c.observing():
+	case !found && c.observing():
 		if err := c.Store.SaveEnrolment(id.Node, store.Enrolment{CertPEM: encodeCert(cert)}); err != nil {
 			return "", unchecked(fmt.Sprintf("the enrolment of node %s could not be written: %v", id.Node, err))
 		}
@@ -146,7 +153,7 @@ func (c *Checker) checkAppliance(id pki.Identity, cert *x509.Certificate, entry 
 	switch {
 	case entry.CertSerial == serial && entry.CertSHA256 == sum:
 		return id.Node, nil
-	case c.observing():
+	case entry.CertSerial == "" && c.observing():
 		c.follow(entry, rev, serial, sum, observedLine(id.Node, serial))
 		return id.Node, nil
 	}
@@ -155,10 +162,17 @@ func (c *Checker) checkAppliance(id pki.Identity, cert *x509.Certificate, entry 
 }
 
 func observedLine(node, serial string) string {
-	return fmt.Sprintf("observe-only: took a certificate of node %s the restored registry did not know (serial %s), and recorded it", node, serial)
+	return fmt.Sprintf("observe-only: took a certificate of node %s, for which the restored registry held none (serial %s), and recorded it", node, serial)
 }
 
-func (c *Checker) observing() bool { return c.ObserveOnly != nil && c.ObserveOnly() }
+func (c *Checker) observing() bool {
+	if c.ObserveOnly == nil {
+		return false
+	}
+	since, on := c.ObserveOnly()
+	now := c.now()
+	return on && !now.Before(since) && now.Before(since.Add(ObserveWindow))
+}
 
 // follow writes the certificate's serial and fingerprint into the node's
 // entry, at the revision it was read at, and records why. An entry another
