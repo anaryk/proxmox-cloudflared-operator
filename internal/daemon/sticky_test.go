@@ -415,7 +415,9 @@ func TestALostPortEventHasTheEntriesGivenAtTheNextCheck(t *testing.T) {
 func TestAFullPortQueueMarksTheEntriesDirty(t *testing.T) {
 	r := newStickyRig(t, true)
 	block := make(chan struct{})
+	applying := make(chan struct{}, 1)
 	r.g.applySticky = func(context.Context, gateway.Backend, []gateway.Sticky) error {
+		applying <- struct{}{}
 		<-block
 		return nil
 	}
@@ -423,6 +425,11 @@ func TestAFullPortQueueMarksTheEntriesDirty(t *testing.T) {
 	defer cancel()
 	called := make(chan struct{})
 	watch := func(ctx context.Context, _ netns.NsHandle, _ string, joined func(string)) error {
+		// The first port is taken up and its apply holds; what the check
+		// took as dirty is taken before that, so the flood that follows
+		// is the only thing that can mark the entries dirty.
+		joined("veth101i1")
+		<-applying
 		for range 10 * portJoinedQueue {
 			joined("veth101i1")
 		}
