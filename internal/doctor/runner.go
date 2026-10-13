@@ -128,7 +128,8 @@ func (r *Runner) Diagnose(ctx context.Context, name string) ([]Step, error) {
 			if err := HolderChanged(ctx, st, host); err != nil {
 				return nil, err
 			}
-			return DiagnoseRoute(context.WithoutCancel(ctx), st, host, r.httpc)
+			ctx := context.WithoutCancel(ctx)
+			return diagnoseRoute(ctx, st, host, r.httpc, readPins(ctx, r.env))
 		})
 	}
 	return await(ctx, f)

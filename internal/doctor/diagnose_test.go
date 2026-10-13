@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -25,6 +26,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 const (
@@ -377,6 +379,78 @@ func TestThePathStepFailsWhereTheLegDoes(t *testing.T) {
 			require.Empty(t, o.requests())
 		})
 	}
+}
+
+// The path step says whether the gateway holds the guest's address to the
+// MAC its proof found, where the pins were read: through an attached network
+// and through the managed one.
+func TestThePathStepNamesThePin(t *testing.T) {
+	pinned := []store.Pin{{Network: "vmbr1", Addr: netip.MustParseAddr("10.50.0.10"), MAC: "bc:24:11:00:00:01"}}
+	for _, tt := range []struct {
+		name    string
+		via     string
+		pins    *pinsRead
+		level   Level
+		detail  string
+		through bool // the steps after it ran
+	}{
+		{name: "pinned", via: "attach:vmbr1", pins: &pinsRead{pins: pinned}, level: LevelOK,
+			detail: "attach vmbr1: leg up, service %s -> 10.50.0.10 programmed, 10.50.0.10 pinned to bc:24:11:00:00:01", through: true},
+		{name: "managed, the pin missing", via: engine.ViaManaged, pins: &pinsRead{pins: pinned}, level: LevelWarn,
+			detail: "managed: leg up, service %s -> 10.50.0.10 programmed, but no pin holds 10.50.0.10 to bc:24:11:00:00:01: " +
+				"another guest that answers for the address may take its requests; the next cycle pins it", through: true},
+		{name: "pinned to another MAC", via: "attach:vmbr1",
+			pins:  &pinsRead{pins: []store.Pin{{Network: "vmbr1", Addr: netip.MustParseAddr("10.50.0.10"), MAC: "bc:24:11:00:00:99"}}},
+			level: LevelFail, detail: "attach vmbr1: 10.50.0.10 is pinned to bc:24:11:00:00:99, and the last proof found it at bc:24:11:00:00:01; the next cycle pins it again"},
+		{name: "the pins unreadable", via: "attach:vmbr1", pins: &pinsRead{err: errors.New("permission denied")}, level: LevelWarn,
+			detail: "attach vmbr1: leg up, service %s -> 10.50.0.10 programmed; the pins of the gateway could not be read: permission denied", through: true},
+		{name: "not read", via: "attach:vmbr1", level: LevelOK, detail: "attach vmbr1: leg up, service %s -> 10.50.0.10 programmed", through: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			o := newOrigin(t, false, nil)
+			st := throughLeg(t, servedBy(t, o.Server, "http"), engine.LegUp)
+			st.Routes[0].Path.Via = tt.via
+
+			steps, err := diagnoseRoute(t.Context(), st, www, o.Client(), tt.pins)
+
+			require.NoError(t, err)
+			detail := tt.detail
+			if strings.Contains(detail, "%s") {
+				detail = fmt.Sprintf(detail, addrOf(t, o.Server).Addr())
+			}
+			if tt.level == LevelFail {
+				requireFailsAt(t, steps, "path", detail)
+				return
+			}
+			require.Equal(t, Step{Name: "path", Level: tt.level, Detail: detail}, steps[6])
+			require.Equal(t, LevelOK, steps[8].Level, "the request was made: %v", steps[8])
+		})
+	}
+}
+
+// A route that reaches its guest directly needs no pin of the gateway.
+func TestADirectPathNeedsNoPin(t *testing.T) {
+	o := newOrigin(t, false, nil)
+	st := servedBy(t, o.Server, "http")
+
+	steps, err := diagnoseRoute(t.Context(), st, www, o.Client(), &pinsRead{err: errors.New("not read")})
+
+	require.NoError(t, err)
+	require.Equal(t, Step{Name: "path", Level: LevelOK, Detail: "direct"}, steps[6])
+}
+
+// The runner reads the pins where the host can tell them.
+func TestTheRunnerReadsThePins(t *testing.T) {
+	o := newOrigin(t, false, nil)
+	st := throughLeg(t, servedBy(t, o.Server, "http"), engine.LegUp)
+	env := healthyNetEnv()
+	env.pins = []store.Pin{{Network: "vmbr1", Addr: netip.MustParseAddr("10.50.0.10"), MAC: "bc:24:11:00:00:01"}}
+	r := NewRunner(func() engine.State { return st }, env, o.Client(), func() time.Time { return now }, zerolog.Nop())
+
+	steps, err := r.Diagnose(t.Context(), www)
+
+	require.NoError(t, err)
+	require.Contains(t, steps[6].Detail, "10.50.0.10 pinned to bc:24:11:00:00:01")
 }
 
 // The identity step names the level the address was proven at, when the

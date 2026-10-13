@@ -11,10 +11,12 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/hostname"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // Step is one link of a route's chain.
@@ -46,6 +48,29 @@ type Step struct {
 // httpc only lends the certificate authorities it trusts; nil trusts those of
 // the system. An unknown hostname is engine.ErrNotFound.
 func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *http.Client) ([]Step, error) {
+	return diagnoseRoute(ctx, st, name, httpc, nil)
+}
+
+// pinsRead are the pins of the gateway as the diagnosis read them: what a
+// path through a leg is checked against.
+type pinsRead struct {
+	pins []store.Pin
+	err  error
+}
+
+// readPins reads the pins of the gateway where env can tell them; nil where
+// it cannot, which leaves them out of the diagnosis.
+func readPins(ctx context.Context, env Env) *pinsRead {
+	net, ok := env.(NetworkEnv)
+	if !ok {
+		return nil
+	}
+	pins, _, err := net.Pins(ctx)
+	return &pinsRead{pins: pins, err: err}
+}
+
+// diagnoseRoute is DiagnoseRoute with the pins of the gateway, when read.
+func diagnoseRoute(ctx context.Context, st engine.State, name string, httpc *http.Client, pins *pinsRead) ([]Step, error) {
 	host, err := hostname.Normalize(name)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", engine.ErrInvalid, err)
@@ -54,7 +79,7 @@ func DiagnoseRoute(ctx context.Context, st engine.State, name string, httpc *htt
 	if !found {
 		return nil, fmt.Errorf("%w: the last cycle has no route for %s", engine.ErrNotFound, host)
 	}
-	d := &diagnosis{st: st, rt: rt, host: host}
+	d := &diagnosis{st: st, rt: rt, host: host, pins: pins}
 	if i := slices.IndexFunc(st.Tunnels, func(t engine.TunnelView) bool { return rt.Account != "" && t.AccountID == rt.Account }); i >= 0 {
 		d.tunnel = &st.Tunnels[i]
 	}
@@ -110,6 +135,7 @@ type diagnosis struct {
 	rt     engine.RouteView
 	host   string
 	tunnel *engine.TunnelView // of the route's account, when the state has it
+	pins   *pinsRead          // nil when they were not read
 }
 
 func passed(detail string) Step { return Step{Level: LevelOK, Detail: detail} }
@@ -287,7 +313,26 @@ func (d *diagnosis) path() Step {
 	case slices.ContainsFunc(d.st.Problems, func(l string) bool { return strings.HasPrefix(l, gatewayFailed) }):
 		return failed(via + ": the gateway could not be programmed; pco status says why")
 	}
-	return passed(fmt.Sprintf("%s: leg up, service %s -> %s programmed", via, p.Service, p.Addr))
+	done := fmt.Sprintf("%s: leg up, service %s -> %s programmed", via, p.Service, p.Addr)
+	if d.pins == nil {
+		return passed(done)
+	}
+	if d.pins.err != nil {
+		return warned(done + "; the pins of the gateway could not be read: " + d.pins.err.Error())
+	}
+	network := strings.TrimPrefix(p.Via, engine.ViaAttach)
+	if p.Via == engine.ViaManaged {
+		network = gateway.ManagedBridge
+	}
+	i := slices.IndexFunc(d.pins.pins, func(pin store.Pin) bool { return pin.Network == network && pin.Addr == p.Addr })
+	switch {
+	case i < 0:
+		return warned(fmt.Sprintf("%s, but no pin holds %s to %s: another guest that answers for the address may take its requests; the next cycle pins it",
+			done, p.Addr, p.MAC))
+	case !strings.EqualFold(d.pins.pins[i].MAC, p.MAC):
+		return failed(fmt.Sprintf("%s: %s is pinned to %s, and the last proof found it at %s; the next cycle pins it again", via, p.Addr, d.pins.pins[i].MAC, p.MAC))
+	}
+	return passed(fmt.Sprintf("%s, %s pinned to %s", done, p.Addr, p.MAC))
 }
 
 // tried lists the candidates resolution tried, and how each fared.
