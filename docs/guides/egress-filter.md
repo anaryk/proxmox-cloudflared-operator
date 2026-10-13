@@ -170,5 +170,6 @@ Switch a filter that is off back on with `pco egress on`, as above.
 - [Troubleshooting](../troubleshooting.md#a-connector-cannot-reach-its-target): a connector
   that cannot reach its target.
 - Reference: [pco egress show](../cli/pco-egress-show.md),
-  [pco egress block](../cli/pco-egress-block.md), [pco egress off](../cli/pco-egress-off.md),
+  [pco egress block](../cli/pco-egress-block.md),
+  [pco egress unblock](../cli/pco-egress-unblock.md), [pco egress off](../cli/pco-egress-off.md),
   [pco egress on](../cli/pco-egress-on.md).

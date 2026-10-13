@@ -183,3 +183,6 @@ SDN objects; without the flag it refuses while a guest has a card on `pconet`. S
   the enforcement window, an admin's rule above pco's, and a partial write.
 - [Identity](../identity.md#filtered-in-the-appliance): the level `filtered`.
 - [Security](../security.md#the-managed-network-against-the-five-attackers): what it stops.
+- Reference: [pco appliance managed enable](../cli/pco-appliance-managed-enable.md),
+  [pco network managed enable](../cli/pco-network-managed-enable.md),
+  [pco managed status](../cli/pco-managed-status.md).

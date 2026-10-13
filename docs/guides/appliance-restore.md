@@ -42,7 +42,9 @@ the container back, and a repair brings back its install, from what Cloudflare a
    volume, puts the container into pool `pco` unless it is in another pool, makes the Proxmox
    token anew, registers the gate tags, and has the appliance adopt the install whose tunnel the
    token sees. With several installs in reach it lists them, and `--install-id` chooses. It stops
-   the container again at the end if it was stopped.
+   the container again at the end if it was stopped. The installer runs
+   [pco appliance repair](../cli/pco-appliance-repair.md) of that release, whose help lists
+   every flag.
 
 3. Protect the container again, and start it if it is stopped:
 

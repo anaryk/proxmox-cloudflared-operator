@@ -219,3 +219,7 @@ removes the cards pco attached first and waits for the configurations to drop th
   grants, the guest firewall and the level `filtered`.
 - [Troubleshooting](../troubleshooting.md#networks-behind-a-leg-and-the-managed-network): a
   card that waits, no DHCP seen, a foreign card, the vnet changed.
+- Reference: [pco network managed enable](../cli/pco-network-managed-enable.md),
+  [pco managed status](../cli/pco-managed-status.md),
+  [pco managed approve](../cli/pco-managed-approve.md),
+  [pco managed revoke](../cli/pco-managed-revoke.md).

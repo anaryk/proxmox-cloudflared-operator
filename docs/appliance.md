@@ -104,9 +104,9 @@ run on a node of its own, with the defaults and a yes to the one question:
       tag a guest with cf-tunnel and write its routes into its notes
     warning: snapshots, clones and storage replication of lxc/120 carry its secrets, the API token and the Cloudflare credentials: whoever can read them can read those
 
-The lines that begin with `lxc/120:` are what `pco appliance init` printed inside the
-container, where it made the store from what the installer pushed in. The Proxmox token and the
-Cloudflare token reach the container in one file, `/var/lib/pco/bootstrap.json`, pushed with
+The lines that begin with `lxc/120:` are what [pco appliance init](cli/pco-appliance-init.md)
+printed inside the container, where it made the store from what the installer pushed in. The
+Proxmox token and the Cloudflare token reach the container in one file, `/var/lib/pco/bootstrap.json`, pushed with
 `pct push` and removed by `init` as soon as it has read it: never through the configuration of
 the container or its environment, which anyone with `VM.Audit` can read.
 
@@ -496,7 +496,9 @@ The grant is on the most specific path of the network: `/sdn/zones/<zone>/<vnet>
 `/<vlan>` for a VLAN, and the zone `localnetwork` for a plain Linux bridge. A whole zone is never
 granted. `--vlan` names a VLAN; `pco appliance network allow vmbr1:20` is the same command
 with the bridge and the VLAN in one argument. `pco appliance revoke-network` takes a grant
-back, and the uninstall does too. `pco doctor` warns in its `network grants` check about a
+back, and the uninstall does too. The reference has
+[grant-network](cli/pco-appliance-grant-network.md) and
+[revoke-network](cli/pco-appliance-revoke-network.md) with their flags. `pco doctor` warns in its `network grants` check about a
 grant on a whole zone or on a bridge that carries an address of a node. The managed network
 takes its own grants, which `pco appliance managed enable` makes:
 [the guide](guides/managed-network-appliance.md) has them, and
@@ -564,7 +566,7 @@ can snapshot. What a connector noticed of a backup in each mode, in two runs:
 
 ## Restore and repair
 
-`pco appliance repair --vmid <vmid>` puts the appliance right, run on the node that has it as
+[`pco appliance repair --vmid <vmid>`](cli/pco-appliance-repair.md) puts the appliance right, run on the node that has it as
 [commands on the node](#commands-on-the-node) are. It starts the container if it is stopped and
 stops it again at the end, takes nothing back when it fails, and finishes when it is run again.
 What it does depends on the state volume:

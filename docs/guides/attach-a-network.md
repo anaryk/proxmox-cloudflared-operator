@@ -191,3 +191,9 @@ until `pco uninstall` removes it.
   pco's own instead.
 - [Troubleshooting](../troubleshooting.md#networks-behind-a-leg-and-the-managed-network): a leg
   that is not up, an address in use, a bridge that is absent.
+- Reference: [pco network candidates](../cli/pco-network-candidates.md),
+  [pco network probe](../cli/pco-network-probe.md),
+  [pco network attach](../cli/pco-network-attach.md),
+  [pco network list](../cli/pco-network-list.md), [pco network show](../cli/pco-network-show.md),
+  [pco network detach](../cli/pco-network-detach.md),
+  [pco netns status](../cli/pco-netns-status.md).

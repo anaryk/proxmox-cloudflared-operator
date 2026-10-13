@@ -191,5 +191,6 @@ every cycle, for every account, until it is removed
   order for replacing a token.
 - [Settings](../settings.md#cloudflare): `zonePins` and `cloudflareBudget`.
 - Reference: [pco credential add](../cli/pco-credential-add.md),
+  [pco credential list](../cli/pco-credential-list.md),
   [pco credential check](../cli/pco-credential-check.md),
   [pco credential remove](../cli/pco-credential-remove.md).

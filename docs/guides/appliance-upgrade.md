@@ -62,6 +62,9 @@ appliance installs them every day by itself.
 
    `pco upgrade pco` or `pco upgrade cloudflared` upgrades one of them, and `--version` names the
    version to install, as `pco upgrade cloudflared --version 2026.10.1`.
+   [pco upgrade](../cli/pco-upgrade.md) has every flag, and
+   [pco appliance recover](../cli/pco-appliance-recover.md) what the recovery after a rollback
+   does.
 
 ## Check
 
