@@ -336,6 +336,7 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		TrustStatic:       settings.TrustStatic,
 		TrustedCIDRs:      settings.TrustedCIDRs,
 		NoForwardingTable: true,
+		Ceiling:           managedCeiling,
 	}, deps.Now)
 	conns := connector.NewManager(deps.Systemd, filepath.Join(cfg.Paths.Local, tunnelsDir), nil, log)
 	filter := newEgressFilter(deps.Nft, cfg.Paths.Local, deps.ConnectorUID, deps.Resolvers)
@@ -370,6 +371,9 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		Gateway:     gw,
 		Networks:    nodeNetworks{proxmox: client, prober: prober},
 		Guests:      managednet.NewAPIConfigurer(client, acl, state.token.TokenID),
+		// The guest firewall is what isolates a card on the managed
+		// network here, written through the API as the token.
+		Firewall: client,
 
 		StartOnlyFields: wiredFields(),
 	}

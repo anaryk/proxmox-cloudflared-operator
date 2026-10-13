@@ -45,6 +45,11 @@ type Attachment struct {
 type FirewallBefore struct {
 	Enabled bool `json:"enabled"`
 	Rules   int  `json:"rules"` // how many rules were there before pco's
+	// PolicyIn and PolicyOut are the policies a firewall that was off had
+	// set, which turning it on with accepting policies replaced; empty for
+	// one not set.
+	PolicyIn  string `json:"policyIn,omitempty"`
+	PolicyOut string `json:"policyOut,omitempty"`
 }
 
 // attachedBy are the values of Attachment.Consent: the consent tag, an

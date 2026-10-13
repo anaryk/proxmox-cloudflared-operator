@@ -128,6 +128,13 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if f.appliance {
+		// pco made the vnet: its routes may be served at observed, as they
+		// are while filtered does not hold, instead of being held back.
+		if err := e.acknowledgeManaged(); err != nil {
+			return err
+		}
+	}
 	first := len(f.nets) == 0
 	if first {
 		if err := e.d.Networks.EnableNamespace(ctx); err != nil {
@@ -188,6 +195,21 @@ func (e *Engine) takeUnknownDropped() int {
 	n := e.unknownDropped
 	e.unknownDropped = 0
 	return n
+}
+
+// acknowledgeManaged acknowledges the segment of the managed network, once.
+func (e *Engine) acknowledgeManaged() error {
+	acked, err := e.d.Store.Segments()
+	if err != nil {
+		return fmt.Errorf("reading the acknowledged segments: %w", err)
+	}
+	if _, ok := acked[store.SegmentID(gateway.ManagedBridge, 0)]; ok {
+		return nil
+	}
+	if err := e.d.Store.SaveSegment(store.Segment{Bridge: gateway.ManagedBridge, AcknowledgedAt: e.d.Now(), By: "managed"}); err != nil {
+		return fmt.Errorf("acknowledging the segment %s: %w", gateway.ManagedBridge, err)
+	}
+	return nil
 }
 
 // makeVnetHint names the command that makes the vnet for the profile.

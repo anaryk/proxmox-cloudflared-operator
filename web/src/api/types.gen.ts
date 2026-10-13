@@ -231,6 +231,8 @@ export interface Finding {
 export interface FirewallBefore {
   enabled: boolean
   rules: number
+  policyIn?: string
+  policyOut?: string
 }
 
 // engine.ForeignView

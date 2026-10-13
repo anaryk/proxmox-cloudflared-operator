@@ -14,8 +14,9 @@ import (
 const reasonBelowMinimum = "identity level %s is below the required %s"
 
 // requiredLevel is the identity level the settings ask of a guest's address.
-// Filtered is the level of the managed network, which the host profile does
-// not have: there it asks for port.
+// Filtered is the level of the managed network in the appliance, which the
+// engine raises proofs at observed on it to while its isolation holds; the
+// host profile does not have it: there it asks for port.
 func (c *cycleRun) requiredLevel() resolve.Level {
 	required := resolve.Level(c.settings.IdentityMinimum)
 	if required == resolve.LevelFiltered && c.install.ProfileName() == store.ProfileHost {
@@ -55,7 +56,11 @@ func (c *cycleRun) holdBelowMinimum() {
 		held = append(held, level)
 	}
 	if len(held) > 0 {
-		c.problem("%s", heldBack(held, required))
+		line := heldBack(held, required)
+		if note := c.filteredNote(); note != "" {
+			line += "; " + note
+		}
+		c.problem("%s", line)
 	}
 }
 

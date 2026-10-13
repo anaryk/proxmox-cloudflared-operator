@@ -155,6 +155,10 @@ type Deps struct {
 	ClusterFirewall func(ctx context.Context) (pve.ClusterFirewallOptions, error)
 	NodeService     func(ctx context.Context, name string) (string, error)
 	GuestFirewall   func(ctx context.Context, g model.Guest) (pve.GuestFirewallOptions, error)
+	// Firewall reads and writes the firewall of guests in the appliance,
+	// which isolates the cards on the managed network there; nil where the
+	// daemon cannot, which adds no card in the appliance.
+	Firewall managednet.FirewallAPI
 }
 
 // Errors the admin actions return, for callers that map them to answers.
@@ -328,6 +332,9 @@ type Engine struct {
 	// dhcp is what the DHCP server of the managed network asks and tells,
 	// beside the cycles; it has a lock of its own.
 	dhcp dhcpBook
+	// filtered is what the appliance's isolation keeps between its steps and
+	// cycles: guarded by the cycle lock.
+	filtered filteredMemory
 
 	stateMu sync.RWMutex
 	state   State

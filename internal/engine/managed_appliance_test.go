@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +29,11 @@ type managedApplianceEnv struct {
 	cfg   *fakeConfigurer
 	facts *managedFacts
 	log   *callLog
+	// fw is the guests' firewall, and gw the gateway, whose dial is the
+	// canary's: canary answers it, silence by default.
+	fw     *fakeFirewalls
+	gw     *fakeGateway
+	canary func(addr netip.AddrPort) (net.Conn, error)
 }
 
 func newManagedApplianceEnv(t *testing.T) *managedApplianceEnv {
@@ -42,13 +50,39 @@ func newManagedApplianceEnv(t *testing.T) *managedApplianceEnv {
 		guestFW:    map[string]bool{},
 		guestFWErr: map[string]error{},
 	}
-	a.guests, a.managed = m.cfg, m.facts.deps
-	a.gateway = &fakeGateway{log: log, down: map[string]string{}}
+	m.fw = newFakeFirewalls(log)
+	a.guests = m.cfg
+	a.managed = func(d *Deps) {
+		m.facts.deps(d)
+		d.Firewall = m.fw
+	}
+	m.gw = &fakeGateway{log: log, down: map[string]string{}, dial: m.dialCanary}
+	a.gateway = m.gw
 	saveManagedNetwork(t, a.store, 1)
 	a.inv.set(snapshot(managedGuest(101, "web-1", "www.example.com -> :8080"), ownGuest(ownMAC)))
 	a.restart(incA)
 	return m
 }
+
+// dialCanary answers a dial through the managed leg as the guest's card
+// would: with what canary says, and by default with the silence of a card
+// whose firewall drops the probe.
+func (m *managedApplianceEnv) dialCanary(_ context.Context, leg gateway.Leg, addr netip.AddrPort) (net.Conn, error) {
+	m.log.add(fmt.Sprintf("canary %s %s", leg.Iface(), addr))
+	if m.canary != nil {
+		return m.canary(addr)
+	}
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", errTimedOut)}
+}
+
+// errTimedOut is the silence of a dropped SYN, as the kernel reports it.
+var errTimedOut = timeoutError{}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "connection timed out" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
 
 func (m *managedApplianceEnv) warm() {
 	m.t.Helper()

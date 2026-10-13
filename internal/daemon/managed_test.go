@@ -9,6 +9,7 @@ import (
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
 // fakeVnetSource answers the read of one vnet as a test sets it.
@@ -60,4 +61,12 @@ func TestTheManagedVnetAsTheEngineReadsIt(t *testing.T) {
 
 	_, err := managedVnet(t.Context(), &fakeVnetSource{err: errors.New("503")})
 	require.EqualError(t, err, "503")
+}
+
+// The appliance's resolver proves a card on the managed network at observed
+// at most; the engine raises it to filtered. Other interfaces are not capped.
+func TestTheApplianceCapsTheProofsOfTheManagedLeg(t *testing.T) {
+	require.Equal(t, resolve.LevelObserved, managedCeiling(resolve.HostIface{Name: "leg1", Via: "pconet"}))
+	require.Empty(t, managedCeiling(resolve.HostIface{Name: "leg2", Via: "vmbr1"}))
+	require.Empty(t, managedCeiling(resolve.HostIface{Name: "net0"}))
 }

@@ -49,6 +49,8 @@ type fakeGateway struct {
 	err   error
 	down  map[string]string // the legs Sync reports not up, by network, with why
 	check func() GatewayCheck
+	// dial answers Dial; nil refuses every dial.
+	dial func(ctx context.Context, leg gateway.Leg, addr netip.AddrPort) (net.Conn, error)
 }
 
 type gatewaySync struct {
@@ -84,8 +86,14 @@ func (f *fakeGateway) Probe(context.Context, string, int, netip.Addr) ([]net.Har
 	return nil, nil
 }
 
-func (f *fakeGateway) Dial(context.Context, gateway.Leg, netip.AddrPort) (net.Conn, error) {
-	return nil, errors.New("no dial in the fake")
+func (f *fakeGateway) Dial(ctx context.Context, leg gateway.Leg, addr netip.AddrPort) (net.Conn, error) {
+	f.mu.Lock()
+	dial := f.dial
+	f.mu.Unlock()
+	if dial == nil {
+		return nil, errors.New("no dial in the fake")
+	}
+	return dial(ctx, leg, addr)
 }
 
 func (f *fakeGateway) Check(context.Context) GatewayCheck {

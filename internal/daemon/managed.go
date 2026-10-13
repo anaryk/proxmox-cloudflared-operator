@@ -7,6 +7,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
 // managedSource is what the step of the managed network reads of Proxmox;
@@ -42,6 +43,16 @@ func managedReaders(d *engine.Deps, src managedSource, node string) {
 	d.GuestFirewall = func(ctx context.Context, g model.Guest) (pve.GuestFirewallOptions, error) {
 		return src.GuestFirewallOptions(ctx, g.Node, g.Ref)
 	}
+}
+
+// managedCeiling is the ceiling of the appliance's proofs: one made through
+// the leg of the managed network stands for observed, which the engine
+// raises to filtered while the guests' firewall is proven to isolate them.
+func managedCeiling(ifc resolve.HostIface) resolve.Level {
+	if ifc.Via == gateway.ManagedBridge {
+		return resolve.LevelObserved
+	}
+	return ""
 }
 
 // vnetSource reads one vnet of the SDN with its zone and its subnets;
