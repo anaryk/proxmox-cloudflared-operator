@@ -263,3 +263,70 @@ func TestAVerifiedAddressWhoseMACMovesIsVerifiedAgain(t *testing.T) {
 		require.Contains(t, e.events.messages()[len(e.events.messages())-1], "did not pass its verification after its MAC moved")
 	})
 }
+
+// What a pass found of an address another node chose is proven again by
+// every pass with the heartbeat of the moment: once the heartbeat that
+// carried the attestation is too old, the address stands at observed and
+// leaves the set, whatever the pass before found.
+func TestAVerifiedAddressIsOnlyAsFreshAsTheLastHeartbeat(t *testing.T) {
+	e := newEnv(t)
+	e.heard(time.Second)
+	s := e.snapshot("www.example.com -> :8080")
+	s.Targets[0] = remoteTarget()
+	st := e.apply(s)
+	require.True(t, report(st, "www.example.com").InEgressSet)
+
+	e.clock.advance(20 * time.Second)
+	st, err := e.agent.Reverify(t.Context())
+
+	require.NoError(t, err)
+	r := report(st, "www.example.com")
+	require.Equal(t, "observed", r.Level)
+	require.False(t, r.Attested)
+	require.False(t, r.InEgressSet)
+	set, _ := e.egr.last()
+	require.Empty(t, set)
+
+	t.Run("and stands again with a new one", func(t *testing.T) {
+		e.heard(time.Second)
+		st, err := e.agent.Reverify(t.Context())
+		require.NoError(t, err)
+		require.True(t, report(st, "www.example.com").InEgressSet)
+	})
+}
+
+func TestNothingOfAVerifiedTargetOutlivesItsPlaceInTheSnapshot(t *testing.T) {
+	e := newEnv(t)
+	e.heard(time.Second)
+	s := e.snapshot("www.example.com -> :8080")
+	s.Targets[0] = remoteTarget()
+	e.apply(s)
+
+	st := e.apply(e.snapshot())
+
+	require.Empty(t, st.Targets)
+	require.Empty(t, e.agent.EgressSet())
+	require.Empty(t, e.agent.Bound())
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.Empty(t, bindings)
+}
+
+// The status says whether an address is in the set as the set is now, not
+// as the pass left it: an address taken out because its MAC moved is not
+// reported in the set while its verification waits.
+func TestInEgressSetFollowsTheSetAsItIsNow(t *testing.T) {
+	e := newEnv(t)
+	e.heard(time.Second)
+	s := e.snapshot("www.example.com -> :8080")
+	s.Targets[0] = remoteTarget()
+	e.apply(verified(s, "10.0.0.30:8080"))
+	require.NoError(t, e.agent.acquire(t.Context())) // the verification waits for the lock
+
+	e.agent.Moved(t.Context(), remoteAddr)
+
+	require.False(t, report(e.agent.Status(t.Context()), "www.example.com").InEgressSet)
+	e.agent.release()
+	e.agent.Wait()
+	require.True(t, report(e.agent.Status(t.Context()), "www.example.com").InEgressSet, "back once verified")
+}

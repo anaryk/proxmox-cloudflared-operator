@@ -113,7 +113,7 @@ func TestAnAddressWhoseMACMovedIsBlockedAtOnceAndComesBackOnceVerified(t *testin
 		"the MAC of 10.0.0.11 moved; the connectors do not reach it until it is verified again",
 		"10.0.0.11 was verified again after its MAC moved; the connectors reach it again",
 	}, e.events.messages())
-	require.Zero(t, e.changed, "nothing to withdraw")
+	require.Zero(t, e.changed.Load(), "nothing to withdraw")
 }
 
 // While an address whose MAC moved waits for its verification it is out of
@@ -205,7 +205,7 @@ func TestAnAddressThatFailsAfterItsMACMovedStaysOut(t *testing.T) {
 	require.Equal(t, "10.0.0.11 did not pass its verification after its MAC moved "+
 		"(10.0.0.11 answered by bc:24:11:ff:ff:01, which is not this guest); it stays out of the egress filter, and its routes are withdrawn",
 		e.events.messages()[1])
-	require.Equal(t, 1, e.changed, "the controller is told at once")
+	require.EqualValues(t, 1, e.changed.Load(), "the controller is told at once")
 	require.Empty(t, e.agent.EgressSet())
 	saved, _, err := e.store.AgentEgress()
 	require.NoError(t, err)

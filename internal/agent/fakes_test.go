@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,7 +145,7 @@ func (f *fakeResolver) VerifyAddress(ctx context.Context, req resolve.VerifyRequ
 	level, set := f.levels[req.Route.Hostname]
 	f.mu.Unlock()
 	at := req.Attestation
-	attested := at != nil && req.Covered && !at.HeardAt.IsZero()
+	attested := at != nil && req.Covered && !at.HeardAt.IsZero() && f.now().Sub(at.HeardAt) <= 15*time.Second
 	switch {
 	case set:
 	case req.Route.Guest == nil:
@@ -566,7 +567,7 @@ type env struct {
 	events  *events
 	kind    pki.Kind
 	install string
-	changed int
+	changed atomic.Int32
 
 	agent *Agent
 	seq   uint64
@@ -612,7 +613,7 @@ func (e *env) deps() Deps {
 		Runner:     e.runs.run,
 		Now:        e.clock.now,
 		Log:        zerolog.Nop(),
-		Changed:    func() { e.changed++ },
+		Changed:    func() { e.changed.Add(1) },
 		Event:      e.events.add,
 	}
 	if e.gw != nil {

@@ -29,6 +29,7 @@ type view struct {
 	seq         uint64
 	seqAt       time.Time
 	targets     []agentproto.TargetReport
+	setOf       map[string]egress.Target // the target the set holds for each report's address, by key
 	conns       []connector.Status
 	egress      string
 	set         []egress.Target
@@ -46,7 +47,7 @@ func (a *Agent) publish(p *pass) {
 	a.repMu.Lock()
 	defer a.repMu.Unlock()
 	if p.done {
-		a.rep.targets = p.reports()
+		a.rep.targets, a.rep.setOf = p.reports()
 		a.rep.conns = p.conns
 		a.rep.egress = p.egress
 		a.rep.localBlocks = p.localBlocks
@@ -81,20 +82,13 @@ func (a *Agent) fill() {
 	}
 }
 
-// reports says how each target of the snapshot fares on this node. The
-// result is the resolver's, before the minimum held anything back, for the
-// controller to judge as it judges its own.
-func (p *pass) reports() []agentproto.TargetReport {
-	// A set the filter did not take is in no table; one the admin switched
-	// off holds nothing back.
-	inSet := map[egress.Target]bool{}
-	p.a.egMu.Lock()
-	for _, t := range p.a.unsuspected() {
-		if (p.egress == egressOn || p.egress == egressOff) && !slices.Contains(p.localBlocks, t.Addr) {
-			inSet[egress.Target{Addr: t.Addr, Port: t.Port}] = true
-		}
-	}
-	p.a.egMu.Unlock()
+// reports says how each target of the snapshot fares on this node, and what
+// the set holds for each that verified. The result is the resolver's, before
+// the minimum held anything back, for the controller to judge as it judges
+// its own. Whether a target is in the set is judged when the status is made,
+// against the set as it is then.
+func (p *pass) reports() ([]agentproto.TargetReport, map[string]egress.Target) {
+	setOf := map[string]egress.Target{}
 	out := make([]agentproto.TargetReport, 0, len(p.s.Targets))
 	for _, t := range p.s.Targets {
 		r := agentproto.TargetReport{Key: t.Key}
@@ -115,7 +109,7 @@ func (p *pass) reports() []agentproto.TargetReport {
 				r.VerifiedAt = p.now
 			}
 			if et, ok := p.verifiedTarget(t); ok {
-				r.InEgressSet = inSet[egress.Target{Addr: et.Addr, Port: et.Port}]
+				setOf[t.Key] = egress.Target{Addr: et.Addr, Port: et.Port}
 			}
 			raw, err := EncodeResult(res)
 			if err != nil {
@@ -124,6 +118,25 @@ func (p *pass) reports() []agentproto.TargetReport {
 			r.Result = raw
 		}
 		out = append(out, r)
+	}
+	return out, setOf
+}
+
+// inSet is what the filter holds now, by target: the set the agent gave it,
+// less the addresses whose MAC moved and those blocked on this node. A set
+// the filter did not take is in no table; one the admin switched off holds
+// nothing back.
+func (a *Agent) inSet(r view) map[egress.Target]bool {
+	if r.egress != egressOn && r.egress != egressOff {
+		return nil
+	}
+	a.egMu.Lock()
+	defer a.egMu.Unlock()
+	out := map[egress.Target]bool{}
+	for _, t := range a.unsuspected() {
+		if !slices.Contains(r.localBlocks, t.Addr) {
+			out[egress.Target{Addr: t.Addr, Port: t.Port}] = true
+		}
 	}
 	return out
 }
@@ -148,7 +161,8 @@ func (a *Agent) Status(context.Context) agentproto.Status {
 	a.repMu.Lock()
 	r := a.rep
 	a.repMu.Unlock()
-	return agentproto.Status{
+	in := a.inSet(r)
+	st := agentproto.Status{
 		Protocol:       agentproto.Range{Min: agentproto.ProtocolMin, Max: agentproto.ProtocolMax},
 		Build:          version.Version,
 		Node:           a.d.Node,
@@ -164,6 +178,10 @@ func (a *Agent) Status(context.Context) agentproto.Status {
 		Actions:        slices.Clone(r.actions),
 		Problems:       a.problems(r, now),
 	}
+	for i, t := range st.Targets {
+		st.Targets[i].InEgressSet = in[r.setOf[t.Key]]
+	}
+	return st
 }
 
 // problems are the lines of the status and of the view.
