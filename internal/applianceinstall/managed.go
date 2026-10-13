@@ -160,7 +160,8 @@ func (r *run) checkFirewall(ctx context.Context) error {
 
 // noteSDN notes the zone and the vnet of the managed network before each is
 // made: in the description of the container, the node's own record, which
-// the appliance cannot change, and in the manifest of the appliance, through
+// the appliance cannot change, under the note the node keeps (sdnNotePath),
+// and in the manifest of the appliance, through
 // pco in it, from what the manifest held when the run read it. Uninstall
 // removes an object only when both name it as pco's.
 func (r *run) noteSDN(ctx context.Context, vmid int, m setup.Manifest, cfg ctConfig) func(change func(*setup.Manifest)) error {
@@ -177,7 +178,12 @@ func (r *run) noteSDN(ctx context.Context, vmid int, m setup.Manifest, cfg ctCon
 		if len(args) == 4 {
 			return nil
 		}
-		desc, ok := withSDNNotes(cfg["description"], m.CreatedZone, m.CreatedVnet)
+		note, err := r.ensureSDNNote(vmid)
+		if err != nil {
+			m = before
+			return err
+		}
+		desc, ok := withSDNNotes(cfg["description"], m.CreatedZone, m.CreatedVnet, note)
 		if !ok {
 			m = before
 			return fmt.Errorf("the description of lxc/%d is not the installer's any more; nothing was made", vmid)

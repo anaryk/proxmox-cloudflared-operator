@@ -520,18 +520,27 @@ func TestParseDescription(t *testing.T) {
 
 	// The notes of the SDN objects made for the appliance go after the lines,
 	// and come off again.
-	noted, ok := withSDNNotes(good+"\nNoAccess for ops@pve on /\n", true, false)
+	note := "0123456789abcdef0123456789abcdef"
+	noted, ok := withSDNNotes(good+"\nNoAccess for ops@pve on /\n", true, false, note)
 	require.True(t, ok)
-	require.Equal(t, good+"\nNoAccess for ops@pve on /\nmade the SDN zone pco", noted)
-	d, ok = parseDescription(noted + "\nmade the SDN vnet pconet\n")
+	require.Equal(t, good+"\nNoAccess for ops@pve on /\nmade the SDN zone pco, note "+note, noted)
+	d, ok = parseDescription(noted + "\nmade the SDN vnet pconet, note fedcba9876543210fedcba9876543210\n")
 	require.True(t, ok)
 	require.True(t, d.zone && d.vnet)
+	require.Equal(t, note, d.zoneNote)
+	require.Equal(t, "fedcba9876543210fedcba9876543210", d.vnetNote)
 	require.Len(t, d.lines, 1)
-	plain, ok := withSDNNotes(noted, false, false)
+	plain, ok := withSDNNotes(noted, false, false, "")
 	require.True(t, ok)
 	require.Equal(t, good+"\nNoAccess for ops@pve on /", plain)
-	_, ok = withSDNNotes("my container", true, true)
+	_, ok = withSDNNotes("my container", true, true, note)
 	require.False(t, ok)
+	// A note of a release before has none: it is read, and matches no note
+	// of the node.
+	d, ok = parseDescription(good + "\nmade the SDN zone pco\n")
+	require.True(t, ok)
+	require.True(t, d.zone)
+	require.Empty(t, d.zoneNote)
 
 	for name, desc := range map[string]string{
 		"a note of the admin":    good + "\nbacked up on Fridays",

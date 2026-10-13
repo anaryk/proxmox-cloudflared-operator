@@ -222,7 +222,12 @@ running appliance for what carries no mark, the registered tags and the template
 untrusted input and checks every object it names against Proxmox; it does without the manifest
 when it cannot have it. A `NoAccess` line goes only when the description of the container names
 it, as the appliance could name any line in its manifest; one above the container that nothing
-names is kept and listed, with the `pveum acl delete` command that takes it back. A container whose description lacks the mark is refused:
+names is kept and listed, with the `pveum acl delete` command that takes it back. The SDN zone
+`pco` and the vnet `pconet` that `pco appliance managed enable` made go only when the manifest,
+the description of the container (`made the SDN zone pco, note <note>`) and the note the node
+keeps in `/etc/pve/priv/pco-appliance/sdn-vm<vmid>` all say so: the description can be changed
+by whoever may change the options of the container, the note only by root. What they disagree
+on stays and is listed. A container whose description lacks the mark is refused:
 `lxc/<vmid> is not a pco appliance (its description lacks the mark of the installer): nothing was removed`.
 
 It lists what goes and what stays, and why, and asks once:

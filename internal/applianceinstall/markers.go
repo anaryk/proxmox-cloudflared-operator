@@ -62,19 +62,26 @@ var (
 // managed enable made the SDN zone and the vnet of the managed network for
 // the appliance. The manifest inside the container notes them too, and
 // uninstall removes them only when both say so: a compromised appliance
-// could name a zone of the admin's as pco's.
+// could name a zone of the admin's as pco's. The description can be set by
+// whoever may change the options of the container, so each line carries a
+// note that the node keeps as well, where only root writes (sdnNotePath).
 const (
 	madeZoneLine = "made the SDN zone " + setup.ManagedZone
 	madeVnetLine = "made the SDN vnet " + setup.ManagedVnet
+	noteSep      = ", note "
 )
+
+var madeNote = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // described is what the description of a container of the installer's says.
 type described struct {
 	vmid  int // the VMID its mark names
 	lines []setup.NoAccessLine
 	// zone and vnet say that pco appliance managed enable made the SDN zone
-	// and the vnet of the managed network for the appliance.
-	zone, vnet bool
+	// and the vnet of the managed network for the appliance, under the notes
+	// zoneNote and vnetNote; a line of a release before has none.
+	zone, vnet         bool
+	zoneNote, vnetNote string
 }
 
 // parseDescription reads the description of a container, when it is the one
@@ -94,14 +101,20 @@ func parseDescription(desc string) (described, bool) {
 	}
 	d.vmid = vmid
 	for line := range strings.Lines(rest) {
-		switch line = strings.TrimSpace(line); line {
-		case "":
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
+		}
+		made, note, noted := strings.Cut(line, noteSep)
+		if noted && !madeNote.MatchString(note) {
+			return described{}, false
+		}
+		switch made {
 		case madeZoneLine:
-			d.zone = true
+			d.zone, d.zoneNote = true, note
 			continue
 		case madeVnetLine:
-			d.vnet = true
+			d.vnet, d.vnetNote = true, note
 			continue
 		}
 		l := describedLine.FindStringSubmatch(line)
@@ -118,9 +131,9 @@ func parseDescription(desc string) (described, bool) {
 }
 
 // withSDNNotes is the description desc, of the installer's, with the notes
-// of the SDN zone and the vnet set as zone and vnet say; its first line and
-// its NoAccess lines stay as they are.
-func withSDNNotes(desc string, zone, vnet bool) (string, bool) {
+// of the SDN zone and the vnet set as zone and vnet say, under note; its
+// first line and its NoAccess lines stay as they are.
+func withSDNNotes(desc string, zone, vnet bool, note string) (string, bool) {
 	d, ok := parseDescription(desc)
 	if !ok {
 		return "", false
@@ -131,10 +144,10 @@ func withSDNNotes(desc string, zone, vnet bool) (string, bool) {
 		out += fmt.Sprintf("\nNoAccess for %s on %s", l.Principal, l.Path)
 	}
 	if zone {
-		out += "\n" + madeZoneLine
+		out += "\n" + madeZoneLine + noteSep + note
 	}
 	if vnet {
-		out += "\n" + madeVnetLine
+		out += "\n" + madeVnetLine + noteSep + note
 	}
 	return out, true
 }

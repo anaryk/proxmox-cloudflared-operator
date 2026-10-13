@@ -26,6 +26,9 @@ type survey struct {
 	noted           []setup.NoAccessLine // the NoAccess lines its description records
 	notedZone       bool                 // its description records that the SDN zone was made for it
 	notedVnet       bool                 // the same for the vnet
+	zoneNote        string               // the note of the zone's line in the description
+	vnetNote        string               // the same for the vnet
+	nodeNote        string               // the note the node keeps; empty when it keeps none
 	originalNode    string               // of lxc/described, when the container is a copy of it that is still there
 	manifest        *setup.Manifest
 	users           []userEntry
@@ -142,6 +145,10 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 			return s, fmt.Errorf("lxc/%d is not a pco appliance (its description lacks the mark of the installer): nothing was removed", vmid)
 		}
 		s.described, s.noted, s.notedZone, s.notedVnet = d.vmid, d.lines, d.zone, d.vnet
+		s.zoneNote, s.vnetNote = d.zoneNote, d.vnetNote
+		if s.nodeNote, err = r.readSDNNote(vmid); err != nil {
+			return s, err
+		}
 		if s.running, err = ctRunning(ctx, r.r, vmid); err != nil {
 			return s, err
 		}
@@ -213,9 +220,15 @@ func (s survey) sdnManifest() *setup.Manifest {
 		return nil
 	}
 	m := *s.manifest
-	m.CreatedZone = m.CreatedZone && s.notedZone
-	m.CreatedVnet = m.CreatedVnet && s.notedVnet
+	m.CreatedZone = m.CreatedZone && s.verified(s.notedZone, s.zoneNote)
+	m.CreatedVnet = m.CreatedVnet && s.verified(s.notedVnet, s.vnetNote)
 	return &m
+}
+
+// verified reports whether a line of the description that names an SDN
+// object as made for the appliance carries the note the node keeps.
+func (s survey) verified(noted bool, note string) bool {
+	return noted && s.nodeNote != "" && note == s.nodeNote
 }
 
 // sdnDisagreements are the SDN objects the manifest and the description of
@@ -226,10 +239,15 @@ func (s survey) sdnDisagreements(vmid int) []string {
 	}
 	var out []string
 	for _, o := range []struct {
-		name            string
-		manifest, noted bool
-	}{{"zone " + setup.ManagedZone, s.manifest.CreatedZone, s.notedZone}, {"vnet " + setup.ManagedVnet, s.manifest.CreatedVnet, s.notedVnet}} {
+		name                      string
+		manifest, noted, verified bool
+	}{
+		{"zone " + setup.ManagedZone, s.manifest.CreatedZone, s.notedZone, s.verified(s.notedZone, s.zoneNote)},
+		{"vnet " + setup.ManagedVnet, s.manifest.CreatedVnet, s.notedVnet, s.verified(s.notedVnet, s.vnetNote)},
+	} {
 		switch {
+		case o.manifest && o.noted && !o.verified:
+			out = append(out, fmt.Sprintf("the SDN %s, which the description of lxc/%d names as pco's under a note this node does not keep", o.name, vmid))
 		case o.manifest && !o.noted:
 			out = append(out, fmt.Sprintf("the SDN %s, which the manifest of lxc/%d names as pco's and the description of its container does not", o.name, vmid))
 		case o.noted && !o.manifest:
@@ -855,6 +873,9 @@ func (r *run) remove(ctx context.Context, vmid int, s survey, p plan, purge bool
 	}
 	if p.managed != "" {
 		r.removeManagedNetwork(ctx, s.sdnManifest())
+	}
+	if gone {
+		fail(r.removeSDNNote(vmid))
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("the uninstall did not finish: %s; run it again to finish the rest", strings.Join(failed, "; "))

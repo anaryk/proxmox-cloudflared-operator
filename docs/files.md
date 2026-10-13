@@ -212,7 +212,11 @@ of the cluster filesystem. The differences in the paths:
 On the node, `pco appliance install` keeps a journal of each run in
 `/root/.pco-appliance-install/<run>.json` (`0600`) and the lock of the installer in the same
 directory, and stages the bootstrap in `/run/pco-appliance-install-<run>/` while it pushes
-it. The journal never holds a secret. The drop-ins `pco.service.d/appliance.conf` and
+it. The journal never holds a secret. When `pco appliance managed enable` makes the SDN zone or
+the vnet of the managed network, it keeps a random note of them in
+`/etc/pve/priv/pco-appliance/sdn-vm<vmid>` (root only, as everything below `/etc/pve/priv`) and
+writes the same note into the description of the container; uninstall removes the zone and the
+vnet only when both agree, and removes the file with the container. The drop-ins `pco.service.d/appliance.conf` and
 `pco-cloudflared@.service.d/appliance.conf` in `/etc/systemd/system` of the appliance make
 `pco-net.service` a requirement of both, and the second adds the condition on the identity
 file.

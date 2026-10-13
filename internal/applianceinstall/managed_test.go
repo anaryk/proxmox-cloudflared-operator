@@ -3,6 +3,8 @@ package applianceinstall
 import (
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -63,20 +65,23 @@ func TestManagedEnableMakesTheVnetAndGrantsIt(t *testing.T) {
 
 	sdn := e.node.ranSince("pvesh create /cluster/sdn/lock")
 	mark := "pco appliance vm100, installed 2026-10-01 by pco appliance install"
+	note := e.sdnNote(100)
+	require.Regexp(t, `^[0-9a-f]{32}$`, note, "the node keeps a note of its own, which the appliance cannot read")
+	zoneLine, vnetLine := "made the SDN zone pco, note "+note, "made the SDN vnet pconet, note "+note
 	require.Equal(t, []string{
 		"pvesh create /cluster/sdn/lock --allow-pending 1 --output-format json",
 		"pvesh get /cluster/sdn/zones --pending 1 --output-format json",
 		"pvesh get /cluster/sdn/vnets --pending 1 --output-format json",
-		"pct set 100 --description " + mark + "\nmade the SDN zone pco",
+		"pct set 100 --description " + mark + "\n" + zoneLine,
 		"pct exec 100 --keep-env 0 -- pco appliance manifest sdn --created-zone=true",
 		"pvesh create /cluster/sdn/zones --zone pco --type simple --lock-token lock-1",
-		"pct set 100 --description " + mark + "\nmade the SDN zone pco\nmade the SDN vnet pconet",
+		"pct set 100 --description " + mark + "\n" + zoneLine + "\n" + vnetLine,
 		"pct exec 100 --keep-env 0 -- pco appliance manifest sdn --created-vnet=true",
 		"pvesh create /cluster/sdn/vnets --vnet pconet --zone pco --isolate-ports 0 --lock-token lock-1",
 		"pvesh set /cluster/sdn --lock-token lock-1",
 		"pvesh delete /cluster/sdn/lock --lock-token lock-1",
 	}, sdn[:11], "each object is noted on the node and in the appliance before it is made")
-	require.Equal(t, mark+"\nmade the SDN zone pco\nmade the SDN vnet pconet", e.node.cts[100].cfg["description"])
+	require.Equal(t, mark+"\n"+zoneLine+"\n"+vnetLine, e.node.cts[100].cfg["description"])
 	require.Contains(t, sdn, "pveum acl modify /sdn/zones/pco/pconet --users pco@pve --tokens pco@pve!vm100 --roles PCOSDN")
 	require.Contains(t, e.ask.text(), "next: pct exec 100 -- pco network managed enable")
 	require.Empty(t, entries(t, e.journals), "no journal is left")
@@ -200,7 +205,7 @@ func TestManagedEnableAsks(t *testing.T) {
 func TestUninstallKeepsTheSDNObjectsTheNodeDoesNotRecord(t *testing.T) {
 	e := managedNode(t)
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
-	desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], false, true)
+	desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], false, true, e.sdnNote(100))
 	require.True(t, ok)
 	e.node.cts[100].cfg["description"] = desc
 
@@ -215,13 +220,61 @@ func TestUninstallKeepsTheSDNObjectsTheNodeDoesNotRecord(t *testing.T) {
 	// business either: nothing refuses the uninstall for it.
 	e = managedNode(t)
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
-	desc, _ = withSDNNotes(e.node.cts[100].cfg["description"], false, false)
+	desc, _ = withSDNNotes(e.node.cts[100].cfg["description"], false, false, "")
 	e.node.cts[100].cfg["description"] = desc
 	e.guestOnPconet()
 	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
 	require.NotEmpty(t, e.node.sdn.zones)
 	require.NotEmpty(t, e.node.sdn.vnets)
 	require.Equal(t, 1, e.node.sdn.applies, "no second apply")
+}
+
+// The description can be changed by whoever may set the options of the
+// container: a note in it counts only with the one the node keeps where only
+// root writes. Without it, or with another, both objects stay.
+func TestUninstallKeepsTheSDNObjectsWithoutTheNoteOfTheNode(t *testing.T) {
+	for name, change := range map[string]func(e *testEnv){
+		"the note of the node is gone": func(e *testEnv) { require.NoError(t, os.Remove(e.sdnNotePath(100))) },
+		"the description has another": func(e *testEnv) {
+			desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], true, true, strings.Repeat("0", 32))
+			require.True(t, ok)
+			e.node.cts[100].cfg["description"] = desc
+		},
+		"the description has none": func(e *testEnv) {
+			desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], false, false, "")
+			require.True(t, ok)
+			e.node.cts[100].cfg["description"] = desc + "\nmade the SDN zone pco\nmade the SDN vnet pconet"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := managedNode(t)
+			require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+			change(e)
+
+			require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+			require.NotEmpty(t, e.node.sdn.zones)
+			require.NotEmpty(t, e.node.sdn.vnets)
+			require.Contains(t, e.ask.text(), "(kept: the SDN zone pco, which the description of lxc/100 names as pco's under a note this node does not keep)")
+			require.Contains(t, e.ask.text(), "(kept: the SDN vnet pconet, which the description of lxc/100 names as pco's under a note this node does not keep)")
+		})
+	}
+}
+
+func (e *testEnv) sdnNotePath(vmid int) string {
+	return filepath.Join(e.pveDir, "priv", "pco-appliance", fmt.Sprintf("sdn-vm%d", vmid))
+}
+
+// sdnNote is the note the node keeps of the SDN objects made for the
+// appliance vmid.
+func (e *testEnv) sdnNote(vmid int) string {
+	e.t.Helper()
+	b, err := os.ReadFile(e.sdnNotePath(vmid))
+	require.NoError(e.t, err)
+	info, err := os.Stat(e.sdnNotePath(vmid))
+	require.NoError(e.t, err)
+	require.Equal(e.t, os.FileMode(0o600), info.Mode().Perm())
+	return strings.TrimSpace(string(b))
 }
 
 // The appliance must run, as its manifest notes what the node makes.
@@ -272,6 +325,7 @@ func TestUninstallRemovesTheManagedNetworkOfTheAppliance(t *testing.T) {
 	require.Contains(t, e.ask.text(), "the SDN vnet pconet and zone pco, which an SDN apply removes from every node, reloading the network of each")
 	destroyed := slices.Index(e.node.ran, "pct destroy 100 --purge 1")
 	require.Greater(t, slices.Index(e.node.ran, "pvesh delete /cluster/sdn/vnets/pconet --lock-token lock-2"), destroyed, "the zone goes last")
+	require.NoFileExists(t, e.sdnNotePath(100), "the note of the node goes with them")
 }
 
 // The manifest that says the zone is pco's goes with the container, so a
