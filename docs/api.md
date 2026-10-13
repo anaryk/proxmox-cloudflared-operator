@@ -690,6 +690,7 @@ stream pco web holds, handed out to every browser filtered for its session.
 | `GET /api/v1/networks/:id` | the same; the service addresses name the guests behind them | admin | none; 10 s |
 | `GET /api/v1/networks/candidates` | the same; the daemon lists the guests for it | admin | none; 60 s |
 | `POST /api/v1/networks`, `/networks/probe`, `/managed/approve`, `/managed/revoke`, `/managed/enable` | the same | admin | 64 KiB; 60 s |
+| `DELETE /api/v1/credentials/:id`, `/routes/manual/:id` | the same | admin | none; 60 s |
 | `DELETE /api/v1/networks/:id` | the same, with `rev` and `confirm` | admin | none; 60 s |
 
 A reader gets the networks without the MACs of the legs, and of the managed network the cards,
@@ -697,7 +698,6 @@ the waiting guests and the foreign cards of the guests it may audit, without the
 identities, the `pveum` lines, the firewall of a guest before pco changed it, the pool grant and the
 appliance's isolation; a reason that carries a `pveum` line or a command is cut to its name, and an
 event of the managed network loses the MACs its text names.
-| `DELETE /api/v1/credentials/:id`, `/routes/manual/:id` | the same | admin | none; 60 s |
 
 Diagnosis and doctor are reads on the socket and `POST` at pco web, so that the checks of a request
 that changes something hold for them too. For a reader, a diagnosis runs only when the route that
