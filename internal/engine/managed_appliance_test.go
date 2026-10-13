@@ -128,7 +128,7 @@ func TestTheApplianceAddsItsCardsWithTheFirewallOn(t *testing.T) {
 
 	st := m.next()
 
-	require.Equal(t, []string{"add lxc/101 net1 name=,bridge=pconet,hwaddr=" + leaseMAC2 + ",ip=10.203.118.2/24,firewall=1"}, m.cfg.changes())
+	require.Equal(t, []string{"add lxc/101 net1 name=,bridge=pconet,hwaddr=" + leaseMAC2 + ",ip=10.203.118.2/24,firewall=1,link_down=1"}, m.cfg.changes())
 	require.Equal(t, AttachmentAttached, attachmentState(st, "lxc/101"))
 	require.True(t, st.Managed.Vnet.OK, st.Managed.Vnet.Why)
 	require.False(t, st.Managed.Vnet.IsolatePorts)
@@ -158,7 +158,7 @@ func TestAGuestWhoseFirewallWouldFilterAnotherCardWaitsForTheConfirmation(t *tes
 		require.Contains(t, m.managedEvents(), "the firewall-impact confirmation for consented guests was switched on by root (cli)")
 
 		st := m.next()
-		require.Equal(t, []string{"add lxc/101 net1 name=,bridge=pconet,hwaddr=" + leaseMAC2 + ",ip=10.203.118.2/24,firewall=1"}, m.cfg.changes())
+		require.Equal(t, []string{"add lxc/101 net1 name=,bridge=pconet,hwaddr=" + leaseMAC2 + ",ip=10.203.118.2/24,firewall=1,link_down=1"}, m.cfg.changes())
 		require.Equal(t, AttachmentAttached, attachmentState(st, "lxc/101"))
 	})
 }

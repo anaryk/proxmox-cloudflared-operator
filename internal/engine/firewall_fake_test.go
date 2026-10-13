@@ -31,6 +31,8 @@ type fakeFirewalls struct {
 	guests map[model.GuestRef]*guestFirewall
 	reads  int
 	fail   error // every write fails with it
+	// normalize changes each rule as it is read back.
+	normalize func(pve.FirewallRule) pve.FirewallRule
 }
 
 func newFakeFirewalls(log *callLog) *fakeFirewalls {
@@ -133,6 +135,9 @@ func (f *fakeFirewalls) GuestFirewallRules(_ context.Context, _ string, ref mode
 	out := slices.Clone(g.rules)
 	for i := range out {
 		out[i].Pos = i
+		if f.normalize != nil {
+			out[i] = f.normalize(out[i])
+		}
 	}
 	if len(out) == 0 {
 		return out, "", nil

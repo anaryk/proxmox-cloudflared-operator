@@ -56,6 +56,10 @@ type FilteredCard struct {
 	ReadErr error
 	// Canary is the probe of a running card, nil when none was made.
 	Canary *CanaryResult
+	// NotEnforced says why the card's firewall cannot be taken as in force
+	// yet: pco wrote it less than a pve-firewall interval ago. Empty when it
+	// can.
+	NotEnforced string
 }
 
 // FilteredResult is the verdict: whether every guest on the vnet is isolated
@@ -124,6 +128,9 @@ func cardWhy(c FilteredCard, comment string) []string {
 	iface := c.Card.Iface()
 	if !c.Firewall {
 		why = append(why, iface+" has firewall=0")
+	}
+	if c.NotEnforced != "" {
+		why = append(why, iface+" is not yet enforced: "+c.NotEnforced)
 	}
 	switch {
 	case c.Read == nil && c.ReadErr != nil:

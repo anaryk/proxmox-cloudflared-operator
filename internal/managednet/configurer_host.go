@@ -65,6 +65,17 @@ func (h *HostConfigurer) SetLinkDown(ctx context.Context, g model.Guest, index i
 	return nil
 }
 
+func (h *HostConfigurer) SetLinkUp(ctx context.Context, g model.Guest, index int) error {
+	err := h.local(g)
+	if err == nil {
+		err = h.linkUp(ctx, g, index)
+	}
+	if err != nil {
+		return fmt.Errorf("setting the link of net%d of %s up: %w", index, g.Ref, err)
+	}
+	return nil
+}
+
 // CanWrite says yes for a guest on this node: root may change every guest
 // there, and qm and pct reach no other.
 func (h *HostConfigurer) CanWrite(_ context.Context, g model.Guest) (bool, string, error) {

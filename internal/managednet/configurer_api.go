@@ -69,6 +69,13 @@ func (c *APIConfigurer) SetLinkDown(ctx context.Context, g model.Guest, index in
 	return nil
 }
 
+func (c *APIConfigurer) SetLinkUp(ctx context.Context, g model.Guest, index int) error {
+	if err := c.linkUp(ctx, g, index); err != nil {
+		return fmt.Errorf("setting the link of net%d of %s up: %w", index, g.Ref, err)
+	}
+	return nil
+}
+
 // CanWrite says whether the token holds VM.Config.Network on the guest,
 // granted on it or on its pool. When it does not, the reason is the pveum
 // line that grants it to pco's user and the token, as both need it.

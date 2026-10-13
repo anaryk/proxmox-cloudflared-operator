@@ -49,6 +49,39 @@ type filteredMemory struct {
 	canary   map[string]uint16 // by owner
 	judged   time.Time
 	lastSaid *FilteredView
+	// written is, by owner, when pco last wrote the firewall of the card,
+	// which counts as enforced enforceAfter later; stuck, by owner, the
+	// digest of rules a write round left differing from pco's, which are not
+	// written again until it changes.
+	written map[string]time.Time
+	stuck   map[string]string
+}
+
+// wrote records that pco wrote the firewall of owner's card at.
+func (m *filteredMemory) wrote(owner string, at time.Time) {
+	if m.written == nil {
+		m.written = map[string]time.Time{}
+	}
+	m.written[owner] = at
+}
+
+// prune forgets the owners that have no attachment any more.
+func (m *filteredMemory) prune(attachments map[string]store.Attachment) {
+	if m.stuck == nil {
+		m.stuck = map[string]string{}
+	}
+	for _, kept := range []map[string]time.Time{m.written} {
+		for owner := range kept {
+			if _, ok := attachments[owner]; !ok {
+				delete(kept, owner)
+			}
+		}
+	}
+	for owner := range m.stuck {
+		if _, ok := attachments[owner]; !ok {
+			delete(m.stuck, owner)
+		}
+	}
 }
 
 // backendRead is what the managed step read of the node's firewall.
@@ -62,11 +95,14 @@ type backendRead struct {
 }
 
 // firewallRead is the firewall of an attached guest as the managed step left
-// it: the card pco writes, and the guest's firewall read after any write.
+// it: the card pco writes, the guest's firewall read after any write, whether
+// it wrote, and the digest of rules a write round left differing.
 type firewallRead struct {
-	card managednet.FirewallCard
-	fw   *managednet.GuestFirewall
-	err  error
+	card  managednet.FirewallCard
+	fw    *managednet.GuestFirewall
+	err   error
+	wrote bool
+	stuck string
 }
 
 // fresh makes the memory that of the cycle c.
@@ -173,6 +209,9 @@ func (c *cycleRun) cardOnVnet(owner string, att store.Attachment) (managednet.Fi
 		card.ReadErr = errors.New("the managed step did not read it")
 	default:
 		card.Card, card.Read, card.ReadErr = read.card, read.fw, read.err
+	}
+	if at, ok := c.e.filtered.written[owner]; ok && c.now.Sub(at) < enforceAfter && !c.now.Before(at) {
+		card.NotEnforced = fmt.Sprintf("pco wrote its firewall %s ago", c.now.Sub(at).Round(time.Second))
 	}
 	return card, true
 }

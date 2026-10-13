@@ -38,6 +38,10 @@ type fakeFirewall struct {
 	fail map[string]error
 	// after runs after every write, with the guest's state as it is then.
 	after func(ref model.GuestRef, g *fakeGuestFirewall)
+	// normalize changes each rule as it is read back; appendRules puts a
+	// new rule last instead of first.
+	normalize   func(pve.FirewallRule) pve.FirewallRule
+	appendRules bool
 }
 
 func newFakeFirewall() *fakeFirewall {
@@ -130,6 +134,9 @@ func (f *fakeFirewall) GuestFirewallRules(_ context.Context, _ string, ref model
 	out := slices.Clone(g.rules)
 	for i := range out {
 		out[i].Pos = i
+		if f.normalize != nil {
+			out[i] = f.normalize(out[i])
+		}
 	}
 	if len(out) == 0 {
 		return out, "", nil
@@ -148,7 +155,11 @@ func (f *fakeFirewall) AddGuestFirewallRule(_ context.Context, _ string, ref mod
 		return err
 	}
 	r.Pos = 0
-	g.rules = append([]pve.FirewallRule{r}, g.rules...)
+	if f.appendRules {
+		g.rules = append(g.rules, r)
+	} else {
+		g.rules = append([]pve.FirewallRule{r}, g.rules...)
+	}
 	f.wrote(ref, g, "add "+ruleText(r))
 	return nil
 }

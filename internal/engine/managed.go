@@ -752,7 +752,9 @@ func (s *managedStep) wait(owner, why string) {
 // spec is the card of a lease for a guest: its MAC, for a container its
 // address, and in the appliance the firewall on.
 func (s *managedStep) spec(g model.Guest, mac string, addr netip.Addr) managednet.NICSpec {
-	spec := managednet.NICSpec{MAC: mac, Bridge: gateway.ManagedBridge, Firewall: s.c.appliance()}
+	// In the appliance the card comes with its link down, which comes up
+	// once its firewall is enforced (the firewall block below).
+	spec := managednet.NICSpec{MAC: mac, Bridge: gateway.ManagedBridge, Firewall: s.c.appliance(), LinkDown: s.c.appliance()}
 	if g.Ref.Kind == model.KindLXC {
 		spec.Addr = netip.PrefixFrom(addr, s.net.Prefix.Bits())
 	}
@@ -1520,6 +1522,10 @@ func (s *managedStep) noteBackend() *backendRead {
 	return &mem.backend
 }
 
+// enforceAfter is how long after pco wrote a card's firewall the card counts
+// as enforced: pve-firewall loads a changed configuration every 10 s.
+const enforceAfter = 15 * time.Second
+
 // guestFirewall writes, in the appliance, what isolates the card of att on
 // g, before the card is added: the guest firewall as it was is recorded in
 // the attachment first, so that a detach puts it back whatever happens
@@ -1543,14 +1549,16 @@ func (s *managedStep) guestFirewall(g model.Guest, att *store.Attachment) bool {
 		if err != nil {
 			return fail("the firewall of the guest could not be read: " + err.Error())
 		}
-		before := managednet.Before(read.Options, len(read.Rules))
+		before := fw.Before(read)
 		att.Firewall = &before
 		if err := c.e.d.Store.SaveAttachment(*att); err != nil {
 			return fail(fmt.Sprintf("saving the attachment: %v", err))
 		}
 		s.attachments[att.Owner] = *att
 	}
-	if err := fw.Apply(c.ctx, g, c.firewallCard(s.net, g, *att)); err != nil {
+	err := fw.Apply(c.ctx, g, c.firewallCard(s.net, g, *att))
+	c.e.filtered.wrote(att.Owner, c.now)
+	if err != nil {
 		return fail("the firewall of the card could not be written: " + err.Error())
 	}
 	return true
@@ -1578,19 +1586,30 @@ func (c *cycleRun) firewallCard(n store.Network, g model.Guest, att store.Attach
 	return managednet.FirewallCard{NIC: att.NIC, Leg: n.Legs[c.e.d.Node], Lease: att.Addr, Ports: slices.Compact(slices.Sorted(slices.Values(ports)))}
 }
 
+// firewallJob is a card on the managed network whose firewall the step keeps.
+type firewallJob struct {
+	g   model.Guest
+	att store.Attachment
+	nic model.NIC
+}
+
 // firewalls keeps, in the appliance, the firewall of each attached guest's
 // card as pco wrote it: the ports follow the guest's routes, and an ipset or
 // rules that drifted are written again. A port is opened only while the
 // cycle may write and the gate of an expanding write is open; closing one,
 // and putting back what drifted, never waits. The guest firewall's options
 // are left alone: an admin who turned it off is not overruled, filtered
-// fails for the card instead. What it read is left for the filtered step of
-// the cycle.
+// fails for the card instead. An attachment made before pco wrote the
+// firewall gets it as an attach does. A card whose removal waits is read
+// until the configuration drops it. A card added with its link down comes up
+// once its firewall has been enforced. What it read is left for the filtered
+// step of the cycle.
 func (s *managedStep) firewalls() {
 	c := s.c
 	mem := &c.e.filtered
 	mem.fresh(c)
 	mem.attachments, mem.net = maps.Clone(s.attachments), s.net
+	mem.prune(s.attachments)
 	if !c.appliance() {
 		return
 	}
@@ -1599,22 +1618,11 @@ func (s *managedStep) firewalls() {
 	if open {
 		open, _ = c.gateOpen("managed firewall ports")
 	}
-	type job struct {
-		g   model.Guest
-		att store.Attachment
-	}
-	var jobs []job
-	for _, owner := range slices.SortedFunc(maps.Keys(s.attachments), model.CompareOwners) {
-		att := s.attachments[owner]
-		ref, _ := model.ParseGuestRef(owner)
-		g, ok := c.snap.Guest(ref)
-		if !ok || att.RemovedAt != nil {
-			continue
+	jobs := s.firewallJobs()
+	for i, j := range jobs {
+		if j.att.Firewall == nil && j.att.RemovedAt == nil && open && fw != nil {
+			s.guestFirewall(j.g, &jobs[i].att)
 		}
-		if nic, ok := g.NIC(att.NIC); !ok || nic.Bridge != gateway.ManagedBridge || !strings.EqualFold(nic.MAC, att.MAC) {
-			continue
-		}
-		jobs = append(jobs, job{g: g, att: att})
 	}
 	results := make([]firewallRead, len(jobs))
 	slots := make(chan struct{}, firewallConcurrency)
@@ -1624,22 +1632,82 @@ func (s *managedStep) firewalls() {
 		slots <- struct{}{}
 		go func() {
 			defer func() { <-slots; wg.Done() }()
-			results[i] = s.keepFirewall(fw, j.g, j.att, open)
+			results[i] = s.keepFirewall(fw, j.g, jobs[i].att, open)
 		}()
 	}
 	wg.Wait()
 	for i, j := range jobs {
 		r := results[i]
-		mem.reads[j.att.Owner] = r
-		if r.err != nil {
-			c.problem(problemManagedCard, s.name(j.att.Owner), "its firewall: "+r.err.Error())
+		owner := j.att.Owner
+		mem.reads[owner] = r
+		if r.wrote {
+			mem.wrote(owner, c.now)
 		}
+		switch {
+		case r.stuck != "":
+			mem.stuck[owner] = r.stuck
+		case r.err == nil:
+			delete(mem.stuck, owner)
+		}
+		if r.err != nil {
+			c.problem(problemManagedCard, s.name(owner), "its firewall: "+r.err.Error())
+		}
+		if j.nic.LinkDown && j.att.RemovedAt == nil {
+			s.linkUp(fw, j, r, open)
+		}
+	}
+}
+
+// firewallJobs are the attachments whose card is on the managed network in
+// the snapshot, those whose removal waits among them.
+func (s *managedStep) firewallJobs() []firewallJob {
+	var jobs []firewallJob
+	for _, owner := range slices.SortedFunc(maps.Keys(s.attachments), model.CompareOwners) {
+		att := s.attachments[owner]
+		ref, _ := model.ParseGuestRef(owner)
+		g, ok := s.c.snap.Guest(ref)
+		if !ok {
+			continue
+		}
+		nic, ok := g.NIC(att.NIC)
+		if !ok || nic.Bridge != gateway.ManagedBridge || !strings.EqualFold(nic.MAC, att.MAC) {
+			continue
+		}
+		jobs = append(jobs, firewallJob{g: g, att: att, nic: nic})
+	}
+	return jobs
+}
+
+// linkUp brings up the link of a card added with it down, once its firewall
+// is as written and was so for enforceAfter, while the cycle may write. A
+// card pco has no time of its write for, as after a restart, waits from now.
+func (s *managedStep) linkUp(fw *managednet.Firewall, j firewallJob, r firewallRead, open bool) {
+	c := s.c
+	owner := j.att.Owner
+	at, known := c.e.filtered.written[owner]
+	switch {
+	case !known:
+		c.e.filtered.wrote(owner, c.now)
+		return
+	case !open || fw == nil || r.err != nil || r.fw == nil || len(r.fw.Drift(r.card, fw.Comment())) > 0 || c.now.Sub(at) < enforceAfter:
+		return
+	}
+	err := c.e.d.Guests.SetLinkUp(c.ctx, j.g, j.att.NIC)
+	switch {
+	case errors.Is(err, managednet.ErrPending):
+		c.problem(problemManagedCard, s.name(owner), fmt.Sprintf("the link of net%d comes up at the restart of the guest", j.att.NIC))
+	case err != nil:
+		c.problem(problemManagedCard, s.name(owner), err.Error())
+	default:
+		s.event(levelInfo, owner, fmt.Sprintf("the link of net%d of %s on the managed network is up: its firewall is enforced", j.att.NIC, s.name(owner)))
 	}
 }
 
 // keepFirewall reads the firewall of one attached guest's card and writes
 // again what drifted, with the ports open may open. It returns the card as
-// it stands written, and the firewall as read after any write.
+// it stands written, the firewall as read after any write, whether it wrote,
+// and, when a write round left pco's rules differing, the digest it left
+// them in: they are not written again until it changes.
 func (s *managedStep) keepFirewall(fw *managednet.Firewall, g model.Guest, att store.Attachment, open bool) firewallRead {
 	c := s.c
 	card := c.firewallCard(s.net, g, att)
@@ -1653,23 +1721,32 @@ func (s *managedStep) keepFirewall(fw *managednet.Firewall, g model.Guest, att s
 	if !open {
 		card.Ports = slices.DeleteFunc(card.Ports, func(p uint16) bool { return !slices.Contains(read.OpenPorts(card, fw.Comment()), p) })
 	}
-	if len(read.Drift(card, fw.Comment())) == 0 || att.Firewall == nil {
+	switch {
+	case len(read.Drift(card, fw.Comment())) == 0 || att.Firewall == nil:
 		return firewallRead{card: card, fw: &read}
+	case read.RulesDigest != "" && c.e.filtered.stuck[att.Owner] == read.RulesDigest:
+		return firewallRead{card: card, fw: &read, stuck: read.RulesDigest, err: fmt.Errorf("%w; they are written again once they change", managednet.ErrRulesDiffer)}
 	}
-	if err := fw.Keep(c.ctx, g, card); err != nil {
-		return firewallRead{card: card, fw: &read, err: err}
-	}
+	kerr := fw.Keep(c.ctx, g, card)
+	digest := read.Options.Digest
 	read, err = fw.Read(c.ctx, g, att.NIC)
-	if err != nil {
-		return firewallRead{card: card, err: err}
+	// The digest is of the guest's whole firewall configuration: one that
+	// moved, or could not be read again, is a write.
+	out := firewallRead{card: card, wrote: err != nil || digest == "" || read.Options.Digest != digest, err: cmp.Or(kerr, err)}
+	if err == nil {
+		out.fw = &read
 	}
-	return firewallRead{card: card, fw: &read}
+	if errors.Is(kerr, managednet.ErrRulesDiffer) && err == nil {
+		out.stuck = read.RulesDigest
+	}
+	return out
 }
 
 // restoreFirewall puts back, in the appliance, the guest firewall of a card
 // that is gone, as the attachment recorded it: false while it could not,
 // which keeps the attachment for the next cycle to try again. A guest that
-// is gone took its firewall with it.
+// is gone took its firewall with it. A firewall an admin took up since pco
+// turned it on stays on, which is said.
 func (s *managedStep) restoreFirewall(att store.Attachment) bool {
 	c := s.c
 	if !c.appliance() || att.Firewall == nil {
@@ -1685,9 +1762,15 @@ func (s *managedStep) restoreFirewall(att store.Attachment) bool {
 		c.problem(problemManagedCard, s.name(att.Owner), "this daemon cannot put its firewall back")
 		return false
 	}
-	if err := fw.Restore(c.ctx, g, att.NIC, att.Firewall); err != nil {
+	kept, err := fw.Restore(c.ctx, g, att.NIC, att.Firewall)
+	if err != nil {
 		c.problem(problemManagedCard, s.name(att.Owner), "putting its firewall back: "+err.Error())
 		return false
+	}
+	if kept != "" {
+		s.event(levelWarn, att.Owner, fmt.Sprintf("the firewall of %s stays on, which pco turned on for its card on the managed network: %s; "+
+			"pco's rules and ipset on net%d are removed", s.name(att.Owner), kept, att.NIC))
+		return true
 	}
 	s.event(levelInfo, att.Owner, fmt.Sprintf("the firewall of %s is as it was before its card on the managed network", s.name(att.Owner)))
 	return true

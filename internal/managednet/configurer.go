@@ -33,6 +33,10 @@ type Configurer interface {
 	// guest without network hotplug the change waits for a restart, and the
 	// error is ErrPending.
 	SetLinkDown(ctx context.Context, g model.Guest, index int) error
+	// SetLinkUp takes link_down off net<index>, a card on the managed
+	// network pco added with its link down, and leaves the rest of the
+	// card as it is.
+	SetLinkUp(ctx context.Context, g model.Guest, index int) error
 	// CanWrite reports whether this configurer may change the guest now, and
 	// why not when it may not: on the host, for a guest on this node; in the
 	// appliance, when the access control grants VM.Config.Network on the
@@ -50,6 +54,9 @@ type NICSpec struct {
 	Bridge   string       // the managed network, pconet
 	Addr     netip.Prefix // LXC only, as ip=<addr>/<len>; zero for QEMU
 	Firewall bool         // false on the host, true in the appliance
+	// LinkDown adds the card with link_down=1: in the appliance its link
+	// comes up only once the firewall that isolates it is enforced.
+	LinkDown bool
 }
 
 // ErrPending is the error of a change that Proxmox made pending: the guest
@@ -183,6 +190,33 @@ func (c cards) linkDown(ctx context.Context, g model.Guest, index int) error {
 	return err
 }
 
+func (c cards) linkUp(ctx context.Context, g model.Guest, index int) error {
+	key, err := nicKey(index)
+	if err != nil {
+		return err
+	}
+	err = c.change(ctx, g, key, func(values map[string]string) (string, bool, error) {
+		cur, ok := values[key]
+		switch {
+		case !ok:
+			return "", false, fmt.Errorf("the guest has no %s", key)
+		case field(cur, "bridge") != gateway.ManagedBridge:
+			return "", false, fmt.Errorf("%s is a card on %s; pco sets up only a card on %s", key, field(cur, "bridge"), gateway.ManagedBridge)
+		case !isTrue(field(cur, "link_down")):
+			return "", false, nil
+		}
+		return withoutField(cur, "link_down"), true, nil
+	})
+	if err != nil {
+		return err
+	}
+	live, err := c.live(ctx, g, key)
+	if err == nil && !live {
+		err = ErrPending
+	}
+	return err
+}
+
 // change reads the configuration of g and lets plan say what key becomes:
 // its new value, or nothing to delete it, and whether to write at all. The
 // write is made under the digest of what was read; a digest that went stale
@@ -240,8 +274,12 @@ func nicValue(kind model.GuestKind, values map[string]string, key string, spec N
 	if spec.Firewall {
 		firewall = 1
 	}
+	link := ""
+	if spec.LinkDown {
+		link = ",link_down=1"
+	}
 	if kind == model.KindQEMU {
-		return fmt.Sprintf("virtio=%s,bridge=%s,firewall=%d", mac, spec.Bridge, firewall), nil
+		return fmt.Sprintf("virtio=%s,bridge=%s,firewall=%d%s", mac, spec.Bridge, firewall, link), nil
 	}
 	if !spec.Addr.IsValid() {
 		return "", errors.New("a container's card on the managed network needs its address")
@@ -250,7 +288,7 @@ func nicValue(kind model.GuestKind, values map[string]string, key string, spec N
 	if name == "" {
 		name = freeName(values, key)
 	}
-	return fmt.Sprintf("name=%s,bridge=%s,hwaddr=%s,ip=%s,firewall=%d", name, spec.Bridge, mac, spec.Addr, firewall), nil
+	return fmt.Sprintf("name=%s,bridge=%s,hwaddr=%s,ip=%s,firewall=%d%s", name, spec.Bridge, mac, spec.Addr, firewall, link), nil
 }
 
 // freeName returns the lowest eth<k> that no card of a container but the one
@@ -307,13 +345,18 @@ func field(value, key string) string {
 // withLinkDown returns the card with link_down=1 at its end, and without the
 // link_down it had.
 func withLinkDown(value string) string {
+	return withoutField(value, "link_down") + ",link_down=1"
+}
+
+// withoutField returns the card without key.
+func withoutField(value, key string) string {
 	var parts []string
 	for part := range strings.SplitSeq(value, ",") {
-		if k, _, _ := strings.Cut(part, "="); k != "link_down" {
+		if k, _, _ := strings.Cut(part, "="); k != key {
 			parts = append(parts, part)
 		}
 	}
-	return strings.Join(append(parts, "link_down=1"), ",")
+	return strings.Join(parts, ",")
 }
 
 // isTrue reads a Proxmox boolean.

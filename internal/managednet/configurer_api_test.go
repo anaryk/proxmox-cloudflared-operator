@@ -179,6 +179,30 @@ func TestAPISetLinkDown(t *testing.T) {
 	require.ErrorIs(t, err, managednet.ErrPending)
 }
 
+// A card of the appliance goes on with its link down, and up once its
+// firewall is enforced.
+func TestAPIAddNICWithItsLinkDownAndSetItUp(t *testing.T) {
+	api := &fakeAPI{configs: []pve.GuestConfig{guestConfig("d1", map[string]string{"net0": "virtio=BC:24:11:00:00:02,bridge=vmbr0"})}}
+	spec := vmSpec
+	spec.Firewall, spec.LinkDown = true, true
+	_, err := managednet.NewAPIConfigurer(api, noAccess, applianceToken).AddNIC(t.Context(), vm, 1, spec)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"net1": "virtio=06:50:43:4f:76:06,bridge=pconet,firewall=1,link_down=1"}, api.writes[0].values)
+
+	down := map[string]string{"net1": "virtio=06:50:43:4f:76:06,bridge=pconet,firewall=1,link_down=1"}
+	api = &fakeAPI{configs: []pve.GuestConfig{guestConfig("d2", down)}}
+	require.NoError(t, managednet.NewAPIConfigurer(api, noAccess, applianceToken).SetLinkUp(t.Context(), vm, 1))
+	require.Equal(t, []write{{node: thisNode, ref: vm.Ref, digest: "d2", values: map[string]string{"net1": "virtio=06:50:43:4f:76:06,bridge=pconet,firewall=1"}}}, api.writes)
+
+	api = &fakeAPI{configs: []pve.GuestConfig{guestConfig("d3", map[string]string{"net1": "virtio=06:50:43:4f:76:06,bridge=pconet,firewall=1"})}}
+	require.NoError(t, managednet.NewAPIConfigurer(api, noAccess, applianceToken).SetLinkUp(t.Context(), vm, 1))
+	require.Empty(t, api.writes, "a card that is up is left")
+
+	api = &fakeAPI{configs: []pve.GuestConfig{guestConfig("d4", map[string]string{"net1": "virtio=06:50:43:4f:76:06,bridge=vmbr0,link_down=1"})}}
+	require.ErrorContains(t, managednet.NewAPIConfigurer(api, noAccess, applianceToken).SetLinkUp(t.Context(), vm, 1), "vmbr0")
+	require.Empty(t, api.writes, "a card on another bridge is not pco's to bring up")
+}
+
 // accessData is a cluster where pco's user and its privilege-separated token
 // of the appliance read everything, with the ACL entries given.
 func accessData(acl ...pve.ACLEntry) access.Data {

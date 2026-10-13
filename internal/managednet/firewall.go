@@ -48,6 +48,12 @@ func IPSetName(nic int) string { return "ipfilter-net" + strconv.Itoa(nic) }
 // address to the leg and a DHCP request, nothing else. The guest reaches the
 // leg and the DHCP server through the card, and nothing else, not even the
 // node's bridge device.
+//
+// The DHCP request is not bound to the lease's address: a DISCOVER comes from
+// 0.0.0.0, and when the guest's dhcp option is on, pve-firewall lets DHCP out
+// in a prelude that runs before its MAC and address filters. What answers it
+// is pco's DHCP server alone, which drops a frame whose Ethernet source is
+// not the client's chaddr.
 func WantRules(card FirewallCard, comment string) []pve.FirewallRule {
 	iface, leg := card.Iface(), card.Leg.String()
 	rule := func(typ, action string) pve.FirewallRule {
@@ -261,13 +267,26 @@ func (f *Firewall) set(ctx context.Context, g model.Guest, nic int) (*pve.IPSet,
 
 // Before is what pco records of the guest firewall before it first writes
 // to it, which Restore puts back: whether it was on and, when it was off,
-// the policies it had set, which pco's turning it on replaces.
-func Before(o pve.GuestFirewallOptions, rules int) store.FirewallBefore {
-	b := store.FirewallBefore{Enabled: o.Enabled, Rules: rules}
-	if !o.Enabled {
-		b.PolicyIn, b.PolicyOut = o.PolicyIn, o.PolicyOut
+// the policies it had set, which pco's turning it on replaces; and how many
+// rules that are on and not this install's it had, by which Restore tells
+// whether an admin has taken the firewall up since.
+func (f *Firewall) Before(read GuestFirewall) store.FirewallBefore {
+	b := store.FirewallBefore{Enabled: read.Options.Enabled, Rules: f.othersOn(read.Rules)}
+	if !b.Enabled {
+		b.PolicyIn, b.PolicyOut = read.Options.PolicyIn, read.Options.PolicyOut
 	}
 	return b
+}
+
+// othersOn counts the rules that are on and not this install's.
+func (f *Firewall) othersOn(rules []pve.FirewallRule) int {
+	n := 0
+	for _, r := range rules {
+		if r.Enable && r.Comment != f.comment {
+			n++
+		}
+	}
+	return n
 }
 
 // Apply writes what isolates the card: the card's ipset holding exactly the
@@ -363,16 +382,33 @@ func (f *Firewall) applySet(ctx context.Context, g model.Guest, card FirewallCar
 	return errors.New("entries besides the lease are still listed")
 }
 
+// ErrRulesDiffer is the error of a write round after which pco's rules on
+// the card still differ from what pco writes: Proxmox reads them back in
+// another form, or did not put a new rule first. Of pco's rules on the card
+// those that can no longer decide anything are removed; the caller writes
+// them again only once they changed.
+var ErrRulesDiffer = errors.New("pco's rules on the card still differ from what pco writes after they were written")
+
 // applyRules puts pco's rules first on the card when they are not, one at a
 // time from the last, each on top of the list under the digest it was read
-// in, and then removes every other rule of pco's on the card.
+// in, and then removes every other rule of pco's on the card. pco's rules on
+// the card never grow beyond one old block and the new one: before and after
+// a write round, those that come after pco's own IN DROP and OUT DROP, which
+// no packet of the card reaches, are removed.
 func (f *Firewall) applyRules(ctx context.Context, g model.Guest, card FirewallCard) error {
 	want := WantRules(card, f.comment)
+	iface := card.Iface()
 	rules, digest, err := f.api.GuestFirewallRules(ctx, g.Node, g.Ref)
 	if err != nil {
 		return err
 	}
 	if rulesDrift(rules, want) != "" {
+		if err := f.removeRules(ctx, g, iface, f.unreachable(iface), len(rules)); err != nil {
+			return err
+		}
+		if rules, digest, err = f.api.GuestFirewallRules(ctx, g.Node, g.Ref); err != nil {
+			return err
+		}
 		for i := len(want) - 1; i >= 0; i-- {
 			if digest == "" {
 				if _, digest, err = f.options(ctx, g); err != nil {
@@ -388,14 +424,38 @@ func (f *Firewall) applyRules(ctx context.Context, g model.Guest, card FirewallC
 		}
 	}
 	if blockEnd(rules, want) == 0 {
-		return errors.New("pco's rules are not the first on the card after they were written")
+		if err := f.removeRules(ctx, g, iface, f.unreachable(iface), len(rules)); err != nil {
+			return err
+		}
+		return ErrRulesDiffer
 	}
 	// pco's block on top is never removed: a list that changed so that it
 	// is not on top any more stops the removal.
-	return f.removeRules(ctx, g, card.Iface(), func(rules []pve.FirewallRule, i int) bool {
+	return f.removeRules(ctx, g, iface, func(rules []pve.FirewallRule, i int) bool {
 		end := blockEnd(rules, want)
 		return end > 0 && i >= end
 	}, len(rules))
+}
+
+// unreachable says which of pco's rules on iface no packet of the card
+// reaches: those after pco's own IN DROP and OUT DROP on it, both on.
+// Removing them never lets anything through that did not pass before.
+func (f *Firewall) unreachable(iface string) func(rules []pve.FirewallRule, i int) bool {
+	return func(rules []pve.FirewallRule, i int) bool {
+		in, out := false, false
+		for _, r := range rules[:i] {
+			if !ours(r, iface, f.comment) || !r.Enable || r.Action != "DROP" || !matchesAll(r) {
+				continue
+			}
+			in, out = in || r.Type == "in", out || r.Type == "out"
+		}
+		return in && out
+	}
+}
+
+// matchesAll says that a rule matches every packet of its direction.
+func matchesAll(r pve.FirewallRule) bool {
+	return r.Macro == "" && r.Source == "" && r.Dest == "" && r.Proto == "" && r.SPort == "" && r.DPort == "" && r.ICMPType == ""
 }
 
 // blockEnd is the position after pco's block of want at the top of the
@@ -458,25 +518,37 @@ func (f *Firewall) removeRules(ctx context.Context, g model.Guest, iface string,
 // Restore takes away what Apply wrote for the card net<nic>: pco's rules on
 // it, its ipset when it is pco's, and, when pco turned the guest firewall on,
 // the firewall and the policies it had. A rule or an ipset that is not pco's
-// stays as it is.
-func (f *Firewall) Restore(ctx context.Context, g model.Guest, nic int, before *store.FirewallBefore) error {
+// stays as it is. The firewall is turned off only while what pco set is
+// still what it is: both policies ACCEPT and no more rules on that are not
+// this install's than it had. Otherwise an admin has taken it up since, and
+// it stays on; kept says why.
+func (f *Firewall) Restore(ctx context.Context, g model.Guest, nic int, before *store.FirewallBefore) (kept string, err error) {
 	iface, name := "net"+strconv.Itoa(nic), IPSetName(nic)
 	rules, _, err := f.api.GuestFirewallRules(ctx, g.Node, g.Ref)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := f.removeRules(ctx, g, iface, func([]pve.FirewallRule, int) bool { return true }, len(rules)); err != nil {
-		return fmt.Errorf("removing pco's rules of %s on %s: %w", g.Ref, iface, err)
+		return "", fmt.Errorf("removing pco's rules of %s on %s: %w", g.Ref, iface, err)
 	}
 	if err := f.removeSet(ctx, g, nic); err != nil {
-		return fmt.Errorf("removing the ipset %s of %s: %w", name, g.Ref, err)
+		return "", fmt.Errorf("removing the ipset %s of %s: %w", name, g.Ref, err)
 	}
 	if before == nil || before.Enabled {
-		return nil
+		return "", nil
 	}
 	o, err := f.api.GuestFirewallOptions(ctx, g.Node, g.Ref)
 	if err != nil || !o.Enabled {
-		return err
+		return "", err
+	}
+	if rules, _, err = f.api.GuestFirewallRules(ctx, g.Node, g.Ref); err != nil {
+		return "", err
+	}
+	switch n := f.othersOn(rules); {
+	case o.PolicyIn != policyAccept || o.PolicyOut != policyAccept:
+		return "its policies were changed since pco turned it on", nil
+	case n > before.Rules:
+		return fmt.Sprintf("it has %d rules more than when pco turned it on", n-before.Rules), nil
 	}
 	off := false
 	change := pve.GuestFirewallChange{Enable: &off, PolicyIn: before.PolicyIn, PolicyOut: before.PolicyOut}
@@ -487,9 +559,9 @@ func (f *Firewall) Restore(ctx context.Context, g model.Guest, nic int, before *
 		change.Delete = append(change.Delete, "policy_out")
 	}
 	if err := f.api.SetGuestFirewallOptions(ctx, g.Node, g.Ref, change, o.Digest); err != nil {
-		return fmt.Errorf("turning the firewall of %s off again: %w", g.Ref, err)
+		return "", fmt.Errorf("turning the firewall of %s off again: %w", g.Ref, err)
 	}
-	return nil
+	return "", nil
 }
 
 func (f *Firewall) removeSet(ctx context.Context, g model.Guest, nic int) error {

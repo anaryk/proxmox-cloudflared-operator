@@ -39,6 +39,7 @@ type fakeConfigurer struct {
 	notLive     map[string]bool  // by owner: AddNIC says the card waits for a restart
 	addErr      map[string]error // by owner: what AddNIC fails with
 	linkDownErr map[string]error // by owner: what SetLinkDown fails with
+	linkUpErr   map[string]error // by owner: what SetLinkUp fails with
 	removeErr   map[string]error // by owner: what RemoveNIC fails with
 	unwritable  map[string]string
 	writeErr    error           // what CanWrite fails with
@@ -62,6 +63,9 @@ func (f *fakeConfigurer) AddNIC(_ context.Context, g model.Guest, index int, spe
 	value := fmt.Sprintf("virtio=%s,bridge=%s,firewall=%d", spec.MAC, spec.Bridge, onOff(spec.Firewall))
 	if g.Ref.Kind == model.KindLXC {
 		value = fmt.Sprintf("name=%s,bridge=%s,hwaddr=%s,ip=%s,firewall=%d", spec.Name, spec.Bridge, spec.MAC, spec.Addr, onOff(spec.Firewall))
+	}
+	if spec.LinkDown {
+		value += ",link_down=1"
 	}
 	call := fmt.Sprintf("add %s net%d %s", owner, index, value)
 	f.calls = append(f.calls, call)
@@ -95,6 +99,15 @@ func (f *fakeConfigurer) SetLinkDown(_ context.Context, g model.Guest, index int
 	f.calls = append(f.calls, call)
 	f.log.add("configurer " + call)
 	return f.linkDownErr[g.Ref.String()]
+}
+
+func (f *fakeConfigurer) SetLinkUp(_ context.Context, g model.Guest, index int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	call := fmt.Sprintf("link-up %s net%d", g.Ref, index)
+	f.calls = append(f.calls, call)
+	f.log.add("configurer " + call)
+	return f.linkUpErr[g.Ref.String()]
 }
 
 func (f *fakeConfigurer) CanWrite(_ context.Context, g model.Guest) (bool, string, error) {

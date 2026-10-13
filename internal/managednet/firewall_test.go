@@ -286,19 +286,112 @@ func TestRestoreTakesAwayWhatPcoWroteAndNothingElse(t *testing.T) {
 	fw := NewFirewall(api, installID)
 	g := api.guest(fwGuest.Ref)
 	g.opts = pve.GuestFirewallOptions{PolicyIn: "DROP"}
-	before := Before(api.optionsNow(fwGuest.Ref), 0)
-	require.Equal(t, store.FirewallBefore{PolicyIn: "DROP"}, before)
-	require.NoError(t, fw.Apply(t.Context(), fwGuest, fwCard))
 	admin := pve.FirewallRule{Type: "in", Action: "ACCEPT", Iface: "net1", Proto: "tcp", DPort: "22", Enable: true, Comment: "admin"}
 	otherInstall := pve.FirewallRule{Type: "in", Action: "DROP", Iface: "net1", Enable: true, Comment: "pco:other"}
-	g.rules = append(g.rules, admin, otherInstall)
+	g.rules = []pve.FirewallRule{admin, otherInstall}
+	read, err := fw.Read(t.Context(), fwGuest, 1)
+	require.NoError(t, err)
+	before := fw.Before(read)
+	require.Equal(t, store.FirewallBefore{PolicyIn: "DROP", Rules: 2}, before)
+	require.NoError(t, fw.Apply(t.Context(), fwGuest, fwCard))
 
-	require.NoError(t, fw.Restore(t.Context(), fwGuest, 1, &before))
-	require.Equal(t, []pve.FirewallRule{admin, otherInstall}, g.rules, "only this install's rules go")
+	kept, err := fw.Restore(t.Context(), fwGuest, 1, &before)
+	require.NoError(t, err)
+	require.Empty(t, kept)
+	require.Equal(t, []pve.FirewallRule{admin, otherInstall}, clearPos(g.rules), "only this install's rules go")
 	require.Empty(t, g.sets)
 	require.False(t, g.opts.Enabled)
 	require.Equal(t, "DROP", g.opts.PolicyIn, "the policy it had is back")
 	require.Empty(t, g.opts.PolicyOut, "the one it had not is taken back")
+}
+
+func clearPos(rules []pve.FirewallRule) []pve.FirewallRule {
+	out := slices.Clone(rules)
+	for i := range out {
+		out[i].Pos = 0
+	}
+	return out
+}
+
+// A firewall that an admin took up after pco turned it on stays on: only
+// pco's rules and ipset go.
+func TestRestoreLeavesAFirewallAnAdminTookUp(t *testing.T) {
+	for name, change := range map[string]func(g *fakeGuestFirewall){
+		"a policy changed": func(g *fakeGuestFirewall) { g.opts.PolicyIn = "DROP" },
+		"a rule added": func(g *fakeGuestFirewall) {
+			g.rules = append(g.rules, pve.FirewallRule{Type: "in", Action: "ACCEPT", Iface: "net0", Proto: "tcp", DPort: "443", Enable: true})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := newFakeFirewall()
+			fw := NewFirewall(api, installID)
+			read, err := fw.Read(t.Context(), fwGuest, 1)
+			require.NoError(t, err)
+			before := fw.Before(read)
+			require.NoError(t, fw.Apply(t.Context(), fwGuest, fwCard))
+			g := api.guests[fwGuest.Ref]
+			change(g)
+
+			kept, err := fw.Restore(t.Context(), fwGuest, 1, &before)
+			require.NoError(t, err)
+			require.NotEmpty(t, kept)
+			require.True(t, g.opts.Enabled, "left on")
+			require.Empty(t, g.sets)
+			for _, r := range g.rules {
+				require.NotEqual(t, fw.Comment(), r.Comment)
+			}
+		})
+	}
+}
+
+// Proxmox reads a rule back in another form than pco wrote it: the rules
+// never match, and every round would add a block. pco's rules stay one
+// block, the card stays isolated, and the write says so.
+func TestARuleReadBackOtherwiseNeverGrowsTheList(t *testing.T) {
+	api := newFakeFirewall()
+	api.normalize = func(r pve.FirewallRule) pve.FirewallRule {
+		if r.Source != "" {
+			r.Source += "/32"
+		}
+		return r
+	}
+	fw := NewFirewall(api, installID)
+	for range 5 {
+		err := fw.Apply(t.Context(), fwGuest, fwCard)
+		require.ErrorIs(t, err, ErrRulesDiffer)
+		g := api.guests[fwGuest.Ref]
+		require.LessOrEqual(t, len(g.rules), 2*len(WantRules(fwCard, fw.Comment())), "at most one old block and the new one during a round")
+		require.Len(t, g.rules, len(WantRules(fwCard, fw.Comment())), "one block after it")
+		on := *g
+		on.opts.Enabled = true
+		other := netip.MustParseAddr("10.203.118.3")
+		require.Equal(t, "DROP", chainVerdict(&on, "net1", packet{dir: "in", src: other, dst: fwCard.Lease, proto: "tcp", dport: 443}),
+			"the block that stays isolates the card once the firewall is on")
+	}
+	require.False(t, api.guests[fwGuest.Ref].opts.Enabled, "the firewall is not turned on while pco's rules are not as written")
+}
+
+// Proxmox puts a new rule last, not first: the new block is not on top, the
+// old one stays and keeps the card isolated, and what the new one added
+// beyond the old block's drops goes again.
+func TestARuleThatDoesNotLandFirstNeverOpensOrGrowsTheList(t *testing.T) {
+	api := newFakeFirewall()
+	fw := NewFirewall(api, installID)
+	admin := pve.FirewallRule{Type: "in", Action: "ACCEPT", Iface: "net0", Proto: "tcp", DPort: "22", Enable: true, Comment: "admin"}
+	api.guest(fwGuest.Ref).rules = []pve.FirewallRule{admin}
+	require.NoError(t, fw.Apply(t.Context(), fwGuest, fwCard))
+	api.appendRules = true
+	changed := fwCard
+	changed.Ports = []uint16{8443}
+	other := netip.MustParseAddr("10.203.118.3")
+	api.after = func(_ model.GuestRef, g *fakeGuestFirewall) {
+		require.Equal(t, "DROP", chainVerdict(g, "net1", packet{dir: "in", src: other, dst: fwCard.Lease, proto: "tcp", dport: 443}))
+		require.Equal(t, "DROP", chainVerdict(g, "net1", packet{dir: "out", src: fwCard.Lease, dst: other, proto: "tcp", dport: 22}))
+	}
+	for range 3 {
+		require.ErrorIs(t, fw.Apply(t.Context(), fwGuest, changed), ErrRulesDiffer)
+		require.Len(t, api.guests[fwGuest.Ref].rules, 1+len(WantRules(fwCard, fw.Comment())), "the old block and the admin's rule")
+	}
 }
 
 func TestRestoreLeavesAFirewallThatWasOnAndAnIPSetThatIsNotPcos(t *testing.T) {
@@ -310,15 +403,13 @@ func TestRestoreLeavesAFirewallThatWasOnAndAnIPSetThatIsNotPcos(t *testing.T) {
 	g.entries["ipfilter-net1"] = []pve.IPSetEntry{{CIDR: "192.0.2.1"}}
 	g.rules = WantRules(fwCard, fw.Comment())
 
-	require.NoError(t, fw.Restore(t.Context(), fwGuest, 1, &store.FirewallBefore{Enabled: true}))
+	kept, err := fw.Restore(t.Context(), fwGuest, 1, &store.FirewallBefore{Enabled: true})
+	require.NoError(t, err)
+	require.Empty(t, kept)
 	require.Empty(t, g.rules)
 	require.Len(t, g.sets, 1)
 	require.True(t, g.opts.Enabled)
 	for _, w := range api.writes {
 		require.NotContains(t, w, "options")
 	}
-}
-
-func (f *fakeFirewall) optionsNow(ref model.GuestRef) pve.GuestFirewallOptions {
-	return f.guest(ref).opts
 }

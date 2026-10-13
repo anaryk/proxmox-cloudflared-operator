@@ -79,6 +79,8 @@ func TestEachConditionFailsFiltered(t *testing.T) {
 			in.Foreign = []ForeignNIC{{Owner: "lxc/9330", NIC: 1, MAC: "06:50:43:4f:76:02"}}
 		}, "guest lxc/9330: net1 (06:50:43:4f:76:02) on the vnet is no card pco attached"},
 		{"firewall=0 on the card", func(in *FilteredInput) { in.Cards[0].Firewall = false }, "guest qemu/9320: net1 has firewall=0"},
+		{"written a moment ago", func(in *FilteredInput) { in.Cards[0].NotEnforced = "pco wrote its firewall 3s ago" },
+			"guest qemu/9320: net1 is not yet enforced: pco wrote its firewall 3s ago"},
 		{"a stopped guest's card counts", func(in *FilteredInput) { in.Cards[1].Firewall = false }, "guest lxc/9321: net2 has firewall=0"},
 		{"guest firewall off", func(in *FilteredInput) { in.Cards[0].Read.Options.Enabled = false }, "guest qemu/9320: the guest firewall is off"},
 		{"macfilter off", func(in *FilteredInput) { in.Cards[0].Read.Options.MACFilterOff = true }, "guest qemu/9320: macfilter is off"},
