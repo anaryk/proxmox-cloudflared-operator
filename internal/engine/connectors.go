@@ -71,7 +71,11 @@ func (c *cycleRun) reconcileConnectors() {
 // looked at too.
 func (c *cycleRun) keepConnectors(shown []reconcile.TunnelState, run map[string]string, prune, keep bool) {
 	if c.node == nil {
-		return
+		// A cycle that held before it knew the install reads the
+		// connectors through the agent of the install the store names.
+		if c.node = c.e.fleet.made(); c.node == nil {
+			return
+		}
 	}
 	st := c.steps
 	if st == nil {
@@ -94,7 +98,7 @@ func (c *cycleRun) keepConnectors(shown []reconcile.TunnelState, run map[string]
 		c.problem("%s", line)
 	}
 	if err != nil {
-		c.hold(c.problem(problemAgentRefused, err))
+		c.hold(c.problem(problemAgentRefusedLate, err))
 	}
 	c.before = c.st.Connectors
 	statuses := make([]connector.Status, 0, len(shown))

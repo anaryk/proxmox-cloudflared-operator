@@ -39,7 +39,9 @@ const (
 	problemNoCredential      = "no Cloudflare credential; add one with pco credential add"
 	problemStoppedResolve    = "the cycle ended while addresses were resolved (%v); nothing is changed"
 	problemAgentRefused      = "the agent of this node does not take the desired state of this cycle: %v; " +
-		"nothing is changed at Cloudflare, and the egress set and the connectors are left as they are"
+		"nothing is changed at Cloudflare, and the egress set, the gateway and the connectors are left as they are"
+	problemAgentRefusedLate = "the agent of this node did not take the desired state of this cycle after its tunnel run: %v; " +
+		"DNS and further changes are held, and the connectors are left as they run"
 )
 
 // cycleRun is the state of one cycle. It runs under the cycle lock.
@@ -530,6 +532,10 @@ func (c *cycleRun) reconcile() {
 // begin starts the pass of the agent of this node that the cycle runs in
 // steps, with s; the agent's lock is held until the cycle ends.
 func (c *cycleRun) begin(s agentproto.Snapshot) (*agent.Steps, error) {
+	// The seq of the snapshot the pass will end with is at least this one:
+	// the agent checks the snapshot it begins with as it checks that one.
+	v := c.node.View()
+	s.Seq = c.e.seqs.floor(s, v.Epoch, v.Seq)
 	st, err := c.node.Begin(c.ctx, s)
 	if err != nil {
 		return nil, err

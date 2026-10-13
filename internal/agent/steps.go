@@ -53,18 +53,22 @@ type Resolution struct {
 
 // Begin starts a pass of s for the engine of this process; it waits for the
 // agent's lock until ctx ends. s is not kept: Finish keeps the snapshot the
-// pass ends with. A snapshot of an epoch the agent would refuse, as one below
-// the epoch it follows, is said by Refused: the engine that sent it is behind
-// and must change nothing. One without an epoch, of an engine without a
-// writer identity, is not refused: that engine writes nothing anyway.
+// pass ends with. Begin checks s as Apply would, against the epoch and the
+// seq the agent follows: a snapshot it would refuse, as one of an engine
+// behind the controller it follows, is said by Refused, and that engine must
+// change nothing. Only a snapshot it takes counts as a controller heard. One
+// without an epoch, of an engine without a writer identity, is not checked:
+// that engine writes nothing anyway.
 func (a *Agent) Begin(ctx context.Context, s agentproto.Snapshot) (*Steps, error) {
 	if err := a.acquire(ctx); err != nil {
 		return nil, err
 	}
-	a.hear()
 	st := &Steps{a: a, p: a.newPass(ctx, s)}
 	if s.Epoch.Generation != 0 {
-		st.refused = s.Validate(a.d.Node, a.remembered, 0)
+		st.refused = a.accept(s)
+	}
+	if st.refused == nil {
+		a.hear()
 	}
 	return st, nil
 }

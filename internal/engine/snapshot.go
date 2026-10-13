@@ -204,6 +204,19 @@ type seqOf struct {
 	sum   [sha256.Size]byte
 }
 
+// floor is the least seq a snapshot of s's epoch for s's node gets from
+// stamp, given what the node's agent applied.
+func (q *seqs) floor(s agentproto.Snapshot, applied agentproto.Epoch, appliedSeq uint64) uint64 {
+	var seq uint64
+	if applied == s.Epoch {
+		seq = appliedSeq
+	}
+	if cur := q.byNode[s.Node]; cur != nil && cur.epoch == s.Epoch {
+		seq = max(seq, cur.seq)
+	}
+	return seq
+}
+
 // stamp gives s its seq. applied is what the node's agent applied last,
 // epoch and seq: after a start of the engine within one epoch, the seqs go on
 // above it.

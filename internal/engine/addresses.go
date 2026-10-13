@@ -45,8 +45,12 @@ func (c *cycleRun) resolveTargets() bool {
 		return false
 	}
 	if err := st.Refused(); err != nil {
-		// The agent follows a later controller than this one: this engine
-		// is behind, and changes nothing the agent would not take from it.
+		// The agent would not take the desired state of this cycle, as from
+		// an engine behind the controller it follows: the cycle changes
+		// nothing the agent would not take from it, on the node or at
+		// Cloudflare. It still resolves, which only takes what lost its
+		// proof out of the egress filter, so that the state says how the
+		// routes fare.
 		c.agentRefused = true
 		c.hold(c.problem(problemAgentRefused, err))
 	}
@@ -68,9 +72,11 @@ func (c *cycleRun) resolveTargets() bool {
 	c.filtered()
 	c.holdBelowMinimum()
 	c.holdObserved()
-	c.gateway()
-	for _, line := range st.Bind(c.results, c.netLegs) {
-		c.problem("%s", line)
+	if !c.agentRefused {
+		c.gateway()
+		for _, line := range st.Bind(c.results, c.netLegs) {
+			c.problem("%s", line)
+		}
 	}
 
 	if c.e.addrs.dirty {

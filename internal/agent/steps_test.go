@@ -366,3 +366,55 @@ func TestTheNodeOperationsOfTheEngine(t *testing.T) {
 	require.NoError(t, e.agent.StopConnectors(t.Context()))
 	require.Equal(t, []string{"Ensure " + sharedID + " rotated", "StopAll"}, e.conn.changes())
 }
+
+// Begin checks the snapshot as Apply would: the seq the agent applied, the
+// denylist and the levels, not the epoch alone.
+func TestBeginRefusesWhatApplyWouldRefuse(t *testing.T) {
+	e := newEnv(t)
+	applied := e.snapshot()
+	e.seq = 5
+	applied.Seq = 5
+	e.apply(applied)
+
+	back := e.snapshot()
+	back.Seq = 4
+	st := e.begin(back)
+	require.ErrorIs(t, st.Refused(), agentproto.ErrSeqBack)
+	st.End()
+
+	bad := e.snapshot()
+	bad.Deny.Soft = map[string]string{"not an address": "why"}
+	st = e.begin(bad)
+	require.Error(t, st.Refused())
+	st.End()
+
+	level := e.snapshot("www.example.com -> :8080")
+	level.Targets[0].Required = "none"
+	st = e.begin(level)
+	require.Error(t, st.Refused())
+	st.End()
+
+	st = e.begin(e.snapshot())
+	require.NoError(t, st.Refused())
+}
+
+// Only a snapshot the agent takes counts as a controller heard.
+func TestARefusedPassIsNoControllerHeard(t *testing.T) {
+	e := newEnv(t)
+	s := e.snapshot()
+	s.Epoch.Generation = 5
+	e.apply(s)
+	e.clock.advance(90 * time.Second)
+
+	st := e.begin(e.snapshot())
+	require.Error(t, st.Refused())
+	st.End()
+	require.Equal(t, 90*time.Second, e.agent.View().SilentFor)
+
+	taken := e.snapshot()
+	taken.Epoch.Generation = 5
+	st = e.begin(taken)
+	require.NoError(t, st.Refused())
+	st.End()
+	require.Zero(t, e.agent.View().SilentFor)
+}

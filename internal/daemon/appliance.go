@@ -156,7 +156,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
-	if why, isCopy := parts.self.CopyBeforeCycle(); isCopy && stopCopy(ctx, why, parts.eng.Agent(), log) {
+	if why, isCopy := parts.self.CopyBeforeCycle(); isCopy && stopCopy(ctx, why, parts.stopper(state.install.ID), log) {
 		parts.eng.StoppedServing()
 	}
 	parts.gw.start(ctx)
@@ -250,16 +250,49 @@ func applianceDoctor(env *doctor.HostEnv, parts applianceParts, state applianceS
 	return h
 }
 
-// stopCopy is what a copy does before its first cycle: the identity flag is
-// gone already; the agent of the node empties the egress filter and stops
-// the connectors of the install, keeping their files. It reports whether both
-// went through; the first cycle does again what did not.
-func stopCopy(ctx context.Context, why string, a *agent.Agent, log zerolog.Logger) bool {
-	log.Error().Str("why", why).Msg("this container is a copy of the appliance; the connectors are stopped and the egress filter is empty")
-	if a == nil {
-		log.Error().Msg("the agent of this node is not running; the first cycle stops the connectors of the copy")
-		return false
+// nodeStopper empties the egress filter of the node and stops the connectors
+// of the install, keeping their files: the agent of the node, or, when it
+// cannot run, the filter and the connector manager themselves.
+type nodeStopper interface {
+	Halt(ctx context.Context) error
+	StopConnectors(ctx context.Context) error
+}
+
+// directStop stops the node without its agent.
+type directStop struct {
+	filter interface {
+		Set(context.Context, []egress.Target) error
 	}
+	conns interface {
+		StopAll(context.Context, string) error
+	}
+	install string
+}
+
+func (d directStop) Halt(ctx context.Context) error {
+	if err := d.filter.Set(ctx, nil); err != nil && !errors.Is(err, egress.ErrOff) {
+		return err
+	}
+	return nil
+}
+
+func (d directStop) StopConnectors(ctx context.Context) error { return d.conns.StopAll(ctx, d.install) }
+
+// stopper is the agent of the node, or the parts themselves when the agent
+// cannot be made.
+func (p applianceParts) stopper(install string) nodeStopper {
+	if a := p.eng.Agent(); a != nil {
+		return a
+	}
+	return directStop{filter: p.filter, conns: p.conns, install: install}
+}
+
+// stopCopy is what a copy does before its first cycle: the identity flag is
+// gone already; the egress filter is emptied and the connectors of the
+// install are stopped, keeping their files. It reports whether both went
+// through; the first cycle does again what did not.
+func stopCopy(ctx context.Context, why string, a nodeStopper, log zerolog.Logger) bool {
+	log.Error().Str("why", why).Msg("this container is a copy of the appliance; the connectors are stopped and the egress filter is empty")
 	done := true
 	if err := a.Halt(ctx); err != nil {
 		log.Error().Err(err).Msg("emptying the egress filter of a copy failed")

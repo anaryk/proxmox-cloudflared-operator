@@ -121,10 +121,45 @@ func TestACycleTheAgentRefusesChangesNothing(t *testing.T) {
 	require.Empty(t, e.writes(), "nothing is written at Cloudflare")
 	require.Equal(t, sets, e.egr.setCount(), "nothing is given to the egress filter")
 	require.Empty(t, e.conn.ensures(), "no connector is started")
+	require.Empty(t, e.eng.Bound(), "nothing is watched for it")
+	bindings, err := e.store.Bindings()
+	require.NoError(t, err)
+	require.Empty(t, bindings, "and no binding kept")
+}
+
+// The engine goes on above the seq the agent applied, also one another
+// publish gave it: its desired state is never refused for its seq.
+func TestACycleGoesOnAboveTheSeqTheAgentApplied(t *testing.T) {
+	e := newEnv(t)
+	e.enforce()
+	require.NoError(t, e.eng.fleet.Publish(t.Context(), testNode, publishable(10)))
+
+	st := e.cycle()
+
+	require.False(t, hasProblem(st, "does not take the desired state"), st.Problems)
+	require.Equal(t, uint64(11), e.kept().Seq)
+}
+
+// A cycle that holds before it knows the install, as on a registry that
+// names another node, still reads the connectors of the tunnels it knows.
+func TestACycleHeldInPrepareReadsTheConnectors(t *testing.T) {
+	e := published(t)
+	tun := e.tunnels()[0].ID
+	e.conn.setReady(tun, false)
+	require.NoError(t, e.store.SaveNode(store.NodeEntry{Name: "pve2", Since: t0}))
+
+	e.clock.advance(20 * time.Second)
+	st := e.cycle()
+
+	require.True(t, hasProblem(st, "the node registry names pve2"), st.Problems)
+	require.Len(t, st.Connectors, 1)
+	require.Equal(t, tun, st.Connectors[0].TunnelID)
+	require.False(t, st.Connectors[0].Ready, "read in this cycle")
 }
 
 // A desired state the agent cannot keep is one it does not follow: the
-// connectors are left as they are and DNS is not written.
+// connectors are left as they run, their statuses are read, and DNS is not
+// written.
 func TestADesiredStateTheAgentCannotKeepHoldsDNS(t *testing.T) {
 	e := newEnv(t)
 	e.enforce()
@@ -132,7 +167,8 @@ func TestADesiredStateTheAgentCannotKeepHoldsDNS(t *testing.T) {
 
 	st := e.cycle()
 
-	require.True(t, hasProblem(st, "the agent of this node does not take the desired state of this cycle"), st.Problems)
+	require.True(t, hasProblem(st, "the agent of this node did not take the desired state of this cycle after its tunnel run"), st.Problems)
+	require.True(t, hasProblem(st, "DNS and further changes are held"), st.Problems)
 	require.Empty(t, e.records(), "no record is written")
 	require.Empty(t, e.conn.ensures())
 }
