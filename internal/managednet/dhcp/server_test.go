@@ -462,11 +462,13 @@ func TestDiscoversAreLimitedPerGuestAndInAll(t *testing.T) {
 		}
 		require.Equal(t, Stats{Unknown: limitKeys, Limited: 1}, ts.Stats(), "the last one is over the table")
 		require.Equal(t, limitKeys, leases.lookups)
+		require.Len(t, ts.lim.byMAC, limitKeys, "the table holds no more")
 		ts.in(goldenFrames["discover.bin"])
 		require.Empty(t, ts.sock.replies(), "a guest with a lease is held off too while the table is full")
 		ts.now = t0.Add(time.Second)
 		ts.in(goldenFrames["discover.bin"])
 		require.Len(t, ts.sock.replies(), 1, "and answered the next second")
+		require.Len(t, ts.lim.byMAC, 1, "the table of the second before is gone")
 	})
 
 	t.Run("a clock that goes back starts the counts again", func(t *testing.T) {

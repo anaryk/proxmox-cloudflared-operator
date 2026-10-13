@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"time"
 
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -137,10 +138,20 @@ func (c legConn) ReadFrame(b []byte) (int, error) { return c.f.Read(b) }
 func (c legConn) MAC() net.HardwareAddr           { return c.mac }
 func (c legConn) Close() error                    { return c.f.Close() }
 
+// WriteFrame writes a frame on the leg, for at most sendTimeout: the
+// replies are sent from the goroutine that reads the requests, and a write
+// that cannot complete must not hold the requests of every other guest.
 func (c legConn) WriteFrame(b []byte) error {
+	if err := c.f.SetWriteDeadline(time.Now().Add(sendTimeout)); err != nil {
+		return err
+	}
 	_, err := c.f.Write(b)
 	return err
 }
+
+// sendTimeout bounds a reply's write on either socket. A frame leaves the
+// leg at once; a write that waits longer is one the socket cannot take.
+const sendTimeout = 200 * time.Millisecond
 
 // udpSender sends the replies; what the socket receives, the same requests
 // the packet socket reads, is read and dropped so that it does not fill.
@@ -150,6 +161,9 @@ type udpSender struct {
 }
 
 func (s *udpSender) Send(payload []byte, to netip.Addr) error {
+	if err := s.conn.SetWriteDeadline(time.Now().Add(sendTimeout)); err != nil {
+		return err
+	}
 	_, err := s.conn.WriteTo(payload, net.UDPAddrFromAddrPort(netip.AddrPortFrom(to, clientPort)))
 	return err
 }
