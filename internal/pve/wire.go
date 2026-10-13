@@ -29,11 +29,12 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// commaList reads a list Proxmox gives as one string, "a,b", or as a JSON
-// list. Empty parts are dropped; nothing is nil.
-type commaList []string
+// List reads a list Proxmox gives as one string, "a;b" or "a,b", or as a
+// JSON list: which one depends on the field and on the version of Proxmox.
+// Empty parts are dropped; nothing is nil.
+type List []string
 
-func (l *commaList) UnmarshalJSON(data []byte) error {
+func (l *List) UnmarshalJSON(data []byte) error {
 	var (
 		s     string
 		parts []string

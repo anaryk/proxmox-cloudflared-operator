@@ -50,7 +50,7 @@ type aclWire struct {
 type userWire struct {
 	ID     string      `json:"userid"`
 	Enable *flexBool   `json:"enable"`
-	Groups commaList   `json:"groups"`
+	Groups List        `json:"groups"`
 	Tokens []tokenWire `json:"tokens"`
 }
 
@@ -60,8 +60,8 @@ type tokenWire struct {
 }
 
 type groupWire struct {
-	ID    string     `json:"groupid"`
-	Users *commaList `json:"users"`
+	ID    string `json:"groupid"`
+	Users *List  `json:"users"`
 }
 
 type groupMembersWire struct {
@@ -69,8 +69,8 @@ type groupMembersWire struct {
 }
 
 type roleWire struct {
-	ID    string    `json:"roleid"`
-	Privs commaList `json:"privs"`
+	ID    string `json:"roleid"`
+	Privs List   `json:"privs"`
 }
 
 // ACL returns the access control list.

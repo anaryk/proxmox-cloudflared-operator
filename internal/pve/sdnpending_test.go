@@ -19,6 +19,11 @@ func TestClusterOptionsGiveTheRegisteredTags(t *testing.T) {
 		{"several", `{"data":{"keyboard":"en-us","registered-tags":"cf-tunnel;cf-tunnel-managed;Prod"}}`, []string{"cf-tunnel", "cf-tunnel-managed", "Prod"}},
 		{"none", `{"data":{"keyboard":"en-us"}}`, nil},
 		{"empty", `{"data":{"registered-tags":""}}`, nil},
+		// Proxmox VE 9.2 gives the tags as a JSON list.
+		{"list", `{"data":{"keyboard":"en-us","registered-tags":["cf-tunnel","cf-tunnel-managed","Prod"]}}`, []string{"cf-tunnel", "cf-tunnel-managed", "Prod"}},
+		{"empty list", `{"data":{"registered-tags":[]}}`, nil},
+		{"list with an empty entry", `{"data":{"registered-tags":["cf-tunnel",""]}}`, []string{"cf-tunnel"}},
+		{"null", `{"data":{"registered-tags":null}}`, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, rec := newTestClient(t, map[string]reply{"/cluster/options": {http.StatusOK, tt.body}})
@@ -42,7 +47,13 @@ func TestDecodeClusterOptions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ClusterOptions{RegisteredTags: []string{"a", "b"}}, got)
 
+	got, err = DecodeClusterOptions([]byte(`{"registered-tags":["a","b"]}`))
+	require.NoError(t, err)
+	require.Equal(t, ClusterOptions{RegisteredTags: []string{"a", "b"}}, got)
+
 	_, err = DecodeClusterOptions([]byte(`"a;b"`))
+	require.Error(t, err)
+	_, err = DecodeClusterOptions([]byte(`{"registered-tags":{"a":1}}`))
 	require.Error(t, err)
 }
 

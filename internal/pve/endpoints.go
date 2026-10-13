@@ -291,12 +291,12 @@ func (c *Client) ClusterOptions(ctx context.Context) (ClusterOptions, error) {
 // prints.
 func DecodeClusterOptions(data []byte) (ClusterOptions, error) {
 	var w struct {
-		RegisteredTags string `json:"registered-tags"`
+		RegisteredTags List `json:"registered-tags"`
 	}
 	if err := json.Unmarshal(data, &w); err != nil {
 		return ClusterOptions{}, fmt.Errorf("decoding the cluster options: %w", err)
 	}
-	return ClusterOptions{RegisteredTags: SplitTags(w.RegisteredTags)}, nil
+	return ClusterOptions{RegisteredTags: w.RegisteredTags}, nil
 }
 
 // guestEndpoint builds nodes/<node>/<kind>/<vmid>/<tail>.

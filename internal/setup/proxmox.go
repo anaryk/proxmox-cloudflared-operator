@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -83,24 +82,6 @@ func setupPrivileges() [][]string {
 	return out
 }
 
-// pveList is a list Proxmox gives as one string, separated by commas,
-// semicolons or spaces; a JSON list is read as well.
-type pveList []string
-
-func (l *pveList) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err == nil {
-		*l = strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' || unicode.IsSpace(r) })
-		return nil
-	}
-	var list []string
-	if err := json.Unmarshal(b, &list); err != nil {
-		return errors.New("want a string or a list of strings")
-	}
-	*l = list
-	return nil
-}
-
 // pveBool is a flag Proxmox gives as 0 or 1, as a number or a string.
 type pveBool bool
 
@@ -117,8 +98,8 @@ func (f *pveBool) UnmarshalJSON(b []byte) error {
 }
 
 type pveRole struct {
-	ID    string  `json:"roleid"`
-	Privs pveList `json:"privs"`
+	ID    string   `json:"roleid"`
+	Privs pve.List `json:"privs"`
 }
 
 type pveUser struct {
@@ -237,7 +218,7 @@ func (s *Setup) removeToken(ctx context.Context) error {
 // RegisteredTags returns the tags only an admin may set, in their order.
 func RegisteredTags(ctx context.Context, r Runner) ([]string, error) {
 	var options struct {
-		Tags pveList `json:"registered-tags"`
+		Tags pve.List `json:"registered-tags"`
 	}
 	if err := query(ctx, r, &options, "pvesh", "get", "/cluster/options", "--output-format", "json"); err != nil {
 		return nil, fmt.Errorf("reading the cluster options: %w", err)
