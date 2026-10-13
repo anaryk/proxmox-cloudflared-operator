@@ -184,7 +184,7 @@ func TestTheChecksOfAHealthyApplianceWithTheManagedNetwork(t *testing.T) {
 		{Check: "leg pconet", Level: LevelOK, Detail: "leg2 is up with 10.203.118.1 on pconet"},
 		{Check: "leg vmbr1", Level: LevelOK, Detail: "leg1 is up with 10.50.0.250 on vmbr1"},
 		{Check: "managed", Level: LevelOK, Detail: "consent per-guest, the tag cf-tunnel-managed is honoured; 1 guest attached; 250 addresses of 10.203.118.0/24 free"},
-		{Check: "managed firewall", Level: LevelOK, Detail: "the datacenter firewall is on, and pve-firewall runs on the node on the iptables backend"},
+		{Check: "managed firewall", Level: LevelOK, Detail: "the node can isolate the managed guests: the datacenter firewall is on, and pve-firewall runs on the iptables backend; whether the rules of each guest are in force is not read here, filtered pconet says what the cycle proved"},
 		{Check: "networks", Level: LevelOK, Detail: "2 of the 15 networks a node reaches are attached"},
 		{Check: "pool grant", Level: LevelOK, Detail: "every guest of pool managed has consent for the managed network"},
 		{Check: "vnet", Level: LevelOK, Detail: "zone pco of type simple, isolate-ports off, no subnet"},

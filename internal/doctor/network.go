@@ -486,14 +486,17 @@ func checkFiltered(m engine.ManagedView) Finding {
 // checkManagedFirewall fails while the appliance's node cannot isolate the
 // managed guests: the nftables backend, the datacenter firewall off or
 // pve-firewall not running, which the cycle reads and refuses the managed
-// network for.
+// network for. It says whether the node can isolate them, not whether the
+// rules of each guest are in force: the appliance cannot read the node's
+// live chains.
 func checkManagedFirewall(m engine.ManagedView) Finding {
 	const check = "managed firewall"
 	if m.Refused != "" {
 		return fail(check, m.Refused+"; the routes on pconet are proven at observed",
 			"put right what it names; nothing is attached until it is, and attached guests keep their cards")
 	}
-	return ok(check, "the datacenter firewall is on, and pve-firewall runs on the node on the iptables backend")
+	return ok(check, "the node can isolate the managed guests: the datacenter firewall is on, and pve-firewall runs on the iptables backend; "+
+		"whether the rules of each guest are in force is not read here, filtered pconet says what the cycle proved")
 }
 
 // checkPoolGrant names every guest of the pool whose cards pco's token may
