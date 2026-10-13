@@ -200,10 +200,12 @@ func (p *prober) FDBPorts(ctx context.Context, bridge string, vlan int, mac stri
 }
 
 // PortKinds is the host's too: the bridge ends of the legs are ports of its
-// bridges like any other.
+// bridges like any other. The appliance sees only the bridges of its own
+// container, never the node's, so it tells no kinds at all and no proof
+// there can stand on them.
 func (p *prober) PortKinds(ctx context.Context, bridge string) (map[string]resolve.PortKind, error) {
 	pc, ok := p.host.(resolve.PortClassifier)
-	if !ok {
+	if !ok || !p.ownNamespace {
 		return nil, fmt.Errorf("the kinds of the ports of %s: %w", bridge, errors.ErrUnsupported)
 	}
 	return pc.PortKinds(ctx, bridge)

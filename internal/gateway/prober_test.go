@@ -472,7 +472,7 @@ func TestTheKindsOfPortsAreTheHosts(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
 	host := classifyingHost{recordingProber{name: "host", mu: &mu, calls: &calls}}
-	p := NewProber(host, func() []Leg { return nil }, nil)
+	p := NewProber(host, func() []Leg { return nil }, &hostBackend{})
 
 	kinds, err := p.(resolve.PortClassifier).PortKinds(t.Context(), "vmbr1")
 
@@ -481,10 +481,25 @@ func TestTheKindsOfPortsAreTheHosts(t *testing.T) {
 	require.Equal(t, []string{"host kinds vmbr1"}, calls)
 
 	t.Run("a host that cannot tell them", func(t *testing.T) {
-		p := NewProber(recordingProber{name: "host", mu: &mu, calls: &calls}, func() []Leg { return nil }, nil)
+		p := NewProber(recordingProber{name: "host", mu: &mu, calls: &calls}, func() []Leg { return nil }, &hostBackend{})
 
 		_, err := p.(resolve.PortClassifier).PortKinds(t.Context(), "vmbr1")
 
 		require.ErrorIs(t, err, errors.ErrUnsupported)
 	})
+}
+
+// The appliance sees none of the node's bridges, whatever its own prober
+// could tell of the bridges of the container: no proof there may stand on
+// the kinds of ports.
+func TestTheApplianceTellsNoKindsOfPorts(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	host := classifyingHost{recordingProber{name: "host", mu: &mu, calls: &calls}}
+	p := NewProber(host, func() []Leg { return nil }, &containerBackend{})
+
+	_, err := p.(resolve.PortClassifier).PortKinds(t.Context(), "vmbr1")
+
+	require.ErrorIs(t, err, errors.ErrUnsupported)
+	require.Empty(t, calls)
 }
