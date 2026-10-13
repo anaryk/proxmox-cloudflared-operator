@@ -1,0 +1,93 @@
+{
+  "lease": {
+    "holder": "pve1",
+    "address": "10.10.0.1",
+    "previous": "pve2",
+    "generation": 7,
+    "nonce": "k3x9",
+    "acquiredAt": "2026-10-01T11:00:00Z",
+    "refreshAge": 3000000000,
+    "valid": true
+  },
+  "cluster": {
+    "controller": "pve1",
+    "generation": 7,
+    "members": [
+      "pve1",
+      "pve2",
+      "pve3"
+    ],
+    "quorate": true,
+    "quorumDevice": false,
+    "coverage": {
+      "covered": true,
+      "since": "2026-10-01T11:00:00Z"
+    },
+    "upgrade": {
+      "from": "1.3.2",
+      "since": "2026-09-29T12:00:00Z"
+    },
+    "blocks": [
+      {
+        "address": "10.0.0.11",
+        "guest": "qemu/101",
+        "mac": "bc:24:11:5e:7a:01",
+        "node": "pve2",
+        "port": "tap140i0",
+        "since": "2026-10-01T11:59:00Z",
+        "lastReport": "2026-10-01T12:00:00Z"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "name": "pve1",
+      "state": "active",
+      "stateSince": "2026-10-01T11:00:00Z",
+      "kind": "host",
+      "index": 0,
+      "agentAddress": "10.10.0.1",
+      "controller": true,
+      "build": "1.4.0",
+      "protocol": "1",
+      "statusAge": 1000000000,
+      "watchRunning": true,
+      "covered": true,
+      "replicaReady": true,
+      "verified": 4,
+      "failing": 0,
+      "belowMinimum": 0,
+      "pinned": 0,
+      "certExpires": "2026-12-20T12:00:00Z",
+      "clockSkew": 0
+    },
+    {
+      "name": "pve3",
+      "state": "joining",
+      "stateSince": "2026-10-01T11:59:00Z",
+      "kind": "appliance",
+      "vmid": 9301,
+      "agentAddress": "10.0.0.93",
+      "controller": false,
+      "statusAge": 4000000000,
+      "watchRunning": false,
+      "covered": false,
+      "replicaReady": false,
+      "verified": 0,
+      "failing": 0,
+      "belowMinimum": 0,
+      "pinned": 0,
+      "clockSkew": 300000000,
+      "joinUses": [
+        {
+          "at": "2026-10-01T11:58:00Z",
+          "source": "10.0.0.93",
+          "vmid": 9301,
+          "macs": [
+            "bc:24:11:00:93:01"
+          ]
+        }
+      ]
+    }
+  ]
+}

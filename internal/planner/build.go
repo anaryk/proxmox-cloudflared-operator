@@ -95,10 +95,14 @@ type IngressRule struct {
 // TunnelPlan is the desired ingress of the tunnel in one account. Rules end
 // with the sentinel and the catch-all.
 type TunnelPlan struct {
-	AccountID    string        `json:"accountId"`
-	CredentialID string        `json:"credentialId"`
-	Name         string        `json:"name"`
-	Rules        []IngressRule `json:"rules"`
+	AccountID    string `json:"accountId"`
+	CredentialID string `json:"credentialId"`
+	Name         string `json:"name"`
+	// Kind is empty for the shared tunnel of an account, and pinned for a
+	// tunnel that only the agent of Node runs.
+	Kind  string        `json:"kind,omitempty"`
+	Node  string        `json:"node,omitempty"`
+	Rules []IngressRule `json:"rules"`
 }
 
 // RecordPlan is a DNS record that points a hostname at a tunnel.

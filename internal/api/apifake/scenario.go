@@ -299,6 +299,10 @@ func sortState(st *engine.State) {
 	st.Actions, st.Conflicts, st.Lost = nonNil(st.Actions), nonNil(st.Conflicts), nonNil(st.Lost)
 	st.Problems, st.Waiting, st.Unapproved = nonNil(st.Problems), nonNil(st.Waiting), nonNil(st.Unapproved)
 	st.Segments, st.RogueConnectors = nonNil(st.Segments), nonNil(st.RogueConnectors)
+	st.Nodes = nonNil(st.Nodes)
+	for i := range st.Routes {
+		st.Routes[i].Replicas = nonNil(st.Routes[i].Replicas)
+	}
 }
 
 func nonNil[T any](s []T) []T {

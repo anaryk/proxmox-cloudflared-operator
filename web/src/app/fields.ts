@@ -38,6 +38,9 @@ export const fieldHomes: Readonly<Record<string, string>> = {
   rogueConnectors: 'Edge > Tunnels; the Edge counter',
   identity: 'Doctor: This install, the container the appliance was installed as and whether it is this one',
   epochDrawnAt: 'Doctor: This install, the epoch drawn after the container started',
+  lease: 'not shown yet: the banners of a controller that moved or is behind come with the pages of the cluster; pco status shows the holder',
+  nodes: 'not shown yet: the Nodes page comes with the pages of the cluster; empty on a single node',
+  cluster: 'not shown yet: the banners of coverage, upgrades and blocks come with the pages of the cluster; absent on a single node',
 }
 
 // homeless are the fields of names that have no home.

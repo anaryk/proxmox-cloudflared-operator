@@ -73,6 +73,7 @@ func TestFirstCycleObservesAndWritesNothing(t *testing.T) {
 		Account:    testAccount,
 		Rule:       &planner.IngressRule{Hostname: "www.example.com", Service: "http://10.0.0.11:8080"},
 		Path:       &PathView{Node: testNode, MAC: testMAC, VerifiedAt: t0, Addr: guestAddr, Via: ViaDirect},
+		Replicas:   []ReplicaView{},
 	}, route(st, "www.example.com"))
 	require.Equal(t, []TunnelView{{TunnelState: reconcile.TunnelState{AccountID: testAccount, CredentialID: testCred, Name: tunnelName}}}, st.Tunnels)
 	require.Empty(t, e.conn.ensures(), "observe mode starts no connector")

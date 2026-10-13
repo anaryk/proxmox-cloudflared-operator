@@ -22,6 +22,25 @@ export interface Action {
   held?: string
 }
 
+// agentproto.AgentView
+export interface AgentView {
+  node: string
+  kind: string
+  controller?: string
+  silentFor: number
+  epoch: Epoch
+  seq: number
+  seqAge: number
+  connectors: number
+  egressTargets: number
+  stoodDown?: string
+  certFingerprint?: string
+  certExpires?: string
+  readyReplicas?: Record<string, number>
+  heartbeatAge: number
+  problems: string[]
+}
+
 // engine.AnnotationView
 export interface AnnotationView {
   ref: string
@@ -76,6 +95,27 @@ export interface AttachmentView {
   grantCmd?: string
 }
 
+// engine.BlockView
+export interface BlockView {
+  address: string
+  guest: string
+  mac?: string
+  node: string
+  port: string
+  since?: string
+  lastReport?: string
+}
+
+// engine.CARotationView
+export interface CARotationView {
+  node: string
+  startedAt?: string
+  done?: string[]
+  next?: string
+  finishedAt?: string
+  refused?: string[]
+}
+
 // resolve.CandidateResult
 export interface CandidateResult {
   addr: string
@@ -122,6 +162,27 @@ export interface ClusterSettings {
   admissionMaxMoves?: number
 }
 
+// engine.ClusterStatus
+export interface ClusterStatus {
+  lease?: LeaseView
+  cluster: ClusterView
+  nodes: NodeView[]
+}
+
+// engine.ClusterView
+export interface ClusterView {
+  controller: string
+  generation: number
+  members: string[]
+  quorate: boolean
+  quorumDevice: boolean
+  overrides?: string[]
+  coverage: CoverageView
+  upgrade?: UpgradeView
+  caRotation?: CARotationView
+  blocks?: BlockView[]
+}
+
 // reconcile.Conflict
 export interface Conflict {
   zone: string
@@ -143,6 +204,15 @@ export interface ConnectorStatus {
   metricsPortHeld?: boolean
 }
 
+// engine.CoverageView
+export interface CoverageView {
+  covered: boolean
+  since?: string
+  promoteAt?: string
+  uncovered?: string[]
+  flapping?: string[]
+}
+
 // engine.CredentialView
 export interface CredentialView {
   id: string
@@ -158,6 +228,13 @@ export interface DHCPView {
   since?: string
   unknown: number
   forged: number
+}
+
+// engine.DifferenceView
+export interface DifferenceView {
+  subject: string
+  store: string
+  reported: string
 }
 
 // wire.DoctorCounts
@@ -178,6 +255,13 @@ export interface Edge {
 export interface EgressView {
   state: string
   since?: string
+}
+
+// agentproto.Epoch
+export interface Epoch {
+  installId: string
+  generation: number
+  nonce: string
 }
 
 // api.ErrorBody
@@ -202,6 +286,8 @@ export interface Event {
   tunnel?: string
   account?: string
   actor?: string
+  node?: string
+  security?: boolean
 }
 
 // credentials.Exclusion
@@ -228,6 +314,13 @@ export interface Finding {
   fix?: string
 }
 
+// engine.FinishUpgradeResult
+export interface FinishUpgradeResult {
+  from: string
+  schema: number
+  backup: string
+}
+
 // store.FirewallBefore
 export interface FirewallBefore {
   enabled: boolean
@@ -245,6 +338,15 @@ export interface ForeignView {
   mac: string
   action: string
   why: string
+}
+
+// engine.ForgetResult
+export interface ForgetResult {
+  node: string
+  compromised: boolean
+  done: string[]
+  pending?: string[]
+  notRotated?: string[]
 }
 
 // engine.GapNotice
@@ -280,6 +382,13 @@ export interface GuestView {
   kind: string
   vmid: number
   name?: string
+}
+
+// engine.HandoffResult
+export interface HandoffResult {
+  from: string
+  to?: string
+  until: string
 }
 
 // engine.Hello
@@ -320,6 +429,37 @@ export interface Issue {
   line?: number
   col?: number
   msg: string
+}
+
+// engine.JoinTokenView
+export interface JoinTokenView {
+  id: string
+  node: string
+  expires: string
+  token: string
+}
+
+// engine.JoinUseView
+export interface JoinUseView {
+  at: string
+  source?: string
+  vmid?: number
+  macs?: string[]
+}
+
+// engine.LeaseView
+export interface LeaseView {
+  holder: string
+  address?: string
+  previous?: string
+  generation: number
+  nonce?: string
+  acquiredAt?: string
+  refreshAge: number
+  valid: boolean
+  fenced?: string
+  behind?: string
+  handoff?: string
 }
 
 // engine.LegView
@@ -392,6 +532,14 @@ export interface ManualTarget {
   port: number
 }
 
+// engine.MoveView
+export interface MoveView {
+  from: string
+  to: string
+  step: string
+  since?: string
+}
+
 // engine.NetworkView
 export interface NetworkView {
   id: string
@@ -413,6 +561,33 @@ export interface NetworkView {
   routes: number
 }
 
+// engine.NodeView
+export interface NodeView {
+  name: string
+  state: string
+  stateSince?: string
+  drained?: string
+  kind: string
+  vmid?: number
+  index?: number
+  agentAddress?: string
+  controller: boolean
+  build?: string
+  protocol?: string
+  statusAge: number
+  watchRunning: boolean
+  covered: boolean
+  replicaReady: boolean
+  verified: number
+  failing: number
+  belowMinimum: number
+  pinned: number
+  certExpires?: string
+  clockSkew: number
+  joinUses?: JoinUseView[]
+  contested?: JoinUseView[]
+}
+
 // engine.PathView
 export interface PathView {
   node: string
@@ -426,6 +601,33 @@ export interface PathView {
   via?: string
   service?: string
   leg?: string
+}
+
+// engine.PlacementView
+export interface PlacementView {
+  tunnel: string
+  kind: string
+  node?: string
+  why?: string
+  move?: MoveView
+}
+
+// engine.PromoteResult
+export interface PromoteResult {
+  differences: DifferenceView[]
+  drawn: boolean
+  generation?: number
+  nonce?: string
+}
+
+// engine.ReplicaView
+export interface ReplicaView {
+  node: string
+  level?: string
+  attested?: boolean
+  ok: boolean
+  reason?: string
+  inSet: boolean
 }
 
 // credentials.Report
@@ -507,6 +709,8 @@ export interface RouteView {
   accountId?: string
   rule?: IngressRule
   path?: PathView
+  replicas: ReplicaView[]
+  placement?: PlacementView
 }
 
 // engine.SegmentView
@@ -595,6 +799,9 @@ export interface State {
   rogueConnectors: RogueConnector[]
   identity?: IdentityView
   epochDrawnAt?: string
+  lease?: LeaseView
+  nodes: NodeView[]
+  cluster?: ClusterView
 }
 
 // engine.StateNotice
@@ -675,6 +882,8 @@ export interface TunnelView {
   accountId: string
   credentialId: string
   name: string
+  kind?: string
+  node?: string
   id?: string
   version: number
   exists: boolean
@@ -704,6 +913,19 @@ export interface Unauthenticated {
   methods: string[]
   ticket: boolean
   realms?: string[]
+}
+
+// engine.UninstallResult
+export interface UninstallResult {
+  clean: string[]
+  left?: string[]
+}
+
+// engine.UpgradeView
+export interface UpgradeView {
+  from: string
+  since?: string
+  older?: string[]
 }
 
 // wire.Upstream
@@ -805,4 +1027,7 @@ export const stateFields: readonly string[] = [
   "rogueConnectors",
   "identity",
   "epochDrawnAt",
+  "lease",
+  "nodes",
+  "cluster",
 ]

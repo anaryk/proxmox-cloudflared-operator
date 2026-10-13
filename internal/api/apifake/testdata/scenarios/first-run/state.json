@@ -1,5 +1,5 @@
 {
-  "digest": "0237f300c3ed4d2b",
+  "digest": "f081adb807e47bfa",
   "mode": "observe",
   "complete": false,
   "routes": [],
@@ -36,5 +36,6 @@
     }
   },
   "gateTagged": 0,
-  "rogueConnectors": []
+  "rogueConnectors": [],
+  "nodes": []
 }

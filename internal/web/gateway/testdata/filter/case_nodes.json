@@ -1,0 +1,7 @@
+{
+  "nodes": [
+    {"name": "pve1", "state": "active", "kind": "host", "index": 0, "agentAddress": "10.10.0.1", "controller": true, "build": "1.4.0", "protocol": "1", "statusAge": 0, "watchRunning": true, "covered": true, "replicaReady": true, "verified": 4, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0},
+    {"name": "pve2", "state": "contested", "kind": "appliance", "vmid": 9302, "index": 1, "controller": false, "statusAge": 0, "watchRunning": false, "covered": false, "replicaReady": false, "verified": 0, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0},
+    {"name": "pve3", "state": "joining", "kind": "appliance", "vmid": 9303, "controller": false, "statusAge": 0, "watchRunning": false, "covered": false, "replicaReady": false, "verified": 0, "failing": 0, "belowMinimum": 0, "pinned": 0, "clockSkew": 0}
+  ]
+}

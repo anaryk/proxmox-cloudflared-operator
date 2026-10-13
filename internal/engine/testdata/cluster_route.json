@@ -1,0 +1,66 @@
+{
+  "hostname": "www.example.com",
+  "owner": "qemu/101",
+  "state": "active",
+  "level": "port",
+  "service": "http://10.0.0.11:8080",
+  "zone": "example.com",
+  "warnings": [
+    "a warning"
+  ],
+  "guest": {
+    "kind": "qemu",
+    "vmid": 101,
+    "name": "web-1"
+  },
+  "candidates": [
+    {
+      "addr": "10.0.0.11",
+      "source": "static",
+      "ok": true,
+      "level": "port"
+    }
+  ],
+  "accountId": "acc1",
+  "rule": {
+    "hostname": "www.example.com",
+    "service": "http://10.0.0.11:8080",
+    "httpHostHeader": "intranet"
+  },
+  "path": {
+    "node": "pve1",
+    "bridge": "vmbr0",
+    "vlan": 20,
+    "port": "tap101i0",
+    "mac": "bc:24:11:5e:7a:01",
+    "verifiedAt": "2026-10-01T12:00:00Z",
+    "since": "2026-09-30T08:00:00Z",
+    "addr": "10.0.0.11",
+    "via": "direct"
+  },
+  "replicas": [
+    {
+      "node": "pve1",
+      "level": "port",
+      "ok": true,
+      "inSet": true
+    },
+    {
+      "node": "pve2",
+      "level": "port",
+      "attested": true,
+      "ok": true,
+      "inSet": true
+    }
+  ],
+  "placement": {
+    "tunnel": "pco-abc123",
+    "kind": "shared",
+    "move": {
+      "from": "pco-abc123-pve2",
+      "to": "pco-abc123",
+      "step": "switch",
+      "since": "2026-10-01T12:00:00Z"
+    }
+  }
+}

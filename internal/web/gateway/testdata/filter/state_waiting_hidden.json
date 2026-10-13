@@ -8,7 +8,8 @@
       "hostname": "www.example.com",
       "owner": "qemu/101",
       "state": "active",
-      "guest": {"kind": "qemu", "vmid": 101, "name": "vm-101"}
+      "guest": {"kind": "qemu", "vmid": 101, "name": "vm-101"},
+      "replicas": null
     }
   ],
   "issues": [],
@@ -37,5 +38,6 @@
     "vnet": {"ok": false, "zoneType": "", "isolatePorts": false, "subnets": 0}
   },
   "gateTagged": 0,
-  "rogueConnectors": null
+  "rogueConnectors": null,
+  "nodes": []
 }

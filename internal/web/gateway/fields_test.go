@@ -63,6 +63,10 @@ var fieldTables = []struct {
 	{reflect.TypeFor[engine.ApprovalView](), approvalFields},
 	{reflect.TypeFor[engine.GuestListView](), guestFields},
 	{reflect.TypeFor[engine.RouteTraffic](), routeTrafficFields},
+	{reflect.TypeFor[engine.LeaseView](), leaseFields},
+	{reflect.TypeFor[engine.NodeView](), nodeFields},
+	{reflect.TypeFor[engine.ClusterView](), clusterFields},
+	{reflect.TypeFor[engine.BlockView](), blockFields},
 }
 
 func TestEveryFieldHasADecision(t *testing.T) {
@@ -111,7 +115,7 @@ func TestDecisionsNameTheirCases(t *testing.T) {
 			require.Contains(t, []action{keep, remove}, d.action, "%s: a field of an entry of a list goes with its entry", field)
 		}
 	}
-	for _, m := range []map[string]decision{identityFields, claimFields, routeTrafficFields} {
+	for _, m := range []map[string]decision{identityFields, claimFields, routeTrafficFields, leaseFields, nodeFields, clusterFields, blockFields} {
 		for field, d := range m {
 			if d.action != keep {
 				require.NotEmpty(t, d.by, "%s says what filters it", field)
@@ -120,6 +124,13 @@ func TestDecisionsNameTheirCases(t *testing.T) {
 	}
 	for _, field := range []string{"copies", "tenants"} {
 		require.True(t, cases[identityFields[field].by], "%s is filtered by a case of the state", field)
+	}
+	for _, m := range []map[string]decision{nodeFields, clusterFields, blockFields} {
+		for field, d := range m {
+			if d.action != keep {
+				require.True(t, cases[d.by], "%s is filtered by a case of the state", field)
+			}
+		}
 	}
 }
 

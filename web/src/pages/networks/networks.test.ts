@@ -5,7 +5,7 @@ import { guestsOf, levelsOf, networksOf } from './networks'
 
 const path = (bridge: string | undefined, vlan?: number): PathView => ({ node: 'pve1', bridge, vlan, verifiedAt: '2026-10-01T12:00:00Z' })
 
-const route = (hostname: string, owner: string, patch: Partial<RouteView> = {}): RouteView => ({ hostname, owner, state: 'active', level: 'port', ...patch })
+const route = (hostname: string, owner: string, patch: Partial<RouteView> = {}): RouteView => ({ hostname, owner, state: 'active', level: 'port', replicas: [], ...patch })
 
 const guest = (vmid: number, name?: string) => ({ kind: 'qemu', vmid, name })
 

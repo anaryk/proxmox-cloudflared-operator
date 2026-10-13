@@ -71,6 +71,7 @@ export function scaled(o: ScaleOptions): State {
       guest: { kind: 'qemu', vmid, name: `app-${vmid}` },
       candidates: [{ addr, source: 'static', ok: state === 'active', level: 'port' }],
       path: { node: 'pve1', bridge: vmid % 4 === 3 ? 'vmbr1' : 'vmbr0', ...(vmid % 4 === 3 ? { vlan: 20 } : {}), port: `tap${vmid}i0`, verifiedAt: '2026-10-01T12:00:00Z' },
+      replicas: [],
     }
     if (state !== 'no-zone') {
       r.zone = zone?.name

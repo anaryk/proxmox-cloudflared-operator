@@ -33,5 +33,6 @@
     }
   },
   "gateTagged": 0,
-  "rogueConnectors": []
+  "rogueConnectors": [],
+  "nodes": []
 }

@@ -45,7 +45,11 @@ type TunnelState struct {
 	AccountID    string `json:"accountId"`
 	CredentialID string `json:"credentialId"`
 	Name         string `json:"name"`
-	ID           string `json:"id,omitempty"` // empty while the tunnel is not known to exist
+	// Kind and Node are those of the plan: empty for the shared tunnel,
+	// pinned and the node's name for a tunnel pinned to a node.
+	Kind string `json:"kind,omitempty"`
+	Node string `json:"node,omitempty"`
+	ID   string `json:"id,omitempty"` // empty while the tunnel is not known to exist
 
 	// Version is the version of the configuration. Without a write it is the
 	// version read. After a write it is the version read back when the

@@ -530,9 +530,9 @@ describe('sign-in and sign-out', () => {
 })
 
 test('shareRoutes keeps the objects whose JSON is equal', () => {
-  const a = { hostname: 'a.example.com', owner: 'qemu/1', state: 'active' }
-  const b = { hostname: 'b.example.com', owner: 'qemu/2', state: 'active' }
-  const out = shareRoutes([a, b], [{ ...a }, { ...b, state: 'held' }, { hostname: 'c.example.com', owner: 'qemu/3', state: 'active' }])
+  const a = { hostname: 'a.example.com', owner: 'qemu/1', state: 'active', replicas: [] }
+  const b = { hostname: 'b.example.com', owner: 'qemu/2', state: 'active', replicas: [] }
+  const out = shareRoutes([a, b], [{ ...a }, { ...b, state: 'held' }, { hostname: 'c.example.com', owner: 'qemu/3', state: 'active', replicas: [] }])
   expect(out[0]).toBe(a)
   expect(out[1]).not.toBe(b)
   expect(out).toHaveLength(3)

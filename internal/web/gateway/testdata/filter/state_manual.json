@@ -4,8 +4,8 @@
   "mode": "enforce",
   "complete": true,
   "routes": [
-    {"hostname": "api.example.com", "owner": "manual/api", "state": "active"},
-    {"hostname": "status.example.com", "owner": "manual/status", "state": "active"}
+    {"hostname": "api.example.com", "owner": "manual/api", "state": "active", "replicas": null},
+    {"hostname": "status.example.com", "owner": "manual/status", "state": "active", "replicas": null}
   ],
   "issues": [],
   "tunnels": null,
@@ -37,5 +37,6 @@
     "vnet": {"ok": false, "zoneType": "", "isolatePorts": false, "subnets": 0}
   },
   "gateTagged": 0,
-  "rogueConnectors": null
+  "rogueConnectors": null,
+  "nodes": []
 }

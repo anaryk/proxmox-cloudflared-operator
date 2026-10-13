@@ -1,0 +1,62 @@
+{
+  "event": {
+    "seq": 3,
+    "level": "info",
+    "kind": "lease",
+    "subject": "pve1",
+    "message": "acquired generation 7",
+    "node": "pve1",
+    "security": true
+  },
+  "finishUpgrade": {
+    "from": "1.3.2",
+    "schema": 3,
+    "backup": "/var/lib/pco/backup/3-20261001T120000Z"
+  },
+  "forget": {
+    "node": "pve3",
+    "compromised": true,
+    "done": [
+      "removed",
+      "connections closed"
+    ],
+    "pending": [
+      "rotate the CA"
+    ],
+    "notRotated": [
+      "the corosync authkey"
+    ]
+  },
+  "handoff": {
+    "from": "pve1",
+    "to": "pve2",
+    "until": "2026-10-01T12:00:30Z"
+  },
+  "joinToken": {
+    "id": "jt1",
+    "node": "pve3",
+    "expires": "2026-10-01T12:15:00Z",
+    "token": "pco1.eyJ2IjoxfQ"
+  },
+  "promote": {
+    "differences": [
+      {
+        "subject": "node pve2",
+        "store": "active",
+        "reported": "absent"
+      }
+    ],
+    "drawn": true,
+    "generation": 8,
+    "nonce": "p2q7"
+  },
+  "uninstall": {
+    "clean": [
+      "pve1",
+      "pve2"
+    ],
+    "left": [
+      "pve3: pco uninstall"
+    ]
+  }
+}

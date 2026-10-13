@@ -415,5 +415,6 @@
   },
   "admission": "approve",
   "gateTagged": 3,
-  "rogueConnectors": []
+  "rogueConnectors": [],
+  "nodes": []
 }

@@ -52,6 +52,7 @@ test.describe('a new install with a token', () => {
     guest: { kind: 'qemu', vmid: 140, name: 'docs' },
     state,
     ...(reason ? { reason } : {}),
+    replicas: [],
     zone: 'example.com',
     accountId: 'acc1',
     ...(state === 'active' ? { service: 'http://10.0.0.140:8080', level: 'port' } : {}),

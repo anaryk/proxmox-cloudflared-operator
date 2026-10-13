@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
@@ -49,6 +50,14 @@ func typeRoots() []reflect.Type {
 		reflect.TypeFor[engine.ManualRouteView](),
 		reflect.TypeFor[engine.GuestListView](),
 		reflect.TypeFor[engine.AnnotationView](),
+		reflect.TypeFor[engine.ClusterStatus](),
+		reflect.TypeFor[engine.JoinTokenView](),
+		reflect.TypeFor[engine.HandoffResult](),
+		reflect.TypeFor[engine.FinishUpgradeResult](),
+		reflect.TypeFor[engine.ForgetResult](),
+		reflect.TypeFor[engine.PromoteResult](),
+		reflect.TypeFor[engine.UninstallResult](),
+		reflect.TypeFor[agentproto.AgentView](),
 		reflect.TypeFor[doctor.Step](),
 		reflect.TypeFor[doctor.Finding](),
 		reflect.TypeFor[api.ErrorBody](),

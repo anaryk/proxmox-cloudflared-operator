@@ -68,6 +68,11 @@ type Event struct {
 	Account string `json:"account,omitempty"`
 	// Actor is who asked for an admin action, as the API was told.
 	Actor string `json:"actor,omitempty"`
+	// Node is the node whose agent made the event, in the merged log of a
+	// cluster; Security marks an event of the audit trail, which the node
+	// that acted also writes to its journal.
+	Node     string `json:"node,omitempty"`
+	Security bool   `json:"security,omitempty"`
 }
 
 // eventLog keeps the last maxEvents events in memory, appends every event to

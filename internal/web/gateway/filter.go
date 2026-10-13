@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -78,6 +79,12 @@ var stateCases = []stateCase{
 	{"managed", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
 		st.Managed = managedFor(st.Managed, visible)
 	}},
+	{"nodes", func(st *engine.State, _ auth.Visible, _ map[string]bool) {
+		st.Nodes = nodesFor(st.Nodes)
+	}},
+	{"cluster", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
+		st.Cluster = clusterFor(st.Cluster, visible)
+	}},
 	{"problems", func(st *engine.State, _ auth.Visible, _ map[string]bool) {
 		st.Problems = only(st.Problems, func(string) bool { return true })
 		for i, line := range st.Problems {
@@ -86,6 +93,38 @@ var stateCases = []stateCase{
 			}
 		}
 	}},
+}
+
+// nodesFor are the nodes as a reader sees them: without the uses of their
+// join tokens, which name the sources and containers of joins, and without
+// the address of an appliance agent, which is a container's.
+func nodesFor(nodes []engine.NodeView) []engine.NodeView {
+	out := only(nodes, func(engine.NodeView) bool { return true })
+	for i := range out {
+		n := &out[i]
+		n.JoinUses, n.Contested = nil, nil
+		if n.Kind != "host" {
+			n.AgentAddress = netip.Addr{}
+		}
+	}
+	return out
+}
+
+// clusterFor is the cluster as a reader who sees visible sees it: the
+// blocks of those guests only, without their MACs and the ports they were
+// seen on, which are other guests'.
+func clusterFor(c *engine.ClusterView, visible auth.Visible) *engine.ClusterView {
+	if c == nil {
+		return nil
+	}
+	v := *c
+	if c.Blocks != nil {
+		v.Blocks = only(c.Blocks, func(b engine.BlockView) bool { return ownerVisible(b.Guest, visible) && !manual(b.Guest) })
+	}
+	for i := range v.Blocks {
+		v.Blocks[i].MAC, v.Blocks[i].Port = "", ""
+	}
+	return &v
 }
 
 // managedLine says that a problem line is one of the managed network's that
@@ -215,11 +254,15 @@ func keepEvent(ev engine.Event, visible auth.Visible, hosts map[string]bool) boo
 }
 
 // FilterEvents are the events a reader gets of evs, a new list. An event of
-// the managed network loses the MACs its text names: a card's, or the leg's.
+// the managed network loses the MACs its text names, a card's or the leg's,
+// and so does one of an attestation or a placement, which names the MAC a
+// node's watch saw. The events of enrolment are an admin's: they name the
+// sources and the containers of joins.
 func FilterEvents(evs []engine.Event, visible auth.Visible, hosts map[string]bool) []engine.Event {
-	out := only(evs, func(ev engine.Event) bool { return keepEvent(ev, visible, hosts) })
+	out := only(evs, func(ev engine.Event) bool { return ev.Kind != "enrol" && keepEvent(ev, visible, hosts) })
 	for i := range out {
-		if out[i].Kind == "managed" {
+		switch out[i].Kind {
+		case "managed", "attestation", "placement":
 			out[i].Message = redactMACs(out[i].Message)
 		}
 	}

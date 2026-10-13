@@ -234,6 +234,7 @@ export const firstRoute: RouteView = {
   accountId: account,
   service: 'http://10.0.0.140:8080',
   level: 'port',
+  replicas: [],
 }
 
 export const firstActions: State['actions'] = [

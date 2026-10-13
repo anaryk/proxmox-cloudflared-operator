@@ -45,7 +45,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.11",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "zabbix.example.com",
@@ -83,7 +84,8 @@
         "via": "attach:vmbr2",
         "service": "198.18.1.5",
         "leg": "up"
-      }
+      },
+      "replicas": []
     }
   ],
   "issues": [
@@ -650,5 +652,6 @@
       "version": "2026.8.0",
       "since": "2026-10-01T11:58:00Z"
     }
-  ]
+  ],
+  "nodes": []
 }

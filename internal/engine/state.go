@@ -51,6 +51,11 @@ type RouteView struct {
 	// and has a binding; nil for one that lost it and for a manual route
 	// without a guest.
 	Path *PathView `json:"path,omitempty"`
+	// Replicas are how the target fares on each replica of the route's
+	// tunnel, by node; [] on a single node. Placement is the tunnel the
+	// route is placed on in a cluster; nil on a single node.
+	Replicas  []ReplicaView  `json:"replicas"`
+	Placement *PlacementView `json:"placement,omitempty"`
 }
 
 // TunnelView is a tunnel of the install as the last cycle found it, or, when
@@ -174,6 +179,14 @@ type State struct {
 	// EpochDrawnAt is when this process drew a new epoch after a container
 	// start; zero when it kept the stored one.
 	EpochDrawnAt time.Time `json:"epochDrawnAt,omitzero"`
+	// Lease is the lease of the host profile; nil in the appliance and
+	// before the daemon has read it.
+	Lease *LeaseView `json:"lease,omitempty"`
+	// Nodes are the nodes of the registry, by name; [] until a cycle has
+	// read it.
+	Nodes []NodeView `json:"nodes"`
+	// Cluster is the cluster as the controller found it; nil until then.
+	Cluster *ClusterView `json:"cluster,omitempty"`
 }
 
 // IdentityView is the self-identification of the appliance as a cycle found
@@ -247,6 +260,8 @@ func (s State) clone() State {
 			copied := *p
 			s.Routes[i].Path = &copied
 		}
+		s.Routes[i].Replicas = slices.Clone(s.Routes[i].Replicas)
+		s.Routes[i].Placement = s.Routes[i].Placement.clone()
 	}
 	s.Issues = slices.Clone(s.Issues)
 	s.Tunnels = slices.Clone(s.Tunnels)
@@ -281,6 +296,7 @@ func (s State) clone() State {
 		copied.Copies, copied.Tenants, copied.Exposed = slices.Clone(id.Copies), slices.Clone(id.Tenants), slices.Clone(id.Exposed)
 		s.Identity = &copied
 	}
+	s.Lease, s.Nodes, s.Cluster = s.Lease.clone(), cloneNodes(s.Nodes), s.Cluster.clone()
 	return s
 }
 
@@ -336,6 +352,7 @@ func (s State) normalized() State {
 	s.Segments = nonNil(s.Segments)
 	s.Networks = nonNil(s.Networks)
 	s.Managed = s.Managed.normalized()
+	s.normalizedCluster()
 	return s
 }
 

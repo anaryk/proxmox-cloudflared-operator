@@ -175,3 +175,19 @@ func TestNICLeasedJSON(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(data), "leased", "a card without a lease says nothing of one")
 }
+
+// A guest's lock is written only while Proxmox shows one, so that a guest
+// without one reads as before.
+func TestTheLockOfAGuestIsWrittenOnlyWhenSet(t *testing.T) {
+	g := Guest{Ref: GuestRef{Kind: KindQEMU, VMID: 101}, Name: "web-1", Node: "pve1"}
+	data, err := json.Marshal(g)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"lock"`)
+
+	g.Lock = "migrate"
+	data, err = json.Marshal(g)
+	require.NoError(t, err)
+	var back Guest
+	require.NoError(t, json.Unmarshal(data, &back))
+	require.Equal(t, "migrate", back.Lock)
+}

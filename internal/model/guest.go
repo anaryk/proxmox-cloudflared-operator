@@ -85,6 +85,9 @@ type Guest struct {
 	Identity    string         `json:"identity"`
 	NICs        []NIC          `json:"nics,omitempty"`
 	Reported    []ReportedAddr `json:"reported,omitempty"`
+	// Lock is the lock Proxmox shows on the guest, as migrate while it
+	// moves to another node; empty without one.
+	Lock string `json:"lock,omitempty"`
 	// StatusUnknown is set when Proxmox reports neither running nor stopped
 	// and no state was ever read for this guest. Running is then false, but
 	// only because nothing is known.

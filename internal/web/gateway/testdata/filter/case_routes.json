@@ -5,7 +5,8 @@
       "owner": "qemu/102",
       "state": "conflict",
       "reason": "hostname is held by qemu/101",
-      "guest": {"kind": "qemu", "vmid": 102, "name": "web-2"}
+      "guest": {"kind": "qemu", "vmid": 102, "name": "web-2"},
+      "replicas": []
     }
   ]
 }

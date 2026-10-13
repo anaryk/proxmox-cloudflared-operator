@@ -72,6 +72,49 @@ var stateFields = map[string]decision{
 	// the foreign cards, each by guest; the MACs, identities and pveum lines
 	// are an admin's.
 	"managed": filteredBy("managed"),
+	// The lease names nodes, their addresses and the epoch: the cluster's.
+	"lease": kept,
+	// The nodes are the cluster's, but the uses of a join token name the
+	// sources and containers of the joins, and an appliance agent's address
+	// is that of a guest.
+	"nodes": filteredBy("nodes"),
+	// The cluster is its own, but a block names a guest and its MAC.
+	"cluster": filteredBy("cluster"),
+}
+
+// leaseFields are the fields of the lease, which a reader gets whole.
+var leaseFields = map[string]decision{
+	"holder": kept, "address": kept, "previous": kept, "generation": kept, "nonce": kept, "acquiredAt": kept,
+	"refreshAge": kept, "valid": kept, "fenced": kept, "behind": kept, "handoff": kept,
+}
+
+// nodeFields are the fields of a node: a reader gets every node, without
+// what the enrolment of an appliance agent says of its container.
+var nodeFields = map[string]decision{
+	"name": kept, "state": kept, "stateSince": kept, "drained": kept, "kind": kept, "vmid": kept, "index": kept,
+	"controller": kept, "build": kept, "protocol": kept, "statusAge": kept, "watchRunning": kept, "covered": kept,
+	"replicaReady": kept, "verified": kept, "failing": kept, "belowMinimum": kept, "pinned": kept,
+	"certExpires": kept, "clockSkew": kept,
+	"agentAddress": filteredBy("nodes"), // a host's stays; an appliance agent's is a container's
+	"joinUses":     removedBy("nodes"),
+	"contested":    removedBy("nodes"),
+}
+
+// clusterFields are the fields of the cluster: the blocks are those of the
+// guests a reader sees.
+var clusterFields = map[string]decision{
+	"controller": kept, "generation": kept, "members": kept, "quorate": kept, "quorumDevice": kept,
+	"overrides": kept, "coverage": kept, "upgrade": kept, "caRotation": kept,
+	"blocks": filteredBy("cluster"),
+}
+
+// blockFields are the fields of a block: a reader gets one of a guest it
+// sees, without the MAC and without the port it was seen on, which is
+// another guest's.
+var blockFields = map[string]decision{
+	"address": kept, "guest": kept, "node": kept, "since": kept, "lastReport": kept,
+	"mac":  removedBy("cluster"),
+	"port": removedBy("cluster"),
 }
 
 // routeFields are the fields of a route of the state: a reader gets a route
@@ -80,6 +123,7 @@ var stateFields = map[string]decision{
 var routeFields = map[string]decision{
 	"hostname": kept, "owner": kept, "state": kept, "level": kept, "reason": kept, "service": kept,
 	"zone": kept, "warnings": kept, "guest": kept, "candidates": kept, "accountId": kept, "rule": kept, "path": kept,
+	"replicas": kept, "placement": kept,
 }
 
 // unapprovedFields are the fields of a guest that waits for approval: a

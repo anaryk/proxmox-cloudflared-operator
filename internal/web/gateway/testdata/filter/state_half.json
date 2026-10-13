@@ -20,7 +20,8 @@
       ],
       "accountId": "acc1",
       "rule": {"hostname": "www.example.com", "service": "http://10.0.0.11:8080", "httpHostHeader": "intranet"},
-      "path": {"node": "pve1", "bridge": "vmbr0", "vlan": 20, "port": "tap101i0", "mac": "bc:24:11:5e:7a:01", "verifiedAt": "2026-10-01T12:00:00Z", "since": "2026-09-30T08:00:00Z", "addr": "10.0.0.11", "via": "direct"}
+      "path": {"node": "pve1", "bridge": "vmbr0", "vlan": 20, "port": "tap101i0", "mac": "bc:24:11:5e:7a:01", "verifiedAt": "2026-10-01T12:00:00Z", "since": "2026-09-30T08:00:00Z", "addr": "10.0.0.11", "via": "direct"},
+      "replicas": []
     }
   ],
   "issues": [
@@ -216,5 +217,6 @@
   "gateTagged": 2,
   "rogueConnectors": [
     {"tunnel": "pco-abc123", "tunnelId": "00000000-0000-4000-8000-000000000001", "accountId": "acc1", "id": "0d5e9a77-3b1c-4f2e-8a6d-5c4b3a291807", "originIp": "198.51.100.7", "version": "2026.8.0", "since": "2026-10-01T11:59:00Z"}
-  ]
+  ],
+  "nodes": []
 }

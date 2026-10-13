@@ -8,7 +8,7 @@ import { fakeStore, memoryStorage } from '../../test/store'
 import { NetworksPage } from './NetworksPage'
 
 const base = populated as unknown as State
-const manual: RouteView = { hostname: 'status.example.com', owner: 'manual/status', state: 'active', level: 'manual', service: 'http://10.0.5.20:9000', zone: 'example.com' }
+const manual: RouteView = { hostname: 'status.example.com', owner: 'manual/status', state: 'active', level: 'manual', service: 'http://10.0.5.20:9000', zone: 'example.com', replicas: [] }
 
 // The populated state has a route of qemu/101 proven on vmbr0 with the tag 20,
 // one that lost its hostname and one of qemu/107 reached through the leg of an

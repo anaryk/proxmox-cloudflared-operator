@@ -2,7 +2,7 @@
   "at": "2026-10-01T12:00:00Z",
   "finishedAt": "2026-10-01T12:00:02Z",
   "node": "pve1",
-  "digest": "b6f66f6fbba9387e",
+  "digest": "e88f5c0c0ab68feb",
   "mode": "enforce",
   "complete": true,
   "routes": [
@@ -16,7 +16,8 @@
         "kind": "lxc",
         "vmid": 210,
         "name": "store"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "app.example.com",
@@ -53,7 +54,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.11",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "db-admin.example.com",
@@ -88,7 +90,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.14",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "git.example.com",
@@ -125,7 +128,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.30",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "grafana.example.com",
@@ -161,7 +165,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.20",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "media.example.io",
@@ -172,7 +177,8 @@
         "kind": "qemu",
         "vmid": 130,
         "name": "jellyfin"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "monitor.example.com",
@@ -207,7 +213,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.15",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "notes.example.info",
@@ -243,7 +250,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.20.51",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "old.example.com",
@@ -260,7 +268,8 @@
       "rule": {
         "hostname": "old.example.com",
         "service": "http_status:503"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "status.example.com",
@@ -272,7 +281,8 @@
       "rule": {
         "hostname": "status.example.com",
         "service": "http://10.0.5.20:9000"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "store.example.com",
@@ -308,7 +318,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.40",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "vpn.example.com",
@@ -344,7 +355,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.60",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "wiki.example.org",
@@ -355,7 +367,8 @@
         "kind": "lxc",
         "vmid": 220,
         "name": "wiki"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "www.example.com",
@@ -396,7 +409,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.11",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "www.example.com",
@@ -407,7 +421,8 @@
         "kind": "qemu",
         "vmid": 102,
         "name": "web-2"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "www.store.example.com",
@@ -443,7 +458,8 @@
         "since": "2026-09-30T08:00:00Z",
         "addr": "10.0.0.40",
         "via": "direct"
-      }
+      },
+      "replicas": []
     },
     {
       "hostname": "zabbix.example.com",
@@ -481,7 +497,8 @@
         "via": "attach:vmbr2",
         "service": "198.18.1.5",
         "leg": "up"
-      }
+      },
+      "replicas": []
     }
   ],
   "issues": [
@@ -1060,5 +1077,6 @@
       "version": "2025.11.1",
       "since": "2026-10-01T08:59:00Z"
     }
-  ]
+  ],
+  "nodes": []
 }

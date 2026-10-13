@@ -70,6 +70,7 @@ func (s State) digestView() State {
 	if v.Managed.DHCP != nil {
 		v.Managed.DHCP.Since = time.Time{}
 	}
+	v.clusterWithoutTimes()
 	return v
 }
 
