@@ -380,6 +380,34 @@ func TestTheClientAppliesTheDesiredStateAndReports(t *testing.T) {
 	})
 }
 
+// A status the controller refuses as too large is said in the view, so that
+// an admin sees why the controller hears nothing of the node, until a status
+// goes through.
+func TestAStatusRefusedAsTooLargeIsSaid(t *testing.T) {
+	ce, srv := oneController(t, pki.KindHost)
+	srv.ctrl.publish(ce.desired())
+	ce.c.statusEvery = 5 * time.Second // the status that goes through waits for the trigger below
+	ce.run(t)
+	require.Eventually(t, func() bool { return ce.agent.Status(t.Context()).SeqApplied == 1 && len(srv.ctrl.reported()) > 0 }, waitFor, tick)
+	big := strings.Repeat("x", 16*1024)
+	for range 80 {
+		ce.log.Add(Event{At: time.Now(), Level: levelInfo, Kind: kindNode, Subject: testNode, Message: big})
+	}
+	refused := func(p string) bool {
+		return strings.HasPrefix(p, "the controller refused the last status as too large (80 events")
+	}
+
+	ce.c.Trigger()
+
+	require.Eventually(t, func() bool { return slices.ContainsFunc(ce.c.View().Problems, refused) }, waitFor, tick)
+
+	t.Run("and no more once a status goes through", func(t *testing.T) {
+		ce.c.Trigger()
+		require.Eventually(t, func() bool { return !slices.ContainsFunc(ce.c.View().Problems, refused) }, waitFor, tick)
+		require.NotEmpty(t, srv.ctrl.reported())
+	})
+}
+
 func TestADefinitiveRefusalStandsTheAgentDownOnce(t *testing.T) {
 	ce, srv := oneController(t, pki.KindHost)
 	srv.ctrl.publish(ce.desired())

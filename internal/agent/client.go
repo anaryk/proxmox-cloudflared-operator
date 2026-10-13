@@ -497,7 +497,8 @@ func (s *session) send(ctx context.Context) error {
 		} else {
 			s.c.d.Events.Skip(st.EventCursor)
 		}
-		s.c.a.d.Log.Warn().Int("events", len(st.Events)).Int("resend", st.Resend).Msg("the controller refused a status as too large; its events were given up")
+		s.c.note(fmt.Sprintf("the controller refused the last status as too large (%d events, a resend of %d); its events were given up, "+
+			"and what this node reports reaches the controller again with the next status it takes", len(st.Events), st.Resend))
 		return nil
 	}
 	return answerError("sending the status", resp)
