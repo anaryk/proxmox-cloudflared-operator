@@ -6,7 +6,9 @@ through a port of the gateway's own otherwise, which is seen on the LAN of a bri
 physical uplink while it probes. Without `--prefix` the prefix is the one most guest addresses
 seen there are in, a /24 around them; without `--address` it is the highest address of the
 prefix that no guest is known to have. `--address` may carry the length of the prefix, as
-10.77.0.250/24. The command exits with 1 when something answered.
+10.77.0.250/24. The appliance probes a bridge only through the card of a network attached
+there; before that it says so, and the leg checks its address when it is raised. The command
+exits with 1 when something answered or the address was not probed.
 
 With `--json` the answer of the daemon is printed as the daemon sent it, re-indented, with
 control and bidirectional characters escaped.

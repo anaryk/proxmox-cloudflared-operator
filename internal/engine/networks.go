@@ -113,6 +113,10 @@ type ProbeResult struct {
 	// Overlap names the route of the node the prefix overlaps, which an
 	// attach refuses without overlapOK.
 	Overlap string `json:"overlap,omitempty"`
+	// NotProbed says why the address was not probed: the appliance has no
+	// card on a bridge before the network there is attached. Free is false
+	// then, and an attach is not refused for it.
+	NotProbed string `json:"notProbed,omitempty"`
 }
 
 // AttachRequest is a network to attach: a bridge and VLAN, the prefix of the
@@ -539,6 +543,18 @@ func (f networkFacts) refusal(c CandidateNetwork) string {
 	return ""
 }
 
+// notProbed is why the appliance did not probe an address, with the segment
+// and the address.
+const notProbed = "the appliance has no network card on %s before the network is attached; " +
+	"the leg checks %s when it is raised and keeps it off if anyone answers"
+
+// canProbe says whether an address on the candidate can be probed before an
+// attach: the host probes through a port of its own, the appliance only
+// through the card of a network attached there already.
+func (f networkFacts) canProbe(c CandidateNetwork) bool {
+	return !f.appliance || c.Attached != ""
+}
+
 // freeSlot says whether the appliance has a card index of net1 to net9 free,
 // which a new leg takes; one that is not listed is taken to have one.
 func (f networkFacts) freeSlot() bool {
@@ -756,6 +772,10 @@ func (e *Engine) ProbeNetwork(ctx context.Context, r ProbeRequest) (ProbeResult,
 		res.Warning = fmt.Sprintf(uplinkWarning, c.Bridge)
 	}
 	res.Overlap = f.overlap(res.Prefix, seg)
+	if !f.canProbe(c) {
+		res.NotProbed = fmt.Sprintf(notProbed, seg, res.Address)
+		return res, nil
+	}
 	answers, err := e.probe(ctx, seg, res.Address)
 	if err != nil {
 		return ProbeResult{}, err
@@ -928,12 +948,14 @@ func (e *Engine) attachable(ctx context.Context, f networkFacts, c CandidateNetw
 	if who, ok := f.taken(c)[r.Address]; ok {
 		return store.Network{}, fieldError("address", "%s is %s", r.Address, cmp.Or(who, "an address of the node"))
 	}
-	answers, err := e.probe(ctx, seg, r.Address)
-	if err != nil {
-		return store.Network{}, err
-	}
-	if len(answers) > 0 {
-		return store.Network{}, fieldError("address", "%s is in use on %s: %s answered", r.Address, seg, strings.Join(answers, ", "))
+	if f.canProbe(c) {
+		answers, err := e.probe(ctx, seg, r.Address)
+		if err != nil {
+			return store.Network{}, err
+		}
+		if len(answers) > 0 {
+			return store.Network{}, fieldError("address", "%s is in use on %s: %s answered", r.Address, seg, strings.Join(answers, ", "))
+		}
 	}
 	mark, err := e.freeMark(f.nets)
 	if err != nil {

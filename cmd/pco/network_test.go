@@ -276,6 +276,34 @@ func TestNetworkAttachOfAnAddressInUse(t *testing.T) {
 	require.Len(t, e.called(), 1)
 }
 
+// The appliance cannot probe a bridge it has no card on yet: the probe says
+// so and exits 1, and the attach goes on to the question, as the leg checks
+// its address when it is raised.
+func TestNetworkAttachOfABridgeTheApplianceCannotProbe(t *testing.T) {
+	const why = "the appliance has no network card on pcot1 before the network is attached; " +
+		"the leg checks 10.77.0.250 when it is raised and keeps it off if anyone answers"
+	const shown = "10.77.0.250 on pcot1, in 10.77.0.0/24, is not probed: " + why + ".\n"
+	unprobed := func(e *fakeEngine) {
+		e.probe = engine.ProbeResult{AnsweredBy: []string{}, NotProbed: why}
+	}
+
+	r, e := daemonWithNetworks(t)
+	unprobed(e)
+	res := r.run("", "network", "probe", "pcot1", "--address", "10.77.0.250/24")
+	require.ErrorIs(t, res.err, errReported, "not known to be free: exit 1")
+	require.Equal(t, shown, res.out)
+
+	r, e = daemonWithNetworks(t)
+	unprobed(e)
+	res = r.run("", "network", "attach", "pcot1", "--address", "10.77.0.250/24", "--yes")
+	require.NoError(t, res.err)
+	require.Equal(t, []string{
+		"probe pcot1:0 prefix=10.77.0.0/24 address=10.77.0.250",
+		"attach pcot1:0 prefix=10.77.0.0/24 address=10.77.0.250 confirmUplink=false overlapOK=false",
+	}, e.called())
+	require.True(t, strings.HasPrefix(res.out, shown), res.out)
+}
+
 func TestNetworkAttachNeedsTheAddressWithItsLength(t *testing.T) {
 	r, e := daemonWithNetworks(t)
 

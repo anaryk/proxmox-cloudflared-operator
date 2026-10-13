@@ -189,7 +189,9 @@ func (a *app) networkProbeCmd() *cobra.Command {
 			"physical uplink while it probes. Without --prefix the prefix is the one most guest addresses\n" +
 			"seen there are in, a /24 around them; without --address it is the highest address of the\n" +
 			"prefix that no guest is known to have. --address may carry the length of the prefix, as\n" +
-			"10.77.0.250/24. The command exits with 1 when something answered.\n\n" + jsonHelp + "\n\n" + askHelp,
+			"10.77.0.250/24. The appliance probes a bridge only through the card of a network attached\n" +
+			"there; before that it says so, and the leg checks its address when it is raised. The command\n" +
+			"exits with 1 when something answered or the address was not probed.\n\n" + jsonHelp + "\n\n" + askHelp,
 		Example: "  # Propose a free address on vmbr1\n" +
 			"  pco network probe vmbr1\n\n" +
 			"  # Is 10.20.0.250 free on VLAN 20 of vmbr2?\n" +
@@ -265,9 +267,12 @@ func probeRequest(seg resolve.Segment, addr, prefix string) (engine.ProbeRequest
 // the node the prefix overlaps.
 func printProbe(s *screen, r engine.ProbeResult) {
 	seg := resolve.Segment{Bridge: r.Bridge, VLAN: r.VLAN}
-	if r.Free {
+	switch {
+	case r.NotProbed != "":
+		s.printf("%s on %s, in %s, is not probed: %s.\n", r.Address, seg, r.Prefix, r.NotProbed)
+	case r.Free:
 		s.printf("%s on %s, in %s, is free: nothing answered the probe.\n", r.Address, seg, r.Prefix)
-	} else {
+	default:
 		s.printf("%s on %s, in %s, is in use: %s answered the probe.\n", r.Address, seg, r.Prefix, strings.Join(r.AnsweredBy, ", "))
 	}
 	if r.Note != "" {
@@ -293,7 +298,9 @@ func (a *app) networkAttachCmd() *cobra.Command {
 		Long: "Attach the network of a bridge or VLAN the node has no address in: a leg of pco's own with\n" +
 			"the address --address gives, with the length of the guests' prefix, which nobody may hold.\n" +
 			"The address is probed first and the result shown, then the question asked; a script passes\n" +
-			"--yes. A bridge with a physical uplink needs --confirm-uplink: the leg's MAC becomes visible\n" +
+			"--yes. The appliance cannot probe a bridge before its card is there: it says so, and the leg\n" +
+			"checks its address when the next cycle raises it and keeps it off if anyone answers. A\n" +
+			"bridge with a physical uplink needs --confirm-uplink: the leg's MAC becomes visible\n" +
 			"on that LAN, so the address has to be one reserved for pco there. A prefix that overlaps a\n" +
 			"route of the node on another interface is refused unless --overlap-ok says that the guests\n" +
 			"there are meant to be reached through the leg; the network records it. The first network\n" +
@@ -332,7 +339,7 @@ func (a *app) networkAttachCmd() *cobra.Command {
 				return err
 			}
 			switch {
-			case !res.Free:
+			case !res.Free && res.NotProbed == "":
 				return fmt.Errorf("%s is in use on %s; choose another address, which pco network probe %s proposes", req.Address, seg, args[0])
 			case res.Uplink && !confirmUplink:
 				return fmt.Errorf("%s has a physical uplink: %s; %s", seg, res.Warning, engine.UplinkHint)

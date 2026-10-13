@@ -908,3 +908,37 @@ func TestTheManagedSubnetIsNotCheckedAgainstAnIncompleteInventory(t *testing.T) 
 	require.EqualError(t, err, "refused: the inventory is incomplete (node pve1: the network could not be read), "+
 		"so managed.subnet cannot be checked against the routes of the nodes and the addresses of the guests; try again once it is complete")
 }
+
+// The appliance has no card on a bridge before the network there is
+// attached, so it cannot probe it: the probe says so instead of failing,
+// the attach runs without one, and the leg checks its address when it is
+// raised. A network attached already is probed through its leg.
+func TestTheApplianceAttachesWithoutAProbe(t *testing.T) {
+	e := newNetEnv(t)
+	require.NoError(t, e.store.SaveInstall(applianceInstall()))
+	saveNetwork(t, e.store, "vmbr3", 1)
+	e.nets.config = append(e.nets.config, pve.NodeIface{Name: "vmbr3", Type: "bridge"})
+
+	res, err := e.eng.ProbeNetwork(t.Context(), ProbeRequest{Bridge: "vmbr1"})
+
+	require.NoError(t, err)
+	require.False(t, res.Free)
+	require.Empty(t, res.AnsweredBy)
+	require.Equal(t, "the appliance has no network card on vmbr1 before the network is attached; "+
+		"the leg checks 10.77.0.254 when it is raised and keeps it off if anyone answers", res.NotProbed)
+	require.Empty(t, e.gw.probed())
+
+	v, err := e.eng.Attach(t.Context(), attachVmbr1())
+
+	require.NoError(t, err)
+	require.Equal(t, "vmbr1", v.ID)
+	require.Empty(t, e.gw.probed(), "no card on vmbr1 to probe through")
+
+	res, err = e.eng.ProbeNetwork(t.Context(), ProbeRequest{Bridge: "vmbr3", Prefix: netip.MustParsePrefix("10.50.0.0/24"),
+		Address: netip.MustParseAddr("10.50.0.9")})
+
+	require.NoError(t, err)
+	require.True(t, res.Free)
+	require.Empty(t, res.NotProbed)
+	require.Equal(t, []string{"vmbr3 0 10.50.0.9"}, e.gw.probed(), "an attached network is probed through its leg")
+}

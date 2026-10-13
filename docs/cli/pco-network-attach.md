@@ -3,7 +3,9 @@
 Attach the network of a bridge or VLAN the node has no address in: a leg of pco's own with
 the address `--address` gives, with the length of the guests' prefix, which nobody may hold.
 The address is probed first and the result shown, then the question asked; a script passes
-`--yes`. A bridge with a physical uplink needs `--confirm-uplink`: the leg's MAC becomes visible
+`--yes`. The appliance cannot probe a bridge before its card is there: it says so, and the leg
+checks its address when the next cycle raises it and keeps it off if anyone answers. A
+bridge with a physical uplink needs `--confirm-uplink`: the leg's MAC becomes visible
 on that LAN, so the address has to be one reserved for pco there. A prefix that overlaps a
 route of the node on another interface is refused unless `--overlap-ok` says that the guests
 there are meant to be reached through the leg; the network records it. The first network
