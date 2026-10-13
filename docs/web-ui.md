@@ -677,14 +677,14 @@ whole. pco web filters what the daemon answers before it reaches the reader's br
 
 | What | A reader gets |
 |---|---|
-| Routes | those of guests it sees, and every manual route |
+| Routes | those of guests it sees, and every manual route; what their replicas and placement say loses the MACs and the ports of guests it names |
 | Guests that wait for approval, approvals, the guest list, the Notes of a guest | those of guests it sees; the page of another guest is not found |
 | Issues | those in the Notes of guests it sees, and every issue of the settings |
 | The appliance's identity | its container and node, whether it proved to be it, and the principals that can reach into it, as an admin sees them; of its copies and tenants, the guests that carry a MAC of the appliance, those it sees; why the proof failed, as free text |
 | Pending actions, records in the way, names that lost the marker | those of the hostnames of routes it sees, and every action on a tunnel |
 | What waits for a confirmation, and its offer | nothing: a reader cannot confirm |
 | Claims | those whose holder it sees, with the owners it sees that wait; a claim whose holder it does not see is not there at all, also when its own guest waits for that hostname: the route's state, `conflict`, still shows it |
-| Events | those of guests and routes it sees, and those about neither |
+| Events | those of guests and routes it sees, and those about neither, without the admin who acted and the account; never one of the audit trail, of an enrolment, an attestation, a placement or a block, which the replicas and the placement of a route sum up |
 | Traffic | the trunk of every tunnel, and the figures of the routes it sees; `shared by` counts only those |
 | A diagnosis | only of a hostname whose holder is a guest it sees, or a manual route; otherwise as if there were no route |
 | The doctor | the counts of its checks |

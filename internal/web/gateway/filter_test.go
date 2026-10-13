@@ -41,6 +41,7 @@ var caseRows = map[string]caseRow{
 	"networks":   {state: populated, visible: sees(101), fields: []string{"networks"}},
 	"managed":    {state: populated, visible: sees(201, 204, 205), fields: []string{"managed"}},
 	"problems":   {state: withManagedProblems, visible: sees(), fields: []string{"problems"}},
+	"lease":      {state: withCluster, visible: sees(101), fields: []string{"lease"}},
 	"nodes":      {state: withCluster, visible: sees(101), fields: []string{"nodes"}},
 	"cluster":    {state: withCluster, visible: sees(101), fields: []string{"cluster"}},
 }

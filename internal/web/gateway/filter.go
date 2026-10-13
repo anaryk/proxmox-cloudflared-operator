@@ -35,6 +35,12 @@ type stateCase struct {
 var stateCases = []stateCase{
 	{"routes", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
 		st.Routes = only(st.Routes, func(r engine.RouteView) bool { return ownerVisible(r.Owner, visible) })
+		for i := range st.Routes {
+			routeFor(&st.Routes[i])
+		}
+	}},
+	{"lease", func(st *engine.State, _ auth.Visible, _ map[string]bool) {
+		st.Lease = copied(st.Lease, leaseFields)
 	}},
 	{"issues", func(st *engine.State, visible auth.Visible, _ map[string]bool) {
 		st.Issues = only(st.Issues, func(i planner.Issue) bool { return i.Guest == (model.GuestRef{}) || visible(i.Guest) })
@@ -102,7 +108,7 @@ func nodesFor(nodes []engine.NodeView) []engine.NodeView {
 	out := only(nodes, func(engine.NodeView) bool { return true })
 	for i := range out {
 		n := &out[i]
-		n.JoinUses, n.Contested = nil, nil
+		cleared(n, nodeFields)
 		if n.Kind != "host" {
 			n.AgentAddress = netip.Addr{}
 		}
@@ -118,13 +124,51 @@ func clusterFor(c *engine.ClusterView, visible auth.Visible) *engine.ClusterView
 		return nil
 	}
 	v := *c
+	cleared(&v, clusterFields)
 	if c.Blocks != nil {
 		v.Blocks = only(c.Blocks, func(b engine.BlockView) bool { return ownerVisible(b.Guest, visible) && !manual(b.Guest) })
 	}
 	for i := range v.Blocks {
-		v.Blocks[i].MAC, v.Blocks[i].Port = "", ""
+		cleared(&v.Blocks[i], blockFields)
 	}
+	cleared(&v.Coverage, coverageFields)
+	v.Upgrade = copied(v.Upgrade, upgradeFields)
+	v.CARotation = copied(v.CARotation, caRotationFields)
 	return &v
+}
+
+// routeFor makes a route of the state what a reader gets of it, in place:
+// the route is a copy, but its replicas and placement are still the
+// state's, and are copied before they change. Their text loses the MACs and
+// the ports of guests a node's watch saw.
+func routeFor(r *engine.RouteView) {
+	cleared(r, routeFields)
+	if r.Replicas != nil {
+		r.Replicas = only(r.Replicas, func(engine.ReplicaView) bool { return true })
+	}
+	for i := range r.Replicas {
+		p := &r.Replicas[i]
+		cleared(p, replicaFields)
+		p.Reason = redactMACsAndPorts(p.Reason)
+	}
+	r.Placement = copied(r.Placement, placementFields)
+	if r.Placement != nil {
+		r.Placement.Why = redactMACsAndPorts(r.Placement.Why)
+		r.Placement.Move = copied(r.Placement.Move, moveFields)
+		if r.Placement.Move != nil {
+			r.Placement.Move.Step = redactMACsAndPorts(r.Placement.Move.Step)
+		}
+	}
+}
+
+// copied is a copy of what v points to, cleared by decided; nil for nil.
+func copied[T any](v *T, decided map[string]decision) *T {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	cleared(&c, decided)
+	return &c
 }
 
 // managedLine says that a problem line is one of the managed network's that
@@ -149,6 +193,18 @@ var macPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(:[0-9a-f]{2}){5}\b`)
 // redactMACs takes every MAC out of free text: the reason of a foreign card
 // names the MAC of the leg, and an error of the configurer may name one.
 func redactMACs(s string) string { return macPattern.ReplaceAllString(s, "a MAC") }
+
+// portPattern is the name of a port of a guest on a node, as Proxmox names
+// them: the tap of a VM, the veth of a container and the links of the
+// firewall bridge, with the VMID after the prefix, and a VLAN after a dot.
+var portPattern = regexp.MustCompile(`\b(?:tap|veth|fwpr|fwbr|fwln)[0-9][0-9a-z]*(?:\.[0-9]+)?\b`)
+
+// redactMACsAndPorts takes every MAC and every port of a guest out of free
+// text: what a node's watch saw names the MAC of one guest and the port of
+// another it was seen on.
+func redactMACsAndPorts(s string) string {
+	return portPattern.ReplaceAllString(redactMACs(s), "a port")
+}
 
 // managedFor is the managed network as a reader sees it: the cards, the
 // waiting guests and the foreign cards of the guests it may audit, without
@@ -253,17 +309,42 @@ func keepEvent(ev engine.Event, visible auth.Visible, hosts map[string]bool) boo
 	return true
 }
 
-// FilterEvents are the events a reader gets of evs, a new list. An event of
-// the managed network loses the MACs its text names, a card's or the leg's,
-// and so does one of an attestation or a placement, which names the MAC a
-// node's watch saw. The events of enrolment are an admin's: they name the
-// sources and the containers of joins.
+// adminKinds are the kinds of event no reader gets whatever they are about:
+// enrolment names the sources and the containers of joins, and an
+// attestation, a placement or a block what a node's watch saw of other
+// guests. The replicas and the placement of a route say what a reader needs
+// of the last three.
+var adminKinds = map[string]bool{"enrol": true, "attestation": true, "placement": true, "block": true}
+
+// readerKeeps says whether a reader gets an event: never one of the audit
+// trail, whatever its kind, nor one of adminKinds; the others by what they
+// are about.
+func readerKeeps(ev engine.Event, visible auth.Visible, hosts map[string]bool) bool {
+	return !ev.Security && !adminKinds[ev.Kind] && keepEvent(ev, visible, hosts)
+}
+
+// readerEvent is what a reader gets of an event, and whether it gets it: a
+// copy without the admin who acted and the account, with the MACs and the
+// ports of guests that the text of an event of the managed network names
+// taken out.
+func readerEvent(ev engine.Event, visible auth.Visible, hosts map[string]bool) (engine.Event, bool) {
+	if !readerKeeps(ev, visible, hosts) {
+		return engine.Event{}, false
+	}
+	ev.Actor, ev.Account = "", ""
+	if ev.Kind == "managed" {
+		ev.Message = redactMACsAndPorts(ev.Message)
+	}
+	return ev, true
+}
+
+// FilterEvents are the events a reader gets of evs, each as readerEvent
+// makes it, a new list.
 func FilterEvents(evs []engine.Event, visible auth.Visible, hosts map[string]bool) []engine.Event {
-	out := only(evs, func(ev engine.Event) bool { return ev.Kind != "enrol" && keepEvent(ev, visible, hosts) })
-	for i := range out {
-		switch out[i].Kind {
-		case "managed", "attestation", "placement":
-			out[i].Message = redactMACs(out[i].Message)
+	out := make([]engine.Event, 0, len(evs))
+	for _, ev := range evs {
+		if ev, ok := readerEvent(ev, visible, hosts); ok {
+			out = append(out, ev)
 		}
 	}
 	return out
@@ -487,7 +568,7 @@ func readerGap(g engine.GapNotice, in []engine.Event, known bool, visible auth.V
 	}
 	var out *engine.GapNotice
 	for _, ev := range in {
-		if ev.Seq >= g.From && ev.Seq <= g.To && keepEvent(ev, visible, hosts) {
+		if ev.Seq >= g.From && ev.Seq <= g.To && readerKeeps(ev, visible, hosts) {
 			out = joined(out, gapOf(ev))
 		}
 	}

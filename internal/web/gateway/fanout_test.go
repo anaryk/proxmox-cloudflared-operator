@@ -225,6 +225,47 @@ func TestAResumeBeforeTheRingIsAGap(t *testing.T) {
 	sr.quiet()
 }
 
+// A reader's stream holds what the events answer holds: no event of the
+// audit trail, of an attestation or of a placement, and of the others
+// neither the admin who acted nor a MAC or a port. A gap counts none of
+// them. An admin's stream carries them as they are.
+func TestAReadersStreamHoldsNoEventOfTheAuditTrail(t *testing.T) {
+	s := newTestServer(t)
+	s.daemon.stream.setHello(engine.Hello{Boot: bootA, Version: "v1.3.0", Seq: 12, Digest: "5e0c1f7a92b4d3e8", PollInterval: "10s"})
+	s.daemon.serveState(populated(t))
+	conn := s.connect()
+	srv := s.streamServer()
+	s.pve.sees(reader, 101)
+	bob := s.signIn(reader).openStream(srv, "")
+	alice := s.signIn(admin).openStream(srv, "")
+	bob.take(2)
+	alice.take(2)
+
+	audit := engine.Event{Seq: 13, Boot: bootA, At: t0, Level: "error", Kind: "rotation", Subject: "ca", Message: "the CA was rotated", Security: true}
+	attestation := engine.Event{Seq: 14, Boot: bootA, At: t0, Level: "warn", Kind: "attestation", Subject: "www.example.com", Guest: "qemu/101", Message: "seen on tap140i0"}
+	managed := engine.Event{Seq: 15, Boot: bootA, At: t0, Level: "info", Kind: "managed", Subject: "qemu/101", Guest: "qemu/101",
+		Message: "card bc:24:11:5e:7a:01 on veth140i0", Actor: "alice@pve (ticket)", Account: "acc1"}
+	s.daemon.serveEvents([]engine.Event{{Seq: 16, Boot: bootA, At: t0, Level: "error", Kind: "lease", Subject: "pve1", Message: "lost", Security: true}})
+	for _, m := range []string{
+		eventMessage(audit), eventMessage(attestation), eventMessage(managed),
+		gapMessage(engine.GapNotice{Boot: bootA, From: 16, To: 16, Count: 1, Level: "error"}),
+		eventMessage(engine.Event{Seq: 17, Boot: bootA, At: t0, Level: "warn", Kind: "problem", Message: "a problem"}),
+	} {
+		conn.send <- m
+	}
+
+	got := bob.next()
+	require.Equal(t, bootA+":15", got.id)
+	require.JSONEq(t, `{"seq":15,"boot":"`+bootA+`","at":"2026-10-01T12:00:00Z","level":"info","kind":"managed","subject":"qemu/101","message":"card a MAC on a port","guest":"qemu/101"}`, got.data)
+	require.Equal(t, bootA+":17", bob.next().id, "the gap of an event of the audit trail is none of the reader's")
+
+	for _, want := range []uint64{13, 14, 15} {
+		m := alice.next()
+		require.Equal(t, fmt.Sprintf("%s:%d", bootA, want), m.id)
+	}
+	bob.quiet()
+}
+
 func TestAMalformedLastEventIDIsRefused(t *testing.T) {
 	s := newTestServer(t)
 	srv := s.streamServer()

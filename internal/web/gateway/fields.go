@@ -1,5 +1,10 @@
 package gateway
 
+import (
+	"reflect"
+	"strings"
+)
+
 // action is what a reader gets of a field.
 type action int
 
@@ -20,6 +25,44 @@ var kept = decision{action: keep}
 
 func filteredBy(name string) decision { return decision{action: filter, by: name} }
 func removedBy(name string) decision  { return decision{action: remove, by: name} }
+
+// cleared zeroes every field of the struct v points to that a reader does
+// not get by decided: those removed, and those without a decision, so that
+// a field added to a view reaches no reader before it is given one. A
+// filtered field is left to the code of its case.
+func cleared[T any](v *T, decided map[string]decision) {
+	clearFields(reflect.ValueOf(v).Elem(), decided)
+}
+
+func clearFields(v reflect.Value, decided map[string]decision) {
+	for i := range v.NumField() {
+		f := v.Type().Field(i)
+		name, ok := jsonName(f)
+		if !ok {
+			continue
+		}
+		if tag, _, _ := strings.Cut(f.Tag.Get("json"), ","); f.Anonymous && tag == "" && f.Type.Kind() == reflect.Struct {
+			clearFields(v.Field(i), decided) // encoding/json inlines its fields
+			continue
+		}
+		if d, ok := decided[name]; !ok || d.action == remove {
+			v.Field(i).SetZero()
+		}
+	}
+}
+
+// jsonName is the name encoding/json gives a field; false for a field it
+// leaves out.
+func jsonName(f reflect.StructField) (string, bool) {
+	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	switch {
+	case name == "-" || !f.IsExported():
+		return "", false
+	case name == "":
+		return f.Name, true
+	}
+	return name, true
+}
 
 // stateFields is the decision for every field of engine.State, by its JSON
 // name: a reader sees what belongs to the guests it may audit and the
@@ -73,7 +116,8 @@ var stateFields = map[string]decision{
 	// are an admin's.
 	"managed": filteredBy("managed"),
 	// The lease names nodes, their addresses and the epoch: the cluster's.
-	"lease": kept,
+	// Its nonce fences the writes of the holder, and is not a reader's.
+	"lease": filteredBy("lease"),
 	// The nodes are the cluster's, but the uses of a join token name the
 	// sources and containers of the joins, and an appliance agent's address
 	// is that of a guest.
@@ -82,10 +126,12 @@ var stateFields = map[string]decision{
 	"cluster": filteredBy("cluster"),
 }
 
-// leaseFields are the fields of the lease, which a reader gets whole.
+// leaseFields are the fields of the lease: a reader gets it without the
+// nonce.
 var leaseFields = map[string]decision{
-	"holder": kept, "address": kept, "previous": kept, "generation": kept, "nonce": kept, "acquiredAt": kept,
+	"holder": kept, "address": kept, "previous": kept, "generation": kept, "acquiredAt": kept,
 	"refreshAge": kept, "valid": kept, "fenced": kept, "behind": kept, "handoff": kept,
+	"nonce": removedBy("lease"),
 }
 
 // nodeFields are the fields of a node: a reader gets every node, without
@@ -104,9 +150,24 @@ var nodeFields = map[string]decision{
 // guests a reader sees.
 var clusterFields = map[string]decision{
 	"controller": kept, "generation": kept, "members": kept, "quorate": kept, "quorumDevice": kept,
-	"overrides": kept, "coverage": kept, "upgrade": kept, "caRotation": kept,
-	"blocks": filteredBy("cluster"),
+	"overrides": kept,
+	"blocks":    filteredBy("cluster"),
+	// Each by its own table below.
+	"coverage": filteredBy("cluster"), "upgrade": filteredBy("cluster"), "caRotation": filteredBy("cluster"),
 }
+
+// coverageFields, upgradeFields and caRotationFields are the fields of the
+// coverage, of an upgrade and of a rotation of the CA: the cluster's, by
+// node.
+var (
+	coverageFields = map[string]decision{
+		"covered": kept, "since": kept, "promoteAt": kept, "uncovered": kept, "flapping": kept,
+	}
+	upgradeFields    = map[string]decision{"from": kept, "since": kept, "older": kept}
+	caRotationFields = map[string]decision{
+		"node": kept, "startedAt": kept, "done": kept, "next": kept, "finishedAt": kept, "refused": kept,
+	}
+)
 
 // blockFields are the fields of a block: a reader gets one of a guest it
 // sees, without the MAC and without the port it was seen on, which is
@@ -119,12 +180,28 @@ var blockFields = map[string]decision{
 
 // routeFields are the fields of a route of the state: a reader gets a route
 // whole, or not at all. reason is free text that may name the holder of a
-// hostname, as the routes table shows it to an admin.
+// hostname, as the routes table shows it to an admin. The replicas and the
+// placement say what a node's watch saw: their text loses the MACs and the
+// ports of guests it names.
 var routeFields = map[string]decision{
 	"hostname": kept, "owner": kept, "state": kept, "level": kept, "reason": kept, "service": kept,
 	"zone": kept, "warnings": kept, "guest": kept, "candidates": kept, "accountId": kept, "rule": kept, "path": kept,
-	"replicas": kept, "placement": kept,
+	"replicas": filteredBy("routes"), "placement": filteredBy("routes"),
 }
+
+// replicaFields, placementFields and moveFields are the fields of a route's
+// replica, placement and move, filtered with the route.
+var (
+	replicaFields = map[string]decision{
+		"node": kept, "level": kept, "attested": kept, "ok": kept, "inSet": kept,
+		"reason": filteredBy("routes"),
+	}
+	placementFields = map[string]decision{
+		"tunnel": kept, "kind": kept, "node": kept,
+		"why": filteredBy("routes"), "move": filteredBy("routes"),
+	}
+	moveFields = map[string]decision{"from": kept, "to": kept, "since": kept, "step": filteredBy("routes")}
+)
 
 // unapprovedFields are the fields of a guest that waits for approval: a
 // reader gets it whole, when it sees the guest.

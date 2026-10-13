@@ -67,6 +67,12 @@ var fieldTables = []struct {
 	{reflect.TypeFor[engine.NodeView](), nodeFields},
 	{reflect.TypeFor[engine.ClusterView](), clusterFields},
 	{reflect.TypeFor[engine.BlockView](), blockFields},
+	{reflect.TypeFor[engine.CoverageView](), coverageFields},
+	{reflect.TypeFor[engine.UpgradeView](), upgradeFields},
+	{reflect.TypeFor[engine.CARotationView](), caRotationFields},
+	{reflect.TypeFor[engine.ReplicaView](), replicaFields},
+	{reflect.TypeFor[engine.PlacementView](), placementFields},
+	{reflect.TypeFor[engine.MoveView](), moveFields},
 }
 
 func TestEveryFieldHasADecision(t *testing.T) {
@@ -110,12 +116,15 @@ func TestDecisionsNameTheirCases(t *testing.T) {
 	for name := range cases {
 		require.True(t, named[name], "the case %s filters no field", name)
 	}
-	for _, m := range []map[string]decision{routeFields, unapprovedFields, waitingFields, claimantFields, approvalFields, guestFields} {
+	for _, m := range []map[string]decision{unapprovedFields, waitingFields, claimantFields, approvalFields, guestFields} {
 		for field, d := range m {
 			require.Contains(t, []action{keep, remove}, d.action, "%s: a field of an entry of a list goes with its entry", field)
 		}
 	}
-	for _, m := range []map[string]decision{identityFields, claimFields, routeTrafficFields, leaseFields, nodeFields, clusterFields, blockFields} {
+	for field, d := range routeFields {
+		require.True(t, d.action == keep || d.by == "routes", "%s: a field of a route goes with its route, or the case of the routes filters it", field)
+	}
+	for _, m := range []map[string]decision{identityFields, claimFields, routeTrafficFields} {
 		for field, d := range m {
 			if d.action != keep {
 				require.NotEmpty(t, d.by, "%s says what filters it", field)
@@ -125,7 +134,7 @@ func TestDecisionsNameTheirCases(t *testing.T) {
 	for _, field := range []string{"copies", "tenants"} {
 		require.True(t, cases[identityFields[field].by], "%s is filtered by a case of the state", field)
 	}
-	for _, m := range []map[string]decision{nodeFields, clusterFields, blockFields} {
+	for _, m := range clusterTables {
 		for field, d := range m {
 			if d.action != keep {
 				require.True(t, cases[d.by], "%s is filtered by a case of the state", field)
@@ -173,4 +182,67 @@ func fieldsOf(t *testing.T, st engine.State) map[string]json.RawMessage {
 	var m map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(data, &m))
 	return m
+}
+
+// clusterTables are the tables of the views of the cluster and of what a
+// route says of its replicas and placement, which the filters go by.
+var clusterTables = []map[string]decision{
+	leaseFields, nodeFields, clusterFields, blockFields, coverageFields, upgradeFields, caRotationFields,
+	replicaFields, placementFields, moveFields,
+}
+
+// A field of a view that has no decision is cleared for a reader, as a
+// removed one is: the filters go by the tables, so a field the daemon adds
+// reaches no reader before it is given a decision.
+func TestAFieldWithoutADecisionIsCleared(t *testing.T) {
+	type view struct {
+		Kept    string `json:"kept"`
+		Removed string `json:"removed"`
+		Later   string `json:"later"`
+		Hidden  string `json:"-"`
+	}
+	v := view{Kept: "a", Removed: "b", Later: "c", Hidden: "d"}
+	cleared(&v, map[string]decision{"kept": kept, "removed": removedBy("nodes")})
+	require.Equal(t, view{Kept: "a", Hidden: "d"}, v)
+}
+
+// What the tables of the views of the cluster say is what the filter does,
+// field by field: kept as it is, removed to nothing.
+func TestTheClusterFiltersDoWhatTheirTablesSay(t *testing.T) {
+	in := withCluster(t)
+	in.Routes[0].Placement = &engine.PlacementView{Tunnel: "pco-abc123-pve2", Kind: engine.TunnelPinned, Node: "pve2", Why: "pinned",
+		Move: &engine.MoveView{From: "pco-abc123", To: "pco-abc123-pve2", Step: "dns", Since: t0}}
+	in.Cluster.Upgrade = &engine.UpgradeView{From: "1.3.0", Since: t0, Older: []string{"pve3"}}
+	in.Cluster.CARotation = &engine.CARotationView{Node: "pve3", StartedAt: t0, Done: []string{"pve1"}, Next: "pve2"}
+	got := FilterState(in, sees(101))
+
+	check := func(want, have any, decided map[string]decision) {
+		t.Helper()
+		w, h := reflect.ValueOf(want), reflect.ValueOf(have)
+		for i := range w.NumField() {
+			name, ok := jsonName(w.Type().Field(i))
+			if !ok {
+				continue
+			}
+			switch decided[name].action {
+			case keep:
+				require.Equal(t, w.Field(i).Interface(), h.Field(i).Interface(), "%s.%s is kept", w.Type(), name)
+			case remove:
+				require.True(t, h.Field(i).IsZero(), "%s.%s is removed", w.Type(), name)
+			}
+		}
+	}
+	check(*in.Lease, *got.Lease, leaseFields)
+	for i := range in.Nodes {
+		check(in.Nodes[i], got.Nodes[i], nodeFields)
+	}
+	check(*in.Cluster, *got.Cluster, clusterFields)
+	check(in.Cluster.Blocks[0], got.Cluster.Blocks[0], blockFields)
+	check(in.Cluster.Coverage, got.Cluster.Coverage, coverageFields)
+	check(*in.Cluster.Upgrade, *got.Cluster.Upgrade, upgradeFields)
+	check(*in.Cluster.CARotation, *got.Cluster.CARotation, caRotationFields)
+	check(in.Routes[0], got.Routes[0], routeFields)
+	check(in.Routes[0].Replicas[0], got.Routes[0].Replicas[0], replicaFields)
+	check(*in.Routes[0].Placement, *got.Routes[0].Placement, placementFields)
+	check(*in.Routes[0].Placement.Move, *got.Routes[0].Placement.Move, moveFields)
 }

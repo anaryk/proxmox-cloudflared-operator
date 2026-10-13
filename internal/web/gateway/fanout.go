@@ -648,13 +648,18 @@ func (h *hub) broadcast(fn func(*stream) []queued) {
 }
 
 // render is what a stream gets of an item of the ring: an admin all of it,
-// a reader the event when it sees it, of a gap the events it sees.
+// a reader the event as the events answer gives it, of a gap the events it
+// sees.
 func (h *hub) render(it item, r *Reader) []queued {
 	if it.event != nil {
-		if r != nil && !keepEvent(*it.event, r.Visible, h.hostsFor(r)) {
+		if r == nil {
+			return []queued{eventQueued(it.event)}
+		}
+		ev, ok := readerEvent(*it.event, r.Visible, h.hostsFor(r))
+		if !ok {
 			return nil
 		}
-		return []queued{eventQueued(it.event)}
+		return []queued{eventQueued(&ev)}
 	}
 	if r == nil {
 		return []queued{gapQueued(it.gap)}
