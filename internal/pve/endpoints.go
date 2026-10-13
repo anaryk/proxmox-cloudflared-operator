@@ -40,6 +40,7 @@ func (c *Client) Resources(ctx context.Context) ([]Resource, error) {
 			Template: bool(row.Template),
 			Tags:     row.Tags,
 			Pool:     row.Pool,
+			Lock:     row.Lock,
 		})
 	}
 	return out, nil

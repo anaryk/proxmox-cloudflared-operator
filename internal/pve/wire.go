@@ -69,6 +69,7 @@ type resourceWire struct {
 	Template flexBool `json:"template"`
 	Tags     List     `json:"tags"`
 	Pool     string   `json:"pool"`
+	Lock     string   `json:"lock"`   // only while a lock is set
 	Uptime   *int64   `json:"uptime"` // seconds; absent while pvestatd does not report
 }
 

@@ -1,0 +1,36 @@
+{
+  "data": [
+    {
+      "id": "lxc/9411",
+      "type": "lxc",
+      "vmid": 9411,
+      "name": "pco-lab-ct",
+      "node": "pco-lab-1",
+      "status": "running",
+      "template": 0,
+      "lock": "backup",
+      "uptime": 1174
+    },
+    {
+      "id": "qemu/9421",
+      "type": "qemu",
+      "vmid": 9421,
+      "name": "pco-lab-vm",
+      "node": "pco-lab-2",
+      "status": "postmigrate",
+      "template": 0,
+      "lock": "migrate",
+      "uptime": 1163
+    },
+    {
+      "id": "qemu/9431",
+      "type": "qemu",
+      "vmid": 9431,
+      "name": "pco-lab-idle",
+      "node": "pco-lab-1",
+      "status": "running",
+      "template": 0,
+      "uptime": 1140
+    }
+  ]
+}

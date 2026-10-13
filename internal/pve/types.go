@@ -25,6 +25,11 @@ type Resource struct {
 	// Pool is the pool the guest is in; empty when it is in none, and also
 	// when the token lacks Pool.Audit on that pool.
 	Pool string
+	// Lock is the lock on the guest, as Proxmox names it: migrate while it
+	// moves to another node, backup while it is backed up, and so on; empty
+	// without one. During a migration the row names the destination as the
+	// node before the lock is gone.
+	Lock string
 }
 
 // GuestConfig is a guest's configuration with every value as text.

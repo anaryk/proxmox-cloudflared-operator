@@ -71,6 +71,22 @@ func TestResourcesCarryThePool(t *testing.T) {
 	}, got)
 }
 
+// The lock of a guest is a key the row has only while the lock is set:
+// backup during a backup, migrate during a migration, when the node of the
+// row is already the destination while the lock is still there.
+func TestResourcesCarryTheLock(t *testing.T) {
+	c, _ := newTestClient(t, map[string]reply{
+		"/cluster/resources?type=vm": okReply(t, "resources_lock.json"),
+	})
+	got, err := c.Resources(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []Resource{
+		{Kind: model.KindLXC, VMID: 9411, Name: "pco-lab-ct", Node: "pco-lab-1", Status: "running", Lock: "backup"},
+		{Kind: model.KindQEMU, VMID: 9421, Name: "pco-lab-vm", Node: "pco-lab-2", Status: "postmigrate", Lock: "migrate"},
+		{Kind: model.KindQEMU, VMID: 9431, Name: "pco-lab-idle", Node: "pco-lab-1", Status: "running"},
+	}, got)
+}
+
 func TestResourcesSkipsOtherTypes(t *testing.T) {
 	c, _ := newTestClient(t, map[string]reply{
 		"/cluster/resources?type=vm": {http.StatusOK, `{"data":[
