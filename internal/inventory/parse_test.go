@@ -254,6 +254,18 @@ func TestBuildGuestPool(t *testing.T) {
 	require.Empty(t, g.Pool)
 }
 
+func TestBuildGuestLock(t *testing.T) {
+	res := qemuResource()
+	res.Lock = "migrate"
+	g, err := BuildGuest(res, config(map[string]string{"name": "web-1"}))
+	require.NoError(t, err)
+	require.Equal(t, "migrate", g.Lock)
+
+	g, err = BuildGuest(qemuResource(), config(map[string]string{"name": "web-1"}))
+	require.NoError(t, err)
+	require.Empty(t, g.Lock)
+}
+
 func TestBuildGuestLXCIgnoresBadAddress(t *testing.T) {
 	for _, ip := range []string{"garbage", "10.20.0.30", "2001:db8::5/64", "0.0.0.0/0"} {
 		t.Run(ip, func(t *testing.T) {

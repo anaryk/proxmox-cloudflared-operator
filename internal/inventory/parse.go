@@ -57,6 +57,7 @@ func BuildGuest(res pve.Resource, cfg pve.GuestConfig) (model.Guest, error) {
 		Digest:      cfg.Digest,
 		Identity:    guestIdentity(ref, cfg.Values),
 		NICs:        parseNICs(res.Kind, cfg.Values),
+		Lock:        res.Lock,
 	}, nil
 }
 
