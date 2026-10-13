@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -33,7 +32,7 @@ func (s *suite) state(t testing.TB) engine.State {
 }
 
 func (s *suite) tryState() (engine.State, error) {
-	out, err := s.run(s.pco, "routes", "--json")
+	out, err := s.pcoOut("routes", "--json")
 	if err != nil {
 		return engine.State{}, err
 	}
@@ -46,7 +45,7 @@ func (s *suite) tryState() (engine.State, error) {
 
 func (s *suite) sync(t testing.TB) {
 	t.Helper()
-	s.must(t, s.pco, "sync")
+	s.pcoMust(t, "sync")
 }
 
 // waitState polls the state until ok, and fails with the last one, and the
@@ -141,7 +140,7 @@ func (s *suite) enforce(t testing.TB) {
 	if s.state(t).Mode == engine.ModeEnforce {
 		return
 	}
-	s.must(t, s.pco, "apply")
+	s.pcoMust(t, "apply")
 	s.waitState(t, "enforce mode", time.Minute, func(st engine.State) bool { return st.Mode == engine.ModeEnforce })
 }
 
@@ -203,7 +202,7 @@ func (s *suite) waitIngress(t testing.TB, tunnel, host, service string) []planne
 // show, and its targets; ok says the command exited 0.
 func (s *suite) egress(t testing.TB) (summary string, targets []string, ok bool) {
 	t.Helper()
-	out, err := s.run(s.pco, "egress", "show")
+	out, err := s.pcoOut("egress", "show")
 	require.Contains(t, []int{0, 1}, exitCode(err), "pco egress show: %v", err)
 	in := false
 	for line := range strings.Lines(out) {
@@ -250,13 +249,18 @@ func (s *suite) requireNoTarget(t testing.TB, target string) {
 	require.NotContains(t, targets, target)
 }
 
-// neighbourSeen watches the neighbour table of the node on the bridge, and
-// sends the time it first gives addr the MAC mac.
+// neighbourSeen watches the neighbour table pco watches on the bridge of the
+// run, the node's or the appliance's on its card there, and sends the time it
+// first gives addr the MAC mac.
 func (s *suite) neighbourSeen(t testing.TB, addr, mac string) <-chan time.Time {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "ip", "monitor", "neigh", "dev", bridge)
-	cmd.Env = s.childEnv()
+	cmd := s.hereCommand(ctx, "ip", "monitor", "neigh", "dev", bridge)
+	if s.app != nil {
+		// Killing pct exec leaves what it runs in the container: the
+		// monitor there ends by itself.
+		cmd = s.hereCommand(ctx, "timeout", "300", "ip", "monitor", "neigh", "dev", s.app.guestIface)
+	}
 	out, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
@@ -282,20 +286,21 @@ func (s *suite) neighbourSeen(t testing.TB, addr, mac string) <-chan time.Time {
 // events returns the events since a time.
 func (s *suite) events(t testing.TB, since time.Time) []engine.Event {
 	t.Helper()
-	out := s.must(t, s.pco, "events", "--json", "--since", since.UTC().Format(time.RFC3339))
+	out := s.pcoMust(t, "events", "--json", "--since", since.UTC().Format(time.RFC3339))
 	var evs []engine.Event
 	require.NoError(t, json.Unmarshal([]byte(out), &evs), out)
 	return evs
 }
 
-// waitEvent waits for an event of a kind whose message has text.
+// waitEvent waits for an event of a kind whose message has text, in any case:
+// a MAC may be written in lower case in one and upper case in the other.
 func (s *suite) waitEvent(t testing.TB, since time.Time, kind, text string) engine.Event {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		evs := s.events(t, since)
 		if i := slices.IndexFunc(evs, func(ev engine.Event) bool {
-			return ev.Kind == kind && strings.Contains(ev.Message, text)
+			return ev.Kind == kind && strings.Contains(strings.ToLower(ev.Message), strings.ToLower(text))
 		}); i >= 0 {
 			return evs[i]
 		}

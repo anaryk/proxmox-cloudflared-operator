@@ -7,6 +7,12 @@ loopback port, or the real API with a zone of yours.
 
 It changes the node it runs on, so run it on a test node only.
 
+It runs in one of two profiles: `host` (the default), pco installed on the node as
+described below, or `appliance`, pco in a container of the node as
+`pco appliance install` makes it; [The appliance profile](#the-appliance-profile) says
+what that one needs and does. `-profile appliance` on the command line or
+`PCO_E2E_PROFILE=appliance` chooses it.
+
 ## What it needs
 
 - Proxmox VE 8.4 or later, run as root. Without root, `pct`, `qm` or pco it skips.
@@ -183,11 +189,126 @@ The grace is 30 seconds and the poll interval 5 seconds for the run; the detach 
 of the managed network is one minute. A run of S1 to S15 takes about half an hour,
 the networking scenarios about an hour more.
 
-The appliance profile has no end-to-end suite yet: the variants of S17, S19, S21 and
-S22 for an appliance (the `filtered` level, the refusals while the node's firewall
-backend, the datacenter firewall or `pve-firewall` do not serve it, the firewall-impact
-confirmation, pco's rules in the guest's chain) are run by hand in the lab until it has
-one.
+In the appliance profile the same scenarios run against the appliance, with its guests
+in its own range (see below), at the level `observed` where the host proves `port`;
+S14 flushes the appliance's ruleset and waits for both of pco's tables there, and finds
+no other table; S15 counts the 2 seconds from the appliance's neighbour table; S9's
+attacker names the node's address on the bridge, which only the run gives it, and the
+appliance's, and takes only the other guest's.
+
+## The appliance profile
+
+The appliance profile installs the appliance from the package and the template of a
+build, with the installer of that package unpacked into the run's directory, as
+`install.sh` hands over to it, and runs every pco command inside it through
+`pct exec`. pco there accepts the Cloudflare API of tests only on a loopback address, so
+the fake listens on the node's address on `vmbr1` and a relay of the suite, `e2e-relay`,
+listens on the appliance's `127.0.0.1:8787` and forwards to it. The settings are changed
+as the host's are, in pco's own store code: the file is pulled into a scratch store on
+the node, changed there, pushed back beside the one in the appliance and renamed over it.
+
+### What it needs
+
+- Proxmox VE 8.4 or later, run as root, on a node of its own, with `vzdump` to the
+  storage `local` and `gpg` (for A-S17).
+- pco not set up on the node, and neither the user `pco@pve` nor the pool `pco`.
+- No guest with an id of `PCO_E2E_VMIDS` (default `9250-9299`, fifty ids). The appliance
+  takes the first of them, or `PCO_E2E_APPLIANCE_VMID`: an id of the range at the offset
+  0, 10 or 19, which no scenario's guest takes.
+- The bridge `vmbr1` with no port but those of guests and without `10.92.0.100`; no
+  bridge `pcote1`, `pcot1`, `pcot2` or `pcoti`.
+- A storage that snapshots a running container, clones from a snapshot and makes
+  snapshot backups, `PCO_E2E_STORAGE` (default `pcotest-zfs`), and the Alpine template
+  of the host profile on it or named with `PCO_E2E_TEMPLATE`.
+- In the working directory, or named: the build's `pco_<version>_amd64.deb`
+  (`PCO_E2E_DEB`), its `pco-appliance_<version>_amd64.tar.zst` (`PCO_E2E_APPLIANCE_TEMPLATE`),
+  its `checksums.txt` if there is one (`PCO_E2E_CHECKSUMS`), and `e2e-relay`
+  (`PCO_E2E_RELAY`). A-S17 runs when `PCO_E2E_UPGRADE_DEB` names the package of a
+  later build.
+- Against the real API, besides the token and the zone: `PCO_E2E_APPLIANCE_BRIDGE`, a
+  bridge with an uplink for the appliance's `net0` by DHCP, through which it reaches
+  Cloudflare and the API; the guests' card is then `net1` on `vmbr1`, and the scenarios
+  that need the fake are skipped or leave out what only the fake shows.
+
+### What it does to the node
+
+- Gives `vmbr1` the address `10.92.0.100/24` for the run, serves the fake there, and
+  installs the appliance at `10.92.0.150/24`, gateway `10.92.0.199`; the guest at the
+  offset n of the range is at `10.92.0.<150 + n>`.
+- In the appliance: the relay as the enabled unit `e2e-relay.service`, the drop-in
+  `/etc/systemd/system/pco.service.d/e2e.conf` with `PCO_CLOUDFLARE_API_URL`, the
+  credential of the run, and the settings of the run.
+- Makes the test principals `pcotest-e2e@pve` (with the tokens `np` and `ps` for a
+  while), role `PCOTESTNET` and pool `pcotest-e2e`, and grants and takes back ACL lines
+  for them, on the appliance among others, and the lines pco asks for the managed guests.
+- Snapshots, clones, reboots, rolls back, backs up and restores the appliance; the
+  backups go to `/var/lib/vz/dump` and are removed again.
+- Makes the runtime bridge `pcote1` and, for the networking scenarios, `pcot1`, `pcot2`
+  and `pcoti`; grants the appliance those networks and makes its managed network
+  (`pco appliance managed enable`: the SDN zone `pco` and vnet `pconet`, applied with an
+  SDN reload). For that it turns the datacenter firewall on with the node's own rules
+  off, so that the node stays reachable as before, sets the node's `nftables` option, and
+  starts `pve-firewall` when it is not running; all of it is put back.
+- Uninstalls the appliance with `--purge-cloudflare` in A-S15, or in its cleanup.
+
+It records all of this under `/var/lib/pco-e2e` (`appliance`, `principals`,
+`firewall-options` and the files of the host profile it shares) and the registered tags
+before the install in `/run/pco-e2e-registered-tags`. With the file `appliance` there,
+`cleanup.sh` works in its appliance mode: it destroys the containers of the range that
+are the appliance, a copy of it (by the mark in their description) or the suite's
+guests (`e2e-*`, `pco-clone`), snapshots first and protection off; removes the tokens
+`pco@pve!vm<id>` of the range, then `pco@pve`, `PCO` (and `PCOManaged`, `PCOSDN`) and
+pool `pco` when nothing else names them; the test principals; puts back the registered
+tags and the firewall options; and removes the bridges, the node's address, the run's
+backups and `/root/.pco-appliance-install`. It reports a vnet `pconet` it finds, and
+leaves anything else.
+
+### Running it
+
+Build the package, the template and the suite on a workstation (the template needs
+Linux, see `packaging/appliance/README.md`, or take it from the CI run of the commit):
+
+    make snapshot template e2e-binaries
+
+Copy `dist/pco_*_amd64.deb`, `build/appliance/pco-appliance_*_amd64.tar.zst`,
+`bin/e2e.test`, `bin/e2e-relay` and `test/e2e/cleanup.sh` into one directory on the
+node, then there:
+
+    PCO_E2E_PROFILE=appliance ./e2e.test -test.v -test.timeout 240m 2>&1 | tee e2e-appliance.log
+    PCO_E2E_PROFILE=appliance ./cleanup.sh
+
+Nothing is installed on the node. A-S1 needs the install the suite makes and runs
+first; A-S15 uninstalls it and runs last. `-test.run 'TestEndToEnd/A-S1_|TestEndToEnd/S1_'`
+runs a part.
+
+### Scenarios of the appliance
+
+The run is A-S1, A-S2, A-S3, then the host's scenarios from S11 to S9 as above, then
+A-S4, A-S5, A-S6, A-S13, A-S14, A-S12, A-S10, A-S11, A-S7, A-S8, A-S16, A-S17, A-S9,
+the networking scenarios in the appliance, and A-S15.
+
+| Id | What is checked |
+|---|---|
+| A-S1 | The install without a Cloudflare token: the container's configuration value by value, role `PCO` with exactly the release's privileges, `pco@pve`, its token with privilege separation, their ACL lines on `/`, pool `pco` with the appliance alone, the gate tag registered; nothing under `/etc` or `/usr` of the node newer than the run, no package or unit file changed, no journal of the installer left; inside the profile, the volume and its marker, the mount source of the appliance's own VMID, no bootstrap, the CA, the install record (VMID, node, MAC, endpoint), `observed` and observe-only, the node's address saved, `pco status`, `nftables.service` masked, `pco net show` with nothing leaked, no connector. |
+| A-S2 | The relay and the drop-in, the credential added inside and its file gone, a complete cycle, the override's problem line the only one besides observe-only. |
+| A-S3 | A route on `vmbr1` held until the segment is acknowledged, then active at `observed` within two cycles with the event of the first pin; nothing written. |
+| A-S4 | Another guest's MAC and address: held with `MAC changed`, the address never served, until approved; back to its own MAC and to another address under it: served within two cycles without an approval and without the event. |
+| A-S5 | `VM.Config.Network` of a test user on a guest, directly and through a pool: the route waits while it holds; `PVEVMUser` as the control. `PVEVMUser` on the appliance: the connectors stop, the flag goes, the egress set empties, writes are held, the problem line gives the exact `pveum` line, which brings it back. A token without privilege separation answered on its user, one with it on itself. |
+| A-S6 | A guest at the appliance's gateway waits until approved with `--allow-address`. |
+| A-S13 | A card of the appliance on a second segment: pending for at most a minute, no hold; a guest there waits for the segment; the card removed: the route goes, the identity stays. |
+| A-S14 | `nftables.service` unmasked, restarted and stopped: both of pco's tables back with their content and an event each, every time. |
+| A-S12 | `pco doctor --json`: the checks that are not ok are exactly those an appliance without an uplink fails. |
+| A-S10 | A guest outside pool `pco` with the appliance's MAC: a tenant, its route rejected, the appliance proven still, S1 never withdrawn, nothing written for the tenant; all served again once it is gone. |
+| A-S11 | A reboot: `pco-net` and `pco-egress` before any connector, no connector before the identity passed, nothing leaked, the epoch one up, one configuration write per tunnel and nothing else; a restart of the daemon writes nothing and keeps the epoch. |
+| A-S7 | A clone from a snapshot in pool `pco`, with a MAC of its own: a copy within 30 seconds of its start, for three cycles no connector, no flag, no target, the cloned `leader.json`; the original's generation alone reaches Cloudflare, and a route added meanwhile is published. |
+| A-S8 | The clone with the appliance's MAC: the original names it as a copy and holds its writes until it is gone, then publishes what waited. |
+| A-S16 | A rollback after a reboot: held as `behind` with the line naming `pco appliance recover`, doctor says the same, nothing written, recover and apply serve again above Cloudflare. A rollback without a start in between: never `behind`, a write verified, the event and doctor's note, the approval made after the snapshot gone. |
+| A-S17 | `pco upgrade pco` from a release the suite signs and serves: the warning, the new version, both packages held, the old package kept; `--rollback`; a `checksums.txt` that its signature does not match refused before a package is fetched. |
+| A-S9 | A backup restored to another VMID: `pco.service` exits 78 without a restart loop, `pco status` names the repair, nothing written, and the repair refuses the copy beside its original. Restored over the appliance: refused the same way until `pco appliance repair --recover`, then served again above Cloudflare. |
+| S17, S19 | In the appliance: the network granted on the node, the leg a card of the container, the guests reached through their service addresses from inside the appliance; with one prefix twice, each hostname answered by its own guest, and one guest's MAC change takes only its service address out. |
+| S21 | In the appliance: the managed network made on the node and taken in inside, a guest's card once the line pco prints ran, at the level `filtered`; the nftables backend, the datacenter firewall off and `pve-firewall` stopped each refused for a while, with nothing detached and the route at `observed`, and back; a guest as the GUI makes it waits for the confirmation of the firewall impact, and its own card answers after. |
+| S22 | In the appliance: pco's rules in the guest's chain of `iptables-save`, guest to guest nothing, a card put on `pconet` by hand drops the level to `observed` and is reported, and back. |
+| A-S15 | The uninstall: no container, token, ACL line, user, role or pool of pco left, the registered tags as before, nothing at Cloudflare; with the rest the run made gone, the node's packages, unit files, ruleset, `/etc` and `/usr` as before. |
 
 ## After a reboot of the node
 
@@ -234,3 +355,30 @@ matches as written, and a change of wording in pco has to change them too:
 - `The namespace pco is as pco left it.` and exit 0 of `pco netns status`;
 - `answer from <leg>:67 yiaddr=<lease> type=5 xid=same`, what the suite's own renewal
   prints in a machine.
+
+In the appliance profile also:
+
+- `Profile:` and `Identity: ok (lxc/<vmid> on <node>)` in `pco status`, and
+  `Rejected since the table was loaded: 0 packets` in `pco net show`;
+- `segment <bridge> is not acknowledged; pco segment acknowledge <bridge>` in the
+  reason of a route, `pinned MAC <mac> for <hostname>` in the claim event, and
+  `MAC changed from <old> to <new>` and `address <ip> is the gateway of the appliance`
+  among the reasons a guest waits for;
+- `pco serves nothing while it does`, ending in the `pveum acl modify ... --roles
+  NoAccess` lines, and `<token> is not privilege-separated: it holds the roles of
+  <user>`, in the problem lines of an exposed appliance;
+- `a NIC of the appliance lxc/<vmid> appeared or vanished` in the problem line of a
+  card that came or went;
+- `<guest> is configured with a MAC of the appliance lxc/<vmid>` in the identity event
+  of a tenant, and `configured with the MAC <mac> of the appliance lxc/<vmid>` in the
+  reason of its route;
+- `the volume at /var/lib/pco is` in the reason of a copy, and `run pco appliance
+  recover` in the hold of an appliance behind Cloudflare;
+- `epoch drawn after a container start; the state is the volume's` in the writer event,
+  and `after a container start` in doctor's `epoch`;
+- `pco appliance repair --vmid <vmid>` in the journal and in `pco status` of a restore,
+  and `lxc/<vmid> is a copy of lxc/<original>, which is still there` in the repair's
+  refusal;
+- `Before an upgrade, take a snapshot of this appliance on the node` in `pco upgrade`;
+- `nftables: 1`, `the datacenter firewall is off` and `pve-firewall is` in the refusal
+  of the managed network, and `needs-firewall-confirmation` in the reason a guest waits.

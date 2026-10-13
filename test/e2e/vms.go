@@ -72,7 +72,7 @@ func (s *suite) sshKey(t testing.TB) (private, public string) {
 // address and the key of the run, starts it and waits until SSH answers.
 func (s *suite) createVM(t testing.TB, v vm, image string) {
 	t.Helper()
-	require.True(t, inRange(v.vmid), "vmid %d", v.vmid)
+	require.True(t, s.mine(v.vmid), "vmid %d", v.vmid)
 	s.vms[v.vmid] = true
 	id := strconv.Itoa(v.vmid)
 	storage := envOr(vmStorageVar, s.disk)
@@ -93,7 +93,7 @@ func (s *suite) createVM(t testing.TB, v vm, image string) {
 	_, public := s.sshKey(t)
 	s.must(t, "qm", "set", id, "--ide2", storage+":cloudinit", "--boot", "order=scsi0",
 		"--ciuser", vmUser, "--sshkeys", public,
-		"--ipconfig0", "ip="+v.addr+"/24,gw="+nodeAddr)
+		"--ipconfig0", "ip="+v.addr+"/24,gw="+s.lay.nodeAddr)
 	s.must(t, "qm", "start", id)
 	s.waitSSH(t, v)
 	t.Logf("VM %d is up at %s", v.vmid, v.addr)

@@ -53,18 +53,19 @@ const (
 	foreignComment = "pco end-to-end suite"
 )
 
-// fakeCloud is the in-memory Cloudflare, served over HTTP on a loopback port
-// to the daemon, setup and uninstall.
+// fakeCloud is the in-memory Cloudflare, served over HTTP on a port of the
+// node: of its loopback, or of its address on the bridge of the appliance,
+// to the daemon, setup and uninstall. The port is fixed by its first start.
 type fakeCloud struct {
 	f   *cffake.Fake
 	srv *fakeServer
 }
 
-func newFakeCloud() (*fakeCloud, error) {
+func newFakeCloud(listen string) (*fakeCloud, error) {
 	f := cffake.New()
 	f.AddAccount(fakeAccount, "e2e")
 	f.AddZone(fakeZoneID, fakeZone, fakeAccount)
-	srv := &fakeServer{addr: "127.0.0.1:0", handler: cffake.Handler(f, cffake.WithToken(fakeToken))}
+	srv := &fakeServer{addr: listen, handler: cffake.Handler(f, cffake.WithToken(fakeToken))}
 	if err := srv.start(); err != nil {
 		return nil, err
 	}
@@ -135,7 +136,7 @@ type fakeServer struct {
 	handler http.Handler
 
 	mu   sync.Mutex
-	addr string // 127.0.0.1:0 until the first start
+	addr string // with port 0 until the first start
 	srv  *http.Server
 	held *heldRequest
 }

@@ -96,7 +96,9 @@ func (s *suite) removeBridges(t *testing.T) {
 		if _, err := s.run("ip", "link", "del", name); err != nil {
 			t.Errorf("removing the bridge %s: %v", name, err)
 			failed = true
+			continue
 		}
+		delete(s.bridges, name)
 	}
 	if !failed {
 		unmark(t, bridgesFile)
@@ -130,6 +132,7 @@ func (s *suite) restoreSysctls(t *testing.T) {
 		}
 	}
 	if !failed {
+		clear(s.sysctls)
 		unmark(t, sysctlFile)
 	}
 }
@@ -159,6 +162,7 @@ func (s *suite) stopFirewallService(t *testing.T) {
 		t.Errorf("stopping pve-firewall again: %v", err)
 		return
 	}
+	s.firewallStarted = false
 	unmark(t, firewallFile)
 }
 
@@ -212,5 +216,6 @@ func (s *suite) restoreRegisteredTags(t *testing.T) {
 		t.Errorf("putting the registered tags back to %v: %v", s.tagsBefore, err)
 		return
 	}
+	s.tagsRecorded = false
 	unmark(t, tagsFile)
 }

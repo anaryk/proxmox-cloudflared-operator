@@ -18,47 +18,63 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
 )
 
-// The scenarios share one install and run in this order: S11 starts from the
-// install that setup leaves, which only observes. Each one makes guests of its
-// own; the ones that look at the whole node use those of the others.
+// scenario is a step of the run, named by its id.
+type scenario struct {
+	name string
+	run  func(*testing.T, *suite)
+}
+
+// The scenarios share one install and run in the order of the profile: S11
+// starts from the install that setup leaves, which only observes. Each one
+// makes guests of its own; the ones that look at the whole node use those of
+// the others.
 func TestEndToEnd(t *testing.T) {
 	s := newSuite(t)
-	for _, sc := range []struct {
-		name string
-		run  func(*testing.T, *suite)
-	}{
-		{"S11 observe-only until apply, mass-delete guard", testObserveApplyAndGuard},
-		{"S1 basic route", testBasicRoute},
-		{"S2 two ports on one guest", testTwoPorts},
-		{"S3 several hostnames to one port", testSeveralHostnames},
-		{"S5 wildcard after exact", testWildcardOrder},
-		{"S6 static and reported addresses", testAddressSources},
-		{"S7 stop, start, edit, untag, destroy", testLifecycle},
-		{"S8 clone with the notes", testClone},
-		{"S10 foreign record, adopt", testForeignRecord},
-		{"S12 token without dns write", testDNSWriteDenied},
-		{"S13 daemon killed, proxmox and cloudflare down", testOutages},
-		{"S14 ruleset flushed", testRulesetFlushed},
-		{"S15 mac moved", testMACMoved},
-		{"S9 identity of others' addresses", testIdentity},
-		// The networking scenarios: guests the node is not on-link with,
-		// reached through legs of the gateway namespace, and the managed
-		// network. S17 leaves its network attached and S21 the managed
-		// network enabled, which S19, S20, S22 and S23 build on.
-		{"S17 attach an isolated bridge", testAttachIsolatedBridge},
-		{"S18 attach a vlan", testAttachVLAN},
-		{"S19 two networks with one subnet", testIdenticalSubnets},
-		{"S20 network reload under legs", testNetworkReload},
-		{"S21 managed network", testManagedNetwork},
-		{"S22 managed network isolation", testManagedIsolation},
-		{"S23 gateway restart and reinstall under traffic", testGatewayRestart},
-	} {
+	run := hostScenarios
+	if s.lay.isAppliance() {
+		run = applianceScenarios
+	}
+	for _, sc := range run {
 		t.Run(sc.name, func(t *testing.T) { sc.run(t, s) })
 	}
 }
 
+// The scenarios on the node both profiles have, in the order they run in;
+// the appliance runs them between its own (appliance_test.go).
+var (
+	s11 = scenario{"S11 observe-only until apply, mass-delete guard", testObserveApplyAndGuard}
+	s1  = scenario{"S1 basic route", testBasicRoute}
+	s2  = scenario{"S2 two ports on one guest", testTwoPorts}
+	s3  = scenario{"S3 several hostnames to one port", testSeveralHostnames}
+	s5  = scenario{"S5 wildcard after exact", testWildcardOrder}
+	s6  = scenario{"S6 static and reported addresses", testAddressSources}
+	s7  = scenario{"S7 stop, start, edit, untag, destroy", testLifecycle}
+	s8  = scenario{"S8 clone with the notes", testClone}
+	s10 = scenario{"S10 foreign record, adopt", testForeignRecord}
+	s12 = scenario{"S12 token without dns write", testDNSWriteDenied}
+	s13 = scenario{"S13 daemon killed, proxmox and cloudflare down", testOutages}
+	s14 = scenario{"S14 ruleset flushed", testRulesetFlushed}
+	s15 = scenario{"S15 mac moved", testMACMoved}
+	s9  = scenario{"S9 identity of others' addresses", testIdentity}
+)
+
+var hostScenarios = []scenario{
+	s11, s1, s2, s3, s5, s6, s7, s8, s10, s12, s13, s14, s15, s9,
+	// The networking scenarios: guests the node is not on-link with,
+	// reached through legs of the gateway namespace, and the managed
+	// network. S17 leaves its network attached and S21 the managed network
+	// enabled, which S19, S20, S22 and S23 build on.
+	{"S17 attach an isolated bridge", testAttachIsolatedBridge},
+	{"S18 attach a vlan", testAttachVLAN},
+	{"S19 two networks with one subnet", testIdenticalSubnets},
+	{"S20 network reload under legs", testNetworkReload},
+	{"S21 managed network", testManagedNetwork},
+	{"S22 managed network isolation", testManagedIsolation},
+	{"S23 gateway restart and reinstall under traffic", testGatewayRestart},
+}
+
 func testObserveApplyAndGuard(t *testing.T, s *suite) {
-	g := s.in(guest{vmid: 9111, notes: "```cf-tunnel\n" +
+	g := s.g(11, guest{notes: "```cf-tunnel\n" +
 		"e2e-s11-1.ZONE e2e-s11-2.ZONE e2e-s11-3.ZONE -> :8080\n" +
 		"e2e-s11-4.ZONE e2e-s11-5.ZONE e2e-s11-6.ZONE -> :8080\n```"})
 	s.create(t, g)
@@ -79,14 +95,14 @@ func testObserveApplyAndGuard(t *testing.T, s *suite) {
 	require.True(t, slices.ContainsFunc(st.Actions, func(a reconcile.Action) bool {
 		return a.Kind == reconcile.CreateTunnel && strings.Contains(a.Held, "observe")
 	}), "%+v", st.Actions)
-	plan := s.must(t, s.pco, "plan")
+	plan := s.pcoMust(t, "plan")
 	require.Contains(t, plan, "observe mode")
 	_, found := s.cloud.Tunnel(t, planner.TunnelName(s.install))
 	require.False(t, found, "observe mode makes no tunnel")
 	for _, h := range hosts {
 		require.Empty(t, s.records(t, h), "observe mode makes no record")
 	}
-	units := s.must(t, "systemctl", "list-units", "--all", "--plain", "--no-legend", "pco-cloudflared@*")
+	units := s.hereMust(t, "systemctl", "list-units", "--all", "--plain", "--no-legend", "pco-cloudflared@*")
 	require.Empty(t, strings.TrimSpace(units), "observe mode starts no connector")
 
 	s.enforce(t)
@@ -106,10 +122,10 @@ func testObserveApplyAndGuard(t *testing.T, s *suite) {
 	for _, h := range hosts {
 		require.NotEmpty(t, s.records(t, h), "the guard deletes nothing")
 	}
-	held := s.must(t, s.pco, "plan")
+	held := s.pcoMust(t, "plan")
 	require.Contains(t, held, reconcile.HeldByGuard)
 
-	out := s.must(t, s.pco, "apply", "--confirm-deletes", "--yes")
+	out := s.pcoMust(t, "apply", "--confirm-deletes", "--yes")
 	t.Logf("pco apply --confirm-deletes:\n%s", out)
 	for _, h := range hosts {
 		s.waitRecord(t, h, "", 2*time.Minute)
@@ -125,7 +141,7 @@ func testBasicRoute(t *testing.T, s *suite) {
 	route := s.waitRoute(t, host, planner.StateActive)
 	service := "http://" + g.ip() + ":8080"
 	require.Equal(t, service, route.Service)
-	require.Equal(t, "port", route.Level)
+	require.Equal(t, s.lay.level(), route.Level)
 	require.Equal(t, g.owner(), route.Owner)
 
 	tunnel := s.tunnel(t)
@@ -154,7 +170,7 @@ func testBasicRoute(t *testing.T, s *suite) {
 }
 
 func testTwoPorts(t *testing.T, s *suite) {
-	g := s.in(guest{vmid: 9102, ports: []int{8080, 8081}, notes: "```cf-tunnel\n" +
+	g := s.g(2, guest{ports: []int{8080, 8081}, notes: "```cf-tunnel\n" +
 		"e2e-s2a.ZONE -> :8080\ne2e-s2b.ZONE -> :8081\n```"})
 	s.create(t, g)
 	s.enforce(t)
@@ -171,7 +187,7 @@ func testTwoPorts(t *testing.T, s *suite) {
 }
 
 func testSeveralHostnames(t *testing.T, s *suite) {
-	g := s.in(guest{vmid: 9103, notes: "cf-tunnel: e2e-s3a.ZONE e2e-s3b.ZONE e2e-s3c.ZONE -> :8080"})
+	g := s.g(3, guest{notes: "cf-tunnel: e2e-s3a.ZONE e2e-s3b.ZONE e2e-s3c.ZONE -> :8080"})
 	s.create(t, g)
 	s.enforce(t)
 	tunnel := s.tunnel(t)
@@ -185,7 +201,7 @@ func testSeveralHostnames(t *testing.T, s *suite) {
 }
 
 func testWildcardOrder(t *testing.T, s *suite) {
-	g := s.in(guest{vmid: 9105, ports: []int{8080, 8081}, notes: "```cf-tunnel\n" +
+	g := s.g(5, guest{ports: []int{8080, 8081}, notes: "```cf-tunnel\n" +
 		"*.e2e-s5.ZONE -> :8080\nwww.e2e-s5.ZONE -> :8081\n```"})
 	s.create(t, g)
 	s.enforce(t)
@@ -205,12 +221,12 @@ func testWildcardOrder(t *testing.T, s *suite) {
 }
 
 func testAddressSources(t *testing.T, s *suite) {
-	static := s.in(guest{vmid: 9106, notes: "cf-tunnel: e2e-s6s.ZONE -> :8080"})
-	reported := s.in(guest{vmid: 9107, manual: true, notes: "cf-tunnel: e2e-s6r.ZONE -> :8080"})
+	static := s.g(6, guest{notes: "cf-tunnel: e2e-s6s.ZONE -> :8080"})
+	reported := s.g(7, guest{manual: true, notes: "cf-tunnel: e2e-s6r.ZONE -> :8080"})
 	s.create(t, static)
 	s.create(t, reported)
 	cfg := s.must(t, "pct", "config", strconv.Itoa(reported.vmid))
-	require.Contains(t, cfg, "ip=manual", "the address of 9107 is in no configuration")
+	require.Contains(t, cfg, "ip=manual", "the address of %d is in no configuration", reported.vmid)
 	s.enforce(t)
 	for _, g := range []guest{static, reported} {
 		name := "s6s"
@@ -219,12 +235,12 @@ func testAddressSources(t *testing.T, s *suite) {
 		}
 		route := s.waitRoute(t, s.host(name), planner.StateActive)
 		require.Equal(t, "http://"+g.ip()+":8080", route.Service, name)
-		require.Equal(t, "port", route.Level, name)
+		require.Equal(t, s.lay.level(), route.Level, name)
 	}
 }
 
 func testLifecycle(t *testing.T, s *suite) {
-	g := s.in(guest{vmid: 9108, notes: "cf-tunnel: e2e-s7.ZONE -> :8080"})
+	g := s.g(8, guest{notes: "cf-tunnel: e2e-s7.ZONE -> :8080"})
 	s.create(t, g)
 	s.enforce(t)
 	tunnel := s.tunnel(t)
@@ -275,7 +291,7 @@ func testLifecycle(t *testing.T, s *suite) {
 }
 
 func testClone(t *testing.T, s *suite) {
-	original := s.in(guest{vmid: 9140, notes: "cf-tunnel: e2e-s8.ZONE -> :8080"})
+	original := s.g(12, guest{notes: "cf-tunnel: e2e-s8.ZONE -> :8080"})
 	s.create(t, original)
 	s.enforce(t)
 	tunnel := s.tunnel(t)
@@ -288,14 +304,15 @@ func testClone(t *testing.T, s *suite) {
 	// has: the original stops for the copy, which withdraws its route for a
 	// moment. The clone keeps the notes and the tag, and gets an address and
 	// a MAC of its own, so that it does not take the original's.
-	clone := guest{vmid: 9141}
+	clone := s.g(13, guest{})
+	cloneID := strconv.Itoa(clone.vmid)
 	s.stop(t, original.vmid)
 	s.guests[clone.vmid] = true
-	s.must(t, "pct", "clone", "9140", "9141", "--hostname", "e2e-9141")
+	s.must(t, "pct", "clone", strconv.Itoa(original.vmid), cloneID, "--hostname", "e2e-"+cloneID)
 	s.start(t, original.vmid)
 	s.waitOwnerRoute(t, host, original.owner(), planner.StateActive)
-	s.must(t, "pct", "set", "9141", "--net0", clone.net0())
-	require.Contains(t, s.must(t, "pct", "config", "9141"), host, "the clone has the notes")
+	s.must(t, "pct", "set", cloneID, "--net0", clone.net0())
+	require.Contains(t, s.must(t, "pct", "config", cloneID), host, "the clone has the notes")
 	require.NotEqual(t, s.hwaddr(t, original.vmid), s.hwaddr(t, clone.vmid))
 	s.start(t, clone.vmid)
 
@@ -328,7 +345,7 @@ func testForeignRecord(t *testing.T, s *suite) {
 		}
 		unmark(t, foreignFile)
 	})
-	g := s.in(guest{vmid: 9160, notes: "cf-tunnel: e2e-s10.ZONE -> :8080"})
+	g := s.g(16, guest{notes: "cf-tunnel: e2e-s10.ZONE -> :8080"})
 	s.create(t, g)
 	s.enforce(t)
 	tunnel := s.tunnel(t)
@@ -339,7 +356,7 @@ func testForeignRecord(t *testing.T, s *suite) {
 	require.Equal(t, []string{"CNAME foreign.example.net"}, s.records(t, host), "a record of someone else is left alone")
 
 	asked := time.Now()
-	out := s.must(t, s.pco, "adopt", host, "--yes")
+	out := s.pcoMust(t, "adopt", host, "--yes")
 	t.Logf("pco adopt:\n%s", out)
 	if s.fake != nil {
 		// The adoption waits for a connector that is ready, which one with
@@ -364,7 +381,7 @@ func testDNSWriteDenied(t *testing.T, s *suite) {
 	s.fake.f.Deny("dns.write")
 	t.Cleanup(func() { s.fake.f.Allow("dns.write") })
 
-	g := s.in(guest{vmid: 9170, notes: "cf-tunnel: e2e-s12.ZONE -> :8080"})
+	g := s.g(17, guest{notes: "cf-tunnel: e2e-s12.ZONE -> :8080"})
 	s.create(t, g)
 	host := s.host("s12")
 	s.waitRoute(t, host, planner.StateActive)
@@ -442,6 +459,10 @@ func testOutages(t *testing.T, s *suite) {
 func testRulesetFlushed(t *testing.T, s *suite) {
 	target := s.ensureS1(t).ip() + ":8080"
 	s.waitTarget(t, target, true, time.Minute, time.Second)
+	if s.app != nil {
+		s.testApplianceRulesetFlushed(t)
+		return
+	}
 	_, targets, ok := s.egress(t)
 	require.True(t, ok)
 	s.saveTables(t)
@@ -464,22 +485,22 @@ func testRulesetFlushed(t *testing.T, s *suite) {
 }
 
 func testMACMoved(t *testing.T, s *suite) {
-	g := s.in(guest{vmid: 9180, notes: "cf-tunnel: e2e-s15.ZONE -> :8080"})
+	g := s.g(18, guest{notes: "cf-tunnel: e2e-s15.ZONE -> :8080"})
 	s.create(t, g)
 	s.enforce(t)
 	host, target := s.host("s15"), g.ip()+":8080"
 	s.waitRoute(t, host, planner.StateActive)
 	s.waitTarget(t, target, true, time.Minute, time.Second)
-	s.requireMACMoveSeen(t, g, "02:e2:e0:00:91:80")
+	s.requireMACMoveSeen(t, g, fmt.Sprintf("02:e2:e0:00:%02d:%02d", g.vmid/100%100, g.vmid%100))
 	s.waitRoute(t, host, planner.StateActive)
 	s.waitTarget(t, target, true, time.Minute, time.Second)
 }
 
 // requireMACMoveSeen gives the guest's card another MAC with the link up,
-// and checks that its target leaves the egress set within 2 seconds of the
-// node seeing the new MAC, with the event and the route withdrawn; then the
-// MAC is put back. The guest is on the bridge of the run, where it reaches
-// the node's address.
+// and checks that its target leaves the egress set within 2 seconds of pco's
+// neighbour table seeing the new MAC, the node's or the appliance's, with the
+// event and the route withdrawn; then the MAC is put back. The guest is on
+// the bridge of the run, where it reaches the address of pco there.
 func (s *suite) requireMACMoveSeen(t *testing.T, g guest, moved string) {
 	t.Helper()
 	target := g.ip() + ":8080"
@@ -513,14 +534,14 @@ func (s *suite) requireMACMoveSeen(t *testing.T, g guest, moved string) {
 	}
 	pinged := make(chan error, 1)
 	go func() {
-		_, err := s.run("pct", "exec", strconv.Itoa(g.vmid), "--", "sh", "-c", "ping -c 1 -W 2 "+nodeAddr+" >/dev/null || true")
+		_, err := s.run("pct", "exec", strconv.Itoa(g.vmid), "--", "sh", "-c", "ping -c 1 -W 2 "+s.lay.pcoAddr()+" >/dev/null || true")
 		pinged <- err
 	}()
 	if at.IsZero() {
 		select {
 		case at = <-seen:
 		case <-time.After(10 * time.Second):
-			t.Fatalf("the neighbour table of the node never gave %s the MAC %s", g.ip(), moved)
+			t.Fatalf("the neighbour table pco watches never gave %s the MAC %s", g.ip(), moved)
 		}
 	}
 	s.waitTarget(t, target, false, 10*time.Second, 50*time.Millisecond)
@@ -534,7 +555,7 @@ func (s *suite) requireMACMoveSeen(t *testing.T, g guest, moved string) {
 	t.Logf("withdrawn: %s", route.Reason)
 
 	s.setMAC(t, g.vmid, own)
-	s.exec(t, g.vmid, "ping -c 1 -W 2 "+nodeAddr+" >/dev/null || true")
+	s.exec(t, g.vmid, "ping -c 1 -W 2 "+s.lay.pcoAddr()+" >/dev/null || true")
 	s.sync(t)
 }
 
@@ -548,20 +569,32 @@ func routeHost(st engine.State, owner string) (string, bool) {
 }
 
 func testIdentity(t *testing.T, s *suite) {
-	victim := s.in(guest{vmid: 9151, notes: "cf-tunnel: e2e-s9v.ZONE -> :8080"})
+	victim := s.g(15, guest{notes: "cf-tunnel: e2e-s9v.ZONE -> :8080"})
 	s.create(t, victim)
 	s.enforce(t)
 	s.waitRoute(t, s.host("s9v"), planner.StateActive)
 	tunnel := s.tunnel(t)
 
 	// The attacker answers for the node's address on the bridge and for the
-	// victim's, and names both in its notes.
-	attacker := s.in(guest{vmid: 9150, notes: "```cf-tunnel\n" +
-		"e2e-s9n.ZONE -> http://" + nodeAddr + ":8080\n" +
-		"e2e-s9g.ZONE -> http://" + victim.ip() + ":8080\n```",
-		start: []string{"ip addr add " + nodeAddr + "/32 dev eth0", "ip addr add " + victim.ip() + "/32 dev eth0"}})
-	s.create(t, attacker)
+	// victim's, and names both in its notes. In the appliance it names the
+	// appliance's address as well, and takes only the victim's: taking the
+	// node's would cut the appliance off its API and prove nothing. The
+	// node's address there is one only the run gives it, which Proxmox lists
+	// nowhere: the installer saved it for the appliance.
+	notes := "```cf-tunnel\n" +
+		"e2e-s9n.ZONE -> http://" + s.lay.nodeAddr + ":8080\n" +
+		"e2e-s9g.ZONE -> http://" + victim.ip() + ":8080\n"
+	takes := []string{"ip addr add " + s.lay.nodeAddr + "/32 dev eth0", "ip addr add " + victim.ip() + "/32 dev eth0"}
+	denied := []string{s.lay.nodeAddr}
 	stolen := []string{s.host("s9n"), s.host("s9g")}
+	if s.app != nil {
+		notes += "e2e-s9a.ZONE -> http://" + s.lay.applianceAddr + ":8080\n"
+		takes = takes[1:]
+		denied = append(denied, s.lay.applianceAddr)
+		stolen = append(stolen, s.host("s9a"))
+	}
+	attacker := s.g(14, guest{notes: notes + "```", start: takes})
+	s.create(t, attacker)
 	// A stolen hostname has no rule but the one of a withdrawn route, which
 	// answers 503; no rule sends anything to the node, and the victim's
 	// address serves the victim's name only.
@@ -575,7 +608,7 @@ func testIdentity(t *testing.T, s *suite) {
 			if u, err := url.Parse(r.Service); err == nil {
 				addr = u.Hostname()
 			}
-			require.NotEqual(t, nodeAddr, addr, "%+v", r)
+			require.NotContains(t, denied, addr, "%+v", r)
 			if addr == victim.ip() {
 				require.Equal(t, s.host("s9v"), r.Hostname, "%+v", r)
 			}
@@ -591,7 +624,9 @@ func testIdentity(t *testing.T, s *suite) {
 			require.False(t, ok && r.State == planner.StateActive, "%s is served: %+v", h, r)
 			require.Empty(t, s.records(t, h), "%s has a record", h)
 		}
-		s.requireNoTarget(t, nodeAddr+":8080")
+		for _, d := range denied {
+			s.requireNoTarget(t, d+":8080")
+		}
 		requireIngress()
 		time.Sleep(s.every())
 	}

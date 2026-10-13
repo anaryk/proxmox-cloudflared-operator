@@ -40,16 +40,11 @@ func (s *suite) enableManaged(t testing.TB) {
 		return
 	}
 	s.registerTag(t, consentTag)
-	st, err := store.Open(store.DefaultPaths())
-	require.NoError(t, err)
-	settings, err := st.Settings()
-	require.NoError(t, err)
-	settings.Managed.DetachGrace = store.Duration(detachGrace)
-	require.NoError(t, st.SaveSettings(settings))
+	s.editSettings(t, func(v *store.Settings) { v.Managed.DetachGrace = store.Duration(detachGrace) })
 
 	marker(t, managedMarker, "")
 	s.managed = true
-	out, err := s.combined(s.pco, "network", "managed", "enable", "--yes")
+	out, err := s.pcoCombined("network", "managed", "enable", "--yes")
 	t.Logf("pco network managed enable:\n%s", out)
 	require.NoError(t, err)
 	s.must(t, "pvesh", "get", "/cluster/sdn/vnets/"+gateway.ManagedBridge)
@@ -64,12 +59,7 @@ func (s *suite) enableManaged(t testing.TB) {
 // edits the settings.
 func (s *suite) setConsent(t testing.TB, mode string) {
 	t.Helper()
-	st, err := store.Open(store.DefaultPaths())
-	require.NoError(t, err)
-	settings, err := st.Settings()
-	require.NoError(t, err)
-	settings.Managed.Consent = mode
-	require.NoError(t, st.SaveSettings(settings))
+	s.editSettings(t, func(v *store.Settings) { v.Managed.Consent = mode })
 	s.sync(t)
 	s.waitState(t, "consent "+mode, time.Minute, func(st engine.State) bool { return st.Managed.Consent == mode })
 }

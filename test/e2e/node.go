@@ -153,14 +153,14 @@ func (s *suite) refuseTakenIDs(t *testing.T) {
 		for line := range strings.Lines(s.must(t, list, "list")) {
 			f := strings.Fields(line)
 			id, err := strconv.Atoi(firstOf(f))
-			if err != nil || !inRange(id) {
+			if err != nil || !s.lay.contains(id) {
 				continue
 			}
 			if slices.Contains(f, "e2e-"+f[0]) && exists(ownedFile) {
 				t.Fatalf("guest %d of a run of the suite is left: %s", id, cleanupHint)
 			}
 			t.Fatalf("guest %d exists; the suite needs the ids %d to %d and %d to %d free, and leaves that guest alone",
-				id, firstVMID, lastVMID, netFirstVMID, netLastVMID)
+				id, s.lay.first, s.lay.last, s.lay.netFirst, s.lay.netLast)
 		}
 	}
 }
@@ -221,8 +221,9 @@ func (s *suite) refuseBridge(t *testing.T) {
 				"claim addresses of others, which must not reach a network beyond the node", bridge, p.Name())
 		}
 	}
-	if addrs := s.must(t, "ip", "-4", "-o", "addr", "show", "dev", bridge); strings.Contains(addrs, "inet "+nodeAddr+"/") {
-		t.Fatalf("%s has %s already, which the suite did not give it: it gives the bridge %s for the run and takes it away", bridge, nodeAddr, nodeCIDR)
+	if addrs := s.must(t, "ip", "-4", "-o", "addr", "show", "dev", bridge); strings.Contains(addrs, "inet "+s.lay.nodeAddr+"/") {
+		t.Fatalf("%s has %s already, which the suite did not give it: it gives the bridge %s for the run and takes it away",
+			bridge, s.lay.nodeAddr, s.lay.nodeCIDR())
 	}
 }
 
@@ -244,15 +245,20 @@ func (s *suite) addAddress(t *testing.T) {
 		marker(t, bridgeWasDown, "")
 		s.must(t, "ip", "link", "set", "dev", bridge, "up")
 	}
-	marker(t, addressFile, nodeCIDR+"\n")
-	s.must(t, "ip", "addr", "add", nodeCIDR, "dev", bridge)
+	marker(t, addressFile, s.lay.nodeCIDR()+"\n")
+	s.must(t, "ip", "addr", "add", s.lay.nodeCIDR(), "dev", bridge)
+	s.addressAdded = true
 }
 
-func (s *suite) removeAddress(t *testing.T) {
-	if _, err := s.run("ip", "addr", "del", nodeCIDR, "dev", bridge); err != nil {
-		t.Errorf("removing %s from %s: %v", nodeCIDR, bridge, err)
+func (s *suite) removeAddress(t testing.TB) {
+	if !s.addressAdded {
 		return
 	}
+	if _, err := s.run("ip", "addr", "del", s.lay.nodeCIDR(), "dev", bridge); err != nil {
+		t.Errorf("removing %s from %s: %v", s.lay.nodeCIDR(), bridge, err)
+		return
+	}
+	s.addressAdded = false
 	unmark(t, addressFile)
 	if !s.bridgeDown {
 		return
@@ -296,14 +302,16 @@ func (s *suite) stopProxmoxAPI(t *testing.T) {
 
 // saveTables saves the tables of the ruleset that are not pco's, which a
 // flush takes as well, and loads those that do not come back by themselves
-// again when t ends; cleanup.sh does so after a run that was cut off.
+// again when t ends; cleanup.sh does so after a run that was cut off. pco's
+// own, the egress table and the one of the service prefix, come back by
+// themselves.
 func (s *suite) saveTables(t *testing.T) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(tablesDir, 0o700))
 	saved := map[string]string{}
 	for line := range strings.Lines(s.must(t, "nft", "list", "tables")) {
 		f := strings.Fields(line)
-		if len(f) != 3 || f[0] != "table" || f[2] == "pco_egress" {
+		if len(f) != 3 || f[0] != "table" || f[2] == "pco_egress" || f[2] == "pco_net" {
 			continue
 		}
 		file := filepath.Join(tablesDir, fmt.Sprintf("table-%d.nft", len(saved)+1))

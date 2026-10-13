@@ -26,32 +26,31 @@ type guest struct {
 	manual bool
 	// start are more lines of the start script, run before the servers.
 	start []string
-	// bridge and addr place the guest on another bridge than the run's,
-	// with that address (as 10.50.0.10/24); vlan tags its port there.
+	// addr is the guest's address with its prefix, as 10.77.0.101/24: on
+	// the bridge of the run where the layout puts the guest's offset, or on
+	// bridge, another one, as 10.50.0.10/24; vlan tags its port there.
 	bridge string
 	addr   string
 	vlan   int
 	// tags are the tags of the guest; the gate tag alone when empty.
 	tags string
+	// mac is the MAC of its card, one Proxmox makes when empty; firewall
+	// turns the firewall of the card on, as the GUI does by default.
+	mac      string
+	firewall bool
 }
 
-// ip is the address of the guest: 10.77.0.<vmid - 9000> on the bridge of the
-// run, or the one given.
+// ip is the address of the guest.
 func (g guest) ip() string {
-	if g.addr != "" {
-		ip, _, _ := strings.Cut(g.addr, "/")
-		return ip
-	}
-	return fmt.Sprintf("10.77.0.%d", g.vmid-9000)
+	ip, _, _ := strings.Cut(g.addr, "/")
+	return ip
 }
 
 func (g guest) owner() string { return "lxc/" + strconv.Itoa(g.vmid) }
 
-// inRange says whether the id is one the suite may use: the range of the
-// run, or the range of the networking scenarios.
-func inRange(vmid int) bool {
-	return (vmid >= firstVMID && vmid <= lastVMID) || (vmid >= netFirstVMID && vmid <= netLastVMID)
-}
+// mine says whether the id is one the suite may give a guest: in its ranges,
+// and not the appliance's.
+func (s *suite) mine(vmid int) bool { return s.lay.contains(vmid) && vmid != s.lay.appliance }
 
 func (g guest) servedPorts() []int {
 	if len(g.ports) == 0 {
@@ -64,16 +63,19 @@ func (g guest) servedPorts() []int {
 func (g guest) body(port int) string { return fmt.Sprintf("e2e %d:%d", g.vmid, port) }
 
 func (g guest) net0() string {
-	ip := "ip=" + g.ip() + "/24"
-	switch {
-	case g.manual:
+	ip := "ip=" + g.addr
+	if g.manual {
 		ip = "ip=manual"
-	case g.addr != "":
-		ip = "ip=" + g.addr
 	}
 	spec := "name=eth0,bridge=" + g.bridgeOf() + "," + ip
 	if g.vlan != 0 {
 		spec += ",tag=" + strconv.Itoa(g.vlan)
+	}
+	if g.mac != "" {
+		spec += ",hwaddr=" + g.mac
+	}
+	if g.firewall {
+		spec += ",firewall=1"
 	}
 	return spec
 }
@@ -136,7 +138,8 @@ printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %%d\r\nCo
 // create makes the guest, tagged with its notes, and starts it.
 func (s *suite) create(t testing.TB, g guest) {
 	t.Helper()
-	require.True(t, inRange(g.vmid), "vmid %d", g.vmid)
+	require.True(t, s.mine(g.vmid), "vmid %d", g.vmid)
+	require.NotEmpty(t, g.addr, "guest %d has no address", g.vmid)
 	s.guests[g.vmid] = true
 	id := strconv.Itoa(g.vmid)
 	s.must(t, "pct", "create", id, s.tmpl,
@@ -250,6 +253,8 @@ func (s *suite) destroyGuest(vmid int) error {
 			return err
 		}
 	}
+	// A copy of the appliance is protected, as the appliance is.
+	_, _ = s.run("pct", "set", id, "--protection", "0")
 	_, err := s.run("pct", "destroy", id, "--purge", "1")
 	return err
 }
@@ -258,12 +263,16 @@ func (s *suite) destroyGuests(t *testing.T) {
 	for vmid := range s.guests {
 		if err := s.destroyGuest(vmid); err != nil {
 			t.Errorf("destroying guest %d: %v", vmid, err)
+			continue
 		}
+		delete(s.guests, vmid)
 	}
 	for vmid := range s.vms {
 		if err := s.destroyVM(vmid); err != nil {
 			t.Errorf("destroying VM %d: %v", vmid, err)
+			continue
 		}
+		delete(s.vms, vmid)
 	}
 }
 
@@ -282,7 +291,9 @@ func (s *suite) destroyPconetGuests(t *testing.T) {
 		}
 		if err != nil {
 			t.Errorf("destroying guest %d: %v", vmid, err)
+			continue
 		}
+		delete(s.pconetGuests, vmid)
 	}
 }
 

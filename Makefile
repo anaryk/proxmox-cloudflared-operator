@@ -177,8 +177,10 @@ template:
 		packaging/appliance/build.sh --arch $(TEMPLATE_ARCH) --version "$$version" \
 			--deb "dist/pco_$${version}_$(TEMPLATE_ARCH).deb" --out build/appliance
 
-# The end-to-end suite and a binary for a Proxmox VE node; test/e2e/README.md
-# says how to run them.
+# The end-to-end suite, a binary for a Proxmox VE node, and the relay the
+# appliance profile puts into the appliance; test/e2e/README.md says how to
+# run them.
 e2e-binaries: $(if $(filter 1,$(UI)),ui-dist)
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/pco-linux-amd64 ./cmd/pco
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -tags e2e,$(TAGS) -o bin/e2e.test ./test/e2e
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags e2e -trimpath -o bin/e2e-relay ./test/e2e/relay

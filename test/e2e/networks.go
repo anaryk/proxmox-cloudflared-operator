@@ -33,7 +33,7 @@ func (s *suite) attach(t testing.TB, bridge string, vlan int, addr string) engin
 	if vlan != 0 {
 		seg += ":" + strconv.Itoa(vlan)
 	}
-	out, err := s.combined(s.pco, "network", "attach", seg, "--address", addr, "--yes")
+	out, err := s.pcoCombined("network", "attach", seg, "--address", addr, "--yes")
 	t.Logf("pco network attach %s --address %s:\n%s", seg, addr, out)
 	require.NoError(t, err)
 	return s.waitLeg(t, store.SegmentID(bridge, vlan), true)
@@ -43,7 +43,7 @@ func (s *suite) attach(t testing.TB, bridge string, vlan int, addr string) engin
 // longer lists it.
 func (s *suite) detach(t testing.TB, id string) {
 	t.Helper()
-	out, err := s.combined(s.pco, "network", "detach", id, "--yes")
+	out, err := s.pcoCombined("network", "detach", id, "--yes")
 	t.Logf("pco network detach %s:\n%s", id, out)
 	require.NoError(t, err)
 	s.waitState(t, "network "+id+" to be gone", 2*time.Minute, func(st engine.State) bool {
@@ -176,7 +176,7 @@ func (s *suite) dnatHas(t testing.TB, service netip.Addr) bool {
 // left it.
 func (s *suite) netnsStatus(t testing.TB) (string, bool) {
 	t.Helper()
-	out, err := s.combined(s.pco, "netns", "status")
+	out, err := s.pcoCombined("netns", "status")
 	require.Contains(t, []int{0, 1}, exitCode(err), "pco netns status: %v", err)
 	return out, err == nil
 }

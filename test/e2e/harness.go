@@ -30,20 +30,12 @@ import (
 )
 
 const (
-	bridge    = "vmbr1"
-	nodeAddr  = "10.77.0.1"
-	nodeCIDR  = nodeAddr + "/24"
-	firstVMID = 9100
-	lastVMID  = 9199
-	// The networking scenarios have a range of their own, the one the lab
-	// node reserves for the suite.
-	netFirstVMID = 9350
-	netLastVMID  = 9399
-	gateTag      = "cf-tunnel"
-	dropInDir    = "/etc/systemd/system/pco.service.d"
-	dropInFile   = dropInDir + "/e2e.conf"
-	overrideOf   = "PCO_CLOUDFLARE_API_URL"
-	cloudflared  = "/usr/bin/cloudflared"
+	bridge      = "vmbr1"
+	gateTag     = "cf-tunnel"
+	dropInDir   = "/etc/systemd/system/pco.service.d"
+	dropInFile  = dropInDir + "/e2e.conf"
+	overrideOf  = "PCO_CLOUDFLARE_API_URL"
+	cloudflared = "/usr/bin/cloudflared"
 
 	// The token of the real API is read from the file tokenFileOf names,
 	// never from the environment or the command line; no command the suite
@@ -67,8 +59,14 @@ const (
 	commandTimeout = 3 * time.Minute
 )
 
-// suite is the node the scenarios run on, with pco set up against the cloud.
+// suite is the node the scenarios run on, with pco set up against the cloud:
+// on the node, or in the appliance.
 type suite struct {
+	lay layout
+	at  place
+	// app is what the appliance profile has besides; nil on the host.
+	app *applianceRun
+
 	cloud cloud
 	fake  *fakeCloud // nil against the real API
 	zone  string
@@ -83,8 +81,10 @@ type suite struct {
 	install string
 	guests  map[int]bool // made by the suite, destroyed at its end
 	began   time.Time
-	// bridgeDown says that the bridge was down before the run.
-	bridgeDown bool
+	// bridgeDown says that the bridge was down before the run, and
+	// addressAdded that the run gave the node its address there.
+	bridgeDown   bool
+	addressAdded bool
 
 	// What the networking scenarios make and change on the node, each
 	// undone at the end: the runtime bridges, the kernel parameters with
@@ -115,7 +115,12 @@ func envOr(name, def string) string {
 // set up. Everything is undone when t ends, whatever happened, and recorded
 // under markerDir for cleanup.sh until then.
 func newSuite(t *testing.T) *suite {
+	profile, err := chooseProfile()
+	require.NoError(t, err)
+	lay, err := layoutFor(profile)
+	require.NoError(t, err)
 	s := &suite{
+		lay:          lay,
 		pco:          envOr("PCO_E2E_PCO", "/usr/bin/pco"),
 		tmpl:         envOr("PCO_E2E_TEMPLATE", "local:vztmpl/alpine-3.24-default_20260714_amd64.tar.xz"),
 		disk:         envOr("PCO_E2E_STORAGE", "local-lvm"),
@@ -127,6 +132,11 @@ func newSuite(t *testing.T) *suite {
 		vms:          map[int]bool{},
 		pconetGuests: map[int]bool{},
 	}
+	if lay.isAppliance() {
+		s.newAppliance(t)
+		return s
+	}
+	s.at = place{pco: s.pco}
 	s.preflight(t)
 	token := s.chooseCloud(t)
 	s.own(t)
@@ -165,17 +175,17 @@ func (s *suite) chooseCloud(t *testing.T) string {
 	file, zone := os.Getenv(tokenFileOf), strings.ToLower(strings.TrimSpace(os.Getenv("PCO_E2E_ZONE")))
 	switch {
 	case file == "" && zone == "":
-		c, err := newFakeCloud()
+		c, err := newFakeCloud(s.fakeListen())
 		require.NoError(t, err)
 		t.Cleanup(c.srv.stop)
 		s.cloud, s.fake, s.zone = c, c, fakeZone
-		s.env = []string{overrideOf + "=" + c.url()}
+		s.env = []string{overrideOf + "=" + s.apiURL()}
 		t.Logf("against the fake Cloudflare at %s", c.url())
 		return fakeToken
 	case file == "" || zone == "":
 		t.Fatalf("against the real API the suite needs both %s and PCO_E2E_ZONE", tokenFileOf)
 	}
-	if _, err := os.Stat(cloudflared); err != nil {
+	if _, err := os.Stat(cloudflared); err != nil && s.app == nil {
 		t.Fatalf("against the real API the connectors need %s: %v", cloudflared, err)
 	}
 	raw, err := os.ReadFile(file)
@@ -233,13 +243,45 @@ func (s *suite) setup(t *testing.T, token string) {
 // them, and asks for a cycle.
 func (s *suite) allowHosts(t testing.TB, patterns ...string) {
 	t.Helper()
+	s.editSettings(t, func(v *store.Settings) { v.AllowHosts = patterns })
+	s.sync(t)
+}
+
+// editSettings changes the settings of the install as an admin edits the
+// file: in the store of the node, or in a scratch store the appliance's file
+// is pulled into and pushed back from.
+func (s *suite) editSettings(t testing.TB, edit func(*store.Settings)) {
+	t.Helper()
+	if s.app != nil {
+		s.editApplianceSettings(t, edit)
+		return
+	}
 	st, err := store.Open(store.DefaultPaths())
 	require.NoError(t, err)
 	settings, err := st.Settings()
 	require.NoError(t, err)
-	settings.AllowHosts = patterns
+	edit(&settings)
 	require.NoError(t, st.SaveSettings(settings))
-	s.sync(t)
+}
+
+// fakeListen is where the fake listens: on the node's loopback, or on the
+// node's address on the bridge of the run, which the appliance reaches.
+func (s *suite) fakeListen() string {
+	if s.lay.isAppliance() {
+		return s.lay.nodeAddr + ":0"
+	}
+	return "127.0.0.1:0"
+}
+
+// apiURL is the Cloudflare API of the fake as pco reaches it: on the node at
+// the fake's own address; in the appliance at the relay on its loopback,
+// which takes the place of the fake there, as pco accepts the override for a
+// loopback address only.
+func (s *suite) apiURL() string {
+	if s.lay.isAppliance() {
+		return relayURL
+	}
+	return s.fake.url()
 }
 
 // requireOverrideLine checks that a state shows the override of the API as a
@@ -251,7 +293,7 @@ func (s *suite) requireOverrideLine(t *testing.T, st engine.State) {
 		require.Empty(t, slices.DeleteFunc(slices.Clone(st.Problems), func(p string) bool { return !strings.Contains(p, overrideOf) }))
 		return
 	}
-	line := "the Cloudflare API is overridden to " + s.fake.url() + " (" + overrideOf + "); this is for tests only"
+	line := "the Cloudflare API is overridden to " + s.apiURL() + " (" + overrideOf + "); this is for tests only"
 	require.Contains(t, st.Problems, line)
 }
 
@@ -314,7 +356,7 @@ func (s *suite) diagnose(t *testing.T) {
 		return
 	}
 	since := s.began.Format("2006-01-02 15:04:05")
-	out, _ := s.run("journalctl", "-u", "pco", "--since", since, "--no-pager", "-n", "200")
+	out, _ := s.here("journalctl", "-u", "pco", "--since", since, "--no-pager", "-n", "200")
 	t.Logf("journal of pco:\n%s", out)
 	if s.fake != nil {
 		calls := s.fake.f.Calls()
@@ -346,7 +388,12 @@ func (s *suite) run(name string, args ...string) (string, error) {
 
 // combined runs a command and returns what it wrote to stdout and stderr.
 func (s *suite) combined(name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	return s.combinedWithin(commandTimeout, name, args...)
+}
+
+// combinedWithin is combined for a command that may take longer.
+func (s *suite) combinedWithin(timeout time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = s.childEnv()
@@ -394,7 +441,14 @@ func (s *suite) in(g guest) guest {
 // s1Guest is the guest of S1, which the scenarios that look at the whole node
 // make when S1 did not run.
 func (s *suite) s1Guest() guest {
-	return s.in(guest{vmid: 9101, notes: "cf-tunnel: e2e-s1.ZONE -> :8080"})
+	return s.g(1, guest{notes: "cf-tunnel: e2e-s1.ZONE -> :8080"})
+}
+
+// g is the guest at offset n of the run's range, at its address on the
+// bridge of the run.
+func (s *suite) g(n int, g guest) guest {
+	g.vmid, g.addr = s.lay.vmid(n), s.lay.addr(n)+"/24"
+	return s.in(g)
 }
 
 // ensureS1 makes the guest of S1 unless the run has it, and waits until it is
@@ -463,11 +517,11 @@ func otherProblems(st engine.State) []string {
 func (s *suite) requireConnector(t *testing.T, tunnel string) {
 	t.Helper()
 	unit := "pco-cloudflared@" + tunnel + ".service"
-	enabled, _ := s.run("systemctl", "is-enabled", unit)
+	enabled, _ := s.here("systemctl", "is-enabled", unit)
 	require.Equal(t, "enabled", strings.TrimSpace(enabled), unit)
-	token, err := os.ReadFile("/var/lib/pco/tunnels/" + tunnel + ".token")
+	token, err := s.readHere("/var/lib/pco/tunnels/" + tunnel + ".token")
 	require.NoError(t, err)
-	same := s.cloud.RunToken(t, tunnel) == strings.TrimSpace(string(token))
+	same := s.cloud.RunToken(t, tunnel) == strings.TrimSpace(token)
 	require.True(t, same, "the token file of the connector of %s does not hold the run token of the tunnel", tunnel)
 
 	st := s.waitState(t, "the connector in the state", time.Minute, func(st engine.State) bool {
@@ -534,7 +588,7 @@ func (s *suite) requireSame(t *testing.T, b before) {
 	tn, found := s.cloud.Tunnel(t, planner.TunnelName(s.install))
 	require.True(t, found)
 	require.Equal(t, b.tunnel, tn.ID)
-	enabled, _ := s.run("systemctl", "is-enabled", "pco-cloudflared@"+b.tunnel+".service")
+	enabled, _ := s.here("systemctl", "is-enabled", "pco-cloudflared@"+b.tunnel+".service")
 	require.Equal(t, "enabled", strings.TrimSpace(enabled))
 }
 
@@ -571,6 +625,6 @@ func (s *suite) killInCycle(t *testing.T) time.Time {
 		time.Sleep(100 * time.Millisecond)
 	}
 	killed := time.Now()
-	s.must(t, "systemctl", "kill", "--signal=SIGKILL", "pco.service")
+	s.hereMust(t, "systemctl", "kill", "--signal=SIGKILL", "pco.service")
 	return killed
 }

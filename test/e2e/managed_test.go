@@ -414,10 +414,10 @@ func testManagedIsolation(t *testing.T, s *suite) {
 		s.create(t, d)
 	}
 	toBefore := s.counter(t, false, "inet", "pco_host", "to_transit")
-	s.exec(t, d.vmid, "ip route replace "+gateway.ServicePrefix.String()+" via "+nodeAddr)
+	s.exec(t, d.vmid, "ip route replace "+gateway.ServicePrefix.String()+" via "+s.lay.nodeAddr)
 	svc, svcPort, _ := strings.Cut(tm, ":")
 	require.False(t, s.connects(d.vmid, svc, svcPort), "a guest reaches the service address %s through the node", tm)
-	s.exec(t, d.vmid, "ip route del "+gateway.ServicePrefix.String()+" via "+nodeAddr)
+	s.exec(t, d.vmid, "ip route del "+gateway.ServicePrefix.String()+" via "+s.lay.nodeAddr)
 	toAfter := s.counter(t, false, "inet", "pco_host", "to_transit")
 	t.Logf("to_transit %d -> %d", toBefore, toAfter)
 	require.Greater(t, toAfter, toBefore, "the node did not drop what was forwarded into the transit link")

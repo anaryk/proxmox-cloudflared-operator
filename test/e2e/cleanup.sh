@@ -10,6 +10,18 @@
 # the pco package and the user of the connectors. pveproxy, which the suite
 # stops for a while, is started when it is not running. It runs as root on
 # the node and can be run again.
+#
+# After a run in the appliance profile (the file appliance in the state
+# directory, or PCO_E2E_PROFILE=appliance) it removes instead the containers
+# of the run's range that are the appliance, copies of it or guests of the
+# suite, the appliance's tokens of that range and then pco@pve, role PCO and
+# pool pco when nothing else names them, the test principals, the registered
+# tags as they were before the install, the firewall options the managed
+# scenarios changed, the runtime bridges, the node's address and the backups
+# of the run, and reports what else of pco it finds.
+
+# The perl expressions in single quotes are perl's to expand, not the shell's.
+# shellcheck disable=SC2016
 set -u
 
 state=/var/lib/pco-e2e
@@ -38,6 +50,9 @@ if ! systemctl is-active --quiet pveproxy; then
 	fi
 fi
 
+profile=${PCO_E2E_PROFILE:-host}
+[ -e "$state/appliance" ] && profile=appliance
+
 installed=
 if [ -e "$installfile" ]; then
 	installed=$(perl -MJSON::PP -e 'local $/; my $d = decode_json(<STDIN>); print $d->{data}{id} // ""' <"$installfile")
@@ -53,6 +68,9 @@ if [ ! -d "$state" ]; then
 	exit "$failed"
 fi
 rm -f "$state/cf-token"
+if [ -e "$state/address-added" ]; then
+	read -r address <"$state/address-added"
+fi
 
 # S14 flushes the ruleset after saving the tables that are not pco's; those
 # that did not come back are loaded as they were.
@@ -75,7 +93,9 @@ rmdir "$state/tables" 2>/dev/null || true
 ours=$(sed -n 's/^install=//p' "$owned" 2>/dev/null | head -n 1)
 mode=$(sed -n 's/^mode=//p' "$owned" 2>/dev/null | head -n 1)
 pco=no
-if [ -n "$installed" ] && [ "$installed" = "$ours" ]; then
+if [ "$profile" = appliance ]; then
+	pco=appliance
+elif [ -n "$installed" ] && [ "$installed" = "$ours" ]; then
 	pco=ours
 elif [ -e "$installfile" ]; then
 	warn "pco is set up here as install ${installed:-(unreadable)}, which no run of the suite recorded as its own" \
@@ -84,23 +104,145 @@ elif [ -e "$owned" ]; then
 	pco=ours
 fi
 
+# json runs a perl expression over what a command printed as JSON, as $d.
+json() {
+	expr=$1
+	shift
+	"$@" --output-format json 2>/dev/null | perl -MJSON::PP -e 'local $/; my $d = eval { decode_json(<STDIN>) } // []; '"$expr"
+}
+
+# The appliance profile: what the suite made of the appliance in Proxmox.
+if [ "$pco" = appliance ]; then
+	range=$(sed -n 's/^range=//p' "$state/appliance" 2>/dev/null | head -n 1)
+	[ -n "$range" ] || range=${PCO_E2E_VMIDS:-9250-9299}
+	first=${range%-*}
+	last=${range#*-}
+
+	# Containers first, snapshots and protection off: the appliance and its
+	# copies by the mark in their description, the guests by their names.
+	for id in $(seq "$first" "$last"); do
+		[ -e "/etc/pve/lxc/$id.conf" ] || continue
+		config=$(pct config "$id" 2>/dev/null)
+		if ! printf '%s\n' "$config" | grep -q -e '^description: pco appliance vm' -e '^hostname: e2e-' -e '^hostname: pco-clone$'; then
+			echo "cleanup: container $id is not one of the suite's; left alone"
+			continue
+		fi
+		pct unlock "$id" >/dev/null 2>&1 || true
+		if pct status "$id" | grep -q running; then
+			pct stop "$id" || warn "stopping container $id failed"
+		fi
+		for snap in $(pct listsnapshot "$id" 2>/dev/null | awk '{ print $2 }' | grep -v '^current$'); do
+			pct delsnapshot "$id" "$snap" --force 1 || warn "deleting snapshot $snap of $id failed"
+		done
+		pct set "$id" --protection 0 >/dev/null 2>&1 || true
+		pct destroy "$id" --purge 1 || warn "destroying container $id failed"
+	done
+
+	# The tokens of the appliances of the range, then the user, its role and
+	# the pool when nothing else names them. The tokens go before the user,
+	# whose removal would leave their secrets behind.
+	for token in $(json 'print "$_->{tokenid}\n" for @$d' pveum user token list pco@pve); do
+		id=${token#vm}
+		case "$id" in
+		*[!0-9]* | '') continue ;;
+		esac
+		if [ "$id" -ge "$first" ] && [ "$id" -le "$last" ]; then
+			pveum user token remove pco@pve "$token" || warn "removing the token pco@pve!$token failed"
+		fi
+	done
+	if pveum user list --output-format json 2>/dev/null | grep -q '"pco@pve"'; then
+		if [ -n "$(json 'print "$_->{tokenid}\n" for @$d' pveum user token list pco@pve)" ]; then
+			warn "pco@pve has tokens of appliances outside the range $range: the user, role PCO and pool pco are left"
+		else
+			pveum user delete pco@pve || warn "removing the user pco@pve failed"
+		fi
+	fi
+	acls=$(json 'print "$_->{roleid} $_->{ugid}\n" for @$d' pveum acl list)
+	for role in PCO PCOManaged PCOSDN; do
+		pveum role list --output-format json 2>/dev/null | grep -q "\"roleid\":\"$role\"" || continue
+		if printf '%s\n' "$acls" | grep -q "^$role "; then
+			warn "the role $role is still named by an ACL line; left alone"
+		else
+			pveum role delete "$role" || warn "removing the role $role failed"
+		fi
+	done
+	if pvesh get /pools/pco --output-format json >/dev/null 2>&1; then
+		members=$(json 'print scalar @{ $d->{members} // [] }' pvesh get /pools/pco)
+		if [ "${members:-0}" -eq 0 ]; then
+			pveum pool delete pco || warn "removing the pool pco failed"
+		else
+			warn "the pool pco has members still; left alone"
+		fi
+	fi
+
+	# The test principals.
+	for token in np ps; do
+		pveum user token remove pcotest-e2e@pve "$token" >/dev/null 2>&1 || true
+	done
+	if pveum user list --output-format json 2>/dev/null | grep -q '"pcotest-e2e@pve"'; then
+		pveum user delete pcotest-e2e@pve || warn "removing the user pcotest-e2e@pve failed"
+	fi
+	if pveum role list --output-format json 2>/dev/null | grep -q '"roleid":"PCOTESTNET"'; then
+		pveum role delete PCOTESTNET || warn "removing the role PCOTESTNET failed"
+	fi
+	if pvesh get /pools/pcotest-e2e --output-format json >/dev/null 2>&1; then
+		pveum pool delete pcotest-e2e || warn "removing the pool pcotest-e2e failed"
+	fi
+	rm -f "$state/principals"
+
+	# The firewall options the managed scenarios changed.
+	if [ -e "$state/firewall-options" ]; then
+		fwfailed=0
+		node=$(hostname)
+		while IFS='=' read -r key value; do
+			case "$key" in
+			datacenter) path=/cluster/firewall/options option=enable ;;
+			node) path=/nodes/$node/firewall/options option=enable ;;
+			nftables) path=/nodes/$node/firewall/options option=nftables ;;
+			*) continue ;;
+			esac
+			if [ -z "$value" ]; then
+				pvesh set "$path" --delete "$option" || { warn "deleting $option of $path failed"; fwfailed=1; }
+			else
+				pvesh set "$path" "--$option" "$value" || { warn "putting $option of $path back to $value failed"; fwfailed=1; }
+			fi
+		done <"$state/firewall-options"
+		[ "$fwfailed" -eq 0 ] && rm -f "$state/firewall-options"
+	fi
+
+	for dump in /var/lib/vz/dump/vzdump-lxc-*; do
+		[ -e "$dump" ] || continue
+		id=$(basename "$dump" | cut -d- -f3)
+		if [ "$id" -ge "$first" ] && [ "$id" -le "$last" ]; then
+			rm -f "$dump" || warn "removing $dump failed"
+		fi
+	done
+	rm -rf /root/.pco-appliance-install /run/pco-appliance-install-*
+	if pvesh get /cluster/sdn/vnets/pconet --output-format json >/dev/null 2>&1; then
+		warn "the SDN vnet pconet of a managed network is still there: remove it with its zone pco if it was the run's"
+	fi
+	rm -f "$state/managed"
+fi
+
 # The registered tags go back to what they were before the networking
 # scenarios added to them, before the uninstall takes away the tag setup
-# registered.
-if [ -e "$state/registered-tags" ]; then
-	read -r tags <"$state/registered-tags"
+# registered; in the appliance profile to what they were before the install.
+for tagsfile in "$state/registered-tags" /run/pco-e2e-registered-tags; do
+	[ -e "$tagsfile" ] || continue
+	[ "$tagsfile" = /run/pco-e2e-registered-tags ] && [ "$pco" != appliance ] && continue
+	read -r tags <"$tagsfile" || tags=
 	if [ -z "$tags" ]; then
 		if pvesh set /cluster/options --delete registered-tags >/dev/null; then
-			rm -f "$state/registered-tags"
+			rm -f "$tagsfile"
 		else
 			warn "deleting the registered tags failed"
 		fi
 	elif pvesh set /cluster/options --registered-tags "$tags" >/dev/null; then
-		rm -f "$state/registered-tags"
+		rm -f "$tagsfile"
 	else
 		warn "putting the registered tags back to '$tags' failed"
 	fi
-fi
+done
 
 # The guests of the networking scenarios go before the uninstall: a card left
 # on pconet would keep the SDN zone of the managed network. The daemon is
@@ -135,9 +277,11 @@ destroy_guest() {
 if [ "$pco" = ours ]; then
 	systemctl stop pco 2>/dev/null || true
 fi
-for id in $(seq 9350 9399); do
-	destroy_guest "$id"
-done
+if [ "$pco" != appliance ]; then
+	for id in $(seq 9350 9399); do
+		destroy_guest "$id"
+	done
+fi
 
 # pco first, while the guests are still there: with them gone, a daemon that
 # still ran would see its guests vanish. Against the real API the purge runs
@@ -170,22 +314,24 @@ if [ -e "$state/foreign" ]; then
 		"by hand, then remove $state/foreign"
 fi
 
-for id in $(seq 9100 9199); do
-	conf=/etc/pve/lxc/$id.conf
-	[ -e "$conf" ] || continue
-	if ! grep -q '^hostname: e2e-' "$conf"; then
-		echo "cleanup: container $id is not one of the suite's; left alone"
-		continue
-	fi
-	pct unlock "$id" >/dev/null 2>&1 || true
-	if pct status "$id" | grep -q running; then
-		pct stop "$id" || warn "stopping container $id failed"
-	fi
-	for snap in $(pct listsnapshot "$id" 2>/dev/null | awk '{ print $2 }' | grep -v '^current$'); do
-		pct delsnapshot "$id" "$snap" --force 1 || warn "deleting snapshot $snap of $id failed"
+if [ "$pco" != appliance ]; then
+	for id in $(seq 9100 9199); do
+		conf=/etc/pve/lxc/$id.conf
+		[ -e "$conf" ] || continue
+		if ! grep -q '^hostname: e2e-' "$conf"; then
+			echo "cleanup: container $id is not one of the suite's; left alone"
+			continue
+		fi
+		pct unlock "$id" >/dev/null 2>&1 || true
+		if pct status "$id" | grep -q running; then
+			pct stop "$id" || warn "stopping container $id failed"
+		fi
+		for snap in $(pct listsnapshot "$id" 2>/dev/null | awk '{ print $2 }' | grep -v '^current$'); do
+			pct delsnapshot "$id" "$snap" --force 1 || warn "deleting snapshot $snap of $id failed"
+		done
+		pct destroy "$id" --purge 1 || warn "destroying container $id failed"
 	done
-	pct destroy "$id" --purge 1 || warn "destroying container $id failed"
-done
+fi
 
 if [ -e "$dropin" ]; then
 	rm -f "$dropin"
@@ -291,6 +437,7 @@ if [ -e "$state/bridges" ]; then
 	[ "$bridgesfailed" -eq 0 ] && rm -f "$state/bridges"
 fi
 
+[ "$pco" = appliance ] && [ "$failed" -eq 0 ] && rm -f "$state/appliance"
 if [ "$failed" -eq 0 ]; then
 	rm -rf "$state"
 else
