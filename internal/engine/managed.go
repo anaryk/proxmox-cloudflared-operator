@@ -131,6 +131,7 @@ type DHCPView struct {
 	Bound   bool      `json:"bound"`
 	Since   time.Time `json:"since,omitzero"`
 	Unknown int       `json:"unknown"` // requests from MACs without a lease, since start
+	Forged  int       `json:"forged"`  // requests with another card's MAC as the client, since start
 }
 
 // ManagedVnet is what Deps.Vnet reads of the vnet pconet.
@@ -1279,9 +1280,8 @@ func (s *managedStep) name(owner string) string {
 // lock, and each cycle brings it up to date with the leases it read.
 type dhcpBook struct {
 	mu sync.Mutex
-	// loaded says that a cycle filled leases; before one did, a lookup
-	// reads the store, at most once every leaseReadEvery, from readAt.
-	loaded bool
+	// readAt is when a lookup last read the leases from the store, for a
+	// MAC the table lacked; at most once every leaseReadEvery.
 	readAt time.Time
 	leases map[string]dhcpLease // by MAC
 	// seen is, by MAC, the last request of a lease's card; said, by MAC and
@@ -1313,8 +1313,8 @@ const (
 	lastDHCPEvery = time.Hour
 	// dhcpEventEvery is how often a card's DECLINE or RELEASE is told.
 	dhcpEventEvery = 5 * time.Minute
-	// leaseReadEvery bounds the reads of the store for the server before
-	// the first cycle.
+	// leaseReadEvery bounds the reads of the store for a MAC the table
+	// lacks: a flood of made-up MACs costs one read in that time.
 	leaseReadEvery = 5 * time.Second
 	problemDHCP    = "the DHCP server is not listening on the managed leg: %v"
 )
@@ -1326,25 +1326,29 @@ type DHCPLeases struct{ e *Engine }
 // DHCPLeases returns what the DHCP server of the managed network asks.
 func (e *Engine) DHCPLeases() DHCPLeases { return DHCPLeases{e: e} }
 
-// Lookup returns the address of a MAC that has a lease. Before the first
-// cycle the leases are read from the store, so that guests that boot with the
-// node get theirs.
+// Lookup returns the address of a MAC that has a lease. A MAC the table
+// lacks has the leases read from the store again, at most every
+// leaseReadEvery: before the first cycle, so that guests that boot with the
+// node get theirs, and after it for a lease the cycle of another node wrote,
+// as for a guest that moved here, which asks before this node's next cycle.
 func (l DHCPLeases) Lookup(mac net.HardwareAddr) (netip.Addr, bool) {
 	e := l.e
 	b := &e.dhcp
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !b.loaded {
-		if now := e.d.Now(); b.readAt.IsZero() || now.Sub(b.readAt) >= leaseReadEvery || now.Before(b.readAt) {
-			b.readAt = now
-			if leases, err := e.d.Store.Leases(); err != nil {
-				e.d.Log.Debug().Err(err).Msg("the DHCP server could not read the leases")
-			} else {
-				b.fill(leases)
-			}
-		}
-	}
 	lease, ok := b.leases[mac.String()]
+	if ok {
+		return lease.addr, true
+	}
+	if now := e.d.Now(); b.readAt.IsZero() || now.Sub(b.readAt) >= leaseReadEvery || now.Before(b.readAt) {
+		b.readAt = now
+		if leases, err := e.d.Store.Leases(); err != nil {
+			e.d.Log.Debug().Err(err).Msg("the DHCP server could not read the leases")
+		} else {
+			b.fill(leases)
+		}
+		lease, ok = b.leases[mac.String()]
+	}
 	return lease.addr, ok
 }
 
@@ -1361,15 +1365,18 @@ func (l DHCPLeases) Seen(mac net.HardwareAddr, t time.Time) {
 	}
 }
 
-// Declined tells that the guest of a card found its address in use.
+// Declined tells that a client with the card's MAC said the address is in
+// use, and Released that it gave the address up. Both are told at info: the
+// server verifies no sender beyond the frame's MAC, which another guest on
+// the network can carry, and neither changes the lease.
 func (l DHCPLeases) Declined(mac net.HardwareAddr, t time.Time) {
-	l.e.dhcpEvent(mac, t, "declined", levelWarn, "%s declined its managed address %s: the guest found it in use on the network")
+	l.e.dhcpEvent(mac, t, "declined", levelInfo,
+		"%s declined its managed address %s: a client on pconet says it is in use; the sender is not verified, and the card keeps its lease")
 }
 
-// Released tells that the guest of a card gave its address up; the card
-// keeps its lease.
 func (l DHCPLeases) Released(mac net.HardwareAddr, t time.Time) {
-	l.e.dhcpEvent(mac, t, "released", levelInfo, "%s released its managed address %s; the card keeps its lease")
+	l.e.dhcpEvent(mac, t, "released", levelInfo,
+		"%s released its managed address %s: a client on pconet gave it up; the sender is not verified, and the card keeps its lease")
 }
 
 // dhcpEvent tells what the guest of a card did, once per card and what in
@@ -1446,7 +1453,6 @@ func (s *managedStep) dhcp() {
 		return
 	}
 	b.fill(s.leases)
-	b.loaded = true
 	seen := maps.Clone(b.seen)
 	s.awaiting(b, seen)
 	b.mu.Unlock()

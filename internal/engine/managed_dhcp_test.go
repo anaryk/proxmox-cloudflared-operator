@@ -167,6 +167,30 @@ func TestTheServerIsGivenTheLeases(t *testing.T) {
 	require.False(t, ok, "a lease that went is not answered")
 }
 
+// A lease another node's cycle wrote, as for a guest that moved here, is
+// answered before this node's next cycle: a MAC the table lacks has the
+// store read again, at most every few seconds.
+func TestALeaseTheTableLacksIsReadFromTheStore(t *testing.T) {
+	m := newManagedEnv(t)
+	m.warm()
+	m.next()
+	leases := m.eng.DHCPLeases()
+	_, ok := leases.Lookup(hw(t, leaseMAC3))
+	require.False(t, ok)
+
+	moved := store.Lease{MAC: leaseMAC3, Addr: netip.MustParseAddr("10.203.118.3"), Owner: "qemu/103", NIC: 1, Since: t0}
+	require.NoError(t, m.store.SaveLease(moved, 0))
+	_, ok = leases.Lookup(hw(t, leaseMAC3))
+	require.False(t, ok, "the store was read for the miss a moment ago")
+	m.clock.advance(leaseReadEvery)
+	addr, ok := leases.Lookup(hw(t, leaseMAC3))
+	require.True(t, ok, "read again for the next miss")
+	require.Equal(t, moved.Addr, addr)
+	addr, ok = leases.Lookup(hw(t, leaseMAC2))
+	require.True(t, ok, "the leases of the cycle are still there")
+	require.Equal(t, netip.MustParseAddr("10.203.118.2"), addr)
+}
+
 func TestADeclineAndAReleaseAreEvents(t *testing.T) {
 	m, _ := attachedVM(t)
 	m.next()
@@ -186,9 +210,9 @@ func TestADeclineAndAReleaseAreEvents(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{
-		"warn qemu/102 declined its managed address 10.203.118.2: the guest found it in use on the network",
-		"info qemu/102 released its managed address 10.203.118.2; the card keeps its lease",
-		"warn qemu/102 declined its managed address 10.203.118.2: the guest found it in use on the network",
+		"info qemu/102 declined its managed address 10.203.118.2: a client on pconet says it is in use; the sender is not verified, and the card keeps its lease",
+		"info qemu/102 released its managed address 10.203.118.2: a client on pconet gave it up; the sender is not verified, and the card keeps its lease",
+		"info qemu/102 declined its managed address 10.203.118.2: a client on pconet says it is in use; the sender is not verified, and the card keeps its lease",
 	}, got)
 }
 
@@ -202,9 +226,9 @@ func TestTheServersStateIsInTheView(t *testing.T) {
 	require.Nil(t, st.Managed.DHCP)
 	require.Contains(t, st.Problems, "the DHCP server is not listening on the managed leg: opening the sockets on leg1: no such device")
 
-	m.eng.NoteDHCP(&DHCPView{Bound: true, Since: t0, Unknown: 3}, nil)
+	m.eng.NoteDHCP(&DHCPView{Bound: true, Since: t0, Unknown: 3, Forged: 1}, nil)
 	st = m.next()
-	require.Equal(t, &DHCPView{Bound: true, Since: t0, Unknown: 3}, st.Managed.DHCP)
+	require.Equal(t, &DHCPView{Bound: true, Since: t0, Unknown: 3, Forged: 1}, st.Managed.DHCP)
 	for _, p := range st.Problems {
 		require.NotContains(t, p, "DHCP")
 	}
