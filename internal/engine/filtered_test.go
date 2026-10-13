@@ -114,7 +114,9 @@ func TestAFailedLinkUpLeavesTheCardDownAndFilteredLost(t *testing.T) {
 	m.warm()
 	m.next()
 	m.inv.set(snapshot(downCard(managedGuest(101, "web-1", "www.example.com -> :8080")), ownGuest(ownMAC)))
-	m.cfg.set(func(f *fakeConfigurer) { f.linkUpErr = map[string]error{"lxc/101": errors.New("permission check failed")} })
+	m.cfg.set(func(f *fakeConfigurer) {
+		f.linkUpErr = map[string]error{"lxc/101": errors.New("permission check failed")}
+	})
 	st := m.next()
 	require.Contains(t, m.cfg.changes(), "link-up lxc/101 net1")
 	require.False(t, st.Managed.Filtered.Holds)
