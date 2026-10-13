@@ -144,6 +144,8 @@ const (
 	firewallUnit   = "pve-firewall"
 	// unknownMACEvery is how often the same unknown MAC is reported.
 	unknownMACEvery = 5 * time.Minute
+	// maxUnknownMACs is how many unknown MACs have an event within that time.
+	maxUnknownMACs = 64
 	// vnetEvery is how long what was read of the vnet stands, and
 	// impactEvery how long what was read of a guest's firewall does while
 	// its configuration is the same.

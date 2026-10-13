@@ -48,6 +48,9 @@ const (
 	problemLegNote        = "network %s: the leg is up, but %s"
 	problemGatewayCache   = "saving the cache of the gateway: %s; a boot before it is saved brings the gateway back as it was before"
 	problemServiceRelease = "releasing the service address %s of %s on network %s: %v; the next cycle releases it"
+	// problemUnknownMACsDropped says how many frames of cards no lease
+	// knows went without an event of their own: a guest that sprays MACs.
+	problemUnknownMACsDropped = "%d frames from MACs no lease knows were seen on the managed network past the %d that have an event; each had the guests read again"
 
 	// reasonNoService is the reason of a target on a leg that has no service
 	// address, and reasonNotMoved that of one whose service address did not
@@ -208,6 +211,9 @@ func (ms mappings) list() []store.ServiceAddr {
 // service address neither in the set nor in a configuration verified at
 // Cloudflare, and that no route is bound to any more, is released after that.
 func (c *cycleRun) gateway() {
+	if n := c.e.takeUnknownDropped(); n > 0 {
+		c.problem(problemUnknownMACsDropped, n, maxUnknownMACs)
+	}
 	c.legKept, c.legIfaces, c.legNets, c.frozen = map[string]string{}, map[string]string{}, map[string]bool{}, map[netip.Addr]bool{}
 	legs := c.markLegTargets()
 	if c.e.d.Gateway == nil {

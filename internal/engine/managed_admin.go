@@ -154,6 +154,42 @@ func (e *Engine) EnableManaged(ctx context.Context) error {
 	return nil
 }
 
+// recordUnknown records a report of an unknown MAC and says whether it has
+// an event: the first in five minutes of a MAC, while the record has room.
+// The room is looked at before the MAC is taken in.
+func (e *Engine) recordUnknown(key string, at time.Time) bool {
+	e.macMu.Lock()
+	defer e.macMu.Unlock()
+	last, seen := e.unknownMACs[key]
+	if seen && at.Sub(last) < unknownMACEvery {
+		return false
+	}
+	if !seen && len(e.unknownMACs) >= maxUnknownMACs {
+		// What is older than the window says nothing any more.
+		for other, when := range e.unknownMACs {
+			if at.Sub(when) >= unknownMACEvery {
+				delete(e.unknownMACs, other)
+			}
+		}
+		if len(e.unknownMACs) >= maxUnknownMACs {
+			e.unknownDropped++
+			return false
+		}
+	}
+	e.unknownMACs[key] = at
+	return true
+}
+
+// takeUnknownDropped returns how many reports of unknown MACs had no event
+// since it was last asked.
+func (e *Engine) takeUnknownDropped() int {
+	e.macMu.Lock()
+	defer e.macMu.Unlock()
+	n := e.unknownDropped
+	e.unknownDropped = 0
+	return n
+}
+
 // makeVnetHint names the command that makes the vnet for the profile.
 func makeVnetHint(appliance bool) string {
 	if appliance {
@@ -163,30 +199,19 @@ func makeVnetHint(appliance bool) string {
 }
 
 // UnknownMAC takes what the source-MAC watch of the managed network found: a
-// frame of a MAC no lease knows. It is recorded once per MAC and five
-// minutes, as an event; the guests of the node are read again, and in the
-// appliance the guests count as not isolated until a passing cycle.
+// frame of a MAC no lease knows. Every report has the guests of the node
+// read again and, in the appliance, the guests count as not isolated until a
+// passing cycle: a card that keeps speaking is acted on whatever was said of
+// it before. The event is once per MAC and five minutes, for at most
+// maxUnknownMACs MACs at once; a report past that has no event, and the next
+// cycle says how many there were.
 func (e *Engine) UnknownMAC(mac net.HardwareAddr, at time.Time) {
 	key := mac.String()
-	e.macMu.Lock()
-	last, seen := e.unknownMACs[key]
-	if seen && at.Sub(last) < unknownMACEvery {
-		e.macMu.Unlock()
-		return
-	}
-	// What is older than the window says nothing any more; a watch that
-	// sees many MACs must not grow the map without end.
-	for other, when := range e.unknownMACs {
-		if at.Sub(when) >= unknownMACEvery {
-			delete(e.unknownMACs, other)
-		}
-	}
-	e.unknownMACs[key] = at
-	e.macMu.Unlock()
-
 	e.d.Inventory.ForceRefresh(e.d.Node)
-	e.events.add(Event{At: at, Level: levelWarn, Kind: kindManaged, Subject: gateway.ManagedBridge,
-		Message: fmt.Sprintf("a frame from %s, a MAC no lease knows, was seen on the managed network; the guests of %s are read again", key, e.d.Node)})
+	if e.recordUnknown(key, at) {
+		e.events.add(Event{At: at, Level: levelWarn, Kind: kindManaged, Subject: gateway.ManagedBridge,
+			Message: fmt.Sprintf("a frame from %s, a MAC no lease knows, was seen on the managed network; the guests of %s are read again", key, e.d.Node)})
+	}
 	if profile, _ := e.RunsAs(); profile != store.ProfileAppliance {
 		return
 	}

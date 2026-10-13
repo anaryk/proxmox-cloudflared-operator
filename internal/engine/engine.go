@@ -319,10 +319,12 @@ type Engine struct {
 	vnetRead     vnetRead
 	impacts      map[string]impactRead
 	// unknownMACs are, by MAC, when the source-MAC watch last reported a
-	// frame of a MAC no lease knows on the managed network; guarded by
-	// macMu.
-	macMu       sync.Mutex
-	unknownMACs map[string]time.Time
+	// frame of a MAC no lease knows on the managed network, and
+	// unknownDropped how many reports since the last cycle had no event as
+	// the record was full; guarded by macMu.
+	macMu          sync.Mutex
+	unknownMACs    map[string]time.Time
+	unknownDropped int
 
 	stateMu sync.RWMutex
 	state   State

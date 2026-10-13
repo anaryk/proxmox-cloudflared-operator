@@ -812,6 +812,8 @@ func TestTheManagedNetworkIsOffWithoutItsNetwork(t *testing.T) {
 	require.Equal(t, "per-guest", st.Managed.Consent)
 }
 
+// The event is once per MAC and five minutes; the guests are read again at
+// every report.
 func TestUnknownMACsAreRecordedOncePerFiveMinutes(t *testing.T) {
 	m := newManagedEnv(t)
 	m.warm()
@@ -821,7 +823,7 @@ func TestUnknownMACsAreRecordedOncePerFiveMinutes(t *testing.T) {
 	m.eng.UnknownMAC(mac, m.clock.now().Add(4*time.Minute))
 	m.eng.UnknownMAC(hardware(t, "bc:24:11:00:99:98"), m.clock.now())
 
-	require.Equal(t, []string{testNode, testNode}, m.inv.forcedNodes())
+	require.Equal(t, []string{testNode, testNode, testNode}, m.inv.forcedNodes())
 	events := m.managedEvents()
 	require.Equal(t, []string{
 		"a frame from bc:24:11:00:99:99, a MAC no lease knows, was seen on the managed network; the guests of pve1 are read again",
@@ -829,7 +831,8 @@ func TestUnknownMACsAreRecordedOncePerFiveMinutes(t *testing.T) {
 	}, events)
 
 	m.eng.UnknownMAC(mac, m.clock.now().Add(5*time.Minute))
-	require.Len(t, m.inv.forcedNodes(), 3, "after five minutes it counts again")
+	require.Len(t, m.inv.forcedNodes(), 4)
+	require.Len(t, m.managedEvents(), 3, "after five minutes it is said again")
 }
 
 func TestTheSettingsRefuseAutoWithoutTheGateTagRegistered(t *testing.T) {

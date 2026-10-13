@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"net"
 	"net/netip"
 	"strings"
 	"testing"
@@ -217,12 +218,15 @@ func TestACardAddedLaterIsSaidToBeAttached(t *testing.T) {
 	require.Equal(t, 1, strings.Count(strings.Join(m.managedEvents(), "\n"), "lxc/101 (web-1) is attached to the managed network"), "said once, when it went through")
 }
 
-// The watch of unknown MACs keeps no entry older than five minutes.
+// The record of unknown MACs makes room by the entries older than five
+// minutes, once it is full.
 func TestUnknownMACsArePruned(t *testing.T) {
 	m := newManagedEnv(t)
 	m.warm()
 
-	m.eng.UnknownMAC(hardware(t, "bc:24:11:00:99:99"), m.clock.now())
+	for i := range maxUnknownMACs {
+		m.eng.UnknownMAC(net.HardwareAddr{0xbc, 0x24, 0x11, 0x01, 0x00, byte(i)}, m.clock.now())
+	}
 	m.eng.UnknownMAC(hardware(t, "bc:24:11:00:99:98"), m.clock.now().Add(6*time.Minute))
 
 	m.eng.macMu.Lock()
