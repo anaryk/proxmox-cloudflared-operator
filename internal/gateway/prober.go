@@ -199,6 +199,16 @@ func (p *prober) FDBPorts(ctx context.Context, bridge string, vlan int, mac stri
 	return p.host.FDBPorts(ctx, bridge, vlan, mac)
 }
 
+// PortKinds is the host's too: the bridge ends of the legs are ports of its
+// bridges like any other.
+func (p *prober) PortKinds(ctx context.Context, bridge string) (map[string]resolve.PortKind, error) {
+	pc, ok := p.host.(resolve.PortClassifier)
+	if !ok {
+		return nil, fmt.Errorf("the kinds of the ports of %s: %w", bridge, errors.ErrUnsupported)
+	}
+	return pc.PortKinds(ctx, bridge)
+}
+
 // Dial through a leg is the backend's: from the leg's address, with its mark.
 func (p *prober) Dial(ctx context.Context, iface string, target netip.AddrPort) error {
 	l, isLeg, err := p.leg(iface)

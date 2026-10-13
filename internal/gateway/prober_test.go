@@ -454,3 +454,37 @@ func TestARouteOfALegIsLookedUpNoLongerOnceCancelled(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.Empty(t, h.take())
 }
+
+// classifyingHost is a host prober that tells the kinds of the ports of its
+// bridges.
+type classifyingHost struct {
+	recordingProber
+}
+
+func (p classifyingHost) PortKinds(_ context.Context, bridge string) (map[string]resolve.PortKind, error) {
+	p.record("kinds %s", bridge)
+	return map[string]resolve.PortKind{"eno1": resolve.PortUplink, "vethpco1": resolve.PortLeg}, p.err
+}
+
+// The ports of a bridge are the host's, the bridge ends of the legs among
+// them, so their kinds are the host's to tell.
+func TestTheKindsOfPortsAreTheHosts(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	host := classifyingHost{recordingProber{name: "host", mu: &mu, calls: &calls}}
+	p := NewProber(host, func() []Leg { return nil }, nil)
+
+	kinds, err := p.(resolve.PortClassifier).PortKinds(t.Context(), "vmbr1")
+
+	require.NoError(t, err)
+	require.Equal(t, map[string]resolve.PortKind{"eno1": resolve.PortUplink, "vethpco1": resolve.PortLeg}, kinds)
+	require.Equal(t, []string{"host kinds vmbr1"}, calls)
+
+	t.Run("a host that cannot tell them", func(t *testing.T) {
+		p := NewProber(recordingProber{name: "host", mu: &mu, calls: &calls}, func() []Leg { return nil }, nil)
+
+		_, err := p.(resolve.PortClassifier).PortKinds(t.Context(), "vmbr1")
+
+		require.ErrorIs(t, err, errors.ErrUnsupported)
+	})
+}
