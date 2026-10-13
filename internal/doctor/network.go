@@ -354,7 +354,9 @@ func checkPconet(ctx context.Context, net NetworkEnv) Finding {
 }
 
 // checkDHCP fails while the DHCP server of the managed guests is not bound.
-// What it did not answer is only counted.
+// What it did not answer is only counted: requests of MACs without a lease,
+// and requests that named another card's MAC as their client behind the
+// frame's own source, which the journal names.
 func checkDHCP(m engine.ManagedView) Finding {
 	const check = "dhcp"
 	switch {
@@ -368,7 +370,11 @@ func checkDHCP(m engine.ManagedView) Finding {
 	if n := m.DHCP.Unknown; n > 0 {
 		unknown = count(n, "request", "requests") + " from MACs without a lease since the start, not answered"
 	}
-	return ok(check, "bound since "+m.DHCP.Since.UTC().Format(time.RFC3339)+"; "+unknown)
+	detail := "bound since " + m.DHCP.Since.UTC().Format(time.RFC3339) + "; " + unknown
+	if n := m.DHCP.Forged; n > 0 {
+		detail += "; " + count(n, "request", "requests") + " with another card's MAC as the client, dropped (journalctl -u pco names the source)"
+	}
+	return ok(check, detail)
 }
 
 // The starts of the reasons a consented guest waits for its card that the

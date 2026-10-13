@@ -157,6 +157,7 @@ export interface DHCPView {
   bound: boolean
   since?: string
   unknown: number
+  forged: number
 }
 
 // wire.DoctorCounts

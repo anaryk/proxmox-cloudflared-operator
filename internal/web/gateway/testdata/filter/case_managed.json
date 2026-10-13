@@ -27,6 +27,6 @@
     ],
     "free": 247,
     "vnet": {"ok": true, "zoneType": "simple", "isolatePorts": false, "subnets": 0},
-    "dhcp": {"bound": true, "since": "2026-10-01T06:00:00Z", "unknown": 1}
+    "dhcp": {"bound": true, "since": "2026-10-01T06:00:00Z", "unknown": 1, "forged": 0}
   }
 }

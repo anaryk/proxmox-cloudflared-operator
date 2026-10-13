@@ -413,6 +413,9 @@ func TestTheDHCPCheck(t *testing.T) {
 		{"not started", nil, warn("dhcp", "the DHCP server of the managed network has not said how it is", "journalctl -u pco says why it does not start")},
 		{"requests of unknown MACs", &engine.DHCPView{Bound: true, Since: now.Add(-time.Hour), Unknown: 3},
 			ok("dhcp", "bound since 2026-10-01T11:00:00Z; 3 requests from MACs without a lease since the start, not answered")},
+		{"forged requests", &engine.DHCPView{Bound: true, Since: now.Add(-time.Hour), Forged: 1},
+			ok("dhcp", "bound since 2026-10-01T11:00:00Z; no request from a MAC without a lease; "+
+				"1 request with another card's MAC as the client, dropped (journalctl -u pco names the source)")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			st := managedState(store.ProfileHost)
