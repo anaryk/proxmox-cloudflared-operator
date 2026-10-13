@@ -69,6 +69,24 @@ func (s *suite) bridgeUp(t testing.TB, name string, vlanAware bool) {
 	s.must(t, "ip", "link", "set", "dev", name, "up")
 }
 
+// physicalPort gives a bridge of the run a port that stands for the NIC of a
+// node: Proxmox makes the VLAN bridge of a tagged guest, <bridge>v<tag>,
+// from the bridge's physical ports (a NIC, a bond or a VLAN device, never a
+// veth), and refuses a bridge without one. A bond without slaves is one,
+// and leads nowhere. The port goes with the bridge at the end.
+func (s *suite) physicalPort(t testing.TB, bridge string) {
+	t.Helper()
+	require.True(t, s.bridges[bridge], "the suite did not make %s", bridge)
+	port := bridgePort(bridge)
+	if _, err := s.run("ip", "link", "show", "dev", port); err == nil {
+		return
+	}
+	s.must(t, "ip", "link", "add", port, "type", "bond")
+	s.must(t, "ip", "link", "set", "dev", port, "master", bridge, "up")
+}
+
+func bridgePort(bridge string) string { return bridge + "p0" }
+
 func (s *suite) recordBridges(t testing.TB) {
 	t.Helper()
 	names := slices.Sorted(maps.Keys(s.bridges))
@@ -78,7 +96,8 @@ func (s *suite) recordBridges(t testing.TB) {
 // removeBridges deletes the bridges the run made. It runs after the guests
 // are destroyed and pco is uninstalled, so that nothing is enslaved to them
 // any more. A bridge Proxmox made for a tagged guest on one of them,
-// <bridge>v<tag>, stays after the guest, and goes first.
+// <bridge>v<tag>, stays after the guest, and goes first; the port that
+// stood for a NIC goes with its VLAN devices.
 func (s *suite) removeBridges(t *testing.T) {
 	failed := false
 	for name := range s.bridges {
@@ -89,15 +108,19 @@ func (s *suite) removeBridges(t *testing.T) {
 				failed = true
 			}
 		}
-		if _, err := s.run("ip", "link", "show", "dev", name); err != nil {
-			continue
+		gone := true
+		for _, dev := range []string{bridgePort(name), name} {
+			if _, err := s.run("ip", "link", "show", "dev", dev); err != nil {
+				continue
+			}
+			if _, err := s.run("ip", "link", "del", dev); err != nil {
+				t.Errorf("removing %s: %v", dev, err)
+				failed, gone = true, false
+			}
 		}
-		if _, err := s.run("ip", "link", "del", name); err != nil {
-			t.Errorf("removing the bridge %s: %v", name, err)
-			failed = true
-			continue
+		if gone {
+			delete(s.bridges, name)
 		}
-		delete(s.bridges, name)
 	}
 	if !failed {
 		unmark(t, bridgesFile)
@@ -198,15 +221,25 @@ func (s *suite) stopService(t *testing.T, name string) {
 	unmark(t, serviceMarker(name))
 }
 
-// registeredTags reads the tags only an admin may set, as the node has them.
+// registeredTags reads the tags only an admin may set, as the node has them:
+// a string of tags separated by ; or , on Proxmox VE 8, a list on 9.
 func (s *suite) registeredTags(t testing.TB) []string {
 	t.Helper()
 	out := s.must(t, "pvesh", "get", "/cluster/options", "--output-format", "json")
 	var opts struct {
-		Tags string `json:"registered-tags"`
+		Tags json.RawMessage `json:"registered-tags"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &opts), out)
-	return strings.FieldsFunc(opts.Tags, func(r rune) bool { return r == ';' || r == ',' })
+	if len(opts.Tags) == 0 {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(opts.Tags, &list); err == nil {
+		return list
+	}
+	var joined string
+	require.NoError(t, json.Unmarshal(opts.Tags, &joined), "registered-tags is neither a list nor a string: %s", opts.Tags)
+	return strings.FieldsFunc(joined, func(r rune) bool { return r == ';' || r == ',' })
 }
 
 // registerTag adds a tag to the registered tags, and records what they were

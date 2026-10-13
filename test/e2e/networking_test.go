@@ -172,6 +172,9 @@ func testAttachVLAN(t *testing.T, s *suite) {
 
 	t.Log("a tag on a bridge that does not filter VLANs: the leg sits on the bridge Proxmox makes for it, and follows it")
 	s.bridgeUp(t, isolatedBridge, false)
+	// Proxmox makes that bridge from the physical ports of the guest's
+	// bridge, and refuses to start the guest on a bridge that has none.
+	s.physicalPort(t, isolatedBridge)
 	onTag := s.in(guest{vmid: s18Tag, bridge: isolatedBridge, vlan: taggedVLAN, addr: "10.70.0.10/24", notes: "cf-tunnel: e2e-s18t.ZONE -> :8080"})
 	s.create(t, onTag)
 	vlanDev := isolatedBridge + "v" + strconv.Itoa(taggedVLAN)

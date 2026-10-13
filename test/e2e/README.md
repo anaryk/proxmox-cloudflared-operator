@@ -63,7 +63,10 @@ when what is in the way was left by a run of its own.
   them first, and loads those that do not come back by themselves as they were.
 - For the networking scenarios: makes the runtime bridges `pcot1`, `pcot2`, `pcotv`
   and `pcoti` with `ip link add` (never in `/etc/network/interfaces`) and removes
-  them at the end; makes guests 9350 to 9399 on them, containers and, with a cloud
+  them at the end, with a bond without slaves, `pcot1p0`, as the port of `pcot1`
+  that stands for a NIC (Proxmox makes the bridge of a tagged guest from the
+  physical ports of its bridge, and refuses a bridge that has none); makes guests
+  9350 to 9399 on them, containers and, with a cloud
   image, virtual machines; attaches networks to them and detaches them again, which
   enables `pco-netns.service` and brings up the gateway namespace `pco`; enables the
   managed network (`pco network managed enable`: the SDN zone `pco` and vnet
