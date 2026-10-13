@@ -297,3 +297,64 @@ func hw(s string) net.HardwareAddr {
 	}
 	return slices.Clone(m)
 }
+
+// A guest that sprays source MACs has the engine told of the first
+// maxReported of them in reportEvery, each once, and grows nothing past that.
+func TestTheSourceWatchReportsABoundedNumberOfMACs(t *testing.T) {
+	r := newSourceRig(t)
+	for i := range 1000 {
+		r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, byte(i >> 8), byte(i)})
+	}
+	require.Len(t, r.seen, maxReported)
+	require.Len(t, r.s.reported, maxReported)
+
+	r.seen = nil
+	r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, 0x00, 0x00})
+	require.Empty(t, r.seen, "a MAC told of is not told again within the time")
+
+	r.now = r.now.Add(reportEvery)
+	r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, 0x09, 0x99})
+	r.s.report(net.HardwareAddr{0xbc, 0x24, 0x11, 0x00, 0x00, 0x00})
+	require.Equal(t, []string{"bc:24:11:00:09:99 12:05:00", "bc:24:11:00:00:00 12:05:00"}, r.seen, "after the time the old ones make room")
+	require.Len(t, r.s.reported, 2)
+}
+
+// The port watch's callback never waits for the entries to be given: a
+// slow apply cannot hold up the reader of the links.
+func TestASlowApplyDoesNotHoldUpThePortWatch(t *testing.T) {
+	r := newStickyRig(t, true)
+	release := make(chan struct{})
+	r.g.applySticky = func(context.Context, gateway.Backend, []gateway.Sticky) error {
+		<-release
+		return nil
+	}
+	defer close(release)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	called := make(chan struct{})
+	watch := func(ctx context.Context, _ netns.NsHandle, _ string, joined func(string)) error {
+		for range 10 * portJoinedQueue {
+			joined("veth101i1")
+		}
+		close(called)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	go r.g.watchPorts(ctx, watch, sleepContext)
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback waited for the apply")
+	}
+}
+
+// The ports that joined meanwhile are given their entries in one turn, once
+// each.
+func TestThePortsWaitingAreTakenOnceEach(t *testing.T) {
+	joined := make(chan string, portJoinedQueue)
+	for _, p := range []string{"tap101i1", "veth102i1", "tap101i1"} {
+		joined <- p
+	}
+	require.Equal(t, []string{"veth103i1", "tap101i1", "veth102i1"}, drainPorts(joined, "veth103i1"))
+	require.Empty(t, joined)
+}

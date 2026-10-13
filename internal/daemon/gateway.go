@@ -191,12 +191,12 @@ func (g *gatewayPart) stickyPorts() map[string]bool {
 }
 
 // keepSticky gives the wanted sticky entries to the ports of managed guests
-// that appeared since the entries were last given: joined, a port the port
+// that appeared since the entries were last given: joined, the ports the port
 // watch saw join the managed bridge, and any other the keeper's check finds
 // there now. A guest that starts makes its port anew, without the entry its
 // card had; until it is given again, another guest may take the card's MAC
 // over. The rest of the gateway is left to the cycle.
-func (g *gatewayPart) keepSticky(ctx context.Context, joined string) error {
+func (g *gatewayPart) keepSticky(ctx context.Context, joined ...string) error {
 	if !g.mayChange() {
 		return nil
 	}
@@ -208,7 +208,7 @@ func (g *gatewayPart) keepSticky(ctx context.Context, joined string) error {
 	now := g.stickyPorts()
 	appeared := false
 	for port := range now {
-		if !g.present[port] || port == joined {
+		if !g.present[port] || slices.Contains(joined, port) {
 			appeared = true
 		}
 	}
@@ -242,8 +242,12 @@ func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Con
 			case <-ctx.Done():
 				return
 			case port := <-joined:
-				if err := g.keepSticky(ctx, port); err != nil && ctx.Err() == nil {
-					g.log.Warn().Err(err).Str("port", port).Msg("giving the port of a managed guest its sticky entry failed; the keeper tries again")
+				// The ports that joined meanwhile are given their entries
+				// at once: a port whose link changes often costs one apply
+				// per turn, not one per change.
+				ports := drainPorts(joined, port)
+				if err := g.keepSticky(ctx, ports...); err != nil && ctx.Err() == nil {
+					g.log.Warn().Err(err).Strs("ports", ports).Msg("giving the ports of managed guests their sticky entries failed; the keeper tries again")
 				}
 			}
 		}
@@ -263,6 +267,22 @@ func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Con
 			"until it runs again, a guest's port gets its sticky entry at the keeper's check")
 		if sleep(ctx, watchAgainAfter) != nil {
 			return
+		}
+	}
+}
+
+// drainPorts returns first and the ports waiting in joined, once each; there
+// are no more than the queue holds.
+func drainPorts(joined <-chan string, first string) []string {
+	ports := []string{first}
+	for {
+		select {
+		case port := <-joined:
+			if !slices.Contains(ports, port) {
+				ports = append(ports, port)
+			}
+		default:
+			return ports
 		}
 	}
 }
@@ -384,7 +404,7 @@ func (k *keeper) checkGateway(ctx context.Context) time.Duration {
 	}
 	// A guest's port that appeared since the last sync is no change of the
 	// gateway: it is given its entry before the check.
-	if err := k.gw.keepSticky(ctx, ""); err != nil {
+	if err := k.gw.keepSticky(ctx); err != nil {
 		k.log.Warn().Err(err).Msg("giving the ports of managed guests their sticky entries failed; the next check tries again")
 	}
 	err := k.gw.Verify(ctx)
@@ -419,6 +439,13 @@ const (
 	// legPollEvery is how often the watch looks for the managed leg while
 	// it has none to listen on.
 	legPollEvery = 5 * time.Second
+	// reportEvery is how often at most the engine is told of one MAC, and
+	// maxReported how many MACs it is told of within that time: a guest that
+	// sends from ever new MACs has the node's guests read again and an event
+	// for the first of them, not for each. The engine's own rule is once per
+	// MAC in the same time.
+	reportEvery = 5 * time.Minute
+	maxReported = 32
 	// leasesReadEvery is how often at most a frame of a MAC the watch does
 	// not know has the leases read again: a card attached in this cycle
 	// speaks before the gateway is synced with its lease, and a guest that
@@ -443,7 +470,11 @@ type sourceWatch struct {
 	known  map[string]bool // the MACs of the leases as last read
 	read   bool            // the leases were read once
 	readAt time.Time
-	failed string // why the watch last failed, said once
+	// reported are, by MAC, when the engine was last told of it; never more
+	// than maxReported. overflowAt is when MACs past that were last logged.
+	reported   map[string]time.Time
+	overflowAt time.Time
+	failed     string // why the watch last failed, said once
 }
 
 // newSourceWatch is the watch of the managed leg of a daemon. It waits for
@@ -489,7 +520,44 @@ func (s *sourceWatch) fail(leg gateway.Leg, err error) {
 	s.log.WithLevel(level).Str("leg", leg.Iface()).Str("why", why).Msg("watching the managed network for cards no lease knows stopped; it starts again")
 }
 
-func (s *sourceWatch) report(mac net.HardwareAddr) { s.unknown(mac, s.now()) }
+// report tells the engine of a MAC no lease knows: once per MAC in
+// reportEvery, and of no more than maxReported MACs in that time. The bound
+// is checked before a MAC is taken in, so that a guest that sprays MACs
+// grows neither the memory nor the work of the watch, nor of the engine.
+func (s *sourceWatch) report(mac net.HardwareAddr) {
+	key, now := mac.String(), s.now()
+	s.mu.Lock()
+	if s.reported == nil {
+		s.reported = make(map[string]time.Time, maxReported)
+	}
+	at, seen := s.reported[key]
+	if seen && now.Sub(at) < reportEvery {
+		s.mu.Unlock()
+		return
+	}
+	if !seen && len(s.reported) >= maxReported {
+		for other, at := range s.reported {
+			if now.Sub(at) >= reportEvery {
+				delete(s.reported, other)
+			}
+		}
+		if len(s.reported) >= maxReported {
+			overflow := now.Sub(s.overflowAt) >= reportEvery
+			if overflow {
+				s.overflowAt = now
+			}
+			s.mu.Unlock()
+			if overflow {
+				s.log.Warn().Int("reported", maxReported).Str("mac", key).
+					Msg("more cards no lease knows speak on the managed network than are reported; the guests of the node are read again already")
+			}
+			return
+		}
+	}
+	s.reported[key] = now
+	s.mu.Unlock()
+	s.unknown(mac, now)
+}
 
 // isLease says whether a MAC is a lease's. A MAC it does not know has the
 // leases read again, no more often than leasesReadEvery. While they were
