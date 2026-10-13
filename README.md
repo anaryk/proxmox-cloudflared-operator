@@ -132,7 +132,7 @@ only observes until `pco apply`.
 
 ## Documentation
 
-The pages will be published, with search, at
+The pages are published, with search, at
 <https://anaryk.github.io/proxmox-cloudflared-operator/>, and the package carries them in
 `/usr/share/doc/pco/docs`.
 
