@@ -142,8 +142,15 @@ Nothing particular. An admin can request an adoption in the web interface as wel
    ```
    ````
 
-3. **Read the plan.** `pco plan` lists each name that a record of someone else holds. Every
-   name that an old tunnel serves is there, and so is the one with the `A` record:
+3. **Read the plan.** `pco plan` lists a `create-record` for each of these names, held by
+   `tunnel not created yet`: pco has no tunnel yet, so it cannot tell which names a record
+   of someone else stands in the way of. Nothing is written while it observes.
+4. **Leave observe-only mode.** `pco apply` makes the tunnel of pco, writes its
+   configuration and starts the connector. Wait until `pco status` shows the tunnel verified
+   and its connector ready, as in the quickstart. No name has moved yet. A name in the Notes
+   that has no record at all is published now. `pco plan` now lists each name that a record
+   of someone else holds. Every name that an old tunnel serves is there, and so is the one
+   with the `A` record:
 
        Records of someone else that stand in the way (pco adopt replaces one):
        NAME              ZONE         TYPE   CONTENT
@@ -154,10 +161,6 @@ Nothing particular. An admin can request an adoption in the web interface as wel
    While they stand in the way pco does not publish the names, and the old tunnels serve
    them, as before. `pco doctor` warns in its `conflicts` check until each is adopted or its
    name is out of the Notes.
-4. **Leave observe-only mode.** `pco apply` makes the tunnel of pco, writes its
-   configuration and starts the connector. Wait until `pco status` shows the tunnel verified
-   and its connector ready, as in the quickstart. No name has moved yet. A name in the Notes
-   that has no record at all is published now.
 5. **Adopt a name.** `pco adopt shop.example.com` shows the conflict and asks:
 
        shop.example.com is held by a record of someone else in zone example.com: CNAME 01234567-89ab-cdef-0123-456789abcdef.cfargotunnel.com.

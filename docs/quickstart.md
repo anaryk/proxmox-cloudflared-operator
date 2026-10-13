@@ -420,7 +420,7 @@ interface; [Appliance](appliance.md#the-web-interface) says how to sign in.
   [backups](guides/backup-and-recovery.md).
 - [Roll out in observe-only mode](guides/observe-then-enforce.md): more hostnames at once, read
   before they are published.
-- [Use cases](use-cases/index.md): six setups, from a homelab to a hosting company, and the
+- [Use cases](use-cases/index.md): seven setups, from a homelab to a hosting company, and the
   decisions each one makes.
 - [Annotations](annotations.md): everything you can write in the Notes.
 - [Networking](networking.md): the guests the node is not on, through a leg of pco's

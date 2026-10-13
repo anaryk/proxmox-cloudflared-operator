@@ -18,7 +18,8 @@ pool `pco`, with the state on a volume of its own that backups leave out and a P
 token of its own, privilege-separated. The node holds the container and nothing else of
 pco. The cost is the one in [Profiles](../profiles.md#side-by-side): the container cannot
 read the forwarding table of a bridge, so the highest level a guest can be proven at is
-`observed`, and the rules for that level decide who may publish.
+`observed`, outside pco's managed network, and the rules for that level decide who may
+publish.
 
 ## The setup
 
@@ -97,8 +98,8 @@ the connectors dial, and nothing of a tenant's is touched; [Attach a network](..
 is the guide. Its segment is the one each leg is on, `vmbr1:20` for the first, and each
 segment is acknowledged once:
 
-    pco segment list
-    pco segment acknowledge vmbr1:20
+    pct exec 120 -- pco segment list
+    pct exec 120 -- pco segment acknowledge vmbr1:20
 
 ### Admission, the tag, and who writes the names
 
@@ -123,7 +124,7 @@ tenant. Two choices follow:
   Notes are then never read, whatever they say. The company makes each route itself, as a
   manual route to the guest, which needs no tag:
 
-      pco route manual add acme.example.net --guest qemu/151 --port 8080
+      pct exec 120 -- pco route manual add acme.example.net --guest qemu/151 --port 8080
 
   The route is the company's own, so the policy does not apply to it, and the rules at
   `observed` do: the segment, the MAC and the approval of the guest. pco reads a machine a

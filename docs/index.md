@@ -57,7 +57,8 @@ To run pco on a node, which is the host profile, you need:
   ([Networking](networking.md)); [Quickstart](quickstart.md) has the whole list.
 
 The packages, their checksums and the signature of the checksum file are on the
-[releases page](https://github.com/anaryk/proxmox-cloudflared-operator/releases).
+[releases page](https://github.com/anaryk/proxmox-cloudflared-operator/releases), once
+there is a release; until then, [Quickstart](quickstart.md#install) says how to build them.
 
 ## Where to read on
 
