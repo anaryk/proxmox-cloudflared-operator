@@ -345,7 +345,7 @@ func TestTheRolloutOfATunnelIsInTheState(t *testing.T) {
 	st = e.cycle()
 
 	ev = rollout()
-	require.Equal(t, fmt.Sprintf("configuration version %d runs on 1 connectors in account acc1", st.Tunnels[0].Version), ev.Message)
+	require.Equal(t, fmt.Sprintf("configuration version %d runs on 1 connector in account acc1", st.Tunnels[0].Version), ev.Message)
 	require.Equal(t, &RolloutView{Version: st.Tunnels[0].Version, Connectors: 1, ConfirmedAt: ev.At}, st.Tunnels[0].Rollout)
 }
 

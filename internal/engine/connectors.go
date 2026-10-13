@@ -435,6 +435,6 @@ func (c *cycleRun) confirmRollout(t reconcile.TunnelState, conns []cfapi.Connect
 	c.e.rolledOut[t.ID] = RolloutView{Version: t.Version, Connectors: len(conns), ConfirmedAt: c.now}
 	c.events = append(c.events, Event{
 		At: c.now, Level: levelInfo, Kind: kindRollout, Subject: t.Name, Tunnel: t.Name, Account: t.AccountID,
-		Message: fmt.Sprintf("configuration version %d runs on %d connectors in account %s", t.Version, len(conns), t.AccountID),
+		Message: fmt.Sprintf("configuration version %d runs on %s in account %s", t.Version, plural(len(conns), "connector", "connectors"), t.AccountID),
 	})
 }
