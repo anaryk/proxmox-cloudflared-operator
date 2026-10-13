@@ -25,6 +25,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -554,20 +555,23 @@ func (f *fakeGateway) last() (gatewaySync, bool) {
 // env is an agent over a real store in a temporary directory and fakes for
 // everything else.
 type env struct {
-	t       *testing.T
-	clock   *clock
-	paths   store.Paths
-	store   *store.Store
-	res     *fakeResolver
-	conn    *fakeConnectors
-	egr     *fakeEgress
-	gw      *fakeGateway
-	blocked []netip.Addr
-	runs    *runner
-	events  *events
-	kind    pki.Kind
-	install string
-	changed atomic.Int32
+	t     *testing.T
+	clock *clock
+	paths store.Paths
+	store *store.Store
+	res   *fakeResolver
+	conn  *fakeConnectors
+	egr   *fakeEgress
+	gw    *fakeGateway
+	// isolation is what an appliance agent reads of its node for the
+	// filtered level; nil for an agent that judges it not.
+	isolation func(context.Context, time.Time) managednet.FilteredInput
+	blocked   []netip.Addr
+	runs      *runner
+	events    *events
+	kind      pki.Kind
+	install   string
+	changed   atomic.Int32
 
 	agent *Agent
 	seq   uint64
@@ -618,6 +622,9 @@ func (e *env) deps() Deps {
 	}
 	if e.gw != nil {
 		d.Gateway = e.gw
+	}
+	if e.isolation != nil {
+		d.Filtered = e.isolation
 	}
 	return d
 }

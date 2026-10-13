@@ -27,6 +27,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -136,8 +137,13 @@ type Deps struct {
 	Blocked    func() ([]netip.Addr, error)
 	Gateway    Gateway // nil where no gateway runs
 	Runner     Runner  // qm and pct; host only
-	Now        func() time.Time
-	Log        zerolog.Logger
+	// Filtered reads, in the appliance, what the filtered level of the
+	// managed network is judged on, with the frames from unknown MACs since
+	// the last judgment. Nil on the host, and where the agent is not to judge
+	// it: the level is then never raised.
+	Filtered func(ctx context.Context, since time.Time) managednet.FilteredInput
+	Now      func() time.Time
+	Log      zerolog.Logger
 	// Changed is called when what the agent reports changed outside a pass,
 	// as when an address whose MAC moved failed its verification, so that it
 	// is reported soon. It may be nil.
@@ -179,8 +185,9 @@ type Agent struct {
 	wasActive map[string]bool // tunnels whose connector ran at the last pass
 	ownReady  map[string]bool // tunnels whose connector was ready at the last pass
 	gwInUse   bool            // the gateway was last given a leg or a service
-	rep       view            // what the last pass found, for Status and View
-	repMu     sync.Mutex      // guards rep
+	filtered  filteredMemory
+	rep       view       // what the last pass found, for Status and View
+	repMu     sync.Mutex // guards rep
 
 	heardMu sync.Mutex
 	heardAt time.Time // the last snapshot or heartbeat of a controller

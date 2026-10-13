@@ -165,6 +165,7 @@ func (p *pass) run() {
 	}
 	p.blockLost()
 	p.freezeMoved()
+	p.filtered()
 	p.holdBelowMinimum()
 	p.markLegs()
 	p.judge()
