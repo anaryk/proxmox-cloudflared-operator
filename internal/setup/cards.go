@@ -278,6 +278,7 @@ type firewallRule struct {
 	Pos     pveInt `json:"pos"`
 	Iface   string `json:"iface"`
 	Comment string `json:"comment"`
+	Enable  pveInt `json:"enable"`
 	Digest  string `json:"digest"`
 }
 
@@ -307,12 +308,71 @@ func (d Detacher) restoreFirewall(ctx context.Context, node string, ref model.Gu
 		}
 	}
 	if !a.Firewall.Enabled {
-		if _, err := d.Run.Run(ctx, "pvesh", "set", fw+"/options", "--enable", "0"); err != nil {
-			return fmt.Errorf("turning the firewall of %s off again: %w", ref, err)
+		kept, err := d.turnOff(ctx, fw, ref, a.Firewall)
+		if err != nil {
+			return err
+		}
+		if kept != "" {
+			d.Ask.Warn("managed card of %s: the firewall stays on, which pco turned on for the card: %s; pco's rules and ipset on %s are removed",
+				a.Owner, kept, iface)
+			return nil
 		}
 	}
 	d.Ask.Info("managed card of %s: the firewall is as it was before pco attached the card", a.Owner)
 	return nil
+}
+
+// firewallOptions are the options of a guest's firewall as pvesh lists them.
+type firewallOptions struct {
+	Enable    pveInt `json:"enable"`
+	PolicyIn  string `json:"policy_in"`
+	PolicyOut string `json:"policy_out"`
+	Digest    string `json:"digest"`
+}
+
+// turnOff turns a guest firewall that pco turned on off again, with the
+// policies it had, but only while what pco set is what it is: both policies
+// ACCEPT, and no more rules that are on and not pco's than it had. Otherwise
+// an admin has taken it up since, and kept says why it stays on.
+func (d Detacher) turnOff(ctx context.Context, fw string, ref model.GuestRef, before *store.FirewallBefore) (kept string, err error) {
+	var o firewallOptions
+	if err := query(ctx, d.Run, &o, "pvesh", "get", fw+"/options", "--output-format", "json"); err != nil {
+		return "", fmt.Errorf("reading the firewall options of %s: %w", ref, err)
+	}
+	if o.Enable != 1 {
+		return "", nil
+	}
+	var rules []firewallRule
+	if err := query(ctx, d.Run, &rules, "pvesh", "get", fw+"/rules", "--output-format", "json"); err != nil {
+		return "", fmt.Errorf("reading the firewall rules of %s: %w", ref, err)
+	}
+	others := 0
+	for _, r := range rules {
+		if r.Enable == 1 && !strings.HasPrefix(r.Comment, FirewallComment) {
+			others++
+		}
+	}
+	switch {
+	case o.PolicyIn != "ACCEPT" || o.PolicyOut != "ACCEPT":
+		return "its policies were changed since pco turned it on", nil
+	case others > before.Rules:
+		return fmt.Sprintf("it has %d rules more than when pco turned it on", others-before.Rules), nil
+	}
+	args := []string{"set", fw + "/options", "--enable", "0"}
+	for _, p := range []struct{ key, value string }{{"policy_in", before.PolicyIn}, {"policy_out", before.PolicyOut}} {
+		if p.value == "" {
+			args = append(args, "--delete", p.key)
+		} else {
+			args = append(args, "--"+p.key, p.value)
+		}
+	}
+	if o.Digest != "" {
+		args = append(args, "--digest", o.Digest)
+	}
+	if _, err := d.Run.Run(ctx, "pvesh", args...); err != nil {
+		return "", fmt.Errorf("turning the firewall of %s off again: %w", ref, err)
+	}
+	return "", nil
 }
 
 // removeRules removes pco's rules on iface, told by their comment, one at a
