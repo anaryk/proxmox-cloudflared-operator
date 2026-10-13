@@ -368,6 +368,7 @@ type tokenEntry struct {
 	Name    string    `json:"tokenid"`
 	Comment string    `json:"comment"`
 	Privsep *flexBool `json:"privsep"`
+	Expire  flexInt   `json:"expire"` // seconds since the epoch; 0: never
 }
 
 // tokens lists the tokens of pco@pve; none when the user is not there.
@@ -383,8 +384,10 @@ func tokens(ctx context.Context, r setup.Runner, users []userEntry) ([]tokenEntr
 }
 
 type userEntry struct {
-	ID      string `json:"userid"`
-	Comment string `json:"comment"`
+	ID      string    `json:"userid"`
+	Comment string    `json:"comment"`
+	Enable  *flexBool `json:"enable"` // enabled unless it says 0
+	Expire  flexInt   `json:"expire"` // seconds since the epoch; 0: never
 }
 
 func users(ctx context.Context, r setup.Runner) ([]userEntry, error) {

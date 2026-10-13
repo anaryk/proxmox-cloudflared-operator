@@ -1,10 +1,12 @@
 package applianceinstall
 
 import (
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -295,10 +297,10 @@ func TestUninstallRefusedWhileAGuestHasACardOnTheManagedNetwork(t *testing.T) {
 		"remove it; nothing was removed")
 }
 
-// attachmentOf is what the appliance lists for the card it attached to a
-// guest, with pco's firewall changes.
-func attachmentOf(owner string, addr string) map[string]any {
-	return map[string]any{"owner": owner, "identity": "x", "nic": 1, "mac": store.ManagedMAC(netip.MustParseAddr(addr)),
+// attachedTo105 is what the appliance lists for the card it attached to
+// lxc/105, with pco's firewall changes.
+func attachedTo105(addr string) map[string]any {
+	return map[string]any{"owner": "lxc/105", "identity": "x", "nic": 1, "mac": store.ManagedMAC(netip.MustParseAddr(addr)),
 		"addr": addr, "consent": "tag", "since": "2026-10-01T12:00:00Z", "firewall": map[string]any{"enabled": false, "rules": 1}}
 }
 
@@ -314,7 +316,7 @@ func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 	e.guestOnPconet()
 	e.node.guestFirewalls[105] = &fakeGuestFirewall{enabled: true,
 		rules: []fakeRule{{"net0", ""}, pcoRule("net1"), {"net1", "backup agent"}, pcoRule("net1")}, ipsets: []string{"ipfilter-net1"}}
-	e.node.attachments = []map[string]any{attachmentOf("lxc/105", "10.203.118.5")}
+	e.node.attachments = []map[string]any{attachedTo105("10.203.118.5")}
 	o := uninstallOptions()
 	o.DetachManaged = true
 
@@ -338,16 +340,27 @@ func TestUninstallDetachesTheCardsOfTheAppliance(t *testing.T) {
 // change (no VM.Config.Network on it, through the guest or its pool) and a
 // card whose address is outside the managed subnet are not its, and stay.
 func TestUninstallLeavesTheCardsTheApplianceMayNotChange(t *testing.T) {
+	expired := t0.Add(-time.Hour).Unix()
 	for _, tt := range []struct {
 		name       string
 		granted    bool
 		attachment map[string]any
+		prepare    func(*fakeNode)
 		warning    string
 	}{
-		{"a guest the token is not granted", false, attachmentOf("lxc/105", "10.203.118.5"),
+		{"a guest the token is not granted", false, attachedTo105("10.203.118.5"), nil,
 			"lxc/100 lists a card it attached to lxc/105, and its token pco@pve!vm100 holds no VM.Config.Network on /vms/105; ignored"},
-		{"an address outside the managed subnet", true, attachmentOf("lxc/105", "10.204.0.5"),
+		{"an address outside the managed subnet", true, attachedTo105("10.204.0.5"), nil,
 			"lxc/100 lists a card it attached to lxc/105 with 10.204.0.5, outside its managed subnet 10.203.118.0/24; ignored"},
+		{"a token that expired", true, attachedTo105("10.203.118.5"),
+			func(f *fakeNode) { f.user("pco@pve").Tokens[0].Expire = expired },
+			"lxc/100 lists a card it attached to lxc/105, and its token pco@pve!vm100 expired at 2026-10-01 11:00 UTC; ignored"},
+		{"a user that is disabled", true, attachedTo105("10.203.118.5"),
+			func(f *fakeNode) { f.user("pco@pve").Enabled = false },
+			"lxc/100 lists a card it attached to lxc/105, and the user pco@pve of its token is disabled; ignored"},
+		{"a user that expired", true, attachedTo105("10.203.118.5"),
+			func(f *fakeNode) { f.user("pco@pve").Expire = expired },
+			"lxc/100 lists a card it attached to lxc/105, and the user pco@pve of its token expired at 2026-10-01 11:00 UTC; ignored"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := managedNode(t)
@@ -356,6 +369,9 @@ func TestUninstallLeavesTheCardsTheApplianceMayNotChange(t *testing.T) {
 				e.node.pools["web"] = &fakePool{Members: []int{105}}
 				e.node.grant("/pool/web", "token", "pco@pve!vm100", "PCOManaged")
 				e.node.grant("/pool/web", "user", "pco@pve", "PCOManaged")
+			}
+			if tt.prepare != nil {
+				tt.prepare(e.node)
 			}
 			e.guestOnPconet()
 			e.node.attachments = []map[string]any{tt.attachment}
@@ -370,6 +386,52 @@ func TestUninstallLeavesTheCardsTheApplianceMayNotChange(t *testing.T) {
 			require.NotNil(t, e.node.cts[100])
 		})
 	}
+}
+
+// The appliance's list is asked about per guest once, however many cards it
+// names on the guest, and a list longer than the guests of the cluster is
+// refused before anything is asked.
+func TestUninstallAsksOncePerGuestAndCapsTheList(t *testing.T) {
+	second := attachedTo105("10.203.118.6")
+	second["nic"] = 2
+	t.Run("once per guest", func(t *testing.T) {
+		e := managedNode(t)
+		require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+		e.guestOnPconet()
+		e.node.attachments = []map[string]any{attachedTo105("10.203.118.5"), second}
+		o := uninstallOptions()
+		o.DetachManaged = true
+
+		_ = e.in.Uninstall(t.Context(), 100, o)
+
+		asked := 0
+		for _, line := range e.node.ran {
+			if strings.HasPrefix(line, "pvesh get /access/permissions --userid pco@pve!vm100 --path /vms/105 ") {
+				asked++
+			}
+		}
+		require.Equal(t, 1, asked)
+	})
+	t.Run("more cards than guests", func(t *testing.T) {
+		e := managedNode(t)
+		require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+		e.guestOnPconet()
+		var many []map[string]any
+		for i := range 3 {
+			a := attachedTo105(fmt.Sprintf("10.203.118.%d", 5+i))
+			a["nic"] = 1 + i
+			many = append(many, a)
+		}
+		e.node.attachments = many
+		o := uninstallOptions()
+		o.DetachManaged = true
+
+		err := e.in.Uninstall(t.Context(), 100, o)
+
+		require.ErrorContains(t, err, "pco appliance attachments listed 3 cards, more than the 2 guests of the cluster")
+		require.NotContains(t, e.node.ran, "pvesh get /access/permissions --userid pco@pve!vm100 --path /vms/105 --output-format json")
+		require.NotNil(t, e.node.cts[100])
+	})
 }
 
 // What a stopped appliance attached cannot be read; the uninstall refuses

@@ -60,6 +60,7 @@ type fakeUser struct {
 	ID      string
 	Comment string
 	Enabled bool
+	Expire  int64 // when it expires, in seconds since the epoch; 0: never
 	Groups  []string
 	Tokens  []fakeToken
 }
@@ -68,6 +69,7 @@ type fakeToken struct {
 	Name    string
 	Comment string
 	Privsep bool
+	Expire  int64
 }
 
 type fakeGroup struct {
@@ -794,7 +796,7 @@ func (f *fakeNode) pveum(args []string) (string, error) {
 	case line == "user list --output-format json":
 		var out []map[string]any
 		for _, u := range f.users {
-			out = append(out, map[string]any{"userid": u.ID, "comment": u.Comment, "enable": b01(u.Enabled)})
+			out = append(out, map[string]any{"userid": u.ID, "comment": u.Comment, "enable": b01(u.Enabled), "expire": u.Expire})
 		}
 		return asJSON(out), nil
 	case args[0] == "user" && args[1] == "add":
@@ -821,7 +823,7 @@ func (f *fakeNode) pveum(args []string) (string, error) {
 		}
 		var out []map[string]any
 		for _, t := range u.Tokens {
-			out = append(out, map[string]any{"tokenid": t.Name, "comment": t.Comment, "privsep": b01(t.Privsep), "expire": 0})
+			out = append(out, map[string]any{"tokenid": t.Name, "comment": t.Comment, "privsep": b01(t.Privsep), "expire": t.Expire})
 		}
 		return asJSON(out), nil
 	case len(args) >= 3 && args[0] == "user" && args[1] == "token" && args[2] == "add":

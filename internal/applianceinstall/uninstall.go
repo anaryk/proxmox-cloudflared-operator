@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/setup"
@@ -273,7 +274,7 @@ func (r *run) surveyManaged(ctx context.Context, vmid int, o UninstallOptions, s
 			"nothing was removed", vmid, vmid)
 	default:
 		var err error
-		if s.attachments, err = r.attachments(ctx, vmid); err != nil {
+		if s.attachments, err = r.attachments(ctx, vmid, *s); err != nil {
 			return fmt.Errorf("reading the cards lxc/%d attached: %w; nothing was removed", vmid, err)
 		}
 	}
@@ -294,7 +295,7 @@ type AttachmentList struct {
 // appliance's token may change, which Proxmox is asked (a grant on the guest
 // or on its pool). A compromised appliance names no other guest's card that
 // way.
-func (r *run) attachments(ctx context.Context, vmid int) ([]store.Attachment, error) {
+func (r *run) attachments(ctx context.Context, vmid int, s survey) ([]store.Attachment, error) {
 	out, err := r.pco(ctx, vmid, "appliance", "attachments")
 	if err != nil {
 		return nil, err
@@ -307,7 +308,20 @@ func (r *run) attachments(ctx context.Context, vmid int) ([]store.Attachment, er
 	if !subnet.IsValid() || !subnet.Addr().Is4() || subnet.Bits() < 16 || subnet.Bits() > 28 || subnet != subnet.Masked() {
 		return nil, fmt.Errorf("pco appliance attachments printed %s as the managed subnet: want an IPv4 prefix of 16 to 28 bits", subnet)
 	}
+	// A guest has one managed card at most, and each card listed is asked
+	// about: a list longer than the guests of the cluster is not worked
+	// through.
+	guests, err := clusterGuests(ctx, r.r)
+	if err != nil {
+		return nil, err
+	}
+	if len(listed.Attachments) > len(guests) {
+		return nil, fmt.Errorf("pco appliance attachments listed %d cards, more than the %d guests of the cluster, "+
+			"one managed card each", len(listed.Attachments), len(guests))
+	}
 	id := tokenID(vmid)
+	unusable := r.tokenUnusable(s, vmid)
+	held := map[int][]string{}
 	var kept []store.Attachment
 	for _, a := range listed.Attachments {
 		ref, err := model.ParseGuestRef(a.Owner)
@@ -319,13 +333,20 @@ func (r *run) attachments(ctx context.Context, vmid int) ([]store.Attachment, er
 		case !subnet.Contains(a.Addr):
 			r.ask.Warn("lxc/%d lists a card it attached to %s with %s, outside its managed subnet %s; ignored", vmid, a.Owner, a.Addr, subnet)
 			continue
+		case unusable != "":
+			r.ask.Warn("lxc/%d lists a card it attached to %s, and %s; ignored", vmid, a.Owner, unusable)
+			continue
 		}
 		guest := "/vms/" + strconv.Itoa(ref.VMID)
-		held, err := permissions(ctx, r.r, id, guest)
-		if err != nil {
-			return nil, err
+		// A list may name a guest again; Proxmox is asked once.
+		privs, asked := held[ref.VMID]
+		if !asked {
+			if privs, err = permissions(ctx, r.r, id, guest); err != nil {
+				return nil, err
+			}
+			held[ref.VMID] = privs
 		}
-		if !slices.Contains(held, "VM.Config.Network") {
+		if !slices.Contains(privs, "VM.Config.Network") {
 			r.ask.Warn("lxc/%d lists a card it attached to %s, and its token %s holds no VM.Config.Network on %s; ignored", vmid, a.Owner, id, guest)
 			continue
 		}
@@ -333,6 +354,34 @@ func (r *run) attachments(ctx context.Context, vmid int) ([]store.Attachment, er
 		kept = append(kept, a)
 	}
 	return kept, nil
+}
+
+// tokenUnusable says why the token of the appliance vmid can change no
+// guest, whatever its grants say: it or its user is gone, disabled or
+// expired. Empty when it can.
+func (r *run) tokenUnusable(s survey, vmid int) string {
+	id := tokenID(vmid)
+	now := r.now().Unix()
+	expired := func(at flexInt) bool { return at > 0 && int64(at) <= now }
+	when := func(at flexInt) string { return time.Unix(int64(at), 0).UTC().Format("2006-01-02 15:04 MST") }
+	i := slices.IndexFunc(s.users, func(u userEntry) bool { return u.ID == setup.UserID })
+	if i < 0 {
+		return fmt.Sprintf("its token %s is gone with the user %s", id, setup.UserID)
+	}
+	switch u := s.users[i]; {
+	case u.Enable != nil && !bool(*u.Enable):
+		return fmt.Sprintf("the user %s of its token is disabled", setup.UserID)
+	case expired(u.Expire):
+		return fmt.Sprintf("the user %s of its token expired at %s", setup.UserID, when(u.Expire))
+	}
+	j := slices.IndexFunc(s.tokens, func(t tokenEntry) bool { return t.Name == tokenName(vmid) })
+	switch {
+	case j < 0:
+		return fmt.Sprintf("its token %s is gone", id)
+	case expired(s.tokens[j].Expire):
+		return fmt.Sprintf("its token %s expired at %s", id, when(s.tokens[j].Expire))
+	}
+	return ""
 }
 
 // refuseManagedCards refuses the uninstall while a guest has a card on the
