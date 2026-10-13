@@ -202,10 +202,11 @@ func (ms mappings) list() []store.ServiceAddr {
 // when the gate is open, and keeps a rule that reaches nothing while it is
 // not; either way nothing forwards to the address it left. The gateway is
 // then given the legs of this node, every service address the egress set of
-// this cycle holds with the ports it holds it at, and the neighbours proven
-// behind them, before anything is written at Cloudflare; a service address
-// neither in the set nor in a configuration verified at Cloudflare, and that
-// no route is bound to any more, is released after that.
+// this cycle holds with the ports it holds it at, the neighbours proven
+// behind them and the leases of the managed network, and the sticky entries
+// of the cards attached to it, before anything is written at Cloudflare; a
+// service address neither in the set nor in a configuration verified at
+// Cloudflare, and that no route is bound to any more, is released after that.
 func (c *cycleRun) gateway() {
 	c.legKept, c.legIfaces, c.legNets, c.frozen = map[string]string{}, map[string]string{}, map[string]bool{}, map[netip.Addr]bool{}
 	legs := c.markLegTargets()
@@ -233,6 +234,10 @@ func (c *cycleRun) gateway() {
 		c.hold(c.storeProblem("reading the service addresses", err))
 		return
 	}
+	cards, ok := c.readManagedCards()
+	if !ok {
+		return
+	}
 	ms := newMappings(all)
 	followed := c.followMovers(ms)
 	for _, rt := range legs {
@@ -243,7 +248,35 @@ func (c *cycleRun) gateway() {
 	if c.storeHold {
 		return
 	}
-	c.syncGateway(nets, ms.list())
+	c.syncGateway(nets, ms.list(), cards)
+}
+
+// managedCards are the cards on the managed network, when it has its leg on
+// this node: the leases, whose addresses the namespace pins to their MACs,
+// and the attachments, whose MACs get a sticky entry on their guest's port.
+type managedCards struct {
+	leases      map[string]store.Lease
+	attachments map[string]store.Attachment
+}
+
+// readManagedCards reads the cards of the managed network. Without them the
+// gateway is not synced: a sync without the entries would take the entries
+// away.
+func (c *cycleRun) readManagedCards() (managedCards, bool) {
+	if !c.legNets[gateway.ManagedBridge] {
+		return managedCards{}, true
+	}
+	leases, err := c.e.d.Store.Leases()
+	if err != nil {
+		c.hold(c.storeProblem("reading the leases", err))
+		return managedCards{}, false
+	}
+	atts, err := c.e.d.Store.Attachments()
+	if err != nil {
+		c.hold(c.storeProblem("reading the attachments", err))
+		return managedCards{}, false
+	}
+	return managedCards{leases: leases, attachments: atts}, true
 }
 
 // leaving is a service address some of whose routes left the address it
@@ -486,17 +519,18 @@ func (c *cycleRun) withoutService(rt model.Route, why string) {
 // syncGateway gives the gateway what this cycle wants of it and keeps what it
 // says of the legs; a gateway that cannot be programmed holds the tunnel run.
 // A node that never had a network asks the gateway for nothing.
-func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []store.ServiceAddr) {
+func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []store.ServiceAddr, cards managedCards) {
 	legs := c.wantedLegs(nets)
 	services := c.wantedServices(legs, mappings)
-	pins := c.wantedPins(services)
+	pins := c.wantedPins(services, cards.leases)
+	sticky := c.wantedSticky(cards.attachments)
 	if len(legs) == 0 && len(services) == 0 && !c.e.gwInUse {
 		// The gateway holds no leg a freed mark could move from.
 		c.e.freedMarks = nil
 		c.releaseUnused(mappings, services)
 		return
 	}
-	states, err := c.e.d.Gateway.Sync(c.ctx, legs, services, pins, nil)
+	states, err := c.e.d.Gateway.Sync(c.ctx, legs, services, pins, sticky)
 	if err != nil {
 		c.gatewayHeld = heldGateway
 		c.problem(problemGatewaySync, err)
@@ -515,7 +549,7 @@ func (c *cycleRun) syncGateway(nets map[string]store.Network, mappings []store.S
 		}
 	}
 	kept := c.releaseUnused(mappings, services)
-	c.saveGatewayCache(legs, services, pins, nets, kept)
+	c.saveGatewayCache(gateway.Cache{Legs: legs, Services: services, Pins: pins, Sticky: sticky, PinsAt: c.now}, nets, kept)
 }
 
 // wantedLegs are the legs of the networks with a leg address on this node,
@@ -565,8 +599,10 @@ func (c *cycleRun) wantedServices(legs []gateway.Leg, mappings []store.ServiceAd
 }
 
 // wantedPins are the MACs proven for the real addresses the services forward
-// to, once each.
-func (c *cycleRun) wantedPins(services []gateway.Service) []gateway.Pin {
+// to, once each, and the MAC of every lease at its address: a lease's
+// address answers at its card's MAC only, whichever guest claims it.
+func (c *cycleRun) wantedPins(services []gateway.Service, leases map[string]store.Lease) []gateway.Pin {
+	leased := leasePins(leases)
 	forwarded := map[mappingKey]bool{}
 	for _, s := range services {
 		forwarded[mappingKey{s.Leg, s.Addr}] = true
@@ -580,13 +616,61 @@ func (c *cycleRun) wantedPins(services []gateway.Service) []gateway.Pin {
 		}
 		key := mappingKey{res.Binding.Via, res.Target.Addr}
 		mac, err := net.ParseMAC(res.Binding.MAC)
-		if err != nil || !forwarded[key] || seen[key] {
+		if err != nil || !forwarded[key] || seen[key] || leased[key] != nil {
 			continue
 		}
 		seen[key] = true
 		out = append(out, gateway.Pin{Leg: key.network, Addr: key.addr, MAC: mac})
 	}
+	for _, p := range leased {
+		out = append(out, *p)
+	}
 	slices.SortFunc(out, func(a, b gateway.Pin) int { return cmp.Or(cmp.Compare(a.Leg, b.Leg), a.Addr.Compare(b.Addr)) })
+	return out
+}
+
+// leasePins are the pins of the leases, by the address each has on the
+// managed network.
+func leasePins(leases map[string]store.Lease) map[mappingKey]*gateway.Pin {
+	out := map[mappingKey]*gateway.Pin{}
+	for _, l := range leases {
+		mac, err := net.ParseMAC(l.MAC)
+		if err != nil || len(mac) != 6 || !l.Addr.Is4() {
+			continue
+		}
+		out[mappingKey{gateway.ManagedBridge, l.Addr}] = &gateway.Pin{Leg: gateway.ManagedBridge, Addr: l.Addr, MAC: mac}
+	}
+	return out
+}
+
+// wantedSticky are the sticky entries of the cards attached to the managed
+// network, of the guests of this node: each MAC on the port its card takes
+// on the bridge, so that no other port can take the MAC over. A guest that
+// is stopped has no port; its entry is given all the same, and the gateway
+// adds it when the port appears. The appliance has none: the bridge is the
+// node's.
+func (c *cycleRun) wantedSticky(atts map[string]store.Attachment) []gateway.Sticky {
+	if c.appliance() {
+		return nil
+	}
+	var out []gateway.Sticky
+	for _, a := range atts {
+		ref, err := model.ParseGuestRef(a.Owner)
+		if err != nil {
+			continue
+		}
+		g, ok := c.snap.Guest(ref)
+		mac, merr := net.ParseMAC(a.MAC)
+		if !ok || g.Node != c.e.d.Node || merr != nil || len(mac) != 6 {
+			continue
+		}
+		firewall := slices.ContainsFunc(g.NICs, func(n model.NIC) bool {
+			return n.Index == a.NIC && n.Bridge == gateway.ManagedBridge && n.Firewall
+		})
+		out = append(out, gateway.Sticky{MAC: mac, Bridge: gateway.ManagedBridge,
+			Port: gateway.GuestPort(ref.Kind == model.KindLXC, ref.VMID, a.NIC, firewall)})
+	}
+	slices.SortFunc(out, func(a, b gateway.Sticky) int { return cmp.Compare(a.Port, b.Port) })
 	return out
 }
 
@@ -640,7 +724,7 @@ func (c *cycleRun) boundAddrs() map[mappingKey]bool {
 // pco netns up restores the namespace from at boot, the networks, service
 // addresses and leases it serves, and the pins with the time they were
 // proven. One that cannot be saved is a problem line; it holds nothing.
-func (c *cycleRun) saveGatewayCache(legs []gateway.Leg, services []gateway.Service, pins []gateway.Pin, nets map[string]store.Network, mappings []store.ServiceAddr) {
+func (c *cycleRun) saveGatewayCache(given gateway.Cache, nets map[string]store.Network, mappings []store.ServiceAddr) {
 	var failed []string
 	fail := func(err error) {
 		if err != nil {
@@ -648,7 +732,7 @@ func (c *cycleRun) saveGatewayCache(legs []gateway.Leg, services []gateway.Servi
 		}
 	}
 	if dir := c.e.d.LocalDir; dir != "" {
-		fail(gateway.WriteCache(dir, gateway.Cache{Legs: legs, Services: services, Pins: pins, PinsAt: c.now}))
+		fail(gateway.WriteCache(dir, given))
 	}
 	leases, err := c.e.d.Store.Leases()
 	fail(err)
@@ -660,8 +744,8 @@ func (c *cycleRun) saveGatewayCache(legs []gateway.Leg, services []gateway.Servi
 		cache.Leases = append(cache.Leases, leases[mac])
 	}
 	fail(c.e.d.Store.SaveNetCache(cache))
-	saved := make([]store.Pin, len(pins))
-	for i, p := range pins {
+	saved := make([]store.Pin, len(given.Pins))
+	for i, p := range given.Pins {
 		saved[i] = store.Pin{Network: p.Leg, Addr: p.Addr, MAC: p.MAC.String()}
 	}
 	fail(c.e.d.Store.SavePins(saved, c.now))
