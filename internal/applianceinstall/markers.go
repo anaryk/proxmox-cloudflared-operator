@@ -64,7 +64,8 @@ var (
 // uninstall removes them only when both say so: a compromised appliance
 // could name a zone of the admin's as pco's. The description can be set by
 // whoever may change the options of the container, so each line carries a
-// note that the node keeps as well, where only root writes (sdnNotePath).
+// note of that object that the node keeps as well, where only root writes
+// (sdnRecord).
 const (
 	madeZoneLine = "made the SDN zone " + setup.ManagedZone
 	madeVnetLine = "made the SDN vnet " + setup.ManagedVnet
@@ -131,23 +132,22 @@ func parseDescription(desc string) (described, bool) {
 }
 
 // withSDNNotes is the description desc, of the installer's, with the notes
-// of the SDN zone and the vnet set as zone and vnet say, under note; its
-// first line and its NoAccess lines stay as they are.
-func withSDNNotes(desc string, zone, vnet bool, note string) (string, bool) {
+// of the SDN zone and the vnet as rec has them: a line for each object it
+// holds a note of. Its first line and its NoAccess lines stay as they are.
+func withSDNNotes(desc string, rec sdnRecord) (string, bool) {
 	d, ok := parseDescription(desc)
 	if !ok {
 		return "", false
 	}
-	first, _, _ := strings.Cut(strings.TrimSpace(desc), "\n")
-	out := strings.TrimSpace(first)
+	out := firstLine(desc)
 	for _, l := range d.lines {
 		out += fmt.Sprintf("\nNoAccess for %s on %s", l.Principal, l.Path)
 	}
-	if zone {
-		out += "\n" + madeZoneLine + noteSep + note
+	if rec.Zone != "" {
+		out += "\n" + madeZoneLine + noteSep + rec.Zone
 	}
-	if vnet {
-		out += "\n" + madeVnetLine + noteSep + note
+	if rec.Vnet != "" {
+		out += "\n" + madeVnetLine + noteSep + rec.Vnet
 	}
 	return out, true
 }

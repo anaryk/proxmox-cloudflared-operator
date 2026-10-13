@@ -1,6 +1,7 @@
 package applianceinstall
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
@@ -65,9 +66,13 @@ func TestManagedEnableMakesTheVnetAndGrantsIt(t *testing.T) {
 
 	sdn := e.node.ranSince("pvesh create /cluster/sdn/lock")
 	mark := "pco appliance vm100, installed 2026-10-01 by pco appliance install"
-	note := e.sdnNote(100)
-	require.Regexp(t, `^[0-9a-f]{32}$`, note, "the node keeps a note of its own, which the appliance cannot read")
-	zoneLine, vnetLine := "made the SDN zone pco, note "+note, "made the SDN vnet pconet, note "+note
+	rec := e.record()
+	require.Equal(t, 100, rec.VMID)
+	require.Equal(t, mark, rec.Mark)
+	require.Regexp(t, `^[0-9a-f]{32}$`, rec.Zone, "the node keeps a note of each object of its own")
+	require.Regexp(t, `^[0-9a-f]{32}$`, rec.Vnet)
+	require.NotEqual(t, rec.Zone, rec.Vnet)
+	zoneLine, vnetLine := "made the SDN zone pco, note "+rec.Zone, "made the SDN vnet pconet, note "+rec.Vnet
 	require.Equal(t, []string{
 		"pvesh create /cluster/sdn/lock --allow-pending 1 --output-format json",
 		"pvesh get /cluster/sdn/zones --pending 1 --output-format json",
@@ -205,7 +210,7 @@ func TestManagedEnableAsks(t *testing.T) {
 func TestUninstallKeepsTheSDNObjectsTheNodeDoesNotRecord(t *testing.T) {
 	e := managedNode(t)
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
-	desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], false, true, e.sdnNote(100))
+	desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], sdnRecord{Vnet: e.record().Vnet})
 	require.True(t, ok)
 	e.node.cts[100].cfg["description"] = desc
 
@@ -220,7 +225,7 @@ func TestUninstallKeepsTheSDNObjectsTheNodeDoesNotRecord(t *testing.T) {
 	// business either: nothing refuses the uninstall for it.
 	e = managedNode(t)
 	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
-	desc, _ = withSDNNotes(e.node.cts[100].cfg["description"], false, false, "")
+	desc, _ = withSDNNotes(e.node.cts[100].cfg["description"], sdnRecord{})
 	e.node.cts[100].cfg["description"] = desc
 	e.guestOnPconet()
 	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
@@ -229,21 +234,38 @@ func TestUninstallKeepsTheSDNObjectsTheNodeDoesNotRecord(t *testing.T) {
 	require.Equal(t, 1, e.node.sdn.applies, "no second apply")
 }
 
-// The description can be changed by whoever may set the options of the
-// container: a note in it counts only with the one the node keeps where only
-// root writes. Without it, or with another, both objects stay.
+// The description can be read by whoever audits the container and changed
+// by whoever may set its options: a line in it counts only with the note the
+// node keeps of that object, for this container and this install, where only
+// root writes. Otherwise both objects stay.
 func TestUninstallKeepsTheSDNObjectsWithoutTheNoteOfTheNode(t *testing.T) {
 	for name, change := range map[string]func(e *testEnv){
-		"the note of the node is gone": func(e *testEnv) { require.NoError(t, os.Remove(e.sdnNotePath(100))) },
-		"the description has another": func(e *testEnv) {
-			desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], true, true, strings.Repeat("0", 32))
-			require.True(t, ok)
-			e.node.cts[100].cfg["description"] = desc
+		"the record of the node is gone": func(e *testEnv) { require.NoError(t, os.Remove(e.recordPath())) },
+		"the description has other notes": func(e *testEnv) {
+			e.setNotes(sdnRecord{Zone: strings.Repeat("0", 32), Vnet: strings.Repeat("1", 32)})
 		},
 		"the description has none": func(e *testEnv) {
-			desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], false, false, "")
-			require.True(t, ok)
-			e.node.cts[100].cfg["description"] = desc + "\nmade the SDN zone pco\nmade the SDN vnet pconet"
+			e.setNotes(sdnRecord{})
+			e.node.cts[100].cfg["description"] += "\nmade the SDN zone pco\nmade the SDN vnet pconet"
+		},
+		"each line has the note of the other object": func(e *testEnv) {
+			rec := e.record()
+			e.setNotes(sdnRecord{Zone: rec.Vnet, Vnet: rec.Zone})
+		},
+		"the record is of another install of the VMID": func(e *testEnv) {
+			rec := e.record()
+			rec.Mark = "pco appliance vm100, installed 2026-09-01 by pco appliance install"
+			e.writeRecord(rec)
+		},
+		"the record is of another container": func(e *testEnv) {
+			rec := e.record()
+			rec.VMID = 101
+			e.writeRecord(rec)
+		},
+		"the record holds empty notes": func(e *testEnv) {
+			e.writeRecord(sdnRecord{VMID: 100, Mark: e.record().Mark})
+			e.setNotes(sdnRecord{})
+			e.node.cts[100].cfg["description"] += "\nmade the SDN zone pco, note \nmade the SDN vnet pconet, note "
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -251,30 +273,86 @@ func TestUninstallKeepsTheSDNObjectsWithoutTheNoteOfTheNode(t *testing.T) {
 			require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
 			change(e)
 
-			require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+			err := e.in.Uninstall(t.Context(), 100, uninstallOptions())
 
 			require.NotEmpty(t, e.node.sdn.zones)
 			require.NotEmpty(t, e.node.sdn.vnets)
-			require.Contains(t, e.ask.text(), "(kept: the SDN zone pco, which the description of lxc/100 names as pco's under a note this node does not keep)")
-			require.Contains(t, e.ask.text(), "(kept: the SDN vnet pconet, which the description of lxc/100 names as pco's under a note this node does not keep)")
+			if err != nil {
+				require.ErrorContains(t, err, "is not a pco appliance", "a description that cannot be read refuses the uninstall")
+				return
+			}
+			require.Contains(t, e.ask.text(), "(kept: the SDN zone pco, which ")
+			require.Contains(t, e.ask.text(), "(kept: the SDN vnet pconet, which ")
 		})
 	}
 }
 
-func (e *testEnv) sdnNotePath(vmid int) string {
-	return filepath.Join(e.pveDir, "priv", "pco-appliance", fmt.Sprintf("sdn-vm%d", vmid))
+// A token that may change the options of its own container may write its
+// description: then nothing in it counts, neither the SDN objects nor the
+// NoAccess lines, which stay.
+func TestUninstallTrustsNoDescriptionTheTokenCanWrite(t *testing.T) {
+	e := managedNode(t)
+	require.NoError(t, e.managedEnable(ManagedOptions{VMID: 100, Yes: true}))
+	e.node.roles["PCOOptions"] = []string{"VM.Config.Options"}
+	e.node.grant("/vms/100", "token", "pco@pve!vm100", "PCOOptions")
+	e.node.grant("/vms/100", "user", "pco@pve", "PCOOptions")
+	e.node.grant("/vms", "user", "ops@pve", "NoAccess")
+	e.node.cts[100].cfg["description"] = strings.Replace(e.node.cts[100].cfg["description"], "\n", "\nNoAccess for ops@pve on /vms\n", 1)
+
+	require.NoError(t, e.in.Uninstall(t.Context(), 100, uninstallOptions()), e.ask.text())
+
+	require.NotEmpty(t, e.node.sdn.zones)
+	require.NotEmpty(t, e.node.sdn.vnets)
+	require.True(t, e.node.has("/vms", "user", "ops@pve", "NoAccess"), "the NoAccess line stays")
+	require.Contains(t, e.ask.text(), "(kept: what the description of lxc/100 records, its NoAccess lines and the SDN objects made for it, "+
+		"as its token pco@pve!vm100 holds VM.Config.Options on /vms/100, so the appliance could have written it)")
 }
 
-// sdnNote is the note the node keeps of the SDN objects made for the
-// appliance vmid.
-func (e *testEnv) sdnNote(vmid int) string {
+// A record left by an earlier install of the VMID goes before the container
+// is made.
+func TestInstallRemovesTheRecordOfAnEarlierInstall(t *testing.T) {
+	e := newEnv(t)
+	e.writeRecord(sdnRecord{VMID: 100, Mark: "pco appliance vm100, installed 2026-10-01 by pco appliance install",
+		Zone: strings.Repeat("0", 32), Vnet: strings.Repeat("1", 32)})
+
+	e.install(e.options())
+
+	require.NoFileExists(t, e.recordPath(), "the install of lxc/100 removed the record of the one before")
+}
+
+// recordPath is where the node keeps the record of lxc/100.
+func (e *testEnv) recordPath() string {
+	return filepath.Join(e.pveDir, "priv", "pco-appliance", "sdn-vm100")
+}
+
+// record is the record the node keeps of the SDN objects made for the
+// appliance lxc/100.
+func (e *testEnv) record() sdnRecord {
 	e.t.Helper()
-	b, err := os.ReadFile(e.sdnNotePath(vmid))
+	b, err := os.ReadFile(e.recordPath())
 	require.NoError(e.t, err)
-	info, err := os.Stat(e.sdnNotePath(vmid))
+	info, err := os.Stat(e.recordPath())
 	require.NoError(e.t, err)
 	require.Equal(e.t, os.FileMode(0o600), info.Mode().Perm())
-	return strings.TrimSpace(string(b))
+	var rec sdnRecord
+	require.NoError(e.t, json.Unmarshal(b, &rec))
+	return rec
+}
+
+func (e *testEnv) writeRecord(rec sdnRecord) {
+	e.t.Helper()
+	require.NoError(e.t, os.MkdirAll(filepath.Dir(e.recordPath()), 0o700))
+	b, err := json.Marshal(rec)
+	require.NoError(e.t, err)
+	require.NoError(e.t, os.WriteFile(e.recordPath(), b, 0o600))
+}
+
+// setNotes sets the SDN lines of the description of lxc/100 as rec says.
+func (e *testEnv) setNotes(rec sdnRecord) {
+	e.t.Helper()
+	desc, ok := withSDNNotes(e.node.cts[100].cfg["description"], rec)
+	require.True(e.t, ok)
+	e.node.cts[100].cfg["description"] = desc
 }
 
 // The appliance must run, as its manifest notes what the node makes.
@@ -325,7 +403,7 @@ func TestUninstallRemovesTheManagedNetworkOfTheAppliance(t *testing.T) {
 	require.Contains(t, e.ask.text(), "the SDN vnet pconet and zone pco, which an SDN apply removes from every node, reloading the network of each")
 	destroyed := slices.Index(e.node.ran, "pct destroy 100 --purge 1")
 	require.Greater(t, slices.Index(e.node.ran, "pvesh delete /cluster/sdn/vnets/pconet --lock-token lock-2"), destroyed, "the zone goes last")
-	require.NoFileExists(t, e.sdnNotePath(100), "the note of the node goes with them")
+	require.NoFileExists(t, e.recordPath(), "the note of the node goes with them")
 }
 
 // The manifest that says the zone is pco's goes with the container, so a

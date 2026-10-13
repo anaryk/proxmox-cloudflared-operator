@@ -93,6 +93,9 @@ func (r *run) createContainer(ctx context.Context) error {
 	}
 	for try := 1; ; try++ {
 		vmid, desc := r.j.VMID, description(r.j.VMID, r.now(), r.denied())
+		if err := r.removeSDNNote(vmid); err != nil {
+			return err
+		}
 		if err := r.record(func(j *journal) {
 			j.Container = desc
 			a := r.appliance()

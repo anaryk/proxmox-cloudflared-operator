@@ -28,21 +28,25 @@ type survey struct {
 	notedVnet       bool                 // the same for the vnet
 	zoneNote        string               // the note of the zone's line in the description
 	vnetNote        string               // the same for the vnet
-	nodeNote        string               // the note the node keeps; empty when it keeps none
-	originalNode    string               // of lxc/described, when the container is a copy of it that is still there
-	manifest        *setup.Manifest
-	users           []userEntry
-	tokens          []tokenEntry
-	roles           []roleEntry
-	acl             []aclLine
-	unpropagated    []aclLine // the lines of acl that count on their own path only
-	pools           []poolEntry
-	members         []string // of pool pco
-	tags            []string
-	templates       []string // the template volumes of pco on the node
-	hostInstall     bool
-	cloudflare      []string // what the install has at Cloudflare, as its purge lists it
-	cloudflareErr   error
+	record          sdnRecord            // what the node keeps of the SDN objects made for it
+	// descWritable says why the token of the appliance may change the
+	// description of its container, which then records nothing; empty
+	// when it may not.
+	descWritable  string
+	originalNode  string // of lxc/described, when the container is a copy of it that is still there
+	manifest      *setup.Manifest
+	users         []userEntry
+	tokens        []tokenEntry
+	roles         []roleEntry
+	acl           []aclLine
+	unpropagated  []aclLine // the lines of acl that count on their own path only
+	pools         []poolEntry
+	members       []string // of pool pco
+	tags          []string
+	templates     []string // the template volumes of pco on the node
+	hostInstall   bool
+	cloudflare    []string // what the install has at Cloudflare, as its purge lists it
+	cloudflareErr error
 	// cards are the cards of other guests on the managed vnet, read when
 	// the manifest says pco appliance managed enable made it.
 	cards []setup.Card
@@ -146,7 +150,7 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 		}
 		s.described, s.noted, s.notedZone, s.notedVnet = d.vmid, d.lines, d.zone, d.vnet
 		s.zoneNote, s.vnetNote = d.zoneNote, d.vnetNote
-		if s.nodeNote, err = r.readSDNNote(vmid); err != nil {
+		if s.record, err = r.readSDNRecord(vmid, firstLine(s.cfg["description"])); err != nil {
 			return s, err
 		}
 		if s.running, err = ctRunning(ctx, r.r, vmid); err != nil {
@@ -175,6 +179,9 @@ func (r *run) survey(ctx context.Context, vmid int, o UninstallOptions) (survey,
 		return s, err
 	}
 	if s.roles, err = roles(ctx, r.r); err != nil {
+		return s, err
+	}
+	if err := r.descriptionWritable(ctx, vmid, &s); err != nil {
 		return s, err
 	}
 	entries, err := aclEntries(ctx, r.r)
@@ -220,15 +227,37 @@ func (s survey) sdnManifest() *setup.Manifest {
 		return nil
 	}
 	m := *s.manifest
-	m.CreatedZone = m.CreatedZone && s.verified(s.notedZone, s.zoneNote)
-	m.CreatedVnet = m.CreatedVnet && s.verified(s.notedVnet, s.vnetNote)
+	m.CreatedZone = m.CreatedZone && s.verified(s.notedZone, s.zoneNote, s.record.Zone)
+	m.CreatedVnet = m.CreatedVnet && s.verified(s.notedVnet, s.vnetNote, s.record.Vnet)
 	return &m
 }
 
 // verified reports whether a line of the description that names an SDN
-// object as made for the appliance carries the note the node keeps.
-func (s survey) verified(noted bool, note string) bool {
-	return noted && s.nodeNote != "" && note == s.nodeNote
+// object as made for the appliance carries the note the node keeps of that
+// object for this container and install, and the appliance's token cannot
+// have written it.
+func (s survey) verified(noted bool, note, kept string) bool {
+	return noted && s.descWritable == "" && kept != "" && note == kept
+}
+
+// descriptionWritable asks Proxmox whether the token of the appliance may
+// change the options of its container, the description among them. Then
+// the description is not the node's own record: its NoAccess lines and its
+// SDN notes count for nothing.
+func (r *run) descriptionWritable(ctx context.Context, vmid int, s *survey) error {
+	if !s.exists || !slices.ContainsFunc(s.tokens, func(t tokenEntry) bool { return t.Name == tokenName(vmid) }) {
+		return nil
+	}
+	vm := "/vms/" + strconv.Itoa(vmid)
+	held, err := permissions(ctx, r.r, tokenID(vmid), vm)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(held, "VM.Config.Options") {
+		s.descWritable = fmt.Sprintf("its token %s holds VM.Config.Options on %s, so the appliance could have written it", tokenID(vmid), vm)
+		s.noted, s.notedZone, s.notedVnet = nil, false, false
+	}
+	return nil
 }
 
 // sdnDisagreements are the SDN objects the manifest and the description of
@@ -242,8 +271,8 @@ func (s survey) sdnDisagreements(vmid int) []string {
 		name                      string
 		manifest, noted, verified bool
 	}{
-		{"zone " + setup.ManagedZone, s.manifest.CreatedZone, s.notedZone, s.verified(s.notedZone, s.zoneNote)},
-		{"vnet " + setup.ManagedVnet, s.manifest.CreatedVnet, s.notedVnet, s.verified(s.notedVnet, s.vnetNote)},
+		{"zone " + setup.ManagedZone, s.manifest.CreatedZone, s.notedZone, s.verified(s.notedZone, s.zoneNote, s.record.Zone)},
+		{"vnet " + setup.ManagedVnet, s.manifest.CreatedVnet, s.notedVnet, s.verified(s.notedVnet, s.vnetNote, s.record.Vnet)},
 	} {
 		switch {
 		case o.manifest && o.noted && !o.verified:
@@ -574,6 +603,10 @@ func (r *run) plan(vmid int, s survey) plan {
 		}
 	}
 	p.managed, _ = madeManaged(s.sdnManifest())
+	if s.descWritable != "" {
+		p.kept = append(p.kept, fmt.Sprintf("what the description of lxc/%d records, its NoAccess lines and the SDN objects made for it, as %s",
+			vmid, s.descWritable))
+	}
 	p.kept = append(p.kept, s.sdnDisagreements(vmid)...)
 	// The template is the installer's when the manifest names it: it names
 	// one only when the installer downloaded it.
