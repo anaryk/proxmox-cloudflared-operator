@@ -30,6 +30,9 @@ type fakeDHCP struct {
 	listen  chan struct{} // closed: Run binds
 	fail    chan error    // what Run ends with
 	running chan struct{} // closed once Run runs
+	// closeGate, when set, holds the return of a stopped Run, as the close
+	// of the sockets does, until the test closes it.
+	closeGate chan struct{}
 }
 
 func newFakeDHCP(cfg dhcp.Config) *fakeDHCP {
@@ -44,15 +47,22 @@ func (f *fakeDHCP) Run(ctx context.Context) error {
 	case err := <-f.fail:
 		return err
 	case <-ctx.Done():
-		return nil
+		return f.stopped()
 	}
 	defer f.bound.Store(false)
 	select {
 	case err := <-f.fail:
 		return err
 	case <-ctx.Done():
-		return nil
+		return f.stopped()
 	}
+}
+
+func (f *fakeDHCP) stopped() error {
+	if f.closeGate != nil {
+		<-f.closeGate
+	}
+	return nil
 }
 
 func (f *fakeDHCP) Bound() bool { return f.bound.Load() }
@@ -132,7 +142,7 @@ func newDHCPTest(t *testing.T, nets ...store.Network) *dhcpTest {
 		log:   zerolog.New(zerolog.NewTestWriter(t)),
 		wait:  defaultDHCPReadyWait,
 	}
-	t.Cleanup(d.p.stopServer)
+	t.Cleanup(d.p.shutdown)
 	return d
 }
 
@@ -301,6 +311,65 @@ func TestAServerInANamespaceMadeAgainIsStartedAgain(t *testing.T) {
 	require.False(t, d.server(0).Bound(), "the old one stopped")
 	_, err := d.notes.last()
 	require.NoError(t, err, "a server stopped for the new namespace is no problem")
+}
+
+// A server is started again only once the one before has closed its
+// sockets: port 67 and the leg's packet socket are held by one at a time.
+func TestTheNextServerStartsOnceTheLastHasClosedItsSockets(t *testing.T) {
+	d := newDHCPTest(t, managedNet(2, managedLegs))
+	d.p.check(t.Context())
+	d.bind(t, 0)
+	gate := make(chan struct{})
+	d.server(0).closeGate = gate
+
+	d.mu.Lock()
+	d.nets[gateway.ManagedBridge] = managedNet(3, managedLegs)
+	d.mu.Unlock()
+	checked := make(chan struct{})
+	go func() {
+		d.p.check(t.Context())
+		close(checked)
+	}()
+	require.Never(t, func() bool { return d.count() > 1 }, 50*time.Millisecond, 5*time.Millisecond, "started beside the old one")
+	close(gate)
+	<-checked
+	require.Equal(t, 2, d.count())
+	require.False(t, d.server(0).Bound())
+}
+
+// Checks run one at a time: the start's check and the timed one never start
+// a server each for the same end.
+func TestTwoChecksAtOnceStartOneServer(t *testing.T) {
+	d := newDHCPTest(t, managedNet(2, managedLegs))
+	d.p.check(t.Context())
+	for i := range 10 {
+		d.end(t, i, errors.New("reading on leg2: network is down"))
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Go(func() { d.p.check(t.Context()) })
+		}
+		wg.Wait()
+		require.Equal(t, i+2, d.count(), "one server for one end")
+	}
+}
+
+// Nothing starts a server after the stop: a check with the ended context,
+// as the start's may run while the daemon stops, does nothing.
+func TestNoServerStartsAfterTheStop(t *testing.T) {
+	d := newDHCPTest(t, managedNet(2, managedLegs))
+	ctx, cancel := context.WithCancel(t.Context())
+	d.p.check(ctx)
+	d.bind(t, 0)
+
+	cancel()
+	d.p.shutdown()
+	require.False(t, d.server(0).Bound())
+	d.p.check(ctx)
+	d.p.awaitBound(ctx)
+	require.Equal(t, 1, d.count())
+	d.p.mu.Lock()
+	require.Nil(t, d.p.cur)
+	d.p.mu.Unlock()
 }
 
 func TestAStoreThatCannotBeReadLeavesTheServerRunning(t *testing.T) {

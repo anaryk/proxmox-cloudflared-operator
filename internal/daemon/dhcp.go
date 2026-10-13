@@ -63,8 +63,13 @@ type dhcpPart struct {
 	// another one than the gateway holds now is started again in that.
 	nsID func() string
 
-	mu  sync.Mutex
-	cur *dhcpRun
+	// turn gives the checks, the reports and the stop their turns, one at
+	// a time: no two checks start a server each, and no check starts one
+	// after the stop. mu guards the fields below within a turn and for the
+	// readers between them.
+	turn sync.Mutex
+	mu   sync.Mutex
+	cur  *dhcpRun
 	// said is the last end of a server that was logged, so that a leg that
 	// stays away is logged once and not every check; before counts what
 	// the servers before cur saw.
@@ -176,7 +181,7 @@ func (p *dhcpPart) start(ctx context.Context) func() {
 }
 
 func (p *dhcpPart) run(ctx context.Context) {
-	defer p.stopServer()
+	defer p.shutdown()
 	for {
 		p.check(ctx)
 		select {
@@ -189,7 +194,14 @@ func (p *dhcpPart) run(ctx context.Context) {
 
 // check starts the server the managed network needs, again when it ended or
 // its leg changed, stops it when the network went, and tells the engine.
+// One check runs at a time, and none once ctx ended: the stop that follows
+// must find every server it is to stop.
 func (p *dhcpPart) check(ctx context.Context) {
+	p.turn.Lock()
+	defer p.turn.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 	cfg, want, err := p.wanted()
 	if err != nil {
 		// The store comes back; the server that runs keeps running.
@@ -257,6 +269,15 @@ func (p *dhcpPart) startServer(ctx context.Context, cfg dhcp.Config, last *dhcpR
 	p.mu.Unlock()
 }
 
+// shutdown stops the server for good, in its turn after the last check.
+func (p *dhcpPart) shutdown() {
+	p.turn.Lock()
+	defer p.turn.Unlock()
+	p.stopServer()
+}
+
+// stopServer stops the server and waits until it has closed its sockets;
+// the caller has the turn.
 func (p *dhcpPart) stopServer() {
 	p.mu.Lock()
 	cur := p.cur
@@ -346,7 +367,11 @@ func (p *dhcpPart) awaitBound(ctx context.Context) {
 	if _, want, err := p.wanted(); err != nil || !want {
 		return
 	}
-	defer p.report()
+	defer func() {
+		p.turn.Lock()
+		defer p.turn.Unlock()
+		p.report()
+	}()
 	deadline := p.after(p.wait)
 	for !p.bound() {
 		if p.ended() {
