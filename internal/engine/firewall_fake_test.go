@@ -31,6 +31,8 @@ type fakeFirewalls struct {
 	guests map[model.GuestRef]*guestFirewall
 	reads  int
 	fail   error // every write fails with it
+	// readErr is what a read of the options fails with.
+	readErr error
 	// normalize changes each rule as it is read back.
 	normalize func(pve.FirewallRule) pve.FirewallRule
 }
@@ -95,6 +97,9 @@ func (f *fakeFirewalls) GuestFirewallOptions(_ context.Context, _ string, ref mo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads++
+	if f.readErr != nil {
+		return pve.GuestFirewallOptions{}, f.readErr
+	}
 	g := f.of(ref)
 	o := g.opts
 	o.Digest = "d" + strconv.Itoa(g.serial)

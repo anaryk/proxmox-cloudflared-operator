@@ -1620,6 +1620,11 @@ func (s *managedStep) firewalls() {
 	}
 	jobs := s.firewallJobs()
 	for i, j := range jobs {
+		// A card this process has no time of a write for, as after a
+		// restart, counts from now: the window starts again, never skipped.
+		if _, ok := mem.written[j.att.Owner]; !ok {
+			mem.wrote(j.att.Owner, c.now)
+		}
 		if j.att.Firewall == nil && j.att.RemovedAt == nil && open && fw != nil {
 			s.guestFirewall(j.g, &jobs[i].att)
 		}
@@ -1679,17 +1684,15 @@ func (s *managedStep) firewallJobs() []firewallJob {
 }
 
 // linkUp brings up the link of a card added with it down, once its firewall
-// is as written and was so for enforceAfter, while the cycle may write. A
-// card pco has no time of its write for, as after a restart, waits from now.
+// is as written and was so for enforceAfter, while the cycle may write. Any
+// doubt, an error of a read or of the write among them, leaves it down, and
+// filtered does not hold while it is.
 func (s *managedStep) linkUp(fw *managednet.Firewall, j firewallJob, r firewallRead, open bool) {
 	c := s.c
 	owner := j.att.Owner
 	at, known := c.e.filtered.written[owner]
-	switch {
-	case !known:
-		c.e.filtered.wrote(owner, c.now)
-		return
-	case !open || fw == nil || r.err != nil || r.fw == nil || len(r.fw.Drift(r.card, fw.Comment())) > 0 || c.now.Sub(at) < enforceAfter:
+	if !known || !open || fw == nil || r.err != nil || r.fw == nil || len(r.fw.Drift(r.card, fw.Comment())) > 0 ||
+		c.now.Before(at) || c.now.Sub(at) < enforceAfter {
 		return
 	}
 	err := c.e.d.Guests.SetLinkUp(c.ctx, j.g, j.att.NIC)

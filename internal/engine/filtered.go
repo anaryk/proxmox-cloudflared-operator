@@ -210,10 +210,27 @@ func (c *cycleRun) cardOnVnet(owner string, att store.Attachment) (managednet.Fi
 	default:
 		card.Card, card.Read, card.ReadErr = read.card, read.fw, read.err
 	}
-	if at, ok := c.e.filtered.written[owner]; ok && c.now.Sub(at) < enforceAfter && !c.now.Before(at) {
-		card.NotEnforced = fmt.Sprintf("pco wrote its firewall %s ago", c.now.Sub(at).Round(time.Second))
-	}
+	card.NotEnforced = c.notEnforced(owner, nic)
 	return card, true
+}
+
+// notEnforced says why the card of owner cannot be taken as isolated yet:
+// its link is still down, as pco added it, or pco wrote its firewall less
+// than enforceAfter ago, or when is not known to this process, or lies
+// after now. Empty when it can.
+func (c *cycleRun) notEnforced(owner string, nic model.NIC) string {
+	at, ok := c.e.filtered.written[owner]
+	switch {
+	case nic.LinkDown:
+		return "its link is down until its firewall is enforced"
+	case !ok:
+		return "when pco wrote its firewall is not known"
+	case c.now.Before(at):
+		return "pco wrote its firewall at a time after now"
+	case c.now.Sub(at) < enforceAfter:
+		return fmt.Sprintf("pco wrote its firewall %s ago", c.now.Sub(at).Round(time.Second))
+	}
+	return ""
 }
 
 // canaries probes each running card from the leg, all of them at once, on a

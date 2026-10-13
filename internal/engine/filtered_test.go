@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -87,19 +88,54 @@ func TestANewCardComesUpOnlyOnceItsFirewallIsEnforced(t *testing.T) {
 	st = m.cycle()
 	require.Contains(t, m.cfg.changes(), "link-up lxc/101 net1")
 	require.Contains(t, m.managedEvents(), "the link of net1 of lxc/101 (web-1) on the managed network is up: its firewall is enforced")
+	require.Contains(t, st.Managed.Filtered.Why, "guest lxc/101: net1 is not yet enforced: its link is down until its firewall is enforced",
+		"until the configuration shows the link up")
+
+	m.inv.set(snapshot(onCard(managedGuest(101, "web-1", "www.example.com -> :8080")), ownGuest(ownMAC)))
+	st = m.cycle()
 	require.True(t, st.Managed.Filtered.Holds, st.Managed.Filtered.Why)
 
-	t.Run("after a restart the time of the write is not known, and it waits again", func(t *testing.T) {
-		n := len(m.cfg.changes())
+	t.Run("after a restart the window starts again, for a card that is up too", func(t *testing.T) {
 		m.restart(incA)
-		m.cycle()
+		st := m.cycle()
+		require.Contains(t, st.Managed.Filtered.Why, "guest lxc/101: net1 is not yet enforced: pco wrote its firewall 0s ago")
 		m.clock.advance(enforceAfter - time.Second)
-		m.cycle()
-		require.NotContains(t, m.cfg.changes()[n:], "link-up lxc/101 net1")
+		require.False(t, m.cycle().Managed.Filtered.Holds)
 		m.clock.advance(time.Second)
-		m.cycle()
-		require.Contains(t, m.cfg.changes()[n:], "link-up lxc/101 net1")
+		st = m.cycle()
+		require.True(t, st.Managed.Filtered.Holds, st.Managed.Filtered.Why)
 	})
+}
+
+// A link that could not be brought up stays down, and filtered does not
+// hold for it.
+func TestAFailedLinkUpLeavesTheCardDownAndFilteredLost(t *testing.T) {
+	m := newManagedApplianceEnv(t)
+	m.warm()
+	m.next()
+	m.inv.set(snapshot(downCard(managedGuest(101, "web-1", "www.example.com -> :8080")), ownGuest(ownMAC)))
+	m.cfg.set(func(f *fakeConfigurer) { f.linkUpErr = map[string]error{"lxc/101": errors.New("permission check failed")} })
+	st := m.next()
+	require.Contains(t, m.cfg.changes(), "link-up lxc/101 net1")
+	require.False(t, st.Managed.Filtered.Holds)
+	require.Contains(t, st.Managed.Filtered.Why, "guest lxc/101: net1 is not yet enforced: its link is down until its firewall is enforced")
+	require.True(t, hasProblem(st, "permission check failed"), st.Problems)
+	require.False(t, m.next().Managed.Filtered.Holds)
+}
+
+// A firewall that could not be read leaves a card that is down, down.
+func TestAnUnreadFirewallLeavesTheCardDown(t *testing.T) {
+	m := newManagedApplianceEnv(t)
+	m.warm()
+	m.next()
+	m.inv.set(snapshot(downCard(managedGuest(101, "web-1", "www.example.com -> :8080")), ownGuest(ownMAC)))
+	m.fw.mu.Lock()
+	m.fw.readErr = errors.New("595 connection refused")
+	m.fw.mu.Unlock()
+	m.next()
+	st := m.next()
+	require.NotContains(t, m.cfg.changes(), "link-up lxc/101 net1")
+	require.False(t, st.Managed.Filtered.Holds)
 }
 
 func TestACardIsNotBroughtUpWhileTheCycleMayNotWrite(t *testing.T) {
