@@ -230,6 +230,7 @@ func makeVnetHint(appliance bool) string {
 func (e *Engine) UnknownMAC(mac net.HardwareAddr, at time.Time) {
 	key := mac.String()
 	e.d.Inventory.ForceRefresh(e.d.Node)
+	e.noteUnknown(key, at)
 	if e.recordUnknown(key, at) {
 		e.events.add(Event{At: at, Level: levelWarn, Kind: kindManaged, Subject: gateway.ManagedBridge,
 			Message: fmt.Sprintf("a frame from %s, a MAC no lease knows, was seen on the managed network; the guests of %s are read again", key, e.d.Node)})

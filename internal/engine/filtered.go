@@ -276,7 +276,25 @@ func firstWhy(v *FilteredView) string {
 	return v.Why[0]
 }
 
-// unknownSince are the MACs the source-MAC watch reported after t.
+// unknownReport is a report of a frame from an unknown MAC.
+type unknownReport struct {
+	mac string
+	at  time.Time
+}
+
+// noteUnknown keeps the last report of an unknown MAC, so that a card that
+// keeps sending fails every judgment, not only the one after its first
+// event.
+func (e *Engine) noteUnknown(mac string, at time.Time) {
+	e.macMu.Lock()
+	defer e.macMu.Unlock()
+	if !at.Before(e.lastUnknown.at) {
+		e.lastUnknown = unknownReport{mac: mac, at: at}
+	}
+}
+
+// unknownSince are the MACs the source-MAC watch reported after t: those
+// with an event, and the last reported.
 func (e *Engine) unknownSince(t time.Time) []string {
 	e.macMu.Lock()
 	defer e.macMu.Unlock()
@@ -285,6 +303,9 @@ func (e *Engine) unknownSince(t time.Time) []string {
 		if at.After(t) {
 			out = append(out, mac)
 		}
+	}
+	if last := e.lastUnknown; last.at.After(t) && !slices.Contains(out, last.mac) {
+		out = append(out, last.mac)
 	}
 	slices.Sort(out)
 	return out

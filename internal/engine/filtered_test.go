@@ -265,6 +265,10 @@ func TestUnknownMACFailsFilteredUntilACyclePasses(t *testing.T) {
 	require.Contains(t, st.Managed.Filtered.Why, "a frame from bc:24:11:aa:bb:cc, a MAC no lease knows, was seen on the vnet")
 	st = m.next()
 	require.True(t, st.Managed.Filtered.Holds, "a cycle later the guests were read again and nothing is foreign")
+
+	m.eng.UnknownMAC(mac, m.clock.now())
+	st = m.next()
+	require.False(t, st.Managed.Filtered.Holds, "the same card sending again, within the window of its event, fails the next judgment too")
 }
 
 func TestAForeignCardFailsFiltered(t *testing.T) {

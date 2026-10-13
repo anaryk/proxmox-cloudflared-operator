@@ -329,6 +329,10 @@ type Engine struct {
 	macMu          sync.Mutex
 	unknownMACs    map[string]time.Time
 	unknownDropped int
+	// lastUnknown is the last report of any unknown MAC, events or not,
+	// which the filtered predicate of the next cycle reads; guarded by
+	// macMu.
+	lastUnknown unknownReport
 	// dhcp is what the DHCP server of the managed network asks and tells,
 	// beside the cycles; it has a lock of its own.
 	dhcp dhcpBook
