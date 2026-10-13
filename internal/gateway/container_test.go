@@ -856,22 +856,29 @@ func TestUpAndSyncMendWhatVerifyFound(t *testing.T) {
 	require.NoError(t, h.b.Verify(t.Context()))
 }
 
-func TestDADKeepsAnAddressInUseOffAnUplinkLeg(t *testing.T) {
-	uplink := legA
-	uplink.Uplink = true
-	h := newCTHarness(t)
-	h.sys.answers[addr("10.50.0.250")] = []net.HardwareAddr{mac("52:54:00:12:34:56")}
-	h.up(t)
-	states := h.sync(t, []Leg{uplink}, nil)
-	require.False(t, states[0].Up)
-	require.Equal(t, "address in use by 52:54:00:12:34:56", states[0].Problem)
-	require.Empty(t, h.sys.n.addrs["leg1"])
-	require.Contains(t, h.sys.n.rules, guardRule(uplink), "the source guard stands all the same")
+// DAD runs on every leg of the appliance, not only on an uplink bridge: the
+// appliance cannot probe a bridge before its card is there, so the attach
+// did not, and the leg is the first to check its address.
+func TestDADKeepsAnAddressInUseOffALeg(t *testing.T) {
+	for _, uplink := range []bool{false, true} {
+		t.Run(fmt.Sprintf("uplink %t", uplink), func(t *testing.T) {
+			l := legA
+			l.Uplink = uplink
+			h := newCTHarness(t)
+			h.sys.answers[addr("10.50.0.250")] = []net.HardwareAddr{mac("52:54:00:12:34:56")}
+			h.up(t)
+			states := h.sync(t, []Leg{l}, nil)
+			require.False(t, states[0].Up)
+			require.Equal(t, "address in use by 52:54:00:12:34:56", states[0].Problem)
+			require.Empty(t, h.sys.n.addrs["leg1"])
+			require.Contains(t, h.sys.n.rules, guardRule(l), "the source guard stands all the same")
 
-	delete(h.sys.answers, addr("10.50.0.250"))
-	states = h.sync(t, []Leg{uplink}, nil)
-	require.True(t, states[0].Up, states[0].Problem)
-	require.Equal(t, h.now, states[0].DADAt)
+			delete(h.sys.answers, addr("10.50.0.250"))
+			states = h.sync(t, []Leg{l}, nil)
+			require.True(t, states[0].Up, states[0].Problem)
+			require.Equal(t, h.now, states[0].DADAt)
+		})
+	}
 }
 
 // Detach takes the leg's card out of service and away through the API, the

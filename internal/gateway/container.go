@@ -732,8 +732,10 @@ func freeSlot(nics map[int]string) int {
 }
 
 // legAddress gives the leg its address, noprefixroute, so that the leg adds
-// no route to the main table, where net0's routes are. On an uplink bridge
-// DAD runs first, and an answer keeps the address off.
+// no route to the main table, where net0's routes are. DAD runs first on
+// every bridge, not only on one with an uplink: the appliance cannot probe a
+// bridge before its card is there, so the attach did not, and an answer
+// keeps the address off.
 func (b *containerBackend) legAddress(ctx context.Context, l Leg, rec *legRecord) (raised bool, problem string, err error) {
 	iface := l.Iface()
 	have, err := b.sys.addrs(iface)
@@ -741,7 +743,7 @@ func (b *containerBackend) legAddress(ctx context.Context, l Leg, rec *legRecord
 		return false, "", fmt.Errorf("reading the addresses of %s: %w", iface, err)
 	}
 	holds := slices.Contains(have, address{prefix: l.Prefix, noPrefixRoute: true})
-	if l.Uplink && !holds {
+	if !holds {
 		macs, err := b.sys.arpProbe(ctx, iface, l.Prefix.Addr(), dadWindow)
 		if err != nil {
 			return false, "", fmt.Errorf("duplicate-address detection of %s on %s: %w", l.Prefix.Addr(), iface, err)
