@@ -70,7 +70,7 @@ flowchart TB
         portServes["Reached by a guest on this node. Served at every identityMinimum."]
     end
     subgraph filtered["filtered"]
-        filteredProof["Reserved for a network that pins every card to its address. Nothing proves it in this release."]
+        filteredProof["In the appliance: proof at observed through the managed network, while the Proxmox firewall of every card on it is proven to isolate it."]
     end
     subgraph observed["observed"]
         observedProof["Proof: only the guest answers ARP and none of its MACs is on the port of a local guest; or a trusted static address, which only the guest's configuration vouches for"]
@@ -84,7 +84,7 @@ flowchart TB
 |---|---|
 | `port` | Steps 1 to 5: only the guest answers ARP for the address, and the forwarding table of this node places each of its MACs on the guest's own port. |
 | `observed` | Less than `port`, in one of two ways. For a guest on another node of the cluster: only the guest answers ARP for the address, and none of its MACs is on the port of a guest of this node, which would be a local guest answering in its name; this node cannot see where the table sends the guest's own frames. For a trusted static address behind a router (see below): neither ARP nor the forwarding table is asked, and only the guest's Proxmox configuration vouches for the address, together with a kernel route to it through a gateway. |
-| `filtered` | Reserved. It is the level of a network in which every guest card is pinned to its address by the Proxmox firewall, which belongs to the appliance profile; see [Profiles](profiles.md). Nothing proves it in this release. |
+| `filtered` | The level of the managed network `pconet` in the appliance: a proof at `observed` through it, while the Proxmox firewall of every card on it is proven to pin the card to its address and keep it from everything but pco's leg; see [`filtered` in the appliance](#filtered-in-the-appliance). The host profile does not have it. |
 
 A route that names an address and no guest has the level `manual`. Root makes it with
 `pco route manual add`, an admin in the web UI, and its address must lie in `manualCIDRs`;
@@ -137,10 +137,9 @@ the same for every guest of the install: any guest that is on another
 node, and any trusted static address, gets the lower proof. If the guests that need
 `observed` are few, the better answer is often to run pco on the node where they live.
 
-`filtered` is accepted as a value, because it is the name of a level the installation
-may have in another profile. On the host it is treated as `port`; in the appliance it holds
-every route back, as nothing proves it there yet (see
-[the appliance](#the-appliance-and-observed)).
+`filtered` is accepted as a value on both profiles. On the host it is treated as `port`; in
+the appliance it serves the routes on the managed network while their isolation holds, and
+holds every other route back (see [`filtered` in the appliance](#filtered-in-the-appliance)).
 
 ## Routes that wait for an admin
 
@@ -237,12 +236,44 @@ with why, and a problem line of `pco status` counts the routes held by these rul
 
     2 routes are held by the observed rules: segment not acknowledged 2; pco routes says why each is held
 
-**Why `filtered` holds every route.** `filtered` is the level of a managed network, in which pco
-attaches a card of its own to each guest and pins it to its address with the Proxmox firewall.
-That network comes in a later release, and nothing proves `filtered` before it. An appliance
-whose `identityMinimum` is `filtered` therefore serves no guest: each route shows
-`identity level observed is below the required filtered` in `pco routes`, and the problem line
-counts them and names `observed`. Leave it at `observed`.
+**`filtered` and the routes off the managed network.** Only a route on the managed network can
+reach `filtered`. With `identityMinimum: filtered` every other route of the appliance is held
+back: it shows `identity level observed is below the required filtered` in `pco routes`, and the
+problem line counts them and says why `filtered` is not reached.
+
+### `filtered` in the appliance
+
+In the appliance, pco isolates each card it puts on `pconet` with the guest's Proxmox firewall
+(the iptables backend, `pve-firewall`): an ipset `ipfilter-net<n>` that holds exactly the card's
+address, and rules of its own, commented `pco:<install id>`, first on the card: from pco's leg
+the DHCP replies and the published ports, nothing else in; out, the card's own address to the
+leg and DHCP requests, nothing else. A card is added with its link down, and its link comes up
+once its firewall has been in force for a `pve-firewall` interval. Each cycle the routes on
+`pconet` are raised from `observed` to `filtered` while all of this holds for every card on the
+vnet; otherwise they are served at `observed` and the problem line `filtered lost: <why>` says
+why. What the proof rests on, and what it does not cover:
+
+- **Configuration, service and a canary, not the kernel's rules.** The appliance reads the
+  firewall through the Proxmox API, which shows what is configured, and the state of
+  `pve-firewall`, which shows that it runs. That rules are loaded in the node's kernel is shown
+  only by a canary: each cycle a TCP SYN from the leg to a port no route publishes, which must
+  meet silence. A check of the node's live rules (`iptables-save`) needs root on the node and
+  is not part of this proof yet.
+- **A partial write fails safe.** pco writes a new block of rules on top before it removes the
+  old one, and the ipset gets the address before anything else leaves it. A write cut off half
+  way leaves the card more closed than intended, not more open: its path may be cut for a cycle,
+  until the next one puts it right. Rules that still read back otherwise after a write are not
+  written again until they change, and `filtered` does not hold for them.
+- **An admin's rule above pco's is pushed down.** pco's rules must be the first that apply to
+  the card. A rule an admin puts above them is left as it is, and pco's block goes on top of it
+  again; the admin's rule then decides nothing for that card.
+- **DHCP requests are not bound to an address.** A DISCOVER comes from `0.0.0.0`, and
+  `pve-firewall` lets DHCP out in a prelude before its MAC and address filters. pco's DHCP server
+  answers only a request whose Ethernet source is the client's `chaddr`. A DECLINE or RELEASE is
+  not checked against the guest that sent it; pco reports it and changes no lease for it.
+- **The guest firewall's options are the admin's.** pco turns the firewall on only when it was
+  off, with accepting policies, and never turns it back on after an admin turned it off; at a
+  detach it turns it off again only while nobody changed its policies or added rules since.
 
 **The appliance's own addresses.** The denylist of the appliance holds, besides the addresses of
 every node, the addresses of the appliance itself and the gateways of SDN subnets. The addresses
