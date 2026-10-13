@@ -276,11 +276,15 @@ fi
 
 # The runtime bridges of the networking scenarios go last, with nothing
 # enslaved to them any more; a VLAN bridge Proxmox made for a tagged guest
-# went with that guest.
+# on one of them, <bridge>v<tag>, stays after the guest and goes first.
 if [ -e "$state/bridges" ]; then
 	bridgesfailed=0
 	while read -r name; do
 		[ -n "$name" ] || continue
+		for vlandir in /sys/class/net/"$name"v[0-9]*; do
+			[ -e "$vlandir" ] || continue
+			ip link del "$(basename "$vlandir")" || { warn "removing the VLAN bridge $(basename "$vlandir") failed"; bridgesfailed=1; }
+		done
 		ip link show dev "$name" >/dev/null 2>&1 || continue
 		ip link del "$name" || { warn "removing the bridge $name failed"; bridgesfailed=1; }
 	done <"$state/bridges"

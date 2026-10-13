@@ -298,7 +298,7 @@ func testNetworkReload(t *testing.T, s *suite) {
 		marks[id] = n.Mark
 	}
 	for _, cmd := range [][]string{{"ifreload", "-a"}, {"pvesh", "set", "/cluster/sdn"}} {
-		tr := startTraffic(targets)
+		tr := startTraffic(t, targets)
 		out, err := s.run(cmd[0], cmd[1:]...)
 		t.Logf("%s:\n%s", strings.Join(cmd, " "), out)
 		require.NoError(t, err)
@@ -360,7 +360,7 @@ func testGatewayRestart(t *testing.T, s *suite) {
 
 	under := func(what string, run func()) {
 		t.Helper()
-		tr := startTraffic(targets)
+		tr := startTraffic(t, targets)
 		run()
 		time.Sleep(5 * time.Second)
 		total, failed, errs := tr.end()

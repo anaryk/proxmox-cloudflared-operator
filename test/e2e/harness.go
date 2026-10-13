@@ -281,6 +281,8 @@ func (s *suite) uninstall(t *testing.T) {
 	}
 	if err != nil {
 		t.Errorf("pco uninstall: %v; %s names the install, and cleanup.sh purges it again", err, ownedFile)
+	} else if s.managed {
+		unmark(t, managedMarker)
 	}
 	if s.install == "" {
 		return

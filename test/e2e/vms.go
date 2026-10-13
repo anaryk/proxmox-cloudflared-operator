@@ -68,22 +68,6 @@ func (s *suite) sshKey(t testing.TB) (private, public string) {
 	return private, private + ".pub"
 }
 
-// uriEscape encodes text the way the Proxmox API wants the ssh keys of a
-// machine: every byte but the unreserved ones as %XX.
-func uriEscape(text string) string {
-	var b strings.Builder
-	for i := range len(text) {
-		c := text[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.', c == '~':
-			b.WriteByte(c)
-		default:
-			fmt.Fprintf(&b, "%%%02X", c)
-		}
-	}
-	return b.String()
-}
-
 // createVM makes the machine from the image, with cloud-init giving it its
 // address and the key of the run, starts it and waits until SSH answers.
 func (s *suite) createVM(t testing.TB, v vm, image string) {
@@ -104,11 +88,11 @@ func (s *suite) createVM(t testing.TB, v vm, image string) {
 	}
 	s.must(t, "qm", args...)
 	s.must(t, "qm", "set", id, "--scsi0", storage+":0,import-from="+image)
+	// On the command line qm reads the keys from a file; the API takes
+	// their text.
 	_, public := s.sshKey(t)
-	key, err := os.ReadFile(public)
-	require.NoError(t, err)
 	s.must(t, "qm", "set", id, "--ide2", storage+":cloudinit", "--boot", "order=scsi0",
-		"--ciuser", vmUser, "--sshkeys", uriEscape(strings.TrimSpace(string(key))),
+		"--ciuser", vmUser, "--sshkeys", public,
 		"--ipconfig0", "ip="+v.addr+"/24,gw="+nodeAddr)
 	s.must(t, "qm", "start", id)
 	s.waitSSH(t, v)

@@ -438,7 +438,7 @@ func testManagedIsolation(t *testing.T, s *suite) {
 	require.Equal(t, lanPort(m.vmid, am.NIC, false), s.stickyPort(t, am.MAC), "the sticky entry of the owner moved")
 	s.requireAnswer(t, tm, m.body(8080), 10*time.Second)
 	s.exec(t, a.vmid, "ip addr del "+am.Addr.String()+"/24 dev "+ifaceA+" && ip link set dev "+ifaceA+" down && ip link set dev "+ifaceA+" address "+aa.MAC+
-		" && ip link set dev "+ifaceA+" up && ip addr add "+aa.Addr.String()+"/24 dev "+ifaceA+" && ip neigh flush dev "+ifaceA)
+		" && ip link set dev "+ifaceA+" up && ip addr replace "+aa.Addr.String()+"/24 dev "+ifaceA+" && ip neigh flush dev "+ifaceA)
 	require.Eventually(t, func() bool {
 		_, ok := s.try(a.vmid, "ping -c 1 -W 1 "+leg)
 		return ok

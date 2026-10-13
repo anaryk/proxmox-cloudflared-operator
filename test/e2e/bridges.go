@@ -5,6 +5,7 @@ package e2e
 import (
 	"encoding/json"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -77,11 +78,18 @@ func (s *suite) recordBridges(t testing.TB) {
 
 // removeBridges deletes the bridges the run made. It runs after the guests
 // are destroyed and pco is uninstalled, so that nothing is enslaved to them
-// any more; a Proxmox VLAN bridge made for a tagged guest goes with its
-// parent.
+// any more. A bridge Proxmox made for a tagged guest on one of them,
+// <bridge>v<tag>, stays after the guest, and goes first.
 func (s *suite) removeBridges(t *testing.T) {
 	failed := false
 	for name := range s.bridges {
+		vlanBridges, _ := filepath.Glob("/sys/class/net/" + name + "v[0-9]*")
+		for _, dir := range vlanBridges {
+			if _, err := s.run("ip", "link", "del", filepath.Base(dir)); err != nil {
+				t.Errorf("removing the VLAN bridge %s: %v", filepath.Base(dir), err)
+				failed = true
+			}
+		}
 		if _, err := s.run("ip", "link", "show", "dev", name); err != nil {
 			continue
 		}

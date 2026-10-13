@@ -319,6 +319,7 @@ func (s *suite) conntrackPorts(t testing.TB, dst string, port int) ([]int, bool)
 type traffic struct {
 	targets map[string]string // body by target
 	stop    chan struct{}
+	stopped sync.Once
 	done    chan struct{}
 	total   atomic.Int64
 	failed  atomic.Int64
@@ -326,9 +327,11 @@ type traffic struct {
 	errs    []string
 }
 
-// startTraffic requests every target about ten times a second until stopped.
-func startTraffic(targets map[string]string) *traffic {
+// startTraffic requests every target about ten times a second until ended,
+// or until the test ends, whichever comes first.
+func startTraffic(t testing.TB, targets map[string]string) *traffic {
 	tr := &traffic{targets: targets, stop: make(chan struct{}), done: make(chan struct{})}
+	t.Cleanup(func() { tr.stopped.Do(func() { close(tr.stop) }) })
 	go func() {
 		defer close(tr.done)
 		tick := time.NewTicker(100 * time.Millisecond)
@@ -364,7 +367,7 @@ func startTraffic(targets map[string]string) *traffic {
 // end stops the traffic and returns how many requests were made and how
 // many failed, with the first failures.
 func (tr *traffic) end() (total, failed int, errs []string) {
-	close(tr.stop)
+	tr.stopped.Do(func() { close(tr.stop) })
 	<-tr.done
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
