@@ -45,7 +45,10 @@ func remoteScenario(t *testing.T) (*scenario, *classifyingProber) {
 }
 
 func freshAttestation() *Attestation {
-	return &Attestation{Node: "pve2", MAC: mac0, Bridge: "vmbr0", Port: "tap101i0", Fresh: true}
+	return &Attestation{
+		Node: "pve2", MAC: mac0, Bridge: "vmbr0", Port: "tap101i0",
+		StatusAge: 5 * time.Second, HeardAt: t0.Add(-time.Second), StableSince: t0.Add(-10 * time.Minute),
+	}
 }
 
 func (s *scenario) verifyRequest() VerifyRequest {
@@ -91,7 +94,6 @@ func TestVerifyAddressOfAGuestOfAnotherNode(t *testing.T) {
 		kinds bool // whether the kinds of the ports are read
 	}{
 		{name: "without coverage", setup: func(_ *scenario, _ *classifyingProber, r *VerifyRequest) { r.Covered = false }},
-		{name: "stale attestation", setup: func(_ *scenario, _ *classifyingProber, r *VerifyRequest) { r.Attestation.Fresh = false }},
 		{name: "no attestation", setup: func(_ *scenario, _ *classifyingProber, r *VerifyRequest) { r.Attestation = nil }},
 		{name: "attestation of another MAC", setup: func(_ *scenario, _ *classifyingProber, r *VerifyRequest) { r.Attestation.MAC = mac1 }},
 		{name: "attestation from another node", setup: func(_ *scenario, _ *classifyingProber, r *VerifyRequest) { r.Attestation.Node = "pve3" }},
@@ -127,6 +129,65 @@ func TestVerifyAddressOfAGuestOfAnotherNode(t *testing.T) {
 			require.Equal(t, tt.kinds, len(p.ops("kinds")) > 0)
 		})
 	}
+
+	t.Run("the attestation must be fresh, stable and of the card", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			change   func(*Attestation)
+			attested bool
+		}{
+			{name: "status at the limit of its age", change: func(a *Attestation) { a.StatusAge = 30 * time.Second }, attested: true},
+			{name: "status too old", change: func(a *Attestation) { a.StatusAge = 30*time.Second + time.Nanosecond }},
+			{name: "status age below zero", change: func(a *Attestation) { a.StatusAge = -time.Second }},
+			{name: "heartbeat at the limit of its age", change: func(a *Attestation) { a.HeardAt = t0.Add(-15 * time.Second) }, attested: true},
+			{name: "heartbeat too old", change: func(a *Attestation) { a.HeardAt = t0.Add(-15*time.Second - time.Nanosecond) }},
+			{name: "heartbeat in the future", change: func(a *Attestation) { a.HeardAt = t0.Add(time.Second) }},
+			{name: "heartbeat never heard", change: func(a *Attestation) { a.HeardAt = time.Time{} }},
+			{name: "stable for the proof age", change: func(a *Attestation) { a.StableSince = t0.Add(-DefaultMaxProofAge) }, attested: true},
+			{name: "stable for less", change: func(a *Attestation) { a.StableSince = t0.Add(-DefaultMaxProofAge + time.Second) }},
+			{name: "stable since a time in the future", change: func(a *Attestation) { a.StableSince = t0.Add(time.Minute) }},
+			{name: "no stable time", change: func(a *Attestation) { a.StableSince = time.Time{} }},
+			{name: "no bridge said", change: func(a *Attestation) { a.Bridge = "" }, attested: true},
+			{name: "another bridge", change: func(a *Attestation) { a.Bridge = "vmbr1" }},
+			{name: "another VLAN", change: func(a *Attestation) { a.VLAN = 20 }},
+			{name: "MAC in another spelling", change: func(a *Attestation) { a.MAC = "BC-24-11-00-00-01" }, attested: true},
+			{name: "no MAC", change: func(a *Attestation) { a.MAC = "" }},
+			{name: "MAC that does not parse", change: func(a *Attestation) { a.MAC = "not-a-mac" }},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				s, p := remoteScenario(t)
+				req := s.verifyRequest()
+				tt.change(req.Attestation)
+
+				res := s.verify(t, p, req)
+
+				require.Equal(t, tt.attested, res.Attested)
+				require.Equal(t, map[bool]Level{true: LevelPort, false: LevelObserved}[tt.attested], res.Level)
+			})
+		}
+	})
+
+	t.Run("the bridge of a VLAN as the card's or as Proxmox makes it", func(t *testing.T) {
+		for _, at := range []struct {
+			bridge string
+			vlan   int
+		}{{"vmbr0", 10}, {"vmbr0v10", 0}} {
+			s, p := remoteScenario(t)
+			s.web().NICs = []model.NIC{nicOn(0, mac0, "vmbr0", 10, "10.30.0.10")}
+			s.prober.ifaces = append(s.prober.ifaces, HostIface{Name: "vmbr0v10", Addrs: prefixes("10.30.0.2/24")})
+			s.prober.arp[arpKey("vmbr0v10", "10.30.0.10")] = []string{mac0}
+			s.prober.fdb[fdbKey("vmbr0v10", 0, mac0)] = []string{"eno1.10"}
+			p.kinds["vmbr0v10"] = map[string]PortKind{"eno1.10": PortUplink}
+			req := s.verifyRequest()
+			req.Guest, req.Snap, req.Addr = *s.web(), s.snapshot(), ip("10.30.0.10")
+			req.Attestation.Bridge, req.Attestation.VLAN = at.bridge, at.vlan
+
+			res := s.verify(t, p, req)
+
+			require.True(t, res.Attested, "%s VLAN %d", at.bridge, at.vlan)
+		}
+	})
 
 	t.Run("a prober that cannot classify ports", func(t *testing.T) {
 		s, _ := remoteScenario(t)

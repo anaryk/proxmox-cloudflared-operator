@@ -6,21 +6,41 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 )
 
+// An attestation stands while the attesting node's status was at most
+// maxStatusAge old at the controller when it sent the heartbeat that carries
+// it, and that heartbeat is at most maxHeartbeatAge old here.
+const (
+	maxStatusAge    = 30 * time.Second
+	maxHeartbeatAge = 15 * time.Second
+)
+
 // Attestation is what the node that hosts a guest says its own forwarding
-// table shows: the MAC learned on the guest's own port of its bridge.
+// table shows: the MAC learned on the guest's own port of its bridge. It
+// carries times rather than a verdict, so that whether it stands is decided
+// here, against this node's clock.
 type Attestation struct {
-	Node   string
-	MAC    string
+	Node string
+	MAC  string
+	// Bridge and VLAN are where the attesting node learned the MAC; empty
+	// when it does not say.
 	Bridge string
 	VLAN   int
 	Port   string
-	Fresh  bool // as the controller's heartbeat says
+	// StatusAge is how old the attesting node's last status was at the
+	// controller when it sent the heartbeat that carries this attestation.
+	StatusAge time.Duration
+	// HeardAt is when this node received that heartbeat.
+	HeardAt time.Time
+	// StableSince is since when the attesting node has seen the MAC on the
+	// port without a move.
+	StableSince time.Time
 }
 
 // VerifyRequest is an address another node chose for a route, to be proven
@@ -149,21 +169,60 @@ func (c *crossCheck) expected(addr netip.Addr, macs []string) outcome {
 }
 
 // attests reports whether the hosting node's attestation stands for every
-// MAC that answered: the settings offer it, it is fresh, every online node
-// is covered, it comes from the node the inventory says runs the guest, and
-// it places each MAC on the guest's own port of the card that has it.
-func (c *crossCheck) attests(s Settings, guest model.Guest, macs []string, own map[string][]int) bool {
+// MAC that answered: the settings offer it, it is fresh at now and the MAC
+// has stayed on its port for MaxProofAge, every online node is covered, it
+// comes from the node the inventory says runs the guest, on the card's
+// bridge and VLAN when it names them, and it places each MAC on the guest's
+// own port of the card that has it.
+func (c *crossCheck) attests(s Settings, now time.Time, guest model.Guest, nic model.NIC, macs []string, own map[string][]int) bool {
 	at := c.attestation
 	switch {
-	case !s.Attested, at == nil, !at.Fresh, !c.covered:
+	case !s.Attested, at == nil, !c.covered:
 		return false
 	case at.Node == "" || at.Node != guest.Node || at.Node == s.LocalNode:
 		return false
+	case !at.fresh(now) || !at.stable(now, s.MaxProofAge) || !at.onCard(nic):
+		return false
+	}
+	// An empty MAC, or one that does not parse, would be compared as it is
+	// written and could match another such string: it attests nothing.
+	attested, err := model.NormalizeMAC(at.MAC)
+	if err != nil {
+		return false
 	}
 	for _, mac := range macs {
-		if normalMAC(at.MAC) != mac || !slices.Contains(GuestPorts(guest.Ref.VMID, own[mac]...), at.Port) {
+		if attested != mac || !slices.Contains(GuestPorts(guest.Ref.VMID, own[mac]...), at.Port) {
 			return false
 		}
 	}
 	return true
+}
+
+// fresh reports whether the attesting node's status and the heartbeat that
+// carried it are recent enough at now. A heartbeat dated after now says
+// nothing about its age.
+func (at *Attestation) fresh(now time.Time) bool {
+	heard := now.Sub(at.HeardAt)
+	return !at.HeardAt.IsZero() && heard >= 0 && heard <= maxHeartbeatAge &&
+		at.StatusAge >= 0 && at.StatusAge <= maxStatusAge
+}
+
+// stable reports whether the MAC has stayed on its port for at least
+// minAge at now, so that a guest answering in another's name for a moment
+// is not taken for it.
+func (at *Attestation) stable(now time.Time, minAge time.Duration) bool {
+	return !at.StableSince.IsZero() && now.Sub(at.StableSince) >= minAge
+}
+
+// onCard reports whether the bridge and VLAN the attestation names, if any,
+// are the card's: as the card names them, or as the bridge Proxmox makes
+// for the VLAN of a bridge that does not filter VLANs.
+func (at *Attestation) onCard(nic model.NIC) bool {
+	switch {
+	case at.Bridge == "" && at.VLAN == 0:
+		return true
+	case at.Bridge == nic.Bridge && at.VLAN == nic.VLAN:
+		return true
+	}
+	return nic.VLAN != 0 && at.Bridge == vlanBridge(nic) && at.VLAN == 0
 }

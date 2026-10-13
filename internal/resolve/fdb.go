@@ -189,7 +189,7 @@ func (a *attempt) onUplink(ctx context.Context, ifc HostIface, nic model.NIC, ma
 	if !unsure.ok() {
 		return nil, unsure.outcome
 	}
-	if len(learned) < len(macs) || !a.cross.attests(a.r.settings, a.guest, macs, own) {
+	if len(learned) < len(macs) || !a.cross.attests(a.r.settings, a.now, a.guest, nic, macs, own) {
 		return nil, outcome{}
 	}
 	kinds := a.portKinds(ctx, bridge)
