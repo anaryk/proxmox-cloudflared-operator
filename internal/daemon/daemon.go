@@ -288,6 +288,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		Timeout:    deps.HostTimeout,
 		Enabled:    deps.UnitEnabled,
 		FileState:  deps.UnitFileState,
+		Pool:       servicePool(st),
+		PinsOf:     st.Pins,
 	}
 	watch := func(ctx context.Context) { watchNetwork(ctx, eng, deps.WatchNetwork, deps.Sleep, log) }
 	k := &keeper{
@@ -311,6 +313,15 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, beside...)
+}
+
+// servicePool is what the doctor reads of the pool of service addresses:
+// how many were given out, and its size.
+func servicePool(st *store.Store) func() (used, size int, err error) {
+	return func() (used, size int, err error) {
+		_, used, size, err = st.ServicePool()
+		return used, size, err
+	}
 }
 
 // startSettings reads the settings that are wired at start. Settings that
