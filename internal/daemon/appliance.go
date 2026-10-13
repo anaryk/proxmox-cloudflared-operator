@@ -202,7 +202,8 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
 	srv.SetWebUID(webUID)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep, traffic.run, keepWeb)
+	sources := newSourceWatch(parts.gw, st, eng, deps, log)
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep, traffic.run, keepWeb, sources.keep)
 }
 
 // applianceStore is the check of the store the doctor makes in the appliance:

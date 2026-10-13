@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/vishvananda/netns"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -112,6 +113,12 @@ type Deps struct {
 	// container, changes, which has the gateway checked; default: netlink.
 	Gateway      gateway.Backend
 	WatchGateway func(ctx context.Context, changed func()) error
+	// WatchPorts calls joined with every port of a guest that joins the
+	// managed bridge, on the host; WatchSources listens on the managed leg
+	// for frames of cards no lease knows. Defaults: netlink and a packet
+	// socket.
+	WatchPorts   func(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string)) error
+	WatchSources func(ctx context.Context, w gateway.SourceWatch, ns netns.NsHandle, dev string) error
 	// Namespace runs pco-netns.service, which the daemon starts for a probe,
 	// enables with the first network attached and disables when the last is
 	// detached; default: systemctl.
@@ -176,6 +183,12 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.WatchGateway == nil {
 		d.WatchGateway = watchLinksAndRoutes
+	}
+	if d.WatchPorts == nil {
+		d.WatchPorts = gateway.WatchGuestPorts
+	}
+	if d.WatchSources == nil {
+		d.WatchSources = runSourceWatch
 	}
 	if d.Namespace == nil {
 		d.Namespace = setup.NewNamespaceUnit(setup.NewHostRunner())
@@ -301,7 +314,9 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		statuses: eng.ConnectorStatuses, scrape: conns.Metrics, record: eng.RecordTraffic, targets: eng.SampleTargets,
 		now: deps.Now, log: log,
 	}
-	beside := []func(context.Context){watch, keep, traffic.run}
+	ports := func(ctx context.Context) { gw.watchPorts(ctx, deps.WatchPorts, deps.Sleep) }
+	sources := newSourceWatch(gw, st, eng, deps, log)
+	beside := []func(context.Context){watch, keep, traffic.run, ports, sources.keep}
 	if cfg.profile() == store.ProfileHost {
 		web := newWebKeeper(cfg, deps, client, eng.NoteWeb, log)
 		env.Web = web.facts

@@ -22,12 +22,14 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
+	"github.com/vishvananda/netns"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/apiclient"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -514,6 +516,14 @@ func newWorld(t *testing.T) *world {
 		UnitEnabled:  func(context.Context, string) (bool, error) { return false, nil },
 		Gateway:      w.gw,
 		WatchGateway: func(ctx context.Context, _ func()) error { <-ctx.Done(); return ctx.Err() },
+		WatchPorts: func(ctx context.Context, _ netns.NsHandle, _ string, _ func(string)) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		WatchSources: func(ctx context.Context, _ gateway.SourceWatch, _ netns.NsHandle, _ string) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
 	}
 	return w
 }

@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/vishvananda/netns"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
 // startVerifyTimeout bounds the check of the gateway at the start of the
@@ -41,10 +43,24 @@ type gatewayPart struct {
 	wanted gateway.Cache
 	upMu   sync.Mutex
 	up     []gateway.Leg
+
+	// portExists says whether a link of the node is there; applySticky
+	// gives the backend the sticky entries between two syncs. present are
+	// the ports of the wanted entries that were there when the entries were
+	// last given, guarded by mu.
+	portExists  func(name string) bool
+	applySticky func(ctx context.Context, b gateway.Backend, sticky []gateway.Sticky) error
+	present     map[string]bool
 }
 
 func newGatewayPart(b gateway.Backend, local string, now func() time.Time, log zerolog.Logger) *gatewayPart {
-	return &gatewayPart{b: b, local: local, now: now, log: log}
+	return &gatewayPart{b: b, local: local, now: now, log: log, portExists: linkExists, applySticky: gateway.ApplySticky}
+}
+
+// linkExists says whether the node has a link of the name.
+func linkExists(name string) bool {
+	_, err := net.InterfaceByName(name)
+	return err == nil
 }
 
 // start takes the cache of the gateway, which the last sync wrote and which
@@ -153,12 +169,112 @@ func (g *gatewayPart) Sync(ctx context.Context, legs []gateway.Leg, services []g
 
 func (g *gatewayPart) sync(ctx context.Context, want gateway.Cache) ([]gateway.LegState, error) {
 	g.wanted = want
+	present := g.stickyPorts()
 	states, err := g.b.Sync(ctx, want.Legs, want.Services, want.Pins, want.Sticky)
 	if err != nil {
 		return nil, err
 	}
+	g.present = present
 	g.setUp(upOf(want.Legs, states))
 	return states, nil
+}
+
+// stickyPorts are the ports of the wanted sticky entries that are there now.
+func (g *gatewayPart) stickyPorts() map[string]bool {
+	out := map[string]bool{}
+	for _, s := range g.wanted.Sticky {
+		if s.Port != "" && g.portExists(s.Port) {
+			out[s.Port] = true
+		}
+	}
+	return out
+}
+
+// keepSticky gives the wanted sticky entries to the ports of managed guests
+// that appeared since the entries were last given: joined, a port the port
+// watch saw join the managed bridge, and any other the keeper's check finds
+// there now. A guest that starts makes its port anew, without the entry its
+// card had; until it is given again, another guest may take the card's MAC
+// over. The rest of the gateway is left to the cycle.
+func (g *gatewayPart) keepSticky(ctx context.Context, joined string) error {
+	if !g.mayChange() {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.wanted.Sticky) == 0 {
+		return nil
+	}
+	now := g.stickyPorts()
+	appeared := false
+	for port := range now {
+		if !g.present[port] || port == joined {
+			appeared = true
+		}
+	}
+	if !appeared {
+		g.present = now
+		return nil
+	}
+	if err := g.applySticky(ctx, g.b, g.wanted.Sticky); err != nil {
+		return err
+	}
+	g.present = now
+	return nil
+}
+
+// portJoinedQueue is how many ports that joined the managed bridge wait for
+// their entries; more at once are left to the keeper's next check.
+const portJoinedQueue = 64
+
+// watchPorts gives the port of a managed guest its sticky entry as soon as
+// it joins the managed bridge, until ctx ends. A watch that fails is started
+// again after a while; until then the keeper's checks give the entries.
+func (g *gatewayPart) watchPorts(ctx context.Context, watch func(ctx context.Context, ns netns.NsHandle, bridge string, joined func(port string)) error,
+	sleep func(context.Context, time.Duration) error,
+) {
+	joined := make(chan string, portJoinedQueue)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case port := <-joined:
+				if err := g.keepSticky(ctx, port); err != nil && ctx.Err() == nil {
+					g.log.Warn().Err(err).Str("port", port).Msg("giving the port of a managed guest its sticky entry failed; the keeper tries again")
+				}
+			}
+		}
+	}()
+	defer func() { <-done }()
+	for {
+		err := watch(ctx, netns.None(), gateway.ManagedBridge, func(port string) {
+			select {
+			case joined <- port:
+			default:
+			}
+		})
+		if ctx.Err() != nil {
+			return
+		}
+		g.log.Warn().Err(err).Dur("again", watchAgainAfter).Msg("watching the ports of the managed bridge failed; " +
+			"until it runs again, a guest's port gets its sticky entry at the keeper's check")
+		if sleep(ctx, watchAgainAfter) != nil {
+			return
+		}
+	}
+}
+
+// managedLeg returns the leg of the managed network, while it is up.
+func (g *gatewayPart) managedLeg() (gateway.Leg, bool) {
+	for _, l := range g.UpLegs() {
+		if l.Managed {
+			return l, true
+		}
+	}
+	return gateway.Leg{}, false
 }
 
 // restore brings the gateway back to what was last wanted of it: Up, then
@@ -266,6 +382,11 @@ func (k *keeper) checkGateway(ctx context.Context) time.Duration {
 	if k.gw == nil || !k.gw.active() {
 		return 0
 	}
+	// A guest's port that appeared since the last sync is no change of the
+	// gateway: it is given its entry before the check.
+	if err := k.gw.keepSticky(ctx, ""); err != nil {
+		k.log.Warn().Err(err).Msg("giving the ports of managed guests their sticky entries failed; the next check tries again")
+	}
 	err := k.gw.Verify(ctx)
 	switch {
 	case err == nil:
@@ -291,4 +412,111 @@ func (k *keeper) checkGateway(ctx context.Context) time.Duration {
 	}
 	k.noteGw(found)
 	return 0
+}
+
+// Of the watch of the managed leg for cards no lease knows.
+const (
+	// legPollEvery is how often the watch looks for the managed leg while
+	// it has none to listen on.
+	legPollEvery = 5 * time.Second
+	// leasesReadEvery is how often at most a frame of a MAC the watch does
+	// not know has the leases read again: a card attached in this cycle
+	// speaks before the gateway is synced with its lease, and a guest that
+	// sends from ever new MACs reads the store no more often than this.
+	leasesReadEvery = time.Second
+)
+
+// sourceWatch listens on the managed leg for frames of cards no lease knows,
+// in both profiles, and tells the engine of each: it reads the guests of the
+// node again, so that a card added outside pco is seen within a cycle rather
+// than at the next full read, and the appliance drops filtered at once.
+type sourceWatch struct {
+	gw      *gatewayPart
+	leases  func() (map[string]store.Lease, error)
+	unknown func(mac net.HardwareAddr, at time.Time)
+	run     func(ctx context.Context, w gateway.SourceWatch, ns netns.NsHandle, dev string) error
+	now     func() time.Time
+	sleep   func(context.Context, time.Duration) error
+	log     zerolog.Logger
+
+	mu     sync.Mutex
+	known  map[string]bool // the MACs of the leases as last read
+	read   bool            // the leases were read once
+	readAt time.Time
+	failed string // why the watch last failed, said once
+}
+
+// newSourceWatch is the watch of the managed leg of a daemon. It waits for
+// the leg on the clock, apart from the daemon's sleep, which its start
+// spends waiting for the cluster filesystem.
+func newSourceWatch(gw *gatewayPart, st *store.Store, eng *engine.Engine, deps Deps, log zerolog.Logger) *sourceWatch {
+	return &sourceWatch{gw: gw, leases: st.Leases, unknown: eng.UnknownMAC, run: deps.WatchSources, now: deps.Now, sleep: sleepContext, log: log}
+}
+
+// runSourceWatch is the watch on the managed leg as it runs on Linux.
+func runSourceWatch(ctx context.Context, w gateway.SourceWatch, ns netns.NsHandle, dev string) error {
+	return w.Run(ctx, ns, dev)
+}
+
+// keep runs the watch on the managed leg until ctx ends, and again on the
+// leg there then whenever it ends: when the leg went away, or was made anew.
+func (s *sourceWatch) keep(ctx context.Context) {
+	for ctx.Err() == nil {
+		if leg, ok := s.gw.managedLeg(); ok {
+			w := gateway.SourceWatch{Known: s.isLease, Own: []net.HardwareAddr{leg.MAC}, Unknown: s.report}
+			err := s.run(ctx, w, s.gw.b.Netns(), leg.Iface())
+			if ctx.Err() != nil {
+				return
+			}
+			s.fail(leg, err)
+		}
+		if s.sleep(ctx, legPollEvery) != nil {
+			return
+		}
+	}
+}
+
+func (s *sourceWatch) fail(leg gateway.Leg, err error) {
+	why := "it ended"
+	if err != nil {
+		why = err.Error()
+	}
+	level := zerolog.DebugLevel
+	if why != s.failed {
+		level = zerolog.WarnLevel
+	}
+	s.failed = why
+	s.log.WithLevel(level).Str("leg", leg.Iface()).Str("why", why).Msg("watching the managed network for cards no lease knows stopped; it starts again")
+}
+
+func (s *sourceWatch) report(mac net.HardwareAddr) { s.unknown(mac, s.now()) }
+
+// isLease says whether a MAC is a lease's. A MAC it does not know has the
+// leases read again, no more often than leasesReadEvery. While they were
+// never read, every MAC counts as known: what cannot be told is no finding.
+func (s *sourceWatch) isLease(mac net.HardwareAddr) bool {
+	key := mac.String()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.known[key] {
+		return true
+	}
+	now := s.now()
+	if s.read && now.Sub(s.readAt) < leasesReadEvery {
+		return false
+	}
+	s.readAt = now
+	leases, err := s.leases()
+	if err != nil {
+		s.log.Debug().Err(err).Msg("reading the leases for the watch of the managed network failed")
+		return !s.read
+	}
+	s.known = make(map[string]bool, len(leases))
+	for _, l := range leases {
+		if m, err := net.ParseMAC(l.MAC); err == nil {
+			s.known[m.String()] = true
+		}
+	}
+	s.read = true
+	return s.known[key]
 }
