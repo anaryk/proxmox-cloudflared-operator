@@ -1,0 +1,384 @@
+package agent
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"net/netip"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/cluster/pki"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
+)
+
+const (
+	// observationQueue is how many observations wait between the goroutine
+	// that reads the kernel's notifications and the one that judges them; a
+	// full queue holds the reader, which lets the kernel drop notifications
+	// and the observer start again from a dump.
+	observationQueue = 1024
+	// heldEntries bounds the entries of the forwarding tables the agent
+	// holds a word of, and movesKept the moves the status carries, which it
+	// carries for movesKeptFor.
+	heldEntries  = 4096
+	movesKept    = 500
+	movesKeptFor = 10 * time.Minute
+	// observeAgainAfter is how long an observer that failed waits before it
+	// starts again.
+	observeAgainAfter = time.Minute
+)
+
+// ObserveFunc reads the forwarding tables of the node's bridges until ctx
+// ends and reports what they show of the expected MACs: egress.ObserveForwarding.
+type ObserveFunc func(ctx context.Context, expected func() map[string]egress.Expected, report func(egress.Observation)) error
+
+// observing is what the agent holds of the forwarding tables of its bridges:
+// the MACs of the published guests, as the observer expects them, and the
+// last word of each entry that still holds. It is guarded by mu; the
+// observer reads the expected MACs at every entry.
+type observing struct {
+	mu       sync.Mutex
+	expected map[string]egress.Expected // by MAC
+	cards    map[string]model.NIC       // by MAC: the card of the published guest
+	kinds    map[int]model.GuestKind    // by VMID, of every guest the snapshot names
+	held     map[entryKey]heldEntry
+	moves    []agentproto.Observation // newest last
+	since    time.Time                // when the observer that runs started; zero while none does
+	run      int                      // numbers the runs of the observer, so a run that ended says nothing more
+	queue    chan observed
+}
+
+// entryKey is an entry of a forwarding table: a MAC in a VLAN of a bridge.
+type entryKey struct {
+	bridge string
+	vlan   int
+	mac    string
+}
+
+// heldEntry is the last Learned or Conflict of an entry that still holds.
+type heldEntry struct {
+	kind  egress.ObservationKind
+	port  string
+	from  string
+	since time.Time
+	// guest and nic are the published card the MAC is of, and attest says
+	// that the entry is on the card's own bridge: the one the attestation
+	// names, not a firewall bridge between the card and it.
+	guest  model.GuestRef
+	nic    int
+	attest bool
+	owner  *model.GuestRef // the guest whose port the MAC is on, for a conflict
+}
+
+// observed is an observation with the run of the observer that made it.
+type observed struct {
+	run int
+	obs egress.Observation
+}
+
+// Expected is what the observer of the forwarding tables asks at every
+// entry: the MACs of the published guests, by MAC, as the last pass set them.
+func (a *Agent) Expected() map[string]egress.Expected {
+	a.obs.mu.Lock()
+	defer a.obs.mu.Unlock()
+	return a.obs.expected
+}
+
+// expect gives the observer the MACs of the guests the snapshot publishes:
+// every card of every target's guest, whatever node the snapshot says runs
+// it, so that this node attests any of them it finds on its bridges. What is
+// held of a MAC that is no longer published, or published for another card,
+// is forgotten. An appliance agent observes nothing.
+func (p *pass) expect() {
+	if p.a.d.Kind != pki.KindHost {
+		return
+	}
+	expected := map[string]egress.Expected{}
+	cards := map[string]model.NIC{}
+	kinds := map[int]model.GuestKind{}
+	for _, t := range p.s.Targets {
+		if t.Guest == nil {
+			continue
+		}
+		kinds[t.Guest.Ref.VMID] = t.Guest.Ref.Kind
+		for _, n := range t.Guest.NICs {
+			mac, err := model.NormalizeMAC(n.MAC)
+			if err != nil {
+				continue
+			}
+			if _, dup := expected[mac]; dup {
+				continue
+			}
+			expected[mac] = egress.Expected{MAC: mac, Guest: t.Guest.Ref, NIC: n.Index}
+			cards[mac] = n
+		}
+	}
+	for _, g := range p.s.Guests {
+		kinds[g.Ref.VMID] = g.Ref.Kind
+	}
+	o := &p.a.obs
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.expected, o.cards, o.kinds = expected, cards, kinds
+	for key, h := range o.held {
+		want, ok := expected[key.mac]
+		if !ok || h.kind == egress.Learned && (want.Guest != h.guest || want.NIC != h.nic) {
+			delete(o.held, key)
+		}
+	}
+}
+
+// Observe runs the observer of the forwarding tables of the node's bridges
+// until ctx ends, and starts it again after a while when it fails; while
+// none runs the node attests nothing. It is called once, by the daemon, on a
+// host node: an appliance agent reads no bridge and refuses.
+func (a *Agent) Observe(ctx context.Context, observe ObserveFunc) error {
+	if a.d.Kind != pki.KindHost {
+		return errors.New("an appliance agent reads no forwarding table")
+	}
+	o := &a.obs
+	o.mu.Lock()
+	if o.queue == nil {
+		o.queue = make(chan observed, observationQueue)
+	}
+	queue := o.queue
+	o.mu.Unlock()
+	judged := make(chan struct{})
+	go func() {
+		defer close(judged)
+		a.judge(ctx, queue)
+	}()
+	defer func() { <-judged }()
+	for {
+		run := a.observing(true)
+		report := func(obs egress.Observation) {
+			select {
+			case queue <- observed{run: run, obs: obs}:
+			case <-ctx.Done():
+			}
+		}
+		err := observe(ctx, a.Expected, report)
+		a.observing(false)
+		if ctx.Err() != nil {
+			return nil
+		}
+		a.d.Log.Warn().Err(err).Dur("again", observeAgainAfter).Msg("watching the forwarding tables of the bridges failed; " +
+			"until it runs again this node attests nothing")
+		ch, stop := a.after(observeAgainAfter)
+		select {
+		case <-ctx.Done():
+			stop()
+			return nil
+		case <-ch:
+		}
+	}
+}
+
+// observing notes that a run of the observer starts, and returns its number,
+// or that the run ended: what it held is forgotten, since the next run reads
+// the tables whole again, and the status says that the tables are not
+// watched.
+func (a *Agent) observing(on bool) int {
+	o := &a.obs
+	o.mu.Lock()
+	if on {
+		o.run++
+		o.since = a.d.Now()
+		run := o.run
+		o.mu.Unlock()
+		return run
+	}
+	o.since = time.Time{}
+	clear(o.held)
+	run := o.run
+	o.mu.Unlock()
+	a.changed()
+	return run
+}
+
+// judge takes the observations off the queue, so that the goroutine that
+// reads the kernel's notifications never waits on the agent's locks.
+func (a *Agent) judge(ctx context.Context, queue <-chan observed) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case o := <-queue:
+			a.observed(ctx, o)
+		}
+	}
+}
+
+// observed takes in what the forwarding table of a bridge showed of a
+// published MAC. A Learned on the guest's own port holds, and is attested
+// when the bridge is the card's; a Conflict holds and is reported while it
+// does; a Moved is reported for a while; a Gone ends what was held. A move
+// or a new conflict takes every address this node serves on that MAC out of
+// the egress filter at once, to be verified again.
+func (a *Agent) observed(ctx context.Context, in observed) {
+	o := &a.obs
+	obs := in.obs
+	key := entryKey{bridge: obs.Bridge, vlan: obs.VLAN, mac: obs.MAC}
+	o.mu.Lock()
+	if in.run != o.run {
+		o.mu.Unlock()
+		return
+	}
+	want, expected := o.expected[obs.MAC]
+	prev, had := o.held[key]
+	var changed, block bool
+	var say string
+	switch obs.Kind {
+	case egress.Learned:
+		if !expected {
+			break
+		}
+		h := heldEntry{kind: egress.Learned, port: obs.Port, since: obs.At, guest: want.Guest, nic: want.NIC, attest: o.onCard(obs.MAC, obs.Bridge)}
+		if had && prev.kind == egress.Learned && prev.port == obs.Port {
+			h.since = prev.since
+		} else {
+			changed = true
+		}
+		o.keep(key, had, h)
+	case egress.Conflict:
+		h := heldEntry{kind: egress.Conflict, port: obs.Port, from: obs.From, since: obs.At, owner: o.ownerOf(obs.Owner)}
+		if had && prev.kind == egress.Conflict && prev.port == obs.Port {
+			h.since = prev.since
+		} else {
+			changed, block = true, true
+			say = fmt.Sprintf("guest %s: its MAC %s is on port %s of bridge %s, a port of %s; the address is not reached until the controller lifts the block",
+				want.Guest, obs.MAC, obs.Port, obs.Bridge, ownerText(h.owner))
+		}
+		o.keep(key, had, h)
+	case egress.Moved:
+		delete(o.held, key)
+		o.moves = append(o.moves, agentproto.Observation{
+			Kind: agentproto.ObservationMoved, MAC: obs.MAC, Bridge: obs.Bridge, VLAN: obs.VLAN, From: obs.From, Port: obs.Port, At: obs.At,
+		})
+		if len(o.moves) > movesKept {
+			o.moves = slices.Delete(o.moves, 0, len(o.moves)-movesKept)
+		}
+		changed, block = true, true
+		say = fmt.Sprintf("guest %s: its MAC %s left its own port %s for %s on bridge %s; the address is verified again before it is reached",
+			want.Guest, obs.MAC, obs.From, obs.Port, obs.Bridge)
+	case egress.Gone:
+		if had {
+			delete(o.held, key)
+			changed = true
+		}
+	}
+	o.mu.Unlock()
+	if block {
+		a.blockMAC(ctx, obs.MAC)
+	}
+	if say != "" {
+		a.event(levelWarn, kindEgress, obs.MAC, say)
+	}
+	if changed {
+		a.changed()
+	}
+}
+
+// keep holds h for key, unless the entry is new and the bound is reached.
+func (o *observing) keep(key entryKey, had bool, h heldEntry) {
+	if !had && len(o.held) >= heldEntries {
+		return
+	}
+	if o.held == nil {
+		o.held = map[entryKey]heldEntry{}
+	}
+	o.held[key] = h
+}
+
+// onCard reports whether bridge is the one the card with mac is on: the
+// bridge the card names, or the one Proxmox makes for its VLAN on a bridge
+// that does not filter VLANs. A firewall bridge between the card and it is
+// neither, and the entry on it names the tap, not the port the attestation
+// must name.
+func (o *observing) onCard(mac, bridge string) bool {
+	nic, ok := o.cards[mac]
+	return ok && (bridge == nic.Bridge || nic.VLAN != 0 && bridge == fmt.Sprintf("%sv%d", nic.Bridge, nic.VLAN))
+}
+
+// ownerOf is the guest whose port a MAC is on, with its kind from the
+// snapshot when the port's name does not say it.
+func (o *observing) ownerOf(owner *model.GuestRef) *model.GuestRef {
+	if owner == nil {
+		return nil
+	}
+	ref := *owner
+	if ref.Kind == "" {
+		ref.Kind = o.kinds[ref.VMID]
+	}
+	return &ref
+}
+
+func ownerText(ref *model.GuestRef) string {
+	switch {
+	case ref == nil:
+		return "another guest"
+	case ref.Kind == "":
+		return fmt.Sprintf("the guest with VMID %d", ref.VMID)
+	}
+	return "guest " + ref.String()
+}
+
+// blockMAC takes every address this node serves on mac out of the egress
+// filter, as a move of its MAC does, to be verified again.
+func (a *Agent) blockMAC(ctx context.Context, mac string) {
+	var addrs []netip.Addr
+	a.egMu.Lock()
+	for addr, p := range a.pins {
+		if p.MAC.String() == mac || slices.ContainsFunc(p.Own, func(o egress.OwnMAC) bool { return o.MAC.String() == mac }) {
+			addrs = append(addrs, addr)
+		}
+	}
+	a.egMu.Unlock()
+	slices.SortFunc(addrs, netip.Addr.Compare)
+	for _, addr := range addrs {
+		a.Moved(ctx, addr)
+	}
+}
+
+// report is what the status carries of the forwarding tables: an
+// attestation for every published card learned on its own port of its own
+// bridge, every conflict that holds, and the moves of the last movesKeptFor,
+// at most movesKept of them all, the oldest left out.
+func (o *observing) report(node string, now time.Time) ([]agentproto.Attestation, []agentproto.Observation) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var attestations []agentproto.Attestation
+	var observations []agentproto.Observation
+	for key, h := range o.held {
+		switch {
+		case h.kind == egress.Learned && h.attest:
+			attestations = append(attestations, agentproto.Attestation{
+				Node: node, Guest: h.guest, NIC: h.nic, MAC: key.mac, Bridge: key.bridge, VLAN: key.vlan, Port: h.port, Since: h.since,
+			})
+		case h.kind == egress.Conflict:
+			observations = append(observations, agentproto.Observation{
+				Kind: agentproto.ObservationConflict, MAC: key.mac, Bridge: key.bridge, VLAN: key.vlan, From: h.from, Port: h.port, Owner: h.owner, At: h.since,
+			})
+		}
+	}
+	for _, m := range o.moves {
+		if now.Sub(m.At) <= movesKeptFor {
+			observations = append(observations, m)
+		}
+	}
+	slices.SortFunc(attestations, func(a, b agentproto.Attestation) int {
+		return cmp.Or(cmp.Compare(a.MAC, b.MAC), cmp.Compare(a.Bridge, b.Bridge), cmp.Compare(a.VLAN, b.VLAN))
+	})
+	slices.SortFunc(observations, func(a, b agentproto.Observation) int {
+		return cmp.Or(a.At.Compare(b.At), cmp.Compare(a.MAC, b.MAC), cmp.Compare(a.Bridge, b.Bridge), cmp.Compare(a.VLAN, b.VLAN), cmp.Compare(a.Kind, b.Kind))
+	})
+	if len(observations) > movesKept {
+		observations = observations[len(observations)-movesKept:]
+	}
+	return attestations, observations
+}

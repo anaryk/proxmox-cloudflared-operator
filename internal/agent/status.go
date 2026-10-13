@@ -181,6 +181,7 @@ func (a *Agent) Status(context.Context) agentproto.Status {
 	for i, t := range st.Targets {
 		st.Targets[i].InEgressSet = in[r.setOf[t.Key]]
 	}
+	a.facts(&st)
 	return st
 }
 

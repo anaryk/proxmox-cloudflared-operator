@@ -196,6 +196,9 @@ type Agent struct {
 	checks   map[netip.Addr]*moveCheck
 	moving   sync.WaitGroup
 	vouch    vouching
+
+	// obs is what the observer of the forwarding tables gave the agent.
+	obs observing
 }
 
 // New returns the agent of a node, with the desired state, the epoch, the
