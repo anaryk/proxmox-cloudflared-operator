@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -150,6 +151,11 @@ type Deps struct {
 	Changed func()
 	// Event receives the agent's events. It may be nil: they are logged.
 	Event func(Event)
+	// After starts a wait, and Timeout gives a call its deadline. Both may
+	// be nil, for a timer and context.WithTimeout: the engine of the same
+	// process passes its own, so that its waits and deadlines are one.
+	After   func(time.Duration) (<-chan time.Time, func() bool)
+	Timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 // Agent applies the desired state of one node. Its methods are safe for
@@ -157,9 +163,13 @@ type Deps struct {
 type Agent struct {
 	d       Deps
 	started time.Time
-	// after starts the wait before a verification of a moved address; tests
-	// replace it.
-	after func(time.Duration) (<-chan time.Time, func() bool)
+	// after starts the wait before a verification of a moved address, and
+	// timeout gives a resolution its deadline; tests replace them.
+	after   func(time.Duration) (<-chan time.Time, func() bool)
+	timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	// halted says that the engine of an appliance stopped serving: a
+	// verification that passes puts nothing back into the filter.
+	halted atomic.Bool
 
 	// sem is held by every pass, by StandDown and by the verification of an
 	// address whose MAC moved. It guards everything below up to rep.
@@ -238,6 +248,7 @@ func New(d Deps) (*Agent, error) {
 		d:         d,
 		started:   d.Now(),
 		after:     startTimer,
+		timeout:   context.WithTimeout,
 		sem:       make(chan struct{}, 1),
 		bootOff:   map[string]bool{},
 		wasActive: map[string]bool{},
@@ -246,6 +257,12 @@ func New(d Deps) (*Agent, error) {
 		demote:    newDemotion(),
 		suspects:  map[netip.Addr]bool{},
 		checks:    map[netip.Addr]*moveCheck{},
+	}
+	if d.After != nil {
+		a.after = d.After
+	}
+	if d.Timeout != nil {
+		a.timeout = d.Timeout
 	}
 	if err := a.load(); err != nil {
 		return nil, err
@@ -293,12 +310,17 @@ func (a *Agent) FlowCounts(ctx context.Context) (generation string, counts map[n
 	return a.d.Egress.FlowCounts(ctx)
 }
 
-// event records ev and logs it.
+// event records an event of the agent.
 func (a *Agent) event(level, kind, subject, msg string) {
 	a.eventOf(Event{At: a.d.Now(), Level: level, Kind: kind, Subject: subject, Message: msg})
 }
 
 func (a *Agent) eventOf(ev Event) {
+	if a.d.Event != nil {
+		// The receiver keeps and logs it.
+		a.d.Event(ev)
+		return
+	}
 	line := a.d.Log.Info()
 	switch ev.Level {
 	case levelWarn:
@@ -307,9 +329,6 @@ func (a *Agent) eventOf(ev Event) {
 		line = a.d.Log.Error()
 	}
 	line.Str("kind", ev.Kind).Str("subject", ev.Subject).Msg(ev.Message)
-	if a.d.Event != nil {
-		a.d.Event(ev)
-	}
 }
 
 // changed says that the report changed outside a pass.

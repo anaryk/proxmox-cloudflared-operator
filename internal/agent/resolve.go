@@ -2,7 +2,6 @@ package agent
 
 import (
 	"cmp"
-	"context"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -125,7 +124,7 @@ func (p *pass) resolveAll() {
 		started++
 		wg.Go(func() {
 			defer func() { <-slots }()
-			ctx, cancel := context.WithTimeout(p.ctx, resolveTimeout)
+			ctx, cancel := p.a.timeout(p.ctx, resolveTimeout)
 			defer cancel()
 			out[i] = p.a.d.Resolver.Resolve(ctx, t.Route, p.inv, prev, p.deny, resolve.Level(t.Required), share)
 		})

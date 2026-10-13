@@ -74,12 +74,17 @@ func (a *Agent) load() error {
 		return fmt.Errorf("agent: reading the egress set it gave: %w", err)
 	}
 	if !found {
-		// The engine of an earlier release kept the set in its memory.
+		// The engine of an earlier release kept the set in its memory; one of
+		// another install says nothing for this one.
+		// One that cannot be read holds nothing the agent trusts: what it
+		// verifies enters the set again.
 		m, err := a.d.Store.EngineMemory()
 		if err != nil {
-			return fmt.Errorf("agent: reading the egress set the engine kept: %w", err)
+			a.d.Log.Warn().Err(err).Msg("the egress set the engine kept cannot be read; a target enters the set as it verifies")
 		}
-		set = m.Egress
+		if err == nil && (m.InstallID == "" || m.InstallID == a.d.InstallID) {
+			set = m.Egress
+		}
 	}
 	a.set = fromAddrPorts(set)
 	return nil

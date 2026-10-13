@@ -216,10 +216,10 @@ func (p *pass) feedEgress(set []egress.Target) {
 	case errors.Is(err, egress.ErrOff):
 		p.egress = egressOff
 	case errors.Is(err, egress.ErrChanged):
-		p.egress = egressChanged
+		p.egress, p.setErr = egressChanged, err
 		p.problem("setting the egress filter: %v", err)
 	default:
-		p.egress = egressNotLoaded
+		p.egress, p.setErr = egressNotLoaded, err
 		p.problem("setting the egress filter: %v", err)
 	}
 }

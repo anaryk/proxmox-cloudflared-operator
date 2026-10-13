@@ -213,7 +213,7 @@ func (a *Agent) reverify(ctx context.Context, addr netip.Addr) {
 	if !again {
 		check.pending = false
 		delete(a.suspects, addr)
-		if passed && a.stood == "" {
+		if passed && a.stood == "" && !a.halted.Load() {
 			err = a.d.Egress.Set(ctx, a.unsuspected())
 		}
 	}
@@ -258,7 +258,7 @@ func (a *Agent) verifyMoved(ctx context.Context, addr netip.Addr) (why string, p
 		return "no route is served on it any more", false
 	}
 	for i, wt := range targets {
-		rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+		rctx, cancel := a.timeout(ctx, resolveTimeout)
 		prev := wt.binding
 		required := resolve.Level(wt.target.Required)
 		res := a.prove(rctx, wt.target, w.inv, &prev, w.deny)

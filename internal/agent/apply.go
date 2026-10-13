@@ -128,6 +128,7 @@ type pass struct {
 	attested    map[string]bool     // the target keys proven at port through another node's attestation
 	conns       []connector.Status
 	egress      string       // how the egress filter took the set
+	setErr      error        // why the egress filter did not take it
 	localBlocks []netip.Addr // blocked on this node alone, which the filter refuses
 	problems    []string
 	err         error
