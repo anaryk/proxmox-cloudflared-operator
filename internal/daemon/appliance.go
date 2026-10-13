@@ -203,7 +203,12 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	srv.SetWebUID(webUID)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
 	sources := newSourceWatch(parts.gw, st, eng, deps, log)
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, watch, keep, traffic.run, keepWeb, sources.keep)
+	// The appliance's DHCP server waits for it to prove itself, which its
+	// first cycle does after the start: a copy answers nobody.
+	dh := newDHCPPart(st, cfg.Node, parts.gw, false, eng.DHCPLeases(), deps, eng.NoteDHCP, log)
+	dh.allowed = parts.gw.mayChange
+	defer dh.start(ctx)()
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, nil, log, watch, keep, traffic.run, keepWeb, sources.keep)
 }
 
 // applianceStore is the check of the store the doctor makes in the appliance:

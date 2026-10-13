@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
@@ -265,6 +267,7 @@ type managedStep struct {
 func (c *cycleRun) managed() {
 	s := &managedStep{c: c, prev: c.st.Managed, unverified: map[string]string{}, migrated: map[string]bool{}, heldDetach: map[string]bool{}}
 	c.st.Managed = s.run()
+	s.dhcp()
 }
 
 func (s *managedStep) run() ManagedView {
@@ -1251,4 +1254,239 @@ func (s *managedStep) name(owner string) string {
 		return owner
 	}
 	return OwnerName(owner, s.c.guestView(ref))
+}
+
+// dhcp
+
+// The DHCP server of the managed network asks the engine for the leases and
+// tells it what it saw, between cycles; dhcpBook holds both, under its own
+// lock, and each cycle brings it up to date with the leases it read.
+type dhcpBook struct {
+	mu sync.Mutex
+	// loaded says that a cycle filled leases; before one did, a lookup
+	// reads the store, at most once every leaseReadEvery, from readAt.
+	loaded bool
+	readAt time.Time
+	leases map[string]dhcpLease // by MAC
+	// seen is, by MAC, the last request of a lease's card; said, by MAC and
+	// what it did, when an event last told of it; waitFrom, by owner, since
+	// when the card of a running virtual machine is live without a request.
+	seen     map[string]time.Time
+	said     map[string]time.Time
+	waitFrom map[string]time.Time
+	// view and problem are what the server last said of itself.
+	view    *DHCPView
+	problem error
+}
+
+// dhcpLease is a lease as the server is given it.
+type dhcpLease struct {
+	addr  netip.Addr
+	owner string
+}
+
+const (
+	// awaitDHCP is how long the card of a running virtual machine may be
+	// live without a DHCP request before the attachment says that it waits
+	// for one.
+	awaitDHCP          = 60 * time.Second
+	detailAwaitingDHCP = "no DHCP request seen on the new card; see docs/networking.md for the snippet of your distribution"
+	// lastDHCPEvery is how much later a request must be than the one its
+	// lease records before a cycle writes it: a guest renews every 3.5 days,
+	// and a flood of requests must not become a flood of writes.
+	lastDHCPEvery = time.Hour
+	// dhcpEventEvery is how often a card's DECLINE or RELEASE is told.
+	dhcpEventEvery = 5 * time.Minute
+	// leaseReadEvery bounds the reads of the store for the server before
+	// the first cycle.
+	leaseReadEvery = 5 * time.Second
+	problemDHCP    = "the DHCP server is not listening on the managed leg: %v"
+)
+
+// DHCPLeases is the engine as the DHCP server of the managed network asks
+// it; its methods are safe to call beside the cycles.
+type DHCPLeases struct{ e *Engine }
+
+// DHCPLeases returns what the DHCP server of the managed network asks.
+func (e *Engine) DHCPLeases() DHCPLeases { return DHCPLeases{e: e} }
+
+// Lookup returns the address of a MAC that has a lease. Before the first
+// cycle the leases are read from the store, so that guests that boot with the
+// node get theirs.
+func (l DHCPLeases) Lookup(mac net.HardwareAddr) (netip.Addr, bool) {
+	e := l.e
+	b := &e.dhcp
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.loaded {
+		if now := e.d.Now(); b.readAt.IsZero() || now.Sub(b.readAt) >= leaseReadEvery || now.Before(b.readAt) {
+			b.readAt = now
+			if leases, err := e.d.Store.Leases(); err != nil {
+				e.d.Log.Debug().Err(err).Msg("the DHCP server could not read the leases")
+			} else {
+				b.fill(leases)
+			}
+		}
+	}
+	lease, ok := b.leases[mac.String()]
+	return lease.addr, ok
+}
+
+// Seen records a request from the card of a lease at t.
+func (l DHCPLeases) Seen(mac net.HardwareAddr, t time.Time) {
+	b := &l.e.dhcp
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.seen == nil {
+		b.seen = map[string]time.Time{}
+	}
+	if last, ok := b.seen[mac.String()]; !ok || t.After(last) {
+		b.seen[mac.String()] = t
+	}
+}
+
+// Declined tells that the guest of a card found its address in use.
+func (l DHCPLeases) Declined(mac net.HardwareAddr, t time.Time) {
+	l.e.dhcpEvent(mac, t, "declined", levelWarn, "%s declined its managed address %s: the guest found it in use on the network")
+}
+
+// Released tells that the guest of a card gave its address up; the card
+// keeps its lease.
+func (l DHCPLeases) Released(mac net.HardwareAddr, t time.Time) {
+	l.e.dhcpEvent(mac, t, "released", levelInfo, "%s released its managed address %s; the card keeps its lease")
+}
+
+// dhcpEvent tells what the guest of a card did, once per card and what in
+// dhcpEventEvery.
+func (e *Engine) dhcpEvent(mac net.HardwareAddr, t time.Time, what, level, format string) {
+	b := &e.dhcp
+	b.mu.Lock()
+	lease, ok := b.leases[mac.String()]
+	key := mac.String() + " " + what
+	last, said := b.said[key]
+	if !ok || said && t.Sub(last) < dhcpEventEvery && !t.Before(last) {
+		b.mu.Unlock()
+		return
+	}
+	if b.said == nil {
+		b.said = map[string]time.Time{}
+	}
+	b.said[key] = t
+	b.mu.Unlock()
+	e.events.add(Event{At: t, Level: level, Kind: kindManaged, Subject: lease.owner, Guest: guestOf(lease.owner),
+		Message: fmt.Sprintf(format, lease.owner, lease.addr)})
+}
+
+// NoteDHCP takes what the DHCP server of the managed network says of itself:
+// nil while none runs, and why it does not listen when it does not.
+func (e *Engine) NoteDHCP(v *DHCPView, problem error) {
+	b := &e.dhcp
+	b.mu.Lock()
+	changed := (b.view == nil) != (v == nil) || b.view != nil && v != nil && b.view.Bound != v.Bound ||
+		(b.problem == nil) != (problem == nil)
+	b.view, b.problem = cloneP(v), problem
+	b.mu.Unlock()
+	if changed {
+		e.Trigger()
+	}
+}
+
+// fill makes the leases the server answers those given.
+func (b *dhcpBook) fill(leases map[string]store.Lease) {
+	b.leases = make(map[string]dhcpLease, len(leases))
+	for mac, l := range leases {
+		b.leases[strings.ToLower(mac)] = dhcpLease{addr: l.Addr, owner: l.Owner}
+	}
+	for mac := range b.seen {
+		if _, ok := b.leases[mac]; !ok {
+			delete(b.seen, mac)
+		}
+	}
+	for key := range b.said {
+		if mac, _, _ := strings.Cut(key, " "); b.leases[mac] == (dhcpLease{}) {
+			delete(b.said, key)
+		}
+	}
+}
+
+// dhcp gives the server the leases of the cycle, writes when a card last
+// asked, says which virtual machines wait for their first request, and puts
+// the server's state into the view.
+func (s *managedStep) dhcp() {
+	c, b := s.c, &s.c.e.dhcp
+	m := &c.st.Managed
+	b.mu.Lock()
+	if !m.Enabled {
+		b.waitFrom = nil
+		b.mu.Unlock()
+		return
+	}
+	m.DHCP = cloneP(b.view)
+	if b.problem != nil {
+		c.problem(problemDHCP, b.problem)
+	}
+	if s.leases == nil {
+		b.mu.Unlock()
+		return
+	}
+	b.fill(s.leases)
+	b.loaded = true
+	seen := maps.Clone(b.seen)
+	s.awaiting(b, seen)
+	b.mu.Unlock()
+	s.saveLastDHCP(seen)
+}
+
+// awaiting marks the attachments whose card has been live on a running
+// virtual machine for awaitDHCP without a request, ever: a container has its
+// address in its configuration and asks for none.
+func (s *managedStep) awaiting(b *dhcpBook, seen map[string]time.Time) {
+	c := s.c
+	waitFrom := map[string]time.Time{}
+	for i := range c.st.Managed.Attachments {
+		a := &c.st.Managed.Attachments[i]
+		ref, err := model.ParseGuestRef(a.Owner)
+		if err != nil || ref.Kind != model.KindQEMU || a.State != AttachmentAttached {
+			continue
+		}
+		mac := strings.ToLower(a.MAC)
+		if g, ok := c.snap.Guest(ref); !ok || !g.Running {
+			continue
+		}
+		if _, asked := seen[mac]; asked {
+			continue
+		}
+		if l, ok := s.leases[mac]; ok && l.LastDHCP != nil {
+			continue
+		}
+		from, ok := b.waitFrom[a.Owner]
+		if !ok || c.now.Before(from) {
+			from = c.now
+		}
+		waitFrom[a.Owner] = from
+		if c.now.Sub(from) >= awaitDHCP {
+			a.State, a.Detail = AttachmentAwaitingDHCP, detailAwaitingDHCP
+		}
+	}
+	b.waitFrom = waitFrom
+}
+
+// saveLastDHCP writes to each lease when its card last asked, where that is
+// lastDHCPEvery later than what it records. A lease changed since the cycle
+// read it is written by a later cycle.
+func (s *managedStep) saveLastDHCP(seen map[string]time.Time) {
+	c := s.c
+	for _, mac := range slices.Sorted(maps.Keys(seen)) {
+		l, ok := s.leases[mac]
+		at := seen[mac]
+		if !ok || l.LastDHCP != nil && at.Sub(*l.LastDHCP) < lastDHCPEvery {
+			continue
+		}
+		l.LastDHCP = &at
+		if err := c.e.d.Store.SaveLease(l, l.Rev); err != nil {
+			c.e.d.Log.Debug().Err(err).Str("lease", mac).Msg("writing when the card of a lease last asked DHCP failed")
+			continue
+		}
+		s.leases[mac] = l
+	}
 }

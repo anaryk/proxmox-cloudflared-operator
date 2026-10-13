@@ -26,6 +26,7 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/managednet/dhcp"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -133,6 +134,13 @@ type Deps struct {
 	ClusterCA, ClusterCAKey   string
 	RestartWeb                func(ctx context.Context) error
 	WebEvery                  time.Duration
+	// NewDHCP makes the DHCP server of the managed network for its leg;
+	// default: the server of package dhcp, with its sockets in the
+	// namespace of the legs. DHCPReadyWait is how long the start waits for
+	// it to listen before the daemon tells systemd that it is ready all the
+	// same; default 10 s.
+	NewDHCP       func(cfg dhcp.Config, leases dhcp.Leases) DHCPServer
+	DHCPReadyWait time.Duration
 	// Appliance is what only the daemon of an appliance uses.
 	Appliance ApplianceDeps
 }
@@ -198,6 +206,9 @@ func (d Deps) withDefaults() Deps {
 	}
 	if d.WebEvery <= 0 {
 		d.WebEvery = webCheckEvery
+	}
+	if d.DHCPReadyWait <= 0 {
+		d.DHCPReadyWait = defaultDHCPReadyWait
 	}
 	return d
 }
@@ -289,6 +300,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
+	dh := newDHCPPart(st, cfg.Node, gw, true, eng.DHCPLeases(), deps, eng.NoteDHCP, log)
+	defer dh.start(ctx)()
 	env := &doctor.HostEnv{
 		Systemd:    deps.Systemd,
 		Proxmox:    client,
@@ -327,7 +340,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	srv := api.New(served{eng, doc}, cfg.Version, uids, log)
 	srv.SetWebUID(web)
 	srv.SetShutdownTimeout(deps.ShutdownTimeout)
-	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, log, beside...)
+	return serve(ctx, srv, eng, cfg.SocketPath, gid, deps.Notifier, dh.awaitBound, log, beside...)
 }
 
 // servicePool is what the doctor reads of the pool of service addresses:
@@ -478,16 +491,20 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 // both until ctx ends or the API fails; then it stops both. The engine waits
 // for the socket so that a socket that cannot be made does not leave a first
 // cycle that is cut off at a point nobody chose. What runs beside the engine
-// starts and stops with it.
+// starts and stops with it. ready, when given, is waited for before systemd
+// is told that the daemon is ready: the DHCP server of a managed network.
 //
 // A request that does not finish within the shutdown time is cut off. That is
 // the end of a stop that was asked for, and not a failure of the daemon.
-func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket string, gid int, n Notifier, log zerolog.Logger, beside ...func(context.Context)) error {
+func serve(ctx context.Context, srv *api.Server, eng *engine.Engine, socket string, gid int, n Notifier, ready func(context.Context), log zerolog.Logger, beside ...func(context.Context)) error {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
 	listening := make(chan struct{})
 	srv.OnListening(func() {
+		if ready != nil {
+			ready(ctx)
+		}
 		if err := n.Ready(); err != nil {
 			log.Warn().Err(err).Msg("telling systemd that the daemon is ready failed")
 		}

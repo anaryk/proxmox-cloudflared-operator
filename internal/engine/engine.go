@@ -325,6 +325,9 @@ type Engine struct {
 	macMu          sync.Mutex
 	unknownMACs    map[string]time.Time
 	unknownDropped int
+	// dhcp is what the DHCP server of the managed network asks and tells,
+	// beside the cycles; it has a lock of its own.
+	dhcp dhcpBook
 
 	stateMu sync.RWMutex
 	state   State
