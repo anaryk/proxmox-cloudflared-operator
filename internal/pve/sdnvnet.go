@@ -19,38 +19,46 @@ type SDNVnetDetail struct {
 
 // SDNVnet reads one vnet, its zone and its subnets, with what is pending: a
 // fixed three calls, however many vnets the cluster has. A vnet that is not
-// there is Found false and no error.
+// there is Found false and no error; a zone that is not there, or that the
+// token may not audit, is left zero.
+//
+// The vnet and its zone are picked from the listings, which take SDN.Audit
+// on the object; the single zone takes SDN.Allocate on it, which a token
+// that only reads the SDN does not hold.
 func (c *Client) SDNVnet(ctx context.Context, vnet string) (SDNVnetDetail, error) {
 	if !validSegment(vnet) {
 		return SDNVnetDetail{}, fmt.Errorf("invalid vnet name %q", vnet)
 	}
 	pending := url.Values{"pending": {"1"}}
 	var raw json.RawMessage
-	err := c.get(ctx, "cluster/sdn/vnets/"+vnet, pending, &raw)
-	switch {
-	case IsNotFound(err):
-		return SDNVnetDetail{}, nil
-	case err != nil:
+	if err := c.get(ctx, "cluster/sdn/vnets", pending, &raw); err != nil {
 		return SDNVnetDetail{}, fmt.Errorf("fetching sdn vnet %s: %w", vnet, err)
 	}
-	vnets, err := DecodeSDNVnets(asList(raw))
-	if err != nil || len(vnets) != 1 {
-		return SDNVnetDetail{}, fmt.Errorf("fetching sdn vnet %s: %w", vnet, cmpErr(err, "not one vnet"))
+	vnets, err := DecodeSDNVnets(raw)
+	if err != nil {
+		return SDNVnetDetail{}, fmt.Errorf("fetching sdn vnet %s: %w", vnet, err)
 	}
-	out := SDNVnetDetail{Vnet: vnets[0], Found: true}
-	zone := out.Vnet.Zone
-	err = c.get(ctx, "cluster/sdn/zones/"+zone, pending, &raw)
+	v, n := pick(vnets, func(v SDNVnet) bool { return v.Name == vnet })
 	switch {
-	case IsNotFound(err):
-	case err != nil:
-		return SDNVnetDetail{}, fmt.Errorf("fetching sdn zone %s of vnet %s: %w", zone, vnet, err)
-	default:
-		zones, err := DecodeSDNZones(asList(raw))
-		if err != nil || len(zones) != 1 {
-			return SDNVnetDetail{}, fmt.Errorf("fetching sdn zone %s of vnet %s: %w", zone, vnet, cmpErr(err, "not one zone"))
-		}
-		out.Zone = zones[0]
+	case n == 0:
+		return SDNVnetDetail{}, nil
+	case n > 1:
+		return SDNVnetDetail{}, fmt.Errorf("fetching sdn vnet %s: unexpected response: %d vnets of that name", vnet, n)
 	}
+	out := SDNVnetDetail{Vnet: v, Found: true}
+	zone := v.Zone
+	if err := c.get(ctx, "cluster/sdn/zones", pending, &raw); err != nil {
+		return SDNVnetDetail{}, fmt.Errorf("fetching sdn zone %s of vnet %s: %w", zone, vnet, err)
+	}
+	zones, err := DecodeSDNZones(raw)
+	if err != nil {
+		return SDNVnetDetail{}, fmt.Errorf("fetching sdn zone %s of vnet %s: %w", zone, vnet, err)
+	}
+	z, n := pick(zones, func(z SDNZone) bool { return z.Name == zone })
+	if n > 1 {
+		return SDNVnetDetail{}, fmt.Errorf("fetching sdn zone %s of vnet %s: unexpected response: %d zones of that name", zone, vnet, n)
+	}
+	out.Zone = z
 	if err := c.get(ctx, "cluster/sdn/vnets/"+vnet+"/subnets", pending, &raw); err != nil {
 		return SDNVnetDetail{}, fmt.Errorf("fetching the subnets of vnet %s: %w", vnet, err)
 	}
@@ -60,17 +68,17 @@ func (c *Client) SDNVnet(ctx context.Context, vnet string) (SDNVnetDetail, error
 	return out, nil
 }
 
-// asList is the JSON of one object as a list of it, which the decoders of
-// the listings read.
-func asList(raw json.RawMessage) []byte {
-	return append(append([]byte("["), raw...), ']')
-}
-
-// cmpErr is err, or one that says what was wrong when the decoding went
-// through and found the wrong number.
-func cmpErr(err error, what string) error {
-	if err != nil {
-		return err
+// pick is the one item that match picks, and how many it picks.
+func pick[T any](items []T, match func(T) bool) (T, int) {
+	var (
+		found T
+		n     int
+	)
+	for _, item := range items {
+		if match(item) {
+			found = item
+			n++
+		}
 	}
-	return fmt.Errorf("unexpected response: %s", what)
+	return found, n
 }
