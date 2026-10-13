@@ -2,12 +2,14 @@
 # Removes from a Proxmox VE node what a run of the end-to-end suite leaves
 # behind, also after a run that was cut off. It acts only on what the suite
 # recorded as its own in /var/lib/pco-e2e: the pco install it set up (purged
-# at Cloudflare when the run was against the real API), its containers 9100
-# to 9199 named e2e-*, the drop-in of pco.service, the address of the node on
-# vmbr1, the tables of others it flushed, and then the pco package and the
-# user of the connectors. pveproxy, which the suite stops for a while, is
-# started when it is not running. It runs as root on the node and can be run
-# again.
+# at Cloudflare when the run was against the real API, its managed network
+# detached), its guests 9100 to 9199 and 9350 to 9399 named e2e-*, the
+# drop-in of pco.service, the address of the node on vmbr1, the tables of
+# others it flushed, the registered tags, kernel parameters and firewall
+# service the networking scenarios changed, their runtime bridges, and then
+# the pco package and the user of the connectors. pveproxy, which the suite
+# stops for a while, is started when it is not running. It runs as root on
+# the node and can be run again.
 set -u
 
 state=/var/lib/pco-e2e
@@ -82,10 +84,66 @@ elif [ -e "$owned" ]; then
 	pco=ours
 fi
 
+# The registered tags go back to what they were before the networking
+# scenarios added to them, before the uninstall takes away the tag setup
+# registered.
+if [ -e "$state/registered-tags" ]; then
+	read -r tags <"$state/registered-tags"
+	if [ -z "$tags" ]; then
+		if pvesh set /cluster/options --delete registered-tags >/dev/null; then
+			rm -f "$state/registered-tags"
+		else
+			warn "deleting the registered tags failed"
+		fi
+	elif pvesh set /cluster/options --registered-tags "$tags" >/dev/null; then
+		rm -f "$state/registered-tags"
+	else
+		warn "putting the registered tags back to '$tags' failed"
+	fi
+fi
+
+# The guests of the networking scenarios go before the uninstall: a card left
+# on pconet would keep the SDN zone of the managed network. The daemon is
+# stopped first, so that it does not act on their going.
+destroy_guest() {
+	id=$1
+	if [ -e "/etc/pve/lxc/$id.conf" ]; then
+		if ! grep -q '^hostname: e2e-' "/etc/pve/lxc/$id.conf"; then
+			echo "cleanup: container $id is not one of the suite's; left alone"
+			return
+		fi
+		pct unlock "$id" >/dev/null 2>&1 || true
+		if pct status "$id" | grep -q running; then
+			pct stop "$id" || warn "stopping container $id failed"
+		fi
+		for snap in $(pct listsnapshot "$id" 2>/dev/null | awk '{ print $2 }' | grep -v '^current$'); do
+			pct delsnapshot "$id" "$snap" --force 1 || warn "deleting snapshot $snap of $id failed"
+		done
+		pct destroy "$id" --purge 1 || warn "destroying container $id failed"
+	elif [ -e "/etc/pve/qemu-server/$id.conf" ]; then
+		if ! grep -q '^name: e2e-' "/etc/pve/qemu-server/$id.conf"; then
+			echo "cleanup: VM $id is not one of the suite's; left alone"
+			return
+		fi
+		qm unlock "$id" >/dev/null 2>&1 || true
+		if qm status "$id" | grep -q running; then
+			qm stop "$id" || warn "stopping VM $id failed"
+		fi
+		qm destroy "$id" --purge 1 || warn "destroying VM $id failed"
+	fi
+}
+if [ "$pco" = ours ]; then
+	systemctl stop pco 2>/dev/null || true
+fi
+for id in $(seq 9350 9399); do
+	destroy_guest "$id"
+done
+
 # pco first, while the guests are still there: with them gone, a daemon that
 # still ran would see its guests vanish. Against the real API the purge runs
 # while the credential is still stored; the fake lived in the suite's process,
-# and what it held went with it.
+# and what it held went with it. A managed network is detached, so that its
+# zone and vnet go with the install.
 if [ "$pco" = ours ] && command -v pco >/dev/null 2>&1 &&
 	{ [ -e "$installfile" ] || [ -e /var/lib/pco/manifest.json ]; }; then
 	case "$mode" in
@@ -93,12 +151,16 @@ if [ "$pco" = ours ] && command -v pco >/dev/null 2>&1 &&
 	fake) cloudflare=--keep-cloudflare ;;
 	*) cloudflare= ;;
 	esac
+	managed=
+	[ -e "$state/managed" ] && managed=--detach-managed
 	if [ -z "$cloudflare" ]; then
 		warn "$owned names no mode of the run, so whether to purge Cloudflare is unknown: pco is left as it is"
 		pco=kept
-	elif ! pco uninstall --yes "$cloudflare"; then
-		warn "pco uninstall $cloudflare failed; pco and its store are kept, and running cleanup.sh again tries again"
+	elif ! pco uninstall --yes "$cloudflare" $managed; then
+		warn "pco uninstall $cloudflare $managed failed; pco and its store are kept, and running cleanup.sh again tries again"
 		pco=kept
+	else
+		rm -f "$state/managed"
 	fi
 fi
 
@@ -148,6 +210,24 @@ if [ -e "$state/bridge-was-down" ]; then
 	fi
 fi
 
+# The kernel parameters the networking scenarios set go back to their values
+# before, and pve-firewall stops again when the suite started it.
+if [ -e "$state/sysctl" ]; then
+	sysctlfailed=0
+	while IFS='=' read -r name value; do
+		[ -n "$name" ] || continue
+		sysctl -qw "$name=$value" || { warn "putting $name back to $value failed"; sysctlfailed=1; }
+	done <"$state/sysctl"
+	[ "$sysctlfailed" -eq 0 ] && rm -f "$state/sysctl"
+fi
+if [ -e "$state/pve-firewall-started" ]; then
+	if systemctl stop pve-firewall; then
+		rm -f "$state/pve-firewall-started"
+	else
+		warn "stopping pve-firewall failed"
+	fi
+fi
+
 if [ "$pco" = ours ]; then
 	# Connectors that uninstall could not remove, as when pco was gone already.
 	for unit in $(systemctl list-units --all --plain --no-legend 'pco-cloudflared@*' | awk '{ print $1 }'); do
@@ -177,6 +257,34 @@ if [ "$pco" = ours ]; then
 	if [ -d /etc/pve/pco ] || [ -d /etc/pve/priv/pco ]; then
 		warn "the store of pco in /etc/pve is still there"
 	fi
+
+	# The gateway namespace and the host's tables and routes for it, which
+	# only pco uninstall removes, and should have.
+	if ip netns list | grep -q '^pco\b'; then
+		warn "the gateway namespace pco is still there (pco netns down --uninstall --yes removes it)"
+	fi
+	for table in "inet pco_host" "bridge pco_guard"; do
+		# shellcheck disable=SC2086
+		if nft list table $table >/dev/null 2>&1; then
+			warn "the table $table is still there"
+		fi
+	done
+	if pvesh get /cluster/sdn/vnets/pconet --output-format json >/dev/null 2>&1; then
+		warn "the SDN vnet pconet of the managed network is still there"
+	fi
+fi
+
+# The runtime bridges of the networking scenarios go last, with nothing
+# enslaved to them any more; a VLAN bridge Proxmox made for a tagged guest
+# went with that guest.
+if [ -e "$state/bridges" ]; then
+	bridgesfailed=0
+	while read -r name; do
+		[ -n "$name" ] || continue
+		ip link show dev "$name" >/dev/null 2>&1 || continue
+		ip link del "$name" || { warn "removing the bridge $name failed"; bridgesfailed=1; }
+	done <"$state/bridges"
+	[ "$bridgesfailed" -eq 0 ] && rm -f "$state/bridges"
 fi
 
 if [ "$failed" -eq 0 ]; then
