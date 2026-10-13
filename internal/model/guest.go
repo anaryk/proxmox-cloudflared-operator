@@ -50,11 +50,13 @@ func ParseGuestRef(s string) (GuestRef, error) {
 
 // NIC is a network interface as configured on the guest.
 type NIC struct {
-	Index    int          `json:"index"`
-	MAC      string       `json:"mac"` // lower case, colon separated
-	Bridge   string       `json:"bridge"`
-	VLAN     int          `json:"vlan,omitempty"`
-	Firewall bool         `json:"firewall,omitempty"`
+	Index    int    `json:"index"`
+	MAC      string `json:"mac"` // lower case, colon separated
+	Bridge   string `json:"bridge"`
+	VLAN     int    `json:"vlan,omitempty"`
+	Firewall bool   `json:"firewall,omitempty"`
+	// LinkDown says that the card is configured with link_down=1.
+	LinkDown bool         `json:"linkDown,omitempty"`
 	Static   []netip.Addr `json:"static,omitempty"`
 	// Leased is the address pco gave the card on its managed network. The
 	// engine fills it from the leases; it is never read from a config.

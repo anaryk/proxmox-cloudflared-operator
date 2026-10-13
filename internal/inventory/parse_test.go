@@ -409,6 +409,19 @@ func TestBuildGuestFirewallFlag(t *testing.T) {
 	}
 }
 
+func TestBuildGuestLinkDown(t *testing.T) {
+	for value, want := range map[string]bool{"link_down=1": true, "link_down=0": false, "firewall=1": false} {
+		t.Run(value, func(t *testing.T) {
+			g, err := BuildGuest(qemuResource(), config(map[string]string{
+				"net0": "virtio=BC:24:11:00:AA:B5,bridge=pconet," + value,
+			}))
+			require.NoError(t, err)
+			require.Len(t, g.NICs, 1)
+			require.Equal(t, want, g.NICs[0].LinkDown)
+		})
+	}
+}
+
 func TestBuildGuestTemplate(t *testing.T) {
 	tests := []struct {
 		name     string

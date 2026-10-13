@@ -186,6 +186,7 @@ func buildNIC(index int, mac string, pairs []pair) (model.NIC, bool) {
 		Bridge:   bridge,
 		VLAN:     vlan,
 		Firewall: isEnabled(lookup(pairs, "firewall")),
+		LinkDown: isEnabled(lookup(pairs, "link_down")),
 	}, true
 }
 
