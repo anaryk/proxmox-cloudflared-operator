@@ -346,6 +346,7 @@ export interface ManagedView {
   enabled: boolean
   consent: string
   autoAllowed: boolean
+  gateTag?: string
   autoStopped?: string
   tagHonoured: boolean
   subnet?: string
