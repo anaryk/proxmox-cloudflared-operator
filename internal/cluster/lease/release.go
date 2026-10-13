@@ -72,16 +72,16 @@ func (k *Keeper) letGo(ctx context.Context, to string, closing bool) error {
 		return err
 	}
 	if err == nil {
-		// pmxcfs lets any node remove any lock. The refresh right before the
-		// rmdir proves the lock still the tenure's, and a keeper that is
-		// fenced after it leaves the lock alone.
-		err = k.refresh(ctx, false)
-	}
-	if err == nil {
 		err = k.unfenced()
 	}
 	if err == nil {
-		err = k.bounded(ctx, func() error { return k.cfg.FS.Rmdir(k.cfg.Lock) })
+		k.mu.Lock()
+		rec := k.rec
+		k.mu.Unlock()
+		err = k.removeLock(ctx, func() error {
+			_, _, err := k.ours(rec)
+			return err
+		})
 	}
 
 	k.mu.Lock()
@@ -124,6 +124,44 @@ func (k *Keeper) unfenced() error {
 		return fmt.Errorf("%w: %s", ErrFenced, k.fencedWhy(k.mono()))
 	}
 	return nil
+}
+
+// removeLock removes the lock in one step with what proves it this node's:
+// check (leader.json naming the tenure's epoch, say), then a refresh, which
+// pmxcfs takes only from the node that made the lock, then the rmdir. pmxcfs
+// has no check-and-remove and lets any node remove any lock, so the rmdir is
+// sent only when the refresh began at most removeWithin before it and no
+// suspend came between: the lock cannot have expired and gone to another
+// node meanwhile. Anything else leaves the lock to expire. What no check
+// can see is a stop of the process between the last look at the clocks and
+// the rmdir itself; the node that took the lock meanwhile then loses it at
+// its next refresh. The caller holds op.
+func (k *Keeper) removeLock(ctx context.Context, check func() error) error {
+	quorate, at := k.cfg.Quorum()
+	k.mu.Lock()
+	k.look()
+	k.noteQuorum(quorate, at)
+	err := k.quorumErr()
+	mtime := k.nextMtime(k.cfg.Clocks.Now())
+	k.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return k.bounded(ctx, func() error {
+		if err := check(); err != nil {
+			return err
+		}
+		mono, boot := k.cfg.Clocks.Monotonic(), k.cfg.Clocks.Boottime()
+		if err := k.cfg.FS.Refresh(k.cfg.Lock, mtime); err != nil {
+			return fmt.Errorf("refreshing it first: %w", err)
+		}
+		took := k.cfg.Clocks.Monotonic() - mono
+		suspended := (k.cfg.Clocks.Boottime() - boot - took).Abs()
+		if took > removeWithin || suspended > SuspendJump {
+			return fmt.Errorf("%s passed since the refresh that confirmed it", took+suspended)
+		}
+		return k.cfg.FS.Rmdir(k.cfg.Lock)
+	})
 }
 
 // writeRelease writes releasedAt, and the hand-off to to, into leader.json.

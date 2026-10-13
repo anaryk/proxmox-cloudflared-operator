@@ -81,6 +81,10 @@ const (
 	// also the one that has an expired lock removed, which happens a moment
 	// later: the extra mkdir takes the lock then, not a whole poll later.
 	removalWait = time.Second
+	// removeWithin is the longest a refresh that confirmed the lock this
+	// node's may have begun before the rmdir that relies on it. pmxcfs has
+	// no check-and-remove, and lets any node remove any lock.
+	removeWithin = time.Second
 	// quorumAge is the oldest read of the members file that still answers
 	// whether the cluster is quorate.
 	quorumAge = 5 * time.Second

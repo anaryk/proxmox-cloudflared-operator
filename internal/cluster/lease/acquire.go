@@ -201,30 +201,18 @@ func (k *Keeper) abandon(ctx context.Context, made bool, start stamp, why string
 	k.waitAt(zerolog.WarnLevel, "could not take the lease", why)
 }
 
-// giveBack removes the lock a claim that began at start made. pmxcfs lets any
-// node remove any lock, and by now the lock may have expired and gone to
-// another node, so it goes only right after pmxcfs took a refresh of it from
-// this node, the owner, with a quorum and no pause since the claim began.
+// giveBack removes the lock a claim that began at start made. By now the lock
+// may have expired and gone to another node, so it goes only as removeLock
+// says, and not at all after a pause since the claim began.
 func (k *Keeper) giveBack(ctx context.Context, start stamp) error {
-	quorate, at := k.cfg.Quorum()
 	k.mu.Lock()
 	k.look()
-	k.noteQuorum(quorate, at)
-	err := k.quorumErr()
-	if err == nil && k.pauseAt >= start.mono {
-		err = errors.New(k.pause)
-	}
-	mtime := k.nextMtime(k.cfg.Clocks.Now())
+	paused, why := k.pauseAt >= start.mono, k.pause
 	k.mu.Unlock()
-	if err != nil {
-		return err
+	if paused {
+		return errors.New(why)
 	}
-	return k.bounded(ctx, func() error {
-		if err := k.cfg.FS.Refresh(k.cfg.Lock, mtime); err != nil {
-			return fmt.Errorf("refreshing it first: %w", err)
-		}
-		return k.cfg.FS.Rmdir(k.cfg.Lock)
-	})
+	return k.removeLock(ctx, func() error { return nil })
 }
 
 // wait records why this node does not hold the lease. A change is logged.
