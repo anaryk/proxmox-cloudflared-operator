@@ -16,7 +16,7 @@ The package installs six systemd units, in `/usr/lib/systemd/system`.
 | `pco-egress.service` | Loads the egress filter by running `pco egress load`, a hidden command that puts the table in place with the resolvers of the node and no targets, and exits. It is a one-shot unit that stays active, and it is ordered before `pco.service`. Setup enables and starts it, so the table is loaded at every boot, also before a connector exists, and uninstall disables it. The connector units require it, so starting a connector starts it too. Do not restart it to load the table again: every connector restarts with it. `pco egress load` does that. |
 | `pco-cloudflared@<tunnel id>.service` | The connector of one tunnel, `cloudflared` with the files of the tunnel. The daemon starts and stops these, one for each tunnel. They require `pco-egress.service`. |
 | `pco-web.service` | The web interface, `pco web`. It runs as the user `pco-web`, starts after `network-online.target`, `pve-cluster.service` and `pco.service`, restarts after 2 seconds when it stops, and reads its address from `/etc/default/pco-web`. `pco setup` enables it, unless it is given `--no-web`. An upgrade of the package restarts it if it ran. |
-| `pco-netns.service` | Runs `pco netns up`, which brings back at boot the network namespace `pco` and the legs through which pco reaches a network the node has no address in, from what the daemon last applied. It is a one-shot unit that stays active, ordered before `pco.service`, the connectors, `pve-guests.service` and `pve-ha-lrm.service`. The daemon starts it for a probe of an address before the first network ([pco network probe](cli/pco-network-probe.md)), enables it when a network is first attached ([pco network attach](cli/pco-network-attach.md)) and disables it when the last is detached, which takes nothing down: the namespace stays until `pco uninstall`. It has no stop action: a restart brings up only what is missing. `pco netns status` shows the legs; see [the command](cli/pco-netns.md). |
+| `pco-netns.service` | Runs `pco netns up`, which brings back at boot the network namespace `pco` and the legs through which pco reaches a network the node has no address in, with their service addresses, the sticky entries and the guard of the managed network, from what the daemon last applied (`/var/lib/pco/netns/gateway.json`). It is a one-shot unit that stays active, ordered before `pco.service`, the connectors, `pve-guests.service` and `pve-ha-lrm.service`, so that a guest behind a leg is reached as soon as it starts. `pco network attach` and `pco network managed enable` enable and start it with the first network, and the last network detached disables it, which takes nothing down: the namespace stays until `pco uninstall`. It has no stop action: `systemctl restart pco-netns` brings up only what is missing and leaves the legs, the translations and the open connections as they are, so an upgrade of the package, which runs `pco netns up` again when the unit is enabled, or a restart by hand costs nothing. A namespace that is gone comes back by that restart alone: the daemon cannot make it from its sandbox. `pco netns status` compares everything and exits 1 on a difference; see [the command](cli/pco-netns.md) and [Networking](networking.md#the-namespace-on-the-host). |
 | `pco-net.service` | For the appliance only; nothing starts it on a host. It runs `pco net load`, a hidden command that puts the dummy device, the route and the table that keep the appliance's service prefix to itself in place, before the network and before `pco.service` and the connectors, which require it in the appliance. Do not restart it to load them again, as `pco.service` and every connector restart with it: `pco net load` does that. |
 
 Who each runs as, and the sandbox of its unit:
@@ -51,7 +51,11 @@ verified the routes and given the filter their targets (see [Security](security.
 daemon starts after `pve-cluster.service` and `pveproxy.service`, and the addresses are verified
 up to 32 at a time, so the time to the first serve grows with their number.
 
-The daemon is not ordered before the start of the guests, so Proxmox may still be starting
+With a network attached, `pco-netns.service` is ordered before `pve-guests.service`: the
+legs, the translations and the sticky entries of the managed guests are back before the
+first guest starts, and the DHCP server of the managed network listens before the daemon
+tells systemd it is ready, so a virtual machine on `pconet` gets its address at its boot. The
+daemon itself is not ordered before the start of the guests, so Proxmox may still be starting
 them when the first cycles run. A guest that does not run yet is listed as stopped, and a
 route that was served before the reboot is withdrawn with the reason `guest is not running`:
 its hostname answers 503 and its DNS record stays. The route is served again in the first
@@ -66,8 +70,10 @@ is served again, and where a visitor sees what.
 flowchart TD
     boot["Boot: systemd starts the enabled units"]
     boot --> egress["pco-egress.service runs pco egress load: the table lets the connectors reach the resolvers and the edge of Cloudflare, and no targets"]
+    boot --> netns["pco-netns.service, where a network is attached, runs pco netns up: the namespace, the legs and the service addresses as last applied, before pve-guests starts the guests"]
     egress --> conn["The connectors start; they require the egress unit"]
-    egress --> daemon["pco.service starts, after pve-cluster and pveproxy"]
+    egress --> daemon["pco.service starts, after pve-cluster, pveproxy and pco-netns"]
+    netns --> daemon
     conn --> r502["A visitor gets 502: the filter refuses every target"]
     daemon --> wait["Waits for /etc/pve, every 10 seconds for two minutes, else exits and systemd starts it again"]
     wait --> first["First cycle: complete listing from Proxmox, addresses verified 32 at a time, targets given to the filter"]
@@ -96,15 +102,21 @@ ask: `pco sync`, `pco apply`, `pco adopt`, or when a credential is added. In eac
    guest reports are cached for a minute.
 3. Reads the routes out of the Notes of the tagged guests and applies the hostname policy
    and, in approve mode, the approvals.
-4. Settles the claims: which guest holds each hostname.
+4. Settles the claims: which guest holds each hostname. With the managed network enabled,
+   decides for each guest whether it gets a card on it, keeps it or loses it after the grace,
+   acts on the cards no attachment explains, and adds and removes the cards, under the gate
+   of the writer below ([Networking](networking.md#managed)).
 5. Verifies the address of each route that holds its hostname, up to 32 at a time, with
    15 seconds for each (see [Identity](identity.md)), and holds back what is below
    `identityMinimum`. Routes on the same address of a guest share one check. A proof the
    watch of the network vouches for is not made again until it is `reverifyInterval` old;
-   see below.
+   see below. A guest behind a leg is proven through it. Each winner reached through a leg
+   is then mapped to its service address, and the gateway is given the legs, the
+   translations and the pinned MACs, before anything is written at Cloudflare; a gateway
+   that cannot be programmed holds the tunnel run.
 6. Plans the state at Cloudflare: one tunnel for each account that holds a zone with routes,
-   a rule for each route, a 503 rule for each hostname that is claimed and not served, and a
-   proxied record for each hostname.
+   a rule for each route, with the service address of a target behind a leg, a 503 rule for
+   each hostname that is claimed and not served, and a proxied record for each hostname.
 7. Gives the egress filter its targets: those it verified and those a confirmed tunnel
    configuration still uses, less the addresses that lost their proof (see
    [Security](security.md)). This comes before anything is written at Cloudflare.
@@ -144,7 +156,19 @@ flowchart TD
 Two things run beside the cycle. A watch of the network reacts to a served address whose
 MAC moves, without waiting for the next cycle. A keeper checks the egress table every 30
 seconds and whenever nftables reports a change, and loads it again when it is gone or
-changed. [Security](security.md) describes both.
+changed. [Security](security.md) describes both. With a network behind a leg the keeper
+checks the gateway the same way, every 30 seconds and on every link or route change the
+kernel reports, and gives a managed guest's port its sticky entry the moment the port
+appears; with the managed network the daemon also runs the DHCP server on its leg and
+listens there for a card no lease knows ([Networking](networking.md)).
+
+Three kinds of change wait for one more thing: a new service address, a card on the managed
+network and its lease are made only in a cycle in which the daemon knows it is the writer,
+which is to say the writer identity was read, the previous cycle's tunnel run found it in
+order, and `leader.json` still names it right before the write. After a start that is one
+cycle later, and the routes concerned hold meanwhile with the reason in their state. What
+exists is used at once, and what restricts, a card's link set down, a card removed after its
+grace, a service address released, never waits.
 
 ### How often an address is checked on the wire
 
@@ -256,7 +280,12 @@ daemon holds when:
 - the egress filter cannot be given its targets, or its table cannot be loaded again after
   it was changed outside pco: the cycle then reads Cloudflare and writes no tunnel
   configuration until it can, because a rule must not send a connector to a target it
-  cannot reach.
+  cannot reach;
+- the gateway cannot be programmed with the legs and the service addresses of this cycle
+  (`programming the gateway: <error>; no tunnel configuration is written until it is
+  programmed`), for the same reason: a rule must not name a service address the gateway
+  does not forward. A namespace that is gone is the usual cause, and
+  `systemctl restart pco-netns` brings it back.
 
 ### Grace periods and the mass delete guard
 
@@ -370,6 +399,30 @@ change those that are there.
 
 The route states are `active`, `unreachable`, `withdrawn`, `conflict`, `no-zone`, `held`,
 `rejected` and `frozen`. `pco routes --state <state>` shows one of them.
+
+## Networks behind a leg
+
+A network the node is not on is attached with `pco network attach`, which puts a leg of pco's
+own there, and the managed network, pco's own SDN vnet `pconet`, is made with
+`pco setup --managed` or `pco network managed enable`; [Networking](networking.md) is the
+page, and the guides take one task each. What an operator meets of them day to day:
+
+- **`pco status`** has a `Managed:` line while the managed network is enabled, and the
+  problems of the gateway and the managed network; **`pco routes`** shows in `VIA` how each
+  route is reached and in `SERVICE` the service address of one behind a leg;
+  **`pco network list`** and **`pco managed status`** show the networks and the cards.
+- **The settings** `managed.consent`, `managed.subnet`, `managed.detachGrace` and
+  `managed.acceptFirewallImpact` are the keys of one object; [Settings](settings.md#managed-network)
+  has them. The subnet can be changed only while the network and its leases do not exist.
+- **The events** of the kinds `network` and `managed`: [Problems](problems.md#event-kinds).
+- **The store** keeps the networks, the service addresses, the leases, the consents and the
+  cards in `/etc/pve/pco`, and the cache of the gateway in `/var/lib/pco/netns`;
+  [Files](files.md) lists them. Edit none by hand.
+- **`pco netns status`** on a host compares the namespace with the cache and exits 1 on a
+  difference, and `systemctl restart pco-netns` puts it right; in the appliance `pco net show`
+  does the same for the service prefix, and `pct config <vmid>` on the node shows the cards.
+- **`pco uninstall --detach-managed`** removes the cards pco attached before the SDN zone and
+  vnet go; without it the zone is kept while any guest has a card on `pconet`.
 
 ## Settings
 
@@ -609,7 +662,9 @@ The appliance runs the units of the package, enabled by its template, and drop-i
 with it both tables of pco. `pco doctor` fails its `nftables` check when the unit is enabled,
 and warns in any other state but masked. `pco-netns.service` is masked too: it brings up the
 gateway namespace of the host profile, and the appliance has none, as its legs are network
-cards of the container. An upgrade of the package masks it in an appliance made from an older
+cards of the container, `net1` to `net9`, which `pco-net.service` restores at boot from the
+same cache and the daemon adds through the API ([Networking](networking.md#the-cards-of-the-appliance)).
+An upgrade of the package masks it in an appliance made from an older
 template, and clears a failure it left, so that the container is no longer degraded by it.
 
 After a start of the container no connector runs until the daemon's cycles have proven the

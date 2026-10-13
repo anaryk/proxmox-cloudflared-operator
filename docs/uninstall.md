@@ -65,6 +65,11 @@ A script that removes everything looks like this:
    that a credential check left behind.
 5. **The egress filter.** It stops and disables `pco-egress.service` and deletes the
    nftables table `inet pco_egress`.
+   **The gateway**, where a network was attached: it disables `pco-netns.service` and runs
+   `pco netns down --uninstall`, which removes the legs from the bridges, the namespace `pco`
+   with its tables, the guard on `pconet` and the routes of the service prefix on the node;
+   it refuses while the connectors still run and the namespace holds service addresses, which
+   is why the connectors go first. The networks themselves go with the store.
 6. **The web interface.** It stops and disables `pco-web.service`, which ends every session of
    it, and removes what setup made for it, as far as the manifest lists it:
    `/etc/default/pco-web`, which goes whole with the lines you added to it, and in
@@ -81,7 +86,21 @@ A script that removes everything looks like this:
      and nobody else holds it. If you added a privilege or took one away, or gave the role to
      another user, group or token, the role stays and the command says why;
    - the registered tags that setup added, `cf-tunnel` and `cf-tunnel-managed`. Tags that
-     were registered before stay in their order.
+     were registered before stay in their order;
+   - the SDN zone `pco` and the vnet `pconet` of the managed network, where `pco setup
+     --managed` or `pco network managed enable` made them, last of all and only once no guest
+     of the cluster has a card on `pconet`: the apply that removes the vnet takes the bridge
+     away from every node, and a guest with a card on it would lose it under its feet. Every
+     guest configuration of the cluster is read first, and while any has one the zone is kept
+     with the line `the SDN zone pco is kept: guests <list> still have a card on pconet; detach
+     them first or pass --detach-managed`. `--detach-managed` removes the cards pco attached,
+     right after the daemon stopped, in the appliance with pco's firewall rules and ipset taken
+     off and the guest firewall put back as pco found it, and waits, bounded, for the
+     configurations to drop them; a virtual machine without network hotplug drops its card at
+     its restart, which the command says. The removal runs under the lock of the SDN
+     configuration, with the pending changes of others refusing it as they refuse the setup,
+     and asks before the apply, naming the reload of every node. A zone that holds a vnet of
+     somebody else's stays.
 8. **`cloudflared`** (with `--remove-cloudflared` or yes to the question, and only if
    setup installed it): the package, its apt source `/etc/apt/sources.list.d/cloudflared.sources`
    if it is still as setup wrote it, and the key `/usr/share/keyrings/cloudflare-main.gpg`,
@@ -102,7 +121,9 @@ and you finish with `pco uninstall --purge-cloudflare` once Cloudflare answers, 
 
 ## What it never touches
 
-- The guests: their tags, their Notes and their configuration. pco never wrote to them.
+- The guests: their tags, their Notes and their configuration, but for the card a guest got on
+  the managed network with its consent, which `--detach-managed` removes and which otherwise
+  stays, with the zone and the vnet it is on. Nothing else of a guest was ever written by pco.
 - Anything in Proxmox that the manifest does not list: a role, user or token that was there
   before setup, tags that were registered before, and privileges that others hold.
 - DNS records without the marker of this install, tunnels of other names, and the objects of
@@ -263,15 +284,23 @@ That run was given `--keep-cloudflare`.
 2. **The container**, with its state volume and every secret on it: its protection is taken
    off, it is stopped and destroyed.
 3. **The token**, before its user, as a user that goes leaves the secrets of its tokens behind.
-4. **The network grants** of `pco appliance grant-network`, and the **`NoAccess` lines** the
-   installer added, while they are as it made them. When the container could not be destroyed,
-   its `NoAccess` lines stay, as they keep principals away from the secrets on its volume.
+4. **The network grants** of `pco appliance grant-network` and `pco appliance managed enable`,
+   the pool grant among them, and the **`NoAccess` lines** the installer added, while they are
+   as it made them. When the container could not be destroyed, its `NoAccess` lines stay, as
+   they keep principals away from the secrets on its volume.
 5. **The user `pco@pve` and the role `PCO`**, and the roles of the network grants, when nothing
    else uses them.
 6. **The pool `pco`**, when it is empty.
 7. **The registered tags** the installer added.
 8. **The template** the installer downloaded, with `--keep-template=false` only. A template of
    pco that the manifest does not name as the installer's always stays.
+9. **The SDN zone `pco` and the vnet `pconet`** that `pco appliance managed enable` made, under
+   the lock of the SDN configuration, as [what it finds](#what-it-finds-and-how) says. While a
+   guest of the cluster has a card on `pconet` the uninstall refuses before anything goes, as
+   the manifest goes with the container; `--detach-managed` has the running appliance list the
+   cards it attached, with what it changed of each guest's firewall, and removes them first,
+   through the appliance's own token and only on the guests it holds `VM.Config.Network` on.
+   A card the appliance did not attach, or a guest it may not change, stays and is named.
 
 A part that fails is reported and the rest goes on; running the uninstall again finishes it.
 

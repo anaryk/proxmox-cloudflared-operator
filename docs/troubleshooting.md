@@ -110,6 +110,11 @@ The sections the two point at:
     minute at most.
 - **Routes** counts the routes by state: `active`, `unreachable`, `withdrawn`, `conflict`,
   `no-zone`, `held`, `rejected`, `frozen`. It says `none` when there are no routes.
+- **Managed** appears only while the managed network is enabled: the consent mode and the
+  counts, as `per-guest, 1 attached`, `auto, 5 attached, 2 waiting, 1 foreign card`; `auto
+  (stopped: ...)` while automatic attaches are stopped, and `refused: ...` or `vnet changed:
+  ...` while no card can be added. `pco managed status` has the detail; see
+  [below](#networks-behind-a-leg-and-the-managed-network).
 - **Segments** appears only when routes at `observed` wait for a segment to be acknowledged,
   as `1 not acknowledged (pco segment list)`.
 - **Approval** appears only when guests wait for an approval, in approve mode or for a route
@@ -164,7 +169,7 @@ checks are:
 | `credential <id>` | A token is not checked, unusable, expired, or expires in less than 30 days. A warning, `the token could not be checked`, when Cloudflare did not answer the check; it says nothing about the token. |
 | `approval <owner>` | A guest waits for approval. |
 | `tunnel <name>`, `connector <name>` | A tunnel is not verified or does not exist yet; a connector is not running, not connected, or was not found. |
-| `netns`, `leg <id>`, `networks`, `service pool` | Only with a network behind a leg. The namespace `pco` is gone or not as pco left it, or `pco-netns.service` would tear it down on a restart, is not enabled, or starts after `pco.service` (`systemctl restart pco-netns`; reinstall the package for old unit files); a leg is not up; the networks near the 15 a node reaches; the service addresses near the end of their pool. |
+| `netns`, `leg <id>`, `networks`, `service pool` | Only with a network behind a leg. The namespace `pco` is gone or not as pco left it, or `pco-netns.service` would tear it down on a restart, is not enabled, or starts after `pco.service` (`systemctl restart pco-netns`; reinstall the package for old unit files); a leg is not up; the networks near the 15 a cluster holds; the service addresses near the end of their pool. [Networks behind a leg](#networks-behind-a-leg-and-the-managed-network) goes through them. |
 | `managed`, `vnet`, `pconet`, `dhcp` | Only with the managed network. It cannot run on the node, its leg is down, automatic attaches stopped, its consent tag is not registered, few addresses are free; the vnet was changed, or others' SDN changes wait to be applied; IPv6 is on on `pconet`; the DHCP server is not bound. |
 | `managed guest <owner>`, `foreign card <owner>` | A guest's card waits for a restart, DHCP, a grant or a confirmation, goes after its grace, or the guest moved to another node; a card on `pconet` that no attachment explains is still there. |
 | `filtered pconet`, `managed firewall`, `pool grant <owner>` | In the appliance: the guests on `pconet` are not proven isolated; the node's firewall cannot isolate them; a note, not a warning, for a guest of the granted pool without consent. |
@@ -239,7 +244,9 @@ candidate.
 | `ARP on vmbr0: ...`, `forwarding table of vmbr0: ...`, `route to <address>: ...`, `listing host interfaces: ...` | The host could not be asked, which proves nothing either way. The error that follows says why; the daemon needs to run as root. |
 | `address of this node`, `address of a cluster node`, `loopback address`, `link-local address`, ... | The address is never published. The target is the node, or something that cannot be a guest. |
 | `identity level observed is below the required port` | The route is held back by `identityMinimum`; see [Identity](identity.md). |
-| `guest has no net1`, `guest has no network card on pconet`, `address <address> is not a usable IPv4 address`, `guest has no network interface` | The route's `via=` or address names something the guest does not have. |
+| `guest has no net1`, `guest has no network card on pconet`, `address <address> is not a usable IPv4 address`, `guest has no network interface` | The route's `via=` or address names something the guest does not have. For `via=managed`, the guest has no card on the managed network yet: `pco managed status` says whether it waits and why. |
+| `service address not allocated: <reason>`, `service address not moved: <reason>; the rule is kept and reaches nothing until it is` | The guest is proven through a leg and has no service address yet, or its service address cannot follow it to a new address; a new one is made only in a cycle in which the daemon knows it is the writer. Usually one cycle after a start. [Problems](problems.md#the-gateway-and-service-addresses) has every reason. |
+| `node has no address on vmbr1 in the guest's network`, with `pco network list` showing `vmbr1` | The network is attached but its leg is not up, so the guest is reached neither directly nor through the leg; see [below](#networks-behind-a-leg-and-the-managed-network). |
 
 Before you give the node an address in a guest's network, think about who is in it. The
 web interface and API of the node (`pveproxy`, port 8006), `spiceproxy` and `sshd` listen on
@@ -264,6 +271,179 @@ There are three ways out:
    guest of the install: [Identity](identity.md) says what it is, and the table in
    [Security](security.md) what it no longer stops.
 3. Leave the route held back, if you did not mean to publish it.
+
+In the appliance with `identityMinimum: filtered`, every route off the managed network is held
+back with `identity level observed is below the required filtered`, and one on the managed
+network while its isolation is not proven: the problem line then ends with why, as `filtered
+lost: <why>`, which [the managed network](problems.md#the-managed-network) lists. `pco managed
+status` shows the isolation under `Filtered` with every reason.
+
+## Networks behind a leg and the managed network
+
+[Networking](networking.md) says how a leg and the managed network work; this is what goes
+wrong, with where it shows and what to do. `pco network list`, `pco network show <id>` and
+`pco managed status` are the three commands to start with, and `pco doctor` has a check for
+each part ([Problems](problems.md#checks-of-the-networks)).
+
+### The leg is not up
+
+`pco network list` shows the leg's state, and a leg that is not up is a problem line,
+`network <network>: the leg is not up: <why>`, and a failed `leg <id>` check:
+
+- **`address in use by <mac>`**: another station holds the leg's address; the leg is raised
+  only once nobody answers for it. A DHCP server of that network gave the address out, or a
+  machine was given it by hand. Find the station by the MAC, free the address, or detach the
+  network and attach it with another address.
+- **The bridge is absent**: `vmbr2v20`, the bridge Proxmox makes for VLAN 20 of a bridge that
+  is not VLAN-aware, exists only while a guest with that tag runs; the leg waits and is
+  attached when the bridge appears. A bridge removed from `/etc/network/interfaces` leaves the
+  leg with its elements, and the network is one to detach.
+- **`no carrier, DAD not run`**: a warning on a bridge whose physical uplink has no carrier;
+  the leg is up and its address could not be checked against the LAN.
+- **In the appliance, the card could not be added**: every slot `net1` to `net9` is taken, the
+  token lacks the grant of the bridge (`pco appliance network allow`), or the bridge is not
+  VLAN-aware for a tagged attach.
+
+### The gateway could not be programmed, or the namespace is gone
+
+`programming the gateway: <error>; no tunnel configuration is written until it is programmed`
+holds every tunnel run, since a rule must not name a service address the gateway does not
+forward. On a host the usual cause is a namespace that is gone, `the gateway namespace is not
+pinned`, after `ip netns del pco` or an unmount of `/run/netns/pco`: `systemctl restart
+pco-netns` brings it back, with the legs and the service addresses, and stops nothing. `pco
+netns status` says what differs, and `pco doctor` fails `netns`. A `pco-netns.service` whose
+loaded unit file has an `ExecStop` line, from before an upgrade, tears the namespace down on a
+restart: reinstall the package and `systemctl daemon-reload` first, as the check says. Changes
+made by hand in the namespace are put back within 30 seconds, with the event `the gateway
+namespace was changed outside pco and was brought back`.
+
+### A route through a leg answers 503 after a start
+
+`service address not allocated: no cycle has run since the start` is one cycle long: a new
+service address is made only once the daemon knows it is the writer, and the routes whose
+service address exists are served at once. A reason that stays names what to fix;
+[Problems](problems.md#the-gateway-and-service-addresses) has them all. A route that moved
+to another address while no service address could be made keeps its rule and reaches nothing
+until the next cycle lets the service address follow.
+
+### A card waits for a restart
+
+`pending-reboot`: a virtual machine without network hotplug (`qm config <vmid>` shows no
+`network` in its `hotplug`) takes its card at its next restart, and `qm pending <vmid>` lists
+it. Restart the guest, or give it `qm set <vmid> --hotplug network,disk,usb` first for the
+next one. The same holds for a card that goes: `detach-pending` until the restart, and
+`link_down` on a foreign card.
+
+### No DHCP seen
+
+`awaiting-dhcp`: a running virtual machine has had its card for a minute and asked for
+nothing. The card is there, as one more interface, and the guest has to ask: add the
+interface to its network configuration and bring it up;
+[Networking](networking.md#dhcp-for-virtual-machines) has the lines for `ifupdown`,
+`systemd-networkd`, netplan, NetworkManager and cloud-init. Inside the guest, `ip link` shows
+the card by its MAC, `06:50:43:4f:...`; a card whose link is down in the appliance (`link_down=1`
+in its configuration) comes up by itself once its firewall has been in force for 15 seconds.
+On the node, `ip netns exec pco tcpdump -ni leg<N> -e udp port 67` shows the requests and the
+answers; a guest that asks and gets nothing has a MAC other than the lease's, as after a MAC
+changed by hand, and the check `dhcp` counts such requests. `the DHCP server is not listening
+on the managed leg: <error>` means the leg is gone or down: `pco netns status`, and
+`systemctl restart pco-netns` brings the leg back, after which the server binds again by
+itself. Containers do not use DHCP: their address is in their configuration.
+
+### The guest waits for a grant
+
+`needs-grant`, in the appliance: the token may not change the guest. `pco managed status`
+prints the line to run on the node, `pveum acl modify /vms/<vmid> --users pco@pve --tokens
+'pco@pve!vm<app>' --roles PCOManaged`, and the card follows at the next read of the access
+control, within a minute. A pool grant covers every guest of the pool;
+[Networking](networking.md#setting-it-up) says what it hands over.
+
+### The guest waits for the firewall confirmation
+
+`needs-firewall-confirmation`, in the appliance: turning the guest's firewall on for the card
+would filter its other card with `firewall=1` as well. `pco managed approve <owner>
+--accept-firewall-impact` confirms it for that guest, `managed.acceptFirewallImpact: true` for
+every guest attached by the tag or by `auto`; or set `firewall=0` on the other card if it was
+never meant to be filtered.
+
+### `filtered` is lost
+
+In the appliance, `filtered lost: <why>; the routes on pconet are served at observed` says
+what the proof of the isolation lacks, for the whole vnet; the routes on `pconet` are served
+at `observed` meanwhile, and held back with `identityMinimum: filtered`. The reasons, and what
+each means:
+
+- **`not yet enforced: pco wrote its firewall <time> ago`**: a new card, or one whose
+  firewall pco just put right, counts only 15 seconds after the write; it passes by itself.
+- **The guest firewall is off, `macfilter` is off, the ipset is missing or wider than the
+  lease, pco's rules are changed, missing or below another rule**: someone changed the guest's
+  firewall. pco puts its own ipset and rules right in the next cycle, and pushes its block on
+  top of a rule put above it; a firewall an admin turned off is not turned back on. Look at
+  `/etc/pve/firewall/<vmid>.fw` on the node.
+- **`the firewall is not enforcing on net<N>`**: the canary from the leg, a SYN to a port no
+  route publishes, was answered. The rules are configured but not in force on the node:
+  `pve-firewall` restarted and has not compiled them, or the backend is not the iptables one.
+  `iptables-save -t filter | grep tap<vmid>i<n>-IN` on the node shows what is loaded.
+- **The backend, the datacenter firewall or `pve-firewall`**: `the managed network cannot run
+  on this node: <why>`, with the fix in the line, on the node. No card is added while it
+  lasts, and the cards that exist stay.
+- **A foreign card, a changed vnet, or a frame from a MAC no lease knows**: the sections
+  below.
+
+### Automatic attaches are stopped
+
+`managed.consent is auto but the gate tag <tag> is not registered as admin-only; automatic
+attaches are stopped; attached guests stay attached`: the gate tag left the registered tags
+of the datacenter, or they could not be read. Nothing is detached, and nothing new is
+attached until `pco setup --repair` registers the tag again or the read works. `pco status`
+shows `Managed: auto (stopped: ...)` meanwhile.
+
+### A foreign card
+
+`foreign card net<n> (<mac>) of <guest>: <why>`: a card on `pconet` that no attachment
+explains, as a clone or a restore copies one, or a card put on `pconet` by hand. What pco did
+is in the line: a consenting guest got a card of its own in its place; a guest pco may write
+had its link set down (a container that refuses `link_down` lost the card); a guest pco may
+not write was only reported, and the card is yours to remove: `qm set <vmid> --delete net<n>`.
+In the appliance a foreign card drops `filtered` until it is dealt with. A card that is set
+down on a virtual machine without network hotplug stays up until its restart.
+
+### The vnet was changed
+
+`the vnet pconet was changed outside pco: <why>`: a subnet was added to it, `isolate-ports`
+was flipped, its zone is not of type `simple`, or it is gone. No card is added while this
+stands, and the cards that exist stay. Put it back as `pco network managed enable` makes it,
+zone `pco` of type `simple`, `isolate-ports` on on a host and off in the appliance, no
+subnet, and apply; `pco doctor` fails `vnet` with what differs, and warns about the SDN
+changes of others that wait to be applied, which the next apply by anyone applies along.
+
+### The attach is refused for an overlapping route
+
+`192.168.4.0/24 overlaps the node's route on vmbr0; pass --overlap-ok if the guests there are
+meant to be reached through the leg`: the prefix of the network is one the node routes on
+another interface, and a leg there would be the second way to those addresses. Pass
+`--overlap-ok` when the guests of that bridge are meant to be reached through the leg, as on
+a bridge that carries a copy of the LAN's addresses; the node's own traffic stays on its
+interface, since the leg's address has no prefix route and only the requests marked for the
+leg are routed through it. A prefix that overlaps the service prefix `198.18.0.0/16` or
+`managed.subnet` is refused always.
+
+### A guest cannot reach another through the managed network
+
+That is what the network is for. On a host the ports of `pconet` are isolated, the guard
+admits from each port only the MAC and address pco leased to that guest, and the node drops
+what `pconet` sends it; in the appliance the guest firewall lets a card send to pco's leg and
+to DHCP only. A guest that changed its address by hand loses even the leg, since the guard
+and the ipset admit the lease alone: `nft list counter bridge pco_guard dropped_spoofed` on a
+host counts what it dropped. A managed guest that should reach something else needs a card
+of its own on that network.
+
+### A guest migrated with its card
+
+`migrated`: the guest took its card and its address to another node, where the managed
+network does not reach it; its routes through it are not served from there. Move it back, or
+publish it another way. A consenting guest on another node waits with `guest is on node
+<node>, not <this node>`.
 
 ## A route is held, withdrawn or in conflict
 

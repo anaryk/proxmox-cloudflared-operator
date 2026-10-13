@@ -66,6 +66,12 @@ mounted.
 | `approvals/<owner>.json` | An approved guest and its identity. A guest `qemu/101` is stored as `qemu_101.json`. | `pco guest approve`, the web interface | as the cluster filesystem sets | Yes: an approval is a decision of an admin. |
 | `routes/<id>.json` | Manual routes, which the daemon reads in every cycle. A manual route names a guest, whose address is proven as for its Notes, or an address, which nothing proves: its level is `manual`. | `pco route manual add` and `remove`, the web interface | as the cluster filesystem sets | Yes. |
 | `segments/<bridge>.json`, `segments/<bridge>.<vlan>.json` | A bridge and VLAN on which routes at `observed` may be served, once an admin acknowledged it. | `pco segment acknowledge` and `revoke` | as the cluster filesystem sets | Yes. |
+| `networks/<id>.json` | A network reached through a leg: its kind, `attach` or `managed`, bridge, VLAN, prefix, the leg of each node, the leg's MAC and the mark, and whether it was attached over a route of the node. The id is `vmbr1`, `vmbr2.20` or `pconet`. | `pco network attach` and `detach`, `pco network managed enable`, `pco setup --managed` | as the cluster filesystem sets | Yes: a network is a decision of an admin, and its mark is part of it. |
+| `svcaddrs/<network>-<address>.json` | A service address, with the guest address behind the leg it stands for and the owner, guest and identity it was made for; only the live ones. | The daemon | as the cluster filesystem sets | No; the daemon makes them again. |
+| `meta/svcpool.json` | The next service address to give out, which only moves forward: an address is never given twice. | The daemon | as the cluster filesystem sets | Yes, with the mappings: without it the daemon starts after the highest in use. |
+| `ipam/<mac>.json` | A lease of the managed network: the address, its card's MAC (the file is named by it, with dashes), the owner and its identity, and when DHCP last asked. | The daemon | as the cluster filesystem sets | No; a card keeps its address through its MAC, and a lease is made again with the card. |
+| `consents/<owner>.json` | An approval for a card on the managed network, with the identity it was given in, who gave it and whether the firewall impact was accepted. | `pco managed approve` and `revoke`, the web interface | as the cluster filesystem sets | Yes: a decision of an admin. |
+| `attachments/<owner>.json` | The card pco gave a guest on the managed network: its index, MAC and address, the consent it rests on, when it was attached, a detach under way, and in the appliance what the guest's firewall was before pco changed it. | The daemon | as the cluster filesystem sets | No; the daemon finds the cards in the guests' configurations and makes the attachment again. |
 | `adopted.jsonl` | One line for each DNS record that `pco adopt` replaced, as it was; at most 256 KiB, oldest lines first out. | The daemon, for `pco adopt` | as the cluster filesystem sets | Yes: it is the only copy of those records. |
 
 ### `/etc/pve/priv/pco`
@@ -95,6 +101,8 @@ mounted.
 | `tunnels/` | `<tunnel id>.token`, `.env` and `.yml` of each connector, in a directory of mode `0700`; the token and the configuration are `0600`, the env file `0644`. The `.env` file names the install the connector belongs to. A hidden file `.<tunnel id>.pending`, `0600`, says that the files of a tunnel changed and its unit has not been started or restarted since. | The daemon | root; the directory `0700`, `.token` and `.yml` `0600`, `.env` `0644` | No; the daemon reads the token of a tunnel again from Cloudflare. |
 | `egress-blocked.json`, `egress-off.json` | The block list and the off switch of the egress filter, `0600`. The off switch is a file that is there while the filter is off. | `pco egress block`, `unblock`, `off` and `on` | root, `0600` | If you keep addresses blocked on purpose. |
 | `daemon.lock` | The lock of the node: the daemon holds it for as long as it runs. The file stays where it is, since removing it would let two daemons lock two different files. | The daemon | root, `0600` | No. |
+| `netns/gateway.json` | The cache of the gateway: the legs with their marks and MACs, the service addresses with their ports, the sticky entries of the managed guests and the pinned MACs, as the daemon last applied them. `pco netns up` brings the namespace back from it at boot, before the guests start, and `pco net load` the cards of the appliance; `pco netns status` compares the namespace with it. | The daemon, after every change of the gateway | root, `0600` | No; the daemon writes it again after its first cycle, and a boot before that brings the gateway back as it was before. |
+| `netns/state.json`, `netns/pins.json` | The networks, service addresses and leases as last synced, and the MACs pinned for the targets behind a leg, with when; pins older than five minutes are not restored. | The daemon | root, `0600` | No. |
 
 The files of `meta/`, `bindings/` and `agent/` are objects of the same envelope.
 
@@ -113,7 +121,10 @@ daemon runs as and not be writable by group or others; a socket elsewhere is cho
 
 ## The units
 
-The package installs these files in `/usr/lib/systemd/system`, all mode `0644`:
+The package installs these files in `/usr/lib/systemd/system`, all mode `0644`; the nftables
+tables the daemon loads beside them are `inet pco_egress`, the egress filter, and with a
+network behind a leg `inet pco_host` on the node, `inet pco_gw` in the namespace `pco` and
+`bridge pco_guard` for the managed network ([Networking](networking.md)):
 
 | Unit | What it is | Owner and mode |
 |---|---|---|
@@ -121,7 +132,8 @@ The package installs these files in `/usr/lib/systemd/system`, all mode `0644`:
 | `pco-egress.service` | Loads the egress filter, `pco egress load`. | root, `0644` |
 | `pco-cloudflared@.service` | The template of the connector of one tunnel. | root, `0644` |
 | `pco-web.service` | The web interface, `pco web`. | root, `0644` |
-| `pco-net.service` | Loads the service-prefix route and filter of the appliance, `pco net load`. Nothing starts it on a host. | root, `0644` |
+| `pco-netns.service` | Brings the gateway namespace `pco` and its legs back at boot, `pco netns up`. Enabled with the first network attached; masked in the appliance. | root, `0644` |
+| `pco-net.service` | Loads the service-prefix route and filter of the appliance, `pco net load`, and restores the legs of the container. Nothing starts it on a host. | root, `0644` |
 
 Their commands, and what each does at a reboot, are in [Operations](operations.md#the-daemon-and-its-units).
 
@@ -225,8 +237,8 @@ file.
 ## What to back up
 
 The state that cannot be made again is what an admin decided: the settings, the approvals,
-the manual routes, the acknowledged segments, the snapshots in `adopted.jsonl`, the
-credentials and the manifest. On a host the settings, approvals, manual routes, segments and
+the manual routes, the acknowledged segments, the networks attached and the consents of the
+managed network, the snapshots in `adopted.jsonl`, the credentials and the manifest. On a host the settings, approvals, manual routes, segments and
 snapshots are in `/etc/pve/pco`, which a backup of the cluster filesystem has, and the
 credentials are in `/etc/pve/priv/pco`: a backup that holds them is a secret too. The
 manifest is in `/var/lib/pco`. Everything else is made again by the daemon: bindings are

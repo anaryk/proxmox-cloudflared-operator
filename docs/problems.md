@@ -202,7 +202,8 @@ forwards it to the guest. On the host the gateway is the network namespace `pco`
 `pco-netns.service` brings up at boot; in the appliance the legs are network cards of the
 container itself, `net1` to `net9`, which the daemon adds to its own configuration through the
 Proxmox API, and there is no namespace and no `pco-netns`. Where the lines below name `pco netns
-status`, look at the journal (`journalctl -u pco`) in the appliance.
+status`, look at the journal (`journalctl -u pco`) in the appliance. [Networking](networking.md)
+is the page of the legs and the service addresses.
 
 | Line | Meaning and cause | What to do |
 |---|---|---|
@@ -252,7 +253,9 @@ reaches nothing until it is`.
 
 The managed network is the SDN vnet `pconet`, on which pco gives consenting guests a card with an
 address of `managed.subnet`. `pco managed status` shows the cards, the guests that wait and why,
-and the foreign cards.
+and the foreign cards; [Networking](networking.md#managed) is its page, and
+[Troubleshooting](troubleshooting.md#networks-behind-a-leg-and-the-managed-network) goes through
+the cases.
 
 | Line | Meaning and cause | What to do |
 |---|---|---|

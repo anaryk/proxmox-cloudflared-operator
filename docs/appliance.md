@@ -235,9 +235,11 @@ tells it from what an admin made:
 | Template volume | `<storage>:vztmpl/pco-appliance_<version>_<arch>.tar.zst`. It stays after the install: it is data, and what an appliance is made again from. | Listed in the manifest. |
 | `NoAccess` lines | Only those you confirmed, at the question or with `--deny-access`. | Recorded in the description of the container, which the appliance's token cannot change, and in the manifest. |
 
-Later, and only through `pco appliance grant-network`, the roles `PCOManaged`
-(`VM.Config.Network`) and `PCOSDN` (`SDN.Use` and `SDN.Audit`) with their lines; see
-[network grants](#network-grants).
+Later, and only through `pco appliance grant-network` and `pco appliance managed enable`, the
+roles `PCOManaged` (`VM.Config.Network`) and `PCOSDN` (`SDN.Use` and `SDN.Audit`) with their
+lines, and with `managed enable` the SDN zone `pco` and the vnet `pconet`, each noted in the
+description of the container and in a record of the node's own before it is made; see
+[network grants](#network-grants) and [the managed network](guides/managed-network-appliance.md).
 
 Nothing else is created on the node, at install or later. The appliance keeps the list of what
 was made for it in `/var/lib/pco/manifest.json`; the uninstaller pulls it back and takes it as
@@ -252,7 +254,8 @@ each time they are needed. Use the release the appliance runs, which
 it removes when it returns, after the same checks of the release as for an install.
 `--uninstall`, `--repair`, `--grant-network` and `--revoke-network`, with `--appliance`, run
 `pco appliance uninstall`, `repair`, `grant-network` and `revoke-network`, and every other
-argument goes to that command:
+argument goes to that command; `pco appliance managed enable` and `pco appliance network
+allow` run the same way, from the package of the release unpacked on the node:
 
     curl -fsSL https://raw.githubusercontent.com/anaryk/proxmox-cloudflared-operator/main/scripts/install.sh | PCO_VERSION=1.2.3 bash -s -- --appliance --uninstall --vmid 120
 
@@ -300,6 +303,8 @@ addresses at. Four things make it publish.
 2. **A guest to publish.** Tag it with the gate tag and write its routes into its Notes, as
    [Quickstart](quickstart.md#tag-a-guest-and-write-its-routes) shows. The guest must be on the
    bridge and VLAN of the appliance's card: the appliance reaches guests on its own segments.
+   For a guest on another network, the appliance attaches that network with a card of its own,
+   or gives the guest a card on its managed network; [Networking](networking.md) has both.
 
 3. **The segment.** A route proven at `observed` is served only on a segment an admin
    acknowledged. `pco status` says when one waits, and `pco routes` names it:
@@ -470,7 +475,8 @@ as it made them, once the container is gone.
 
 ### Network grants
 
-A later release attaches cards of the appliance to the networks of guests. That needs
+The appliance reaches a network it is not on through a card of its own there, a leg, which
+`pco network attach` adds to the container ([Networking](networking.md#attach)). That needs
 `VM.Config.Network` on the appliance and `SDN.Use` on the network (with `SDN.Audit`, which reads
 whether the network is VLAN-aware), and pco's token never holds
 `Permissions.Modify`, so a command run as root on the node grants them (see
@@ -488,9 +494,13 @@ whether the network is VLAN-aware), and pco's token never holds
 
 The grant is on the most specific path of the network: `/sdn/zones/<zone>/<vnet>`, with
 `/<vlan>` for a VLAN, and the zone `localnetwork` for a plain Linux bridge. A whole zone is never
-granted. `--vlan` names a VLAN. `pco appliance revoke-network` takes a grant back, and the
-uninstall does too. `pco doctor` warns in its `network grants` check about a grant on a whole
-zone or on a bridge that carries an address of a node. Nothing in this release attaches a card.
+granted. `--vlan` names a VLAN; `pco appliance network allow vmbr1:20` is the same command
+with the bridge and the VLAN in one argument. `pco appliance revoke-network` takes a grant
+back, and the uninstall does too. `pco doctor` warns in its `network grants` check about a
+grant on a whole zone or on a bridge that carries an address of a node. The managed network
+takes its own grants, which `pco appliance managed enable` makes:
+[the guide](guides/managed-network-appliance.md) has them, and
+[Security](security.md#its-rights-in-proxmox) what a pool grant hands over.
 
 ### Beside a host install
 
@@ -674,9 +684,12 @@ installed anew, not made from a copy.
   node that are on its segments; when its node is down, so are the hostnames it serves. pco does
   not make it a Proxmox HA resource, and moving it to another node when that node fails comes in
   a later release. See [Operations](operations.md#the-appliance-on-a-cluster).
-- No Attach and no managed network: the appliance reaches the guests on the segments of its
-  cards, and `filtered`, the level of the managed network, proves nothing yet. An
-  `identityMinimum` of `filtered` therefore holds every route back.
+- Nine legs, `net1` to `net9`, admin-added cards counted, and a VLAN attached on a VLAN-aware
+  bridge only. The managed network of the appliance needs the iptables backend of the Proxmox
+  firewall, the datacenter firewall on and `pve-firewall` running on the node, and `filtered`
+  is proven from the configuration, the service and a canary, not from the rules in the
+  node's kernel ([Networking](networking.md#the-appliance-the-guest-firewall)). An
+  `identityMinimum` of `filtered` holds every route off the managed network back.
 - `pco export` writes the install to an encrypted bundle inside the appliance, but `pco import`
   restores the install of a host only. A lost state volume comes back through
   `pco appliance repair --recover`, which adopts the install from Cloudflare, and the settings,

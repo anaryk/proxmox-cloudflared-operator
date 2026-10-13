@@ -207,7 +207,8 @@ as `1m0s`.
 
 ## Managed network
 
-The settings of pco's managed network are the keys of one object, `managed`:
+The settings of pco's managed network, the SDN vnet `pconet` on which guests that consent get
+a card of pco's ([Networking](networking.md#managed)), are the keys of one object, `managed`:
 
 ```json
 "managed": {
@@ -226,9 +227,13 @@ The settings of pco's managed network are the keys of one object, `managed`:
 
 - `consent`: which guests get a card on the managed network. `per-guest` gives one to a
   guest that carries the tag `cf-tunnel-managed` or that an admin approved. `auto` also gives
-  one, without either, to a guest the gate tag admits whose routes need the network. A guest
-  whose Notes say `cf-tunnel-managed=off` gets none in either mode; see
-  [Annotations](annotations.md#refusing-the-managed-network).
+  one, without either, to a guest the gate tag admits whose routes need the network. `auto`
+  can be set only while the gate tag is registered as admin-only, and a `gateTag` change to a
+  tag that is not registered is refused while it is on; when the tag loses its registration
+  later, automatic attaches stop and the guests that are attached stay. A guest whose Notes
+  say `cf-tunnel-managed=off` gets none in either mode; see
+  [Annotations](annotations.md#refusing-the-managed-network) and
+  [Networking](networking.md#consent).
 - `subnet`: the addresses of the managed network. pco's own leg has the first, the guests the
   others up to the last before the broadcast address. A `/16` to a `/28`, written as its
   network address, as `10.203.118.0/24` and not `10.203.118.1/24`. It may not overlap the
