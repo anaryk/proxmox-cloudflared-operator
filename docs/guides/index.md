@@ -3,7 +3,7 @@
 Each guide is one task, from start to end: when you need it, what to have ready, the steps with
 the commands and the Notes to write, how to check the result, and how to undo it. The guides
 under the first three headings are for a node of the host profile, set up as in
-[Quickstart](../quickstart.md); the last three are for the appliance. They link the concept pages
+[Quickstart](../quickstart.md); the last four are for the appliance. They link the concept pages
 and the reference where those say more.
 
 ## Publishing
@@ -21,6 +21,13 @@ and the reference where those say more.
   and clones of a published guest.
 - [Take over existing DNS records](adopt-existing-records.md): from a `cloudflared` of your
   own or an address record, with `pco adopt`.
+
+## Reaching guests the node is not on
+
+- [Attach a network](attach-a-network.md): the candidates, the probe, the uplink warning and
+  a leg of pco's own in a bridge or VLAN, without touching the guests.
+- [Set up the managed network](managed-network.md): the SDN vnet `pconet`, the consent of a
+  guest, the card pco adds, DHCP for a virtual machine, and automatic consent.
 
 ## Deciding and securing
 
@@ -52,6 +59,9 @@ The same tasks for [the appliance](../appliance.md), pco in a container of its o
 
 - [Install the appliance](appliance-install.md): the installer and its questions, the segment,
   the approvals, and what `pco doctor` shows on a fresh install.
+- [The managed network of the appliance](managed-network-appliance.md): the vnet made and
+  granted from the node, the grant per guest or per pool, the guest firewall and the level
+  `filtered`.
 - [Upgrade the appliance](appliance-upgrade.md): `pco upgrade --check`, the snapshot taken on the
   node before it, and the upgrade of pco and `cloudflared`.
 - [Restore the appliance from a backup](appliance-restore.md): the container restored with

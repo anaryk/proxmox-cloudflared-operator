@@ -82,15 +82,20 @@ can only be aimed at an address the guest itself answers for, but a tenant who m
 MAC of its card can aim at any device on its segment, so the segment of a tenant should hold
 the tenant's machines and a gateway, and nothing else of the company's.
 
-The appliance needs a card of its own on each of these networks, with an address in the
-network. pco does not attach cards in this release, so they are added to the container in
-Proxmox, as to any container. For the two networks of the diagram:
+The appliance needs a card of its own on each of these networks, a leg, which attaching the
+network adds to the container, with an address of the tenant's network that the tenant set
+aside for it. The grant comes first, on the node, one VLAN at a time and never the whole
+bridge; then the attach, inside the appliance. For the two networks of the diagram:
 
-    pct set 120 --net1 name=eth1,bridge=vmbr1,tag=20,ip=10.0.20.2/24
-    pct set 120 --net2 name=eth2,bridge=vmbr1,tag=30,ip=10.0.30.2/24
+    pco appliance network allow vmbr1:20 --vmid 120
+    pco appliance network allow vmbr1:30 --vmid 120
+    pct exec 120 -- pco network attach vmbr1:20 --address 10.0.20.250/24
+    pct exec 120 -- pco network attach vmbr1:30 --address 10.0.30.250/24
 
-Its segment is then the one the card is on, `vmbr1:20` for the first, and each segment is
-acknowledged once:
+The tenants' guests are then served through the legs, under service addresses of pco's that
+the connectors dial, and nothing of a tenant's is touched; [Attach a network](../guides/attach-a-network.md)
+is the guide. Its segment is the one each leg is on, `vmbr1:20` for the first, and each
+segment is acknowledged once:
 
     pco segment list
     pco segment acknowledge vmbr1:20

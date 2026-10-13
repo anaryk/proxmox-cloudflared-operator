@@ -1,7 +1,7 @@
 # Use cases
 
-Six setups, each from the situation to the settings and Notes it ends with. They differ in
-who runs the node, who may publish, and what is in front of the tunnel. Pick the one that is
+Seven setups, each from the situation to the settings and Notes it ends with. They differ in
+who runs the node, who may publish, where the guests are, and what is in front of the tunnel. Pick the one that is
 closest to yours, and read the others for the decisions they explain.
 
 | Page | The situation | Profile |
@@ -12,13 +12,15 @@ closest to yours, and read the others for the decisions they explain.
 | [Internal tools behind Cloudflare Access](internal-tools-behind-access.md) | Tools only staff should reach, with Access in front of pco. | either |
 | [Preview environments](preview-environments.md) | A guest for each pull request, made and destroyed by CI. | host |
 | [Leaving hand-run tunnels](leaving-hand-run-tunnels.md) | `cloudflared` processes started by hand, moved to pco one name at a time. | either |
+| [Guests on networks of their own](isolated-networks.md) | A team's VLAN, an internal bridge and guests with no network to share: attached networks and the managed network. | host |
 
 Each page has the situation, a diagram of the setup, the decisions in the same order, what
 the setup ends with, what to watch once it runs, and the guides it uses. The decisions are the
 profile, the admission mode, the identity minimum, the tokens, the egress filter and who may
-reach the web interface.
+reach the web interface, and where the guests are not on the node's network, how they are
+reached.
 
-Two facts are behind all six. pco runs on one node, and it does not fail over: while that node
+Two facts are behind all seven. pco runs on one node, and it does not fail over: while that node
 is down, every published hostname is down, and moving pco to another node is something an
 admin does. And pco is never in the data path, so the connectors keep serving while the daemon
 is stopped or upgraded ([Architecture](../architecture.md)).
