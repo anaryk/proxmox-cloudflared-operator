@@ -872,6 +872,18 @@ of it, which is why `pco upgrade` asks you for one. The one way it gains a right
 appliance grant-network`, run by root on the node, which grants `VM.Config.Network` on the
 appliance and `SDN.Use` with `SDN.Audit` on one network, for the cards a later release attaches. Nothing is granted on a whole zone, and nothing beyond the read-only role on `/`.
 
+`pco appliance managed enable --pool <pool>` grants role `PCOManaged` (`VM.Config.Network`) on
+`/pool/<pool>`, so that the appliance can attach the managed network to the guests of that pool
+and turn their firewall on. A pool grant covers every guest that is in the pool, now or later,
+whoever administers it: anyone who may put a guest into the pool hands its network cards and its
+firewall to the appliance. Grant a pool whose members you would let the appliance change, and
+keep `Pool.Allocate` on it to the admins. The grant goes to the user `pco@pve` as well as to the
+token, as privilege separation needs, and the user is the same for every appliance of the
+cluster: the token of another appliance holds only what is granted to it as well, and stays
+without the pool, but a token of `pco@pve` without privilege separation would hold it, and pco
+makes none. `pveum acl delete /pool/<pool> --users pco@pve --tokens 'pco@pve!vm<vmid>' --roles
+PCOManaged` takes the grant back.
+
 The appliance reaches the API through its card, at an address of the node, and verifies its
 certificate under the name the installer chose, against the cluster CA it pushed or the system
 roots. It never takes a certificate on trust. When the certificate stops verifying, it holds its
