@@ -307,6 +307,9 @@ func testNetworkReload(t *testing.T, s *suite) {
 		require.NoError(t, err)
 		time.Sleep(5 * time.Second)
 		total, failed, errs := tr.end()
+		// The reload keeps the bridge of the run as the node configures it,
+		// without the address the run gave it; the guests there need it.
+		s.restoreAddress(t)
 		t.Logf("%s: %d requests, %d failed %v", strings.Join(cmd, " "), total, failed, errs)
 		require.Zero(t, failed, "requests failed around %s", strings.Join(cmd, " "))
 		for id, mark := range marks {

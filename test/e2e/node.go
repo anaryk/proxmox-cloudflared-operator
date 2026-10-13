@@ -250,6 +250,18 @@ func (s *suite) addAddress(t *testing.T) {
 	s.addressAdded = true
 }
 
+// restoreAddress gives the node its address on the bridge again after a
+// reload of the node's network, which keeps what /etc/network/interfaces
+// says and nothing the run added, and brings the bridge up again.
+func (s *suite) restoreAddress(t testing.TB) {
+	t.Helper()
+	if !s.addressAdded {
+		return
+	}
+	s.must(t, "ip", "link", "set", "dev", bridge, "up")
+	s.must(t, "ip", "addr", "replace", s.lay.nodeCIDR(), "dev", bridge)
+}
+
 func (s *suite) removeAddress(t testing.TB) {
 	if !s.addressAdded {
 		return
