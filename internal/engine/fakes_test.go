@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -17,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -262,6 +264,12 @@ func (f *fakeResolver) Resolve(ctx context.Context, route model.Route, snap inve
 	return res
 }
 
+// VerifyAddress is asked only of an address another node chose, which a
+// single node never has: it proves nothing.
+func (f *fakeResolver) VerifyAddress(context.Context, resolve.VerifyRequest) resolve.VerifyResult {
+	return resolve.VerifyResult{}
+}
+
 // proveOn makes every binding say it was proven on seg.
 func (f *fakeResolver) proveOn(seg resolve.Segment) {
 	f.mu.Lock()
@@ -499,6 +507,16 @@ func (f *fakeConnectors) stopAlls() int {
 	return f.stops
 }
 
+// Stop and Disable are what the agent asks of a connector of a cluster's
+// node, which a single node never does.
+func (f *fakeConnectors) Stop(context.Context, string) error {
+	return errors.New("a single node stops no single connector")
+}
+
+func (f *fakeConnectors) Disable(context.Context, string) error {
+	return errors.New("a single node keeps its connectors enabled at boot")
+}
+
 func (f *fakeConnectors) Token(id string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -538,6 +556,12 @@ func (f *fakeEgress) Set(_ context.Context, targets []egress.Target) error {
 	f.sets = append(f.sets, slices.Clone(targets))
 	f.log.add("egress set " + targetsText(targets))
 	return f.setErr
+}
+
+// Live is the table loaded on the node, which only the start of an agent of
+// a cluster's node reads.
+func (f *fakeEgress) Live(context.Context) (egress.Live, error) {
+	return egress.Live{}, egress.ErrNotLoaded
 }
 
 func (f *fakeEgress) Remove(_ context.Context, addr netip.Addr) error {
@@ -743,9 +767,12 @@ type env struct {
 	store *store.Store
 	inv   *fakeInventory
 	res   *fakeResolver
-	conn  *fakeConnectors
-	egr   *fakeEgress
-	cf    *cffake.Fake
+	// resolver, when set, is what the engines a test makes next resolve
+	// through instead of res.
+	resolver agent.Resolver
+	conn     *fakeConnectors
+	egr      *fakeEgress
+	cf       *cffake.Fake
 
 	mu   sync.Mutex
 	apis map[string]cfapi.API // by token: what NewClient hands out; the fake by default
@@ -829,14 +856,19 @@ func newEnvWith(t *testing.T, paths func(base string, p *store.Paths)) *env {
 
 func (e *env) newEngine() *Engine { return e.newEngineWith(e.conn) }
 
-func (e *env) newEngineWith(conns Connectors) *Engine {
+func (e *env) newEngineWith(conns agent.Connectors) *Engine {
 	e.t.Helper()
+	var res agent.Resolver = e.res
+	if e.resolver != nil {
+		res = e.resolver
+	}
 	d := Deps{
-		Store:      e.store,
-		Inventory:  e.inv,
-		Resolver:   e.res,
+		Store:     e.store,
+		Inventory: e.inv,
+		Fleet: NewLocalFleet(agent.Deps{
+			Node: testNode, Store: e.store, Resolver: res, Connectors: conns, Egress: e.egr, Now: e.clock.now, Log: e.log,
+		}),
 		Connectors: conns,
-		Egress:     e.egr,
 		StartOnly:  e.startOnly,
 		Problems:   e.problems,
 		NewClient:  e.newClient,

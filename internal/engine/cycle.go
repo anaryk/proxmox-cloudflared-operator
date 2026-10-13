@@ -10,7 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agentproto"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
@@ -138,6 +141,14 @@ type cycleRun struct {
 	// tenants are the guests outside the pool of the appliance configured
 	// with one of its MACs, each with that MAC: their routes are not served.
 	tenants map[model.GuestRef]string
+
+	// node is the agent of this node, and steps the pass of it the cycle
+	// runs, from the resolution to the end of the cycle; netLegs are the
+	// networks with the marks of their legs, which the pins of targets on a
+	// leg name.
+	node    *agent.Agent
+	steps   *agent.Steps
+	netLegs []gateway.Leg
 }
 
 func (e *Engine) newCycle(ctx context.Context) *cycleRun {
@@ -148,6 +159,7 @@ func (e *Engine) newCycle(ctx context.Context) *cycleRun {
 // run goes through the steps of a cycle in order. A step that cannot go on
 // safely ends the cycle; what it found so far is the state.
 func (c *cycleRun) run() State {
+	defer c.endSteps()
 	c.st.Problems = append(c.st.Problems, c.e.d.Problems...)
 	c.expireRequests()
 	c.noteEgress()
@@ -240,6 +252,14 @@ func (c *cycleRun) prepare() bool {
 	c.st.Profile = inst.ProfileName()
 	if !c.registered() {
 		return false
+	}
+	node, err := c.e.fleet.agentOf(inst)
+	if err != nil {
+		c.hold(c.problem("starting the agent of this node: %v", err))
+		return false
+	}
+	if c.node = node; c.e.egress == nil {
+		c.e.egress = node.EgressSet()
 	}
 	c.readWriter()
 	switch err := c.e.recall(c.install.ID); {
@@ -500,6 +520,24 @@ func (c *cycleRun) reconcile() {
 		return
 	}
 	c.reconcileDNS()
+}
+
+// begin starts the pass of the agent of this node that the cycle runs in
+// steps, with s; the agent's lock is held until the cycle ends.
+func (c *cycleRun) begin(s agentproto.Snapshot) (*agent.Steps, error) {
+	st, err := c.node.Begin(c.ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	c.steps = st
+	return st, nil
+}
+
+// endSteps ends the pass of the agent, if the cycle began one.
+func (c *cycleRun) endSteps() {
+	if c.steps != nil {
+		c.steps.End()
+	}
 }
 
 // goOn reports whether the cycle's context still lets it go on.

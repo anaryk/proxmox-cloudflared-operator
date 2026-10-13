@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/gateway"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
@@ -229,8 +228,10 @@ func (c *cycleRun) gateway() {
 		c.hold(c.storeProblem("reading the networks", err))
 		return
 	}
-	for id, n := range nets {
+	for _, id := range slices.Sorted(maps.Keys(nets)) {
+		n := nets[id]
 		c.legIfaces[id] = gateway.LegIface(n.Mark)
+		c.netLegs = append(c.netLegs, gateway.Leg{ID: id, Mark: n.Mark})
 		if _, ok := n.Legs[c.e.d.Node]; ok {
 			c.legNets[id] = true
 		}
@@ -422,10 +423,7 @@ func (c *cycleRun) freeze(service netip.Addr) {
 		return
 	}
 	c.lost[service] = true
-	if !slices.ContainsFunc(c.e.egress, func(t egress.Target) bool { return t.Addr == service }) {
-		return
-	}
-	if err := c.e.d.Egress.Remove(c.ctx, service); err != nil {
+	if err := c.steps.TakeOut(service); err != nil {
 		c.problem("taking %s out of the egress filter: %v", service, err)
 	}
 }

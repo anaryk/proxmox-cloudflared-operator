@@ -100,6 +100,16 @@ func (k *egressFilter) Remove(ctx context.Context, addr netip.Addr) error {
 	return f.Remove(ctx, addr)
 }
 
+// Live reads the table loaded on the node, for the agent to tell a start of
+// the daemon from a boot of the node.
+func (k *egressFilter) Live(ctx context.Context) (egress.Live, error) {
+	f, err := k.filter()
+	if err != nil {
+		return egress.Live{}, err
+	}
+	return f.Live(ctx)
+}
+
 // FlowCounts reads the counters of the live table through the filter.
 func (k *egressFilter) FlowCounts(ctx context.Context) (string, map[netip.AddrPort]uint64, error) {
 	f, err := k.filter()

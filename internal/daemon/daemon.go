@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/vishvananda/netns"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/doctor"
@@ -460,9 +461,8 @@ func build(cfg Config, deps Deps, st *store.Store, token store.PVEToken, setting
 		Inventory:  inv,
 		StartOnly:  func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Restart:    restart,
-		Resolver:   res,
+		Fleet:      engine.NewLocalFleet(agent.Deps{Resolver: res, Connectors: conns, Egress: filter}),
 		Connectors: conns,
-		Egress:     filter,
 		NewClient:  deps.clients(settings.CloudflareBudget),
 		Node:       cfg.Node,
 		Now:        deps.Now,

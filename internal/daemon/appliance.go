@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/api"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appnet"
@@ -155,7 +156,7 @@ func RunAppliance(ctx context.Context, cfg Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
-	if why, isCopy := parts.self.CopyBeforeCycle(); isCopy && stopCopy(ctx, why, parts.filter, parts.conns, state.install.ID, log) {
+	if why, isCopy := parts.self.CopyBeforeCycle(); isCopy && stopCopy(ctx, why, parts.eng.Agent(), log) {
 		parts.eng.StoppedServing()
 	}
 	parts.gw.start(ctx)
@@ -250,17 +251,21 @@ func applianceDoctor(env *doctor.HostEnv, parts applianceParts, state applianceS
 }
 
 // stopCopy is what a copy does before its first cycle: the identity flag is
-// gone already; the egress filter is emptied and the connectors of the
-// install are stopped. It reports whether both went through; the first cycle
-// does again what did not.
-func stopCopy(ctx context.Context, why string, filter engine.Egress, conns engine.Connectors, installID string, log zerolog.Logger) bool {
+// gone already; the agent of the node empties the egress filter and stops
+// the connectors of the install, keeping their files. It reports whether both
+// went through; the first cycle does again what did not.
+func stopCopy(ctx context.Context, why string, a *agent.Agent, log zerolog.Logger) bool {
 	log.Error().Str("why", why).Msg("this container is a copy of the appliance; the connectors are stopped and the egress filter is empty")
+	if a == nil {
+		log.Error().Msg("the agent of this node is not running; the first cycle stops the connectors of the copy")
+		return false
+	}
 	done := true
-	if err := filter.Set(ctx, nil); err != nil && !errors.Is(err, egress.ErrOff) {
+	if err := a.Halt(ctx); err != nil {
 		log.Error().Err(err).Msg("emptying the egress filter of a copy failed")
 		done = false
 	}
-	if err := conns.StopAll(ctx, installID); err != nil {
+	if err := a.StopConnectors(ctx); err != nil {
 		log.Error().Err(err).Msg("stopping the connectors of a copy failed")
 		done = false
 	}
@@ -352,9 +357,8 @@ func buildAppliance(cfg Config, deps Deps, app ApplianceDeps, st *store.Store, s
 		Inventory:   inv,
 		StartOnly:   func(s store.Settings) []string { return start.differences(wiredFrom(s)) },
 		Restart:     restart,
-		Resolver:    res,
+		Fleet:       engine.NewLocalFleet(agent.Deps{Resolver: res, Connectors: conns, Egress: filter}),
 		Connectors:  conns,
-		Egress:      filter,
 		NewClient:   deps.clients(settings.CloudflareBudget),
 		Node:        a.Node,
 		Now:         deps.Now,

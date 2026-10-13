@@ -1,14 +1,12 @@
 package engine
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/access"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/appliance"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/egress"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
@@ -89,6 +87,7 @@ func (c *cycleRun) identify() bool {
 	} else {
 		c.e.notServing.Store(false)
 		c.e.stopped = false
+		c.node.Resume()
 	}
 	ours := applianceMACs(c.snap, a.MACs, self)
 	c.tenants = tenantMACs(c.snap, v.Tenants, ours)
@@ -113,10 +112,7 @@ func (c *cycleRun) stopServing() {
 	if c.e.stopped {
 		return
 	}
-	c.e.egMu.Lock()
-	err := c.e.d.Egress.Set(c.ctx, nil)
-	c.e.egMu.Unlock()
-	if err != nil && !errors.Is(err, egress.ErrOff) {
+	if err := c.node.Halt(c.ctx); err != nil {
 		c.problem("emptying the egress filter: %v", err)
 		return
 	}

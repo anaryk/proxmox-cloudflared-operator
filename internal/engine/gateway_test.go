@@ -1180,10 +1180,9 @@ func TestTheWatchVouchesForATargetOnALegByItsServiceAddress(t *testing.T) {
 	e.warm()
 	e.next()
 
-	e.eng.vouch.mu.Lock()
-	_, pinned := e.eng.vouch.pinned[svc0]
-	_, real := e.eng.vouch.pinned[legAddr]
-	e.eng.vouch.mu.Unlock()
+	// The watch vouches for the addresses it was given the pins of.
+	_, pinned := e.eng.Bound()[svc0]
+	_, real := e.eng.Bound()[legAddr]
 	require.True(t, pinned)
 	require.False(t, real, "the real address is not what the watch watches")
 

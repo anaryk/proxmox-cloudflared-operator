@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/inventory"
@@ -30,8 +31,9 @@ func TestTokensNeverReachTheStateEventsOrLog(t *testing.T) {
 	e := newEnv(t)
 	var logged bytes.Buffer
 	eng, err := New(Deps{
-		Store: e.store, Inventory: e.inv, Resolver: e.res, Connectors: e.conn, Egress: e.egr, NewClient: e.newClient,
-		Node: testNode, Now: e.clock.now, Log: zerolog.New(&logged).Level(zerolog.DebugLevel), LocalDir: e.paths.Local,
+		Store: e.store, Inventory: e.inv, Connectors: e.conn, NewClient: e.newClient,
+		Fleet: NewLocalFleet(agent.Deps{Resolver: e.res, Connectors: e.conn, Egress: e.egr}),
+		Node:  testNode, Now: e.clock.now, Log: zerolog.New(&logged).Level(zerolog.DebugLevel), LocalDir: e.paths.Local,
 	})
 	require.NoError(t, err)
 	e.eng = eng

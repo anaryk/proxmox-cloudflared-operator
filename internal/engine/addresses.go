@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -31,36 +30,43 @@ func (c *cycleRun) learnNodeAddrs() bool {
 	return true
 }
 
-// resolveTargets resolves the address of every winner, with the binding of
-// its hostname, raises in the appliance what the managed network's
-// isolation proves to filtered, takes the addresses that lost their proof out
-// of the egress filter, holds back what is proven below the identity
-// minimum, gives the
-// targets on a leg their service addresses and programs the gateway, and
-// saves the bindings. A cycle whose context ends in the middle plans and
-// changes nothing.
+// resolveTargets has the agent of this node resolve the address of every
+// winner, with the binding of its hostname, and take the addresses that lost
+// their proof out of the egress filter; then raises in the appliance what the
+// managed network's isolation proves to filtered, holds back what is proven
+// below the identity minimum or by a rule the admin has not acknowledged,
+// gives the targets on a leg their service addresses and programs the
+// gateway, and has the agent watch what is served and keep the bindings. A
+// cycle whose context ends in the middle plans and changes nothing.
 func (c *cycleRun) resolveTargets() bool {
-	c.results = c.resolveAll(c.bindings, c.deny)
-	if err := c.ctx.Err(); err != nil {
+	st, err := c.begin(c.snapshot())
+	if err != nil {
 		c.hold(c.problem(problemStoppedResolve, err))
 		return false
 	}
+	res, err := st.Resolve()
+	if cerr := c.ctx.Err(); cerr != nil {
+		c.hold(c.problem(problemStoppedResolve, cerr))
+		return false
+	}
+	if err != nil {
+		c.hold(c.problem("resolving the addresses: %v", err))
+		return false
+	}
+	c.results = res.Results
+	c.st.Problems = append(c.st.Problems, res.Problems...)
+	c.lost = make(map[netip.Addr]bool, len(res.Lost))
+	for _, addr := range res.Lost {
+		c.lost[addr] = true
+	}
 	c.filtered()
-	c.blockLost()
 	c.holdBelowMinimum()
 	c.holdObserved()
 	c.gateway()
-	c.watch()
+	for _, line := range st.Bind(c.results, c.netLegs) {
+		c.problem("%s", line)
+	}
 
-	next := make(map[string]resolve.Binding, len(c.results))
-	for host, res := range c.results {
-		if res.Binding != nil {
-			next[host] = *res.Binding
-		}
-	}
-	if err := c.e.d.Store.SaveBindings(next); err != nil {
-		c.problem("saving the bindings: %v", err)
-	}
 	if c.e.addrs.dirty {
 		if err := c.e.d.Store.SaveNodeAddrs(c.e.addrs.list); err != nil {
 			c.problem("saving the node addresses: %v", err)
@@ -177,48 +183,4 @@ func sdnGateways(subnets []pve.Subnet) map[netip.Addr]string {
 		}
 	}
 	return out
-}
-
-// resolveAll runs Resolve for each winner, at most resolveConcurrency at a
-// time and each with a deadline of its own, so that one guest that reports
-// many addresses cannot hold up the others. The calls share one proof for
-// each address of a guest NIC, and a proof the watch of the network vouches
-// for stands without being made again.
-func (c *cycleRun) resolveAll(stored map[string]resolve.Binding, deny resolve.Denylist) map[string]resolve.Result {
-	winners := c.claims.Winners
-	required := c.requiredLevel()
-	c.e.vouch.see(c.snap, c.now)
-	share := resolve.NewShared(c.reusable)
-	out := make([]resolve.Result, len(winners))
-	slots := make(chan struct{}, resolveConcurrency)
-	done := make(chan struct{})
-	started := 0
-	for i, rt := range winners {
-		select {
-		case slots <- struct{}{}:
-		case <-c.ctx.Done():
-		}
-		if c.ctx.Err() != nil {
-			break
-		}
-		var prev *resolve.Binding
-		if b, ok := stored[rt.Hostname]; ok {
-			prev = &b
-		}
-		started++
-		go func() {
-			defer func() { <-slots; done <- struct{}{} }()
-			ctx, cancel := c.e.timeout(c.ctx, resolveTimeout)
-			defer cancel()
-			out[i] = c.e.d.Resolver.Resolve(ctx, rt, c.snap, prev, deny, required, share)
-		}()
-	}
-	for range started {
-		<-done
-	}
-	results := make(map[string]resolve.Result, len(winners))
-	for i, rt := range winners[:started] {
-		results[rt.Hostname] = out[i]
-	}
-	return results
 }

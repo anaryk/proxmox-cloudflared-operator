@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/connector"
@@ -26,25 +27,27 @@ import (
 
 func TestNewRefusesMissingDependencies(t *testing.T) {
 	e := newEnv(t)
-	full := Deps{
-		Store: e.store, Inventory: e.inv, Resolver: e.res, Connectors: e.conn, Egress: e.egr,
-		NewClient: e.newClient, Node: testNode, Log: zerolog.Nop(),
+	// A fleet serves one engine.
+	full := func() Deps {
+		return Deps{
+			Store: e.store, Inventory: e.inv, Connectors: e.conn, NewClient: e.newClient, Node: testNode, Log: zerolog.Nop(),
+			Fleet: NewLocalFleet(agent.Deps{Node: testNode, Resolver: e.res, Connectors: e.conn, Egress: e.egr}),
+		}
 	}
 	for name, change := range map[string]func(*Deps){
 		"store":      func(d *Deps) { d.Store = nil },
 		"inventory":  func(d *Deps) { d.Inventory = nil },
-		"resolver":   func(d *Deps) { d.Resolver = nil },
+		"fleet":      func(d *Deps) { d.Fleet = nil },
 		"connectors": func(d *Deps) { d.Connectors = nil },
-		"egress":     func(d *Deps) { d.Egress = nil },
 		"client":     func(d *Deps) { d.NewClient = nil },
 		"node":       func(d *Deps) { d.Node = "" },
 	} {
-		d := full
+		d := full()
 		change(&d)
 		_, err := New(d)
 		require.Error(t, err, name)
 	}
-	_, err := New(full)
+	_, err := New(full())
 	require.NoError(t, err)
 }
 

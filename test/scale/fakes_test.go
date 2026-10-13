@@ -222,6 +222,10 @@ func (c *connectors) PruneInstall(context.Context, string, []string) error { ret
 
 func (c *connectors) StopAll(context.Context, string) error { return nil }
 
+func (c *connectors) Stop(context.Context, string) error { return nil }
+
+func (c *connectors) Disable(context.Context, string) error { return nil }
+
 func (c *connectors) List(context.Context) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -244,6 +248,9 @@ type egressFake struct{}
 
 func (egressFake) Set(context.Context, []egress.Target) error { return nil }
 func (egressFake) Remove(context.Context, netip.Addr) error   { return nil }
+func (egressFake) Live(context.Context) (egress.Live, error) {
+	return egress.Live{}, egress.ErrNotLoaded
+}
 func (egressFake) FlowCounts(context.Context) (string, map[netip.AddrPort]uint64, error) {
 	return "", nil, egress.ErrNoCounters
 }

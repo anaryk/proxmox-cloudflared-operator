@@ -21,6 +21,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
+	"github.com/anaryk/proxmox-cloudflared-operator/internal/agent"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/cfapi/cffake"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/engine"
@@ -103,12 +104,16 @@ func newBench(t *testing.T, guests, routes int, limiterOf func(*clock) *cfapi.Li
 	t.Cleanup(srv.Close)
 	limiter := limiterOf(b.clock)
 
+	conns := &connectors{tokens: map[string]string{}}
 	eng, err := engine.New(engine.Deps{
-		Store:      st,
-		Inventory:  b.inv,
-		Resolver:   resolve.NewResolver(b.prober, resolve.Settings{LocalNode: testNode}, b.clock.now),
-		Connectors: &connectors{tokens: map[string]string{}},
-		Egress:     egressFake{},
+		Store:     st,
+		Inventory: b.inv,
+		Fleet: engine.NewLocalFleet(agent.Deps{
+			Resolver:   resolve.NewResolver(b.prober, resolve.Settings{LocalNode: testNode}, b.clock.now),
+			Connectors: conns,
+			Egress:     egressFake{},
+		}),
+		Connectors: conns,
 		NewClient: func(c store.Credential) (cfapi.API, error) {
 			return cfapi.New(cfapi.Options{
 				BaseURL:    srv.URL + "/client/v4",

@@ -150,8 +150,12 @@ func (e *Engine) SampleTargets(ctx context.Context, t time.Time) {
 		counts     map[netip.AddrPort]uint64
 		err        error
 	)
-	if state == EgressOn {
-		generation, counts, err = e.d.Egress.FlowCounts(ctx)
+	a := e.fleet.made()
+	if state == EgressOn && a == nil {
+		err = errNoAgent
+	}
+	if state == EgressOn && a != nil {
+		generation, counts, err = a.FlowCounts(ctx)
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return
 		}

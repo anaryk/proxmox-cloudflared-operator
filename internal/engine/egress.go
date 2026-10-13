@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"context"
-	"errors"
 	"maps"
 	"net/netip"
 	"slices"
@@ -13,22 +11,8 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/model"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
-
-// Egress is the filter that confines the connectors to the targets the
-// engine verified. Its methods may be called from more than one goroutine.
-type Egress interface {
-	// Set replaces the targets the connectors may open connections to.
-	Set(ctx context.Context, targets []egress.Target) error
-	// Remove takes every target of an address out at once.
-	Remove(ctx context.Context, addr netip.Addr) error
-	// FlowCounts reads the counters of the live table: by target, the
-	// connections a connector opened to it, and the generation of the table.
-	// Two reads of one generation are of the same counters.
-	FlowCounts(ctx context.Context) (generation string, counts map[netip.AddrPort]uint64, err error)
-}
 
 // The states of the egress filter, as EgressView says them.
 const (
@@ -53,104 +37,36 @@ type EgressView struct {
 // target it cannot reach.
 const heldEgress = "the egress filter could not be set"
 
-// blockLost takes out of the egress filter, at once, every target whose
-// binding lost its proof in this cycle, and keeps their addresses for the
-// set: what the rest of the cycle takes may be long, and the address may now
-// be someone else's. A target is taken out by the address the set holds for
-// it, the service address of one on a leg, never by the real address, which
-// a target the node reaches directly may have too. Only the addresses the
-// last set holds can be in the table.
-func (c *cycleRun) blockLost() {
-	c.lost = map[netip.Addr]bool{}
-	for _, rt := range c.claims.Winners {
-		res, ok := c.results[rt.Hostname]
-		prev, bound := c.bindings[rt.Hostname]
-		if !ok || !bound {
-			continue
-		}
-		if _, lost := resolve.LostProof(rt, &prev, res); lost && setAddr(prev).IsValid() {
-			c.lost[setAddr(prev)] = true
-		}
-	}
-	for _, addr := range slices.SortedFunc(maps.Keys(c.lost), netip.Addr.Compare) {
-		if !slices.ContainsFunc(c.e.egress, func(t egress.Target) bool { return t.Addr == addr }) {
-			continue
-		}
-		if err := c.e.d.Egress.Remove(c.ctx, addr); err != nil {
-			c.problem("taking %s out of the egress filter: %v", addr, err)
-		}
-	}
-}
-
-// feedEgress gives the egress filter the targets of this cycle: every target
-// it verified for a winner, and every target of the last set that a tunnel
-// configuration as last verified at Cloudflare still sends a connector to,
-// unless its binding is withdrawn, less the addresses that lost their proof;
-// an address whose MAC moved stays out until it is verified again. A target
-// thus enters the set before the tunnel run that publishes its rule, and
-// leaves it only after a tunnel run verified a configuration without it,
-// unless its proof is lost. A cycle that holds because of the store leaves the
-// set as it is. A set that cannot be given holds the writes of the tunnel run;
-// a filter the admin switched off is no failure. The traffic keeps, for each
-// target of the set, the routes it serves.
+// feedEgress has the agent give the egress filter the set of this cycle:
+// every target it verified that the engine serves, and every target of the
+// last set that a tunnel configuration as last verified at Cloudflare still
+// sends a connector to, unless its binding is withdrawn, less the addresses
+// that lost their proof; an address whose MAC moved stays out until it is
+// verified again. A target thus enters the set before the tunnel run that
+// publishes its rule, and leaves it only after a tunnel run verified a
+// configuration without it, unless its proof is lost. A cycle that holds
+// because of the store leaves the set as it is. A set that cannot be given
+// holds the writes of the tunnel run; a filter the admin switched off is no
+// failure. The traffic keeps, for each target of the set, the routes it
+// serves.
 func (c *cycleRun) feedEgress() {
 	if c.storeHold {
 		return
 	}
-	c.e.egress = c.egressSet()
+	set, err := c.steps.Feed()
+	c.e.egress = set
 	c.e.keepServed(c.servedTargets())
-	c.e.egMu.Lock()
-	err := c.e.d.Egress.Set(c.ctx, c.e.unsuspected())
-	c.e.egMu.Unlock()
-	switch {
-	case err == nil, errors.Is(err, egress.ErrOff):
-	default:
+	if err != nil {
 		c.egressHeld = heldEgress
 		c.problem("setting the egress filter: %v; no tunnel configuration is written until it is set", err)
 	}
 }
 
-// egressSet is the set of targets of this cycle, as feedEgress gives it and
-// the gateway is given the service addresses of: the targets verified for the
-// winners and those of the last set a configuration verified at Cloudflare
-// still sends a connector to, less the withdrawn and those whose proof was
-// lost, each once.
+// egressSet is the set of targets the agent gives the filter when the cycle
+// serves its results as they are now, as the gateway is given the service
+// addresses of.
 func (c *cycleRun) egressSet() []egress.Target {
-	set := c.verifiedTargets()
-	sent := c.e.sentTargets()
-	withdrawn := c.withdrawnAddrs()
-	for _, t := range c.e.egress {
-		// A target whose proof only fell below the minimum is still proven
-		// and leaves after its rule, as any other that is no longer served.
-		// A withdrawn one is not fed back, whether or not its proof was lost
-		// in this cycle: the memory of the set may be older than the binding
-		// that says so.
-		if sent[egress.Target{Addr: t.Addr, Port: t.Port}] && !withdrawn[t.Addr] {
-			set = append(set, t)
-		}
-	}
-	set = slices.DeleteFunc(set, func(t egress.Target) bool { return c.lost[t.Addr] })
-	// A target of allowNode sorts first among its equals, and is the one kept:
-	// one of an earlier process comes back from the memory without the mark.
-	slices.SortFunc(set, egress.CompareAllowNodeFirst)
-	return slices.CompactFunc(set, func(a, b egress.Target) bool { return egress.CompareEndpoints(a, b) == 0 })
-}
-
-// verifiedTargets are the targets this cycle verified for the winners: an
-// address resolution proved for the owner that serves the hostname, at the
-// route's port, as the connector dials it: the service address of a target
-// on a leg, which is none until it has one, and the address of any other. A
-// target the identity minimum holds back has no address any more. The target
-// of a manual route with allowNode is marked so: it may be an address of the
-// node, which the filter refuses for any other.
-func (c *cycleRun) verifiedTargets() []egress.Target {
-	var out []egress.Target
-	for _, rt := range c.claims.Winners {
-		if t, ok := c.verifiedTarget(rt); ok {
-			out = append(out, t)
-		}
-	}
-	return out
+	return c.steps.EgressSet(c.results)
 }
 
 // verifiedTarget is the target this cycle verified for a winner, if any.
@@ -163,28 +79,6 @@ func (c *cycleRun) verifiedTarget(rt model.Route) (egress.Target, bool) {
 		return egress.Target{}, false
 	}
 	return egress.Target{Addr: dialed, Port: rt.Target.Port, AllowNode: rt.Source == model.SourceManual && rt.Options.AllowNode}, true
-}
-
-// withdrawnAddrs are the addresses the set holds for the winners whose
-// binding is withdrawn after this cycle's resolution, and for every stored
-// binding that was withdrawn when the cycle began, which covers a route gone
-// since: the service address of one on a leg, the address of any other.
-func (c *cycleRun) withdrawnAddrs() map[netip.Addr]bool {
-	out := map[netip.Addr]bool{}
-	add := func(b resolve.Binding) {
-		if addr := setAddr(b); b.Withdrawn && addr.IsValid() {
-			out[addr] = true
-		}
-	}
-	for _, b := range c.bindings {
-		add(b)
-	}
-	for _, rt := range c.claims.Winners {
-		if b := c.results[rt.Hostname].Binding; b != nil {
-			add(*b)
-		}
-	}
-	return out
 }
 
 // sentTargets are the targets the tunnel configurations last verified at
@@ -237,10 +131,9 @@ func ruleTargets(rules []planner.IngressRule) []egress.Target {
 	return slices.Compact(out)
 }
 
-// rememberEgress takes the set and the verified configurations from the
-// memory of an earlier process.
+// rememberEgress takes the verified configurations from the memory of an
+// earlier process. The set is the agent's, which keeps it itself.
 func (e *Engine) rememberEgress(m store.EngineMemory) {
-	e.egress = fromAddrPorts(m.Egress)
 	for _, v := range m.Verified {
 		e.verified[v.AccountID] = fromAddrPorts(v.Targets)
 	}

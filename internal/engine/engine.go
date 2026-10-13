@@ -32,7 +32,6 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/planner"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/pve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/reconcile"
-	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/store"
 )
 
@@ -43,12 +42,6 @@ type Inventory interface {
 	Refresh(ctx context.Context) inventory.Snapshot
 	// ForceRefresh has the next refresh read every guest of node again.
 	ForceRefresh(node string)
-}
-
-// Resolver is the part of *resolve.Resolver the engine uses. It must be safe
-// for concurrent use.
-type Resolver interface {
-	Resolve(ctx context.Context, route model.Route, snap inventory.Snapshot, prev *resolve.Binding, deny resolve.Denylist, required resolve.Level, share *resolve.Shared) resolve.Result
 }
 
 // Connectors is the part of *connector.Manager the engine uses.
@@ -82,11 +75,13 @@ type ClientFactory func(c store.Credential) (cfapi.API, error)
 
 // Deps is what an Engine is built from.
 type Deps struct {
-	Store      *store.Store
-	Inventory  Inventory
-	Resolver   Resolver
+	Store     *store.Store
+	Inventory Inventory
+	// Fleet is the agents through which the engine does what it does on a
+	// node: the resolution of the targets, the egress filter, the watch of
+	// the network.
+	Fleet      *LocalFleet
 	Connectors Connectors
-	Egress     Egress
 	NewClient  ClientFactory
 	Node       string
 	Now        func() time.Time
@@ -235,24 +230,17 @@ type Engine struct {
 	// setAside says that the memory read was of another install, until a
 	// cycle says so.
 	setAside string
-	// egress is the set of targets the egress filter was last given, and
+	// fleet is the agent of this node.
+	fleet *LocalFleet
+	// egress is the set of targets the agent last gave the egress filter, and
 	// verified, by account, the targets of the tunnel configuration last
-	// verified at Cloudflare. Both are kept in the memory.
+	// verified at Cloudflare. Both are kept in the memory, the set for an
+	// earlier release, whose engine kept it.
 	egress   []egress.Target
 	verified map[string][]egress.Target
-	watched  watched
-	vouch    vouching
-
-	// egMu guards what the watch of the network reads and changes beside
-	// the cycles: the pins it watches, the addresses whose MAC moved and that
-	// were not verified again yet, and the verifications that wait or run.
-	// It is held around every change of the egress filter that depends on
-	// the suspects.
-	egMu     sync.Mutex
-	pins     map[netip.Addr]egress.Pin
-	suspects map[netip.Addr]bool
-	checks   map[netip.Addr]*moveCheck
-	moving   sync.WaitGroup
+	// moving are the verifications of addresses whose MAC moved that the
+	// agent runs, which Run waits for.
+	moving sync.WaitGroup
 
 	// notes is what the checks of the egress table found since the last
 	// cycle.
@@ -358,12 +346,10 @@ func New(d Deps) (*Engine, error) {
 		return nil, errors.New("engine: no store")
 	case d.Inventory == nil:
 		return nil, errors.New("engine: no inventory")
-	case d.Resolver == nil:
-		return nil, errors.New("engine: no resolver")
+	case d.Fleet == nil:
+		return nil, errors.New("engine: no fleet of agents")
 	case d.Connectors == nil:
 		return nil, errors.New("engine: no connector manager")
-	case d.Egress == nil:
-		return nil, errors.New("engine: no egress filter")
 	case d.NewClient == nil:
 		return nil, errors.New("engine: no Cloudflare client factory")
 	case d.Node == "":
@@ -400,8 +386,7 @@ func New(d Deps) (*Engine, error) {
 		reports:   make(map[string]credentials.Report),
 		recheckAt: make(map[string]time.Time),
 		verified:  make(map[string][]egress.Target),
-		suspects:  make(map[netip.Addr]bool),
-		checks:    make(map[netip.Addr]*moveCheck),
+		fleet:     d.Fleet,
 		state:     first,
 
 		pendingCards: make(map[string]bool),
@@ -419,6 +404,9 @@ func New(d Deps) (*Engine, error) {
 	// as long as the engine. The DNS reconciler is made by the first cycle
 	// that knows the install and the settings.
 	e.tunnels = reconcile.NewTunnelReconciler(e.clients, e.writer, d.Now, d.Log)
+	if err := d.Fleet.attach(e); err != nil {
+		return nil, fmt.Errorf("engine: starting the agent of this node: %w", err)
+	}
 	return e, nil
 }
 

@@ -15,6 +15,10 @@ import (
 	"github.com/anaryk/proxmox-cloudflared-operator/internal/resolve"
 )
 
+// reverifyEvery is the least time the agent lets pass between the starts of
+// two verifications of an address whose MAC moved.
+const reverifyEvery = 5 * time.Second
+
 // timers replaces the timers of an engine: a test fires them.
 type timers struct {
 	mu      sync.Mutex
